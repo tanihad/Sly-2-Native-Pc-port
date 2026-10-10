@@ -107,7 +107,8 @@ void gs_write_reg(uint32_t r, uint64_t v) {
         gs_exec_write_reg(r, v);
         return;
     }
-    slot* s = reserve(1);
+    /* one slot never needs padding: only check the remembered free space (reserve when it runs out) */
+    slot* s = (int32_t)(room_end - (wr_local + 1)) >= 0 ? &q[wr_local & Q_MASK] : reserve(1);
     s->kind = r;
     s->v = v;
     wr_local++;
