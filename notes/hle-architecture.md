@@ -71,3 +71,17 @@ tools/, orig/ and .venv/ only exist in the main checkout
   `PS2_GS_TRACE_FROM=<vsync>`, `PS2_GS_TRACE_MAX=<n>` (default 64), `PS2_GS_TRACE_BRIEF=1` (one line
   per primitive), `PS2_GS_TRACE_MINSIZE=<px>` (skip small ones), `PS2_GS_TRACE_TEXELS=0`.
   `PS2_PEEK=12000000:2,12000070:4` reads the GS privileged registers (PMODE, DISPFB1, ...).
+- Scripted input (`PS2_INPUT`, runtime/window.c header): absolute `<padframe>:<button>[:<hold>]`,
+  relative `+n:...`, anchored to game code `@<func>[/<ra>][+n]:...` (after a call of a recompiled
+  function, optionally from the call site returning to ra) and `@!<func>[+n]:...` (after it went
+  quiet for n frames), `none`, partial sticks `lxHH/lyHH/rxHH/ryHH`, `ram` (EE RAM dump). Sly 2:
+  `@187D80/1DD96C+30:start` presses START once the title screen accepts it; `@!227820+90:none` waits
+  for the end of a Binocucom conversation. Anchors need the debug build.
+- Live play: `scripts\live_game.ps1` starts the game in the background with `PS2_INPUT_FILE`
+  (lines appended to build\live\input.txt are read while it runs); `scripts\live_look.ps1 -Send
+  "+0:lup:60" -Wait 3` sends input and tiles the newest frames into build\live\look.png;
+  `scripts\live_goto.py x,y ...` steers Sly to world positions, `scripts\live_hop.py` jumps towards
+  one (both need `PS2_PEEK="2DE1C0:4,2DDFD0:4"`: player focus and camera position).
+- Frame dumps: `PS2_DUMP_FROM=<vblank>`, `PS2_DUMP_RING=<n>` (keep the newest n), `latest.png`;
+  `PS2_DUMP_RAM=<vblank>,...`; `PS2_CALLS=<from>:<n>,...` (up to 8 call-profile windows);
+  `scripts\contact_sheet.py out.png frames... [--cols --scale --crop x0,y0,x1,y1 --zoom n]`.

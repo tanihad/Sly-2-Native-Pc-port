@@ -46,10 +46,15 @@ skeleton up onto the skeleton, walk along it to the tail, leap to the elevator s
 marker), press Circle. Then Bentley hacks the security computer (lasers/spotlights off, gate open),
 Sly meets Murray (ropes: jump + Circle), Murray lifts the gate, exhibit room, Carmelita/Neyla.
 World coordinates (Z up, floor 625 = 0x2DE1C0.z): start (4915,-5211); stairs top/door (6262,-3387,845);
-trampoline (blue dome) centre ~(5130,-2790) (Sly bounces very high there; double jump at the peak
-goes higher still); security station / lasers on the north balcony around (4300,-900,~1200);
-Binocucom briefing camera (5434,-4595,952) looking (-0.30,0.95,0.07). Landing on the skeleton from
-the trampoline was not achieved in ~10 tries (tramp.py-style bounce + steer in 8 directions).
+blue dome trampoline ~(5130,-2790) (north of the hall centre); **brown drum trampoline right under
+the whale skull at ~(5300,-4586)**, next to the start: `scripts\live_climb.ps1` walks to
+(5060,-4740) and hops onto it; Sly then bounces automatically to the camera-focus ceiling z=1661
+beside the skull (the focus z seems clamped there, so it does not tell whether he stands on bone).
+Steering west at the apex carries him ~500 units along y=-4571 to x~4790, then he descends towards
+(4690,-4660) and falls; slow/partial-stick walking falls off sooner. The real player position
+(not the camera focus) has not been found in RAM yet; the bone matrices in the 0x306000/0x35F000
+scratch buffers carry it per frame. Security station / lasers on the north balcony around
+(4300,-900,~1200); Binocucom briefing camera (5434,-4595,952) looking (-0.30,0.95,0.07).
 
 ## Next
 1. Get onto the whale skeleton (needs a view of it from the trampoline; try steering at the peak of

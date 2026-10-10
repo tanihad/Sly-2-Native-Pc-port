@@ -52,6 +52,7 @@ def main() -> int:
     ap.add_argument("--sign", type=float, default=1.0, help="flip if steering goes the wrong way")
     ap.add_argument("--timeout", type=float, default=60.0)
     ap.add_argument("--step", type=int, default=20, help="frames per stick command")
+    ap.add_argument("--scale", type=float, default=1.0, help="stick deflection 0..1 (walk slowly)")
     a = ap.parse_args()
     d = Path(a.dir)
     log, inp = d / "run.log", d / "input.txt"
@@ -73,19 +74,19 @@ def main() -> int:
             print(f"v{vb} at {pos[0]:.0f},{pos[1]:.0f},{pos[2]:.0f} -> {tx:.0f},{ty:.0f}: {dist:.0f}", flush=True)
             if dist < a.tol:
                 break
-            if dist < best - 20:
+            if dist < best - 5:
                 best, stall = dist, 0
             else:
                 stall += 1
-                if stall > 8:
+                if stall > 12:
                     print("no progress, giving up on this point")
                     break
             fx, fy = pos[0] - ahead[0], pos[1] - ahead[1]          # camera -> player
             fn = math.hypot(fx, fy) or 1.0
             fx, fy = fx / fn, fy / fn
             ang = math.atan2(fx * dy - fy * dx, fx * dx + fy * dy)   # + = target to the left
-            sx = -math.sin(ang) * a.sign                               # stick right = +
-            sy = -math.cos(ang)                                        # stick up = -
+            sx = -math.sin(ang) * a.sign * a.scale                              # stick right = +
+            sy = -math.cos(ang) * a.scale                                      # stick up = -
             hx = max(0, min(255, int(round(128 + sx * 127))))
             hy = max(0, min(255, int(round(128 + sy * 127))))
             send(inp, f"+0:lx{hx:02x}:{a.step},+0:ly{hy:02x}:{a.step}")
