@@ -64,3 +64,5 @@ void     iop_cd_service(int64_t now);              /* iop_sif.c */
 void     iop_sif_service(void);                    /* iop_sif.c */
 void     iop_sd_service(void);                     /* iop_libs.c */
 int      iop_cd_busy(void);
+void     iop_sif_report(char* buf, size_t cap);    /* RPC and CD counters for the status line */
+uint64_t iop_timer_ticks(void);                    /* hard timer handler calls so far */

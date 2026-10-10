@@ -6,18 +6,22 @@ served by the real driver; libsd calls go to runtime/sd.h.
 
 ## Done
 - recomp/irx.py: IRX parser + relocator (R_MIPS_32/26/HI16/LO16), import/export tables.
+- recomp/iop.py (`python -m recomp iop <elf> -o dir`): discovery + MIPS I codegen; 634 functions,
+  113 stubs, 0 untranslated, 0 load-delay hazards. build_game.py runs it.
+- runtime/iop.h (ctx, accessors, memory map), iop_internal.h, iop_kernel.c, iop_libs.c,
+  iop_sif.c, iop_loader.c; runtime/stub/sd_stub.c (positions simulated; linked if no sd.c).
+- sif.c (IOP servers, deferred replies, sysmem RPC buffers), iop_modules.c (native load,
+  IOPHEAP on sysmem), cdvd.c (cdvd_read_host), ps2_runtime.c (iop_init/iop_service/poll flag).
+- Game: banner, both servers registered, bank load -> handle 0x001D1F00, tick 240.0/s,
+  sd stub gets voice transfers/key-ons; with PS2_INPUT reaches title + first cutscene.
+  PS2_AUDIO=0 behaves like the old build. tests/run_tests.py passes.
 
 ## In progress
-- recomp/iop.py: IOP function discovery + MIPS I codegen.
+- Unit tests: tests/unit/iop_recomp (hand-encoded MIPS I via a synthetic IRX), tests/unit/iop_kernel.
 
 ## Next
-1. runtime/iop.h (ctx, memory accessors, kernel API), iop_kernel.c (sysmem, threads on fibers,
-   sema, evf, intrman, timrman, scheduler/iop_run/iop_service), iop_libs.c (sysclib, stdio,
-   ioman, lgaud, loadcore, libsd glue), iop_sif.c (sifman/sifcmd server, cdvdman), iop_loader.c.
-2. runtime/stub/sd_stub.c (logging libsd backend; only linked when runtime/sd.c is absent).
-3. sif.c / iop_modules.c / cdvd.c / ps2_runtime.c integration; build_game.py runs `recomp iop`.
-4. Unit tests: tests/unit/iop_recomp (hand-encoded MIPS I), tests/unit/iop_kernel.
-5. Run the game; check banner, RPC servers, bank loads, 240 Hz tick, sd stub traffic.
+1. Notes: notes/iop-native.md (design, memory map, debugging), update audio-native-plan/progress.
+2. Final run + commit.
 
 ## Findings / traps
 - 989snd .text ends with data (0x1C934-0x1C9C4, a table after the import stubs): code ranges

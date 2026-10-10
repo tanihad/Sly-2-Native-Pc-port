@@ -16,7 +16,7 @@
 
 /* ---- sifcmd: RPC servers ------------------------------------------------------------------------- */
 
-typedef struct { uint32_t sd, sid, func, buff, cfunc, cbuff, qd; } rpc_server;
+typedef struct { uint32_t sd, sid, func, buff, cfunc, cbuff, qd, calls; } rpc_server;
 typedef struct {
     uint32_t qd;
     int thread;
@@ -55,7 +55,7 @@ void iop_imp_sifcmd_sceSifSetRpcQueue(iop_ctx* c) {
 /* sceSifRegisterRpc(SifRpcServerData_t* sd, int sid, func, buff, cfunc, cbuff, SifRpcDataQueue_t* qd) */
 void iop_imp_sifcmd_sceSifRegisterRpc(iop_ctx* c) {
     uint32_t sd = c->r[4];
-    rpc_server s = { sd, c->r[5], c->r[6], c->r[7], iop_arg(c, 4), iop_arg(c, 5), iop_arg(c, 6) };
+    rpc_server s = { sd, c->r[5], c->r[6], c->r[7], iop_arg(c, 4), iop_arg(c, 5), iop_arg(c, 6), 0 };
     for (uint32_t k = 0; k < 0x44; k += 4) iop_w32(sd + k, 0);
     iop_w32(sd + 0, s.sid);
     iop_w32(sd + 4, s.func);
@@ -122,7 +122,11 @@ void iop_imp_sifcmd_sceSifRpcLoop(iop_ctx* c) {
         iop_w32(s->sd + 48, r.rmode);        /* rmode */
         iop_w32(s->sd + 52, r.pkt[0]);       /* rid */
         uint32_t reply = iop_guest_call(c, s->func, r.fno, s->buff, r.send_size, 0);
-        if (iop_log) fprintf(stderr, "[iop] RPC 0x%08X fn %u (%u bytes) -> reply 0x%08X\n", s->sid, r.fno, r.send_size, reply);
+        s = server_by_sd(r.server);                       /* (the table may have changed meanwhile) */
+        if (s) s->calls++;
+        if (iop_log)
+            fprintf(stderr, "[iop] RPC 0x%08X fn %u (%u bytes) -> reply at 0x%08X, first word 0x%08X\n",
+                    s ? s->sid : 0, r.fno, r.send_size, reply, reply ? iop_r32(reply) : 0);
         sif_rpc_reply(&r, reply);
     }
 }
@@ -182,8 +186,16 @@ enum { SCECdStatPause = 0x0A, SCECdStatRead = 0x06, SCECdFuncRead = 1, SCECdErNO
 static int cd_busy, cd_error;
 static uint32_t cd_callback, cd_callback_gp;
 static int64_t cd_done_at;
+static unsigned cd_reads, cd_sectors;
 
 int iop_cd_busy(void) { return cd_busy; }
+
+void iop_sif_report(char* buf, size_t cap) {
+    size_t n = (size_t)snprintf(buf, cap, "RPC calls served:");
+    for (int i = 0; i < nservers && n < cap; i++)
+        n += (size_t)snprintf(buf + n, cap - n, " 0x%08X %u,", servers[i].sid, servers[i].calls);
+    if (n < cap) snprintf(buf + n, cap - n, " CD reads %u (%u sectors)", cd_reads, cd_sectors);
+}
 
 /* sceCdRead(lbn, sectors, buf, sceCdRMode*) */
 void iop_imp_cdvdman_sceCdRead(iop_ctx* c) {
@@ -194,6 +206,8 @@ void iop_imp_cdvdman_sceCdRead(iop_ctx* c) {
              ((buf & (IOP_RAM_SIZE - 1)) + n * 2048u <= IOP_RAM_SIZE) && cdvd_read_host(lbn, n, dst);
     if (iop_log) fprintf(stderr, "[iop] sceCdRead(lbn %u, %u sectors) -> 0x%08X%s\n", lbn, n, buf, ok ? "" : " FAILED");
     cd_error = ok ? SCECdErNO : SCECdErREAD;
+    cd_reads++;
+    cd_sectors += n;
     cd_busy = 1;
     cd_done_at = iop_now();            /* completes at the next interrupt delivery point */
     iop_ret(c, 1);

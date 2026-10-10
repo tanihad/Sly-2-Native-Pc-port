@@ -259,6 +259,7 @@ typedef struct {
     int      intr_disabled;
     uint32_t exit_value;
     void*    fiber;
+    int      fiber_stale;                  /* fiber stopped mid-way (ExitThread): replace on start */
     iop_ctx  ctx;
 } iop_thread;
 
@@ -375,8 +376,10 @@ static int create_thread(uint32_t entry, int prio, uint32_t stack_size, uint32_t
         if (!stack) return KE_NO_MEMORY;
         iop_thread* t = &th[i];
         void* fiber = t->fiber;                            /* a parked fiber of a deleted thread is reused */
+        int stale = t->fiber_stale;
         memset(t, 0, sizeof *t);
         t->fiber = fiber;
+        t->fiber_stale = stale;
         t->status = TS_DORMANT;
         t->entry = entry;
         t->prio = t->init_prio = prio;
@@ -403,6 +406,8 @@ static int start_thread(int tid, uint32_t a0, uint32_t a1) {
     t->prio = t->init_prio;
     t->wakeups = 0;
     t->intr_disabled = 0;
+    if (t->fiber && t->fiber_stale) { DeleteFiber(t->fiber); t->fiber = NULL; }
+    t->fiber_stale = 0;
     if (!t->fiber) t->fiber = CreateFiberEx(64 * 1024, 1 << 20, 0, thread_main, t);
     if (!t->fiber) { fprintf(stderr, "[iop] CreateFiber failed\n"); return KE_NO_MEMORY; }
     make_ready((int)(t - th));
@@ -465,6 +470,8 @@ void iop_imp_thbase_ExitThread(iop_ctx* c) {
     (void)c;
     if (!cur || in_intr) return;
     th[cur].status = TS_DORMANT;
+    th[cur].exit_value = 0;
+    th[cur].fiber_stale = 1;                               /* never resumed: StartThread makes a new one */
     switch_to_scheduler();
 }
 
@@ -807,20 +814,20 @@ void iop_imp_timrman_StopHardTimer(iop_ctx* c) {
 static uint64_t timer_ticks_total;
 uint64_t iop_timer_ticks(void) { return timer_ticks_total; }
 
+/* Timers keep real time: when the EE reached no safe point for a while (a long frame), the missed
+ * interrupts are delivered back to back, so the 989snd tick averages 240 Hz. Only a stall of more
+ * than a second (debugger, window drag) is dropped instead of replayed. */
 static void timers_service(int64_t now) {
     for (int i = 0; i < 4; i++) {
         hard_timer* t = &timers[i];
-        int n = 0;
+        if (t->used && t->active && now - t->next_due > iop_usec_to_ticks(1000000u))
+            t->next_due = now;
         while (t->used && t->active && t->handler && now >= t->next_due) {
             uint32_t next = iop_intr_call(t->handler, t->arg, 0, t->gp);
             timer_ticks_total++;
             if (!next) { t->active = 0; break; }           /* handler returned 0: timer stops */
             t->compare = next;
             t->next_due += timer_period(t, next);
-            if (++n == 8 && now >= t->next_due) {          /* far behind (EE stalled): don't burst */
-                t->next_due = now + timer_period(t, next);
-                break;
-            }
         }
     }
 }
@@ -860,9 +867,30 @@ void iop_run(void) {
     in_run = 0;
 }
 
+/* Every 10 s while the recompiled modules run: one line showing the IOP is alive. */
+static void status_line(void) {
+    static int64_t last;
+    static uint64_t last_ticks;
+    int64_t now = iop_now();
+    if (!last) { last = now; last_ticks = timer_ticks_total; return; }
+    if (now - last < iop_usec_to_ticks(10000000u)) return;
+    double secs = (double)(now - last) / (double)qpc_freq.QuadPart;
+    double rate = (double)(timer_ticks_total - last_ticks) / secs;
+    last = now;
+    last_ticks = timer_ticks_total;
+    char sif[512];
+    iop_sif_report(sif, sizeof sif);
+    int ready = 0, waiting = 0;
+    for (int i = 1; i < MAX_THREADS; i++) { ready += th[i].status == TS_READY; waiting += th[i].status == TS_WAIT; }
+    fprintf(stderr, "[iop] status: hard timer handler %llu calls (%.1f/s over the last %.0f s), threads %d waiting/"
+                    "%d ready, free IOP memory 0x%X; %s\n", (unsigned long long)timer_ticks_total, rate, secs,
+            waiting, ready, iop_total_free(), sif);
+}
+
 void iop_service(void) {
     if (!inited) return;
     iop_run();
+    if (timer_ticks_total) status_line();
 }
 
 /* Loop heads of recompiled code (IOP_POLL): pending interrupts, preemption, end of the time slice. */
