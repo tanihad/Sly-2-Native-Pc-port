@@ -10,6 +10,12 @@ microcode) is statically recompiled, never interpreted; PS2 hardware requests ar
 PC APIs (Direct3D 11, WASAPI, XInput, files) at a high level, not simulated cycle- or
 pixel-accurately. The project owner explicitly does not want "another PCSX2".
 
+## Checkpoints (work must survive interruptions)
+
+Follow `notes/agent-checkpoints.md`: at start, look for `notes/wip/<task>.md` and WIP commits from
+an earlier attempt and continue from them; while working, update that file and commit after every
+meaningful step, so an interrupted run resumes where it stopped instead of starting over.
+
 ## Rules
 
 - Never download game ISOs/executables or copyrighted assets. Original files come only from the
