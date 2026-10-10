@@ -2,7 +2,22 @@
 
 ## Resume here (read first in a new session)
 
-State on 2026-10-10:
+**Latest (2026-10-10, later):** all `hw/*` branches are merged into main. The game boots, plays
+the intro movie, shows the mask logo and renders the memory-card prompt ("Do you want to create
+a Sly 2 Save File?"), where it currently stops reacting to input (presses do reach the game's
+joystick object). Running in parallel, each in a worktree under
+`C:\Users\tanih\Projects\sly2-worktrees\`:
+- workflow `playtest-fixes`: `fix/fix-input` (why the prompt ignores input, then push further
+  into the game), `fix/fix-perf` (game runs ~77% speed; profiler + optimisations),
+  `fix/fix-render` (grey button glyph, accuracy).
+- workflow `native-audio`: `audio/audio-iop` (recompile 989snd/spiop + native IOP libraries) and
+  `audio/audio-mixer` (native libsd mixer + WASAPI, interface `runtime/sd.h`), then integration
+  on `audio/audio-iop`.
+If interrupted: each branch has commits and `notes/wip/<task>.md` checkpoints; restart an agent in
+that worktree with the task text from the workflow scripts plus the checkpoint protocol.
+Debug tools: PS2_INPUT (scripted presses), PS2_PEEK (memory), PS2_LOG_PAD/SIF/GS, frame dumps.
+
+Earlier state on 2026-10-10:
 - `main`: recompiler + runtime boot the game to its intro movie; hardware layer architecture with
   frozen interfaces (`runtime/hw.h`, `runtime/gs_internal.h`) and stubs for every subsystem.
 - Design rules: `notes/native-port-principles.md` (native port, not an emulator),
