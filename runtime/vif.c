@@ -28,6 +28,7 @@
 /* ---- register bits --------------------------------------------------------------------------- */
 
 #define ST_VPS_WAIT 0x1u               /* VPS = 1: waiting for the data of a command */
+#define ST_VPS_DECODE 0x2u             /* VPS = 2: decoding (a command waiting for the VU) */
 #define ST_VPS_XFER 0x3u               /* VPS = 3: transferring (DIRECT waiting on the GIF) */
 #define ST_VEW (1u << 2)
 #define ST_VGW (1u << 3)
@@ -73,6 +74,7 @@ typedef struct {
     uint32_t left;                     /* data words the command still expects */
     uint32_t pos;                      /* STROW/STCOL element; MPG byte address */
     int      stop_req;                 /* FBRST.STP arrived during a command */
+    int      vu_wait;                  /* CODE holds a command waiting for the VU (STAT.VPS = 2) */
 
     /* UNPACK */
     uint32_t u_fmt;                    /* CMD bits 0-3: vn << 2 | vl (0xF = V4-5) */
@@ -504,7 +506,12 @@ static uint32_t feed(vif_state* v, const uint32_t* w, uint32_t n) {
             v->stat |= ST_VIS;
             break;
         }
-        if (!cmd_begin(v, code)) break;
+        if (!cmd_begin(v, code)) {                           /* waits for the VU: it is the command */
+            v->code = code;                                  /* being processed (CODE, VPS = 2) */
+            v->vu_wait = 1;
+            break;
+        }
+        v->vu_wait = 0;
         i++;
     }
     return i;
@@ -598,7 +605,10 @@ static void vif_reset(vif_state* v) {
 static uint32_t stat_read(vif_state* v) {
     uint32_t s = v->stat;
     if (v->kind != K_NONE) s |= (v->left ? ST_VPS_WAIT : ST_VPS_XFER);
-    if (vu_running(v)) s |= ST_VEW;
+    if (vu_running(v)) {
+        s |= ST_VEW;
+        if (v->kind == K_NONE && v->vu_wait) s |= ST_VPS_DECODE;
+    }
     uint32_t fqc = (v->fifo_n + 3) / 4, cap = v->id ? 16 : 8;
     s |= (fqc < cap ? fqc : cap) << 24;
     return s;

@@ -610,6 +610,51 @@ static void test_mscal_double_buffer(void) {
     CHECK_EQ(fake_tops_itop[0], 0x12);
 }
 
+/* Review: a command that waits for the VU (MSCAL/MSCALF/MSCNT/MPG/FLUSHE/FLUSH/FLUSHA) is the
+ * command being processed. ps2tek, VIFn_CODE: "the last processed command or if the VIF was stalled
+ * while processing a command, the command currently being processed"; STAT.VPS is not idle then. */
+static void test_code_while_waiting_for_vu(void) {
+    reset_all();
+    s_clear(&S);
+    s_put(&S, VC(0x07, 0, 0x11));                      /* MARK */
+    s_put(&S, 0); s_put(&S, 0);
+    s_put(&S, VC(0x14, 0, 0x40));                      /* MSCAL: waits */
+    s_put(&S, VC(0x10, 0, 0)); s_put(&S, 0); s_put(&S, 0); s_put(&S, 0);
+    fake_vu1_busy = 1;
+    CHECK_EQ(vif_dma(1, S.w, 1), 1);
+    CHECK_EQ(rd(1, R_CODE), VC(0x14, 0, 0x40));
+    CHECK_EQ(rd(1, R_STAT) & (ST_VPS | ST_VEW), 2 | ST_VEW);   /* VPS = 2: decoding */
+    CHECK_EQ(fake_vu1_starts, 0);
+    fake_vu1_busy = 0;
+    CHECK_EQ(rd(1, R_STAT) & (ST_VPS | ST_VEW), 0);    /* the poll lets it run */
+    CHECK_EQ(fake_vu1_starts, 1);
+    CHECK_EQ(rd(1, R_CODE), VC(0x14, 0, 0x40));
+
+    /* FLUSHE at a qword boundary: the DMAC keeps the qword, the VIF still shows the wait */
+    fake_vu1_busy = 1;
+    CHECK_EQ(vif_dma(1, S.w + 4, 1), 0);
+    CHECK_EQ(rd(1, R_CODE), VC(0x10, 0, 0));
+    CHECK_EQ(rd(1, R_STAT) & ST_VPS, 2);
+    fake_vu1_busy = 0;
+    CHECK_EQ(vif_dma(1, S.w + 4, 1), 1);
+    CHECK_EQ(rd(1, R_STAT) & ST_VPS, 0);
+    CHECK_EQ(rd(1, R_CODE), 0);                        /* last NOP */
+
+    /* MPG waiting for the VU */
+    s_clear(&S);
+    s_put(&S, 0);
+    s_put(&S, VC(0x4A, 1, 0x000)); s_put(&S, 0x33); s_put(&S, 0x44);
+    fake_vu1_busy = 1;
+    CHECK_EQ(vif_dma(1, S.w, 1), 1);
+    CHECK_EQ(rd(1, R_CODE), VC(0x4A, 1, 0x000));
+    CHECK_EQ(rd(1, R_STAT) & ST_VPS, 2);
+    fake_vu1_busy = 0;
+    CHECK_EQ(rd(1, R_STAT) & ST_VPS, 0);
+    CHECK_EQ(rd(1, R_NUM), 0);
+    wr(1, R_FBRST, 1);
+    CHECK_EQ(rd(1, R_STAT), 0);
+}
+
 static void test_direct(void) {
     reset_all();
     /* Aligned DIRECT: code in word 3 */
@@ -779,6 +824,188 @@ static void test_ibit(void) {
     CHECK_EQ(rd(1, R_MODE), 2);
 }
 
+/* Sly 2's VIF1 interrupt (handler at 0x00167F78, AddIntcHandler(INTC_VIF1)): packets end a VU1
+ * job with MSCAL + FLUSHE|i; the handler reads the results from VU1 data memory (0x1100C320...)
+ * and then writes FBRST.STC. The next command must not touch VU memory before the STC. */
+static void test_game_flushe_ibit_handler(void) {
+    for (int split = 0; split < 3; split++) {
+        reset_all();
+        wr(1, R_ERR, 2);                               /* sceGsResetPath: ME0 */
+        s_clear(&S);
+        s_put(&S, VC(0x01, 0, 0x0101));
+        s_put(&S, VC(0x6C, 1, 0x032)); s_put(&S, 1); s_put(&S, 2); s_put(&S, 3); s_put(&S, 4);
+        s_put(&S, VC(0x14, 0, 0x0100));                /* MSCAL */
+        while (S.n % 4 != (uint32_t)(split == 0 ? 3 : split == 1 ? 1 : 0)) s_put(&S, 0);
+        s_put(&S, VC(0x10, 0, 0) | IBIT);              /* FLUSHE|i */
+        s_put(&S, VC(0x6C, 1, 0x032)); s_put(&S, 5); s_put(&S, 6); s_put(&S, 7); s_put(&S, 8);
+        s_put(&S, VC(0x14, 0, 0x0200));
+        s_align(&S);
+        uint32_t total = S.n / 4, q = vif_dma(1, S.w, total);
+        CHECK(q < total);                              /* the DMAC has to wait */
+        CHECK_EQ(fake_intc_count[INTC_VIF1], 1);
+        CHECK_EQ(fake_vu1_starts, 1);
+        CHECK_VEC(1, 0x32, 1, 2, 3, 4);                /* what the handler reads */
+        CHECK(rd(1, R_STAT) & ST_VIS);
+        CHECK_EQ(rd(1, R_CODE), VC(0x10, 0, 0) | IBIT);
+        CHECK_VEC(1, 0x32, 1, 2, 3, 4);                /* a STAT poll does not run past the stall */
+        CHECK_EQ(vif_dma(1, S.w + 4 * q, total - q), 0);
+        wr(1, R_FBRST, 8);                             /* handler: STC */
+        q += vif_dma(1, S.w + 4 * q, total - q);
+        CHECK_EQ(q, total);
+        CHECK_VEC(1, 0x32, 5, 6, 7, 8);
+        CHECK_EQ(fake_vu1_starts, 2);
+        CHECK_EQ(rd(1, R_STAT) & ~(uint32_t)ST_DBF, 0);
+    }
+}
+
+/* Random command streams with i bits, delivered in random pieces (DMA, TTE tags, 32/64/128-bit
+ * FIFO writes) with STC whenever the VIF stalls, plus GIF refusals, a busy VU, STP/FBK and register
+ * polls in between, must end exactly like the same stream processed in one call with ERR.MII = 1. */
+static void gen_stream(stream* s, int vif, int* nibits) {
+    s_clear(s);
+    *nibits = 0;
+    int cmds = 1 + (int)(rnd() % 60);
+    for (int k = 0; k < cmds; k++) {
+        uint32_t ib = rnd() % 4 == 0 ? IBIT : 0;
+        if (ib) (*nibits)++;
+        switch (rnd() % 15) {
+        case 0: s_put(s, VC(0x00, 0, 0) | ib); break;
+        case 1: s_put(s, VC(0x01, 0, (rnd() % 5) | (1 + rnd() % 5) << 8) | ib); break;
+        case 2: s_put(s, VC(0x05, 0, rnd() % 3) | ib); break;
+        case 3: s_put(s, VC(0x20, 0, 0) | ib); s_put(s, rnd()); break;
+        case 4: s_put(s, VC(0x30, 0, 0) | ib); for (int j = 0; j < 4; j++) s_put(s, rnd()); break;
+        case 5: s_put(s, VC(0x31, 0, 0) | ib); for (int j = 0; j < 4; j++) s_put(s, rnd()); break;
+        case 6: s_put(s, VC(0x07, 0, rnd() & 0xFFFF) | ib); break;
+        case 7: case 8: case 9: {
+            uint32_t cmd;
+            do cmd = 0x60 | (rnd() & 0x1F); while ((cmd & 3) == 3 && (cmd & 0xC) != 0xC);
+            uint32_t num = 1 + rnd() % 30, cl = 1 + rnd() % 4, wl = 1 + rnd() % 4;
+            s_put(s, VC(0x01, 0, cl | wl << 8));
+            uint32_t n_in = wl <= cl ? num : (num / wl) * cl + (num % wl < cl ? num % wl : cl);
+            uint32_t vb = (cmd & 0xF) == 0xF ? 2 : (4u >> (cmd & 3)) * (((cmd >> 2) & 3) + 1);
+            s_put(s, VC(cmd, num, (rnd() & 0x3FF) | (rnd() & 0xC000)) | ib);
+            for (uint32_t i = 0; i < (n_in * vb + 3) / 4; i++) s_put(s, rnd());
+            break;
+        }
+        case 10: s_put(s, VC(vif ? 0x03 : 0x04, 0, rnd() & 0x3FF) | ib); break;
+        case 11: s_put(s, (vif ? VC(0x02, 0, rnd() & 0x3FF) : 0) | ib); break;
+        case 12: {
+            while (s->n & 1) s_put(s, 0);
+            s_put(s, 0);
+            uint32_t num = 1 + rnd() % 8;
+            s_put(s, VC(0x4A, num, rnd() & 0x7FF) | ib);
+            for (uint32_t i = 0; i < num * 2; i++) s_put(s, rnd());
+            break;
+        }
+        case 13:
+            if (vif) {
+                while ((s->n & 3) != 3) s_put(s, 0);
+                uint32_t q = 1 + rnd() % 4;
+                s_put(s, VC(0x50 + (rnd() & 1), 0, q) | ib);
+                for (uint32_t i = 0; i < q * 4; i++) s_put(s, rnd());
+            } else {
+                s_put(s, VC(0x14, 0, rnd() & 0xFF) | ib);
+            }
+            break;
+        default: s_put(s, VC(0x14 + (vif ? (rnd() & 1) : 0), 0, rnd() & 0x7FF) | ib); break;
+        }
+    }
+    s_align(s);
+}
+
+static void stc_if_stalled(int vif) {
+    if (rd(vif, R_STAT) & (ST_INT | ST_VIS | ST_VSS | ST_VFS | ST_ER1)) wr(vif, R_FBRST, 8);
+}
+
+static void test_stall_resume_random(void) {
+    static uint8_t data1[16384], micro1[16384], gif1[1 << 16];
+    static const uint32_t regs[] = { R_CYCLE, R_MODE, R_MASK, R_ITOPS, R_BASE, R_OFST, R_TOPS, R_ITOP, R_TOP,
+                                     R_MARK, R_NUM, R_R0, R_R0 + 0x10, R_R0 + 0x20, R_R0 + 0x30, R_C0,
+                                     R_C0 + 0x10, R_C0 + 0x20, R_C0 + 0x30 };
+    enum { NREGS = sizeof regs / sizeof regs[0] };
+    rng_state = 0xC0FFEE;
+    int bad = 0;
+    for (int iter = 0; iter < 3000 && bad < 5; iter++) {
+        int vif = rnd() % 3 ? 1 : 0, nibits;
+        gen_stream(&S, vif, &nibits);
+        uint32_t total = S.n / 4;
+
+        reset_all();
+        wr(vif, R_ERR, 3);                             /* MII: no i-bit stalls */
+        CHECK_EQ(vif_dma(vif, S.w, total), total);
+        memcpy(data1, fake_vu_data[vif], sizeof data1);
+        memcpy(micro1, fake_vu_micro[vif], sizeof micro1);
+        uint32_t gifq = fake_gif_qwc, r1[NREGS];
+        memcpy(gif1, fake_gif, sizeof gif1);
+        int starts = fake_vu1_starts;
+        for (int r = 0; r < NREGS; r++) r1[r] = rd(vif, regs[r]);
+        uint32_t st1 = rd(vif, R_STAT) & ~(uint32_t)ST_MRK;
+
+        reset_all();
+        wr(vif, R_ERR, 2);
+        uint32_t fifo = vif ? 0x10005000u : 0x10004000u;
+        for (uint32_t q = 0, guard = 0; q < total && guard < 100000; guard++) {
+            uint32_t r = rnd() % 16;
+            fake_gif_limit = r == 0 ? (int)(rnd() % 3) : -1;
+            fake_vu1_busy = r == 1;
+            if (r == 2) wr(vif, R_FBRST, 4);
+            if (r == 3) wr(vif, R_FBRST, 2);
+            if (r == 4) (void)rd(vif, R_CODE);
+            switch (rnd() % 4) {
+            case 0: {
+                uint32_t c = 1 + rnd() % 5;
+                if (c > total - q) c = total - q;
+                q += vif_dma(vif, S.w + q * 4, c);
+                break;
+            }
+            case 1: {                                  /* the qword as two TTE tags */
+                _Alignas(16) uint32_t t1[4] = { 0, 0, S.w[q * 4], S.w[q * 4 + 1] };
+                _Alignas(16) uint32_t t2[4] = { 0, 0, S.w[q * 4 + 2], S.w[q * 4 + 3] };
+                if (vif_dma_tag(vif, t1)) {
+                    for (int g = 0; !vif_dma_tag(vif, t2) && g < 100; g++) {
+                        fake_gif_limit = -1;
+                        fake_vu1_busy = 0;
+                        stc_if_stalled(vif);
+                    }
+                    q++;
+                }
+                break;
+            }
+            case 2: {
+                unsigned sz = 4u << (rnd() % 3);
+                for (unsigned off = 0; off < 16; off += sz) {
+                    uint32_t w[4];
+                    memcpy(w, (const uint8_t*)&S.w[q * 4] + off, sz);
+                    vif_access(fifo, w, sz, 1);
+                }
+                q++;
+                break;
+            }
+            default: q += vif_dma(vif, S.w + q * 4, 0); break;
+            }
+            fake_gif_limit = -1;
+            fake_vu1_busy = 0;
+            if (rnd() & 1) stc_if_stalled(vif);
+        }
+        for (int k = 0; k < 4; k++) stc_if_stalled(vif);
+
+        int diff = 0;
+        if (memcmp(data1, fake_vu_data[vif], sizeof data1)) diff |= 1;
+        if (memcmp(micro1, fake_vu_micro[vif], sizeof micro1)) diff |= 2;
+        if (fake_gif_qwc != gifq || memcmp(gif1, fake_gif, gifq * 16)) diff |= 4;
+        for (int r = 0; r < NREGS; r++) if (rd(vif, regs[r]) != r1[r]) diff |= 8;
+        if ((rd(vif, R_STAT) & ~(uint32_t)ST_MRK) != st1) diff |= 16;
+        if (fake_vu1_starts != starts) diff |= 32;
+        if (fake_intc_count[vif ? INTC_VIF1 : INTC_VIF0] != nibits) diff |= 64;
+        checks++;
+        if (diff) {
+            bad++;
+            failures++;
+            fprintf(stderr, "stall/resume random %d (VIF%d): mismatch 0x%X\n", iter, vif, (unsigned)diff);
+        }
+    }
+}
+
 static void test_stop_and_break(void) {
     reset_all();
     /* STP while idle: stops before the next command */
@@ -939,8 +1166,11 @@ int main(void) {
     test_unpack_random();
     test_mpg();
     test_mscal_double_buffer();
+    test_code_while_waiting_for_vu();
     test_direct();
     test_ibit();
+    test_game_flushe_ibit_handler();
+    test_stall_resume_random();
     test_stop_and_break();
     test_split_everything();
     test_vif1_read();
