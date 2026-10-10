@@ -1,5 +1,6 @@
-# Build and run the window tests: unit checks, then the interactive window test (opens a window
-# for a few seconds) with the Direct3D 11 presenter and again with the GDI fallback.
+# Build and run the window tests: unit checks, presenter checks (small test windows), then the
+# interactive window test (opens a window for a few seconds) with the Direct3D 11 presenter and
+# again with the GDI fallback.
 #   powershell -ExecutionPolicy Bypass -File tests\unit\window\run.ps1 [-UnitOnly] [-NoFullscreen] [-Seconds 3]
 param([switch]$UnitOnly, [switch]$NoFullscreen, [double]$Seconds = 3)
 $ErrorActionPreference = 'Stop'

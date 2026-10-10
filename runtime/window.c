@@ -506,7 +506,10 @@ static HRESULT d3d_resize(int w, int h) {
     ID3D11DeviceContext_Flush(d3d.ctx);
     HRESULT hr = IDXGISwapChain_ResizeBuffers(d3d.sc, 0, (UINT)w, (UINT)h, DXGI_FORMAT_UNKNOWN, 0);
     if (SUCCEEDED(hr) && !d3d_make_rtv()) hr = E_FAIL;
-    if (SUCCEEDED(hr)) { d3d.bb_w = w; d3d.bb_h = h; }
+    /* On failure there is no render target any more: force another resize before the next draw,
+     * even if the client area goes back to the old back-buffer size. */
+    d3d.bb_w = SUCCEEDED(hr) ? w : -1;
+    d3d.bb_h = SUCCEEDED(hr) ? h : -1;
     return hr;
 }
 
@@ -598,10 +601,11 @@ static void gdi_render(HWND hwnd, const uint32_t* px, int fw, int fh) {
         SetStretchBltMode(dc, HALFTONE);
         SetBrushOrgEx(dc, 0, 0, NULL);
         StretchDIBits(dc, r.x, r.y, r.w, r.h, 0, 0, fw, fh, px, &bi, DIB_RGB_COLORS, SRCCOPY);
-        RECT bars[2] = { { 0, 0, 0, 0 }, { 0, 0, 0, 0 } };
-        if (r.x > 0) { bars[0] = (RECT){ 0, 0, r.x, rc.bottom }; bars[1] = (RECT){ r.x + r.w, 0, rc.right, rc.bottom }; }
-        if (r.y > 0) { bars[0] = (RECT){ 0, 0, rc.right, r.y }; bars[1] = (RECT){ 0, r.y + r.h, rc.right, rc.bottom }; }
-        for (int i = 0; i < 2; i++) if (bars[i].right > bars[i].left && bars[i].bottom > bars[i].top) FillRect(dc, &bars[i], black);
+        /* Everything around the picture. When the spare width or height is odd, the right/bottom
+         * bar is one pixel wider than the left/top one, and may be the only bar (1 pixel). */
+        const RECT bars[4] = { { 0, 0, r.x, rc.bottom }, { r.x + r.w, 0, rc.right, rc.bottom },
+                               { r.x, 0, r.x + r.w, r.y }, { r.x, r.y + r.h, r.x + r.w, rc.bottom } };
+        for (int i = 0; i < 4; i++) if (bars[i].right > bars[i].left && bars[i].bottom > bars[i].top) FillRect(dc, &bars[i], black);
     } else {
         FillRect(dc, &rc, black);
     }
@@ -793,6 +797,7 @@ static DWORD WINAPI window_thread(LPVOID arg) {
     InterlockedExchange(&xi_probing_thread, 1);
 
     ULONGLONG fps_t0 = GetTickCount64();
+    InterlockedExchange(&fb_presented, 0);   /* frames handed over while starting up are not in this interval */
     for (;;) {
         MsgWaitForMultipleObjectsEx(1, &fb_event, 100, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
         MSG m;

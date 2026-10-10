@@ -3,10 +3,14 @@
  * 1. Unit checks (no window): 4:3 letterbox maths, XInput -> DualShock 2 mapping (buttons,
  *    triggers with pressure, sticks with dead zone), keyboard mapping, and the triple-buffer frame
  *    hand-off (ordering, cropping, bad input, and a two-thread stress test for torn frames).
- * 2. Interactive run: opens the window, presents moving test patterns at 60 fps for ~3 s while the
+ * 2. Presenter checks (small test windows of their own, shown without activation): the GDI
+ *    presenter paints every letterbox bar black, including one-pixel bars; the Direct3D 11
+ *    presenter recovers from a failed ResizeBuffers when the window returns to its old size.
+ * 3. Interactive run: opens the window, presents moving test patterns at 60 fps for ~3 s while the
  *    frame size changes, toggles borderless fullscreen (F11) on and off, checks the presented
- *    picture through PrintWindow (letterbox bars black, image colour exact), prints input state
- *    and timing, then exits.
+ *    picture through PrintWindow (letterbox bars black, image colour exact), checks the title's
+ *    FPS value (also the first one, with frames presented while the window was coming up),
+ *    prints input state and timing, then exits.
  *
  * The implementation is #included so its internal helpers can be tested directly.
  *
@@ -294,6 +298,136 @@ static void test_headless_input(void) {
     if (slots < 2) CHECK(is_cleared(&p), "absent port 1 not cleared");
 }
 
+/* ---- presenter checks: the GDI and Direct3D 11 presenters drawing into a test window of their own
+ * (shown without activation, before window_init, so the window thread is not involved) ---------- */
+
+static LRESULT CALLBACK test_wndproc(HWND h, UINT m, WPARAM w, LPARAM l) { return DefWindowProcW(h, m, w, l); }
+
+static HWND test_window(int cw, int ch) {
+    WNDCLASSW wc;
+    memset(&wc, 0, sizeof wc);
+    wc.lpfnWndProc = test_wndproc;
+    wc.hInstance = GetModuleHandleW(NULL);
+    wc.lpszClassName = L"Sly2WindowTest";
+    RegisterClassW(&wc);
+    RECT r = { 0, 0, cw, ch };
+    AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);
+    HWND h = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, L"Sly2WindowTest", L"window test",
+                             WS_OVERLAPPEDWINDOW, 40, 40, r.right - r.left, r.bottom - r.top, NULL, NULL,
+                             wc.hInstance, NULL);
+    if (h) ShowWindow(h, SW_SHOWNOACTIVATE);
+    return h;
+}
+
+static void set_client_size(HWND h, int cw, int ch);
+static int near_rgb(uint32_t a, uint32_t b, int tol);
+
+/* Copy the client area into a top-down 32-bit buffer. GDI content is read through the window DC;
+ * flip-model Direct3D content only through PrintWindow(PW_RENDERFULLCONTENT). */
+static int read_client(HWND h, uint32_t* buf, int cw, int ch, int print) {
+    BITMAPINFO bi;
+    memset(&bi, 0, sizeof bi);
+    bi.bmiHeader.biSize = sizeof bi.bmiHeader;
+    bi.bmiHeader.biWidth = cw;
+    bi.bmiHeader.biHeight = -ch;
+    bi.bmiHeader.biPlanes = 1;
+    bi.bmiHeader.biBitCount = 32;
+    bi.bmiHeader.biCompression = BI_RGB;
+    HDC wdc = GetDC(h), mem = CreateCompatibleDC(wdc);
+    void* bits = NULL;
+    HBITMAP bmp = CreateDIBSection(mem, &bi, DIB_RGB_COLORS, &bits, NULL, 0);
+    int ok = 0;
+    if (bmp && bits) {
+        HGDIOBJ old = SelectObject(mem, bmp);
+        memset(bits, 0x5A, (size_t)cw * (size_t)ch * 4);
+        ok = print ? PrintWindow(h, mem, 1 | 2) : BitBlt(mem, 0, 0, cw, ch, wdc, 0, 0, SRCCOPY);
+        GdiFlush();
+        for (size_t i = 0; i < (size_t)cw * (size_t)ch; i++) buf[i] = ((const uint32_t*)bits)[i] & 0xFFFFFFu;
+        SelectObject(mem, old);
+        DeleteObject(bmp);
+    }
+    DeleteDC(mem);
+    ReleaseDC(h, wdc);
+    return ok;
+}
+
+static uint32_t shot[1200 * 1000];
+static uint32_t solid[640 * 480];
+
+/* GDI: every client pixel outside the 4:3 picture must be painted black, including a bar only one
+ * pixel wide (the client is first filled white so an unpainted bar shows). */
+static void test_gdi_bars(void) {
+    static const int sizes[][2] = { { 700, 480 }, { 640, 600 }, { 641, 480 }, { 642, 481 }, { 640, 481 }, { 801, 600 } };
+    HWND h = test_window(700, 600);
+    CHECK(h != NULL, "test window");
+    if (!h) return;
+    for (int i = 0; i < 320 * 224; i++) solid[i] = 0x7F2060C0u;
+    for (size_t k = 0; k < sizeof sizes / sizeof sizes[0]; k++) {
+        set_client_size(h, sizes[k][0], sizes[k][1]);
+        RECT rc;
+        GetClientRect(h, &rc);
+        int cw = rc.right, ch = rc.bottom;
+        HDC dc = GetDC(h);
+        FillRect(dc, &rc, (HBRUSH)GetStockObject(WHITE_BRUSH));
+        ReleaseDC(h, dc);
+        gdi_render(h, solid, 320, 224);
+        if (!read_client(h, shot, cw, ch, 0)) { CHECK(0, "cannot read the client area"); break; }
+        wrect r = letterbox(cw, ch);
+        int unpainted = 0, fx = -1, fy = -1;
+        for (int y = 0; y < ch; y++)
+            for (int x = 0; x < cw; x++) {
+                int in = x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
+                if (!in && shot[(size_t)y * cw + x] != 0 && unpainted++ == 0) { fx = x; fy = y; }
+            }
+        uint32_t mid = shot[(size_t)(r.y + r.h / 2) * cw + r.x + r.w / 2];
+        CHECK(unpainted == 0, "GDI client %dx%d (picture %d,%d %dx%d): %d bar pixels not black, first at %d,%d = %06X",
+              cw, ch, r.x, r.y, r.w, r.h, unpainted, fx, fy, unpainted ? shot[(size_t)fy * cw + fx] : 0);
+        CHECK(near_rgb(mid, 0x2060C0, 2), "GDI client %dx%d: picture centre %06X", cw, ch, mid);
+    }
+    DestroyWindow(h);
+}
+
+/* Direct3D 11: a failed ResizeBuffers (forced here by holding a back-buffer reference, as the
+ * runtime refuses to resize then) must not leave the presenter without a render target. When the
+ * window goes back to the old size, the next frame must be drawn and shown. */
+static void test_d3d_resize_failure(void) {
+    HWND h = test_window(640, 480);
+    CHECK(h != NULL, "test window");
+    if (!h) return;
+    if (!d3d_init(h)) {
+        printf("Direct3D resize check: SKIPPED (no Direct3D 11)\n");
+        DestroyWindow(h);
+        return;
+    }
+    for (int i = 0; i < 640 * 480; i++) solid[i] = 0x7FFF0000u;             /* red */
+    HRESULT hr = d3d_render(h, solid, 640, 480, 1);
+    CHECK(SUCCEEDED(hr) && d3d.bb_w == 640 && d3d.bb_h == 480, "first frame: hr %08lX, back buffer %dx%d",
+          (unsigned long)hr, d3d.bb_w, d3d.bb_h);
+    ID3D11Texture2D* held = NULL;
+    IDXGISwapChain_GetBuffer(d3d.sc, 0, &IID_ID3D11Texture2D_, (void**)&held);
+    set_client_size(h, 700, 500);
+    hr = d3d_render(h, solid, 640, 480, 1);
+    CHECK(FAILED(hr), "resize with a back buffer still referenced succeeded (hr %08lX)", (unsigned long)hr);
+    RELEASE(held);
+    set_client_size(h, 640, 480);                                           /* back to the old size */
+    for (int i = 0; i < 640 * 480; i++) solid[i] = 0x7F00FF00u;             /* green */
+    hr = d3d_render(h, solid, 640, 480, 2);
+    CHECK(SUCCEEDED(hr) && d3d.rtv != NULL && d3d.bb_w == 640 && d3d.bb_h == 480,
+          "frame after a failed resize: hr %08lX, render target %p, back buffer %dx%d", (unsigned long)hr,
+          (void*)d3d.rtv, d3d.bb_w, d3d.bb_h);
+    hr = d3d_render(h, solid, 640, 480, 2);                                 /* flip model: show it twice */
+    Sleep(100);
+    if (read_client(h, shot, 640, 480, 1) && shot[240 * 640 + 320] != 0x5A5A5A) {
+        uint32_t c = shot[240 * 640 + 320];
+        printf("Direct3D resize check: centre after recovery %06X (want 00FF00)\n", c);
+        CHECK(near_rgb(c, 0x00FF00, 2), "frame after a failed resize not shown: centre %06X", c);
+    } else {
+        printf("Direct3D resize check: picture capture unavailable\n");
+    }
+    d3d_shutdown();
+    DestroyWindow(h);
+}
+
 /* ---- interactive run -------------------------------------------------------------------------- */
 
 static uint32_t frame[FRAME_MAX * FRAME_MAX];
@@ -406,9 +540,23 @@ static void interactive(double seconds, int do_fullscreen) {
     set_dpi_fn set_dpi = (set_dpi_fn)dll_proc(GetModuleHandleW(L"user32.dll"), "SetThreadDpiAwarenessContext");
     if (set_dpi && !set_dpi((HANDLE)(LONG_PTR)-4)) set_dpi((HANDLE)(LONG_PTR)-3);
 
-    double t0 = now_ms();
+    /* Frames handed over while the window and renderer are still coming up (0.35-0.9 s on a cold
+     * start, i.e. 20-55 frames from the emulator) must not inflate the first FPS reading in the
+     * title. Present 60 at once right away (the window takes far longer than that to come up), then
+     * 60 per second. Calls made by the unit checks above don't count either. */
+    InterlockedExchange(&fb_presented, 0);
+    double t0 = now_ms(), early_due = t0;
     window_init();
-    while (!g_hwnd && now_ms() - t0 < 5000) Sleep(5);
+    pattern(frame, FRAME_MAX, 640, 448, 0);
+    for (int n = 0; n < 60; n++) window_present(frame, 640, 448, FRAME_MAX);
+    int early_burst_done = !g_hwnd;
+    for (int n = 0; !g_hwnd && now_ms() - t0 < 5000; n++) {
+        pattern(frame, FRAME_MAX, 640, 448, n);
+        window_present(frame, 640, 448, FRAME_MAX);
+        early_due += 1000.0 / 60.0;
+        while (now_ms() < early_due) Sleep(1);
+    }
+    if (!early_burst_done) printf("note: the window came up before the 60-frame burst ended\n");
     HWND h = g_hwnd;
     CHECK(h != NULL, "window did not come up");
     if (!h) return;
@@ -422,6 +570,7 @@ static void interactive(double seconds, int do_fullscreen) {
     int frames = (int)(seconds * 60.0), shown0 = frames_shown;
     double present_total = 0, present_max = 0, input_total = 0;
     int input_calls = 0, fs_seen = 0, fs_restored = 0;
+    double first_fps = -1;
     RECT before_fs;
     GetWindowRect(h, &before_fs);
     double start = now_ms();
@@ -434,6 +583,14 @@ static void interactive(double seconds, int do_fullscreen) {
         present_total += d;
         if (d > present_max) present_max = d;
         if (i % 30 == 0) print_input(i);
+        if (first_fps < 0 && i % 6 == 3) {               /* the first FPS value the title shows */
+            char t[128];
+            GetWindowTextA(h, t, sizeof t);
+            if (!strncmp(t, "Sly 2 - ", 8) && strncmp(t + 8, "0.0 ", 4)) {
+                first_fps = atof(t + 8);
+                printf("first title FPS reading: \"%s\" (frame %d)\n", t, i);
+            }
+        }
         if (i % 30 == 15) {                              /* time the emulation-thread call alone */
             pad_input p;
             a = now_ms();
@@ -477,6 +634,7 @@ static void interactive(double seconds, int do_fullscreen) {
     CHECK(strncmp(title, "Sly 2 - ", 8) == 0 && strstr(title, " fps"), "title has no FPS counter");
     double fps = atof(title + 8);
     CHECK(fps > 40 && fps < 75, "title FPS %.1f while presenting at 60", fps);
+    CHECK(first_fps > 54 && first_fps < 66, "first title FPS %.1f while presenting at 60 from the start", first_fps);
 
     /* Picture check at a wide client size: letterbox bars must be black, the image exact. */
     set_client_size(h, 900, 450);
@@ -535,7 +693,16 @@ int main(int argc, char** argv) {
     test_frame_handoff_stress();
     test_headless_input();
     printf("unit checks: %d, failures: %d\n", checks, failures);
-    if (!unit_only) interactive(seconds < 2.5 ? 2.5 : seconds, fullscreen);
+    if (!unit_only) {
+        typedef HANDLE (WINAPI* set_dpi_fn)(HANDLE);      /* real pixels, like the window thread */
+        set_dpi_fn set_dpi = (set_dpi_fn)dll_proc(GetModuleHandleW(L"user32.dll"), "SetThreadDpiAwarenessContext");
+        if (set_dpi && !set_dpi((HANDLE)(LONG_PTR)-4)) set_dpi((HANDLE)(LONG_PTR)-3);
+        int before = failures;
+        test_gdi_bars();
+        test_d3d_resize_failure();
+        printf("presenter checks: %s\n", failures == before ? "passed" : "FAILED");
+        interactive(seconds < 2.5 ? 2.5 : seconds, fullscreen);
+    }
 
     printf("%s: %d checks, %d failures\n", failures ? "FAILED" : "PASSED", checks, failures);
     return failures ? 1 : 0;
