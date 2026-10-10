@@ -937,6 +937,104 @@ static void bench(void) {
     save("bench", 0, 10, PSMCT32, 640, 448);
 }
 
+/* REGION_CLAMP / REGION_REPEAT with point sampling on a texture whose texel encodes its position */
+static void t_region_clamp(void) {
+    reset_env();
+    clear(0, 0, 0, 0);
+    static uint32_t tex[16 * 16];
+    for (int y = 0; y < 16; y++) for (int x = 0; x < 16; x++) tex[y * 16 + x] = 0x80000000u | (uint32_t)x | (uint32_t)y << 8;
+    upload(TEXBP, 1, PSMCT32, 0, 0, 16, 16, tex, sizeof tex);
+    W(TEX0_1, tex0(TEXBP, 1, PSMCT32, 4, 4, 1, 1, 0, 0, 0, 0));
+    /* REGION_CLAMP u in [4, 7], v in [2, 5] */
+    W(CLAMP_1, 2 | 2 << 2 | 4ull << 4 | 7ull << 14 | 2ull << 24 | 5ull << 34);
+    prim(P_SPRITE, TME | FST);
+    uv(0, 0); xyz(10, 10, 0); uv(256, 256); xyz(26, 26, 0);
+    int bad = 0;
+    for (int y = 0; y < 16; y++)
+        for (int x = 0; x < 16; x++) {
+            int u = x < 4 ? 4 : x > 7 ? 7 : x, v = y < 2 ? 2 : y > 5 ? 5 : y;
+            bad += rgb(px(10 + x, 10 + y)) != (uint32_t)(u | v << 8);
+        }
+    CHECK(bad == 0, "REGION_CLAMP: %d wrong", bad);
+    /* REGION_REPEAT u = (u & 3) | 8, v = (v & 1) | 4 over a 32x32 sprite (u up to 31: wraps) */
+    W(CLAMP_1, 3 | 3 << 2 | 3ull << 4 | 8ull << 14 | 1ull << 24 | 4ull << 34);
+    prim(P_SPRITE, TME | FST);
+    uv(0, 0); xyz(40, 10, 0); uv(512, 512); xyz(72, 42, 0);
+    bad = 0;
+    for (int y = 0; y < 32; y++)
+        for (int x = 0; x < 32; x++) bad += rgb(px(40 + x, 10 + y)) != (uint32_t)((((x & 15) & 3) | 8) | (((y & 15) & 1) | 4) << 8);
+    CHECK(bad == 0, "REGION_REPEAT: %d wrong (%06X)", bad, rgb(px(41, 10)));
+    /* CLAMP vs REPEAT outside [0, 16) */
+    W(CLAMP_1, 1 | 0 << 2);
+    prim(P_SPRITE, TME | FST);
+    uv(-0, 0); xyz(80, 10, 0); uv(512, 256); xyz(112, 26, 0);
+    CHECK(rgb(px(80 + 20, 12)) == (15u | 2u << 8) && rgb(px(80 + 3, 12)) == (3u | 2u << 8), "CLAMP u beyond the texture");
+    W(CLAMP_1, 0);
+    save("region", 0, 10, PSMCT32, 640, 448);
+}
+
+static void t_formats_contexts(void) {
+    reset_env();
+    clear(0, 0, 0, 0xAB);
+    /* PSMCT24 frame: RGB written, the top byte (alpha/T8H data) untouched */
+    frame(0, 10, PSMCT24, 0);
+    sprite(10, 10, 20, 20, 1, 2, 3, 0x40);
+    frame(0, 10, PSMCT32, 0);
+    CHECK(px(15, 15) == 0xAB030201, "CT24 keeps the top byte: %08X", px(15, 15));
+    /* CT24 frame with blending: destination alpha reads as 1.0 */
+    frame(0, 10, PSMCT24, 0);
+    alpha_reg(1, 2, 1, 2, 0);            /* Cd * Ad -> Cd */
+    prim(P_SPRITE, ABE); rgba(200, 200, 200, 0x80); xyz(10, 10, 0); xyz(20, 20, 0);
+    frame(0, 10, PSMCT32, 0);
+    CHECK(px(15, 15) == 0xAB030201, "CT24 Ad = 1.0: %08X", px(15, 15));
+    /* PSMCT16S frame */
+    frame(400, 10, PSMCT16S, 0);
+    sprite(0, 0, 64, 64, 0, 0, 0, 0);
+    sprite(5, 6, 9, 9, 0xF8, 0, 0xF8, 0x80);
+    CHECK(px(5, 6) == (0x1F | 0x1F << 10 | 0x8000) && px(4, 6) == 0 && px(9, 8) == 0, "CT16S frame %04X", px(5, 6));
+    frame(0, 10, PSMCT32, 0);
+    /* context 2: its own FRAME/TEST/XYOFFSET/SCISSOR */
+    W(FRAME_1 + 1, 200 | 10ull << 16);
+    W(ZBUF_1 + 1, 1ull << 32);
+    W(XYOFFSET_1 + 1, (uint64_t)(100 * 16) | (uint64_t)(100 * 16) << 32);
+    W(SCISSOR_1 + 1, 639ull << 16 | 447ull << 48);
+    W(TEST_1 + 1, 1ull << 16 | 1ull << 17);
+    W(ALPHA_1 + 1, 0); W(FBA_1 + 1, 0); W(TEX0_1 + 1, 0);
+    prim(P_SPRITE, CTXT2); rgba(9, 8, 7, 0x80);
+    xyz(110, 110, 0); xyz(120, 120, 0);
+    CHECK(gs_mem_read(PSMCT32, 200 * 32, 10, 15, 15) == 0x80070809 && rgb(px(15, 15)) == 0x030201, "context 2");
+    /* PRMODECONT = 0: attributes come from PRMODE (ABE here), PRIM only gives the type */
+    clear(0, 0, 0, 0x80);
+    alpha_reg(0, 2, 2, 1, 0x80);         /* Cs + Cd */
+    W(PRMODECONT, 0);
+    W(PRMODE, ABE);
+    sprite(30, 10, 40, 20, 0x10, 0, 0, 0x80);
+    sprite(30, 10, 40, 20, 0x10, 0, 0, 0x80);
+    W(PRMODECONT, 1);
+    CHECK(chan(px(35, 15), 0) == 0x20, "PRMODE ABE: %08X", px(35, 15));
+    /* CSR RESET drops a half-sent primitive */
+    prim(P_SPRITE, 0); rgba(255, 255, 255, 0x80);
+    xyz(50, 10, 0);
+    uint32_t reset = 1u << 9;
+    gs_priv_access(0x12001000, &reset, 4, 1);
+    xyz(60, 20, 0);
+    CHECK(rgb(px(55, 15)) == 0, "CSR RESET clears the vertex queue");
+    /* CT16 display */
+    reset_env();
+    frame(400, 8, PSMCT16, 0);
+    sprite(0, 0, 8, 8, 0xF8, 0x80, 0x00, 0x80);
+    uint64_t v;
+    v = 0x62; gs_priv_access(0x12000000, &v, 8, 1);
+    v = 0; gs_priv_access(0x12000020, &v, 8, 1);
+    v = 400 | 8 << 9 | (uint64_t)PSMCT16 << 15; gs_priv_access(0x12000090, &v, 8, 1);
+    v = 0x1BF9FF0203227Cull; gs_priv_access(0x120000A0, &v, 8, 1);
+    static uint32_t out[1024 * 1024];
+    int w, h;
+    gs_display(out, 1024, &w, &h);
+    CHECK(out[1024 * 3 + 3] == 0xF88000, "CT16 display %06X", out[1024 * 3 + 3]);
+    frame(0, 10, PSMCT32, 0);
+}
+
 int main(int argc, char** argv) {
     if (argc > 1) outdir = argv[1];
     gs_swz_init();
@@ -954,6 +1052,9 @@ int main(int argc, char** argv) {
     t_ztest(PSMZ32);
     t_ztest(PSMZ24);
     t_ztest(PSMZ16);
+    t_ztest(PSMZ16S);
+    t_region_clamp();
+    t_formats_contexts();
     t_scissor_offset();
     t_alpha_tests();
     t_fog_tfx();

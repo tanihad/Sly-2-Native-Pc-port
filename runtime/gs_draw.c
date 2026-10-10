@@ -714,6 +714,8 @@ void gs_write_reg(uint32_t r, uint64_t v) {
     case R_SIGNAL: gs_csr_signal((uint32_t)v, (uint32_t)(v >> 32)); break;
     case R_FINISH: gs_csr_finish(); break;
     case R_LABEL: gs_csr_label((uint32_t)v, (uint32_t)(v >> 32)); break;
+    case 0x0E: case 0x0F:                /* A+D / NOP descriptors: nothing to do */
+        break;
     default:
         if (r < 0x64) reg[r] = v;
         {

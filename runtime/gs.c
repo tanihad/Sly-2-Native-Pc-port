@@ -129,12 +129,14 @@ static void decode_circuit(int i, circuit* c) {
 static void read_row(const circuit* c, int fy, const int* xs, int w, uint32_t* out) {
     const gs_fmt* f = c->fmt;
     fy &= 2047;
+    const uint16_t* trow = f->tab + (((uint32_t)fy & ((1u << f->ph_shift) - 1)) << 6);
+    const uint32_t prow = (uint32_t)c->fbp + ((uint32_t)fy >> f->ph_shift) * (uint32_t)c->fbw;
     for (int i = 0; i < w; i++) {
         int fx = xs[i];
         if (fx < 0) { out[i] = 0; continue; }
         uint32_t v;
         if (gs_swz_fast) {
-            uint32_t a = gs_swz_addr(f, (uint32_t)c->fbp, (uint32_t)c->fbw, fx, fy);
+            uint32_t a = (((prow + ((uint32_t)fx >> 6)) & 511u) << 13) | ((uint32_t)trow[fx & 63] << f->elem_shift);
             if (f->bits == 16) { uint16_t h; memcpy(&h, gs_vram + a, 2); v = h; }
             else memcpy(&v, gs_vram + a, 4);
         } else {
