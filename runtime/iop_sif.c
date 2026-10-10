@@ -1,0 +1,241 @@
+/* Native IOP SIF libraries (sifman, sifcmd: the RPC server side) and the IOP's CD/DVD driver
+ * (cdvdman), for the recompiled sound modules.
+ *
+ * RPC: a guest thread registers a server (sceSifRegisterRpc) on a queue (sceSifSetRpcQueue) and
+ * serves it in sceSifRpcLoop. sif.c hands every EE call for such a server to iop_rpc_request();
+ * the serving thread wakes, runs the guest's server function and replies through sif_rpc_reply()
+ * (result copied to the EE, RPC_END sent), possibly long after the request (bank loads read the
+ * disc first). Structure layouts follow Sony's sifrpc.h (also in ps2sdk).
+ *
+ * cdvdman: sceCdRead copies from the disc image (cdvd.c) into IOP RAM at once; the command then
+ * stays "busy" until the next interrupt delivery point, where the sceCdCallback handler runs in
+ * interrupt context and sceCdSync(0) waiters wake, as after a real drive interrupt. */
+#include "iop_internal.h"
+
+#include <stdlib.h>
+
+/* ---- sifcmd: RPC servers ------------------------------------------------------------------------- */
+
+typedef struct { uint32_t sd, sid, func, buff, cfunc, cbuff, qd; } rpc_server;
+typedef struct {
+    uint32_t qd;
+    int thread;
+    iop_rpc_req req[32];
+    unsigned head, tail;
+} rpc_queue;
+
+static rpc_server servers[16];
+static int nservers;
+static rpc_queue queues[8];
+static int nqueues;
+
+static rpc_queue* queue_by_addr(uint32_t qd) {
+    for (int i = 0; i < nqueues; i++) if (queues[i].qd == qd) return &queues[i];
+    return NULL;
+}
+
+void iop_imp_sifcmd_sceSifInitRpc(iop_ctx* c) { (void)c; }
+
+/* sceSifSetRpcQueue(SifRpcDataQueue_t* qd, int thread_id) */
+void iop_imp_sifcmd_sceSifSetRpcQueue(iop_ctx* c) {
+    uint32_t qd = c->r[4];
+    rpc_queue* q = queue_by_addr(qd);
+    if (!q) {
+        if (nqueues == 8) { fprintf(stderr, "[iop] too many RPC queues\n"); return; }
+        q = &queues[nqueues++];
+    }
+    memset(q, 0, sizeof *q);
+    q->qd = qd;
+    q->thread = (int)c->r[5];
+    iop_w32(qd + 0, c->r[5]);          /* thread_id */
+    iop_w32(qd + 4, 0);                /* active */
+    for (uint32_t k = 8; k < 24; k += 4) iop_w32(qd + k, 0);   /* link, start, end, next */
+}
+
+/* sceSifRegisterRpc(SifRpcServerData_t* sd, int sid, func, buff, cfunc, cbuff, SifRpcDataQueue_t* qd) */
+void iop_imp_sifcmd_sceSifRegisterRpc(iop_ctx* c) {
+    uint32_t sd = c->r[4];
+    rpc_server s = { sd, c->r[5], c->r[6], c->r[7], iop_arg(c, 4), iop_arg(c, 5), iop_arg(c, 6) };
+    for (uint32_t k = 0; k < 0x44; k += 4) iop_w32(sd + k, 0);
+    iop_w32(sd + 0, s.sid);
+    iop_w32(sd + 4, s.func);
+    iop_w32(sd + 8, s.buff);
+    iop_w32(sd + 16, s.cfunc);
+    iop_w32(sd + 20, s.cbuff);
+    iop_w32(sd + 64, s.qd);            /* base */
+    int i = 0;
+    while (i < nservers && servers[i].sid != s.sid) i++;
+    if (i == 16) { fprintf(stderr, "[iop] too many RPC servers\n"); return; }
+    if (i == nservers) nservers++;
+    servers[i] = s;
+    rpc_queue* q = queue_by_addr(s.qd);
+    if (q && !iop_r32(s.qd + 12)) iop_w32(s.qd + 12, sd);   /* queue's first server */
+    fprintf(stderr, "[iop] RPC server 0x%08X registered by the IOP (sd 0x%08X, buffer 0x%08X, thread %d)\n",
+            s.sid, sd, s.buff, q ? q->thread : -1);
+}
+
+int iop_rpc_find_server(uint32_t sid, uint32_t* sd, uint32_t* buff) {
+    for (int i = 0; i < nservers; i++)
+        if (servers[i].sid == sid) { *sd = servers[i].sd; *buff = servers[i].buff; return 1; }
+    return 0;
+}
+
+int iop_rpc_is_server(uint32_t sd) {
+    for (int i = 0; i < nservers; i++) if (servers[i].sd == sd) return 1;
+    return 0;
+}
+
+static rpc_server* server_by_sd(uint32_t sd) {
+    for (int i = 0; i < nservers; i++) if (servers[i].sd == sd) return &servers[i];
+    return NULL;
+}
+
+void iop_rpc_request(const iop_rpc_req* r) {
+    rpc_server* s = server_by_sd(r->server);
+    rpc_queue* q = s ? queue_by_addr(s->qd) : NULL;
+    if (!q) { fprintf(stderr, "[iop] RPC request for unknown server 0x%08X\n", r->server); return; }
+    if (q->tail - q->head >= 32) { fprintf(stderr, "[iop] RPC queue full (sid 0x%08X)\n", s->sid); return; }
+    q->req[q->tail++ & 31] = *r;
+    int t = iop_find_waiter(IOP_WAIT_RPC, q->qd, 1);
+    if (t) iop_wake(t, KE_OK);
+}
+
+/* sceSifRpcLoop(SifRpcDataQueue_t* qd): serve requests forever. */
+void iop_imp_sifcmd_sceSifRpcLoop(iop_ctx* c) {
+    uint32_t qd = c->r[4];
+    for (;;) {
+        rpc_queue* q = queue_by_addr(qd);
+        if (!q) { fprintf(stderr, "[iop] sceSifRpcLoop on an unknown queue 0x%08X\n", qd); return; }
+        if (q->head == q->tail) {
+            if (iop_block(IOP_WAIT_RPC, qd) != KE_OK) return;
+            continue;
+        }
+        iop_rpc_req r = q->req[q->head++ & 31];
+        rpc_server* s = server_by_sd(r.server);
+        if (!s) continue;
+        iop_w32(s->sd + 12, r.send_size);    /* size */
+        iop_w32(s->sd + 28, r.pkt[3]);       /* client */
+        iop_w32(s->sd + 32, r.pkt[1]);       /* pkt_addr */
+        iop_w32(s->sd + 36, r.fno);          /* rpc_number */
+        iop_w32(s->sd + 40, r.receive);      /* receive */
+        iop_w32(s->sd + 44, r.recv_size);    /* rsize */
+        iop_w32(s->sd + 48, r.rmode);        /* rmode */
+        iop_w32(s->sd + 52, r.pkt[0]);       /* rid */
+        uint32_t reply = iop_guest_call(c, s->func, r.fno, s->buff, r.send_size, 0);
+        if (iop_log) fprintf(stderr, "[iop] RPC 0x%08X fn %u (%u bytes) -> reply 0x%08X\n", s->sid, r.fno, r.send_size, reply);
+        sif_rpc_reply(&r, reply);
+    }
+}
+
+/* sceSifGetOtherData(SifRpcReceiveData_t* rd, void* src (EE), void* dest (IOP), int size, int mode) */
+void iop_imp_sifcmd_sceSifGetOtherData(iop_ctx* c) {
+    uint32_t src = c->r[5], dst = c->r[6], size = c->r[7];
+    iop_ret(c, sif_ee_to_iop(dst, src, size) ? 0 : -1);
+}
+
+/* ---- sifman: IOP -> EE DMA ---------------------------------------------------------------------- */
+
+static uint32_t dma_id = 1;
+static struct { uint32_t fn, arg, gp; } dma_cb[16];
+static unsigned cb_head, cb_tail;
+
+static uint32_t do_dma(uint32_t list, uint32_t count) {
+    for (uint32_t i = 0; i < count; i++) {     /* SifDmaTransfer_t: src (IOP), dest (EE), size, attr */
+        uint32_t d = list + 16 * i;
+        sif_iop_to_ee(iop_r32(d + 4), iop_r32(d), iop_r32(d + 8));
+    }
+    if (++dma_id == 0) dma_id = 1;
+    return dma_id;
+}
+
+void iop_imp_sifman_sceSifInit(iop_ctx* c) { (void)c; }
+void iop_imp_sifman_sceSifCheckInit(iop_ctx* c) { iop_ret(c, 1); }
+void iop_imp_sifman_sceSifSetDma(iop_ctx* c) { iop_ret(c, (int32_t)do_dma(c->r[4], c->r[5])); }
+void iop_imp_sifman_sceSifDmaStat(iop_ctx* c) { iop_ret(c, -1); }   /* every transfer is already done */
+
+/* sceSifSetDmaIntr(dmat, count, void (*func)(void*), void* data): func runs as the DMA interrupt. */
+void iop_imp_sifman_sceSifSetDmaIntr(iop_ctx* c) {
+    uint32_t id = do_dma(c->r[4], c->r[5]);
+    if (c->r[6]) {
+        if (cb_tail - cb_head < 16) {
+            dma_cb[cb_tail & 15].fn = c->r[6];
+            dma_cb[cb_tail & 15].arg = c->r[7];
+            dma_cb[cb_tail & 15].gp = c->r[28];
+            cb_tail++;
+            iop_poll_flag = 1;
+        } else fprintf(stderr, "[iop] SIF DMA callback queue full\n");
+    }
+    iop_ret(c, (int32_t)id);
+}
+
+void iop_sif_service(void) {
+    while (cb_head != cb_tail) {
+        unsigned k = cb_head++ & 15;
+        iop_intr_call(dma_cb[k].fn, dma_cb[k].arg, 0, dma_cb[k].gp);
+    }
+}
+
+/* ---- cdvdman ---------------------------------------------------------------------------------------- */
+
+enum { SCECdStatPause = 0x0A, SCECdStatRead = 0x06, SCECdFuncRead = 1, SCECdErNO = 0, SCECdErREAD = 0x30 };
+
+static int cd_busy, cd_error;
+static uint32_t cd_callback, cd_callback_gp;
+static int64_t cd_done_at;
+
+int iop_cd_busy(void) { return cd_busy; }
+
+/* sceCdRead(lbn, sectors, buf, sceCdRMode*) */
+void iop_imp_cdvdman_sceCdRead(iop_ctx* c) {
+    uint32_t lbn = c->r[4], n = c->r[5], buf = c->r[6];
+    if (cd_busy) { iop_ret(c, 0); return; }
+    uint8_t* dst = iop_ram_ptr(buf);
+    int ok = dst && (buf & 0x1FFFFFFFu) + n * 2048u <= 0x00800000u &&
+             ((buf & (IOP_RAM_SIZE - 1)) + n * 2048u <= IOP_RAM_SIZE) && cdvd_read_host(lbn, n, dst);
+    if (iop_log) fprintf(stderr, "[iop] sceCdRead(lbn %u, %u sectors) -> 0x%08X%s\n", lbn, n, buf, ok ? "" : " FAILED");
+    cd_error = ok ? SCECdErNO : SCECdErREAD;
+    cd_busy = 1;
+    cd_done_at = iop_now();            /* completes at the next interrupt delivery point */
+    iop_ret(c, 1);
+}
+
+void iop_cd_service(int64_t now) {
+    if (!cd_busy || now < cd_done_at) return;
+    cd_busy = 0;
+    for (int t; (t = iop_find_waiter(IOP_WAIT_CD, 0, 1)) != 0;) iop_wake(t, KE_OK);
+    if (cd_callback) iop_intr_call(cd_callback, SCECdFuncRead, 0, cd_callback_gp);
+}
+
+/* sceCdSync(mode): 0 waits for the command to finish; 1 polls (1 = busy, 0 = done). */
+void iop_imp_cdvdman_sceCdSync(iop_ctx* c) {
+    if (c->r[4] & 1) { iop_ret(c, cd_busy); return; }
+    while (cd_busy) if (iop_block(IOP_WAIT_CD, 0) != KE_OK) break;
+    iop_ret(c, 0);
+}
+
+void iop_imp_cdvdman_sceCdGetError(iop_ctx* c) { iop_ret(c, cd_error); }
+void iop_imp_cdvdman_sceCdStatus(iop_ctx* c) { iop_ret(c, cd_busy ? SCECdStatRead : SCECdStatPause); }
+void iop_imp_cdvdman_sceCdBreak(iop_ctx* c) { iop_ret(c, 1); }
+void iop_imp_cdvdman_sceCdStop(iop_ctx* c) { iop_ret(c, 1); }
+
+/* sceCdTrayReq(mode, u32* traycheck): the tray never opened. */
+void iop_imp_cdvdman_sceCdTrayReq(iop_ctx* c) {
+    if (c->r[5]) iop_w32(c->r[5], 0);
+    iop_ret(c, 1);
+}
+
+/* sceCdSearchFile(sceCdlFILE*, name): the game finds its data by sector, not by name. */
+void iop_imp_cdvdman_sceCdSearchFile(iop_ctx* c) {
+    char name[64];
+    iop_strncpy_from(name, c->r[5], sizeof name);
+    fprintf(stderr, "[iop] sceCdSearchFile(%s): not supported\n", name);
+    iop_ret(c, 0);
+}
+
+/* sceCdCallback(func): returns the previous callback. */
+void iop_imp_cdvdman_sceCdCallback(iop_ctx* c) {
+    uint32_t old = cd_callback;
+    cd_callback = c->r[4];
+    cd_callback_gp = c->r[28];
+    iop_ret(c, (int32_t)old);
+}

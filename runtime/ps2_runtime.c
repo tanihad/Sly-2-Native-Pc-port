@@ -1,5 +1,6 @@
 /* Runtime for recompiled PS2 code: function lookup, interrupts, BIOS syscalls (HLE), startup. */
 #include "hw.h"
+#include "iop.h"
 
 #include <stdlib.h>
 #include <windows.h>
@@ -158,6 +159,7 @@ static DWORD WINAPI host_timer(LPVOID arg) {
             InterlockedOr((volatile LONG*)&ps2_irq_pending, PS2_IRQ_VBLANK);
         }
         InterlockedOr((volatile LONG*)&ps2_irq_pending, PS2_IRQ_TICK);
+        iop_poll_flag = 1;                       /* IOP loop heads: check interrupts, time slice */
         Sleep(1);
     }
     return 0;
@@ -216,6 +218,7 @@ void ps2_service_irq(ps2_ctx* ctx) {
     }
     timer_service();
     dma_service();
+    iop_service();                               /* IOP threads and interrupts (timers, CD, SIF) */
     sif_deliver(ctx);
 
     if (!ctx->ie) {                              /* interrupts off: keep them pending */
@@ -366,6 +369,7 @@ int main(int argc, char** argv) {
     ps2_spr = calloc(1, PS2_SPR_SIZE + 16);
     if (!ps2_ram || !ps2_spr) die("out of memory (%u)", 0);
     load_elf(argv[1]);
+    iop_init();                                  /* IOP memory map before the EE's first IOP request */
 
     int dump_regs = argc > 2 && strcmp(argv[2], "--dump-regs") == 0;
     ps2_log_sif = getenv("PS2_LOG_SIF") != NULL;

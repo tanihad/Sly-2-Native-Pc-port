@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tests"))
 sys.path.insert(0, str(ROOT / "scripts"))
 import make_test_elf  # noqa: E402
-from paths import CLANG  # noqa: E402
+from paths import CLANG, runtime_sources  # noqa: E402
 
 BUILD = ROOT / "build" / "test"
 
@@ -33,7 +33,7 @@ def main() -> int:
         return 1
 
     exe = BUILD / "test.exe"
-    sources = sorted((BUILD / "recomp").glob("*.c")) + sorted((ROOT / "runtime").glob("*.c"))
+    sources = sorted((BUILD / "recomp").glob("*.c")) + runtime_sources()
     cc = run([CLANG, "-O2", "-std=c11", "-Wall", "-Wno-unused-label",
               "-I", ROOT / "runtime", "-I", BUILD / "recomp", *sources,
               "-lwinmm", "-lgdi32", "-luser32", "-lxinput1_4", "-o", exe])
