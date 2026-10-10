@@ -69,6 +69,44 @@ typedef struct {
     const vu_rec_tail* t;
 } rec;
 
+static void load_state(vu_state* st, const rec* r) {
+    memcpy(vu_data_mem((int)r->h->idx), r->data, r->h->data_size);
+    memcpy(st->vf, r->h->vf, sizeof st->vf);
+    st->acc = r->h->acc;
+    memcpy(st->vi, r->h->vi, sizeof st->vi);
+    st->I = r->h->I; st->Q = r->h->Q; st->P = r->h->P; st->R = r->h->R;
+    st->status = r->h->status; st->mac = r->h->mac; st->clip = r->h->clip;
+    st->top = r->h->top; st->itop = r->h->itop;
+}
+
+/* Compiled mode: what exactly differs from the interpreter on this program (registers, flags, data). */
+static void diff_with_interpreter(vu_state* st, const rec* r) {
+    static vu_state got;
+    static uint8_t got_data[16384];
+    got = *st;
+    memcpy(got_data, st->data, r->h->data_size);
+    load_state(st, r);
+    const unsigned csr = _mm_getcsr();
+    _mm_setcsr(VU_MXCSR);
+    vu_run(st, r->h->addr);
+    _mm_setcsr(csr);
+    for (int k = 0; k < 32; k++)
+        if (memcmp(&got.vf[k], &st->vf[k], 16))
+            fprintf(stderr, "    vf%02d compiled %08X %08X %08X %08X interpreter %08X %08X %08X %08X\n", k, got.vf[k].u[0],
+                    got.vf[k].u[1], got.vf[k].u[2], got.vf[k].u[3], st->vf[k].u[0], st->vf[k].u[1], st->vf[k].u[2], st->vf[k].u[3]);
+    if (memcmp(&got.acc, &st->acc, 16)) fprintf(stderr, "    acc differs\n");
+    for (int k = 0; k < 16; k++)
+        if (got.vi[k] != st->vi[k]) fprintf(stderr, "    vi%02d compiled %04X interpreter %04X\n", k, got.vi[k], st->vi[k]);
+    const char* nm[8] = { "I", "Q", "P", "R", "status", "mac", "clip", "tpc" };
+    const uint32_t a[8] = { got.I, got.Q, got.P, got.R, got.status, got.mac, got.clip, got.tpc };
+    const uint32_t b[8] = { st->I, st->Q, st->P, st->R, st->status, st->mac, st->clip, st->tpc };
+    for (int k = 0; k < 8; k++) if (a[k] != b[k]) fprintf(stderr, "    %s compiled %08X interpreter %08X\n", nm[k], a[k], b[k]);
+    int shown = 0;
+    for (uint32_t q = 0; q < r->h->data_size / 16; q++)
+        if (memcmp(got_data + q * 16, st->data + q * 16, 16) && shown++ < 8)
+            fprintf(stderr, "    data qw 0x%03X differs\n", q);
+}
+
 int main(int argc, char** argv) {
     if (argc < 2) { fprintf(stderr, "usage: vu_replay <recording> [passes]\n"); return 2; }
     int passes = argc > 2 ? atoi(argv[2]) : 5;
@@ -127,13 +165,7 @@ int main(int argc, char** argv) {
             const int u = (int)r->h->idx;
             vu_state* st = &vu_st[u];
             if (loaded[u] != r->micro) { memcpy(vu_micro_mem(u), r->micro, (st->pcmask + 1) * 8u); loaded[u] = r->micro; }
-            memcpy(vu_data_mem(u), r->data, r->h->data_size);
-            memcpy(st->vf, r->h->vf, sizeof st->vf);
-            st->acc = r->h->acc;
-            memcpy(st->vi, r->h->vi, sizeof st->vi);
-            st->I = r->h->I; st->Q = r->h->Q; st->P = r->h->P; st->R = r->h->R;
-            st->status = r->h->status; st->mac = r->h->mac; st->clip = r->h->clip;
-            st->top = r->h->top; st->itop = r->h->itop;
+            load_state(st, r);
             khash = VU_HASH_SEED;
             kicks = 0;
             const uint64_t c0 = st->cycles;
@@ -156,6 +188,7 @@ int main(int argc, char** argv) {
                     fprintf(stderr, "program %zu (VU%d at 0x%04X, VBlank %u): pairs %u/%u cycles %u/%u kicks %u/%u%s\n",
                             i, u, r->h->addr * 8u, r->h->vblank, np, r->t->pairs, nc, r->t->cycles, kicks,
                             r->t->kicks, result ? " results differ" : "");
+                if (compiled && bad <= 3) diff_with_interpreter(st, r);
             }
         }
         double ms = (double)ticks * 1e3 / (double)fq.QuadPart;

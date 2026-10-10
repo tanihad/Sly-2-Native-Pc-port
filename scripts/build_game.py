@@ -54,6 +54,12 @@ def main() -> int:
     print(iop.stdout.strip() or iop.stderr)
     if iop.returncode:
         return 1
+    # The VU microprograms (.vutext overlays): recomp/vu_recomp.py
+    vu = subprocess.run([sys.executable, "-m", "recomp", "vu", args.elf, "-o", str(out / "vu")],
+                        cwd=ROOT, capture_output=True, text=True)
+    print(vu.stdout.strip() or vu.stderr)
+    if vu.returncode:
+        return 1
 
     obj_dir = out / "obj"
     obj_dir.mkdir(parents=True, exist_ok=True)
@@ -61,7 +67,8 @@ def main() -> int:
     if not stamp.exists() or stamp.read_text() != " ".join(flags):
         stamp.write_text(" ".join(flags))              # flag change: rebuild everything
 
-    sources = sorted((out / "recomp").glob("*.c")) + sorted((out / "iop").glob("*.c")) + runtime_sources()
+    sources = (sorted((out / "recomp").glob("*.c")) + sorted((out / "iop").glob("*.c")) +
+               sorted((out / "vu").glob("*.c")) + runtime_sources())
     objs, errors = [], []
     with ThreadPoolExecutor(max_workers=os.cpu_count()) as pool:
         for obj, err in pool.map(lambda s: compile_one(s, obj_dir, flags), sources):

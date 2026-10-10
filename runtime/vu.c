@@ -135,22 +135,53 @@ uint32_t vuc_runaway(vu_state* st, uint32_t pc, uint32_t cyc, uint32_t n) {
     return n;
 }
 
-/* PS2_VU_VERIFY: the interpreter runs the same program on a snapshot; its XGKICKs only feed a hash. */
+/* PS2_VU_VERIFY: the interpreter runs the same program on a snapshot; its XGKICKs only feed a hash.
+ * PS2_VU_VERIFY_DUMP=<file>: mismatching programs are written as a recording (vu_record.h, with
+ * the interpreter's results), for scripts/vu_replay.ps1 -Compiled. */
 static vu_state vuc_shadow;
-static _Alignas(16) uint8_t vuc_shadow_data[16384];
+static _Alignas(16) uint8_t vuc_shadow_data[16384], vuc_before_data[16384];
 static int vuc_shadow_active, vuc_hashing;
 static uint64_t vuc_khash;
 static uint32_t vuc_kicks, vuc_verified, vuc_mismatches;
+static FILE* vuc_dump;
+
+static void vuc_dump_program(const vu_state* before, uint32_t pc, uint32_t pairs, uint32_t cycles,
+                             uint32_t kicks, uint64_t hash, uint64_t khash) {
+    static int tried;
+    if (!tried) {
+        tried = 1;
+        const char* path = getenv("PS2_VU_VERIFY_DUMP");
+        if (path && *path && !(vuc_dump = fopen(path, "wb"))) fprintf(stderr, "[vu] cannot write %s\n", path);
+    }
+    if (!vuc_dump || vuc_mismatches > 200) return;
+    const uint32_t msize = (before->pcmask + 1) * 8u, dsize = (before->dmask + 1) * 16u;
+    vu_rec_head h;
+    memset(&h, 0, sizeof h);
+    memcpy(h.magic, "VUP1", 4);
+    h.idx = (uint32_t)before->idx; h.addr = pc; h.vblank = ps2_vblank_count();
+    h.micro_size = msize; h.data_size = dsize;
+    memcpy(h.vf, before->vf, sizeof h.vf); h.acc = before->acc; memcpy(h.vi, before->vi, sizeof h.vi);
+    h.I = before->I; h.Q = before->Q; h.P = before->P; h.R = before->R;
+    h.status = before->status; h.mac = before->mac; h.clip = before->clip; h.top = before->top; h.itop = before->itop;
+    vu_rec_tail t = { pairs, cycles, kicks, 0, hash, khash };
+    fwrite(&h, sizeof h, 1, vuc_dump);
+    fwrite(before->micro, msize, 1, vuc_dump);
+    fwrite(vuc_before_data, dsize, 1, vuc_dump);
+    fwrite(&t, sizeof t, 1, vuc_dump);
+    fflush(vuc_dump);
+}
 
 static uint32_t vuc_verify(vu_state* st, uint32_t pc, const vuc_program* p, uint32_t idx) {
     vuc_shadow = *st;
     memcpy(vuc_shadow_data, st->data, (st->dmask + 1u) * 16u);
+    memcpy(vuc_before_data, st->data, (st->dmask + 1u) * 16u);
     vuc_shadow.data = vuc_shadow_data;
     const uint64_t c0 = st->cycles;
     vuc_khash = VU_HASH_SEED; vuc_kicks = 0; vuc_hashing = 1;
     const uint32_t n = p->fn(st, idx);
     const uint64_t kh = vuc_khash;
     const uint32_t kn = vuc_kicks;
+    vu_state before = vuc_shadow;
     vuc_khash = VU_HASH_SEED; vuc_kicks = 0; vuc_shadow_active = 1;
     const uint32_t n2 = vu_run(&vuc_shadow, pc);
     vuc_shadow_active = 0; vuc_hashing = 0;
@@ -158,6 +189,7 @@ static uint32_t vuc_verify(vu_state* st, uint32_t pc, const vuc_program* p, uint
     const uint32_t cyc = (uint32_t)(st->cycles - c0), cyc2 = (uint32_t)(vuc_shadow.cycles - c0);
     const uint64_t h = vu_state_hash(st), h2 = vu_state_hash(&vuc_shadow);
     if (n != n2 || cyc != cyc2 || h != h2 || kh != vuc_khash || kn != vuc_kicks) {
+        vuc_dump_program(&before, pc, n2, cyc2, vuc_kicks, h2, vuc_khash);
         if (vuc_mismatches++ < 20)
             fprintf(stderr, "[vu] verify: VU%d %s at 0x%04X differs from the interpreter: pairs %u/%u cycles %u/%u kicks %u/%u%s%s "
                     "(%u programs verified)\n", st->idx, p->name, pc * 8u, n, n2, cyc, cyc2, kn, vuc_kicks,
