@@ -24,6 +24,43 @@ void hw_log_unhandled(const char* unit, uint32_t phys, const void* data, unsigne
 }
 uint32_t ps2_vblank_count(void) { return 0; }
 
+/* VU_REPLAY_PROFILE=1: sample the replaying thread's instruction pointer every ~50 us and print the
+ * hottest addresses as image-relative offsets (match them with llvm-objdump -d of the exe). */
+#define PROF_SLOTS (1u << 20)
+static uint32_t* prof_hits;
+static volatile LONG prof_stop;
+static DWORD WINAPI prof_thread(LPVOID arg) {
+    HANDLE th = (HANDLE)arg;
+    const uintptr_t base = (uintptr_t)GetModuleHandleA(NULL);
+    while (!prof_stop) {
+        if (SuspendThread(th) != (DWORD)-1) {
+            CONTEXT c;
+            c.ContextFlags = CONTEXT_CONTROL;
+            if (GetThreadContext(th, &c)) {
+                uintptr_t off = (uintptr_t)c.Rip - base;
+                prof_hits[off < PROF_SLOTS ? off : PROF_SLOTS - 1]++;
+            }
+            ResumeThread(th);
+        }
+        for (volatile int spin = 0; spin < 20000; spin++) {}
+    }
+    return 0;
+}
+static int prof_cmp(const void* a, const void* b) {
+    uint32_t x = prof_hits[*(const uint32_t*)a], y = prof_hits[*(const uint32_t*)b];
+    return x < y ? 1 : x > y ? -1 : 0;
+}
+static void prof_report(void) {
+    uint64_t total = 0;
+    for (uint32_t i = 0; i < PROF_SLOTS; i++) total += prof_hits[i];
+    uint32_t* idx = malloc(PROF_SLOTS * sizeof *idx);
+    for (uint32_t i = 0; i < PROF_SLOTS; i++) idx[i] = i;
+    qsort(idx, PROF_SLOTS, sizeof *idx, prof_cmp);
+    printf("profile: %llu samples; image base 0x140000000 + offset:\n", (unsigned long long)total);
+    for (int i = 0; i < 600 && prof_hits[idx[i]]; i++)
+        printf("  %6.2f%%  0x%llx\n", 100.0 * prof_hits[idx[i]] / (double)total, 0x140000000ull + idx[i]);
+}
+
 typedef struct {
     const vu_rec_head* h;
     const uint8_t *micro, *data;
@@ -71,6 +108,14 @@ int main(int argc, char** argv) {
     uint64_t pairs = 0, cycles = 0;
     uint32_t bad = 0, bad_timing = 0, vb0 = recs[0].h->vblank, vb1 = recs[n - 1].h->vblank;
     const unsigned host_csr = _mm_getcsr();
+    HANDLE prof = NULL;
+    if (getenv("VU_REPLAY_PROFILE")) {
+        HANDLE self;
+        DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &self, 0, FALSE,
+                        DUPLICATE_SAME_ACCESS);
+        prof_hits = calloc(PROF_SLOTS, sizeof *prof_hits);
+        prof = CreateThread(NULL, 0, prof_thread, self, 0, NULL);
+    }
     for (int pass = 0; pass < passes; pass++) {
         const uint8_t* loaded[2] = { NULL, NULL };
         int64_t ticks = 0;
@@ -112,6 +157,11 @@ int main(int argc, char** argv) {
         }
         double ms = (double)ticks * 1e3 / (double)fq.QuadPart;
         if (ms < best) best = ms;
+    }
+    if (prof) {
+        prof_stop = 1;
+        WaitForSingleObject(prof, INFINITE);
+        prof_report();
     }
     printf("%zu programs (VBlanks %u-%u), %llu pairs, %llu cycles: %.3f ms (fastest of %d passes) = %.2f ns/pair; "
            "%u programs differ (%u in pair/cycle counts)\n",

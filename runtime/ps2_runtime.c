@@ -511,9 +511,29 @@ static LONG WINAPI crash_report(EXCEPTION_POINTERS* ep) {
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
+/* A game must not be treated as background work when its window is not in front: Windows 11 then
+ * runs a process at low QoS ("EcoQoS": efficiency cores, low clocks) and may ignore its timer
+ * resolution. Opt out of both (SetProcessInformation(ProcessPowerThrottling), looked up at run
+ * time: Windows 10 1709+). PS2_HIGH_QOS=0 keeps Windows' default. */
+static void request_high_qos(void) {
+    const char* e = getenv("PS2_HIGH_QOS");
+    if (e && atoi(e) == 0) return;
+    typedef struct { ULONG version, control, state; } throttling;            /* PROCESS_POWER_THROTTLING_STATE */
+    typedef BOOL(WINAPI * set_info_fn)(HANDLE, int, LPVOID, DWORD);
+    set_info_fn set_info = (set_info_fn)(void*)GetProcAddress(GetModuleHandleA("kernel32.dll"), "SetProcessInformation");
+    if (!set_info) return;
+    enum { PROCESS_POWER_THROTTLING = 4, EXECUTION_SPEED = 0x1, IGNORE_TIMER_RESOLUTION = 0x4 };
+    throttling t = { 1, EXECUTION_SPEED | IGNORE_TIMER_RESOLUTION, 0 };     /* controlled, and off */
+    if (!set_info(GetCurrentProcess(), PROCESS_POWER_THROTTLING, &t, sizeof t)) {
+        t.control = EXECUTION_SPEED;                                          /* before Windows 11 */
+        set_info(GetCurrentProcess(), PROCESS_POWER_THROTTLING, &t, sizeof t);
+    }
+}
+
 int main(int argc, char** argv) {
     if (argc < 2) { fprintf(stderr, "usage: %s <path to original PS2 executable>\n", argv[0]); return 2; }
     SetUnhandledExceptionFilter(crash_report);
+    request_high_qos();
     QueryPerformanceFrequency(&qpc_freq);
     QueryPerformanceCounter(&qpc_start);
     perf_init();                                 /* PS2_PERF / PS2_PROFILE */
