@@ -37,9 +37,19 @@ int  gs_display_regs(const uint64_t pr[GS_PRIV_SNAPSHOT], uint32_t* dst, int str
 /* ---- gs_thread.c (see also hw.h) --------------------------------------------------------------------- */
 void gs_sync(void);                      /* wait until everything sent to the GS has executed */
 
-/* ---- gs_draw_pixel.c: pixel worker threads --------------------------------------------------------- */
-void gs_draw_set_workers(int n);         /* start n threads that share large batches with the GS thread */
-int  gs_draw_workers(void);
+/* ---- gs_draw_pixel.c: pixel worker threads and deferred drawing ----------------------------------------
+ * With workers, spans are recorded and drawn later in parallel bands (gs_draw_pixel.c). Whoever
+ * reads or writes VRAM outside the pixel pipeline, or changes texture cache memory a recorded
+ * primitive may still sample, must first let that drawing finish: */
+void     gs_draw_set_workers(int n);     /* start n pixel worker threads (once, before drawing) */
+int      gs_draw_workers(void);
+void     gs_draw_sync(void);             /* finish all deferred drawing */
+void     gs_draw_kick(void);             /* start drawing what has been recorded (does not wait) */
+int      gs_draw_pages_pending(uint32_t page0, uint32_t npages);   /* deferred drawing writes one of these 8 KB pages */
+uint32_t gs_draw_fill_serial(void);      /* batch that primitives are recorded into now */
+int      gs_draw_busy(uint32_t serial);  /* that batch (or a later one) has not been drawn yet */
+/* bumped whenever gs_prim changes other than the per-primitive steps (dr..dv, lod_q, nowrap) */
+extern uint32_t gs_prim_version;
 
 /* activity counters (PS2_LOG_GS=1 prints them from gs_vsync once a second) */
 typedef struct { uint32_t regs, prims, sprites, tris, image_bytes, xfers, pixels; } gs_stats_t;
@@ -102,6 +112,8 @@ void gs_tex_validate(gs_texlvl* L);
 /* Make sure texels in the (unwrapped, inclusive) range [u0,u1] x [v0,v1] are decoded. */
 void gs_tex_ensure(gs_texlvl* L, int u0, int u1, int v0, int v1);
 void gs_tex_flush_all(void);             /* forget every cached texture (reset) */
+/* Deferred drawing of batch `serial` samples this level's texels: keep them until it is drawn. */
+void gs_tex_note_use(const gs_texlvl* L, uint32_t serial);
 void gs_tex_fast_init(void);             /* probe/verify direct texel decoding (called by gs_swz_init) */
 
 /* ---- gs_draw_pixel.c: primitive state and span drawing ---------------------------------------- */

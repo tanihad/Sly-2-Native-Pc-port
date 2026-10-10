@@ -142,6 +142,9 @@ static void prof_sample(void) {
     prof_samples++;
 }
 
+void* gs_thread_os_handle(void);           /* gs_thread.c */
+static int prof_gs;                         /* PS2_PROFILE=gs: sample the GS thread instead */
+
 static DWORD WINAPI prof_thread(LPVOID arg) {
     (void)arg;
     /* 0.5 ms period with a high-resolution waitable timer (Windows 10 1803+), else Sleep(1) */
@@ -156,6 +159,12 @@ static DWORD WINAPI prof_thread(LPVOID arg) {
             WaitForSingleObject(timer, INFINITE);
         } else {
             Sleep(1);
+        }
+        if (!prof_target) {                    /* the GS thread starts after perf_init */
+            HANDLE h = prof_gs ? gs_thread_os_handle() : NULL;
+            if (!h || !DuplicateHandle(GetCurrentProcess(), h, GetCurrentProcess(), &prof_target,
+                                       THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, 0))
+                continue;
         }
         LARGE_INTEGER now;
         QueryPerformanceCounter(&now);
@@ -205,9 +214,10 @@ static void profile_report(void) {
         if (k < nmods) mods[k].n++;
     }
 
-    fprintf(stderr, "\n[profile] %u samples of the emulation thread (self time): %.1f%% recompiled game code (f_*), "
+    fprintf(stderr, "\n[profile] %u samples of the %s thread (self time): %.1f%% recompiled game code (f_*), "
                     "%.1f%% runtime, %.1f%% system DLLs\n",
-            n, 100.0 * prof_game_self / n, 100.0 * (n - prof_game_self - outside_n) / n, 100.0 * outside_n / n);
+            n, prof_gs ? "GS" : "EE", 100.0 * prof_game_self / n, 100.0 * (n - prof_game_self - outside_n) / n,
+            100.0 * outside_n / n);
     int nh = 0;
     for (int s = 0; s < nsyms; s++) if (prof_self[s]) hits[nh++] = (hit){ syms[s].name, prof_self[s] };
     for (int k = 0; k < nmods; k++) hits[nh++] = (hit){ mods[k].name, mods[k].n };
@@ -242,9 +252,10 @@ void perf_init(void) {
         prof_self = calloc((size_t)nsyms + 1, sizeof(uint32_t));
         prof_incl = calloc((size_t)nsyms + 1, sizeof(uint32_t));
         outside_rip = malloc(OUTSIDE_MAX * sizeof(uint64_t));
+        prof_gs = !strcmp(p, "gs");
         if (prof_self && prof_incl && outside_rip &&
-            DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &prof_target,
-                            THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, 0)) {
+            (prof_gs || DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &prof_target,
+                                        THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, 0))) {
             prof_thread_handle = CreateThread(NULL, 0, prof_thread, NULL, 0, NULL);
             if (prof_thread_handle) SetThreadPriority(prof_thread_handle, THREAD_PRIORITY_TIME_CRITICAL);
         }

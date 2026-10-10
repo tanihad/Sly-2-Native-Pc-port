@@ -222,6 +222,7 @@ static void env_update(void) {
     else P.texm = 0;
     gs_prim_finalize(&P);
     prim_draws = P.fbmsk != 0xFFFFFFFFu || (P.zuse && !P.zmsk);
+    gs_prim_version++;                   /* deferred drawing snapshots the new state */
 }
 
 /* ---- attribute planes ---------------------------------------------------------------------------- */
@@ -630,6 +631,7 @@ static void mark_xfer_dest(void) {
 }
 
 static void trxdir(uint32_t dir) {
+    gs_draw_sync();                      /* transfers read/write VRAM in stream order */
     uint64_t bb = reg[R_BITBLTBUF], pos = reg[R_TRXPOS], rr = reg[R_TRXREG];
     xfer_dir = (int)dir;
     xfer_dbp = (uint32_t)((bb >> 32) & 0x3FFF);
@@ -646,6 +648,7 @@ static void trxdir(uint32_t dir) {
 
 void gs_exec_image_write(const void* data, uint32_t bytes) {
     GS_INIT();
+    gs_draw_sync();
     gs_stats.image_bytes += bytes;
     if (xfer_dir == 0 && xfer_marked_at != gs_tex_decodes) mark_xfer_dest();
     gs_mem_xfer_write(data, bytes);
@@ -656,6 +659,7 @@ uint32_t gs_exec_image_read(void* data, uint32_t bytes) {
 }
 
 void gs_draw_reset(void) {
+    gs_draw_sync();
     vcount = 0;
     env_dirty = 1;
     if (xfer_dir != 3) gs_mem_xfer_start(reg[R_BITBLTBUF], reg[R_TRXPOS], reg[R_TRXREG], 3);
@@ -668,6 +672,8 @@ static void tex0_write(int ctx, uint64_t v) {
     reg[R_TEX0_1 + ctx] = v;
     gs_tex0 t = decode_tex0(v);
     gs_texclut tc = decode_texclut(reg[R_TEXCLUT]);
+    /* a CLUT load reads VRAM (CSM1: from CBP, at most 1 KB; CSM2: anywhere in its buffer) */
+    if (t.cld && (t.csm || gs_draw_pages_pending(t.cbp >> 5, 2))) gs_draw_sync();
     gs_clut_on_tex0(&t, &tc);
     if (t.cld) gs_clut_version++;
     env_dirty = 1;
@@ -716,6 +722,7 @@ void gs_exec_write_reg(uint32_t r, uint64_t v) {
         trxdir((uint32_t)(v & 3));
         break;
     case R_HWREG:
+        gs_draw_sync();
         if (xfer_dir == 0 && xfer_marked_at != gs_tex_decodes) mark_xfer_dest();
         gs_mem_xfer_write(&v, 8);
         break;

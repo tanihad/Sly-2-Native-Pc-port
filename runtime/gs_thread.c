@@ -30,7 +30,7 @@
 #define PUBLISH_EVERY  64
 #define SPINS          4000             /* pause iterations before blocking */
 
-enum { K_IMAGE = 0x100, K_SKIP, K_VSYNC };
+enum { K_IMAGE = 0x100, K_SKIP, K_VSYNC, K_SYNC };
 enum { R_XYZF2 = 0x04, R_XYZ2 = 0x05, R_SIGNAL = 0x60, R_FINISH = 0x61, R_LABEL = 0x62 };
 
 typedef struct { uint32_t kind, len; uint64_t v; } slot;   /* kind: register number or K_* */
@@ -46,6 +46,7 @@ static gs_present_fn present;
 static HANDLE thread;
 
 int gs_async(void) { return async_on; }
+void* gs_thread_os_handle(void) { return async_on ? thread : NULL; }   /* for the profiler (perf.c) */
 
 /* ---- producer (EE thread) ------------------------------------------------------------------------ */
 
@@ -117,16 +118,20 @@ void gs_image_write(const void* data, uint32_t bytes) {
 }
 
 void gs_sync(void) {
-    if (!async_on) return;
+    static uint32_t synced_at = ~0u;                    /* wr_local after the last completed sync */
+    if (!async_on || wr_local == synced_at) return;     /* nothing sent since: still in sync */
+    slot* s = reserve(1);                               /* the GS thread finishes deferred drawing too */
+    s->kind = K_SYNC;
+    wr_local++;
     publish();
     uint32_t rd = atomic_load_explicit(&q_rd, memory_order_acquire);
-    if (rd == wr_local) return;
     int prev = perf_enter(PERF_GSWAIT);
     while (rd != wr_local) {
         ee_wait_change(&q_rd, rd);
         rd = atomic_load_explicit(&q_rd, memory_order_acquire);
     }
     perf_leave(prev);
+    synced_at = wr_local;
 }
 
 uint32_t gs_image_read(void* data, uint32_t bytes) {
@@ -189,6 +194,10 @@ static DWORD WINAPI gs_thread_main(LPVOID arg) {
                 gs_exec_image_write(s + 1, s->len);
                 rd += 1 + (s->len + 15) / 16;
                 break;
+            case K_SYNC:
+                gs_draw_sync();
+                rd++;
+                break;
             case K_VSYNC:
                 compose(s);
                 rd += 1 + GS_PRIV_SNAPSHOT * 8 / 16;
@@ -203,6 +212,7 @@ static DWORD WINAPI gs_thread_main(LPVOID arg) {
             }
             if ((rd & 1023) == 0) atomic_store_explicit(&q_rd, rd, memory_order_release);   /* free space */
         }
+        gs_draw_kick();                                       /* caught up: let the workers draw the rest */
         perf_state.gs_busy += __rdtsc() - t0;                 /* only this thread writes it */
         atomic_store_explicit(&q_rd, rd, memory_order_seq_cst);
         if (atomic_load_explicit(&ee_waiting, memory_order_seq_cst)) {
