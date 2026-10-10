@@ -39,6 +39,7 @@ from pathlib import Path
 from .vu_decode import (B_E, B_I, BM_BC, BM_I, BM_Q, BM_VEC, CLIP_READERS, COND_BRANCHES, EFU_KIND,
                         MAC_READERS, STALL_EFU, STALL_P, STALL_Q, STATUS_READERS, VuOp, decode)
 
+KEY_FLAGS_DIRTY = False      # True: unapplied FMAC flags carried across blocks (key bit); False: applied at block ends
 MAX_VERSIONS_PER_PC = 24
 MAX_VERSIONS = 60000
 ANY = -1                                  # successor that is not known statically
@@ -268,6 +269,7 @@ class Key:
     fq: tuple = ()        # pending MAC/status entries, oldest first (values in fq0..)
     cq: tuple = ()        # pending clip entries, oldest first (values in cq0..)
     run: tuple = ()       # VI chain run: (reg, ((reads, stalled, writer pc), ...)) newest first
+    fd: int = 0           # 1: folded FMAC flags not yet applied to mac/status (in fl/fk)
 
 
 class Sim:
@@ -282,6 +284,7 @@ class Sim:
         self.fq = [(r, f"fq{i}") for i, r in enumerate(key.fq)]
         self.cq = [(r, f"cq{i}") for i, r in enumerate(key.cq)]
         self.run = key.run              # () or (reg, entries)
+        self.fd = key.fd
 
 
 def _free(used: list, prefix: str, n: int) -> str:
@@ -326,7 +329,7 @@ class Unit:
         self.vi_written: set[int] = set()
         self.stats = {"handoffs": 0, "capped": 0, "pairs": 0}
         self.handoff_reasons: dict[str, int] = {}
-        self.label_n = 0
+        self.runaway_stubs: set[int] = set()
         for pc, op in self.ops.items():
             if op.vichain and (self.an.br_after(pc) >> op.vichain) & 1:
                 self.saves.add(pc)
@@ -354,13 +357,29 @@ class Unit:
         while self.work:
             vid = self.work.popleft()
             self.code[vid] = self.block(vid, self.keys[vid])
+        self.stub_code: list[str] = []
+        for vid in sorted(self.runaway_stubs):
+            key = self.keys[vid]
+            self.stub_code.append(f"H{vid}:")
+            self.handoff(Sim(key), str(key.pc), str((key.pc + 1) & self.mask), 0, 0, "runaway guard", self.stub_code)
 
     # -- helpers emitting fold code --
+    def accumulate(self, sim: Sim, m: str, out: list[str]) -> None:
+        """Fold an FMAC result's flags (lane masks, vu_macmask): fl = newest, fk = OR since the last
+        materialize(); mac/status are computed from them only where something reads them."""
+        out.append(f"fl = {m}; fk {'|' if sim.fd else ''}= fl;")
+        sim.fd = 1
+
+    def materialize(self, sim: Sim, out: list[str]) -> None:
+        if sim.fd:
+            out.append("mac = vu_mac_of_mask(fl); status = vu_status_of_masks(status, fl, fk);")
+            sim.fd = 0
+
     def fold_flags(self, sim: Sim, upto: int | None, out: list[str]) -> None:
         """Fold MAC/status entries that landed by time upto (None: all) into mac/status."""
         while sim.fq and (upto is None or sim.fq[0][0] <= upto):
             _, v = sim.fq.pop(0)
-            out.append(f"mac = {v} & 0xFFFF; status = vu_status_fold(status, {v});")
+            self.accumulate(sim, v, out)
 
     def fold_clip(self, sim: Sim, upto: int | None, out: list[str]) -> None:
         last = None
@@ -383,6 +402,8 @@ class Unit:
         """Fold what has landed by T, move queued values into canonical slots and return the
         relative (fq, cq, p, q) parts of the successor key."""
         self.fold_flags(sim, T, out)
+        if not KEY_FLAGS_DIRTY:
+            self.materialize(sim, out)
         self.fold_clip(sim, T, out)
         self.fold_q(sim, T, out)
         self.fold_p(sim, T, out)
@@ -404,7 +425,7 @@ class Unit:
         run = sim.run
         if run and pc in self.ops and not (self.an.BR[pc][4] >> run[0]) & 1:
             run = ()
-        return Key(pc=pc, vf=vf, vi=vi, q=q, p=p, fq=fq, cq=cq, run=run)
+        return Key(pc=pc, vf=vf, vi=vi, q=q, p=p, fq=fq, cq=cq, run=run, fd=sim.fd)
 
     # -- handoff to the interpreter --
     def handoff(self, sim: Sim, pc_expr: str, npc_expr: str, ending: int, k: int, why: str,
@@ -414,6 +435,9 @@ class Unit:
         self.handoff_reasons[why] = self.handoff_reasons.get(why, 0) + 1
         t = sim.t
         out.append(f"/* handoff: {why} */")
+        fd = sim.fd
+        self.materialize(sim, out)
+        sim.fd = fd                      # (only this path materializes; the caller's state is unchanged)
         out.append("vuc_pipe_clear(st);")
         for r, l in sim.vf.items():
             lanes = [x for x in l]
@@ -426,8 +450,8 @@ class Unit:
             if x > t:
                 out.append(f"st->vi_ready[{r}] = cyc + {x};")
         for i, (r, v) in enumerate(sim.fq):
-            out.append(f"st->fq[{i}].ready = cyc + {r}; st->fq[{i}].mac = (uint16_t){v}; "
-                       f"st->fq[{i}].zsuo = (uint16_t)({v} >> 16);")
+            out.append(f"st->fq[{i}].ready = cyc + {r}; st->fq[{i}].mac = (uint16_t)vu_mac_of_mask({v}); "
+                       f"st->fq[{i}].zsuo = (uint16_t)vu_zsuo_of_mask({v});")
         if sim.fq:
             out.append(f"st->fq_tail = {len(sim.fq)};")
         for i, (r, v) in enumerate(sim.cq):
@@ -535,13 +559,12 @@ class Unit:
             return f"(tk ? {dyn[1]}u : {dyn[2]}u)"
         return "jt"
 
-    def runaway_check(self, sim: Sim, pc_expr: str, k: int, out: list[str]) -> None:
-        """On a backward jump: close to the interpreter's runaway limit, continue in the interpreter so
-        that a program without an E bit stops at exactly the same pair (vu_exec.c VU_MAX_PAIRS)."""
-        sub: list[str] = [f"if (n + {k} >= VUC_RUNAWAY_HANDOFF) {{"]
-        self.handoff(sim, pc_expr, f"({pc_expr} + 1) & {self.mask}u", 0, k, "runaway guard", sub)
-        sub.append("}")
-        out.extend(sub)
+    def guarded_goto(self, vid: int) -> str:
+        """Backward jump to a block version: close to the interpreter's runaway limit, hand over to
+        the interpreter at the version's start instead (stub H<vid>, emitted once per version), so
+        that a program without an E bit stops exactly where the interpreter stops it."""
+        self.runaway_stubs.add(vid)
+        return f"if (n >= VUC_RUNAWAY_HANDOFF) goto H{vid}; goto V{vid};"
 
     def transition(self, sim: Sim, pc: int, k: int, out: list[str], back: bool) -> None:
         T = sim.t
@@ -551,10 +574,8 @@ class Unit:
         if vid is None:
             self.handoff(sim, str(pc), str((pc + 1) & self.mask), 0, k, "version cap", out)
             return
-        if back:
-            self.runaway_check(sim, str(pc), k, out)
         out.append(f"cyc += {T}; n += {k};")
-        out.append(f"goto V{vid};")
+        out.append(self.guarded_goto(vid) if back else f"goto V{vid};")
 
     def transition_dyn(self, sim: Sim, dyn, k: int, out: list[str]) -> None:
         T = sim.t
@@ -574,15 +595,15 @@ class Unit:
                         self.handoff(sim, str(pc), str((pc + 1) & m), 0, k, "version cap", sub)
                         out.extend(sub)
                         out.append("}")
-            if tgt <= dyn[3]:
-                self.runaway_check(sim, f"(tk ? {tgt}u : {fall}u)", k, out)
             out.append(f"cyc += {T}; n += {k};")
-            if ids[0] is not None and ids[1] is not None:
-                out.append(f"if (tk) goto V{ids[0]}; goto V{ids[1]};")
-            elif ids[0] is not None:
-                out.append(f"goto V{ids[0]};")
-            elif ids[1] is not None:
-                out.append(f"goto V{ids[1]};")
+            go = [None, None]
+            for i, (pc, vid) in enumerate(((tgt, ids[0]), (fall, ids[1]))):
+                if vid is not None:
+                    go[i] = self.guarded_goto(vid) if pc <= dyn[3] else f"goto V{vid};"
+            if go[0] and go[1]:
+                out.append(f"if (tk) {{ {go[0]} }} {go[1]}")
+            elif go[0] or go[1]:
+                out.append(go[0] or go[1])
             return
         _, cands, site = dyn
         cases = []
@@ -591,11 +612,10 @@ class Unit:
             vid = self.version(key)
             if vid is not None:
                 cases.append((pc, vid))
-        self.runaway_check(sim, "jt", k, out)
         out.append(f"cyc += {T}; n += {k};")
         out.append("switch (jt) {")
         for pc, vid in cases:
-            out.append(f"case {pc}: goto V{vid};")
+            out.append(f"case {pc}: {self.guarded_goto(vid) if pc <= site else f'goto V{vid};'}")
         out.append("default: {")
         out.append(f"    vuc_unknown_jump(st, {site}u, jt);")
         sub: list[str] = []
@@ -612,6 +632,7 @@ class Unit:
 
     def end_program(self, sim: Sim, tpc: str, k: int, out: list[str]) -> None:
         self.fold_flags(sim, None, out)
+        self.materialize(sim, out)
         self.fold_clip(sim, None, out)
         self.fold_q(sim, None, out)
         self.fold_p(sim, None, out)
@@ -668,7 +689,7 @@ class Unit:
                 sub = 1 if up == "opmsub" else 0
                 out.append(f"unsigned z, u; __m128 ur = vu_opm({sub}, {a}, vu_vclean({VF(op.uft)}), acc, {op.udst}, &z, &u);")
                 utarget = (VF(op.ufd) if op.ufd else None) if sub else "acc"
-            out.append(f"uint32_t uf = vu_macflags(ur, {op.udst}, z, u);")
+            out.append(f"uint32_t uf = vu_macmask(ur, {op.udst}, z, u);")
             if an.FR[pc][4]:
                 self.fold_flags(sim, t, out)
                 v = _free(sim.fq, "fq", 4)
@@ -676,7 +697,7 @@ class Unit:
                 sim.fq.append((t + 4, v))
             else:
                 self.fold_flags(sim, None, out)
-                out.append("mac = uf & 0xFFFF; status = vu_status_fold(status, uf);")
+                self.accumulate(sim, "uf", out)
         elif up in ("max", "mini"):
             self.vf_used.update((op.ufs, op.uft))
             if op.ubm == BM_VEC:
@@ -795,6 +816,7 @@ class Unit:
 
         def status_now() -> None:
             self.fold_flags(sim, t, out)
+            self.materialize(sim, out)
             self.fold_q(sim, t, out)
 
         if lo in ("nop", "loi", "waitq", "waitp"):
@@ -847,6 +869,7 @@ class Unit:
                 L(f"status = (status & 0x3F) | 0x{op.imm & 0xFC0:X}u;")
         elif lo in ("fmeq", "fmand", "fmor"):
             self.fold_flags(sim, t, out)
+            self.materialize(sim, out)
             use_vi(ls)
             if lo == "fmeq":
                 setvi(lt, f"(mac & 0xFFFF) == {VI(ls)}")
@@ -969,7 +992,7 @@ class Unit:
         L.append("    uint32_t I = st->I, Q = st->Q, P = st->P, R = st->R;")
         L.append("    uint32_t status = st->status, mac = st->mac, clip = st->clip, clip_pipe = st->clip;")
         L.append("    uint32_t q_next = 0, q_flags = 0, p0 = 0, p1 = 0, fq0 = 0, fq1 = 0, fq2 = 0, fq3 = 0;")
-        L.append("    uint32_t cq0 = 0, cq1 = 0, cq2 = 0, cq3 = 0;")
+        L.append("    uint32_t cq0 = 0, cq1 = 0, cq2 = 0, cq3 = 0, fl = 0, fk = 0;")
         L.append("    uint32_t cyc = 0, n = 0, tpc = 0, jt = 0; int tk = 0;")
         L.append("    uint32_t ho_pc = 0, ho_npc = 0, ho_cyc = 0, ho_n = 0; int ho_end = 0;")
         for pc in sorted(self.saves):
@@ -977,6 +1000,7 @@ class Unit:
         L.append("    (void)Q; (void)P; (void)R; (void)I; (void)dm; (void)mac; (void)clip_pipe; (void)tk; (void)jt;")
         L.append("    (void)q_next; (void)q_flags; (void)p0; (void)p1; (void)fq0; (void)fq1; (void)fq2; (void)fq3;")
         L.append("    (void)cq0; (void)cq1; (void)cq2; (void)cq3; (void)ho_npc; (void)ho_cyc; (void)ho_n; (void)ho_end;")
+        L.append("    (void)fl; (void)fk;")
         L.append("    switch (entry) {")
         for i, vid in enumerate(self.entry_ids):
             if vid is not None:
@@ -985,6 +1009,7 @@ class Unit:
         L.append("    }")
         for vid in range(len(self.keys)):
             L.extend("    " + x for x in self.code[vid])
+        L.extend("    " + x for x in self.stub_code)
         writeback = []
         for r in vfs:
             if r in self.vf_written:

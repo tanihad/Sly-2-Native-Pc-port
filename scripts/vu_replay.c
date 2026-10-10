@@ -28,7 +28,7 @@ uint32_t ps2_vblank_count(void) { return 0; }
 
 /* VU_REPLAY_PROFILE=1: sample the replaying thread's instruction pointer every ~50 us and print the
  * hottest addresses as image-relative offsets (match them with llvm-objdump -d of the exe). */
-#define PROF_SLOTS (1u << 20)
+#define PROF_SLOTS (1u << 24)                 /* image offsets up to 16 MB (recompiled microcode is large) */
 static uint32_t* prof_hits;
 static volatile LONG prof_stop;
 static DWORD WINAPI prof_thread(LPVOID arg) {
@@ -59,7 +59,7 @@ static void prof_report(void) {
     for (uint32_t i = 0; i < PROF_SLOTS; i++) idx[i] = i;
     qsort(idx, PROF_SLOTS, sizeof *idx, prof_cmp);
     printf("profile: %llu samples; image base 0x140000000 + offset:\n", (unsigned long long)total);
-    for (int i = 0; i < 600 && prof_hits[idx[i]]; i++)
+    for (int i = 0; i < 4000 && prof_hits[idx[i]]; i++)
         printf("  %6.2f%%  0x%llx\n", 100.0 * prof_hits[idx[i]] / (double)total, 0x140000000ull + idx[i]);
 }
 
@@ -143,6 +143,13 @@ int main(int argc, char** argv) {
 
     vu_set_vif_tops(0, 0, 0);                                 /* initialises both units */
     vu_set_vif_tops(1, 0, 0);
+    /* VU_REPLAY_CPU=<n>: run on that logical processor at high priority (benchmarks on a hybrid CPU:
+     * pick a P-core; 0-15 on the i7-14700F) */
+    const char* cpu = getenv("VU_REPLAY_CPU");
+    if (cpu && *cpu) {
+        SetThreadAffinityMask(GetCurrentThread(), (DWORD_PTR)1 << atoi(cpu));
+        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+    }
     LARGE_INTEGER fq;
     QueryPerformanceFrequency(&fq);
     double best = 1e30;

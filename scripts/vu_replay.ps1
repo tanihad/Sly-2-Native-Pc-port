@@ -37,8 +37,12 @@ if ($Compiled) {
 }
 $extra = @()
 if ($DebugInfo) { $extra += '-g'; $tag = "g$tag" }       # -DebugInfo: for llvm-symbolizer on profiles
-$exe = Join-Path $out "vu_replay_$tag.exe"
-& $clang "-$Opt" @extra -std=c11 -w -I $Runtime -I (Join-Path $root 'runtime') @srcs -o $exe
-if ($LASTEXITCODE -ne 0) { Write-Host 'vu_replay build failed'; exit 1 }
+$exe = Join-Path $out "vu_replay_$tag$Opt.exe"
+$inputs = @($srcs) + @(Get-ChildItem $Runtime -Filter *.h | ForEach-Object { $_.FullName }) + @($MyInvocation.MyCommand.Path)
+$newest = ($inputs | ForEach-Object { (Get-Item $_).LastWriteTimeUtc } | Measure-Object -Maximum).Maximum
+if (-not (Test-Path $exe) -or (Get-Item $exe).LastWriteTimeUtc -lt $newest) {   # rebuild only when needed
+    & $clang "-$Opt" @extra -std=c11 -w -I $Runtime -I (Join-Path $root 'runtime') @srcs -o $exe
+    if ($LASTEXITCODE -ne 0) { Write-Host 'vu_replay build failed'; exit 1 }
+}
 & $exe (Resolve-Path $Rec).Path $Passes $mode
 exit $LASTEXITCODE

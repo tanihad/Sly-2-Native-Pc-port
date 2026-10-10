@@ -148,6 +148,26 @@ VU_INLINE uint32_t vu_macflags(__m128 r, unsigned dst, unsigned z, unsigned u) {
     uint32_t zsuo = (z ? 1u : 0u) | (s ? 2u : 0u) | (u ? 4u : 0u) | (o ? 8u : 0u);
     return mac | zsuo << 16;
 }
+/* The same flags as lane masks (bit0 = x) packed Z | S << 4 | U << 8 | O << 12: cheaper to compute,
+ * and several results combine by OR (the recompiled code folds a run of FMAC results into MAC/status
+ * only where something reads them: vu_mac_of_mask(last), vu_status_of_masks(status, last, OR of all)). */
+VU_INLINE uint32_t vu_macmask(__m128 r, unsigned dst, unsigned z, unsigned u) {
+    unsigned s = (unsigned)_mm_movemask_ps(r) & dst;
+    __m128i a = _mm_and_si128(_mm_castps_si128(r), _mm_set1_epi32(0x7FFFFFFF));
+    unsigned o = (unsigned)_mm_movemask_ps(_mm_castsi128_ps(_mm_cmpeq_epi32(a, _mm_set1_epi32(0x7F7FFFFF)))) & dst;
+    return z | s << 4 | u << 8 | o << 12;
+}
+VU_INLINE uint32_t vu_zsuo_of_mask(uint32_t m) {
+    return ((m & 0xF) ? 1u : 0u) | ((m & 0xF0) ? 2u : 0u) | ((m & 0xF00) ? 4u : 0u) | ((m & 0xF000) ? 8u : 0u);
+}
+VU_INLINE uint32_t vu_mac_of_mask(uint32_t m) {
+    return (uint32_t)(VU_REV4[m & 15] | VU_REV4[(m >> 4) & 15] << 4 | VU_REV4[(m >> 8) & 15] << 8 | VU_REV4[(m >> 12) & 15] << 12);
+}
+/* Status after folding results whose newest has lane masks `last` and whose OR is `all`. */
+VU_INLINE uint32_t vu_status_of_masks(uint32_t status, uint32_t last, uint32_t all) {
+    return (status & ~0xFu) | vu_zsuo_of_mask(last) | (vu_zsuo_of_mask(all) << 6);
+}
+
 /* Status register after the MAC/status entry f (vu_macflags) lands: Z S U O replaced, sticky ORed. */
 VU_INLINE uint32_t vu_status_fold(uint32_t status, uint32_t f) {
     uint32_t zsuo = f >> 16;
