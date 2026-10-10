@@ -6,33 +6,42 @@ Status: in progress
 Game runs at full NTSC speed with plenty of headroom, measured in the release build; pacing never
 faster than real time; smooth presentation. Report before/after numbers per change.
 
-## Done
-- Instrumentation (runtime/perf.h, runtime/perf.c):
-  - PS2_PERF=1: once per second `[perf]` line: VBlanks serviced/due, flips (DISPFB changes),
-    busy ms per serviced VBlank, exclusive time share EE/GS/VU/VIF/IPU/IOP/present/idle.
-    Hooks: gif_feed (GS), vu.c run() (VU), vif.c feed() (VIF), ipu entry points (IPU),
-    sif_set_dma (IOP), vblank() display/present (present), threads.c idle wait (idle).
-    State is a selectany global in perf.h so unit tests need not link perf.c.
-  - PS2_PROFILE=1: sampler thread (0.5 ms high-res waitable timer) suspends the main thread,
-    records RIP; at exit (watchdog/exit) resolves through the exe's own COFF symbol table and
-    prints the top 40 (system DLLs per module).
+## Done (commits on fix/fix-perf)
+1. c5aaaab Instrumentation (runtime/perf.h, runtime/perf.c): PS2_PERF=1 per-second report
+   (vblanks serviced/due, flips, busy ms/vblank, EE/GS/VU/VIF/IPU/IOP/present/gswait/idle shares,
+   GS thread ms/vblank); PS2_PROFILE=1 (EE thread) / =gs (GS thread) stack-sampling profiler with
+   self + inclusive tables from the exe's COFF symbols; PS2_PROFILE_SKIP=<s>.
+2. 1b15313 Codegen: $zero reads as constant, `restrict` ctx, inline RAM/SPR fast path with
+   out-of-line ps2_mem_read_slow/write_slow, -fno-auto-import; recomp writes only changed files.
+3. 3a25f75 GS on its own thread (runtime/gs_thread.c): in-order SPSC queue of register writes and
+   IMAGE data; SIGNAL/FINISH/LABEL stay on the EE thread; VBlank pictures composed in-stream from
+   a snapshot of the display registers (gs_queue_vsync); EE waits at most one VBlank.
+4. 3735796 Deferred band-parallel drawing (gs_draw_pixel.c): spans binned by VRAM page-row
+   ownership, pixel workers draw while the GS thread sets up; hazard syncs (texture decode/evict,
+   CLUT load, transfers, display); gs-draw unit tests have an async variant (3 workers).
 
-## Baseline (before any optimisation), 30 s runs, headless
-Debug (-O1): movie 60/60 vblanks but busy 16.5 ms/vblank (EE 75-80%: spin), logo/prompt
-35/61 vblanks, ~33 flips/s, busy 22-26 ms/vblank: GS 60%, VU 18%, idle 13%.
-Release (-O2): same picture; late in the run (prompt) 20/60 vblanks, busy 48-52 ms/vblank.
-Profile (release): flush 17.8%, ntdll (idle sleep) 13%, vu_run 8.7%, write_32_2_1 7.6%,
-gs_tex_ensure 4.8%, sample_stq_bilin 4.4%, f_0024D5E8 3.5%, write_16_2_1 3.3%, f_0024F390 3.1%,
-write_32_1_1 2.7%, gs_display 2.4%, draw 2.1%, u_madd_bc 1.9%.
+## Measurements (release, memory-card prompt, 28-thread PC)
+- Baseline: 30-35 vblanks/s serviced of 60, ~33 flips/s, busy 22-50 ms/vblank (GS 60%, VU 18%).
+- After 3 (GS thread, fork-join pixels): ~57/60 vblanks, ~47 flips/s; GS thread saturated.
+- After 4: 60/60 vblanks, 57-60 flips/s, EE thread busy ~10 ms/vblank (VU ~48%), GS thread ~15 ms.
+- Frames identical to the baseline (frame_000840 etc., except the field-parity bottom row).
+- Movie: 60/60, EE 80% is the game's own busy demux loop (f_001B4058 polls f_001B41D0/f_0024F770
+  until state changes); not real work. Use a headroom test (burn) to show margin there.
 
 ## Next
-1. Find what `flush` (GS pixel pipeline) does and speed it up; pixel write paths.
-2. VU interpreter cost (vu_run, u_*).
-3. Game functions f_0024D5E8 / f_0024F390 / f_0024CF40 (library memcpy/memset?) -> native.
-4. Cache-maintenance functions (0x234EA0/0x234FD0 loops) -> native override table in recomp.
-5. EE spin during the movie (EE 80%, idle 0%): find the wait loop.
-6. Frame pacing: vblank skipping when behind; presentation smoothness.
+1. Profile EE thread (VU interpreter ~8-9 ms/frame) and GS thread (setup) again; optimise:
+   VU interpreter dispatch, GS setup (draw/tex_prepare/gs_tex_ensure), gs_display_regs.
+2. Cache-maintenance override table in the recompiler (0x234EA0/0x234FD0 loops) + doc.
+3. Frame pacing: vblank skip policy when behind; presentation smoothness; PS2_PERF_BURN headroom test.
+4. Debug build numbers; final report; notes/progress.md + notes/performance.md docs.
 
 ## Findings / traps
-- Runtime sources are CRLF in the working tree (autocrlf); PowerShell string Replace with `n
-  fails silently on them - use the Edit tool.
+- Runtime sources are CRLF in the working tree; PowerShell string Replace with `n fails silently.
+- NEVER use relative paths with [IO.File]::ReadAllText/WriteAllText: .NET's current directory is the
+  MAIN checkout (C:\Users\tanih\Projects\sly2-decomp), not the worktree. This once modified the main
+  checkout's runtime/gs_draw.c (restored with git checkout; main is clean).
+- Fork-join of single primitives (parts of ~1k px) gained little: hand-off cache misses ~= the work.
+- Deferred drawing must cut spans exactly where immediate drawing (B0) cuts them: S/T/Q are float
+  accumulators, a different cut point changes texel coordinates slightly (seen as 122 bytes of
+  difference on the prompt before this was fixed).
+- GS thread "busy ms/vblank" saturates at ~16.7 when the GS is the bottleneck; look at flips/s.
