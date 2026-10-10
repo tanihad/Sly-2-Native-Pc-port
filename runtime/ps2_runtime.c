@@ -311,6 +311,15 @@ static void present_frame(const uint32_t* frame, int ok, int w, int h, uint32_t 
         char path[512];
         snprintf(path, sizeof path, "%s/frame_%06u.png", dump_dir, vb);
         debug_write_png(path, frame, w, h, 1024);
+        char latest[512];                        /* latest.png: always the newest dump (live play) */
+        snprintf(latest, sizeof latest, "%s/latest.png", dump_dir);
+        CopyFileA(path, latest, FALSE);
+        static int ring = -1;                    /* PS2_DUMP_RING=<n>: keep only the newest n dumps */
+        if (ring < 0) ring = getenv("PS2_DUMP_RING") ? atoi(getenv("PS2_DUMP_RING")) : 0;
+        if (ring > 0 && vb >= (uint32_t)(ring * dump_every)) {
+            snprintf(path, sizeof path, "%s/frame_%06u.png", dump_dir, vb - (uint32_t)(ring * dump_every));
+            DeleteFileA(path);
+        }
     }
 }
 

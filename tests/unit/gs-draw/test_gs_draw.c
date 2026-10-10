@@ -775,6 +775,35 @@ static void t_lines_points(void) {
     W(XYZ3, (uint64_t)(450 * 16) | (uint64_t)(300 * 16) << 16);
     W(XYZ3, (uint64_t)(460 * 16) | (uint64_t)(310 * 16) << 16);
     CHECK(rgb(px(455, 305)) == 0, "XYZ3 does not kick");
+
+    /* AA1 lines: the two pixels straddling the line share its coverage, which replaces As */
+    sprite(0, 380, 640, 448, 255, 255, 255, 0x80);
+    alpha_reg(0, 1, 0, 1, 0);                                   /* (Cs - Cd) * As + Cd */
+    prim(P_LINE, ABE | (1 << 7)); rgba(0, 0, 0, 0x80);
+    xyz(20, 390.25, 0); xyz(120, 390.25, 0);                    /* 3/4 on row 390, 1/4 on 391 */
+    CHECK(abs(chan(px(60, 390), 0) - 64) <= 2 && abs(chan(px(60, 391), 0) - 191) <= 2 &&
+          rgb(px(60, 389)) == 0xFFFFFF && rgb(px(60, 392)) == 0xFFFFFF, "AA1 line coverage %08X %08X",
+          px(60, 390), px(60, 391));
+    xyz(20, 400, 0); xyz(120, 400, 0);                          /* on the pixel centres: one row */
+    CHECK(rgb(px(60, 400)) == 0 && rgb(px(60, 401)) == 0xFFFFFF && rgb(px(60, 399)) == 0xFFFFFF,
+          "AA1 line on centres %08X %08X", px(60, 400), px(60, 401));
+    prim(P_LINE, ABE | (1 << 7));                               /* y-major: left/right neighbours */
+    xyz(200.5, 382, 0); xyz(200.5, 440, 0);
+    CHECK(abs(chan(px(200, 410), 0) - 128) <= 2 && abs(chan(px(201, 410), 0) - 128) <= 2, "AA1 y-major %08X %08X",
+          px(200, 410), px(201, 410));
+    /* Sly 2's outlines: Z GREATER, RGB only. A line on the edge of a surface at the same depth
+     * shows only on the outside half (row 424 here), at its coverage */
+    zbuf(160, PSMZ32, 0);
+    test_reg(0, 1, 0, 0, 0, 0, 1, 1);
+    sprite(300, 420, 400, 430, 255, 255, 255, 0x80);            /* background: z = 0 */
+    prim(P_SPRITE, 0); rgba(255, 255, 255, 0x80); xyz(300, 420, 100); xyz(400, 424, 100);  /* surface */
+    test_reg(1, 0, 0, 3, 0, 0, 1, 3);                           /* ATST NEVER -> RGB_ONLY; Z GREATER */
+    prim(P_LINE, ABE | (1 << 7)); rgba(0, 0, 0, 0x80);
+    xyz(310, 423.5, 100); xyz(390, 423.5, 100);
+    CHECK(rgb(px(350, 423)) == 0xFFFFFF && abs(chan(px(350, 424), 0) - 128) <= 2, "AA1 outline %08X %08X",
+          px(350, 423), px(350, 424));
+    zbuf(160, PSMZ32, 1);
+    test_reg(0, 1, 0, 0, 0, 0, 1, 1);
     save("lines", 0, 10, PSMCT32, 640, 448);
 }
 

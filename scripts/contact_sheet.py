@@ -78,18 +78,35 @@ def shrink(w: int, h: int, rgb: bytearray, s: int) -> tuple[int, int, bytearray]
     return nw, nh, out
 
 
+def crop(w: int, h: int, rgb: bytearray, box: tuple[int, int, int, int], zoom: int) -> tuple[int, int, bytearray]:
+    x0, y0, x1, y1 = max(0, box[0]), max(0, box[1]), min(w, box[2]), min(h, box[3])
+    nw, nh = (x1 - x0) * zoom, (y1 - y0) * zoom
+    out = bytearray(nw * nh * 3)
+    for y in range(nh):
+        sy = y0 + y // zoom
+        for x in range(nw):
+            s = (sy * w + x0 + x // zoom) * 3
+            out[(y * nw + x) * 3:(y * nw + x) * 3 + 3] = rgb[s:s + 3]
+    return nw, nh, out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("out")
     ap.add_argument("frames", nargs="+")
     ap.add_argument("--cols", type=int, default=3)
     ap.add_argument("--scale", type=int, default=2)
+    ap.add_argument("--crop", help="x0,y0,x1,y1: cut this rectangle out of each frame first")
+    ap.add_argument("--zoom", type=int, default=1, help="enlarge the crop (nearest neighbour)")
     a = ap.parse_args()
     tiles = []
     for f in a.frames:
         p = Path(f)
         if p.exists():
-            tiles.append(shrink(*read_png(p), a.scale))
+            img = read_png(p)
+            if a.crop:
+                img = crop(*img, tuple(int(v) for v in a.crop.split(",")), a.zoom)
+            tiles.append(shrink(*img, a.scale))
     if not tiles:
         print("no frames")
         return 1
