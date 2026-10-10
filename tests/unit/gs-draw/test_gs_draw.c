@@ -1070,6 +1070,27 @@ static void t_direct_order(void) {
         bad += rgb(px(10, y)) != want || rgb(px(60, y)) != want;
     }
     CHECK(bad == 0, "in-place filter on its own pixels: %d wrong (row 101: %08X)", bad, px(10, 101));
+    /* the same kind of filter over an area larger than its texture (64x32 texture, 64x64 sprite on
+     * the buffer it samples): rows 32-63 sample rows of the texture's other page through CLAMP or
+     * REPEAT, i.e. other pixels' texels - feedback, not a pixel-local filter. Every pixel must get
+     * the texel as it was before the primitive (MODULATE by 0.5: 200 -> 100), whatever order bands
+     * or immediate-drawing flushes write rows 0-31 in. */
+    const uint32_t C = 240;                        /* 64x64 CT32 buffer: pages 240 (rows 0-31), 241 */
+    frame(C, 1, PSMCT32, 0);
+    scissor(0, 63, 0, 63);
+    for (int mode = 1; mode >= 0; mode--) {        /* CLAMP_1 WMS/WMT: 1 = CLAMP, 0 = REPEAT */
+        sprite(0, 0, 64, 64, 200, 0, 0, 0x80);
+        W(CLAMP_1, (uint64_t)(mode | mode << 2));
+        W(TEX0_1, tex0(C * 32, 1, PSMCT32, 6, 5, 1, 0 /*MODULATE*/, 0, 0, 0, 0));
+        prim(P_SPRITE, TME | FST);
+        rgba(0x40, 0x40, 0x40, 0x80);
+        uv(0, 0); xyz(0, 0, 0); uv(64 * 16, 64 * 16); xyz(64, 64, 0);
+        bad = 0;
+        for (int y = 0; y < 64; y++) bad += rgb(px(5, y)) != 100 || rgb(px(60, y)) != 100;
+        CHECK(bad == 0, "in-place filter beyond its texture (%s) samples it as it was: %d wrong (row 40: %08X)",
+              mode ? "CLAMP" : "REPEAT", bad, px(5, 40));
+    }
+    W(CLAMP_1, 0);
     frame(0, 10, PSMCT32, 0);
     scissor(0, 639, 0, 447);
 }

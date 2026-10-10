@@ -266,10 +266,19 @@ static void add_buf_pages(uint32_t page0, uint32_t bw, int ph_sh, int x0, int y0
         }
 }
 
+/* Every texel of the (unwrapped, inclusive) range [u0,u1] x [v0,v1] is inside the texture and its
+ * clamp region, so it is sampled at its own coordinates: no REPEAT wrap, no clamping. */
+static int texels_unwrapped(const gs_texlvl* L, int u0, int u1, int v0, int v1) {
+    return L->umode != 3 && L->vmode != 3 && u0 >= 0 && v0 >= 0 && u0 >= L->ulo && v0 >= L->vlo &&
+           u1 <= L->w - 1 && v1 <= L->h - 1 && u1 <= L->uhi && v1 <= L->vhi;
+}
+
 /* Texel-space bounding box of the vertices (level 0), then per level: sample directly (recording
  * the pages read for deferred drawing) - from a snapshot of the pages when the texels are in pages
  * the primitive writes (inclusive pixel box x0..x1, y0..y1) - or decode what it can reach into the
- * texture cache (formats without direct sampling). */
+ * texture cache (formats without direct sampling). `local`: the caller found that each pixel
+ * samples the texel at its own position (draw_sprite); that is a pixel-local filter only if the
+ * texture also covers the whole range unwrapped and lies on the frame buffer itself. */
 static void tex_prepare(const vtx* const* vs, int n, int as_uv, const double* su, const double* sv,
                         int x0, int y0, int x1, int y1, int local) {
     if (!P.tme) return;
@@ -324,10 +333,12 @@ static void tex_prepare(const vtx* const* vs, int n, int as_uv, const double* su
                 v0 = (int)floor(vmin * sc - EPS); v1 = (int)floor(vmax * sc + EPS);
             }
         }
-        if (L->dkind >= 0 && local && L->tab == P.ffmt->tab && L->bp == P.fpage * 32 && L->t.tbw == P.fbw) {
+        if (L->dkind >= 0 && local && !all && texels_unwrapped(L, u0, u1, v0, v1) && L->tab == P.ffmt->tab &&
+            L->bp == P.fpage * 32 && L->t.tbw == P.fbw) {
             /* every pixel samples its own memory (an in-place filter on the frame buffer): like
              * blending, which reads the destination, the reads are ordered with the writes by the
-             * band that owns the pages; no snapshot, nothing to record */
+             * band that owns the pages; no snapshot, nothing to record. (Beyond the texture, CLAMP
+             * or REPEAT would make pixels sample other pixels, in other bands: feedback, below.) */
             gs_tex_use_snapshot(L, 0);
             continue;
         }
@@ -353,9 +364,7 @@ static void tex_prepare(const vtx* const* vs, int n, int as_uv, const double* su
         gs_tex_ensure(L, u0, u1, v0, v1);
         /* every texel the primitive can reach is inside the texture and the clamp region: sampling
          * (from the cache) needs no wrapping */
-        if (!all && P.texm != 3 && L->umode != 3 && L->vmode != 3 && u0 >= 0 && v0 >= 0 &&
-            u0 >= L->ulo && v0 >= L->vlo && u1 <= L->w - 1 && v1 <= L->h - 1 && u1 <= L->uhi && v1 <= L->vhi)
-            P.nowrap = 1;
+        if (!all && P.texm != 3 && texels_unwrapped(L, u0, u1, v0, v1)) P.nowrap = 1;
     }
     gs_draw_set_reads(any_reads ? reads : NULL, any_snap ? snap : NULL);
 }
