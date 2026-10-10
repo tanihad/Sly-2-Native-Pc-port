@@ -74,7 +74,8 @@ static void anchors_init(void) {
     const char* s = getenv("PS2_INPUT");
     for (; s && (s = strchr(s, '@')) != NULL; s++) {
         char* p;
-        uint32_t a = (uint32_t)strtoul(s + 1, &p, 16), ra = *p == '/' ? (uint32_t)strtoul(p + 1, NULL, 16) : 0;
+        uint32_t a = (uint32_t)strtoul(s + (s[1] == '!' ? 2 : 1), &p, 16);   /* "@!": quiet anchor */
+        uint32_t ra = *p == '/' ? (uint32_t)strtoul(p + 1, NULL, 16) : 0;
         int k = 0;
         while (k < anchor_n && (anchor_addr[k] != a || anchor_ra[k] != ra)) k++;
         if (k == anchor_n && anchor_n < 32) { anchor_addr[anchor_n] = a; anchor_ra[anchor_n++] = ra; }

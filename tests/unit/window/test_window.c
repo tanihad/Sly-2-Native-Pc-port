@@ -327,6 +327,19 @@ static void test_input_script(void) {
         CHECK(!!(buttons[f] & PAD_START) == (f == 28 || f == 29), "start at frame %d", f);
         CHECK((ly[f] == 0) == (f == 29), "left stick up at frame %d (ly %02X)", f, ly[f]);
     }
+    /* quiet anchor: fires once the function was called and then stayed silent for 5 frames */
+    script_n = 0;
+    script_frame = 0;
+    fake_anchor_calls = 0;
+    script_parse("@!187d80/1dd96c+5:none,+2:circle:1");
+    CHECK(script_n == 2, "parsed %d tokens", script_n);
+    for (int f = 0; f < 40; f++) {
+        if (f >= 10 && f < 20) fake_anchor_calls++;       /* called on frames 10..19, silent after */
+        pad_input p;
+        pad_clear(&p);
+        script_apply(0, &p);
+        CHECK(!!(p.buttons & PAD_CIRCLE) == (f == 26), "circle at frame %d", f);
+    }
     script_n = 0;                                         /* leave scripting off for the other tests */
 }
 
