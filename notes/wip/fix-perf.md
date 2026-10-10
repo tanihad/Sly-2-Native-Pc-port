@@ -51,6 +51,18 @@ faster than real time; smooth presentation. Report before/after numbers per chan
    interleaved A/B min-of-N (gs_replay -Bench) for GS numbers. Unexplained early exits of the game
    twice (no crash event): probably other agents killing sly2.exe; crash handler now in place.
 
+9. b5b40e9 Pacing: VBlanks from a high-resolution waitable timer; idle EE woken via WaitOnAddress;
+   PS2_PERF_BURN / PS2_PERF_BURN_GS + scripts/headroom.ps1; GS producer: cached free space,
+   256-slot publish chunks, inline register mirror.
+10. d05335b recomp/overrides.py: native override table (hash-guarded); D-cache maintenance loops
+    0x234EA0, 0x234FD0, 0x23B170 -> no-ops; test in tests/run_tests.py; notes/recompiler-design.md.
+11. db35529/9aa0b3f exact CSM1 CLUT page range (+ test of a GS-drawn CLUT). Block-level write
+    tracking was tried: Sly 2's ~2 CLUT waits/frame are true block-level dependencies (CLUT in
+    page 128 inside the Z buffer area, rewritten by drawing); reverted, page level kept.
+12. 8ba2bd6 VBlank picture = job in the deferred-drawing queue (picture_run on a worker); no
+    per-VBlank drain on the GS thread. Display pages count as reads for transfers (field mode:
+    half height). Transfer waits ~30/s are a CLUT upload into page 192 (true block overlap).
+
 ## Measurements (release, memory-card prompt, 28-thread PC)
 - Baseline: 30-35 vblanks/s serviced of 60, ~33 flips/s, busy 22-50 ms/vblank (GS 60%, VU 18%).
 - After 3 (GS thread, fork-join pixels): ~57/60 vblanks, ~47 flips/s; GS thread saturated.
@@ -69,12 +81,12 @@ faster than real time; smooth presentation. Report before/after numbers per chan
   EE thread busy 15-16 ms/vblank with VU ~60% -> the EE thread is the bottleneck now.
 
 ## Next
-1. Frame pacing (vblank skip policy, smooth presentation), PS2_PERF_BURN headroom test.
-2. Cache-maintenance override table in the recompiler + doc.
-3. GS: compose the VBlank picture as a queue job (no per-frame drain on the GS thread); CLUT
-   loads from drawn pages (~2 syncs/frame); setup cost; pixel pipeline (~18 ns/pixel).
-4. VU: more dispatch work if time permits (recompiler is a separate task).
-5. notes/performance.md, progress.md, final report.
+1. Pixel workers: critical path ~12 ms/frame at the title (pixel work ~40 ms CPU/frame): profile
+   PS2_PROFILE=workers, speed up the pipeline / balance bands.
+2. GS setup cost (draw/triangle setup, deferred_span) if time permits.
+3. Headroom sweep (scripts/headroom.ps1) when the machine is quiet (play-1 agent runs sly2.exe:
+   ~88% CPU load; measurements noisy).
+4. notes/performance.md, progress.md, final report.
 2. Cache-maintenance override table in the recompiler (0x234EA0/0x234FD0 loops) + doc.
 3. Frame pacing: vblank skip policy when behind; presentation smoothness; PS2_PERF_BURN headroom test.
 4. Debug build numbers; final report; notes/progress.md + notes/performance.md docs.
