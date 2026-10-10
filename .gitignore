@@ -19,6 +19,9 @@ ghidra/
 tools/*
 !tools/README.md
 
+# Object files
+*.o
+
 # Python
 __pycache__/
 .venv/

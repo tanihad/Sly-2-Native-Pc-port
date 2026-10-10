@@ -17,7 +17,8 @@ OUT = ROOT / "build" / "sly2"
 
 
 def compile_one(src: Path, opt: str) -> tuple[Path, str]:
-    obj = src.with_suffix(".o")
+    obj = OUT / "obj" / src.with_suffix(".o").name     # never next to the source
+    obj.parent.mkdir(parents=True, exist_ok=True)
     if obj.exists() and obj.stat().st_mtime > src.stat().st_mtime \
             and obj.stat().st_mtime > (ROOT / "runtime" / "ps2_runtime.h").stat().st_mtime:
         return obj, ""
