@@ -368,9 +368,9 @@ static int read_src_tag(int ch) {
         if (asp < 2) { c->asr[asp++] = next + qwc * 16; c->tadr = addr; }
         else { note(LOG_CALL, "call tag with a full address stack: chain ended", (uint32_t)ch, ta); c->tag_end = 1; }
         break;
-    case TAG_RET:
+    case TAG_RET:                                    /* ASP 2 pops ASR1, 1 pops ASR0; 0 (or 3) ends */
         c->madr = next;
-        if (asp > 0) c->tadr = c->asr[--asp];
+        if (asp == 1 || asp == 2) c->tadr = c->asr[--asp];
         else c->tag_end = c->ret_end = 1;
         break;
     default:       c->madr = next; c->tag_end = 1; break;   /* end: TADR stays on the tag */
@@ -467,12 +467,15 @@ static int run(int ch) {                         /* 1 = something changed */
 }
 
 /* Run every active channel until none can make progress (channels feed each other: SPR_FROM fills
- * the MFIFO ring a drain is waiting on, IPU_TO input lets IPU_FROM produce, ...). */
+ * the MFIFO ring a drain is waiting on, IPU_TO input lets IPU_FROM produce, ...). No round limit:
+ * progress means a tag read (at most TAG_BUDGET per channel), a qword moved (QWC only grows again
+ * through a tag read) or a channel stopping, so the loop always ends. A cap would leave channels
+ * that feed each other through a small device FIFO stalled until the next retry. */
 static void pump(void) {
     if (pumping) return;
     pumping = 1;
     for (int ch = 0; ch < NCH; ch++) ch_[ch].budget = TAG_BUDGET;
-    for (int pass = 0; pass < 32; pass++) {
+    for (;;) {
         int progress = 0;
         for (int ch = 0; ch < NCH; ch++)
             if (runnable(ch)) progress |= run(ch);

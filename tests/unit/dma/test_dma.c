@@ -53,7 +53,14 @@ int vif_dma_tag(int vif, const void* tag_qw) {
     record(vif ? 'b' : 'a', tag_qw);
     return 1;
 }
-uint32_t ipu_dma_to(const void* qw, uint32_t qwc) { return accept('I', &ipu_in_budget, qw, qwc); }
+/* ipu_fifo_mode: IPU_TO and IPU_FROM share an 8-qword FIFO, like a decoder that needs its output
+ * drained before it takes more input (the two channels can only make progress in turns). */
+static int ipu_fifo_mode;
+static uint32_t ipu_fifo;
+uint32_t ipu_dma_to(const void* qw, uint32_t qwc) {
+    if (ipu_fifo_mode) { uint32_t room = 8 - ipu_fifo, n = accept('I', &room, qw, qwc); ipu_fifo += n; return n; }
+    return accept('I', &ipu_in_budget, qw, qwc);
+}
 static uint32_t produce(void* qw, uint32_t n, uint32_t* avail, uint32_t* seq, uint32_t tag) {
     if (n > *avail) n = *avail;
     *avail -= n;
@@ -63,7 +70,9 @@ static uint32_t produce(void* qw, uint32_t n, uint32_t* avail, uint32_t* seq, ui
     }
     return n;
 }
-uint32_t ipu_dma_from(void* qw, uint32_t qwc) { return produce(qw, qwc, &ipu_out_avail, &ipu_out_seq, 0x1F000000u); }
+uint32_t ipu_dma_from(void* qw, uint32_t qwc) {
+    return produce(qw, qwc, ipu_fifo_mode ? &ipu_fifo : &ipu_out_avail, &ipu_out_seq, 0x1F000000u);
+}
 uint32_t vif1_read(void* qw, uint32_t qwc) { return produce(qw, qwc, &vif1_out_avail, &vif1_out_seq, 0x71000000u); }
 
 /* ---- helpers -------------------------------------------------------------------------------------- */
@@ -120,6 +129,7 @@ static void tag(uint32_t at, uint32_t id, uint32_t qwc, uint32_t addr, int irq) 
 static void reset(void) {
     gif_budget = vif_budget[0] = vif_budget[1] = ipu_in_budget = 0;   /* quiesce while stopping */
     ipu_out_avail = vif1_out_avail = 0;
+    ipu_fifo_mode = 0; ipu_fifo = 0;
     w32(D_CTRL, 1);
     w32(D_PCR, 0);
     w32(D_ENABLEW, 0x1201);
@@ -719,6 +729,38 @@ static void test_poll_dstat(void) {
     CHECK_EQ(r32(CHCR(3)) & STR, 0);
 }
 
+/* ret with CHCR.ASP = 3 (a value the CPU can write): ps2tek pops ASR1 only for ASP 2 and ASR0 only
+ * for ASP 1; anything else ends the chain after the ret's data. */
+static void test_ret_asp3(void) {
+    reset();
+    tag(0x1000, RET, 1, 0, 0); fill(0x1010, 1);
+    tag(0x0000, CNT, 1, 0, 0); fill(0x0010, 1);            /* where a bogus pop to 0 would lead */
+    tag(0x0020, END, 0, 0, 0);
+    w32(TADR(2), 0x1000); w32(QWC(2), 0);
+    w32(CHCR(2), STR | CHAIN | 0x30);
+    CHECK_EQ(count('G'), 1); CHECK_EQ(ev_w0('G', 0), 0x1010);
+    CHECK_EQ(r32(CHCR(2)) & STR, 0);
+    CHECK_EQ((r32(CHCR(2)) >> 4) & 3, 3);                   /* ASP untouched */
+    CHECK_EQ(r32(TADR(2)), 0x1000);                         /* stays on the ret tag, as for ASP 0 */
+    CHECK_EQ(raised[2], 1);
+}
+
+/* Channels that feed each other through a device (IPU_TO -> decoder -> IPU_FROM, 8-qword FIFO) both
+ * finish within the retry that a single register write triggers: rounds go on until nothing moves. */
+static void test_coupled_channels(void) {
+    reset();
+    ipu_fifo_mode = 1;
+    fill(0x100000, 1000);
+    w32(MADR(3), 0x200000); w32(QWC(3), 1000); w32(CHCR(3), STR);
+    w32(MADR(4), 0x100000); w32(QWC(4), 1000);
+    w32(CHCR(4), STR | DIR);                                /* one write; no polling afterwards */
+    CHECK_EQ(count('I'), 1000);
+    CHECK_EQ(raised[4], 1);
+    CHECK_EQ(raised[3], 1);
+    uint32_t w;
+    memcpy(&w, mp(0x200000 + 16 * 999), 4); CHECK_EQ(w, 0x1F000000u + 999);
+}
+
 int main(void) {
     test_registers();
     test_normal();
@@ -735,6 +777,8 @@ int main(void) {
     test_bus_error();
     test_looping_chain();
     test_poll_dstat();
+    test_ret_asp3();
+    test_coupled_channels();
     printf("dma: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }
