@@ -966,6 +966,67 @@ static void t_partial_invalidation_clut(void) {
     CHECK(rgb(px(10, 310)) == 0x00FF00 && rgb(px(200, 310)) == 0xFF0000, "after the CLUT change: %08X %08X", px(10, 310), px(200, 310));
 }
 
+/* Direct sampling (textures read straight from VRAM) under deferred drawing: primitives that sample
+ * a buffer must see it as it was when they were sent, even when a later primitive overwrites that
+ * buffer from another band (write after read), and an indexed texture drawn with one CLUT, then
+ * another, keeps the first colours where it was drawn first (palette snapshots). */
+static void t_direct_order(void) {
+    reset_env();
+    clear(0, 0, 0, 0);
+    const uint32_t A = 200;                        /* 64x64 CT32 buffer at page 200 */
+    const uint64_t tA = tex0(A * 32, 1, PSMCT32, 6, 6, 1, 1, 0, 0, 0, 0);
+    frame(A, 1, PSMCT32, 0);
+    sprite(0, 0, 64, 64, 255, 0, 0, 0x80);         /* A: red */
+    frame(0, 10, PSMCT32, 0);
+    W(TEX0_1, tA);
+    prim(P_SPRITE, TME | FST);
+    for (int i = 0; i < 8; i++) { uv(0, 0); xyz(i * 64, 300, 0); uv(64 * 16, 64 * 16); xyz(i * 64 + 64, 364, 0); }
+    frame(A, 1, PSMCT32, 0);
+    sprite(0, 0, 64, 64, 0, 255, 0, 0x80);         /* A: green, after the reads, rows of other bands */
+    frame(0, 10, PSMCT32, 0);
+    W(TEX0_1, tA);
+    prim(P_SPRITE, TME | FST);
+    uv(0, 0); xyz(0, 400, 0); uv(64 * 16, 32 * 16); xyz(64, 432, 0);
+    int bad = 0;
+    for (int i = 0; i < 8; i++) bad += rgb(px(i * 64 + 10, 310)) != 0x0000FF || rgb(px(i * 64 + 50, 360)) != 0x0000FF;
+    CHECK(bad == 0, "reads before a write see the old texels: %d wrong (%08X)", bad, px(10, 310));
+    CHECK(rgb(px(10, 410)) == 0x00FF00, "read after the write: %08X", px(10, 410));
+
+    /* T8 8x8, every texel index 3; CLUT entry 3 blue, then yellow */
+    uint8_t idx[64];
+    memset(idx, 3, sizeof idx);
+    upload(TEXBP, 2, PSMT8, 0, 0, 8, 8, idx, sizeof idx);
+    uint32_t pal[256];
+    memset(pal, 0, sizeof pal);
+    pal[3] = 0x80FF0000u;
+    upload_clut8(CLUTBP, pal);
+    W(TEX0_1, tex0(TEXBP, 2, PSMT8, 3, 3, 1, 1, CLUTBP, PSMCT32, 0, 1));
+    prim(P_SPRITE, TME | FST);
+    uv(0, 0); xyz(300, 300, 0); uv(8 * 16, 8 * 16); xyz(308, 308, 0);
+    pal[3] = 0x8000FFFFu;
+    upload_clut8(CLUTBP, pal);
+    W(TEX0_1, tex0(TEXBP, 2, PSMT8, 3, 3, 1, 1, CLUTBP, PSMCT32, 0, 1));
+    prim(P_SPRITE, TME | FST);
+    uv(0, 0); xyz(300, 10, 0); uv(8 * 16, 8 * 16); xyz(308, 18, 0);
+    CHECK(rgb(px(304, 304)) == 0xFF0000 && rgb(px(304, 14)) == 0x00FFFF, "palette per primitive: %08X %08X",
+          px(304, 304), px(304, 14));
+
+    /* feedback over many bands: a 64x256 buffer shifted down by 8 rows onto itself; every pixel must
+     * get the texel as it was before the primitive (row y - 8), whatever order rows are drawn in */
+    const uint32_t B = 220;
+    frame(B, 1, PSMCT32, 0);
+    scissor(0, 63, 0, 255);
+    for (int y = 0; y < 256; y++) sprite(0, y, 64, y + 1, y, 0, 0, 0x80);
+    W(TEX0_1, tex0(B * 32, 1, PSMCT32, 6, 8, 1, 1, 0, 0, 0, 0));
+    prim(P_SPRITE, TME | FST);
+    uv(0, 0); xyz(0, 8, 0); uv(64 * 16, 248 * 16); xyz(64, 256, 0);
+    bad = 0;
+    for (int y = 0; y < 256; y++) bad += rgb(px(10, y)) != (uint32_t)(y < 8 ? y : y - 8);
+    CHECK(bad == 0, "in-place shift reads the buffer as it was: %d rows wrong (row 100: %08X)", bad, px(10, 100));
+    frame(0, 10, PSMCT32, 0);
+    scissor(0, 639, 0, 447);
+}
+
 /* Interlaced field rendering (the intro movie): the game draws the buffer for an odd field with
  * XYOFFSET.Y + 0.5 (sceGsSetHalfOffset), so its rows are the odd lines of a 448-line picture.
  * Line-doubling every field (the old behaviour) halves the vertical resolution and makes the picture
@@ -1447,6 +1508,7 @@ int main(int argc, char** argv) {
     t_display();
     t_deferred_hazards();
     t_partial_invalidation_clut();
+    t_direct_order();
     t_display_weave();
     bench();
     fprintf(stderr, "%s: %d/%d checks passed\n", argv[0], checks - fails, checks);

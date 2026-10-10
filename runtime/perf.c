@@ -143,7 +143,10 @@ static void prof_sample(void) {
 }
 
 void* gs_thread_os_handle(void);           /* gs_thread.c */
+void* gs_draw_worker_handle(int i);        /* gs_draw_pixel.c */
+int   gs_draw_workers(void);
 static int prof_gs;                         /* PS2_PROFILE=gs: sample the GS thread instead */
+static int prof_workers;                    /* PS2_PROFILE=workers: the pixel workers, in turn */
 
 static DWORD WINAPI prof_thread(LPVOID arg) {
     (void)arg;
@@ -151,6 +154,8 @@ static DWORD WINAPI prof_thread(LPVOID arg) {
     HANDLE timer = CreateWaitableTimerExW(NULL, NULL, 0x2 /* CREATE_WAITABLE_TIMER_HIGH_RESOLUTION */,
                                           TIMER_ALL_ACCESS);
     if (!timer) timeBeginPeriod(1);
+    static HANDLE workers[32];
+    int nworkers = 0, turn = 0;
     while (!prof_stop) {
         if (timer) {
             LARGE_INTEGER due;
@@ -159,6 +164,16 @@ static DWORD WINAPI prof_thread(LPVOID arg) {
             WaitForSingleObject(timer, INFINITE);
         } else {
             Sleep(1);
+        }
+        if (prof_workers) {                    /* the workers start after perf_init */
+            if (!nworkers) {
+                for (int i = 0; i < gs_draw_workers() && i < 32; i++)
+                    if (DuplicateHandle(GetCurrentProcess(), gs_draw_worker_handle(i), GetCurrentProcess(), &workers[nworkers],
+                                        THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, 0))
+                        nworkers++;
+                if (!nworkers) continue;
+            }
+            prof_target = workers[turn++ % nworkers];
         }
         if (!prof_target) {                    /* the GS thread starts after perf_init */
             HANDLE h = prof_gs ? gs_thread_os_handle() : NULL;
@@ -216,7 +231,7 @@ static void profile_report(void) {
 
     fprintf(stderr, "\n[profile] %u samples of the %s thread (self time): %.1f%% recompiled game code (f_*), "
                     "%.1f%% runtime, %.1f%% system DLLs\n",
-            n, prof_gs ? "GS" : "EE", 100.0 * prof_game_self / n, 100.0 * (n - prof_game_self - outside_n) / n,
+            n, prof_gs ? "GS" : prof_workers ? "pixel worker" : "EE", 100.0 * prof_game_self / n, 100.0 * (n - prof_game_self - outside_n) / n,
             100.0 * outside_n / n);
     int nh = 0;
     for (int s = 0; s < nsyms; s++) if (prof_self[s]) hits[nh++] = (hit){ syms[s].name, prof_self[s] };
@@ -253,8 +268,9 @@ void perf_init(void) {
         prof_incl = calloc((size_t)nsyms + 1, sizeof(uint32_t));
         outside_rip = malloc(OUTSIDE_MAX * sizeof(uint64_t));
         prof_gs = !strcmp(p, "gs");
+        prof_workers = !strcmp(p, "workers");
         if (prof_self && prof_incl && outside_rip &&
-            (prof_gs || DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &prof_target,
+            (prof_gs || prof_workers || DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &prof_target,
                                         THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, 0))) {
             prof_thread_handle = CreateThread(NULL, 0, prof_thread, NULL, 0, NULL);
             if (prof_thread_handle) SetThreadPriority(prof_thread_handle, THREAD_PRIORITY_TIME_CRITICAL);

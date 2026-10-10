@@ -258,8 +258,20 @@ static void set_steps(const planes* pl) {
 
 /* ---- texture preparation per primitive -------------------------------------------------------- */
 
-/* Texel-space bounding box of the vertices (level 0), then decode what the primitive can reach. */
-static void tex_prepare(const vtx* const* vs, int n, int as_uv, const double* su, const double* sv) {
+static void add_buf_pages(uint32_t page0, uint32_t bw, int ph_sh, int x0, int y0, int x1, int y1, uint64_t set[8]) {
+    for (int r = y0 >> ph_sh; r <= y1 >> ph_sh; r++)
+        for (int c = x0 >> 6; c <= x1 >> 6; c++) {
+            uint32_t pg = (page0 + (uint32_t)r * bw + (uint32_t)c) & 511u;
+            set[pg >> 6] |= 1ull << (pg & 63);
+        }
+}
+
+/* Texel-space bounding box of the vertices (level 0), then per level: sample directly (recording
+ * the pages read for deferred drawing) - from a snapshot of the pages when the texels are in pages
+ * the primitive writes (inclusive pixel box x0..x1, y0..y1) - or decode what it can reach into the
+ * texture cache (formats without direct sampling). */
+static void tex_prepare(const vtx* const* vs, int n, int as_uv, const double* su, const double* sv,
+                        int x0, int y0, int x1, int y1) {
     if (!P.tme) return;
     int lo = P.texm == 3 ? 0 : P.cur_level, hi = P.texm == 3 ? P.mxl : P.cur_level;
     for (int l = lo; l <= hi; l++) gs_tex_validate(&P.lvl[l]);
@@ -289,19 +301,50 @@ static void tex_prepare(const vtx* const* vs, int n, int as_uv, const double* su
         if (pos != n && neg != n) all = 1;
     }
     P.nowrap = 0;
+    uint64_t reads[8] = { 0 }, snap[8] = { 0 }, dest[8];
+    int have_dest = 0, any_reads = 0, any_snap = 0;
+    /* The texels sampled: point sampling reads texel floor(c), bilinear floor(c - 0.5) and the next
+     * one, for c between the extremes above (the vertices, or for sprites the first and last pixel
+     * sampled); EPS covers the fixed-point stepping of the pixel pipeline. The range must be tight:
+     * an extra texel row reaching into the destination buffer would make the primitive sample a
+     * snapshot (feedback), and with REPEAT a margin below 0 wraps to the far end of the texture. */
+    const double EPS = 1.0 / 16;
+    const int bil = P.texm != 1;
     for (int l = lo; l <= hi; l++) {
         gs_texlvl* L = &P.lvl[l];
-        if (all) { gs_tex_ensure(L, 0, L->w - 1, 0, L->h - 1); continue; }
-        double sc = 1.0 / (double)(1 << l);
-        int u0 = (int)floor(umin * sc) - 1, u1 = (int)floor(umax * sc) + 1;
-        int v0 = (int)floor(vmin * sc) - 1, v1 = (int)floor(vmax * sc) + 1;
+        int u0 = 0, u1 = L->w - 1, v0 = 0, v1 = L->h - 1;
+        if (!all) {
+            double sc = 1.0 / (double)(1 << l), h = bil ? 0.5 : 0;
+            u0 = (int)floor(umin * sc - h - EPS); u1 = (int)floor(umax * sc - h + EPS) + bil;
+            v0 = (int)floor(vmin * sc - h - EPS); v1 = (int)floor(vmax * sc - h + EPS) + bil;
+        }
+        if (L->dkind >= 0) {
+            uint64_t rp[8] = { 0 };
+            gs_tex_read_pages(L, u0, u1, v0, v1, rp);
+            if (!have_dest) {
+                memset(dest, 0, sizeof dest);
+                if (P.fbmsk != 0xFFFFFFFFu) add_buf_pages(P.fpage, P.fbw, P.ffmt->ph_shift, x0, y0, x1, y1, dest);
+                if (P.zuse && !P.zmsk) add_buf_pages(P.zpage, P.zbw, P.zfmt->ph_shift, x0, y0, x1, y1, dest);
+                have_dest = 1;
+            }
+            int feedback = 0;
+            for (int k = 0; k < 8; k++) feedback |= (rp[k] & dest[k]) != 0;
+            gs_tex_use_snapshot(L, feedback);
+            uint64_t* to = feedback ? snap : reads;
+            for (int k = 0; k < 8; k++) to[k] |= rp[k];
+            if (feedback) any_snap = 1; else any_reads = 1;
+        }
+        if (L->kind >= 0) continue;
+        /* the cache: one more texel of margin, which costs nothing there */
+        if (!all) { u0--; u1++; v0--; v1++; }
         gs_tex_ensure(L, u0, u1, v0, v1);
-        /* every texel the primitive can reach (one texel of margin) is inside the texture and the
-         * clamp region: sampling needs no wrapping */
-        if (P.texm != 3 && L->umode != 3 && L->vmode != 3 && u0 >= 0 && v0 >= 0 &&
+        /* every texel the primitive can reach is inside the texture and the clamp region: sampling
+         * (from the cache) needs no wrapping */
+        if (!all && P.texm != 3 && L->umode != 3 && L->vmode != 3 && u0 >= 0 && v0 >= 0 &&
             u0 >= L->ulo && v0 >= L->vlo && u1 <= L->w - 1 && v1 <= L->h - 1 && u1 <= L->uhi && v1 <= L->vhi)
             P.nowrap = 1;
     }
+    gs_draw_set_reads(any_reads ? reads : NULL, any_snap ? snap : NULL);
 }
 
 static void mark_written(int x0, int y0, int x1, int y1) {   /* inclusive pixel bbox */
@@ -347,8 +390,10 @@ static void draw_sprite(const vtx* v0, const vtx* v1) {
         pl.v.cy = dy > 0 ? (V1 - V0) / dy : 0;
         pl.v.c0 = V0 - pl.v.cy * (Y0 / 16.0);
         P.lod_q = v1->q;
-        double su[2] = { U0, U1 }, sv[2] = { V0, V1 };
-        tex_prepare(NULL, 2, 1, su, sv);
+        /* coordinates at the first and last pixel sampled (the edges X1/Y1 are not) */
+        double su[2] = { pl.u.c0 + pl.u.cx * px0, pl.u.c0 + pl.u.cx * px1 };
+        double sv[2] = { pl.v.c0 + pl.v.cy * py0, pl.v.c0 + pl.v.cy * py1 };
+        tex_prepare(NULL, 2, 1, su, sv, px0, py0, px1, py1);
     }
     set_steps(&pl);
     gs_batch_begin(&P, 0);               /* u along x, v along y: no per-pixel division */
@@ -474,7 +519,7 @@ static void draw_triangle(const vtx* v0, const vtx* v1, const vtx* v2) {
     if (P.tme) {
         if (P.fst) { PLANE(pl.u, u); PLANE(pl.v, v); P.lod_q = v2->q; }
         else { PLANE(pl.s, s); PLANE(pl.t, t); PLANE(pl.q, q); }
-        tex_prepare(vs, 3, 0, NULL, NULL);
+        tex_prepare(vs, 3, 0, NULL, NULL, bx0, by0, bx1, by1);
     }
 #undef PLANE
     rowstep rs;
@@ -519,7 +564,9 @@ static void draw_line(const vtx* v0, const vtx* v1) {
     if (P.tme) {
         const vtx* vs[2] = { v0, v1 };
         P.lod_q = v1->q;
-        tex_prepare(vs, 2, 0, NULL, NULL);
+        int lx0 = imax((int)((X0 < X1 ? X0 : X1) >> 4) - 1, P.scx0), lx1 = imin((int)((X0 < X1 ? X1 : X0) >> 4) + 1, P.scx1);
+        int ly0 = imax((int)((Y0 < Y1 ? Y0 : Y1) >> 4) - 1, P.scy0), ly1 = imin((int)((Y0 < Y1 ? Y1 : Y0) >> 4) + 1, P.scy1);
+        tex_prepare(vs, 2, 0, NULL, NULL, lx0, ly0, lx1, ly1);
     }
     planes pl;                           /* evaluated with x = t (0..1 along the line), y = 0 */
 #define LPLANE(pl, field) do { (pl).c0 = v0->field; (pl).cx = (double)v1->field - (double)v0->field; (pl).cy = 0; } while (0)
@@ -551,7 +598,7 @@ static void draw_point(const vtx* v) {
     if (P.tme) {
         const vtx* vs[1] = { v };
         P.lod_q = v->q;
-        tex_prepare(vs, 1, 0, NULL, NULL);
+        tex_prepare(vs, 1, 0, NULL, NULL, px, py, px, py);
     }
     gs_span_start st = { v->r << 16, v->g << 16, v->b << 16, v->a << 16, v->f << 16, (int64_t)v->z << 16,
                          v->s, v->t, v->q, v->u << UVSH, v->v << UVSH };

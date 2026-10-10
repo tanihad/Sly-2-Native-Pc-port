@@ -307,13 +307,10 @@ static void check_entry(tex_entry* e, const gs_tex0* t, const gs_texa* ta) {
     }
 }
 
-void gs_tex_bind(gs_texlvl* L, const gs_tex0* t0, const gs_texa* ta, uint64_t clamp, int level) {
-    gs_prim_version++;                           /* *L is part of the primitive state */
-    gs_tex0 t = *t0;
-    if (t.tw > 10) t.tw = 10;
-    if (t.th > 10) t.th = 10;
-    L->t = t; L->ta = *ta; L->clamp = clamp; L->level = level;
-    uint32_t xkey = entry_xkey(&t, ta);
+/* Look up (or create) the cache entry for L's texture and bind it. */
+static void cache_bind(gs_texlvl* L) {
+    const gs_tex0 t = L->t;
+    uint32_t xkey = entry_xkey(&t, &L->ta);
 #define KEY_MATCH(c) ((c)->used && (c)->tbp == t.tbp0 && (c)->tbw == t.tbw && (c)->psm == t.psm && \
                       (c)->tw == t.tw && (c)->th == t.th && (c)->xkey == xkey)
     /* direct-mapped memo of recent lookups in front of the linear search */
@@ -335,11 +332,43 @@ void gs_tex_bind(gs_texlvl* L, const gs_tex0* t0, const gs_texa* ta, uint64_t cl
     }
 }
 
+static void set_wrap(gs_texlvl* L) {
+    uint64_t c = L->clamp;
+    L->umode = (int)(c & 3); L->vmode = (int)((c >> 2) & 3);
+    axis_params(L->umode, (int)((c >> 4) & 0x3FF), (int)((c >> 14) & 0x3FF), L->w, L->level, &L->ulo, &L->uhi, &L->umsk, &L->ufix);
+    axis_params(L->vmode, (int)((c >> 24) & 0x3FF), (int)((c >> 34) & 0x3FF), L->h, L->level, &L->vlo, &L->vhi, &L->vmsk, &L->vfix);
+}
+
+static int direct_setup(gs_texlvl* L);           /* below, with the raw texel layouts */
+static void palette_update(gs_texlvl* L);
+
+void gs_tex_bind(gs_texlvl* L, const gs_tex0* t0, const gs_texa* ta, uint64_t clamp, int level) {
+    gs_prim_version++;                           /* *L is part of the primitive state */
+    gs_tex0 t = *t0;
+    if (t.tw > 10) t.tw = 10;
+    if (t.th > 10) t.th = 10;
+    L->t = t; L->ta = *ta; L->clamp = clamp; L->level = level;
+    L->w = 1 << t.tw; L->h = 1 << t.th; L->ushift = (int)t.tw;
+    set_wrap(L);
+    L->entry = NULL; L->entry_id = 0;
+    L->tex = &dummy_texel;
+    L->pal = NULL; L->pal_slot = -1;
+    L->vram = gs_vram;
+    L->dkind = direct_setup(L);
+    L->kind = L->dkind;
+    if (L->kind >= 0) palette_update(L);
+    else cache_bind(L);
+}
+
 void gs_tex_validate(gs_texlvl* L) {
+    if (L->kind >= 0) {                          /* direct: only the palette can change */
+        palette_update(L);
+        return;
+    }
     tex_entry* e = L->entry;
     if (!e || e->id != L->entry_id) {            /* evicted (or never allocated): bind again */
-        gs_tex0 t = L->t; gs_texa ta = L->ta;
-        gs_tex_bind(L, &t, &ta, L->clamp, L->level);
+        cache_bind(L);
+        gs_prim_version++;
         return;
     }
     e->last_use = ++use_clock;
@@ -352,6 +381,13 @@ void gs_tex_validate(gs_texlvl* L) {
     }
 }
 
+void gs_tex_use_snapshot(gs_texlvl* L, int on) {
+    const uint8_t* v = on ? gs_vram_shadow : gs_vram;
+    if (L->kind < 0 || L->vram == v) return;
+    L->vram = v;
+    gs_prim_version++;
+}
+
 /* ---- fast raw texel access ----------------------------------------------------------------------
  * Stored texel values read straight from gs_vram (instead of one gs_mem call per texel). Layouts:
  * 32/24/16-bit formats use gs_draw_swz.c's documented tables (checked against gs_mem); T8 and T4
@@ -359,7 +395,8 @@ void gs_tex_validate(gs_texlvl* L) {
  * gs_mem_read with random data, separately for even and odd buffer widths and unaligned bases;
  * only verified (format, width parity) pairs use this path. */
 
-enum { K32, K24, K16, K8, K4, K8H, K4HL, K4HH };
+enum { K32 = GS_TK_32, K24 = GS_TK_24, K16 = GS_TK_16, K8 = GS_TK_8, K4 = GS_TK_4, K8H = GS_TK_8H,
+       K4HL = GS_TK_4HL, K4HH = GS_TK_4HH };
 typedef struct { int kind, pw_sh, ph_sh, es; const uint16_t* tab; uint32_t ppr, bp; } raw_layout;
 
 static uint16_t t8_tab[64 * 128];        /* byte offset in a page of T8 texel (x & 127, y & 63) */
@@ -569,6 +606,72 @@ void gs_tex_fast_init(void) {
     memcpy(gs_vram, saved, sizeof saved);
 }
 
+/* ---- direct sampling ------------------------------------------------------------------------------ */
+
+/* Kind and layout for sampling L straight from VRAM, or -1 (layout of the format not verified, slow
+ * gs_mem path, or TBW 0, where the raw layout's page arithmetic differs from gs_mem's). */
+static int direct_setup(gs_texlvl* L) {
+    raw_layout r;
+    const gs_tex0* t = &L->t;
+    if (!gs_swz_fast || !t->tbw || !raw_ok[t->psm & 63][t->tbw & 1] || !raw_layout_of(t->psm, t->tbp0, t->tbw, &r)) return -1;
+    L->pw_sh = r.pw_sh; L->ph_sh = r.ph_sh; L->es = r.es;
+    L->bp = r.bp; L->ppr = r.ppr; L->tab = r.tab;
+    L->vram = gs_vram;
+    return r.kind;
+}
+
+/* Palette snapshots for indexed kinds: deferred drawing samples them later, so a slot is reused
+ * only when the batches that used it are done (pal_serial). Consecutive identical palettes (a CLUT
+ * loaded again with the same colours) share a slot. */
+#define PAL_SLOTS 2048
+static uint32_t pal_mem[PAL_SLOTS][256];
+static uint32_t pal_serial[PAL_SLOTS];
+static int pal_next, pal_last = -1;
+static uint32_t pal_last_n;
+
+static void palette_update(gs_texlvl* L) {
+    int k = L->kind;
+    if (k != K8 && k != K4 && k != K8H && k != K4HL && k != K4HH) return;
+    uint32_t tk = (L->t.cpsm == PSMCT16 || L->t.cpsm == PSMCT16S) ? texa_key(&L->ta) : 0;
+    if (L->pal && L->pal_clut == gs_clut_version && L->pal_texa == tk) return;
+    uint32_t n = (k == K8 || k == K8H) ? 256 : 16, tmp[256];
+    for (uint32_t i = 0; i < n; i++) tmp[i] = gs_clut_lookup(&L->t, &L->ta, i);
+    int s = pal_last;
+    if (s < 0 || pal_last_n != n || memcmp(pal_mem[s], tmp, n * 4)) {
+        int tries = 0;
+        do {                                     /* the next slot deferred drawing no longer samples */
+            s = pal_next;
+            pal_next = (pal_next + 1) % PAL_SLOTS;
+        } while (gs_draw_busy(pal_serial[s]) && ++tries < 64);
+        if (gs_draw_busy(pal_serial[s])) gs_draw_sync();
+        memcpy(pal_mem[s], tmp, n * 4);
+        pal_last = s;
+        pal_last_n = n;
+    }
+    if (L->pal != pal_mem[s]) gs_prim_version++;
+    L->pal = pal_mem[s];
+    L->pal_slot = s;
+    L->pal_clut = gs_clut_version;
+    L->pal_texa = tk;
+}
+
+static int axis_ranges(int mode, int a, int b, int size, int lo, int hi, int out[4]);
+
+void gs_tex_read_pages(const gs_texlvl* L, int u0, int u1, int v0, int v1, uint64_t set[8]) {
+    int ur[4], vr[4];
+    int nu = axis_ranges(L->umode, u0, u1, L->w, L->ulo, L->uhi, ur);
+    int nv = axis_ranges(L->vmode, v0, v1, L->h, L->vlo, L->vhi, vr);
+    const uint32_t page0 = L->bp >> 5, spill = (L->bp & 31) != 0;
+    for (int i = 0; i < nv; i++)
+        for (int r = vr[2 * i] >> L->ph_sh; r <= vr[2 * i + 1] >> L->ph_sh; r++)
+            for (int j = 0; j < nu; j++)
+                for (int c = ur[2 * j] >> L->pw_sh; c <= ur[2 * j + 1] >> L->pw_sh; c++) {
+                    uint32_t pg = (page0 + (uint32_t)r * L->ppr + (uint32_t)c) & 511u;
+                    set[pg >> 6] |= 1ull << (pg & 63);
+                    if (spill) { pg = (pg + 1) & 511u; set[pg >> 6] |= 1ull << (pg & 63); }
+                }
+}
+
 static void decode_tile(tex_entry* e, int tx, int ty) {
     uint8_t* fl = &e->tiles[ty * e->tiles_x + tx];
     int x0 = tx * 8, y0 = ty * 8, x1 = x0 + 8 < e->w ? x0 + 8 : e->w, y1 = y0 + 8 < e->h ? y0 + 8 : e->h;
@@ -631,13 +734,17 @@ static int axis_ranges(int mode, int a, int b, int size, int lo, int hi, int out
 }
 
 void gs_tex_note_use(const gs_texlvl* L, uint32_t serial) {
+    if (L->kind >= 0) {
+        if (L->pal_slot >= 0 && serial > pal_serial[L->pal_slot]) pal_serial[L->pal_slot] = serial;
+        return;
+    }
     tex_entry* e = L->entry;
     if (e && e->id == L->entry_id && serial > e->use_serial) e->use_serial = serial;
 }
 
 void gs_tex_ensure(gs_texlvl* L, int u0, int u1, int v0, int v1) {
     tex_entry* e = L->entry;
-    if (!e || e->rgba_tiles == e->tiles_x * e->tiles_y) return;
+    if (L->kind >= 0 || !e || e->rgba_tiles == e->tiles_x * e->tiles_y) return;
     int ur[4], vr[4];
     int nu = axis_ranges(L->umode, u0, u1, e->w, L->ulo, L->uhi, ur);
     int nv = axis_ranges(L->vmode, v0, v1, e->h, L->vlo, L->vhi, vr);

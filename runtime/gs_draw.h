@@ -50,6 +50,12 @@ uint32_t gs_draw_fill_serial(void);      /* batch that primitives are recorded i
 int      gs_draw_busy(uint32_t serial);  /* that batch (or a later one) has not been drawn yet */
 /* bumped whenever gs_prim changes other than the per-primitive steps (dr..dv, lod_q, nowrap) */
 extern uint32_t gs_prim_version;
+/* The pages the next primitive samples directly (reads; NULL: none) and those it samples from the
+ * snapshot (snap; NULL: none), before its gs_batch_begin. Keeps deferred drawing in order: it goes
+ * to a new batch if it reads pages written earlier in the batch being filled, a later write to the
+ * pages it reads directly starts a new batch, and the snapshot pages are copied to gs_vram_shadow
+ * when its batch starts (at once without deferred drawing). */
+void     gs_draw_set_reads(const uint64_t reads[8], const uint64_t snap[8]);
 
 /* activity counters (PS2_LOG_GS=1 prints them from gs_vsync once a second) */
 typedef struct { uint32_t regs, prims, sprites, tris, image_bytes, xfers, pixels; } gs_stats_t;
@@ -96,13 +102,35 @@ void gs_page_dims(int psm, int* pw, int* ph);     /* page size in pixels for any
 /* Mark the pages holding rectangle [x0,x1) x [y0,y1) of a buffer (bp in 256-byte blocks). */
 void gs_mark_rect(int psm, uint32_t bp, uint32_t bw, int x0, int y0, int x1, int y1);
 
-/* ---- gs_draw_tex.c: decoded texture cache ------------------------------------------------------ */
+/* ---- gs_draw_tex.c: texture sampling setup ----------------------------------------------------------
+ * Textures are normally sampled straight from VRAM (direct sampling): the pixel pipeline computes each
+ * texel's address with the verified page layout of its format (gs_tex_fast_init) and expands it
+ * (TEXA for 24/16-bit texels, a palette snapshot of the CLUT for indexed ones). Nothing is decoded
+ * ahead, so uploads, render-to-texture and CLUT changes cost nothing on the GS thread. Deferred
+ * drawing keeps the order: a primitive that reads pages written earlier in the batch being filled
+ * starts a new batch, as does a primitive writing pages read earlier in it (gs_draw_set_reads).
+ * A primitive that samples pages it writes itself (feedback: in-place colour filters on the frame
+ * buffer) samples a snapshot of those pages instead (gs_vram_shadow), taken when everything drawn
+ * before it is in VRAM, so it reads the texture as it was before it started.
+ * A format whose layout could not be verified, or the slow gs_mem path, use the decoded texture
+ * cache: texels are decoded into linear 0xAABBGGRR arrays before the primitive is drawn. */
+enum { GS_TK_32, GS_TK_24, GS_TK_16, GS_TK_8, GS_TK_4, GS_TK_8H, GS_TK_4HL, GS_TK_4HH, GS_TK_N };
+
 typedef struct {
-    const uint32_t* tex;                 /* 0xAABBGGRR texels, row stride 1 << ushift */
+    const uint32_t* tex;                 /* cache: 0xAABBGGRR texels, row stride 1 << ushift */
     int ushift, w, h;
     /* coordinate wrap per axis: c = clamp(c, lo, hi); c = (c & msk) | fix  (result in [0, w)) */
     int ulo, uhi, umsk, ufix, vlo, vhi, vmsk, vfix;
     int umode, vmode;                    /* CLAMP WMS/WMT */
+    /* direct sampling: kind >= 0 (GS_TK_*); -1 = sample the cache (tex) */
+    int kind, dkind;                     /* sampling now / direct sampling possible (-1: no) */
+    const uint8_t* vram;                 /* gs_vram, or gs_vram_shadow for feedback */
+    int pw_sh, ph_sh, es;                /* page size (log2 texels), element shift (bytes) */
+    uint32_t bp, ppr;                    /* base in 256-byte blocks, pages per buffer row */
+    const uint16_t* tab;                 /* element (or nibble) offset in a page, [(y % ph) << pw_sh | x % pw] */
+    const uint32_t* pal;                 /* indexed kinds: palette snapshot (0xAABBGGRR) */
+    int pal_slot;
+    uint32_t pal_clut, pal_texa;         /* what the palette was built for */
     /* binding */
     gs_tex0 t;                           /* this level's TEX0 (tbp0/tbw/tw/th per level) */
     gs_texa ta;
@@ -119,12 +147,58 @@ extern uint32_t gs_tex_decodes;          /* bumped whenever texels are decoded f
 void gs_tex_bind(gs_texlvl* L, const gs_tex0* t, const gs_texa* ta, uint64_t clamp, int level);
 /* Re-validate a bound level against VRAM writes / CLUT changes since it was last used. */
 void gs_tex_validate(gs_texlvl* L);
-/* Make sure texels in the (unwrapped, inclusive) range [u0,u1] x [v0,v1] are decoded. */
+/* Direct levels: sample the snapshot gs_vram_shadow (1, feedback) or gs_vram (0). Bumps
+ * gs_prim_version when that changes. */
+void gs_tex_use_snapshot(gs_texlvl* L, int on);
+extern uint8_t gs_vram_shadow[GS_VRAM_SIZE];   /* gs_draw_pixel.c: page snapshots for feedback */
+/* Make sure texels in the (unwrapped, inclusive) range [u0,u1] x [v0,v1] are decoded (cache). */
 void gs_tex_ensure(gs_texlvl* L, int u0, int u1, int v0, int v1);
+/* Add the 8 KB pages holding the texels of the (unwrapped, inclusive) range to set. */
+void gs_tex_read_pages(const gs_texlvl* L, int u0, int u1, int v0, int v1, uint64_t set[8]);
 void gs_tex_flush_all(void);             /* forget every cached texture (reset) */
 /* Deferred drawing of batch `serial` samples this level's texels: keep them until it is drawn. */
 void gs_tex_note_use(const gs_texlvl* L, uint32_t serial);
 void gs_tex_fast_init(void);             /* probe/verify direct texel decoding (called by gs_swz_init) */
+
+/* One texel of a direct level, stored value (indices and 16/24-bit colours not yet expanded). */
+GS_AI uint32_t gs_tex_raw(const gs_texlvl* L, int x, int y, const int K) {
+    const int pw_sh = K == GS_TK_8 || K == GS_TK_4 ? 7 : 6;
+    const int ph_sh = K == GS_TK_4 ? 7 : K == GS_TK_16 || K == GS_TK_8 ? 6 : 5;
+    const int es = K == GS_TK_16 ? 1 : K == GS_TK_8 || K == GS_TK_4 ? 0 : 2;
+    uint32_t page = ((uint32_t)y >> ph_sh) * L->ppr + ((uint32_t)x >> pw_sh);
+    uint32_t ti = (((uint32_t)y & ((1u << ph_sh) - 1)) << pw_sh) | ((uint32_t)x & ((1u << pw_sh) - 1));
+    const uint8_t* vram = L->vram;
+    if (K == GS_TK_4) {
+        uint32_t n = (((L->bp + page * 32) << 9) + L->tab[ti]) & 0x7FFFFFu;
+        return (vram[n >> 1] >> ((n & 1) * 4)) & 15;
+    }
+    uint32_t a = (((L->bp + page * 32) << 8) + ((uint32_t)L->tab[ti] << es)) & 0x3FFFFFu, v;
+    switch (K) {
+    case GS_TK_32: memcpy(&v, vram + a, 4); return v;
+    case GS_TK_24: memcpy(&v, vram + a, 4); return v & 0xFFFFFF;
+    case GS_TK_16: { uint16_t h; memcpy(&h, vram + a, 2); return h; }
+    case GS_TK_8: return vram[a];
+    case GS_TK_8H: return vram[a + 3];
+    case GS_TK_4HL: return vram[a + 3] & 15u;
+    default: return (uint32_t)vram[a + 3] >> 4;
+    }
+}
+
+/* One texel of a direct level as 0xAABBGGRR (GS manual: 24-bit texels get TA0, or 0 when AEM and
+ * RGB = 0; 16-bit texels get TA1 when A = 1, else TA0 / 0 likewise; indexed ones the palette). */
+GS_AI uint32_t gs_tex_texel(const gs_texlvl* L, int x, int y, const int K) {
+    uint32_t v = gs_tex_raw(L, x, y, K);
+    switch (K) {
+    case GS_TK_32: return v;
+    case GS_TK_24: return v | ((L->ta.aem && !v) ? 0 : L->ta.ta0 << 24);
+    case GS_TK_16: {
+        uint32_t rgb = ((v & 0x1F) << 3) | ((v & 0x3E0) << 6) | ((v & 0x7C00) << 9);
+        uint32_t a = (v & 0x8000) ? L->ta.ta1 : (L->ta.aem && !(v & 0x7FFF)) ? 0 : L->ta.ta0;
+        return rgb | a << 24;
+    }
+    default: return L->pal[v];
+    }
+}
 
 /* ---- gs_draw_pixel.c: primitive state and span drawing ---------------------------------------- */
 typedef struct gs_prim gs_prim;

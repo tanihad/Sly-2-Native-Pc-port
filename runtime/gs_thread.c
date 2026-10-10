@@ -87,7 +87,12 @@ static slot* reserve(uint32_t n) {
     return &q[wr_local & Q_MASK];
 }
 
+void gs_record_reg(uint32_t r, uint64_t v);       /* gs_record.c */
+void gs_record_image(const void* data, uint32_t bytes);
+void gs_record_vsync(uint32_t vblank);
+
 void gs_write_reg(uint32_t r, uint64_t v) {
+    gs_record_reg(r, v);
     if (!async_on) { gs_exec_write_reg(r, v); return; }
     if (r == R_SIGNAL || r == R_FINISH || r == R_LABEL) {   /* CSR events: on the EE's timeline */
         gs_exec_write_reg(r, v);
@@ -101,6 +106,7 @@ void gs_write_reg(uint32_t r, uint64_t v) {
 }
 
 void gs_image_write(const void* data, uint32_t bytes) {
+    gs_record_image(data, bytes);
     if (!async_on) { gs_exec_image_write(data, bytes); return; }
     const uint8_t* p = data;
     while (bytes) {
@@ -140,6 +146,7 @@ uint32_t gs_image_read(void* data, uint32_t bytes) {
 }
 
 void gs_queue_vsync(uint32_t vblank) {
+    gs_record_vsync(vblank);                            /* PS2_GS_RECORD (gs_record.c) */
     /* at most one picture in flight: wait for the previous VBlank's to be presented */
     uint32_t done = atomic_load_explicit(&vsync_done, memory_order_acquire);
     if (vsync_queued != done) {
@@ -176,6 +183,11 @@ static DWORD WINAPI gs_thread_main(LPVOID arg) {
         if (wr == rd) {
             for (int i = 0; i < SPINS && (wr = atomic_load_explicit(&q_wr, memory_order_acquire)) == rd; i++) _mm_pause();
             if (wr == rd) {
+                /* nothing more for a while: let the workers draw what has been recorded. Not at
+                 * every catch-up: the EE publishes every primitive, and a stream of tiny batches
+                 * costs more (each submit waits for the previous batch) than it gains. */
+                gs_draw_kick();
+                if ((wr = atomic_load_explicit(&q_wr, memory_order_acquire)) != rd) continue;
                 atomic_store_explicit(&gs_sleeping, 1, memory_order_seq_cst);
                 if ((wr = atomic_load_explicit(&q_wr, memory_order_seq_cst)) == rd)
                     WaitOnAddress((volatile VOID*)&q_wr, &rd, sizeof rd, INFINITE);
@@ -212,7 +224,6 @@ static DWORD WINAPI gs_thread_main(LPVOID arg) {
             }
             if ((rd & 1023) == 0) atomic_store_explicit(&q_rd, rd, memory_order_release);   /* free space */
         }
-        gs_draw_kick();                                       /* caught up: let the workers draw the rest */
         perf_state.gs_busy += __rdtsc() - t0;                 /* only this thread writes it */
         atomic_store_explicit(&q_rd, rd, memory_order_seq_cst);
         if (atomic_load_explicit(&ee_waiting, memory_order_seq_cst)) {
