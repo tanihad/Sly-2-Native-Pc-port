@@ -155,6 +155,10 @@ class FunctionTranslator:
         self.stats = stats
         self.has_switch = any(i.uniqueId == I.cpu_jr and rs(i) != 31 for i in func.instrs)
         self.labels = self._find_labels()
+        # Targets of backward branches are loop heads; tracing them makes spin loops visible.
+        self.loop_heads = {i.getBranchVramGeneric() for i in func.instrs
+                           if i.isBranch() and i.getBranchVramGeneric() <= i.vram
+                           and self.in_func(i.getBranchVramGeneric())}
 
     def _find_labels(self) -> set[int]:
         if self.has_switch:                       # jump tables can land anywhere
@@ -234,8 +238,10 @@ class FunctionTranslator:
         s, t, d = rs(i), rt(i), rd(i)
         sa = sa_(i)
 
+        if u == I.r5900_ei: return "ctx->ie = 1;"
+        if u == I.r5900_di: return "ctx->ie = 0;"
         # no-ops for a single-threaded native build
-        if u in (I.cpu_nop, I.cpu_sync, I.r5900_sync_p, I.cpu_cache, I.cpu_pref, I.r5900_ei, I.r5900_di):
+        if u in (I.cpu_nop, I.cpu_sync, I.r5900_sync_p, I.cpu_cache, I.cpu_pref):
             return f"/* {op} */"
         if i.getRaw() == 0:
             return "/* nop */"
@@ -395,7 +401,8 @@ class FunctionTranslator:
 
     def translate(self) -> str:
         f = self.f
-        out = [f"/* {f.name}: 0x{f.start:08X}-0x{f.end:08X} */", f"void {cname(f.start)}(ps2_ctx* ctx) {{"]
+        out = [f"/* {f.name}: 0x{f.start:08X}-0x{f.end:08X} */", f"void {cname(f.start)}(ps2_ctx* ctx) {{",
+               f"    PS2_TRACE(0x{f.start:08X}u);"]
         instrs = f.instrs
         k = 0
         while k < len(instrs):
@@ -403,6 +410,8 @@ class FunctionTranslator:
             asm = i.disassemble().replace("*/", "* /")
             if i.vram in self.labels:
                 out.append(f"{label(i.vram)}:;")
+                if i.vram in self.loop_heads:
+                    out.append(f"    PS2_TRACE(0x{i.vram:08X}u); PS2_POLL_IRQ(ctx);")
             if i.isBranch() or i.isJump():
                 if k + 1 < len(instrs):
                     slot = instrs[k + 1]

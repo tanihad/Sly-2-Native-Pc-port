@@ -36,12 +36,42 @@ No symbol table.
 3. Timer 2 setup, AddIntcHandler/EnableIntc, CreateThread, ChangeThreadPriority,
    GetOsdConfigParam, CreateSema.
 4. All C++ static constructors and init tables.
-5. SIF setup: AddDmacHandler(5 = SIF0), EnableDmac, then polls SifGetReg(4) for IOP boot.
-   Runtime now reports the IOP as booted. **Next: SIF command/RPC layer + IOP HLE.**
+5. SIF setup: AddDmacHandler(5 = SIF0), EnableDmac, polls SifGetReg(4) for IOP boot.
+6. SIF RPC init (sreg 0 handshake), then CD/DVD init. Game halts unless disc type == 0x14
+   (PS2 DVD); runtime answers from the ISO.
+7. IOP reboot with IOPRP300.IMG, LOADFILE version check ("3000"), modules loaded:
+   sio2man, padman, mcman, mcserv, Sound_Device_Library (libsd), USB_driver, lgAud,
+   989snd_Library, spiop (Sucker Punch).
+8. GS reset + display mode (sceGsResetGraph, NTSC interlaced), pad, memory card, fileio and
+   989snd servers bound. 989snd batches need 0xFFFFFFFF sentinels around results.
+9. Worker thread (f_00160B70) started; requires real threads (fibers in runtime/threads.c).
+10. VSync interrupt at 59.94 Hz, serviced at loop heads.
+11. CD streaming starts (lbn ~959782, 128-sector chunks, double-buffered at 0x01BE0400 /
+    0x01C20400). **Now at the intro movie: sceMpeg drives the IPU (0x10002000) and waits.**
+
+## IOP services (runtime stand-ins)
+
+| SID        | Service                     | Status                                  |
+|------------|-----------------------------|-----------------------------------------|
+| 0x80000592 | CD init                     | ok                                      |
+| 0x80000593 | CD S-commands               | fn 3 disc type, fn 4 error; fn 34 TODO  |
+| 0x80000595 | CD N-commands               | fn 1 read (from ISO), 5-8, 14 ready     |
+| 0x8000059C | CD (callback?)              | zeros                                   |
+| 0x80000003 | IOP heap                    | alloc/free                              |
+| 0x80000006 | LOADFILE                    | version, module loads (logged)          |
+| 0x80000100/101 | padman                  | zeros (no controller yet)               |
+| 0x80000400 | mcserv (memory card)        | zeros                                   |
+| 0x80000001 | fileio                      | zeros                                   |
+| 0x00123456/57 | 989snd                   | sentinel replies, silent                |
+
+## Bugs found and fixed
+
+- RAM fast-path mask `0xCFFFFFFF` also matched 0x1xxxxxxx, so all hardware registers
+  (DMA, IPU, VIF, INTC, VU memory) silently read/wrote RAM. Covered by a test now.
 
 ## Blockers
 
-- Windows Smart App Control (on) started blocking freshly built `sly2.exe` builds.
+- (resolved) Windows Smart App Control blocked fresh builds; user turned it off.
 
 ## Open questions
 

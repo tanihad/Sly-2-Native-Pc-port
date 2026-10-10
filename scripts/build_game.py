@@ -19,8 +19,8 @@ OUT = ROOT / "build" / "sly2"
 def compile_one(src: Path, opt: str) -> tuple[Path, str]:
     obj = OUT / "obj" / src.with_suffix(".o").name     # never next to the source
     obj.parent.mkdir(parents=True, exist_ok=True)
-    if obj.exists() and obj.stat().st_mtime > src.stat().st_mtime \
-            and obj.stat().st_mtime > (ROOT / "runtime" / "ps2_runtime.h").stat().st_mtime:
+    headers = max(h.stat().st_mtime for h in (ROOT / "runtime").glob("*.h"))
+    if obj.exists() and obj.stat().st_mtime > max(src.stat().st_mtime, headers):
         return obj, ""
     res = subprocess.run([str(CLANG), opt, "-std=c11", "-c", "-Wno-unused-label", "-Wno-unused-variable",
                           "-I", str(ROOT / "runtime"), "-I", str(src.parent), str(src), "-o", str(obj)],
@@ -42,7 +42,7 @@ def main() -> int:
     if gen.returncode:
         return 1
 
-    sources = sorted((OUT / "recomp").glob("*.c")) + [ROOT / "runtime" / "ps2_runtime.c"]
+    sources = sorted((OUT / "recomp").glob("*.c")) + sorted((ROOT / "runtime").glob("*.c"))
     objs, errors = [], []
     with ThreadPoolExecutor(max_workers=os.cpu_count()) as pool:
         for obj, err in pool.map(lambda s: compile_one(s, opt), sources):
@@ -55,7 +55,7 @@ def main() -> int:
     print(f"compiled {len(sources)} files ({opt}) in {time.time() - t0:.0f}s")
 
     exe = OUT / "sly2.exe"
-    link = subprocess.run([str(CLANG), *map(str, objs), "-o", str(exe)], capture_output=True, text=True)
+    link = subprocess.run([str(CLANG), *map(str, objs), "-lwinmm", "-o", str(exe)], capture_output=True, text=True)
     if link.returncode:
         print(link.stderr[:4000])
         return 1

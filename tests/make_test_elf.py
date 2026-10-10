@@ -112,6 +112,15 @@ main = [
     vaddq(X, 6, 0),             # vf6.x = vf0.x + Q
     qmfc2(T6, 6),
 
+    # --- memory map: hardware registers must not alias RAM; uncached mirror must ---
+    addiu(T0, ZERO, 0x2000),
+    addiu(T1, ZERO, 0x1234),
+    sw(T1, 0, T0),              # RAM 0x2000 = 0x1234
+    lui(T2, 0x1000),
+    sw(T2, 0x2000, T2),         # write hardware register 0x10002000 (IPU), not RAM
+    lui(T2, 0x2000),
+    lw(T7, 0x2000, T2),         # read RAM 0x2000 through the uncached mirror 0x20002000
+
     lw(RA, 0, SP),
     addiu(SP, SP, 16),
     jr(RA),
@@ -146,6 +155,7 @@ EXPECTED = {                    # low 64 bits
     S5: 0xFFFFFFFFFFFFFFFF,
     S6: 1,
     S7: 3,
+    T7: 0x1234,
 }
 EXPECTED128 = {                 # full 128 bits
     A2: 0x00000000_00000000_11111111_22222222,
@@ -156,7 +166,7 @@ EXPECTED128 = {                 # full 128 bits
     T5: f32(-4, 8, -4, 0),
     T6: f32(4 / 5),
 }
-NAMES = {3: "v1", 6: "a2", 7: "a3", 11: "t3", 12: "t4", 13: "t5", 14: "t6",
+NAMES = {3: "v1", 6: "a2", 7: "a3", 11: "t3", 12: "t4", 13: "t5", 14: "t6", 15: "t7",
          **{16 + n: f"s{n}" for n in range(8)}}
 
 

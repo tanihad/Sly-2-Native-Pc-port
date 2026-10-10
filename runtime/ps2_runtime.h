@@ -31,6 +31,8 @@ typedef struct ps2_ctx {
     uint16_t vi[16];                /* vi0 is always 0 */
     float    vq, vi_reg, vp;        /* Q (divide result), I (immediate), P */
     uint32_t vr;                    /* random number register */
+
+    uint32_t ie;                    /* interrupts enabled (EI/DI, COP0 Status.EIE) */
 } ps2_ctx;
 
 typedef void (*ps2_func)(ps2_ctx*);
@@ -55,10 +57,12 @@ void ps2_hw_write(ps2_ctx* ctx, uint32_t addr, const void* in, unsigned size);
 /* Main RAM, its uncached mirrors (0x2/0x3xxxxxxx) and kernel views (kseg0/kseg1, 0x8-0xBxxxxxxx),
  * or the scratchpad; NULL = hardware register or unmapped. */
 static inline uint8_t* ps2_fast(uint32_t a) {
-    if ((a & 0xCFFFFFFFu) < PS2_RAM_SIZE) return ps2_ram + (a & (PS2_RAM_SIZE - 1));
+    uint32_t seg = a >> 28;                       /* 0 = direct, 2 = uncached, 3 = uncached-accel */
+    if ((seg == 0 || seg == 2 || seg == 3) && (a & 0x0FFFFFFFu) < PS2_RAM_SIZE)
+        return ps2_ram + (a & (PS2_RAM_SIZE - 1));
     if ((a & 0xFFFFC000u) == 0x70000000u) return ps2_spr + (a & (PS2_SPR_SIZE - 1));
     if (a - 0x80000000u < 0x40000000u && (a & 0x1FFFFFFFu) < PS2_RAM_SIZE) return ps2_ram + (a & 0x1FFFFFFFu);
-    return NULL;
+    return NULL;                                  /* hardware registers (0x10000000+), unmapped */
 }
 
 /* The kernel's syscall table lives in kernel RAM, as on a real PS2: games find it by scanning
@@ -254,6 +258,19 @@ static inline void mmi_qfsrv(ps2_ctx* c, int rd, int rs, int rt) {
     memcpy(&d, buf + ((c->sa >> 3) & 15), 16);
     MMI_END
 }
+
+/* ---- tracing: every recompiled function records its address on entry ----------------------- */
+
+#define PS2_TRACE_SIZE 4096u
+extern uint32_t ps2_trace[PS2_TRACE_SIZE];
+extern uint32_t ps2_trace_pos;
+#define PS2_TRACE(addr) (ps2_trace[ps2_trace_pos++ & (PS2_TRACE_SIZE - 1)] = (addr))
+
+/* ---- interrupts: set asynchronously by host timers, serviced at loop heads -------------------- */
+
+extern volatile uint32_t ps2_irq_pending;
+void ps2_service_irq(ps2_ctx* ctx);
+#define PS2_POLL_IRQ(ctx) do { if (ps2_irq_pending) ps2_service_irq(ctx); } while (0)
 
 /* ---- system ------------------------------------------------------------------------------ */
 
