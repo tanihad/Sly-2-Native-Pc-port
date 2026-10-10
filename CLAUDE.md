@@ -20,5 +20,15 @@ The user owns the game and supplies the executable from their own disc.
 - Use `.venv` (Python 3.13), not the system Python 3.15.
 - Ghidra runs headless only (`analyzeHeadless.bat`); the PS2 Emotion Engine plugin is installed.
 - The original compiler is still unknown, so nothing can be byte-matched yet.
+
+## GitHub
+
+- Remote: https://github.com/tanihad/sly2-decomp (private). Commits are authored as `tanihad`
+  with the no-reply email (repo-local git config). Credentials are stored by Git Credential
+  Manager, so `git push` works from the agent shell.
+- The user's GitHub account is **tanihad**. Two Chrome browsers are connected to Claude in
+  Chrome: the user's Windows one (signed in as tanihad) and a Mac one signed in to a different
+  person's account. Only use the Windows browser, and confirm the account shown is tanihad before
+  acting on GitHub.
 - The installed `reverse-engineering` skill (~/.claude/skills) covers general binary triage and
   assembly-reading methodology.
