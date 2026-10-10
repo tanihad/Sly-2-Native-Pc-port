@@ -294,6 +294,12 @@ static void vblank(ps2_ctx* ctx) {
     intc_raise(INTC_VBLANK_E);
 }
 
+/* Between the steps of long runtime operations (dma.c). The IOP is independent of the EE's state, but
+ * like sif.c it is not run from inside a game interrupt handler. */
+void ps2_poll_iop(void) {
+    if (iop_poll_flag && !in_interrupt) iop_service();
+}
+
 /* Called at safe points (loop heads, syscall returns, idle) when ps2_irq_pending is set. */
 void ps2_service_irq(ps2_ctx* ctx) {
     if (in_interrupt) return;

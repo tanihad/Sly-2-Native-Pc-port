@@ -55,3 +55,8 @@ uint8_t* iop_mem(uint32_t iop_addr);
 /* Native IOP (iop_kernel.c, see iop.h): startup and the EE side's safe-point hook */
 void iop_init(void);
 void iop_service(void);
+/* For runtime code that runs a long time inside one EE instruction (a DMA chain that renders a
+ * whole frame: up to ~150 ms with the software GS): call between steps. Runs the IOP when its 1 ms
+ * poll is due (ps2_runtime.c), so 989snd's 240 Hz tick and spiop's stream refills keep real time
+ * instead of waiting for the next safe point in recompiled code. */
+void ps2_poll_iop(void);

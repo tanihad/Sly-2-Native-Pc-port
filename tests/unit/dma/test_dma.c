@@ -75,6 +75,10 @@ uint32_t ipu_dma_from(void* qw, uint32_t qwc) {
 }
 uint32_t vif1_read(void* qw, uint32_t qwc) { return produce(qw, qwc, &vif1_out_avail, &vif1_out_seq, 0x71000000u); }
 
+/* The IOP hook (ps2_runtime.c): records how many qwords the devices had received at each call. */
+static int polls, poll_nev[64];
+void ps2_poll_iop(void) { if (polls < 64) poll_nev[polls] = nev; polls++; }
+
 /* ---- helpers -------------------------------------------------------------------------------------- */
 
 static int failures, checks;
@@ -761,6 +765,26 @@ static void test_coupled_channels(void) {
     memcpy(&w, mp(0x200000 + 16 * 999), 4); CHECK_EQ(w, 0x1F000000u + 999);
 }
 
+/* A chain that draws a whole frame runs for a long time inside one register write (up to ~150 ms with
+ * the software GS); the IOP, which runs on the same thread, gets a chance between the tags. */
+static void test_poll_iop_between_tags(void) {
+    reset();
+    for (uint32_t i = 0; i < 4; i++) { tag(0x1000 + 0x20 * i, CNT, 1, 0, 0); fill(0x1010 + 0x20 * i, 1); }
+    tag(0x1080, END, 0, 0, 0);
+    polls = 0;
+    w32(TADR(2), 0x1000); w32(CHCR(2), STR | CHAIN);
+    CHECK_EQ(count('G'), 4);
+    int between = 0;                                        /* calls made after some but not all data */
+    for (int i = 0; i < polls && i < 64; i++) between += poll_nev[i] > 0 && poll_nev[i] < 4;
+    CHECK(between >= 3);
+
+    reset();                                                /* also between the rounds of a normal transfer */
+    polls = 0;
+    w32(MADR(2), 0x20000); w32(QWC(2), 3); w32(CHCR(2), STR);
+    CHECK_EQ(count('G'), 3);
+    CHECK(polls >= 1);
+}
+
 int main(void) {
     test_registers();
     test_normal();
@@ -779,6 +803,7 @@ int main(void) {
     test_poll_dstat();
     test_ret_asp3();
     test_coupled_channels();
+    test_poll_iop_between_tags();
     printf("dma: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }
