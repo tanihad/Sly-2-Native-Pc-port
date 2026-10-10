@@ -111,7 +111,9 @@ static void log_once(int* flag, const char* fmt, ...) {
     fputc('\n', stderr);
     va_end(ap);
 }
-#define SDLOG(...) do { if (g_log > 0) fprintf(stderr, "[sd] " __VA_ARGS__); } while (0)
+/* Log lines carry the audio clock (seconds of rendered audio = position in a PS2_AUDIO_WAV file). */
+#define SDLOG(...) do { if (g_log > 0) { fprintf(stderr, "[sd %8.3f] ", (double)g_frames / 48000.0); \
+                                         fprintf(stderr, __VA_ARGS__); } } while (0)
 
 static inline int32_t clamp16(int32_t v) { return v < -32768 ? -32768 : v > 32767 ? 32767 : v; }
 static inline int32_t mul15(int32_t a, int32_t b) { return (a * b) >> 15; }

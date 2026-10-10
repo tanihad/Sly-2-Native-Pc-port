@@ -1,6 +1,7 @@
 /* Runtime for recompiled PS2 code: function lookup, interrupts, BIOS syscalls (HLE), startup. */
 #include "hw.h"
 #include "iop.h"
+#include "sd.h"
 
 #include <stdlib.h>
 #include <windows.h>
@@ -379,6 +380,7 @@ int main(int argc, char** argv) {
     const char* wd = getenv("PS2_WATCHDOG");
     if (wd && atoi(wd) > 0) CreateThread(NULL, 0, watchdog, (LPVOID)(uintptr_t)atoi(wd), 0, NULL);
     if (!headless) window_init();
+    if (!dump_regs) audio_init();                /* sound output thread (sd.c mixer -> WASAPI) */
 
     static ps2_ctx init;
     init.r[29].sd[0] = (int32_t)(PS2_RAM_SIZE - 0x10);   /* provisional stack until SetupThread */
