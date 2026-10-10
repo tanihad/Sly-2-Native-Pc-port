@@ -3,6 +3,13 @@
 Matching decompilation of Sly 2: Band of Thieves (PS2, MIPS R5900 "Emotion Engine").
 The user owns the game and supplies the executable from their own disc.
 
+## Goal: a native PC port, not an emulator
+
+Read `notes/native-port-principles.md` before designing anything. Game code (EE and VU
+microcode) is statically recompiled, never interpreted; PS2 hardware requests are translated to
+PC APIs (Direct3D 11, WASAPI, XInput, files) at a high level, not simulated cycle- or
+pixel-accurately. The project owner explicitly does not want "another PCSX2".
+
 ## Rules
 
 - Never download game ISOs/executables or copyrighted assets. Original files come only from the
