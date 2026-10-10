@@ -240,7 +240,9 @@ void gif_path1_kick(const uint8_t* vu1_data, uint32_t qw_addr) {
     uint32_t addr = qw_addr & (VU1_QWC - 1), total = 0;
     if (!vu1_data) return;
     for (;;) {
-        uint32_t n = gif_feed(p, 1, vu1_data + (size_t)addr * 16, VU1_QWC - addr, FEED_PATH1);
+        uint32_t len = VU1_QWC - addr;             /* up to the end of VU1 memory, and no further than the limit */
+        if (len > PATH1_MAX - total) len = PATH1_MAX - total;
+        uint32_t n = gif_feed(p, 1, vu1_data + (size_t)addr * 16, len, FEED_PATH1);
         addr = (addr + n) & (VU1_QWC - 1);         /* the packet wraps at the end of VU1 memory */
         total += n;
         if (!p->in_packet) break;
@@ -326,7 +328,7 @@ void gif_access(uint32_t phys, void* data, unsigned size, int is_write) {
     memcpy(buf + sub, data, n);
     uint32_t v;
     memcpy(&v, buf, 4);
-    if (sub >= 4) return;                          /* only bits 0-31 exist */
+    if ((off == 0x00 || off == 0x10) && sub >= 4) return;   /* GIF_CTRL/GIF_MODE: only bits 0-31 exist */
     if (off == 0x00) {                             /* GIF_CTRL: RST, PSE */
         if (v & 1) gif_reset();
         ctrl_pse = (v >> 3) & 1;

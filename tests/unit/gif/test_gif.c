@@ -241,9 +241,9 @@ static void test_image(void) {
 
 static qword stream[64];
 static int stream_len;
-static event ref_evs[256];
+static event ref_evs[8192];
 static int ref_nev;
-static uint8_t ref_img[4096];
+static uint8_t ref_img[1 << 16];
 static uint32_t ref_img_len;
 
 static void build_stream(void) {
@@ -358,6 +358,144 @@ static void test_paths_independent(void) {
     CHECK_EQ(gif_stat_rd() & 0xE00, 0);
 }
 
+/* ---- random streams against a whole-stream reference decoder ---------------------------------- */
+
+/* Decodes complete packets in one pass, written straight from ps2tek's tables (no state machine). */
+static void ref_decode(const qword* s, int n) {
+    for (int i = 0; i < n;) {
+        uint64_t lo, hi; memcpy(&lo, s[i].b, 8); memcpy(&hi, s[i].b + 8, 8); i++;
+        uint32_t nloop = lo & 0x7FFF, flg = (lo >> 58) & 3, nreg = (uint32_t)(lo >> 60) ? (uint32_t)(lo >> 60) : 16;
+        uint32_t q = 0x3F800000u;
+        if (!nloop) continue;
+        if (flg == 0) {
+            if ((lo >> 46) & 1) gs_write_reg(0x00, (lo >> 47) & 0x7FF);
+            for (uint32_t k = 0; k < nloop * nreg; k++, i++) {
+                uint64_t a, b; memcpy(&a, s[i].b, 8); memcpy(&b, s[i].b + 8, 8);
+                uint32_t desc = (hi >> (k % nreg * 4)) & 15, adc = (b >> 47) & 1;
+                if (desc == 0x0) gs_write_reg(0x00, a & 0x7FF);
+                else if (desc == 0x1) gs_write_reg(0x01, (a & 0xFF) | ((a >> 32 & 0xFF) << 8) | ((b & 0xFF) << 16) | ((b >> 32 & 0xFF) << 24) | ((uint64_t)q << 32));
+                else if (desc == 0x2) { q = (uint32_t)b; gs_write_reg(0x02, a); }
+                else if (desc == 0x3) gs_write_reg(0x03, (a & 0x3FFF) | ((a >> 32 & 0x3FFF) << 16));
+                else if (desc == 0x4) gs_write_reg(adc ? 0x0C : 0x04, (a & 0xFFFF) | ((a >> 32 & 0xFFFF) << 16) | ((b >> 4 & 0xFFFFFF) << 32) | ((b >> 36 & 0xFF) << 56));
+                else if (desc == 0x5) gs_write_reg(adc ? 0x0D : 0x05, (a & 0xFFFF) | ((a >> 32 & 0xFFFF) << 16) | (b << 32));
+                else if (desc == 0xA) gs_write_reg(0x0A, (b >> 36 & 0xFF) << 56);
+                else if (desc == 0xE) { if ((b & 0xFF) == 0x54) gs_image_write(&a, 8); else gs_write_reg(b & 0xFF, a); }
+                else if (desc != 0xF) gs_write_reg(desc, a);
+            }
+        } else if (flg == 1) {
+            uint32_t dw = nloop * nreg;
+            for (uint32_t k = 0; k < dw; k++) {
+                uint32_t desc = (hi >> (k % nreg * 4)) & 15;
+                uint64_t d; memcpy(&d, s[i + (int)(k / 2)].b + (k & 1) * 8, 8);
+                if (desc < 0xE) gs_write_reg(desc, d);
+            }
+            i += (int)((dw + 1) / 2);
+        } else {
+            gs_image_write(s[i].b, nloop * 16);
+            i += (int)nloop;
+        }
+    }
+}
+
+static uint64_t rnd64(void) {
+    uint64_t v = 0;
+    for (int k = 0; k < 5; k++) v = (v << 15) ^ (uint64_t)(rand() & 0x7FFF);
+    return v;
+}
+
+static qword rstream[512];
+static int rpkt[128], nrpkt;                       /* start of each packet; rpkt[nrpkt] = length */
+
+static int build_random(void) {
+    static const uint8_t descs[] = { 0x0, 0x1, 0x2, 0x3, 0x4, 0x5, 0x6, 0xA, 0xC, 0xE, 0xF };
+    int n = 0;
+    nrpkt = 0;
+    while (n < 300) {
+        rpkt[nrpkt++] = n;
+        int ntags = 1 + rand() % 4;
+        for (int t = 0; t < ntags; t++) {
+            uint32_t flg = (uint32_t)rand() & 3, nreg = (uint32_t)rand() & 15, nloop = rand() % 6 ? (uint32_t)(rand() % 4) : 0;
+            uint64_t regs = rnd64() ^ (rnd64() << 32);
+            if (rand() & 1) { regs = 0; for (int r = 0; r < 16; r++) regs |= (uint64_t)descs[rand() % 11] << (r * 4); }
+            uint64_t lo = nloop | ((uint64_t)(t == ntags - 1) << 15) | ((uint64_t)(rand() & 1) << 46) |
+                          ((rnd64() & 0x7FF) << 47) | ((uint64_t)flg << 58) | ((uint64_t)nreg << 60) |
+                          (rnd64() & 0x00003FFFFFFF0000ull);              /* junk in the unused bits */
+            rstream[n++] = qw(lo, regs);
+            uint32_t nr = nreg ? nreg : 16;
+            uint32_t data = !nloop ? 0 : flg == 0 ? nloop * nr : flg == 1 ? (nloop * nr + 1) / 2 : nloop;
+            for (uint32_t k = 0; k < data; k++) {
+                uint64_t hi = rnd64() ^ (rnd64() << 32);
+                if (rand() % 4 == 0) hi = (hi & ~0xFFull) | 0x54;       /* some A+D to HWREG */
+                rstream[n++] = qw(rnd64() ^ (rnd64() << 32), hi);
+            }
+        }
+    }
+    rpkt[nrpkt] = n;
+    return n;
+}
+
+static void test_random_streams(void) {
+    static uint8_t vu1[16384];
+    srand(4321);
+    for (int round = 0; round < 60; round++) {
+        int n = build_random();
+        reset_gif();
+        ref_decode(rstream, n);
+        save_ref();
+
+        clear();                                   /* PATH2, random pieces */
+        for (int i = 0; i < n;) {
+            uint32_t c = 1 + (uint32_t)(rand() % 24);
+            if (c > (uint32_t)(n - i)) c = (uint32_t)(n - i);
+            CHECK_EQ(gif_path2(&rstream[i], c), c);
+            i += (int)c;
+        }
+        CHECK(same_as_ref());
+
+        clear();                                   /* PATH3 DMA, random pieces, masks and pauses toggling */
+        for (int i = 0, guard = 0; i < n && guard < 100000; guard++) {
+            switch (rand() % 8) {
+            case 0: gif_set_path3_mask(1); break;
+            case 1: gif_set_path3_mask(0); break;
+            case 2: wreg32(0x10003010, 1); break;
+            case 3: wreg32(0x10003010, 0); break;
+            case 4: wreg32(0x10003000, 8); break;
+            case 5: wreg32(0x10003000, 0); break;
+            }
+            uint32_t c = 1 + (uint32_t)(rand() % 24);
+            if (c > (uint32_t)(n - i)) c = (uint32_t)(n - i);
+            uint32_t got = gif_path3_dma(&rstream[i], c);
+            CHECK(got <= c);
+            i += (int)got;
+        }
+        wreg32(0x10003000, 0); wreg32(0x10003010, 0); gif_set_path3_mask(0);
+        CHECK(same_as_ref());
+        CHECK_EQ(gif_stat_rd() & 0xE00, 0);
+
+        clear();                                   /* FIFO stores, 128-bit or two 64-bit halves, mask toggling */
+        for (int i = 0; i < n; i++) {
+            int r = rand() % 6;
+            if (r == 0 && STAT_FQC(gif_stat_rd()) < 8) gif_set_path3_mask(1);
+            else if (r == 1 || STAT_FQC(gif_stat_rd()) == 16) gif_set_path3_mask(0);
+            if (rand() & 1) gif_access(0x10006000, rstream[i].b, 16, 1);
+            else { gif_access(0x10006000, rstream[i].b, 8, 1); gif_access(0x10006008, rstream[i].b + 8, 8, 1); }
+        }
+        gif_set_path3_mask(0);
+        CHECK(same_as_ref());
+
+        clear();                                   /* PATH1: each packet from a random VU1 address */
+        for (int p = 0; p < nrpkt; p++) {
+            uint32_t a = (uint32_t)rand() & 1023, len = (uint32_t)(rpkt[p + 1] - rpkt[p]);
+            memset(vu1, 0xEE, sizeof vu1);
+            for (uint32_t k = 0; k < len; k++) memcpy(vu1 + (size_t)((a + k) & 1023) * 16, rstream[rpkt[p] + (int)k].b, 16);
+            gif_path1_kick(vu1, a);
+            CHECK_EQ((reg32(0x10003080) >> 20) & 0x3FF, (a + len) & 1023);
+        }
+        CHECK(same_as_ref());
+        CHECK_EQ(gif_stat_rd() & 0xE00, 0);
+    }
+}
+
 /* ---- PATH1 ------------------------------------------------------------------------------------- */
 
 static void test_path1_wrap(void) {
@@ -403,6 +541,19 @@ static void test_path1_no_eop(void) {
     gif_path1_kick(vu1, 0);                        /* PATH1 recovers */
     CHECK_EQ(nev, 1);
     expect_reg(0, 0x03, 0x42);
+
+    /* the abandon limit is 2048 qwords wherever the kick starts: a tag plus 2047 UV writes, not
+     * whatever the next 1024-qword lap happens to reach */
+    for (uint32_t start = 0; start < 1024; start += 341) {
+        memset(vu1, 0, sizeof vu1);
+        qword t = tag(0x7FFF, 0, 0, 0, 0, 1, 0x3);     /* no EOP within reach */
+        memcpy(vu1 + (size_t)start * 16, t.b, 16);
+        clear();
+        gif_path1_kick(vu1, start);
+        CHECK_EQ(nev, 2047);
+        CHECK_EQ((reg32(0x10003080) >> 20) & 0x3FF, (start + 2048) & 1023);   /* GIF_CNT.VUADDR */
+        CHECK_EQ(gif_stat_rd() & 0xE00, 0);
+    }
 }
 
 /* ---- PATH3 masking ----------------------------------------------------------------------------- */
@@ -576,6 +727,17 @@ static void test_registers(void) {
     CHECK_EQ(unhandled, before + 1);
     wreg32(0x10003020, 0xFFFFFFFF);                /* GIF_STAT is read-only */
     CHECK_EQ(gif_stat_rd(), 0);
+    /* writes to unknown registers are reported wherever they land in the 16-byte slot; the unused
+     * upper bytes of GIF_CTRL/GIF_MODE are ignored quietly */
+    before = unhandled;
+    wreg32(0x10003104, 0x12345678);
+    CHECK_EQ(unhandled, before + 1);
+    wreg32(0x10003028, 0x12345678);                /* GIF_STAT bytes 8-11 (read-only) */
+    CHECK_EQ(unhandled, before + 2);
+    wreg32(0x10003004, 0xFFFFFFFF);
+    wreg32(0x10003018, 0xFFFFFFFF);
+    CHECK_EQ(unhandled, before + 2);
+    CHECK_EQ(gif_stat_rd(), 0);                    /* and they change nothing */
 }
 
 int main(void) {
@@ -588,6 +750,7 @@ int main(void) {
     test_image();
     test_split_packets();
     test_paths_independent();
+    test_random_streams();
     test_path1_wrap();
     test_path1_no_eop();
     test_mask_vif();
