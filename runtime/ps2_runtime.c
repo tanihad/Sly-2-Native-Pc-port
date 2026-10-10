@@ -42,6 +42,52 @@ static DWORD WINAPI watchdog(LPVOID arg) {
     return 0;
 }
 
+/* PS2_CALLS="<vblank>[:<frames>]": count every recompiled function called from that VBlank on, for
+ * <frames> VBlanks (default 1), with the threads that called it, then print the table sorted by
+ * address. Debug builds only (needs PS2_TRACE). */
+volatile int ps2_calls_on;
+#define CALLS_HASH 65536u
+static struct { uint32_t addr, count, threads; } calls[CALLS_HASH];
+static uint32_t calls_from, calls_frames;
+int thread_current_id(void);
+
+void ps2_calls_record(uint32_t addr) {
+    uint32_t h = ((addr >> 2) * 2654435761u) >> 16;
+    while (calls[h].addr != addr) {
+        if (!calls[h].addr) { calls[h].addr = addr; break; }
+        h = (h + 1) & (CALLS_HASH - 1);
+    }
+    calls[h].count++;
+    calls[h].threads |= 1u << (thread_current_id() & 31);
+}
+
+static int calls_cmp(const void* a, const void* b) {
+    uint32_t x = *(const uint32_t*)a, y = *(const uint32_t*)b;
+    return x < y ? -1 : x > y;
+}
+
+static void calls_vblank(uint32_t v) {
+    static int init;
+    if (!init) {
+        init = 1;
+        const char* e = getenv("PS2_CALLS");
+        if (e) { calls_frames = 1; sscanf(e, "%u:%u", &calls_from, &calls_frames); }
+    }
+    if (!calls_from) return;
+    if (v == calls_from) ps2_calls_on = 1;
+    if (v == calls_from + calls_frames) {
+        ps2_calls_on = 0;
+        static uint32_t rows[CALLS_HASH][3];
+        uint32_t n = 0;
+        for (uint32_t i = 0; i < CALLS_HASH; i++)
+            if (calls[i].addr) { rows[n][0] = calls[i].addr; rows[n][1] = calls[i].count; rows[n][2] = calls[i].threads; n++; }
+        qsort(rows, n, sizeof rows[0], calls_cmp);
+        fprintf(stderr, "[calls] VBlank %u-%u: %u functions\n", calls_from, v, n);
+        for (uint32_t i = 0; i < n; i++)
+            fprintf(stderr, "[calls] %08X %8u threads 0x%X\n", rows[i][0], rows[i][1], rows[i][2]);
+    }
+}
+
 static void die(const char* fmt, uint32_t v) {
     fprintf(stderr, "[ps2] fatal: ");
     fprintf(stderr, fmt, v);
@@ -167,6 +213,7 @@ uint32_t ps2_vblank_count(void) { return vblank_count; }
 
 static void vblank(ps2_ctx* ctx) {
     vblank_count++;
+    calls_vblank(vblank_count);
     gs_vsync();
     static uint32_t frame[1024 * 1024];
     int w = 0, h = 0;
@@ -191,6 +238,9 @@ static void vblank(ps2_ctx* ctx) {
         peek = getenv("PS2_PEEK");
         if (getenv("PS2_PEEK_EVERY")) peek_every = atoi(getenv("PS2_PEEK_EVERY")) > 0 ? atoi(getenv("PS2_PEEK_EVERY")) : 60;
     }
+    static int log_threads = -1;
+    if (log_threads < 0) log_threads = getenv("PS2_LOG_THREADS") != NULL;
+    if (log_threads && vblank_count % (uint32_t)peek_every == 0) threads_debug_dump();
     if (peek && vblank_count % (uint32_t)peek_every == 0) {
         char buf[512];
         snprintf(buf, sizeof buf, "%s", peek);

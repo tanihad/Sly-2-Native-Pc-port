@@ -27,6 +27,8 @@ void     threads_init(ps2_ctx* main_ctx);
 ps2_ctx* thread_ctx(void);                 /* registers of the running thread */
 int      thread_syscall(ps2_ctx* ctx, int n, int64_t* ret);
 void     thread_reschedule(void);          /* switch if a higher-priority thread is ready */
+int      thread_current_id(void);
+void     threads_debug_dump(void);         /* PS2_LOG_THREADS: print every thread's state */
 
 /* SIF: EE <-> IOP link and the high-level-emulated IOP (sif.c) */
 uint32_t sif_get_reg(uint32_t reg);
