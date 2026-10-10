@@ -18,13 +18,22 @@ safety, regressions vs main, cleanliness; fix suspected bugs test-first on this 
 - Trial merges: clean with current fix/fix-perf (9aa0b3f); conflicts with audio/audio-iop in
   ps2_runtime.c, sif.c, window.c (context only, integrator).
 
+- Save and Quit reproduced live (build\review\live): pause -> down -> cross -> up ("Yes, Quit")
+  -> cross -> notice -> SQUARE (= Continue) rewrites save1, game restarts at the intro; title says
+  "Press START button to Resume Game"; START resumes Sly in the museum at (4915,-5211).
+- BUG (fixed, 7cd52d2): "@func" anchors in live PS2_INPUT_FILE lines never fired, because the
+  runtime only registered anchors found in PS2_INPUT at boot. Repro: live line "@187D80+0:none"
+  stayed unresolved through gameplay, pause, save and the title (where 187D80 runs). Now
+  ps2_func_calls registers an anchor on its first query (emulation thread, like the counting);
+  anchors_init removed; release builds print that anchors never fire. Verified: the same live line
+  fires at pad frame 290; release run prints the warning.
+- Release build links and runs (build\review\rel, title intro rendered at v2100).
+
 ## In progress
-- Save and Quit + Resume reproduction via live play (build\review\live, mc_new).
+- Outline (AA1) comparison main vs play-1 on the intro's "Sly Cooper the thief" scene (cmpA/cmpB).
 
 ## Next
-1. Save/resume check; release build; anchors in PS2_INPUT_FILE lines (suspected bug: never fire).
-2. Write failing tests for suspected bugs, fix, commit.
-3. Verdict.
+1. Finish outline comparison; final test pass; verdict.
 
 ## Findings
 - Syscall 0x6B wrapper at 0x234CF0 is called from 0x2391C8 (SIF init path); 0x4A/0x4B from the
