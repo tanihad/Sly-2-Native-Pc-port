@@ -168,6 +168,12 @@ static inline void vu0_sqc2(ps2_ctx* c, int ft, uint32_t a) {
     r128 v; memcpy(&v, &c->vf[ft], 16);
     ps2_w128(c, a & ~15u, v);
 }
+/* VU0 control registers other than R/I/Q (flags, TPC, CMSAR0, FBRST, VPU-STAT) and micro mode
+ * live in vu.c. */
+uint32_t vu0_cfc2_ctrl(struct ps2_ctx* ctx, int reg);
+void     vu0_ctc2_ctrl(struct ps2_ctx* ctx, int reg, uint32_t v);
+void     vu0_callms(struct ps2_ctx* ctx, uint32_t addr_dw);
+
 static inline uint32_t vu0_cfc2(ps2_ctx* c, int reg) {
     if (reg < 16) return c->vi[reg];
     uint32_t u;
@@ -175,7 +181,7 @@ static inline uint32_t vu0_cfc2(ps2_ctx* c, int reg) {
     case 20: return c->vr;
     case 21: memcpy(&u, &c->vi_reg, 4); return u;
     case 22: memcpy(&u, &c->vq, 4); return u;
-    default: return 0;                         /* status/MAC/clip flags not modeled yet */
+    default: return vu0_cfc2_ctrl(c, reg);
     }
 }
 static inline void vu0_ctc2(ps2_ctx* c, int reg, uint32_t v) {
@@ -183,6 +189,7 @@ static inline void vu0_ctc2(ps2_ctx* c, int reg, uint32_t v) {
     else if (reg == 20) c->vr = v;
     else if (reg == 21) memcpy(&c->vi_reg, &v, 4);
     else if (reg == 22) memcpy(&c->vq, &v, 4);
+    else if (reg >= 16) vu0_ctc2_ctrl(c, reg, v);
 }
 static inline float vu0_ftoi_scale(int bits) { return (float)(1 << bits); }
 static inline uint32_t vu0_ftoi(float f, int bits) {
@@ -264,10 +271,17 @@ static inline void mmi_qfsrv(ps2_ctx* c, int rd, int rs, int rt) {
 #define PS2_TRACE_SIZE 4096u
 extern uint32_t ps2_trace[PS2_TRACE_SIZE];
 extern uint32_t ps2_trace_pos;
+#ifdef PS2_NO_TRACE                      /* release builds */
+#define PS2_TRACE(addr) ((void)0)
+#else
 #define PS2_TRACE(addr) (ps2_trace[ps2_trace_pos++ & (PS2_TRACE_SIZE - 1)] = (addr))
+#endif
 
 /* ---- interrupts: set asynchronously by host timers, serviced at loop heads -------------------- */
 
+#define PS2_IRQ_VBLANK 1u                /* host VBlank timer fired */
+#define PS2_IRQ_TICK   2u                /* ~1 kHz housekeeping tick (timers, DMA retries) */
+#define PS2_IRQ_HW     4u                /* a hardware interrupt is pending in INTC/DMAC */
 extern volatile uint32_t ps2_irq_pending;
 void ps2_service_irq(ps2_ctx* ctx);
 #define PS2_POLL_IRQ(ctx) do { if (ps2_irq_pending) ps2_service_irq(ctx); } while (0)

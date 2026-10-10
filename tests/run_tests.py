@@ -9,10 +9,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tests"))
+sys.path.insert(0, str(ROOT / "scripts"))
 import make_test_elf  # noqa: E402
+from paths import CLANG  # noqa: E402
 
 BUILD = ROOT / "build" / "test"
-CLANG = ROOT / "tools" / "llvm-mingw" / "bin" / "clang.exe"
 
 
 def run(cmd: list) -> subprocess.CompletedProcess:
@@ -34,7 +35,8 @@ def main() -> int:
     exe = BUILD / "test.exe"
     sources = sorted((BUILD / "recomp").glob("*.c")) + sorted((ROOT / "runtime").glob("*.c"))
     cc = run([CLANG, "-O2", "-std=c11", "-Wall", "-Wno-unused-label",
-              "-I", ROOT / "runtime", "-I", BUILD / "recomp", *sources, "-lwinmm", "-o", exe])
+              "-I", ROOT / "runtime", "-I", BUILD / "recomp", *sources,
+              "-lwinmm", "-lgdi32", "-luser32", "-lxinput1_4", "-o", exe])
     if cc.returncode or cc.stderr.strip():
         print("compile output:\n" + cc.stderr)
         if cc.returncode:

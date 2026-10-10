@@ -4,16 +4,22 @@
 
 #include <stdio.h>
 
+/* Debug output of rendered frames (debug.c): PS2_DUMP_FRAMES=<dir> */
+void debug_write_png(const char* path, const uint32_t* bgrx, int w, int h, int stride);
+
 /* Register numbers */
 enum { REG_V0 = 2, REG_V1 = 3, REG_A0 = 4, REG_A1 = 5, REG_A2 = 6, REG_A3 = 7, REG_T0 = 8,
        REG_GP = 28, REG_SP = 29, REG_RA = 31 };
 
-/* Interrupts (ps2_runtime.c) */
-/* Return 1 if a handler ran; 0 if the source is disabled, has no handler, or we're already
- * inside an interrupt (the caller should retry later). */
-int ps2_raise_dmac(ps2_ctx* ctx, int channel);
-int ps2_raise_intc(ps2_ctx* ctx, int cause);
-int ps2_in_interrupt(void);
+/* Interrupts (ps2_runtime.c runs handlers; hw.c holds INTC/DMAC state) */
+int      ps2_in_interrupt(void);
+uint32_t intc_pending(void);               /* I_STAT & I_MASK */
+void     intc_ack(int cause);
+void     intc_set_mask(int cause, int on); /* EnableIntc / DisableIntc */
+uint32_t dmac_pending(void);               /* CIS & CIM */
+void     dmac_ack(int channel);
+void     dmac_set_mask(int channel, int on);   /* EnableDmac / DisableDmac */
+int      dmac_mask_enabled(int channel);
 
 /* Threads and semaphores (threads.c) */
 void     threads_init(ps2_ctx* main_ctx);
@@ -38,12 +44,6 @@ int iop_modules_rpc(ps2_ctx* ctx, uint32_t sid, uint32_t fno, const uint8_t* arg
 
 int snd_rpc(ps2_ctx* ctx, uint32_t sid, uint32_t fno, const uint8_t* args, uint32_t send_size,
             uint8_t* out, uint32_t recv_size);
-
-/* GS privileged registers (gs.c); addresses are physical (kseg bits stripped) */
-int      gs_is_priv(uint32_t phys);
-uint64_t gs_read(uint32_t phys);
-void     gs_write(uint32_t phys, uint64_t v);
-void     gs_vsync(void);
 
 /* IOP RAM (sif.c): host pointer for an IOP address, or NULL if out of range */
 uint8_t* iop_mem(uint32_t iop_addr);

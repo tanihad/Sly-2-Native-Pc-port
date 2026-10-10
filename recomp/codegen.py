@@ -138,6 +138,8 @@ def emit_vu0(i, op: str) -> str | None:
         return f"memcpy(&ctx->vf[{rd(i)}], &ctx->r[{rt(i)}], 16);" if rd(i) else "/* qmtc2 to vf0 */"
     if op.startswith("qmfc2"):
         return f"memcpy(&ctx->r[{rt(i)}], &ctx->vf[{rd(i)}], 16);" if rt(i) else "/* qmfc2 to $zero */"
+    if op == "vcallms": return f"vu0_callms(ctx, 0x{(raw >> 6) & 0x7FFF:X}u);"
+    if op == "vcallmsr": return "vu0_callms(ctx, vu0_cfc2_ctrl(ctx, 27));"     # start at CMSAR0
     if op.startswith("cfc2"): return set32s(rt(i), f"vu0_cfc2(ctx, {rd(i)})")
     if op.startswith("ctc2"): return f"vu0_ctc2(ctx, {rd(i)}, {U32(rt(i))});"
     return None

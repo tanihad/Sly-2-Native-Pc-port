@@ -6,7 +6,7 @@
  * interrupt, whose handler (game code) dispatches them. Packet layouts follow Sony's sifcmd
  * protocol (also documented by ps2sdk).
  */
-#include "ps2_internal.h"
+#include "hw.h"
 
 #include <stdlib.h>
 
@@ -62,6 +62,8 @@ static void rpc_dispatch(rpc_server* s, uint32_t fno, const uint8_t* args, uint3
     if (cdvd_rpc(cur_ctx, s->sid, fno, args, send_size, out, recv_size)) return;
     if (iop_modules_rpc(cur_ctx, s->sid, fno, args, send_size, out, recv_size)) return;
     if (snd_rpc(cur_ctx, s->sid, fno, args, send_size, out, recv_size)) return;
+    if (pad_rpc(cur_ctx, s->sid, fno, args, send_size, out, recv_size)) return;
+    if (mc_rpc(cur_ctx, s->sid, fno, args, send_size, out, recv_size)) return;
     if (s->calls++ < 4 || ps2_log_sif)
         fprintf(stderr, "[sif] RPC call sid 0x%08X fn %u (send %u, recv %u): no handler, replying zeros\n",
                 s->sid, fno, send_size, recv_size);
@@ -109,23 +111,23 @@ static void send_to_ee(uint32_t cid, const void* body, uint32_t body_size) {
     p->size = size;
 }
 
+/* Hand the next queued packet to the EE: copy it into the receive buffer and raise the SIF0
+ * DMA interrupt. One packet at a time, like the hardware: the next one waits until the game's
+ * handler has taken this one (its D_STAT bit acknowledged) and SIF0 interrupts are enabled. */
 void sif_deliver(ps2_ctx* ctx) {
-    static int delivering;
-    if (delivering || !ee_pktbuf) return;
-    delivering = 1;
-    while (q_head != q_tail) {
-        packet* p = &queue[q_head & 63];
-        uint8_t* dst = ps2_fast(ee_pktbuf);
-        if (!dst) { fprintf(stderr, "[sif] EE receive buffer 0x%08X not in RAM\n", ee_pktbuf); break; }
-        memcpy(dst, p->data, p->size);
-        if (!ps2_raise_dmac(ctx, 5)) break;             /* SIF0 interrupt off: keep it queued */
-        q_head++;
-        if (ps2_log_sif) {
-            uint32_t cid; memcpy(&cid, p->data + 8, 4);
-            fprintf(stderr, "[sif] IOP->EE cid 0x%08X (%u bytes)\n", cid, p->size);
-        }
+    (void)ctx;
+    if (q_head == q_tail || !ee_pktbuf) return;
+    if (!dmac_mask_enabled(DMA_SIF0) || (dmac_stat_read() & (1u << DMA_SIF0))) return;
+    packet* p = &queue[q_head & 63];
+    uint8_t* dst = ps2_fast(ee_pktbuf);
+    if (!dst) { fprintf(stderr, "[sif] EE receive buffer 0x%08X not in RAM\n", ee_pktbuf); return; }
+    memcpy(dst, p->data, p->size);
+    q_head++;
+    if (ps2_log_sif) {
+        uint32_t cid; memcpy(&cid, p->data + 8, 4);
+        fprintf(stderr, "[sif] IOP->EE cid 0x%08X (%u bytes)\n", cid, p->size);
     }
-    delivering = 0;
+    dmac_raise(DMA_SIF0);
 }
 
 /* ---- incoming (EE -> IOP) commands ---------------------------------------------------------- */
