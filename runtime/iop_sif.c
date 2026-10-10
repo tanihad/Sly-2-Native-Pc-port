@@ -238,12 +238,64 @@ void iop_imp_cdvdman_sceCdTrayReq(iop_ctx* c) {
     iop_ret(c, 1);
 }
 
-/* sceCdSearchFile(sceCdlFILE*, name): the game finds its data by sector, not by name. */
+/* sceCdSearchFile(sceCdlFILE* fp, const char* name): look a path ("\DIR\FILE.EXT;1") up in the
+ * disc's ISO 9660 directories. Fills fp = { u32 lsn, u32 size, char name[16], u8 date[8] } and
+ * returns 1, or 0 if there is no such file. (Sly 2 finds its data by sector; 989snd only uses
+ * this for loads by file name.) */
+static int iso_find(const char* path, uint32_t* lsn, uint32_t* size, uint8_t date[8], char* leaf, size_t leaf_cap) {
+    static uint8_t sec[2048];
+    if (!cdvd_read_host(16, 1, sec) || sec[0] != 1 || memcmp(sec + 1, "CD001", 5) != 0) return 0;
+    uint32_t dir_lsn, dir_size;
+    memcpy(&dir_lsn, sec + 156 + 2, 4);
+    memcpy(&dir_size, sec + 156 + 10, 4);
+    while (*path == '\\' || *path == '/') path++;
+    while (*path) {
+        size_t n = strcspn(path, "\\/");
+        char want[64];
+        snprintf(want, sizeof want, "%.*s", (int)n, path);
+        if (!strchr(want, ';') && path[n] == 0 && strlen(want) + 2 < sizeof want) strcat(want, ";1");
+        int found = 0;
+        for (uint32_t off = 0; off < dir_size && !found; off += 2048) {
+            if (!cdvd_read_host(dir_lsn + off / 2048, 1, sec)) return 0;
+            for (uint32_t p = 0; p + 33 < 2048 && sec[p];) {
+                uint8_t len = sec[p], nlen = sec[p + 32];
+                if (p + 33 + nlen > 2048) break;
+                char name[64];
+                snprintf(name, sizeof name, "%.*s", (int)nlen, (const char*)sec + p + 33);
+                if (_stricmp(name, want) == 0) {
+                    memcpy(&dir_lsn, sec + p + 2, 4);
+                    memcpy(&dir_size, sec + p + 10, 4);
+                    if (date) memcpy(date, sec + p + 18, 7), date[7] = 0;
+                    if (leaf) snprintf(leaf, leaf_cap, "%s", name);
+                    found = 1;
+                    break;
+                }
+                p += len;
+            }
+        }
+        if (!found) return 0;
+        path += n;
+        while (*path == '\\' || *path == '/') path++;
+    }
+    *lsn = dir_lsn;
+    *size = dir_size;
+    return 1;
+}
+
 void iop_imp_cdvdman_sceCdSearchFile(iop_ctx* c) {
-    char name[64];
+    char name[128], leaf[64] = "";
+    uint8_t date[8] = { 0 };
+    uint32_t lsn = 0, size = 0;
     iop_strncpy_from(name, c->r[5], sizeof name);
-    fprintf(stderr, "[iop] sceCdSearchFile(%s): not supported\n", name);
-    iop_ret(c, 0);
+    int ok = iso_find(name, &lsn, &size, date, leaf, sizeof leaf);
+    if (ok && c->r[4]) {
+        iop_w32(c->r[4], lsn);
+        iop_w32(c->r[4] + 4, size);
+        for (uint32_t i = 0; i < 16; i++) iop_w8(c->r[4] + 8 + i, i < strlen(leaf) ? (uint8_t)leaf[i] : 0);
+        for (uint32_t i = 0; i < 8; i++) iop_w8(c->r[4] + 24 + i, date[i]);
+    }
+    fprintf(stderr, "[iop] sceCdSearchFile(%s) -> %s (lsn %u, %u bytes)\n", name, ok ? "found" : "not found", lsn, size);
+    iop_ret(c, ok);
 }
 
 /* sceCdCallback(func): returns the previous callback. */

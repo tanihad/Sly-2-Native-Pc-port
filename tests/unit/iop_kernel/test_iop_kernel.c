@@ -27,7 +27,8 @@ static int failures;
     X(intrman_QueryIntrContext) X(timrman_AllocHardTimer) X(timrman_SetTimerHandler) X(timrman_SetupHardTimer) \
     X(timrman_StartHardTimer) X(timrman_StopHardTimer) X(timrman_FreeHardTimer) X(sifcmd_sceSifSetRpcQueue) \
     X(sifcmd_sceSifRegisterRpc) X(sifcmd_sceSifRpcLoop) X(sifman_sceSifSetDmaIntr) X(sifman_sceSifDmaStat) \
-    X(cdvdman_sceCdRead) X(cdvdman_sceCdSync) X(cdvdman_sceCdCallback) X(libsd_sceSdSetTransIntrHandler) \
+    X(cdvdman_sceCdRead) X(cdvdman_sceCdSync) X(cdvdman_sceCdCallback) X(cdvdman_sceCdSearchFile) \
+    X(libsd_sceSdSetTransIntrHandler) \
     X(sysclib_memcpy) X(sysclib_memset) X(sysclib_strncmp) X(sysclib_strtol) X(sysclib_wmemcopy) X(stdio_printf)
 #define DECL(n) void iop_imp_##n(iop_ctx* c);
 NATIVES(DECL)
@@ -48,8 +49,41 @@ void sif_rpc_reply(const iop_rpc_req* r, uint32_t a) { last_reply_req = *r; last
 static uint32_t dma_ee, dma_iop, dma_size;
 void sif_iop_to_ee(uint32_t ee, uint32_t iop, uint32_t size) { dma_ee = ee; dma_iop = iop; dma_size = size; }
 int sif_ee_to_iop(uint32_t iop, uint32_t ee, uint32_t size) { (void)iop; (void)ee; (void)size; return 1; }
-int cdvd_read_host(uint32_t lbn, uint32_t count, void* dst) {
-    for (uint32_t i = 0; i < count * 2048u; i++) ((uint8_t*)dst)[i] = (uint8_t)(lbn + i);
+/* The disc: an ISO 9660 volume descriptor at 16, root directory at 20 holding SYSTEM.CNF;1 and a
+ * directory DATA (21) holding SND.BNK;1; every other sector is a byte pattern. */
+static void dir_record(uint8_t* sec, uint32_t* p, const char* name, uint32_t lsn, uint32_t size, int is_dir) {
+    uint8_t n = (uint8_t)strlen(name), len = (uint8_t)((33 + n + 1) & ~1);
+    memset(sec + *p, 0, len);
+    sec[*p] = len;
+    memcpy(sec + *p + 2, &lsn, 4);
+    memcpy(sec + *p + 10, &size, 4);
+    sec[*p + 18] = 104;                               /* 2004 */
+    sec[*p + 25] = is_dir ? 2 : 0;
+    sec[*p + 32] = n;
+    memcpy(sec + *p + 33, name, n);
+    *p += len;
+}
+int cdvd_read_host(uint32_t first, uint32_t count, void* dst) {
+    uint8_t* d = dst;
+    uint32_t lbn = first;
+    for (uint32_t s = 0; s < count; s++, lbn++, d += 2048) {
+        memset(d, 0, 2048);
+        uint32_t p = 0;
+        if (lbn == 16) {
+            d[0] = 1; memcpy(d + 1, "CD001", 5);
+            uint32_t root = 20, size = 2048;
+            memcpy(d + 156 + 2, &root, 4); memcpy(d + 156 + 10, &size, 4);
+        } else if (lbn == 20) {
+            dir_record(d, &p, "\0", 20, 2048, 1);
+            dir_record(d, &p, "\1", 20, 2048, 1);
+            dir_record(d, &p, "DATA", 21, 2048, 1);
+            dir_record(d, &p, "SYSTEM.CNF;1", 30, 100, 0);
+        } else if (lbn == 21) {
+            dir_record(d, &p, "SND.BNK;1", 40, 5000, 0);
+        } else {
+            for (uint32_t i = 0; i < 2048u; i++) d[i] = (uint8_t)(first + s * 2048u + i);
+        }
+    }
     return 1;
 }
 int sceSdInit(int flag) { (void)flag; return 0; }
@@ -70,6 +104,8 @@ int sceSdClearEffectWorkArea(int core, int ch, int m) { (void)core; (void)ch; (v
 void audio_init(void) {}
 
 /* ---- guest helpers ------------------------------------------------------------------------------- */
+
+static void put_str(uint32_t addr, const char* s) { memcpy(iop_ram + addr, s, strlen(s) + 1); }
 
 static char order[256];                          /* execution order of the threads under test */
 static void mark(const char* s) { strncat(order, s, sizeof order - strlen(order) - 1); }
@@ -372,6 +408,17 @@ static void test_completions(void) {
           cd_cb_calls, cd_cb_reason, cd_cb_intr);
 
     iop_ctx c = { 0 };
+    uint32_t fp = scratch + 0x340;                    /* sceCdlFILE: lsn, size, name[16], date[8] */
+    put_str(scratch + 0x380, "\\SYSTEM.CNF;1");
+    put_str(scratch + 0x3A0, "\\data\\snd.bnk");
+    put_str(scratch + 0x3C0, "\\DATA\\NOPE.BNK");
+    CHECK(CALL(cdvdman_sceCdSearchFile, &c, fp, scratch + 0x380, 0, 0) == 1 && iop_r32(fp) == 30 && iop_r32(fp + 4) == 100,
+          "SearchFile SYSTEM.CNF: lsn %u size %u", iop_r32(fp), iop_r32(fp + 4));
+    CHECK(CALL(cdvdman_sceCdSearchFile, &c, fp, scratch + 0x3A0, 0, 0) == 1 && iop_r32(fp) == 40 &&
+          iop_r32(fp + 4) == 5000 && iop_r8(fp + 8) == 'S' && iop_r8(fp + 24) == 104,
+          "SearchFile in a subdirectory: lsn %u size %u", iop_r32(fp), iop_r32(fp + 4));
+    CHECK(CALL(cdvdman_sceCdSearchFile, &c, fp, scratch + 0x3C0, 0, 0) == 0, "SearchFile of a missing file");
+
     uint32_t d = scratch + 0x300;                     /* SifDmaTransfer_t: src, dest, size, attr */
     iop_w32(d, 0x1234); iop_w32(d + 4, 0x00500000u); iop_w32(d + 8, 0x24); iop_w32(d + 12, 0);
     uint32_t id = CALL(sifman_sceSifSetDmaIntr, &c, d, 1, G_DMA_CB, 0xBEEF);
@@ -401,8 +448,6 @@ static void test_slice(void) {
     iop_run();
     CHECK(spin_done, "spinning thread did not resume");
 }
-
-static void put_str(uint32_t addr, const char* s) { memcpy(iop_ram + addr, s, strlen(s) + 1); }
 
 static void test_libs(void) {
     printf("sysclib and printf\n");

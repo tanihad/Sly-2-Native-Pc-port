@@ -229,8 +229,8 @@ void iop_init(void) {
 void iop_imp_sysmem_AllocSysMemory(iop_ctx* c) {
     uint32_t a = sysmem_alloc((int)c->r[4], c->r[5], c->r[6]);
     if (iop_log) fprintf(stderr, "[iop] AllocSysMemory(%u, 0x%X, 0x%X) -> 0x%08X\n", c->r[4], c->r[5], c->r[6], a);
-    if (!a) fprintf(stderr, "[iop] AllocSysMemory(%u, 0x%X): out of IOP memory (largest free 0x%X)\n",
-                    c->r[4], c->r[5], iop_max_free());
+    if (!a) fprintf(stderr, "[iop] AllocSysMemory(mode %u, 0x%X bytes, at 0x%X) failed (largest free block 0x%X)\n",
+                    c->r[4], c->r[5], c->r[6], iop_max_free());
     iop_ret(c, (int32_t)a);
 }
 void iop_imp_sysmem_FreeSysMemory(iop_ctx* c) { iop_ret(c, iop_free(c->r[4]) ? KE_ERROR : KE_OK); }
