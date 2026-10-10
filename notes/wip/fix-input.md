@@ -17,8 +17,24 @@ the runtime, then get as far into the game as possible with scripted input.
   BASCUS-97316YAOTWTD!, icon.sys, memcard_icon.ico, save1..3 and goes on to the title scene
   (frames build/frames1/frame_000900.png, frame_001080.png).
 
+- `PS2_WATCH=<hex>,...` (+`PS2_WATCH_ALL=1`): logs callers ($ra) and $a0-$a3 of chosen functions.
+- Title screen ("Press START button for New Game / SELECT for Menu") appears ~v1140-1200; its input
+  handler 0x1DD920 (START -> 0x165E38(save slot) via 0x1DD99C) only runs from ~v1315 on, and the
+  first START after that may still be ignored while the title settles; START at pad frame 1500
+  (v~1568) starts the game: Bentley/Sly Binocucom briefing (build/frames6/frame_001770.png).
+
+- **Blocker 2 (fixed): Binocucom briefing stuck at "B|".** The dialogue subtitle is revealed in
+  step with the voice stream (0x227820: chars = stream time / (length - 0.5) * total) and a line
+  ends when spiop reports its stream finished. Streams go through Sucker Punch's IOP module spiop
+  ('SUKR' extern procs via 989snd commands 76/104). runtime/snd.c answered every command 0, so
+  proc 1 (open stream) "failed" and the EE retried it forever (callback 0x1FCBA8 -> restart
+  0x1FC270). Fix: snd.c now returns per-command results and models spiop's 3 stream channels
+  silently (open/close/pause/resume/ready/active, length from the VAGp / " KPV" header on disc via
+  new cdvd_read_host). Dialogue now plays line by line (build/frames8/).
+  `PS2_LOG_SND=1` lists sound commands and stream events.
+
 ## In progress
-- Scripted run past the title screen.
+- Continue past the briefing into the Cairo prologue.
 
 ## Next
 1. Title screen -> menus -> first gameplay with scripted input; dump frames.

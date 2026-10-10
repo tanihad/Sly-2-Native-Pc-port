@@ -53,12 +53,13 @@ static int calls_window;
 
 /* PS2_WATCH="<hexaddr>,...": log calls of these functions with $ra and $a0-$a3, each distinct
  * caller once (PS2_WATCH_ALL=1: every call, up to 5000 lines). */
-static uint32_t watch[16], watch_seen[256][2];
-static int watch_n, watch_all, watch_seen_n, watch_lines;
+static uint32_t watch[16], watch_seen[256][2], watch_a0;
+static int watch_n, watch_all, watch_seen_n, watch_lines, watch_a0_on;
 
 void ps2_calls_record(ps2_ctx* ctx, uint32_t addr) {
     for (int i = 0; i < watch_n; i++) {
         if (watch[i] != addr) continue;
+        if (watch_a0_on && ctx->r[REG_A0].uw[0] != watch_a0) continue;   /* PS2_WATCH_A0=<hex> */
         uint32_t ra = ctx->r[REG_RA].uw[0];
         int seen = 0;
         for (int k = 0; k < watch_seen_n && !seen; k++) seen = watch_seen[k][0] == addr && watch_seen[k][1] == ra;
@@ -86,6 +87,7 @@ static void watch_init(void) {
     for (char* tok = strtok(buf, ","); tok && watch_n < 16; tok = strtok(NULL, ","))
         watch[watch_n++] = (uint32_t)strtoul(tok, NULL, 16);
     watch_all = getenv("PS2_WATCH_ALL") != NULL;
+    if (getenv("PS2_WATCH_A0")) { watch_a0_on = 1; watch_a0 = (uint32_t)strtoul(getenv("PS2_WATCH_A0"), NULL, 16); }
     if (watch_n) ps2_calls_on = 1;
 }
 

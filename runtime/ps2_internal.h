@@ -42,6 +42,7 @@ extern int ps2_log_sif;                    /* PS2_LOG_SIF=1 */
  * bytes of reply into `out` (pre-zeroed). */
 int cdvd_rpc(ps2_ctx* ctx, uint32_t sid, uint32_t fno, const uint8_t* args, uint32_t send_size,
              uint8_t* out, uint32_t recv_size);
+int cdvd_read_host(uint32_t lbn, uint32_t count, void* dst);   /* disc sectors into host memory */
 int iop_modules_rpc(ps2_ctx* ctx, uint32_t sid, uint32_t fno, const uint8_t* args, uint32_t send_size,
                     uint8_t* out, uint32_t recv_size);
 
