@@ -43,7 +43,10 @@ void gs_csr_label(uint32_t id, uint32_t mask) {
     siglblid = (siglblid & 0xFFFFFFFFull) | ((uint64_t)((l & ~mask) | (id & mask)) << 32);
 }
 
+uint32_t gs_vsync_count;
+
 void gs_vsync(void) {
+    gs_vsync_count++;
     csr_field ^= CSR_FIELD;
     set_events(CSR_VSINT | CSR_HSINT);   /* many HSyncs happened since the last VSync too */
 

@@ -26,6 +26,7 @@ void gs_draw_reset(void);                /* CSR.RESET: drop the vertex queue, ca
 /* activity counters (PS2_LOG_GS=1 prints them from gs_vsync once a second) */
 typedef struct { uint32_t regs, prims, sprites, tris, image_bytes, xfers; } gs_stats_t;
 extern gs_stats_t gs_stats;
+extern uint32_t gs_vsync_count;          /* gs_vsync calls so far (debug output) */
 
 /* ---- gs_draw_swz.c: direct frame/Z buffer addressing ------------------------------------------ */
 typedef struct {
