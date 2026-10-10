@@ -42,9 +42,9 @@ static DWORD WINAPI watchdog(LPVOID arg) {
     return 0;
 }
 
-/* PS2_CALLS="<vblank>[:<frames>]": count every recompiled function called from that VBlank on, for
- * <frames> VBlanks (default 1), with the threads that called it, then print the table sorted by
- * address. Debug builds only (needs PS2_TRACE). */
+/* PS2_CALLS="<vblank>[:<frames>][,...]": count every recompiled function called from that VBlank on,
+ * for <frames> VBlanks (default 1), with the threads that called it, then print the table sorted by
+ * address; up to 8 windows. Debug builds only (needs PS2_TRACE). */
 volatile int ps2_calls_on;
 #define CALLS_HASH 65536u
 static struct { uint32_t addr, count, threads; } calls[CALLS_HASH];
@@ -56,7 +56,33 @@ static int calls_window;
 static uint32_t watch[16], watch_seen[256][2], watch_a0;
 static int watch_n, watch_all, watch_seen_n, watch_lines, watch_a0_on;
 
+/* PS2_INPUT "@<hexaddr>[/<hexra>]" tokens: window.c's input script waits for calls of these
+ * functions (made from the call site returning to <hexra>, if given). */
+static uint32_t anchor_addr[32], anchor_ra[32];
+static volatile uint32_t anchor_calls[32];
+static int anchor_n;
+
+uint32_t ps2_func_calls(uint32_t addr, uint32_t ra) {
+    for (int k = 0; k < anchor_n; k++)
+        if (anchor_addr[k] == addr && anchor_ra[k] == ra) return anchor_calls[k];
+    return 0;
+}
+
+static void anchors_init(void) {
+    const char* s = getenv("PS2_INPUT");
+    for (; s && (s = strchr(s, '@')) != NULL; s++) {
+        char* p;
+        uint32_t a = (uint32_t)strtoul(s + 1, &p, 16), ra = *p == '/' ? (uint32_t)strtoul(p + 1, NULL, 16) : 0;
+        int k = 0;
+        while (k < anchor_n && (anchor_addr[k] != a || anchor_ra[k] != ra)) k++;
+        if (k == anchor_n && anchor_n < 32) { anchor_addr[anchor_n] = a; anchor_ra[anchor_n++] = ra; }
+    }
+    if (anchor_n) ps2_calls_on = 1;
+}
+
 void ps2_calls_record(ps2_ctx* ctx, uint32_t addr) {
+    for (int k = 0; k < anchor_n; k++)
+        if (anchor_addr[k] == addr && (!anchor_ra[k] || anchor_ra[k] == ctx->r[REG_RA].uw[0])) anchor_calls[k]++;
     for (int i = 0; i < watch_n; i++) {
         if (watch[i] != addr) continue;
         if (watch_a0_on && ctx->r[REG_A0].uw[0] != watch_a0) continue;   /* PS2_WATCH_A0=<hex> */
@@ -97,17 +123,26 @@ static int calls_cmp(const void* a, const void* b) {
 }
 
 static void calls_vblank(uint32_t v) {
-    static int init;
-    if (!init) {
+    static int init, next;
+    static uint32_t windows[9][2];
+    if (!init) {                                 /* "<from>[:<frames>],..." up to 8 windows */
         init = 1;
         const char* e = getenv("PS2_CALLS");
-        if (e) { calls_frames = 1; sscanf(e, "%u:%u", &calls_from, &calls_frames); }
+        int n = 0;
+        while (e && n < 8) {
+            windows[n][1] = 1;
+            if (sscanf(e, "%u:%u", &windows[n][0], &windows[n][1]) >= 1) n++;
+            e = strchr(e, ',');
+            if (e) e++;
+        }
+        if (n) { calls_from = windows[0][0]; calls_frames = windows[0][1]; next = 1; }
+        windows[n][0] = 0;
     }
     if (!calls_from) return;
     if (v == calls_from) ps2_calls_on = calls_window = 1;
     if (v == calls_from + calls_frames) {
         calls_window = 0;
-        ps2_calls_on = watch_n > 0;
+        ps2_calls_on = watch_n > 0 || anchor_n > 0;
         static uint32_t rows[CALLS_HASH][3];
         uint32_t n = 0;
         for (uint32_t i = 0; i < CALLS_HASH; i++)
@@ -116,6 +151,10 @@ static void calls_vblank(uint32_t v) {
         fprintf(stderr, "[calls] VBlank %u-%u: %u functions\n", calls_from, v, n);
         for (uint32_t i = 0; i < n; i++)
             fprintf(stderr, "[calls] %08X %8u threads 0x%X\n", rows[i][0], rows[i][1], rows[i][2]);
+        memset(calls, 0, sizeof calls);
+        calls_from = windows[next][0];           /* next window, if any (0 ends the list) */
+        calls_frames = windows[next][1];
+        if (calls_from) next++;
     }
 }
 
@@ -221,6 +260,7 @@ static volatile LONG frames_behind;              /* VBlanks the emulation hasn't
 static uint32_t vblank_count;
 static const char* dump_dir;
 static int dump_every = 60, headless;
+static uint32_t dump_from;                       /* PS2_DUMP_FROM=<vblank>: no dumps before it */
 
 static DWORD WINAPI host_timer(LPVOID arg) {
     (void)arg;
@@ -254,7 +294,7 @@ static void vblank(ps2_ctx* ctx) {
         if (!headless) window_present(frame, w, h, 1024);
     } else {
         if (!headless) window_present(frame, w, h, 1024);
-        if (dump_dir && vblank_count % (uint32_t)dump_every == 0) {
+        if (dump_dir && vblank_count % (uint32_t)dump_every == 0 && vblank_count >= dump_from) {
             char path[512];
             snprintf(path, sizeof path, "%s/frame_%06u.png", dump_dir, vblank_count);
             debug_write_png(path, frame, w, h, 1024);
@@ -451,9 +491,11 @@ int main(int argc, char** argv) {
     int dump_regs = argc > 2 && strcmp(argv[2], "--dump-regs") == 0;
     ps2_log_sif = getenv("PS2_LOG_SIF") != NULL;
     watch_init();
+    anchors_init();
     headless = dump_regs || getenv("PS2_HEADLESS") != NULL;
     dump_dir = getenv("PS2_DUMP_FRAMES");
     if (getenv("PS2_DUMP_EVERY")) dump_every = atoi(getenv("PS2_DUMP_EVERY")) > 0 ? atoi(getenv("PS2_DUMP_EVERY")) : 60;
+    if (getenv("PS2_DUMP_FROM")) dump_from = (uint32_t)atoi(getenv("PS2_DUMP_FROM"));
     const char* wd = getenv("PS2_WATCHDOG");
     if (wd && atoi(wd) > 0) CreateThread(NULL, 0, watchdog, (LPVOID)(uintptr_t)atoi(wd), 0, NULL);
     if (!headless) window_init();

@@ -69,34 +69,87 @@ static const struct { const char* name; int axis, value; } script_sticks[] = {
     { "lup", 2, 0x00 }, { "ldown", 2, 0xFF }, { "lleft", 1, 0x00 }, { "lright", 1, 0xFF },
     { "rup", 4, 0x00 }, { "rdown", 4, 0xFF }, { "rleft", 3, 0x00 }, { "rright", 3, 0xFF },
 };
-static struct { uint32_t frame, hold; int button; } script[256];
+/* Besides absolute frames, a token can start relative to the token before it:
+ *   "+<n>:<button>[:<hold>]"            n frames after the previous token started;
+ *   "@<hexaddr>[/<hexra>][+<n>]:<button>[:<hold>]"
+ *       n frames after the recompiled function <hexaddr> was called (from the call site returning
+ *       to <hexra>, if given) once the previous token has started, e.g. "@187D80/1DD96C+30:start"
+ *       = START 30 frames after the title screen first checks for START.
+ * Anchors need the debug build (function tracing); the runtime counts their calls
+ * (ps2_func_calls). A token waits until the one before it has started. */
+enum { SCRIPT_ABS, SCRIPT_REL, SCRIPT_ANCHOR };
+#define SCRIPT_UNSET 0xFFFFFFFFu
+static struct { uint32_t frame, hold, start, addr, ra, base; int button, kind, armed; } script[256];
 static int script_n = -1;
 static uint32_t script_frame;
+uint32_t ps2_func_calls(uint32_t addr, uint32_t ra);   /* runtime: calls of an anchor so far */
+uint32_t ps2_vblank_count(void);
+
+static void script_parse(const char* s) {
+    char buf[4096];
+    snprintf(buf, sizeof buf, "%s", s ? s : "");
+    for (char* tok = strtok(buf, ","); tok && script_n < 256; tok = strtok(NULL, ",")) {
+        char name[32] = { 0 };
+        unsigned frame = 0, hold = 6, addr = 0, ra = 0;
+        int kind = SCRIPT_ABS;
+        if (tok[0] == '+') {
+            kind = SCRIPT_REL;
+            if (sscanf(tok + 1, "%u:%31[a-z0-9]:%u", &frame, name, &hold) < 2) continue;
+        } else if (tok[0] == '@') {
+            kind = SCRIPT_ANCHOR;
+            char* p = tok + 1;
+            addr = (unsigned)strtoul(p, &p, 16);
+            if (*p == '/') ra = (unsigned)strtoul(p + 1, &p, 16);
+            if (*p == '+') frame = (unsigned)strtoul(p + 1, &p, 10);
+            if (*p != ':' || sscanf(p + 1, "%31[a-z0-9]:%u", name, &hold) < 1) continue;
+        } else if (sscanf(tok, "%u:%31[a-z0-9]:%u", &frame, name, &hold) < 2) continue;
+        int found = -1;
+        for (int b = 0; b < SCRIPT_NBUTTONS; b++)
+            if (!strcmp(name, script_buttons[b].name)) found = b;
+        for (int b = 0; b < (int)(sizeof script_sticks / sizeof script_sticks[0]); b++)
+            if (!strcmp(name, script_sticks[b].name)) found = SCRIPT_NBUTTONS + b;
+        if (found < 0) { wlog("PS2_INPUT: unknown button in '%s'", tok); continue; }
+        script[script_n].frame = frame; script[script_n].hold = hold; script[script_n].button = found;
+        script[script_n].kind = kind; script[script_n].addr = addr; script[script_n].ra = ra;
+        script[script_n].armed = 0;
+        script[script_n++].start = kind == SCRIPT_ABS ? frame : SCRIPT_UNSET;
+    }
+}
+
+/* Give relative and anchored tokens their start frame once the token before them has started. */
+static void script_resolve(uint32_t now) {
+    for (int i = 0; i < script_n; i++) {
+        if (script[i].start != SCRIPT_UNSET) continue;
+        uint32_t prev = i ? script[i - 1].start : 0;
+        if (prev == SCRIPT_UNSET || now < prev) return;          /* previous one hasn't started */
+        if (script[i].kind == SCRIPT_REL) { script[i].start = prev + script[i].frame; continue; }
+        uint32_t calls = ps2_func_calls(script[i].addr, script[i].ra);
+        if (!script[i].armed) { script[i].armed = 1; script[i].base = calls; }
+        if (calls == script[i].base) return;                     /* still waiting for the call */
+        script[i].start = now + script[i].frame;
+        wlog("pad frame %u: function %08X called, '%s' at %u", now, script[i].addr,
+             script[i].button >= SCRIPT_NBUTTONS ? script_sticks[script[i].button - SCRIPT_NBUTTONS].name
+                                                 : script_buttons[script[i].button].name, script[i].start);
+    }
+}
 
 static void script_apply(int port, pad_input* in) {
     if (script_n < 0) {
         script_n = 0;
         const char* s = getenv("PS2_INPUT");
-        char buf[4096];
-        snprintf(buf, sizeof buf, "%s", s ? s : "");
-        for (char* tok = strtok(buf, ","); tok && script_n < 256; tok = strtok(NULL, ",")) {
-            char name[32] = { 0 };
-            unsigned frame = 0, hold = 6;
-            if (sscanf(tok, "%u:%31[a-z0-9]:%u", &frame, name, &hold) < 2) continue;
-            int found = -1;
-            for (int b = 0; b < SCRIPT_NBUTTONS; b++)
-                if (!strcmp(name, script_buttons[b].name)) found = b;
-            for (int b = 0; b < (int)(sizeof script_sticks / sizeof script_sticks[0]); b++)
-                if (!strcmp(name, script_sticks[b].name)) found = SCRIPT_NBUTTONS + b;
-            if (found >= 0) { script[script_n].frame = frame; script[script_n].hold = hold; script[script_n++].button = found; }
-        }
+        script_parse(s);
         if (s) wlog("%d scripted presses", script_n);
     }
     if (port != 0 || !script_n) return;
     uint32_t now = script_frame++;
+    script_resolve(now);
     for (int i = 0; i < script_n; i++) {
-        if (now < script[i].frame || now >= script[i].frame + script[i].hold) continue;
+        if (script[i].start == SCRIPT_UNSET) continue;
+        if (now < script[i].start || now >= script[i].start + script[i].hold) continue;
         int b = script[i].button;
+        if (now == script[i].start)                           /* calibrate pad frames vs VBlanks */
+            wlog("pad frame %u (VBlank %u): %s (%u frames)", now, ps2_vblank_count(), b >= SCRIPT_NBUTTONS ?
+                 script_sticks[b - SCRIPT_NBUTTONS].name : script_buttons[b].name, script[i].hold);
         if (b >= SCRIPT_NBUTTONS) {
             uint8_t v = (uint8_t)script_sticks[b - SCRIPT_NBUTTONS].value;
             switch (script_sticks[b - SCRIPT_NBUTTONS].axis) {
