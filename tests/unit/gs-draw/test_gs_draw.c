@@ -861,6 +861,81 @@ static void t_display(void) {
     CHECK(gs_display(out, 1024, &w, &h) == 0, "display off");
 }
 
+/* Render-to-texture chains with nothing read back in between: in the async variant every step is
+ * still being drawn (deferred) when the next one samples it, so this checks the hazard handling of
+ * gs_draw_pixel.c / gs_draw_tex.c. The texture is declared 1024x1024 over a 64x64 buffer, as games
+ * do with frame buffers, so it also covers pages that are written without touching its texels. */
+static void t_deferred_hazards(void) {
+    reset_env();
+    const uint32_t A = 200;                        /* 64x64 source buffer at page 200 (FBW 1) */
+    const uint64_t tA = tex0(A * 32, 1, PSMCT32, 10, 10, 1, 1, 0, 0, 0, 0);
+    frame(0, 10, PSMCT32, 0);
+    clear(0, 0, 0, 0);
+    frame(A, 1, PSMCT32, 0);
+    sprite(0, 0, 64, 64, 255, 0, 0, 0x80);         /* A: red */
+    frame(0, 10, PSMCT32, 0);
+    W(TEX0_1, tA);
+    prim(P_SPRITE, TME | FST);
+    uv(0, 0); xyz(0, 0, 0); uv(64 * 16, 64 * 16); xyz(64, 64, 0);          /* red */
+    frame(A, 1, PSMCT32, 0);
+    sprite(0, 0, 64, 32, 0, 255, 0, 0x80);         /* A: green top half */
+    frame(0, 10, PSMCT32, 0);
+    W(TEX0_1, tA);
+    prim(P_SPRITE, TME | FST);
+    uv(0, 0); xyz(100, 0, 0); uv(64 * 16, 64 * 16); xyz(164, 64, 0);      /* green / red */
+    frame(A + 5, 1, PSMCT32, 0);                   /* texture rows 160-191: not sampled below */
+    sprite(0, 0, 64, 32, 0, 0, 255, 0x80);
+    frame(0, 10, PSMCT32, 0);
+    W(TEX0_1, tA);
+    prim(P_SPRITE, TME | FST);
+    uv(0, 0); xyz(200, 0, 0); uv(64 * 16, 64 * 16); xyz(264, 64, 0);      /* green / red */
+    frame(A, 1, PSMCT32, 0);                       /* feedback: A's top half copied onto its bottom half */
+    W(TEX0_1, tA);
+    prim(P_SPRITE, TME | FST);
+    uv(0, 0); xyz(0, 32, 0); uv(64 * 16, 32 * 16); xyz(64, 64, 0);
+    frame(0, 10, PSMCT32, 0);
+    W(TEX0_1, tA);
+    prim(P_SPRITE, TME | FST);
+    uv(0, 0); xyz(300, 0, 0); uv(64 * 16, 64 * 16); xyz(364, 64, 0);      /* green / green */
+    CHECK(rgb(px(10, 10)) == 0x0000FF && rgb(px(10, 50)) == 0x0000FF, "sampled red: %08X %08X", px(10, 10), px(10, 50));
+    CHECK(rgb(px(110, 10)) == 0x00FF00 && rgb(px(110, 50)) == 0x0000FF, "after drawing into it: %08X %08X", px(110, 10), px(110, 50));
+    CHECK(rgb(px(210, 10)) == 0x00FF00 && rgb(px(210, 50)) == 0x0000FF, "after drawing elsewhere in its pages: %08X %08X", px(210, 10), px(210, 50));
+    CHECK(rgb(px(310, 10)) == 0x00FF00 && rgb(px(310, 50)) == 0x00FF00, "after feedback drawing: %08X %08X", px(310, 10), px(310, 50));
+}
+
+/* An upload into one page of an indexed texture drops only that page's tiles; a palette change
+ * afterwards must still reach the tiles of the other page that hold an index whose probe position
+ * was in the dropped page. */
+static void t_partial_invalidation_clut(void) {
+    reset_env();
+    clear(0, 0, 0, 0);
+    static uint8_t idx[256 * 64];
+    memset(idx, 7, sizeof idx);
+    upload(TEXBP, 4, PSMT8, 0, 0, 256, 64, idx, sizeof idx);       /* two T8 pages side by side */
+    uint32_t pal[256];
+    for (int i = 0; i < 256; i++) pal[i] = 0x80000000u | (uint32_t)i;
+    pal[7] = 0x800000FFu; pal[9] = 0x8000FF00u;
+    upload_clut8(CLUTBP, pal);
+    const uint64_t t = tex0(TEXBP, 4, PSMT8, 8, 6, 1, 1 /*DECAL*/, CLUTBP, PSMCT32, 0, 1);
+    W(TEX0_1, t);
+    prim(P_SPRITE, TME | FST);
+    rgba(128, 128, 128, 128);
+    uv(0, 0); xyz(0, 100, 0); uv(256 * 16, 64 * 16); xyz(256, 164, 0);
+    memset(idx, 9, 128 * 64);
+    upload(TEXBP, 4, PSMT8, 0, 0, 128, 64, idx, 128 * 64);           /* left page only */
+    W(TEX0_1, t);
+    prim(P_SPRITE, TME | FST);
+    uv(0, 0); xyz(0, 200, 0); uv(256 * 16, 64 * 16); xyz(256, 264, 0);
+    pal[7] = 0x80FF0000u;
+    upload_clut8(CLUTBP, pal);
+    W(TEX0_1, t);
+    prim(P_SPRITE, TME | FST);
+    uv(0, 0); xyz(0, 300, 0); uv(256 * 16, 64 * 16); xyz(256, 364, 0);
+    CHECK(rgb(px(10, 110)) == 0x0000FF && rgb(px(200, 110)) == 0x0000FF, "before: %08X %08X", px(10, 110), px(200, 110));
+    CHECK(rgb(px(10, 210)) == 0x00FF00 && rgb(px(200, 210)) == 0x0000FF, "after the upload: %08X %08X", px(10, 210), px(200, 210));
+    CHECK(rgb(px(10, 310)) == 0x00FF00 && rgb(px(200, 310)) == 0xFF0000, "after the CLUT change: %08X %08X", px(10, 310), px(200, 310));
+}
+
 /* ---- benchmark --------------------------------------------------------------------------------- */
 
 static double now(void) {
@@ -1253,6 +1328,8 @@ int main(int argc, char** argv) {
     t_stq_negative_coords();
     t_csr();
     t_display();
+    t_deferred_hazards();
+    t_partial_invalidation_clut();
     bench();
     fprintf(stderr, "%s: %d/%d checks passed\n", argv[0], checks - fails, checks);
     return fails ? 1 : 0;

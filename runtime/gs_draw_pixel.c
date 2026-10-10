@@ -798,8 +798,10 @@ static void db_submit(void) {
     cur_prim = -1;
 }
 
+uint32_t dbg_syncs;
 void gs_draw_sync(void) {
     if (!deferred()) return;
+    if (DB[db_fill].nprims || db_run >= 0) dbg_syncs++;
     db_submit();
     db_wait();
 }
