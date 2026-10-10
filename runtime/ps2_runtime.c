@@ -44,6 +44,83 @@ static DWORD WINAPI watchdog(LPVOID arg) {
     return 0;
 }
 
+/* PS2_CALLS="<vblank>[:<frames>]": count every recompiled function called from that VBlank on, for
+ * <frames> VBlanks (default 1), with the threads that called it, then print the table sorted by
+ * address. Debug builds only (needs PS2_TRACE). */
+volatile int ps2_calls_on;
+#define CALLS_HASH 65536u
+static struct { uint32_t addr, count, threads; } calls[CALLS_HASH];
+static uint32_t calls_from, calls_frames;
+static int calls_window;
+
+/* PS2_WATCH="<hexaddr>,...": log calls of these functions with $ra and $a0-$a3, each distinct
+ * caller once (PS2_WATCH_ALL=1: every call, up to 5000 lines). */
+static uint32_t watch[16], watch_seen[256][2], watch_a0;
+static int watch_n, watch_all, watch_seen_n, watch_lines, watch_a0_on;
+
+void ps2_calls_record(ps2_ctx* ctx, uint32_t addr) {
+    for (int i = 0; i < watch_n; i++) {
+        if (watch[i] != addr) continue;
+        if (watch_a0_on && ctx->r[REG_A0].uw[0] != watch_a0) continue;   /* PS2_WATCH_A0=<hex> */
+        uint32_t ra = ctx->r[REG_RA].uw[0];
+        int seen = 0;
+        for (int k = 0; k < watch_seen_n && !seen; k++) seen = watch_seen[k][0] == addr && watch_seen[k][1] == ra;
+        if (!seen && watch_seen_n < 256) { watch_seen[watch_seen_n][0] = addr; watch_seen[watch_seen_n++][1] = ra; }
+        if ((!seen || watch_all) && watch_lines++ < 5000)
+            fprintf(stderr, "[watch] v%u #%d %08X ra %08X a0 %08X a1 %08X a2 %08X a3 %08X\n", ps2_vblank_count(),
+                    thread_current_id(), addr, ra, ctx->r[REG_A0].uw[0], ctx->r[REG_A1].uw[0],
+                    ctx->r[REG_A2].uw[0], ctx->r[REG_A3].uw[0]);
+    }
+    if (!calls_window) return;
+    uint32_t h = ((addr >> 2) * 2654435761u) >> 16;
+    while (calls[h].addr != addr) {
+        if (!calls[h].addr) { calls[h].addr = addr; break; }
+        h = (h + 1) & (CALLS_HASH - 1);
+    }
+    calls[h].count++;
+    calls[h].threads |= 1u << (thread_current_id() & 31);
+}
+
+static void watch_init(void) {
+    const char* e = getenv("PS2_WATCH");
+    if (!e) return;
+    char buf[512];
+    snprintf(buf, sizeof buf, "%s", e);
+    for (char* tok = strtok(buf, ","); tok && watch_n < 16; tok = strtok(NULL, ","))
+        watch[watch_n++] = (uint32_t)strtoul(tok, NULL, 16);
+    watch_all = getenv("PS2_WATCH_ALL") != NULL;
+    if (getenv("PS2_WATCH_A0")) { watch_a0_on = 1; watch_a0 = (uint32_t)strtoul(getenv("PS2_WATCH_A0"), NULL, 16); }
+    if (watch_n) ps2_calls_on = 1;
+}
+
+static int calls_cmp(const void* a, const void* b) {
+    uint32_t x = *(const uint32_t*)a, y = *(const uint32_t*)b;
+    return x < y ? -1 : x > y;
+}
+
+static void calls_vblank(uint32_t v) {
+    static int init;
+    if (!init) {
+        init = 1;
+        const char* e = getenv("PS2_CALLS");
+        if (e) { calls_frames = 1; sscanf(e, "%u:%u", &calls_from, &calls_frames); }
+    }
+    if (!calls_from) return;
+    if (v == calls_from) ps2_calls_on = calls_window = 1;
+    if (v == calls_from + calls_frames) {
+        calls_window = 0;
+        ps2_calls_on = watch_n > 0;
+        static uint32_t rows[CALLS_HASH][3];
+        uint32_t n = 0;
+        for (uint32_t i = 0; i < CALLS_HASH; i++)
+            if (calls[i].addr) { rows[n][0] = calls[i].addr; rows[n][1] = calls[i].count; rows[n][2] = calls[i].threads; n++; }
+        qsort(rows, n, sizeof rows[0], calls_cmp);
+        fprintf(stderr, "[calls] VBlank %u-%u: %u functions\n", calls_from, v, n);
+        for (uint32_t i = 0; i < n; i++)
+            fprintf(stderr, "[calls] %08X %8u threads 0x%X\n", rows[i][0], rows[i][1], rows[i][2]);
+    }
+}
+
 static void die(const char* fmt, uint32_t v) {
     fprintf(stderr, "[ps2] fatal: ");
     fprintf(stderr, fmt, v);
@@ -199,6 +276,7 @@ static void present_frame(const uint32_t* frame, int ok, int w, int h, uint32_t 
 static void vblank(ps2_ctx* ctx) {
     vblank_count++;
     perf_vblank(vblank_count, (uint32_t)vblanks_due);
+    calls_vblank(vblank_count);
     gs_vsync();
     int perf_prev = perf_enter(PERF_PRESENT);
     if (gs_async()) {
@@ -219,6 +297,9 @@ static void vblank(ps2_ctx* ctx) {
         peek = getenv("PS2_PEEK");
         if (getenv("PS2_PEEK_EVERY")) peek_every = atoi(getenv("PS2_PEEK_EVERY")) > 0 ? atoi(getenv("PS2_PEEK_EVERY")) : 60;
     }
+    static int log_threads = -1;
+    if (log_threads < 0) log_threads = getenv("PS2_LOG_THREADS") != NULL;
+    if (log_threads && vblank_count % (uint32_t)peek_every == 0) threads_debug_dump();
     if (peek && vblank_count % (uint32_t)peek_every == 0) {
         char buf[512];
         snprintf(buf, sizeof buf, "%s", peek);
@@ -399,6 +480,7 @@ int main(int argc, char** argv) {
 
     int dump_regs = argc > 2 && strcmp(argv[2], "--dump-regs") == 0;
     ps2_log_sif = getenv("PS2_LOG_SIF") != NULL;
+    watch_init();
     headless = dump_regs || getenv("PS2_HEADLESS") != NULL;
     dump_dir = getenv("PS2_DUMP_FRAMES");
     if (getenv("PS2_DUMP_EVERY")) dump_every = atoi(getenv("PS2_DUMP_EVERY")) > 0 ? atoi(getenv("PS2_DUMP_EVERY")) : 60;

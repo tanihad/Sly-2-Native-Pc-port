@@ -8,6 +8,7 @@
 #include "ps2_internal.h"
 #include "perf.h"
 
+#include <stdlib.h>
 #include <windows.h>
 
 enum { TH_FREE, TH_DORMANT, TH_READY, TH_WAIT_SEMA, TH_SLEEP, TH_RUNNING };
@@ -36,6 +37,25 @@ static ps2_ctx idle_ctx;           /* runs interrupt handlers while every thread
 
 ps2_ctx* thread_ctx(void) { return &threads[current].ctx; }
 int thread_current_id(void) { return current; }
+
+/* PS2_LOG_THREADS=1: log thread creation, start, exit and priority changes. */
+static int log_threads = -1;
+#define TLOG(...) do { if (log_threads < 0) log_threads = getenv("PS2_LOG_THREADS") != NULL; \
+                       if (log_threads) fprintf(stderr, __VA_ARGS__); } while (0)
+
+/* Print every thread's state (debug: PS2_LOG_THREADS with PS2_PEEK_EVERY). */
+void threads_debug_dump(void) {
+    static const char* names[] = { "free", "dormant", "ready", "wait-sema", "sleep", "running" };
+    for (int i = 1; i < MAX_THREADS; i++) {
+        thread* t = &threads[i];
+        if (t->status == TH_FREE) continue;
+        fprintf(stderr, "[thread] v%u #%d %s prio %d entry 0x%08X%s", ps2_vblank_count(), i, names[t->status],
+                t->prio, t->entry, i == current ? " (current)" : "");
+        if (t->status == TH_WAIT_SEMA)
+            fprintf(stderr, " sema %d (count %d)", t->wait_sema, semas[t->wait_sema].count);
+        fprintf(stderr, " ra 0x%08X\n", t->ctx.r[REG_RA].uw[0]);
+    }
+}
 
 static void make_ready(int tid, int at_head) {
     threads[tid].status = TH_READY;
@@ -154,6 +174,8 @@ int thread_syscall(ps2_ctx* ctx, int n, int64_t* ret) {
             t->prio = t->init_prio = (int)ps2_r32(ctx, a0 + 20);
             t->attr = ps2_r32(ctx, a0 + 28);
             t->option = ps2_r32(ctx, a0 + 32);
+            TLOG("[thread] create #%d entry 0x%08X prio %d stack 0x%08X+0x%X (by #%d, ra 0x%08X)\n", i, t->entry,
+                 t->prio, t->stack, t->stack_size, current, ctx->r[REG_RA].uw[0]);
             *ret = i;
             return 1;
         }
@@ -175,17 +197,21 @@ int thread_syscall(ps2_ctx* ctx, int n, int64_t* ret) {
         t->ctx.r[REG_SP].sd[0] = (int32_t)((t->stack + t->stack_size - 0x2A0u) & ~15u);
         t->prio = t->init_prio;
         if (!t->fiber) t->fiber = CreateFiber(1 << 20, thread_main, t);
+        TLOG("[thread] start #%d arg 0x%08X (by #%d prio %d)\n", (int)(t - threads), a1, current, threads[current].prio);
         make_ready((int)(t - threads), 0);
         *ret = 0;
         return 1;
     }
     case 0x23: case 0x24:                         /* ExitThread, ExitDeleteThread */
+        TLOG("[thread] exit #%d (%s)\n", current, n == 0x23 ? "ExitThread" : "ExitDeleteThread");
         threads[current].status = (n == 0x23) ? TH_DORMANT : TH_FREE;
         schedule();
         *ret = 0;
         return 1;
     case 0x29: case 0x2A:                         /* (i)ChangeThreadPriority(tid, prio) */
         if (!(t = get(a0))) { *ret = -1; return 1; }
+        TLOG("[thread] priority #%d %d -> %d (by #%d, ra 0x%08X)\n", (int)(t - threads), t->prio, (int)a1, current,
+             ctx->r[REG_RA].uw[0]);
         *ret = t->prio;
         t->prio = (int)a1;
         if (t == &threads[current]) need_resched = 1;          /* may now be outranked */

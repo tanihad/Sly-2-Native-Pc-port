@@ -53,7 +53,8 @@ static void* dll_proc(HMODULE m, const char* name) { return m ? (void*)GetProcAd
 /* ---- scripted input for automated runs ----------------------------------------------------------
  * PS2_INPUT="<frame>:<button>[:<frames held>],..." presses buttons on port 0, e.g.
  * "700:circle,900:start:10". Frames are counted by port-0 reads (padman reads once per VBlank).
- * Buttons: cross circle square triangle start select up down left right l1 l2 r1 r2 l3 r3. */
+ * Buttons: cross circle square triangle start select up down left right l1 l2 r1 r2 l3 r3.
+ * Sticks (full deflection): lup ldown lleft lright (left stick), rup rdown rleft rright. */
 
 static const struct { const char* name; uint16_t bit; int pressure; } script_buttons[] = {
     { "cross", PAD_CROSS, 6 }, { "circle", PAD_CIRCLE, 5 }, { "square", PAD_SQUARE, 7 },
@@ -61,6 +62,12 @@ static const struct { const char* name; uint16_t bit; int pressure; } script_but
     { "up", PAD_UP, 2 }, { "down", PAD_DOWN, 3 }, { "left", PAD_LEFT, 1 }, { "right", PAD_RIGHT, 0 },
     { "l1", PAD_L1, 8 }, { "r1", PAD_R1, 9 }, { "l2", PAD_L2, 10 }, { "r2", PAD_R2, 11 },
     { "l3", PAD_L3, -1 }, { "r3", PAD_R3, -1 },
+};
+#define SCRIPT_NBUTTONS ((int)(sizeof script_buttons / sizeof script_buttons[0]))
+/* stick entries follow the buttons in the script's index space; axis: 1 lx, 2 ly, 3 rx, 4 ry */
+static const struct { const char* name; int axis, value; } script_sticks[] = {
+    { "lup", 2, 0x00 }, { "ldown", 2, 0xFF }, { "lleft", 1, 0x00 }, { "lright", 1, 0xFF },
+    { "rup", 4, 0x00 }, { "rdown", 4, 0xFF }, { "rleft", 3, 0x00 }, { "rright", 3, 0xFF },
 };
 static struct { uint32_t frame, hold; int button; } script[256];
 static int script_n = -1;
@@ -76,8 +83,12 @@ static void script_apply(int port, pad_input* in) {
             char name[32] = { 0 };
             unsigned frame = 0, hold = 6;
             if (sscanf(tok, "%u:%31[a-z0-9]:%u", &frame, name, &hold) < 2) continue;
-            for (int b = 0; b < (int)(sizeof script_buttons / sizeof script_buttons[0]); b++)
-                if (!strcmp(name, script_buttons[b].name)) { script[script_n].frame = frame; script[script_n].hold = hold; script[script_n++].button = b; break; }
+            int found = -1;
+            for (int b = 0; b < SCRIPT_NBUTTONS; b++)
+                if (!strcmp(name, script_buttons[b].name)) found = b;
+            for (int b = 0; b < (int)(sizeof script_sticks / sizeof script_sticks[0]); b++)
+                if (!strcmp(name, script_sticks[b].name)) found = SCRIPT_NBUTTONS + b;
+            if (found >= 0) { script[script_n].frame = frame; script[script_n].hold = hold; script[script_n++].button = found; }
         }
         if (s) wlog("%d scripted presses", script_n);
     }
@@ -85,8 +96,19 @@ static void script_apply(int port, pad_input* in) {
     uint32_t now = script_frame++;
     for (int i = 0; i < script_n; i++) {
         if (now < script[i].frame || now >= script[i].frame + script[i].hold) continue;
-        in->buttons |= script_buttons[script[i].button].bit;
-        if (script_buttons[script[i].button].pressure >= 0) in->pressure[script_buttons[script[i].button].pressure] = 0xFF;
+        int b = script[i].button;
+        if (b >= SCRIPT_NBUTTONS) {
+            uint8_t v = (uint8_t)script_sticks[b - SCRIPT_NBUTTONS].value;
+            switch (script_sticks[b - SCRIPT_NBUTTONS].axis) {
+            case 1: in->lx = v; break;
+            case 2: in->ly = v; break;
+            case 3: in->rx = v; break;
+            default: in->ry = v; break;
+            }
+            continue;
+        }
+        in->buttons |= script_buttons[b].bit;
+        if (script_buttons[b].pressure >= 0) in->pressure[script_buttons[b].pressure] = 0xFF;
     }
 }
 
