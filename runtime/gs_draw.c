@@ -617,7 +617,7 @@ static void trace_texels(double umin, double umax, double vmin, double vmax) {
                 n += snprintf(line + n, sizeof line - (size_t)n, " %08X", c);
             if (n >= (int)sizeof line - 16) break;
         }
-        fprintf(stderr, "%s\n", line);
+        fprintf(trace_out, "%s\n", line);
     }
 }
 
@@ -704,6 +704,9 @@ static void draw(int type, const vtx* a, const vtx* b, const vtx* c) {
             if (flushed_at != gs_vsync_count) { flushed_at = gs_vsync_count; fflush(trace_out); }
             const vtx* vs[3] = { a, b, c };
             trace_prim(type, vs, type == PRIM_POINT ? 1 : type == PRIM_TRI || type == PRIM_TRISTRIP || type == PRIM_TRIFAN ? 3 : 2);
+            /* the last record: nothing above flushes after this, and the game ends with ExitProcess,
+             * which drops stdio buffers */
+            if (trace_left <= 0) fflush(trace_out);
         }
     }
     if (!env_ok || !prim_draws) return;

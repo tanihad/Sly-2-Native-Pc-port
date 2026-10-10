@@ -141,6 +141,35 @@ static void save(const char* name, uint32_t fbp, uint32_t fbw, int psm, int w, i
 
 /* ---- tests ---------------------------------------------------------------------------------------- */
 
+/* PS2_GS_TRACE_RECT debug trace, configured by main() before the first draw (gs_draw reads the
+ * environment once) with PS2_GS_TRACE_MAX=2 and a rectangle no other test touches. A textured
+ * primitive's texel rows must go to the PS2_GS_TRACE_OUT file with the rest of its record (they went
+ * to stderr), and the file must be complete as soon as the last record is written: the game ends
+ * with ExitProcess, which drops stdio buffers, so a trace that hit its limit lost its tail. */
+static char trace_path[512];
+
+static void t_trace(void) {
+    reset_env();
+    W(TEX0_1, tex0(2000, 1, PSMCT32, 2, 2, 1, 1, 0, 0, 0, 0));    /* 4x4 CT32 */
+    for (int i = 0; i < 3; i++) {        /* the third is past PS2_GS_TRACE_MAX */
+        prim(P_SPRITE, TME | FST);
+        rgba(0x80, 0x80, 0x80, 0x80);
+        uv(0, 0); xyz(1000, 1000, 0);    /* outside the scissor: nothing is drawn */
+        uv(4 * 16, 4 * 16); xyz(1004, 1004, 0);
+    }
+    FILE* f = fopen(trace_path, "r");    /* still open for writing in gs_draw, not flushed by a vsync */
+    int recs = 0, heads = 0, rows = 0;
+    char line[1024];
+    while (f && fgets(line, sizeof line, f)) {
+        recs += strncmp(line, "[gstrace] v", 11) == 0 && strstr(line, " sprite ") != NULL;
+        heads += strncmp(line, "[gstrace]   texels u 0..3 v 0..3", 32) == 0;
+        rows += strncmp(line, "[gstrace]   v ", 14) == 0;     /* "[gstrace]   v   0: ..." */
+    }
+    if (f) fclose(f);
+    CHECK(f && recs == 2 && heads == 2 && rows == 8, "trace file %s: %d records, %d texel blocks, %d texel rows (want 2, 2, 8)",
+          trace_path, recs, heads, rows);
+}
+
 static void t_sprite_coverage(void) {
     reset_env();
     clear(0, 0, 0, 0);
@@ -1279,12 +1308,21 @@ static void t_texture_cache_random(void) {
 
 int main(int argc, char** argv) {
     if (argc > 1) outdir = argv[1];
+    snprintf(trace_path, sizeof trace_path, "%s/trace.txt", outdir);
+    _putenv_s("PS2_GS_TRACE_RECT", "1000,1000,1003,1003");    /* see t_trace */
+    _putenv_s("PS2_GS_TRACE_OUT", trace_path);
+    _putenv_s("PS2_GS_TRACE_MAX", "2");
+    _putenv_s("PS2_GS_TRACE_FROM", "0");
+    _putenv_s("PS2_GS_TRACE_TEXELS", "1");
+    _putenv_s("PS2_GS_TRACE_BRIEF", "0");
+    _putenv_s("PS2_GS_TRACE_MINSIZE", "0");
     gs_swz_init();
 #ifdef FAKE_LINEAR
     CHECK(!gs_swz_fast, "linear fake layout must disable the fast path");
 #else
     CHECK(gs_swz_fast, "documented layout must enable the fast path");
 #endif
+    t_trace();                           /* first: no other primitive may use up PS2_GS_TRACE_MAX */
     t_sprite_coverage();
     t_fill_rule();
     t_gouraud();
