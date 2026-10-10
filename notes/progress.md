@@ -11,7 +11,14 @@ pacing. Headroom 2-6 ms per VBlank on the EE thread (the intro cutscene is the t
 big step. Tools and numbers: `notes/performance.md` (PS2_PERF, PS2_GS_STATS, profilers, headroom,
 GS and VU record/replay).
 
-**Newest:** main (eb96e20) reaches the title screen and the Bentley/Sly Binocucom briefing
+**Newest (main c8cc6ef):** perf, gameplay and native audio are merged. The release build runs at
+60 fps with sound from boot to gameplay in the Cairo Museum prologue (`scripts\play.ps1` builds
+and launches it). Workflow `whole-game-sweep` is running: `next/warp` (episode warp tool),
+`next/vu-recomp` (static VU microcode recompiler), `next/ep1`..`next/ep8` (one playtest/fix agent
+per episode, after the warp tool), then `next/integrate` (merge all + full regression). Worktrees
+under `C:\Users\tanih\Projects\sly2-worktrees\`; each keeps `notes/wip/<task>.md`.
+
+**Previous:** main (eb96e20) reaches the title screen and the Bentley/Sly Binocucom briefing
 (SQUARE answers "Yes" on the memory-card prompt: PS2_INPUT="600:square:12,1500:start:10").
 fix-render and fix-input are merged. Workflow `continue-to-playable` is running:
 `fix/fix-perf` (60/60 fps in release on menus already; merging main, continuing its checkpoint),
