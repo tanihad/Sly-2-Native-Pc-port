@@ -2,6 +2,15 @@
 
 ## Resume here (read first in a new session)
 
+**fix/fix-perf (2026-10-10):** the release build (and the -O1 default build) runs at full speed,
+59.94 VBlanks/s and ~60 game flips/s, on the movie, memory-card prompt, intro cutscene, title and
+Binocucom briefing (main before: 22-32 VBlanks/s in the 3D scenes). GS on its own thread with
+deferred band-parallel pixel workers, direct texture sampling from VRAM, EcoQoS opt-out, timer
+pacing. Headroom 2-6 ms per VBlank on the EE thread (the intro cutscene is the tightest: 2 ms) and
+3-6 ms on the GS thread. The EE thread is now ~60% VU interpreter: the VU recompiler is the next
+big step. Tools and numbers: `notes/performance.md` (PS2_PERF, PS2_GS_STATS, profilers, headroom,
+GS and VU record/replay).
+
 **Newest:** main (eb96e20) reaches the title screen and the Bentley/Sly Binocucom briefing
 (SQUARE answers "Yes" on the memory-card prompt: PS2_INPUT="600:square:12,1500:start:10").
 fix-render and fix-input are merged. Workflow `continue-to-playable` is running:

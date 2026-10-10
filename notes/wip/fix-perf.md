@@ -104,11 +104,16 @@ faster than real time; smooth presentation. Report before/after numbers per chan
   1.85M pixels per frame), pixel work ~33 ms CPU/frame (18 ns/pixel!), critical path ~10 ms/frame;
   EE thread busy 15-16 ms/vblank with VU ~60% -> the EE thread is the bottleneck now.
 
+17. Per-scene before/after and headroom measured: notes/performance.md (tables). main's exe:
+    22-32 VBlanks/s in 3D scenes (frame-dump timestamps); this branch: 59.9 everywhere, flips ~60.
+    Headroom EE 2-6 ms (intro tightest), GS 3-6 ms. The game draws less when frames get tight
+    (VU pairs/VBlank drop, flips stay 60): not via the EE timers (timer clock x0.5: no change).
+    Default -O1 build also 60/60. Memory-card prompt and movie appear only with an empty card
+    (fresh output dir: build/fresh_*).
+
 ## Next
-1. Per-scene headroom (EE burn, then -Gs) with -From/-To: intro v600-1400, title v1600-2050,
-   briefing v2500-. Record numbers here.
-2. notes/performance.md (how to measure + before/after), notes/progress.md, final report.
-3. If time: GS setup cost / pixel pipeline; EE-side GIF/VIF (~13% of the EE thread).
+1. Final report (StructuredOutput). Optional later: EE-side GIF/VIF packets to the GS thread
+   (~13% of the EE thread); VBlank from display vsync; VU recompiler (separate task).
 
 ## Findings / traps
 - Runtime sources are CRLF in the working tree; PowerShell string Replace with `n fails silently.
