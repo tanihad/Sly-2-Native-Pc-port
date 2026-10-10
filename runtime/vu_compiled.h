@@ -26,13 +26,36 @@ typedef struct vuc_program {
 } vuc_program;
 
 #define VUC_NOT_COMPILED 0xFFFFFFFFu  /* returned by a unit's function for an entry it has no code for */
+/* A program still running after this many pairs continues in the interpreter at its next backward
+ * jump, so that one without an E bit stops exactly where the interpreter stops it (VU_MAX_PAIRS). */
+#define VUC_RUNAWAY_HANDOFF (VU_MAX_PAIRS - 0x10000u)
 
 /* vu.c */
 void     vu_register_compiled(const vuc_program* const* progs, uint32_t n);
 void     vuc_unknown_jump(const vu_state* st, uint32_t site, uint32_t target);
-uint32_t vuc_runaway(vu_state* st, uint32_t pc, uint32_t cyc, uint32_t n);
 
-#define VF0 _mm_setr_ps(0.0f, 0.0f, 0.0f, 1.0f)
+/* Float values the compiler could know: vf00, LOI immediates and VI values moved to VF (MFIR). They
+ * pass through these barriers so that clang cannot fold float operations or comparisons on them:
+ * its folding assumes IEEE denormals (the VU code runs with DAZ/FTZ, e.g. `loi -6.68e-39` then
+ * `mulai ACC, vf07, I` must see I as zero for the U flag, and x * vf00w is not x for a denormal x)
+ * and round-to-nearest (FENV_ACCESS in the generated files covers the rounding, not the denormal
+ * mode). */
+static inline __attribute__((always_inline)) uint32_t vuc_opaque(uint32_t x) {
+    __asm__("" : "+r"(x));
+    return x;
+}
+static inline __attribute__((always_inline)) __m128 vuc_opaque_v(__m128 x) {
+    __asm__("" : "+x"(x));
+    return x;
+}
+#define VF0 vf0                          /* a local of every generated function: (0, 0, 0, 1), opaque */
+
+/* -DVU_TRACE: every pair prints its address and issue cycle, like vu_exec.c under the same flag. */
+#ifdef VU_TRACE
+#define VUC_TRACE(pc, c) fprintf(stderr, "T %04X %u\n", (unsigned)(pc) * 8u, (unsigned)(c))
+#else
+#define VUC_TRACE(pc, c) ((void)0)
+#endif
 
 /* Data memory, as vu_exec.c's load_qw/store_qw/load_w/store_w: VU1 16 KB (quadword mask 0x3FF);
  * VU0 4 KB (mask 0xFF) where addresses with bit 0x400 set reach VU1's registers. */

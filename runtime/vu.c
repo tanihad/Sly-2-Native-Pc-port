@@ -66,7 +66,7 @@ void vu_mem_access(uint32_t phys, void* data, unsigned size, int is_write) {
  *   PS2_VU_INTERP=1  interpreter only (A/B comparisons)
  *   PS2_VU_VERIFY=1  run every compiled program and the interpreter on a copy of the state, compare
  *                    pairs, cycles, the resulting state and the XGKICKs; print mismatches */
-#define VUC_MAX_PROGS 64
+#define VUC_MAX_PROGS 1024
 static const vuc_program* const* vuc_progs;
 static uint32_t vuc_nprogs;
 static int vuc_mode;                     /* 0 not decided, 1 compiled, 2 interpreter only, 3 verify */
@@ -122,17 +122,6 @@ void vuc_unknown_jump(const vu_state* st, uint32_t site, uint32_t target) {
     else return;
     fprintf(stderr, "[vu] VU%d: jump from 0x%04X to 0x%04X is not in the recompiled code; continuing in the interpreter\n",
             st->idx, site * 8u, target * 8u);
-}
-
-uint32_t vuc_runaway(vu_state* st, uint32_t pc, uint32_t cyc, uint32_t n) {
-    static int logged;
-    if (!logged++) fprintf(stderr, "[vu] VU%d: recompiled program ran %u pairs without an E bit; stopped at 0x%04X\n",
-                           st->idx, n, pc * 8u);
-    st->tpc = pc;
-    st->programs++;
-    st->pairs += n;
-    st->cycles += cyc;
-    return n;
 }
 
 /* PS2_VU_VERIFY: the interpreter runs the same program on a snapshot; its XGKICKs only feed a hash.

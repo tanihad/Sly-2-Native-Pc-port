@@ -856,6 +856,9 @@ static uint32_t vu_loop(vu_state* st, uint32_t pc, uint32_t npc, uint32_t cyc, u
         }
         st->cyc = cyc;
         st->stalled = stalled;
+#ifdef VU_TRACE                          /* debugging the recompiler: compare with VUC_TRACE output */
+        fprintf(stderr, "T %04X %u\n", (unsigned)(op - cache) * 8, cyc);
+#endif
         st->hpos = n;
 
         /* upper reads its operands, the lower executes, then the upper result is committed (it

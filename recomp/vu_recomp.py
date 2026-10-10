@@ -479,7 +479,8 @@ class Unit:
             new_pc = npc
             new_npc = "D" if npc == "D" else (npc + 1) & m
             body, br = self.pair(op, sim, k, new_npc)      # link value: the address after the delay slot
-            out.append(f"{{ /* 0x{pc * 8:04X} {op.upper_word:08X} {op.lower_word:08X} t={sim.t - 1} */")
+            out.append(f"{{ /* 0x{pc * 8:04X} {op.upper_word:08X} {op.lower_word:08X} t={sim.t - 1} */ "
+                       f"VUC_TRACE({pc}, cyc + {sim.t - 1});")
             out.extend("    " + x for x in body)
             out.append("}")
             k += 1
@@ -493,7 +494,7 @@ class Unit:
                     new_npc = "D"
             end_now = ending
             if op.bits & B_I:
-                out.append(f"I = 0x{op.imm & 0xFFFFFFFF:08X}u;")
+                out.append(f"I = vuc_opaque(0x{op.imm & 0xFFFFFFFF:08X}u);")
             if not end_now and op.bits & B_E:
                 ending = 1
             if end_now:
@@ -534,6 +535,14 @@ class Unit:
             return f"(tk ? {dyn[1]}u : {dyn[2]}u)"
         return "jt"
 
+    def runaway_check(self, sim: Sim, pc_expr: str, k: int, out: list[str]) -> None:
+        """On a backward jump: close to the interpreter's runaway limit, continue in the interpreter so
+        that a program without an E bit stops at exactly the same pair (vu_exec.c VU_MAX_PAIRS)."""
+        sub: list[str] = [f"if (n + {k} >= VUC_RUNAWAY_HANDOFF) {{"]
+        self.handoff(sim, pc_expr, f"({pc_expr} + 1) & {self.mask}u", 0, k, "runaway guard", sub)
+        sub.append("}")
+        out.extend(sub)
+
     def transition(self, sim: Sim, pc: int, k: int, out: list[str], back: bool) -> None:
         T = sim.t
         fq, cq, p, q = self.canon(sim, T, out)
@@ -542,9 +551,9 @@ class Unit:
         if vid is None:
             self.handoff(sim, str(pc), str((pc + 1) & self.mask), 0, k, "version cap", out)
             return
-        out.append(f"cyc += {T}; n += {k};")
         if back:
-            out.append(f"if (n >= VU_MAX_PAIRS) {{ ho_pc = {pc}; goto runaway; }}")
+            self.runaway_check(sim, str(pc), k, out)
+        out.append(f"cyc += {T}; n += {k};")
         out.append(f"goto V{vid};")
 
     def transition_dyn(self, sim: Sim, dyn, k: int, out: list[str]) -> None:
@@ -565,10 +574,9 @@ class Unit:
                         self.handoff(sim, str(pc), str((pc + 1) & m), 0, k, "version cap", sub)
                         out.extend(sub)
                         out.append("}")
+            if tgt <= dyn[3]:
+                self.runaway_check(sim, f"(tk ? {tgt}u : {fall}u)", k, out)
             out.append(f"cyc += {T}; n += {k};")
-            back = tgt <= dyn[3]
-            if back:
-                out.append(f"if (n >= VU_MAX_PAIRS) {{ ho_pc = tk ? {tgt}u : {fall}u; goto runaway; }}")
             if ids[0] is not None and ids[1] is not None:
                 out.append(f"if (tk) goto V{ids[0]}; goto V{ids[1]};")
             elif ids[0] is not None:
@@ -583,8 +591,8 @@ class Unit:
             vid = self.version(key)
             if vid is not None:
                 cases.append((pc, vid))
+        self.runaway_check(sim, "jt", k, out)
         out.append(f"cyc += {T}; n += {k};")
-        out.append(f"if (n >= VU_MAX_PAIRS) {{ ho_pc = jt; goto runaway; }}")
         out.append("switch (jt) {")
         for pc, vid in cases:
             out.append(f"case {pc}: goto V{vid};")
@@ -727,7 +735,9 @@ class Unit:
                 for i in range(4):
                     if mask >> i & 1:
                         l[i] = t + 4
-        if op.viw and op.viwlat > 1:
+        if op.viw:
+            # every write sets the register's ready time (a 1-cycle write after an ILW replaces the
+            # ILW's later one, as in vu_exec.c mark_writes)
             sim.vi[op.viw] = t + op.viwlat
         # VI chain run (most recent consecutive chain writes of one register)
         if op.vichain:
@@ -906,7 +916,7 @@ class Unit:
             setvi(lt, f"vu_lane({VF(ls)}, {op.fsf})")
         elif lo == "mfir":
             use_vi(ls)
-            vfw(lt, f"vu_bits((uint32_t)(int32_t)(int16_t){VI(ls)})", op.ldst)
+            vfw(lt, f"vu_bits(vuc_opaque((uint32_t)(int32_t)(int16_t){VI(ls)}))", op.ldst)
         elif lo == "rnext":
             L("R = vu_rnext(R);")
             vfw(lt, "vu_bits(R)", op.ldst)
@@ -950,6 +960,7 @@ class Unit:
                  f"{self.stats['pairs']} pairs generated, {self.stats['handoffs']} handoff sites */")
         L.append(f"static uint32_t {self.fname}(vu_state* st, uint32_t entry) {{")
         L.append("    uint8_t* const dm = st->data;")
+        L.append("    const __m128 vf0 = vuc_opaque_v(_mm_setr_ps(0.0f, 0.0f, 0.0f, 1.0f));")
         for r in vfs:
             L.append(f"    __m128 vf{r} = _mm_loadu_ps(st->vf[{r}].f);")
         L.append("    __m128 acc = _mm_loadu_ps(st->acc.f);")
@@ -992,9 +1003,6 @@ class Unit:
         L.append("handoff:")
         L.extend("    " + x for x in writeback)
         L.append("    return vu_resume(st, ho_pc, ho_npc, ho_cyc, ho_n, ho_end);")
-        L.append("runaway:")
-        L.extend("    " + x for x in writeback)
-        L.append("    return vuc_runaway(st, ho_pc, cyc, n);")
         L.append("}")
         return "\n".join(L)
 
