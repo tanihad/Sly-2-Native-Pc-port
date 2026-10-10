@@ -64,3 +64,10 @@ tools/, orig/ and .venv/ only exist in the main checkout
   traffic; the watchdog prints the hottest recompiled functions when it stops the game)
 - Disassemble game code: `<python> -m recomp disasm orig\SCUS_973.16 <hexaddr> -n 40`
   (run from your tree; pass the main checkout's `orig\SCUS_973.16` path)
+- GS primitive trace: `PS2_GS_TRACE_RECT=x0,y0,x1,y1` (drawing-buffer pixels after XYOFFSET; Sly 2
+  draws 512x224 field buffers, so halve the y of a dumped 448-line frame) logs every primitive
+  touching the rectangle: vertices, PRIM attributes, FRAME/ZBUF/TEST/ALPHA/TEX0/TEX1/CLAMP/TEXA and
+  the texels it covers, plus TRXDIR transfers. `PS2_GS_TRACE_OUT=<file>` (buffered; stderr is slow),
+  `PS2_GS_TRACE_FROM=<vsync>`, `PS2_GS_TRACE_MAX=<n>` (default 64), `PS2_GS_TRACE_BRIEF=1` (one line
+  per primitive), `PS2_GS_TRACE_MINSIZE=<px>` (skip small ones), `PS2_GS_TRACE_TEXELS=0`.
+  `PS2_PEEK=12000000:2,12000070:4` reads the GS privileged registers (PMODE, DISPFB1, ...).

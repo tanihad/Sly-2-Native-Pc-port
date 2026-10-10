@@ -141,6 +141,35 @@ static void save(const char* name, uint32_t fbp, uint32_t fbw, int psm, int w, i
 
 /* ---- tests ---------------------------------------------------------------------------------------- */
 
+/* PS2_GS_TRACE_RECT debug trace, configured by main() before the first draw (gs_draw reads the
+ * environment once) with PS2_GS_TRACE_MAX=2 and a rectangle no other test touches. A textured
+ * primitive's texel rows must go to the PS2_GS_TRACE_OUT file with the rest of its record (they went
+ * to stderr), and the file must be complete as soon as the last record is written: the game ends
+ * with ExitProcess, which drops stdio buffers, so a trace that hit its limit lost its tail. */
+static char trace_path[512];
+
+static void t_trace(void) {
+    reset_env();
+    W(TEX0_1, tex0(2000, 1, PSMCT32, 2, 2, 1, 1, 0, 0, 0, 0));    /* 4x4 CT32 */
+    for (int i = 0; i < 3; i++) {        /* the third is past PS2_GS_TRACE_MAX */
+        prim(P_SPRITE, TME | FST);
+        rgba(0x80, 0x80, 0x80, 0x80);
+        uv(0, 0); xyz(1000, 1000, 0);    /* outside the scissor: nothing is drawn */
+        uv(4 * 16, 4 * 16); xyz(1004, 1004, 0);
+    }
+    FILE* f = fopen(trace_path, "r");    /* still open for writing in gs_draw, not flushed by a vsync */
+    int recs = 0, heads = 0, rows = 0;
+    char line[1024];
+    while (f && fgets(line, sizeof line, f)) {
+        recs += strncmp(line, "[gstrace] v", 11) == 0 && strstr(line, " sprite ") != NULL;
+        heads += strncmp(line, "[gstrace]   texels u 0..3 v 0..3", 32) == 0;
+        rows += strncmp(line, "[gstrace]   v ", 14) == 0;     /* "[gstrace]   v   0: ..." */
+    }
+    if (f) fclose(f);
+    CHECK(f && recs == 2 && heads == 2 && rows == 8, "trace file %s: %d records, %d texel blocks, %d texel rows (want 2, 2, 8)",
+          trace_path, recs, heads, rows);
+}
+
 static void t_sprite_coverage(void) {
     reset_env();
     clear(0, 0, 0, 0);
@@ -849,6 +878,84 @@ static void t_display(void) {
     CHECK(gs_display(out, 1024, &w, &h) == 0, "display off");
 }
 
+/* Interlaced field rendering (the intro movie): the game draws the buffer for an odd field with
+ * XYOFFSET.Y + 0.5 (sceGsSetHalfOffset), so its rows are the odd lines of a 448-line picture.
+ * Line-doubling every field (the old behaviour) halves the vertical resolution and makes the picture
+ * jump half a line every field; the display now puts each field on its own lines and weaves in the
+ * other field where the picture is still. */
+static void t_display_weave(void) {
+    uint64_t v;
+    static uint32_t out[1024 * 1024];
+    int w = 0, h = 0;
+    v = 0x8066; gs_priv_access(0x12000000, &v, 8, 1);    /* circuit 2 only */
+    v = 3; gs_priv_access(0x12000020, &v, 8, 1);         /* SMODE2: INT | FFMD */
+    v = 0x1BF9FF0203227Cull; gs_priv_access(0x120000A0, &v, 8, 1);   /* DISPLAY2: 512x448 */
+    /* the picture: a 448-line image whose line y has the value y & 0xFF in red, line parity in
+     * green; field buffers sample it at y = 2k (even, page 56) and y = 2k + 1 (odd, page 0) */
+    for (int fld = 0; fld < 2; fld++) {
+        reset_env();
+        frame(fld ? 0 : 56, 8, PSMCT32, 0);
+        scissor(0, 511, 0, 223);
+        W(XYOFFSET_1, (uint64_t)(fld ? 8 : 0) << 32);    /* half-pixel offset for the odd field */
+        for (int k = 0; k < 224; k++) {
+            int y = 2 * k + fld;
+            /* covers buffer row k only: [k, k + 1) on screen, i.e. [k + 0.5, k + 1.5) before the offset */
+            sprite(0, k + (fld ? 0.5 : 0), 512, k + 1 + (fld ? 0.5 : 0), y & 0xFF, fld ? 0xFF : 0, 0, 0x80);
+        }
+    }
+    W(XYOFFSET_1, 0);
+#define SHOW(page) do { v = 0x1000 | (page); gs_priv_access(0x12000090, &v, 8, 1); gs_vsync(); gs_display(out, 1024, &w, &h); } while (0)
+#define FOUT(y) (out[1024 * (y) + 7] & 0xFFFFFF)
+    /* even field (page 56) first: no odd field seen yet, so it is shown line-doubled like any
+     * progressive buffer */
+    SHOW(56);
+    CHECK(h == 448 && FOUT(100) == 0x640000 && FOUT(101) == 0x640000, "first field line-doubled: %06X %06X", FOUT(100), FOUT(101));
+    /* odd field (page 0) on the odd lines, at its own position: no half-line jump */
+    SHOW(0);
+    CHECK(FOUT(101) == 0x65FF00 && FOUT(100) == 0x64FF00 /* average of lines 99 and 101 */,
+          "odd field on the odd lines: %06X %06X", FOUT(100), FOUT(101));
+    /* from the next field on the picture is still: the other field's lines are woven in */
+    SHOW(56);
+    SHOW(0);
+    int bad = 0;
+    for (int y = 0; y < 448; y++) bad += FOUT(y) != ((uint32_t)((y & 0xFF) << 16) | ((y & 1) ? 0xFF00u : 0));
+    CHECK(bad == 0, "woven still picture: %d wrong lines (line 100 %06X, 101 %06X)", bad, FOUT(100), FOUT(101));
+    /* motion: the even field changes left of x = 256; there its odd lines are interpolated from it
+     * (no combing with the older odd field), right of it the still picture stays woven */
+    reset_env();
+    frame(56, 8, PSMCT32, 0);
+    scissor(0, 255, 0, 223);
+    sprite(0, 0, 256, 224, 0, 0, 0xFF, 0x80);
+    SHOW(56);
+    CHECK(FOUT(301) == 0x0000FF && (out[1024 * 301 + 300] & 0xFFFFFF) == (((301 & 0xFF) << 16) | 0xFF00),
+          "moving part interpolated, still part woven: %06X %06X", FOUT(301), out[1024 * 301 + 300] & 0xFFFFFF);
+    /* a field shown more than two fields ago is not woven in */
+    gs_vsync(); gs_vsync(); gs_vsync();
+    gs_display(out, 1024, &w, &h);
+    CHECK(FOUT(301) == 0x0000FF && (out[1024 * 301 + 300] & 0xFFFFFF) == ((300 & 0xFF) << 16),
+          "stale odd field dropped, back to line doubling: %06X", out[1024 * 301 + 300] & 0xFFFFFF);
+#undef SHOW
+#undef FOUT
+    /* buffers drawn without the half-pixel convention (both offsets equal, as Sly 2's menus) stay
+     * line-doubled */
+    for (int b = 0; b < 2; b++) {
+        reset_env();
+        frame(b ? 0 : 56, 8, PSMCT32, 0);
+        scissor(0, 511, 0, 223);
+        sprite(0, 0, 512, 224, 0, 0, b ? 0xFF : 0x80, 0x80);
+    }
+    for (int b = 0; b < 2; b++) {
+        v = 0x1000 | (b ? 0 : 56); gs_priv_access(0x12000090, &v, 8, 1);
+        gs_vsync();
+        gs_display(out, 1024, &w, &h);
+    }
+    CHECK((out[1024 * 300] & 0xFFFFFF) == 0xFF && (out[1024 * 301] & 0xFFFFFF) == 0xFF,
+          "same-offset fields are not woven: %06X %06X", out[1024 * 300], out[1024 * 301]);
+    char path[512];
+    snprintf(path, sizeof path, "%s/display_weave.png", outdir);
+    debug_write_png(path, out, w, h, 1024);
+}
+
 /* ---- benchmark --------------------------------------------------------------------------------- */
 
 static double now(void) {
@@ -1201,12 +1308,21 @@ static void t_texture_cache_random(void) {
 
 int main(int argc, char** argv) {
     if (argc > 1) outdir = argv[1];
+    snprintf(trace_path, sizeof trace_path, "%s/trace.txt", outdir);
+    _putenv_s("PS2_GS_TRACE_RECT", "1000,1000,1003,1003");    /* see t_trace */
+    _putenv_s("PS2_GS_TRACE_OUT", trace_path);
+    _putenv_s("PS2_GS_TRACE_MAX", "2");
+    _putenv_s("PS2_GS_TRACE_FROM", "0");
+    _putenv_s("PS2_GS_TRACE_TEXELS", "1");
+    _putenv_s("PS2_GS_TRACE_BRIEF", "0");
+    _putenv_s("PS2_GS_TRACE_MINSIZE", "0");
     gs_swz_init();
 #ifdef FAKE_LINEAR
     CHECK(!gs_swz_fast, "linear fake layout must disable the fast path");
 #else
     CHECK(gs_swz_fast, "documented layout must enable the fast path");
 #endif
+    t_trace();                           /* first: no other primitive may use up PS2_GS_TRACE_MAX */
     t_sprite_coverage();
     t_fill_rule();
     t_gouraud();
@@ -1232,6 +1348,7 @@ int main(int argc, char** argv) {
     t_stq_negative_coords();
     t_csr();
     t_display();
+    t_display_weave();
     bench();
     fprintf(stderr, "%s: %d/%d checks passed\n", argv[0], checks - fails, checks);
     return fails ? 1 : 0;

@@ -27,6 +27,8 @@ void     threads_init(ps2_ctx* main_ctx);
 ps2_ctx* thread_ctx(void);                 /* registers of the running thread */
 int      thread_syscall(ps2_ctx* ctx, int n, int64_t* ret);
 void     thread_reschedule(void);          /* switch if a higher-priority thread is ready */
+int      thread_current_id(void);
+void     threads_debug_dump(void);         /* PS2_LOG_THREADS: print every thread's state */
 
 /* SIF: EE <-> IOP link and the high-level-emulated IOP (sif.c) */
 uint32_t sif_get_reg(uint32_t reg);
@@ -40,6 +42,7 @@ extern int ps2_log_sif;                    /* PS2_LOG_SIF=1 */
  * bytes of reply into `out` (pre-zeroed). */
 int cdvd_rpc(ps2_ctx* ctx, uint32_t sid, uint32_t fno, const uint8_t* args, uint32_t send_size,
              uint8_t* out, uint32_t recv_size);
+int cdvd_read_host(uint32_t lbn, uint32_t count, void* dst);   /* disc sectors into host memory */
 int iop_modules_rpc(ps2_ctx* ctx, uint32_t sid, uint32_t fno, const uint8_t* args, uint32_t send_size,
                     uint8_t* out, uint32_t recv_size);
 

@@ -273,10 +273,13 @@ static inline void mmi_qfsrv(ps2_ctx* c, int rd, int rs, int rt) {
 #define PS2_TRACE_SIZE 4096u
 extern uint32_t ps2_trace[PS2_TRACE_SIZE];
 extern uint32_t ps2_trace_pos;
+extern volatile int ps2_calls_on;        /* PS2_CALLS / PS2_WATCH debugging active (debug builds) */
+void ps2_calls_record(ps2_ctx* ctx, uint32_t addr);
 #ifdef PS2_NO_TRACE                      /* release builds */
 #define PS2_TRACE(addr) ((void)0)
 #else
-#define PS2_TRACE(addr) (ps2_trace[ps2_trace_pos++ & (PS2_TRACE_SIZE - 1)] = (addr))
+#define PS2_TRACE(addr) (ps2_trace[ps2_trace_pos++ & (PS2_TRACE_SIZE - 1)] = (addr), \
+                         ps2_calls_on ? ps2_calls_record(ctx, addr) : (void)0)
 #endif
 
 /* ---- interrupts: set asynchronously by host timers, serviced at loop heads -------------------- */

@@ -62,6 +62,14 @@ static int read_sectors(ps2_ctx* ctx, uint32_t lbn, uint32_t count, uint32_t dst
     return 1;
 }
 
+/* Read sectors into host memory (for IOP-side stand-ins that read the disc themselves). */
+int cdvd_read_host(uint32_t lbn, uint32_t count, void* dst) {
+    open_iso();
+    if (!iso || (uint64_t)lbn + count > iso_sectors) return 0;
+    _fseeki64(iso, (int64_t)lbn * SECTOR, SEEK_SET);
+    return fread(dst, SECTOR, count, iso) == count;
+}
+
 int cdvd_rpc(ps2_ctx* ctx, uint32_t sid, uint32_t fno, const uint8_t* args, uint32_t send_size,
              uint8_t* out, uint32_t recv_size) {
     uint32_t a[8] = { 0 };
