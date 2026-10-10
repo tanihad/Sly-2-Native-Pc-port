@@ -5,6 +5,7 @@
  * VSync), bits 14-15 FIFO status (always "empty": drawing is synchronous), REV/ID in bits 16-31.
  * IMR bits 8-12 mask the same events; an unmasked event raises INTC_GS when it is set. */
 #include "gs_draw.h"
+#include "perf.h"
 
 #include <stdlib.h>
 
@@ -112,7 +113,11 @@ void gs_priv_access(uint32_t phys, void* data, unsigned size, int is_write) {
     uint64_t m = n == 8 ? ~0ull : (((1ull << (n * 8)) - 1) << (sub * 8));
     uint64_t merged = (*reg & ~m) | (v & m);
     if (special == 2) imr_write(merged);
-    else *reg = merged;
+    else {
+        if ((reg == &priv[P_DISPFB1] || reg == &priv[P_DISPFB2]) && *reg != merged)
+            perf_state.flips++;          /* PS2_PERF: the game showed another buffer */
+        *reg = merged;
+    }
     if (reg == &priv[P_EXTWRITE] && (merged & 1)) {
         static int logged;
         if (!logged) { logged = 1; fprintf(stderr, "[gs] EXTWRITE (display capture) not emulated\n"); }

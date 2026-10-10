@@ -24,6 +24,7 @@
  *    TOPS = BASE (+ OFST when DBF = 1), then tells the VU through vu_set_vif_tops().
  */
 #include "hw.h"
+#include "perf.h"
 
 /* ---- register bits --------------------------------------------------------------------------- */
 
@@ -484,6 +485,7 @@ invalid:
 
 /* Run the command processor over n words; returns words consumed (stops early at a stall). */
 static uint32_t feed(vif_state* v, const uint32_t* w, uint32_t n) {
+    int perf_prev = perf_enter(PERF_VIF);                    /* PS2_PERF: VIF time (VU/GS nest inside) */
     uint32_t i = 0;
     for (;;) {
         if (v->stat & ST_STALL) break;
@@ -506,6 +508,7 @@ static uint32_t feed(vif_state* v, const uint32_t* w, uint32_t n) {
         v->vu_wait = 0;
         i++;
     }
+    perf_leave(perf_prev);
     return i;
 }
 

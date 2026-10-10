@@ -1,5 +1,6 @@
 /* Runtime for recompiled PS2 code: function lookup, interrupts, BIOS syscalls (HLE), startup. */
 #include "hw.h"
+#include "perf.h"
 
 #include <stdlib.h>
 #include <windows.h>
@@ -14,6 +15,7 @@ static int in_interrupt;                         /* inside a game interrupt hand
  * The trace is written without locks, so the snapshot can be slightly torn; fine for debugging. */
 static DWORD WINAPI watchdog(LPVOID arg) {
     Sleep((DWORD)(uintptr_t)arg * 1000);
+    perf_final();
     static uint32_t snap[PS2_TRACE_SIZE];
     uint32_t pos = ps2_trace_pos;
     memcpy(snap, ps2_trace, sizeof snap);
@@ -141,6 +143,7 @@ int ps2_in_interrupt(void) { return in_interrupt; }
 
 volatile uint32_t ps2_irq_pending;
 static volatile LONG frames_behind;              /* VBlanks the emulation hasn't serviced yet */
+static volatile LONG vblanks_due;                /* VBlanks the host timer has raised so far */
 static uint32_t vblank_count;
 static const char* dump_dir;
 static int dump_every = 60, headless;
@@ -155,6 +158,7 @@ static DWORD WINAPI host_timer(LPVOID arg) {
         if (now.QuadPart >= due) {
             frame++;
             InterlockedIncrement(&frames_behind);
+            InterlockedIncrement(&vblanks_due);
             InterlockedOr((volatile LONG*)&ps2_irq_pending, PS2_IRQ_VBLANK);
         }
         InterlockedOr((volatile LONG*)&ps2_irq_pending, PS2_IRQ_TICK);
@@ -167,7 +171,9 @@ uint32_t ps2_vblank_count(void) { return vblank_count; }
 
 static void vblank(ps2_ctx* ctx) {
     vblank_count++;
+    perf_vblank(vblank_count, (uint32_t)vblanks_due);
     gs_vsync();
+    int perf_prev = perf_enter(PERF_PRESENT);
     static uint32_t frame[1024 * 1024];
     int w = 0, h = 0;
     if (!gs_display(frame, 1024, &w, &h)) {      /* display off: show black, not a stale frame */
@@ -182,6 +188,7 @@ static void vblank(ps2_ctx* ctx) {
             debug_write_png(path, frame, w, h, 1024);
         }
     }
+    perf_leave(perf_prev);
     pad_vsync(ctx);
 
     /* PS2_PEEK="<hexaddr>:<words>[,...]": print EE memory every PS2_PEEK_EVERY VBlanks (default 60) */
@@ -362,6 +369,8 @@ int main(int argc, char** argv) {
     if (argc < 2) { fprintf(stderr, "usage: %s <path to original PS2 executable>\n", argv[0]); return 2; }
     QueryPerformanceFrequency(&qpc_freq);
     QueryPerformanceCounter(&qpc_start);
+    perf_init();                                 /* PS2_PERF / PS2_PROFILE */
+    atexit(perf_final);
     ps2_ram = calloc(1, PS2_RAM_SIZE + 16);      /* +16: a 128-bit access at the very end */
     ps2_spr = calloc(1, PS2_SPR_SIZE + 16);
     if (!ps2_ram || !ps2_spr) die("out of memory (%u)", 0);

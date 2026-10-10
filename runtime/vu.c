@@ -6,6 +6,7 @@
  * never busy as far as VIF, VPU-STAT or the EE can tell.
  */
 #include "vu_internal.h"
+#include "perf.h"
 
 #include <xmmintrin.h>
 
@@ -52,11 +53,13 @@ void vu_mem_access(uint32_t phys, void* data, unsigned size, int is_write) {
 /* ---- running microprograms ---------------------------------------------------------------------- */
 
 static void run(vu_state* st, uint32_t addr_dw) {
+    int perf_prev = perf_enter(PERF_VU);
     unsigned csr = _mm_getcsr();
     host_csr = csr;
     _mm_setcsr(VU_MXCSR);
     vu_run(st, addr_dw);
     _mm_setcsr(csr);
+    perf_leave(perf_prev);
 }
 
 void vu_xgkick(uint32_t qw_addr) {

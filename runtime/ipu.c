@@ -22,6 +22,7 @@
  * periodic retry. */
 #include "hw.h"
 #include "ipu_internal.h"
+#include "perf.h"
 
 enum { CMD_BCLR, CMD_IDEC, CMD_BDEC, CMD_VDEC, CMD_FDEC, CMD_SETIQ, CMD_SETVQ, CMD_CSC, CMD_PACK, CMD_SETTH };
 
@@ -614,7 +615,7 @@ static uint64_t reg_read(uint32_t reg) {
     }
 }
 
-void ipu_access(uint32_t phys, void* data, unsigned size, int is_write) {
+static void ipu_access_body(uint32_t phys, void* data, unsigned size, int is_write) {
     if (!ipu.ready) ipu_init();
     if (phys >= 0x10007000) {                            /* FIFOs */
         uint32_t off = phys & 0xFFF;
@@ -667,7 +668,15 @@ void ipu_access(uint32_t phys, void* data, unsigned size, int is_write) {
     }
 }
 
+/* PS2_PERF: the IPU's decoding time is charged to IPU (perf.h). */
+void ipu_access(uint32_t phys, void* data, unsigned size, int is_write) {
+    int perf_prev = perf_enter(PERF_IPU);
+    ipu_access_body(phys, data, size, is_write);
+    perf_leave(perf_prev);
+}
+
 uint32_t ipu_dma_to(const void* qw, uint32_t qwc) {
+    int perf_prev = perf_enter(PERF_IPU);
     if (!ipu.ready) ipu_init();
     const uint8_t* p = qw;
     uint32_t done = 0;
@@ -680,10 +689,12 @@ uint32_t ipu_dma_to(const void* qw, uint32_t qwc) {
         ipu_run();
     }
     ipu.dma_qw += done;
+    perf_leave(perf_prev);
     return done;
 }
 
 uint32_t ipu_dma_from(void* qw, uint32_t qwc) {
+    int perf_prev = perf_enter(PERF_IPU);
     if (!ipu.ready) ipu_init();
     uint8_t* p = qw;
     uint32_t done = 0;
@@ -692,5 +703,6 @@ uint32_t ipu_dma_from(void* qw, uint32_t qwc) {
         if (done == qwc || !ipu_progress()) break;
     }
     ipu.dma_qw += done;
+    perf_leave(perf_prev);
     return done;
 }
