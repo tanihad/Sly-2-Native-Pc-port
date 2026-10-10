@@ -100,6 +100,22 @@ def cmd_iop(args) -> None:
     print(generate(args.elf, args.output))
 
 
+def cmd_vu(args) -> None:
+    from .vu_recomp import Image, game_images, write_units
+    if args.image:
+        data = Path(args.elf).read_bytes()
+        base = int(args.base, 0) // 8
+        raws = [int.from_bytes(data[i:i + 8], "little") for i in range(0, len(data) - 7, 8)]
+        ents = [int(e, 0) // 8 for e in args.entries.split(",")] if args.entries else []
+        images = [Image(args.name, args.unit, [(base, raws)], ents)]
+    else:
+        images = game_images(args.elf)
+    report = write_units(images, Path(args.output), args.prefix)
+    if args.verbose:
+        print("\n".join(report))
+    print(f"wrote {len(images)} recompiled VU microcode units to {args.output}")
+
+
 def cmd_disasm(args) -> None:
     from .decode import decode
     prog = load(args.elf)
@@ -128,6 +144,17 @@ def main() -> None:
     o.add_argument("elf")
     o.add_argument("-o", "--output", default="build/iop")
     o.set_defaults(fn=cmd_iop)
+    v = sub.add_parser("vu", help="write C source for the game's VU microprograms (recomp/vu_recomp.py)")
+    v.add_argument("elf", help="the game ELF, or with --image a raw micro memory file")
+    v.add_argument("-o", "--output", default="build/vu")
+    v.add_argument("--image", action="store_true", help="elf is raw micro code (little-endian pairs)")
+    v.add_argument("--base", default="0", help="--image: VU byte address of the file's first pair")
+    v.add_argument("--unit", type=int, default=1, help="--image: VU number")
+    v.add_argument("--name", default="image", help="--image: unit name")
+    v.add_argument("--entries", default="", help="--image: entry byte addresses (default: start + after E bits)")
+    v.add_argument("--prefix", default="vuc", help="C symbol prefix")
+    v.add_argument("-v", "--verbose", action="store_true")
+    v.set_defaults(fn=cmd_vu)
     d = sub.add_parser("disasm", help="disassemble an address range")
     d.add_argument("elf")
     d.add_argument("addr", help="start address in hex")

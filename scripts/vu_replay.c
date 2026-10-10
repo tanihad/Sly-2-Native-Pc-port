@@ -3,8 +3,10 @@
  *  - a benchmark of real game microcode, without the EE, VIF or GS around it;
  *  - an exactness check: pair and cycle counts, the resulting registers/flags/data memory and the
  *    XGKICKs (address and issue cycle) must match what the recording run produced.
- *   vu_replay <file> [passes]
- * Prints the time of the fastest pass and the number of programs whose results differ. */
+ *   vu_replay <file> [passes] [interp|compiled]
+ * Prints the time of the fastest pass and the number of programs whose results differ. "compiled"
+ * starts programs through vu_execute(), i.e. the recompiled microcode linked in (vu_replay.ps1
+ * -Compiled <dir>), falling back to the interpreter where the runtime would. */
 #include "vu_internal.h"
 #include "vu_record.h"                 /* this checkout's, if -Runtime is an older one */
 
@@ -71,6 +73,7 @@ int main(int argc, char** argv) {
     if (argc < 2) { fprintf(stderr, "usage: vu_replay <recording> [passes]\n"); return 2; }
     int passes = argc > 2 ? atoi(argv[2]) : 5;
     if (passes < 1) passes = 1;
+    const int compiled = argc > 3 && !strcmp(argv[3], "compiled");
     FILE* f = fopen(argv[1], "rb");
     if (!f) { fprintf(stderr, "cannot open %s\n", argv[1]); return 2; }
     fseek(f, 0, SEEK_END);
@@ -137,7 +140,7 @@ int main(int argc, char** argv) {
             LARGE_INTEGER t0, t1;
             _mm_setcsr(VU_MXCSR);
             QueryPerformanceCounter(&t0);
-            uint32_t np = vu_run(st, r->h->addr);
+            uint32_t np = compiled ? vu_execute(st, r->h->addr) : vu_run(st, r->h->addr);
             QueryPerformanceCounter(&t1);
             _mm_setcsr(host_csr);
             ticks += t1.QuadPart - t0.QuadPart;
@@ -163,9 +166,11 @@ int main(int argc, char** argv) {
         WaitForSingleObject(prof, INFINITE);
         prof_report();
     }
+    const uint64_t cp = vu_st[0].cprograms + vu_st[1].cprograms, ap = vu_st[0].programs + vu_st[1].programs;
     printf("%zu programs (VBlanks %u-%u), %llu pairs, %llu cycles: %.3f ms (fastest of %d passes) = %.2f ns/pair; "
-           "%u programs differ (%u in pair/cycle counts)\n",
+           "%u programs differ (%u in pair/cycle counts)%s",
            n, vb0, vb1, (unsigned long long)pairs, (unsigned long long)cycles, best, passes,
-           best * 1e6 / (double)pairs, bad, bad_timing);
+           best * 1e6 / (double)pairs, bad, bad_timing, compiled ? "; " : "\n");
+    if (compiled) printf("%.1f%% of programs started in recompiled code\n", ap ? 100.0 * (double)cp / (double)ap : 0.0);
     return bad ? 1 : 0;
 }

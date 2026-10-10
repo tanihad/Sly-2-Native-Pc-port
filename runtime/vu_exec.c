@@ -811,7 +811,7 @@ static void mark_writes(vu_state* st, const vu_op* op, uint32_t cyc) {
     if (op->viw) st->vi_ready[op->viw] = cyc + op->viwlat;
 }
 
-#define VU_MAX_PAIRS (1u << 24)          /* runaway guard: ~0.1 s of VU time */
+static uint32_t vu_loop(vu_state* st, uint32_t pc, uint32_t npc, uint32_t cyc, uint32_t n, int ending);
 
 uint32_t vu_run(vu_state* st, uint32_t pc) {
     /* fresh pipeline: everything from the previous program drained when it ended */
@@ -823,13 +823,21 @@ uint32_t vu_run(vu_state* st, uint32_t pc) {
     st->q_pend = st->p_pend = 0;
     st->next_event = UINT32_MAX;
     st->clip_pipe = st->clip;
+    pc &= st->pcmask;
+    return vu_loop(st, pc, (pc + 1) & st->pcmask, 0, 0, 0);
+}
 
+/* Continue a program that recompiled code started (vu_compiled.h): the registers and the pipeline
+ * (scoreboard, flag/clip queues, Q/P in flight, VI history) are in st as this loop keeps them, the
+ * next pair is at pc with npc after it, cyc/n count what already ran. */
+uint32_t vu_resume(vu_state* st, uint32_t pc, uint32_t npc, uint32_t cyc, uint32_t n, int ending) {
+    return vu_loop(st, pc & st->pcmask, npc & st->pcmask, cyc, n, ending);
+}
+
+static uint32_t vu_loop(vu_state* st, uint32_t pc, uint32_t npc, uint32_t cyc, uint32_t n, int ending) {
     vu_op* const cache = st->cache;
     const uint8_t* const micro = st->micro;
     const uint32_t pcmask = st->pcmask;
-    pc &= pcmask;
-    uint32_t npc = (pc + 1) & pcmask, cyc = 0, n = 0;
-    int ending = 0;
     const uint32_t start = pc;
 
     for (;;) {
