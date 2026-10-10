@@ -69,15 +69,25 @@ static inline uint8_t* ps2_fast(uint32_t a) {
  * memory (see notes) and SetSyscall/patches write handler addresses into it. */
 #define PS2_SYSCALL_TABLE 0x00010000u
 
+/* Everything but direct RAM (0x00000000-0x01FFFFFF) and the scratchpad: the RAM mirrors, kernel
+ * views and hardware registers (out of line, ps2_runtime.c). */
+void ps2_mem_read_slow(ps2_ctx* ctx, uint32_t a, void* out, unsigned size);
+void ps2_mem_write_slow(ps2_ctx* ctx, uint32_t a, const void* in, unsigned size);
+
+/* The generated code performs every load and store through these, so the common cases are a
+ * single compare inline; the rest is a call. */
 #define PS2_MEM_ACCESSORS(T, N)                                                               \
     static inline T ps2_r##N(ps2_ctx* ctx, uint32_t a) {                                      \
-        T v; uint8_t* p = ps2_fast(a);                                                        \
-        if (p) memcpy(&v, p, sizeof v); else ps2_hw_read(ctx, a, &v, sizeof v);               \
+        T v;                                                                                  \
+        if (__builtin_expect(a < PS2_RAM_SIZE, 1)) memcpy(&v, ps2_ram + a, sizeof v);         \
+        else if ((a & 0xFFFFC000u) == 0x70000000u) memcpy(&v, ps2_spr + (a & (PS2_SPR_SIZE - 1)), sizeof v); \
+        else ps2_mem_read_slow(ctx, a, &v, sizeof v);                                         \
         return v;                                                                             \
     }                                                                                         \
     static inline void ps2_w##N(ps2_ctx* ctx, uint32_t a, T v) {                              \
-        uint8_t* p = ps2_fast(a);                                                             \
-        if (p) memcpy(p, &v, sizeof v); else ps2_hw_write(ctx, a, &v, sizeof v);               \
+        if (__builtin_expect(a < PS2_RAM_SIZE, 1)) memcpy(ps2_ram + a, &v, sizeof v);         \
+        else if ((a & 0xFFFFC000u) == 0x70000000u) memcpy(ps2_spr + (a & (PS2_SPR_SIZE - 1)), &v, sizeof v); \
+        else ps2_mem_write_slow(ctx, a, &v, sizeof v);                                        \
     }
 PS2_MEM_ACCESSORS(uint8_t, 8)
 PS2_MEM_ACCESSORS(uint16_t, 16)

@@ -8,9 +8,11 @@
  * raw texels are read from gs_vram directly instead, with the documented TEXA expansion; the CLUT
  * always comes from gs_mem.
  *
- * Invalidation: an entry remembers the VRAM pages it covers; any write to one of them (drawing,
- * host->local or local->local transfer, see gs_mark_rect) drops all its tiles. A CLUT load
- * (gs_clut_version) re-probes the palette and only re-expands tiles if the colours changed. */
+ * Invalidation: an entry remembers the VRAM page behind each page-sized rectangle of the texture; a
+ * write to a page (drawing, host->local or local->local transfer, see gs_mark_rect) drops the tiles
+ * of the rectangles it backs. A CLUT load (gs_clut_version) re-probes the palette and only
+ * re-expands tiles if the colours changed. With deferred drawing, dropped tiles are marked
+ * TILE_STALE and replaced texel buffers are kept until the batches sampling them are done. */
 #include "gs_draw.h"
 
 #include <limits.h>
@@ -20,7 +22,9 @@
 #define TEX_BUDGET ((size_t)384 << 20)
 #define NO_POS 0xFFFFFFFFu
 
-enum { TILE_IDX = 1, TILE_RGBA = 2 };
+/* TILE_STALE: the tile's texels were dropped (VRAM written, palette changed); deferred drawing may
+ * still sample the old ones, so decoding it again must wait for that drawing. */
+enum { TILE_IDX = 1, TILE_RGBA = 2, TILE_STALE = 4 };
 
 typedef struct {
     int used, indexed;
@@ -30,16 +34,23 @@ typedef struct {
     int w, h, tiles_x, tiles_y;
     int rgba_tiles;                              /* tiles with TILE_RGBA set */
     uint8_t* tiles;                              /* TILE_* flags per 8x8 tile */
+    uint16_t* row_rgba;                          /* tiles with TILE_RGBA set, per row of tiles */
     uint8_t* idx;                                /* indexed formats: raw indices */
     uint32_t* rgba;
     size_t bytes;
     uint32_t stamp, checked_serial;              /* page validity */
     uint32_t page0, npages;
+    /* the texture as a grid of page-sized rectangles (pw x ph texels, pw/8 x ph/8 tiles): the VRAM
+     * page holding each (rect_page; a TBP that is not page-aligned spills into the next page too) */
+    int pw_sh, ph_sh, rcols, rrows, spill;
+    uint16_t* rect_page;
     uint32_t pal_clut, pal_texa;                 /* palette validity */
+    int pos_lost;                                /* some pos[] dropped with their tiles (reset_written) */
     gs_tex0 t;                                   /* last TEX0/TEXA used for decoding */
     gs_texa ta;
     uint32_t pos[256];                           /* (v << 16) | u of a texel with this index */
     uint32_t pal[256];
+    uint32_t use_serial;                         /* newest deferred batch sampling rgba (gs_draw_pixel.c) */
 } tex_entry;
 
 uint32_t gs_clut_version;
@@ -73,8 +84,9 @@ static void ref_pages(const tex_entry* e, int d) {
 }
 
 static void free_entry(tex_entry* e) {
+    if (gs_draw_busy(e->use_serial)) gs_draw_sync();   /* deferred drawing still samples it */
     ref_pages(e, -1);
-    free(e->tiles); free(e->idx); free(e->rgba);
+    free(e->tiles); free(e->idx); free(e->rgba); free(e->row_rgba); free(e->rect_page);
     cache_bytes -= e->bytes;
     memset(e, 0, sizeof *e);
 }
@@ -86,9 +98,57 @@ void gs_tex_flush_all(void) {
 
 static void reset_tiles(tex_entry* e) {
     memset(e->tiles, 0, (size_t)e->tiles_x * (size_t)e->tiles_y);
+    memset(e->row_rgba, 0, (size_t)e->tiles_y * sizeof *e->row_rgba);
     e->rgba_tiles = 0;
     if (e->indexed) for (int k = 0; k < 256; k++) e->pos[k] = NO_POS;
+    e->pos_lost = 0;
     e->stamp = gs_vram_serial;
+}
+
+/* Drop the tiles of every page-sized rectangle whose VRAM page(s) were written since the entry was
+ * last checked. Tiles elsewhere stay decoded: a texture often covers more than the buffer it is
+ * read from (a 1024x1024 TEX0 over a 512x448 frame buffer also covers the buffers after it). */
+static void reset_written(tex_entry* e) {
+    int dropped = 0;
+    const int tw = 1 << (e->pw_sh - 3), th = 1 << (e->ph_sh - 3);    /* tiles per rectangle */
+    for (int r = 0; r < e->rrows; r++)
+        for (int c = 0; c < e->rcols; c++) {
+            uint32_t pg = e->rect_page[r * e->rcols + c];
+            if (gs_page_gen[pg] <= e->stamp && !(e->spill && gs_page_gen[(pg + 1) & 511] > e->stamp)) continue;
+            int ty1 = (r + 1) * th < e->tiles_y ? (r + 1) * th : e->tiles_y;
+            int tx1 = (c + 1) * tw < e->tiles_x ? (c + 1) * tw : e->tiles_x;
+            for (int ty = r * th; ty < ty1; ty++)
+                for (int tx = c * tw; tx < tx1; tx++) {
+                    uint8_t* f = &e->tiles[ty * e->tiles_x + tx];
+                    if (!(*f & (TILE_IDX | TILE_RGBA))) continue;
+                    if (*f & TILE_RGBA) { e->rgba_tiles--; e->row_rgba[ty]--; }
+                    *f = TILE_STALE;
+                    dropped = 1;
+                }
+        }
+    if (dropped && e->indexed)                   /* palette probe positions must be in valid tiles */
+        for (int k = 0; k < 256; k++)
+            if (e->pos[k] != NO_POS && !(e->tiles[((e->pos[k] >> 19) * (uint32_t)e->tiles_x) + ((e->pos[k] & 0xFFFF) >> 3)] & TILE_IDX)) {
+                e->pos[k] = NO_POS;
+                e->pos_lost = 1;                 /* other valid tiles may still hold index k */
+            }
+    e->stamp = gs_vram_serial;
+}
+
+/* Find a probe position for every index that lost its own (reset_written) among the tiles whose
+ * indices are still valid, so a palette change re-expands them correctly. */
+static void find_lost_positions(tex_entry* e) {
+    e->pos_lost = 0;
+    for (int ty = 0; ty < e->tiles_y; ty++)
+        for (int tx = 0; tx < e->tiles_x; tx++) {
+            if (!(e->tiles[ty * e->tiles_x + tx] & TILE_IDX)) continue;
+            int x0 = tx * 8, y0 = ty * 8, x1 = x0 + 8 < e->w ? x0 + 8 : e->w, y1 = y0 + 8 < e->h ? y0 + 8 : e->h;
+            for (int y = y0; y < y1; y++)
+                for (int x = x0; x < x1; x++) {
+                    uint8_t k = e->idx[y * e->w + x];
+                    if (e->pos[k] == NO_POS) e->pos[k] = ((uint32_t)y << 16) | (uint32_t)x;
+                }
+        }
 }
 
 /* Least recently used entry that is not part of the last few binds (one primitive binds <= 7). */
@@ -114,8 +174,9 @@ static tex_entry* create_entry(const gs_tex0* t, uint32_t xkey) {
     e->rgba = malloc(((size_t)w * h + (size_t)w + 1) * 4);     /* one spare row: never read, just a guard */
     e->idx = ind ? malloc((size_t)w * h) : NULL;
     e->tiles = malloc((size_t)tx * ty);
-    if (!e->rgba || !e->tiles || (ind && !e->idx)) {
-        free(e->rgba); free(e->idx); free(e->tiles);
+    e->row_rgba = malloc((size_t)ty * sizeof *e->row_rgba);
+    if (!e->rgba || !e->tiles || !e->row_rgba || (ind && !e->idx)) {
+        free(e->rgba); free(e->idx); free(e->tiles); free(e->row_rgba);
         memset(e, 0, sizeof *e);
         return NULL;
     }
@@ -137,6 +198,15 @@ static tex_entry* create_entry(const gs_tex0* t, uint32_t xkey) {
     uint32_t n = (rows - 1) * ppr + cols + ((t->tbp0 & 31) != 0);
     e->page0 = t->tbp0 >> 5;
     e->npages = n > 512 ? 512 : n;
+    e->pw_sh = __builtin_ctz((unsigned)pw);
+    e->ph_sh = __builtin_ctz((unsigned)ph);
+    e->rcols = (int)cols;
+    e->rrows = (int)rows;
+    e->spill = (t->tbp0 & 31) != 0;
+    e->rect_page = malloc(rows * cols * sizeof *e->rect_page);
+    if (!e->rect_page) { e->used = 0; free(e->rgba); free(e->idx); free(e->tiles); free(e->row_rgba); cache_bytes -= bytes; memset(e, 0, sizeof *e); return NULL; }
+    for (uint32_t r = 0; r < rows; r++)
+        for (uint32_t c = 0; c < cols; c++) e->rect_page[r * cols + c] = (uint16_t)((e->page0 + r * ppr + c) & 511);
     ref_pages(e, +1);
     e->pal_clut = gs_clut_version - 1;           /* force a palette probe */
     reset_tiles(e);
@@ -176,17 +246,39 @@ static void bind_entry(gs_texlvl* L, tex_entry* e) {
     axis_params(L->vmode, (int)((c >> 24) & 0x3FF), (int)((c >> 34) & 0x3FF), e->h, L->level, &L->vlo, &L->vhi, &L->vmsk, &L->vfix);
 }
 
+/* Texel buffers replaced while deferred drawing (batch `serial`) may still sample them. */
+typedef struct { void* p; uint32_t serial; } grave;
+static grave graves[256];
+static int ngraves;
+
+static void bury(void* p, uint32_t serial) {
+    int j = 0;
+    for (int i = 0; i < ngraves; i++) {
+        if (gs_draw_busy(graves[i].serial)) graves[j++] = graves[i];
+        else free(graves[i].p);
+    }
+    ngraves = j;
+    if (ngraves == (int)(sizeof graves / sizeof graves[0])) {
+        gs_draw_sync();
+        for (int i = 0; i < ngraves; i++) free(graves[i].p);
+        ngraves = 0;
+    }
+    graves[ngraves++] = (grave){ p, serial };
+}
+
 static void check_entry(tex_entry* e, const gs_tex0* t, const gs_texa* ta) {
     e->t = *t;
     e->ta = *ta;
     if (e->checked_serial != gs_vram_serial) {
         for (uint32_t i = 0; i < e->npages; i++)
-            if (gs_page_gen[(e->page0 + i) & 511] > e->stamp) { reset_tiles(e); break; }
+            if (gs_page_gen[(e->page0 + i) & 511] > e->stamp) { reset_written(e); break; }
         e->checked_serial = gs_vram_serial;
     }
     if (e->indexed) {
         uint32_t tk = pal_texa_key(e, ta);
         if (e->pal_clut != gs_clut_version || e->pal_texa != tk) {
+            if (gs_draw_pages_pending(e->page0, e->npages)) gs_draw_sync();   /* reads texels in VRAM */
+            if (e->pos_lost) find_lost_positions(e);
             int changed = 0;
             for (int k = 0; k < 256; k++) {
                 if (e->pos[k] == NO_POS) continue;
@@ -194,8 +286,19 @@ static void check_entry(tex_entry* e, const gs_tex0* t, const gs_texa* ta) {
                 if (c != e->pal[k]) { e->pal[k] = c; changed = 1; }
             }
             if (changed) {
+                /* Every tile gets expanded again with the new palette. If deferred drawing still
+                 * samples the old colours (a font drawn with two CLUTs in turn), expand into a new
+                 * buffer and free the old one once that drawing is done, instead of waiting. */
+                uint8_t stale = 0;
+                if (e->rgba_tiles && gs_draw_busy(e->use_serial)) {
+                    uint32_t* fresh = malloc(((size_t)e->w * e->h + (size_t)e->w + 1) * 4);
+                    if (fresh) { bury(e->rgba, e->use_serial); e->rgba = fresh; }
+                    else stale = TILE_STALE;
+                }
                 size_t n = (size_t)e->tiles_x * (size_t)e->tiles_y;
-                for (size_t i = 0; i < n; i++) e->tiles[i] &= (uint8_t)~TILE_RGBA;
+                for (size_t i = 0; i < n; i++)
+                    if (e->tiles[i] & TILE_RGBA) e->tiles[i] = (uint8_t)((e->tiles[i] & ~TILE_RGBA) | stale);
+                memset(e->row_rgba, 0, (size_t)e->tiles_y * sizeof *e->row_rgba);
                 e->rgba_tiles = 0;
             }
             e->pal_clut = gs_clut_version;
@@ -205,6 +308,7 @@ static void check_entry(tex_entry* e, const gs_tex0* t, const gs_texa* ta) {
 }
 
 void gs_tex_bind(gs_texlvl* L, const gs_tex0* t0, const gs_texa* ta, uint64_t clamp, int level) {
+    gs_prim_version++;                           /* *L is part of the primitive state */
     gs_tex0 t = *t0;
     if (t.tw > 10) t.tw = 10;
     if (t.th > 10) t.th = 10;
@@ -225,7 +329,10 @@ void gs_tex_bind(gs_texlvl* L, const gs_tex0* t0, const gs_texa* ta, uint64_t cl
     }
 #undef KEY_MATCH
     bind_entry(L, e);
-    if (e) check_entry(e, &L->t, &L->ta);
+    if (e) {
+        check_entry(e, &L->t, &L->ta);
+        L->tex = e->rgba;                        /* (a palette change may have replaced it) */
+    }
 }
 
 void gs_tex_validate(gs_texlvl* L) {
@@ -236,10 +343,13 @@ void gs_tex_validate(gs_texlvl* L) {
         return;
     }
     e->last_use = ++use_clock;
-    if (e->checked_serial == gs_vram_serial && (!e->indexed || (e->pal_clut == gs_clut_version &&
-        e->pal_texa == pal_texa_key(e, &L->ta))))
-        return;
-    check_entry(e, &L->t, &L->ta);
+    if (!(e->checked_serial == gs_vram_serial && (!e->indexed || (e->pal_clut == gs_clut_version &&
+          e->pal_texa == pal_texa_key(e, &L->ta)))))
+        check_entry(e, &L->t, &L->ta);
+    if (L->tex != e->rgba) {                     /* a palette change replaced the texel buffer */
+        L->tex = e->rgba;
+        gs_prim_version++;
+    }
 }
 
 /* ---- fast raw texel access ----------------------------------------------------------------------
@@ -462,11 +572,18 @@ void gs_tex_fast_init(void) {
 static void decode_tile(tex_entry* e, int tx, int ty) {
     uint8_t* fl = &e->tiles[ty * e->tiles_x + tx];
     int x0 = tx * 8, y0 = ty * 8, x1 = x0 + 8 < e->w ? x0 + 8 : e->w, y1 = y0 + 8 < e->h ? y0 + 8 : e->h;
+    /* deferred drawing (gs_draw_pixel.c) must not still write the VRAM page this tile is read from,
+     * nor still sample the texels this tile held before it was dropped */
+    uint32_t pg = e->rect_page[(y0 >> e->ph_sh) * e->rcols + (x0 >> e->pw_sh)];
+    if (gs_draw_pages_pending(pg, 1u + (uint32_t)e->spill) || ((*fl & TILE_STALE) && gs_draw_busy(e->use_serial)))
+        gs_draw_sync();
+    *fl &= (uint8_t)~TILE_STALE;
     const gs_tex0* t = &e->t;
     raw_layout r;
     uint32_t raw[64];
     int fast = e->fast && raw_layout_of(t->psm, t->tbp0, t->tbw, &r);
     e->rgba_tiles++;
+    e->row_rgba[ty]++;
     gs_tex_decodes++;
     if (!e->indexed) {
         if (fast) {
@@ -513,6 +630,11 @@ static int axis_ranges(int mode, int a, int b, int size, int lo, int hi, int out
     return 1;
 }
 
+void gs_tex_note_use(const gs_texlvl* L, uint32_t serial) {
+    tex_entry* e = L->entry;
+    if (e && e->id == L->entry_id && serial > e->use_serial) e->use_serial = serial;
+}
+
 void gs_tex_ensure(gs_texlvl* L, int u0, int u1, int v0, int v1) {
     tex_entry* e = L->entry;
     if (!e || e->rgba_tiles == e->tiles_x * e->tiles_y) return;
@@ -520,8 +642,10 @@ void gs_tex_ensure(gs_texlvl* L, int u0, int u1, int v0, int v1) {
     int nu = axis_ranges(L->umode, u0, u1, e->w, L->ulo, L->uhi, ur);
     int nv = axis_ranges(L->vmode, v0, v1, e->h, L->vlo, L->vhi, vr);
     for (int i = 0; i < nv; i++)
-        for (int ty = vr[2 * i] >> 3; ty <= vr[2 * i + 1] >> 3; ty++)
+        for (int ty = vr[2 * i] >> 3; ty <= vr[2 * i + 1] >> 3; ty++) {
+            if (e->row_rgba[ty] == e->tiles_x) continue;             /* the whole row is decoded */
             for (int j = 0; j < nu; j++)
                 for (int tx = ur[2 * j] >> 3; tx <= ur[2 * j + 1] >> 3; tx++)
                     if (!(e->tiles[ty * e->tiles_x + tx] & TILE_RGBA)) decode_tile(e, tx, ty);
+        }
 }

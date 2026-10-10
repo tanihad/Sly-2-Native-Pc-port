@@ -2,7 +2,14 @@
 
 ## Resume here (read first in a new session)
 
-**Latest (2026-10-10, later):** all `hw/*` branches are merged into main. The game boots, plays
+**Newest:** main (eb96e20) reaches the title screen and the Bentley/Sly Binocucom briefing
+(SQUARE answers "Yes" on the memory-card prompt: PS2_INPUT="600:square:12,1500:start:10").
+fix-render and fix-input are merged. Workflow `continue-to-playable` is running:
+`fix/fix-perf` (60/60 fps in release on menus already; merging main, continuing its checkpoint),
+`audio/audio-iop` (recompiled 989snd/spiop + native mixer; finishing integration),
+`play/play-1` (pushing into gameplay). Each has `notes/wip/<task>.md`; resume from those.
+
+**Earlier (2026-10-10, later):** all `hw/*` branches are merged into main. The game boots, plays
 the intro movie, shows the mask logo and renders the memory-card prompt ("Do you want to create
 a Sly 2 Save File?"), where it currently stops reacting to input (presses do reach the game's
 joystick object). Running in parallel, each in a worktree under

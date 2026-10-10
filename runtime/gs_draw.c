@@ -226,6 +226,7 @@ static void env_update(void) {
     else P.texm = 0;
     gs_prim_finalize(&P);
     prim_draws = P.fbmsk != 0xFFFFFFFFu || (P.zuse && !P.zmsk);
+    gs_prim_version++;                   /* deferred drawing snapshots the new state */
 }
 
 /* ---- attribute planes ---------------------------------------------------------------------------- */
@@ -637,7 +638,7 @@ static void trace_prim(int type, const vtx* const* vs, int nv) {
         uint64_t fr = reg[R_FRAME_1 + ctx], al = reg[R_ALPHA_1 + ctx], t0 = reg[R_TEX0_1 + ctx];
         fprintf(trace_out, "[gstrace] v%u %-9s %4d,%4d..%4d,%4d rgba %02X%02X%02X%02X z %u FBP %u/%02X msk %08X%s%s ABE %d "
                         "ALPHA %u%u%u%u/%02X TME %d TBP %u/%02X TFX %u TCC %u\n",
-                gs_vsync_count, names[type & 7], x0, y0, x1, y1, vs[nv - 1]->r, vs[nv - 1]->g, vs[nv - 1]->b,
+                gs_stream_vsync, names[type & 7], x0, y0, x1, y1, vs[nv - 1]->r, vs[nv - 1]->g, vs[nv - 1]->b,
                 vs[nv - 1]->a, vs[nv - 1]->z, (unsigned)(fr & 0x1FF), (unsigned)((fr >> 24) & 0x3F),
                 (unsigned)(fr >> 32), (attr >> 3) & 1 ? " gouraud" : "", (attr >> 7) & 1 ? " AA1" : "", (int)(attr >> 6) & 1,
                 (unsigned)(al & 3), (unsigned)((al >> 2) & 3), (unsigned)((al >> 4) & 3), (unsigned)((al >> 6) & 3),
@@ -645,7 +646,7 @@ static void trace_prim(int type, const vtx* const* vs, int nv) {
                 (unsigned)((t0 >> 20) & 0x3F), (unsigned)((t0 >> 35) & 3), (unsigned)((t0 >> 34) & 1));
         return;
     }
-    fprintf(trace_out, "[gstrace] v%u %s IIP %d TME %d FGE %d ABE %d AA1 %d FST %d CTXT %d FIX %d\n", gs_vsync_count,
+    fprintf(trace_out, "[gstrace] v%u %s IIP %d TME %d FGE %d ABE %d AA1 %d FST %d CTXT %d FIX %d\n", gs_stream_vsync,
             names[type & 7], (int)(attr >> 3) & 1, (int)(attr >> 4) & 1, (int)(attr >> 5) & 1, (int)(attr >> 6) & 1,
             (int)(attr >> 7) & 1, (int)(attr >> 8) & 1, ctx, (int)(attr >> 10) & 1);
     for (int i = 0; i < nv; i++) {
@@ -699,9 +700,9 @@ static void draw(int type, const vtx* a, const vtx* b, const vtx* c) {
     gs_stats.prims++;
     if (trace_on) {
         if (trace_on < 0) trace_init();
-        if (trace_on && trace_left > 0 && gs_vsync_count >= trace_from) {
+        if (trace_on && trace_left > 0 && gs_stream_vsync >= trace_from) {
             static uint32_t flushed_at;  /* the process may end without flushing stdio */
-            if (flushed_at != gs_vsync_count) { flushed_at = gs_vsync_count; fflush(trace_out); }
+            if (flushed_at != gs_stream_vsync) { flushed_at = gs_stream_vsync; fflush(trace_out); }
             const vtx* vs[3] = { a, b, c };
             trace_prim(type, vs, type == PRIM_POINT ? 1 : type == PRIM_TRI || type == PRIM_TRISTRIP || type == PRIM_TRIFAN ? 3 : 2);
             /* the last record: nothing above flushes after this, and the game ends with ExitProcess,
@@ -777,6 +778,7 @@ static void mark_xfer_dest(void) {
 }
 
 static void trxdir(uint32_t dir) {
+    gs_draw_sync();                      /* transfers read/write VRAM in stream order */
     uint64_t bb = reg[R_BITBLTBUF], pos = reg[R_TRXPOS], rr = reg[R_TRXREG];
     xfer_dir = (int)dir;
     xfer_dbp = (uint32_t)((bb >> 32) & 0x3FFF);
@@ -787,27 +789,29 @@ static void trxdir(uint32_t dir) {
     xfer_x1 = xfer_x0 + (int)(rr & 0xFFF);
     xfer_y1 = xfer_y0 + (int)((rr >> 32) & 0xFFF);
     gs_stats.xfers += dir != 3;
-    if (trace_on > 0 && trace_left > 0 && gs_vsync_count >= trace_from && dir != 3)
+    if (trace_on > 0 && trace_left > 0 && gs_stream_vsync >= trace_from && dir != 3)
         fprintf(trace_out, "[gstrace] v%u xfer dir %u %ux%u src %u,%u BP %u BW %u PSM %02X -> dst %d,%d BP %u BW %u PSM %02X\n",
-                gs_vsync_count, dir, (unsigned)(rr & 0xFFF), (unsigned)((rr >> 32) & 0xFFF), (unsigned)(pos & 0x7FF),
+                gs_stream_vsync, dir, (unsigned)(rr & 0xFFF), (unsigned)((rr >> 32) & 0xFFF), (unsigned)(pos & 0x7FF),
                 (unsigned)((pos >> 16) & 0x7FF), (unsigned)(bb & 0x3FFF), (unsigned)((bb >> 16) & 0x3F),
                 (unsigned)((bb >> 24) & 0x3F), xfer_x0, xfer_y0, xfer_dbp, xfer_dbw, xfer_dpsm);
     gs_mem_xfer_start(bb, pos, rr, dir);
     if (dir == 0 || dir == 2) mark_xfer_dest();
 }
 
-void gs_image_write(const void* data, uint32_t bytes) {
+void gs_exec_image_write(const void* data, uint32_t bytes) {
     GS_INIT();
+    gs_draw_sync();
     gs_stats.image_bytes += bytes;
     if (xfer_dir == 0 && xfer_marked_at != gs_tex_decodes) mark_xfer_dest();
     gs_mem_xfer_write(data, bytes);
 }
 
-uint32_t gs_image_read(void* data, uint32_t bytes) {
+uint32_t gs_exec_image_read(void* data, uint32_t bytes) {
     return gs_mem_xfer_read(data, bytes);
 }
 
 void gs_draw_reset(void) {
+    gs_draw_sync();
     vcount = 0;
     env_dirty = 1;
     if (xfer_dir != 3) gs_mem_xfer_start(reg[R_BITBLTBUF], reg[R_TRXPOS], reg[R_TRXREG], 3);
@@ -820,12 +824,14 @@ static void tex0_write(int ctx, uint64_t v) {
     reg[R_TEX0_1 + ctx] = v;
     gs_tex0 t = decode_tex0(v);
     gs_texclut tc = decode_texclut(reg[R_TEXCLUT]);
+    /* a CLUT load reads VRAM (CSM1: from CBP, at most 1 KB; CSM2: anywhere in its buffer) */
+    if (t.cld && (t.csm || gs_draw_pages_pending(t.cbp >> 5, 2))) gs_draw_sync();
     gs_clut_on_tex0(&t, &tc);
     if (t.cld) gs_clut_version++;
     env_dirty = 1;
 }
 
-void gs_write_reg(uint32_t r, uint64_t v) {
+void gs_exec_write_reg(uint32_t r, uint64_t v) {
     GS_INIT();
     gs_stats.regs++;
     switch (r) {
@@ -868,6 +874,7 @@ void gs_write_reg(uint32_t r, uint64_t v) {
         trxdir((uint32_t)(v & 3));
         break;
     case R_HWREG:
+        gs_draw_sync();
         if (xfer_dir == 0 && xfer_marked_at != gs_tex_decodes) mark_xfer_dest();
         gs_mem_xfer_write(&v, 8);
         break;

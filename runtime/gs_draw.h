@@ -22,11 +22,42 @@ void gs_csr_label(uint32_t id, uint32_t mask);    /* SIGLBLID.LBLID update */
 
 /* ---- gs_draw.c --------------------------------------------------------------------------------- */
 void gs_draw_reset(void);                /* CSR.RESET: drop the vertex queue, cancel transfers */
+/* The GS itself: gs_write_reg / gs_image_write / gs_image_read (hw.h) execute these directly, or
+ * hand them to the GS thread (gs_thread.c) in order. */
+void     gs_exec_write_reg(uint32_t reg, uint64_t value);
+void     gs_exec_image_write(const void* data, uint32_t bytes);
+uint32_t gs_exec_image_read(void* data, uint32_t bytes);
+
+/* ---- gs.c: display -------------------------------------------------------------------------------- */
+#define GS_PRIV_SNAPSHOT 16              /* uint64_t values in a display register snapshot */
+void gs_priv_snapshot(uint64_t out[GS_PRIV_SNAPSHOT]);   /* PMODE ... BGCOLOR as they are now, + gs_vsync_count */
+/* gs_display() for a snapshot of the display registers (the caller makes sure the GS is idle). */
+int  gs_display_regs(const uint64_t pr[GS_PRIV_SNAPSHOT], uint32_t* dst, int stride, int* w, int* h);
+
+/* ---- gs_thread.c (see also hw.h) --------------------------------------------------------------------- */
+void gs_sync(void);                      /* wait until everything sent to the GS has executed */
+
+/* ---- gs_draw_pixel.c: pixel worker threads and deferred drawing ----------------------------------------
+ * With workers, spans are recorded and drawn later in parallel bands (gs_draw_pixel.c). Whoever
+ * reads or writes VRAM outside the pixel pipeline, or changes texture cache memory a recorded
+ * primitive may still sample, must first let that drawing finish: */
+void     gs_draw_set_workers(int n);     /* start n pixel worker threads (once, before drawing) */
+int      gs_draw_workers(void);
+void     gs_draw_sync(void);             /* finish all deferred drawing */
+void     gs_draw_kick(void);             /* start drawing what has been recorded (does not wait) */
+int      gs_draw_pages_pending(uint32_t page0, uint32_t npages);   /* deferred drawing writes one of these 8 KB pages */
+uint32_t gs_draw_fill_serial(void);      /* batch that primitives are recorded into now */
+int      gs_draw_busy(uint32_t serial);  /* that batch (or a later one) has not been drawn yet */
+/* bumped whenever gs_prim changes other than the per-primitive steps (dr..dv, lod_q, nowrap) */
+extern uint32_t gs_prim_version;
 
 /* activity counters (PS2_LOG_GS=1 prints them from gs_vsync once a second) */
-typedef struct { uint32_t regs, prims, sprites, tris, image_bytes, xfers; } gs_stats_t;
+typedef struct { uint32_t regs, prims, sprites, tris, image_bytes, xfers, pixels; } gs_stats_t;
 extern gs_stats_t gs_stats;
-extern uint32_t gs_vsync_count;          /* gs_vsync calls so far */
+extern uint32_t gs_vsync_count;          /* gs_vsync calls so far (EE thread) */
+/* gs_vsync_count as the GS stream has reached it: the VBlank of the last picture composed. With the
+ * GS thread, that thread runs up to one VBlank behind the EE; the GS trace uses this count. */
+extern uint32_t gs_stream_vsync;
 
 /* Field rendering: XYOFFSET.Y fraction (1/16 pixel) and FRAME PSM of the last primitive drawn into
  * each frame buffer page (gs_fb_yfrac 0xFF = never drawn). Interlaced games draw the buffer shown in
@@ -91,6 +122,8 @@ void gs_tex_validate(gs_texlvl* L);
 /* Make sure texels in the (unwrapped, inclusive) range [u0,u1] x [v0,v1] are decoded. */
 void gs_tex_ensure(gs_texlvl* L, int u0, int u1, int v0, int v1);
 void gs_tex_flush_all(void);             /* forget every cached texture (reset) */
+/* Deferred drawing of batch `serial` samples this level's texels: keep them until it is drawn. */
+void gs_tex_note_use(const gs_texlvl* L, uint32_t serial);
 void gs_tex_fast_init(void);             /* probe/verify direct texel decoding (called by gs_swz_init) */
 
 /* ---- gs_draw_pixel.c: primitive state and span drawing ---------------------------------------- */

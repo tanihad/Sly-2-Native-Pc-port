@@ -1,5 +1,6 @@
 /* Runtime for recompiled PS2 code: function lookup, interrupts, BIOS syscalls (HLE), startup. */
 #include "hw.h"
+#include "perf.h"
 
 #include <stdlib.h>
 #include <windows.h>
@@ -14,6 +15,7 @@ static int in_interrupt;                         /* inside a game interrupt hand
  * The trace is written without locks, so the snapshot can be slightly torn; fine for debugging. */
 static DWORD WINAPI watchdog(LPVOID arg) {
     Sleep((DWORD)(uintptr_t)arg * 1000);
+    perf_final();
     static uint32_t snap[PS2_TRACE_SIZE];
     uint32_t pos = ps2_trace_pos;
     memcpy(snap, ps2_trace, sizeof snap);
@@ -165,6 +167,18 @@ static void die(const char* fmt, uint32_t v) {
     exit(1);
 }
 
+/* ---- memory: the cases the inline accessors (ps2_runtime.h) leave out ------------------------- */
+
+void ps2_mem_read_slow(ps2_ctx* ctx, uint32_t a, void* out, unsigned size) {
+    uint8_t* p = ps2_fast(a);
+    if (p) memcpy(out, p, size); else ps2_hw_read(ctx, a, out, size);
+}
+
+void ps2_mem_write_slow(ps2_ctx* ctx, uint32_t a, const void* in, unsigned size) {
+    uint8_t* p = ps2_fast(a);
+    if (p) memcpy(p, in, size); else ps2_hw_write(ctx, a, in, size);
+}
+
 /* ---- function lookup ---------------------------------------------------------------------- */
 
 static ps2_func find_func(uint32_t addr) {
@@ -257,6 +271,7 @@ int ps2_in_interrupt(void) { return in_interrupt; }
 
 volatile uint32_t ps2_irq_pending;
 static volatile LONG frames_behind;              /* VBlanks the emulation hasn't serviced yet */
+static volatile LONG vblanks_due;                /* VBlanks the host timer has raised so far */
 static uint32_t vblank_count;
 static const char* dump_dir;
 static int dump_every = 60, headless;
@@ -272,6 +287,7 @@ static DWORD WINAPI host_timer(LPVOID arg) {
         if (now.QuadPart >= due) {
             frame++;
             InterlockedIncrement(&frames_behind);
+            InterlockedIncrement(&vblanks_due);
             InterlockedOr((volatile LONG*)&ps2_irq_pending, PS2_IRQ_VBLANK);
         }
         InterlockedOr((volatile LONG*)&ps2_irq_pending, PS2_IRQ_TICK);
@@ -282,24 +298,36 @@ static DWORD WINAPI host_timer(LPVOID arg) {
 
 uint32_t ps2_vblank_count(void) { return vblank_count; }
 
+/* The picture of VBlank `vb` (ok = 0: display off). Runs on the GS thread when there is one. */
+static void present_frame(const uint32_t* frame, int ok, int w, int h, uint32_t vb) {
+    if (!ok) {                                   /* display off: show black, not a stale frame */
+        static uint32_t black[640 * 448];
+        if (!headless) window_present(black, 640, 448, 640);
+        return;
+    }
+    if (!headless) window_present(frame, w, h, 1024);
+    if (dump_dir && vb % (uint32_t)dump_every == 0 && vb >= dump_from) {
+        char path[512];
+        snprintf(path, sizeof path, "%s/frame_%06u.png", dump_dir, vb);
+        debug_write_png(path, frame, w, h, 1024);
+    }
+}
+
 static void vblank(ps2_ctx* ctx) {
     vblank_count++;
+    perf_vblank(vblank_count, (uint32_t)vblanks_due);
     calls_vblank(vblank_count);
     gs_vsync();
-    static uint32_t frame[1024 * 1024];
-    int w = 0, h = 0;
-    if (!gs_display(frame, 1024, &w, &h)) {      /* display off: show black, not a stale frame */
-        w = 640; h = 448;
-        for (int y = 0; y < h; y++) memset(frame + (size_t)y * 1024, 0, (size_t)w * 4);
-        if (!headless) window_present(frame, w, h, 1024);
+    int perf_prev = perf_enter(PERF_PRESENT);
+    if (gs_async()) {
+        gs_queue_vsync(vblank_count);            /* composed and presented by the GS thread */
     } else {
-        if (!headless) window_present(frame, w, h, 1024);
-        if (dump_dir && vblank_count % (uint32_t)dump_every == 0 && vblank_count >= dump_from) {
-            char path[512];
-            snprintf(path, sizeof path, "%s/frame_%06u.png", dump_dir, vblank_count);
-            debug_write_png(path, frame, w, h, 1024);
-        }
+        static uint32_t frame[1024 * 1024];
+        int w = 0, h = 0;
+        int ok = gs_display(frame, 1024, &w, &h);
+        present_frame(frame, ok, w, h, vblank_count);
     }
+    perf_leave(perf_prev);
     pad_vsync(ctx);
 
     /* PS2_PEEK="<hexaddr>:<words>[,...]": print EE memory every PS2_PEEK_EVERY VBlanks (default 60) */
@@ -483,6 +511,8 @@ int main(int argc, char** argv) {
     if (argc < 2) { fprintf(stderr, "usage: %s <path to original PS2 executable>\n", argv[0]); return 2; }
     QueryPerformanceFrequency(&qpc_freq);
     QueryPerformanceCounter(&qpc_start);
+    perf_init();                                 /* PS2_PERF / PS2_PROFILE */
+    atexit(perf_final);
     ps2_ram = calloc(1, PS2_RAM_SIZE + 16);      /* +16: a 128-bit access at the very end */
     ps2_spr = calloc(1, PS2_SPR_SIZE + 16);
     if (!ps2_ram || !ps2_spr) die("out of memory (%u)", 0);
@@ -499,6 +529,21 @@ int main(int argc, char** argv) {
     const char* wd = getenv("PS2_WATCHDOG");
     if (wd && atoi(wd) > 0) CreateThread(NULL, 0, watchdog, (LPVOID)(uintptr_t)atoi(wd), 0, NULL);
     if (!headless) window_init();
+
+    /* The GS on its own thread plus pixel workers (PS2_GS_ASYNC=0: synchronous, as in the unit
+     * tests; PS2_GS_THREADS=<n>: pixel workers, default half the logical processors minus one, at
+     * most 8). */
+    const char* ga = getenv("PS2_GS_ASYNC");
+    if (!dump_regs && !(ga && atoi(ga) == 0)) {
+        int ncpu = (int)GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
+        int workers = ncpu / 2 - 1;
+        if (workers > 8) workers = 8;
+        if (workers < 0) workers = 0;
+        const char* gt = getenv("PS2_GS_THREADS");
+        if (gt) workers = atoi(gt);
+        gs_thread_start(workers, present_frame);
+        fprintf(stderr, "[ps2] GS thread started with %d pixel workers\n", workers);
+    }
 
     static ps2_ctx init;
     init.r[29].sd[0] = (int32_t)(PS2_RAM_SIZE - 0x10);   /* provisional stack until SetupThread */
