@@ -21,6 +21,14 @@ The user owns the game and supplies the executable from their own disc.
 - Ghidra runs headless only (`analyzeHeadless.bat`); the PS2 Emotion Engine plugin is installed.
 - The original compiler is still unknown, so nothing can be byte-matched yet.
 
+## Current direction: static recompiler (PS2 -> native x86-64)
+
+- Design and milestones: `notes/recompiler-design.md`.
+- `recomp/` (Python) translates the ELF to C; `runtime/` (C) is the hardware/BIOS stand-in.
+- Run `.venv\Scripts\python.exe tests\run_tests.py` after any codegen or runtime change. It
+  compiles a synthetic PS2 program with clang and checks results against real R5900 semantics.
+  Add a case to `tests/make_test_elf.py` for each newly translated instruction.
+
 ## GitHub
 
 - Remote: https://github.com/tanihad/sly2-decomp (private). Commits are authored as `tanihad`

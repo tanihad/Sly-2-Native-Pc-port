@@ -12,6 +12,7 @@ verifies every download against its published SHA-256. Load into a shell with
 | ghidra-emotionengine-reloaded (PS2)   | 2.1.38    | `tools/ghidra/Ghidra/Extensions`       |
 | objdiff-cli                           | 3.8.2     | `tools/objdiff-cli.exe`                |
 | uv                                    | latest    | `tools/uv`                             |
+| llvm-mingw (clang)                    | 20261006 / clang 23.1.3 | `tools/llvm-mingw` - compiles generated C |
 | Python (uv-managed)                   | 3.13.16   | `tools/python`, venv in `.venv`        |
 | splat64 (+ spimdisasm, rabbitizer)    | 0.50.0    | `.venv`                                |
 | pyelftools / capstone                 | 0.33 / 5.0.9 | `.venv`                             |

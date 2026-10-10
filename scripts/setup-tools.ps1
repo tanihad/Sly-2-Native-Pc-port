@@ -105,6 +105,14 @@ if (-not (Test-Path (Join-Path $uvDir 'uv.exe'))) {
     Expand-Archive $z $uvDir -Force
 }
 
+# --- llvm-mingw: portable clang + Windows headers/libs, compiles the generated C ---
+$llvmDir = Join-Path $tools 'llvm-mingw'
+if (-not (Test-Path $llvmDir)) {
+    $a = Get-GitHubAsset 'mstorsjo/llvm-mingw' 'llvm-mingw-*-ucrt-x86_64.zip'
+    $z = Save-Verified $a.Name $a.Url $a.Sha256
+    Expand-Into $z $llvmDir
+}
+
 # --- Python 3.13 venv with splat, pyelftools, capstone (kept inside the project) ---
 $env:UV_PYTHON_INSTALL_DIR = Join-Path $tools 'python'
 $env:UV_CACHE_DIR          = Join-Path $tools 'uv-cache'

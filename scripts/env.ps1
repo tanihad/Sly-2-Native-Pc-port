@@ -13,5 +13,6 @@ $env:PATH = (@(
     (Join-Path $tools 'git\cmd'),
     (Join-Path $tools 'ghidra\support'),
     (Join-Path $tools 'uv'),
+    (Join-Path $tools 'llvm-mingw\bin'),
     $tools                                   # objdiff-cli.exe
 ) -join ';') + ';' + $env:PATH
