@@ -17,6 +17,8 @@ the `PS2_AUDIO=0` fallback now.
 | `runtime/sd_reverb.c` | reverb presets, reverb algorithm, resampling filter |
 | `runtime/audio_out.c/.h` | output thread: WASAPI shared/event mode, real-time null sink, WAV dump, test tone |
 | `tests/unit/sd/` | `run.ps1` builds and runs `test_sd` (mixer) and `test_audio_out` (output path) |
+| `scripts/wav_analyze.py` | levels over time, clipping, silence/sound segments, digital-zero dropouts, clicks (2nd difference), per-segment balance, correlation and dominant frequencies of a recorded WAV |
+| `scripts/audio_streams.py` | spiop streams of a recorded run against the disc: durations vs headers, levels, decoded dialogue vs WAV |
 
 No extra link libraries: `audio_out.c` loads `ole32.dll` (CoInitializeEx/CoCreateInstance) and
 `avrt.dll` (Pro Audio thread class) with LoadLibrary and defines the four WASAPI GUIDs itself, so
@@ -162,26 +164,65 @@ stability; performance (48 voices + hall reverb: about 24 ms of CPU per second o
 the right level and real-time pace; a voice rendered by `sd.c` reaches the WAV frame-exact; the
 WASAPI path starts and is paced by the device (48000 frames per second).
 
-## Integration notes (for the integrator / IOP side)
+## Integration in the game (2026-10-10, branch audio/audio-iop)
 
-- Call `audio_init()` once at start-up (e.g. in `ps2_runtime.c` next to the other subsystem inits);
-  `audio_shutdown()` is registered with atexit and is optional.
-- `iop_sd_transfer_done(int channel)`: `sd.c` has a weak no-op default so the game links before
-  integration; the IOP side's definition replaces it. It is called (lock released) synchronously
-  inside `sceSdVoiceTrans` on the emulation thread, and on the audio thread for AutoDMA halves; it
-  must only queue the guest's transfer handler. libsd's `VoiceTransStatus(ch, WAIT)` returns after
-  the handler has run on hardware; if a caller depends on that, run pending handlers before
-  returning from a waiting status call (989snd's movie-sound code at 0xB5C0 waits this way right
-  after its VoiceTrans).
-- `sd_effect_attr` has the same field offsets as the guest's struct (core at 0, mode 4, depth 8/10,
-  delay 12, feedback 16; 989snd stores core as a word), so the guest bytes can be converted field by
-  field from those offsets.
-- `sceSdClearEffectWorkArea` and the clear inside `sceSdSetEffectAttr` do not announce a transfer
-  (libsd waits for that DMA internally).
-- `sd_frames_rendered()` (sd_internal.h) is a monotonic 48 kHz clock of rendered audio, usable if
-  the IOP's 240 Hz tick should follow the audio clock.
-- `scripts/run_game.ps1` runs headless but would still open the audio device; consider setting
-  `PS2_AUDIO_NULL=1` there unless `-Window`, and a `-Wav <file>` switch for `PS2_AUDIO_WAV`.
+How it is wired:
+- `ps2_runtime.c` calls `audio_init()` at start-up (not in `--dump-regs` mode, which the
+  recompiler tests use); `audio_shutdown()` runs at exit and finalises a WAV.
+- The IOP side (`iop_libs.c`) maps every libsd import to the sd.h call and defines
+  `iop_sd_transfer_done()`: each completion queues one call of the guest's transfer handler
+  (sceSdSetTransIntrHandler), run in interrupt context at the next IOP interrupt point. Two
+  completions on one channel before the handler runs give two calls (as two DMA interrupts would).
+- `sd_effect_attr` is converted field by field from the guest struct (core word at 0, mode 4,
+  depth 8/10, delay 12, feedback 16).
+- No extra link libraries (COM/avrt are loaded at run time).
+- `scripts/run_game.ps1`: headless runs set `PS2_AUDIO_NULL=1` (real-time null sink, no device);
+  `-Window` plays through the default device; `-Wav <file>` records; `-Pad "<script>"` sets
+  PS2_INPUT. Set `$env:PS2_AUDIO_NULL="0"` to hear a headless run through WASAPI.
+
+How to test (what was done on 2026-10-10):
+
+    Remove-Item -Recurse build\sly2rel\memcard      # fresh card: the save prompt appears
+    $env:PS2_LOG_SND="1"
+    scripts\run_game.ps1 -Out build\sly2rel -Seconds 240 -Wav build\audio\rel8.wav -Dump build\audio\rel8 `
+        -DumpEvery 90 -Pad "600:square:12,t95:start:10"
+    <python> scripts\wav_analyze.py build\audio\rel8.wav --window 5 --fft
+    <python> scripts\audio_streams.py build\sly2rel\run.log build\audio\rel8.wav --correlate
+
+The intro cutscene after the save prompt follows its music stream (about 40 s of real time), so
+how many VBlanks it lasts depends on the emulation speed (16-40 fps with the software GS). A START
+at a fixed pad frame lands inside it and is ignored; `t95:start` (wall clock) reaches the title
+screen reliably.
+
+Results (release build, rel5/rel8; debug build, dbg1):
+- Sequence: boot movie (0.5-4.9 s), save prompt (paused music), intro cutscene with music,
+  "Sly Cooper the thief" card, title screen, START, Bentley/Sly Binocucom briefing with all eight
+  dialogue lines advancing, then gameplay in the museum. Same in the debug build (slower).
+- Health counters over 240-420 s runs: 0 underruns (null sink and a 30 s live WASAPI run), 0
+  invalid ADPCM blocks, 0 late/early stream refills in release. The debug build had 2 late movie
+  refills at 2.0 s (the slow EE fed the 160 ms movie-audio ring late, during its silent part);
+  that is EE speed, not the sound path. Mixer CPU 0.6-2% of a core.
+- Levels: overall about -23 dBFS RMS, peaks -2.5 dBFS, no clipped sample in any run, DC < 10 LSB.
+- Silence where expected only: the boot movie's own silent stretch (2.0-4.3 s; the EE sends
+  all-zero ADPCM there, see the "(silence)" marks in PS2_LOG_SD), and the save prompt (the game
+  pauses both music streams with spiop proc 3 and resumes them with proc 4 after the answer).
+  Short digital-zero runs at the prompt answer are key-offs of beeps with release rate 0.
+- Dialogue (spiop VAGp streams, 22050 Hz): each line plays exactly its header length (+-0.08 s,
+  the measuring resolution), the game ends it on spiop's "finished" answer and starts the next.
+  Decoded independently from the disc and compared with the WAV in 0.2 s windows: median
+  correlation 0.93-0.99 per line, with the 15 samples/s drift of pitch 0759h (22043 Hz), as on
+  the PS2. Lines -20..-22 dBFS RMS, background between lines -32..-39 dBFS.
+- Pitch plausibility: stream pitches 0AAAh (32 kHz), 0EB3h (44.1 kHz), 0759h (22.05 kHz) match
+  the stream headers; the dialogue durations and correlation confirm the rate end to end.
+- Stereo: music voices are symmetric; the intro runs ~3 dB louder on the right because a 3D
+  positioned stream (spiop channel 0 of the 32 kHz music, panned and moving) sits on the right and
+  partly behind the listener: 989snd writes negative (phase-inverted) volumes for rear positions,
+  e.g. VOLL 7A7Eh = -582h, which the SPU2 plays inverted (Pro Logic style). The briefing is nearly
+  mono (side -50 dB, correlation 0.99).
+- "Clicks" flagged by the analyser are content: drum hits on the music's 1/3 s beat grid and
+  speech consonants (checked sample by sample).
+- No reverb in this part of the game: the EE never sends 989snd command 14 (SetReverbType), so
+  sceSdSetEffectAttr is not called; the reverb code is only covered by the unit tests so far.
 
 ## Known deviations
 

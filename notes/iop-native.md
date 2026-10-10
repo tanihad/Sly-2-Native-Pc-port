@@ -1,10 +1,10 @@
 # The IOP side of native audio (approach C): recompiled 989snd + spiop on a native IOP kernel
 
-Status (2026-10-10, branch audio/audio-iop): implemented and running in the game. Plan and
-decision: `notes/audio-native-plan.md`; research on the modules and the protocol:
-`notes/audio-plan.md`. The other half (the native libsd backend, `runtime/sd.c`, WASAPI) is built
-separately against the frozen interface `runtime/sd.h`; until it lands, `runtime/stub/sd_stub.c`
-stands in.
+Status (2026-10-10, branch audio/audio-iop): implemented, integrated with the native libsd
+backend (`runtime/sd.c` + WASAPI, `notes/audio-mixer.md`) and running in the game: the game's
+sound plays through it from the boot movie to gameplay. Plan and decision:
+`notes/audio-native-plan.md`; research on the modules and the protocol: `notes/audio-plan.md`.
+(`runtime/stub/sd_stub.c` is only built when `runtime/sd.c` is absent.)
 
 ## What runs
 
@@ -20,7 +20,16 @@ stands in.
   EE to them, queues every call for the IOP thread serving it and sends the reply when that thread
   finishes, possibly much later (bank loads read the disc first).
 - `runtime/snd.c` is the fallback: `PS2_AUDIO=0` (or a module whose CRC does not match) keeps the
-  old acknowledging behaviour.
+  old acknowledging behaviour, including its silent model of spiop's three stream channels (so
+  dialogue lines still advance without sound). It reads stream headers with the same ISO reader
+  as the IOP's cdvdman (`cdvd_read_host` in cdvd.c).
+
+Verified in the game with sound (2026-10-10, see `notes/audio-mixer.md`, "Integration in the
+game"): spiop opens the two looping music streams (32 kHz and 44.1 kHz " KPV", channels 0/1) at
+the save prompt, the game pauses them during the prompt (proc 3) and resumes them (proc 4); each
+Binocucom dialogue line is a VAGp stream on channel 2 that the real spiop reports finished (proc 8
+= 0) exactly one header length after it was resumed, after which the game closes it (proc 2) and
+opens the next line. `scripts/audio_streams.py` checks this from a `PS2_LOG_SND=1` run.
 
 Observed in the game (headless run, `scripts/run_game.ps1`): the 989snd banner, both servers
 registered by the recompiled code, the boot bank load returning handle 0x001D1F00, the sound tick
@@ -100,7 +109,12 @@ Execution model:
   the next interrupt point; `sceSifDmaStat` reports done (-1). `sceSifGetOtherData` copies EE -> IOP.
 - **libsd**: each import is a direct call to the sd.h function. `iop_sd_transfer_done(channel)`
   (thread-safe) queues the handler registered with `sceSdSetTransIntrHandler(channel, func, arg)`;
-  it runs as `func(channel, arg)` in interrupt context at the next interrupt point.
+  it runs as `func(channel, arg)` in interrupt context at the next interrupt point, once per
+  completion (completions are counted per channel, not merged).
+- **RPC receive buffers**: the EE DMAs a call's arguments into the server's single buffer before
+  the call packet, so a call that arrives while an earlier one for the same server is still queued
+  has overwritten its arguments. sif.c runs the IOP right after queuing, so this does not happen
+  in practice; `iop_rpc_request` logs it if it ever does ("arguments overwritten").
 - **lgaud**: spiop polls #18 (device count, written through a0) every 500 ms; it reports 0, every
   other call fails with -1 (they are only reached with a headset present).
 
@@ -118,8 +132,13 @@ Execution model:
 
 - `PS2_LOG_IOP=1`: kernel calls (threads, memory, RPC replies with their first word, CD reads).
 - A status line every 10 s: timer rate, IOP CPU share, thread states, free IOP memory, RPC calls
-  per server, CD reads.
-- `PS2_LOG_SD=1` (stub): every libsd call; otherwise the first few and a summary every 5 s.
+  per server, CD reads; below it every thread that used up 2 ms time slices without blocking
+  since the last line (busy-waiting, or slowed down by logging).
+- `PS2_LOG_SND=1`: every 989snd command the EE sends, with its data words and result
+  (`[snd] v<vblank> cmd <n> (<bytes>): ... -> <result>`; direct calls are marked "direct"), the
+  same format as the fallback snd.c. spiop's procs are commands 76/104 with 'SUKR' (524B5553) and
+  the proc number in the first two words.
+- `PS2_LOG_SD=1|2`: the backend's log (`notes/audio-mixer.md`); the stub logs every libsd call.
 - `PS2_AUDIO=0`: old behaviour (modules acknowledged, snd.c answers).
 - Calls to addresses that are not recompiled functions, `break`, unimplemented instructions and I/O
   accesses are logged once with the last IOP functions (`iop_trace`).
@@ -141,9 +160,13 @@ Execution model:
 
 ## Open points
 
-- The real backend (`runtime/sd.c`, `audio_out.c`) replaces the stub; nothing else changes.
-  `audio_init()` is not called yet (the integrator adds it next to `iop_init()` in ps2_runtime.c).
-- Only one bank load (the boot bank) happens before the episode intro; level banks load later in
-  the game and take the same path.
+- Only one bank load (the boot bank) happens before the museum prologue; level banks load later
+  in the game and take the same path.
+- Reverb (989snd command 14 -> sceSdSetEffectAttr) is not requested up to the first gameplay.
+- The IOP runs only at EE safe points (loop heads of recompiled code, about 1 kHz). Native code
+  that runs for a long time without one (a huge software-rasterised frame) delays stream refills;
+  the stream buffers hold 0.16-0.22 s, and the backend's "late/early stream refills" counter shows
+  when it was not enough (none in release runs; two late movie-audio refills in the debug build,
+  where the EE itself fed the movie audio late).
 - ADMA streaming (`sceSdBlockTrans` loop mode) is not used by what has run so far; the backend
   should call `iop_sd_transfer_done()` per consumed half buffer when it is.
