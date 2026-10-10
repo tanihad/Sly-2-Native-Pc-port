@@ -207,7 +207,7 @@ static DWORD WINAPI gs_thread_main(LPVOID arg) {
                 rd += 1 + (s->len + 15) / 16;
                 break;
             case K_SYNC:
-                gs_draw_sync();
+                gs_draw_sync_why(GS_SYNC_EE);
                 rd++;
                 break;
             case K_VSYNC:

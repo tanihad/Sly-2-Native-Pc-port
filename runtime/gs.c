@@ -258,7 +258,7 @@ uint32_t gs_stream_vsync;
 int gs_display_regs(const uint64_t priv[GS_PRIV_SNAPSHOT], uint32_t* dst, int stride, int* w, int* h) {
     GS_INIT();
     gs_stream_vsync = (uint32_t)priv[S_VSYNC];
-    gs_draw_sync();                      /* deferred drawing reaches VRAM first */
+    gs_draw_sync_why(GS_SYNC_DISPLAY);   /* deferred drawing reaches VRAM first */
     uint64_t pmode = priv[P_PMODE];
     int en[2] = { (int)(pmode & 1), (int)((pmode >> 1) & 1) };
     *w = *h = 0;

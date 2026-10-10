@@ -84,7 +84,7 @@ static void ref_pages(const tex_entry* e, int d) {
 }
 
 static void free_entry(tex_entry* e) {
-    if (gs_draw_busy(e->use_serial)) gs_draw_sync();   /* deferred drawing still samples it */
+    if (gs_draw_busy(e->use_serial)) gs_draw_sync_why(GS_SYNC_TEXCACHE);   /* deferred drawing still samples it */
     ref_pages(e, -1);
     free(e->tiles); free(e->idx); free(e->rgba); free(e->row_rgba); free(e->rect_page);
     cache_bytes -= e->bytes;
@@ -259,7 +259,7 @@ static void bury(void* p, uint32_t serial) {
     }
     ngraves = j;
     if (ngraves == (int)(sizeof graves / sizeof graves[0])) {
-        gs_draw_sync();
+        gs_draw_sync_why(GS_SYNC_TEXCACHE);
         for (int i = 0; i < ngraves; i++) free(graves[i].p);
         ngraves = 0;
     }
@@ -277,7 +277,7 @@ static void check_entry(tex_entry* e, const gs_tex0* t, const gs_texa* ta) {
     if (e->indexed) {
         uint32_t tk = pal_texa_key(e, ta);
         if (e->pal_clut != gs_clut_version || e->pal_texa != tk) {
-            if (gs_draw_pages_pending(e->page0, e->npages)) gs_draw_sync();   /* reads texels in VRAM */
+            if (gs_draw_pages_pending(e->page0, e->npages)) gs_draw_sync_why(GS_SYNC_TEXCACHE);   /* reads texels in VRAM */
             if (e->pos_lost) find_lost_positions(e);
             int changed = 0;
             for (int k = 0; k < 256; k++) {
@@ -643,7 +643,7 @@ static void palette_update(gs_texlvl* L) {
             s = pal_next;
             pal_next = (pal_next + 1) % PAL_SLOTS;
         } while (gs_draw_busy(pal_serial[s]) && ++tries < 64);
-        if (gs_draw_busy(pal_serial[s])) gs_draw_sync();
+        if (gs_draw_busy(pal_serial[s])) gs_draw_sync_why(GS_SYNC_PALETTE);
         memcpy(pal_mem[s], tmp, n * 4);
         pal_last = s;
         pal_last_n = n;
@@ -679,7 +679,7 @@ static void decode_tile(tex_entry* e, int tx, int ty) {
      * nor still sample the texels this tile held before it was dropped */
     uint32_t pg = e->rect_page[(y0 >> e->ph_sh) * e->rcols + (x0 >> e->pw_sh)];
     if (gs_draw_pages_pending(pg, 1u + (uint32_t)e->spill) || ((*fl & TILE_STALE) && gs_draw_busy(e->use_serial)))
-        gs_draw_sync();
+        gs_draw_sync_why(GS_SYNC_TEXCACHE);
     *fl &= (uint8_t)~TILE_STALE;
     const gs_tex0* t = &e->t;
     raw_layout r;

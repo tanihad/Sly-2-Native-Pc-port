@@ -1011,6 +1011,22 @@ static void t_direct_order(void) {
     CHECK(rgb(px(304, 304)) == 0xFF0000 && rgb(px(304, 14)) == 0x00FFFF, "palette per primitive: %08X %08X",
           px(304, 304), px(304, 14));
 
+    /* an upload into a texture that recorded drawing still samples waits for that drawing; one
+     * elsewhere does not need to (both must draw right) */
+    memset(idx, 9, sizeof idx);
+    pal[9] = 0x80FF00FFu;
+    upload_clut8(CLUTBP, pal);
+    W(TEX0_1, tex0(TEXBP, 2, PSMT8, 3, 3, 1, 1, CLUTBP, PSMCT32, 0, 1));
+    prim(P_SPRITE, TME | FST);
+    uv(0, 0); xyz(320, 300, 0); uv(8 * 16, 8 * 16); xyz(328, 308, 0);     /* index 3: yellow */
+    upload(TEXBP + 64, 2, PSMT8, 0, 0, 8, 8, idx, sizeof idx);            /* other pages */
+    upload(TEXBP, 2, PSMT8, 0, 0, 8, 8, idx, sizeof idx);                 /* index 9 */
+    W(TEX0_1, tex0(TEXBP, 2, PSMT8, 3, 3, 1, 1, CLUTBP, PSMCT32, 0, 0));
+    prim(P_SPRITE, TME | FST);
+    uv(0, 0); xyz(320, 10, 0); uv(8 * 16, 8 * 16); xyz(328, 18, 0);       /* index 9: magenta */
+    CHECK(rgb(px(324, 304)) == 0x00FFFF && rgb(px(324, 14)) == 0xFF00FF, "upload after a read: %08X %08X",
+          px(324, 304), px(324, 14));
+
     /* feedback over many bands: a 64x256 buffer shifted down by 8 rows onto itself; every pixel must
      * get the texel as it was before the primitive (row y - 8), whatever order rows are drawn in */
     const uint32_t B = 220;
@@ -1023,6 +1039,25 @@ static void t_direct_order(void) {
     bad = 0;
     for (int y = 0; y < 256; y++) bad += rgb(px(10, y)) != (uint32_t)(y < 8 ? y : y - 8);
     CHECK(bad == 0, "in-place shift reads the buffer as it was: %d rows wrong (row 100: %08X)", bad, px(10, 100));
+    /* in-place filter, every pixel sampling its own texel (bilinear at texel centres, MODULATE by
+     * 0.5), drawn as 8x8 sprites in several bands, twice over: each pixel quartered exactly */
+    W(TEX1_1, 1ull << 5 | 1ull << 6);                /* MMAG/MMIN bilinear */
+    W(TEX0_1, tex0(B * 32, 1, PSMCT32, 6, 8, 1, 0 /*MODULATE*/, 0, 0, 0, 0));
+    for (int pass = 0; pass < 2; pass++)
+        for (int sy = 0; sy < 256; sy += 8)
+            for (int sx = 0; sx < 64; sx += 8) {
+                prim(P_SPRITE, TME | FST);
+                rgba(0x40, 0x40, 0x40, 0x80);
+                uv(sx * 16 + 8, sy * 16 + 8); xyz(sx, sy, 0);
+                uv((sx + 8) * 16 + 8, (sy + 8) * 16 + 8); xyz(sx + 8, sy + 8, 0);
+            }
+    W(TEX1_1, 0);
+    bad = 0;
+    for (int y = 0; y < 256; y++) {
+        uint32_t want = (uint32_t)((y < 8 ? y : y - 8) >> 2);
+        bad += rgb(px(10, y)) != want || rgb(px(60, y)) != want;
+    }
+    CHECK(bad == 0, "in-place filter on its own pixels: %d wrong (row 101: %08X)", bad, px(10, 101));
     frame(0, 10, PSMCT32, 0);
     scissor(0, 639, 0, 447);
 }

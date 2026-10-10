@@ -44,6 +44,12 @@ void gs_sync(void);                      /* wait until everything sent to the GS
 void     gs_draw_set_workers(int n);     /* start n pixel worker threads (once, before drawing) */
 int      gs_draw_workers(void);
 void     gs_draw_sync(void);             /* finish all deferred drawing */
+/* the same, counted under a reason in the PS2_GS_STATS report */
+enum { GS_SYNC_OTHER, GS_SYNC_DISPLAY, GS_SYNC_XFER, GS_SYNC_CLUT, GS_SYNC_EE, GS_SYNC_TEXCACHE, GS_SYNC_PALETTE, GS_SYNC_N };
+void     gs_draw_sync_why(int why);
+/* Deferred drawing not yet done writes, samples or snapshots one of these pages: a transfer that
+ * writes them (or reads them, for written ones) must wait for it. */
+int      gs_draw_pages_touched(const uint64_t set[8], int writes_only);
 void     gs_draw_kick(void);             /* start drawing what has been recorded (does not wait) */
 int      gs_draw_pages_pending(uint32_t page0, uint32_t npages);   /* deferred drawing writes one of these 8 KB pages */
 uint32_t gs_draw_fill_serial(void);      /* batch that primitives are recorded into now */
@@ -101,6 +107,8 @@ extern uint16_t gs_page_texrefs[512];
 void gs_page_dims(int psm, int* pw, int* ph);     /* page size in pixels for any PSM */
 /* Mark the pages holding rectangle [x0,x1) x [y0,y1) of a buffer (bp in 256-byte blocks). */
 void gs_mark_rect(int psm, uint32_t bp, uint32_t bw, int x0, int y0, int x1, int y1);
+/* Add those pages to set (512 bits). */
+void gs_rect_pages(int psm, uint32_t bp, uint32_t bw, int x0, int y0, int x1, int y1, uint64_t set[8]);
 
 /* ---- gs_draw_tex.c: texture sampling setup ----------------------------------------------------------
  * Textures are normally sampled straight from VRAM (direct sampling): the pixel pipeline computes each

@@ -467,8 +467,24 @@ static void load_elf(const char* path) {
     free(buf);
 }
 
+/* A crash in any thread: say what and where (as an offset into the executable, for llvm-nm/objdump),
+ * then let Windows end the process as usual. */
+static LONG WINAPI crash_report(EXCEPTION_POINTERS* ep) {
+    const EXCEPTION_RECORD* er = ep->ExceptionRecord;
+    uintptr_t base = (uintptr_t)GetModuleHandleW(NULL), pc = (uintptr_t)er->ExceptionAddress;
+    fprintf(stderr, "\n[ps2] crash: exception 0x%08lX at %p (exe+0x%llX) in thread %lu", (unsigned long)er->ExceptionCode,
+            er->ExceptionAddress, (unsigned long long)(pc - base), (unsigned long)GetCurrentThreadId());
+    if (er->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && er->NumberParameters >= 2)
+        fprintf(stderr, ", %s address 0x%llX", er->ExceptionInformation[0] ? "writing" : "reading",
+                (unsigned long long)er->ExceptionInformation[1]);
+    fprintf(stderr, "\n");
+    fflush(stderr);
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
 int main(int argc, char** argv) {
     if (argc < 2) { fprintf(stderr, "usage: %s <path to original PS2 executable>\n", argv[0]); return 2; }
+    SetUnhandledExceptionFilter(crash_report);
     QueryPerformanceFrequency(&qpc_freq);
     QueryPerformanceCounter(&qpc_start);
     perf_init();                                 /* PS2_PERF / PS2_PROFILE */

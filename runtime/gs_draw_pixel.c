@@ -769,7 +769,7 @@ enum { SUB_SYNC, SUB_KICK, SUB_RAW, SUB_SNAP, SUB_HOLD, SUB_WAR, SUB_BANDS, SUB_
 static struct {
     int on;
     uint64_t t0_ms, tsc0;
-    uint32_t batches, bands, prims, why[SUB_N], syncs, queue_waits;
+    uint32_t batches, bands, prims, why[SUB_N], syncs, queue_waits, sync_why[8];
     uint64_t sync_tsc, queue_tsc;
     _Atomic uint64_t band_tsc, crit_tsc;
 } st;
@@ -788,10 +788,15 @@ static void stats_report(void) {
             PER_S(st.why[SUB_SYNC]), PER_S(st.why[SUB_KICK]), PER_S(st.why[SUB_RAW]), PER_S(st.why[SUB_SNAP]),
             PER_S(st.why[SUB_HOLD]), PER_S(st.why[SUB_WAR]), PER_S(st.why[SUB_BANDS]), PER_S(st.why[SUB_FULL]),
             PER_S(st.why[SUB_LIMIT]));
-    fprintf(stderr, "[gs-stats] drawing thread waits: queue full %.0f/s %.2f ms/s, syncs %.0f/s %.2f ms/s | pixel work "
+    fprintf(stderr, "[gs-stats] drawing thread waits: queue full %.0f/s %.2f ms/s, syncs %.0f/s %.2f ms/s (display %.0f "
+                    "transfer %.0f CLUT %.0f EE %.0f texture cache %.0f palette %.0f other %.0f) | pixel work "
                     "%.1f ms/s on %d workers, critical path (longest band per batch) %.1f ms/s\n",
             PER_S(st.queue_waits), MS_S(st.queue_tsc), PER_S(st.syncs), MS_S(st.sync_tsc),
+            PER_S(st.sync_why[GS_SYNC_DISPLAY]), PER_S(st.sync_why[GS_SYNC_XFER]), PER_S(st.sync_why[GS_SYNC_CLUT]),
+            PER_S(st.sync_why[GS_SYNC_EE]), PER_S(st.sync_why[GS_SYNC_TEXCACHE]), PER_S(st.sync_why[GS_SYNC_PALETTE]),
+            PER_S(st.sync_why[GS_SYNC_OTHER]),
             MS_S(atomic_exchange(&st.band_tsc, 0)), pool.n, MS_S(atomic_exchange(&st.crit_tsc, 0)));
+    memset(st.sync_why, 0, sizeof st.sync_why);
 #undef PER_S
 #undef MS_S
     st.t0_ms = now; st.tsc0 = tsc;
@@ -987,14 +992,28 @@ static void db_submit(int why) {
     cur_prim = -1;
 }
 
-void gs_draw_sync(void) {
+void gs_draw_sync_why(int why) {
     if (!deferred()) return;
     if (!DB[db_fill].nprims && atomic_load_explicit(&q_head, memory_order_acquire) == q_tail) return;
     uint64_t t0 = __rdtsc();
     db_submit(SUB_SYNC);
     while (atomic_load_explicit(&q_head, memory_order_acquire) != q_tail) help();
     st.syncs++;
+    st.sync_why[why >= 0 && why < 8 ? why : 0]++;
     st.sync_tsc += __rdtsc() - t0;
+}
+
+void gs_draw_sync(void) { gs_draw_sync_why(GS_SYNC_OTHER); }
+
+int gs_draw_pages_touched(const uint64_t set[8], int writes_only) {
+    if (!deferred()) return 0;
+    for (uint32_t b = atomic_load_explicit(&q_head, memory_order_acquire); b != q_tail + 1; b++) {
+        const dbatch* d = &DB[b % DB_QUEUE];     /* the queued batches and the one being filled */
+        if (!d->nprims) continue;
+        for (int k = 0; k < 8; k++)
+            if (set[k] & (d->written[k] | (writes_only ? 0 : d->readp[k] | d->copyp[k]))) return 1;
+    }
+    return 0;
 }
 
 void gs_draw_kick(void) {
