@@ -66,6 +66,41 @@ def after_return_starts(instrs: list[rz.Instruction]) -> set[int]:
     return out
 
 
+def switch_tables(prog: Program, instrs: list[rz.Instruction], lo: int, hi: int) -> list[tuple[int, list[int]]]:
+    """Switch jump tables found from the code that uses them. A compiled switch dispatches with
+        sltiu  t, idx, N          # bounds check: N cases
+        lui/addiu base            # table address (in .rodata)
+        lw     r, off(base + idx*4)
+        jr     r
+    Returns (address of the jr, case targets) for each one. Case targets are labels inside the
+    function containing the jr, even when a case body looks like a whole function."""
+    rodata = [(s.addr, s.addr + s.size) for s in prog.sections if not s.executable and s.size]
+    out = []
+    for n, ins in enumerate(instrs):
+        raw = ins.getRaw()
+        if ins.uniqueId != I.cpu_jr or (raw >> 21) & 31 == 31:
+            continue
+        window = instrs[max(0, n - 12):n]
+        bases = [a for a in address_constants(window) if any(s <= a < e for s, e in rodata)]
+        if not bases:
+            continue
+        base = bases[-1]
+        count = None
+        for w in reversed(window):
+            if w.uniqueId == I.cpu_sltiu:
+                count = w.getRaw() & 0xFFFF
+                break
+        targets = []
+        for k in range(count if count is not None else 512):
+            v = prog.read_u32(base + 4 * k)
+            if v is None or not (lo <= v < hi) or v % 4:
+                break
+            targets.append(v)
+        if targets:
+            out.append((ins.vram, targets))
+    return out
+
+
 def jump_table_ranges(prog: Program, lo: int, hi: int, words: dict[int, int]) -> list[tuple[int, int]]:
     """Runs of 3+ consecutive data words that all point into [lo, hi) close together: switch
     jump tables. The code they point at belongs to one function and must not be split.
@@ -160,18 +195,24 @@ def find_functions(prog: Program) -> list[Function]:
                 continue
             if in_range(target):
                 starts.add(target)
-        # Code addresses held in data or built as constants are entry points (function pointers,
-        # vtables, handlers passed to the kernel), except the case labels of switch jump tables.
-        tables = jump_table_ranges(prog, lo, end, words)
+        # Switch statements: case labels belong to the function with the dispatching jr, and
+        # nothing between the jr and its cases may start a new function.
+        switches = switch_tables(prog, instrs, lo, end)
+        case_labels = {t for _, ts in switches for t in ts}
+        tables = [(min(jr, min(ts)) - 1, max(jr, max(ts))) for jr, ts in switches]
+        tables += jump_table_ranges(prog, lo, end, words)     # data-only heuristic, as a fallback
         def in_table(x: int) -> bool:
             return any(a < x <= b for a, b in tables)
-        # Data can hold numbers that merely look like code addresses, so a pointer only counts as
-        # proven if the code there also looks like a function start; otherwise it's a guess.
+        # Code addresses held in data or built as constants are entry points (function pointers,
+        # vtables, handlers passed to the kernel). Data can hold numbers that merely look like code
+        # addresses, so a pointer only counts as proven if the code there also looks like a
+        # function start; otherwise it's a guess.
         def plausible(a: int) -> bool:
             return looks_like_function_start(words, a) or has_prologue(words, a)
-        pointed = {a for a in referenced if in_range(a)} | \
-                  {a for a in from_rodata if in_range(a) and (not in_table(a) or plausible(a))}
-        strong = set(starts) | {lo} | {a for a in pointed if plausible(a)}
+        pointed = {a for a in referenced if in_range(a) and a not in case_labels} | \
+                  {a for a in from_rodata if in_range(a) and a not in case_labels
+                   and (not in_table(a) or plausible(a))}
+        strong = set(starts) | {lo} | {a for a in pointed if plausible(a) and not in_table(a)}
         starts |= strong | pointed
         starts |= {x for x in after_return_starts(instrs) if not in_table(x)}
         # `j` is how compilers tail-call; occasionally it's an intra-function jump, which the

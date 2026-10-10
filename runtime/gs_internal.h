@@ -20,7 +20,7 @@ enum {
  *     8 KB page units, so callers pass FBP*32 and ZBP*32).
  * bw: buffer width in 64-pixel units (FBW/TBW/DBW/SBW).
  * Values are the stored bits of that format, right-aligned: 32 bits for *32, 24 bits for *24
- * (writes leave the top byte of the 32-bit word untouched), 16 bits for *16/*16S, 8 or 4 bits for
+ * (writes leave the top byte of the 32-bit word untouched), 16 bits for the 16 and 16S formats, 8 or 4 bits for
  * the T8/T4 (incl. 8H/4HL/4HH, which live inside 32-bit pixels) formats.
  * Coordinates wrap inside the 4 MB memory as the hardware does. */
 uint32_t gs_mem_read(int psm, uint32_t bp, uint32_t bw, int x, int y);

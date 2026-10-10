@@ -173,6 +173,8 @@ static inline void vu0_sqc2(ps2_ctx* c, int ft, uint32_t a) {
 uint32_t vu0_cfc2_ctrl(struct ps2_ctx* ctx, int reg);
 void     vu0_ctc2_ctrl(struct ps2_ctx* ctx, int reg, uint32_t v);
 void     vu0_callms(struct ps2_ctx* ctx, uint32_t addr_dw);
+/* MAC/status flags after a flag-setting VU0 macro op (result register, dest mask xyzw = 8,4,2,1) */
+void     vu0_macro_flags(const vf128* r, unsigned dest_xyzw);
 
 static inline uint32_t vu0_cfc2(ps2_ctx* c, int reg) {
     if (reg < 16) return c->vi[reg];

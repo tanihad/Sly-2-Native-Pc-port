@@ -26,6 +26,12 @@ void vu1_start(uint32_t addr_dw) {
     fake_vu1_starts++;
 }
 int vu1_busy(void) { return fake_vu1_busy; }
+uint32_t fake_vu_tpc[2];
+uint32_t vu_get_tpc(int vu) { return fake_vu_tpc[vu ? 1 : 0]; }
+int      fake_vu0_starts;
+uint32_t fake_vu0_start_addr;
+void vu0_callms(ps2_ctx* ctx, uint32_t addr_dw) { (void)ctx; fake_vu0_starts++; fake_vu0_start_addr = addr_dw; }
+ps2_ctx* thread_ctx(void) { static ps2_ctx c; return &c; }
 void vu_set_vif_tops(int vu, uint32_t top, uint32_t itop) {
     vu = vu ? 1 : 0;
     fake_tops_top[vu] = top;

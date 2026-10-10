@@ -81,6 +81,7 @@ uint8_t* vu_data_mem(int vu);            /* VU0: 4 KB, VU1: 16 KB */
 uint8_t* vu_micro_mem(int vu);           /* VU0: 4 KB, VU1: 16 KB */
 void     vu1_start(uint32_t addr_dw);    /* run a VU1 microprogram from instruction address (64-bit units) until its E bit */
 int      vu1_busy(void);
+uint32_t vu_get_tpc(int vu);             /* where the last microprogram stopped (MSCNT continues there) */
 void     vu_set_vif_tops(int vu, uint32_t top, uint32_t itop);  /* VIF TOP/ITOP values for XTOP/XITOP */
 /* VU0 from EE code (macro mode registers live in ps2_ctx: vf, vacc, vi, vq, vi_reg, vr) */
 void     vu0_callms(ps2_ctx* ctx, uint32_t addr_dw);  /* VCALLMS / VCALLMSR */

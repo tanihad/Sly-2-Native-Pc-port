@@ -128,24 +128,16 @@ static void cmd_done(vif_state* v) {
 static void micro_start(vif_state* v, uint32_t cmd, uint32_t addr_dw) {
     v->itop = v->itops;
     if (v->id == 0) {
-        static int logged;
+        /* VU0's registers are the EE's macro-mode registers, which live in the running thread. */
         vu_set_vif_tops(0, 0, v->itop);
-        log_once(&logged, "VIF0 microprogram start (cmd 0x%02X, addr 0x%X) ignored: no VU0 entry point from VIF",
-                 cmd, addr_dw * 8);
+        vu0_callms(thread_ctx(), cmd == CMD_MSCNT ? vu_get_tpc(0) : addr_dw);
         return;
     }
     v->top = v->tops;
     v->stat ^= ST_DBF;
     v->tops = (v->base + ((v->stat & ST_DBF) ? v->ofst : 0)) & 0x3FF;
     vu_set_vif_tops(1, v->top, v->itop);
-    if (cmd == CMD_MSCNT) {
-        /* Continue at the VU's TPC: hw.h has no way to ask the VU for it yet. */
-        static int logged;
-        log_once(&logged, "MSCNT not run: needs a VU1 'continue at TPC' entry point (TOP=0x%X ITOP=0x%X)",
-                 v->top, v->itop);
-        return;
-    }
-    vu1_start(addr_dw);
+    vu1_start(cmd == CMD_MSCNT ? vu_get_tpc(1) : addr_dw);
 }
 
 /* ---- UNPACK ------------------------------------------------------------------------------------ */

@@ -168,7 +168,11 @@ static void vblank(ps2_ctx* ctx) {
     gs_vsync();
     static uint32_t frame[1024 * 1024];
     int w = 0, h = 0;
-    if (gs_display(frame, 1024, &w, &h)) {
+    if (!gs_display(frame, 1024, &w, &h)) {      /* display off: show black, not a stale frame */
+        w = 640; h = 448;
+        for (int y = 0; y < h; y++) memset(frame + (size_t)y * 1024, 0, (size_t)w * 4);
+        if (!headless) window_present(frame, w, h, 1024);
+    } else {
         if (!headless) window_present(frame, w, h, 1024);
         if (dump_dir && vblank_count % (uint32_t)dump_every == 0) {
             char path[512];
@@ -204,6 +208,7 @@ void ps2_service_irq(ps2_ctx* ctx) {
             if (ip & (1u << c)) { intc_ack(c); run_handlers(ctx, intc_handlers[c], c); }
         for (int ch = 0; ch < 16; ch++)
             if (dp & (1u << ch)) { dmac_ack(ch); run_handlers(ctx, dmac_handlers[ch], ch); }
+        dma_service();                           /* handlers often unblock a stalled channel */
         sif_deliver(ctx);                        /* next queued IOP reply, if any */
     }
     thread_reschedule();                         /* handlers may have woken a thread */
@@ -269,6 +274,22 @@ void ps2_syscall(ps2_ctx* ctx, uint32_t pc) {
     case 0x7C:                                   /* Deci2Call: dev-kit debug channel, absent on retail */
         ret = -1;
         break;
+    case 0x02: {                                 /* SetGsCrt(interlace, mode, ffmd) */
+        uint64_t smode2 = (a0 & 1) | ((uint64_t)(a2 & 1) << 1);
+        gs_priv_access(0x12000020, &smode2, 8, 1);
+        break;
+    }
+    case 0x70: {                                 /* GsGetIMR */
+        uint64_t imr = 0;
+        gs_priv_access(0x12001010, &imr, 8, 0);
+        ret = (int64_t)imr;
+        break;
+    }
+    case 0x71: {                                 /* GsPutIMR(imr) */
+        uint64_t imr = a0;
+        gs_priv_access(0x12001010, &imr, 8, 1);
+        break;
+    }
     case 0x7F:                                   /* GetMemorySize */
         ret = PS2_RAM_SIZE;
         break;

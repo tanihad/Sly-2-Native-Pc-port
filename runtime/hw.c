@@ -26,14 +26,18 @@ static uint32_t d_stat;                  /* DMAC: CIS 0-9, SIS 13, MEIS 14, BEIS
 
 static void mark_pending(void) { InterlockedOr((volatile LONG*)&ps2_irq_pending, PS2_IRQ_HW); }
 
+/* Pending DMAC causes: channel CIS bits 0-9 and SIS (13) / MEIS (14) under their masks, plus
+ * BEIS (15, bus error), which cannot be masked. */
+uint32_t dmac_pending(void) { return (d_stat & 0x63FFu & (d_stat >> 16)) | (d_stat & 0x8000u); }
+
 void intc_raise(int cause) { i_stat |= 1u << cause; if (i_mask & (1u << cause)) mark_pending(); }
-void dmac_raise(int ch)    { d_stat |= 1u << ch; if (d_stat & (1u << (ch + 16))) mark_pending(); }
+void dmac_raise(int ch)    { d_stat |= 1u << ch; if (dmac_pending() & (1u << ch)) mark_pending(); }
 
 uint32_t dmac_stat_read(void) { return d_stat; }
 void dmac_stat_write(uint32_t v) {
     d_stat &= ~(v & 0xFFFFu);            /* status bits: write 1 to clear */
     d_stat ^= v & 0xFFFF0000u;           /* mask bits: write 1 to toggle */
-    if ((d_stat & 0x3FF) & (d_stat >> 16)) mark_pending();
+    if (dmac_pending()) mark_pending();
 }
 
 uint32_t intc_pending(void) { return i_stat & i_mask; }
@@ -42,7 +46,6 @@ void     intc_set_mask(int cause, int on) {
     if (on) i_mask |= 1u << cause; else i_mask &= ~(1u << cause);
     if (i_stat & i_mask) mark_pending();
 }
-uint32_t dmac_pending(void) { return (d_stat & 0x3FF) & (d_stat >> 16); }
 void     dmac_ack(int ch) { d_stat &= ~(1u << ch); }
 void     dmac_set_mask(int ch, int on) {
     if (on) d_stat |= 1u << (ch + 16); else d_stat &= ~(1u << (ch + 16));

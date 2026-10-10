@@ -83,6 +83,13 @@ def vu_assign(target: str, lanes: list[int], exprs: dict[int, str]) -> str:
     return f"{{ {tmp} {st} }}"
 
 
+def vu_flags(target: str, dest: int) -> str:
+    """Update VU0 MAC/status flags from a macro-mode result (the game reads them with CFC2)."""
+    if target == "ctx->vf[0]" or not dest:
+        return ""
+    return f" vu0_macro_flags(&{target}, {dest}u);"
+
+
 def emit_vu0(i, op: str) -> str | None:
     raw = i.getRaw()
     t, s, d = ft(i), fs(i), fd(i)
@@ -99,15 +106,18 @@ def emit_vu0(i, op: str) -> str | None:
             e = VU_EXPR[base].format(a=VF(s, k), b=b(k), acc=f"ctx->vacc.f[{k}]")
             exprs[k] = e if base in ("max", "mini") else f"ps2_fclamp({e})"
         target = "ctx->vacc" if to_acc else f"ctx->vf[{d}]"
-        return vu_assign(target, vdest(i), exprs)
+        code = vu_assign(target, vdest(i), exprs)
+        if base in ("max", "mini"):                    # MAX/MINI don't touch the flags
+            return code
+        return code + vu_flags(target, (raw >> 21) & 15)
 
     rot1, rot2 = (1, 2, 0), (2, 0, 1)                 # .yzx and .zxy
     if op == "vopmula":
         exprs = {k: f"ps2_fclamp({VF(s, rot1[k])} * {VF(t, rot2[k])})" for k in range(3)}
-        return vu_assign("ctx->vacc", [0, 1, 2], exprs)
+        return vu_assign("ctx->vacc", [0, 1, 2], exprs) + vu_flags("ctx->vacc", 0xE)
     if op == "vopmsub":
         exprs = {k: f"ps2_fclamp(ctx->vacc.f[{k}] - {VF(s, rot1[k])} * {VF(t, rot2[k])})" for k in range(3)}
-        return vu_assign(f"ctx->vf[{d}]", [0, 1, 2], exprs)
+        return vu_assign(f"ctx->vf[{d}]", [0, 1, 2], exprs) + vu_flags(f"ctx->vf[{d}]", 0xE)
 
     fsf, ftf = (raw >> 21) & 3, (raw >> 23) & 3        # lane selectors for DIV/SQRT/RSQRT
     if op == "vdiv": return f"ctx->vq = ps2_fdiv({VF(s, fsf)}, {VF(t, ftf)});"

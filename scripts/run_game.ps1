@@ -4,7 +4,7 @@
 param([int]$Seconds = 5, [int]$Skip = 0, [string]$Out = "", [string]$Dump = "", [int]$DumpEvery = 60, [switch]$Window)
 $root = Split-Path $PSScriptRoot -Parent
 $main = $root
-if (-not (Test-Path (Join-Path $root 'orig'))) {           # worktree: find the main checkout
+if (-not (Test-Path (Join-Path $root 'orig\SCUS_973.16'))) {   # worktree: find the main checkout
     $gitfile = Join-Path $root '.git'
     if (Test-Path $gitfile -PathType Leaf) {
         $gitdir = ((Get-Content $gitfile -Raw) -replace '^gitdir:\s*', '').Trim()
