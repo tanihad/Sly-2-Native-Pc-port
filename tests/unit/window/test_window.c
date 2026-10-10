@@ -298,6 +298,67 @@ static void test_headless_input(void) {
     if (slots < 2) CHECK(is_cleared(&p), "absent port 1 not cleared");
 }
 
+/* ---- PS2_INPUT scripts: absolute, relative (+n) and function-anchored (@addr+n) tokens --------- */
+
+static uint32_t fake_anchor_calls;
+uint32_t ps2_func_calls(uint32_t addr, uint32_t ra) {
+    return addr == 0x187D80 && ra == 0x1DD96C ? fake_anchor_calls : 0;
+}
+uint32_t ps2_vblank_count(void) { return 0; }
+static int ram_dumps;
+void ps2_request_ram_dump(void) { ram_dumps++; }
+
+static void test_input_script(void) {
+    script_n = 0;
+    script_frame = 0;
+    script_parse("10:cross:2,+5:square:1,@187d80/1dd96c+3:start:2,+1:lup:1,7:bogus");
+    CHECK(script_n == 4, "parsed %d tokens", script_n);
+    uint16_t buttons[40];
+    uint8_t ly[40];
+    for (int f = 0; f < 40; f++) {
+        if (f == 25) fake_anchor_calls++;                 /* the anchor function runs before frame 25 */
+        pad_input p;
+        pad_clear(&p);
+        script_apply(0, &p);
+        buttons[f] = p.buttons;
+        ly[f] = p.ly;
+    }
+    for (int f = 0; f < 40; f++) {
+        CHECK(!!(buttons[f] & PAD_CROSS) == (f == 10 || f == 11), "cross at frame %d", f);
+        CHECK(!!(buttons[f] & PAD_SQUARE) == (f == 15), "square at frame %d", f);
+        CHECK(!!(buttons[f] & PAD_START) == (f == 28 || f == 29), "start at frame %d", f);
+        CHECK((ly[f] == 0) == (f == 29), "left stick up at frame %d (ly %02X)", f, ly[f]);
+    }
+    /* quiet anchor: fires once the function was called and then stayed silent for 5 frames */
+    script_n = 0;
+    script_frame = 0;
+    fake_anchor_calls = 0;
+    script_parse("@!187d80/1dd96c+5:none,+2:circle:1");
+    CHECK(script_n == 2, "parsed %d tokens", script_n);
+    for (int f = 0; f < 40; f++) {
+        if (f >= 10 && f < 20) fake_anchor_calls++;       /* called on frames 10..19, silent after */
+        pad_input p;
+        pad_clear(&p);
+        script_apply(0, &p);
+        CHECK(!!(p.buttons & PAD_CIRCLE) == (f == 26), "circle at frame %d", f);
+    }
+    /* partial stick deflection and the RAM dump request */
+    script_n = 0;
+    script_frame = 0;
+    ram_dumps = 0;
+    script_parse("2:lx40:3,+1:ryc0:1,+0:ram");
+    CHECK(script_n == 3, "parsed %d tokens", script_n);
+    for (int f = 0; f < 8; f++) {
+        pad_input p;
+        pad_clear(&p);
+        script_apply(0, &p);
+        CHECK((p.lx == 0x40) == (f >= 2 && f < 5), "lx at frame %d: %02X", f, p.lx);
+        CHECK((p.ry == 0xC0) == (f == 3), "ry at frame %d: %02X", f, p.ry);
+    }
+    CHECK(ram_dumps == 1, "%d RAM dumps", ram_dumps);
+    script_n = 0;                                         /* leave scripting off for the other tests */
+}
+
 /* ---- presenter checks: the GDI and Direct3D 11 presenters drawing into a test window of their own
  * (shown without activation, before window_init, so the window thread is not involved) ---------- */
 
@@ -692,6 +753,7 @@ int main(int argc, char** argv) {
     test_frame_handoff_basic();
     test_frame_handoff_stress();
     test_headless_input();
+    test_input_script();
     printf("unit checks: %d, failures: %d\n", checks, failures);
     if (!unit_only) {
         typedef HANDLE (WINAPI* set_dpi_fn)(HANDLE);      /* real pixels, like the window thread */

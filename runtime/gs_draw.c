@@ -43,6 +43,8 @@ static int env_dirty = 1, env_ok;
 static gs_prim P;
 static int ofx, ofy;                     /* XYOFFSET of the drawing context, 12.4 */
 static int prim_draws;                   /* 0 when nothing can be written */
+static int prim_aa1;                     /* PRIM.AA1 of the current drawing environment */
+static int prim_iip;                     /* PRIM.IIP (P.iip is also set for AA1: per-pixel alpha) */
 static int xfer_dir = 3;                 /* last TRXDIR */
 static int xfer_dpsm, xfer_x0, xfer_y0, xfer_x1, xfer_y1;
 static uint32_t xfer_dbp, xfer_dbw;
@@ -164,12 +166,13 @@ static void env_update(void) {
     env_dirty = 0;
     uint64_t attr = (reg[R_PRMODECONT] & 1) ? reg[R_PRIM] : reg[R_PRMODE];
     int ctx = (int)((attr >> 9) & 1);
-    P.iip = (int)((attr >> 3) & 1);
+    prim_iip = (int)((attr >> 3) & 1);
+    P.iip = prim_iip || ((attr >> 7) & 1);   /* AA1: per-pixel alpha (coverage) even when flat */
     P.tme = (int)((attr >> 4) & 1);
     P.fge = (int)((attr >> 5) & 1);
     P.abe = (int)((attr >> 6) & 1);
     P.fst = (int)((attr >> 8) & 1);
-    if (attr & (1u << 7)) log_once("antialiasing (AA1) requested; drawn without it", 1);
+    prim_aa1 = (int)((attr >> 7) & 1);   /* lines: coverage alpha (draw_line); others: ignored */
 
     uint64_t frame = reg[R_FRAME_1 + ctx], zbuf = reg[R_ZBUF_1 + ctx], test = reg[R_TEST_1 + ctx];
     uint64_t alpha = reg[R_ALPHA_1 + ctx], sc = reg[R_SCISSOR_1 + ctx], xyo = reg[R_XYOFFSET_1 + ctx];
@@ -546,7 +549,7 @@ static void draw_triangle(const vtx* v0, const vtx* v1, const vtx* v2) {
         (pl).cy = (d2 * (X[1] - X[0]) - d1 * (X[2] - X[0])) * inv; \
         (pl).c0 = a0 - (pl).cx * X[0] - (pl).cy * Y[0]; } while (0)
     planes pl;
-    if (P.iip) { PLANE(pl.r, r); PLANE(pl.g, g); PLANE(pl.b, b); PLANE(pl.a, a); }
+    if (prim_iip) { PLANE(pl.r, r); PLANE(pl.g, g); PLANE(pl.b, b); PLANE(pl.a, a); }
     else { plane_const(&pl.r, v2->r); plane_const(&pl.g, v2->g); plane_const(&pl.b, v2->b); plane_const(&pl.a, v2->a); }
     if (P.fge) PLANE(pl.f, f); else plane_const(&pl.f, v2->f);
     if (P.zuse) PLANE(pl.z, z); else plane_const(&pl.z, v2->z);
@@ -606,23 +609,39 @@ static void draw_line(const vtx* v0, const vtx* v1) {
     }
     planes pl;                           /* evaluated with x = t (0..1 along the line), y = 0 */
 #define LPLANE(pl, field) do { (pl).c0 = v0->field; (pl).cx = (double)v1->field - (double)v0->field; (pl).cy = 0; } while (0)
-    if (P.iip) { LPLANE(pl.r, r); LPLANE(pl.g, g); LPLANE(pl.b, b); LPLANE(pl.a, a); }
+    if (prim_iip) { LPLANE(pl.r, r); LPLANE(pl.g, g); LPLANE(pl.b, b); LPLANE(pl.a, a); }
     else { plane_const(&pl.r, v1->r); plane_const(&pl.g, v1->g); plane_const(&pl.b, v1->b); plane_const(&pl.a, v1->a); }
     LPLANE(pl.f, f); LPLANE(pl.z, z); LPLANE(pl.s, s); LPLANE(pl.t, t); LPLANE(pl.q, q); LPLANE(pl.u, u); LPLANE(pl.v, v);
 #undef LPLANE
     P.dr = P.dg = P.db = P.da = P.df = 0; P.dz = 0; P.ds = P.dt = P.dq = 0; P.du = P.dv = 0;
     gs_span_start st;
     int mx0 = 2047, mx1 = 0, my0 = 2047, my1 = 0;
+    /* AA1 (with alpha blending): the GS antialiases a line by covering the two pixels that straddle
+     * it across the minor axis, each with its share of the line as coverage, and the coverage
+     * replaces the source alpha (0x80 = fully covered). Sly 2 draws its character outlines this way
+     * (Z test GREATER, RGB only): only the half outside the silhouette shows, so drawing one pixel
+     * per step instead loses whole stretches of outline. */
+    int aa = prim_aa1 && P.abe;
     gs_batch_begin(&P, P.tme && !P.fst);
     for (int p = p0; p <= p1; p++) {
         double t = ((double)p * 16.0 - (double)a0) / len;
         double other = xmajor ? (double)Y0 + t * (double)dy : (double)X0 + t * (double)dx;
-        int q = (int)floor((other + 8.0) / 16.0);
-        int px = xmajor ? p : q, py = xmajor ? q : p;
-        if (px < P.scx0 || px > P.scx1 || py < P.scy0 || py > P.scy1 || row_masked(py)) continue;
-        span_start_at(&pl, t, 0, &st);
-        gs_batch_span(py, px, 1, &st);
-        mx0 = imin(mx0, px); mx1 = imax(mx1, px); my0 = imin(my0, py); my1 = imax(my1, py);
+        int q = (int)floor((other + 8.0) / 16.0), qn = 1;
+        int cov[2] = { 0x80, 0 };
+        if (aa) {                            /* pixel centres sit at multiples of 16 */
+            q = (int)floor(other / 16.0);
+            int frac = (int)lround((other - 16.0 * q) * 8.0);   /* 0..128 towards pixel q + 1 */
+            cov[0] = 0x80 - frac; cov[1] = frac; qn = 2;
+        }
+        for (int k = 0; k < qn; k++) {
+            if (!cov[k]) continue;
+            int px = xmajor ? p : q + k, py = xmajor ? q + k : p;
+            if (px < P.scx0 || px > P.scx1 || py < P.scy0 || py > P.scy1 || row_masked(py)) continue;
+            span_start_at(&pl, t, 0, &st);
+            if (aa) st.a = cov[k] << 16;
+            gs_batch_span(py, px, 1, &st);
+            mx0 = imin(mx0, px); mx1 = imax(mx1, px); my0 = imin(my0, py); my1 = imax(my1, py);
+        }
     }
     gs_batch_end();
     if (mx0 <= mx1) mark_written(mx0, my0, mx1, my1);
@@ -794,6 +813,8 @@ static void draw(int type, const vtx* a, const vtx* b, const vtx* c) {
         }
     }
     if (!env_ok || !prim_draws) return;
+    if (prim_aa1 && type != PRIM_LINE && type != PRIM_LINESTRIP)
+        log_once("antialiasing (AA1) of points/triangles/sprites requested; drawn without it", 1);
     switch (type) {
     case PRIM_POINT: draw_point(a); break;
     case PRIM_LINE: case PRIM_LINESTRIP: draw_line(a, b); break;

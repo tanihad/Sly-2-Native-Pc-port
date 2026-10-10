@@ -69,34 +69,170 @@ static const struct { const char* name; int axis, value; } script_sticks[] = {
     { "lup", 2, 0x00 }, { "ldown", 2, 0xFF }, { "lleft", 1, 0x00 }, { "lright", 1, 0xFF },
     { "rup", 4, 0x00 }, { "rdown", 4, 0xFF }, { "rleft", 3, 0x00 }, { "rright", 3, 0xFF },
 };
-static struct { uint32_t frame, hold; int button; } script[256];
+/* Besides absolute frames, a token can start relative to the token before it:
+ *   "+<n>:<button>[:<hold>]"            n frames after the previous token started;
+ *   "@<hexaddr>[/<hexra>][+<n>]:<button>[:<hold>]"
+ *       n frames after the recompiled function <hexaddr> was called (from the call site returning
+ *       to <hexra>, if given) once the previous token has started, e.g. "@187D80/1DD96C+30:start"
+ *       = START 30 frames after the title screen first checks for START.
+ *   "@!<hexaddr>[/<hexra>][+<n>]:<button>[:<hold>]"
+ *       once the function has been called and then not called for n frames (default 30), e.g.
+ *       "@!227820+60:none" = when the Binocucom dialogue has been gone for 60 frames.
+ * Anchors need the debug build (function tracing); the runtime counts their calls
+ * (ps2_func_calls). A token waits until the one before it has started. The button "none" presses
+ * nothing (a pure wait point for the tokens after it). Partial stick deflection: "lxHH", "lyHH",
+ * "rxHH", "ryHH" set that axis to the hex value HH (00 left/up, 80 centre, FF right/down).
+ * "ram" writes EE RAM to <dump dir>/ram_<vblank>.bin (debugging).
+ *
+ * PS2_INPUT_FILE=<path>: live input. Lines appended to that file while the game runs are read
+ * every few frames and added to the script; relative tokens in a new line count from the moment
+ * it is read ("+0:lup:60,+60:cross"), so a running game can be steered step by step (anchors work
+ * there too: the runtime starts counting a function's calls when the script first asks for them). */
+enum { SCRIPT_ABS, SCRIPT_REL, SCRIPT_ANCHOR, SCRIPT_QUIET };
+#define SCRIPT_UNSET 0xFFFFFFFFu
+#define SCRIPT_NONE  (-2)
+#define SCRIPT_AXIS  (-3)                 /* lxHH etc.: axis/value in the token */
+#define SCRIPT_RAM   (-4)                 /* "ram": dump EE RAM (debug) */
+void ps2_request_ram_dump(void);
+#define SCRIPT_MAX   4096
+static struct { uint32_t frame, hold, start, addr, ra, base, last; int button, kind, armed, seen, axis, value; }
+    script[SCRIPT_MAX];
 static int script_n = -1;
 static uint32_t script_frame;
+uint32_t ps2_func_calls(uint32_t addr, uint32_t ra);   /* runtime: calls of an anchor so far */
+uint32_t ps2_vblank_count(void);
+
+static void script_parse(const char* s) {
+    static char buf[16384];
+    snprintf(buf, sizeof buf, "%s", s ? s : "");
+    for (char* tok = strtok(buf, ", \t\r\n"); tok && script_n < SCRIPT_MAX; tok = strtok(NULL, ", \t\r\n")) {
+        char name[32] = { 0 };
+        unsigned frame = 0, hold = 6, addr = 0, ra = 0;
+        int kind = SCRIPT_ABS;
+        if (tok[0] == '+') {
+            kind = SCRIPT_REL;
+            if (sscanf(tok + 1, "%u:%31[a-z0-9]:%u", &frame, name, &hold) < 2) continue;
+        } else if (tok[0] == '@') {
+            kind = tok[1] == '!' ? SCRIPT_QUIET : SCRIPT_ANCHOR;
+            char* p = tok + (kind == SCRIPT_QUIET ? 2 : 1);
+            addr = (unsigned)strtoul(p, &p, 16);
+            if (*p == '/') ra = (unsigned)strtoul(p + 1, &p, 16);
+            if (kind == SCRIPT_QUIET) frame = 30;
+            if (*p == '+') frame = (unsigned)strtoul(p + 1, &p, 10);
+            if (*p != ':' || sscanf(p + 1, "%31[a-z0-9]:%u", name, &hold) < 1) continue;
+        } else if (sscanf(tok, "%u:%31[a-z0-9]:%u", &frame, name, &hold) < 2) continue;
+        int found = !strcmp(name, "none") ? SCRIPT_NONE : !strcmp(name, "ram") ? SCRIPT_RAM : -1, axis = 0, value = 0x80;
+        for (int b = 0; b < SCRIPT_NBUTTONS; b++)
+            if (!strcmp(name, script_buttons[b].name)) found = b;
+        for (int b = 0; b < (int)(sizeof script_sticks / sizeof script_sticks[0]); b++)
+            if (!strcmp(name, script_sticks[b].name)) found = SCRIPT_NBUTTONS + b;
+        static const char* const axes[] = { "lx", "ly", "rx", "ry" };
+        for (int a = 0; a < 4; a++)
+            if (!strncmp(name, axes[a], 2) && strlen(name) == 4) {
+                found = SCRIPT_AXIS; axis = a + 1; value = (int)strtoul(name + 2, NULL, 16);
+            }
+        if (found == -1) { wlog("PS2_INPUT: unknown button in '%s'", tok); continue; }
+        script[script_n].axis = axis; script[script_n].value = value;
+        script[script_n].frame = frame; script[script_n].hold = hold; script[script_n].button = found;
+        script[script_n].kind = kind; script[script_n].addr = addr; script[script_n].ra = ra;
+        script[script_n].armed = script[script_n].seen = 0;
+        script[script_n++].start = kind == SCRIPT_ABS ? frame : SCRIPT_UNSET;
+    }
+}
+
+static const char* script_name(int b) {
+    return b == SCRIPT_NONE ? "none" : b == SCRIPT_AXIS ? "axis" : b == SCRIPT_RAM ? "ram" :
+           b >= SCRIPT_NBUTTONS ? script_sticks[b - SCRIPT_NBUTTONS].name : script_buttons[b].name;
+}
+
+/* PS2_INPUT_FILE: read lines appended since the last look; each line starts at "now". */
+static void script_poll_file(uint32_t now) {
+    static const char* path = (const char*)1;
+    static long offset;
+    if (path == (const char*)1) {
+        path = getenv("PS2_INPUT_FILE");
+        if (path) {                                           /* ignore what is already there */
+            FILE* f = fopen(path, "rb");
+            if (f) { fseek(f, 0, SEEK_END); offset = ftell(f); fclose(f); }
+            wlog("live input from %s", path);
+        }
+    }
+    if (!path || now % 8) return;
+    FILE* f = fopen(path, "rb");
+    if (!f) return;
+    static char buf[16384];
+    fseek(f, offset, SEEK_SET);
+    size_t n = fread(buf, 1, sizeof buf - 1, f);
+    fclose(f);
+    while (n && buf[n - 1] != '\n') n--;                      /* complete lines only */
+    if (!n) return;
+    buf[n] = 0;
+    offset += (long)n;
+    if (script_n < SCRIPT_MAX) {                              /* the batch's time origin */
+        memset(&script[script_n], 0, sizeof script[0]);
+        script[script_n].button = SCRIPT_NONE;
+        script[script_n].frame = script[script_n].start = now;
+        script[script_n++].hold = 1;
+    }
+    int first = script_n;
+    script_parse(buf);
+    wlog("pad frame %u (VBlank %u): %d live tokens: %s", now, ps2_vblank_count(), script_n - first, buf);
+}
+
+/* Give relative and anchored tokens their start frame once the token before them has started. */
+static void script_resolve(uint32_t now) {
+    for (int i = 0; i < script_n; i++) {
+        if (script[i].start != SCRIPT_UNSET) continue;
+        uint32_t prev = i ? script[i - 1].start : 0;
+        if (prev == SCRIPT_UNSET || now < prev) continue;        /* previous one hasn't started */
+        if (script[i].kind == SCRIPT_REL) { script[i].start = prev + script[i].frame; continue; }
+        uint32_t calls = ps2_func_calls(script[i].addr, script[i].ra);
+        if (!script[i].armed) { script[i].armed = 1; script[i].base = calls; script[i].last = now; }
+        if (script[i].kind == SCRIPT_QUIET) {                    /* called, then silent for n frames */
+            if (calls != script[i].base) { script[i].base = calls; script[i].last = now; script[i].seen = 1; }
+            if (!script[i].seen || now - script[i].last < script[i].frame) continue;
+            script[i].start = now;
+            wlog("pad frame %u: function %08X silent for %u frames, '%s'", now, script[i].addr,
+                 script[i].frame, script_name(script[i].button));
+            continue;
+        }
+        if (calls == script[i].base) continue;                   /* still waiting for the call */
+        script[i].start = now + script[i].frame;
+        wlog("pad frame %u: function %08X called, '%s' at %u", now, script[i].addr,
+             script_name(script[i].button), script[i].start);
+    }
+}
 
 static void script_apply(int port, pad_input* in) {
     if (script_n < 0) {
         script_n = 0;
         const char* s = getenv("PS2_INPUT");
-        char buf[4096];
-        snprintf(buf, sizeof buf, "%s", s ? s : "");
-        for (char* tok = strtok(buf, ","); tok && script_n < 256; tok = strtok(NULL, ",")) {
-            char name[32] = { 0 };
-            unsigned frame = 0, hold = 6;
-            if (sscanf(tok, "%u:%31[a-z0-9]:%u", &frame, name, &hold) < 2) continue;
-            int found = -1;
-            for (int b = 0; b < SCRIPT_NBUTTONS; b++)
-                if (!strcmp(name, script_buttons[b].name)) found = b;
-            for (int b = 0; b < (int)(sizeof script_sticks / sizeof script_sticks[0]); b++)
-                if (!strcmp(name, script_sticks[b].name)) found = SCRIPT_NBUTTONS + b;
-            if (found >= 0) { script[script_n].frame = frame; script[script_n].hold = hold; script[script_n++].button = found; }
-        }
+        script_parse(s);
         if (s) wlog("%d scripted presses", script_n);
     }
-    if (port != 0 || !script_n) return;
+    if (port != 0) return;
     uint32_t now = script_frame++;
+    script_poll_file(now);
+    if (!script_n) return;
+    script_resolve(now);
     for (int i = 0; i < script_n; i++) {
-        if (now < script[i].frame || now >= script[i].frame + script[i].hold) continue;
+        if (script[i].start == SCRIPT_UNSET) continue;
+        if (now < script[i].start || now >= script[i].start + script[i].hold) continue;
         int b = script[i].button;
+        if (now == script[i].start && b != SCRIPT_NONE)       /* calibrate pad frames vs VBlanks */
+            wlog("pad frame %u (VBlank %u): %s (%u frames)", now, ps2_vblank_count(), script_name(b), script[i].hold);
+        if (b == SCRIPT_NONE) continue;
+        if (b == SCRIPT_RAM) { if (now == script[i].start) ps2_request_ram_dump(); continue; }
+        if (b == SCRIPT_AXIS) {
+            uint8_t v = (uint8_t)script[i].value;
+            switch (script[i].axis) {
+            case 1: in->lx = v; break;
+            case 2: in->ly = v; break;
+            case 3: in->rx = v; break;
+            default: in->ry = v; break;
+            }
+            continue;
+        }
         if (b >= SCRIPT_NBUTTONS) {
             uint8_t v = (uint8_t)script_sticks[b - SCRIPT_NBUTTONS].value;
             switch (script_sticks[b - SCRIPT_NBUTTONS].axis) {
