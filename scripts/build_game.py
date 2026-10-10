@@ -69,7 +69,7 @@ def main() -> int:
 
     exe = out / "sly2.exe"
     link = subprocess.run([str(CLANG), *map(str, objs), "-lwinmm", "-lgdi32", "-luser32", "-lxinput1_4",
-                           "-o", str(exe)], capture_output=True, text=True)
+                           "-lsynchronization", "-o", str(exe)], capture_output=True, text=True)
     if link.returncode:
         print(link.stderr[:6000])
         return 1

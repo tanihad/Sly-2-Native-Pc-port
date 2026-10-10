@@ -65,6 +65,7 @@ static void csr_write(uint64_t v) {
     csr_events &= ~(uint32_t)(v & 0x1F);
     if (v & CSR_RESET) {
         csr_events = 0;
+        gs_sync();                       /* the GS thread must be idle (gs_thread.c) */
         gs_draw_reset();
     }
 }
@@ -131,7 +132,7 @@ typedef struct {
     const gs_fmt* fmt;
 } circuit;
 
-static void decode_circuit(int i, circuit* c) {
+static void decode_circuit(const uint64_t* priv, int i, circuit* c) {
     uint64_t fb = priv[P_DISPFB1 + 2 * i], d = priv[P_DISPLAY1 + 2 * i];
     c->fbp = (int)(fb & 0x1FF); c->fbw = (int)((fb >> 9) & 0x3F); c->psm = (int)((fb >> 15) & 0x1F);
     c->dbx = (int)((fb >> 32) & 0x7FF); c->dby = (int)((fb >> 43) & 0x7FF);
@@ -173,7 +174,17 @@ static uint32_t mix(uint32_t a, uint32_t b, uint32_t al) {      /* a*al + b*(255
     return (r << 16) | (g << 8) | bl;
 }
 
+void gs_priv_snapshot(uint64_t out[GS_PRIV_SNAPSHOT]) {
+    memset(out, 0, GS_PRIV_SNAPSHOT * sizeof(uint64_t));
+    memcpy(out, priv, sizeof priv);
+}
+
 int gs_display(uint32_t* dst, int stride, int* w, int* h) {
+    gs_sync();                           /* everything drawn so far must be in VRAM */
+    return gs_display_regs(priv, dst, stride, w, h);
+}
+
+int gs_display_regs(const uint64_t priv[GS_PRIV_SNAPSHOT], uint32_t* dst, int stride, int* w, int* h) {
     GS_INIT();
     uint64_t pmode = priv[P_PMODE];
     int en[2] = { (int)(pmode & 1), (int)((pmode >> 1) & 1) };
@@ -186,7 +197,7 @@ int gs_display(uint32_t* dst, int stride, int* w, int* h) {
     circuit c[2];
     int ux0 = 1 << 30, uy0 = 1 << 30, ux1 = 0, uy1 = 0;
     for (int i = 0; i < 2; i++) {
-        decode_circuit(i, &c[i]);
+        decode_circuit(priv, i, &c[i]);
         if (!en[i]) continue;
         ux0 = c[i].dx < ux0 ? c[i].dx : ux0;
         uy0 = c[i].dy < uy0 ? c[i].dy : uy0;

@@ -22,6 +22,24 @@ void gs_csr_label(uint32_t id, uint32_t mask);    /* SIGLBLID.LBLID update */
 
 /* ---- gs_draw.c --------------------------------------------------------------------------------- */
 void gs_draw_reset(void);                /* CSR.RESET: drop the vertex queue, cancel transfers */
+/* The GS itself: gs_write_reg / gs_image_write / gs_image_read (hw.h) execute these directly, or
+ * hand them to the GS thread (gs_thread.c) in order. */
+void     gs_exec_write_reg(uint32_t reg, uint64_t value);
+void     gs_exec_image_write(const void* data, uint32_t bytes);
+uint32_t gs_exec_image_read(void* data, uint32_t bytes);
+
+/* ---- gs.c: display -------------------------------------------------------------------------------- */
+#define GS_PRIV_SNAPSHOT 16              /* uint64_t values in a display register snapshot */
+void gs_priv_snapshot(uint64_t out[GS_PRIV_SNAPSHOT]);   /* PMODE ... BGCOLOR as they are now */
+/* gs_display() for a snapshot of the display registers (the caller makes sure the GS is idle). */
+int  gs_display_regs(const uint64_t pr[GS_PRIV_SNAPSHOT], uint32_t* dst, int stride, int* w, int* h);
+
+/* ---- gs_thread.c (see also hw.h) --------------------------------------------------------------------- */
+void gs_sync(void);                      /* wait until everything sent to the GS has executed */
+
+/* ---- gs_draw_pixel.c: pixel worker threads --------------------------------------------------------- */
+void gs_draw_set_workers(int n);         /* start n threads that share large batches with the GS thread */
+int  gs_draw_workers(void);
 
 /* activity counters (PS2_LOG_GS=1 prints them from gs_vsync once a second) */
 typedef struct { uint32_t regs, prims, sprites, tris, image_bytes, xfers, pixels; } gs_stats_t;

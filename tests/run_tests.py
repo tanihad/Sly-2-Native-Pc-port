@@ -36,7 +36,7 @@ def main() -> int:
     sources = sorted((BUILD / "recomp").glob("*.c")) + sorted((ROOT / "runtime").glob("*.c"))
     cc = run([CLANG, "-O2", "-std=c11", "-Wall", "-Wno-unused-label",
               "-I", ROOT / "runtime", "-I", BUILD / "recomp", *sources,
-              "-lwinmm", "-lgdi32", "-luser32", "-lxinput1_4", "-o", exe])
+              "-lwinmm", "-lgdi32", "-luser32", "-lxinput1_4", "-lsynchronization", "-o", exe])
     if cc.returncode or cc.stderr.strip():
         print("compile output:\n" + cc.stderr)
         if cc.returncode:

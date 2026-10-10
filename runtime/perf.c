@@ -6,11 +6,11 @@
 #include <stdlib.h>
 #include <windows.h>
 
-static const char* const cat_names[PERF_N] = { "EE", "GS", "VU", "VIF", "IPU", "IOP", "present", "idle" };
+static const char* const cat_names[PERF_N] = { "EE", "GS", "VU", "VIF", "IPU", "IOP", "present", "gswait", "idle" };
 
 static LARGE_INTEGER qpc_freq;
 static int64_t report_qpc;                 /* QPC of the last report */
-static uint64_t report_tsc, report_acc[PERF_N];
+static uint64_t report_tsc, report_acc[PERF_N], report_gs_busy;
 static uint32_t report_serviced, report_due, report_flips;
 static int64_t start_qpc;
 
@@ -273,11 +273,16 @@ void perf_vblank(uint32_t serviced, uint32_t due) {
     for (int c = 0; c < PERF_N; c++)
         len += snprintf(cats + len, sizeof cats - (size_t)len, " %s %.1f%%", cat_names[c],
                         total ? 100.0 * (double)d[c] / (double)total : 0.0);
-    /* busy = everything except idle, per serviced VBlank: the budget is 16.68 ms */
-    double busy_ms = ds ? (double)(total - d[PERF_IDLE]) / tsc_hz * 1000.0 / ds : 0;
-    fprintf(stderr, "[perf] %6.1fs vblanks %u/%u due (%.1f/s), flips %u (%.1f/s), busy %.2f ms/vblank |%s\n",
+    /* busy = everything except idle and waiting for the GS thread, per serviced VBlank: the
+     * budget is 16.68 ms. The GS thread's own busy time is reported separately. */
+    double busy_ms = ds ? (double)(total - d[PERF_IDLE] - d[PERF_GSWAIT]) / tsc_hz * 1000.0 / ds : 0;
+    uint64_t gsb = perf_state.gs_busy, dgs = gsb - report_gs_busy;
+    report_gs_busy = gsb;
+    char gsthread[64] = "";
+    if (dgs) snprintf(gsthread, sizeof gsthread, ", GS thread %.2f ms/vblank", ds ? (double)dgs / tsc_hz * 1000.0 / ds : 0);
+    fprintf(stderr, "[perf] %6.1fs vblanks %u/%u due (%.1f/s), flips %u (%.1f/s), busy %.2f ms/vblank%s |%s\n",
             (double)(now.QuadPart - start_qpc) / (double)qpc_freq.QuadPart, ds, dd, ds / secs, df, df / secs,
-            busy_ms, cats);
+            busy_ms, gsthread, cats);
     report_qpc = now.QuadPart;
     report_tsc = t;
     report_serviced = serviced;

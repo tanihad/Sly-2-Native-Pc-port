@@ -644,14 +644,14 @@ static void trxdir(uint32_t dir) {
     if (dir == 0 || dir == 2) mark_xfer_dest();
 }
 
-void gs_image_write(const void* data, uint32_t bytes) {
+void gs_exec_image_write(const void* data, uint32_t bytes) {
     GS_INIT();
     gs_stats.image_bytes += bytes;
     if (xfer_dir == 0 && xfer_marked_at != gs_tex_decodes) mark_xfer_dest();
     gs_mem_xfer_write(data, bytes);
 }
 
-uint32_t gs_image_read(void* data, uint32_t bytes) {
+uint32_t gs_exec_image_read(void* data, uint32_t bytes) {
     return gs_mem_xfer_read(data, bytes);
 }
 
@@ -673,7 +673,7 @@ static void tex0_write(int ctx, uint64_t v) {
     env_dirty = 1;
 }
 
-void gs_write_reg(uint32_t r, uint64_t v) {
+void gs_exec_write_reg(uint32_t r, uint64_t v) {
     GS_INIT();
     gs_stats.regs++;
     switch (r) {

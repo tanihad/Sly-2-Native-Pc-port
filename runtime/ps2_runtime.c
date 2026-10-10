@@ -181,24 +181,33 @@ static DWORD WINAPI host_timer(LPVOID arg) {
 
 uint32_t ps2_vblank_count(void) { return vblank_count; }
 
+/* The picture of VBlank `vb` (ok = 0: display off). Runs on the GS thread when there is one. */
+static void present_frame(const uint32_t* frame, int ok, int w, int h, uint32_t vb) {
+    if (!ok) {                                   /* display off: show black, not a stale frame */
+        static uint32_t black[640 * 448];
+        if (!headless) window_present(black, 640, 448, 640);
+        return;
+    }
+    if (!headless) window_present(frame, w, h, 1024);
+    if (dump_dir && vb % (uint32_t)dump_every == 0) {
+        char path[512];
+        snprintf(path, sizeof path, "%s/frame_%06u.png", dump_dir, vb);
+        debug_write_png(path, frame, w, h, 1024);
+    }
+}
+
 static void vblank(ps2_ctx* ctx) {
     vblank_count++;
     perf_vblank(vblank_count, (uint32_t)vblanks_due);
     gs_vsync();
     int perf_prev = perf_enter(PERF_PRESENT);
-    static uint32_t frame[1024 * 1024];
-    int w = 0, h = 0;
-    if (!gs_display(frame, 1024, &w, &h)) {      /* display off: show black, not a stale frame */
-        w = 640; h = 448;
-        for (int y = 0; y < h; y++) memset(frame + (size_t)y * 1024, 0, (size_t)w * 4);
-        if (!headless) window_present(frame, w, h, 1024);
+    if (gs_async()) {
+        gs_queue_vsync(vblank_count);            /* composed and presented by the GS thread */
     } else {
-        if (!headless) window_present(frame, w, h, 1024);
-        if (dump_dir && vblank_count % (uint32_t)dump_every == 0) {
-            char path[512];
-            snprintf(path, sizeof path, "%s/frame_%06u.png", dump_dir, vblank_count);
-            debug_write_png(path, frame, w, h, 1024);
-        }
+        static uint32_t frame[1024 * 1024];
+        int w = 0, h = 0;
+        int ok = gs_display(frame, 1024, &w, &h);
+        present_frame(frame, ok, w, h, vblank_count);
     }
     perf_leave(perf_prev);
     pad_vsync(ctx);
@@ -396,6 +405,21 @@ int main(int argc, char** argv) {
     const char* wd = getenv("PS2_WATCHDOG");
     if (wd && atoi(wd) > 0) CreateThread(NULL, 0, watchdog, (LPVOID)(uintptr_t)atoi(wd), 0, NULL);
     if (!headless) window_init();
+
+    /* The GS on its own thread plus pixel workers (PS2_GS_ASYNC=0: synchronous, as in the unit
+     * tests; PS2_GS_THREADS=<n>: pixel workers, default half the logical processors minus one, at
+     * most 8). */
+    const char* ga = getenv("PS2_GS_ASYNC");
+    if (!dump_regs && !(ga && atoi(ga) == 0)) {
+        int ncpu = (int)GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
+        int workers = ncpu / 2 - 1;
+        if (workers > 8) workers = 8;
+        if (workers < 0) workers = 0;
+        const char* gt = getenv("PS2_GS_THREADS");
+        if (gt) workers = atoi(gt);
+        gs_thread_start(workers, present_frame);
+        fprintf(stderr, "[ps2] GS thread started with %d pixel workers\n", workers);
+    }
 
     static ps2_ctx init;
     init.r[29].sd[0] = (int32_t)(PS2_RAM_SIZE - 0x10);   /* provisional stack until SetupThread */

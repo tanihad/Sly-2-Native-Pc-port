@@ -17,14 +17,17 @@
 #include <stdint.h>
 #include <x86intrin.h>
 
-enum { PERF_EE, PERF_GS, PERF_VU, PERF_VIF, PERF_IPU, PERF_IOP, PERF_PRESENT, PERF_IDLE, PERF_N };
+/* GS: with the GS thread running (gs_thread.c) this is only the EE side (GIF parsing, queueing);
+ * GSWAIT: the EE thread waiting for the GS thread (downloads, one frame of lag at most). */
+enum { PERF_EE, PERF_GS, PERF_VU, PERF_VIF, PERF_IPU, PERF_IOP, PERF_PRESENT, PERF_GSWAIT, PERF_IDLE, PERF_N };
 
 typedef struct {
     int      on;                   /* PS2_PERF set */
-    int      cat;                  /* category being charged now */
+    int      cat;                  /* category being charged now (EE thread) */
     uint64_t t0;                   /* TSC when `cat` was entered */
     uint64_t acc[PERF_N];          /* TSC ticks charged per category */
     uint32_t flips;                /* displayed-buffer changes (DISPFB writes that change the value) */
+    volatile uint64_t gs_busy;     /* TSC ticks the GS thread spent executing (written by it only) */
 } perf_state_t;
 
 __attribute__((selectany)) perf_state_t perf_state = { 0 };

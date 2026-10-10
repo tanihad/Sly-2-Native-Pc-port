@@ -14,7 +14,15 @@
 #include <emmintrin.h>
 #include <math.h>
 
-#define MAX_SEGS 512
+#include <stdatomic.h>
+#include <stdlib.h>
+#include <windows.h>
+
+/* A batch holds up to BATCH_PIX pixels of one primitive. Large batches are split by segments
+ * among the pixel worker threads (gs_draw_set_workers): pixels of one primitive never overlap, so
+ * the parts are independent and the result is the same as running the batch in one piece. */
+#define BATCH_PIX (8 * GS_MAX_SPAN)
+#define MAX_SEGS 2048
 
 typedef struct {
     int y, x0, n, off;                   /* off: index of the first pixel in the batch arrays */
@@ -26,11 +34,11 @@ typedef struct {                         /* one batch of spans and its per-pixel
     int stq;
     int nseg, npix;
     seg segs[MAX_SEGS];
-    uint32_t col[GS_MAX_SPAN];           /* fragment colour 0xAABBGGRR */
-    uint32_t tex[GS_MAX_SPAN];           /* texel colour */
-    uint32_t fa[GS_MAX_SPAN];            /* frame buffer byte offsets from fbase */
-    uint8_t wm[GS_MAX_SPAN];             /* write mode: 0 none, 1 RGBA, 2 RGB only */
-    uint8_t ftmp[GS_MAX_SPAN * 4], ztmp[GS_MAX_SPAN * 4];   /* slow path: pixels via gs_mem */
+    uint32_t col[BATCH_PIX];             /* fragment colour 0xAABBGGRR */
+    uint32_t tex[BATCH_PIX];             /* texel colour */
+    uint32_t fa[BATCH_PIX];              /* frame buffer byte offsets from fbase */
+    uint8_t wm[BATCH_PIX];               /* write mode: 0 none, 1 RGBA, 2 RGB only */
+    uint8_t ftmp[BATCH_PIX * 4], ztmp[BATCH_PIX * 4];   /* slow path: pixels via gs_mem */
 } batch;
 
 static batch B0;                         /* the (single) drawing thread's batch */
@@ -164,12 +172,12 @@ static uint32_t tex_general(const gs_prim* p, int U, int V, float q) {
 
 /* texel stage, specialised on coordinates (UV/STQ) and filter (1 point, 2 bilinear, 3 general,
  * 4 point without wrapping, 5 bilinear without wrapping) */
-GS_AI void sample_batch(batch* b, const gs_prim* p, const int STQ, const int FILT) {
+GS_AI void sample_batch(batch* b, const gs_prim* p, int k0, int k1, const int STQ, const int FILT) {
     const lvl_view L = view_of(&p->lvl[p->cur_level]);
     const int cl = p->cur_level;
     const float ds = p->ds, dt = p->dt, dq = p->dq, tw16 = p->tw16, th16 = p->th16, lq = p->lod_q;
     const int32_t du = p->du, dv = p->dv;
-    for (int k = 0; k < b->nseg; k++) {
+    for (int k = k0; k < k1; k++) {
         const seg* sg = &b->segs[k];
         uint32_t* out = b->tex + sg->off;
         const int n = sg->n;
@@ -194,18 +202,20 @@ GS_AI void sample_batch(batch* b, const gs_prim* p, const int STQ, const int FIL
     }
 }
 
-static void sample_uv_point(batch* b, const gs_prim* p) { sample_batch(b, p, 0, 1); }
-static void sample_uv_bilin(batch* b, const gs_prim* p) { sample_batch(b, p, 0, 2); }
-static void sample_uv_gen(batch* b, const gs_prim* p) { sample_batch(b, p, 0, 3); }
-static void sample_uv_point_nw(batch* b, const gs_prim* p) { sample_batch(b, p, 0, 4); }
-static void sample_uv_bilin_nw(batch* b, const gs_prim* p) { sample_batch(b, p, 0, 5); }
-static void sample_stq_point(batch* b, const gs_prim* p) { sample_batch(b, p, 1, 1); }
-static void sample_stq_bilin(batch* b, const gs_prim* p) { sample_batch(b, p, 1, 2); }
-static void sample_stq_gen(batch* b, const gs_prim* p) { sample_batch(b, p, 1, 3); }
-static void sample_stq_point_nw(batch* b, const gs_prim* p) { sample_batch(b, p, 1, 4); }
-static void sample_stq_bilin_nw(batch* b, const gs_prim* p) { sample_batch(b, p, 1, 5); }
+#define SAMPLE_FN(name, STQ, FILT) \
+    static void name(batch* b, const gs_prim* p, int k0, int k1) { sample_batch(b, p, k0, k1, STQ, FILT); }
+SAMPLE_FN(sample_uv_point, 0, 1)
+SAMPLE_FN(sample_uv_bilin, 0, 2)
+SAMPLE_FN(sample_uv_gen, 0, 3)
+SAMPLE_FN(sample_uv_point_nw, 0, 4)
+SAMPLE_FN(sample_uv_bilin_nw, 0, 5)
+SAMPLE_FN(sample_stq_point, 1, 1)
+SAMPLE_FN(sample_stq_bilin, 1, 2)
+SAMPLE_FN(sample_stq_gen, 1, 3)
+SAMPLE_FN(sample_stq_point_nw, 1, 4)
+SAMPLE_FN(sample_stq_bilin_nw, 1, 5)
 
-typedef void (*sample_fn)(batch*, const gs_prim*);
+typedef void (*sample_fn)(batch*, const gs_prim*, int, int);
 static const sample_fn sample_table[2][2][4] = {           /* [stq][nowrap][texm] */
     { { NULL, sample_uv_point, sample_uv_bilin, sample_uv_gen },
       { NULL, sample_uv_point_nw, sample_uv_bilin_nw, sample_uv_gen } },
@@ -215,16 +225,21 @@ static const sample_fn sample_table[2][2][4] = {           /* [stq][nowrap][texm
 
 /* ---- colour stages -------------------------------------------------------------------------------- */
 
-static void colour_batch(batch* b, const gs_prim* p) {
+/* first pixel index of segment k0 and the pixel count of segments [k0, k1) */
+GS_AI int range_off(const batch* b, int k0) { return b->segs[k0].off; }
+GS_AI int range_pix(const batch* b, int k0, int k1) { return b->segs[k1 - 1].off + b->segs[k1 - 1].n - b->segs[k0].off; }
+
+static void colour_batch(batch* b, const gs_prim* p, int k0, int k1) {
     if (!p->iip) {
         const gs_span_start* st = &b->segs[0].st;
         uint32_t c = clamp255(st->r >> 16) | clamp255(st->g >> 16) << 8 | clamp255(st->b >> 16) << 16 | clamp255(st->a >> 16) << 24;
-        for (int i = 0; i < b->npix; i++) b->col[i] = c;
+        uint32_t* col = b->col + range_off(b, k0);
+        for (int i = 0, n = range_pix(b, k0, k1); i < n; i++) col[i] = c;
         return;
     }
     /* r, g, b, a in 4 lanes: >> 16, then saturating packs clamp to 0..255 exactly like clamp255 */
     const __m128i step = _mm_set_epi32(p->da, p->db, p->dg, p->dr);
-    for (int k = 0; k < b->nseg; k++) {
+    for (int k = k0; k < k1; k++) {
         const seg* sg = &b->segs[k];
         uint32_t* col = b->col + sg->off;
         __m128i v = _mm_set_epi32(sg->st.a, sg->st.b, sg->st.g, sg->st.r);
@@ -278,10 +293,10 @@ static void tfx_batch(int tfx, int tcc, int n, uint32_t* col, const uint32_t* te
     }
 }
 
-static void fog_batch(batch* b, const gs_prim* p) {
+static void fog_batch(batch* b, const gs_prim* p, int k0, int k1) {
     const int32_t df = p->df;
     const int fr = p->fogr, fg = p->fogg, fb = p->fogb;
-    for (int k = 0; k < b->nseg; k++) {
+    for (int k = k0; k < k1; k++) {
         const seg* sg = &b->segs[k];
         uint32_t* col = b->col + sg->off;
         int32_t f = sg->st.f;
@@ -298,7 +313,7 @@ static void fog_batch(batch* b, const gs_prim* p) {
 /* ---- tests: alpha test, destination alpha test, depth test (+ Z write) -> write modes ---------- */
 
 /* Returns the number of pixels left to write. */
-GS_AI int tests_batch(batch* b, const gs_prim* p, uint8_t* fbase, uint8_t* zbase, const int ZBITS) {
+GS_AI int tests_batch(batch* b, const gs_prim* p, uint8_t* fbase, uint8_t* zbase, int k0, int k1, const int ZBITS) {
     const int ate = p->ate, afail = p->afail, date = p->date, datm = p->datm, fbits = p->ffmt->bits;
     const int date_sh = fbits == 16 ? 15 : 31;
     const uint8_t* apass = p->apass;
@@ -309,7 +324,7 @@ GS_AI int tests_batch(batch* b, const gs_prim* p, uint8_t* fbase, uint8_t* zbase
     const gs_fmt* zf = p->zfmt ? p->zfmt : p->ffmt;
     const int zes = zf->elem_shift;
     int left = 0;
-    for (int k = 0; k < b->nseg; k++) {
+    for (int k = k0; k < k1; k++) {
         const seg* sg = &b->segs[k];
         const int y = sg->y, x0 = sg->x0, n = sg->n, off = sg->off;
         const uint32_t* col = b->col + off;
@@ -353,10 +368,9 @@ GS_AI int tests_batch(batch* b, const gs_prim* p, uint8_t* fbase, uint8_t* zbase
     return left;
 }
 
-static int tests_z0(batch* b, const gs_prim* p, uint8_t* f, uint8_t* z) { return tests_batch(b, p, f, z, 0); }
-static int tests_z16(batch* b, const gs_prim* p, uint8_t* f, uint8_t* z) { return tests_batch(b, p, f, z, 16); }
-static int tests_z24(batch* b, const gs_prim* p, uint8_t* f, uint8_t* z) { return tests_batch(b, p, f, z, 24); }
-static int tests_z32(batch* b, const gs_prim* p, uint8_t* f, uint8_t* z) { return tests_batch(b, p, f, z, 32); }
+#define TESTS_FN(Z) static int tests_z##Z(batch* b, const gs_prim* p, uint8_t* f, uint8_t* z, int k0, int k1) \
+    { return tests_batch(b, p, f, z, k0, k1, Z); }
+TESTS_FN(0) TESTS_FN(16) TESTS_FN(24) TESTS_FN(32)
 
 /* ---- blend + frame buffer write ------------------------------------------------------------------ */
 
@@ -433,84 +447,192 @@ GS_AI void write_seg(batch* b, const gs_prim* p, const seg* sg, uint8_t* fbase, 
     }
 }
 
-GS_AI void write_batch(batch* b, const gs_prim* p, uint8_t* fbase, const int FB, const int BL, const int WM) {
-    for (int k = 0; k < b->nseg; k++) write_seg(b, p, &b->segs[k], fbase, FB, BL, WM);
+GS_AI void write_batch(batch* b, const gs_prim* p, uint8_t* fbase, int k0, int k1, const int FB, const int BL, const int WM) {
+    for (int k = k0; k < k1; k++) write_seg(b, p, &b->segs[k], fbase, FB, BL, WM);
 }
 
-#define WRITE_FN(F, BL, W) static void write_##F##_##BL##_##W(batch* b, const gs_prim* p, uint8_t* fb) { write_batch(b, p, fb, F, BL, W); }
+#define WRITE_FN(F, BL, W) static void write_##F##_##BL##_##W(batch* b, const gs_prim* p, uint8_t* fb, int k0, int k1) \
+    { write_batch(b, p, fb, k0, k1, F, BL, W); }
 #define WRITE_FNS(F) WRITE_FN(F, 0, 0) WRITE_FN(F, 0, 1) WRITE_FN(F, 1, 0) WRITE_FN(F, 1, 1) WRITE_FN(F, 2, 0) WRITE_FN(F, 2, 1)
 WRITE_FNS(32) WRITE_FNS(24) WRITE_FNS(16)
-typedef void (*write_fn)(batch*, const gs_prim*, uint8_t*);
+typedef void (*write_fn)(batch*, const gs_prim*, uint8_t*, int, int);
 #define WRITE_ROW(F) { { write_##F##_0_0, write_##F##_0_1 }, { write_##F##_1_0, write_##F##_1_1 }, { write_##F##_2_0, write_##F##_2_1 } }
 static const write_fn write_table[3][3][2] = { WRITE_ROW(32), WRITE_ROW(24), WRITE_ROW(16) };
 
 /* ---- batch driver --------------------------------------------------------------------------------- */
+
+/* Colour, texture, fog, tests and frame buffer write for segments [k0, k1) (addresses in b->fa). */
+static void pipeline(batch* b, int k0, int k1, uint8_t* fbase, uint8_t* zbase) {
+    const gs_prim* p = b->p;
+    colour_batch(b, p, k0, k1);
+    if (p->tme && p->texm) {
+        sample_table[b->stq][p->nowrap][p->texm](b, p, k0, k1);
+        int off = range_off(b, k0);
+        tfx_batch(p->tfx, p->tcc, range_pix(b, k0, k1), b->col + off, b->tex + off);
+    }
+    if (p->fge) fog_batch(b, p, k0, k1);
+
+    int wmode = 0;
+    if (p->ate || p->date || p->zuse) {
+        int left;
+        switch (p->zuse ? p->zfmt->bits : 0) {
+        case 16: left = tests_z16(b, p, fbase, zbase, k0, k1); break;
+        case 24: left = tests_z24(b, p, fbase, zbase, k0, k1); break;
+        case 32: left = tests_z32(b, p, fbase, zbase, k0, k1); break;
+        default: left = tests_z0(b, p, fbase, zbase, k0, k1); break;
+        }
+        wmode = 1;
+        if (!left) return;
+    }
+    const int fbits = p->ffmt->bits;
+    write_table[fbits == 32 ? 0 : fbits == 24 ? 1 : 2][!p->abe ? 0 : p->std_blend ? 1 : 2][wmode](b, p, fbase, k0, k1);
+}
+
+/* Segments [k0, k1) straight into gs_vram (gs_swz_fast). */
+static void run_range(batch* b, int k0, int k1) {
+    const gs_prim* p = b->p;
+    for (int k = k0; k < k1; k++)
+        row_addrs(p->ffmt, p->fpage, p->fbw, b->segs[k].x0, b->segs[k].y, b->segs[k].n, b->fa + b->segs[k].off);
+    pipeline(b, k0, k1, gs_vram, gs_vram);
+}
+
+/* ---- pixel worker threads --------------------------------------------------------------------------
+ * A large batch is cut into parts (runs of whole segments of about equal pixel count). The drawing
+ * thread publishes the job and then claims parts itself like any worker, so a job completes even
+ * while every worker is asleep; it returns only when all parts are done. Workers spin for a while
+ * after a job (drawing comes in bursts), then block in WaitOnAddress. */
+
+#define MAX_WORKERS 31
+#define PART_MIN_PIX 1024                /* smaller parts are not worth handing out */
+#define WORKER_SPINS 20000               /* pause iterations before a worker blocks (~1 ms) */
+
+static struct {
+    int n;                               /* worker threads */
+    batch* b;
+    int k[MAX_WORKERS + 2];              /* part i = segments [k[i], k[i + 1]) */
+    _Atomic uint64_t claim;              /* job generation << 16 | parts << 8 | next unclaimed part */
+    _Atomic uint32_t gen;                /* job generation (workers wait on it) */
+    _Atomic int pending;                 /* parts not finished */
+    _Atomic int sleepers;                /* workers blocked in WaitOnAddress */
+    uint32_t next_gen;
+} pool;
+
+static int claim_part(uint32_t g) {
+    uint64_t c = atomic_load_explicit(&pool.claim, memory_order_acquire);
+    for (;;) {
+        if ((uint32_t)(c >> 16) != g) return -1;              /* a later job: this one is over */
+        int parts = (int)((c >> 8) & 0xFF), i = (int)(c & 0xFF);
+        if (i >= parts) return -1;
+        if (atomic_compare_exchange_weak_explicit(&pool.claim, &c, c + 1, memory_order_acq_rel, memory_order_acquire))
+            return i;
+    }
+}
+
+static void run_parts(uint32_t g) {
+    int i;
+    while ((i = claim_part(g)) >= 0) {
+        run_range(pool.b, pool.k[i], pool.k[i + 1]);
+        atomic_fetch_sub_explicit(&pool.pending, 1, memory_order_release);
+    }
+}
+
+static DWORD WINAPI pixel_worker(LPVOID arg) {
+    (void)arg;
+    uint32_t seen = atomic_load_explicit(&pool.gen, memory_order_acquire);
+    for (;;) {
+        uint32_t g;
+        int spins = 0;
+        while ((g = atomic_load_explicit(&pool.gen, memory_order_acquire)) == seen) {
+            if (++spins < WORKER_SPINS) { _mm_pause(); continue; }
+            atomic_fetch_add(&pool.sleepers, 1);
+            if (atomic_load(&pool.gen) == seen) WaitOnAddress((volatile VOID*)&pool.gen, &seen, sizeof seen, INFINITE);
+            atomic_fetch_sub(&pool.sleepers, 1);
+            spins = 0;
+        }
+        seen = g;
+        run_parts(g);
+    }
+    return 0;
+}
+
+void gs_draw_set_workers(int n) {
+    if (pool.n || n <= 0) return;
+    if (n > MAX_WORKERS) n = MAX_WORKERS;
+    for (int i = 0; i < n; i++) {
+        HANDLE h = CreateThread(NULL, 0, pixel_worker, NULL, 0, NULL);
+        if (!h) break;
+        CloseHandle(h);
+        pool.n++;
+    }
+}
+
+int gs_draw_workers(void) { return pool.n; }
+
+/* Run a batch on the worker pool (b->npix large enough, gs_swz_fast). */
+static void run_parallel(batch* b, int parts) {
+    int64_t target = b->npix / parts, acc = 0;
+    int np = 0;
+    pool.k[0] = 0;
+    for (int k = 0; k < b->nseg && np < parts - 1; k++) {
+        acc += b->segs[k].n;
+        if (acc >= target * (np + 1) && k + 1 < b->nseg) pool.k[++np] = k + 1;
+    }
+    pool.k[++np] = b->nseg;
+    pool.b = b;
+    atomic_store_explicit(&pool.pending, np, memory_order_relaxed);
+    uint32_t g = ++pool.next_gen;
+    atomic_store_explicit(&pool.claim, (uint64_t)g << 16 | (uint64_t)np << 8, memory_order_release);
+    atomic_store_explicit(&pool.gen, g, memory_order_seq_cst);
+    if (atomic_load(&pool.sleepers)) WakeByAddressAll((PVOID)&pool.gen);
+    run_parts(g);
+    while (atomic_load_explicit(&pool.pending, memory_order_acquire)) _mm_pause();
+}
 
 static void flush(batch* b) {
     const gs_prim* p = b->p;
     if (!b->npix) return;
     const gs_fmt* ff = p->ffmt;
     const gs_fmt* zf = p->zfmt;
-    const int fbits = ff->bits, fes = ff->elem_shift, fast = gs_swz_fast, zuse = p->zuse;
-    uint8_t* fbase = gs_vram;
-    uint8_t* zbase = gs_vram;
+    const int fbits = ff->bits, fes = ff->elem_shift, zuse = p->zuse;
 
-    if (fast) {
-        for (int k = 0; k < b->nseg; k++)
-            row_addrs(ff, p->fpage, p->fbw, b->segs[k].x0, b->segs[k].y, b->segs[k].n, b->fa + b->segs[k].off);
-    } else {                             /* gather through gs_mem; scattered back below */
-        fbase = b->ftmp;
-        zbase = b->ztmp;
-        for (int k = 0; k < b->nseg; k++) {
-            const seg* sg = &b->segs[k];
-            for (int i = 0; i < sg->n; i++) {
-                uint32_t j = (uint32_t)(sg->off + i);
-                b->fa[j] = j << fes;
-                uint32_t v = gs_mem_read(p->fpsm, p->fpage * 32, p->fbw, sg->x0 + i, sg->y);
-                if (fbits == 16) wr16(fbase + b->fa[j], v); else wr32(fbase + b->fa[j], v);
-                if (zuse) {
-                    v = gs_mem_read(p->zpsm, p->zpage * 32, p->zbw, sg->x0 + i, sg->y);
-                    if (zf->bits == 16) wr16(zbase + (j << zf->elem_shift), v); else wr32(zbase + (j << zf->elem_shift), v);
-                }
+    if (gs_swz_fast) {
+        int parts = pool.n ? b->npix / PART_MIN_PIX : 1;
+        if (parts > pool.n + 1) parts = pool.n + 1;
+        if (parts > 1 && b->nseg > 1) run_parallel(b, parts);
+        else run_range(b, 0, b->nseg);
+        b->nseg = 0;
+        b->npix = 0;
+        return;
+    }
+
+    /* slow path: gather the pixels through gs_mem, run the pipeline, scatter them back */
+    uint8_t* fbase = b->ftmp;
+    uint8_t* zbase = b->ztmp;
+    for (int k = 0; k < b->nseg; k++) {
+        const seg* sg = &b->segs[k];
+        for (int i = 0; i < sg->n; i++) {
+            uint32_t j = (uint32_t)(sg->off + i);
+            b->fa[j] = j << fes;
+            uint32_t v = gs_mem_read(p->fpsm, p->fpage * 32, p->fbw, sg->x0 + i, sg->y);
+            if (fbits == 16) wr16(fbase + b->fa[j], v); else wr32(fbase + b->fa[j], v);
+            if (zuse) {
+                v = gs_mem_read(p->zpsm, p->zpage * 32, p->zbw, sg->x0 + i, sg->y);
+                if (zf->bits == 16) wr16(zbase + (j << zf->elem_shift), v); else wr32(zbase + (j << zf->elem_shift), v);
             }
         }
     }
-
-    colour_batch(b, p);
-    if (p->tme && p->texm) {
-        sample_table[b->stq][p->nowrap][p->texm](b, p);
-        tfx_batch(p->tfx, p->tcc, b->npix, b->col, b->tex);
-    }
-    if (p->fge) fog_batch(b, p);
-
-    int wmode = 0;
-    if (p->ate || p->date || zuse) {
-        int left;
-        switch (zuse ? zf->bits : 0) {
-        case 16: left = tests_z16(b, p, fbase, zbase); break;
-        case 24: left = tests_z24(b, p, fbase, zbase); break;
-        case 32: left = tests_z32(b, p, fbase, zbase); break;
-        default: left = tests_z0(b, p, fbase, zbase); break;
-        }
-        wmode = 1;
-        if (!left) goto done;
-    }
-    write_table[fbits == 32 ? 0 : fbits == 24 ? 1 : 2][!p->abe ? 0 : p->std_blend ? 1 : 2][wmode](b, p, fbase);
-
-done:
-    if (!fast) {
-        for (int k = 0; k < b->nseg; k++) {
-            const seg* sg = &b->segs[k];
-            for (int i = 0; i < sg->n; i++) {
-                uint32_t j = (uint32_t)(sg->off + i);
-                uint8_t* fp = fbase + b->fa[j];
-                gs_mem_write(p->fpsm, p->fpage * 32, p->fbw, sg->x0 + i, sg->y,
-                             fbits == 16 ? rd16(fp) : rd32(fp) & (fbits == 24 ? 0xFFFFFFu : 0xFFFFFFFFu));
-                if (zuse && !p->zmsk) {
-                    uint8_t* zp = zbase + (j << zf->elem_shift);
-                    gs_mem_write(p->zpsm, p->zpage * 32, p->zbw, sg->x0 + i, sg->y,
-                                 zf->bits == 16 ? rd16(zp) : rd32(zp) & (zf->bits == 24 ? 0xFFFFFFu : 0xFFFFFFFFu));
-                }
+    pipeline(b, 0, b->nseg, fbase, zbase);
+    for (int k = 0; k < b->nseg; k++) {
+        const seg* sg = &b->segs[k];
+        for (int i = 0; i < sg->n; i++) {
+            uint32_t j = (uint32_t)(sg->off + i);
+            uint8_t* fp = fbase + b->fa[j];
+            gs_mem_write(p->fpsm, p->fpage * 32, p->fbw, sg->x0 + i, sg->y,
+                         fbits == 16 ? rd16(fp) : rd32(fp) & (fbits == 24 ? 0xFFFFFFu : 0xFFFFFFFFu));
+            if (zuse && !p->zmsk) {
+                uint8_t* zp = zbase + (j << zf->elem_shift);
+                gs_mem_write(p->zpsm, p->zpage * 32, p->zbw, sg->x0 + i, sg->y,
+                             zf->bits == 16 ? rd16(zp) : rd32(zp) & (zf->bits == 24 ? 0xFFFFFFu : 0xFFFFFFFFu));
             }
         }
     }
@@ -561,9 +683,11 @@ void gs_batch_span(int y, int x0, int n, const gs_span_start* st) {
     gs_stats.pixels += (uint32_t)n;
     if (p->solid && gs_swz_fast) { fill_span(p, y, x0, n, st); return; }
     gs_span_start s = *st;
+    /* without workers, batches stay small enough for the stage arrays to live in L1 */
+    const int cap = pool.n ? BATCH_PIX : GS_MAX_SPAN;
     while (n > 0) {
-        if (b->nseg == MAX_SEGS || b->npix == GS_MAX_SPAN) flush(b);
-        int take = GS_MAX_SPAN - b->npix < n ? GS_MAX_SPAN - b->npix : n;
+        if (b->nseg == MAX_SEGS || b->npix >= cap) flush(b);
+        int take = cap - b->npix < n ? cap - b->npix : n;
         seg* sg = &b->segs[b->nseg++];
         sg->y = y; sg->x0 = x0; sg->n = take; sg->off = b->npix; sg->st = s;
         b->npix += take;

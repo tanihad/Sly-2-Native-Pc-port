@@ -18,6 +18,16 @@ void hw_log_unhandled(const char* unit, uint32_t phys, const void* data, unsigne
 }
 extern int fake_clut_loads;
 
+#ifdef TEST_ASYNC
+/* The same scenes through the GS thread and its pixel workers (gs_thread.c, started in main): wait
+ * for the queue to drain before looking at VRAM. */
+static uint32_t synced_mem_read(int psm, uint32_t bp, uint32_t bw, int x, int y) {
+    gs_sync();
+    return gs_mem_read(psm, bp, bw, x, y);
+}
+#define gs_mem_read synced_mem_read
+#endif
+
 /* ---- test helpers --------------------------------------------------------------------------------- */
 
 static int fails, checks;
@@ -294,9 +304,11 @@ static void t_clut_textures(void) {
     for (int y = 0; y < 16; y++) for (int x = 0; x < 16; x++) bad += px(300 + x, 60 + y) != pal[x + 16 * y];
     CHECK(bad == 0, "T8 after CLUT reload: %d wrong", bad);
     /* CLD=4 with an unchanged CBP: no reload (fake counts loads) */
+    gs_sync();                           /* (no-op unless TEST_ASYNC) */
     int loads = fake_clut_loads;
     W(TEX0_1, tex0(TEXBP, 2, PSMT8, 4, 4, 1, 1, CLUTBP, PSMCT32, 0, 4));
     W(TEX0_1, tex0(TEXBP, 2, PSMT8, 4, 4, 1, 1, CLUTBP, PSMCT32, 0, 4));
+    gs_sync();
     CHECK(loads < 0 || fake_clut_loads == loads + 1, "gs_clut_on_tex0 called for every TEX0 write");   /* < 0: real gs_mem */
     /* TEX2 changes only PSM/CLUT fields */
     W(TEX2_1, tex0(0, 0, PSMT8, 0, 0, 0, 0, CLUTBP, PSMCT32, 0, 0));
@@ -892,6 +904,7 @@ static void bench(void) {
             uv(0, 0); st(0, 0); xyz(0, 0, 1);
             uv(256 * 16, 256 * 16); st(1, 1); xyz(640, 448, 1);
         }
+        gs_sync();
         double t1 = now();
         fprintf(stderr, "bench: full-screen sprites, %s %5.2f ns/pixel\n", cfg[c].name, (t1 - t0) * 1e9 / (N * 640.0 * 448.0));
     }
@@ -914,6 +927,7 @@ static void bench(void) {
         }
         tris++;
     }
+    gs_sync();
     double t1 = now();
     fprintf(stderr, "bench: %d small textured Z triangles: %.2f us each\n", tris, (t1 - t0) * 1e6 / tris);
     /* per-triangle overhead: the same triangles shrunk to about 2 pixels */
@@ -927,6 +941,7 @@ static void bench(void) {
             xyz(cx + (k == 1 ? 2 : 0), cy + (k == 2 ? 2 : 0), (uint32_t)(i + 1));
         }
     }
+    gs_sync();
     t1 = now();
     fprintf(stderr, "bench: 20000 tiny (2-pixel) textured Z triangles: %.2f us each\n", (t1 - t0) * 1e6 / 20000);
 
@@ -939,10 +954,12 @@ static void bench(void) {
         double a = now();
         upload(TEXBP, 4, PSMT8, 0, 0, 256, 256, idx, sizeof idx);
         W(TEX0_1, tex0(TEXBP, 4, PSMT8, 8, 8, 1, 0, CLUTBP, PSMCT32, 0, 1));
+        gs_sync();
         double b = now();
         prim(P_SPRITE, TME | FST);
         rgba(128, 128, 128, 0x80);
         uv(0, 0); xyz(0, 0, 0); uv(256 * 16, 256 * 16); xyz(64, 64, 0);
+        gs_sync();
         double c = now();
         tu += b - a; td += c - b;
     }
@@ -1202,6 +1219,10 @@ static void t_texture_cache_random(void) {
 int main(int argc, char** argv) {
     if (argc > 1) outdir = argv[1];
     gs_swz_init();
+#ifdef TEST_ASYNC
+    gs_thread_start(3, NULL);
+    CHECK(gs_async() && gs_draw_workers() == 3, "GS thread and 3 pixel workers running");
+#endif
 #ifdef FAKE_LINEAR
     CHECK(!gs_swz_fast, "linear fake layout must disable the fast path");
 #else
