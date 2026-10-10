@@ -2,14 +2,15 @@
 # headless on it and presses START on the title screen ("Resume Game"). Each run gets its own
 # directory (build\warp\<name>: card, exe copy, run.log, frames), so several can run in parallel.
 #   .\scripts\warp_run.ps1 -Episode 3 [-Job m3_recon] [-Seconds 150] [-Release] [-Pad "<more input>"]
-#                          [-DumpEvery 120] [-Name ep3] [-Window] [-Set "path=value",...]
+#                          [-DumpEvery 120] [-Name ep3] [-Window] [-Set "path=value,path=value"]
+#                          [-Make "--complete t1_sat_ --activate t1_recon_intro"] (more warp.py make options)
 # Debug build (default, build\sly2): START is anchored to the title screen's START check
 # (@187D80/1DD96C+30). -Release (build\rel, no anchors): START at pad frame -TitleFrame (default 2400,
 # ~40 s), which is after the title appears in both builds. -Pad tokens are appended after START,
 # e.g. "+900:cross" (relative to the START press). Frames: <dir>\frames\latest.png. See notes/warp.md.
 param([Parameter(Mandatory = $true)][int]$Episode, [string]$Job = "", [int]$Seconds = 150,
       [switch]$Release, [string]$Pad = "", [int]$DumpEvery = 120, [string]$Name = "", [switch]$Window,
-      [string[]]$Set = @(), [int]$TitleFrame = 2400)
+      [string]$Set = "", [string]$Make = "", [int]$TitleFrame = 2400)
 $root = Split-Path $PSScriptRoot -Parent
 $main = $root
 if (-not (Test-Path (Join-Path $root 'orig\SCUS_973.16'))) {   # worktree: find the main checkout
@@ -27,7 +28,8 @@ Remove-Item -Recurse -Force $card -ErrorAction SilentlyContinue
 
 $mk = @('scripts\warp.py', 'make', '--episode', "$Episode", '--card', $card)
 if ($Job) { $mk += @('--job', $Job) }
-foreach ($s in $Set) { $mk += @('--set', $s) }
+foreach ($s in ($Set -split ',' | Where-Object { $_ })) { $mk += @('--set', $s.Trim()) }
+if ($Make) { $mk += ($Make -split '\s+' | Where-Object { $_ }) }   # more warp.py make options
 Push-Location $root
 & $py @mk
 if ($LASTEXITCODE) { Pop-Location; exit 1 }
