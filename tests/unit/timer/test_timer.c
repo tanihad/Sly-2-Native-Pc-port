@@ -492,6 +492,63 @@ static void test_gate_reset_modes(void) {
     CHECK_EQ(rd(MODE(0)) & (EQUF | OVFF), EQUF);                 /* 9000 < 9371.66 */
 }
 
+/* Run timer 0 gated for `span` bus cycles after `offset`, updating it every `step` cycles; returns
+ * the flags raised during the span and the final COUNT. */
+static uint64_t gated_run(uint32_t mode, uint32_t comp, uint64_t offset, uint64_t span, uint64_t step) {
+    reset(BUS);
+    wr(COMP(0), comp);
+    wr(MODE(0), mode);
+    advance(offset);
+    wr(MODE(0), mode | EQUF | OVFF);                             /* start with clear flags */
+    for (uint64_t done = 0; done < span;) {
+        uint64_t s = span - done < step ? span - done : step;
+        advance(s);
+        done += s;
+        rd(COUNT(0));
+    }
+    return (uint64_t)(rd(MODE(0)) & (EQUF | OVFF)) << 32 | rd(COUNT(0));
+}
+
+static void test_gate_reset_long_gaps(void) {
+    /* With GATM 1-3, COUNT restarts from 0 at every edge, so each whole segment between two edges
+     * raises the events its length reaches. Lengths of one kind differ by a tick (a line is
+     * 9371.66 bus cycles), so with COMP at the longer length only some segments reach it. One
+     * update across many edges must find the same events as updates that cross one edge at a time. */
+    static const uint32_t clocks[] = { CLK_BUS, CLK_16, CLK_256, CLK_HBLNK };
+    static const uint64_t offsets[] = { 0, 12345, 777777 };
+    int mismatches = 0;
+    for (int v = 0; v < 2; v++)
+        for (int ci = 0; ci < 4; ci++) {
+            uint32_t clk = clocks[ci];
+            if (!v && clk == CLK_HBLNK) continue;                /* HBLNK gate on HBLNK clock: ignored */
+            double per_tick = clk == CLK_HBLNK ? LINE_BUS : clk == CLK_256 ? 256 : clk == CLK_16 ? 16 : 1;
+            double period = v ? FIELD_BUS : LINE_BUS, low = v ? FIELD_BUS - 22 * LINE_BUS : 0.83 * LINE_BUS;
+            uint64_t fine = v ? 100000 : 1000;                   /* shorter than any segment: one edge per step */
+            for (uint32_t gatm = 1; gatm <= 3; gatm++) {
+                double longest = (gatm == 3 ? low : period) / per_tick;   /* longest kind of segment, in ticks */
+                uint32_t comps[3] = { (uint32_t)longest, (uint32_t)longest + 1, 0x8000 };
+                for (int k = 0; k < 3; k++) {
+                    if (comps[k] > 0xFFFF) continue;
+                    for (int o = 0; o < 3; o++)
+                        for (int lng = 0; lng < 2; lng++) {
+                            /* about 120 / 800 segments: below and above any cap on segments examined */
+                            uint64_t span = (uint64_t)((v ? (lng ? 300 : 45) : (lng ? 400 : 60)) * period);
+                            uint32_t mode = CUE | CMPE | OVFE | clk | GATE | (v ? GATS_V : 0) | GATM(gatm);
+                            uint64_t one = gated_run(mode, comps[k], offsets[o], span, span);
+                            uint64_t many = gated_run(mode, comps[k], offsets[o], span, fine);
+                            if (one != many && mismatches++ < 6)
+                                printf("  %s gate, CLKS %u, GATM %u, COMP %u, offset %llu, span %llu: one update "
+                                       "flags 0x%X count %u, frequent updates flags 0x%X count %u\n",
+                                       v ? "V" : "H", clk, gatm, comps[k], (unsigned long long)offsets[o],
+                                       (unsigned long long)span, (unsigned)(one >> 32), (unsigned)one,
+                                       (unsigned)(many >> 32), (unsigned)many);
+                        }
+                }
+            }
+        }
+    CHECK_EQ(mismatches, 0);
+}
+
 /* ---- register access ------------------------------------------------------------------------------ */
 
 static void test_access_widths(void) {
@@ -568,6 +625,30 @@ static void test_interrupt_causes(void) {
     CHECK_EQ(irqs[INTC_GS] + irqs[INTC_VBLANK_S] + irqs[INTC_SBUS], 0);
 }
 
+static uint64_t ticking_clock(void) { return fake_now += 100; }  /* time passes between any two reads */
+
+static void test_narrow_count_write_is_one_instant(void) {
+    /* A narrow COUNT write merges the written bytes into COUNT at the moment of the write. Writing a
+     * byte that isn't part of the 16-bit counter must leave it running undisturbed, even though the
+     * host clock moves on between any two queries. */
+    fake_now = 1000;
+    timer_set_host_clock(ticking_clock, BUS);                    /* one host tick = one bus cycle */
+    wr(MODE(0), CUE | CLK_BUS);
+    uint64_t start = fake_now;                                   /* the instant counting started */
+    uint8_t z = 0;
+    timer_access(COUNT(0) + 3, &z, 1, 1);                        /* bits 24-31: no effect */
+    uint16_t h = 0;
+    timer_access(COUNT(0) + 2, &h, 2, 1);                        /* bits 16-31: no effect */
+    uint32_t c = rd(COUNT(0));
+    CHECK_EQ(c, fake_now - start);
+    z = 0x12;
+    timer_access(COUNT(0) + 1, &z, 1, 1);                        /* high byte: low byte keeps counting */
+    uint64_t at = fake_now;
+    c = rd(COUNT(0));
+    CHECK_EQ(c, 0x1200 + ((at - start) & 0xFF) + (fake_now - at));
+    timer_set_host_clock(fake_clock, BUS);
+}
+
 static void test_time_going_backwards(void) {
     reset(BUS);
     wr(MODE(0), CUE | CLK_BUS);
@@ -597,9 +678,11 @@ int main(void) {
         { "gate_vblank_count_while_low", test_gate_vblank_count_while_low },
         { "gate_hblank_count_while_low", test_gate_hblank_count_while_low },
         { "gate_reset_modes", test_gate_reset_modes },
+        { "gate_reset_long_gaps", test_gate_reset_long_gaps },
         { "access_widths", test_access_widths },
         { "hold_and_unmapped", test_hold_and_unmapped },
         { "interrupt_causes", test_interrupt_causes },
+        { "narrow_count_write_is_one_instant", test_narrow_count_write_is_one_instant },
         { "time_going_backwards", test_time_going_backwards },
     };
     for (size_t i = 0; i < sizeof tests / sizeof tests[0]; i++) {

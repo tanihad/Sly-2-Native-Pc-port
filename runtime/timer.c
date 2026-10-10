@@ -30,10 +30,10 @@
  *    VBLANK is high for the first 22 lines of each field. These signals are not phase-locked to
  *    the runtime's VBlank interrupt. GATM 0 counts only while the gate signal is low. GATM 1/2/3
  *    reset COUNT to 0 on the rising, falling or both edges and count the rest of the time. When
- *    many edges pass between two updates, events are evaluated for the partial first and last
- *    segments plus up to two whole segments in between (whole segments of one kind are the same
- *    length to within a tick, so they would produce the same events). An HBLNK gate on an HBLNK
- *    clock is ignored, as on hardware.
+ *    many edges pass between two updates, the whole segments in between are examined until every
+ *    armed event has been seen (at most 256 of them, enough to find the longest segment of each
+ *    kind; see count_with_resets), so the events don't depend on how often the timer is updated.
+ *    An HBLNK gate on an HBLNK clock is ignored, as on hardware.
  *  - Tn_HOLD (T0/T1) is plain storage. On hardware an SBUS interrupt latches COUNT into it; that
  *    interrupt isn't visible to this file.
  *
@@ -179,15 +179,26 @@ static uint32_t count_ticks(ee_timer* t, uint64_t d) {
     return ev;
 }
 
-/* GATM 1-3: COUNT is reset to 0 at every gate edge in (then, now]. */
-static uint32_t count_with_resets(ee_timer* t, const gate_sig* g, uint64_t then, uint64_t now) {
+/* GATM 1-3: COUNT is reset to 0 at every gate edge in (then, now]. A whole segment between two
+ * edges counts up from 0, so its events depend only on its length, and a longer segment raises
+ * every event a shorter one does. Segments of one kind differ in length by a tick (a line is
+ * 9371.66 bus cycles) and the longer ones can be rare, so the whole segments are examined one by
+ * one until every armed event (enabled, flag clear) has been seen, up to SCAN_SEGMENTS of them.
+ * That is more than twice the longest run of short segments of one kind for any gate and clock
+ * (106 fields: the VBLANK high part on bus/16), so the window always contains a longest segment of
+ * each kind and a long gap raises the same events as frequent updates. */
+#define SCAN_SEGMENTS 256
+static uint32_t count_with_resets(ee_timer* t, const gate_sig* g, uint64_t then, uint64_t now, uint32_t armed) {
     uint32_t m = t->mode, gatm = (m & MODE_GATM) >> 4;
     uint64_t e0 = gate_edges(gatm, g, then), e1 = gate_edges(gatm, g, now);
     if (e0 == e1) return count_ticks(t, clock_ticks(m, now) - clock_ticks(m, then));
-    uint32_t ev = count_ticks(t, clock_ticks(m, gate_edge_time(gatm, g, e0 + 1)) - clock_ticks(m, then));
-    for (uint64_t k = e0 + 1; k < e1 && k < e0 + 3; k++) {                  /* representative whole segments */
+    uint64_t at = clock_ticks(m, gate_edge_time(gatm, g, e0 + 1));
+    uint32_t ev = count_ticks(t, at - clock_ticks(m, then));
+    for (uint64_t k = e0 + 1; k < e1 && k <= e0 + SCAN_SEGMENTS && (armed & ~ev); k++) {
+        uint64_t next = clock_ticks(m, gate_edge_time(gatm, g, k + 1));
         t->count = 0;
-        ev |= count_ticks(t, clock_ticks(m, gate_edge_time(gatm, g, k + 1)) - clock_ticks(m, gate_edge_time(gatm, g, k)));
+        ev |= count_ticks(t, next - at);
+        at = next;
     }
     t->count = 0;
     return ev | count_ticks(t, clock_ticks(m, now) - clock_ticks(m, gate_edge_time(gatm, g, e1)));
@@ -202,6 +213,7 @@ static void timer_update(int n, uint64_t now) {
     uint32_t m = t->mode;
     if (!(m & MODE_CUE)) return;
 
+    uint32_t armed = (((m >> 8) & 3u) << 10) & ~m;                          /* CMPE -> EQUF, OVFE -> OVFF, still clear */
     const gate_sig* g = timer_gate(m);
     uint32_t ev;
     if (!g)
@@ -209,10 +221,9 @@ static void timer_update(int n, uint64_t now) {
     else if (!(m & MODE_GATM))                                              /* count while the gate is low */
         ev = count_ticks(t, clock_ticks(m, sig_low_time(g, now)) - clock_ticks(m, sig_low_time(g, then)));
     else
-        ev = count_with_resets(t, g, then, now);
+        ev = count_with_resets(t, g, then, now, armed);
 
-    ev &= ((m >> 8) & 3u) << 10;                                            /* CMPE -> EQUF, OVFE -> OVFF */
-    uint32_t rising = ev & ~m;
+    uint32_t rising = ev & armed;
     if (rising) {
         t->mode = m | rising;
         intc_raise(INTC_TIM0 + n);
@@ -221,11 +232,12 @@ static void timer_update(int n, uint64_t now) {
 
 /* ---- registers ----------------------------------------------------------------------------------- */
 
+/* The timer is already up to date (timer_access). */
 static uint32_t reg_read(int n, unsigned reg) {
     ee_timer* t = &timers[n];
     switch (reg) {
-    case 0:  timer_update(n, bus_now()); return t->count;
-    case 1:  timer_update(n, bus_now()); return t->mode;
+    case 0:  return t->count;
+    case 1:  return t->mode;
     case 2:  return t->comp;
     default: return t->hold;
     }
@@ -233,7 +245,6 @@ static uint32_t reg_read(int n, unsigned reg) {
 
 static void reg_write(int n, unsigned reg, uint32_t v) {
     ee_timer* t = &timers[n];
-    if (reg != 3) timer_update(n, bus_now());
     switch (reg) {
     case 0: t->count = v & 0xFFFF; break;
     case 1:
@@ -258,6 +269,9 @@ void timer_access(uint32_t phys, void* data, unsigned size, int is_write) {
         return;
     }
     unsigned span = size < 4 - byte ? size : 4 - byte;                     /* register bytes covered */
+    /* Bring the timer up to date once, so the whole access (a narrow write reads, merges and writes)
+     * happens at one instant and events before a write are judged with the old settings. */
+    if (reg <= 1 || (reg == 2 && is_write)) timer_update(n, bus_now());
     if (!is_write) {
         uint32_t v = reg_read(n, reg) >> (8 * byte);
         memset(data, 0, size);
