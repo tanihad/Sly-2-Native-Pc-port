@@ -21,7 +21,7 @@ typedef struct {
     gs_span_start st;
 } seg;
 
-static struct {
+typedef struct {                         /* one batch of spans and its per-pixel work arrays */
     const gs_prim* p;
     int stq;
     int nseg, npix;
@@ -31,7 +31,9 @@ static struct {
     uint32_t fa[GS_MAX_SPAN];            /* frame buffer byte offsets from fbase */
     uint8_t wm[GS_MAX_SPAN];             /* write mode: 0 none, 1 RGBA, 2 RGB only */
     uint8_t ftmp[GS_MAX_SPAN * 4], ztmp[GS_MAX_SPAN * 4];   /* slow path: pixels via gs_mem */
-} B;
+} batch;
+
+static batch B0;                         /* the (single) drawing thread's batch */
 
 GS_AI int clampi(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }
 GS_AI uint32_t clamp255(int v) { return (uint32_t)(v < 0 ? 0 : v > 255 ? 255 : v); }
@@ -161,14 +163,14 @@ static uint32_t tex_general(const gs_prim* p, int U, int V, float q) {
 
 /* texel stage, specialised on coordinates (UV/STQ) and filter (1 point, 2 bilinear, 3 general,
  * 4 point without wrapping, 5 bilinear without wrapping) */
-GS_AI void sample_batch(const gs_prim* p, const int STQ, const int FILT) {
+GS_AI void sample_batch(batch* b, const gs_prim* p, const int STQ, const int FILT) {
     const lvl_view L = view_of(&p->lvl[p->cur_level]);
     const int cl = p->cur_level;
     const float ds = p->ds, dt = p->dt, dq = p->dq, tw16 = p->tw16, th16 = p->th16, lq = p->lod_q;
     const int32_t du = p->du, dv = p->dv;
-    for (int k = 0; k < B.nseg; k++) {
-        const seg* sg = &B.segs[k];
-        uint32_t* out = B.tex + sg->off;
+    for (int k = 0; k < b->nseg; k++) {
+        const seg* sg = &b->segs[k];
+        uint32_t* out = b->tex + sg->off;
         const int n = sg->n;
         if (STQ) {
             float s = sg->st.s, t = sg->st.t, q = sg->st.q;
@@ -191,18 +193,18 @@ GS_AI void sample_batch(const gs_prim* p, const int STQ, const int FILT) {
     }
 }
 
-static void sample_uv_point(const gs_prim* p) { sample_batch(p, 0, 1); }
-static void sample_uv_bilin(const gs_prim* p) { sample_batch(p, 0, 2); }
-static void sample_uv_gen(const gs_prim* p) { sample_batch(p, 0, 3); }
-static void sample_uv_point_nw(const gs_prim* p) { sample_batch(p, 0, 4); }
-static void sample_uv_bilin_nw(const gs_prim* p) { sample_batch(p, 0, 5); }
-static void sample_stq_point(const gs_prim* p) { sample_batch(p, 1, 1); }
-static void sample_stq_bilin(const gs_prim* p) { sample_batch(p, 1, 2); }
-static void sample_stq_gen(const gs_prim* p) { sample_batch(p, 1, 3); }
-static void sample_stq_point_nw(const gs_prim* p) { sample_batch(p, 1, 4); }
-static void sample_stq_bilin_nw(const gs_prim* p) { sample_batch(p, 1, 5); }
+static void sample_uv_point(batch* b, const gs_prim* p) { sample_batch(b, p, 0, 1); }
+static void sample_uv_bilin(batch* b, const gs_prim* p) { sample_batch(b, p, 0, 2); }
+static void sample_uv_gen(batch* b, const gs_prim* p) { sample_batch(b, p, 0, 3); }
+static void sample_uv_point_nw(batch* b, const gs_prim* p) { sample_batch(b, p, 0, 4); }
+static void sample_uv_bilin_nw(batch* b, const gs_prim* p) { sample_batch(b, p, 0, 5); }
+static void sample_stq_point(batch* b, const gs_prim* p) { sample_batch(b, p, 1, 1); }
+static void sample_stq_bilin(batch* b, const gs_prim* p) { sample_batch(b, p, 1, 2); }
+static void sample_stq_gen(batch* b, const gs_prim* p) { sample_batch(b, p, 1, 3); }
+static void sample_stq_point_nw(batch* b, const gs_prim* p) { sample_batch(b, p, 1, 4); }
+static void sample_stq_bilin_nw(batch* b, const gs_prim* p) { sample_batch(b, p, 1, 5); }
 
-typedef void (*sample_fn)(const gs_prim*);
+typedef void (*sample_fn)(batch*, const gs_prim*);
 static const sample_fn sample_table[2][2][4] = {           /* [stq][nowrap][texm] */
     { { NULL, sample_uv_point, sample_uv_bilin, sample_uv_gen },
       { NULL, sample_uv_point_nw, sample_uv_bilin_nw, sample_uv_gen } },
@@ -212,18 +214,18 @@ static const sample_fn sample_table[2][2][4] = {           /* [stq][nowrap][texm
 
 /* ---- colour stages -------------------------------------------------------------------------------- */
 
-static void colour_batch(const gs_prim* p) {
+static void colour_batch(batch* b, const gs_prim* p) {
     if (!p->iip) {
-        const gs_span_start* st = &B.segs[0].st;
+        const gs_span_start* st = &b->segs[0].st;
         uint32_t c = clamp255(st->r >> 16) | clamp255(st->g >> 16) << 8 | clamp255(st->b >> 16) << 16 | clamp255(st->a >> 16) << 24;
-        for (int i = 0; i < B.npix; i++) B.col[i] = c;
+        for (int i = 0; i < b->npix; i++) b->col[i] = c;
         return;
     }
     /* r, g, b, a in 4 lanes: >> 16, then saturating packs clamp to 0..255 exactly like clamp255 */
     const __m128i step = _mm_set_epi32(p->da, p->db, p->dg, p->dr);
-    for (int k = 0; k < B.nseg; k++) {
-        const seg* sg = &B.segs[k];
-        uint32_t* col = B.col + sg->off;
+    for (int k = 0; k < b->nseg; k++) {
+        const seg* sg = &b->segs[k];
+        uint32_t* col = b->col + sg->off;
         __m128i v = _mm_set_epi32(sg->st.a, sg->st.b, sg->st.g, sg->st.r);
         for (int i = 0; i < sg->n; i++, v = _mm_add_epi32(v, step)) {
             __m128i c = _mm_srai_epi32(v, 16);
@@ -275,12 +277,12 @@ static void tfx_batch(int tfx, int tcc, int n, uint32_t* col, const uint32_t* te
     }
 }
 
-static void fog_batch(const gs_prim* p) {
+static void fog_batch(batch* b, const gs_prim* p) {
     const int32_t df = p->df;
     const int fr = p->fogr, fg = p->fogg, fb = p->fogb;
-    for (int k = 0; k < B.nseg; k++) {
-        const seg* sg = &B.segs[k];
-        uint32_t* col = B.col + sg->off;
+    for (int k = 0; k < b->nseg; k++) {
+        const seg* sg = &b->segs[k];
+        uint32_t* col = b->col + sg->off;
         int32_t f = sg->st.f;
         for (int i = 0; i < sg->n; i++, f += df) {
             int fv = clampi(f >> 16, 0, 255), c = (int)col[i];
@@ -295,7 +297,7 @@ static void fog_batch(const gs_prim* p) {
 /* ---- tests: alpha test, destination alpha test, depth test (+ Z write) -> write modes ---------- */
 
 /* Returns the number of pixels left to write. */
-GS_AI int tests_batch(const gs_prim* p, uint8_t* fbase, uint8_t* zbase, const int ZBITS) {
+GS_AI int tests_batch(batch* b, const gs_prim* p, uint8_t* fbase, uint8_t* zbase, const int ZBITS) {
     const int ate = p->ate, afail = p->afail, date = p->date, datm = p->datm, fbits = p->ffmt->bits;
     const int date_sh = fbits == 16 ? 15 : 31;
     const uint8_t* apass = p->apass;
@@ -306,12 +308,12 @@ GS_AI int tests_batch(const gs_prim* p, uint8_t* fbase, uint8_t* zbase, const in
     const gs_fmt* zf = p->zfmt ? p->zfmt : p->ffmt;
     const int zes = zf->elem_shift;
     int left = 0;
-    for (int k = 0; k < B.nseg; k++) {
-        const seg* sg = &B.segs[k];
+    for (int k = 0; k < b->nseg; k++) {
+        const seg* sg = &b->segs[k];
         const int y = sg->y, x0 = sg->x0, n = sg->n, off = sg->off;
-        const uint32_t* col = B.col + off;
-        const uint32_t* fa = B.fa + off;
-        uint8_t* wm = B.wm + off;
+        const uint32_t* col = b->col + off;
+        const uint32_t* fa = b->fa + off;
+        uint8_t* wm = b->wm + off;
         const uint16_t* zrow = zf->tab + (((uint32_t)y & ((1u << zf->ph_shift) - 1)) << 6);
         const uint32_t zprow = p->zpage + ((uint32_t)y >> zf->ph_shift) * p->zbw;
         int64_t z = sg->st.z;
@@ -350,20 +352,20 @@ GS_AI int tests_batch(const gs_prim* p, uint8_t* fbase, uint8_t* zbase, const in
     return left;
 }
 
-static int tests_z0(const gs_prim* p, uint8_t* f, uint8_t* z) { return tests_batch(p, f, z, 0); }
-static int tests_z16(const gs_prim* p, uint8_t* f, uint8_t* z) { return tests_batch(p, f, z, 16); }
-static int tests_z24(const gs_prim* p, uint8_t* f, uint8_t* z) { return tests_batch(p, f, z, 24); }
-static int tests_z32(const gs_prim* p, uint8_t* f, uint8_t* z) { return tests_batch(p, f, z, 32); }
+static int tests_z0(batch* b, const gs_prim* p, uint8_t* f, uint8_t* z) { return tests_batch(b, p, f, z, 0); }
+static int tests_z16(batch* b, const gs_prim* p, uint8_t* f, uint8_t* z) { return tests_batch(b, p, f, z, 16); }
+static int tests_z24(batch* b, const gs_prim* p, uint8_t* f, uint8_t* z) { return tests_batch(b, p, f, z, 24); }
+static int tests_z32(batch* b, const gs_prim* p, uint8_t* f, uint8_t* z) { return tests_batch(b, p, f, z, 32); }
 
 /* ---- blend + frame buffer write ------------------------------------------------------------------ */
 
 GS_AI int sel3(int s, int src, int dst) { return s == 0 ? src : s == 1 ? dst : 0; }
 
 /* One segment. BL: 0 none, 1 (Cs - Cd) * As + Cd, 2 generic. FB: 32, 24 or 16. WM: write modes. */
-GS_AI void write_seg(const gs_prim* p, const seg* sg, uint8_t* fbase, const int FB, const int BL, const int WM) {
-    const uint32_t* col = B.col + sg->off;
-    const uint32_t* fa = B.fa + sg->off;
-    const uint8_t* wm = B.wm + sg->off;
+GS_AI void write_seg(batch* b, const gs_prim* p, const seg* sg, uint8_t* fbase, const int FB, const int BL, const int WM) {
+    const uint32_t* col = b->col + sg->off;
+    const uint32_t* fa = b->fa + sg->off;
+    const uint8_t* wm = b->wm + sg->off;
     const int n = sg->n;
     const uint32_t fmask = p->fmask, amask = p->amask, fba = (uint32_t)p->fba;
     const int pabe = p->pabe, colclamp = p->colclamp, dthe = FB == 16 && p->dthe;
@@ -430,22 +432,22 @@ GS_AI void write_seg(const gs_prim* p, const seg* sg, uint8_t* fbase, const int 
     }
 }
 
-GS_AI void write_batch(const gs_prim* p, uint8_t* fbase, const int FB, const int BL, const int WM) {
-    for (int k = 0; k < B.nseg; k++) write_seg(p, &B.segs[k], fbase, FB, BL, WM);
+GS_AI void write_batch(batch* b, const gs_prim* p, uint8_t* fbase, const int FB, const int BL, const int WM) {
+    for (int k = 0; k < b->nseg; k++) write_seg(b, p, &b->segs[k], fbase, FB, BL, WM);
 }
 
-#define WRITE_FN(F, BL, W) static void write_##F##_##BL##_##W(const gs_prim* p, uint8_t* fb) { write_batch(p, fb, F, BL, W); }
+#define WRITE_FN(F, BL, W) static void write_##F##_##BL##_##W(batch* b, const gs_prim* p, uint8_t* fb) { write_batch(b, p, fb, F, BL, W); }
 #define WRITE_FNS(F) WRITE_FN(F, 0, 0) WRITE_FN(F, 0, 1) WRITE_FN(F, 1, 0) WRITE_FN(F, 1, 1) WRITE_FN(F, 2, 0) WRITE_FN(F, 2, 1)
 WRITE_FNS(32) WRITE_FNS(24) WRITE_FNS(16)
-typedef void (*write_fn)(const gs_prim*, uint8_t*);
+typedef void (*write_fn)(batch*, const gs_prim*, uint8_t*);
 #define WRITE_ROW(F) { { write_##F##_0_0, write_##F##_0_1 }, { write_##F##_1_0, write_##F##_1_1 }, { write_##F##_2_0, write_##F##_2_1 } }
 static const write_fn write_table[3][3][2] = { WRITE_ROW(32), WRITE_ROW(24), WRITE_ROW(16) };
 
 /* ---- batch driver --------------------------------------------------------------------------------- */
 
-static void flush(void) {
-    const gs_prim* p = B.p;
-    if (!B.npix) return;
+static void flush(batch* b) {
+    const gs_prim* p = b->p;
+    if (!b->npix) return;
     const gs_fmt* ff = p->ffmt;
     const gs_fmt* zf = p->zfmt;
     const int fbits = ff->bits, fes = ff->elem_shift, fast = gs_swz_fast, zuse = p->zuse;
@@ -453,18 +455,18 @@ static void flush(void) {
     uint8_t* zbase = gs_vram;
 
     if (fast) {
-        for (int k = 0; k < B.nseg; k++)
-            row_addrs(ff, p->fpage, p->fbw, B.segs[k].x0, B.segs[k].y, B.segs[k].n, B.fa + B.segs[k].off);
+        for (int k = 0; k < b->nseg; k++)
+            row_addrs(ff, p->fpage, p->fbw, b->segs[k].x0, b->segs[k].y, b->segs[k].n, b->fa + b->segs[k].off);
     } else {                             /* gather through gs_mem; scattered back below */
-        fbase = B.ftmp;
-        zbase = B.ztmp;
-        for (int k = 0; k < B.nseg; k++) {
-            const seg* sg = &B.segs[k];
+        fbase = b->ftmp;
+        zbase = b->ztmp;
+        for (int k = 0; k < b->nseg; k++) {
+            const seg* sg = &b->segs[k];
             for (int i = 0; i < sg->n; i++) {
                 uint32_t j = (uint32_t)(sg->off + i);
-                B.fa[j] = j << fes;
+                b->fa[j] = j << fes;
                 uint32_t v = gs_mem_read(p->fpsm, p->fpage * 32, p->fbw, sg->x0 + i, sg->y);
-                if (fbits == 16) wr16(fbase + B.fa[j], v); else wr32(fbase + B.fa[j], v);
+                if (fbits == 16) wr16(fbase + b->fa[j], v); else wr32(fbase + b->fa[j], v);
                 if (zuse) {
                     v = gs_mem_read(p->zpsm, p->zpage * 32, p->zbw, sg->x0 + i, sg->y);
                     if (zf->bits == 16) wr16(zbase + (j << zf->elem_shift), v); else wr32(zbase + (j << zf->elem_shift), v);
@@ -473,34 +475,34 @@ static void flush(void) {
         }
     }
 
-    colour_batch(p);
+    colour_batch(b, p);
     if (p->tme && p->texm) {
-        sample_table[B.stq][p->nowrap][p->texm](p);
-        tfx_batch(p->tfx, p->tcc, B.npix, B.col, B.tex);
+        sample_table[b->stq][p->nowrap][p->texm](b, p);
+        tfx_batch(p->tfx, p->tcc, b->npix, b->col, b->tex);
     }
-    if (p->fge) fog_batch(p);
+    if (p->fge) fog_batch(b, p);
 
     int wmode = 0;
     if (p->ate || p->date || zuse) {
         int left;
         switch (zuse ? zf->bits : 0) {
-        case 16: left = tests_z16(p, fbase, zbase); break;
-        case 24: left = tests_z24(p, fbase, zbase); break;
-        case 32: left = tests_z32(p, fbase, zbase); break;
-        default: left = tests_z0(p, fbase, zbase); break;
+        case 16: left = tests_z16(b, p, fbase, zbase); break;
+        case 24: left = tests_z24(b, p, fbase, zbase); break;
+        case 32: left = tests_z32(b, p, fbase, zbase); break;
+        default: left = tests_z0(b, p, fbase, zbase); break;
         }
         wmode = 1;
         if (!left) goto done;
     }
-    write_table[fbits == 32 ? 0 : fbits == 24 ? 1 : 2][!p->abe ? 0 : p->std_blend ? 1 : 2][wmode](p, fbase);
+    write_table[fbits == 32 ? 0 : fbits == 24 ? 1 : 2][!p->abe ? 0 : p->std_blend ? 1 : 2][wmode](b, p, fbase);
 
 done:
     if (!fast) {
-        for (int k = 0; k < B.nseg; k++) {
-            const seg* sg = &B.segs[k];
+        for (int k = 0; k < b->nseg; k++) {
+            const seg* sg = &b->segs[k];
             for (int i = 0; i < sg->n; i++) {
                 uint32_t j = (uint32_t)(sg->off + i);
-                uint8_t* fp = fbase + B.fa[j];
+                uint8_t* fp = fbase + b->fa[j];
                 gs_mem_write(p->fpsm, p->fpage * 32, p->fbw, sg->x0 + i, sg->y,
                              fbits == 16 ? rd16(fp) : rd32(fp) & (fbits == 24 ? 0xFFFFFFu : 0xFFFFFFFFu));
                 if (zuse && !p->zmsk) {
@@ -511,8 +513,8 @@ done:
             }
         }
     }
-    B.nseg = 0;
-    B.npix = 0;
+    b->nseg = 0;
+    b->npix = 0;
 }
 
 /* solid fill: flat colour, no texture/fog/tests/blend/dither, direct addressing */
@@ -546,21 +548,23 @@ static void fill_span(const gs_prim* p, int y, int x0, int n, const gs_span_star
 }
 
 void gs_batch_begin(const gs_prim* p, int stq) {
-    B.p = p;
-    B.stq = stq;
-    B.nseg = B.npix = 0;
+    batch* b = &B0;
+    b->p = p;
+    b->stq = stq;
+    b->nseg = b->npix = 0;
 }
 
 void gs_batch_span(int y, int x0, int n, const gs_span_start* st) {
-    const gs_prim* p = B.p;
+    batch* b = &B0;
+    const gs_prim* p = b->p;
     if (p->solid && gs_swz_fast) { fill_span(p, y, x0, n, st); return; }
     gs_span_start s = *st;
     while (n > 0) {
-        if (B.nseg == MAX_SEGS || B.npix == GS_MAX_SPAN) flush();
-        int take = GS_MAX_SPAN - B.npix < n ? GS_MAX_SPAN - B.npix : n;
-        seg* sg = &B.segs[B.nseg++];
-        sg->y = y; sg->x0 = x0; sg->n = take; sg->off = B.npix; sg->st = s;
-        B.npix += take;
+        if (b->nseg == MAX_SEGS || b->npix == GS_MAX_SPAN) flush(b);
+        int take = GS_MAX_SPAN - b->npix < n ? GS_MAX_SPAN - b->npix : n;
+        seg* sg = &b->segs[b->nseg++];
+        sg->y = y; sg->x0 = x0; sg->n = take; sg->off = b->npix; sg->st = s;
+        b->npix += take;
         n -= take;
         if (n) {                         /* split: advance the interpolants */
             x0 += take;
@@ -571,7 +575,7 @@ void gs_batch_span(int y, int x0, int n, const gs_span_start* st) {
     }
 }
 
-void gs_batch_end(void) { flush(); }
+void gs_batch_end(void) { flush(&B0); }
 
 void gs_prim_finalize(gs_prim* p) {
     /* alpha test table: ATST 0 NEVER 1 ALWAYS 2 LESS 3 LEQUAL 4 EQUAL 5 GEQUAL 6 GREATER 7 NOTEQUAL */

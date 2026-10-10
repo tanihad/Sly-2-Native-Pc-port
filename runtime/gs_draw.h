@@ -4,8 +4,10 @@
  * Frame and Z buffers are accessed directly in gs_vram using the GS manual's documented page/block/
  * column layout (gs_draw_swz.c). At start-up that layout is checked against gs_mem_write(); if the
  * two disagree, every frame/Z access goes through gs_mem_read/gs_mem_write instead (slow but
- * correct). Textures are always read through gs_mem (gs_tex_fetch / gs_mem_read) into a cache of
- * decoded texels, invalidated per 8 KB page when VRAM is written. */
+ * correct). Textures are decoded into a cache of linear texels, invalidated per 8 KB page when VRAM
+ * is written; texels are read through gs_mem (gs_tex_fetch / gs_mem_read), or straight from
+ * gs_vram for formats whose layout was verified against gs_mem at start-up (gs_draw_tex.c). The
+ * CLUT always comes from gs_mem. gs_mem therefore must not cache anything derived from gs_vram. */
 #pragma once
 #include "gs_internal.h"
 
@@ -102,7 +104,7 @@ struct gs_prim {
     /* tests */
     int ate, atst, aref, afail, date, datm;
     uint8_t apass[256];                  /* alpha test result per source alpha */
-    int apass_atst, apass_aref;          /* what apass[] was built for (-1: nothing yet) */
+    int apass_atst, apass_aref;          /* what apass[] was built for (zeroed = NEVER, 0) */
     /* blending */
     int abe, asel, bsel, csel, dsel, fix, pabe, fba, colclamp, dthe, std_blend;
     int8_t dimx[4][4];
@@ -119,8 +121,6 @@ struct gs_prim {
     /* misc */
     int iip, scanmsk;
     int scx0, scx1, scy0, scy1;          /* scissor, inclusive */
-    /* flat values */
-    int fr, fg, fb, fa, ff;
     /* per-pixel x steps */
     int32_t dr, dg, db, da, df;          /* 16.16 */
     int64_t dz;                          /* 32.16 */
@@ -136,12 +136,15 @@ struct gs_span_start {                   /* attribute values at the first pixel 
     int32_t u, v;                        /* 1/16 texel << GS_UVSH */
 };
 
-/* Derive the per-primitive tables (alpha test, masks) and pick the specialised span function. */
+/* Derive the per-primitive tables (alpha test, write masks, solid-fill shortcut). */
 void gs_prim_finalize(gs_prim* p);
 
 /* Spans of one primitive are collected and run through the pipeline stages together (pixels of
  * one primitive never overlap, so the order of stages across its spans does not matter).
- * stq: interpolate S/T/Q (else U/V). The state in *p must not change until gs_batch_end. */
+ * stq: interpolate S/T/Q (else U/V). The state in *p must not change until gs_batch_end.
+ * Multithreading: the stage functions in gs_draw_pixel.c work on an explicit batch, so worker
+ * threads can each run their own batch (e.g. split by row bands); textures are decoded before
+ * the spans are generated, so workers only read the texture cache. */
 void gs_batch_begin(const gs_prim* p, int stq);
 void gs_batch_span(int y, int x0, int n, const gs_span_start* s);   /* already scissored */
 void gs_batch_end(void);
