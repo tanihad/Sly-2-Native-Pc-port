@@ -86,7 +86,8 @@ static const struct { const char* name; int axis, value; } script_sticks[] = {
  *
  * PS2_INPUT_FILE=<path>: live input. Lines appended to that file while the game runs are read
  * every few frames and added to the script; relative tokens in a new line count from the moment
- * it is read ("+0:lup:60,+60:cross"), so a running game can be steered step by step. */
+ * it is read ("+0:lup:60,+60:cross"), so a running game can be steered step by step (anchors work
+ * there too: the runtime starts counting a function's calls when the script first asks for them). */
 enum { SCRIPT_ABS, SCRIPT_REL, SCRIPT_ANCHOR, SCRIPT_QUIET };
 #define SCRIPT_UNSET 0xFFFFFFFFu
 #define SCRIPT_NONE  (-2)

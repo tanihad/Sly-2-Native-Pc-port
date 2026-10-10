@@ -58,29 +58,31 @@ static int calls_window;
 static uint32_t watch[16], watch_seen[256][2], watch_a0;
 static int watch_n, watch_all, watch_seen_n, watch_lines, watch_a0_on;
 
-/* PS2_INPUT "@<hexaddr>[/<hexra>]" tokens: window.c's input script waits for calls of these
- * functions (made from the call site returning to <hexra>, if given). */
-static uint32_t anchor_addr[32], anchor_ra[32];
-static volatile uint32_t anchor_calls[32];
+/* PS2_INPUT "@<hexaddr>[/<hexra>]" tokens (from PS2_INPUT or live PS2_INPUT_FILE lines): window.c's
+ * input script waits for calls of these functions (made from the call site returning to <hexra>,
+ * if not 0). An anchor is registered by its first query and counted from then on; queries and
+ * counting both run on the emulation thread. */
+#define ANCHORS_MAX 64
+static uint32_t anchor_addr[ANCHORS_MAX], anchor_ra[ANCHORS_MAX], anchor_calls[ANCHORS_MAX];
 static int anchor_n;
 
 uint32_t ps2_func_calls(uint32_t addr, uint32_t ra) {
     for (int k = 0; k < anchor_n; k++)
         if (anchor_addr[k] == addr && anchor_ra[k] == ra) return anchor_calls[k];
-    return 0;
-}
-
-static void anchors_init(void) {
-    const char* s = getenv("PS2_INPUT");
-    for (; s && (s = strchr(s, '@')) != NULL; s++) {
-        char* p;
-        uint32_t a = (uint32_t)strtoul(s + (s[1] == '!' ? 2 : 1), &p, 16);   /* "@!": quiet anchor */
-        uint32_t ra = *p == '/' ? (uint32_t)strtoul(p + 1, NULL, 16) : 0;
-        int k = 0;
-        while (k < anchor_n && (anchor_addr[k] != a || anchor_ra[k] != ra)) k++;
-        if (k == anchor_n && anchor_n < 32) { anchor_addr[anchor_n] = a; anchor_ra[anchor_n++] = ra; }
+#ifdef PS2_NO_TRACE
+    static int warned;
+    if (!warned++) fprintf(stderr, "[ps2] PS2_INPUT: function anchors (@...) need the debug build; they never fire here\n");
+#endif
+    if (anchor_n == ANCHORS_MAX) {
+        static int full;
+        if (!full++) fprintf(stderr, "[ps2] PS2_INPUT: more than %d function anchors; the rest never fire\n", ANCHORS_MAX);
+        return 0;
     }
-    if (anchor_n) ps2_calls_on = 1;
+    anchor_addr[anchor_n] = addr;
+    anchor_ra[anchor_n] = ra;
+    anchor_calls[anchor_n++] = 0;
+    ps2_calls_on = 1;
+    return 0;
 }
 
 void ps2_calls_record(ps2_ctx* ctx, uint32_t addr) {
@@ -561,7 +563,6 @@ int main(int argc, char** argv) {
     int dump_regs = argc > 2 && strcmp(argv[2], "--dump-regs") == 0;
     ps2_log_sif = getenv("PS2_LOG_SIF") != NULL;
     watch_init();
-    anchors_init();
     headless = dump_regs || getenv("PS2_HEADLESS") != NULL;
     dump_dir = getenv("PS2_DUMP_FRAMES");
     if (getenv("PS2_DUMP_EVERY")) dump_every = atoi(getenv("PS2_DUMP_EVERY")) > 0 ? atoi(getenv("PS2_DUMP_EVERY")) : 60;
