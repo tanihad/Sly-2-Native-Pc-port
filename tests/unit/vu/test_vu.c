@@ -24,6 +24,7 @@ void gif_path1_kick(const uint8_t* vu1_data, uint32_t qw_addr) {
 void hw_log_unhandled(const char* unit, uint32_t phys, const void* data, unsigned size, int is_write) {
     (void)unit; (void)phys; (void)data; (void)size; (void)is_write;
 }
+uint32_t ps2_vblank_count(void) { return 0; }
 
 /* ---- tiny test framework ---------------------------------------------------------------------- */
 

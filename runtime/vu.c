@@ -5,9 +5,10 @@
  * synchronous: a microprogram runs to its E bit inside the call that starts it, so the VUs are
  * never busy as far as VIF, VPU-STAT or the EE can tell.
  */
-#include "vu_internal.h"
+#include "vu_record.h"
 #include "perf.h"
 
+#include <stdlib.h>
 #include <xmmintrin.h>
 
 static _Alignas(16) uint8_t vu0_data[4096], vu0_micro[4096], vu1_data[16384], vu1_micro[16384];
@@ -50,19 +51,88 @@ void vu_mem_access(uint32_t phys, void* data, unsigned size, int is_write) {
     if (is_write) memcpy(mem + off, data, size); else memcpy(data, mem + off, size);
 }
 
+/* ---- recording (PS2_VU_RECORD) ---------------------------------------------------------------------
+ * PS2_VU_RECORD=<file> records PS2_VU_RECORD_COUNT (default 2000) microprograms from VBlank
+ * PS2_VU_RECORD_FROM (default 0) on: registers and memory before each run, and its pair/cycle
+ * counts, resulting state hash and XGKICKs after it (format in vu_internal.h). scripts/vu_replay.ps1
+ * runs a recording with any version of the interpreter: a benchmark on real game microcode and an
+ * exactness check of interpreter changes. */
+static struct {
+    int      state;                      /* 0: not set up, 1: off, 2: armed, 3: recording a program */
+    FILE*    f;
+    uint32_t from, left, kicks;
+    uint64_t khash, cyc0;
+    int      have_micro[2];
+    uint8_t  micro[2][16384];            /* micro memory as last written to the file */
+} vrec;
+
+static void vrec_begin(vu_state* st, uint32_t addr) {
+    if (!vrec.state) {
+        const char* path = getenv("PS2_VU_RECORD");
+        vrec.state = 1;
+        if (!path || !*path) return;
+        if (!(vrec.f = fopen(path, "wb"))) { fprintf(stderr, "[vu] cannot write %s\n", path); return; }
+        const char* s = getenv("PS2_VU_RECORD_FROM");
+        vrec.from = s ? (uint32_t)strtoul(s, NULL, 0) : 0;
+        s = getenv("PS2_VU_RECORD_COUNT");
+        vrec.left = s ? (uint32_t)strtoul(s, NULL, 0) : 2000;
+        if (!vrec.left) vrec.left = 1;
+        vrec.state = 2;
+        fprintf(stderr, "[vu] recording %u microprograms from VBlank %u to %s\n", vrec.left, vrec.from, path);
+    }
+    if (vrec.state != 2 || ps2_vblank_count() < vrec.from) return;
+    const int u = st->idx;
+    const uint32_t msize = (st->pcmask + 1) * 8u, dsize = (st->dmask + 1) * 16u;
+    const int same = vrec.have_micro[u] && !memcmp(vrec.micro[u], st->micro, msize);
+    vu_rec_head h;
+    memset(&h, 0, sizeof h);
+    memcpy(h.magic, "VUP1", 4);
+    h.idx = (uint32_t)u; h.addr = addr; h.vblank = ps2_vblank_count();
+    h.micro_size = same ? 0 : msize; h.data_size = dsize;
+    memcpy(h.vf, st->vf, sizeof h.vf); h.acc = st->acc; memcpy(h.vi, st->vi, sizeof h.vi);
+    h.I = st->I; h.Q = st->Q; h.P = st->P; h.R = st->R;
+    h.status = st->status; h.mac = st->mac; h.clip = st->clip; h.top = st->top; h.itop = st->itop;
+    fwrite(&h, sizeof h, 1, vrec.f);
+    if (!same) {
+        fwrite(st->micro, msize, 1, vrec.f);
+        memcpy(vrec.micro[u], st->micro, msize);
+        vrec.have_micro[u] = 1;
+    }
+    fwrite(st->data, dsize, 1, vrec.f);
+    vrec.kicks = 0;
+    vrec.khash = VU_HASH_SEED;
+    vrec.cyc0 = st->cycles;
+    vrec.state = 3;
+}
+
+static void vrec_end(vu_state* st, uint32_t pairs) {
+    vu_rec_tail t = { pairs, (uint32_t)(st->cycles - vrec.cyc0), vrec.kicks, 0, vu_state_hash(st), vrec.khash };
+    fwrite(&t, sizeof t, 1, vrec.f);
+    vrec.state = 2;
+    if (!--vrec.left) {
+        fclose(vrec.f);
+        vrec.f = NULL;
+        vrec.state = 1;
+        fprintf(stderr, "[vu] recording complete\n");
+    }
+}
+
 /* ---- running microprograms ---------------------------------------------------------------------- */
 
 static void run(vu_state* st, uint32_t addr_dw) {
     int perf_prev = perf_enter(PERF_VU);
+    if (vrec.state != 1) vrec_begin(st, addr_dw);
     unsigned csr = _mm_getcsr();
     host_csr = csr;
     _mm_setcsr(VU_MXCSR);
-    vu_run(st, addr_dw);
+    uint32_t pairs = vu_run(st, addr_dw);
     _mm_setcsr(csr);
+    if (vrec.state == 3) vrec_end(st, pairs);
     perf_leave(perf_prev);
 }
 
 void vu_xgkick(uint32_t qw_addr) {
+    if (vrec.state == 3) { vrec.khash = vu_kick_hash(vrec.khash, qw_addr, vu_st[1].cyc); vrec.kicks++; }
     _mm_setcsr(host_csr);                /* the GIF/GS code runs in the host's FP mode */
     gif_path1_kick(vu1_data, qw_addr & 0x3FF);
     _mm_setcsr(VU_MXCSR);
