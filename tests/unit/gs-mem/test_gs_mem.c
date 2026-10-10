@@ -241,6 +241,58 @@ static void test_cross_format(void) {
           "Z24 keeps the top byte");
 }
 
+/* Independent reference model: bit address of a pixel, built only from the manual tables above
+ * (8-bit/4-bit columns 2 and 3 are columns 0 and 1 shifted by 128 bytes / 256 nibbles). */
+static uint64_t ref_bit_addr(int psm, uint32_t bp, uint32_t bw, uint32_t x, uint32_t y) {
+    uint64_t blk, unit;   /* unit = bit offset inside the block */
+    uint32_t pw8 = bw / 2 ? bw / 2 : 1;
+    switch (psm) {
+    case PSMCT32: case PSMCT24: case PSMT8H: case PSMT4HL: case PSMT4HH: case PSMZ32: case PSMZ24: {
+        int z = psm == PSMZ32 || psm == PSMZ24;
+        blk = bp + ((y / 32) * bw + x / 64) * 32 + (z ? man_blkz32 : man_blk32)[(y % 32) / 8][(x % 64) / 8];
+        unit = (uint64_t)(((y % 8) / 2) * 64 + man_col32[y % 2][x % 8] * 4) * 8;
+        if (psm == PSMT8H || psm == PSMT4HL) unit += 24;
+        if (psm == PSMT4HH) unit += 28;
+        break;
+    }
+    case PSMCT16: case PSMCT16S: case PSMZ16: case PSMZ16S: {
+        const int (*t)[4] = psm == PSMCT16 ? man_blk16 : psm == PSMCT16S ? man_blk16s : psm == PSMZ16 ? man_blkz16 : man_blkz16s;
+        blk = bp + ((y / 64) * bw + x / 64) * 32 + t[(y % 64) / 8][(x % 64) / 16];
+        unit = (uint64_t)(((y % 8) / 2) * 64 + man_col16[y % 2][x % 16] * 2) * 8;
+        break;
+    }
+    case PSMT8:
+        blk = bp + ((y / 64) * pw8 + x / 128) * 32 + man_blk32[(y % 64) / 16][(x % 128) / 16];
+        unit = (uint64_t)(man_t8[y % 8][x % 16] + ((y % 16) / 8) * 128) * 8;
+        break;
+    default: /* PSMT4 */
+        blk = bp + ((y / 128) * pw8 + x / 128) * 32 + man_blk16[(y % 128) / 16][(x % 128) / 32];
+        unit = (uint64_t)(man_t4[y % 8][x % 32] + ((y % 16) / 8) * 256) * 4;
+        break;
+    }
+    return (blk * 2048 + unit) % ((uint64_t)GS_VRAM_SIZE * 8);
+}
+
+/* Random spot checks of every format at random block pointers (incl. non page aligned and the
+ * 4 MB wrap), widths and coordinates against the reference model. */
+static void test_reference_addressing(void) {
+    int bad = 0;
+    fill_random();
+    for (int it = 0; it < 200000; it++) {
+        int psm = all_psm[rnd() % NPSM];
+        uint32_t bp = rnd() & 16383, bw = 1 + rnd() % 63, x = rnd() & 2047, y = rnd() & 2047, v = rnd(), m = mask_of(psm);
+        uint64_t bit = ref_bit_addr(psm, bp, bw, x, y);
+        gs_mem_write(psm, bp, bw, (int)x, (int)y, v);
+        uint32_t word;
+        memcpy(&word, gs_vram + (bit >> 5) * 4, 4);
+        uint32_t stored = (word >> (bit & 31)) & m;
+        if (stored != (v & m) || gs_mem_read(psm, bp, bw, (int)x, (int)y) != stored) {
+            if (bad++ < 8) printf("ref addressing %s bp=%u bw=%u (%u,%u): stored %X want %X\n", psm_name(psm), bp, bw, x, y, stored, v & m);
+        }
+    }
+    CHECK(bad == 0, "reference addressing model: %d mismatches", bad);
+}
+
 /* Every page table must be a permutation of its page. */
 static void test_permutations(void) {
     static uint8_t seen[16384];
@@ -381,6 +433,56 @@ static void test_host_local(void) {
     for (int i = 0; i < 16; i++) if (gs_mem_read(PSMT4, 0, 2, i, 0) != (uint32_t)((i + 1) & 15)) ok4 = 0;
     CHECK(ok4, "T4 upload nibble order");
 
+    /* 4-bit with an odd pixel count (5x3): the stream is continuous across rows, the last byte
+     * carries one pixel, and the readback pads that byte's high nibble with 0 */
+    fill_random();
+    const uint8_t odd4[8] = { 0x10, 0x32, 0x54, 0x76, 0x98, 0xBA, 0xDC, 0xFE };
+    gs_mem_xfer_start(bitbltbuf(0, 0, 0, 32 * 7, 2, PSMT4), trxpos(0, 0, 9, 4, 0), trxreg(5, 3), 0);
+    gs_mem_xfer_write(odd4, 3); gs_mem_xfer_write(odd4 + 3, 5);
+    CHECK(!gs_mem_xfer_active(), "odd 4-bit upload done");
+    int okodd = 1;
+    for (int i = 0; i < 15; i++) if (gs_mem_read(PSMT4, 32 * 7, 2, 9 + i % 5, 4 + i / 5) != (uint32_t)i) okodd = 0;
+    CHECK(okodd, "odd 4-bit upload: pixel i = i");
+    uint8_t odd_back[8];
+    gs_mem_xfer_start(bitbltbuf(32 * 7, 2, PSMT4, 0, 0, 0), trxpos(9, 4, 0, 0, 0), trxreg(5, 3), 1);
+    CHECK(gs_mem_xfer_read(odd_back, 8) == 8 && memcmp(odd_back, odd4, 7) == 0 && odd_back[7] == 0x0E, "odd 4-bit readback");
+
+    /* random rectangles (any width, also wider than the buffer and across the 2048 wrap), random
+     * chunking incl. empty writes and trailing padding, compared with per-pixel writes */
+    static uint8_t fz_stream[300 * 100 * 4 + 64], fz_back[300 * 100 * 4 + 64];
+    int fz_bad = 0;
+    for (int it = 0; it < 60; it++) {
+        int psm = all_psm[rnd() % NPSM], bpp = bits_of(psm);
+        uint32_t bp = rnd() & 16383, bw = rnd() % 12, x0 = rnd() & 2047, y0 = rnd() & 2047, w = 1 + rnd() % 300, h = 1 + rnd() % 100;
+        uint32_t npx = w * h, nbytes = (npx * (uint32_t)bpp + 7) / 8;
+        for (uint32_t i = 0; i < nbytes + 16; i++) fz_stream[i] = (uint8_t)rnd();
+        fill_random();
+        memcpy(snap, gs_vram, GS_VRAM_SIZE);
+        gs_mem_xfer_start(bitbltbuf(0, 0, 0, bp, bw, (uint32_t)psm), trxpos(0, 0, x0, y0, 0), trxreg(w, h), 0);
+        for (uint32_t off = 0; off < nbytes + 15;) {
+            uint32_t n = rnd() % 50;
+            if (n > nbytes + 15 - off) n = nbytes + 15 - off;
+            gs_mem_xfer_write(fz_stream + off, n);
+            off += n;
+        }
+        memcpy(result, gs_vram, GS_VRAM_SIZE);
+        memcpy(gs_vram, snap, GS_VRAM_SIZE);
+        for (uint32_t i = 0; i < npx; i++)
+            gs_mem_write(psm, bp, bw, (int)((x0 + i % w) & 2047), (int)((y0 + i / w) & 2047), stream_px(fz_stream, bpp, i));
+        if (memcmp(result, gs_vram, GS_VRAM_SIZE)) { fz_bad++; continue; }
+        gs_mem_xfer_start(bitbltbuf(bp, bw, (uint32_t)psm, 0, 0, 0), trxpos(x0, y0, 0, 0, 0), trxreg(w, h), 1);
+        uint32_t got = 0;
+        while (gs_mem_xfer_active()) {
+            uint32_t n = 1 + rnd() % 40, r = gs_mem_xfer_read(fz_back + got, n);
+            got += r;
+            if (r < n) break;
+        }
+        if (got != nbytes) { fz_bad++; continue; }
+        for (uint32_t i = 0; i < npx; i++)
+            if (stream_px(fz_back, bpp, i) != gs_mem_read(psm, bp, bw, (int)((x0 + i % w) & 2047), (int)((y0 + i / w) & 2047))) { fz_bad++; break; }
+    }
+    CHECK(fz_bad == 0, "random host<->local transfers: %d bad", fz_bad);
+
     /* data with no transfer is ignored; dir 3 stops a transfer */
     gs_mem_xfer_start(bitbltbuf(0, 0, 0, 0, 1, PSMCT32), trxpos(0, 0, 0, 0, 0), trxreg(8, 8), 0);
     gs_mem_xfer_start(0, 0, 0, 3);
@@ -443,6 +545,30 @@ static void test_local_local(void) {
         if (dir & 1) CHECK(shifted, "DIR=%d (bottom to top) shifts down correctly", dir);
         else CHECK(smeared, "DIR=%d (top to bottom) smears when shifting down", dir);
     }
+    /* random copies (every format, every DIR, wrapping at 2048) against a per-pixel reference
+     * that visits the pixels in the documented order */
+    int l2l_bad = 0;
+    for (int it = 0; it < 60; it++) {
+        int psm = all_psm[rnd() % NPSM];
+        uint32_t sbp = rnd() & 16383, sbw = 1 + rnd() % 10, dbp = rnd() & 16383, dbw = 1 + rnd() % 10;
+        uint32_t sx = rnd() & 2047, sy = rnd() & 2047, dx = rnd() & 2047, dy = rnd() & 2047, w = 1 + rnd() % 100, h = 1 + rnd() % 50, dir = rnd() & 3;
+        fill_random();
+        memcpy(snap, gs_vram, GS_VRAM_SIZE);
+        gs_mem_xfer_start(bitbltbuf(sbp, sbw, (uint32_t)psm, dbp, dbw, (uint32_t)psm), trxpos(sx, sy, dx, dy, dir), trxreg(w, h), 2);
+        memcpy(result, gs_vram, GS_VRAM_SIZE);
+        memcpy(gs_vram, snap, GS_VRAM_SIZE);
+        for (uint32_t jj = 0; jj < h; jj++) {
+            uint32_t j = (dir & 1) ? h - 1 - jj : jj;
+            for (uint32_t ii = 0; ii < w; ii++) {
+                uint32_t i = (dir & 2) ? w - 1 - ii : ii;
+                gs_mem_write(psm, dbp, dbw, (int)((dx + i) & 2047), (int)((dy + j) & 2047),
+                             gs_mem_read(psm, sbp, sbw, (int)((sx + i) & 2047), (int)((sy + j) & 2047)));
+            }
+        }
+        if (memcmp(result, gs_vram, GS_VRAM_SIZE)) l2l_bad++;
+    }
+    CHECK(l2l_bad == 0, "random local->local copies: %d bad", l2l_bad);
+
     /* shifting left/up with DIR 0 is exact */
     memset(gs_vram, 0, GS_VRAM_SIZE);
     for (int y = 0; y < 8; y++) for (int x = 0; x < 16; x++) gs_mem_write(PSMT8, 0, 2, x, y, (uint32_t)(y * 16 + x));
@@ -686,6 +812,7 @@ int main(void) {
     test_permutations();
     test_block_arrangement();
     test_columns();
+    test_reference_addressing();
     test_pages_and_wrap();
     test_cross_format();
     test_roundtrip();
