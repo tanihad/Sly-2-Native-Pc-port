@@ -1,0 +1,25 @@
+# Copyrighted game data - never commit
+orig/*
+!orig/README.md
+*.iso
+*.bin
+*.elf
+SCUS_*
+SCES_*
+SLUS_*
+SLES_*
+SLPS_*
+
+# Generated
+build/
+asm/
+ghidra/
+
+# Tool binaries
+tools/*
+!tools/README.md
+
+# Python
+__pycache__/
+.venv/
+*.pyc
