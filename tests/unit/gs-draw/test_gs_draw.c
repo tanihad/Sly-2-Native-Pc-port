@@ -913,6 +913,24 @@ static void bench(void) {
     }
     t1 = now();
     fprintf(stderr, "bench: 20000 tiny (2-pixel) textured Z triangles: %.2f us each\n", (t1 - t0) * 1e6 / 20000);
+
+    /* texture re-upload + decode: a 256x256 T8 texture uploaded again before every 64x64 sprite */
+    zbuf(160, PSMZ32, 1);
+    test_reg(0, 1, 0, 0, 0, 0, 1, 1);
+    W(TEX1_1, 0);
+    double tu = 0, td = 0;
+    for (int i = 0; i < 20; i++) {
+        double a = now();
+        upload(TEXBP, 4, PSMT8, 0, 0, 256, 256, idx, sizeof idx);
+        W(TEX0_1, tex0(TEXBP, 4, PSMT8, 8, 8, 1, 0, CLUTBP, PSMCT32, 0, 1));
+        double b = now();
+        prim(P_SPRITE, TME | FST);
+        rgba(128, 128, 128, 0x80);
+        uv(0, 0); xyz(0, 0, 0); uv(256 * 16, 256 * 16); xyz(64, 64, 0);
+        double c = now();
+        tu += b - a; td += c - b;
+    }
+    fprintf(stderr, "bench: 256x256 T8 re-upload %.0f us (gs_mem), first draw incl. decode %.0f us\n", tu * 1e6 / 20, td * 1e6 / 20);
     test_reg(0, 1, 0, 0, 0, 0, 1, 1);
     zbuf(160, PSMZ32, 1);
     W(TEX1_1, 0);

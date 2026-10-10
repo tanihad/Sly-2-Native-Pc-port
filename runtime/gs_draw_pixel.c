@@ -101,6 +101,24 @@ GS_AI uint32_t tex_bilinear(const lvl_view* L, int U, int V) {
     return (uint32_t)_mm_cvtsi128_si32(_mm_packus_epi16(h, h));
 }
 
+/* the same without wrapping, when the primitive's texel range is known to be inside the texture */
+GS_AI uint32_t tex_point_nw(const lvl_view* L, int U, int V) { return L->tex[((V >> 4) << L->sh) + (U >> 4)]; }
+
+GS_AI uint32_t tex_bilinear_nw(const lvl_view* L, int U, int V) {
+    U -= 8; V -= 8;
+    int fu = U & 15, fv = V & 15;
+    const uint32_t* t = L->tex + ((V >> 4) << L->sh) + (U >> 4);
+    const uint32_t* b = t + (1 << L->sh);
+    const __m128i zero = _mm_setzero_si128();
+    __m128i top = _mm_unpacklo_epi8(_mm_loadl_epi64((const __m128i*)t), zero);
+    __m128i bot = _mm_unpacklo_epi8(_mm_loadl_epi64((const __m128i*)b), zero);
+    __m128i v = _mm_add_epi16(_mm_slli_epi16(top, 4), _mm_mullo_epi16(_mm_sub_epi16(bot, top), _mm_set1_epi16((short)fv)));
+    __m128i h = _mm_mullo_epi16(v, _mm_unpacklo_epi64(_mm_set1_epi16((short)(16 - fu)), _mm_set1_epi16((short)fu)));
+    h = _mm_add_epi16(h, _mm_srli_si128(h, 8));
+    h = _mm_srli_epi16(h, 8);
+    return (uint32_t)_mm_cvtsi128_si32(_mm_packus_epi16(h, h));
+}
+
 GS_AI uint32_t lerp_rgba(uint32_t a, uint32_t b, uint32_t f) {     /* f in 0..16 */
     uint32_t rb = ((a & 0xFF00FFu) * (16 - f) + (b & 0xFF00FFu) * f) >> 4;
     uint32_t ga = (((a >> 8) & 0xFF00FFu) * (16 - f) + ((b >> 8) & 0xFF00FFu) * f) >> 4;
@@ -141,7 +159,8 @@ static uint32_t tex_general(const gs_prim* p, int U, int V, float q) {
     }
 }
 
-/* texel stage, specialised on coordinates (UV/STQ) and filter (point/bilinear/general) */
+/* texel stage, specialised on coordinates (UV/STQ) and filter (1 point, 2 bilinear, 3 general,
+ * 4 point without wrapping, 5 bilinear without wrapping) */
 GS_AI void sample_batch(const gs_prim* p, const int STQ, const int FILT) {
     const lvl_view L = view_of(&p->lvl[p->cur_level]);
     const int cl = p->cur_level;
@@ -157,14 +176,16 @@ GS_AI void sample_batch(const gs_prim* p, const int STQ, const int FILT) {
                 float iq = 1.0f / q;
                 int U = f2i(s * iq * tw16), V = f2i(t * iq * th16);
                 out[i] = FILT == 1 ? tex_point(&L, U >> cl, V >> cl) : FILT == 2 ? tex_bilinear(&L, U >> cl, V >> cl)
-                                                                          : tex_general(p, U, V, q);
+                       : FILT == 4 ? tex_point_nw(&L, U >> cl, V >> cl) : FILT == 5 ? tex_bilinear_nw(&L, U >> cl, V >> cl)
+                       : tex_general(p, U, V, q);
             }
         } else {
             int32_t u = sg->st.u, v = sg->st.v;
             for (int i = 0; i < n; i++, u += du, v += dv) {
                 int U = u >> GS_UVSH, V = v >> GS_UVSH;
                 out[i] = FILT == 1 ? tex_point(&L, U >> cl, V >> cl) : FILT == 2 ? tex_bilinear(&L, U >> cl, V >> cl)
-                                                                          : tex_general(p, U, V, lq);
+                       : FILT == 4 ? tex_point_nw(&L, U >> cl, V >> cl) : FILT == 5 ? tex_bilinear_nw(&L, U >> cl, V >> cl)
+                       : tex_general(p, U, V, lq);
             }
         }
     }
@@ -173,14 +194,20 @@ GS_AI void sample_batch(const gs_prim* p, const int STQ, const int FILT) {
 static void sample_uv_point(const gs_prim* p) { sample_batch(p, 0, 1); }
 static void sample_uv_bilin(const gs_prim* p) { sample_batch(p, 0, 2); }
 static void sample_uv_gen(const gs_prim* p) { sample_batch(p, 0, 3); }
+static void sample_uv_point_nw(const gs_prim* p) { sample_batch(p, 0, 4); }
+static void sample_uv_bilin_nw(const gs_prim* p) { sample_batch(p, 0, 5); }
 static void sample_stq_point(const gs_prim* p) { sample_batch(p, 1, 1); }
 static void sample_stq_bilin(const gs_prim* p) { sample_batch(p, 1, 2); }
 static void sample_stq_gen(const gs_prim* p) { sample_batch(p, 1, 3); }
+static void sample_stq_point_nw(const gs_prim* p) { sample_batch(p, 1, 4); }
+static void sample_stq_bilin_nw(const gs_prim* p) { sample_batch(p, 1, 5); }
 
 typedef void (*sample_fn)(const gs_prim*);
-static const sample_fn sample_table[2][4] = {
-    { NULL, sample_uv_point, sample_uv_bilin, sample_uv_gen },
-    { NULL, sample_stq_point, sample_stq_bilin, sample_stq_gen },
+static const sample_fn sample_table[2][2][4] = {           /* [stq][nowrap][texm] */
+    { { NULL, sample_uv_point, sample_uv_bilin, sample_uv_gen },
+      { NULL, sample_uv_point_nw, sample_uv_bilin_nw, sample_uv_gen } },
+    { { NULL, sample_stq_point, sample_stq_bilin, sample_stq_gen },
+      { NULL, sample_stq_point_nw, sample_stq_bilin_nw, sample_stq_gen } },
 };
 
 /* ---- colour stages -------------------------------------------------------------------------------- */
@@ -192,21 +219,36 @@ static void colour_batch(const gs_prim* p) {
         for (int i = 0; i < B.npix; i++) B.col[i] = c;
         return;
     }
-    const int32_t dr = p->dr, dg = p->dg, db = p->db, da = p->da;
+    /* r, g, b, a in 4 lanes: >> 16, then saturating packs clamp to 0..255 exactly like clamp255 */
+    const __m128i step = _mm_set_epi32(p->da, p->db, p->dg, p->dr);
     for (int k = 0; k < B.nseg; k++) {
         const seg* sg = &B.segs[k];
         uint32_t* col = B.col + sg->off;
-        int32_t r = sg->st.r, g = sg->st.g, b = sg->st.b, a = sg->st.a;
-        for (int i = 0; i < sg->n; i++, r += dr, g += dg, b += db, a += da)
-            col[i] = clamp255(r >> 16) | clamp255(g >> 16) << 8 | clamp255(b >> 16) << 16 | clamp255(a >> 16) << 24;
+        __m128i v = _mm_set_epi32(sg->st.a, sg->st.b, sg->st.g, sg->st.r);
+        for (int i = 0; i < sg->n; i++, v = _mm_add_epi32(v, step)) {
+            __m128i c = _mm_srai_epi32(v, 16);
+            c = _mm_packs_epi32(c, c);
+            col[i] = (uint32_t)_mm_cvtsi128_si32(_mm_packus_epi16(c, c));
+        }
     }
 }
 
 /* texture function: Cf (col) x Ct (tex), GS alpha 0x80 = 1.0 */
 static void tfx_batch(int tfx, int tcc, int n, uint32_t* col, const uint32_t* tex) {
     switch (tfx * 2 + tcc) {
-    case 0: case 1:                      /* MODULATE */
-        for (int i = 0; i < n; i++) {
+    case 0: case 1: {                    /* MODULATE: (Cf * Ct) >> 7 saturated, 4 pixels at a time */
+        const __m128i zero = _mm_setzero_si128();
+        const __m128i amask = _mm_set1_epi32(tcc ? 0 : (int)0xFF000000u);
+        int i = 0;
+        for (; i + 4 <= n; i += 4) {
+            __m128i c = _mm_loadu_si128((const __m128i*)(col + i)), t = _mm_loadu_si128((const __m128i*)(tex + i));
+            __m128i lo = _mm_srli_epi16(_mm_mullo_epi16(_mm_unpacklo_epi8(c, zero), _mm_unpacklo_epi8(t, zero)), 7);
+            __m128i hi = _mm_srli_epi16(_mm_mullo_epi16(_mm_unpackhi_epi8(c, zero), _mm_unpackhi_epi8(t, zero)), 7);
+            __m128i m = _mm_packus_epi16(lo, hi);
+            m = _mm_or_si128(_mm_andnot_si128(amask, m), _mm_and_si128(amask, c));   /* TCC=0: vertex alpha */
+            _mm_storeu_si128((__m128i*)(col + i), m);
+        }
+        for (; i < n; i++) {
             uint32_t c = col[i], t = tex[i];
             uint32_t r = ((c & 0xFF) * (t & 0xFF)) >> 7, g = (((c >> 8) & 0xFF) * ((t >> 8) & 0xFF)) >> 7;
             uint32_t b = (((c >> 16) & 0xFF) * ((t >> 16) & 0xFF)) >> 7;
@@ -214,6 +256,7 @@ static void tfx_batch(int tfx, int tcc, int n, uint32_t* col, const uint32_t* te
             col[i] = (r > 255 ? 255 : r) | (g > 255 ? 255 : g) << 8 | (b > 255 ? 255 : b) << 16 | (a > 255 ? 255 : a) << 24;
         }
         break;
+    }
     case 2:                              /* DECAL, vertex alpha */
         for (int i = 0; i < n; i++) col[i] = (tex[i] & 0xFFFFFF) | (col[i] & 0xFF000000u);
         break;
@@ -432,7 +475,7 @@ static void flush(void) {
 
     colour_batch(p);
     if (p->tme && p->texm) {
-        sample_table[B.stq][p->texm](p);
+        sample_table[B.stq][p->nowrap][p->texm](p);
         tfx_batch(p->tfx, p->tcc, B.npix, B.col, B.tex);
     }
     if (p->fge) fog_batch(p);

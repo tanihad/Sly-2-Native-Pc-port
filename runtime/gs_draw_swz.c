@@ -117,6 +117,7 @@ void gs_swz_init(void) {
             break;
         }
     memcpy(gs_vram, saved, sizeof saved);
+    gs_tex_fast_init();
 }
 
 /* ---- page write tracking ------------------------------------------------------------------------ */

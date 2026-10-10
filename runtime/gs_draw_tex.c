@@ -21,6 +21,7 @@ enum { TILE_IDX = 1, TILE_RGBA = 2 };
 
 typedef struct {
     int used, indexed;
+    int fast;                                    /* decode from gs_vram directly (layout verified) */
     uint32_t id, last_use;
     uint32_t tbp, tbw, psm, tw, th, xkey;        /* cache key */
     int w, h, tiles_x, tiles_y;
@@ -39,6 +40,7 @@ typedef struct {
 } tex_entry;
 
 uint32_t gs_clut_version;
+static uint8_t raw_ok[64][2];            /* [psm][TBW & 1]: direct texel decode verified (see below) */
 static tex_entry cache[TEX_ENTRIES];
 static size_t cache_bytes;
 static uint32_t next_id = 1, use_clock;
@@ -105,7 +107,7 @@ static tex_entry* create_entry(const gs_tex0* t, uint32_t xkey) {
     tex_entry* e = NULL;
     for (int i = 0; i < TEX_ENTRIES && !e; i++) if (!cache[i].used) e = &cache[i];
     if (!e && !(e = evict_one())) return NULL;
-    e->rgba = malloc((size_t)w * h * 4);
+    e->rgba = malloc(((size_t)w * h + (size_t)w + 1) * 4);     /* one spare row: never read, just a guard */
     e->idx = ind ? malloc((size_t)w * h) : NULL;
     e->tiles = malloc((size_t)tx * ty);
     if (!e->rgba || !e->tiles || (ind && !e->idx)) {
@@ -115,6 +117,7 @@ static tex_entry* create_entry(const gs_tex0* t, uint32_t xkey) {
     }
     e->used = 1;
     e->indexed = ind;
+    e->fast = t->tbw != 0 && raw_ok[t->psm & 63][t->tbw & 1];
     e->id = next_id++;
     e->tbp = t->tbp0; e->tbw = t->tbw; e->psm = t->psm; e->tw = t->tw; e->th = t->th; e->xkey = xkey;
     e->w = w; e->h = h; e->tiles_x = tx; e->tiles_y = ty;
@@ -235,21 +238,248 @@ void gs_tex_validate(gs_texlvl* L) {
     check_entry(e, &L->t, &L->ta);
 }
 
+/* ---- fast raw texel access ----------------------------------------------------------------------
+ * Stored texel values read straight from gs_vram (instead of one gs_mem call per texel). Layouts:
+ * 32/24/16-bit formats use gs_draw_swz.c's documented tables (checked against gs_mem); T8 and T4
+ * page layouts are probed from gs_mem_write at start-up. Every format is then verified against
+ * gs_mem_read with random data, separately for even and odd buffer widths and unaligned bases;
+ * only verified (format, width parity) pairs use this path. */
+
+enum { K32, K24, K16, K8, K4, K8H, K4HL, K4HH };
+typedef struct { int kind, pw_sh, ph_sh, es; const uint16_t* tab; uint32_t ppr, bp; } raw_layout;
+
+static uint16_t t8_tab[64 * 128];        /* byte offset in a page of T8 texel (x & 127, y & 63) */
+static uint16_t t4_tab[128 * 128];       /* nibble offset in a page of T4 texel (x & 127, y & 127) */
+
+static int raw_layout_of(uint32_t psm, uint32_t bp, uint32_t bw, raw_layout* r) {
+    const gs_fmt* f = NULL;
+    switch (psm) {
+    case PSMCT32: case PSMZ32: r->kind = K32; f = gs_fmt_of((int)psm); break;
+    case PSMCT24: case PSMZ24: r->kind = K24; f = gs_fmt_of((int)psm); break;
+    case PSMCT16: case PSMCT16S: case PSMZ16: case PSMZ16S: r->kind = K16; f = gs_fmt_of((int)psm); break;
+    case PSMT8H: r->kind = K8H; f = gs_fmt_of(PSMCT32); break;
+    case PSMT4HL: r->kind = K4HL; f = gs_fmt_of(PSMCT32); break;
+    case PSMT4HH: r->kind = K4HH; f = gs_fmt_of(PSMCT32); break;
+    case PSMT8: r->kind = K8; r->tab = t8_tab; r->pw_sh = 7; r->ph_sh = 6; r->es = 0; break;
+    case PSMT4: r->kind = K4; r->tab = t4_tab; r->pw_sh = 7; r->ph_sh = 7; r->es = 0; break;
+    default: return 0;
+    }
+    if (f) { r->tab = f->tab; r->pw_sh = 6; r->ph_sh = f->ph_shift; r->es = f->elem_shift; }
+    r->ppr = (bw * 64) >> r->pw_sh;
+    if (!r->ppr) r->ppr = 1;
+    r->bp = bp;
+    return 1;
+}
+
+GS_AI uint32_t raw_texel(const raw_layout* r, int x, int y, const int KIND) {
+    uint32_t page = ((uint32_t)y >> r->ph_sh) * r->ppr + ((uint32_t)x >> r->pw_sh);
+    uint32_t ti = (((uint32_t)y & ((1u << r->ph_sh) - 1)) << r->pw_sh) | ((uint32_t)x & ((1u << r->pw_sh) - 1));
+    if (KIND == K4) {
+        uint32_t n = (((r->bp + page * 32) << 9) + r->tab[ti]) & 0x7FFFFFu;
+        return (gs_vram[n >> 1] >> ((n & 1) * 4)) & 15;
+    }
+    uint32_t a = (((r->bp + page * 32) << 8) + ((uint32_t)r->tab[ti] << r->es)) & 0x3FFFFFu, v;
+    switch (KIND) {
+    case K32: memcpy(&v, gs_vram + a, 4); return v;
+    case K24: memcpy(&v, gs_vram + a, 4); return v & 0xFFFFFF;
+    case K16: { uint16_t h; memcpy(&h, gs_vram + a, 2); return h; }
+    case K8: return gs_vram[a];
+    case K8H: return gs_vram[a + 3];
+    case K4HL: return gs_vram[a + 3] & 15;
+    default: return gs_vram[a + 3] >> 4;
+    }
+}
+
+/* raw values of one tile's texels [x0,x1) x [y0,y1) into out (row stride 8). A tile row never
+ * crosses a page (tiles are 8-aligned, pages are 64 or 128 wide), so the page base is per row. */
+GS_AI void raw_rows(const raw_layout* r, int x0, int y0, int x1, int y1, uint32_t* out, const int KIND) {
+    const uint32_t phm = (1u << r->ph_sh) - 1, pwm = (1u << r->pw_sh) - 1;
+    const int n = x1 - x0;
+    for (int y = y0; y < y1; y++, out += 8) {
+        uint32_t page = ((uint32_t)y >> r->ph_sh) * r->ppr + ((uint32_t)x0 >> r->pw_sh);
+        const uint16_t* trow = r->tab + (((uint32_t)y & phm) << r->pw_sh) + ((uint32_t)x0 & pwm);
+        if (KIND == K4) {
+            uint32_t base = (r->bp + page * 32) << 9;
+            for (int k = 0; k < n; k++) {
+                uint32_t nb = (base + trow[k]) & 0x7FFFFFu;
+                out[k] = (gs_vram[nb >> 1] >> ((nb & 1) * 4)) & 15;
+            }
+            continue;
+        }
+        uint32_t base = (r->bp + page * 32) << 8;
+        for (int k = 0; k < n; k++) {
+            uint32_t a = (base + ((uint32_t)trow[k] << r->es)) & 0x3FFFFFu, v;
+            switch (KIND) {
+            case K32: memcpy(&v, gs_vram + a, 4); break;
+            case K24: memcpy(&v, gs_vram + a, 4); v &= 0xFFFFFF; break;
+            case K16: { uint16_t h; memcpy(&h, gs_vram + a, 2); v = h; break; }
+            case K8: v = gs_vram[a]; break;
+            case K8H: v = gs_vram[a + 3]; break;
+            case K4HL: v = gs_vram[a + 3] & 15u; break;
+            default: v = (uint32_t)gs_vram[a + 3] >> 4; break;
+            }
+            out[k] = v;
+        }
+    }
+}
+
+static void raw_block(const raw_layout* r, int x0, int y0, int x1, int y1, uint32_t* out) {
+    switch (r->kind) {
+    case K32: raw_rows(r, x0, y0, x1, y1, out, K32); break;
+    case K24: raw_rows(r, x0, y0, x1, y1, out, K24); break;
+    case K16: raw_rows(r, x0, y0, x1, y1, out, K16); break;
+    case K8: raw_rows(r, x0, y0, x1, y1, out, K8); break;
+    case K4: raw_rows(r, x0, y0, x1, y1, out, K4); break;
+    case K8H: raw_rows(r, x0, y0, x1, y1, out, K8H); break;
+    case K4HL: raw_rows(r, x0, y0, x1, y1, out, K4HL); break;
+    default: raw_rows(r, x0, y0, x1, y1, out, K4HH); break;
+    }
+}
+
+/* stored value -> 0xAABBGGRR for direct-colour formats, with TEXA (GS manual: 24-bit texels get
+ * TA0, or 0 when AEM and RGB = 0; 16-bit texels get TA1 when A = 1, else TA0 / 0 likewise) */
+GS_AI uint32_t expand_texel(int kind, uint32_t v, const gs_texa* ta) {
+    if (kind == K32) return v;
+    if (kind == K24) return v | ((ta->aem && !v) ? 0 : ta->ta0 << 24);
+    uint32_t rgb = ((v & 0x1F) << 3) | ((v & 0x3E0) << 6) | ((v & 0x7C00) << 9);
+    uint32_t a = (v & 0x8000) ? ta->ta1 : (ta->aem && !(v & 0x7FFF)) ? 0 : ta->ta0;
+    return rgb | a << 24;
+}
+
+static uint32_t lcg(uint32_t* s) { *s = *s * 1664525u + 1013904223u; return *s >> 8; }
+
+/* T8/T4 page layouts from gs_mem: write the texel index in 8-/4-bit slices, see where it lands */
+static int probe_t8(void) {
+    static uint8_t snap[2][8192];
+    for (int pass = 0; pass < 2; pass++) {
+        for (int y = 0; y < 64; y++)
+            for (int x = 0; x < 128; x++) {
+                uint32_t i = (uint32_t)(y * 128 + x);
+                gs_mem_write(PSMT8, 0, 2, x, y, pass ? i >> 8 : i & 0xFF);
+            }
+        memcpy(snap[pass], gs_vram, 8192);
+    }
+    static uint8_t seen[8192];
+    memset(seen, 0, sizeof seen);
+    for (int b = 0; b < 8192; b++) {
+        uint32_t i = snap[0][b] | (uint32_t)snap[1][b] << 8;
+        if (i >= 8192 || seen[i]) return 0;
+        seen[i] = 1;
+        t8_tab[i] = (uint16_t)b;
+    }
+    return 1;
+}
+
+static int probe_t4(void) {
+    static uint8_t snap[4][8192];
+    for (int pass = 0; pass < 4; pass++) {
+        for (int y = 0; y < 128; y++)
+            for (int x = 0; x < 128; x++)
+                gs_mem_write(PSMT4, 0, 2, x, y, ((uint32_t)(y * 128 + x) >> (pass * 4)) & 15);
+        memcpy(snap[pass], gs_vram, 8192);
+    }
+    static uint8_t seen[16384];
+    memset(seen, 0, sizeof seen);
+    for (int n = 0; n < 16384; n++) {
+        uint32_t i = 0;
+        for (int pass = 0; pass < 4; pass++) i |= (uint32_t)((snap[pass][n >> 1] >> ((n & 1) * 4)) & 15) << (pass * 4);
+        if (i >= 16384 || seen[i]) return 0;
+        seen[i] = 1;
+        t4_tab[i] = (uint16_t)n;
+    }
+    return 1;
+}
+
+/* random texels through gs_mem_write, read back with raw_texel; TEXA expansion vs gs_tex_fetch */
+static int verify_raw(uint32_t psm, uint32_t bp, uint32_t bw) {
+    raw_layout r;
+    if (!raw_layout_of(psm, bp, bw, &r)) return 0;
+    uint32_t seed = psm * 977u + bp * 13u + bw, bits = 0xFFFFFFFFu;
+    switch (r.kind) { case K24: bits = 0xFFFFFF; break; case K16: bits = 0xFFFF; break;
+                      case K8: case K8H: bits = 0xFF; break; case K4: case K4HL: case K4HH: bits = 15; break; }
+    const int W = 200, H = 140;
+    for (int y = 0; y < H; y++)
+        for (int x = 0; x < W; x++) gs_mem_write((int)psm, bp, bw, x, y, lcg(&seed) & bits);
+    for (int y = 0; y < H; y++)
+        for (int x = 0; x < W; x++) {
+            uint32_t want = gs_mem_read((int)psm, bp, bw, x, y), got;
+            switch (r.kind) {
+            case K32: got = raw_texel(&r, x, y, K32); break;
+            case K24: got = raw_texel(&r, x, y, K24); break;
+            case K16: got = raw_texel(&r, x, y, K16); break;
+            case K8: got = raw_texel(&r, x, y, K8); break;
+            case K4: got = raw_texel(&r, x, y, K4); break;
+            case K8H: got = raw_texel(&r, x, y, K8H); break;
+            case K4HL: got = raw_texel(&r, x, y, K4HL); break;
+            default: got = raw_texel(&r, x, y, K4HH); break;
+            }
+            if (got != want) return 0;
+        }
+    if (r.kind == K32 || r.kind == K24 || r.kind == K16) {
+        static const gs_texa tas[3] = { { 0x80, 0, 0x40 }, { 0x33, 1, 0x7F }, { 0, 1, 0xFF } };
+        gs_tex0 t;
+        memset(&t, 0, sizeof t);
+        t.tbp0 = bp; t.tbw = bw; t.psm = psm; t.tw = 8; t.th = 8;
+        for (int k = 0; k < 3; k++)
+            for (int y = 0; y < 16; y++)
+                for (int x = 0; x < 16; x++) {
+                    uint32_t v = raw_texel(&r, x * 7, y * 5, r.kind == K32 ? K32 : r.kind == K24 ? K24 : K16);
+                    if (y == 0 && x < 4) v = 0;          /* exercise AEM with RGB = 0 */
+                    gs_mem_write((int)psm, bp, bw, x * 7, y * 5, v);
+                    if (expand_texel(r.kind, v, &tas[k]) != gs_tex_fetch(&t, &tas[k], x * 7, y * 5)) return 0;
+                }
+    }
+    return 1;
+}
+
+void gs_tex_fast_init(void) {
+    static int inited;
+    if (inited) return;
+    inited = 1;
+    if (!gs_swz_fast) return;            /* gs_mem disagrees with the documented layout (or is a stub) */
+    static uint8_t saved[GS_VRAM_SIZE];
+    memcpy(saved, gs_vram, sizeof saved);
+    int t8 = probe_t8(), t4 = probe_t4();
+    static const uint32_t psms[] = { PSMCT32, PSMCT24, PSMCT16, PSMCT16S, PSMZ32, PSMZ24, PSMZ16, PSMZ16S,
+                                     PSMT8, PSMT4, PSMT8H, PSMT4HL, PSMT4HH };
+    char off[160] = "";
+    for (unsigned i = 0; i < sizeof psms / sizeof psms[0]; i++) {
+        uint32_t psm = psms[i];
+        if ((psm == PSMT8 && !t8) || (psm == PSMT4 && !t4)) { snprintf(off + strlen(off), sizeof off - strlen(off), " %02X", psm); continue; }
+        raw_ok[psm][0] = (uint8_t)(verify_raw(psm, 0, 2) && verify_raw(psm, 32 * 9 + 5, 4));
+        raw_ok[psm][1] = (uint8_t)(verify_raw(psm, 32 * 21 + 17, 3) && verify_raw(psm, 32 * 40 + 3, 1));
+        if (!raw_ok[psm][0] || !raw_ok[psm][1])
+            snprintf(off + strlen(off), sizeof off - strlen(off), " %02X%s", psm, raw_ok[psm][0] ? "(odd TBW)" : "");
+    }
+    if (off[0]) fprintf(stderr, "[gs] direct texel decode not verified for PSM%s: those use gs_mem per texel\n", off);
+    memcpy(gs_vram, saved, sizeof saved);
+}
+
 static void decode_tile(tex_entry* e, int tx, int ty) {
     uint8_t* fl = &e->tiles[ty * e->tiles_x + tx];
     int x0 = tx * 8, y0 = ty * 8, x1 = x0 + 8 < e->w ? x0 + 8 : e->w, y1 = y0 + 8 < e->h ? y0 + 8 : e->h;
     const gs_tex0* t = &e->t;
+    raw_layout r;
+    uint32_t raw[64];
+    int fast = e->fast && raw_layout_of(t->psm, t->tbp0, t->tbw, &r);
     e->rgba_tiles++;
     if (!e->indexed) {
-        for (int y = y0; y < y1; y++)
-            for (int x = x0; x < x1; x++) e->rgba[y * e->w + x] = gs_tex_fetch(t, &e->ta, x, y);
+        if (fast) {
+            raw_block(&r, x0, y0, x1, y1, raw);
+            for (int y = y0; y < y1; y++)
+                for (int x = x0; x < x1; x++) e->rgba[y * e->w + x] = expand_texel(r.kind, raw[(y - y0) * 8 + (x - x0)], &e->ta);
+        } else {
+            for (int y = y0; y < y1; y++)
+                for (int x = x0; x < x1; x++) e->rgba[y * e->w + x] = gs_tex_fetch(t, &e->ta, x, y);
+        }
         *fl |= TILE_RGBA;
         return;
     }
     if (!(*fl & TILE_IDX)) {
+        if (fast) raw_block(&r, x0, y0, x1, y1, raw);
         for (int y = y0; y < y1; y++)
             for (int x = x0; x < x1; x++) {
-                uint32_t k = gs_mem_read((int)t->psm, t->tbp0, t->tbw, x, y) & 0xFF;
+                uint32_t k = fast ? raw[(y - y0) * 8 + (x - x0)] : gs_mem_read((int)t->psm, t->tbp0, t->tbw, x, y) & 0xFF;
                 e->idx[y * e->w + x] = (uint8_t)k;
                 if (e->pos[k] == NO_POS) {
                     e->pos[k] = ((uint32_t)y << 16) | (uint32_t)x;

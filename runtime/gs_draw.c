@@ -285,6 +285,7 @@ static void tex_prepare(const vtx* const* vs, int n, int as_uv, const double* su
         }
         if (pos != n && neg != n) all = 1;
     }
+    P.nowrap = 0;
     for (int l = lo; l <= hi; l++) {
         gs_texlvl* L = &P.lvl[l];
         if (all) { gs_tex_ensure(L, 0, L->w - 1, 0, L->h - 1); continue; }
@@ -292,6 +293,11 @@ static void tex_prepare(const vtx* const* vs, int n, int as_uv, const double* su
         int u0 = (int)floor(umin * sc) - 1, u1 = (int)floor(umax * sc) + 1;
         int v0 = (int)floor(vmin * sc) - 1, v1 = (int)floor(vmax * sc) + 1;
         gs_tex_ensure(L, u0, u1, v0, v1);
+        /* every texel the primitive can reach (one texel of margin) is inside the texture and the
+         * clamp region: sampling needs no wrapping */
+        if (P.texm != 3 && L->umode != 3 && L->vmode != 3 && u0 >= 0 && v0 >= 0 &&
+            u0 >= L->ulo && v0 >= L->vlo && u1 <= L->w - 1 && v1 <= L->h - 1 && u1 <= L->uhi && v1 <= L->vhi)
+            P.nowrap = 1;
     }
 }
 

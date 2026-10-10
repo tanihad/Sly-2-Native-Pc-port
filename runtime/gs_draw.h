@@ -75,6 +75,7 @@ void gs_tex_validate(gs_texlvl* L);
 /* Make sure texels in the (unwrapped, inclusive) range [u0,u1] x [v0,v1] are decoded. */
 void gs_tex_ensure(gs_texlvl* L, int u0, int u1, int v0, int v1);
 void gs_tex_flush_all(void);             /* forget every cached texture (reset) */
+void gs_tex_fast_init(void);             /* probe/verify direct texel decoding (called by gs_swz_init) */
 
 /* ---- gs_draw_pixel.c: primitive state and span drawing ---------------------------------------- */
 typedef struct gs_prim gs_prim;
@@ -105,6 +106,7 @@ struct gs_prim {
     int texm;                            /* 0 none, 1 point, 2 bilinear, 3 general (mipmaps/LOD) */
     int mmag, mmin, mxl, lcm, lshift, k; /* TEX1 */
     int nlevels, cur_level;              /* bound levels; level used by texm 1/2 */
+    int nowrap;                          /* this primitive's texels need no wrap/clamp (texm 1/2) */
     float tw16, th16;                    /* 16 * level-0 size (STQ -> 1/16 texel units) */
     gs_texlvl lvl[7];
     /* misc */
