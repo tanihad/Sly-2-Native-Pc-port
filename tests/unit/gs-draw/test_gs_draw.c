@@ -18,6 +18,16 @@ void hw_log_unhandled(const char* unit, uint32_t phys, const void* data, unsigne
 }
 extern int fake_clut_loads;
 
+#ifdef TEST_ASYNC
+/* The same scenes through the GS thread and its pixel workers (gs_thread.c, started in main): wait
+ * for the queue to drain before looking at VRAM. */
+static uint32_t synced_mem_read(int psm, uint32_t bp, uint32_t bw, int x, int y) {
+    gs_sync();
+    return gs_mem_read(psm, bp, bw, x, y);
+}
+#define gs_mem_read synced_mem_read
+#endif
+
 /* ---- test helpers --------------------------------------------------------------------------------- */
 
 static int fails, checks;
@@ -157,6 +167,7 @@ static void t_trace(void) {
         uv(0, 0); xyz(1000, 1000, 0);    /* outside the scissor: nothing is drawn */
         uv(4 * 16, 4 * 16); xyz(1004, 1004, 0);
     }
+    gs_sync();                           /* async variant: the GS thread has drawn (and traced) them */
     FILE* f = fopen(trace_path, "r");    /* still open for writing in gs_draw, not flushed by a vsync */
     int recs = 0, heads = 0, rows = 0;
     char line[1024];
@@ -323,9 +334,11 @@ static void t_clut_textures(void) {
     for (int y = 0; y < 16; y++) for (int x = 0; x < 16; x++) bad += px(300 + x, 60 + y) != pal[x + 16 * y];
     CHECK(bad == 0, "T8 after CLUT reload: %d wrong", bad);
     /* CLD=4 with an unchanged CBP: no reload (fake counts loads) */
+    gs_sync();                           /* (no-op unless TEST_ASYNC) */
     int loads = fake_clut_loads;
     W(TEX0_1, tex0(TEXBP, 2, PSMT8, 4, 4, 1, 1, CLUTBP, PSMCT32, 0, 4));
     W(TEX0_1, tex0(TEXBP, 2, PSMT8, 4, 4, 1, 1, CLUTBP, PSMCT32, 0, 4));
+    gs_sync();
     CHECK(loads < 0 || fake_clut_loads == loads + 1, "gs_clut_on_tex0 called for every TEX0 write");   /* < 0: real gs_mem */
     /* TEX2 changes only PSM/CLUT fields */
     W(TEX2_1, tex0(0, 0, PSMT8, 0, 0, 0, 0, CLUTBP, PSMCT32, 0, 0));
@@ -878,6 +891,210 @@ static void t_display(void) {
     CHECK(gs_display(out, 1024, &w, &h) == 0, "display off");
 }
 
+/* Render-to-texture chains with nothing read back in between: in the async variant every step is
+ * still being drawn (deferred) when the next one samples it, so this checks the hazard handling of
+ * gs_draw_pixel.c / gs_draw_tex.c. The texture is declared 1024x1024 over a 64x64 buffer, as games
+ * do with frame buffers, so it also covers pages that are written without touching its texels. */
+static void t_deferred_hazards(void) {
+    reset_env();
+    const uint32_t A = 200;                        /* 64x64 source buffer at page 200 (FBW 1) */
+    const uint64_t tA = tex0(A * 32, 1, PSMCT32, 10, 10, 1, 1, 0, 0, 0, 0);
+    frame(0, 10, PSMCT32, 0);
+    clear(0, 0, 0, 0);
+    frame(A, 1, PSMCT32, 0);
+    sprite(0, 0, 64, 64, 255, 0, 0, 0x80);         /* A: red */
+    frame(0, 10, PSMCT32, 0);
+    W(TEX0_1, tA);
+    prim(P_SPRITE, TME | FST);
+    uv(0, 0); xyz(0, 0, 0); uv(64 * 16, 64 * 16); xyz(64, 64, 0);          /* red */
+    frame(A, 1, PSMCT32, 0);
+    sprite(0, 0, 64, 32, 0, 255, 0, 0x80);         /* A: green top half */
+    frame(0, 10, PSMCT32, 0);
+    W(TEX0_1, tA);
+    prim(P_SPRITE, TME | FST);
+    uv(0, 0); xyz(100, 0, 0); uv(64 * 16, 64 * 16); xyz(164, 64, 0);      /* green / red */
+    frame(A + 5, 1, PSMCT32, 0);                   /* texture rows 160-191: not sampled below */
+    sprite(0, 0, 64, 32, 0, 0, 255, 0x80);
+    frame(0, 10, PSMCT32, 0);
+    W(TEX0_1, tA);
+    prim(P_SPRITE, TME | FST);
+    uv(0, 0); xyz(200, 0, 0); uv(64 * 16, 64 * 16); xyz(264, 64, 0);      /* green / red */
+    frame(A, 1, PSMCT32, 0);                       /* feedback: A's top half copied onto its bottom half */
+    W(TEX0_1, tA);
+    prim(P_SPRITE, TME | FST);
+    uv(0, 0); xyz(0, 32, 0); uv(64 * 16, 32 * 16); xyz(64, 64, 0);
+    frame(0, 10, PSMCT32, 0);
+    W(TEX0_1, tA);
+    prim(P_SPRITE, TME | FST);
+    uv(0, 0); xyz(300, 0, 0); uv(64 * 16, 64 * 16); xyz(364, 64, 0);      /* green / green */
+    CHECK(rgb(px(10, 10)) == 0x0000FF && rgb(px(10, 50)) == 0x0000FF, "sampled red: %08X %08X", px(10, 10), px(10, 50));
+    CHECK(rgb(px(110, 10)) == 0x00FF00 && rgb(px(110, 50)) == 0x0000FF, "after drawing into it: %08X %08X", px(110, 10), px(110, 50));
+    CHECK(rgb(px(210, 10)) == 0x00FF00 && rgb(px(210, 50)) == 0x0000FF, "after drawing elsewhere in its pages: %08X %08X", px(210, 10), px(210, 50));
+    CHECK(rgb(px(310, 10)) == 0x00FF00 && rgb(px(310, 50)) == 0x00FF00, "after feedback drawing: %08X %08X", px(310, 10), px(310, 50));
+}
+
+/* An upload into one page of an indexed texture drops only that page's tiles; a palette change
+ * afterwards must still reach the tiles of the other page that hold an index whose probe position
+ * was in the dropped page. */
+static void t_partial_invalidation_clut(void) {
+    reset_env();
+    clear(0, 0, 0, 0);
+    static uint8_t idx[256 * 64];
+    memset(idx, 7, sizeof idx);
+    upload(TEXBP, 4, PSMT8, 0, 0, 256, 64, idx, sizeof idx);       /* two T8 pages side by side */
+    uint32_t pal[256];
+    for (int i = 0; i < 256; i++) pal[i] = 0x80000000u | (uint32_t)i;
+    pal[7] = 0x800000FFu; pal[9] = 0x8000FF00u;
+    upload_clut8(CLUTBP, pal);
+    const uint64_t t = tex0(TEXBP, 4, PSMT8, 8, 6, 1, 1 /*DECAL*/, CLUTBP, PSMCT32, 0, 1);
+    W(TEX0_1, t);
+    prim(P_SPRITE, TME | FST);
+    rgba(128, 128, 128, 128);
+    uv(0, 0); xyz(0, 100, 0); uv(256 * 16, 64 * 16); xyz(256, 164, 0);
+    memset(idx, 9, 128 * 64);
+    upload(TEXBP, 4, PSMT8, 0, 0, 128, 64, idx, 128 * 64);           /* left page only */
+    W(TEX0_1, t);
+    prim(P_SPRITE, TME | FST);
+    uv(0, 0); xyz(0, 200, 0); uv(256 * 16, 64 * 16); xyz(256, 264, 0);
+    pal[7] = 0x80FF0000u;
+    upload_clut8(CLUTBP, pal);
+    W(TEX0_1, t);
+    prim(P_SPRITE, TME | FST);
+    uv(0, 0); xyz(0, 300, 0); uv(256 * 16, 64 * 16); xyz(256, 364, 0);
+    CHECK(rgb(px(10, 110)) == 0x0000FF && rgb(px(200, 110)) == 0x0000FF, "before: %08X %08X", px(10, 110), px(200, 110));
+    CHECK(rgb(px(10, 210)) == 0x00FF00 && rgb(px(200, 210)) == 0x0000FF, "after the upload: %08X %08X", px(10, 210), px(200, 210));
+    CHECK(rgb(px(10, 310)) == 0x00FF00 && rgb(px(200, 310)) == 0xFF0000, "after the CLUT change: %08X %08X", px(10, 310), px(200, 310));
+}
+
+/* Direct sampling (textures read straight from VRAM) under deferred drawing: primitives that sample
+ * a buffer must see it as it was when they were sent, even when a later primitive overwrites that
+ * buffer from another band (write after read), and an indexed texture drawn with one CLUT, then
+ * another, keeps the first colours where it was drawn first (palette snapshots). */
+static void t_direct_order(void) {
+    reset_env();
+    clear(0, 0, 0, 0);
+    const uint32_t A = 200;                        /* 64x64 CT32 buffer at page 200 */
+    const uint64_t tA = tex0(A * 32, 1, PSMCT32, 6, 6, 1, 1, 0, 0, 0, 0);
+    frame(A, 1, PSMCT32, 0);
+    sprite(0, 0, 64, 64, 255, 0, 0, 0x80);         /* A: red */
+    frame(0, 10, PSMCT32, 0);
+    W(TEX0_1, tA);
+    prim(P_SPRITE, TME | FST);
+    for (int i = 0; i < 8; i++) { uv(0, 0); xyz(i * 64, 300, 0); uv(64 * 16, 64 * 16); xyz(i * 64 + 64, 364, 0); }
+    frame(A, 1, PSMCT32, 0);
+    sprite(0, 0, 64, 64, 0, 255, 0, 0x80);         /* A: green, after the reads, rows of other bands */
+    frame(0, 10, PSMCT32, 0);
+    W(TEX0_1, tA);
+    prim(P_SPRITE, TME | FST);
+    uv(0, 0); xyz(0, 400, 0); uv(64 * 16, 32 * 16); xyz(64, 432, 0);
+    int bad = 0;
+    for (int i = 0; i < 8; i++) bad += rgb(px(i * 64 + 10, 310)) != 0x0000FF || rgb(px(i * 64 + 50, 360)) != 0x0000FF;
+    CHECK(bad == 0, "reads before a write see the old texels: %d wrong (%08X)", bad, px(10, 310));
+    CHECK(rgb(px(10, 410)) == 0x00FF00, "read after the write: %08X", px(10, 410));
+
+    /* T8 8x8, every texel index 3; CLUT entry 3 blue, then yellow */
+    uint8_t idx[64];
+    memset(idx, 3, sizeof idx);
+    upload(TEXBP, 2, PSMT8, 0, 0, 8, 8, idx, sizeof idx);
+    uint32_t pal[256];
+    memset(pal, 0, sizeof pal);
+    pal[3] = 0x80FF0000u;
+    upload_clut8(CLUTBP, pal);
+    W(TEX0_1, tex0(TEXBP, 2, PSMT8, 3, 3, 1, 1, CLUTBP, PSMCT32, 0, 1));
+    prim(P_SPRITE, TME | FST);
+    uv(0, 0); xyz(300, 300, 0); uv(8 * 16, 8 * 16); xyz(308, 308, 0);
+    pal[3] = 0x8000FFFFu;
+    upload_clut8(CLUTBP, pal);
+    W(TEX0_1, tex0(TEXBP, 2, PSMT8, 3, 3, 1, 1, CLUTBP, PSMCT32, 0, 1));
+    prim(P_SPRITE, TME | FST);
+    uv(0, 0); xyz(300, 10, 0); uv(8 * 16, 8 * 16); xyz(308, 18, 0);
+    CHECK(rgb(px(304, 304)) == 0xFF0000 && rgb(px(304, 14)) == 0x00FFFF, "palette per primitive: %08X %08X",
+          px(304, 304), px(304, 14));
+
+    /* an upload into a texture that recorded drawing still samples waits for that drawing; one
+     * elsewhere does not need to (both must draw right) */
+    memset(idx, 9, sizeof idx);
+    pal[9] = 0x80FF00FFu;
+    upload_clut8(CLUTBP, pal);
+    W(TEX0_1, tex0(TEXBP, 2, PSMT8, 3, 3, 1, 1, CLUTBP, PSMCT32, 0, 1));
+    prim(P_SPRITE, TME | FST);
+    uv(0, 0); xyz(320, 300, 0); uv(8 * 16, 8 * 16); xyz(328, 308, 0);     /* index 3: yellow */
+    upload(TEXBP + 64, 2, PSMT8, 0, 0, 8, 8, idx, sizeof idx);            /* other pages */
+    upload(TEXBP, 2, PSMT8, 0, 0, 8, 8, idx, sizeof idx);                 /* index 9 */
+    W(TEX0_1, tex0(TEXBP, 2, PSMT8, 3, 3, 1, 1, CLUTBP, PSMCT32, 0, 0));
+    prim(P_SPRITE, TME | FST);
+    uv(0, 0); xyz(320, 10, 0); uv(8 * 16, 8 * 16); xyz(328, 18, 0);       /* index 9: magenta */
+    CHECK(rgb(px(324, 304)) == 0x00FFFF && rgb(px(324, 14)) == 0xFF00FF, "upload after a read: %08X %08X",
+          px(324, 304), px(324, 14));
+
+    /* a CLUT drawn by the GS (palette entry 9 of a 16x16 CT32 CLUT at page 230: pixel (9, 0)) and
+     * loaded right after: the load must wait for that drawing; drawing into other blocks of the page
+     * (x 32-63) does not matter */
+    frame(230, 1, PSMCT32, 0);
+    sprite(32, 0, 64, 32, 0, 0, 255, 0x80);            /* other blocks of the page */
+    sprite(1, 1, 2, 2, 0x12, 0x34, 0x56, 0x80);        /* entry 9 (CSM1: bits 3 and 4 swapped: x 1, y 1) */
+    frame(0, 10, PSMCT32, 0);
+    W(TEX0_1, tex0(TEXBP, 2, PSMT8, 3, 3, 1, 1, 230 * 32, PSMCT32, 0, 1));
+    prim(P_SPRITE, TME | FST);
+    uv(0, 0); xyz(340, 300, 0); uv(8 * 16, 8 * 16); xyz(348, 308, 0);    /* index 9 */
+    CHECK(rgb(px(344, 304)) == 0x563412, "CLUT drawn just before its load: %08X", px(344, 304));
+
+    /* feedback over many bands: a 64x256 buffer shifted down by 8 rows onto itself; every pixel must
+     * get the texel as it was before the primitive (row y - 8), whatever order rows are drawn in */
+    const uint32_t B = 220;
+    frame(B, 1, PSMCT32, 0);
+    scissor(0, 63, 0, 255);
+    for (int y = 0; y < 256; y++) sprite(0, y, 64, y + 1, y, 0, 0, 0x80);
+    W(TEX0_1, tex0(B * 32, 1, PSMCT32, 6, 8, 1, 1, 0, 0, 0, 0));
+    prim(P_SPRITE, TME | FST);
+    uv(0, 0); xyz(0, 8, 0); uv(64 * 16, 248 * 16); xyz(64, 256, 0);
+    bad = 0;
+    for (int y = 0; y < 256; y++) bad += rgb(px(10, y)) != (uint32_t)(y < 8 ? y : y - 8);
+    CHECK(bad == 0, "in-place shift reads the buffer as it was: %d rows wrong (row 100: %08X)", bad, px(10, 100));
+    /* in-place filter, every pixel sampling its own texel (bilinear at texel centres, MODULATE by
+     * 0.5), drawn as 8x8 sprites in several bands, twice over: each pixel quartered exactly */
+    W(TEX1_1, 1ull << 5 | 1ull << 6);                /* MMAG/MMIN bilinear */
+    W(TEX0_1, tex0(B * 32, 1, PSMCT32, 6, 8, 1, 0 /*MODULATE*/, 0, 0, 0, 0));
+    for (int pass = 0; pass < 2; pass++)
+        for (int sy = 0; sy < 256; sy += 8)
+            for (int sx = 0; sx < 64; sx += 8) {
+                prim(P_SPRITE, TME | FST);
+                rgba(0x40, 0x40, 0x40, 0x80);
+                uv(sx * 16 + 8, sy * 16 + 8); xyz(sx, sy, 0);
+                uv((sx + 8) * 16 + 8, (sy + 8) * 16 + 8); xyz(sx + 8, sy + 8, 0);
+            }
+    W(TEX1_1, 0);
+    bad = 0;
+    for (int y = 0; y < 256; y++) {
+        uint32_t want = (uint32_t)((y < 8 ? y : y - 8) >> 2);
+        bad += rgb(px(10, y)) != want || rgb(px(60, y)) != want;
+    }
+    CHECK(bad == 0, "in-place filter on its own pixels: %d wrong (row 101: %08X)", bad, px(10, 101));
+    /* the same kind of filter over an area larger than its texture (64x32 texture, 64x64 sprite on
+     * the buffer it samples): rows 32-63 sample rows of the texture's other page through CLAMP or
+     * REPEAT, i.e. other pixels' texels - feedback, not a pixel-local filter. Every pixel must get
+     * the texel as it was before the primitive (MODULATE by 0.5: 200 -> 100), whatever order bands
+     * or immediate-drawing flushes write rows 0-31 in. */
+    const uint32_t C = 240;                        /* 64x64 CT32 buffer: pages 240 (rows 0-31), 241 */
+    frame(C, 1, PSMCT32, 0);
+    scissor(0, 63, 0, 63);
+    for (int mode = 1; mode >= 0; mode--) {        /* CLAMP_1 WMS/WMT: 1 = CLAMP, 0 = REPEAT */
+        sprite(0, 0, 64, 64, 200, 0, 0, 0x80);
+        W(CLAMP_1, (uint64_t)(mode | mode << 2));
+        W(TEX0_1, tex0(C * 32, 1, PSMCT32, 6, 5, 1, 0 /*MODULATE*/, 0, 0, 0, 0));
+        prim(P_SPRITE, TME | FST);
+        rgba(0x40, 0x40, 0x40, 0x80);
+        uv(0, 0); xyz(0, 0, 0); uv(64 * 16, 64 * 16); xyz(64, 64, 0);
+        bad = 0;
+        for (int y = 0; y < 64; y++) bad += rgb(px(5, y)) != 100 || rgb(px(60, y)) != 100;
+        CHECK(bad == 0, "in-place filter beyond its texture (%s) samples it as it was: %d wrong (row 40: %08X)",
+              mode ? "CLAMP" : "REPEAT", bad, px(5, 40));
+    }
+    W(CLAMP_1, 0);
+    frame(0, 10, PSMCT32, 0);
+    scissor(0, 639, 0, 447);
+}
+
 /* Interlaced field rendering (the intro movie): the game draws the buffer for an odd field with
  * XYOFFSET.Y + 0.5 (sceGsSetHalfOffset), so its rows are the odd lines of a 448-line picture.
  * Line-doubling every field (the old behaviour) halves the vertical resolution and makes the picture
@@ -999,6 +1216,7 @@ static void bench(void) {
             uv(0, 0); st(0, 0); xyz(0, 0, 1);
             uv(256 * 16, 256 * 16); st(1, 1); xyz(640, 448, 1);
         }
+        gs_sync();
         double t1 = now();
         fprintf(stderr, "bench: full-screen sprites, %s %5.2f ns/pixel\n", cfg[c].name, (t1 - t0) * 1e9 / (N * 640.0 * 448.0));
     }
@@ -1021,6 +1239,7 @@ static void bench(void) {
         }
         tris++;
     }
+    gs_sync();
     double t1 = now();
     fprintf(stderr, "bench: %d small textured Z triangles: %.2f us each\n", tris, (t1 - t0) * 1e6 / tris);
     /* per-triangle overhead: the same triangles shrunk to about 2 pixels */
@@ -1034,6 +1253,7 @@ static void bench(void) {
             xyz(cx + (k == 1 ? 2 : 0), cy + (k == 2 ? 2 : 0), (uint32_t)(i + 1));
         }
     }
+    gs_sync();
     t1 = now();
     fprintf(stderr, "bench: 20000 tiny (2-pixel) textured Z triangles: %.2f us each\n", (t1 - t0) * 1e6 / 20000);
 
@@ -1046,10 +1266,12 @@ static void bench(void) {
         double a = now();
         upload(TEXBP, 4, PSMT8, 0, 0, 256, 256, idx, sizeof idx);
         W(TEX0_1, tex0(TEXBP, 4, PSMT8, 8, 8, 1, 0, CLUTBP, PSMCT32, 0, 1));
+        gs_sync();
         double b = now();
         prim(P_SPRITE, TME | FST);
         rgba(128, 128, 128, 0x80);
         uv(0, 0); xyz(0, 0, 0); uv(256 * 16, 256 * 16); xyz(64, 64, 0);
+        gs_sync();
         double c = now();
         tu += b - a; td += c - b;
     }
@@ -1317,6 +1539,10 @@ int main(int argc, char** argv) {
     _putenv_s("PS2_GS_TRACE_BRIEF", "0");
     _putenv_s("PS2_GS_TRACE_MINSIZE", "0");
     gs_swz_init();
+#ifdef TEST_ASYNC
+    gs_thread_start(3, NULL);
+    CHECK(gs_async() && gs_draw_workers() == 3, "GS thread and 3 pixel workers running");
+#endif
 #ifdef FAKE_LINEAR
     CHECK(!gs_swz_fast, "linear fake layout must disable the fast path");
 #else
@@ -1348,6 +1574,9 @@ int main(int argc, char** argv) {
     t_stq_negative_coords();
     t_csr();
     t_display();
+    t_deferred_hazards();
+    t_partial_invalidation_clut();
+    t_direct_order();
     t_display_weave();
     bench();
     fprintf(stderr, "%s: %d/%d checks passed\n", argv[0], checks - fails, checks);

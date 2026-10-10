@@ -226,6 +226,7 @@ static void env_update(void) {
     else P.texm = 0;
     gs_prim_finalize(&P);
     prim_draws = P.fbmsk != 0xFFFFFFFFu || (P.zuse && !P.zmsk);
+    gs_prim_version++;                   /* deferred drawing snapshots the new state */
 }
 
 /* ---- attribute planes ---------------------------------------------------------------------------- */
@@ -257,8 +258,29 @@ static void set_steps(const planes* pl) {
 
 /* ---- texture preparation per primitive -------------------------------------------------------- */
 
-/* Texel-space bounding box of the vertices (level 0), then decode what the primitive can reach. */
-static void tex_prepare(const vtx* const* vs, int n, int as_uv, const double* su, const double* sv) {
+static void add_buf_pages(uint32_t page0, uint32_t bw, int ph_sh, int x0, int y0, int x1, int y1, uint64_t set[8]) {
+    for (int r = y0 >> ph_sh; r <= y1 >> ph_sh; r++)
+        for (int c = x0 >> 6; c <= x1 >> 6; c++) {
+            uint32_t pg = (page0 + (uint32_t)r * bw + (uint32_t)c) & 511u;
+            set[pg >> 6] |= 1ull << (pg & 63);
+        }
+}
+
+/* Every texel of the (unwrapped, inclusive) range [u0,u1] x [v0,v1] is inside the texture and its
+ * clamp region, so it is sampled at its own coordinates: no REPEAT wrap, no clamping. */
+static int texels_unwrapped(const gs_texlvl* L, int u0, int u1, int v0, int v1) {
+    return L->umode != 3 && L->vmode != 3 && u0 >= 0 && v0 >= 0 && u0 >= L->ulo && v0 >= L->vlo &&
+           u1 <= L->w - 1 && v1 <= L->h - 1 && u1 <= L->uhi && v1 <= L->vhi;
+}
+
+/* Texel-space bounding box of the vertices (level 0), then per level: sample directly (recording
+ * the pages read for deferred drawing) - from a snapshot of the pages when the texels are in pages
+ * the primitive writes (inclusive pixel box x0..x1, y0..y1) - or decode what it can reach into the
+ * texture cache (formats without direct sampling). `local`: the caller found that each pixel
+ * samples the texel at its own position (draw_sprite); that is a pixel-local filter only if the
+ * texture also covers the whole range unwrapped and lies on the frame buffer itself. */
+static void tex_prepare(const vtx* const* vs, int n, int as_uv, const double* su, const double* sv,
+                        int x0, int y0, int x1, int y1, int local) {
     if (!P.tme) return;
     int lo = P.texm == 3 ? 0 : P.cur_level, hi = P.texm == 3 ? P.mxl : P.cur_level;
     for (int l = lo; l <= hi; l++) gs_tex_validate(&P.lvl[l]);
@@ -288,19 +310,63 @@ static void tex_prepare(const vtx* const* vs, int n, int as_uv, const double* su
         if (pos != n && neg != n) all = 1;
     }
     P.nowrap = 0;
+    uint64_t reads[8] = { 0 }, snap[8] = { 0 }, dest[8];
+    int have_dest = 0, any_reads = 0, any_snap = 0;
+    /* The texels that contribute: point sampling reads texel floor(c), bilinear floor(c - 0.5) and,
+     * unless c - 0.5 is a whole number (weight 0), the next one, for c between the extremes above
+     * (the vertices; for sprites the exact values the pipeline uses at the first and last pixel).
+     * EPS covers the interpolation of triangles. The range must be tight: an extra texel row
+     * reaching into the destination buffer would make the primitive sample a snapshot (feedback),
+     * and with REPEAT a margin below 0 wraps to the far end of the texture. */
+    const double EPS = as_uv ? 0 : 1.0 / 16;
+    const int bil = P.texm != 1;
     for (int l = lo; l <= hi; l++) {
         gs_texlvl* L = &P.lvl[l];
-        if (all) { gs_tex_ensure(L, 0, L->w - 1, 0, L->h - 1); continue; }
-        double sc = 1.0 / (double)(1 << l);
-        int u0 = (int)floor(umin * sc) - 1, u1 = (int)floor(umax * sc) + 1;
-        int v0 = (int)floor(vmin * sc) - 1, v1 = (int)floor(vmax * sc) + 1;
+        int u0 = 0, u1 = L->w - 1, v0 = 0, v1 = L->h - 1;
+        if (!all) {
+            double sc = 1.0 / (double)(1 << l);
+            if (bil) {
+                u0 = (int)floor(umin * sc - 0.5 - EPS); u1 = (int)ceil(umax * sc - 0.5 + EPS);
+                v0 = (int)floor(vmin * sc - 0.5 - EPS); v1 = (int)ceil(vmax * sc - 0.5 + EPS);
+            } else {
+                u0 = (int)floor(umin * sc - EPS); u1 = (int)floor(umax * sc + EPS);
+                v0 = (int)floor(vmin * sc - EPS); v1 = (int)floor(vmax * sc + EPS);
+            }
+        }
+        if (L->dkind >= 0 && local && !all && texels_unwrapped(L, u0, u1, v0, v1) && L->tab == P.ffmt->tab &&
+            L->bp == P.fpage * 32 && L->t.tbw == P.fbw) {
+            /* every pixel samples its own memory (an in-place filter on the frame buffer): like
+             * blending, which reads the destination, the reads are ordered with the writes by the
+             * band that owns the pages; no snapshot, nothing to record. (Beyond the texture, CLAMP
+             * or REPEAT would make pixels sample other pixels, in other bands: feedback, below.) */
+            gs_tex_use_snapshot(L, 0);
+            continue;
+        }
+        if (L->dkind >= 0) {
+            uint64_t rp[8] = { 0 };
+            gs_tex_read_pages(L, u0, u1, v0, v1, rp);
+            if (!have_dest) {
+                memset(dest, 0, sizeof dest);
+                if (P.fbmsk != 0xFFFFFFFFu) add_buf_pages(P.fpage, P.fbw, P.ffmt->ph_shift, x0, y0, x1, y1, dest);
+                if (P.zuse && !P.zmsk) add_buf_pages(P.zpage, P.zbw, P.zfmt->ph_shift, x0, y0, x1, y1, dest);
+                have_dest = 1;
+            }
+            int feedback = 0;
+            for (int k = 0; k < 8; k++) feedback |= (rp[k] & dest[k]) != 0;
+            gs_tex_use_snapshot(L, feedback);
+            uint64_t* to = feedback ? snap : reads;
+            for (int k = 0; k < 8; k++) to[k] |= rp[k];
+            if (feedback) any_snap = 1; else any_reads = 1;
+        }
+        if (L->kind >= 0) continue;
+        /* the cache: one more texel of margin, which costs nothing there */
+        if (!all) { u0--; u1++; v0--; v1++; }
         gs_tex_ensure(L, u0, u1, v0, v1);
-        /* every texel the primitive can reach (one texel of margin) is inside the texture and the
-         * clamp region: sampling needs no wrapping */
-        if (P.texm != 3 && L->umode != 3 && L->vmode != 3 && u0 >= 0 && v0 >= 0 &&
-            u0 >= L->ulo && v0 >= L->vlo && u1 <= L->w - 1 && v1 <= L->h - 1 && u1 <= L->uhi && v1 <= L->vhi)
-            P.nowrap = 1;
+        /* every texel the primitive can reach is inside the texture and the clamp region: sampling
+         * (from the cache) needs no wrapping */
+        if (!all && P.texm != 3 && texels_unwrapped(L, u0, u1, v0, v1)) P.nowrap = 1;
     }
+    gs_draw_set_reads(any_reads ? reads : NULL, any_snap ? snap : NULL);
 }
 
 static void mark_written(int x0, int y0, int x1, int y1) {   /* inclusive pixel bbox */
@@ -346,8 +412,24 @@ static void draw_sprite(const vtx* v0, const vtx* v1) {
         pl.v.cy = dy > 0 ? (V1 - V0) / dy : 0;
         pl.v.c0 = V0 - pl.v.cy * (Y0 / 16.0);
         P.lod_q = v1->q;
-        double su[2] = { U0, U1 }, sv[2] = { V0, V1 };
-        tex_prepare(NULL, 2, 1, su, sv);
+        /* the coordinates (1/16 texel) the pixel pipeline will use at the first and last pixel
+         * sampled, computed exactly as span_start_at and the per-pixel stepping do (the edges X1/Y1
+         * are not sampled) */
+        const double fs = (double)(1 << UVSH);
+        int32_t ua = d2i32((pl.u.c0 + pl.u.cx * px0) * fs), du = d2i32(pl.u.cx * fs);
+        int32_t ub = (int32_t)((int64_t)ua + (int64_t)du * (px1 - px0));
+        int32_t va = d2i32((pl.v.c0 + pl.v.cy * py0) * fs), vb = d2i32((pl.v.c0 + pl.v.cy * py1) * fs);
+        double su[2] = { (double)(ua >> UVSH), (double)(ub >> UVSH) }, sv[2] = { (double)(va >> UVSH), (double)(vb >> UVSH) };
+        /* One texel per pixel, every pixel sampling the texel at its own coordinates (with bilinear
+         * filtering: exactly at its centre, the neighbours weighing 0): tex_prepare can treat an
+         * in-place filter on the frame buffer like blending, which reads the destination. Rows
+         * have the same fraction when the V step is exactly one texel. */
+        const int bil = P.texm == 2, off = bil ? 8 : 0;
+        int ou = (ua >> UVSH) - off - 16 * px0, ov = (va >> UVSH) - off - 16 * py0;
+        int local = (P.texm == 1 || P.texm == 2) && P.cur_level == 0 &&
+                    (px1 == px0 || du == 16 << UVSH) && (py1 == py0 || pl.v.cy == 16.0) &&
+                    (bil ? ou == 0 && ov == 0 : ou >= 0 && ou < 16 && ov >= 0 && ov < 16);
+        tex_prepare(NULL, 2, 1, su, sv, px0, py0, px1, py1, local);
     }
     set_steps(&pl);
     gs_batch_begin(&P, 0);               /* u along x, v along y: no per-pixel division */
@@ -473,7 +555,7 @@ static void draw_triangle(const vtx* v0, const vtx* v1, const vtx* v2) {
     if (P.tme) {
         if (P.fst) { PLANE(pl.u, u); PLANE(pl.v, v); P.lod_q = v2->q; }
         else { PLANE(pl.s, s); PLANE(pl.t, t); PLANE(pl.q, q); }
-        tex_prepare(vs, 3, 0, NULL, NULL);
+        tex_prepare(vs, 3, 0, NULL, NULL, bx0, by0, bx1, by1, 0);
     }
 #undef PLANE
     rowstep rs;
@@ -518,7 +600,9 @@ static void draw_line(const vtx* v0, const vtx* v1) {
     if (P.tme) {
         const vtx* vs[2] = { v0, v1 };
         P.lod_q = v1->q;
-        tex_prepare(vs, 2, 0, NULL, NULL);
+        int lx0 = imax((int)((X0 < X1 ? X0 : X1) >> 4) - 1, P.scx0), lx1 = imin((int)((X0 < X1 ? X1 : X0) >> 4) + 1, P.scx1);
+        int ly0 = imax((int)((Y0 < Y1 ? Y0 : Y1) >> 4) - 1, P.scy0), ly1 = imin((int)((Y0 < Y1 ? Y1 : Y0) >> 4) + 1, P.scy1);
+        tex_prepare(vs, 2, 0, NULL, NULL, lx0, ly0, lx1, ly1, 0);
     }
     planes pl;                           /* evaluated with x = t (0..1 along the line), y = 0 */
 #define LPLANE(pl, field) do { (pl).c0 = v0->field; (pl).cx = (double)v1->field - (double)v0->field; (pl).cy = 0; } while (0)
@@ -550,7 +634,7 @@ static void draw_point(const vtx* v) {
     if (P.tme) {
         const vtx* vs[1] = { v };
         P.lod_q = v->q;
-        tex_prepare(vs, 1, 0, NULL, NULL);
+        tex_prepare(vs, 1, 0, NULL, NULL, px, py, px, py, 0);
     }
     gs_span_start st = { v->r << 16, v->g << 16, v->b << 16, v->a << 16, v->f << 16, (int64_t)v->z << 16,
                          v->s, v->t, v->q, v->u << UVSH, v->v << UVSH };
@@ -637,7 +721,7 @@ static void trace_prim(int type, const vtx* const* vs, int nv) {
         uint64_t fr = reg[R_FRAME_1 + ctx], al = reg[R_ALPHA_1 + ctx], t0 = reg[R_TEX0_1 + ctx];
         fprintf(trace_out, "[gstrace] v%u %-9s %4d,%4d..%4d,%4d rgba %02X%02X%02X%02X z %u FBP %u/%02X msk %08X%s%s ABE %d "
                         "ALPHA %u%u%u%u/%02X TME %d TBP %u/%02X TFX %u TCC %u\n",
-                gs_vsync_count, names[type & 7], x0, y0, x1, y1, vs[nv - 1]->r, vs[nv - 1]->g, vs[nv - 1]->b,
+                gs_stream_vsync, names[type & 7], x0, y0, x1, y1, vs[nv - 1]->r, vs[nv - 1]->g, vs[nv - 1]->b,
                 vs[nv - 1]->a, vs[nv - 1]->z, (unsigned)(fr & 0x1FF), (unsigned)((fr >> 24) & 0x3F),
                 (unsigned)(fr >> 32), (attr >> 3) & 1 ? " gouraud" : "", (attr >> 7) & 1 ? " AA1" : "", (int)(attr >> 6) & 1,
                 (unsigned)(al & 3), (unsigned)((al >> 2) & 3), (unsigned)((al >> 4) & 3), (unsigned)((al >> 6) & 3),
@@ -645,7 +729,7 @@ static void trace_prim(int type, const vtx* const* vs, int nv) {
                 (unsigned)((t0 >> 20) & 0x3F), (unsigned)((t0 >> 35) & 3), (unsigned)((t0 >> 34) & 1));
         return;
     }
-    fprintf(trace_out, "[gstrace] v%u %s IIP %d TME %d FGE %d ABE %d AA1 %d FST %d CTXT %d FIX %d\n", gs_vsync_count,
+    fprintf(trace_out, "[gstrace] v%u %s IIP %d TME %d FGE %d ABE %d AA1 %d FST %d CTXT %d FIX %d\n", gs_stream_vsync,
             names[type & 7], (int)(attr >> 3) & 1, (int)(attr >> 4) & 1, (int)(attr >> 5) & 1, (int)(attr >> 6) & 1,
             (int)(attr >> 7) & 1, (int)(attr >> 8) & 1, ctx, (int)(attr >> 10) & 1);
     for (int i = 0; i < nv; i++) {
@@ -699,9 +783,9 @@ static void draw(int type, const vtx* a, const vtx* b, const vtx* c) {
     gs_stats.prims++;
     if (trace_on) {
         if (trace_on < 0) trace_init();
-        if (trace_on && trace_left > 0 && gs_vsync_count >= trace_from) {
+        if (trace_on && trace_left > 0 && gs_stream_vsync >= trace_from) {
             static uint32_t flushed_at;  /* the process may end without flushing stdio */
-            if (flushed_at != gs_vsync_count) { flushed_at = gs_vsync_count; fflush(trace_out); }
+            if (flushed_at != gs_stream_vsync) { flushed_at = gs_stream_vsync; fflush(trace_out); }
             const vtx* vs[3] = { a, b, c };
             trace_prim(type, vs, type == PRIM_POINT ? 1 : type == PRIM_TRI || type == PRIM_TRISTRIP || type == PRIM_TRIFAN ? 3 : 2);
             /* the last record: nothing above flushes after this, and the game ends with ExitProcess,
@@ -776,8 +860,38 @@ static void mark_xfer_dest(void) {
     xfer_marked_at = gs_tex_decodes;
 }
 
+/* Pages the current host->local transfer writes: deferred drawing that writes, samples or will
+ * snapshot them has to be done before the data lands (it is written at once, on this thread). */
+static uint64_t xfer_dest_pages[8];
+
+static void xfer_wait(void) {
+    if (gs_draw_pages_touched(xfer_dest_pages, 0)) gs_draw_sync_why(GS_SYNC_XFER);
+}
+
 static void trxdir(uint32_t dir) {
     uint64_t bb = reg[R_BITBLTBUF], pos = reg[R_TRXPOS], rr = reg[R_TRXREG];
+    /* transfers read/write VRAM in stream order: wait for the deferred drawing they could see */
+    if (dir == 0 || dir == 2) {
+        int x0 = (int)((pos >> 32) & 0x7FF), y0 = (int)((pos >> 48) & 0x7FF);
+        int x1 = x0 + (int)(rr & 0xFFF), y1 = y0 + (int)((rr >> 32) & 0xFFF);
+        memset(xfer_dest_pages, 0, sizeof xfer_dest_pages);
+        if (x1 > 2048 || y1 > 2048) memset(xfer_dest_pages, 0xFF, sizeof xfer_dest_pages);   /* wraps */
+        else gs_rect_pages((int)((bb >> 56) & 0x3F), (uint32_t)((bb >> 32) & 0x3FFF), (uint32_t)((bb >> 48) & 0x3F),
+                           x0, y0, x1, y1, xfer_dest_pages);
+        int busy = gs_draw_pages_touched(xfer_dest_pages, 0);
+        if (!busy && dir == 2) {                 /* the source must not have drawing pending either */
+            uint64_t src[8] = { 0 };
+            int sx = (int)(pos & 0x7FF), sy = (int)((pos >> 16) & 0x7FF);
+            int sx1 = sx + (int)(rr & 0xFFF), sy1 = sy + (int)((rr >> 32) & 0xFFF);
+            if (sx1 > 2048 || sy1 > 2048) memset(src, 0xFF, sizeof src);
+            else gs_rect_pages((int)((bb >> 24) & 0x3F), (uint32_t)(bb & 0x3FFF), (uint32_t)((bb >> 16) & 0x3F),
+                               sx, sy, sx1, sy1, src);
+            busy = gs_draw_pages_touched(src, 1);
+        }
+        if (busy) gs_draw_sync_why(GS_SYNC_XFER);
+    } else if (dir == 1) {
+        gs_draw_sync_why(GS_SYNC_XFER);       /* local->host: the EE reads VRAM */
+    }
     xfer_dir = (int)dir;
     xfer_dbp = (uint32_t)((bb >> 32) & 0x3FFF);
     xfer_dbw = (uint32_t)((bb >> 48) & 0x3F);
@@ -787,27 +901,29 @@ static void trxdir(uint32_t dir) {
     xfer_x1 = xfer_x0 + (int)(rr & 0xFFF);
     xfer_y1 = xfer_y0 + (int)((rr >> 32) & 0xFFF);
     gs_stats.xfers += dir != 3;
-    if (trace_on > 0 && trace_left > 0 && gs_vsync_count >= trace_from && dir != 3)
+    if (trace_on > 0 && trace_left > 0 && gs_stream_vsync >= trace_from && dir != 3)
         fprintf(trace_out, "[gstrace] v%u xfer dir %u %ux%u src %u,%u BP %u BW %u PSM %02X -> dst %d,%d BP %u BW %u PSM %02X\n",
-                gs_vsync_count, dir, (unsigned)(rr & 0xFFF), (unsigned)((rr >> 32) & 0xFFF), (unsigned)(pos & 0x7FF),
+                gs_stream_vsync, dir, (unsigned)(rr & 0xFFF), (unsigned)((rr >> 32) & 0xFFF), (unsigned)(pos & 0x7FF),
                 (unsigned)((pos >> 16) & 0x7FF), (unsigned)(bb & 0x3FFF), (unsigned)((bb >> 16) & 0x3F),
                 (unsigned)((bb >> 24) & 0x3F), xfer_x0, xfer_y0, xfer_dbp, xfer_dbw, xfer_dpsm);
     gs_mem_xfer_start(bb, pos, rr, dir);
     if (dir == 0 || dir == 2) mark_xfer_dest();
 }
 
-void gs_image_write(const void* data, uint32_t bytes) {
+void gs_exec_image_write(const void* data, uint32_t bytes) {
     GS_INIT();
+    xfer_wait();                         /* (drawing recorded since TRXDIR may touch the pages) */
     gs_stats.image_bytes += bytes;
     if (xfer_dir == 0 && xfer_marked_at != gs_tex_decodes) mark_xfer_dest();
     gs_mem_xfer_write(data, bytes);
 }
 
-uint32_t gs_image_read(void* data, uint32_t bytes) {
+uint32_t gs_exec_image_read(void* data, uint32_t bytes) {
     return gs_mem_xfer_read(data, bytes);
 }
 
 void gs_draw_reset(void) {
+    gs_draw_sync_why(GS_SYNC_OTHER);
     vcount = 0;
     env_dirty = 1;
     if (xfer_dir != 3) gs_mem_xfer_start(reg[R_BITBLTBUF], reg[R_TRXPOS], reg[R_TRXREG], 3);
@@ -820,12 +936,30 @@ static void tex0_write(int ctx, uint64_t v) {
     reg[R_TEX0_1 + ctx] = v;
     gs_tex0 t = decode_tex0(v);
     gs_texclut tc = decode_texclut(reg[R_TEXCLUT]);
+    /* a CLUT load reads VRAM (CSM1: from CBP, at most 1 KB; CSM2: a line of its buffer) */
+    if (t.cld && t.cld < 6 && (t.psm == PSMT8 || t.psm == PSMT4 || t.psm == PSMT8H || t.psm == PSMT4HL || t.psm == PSMT4HH)) {
+        uint64_t pages[8] = { 0 };
+        if (t.csm) {
+            uint32_t n = (t.psm == PSMT8 || t.psm == PSMT8H) ? 256 : 16;
+            int x = (int)(tc.cou * 16), y = (int)tc.cov;
+            if (x + (int)n > 2048) memset(pages, 0xFF, sizeof pages);
+            else gs_rect_pages((int)t.cpsm, t.cbp, tc.cbw, x, y, x + (int)n, y + 1, pages);
+        } else {
+            /* CSM1: 16x16 (T8) or 8x2 (T4) pixels at CBP, i.e. blocks CBP .. CBP+3 (PSMCT32, T8),
+             * CBP .. CBP+1 (PSMCT16, T8) or CBP (T4) */
+            uint32_t last = (t.psm == PSMT8 || t.psm == PSMT8H) ? (t.cpsm == PSMCT32 ? 3 : 1) : 0;
+            for (uint32_t p = t.cbp >> 5; p <= (t.cbp + last) >> 5; p++) pages[(p & 511) >> 6] |= 1ull << (p & 63);
+        }
+        /* (Sly 2 keeps CLUTs in pages its Z buffer covers and draws there before loading them:
+         * about two waits per frame, which block-level tracking showed to be true dependencies) */
+        if (gs_draw_pages_touched(pages, 1)) gs_draw_sync_why(GS_SYNC_CLUT);
+    }
     gs_clut_on_tex0(&t, &tc);
     if (t.cld) gs_clut_version++;
     env_dirty = 1;
 }
 
-void gs_write_reg(uint32_t r, uint64_t v) {
+void gs_exec_write_reg(uint32_t r, uint64_t v) {
     GS_INIT();
     gs_stats.regs++;
     switch (r) {
@@ -868,6 +1002,7 @@ void gs_write_reg(uint32_t r, uint64_t v) {
         trxdir((uint32_t)(v & 3));
         break;
     case R_HWREG:
+        xfer_wait();
         if (xfer_dir == 0 && xfer_marked_at != gs_tex_decodes) mark_xfer_dest();
         gs_mem_xfer_write(&v, 8);
         break;

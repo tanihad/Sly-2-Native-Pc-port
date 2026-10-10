@@ -36,7 +36,7 @@ def main() -> int:
     sources = sorted((BUILD / "recomp").glob("*.c")) + sorted((ROOT / "runtime").glob("*.c"))
     cc = run([CLANG, "-O2", "-std=c11", "-Wall", "-Wno-unused-label",
               "-I", ROOT / "runtime", "-I", BUILD / "recomp", *sources,
-              "-lwinmm", "-lgdi32", "-luser32", "-lxinput1_4", "-o", exe])
+              "-lwinmm", "-lgdi32", "-luser32", "-lxinput1_4", "-lsynchronization", "-o", exe])
     if cc.returncode or cc.stderr.strip():
         print("compile output:\n" + cc.stderr)
         if cc.returncode:
@@ -63,7 +63,32 @@ def main() -> int:
         width = bits // 4 + 2
         print(f"  {'PASS' if ok else 'FAIL'}  ${name:2}: got {got:#0{width}x}  want {want:#0{width}x}")
     print(f"\n{len(checks) - failures}/{len(checks)} passed")
-    return 1 if failures else 0
+    return 1 if failures or not check_overrides() else 0
+
+
+def check_overrides() -> bool:
+    """recomp/overrides.py replaces a function only if its bytes are the expected ones."""
+    sys.path.insert(0, str(ROOT))
+    from recomp.overrides import OVERRIDES, Override, function_sha1, override_for
+
+    class Prog:                                     # 8 words at 0x1000
+        def __init__(self, words): self.words = words
+        def read_u32(self, a): return self.words[(a - 0x1000) // 4] if 0x1000 <= a < 0x1020 else None
+
+    words = [0x3C07FFFF, 0x0000302D, 0x34E7F000, 0, 0x03E00008, 0, 0, 0]
+    prog = Prog(words)
+    saved = dict(OVERRIDES)
+    try:
+        OVERRIDES.clear()
+        OVERRIDES[0x1000] = Override("t", function_sha1(prog, 0x1000, 0x1020), "return;", "test")
+        ok = override_for(prog, 0x1000, 0x1020) is not None
+        ok &= override_for(Prog(words[:-1] + [1]), 0x1000, 0x1020) is None      # different bytes
+        ok &= override_for(prog, 0x1004, 0x1020) is None                         # not in the table
+    finally:
+        OVERRIDES.clear()
+        OVERRIDES.update(saved)
+    print(f"  {'PASS' if ok else 'FAIL'}  native overrides apply only to the expected bytes")
+    return ok
 
 
 if __name__ == "__main__":

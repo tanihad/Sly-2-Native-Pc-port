@@ -166,46 +166,57 @@ VU_INLINE __m128i fkey(__m128 v) {
 
 /* ---- pipelines ---------------------------------------------------------------------------------- */
 
-VU_INLINE void note_event(vu_state* st, uint32_t ready) { if (ready < st->next_event) st->next_event = ready; }
-
-/* Queue the MAC/status result of an FMAC op issued in the current cycle. z and u are lane masks
- * (bit0 = x) of zero and underflowed results, already restricted to the dest fields. */
-VU_INLINE void push_mac(vu_state* st, __m128 r, unsigned dst, unsigned z, unsigned u) {
-    unsigned s = (unsigned)_mm_movemask_ps(r) & dst;
-    __m128i a = _mm_and_si128(_mm_castps_si128(r), _mm_set1_epi32(0x7FFFFFFF));
-    unsigned o = (unsigned)_mm_movemask_ps(_mm_castsi128_ps(_mm_cmpeq_epi32(a, _mm_set1_epi32(0x7F7FFFFF)))) & dst;
-    vu_flagent* e = &st->fq[st->fq_tail++ & 7];
-    e->ready = st->cyc + 4;
-    e->mac = (uint16_t)(REV4[z] | REV4[s] << 4 | REV4[u] << 8 | REV4[o] << 12);
-    e->zsuo = (uint16_t)((z ? 1 : 0) | (s ? 2 : 0) | (u ? 4 : 0) | (o ? 8 : 0));
-    note_event(st, e->ready);
+/* Results in flight (MAC/status flags, clip flags, Q, P) are folded into the visible registers
+ * lazily: an instruction that reads one of them first folds in everything of that kind that is
+ * ready by its issue cycle (sync_*), and the end of a program folds everything (retire). That is
+ * exactly what folding at every cycle would show, without the per-pair cost. */
+VU_INLINE void fold_flags(vu_state* st) {
+    const vu_flagent* e = &st->fq[st->fq_head++ & 7];
+    st->mac = e->mac;
+    st->status = (st->status & ~0xFu) | e->zsuo | ((uint32_t)e->zsuo << 6);
 }
-
-VU_INLINE void retire(vu_state* st, uint32_t cyc) {
-    while (st->fq_head != st->fq_tail && st->fq[st->fq_head & 7].ready <= cyc) {
-        const vu_flagent* e = &st->fq[st->fq_head++ & 7];
-        st->mac = e->mac;
-        st->status = (st->status & ~0xFu) | e->zsuo | ((uint32_t)e->zsuo << 6);
-    }
+VU_INLINE void sync_flags(vu_state* st, uint32_t cyc) {
+    while (st->fq_head != st->fq_tail && st->fq[st->fq_head & 7].ready <= cyc) fold_flags(st);
+}
+VU_INLINE void sync_clip(vu_state* st, uint32_t cyc) {
     while (st->cq_head != st->cq_tail && st->cq[st->cq_head & 7].ready <= cyc)
         st->clip = st->cq[st->cq_head++ & 7].clip;
+}
+VU_INLINE void sync_q(vu_state* st, uint32_t cyc) {
     if (st->q_pend && st->q_ready <= cyc) {
         st->Q = st->q_next;
         st->status = (st->status & ~0x30u) | st->q_flags | (st->q_flags << 6);
         st->q_pend = 0;
     }
+}
+VU_INLINE void sync_p(vu_state* st, uint32_t cyc) {
     while (st->p_pend && st->p_ready[0] <= cyc) {
         st->P = st->p_next[0];
         st->p_next[0] = st->p_next[1];
         st->p_ready[0] = st->p_ready[1];
         st->p_pend--;
     }
-    uint32_t n = UINT32_MAX;
-    if (st->fq_head != st->fq_tail && st->fq[st->fq_head & 7].ready < n) n = st->fq[st->fq_head & 7].ready;
-    if (st->cq_head != st->cq_tail && st->cq[st->cq_head & 7].ready < n) n = st->cq[st->cq_head & 7].ready;
-    if (st->q_pend && st->q_ready < n) n = st->q_ready;
-    if (st->p_pend && st->p_ready[0] < n) n = st->p_ready[0];
-    st->next_event = n;
+}
+VU_INLINE void retire(vu_state* st, uint32_t cyc) {
+    sync_flags(st, cyc);
+    sync_clip(st, cyc);
+    sync_q(st, cyc);
+    sync_p(st, cyc);
+}
+
+/* Queue the MAC/status result of an FMAC op issued in the current cycle. z and u are lane masks
+ * (bit0 = x) of zero and underflowed results, already restricted to the dest fields. At most one
+ * FMAC op issues per cycle and results land 4 cycles later, so when all 8 slots are taken the
+ * oldest result is certainly visible already: fold it to make room. */
+VU_INLINE void push_mac(vu_state* st, __m128 r, unsigned dst, unsigned z, unsigned u) {
+    unsigned s = (unsigned)_mm_movemask_ps(r) & dst;
+    __m128i a = _mm_and_si128(_mm_castps_si128(r), _mm_set1_epi32(0x7FFFFFFF));
+    unsigned o = (unsigned)_mm_movemask_ps(_mm_castsi128_ps(_mm_cmpeq_epi32(a, _mm_set1_epi32(0x7F7FFFFF)))) & dst;
+    if (st->fq_tail - st->fq_head == 8) fold_flags(st);
+    vu_flagent* e = &st->fq[st->fq_tail++ & 7];
+    e->ready = st->cyc + 4;
+    e->mac = (uint16_t)(REV4[z] | REV4[s] << 4 | REV4[u] << 8 | REV4[o] << 12);
+    e->zsuo = (uint16_t)((z ? 1 : 0) | (s ? 2 : 0) | (u ? 4 : 0) | (o ? 8 : 0));
 }
 
 /* Conditional branches read a VI register before a chain of up to four immediately preceding
@@ -266,10 +277,10 @@ static void log_invalid(const vu_state* st, const vu_op* op, const char* what) {
 
 /* ---- upper handlers ----------------------------------------------------------------------------- */
 
-VU_INLINE __m128 opb(const vu_state* st, const vu_op* op, int bm) {
+VU_INLINE __m128 opb(vu_state* st, const vu_op* op, int bm) {
     if (bm == BM_VEC) return vclean(vld(&st->vf[op->uft]));
     if (bm == BM_BC)  return vclean(vbits(st->vf[op->uft].u[op->ubc]));
-    if (bm == BM_Q)   return vclean(vbits(st->Q));
+    if (bm == BM_Q)   { sync_q(st, st->cyc); return vclean(vbits(st->Q)); }
     return vclean(vbits(st->I));
 }
 VU_INLINE vf128* utarget(vu_state* st, const vu_op* op) {
@@ -399,10 +410,10 @@ static vf128* u_clip(vu_state* st, const vu_op* op, __m128* out) {
     uint32_t j = (uint32_t)(x > w) | (uint32_t)(x < -w) << 1 | (uint32_t)(y > w) << 2 |
                  (uint32_t)(y < -w) << 3 | (uint32_t)(z > w) << 4 | (uint32_t)(z < -w) << 5;
     st->clip_pipe = ((st->clip_pipe << 6) | j) & 0xFFFFFF;
+    if (st->cq_tail - st->cq_head == 8) st->clip = st->cq[st->cq_head++ & 7].clip;   /* landed (see push_mac) */
     vu_clipent* e = &st->cq[st->cq_tail++ & 7];
     e->ready = st->cyc + 4;
     e->clip = st->clip_pipe;
-    note_event(st, e->ready);
     return NULL;
 }
 
@@ -432,22 +443,26 @@ LFN(l_iadd) { SETVI(op->ld, VI(op->ls) + VI(op->lt)); return npc; }
 LFN(l_isub) { SETVI(op->ld, VI(op->ls) - VI(op->lt)); return npc; }
 LFN(l_iand) { SETVI(op->ld, VI(op->ls) & VI(op->lt)); return npc; }
 LFN(l_ior)  { SETVI(op->ld, VI(op->ls) | VI(op->lt)); return npc; }
-LFN(l_fceq) { st->vi[1] = (st->clip & 0xFFFFFF) == (uint32_t)op->imm; return npc; }
-LFN(l_fcand) { st->vi[1] = (st->clip & (uint32_t)op->imm) != 0; return npc; }
-LFN(l_fcor) { st->vi[1] = ((st->clip | (uint32_t)op->imm) & 0xFFFFFF) == 0xFFFFFF; return npc; }
+/* flag readers fold in what has landed by now (see retire) */
+#define CLIP_NOW() (sync_clip(st, st->cyc), st->clip)
+#define STATUS_NOW() (sync_flags(st, st->cyc), sync_q(st, st->cyc), st->status)
+#define MAC_NOW() (sync_flags(st, st->cyc), st->mac)
+LFN(l_fceq) { st->vi[1] = (CLIP_NOW() & 0xFFFFFF) == (uint32_t)op->imm; return npc; }
+LFN(l_fcand) { st->vi[1] = (CLIP_NOW() & (uint32_t)op->imm) != 0; return npc; }
+LFN(l_fcor) { st->vi[1] = ((CLIP_NOW() | (uint32_t)op->imm) & 0xFFFFFF) == 0xFFFFFF; return npc; }
 LFN(l_fcset) {
     st->clip = st->clip_pipe = (uint32_t)op->imm;
     st->cq_head = st->cq_tail;                      /* in-flight CLIP results are overwritten */
     return npc;
 }
-LFN(l_fcget) { SETVI(op->lt, st->clip & 0xFFF); return npc; }
-LFN(l_fseq)  { SETVI(op->lt, (st->status & 0xFFF) == (uint32_t)op->imm); return npc; }
-LFN(l_fsand) { SETVI(op->lt, st->status & (uint32_t)op->imm); return npc; }
-LFN(l_fsor)  { SETVI(op->lt, ((st->status | (uint32_t)op->imm) & 0xFFF) == 0xFFF); return npc; }
-LFN(l_fsset) { st->status = (st->status & 0x3F) | ((uint32_t)op->imm & 0xFC0); return npc; }
-LFN(l_fmeq)  { SETVI(op->lt, (st->mac & 0xFFFF) == VI(op->ls)); return npc; }
-LFN(l_fmand) { SETVI(op->lt, st->mac & VI(op->ls)); return npc; }
-LFN(l_fmor)  { SETVI(op->lt, ((st->mac | VI(op->ls)) & 0xFFFF) == 0xFFFF); return npc; }
+LFN(l_fcget) { SETVI(op->lt, CLIP_NOW() & 0xFFF); return npc; }
+LFN(l_fseq)  { SETVI(op->lt, (STATUS_NOW() & 0xFFF) == (uint32_t)op->imm); return npc; }
+LFN(l_fsand) { SETVI(op->lt, STATUS_NOW() & (uint32_t)op->imm); return npc; }
+LFN(l_fsor)  { SETVI(op->lt, ((STATUS_NOW() | (uint32_t)op->imm) & 0xFFF) == 0xFFF); return npc; }
+LFN(l_fsset) { st->status = (STATUS_NOW() & 0x3F) | ((uint32_t)op->imm & 0xFC0); return npc; }
+LFN(l_fmeq)  { SETVI(op->lt, (MAC_NOW() & 0xFFFF) == VI(op->ls)); return npc; }
+LFN(l_fmand) { SETVI(op->lt, MAC_NOW() & VI(op->ls)); return npc; }
+LFN(l_fmor)  { SETVI(op->lt, ((MAC_NOW() | VI(op->ls)) & 0xFFFF) == 0xFFFF); return npc; }
 /* Branches: npc is the address after the delay slot, which is also the link value. */
 LFN(l_b)    { (void)st; (void)npc; return (uint32_t)op->imm; }
 LFN(l_bal)  { SETVI(op->lt, npc); return (uint32_t)op->imm; }
@@ -494,8 +509,8 @@ LFN(l_sqd) {
 
 /* FDIV: Q arrives 7 (DIV, SQRT) or 13 (RSQRT) cycles after issue, with the I/D status flags. */
 VU_INLINE void start_fdiv(vu_state* st, uint32_t lat, uint32_t q, uint32_t flags) {
+    sync_q(st, st->cyc);                         /* the previous result (FDIV stalls until it lands) */
     st->q_pend = 1; st->q_next = q; st->q_ready = st->cyc + lat; st->q_flags = flags;
-    note_event(st, st->q_ready);
 }
 LFN(l_div) {
     uint32_t sb = st->vf[op->ls].u[op->fsf], tb = st->vf[op->lt].u[op->ftf];
@@ -529,7 +544,7 @@ static uint32_t rnext(uint32_t r) {
 }
 LFN(l_rnext) { st->R = rnext(st->R); if (op->lt) vwrite(&st->vf[op->lt], vbits(st->R), op->ldst); return npc; }
 LFN(l_rget)  { vwrite(&st->vf[op->lt], vbits(st->R), op->ldst); return npc; }
-LFN(l_mfp)   { vwrite(&st->vf[op->lt], vbits(st->P), op->ldst); return npc; }
+LFN(l_mfp)   { sync_p(st, st->cyc); vwrite(&st->vf[op->lt], vbits(st->P), op->ldst); return npc; }
 LFN(l_rinit) { st->R = 0x3F800000u | (st->vf[op->ls].u[op->fsf] & 0x7FFFFF); return npc; }
 LFN(l_rxor)  { st->R = 0x3F800000u | ((st->R ^ st->vf[op->ls].u[op->fsf]) & 0x7FFFFF); return npc; }
 LFN(l_xtop)  { SETVI(op->lt, st->top); return npc; }
@@ -564,10 +579,10 @@ LFN(l_efu) {
     case LOP_EATAN:   p = atanf(f); break;
     default:          p = expf(-f); break;     /* EEXP */
     }
+    sync_p(st, st->cyc);
     const uint32_t k = st->p_pend++;         /* at most one older result is still in flight */
     st->p_next[k] = fbits(p);
     st->p_ready[k] = st->cyc + (uint32_t)op->imm;
-    note_event(st, st->p_ready[k]);
     return npc;
 }
 LFN(l_invalid) { log_invalid(st, op, "lower"); return npc; }
@@ -931,7 +946,6 @@ uint32_t vu_run(vu_state* st, uint32_t pc) {
             stalled = t != cyc;
             cyc = t;
         }
-        if (cyc >= st->next_event) retire(st, cyc);
         st->cyc = cyc;
         st->stalled = stalled;
         st->hpos = n;

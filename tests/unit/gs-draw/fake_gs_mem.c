@@ -150,6 +150,14 @@ uint32_t gs_tex_fetch(const gs_tex0* t, const gs_texa* ta, int u, int v) {
     }
 }
 
+const uint16_t* gs_clut_buffer(void) { return NULL; }   /* (gs_record.c: not recorded here) */
+
+uint32_t gs_clut_lookup(const gs_tex0* t, const gs_texa* ta, uint32_t index) {
+    int t4 = t->psm == PSMT4 || t->psm == PSMT4HL || t->psm == PSMT4HH;
+    uint32_t e = clut[t4 ? ((t->csa * 16 + (index & 15)) & 255) : (index & 255)];
+    return t->cpsm == PSMCT32 ? e : expand16(e, ta);
+}
+
 /* ---- transfers ------------------------------------------------------------------------------ */
 
 static struct { int active, dir, psm, sx, sy, dx, dy, w, h, x, y; uint32_t sbp, sbw, dbp, dbw; uint32_t acc; int accbits; } X;

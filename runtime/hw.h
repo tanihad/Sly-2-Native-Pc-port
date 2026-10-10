@@ -106,6 +106,19 @@ void     gs_vsync(void);                                   /* start of vertical 
  * is off. *w and *h receive the output size in pixels. */
 int      gs_display(uint32_t* dst, int stride, int* w, int* h);
 
+/* ---- gs_thread.c: the GS on its own host thread ---------------------------------------------------
+ * After gs_thread_start(), gs_write_reg/gs_image_write only queue (in order) and a host thread
+ * executes the stream, sharing large primitives with `pixel_workers` more threads. The picture of
+ * each VBlank is composed there too: gs_queue_vsync() marks the VBlank in the stream, and when the
+ * GS reaches it `present` is called (on the GS thread) with the picture a synchronous GS would have
+ * shown at that VBlank (ok = 0: display off). The EE waits only where it observes the GS (local->host
+ * transfers, CSR.RESET) and at a VBlank while the previous picture is still pending. Without
+ * gs_thread_start() everything stays synchronous (unit tests). */
+typedef void (*gs_present_fn)(const uint32_t* frame, int ok, int w, int h, uint32_t vblank);
+void     gs_thread_start(int pixel_workers, gs_present_fn present);
+int      gs_async(void);                 /* the GS thread is running */
+void     gs_queue_vsync(uint32_t vblank);
+
 /* ---- window.c: presentation + input (own OS thread) --------------------------------------------- */
 
 /* Controller state, active-high bits in DualShock 2 order. */

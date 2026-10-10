@@ -6,6 +6,7 @@
  * thread becomes ready. Switches only happen at syscalls and after interrupt handlers return,
  * the same places the real kernel can switch. */
 #include "ps2_internal.h"
+#include "perf.h"
 
 #include <stdlib.h>
 #include <windows.h>
@@ -91,7 +92,12 @@ static void schedule(void) {
     if (!next) {
         idling = 1;
         while (!next) {
-            while (!ps2_irq_pending) Sleep(1);
+            int perf_prev = perf_enter(PERF_IDLE);
+            /* the host timer (ps2_runtime.c) wakes us as soon as it raises something; the timeout
+             * covers interrupts raised by other threads without a wake */
+            static const uint32_t none = 0;
+            while (!ps2_irq_pending) WaitOnAddress((volatile VOID*)&ps2_irq_pending, (PVOID)&none, sizeof none, 1);
+            perf_leave(perf_prev);
             ps2_service_irq(&idle_ctx);
             next = pick_next();
         }

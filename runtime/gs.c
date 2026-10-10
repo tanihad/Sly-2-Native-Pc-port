@@ -5,6 +5,7 @@
  * VSync), bits 14-15 FIFO status (always "empty": drawing is synchronous), REV/ID in bits 16-31.
  * IMR bits 8-12 mask the same events; an unmasked event raises INTC_GS when it is set. */
 #include "gs_draw.h"
+#include "perf.h"
 
 #include <stdlib.h>
 
@@ -55,8 +56,8 @@ void gs_vsync(void) {
     if (log_gs < 0) log_gs = getenv("PS2_LOG_GS") != NULL;
     if (log_gs && ++vsyncs % 60 == 0) {
         fprintf(stderr, "[gs] last 60 vsyncs: %u register writes, %u primitives (%u triangles, %u sprites), "
-                        "%u transfers, %u image bytes\n", gs_stats.regs, gs_stats.prims, gs_stats.tris,
-                gs_stats.sprites, gs_stats.xfers, gs_stats.image_bytes);
+                        "%u pixels, %u transfers, %u image bytes\n", gs_stats.regs, gs_stats.prims, gs_stats.tris,
+                gs_stats.sprites, gs_stats.pixels, gs_stats.xfers, gs_stats.image_bytes);
         memset(&gs_stats, 0, sizeof gs_stats);
     }
 }
@@ -67,6 +68,7 @@ static void csr_write(uint64_t v) {
     csr_events &= ~(uint32_t)(v & 0x1F);
     if (v & CSR_RESET) {
         csr_events = 0;
+        gs_sync();                       /* the GS thread must be idle (gs_thread.c) */
         gs_draw_reset();
     }
 }
@@ -115,7 +117,11 @@ void gs_priv_access(uint32_t phys, void* data, unsigned size, int is_write) {
     uint64_t m = n == 8 ? ~0ull : (((1ull << (n * 8)) - 1) << (sub * 8));
     uint64_t merged = (*reg & ~m) | (v & m);
     if (special == 2) imr_write(merged);
-    else *reg = merged;
+    else {
+        if ((reg == &priv[P_DISPFB1] || reg == &priv[P_DISPFB2]) && *reg != merged)
+            perf_state.flips++;          /* PS2_PERF: the game showed another buffer */
+        *reg = merged;
+    }
     if (reg == &priv[P_EXTWRITE] && (merged & 1)) {
         static int logged;
         if (!logged) { logged = 1; fprintf(stderr, "[gs] EXTWRITE (display capture) not emulated\n"); }
@@ -129,7 +135,7 @@ typedef struct {
     const gs_fmt* fmt;
 } circuit;
 
-static void decode_circuit(int i, circuit* c) {
+static void decode_circuit(const uint64_t* priv, int i, circuit* c) {
     uint64_t fb = priv[P_DISPFB1 + 2 * i], d = priv[P_DISPLAY1 + 2 * i];
     c->fbp = (int)(fb & 0x1FF); c->fbw = (int)((fb >> 9) & 0x3F); c->psm = (int)((fb >> 15) & 0x1F);
     c->dbx = (int)((fb >> 32) & 0x7FF); c->dby = (int)((fb >> 43) & 0x7FF);
@@ -171,6 +177,16 @@ static uint32_t mix(uint32_t a, uint32_t b, uint32_t al) {      /* a*al + b*(255
     return (r << 16) | (g << 8) | bl;
 }
 
+/* A display register snapshot (gs_priv_snapshot) is priv[] plus the VBlank count it was taken at. */
+enum { S_VSYNC = P_COUNT };
+_Static_assert(S_VSYNC < GS_PRIV_SNAPSHOT, "display snapshot too small");
+
+void gs_priv_snapshot(uint64_t out[GS_PRIV_SNAPSHOT]) {
+    memset(out, 0, GS_PRIV_SNAPSHOT * sizeof(uint64_t));
+    memcpy(out, priv, sizeof priv);
+    out[S_VSYNC] = gs_vsync_count;
+}
+
 /* Interlaced field mode (SMODE2 INT = FFMD = 1): each field shows one 224-line buffer on the even or
  * the odd scanlines of the 448-line picture. gs_display line-doubles the current field. When the game
  * rendered it as an odd or even field (half-pixel XYOFFSET.Y, see gs_fb_yfrac), the field is put on
@@ -192,15 +208,18 @@ static uint32_t px_avg(uint32_t a, uint32_t b) {
     return (((a & 0xFEFEFE) >> 1) + ((b & 0xFEFEFE) >> 1) + (a & b & 0x010101)) & 0xFFFFFF;
 }
 
-static void deinterlace(uint32_t* dst, int stride, int W, int H, const circuit* ref) {
+static void deinterlace(uint32_t* dst, int stride, int W, int H, const circuit* ref, const gs_display_snap* s) {
+    /* Runs where the picture is composed (in order, one picture at a time): s holds the GS stream's
+     * field state (gs_fb_yfrac/psm) at this VBlank and the VBlank count of the register snapshot. */
     static uint32_t rows[2][512 * 1024];          /* last field of each parity: [(oy >> 1) * 1024 + x] */
-    static uint32_t when[2];                      /* gs_vsync_count + 1 when it was shown, 0 = none */
+    static uint32_t when[2];                      /* vsync + 1 when it was shown, 0 = none */
     static int dims[2][2];
     static uint8_t still[1024];                   /* per pixel of an output row: no motion around it */
-    int f = gs_fb_psm[ref->fbp & 511] == ref->psm ? gs_fb_yfrac[ref->fbp & 511] : 0xFF;
+    const uint32_t vsync = (uint32_t)s->priv[S_VSYNC];
+    int f = s->fb_psm[ref->fbp & 511] == ref->psm ? s->fb_yfrac[ref->fbp & 511] : 0xFF;
     if (f != 0 && f != 8) { when[0] = when[1] = 0; return; }
     int par = f == 8, oth = !par;
-    uint32_t now = gs_vsync_count + 1;
+    uint32_t now = vsync + 1;
     int have_same = when[par] && when[par] + 3 >= now && dims[par][0] == W && dims[par][1] == H;
     int have_oth = when[oth] && when[oth] + 2 >= now && dims[oth][0] == W && dims[oth][1] == H;
 #define ROW(y) (dst + (size_t)(y) * (size_t)stride)
@@ -229,7 +248,46 @@ static void deinterlace(uint32_t* dst, int stride, int W, int H, const circuit* 
 }
 
 int gs_display(uint32_t* dst, int stride, int* w, int* h) {
+    gs_sync();                           /* everything drawn so far must be in VRAM */
+    uint64_t snap[GS_PRIV_SNAPSHOT];
+    gs_priv_snapshot(snap);
+    return gs_display_regs(snap, dst, stride, w, h);
+}
+
+uint32_t gs_stream_vsync;
+
+void gs_display_snapshot(gs_display_snap* s, const uint64_t priv[GS_PRIV_SNAPSHOT]) {
+    gs_stream_vsync = (uint32_t)priv[S_VSYNC];      /* (taken in stream order) */
+    memcpy(s->priv, priv, sizeof s->priv);
+    memcpy(s->fb_yfrac, gs_fb_yfrac, sizeof s->fb_yfrac);
+    memcpy(s->fb_psm, gs_fb_psm, sizeof s->fb_psm);
+}
+
+void gs_display_pages(const uint64_t priv[GS_PRIV_SNAPSHOT], uint64_t set[8]) {
+    uint64_t pmode = priv[P_PMODE];
+    const int field_mode = (priv[P_SMODE2] & 3) == 3;      /* the buffer holds every other line */
+    for (int i = 0; i < 2; i++) {
+        if (!((pmode >> i) & 1)) continue;
+        circuit c;
+        decode_circuit(priv, i, &c);
+        int w = (c.dw + 1) / (c.magh + 1) + 1, h = (c.dh + 1) / (c.magv + 1) + 1;
+        if (field_mode) h = h / 2 + 1;
+        if (c.dbx + w > 2048 || c.dby + h > 2048) { memset(set, 0xFF, 8 * sizeof set[0]); return; }
+        gs_rect_pages(c.psm, (uint32_t)c.fbp * 32, (uint32_t)c.fbw, c.dbx, c.dby, c.dbx + w, c.dby + h, set);
+    }
+}
+
+int gs_display_regs(const uint64_t priv[GS_PRIV_SNAPSHOT], uint32_t* dst, int stride, int* w, int* h) {
     GS_INIT();
+    gs_stream_vsync = (uint32_t)priv[S_VSYNC];
+    gs_draw_sync_why(GS_SYNC_DISPLAY);   /* deferred drawing reaches VRAM first */
+    static gs_display_snap s;
+    gs_display_snapshot(&s, priv);
+    return gs_compose(&s, dst, stride, w, h);
+}
+
+int gs_compose(const gs_display_snap* snap, uint32_t* dst, int stride, int* w, int* h) {
+    const uint64_t* priv = snap->priv;
     uint64_t pmode = priv[P_PMODE];
     int en[2] = { (int)(pmode & 1), (int)((pmode >> 1) & 1) };
     *w = *h = 0;
@@ -241,7 +299,7 @@ int gs_display(uint32_t* dst, int stride, int* w, int* h) {
     circuit c[2];
     int ux0 = 1 << 30, uy0 = 1 << 30, ux1 = 0, uy1 = 0;
     for (int i = 0; i < 2; i++) {
-        decode_circuit(i, &c[i]);
+        decode_circuit(priv, i, &c[i]);
         if (!en[i]) continue;
         ux0 = c[i].dx < ux0 ? c[i].dx : ux0;
         uy0 = c[i].dy < uy0 ? c[i].dy : uy0;
@@ -317,7 +375,7 @@ int gs_display(uint32_t* dst, int stride, int* w, int* h) {
             }
         }
     }
-    if (field_mode) deinterlace(dst, stride, W, H, ref);
+    if (field_mode) deinterlace(dst, stride, W, H, ref, snap);
     *w = W;
     *h = H;
     return 1;

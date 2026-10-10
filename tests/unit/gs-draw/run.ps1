@@ -18,12 +18,15 @@ $out = Join-Path $root 'build\unit\gs-draw'
 New-Item -ItemType Directory -Force $out | Out-Null
 
 $rt = Join-Path $root 'runtime'
-$src = @('gs.c', 'gs_draw.c', 'gs_draw_pixel.c', 'gs_draw_tex.c', 'gs_draw_swz.c', 'debug.c') | ForEach-Object { Join-Path $rt $_ }
+$src = @('gs.c', 'gs_draw.c', 'gs_draw_pixel.c', 'gs_draw_tex.c', 'gs_draw_swz.c', 'gs_thread.c', 'gs_record.c', 'debug.c') | ForEach-Object { Join-Path $rt $_ }
 $src += Join-Path $PSScriptRoot 'test_gs_draw.c'
 $flags = @('-O2', '-std=c11', '-Wall', '-Wno-comment', '-I', $rt)
+$libs = @('-lsynchronization')
 $fake = @(Join-Path $PSScriptRoot 'fake_gs_mem.c')
 
+# test_gs_draw_async: the same scenes through the GS thread with 3 pixel workers (gs_thread.c)
 $variants = @(@{ name = 'test_gs_draw'; defs = @(); mem = $fake; dir = $out },
+              @{ name = 'test_gs_draw_async'; defs = @('-DTEST_ASYNC'); mem = $fake; dir = (Join-Path $out 'async') },
               @{ name = 'test_gs_draw_linear'; defs = @('-DFAKE_LINEAR'); mem = $fake; dir = (Join-Path $out 'linear') })
 $realmem = Join-Path $rt 'gs_mem.c'
 if ((Test-Path $realmem) -and -not (Select-String -Path $realmem -Pattern 'STUB' -Quiet)) {
@@ -35,7 +38,7 @@ $failed = $false
 foreach ($v in $variants) {
     New-Item -ItemType Directory -Force $v.dir | Out-Null
     $exe = Join-Path $out ($v.name + '.exe')
-    & $clang @flags @($v.defs) @src @($v.mem) -o $exe
+    & $clang @flags @($v.defs) @src @($v.mem) @libs -o $exe
     if ($LASTEXITCODE -ne 0) { Write-Host "build of $($v.name) failed"; exit 1 }
     & $exe $v.dir
     if ($LASTEXITCODE -ne 0) { $failed = $true }

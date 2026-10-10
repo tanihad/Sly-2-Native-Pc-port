@@ -49,6 +49,13 @@ Unit tests go in `tests/unit/<subsystem>/` with a `run.ps1` that builds and runs
 4. Never call game code or deliver interrupts directly; use `intc_raise` / `dmac_raise`.
 5. Don't modify files you don't own. Don't push. Commit to your own branch.
 
+## Threads (performance)
+
+Rule 3 describes the interface. Behind it, the GS runs on its own thread (`runtime/gs_thread.c`:
+the EE queues register writes and image data in order and waits only where it observes the GS)
+with pixel workers drawing deferred batches (`runtime/gs_draw_pixel.c`); VBlanks come from a host
+timer thread. Measuring and tuning: `notes/performance.md`.
+
 ## Building and running from a worktree
 
 tools/, orig/ and .venv/ only exist in the main checkout

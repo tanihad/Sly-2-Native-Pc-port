@@ -7,6 +7,7 @@
  * protocol (also documented by ps2sdk).
  */
 #include "hw.h"
+#include "perf.h"
 
 #include <stdlib.h>
 
@@ -188,6 +189,7 @@ static void handle_command(const uint8_t* pkt) {
 }
 
 uint32_t sif_set_dma(ps2_ctx* ctx, uint32_t desc, uint32_t count) {
+    int perf_prev = perf_enter(PERF_IOP);                         /* PS2_PERF: IOP services */
     cur_ctx = ctx;
     for (uint32_t i = 0; i < count; i++) {
         uint32_t d = desc + 16 * i;
@@ -200,6 +202,7 @@ uint32_t sif_set_dma(ps2_ctx* ctx, uint32_t desc, uint32_t count) {
         }
         if (off == IOP_CMD_BUF) handle_command(iop_ram + off);
     }
+    perf_leave(perf_prev);
     return next_dma_id++;
 }
 

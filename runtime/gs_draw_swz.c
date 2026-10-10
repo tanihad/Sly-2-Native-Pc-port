@@ -132,6 +132,28 @@ void gs_page_dims(int psm, int* pw, int* ph) {
     }
 }
 
+void gs_rect_pages(int psm, uint32_t bp, uint32_t bw, int x0, int y0, int x1, int y1, uint64_t set[8]) {
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 <= x0 || y1 <= y0) return;
+    int pw, ph;
+    gs_page_dims(psm, &pw, &ph);
+    uint32_t ppr = bw * 64 / (uint32_t)pw;
+    if (!ppr) ppr = 1;
+    int r0 = y0 / ph, r1 = (y1 - 1) / ph, c0 = x0 / pw, c1 = (x1 - 1) / pw;
+    if ((uint32_t)(r1 - r0 + 1) * (uint32_t)(c1 - c0 + 1) >= 512) {
+        memset(set, 0xFF, 8 * sizeof set[0]);
+        return;
+    }
+    uint32_t base = bp >> 5, extra = (bp & 31) != 0;         /* block offset: content spills into p+1 */
+    for (int r = r0; r <= r1; r++)
+        for (int c = c0; c <= c1; c++) {
+            uint32_t p = (base + (uint32_t)r * ppr + (uint32_t)c) & 511;
+            set[p >> 6] |= 1ull << (p & 63);
+            if (extra) { p = (p + 1) & 511; set[p >> 6] |= 1ull << (p & 63); }
+        }
+}
+
 void gs_mark_rect(int psm, uint32_t bp, uint32_t bw, int x0, int y0, int x1, int y1) {
     if (x0 < 0) x0 = 0;
     if (y0 < 0) y0 = 0;

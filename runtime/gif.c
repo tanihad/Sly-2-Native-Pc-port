@@ -36,6 +36,7 @@
  * Debugging: PS2_LOG_GIF=1 prints every GIFtag (first 100000) to stderr.
  */
 #include "hw.h"
+#include "perf.h"
 
 #include <stdlib.h>
 
@@ -159,7 +160,7 @@ static inline void packed_write(gif_path* p, uint32_t desc, uint64_t d0, uint64_
 /* Run qwords through one path's state machine; returns how many were consumed.
  * FEED_PATH1 stops right after the packet's EOP tag completes; FEED_PATH3 stops at a packet
  * boundary while PATH3 is masked or paused; FEED_PATH2 consumes everything. */
-static uint32_t gif_feed(gif_path* p, int path, const uint8_t* src, uint32_t qwc, int how) {
+static uint32_t gif_feed_body(gif_path* p, int path, const uint8_t* src, uint32_t qwc, int how) {
     uint32_t i = 0;
     while (i < qwc) {
         const uint8_t* qw = src + (size_t)i * 16;
@@ -197,6 +198,14 @@ static uint32_t gif_feed(gif_path* p, int path, const uint8_t* src, uint32_t qwc
         }
     }
     return i;
+}
+
+/* Everything the GS draws passes through here: charged to GS time in the PS2_PERF report. */
+static uint32_t gif_feed(gif_path* p, int path, const uint8_t* src, uint32_t qwc, int how) {
+    int perf_prev = perf_enter(PERF_GS);
+    uint32_t n = gif_feed_body(p, path, src, qwc, how);
+    perf_leave(perf_prev);
+    return n;
 }
 
 /* ---- PATH3 FIFO -------------------------------------------------------------------------------- */

@@ -84,6 +84,10 @@ static inline uint32_t clut_lookup(const gs_tex0* t, const gs_texa* ta, uint32_t
     return clut[p] | (uint32_t)clut[p ^ 256u] << 16;
 }
 
+uint32_t gs_clut_lookup(const gs_tex0* t, const gs_texa* ta, uint32_t index) {
+    return clut_lookup(t, ta, index & 255u);
+}
+
 uint32_t gs_tex_fetch(const gs_tex0* t, const gs_texa* ta, int u, int v) {
     uint32_t x = (uint32_t)u & 2047u, y = (uint32_t)v & 2047u, bp = t->tbp0, bw = t->tbw;
     switch (t->psm) {

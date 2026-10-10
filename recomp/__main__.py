@@ -7,9 +7,10 @@ import hashlib
 from collections import Counter
 from pathlib import Path
 
-from .codegen import FunctionTranslator, cname
+from .codegen import FunctionTranslator, cname, override_body
 from .elf import load
 from .functions import find_functions
+from .overrides import override_for
 
 
 def translate_all(path: str):
@@ -17,7 +18,14 @@ def translate_all(path: str):
     funcs = find_functions(prog)
     starts = {f.start for f in funcs}
     stats: Counter = Counter()
-    bodies = [FunctionTranslator(f, starts, stats).translate() for f in funcs]
+    bodies = []
+    for f in funcs:
+        o = override_for(prog, f.start, f.end)        # native replacement (recomp/overrides.py)
+        if o:
+            stats["native overrides"] += 1
+            bodies.append(override_body(f, o))
+        else:
+            bodies.append(FunctionTranslator(f, starts, stats).translate())
     return prog, funcs, bodies, stats
 
 
@@ -48,32 +56,42 @@ def cmd_analyze(args) -> None:
             print(f"\nwarning: {stats[k]} {k}")
 
 
+def write_if_changed(path: Path, text: str) -> None:
+    """Leave unchanged files alone, so their mtime (and the build's object files) stay valid."""
+    if path.exists() and path.read_text(encoding="utf-8") == text:
+        return
+    path.write_text(text, encoding="utf-8")
+
+
 def cmd_generate(args) -> None:
     prog, funcs, bodies, stats = translate_all(args.elf)
     out = Path(args.output)
     out.mkdir(parents=True, exist_ok=True)
-    for stale in [*out.glob("funcs_*.c"), *out.glob("*.o")]:   # file count can shrink between runs
-        stale.unlink()
 
     protos = "\n".join(f"void {cname(f.start)}(ps2_ctx* ctx);" for f in funcs)
-    (out / "recomp_funcs.h").write_text(
-        f'#pragma once\n#include "ps2_runtime.h"\n\n{protos}\n', encoding="utf-8")
+    write_if_changed(out / "recomp_funcs.h", f'#pragma once\n#include "ps2_runtime.h"\n\n{protos}\n')
 
+    written = set()
     for n in range(0, len(bodies), args.per_file):
         chunk = "\n\n".join(bodies[n:n + args.per_file])
-        (out / f"funcs_{n // args.per_file:03}.c").write_text(
-            f'#include "recomp_funcs.h"\n\n{chunk}\n', encoding="utf-8")
+        name = f"funcs_{n // args.per_file:03}.c"
+        write_if_changed(out / name, f'#include "recomp_funcs.h"\n\n{chunk}\n')
+        written.add(name)
+    for stale in [*out.glob("funcs_*.c"), *out.glob("*.o")]:   # file count can shrink between runs
+        if stale.name not in written:
+            stale.unlink()
 
     table = ",\n".join(f"    {{ 0x{f.start:08X}u, {cname(f.start)} }}" for f in funcs)
-    (out / "func_table.c").write_text(
-        '#include "recomp_funcs.h"\n\n'
-        f"const ps2_func_entry ps2_funcs[] = {{\n{table}\n}};\n"
-        f"const size_t ps2_func_count = {len(funcs)};\n"
-        f"const uint32_t ps2_entry_point = 0x{prog.entry:08X}u;\n", encoding="utf-8")
+    write_if_changed(out / "func_table.c",
+                     '#include "recomp_funcs.h"\n\n'
+                     f"const ps2_func_entry ps2_funcs[] = {{\n{table}\n}};\n"
+                     f"const size_t ps2_func_count = {len(funcs)};\n"
+                     f"const uint32_t ps2_entry_point = 0x{prog.entry:08X}u;\n")
 
     unimpl = sum(v for k, v in stats.items() if k.startswith("UNIMPL "))
     files = (len(bodies) + args.per_file - 1) // args.per_file
-    print(f"wrote {len(funcs):,} functions in {files} files to {out} ({unimpl:,} untranslated instructions)")
+    print(f"wrote {len(funcs):,} functions in {files} files to {out} ({unimpl:,} untranslated instructions, "
+          f"{stats['native overrides']} native overrides)")
 
 
 def cmd_disasm(args) -> None:

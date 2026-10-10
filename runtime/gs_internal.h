@@ -49,6 +49,11 @@ void gs_clut_on_tex0(const gs_tex0* t, const gs_texclut* tc);
  * 24/16-bit formats through TEXA, and TCC=0 is NOT applied here (the caller decides). */
 uint32_t gs_tex_fetch(const gs_tex0* t, const gs_texa* ta, int u, int v);
 
+/* The CLUT entry an indexed texel with value `index` (0-255, or 0-15 for 4-bit formats) of texture
+ * t gets, expanded like gs_tex_fetch (CSA, CPSM and TEXA applied). Lets gs_draw build a palette
+ * snapshot instead of fetching one texel per index. */
+uint32_t gs_clut_lookup(const gs_tex0* t, const gs_texa* ta, uint32_t index);
+
 /* ---- transfers (gs_mem.c) -------------------------------------------------------------------------
  * Called by gs_draw.c when TRXDIR is written, with the current raw BITBLTBUF/TRXPOS/TRXREG.
  * dir 0 = host->local (data then arrives via gs_mem_xfer_write), 1 = local->host (data leaves
