@@ -35,6 +35,7 @@ typedef struct {
 } vtx;
 
 gs_stats_t gs_stats;
+uint8_t gs_fb_yfrac[512] = { [0 ... 511] = 0xFF }, gs_fb_psm[512];
 static uint64_t reg[0x64];
 static vtx vq[3];
 static int vcount;
@@ -218,6 +219,8 @@ static void env_update(void) {
     P.scy0 = (int)((sc >> 32) & 0x7FF); P.scy1 = (int)((sc >> 48) & 0x7FF);
     ofx = (int)(xyo & 0xFFFF);
     ofy = (int)((xyo >> 32) & 0xFFFF);
+    gs_fb_yfrac[P.fpage] = (uint8_t)(ofy & 15);
+    gs_fb_psm[P.fpage] = (uint8_t)P.fpsm;
 
     if (P.tme) bind_textures(ctx);
     else P.texm = 0;

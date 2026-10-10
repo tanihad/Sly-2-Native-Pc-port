@@ -171,6 +171,63 @@ static uint32_t mix(uint32_t a, uint32_t b, uint32_t al) {      /* a*al + b*(255
     return (r << 16) | (g << 8) | bl;
 }
 
+/* Interlaced field mode (SMODE2 INT = FFMD = 1): each field shows one 224-line buffer on the even or
+ * the odd scanlines of the 448-line picture. gs_display line-doubles the current field. When the game
+ * rendered it as an odd or even field (half-pixel XYOFFSET.Y, see gs_fb_yfrac), the field is put on
+ * its own scanlines and the lines in between come from
+ *   - the most recent field of the other parity where the picture is static (the current field equals
+ *     the previous field of its parity around that pixel): full vertical resolution, as a TV shows a
+ *     still interlaced picture;
+ *   - the average of the field's lines above and below where it moves (no combing on a progressive
+ *     display).
+ * Either way the picture no longer jumps half a line every field. Buffers drawn without the
+ * half-pixel convention (both with the same offset, as Sly 2's menus and 3D) stay line-doubled. */
+static int px_close(uint32_t a, uint32_t b) {
+    int dr = (int)((a >> 16) & 0xFF) - (int)((b >> 16) & 0xFF), dg = (int)((a >> 8) & 0xFF) - (int)((b >> 8) & 0xFF);
+    int db = (int)(a & 0xFF) - (int)(b & 0xFF);
+    return dr >= -6 && dr <= 6 && dg >= -6 && dg <= 6 && db >= -6 && db <= 6;
+}
+
+static uint32_t px_avg(uint32_t a, uint32_t b) {
+    return (((a & 0xFEFEFE) >> 1) + ((b & 0xFEFEFE) >> 1) + (a & b & 0x010101)) & 0xFFFFFF;
+}
+
+static void deinterlace(uint32_t* dst, int stride, int W, int H, const circuit* ref) {
+    static uint32_t rows[2][512 * 1024];          /* last field of each parity: [(oy >> 1) * 1024 + x] */
+    static uint32_t when[2];                      /* gs_vsync_count + 1 when it was shown, 0 = none */
+    static int dims[2][2];
+    static uint8_t still[1024];                   /* per pixel of an output row: no motion around it */
+    int f = gs_fb_psm[ref->fbp & 511] == ref->psm ? gs_fb_yfrac[ref->fbp & 511] : 0xFF;
+    if (f != 0 && f != 8) { when[0] = when[1] = 0; return; }
+    int par = f == 8, oth = !par;
+    uint32_t now = gs_vsync_count + 1;
+    int have_same = when[par] && when[par] + 3 >= now && dims[par][0] == W && dims[par][1] == H;
+    int have_oth = when[oth] && when[oth] + 2 >= now && dims[oth][0] == W && dims[oth][1] == H;
+#define ROW(y) (dst + (size_t)(y) * (size_t)stride)
+    /* an even-offset field with no odd field around is ordinary progressive rendering: keep it
+     * line-doubled (sharp 1-line features, as before) */
+    for (int oy = oth; oy < H && (par || have_oth); oy += 2) {   /* the lines between this field's lines */
+        int ya = oy - 1 >= 0 ? oy - 1 : oy + 1, yb = oy + 1 < H ? oy + 1 : oy - 1;
+        if (ya < 0 || ya >= H) continue;
+        const uint32_t* a = ROW(ya);
+        const uint32_t* b = ROW(yb);
+        uint32_t* d = ROW(oy);
+        if (have_oth && have_same) {
+            const uint32_t* pa = &rows[par][(ya >> 1) * 1024];
+            const uint32_t* pb = &rows[par][(yb >> 1) * 1024];
+            for (int x = 0; x < W; x++) still[x] = (uint8_t)(px_close(a[x], pa[x]) && px_close(b[x], pb[x]));
+            const uint32_t* o = &rows[oth][(oy >> 1) * 1024];
+            for (int x = 0; x < W; x++) d[x] = still[x] ? o[x] : px_avg(a[x], b[x]);
+        } else {
+            for (int x = 0; x < W; x++) d[x] = px_avg(a[x], b[x]);
+        }
+    }
+    for (int oy = par; oy < H; oy += 2) memcpy(&rows[par][(oy >> 1) * 1024], ROW(oy), (size_t)W * 4);
+#undef ROW
+    when[par] = now;
+    dims[par][0] = W; dims[par][1] = H;
+}
+
 int gs_display(uint32_t* dst, int stride, int* w, int* h) {
     GS_INIT();
     uint64_t pmode = priv[P_PMODE];
@@ -260,6 +317,7 @@ int gs_display(uint32_t* dst, int stride, int* w, int* h) {
             }
         }
     }
+    if (field_mode) deinterlace(dst, stride, W, H, ref);
     *w = W;
     *h = H;
     return 1;
