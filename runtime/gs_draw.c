@@ -139,13 +139,10 @@ static void bind_textures(int ctx) {
     for (int l = 0; l <= mxl; l++) {
         gs_tex0 t = t0;
         if (l > 0) {
-            if (mtba && l <= 3) {        /* automatic: levels follow each other, buffer width halves */
-                gs_tex0 prev = t0;
-                prev.tbp0 = tbp; prev.tbw = tbw;
+            if (mtba && l <= 3) {        /* automatic: each level follows the previous one, width halves */
                 uint32_t ph = 1u << (t0.th > (uint32_t)(l - 1) ? t0.th - (uint32_t)(l - 1) : 0);
                 tbp = (tbp + (tbw * 64u * ph * (uint32_t)psm_bpp(t0.psm) / 8u) / 256u) & 0x3FFF;
                 tbw = tbw > 1 ? tbw / 2 : 1;
-                (void)prev;
             } else {
                 uint64_t m = l <= 3 ? mt1 : mt2;
                 int sh = ((l - 1) % 3) * 20;
@@ -452,7 +449,8 @@ static void draw_triangle(const vtx* v0, const vtx* v1, const vtx* v2) {
     if (bx0 > bx1 || by0 > by1) return;
 
     /* attribute planes (pixel units) */
-    double X[3] = { x0 / 16.0, x1 / 16.0, x2 / 16.0 }, Y[3] = { y0 / 16.0, y1 / 16.0, y2 / 16.0 };
+    double X[3] = { (double)x0 / 16.0, (double)x1 / 16.0, (double)x2 / 16.0 };
+    double Y[3] = { (double)y0 / 16.0, (double)y1 / 16.0, (double)y2 / 16.0 };
     double det = (X[1] - X[0]) * (Y[2] - Y[0]) - (X[2] - X[0]) * (Y[1] - Y[0]), inv = 1.0 / det;
     const vtx* vs[3] = { v0, v1, v2 };
 #define PLANE(pl, field) do { \
@@ -617,11 +615,16 @@ static void vertex(uint64_t xyz, int has_f, int kick) {
 
 /* ---- transfers ------------------------------------------------------------------------------------ */
 
+/* Marks the destination pages of the current transfer. Data arriving later only needs another
+ * mark if some texture was decoded in between (it may have read the partly written area). */
+static uint32_t xfer_marked_at;          /* gs_tex_decodes when last marked */
+
 static void mark_xfer_dest(void) {
     int x0 = xfer_x0, x1 = xfer_x1, y0 = xfer_y0, y1 = xfer_y1;
     if (x1 > 2048) { x0 = 0; x1 = 2048; }
     if (y1 > 2048) { y0 = 0; y1 = 2048; }
     gs_mark_rect(xfer_dpsm, xfer_dbp, xfer_dbw, x0, y0, x1, y1);
+    xfer_marked_at = gs_tex_decodes;
 }
 
 static void trxdir(uint32_t dir) {
@@ -639,8 +642,8 @@ static void trxdir(uint32_t dir) {
 }
 
 void gs_image_write(const void* data, uint32_t bytes) {
-    gs_swz_init();
-    if (xfer_dir == 0) mark_xfer_dest();
+    GS_INIT();
+    if (xfer_dir == 0 && xfer_marked_at != gs_tex_decodes) mark_xfer_dest();
     gs_mem_xfer_write(data, bytes);
 }
 
@@ -667,7 +670,7 @@ static void tex0_write(int ctx, uint64_t v) {
 }
 
 void gs_write_reg(uint32_t r, uint64_t v) {
-    gs_swz_init();
+    GS_INIT();
     switch (r) {
     case R_PRIM:
         /* the type only matters to the vertex queue; attributes only when PRMODECONT.AC = 1 */
@@ -708,7 +711,7 @@ void gs_write_reg(uint32_t r, uint64_t v) {
         trxdir((uint32_t)(v & 3));
         break;
     case R_HWREG:
-        if (xfer_dir == 0) mark_xfer_dest();
+        if (xfer_dir == 0 && xfer_marked_at != gs_tex_decodes) mark_xfer_dest();
         gs_mem_xfer_write(&v, 8);
         break;
     case R_SIGNAL: gs_csr_signal((uint32_t)v, (uint32_t)(v >> 32)); break;

@@ -89,7 +89,7 @@ void gs_priv_access(uint32_t phys, void* data, unsigned size, int is_write) {
         return;
     }
     if (!is_write) {
-        gs_swz_init();
+        GS_INIT();
         memset(data, 0, size);
         memcpy(data, (uint8_t*)reg + sub, n);
         return;
@@ -157,7 +157,7 @@ static uint32_t mix(uint32_t a, uint32_t b, uint32_t al) {      /* a*al + b*(255
 }
 
 int gs_display(uint32_t* dst, int stride, int* w, int* h) {
-    gs_swz_init();
+    GS_INIT();
     uint64_t pmode = priv[P_PMODE];
     int en[2] = { (int)(pmode & 1), (int)((pmode >> 1) & 1) };
     *w = *h = 0;

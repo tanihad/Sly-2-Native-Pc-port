@@ -90,10 +90,11 @@ static int check_layout(int psm) {
     return 1;
 }
 
+int gs_swz_ready;
+
 void gs_swz_init(void) {
-    static int inited;
-    if (inited) return;
-    inited = 1;
+    if (gs_swz_ready) return;
+    gs_swz_ready = 1;
     build32(tab_ct32, 0);
     build32(tab_z32, 24);
     build16(tab_ct16, blk16, 0);

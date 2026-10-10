@@ -30,7 +30,9 @@ typedef struct {
 } gs_fmt;
 
 extern int gs_swz_fast;                  /* 1: gs_mem agrees with the documented layout */
+extern int gs_swz_ready;                 /* gs_swz_init has run */
 void gs_swz_init(void);                  /* idempotent; runs the layout self-check once */
+#define GS_INIT() do { if (!gs_swz_ready) gs_swz_init(); } while (0)
 const gs_fmt* gs_fmt_of(int psm);        /* PSMCT32/24/16/16S, PSMZ32/24/16/16S; else NULL */
 
 /* Byte address in gs_vram of pixel (x, y) of a page-aligned buffer (page0 in 8 KB pages). */
@@ -67,6 +69,7 @@ typedef struct {
 } gs_texlvl;
 
 extern uint32_t gs_clut_version;         /* bumped on every TEX0/TEX2 write that may load the CLUT */
+extern uint32_t gs_tex_decodes;          /* bumped whenever texels are decoded from VRAM */
 
 /* Bind one mipmap level (t describes that level: tbp0/tbw/tw/th already per level). */
 void gs_tex_bind(gs_texlvl* L, const gs_tex0* t, const gs_texa* ta, uint64_t clamp, int level);

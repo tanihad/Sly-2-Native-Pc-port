@@ -1,9 +1,12 @@
 /* Decoded texture cache.
  *
  * Each mipmap level the rasterizer samples is decoded once into a linear 0xAABBGGRR array, lazily
- * in 8x8-texel tiles (only the tiles a primitive can reach). Texels come from gs_mem only:
- * direct-colour formats through gs_tex_fetch(), indexed formats as raw indices (gs_mem_read) plus a
- * palette obtained by calling gs_tex_fetch() once per distinct index at a texel holding it.
+ * in 8x8-texel tiles (only the tiles a primitive can reach). Direct-colour texels come from
+ * gs_tex_fetch() and indexed formats are stored as raw indices (gs_mem_read) plus a palette
+ * obtained by calling gs_tex_fetch() once per distinct index at a texel holding it. When the
+ * VRAM layout of a format has been verified against gs_mem at start-up (gs_tex_fast_init), the
+ * raw texels are read from gs_vram directly instead, with the documented TEXA expansion; the CLUT
+ * always comes from gs_mem.
  *
  * Invalidation: an entry remembers the VRAM pages it covers; any write to one of them (drawing,
  * host->local or local->local transfer, see gs_mark_rect) drops all its tiles. A CLUT load
@@ -40,6 +43,7 @@ typedef struct {
 } tex_entry;
 
 uint32_t gs_clut_version;
+uint32_t gs_tex_decodes;
 static uint8_t raw_ok[64][2];            /* [psm][TBW & 1]: direct texel decode verified (see below) */
 static tex_entry cache[TEX_ENTRIES];
 static size_t cache_bytes;
@@ -463,6 +467,7 @@ static void decode_tile(tex_entry* e, int tx, int ty) {
     uint32_t raw[64];
     int fast = e->fast && raw_layout_of(t->psm, t->tbp0, t->tbw, &r);
     e->rgba_tiles++;
+    gs_tex_decodes++;
     if (!e->indexed) {
         if (fast) {
             raw_block(&r, x0, y0, x1, y1, raw);
