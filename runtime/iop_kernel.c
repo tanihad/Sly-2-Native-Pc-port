@@ -848,12 +848,15 @@ static void deliver_interrupts(void) {
     }
 }
 
+static int64_t busy_ticks;                 /* host time spent running the IOP (status line) */
+
 void iop_run(void) {
     if (in_run || in_intr) return;
     in_run = 1;
     run_pass++;
     sched_fiber = GetCurrentFiber();
-    run_deadline = iop_now() + iop_usec_to_ticks(SLICE_USEC);
+    int64_t t0 = iop_now();
+    run_deadline = t0 + iop_usec_to_ticks(SLICE_USEC);
     for (;;) {
         iop_poll_flag = 0;
         deliver_interrupts();
@@ -864,27 +867,30 @@ void iop_run(void) {
         SwitchToFiber(th[next].fiber);
         cur = 0;
     }
+    busy_ticks += iop_now() - t0;
     in_run = 0;
 }
 
 /* Every 10 s while the recompiled modules run: one line showing the IOP is alive. */
 static void status_line(void) {
-    static int64_t last;
+    static int64_t last, last_busy;
     static uint64_t last_ticks;
     int64_t now = iop_now();
-    if (!last) { last = now; last_ticks = timer_ticks_total; return; }
+    if (!last) { last = now; last_ticks = timer_ticks_total; last_busy = busy_ticks; return; }
     if (now - last < iop_usec_to_ticks(10000000u)) return;
     double secs = (double)(now - last) / (double)qpc_freq.QuadPart;
     double rate = (double)(timer_ticks_total - last_ticks) / secs;
+    double load = 100.0 * (double)(busy_ticks - last_busy) / (double)(now - last);
     last = now;
     last_ticks = timer_ticks_total;
+    last_busy = busy_ticks;
     char sif[512];
     iop_sif_report(sif, sizeof sif);
     int ready = 0, waiting = 0;
     for (int i = 1; i < MAX_THREADS; i++) { ready += th[i].status == TS_READY; waiting += th[i].status == TS_WAIT; }
-    fprintf(stderr, "[iop] status: hard timer handler %llu calls (%.1f/s over the last %.0f s), threads %d waiting/"
-                    "%d ready, free IOP memory 0x%X; %s\n", (unsigned long long)timer_ticks_total, rate, secs,
-            waiting, ready, iop_total_free(), sif);
+    fprintf(stderr, "[iop] status: hard timer handler %llu calls (%.1f/s over the last %.0f s), IOP code %.2f%% of "
+                    "the time, threads %d waiting/%d ready, free IOP memory 0x%X; %s\n",
+            (unsigned long long)timer_ticks_total, rate, secs, load, waiting, ready, iop_total_free(), sif);
 }
 
 void iop_service(void) {

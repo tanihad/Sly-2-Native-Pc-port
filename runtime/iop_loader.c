@@ -149,8 +149,7 @@ int iop_load_module(uint32_t image, const char* args, uint32_t args_len, int32_t
         }
         Sleep(1);
     }
-    iop_delete_kernel_thread(tid);
-    iop_free(block);
+    iop_delete_kernel_thread(tid);                         /* argv stays: modules may keep pointers into it */
     *result = (int32_t)ret;
     fprintf(stderr, "[iop] %s: start returned %d\n", name, (int)ret);
     return 1;
