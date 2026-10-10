@@ -1064,6 +1064,103 @@ static void t_formats_contexts(void) {
     frame(0, 10, PSMCT32, 0);
 }
 
+/* Random triangles (fractional and integer vertices, XYOFFSET, scissor) against a per-pixel
+ * evaluation of the three edge functions with the top-left rule. */
+static uint32_t rng_state;
+static int rnd(int n) { rng_state = rng_state * 1664525u + 1013904223u; return (int)((rng_state >> 9) % (uint32_t)n); }
+static double rndf(void) { return rnd(65536) / 65536.0; }
+
+static void t_coverage_reference(void) {
+    reset_env();
+    rng_state = 99;
+    int bad = 0;
+    for (int it = 0; it < 300; it++) {
+        int ox = (100 + rnd(64)) * 16, oy = (100 + rnd(64)) * 16;
+        ox += rnd(16); oy += rnd(16);
+        int sx0 = rnd(40), sx1 = 200 + rnd(40), sy0 = rnd(40), sy1 = 160 + rnd(40);
+        W(XYOFFSET_1, 0);
+        scissor(0, 639, 0, 447);
+        clear(0, 0, 0, 0);
+        W(XYOFFSET_1, (uint64_t)ox | (uint64_t)oy << 32);
+        scissor(sx0, sx1, sy0, sy1);
+        int64_t x[3], y[3];
+        int kind = rnd(4);
+        for (int k = 0; k < 3; k++) {
+            if (kind == 0) { x[k] = rnd(280 * 16) - 20 * 16; y[k] = rnd(230 * 16) - 15 * 16; }
+            else if (kind == 1) { x[k] = 100 * 16 + rnd(64); y[k] = 100 * 16 + rnd(64); }     /* tiny */
+            else { x[k] = rnd(26) * 160; y[k] = rnd(22) * 160; }                             /* many ties */
+        }
+        if (kind == 3) {                 /* axis-aligned right triangle, any orientation, any fraction */
+            int fx = rnd(16), fy = rnd(16), w = (rnd(2) ? 1 : -1) * (16 + rnd(1600)), h = (rnd(2) ? 1 : -1) * (16 + rnd(1600));
+            x[0] = 1200 + fx; y[0] = 1200 + fy;
+            x[1] = x[0] + w; y[1] = y[0];
+            x[2] = x[0]; y[2] = y[0] + h;
+        }
+        prim(P_TRI, 0); rgba(255, 255, 255, 0x80);
+        for (int k = 0; k < 3; k++) W(XYZ2, (uint64_t)(x[k] + ox) | (uint64_t)(y[k] + oy) << 16);
+        int64_t area = (x[1] - x[0]) * (y[2] - y[0]) - (y[1] - y[0]) * (x[2] - x[0]);
+        for (int py = 0; py < 240; py++)
+            for (int pxx = 0; pxx < 280; pxx++) {
+                int in = area != 0 && pxx >= sx0 && pxx <= sx1 && py >= sy0 && py <= sy1;
+                for (int k = 0; k < 3 && in; k++) {
+                    int64_t ex = x[(k + 1) % 3] - x[k], ey = y[(k + 1) % 3] - y[k];
+                    if (area < 0) { ex = -ex; ey = -ey; }
+                    int64_t e = ex * (16 * py - y[k]) - ey * (16 * pxx - x[k]);
+                    int top_left = ey < 0 || (ey == 0 && ex > 0);
+                    if (e < 0 || (e == 0 && !top_left)) in = 0;
+                }
+                if (in != (rgb(px(pxx, py)) != 0)) bad++;
+            }
+    }
+    CHECK(bad == 0, "triangle coverage vs edge-function reference: %d pixels differ", bad);
+    W(XYOFFSET_1, 0);
+    scissor(0, 639, 0, 447);
+}
+
+/* Texture cache invalidation under random primitives: every re-upload must make all later samples
+ * see the new texels (an undecoded tile would still hold the previous colour). */
+static void t_texture_cache_random(void) {
+    reset_env();
+    static uint32_t img[256 * 128];
+    rng_state = 5;
+    int bad = 0, drawn = 0;
+    for (int it = 0; it < 300; it++) {
+        uint32_t cur = (it & 1) ? 0x8000FF00u : 0x800000FFu;
+        for (int i = 0; i < 256 * 128; i++) img[i] = cur;
+        upload(TEXBP, 4, PSMCT32, 0, 0, 256, 128, img, sizeof img);
+        W(TEX0_1, tex0(TEXBP, 4, PSMCT32, 8, 7, 1, 1, 0, 0, 0, 0));
+        uint64_t clamp = (uint64_t)rnd(4);
+        clamp |= (uint64_t)rnd(4) << 2;
+        clamp |= (uint64_t)rnd(256) << 4;
+        clamp |= (uint64_t)rnd(256) << 14;
+        clamp |= (uint64_t)rnd(128) << 24;
+        clamp |= (uint64_t)rnd(128) << 34;
+        W(CLAMP_1, clamp);
+        int mmag = rnd(2), mmin = rnd(2);
+        W(TEX1_1, (uint64_t)mmag << 5 | (uint64_t)mmin << 6);
+        clear(0, 0, 0, 0);
+        int type = rnd(4), fst = rnd(2), nv = type == 0 ? 3 : type == 3 ? 1 : 2;
+        prim(type == 0 ? P_TRI : type == 1 ? P_SPRITE : type == 2 ? P_LINE : P_POINT, TME | (fst ? FST : 0));
+        for (int v = 0; v < nv; v++) {
+            float q = (float)(0.05 + rndf() * 2);
+            double u = rndf() * 600 - 100, t = rndf() * 400 - 100;
+            double sx = rndf() * 640, sy = rndf() * 448;
+            rgbaq(0x80, 0x80, 0x80, 0x80, q);
+            st((float)(u / 256 * q), (float)(t / 128 * q));
+            uv(u < 0 ? 0 : (int)(u * 16), t < 0 ? 0 : (int)(t * 16));
+            xyz(sx, sy, 0);
+        }
+        for (int y = 0; y < 448; y++)
+            for (int x = 0; x < 640; x++) {
+                uint32_t c = px(x, y);
+                bad += c != 0 && c != cur;
+                drawn += c == cur;
+            }
+    }
+    CHECK(bad == 0 && drawn > 100000, "texture re-uploads: %d stale texels (%d textured pixels)", bad, drawn);
+    W(TEX1_1, 0); W(CLAMP_1, 0);
+}
+
 int main(int argc, char** argv) {
     if (argc > 1) outdir = argv[1];
     gs_swz_init();
@@ -1092,6 +1189,8 @@ int main(int argc, char** argv) {
     t_mipmap();
     t_texture_cache();
     t_lines_points();
+    t_coverage_reference();
+    t_texture_cache_random();
     t_csr();
     t_display();
     bench();
