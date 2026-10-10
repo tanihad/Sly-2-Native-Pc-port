@@ -565,7 +565,8 @@ int main(int argc, char** argv) {
         const char* gt = getenv("PS2_GS_THREADS");
         if (gt) workers = atoi(gt);
         gs_thread_start(workers, present_frame);
-        fprintf(stderr, "[ps2] GS thread started with %d pixel workers\n", workers);
+        if (gs_async()) fprintf(stderr, "[ps2] GS thread started with %d pixel workers\n", workers);
+        else fprintf(stderr, "[ps2] GS thread could not be started: the GS runs on the EE thread\n");
     }
 
     static ps2_ctx init;

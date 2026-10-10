@@ -39,14 +39,27 @@ cleanliness; fix confirmed bugs with a failing test first; give a verdict.
   Fix: texels_unwrapped() (shared with the P.nowrap test) required for local. Replays of prompt,
   intro, briefing recordings: bit-identical before/after (sync and 8 workers).
 
-## In progress
-- Thread-safety review (gs_thread.c, gs_draw_pixel.c, gs_draw_tex.c, gs.c reviewed: OK apart from
-  the bug above).
+- Thread-safety review of gs_thread.c (SPSC queue, Dekker-style sleep/wake with seq_cst, one picture
+  in flight), gs_draw_pixel.c (batches strictly in order, bands own pages, RAW/WAR/snapshot rules),
+  gs_draw_tex.c (palette slots / graves by batch serial), gs.c (CSR/priv on EE only, display from
+  snapshots), window_present from workers (one at a time, ordered): OK apart from the bug above.
+- Cleanups: stale "at most two pictures in flight" comment (gs_thread.c); startup message no longer
+  claims the GS thread started when gs_thread_start failed (ps2_runtime.c); codegen comment on the
+  invariant `restrict ctx` relies on.
+- Overrides: 0x234EA0/0x234FD0 are pure tag-walk loops; wrapper 0x234F48 uses only $s0 after the call.
+- Default -O1 traced build (fresh card), 75 s: 60/60 VBlanks in every 5-s window, flips 58-62.
+- Final release run (existing card), 62 s: 100% VBlanks, flips 57.5-62.2/s, briefing reached
+  (frame 3600 shows dialogue). All unit tests + run_tests.py pass after the changes.
 
 ## Next
-2. Review thread safety of gs_thread.c / gs_draw_pixel.c / perf.c / ps2_runtime.c pacing.
-3. Review `restrict ctx` in codegen (callees touching ctx via other pointers?), overrides callers.
-4. Headroom spot check; default build run.
-5. Write verdict.
+1. Commit cleanups; verdict (StructuredOutput).
 
 ## Findings
+- `restrict ctx` (codegen) is formally violated by vif.c's vu0_callms(thread_ctx()) (VU0 registers
+  live in ps2_ctx), but only inside calls that receive ctx, which clang must treat as clobbering it;
+  no miscompile possible without LTO/argmem attributes. Documented in codegen.py.
+- Game frames at the same VBlank differ from main at full speed even on the static memory-card
+  prompt: the game draws differently when it has time. Proven by GS replay (same input -> identical
+  frames with main's and the branch's renderer) and by slowing the branch (burn) -> matches main.
+- The "headroom" in 3D scenes partly comes from the game adapting (VU pairs drop ~27% with a 6 ms
+  burn in the briefing); notes/performance.md says so.

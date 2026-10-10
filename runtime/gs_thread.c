@@ -182,7 +182,9 @@ void gs_queue_vsync(uint32_t vblank) {
 
 /* The picture of a VBlank: composed and presented by a pixel worker once everything the GS was sent
  * before the VBlank is drawn (gs_draw_queue_job), so this thread goes on with the next frame
- * instead of waiting for the drawing to drain. At most two are in flight (gs_queue_vsync). */
+ * instead of waiting for the drawing to drain. At most one is in flight (gs_queue_vsync waits for the
+ * previous one to be presented), so pictures are composed one after another (gs_compose and
+ * deinterlace keep static state) and the ring of 4 is never reused early. */
 typedef struct { gs_display_snap snap; uint32_t vblank; } picture;
 static picture pictures[4];
 static uint32_t picture_next;
