@@ -1,8 +1,9 @@
 # Build and run the gs-draw unit tests (gs.c, gs_draw*.c against a fake gs_mem).
 #   powershell -ExecutionPolicy Bypass -File tests\unit\gs-draw\run.ps1
-# Two builds: the fake gs_mem with the documented VRAM layout (direct-access fast path) and with a
-# linear layout (-DFAKE_LINEAR: gs_draw must fall back to gs_mem_read/write). PNGs of every scene go
-# to build\unit\gs-draw\ (and ...\linear\).
+# Builds: the fake gs_mem with the documented VRAM layout (direct-access fast paths), the fake with
+# a linear layout (-DFAKE_LINEAR: gs_draw must fall back to gs_mem_read/write), and, once
+# runtime/gs_mem.c is no longer the stub, the real runtime/gs_mem*.c. PNGs of every scene go to
+# build\unit\gs-draw\ (and ...\linear\, ...\real\).
 $root = Resolve-Path (Join-Path $PSScriptRoot '..\..\..')
 $main = $root
 if (-not (Test-Path (Join-Path $root 'tools\llvm-mingw'))) {            # worktree: tools live in the main checkout
@@ -15,21 +16,28 @@ if (-not (Test-Path (Join-Path $root 'tools\llvm-mingw'))) {            # worktr
 $clang = Join-Path $main 'tools\llvm-mingw\bin\clang.exe'
 $out = Join-Path $root 'build\unit\gs-draw'
 New-Item -ItemType Directory -Force $out | Out-Null
-New-Item -ItemType Directory -Force (Join-Path $out 'linear') | Out-Null
 
 $rt = Join-Path $root 'runtime'
 $src = @('gs.c', 'gs_draw.c', 'gs_draw_pixel.c', 'gs_draw_tex.c', 'gs_draw_swz.c', 'debug.c') | ForEach-Object { Join-Path $rt $_ }
-$src += Join-Path $PSScriptRoot 'fake_gs_mem.c'
 $src += Join-Path $PSScriptRoot 'test_gs_draw.c'
 $flags = @('-O2', '-std=c11', '-Wall', '-Wno-comment', '-I', $rt)
+$fake = @(Join-Path $PSScriptRoot 'fake_gs_mem.c')
+
+$variants = @(@{ name = 'test_gs_draw'; defs = @(); mem = $fake; dir = $out },
+              @{ name = 'test_gs_draw_linear'; defs = @('-DFAKE_LINEAR'); mem = $fake; dir = (Join-Path $out 'linear') })
+$realmem = Join-Path $rt 'gs_mem.c'
+if ((Test-Path $realmem) -and -not (Select-String -Path $realmem -Pattern 'STUB' -Quiet)) {
+    $mem = @(Get-ChildItem $rt -Filter 'gs_mem*.c' | ForEach-Object { $_.FullName }) + (Join-Path $PSScriptRoot 'real_gs_mem_glue.c')
+    $variants += @{ name = 'test_gs_draw_real'; defs = @(); mem = $mem; dir = (Join-Path $out 'real') }
+}
 
 $failed = $false
-foreach ($variant in @(@{ name = 'test_gs_draw'; defs = @(); dir = $out },
-                       @{ name = 'test_gs_draw_linear'; defs = @('-DFAKE_LINEAR'); dir = (Join-Path $out 'linear') })) {
-    $exe = Join-Path $out ($variant.name + '.exe')
-    & $clang @flags @($variant.defs) @src -o $exe
-    if ($LASTEXITCODE -ne 0) { Write-Host "build of $($variant.name) failed"; exit 1 }
-    & $exe $variant.dir
+foreach ($v in $variants) {
+    New-Item -ItemType Directory -Force $v.dir | Out-Null
+    $exe = Join-Path $out ($v.name + '.exe')
+    & $clang @flags @($v.defs) @src @($v.mem) -o $exe
+    if ($LASTEXITCODE -ne 0) { Write-Host "build of $($v.name) failed"; exit 1 }
+    & $exe $v.dir
     if ($LASTEXITCODE -ne 0) { $failed = $true }
 }
 if ($failed) { Write-Host 'gs-draw unit tests FAILED'; exit 1 }
