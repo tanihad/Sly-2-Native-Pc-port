@@ -7,16 +7,17 @@
  *  - SIGNAL / FINISH / LABEL only change CSR / SIGLBLID and raise INTC_GS. They are executed on the
  *    EE thread at the moment they are queued, exactly when the synchronous GS executed them.
  *  - Local->host transfers (gs_image_read) and CSR.RESET wait until the queue is empty (gs_sync).
- *  - The picture for a VBlank is composed by this thread when it reaches the VBlank's place in the
- *    stream (gs_queue_vsync, with a snapshot of the display registers), so it shows exactly what a
- *    synchronous GS would have shown at that VBlank. The EE thread waits at a VBlank while the
- *    previous one has not been presented yet: the GS never falls more than one frame behind.
+ *  - The picture for a VBlank is taken at the VBlank's place in the stream (gs_queue_vsync, with a
+ *    snapshot of the display registers) and composed once everything before it is drawn (a job in
+ *    the deferred-drawing queue, see vblank_picture), so it shows exactly what a synchronous GS
+ *    would have shown at that VBlank. The EE thread waits at a VBlank while the previous one has
+ *    not been presented yet: the GS never falls more than one frame behind.
  *
  * The queue is a single-producer/single-consumer ring of 16-byte slots: a register write is one
  * slot, IMAGE data is a header slot followed by the data (never wrapping: a SKIP slot pads to the
  * end of the ring first). Positions are free-running slot counters. The producer publishes in
- * batches (every PUBLISH_EVERY slots, and after IMAGE data, syncs and VBlanks); both sides spin before they
- * block in WaitOnAddress. */
+ * batches (every PUBLISH_EVERY slots, and after IMAGE data, syncs and VBlanks); both sides spin
+ * before they block in WaitOnAddress. */
 #include "gs_draw.h"
 #include "perf.h"
 
@@ -178,12 +179,35 @@ void gs_queue_vsync(uint32_t vblank) {
 
 /* ---- consumer (GS thread) ------------------------------------------------------------------------ */
 
-static void compose(const slot* s) {
-    if (perf_burn_hook) perf_burn_hook(1);         /* PS2_PERF_BURN_GS headroom test */
+/* The picture of a VBlank: composed and presented by a pixel worker once everything the GS was sent
+ * before the VBlank is drawn (gs_draw_queue_job), so this thread goes on with the next frame
+ * instead of waiting for the drawing to drain. At most two are in flight (gs_queue_vsync). */
+typedef struct { gs_display_snap snap; uint32_t vblank; } picture;
+static picture pictures[4];
+static uint32_t picture_next;
+
+static void picture_done(void) {
+    atomic_fetch_add_explicit(&vsync_done, 1, memory_order_seq_cst);
+    if (atomic_load_explicit(&ee_waiting, memory_order_seq_cst)) WakeByAddressAll((PVOID)&vsync_done);
+}
+
+static void picture_run(void* arg) {
+    const picture* p = arg;
     static uint32_t frame[1024 * 1024];
     int w = 0, h = 0;
-    int ok = gs_display_regs((const uint64_t*)(const void*)(s + 1), frame, 1024, &w, &h);
-    if (present) present(frame, ok, w, h, s->len);
+    int ok = gs_compose(&p->snap, frame, 1024, &w, &h);
+    if (present) present(frame, ok, w, h, p->vblank);
+    picture_done();
+}
+
+static void vblank_picture(const slot* s) {
+    if (perf_burn_hook) perf_burn_hook(1);         /* PS2_PERF_BURN_GS headroom test */
+    picture* p = &pictures[picture_next++ & 3];
+    gs_display_snapshot(&p->snap, (const uint64_t*)(const void*)(s + 1));
+    p->vblank = s->len;
+    uint64_t reads[8] = { 0 };
+    gs_display_pages(p->snap.priv, reads);         /* transfers into the shown buffers wait for it */
+    gs_draw_queue_job(picture_run, p, reads);
 }
 
 static DWORD WINAPI gs_thread_main(LPVOID arg) {
@@ -222,11 +246,9 @@ static DWORD WINAPI gs_thread_main(LPVOID arg) {
                 rd++;
                 break;
             case K_VSYNC:
-                compose(s);
+                vblank_picture(s);
                 rd += 1 + GS_PRIV_SNAPSHOT * 8 / 16;
                 atomic_store_explicit(&q_rd, rd, memory_order_release);
-                atomic_fetch_add_explicit(&vsync_done, 1, memory_order_seq_cst);
-                if (atomic_load_explicit(&ee_waiting, memory_order_seq_cst)) WakeByAddressAll((PVOID)&vsync_done);
                 break;
             default:
                 gs_exec_write_reg(s->kind, s->v);

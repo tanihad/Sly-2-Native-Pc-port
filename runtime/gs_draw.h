@@ -31,8 +31,19 @@ uint32_t gs_exec_image_read(void* data, uint32_t bytes);
 /* ---- gs.c: display -------------------------------------------------------------------------------- */
 #define GS_PRIV_SNAPSHOT 16              /* uint64_t values in a display register snapshot */
 void gs_priv_snapshot(uint64_t out[GS_PRIV_SNAPSHOT]);   /* PMODE ... BGCOLOR as they are now, + gs_vsync_count */
-/* gs_display() for a snapshot of the display registers (the caller makes sure the GS is idle). */
+/* gs_display() for a snapshot of the display registers (finishes deferred drawing first). */
 int  gs_display_regs(const uint64_t pr[GS_PRIV_SNAPSHOT], uint32_t* dst, int stride, int* w, int* h);
+/* What composing a VBlank's picture needs, taken in stream order: the display registers and the
+ * field state of the frame buffers (gs_fb_yfrac/psm), so it can run later on another thread. */
+typedef struct {
+    uint64_t priv[GS_PRIV_SNAPSHOT];
+    uint8_t fb_yfrac[512], fb_psm[512];
+} gs_display_snap;
+void gs_display_snapshot(gs_display_snap* s, const uint64_t pr[GS_PRIV_SNAPSHOT]);
+/* Compose the picture from VRAM as it is (no sync: the caller orders it after the drawing). */
+int  gs_compose(const gs_display_snap* s, uint32_t* dst, int stride, int* w, int* h);
+/* The 8 KB pages the displayed buffers occupy. */
+void gs_display_pages(const uint64_t pr[GS_PRIV_SNAPSHOT], uint64_t set[8]);
 
 /* ---- gs_thread.c (see also hw.h) --------------------------------------------------------------------- */
 void gs_sync(void);                      /* wait until everything sent to the GS has executed */
@@ -50,6 +61,10 @@ void     gs_draw_sync_why(int why);
 /* Deferred drawing not yet done writes, samples or snapshots one of these pages: a transfer that
  * writes them (or reads them, for written ones) must wait for it. */
 int      gs_draw_pages_touched(const uint64_t set[8], int writes_only);
+/* Run fn(arg) on a pixel worker once everything recorded so far is drawn, in order with the drawing
+ * after it (the VBlank picture); `reads` are the pages it reads, so transfers into them wait for
+ * it. Without deferred drawing it runs at once. */
+void     gs_draw_queue_job(void (*fn)(void* arg), void* arg, const uint64_t reads[8]);
 void     gs_draw_kick(void);             /* start drawing what has been recorded (does not wait) */
 int      gs_draw_pages_pending(uint32_t page0, uint32_t npages);   /* deferred drawing writes one of these 8 KB pages */
 uint32_t gs_draw_fill_serial(void);      /* batch that primitives are recorded into now */

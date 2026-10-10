@@ -208,14 +208,15 @@ static uint32_t px_avg(uint32_t a, uint32_t b) {
     return (((a & 0xFEFEFE) >> 1) + ((b & 0xFEFEFE) >> 1) + (a & b & 0x010101)) & 0xFFFFFF;
 }
 
-static void deinterlace(uint32_t* dst, int stride, int W, int H, const circuit* ref, uint32_t vsync) {
-    /* Runs where the picture is composed (the GS thread when there is one): gs_fb_yfrac is the GS
-     * stream's state at this VBlank, and `vsync` is the VBlank count of the register snapshot. */
+static void deinterlace(uint32_t* dst, int stride, int W, int H, const circuit* ref, const gs_display_snap* s) {
+    /* Runs where the picture is composed (in order, one picture at a time): s holds the GS stream's
+     * field state (gs_fb_yfrac/psm) at this VBlank and the VBlank count of the register snapshot. */
     static uint32_t rows[2][512 * 1024];          /* last field of each parity: [(oy >> 1) * 1024 + x] */
     static uint32_t when[2];                      /* vsync + 1 when it was shown, 0 = none */
     static int dims[2][2];
     static uint8_t still[1024];                   /* per pixel of an output row: no motion around it */
-    int f = gs_fb_psm[ref->fbp & 511] == ref->psm ? gs_fb_yfrac[ref->fbp & 511] : 0xFF;
+    const uint32_t vsync = (uint32_t)s->priv[S_VSYNC];
+    int f = s->fb_psm[ref->fbp & 511] == ref->psm ? s->fb_yfrac[ref->fbp & 511] : 0xFF;
     if (f != 0 && f != 8) { when[0] = when[1] = 0; return; }
     int par = f == 8, oth = !par;
     uint32_t now = vsync + 1;
@@ -255,10 +256,38 @@ int gs_display(uint32_t* dst, int stride, int* w, int* h) {
 
 uint32_t gs_stream_vsync;
 
+void gs_display_snapshot(gs_display_snap* s, const uint64_t priv[GS_PRIV_SNAPSHOT]) {
+    gs_stream_vsync = (uint32_t)priv[S_VSYNC];      /* (taken in stream order) */
+    memcpy(s->priv, priv, sizeof s->priv);
+    memcpy(s->fb_yfrac, gs_fb_yfrac, sizeof s->fb_yfrac);
+    memcpy(s->fb_psm, gs_fb_psm, sizeof s->fb_psm);
+}
+
+void gs_display_pages(const uint64_t priv[GS_PRIV_SNAPSHOT], uint64_t set[8]) {
+    uint64_t pmode = priv[P_PMODE];
+    const int field_mode = (priv[P_SMODE2] & 3) == 3;      /* the buffer holds every other line */
+    for (int i = 0; i < 2; i++) {
+        if (!((pmode >> i) & 1)) continue;
+        circuit c;
+        decode_circuit(priv, i, &c);
+        int w = (c.dw + 1) / (c.magh + 1) + 1, h = (c.dh + 1) / (c.magv + 1) + 1;
+        if (field_mode) h = h / 2 + 1;
+        if (c.dbx + w > 2048 || c.dby + h > 2048) { memset(set, 0xFF, 8 * sizeof set[0]); return; }
+        gs_rect_pages(c.psm, (uint32_t)c.fbp * 32, (uint32_t)c.fbw, c.dbx, c.dby, c.dbx + w, c.dby + h, set);
+    }
+}
+
 int gs_display_regs(const uint64_t priv[GS_PRIV_SNAPSHOT], uint32_t* dst, int stride, int* w, int* h) {
     GS_INIT();
     gs_stream_vsync = (uint32_t)priv[S_VSYNC];
     gs_draw_sync_why(GS_SYNC_DISPLAY);   /* deferred drawing reaches VRAM first */
+    static gs_display_snap s;
+    gs_display_snapshot(&s, priv);
+    return gs_compose(&s, dst, stride, w, h);
+}
+
+int gs_compose(const gs_display_snap* snap, uint32_t* dst, int stride, int* w, int* h) {
+    const uint64_t* priv = snap->priv;
     uint64_t pmode = priv[P_PMODE];
     int en[2] = { (int)(pmode & 1), (int)((pmode >> 1) & 1) };
     *w = *h = 0;
@@ -346,7 +375,7 @@ int gs_display_regs(const uint64_t priv[GS_PRIV_SNAPSHOT], uint32_t* dst, int st
             }
         }
     }
-    if (field_mode) deinterlace(dst, stride, W, H, ref, (uint32_t)priv[S_VSYNC]);
+    if (field_mode) deinterlace(dst, stride, W, H, ref, snap);
     *w = W;
     *h = H;
     return 1;

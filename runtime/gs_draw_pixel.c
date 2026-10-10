@@ -712,7 +712,11 @@ typedef struct {
     uint64_t readp[8];                   /* pages its primitives sample directly (textures) */
     uint64_t copyp[8];                   /* pages copied to gs_vram_shadow before it starts */
     uint64_t snap_hold[8];               /* shadow pages its primitives sample (must not change) */
+    void (*job_fn)(void*);               /* a job batch (gs_draw_queue_job): no primitives */
+    void* job_arg;
 } dbatch;
+
+#define JOB_BAND 0xFF                    /* the one "band" of a job batch */
 
 typedef struct {                         /* a drawing thread's own state */
     batch b;
@@ -765,7 +769,7 @@ static void copy_pages(const uint64_t set[8]) {
 
 /* ---- PS2_GS_STATS=1: what deferred drawing does, once every 5 seconds -------------------------------- */
 
-enum { SUB_SYNC, SUB_KICK, SUB_RAW, SUB_SNAP, SUB_HOLD, SUB_WAR, SUB_BANDS, SUB_FULL, SUB_LIMIT, SUB_N };
+enum { SUB_SYNC, SUB_KICK, SUB_RAW, SUB_SNAP, SUB_HOLD, SUB_WAR, SUB_BANDS, SUB_FULL, SUB_LIMIT, SUB_JOB, SUB_N };
 static struct {
     int on;
     uint64_t t0_ms, tsc0;
@@ -783,11 +787,11 @@ static void stats_report(void) {
 #define PER_S(v) ((double)(v) / secs)
 #define MS_S(t) ((double)(t) / tsc_ms / secs)
     fprintf(stderr, "[gs-stats] %.0f batches/s (%.1f bands, %.0f primitives each); new batch per s: sync %.0f kick %.0f "
-                    "read-after-write %.0f snapshot %.0f+%.0f write-after-read %.0f band conflict %.0f bin full %.0f limits %.0f\n",
+                    "read-after-write %.0f snapshot %.0f+%.0f write-after-read %.0f band conflict %.0f bin full %.0f limits %.0f picture %.0f\n",
             PER_S(st.batches), st.batches ? (double)st.bands / st.batches : 0, st.batches ? (double)st.prims / st.batches : 0,
             PER_S(st.why[SUB_SYNC]), PER_S(st.why[SUB_KICK]), PER_S(st.why[SUB_RAW]), PER_S(st.why[SUB_SNAP]),
             PER_S(st.why[SUB_HOLD]), PER_S(st.why[SUB_WAR]), PER_S(st.why[SUB_BANDS]), PER_S(st.why[SUB_FULL]),
-            PER_S(st.why[SUB_LIMIT]));
+            PER_S(st.why[SUB_LIMIT]), PER_S(st.why[SUB_JOB]));
     fprintf(stderr, "[gs-stats] drawing thread waits: queue full %.0f/s %.2f ms/s, syncs %.0f/s %.2f ms/s (display %.0f "
                     "transfer %.0f CLUT %.0f EE %.0f texture cache %.0f palette %.0f other %.0f) | pixel work "
                     "%.1f ms/s on %d workers, critical path (longest band per batch) %.1f ms/s\n",
@@ -808,6 +812,7 @@ static void stats_report(void) {
 /* ---- the worker pool ---------------------------------------------------------------------------------- */
 
 static void process_band(wctx* w, const dbatch* d, int band) {
+    if (band == JOB_BAND) { d->job_fn(d->job_arg); return; }
     const dseg* s = d->bins + (size_t)band * BIN_SEGS;
     const int n = d->nbin[band];
     int i = 0;
@@ -856,7 +861,8 @@ static void start_job(dbatch* d) {
     for (;;) {
         copy_pages(d->copyp);                    /* snapshots: VRAM as everything before d left it */
         nb = 0;
-        for (int band = 0; band < NBANDS; band++) if (d->nbin[band]) pool.bands[nb++] = (uint8_t)band;
+        if (d->job_fn) pool.bands[nb++] = JOB_BAND;
+        else for (int band = 0; band < NBANDS; band++) if (d->nbin[band]) pool.bands[nb++] = (uint8_t)band;
         if (nb) break;
         /* nothing to draw (should not happen: a batch is submitted with pieces): retire it now */
         atomic_store_explicit(&db_done, d->serial, memory_order_release);
@@ -936,6 +942,7 @@ static void db_reset(dbatch* d) {
     memset(d->readp, 0, sizeof d->readp);
     memset(d->copyp, 0, sizeof d->copyp);
     memset(d->snap_hold, 0, sizeof d->snap_hold);
+    d->job_fn = NULL;
     d->serial = ++db_serial;
 }
 
@@ -973,7 +980,7 @@ static void help(void) {
 /* Queue the batch being filled (drawn after the batches before it) and start filling the next. */
 static void db_submit(int why) {
     dbatch* d = &DB[db_fill];
-    if (!d->nprims) return;
+    if (!d->nprims && !d->job_fn) return;
     stats_report();
     st.why[why]++;
     if (q_tail + 2 - atomic_load_explicit(&q_head, memory_order_acquire) > DB_QUEUE) {   /* no free batch */
@@ -994,7 +1001,7 @@ static void db_submit(int why) {
 
 void gs_draw_sync_why(int why) {
     if (!deferred()) return;
-    if (!DB[db_fill].nprims && atomic_load_explicit(&q_head, memory_order_acquire) == q_tail) return;
+    if (!DB[db_fill].nprims && !DB[db_fill].job_fn && atomic_load_explicit(&q_head, memory_order_acquire) == q_tail) return;
     uint64_t t0 = __rdtsc();
     db_submit(SUB_SYNC);
     while (atomic_load_explicit(&q_head, memory_order_acquire) != q_tail) help();
@@ -1005,11 +1012,21 @@ void gs_draw_sync_why(int why) {
 
 void gs_draw_sync(void) { gs_draw_sync_why(GS_SYNC_OTHER); }
 
+void gs_draw_queue_job(void (*fn)(void* arg), void* arg, const uint64_t reads[8]) {
+    if (!deferred()) { fn(arg); return; }
+    db_submit(SUB_JOB);                          /* what was recorded before it */
+    dbatch* d = &DB[db_fill];
+    d->job_fn = fn;
+    d->job_arg = arg;
+    memcpy(d->readp, reads, sizeof d->readp);
+    db_submit(SUB_JOB);
+}
+
 int gs_draw_pages_touched(const uint64_t set[8], int writes_only) {
     if (!deferred()) return 0;
     for (uint32_t b = atomic_load_explicit(&q_head, memory_order_acquire); b != q_tail + 1; b++) {
         const dbatch* d = &DB[b % DB_QUEUE];     /* the queued batches and the one being filled */
-        if (!d->nprims) continue;
+        if (!d->nprims && !d->job_fn) continue;
         for (int k = 0; k < 8; k++)
             if (set[k] & (d->written[k] | (writes_only ? 0 : d->readp[k] | d->copyp[k]))) return 1;
     }
