@@ -11,7 +11,7 @@
 # dispatch: recompiled code where the micro memory matches, the interpreter elsewhere). The
 # recording's results come from the interpreter, so this is the recompiler's exactness check.
 param([Parameter(Mandatory = $true)][string]$Rec, [string]$Runtime = "", [int]$Passes = 5, [string]$Opt = "O2",
-      [string]$Compiled = "")
+      [string]$Compiled = "", [switch]$DebugInfo)
 $root = Split-Path $PSScriptRoot -Parent
 $main = $root
 if (-not (Test-Path (Join-Path $root 'tools\llvm-mingw'))) {            # worktree: tools live in the main checkout
@@ -35,8 +35,10 @@ if ($Compiled) {
     $mode = "compiled"
     $tag = "c$([Math]::Abs(($Runtime + $Compiled).GetHashCode()))"
 }
+$extra = @()
+if ($DebugInfo) { $extra += '-g'; $tag = "g$tag" }       # -DebugInfo: for llvm-symbolizer on profiles
 $exe = Join-Path $out "vu_replay_$tag.exe"
-& $clang "-$Opt" -std=c11 -w -I $Runtime -I (Join-Path $root 'runtime') @srcs -o $exe
+& $clang "-$Opt" @extra -std=c11 -w -I $Runtime -I (Join-Path $root 'runtime') @srcs -o $exe
 if ($LASTEXITCODE -ne 0) { Write-Host 'vu_replay build failed'; exit 1 }
 & $exe (Resolve-Path $Rec).Path $Passes $mode
 exit $LASTEXITCODE

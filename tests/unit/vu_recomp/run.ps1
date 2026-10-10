@@ -2,7 +2,7 @@
 # must give exactly the interpreter's results, timing and XGKICKs (test_vu_recomp.c).
 #   powershell -ExecutionPolicy Bypass -File tests\unit\vu_recomp\run.ps1 [-Count 160] [-Seed 1] [-States 24] [-Opt O2]
 # Output goes to build\unit\vu_recomp\.
-param([int]$Count = 160, [int]$Seed = 1, [int]$States = 24, [string]$Opt = "O2")
+param([int]$Count = 160, [int]$Seed = 1, [int]$States = 24, [string]$Opt = "O2", [string]$Out = "")
 $ErrorActionPreference = "Stop"
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path
 $main = $root
@@ -15,7 +15,7 @@ if (-not (Test-Path (Join-Path $root 'tools\llvm-mingw'))) {          # worktree
 }
 $clang = Join-Path $main 'tools\llvm-mingw\bin\clang.exe'
 $python = Join-Path $main '.venv\Scripts\python.exe'
-$out = Join-Path $root 'build\unit\vu_recomp'
+$out = if ($Out) { [IO.Path]::GetFullPath((Join-Path $root $Out)) } else { Join-Path $root 'build\unit\vu_recomp' }
 New-Item -ItemType Directory -Force $out | Out-Null
 
 & $python (Join-Path $PSScriptRoot 'gen.py') $out --count $Count --seed $Seed
