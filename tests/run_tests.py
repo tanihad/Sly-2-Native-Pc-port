@@ -46,15 +46,21 @@ def main() -> int:
         name, val = line.split("=")
         regs[int(name[1:])] = int(val, 16)
 
+    checks = [(reg, want, 64) for reg, want in make_test_elf.EXPECTED.items()] + \
+             [(reg, want, 128) for reg, want in make_test_elf.EXPECTED128.items()]
     failures = 0
-    names = {16 + n: f"s{n}" for n in range(8)}
-    for reg, want in make_test_elf.EXPECTED.items():
-        got = regs.get(reg)
+    for reg, want, bits in checks:
+        name = make_test_elf.NAMES[reg]
+        if reg not in regs:
+            failures += 1
+            print(f"  FAIL  ${name}: missing (exit {res.returncode}, stderr: {res.stderr.strip()[-300:]})")
+            continue
+        got = regs[reg] & ((1 << bits) - 1)
         ok = got == want
         failures += not ok
-        print(f"  {'PASS' if ok else 'FAIL'}  ${names[reg]}: got {got:#018x}  want {want:#018x}" if got is not None
-              else f"  FAIL  ${names[reg]}: missing (exit {res.returncode}, stderr: {res.stderr.strip()})")
-    print(f"\n{len(make_test_elf.EXPECTED) - failures}/{len(make_test_elf.EXPECTED)} passed")
+        width = bits // 4 + 2
+        print(f"  {'PASS' if ok else 'FAIL'}  ${name:2}: got {got:#0{width}x}  want {want:#0{width}x}")
+    print(f"\n{len(checks) - failures}/{len(checks)} passed")
     return 1 if failures else 0
 
 

@@ -19,11 +19,34 @@ class Segment:
 
 
 @dataclass
+class Section:
+    name: str
+    addr: int
+    size: int
+    executable: bool
+
+
+@dataclass
 class Program:
     path: str
     entry: int
     segments: list[Segment]
     symbols: dict[int, str] = field(default_factory=dict)   # function address -> name
+    sections: list[Section] = field(default_factory=list)
+
+    def code_ranges(self) -> list[tuple[int, int]]:
+        """Address ranges that hold instructions: executable sections if the ELF has section
+        headers (segments often mix code and data), otherwise whole executable segments."""
+        # .vutext holds vector-unit microcode, a different instruction set from the EE's.
+        ranges = [(s.addr, s.addr + s.size) for s in self.sections
+                  if s.executable and s.size and not s.name.startswith(".vu")]
+        return ranges or [(s.vaddr, s.vaddr + len(s.data)) for s in self.code_segments()]
+
+    def read_bytes(self, start: int, end: int) -> bytes:
+        for s in self.segments:
+            if s.vaddr <= start and end <= s.vaddr + len(s.data):
+                return s.data[start - s.vaddr:end - s.vaddr]
+        raise ValueError(f"0x{start:08X}-0x{end:08X} is not file-backed")
 
     def code_segments(self) -> list[Segment]:
         return [s for s in self.segments if s.executable]
@@ -53,6 +76,9 @@ def load(path: str) -> Program:
                 executable=bool(seg["p_flags"] & P_FLAGS.PF_X),
             ))
 
+        sections = [Section(sec.name, sec["sh_addr"], sec["sh_size"], bool(sec["sh_flags"] & 0x4))
+                    for sec in elf.iter_sections() if sec["sh_addr"]]   # SHF_EXECINSTR = 0x4
+
         symbols = {}
         for sec in elf.iter_sections():
             if isinstance(sec, SymbolTableSection):
@@ -60,4 +86,5 @@ def load(path: str) -> Program:
                     if sym["st_info"]["type"] == "STT_FUNC" and sym["st_value"] and sym.name:
                         symbols[sym["st_value"]] = sym.name
 
-        return Program(path=path, entry=elf["e_entry"], segments=segments, symbols=symbols)
+        return Program(path=path, entry=elf["e_entry"], segments=segments, symbols=symbols,
+                       sections=sections)

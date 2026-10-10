@@ -1,4 +1,5 @@
 """Translate R5900 functions into C that runs against runtime/ps2_runtime.h."""
+import re
 from collections import Counter
 
 import rabbitizer as rz
@@ -52,6 +53,99 @@ def set32s(n: int, expr: str) -> str:
 
 def ea(i) -> str:
     return f"(uint32_t)({U32(rs(i))} + {simm16(i)})"
+
+
+# --- VU0 macro mode (COP2) -----------------------------------------------------------------
+# Vector ops encode: dest mask (x=8,y=4,z=2,w=1) in bits 24..21, ft 20..16, fs 15..11, fd 10..6.
+
+LANES = "xyzw"
+VU_ARITH = re.compile(r"^v(madd|msub|mini|max|add|sub|mul)(a?)([xyzwqi]?)$")
+VU_EXPR = {"add": "{a} + {b}", "sub": "{a} - {b}", "mul": "{a} * {b}",
+           "madd": "{acc} + {a} * {b}", "msub": "{acc} - {a} * {b}",
+           "max": "fmaxf({a}, {b})", "mini": "fminf({a}, {b})"}
+
+
+def vdest(i) -> list[int]:
+    m = (i.getRaw() >> 21) & 15
+    return [k for k in range(4) if m & (8 >> k)]
+
+
+def VF(n: int, k: int) -> str:
+    return f"ctx->vf[{n}].f[{k}]"
+
+
+def vu_assign(target: str, lanes: list[int], exprs: dict[int, str]) -> str:
+    """Compute every lane before writing any, since the destination may also be a source."""
+    if not lanes or target == "ctx->vf[0]":
+        return "/* writes vf0: no effect */"
+    tmp = " ".join(f"float t{k} = {exprs[k]};" for k in lanes)
+    st = " ".join(f"{target}.f[{k}] = t{k};" for k in lanes)
+    return f"{{ {tmp} {st} }}"
+
+
+def emit_vu0(i, op: str) -> str | None:
+    raw = i.getRaw()
+    t, s, d = ft(i), fs(i), fd(i)
+    m = VU_ARITH.match(op)
+    if m:
+        base, to_acc, src = m.groups()
+        def b(k):
+            if src in ("", None): return VF(t, k)
+            if src == "q": return "ctx->vq"
+            if src == "i": return "ctx->vi_reg"
+            return VF(t, LANES.index(src))
+        exprs = {}
+        for k in range(4):
+            e = VU_EXPR[base].format(a=VF(s, k), b=b(k), acc=f"ctx->vacc.f[{k}]")
+            exprs[k] = e if base in ("max", "mini") else f"ps2_fclamp({e})"
+        target = "ctx->vacc" if to_acc else f"ctx->vf[{d}]"
+        return vu_assign(target, vdest(i), exprs)
+
+    rot1, rot2 = (1, 2, 0), (2, 0, 1)                 # .yzx and .zxy
+    if op == "vopmula":
+        exprs = {k: f"ps2_fclamp({VF(s, rot1[k])} * {VF(t, rot2[k])})" for k in range(3)}
+        return vu_assign("ctx->vacc", [0, 1, 2], exprs)
+    if op == "vopmsub":
+        exprs = {k: f"ps2_fclamp(ctx->vacc.f[{k}] - {VF(s, rot1[k])} * {VF(t, rot2[k])})" for k in range(3)}
+        return vu_assign(f"ctx->vf[{d}]", [0, 1, 2], exprs)
+
+    fsf, ftf = (raw >> 21) & 3, (raw >> 23) & 3        # lane selectors for DIV/SQRT/RSQRT
+    if op == "vdiv": return f"ctx->vq = ps2_fdiv({VF(s, fsf)}, {VF(t, ftf)});"
+    if op == "vsqrt": return f"ctx->vq = sqrtf(fabsf({VF(t, ftf)}));"
+    if op == "vrsqrt": return f"ctx->vq = ps2_fdiv({VF(s, fsf)}, sqrtf(fabsf({VF(t, ftf)})));"
+    if op in ("vwaitq", "vnop"): return f"/* {op} */"
+    if op == "vmove": return vu_assign(f"ctx->vf[{t}]", vdest(i), {k: VF(s, k) for k in range(4)})
+    if op == "vmr32": return vu_assign(f"ctx->vf[{t}]", vdest(i), {k: VF(s, (k + 1) % 4) for k in range(4)})
+    if op == "vabs": return vu_assign(f"ctx->vf[{t}]", vdest(i), {k: f"fabsf({VF(s, k)})" for k in range(4)})
+    m = re.match(r"^v(ftoi|itof)(0|4|12|15)$", op)
+    if m:
+        kind, bits = m.group(1), m.group(2)
+        lanes = vdest(i)
+        if not lanes or t == 0:
+            return "/* writes vf0: no effect */"
+        if kind == "ftoi":
+            body = " ".join(f"u{k} = vu0_ftoi({VF(s, k)}, {bits});" for k in lanes)
+            decl = "uint32_t " + ", ".join(f"u{k}" for k in lanes) + ";"
+            st = " ".join(f"ctx->vf[{t}].u[{k}] = u{k};" for k in lanes)
+            return f"{{ {decl} {body} {st} }}"
+        exprs = {k: f"vu0_itof(ctx->vf[{s}].u[{k}], {bits})" for k in range(4)}
+        return vu_assign(f"ctx->vf[{t}]", lanes, exprs)
+
+    # transfers between the EE and VU0
+    if op == "lqc2": return f"vu0_lqc2(ctx, {rt(i)}, {ea(i)});"
+    if op == "sqc2": return f"vu0_sqc2(ctx, {rt(i)}, {ea(i)});"
+    if op.startswith("qmtc2"):
+        return f"memcpy(&ctx->vf[{rd(i)}], &ctx->r[{rt(i)}], 16);" if rd(i) else "/* qmtc2 to vf0 */"
+    if op.startswith("qmfc2"):
+        return f"memcpy(&ctx->r[{rt(i)}], &ctx->vf[{rd(i)}], 16);" if rt(i) else "/* qmfc2 to $zero */"
+    if op.startswith("cfc2"): return set32s(rt(i), f"vu0_cfc2(ctx, {rd(i)})")
+    if op.startswith("ctc2"): return f"vu0_ctc2(ctx, {rd(i)}, {U32(rt(i))});"
+    return None
+
+
+MMI_3OP = {"pextlw", "pextuw", "pextlb", "pextub", "ppacb", "prot3w", "pcpyh", "paddh", "psubw",
+           "psubb", "padduw", "pminh", "pmaxh", "pcgth", "qfsrv"}
+MMI_SHIFT = {"psllh", "psrlh", "psrah"}
 
 
 class FunctionTranslator:
@@ -216,6 +310,13 @@ class FunctionTranslator:
         if u == I.r5900_mtlo1: return f"ctx->lo1 = {U64(s)};"
         if u == I.r5900_mfsa: return set64(d, "ctx->sa")
         if u == I.r5900_mtsa: return f"ctx->sa = {U32(s)};"
+        if u == I.r5900_mtsab: return f"ctx->sa = (({U32(s)} ^ 0x{imm16(i):X}u) & 15u) * 8u;"
+        if u == I.r5900_mtsah: return f"ctx->sa = (({U32(s)} ^ 0x{imm16(i):X}u) & 7u) * 16u;"
+        if op in MMI_3OP: return f"mmi_{op}(ctx, {d}, {s}, {t});"
+        if op in MMI_SHIFT: return f"mmi_{op}(ctx, {d}, {t}, {sa});"
+        vu = emit_vu0(i, op)
+        if vu is not None:
+            return vu
         # loads
         if u == I.cpu_lb: return set64(t, f"(int64_t)(int8_t)ps2_r8(ctx, {ea(i)})")
         if u == I.cpu_lbu: return set64(t, f"ps2_r8(ctx, {ea(i)})")

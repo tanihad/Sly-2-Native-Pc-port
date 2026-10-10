@@ -15,13 +15,22 @@ typedef union {
     uint8_t  ub[16]; int8_t sb[16];
 } r128;
 
+typedef union { float f[4]; uint32_t u[4]; } vf128;   /* x, y, z, w */
+
 typedef struct ps2_ctx {
     r128     r[32];                 /* GPRs are 128 bits on the R5900 */
     uint64_t hi, lo, hi1, lo1;      /* two multiply/divide pipelines */
-    uint32_t sa;                    /* shift amount register (QFSRV) */
+    uint32_t sa;                    /* shift amount in bits (QFSRV) */
     union { float f; uint32_t u; } f[32];
     float    acc;                   /* FPU accumulator (MADD.S etc.) */
     uint32_t fcr31;                 /* FPU control/status; bit 23 = condition */
+
+    /* VU0 in macro mode (COP2) */
+    vf128    vf[32];                /* vf0 is the constant (0, 0, 0, 1) */
+    vf128    vacc;
+    uint16_t vi[16];                /* vi0 is always 0 */
+    float    vq, vi_reg, vp;        /* Q (divide result), I (immediate), P */
+    uint32_t vr;                    /* random number register */
 } ps2_ctx;
 
 typedef void (*ps2_func)(ps2_ctx*);
@@ -43,12 +52,18 @@ extern uint8_t* ps2_spr;
 void ps2_hw_read(ps2_ctx* ctx, uint32_t addr, void* out, unsigned size);
 void ps2_hw_write(ps2_ctx* ctx, uint32_t addr, const void* in, unsigned size);
 
-/* Main RAM and its uncached mirrors (0x2xxxxxxx, 0x3xxxxxxx), or the scratchpad; NULL = hardware. */
+/* Main RAM, its uncached mirrors (0x2/0x3xxxxxxx) and kernel views (kseg0/kseg1, 0x8-0xBxxxxxxx),
+ * or the scratchpad; NULL = hardware register or unmapped. */
 static inline uint8_t* ps2_fast(uint32_t a) {
     if ((a & 0xCFFFFFFFu) < PS2_RAM_SIZE) return ps2_ram + (a & (PS2_RAM_SIZE - 1));
     if ((a & 0xFFFFC000u) == 0x70000000u) return ps2_spr + (a & (PS2_SPR_SIZE - 1));
+    if (a - 0x80000000u < 0x40000000u && (a & 0x1FFFFFFFu) < PS2_RAM_SIZE) return ps2_ram + (a & 0x1FFFFFFFu);
     return NULL;
 }
+
+/* The kernel's syscall table lives in kernel RAM, as on a real PS2: games find it by scanning
+ * memory (see notes) and SetSyscall/patches write handler addresses into it. */
+#define PS2_SYSCALL_TABLE 0x00010000u
 
 #define PS2_MEM_ACCESSORS(T, N)                                                               \
     static inline T ps2_r##N(ps2_ctx* ctx, uint32_t a) {                                      \
@@ -137,6 +152,107 @@ static inline int32_t ps2_f2i(float f) {
 }
 static inline void ps2_fcond(ps2_ctx* ctx, int c) {
     if (c) ctx->fcr31 |= 1u << 23; else ctx->fcr31 &= ~(1u << 23);
+}
+
+/* ---- VU0 macro mode ------------------------------------------------------------------------ */
+
+static inline void vu0_lqc2(ps2_ctx* c, int ft, uint32_t a) {
+    r128 v = ps2_r128(c, a & ~15u);
+    if (ft) memcpy(&c->vf[ft], &v, 16);
+}
+static inline void vu0_sqc2(ps2_ctx* c, int ft, uint32_t a) {
+    r128 v; memcpy(&v, &c->vf[ft], 16);
+    ps2_w128(c, a & ~15u, v);
+}
+static inline uint32_t vu0_cfc2(ps2_ctx* c, int reg) {
+    if (reg < 16) return c->vi[reg];
+    uint32_t u;
+    switch (reg) {
+    case 20: return c->vr;
+    case 21: memcpy(&u, &c->vi_reg, 4); return u;
+    case 22: memcpy(&u, &c->vq, 4); return u;
+    default: return 0;                         /* status/MAC/clip flags not modeled yet */
+    }
+}
+static inline void vu0_ctc2(ps2_ctx* c, int reg, uint32_t v) {
+    if (reg > 0 && reg < 16) c->vi[reg] = (uint16_t)v;
+    else if (reg == 20) c->vr = v;
+    else if (reg == 21) memcpy(&c->vi_reg, &v, 4);
+    else if (reg == 22) memcpy(&c->vq, &v, 4);
+}
+static inline float vu0_ftoi_scale(int bits) { return (float)(1 << bits); }
+static inline uint32_t vu0_ftoi(float f, int bits) {
+    return (uint32_t)ps2_f2i(f * vu0_ftoi_scale(bits));
+}
+static inline float vu0_itof(uint32_t u, int bits) {
+    return (float)(int32_t)u / vu0_ftoi_scale(bits);
+}
+
+/* ---- MMI (128-bit integer SIMD) ------------------------------------------------------------- */
+
+#define MMI_BEGIN r128 a = c->r[rs], b = c->r[rt], d; (void)a; (void)b; memset(&d, 0, sizeof d);
+#define MMI_END   if (rd) c->r[rd] = d;
+
+static inline void mmi_pextlw(ps2_ctx* c, int rd, int rs, int rt) {
+    MMI_BEGIN d.uw[0] = b.uw[0]; d.uw[1] = a.uw[0]; d.uw[2] = b.uw[1]; d.uw[3] = a.uw[1]; MMI_END
+}
+static inline void mmi_pextuw(ps2_ctx* c, int rd, int rs, int rt) {
+    MMI_BEGIN d.uw[0] = b.uw[2]; d.uw[1] = a.uw[2]; d.uw[2] = b.uw[3]; d.uw[3] = a.uw[3]; MMI_END
+}
+static inline void mmi_pextlb(ps2_ctx* c, int rd, int rs, int rt) {
+    MMI_BEGIN for (int k = 0; k < 8; k++) { d.ub[2 * k] = b.ub[k]; d.ub[2 * k + 1] = a.ub[k]; } MMI_END
+}
+static inline void mmi_pextub(ps2_ctx* c, int rd, int rs, int rt) {
+    MMI_BEGIN for (int k = 0; k < 8; k++) { d.ub[2 * k] = b.ub[k + 8]; d.ub[2 * k + 1] = a.ub[k + 8]; } MMI_END
+}
+static inline void mmi_ppacb(ps2_ctx* c, int rd, int rs, int rt) {
+    MMI_BEGIN for (int k = 0; k < 8; k++) { d.ub[k] = b.ub[2 * k]; d.ub[k + 8] = a.ub[2 * k]; } MMI_END
+}
+static inline void mmi_prot3w(ps2_ctx* c, int rd, int rs, int rt) {
+    MMI_BEGIN d.uw[0] = b.uw[1]; d.uw[1] = b.uw[2]; d.uw[2] = b.uw[0]; d.uw[3] = b.uw[3]; MMI_END
+}
+static inline void mmi_pcpyh(ps2_ctx* c, int rd, int rs, int rt) {
+    MMI_BEGIN for (int k = 0; k < 4; k++) { d.uh[k] = b.uh[0]; d.uh[k + 4] = b.uh[4]; } MMI_END
+}
+static inline void mmi_paddh(ps2_ctx* c, int rd, int rs, int rt) {
+    MMI_BEGIN for (int k = 0; k < 8; k++) d.uh[k] = (uint16_t)(a.uh[k] + b.uh[k]); MMI_END
+}
+static inline void mmi_psubw(ps2_ctx* c, int rd, int rs, int rt) {
+    MMI_BEGIN for (int k = 0; k < 4; k++) d.uw[k] = a.uw[k] - b.uw[k]; MMI_END
+}
+static inline void mmi_psubb(ps2_ctx* c, int rd, int rs, int rt) {
+    MMI_BEGIN for (int k = 0; k < 16; k++) d.ub[k] = (uint8_t)(a.ub[k] - b.ub[k]); MMI_END
+}
+static inline void mmi_padduw(ps2_ctx* c, int rd, int rs, int rt) {
+    MMI_BEGIN for (int k = 0; k < 4; k++) {
+        uint64_t s = (uint64_t)a.uw[k] + b.uw[k]; d.uw[k] = s > 0xFFFFFFFFu ? 0xFFFFFFFFu : (uint32_t)s;
+    } MMI_END
+}
+static inline void mmi_pminh(ps2_ctx* c, int rd, int rs, int rt) {
+    MMI_BEGIN for (int k = 0; k < 8; k++) d.sh[k] = a.sh[k] < b.sh[k] ? a.sh[k] : b.sh[k]; MMI_END
+}
+static inline void mmi_pmaxh(ps2_ctx* c, int rd, int rs, int rt) {
+    MMI_BEGIN for (int k = 0; k < 8; k++) d.sh[k] = a.sh[k] > b.sh[k] ? a.sh[k] : b.sh[k]; MMI_END
+}
+static inline void mmi_pcgth(ps2_ctx* c, int rd, int rs, int rt) {
+    MMI_BEGIN for (int k = 0; k < 8; k++) d.uh[k] = a.sh[k] > b.sh[k] ? 0xFFFF : 0; MMI_END
+}
+/* Halfword shifts by the sa field: rd = rt shifted. */
+static inline void mmi_psllh(ps2_ctx* c, int rd, int rt, int sa) {
+    int rs = 0; MMI_BEGIN for (int k = 0; k < 8; k++) d.uh[k] = (uint16_t)(b.uh[k] << (sa & 15)); MMI_END
+}
+static inline void mmi_psrlh(ps2_ctx* c, int rd, int rt, int sa) {
+    int rs = 0; MMI_BEGIN for (int k = 0; k < 8; k++) d.uh[k] = (uint16_t)(b.uh[k] >> (sa & 15)); MMI_END
+}
+static inline void mmi_psrah(ps2_ctx* c, int rd, int rt, int sa) {
+    int rs = 0; MMI_BEGIN for (int k = 0; k < 8; k++) d.sh[k] = (int16_t)(b.sh[k] >> (sa & 15)); MMI_END
+}
+/* Funnel shift: rd = low 128 bits of (rs:rt) >> SA bits. */
+static inline void mmi_qfsrv(ps2_ctx* c, int rd, int rs, int rt) {
+    MMI_BEGIN
+    uint8_t buf[32]; memcpy(buf, &b, 16); memcpy(buf + 16, &a, 16);
+    memcpy(&d, buf + ((c->sa >> 3) & 15), 16);
+    MMI_END
 }
 
 /* ---- system ------------------------------------------------------------------------------ */

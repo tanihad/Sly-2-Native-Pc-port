@@ -31,14 +31,23 @@ void ps2_hw_write(ps2_ctx* ctx, uint32_t addr, const void* in, unsigned size) {
 
 /* ---- function lookup ---------------------------------------------------------------------- */
 
-void ps2_call(ps2_ctx* ctx, uint32_t addr) {
+static ps2_func find_func(uint32_t addr) {
     size_t lo = 0, hi = ps2_func_count;
     while (lo < hi) {
         size_t mid = (lo + hi) / 2;
         if (ps2_funcs[mid].addr < addr) lo = mid + 1; else hi = mid;
     }
-    if (lo < ps2_func_count && ps2_funcs[lo].addr == addr) { ps2_funcs[lo].fn(ctx); return; }
-    die("call to 0x%08X, which is not the start of a recompiled function", addr);
+    return (lo < ps2_func_count && ps2_funcs[lo].addr == addr) ? ps2_funcs[lo].fn : NULL;
+}
+
+void ps2_call(ps2_ctx* ctx, uint32_t addr) {
+    ps2_func fn = find_func(addr);
+    if (!fn) {
+        fprintf(stderr, "[ps2] fatal: call to 0x%08X, which is not the start of a recompiled function "
+                        "($ra=0x%08X)\n", addr, ctx->r[31].uw[0]);
+        exit(1);
+    }
+    fn(ctx);
 }
 
 /* ---- COP0 / unimplemented ------------------------------------------------------------------ */
@@ -73,13 +82,37 @@ void ps2_unimpl(ps2_ctx* ctx, uint32_t pc, const char* op) {
 #define REG_A2 6
 #define REG_GP 28
 
+static uint32_t next_sema_id = 1;
+
 void ps2_syscall(ps2_ctx* ctx, uint32_t pc) {
     int32_t n = ctx->r[REG_V1].sw[0];
     if (n < 0) n = -n;                           /* negative = interrupt-context ("i") variant */
     uint32_t a0 = ctx->r[REG_A0].uw[0], a1 = ctx->r[REG_A1].uw[0], a2 = ctx->r[REG_A2].uw[0];
     int64_t ret = 0;
 
+    /* A handler the game installed (SetSyscall or a direct kernel patch) takes priority, if it
+     * is recompiled code. Sony's libkernel also copies kernel patches (e.g. the alarm patch)
+     * from .data into kernel RAM; those aren't recompiled, so our own HLE stands in for them. */
+    uint32_t user = (n < 256) ? ps2_r32(ctx, PS2_SYSCALL_TABLE + 4u * (uint32_t)n) : 0;
+    if (user) {
+        static uint8_t logged[256];
+        ps2_func fn = find_func(user);
+        if (!logged[n]) {
+            logged[n] = 1;
+            fprintf(stderr, "[ps2] syscall 0x%X -> game handler 0x%08X%s (from 0x%08X)\n", (unsigned)n, user,
+                    fn ? "" : " (not recompiled: using HLE)", pc);
+        }
+        if (fn) { fn(ctx); return; }
+    }
+
     switch (n) {
+    case 0x74:                                   /* SetSyscall(num, handler) */
+        fprintf(stderr, "[ps2] SetSyscall(0x%X, 0x%08X)\n", a0, a1);
+        if (a0 < 256) ps2_w32(ctx, PS2_SYSCALL_TABLE + 4u * a0, a1);
+        break;
+    case 0x40:                                   /* CreateSema: no threads yet, just hand out ids */
+        ret = next_sema_id++;
+        break;
     case 0x04:                                   /* Exit */
         fprintf(stderr, "[ps2] Exit(%d)\n", (int)a0);
         exit((int)a0);
@@ -94,10 +127,20 @@ void ps2_syscall(ps2_ctx* ctx, uint32_t pc) {
         break;
     case 0x64:                                   /* FlushCache: nothing to flush natively */
         break;
-    default:
-        fprintf(stderr, "[ps2] syscall 0x%X (a0=0x%08X a1=0x%08X) at 0x%08X not implemented\n",
-                (unsigned)n, a0, a1, pc);
+    case 0x7A:                                   /* SifGetReg */
+        /* SMFLAG (4): report the IOP as booted with SIF and SIF-command layers initialized. */
+        ret = (a0 == 4) ? 0x00070000 : 0;
         break;
+    case 0x7C:                                   /* Deci2Call: dev-kit debug channel, absent on retail */
+        ret = -1;
+        break;
+    default: {
+        static uint32_t seen[512];
+        if (seen[n & 511]++ < 3)
+            fprintf(stderr, "[ps2] syscall 0x%X (a0=0x%08X a1=0x%08X) at 0x%08X not implemented%s\n",
+                    (unsigned)n, a0, a1, pc, seen[n & 511] == 3 ? " (further calls not logged)" : "");
+        break;
+    }
     }
     ctx->r[REG_V0].sd[0] = ret;
 }
@@ -139,9 +182,12 @@ int main(int argc, char** argv) {
 
     static ps2_ctx ctx;
     ctx.r[29].sd[0] = (int32_t)(PS2_RAM_SIZE - 0x10);    /* provisional stack until SetupThread */
+    ctx.vf[0].f[3] = 1.0f;                               /* VU0 vf0 = (0, 0, 0, 1) */
     ps2_call(&ctx, ps2_entry_point);
     fprintf(stderr, "[ps2] entry point returned\n");
     if (argc > 2 && strcmp(argv[2], "--dump-regs") == 0)
-        for (int i = 1; i < 32; i++) printf("r%d=%016llX\n", i, (unsigned long long)ctx.r[i].ud[0]);
+        for (int i = 1; i < 32; i++)                     /* full 128 bits, high half first */
+            printf("r%d=%016llX%016llX\n", i, (unsigned long long)ctx.r[i].ud[1],
+                   (unsigned long long)ctx.r[i].ud[0]);
     return 0;
 }

@@ -29,6 +29,8 @@ def cmd_analyze(args) -> None:
     for s in prog.segments:
         kind = "code" if s.executable else "data"
         print(f"segment   0x{s.vaddr:08X}-0x{s.end:08X}  {kind}  file {len(s.data):,} / mem {s.memsz:,} bytes")
+    for s in prog.sections:
+        print(f"section   0x{s.addr:08X}-0x{s.addr + s.size:08X}  {s.name:10} {'code' if s.executable else ''}")
     print(f"symbols   {len(prog.symbols):,} function symbols in the ELF")
     print(f"functions {len(funcs):,}")
 
@@ -50,6 +52,8 @@ def cmd_generate(args) -> None:
     prog, funcs, bodies, stats = translate_all(args.elf)
     out = Path(args.output)
     out.mkdir(parents=True, exist_ok=True)
+    for stale in [*out.glob("funcs_*.c"), *out.glob("*.o")]:   # file count can shrink between runs
+        stale.unlink()
 
     protos = "\n".join(f"void {cname(f.start)}(ps2_ctx* ctx);" for f in funcs)
     (out / "recomp_funcs.h").write_text(
@@ -72,6 +76,18 @@ def cmd_generate(args) -> None:
     print(f"wrote {len(funcs):,} functions in {files} files to {out} ({unimpl:,} untranslated instructions)")
 
 
+def cmd_disasm(args) -> None:
+    from .decode import decode
+    prog = load(args.elf)
+    start = int(args.addr, 16)
+    for n in range(args.count):
+        a = start + 4 * n
+        w = prog.read_u32(a)
+        if w is None:
+            break
+        print(f"{a:08X}: {w:08X}  {decode(w, a).disassemble()}")
+
+
 def main() -> None:
     p = argparse.ArgumentParser(prog="recomp", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -84,6 +100,11 @@ def main() -> None:
     g.add_argument("-o", "--output", default="build/recomp")
     g.add_argument("--per-file", type=int, default=500)
     g.set_defaults(fn=cmd_generate)
+    d = sub.add_parser("disasm", help="disassemble an address range")
+    d.add_argument("elf")
+    d.add_argument("addr", help="start address in hex")
+    d.add_argument("-n", "--count", type=int, default=40)
+    d.set_defaults(fn=cmd_disasm)
     args = p.parse_args()
     args.fn(args)
 
