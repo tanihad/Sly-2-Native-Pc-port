@@ -1066,6 +1066,44 @@ static void t_formats_contexts(void) {
 
 /* Random triangles (fractional and integer vertices, XYOFFSET, scissor) against a per-pixel
  * evaluation of the three edge functions with the top-left rule. */
+/* STQ texture coordinates must be floored (not truncated toward zero) when converted to texels:
+ * with REPEAT, sampling is periodic across u = 0. A 16-texel-wide texel ramp mapped 1:1 onto a
+ * triangle row with u = x - 100.03 (q = 1): pixel x samples texel floor(x - 100.03) & 15. */
+static void t_stq_negative_coords(void) {
+    reset_env();
+    clear(0, 0, 0, 0);
+    static uint32_t tex[16 * 16];
+    for (int y = 0; y < 16; y++) for (int x = 0; x < 16; x++) tex[y * 16 + x] = 0x80000000u | (uint32_t)x | (uint32_t)y << 8;
+    upload(TEXBP, 1, PSMCT32, 0, 0, 16, 16, tex, sizeof tex);
+    W(TEX0_1, tex0(TEXBP, 1, PSMCT32, 4, 4, 1, 1, 0, 0, 0, 0));
+    W(CLAMP_1, 0);                       /* REPEAT */
+    W(TEX1_1, 0);                        /* point sampling */
+    for (int pass = 0; pass < 2; pass++) {
+        /* pass 0: triangle; pass 1: the same coordinates on a line along row 30 */
+        double u0 = -100.03, u1 = 299.97;     /* u at x = 0 and x = 400 */
+        float tv = 0.5f / 16;                 /* v = 0.5: texel row 0 */
+        if (pass == 0) {
+            prim(P_TRI, TME);
+            rgbaq(0x80, 0x80, 0x80, 0x80, 1.0f); st((float)(u0 / 16), tv); xyz(0, 0, 0);
+            rgbaq(0x80, 0x80, 0x80, 0x80, 1.0f); st((float)(u1 / 16), tv); xyz(400, 0, 0);
+            rgbaq(0x80, 0x80, 0x80, 0x80, 1.0f); st((float)(u0 / 16), tv); xyz(0, 40, 0);
+        } else {
+            prim(P_LINE, TME);
+            rgbaq(0x80, 0x80, 0x80, 0x80, 1.0f); st((float)(u0 / 16), tv); xyz(0, 30, 0);
+            rgbaq(0x80, 0x80, 0x80, 0x80, 1.0f); st((float)(u1 / 16), tv); xyz(400, 30, 0);
+        }
+        int y = pass == 0 ? 5 : 30, bad = 0, first = -1;
+        for (int x = 20; x < 300; x++) {
+            int want = (int)floor(x - 100.03) & 15;
+            if (rgb(px(x, y)) != (uint32_t)want) { bad++; if (first < 0) first = x; }
+        }
+        CHECK(bad == 0, "STQ %s, negative u: %d pixels sample the wrong texel (first at x=%d: %06X, want %02X)",
+              pass ? "line" : "triangle", bad, first, first < 0 ? 0 : rgb(px(first, y)),
+              first < 0 ? 0 : (int)floor(first - 100.03) & 15);
+    }
+    save("stq_negative", 0, 10, PSMCT32, 640, 448);
+}
+
 static uint32_t rng_state;
 static int rnd(int n) { rng_state = rng_state * 1664525u + 1013904223u; return (int)((rng_state >> 9) % (uint32_t)n); }
 static double rndf(void) { return rnd(65536) / 65536.0; }
@@ -1191,6 +1229,7 @@ int main(int argc, char** argv) {
     t_lines_points();
     t_coverage_reference();
     t_texture_cache_random();
+    t_stq_negative_coords();
     t_csr();
     t_display();
     bench();

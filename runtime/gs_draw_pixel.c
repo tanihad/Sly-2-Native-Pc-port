@@ -43,10 +43,11 @@ GS_AI uint32_t rd16(const uint8_t* p) { uint16_t v; memcpy(&v, p, 2); return v; 
 GS_AI void wr32(uint8_t* p, uint32_t v) { memcpy(p, &v, 4); }
 GS_AI void wr16(uint8_t* p, uint32_t v) { uint16_t h = (uint16_t)v; memcpy(p, &h, 2); }
 
-GS_AI int f2i(float x) {                 /* saturating, NaN -> large negative */
+GS_AI int f2i(float x) {                 /* floor, saturating, NaN -> large negative */
     if (!(x > -1e8f)) return -100000000;
     if (x > 1e8f) return 100000000;
-    return (int)x;
+    int i = (int)x;                      /* truncates toward zero: step down for negative fractions */
+    return i - (x < (float)i);
 }
 
 /* ---- addresses ----------------------------------------------------------------------------------- */
