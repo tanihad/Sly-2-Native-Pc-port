@@ -11,4 +11,12 @@ $frames = Get-ChildItem (Join-Path $Dir 'frames') -Filter 'frame_*.png' | Sort-O
 $sheet = Join-Path $Dir 'look.png'
 & $py (Join-Path $root 'scripts\contact_sheet.py') $sheet ($frames | ForEach-Object { $_.FullName }) --cols $Cols --scale $Scale | Out-Null
 "frames: $(($frames | ForEach-Object { $_.BaseName -replace 'frame_0*', '' }) -join ' ')"
-Get-Content (Join-Path $Dir 'run.log') -Tail 400 | Where-Object { $_ -notlike '*live tokens*' -and $_ -notlike '*pad frame*' } | Select-Object -Last 3
+$log = Get-Content (Join-Path $Dir 'run.log') -Tail 400
+$log | Where-Object { $_ -notlike '*live tokens*' -and $_ -notlike '*pad frame*' -and $_ -notlike '`[peek`]*' } | Select-Object -Last 3
+# PS2_PEEK lines: show the newest value of each address as floats too
+$peeks = @{}
+foreach ($l in $log) { if ($l -match '^\[peek\] v(\d+) ([0-9A-F]{8}):((?: [0-9A-F]{8})+)') { $peeks[$Matches[2]] = @($Matches[1], $Matches[3].Trim()) } }
+foreach ($k in $peeks.Keys) {
+    $f = ($peeks[$k][1] -split ' ' | ForEach-Object { [BitConverter]::ToSingle([BitConverter]::GetBytes([Convert]::ToUInt32($_, 16)), 0).ToString('0.##') }) -join ' '
+    "peek v$($peeks[$k][0]) $k : $f"
+}

@@ -299,6 +299,9 @@ static DWORD WINAPI host_timer(LPVOID arg) {
 
 uint32_t ps2_vblank_count(void) { return vblank_count; }
 
+static volatile int ram_dump_request;
+void ps2_request_ram_dump(void) { ram_dump_request = 1; }   /* written at the next VBlank */
+
 /* The picture of VBlank `vb` (ok = 0: display off). Runs on the GS thread when there is one. */
 static void present_frame(const uint32_t* frame, int ok, int w, int h, uint32_t vb) {
     if (!ok) {                                   /* display off: show black, not a stale frame */
@@ -346,6 +349,18 @@ static void vblank(ps2_ctx* ctx) {
     if (peek == (const char*)1) {
         peek = getenv("PS2_PEEK");
         if (getenv("PS2_PEEK_EVERY")) peek_every = atoi(getenv("PS2_PEEK_EVERY")) > 0 ? atoi(getenv("PS2_PEEK_EVERY")) : 60;
+    }
+    /* PS2_DUMP_RAM="<vblank>[,...]": write EE RAM (32 MB) to <dump dir or .>/ram_<vblank>.bin */
+    static const char* ram_at = (const char*)1;
+    if (ram_at == (const char*)1) ram_at = getenv("PS2_DUMP_RAM");
+    int ram_now = ram_dump_request;              /* live input token "ram" */
+    ram_dump_request = 0;
+    for (const char* s = ram_now ? "0" : ram_at; s && *s; s = strchr(s, ',') ? strchr(s, ',') + 1 : "") {
+        if (!ram_now && (uint32_t)strtoul(s, NULL, 10) != vblank_count) continue;
+        char path[512];
+        snprintf(path, sizeof path, "%s/ram_%06u.bin", dump_dir ? dump_dir : ".", vblank_count);
+        FILE* f = fopen(path, "wb");
+        if (f) { fwrite(ps2_ram, 1, PS2_RAM_SIZE, f); fclose(f); fprintf(stderr, "[ps2] RAM written to %s\n", path); }
     }
     static int log_threads = -1;
     if (log_threads < 0) log_threads = getenv("PS2_LOG_THREADS") != NULL;

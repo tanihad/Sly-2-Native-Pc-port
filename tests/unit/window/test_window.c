@@ -305,6 +305,8 @@ uint32_t ps2_func_calls(uint32_t addr, uint32_t ra) {
     return addr == 0x187D80 && ra == 0x1DD96C ? fake_anchor_calls : 0;
 }
 uint32_t ps2_vblank_count(void) { return 0; }
+static int ram_dumps;
+void ps2_request_ram_dump(void) { ram_dumps++; }
 
 static void test_input_script(void) {
     script_n = 0;
@@ -340,6 +342,20 @@ static void test_input_script(void) {
         script_apply(0, &p);
         CHECK(!!(p.buttons & PAD_CIRCLE) == (f == 26), "circle at frame %d", f);
     }
+    /* partial stick deflection and the RAM dump request */
+    script_n = 0;
+    script_frame = 0;
+    ram_dumps = 0;
+    script_parse("2:lx40:3,+1:ryc0:1,+0:ram");
+    CHECK(script_n == 3, "parsed %d tokens", script_n);
+    for (int f = 0; f < 8; f++) {
+        pad_input p;
+        pad_clear(&p);
+        script_apply(0, &p);
+        CHECK((p.lx == 0x40) == (f >= 2 && f < 5), "lx at frame %d: %02X", f, p.lx);
+        CHECK((p.ry == 0xC0) == (f == 3), "ry at frame %d: %02X", f, p.ry);
+    }
+    CHECK(ram_dumps == 1, "%d RAM dumps", ram_dumps);
     script_n = 0;                                         /* leave scripting off for the other tests */
 }
 
