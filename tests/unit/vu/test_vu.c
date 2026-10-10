@@ -583,6 +583,45 @@ static void test_vi_branch_quirk(void) {
     CHECKU(V1->vi[12], 0);
     CHECKU(V1->vi[13], 7);
     CHECKU(V1->vi[14], 1);
+
+    /* PCSX2 VU documentation, note 2: a chain starts at the first write and only continues while
+     * the next instruction reads AND writes the register. A write that does not read it starts a
+     * new chain, so the branch sees the value from just before that write. */
+    cur_test = "VI branch, write-only restarts the chain";
+    reset1();
+    V1->vi[6] = 3;
+    begin();
+    P(U_NOP, L_IADDIU(5, 0, 100));                   /* 0: chain on vi5 starts */
+    P(U_NOP, L_IADDIU(5, 0, 0));                     /* 1: writes vi5 without reading it: new chain */
+    P(U_NOP, L_IBNE(5, 0, 2));                       /* 2: sees 100 (before 1): taken -> 5 */
+    P(U_NOP, L_NOP);                                 /* 3 */
+    P(U_NOP, L_IADDIU(7, 0, 1));                     /* 4: skipped */
+    P(U_NOP, L_IADDIU(8, 0, 100));                   /* 5: chain on vi8 */
+    P(U_NOP, L_IADD(8, 6, 6));                       /* 6: vi8 = vi6 + vi6, does not read vi8: new chain */
+    P(U_NOP, L_IBEQ(8, 0, 2));                       /* 7: sees 100: not taken */
+    P(U_NOP, L_NOP);                                 /* 8 */
+    P(U_NOP, L_IADDIU(9, 0, 1));                     /* 9: runs */
+    PE();
+    run1();
+    CHECKU(V1->vi[5], 0);
+    CHECKU(V1->vi[7], 0);
+    CHECKU(V1->vi[8], 6);
+    CHECKU(V1->vi[9], 1);
+
+    /* The documentation's own example (Champions: Return to Arms): an SQI loop whose IBNE sees vi02
+     * from before the chain, which includes the previous pass's delay slot. Exits after 256 SQIs. */
+    cur_test = "VI branch, SQI loop example";
+    reset1();
+    begin();
+    P(U_NOP, L_IADDIU(3, 2, 251));                   /* 0 */
+    P(U_NOP, L_SQI(DXYZW, 20, 2));                   /* 1: loop */
+    P(U_NOP, L_SQI(DXYZW, 21, 2));                   /* 2 */
+    P(U_NOP, L_SQI(DXYZW, 22, 2));                   /* 3 */
+    P(U_NOP, L_IBNE(3, 2, -4));                      /* 4: -> 1 */
+    P(U_NOP, L_SQI(DXYZW, 23, 2));                   /* 5: delay slot */
+    PE();
+    run1();
+    CHECKU(V1->vi[2], 256);
 }
 
 static void test_stalls(void) {
@@ -656,6 +695,31 @@ static void test_efu_random_tops(void) {
     CHECKNEAR(V1->vf[5].f[0], 0.2f, 1e-6f);
     CHECKF(V1->vf[5].f[1], 2.0f);
     CHECKNEAR(V1->vf[5].f[2], 0.785398163f, 1e-6f);
+
+    /* ps2tek: the EFU is the FDIV pipeline without a writeback hazard check, "meaning that a stall
+     * lasts for one cycle less than usual" -- for WAITP and for a new EFU op on a busy EFU alike.
+     * The sequence is the game's own (376110651 at 0x00D0, 188054619 at 0x00A8): three ELENGs whose
+     * MFPs each read the previous result while the next one is already running. */
+    cur_test = "EFU busy stall";
+    reset1();
+    V1->P = fb(-1.0f);
+    setv(&V1->vf[3], 3, 4, 0, 0);                    /* |vf3| = 5 */
+    setv(&V1->vf[4], 0, 6, 8, 0);                    /* 10 */
+    setv(&V1->vf[5], 1, 2, 2, 0);                    /* 3 */
+    begin();
+    P(U_NOP, L_ELENG(3));                            /* 0: P = 5 at 18 */
+    P(U_NOP, L_ELENG(4));                            /* 1: EFU busy: issues at 17, P = 10 at 35 */
+    P(U_NOP, L_MFP(DX, 22));                         /* 18: 5 */
+    P(U_NOP, L_ELENG(5));                            /* 19: issues at 34, P = 3 at 52 */
+    P(U_NOP, L_MFP(DY, 22));                         /* 35: 10 */
+    P(U_NOP, L_WAITP);                               /* 36: until 51 */
+    P(U_NOP, L_MFP(DZ, 22));                         /* 52: 3 */
+    PE();                                            /* 53, 54 */
+    run1();
+    CHECKF(V1->vf[22].f[0], 5.0f);
+    CHECKF(V1->vf[22].f[1], 10.0f);
+    CHECKF(V1->vf[22].f[2], 3.0f);
+    CHECKU(last_cycles, 55);
 
     cur_test = "random";
     reset1();
@@ -761,6 +825,19 @@ static void test_vu0(void) {
     setv(&r, 3.0f, -2.0f, 1.0f, -1.0f);
     vu0_macro_flags(&r, DY);
     CHECKU(vu0_cfc2_ctrl(&ctx, 17), 0x40);
+
+    /* R is 23 bits with a fixed 0x7F exponent; the EE-side copy can hold any value (the inline
+     * CTC2 in ps2_runtime.h stores all 32 bits), so micro mode must not see the extra bits. */
+    cur_test = "vu0 R register";
+    begin();
+    P(U_NOP, L_RGET(DXYZW, 9));
+    PE();
+    load(0, 0x40);
+    ctx.vr = 0x12345678u;
+    vu0_callms(&ctx, 0x40);
+    CHECKU(ctx.vf[9].u[0], 0x3F800000u | (0x12345678u & 0x7FFFFFu));
+    CHECKU(ctx.vr & 0xFF800000u, 0x3F800000u);
+
     /* CMSAR1 starts VU1 */
     reset1();
     begin();

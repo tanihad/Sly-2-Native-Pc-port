@@ -40,7 +40,7 @@ before the pair), then the upper result is committed, then the I bit loads I. Co
 | FMAC (upper ops; LQ/LQI/LQD/MOVE/MR32/MFIR/MFP/RGET/RNEXT VF writes) | result ready 4 cycles after issue; readers stall per field (up to 3 cycles). vf0, ACC, I, Q, P, R are not checked (ACC chains MULA/MADDA... run back to back). |
 | MAC/status flags, clip flags | queued with ready = issue + 4; FM*/FS*/FC* read the visible copy. Sticky status bits OR in when an op retires. FSSET writes the sticky bits; FCSET overwrites clip and drops in-flight CLIP results. |
 | FDIV | DIV/SQRT: Q ready at issue + 7, RSQRT at + 13. A read before that sees the old Q. A second FDIV op (and WAITQ) stalls until the first is done; WAITQ's pair (including its upper op) then sees the new Q. Status I/D flags arrive with Q. |
-| EFU (P) | ESADD 11, ERSADD 18, ELENG 18, ERLENG 24, ERSQRT 18, ESQRT 12, ERCPR 12, ESUM 12, ESIN 29, EEXP 44, EATAN/EATANxy/EATANxz 54 (ps2tek). P visible at issue + latency; WAITP stalls until latency - 1 (no writeback check, "one cycle less"); a new EFU op waits for the previous one. |
+| EFU (P) | ESADD 11, ERSADD 18, ELENG 18, ERLENG 24, ERSQRT 18, ESQRT 12, ERCPR 12, ESUM 12, ESIN 29, EEXP 44, EATAN/EATANxy/EATANxz 54 (ps2tek). P visible at issue + latency. EFU stalls are the FDIV ones minus a cycle (no writeback hazard check: "a stall lasts for one cycle less than usual"): WAITP and a new EFU op on a busy EFU both wait until latency - 1, so two P results can be in flight. Sly 2 issues EFU ops back to back: `eleng P, vf03 / eleng P, vf04 / mfp.x ... / eleng P, vf05 / mfp.y ...` (376110651 at 0x00D0, 188054619 at 0x00A8) reads each length while the next one runs. |
 | Integer | IALU results visible to the next pair (bypass). ILW/ILWR results take 4 cycles; readers stall. |
 | Branches | one delay slot, modelled with MIPS-style pc/npc: a branch in a delay slot runs one instruction at the first target, then goes to the second target (unverified on hardware; Sly 2 never does it). BAL/JALR link = address after the delay slot / 8. |
 | E bit | the pair after the E bit (its delay slot) still runs; TPC = the address after it (used by MSCNT). The pipeline drains at the end: pending Q/P/flags land. |
@@ -48,7 +48,10 @@ before the pair), then the upper result is committed, then the I bit loads I. Co
 ### VI register hazard for conditional branches
 
 A conditional branch reads a VI register as it was *before* a chain of up to four immediately
-preceding pairs that write that register (each one directly before the next). A stall inside the
+preceding pairs that write that register (each one directly before the next). The chain starts
+at a write and continues only while the next pair reads AND writes the register (`iaddi vi5,
+vi5, 1`, `sqi ..., (vi5++)`); a write that does not read it (`iaddiu vi5, vi0, 7`) starts a new
+chain, so the branch sees the value from just before that write. A stall inside the
 chain lets the writes land: the chain then starts at the stalled pair; a stall on the branch
 itself cancels the effect. FS/FM/FC flag ops write their VI result without this delay. JR/JALR
 are not affected. ILW/ILWR results make the branch stall, so it reads the loaded value. (Source:
@@ -89,7 +92,9 @@ Known deviations (documented, deliberate):
 - VU0 data addresses 0x4000-0x43FF (quadword 0x400-0x43F) are VU1's registers: VF0-31, then VI0-15
   and control registers 16-31 in the x word (status, MAC, clip, R, I, Q, P, TPC).
 - `vu0_callms` copies the macro-mode registers from `ps2_ctx` (vf, vacc, vi, vi_reg = I, vq, vp,
-  vr) in, runs until E, and copies them back. VU0 flags, TPC, CMSAR0/1 and FBRST live in `vu.c`.
+  vr) in, runs until E, and copies them back. R keeps only its 23 mantissa bits (exponent 0x7F) on
+  the way in, since the EE-side copy can hold anything (the inline CTC2 stores all 32 bits). VU0
+  flags, TPC, CMSAR0/1 and FBRST live in `vu.c`.
 - CFC2/CTC2 16-31: status (only sticky bits writable), MAC (read-only), clip, P, TPC, CMSAR0,
   FBRST (RS0/RS1 reset flags/TPC; DE/TE bits read back), VPU-STAT (0), CMSAR1 (write starts VU1).
 - XGKICK calls `gif_path1_kick(vu_data_mem(1), addr & 0x3FF)` synchronously at the instruction.

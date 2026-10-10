@@ -194,20 +194,27 @@ VU_INLINE void retire(vu_state* st, uint32_t cyc) {
         st->status = (st->status & ~0x30u) | st->q_flags | (st->q_flags << 6);
         st->q_pend = 0;
     }
-    if (st->p_pend && st->p_ready <= cyc) { st->P = st->p_next; st->p_pend = 0; }
+    while (st->p_pend && st->p_ready[0] <= cyc) {
+        st->P = st->p_next[0];
+        st->p_next[0] = st->p_next[1];
+        st->p_ready[0] = st->p_ready[1];
+        st->p_pend--;
+    }
     uint32_t n = UINT32_MAX;
     if (st->fq_head != st->fq_tail && st->fq[st->fq_head & 7].ready < n) n = st->fq[st->fq_head & 7].ready;
     if (st->cq_head != st->cq_tail && st->cq[st->cq_head & 7].ready < n) n = st->cq[st->cq_head & 7].ready;
     if (st->q_pend && st->q_ready < n) n = st->q_ready;
-    if (st->p_pend && st->p_ready < n) n = st->p_ready;
+    if (st->p_pend && st->p_ready[0] < n) n = st->p_ready[0];
     st->next_event = n;
 }
 
 /* Conditional branches read a VI register before a chain of up to four immediately preceding
  * writes to it (PCSX2 VU documentation, "VI register delays on conditional branches"; games such
- * as Champions: Return to Arms rely on it). A stall in the chain (or on the branch itself) lets
- * the writes complete: the chain starts at the stalled instruction. Flag instructions (FS/FM/FC)
- * write their result without this delay. */
+ * as Champions: Return to Arms rely on it). A chain starts at a write and continues only while
+ * the next instruction reads AND writes the register (IADDI vi5, vi5, 1; SQI ..., (vi5++)); a
+ * write that does not read it starts a new chain. A stall in the chain (or on the branch itself)
+ * lets the writes complete: the chain starts at the stalled instruction. Flag instructions
+ * (FS/FM/FC) write their result without this delay. */
 VU_INLINE uint16_t branch_vi(const vu_state* st, unsigned r) {
     uint16_t v = st->vi[r];
     if (!r || st->stalled) return v;
@@ -215,7 +222,7 @@ VU_INLINE uint16_t branch_vi(const vu_state* st, unsigned r) {
         uint32_t h = st->vih[(st->hpos - k) & 3];
         if ((h & 0xFF) != r) break;
         v = (uint16_t)(h >> 16);
-        if (h & 0x100) break;
+        if ((h & 0x300) != 0x200) break;   /* stalled, or a write that does not read r: chain start */
     }
     return v;
 }
@@ -537,7 +544,8 @@ VU_INLINE float sdiv(float a, float b) {   /* division with the VU's divide-by-z
     if (b == 0.0f) return (signbit(a) != signbit(b)) ? -FLT_MAX : FLT_MAX;
     return a / b;
 }
-/* EFU (VU1 only on hardware; harmless on VU0): P arrives op->imm cycles after issue. */
+/* EFU (VU1 only on hardware; harmless on VU0): P arrives op->imm cycles after issue. The op may
+ * issue one cycle before the previous EFU result lands (see stall_until), so results queue. */
 LFN(l_efu) {
     const vf128* v = &st->vf[op->ls];
     float x = lanef(v, 0), y = lanef(v, 1), z = lanef(v, 2), w = lanef(v, 3), f = lanef(v, op->fsf), p;
@@ -556,10 +564,10 @@ LFN(l_efu) {
     case LOP_EATAN:   p = atanf(f); break;
     default:          p = expf(-f); break;     /* EEXP */
     }
-    st->p_pend = 1;
-    st->p_next = fbits(p);
-    st->p_ready = st->cyc + (uint32_t)op->imm;
-    note_event(st, st->p_ready);
+    const uint32_t k = st->p_pend++;         /* at most one older result is still in flight */
+    st->p_next[k] = fbits(p);
+    st->p_ready[k] = st->cyc + (uint32_t)op->imm;
+    note_event(st, st->p_ready[k]);
     return npc;
 }
 LFN(l_invalid) { log_invalid(st, op, "lower"); return npc; }
@@ -820,6 +828,7 @@ static void vu_decode(vu_op* op, uint64_t raw, uint32_t pc, uint32_t pcmask) {
     else decode_lower(op, l, pc, pcmask);
     op->check = op->nsrc || op->visrc[0] || op->stall;
     op->writes = op->uwreg || op->lwreg || op->viw;
+    op->vichain_rd = op->vichain && (op->visrc[0] == op->vichain || op->visrc[1] == op->vichain);
 }
 
 void vu_init_state(vu_state* st) {
@@ -854,8 +863,12 @@ VU_INLINE uint32_t stall_until(const vu_state* st, const vu_op* op, uint32_t t) 
     if (st->vi_ready[op->visrc[1]] > t) t = st->vi_ready[op->visrc[1]];
     switch (op->stall) {
     case VU_STALL_Q:   if (st->q_pend && st->q_ready > t) t = st->q_ready; break;          /* WAITQ, busy FDIV */
-    case VU_STALL_EFU: if (st->p_pend && st->p_ready > t) t = st->p_ready; break;          /* busy EFU */
-    case VU_STALL_P:   if (st->p_pend && st->p_ready - 1 > t) t = st->p_ready - 1; break;  /* WAITP */
+    /* busy EFU and WAITP: "a stall lasts for one cycle less than usual" (ps2tek; no writeback
+     * hazard check), i.e. until one cycle before the newest result lands */
+    case VU_STALL_EFU:
+    case VU_STALL_P:
+        if (st->p_pend && st->p_ready[st->p_pend - 1] - 1 > t) t = st->p_ready[st->p_pend - 1] - 1;
+        break;
     default: break;
     }
     return t;
@@ -927,7 +940,8 @@ uint32_t vu_run(vu_state* st, uint32_t pc) {
          * wins over a lower write to the same field), then the I bit loads I */
         __m128 ur;
         vf128* udst = op->ufn ? op->ufn(st, op, &ur) : NULL;
-        const uint32_t hv = op->vichain ? op->vichain | (uint32_t)st->vi[op->vichain] << 16 : 0xFF;
+        const uint32_t hv = op->vichain ? op->vichain | (uint32_t)op->vichain_rd << 9 |
+                                              (uint32_t)st->vi[op->vichain] << 16 : 0xFF;
         if (op->lfn) npc = op->lfn(st, op, npc);
         if (udst) vwrite(udst, ur, op->udst);
         if (op->writes) mark_writes(st, op, cyc);

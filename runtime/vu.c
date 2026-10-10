@@ -91,7 +91,7 @@ void vu0_callms(ps2_ctx* ctx, uint32_t addr_dw) {
     memcpy(&st->I, &ctx->vi_reg, 4);
     memcpy(&st->Q, &ctx->vq, 4);
     memcpy(&st->P, &ctx->vp, 4);
-    st->R = ctx->vr;
+    st->R = 0x3F800000u | (ctx->vr & 0x7FFFFFu);   /* 23 bits; the EE-side copy may hold any value */
     run(st, addr_dw);
     memcpy(&ctx->vf[1], &st->vf[1], 31 * sizeof(vf128));
     ctx->vacc = st->acc;

@@ -11,13 +11,16 @@
  *    the stall this gives the hardware's visible behaviour.
  *  - MAC/status/clip flags: queued with ready time issue+4; FS/FM/FC instructions read the
  *    architecturally visible copy.
- *  - Q: DIV/SQRT ready at issue+7, RSQRT at issue+13. P: EFU latency per op.
+ *  - Q: DIV/SQRT ready at issue+7, RSQRT at issue+13. P: EFU latency per op. EFU stalls (WAITP
+ *    and a new EFU op while one runs) end one cycle before the result lands (ps2tek), so up to
+ *    two P results can be in flight.
  *  - Within a pair the upper op reads its operands, then the lower op executes (it sees the
  *    registers as they were before the pair), then the upper result is committed (so if both
  *    write the same VF field, the upper op wins), then the I bit loads I.
  *  - Integer registers: written at issue (1-cycle bypass) except ILW/ILWR (4 cycles, readers
  *    stall). Conditional branches read the value from before a chain of up to 4 immediately
- *    preceding writes to that register (quirk documented by the PCSX2 team; see vu_exec.c).
+ *    preceding writes to that register, where every write after the first also reads it (quirk
+ *    documented by the PCSX2 team; see vu_exec.c).
  */
 #pragma once
 #include "hw.h"
@@ -56,6 +59,7 @@ typedef struct vu_op {
     uint8_t  lwreg, lwmask;      /* VF register written by the lower op (0 = none) */
     uint8_t  viw, viwlat;        /* VI register written by the lower op and its latency */
     uint8_t  vichain;            /* VI register this write chains for the branch quirk (0 = none) */
+    uint8_t  vichain_rd;         /* 1: the op also reads vichain, so it continues a chain */
     uint8_t  stall;              /* VU_STALL_* */
     uint8_t  check;              /* nonzero: operands/units to check for stalls */
     uint8_t  writes;             /* nonzero: uwreg, lwreg or viw set */
@@ -81,9 +85,10 @@ typedef struct vu_state {
     vu_flagent fq[8];  uint32_t fq_head, fq_tail;
     vu_clipent cq[8];  uint32_t cq_head, cq_tail;
     uint32_t   q_pend, q_next, q_ready, q_flags;   /* q_flags: status I (0x10) / D (0x20) */
-    uint32_t   p_pend, p_next, p_ready;
+    uint32_t   p_pend, p_next[2], p_ready[2];      /* EFU results in flight (oldest first) */
     uint32_t   vf_ready[32][4], vf_ready_any[32], vi_ready[16];
-    uint32_t   vih[4], hpos;     /* last 4 pairs' VI writes, for the branch quirk */
+    uint32_t   vih[4], hpos;     /* last 4 pairs' VI writes, for the branch quirk: register |
+                                    stalled << 8 | reads-it << 9 | old value << 16 (0xFF: none) */
     uint32_t   cyc, stalled;     /* issue cycle of the current pair, and whether it stalled */
 
     /* memory */
