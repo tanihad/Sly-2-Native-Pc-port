@@ -52,9 +52,6 @@ int snd_rpc(ps2_ctx* ctx, uint32_t sid, uint32_t fno, const uint8_t* args, uint3
 /* IOP RAM (sif.c): host pointer for an IOP address, or NULL if out of range */
 uint8_t* iop_mem(uint32_t iop_addr);
 
-/* Disc image (cdvd.c): read `count` 2048-byte sectors to a host buffer; 1 on success */
-int cdvd_read_host(uint32_t lbn, uint32_t count, void* dst);
-
 /* Native IOP (iop_kernel.c, see iop.h): startup and the EE side's safe-point hook */
 void iop_init(void);
 void iop_service(void);

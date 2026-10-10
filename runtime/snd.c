@@ -1,4 +1,8 @@
-/* High-level emulation of the 989snd sound library's IOP RPC servers (silent for now).
+/* Fallback for the 989snd sound library's IOP RPC servers: silent acknowledgements.
+ *
+ * Normally the recompiled 989snd and spiop run on the native IOP (notes/iop-native.md) and serve
+ * 0x123456/0x123457 themselves, so nothing here is reached. This file only answers when that path
+ * is off: PS2_AUDIO=0, or a sound module whose CRC does not match what was recompiled.
  *
  * The EE side batches sound commands into one RPC call on server 0x123456. The reply buffer
  * holds one result per command between two 0xFFFFFFFF sentinel words; the EE only accepts it
