@@ -7,9 +7,10 @@ import hashlib
 from collections import Counter
 from pathlib import Path
 
-from .codegen import FunctionTranslator, cname
+from .codegen import FunctionTranslator, cname, override_body
 from .elf import load
 from .functions import find_functions
+from .overrides import override_for
 
 
 def translate_all(path: str):
@@ -17,7 +18,14 @@ def translate_all(path: str):
     funcs = find_functions(prog)
     starts = {f.start for f in funcs}
     stats: Counter = Counter()
-    bodies = [FunctionTranslator(f, starts, stats).translate() for f in funcs]
+    bodies = []
+    for f in funcs:
+        o = override_for(prog, f.start, f.end)        # native replacement (recomp/overrides.py)
+        if o:
+            stats["native overrides"] += 1
+            bodies.append(override_body(f, o))
+        else:
+            bodies.append(FunctionTranslator(f, starts, stats).translate())
     return prog, funcs, bodies, stats
 
 
@@ -82,7 +90,8 @@ def cmd_generate(args) -> None:
 
     unimpl = sum(v for k, v in stats.items() if k.startswith("UNIMPL "))
     files = (len(bodies) + args.per_file - 1) // args.per_file
-    print(f"wrote {len(funcs):,} functions in {files} files to {out} ({unimpl:,} untranslated instructions)")
+    print(f"wrote {len(funcs):,} functions in {files} files to {out} ({unimpl:,} untranslated instructions, "
+          f"{stats['native overrides']} native overrides)")
 
 
 def cmd_disasm(args) -> None:

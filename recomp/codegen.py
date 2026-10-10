@@ -447,3 +447,16 @@ class FunctionTranslator:
         out.append(f"    {self.call(f.end)} /* fell off the end */")
         out.append("}")
         return "\n".join(out)
+
+
+def override_body(f: Function, o) -> str:
+    """C source of a function replaced by native code (recomp/overrides.py)."""
+    reason = o.reason.replace("*/", "* /")
+    return "\n".join([
+        f"/* {f.name}: 0x{f.start:08X}-0x{f.end:08X}, native override '{o.name}':",
+        f" * {reason} */",
+        f"void {cname(f.start)}(ps2_ctx* restrict ctx) {{",
+        f"    PS2_TRACE(0x{f.start:08X}u);",
+        "    (void)ctx;",
+        f"    {o.body}",
+        "}"])

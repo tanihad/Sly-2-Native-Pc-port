@@ -40,6 +40,32 @@ build/recomp/*.c  +  runtime/*.c  ──clang──►  sly2.exe
 - **Unknown/unhandled instructions** become `PS2_UNIMPL(...)`, which logs once at runtime. The
   `analyze` command counts them, so we implement what the game actually uses first.
 
+## Native overrides (recomp/overrides.py)
+
+The recompiler owns every function, so a function whose work is meaningless on the host can be
+replaced wholesale by native C (native-port-principles.md, rule 4). `OVERRIDES` maps a function
+start address to an `Override` (name, SHA-1 of the function's original bytes, C body, reason);
+`translate_all` uses it instead of translating the function, but only when the bytes match, so a
+different executable (another region, the synthetic test ELF) is translated normally
+(`tests/run_tests.py` checks this). The generated function keeps its name `f_<addr>` and its
+`PS2_TRACE`, and its comment carries the reason.
+
+Current table - cache maintenance. The EE caches are not modelled (guest memory is always coherent
+with DMA/VIF/GIF/IOP), so Sony's cache routines are no-ops by definition, but translated they still
+loop over every line (or the whole 64 x 2 tag RAM with an `mfc0 TagLo` call per line):
+
+| Address    | Function (libkernel)        | What the original loops do                          |
+|------------|-----------------------------|-----------------------------------------------------|
+| 0x00234EA0 | SyncDCache inner loop       | tag walk; write back lines in [a0, a1) (cache 0x14)  |
+| 0x00234FD0 | InvalidDCache inner loop    | tag walk; invalidate lines in [a0, a1) (cache 0x16)  |
+| 0x0023B170 | sceSifWriteBackDCache       | line by line over [a0, a0+a1) (cache 0x18), 22 callers |
+
+The replacements return at once and leave the loops' scratch registers alone (callers are
+compiled C and the functions return nothing). The wrappers that disable/enable interrupts around
+the first two (0x234F48, 0x235078) are still translated as they are. To add an override: find the
+function's bounds with `recomp/functions.py`, hash its bytes with `overrides.function_sha1`, and add
+an entry with the reason.
+
 ## Known hard parts (in rough order of how much work they are)
 
 1. **Graphics (GS + GIF + VIF + VU1)**: the game draws by sending packets through DMA to the
