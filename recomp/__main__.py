@@ -1,6 +1,7 @@
 """Usage:
     python -m recomp analyze  <elf>
     python -m recomp generate <elf> [-o build/recomp] [--per-file 500]
+    python -m recomp iop      <elf> [-o build/iop]       (IOP sound modules, see recomp/iop.py)
 """
 import argparse
 import hashlib
@@ -94,6 +95,11 @@ def cmd_generate(args) -> None:
           f"{stats['native overrides']} native overrides)")
 
 
+def cmd_iop(args) -> None:
+    from .iop import generate
+    print(generate(args.elf, args.output))
+
+
 def cmd_disasm(args) -> None:
     from .decode import decode
     prog = load(args.elf)
@@ -118,6 +124,10 @@ def main() -> None:
     g.add_argument("-o", "--output", default="build/recomp")
     g.add_argument("--per-file", type=int, default=500)
     g.set_defaults(fn=cmd_generate)
+    o = sub.add_parser("iop", help="write C source for the game's IOP sound modules (989snd, spiop)")
+    o.add_argument("elf")
+    o.add_argument("-o", "--output", default="build/iop")
+    o.set_defaults(fn=cmd_iop)
     d = sub.add_parser("disasm", help="disassemble an address range")
     d.add_argument("elf")
     d.add_argument("addr", help="start address in hex")

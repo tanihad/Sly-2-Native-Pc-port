@@ -83,12 +83,24 @@ static const struct { const char* name; int axis, value; } script_sticks[] = {
  * nothing (a pure wait point for the tokens after it). Partial stick deflection: "lxHH", "lyHH",
  * "rxHH", "ryHH" set that axis to the hex value HH (00 left/up, 80 centre, FF right/down).
  * "ram" writes EE RAM to <dump dir>/ram_<vblank>.bin (debugging).
+ *   "t<seconds>:<button>[:<hold>]"      at a wall-clock time since the first pad read, e.g.
+ *       "t95:start": scenes synchronised to sound (the intro cutscene follows its music stream)
+ *       last a fixed real time, however fast the game runs.
  *
  * PS2_INPUT_FILE=<path>: live input. Lines appended to that file while the game runs are read
  * every few frames and added to the script; relative tokens in a new line count from the moment
  * it is read ("+0:lup:60,+60:cross"), so a running game can be steered step by step (anchors work
  * there too: the runtime starts counting a function's calls when the script first asks for them). */
-enum { SCRIPT_ABS, SCRIPT_REL, SCRIPT_ANCHOR, SCRIPT_QUIET };
+enum { SCRIPT_ABS, SCRIPT_REL, SCRIPT_ANCHOR, SCRIPT_QUIET, SCRIPT_TIME };
+static double script_at[4096];             /* SCRIPT_TIME tokens: seconds since the first pad read */
+static double script_t0;
+
+static double script_seconds(void) {
+    LARGE_INTEGER f, t;
+    QueryPerformanceFrequency(&f);
+    QueryPerformanceCounter(&t);
+    return (double)t.QuadPart / (double)f.QuadPart;
+}
 #define SCRIPT_UNSET 0xFFFFFFFFu
 #define SCRIPT_NONE  (-2)
 #define SCRIPT_AXIS  (-3)                 /* lxHH etc.: axis/value in the token */
@@ -109,9 +121,13 @@ static void script_parse(const char* s) {
         char name[32] = { 0 };
         unsigned frame = 0, hold = 6, addr = 0, ra = 0;
         int kind = SCRIPT_ABS;
+        double at = 0;
         if (tok[0] == '+') {
             kind = SCRIPT_REL;
             if (sscanf(tok + 1, "%u:%31[a-z0-9]:%u", &frame, name, &hold) < 2) continue;
+        } else if (tok[0] == 't') {
+            kind = SCRIPT_TIME;
+            if (sscanf(tok + 1, "%lf:%31[a-z0-9]:%u", &at, name, &hold) < 2) continue;
         } else if (tok[0] == '@') {
             kind = tok[1] == '!' ? SCRIPT_QUIET : SCRIPT_ANCHOR;
             char* p = tok + (kind == SCRIPT_QUIET ? 2 : 1);
@@ -136,6 +152,7 @@ static void script_parse(const char* s) {
         script[script_n].frame = frame; script[script_n].hold = hold; script[script_n].button = found;
         script[script_n].kind = kind; script[script_n].addr = addr; script[script_n].ra = ra;
         script[script_n].armed = script[script_n].seen = 0;
+        script_at[script_n] = at;
         script[script_n++].start = kind == SCRIPT_ABS ? frame : SCRIPT_UNSET;
     }
 }
@@ -186,6 +203,13 @@ static void script_resolve(uint32_t now) {
         uint32_t prev = i ? script[i - 1].start : 0;
         if (prev == SCRIPT_UNSET || now < prev) continue;        /* previous one hasn't started */
         if (script[i].kind == SCRIPT_REL) { script[i].start = prev + script[i].frame; continue; }
+        if (script[i].kind == SCRIPT_TIME) {
+            double secs = script_seconds() - script_t0;
+            if (secs < script_at[i]) continue;
+            script[i].start = now;
+            wlog("scripted press at %.1f s: pad frame %u, '%s'", secs, now, script_name(script[i].button));
+            continue;
+        }
         uint32_t calls = ps2_func_calls(script[i].addr, script[i].ra);
         if (!script[i].armed) { script[i].armed = 1; script[i].base = calls; script[i].last = now; }
         if (script[i].kind == SCRIPT_QUIET) {                    /* called, then silent for n frames */
@@ -206,6 +230,7 @@ static void script_resolve(uint32_t now) {
 static void script_apply(int port, pad_input* in) {
     if (script_n < 0) {
         script_n = 0;
+        script_t0 = script_seconds();
         const char* s = getenv("PS2_INPUT");
         script_parse(s);
         if (s) wlog("%d scripted presses", script_n);

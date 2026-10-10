@@ -13,7 +13,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from paths import CLANG, ELF, ROOT
+from paths import CLANG, ELF, ROOT, runtime_sources
 
 
 def compile_one(src: Path, obj_dir: Path, flags: list[str]) -> tuple[Path, str]:
@@ -48,6 +48,12 @@ def main() -> int:
     print(gen.stdout.strip() or gen.stderr)
     if gen.returncode:
         return 1
+    # The IOP sound modules (989snd, spiop) embedded in the executable: recomp/iop.py
+    iop = subprocess.run([sys.executable, "-m", "recomp", "iop", args.elf, "-o", str(out / "iop")],
+                         cwd=ROOT, capture_output=True, text=True)
+    print(iop.stdout.strip() or iop.stderr)
+    if iop.returncode:
+        return 1
 
     obj_dir = out / "obj"
     obj_dir.mkdir(parents=True, exist_ok=True)
@@ -55,7 +61,7 @@ def main() -> int:
     if not stamp.exists() or stamp.read_text() != " ".join(flags):
         stamp.write_text(" ".join(flags))              # flag change: rebuild everything
 
-    sources = sorted((out / "recomp").glob("*.c")) + sorted((ROOT / "runtime").glob("*.c"))
+    sources = sorted((out / "recomp").glob("*.c")) + sorted((out / "iop").glob("*.c")) + runtime_sources()
     objs, errors = [], []
     with ThreadPoolExecutor(max_workers=os.cpu_count()) as pool:
         for obj, err in pool.map(lambda s: compile_one(s, obj_dir, flags), sources):

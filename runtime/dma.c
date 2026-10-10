@@ -424,6 +424,7 @@ static int run_src_chain(int ch) {
         }
         if (c->tag_end) { finish(ch); return 1; }
         if (!c->budget) { note(LOG_BUDGET, "very long or looping DMA chain: continuing later", (uint32_t)ch, c->tadr); return progress; }
+        ps2_poll_iop();                          /* a frame's chain can take 100+ ms: let the IOP run */
         int t = read_src_tag(ch);
         if (t < 0) return 1;
         if (!t) return progress;
@@ -443,6 +444,7 @@ static int run_dst_chain(int ch) {
         }
         if (c->tag_end) { finish(ch); return 1; }
         if (!c->budget) { note(LOG_BUDGET, "very long or looping DMA chain: continuing later", (uint32_t)ch, c->sadr); return progress; }
+        ps2_poll_iop();
         if (read_dst_tag(ch) < 0) return 1;
         progress = 1;
     }
@@ -470,7 +472,9 @@ static int run(int ch) {                         /* 1 = something changed */
  * the MFIFO ring a drain is waiting on, IPU_TO input lets IPU_FROM produce, ...). No round limit:
  * progress means a tag read (at most TAG_BUDGET per channel), a qword moved (QWC only grows again
  * through a tag read) or a channel stopping, so the loop always ends. A cap would leave channels
- * that feed each other through a small device FIFO stalled until the next retry. */
+ * that feed each other through a small device FIFO stalled until the next retry.
+ * The devices do their work (VU1 microprograms, GS drawing) inside these transfers, so a frame's
+ * chain can run for 100+ ms; ps2_poll_iop() between rounds and tags keeps the IOP (sound) on time. */
 static void pump(void) {
     if (pumping) return;
     pumping = 1;
@@ -480,6 +484,7 @@ static void pump(void) {
         for (int ch = 0; ch < NCH; ch++)
             if (runnable(ch)) progress |= run(ch);
         if (!progress) break;
+        ps2_poll_iop();
     }
     pumping = 0;
 }

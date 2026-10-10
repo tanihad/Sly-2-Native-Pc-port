@@ -36,32 +36,31 @@ static void put32(uint8_t* out, uint32_t recv_size, uint32_t off, uint32_t v) {
     if (off + 4 <= recv_size) memcpy(out + off, &v, 4);
 }
 
-/* Read `count` 2048-byte sectors starting at `lbn` into EE memory at `dst`. */
-static int read_sectors(ps2_ctx* ctx, uint32_t lbn, uint32_t count, uint32_t dst) {
+/* Read `count` 2048-byte sectors starting at `lbn` into a host buffer; 1 on success. The one ISO
+ * reader: shared with the native IOP's cdvdman (iop_sif.c, reads into IOP RAM) and with snd.c's
+ * fallback stream model. All callers run on the emulation thread. */
+int cdvd_read_host(uint32_t lbn, uint32_t count, void* dst) {
     open_iso();
     if (!iso || (uint64_t)lbn + count > iso_sectors) {
         fprintf(stderr, "[cdvd] read lbn %u x%u out of range\n", lbn, count);
         return 0;
     }
-    static uint8_t buf[SECTOR * 64];
     _fseeki64(iso, (int64_t)lbn * SECTOR, SEEK_SET);
+    return fread(dst, SECTOR, count, iso) == count;
+}
+
+/* Read `count` 2048-byte sectors starting at `lbn` into EE memory at `dst`. */
+static int read_sectors(ps2_ctx* ctx, uint32_t lbn, uint32_t count, uint32_t dst) {
+    static uint8_t buf[SECTOR * 64];
     while (count) {
         uint32_t n = count > 64 ? 64 : count;
-        if (fread(buf, SECTOR, n, iso) != n) return 0;
+        if (!cdvd_read_host(lbn, n, buf)) return 0;
         uint8_t* p = ps2_fast(dst);
         if (p && ps2_fast(dst + n * SECTOR - 1)) memcpy(p, buf, n * SECTOR);
         else for (uint32_t k = 0; k < n * SECTOR; k++) ps2_w8(ctx, dst + k, buf[k]);
-        dst += n * SECTOR; count -= n;
+        dst += n * SECTOR; lbn += n; count -= n;
     }
     return 1;
-}
-
-/* Read sectors into host memory (for IOP-side stand-ins that read the disc themselves). */
-int cdvd_read_host(uint32_t lbn, uint32_t count, void* dst) {
-    open_iso();
-    if (!iso || (uint64_t)lbn + count > iso_sectors) return 0;
-    _fseeki64(iso, (int64_t)lbn * SECTOR, SEEK_SET);
-    return fread(dst, SECTOR, count, iso) == count;
 }
 
 int cdvd_rpc(ps2_ctx* ctx, uint32_t sid, uint32_t fno, const uint8_t* args, uint32_t send_size,

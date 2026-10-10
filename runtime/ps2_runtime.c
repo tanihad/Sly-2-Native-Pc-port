@@ -1,6 +1,8 @@
 /* Runtime for recompiled PS2 code: function lookup, interrupts, BIOS syscalls (HLE), startup. */
 #include "hw.h"
 #include "perf.h"
+#include "iop.h"
+#include "audio_out.h"
 
 #include <stdlib.h>
 #include <windows.h>
@@ -307,6 +309,7 @@ static DWORD WINAPI host_timer(LPVOID arg) {
         if (now.QuadPart >= next_tick) {
             next_tick = now.QuadPart + tick;
             raise |= PS2_IRQ_TICK;
+            iop_poll_flag = 1;                   /* IOP loop heads: check interrupts, time slice */
         }
         if (raise) {
             InterlockedOr((volatile LONG*)&ps2_irq_pending, (LONG)raise);
@@ -344,6 +347,10 @@ static void present_frame(const uint32_t* frame, int ok, int w, int h, uint32_t 
         char path[512];
         snprintf(path, sizeof path, "%s/frame_%06u.png", dump_dir, vb);
         debug_write_png(path, frame, w, h, 1024);
+        /* audio clock = position in a PS2_AUDIO_WAV recording, to line sound up with pictures */
+        if (audio_backend() != AUDIO_OFF)
+            fprintf(stderr, "[dump] frame_%06u.png at audio %.2f s\n", vb,
+                    (double)audio_frames_written() / 48000.0);
         char latest[512];                        /* latest.png: always the newest dump (live play) */
         snprintf(latest, sizeof latest, "%s/latest.png", dump_dir);
         CopyFileA(path, latest, FALSE);
@@ -411,6 +418,12 @@ static void vblank(ps2_ctx* ctx) {
     intc_raise(INTC_VBLANK_E);
 }
 
+/* Between the steps of long runtime operations (dma.c). The IOP is independent of the EE's state, but
+ * like sif.c it is not run from inside a game interrupt handler. */
+void ps2_poll_iop(void) {
+    if (iop_poll_flag && !in_interrupt) iop_service();
+}
+
 /* Called at safe points (loop heads, syscall returns, idle) when ps2_irq_pending is set. */
 void ps2_service_irq(ps2_ctx* ctx) {
     if (in_interrupt) return;
@@ -421,6 +434,7 @@ void ps2_service_irq(ps2_ctx* ctx) {
     }
     timer_service();
     dma_service();
+    iop_service();                               /* IOP threads and interrupts (timers, CD, SIF) */
     sif_deliver(ctx);
 
     if (!ctx->ie) {                              /* interrupts off: keep them pending */
@@ -624,6 +638,7 @@ int main(int argc, char** argv) {
     ps2_spr = calloc(1, PS2_SPR_SIZE + 16);
     if (!ps2_ram || !ps2_spr) die("out of memory (%u)", 0);
     load_elf(argv[1]);
+    iop_init();                                  /* IOP memory map before the EE's first IOP request */
 
     int dump_regs = argc > 2 && strcmp(argv[2], "--dump-regs") == 0;
     ps2_log_sif = getenv("PS2_LOG_SIF") != NULL;
@@ -635,6 +650,7 @@ int main(int argc, char** argv) {
     const char* wd = getenv("PS2_WATCHDOG");
     if (wd && atoi(wd) > 0) CreateThread(NULL, 0, watchdog, (LPVOID)(uintptr_t)atoi(wd), 0, NULL);
     if (!headless) window_init();
+    if (!dump_regs) audio_init();                /* sound output thread (sd.c mixer -> WASAPI) */
 
     /* The GS on its own thread plus pixel workers (PS2_GS_ASYNC=0: synchronous, as in the unit
      * tests; PS2_GS_THREADS=<n>: pixel workers, default half the logical processors minus one, at

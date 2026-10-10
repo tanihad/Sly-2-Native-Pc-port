@@ -1,5 +1,8 @@
 # Audio: native plan (decided 2026-10-10)
 
+Status: the IOP side (steps 1, 2, 4, 5 below) is implemented, see `notes/iop-native.md`; the
+libsd backend (step 3) is built against `runtime/sd.h` separately.
+
 Decision by the project owner: audio must be native, not emulated. The research in
 `notes/audio-plan.md` (branch hw/audio) compared reimplementing 989snd by hand (A) with running
 the IOP sound modules on an emulated IOP + SPU2 (B). We take a third route that matches the rest

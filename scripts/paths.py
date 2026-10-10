@@ -23,3 +23,13 @@ CLANG = TOOLS / "llvm-mingw" / "bin" / "clang.exe"
 ORIG = MAIN / "orig"
 ELF = ORIG / "SCUS_973.16"
 ISO_DIR = ORIG / "disc"
+
+
+def runtime_sources() -> list[Path]:
+    """The runtime's C files. runtime/stub/ holds stand-ins for parts developed elsewhere: the
+    native sound backend (sd.h) is runtime/sd.c once it exists, a logging stub until then."""
+    rt = ROOT / "runtime"
+    srcs = sorted(rt.glob("*.c"))
+    if not (rt / "sd.c").exists():
+        srcs.append(rt / "stub" / "sd_stub.c")
+    return srcs
