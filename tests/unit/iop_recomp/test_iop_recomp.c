@@ -19,6 +19,7 @@ uint8_t* iop_mem(uint32_t a) { a &= 0x1FFFFFFFu; return a < IOP_RAM_SIZE ? iop_r
 void sif_rpc_reply(const iop_rpc_req* r, uint32_t a) { (void)r; (void)a; }
 void sif_iop_to_ee(uint32_t ee, uint32_t iop, uint32_t size) { (void)ee; (void)iop; (void)size; }
 int sif_ee_to_iop(uint32_t iop, uint32_t ee, uint32_t size) { (void)iop; (void)ee; (void)size; return 1; }
+uint32_t ps2_vblank_count(void) { return 0; }
 int cdvd_read_host(uint32_t lbn, uint32_t count, void* dst) { (void)lbn; memset(dst, 0, count * 2048u); return 1; }
 
 static struct { int calls; int16_t ch; uint16_t mode; uint32_t iop, spu, size; } vt;

@@ -2,8 +2,10 @@
 
 Part of approach C (`notes/audio-native-plan.md`): the recompiled 989snd/spiop call Sony's libsd;
 libsd is not run, its API (`runtime/sd.h`, frozen) is implemented natively on a PC voice mixer.
-This document describes that mixer. Status (2026-10-10): implemented and unit-tested; not yet
-called by the game (`runtime/snd.c` stays the active path until the IOP side is integrated).
+This document describes that mixer. Status (2026-10-10): implemented, unit-tested and
+**integrated**: the game's sound (movies, menus, music and dialogue streams, effects) plays
+through it; see "Integration in the game" below for how it was verified. `runtime/snd.c` is only
+the `PS2_AUDIO=0` fallback now.
 
 ## Files
 
@@ -127,7 +129,20 @@ every event to keep the target queued. Environment:
 | `PS2_AUDIO_WAV=<file>` | also write everything rendered to a WAV (header refreshed every 250 ms, since the game may leave with ExitProcess) |
 | `PS2_AUDIO_TEST=1` | 440 Hz sine at -12 dBFS instead of the game's sound |
 | `PS2_AUDIO_LATENCY=<ms>` | target queued audio, 10-500 (default 40) |
-| `PS2_LOG_SD=1` | log sceSdInit, KON (voice, SSA, pitch, ADSR, volume), KOFF, transfers, BlockTrans, SetEffectAttr |
+| `PS2_LOG_SD=1` | log sceSdInit, KON (voice, SSA, pitch, ADSR, volume), KOFF, transfers (marked "(silence)" when the data is all zero samples), BlockTrans, SetEffectAttr; every line starts with the audio clock (= position in the WAV) |
+| `PS2_LOG_SD=2` | also every VOLL/VOLR/PITCH/SSA/LSAX write (a lot) |
+
+Logging goes to unbuffered stderr from the IOP threads: with `PS2_LOG_SD` the IOP's CPU share
+rises from ~0.2% to ~10% and its threads start using up time slices. Use it for short runs.
+
+Every 10 s the output thread prints a health line:
+`[audio] status: <s> of audio, <n> underruns, mixer <x>% of a core, late/early stream refills <n>,
+invalid ADPCM blocks <n>`. Underruns: WASAPI found its buffer empty (`GetCurrentPadding` = 0; the
+first five are logged with their time) or the null sink fell more than 100 ms behind. Late/early
+stream refills: a `sceSdVoiceTrans` wrote into the block an audible voice was playing (the first 20
+are logged with voice and address). Invalid ADPCM blocks: an audible voice decoded a header with
+shift 13-15 or filter 5-7, which Sony's encoder never produces (a voice playing PCM or a wrong
+address).
 
 ## Tests (`tests/unit/sd/run.ps1 [-Audible]`)
 

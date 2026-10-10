@@ -95,9 +95,44 @@ void iop_rpc_request(const iop_rpc_req* r) {
     rpc_queue* q = s ? queue_by_addr(s->qd) : NULL;
     if (!q) { fprintf(stderr, "[iop] RPC request for unknown server 0x%08X\n", r->server); return; }
     if (q->tail - q->head >= 32) { fprintf(stderr, "[iop] RPC queue full (sid 0x%08X)\n", s->sid); return; }
+    /* The EE DMAs a call's arguments into the server's one receive buffer before the call packet,
+     * so a second call while one is still queued has already overwritten the first one's data. */
+    for (unsigned i = q->head; i != q->tail; i++)
+        if (q->req[i & 31].server == r->server) {
+            static int warned;
+            if (warned++ < 5) fprintf(stderr, "[iop] RPC 0x%08X fn %u arrived while fn %u is still queued: arguments overwritten\n",
+                                      s->sid, r->fno, q->req[i & 31].fno);
+            break;
+        }
     q->req[q->tail++ & 31] = *r;
     int t = iop_find_waiter(IOP_WAIT_RPC, q->qd, 1);
     if (t) iop_wake(t, KE_OK);
+}
+
+/* PS2_LOG_SND=1: the 989snd commands the EE sends (as runtime/snd.c logs them on the fallback
+ * path) with their results, e.g. spiop's 'SUKR' stream procs through commands 76/104:
+ * "[snd] v<vblank> cmd <n> (<bytes>): <words> -> <result>". */
+#define SND_SID 0x00123456u
+
+static void snd_log(uint32_t fno, uint32_t buff, uint32_t send_size, uint32_t reply, int after) {
+    static int on = -1;
+    if (on < 0) { const char* e = getenv("PS2_LOG_SND"); on = e && *e && *e != '0'; }
+    if (!on || !after) return;
+    if (fno != 77) {                                   /* a direct ("wait") command: 12-byte reply */
+        fprintf(stderr, "[snd] v%u direct cmd %u (%u bytes):", ps2_vblank_count(), fno, send_size);
+        for (uint32_t k = 0; k + 4 <= send_size && k < 32; k += 4) fprintf(stderr, " %08X", iop_r32(buff + k));
+        fprintf(stderr, " -> %08X\n", reply ? iop_r32(reply + 4) : 0);
+        return;
+    }
+    uint32_t count = iop_r32(buff), pos = 4;           /* batch: s16 cmd, s16 size, data */
+    for (uint32_t i = 0; i < count && pos + 4 <= send_size; i++) {
+        int16_t cmd = (int16_t)iop_r16(buff + pos), size = (int16_t)iop_r16(buff + pos + 2);
+        uint32_t n = size > 0 ? (uint32_t)size : 0;
+        fprintf(stderr, "[snd] v%u cmd %d (%u bytes):", ps2_vblank_count(), cmd, n);
+        for (uint32_t k = 0; k + 4 <= n && k < 32; k += 4) fprintf(stderr, " %08X", iop_r32(buff + pos + 4 + k));
+        fprintf(stderr, " -> %08X\n", reply ? iop_r32(reply + 4 + 4 * i) : 0);
+        pos += 4 + ((n + 3) & ~3u);
+    }
 }
 
 /* sceSifRpcLoop(SifRpcDataQueue_t* qd): serve requests forever. */
@@ -121,7 +156,9 @@ void iop_imp_sifcmd_sceSifRpcLoop(iop_ctx* c) {
         iop_w32(s->sd + 44, r.recv_size);    /* rsize */
         iop_w32(s->sd + 48, r.rmode);        /* rmode */
         iop_w32(s->sd + 52, r.pkt[0]);       /* rid */
+        uint32_t buff = s->buff, sid = s->sid;
         uint32_t reply = iop_guest_call(c, s->func, r.fno, s->buff, r.send_size, 0);
+        if (sid == SND_SID) snd_log(r.fno, buff, r.send_size, reply, 1);
         s = server_by_sd(r.server);                       /* (the table may have changed meanwhile) */
         if (s) s->calls++;
         if (iop_log || (s && s->calls <= 16))             /* the first calls of each server, e.g. bank loads */

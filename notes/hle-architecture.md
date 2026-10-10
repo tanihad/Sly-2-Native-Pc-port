@@ -62,6 +62,11 @@ tools/, orig/ and .venv/ only exist in the main checkout
 - Run: `powershell -ExecutionPolicy Bypass -File scripts\run_game.ps1 -Seconds 8 [-Dump <dir>]`
   (headless; `-Dump` writes displayed frames as PNG every 60 VBlanks; `PS2_LOG_SIF=1` logs IOP
   traffic; the watchdog prints the hottest recompiled functions when it stops the game)
+- Sound: headless runs render audio in real time into a null sink; `-Wav <file>` records it
+  (`[dump] frame_N.png at audio T s` lines map dumped frames to WAV time), `-Pad "..."` sets
+  PS2_INPUT. `PS2_INPUT="t95:start"` presses at a wall-clock time (scenes synchronised to sound
+  last a fixed real time). Analyse with `<python> scripts\wav_analyze.py <wav> [--fft]`. Details:
+  `notes/audio-mixer.md` ("Integration in the game").
 - Disassemble game code: `<python> -m recomp disasm orig\SCUS_973.16 <hexaddr> -n 40`
   (run from your tree; pass the main checkout's `orig\SCUS_973.16` path)
 - GS primitive trace: `PS2_GS_TRACE_RECT=x0,y0,x1,y1` (drawing-buffer pixels after XYOFFSET; Sly 2

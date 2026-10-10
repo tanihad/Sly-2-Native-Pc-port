@@ -49,6 +49,7 @@ void sif_rpc_reply(const iop_rpc_req* r, uint32_t a) { last_reply_req = *r; last
 static uint32_t dma_ee, dma_iop, dma_size;
 void sif_iop_to_ee(uint32_t ee, uint32_t iop, uint32_t size) { dma_ee = ee; dma_iop = iop; dma_size = size; }
 int sif_ee_to_iop(uint32_t iop, uint32_t ee, uint32_t size) { (void)iop; (void)ee; (void)size; return 1; }
+uint32_t ps2_vblank_count(void) { return 0; }
 /* The disc: an ISO 9660 volume descriptor at 16, root directory at 20 holding SYSTEM.CNF;1 and a
  * directory DATA (21) holding SND.BNK;1; every other sector is a byte pattern. */
 static void dir_record(uint8_t* sec, uint32_t* p, const char* name, uint32_t lsn, uint32_t size, int is_dir) {

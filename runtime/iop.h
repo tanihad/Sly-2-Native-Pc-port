@@ -181,3 +181,5 @@ int      sif_ee_to_iop(uint32_t iop_addr, uint32_t ee_addr, uint32_t size); /* s
 
 /* Disc access shared with cdvd.c: read `count` 2048-byte sectors to a host buffer; 1 on success. */
 int      cdvd_read_host(uint32_t lbn, uint32_t count, void* dst);
+/* VBlanks serviced so far (ps2_runtime.c), for log lines comparable with PS2_INPUT and dumps. */
+uint32_t ps2_vblank_count(void);

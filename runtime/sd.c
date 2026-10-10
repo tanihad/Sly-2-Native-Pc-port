@@ -859,7 +859,11 @@ int sceSdVoiceTrans(int16_t channel, uint16_t mode, uint32_t iop_addr, uint32_t 
     if (hits && (overlaps <= 20 || g_log > 0))
         fprintf(stderr, "[sd %8.3f] VoiceTrans to %06X+%X overwrites the block voice c%u v%u is playing (%llu so far)\n",
                 (double)g_frames / 48000.0, spu_addr, size, hit_core, hit_voice, (unsigned long long)overlaps);
-    SDLOG("VoiceTrans ch%d %s iop %06X spu %06X size %X\n", ch, dir ? "read" : "write", iop_addr, spu_addr, size);
+    int silent = 1;                                          /* data whose samples are all zero */
+    for (uint32_t k = 0; g_log > 0 && iop && k + 16 <= len && silent; k += 16)
+        for (int b = 2; b < 16; b++) if (iop[k + b]) { silent = 0; break; }
+    SDLOG("VoiceTrans ch%d %s iop %06X spu %06X size %X%s\n", ch, dir ? "read" : "write", iop_addr, spu_addr, size,
+          silent && iop ? " (silence)" : "");
     iop_sd_transfer_done(ch);
     return (int)n;
 }
