@@ -332,21 +332,30 @@ void perf_vblank(uint32_t serviced, uint32_t due) {
 /* ---- headroom test: PS2_PERF_BURN=<ms> / PS2_PERF_BURN_GS=<ms> ---------------------------------------
  * Extra busy work per VBlank on the EE thread (perf_burn(0), from the VBlank handler) or per picture
  * on the GS thread (perf_burn(1), when it composes one). The largest burn that still keeps 59.94
- * VBlanks per second serviced is the thread's headroom (scripts/headroom.ps1). */
+ * VBlanks per second serviced and the game's frame rate is the thread's headroom
+ * (scripts/headroom.ps1). PS2_PERF_BURN_FROM / _TO=<VBlank>: burn only in that range, so that every
+ * run reaches the measured scene in the same state (a slowed game can take scripted inputs in
+ * another state). */
 void perf_burn(int gs) {
-    static int init;
+    static volatile LONG init;
     static double ms[2];
+    static uint32_t from, to = UINT32_MAX;
     if (!init) {
-        init = 1;
         const char* e = getenv("PS2_PERF_BURN");
         const char* g = getenv("PS2_PERF_BURN_GS");
+        const char* f = getenv("PS2_PERF_BURN_FROM");
+        const char* t = getenv("PS2_PERF_BURN_TO");
         ms[0] = e ? atof(e) : 0;
         ms[1] = g ? atof(g) : 0;
-        if (ms[0] > 0 || ms[1] > 0)
-            fprintf(stderr, "[perf] headroom test: burning %.2f ms per VBlank on the EE thread, %.2f ms per picture on the GS thread\n",
-                    ms[0], ms[1]);
+        if (f) from = (uint32_t)strtoul(f, NULL, 0);
+        if (t) to = (uint32_t)strtoul(t, NULL, 0);
+        if (!InterlockedExchange(&init, 1) && (ms[0] > 0 || ms[1] > 0))
+            fprintf(stderr, "[perf] headroom test: burning %.2f ms per VBlank on the EE thread, %.2f ms per picture on the GS thread, VBlanks %u-%u\n",
+                    ms[0], ms[1], from, to);
     }
     if (ms[gs] <= 0) return;
+    const uint32_t vb = ps2_vblank_count();
+    if (vb < from || vb > to) return;
     LARGE_INTEGER t0, t;
     QueryPerformanceCounter(&t0);
     const int64_t until = t0.QuadPart + (int64_t)(ms[gs] * (double)qpc_freq.QuadPart / 1000.0);

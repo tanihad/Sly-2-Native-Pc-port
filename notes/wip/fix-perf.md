@@ -63,6 +63,30 @@ faster than real time; smooth presentation. Report before/after numbers per chan
     per-VBlank drain on the GS thread. Display pages count as reads for transfers (field mode:
     half height). Transfer waits ~30/s are a CLUT upload into page 192 (true block overlap).
 
+13. 3d31ea4 Spans cut at 64-px page columns, bands per page (row group x column): the 512x224
+    field buffers spread over up to 32 bands; critical path 720 -> 450 ms/s at the title.
+    39cc883 gs_write_reg fast path (cached free space).
+14. 9dc5cd1 VU microprogram recorder PS2_VU_RECORD/_FROM/_COUNT + scripts/vu_replay.ps1 (benchmark
+    on real game microcode + exactness check: pair/cycle counts, state hash, XGKICK cycles; any
+    runtime/ version via -Runtime). build/brief.vurec (v2500, 6000 programs, 2.45M pairs): 7.8
+    ns/pair. VU_REPLAY_PROFILE=1 samples the instruction pointer.
+    VU experiments on the replay (A/B, ns/pair, 7.85 baseline): no hazard tracking 6.35 (upper
+    bound), no flag pipeline 7.13, no vclean 7.68; a 128-bit VF write-mask ring scoreboard instead
+    of per-lane ready times: exact but no faster (7.8); branch instead of cmov in stall checks: no
+    change; -march=x86-64-v2 / -O3: no change; -march=x86-64-v3 CHANGES RESULTS (FMA contraction:
+    5 programs differ) -> never let the compiler contract VU math. Conclusion: the interpreter is
+    at ~7.7 ns/pair (~35 cycles); big gains need the VU recompiler (separate task). Reverted.
+15. c37c297 Opt out of Windows power throttling (EcoQoS) in main(): headless/background runs were
+    on E-cores/low clocks: VU 16.5 -> 12 ns/pair in game, EE busy 13.5 -> 12 ms/VBlank.
+    Thread priority above normal for the EE thread: no measurable change (not kept).
+16. Headroom: PS2_PERF_BURN_FROM/_TO (burn only in a VBlank range so all runs reach the scene in
+    the same state; a slowed game took START in another state before); headroom.ps1 prints flips/s
+    and VU pairs/VBlank (scene fingerprint) per burn and -From/-To.
+    Scenes now (main's memcard/movie changes): copyright screen v0-450, in-engine intro cutscene
+    v450-1500 (heaviest VU, ~950k pairs/VBlank), "Sly Cooper the thief" attract ~1500-2000, title
+    menu ~2000-2100, briefing from ~2300 (START at 2100). No memory-card prompt / FMV appear in
+    this boot path any more.
+
 ## Measurements (release, memory-card prompt, 28-thread PC)
 - Baseline: 30-35 vblanks/s serviced of 60, ~33 flips/s, busy 22-50 ms/vblank (GS 60%, VU 18%).
 - After 3 (GS thread, fork-join pixels): ~57/60 vblanks, ~47 flips/s; GS thread saturated.
@@ -81,15 +105,10 @@ faster than real time; smooth presentation. Report before/after numbers per chan
   EE thread busy 15-16 ms/vblank with VU ~60% -> the EE thread is the bottleneck now.
 
 ## Next
-1. Pixel workers: critical path ~12 ms/frame at the title (pixel work ~40 ms CPU/frame): profile
-   PS2_PROFILE=workers, speed up the pipeline / balance bands.
-2. GS setup cost (draw/triangle setup, deferred_span) if time permits.
-3. Headroom sweep (scripts/headroom.ps1) when the machine is quiet (play-1 agent runs sly2.exe:
-   ~88% CPU load; measurements noisy).
-4. notes/performance.md, progress.md, final report.
-2. Cache-maintenance override table in the recompiler (0x234EA0/0x234FD0 loops) + doc.
-3. Frame pacing: vblank skip policy when behind; presentation smoothness; PS2_PERF_BURN headroom test.
-4. Debug build numbers; final report; notes/progress.md + notes/performance.md docs.
+1. Per-scene headroom (EE burn, then -Gs) with -From/-To: intro v600-1400, title v1600-2050,
+   briefing v2500-. Record numbers here.
+2. notes/performance.md (how to measure + before/after), notes/progress.md, final report.
+3. If time: GS setup cost / pixel pipeline; EE-side GIF/VIF (~13% of the EE thread).
 
 ## Findings / traps
 - Runtime sources are CRLF in the working tree; PowerShell string Replace with `n fails silently.
