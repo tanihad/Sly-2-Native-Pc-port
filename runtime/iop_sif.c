@@ -111,26 +111,54 @@ void iop_rpc_request(const iop_rpc_req* r) {
 
 /* PS2_LOG_SND=1: the 989snd commands the EE sends (as runtime/snd.c logs them on the fallback
  * path) with their results, e.g. spiop's 'SUKR' stream procs through commands 76/104:
- * "[snd] v<vblank> cmd <n> (<bytes>): <words> -> <result>". */
+ * "[snd] v<vblank> cmd <n> (<bytes>): <words> -> <result>". The arguments are copied before the
+ * call (the server may reuse its receive buffer); each line goes out in one write, so it neither
+ * interleaves with other threads' output nor costs a system call per word. */
 #define SND_SID 0x00123456u
 
-static void snd_log(uint32_t fno, uint32_t buff, uint32_t send_size, uint32_t reply, int after) {
+static int snd_log_on(void) {
     static int on = -1;
     if (on < 0) { const char* e = getenv("PS2_LOG_SND"); on = e && *e && *e != '0'; }
-    if (!on || !after) return;
+    return on;
+}
+
+static uint8_t snd_args[16384];
+
+static void snd_log_args(uint32_t buff, uint32_t send_size) {
+    uint32_t n = send_size < sizeof snd_args ? send_size : (uint32_t)sizeof snd_args;
+    for (uint32_t k = 0; k < n; k++) snd_args[k] = iop_r8(buff + k);
+}
+
+static uint32_t snd_arg32(uint32_t off) {
+    if (off + 4 > sizeof snd_args) return 0;
+    uint32_t v;
+    memcpy(&v, snd_args + off, 4);
+    return v;
+}
+
+static void snd_log_line(int direct, int cmd, uint32_t data_off, uint32_t n, uint32_t result) {
+    char line[256];
+    int len = snprintf(line, sizeof line, "[snd] v%u %scmd %d (%u bytes):", ps2_vblank_count(), direct ? "direct " : "",
+                       cmd, n);
+    for (uint32_t k = 0; k + 4 <= n && k < 32; k += 4)
+        len += snprintf(line + len, sizeof line - (size_t)len, " %08X", snd_arg32(data_off + k));
+    snprintf(line + len, sizeof line - (size_t)len, " -> %08X\n", result);
+    fputs(line, stderr);
+}
+
+static void snd_log(uint32_t fno, uint32_t send_size, uint32_t reply) {
+    if (send_size > sizeof snd_args) send_size = sizeof snd_args;
     if (fno != 77) {                                   /* a direct ("wait") command: 12-byte reply */
-        fprintf(stderr, "[snd] v%u direct cmd %u (%u bytes):", ps2_vblank_count(), fno, send_size);
-        for (uint32_t k = 0; k + 4 <= send_size && k < 32; k += 4) fprintf(stderr, " %08X", iop_r32(buff + k));
-        fprintf(stderr, " -> %08X\n", reply ? iop_r32(reply + 4) : 0);
+        snd_log_line(1, (int)fno, 0, send_size, reply ? iop_r32(reply + 4) : 0);
         return;
     }
-    uint32_t count = iop_r32(buff), pos = 4;           /* batch: s16 cmd, s16 size, data */
+    uint32_t count = snd_arg32(0), pos = 4;            /* batch: s16 cmd, s16 size, data */
     for (uint32_t i = 0; i < count && pos + 4 <= send_size; i++) {
-        int16_t cmd = (int16_t)iop_r16(buff + pos), size = (int16_t)iop_r16(buff + pos + 2);
+        uint32_t w = snd_arg32(pos);
+        int16_t cmd = (int16_t)(w & 0xFFFF), size = (int16_t)(w >> 16);
         uint32_t n = size > 0 ? (uint32_t)size : 0;
-        fprintf(stderr, "[snd] v%u cmd %d (%u bytes):", ps2_vblank_count(), cmd, n);
-        for (uint32_t k = 0; k + 4 <= n && k < 32; k += 4) fprintf(stderr, " %08X", iop_r32(buff + pos + 4 + k));
-        fprintf(stderr, " -> %08X\n", reply ? iop_r32(reply + 4 + 4 * i) : 0);
+        if (pos + 4 + n > send_size) n = send_size - pos - 4;
+        snd_log_line(0, cmd, pos + 4, n, reply ? iop_r32(reply + 4 + 4 * i) : 0);
         pos += 4 + ((n + 3) & ~3u);
     }
 }
@@ -156,9 +184,10 @@ void iop_imp_sifcmd_sceSifRpcLoop(iop_ctx* c) {
         iop_w32(s->sd + 44, r.recv_size);    /* rsize */
         iop_w32(s->sd + 48, r.rmode);        /* rmode */
         iop_w32(s->sd + 52, r.pkt[0]);       /* rid */
-        uint32_t buff = s->buff, sid = s->sid;
+        int log_snd = s->sid == SND_SID && snd_log_on();
+        if (log_snd) snd_log_args(s->buff, r.send_size);
         uint32_t reply = iop_guest_call(c, s->func, r.fno, s->buff, r.send_size, 0);
-        if (sid == SND_SID) snd_log(r.fno, buff, r.send_size, reply, 1);
+        if (log_snd) snd_log(r.fno, r.send_size, reply);
         s = server_by_sd(r.server);                       /* (the table may have changed meanwhile) */
         if (s) s->calls++;
         if (iop_log || (s && s->calls <= 16))             /* the first calls of each server, e.g. bank loads */

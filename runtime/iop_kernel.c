@@ -814,6 +814,11 @@ void iop_imp_timrman_StopHardTimer(iop_ctx* c) {
 
 static uint64_t timer_ticks_total;
 uint64_t iop_timer_ticks(void) { return timer_ticks_total; }
+/* How late timer interrupts are delivered (status line): the IOP only runs at EE safe points, so a
+ * long stretch of EE code without one delays the 989snd tick (sequenced notes, stream refills). */
+static int64_t  timer_late_max;
+static uint64_t timer_late_count;           /* deliveries more than TIMER_LATE_USEC late */
+#define TIMER_LATE_USEC 8000u
 
 /* Timers keep real time: when the EE reached no safe point for a while (a long frame), the missed
  * interrupts are delivered back to back, so the 989snd tick averages 240 Hz. Only a stall of more
@@ -824,6 +829,9 @@ static void timers_service(int64_t now) {
         if (t->used && t->active && now - t->next_due > iop_usec_to_ticks(1000000u))
             t->next_due = now;
         while (t->used && t->active && t->handler && now >= t->next_due) {
+            int64_t late = now - t->next_due;
+            if (late > timer_late_max) timer_late_max = late;
+            if (late > iop_usec_to_ticks(TIMER_LATE_USEC)) timer_late_count++;
             uint32_t next = iop_intr_call(t->handler, t->arg, 0, t->gp);
             timer_ticks_total++;
             if (!next) { t->active = 0; break; }           /* handler returned 0: timer stops */
@@ -889,9 +897,14 @@ static void status_line(void) {
     iop_sif_report(sif, sizeof sif);
     int ready = 0, waiting = 0;
     for (int i = 1; i < MAX_THREADS; i++) { ready += th[i].status == TS_READY; waiting += th[i].status == TS_WAIT; }
-    fprintf(stderr, "[iop] status: hard timer handler %llu calls (%.1f/s over the last %.0f s), IOP code %.2f%% of "
-                    "the time, threads %d waiting/%d ready, free IOP memory 0x%X; %s\n",
-            (unsigned long long)timer_ticks_total, rate, secs, load, waiting, ready, iop_total_free(), sif);
+    fprintf(stderr, "[iop] status: hard timer handler %llu calls (%.1f/s over the last %.0f s, %llu of them more than "
+                    "%u ms late, at most %.1f ms), IOP code %.2f%% of the time, threads %d waiting/%d ready, free IOP "
+                    "memory 0x%X; %s\n",
+            (unsigned long long)timer_ticks_total, rate, secs, (unsigned long long)timer_late_count,
+            TIMER_LATE_USEC / 1000u, (double)timer_late_max * 1000.0 / (double)qpc_freq.QuadPart, load, waiting,
+            ready, iop_total_free(), sif);
+    timer_late_count = 0;
+    timer_late_max = 0;
     for (int i = 1; i < MAX_THREADS; i++) {                /* threads that busy-waited since the last line */
         iop_thread* t = &th[i];
         if (t->status == TS_FREE || t->slices == t->slices_seen) continue;
