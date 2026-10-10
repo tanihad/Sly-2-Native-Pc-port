@@ -416,7 +416,9 @@ class FunctionTranslator:
     def translate(self) -> str:
         f = self.f
         # restrict: guest memory (ps2_ram) never overlaps the register file, so stores to guest
-        # memory don't force the C compiler to reload registers from ctx.
+        # memory don't force the C compiler to reload registers from ctx. Runtime code that reaches
+        # the register file through another pointer (vif.c: VIF0 MSCAL runs VU0 on thread_ctx())
+        # must only do so inside calls that are passed ctx, which the compiler treats as clobbering it.
         out = [f"/* {f.name}: 0x{f.start:08X}-0x{f.end:08X} */", f"void {cname(f.start)}(ps2_ctx* restrict ctx) {{",
                f"    PS2_TRACE(0x{f.start:08X}u);"]
         instrs = f.instrs
