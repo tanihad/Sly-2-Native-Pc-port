@@ -53,8 +53,8 @@ void gs_vsync(void) {
     if (log_gs < 0) log_gs = getenv("PS2_LOG_GS") != NULL;
     if (log_gs && ++vsyncs % 60 == 0) {
         fprintf(stderr, "[gs] last 60 vsyncs: %u register writes, %u primitives (%u triangles, %u sprites), "
-                        "%u transfers, %u image bytes\n", gs_stats.regs, gs_stats.prims, gs_stats.tris,
-                gs_stats.sprites, gs_stats.xfers, gs_stats.image_bytes);
+                        "%u pixels, %u transfers, %u image bytes\n", gs_stats.regs, gs_stats.prims, gs_stats.tris,
+                gs_stats.sprites, gs_stats.pixels, gs_stats.xfers, gs_stats.image_bytes);
         memset(&gs_stats, 0, sizeof gs_stats);
     }
 }

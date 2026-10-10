@@ -17,8 +17,16 @@ static uint8_t iop_ram[0x200000];
 uint8_t* iop_mem(uint32_t a) { a &= 0x1FFFFFFFu; return a < sizeof iop_ram ? iop_ram + a : NULL; }
 void ps2_hw_read(ps2_ctx* ctx, uint32_t addr, void* out, unsigned size) { (void)ctx; (void)addr; memset(out, 0, size); }
 void ps2_hw_write(ps2_ctx* ctx, uint32_t addr, const void* in, unsigned size) { (void)ctx; (void)addr; (void)in; (void)size; }
+void ps2_mem_read_slow(ps2_ctx* ctx, uint32_t a, void* out, unsigned size) {
+    uint8_t* p = ps2_fast(a);
+    if (p) memcpy(out, p, size); else ps2_hw_read(ctx, a, out, size);
+}
+void ps2_mem_write_slow(ps2_ctx* ctx, uint32_t a, const void* in, unsigned size) {
+    uint8_t* p = ps2_fast(a);
+    if (p) memcpy(p, in, size); else ps2_hw_write(ctx, a, in, size);
+}
 
-static pad_input input;                 /* what the host controller reports for port 0 */
+static pad_input input;                /* what the host controller reports for port 0 */
 static int input_calls[2];
 void window_get_input(int port, pad_input* out) {
     input_calls[port & 1]++;

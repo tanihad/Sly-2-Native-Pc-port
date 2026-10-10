@@ -22,6 +22,14 @@ uint8_t* ps2_spr;
 int ps2_log_sif;
 void ps2_hw_read(ps2_ctx* ctx, uint32_t addr, void* out, unsigned size) { (void)ctx; (void)addr; memset(out, 0, size); }
 void ps2_hw_write(ps2_ctx* ctx, uint32_t addr, const void* in, unsigned size) { (void)ctx; (void)addr; (void)in; (void)size; }
+void ps2_mem_read_slow(ps2_ctx* ctx, uint32_t a, void* out, unsigned size) {
+    uint8_t* p = ps2_fast(a);
+    if (p) memcpy(out, p, size); else ps2_hw_read(ctx, a, out, size);
+}
+void ps2_mem_write_slow(ps2_ctx* ctx, uint32_t a, const void* in, unsigned size) {
+    uint8_t* p = ps2_fast(a);
+    if (p) memcpy(p, in, size); else ps2_hw_write(ctx, a, in, size);
+}
 
 /* ---- test plumbing ------------------------------------------------------------------------- */
 

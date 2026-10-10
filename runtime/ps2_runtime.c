@@ -51,6 +51,18 @@ static void die(const char* fmt, uint32_t v) {
     exit(1);
 }
 
+/* ---- memory: the cases the inline accessors (ps2_runtime.h) leave out ------------------------- */
+
+void ps2_mem_read_slow(ps2_ctx* ctx, uint32_t a, void* out, unsigned size) {
+    uint8_t* p = ps2_fast(a);
+    if (p) memcpy(out, p, size); else ps2_hw_read(ctx, a, out, size);
+}
+
+void ps2_mem_write_slow(ps2_ctx* ctx, uint32_t a, const void* in, unsigned size) {
+    uint8_t* p = ps2_fast(a);
+    if (p) memcpy(p, in, size); else ps2_hw_write(ctx, a, in, size);
+}
+
 /* ---- function lookup ---------------------------------------------------------------------- */
 
 static ps2_func find_func(uint32_t addr) {

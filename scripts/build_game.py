@@ -36,7 +36,9 @@ def main() -> int:
     ap.add_argument("--out", default=str(ROOT / "build" / "sly2"))
     args = ap.parse_args()
     out = Path(args.out)
-    flags = [f"-O{args.opt or ('2' if args.release else '1')}"]
+    # -fno-auto-import: globals are in this executable, so access them directly instead of through
+    # a .refptr pointer (MinGW's provision for data imported from DLLs): one load less per access.
+    flags = [f"-O{args.opt or ('2' if args.release else '1')}", "-fno-auto-import"]
     if args.release:
         flags.append("-DPS2_NO_TRACE")
 

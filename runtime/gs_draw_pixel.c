@@ -558,6 +558,7 @@ void gs_batch_begin(const gs_prim* p, int stq) {
 void gs_batch_span(int y, int x0, int n, const gs_span_start* st) {
     batch* b = &B0;
     const gs_prim* p = b->p;
+    gs_stats.pixels += (uint32_t)n;
     if (p->solid && gs_swz_fast) { fill_span(p, y, x0, n, st); return; }
     gs_span_start s = *st;
     while (n > 0) {

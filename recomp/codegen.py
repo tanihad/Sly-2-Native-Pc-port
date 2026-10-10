@@ -31,10 +31,12 @@ def imm16(i): return i.getRaw() & 0xFFFF
 def simm16(i): v = imm16(i); return v - 0x10000 if v & 0x8000 else v
 
 
-def U64(n): return f"ctx->r[{n}].ud[0]"
-def S64(n): return f"ctx->r[{n}].sd[0]"
-def U32(n): return f"ctx->r[{n}].uw[0]"
-def S32(n): return f"ctx->r[{n}].sw[0]"
+# Reads of $zero are the constant 0 (writes to it are discarded by set64), so the C compiler
+# doesn't have to load ctx->r[0] from memory.
+def U64(n): return f"ctx->r[{n}].ud[0]" if n else "(uint64_t)0"
+def S64(n): return f"ctx->r[{n}].sd[0]" if n else "(int64_t)0"
+def U32(n): return f"ctx->r[{n}].uw[0]" if n else "(uint32_t)0"
+def S32(n): return f"ctx->r[{n}].sw[0]" if n else "(int32_t)0"
 def F(n): return f"ctx->f[{n}].f"
 def FU(n): return f"ctx->f[{n}].u"
 
@@ -413,7 +415,9 @@ class FunctionTranslator:
 
     def translate(self) -> str:
         f = self.f
-        out = [f"/* {f.name}: 0x{f.start:08X}-0x{f.end:08X} */", f"void {cname(f.start)}(ps2_ctx* ctx) {{",
+        # restrict: guest memory (ps2_ram) never overlaps the register file, so stores to guest
+        # memory don't force the C compiler to reload registers from ctx.
+        out = [f"/* {f.name}: 0x{f.start:08X}-0x{f.end:08X} */", f"void {cname(f.start)}(ps2_ctx* restrict ctx) {{",
                f"    PS2_TRACE(0x{f.start:08X}u);"]
         instrs = f.instrs
         k = 0
