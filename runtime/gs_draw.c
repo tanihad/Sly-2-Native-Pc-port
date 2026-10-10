@@ -929,22 +929,21 @@ static void tex0_write(int ctx, uint64_t v) {
     gs_texclut tc = decode_texclut(reg[R_TEXCLUT]);
     /* a CLUT load reads VRAM (CSM1: from CBP, at most 1 KB; CSM2: a line of its buffer) */
     if (t.cld && t.cld < 6 && (t.psm == PSMT8 || t.psm == PSMT4 || t.psm == PSMT8H || t.psm == PSMT4HL || t.psm == PSMT4HH)) {
-        int busy;
+        uint64_t pages[8] = { 0 };
         if (t.csm) {
-            uint64_t pages[8] = { 0 };
             uint32_t n = (t.psm == PSMT8 || t.psm == PSMT8H) ? 256 : 16;
             int x = (int)(tc.cou * 16), y = (int)tc.cov;
             if (x + (int)n > 2048) memset(pages, 0xFF, sizeof pages);
             else gs_rect_pages((int)t.cpsm, t.cbp, tc.cbw, x, y, x + (int)n, y + 1, pages);
-            busy = gs_draw_pages_touched(pages, 1);
         } else {
             /* CSM1: 16x16 (T8) or 8x2 (T4) pixels at CBP, i.e. blocks CBP .. CBP+3 (PSMCT32, T8),
-             * CBP .. CBP+1 (PSMCT16, T8) or CBP (T4). Checked per block: games keep CLUTs in spare
-             * blocks of pages whose other blocks are being drawn into (Sly 2: beside its Z buffer). */
-            uint32_t n = (t.psm == PSMT8 || t.psm == PSMT8H) ? (t.cpsm == PSMCT32 ? 4 : 2) : 1;
-            busy = gs_draw_blocks_written(t.cbp, n);
+             * CBP .. CBP+1 (PSMCT16, T8) or CBP (T4) */
+            uint32_t last = (t.psm == PSMT8 || t.psm == PSMT8H) ? (t.cpsm == PSMCT32 ? 3 : 1) : 0;
+            for (uint32_t p = t.cbp >> 5; p <= (t.cbp + last) >> 5; p++) pages[(p & 511) >> 6] |= 1ull << (p & 63);
         }
-        if (busy) gs_draw_sync_why(GS_SYNC_CLUT);
+        /* (Sly 2 keeps CLUTs in pages its Z buffer covers and draws there before loading them:
+         * about two waits per frame, which block-level tracking showed to be true dependencies) */
+        if (gs_draw_pages_touched(pages, 1)) gs_draw_sync_why(GS_SYNC_CLUT);
     }
     gs_clut_on_tex0(&t, &tc);
     if (t.cld) gs_clut_version++;
