@@ -662,12 +662,12 @@ static void fill_span(const gs_prim* p, int y, int x0, int n, const gs_span_star
  * With pixel workers (gs_draw_set_workers), spans are not drawn when they arrive: the drawing thread
  * (the GS thread) records them in a deferred batch and goes on setting up primitives while the
  * workers draw the previous batch.
- *  - A span (cut only where immediate drawing would cut it, so the pixels are identical) goes to
- *    the bin of the band that owns the 8 KB pages it touches in the frame and Z buffers in this
- *    batch; the first span to touch a page decides (by its row of pages). All accesses to a page
- *    therefore happen in one bin, in primitive order, whatever buffer, format or coordinates they
- *    come through. A span whose pages belong to different bands ends the batch first
- *    (gs_draw_sync), as does a full bin or record array.
+ *  - A span piece (cut at 64-pixel page columns, exactly where immediate drawing cuts it too, so
+ *    the pixels are identical) goes to the bin of the band that owns the 8 KB pages it touches in
+ *    the frame and Z buffers in this batch; the first piece to touch a page decides (by its page).
+ *    All accesses to a page therefore happen in one bin, in primitive order, whatever buffer,
+ *    format or coordinates they come through. A piece whose pages belong to different bands
+ *    starts the next batch, as does a full bin or record array (batches are drawn in order).
  *  - Workers (and the drawing thread while it waits) take whole bands and draw their pieces in
  *    order, a run of pieces of one primitive at a time, with the same stage functions as immediate
  *    drawing (each thread has its own batch arrays).
@@ -1120,9 +1120,9 @@ static void register_prim(void) {
 
 /* The band for a piece of row y, [x0, x0 + n): the band that owns its frame and Z pages in this batch
  * (claiming the unowned ones for it), -1 if they belong to different bands, -2 if it writes a page
- * that a primitive of this batch samples directly (that one may run later, in another band). A new
- * piece goes to the band of its page row, so a frame is spread over as many bands as it has rows of
- * pages. */
+ * that a primitive of this batch samples directly (that one may run later, in another band). A piece
+ * on new pages goes to the band of its page (row group and 64-pixel column), so a frame is spread
+ * over as many bands as it has pages (up to NBANDS). */
 static int assign_band(dbatch* d, const gs_prim* p, int y, int x0, int n, int check_reads) {
     const uint32_t c0 = (uint32_t)x0 >> 6, c1 = (uint32_t)(x0 + n - 1) >> 6;
     const uint32_t frow = p->fpage + ((uint32_t)y >> p->ffmt->ph_shift) * p->fbw;
@@ -1139,7 +1139,10 @@ static int assign_band(dbatch* d, const gs_prim* p, int y, int x0, int n, int ch
             if (check_reads && zw && HAS(d->readp, (zrow + c) & 511u)) return -2;
         }
     }
-    if (band == 0xFF) band = (int)(((uint32_t)y >> p->ffmt->ph_shift) % NBANDS);
+    if (band == 0xFF) {                          /* a new page: its own band, by row group and column */
+        int sh = p->zuse && p->zfmt->ph_shift > p->ffmt->ph_shift ? p->zfmt->ph_shift : p->ffmt->ph_shift;
+        band = (int)((((uint32_t)y >> sh) * 16u + c0) % NBANDS);   /* (a Z page spans whole row groups) */
+    }
     for (uint32_t c = c0; c <= c1; c++) {
         uint32_t pg = (frow + c) & 511u;
         d->owner[pg] = (uint8_t)band;
@@ -1154,15 +1157,23 @@ static int assign_band(dbatch* d, const gs_prim* p, int y, int x0, int n, int ch
 }
 
 /* Spans are cut exactly where immediate drawing (B0) cuts them, so the interpolants of every
- * piece start from the same values and the pixels come out identical. */
+ * piece start from the same values and the pixels come out identical. Both cut at every 64-pixel
+ * column (the width of a page in every format a frame or Z buffer can have), so a piece touches
+ * one frame page and one Z page, and the pages of a buffer row can go to different bands. */
 static int vnseg, vnpix;                 /* B0's fill for the current primitive */
+
+GS_AI int piece_len(int x0, int n, int room) {   /* up to the batch room and the next page column */
+    int col = 64 - (x0 & 63);
+    int t = room < n ? room : n;
+    return col < t ? col : t;
+}
 
 static void deferred_span(int y, int x0, int n, const gs_span_start* st) {
     const gs_prim* p = cur_p;
     gs_span_start s = *st;
     while (n > 0) {
         if (vnseg == MAX_SEGS || vnpix == GS_MAX_SPAN) vnseg = vnpix = 0;
-        int take = GS_MAX_SPAN - vnpix < n ? GS_MAX_SPAN - vnpix : n;
+        int take = piece_len(x0, n, GS_MAX_SPAN - vnpix);
         vnseg++;
         vnpix += take;
         for (;;) {
@@ -1214,7 +1225,7 @@ void gs_batch_span(int y, int x0, int n, const gs_span_start* st) {
     gs_span_start s = *st;
     while (n > 0) {
         if (b->nseg == MAX_SEGS || b->npix == GS_MAX_SPAN) flush(b);
-        int take = GS_MAX_SPAN - b->npix < n ? GS_MAX_SPAN - b->npix : n;
+        int take = piece_len(x0, n, GS_MAX_SPAN - b->npix);   /* (cut as deferred drawing cuts) */
         seg* sg = &b->segs[b->nseg++];
         sg->y = y; sg->x0 = x0; sg->n = take; sg->off = b->npix; sg->st = s;
         b->npix += take;
