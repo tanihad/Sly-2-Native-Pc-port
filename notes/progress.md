@@ -1,5 +1,30 @@
 # Progress log
 
+## Resume here (read first in a new session)
+
+State on 2026-10-10:
+- `main`: recompiler + runtime boot the game to its intro movie; hardware layer architecture with
+  frozen interfaces (`runtime/hw.h`, `runtime/gs_internal.h`) and stubs for every subsystem.
+- Design rules: `notes/native-port-principles.md` (native port, not an emulator),
+  `notes/hle-architecture.md` (file ownership, build/run from worktrees),
+  `notes/audio-native-plan.md` (audio: recompile 989snd/spiop, native sceSd mixer + WASAPI).
+- Subsystem implementations were built in parallel on branches `hw/<name>`, one git worktree each
+  under `C:\Users\tanih\Projects\sly2-worktrees\<name>` (also pushed to GitHub):
+  gs-mem, gs-draw, gif, dma, vif, vu, ipu, timer, window, pad, mc, audio (research notes only).
+  Each has unit tests in `tests/unit/<name>/run.ps1`. Check each branch's state with
+  `git -C <worktree> log main..HEAD` and `git -C <worktree> status` (an agent may have stopped
+  with uncommitted work).
+
+Next steps, in order:
+1. Merge the `hw/*` branches into main (file ownership means few conflicts), apply the
+   integrator requests the agents listed (e.g. extra link libraries for window.c's D3D11), build,
+   run `scripts\run_game.ps1 -Seconds 20 -Dump build\frames`, look at the frames.
+2. Phase 2 (native pieces): Direct3D 11 renderer replacing gs-draw's software rasterizer; static
+   recompilation of the VU microcode (the vu branch's interpreter becomes the reference);
+   native audio per `notes/audio-native-plan.md`.
+3. Play-test and fix until the game is playable start to finish; then performance and polish
+   (resolution scaling, widescreen).
+
 ## Target build
 
 - Game: Sly 2: Band of Thieves, NTSC-U, `SCUS_973.16`, VER 1.00 (SYSTEM.CNF)
