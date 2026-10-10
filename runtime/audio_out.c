@@ -96,11 +96,41 @@ static void tone_render(int16_t* out, uint32_t frames) {
     }
 }
 
+/* ---- health: underruns and render cost, reported every 10 s when something happened ---------- */
+
+static volatile LONG g_underruns;          /* device ran dry (WASAPI) / null sink fell >100 ms behind */
+static uint64_t g_render_ticks, g_status_frames;
+static uint32_t g_status_underruns;
+static int64_t  g_status_ticks;
+
+static void status_tick(void) {
+    uint64_t w = (uint64_t)g_written;
+    if (w - g_status_frames < (uint64_t)RATE * 10) return;
+    LARGE_INTEGER f;
+    QueryPerformanceFrequency(&f);
+    double audio_s = (double)(w - g_status_frames) / RATE;
+    double cpu = 100.0 * (double)(g_render_ticks - (uint64_t)g_status_ticks) / (double)f.QuadPart / audio_s;
+    uint32_t u = (uint32_t)g_underruns;
+    uint64_t overlaps, bad;
+    sd_health(&overlaps, &bad);
+    fprintf(stderr, "[audio] status: %.1f s of audio, %u underruns (%u in the last %.0f s), mixer %.1f%% of a core, "
+                    "late/early stream refills %llu, invalid ADPCM blocks %llu\n",
+            (double)w / RATE, u, u - g_status_underruns, audio_s, cpu, (unsigned long long)overlaps, (unsigned long long)bad);
+    g_status_frames = w;
+    g_status_ticks = (int64_t)g_render_ticks;
+    g_status_underruns = u;
+}
+
 static void produce(int16_t* out, uint32_t frames) {
+    LARGE_INTEGER t0, t1;
+    QueryPerformanceCounter(&t0);
     if (g_tone) tone_render(out, frames);
     else        sd_render(out, frames);
+    QueryPerformanceCounter(&t1);
+    g_render_ticks += (uint64_t)(t1.QuadPart - t0.QuadPart);
     if (g_wav) wav_write(out, frames);
     InterlockedExchangeAdd64(&g_written, frames);
+    status_tick();
 }
 
 /* ---- null sink: real-time pacing without a device ----------------------------------------- */
@@ -117,7 +147,10 @@ static void null_run(DWORD retry_ms) {
         Sleep(5);
         QueryPerformanceCounter(&t);
         uint64_t due = (uint64_t)((double)(t.QuadPart - t0.QuadPart) * RATE / (double)freq.QuadPart);
-        if (due > done + RATE / 10) done = due - RATE / 10;      /* after a stall, skip ahead */
+        if (due > done + RATE / 10) {                            /* after a stall, skip ahead */
+            done = due - RATE / 10;
+            InterlockedIncrement(&g_underruns);
+        }
         while (done < due && !g_stop) {
             uint32_t n = due - done > 1024 ? 1024 : (uint32_t)(due - done);
             produce(buf, n);
@@ -212,6 +245,10 @@ static int wasapi_run(int quiet) {
         UINT32 pad = 0;
         hr = IAudioClient_GetCurrentPadding(ac, &pad);
         if (FAILED(hr)) break;
+        if (pad == 0) {                            /* the device played everything we gave it */
+            LONG n = InterlockedIncrement(&g_underruns);
+            if (n <= 5) fprintf(stderr, "[audio] underrun at %.3f s of audio\n", (double)g_written / RATE);
+        }
         if (pad >= target) continue;
         UINT32 n = target - pad;
         hr = IAudioRenderClient_GetBuffer(rc, n, &data);

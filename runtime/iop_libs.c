@@ -205,7 +205,7 @@ void iop_imp_libsd_sceSdClearEffectWorkArea(iop_ctx* c) {
  * guest handler; the backend reports completions through iop_sd_transfer_done() (any thread),
  * and the handler runs in interrupt context at the next interrupt delivery point. */
 static struct { uint32_t fn, arg, gp; } trans_handler[2];
-static volatile LONG sd_pending;
+static volatile LONG sd_pending[2];            /* completions per channel not yet handled */
 
 void iop_imp_libsd_sceSdSetTransIntrHandler(iop_ctx* c) {
     int ch = (int)(c->r[4] & 1);
@@ -216,14 +216,17 @@ void iop_imp_libsd_sceSdSetTransIntrHandler(iop_ctx* c) {
     iop_ret(c, (int32_t)old);
 }
 
+/* One handler call per completion, as on the hardware (a DMA channel interrupts once per transfer):
+ * the backend completes transfers at once, so two may finish before the handler gets to run. */
 void iop_sd_transfer_done(int channel) {
-    InterlockedOr(&sd_pending, 1 << (channel & 1));
+    InterlockedIncrement(&sd_pending[channel & 1]);
     iop_poll_flag = 1;
 }
 
 void iop_sd_service(void) {
-    LONG p = InterlockedExchange(&sd_pending, 0);
-    for (int ch = 0; ch < 2; ch++)
-        if ((p & (1 << ch)) && trans_handler[ch].fn)
+    for (int ch = 0; ch < 2; ch++) {
+        LONG n = InterlockedExchange(&sd_pending[ch], 0);
+        while (n-- > 0 && trans_handler[ch].fn)
             iop_intr_call(trans_handler[ch].fn, (uint32_t)ch, trans_handler[ch].arg, trans_handler[ch].gp);
+    }
 }

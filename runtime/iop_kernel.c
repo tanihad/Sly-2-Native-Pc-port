@@ -260,6 +260,7 @@ typedef struct {
     uint32_t exit_value;
     void*    fiber;
     int      fiber_stale;                  /* fiber stopped mid-way (ExitThread): replace on start */
+    uint32_t slices, slices_seen;          /* time slices used up without blocking (busy-waiting) */
     iop_ctx  ctx;
 } iop_thread;
 
@@ -891,6 +892,13 @@ static void status_line(void) {
     fprintf(stderr, "[iop] status: hard timer handler %llu calls (%.1f/s over the last %.0f s), IOP code %.2f%% of "
                     "the time, threads %d waiting/%d ready, free IOP memory 0x%X; %s\n",
             (unsigned long long)timer_ticks_total, rate, secs, load, waiting, ready, iop_total_free(), sif);
+    for (int i = 1; i < MAX_THREADS; i++) {                /* threads that busy-waited since the last line */
+        iop_thread* t = &th[i];
+        if (t->status == TS_FREE || t->slices == t->slices_seen) continue;
+        fprintf(stderr, "[iop]   thread %d (entry 0x%05X, prio %d) used up %u time slices without blocking\n",
+                i, t->entry, t->prio, t->slices - t->slices_seen);
+        t->slices_seen = t->slices;
+    }
 }
 
 void iop_service(void) {
@@ -905,7 +913,7 @@ void iop_poll(iop_ctx* c) {
     iop_poll_flag = 0;
     if (in_intr || !cur) return;
     if (!th[cur].intr_disabled) deliver_interrupts();
-    if (iop_now() > run_deadline) { yield_running(); return; }
+    if (iop_now() > run_deadline) { th[cur].slices++; yield_running(); return; }
     iop_check_preempt();
 }
 

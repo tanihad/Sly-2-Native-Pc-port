@@ -96,6 +96,8 @@ static uint64_t g_frames;
 static int      g_irq_pending[2];      /* ADMA half-buffer completions to announce */
 static int16_t  g_gauss[512];
 static int      g_log = -1;
+static uint64_t g_trans_overlaps;      /* VoiceTrans writes into a block a voice was playing */
+static uint64_t g_bad_blocks;          /* audible ADPCM blocks with impossible headers */
 
 #define LOCK()   AcquireSRWLockExclusive(&g_lock)
 #define UNLOCK() ReleaseSRWLockExclusive(&g_lock)
@@ -141,8 +143,8 @@ static void global_init(void) {          /* call with the lock held */
     gauss_init();
     sd_reverb_init();
     if (g_log < 0) {
-        const char* e = getenv("PS2_LOG_SD");
-        g_log = e && *e && *e != '0';
+        const char* e = getenv("PS2_LOG_SD");      /* 1: KON/KOFF/transfers, 2: also volumes, pitch */
+        g_log = e && *e && *e != '0' ? (atoi(e) > 1 ? atoi(e) : 1) : 0;
     }
     g_ready = 1;
 }
@@ -255,6 +257,9 @@ static void load_block(sd_voice* vc, int decode) {
     vc->flags = b[1];
     if (b[1] & 4) vc->lsa = vc->cur;                /* loop start: remember this block */
     if (decode) {
+        /* Health check: shift 13-15 or filter 5-7 never occur in data made by Sony's encoder, so
+         * an audible voice decoding them plays something that is not ADPCM (wrong address, PCM). */
+        if (((b[0] & 0x0F) > 12 || (b[0] & 0x70) > 0x40) && vc->env) g_bad_blocks++;
         vc->s[0] = vc->s[28]; vc->s[1] = vc->s[29]; vc->s[2] = vc->s[30];
         sd_adpcm_decode_block(b, vc->hist, vc->s + 3);
     }
@@ -508,6 +513,13 @@ uint64_t sd_frames_rendered(void) {
     return f;
 }
 
+void sd_health(uint64_t* trans_overlaps, uint64_t* bad_blocks) {
+    LOCK();
+    *trans_overlaps = g_trans_overlaps;
+    *bad_blocks = g_bad_blocks;
+    UNLOCK();
+}
+
 /* ---- libsd API -------------------------------------------------------------------------------- */
 
 int sceSdInit(int flag) {
@@ -582,6 +594,8 @@ void sceSdSetParam(uint16_t entry, uint16_t value) {
             case P_VOLXL: vc->vol[0].cur = (int16_t)value; vc->vol[0].level = abs(vc->vol[0].cur); break;
             case P_VOLXR: vc->vol[1].cur = (int16_t)value; vc->vol[1].level = abs(vc->vol[1].cur); break;
             }
+            if (g_log > 1 && (p == P_VOLL || p == P_VOLR || p == P_PITCH))
+                SDLOG("%s c%d v%-2d %04X\n", p == P_VOLL ? "VOLL " : p == P_VOLR ? "VOLR " : "PITCH", core, voice, value);
         }
     } else {
         switch (p) {
@@ -725,6 +739,7 @@ void sceSdSetAddr(uint16_t entry, uint32_t value) {
     default:      log_once(&unk, "sceSdSetAddr: unhandled entry 0x%04X", entry); break;
     }
     UNLOCK();
+    if (g_log > 1 && (a == VA_SSA || a == VA_LSAX)) SDLOG("%s c%d v%-2d %05X\n", a == VA_SSA ? "SSA  " : "LSAX ", core, voice, value);
 }
 
 uint32_t sceSdGetAddr(uint16_t entry) {
@@ -828,7 +843,22 @@ int sceSdVoiceTrans(int16_t channel, uint16_t mode, uint32_t iop_addr, uint32_t 
         spu = (spu + chunk) & 0x1FFFFEu;
     }
     g_core[ch].tsa = ((spu_addr + n) >> 1) & SD_RAM_MASK;
+    /* Stream health: a write into the block an audible voice is playing means a stream refill came
+     * too late (or too early) and that voice glitches. 989snd/spiop refill the half not playing. */
+    uint32_t lo = (spu_addr >> 1) & SD_RAM_MASK, hi = lo + (len >> 1), hit_core = 0, hit_voice = 0, hits = 0;
+    for (int c = 0; dir == TRANS_WRITE && c < 2; c++)
+        for (int v = 0; v < 24; v++) {
+            const sd_voice* vc = &g_core[c].v[v];
+            if (vc->phase == PH_RELEASE && vc->env == 0) continue;
+            uint32_t b = vc->cur & ~7u;
+            if ((b >= lo && b < hi) || (b + 0x200000u / 2 >= lo && b + 0x200000u / 2 < hi)) { hits++; hit_core = (uint32_t)c; hit_voice = (uint32_t)v; }
+        }
+    if (hits) g_trans_overlaps++;
+    uint64_t overlaps = g_trans_overlaps;
     UNLOCK();
+    if (hits && (overlaps <= 20 || g_log > 0))
+        fprintf(stderr, "[sd %8.3f] VoiceTrans to %06X+%X overwrites the block voice c%u v%u is playing (%llu so far)\n",
+                (double)g_frames / 48000.0, spu_addr, size, hit_core, hit_voice, (unsigned long long)overlaps);
     SDLOG("VoiceTrans ch%d %s iop %06X spu %06X size %X\n", ch, dir ? "read" : "write", iop_addr, spu_addr, size);
     iop_sd_transfer_done(ch);
     return (int)n;

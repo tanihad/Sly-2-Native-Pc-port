@@ -53,6 +53,9 @@ static void* dll_proc(HMODULE m, const char* name) { return m ? (void*)GetProcAd
 /* ---- scripted input for automated runs ----------------------------------------------------------
  * PS2_INPUT="<frame>:<button>[:<frames held>],..." presses buttons on port 0, e.g.
  * "700:circle,900:start:10". Frames are counted by port-0 reads (padman reads once per VBlank).
+ * "t<seconds>:<button>[:<frames held>]" presses at a wall-clock time since the first pad read
+ * instead, e.g. "t90:start": scenes synchronised to sound (the intro cutscene follows its music
+ * stream) last a fixed real time, however fast the emulation runs.
  * Buttons: cross circle square triangle start select up down left right l1 l2 r1 r2 l3 r3.
  * Sticks (full deflection): lup ldown lleft lright (left stick), rup rdown rleft rright. */
 
@@ -69,31 +72,56 @@ static const struct { const char* name; int axis, value; } script_sticks[] = {
     { "lup", 2, 0x00 }, { "ldown", 2, 0xFF }, { "lleft", 1, 0x00 }, { "lright", 1, 0xFF },
     { "rup", 4, 0x00 }, { "rdown", 4, 0xFF }, { "rleft", 3, 0x00 }, { "rright", 3, 0xFF },
 };
-static struct { uint32_t frame, hold; int button; } script[256];
+#define SCRIPT_UNSET 0xFFFFFFFFu
+static struct { uint32_t frame, hold; int button; double at; } script[256];   /* at >= 0: seconds */
 static int script_n = -1;
 static uint32_t script_frame;
+static double script_t0;
+
+static double script_seconds(void) {
+    LARGE_INTEGER f, t;
+    QueryPerformanceFrequency(&f);
+    QueryPerformanceCounter(&t);
+    return (double)t.QuadPart / (double)f.QuadPart;
+}
 
 static void script_apply(int port, pad_input* in) {
     if (script_n < 0) {
         script_n = 0;
+        script_t0 = script_seconds();
         const char* s = getenv("PS2_INPUT");
         char buf[4096];
         snprintf(buf, sizeof buf, "%s", s ? s : "");
         for (char* tok = strtok(buf, ","); tok && script_n < 256; tok = strtok(NULL, ",")) {
             char name[32] = { 0 };
             unsigned frame = 0, hold = 6;
-            if (sscanf(tok, "%u:%31[a-z0-9]:%u", &frame, name, &hold) < 2) continue;
+            double at = -1.0;
+            if (tok[0] == 't') {
+                if (sscanf(tok + 1, "%lf:%31[a-z0-9]:%u", &at, name, &hold) < 2) continue;
+                frame = SCRIPT_UNSET;                     /* set when the time comes */
+            } else if (sscanf(tok, "%u:%31[a-z0-9]:%u", &frame, name, &hold) < 2) continue;
             int found = -1;
             for (int b = 0; b < SCRIPT_NBUTTONS; b++)
                 if (!strcmp(name, script_buttons[b].name)) found = b;
             for (int b = 0; b < (int)(sizeof script_sticks / sizeof script_sticks[0]); b++)
                 if (!strcmp(name, script_sticks[b].name)) found = SCRIPT_NBUTTONS + b;
-            if (found >= 0) { script[script_n].frame = frame; script[script_n].hold = hold; script[script_n++].button = found; }
+            if (found >= 0) {
+                script[script_n].frame = frame; script[script_n].hold = hold; script[script_n].at = at;
+                script[script_n++].button = found;
+            }
         }
         if (s) wlog("%d scripted presses", script_n);
     }
     if (port != 0 || !script_n) return;
     uint32_t now = script_frame++;
+    double secs = -1.0;
+    for (int i = 0; i < script_n; i++) {
+        if (script[i].frame != SCRIPT_UNSET) continue;
+        if (secs < 0) secs = script_seconds() - script_t0;
+        if (secs < script[i].at) continue;
+        script[i].frame = now;
+        wlog("scripted press at %.1f s: pad frame %u", secs, now);
+    }
     for (int i = 0; i < script_n; i++) {
         if (now < script[i].frame || now >= script[i].frame + script[i].hold) continue;
         int b = script[i].button;

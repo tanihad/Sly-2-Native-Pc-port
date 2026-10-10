@@ -434,6 +434,10 @@ static void test_completions(void) {
     iop_run();
     CHECK(sd_cb_calls == 1 && sd_cb_ch == 1 && sd_cb_arg == 0x77, "sd handler: %u calls ch %u arg 0x%X", sd_cb_calls,
           sd_cb_ch, sd_cb_arg);
+    iop_sd_transfer_done(1);              /* two transfers finished before the handler could run */
+    iop_sd_transfer_done(1);
+    iop_run();
+    CHECK(sd_cb_calls == 3, "sd handler: one call per completion expected, %u calls", sd_cb_calls);
 }
 
 static void test_slice(void) {

@@ -194,21 +194,23 @@ def main():
             i += 1
     print(f"  {found} found")
 
-    # ---- clicks: jumps much larger than the local slope
-    print("\nclicks (|delta| > 8x local mean |delta| and > 4000):")
+    # ---- clicks: discontinuities. A step or a broken waveform shows up as one large second
+    # difference (curvature) among small ones; loud high-pitched content has large first
+    # differences but smooth curvature, so it is not flagged.
+    print("\nclicks (|2nd difference| > 12x its local mean and > 2500):")
     clicks = 0
     for ch_name, X in (("L", L), ("R", R)):
-        d = [abs(X[k + 1] - X[k]) for k in range(n - 1)]
+        d2 = [abs(X[k + 1] - 2 * X[k] + X[k - 1]) for k in range(1, n - 1)]
         blk = 480
-        for s in range(0, len(d), blk):
-            seg = d[s:s + blk]
+        for s in range(0, len(d2), blk):
+            seg = d2[s:s + blk]
             mean = sum(seg) / len(seg)
             mx = max(seg)
-            if mx > 4000 and mx > 8 * mean:
+            if mx > 2500 and mx > 12 * mean:
                 clicks += 1
                 if clicks <= 30:
-                    k = s + seg.index(mx)
-                    print(f"  {ch_name} {args.t0 + k / rate:8.3f} s: jump {mx} (local mean {mean:.0f})")
+                    k = s + seg.index(mx) + 1
+                    print(f"  {ch_name} {args.t0 + k / rate:8.3f} s: curvature {mx} (local mean {mean:.0f})")
     print(f"  {clicks} found")
 
     # ---- per segment: stereo correlation, balance, dominant frequencies

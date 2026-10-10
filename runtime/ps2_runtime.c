@@ -1,7 +1,7 @@
 /* Runtime for recompiled PS2 code: function lookup, interrupts, BIOS syscalls (HLE), startup. */
 #include "hw.h"
 #include "iop.h"
-#include "sd.h"
+#include "audio_out.h"
 
 #include <stdlib.h>
 #include <windows.h>
@@ -261,6 +261,10 @@ static void vblank(ps2_ctx* ctx) {
             char path[512];
             snprintf(path, sizeof path, "%s/frame_%06u.png", dump_dir, vblank_count);
             debug_write_png(path, frame, w, h, 1024);
+            /* audio clock = position in a PS2_AUDIO_WAV recording, to line sound up with pictures */
+            if (audio_backend() != AUDIO_OFF)
+                fprintf(stderr, "[dump] frame_%06u.png at audio %.2f s\n", vblank_count,
+                        (double)audio_frames_written() / 48000.0);
         }
     }
     pad_vsync(ctx);

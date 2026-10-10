@@ -14,6 +14,9 @@
  * slices so the emulation thread is never blocked for long. */
 void     sd_render(int16_t* out, uint32_t frames);
 uint64_t sd_frames_rendered(void);   /* total frames rendered since start (an audio clock) */
+/* Integration health counters: VoiceTrans writes into the block an audible voice was playing (a
+ * stream refill too late or too early), and audible ADPCM blocks with impossible headers. */
+void     sd_health(uint64_t* trans_overlaps, uint64_t* bad_blocks);
 
 /* ---- building blocks, exposed for the unit tests -------------------------------------------- */
 
