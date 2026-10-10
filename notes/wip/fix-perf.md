@@ -1,6 +1,6 @@
 # fix-perf: full speed (steady 59.94 fields/s) with headroom, release build
 
-Status: in progress
+Status: complete (final report sent; see notes/performance.md)
 
 ## Goal
 Game runs at full NTSC speed with plenty of headroom, measured in the release build; pacing never
