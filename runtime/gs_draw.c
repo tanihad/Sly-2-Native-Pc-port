@@ -7,6 +7,7 @@
 #include "gs_draw.h"
 
 #include <math.h>
+#include <stdlib.h>
 
 enum {
     R_PRIM = 0x00, R_RGBAQ = 0x01, R_ST = 0x02, R_UV = 0x03, R_XYZF2 = 0x04, R_XYZ2 = 0x05,
@@ -34,6 +35,7 @@ typedef struct {
 } vtx;
 
 gs_stats_t gs_stats;
+uint8_t gs_fb_yfrac[512] = { [0 ... 511] = 0xFF }, gs_fb_psm[512];
 static uint64_t reg[0x64];
 static vtx vq[3];
 static int vcount;
@@ -217,6 +219,8 @@ static void env_update(void) {
     P.scy0 = (int)((sc >> 32) & 0x7FF); P.scy1 = (int)((sc >> 48) & 0x7FF);
     ofx = (int)(xyo & 0xFFFF);
     ofy = (int)((xyo >> 32) & 0xFFFF);
+    gs_fb_yfrac[P.fpage] = (uint8_t)(ofy & 15);
+    gs_fb_psm[P.fpage] = (uint8_t)P.fpsm;
 
     if (P.tme) bind_textures(ctx);
     else P.texm = 0;
@@ -557,11 +561,154 @@ static void draw_point(const vtx* v) {
     mark_written(px, py, px, py);
 }
 
+/* ---- debug trace: PS2_GS_TRACE_RECT=x0,y0,x1,y1 ----------------------------------------------------
+ * Logs every primitive whose vertex bounding box touches that rectangle (drawing-buffer pixels after
+ * XYOFFSET, inclusive) with its vertices, the drawing environment and, for textured primitives, the
+ * texels it covers (at most 32x32, as gs_tex_fetch returns them: 0xAABBGGRR after CLUT/TEXA; indexed
+ * formats also show the raw indices). PS2_GS_TRACE_FROM=<vsync> starts later, PS2_GS_TRACE_MAX=<n>
+ * (default 64) limits the number of primitives logged, PS2_GS_TRACE_TEXELS=0 leaves out the texels,
+ * PS2_GS_TRACE_BRIEF=1 prints one line per primitive, PS2_GS_TRACE_MINSIZE=<n> skips primitives whose
+ * bounding box is under n pixels in both directions. Output goes to stderr, or (much faster, fully
+ * buffered) to the file PS2_GS_TRACE_OUT names. */
+static int trace_on = -1, trace_x0, trace_y0, trace_x1, trace_y1, trace_left, trace_texels_on, trace_brief;
+static int trace_minsize;
+static uint32_t trace_from;
+static FILE* trace_out;
+
+static void trace_init(void) {
+    const char* o = getenv("PS2_GS_TRACE_OUT");
+    trace_out = o ? fopen(o, "w") : NULL;
+    if (!trace_out) trace_out = stderr;
+    const char* r = getenv("PS2_GS_TRACE_RECT");
+    trace_on = r && sscanf(r, "%d,%d,%d,%d", &trace_x0, &trace_y0, &trace_x1, &trace_y1) == 4;
+    const char* f = getenv("PS2_GS_TRACE_FROM");
+    const char* m = getenv("PS2_GS_TRACE_MAX");
+    const char* t = getenv("PS2_GS_TRACE_TEXELS");
+    const char* b = getenv("PS2_GS_TRACE_BRIEF");
+    trace_from = f ? (uint32_t)strtoul(f, NULL, 0) : 0;
+    trace_left = m ? atoi(m) : 64;
+    trace_texels_on = !t || atoi(t) != 0;
+    trace_brief = b && atoi(b) != 0;
+    const char* ms = getenv("PS2_GS_TRACE_MINSIZE");
+    trace_minsize = ms ? atoi(ms) : 0;
+}
+
+static void trace_texels(double umin, double umax, double vmin, double vmax) {
+    gs_tex0 t = decode_tex0(reg[R_TEX0_1 + ((((reg[R_PRMODECONT] & 1) ? reg[R_PRIM] : reg[R_PRMODE]) >> 9) & 1)]);
+    gs_texa ta = decode_texa(reg[R_TEXA]);
+    int u0 = (int)floor(umin), u1 = (int)ceil(umax) - 1, v0 = (int)floor(vmin), v1 = (int)ceil(vmax) - 1;
+    if (u1 < u0) u1 = u0;
+    if (v1 < v0) v1 = v0;
+    if (u1 - u0 > 31) u1 = u0 + 31;
+    if (v1 - v0 > 31) v1 = v0 + 31;
+    int indexed = t.psm == PSMT8 || t.psm == PSMT4 || t.psm == PSMT8H || t.psm == PSMT4HL || t.psm == PSMT4HH;
+    fprintf(trace_out, "[gstrace]   texels u %d..%d v %d..%d (AABBGGRR%s)\n", u0, u1, v0, v1, indexed ? ", index" : "");
+    int tw = 1 << (t.tw > 10 ? 10 : t.tw), th = 1 << (t.th > 10 ? 10 : t.th);
+    for (int v = v0; v <= v1; v++) {
+        char line[32 * 13 + 32];
+        int n = snprintf(line, sizeof line, "[gstrace]   v%4d:", v);
+        for (int u = u0; u <= u1; u++) {
+            int uu = u & (tw - 1), vv = v & (th - 1);
+            uint32_t c = gs_tex_fetch(&t, &ta, uu, vv);
+            if (indexed)
+                n += snprintf(line + n, sizeof line - (size_t)n, " %08X/%02X", c,
+                              gs_mem_read((int)t.psm, t.tbp0, t.tbw, uu, vv) & 0xFF);
+            else
+                n += snprintf(line + n, sizeof line - (size_t)n, " %08X", c);
+            if (n >= (int)sizeof line - 16) break;
+        }
+        fprintf(trace_out, "%s\n", line);
+    }
+}
+
+static void trace_prim(int type, const vtx* const* vs, int nv) {
+    int x0 = 1 << 30, y0 = 1 << 30, x1 = -(1 << 30), y1 = -(1 << 30);
+    for (int i = 0; i < nv; i++) {
+        int x = (vs[i]->x - ofx) >> 4, y = (vs[i]->y - ofy) >> 4;
+        x0 = imin(x0, x); x1 = imax(x1, x); y0 = imin(y0, y); y1 = imax(y1, y);
+    }
+    if (x1 < trace_x0 || x0 > trace_x1 || y1 < trace_y0 || y0 > trace_y1) return;
+    if (x1 - x0 < trace_minsize && y1 - y0 < trace_minsize) return;
+    trace_left--;
+    static const char* names[8] = { "point", "line", "linestrip", "tri", "tristrip", "trifan", "sprite", "prim7" };
+    uint64_t attr = (reg[R_PRMODECONT] & 1) ? reg[R_PRIM] : reg[R_PRMODE];
+    int ctx = (int)((attr >> 9) & 1);
+    if (trace_brief) {
+        uint64_t fr = reg[R_FRAME_1 + ctx], al = reg[R_ALPHA_1 + ctx], t0 = reg[R_TEX0_1 + ctx];
+        fprintf(trace_out, "[gstrace] v%u %-9s %4d,%4d..%4d,%4d rgba %02X%02X%02X%02X z %u FBP %u/%02X msk %08X%s%s ABE %d "
+                        "ALPHA %u%u%u%u/%02X TME %d TBP %u/%02X TFX %u TCC %u\n",
+                gs_vsync_count, names[type & 7], x0, y0, x1, y1, vs[nv - 1]->r, vs[nv - 1]->g, vs[nv - 1]->b,
+                vs[nv - 1]->a, vs[nv - 1]->z, (unsigned)(fr & 0x1FF), (unsigned)((fr >> 24) & 0x3F),
+                (unsigned)(fr >> 32), (attr >> 3) & 1 ? " gouraud" : "", (attr >> 7) & 1 ? " AA1" : "", (int)(attr >> 6) & 1,
+                (unsigned)(al & 3), (unsigned)((al >> 2) & 3), (unsigned)((al >> 4) & 3), (unsigned)((al >> 6) & 3),
+                (unsigned)((al >> 32) & 0xFF), (int)(attr >> 4) & 1, (unsigned)(t0 & 0x3FFF),
+                (unsigned)((t0 >> 20) & 0x3F), (unsigned)((t0 >> 35) & 3), (unsigned)((t0 >> 34) & 1));
+        return;
+    }
+    fprintf(trace_out, "[gstrace] v%u %s IIP %d TME %d FGE %d ABE %d AA1 %d FST %d CTXT %d FIX %d\n", gs_vsync_count,
+            names[type & 7], (int)(attr >> 3) & 1, (int)(attr >> 4) & 1, (int)(attr >> 5) & 1, (int)(attr >> 6) & 1,
+            (int)(attr >> 7) & 1, (int)(attr >> 8) & 1, ctx, (int)(attr >> 10) & 1);
+    for (int i = 0; i < nv; i++) {
+        const vtx* v = vs[i];
+        fprintf(trace_out, "[gstrace]   xy (%.4f, %.4f) z %u rgba %02X %02X %02X %02X q %g st %g %g uv %.4f %.4f f %d\n",
+                (v->x - ofx) / 16.0, (v->y - ofy) / 16.0, v->z, v->r, v->g, v->b, v->a, v->q, v->s, v->t,
+                v->u / 16.0, v->v / 16.0, v->f);
+    }
+    uint64_t fr = reg[R_FRAME_1 + ctx], zb = reg[R_ZBUF_1 + ctx], te = reg[R_TEST_1 + ctx], al = reg[R_ALPHA_1 + ctx];
+    uint64_t sc = reg[R_SCISSOR_1 + ctx];
+    fprintf(trace_out, "[gstrace]   FRAME FBP %u FBW %u PSM %02X FBMSK %08X  ZBUF ZBP %u PSM %02X ZMSK %u  "
+                    "SCISSOR %u..%u,%u..%u  XYOFFSET %.4f,%.4f\n",
+            (unsigned)(fr & 0x1FF), (unsigned)((fr >> 16) & 0x3F), (unsigned)((fr >> 24) & 0x3F), (unsigned)(fr >> 32),
+            (unsigned)(zb & 0x1FF), (unsigned)((zb >> 24) & 0xF), (unsigned)((zb >> 32) & 1),
+            (unsigned)(sc & 0x7FF), (unsigned)((sc >> 16) & 0x7FF), (unsigned)((sc >> 32) & 0x7FF), (unsigned)((sc >> 48) & 0x7FF),
+            ofx / 16.0, ofy / 16.0);
+    fprintf(trace_out, "[gstrace]   TEST ATE %u ATST %u AREF %02X AFAIL %u DATE %u DATM %u ZTE %u ZTST %u  "
+                    "ALPHA A %u B %u C %u D %u FIX %02X  PABE %u FBA %u COLCLAMP %u DTHE %u\n",
+            (unsigned)(te & 1), (unsigned)((te >> 1) & 7), (unsigned)((te >> 4) & 0xFF), (unsigned)((te >> 12) & 3),
+            (unsigned)((te >> 14) & 1), (unsigned)((te >> 15) & 1), (unsigned)((te >> 16) & 1), (unsigned)((te >> 17) & 3),
+            (unsigned)(al & 3), (unsigned)((al >> 2) & 3), (unsigned)((al >> 4) & 3), (unsigned)((al >> 6) & 3),
+            (unsigned)((al >> 32) & 0xFF), (unsigned)(reg[R_PABE] & 1), (unsigned)(reg[R_FBA_1 + ctx] & 1),
+            (unsigned)(reg[R_COLCLAMP] & 1), (unsigned)(reg[R_DTHE] & 1));
+    if (!((attr >> 4) & 1)) return;
+    gs_tex0 t = decode_tex0(reg[R_TEX0_1 + ctx]);
+    gs_texa ta = decode_texa(reg[R_TEXA]);
+    uint64_t t1 = reg[R_TEX1_1 + ctx], cl = reg[R_CLAMP_1 + ctx];
+    fprintf(trace_out, "[gstrace]   TEX0 TBP0 %u TBW %u PSM %02X TW %u TH %u TCC %u TFX %u CBP %u CPSM %02X CSM %u CSA %u CLD %u"
+                    "  TEXA TA0 %02X AEM %u TA1 %02X\n",
+            t.tbp0, t.tbw, t.psm, t.tw, t.th, t.tcc, t.tfx, t.cbp, t.cpsm, t.csm, t.csa, t.cld, ta.ta0, ta.aem, ta.ta1);
+    fprintf(trace_out, "[gstrace]   TEX1 LCM %u MXL %u MMAG %u MMIN %u MTBA %u L %u K %d  CLAMP WMS %u WMT %u U %u..%u V %u..%u\n",
+            (unsigned)(t1 & 1), (unsigned)((t1 >> 2) & 7), (unsigned)((t1 >> 5) & 1), (unsigned)((t1 >> 6) & 7),
+            (unsigned)((t1 >> 9) & 1), (unsigned)((t1 >> 19) & 3), (int)(((int64_t)(t1 << 20)) >> 52),
+            (unsigned)(cl & 3), (unsigned)((cl >> 2) & 3), (unsigned)((cl >> 4) & 0x3FF), (unsigned)((cl >> 14) & 0x3FF),
+            (unsigned)((cl >> 24) & 0x3FF), (unsigned)((cl >> 34) & 0x3FF));
+    double umin = 1e30, umax = -1e30, vmin = 1e30, vmax = -1e30;
+    for (int i = 0; i < nv; i++) {
+        double u, v;
+        if ((attr >> 8) & 1) { u = vs[i]->u / 16.0; v = vs[i]->v / 16.0; }
+        else { u = vs[i]->s / vs[i]->q * (double)(1 << t.tw); v = vs[i]->t / vs[i]->q * (double)(1 << t.th); }
+        if (!(fabs(u) < 1e6) || !(fabs(v) < 1e6)) return;
+        umin = fmin(umin, u); umax = fmax(umax, u); vmin = fmin(vmin, v); vmax = fmax(vmax, v);
+    }
+    if (trace_texels_on) trace_texels(umin, umax, vmin, vmax);
+}
+
 /* ---- vertex queue -------------------------------------------------------------------------------- */
 
 static void draw(int type, const vtx* a, const vtx* b, const vtx* c) {
     if (env_dirty) env_update();
     gs_stats.prims++;
+    if (trace_on) {
+        if (trace_on < 0) trace_init();
+        if (trace_on && trace_left > 0 && gs_vsync_count >= trace_from) {
+            static uint32_t flushed_at;  /* the process may end without flushing stdio */
+            if (flushed_at != gs_vsync_count) { flushed_at = gs_vsync_count; fflush(trace_out); }
+            const vtx* vs[3] = { a, b, c };
+            trace_prim(type, vs, type == PRIM_POINT ? 1 : type == PRIM_TRI || type == PRIM_TRISTRIP || type == PRIM_TRIFAN ? 3 : 2);
+            /* the last record: nothing above flushes after this, and the game ends with ExitProcess,
+             * which drops stdio buffers */
+            if (trace_left <= 0) fflush(trace_out);
+        }
+    }
     if (!env_ok || !prim_draws) return;
     switch (type) {
     case PRIM_POINT: draw_point(a); break;
@@ -640,6 +787,11 @@ static void trxdir(uint32_t dir) {
     xfer_x1 = xfer_x0 + (int)(rr & 0xFFF);
     xfer_y1 = xfer_y0 + (int)((rr >> 32) & 0xFFF);
     gs_stats.xfers += dir != 3;
+    if (trace_on > 0 && trace_left > 0 && gs_vsync_count >= trace_from && dir != 3)
+        fprintf(trace_out, "[gstrace] v%u xfer dir %u %ux%u src %u,%u BP %u BW %u PSM %02X -> dst %d,%d BP %u BW %u PSM %02X\n",
+                gs_vsync_count, dir, (unsigned)(rr & 0xFFF), (unsigned)((rr >> 32) & 0xFFF), (unsigned)(pos & 0x7FF),
+                (unsigned)((pos >> 16) & 0x7FF), (unsigned)(bb & 0x3FFF), (unsigned)((bb >> 16) & 0x3F),
+                (unsigned)((bb >> 24) & 0x3F), xfer_x0, xfer_y0, xfer_dbp, xfer_dbw, xfer_dpsm);
     gs_mem_xfer_start(bb, pos, rr, dir);
     if (dir == 0 || dir == 2) mark_xfer_dest();
 }
