@@ -1,6 +1,6 @@
 # review-fix-perf: independent review of fix/fix-perf
 
-Status: in progress
+Status: complete (verdict: approve with the fix b2c721f; commits b2c721f, ff90a24, 4c54954)
 
 ## Goal
 Verify fix-perf independently (rebuild, unit tests, game run, reproduce perf evidence, compare
