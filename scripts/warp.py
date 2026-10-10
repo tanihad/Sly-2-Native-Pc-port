@@ -145,7 +145,9 @@ def complete_group(sv, g):
             sv.set(f"{g}.{f}", v)
 
 
-TASK_DONE = 3          # task state the game leaves finished tasks in (see notes/warp.md)
+# Task states (observed): 0 not started, 1 active (current objective / available), 2 completed
+# (complete_count +1), 3 closed without completing (e.g. intro steps the story skipped past).
+TASK_DONE = 2
 
 
 def build(schema, episode, job=None, sets=()):
@@ -226,7 +228,12 @@ def cmd_list(schema, args):
 
 
 def cmd_make(schema, args):
-    data = build(schema, args.episode, args.job, args.set or ())
+    if args.episode == 0 and not args.job and not args.set:
+        # The prologue starts from a new game: a save directory with empty slots (play time 0)
+        # skips the "create a save file?" prompt, and START on the title begins the prologue.
+        data = bytes(SAVE_SIZE)
+    else:
+        data = build(schema, args.episode, args.job, args.set or ())
     card = args.card or str(ROOT / "build" / "rel" / "memcard" / "slot0")
     f = write_card(card, args.slot, data, args.keep_others)
     print(f"wrote {f} ({EPISODES[args.episode][1]})")
