@@ -54,3 +54,6 @@ static inline void perf_leave(int prev) {
 void perf_init(void);                          /* reads PS2_PERF / PS2_PROFILE; starts the sampler */
 void perf_vblank(uint32_t serviced, uint32_t due);   /* once per serviced VBlank: totals so far */
 void perf_final(void);                         /* prints the profile (once); call before exiting */
+void perf_burn(int gs_thread);                 /* PS2_PERF_BURN / PS2_PERF_BURN_GS headroom test */
+/* set by perf_init when a burn is requested, so files linked without perf.c can call it */
+__attribute__((selectany)) void (*perf_burn_hook)(int gs_thread) = 0;

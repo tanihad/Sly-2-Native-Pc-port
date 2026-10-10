@@ -39,6 +39,18 @@ faster than real time; smooth presentation. Report before/after numbers per chan
    Replay of the briefing (build/brief.gsrec, v2500+30): old (7491a63) and new frames identical
    (sync and 8 workers). GS-only: 23.6 -> 8.9 ms/frame (8 workers).
 
+8. 14a7c8f Transfers/CLUT loads wait only if pending drawing touches their pages
+   (gs_draw_pages_touched, gs_rect_pages); exact sprite texel ranges (fixed-point values of the
+   pipeline; zero-weight bilinear texels excluded: the field-blend copy is no longer "feedback");
+   pixel-local in-place filters (texel == own pixel, same base/width/layout) treated like blending;
+   sync reasons in PS2_GS_STATS. VU: lazy pipeline retirement (sync_flags/clip/q/p at readers)
+   6.2 -> 5.7 ns/pair (unit bench), in-game ~11-16 ns/pair. Crash handler in ps2_runtime.c.
+   Recordings: build/brief.gsrec (v2500), build/title.gsrec (v1750, Sly intro); old (7491a63)
+   vs new identical on both (build/oldrt = git archive 7491a63 runtime).
+   NOTE: the machine is shared with other agents' game runs/builds: timings vary 2x; use
+   interleaved A/B min-of-N (gs_replay -Bench) for GS numbers. Unexplained early exits of the game
+   twice (no crash event): probably other agents killing sly2.exe; crash handler now in place.
+
 ## Measurements (release, memory-card prompt, 28-thread PC)
 - Baseline: 30-35 vblanks/s serviced of 60, ~33 flips/s, busy 22-50 ms/vblank (GS 60%, VU 18%).
 - After 3 (GS thread, fork-join pixels): ~57/60 vblanks, ~47 flips/s; GS thread saturated.
@@ -57,8 +69,12 @@ faster than real time; smooth presentation. Report before/after numbers per chan
   EE thread busy 15-16 ms/vblank with VU ~60% -> the EE thread is the bottleneck now.
 
 ## Next
-1. VU interpreter (EE thread, ~9.5 ms/frame in the briefing): profile, pre-decoded dispatch.
-   Then GS setup (draw/triangle setup, deferred_span) and the pixel pipeline (18 ns/pixel).
+1. Frame pacing (vblank skip policy, smooth presentation), PS2_PERF_BURN headroom test.
+2. Cache-maintenance override table in the recompiler + doc.
+3. GS: compose the VBlank picture as a queue job (no per-frame drain on the GS thread); CLUT
+   loads from drawn pages (~2 syncs/frame); setup cost; pixel pipeline (~18 ns/pixel).
+4. VU: more dispatch work if time permits (recompiler is a separate task).
+5. notes/performance.md, progress.md, final report.
 2. Cache-maintenance override table in the recompiler (0x234EA0/0x234FD0 loops) + doc.
 3. Frame pacing: vblank skip policy when behind; presentation smoothness; PS2_PERF_BURN headroom test.
 4. Debug build numbers; final report; notes/progress.md + notes/performance.md docs.

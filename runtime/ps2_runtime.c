@@ -237,21 +237,49 @@ static uint32_t vblank_count;
 static const char* dump_dir;
 static int dump_every = 60, headless;
 
+/* VBlank pacing: VBlanks are due at exact multiples of 1/59.94 s of host time (QPC), so the game
+ * never runs faster than real time. The thread sleeps until the next VBlank or 1 ms housekeeping
+ * tick, whichever is first, with a high-resolution waitable timer (Windows 10 1803+; else
+ * Sleep(1)), and wakes an idle EE at once (threads.c waits on ps2_irq_pending). When the EE falls
+ * behind, the VBlanks it missed are dropped, not delivered in a burst (ps2_service_irq): the game
+ * slows down instead of stuttering through catch-up frames. */
 static DWORD WINAPI host_timer(LPVOID arg) {
     (void)arg;
     timeBeginPeriod(1);
+    HANDLE timer = CreateWaitableTimerExW(NULL, NULL, 0x2 /* CREATE_WAITABLE_TIMER_HIGH_RESOLUTION */, TIMER_ALL_ACCESS);
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
     LARGE_INTEGER now;
+    const int64_t tick = qpc_freq.QuadPart / 1000;
+    int64_t next_tick = qpc_start.QuadPart + tick;
     for (uint64_t frame = 1;;) {                 /* NTSC: 59.94 fields per second */
         int64_t due = qpc_start.QuadPart + (int64_t)(frame * 1001 * (uint64_t)qpc_freq.QuadPart / 60000);
         QueryPerformanceCounter(&now);
+        uint32_t raise = 0;
         if (now.QuadPart >= due) {
             frame++;
             InterlockedIncrement(&frames_behind);
             InterlockedIncrement(&vblanks_due);
-            InterlockedOr((volatile LONG*)&ps2_irq_pending, PS2_IRQ_VBLANK);
+            raise |= PS2_IRQ_VBLANK;
         }
-        InterlockedOr((volatile LONG*)&ps2_irq_pending, PS2_IRQ_TICK);
-        Sleep(1);
+        if (now.QuadPart >= next_tick) {
+            next_tick = now.QuadPart + tick;
+            raise |= PS2_IRQ_TICK;
+        }
+        if (raise) {
+            InterlockedOr((volatile LONG*)&ps2_irq_pending, (LONG)raise);
+            WakeByAddressAll((PVOID)&ps2_irq_pending);
+            continue;
+        }
+        int64_t wait = (due < next_tick ? due : next_tick) - now.QuadPart;   /* QPC units */
+        if (timer) {
+            LARGE_INTEGER rel;
+            rel.QuadPart = -(wait * 10000000 / qpc_freq.QuadPart);          /* 100 ns units, relative */
+            if (!rel.QuadPart) rel.QuadPart = -1;
+            SetWaitableTimer(timer, &rel, 0, NULL, NULL, FALSE);
+            WaitForSingleObject(timer, INFINITE);
+        } else {
+            Sleep(1);
+        }
     }
     return 0;
 }
@@ -276,6 +304,7 @@ static void present_frame(const uint32_t* frame, int ok, int w, int h, uint32_t 
 static void vblank(ps2_ctx* ctx) {
     vblank_count++;
     perf_vblank(vblank_count, (uint32_t)vblanks_due);
+    if (perf_burn_hook) perf_burn_hook(0);       /* PS2_PERF_BURN headroom test */
     calls_vblank(vblank_count);
     gs_vsync();
     int perf_prev = perf_enter(PERF_PRESENT);

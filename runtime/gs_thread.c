@@ -15,7 +15,7 @@
  * The queue is a single-producer/single-consumer ring of 16-byte slots: a register write is one
  * slot, IMAGE data is a header slot followed by the data (never wrapping: a SKIP slot pads to the
  * end of the ring first). Positions are free-running slot counters. The producer publishes in
- * batches (at primitive kicks and every PUBLISH_EVERY slots); both sides spin briefly before they
+ * batches (every PUBLISH_EVERY slots, and after IMAGE data, syncs and VBlanks); both sides spin before they
  * block in WaitOnAddress. */
 #include "gs_draw.h"
 #include "perf.h"
@@ -27,7 +27,7 @@
 #define Q_SLOTS        (1u << 18)       /* 4 MB of 16-byte slots */
 #define Q_MASK         (Q_SLOTS - 1)
 #define IMAGE_CHUNK    (16384u * 16u)   /* bytes per IMAGE record (a larger write is split) */
-#define PUBLISH_EVERY  64
+#define PUBLISH_EVERY  256
 #define SPINS          4000             /* pause iterations before blocking */
 
 enum { K_IMAGE = 0x100, K_SKIP, K_VSYNC, K_SYNC };
@@ -68,13 +68,18 @@ static void ee_wait_change(_Atomic uint32_t* addr, uint32_t val) {
     atomic_store_explicit(&ee_waiting, 0, memory_order_relaxed);
 }
 
-/* Room for n contiguous slots at the write position (padding to the end of the ring if needed). */
+/* Room for n contiguous slots at the write position (padding to the end of the ring if needed).
+ * The free space last seen is remembered (room_end), so the consumer's counter - a cache line the
+ * GS thread writes - is only read when that runs out, not on every register write. */
+static uint32_t room_end;                               /* wr_local may grow up to this */
+
 static slot* reserve(uint32_t n) {
     uint32_t pos = wr_local & Q_MASK;
     uint32_t pad = pos + n > Q_SLOTS ? Q_SLOTS - pos : 0;
-    for (;;) {
+    while ((int32_t)(room_end - (wr_local + pad + n)) < 0) {
         uint32_t rd = atomic_load_explicit(&q_rd, memory_order_acquire);
-        if (wr_local + pad + n - rd <= Q_SLOTS) break;
+        room_end = rd + Q_SLOTS;
+        if ((int32_t)(room_end - (wr_local + pad + n)) >= 0) break;
         publish();                                      /* full: let the GS thread catch up */
         int prev = perf_enter(PERF_GSWAIT);
         ee_wait_change(&q_rd, rd);
@@ -90,9 +95,12 @@ static slot* reserve(uint32_t n) {
 void gs_record_reg(uint32_t r, uint64_t v);       /* gs_record.c */
 void gs_record_image(const void* data, uint32_t bytes);
 void gs_record_vsync(uint32_t vblank);
+extern uint64_t gs_reg_mirror[0x64];             /* gs_record.c: every register as last written */
+extern int gs_recording;
 
 void gs_write_reg(uint32_t r, uint64_t v) {
-    gs_record_reg(r, v);
+    if (r < 0x64) gs_reg_mirror[r] = v;
+    if (gs_recording) gs_record_reg(r, v);
     if (!async_on) { gs_exec_write_reg(r, v); return; }
     if (r == R_SIGNAL || r == R_FINISH || r == R_LABEL) {   /* CSR events: on the EE's timeline */
         gs_exec_write_reg(r, v);
@@ -102,11 +110,13 @@ void gs_write_reg(uint32_t r, uint64_t v) {
     s->kind = r;
     s->v = v;
     wr_local++;
-    if (r == R_XYZ2 || r == R_XYZF2 || ++unpublished >= PUBLISH_EVERY) publish();
+    /* published in chunks (and at the end of every IMAGE transfer, sync and VBlank): a fenced store
+     * per primitive costs the EE more than the GS gains from starting a few microseconds earlier */
+    if (++unpublished >= PUBLISH_EVERY) publish();
 }
 
 void gs_image_write(const void* data, uint32_t bytes) {
-    gs_record_image(data, bytes);
+    if (gs_recording) gs_record_image(data, bytes);
     if (!async_on) { gs_exec_image_write(data, bytes); return; }
     const uint8_t* p = data;
     while (bytes) {
@@ -169,6 +179,7 @@ void gs_queue_vsync(uint32_t vblank) {
 /* ---- consumer (GS thread) ------------------------------------------------------------------------ */
 
 static void compose(const slot* s) {
+    if (perf_burn_hook) perf_burn_hook(1);         /* PS2_PERF_BURN_GS headroom test */
     static uint32_t frame[1024 * 1024];
     int w = 0, h = 0;
     int ok = gs_display_regs((const uint64_t*)(const void*)(s + 1), frame, 1024, &w, &h);

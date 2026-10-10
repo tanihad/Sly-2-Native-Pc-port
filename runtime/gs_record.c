@@ -19,9 +19,10 @@
 const uint16_t* gs_clut_buffer(void);    /* gs_mem_tex.c */
 
 static FILE* rec;
-static int rec_init, rec_on;
+static int rec_init;
+int gs_recording;                         /* records are being written (gs_thread.c checks it) */
 static uint32_t rec_from = 600, rec_frames = 60, rec_seen;
-static uint64_t mirror[0x64];             /* every general register as last written */
+uint64_t gs_reg_mirror[0x64];             /* every general register as last written (gs_thread.c) */
 
 static void put(uint32_t tag, uint32_t len, const void* p, size_t n) {
     uint32_t h[2] = { tag, len };
@@ -30,12 +31,11 @@ static void put(uint32_t tag, uint32_t len, const void* p, size_t n) {
 }
 
 void gs_record_reg(uint32_t r, uint64_t v) {
-    if (r < 0x64) mirror[r] = v;
-    if (rec_on && (r < 0x60 || r > 0x62)) put(1, r, &v, 8);
+    if (gs_recording && (r < 0x60 || r > 0x62)) put(1, r, &v, 8);
 }
 
 void gs_record_image(const void* data, uint32_t bytes) {
-    if (!rec_on) return;
+    if (!gs_recording) return;
     static const uint8_t pad[4];
     put(2, bytes, data, bytes);
     if (bytes & 3) fwrite(pad, 1, 4 - (bytes & 3), rec);
@@ -53,7 +53,7 @@ void gs_record_vsync(uint32_t vblank) {
         setvbuf(rec, NULL, _IOFBF, 1 << 22);
     }
     if (!rec) return;
-    if (!rec_on) {
+    if (!gs_recording) {
         if (vblank < rec_from) return;
         gs_sync();                               /* the state below is the GS's at this point */
         fwrite("GSREC001", 8, 1, rec);
@@ -62,8 +62,8 @@ void gs_record_vsync(uint32_t vblank) {
         const uint16_t* c = gs_clut_buffer();
         if (c) memcpy(clut, c, sizeof clut);
         fwrite(clut, sizeof clut, 1, rec);
-        fwrite(mirror, sizeof mirror, 1, rec);
-        rec_on = 1;
+        fwrite(gs_reg_mirror, sizeof gs_reg_mirror, 1, rec);
+        gs_recording = 1;
         fprintf(stderr, "[gs] recording the GS stream from VBlank %u for %u VBlanks\n", vblank, rec_frames);
     }
     uint64_t snap[GS_PRIV_SNAPSHOT];
@@ -72,7 +72,7 @@ void gs_record_vsync(uint32_t vblank) {
     if (++rec_seen >= rec_frames) {
         fclose(rec);
         rec = NULL;
-        rec_on = 0;
+        gs_recording = 0;
         fprintf(stderr, "[gs] GS recording complete\n");
     }
 }

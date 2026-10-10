@@ -260,6 +260,7 @@ void perf_init(void) {
         perf_state.cat = PERF_EE;
         perf_state.t0 = report_tsc;
     }
+    if (getenv("PS2_PERF_BURN") || getenv("PS2_PERF_BURN_GS")) perf_burn_hook = perf_burn;
     p = getenv("PS2_PROFILE");
     if (p && *p && *p != '0') {
         load_symbols();
@@ -326,6 +327,30 @@ void perf_vblank(uint32_t serviced, uint32_t due) {
     report_serviced = serviced;
     report_due = due;
     report_flips = perf_state.flips;
+}
+
+/* ---- headroom test: PS2_PERF_BURN=<ms> / PS2_PERF_BURN_GS=<ms> ---------------------------------------
+ * Extra busy work per VBlank on the EE thread (perf_burn(0), from the VBlank handler) or per picture
+ * on the GS thread (perf_burn(1), when it composes one). The largest burn that still keeps 59.94
+ * VBlanks per second serviced is the thread's headroom (scripts/headroom.ps1). */
+void perf_burn(int gs) {
+    static int init;
+    static double ms[2];
+    if (!init) {
+        init = 1;
+        const char* e = getenv("PS2_PERF_BURN");
+        const char* g = getenv("PS2_PERF_BURN_GS");
+        ms[0] = e ? atof(e) : 0;
+        ms[1] = g ? atof(g) : 0;
+        if (ms[0] > 0 || ms[1] > 0)
+            fprintf(stderr, "[perf] headroom test: burning %.2f ms per VBlank on the EE thread, %.2f ms per picture on the GS thread\n",
+                    ms[0], ms[1]);
+    }
+    if (ms[gs] <= 0) return;
+    LARGE_INTEGER t0, t;
+    QueryPerformanceCounter(&t0);
+    const int64_t until = t0.QuadPart + (int64_t)(ms[gs] * (double)qpc_freq.QuadPart / 1000.0);
+    do { _mm_pause(); QueryPerformanceCounter(&t); } while (t.QuadPart < until);
 }
 
 void perf_final(void) {
