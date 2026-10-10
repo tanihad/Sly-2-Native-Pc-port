@@ -793,6 +793,10 @@ uint16_t sceSdNote2Pitch(uint16_t center_note, uint16_t center_fine, uint16_t no
 
 /* ---- transfers -------------------------------------------------------------------------------- */
 
+/* Default for builds without the IOP side (the game before integration, tools): nobody to tell.
+ * The IOP side's definition replaces this one at link time. */
+__attribute__((weak)) void iop_sd_transfer_done(int channel) { (void)channel; }
+
 static uint8_t* iop_range(uint32_t addr, uint32_t* len) {
     uint8_t* p = iop_mem(addr);
     if (!p) return NULL;
