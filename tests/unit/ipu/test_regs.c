@@ -351,6 +351,62 @@ static void test_output_fifo(void) {
     CHECK(memcmp(a, b, 1024) == 0, "FIFO output differs from the conversion");
 }
 
+/* Edge paths: byte input that is not byte-aligned, output back-pressure, a field straddling the
+ * end of the only qword held. */
+static void test_edges(void) {
+    static uint8_t raw[384], want[1024], got[1024], stream[16 * 26];
+
+    /* BCLR 127 with one qword: TOP is busy and holds the single bit; FDEC completes when the next
+     * qword arrives and does not move BP */
+    uint8_t data[48];
+    for (int i = 0; i < 48; i++) data[i] = (uint8_t)(i * 37 + 11);
+    reset();
+    cmd(127);
+    ipu_fifo_write(data);
+    cmd(0x40000000);
+    uint64_t top = ipu_rd64(IPU_TOP);
+    CHECK(busy() && (top >> 63) && (uint32_t)top == ((uint32_t)(data[15] & 1) << 31), "TOP with 1 bit = %016llX",
+          (unsigned long long)top);
+    ipu_fifo_write(data + 16);
+    CHECK(!busy() && (uint32_t)ipu_rd64(IPU_CMD) == bits_at(data, 127), "FDEC at bit 127 = %08X",
+          (uint32_t)ipu_rd64(IPU_CMD));
+    CHECK(ipu_rd32(IPU_BP) == (127u | (2u << 16)), "BP after FDEC at 127 = %08X", ipu_rd32(IPU_BP));
+
+    /* CSC input starting 4 bits into the stream (BCLR 4): RAW8 bytes are read across byte
+     * boundaries, delivered one qword at a time */
+    for (int i = 0; i < 384; i++) raw[i] = (uint8_t)(i * 7 + 3);
+    ipu_csc_mb(raw, want, 0, 0, 0, 0, 0);
+    memset(stream, 0, sizeof stream);
+    bitwriter w = { stream, sizeof stream, 0 };
+    bw_put(&w, 0xA, 4);
+    for (int i = 0; i < 384; i++) bw_put(&w, raw[i], 8);
+    while (w.bits < sizeof stream * 8) bw_put(&w, 0, 1);
+    reset();
+    cmd(4);
+    cmd(0x70000001);
+    for (int q = 0; q < 25; q++) ipu_fifo_write(stream + 16 * q);
+    for (int q = 0; q < 64; q++) ipu_fifo_read(got + 16 * q);
+    CHECK(!busy() && memcmp(got, want, 1024) == 0, "CSC from bit 4 differs from the conversion");
+    CHECK((ipu_rd32(IPU_BP) & 0x7F) == 4, "BP after CSC from bit 4 = %08X", ipu_rd32(IPU_BP));
+
+    /* back-pressure: 5 macroblocks with nobody draining the output stay busy (OFC 8), and complete
+     * once the output is read */
+    reset();
+    cmd(0);
+    cmd(0x70000005);
+    for (int m = 0; m < 5; m++) for (int q = 0; q < 24; q++) ipu_fifo_write(raw + 16 * q);
+    uint32_t ctrl = ipu_rd32(IPU_CTRL);
+    CHECK((ctrl >> 31) && ((ctrl >> 4) & 15) == 8, "CSC without output drain: CTRL %08X", ctrl);
+    int bad = 0;
+    for (int m = 0; m < 5; m++)
+        for (int q = 0; q < 64; q++) {
+            ipu_fifo_read(got);
+            bad += memcmp(got, want + 16 * q, 16) != 0;
+        }
+    CHECK(!busy() && bad == 0 && ((ipu_rd32(IPU_CTRL) >> 4) & 15) == 0, "drained CSC: %d bad qwords, CTRL %08X", bad,
+          ipu_rd32(IPU_CTRL));
+}
+
 int main(void) {
     test_reset_and_fifo();
     test_fdec();
@@ -359,6 +415,7 @@ int main(void) {
     test_csc();
     test_pack();
     test_output_fifo();
+    test_edges();
     CHECK(fake_unhandled == 0, "%d unhandled accesses logged", fake_unhandled);
     printf("test_regs: %s (%d failures)\n", test_failures ? "FAILED" : "ok", test_failures);
     return test_failures != 0;
