@@ -21,6 +21,10 @@ void gs_csr_label(uint32_t id, uint32_t mask);    /* SIGLBLID.LBLID update */
 /* ---- gs_draw.c --------------------------------------------------------------------------------- */
 void gs_draw_reset(void);                /* CSR.RESET: drop the vertex queue, cancel transfers */
 
+/* activity counters (PS2_LOG_GS=1 prints them from gs_vsync once a second) */
+typedef struct { uint32_t regs, prims, sprites, tris, image_bytes, xfers; } gs_stats_t;
+extern gs_stats_t gs_stats;
+
 /* ---- gs_draw_swz.c: direct frame/Z buffer addressing ------------------------------------------ */
 typedef struct {
     const uint16_t* tab;                 /* [ (y & (ph-1)) * 64 + (x & 63) ] -> element index in page */

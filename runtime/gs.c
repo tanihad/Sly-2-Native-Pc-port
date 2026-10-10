@@ -6,6 +6,8 @@
  * IMR bits 8-12 mask the same events; an unmasked event raises INTC_GS when it is set. */
 #include "gs_draw.h"
 
+#include <stdlib.h>
+
 enum {
     CSR_SIGNAL = 1u << 0, CSR_FINISH = 1u << 1, CSR_HSINT = 1u << 2, CSR_VSINT = 1u << 3,
     CSR_EDWINT = 1u << 4, CSR_RESET = 1u << 9, CSR_FIELD = 1u << 13, CSR_FIFO_EMPTY = 1u << 14,
@@ -44,6 +46,16 @@ void gs_csr_label(uint32_t id, uint32_t mask) {
 void gs_vsync(void) {
     csr_field ^= CSR_FIELD;
     set_events(CSR_VSINT | CSR_HSINT);   /* many HSyncs happened since the last VSync too */
+
+    static int log_gs = -1;
+    static uint32_t vsyncs;
+    if (log_gs < 0) log_gs = getenv("PS2_LOG_GS") != NULL;
+    if (log_gs && ++vsyncs % 60 == 0) {
+        fprintf(stderr, "[gs] last 60 vsyncs: %u register writes, %u primitives (%u triangles, %u sprites), "
+                        "%u transfers, %u image bytes\n", gs_stats.regs, gs_stats.prims, gs_stats.tris,
+                gs_stats.sprites, gs_stats.xfers, gs_stats.image_bytes);
+        memset(&gs_stats, 0, sizeof gs_stats);
+    }
 }
 
 static uint64_t csr_value(void) { return csr_events | csr_field | CSR_FIFO_EMPTY | CSR_REV_ID; }

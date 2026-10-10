@@ -33,6 +33,7 @@ typedef struct {
     int u, v;                            /* 1/16 texel */
 } vtx;
 
+gs_stats_t gs_stats;
 static uint64_t reg[0x64];
 static vtx vq[3];
 static int vcount;
@@ -560,12 +561,13 @@ static void draw_point(const vtx* v) {
 
 static void draw(int type, const vtx* a, const vtx* b, const vtx* c) {
     if (env_dirty) env_update();
+    gs_stats.prims++;
     if (!env_ok || !prim_draws) return;
     switch (type) {
     case PRIM_POINT: draw_point(a); break;
     case PRIM_LINE: case PRIM_LINESTRIP: draw_line(a, b); break;
-    case PRIM_TRI: case PRIM_TRISTRIP: case PRIM_TRIFAN: draw_triangle(a, b, c); break;
-    case PRIM_SPRITE: draw_sprite(a, b); break;
+    case PRIM_TRI: case PRIM_TRISTRIP: case PRIM_TRIFAN: gs_stats.tris++; draw_triangle(a, b, c); break;
+    case PRIM_SPRITE: gs_stats.sprites++; draw_sprite(a, b); break;
     default: break;
     }
 }
@@ -637,12 +639,14 @@ static void trxdir(uint32_t dir) {
     xfer_y0 = (int)((pos >> 48) & 0x7FF);
     xfer_x1 = xfer_x0 + (int)(rr & 0xFFF);
     xfer_y1 = xfer_y0 + (int)((rr >> 32) & 0xFFF);
+    gs_stats.xfers += dir != 3;
     gs_mem_xfer_start(bb, pos, rr, dir);
     if (dir == 0 || dir == 2) mark_xfer_dest();
 }
 
 void gs_image_write(const void* data, uint32_t bytes) {
     GS_INIT();
+    gs_stats.image_bytes += bytes;
     if (xfer_dir == 0 && xfer_marked_at != gs_tex_decodes) mark_xfer_dest();
     gs_mem_xfer_write(data, bytes);
 }
@@ -671,6 +675,7 @@ static void tex0_write(int ctx, uint64_t v) {
 
 void gs_write_reg(uint32_t r, uint64_t v) {
     GS_INIT();
+    gs_stats.regs++;
     switch (r) {
     case R_PRIM:
         /* the type only matters to the vertex queue; attributes only when PRMODECONT.AC = 1 */
