@@ -59,6 +59,9 @@ static const uint8_t ds2_act_info[DS2_NACT][4] = {     /* function, sub-function
 static const uint8_t ds2_comb_info[DS2_NCOMB][4] = { { 0x02, 0x00, 0x01, 0x00 } };
 #define DS2_FULL_MASK 0x0003FFFFu       /* 0x41 reply in analog mode: buttons, sticks, 12 pressures */
 #define PAD_MAX_CURRENT 60              /* padman refuses motor requests beyond this total */
+/* Entering configuration mode arms a watchdog in the controller: after about a second without
+ * communication it resets to digital mode with the motors off and unmapped (psx-spx, 43h). */
+#define DS2_WATCHDOG_FRAMES 60
 
 typedef struct {
     int      present;
@@ -66,9 +69,24 @@ typedef struct {
     int      locked;                    /* mode lock: the ANALOG button is ignored */
     uint32_t resp_mask;                 /* 0x4F: which of the 18 analog bytes the poll returns */
     uint8_t  align[6];                  /* 0x4D: motor driven by each poll byte (0xFF = none) */
-    uint8_t  motor[2];                  /* small, large */
+    uint8_t  motor[2];                  /* small (on/off), large (speed) */
     uint8_t  vref[12];                  /* 0x40: pressure sensor parameters */
+    int      armed;                     /* watchdog running (configuration mode was entered) */
+    int      idle;                      /* frames without communication */
 } ds2_state;
+
+/* Once per frame: `talked` says whether padman exchanged a transaction with the controller. */
+static void ds2_watchdog(ds2_state* d, int talked) {
+    if (talked) { d->idle = 0; return; }
+    if (!d->armed || ++d->idle < DS2_WATCHDOG_FRAMES) return;
+    d->analog = 0;
+    d->locked = 0;
+    d->resp_mask = 0x3F;
+    memset(d->align, 0xFF, sizeof d->align);
+    d->motor[0] = d->motor[1] = 0;
+    d->armed = 0;
+    d->idle = 0;
+}
 
 static uint8_t ds2_id(const ds2_state* d) {
     if (!d->analog) return 0x41;
@@ -82,10 +100,15 @@ static const uint16_t pressure_button[12] = {
 };
 
 /* Reply to a poll (command 0x42): 0xFF, ID, 0x5A, then 2/6/18 data bytes. The bytes padman sent
- * along (tx[3..8], the motor values) drive the motors through the alignment table. */
+ * along (tx[3..8], the motor values) drive the motors through the alignment table (0x4D): a motor
+ * no byte is mapped to gets no drive value and stops, and the small motor is on/off and only
+ * looks at bit 0 of its byte (psx-spx, commands 42h/4Dh). */
 static void ds2_poll(ds2_state* d, const pad_input* in, const uint8_t tx[6], uint8_t rx[32]) {
+    uint8_t motor[2] = { 0, 0 };
     for (int i = 0; i < 6; i++)
-        if (d->align[i] < 2) d->motor[d->align[i]] = tx[i];
+        if (d->align[i] < 2) motor[d->align[i]] = tx[i];
+    d->motor[0] = motor[0] & 1;
+    d->motor[1] = motor[1];
     memset(rx, 0, 32);
     uint8_t id = ds2_id(d);
     uint16_t b = in->buttons;
@@ -176,10 +199,10 @@ static pad_slot* slot_at(uint32_t port, uint32_t slot) {
 
 /* -- tasks -- */
 
-/* Detection (re)starts: padman forgets everything it knew about the controller. */
+/* Detection (re)starts: padman forgets everything it knew about the controller. The state is
+ * left to the caller: the detection thread itself only sets it after its first transaction. */
 static void detect_start(pad_slot* s) {
     s->task = TASK_DETECT;
-    s->state = STATE_EXECCMD;
     s->data_valid = 0;
     s->cur_id = s->mode_config = s->model = 0;
     s->n_modes = s->n_act = s->n_comb = 0;
@@ -203,7 +226,8 @@ static void detect_step(pad_slot* s, ds2_state* d) {
         if (!d) { s->state = STATE_DISCONN; s->first = 1; return; }
         s->state = STATE_EXECCMD;
         if (s->first) memset(s->act_align, 0xFF, sizeof s->act_align);
-        s->phase = 1;
+        s->phase = 1;                   /* next: enter configuration mode */
+        d->armed = 1;
         if (s->first && d->analog)
             s->steps = 3;               /* enter config, query model, set digital mode */
         else
@@ -267,6 +291,7 @@ static void command_start(pad_slot* s) {
 
 static void command_step(pad_slot* s, ds2_state* d, int port) {
     s->phase++;
+    if (s->phase == 1 && d) d->armed = 1;   /* enter configuration mode */
     if (s->phase == 2 && d) {           /* the transaction after "enter configuration mode" */
         switch (s->task) {
         case TASK_SETMODE:
@@ -317,7 +342,7 @@ static void poll_step(pad_slot* s, ds2_state* d, int port, int slot, const pad_i
     act_blocks(port, slot, s);
     if (!d) {                           /* nobody answers: count errors, then look for a controller */
         s->data_valid = 0;
-        s->state = STATE_ERROR;
+        s->state = STATE_ERROR;         /* stays ERROR in the frame detection is started */
         s->err_count++;
         if (++s->poll_fail >= 10) detect_start(s);
         return;
@@ -328,7 +353,11 @@ static void poll_step(pad_slot* s, ds2_state* d, int port, int slot, const pad_i
     uint8_t rx[32];
     ds2_poll(d, in, tx, rx);
     s->poll_fail = 0;
-    if (rx[2] != 0x5A || rx[1] != s->cur_id || rx[1] == 0xF3) { detect_start(s); return; }
+    if (rx[2] != 0x5A || rx[1] != s->cur_id || rx[1] == 0xF3) {
+        detect_start(s);
+        s->state = STATE_EXECCMD;       /* padman+0x25C8: unexpected answer */
+        return;
+    }
     memcpy(s->rx, rx, sizeof rx);
     s->data_valid = 1;
     s->state = s->mode_config == 1 ? STATE_FINDCTP1 : STATE_STABLE;
@@ -408,14 +437,15 @@ static void write_ee(pad_slot* s, int port, int slot) {
 
 void pad_vsync(ps2_ctx* ctx) {
     (void)ctx;
-    if (!initialized) return;
-    for (int port = 0; port < PAD_PORTS; port++) {
+    int talked[PAD_PORTS] = { 0 };      /* a transaction reached the controller this frame */
+    for (int port = 0; port < PAD_PORTS && initialized; port++) {
         pad_input in = { 0 };
         int have_input = 0;
         for (int slot = 0; slot < PAD_SLOTS; slot++) {
             pad_slot* s = &slots[port][slot];
             if (!s->open) continue;
             ds2_state* d = pad_at(port, slot);
+            if (d) talked[port] = 1;    /* every task runs one transaction per frame */
             /* scheduler: hand a queued request to its task (only while polling) */
             if (s->pending) {
                 if (s->task == TASK_POLL) {
@@ -442,9 +472,12 @@ void pad_vsync(ps2_ctx* ctx) {
             }
         }
     }
-    for (int port = 0; port < PAD_PORTS; port++)
+    for (int port = 0; port < PAD_PORTS && initialized; port++)
         for (int slot = 0; slot < PAD_SLOTS; slot++)
             if (slots[port][slot].open) write_ee(&slots[port][slot], port, slot);
+    /* the controllers' own watchdogs keep running when padman is idle or gone */
+    for (int port = 0; port < PAD_PORTS && pads_ready; port++)
+        if (pads[port].present) ds2_watchdog(&pads[port], talked[port]);
 }
 
 /* -- RPC commands -- */

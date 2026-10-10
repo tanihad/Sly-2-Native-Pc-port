@@ -474,6 +474,124 @@ static void test_close_and_reopen_forces_digital(void) {
     CHECK_EQ(lp_info_mode(3, 0), 0);
 }
 
+/* padman's poll thread (padman+0x2674): every failed poll sets ERROR and counts; on the tenth it
+ * starts the detection thread but leaves the state at ERROR. Detection only changes the state
+ * after its first transaction (DISCONN when nobody answers, padman+0x27C4). So an empty port reads
+ * ERROR for ten frames and DISCONN afterwards, never EXECCMD. */
+static void test_empty_port_state_sequence(void) {
+    reset_world();
+    CHECK_EQ(lp_port_open(1, 0, EE_PADBUF), 1);
+    for (int f = 1; f <= 10; f++) {
+        vsync(1);
+        if (lp_get_state() != 7) fprintf(stderr, "  empty port, frame %d: state %d\n", f, lp_get_state());
+        CHECK_EQ(lp_get_state(), 7);
+        CHECK_EQ(P()[0x72], f < 10 ? 1 : 2);                      /* detection starts on the tenth */
+    }
+    vsync(1);
+    CHECK_EQ(lp_get_state(), 0);
+}
+
+/* The small motor is on/off and only looks at bit 0 of its byte (psx-spx, config command 4Dh:
+ * "Map Right/small Motor (Motor M2) to bit0 of this byte"; command 42h: "xx.bit0 ---> Right/small
+ * Motor M2 (digital on/off) (0=off, 1=on)"). The large motor takes the whole byte as its speed. */
+static void test_small_motor_uses_bit0(void) {
+    reset_world();
+    lp_port_open(0, 0, EE_PADBUF);
+    CHECK(wait_state(6, 60) > 0);
+    CHECK_EQ(lp_set_main_mode(1, 3), 1);
+    CHECK(wait_complete(120, NULL) > 0);
+    static const uint8_t align[6] = { 0, 1, 0xFF, 0xFF, 0xFF, 0xFF };
+    CHECK_EQ(lp_set_act_align(align), 1);
+    CHECK(wait_complete(120, NULL) > 0);
+
+    uint8_t m[2];
+    static const uint8_t even[6] = { 0xFE, 0x80, 0, 0, 0, 0 };
+    CHECK_EQ(lp_set_act_direct(0, 0, even), 1);
+    vsync(1);
+    pad_get_motors(0, m);
+    CHECK_EQ(m[0], 0);                  /* bit 0 clear: small motor off */
+    CHECK_EQ(m[1], 0x80);
+    static const uint8_t odd[6] = { 0x03, 0, 0, 0, 0, 0 };
+    CHECK_EQ(lp_set_act_direct(0, 0, odd), 1);
+    vsync(1);
+    pad_get_motors(0, m);
+    CHECK_EQ(m[0], 1);                  /* on */
+    CHECK_EQ(m[1], 0);
+}
+
+/* Command 4Dh decides which poll byte drives which motor; a motor no byte is mapped to gets no
+ * drive value any more and stops (psx-spx: 4Dh with FFh bytes "disables motor control"). Here the
+ * game turns the large motor on, then unmaps both motors with SetActAlign. */
+static void test_unmapped_motor_stops(void) {
+    reset_world();
+    lp_port_open(0, 0, EE_PADBUF);
+    CHECK(wait_state(6, 60) > 0);
+    CHECK_EQ(lp_set_main_mode(1, 3), 1);
+    CHECK(wait_complete(120, NULL) > 0);
+    static const uint8_t align[6] = { 0, 1, 0xFF, 0xFF, 0xFF, 0xFF };
+    CHECK_EQ(lp_set_act_align(align), 1);
+    CHECK(wait_complete(120, NULL) > 0);
+    static const uint8_t act[6] = { 1, 0xC0, 0, 0, 0, 0 };
+    CHECK_EQ(lp_set_act_direct(0, 0, act), 1);
+    vsync(1);
+    uint8_t m[2];
+    pad_get_motors(0, m);
+    CHECK_EQ(m[0], 1);
+    CHECK_EQ(m[1], 0xC0);
+
+    static const uint8_t none[6] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
+    CHECK_EQ(lp_set_act_align(none), 1);
+    CHECK(wait_complete(120, NULL) > 0);
+    vsync(2);
+    pad_get_motors(0, m);
+    CHECK_EQ(m[0], 0);
+    CHECK_EQ(m[1], 0);
+}
+
+/* Entering configuration mode arms the controller's watchdog: after about a second without any
+ * communication it resets, which "does disable and lock rumble motors, and switches the
+ * controller to Digital Mode" (psx-spx, command 43h). Here the game ends its session (Init closes
+ * the ports) while the motors run; nobody polls the pad any more. */
+static void test_watchdog_after_polling_stops(void) {
+    reset_world();
+    lp_port_open(0, 0, EE_PADBUF);
+    CHECK(wait_state(6, 60) > 0);
+    CHECK_EQ(lp_set_main_mode(1, 3), 1);
+    CHECK(wait_complete(120, NULL) > 0);
+    static const uint8_t align[6] = { 0, 1, 0xFF, 0xFF, 0xFF, 0xFF };
+    CHECK_EQ(lp_set_act_align(align), 1);
+    CHECK(wait_complete(120, NULL) > 0);
+    static const uint8_t act[6] = { 1, 0xC0, 0, 0, 0, 0 };
+    CHECK_EQ(lp_set_act_direct(0, 0, act), 1);
+    vsync(1);
+    uint8_t m[2];
+    pad_get_motors(0, m);
+    CHECK_EQ(m[1], 0xC0);
+
+    CHECK_EQ(lp_init(), 1);             /* ports closed: no more transactions */
+    vsync(30);                          /* half a second: still running */
+    pad_get_motors(0, m);
+    CHECK_EQ(m[0], 1);
+    CHECK_EQ(m[1], 0xC0);
+    vsync(60);                          /* well past a second: the controller has reset */
+    pad_get_motors(0, m);
+    CHECK_EQ(m[0], 0);
+    CHECK_EQ(m[1], 0);
+
+    /* it comes back in digital mode, so the first detection needs no forced mode change */
+    CHECK_EQ(lp_port_open(0, 0, EE_PADBUF), 1);
+    int f = wait_state(6, 60);
+    CHECK_EQ(f, 14);
+    CHECK_EQ(P()[0x65], 0x41);
+
+    /* while the game keeps polling, nothing resets, however long it runs */
+    CHECK_EQ(lp_set_main_mode(1, 3), 1);
+    CHECK(wait_complete(120, NULL) > 0);
+    vsync(600);
+    CHECK_EQ(P()[0x65], 0x73);
+    CHECK_EQ(lp_get_state(), 6);
+}
+
 static void test_init_closes_ports(void) {
     reset_world();
     lp_port_open(0, 0, EE_PADBUF);
@@ -498,6 +616,10 @@ int main(void) {
     test_empty_port();
     test_close_and_reopen_forces_digital();
     test_init_closes_ports();
+    test_empty_port_state_sequence();
+    test_small_motor_uses_bit0();
+    test_unmapped_motor_stops();
+    test_watchdog_after_polling_stops();
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

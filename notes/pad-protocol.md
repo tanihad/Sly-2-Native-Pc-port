@@ -157,14 +157,18 @@ SetActDirect drops motor bytes that would exceed a power budget of 60 units over
 running actuator draws the "current" byte of its table entry: 10 and 20 on a DualShock 2).
 
 The motor values travel in the next poll command: transmit byte i carries value i when the
-alignment entry i is not 0xFF; the controller routes transmit byte i to motor `align[i]`.
+alignment entry i is not 0xFF; the controller routes transmit byte i to motor `align[i]`. A motor
+that no byte is mapped to gets no drive value and stops; the small motor is on/off and only looks
+at bit 0 of its byte, the large one takes the whole byte as its speed (psx-spx, commands 42h/4Dh).
+Sly 2's vibration patterns (table at 0x2C2260) only use 0/1 for the small motor.
 
 ## padman's state machine (one controller transaction per frame and pad)
 
 - Polling (task 1, padman+0x2530): read the controller. A reply with a different ID than
-  expected, or no 0x5A, starts detection; ten failed transactions too. Otherwise the data becomes
-  valid, the state STABLE (FINDCTP1 for controllers without configuration mode), and a BUSY
-  request with nothing queued becomes COMPLETE.
+  expected, or no 0x5A, sets EXECCMD and starts detection; ten failed transactions too, but those
+  leave the state at ERROR (detection only sets a state after its first transaction). Otherwise
+  the data becomes valid, the state STABLE (FINDCTP1 for controllers without configuration mode),
+  and a BUSY request with nothing queued becomes COMPLETE.
 - Scheduler (padman+0xA10): a queued request starts its task if the slot is polling; otherwise
   it fails (request state FAILED).
 - Detection (task 2, padman+0x26C0): forget everything, find the controller (state DISCONN until
@@ -213,15 +217,21 @@ EnterPressMode 29.
   `window_get_input(port)`; a button pressed without a pressure value (keyboard, digital
   triggers) reads as full pressure 0xFF. L3/R3 do not exist in digital mode.
 - Setting a main mode (0x44) resets the controller's response mask, so pressure mode has to be
-  re-entered after a mode change (assumption; games do it in this order anyway).
+  re-entered after a mode change (psx-spx: "Sending Command 44h does RESET the Command 4Fh
+  setting"; games do it in this order anyway).
 - With a partial SetButtonInfo mask the controller still answers ID 0x79 with 12 pressure bytes,
   unrequested ones reading 0 (a real pad would shorten the reply).
 - Actuator blocks live at IOP address 0x1E000 + (port * 4 + slot) * 0x40 (nothing else in the
   HLE uses IOP RAM below the SIF command buffer at 0x1F000).
 - PortClose takes effect immediately. The per-frame SIF notification (command 0x18, SIF command
   0x80000019 carrying the IOP VBlank count) is not emulated; Sly 2 never enables it.
-- Motor values are kept per port (`pad_get_motors`) for a future host rumble hook; nothing drives
-  a real motor yet.
+- Motor values are kept per port (`pad_get_motors`: small motor 0/1, large motor speed) for a
+  future host rumble hook; nothing drives a real motor yet.
+- The controller's watchdog is emulated: once configuration mode has been entered, a second
+  (60 frames) without any transaction resets it to digital mode, unlocked, with the motors off and
+  unmapped (psx-spx, command 43h: "The reset does disable and lock rumble motors, and switches
+  the controller to Digital Mode"). This only matters after End/Init/PortClose; padman polls every
+  frame while a port is open.
 
 ## Verification
 
