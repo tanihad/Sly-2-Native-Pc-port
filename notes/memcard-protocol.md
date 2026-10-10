@@ -107,7 +107,9 @@ McReplaceBadBlock and releases mcman's I/O semaphore.
   descriptor (0x20, at most 16; writes under 17 bytes go entirely there). mcserv writes those,
   then **pulls the rest from EE memory itself with sceSifGetOtherData** (8 KB at a time from
   desc 0x18). The EE does *not* DMA the bulk data into IOP RAM before the call. The HLE reads
-  EE RAM directly at that point. Result: total, the short count + head, or the error.
+  EE RAM directly at that point. Result: total, the short count + head, or the error. (mcman's
+  PS2 write never returns a short count: it is all bytes or an error, so a write the card
+  hasn't room for returns **-3** even when earlier 8 KB pieces were written.)
 - **GetInfo** (mcserv 0xD38): result struct (0xC0 bytes) to desc 0x1C: **type at 0x00**
   (2 = PS2), **free clusters at 0x04**, **formatted at 0x90**; libmc's callback stores each into
   the caller's pointer if it was non-NULL (the "want" words tell mcserv which to compute). For a
@@ -138,7 +140,10 @@ PS2 clock time, i.e. JST), 0x10 file size (0 for directories), 0x14 mode (u16), 
   control characters) -4; three handles max (-7); missing without create -4; missing parent -4.
   New files get mode **0x8417**, new directories **0x8427**, both stamped with the current
   time; a file gains **0x80 ("closed") when closed or flushed** after writing, which also sets
-  its modified time and its directory's (so a finished file is 0x8497).
+  its modified time and its directory's (so a finished file is 0x8497). The **first write after
+  an open or flush clears 0x80** again (mcman 0x6078 with the handle's "written" byte set), so
+  a file being written, or one whose handle was lost, reads as not closed. A created file
+  counts as written from the start.
   **Create on an existing file deletes it and makes a new, empty entry** (new creation time,
   attribute word 0). Opening for write needs mode bit 2, for read bit 1 (-5), and fails while
   another handle has the file open for writing (-5); re-creating an open file returns -43.
@@ -147,7 +152,11 @@ PS2 clock time, i.e. JST), 0x10 file size (0 for directories), 0x14 mode (u16), 
   A subdirectory holds at most **20 entries** including "." and ".." (-5 beyond).
 - **Read/Write/Seek/Close/Flush** on a bad or closed handle -5; read needs the read flag,
   write the write flag. Seek origins 0 SET, 2 END, anything else CUR; the result is clamped
-  at 0.
+  at 0. **A read or write that fails past those checks frees the handle** (McRead 0x12A8,
+  McWrite 0x1460 clear its status byte): the entry is never closed and a later close is -5.
+  The PS2 write (0x5E08) allocates clusters as it goes and returns **-3** at the first one it
+  can't get, discarding its count; what it wrote of that call lies past the entry's length
+  (the entry is updated only after a successful write), so the HLE writes nothing of it.
 - **GetDir**: the name splits at its last '/' into a directory (empty = current directory)
   and a pattern. The **root lists from entry 2** (no "." / ".."); subdirectories list "."
   (the directory's own entry) and ".." (its parent's) first. Deleted and **hidden (0x2000)**
@@ -161,7 +170,8 @@ PS2 clock time, i.e. JST), 0x10 file size (0 for directories), 0x14 mode (u16), 
 - **SetFileInfo** flags: 0x01 created, 0x02 modified, 0x04 (and 0x200) mode — **directories
   only**, bits 0x180F (rwx, copy-protect 0x08, 0x800, 0x1000), 0x08 attribute word (from
   table 0x18), 0x10 rename (table 0x20, at most 31 characters; "." / ".." / '/' / wildcards /
-  existing name -4). The root and "." / ".." can't be changed (-5).
+  existing name -4, the entry's own name included: mcman looks the new name up in the
+  directory, 0x6678). The root and "." / ".." can't be changed (-5).
 - **ChDir**: sets the per-card current directory and returns its absolute path ("/",
   "/DIR").
 - **Format** re-creates an empty root; **Unformat** leaves the card unformatted (GetInfo:
@@ -181,7 +191,9 @@ mode 1, checking the byte counts. At boot it calls sceMcInit then sceMcGetInfo(0
 ## Host mapping (runtime/mc.c)
 
 - Port 0 slot 0: card directory `PS2_MEMCARD_DIR`, else `memcard\slot0` next to the
-  executable (created on first use). Port 1 and other slots: no card (-10).
+  executable (created on first use). Port 1 and other slots: no card (-10). The directory is
+  made absolute and used as a `\\?\` path, so card paths aren't limited to MAX_PATH (an escaped
+  32-byte name alone can take 96 characters per level).
 - Card directories are host directories and files host files; card names are case-sensitive
   bytes, compared exactly (a host name differing only in case counts as absent, and creating
   such a name is refused with -5). Bytes outside `0-9 A-Z a-z ! # $ & ' ( ) + , - . ; = @ [ ] ^ _
@@ -195,6 +207,9 @@ mode 1, checking the byte counts. At boot it calls sceMcInit then sceMcGetInfo(0
   their own sidecar, so a save directory copied elsewhere keeps its attributes). Times are
   `YYYY-MM-DDThh:mm:ss` JST. Entries missing from the sidecar get defaults (0x8497 / 0x8427,
   host file times). Sidecars are rewritten atomically (temp file + rename) on every change.
+- Only the card mode decides what may be written: a host read-only attribute (saves copied
+  from a CD or an archive, a read-only `%meta`) is cleared when the card overwrites,
+  re-creates, deletes or updates the entry.
 - Free space = 8001 - (sum over files of ceil(size / 1 KB) + sum over directories of
   ceil((entries + 2) / 2)); recounted when stale (our writes keep it current).
 - `%unformatted` in the card directory marks an unformatted card.

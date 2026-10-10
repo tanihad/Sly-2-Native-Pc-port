@@ -207,6 +207,7 @@ static void wipe(const wchar_t* dir) {
     do {
         if (!wcscmp(fd.cFileName, L".") || !wcscmp(fd.cFileName, L"..")) continue;
         swprintf(p, 1024, L"%ls\\%ls", dir, fd.cFileName);
+        SetFileAttributesW(p, FILE_ATTRIBUTE_NORMAL);
         if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) { wipe(p); RemoveDirectoryW(p); }
         else DeleteFileW(p);
     } while (FindNextFileW(h, &fd));
@@ -553,6 +554,7 @@ static void test_setinfo(void) {
     CHECK_EQ(mc_setinfo(0, 0, SAVE_DIR "/renamed", EE_INFO, 0x10), -4);
     strcpy((char*)info + 0x20, "save0");
     CHECK_EQ(mc_setinfo(0, 0, SAVE_DIR "/renamed", EE_INFO, 0x10), 0);
+    CHECK_EQ(mc_setinfo(0, 0, SAVE_DIR "/save0", EE_INFO, 0x10), -4);     /* its own name is taken too */
     CHECK_EQ(mc_delete(0, 0, SAVE_DIR "/other"), 0);
     CHECK_EQ(mc_setinfo(0, 0, SAVE_DIR "/missing", EE_INFO, 0x02), -4);
     CHECK_EQ(mc_setinfo(0, 0, "/", EE_INFO, 0x02), -5);
@@ -573,6 +575,9 @@ static void test_chdir(void) {
     CHECK_EQ(mc_chdir(0, 0, SAVE_DIR "/save0", EE_CUR), -4);
 }
 
+/* mcman's PS2 write allocates clusters as it goes and returns -3 as soon as one can't be had: a
+ * write that doesn't fit fails as a whole (no short count). McWrite then frees the handle, so the
+ * entry is never closed. */
 static void test_full_card(void) {
     int freec;
     mc_getinfo(0, 0, NULL, &freec, NULL);
@@ -580,18 +585,70 @@ static void test_full_card(void) {
     memset(ee(chunk), 0x5A, 4u << 20);
     int fd = mc_open(0, 0, SAVE_DIR "/big", 0x202);
     CHECK(fd >= 0, "create big: %d", fd);
-    int32_t total = 0, r;
-    while ((r = mc_write(fd, chunk, 4 << 20)) > 0) total += r;
-    CHECK_EQ(r, -3);
-    mc_close(fd);
+    int room;
+    mc_getinfo(0, 0, NULL, &room, NULL);
+    int32_t total = 0, want = (room - 2) * 1024;              /* fill all but two clusters */
+    while (total < want) {
+        int32_t n = want - total < (4 << 20) ? want - total : (4 << 20);
+        int32_t r = mc_write(fd, chunk, n);
+        CHECK_EQ(r, n);
+        if (r != n) break;
+        total += r;
+    }
     int after;
     mc_getinfo(0, 0, NULL, &after, NULL);
+    CHECK_EQ(after, 2);
+    CHECK_EQ(mc_write(fd, chunk, 3 * 1024), -3);              /* needs three clusters */
+    CHECK_EQ(mc_close(fd), -5);                               /* the failed write freed the handle */
+    CHECK_EQ(host_size(L"BASCUS-97316YAOTWTD!\\big"), total);
+    static tbl t[4];
+    CHECK_EQ(list(SAVE_DIR "/big", t, 4), 1);
+    CHECK_EQ(t[0].mode, 0x8417);                              /* never closed */
+
+    fd = mc_open(0, 0, SAVE_DIR "/big", 2);                   /* the last two clusters still fit */
+    CHECK_EQ(mc_seek(fd, 0, 2), total);
+    CHECK_EQ(mc_write(fd, chunk, 2 * 1024), 2 * 1024);
+    CHECK_EQ(mc_close(fd), 0);
+    mc_getinfo(0, 0, NULL, &after, NULL);
     CHECK_EQ(after, 0);
-    CHECK(total >= (freec - 1) * 1024 && total <= freec * 1024, "wrote %d with %d clusters free", total, freec);
     CHECK_EQ(mc_open(0, 0, SAVE_DIR "/more", 0x202), -3);    /* no cluster for a new entry */
     CHECK_EQ(mc_delete(0, 0, SAVE_DIR "/big"), 0);
     mc_getinfo(0, 0, NULL, &after, NULL);
     CHECK_EQ(after, freec);
+}
+
+/* The first write after an open marks the entry "not closed" (mcman finalizes it with 0x80 off
+ * before writing); close and flush set the bit again. */
+static void test_unclosed_while_writing(void) {
+    static tbl t[4];
+    int fd = mc_open(0, 0, SAVE_DIR "/w", 0x202);
+    CHECK_EQ(mc_write(fd, 0x00100000, 10), 10);
+    CHECK_EQ(mc_close(fd), 0);
+    CHECK_EQ(list(SAVE_DIR "/w", t, 4), 1);
+    CHECK_EQ(t[0].mode, 0x8497);
+    fd = mc_open(0, 0, SAVE_DIR "/w", 2);
+    list(SAVE_DIR "/w", t, 4);
+    CHECK_EQ(t[0].mode, 0x8497);                              /* opening alone changes nothing */
+    CHECK_EQ(mc_write(fd, 0x00100000, 4), 4);
+    list(SAVE_DIR "/w", t, 4);
+    CHECK_EQ(t[0].mode, 0x8417);
+    CHECK_EQ(mc_flush(fd), 0);
+    list(SAVE_DIR "/w", t, 4);
+    CHECK_EQ(t[0].mode, 0x8497);
+    CHECK_EQ(mc_write(fd, 0x00100000, 4), 4);
+    list(SAVE_DIR "/w", t, 4);
+    CHECK_EQ(t[0].mode, 0x8417);
+    CHECK_EQ(mc_close(fd), 0);
+    list(SAVE_DIR "/w", t, 4);
+    CHECK_EQ(t[0].mode, 0x8497);
+
+    /* McRead frees the handle too when the read itself fails (here: the host file vanished) */
+    fd = mc_open(0, 0, SAVE_DIR "/w", 1);
+    wchar_t p[1024];
+    host(L"BASCUS-97316YAOTWTD!\\w", p);
+    CHECK(DeleteFileW(p), "cannot delete the host file");
+    CHECK_EQ(mc_read(fd, 0x00280000, 4), -4);
+    CHECK_EQ(mc_close(fd), -5);
 }
 
 static void test_misc_rpcs(void) {
@@ -646,6 +703,63 @@ static void test_host_import(void) {
     CHECK(!host_exists(L"IMPORTED"), "imported directory still on the host");
 }
 
+/* Saves copied onto the host read-only (e.g. from a CD or an archive) are ordinary card files:
+ * the card's mode (writable) is what counts, so the game can overwrite and delete them. */
+static void test_host_readonly(void) {
+    wchar_t p[1024], d[1024];
+    DWORD w;
+    host(L"BASCUS-97316YAOTWTD!\\ro", p);
+    HANDLE h = CreateFileW(p, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_READONLY, NULL);
+    WriteFile(h, "abc", 3, &w, NULL);
+    CloseHandle(h);
+    static tbl t[4];
+    CHECK_EQ(list(SAVE_DIR "/ro", t, 4), 1);
+    CHECK_EQ(t[0].mode, 0x8497);                              /* writable as far as the card knows */
+    int fd = mc_open(0, 0, SAVE_DIR "/ro", 2);                /* overwrite in place */
+    CHECK(fd >= 0, "open read-only host file for writing: %d", fd);
+    CHECK_EQ(mc_write(fd, 0x00100000, 2), 2);
+    CHECK_EQ(mc_close(fd), 0);
+    SetFileAttributesW(p, FILE_ATTRIBUTE_READONLY);
+    fd = mc_open(0, 0, SAVE_DIR "/ro", 0x202);                /* re-create */
+    CHECK(fd >= 0, "re-create read-only host file: %d", fd);
+    CHECK_EQ(mc_write(fd, 0x00100000, 5), 5);
+    mc_close(fd);
+    CHECK_EQ(host_size(L"BASCUS-97316YAOTWTD!\\ro"), 5);
+    SetFileAttributesW(p, FILE_ATTRIBUTE_READONLY);
+    strcpy((char*)ee(EE_INFO) + 0x20, "ro2");                 /* rename there and back */
+    CHECK_EQ(mc_setinfo(0, 0, SAVE_DIR "/ro", EE_INFO, 0x10), 0);
+    strcpy((char*)ee(EE_INFO) + 0x20, "ro");
+    CHECK_EQ(mc_setinfo(0, 0, SAVE_DIR "/ro2", EE_INFO, 0x10), 0);
+    CHECK_EQ(mc_delete(0, 0, SAVE_DIR "/ro"), 0);
+    CHECK(!host_exists(L"BASCUS-97316YAOTWTD!\\ro"), "read-only file not deleted");
+
+    host(L"RODIR", d);                                        /* an empty read-only directory */
+    CreateDirectoryW(d, NULL);
+    SetFileAttributesW(d, FILE_ATTRIBUTE_READONLY);
+    CHECK_EQ(mc_delete(0, 0, "/RODIR"), 0);
+    CHECK(!host_exists(L"RODIR"), "read-only directory not deleted");
+
+    wchar_t m[1024];                                          /* a read-only sidecar still takes updates */
+    host(L"BASCUS-97316YAOTWTD!\\%meta", m);
+    SetFileAttributesW(m, FILE_ATTRIBUTE_READONLY);
+    uint8_t* info = ee(EE_INFO);
+    memset(info, 0, 64);
+    uint32_t attr = 0x55AA;
+    memcpy(info + 0x18, &attr, 4);
+    CHECK_EQ(mc_setinfo(0, 0, SAVE_DIR "/save0", EE_INFO, 0x08), 0);
+    CHECK_EQ(list(SAVE_DIR "/save0", t, 4), 1);
+    CHECK_EQ(t[0].attr, 0x55AA);
+    attr = 0;
+    memcpy(info + 0x18, &attr, 4);
+    CHECK_EQ(mc_setinfo(0, 0, SAVE_DIR "/save0", EE_INFO, 0x08), 0);
+
+    SetFileAttributesW(m, FILE_ATTRIBUTE_NORMAL);             /* leave nothing undeletable behind */
+    SetFileAttributesW(p, FILE_ATTRIBUTE_NORMAL);
+    DeleteFileW(p);
+    SetFileAttributesW(d, FILE_ATTRIBUTE_NORMAL);
+    RemoveDirectoryW(d);
+}
+
 /* Leave a save for the second process: the same layout the game writes. */
 static void make_persistent_save(void) {
     const char* files[] = { SAVE_DIR "/icon.sys", SAVE_DIR "/save1" };
@@ -686,16 +800,61 @@ static void test_persist(void) {
     mc_close(fd);
 }
 
+/* A card directory deeper than MAX_PATH (260 characters; PS2_MEMCARD_DIR can be anywhere) holding
+ * a save whose 32-byte name escapes to 96 host characters. */
+static void test_long_root(void) {
+    CHECK_EQ(mc_init(), 0);
+    int type = -1, freec = -1, format = -1;
+    CHECK_EQ(mc_getinfo(0, 0, &type, &freec, &format), -1);
+    CHECK_EQ(freec, 8000);
+    CHECK_EQ(format, 1);
+    CHECK_EQ(mc_mkdir(0, 0, SAVE_DIR), 0);
+    const char* name = SAVE_DIR "/????????????????????????????????";
+    char path[64];
+    strcpy(path, name);
+    for (char* p = path + strlen(SAVE_DIR) + 1; *p; p++) *p = '%';   /* 32 x '%' -> "%25" x 32 */
+    for (uint32_t k = 0; k < 3000; k++) ee(0x00100000)[k] = pattern_byte(k);
+    int fd = mc_open(0, 0, path, 0x202);
+    CHECK(fd >= 0, "create in a deep card directory: %d", fd);
+    CHECK_EQ(mc_write(fd, 0x00100000, 3000), 3000);
+    CHECK_EQ(mc_close(fd), 0);
+    fd = mc_open(0, 0, path, 1);
+    CHECK_EQ(mc_read(fd, 0x00200000, 3000), 3000);
+    CHECK(!memcmp(ee(0x00200000), ee(0x00100000), 3000), "read back differs");
+    mc_close(fd);
+    static tbl t[4];
+    CHECK_EQ(list(SAVE_DIR "/*", t, 4), 3);
+    CHECK_EQ(t[2].mode, 0x8497);
+    CHECK_EQ(t[2].size, 3000);
+    CHECK_EQ(mc_delete(0, 0, path), 0);
+    CHECK_EQ(mc_delete(0, 0, SAVE_DIR), 0);
+}
+
 int main(int argc, char** argv) {
     ps2_ram = calloc(1, PS2_RAM_SIZE + 16);
     ps2_spr = calloc(1, PS2_SPR_SIZE + 16);
     GetModuleFileNameW(NULL, card_dir, 1000);
     wchar_t* s = wcsrchr(card_dir, L'\\');
     if (s) *s = 0;
-    wcscat(card_dir, L"\\card");
+    int longroot = argc > 1 && !strcmp(argv[1], "longroot");
+    if (longroot) {                                           /* ...\long\0123456789\0123456789\... (> 300 characters) */
+        wcscat(card_dir, L"\\long");
+        while (wcslen(card_dir) < 300) wcscat(card_dir, L"\\0123456789");
+    } else wcscat(card_dir, L"\\card");
     wchar_t env[1100];
     swprintf(env, 1100, L"PS2_MEMCARD_DIR=%ls", card_dir);
     _wputenv(env);
+
+    if (longroot) {
+        wchar_t top[1024];                                    /* the test's own host access needs \\?\ paths */
+        GetModuleFileNameW(NULL, top, 1000);
+        *wcsrchr(top, L'\\') = 0;
+        swprintf(card_dir, 1024, L"\\\\?\\%ls\\long", top);
+        wipe(card_dir);
+        test_long_root();
+        printf("mc longroot: %d checks, %d failed\n", checks, failures);
+        return failures ? 1 : 0;
+    }
 
     int persist = argc > 1 && !strcmp(argv[1], "persist");
     if (!persist) {
@@ -713,8 +872,10 @@ int main(int argc, char** argv) {
         test_setinfo();
         test_chdir();
         test_full_card();
+        test_unclosed_while_writing();
         test_misc_rpcs();
         test_host_import();
+        test_host_readonly();
         make_persistent_save();
     } else test_persist();
 

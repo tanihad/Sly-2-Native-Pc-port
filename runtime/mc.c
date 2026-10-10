@@ -295,7 +295,28 @@ static void mkdir_p(wchar_t* p) {
     CreateDirectoryW(p, NULL);
 }
 
+/* Files and directories copied onto the host read-only (from a CD, an archive) are still writable
+ * card entries: the card's own mode decides. Clear the host attribute before the host refuses a
+ * change the card allows. */
+static void host_writable(const wchar_t* path) {
+    DWORD a = GetFileAttributesW(path);
+    if (a == INVALID_FILE_ATTRIBUTES || !(a & FILE_ATTRIBUTE_READONLY)) return;
+    a &= FILE_ATTRIBUTE_ARCHIVE | FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_NOT_CONTENT_INDEXED | FILE_ATTRIBUTE_SYSTEM;
+    SetFileAttributesW(path, a ? a : FILE_ATTRIBUTE_NORMAL);
+}
+
+/* CreateFileW for writing an existing host file, read-only or not. */
+static HANDLE open_existing_w(const wchar_t* path, DWORD access, DWORD share, DWORD disposition) {
+    HANDLE h = CreateFileW(path, access, share, NULL, disposition, 0, NULL);
+    if (h == INVALID_HANDLE_VALUE && GetLastError() == ERROR_ACCESS_DENIED) {
+        host_writable(path);
+        h = CreateFileW(path, access, share, NULL, disposition, 0, NULL);
+    }
+    return h;
+}
+
 static int write_file_w(const wchar_t* path, const void* data, uint32_t n) {
+    host_writable(path);
     HANDLE h = CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (h == INVALID_HANDLE_VALUE) return 0;
     DWORD w = 0;
@@ -486,7 +507,12 @@ static int dir_save(const char* canon, const mc_dir* d) {
         time_text(&e->ctime, ct); time_text(&e->mtime, mt);
         n += (size_t)sprintf(text + n, "%s %04X %08X %s %s\n", esc, e->mode, e->attr, ct, mt);
     }
-    if (!write_file_w(tmp, text, (uint32_t)n) || !MoveFileExW(tmp, fin, MOVEFILE_REPLACE_EXISTING)) {
+    if (!write_file_w(tmp, text, (uint32_t)n)) {
+        log_once("sidecar", "cannot write %ls", fin);
+        return 0;
+    }
+    host_writable(fin);
+    if (!MoveFileExW(tmp, fin, MOVEFILE_REPLACE_EXISTING)) {
         log_once("sidecar", "cannot write %ls", fin);
         return 0;
     }
@@ -495,23 +521,42 @@ static int dir_save(const char* canon, const mc_dir* d) {
 
 /* ---- card setup, space accounting ---------------------------------------------------------------- */
 
+/* card.root = `dir` as an absolute \\?\ path, so card paths aren't limited to MAX_PATH (260
+ * characters, 248 for directories; escaped card names alone can take 96 per level). A drive root
+ * stays as it is. */
+static int set_root(const wchar_t* dir) {
+    wchar_t full[HOST_MAX];
+    DWORD n = GetFullPathNameW(dir, HOST_MAX, full, NULL);
+    if (n == 0 || n >= HOST_MAX) return 0;
+    size_t len = wcslen(full);
+    while (len > 3 && (full[len - 1] == L'\\' || full[len - 1] == L'/')) full[--len] = 0;
+    const wchar_t* prefix = L"\\\\?\\";
+    const wchar_t* rest = full;
+    if (!wcsncmp(full, L"\\\\?\\", 4) || !wcsncmp(full, L"\\\\.\\", 4) || len <= 3) prefix = L"";
+    else if (full[0] == L'\\' && full[1] == L'\\') { prefix = L"\\\\?\\UNC\\"; rest = full + 2; }
+    if (wcslen(prefix) + wcslen(rest) >= HOST_MAX - 64) return 0;
+    wcscpy(card.root, prefix);
+    wcscat(card.root, rest);
+    return 1;
+}
+
 static void card_setup(void) {
     if (card.init) return;
     card.init = 1;
     strcpy(card.cwd, "/");
+    wchar_t dir[HOST_MAX];
     const wchar_t* env = _wgetenv(L"PS2_MEMCARD_DIR");
-    if (env && *env && wcslen(env) < HOST_MAX - 64) wcscpy(card.root, env);
+    if (env && *env && wcslen(env) < HOST_MAX - 64) wcscpy(dir, env);
     else {
-        DWORD n = GetModuleFileNameW(NULL, card.root, HOST_MAX - 64);
+        DWORD n = GetModuleFileNameW(NULL, dir, HOST_MAX - 64);
         if (n == 0 || n >= HOST_MAX - 64) { fprintf(stderr, "[mc] cannot locate the executable: no memory card\n"); return; }
-        wchar_t* s = wcsrchr(card.root, L'\\');
-        if (s) s[1] = 0; else card.root[0] = 0;
-        wcscat(card.root, L"memcard\\slot0");
+        wchar_t* s = wcsrchr(dir, L'\\');
+        if (s) s[1] = 0; else dir[0] = 0;
+        wcscat(dir, L"memcard\\slot0");
     }
-    size_t len = wcslen(card.root);
-    while (len > 3 && (card.root[len - 1] == L'\\' || card.root[len - 1] == L'/')) card.root[--len] = 0;
+    if (!set_root(dir)) { fprintf(stderr, "[mc] cannot use %ls: no memory card\n", dir); return; }
     mkdir_p(card.root);
-    if (!is_dir_w(card.root)) { fprintf(stderr, "[mc] cannot use %ls: no memory card\n", card.root); return; }
+    if (!is_dir_w(card.root)) { fprintf(stderr, "[mc] cannot use %ls: no memory card\n", dir); return; }
     card.ok = 1;
     wchar_t p[HOST_MAX];
     host_path("/", L"%unformatted", p);
@@ -522,7 +567,7 @@ static void card_setup(void) {
         dir_a.self.ctime = dir_a.self.mtime = time_now();
         dir_save("/", &dir_a);
     }
-    fprintf(stderr, "[mc] memory card (port 0 slot 0, 8 MB%s) in %ls\n", card.formatted ? "" : ", unformatted", card.root);
+    fprintf(stderr, "[mc] memory card (port 0 slot 0, 8 MB%s) in %ls\n", card.formatted ? "" : ", unformatted", dir);
 }
 
 static uint32_t count_used(const wchar_t* dir, int depth) {
@@ -779,7 +824,7 @@ static int32_t mc_open(int port, int slot, const char* name, uint32_t flags) {
         if (any_fd_on(res->path, -1, 0)) return MC_REPLACE_OPEN;
         wchar_t p[HOST_MAX];
         if (!host_path(res->path, NULL, p)) return MC_DENIED;
-        HANDLE h = CreateFileW(p, GENERIC_WRITE, 0, NULL, TRUNCATE_EXISTING, 0, NULL);
+        HANDLE h = open_existing_w(p, GENERIC_WRITE, 0, TRUNCATE_EXISTING);
         if (h == INVALID_HANDLE_VALUE) { log_once("trunc", "cannot truncate %ls", p); return MC_DENIED; }
         CloseHandle(h);
         e.mode = (uint16_t)(MODE_NEW_FILE | (flags & O_KEEP));
@@ -797,20 +842,27 @@ static int32_t mc_open(int port, int slot, const char* name, uint32_t flags) {
 
 static mc_fd* get_fd(int fd) { return fd >= 0 && fd < MC_MAX_FD && fds[fd].open ? &fds[fd] : NULL; }
 
-/* Close/flush of a written file: the entry gets the "closed" bit and the time; so does its directory. */
-static void finalize(mc_fd* f) {
-    if (!f->dirty || f->is_dir) return;
-    f->dirty = 0;
+/* mcman's entry update for an open file: the "closed" bit set (close/flush) or cleared (first write
+ * after an open or flush), and the time; its directory gets the time too. */
+static void mark_entry(const mc_fd* f, int closed) {
     mc_res* res = &res_b;
     resolve(f->path, res);
-    if (res->status != 0 || !dir_load(res->parent, &dir_a)) return;
+    if (res->status != 0 || res->is_dir || !dir_load(res->parent, &dir_a)) return;
     int i = find_ent(&dir_a, res->name);
     if (i < 0) return;
     mc_time now = time_now();
-    dir_a.e[i].mode |= M_CLOSED;
+    if (closed) dir_a.e[i].mode |= M_CLOSED;
+    else dir_a.e[i].mode &= (uint16_t)~M_CLOSED;
     dir_a.e[i].mtime = now;
     dir_a.self.mtime = now;
     dir_save(res->parent, &dir_a);
+}
+
+/* Close/flush of a written file. */
+static void finalize(mc_fd* f) {
+    if (!f->dirty || f->is_dir) return;
+    f->dirty = 0;
+    mark_entry(f, 1);
 }
 
 static int32_t mc_close(int fd) {
@@ -849,7 +901,8 @@ static int32_t mc_seek(int fd, int32_t offset, int origin) {
     return (int32_t)f->pos;
 }
 
-/* mcman McRead: up to n bytes at the file position. */
+/* mcman McRead: up to n bytes at the file position. Like McWrite, it frees the handle when the read
+ * itself fails (past the handle and card checks). */
 static int32_t mc_read(int fd, uint8_t* dst, int32_t n) {
     mc_fd* f = get_fd(fd);
     if (!f || !f->rd) return MC_DENIED;
@@ -857,9 +910,9 @@ static int32_t mc_read(int fd, uint8_t* dst, int32_t n) {
     if (r) return r;
     if (n <= 0) return 0;
     wchar_t p[HOST_MAX];
-    if (!host_path(f->path, NULL, p)) return MC_DENIED;
+    if (!host_path(f->path, NULL, p)) { f->open = 0; return MC_DENIED; }
     HANDLE h = CreateFileW(p, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
-    if (h == INVALID_HANDLE_VALUE) return MC_NOENTRY;
+    if (h == INVALID_HANDLE_VALUE) { f->open = 0; return MC_NOENTRY; }
     LARGE_INTEGER li;
     li.QuadPart = f->pos;
     DWORD got = 0;
@@ -869,16 +922,14 @@ static int32_t mc_read(int fd, uint8_t* dst, int32_t n) {
     return (int32_t)got;
 }
 
-/* mcman McWrite: n bytes at the file position, as far as the card has room. */
-static int32_t mc_write(int fd, const uint8_t* src, int32_t n) {
-    mc_fd* f = get_fd(fd);
-    if (!f || !f->wr) return MC_DENIED;
-    int r = card_check(0, 0);
-    if (r) return r;
-    if (n <= 0) return 0;
+/* The host side of a write: all n bytes at the file position, or MC_FULL (nothing written) when
+ * the card hasn't the clusters for them. mcman allocates clusters as it goes and gives up with -3
+ * at the first one it can't get; what it wrote of that call lies past the entry's length, so it
+ * never shows. */
+static int32_t write_data(mc_fd* f, const uint8_t* src, int32_t n) {
     wchar_t p[HOST_MAX];
     if (!host_path(f->path, NULL, p)) return MC_DENIED;
-    HANDLE h = CreateFileW(p, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    HANDLE h = open_existing_w(p, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ, OPEN_EXISTING);
     if (h == INVALID_HANDLE_VALUE) return MC_NOENTRY;
     LARGE_INTEGER size;
     if (!GetFileSizeEx(h, &size)) size.QuadPart = 0;
@@ -886,23 +937,34 @@ static int32_t mc_write(int fd, const uint8_t* src, int32_t n) {
     uint64_t end = (uint64_t)f->pos + (uint32_t)n;
     uint64_t want = (end > (uint64_t)size.QuadPart ? end : (uint64_t)size.QuadPart);
     want = (want + MC_CLUSTER - 1) / MC_CLUSTER;
-    uint32_t avail = card_free();
-    if (want > have + avail) {                               /* card full: write what fits */
-        uint64_t limit = (have + avail) * MC_CLUSTER;
-        if (limit <= f->pos) { CloseHandle(h); return MC_FULL; }
-        n = (int32_t)(limit - f->pos);
-    }
+    if (want > have + card_free()) { CloseHandle(h); return MC_FULL; }
     LARGE_INTEGER li;
     li.QuadPart = f->pos;
     DWORD w = 0;
-    if (SetFilePointerEx(h, li, NULL, FILE_BEGIN)) WriteFile(h, src, (DWORD)n, &w, NULL);
+    BOOL ok = SetFilePointerEx(h, li, NULL, FILE_BEGIN) && WriteFile(h, src, (DWORD)n, &w, NULL) && w == (DWORD)n;
     CloseHandle(h);
-    if (!w) return MC_DENIED;
+    if (!ok) { log_once("write", "cannot write %ls", p); return MC_DENIED; }
     f->pos += w;
-    f->dirty = 1;
     if ((uint64_t)f->pos > (uint64_t)size.QuadPart)          /* keep the cluster count current */
         card.used += (uint32_t)(((uint64_t)f->pos + MC_CLUSTER - 1) / MC_CLUSTER - have);
     return (int32_t)w;
+}
+
+/* mcman McWrite: n bytes at the file position. The first write after an open or flush marks the
+ * entry "not closed"; a failed write frees the handle (so the entry is never closed). */
+static int32_t mc_write(int fd, const uint8_t* src, int32_t n) {
+    mc_fd* f = get_fd(fd);
+    if (!f || !f->wr) return MC_DENIED;
+    int r = card_check(0, 0);
+    if (r) return r;
+    if (n <= 0) return 0;
+    if (!f->dirty) {
+        f->dirty = 1;
+        mark_entry(f, 0);
+    }
+    r = write_data(f, src, n);
+    if (r < 0) f->open = 0;
+    return r;
 }
 
 /* mcman's name pattern match: '?' matches one character (or the end of the name), '*' any run;
@@ -1068,7 +1130,10 @@ static int remove_tree(const wchar_t* dir, int remove_self) {
         } while (FindNextFileW(h, &fd));
         FindClose(h);
     }
-    if (remove_self) ok &= RemoveDirectoryW(dir) != 0;
+    if (remove_self) {
+        host_writable(dir);
+        ok &= RemoveDirectoryW(dir) != 0;
+    }
     return ok;
 }
 
@@ -1094,6 +1159,7 @@ static int32_t mc_delete(int port, int slot, const char* name, uint32_t flags) {
         if (!remove_tree(p, 1)) { log_once("rmdir", "cannot remove %ls", p); return MC_DENIED; }
     } else {
         if (any_fd_on(res->path, -1, 0)) return MC_DENIED;
+        host_writable(p);
         if (!DeleteFileW(p)) { log_once("del", "cannot delete %ls", p); return MC_DENIED; }
     }
     if (dir_load(res->parent, &dir_a)) {
@@ -1121,11 +1187,9 @@ static int32_t mc_setinfo(int port, int slot, const char* name, const uint8_t* i
         if (!newname[0] || !strcmp(newname, ".") || !strcmp(newname, "..") || strchr(newname, '/') ||
             !valid_name(newname))
             return MC_NOENTRY;
-        if (strcmp(newname, res->name) != 0) {
-            int lk = lookup(res->parent, newname, NULL, NULL);
-            if (lk == 1) return MC_NOENTRY;
-            if (lk == -1 && _stricmp(newname, res->name) != 0) return MC_DENIED;
-        }
+        int lk = lookup(res->parent, newname, NULL, NULL);
+        if (lk == 1) return MC_NOENTRY;                      /* taken, by the entry itself too */
+        if (lk == -1 && _stricmp(newname, res->name) != 0) return MC_DENIED;
     }
     mc_ent e;
     if (!load_entry(res, &e)) return MC_NOENTRY;

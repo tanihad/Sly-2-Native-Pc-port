@@ -23,6 +23,8 @@ if ($LASTEXITCODE -ne 0) { Write-Host 'build failed'; exit 1 }
 $first = $LASTEXITCODE
 & $exe persist                                      # a second process: the card must still be there
 $second = $LASTEXITCODE
-if ($first -ne 0 -or $second -ne 0) { Write-Host 'mc unit tests FAILED'; exit 1 }
+& $exe longroot                                     # a card directory deeper than MAX_PATH
+$third = $LASTEXITCODE
+if ($first -ne 0 -or $second -ne 0 -or $third -ne 0) { Write-Host 'mc unit tests FAILED'; exit 1 }
 Write-Host 'mc unit tests passed'
 exit 0
