@@ -819,16 +819,32 @@ static void t_display(void) {
     v = 1; gs_priv_access(0x12000020, &v, 8, 1);
     gs_display(out, 1024, &w, &h);
     CHECK(out[1024 * 3 + 3] == 0xFFFFFF && out[1024 * 4 + 3] == 0 && h == 448, "frame mode");
-    /* both circuits, 50% merge with ALP = 0x80 over a white circuit-1 image */
+    /* both circuits, 50% merge with ALP = 0x80 (PMODE.MMOD = 1: the ALP register) over a white
+     * circuit-1 image */
     frame(200, 8, PSMCT32, 0);
-    prim(P_SPRITE, 0); rgba(255, 255, 255, 0x80); xyz(0, 0, 0); xyz(512, 224, 0);
-    v = 0x8007; gs_priv_access(0x12000000, &v, 8, 1);    /* EN1 | EN2, ALP = 0x80 */
+    prim(P_SPRITE, 0); rgba(255, 255, 255, 0x00); xyz(0, 0, 0); xyz(512, 224, 0);   /* pixel alpha unused */
+    v = 0x8027; gs_priv_access(0x12000000, &v, 8, 1);    /* EN1 | EN2, MMOD = 1, ALP = 0x80 */
     v = 0x1000 | 200; gs_priv_access(0x12000070, &v, 8, 1);   /* DISPFB1 at page 200 */
     v = 0x1BF9FF0203227Cull; gs_priv_access(0x12000080, &v, 8, 1);
     v = 3; gs_priv_access(0x12000020, &v, 8, 1);
     gs_display(out, 1024, &w, &h);
     CHECK(close_to(out[1024 * 1 + 1], 0xFFFFFF & 0xFFFFFF, 0) && close_to(out[1024 * 300 + 2], 0x808080, 1),
-          "merge %06X %06X", out[1024 + 1], out[1024 * 300 + 2]);
+          "merge MMOD=1 (ALP) %06X %06X", out[1024 + 1], out[1024 * 300 + 2]);
+    /* MMOD = 0: the blend factor is circuit 1's pixel alpha (GS alpha, 0x80 = 1.0), ALP is unused:
+     * A = 0x80 shows circuit 1 alone, A = 0x40 is a 50% merge, A = 0 shows circuit 2 */
+    v = 0x0007; gs_priv_access(0x12000000, &v, 8, 1);    /* EN1 | EN2, MMOD = 0, ALP = 0 */
+    prim(P_SPRITE, 0); rgba(255, 255, 255, 0x80); xyz(0, 0, 0); xyz(512, 224, 0);
+    gs_display(out, 1024, &w, &h);
+    CHECK(out[1024 * 300 + 2] == 0xFFFFFF, "merge MMOD=0, circuit-1 alpha 0x80: %06X", out[1024 * 300 + 2]);
+    prim(P_SPRITE, 0); rgba(255, 255, 255, 0x40); xyz(0, 0, 0); xyz(512, 224, 0);
+    gs_display(out, 1024, &w, &h);
+    CHECK(close_to(out[1024 * 300 + 2], 0x808080, 1), "merge MMOD=0, circuit-1 alpha 0x40: %06X", out[1024 * 300 + 2]);
+    prim(P_SPRITE, 0); rgba(255, 255, 255, 0x00); xyz(0, 0, 0); xyz(512, 224, 0);
+    v = 0xFF07; gs_priv_access(0x12000000, &v, 8, 1);    /* MMOD = 0 with ALP = 0xFF: still per-pixel alpha */
+    gs_display(out, 1024, &w, &h);
+    uint32_t c2 = gs_mem_read(PSMCT32, 56 * 32, 8, 256, 150);   /* circuit 2 behind output (256, 300) */
+    CHECK((c2 & 0xFFFFFF) && out[1024 * 300 + 256] == (((c2 & 0xFF) << 16) | (c2 & 0xFF00) | ((c2 >> 16) & 0xFF)),
+          "merge MMOD=0, circuit-1 alpha 0: circuit 2 shows, %06X", out[1024 * 300 + 256]);
     v = 0; gs_priv_access(0x12000000, &v, 8, 1);
     CHECK(gs_display(out, 1024, &w, &h) == 0, "display off");
 }

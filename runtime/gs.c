@@ -247,8 +247,14 @@ int gs_display(uint32_t* dst, int stride, int* w, int* h) {
             uint32_t lower = slbg ? bg : (in[1] && xs[1][x] >= 0) ? row[1][x] & 0xFFFFFF : 0;
             if (xs[0][x] < 0) { d[x] = lower; continue; }
             uint32_t top = row[0][x];
-            if (en[1] || slbg) d[x] = mix(top, lower, mmod ? top >> 24 : (uint32_t)alp);
-            else d[x] = top & 0xFFFFFF;
+            if (en[1] || slbg) {
+                /* PMODE.MMOD: 1 = the fixed ALP (0xFF = 1.0), 0 = circuit 1's pixel alpha (GS alpha,
+                 * 0x80 = 1.0) */
+                uint32_t pa = top >> 24, al = mmod ? (uint32_t)alp : pa >= 0x80 ? 255u : pa * 2;
+                d[x] = mix(top, lower, al);
+            } else {
+                d[x] = top & 0xFFFFFF;
+            }
         }
     }
     *w = W;
