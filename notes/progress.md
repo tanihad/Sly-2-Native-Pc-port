@@ -15,6 +15,13 @@ State on 2026-10-10:
   `git -C <worktree> log main..HEAD` and `git -C <worktree> status` (an agent may have stopped
   with uncommitted work).
 
+If the hardware workflow (`ps2-hardware-layer`) was interrupted: do NOT rerun it from the top.
+For each `hw/<name>` worktree whose work is unfinished (no review commits, or uncommitted files),
+start one agent in that worktree with the original requirements (in the session's workflow script
+`ps2-hardware-layer-*.js`) plus the checkpoint protocol (`notes/agent-checkpoints.md`): it reads the
+branch's commits and any `notes/wip/<name>.md`, finishes implementation, then the adversarial
+review. Same session: `Workflow({scriptPath, resumeFromRunId})` returns finished agents instantly.
+
 Next steps, in order:
 1. Merge the `hw/*` branches into main (file ownership means few conflicts), apply the
    integrator requests the agents listed (e.g. extra link libraries for window.c's D3D11), build,
