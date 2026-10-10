@@ -226,6 +226,20 @@ Results (release build, rel5/rel8; debug build, dbg1):
   speech consonants (checked sample by sample).
 - No reverb in this part of the game: the EE never sends 989snd command 14 (SetReverbType), so
   sceSdSetEffectAttr is not called; the reverb code is only covered by the unit tests so far.
+- The boot movie is mono on the disc: its PSS audio (SShd: 44100 Hz, 2 channels, 32-byte
+  interleave) has bit-identical left and right blocks, hence L/R correlation 1.00 there.
+
+Review (2026-10-10, same day, branch audio/audio-iop): the sound in these runs was sequenced in
+bursts. The IOP only ran at EE safe points, and a frame's DMA chain (VIF/VU1/software GS inside one
+CHCR write) took 60-360 ms, so 989snd's 240 Hz tick was delivered late in batches (1600-2000 of
+2400 ticks per 10 s more than 8 ms late): e.g. the save prompt's 9-note arpeggio played with 54-78
+ms note spacing instead of ~45 ms. `dma.c` now runs the IOP between DMA tags (`ps2_poll_iop`,
+`notes/iop-native.md`); the IOP status line reports the lateness. Re-runs (release r4 250 s,
+debug dbg2 330 s, live WASAPI 30 s; build/rv_audio/, not committed): same sequence to gameplay,
+all eight dialogue lines advance (header length -0.18..+0.24 s at 2 s dump resolution, decoded
+correlation 0.95-0.99), 0 underruns, 0 late/early refills (also in the debug build), no clipping,
+peaks -2.6 dBFS; late ticks 2-80 per 10 s, at most 9-36 ms in release (50 ms in debug); the
+arpeggio at 41-42 ms spacing.
 
 ## Known deviations
 
