@@ -1027,6 +1027,18 @@ static void t_direct_order(void) {
     CHECK(rgb(px(324, 304)) == 0x00FFFF && rgb(px(324, 14)) == 0xFF00FF, "upload after a read: %08X %08X",
           px(324, 304), px(324, 14));
 
+    /* a CLUT drawn by the GS (palette entry 9 of a 16x16 CT32 CLUT at page 230: pixel (9, 0)) and
+     * loaded right after: the load must wait for that drawing; drawing into other blocks of the page
+     * (x 32-63) does not matter */
+    frame(230, 1, PSMCT32, 0);
+    sprite(32, 0, 64, 32, 0, 0, 255, 0x80);            /* other blocks of the page */
+    sprite(1, 1, 2, 2, 0x12, 0x34, 0x56, 0x80);        /* entry 9 (CSM1: bits 3 and 4 swapped: x 1, y 1) */
+    frame(0, 10, PSMCT32, 0);
+    W(TEX0_1, tex0(TEXBP, 2, PSMT8, 3, 3, 1, 1, 230 * 32, PSMCT32, 0, 1));
+    prim(P_SPRITE, TME | FST);
+    uv(0, 0); xyz(340, 300, 0); uv(8 * 16, 8 * 16); xyz(348, 308, 0);    /* index 9 */
+    CHECK(rgb(px(344, 304)) == 0x563412, "CLUT drawn just before its load: %08X", px(344, 304));
+
     /* feedback over many bands: a 64x256 buffer shifted down by 8 rows onto itself; every pixel must
      * get the texel as it was before the primitive (row y - 8), whatever order rows are drawn in */
     const uint32_t B = 220;
