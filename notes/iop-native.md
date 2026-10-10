@@ -35,7 +35,8 @@ Observed in the game (headless run, `scripts/run_game.ps1`): the 989snd banner, 
 registered by the recompiled code, the boot bank load returning handle 0x001D1F00, the sound tick
 at 240.0 Hz, sample uploads (~1.4 MB) and key-ons reaching the libsd backend, spiop streaming the
 cutscene dialogue from disc; title screen and the episode intro behave as before. The IOP costs
-about 0.2% of the emulation thread.
+about 0.2-0.4% of the emulation thread (more with `PS2_LOG_SND`/`PS2_LOG_SD`, which write a line
+per command or voice event).
 
 ## IOP memory map (2 MB, `iop_ram[]` in iop_kernel.c; also in `runtime/iop.h`)
 
@@ -93,6 +94,14 @@ Execution model:
   queued, while binding, and by the loader. A thread that runs for more than 2 ms without blocking
   (a busy-wait) is preempted at its next loop head and continued at the next service, so the EE
   never stalls on the IOP.
+- **Long runtime operations**: a DMA chain started by one CHCR write renders a whole frame (VIF,
+  VU1, software GS) before the EE gets back to a safe point: 60-360 ms in release runs. `dma.c`
+  therefore calls `ps2_poll_iop()` between tags and rounds, which runs the IOP when its 1 ms poll
+  flag is set (not inside a game interrupt handler). Without it 989snd's 240 Hz tick ran in bursts
+  (1600-2000 of 2400 ticks per 10 s more than 8 ms late, up to 140 ms, 364 ms at gameplay start):
+  sequenced notes bunched up (the save prompt's arpeggio at 54-78 ms note spacing instead of ~45
+  ms) and stream refills waited. With it: 20-80 late ticks per 10 s, at most ~15-35 ms (the rest is
+  single DMA tags whose VU1/GS work takes that long).
 - **Interrupts**: hard timers, CD completion, SIF DMA completion callbacks and libsd transfer
   completions are delivered between thread slices and at loop heads of code with interrupts
   enabled (CpuSuspendIntr state is per thread). Handlers run on the interrupt stack with
@@ -131,13 +140,16 @@ Execution model:
 ## Debugging
 
 - `PS2_LOG_IOP=1`: kernel calls (threads, memory, RPC replies with their first word, CD reads).
-- A status line every 10 s: timer rate, IOP CPU share, thread states, free IOP memory, RPC calls
-  per server, CD reads; below it every thread that used up 2 ms time slices without blocking
-  since the last line (busy-waiting, or slowed down by logging).
+- A status line every 10 s: timer rate, how many timer interrupts were delivered more than 8 ms
+  late and the worst lateness (the IOP waits for EE safe points; see "Long runtime operations"),
+  IOP CPU share, thread states, free IOP memory, RPC calls per server, CD reads; below it every
+  thread that used up 2 ms time slices without blocking since the last line (busy-waiting, or
+  slowed down by logging).
 - `PS2_LOG_SND=1`: every 989snd command the EE sends, with its data words and result
   (`[snd] v<vblank> cmd <n> (<bytes>): ... -> <result>`; direct calls are marked "direct"), the
   same format as the fallback snd.c. spiop's procs are commands 76/104 with 'SUKR' (524B5553) and
-  the proc number in the first two words.
+  the proc number in the first two words. The arguments are copied before the call and each line
+  is written at once (lines used to be split by other threads' output).
 - `PS2_LOG_SD=1|2`: the backend's log (`notes/audio-mixer.md`); the stub logs every libsd call.
 - `PS2_AUDIO=0`: old behaviour (modules acknowledged, snd.c answers).
 - Calls to addresses that are not recompiled functions, `break`, unimplemented instructions and I/O
@@ -163,10 +175,12 @@ Execution model:
 - Only one bank load (the boot bank) happens before the museum prologue; level banks load later
   in the game and take the same path.
 - Reverb (989snd command 14 -> sceSdSetEffectAttr) is not requested up to the first gameplay.
-- The IOP runs only at EE safe points (loop heads of recompiled code, about 1 kHz). Native code
-  that runs for a long time without one (a huge software-rasterised frame) delays stream refills;
+- The IOP runs only at EE safe points and between DMA tags (`ps2_poll_iop`). A single DMA tag whose
+  VU1/GS work is long still delays it (at most ~15-35 ms in release runs, more in the debug build);
   the stream buffers hold 0.16-0.22 s, and the backend's "late/early stream refills" counter shows
   when it was not enough (none in release runs; two late movie-audio refills in the debug build,
-  where the EE itself fed the movie audio late).
+  where the EE itself fed the movie audio late). A finer poll (per VIF command) or an IOP on its
+  own OS thread would remove the rest.
 - ADMA streaming (`sceSdBlockTrans` loop mode) is not used by what has run so far; the backend
-  should call `iop_sd_transfer_done()` per consumed half buffer when it is.
+  already announces each consumed half buffer (`iop_sd_transfer_done()`, unit-tested in
+  tests/unit/sd), but no game path has exercised it.

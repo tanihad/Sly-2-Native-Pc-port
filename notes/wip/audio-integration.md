@@ -39,7 +39,8 @@ game") and `notes/iop-native.md`.
 ## Findings / traps
 - The intro cutscene after the memcard prompt follows its music: it lasts ~40 s of real time, so
   its length in VBlanks depends on emulation speed (software GS: 16-40 fps). Main's frame-based
-  START at 1500 lands inside it and is ignored; use a wall-clock press (t95:start) instead.
+  START at 1500 lands inside it and skips it to the title screen (as on main; corrected by the
+  review: it is not ignored), so no new game starts; use a wall-clock press (t95:start) instead.
 - The memcard is in <out>/memcard: delete it for a fresh run (otherwise no prompt).
 - PS2_LOG_SD=1 slows the IOP a lot (unbuffered stderr): "IOP code 15%" and ready threads in the
   status line came from logging, not from busy-waiting.

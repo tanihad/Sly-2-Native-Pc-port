@@ -189,10 +189,13 @@ How to test (what was done on 2026-10-10):
     <python> scripts\wav_analyze.py build\audio\rel8.wav --window 5 --fft
     <python> scripts\audio_streams.py build\sly2rel\run.log build\audio\rel8.wav --correlate
 
-The intro cutscene after the save prompt follows its music stream (about 40 s of real time), so
-how many VBlanks it lasts depends on the emulation speed (16-40 fps with the software GS). A START
-at a fixed pad frame lands inside it and is ignored; `t95:start` (wall clock) reaches the title
-screen reliably.
+The intro cutscene after the save prompt follows its music stream (about 40 s of real time, then
+the "Sly Cooper the thief" cards), so how many VBlanks it lasts depends on the emulation speed
+(16-40 fps with the software GS). A START during the intro skips it to the title screen (the same
+on main, where `1500:start` skips it too); only a START on the title screen starts a new game.
+`t95:start` (wall clock) lands on the title after the whole intro, whatever the frame rate; a
+frame-based script needs a press that skips the intro and a second one on the title, at frames that
+depend on the emulation speed.
 
 Results (release build, rel5/rel8; debug build, dbg1):
 - Sequence: boot movie (0.5-4.9 s), save prompt (paused music), intro cutscene with music,
