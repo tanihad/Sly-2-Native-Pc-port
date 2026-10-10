@@ -20,7 +20,9 @@
  */
 #include "hw.h"
 
-#define PAD_SID          0x80000100u    /* padman command server */
+#include <stdlib.h>
+
+#define PAD_SID         0x80000100u    /* padman command server */
 #define PAD_EXT_SID      0x80000101u    /* "extended service": not supported by padman 4.16 either */
 #define PAD_MODULE_VER   0x0410u        /* padman.irx module version; libpad requires major 4 */
 #define PAD_PORTS        2
@@ -353,6 +355,13 @@ static void poll_step(pad_slot* s, ds2_state* d, int port, int slot, const pad_i
     uint8_t rx[32];
     ds2_poll(d, in, tx, rx);
     s->poll_fail = 0;
+    static int log_pad = -1;
+    static uint16_t last_buttons;
+    if (log_pad < 0) log_pad = getenv("PS2_LOG_PAD") != NULL;
+    if (log_pad && in->buttons != last_buttons) {
+        fprintf(stderr, "[pad] frame %u: buttons 0x%04X (id 0x%02X)\n", s->frame, in->buttons, rx[1]);
+        last_buttons = in->buttons;
+    }
     if (rx[2] != 0x5A || rx[1] != s->cur_id || rx[1] == 0xF3) {
         detect_start(s);
         s->state = STATE_EXECCMD;       /* padman+0x25C8: unexpected answer */
@@ -456,6 +465,11 @@ void pad_vsync(ps2_ctx* ctx) {
                     s->req_state = RSTAT_FAILED;
                 }
                 s->pending = 0;
+            }
+            {
+                static int log_pad = -1, n;
+                if (log_pad < 0) log_pad = getenv("PS2_LOG_PAD") != NULL;
+                if (log_pad && n < 40 && (s->frame % 30) == 0) { n++; fprintf(stderr, "[pad] frame %u port %d slot %d task %d d=%p\n", s->frame, port, slot, s->task, (void*)d); }
             }
             switch (s->task) {
             case TASK_POLL:

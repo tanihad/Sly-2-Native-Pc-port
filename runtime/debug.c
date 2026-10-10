@@ -1,5 +1,5 @@
-/* Debug helpers: write frames as PNG (uncompressed deflate, no dependencies). */
-#include "ps2_internal.h"
+﻿/* Debug helpers: PNG frame dumps (uncompressed deflate, no dependencies). */
+#include "hw.h"
 
 #include <stdlib.h>
 

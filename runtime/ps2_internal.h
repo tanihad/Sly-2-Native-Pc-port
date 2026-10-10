@@ -6,6 +6,7 @@
 
 /* Debug output of rendered frames (debug.c): PS2_DUMP_FRAMES=<dir> */
 void debug_write_png(const char* path, const uint32_t* bgrx, int w, int h, int stride);
+uint32_t ps2_vblank_count(void);           /* VBlanks serviced so far (ps2_runtime.c) */
 
 /* Register numbers */
 enum { REG_V0 = 2, REG_V1 = 3, REG_A0 = 4, REG_A1 = 5, REG_A2 = 6, REG_A3 = 7, REG_T0 = 8,

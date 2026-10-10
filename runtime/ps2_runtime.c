@@ -163,6 +163,8 @@ static DWORD WINAPI host_timer(LPVOID arg) {
     return 0;
 }
 
+uint32_t ps2_vblank_count(void) { return vblank_count; }
+
 static void vblank(ps2_ctx* ctx) {
     vblank_count++;
     gs_vsync();
@@ -181,6 +183,25 @@ static void vblank(ps2_ctx* ctx) {
         }
     }
     pad_vsync(ctx);
+
+    /* PS2_PEEK="<hexaddr>:<words>[,...]": print EE memory every PS2_PEEK_EVERY VBlanks (default 60) */
+    static const char* peek = (const char*)1;
+    static int peek_every = 60;
+    if (peek == (const char*)1) {
+        peek = getenv("PS2_PEEK");
+        if (getenv("PS2_PEEK_EVERY")) peek_every = atoi(getenv("PS2_PEEK_EVERY")) > 0 ? atoi(getenv("PS2_PEEK_EVERY")) : 60;
+    }
+    if (peek && vblank_count % (uint32_t)peek_every == 0) {
+        char buf[512];
+        snprintf(buf, sizeof buf, "%s", peek);
+        for (char* tok = strtok(buf, ","); tok; tok = strtok(NULL, ",")) {
+            unsigned addr = 0, words = 1;
+            if (sscanf(tok, "%x:%u", &addr, &words) < 1) continue;
+            fprintf(stderr, "[peek] v%u %08X:", vblank_count, addr);
+            for (unsigned k = 0; k < words && k < 16; k++) fprintf(stderr, " %08X", ps2_r32(ctx, addr + 4 * k));
+            fprintf(stderr, "\n");
+        }
+    }
     intc_raise(INTC_VBLANK_S);
     intc_raise(INTC_VBLANK_E);
 }
