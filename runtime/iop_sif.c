@@ -124,7 +124,7 @@ void iop_imp_sifcmd_sceSifRpcLoop(iop_ctx* c) {
         uint32_t reply = iop_guest_call(c, s->func, r.fno, s->buff, r.send_size, 0);
         s = server_by_sd(r.server);                       /* (the table may have changed meanwhile) */
         if (s) s->calls++;
-        if (iop_log)
+        if (iop_log || (s && s->calls <= 16))             /* the first calls of each server, e.g. bank loads */
             fprintf(stderr, "[iop] RPC 0x%08X fn %u (%u bytes) -> reply at 0x%08X, first word 0x%08X\n",
                     s ? s->sid : 0, r.fno, r.send_size, reply, reply ? iop_r32(reply) : 0);
         sif_rpc_reply(&r, reply);
