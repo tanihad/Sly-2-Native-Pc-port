@@ -931,6 +931,19 @@ static void bench(void) {
         tu += b - a; td += c - b;
     }
     fprintf(stderr, "bench: 256x256 T8 re-upload %.0f us (gs_mem), first draw incl. decode %.0f us\n", tu * 1e6 / 20, td * 1e6 / 20);
+
+    /* display readout as at every VBlank: Sly 2's mode (512x448 from a field buffer) */
+    uint64_t v;
+    v = 0x8066; gs_priv_access(0x12000000, &v, 8, 1);
+    v = 3; gs_priv_access(0x12000020, &v, 8, 1);
+    v = 0x1038; gs_priv_access(0x12000090, &v, 8, 1);
+    v = 0x1BF9FF0203227Cull; gs_priv_access(0x120000A0, &v, 8, 1);
+    static uint32_t outimg[1024 * 1024];
+    int w, h;
+    t0 = now();
+    for (int i = 0; i < 50; i++) gs_display(outimg, 1024, &w, &h);
+    t1 = now();
+    fprintf(stderr, "bench: gs_display %dx%d: %.0f us per frame\n", w, h, (t1 - t0) * 1e6 / 50);
     test_reg(0, 1, 0, 0, 0, 0, 1, 1);
     zbuf(160, PSMZ32, 1);
     W(TEX1_1, 0);

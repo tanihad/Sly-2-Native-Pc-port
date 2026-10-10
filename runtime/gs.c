@@ -220,22 +220,29 @@ int gs_display(uint32_t* dst, int stride, int* w, int* h) {
     uint32_t bg = (uint32_t)priv[P_BGCOLOR];
     bg = ((bg & 0xFF) << 16) | (bg & 0xFF00) | ((bg >> 16) & 0xFF);
 
+    int last_fy[2] = { -1, -1 }, last_out = -1;    /* buffer rows in row[] / in the previous output row */
     for (int oy = 0; oy < H; oy++) {
         int L = uy0 + oy * vs, in[2] = { 0, 0 };
         for (int i = 0; i < 2; i++) {
             if (!en[i] || L < c[i].dy || L > c[i].dy + c[i].dh) continue;
             int rel = (L - c[i].dy) / (c[i].magv + 1);
             if (field_mode) rel >>= 1;
-            read_row(&c[i], c[i].dby + rel, xs[i], W, row[i]);
+            if (c[i].dby + rel != last_fy[i]) {          /* line doubling / MAGV: reuse the row */
+                read_row(&c[i], c[i].dby + rel, xs[i], W, row[i]);
+                last_fy[i] = c[i].dby + rel;
+            }
             in[i] = 1;
         }
         uint32_t* d = dst + (size_t)oy * (size_t)stride;
         if (!in[0]) {                    /* circuit 2 (or the background) only */
             if (slbg) for (int x = 0; x < W; x++) d[x] = bg;
+            else if (in[1] && oy > 0 && last_out == last_fy[1]) memcpy(d, d - stride, (size_t)W * 4);
             else if (in[1]) for (int x = 0; x < W; x++) d[x] = row[1][x] & 0xFFFFFF;
             else for (int x = 0; x < W; x++) d[x] = 0;
+            last_out = in[1] && !slbg ? last_fy[1] : -1;
             continue;
         }
+        last_out = -1;
         for (int x = 0; x < W; x++) {
             uint32_t lower = slbg ? bg : (in[1] && xs[1][x] >= 0) ? row[1][x] & 0xFFFFFF : 0;
             if (xs[0][x] < 0) { d[x] = lower; continue; }
