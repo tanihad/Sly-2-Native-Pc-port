@@ -50,11 +50,19 @@ EPISODES = [
 ]
 CHARACTERS = {"sly": 7, "bentley": 8, "murray": 9}       # player object ids (oidPoCurrent)
 CHAR_NAMES = {v: k for k, v in CHARACTERS.items()}
+# powerUps.mppukfAcquired bits (power-up table at 0x2BCD00, 32-byte records: kind, character, cost,
+# ..., shop position, name/description text ids): 7-14 Bentley's gadgets, 15-22 Murray's, 23-30 Sly's
+# (23 Smoke Bomb, 24 Combat Dodge, 25 Stealth Slide, 26 Alarm Clock, 27 Paraglide, 28 Silent
+# Obliteration, 29, 30), 31-42 moves that cost nothing. Two are bought because the story needs them:
+STORY_GADGETS = {"t5_paraglide_purchase": 27, "t7_alarmclock_purchase": 26}
+SHOP_GADGETS = range(7, 31)
 
 T_FLOAT, T_BOOL = 3, 4
-# Task states (observed in the game's task objects and saves): 0 not started, 1 active (available
-# job / current objective), 2 completed (complete_count +1), 3 closed (intros the story passed).
-TASK_ACTIVE, TASK_DONE = 1, 2
+# Task states (the game's task objects, FUN_001657d0): 0 not started, 1 active (available job /
+# current objective), 2 completed, 3 closed. Loading a save (FUN_00164270) turns state 1/2 tasks of a
+# job back into 0/1 - a job that was not finished restarts - so finished tasks are saved as 3, as the
+# game itself leaves them once the story has moved on.
+TASK_ACTIVE, TASK_DONE = 1, 3
 
 
 class Schema:
@@ -239,7 +247,8 @@ def complete_group(sv, g, state=TASK_DONE):
             sv.set(f"{g}.{f}", v)
 
 
-def build(schema, episode, job=None, sets=(), complete=(), activate=(), character=None):
+def build(schema, episode, job=None, sets=(), complete=(), activate=(), character=None, coins=None,
+          gadgets=False):
     sv = Save(schema)
     name, _, _, hub = EPISODES[episode]
     sv.set("episodeCurrent", episode)
@@ -258,6 +267,7 @@ def build(schema, episode, job=None, sets=(), complete=(), activate=(), characte
         for g in schema.groups(f"m{e}_") + schema.groups(f"t{e}_"):
             complete_group(sv, g)
     notes = []
+    po = -1
     if job:
         tasks = load_tasks()
         entry, mission = resolve_job(tasks, job, episode)
@@ -273,17 +283,25 @@ def build(schema, episode, job=None, sets=(), complete=(), activate=(), characte
         for m in {tasks[t].mission for t in ep_tasks if tasks[t].mission}:
             if all(t in done for t in mission_tasks(tasks, m)):
                 complete_group(sv, m)
-        po = tasks[entry].po
-        if po == -1:                       # entry without a start point: the job's first one that has
-            po = next((tasks[t].po for t in topo(tasks, mission_tasks(tasks, mission)) if tasks[t].po != -1), -1)
-        if po != -1:
-            sv.set("oidPoCurrent", po)
+        po = next((tasks[t].po for t in topo(tasks, mission_tasks(tasks, mission)) if tasks[t].po != -1), -1)
         notes.append(f"job {mission}: first task {entry} active; {len(done)} earlier tasks done; also active: "
                      + (" ".join(t for t in sorted(frontier) if t != entry) or "-"))
         if po in CHAR_NAMES:
-            notes.append(f"plays as {CHAR_NAMES[po]}")
+            notes.append(f"the job is played as {CHAR_NAMES[po]} (the game switches when the job starts)")
+    if episode == 4 and (not job or po == CHARACTERS["bentley"]):
+        # Jailbreak opens with Sly and Murray in prison: Bentley alone runs the first jobs, and the
+        # safehouse only offers him (with Sly as the saved player it opens on ThiefNet instead).
+        sv.set("oidPoCurrent", CHARACTERS["bentley"])
     if character:
         sv.set("oidPoCurrent", CHARACTERS[character])
+    for task, bit in STORY_GADGETS.items():    # gadgets the story made the player buy
+        if sv.get(f"{task}.is_complete"):
+            sv.set(f"powerUps.mppukfAcquired[{bit}]", 1)
+    if gadgets:
+        for bit in SHOP_GADGETS:
+            sv.set(f"powerUps.mppukfAcquired[{bit}]", 1)
+    if coins is not None:
+        sv.set("loot.ccoin", coins)
     for prefix in complete:                # --complete t1_sat_ : every m*/t* group with that prefix
         groups = schema.groups(prefix)
         if not groups:
@@ -471,14 +489,15 @@ def cmd_make(schema, args):
     if episode is None:
         sys.exit("make needs --episode or --job")
     notes = []
-    if episode == 0 and not (args.job or args.set or args.complete or args.activate or args.character):
+    if episode == 0 and not (args.job or args.set or args.complete or args.activate or args.character
+                             or args.coins is not None or args.gadgets):
         # The prologue starts from a new game: a save directory with empty slots (play time 0)
         # skips the "create a save file?" prompt, and START on the title begins the prologue.
         data = bytes(SAVE_SIZE)
         notes.append("new game (empty slots)")
     else:
         data, notes = build(schema, episode, args.job, args.set or (), args.complete or (), args.activate or (),
-                            args.character)
+                            args.character, args.coins, args.gadgets)
     card = args.card or str(ROOT / "build" / "rel" / "memcard" / "slot0")
     f = write_card(card, args.slot, data, args.keep_others)
     print(f"wrote {f} ({EPISODES[episode][1]})")
@@ -526,7 +545,10 @@ def main():
     m.add_argument("--card", help="memory card directory (default build/rel/memcard/slot0)")
     m.add_argument("--slot", type=int, default=1, choices=(1, 2, 3))
     m.add_argument("--keep-others", action="store_true", help="keep the other two save slots")
-    m.add_argument("--character", choices=sorted(CHARACTERS), help="play as (default: the job's character, else Sly)")
+    m.add_argument("--character", choices=sorted(CHARACTERS),
+                   help="saved player character (default Sly; Bentley at the start of episode 4)")
+    m.add_argument("--coins", type=int, help="coins to spend in ThiefNet (loot.ccoin)")
+    m.add_argument("--gadgets", action="store_true", help="own every ThiefNet gadget")
     m.add_argument("--set", action="append", metavar="PATH=VALUE", help="extra field (repeatable)")
     m.add_argument("--complete", action="append", metavar="PREFIX",
                    help="mark every mission/task group starting with PREFIX done (repeatable)")
