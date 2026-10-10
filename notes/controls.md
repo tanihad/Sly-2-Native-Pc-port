@@ -1,0 +1,60 @@
+# Controls
+
+Implemented in `runtime/window.c` (keep this file in sync with the `kb_buttons` / `kb_axes` and
+`xi_buttons` tables there).
+
+## Controllers (XInput)
+
+Any XInput controller (Xbox 360/One/Series, or anything exposed through XInput). The first
+connected controller is PS2 port 0, the second is port 1. Plugging one in is noticed within ~2 s.
+
+| DualShock 2      | XInput controller                     |
+|------------------|---------------------------------------|
+| Cross            | A                                     |
+| Circle           | B                                     |
+| Square           | X                                     |
+| Triangle         | Y                                     |
+| L1 / R1          | LB / RB                               |
+| L2 / R2          | LT / RT (pressure = trigger travel)   |
+| L3 / R3          | press left / right stick              |
+| Select / Start   | Back (View) / Start (Menu)            |
+| D-pad            | D-pad                                 |
+| Left/right stick | left/right stick (radial dead zone)   |
+
+Digital buttons report pressure 0xFF when pressed. Sticks are 0x00..0xFF with 0x80 at rest; up and
+left are smaller values, as on a DualShock 2.
+
+## Keyboard (port 0, only while the game window has focus)
+
+| DualShock 2    | Key                                  |
+|----------------|--------------------------------------|
+| Left stick     | W A S D                              |
+| Right stick    | I J K L                              |
+| D-pad          | arrow keys                           |
+| Cross          | Space (or Numpad 2)                  |
+| Circle         | Left Ctrl (or Numpad 6)              |
+| Square         | F (or Numpad 4)                      |
+| Triangle       | R (or Numpad 8)                      |
+| L1 / R1        | Q / E                                |
+| L2 / R2        | 1 / 3                                |
+| L3 / R3        | C / U                                |
+| Start          | Enter                                |
+| Select         | Backspace                            |
+
+The left hand covers movement and the face buttons (WASD, Space, Left Ctrl, F, R, Q/E, 1/3), the
+right hand the camera (IJKL) or the D-pad (arrows). Stick keys give full deflection; opposite keys
+cancel. Keyboard and controller combine on port 0 (buttons add up; a stick driven by keys
+overrides the controller's stick). Numpad keys need Num Lock on. While Alt is held, keys are not
+passed to the game (Alt+Enter, Alt+Tab, Alt+F4 are window shortcuts).
+
+## Window
+
+| Action                         | Key                         |
+|--------------------------------|-----------------------------|
+| Borderless fullscreen on/off   | F11 or Alt+Enter            |
+| Leave fullscreen               | Esc (only while fullscreen) |
+| Quit                           | close the window or Alt+F4  |
+
+The picture is always shown at 4:3, letterboxed in the window. The title bar shows the frame rate
+(frames the game presents per second). `PS2_WINDOW_GDI=1` forces the GDI presenter instead of
+Direct3D 11.
