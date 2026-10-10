@@ -411,6 +411,12 @@ void ps2_service_irq(ps2_ctx* ctx) {
 
 /* ---- BIOS syscalls (high-level emulation) --------------------------------------------------- */
 
+/* OSD configuration (the console's system settings) as Get/SetOsdConfigParam see it: bit 0 SPDIF
+ * off, bits 1-2 screen type (0 = 4:3), bit 3 video output, bit 4 "language is not Japanese",
+ * bits 5-12 PS1 driver settings, bits 13-15 version, bits 16-20 language (1 = English), bits 21-31
+ * time zone offset. A US console with English and a 4:3 TV. */
+static uint32_t osd_config = (1u << 16) | (1u << 13) | (1u << 4);
+
 void ps2_syscall(ps2_ctx* ctx, uint32_t pc) {
     int32_t n = ctx->r[REG_V1].sw[0];
     if (n < 0) n = -n;                           /* negative = interrupt-context ("i") variant */
@@ -452,6 +458,15 @@ void ps2_syscall(ps2_ctx* ctx, uint32_t pc) {
         ret = (int32_t)((a1 == 0xFFFFFFFFu) ? ctx->r[29].uw[0] : a0 + a1);
         break;
     case 0x64:                                   /* FlushCache: nothing to flush natively */
+    case 0x68:                                   /* iFlushCache */
+        break;
+    case 0x6B:                                   /* sceSifStopDma: transfers complete at once */
+        break;
+    case 0x4A:                                   /* SetOsdConfigParam(const ConfigParam*) */
+        osd_config = ps2_r32(ctx, a0);
+        break;
+    case 0x4B:                                   /* GetOsdConfigParam(ConfigParam*) */
+        ps2_w32(ctx, a0, osd_config);
         break;
     case 0x10: ret = add_handler(intc_handlers[a0 & 15], a1, ctx->r[REG_A3].uw[0]); break;   /* AddIntcHandler */
     case 0x11: ret = remove_handler(intc_handlers[a0 & 15], a1); break;                     /* RemoveIntcHandler */
