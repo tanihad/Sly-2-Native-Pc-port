@@ -206,6 +206,13 @@ class Module:
         weak = {s for s, _ in self.ranges}
         for s, e in self.ranges:
             weak |= after_return_starts([self.instrs[a] for a in range(s, e, 4)])
+        for a, i in self.instrs.items():             # after an unconditional jump (tail calls)
+            if i.uniqueId == I.cpu_j or (i.uniqueId == I.cpu_beq and rs(i) == 0 and rt(i) == 0):
+                n = a + 8
+                while self.in_code(n) and self.m.word(n) == 0:
+                    n += 4
+                if self.in_code(n):
+                    weak.add(n)
         weak = {a for a in weak - case_labels if not self.is_delay_slot(a)}
 
         forced: set[int] = set()
@@ -480,23 +487,29 @@ class FunctionTranslator:
 
 # --- driver ------------------------------------------------------------------------------------
 
-def load_modules(elf: str, names=None) -> list[tuple[IrxModule, Module]]:
-    wanted = names or list(MODULES)
-    found = {m.name: m for _, m in elf_irx_modules(elf)}
-    out = []
-    for name in wanted:
-        if name not in found:
-            raise GenError(f"{elf}: no IOP module named {name}")
-        orig = found[name]
-        mod = Module(orig.relocated(MODULES[name]))
-        out.append((orig, mod))
+def prepare(modules: list[tuple[IrxModule, int]]) -> list[tuple[IrxModule, Module]]:
+    """Relocate each (module as shipped, link address) and split its code into functions."""
+    out = [(orig, Module(orig.relocated(base))) for orig, base in modules]
     for _, mod in out:
         mod.discover()
     return out
 
 
+def load_modules(elf: str, names=None) -> list[tuple[IrxModule, Module]]:
+    found = {m.name: m for _, m in elf_irx_modules(elf)}
+    wanted = []
+    for name in names or list(MODULES):
+        if name not in found:
+            raise GenError(f"{elf}: no IOP module named {name}")
+        wanted.append((found[name], MODULES[name]))
+    return prepare(wanted)
+
+
 def generate(elf: str, out_dir: str, per_file: int = 400) -> str:
-    pairs = load_modules(elf)
+    return write_c(load_modules(elf), out_dir, per_file)
+
+
+def write_c(pairs: list[tuple[IrxModule, Module]], out_dir: str, per_file: int = 400) -> str:
     mods = [mod for _, mod in pairs]
     gen = Generator(mods)
     bodies = []
