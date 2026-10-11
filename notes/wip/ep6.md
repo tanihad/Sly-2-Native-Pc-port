@@ -160,8 +160,12 @@ recompiler problem found at its root, with tests; frames in build\screenshots\ep
 - t1: red train interior (Bentley HP held by PS2_POKE 3D4AC8=28): car 1 -> door -> car 2 rotating
   red laser fan renders right (screenshot ep6_train_red_laser_fan); Bentley knocked aside by
   lasers; game at the 1/30 dt clamp (machine). Not finished live.
-- c1: recon blueprint 3 direct start + task file -> complete recon -> chalk talk 1 (cutscene type
-  not yet seen in ep6).
+- c1: recon blueprint 3 direct start + task file (2854, 2855, 2860 -> 2): blueprints_complete,
+  recon_complete -> AUTOSAVE (save1 10:12:47) -> cutscene (Iron Horse trains on the trestle,
+  moose guard with megaphone) -> CHALK TALK 1 (projector film frame, yellow chalk circle/arrow
+  annotations, spice balloons; screenshots ep6_chalktalk1_circle/_arrow) with 44 s of mono
+  narration+music (-12..-17 dB RMS, peaks -0.4 dBFS, no clipping), 1.2 s silence, safehouse
+  "Press X to play as Sly". All fine.
 
 ## Next
 0. RC chopper battle stall: rerun with less load, dump RAM often after the launchers; if it stalls
