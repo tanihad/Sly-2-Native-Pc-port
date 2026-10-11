@@ -44,6 +44,22 @@ recompiler problem found at its root (with tests), save frames to build\screensh
   terminal ~(-6386,-7896,-57) (objects at the path2 warp 60450), across a canal from the track
   ledge at (-6525,-8720,-88); hopping over the rail costs health; not reached yet (falls into the
   canal). Bentley respawns at (-6729,-9721).
+  The 6 hack stations are objects of vtable 0x2DCC98 (0x759BE0, 0x758C60, ... 0xF80 apart, pos
+  +0x1C0): (-6784,-8061,-160), (-10076,-4941,315), (-6986,1816,560), (-1994,5470,155),
+  (4595,2877,-97), (8456,1449,-163) (build\tools\commonvt.py: vtables near every path warp).
+  Route to station 1: build\tools\hk_route.ps1 (train wait, hop over the wall, along the track bed
+  to (-6720,-8280)). L3 = Bentley's waypoint arrow (shows the way). The green sparkle on the
+  platform east of the track is a clue bottle (guard patrols there).
+- Episode end (lw\end2, t4_heist7_intro direct + PS2_TASK_FILE 2600:2): heist7_complete cutscene
+  (Sly/Bentley/Murray), the camp-fire ending movie, the episode menu "Episode 5 / A Tangled Web /
+  X: Start Episode"; save1 written (prison 100%, episodeBest 4, episodeCurrent 0, t4_complete 1);
+  X starts the episode 5 intro movie. Menu silent after the movie: ep2's known bug (IOP starved
+  while the EE waits for the GS; fixed on next/ep2 7558b12), not duplicated here.
+- Recon completed in context (lw\rec, hits 2400-2403 via PS2_TASK_FILE): Bentley's outro cutscene
+  with subtitles, Thievius Raccoonus page wipe, back in the hub as Bentley; save1 has m4_recon
+  complete, t4_hack_intro active. Job Help: "Shoot Contessa with darts"; Binocucom: left stick aims
+  (inverted Y), right stick zooms, R1 fires.
+- Cherry-picked ep3's PS2_POKE_FILE (fa2cf07) for one-shot writes in live sessions.
 - Heist 4 (lw\h4k, PS2_TASK_FILE): completing t4_heist4_get_to_keypad1 (2558:2) only activates
   hack1 (no minigame: it starts from the keypad interaction); completing hack1 (2560:2) puts Sly
   at keypad 1 (-4651,2798,417 feet). No memory-card write on these intermediate task changes.
