@@ -96,6 +96,14 @@ warp saves / direct job starts; fix every runtime/recompiler problem found at it
   safehouse "Press X to play as Sly"; autosave (episodeCurrent 3, t3_intro 3, recon_intro 1).
   Frames ep3_episode_menu, ep3_episode_start, ep3_intro_comic_*.
 
+- Chalk talk 2 (live, lead_rajan direct start with --complete t3_waterbug/t3_free_elephant
+  (+ m3_*), then PS2_TASK_FILE 2245/2251/2257 -> 2 (blueprints) and 2258 -> 2): job ends, chalk
+  talk 2 MPEG movie (Rajan, heart room, ruby, chalk lines), safehouse "Press X to play as Bentley",
+  autosave (chalktalk2 3, lead_rajan_complete 3, temple 50%, turret/ruby intros active).
+- Boss (live): direct start = Sly beside Murray on the temple roof; walking forward leads to the
+  lily-pad pool; boss tasks via PS2_TASK_FILE change state but not the fight (own state machine).
+- PS2_INPUT tokens now case-insensitive (2c3c73d).
+
 ## Next
 1. Perf: machine is shared by ~15 game instances (100% CPU), so PS2_PERF numbers are inflated
    (VU 24-27 ns/pair instead of ~11). GS replay, interleaved, same load: title (build\gsrec\
