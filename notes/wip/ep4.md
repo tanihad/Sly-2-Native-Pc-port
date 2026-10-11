@@ -50,8 +50,19 @@ recompiler problem found at its root (with tests), save frames to build\screensh
   0x200950 with a vector arg 105.0: "+105 local x per frame" thrust phases of ~23 frames) and the
   physics step (fn 0x22DD00 path, ra 0x22E100). So the chopper is driven by a script; the thrust
   comes in periodic bursts with the stick neutral. PARKED (no evidence yet that it is a port bug).
-- Job Failed screen is digitally silent (rc run: 376 s of zeros after "Your chopper got
-  destroyed"): checking with PS2_LOG_SND whether the game pauses all sound itself (lw\rcsnd).
+  The stick really reads neutral: the game's JOY struct is at 0x2E0BC0 (+0x80 left stick
+  angle/magnitude floats + raw lx/ly bytes, +0xB0 right stick; neutral = magnitude 0, found by
+  RAM diffs with lright/rup held, build\tools\joyfind.py).
+- Job Failed screen silence is the game's own: 989snd cmd 9 (master volume, groups 0/1) fades
+  0x3BB -> 0 over ~40 VBlanks right after the failure (PS2_LOG_SND, lw\rcsnd). Not a bug.
+- RC chopper audio "clicks" (wav_analyze finds ~70 in 4 min): noise bursts that switch on/off
+  every ~0.1-0.2 s with no KON (PS2_LOG_SD=2 run lw\rcsd, build\tools\wavwin.py): the looping rotor
+  sound ("whup-whup" noise bursts) - content, not a mixer artifact.
+- Lightning job (lw\ltn): briefing (red bolts render), Sly on the roof, 0/5 rods; touching the
+  electrified rod platform kills Sly -> respawn. Rods = "turn the wheels" (Circle?) - not solved.
+- Heist 7 (lw\h7): Murray/Sly/Bentley escape over the bridges after Contessa's "time is up";
+  guards attack; objective unknown ("Chase the Contessa"?). Warp 77611 (heist7_complete start)
+  is at (400,-4960,2693), next to the heist7 start.
 
 ## Next
 1. Hacking minigame (m4_hack station, heist4 keypads), lightning puzzle, Murray brawl.
