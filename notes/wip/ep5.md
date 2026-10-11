@@ -141,8 +141,23 @@ runtime/recompiler problems at the root (crash, hang, missing syscall/RPC, rende
   Screen ep5_thiefnet_paraglide_bought.png. Menu input: presses must be ~40 frames apart under
   load (shorter gaps get lost).
 
+- All 12 PS2_VU_VERIFY runs (also recon, ghost tomb, tank chase, paraglide): 4-6M programs each,
+  0 mismatches; audio 0-2 underruns per 310 s under heavy load.
+- Chalk talk 2 in context: direct t5_ghost_take_pictures with `--complete m5_ewok_trap --complete
+  t5_ewok_trap --complete m5_kidnap --complete t5_kidnap`: Sly in the graveyard, camera 0/9;
+  Binocucom = R3 (left stick aims, Y inverted; right stick zooms; R1 photo; the purple wisps are
+  not targets: "No item of interest in view"). 2650-2657:2 -> 8/9, 2658:2 -> 2660 done by the game,
+  2661 ghost_drop active ("Deliver ghosts to Neyla's HQ"); 2661:2 -> the game's own flow: delivery
+  cutscene (ghosts released at Neyla's HQ, Neyla: "So, the Contessa wants war, eh? ... a few
+  bombers"), "Job Completed!" (Sly, 50%), safehouse, chalk talk 2 (sepia overhead slides), safehouse;
+  chalktalk2 3, pickpocket/battlezone/hack intros 1, autosave castle 45%. Screens
+  ep5_chalktalk2_start.png, ep5_ghost_delivery_job_completed_sheet.png.
+  => all three chalk talks, the ThiefNet purchase and job-end autosaves verified in context.
+- Rule learned: set the stage tasks *before* a job's final task (tank kills, photo targets, drop)
+  and the game runs its own job-end flow; setting the *_complete task itself skips it.
+
 ## In progress
-- Chalk talk 2 in context: hub run (build\live\ct2, warp --job m5_ghost), set the stage before each
+- (none): hub run (build\live\ct2, warp --job m5_ghost), set the stage before each
   final task (2661 ghost_drop, 2679 ewok water, 2685 kidnap carry) and let the game finish the jobs.
 
 ## Next
