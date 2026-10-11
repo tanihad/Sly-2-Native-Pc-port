@@ -6,8 +6,16 @@
 fix from next/ep5 (runtime/threads.c): thread churn leaked ~1 MB/s of fiber stacks, and a restarted
 thread resumed its old fiber (StartThread after a normal return spun forever; after ExitThread or
 TerminateThread it resumed inside the old syscall). Hangs or "stuck" scripts that involve thread
-restarts, and growing memory in long runs, may be this bug. ep5 is complete. The workflow was
-resumed again after a session limit (ep1-4, ep6-8, VU review, integrate pending).
+restarts, and growing memory in long runs, may be this bug. ep5, ep6, ep8 are complete; the
+workflow was resumed again (ep1-4, ep7, VU review, integrate pending).
+
+**Direct3D 11 renderer design (2026-10-11), running in parallel:** workflow
+`d3d11-renderer-design` (run wf_45705d77-396; worktree `sly2-worktrees\d3d11`, branch
+next/d3d11): renderer map + census of Sly 2's GS usage over the .gsrec corpus + prior art, then
+3 competing designs (high-level translation / GPU-exact compute / Sly-specialised hybrid), a
+3-lens judge panel, and the final design in `notes/d3d11-renderer.md` on next/d3d11. Each agent
+checkpoints to `notes/wip/d3d11-*.md` there. Resume: `Workflow({scriptPath: <session>\workflows\
+scripts\d3d11-renderer-design-wf_45705d77-396.js, resumeFromRunId: "wf_45705d77-396"})`.
 
 **Main 125390a (2026-10-11):** the VU microcode recompiler and the warp tool's release-build
 direct starts are merged. Release regression: 60 fps, VU 100% recompiled (2.2 ns/pair), EE thread
