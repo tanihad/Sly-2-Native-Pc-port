@@ -292,7 +292,7 @@ def build(schema, episode, job=None, sets=(), complete=(), activate=(), characte
         if direct:                         # the runtime starts this task on resume (PS2_WARP_TASK)
             entry = start_point(tasks, entry, mission)
             t = tasks[entry]
-            notes.append(f"direct start (debug build): PS2_WARP_TASK={t.oid}" + (f":{t.wid}" if t.wid != -1 else ""))
+            notes.append(f"direct start: PS2_WARP_TASK={t.oid}" + (f":{t.wid}" if t.wid != -1 else ""))
         done = ancestors(tasks, entry)
         ep_tasks = [t for t in tasks if episode_of(t) == episode]
         # A job whose exit tasks (those later tasks wait for) are done is finished as a whole, side
@@ -622,7 +622,7 @@ def main():
     m.add_argument("--coins", type=int, help="coins to spend in ThiefNet (loot.ccoin)")
     m.add_argument("--gadgets", action="store_true", help="own every ThiefNet gadget")
     m.add_argument("--direct", action="store_true",
-                   help="with --job: also print PS2_WARP_TASK, which makes a debug build start the job itself")
+                   help="with --job: also print PS2_WARP_TASK, which makes the game start the job itself")
     m.add_argument("--set", action="append", metavar="PATH=VALUE", help="extra field (repeatable)")
     m.add_argument("--complete", action="append", metavar="PREFIX",
                    help="mark every mission/task group starting with PREFIX done (repeatable)")

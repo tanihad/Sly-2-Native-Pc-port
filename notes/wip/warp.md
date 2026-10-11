@@ -1,4 +1,4 @@
-**Status: complete**
+**Status: in progress (follow-up after the merge into main 78c51f8: direct start in release builds)**
 
 # warp: start the game at any episode / job
 
@@ -21,11 +21,17 @@ episode (Prologue, Episodes 1-8) and ideally at a chosen job, verified by loadin
 - tests/unit/warp (113 checks); all unit tests + run_tests.py pass; release build OK.
 
 ## In progress
-- (none)
+- Direct start in release builds (done, verifying): recomp/hooks.py (hash-guarded entry hooks,
+  PS2_HOOK in every build, ps2_hooks_on/ps2_hook in runtime/ps2_runtime.c, ps2_hook_addrs table in
+  func_table.c); hooks 0x22B490 (warp) and 0x187D80 (pad button test: makes the title anchor
+  @187D80/1DD96C work in release, so warp_run -Release no longer guesses a frame; -TitleFrame 2400
+  was too early under load). Verified: release m1_brawl direct (Murray, alarms 0/3), debug m8_boss
+  direct, release ep6 title anchor; run_tests 16/16 + overrides + hooks checks; warp unit 113.
 
 ## Next
-- Optional: walk-free job markers in release builds would need a release-build hook (the direct
-  start uses function tracing). Only the hubs and sampled job starts were played.
+- Check rel_ep6 (-Play, 160 s) and rel_m3_heist_direct frames; update notes/warp.md (direct start
+  any build, release anchor); unit tests all; commit; status complete.
+- Only the hubs and sampled job starts were played.
 
 ## Findings / traps
 - Save file = the game-state blob at EE 0x3D4A60 (0x5408 bytes), laid out by a schema loaded from
