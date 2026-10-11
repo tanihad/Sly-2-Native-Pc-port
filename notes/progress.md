@@ -2,12 +2,50 @@
 
 ## Resume here (read first in a new session)
 
+**Main 125390a (2026-10-11):** the VU microcode recompiler and the warp tool's release-build
+direct starts are merged. Release regression: 60 fps, VU 100% recompiled (2.2 ns/pair), EE thread
+7.7 ms/frame (was ~14), GS thread ~16.4 ms/frame (now the busiest: the game draws more detail when
+it has time; the Direct3D 11 renderer is the fix), audio 0 underruns. Still unmerged: next/ep1..8
+(episode testers; ep7 verified the Episode 7 -> 8 transition; ep6 investigates Neyla chopper
+stages ending in "Job Failed"); the VU review and the integrate step are pending in the
+resumed workflow.
+
+**RESUMED on 2026-10-11:** workflow `whole-game-sweep` (run wf_1f8b6c38-938) is running again:
+episode testers continue from their checkpoints, then the VU recompiler review and the integrate
+step. The state below is the pause point.
+
+**PAUSED by the user on 2026-10-11** (to use the computer). Nothing is running. Main (78c51f8+)
+has everything up to and including the episode warp tool and is playable (`scripts\play.ps1`).
+Unmerged work, all committed and pushed to GitHub, each with `notes/wip/<task>.md` checkpoints:
+- `next/vu-recomp` (worktree `sly2-worktrees\vu-recomp`): VU microcode recompiler, COMPLETE per its
+  checkpoint (exact vs the interpreter on recordings + fuzzing). Its independent review was
+  interrupted; run the review (prompt in the `whole-game-sweep` workflow script), then merge.
+- `next/ep1`..`next/ep8`: per-episode playtesting/fixes. Every job type tested starts in every
+  episode; no runtime blockers reported. ep1/ep2/ep3 end with a "PAUSED mid-edit" commit holding
+  unfinished, untested fixes (ep1: audio/IOP timing in sd.c/iop_kernel.c; ep2/ep3: GS thread /
+  pixel workers) — finish and verify those before merging. Notable open finding (ep2): menu
+  music stream can stop when the IOP runs late while the EE waits for the GS.
+- To resume: same session -> `Workflow({scriptPath: <whole-game-sweep script>, resumeFromRunId:
+  "wf_1f8b6c38-938"})` (finished agents replay from cache; the others continue from their
+  checkpoints), then the `integrate` step merges everything and runs the full regression.
+  New session -> start one agent per unfinished branch with its checkpoint, then integrate.
+Next after that: Direct3D 11 renderer (resolution scaling), widescreen, 60 Hz-synced pacing.
+
 **warp (2026-10-10):** start the game at any episode or job without playing up to it:
 `scripts\warp_run.ps1 -Episode N [-Job m3_heist] [-Direct] -Play [-Release]`, or
 `scripts\warp.py make --episode N` / `--job <job>` then `scripts\play.ps1`. Memory-card saves built
 from the reverse-engineered progress blob (schema + task graph read from the game), plus a
 debug-only hook that starts a job directly (runtime/warp.c, PS2_WARP_TASK). All 9 episode starts
 and 10 sampled jobs verified, no runtime blockers found. Guide and format: `notes/warp.md`.
+**next/vu-recomp (2026-10-10):** the game's VU microcode is statically recompiled to C at build
+time (`recomp/vu_recomp.py`: all 8 overlays of `.vutext`, the VU1 renderers and the VU0 library);
+`runtime/vu.c` runs the compiled program whenever micro memory holds a compiled image, the
+interpreter otherwise (logged once; `PS2_VU_INTERP=1` forces it). Exact against the interpreter
+(registers, flags, Q/P, data memory, XGKICK addresses and cycles, pair/cycle counts): recordings of
+intro, title, briefing and museum gameplay replay with 0 differences, in-game `PS2_VU_VERIFY`
+found 0 mismatches in 15.7M programs, and `tests\unit\vu_recomp` runs random programs differentially.
+VU cost per pair 4-7x lower; the VU share of the EE thread drops from ~60% to ~10-15%. Numbers:
+`notes/performance.md`; design: `notes/vu-microcode.md` (Recompiler).
 
 **fix/fix-perf (2026-10-10):** the release build (and the -O1 default build) runs at full speed,
 59.94 VBlanks/s and ~60 game flips/s, on the movie, memory-card prompt, intro cutscene, title and
@@ -18,7 +56,14 @@ pacing. Headroom 2-6 ms per VBlank on the EE thread (the intro cutscene is the t
 big step. Tools and numbers: `notes/performance.md` (PS2_PERF, PS2_GS_STATS, profilers, headroom,
 GS and VU record/replay).
 
-**Newest:** main (eb96e20) reaches the title screen and the Bentley/Sly Binocucom briefing
+**Newest (main c8cc6ef):** perf, gameplay and native audio are merged. The release build runs at
+60 fps with sound from boot to gameplay in the Cairo Museum prologue (`scripts\play.ps1` builds
+and launches it). Workflow `whole-game-sweep` is running: `next/warp` (episode warp tool),
+`next/vu-recomp` (static VU microcode recompiler), `next/ep1`..`next/ep8` (one playtest/fix agent
+per episode, after the warp tool), then `next/integrate` (merge all + full regression). Worktrees
+under `C:\Users\tanih\Projects\sly2-worktrees\`; each keeps `notes/wip/<task>.md`.
+
+**Previous:** main (eb96e20) reaches the title screen and the Bentley/Sly Binocucom briefing
 (SQUARE answers "Yes" on the memory-card prompt: PS2_INPUT="600:square:12,1500:start:10").
 fix-render and fix-input are merged. Workflow `continue-to-playable` is running:
 `fix/fix-perf` (60/60 fps in release on menus already; merging main, continuing its checkpoint),
