@@ -126,10 +126,23 @@ void iop_strncpy_from(char* dst, uint32_t src, size_t cap) {
 
 static LARGE_INTEGER qpc_freq;
 
+/* Debug pause (ps2_debug_hold): IOP time stands still while the EE waits for a live input line, so
+ * the hard timers (989snd's tick: sequenced music, stream refills) neither replay the wait as a
+ * burst of ticks afterwards nor drop it. The IOP runs on the EE thread (iop_service), as does the
+ * hold, so no locking. */
+static int64_t time_held_at, time_held_total;
+
 int64_t iop_now(void) {
     LARGE_INTEGER t;
     QueryPerformanceCounter(&t);
-    return t.QuadPart;
+    return (time_held_at ? time_held_at : t.QuadPart) - time_held_total;
+}
+
+void iop_time_hold(int on) {
+    LARGE_INTEGER t;
+    QueryPerformanceCounter(&t);
+    if (on && !time_held_at) time_held_at = t.QuadPart;
+    else if (!on && time_held_at) { time_held_total += t.QuadPart - time_held_at; time_held_at = 0; }
 }
 
 int64_t iop_usec_to_ticks(uint64_t usec) {

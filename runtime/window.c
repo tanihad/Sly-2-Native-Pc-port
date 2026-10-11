@@ -116,6 +116,7 @@ static double script_seconds(void) {
 #define SCRIPT_PAUSE (-5)                 /* "pause": stop until the next live input line */
 static int script_pause_req;
 void ps2_request_ram_dump(void);
+void ps2_debug_hold(int on);              /* runtime: EE timers, IOP time and the SPU2 stand still */
 static struct { uint32_t frame, hold, start, addr, ra, base, last; int button, kind, armed, seen, axis, value; }
     script[SCRIPT_MAX];
 static int script_n = -1;
@@ -257,7 +258,7 @@ static int script_pause_due(void) {
 /* The EE waits here, inside the pad read, until a complete line follows what was read. */
 static void script_wait_line(uint32_t now) {
     wlog("pad frame %u (VBlank %u): paused until the next line in %s", now, ps2_vblank_count(), script_path);
-    timer_hold(1);                                            /* no game time passes while paused */
+    ps2_debug_hold(1);                                        /* no PS2 time passes while paused */
     for (;;) {
         FILE* f = fopen(script_path, "rb");
         int line = 0;
@@ -266,7 +267,7 @@ static void script_wait_line(uint32_t now) {
                 for (int c; !line && (c = fgetc(f)) != EOF;) line = c == '\n';
             fclose(f);
         }
-        if (line) { timer_hold(0); return; }
+        if (line) { ps2_debug_hold(0); return; }
         Sleep(20);
     }
 }
