@@ -114,7 +114,18 @@ runtime/recompiler problems at the root (crash, hang, missing syscall/RPC, rende
   Completed" for Bentley and Murray, saving icon, safehouse; chalktalk2 went 1 -> 3 without any
   slides. Setting a job's final task directly probably bypasses the game's job-end flow.
 
+- Session 4: merged main 8e05f84 (VU microcode recompiler) into next/ep5 (df4589a; conflict only in
+  notes/hle-architecture.md, both tool lines kept); rebuilt build\rel and build\sly2. batch.ps1 now
+  takes -Prefix (run dirs build\warp\<prefix><job>).
+- Hub perf (release, recompiled VU, machine ~99% CPU with 2-3 other games): VU 100% recompiled at
+  3-6 ns/pair, EE busy 9-13 ms/VBlank, GS thread 15-18 ms/VBlank (up to 22 when more games run)
+  -> 45-58 VBlanks/s, 37-48 flips/s. The GS thread waits on full pixel-worker queues
+  (150-370 ms/s) and CLUT syncs (~55/s, 130-230 ms/s): GS-bound under load, as main's regression
+  note says for every scene (D3D11 renderer is the planned fix).
+
 ## In progress
+- PS2_VU_VERIFY=1 batch over 12 ep5 jobs (build\warp\v_<job>, scratchpad\ep5\batch.ps1 -Prefix v_).
+- Hub GS profile (build\live\hubprof, PS2_PROFILE=gs, PS2_GS_STATS).
 - Chalk talk 2 in context: hub run (build\live\ct2, warp --job m5_ghost), set the stage before each
   final task (2661 ghost_drop, 2679 ewok water, 2685 kidnap carry) and let the game finish the jobs.
 
