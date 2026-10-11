@@ -37,13 +37,20 @@ memory they cover, interpreter stays as reference/fallback; measure and document
 - In-game A/B (scripts/vu_ab.ps1, loaded machine): EE busy 12-17 -> 6.5-9.5 ms/VBlank; intro
   cutscene VBlanks 85-92% -> 97-100%; title: GS thread ~16 ms and flips ~55 (game draws more).
 
+- Resumed after usage limit (22:20): final generator (de037da) replay on all 5 recordings exact,
+  100% compiled. Loaded machine (4 other sly2 instances, 85% CPU), CPU 4 pinned, interleaved:
+  interp 15.0-20.8 ns/pair, compiled 2.0-3.5 (intro 3.2-3.5, title 2.5-2.7, brief 2.5-2.8,
+  museum 2.0-2.3): 6-7x.
+- Release in-game PS2_VU_VERIFY (build\verrel, 150 s, intro+attract+title): 3.1M programs, 0
+  mismatches. Debug build rebuilt with final generator (build\sly2).
+- All unit tests (15 dirs, window -UnitOnly) + tests/run_tests.py pass.
+- Frames between two runs are not comparable (frames_interp vs frames_interp2 differ too: wall-clock
+  VBlanks); identity follows from VERIFY (data memory hashed at every XGKICK = GIF packets).
+
 ## Next
-1. Re-measure (quiet machine): pinned replay interp vs current; in-game vu_ab.ps1; flags-free bound.
-2. Rebuild release with current generator; in-game PS2_VU_VERIFY run (standard path + museum).
-3. Frame check: dumps compiled vs PS2_VU_INTERP=1 at same VBlanks (compare_frames.py); argue
-   identity from VERIFY (data memory + XGKICK addresses/cycles identical).
-4. All unit tests + tests/run_tests.py; docs: notes/vu-microcode.md (recompiler section),
-   notes/performance.md, notes/hle-architecture.md (env vars), notes/progress.md.
+1. Debug in-game PS2_VU_VERIFY into museum gameplay (build\verdbg running), check frames.
+2. In-game vu_ab.ps1 (release) + headroom.ps1 on the intro cutscene, compiled vs interp.
+3. Docs: notes/performance.md (VU section, before/after, threads table), notes/progress.md.
 
 ## Findings / traps
 - 376110651 uses a software return stack in vf02 and `jalr vi15, vi01` (target from data memory).
