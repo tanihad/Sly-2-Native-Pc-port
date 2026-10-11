@@ -41,13 +41,17 @@ recompiler problem found at its root, with tests; frames in build\screenshots\ep
   small green/yellow model with a translucent rotor - renders). lblue: blue train caboose, walking.
 - Session 2: merged next/warp again (entry hooks: PS2_WARP_TASK + @187D80 anchor in RELEASE builds,
   warp_run -Direct -Release). Scratch scripts now in scratchpad\ep6\ (scratchpad is shared).
+- Release direct starts (build\warp\r_<task>, batch6.ps1 -Release): t6_heist_rc_chopper_1_intro
+  (Neyla plane cutscene with subtitles, RC chopper over the train), t6_heist_rc_chopper_2_intro
+  (Sly in the locomotive, Bentley/Murray hand car cutscene, chopper vs Neyla's plane, shots),
+  t6_heist_train_2_intro (Sly on the moving train), t6_train_red_intro (Binocucom, Bentley chases
+  Iron Horse 2, "Job Failed" when it leaves), t6_train_blue_intro (Binocucom, Sly on the cliff, train
+  passes). All OK, no log errors. Every ep6 job start has now been seen.
 
 ## Next
-1. Review batch frames/logs for each job; then deeper live play in selected jobs
-   (scratchpad live6.ps1 = warp card + live_game.ps1 with PS2_WARP_TASK).
-2. Remaining direct starts: t6_heist_rc_chopper_1_intro, t6_heist_train_2_intro,
-   t6_heist_rc_chopper_2_intro, t6_train_red_intro (hub part), t6_train_blue_intro.
-3. Checkpoint saves.
+1. Deeper live play in selected jobs (scratchpad\ep6\live6.ps1 -Release -Direct): red train
+   (catch the caboose, interior lasers), RC chopper battle, bear cubs (Murray), paraglide, heist.
+3. Checkpoint saves (complete a job stage -> autosave on the card).
 4. Perf: hub VU ~900k pairs/VBlank, blue train 720k (measure when the machine is quieter).
 
 ## Findings / traps
