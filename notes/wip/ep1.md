@@ -152,6 +152,24 @@ runtime/recompiler problem found at its root (with tests); frames in build\scree
   knocked the flashlight guard over once; normal combos knock him out too; a second guard then
   beats Sly (health pie, coins drop) -> death -> restart at the checkpoint. All game behaviour;
   the window was not reached (live stealth at ~30 fps with seconds of latency).
+- soak1 (release, Paris hub, Sly idle, 35 min, PERF + WAV): committed memory flat 151-152 MB
+  (main's fiber fix), 9 streams steady (485-490 transfers/10 s), 2 underruns (level load), WAV
+  levels steady -16/-17 dB after the load, no silence after 90 s. Unit tests + run_tests.py pass
+  after merging main.
+- **Harpoon solved (hp1, t1_heist_7_shoot_harpoon direct)**: the hook does not fly along the
+  camera axis; build\tools\aim.ps1 (RAM dump: camera forward at 0x2DDFA0, camera 0x2DDFD0, gun
+  0x2DE1C0, Sly object 0xFB1580 +0x230) reads the aim. The projectile (0x115D840) leaves ~5-6 deg
+  left and ~8 deg above the camera axis and arcs. Sly catches it with the camera at az 61.2-61.4,
+  el 36.5-37.1 (5 of 5 shots); el 35.3-35.9 -> Sly ducks under it, az >= 61.6 -> passes on his
+  right. The miss cam, the catch, the rope latched to the sign, then the siege (HUD + truck health
+  gauge, guards attack the truck) all work. The truck dies in ~6 s of game time unless Sly slides
+  down the rope at once; jumping off (X, circle) dropped Sly to the square -> "Job Failed! You need
+  to prevent the truck from being destroyed" -> X retries from the truck drive. Not beaten (needs
+  the rope slide quickly); no runtime problem.
+- Game clock: 0x2DDEE4 (float seconds) advanced 6.4 s in 10.0 s of wall/audio time while ~37 of
+  60 VBlanks/s were serviced: the game's time follows serviced VBlanks (slow motion under load,
+  not bigger steps), so physics/timing behave as on a PS2 that runs slow.
+- Frames: ep1_harpoon_caught.png, ep1_siege_start.png, ep1_siege_job_failed.png.
 
 ## Next
 1. Chalk talk test (ct1: m1_recon direct + task file: 1793/1794/1795 -> 2 -> recon complete ->
