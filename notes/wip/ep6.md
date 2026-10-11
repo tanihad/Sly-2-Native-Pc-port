@@ -87,7 +87,22 @@ recompiler problem found at its root, with tests; frames in build\screenshots\ep
   Perf note: in-level 45-58 VBlanks/s with GS thread 14-24 ms/VBlank on the shared machine (the GS
   thread is the known bottleneck; D3D11 renderer is the planned fix); movie/menus 60.
 
+- p4 bear cubs live (with -Wav): Murray up the trestle, falls onto the job beacon below = job start
+  ("Get the bear cubs inside the fence"); 0.56 s digital silence exactly at the black mask-wipe of
+  the job start (transition, probably faithful); no other dropouts. Layout unknown, not finished.
+- Session-4 direct-start batches (build\warp\s4_<task>, release, 240 s): recon get_blueprint_1/2/3
+  (cabins 28: Bison sees Sly -> "You can't let Jean Bison see you"; lumberjack lantern guards),
+  recon complete_blueprint_1/2/3 (hub, 1/3 and 2/3 counters), heist_intro (hand car cutscene, hub
+  27 -> world 30 transition, Sly in the caboose), carmelita follow_complete (cage cutscene, 0/3 keys)
+  and pickpocket_1/2/3_intro, paraglide need_2/need_1 (train counter). All load/play, no log errors.
+- p5 RC chopper battle (Aerial Assault) live at 35-50 VBlanks/s (9 game instances, CPU 100%): 4
+  guards and both launchers bombed, orange planes crossed, then NOTHING more for ~5 min (camera stays
+  on car 1) - same symptom as lrc2 (slow machine); lrc3 at full speed progressed to car 2. RAM dump
+  build\p5\frames\ram_028636.bin. Suspect timing-dependent stall -> rerun when the machine is quieter.
+
 ## Next
+0. RC chopper battle stall: rerun with less load, dump RAM often after the launchers; if it stalls
+   again find what the wave logic waits for.
 1. Deeper live play: bear cubs (Murray), paraglide, heist train_1 (lasers, Bison car), recon
    (cabin), train_blue; capture -Wav in one of them and analyse.
 2. Perf when the machine is quieter.
