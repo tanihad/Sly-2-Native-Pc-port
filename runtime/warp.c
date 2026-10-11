@@ -1,4 +1,4 @@
-/* PS2_WARP_TASK: start the game directly inside a job (debug tool, off by default; debug builds only).
+/* PS2_WARP_TASK: start the game directly inside a job (debug tool, off by default; every build).
  *
  *   PS2_WARP_TASK=<task object id>[:<world id>]
  *
@@ -12,9 +12,10 @@
  * remember the task object id in 0x2DEB48 and set transition flag 8. After the load the game itself
  * starts the task (0x165280: task state 1, the task's character as player, its start point).
  *
- * The hook runs at the entry of the recompiled 0x22B490 (PS2_TRACE -> ps2_calls_record), changes
- * its argument registers once and never touches the game otherwise. It checks the caller's
- * instructions first, so another executable is left alone. */
+ * The hook runs at the entry of the recompiled 0x22B490 (an entry hook, recomp/hooks.py: PS2_HOOK ->
+ * ps2_hook, present in release builds too), changes its argument registers once and never touches
+ * the game otherwise. It checks the caller's instructions first, so another executable is left
+ * alone. */
 #include "hw.h"
 
 #include <stdlib.h>
@@ -37,14 +38,9 @@ int warp_init(void) {
     char* end;
     warp_oid = (uint32_t)strtoul(e, &end, 0);
     if (*end == ':') warp_wid = (int)strtol(end + 1, NULL, 0);
-#ifdef PS2_NO_TRACE
-    fprintf(stderr, "[warp] PS2_WARP_TASK needs the debug build (function tracing); ignored\n");
-    return 0;
-#else
     fprintf(stderr, "[warp] will start task %u%s on \"Resume Game\"\n", warp_oid, warp_wid >= 0 ? " in its world" : "");
     warp_state = 1;
     return 1;
-#endif
 }
 
 void warp_on_call(ps2_ctx* ctx, uint32_t addr) {
@@ -64,5 +60,3 @@ void warp_on_call(ps2_ctx* ctx, uint32_t addr) {
     fprintf(stderr, "[warp] v%u: resume turned into starting task %u (world %d, descriptor 0x%08X)\n",
             ps2_vblank_count(), warp_oid, warp_wid, ctx->r[REG_A1].uw[0]);
 }
-
-int warp_active(void) { return warp_state == 1; }

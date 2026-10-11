@@ -292,6 +292,14 @@ void ps2_calls_record(ps2_ctx* ctx, uint32_t addr);
                          ps2_calls_on ? ps2_calls_record(ctx, addr) : (void)0)
 #endif
 
+/* Entry hooks (recomp/hooks.py): the few functions a debug tool must see called in every build,
+ * release included, start with PS2_HOOK. ps2_hooks_on is 0 unless a tool (runtime/warp.c, an input
+ * anchor on a hooked function in a release build) is on. */
+extern volatile int ps2_hooks_on;
+extern const uint32_t ps2_hook_addrs[];  /* the hooked functions, 0-terminated (generated func_table.c) */
+void ps2_hook(ps2_ctx* ctx, uint32_t addr);
+#define PS2_HOOK(addr) (ps2_hooks_on ? ps2_hook(ctx, addr) : (void)0)
+
 /* ---- interrupts: set asynchronously by host timers, serviced at loop heads -------------------- */
 
 #define PS2_IRQ_VBLANK 1u                /* host VBlank timer fired */
