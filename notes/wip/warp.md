@@ -1,4 +1,5 @@
-**Status: complete**
+**Status: complete** (follow-up after the merge into main 78c51f8: direct start + title anchor in
+release builds via entry hooks)
 
 # warp: start the game at any episode / job
 
@@ -20,12 +21,19 @@ episode (Prologue, Episodes 1-8) and ideally at a chosen job, verified by loadin
 - Story gadgets (Paraglide bit 27, Alarm Clock bit 26) confirmed in ThiefNet.
 - tests/unit/warp (113 checks); all unit tests + run_tests.py pass; release build OK.
 
+- Direct start in release builds: recomp/hooks.py (hash-guarded entry hooks, PS2_HOOK in every
+  build, ps2_hooks_on/ps2_hook in runtime/ps2_runtime.c, ps2_hook_addrs table in func_table.c);
+  hooks 0x22B490 (warp) and 0x187D80 (pad button test: the title anchor @187D80/1DD96C works in
+  release, so warp_run -Release no longer guesses a frame; the title came at pad frames 2070-2720).
+  Verified: release m1_brawl + m3_heist direct, release ep6 -Play (hub), debug m1_brawl + m8_boss
+  direct; run_tests 16/16 + overrides + hooks checks; all unit suites pass. Frames
+  build\screenshots\warp_job_*_release.png. Docs: notes/warp.md, recompiler-design.md "Entry hooks".
+
 ## In progress
 - (none)
 
 ## Next
-- Optional: walk-free job markers in release builds would need a release-build hook (the direct
-  start uses function tracing). Only the hubs and sampled job starts were played.
+- Only the hubs and sampled job starts were played (episode testers take over).
 
 ## Findings / traps
 - Save file = the game-state blob at EE 0x3D4A60 (0x5408 bytes), laid out by a schema loaded from

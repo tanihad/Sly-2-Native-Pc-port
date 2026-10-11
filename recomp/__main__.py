@@ -11,6 +11,7 @@ from pathlib import Path
 from .codegen import FunctionTranslator, cname, override_body
 from .elf import load
 from .functions import find_functions
+from .hooks import hook_for
 from .overrides import override_for
 
 
@@ -21,12 +22,14 @@ def translate_all(path: str):
     stats: Counter = Counter()
     bodies = []
     for f in funcs:
+        hook = hook_for(prog, f.start, f.end) is not None   # entry hook (recomp/hooks.py)
+        stats["entry hooks"] += hook
         o = override_for(prog, f.start, f.end)        # native replacement (recomp/overrides.py)
         if o:
             stats["native overrides"] += 1
-            bodies.append(override_body(f, o))
+            bodies.append(override_body(f, o, hook))
         else:
-            bodies.append(FunctionTranslator(f, starts, stats).translate())
+            bodies.append(FunctionTranslator(f, starts, stats).translate(hook))
     return prog, funcs, bodies, stats
 
 
@@ -83,16 +86,19 @@ def cmd_generate(args) -> None:
             stale.unlink()
 
     table = ",\n".join(f"    {{ 0x{f.start:08X}u, {cname(f.start)} }}" for f in funcs)
+    hooked = "".join(f"0x{f.start:08X}u, " for f in funcs if hook_for(prog, f.start, f.end))
     write_if_changed(out / "func_table.c",
                      '#include "recomp_funcs.h"\n\n'
                      f"const ps2_func_entry ps2_funcs[] = {{\n{table}\n}};\n"
                      f"const size_t ps2_func_count = {len(funcs)};\n"
-                     f"const uint32_t ps2_entry_point = 0x{prog.entry:08X}u;\n")
+                     f"const uint32_t ps2_entry_point = 0x{prog.entry:08X}u;\n"
+                     "/* functions with an entry hook (recomp/hooks.py), 0-terminated */\n"
+                     f"const uint32_t ps2_hook_addrs[] = {{ {hooked}0 }};\n")
 
     unimpl = sum(v for k, v in stats.items() if k.startswith("UNIMPL "))
     files = (len(bodies) + args.per_file - 1) // args.per_file
     print(f"wrote {len(funcs):,} functions in {files} files to {out} ({unimpl:,} untranslated instructions, "
-          f"{stats['native overrides']} native overrides)")
+          f"{stats['native overrides']} native overrides, {stats['entry hooks']} entry hooks)")
 
 
 def cmd_iop(args) -> None:
