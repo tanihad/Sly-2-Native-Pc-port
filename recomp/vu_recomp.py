@@ -1093,8 +1093,10 @@ class Unit:
 
 HEADER = [
     "/* The code runs under the VU MXCSR (round toward zero, flush to zero): the compiler must not",
-    " * fold float operations on constants (vf00, LOI immediates) with its own rounding. */",
+    " * fold float operations on constants (vf00, LOI immediates) with its own rounding. FP exception",
+    " * flags are of no interest, so unused float operations (flags nobody reads) can still go. */",
     "#pragma STDC FENV_ACCESS ON",
+    "#pragma clang fp exceptions(ignore)",
     '#include "vu_compiled.h"',
     "",
 ]
