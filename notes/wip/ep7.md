@@ -138,6 +138,9 @@ build\screenshots\ep7_*.png.
   the ice wall), idle -> "Job Failed! Jean Bison was able to make it to the top of the wall in
   time", X retry, hint marquee. Renders right. (--job t7_heist3_wall_hook starts heist4_intro: tasks
   without a world go to the next stage with one.)
+- VU recompiler check on ep7 content (release, PS2_VU_VERIFY=1, build\warp\vv_*): hub gameplay
+  9.4M programs, RC combat (world 33) 9.4M, lighthouse interior (35) 5.2M, bear cave (36) 5.2M, boss
+  arena (37) 5.2M: 0 mismatches.
 
 ## In progress
 - Perf sweep (release, PS2_PERF) of the ep7 hub and the heavy job levels while the machine is quiet.
