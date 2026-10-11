@@ -167,6 +167,15 @@ starts with `PS2_HOOK`, a test of a flag that only debug tools set, so release b
 notes/recompiler-design.md "Entry hooks"). The pad-button test 0x187D80 has one too, which is what
 makes the title-screen START anchor work in release builds.
 
+**Task states while playing** (runtime/warp.c, every build, off by default):
+`PS2_TASK_SET=<task oid>:<state>[@<vblank>],...` or `PS2_TASK_FILE=<path>` (lines `<oid>:<state>`
+appended while the game runs; `<oid>:?` prints the state). At the top of the main loop (entry hook
+on 0x20E890) the hook finds the task object with the game's 0x15E938 (world 0x3DD490, class 0x105)
+and calls the game's own 0x164DF0 (task, state), which propagates the change to the successors and
+autosaves, as when a stage is won. Useful for stage tasks whose next stage is driven by the task
+graph; a boss's stages follow its own state machine, so completing a boss task (e.g. m8_boss's
+3484/3488/3492) does not end the stage being played.
+
 **Power-ups**: table at 0x2BCD00 (32-byte records: kind, character, cost, ?, ThiefNet position,
 name/description text ids); bits 7-14 Bentley's gadgets, 15-22 Murray's, 23-30 Sly's (26 Alarm
 Clock, 27 Paraglide, confirmed in ThiefNet), 31-42 free moves.
