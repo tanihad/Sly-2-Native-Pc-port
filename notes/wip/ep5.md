@@ -204,6 +204,14 @@ in 12 ep5 scenes; one runtime fix (fiber leak, 9d6c24c). Not done: finishing job
   water and respawned at the safehouse (death/respawn flow fine).
 - PS2_POKE "?addr=val" condition (runtime/ps2_runtime.c, debug only): write only while a word holds
   a value, e.g. while a level object's vtable is in place. Used to move bottle 25 next to the spawn.
+- Result: the green "?" clue bottle renders next to Sly, walking into it collects it: HUD "30/30"
+  with the bottle icon, game state exterior afClue 0x3DFFFFFF -> 0x3FFFFFFF. No message/cutscene
+  follows. Vault: class table entry {cid 0x4E, size 0x230, ctor 0x111DE8, vtable 0x2D5B30; its
+  methods 0x1C8090.. read fVault}; no instance in the episode-start hub (no +0xC == 0x2D5B30
+  anywhere in RAM; the 251 object-name records have only "vault_waypoint", cid 1). Binocucom
+  (R3, full 360 pan) shows only the safehouse triangle and the recon job marker. Class table:
+  entries {parent entry, cid, ?, size, ctor} at 0x2BAxxx (clue: cid 7, 0x110 bytes, ctor 0x110BF0).
+  Not pursued further (no vault in this hub state; the runtime side - pickup, HUD, state - works).
 
 ## Next
 1. When the machine is quiet: PS2_PERF (release) in the hub street (Sly walking), boss 1,
