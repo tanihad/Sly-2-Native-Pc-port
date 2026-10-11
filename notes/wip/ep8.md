@@ -87,6 +87,26 @@ frames in build\screenshots\ep8_*.png.
 - NEW scripts\ep8_finale.ps1 (+ scripts\live_waitpos.py): unattended final boss -> Hate Chip ->
   ending -> credits -> autosave (exit 0), optional -Wav: a regression run for the end of the game.
 
+- Session 5: merged main 2d00835 (threads fiber-leak fix); rebuilt rel + debug. Hub PS2_PERF
+  (release, 4 other games at ~5 cores each, CPU 99%): EE busy 6-11 ms/VBlank, VU 100% recompiled
+  4-6 ns/pair, GS thread 15-20 ms/VBlank (25-38 when more load) -> 45-56 VBlanks/s; title and
+  intro in the same run had GS 13-16 ms: GS-bound under load, as in ep5 (not ep8-specific).
+- Recon in context (direct t8_recon_switch_slowdown, world 39, release, build\warp\s9_recon):
+  Sly at a switch box, HUD 0/4; PS2_TASK_FILE 3366/3368/3370 -> HUD 3/4, 3372 -> the game's own
+  flow: post-recon confrontation cutscene (Neyla, "Sly Cooper!? Of course this'd be your doing",
+  Arpeggio in his cage explaining the hypnosis plan), Clock-La revealed, autosave icon, chalk talk 1
+  (chalk sketch over the blimp interior), safehouse. Autosave: blimp 25%, m8_recon/m8_post_recon
+  complete, t8_chalktalk1 3, tntbarrel/jt/bentley/murray intros active. All as the game intends.
+- TNT run (direct m8_tntbarrel, warp --complete m8_engine_room --complete t8_engine_room,
+  build\warp\s9_tnt): briefing ("walk one of these TNT barrels up to that engine room"), Sly on the
+  blimp 0/3; fell off once (respawn), spotted by a searchlight (alarm). PS2_TASK_FILE 3382-3384 ->
+  the game completes destroy_engine_room 3385, Sly carries the charged barrel ("weak point marked
+  in your binocucom, now get to the engine room"); 3386:2 -> chalk talk 2 (film-look planning
+  sequence: chalk circles on the blimp, helicopter, Clock-La, missiles) -> safehouse. Autosave
+  blimp 81%, m8_tntbarrel complete, t8_chalktalk2 3, t8_megajump_intro 1.
+  build\screenshots\ep8_chalktalk2_*.png, ep8_after_chalktalk2_safehouse.png.
+- Live frames: PS2_DUMP_RING=200 x DumpEvery 30 keeps only ~2 min: copy frames right away.
+
 ## In progress
 - Boss Murray stage (t8_open_head_intro, release, head3..5 with PS2_POKE=3D4AE0=3C): Murray walks
   to Clock-La's head (player pos peek 0x2DE1C0: start (0,-2168), beak front ~(40..250, 200..450));
