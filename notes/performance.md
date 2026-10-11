@@ -52,7 +52,7 @@ the "create a save file?" prompt appears first (SQUARE answers it).
 
 | variable / tool | what it gives |
 |---|---|
-| `PS2_PERF=1` | once a second: VBlanks serviced/due, game flips, EE thread busy ms per VBlank and its split (EE code, GS = GIF/queueing, VU, VIF, IPU, IOP, present, gswait, idle), GS thread ms per VBlank, VU pairs/programs per VBlank and ns per pair |
+| `PS2_PERF=1` | once a second: VBlanks serviced/due, game flips, EE thread busy ms per VBlank and its split (EE code, GS = GIF/queueing, VU, VIF, IPU, IOP, present, gswait, idle), GS thread ms per VBlank, VU pairs/programs per VBlank and ns per pair; every 10 s the process's committed memory and working set (`[perf] memory:`; steady growth = a leak, e.g. the EE thread fibers below) |
 | `PS2_GS_STATS=1` | every 5 s: deferred-drawing batches and why they were submitted, GS-thread syncs by reason (display, transfer, CLUT, EE, texture cache, palette), pixel work and the critical path |
 | `PS2_PROFILE=1` / `gs` / `workers` | sampling profiler of the EE thread / GS thread / pixel workers, printed at exit (`PS2_PROFILE_SKIP=<s>` skips the start) |
 | `scripts\headroom.ps1` | headroom test: `PS2_PERF_BURN=<ms>` burns per VBlank on the EE thread, `-Gs` (`PS2_PERF_BURN_GS`) per picture on the GS thread; `-From/-To` (`PS2_PERF_BURN_FROM/_TO`) burn only in a VBlank range so every run reaches the scene in the same state. Prints VBlanks %, flips/s and VU pairs per VBlank per 5-s window |
@@ -163,6 +163,15 @@ in the headroom table above to roughly 8-10 ms.
 | VU: lazy pipeline retirement | 6.2 -> 5.7 ns/pair (unit bench) |
 | EcoQoS opt-out | VU 16.5 -> 12 ns/pair in headless runs |
 | pacing: high-resolution waitable timer, drop missed VBlanks, WaitOnAddress idle | steady 59.94, no bursts |
+
+## Memory
+
+The process commits ~150 MB (32 MB EE RAM, VRAM, GS queues and deferred batches, fibers) and stays
+there. Until 2026-10-11 it grew by ~1 MB per second in every scene: Sly 2 creates, starts and
+ExitDeleteThreads a thread (entry 0x1AAF18) about once a second, and each CreateThread wiped the
+slot's fiber pointer, leaving the old fiber (1 MB of committed stack) behind - over 1 GB after
+15 minutes of play. `runtime/threads.c` now deletes fibers stopped mid-way and reuses parked ones
+(`tests/unit/threads`).
 
 ## Next
 

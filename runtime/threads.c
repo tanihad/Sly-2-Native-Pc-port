@@ -21,6 +21,7 @@ typedef struct {
     int      wakeups;              /* WakeupThread calls banked while not sleeping */
     int      wait_sema;
     void*    fiber;
+    int      parked;               /* the fiber waits at the top of thread_main: it can start the thread again */
     ps2_ctx  ctx;
 } thread;
 
@@ -74,13 +75,36 @@ static int pick_next(void) {
     return best;
 }
 
+/* Fibers. StartThread gives a thread a fiber running thread_main: the entry function, then (it
+ * returned: ExitThread) the fiber parks, and a later StartThread of the slot (also after DeleteThread
+ * and CreateThread) runs the new entry on it. A fiber stopped mid-way (the ExitThread and
+ * ExitDeleteThread syscalls, TerminateThread or DeleteThread of a blocked thread) must never resume,
+ * so it is deleted and StartThread makes a new one. A fiber cannot delete itself: the exiting one is
+ * deleted by the next fiber that runs. (Sly 2 creates, starts and ExitDeleteThreads a thread about
+ * once a second; each one used to leave its fiber, 1 MB of committed stack, behind.) */
+static void* fiber_grave;
+
+static void reap_fiber(void) {
+    if (fiber_grave && fiber_grave != GetCurrentFiber()) { DeleteFiber(fiber_grave); fiber_grave = NULL; }
+}
+
+static void drop_fiber(thread* t) {
+    if (!t->fiber || t == &threads[1]) return;   /* #1 is the host thread itself (ConvertThreadToFiber) */
+    reap_fiber();
+    if (t->fiber == GetCurrentFiber()) fiber_grave = t->fiber;
+    else DeleteFiber(t->fiber);
+    t->fiber = NULL;
+    t->parked = 0;
+}
+
 static void switch_to(int tid) {
-    if (tid == current) { threads[tid].status = TH_RUNNING; return; }
-    if (threads[current].status == TH_RUNNING) make_ready(current, 1);   /* preempted: head */
+    if (tid == current && threads[tid].fiber == GetCurrentFiber()) { threads[tid].status = TH_RUNNING; return; }
+    if (tid != current && threads[current].status == TH_RUNNING) make_ready(current, 1);   /* preempted: head */
     current = tid;
     threads[tid].status = TH_RUNNING;
     SwitchToFiber(threads[tid].fiber);
     /* ...execution continues here when this thread is scheduled again */
+    reap_fiber();
 }
 
 static int idling;
@@ -112,10 +136,14 @@ void thread_reschedule(void) {
 
 static VOID CALLBACK thread_main(LPVOID arg) {
     thread* t = (thread*)arg;
-    ps2_call(&t->ctx, t->entry);
-    t->status = TH_DORMANT;                       /* returned from its function: ExitThread */
-    schedule();
-    for (;;) schedule();                          /* never resumed while dormant */
+    for (;;) {
+        reap_fiber();
+        t->parked = 0;
+        ps2_call(&t->ctx, t->entry);
+        t->status = TH_DORMANT;                   /* returned from its function: ExitThread */
+        t->parked = 1;
+        schedule();                               /* resumed only by StartThread: run the (new) entry */
+    }
 }
 
 void threads_init(ps2_ctx* main_ctx) {
@@ -168,7 +196,11 @@ int thread_syscall(ps2_ctx* ctx, int n, int64_t* ret) {
         for (int i = 2; i < MAX_THREADS; i++) {
             if (threads[i].status != TH_FREE) continue;
             t = &threads[i];
+            void* fiber = t->fiber;               /* a parked fiber of a deleted thread is reused */
+            int parked = t->parked;
             memset(t, 0, sizeof *t);
+            t->fiber = fiber;
+            t->parked = parked;
             t->status = TH_DORMANT;
             t->entry = ps2_r32(ctx, a0 + 4);
             t->stack = ps2_r32(ctx, a0 + 8);
@@ -188,6 +220,7 @@ int thread_syscall(ps2_ctx* ctx, int n, int64_t* ret) {
     case 0x21: case 0x25: case 0x26:              /* DeleteThread, (i)TerminateThread */
         if (!(t = get(a0)) || t == &threads[current]) { *ret = -1; return 1; }
         t->status = (n == 0x21) ? TH_FREE : TH_DORMANT;
+        if (!t->parked) drop_fiber(t);            /* stopped mid-way (or never ran): start afresh */
         *ret = 0;
         return 1;
     case 0x22: {                                  /* StartThread(tid, arg) */
@@ -199,6 +232,7 @@ int thread_syscall(ps2_ctx* ctx, int n, int64_t* ret) {
         t->ctx.r[REG_GP].sd[0] = (int32_t)t->gp;
         t->ctx.r[REG_SP].sd[0] = (int32_t)((t->stack + t->stack_size - 0x2A0u) & ~15u);
         t->prio = t->init_prio;
+        if (t->fiber && !t->parked) drop_fiber(t);
         if (!t->fiber) t->fiber = CreateFiber(1 << 20, thread_main, t);
         TLOG("[thread] start #%d arg 0x%08X (by #%d prio %d)\n", (int)(t - threads), a1, current, threads[current].prio);
         make_ready((int)(t - threads), 0);
@@ -208,6 +242,7 @@ int thread_syscall(ps2_ctx* ctx, int n, int64_t* ret) {
     case 0x23: case 0x24:                         /* ExitThread, ExitDeleteThread */
         TLOG("[thread] exit #%d (%s)\n", current, n == 0x23 ? "ExitThread" : "ExitDeleteThread");
         threads[current].status = (n == 0x23) ? TH_DORMANT : TH_FREE;
+        drop_fiber(&threads[current]);            /* mid-way in its call chain: never resumed */
         schedule();
         *ret = 0;
         return 1;
