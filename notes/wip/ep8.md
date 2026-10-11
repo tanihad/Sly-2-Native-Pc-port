@@ -121,6 +121,17 @@ frames in build\screenshots\ep8_*.png.
 - Per-instance CPU: other agents' sly2 instances use 5-6.5 cores each (pixel workers spin 20000
   pauses before WaitOnAddress, gs_draw_pixel.c WORKER_SPINS); with 4-6 games the machine is at
   99% and every game is GS-bound (GS thread 20-90 ms/VBlank in s9_tur). Not changed (generic).
+  My own release instance in the debris fall: 3-4.5 cores, of which pixel work 1.2-2.0 s/s
+  (PS2_GS_STATS), critical path 0.5-0.7 s/s: spinning is ~1 core, not the main cost.
+- GS cost of ep8 scenes vs the reference (gs_replay -Bench, 8 workers, interleaved, machine at
+  100%): hub walk (build\gsrec\hub.gsrec, 240 VBlanks) 14.6-22.2 ms/VBlank, debris fall
+  (boss.gsrec) 25.6-31.9, fix-perf briefing (holds 60 when quiet: 8.9) 27.5-44.1 => ep8 scenes need
+  0.5-0.8x the briefing's GS work: they hold 60 where the briefing does. EE side (perf_hub2): busy
+  6-11 ms/VBlank under load, VU 4-6 ns/pair. Slowdowns seen here are machine load only.
+- Murray engine room (direct t8_engine_room_murray_lift_complete, world 40, build\warp\s9_mur):
+  Murray above the engine room with 8 red switch pedestals and spark enemies (they shock him).
+  3439-3447:2 -> the game completes destroy_switches 3448 (cutscene) and activates 3449; 3449:2
+  set directly shows nothing (that job's end is level-script driven; skipped). Flop not played.
 
 ## In progress
 - Boss Murray stage (t8_open_head_intro, release, head3..5 with PS2_POKE=3D4AE0=3C): Murray walks
