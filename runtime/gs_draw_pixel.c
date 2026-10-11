@@ -723,6 +723,7 @@ typedef struct {                         /* a drawing thread's own state */
     gs_prim p;
     uint32_t serial;                     /* batch and state the snapshot in p came from */
     int state;
+    uint32_t gen0;                       /* pool.gen when the worker was created */
 } wctx;
 
 /* Batch queue: DB[q_tail % DB_QUEUE] is filled by the drawing thread; the submitted batches
@@ -911,7 +912,15 @@ static void run_bands(uint32_t g, wctx* w) {
 
 static DWORD WINAPI pixel_worker(LPVOID arg) {
     wctx* w = arg;
-    uint32_t seen = atomic_load_explicit(&pool.gen, memory_order_acquire);
+#ifdef GS_TEST_WORKER_DELAY_MS
+    Sleep(GS_TEST_WORKER_DELAY_MS);              /* unit test: workers that start after the first job */
+#endif
+    /* The generation at creation, not the one when this thread first runs: on a loaded machine a new
+     * thread can start tens of milliseconds late, after the first job (the first VBlank picture) has
+     * already been started; reading pool.gen here would skip that job, and if every worker skipped
+     * it, it was never drawn - the pool stalled with it and the EE waited forever for the picture
+     * (a hang at boot, seen once in ~100 headless runs on a machine at 100% CPU). */
+    uint32_t seen = w->gen0;
     for (;;) {
         uint32_t g;
         int spins = 0;
@@ -962,6 +971,7 @@ void gs_draw_set_workers(int n) {
     st.on = getenv("PS2_GS_STATS") != NULL;
     for (int i = 0; i < n; i++) {
         wctx* w = new_ctx();
+        if (w) w->gen0 = atomic_load_explicit(&pool.gen, memory_order_acquire);
         HANDLE h = w ? CreateThread(NULL, 0, pixel_worker, w, 0, NULL) : NULL;
         if (!h) break;
         worker_handles[pool.n++] = h;            /* kept for the profiler (PS2_PROFILE=workers) */

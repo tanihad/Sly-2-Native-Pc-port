@@ -27,7 +27,9 @@ $fake = @(Join-Path $PSScriptRoot 'fake_gs_mem.c')
 # test_gs_draw_async: the same scenes through the GS thread with 3 pixel workers (gs_thread.c)
 $variants = @(@{ name = 'test_gs_draw'; defs = @(); mem = $fake; dir = $out },
               @{ name = 'test_gs_draw_async'; defs = @('-DTEST_ASYNC'); mem = $fake; dir = (Join-Path $out 'async') },
-              @{ name = 'test_gs_draw_linear'; defs = @('-DFAKE_LINEAR'); mem = $fake; dir = (Join-Path $out 'linear') })
+              @{ name = 'test_gs_draw_linear'; defs = @('-DFAKE_LINEAR'); mem = $fake; dir = (Join-Path $out 'linear') },
+              # pixel workers that first run after the first job has started (a boot hang under load)
+              @{ name = 'test_gs_draw_late_workers'; defs = @('-DTEST_LATE_WORKERS', '-DGS_TEST_WORKER_DELAY_MS=300'); mem = $fake; dir = (Join-Path $out 'late') })
 $realmem = Join-Path $rt 'gs_mem.c'
 if ((Test-Path $realmem) -and -not (Select-String -Path $realmem -Pattern 'STUB' -Quiet)) {
     $mem = @(Get-ChildItem $rt -Filter 'gs_mem*.c' | ForEach-Object { $_.FullName }) + (Join-Path $PSScriptRoot 'real_gs_mem_glue.c')

@@ -1557,8 +1557,42 @@ static void t_texture_cache_random(void) {
     W(TEX1_1, 0); W(CLAMP_1, 0);
 }
 
+#ifdef TEST_LATE_WORKERS
+/* Pixel workers that first run after the first job has started (built with GS_TEST_WORKER_DELAY_MS:
+ * each worker sleeps before its first look at the pool, as a new thread can on a loaded machine) must
+ * still draw it. They used to read the pool's generation when they started, so all of them skipped
+ * the first VBlank picture, it was never presented, and the next gs_queue_vsync waited for it forever
+ * (the game hung at boot). A watchdog turns a hang into a failure. */
+static volatile LONG late_presented;
+static void late_present(const uint32_t* frame, int ok, int w, int h, uint32_t vblank) {
+    (void)frame; (void)ok; (void)w; (void)h; (void)vblank;
+    InterlockedIncrement(&late_presented);
+}
+static DWORD WINAPI late_watchdog(LPVOID arg) {
+    (void)arg;
+    Sleep(15000);
+    fprintf(stderr, "FAIL: late-starting pixel workers: VBlank pictures stalled (%ld presented)\n", late_presented);
+    ExitProcess(1);
+    return 0;
+}
+static int t_late_workers(void) {
+    CreateThread(NULL, 0, late_watchdog, NULL, 0, NULL);
+    gs_thread_start(3, late_present);
+    CHECK(gs_async() && gs_draw_workers() == 3, "GS thread and 3 pixel workers running");
+    for (uint32_t v = 1; v <= 4; v++) gs_queue_vsync(v);   /* each waits for the previous picture */
+    gs_sync();
+    CHECK(late_presented >= 3, "VBlank pictures presented with late-starting workers: %ld", late_presented);
+    fprintf(stderr, "late workers: %d/%d checks passed\n", checks - fails, checks);
+    return fails ? 1 : 0;
+}
+#endif
+
 int main(int argc, char** argv) {
     if (argc > 1) outdir = argv[1];
+#ifdef TEST_LATE_WORKERS
+    gs_swz_init();
+    return t_late_workers();
+#endif
     snprintf(trace_path, sizeof trace_path, "%s/trace.txt", outdir);
     _putenv_s("PS2_GS_TRACE_RECT", "1000,1000,1003,1003");    /* see t_trace */
     _putenv_s("PS2_GS_TRACE_OUT", trace_path);
