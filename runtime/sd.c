@@ -98,6 +98,13 @@ static int16_t  g_gauss[512];
 static int      g_log = -1;
 static uint64_t g_trans_overlaps;      /* VoiceTrans writes into a block a voice was playing */
 static uint64_t g_bad_blocks;          /* audible ADPCM blocks with impossible headers */
+/* The last register events of every voice (KON, KOFF, PITCH, SSA, LSAX with the audio clock),
+ * printed with a stream-refill overlap so the voice's story is known without PS2_LOG_SD (which
+ * slows the IOP enough to change stream timing). */
+enum { HIST_N = 8 };
+typedef struct { uint64_t frame; uint32_t value; char what; } sd_hist;
+static sd_hist  g_hist[2][24][HIST_N];
+static uint8_t  g_hist_pos[2][24];
 
 #define LOCK()   AcquireSRWLockExclusive(&g_lock)
 #define UNLOCK() ReleaseSRWLockExclusive(&g_lock)
@@ -116,6 +123,26 @@ static void log_once(int* flag, const char* fmt, ...) {
 /* Log lines carry the audio clock (seconds of rendered audio = position in a PS2_AUDIO_WAV file). */
 #define SDLOG(...) do { if (g_log > 0) { fprintf(stderr, "[sd %8.3f] ", (double)g_frames / 48000.0); \
                                          fprintf(stderr, __VA_ARGS__); } } while (0)
+
+static inline void hist_add(int core, int voice, char what, uint32_t value) {   /* lock held */
+    uint8_t* p = &g_hist_pos[core][voice];
+    g_hist[core][voice][*p] = (sd_hist){ g_frames, value, what };
+    *p = (uint8_t)((*p + 1) % HIST_N);
+}
+
+/* "  KON 09070 @95.030, PITCH 0EB3 @112.140, ..." oldest first (lock held). */
+static void hist_format(int core, int voice, char* out, size_t size) {
+    size_t n = 0;
+    out[0] = 0;
+    for (int i = 0; i < HIST_N && n + 32 < size; i++) {
+        const sd_hist* h = &g_hist[core][voice][(g_hist_pos[core][voice] + i) % HIST_N];
+        if (!h->what) continue;
+        const char* name = h->what == 'K' ? "KON" : h->what == 'O' ? "KOFF" : h->what == 'P' ? "PITCH" :
+                           h->what == 'S' ? "SSA" : "LSAX";
+        n += (size_t)snprintf(out + n, size - n, "%s%s %0*X @%.3f", n ? ", " : "", name,
+                              h->what == 'P' ? 4 : 5, h->value, (double)h->frame / 48000.0);
+    }
+}
 
 static inline int32_t clamp16(int32_t v) { return v < -32768 ? -32768 : v > 32767 ? 32767 : v; }
 static inline int32_t mul15(int32_t a, int32_t b) { return (a * b) >> 15; }
@@ -143,7 +170,7 @@ static void global_init(void) {          /* call with the lock held */
     gauss_init();
     sd_reverb_init();
     if (g_log < 0) {
-        const char* e = getenv("PS2_LOG_SD");      /* 1: KON/KOFF/transfers, 2: also volumes, pitch */
+        const char* e = getenv("PS2_LOG_SD");      /* 1: KON/KOFF/transfers, 2: + PITCH/SSA/LSAX, 3: + VOLL/R */
         g_log = e && *e && *e != '0' ? (atoi(e) > 1 ? atoi(e) : 1) : 0;
     }
     g_ready = 1;
@@ -587,14 +614,14 @@ void sceSdSetParam(uint16_t entry, uint16_t value) {
             switch (p) {
             case P_VOLL:  vol_set(&vc->vol[0], value); break;
             case P_VOLR:  vol_set(&vc->vol[1], value); break;
-            case P_PITCH: vc->pitch = value; break;
+            case P_PITCH: vc->pitch = value; hist_add(core, voice, 'P', value); break;
             case P_ADSR1: vc->adsr1 = value; break;
             case P_ADSR2: vc->adsr2 = value; break;
             case P_ENVX:  vc->env = value & 0x7FFF; break;
             case P_VOLXL: vc->vol[0].cur = (int16_t)value; vc->vol[0].level = abs(vc->vol[0].cur); break;
             case P_VOLXR: vc->vol[1].cur = (int16_t)value; vc->vol[1].level = abs(vc->vol[1].cur); break;
             }
-            if (g_log > 1 && (p == P_VOLL || p == P_VOLR || p == P_PITCH))
+            if ((g_log > 1 && p == P_PITCH) || (g_log > 2 && (p == P_VOLL || p == P_VOLR)))
                 SDLOG("%s c%d v%-2d %04X\n", p == P_VOLL ? "VOLL " : p == P_VOLR ? "VOLR " : "PITCH", core, voice, value);
         }
     } else {
@@ -669,7 +696,10 @@ void sceSdSetSwitch(uint16_t entry, uint32_t value) {
     sd_core* k = &g_core[core];
     switch (s) {
     case S_PMON:   k->pmon = value; break;
-    case S_NON:    k->non = value; break;
+    case S_NON:
+        if (value != k->non) SDLOG("NON  c%d %06X\n", core, value);
+        k->non = value;
+        break;
     case S_VMIXL:  k->vmixl = value; break;
     case S_VMIXEL: k->vmixel = value; break;
     case S_VMIXR:  k->vmixr = value; break;
@@ -679,15 +709,16 @@ void sceSdSetSwitch(uint16_t entry, uint32_t value) {
         for (int v = 0; v < 24; v++)
             if (value & (1u << v)) {
                 key_on(k, v);
-                SDLOG("KON  c%d v%-2d ssa %05X pitch %04X adsr %04X/%04X vol %04X/%04X\n", core, v,
+                hist_add(core, v, 'K', k->v[v].ssa << 1);
+                SDLOG("KON  c%d v%-2d ssa %05X pitch %04X adsr %04X/%04X vol %04X/%04X%s\n", core, v,
                       k->v[v].ssa << 1, k->v[v].pitch, k->v[v].adsr1, k->v[v].adsr2,
-                      k->v[v].vol[0].reg, k->v[v].vol[1].reg);
+                      k->v[v].vol[0].reg, k->v[v].vol[1].reg, (k->non >> v) & 1 ? " noise" : "");
             }
         break;
     case S_KOFF:
         k->koff = value;
         for (int v = 0; v < 24; v++)
-            if (value & (1u << v)) key_off(k, v);
+            if (value & (1u << v)) { key_off(k, v); hist_add(core, v, 'O', k->v[v].cur << 1); }
         if (value) SDLOG("KOFF c%d %06X\n", core, value);
         break;
     case S_ENDX:   k->endx = 0; break;        /* a write clears the end flags */
@@ -733,8 +764,8 @@ void sceSdSetAddr(uint16_t entry, uint32_t value) {
     case A_EEA:   k->eea_hi = (value >> 17) & 0xF; break;
     case A_TSA:   k->tsa = hw; break;
     case A_IRQA:  k->irqa = hw; break;
-    case VA_SSA:  if (!bad_voice(voice)) k->v[voice].ssa = hw; break;
-    case VA_LSAX: if (!bad_voice(voice)) k->v[voice].lsa = hw; break;
+    case VA_SSA:  if (!bad_voice(voice)) { k->v[voice].ssa = hw; hist_add(core, voice, 'S', hw << 1); } break;
+    case VA_LSAX: if (!bad_voice(voice)) { k->v[voice].lsa = hw; hist_add(core, voice, 'L', hw << 1); } break;
     case VA_NAX:  log_once(&nax, "sceSdSetAddr(NAX) ignored"); break;
     default:      log_once(&unk, "sceSdSetAddr: unhandled entry 0x%04X", entry); break;
     }
@@ -844,21 +875,32 @@ int sceSdVoiceTrans(int16_t channel, uint16_t mode, uint32_t iop_addr, uint32_t 
     }
     g_core[ch].tsa = ((spu_addr + n) >> 1) & SD_RAM_MASK;
     /* Stream health: a write into the block an audible voice is playing means a stream refill came
-     * too late (or too early) and that voice glitches. 989snd/spiop refill the half not playing. */
+     * too late (or too early) and that voice glitches. 989snd/spiop refill the half not playing.
+     * Noise voices do not count: their sample data is not heard, and 989snd keys them on without
+     * writing SSA, so they can sit on whatever block the voice last played (Sly 2's wind in Episode 6
+     * sat on a music stream buffer with pitch 0 and was reported at every refill). */
     uint32_t lo = (spu_addr >> 1) & SD_RAM_MASK, hi = lo + (len >> 1), hit_core = 0, hit_voice = 0, hits = 0;
+    sd_voice hv = { 0 };
     for (int c = 0; dir == TRANS_WRITE && c < 2; c++)
         for (int v = 0; v < 24; v++) {
             const sd_voice* vc = &g_core[c].v[v];
-            if (vc->phase == PH_RELEASE && vc->env == 0) continue;
+            if ((vc->phase == PH_RELEASE && vc->env == 0) || ((g_core[c].non >> v) & 1)) continue;
             uint32_t b = vc->cur & ~7u;
-            if ((b >= lo && b < hi) || (b + 0x200000u / 2 >= lo && b + 0x200000u / 2 < hi)) { hits++; hit_core = (uint32_t)c; hit_voice = (uint32_t)v; }
+            if ((b >= lo && b < hi) || (b + 0x200000u / 2 >= lo && b + 0x200000u / 2 < hi)) {
+                hits++; hit_core = (uint32_t)c; hit_voice = (uint32_t)v; hv = *vc;
+            }
         }
     if (hits) g_trans_overlaps++;
     uint64_t overlaps = g_trans_overlaps;
+    char hist[400] = "";
+    int report = hits && (overlaps <= 20 || g_log > 0);
+    if (report) hist_format((int)hit_core, (int)hit_voice, hist, sizeof hist);
     UNLOCK();
-    if (hits && (overlaps <= 20 || g_log > 0))
-        fprintf(stderr, "[sd %8.3f] VoiceTrans to %06X+%X overwrites the block voice c%u v%u is playing (%llu so far)\n",
-                (double)g_frames / 48000.0, spu_addr, size, hit_core, hit_voice, (unsigned long long)overlaps);
+    if (report)
+        fprintf(stderr, "[sd %8.3f] VoiceTrans to %06X+%X overwrites the block voice c%u v%u is playing (%llu so far; "
+                "at %05X lsa %05X pitch %04X env %04X; %s)\n",
+                (double)g_frames / 48000.0, spu_addr, size, hit_core, hit_voice, (unsigned long long)overlaps,
+                (hv.cur & ~7u) << 1, hv.lsa << 1, hv.pitch, hv.env, hist);
     int silent = 1;                                          /* data whose samples are all zero */
     for (uint32_t k = 0; g_log > 0 && iop && k + 16 <= len && silent; k += 16)
         for (int b = 2; b < 16; b++) if (iop[k + b]) { silent = 0; break; }
