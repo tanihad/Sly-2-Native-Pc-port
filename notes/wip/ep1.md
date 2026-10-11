@@ -24,13 +24,24 @@ runtime/recompiler problem found at its root (with tests); frames in build\scree
 - Frames: build\screenshots\ep1_*.png (safehouse, sat briefing, hub roof, recon basement, theater,
   waterpump, disco, heist, harpoon fire/miss, neela chase, siege, boss intro).
 
+- Direct starts m1_sat (Paris street, satellite dishes, guards), m1_follow_dimitri (Binocucom
+  briefing, Sly on the canal), m1_brawl (Murray briefing, alarms job) load and play (debug, 360 s);
+  no new log lines. Every Episode 1 job now has a checked direct start.
+- Audio: safehouse music loops cleanly for 30 min (debug, snd2: 60 s period, steady levels, 0
+  underruns); roof idle 18 min (snd1) steady. Hub run hub2 (release): after ~205 s the music went
+  almost silent (-65 dB, left only) while Sly stood in the hub; not yet explained (game fade of the
+  music channels via spiop proc 6, or a stream problem?) -> check with PS2_LOG_SND.
+- Merged the newer next/warp (entry hooks: direct starts and the title anchor in release builds);
+  cherry-picked ep7's PS2_POKE debug aid (11b4ac8) to hold sly.hpCur (0x3D4AB0) in the boss fight.
+
 ## In progress
-- Boss fight live (build\boss, debug, direct start m1_boss).
+- Boss fight live (direct start m1_boss) with PS2_POKE=3D4AB0=<hp>.
 
 ## Next
-1. Boss fight: try to beat Dimitri (dodge 4 bolts, hit when his ring malfunctions) -> episode end.
-2. Direct starts not yet run: m1_sat, m1_follow_dimitri, m1_brawl.
-3. Audio (-Wav + wav_analyze) in the hub and a job; PS2_PERF in release when the machine is quieter.
+1. Boss fight: beat Dimitri (dodge 4 bolts, hit when his ring malfunctions) -> episode end,
+   cutscene, save; then Episode 2 start.
+2. Hub music silence: PS2_LOG_SND run in the hub, see whether proc 6 volumes go to 0.
+3. PS2_PERF in release when the machine is quieter.
 
 ## Findings / traps
 - The scratchpad dir is shared with other agents (a file there was overwritten): keep helper
