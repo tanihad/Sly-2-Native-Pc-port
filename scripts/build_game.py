@@ -18,6 +18,10 @@ from paths import CLANG, ELF, ROOT, runtime_sources
 
 def compile_one(src: Path, obj_dir: Path, flags: list[str]) -> tuple[Path, str]:
     obj = obj_dir / src.with_suffix(".o").name     # never next to the source
+    if src.parent.name == "vu":
+        # recompiled VU microcode: already SIMD; clang's SLP vectorizer only costs minutes on these
+        # huge functions (recomp/vu_recomp.py)
+        flags = flags + ["-fno-slp-vectorize"]
     headers = max(h.stat().st_mtime for h in (ROOT / "runtime").glob("*.h"))
     stamp = obj_dir / "flags.txt"
     if obj.exists() and obj.stat().st_mtime > max(src.stat().st_mtime, headers, stamp.stat().st_mtime):
@@ -54,6 +58,12 @@ def main() -> int:
     print(iop.stdout.strip() or iop.stderr)
     if iop.returncode:
         return 1
+    # The VU microprograms (.vutext overlays): recomp/vu_recomp.py
+    vu = subprocess.run([sys.executable, "-m", "recomp", "vu", args.elf, "-o", str(out / "vu")],
+                        cwd=ROOT, capture_output=True, text=True)
+    print(vu.stdout.strip() or vu.stderr)
+    if vu.returncode:
+        return 1
 
     obj_dir = out / "obj"
     obj_dir.mkdir(parents=True, exist_ok=True)
@@ -61,7 +71,8 @@ def main() -> int:
     if not stamp.exists() or stamp.read_text() != " ".join(flags):
         stamp.write_text(" ".join(flags))              # flag change: rebuild everything
 
-    sources = sorted((out / "recomp").glob("*.c")) + sorted((out / "iop").glob("*.c")) + runtime_sources()
+    sources = (sorted((out / "recomp").glob("*.c")) + sorted((out / "iop").glob("*.c")) +
+               sorted((out / "vu").glob("*.c")) + runtime_sources())
     objs, errors = [], []
     with ThreadPoolExecutor(max_workers=os.cpu_count()) as pool:
         for obj, err in pool.map(lambda s: compile_one(s, obj_dir, flags), sources):

@@ -310,15 +310,18 @@ void perf_vblank(uint32_t serviced, uint32_t due) {
     char gsthread[64] = "";
     if (dgs) snprintf(gsthread, sizeof gsthread, ", GS thread %.2f ms/vblank", ds ? (double)dgs / tsc_hz * 1000.0 / ds : 0);
     /* VU microprograms: pairs executed per VBlank and the time per pair */
-    static uint64_t last_pairs, last_progs;
+    static uint64_t last_pairs, last_progs, last_cpairs;
     uint64_t pairs = vu_st[0].pairs + vu_st[1].pairs, dp = pairs - last_pairs;
     uint64_t progs = vu_st[0].programs + vu_st[1].programs, dprog = progs - last_progs;
+    uint64_t cpairs = vu_st[0].cpairs + vu_st[1].cpairs, dcp = cpairs - last_cpairs;
     last_pairs = pairs;
     last_progs = progs;
-    char vu[128] = "";
+    last_cpairs = cpairs;
+    char vu[160] = "";
     if (dp && ds)
-        snprintf(vu, sizeof vu, ", VU %.0fk pairs in %.0f programs/vblank (%.1f ns per pair)", (double)dp / ds / 1000.0,
-                 (double)dprog / ds, (double)d[PERF_VU] / tsc_hz * 1e9 / (double)dp);
+        snprintf(vu, sizeof vu, ", VU %.0fk pairs in %.0f programs/vblank (%.1f ns per pair, %.0f%% recompiled)",
+                 (double)dp / ds / 1000.0, (double)dprog / ds, (double)d[PERF_VU] / tsc_hz * 1e9 / (double)dp,
+                 100.0 * (double)dcp / (double)dp);
     fprintf(stderr, "[perf] %6.1fs vblanks %u/%u due (%.1f/s), flips %u (%.1f/s), busy %.2f ms/vblank%s%s |%s\n",
             (double)(now.QuadPart - start_qpc) / (double)qpc_freq.QuadPart, ds, dd, ds / secs, df, df / secs,
             busy_ms, gsthread, vu, cats);
