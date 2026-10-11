@@ -90,6 +90,12 @@ warp saves / direct job starts; fix every runtime/recompiler problem found at it
   the branches merge cleanly; my variant + GS_TEST_WORKER_DELAY_MS test are dropped. Re-run of the
   boss intro with it: 20-124 late ticks per 10 s, max 50-150 ms (one 500 ms OS stall).
 
+- Episode 2 -> 3 transition (live, warp --episode 2 --set episode.palace.percent_complete=100):
+  START -> episode menu on Episode 3 (Rajan portrait) -> X -> "The Predator Awakes / Start
+  Episode 0%" -> X -> episode 3 intro comic (gang at the temple, spice pot, Rajan, jungle) ->
+  safehouse "Press X to play as Sly"; autosave (episodeCurrent 3, t3_intro 3, recon_intro 1).
+  Frames ep3_episode_menu, ep3_episode_start, ep3_intro_comic_*.
+
 ## Next
 1. Perf: machine is shared by ~15 game instances (100% CPU), so PS2_PERF numbers are inflated
    (VU 24-27 ns/pair instead of ~11). GS replay, interleaved, same load: title (build\gsrec\
