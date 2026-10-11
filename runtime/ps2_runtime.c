@@ -87,7 +87,13 @@ uint32_t ps2_func_calls(uint32_t addr, uint32_t ra) {
     return 0;
 }
 
+/* PS2_WARP_TASK (runtime/warp.c): start a job directly on "Resume Game" (debug tool, off by default). */
+int warp_init(void);
+void warp_on_call(ps2_ctx* ctx, uint32_t addr);
+int warp_active(void);
+
 void ps2_calls_record(ps2_ctx* ctx, uint32_t addr) {
+    warp_on_call(ctx, addr);
     for (int k = 0; k < anchor_n; k++)
         if (anchor_addr[k] == addr && (!anchor_ra[k] || anchor_ra[k] == ctx->r[REG_RA].uw[0])) anchor_calls[k]++;
     for (int i = 0; i < watch_n; i++) {
@@ -149,7 +155,7 @@ static void calls_vblank(uint32_t v) {
     if (v == calls_from) ps2_calls_on = calls_window = 1;
     if (v == calls_from + calls_frames) {
         calls_window = 0;
-        ps2_calls_on = watch_n > 0 || anchor_n > 0;
+        ps2_calls_on = watch_n > 0 || anchor_n > 0 || warp_active();
         static uint32_t rows[CALLS_HASH][3];
         uint32_t n = 0;
         for (uint32_t i = 0; i < CALLS_HASH; i++)
@@ -643,6 +649,7 @@ int main(int argc, char** argv) {
     int dump_regs = argc > 2 && strcmp(argv[2], "--dump-regs") == 0;
     ps2_log_sif = getenv("PS2_LOG_SIF") != NULL;
     watch_init();
+    if (warp_init()) ps2_calls_on = 1;
     headless = dump_regs || getenv("PS2_HEADLESS") != NULL;
     dump_dir = getenv("PS2_DUMP_FRAMES");
     if (getenv("PS2_DUMP_EVERY")) dump_every = atoi(getenv("PS2_DUMP_EVERY")) > 0 ? atoi(getenv("PS2_DUMP_EVERY")) : 60;

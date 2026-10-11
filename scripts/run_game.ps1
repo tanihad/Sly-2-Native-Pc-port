@@ -1,11 +1,13 @@
 # Run the recompiled game for a few seconds and summarize what it did.
 #   .\scripts\run_game.ps1 [-Seconds 5] [-Skip 0] [-Out build\sly2] [-Dump <dir>] [-DumpEvery 60] [-Window]
-#                          [-Wav <file>] [-Pad "<frame>:<button>[:<held>],..."]
+#                          [-Wav <file>] [-Pad "<frame>:<button>[:<held>],..."] [-Card <memcard dir>]
+# -Card runs with that memory card directory (PS2_MEMCARD_DIR) instead of memcard\slot0 next to the
+# exe, e.g. one written by scripts\warp.py (start at any episode: notes/warp.md).
 # Headless by default (no window, audio rendered in real time into a null sink); -Window shows it
 # and plays sound through the default device. -Wav also records everything the mixer renders.
 # Works from a git worktree too.
 param([int]$Seconds = 5, [int]$Skip = 0, [string]$Out = "", [string]$Dump = "", [int]$DumpEvery = 60,
-      [switch]$Window, [string]$Wav = "", [string]$Pad = "")
+      [switch]$Window, [string]$Wav = "", [string]$Pad = "", [string]$Card = "")
 $root = Split-Path $PSScriptRoot -Parent
 $main = $root
 if (-not (Test-Path (Join-Path $root 'orig\SCUS_973.16'))) {   # worktree: find the main checkout
@@ -33,6 +35,8 @@ if ($Wav) {
     $env:PS2_AUDIO_WAV = [IO.Path]::GetFullPath($Wav)
 } else { Remove-Item Env:\PS2_AUDIO_WAV -ErrorAction SilentlyContinue }
 if ($Pad) { $env:PS2_INPUT = $Pad }    # scripted pad presses (window.c)
+if ($Card) { $env:PS2_MEMCARD_DIR = [IO.Path]::GetFullPath([IO.Path]::Combine((Get-Location).Path, $Card)) }
+else { Remove-Item Env:\PS2_MEMCARD_DIR -ErrorAction SilentlyContinue }
 if ($Dump) { New-Item -ItemType Directory -Force $Dump | Out-Null; $env:PS2_DUMP_FRAMES = $Dump; $env:PS2_DUMP_EVERY = "$DumpEvery" }
 else { Remove-Item Env:\PS2_DUMP_FRAMES -ErrorAction SilentlyContinue }
 $iso = Get-ChildItem (Join-Path $main 'orig\disc') -Filter *.iso -ErrorAction SilentlyContinue | Select-Object -First 1
