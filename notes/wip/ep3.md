@@ -80,6 +80,16 @@ warp saves / direct job starts; fix every runtime/recompiler problem found at it
   6-13 ms; the EE waits for the GS (gswait 50-85%). GS-bound (software rasterizer; the planned
   Direct3D 11 renderer is the fix). Not measurable properly until the machine is quiet.
 
+- Audio (WAV, release, boss intro + heist1 direct starts, build\tools\wavrun.ps1): no underruns,
+  no ADPCM errors; the digital-silence gaps are the attract cards' pauses and level loads. But the
+  IOP status showed the 989snd hard timer 1500-1900 times per 10 s more than 8 ms late (max ~1 s):
+  the IOP stood still while the EE thread waited for the GS thread (gs_thread.c ee_wait_change).
+  next/ep2 had already fixed exactly this (gs_set_wait_hook -> ps2_poll_iop) together with the
+  same pixel-worker race I fixed in 2b996f3. d7a9611 takes ep2's code verbatim (gs_draw_pixel.c,
+  gs_thread.c, hw.h, gs-draw tests identical to next/ep2; ps2_runtime.c with ep2's two hunks) so
+  the branches merge cleanly; my variant + GS_TEST_WORKER_DELAY_MS test are dropped. Re-run of the
+  boss intro with it: 20-124 late ticks per 10 s, max 50-150 ms (one 500 ms OS stall).
+
 ## Next
 1. Perf: machine is shared by ~15 game instances (100% CPU), so PS2_PERF numbers are inflated
    (VU 24-27 ns/pair instead of ~11). GS replay, interleaved, same load: title (build\gsrec\
