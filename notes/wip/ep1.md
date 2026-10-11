@@ -34,14 +34,24 @@ runtime/recompiler problem found at its root (with tests); frames in build\scree
 - Merged the newer next/warp (entry hooks: direct starts and the title anchor in release builds);
   cherry-picked ep7's PS2_POKE debug aid (11b4ac8) to hold sly.hpCur (0x3D4AB0) in the boss fight.
 
-## In progress
-- Boss fight live (direct start m1_boss) with PS2_POKE=3D4AB0=<hp>.
+- Boss (m1_boss "Printing Press Duel", release direct start, ~1 h of live play with
+  PS2_POKE=3D4AB0=28): intro cutscene with subtitles, Dimitri's ring bolts (purple projectile,
+  lightning hit effect on Sly), Sly's health icon flashing, Dimitri's melee kicks and teleports
+  between numbered platforms all happen; Job Help shows the job text. Not won: the camera is
+  fixed per area, Sly is knocked across the room, and with the poke Sly sometimes stands frozen
+  next to Dimitri for ~1000 VBlanks (probably the poke fighting the game's death/stun logic).
+  Direct starts of t1_dimitri_boss_complete / t1_complete only put Sly in the safehouse (the
+  post-boss sequence is driven by the boss stage itself), so the episode end is untested.
+- Pause menu: dpad presses of 4 frames were missed on the loaded machine (~25 game fps); 10-frame
+  holds work (left stick works too). Not a runtime bug.
+- Tools for live play (build\tools, not committed): pose.py (player/camera pose from PEEK lines),
+  objs.py/vts.py/movers.py (objects in RAM dumps after ep7's findobj: +0xC vtable, +0x18 oid,
+  +0x230 position; Sly oid 7 vt 2D2E98, Bentley 8, Murray 9; Dimitri's position is not at +0x230).
 
 ## Next
-1. Boss fight: beat Dimitri (dodge 4 bolts, hit when his ring malfunctions) -> episode end,
-   cutscene, save; then Episode 2 start.
-2. Hub music silence: PS2_LOG_SND run in the hub, see whether proc 6 volumes go to 0.
-3. PS2_PERF in release when the machine is quieter.
+1. Hub music silence: PS2_LOG_SND run in the hub, see whether proc 6 volumes go to 0.
+2. PS2_PERF in release when the machine is quieter.
+3. If time: boss again without the poke, using cover (barrels/glass) and the 3rd/4th-shot jam.
 
 ## Findings / traps
 - The scratchpad dir is shared with other agents (a file there was overwritten): keep helper
