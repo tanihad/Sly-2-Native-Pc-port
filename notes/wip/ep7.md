@@ -120,6 +120,15 @@ build\screenshots\ep7_*.png.
   X -> Sly in the hub; autosave save1 (episodeCurrent 7, widCurrent 32). ep7_title_card.png,
   ep7_intro_movie_sheet.png, ep7_hub_after_intro.png. Log: one more "[sd] VoiceTrans ... overwrites the
   block voice c0 v9 is playing" at a level load (same game-side pattern as before).
+- Heist 6 (log flume cheat, Sly, hub): Bison log-rolling, judge on a platform, gadget meter; Gadget
+  Grid -> Alarm Clock assigned to L1 (button glyphs L1/L2/R2 render), L1 = aim arc, L1 = throw (meter
+  drops). "Lure the guards into the cave with your Alarm Clock gadget." Not completed (cave unknown).
+- Boss (build\boss3/boss4, pause-token stepping, build\tools\step.ps1): Bentley vs Bison; idle =
+  "Looks like I'm tougher than you are clever!" game-over cutscene + mask wipe + retry. SQUARE fires
+  the fire-pad grates (big flame burst ~30 frames later, Bentley burns and is charred): fire renders
+  right (ep7_boss_flames.png). Traps per level data: c_ewok_trap_fire_pad / _circular_saw / _log.
+  With PS2_POKE health hold Bison pins Bentley in an endless hit loop (as before) -> not won;
+  parked (game logic, no runtime issue seen).
 
 ## In progress
 - Perf sweep (release, PS2_PERF) of the ep7 hub and the heavy job levels while the machine is quiet.
