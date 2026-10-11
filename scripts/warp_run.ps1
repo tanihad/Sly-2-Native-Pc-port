@@ -5,15 +5,15 @@
 #                          [-Pad "<more input>"] [-DumpEvery 120] [-Name ep3] [-Window]
 #                          [-Set "path=value,path=value"] [-Make "--coins 5000 --gadgets"]
 # -Job: the save has every task the job depends on done, so the hub opens with the job available.
-# -Direct (debug build only): the game also starts the job by itself (PS2_WARP_TASK, runtime/warp.c).
+# -Direct: the game also starts the job by itself (PS2_WARP_TASK, runtime/warp.c; any build).
 # -Play: press X at the safehouse ("Press X to play as ...") 1500 frames after START, into the hub.
-# Debug build (default, build\sly2): START is anchored to the title screen's START check
-# (@187D80/1DD96C+30). -Release (build\rel, no anchors, no -Direct): START at pad frame -TitleFrame
-# (default 2400, ~40 s), after the title appears in both builds. -Pad tokens follow START, e.g.
+# Debug build (default, build\sly2) or -Release (build\rel): START is anchored to the title screen's
+# START check (@187D80/1DD96C+30, an entry hook in release builds: recomp/hooks.py); -TitleFrame N
+# presses it at pad frame N instead (an exe built before the hook). -Pad tokens follow START, e.g.
 # "+900:cross" (relative to the START press). Frames: <dir>\frames\latest.png. Guide: notes/warp.md.
 param([Parameter(Mandatory = $true)][int]$Episode, [string]$Job = "", [switch]$Direct, [switch]$Play,
       [int]$Seconds = 150, [switch]$Release, [string]$Pad = "", [int]$DumpEvery = 120, [string]$Name = "",
-      [switch]$Window, [string]$Set = "", [string]$Make = "", [int]$TitleFrame = 2400)
+      [switch]$Window, [string]$Set = "", [string]$Make = "", [int]$TitleFrame = 0)
 $root = Split-Path $PSScriptRoot -Parent
 $main = $root
 if (-not (Test-Path (Join-Path $root 'orig\SCUS_973.16'))) {   # worktree: find the main checkout
@@ -21,7 +21,6 @@ if (-not (Test-Path (Join-Path $root 'orig\SCUS_973.16'))) {   # worktree: find 
     $main = Split-Path (Split-Path (Split-Path $gitdir -Parent) -Parent) -Parent
 }
 $py = Join-Path $main '.venv\Scripts\python.exe'
-if ($Direct -and $Release) { "-Direct needs the debug build (function tracing); drop -Release"; exit 1 }
 if ($Direct -and -not $Job) { "-Direct needs -Job"; exit 1 }
 if (-not $Name) { $Name = "ep$Episode$(if ($Job) { "_$Job" })$(if ($Direct) { '_direct' })" }
 $dir = Join-Path $root "build\warp\$Name"
@@ -51,7 +50,7 @@ if ($Direct) {
 
 $build = Join-Path $root $(if ($Release) { 'build\rel' } else { 'build\sly2' })
 Copy-Item (Join-Path $build 'sly2.exe') (Join-Path $dir 'sly2.exe') -Force   # own exe: parallel runs
-$script = if ($Release) { "${TitleFrame}:start:10" } else { '@187D80/1DD96C+30:start:10' }
+$script = if ($TitleFrame -gt 0) { "${TitleFrame}:start:10" } else { '@187D80/1DD96C+30:start:10' }
 if ($Play -and -not $Direct -and $Episode -gt 0) { $script += ',+1500:cross:6' }
 if ($Pad) { $script += ",$Pad" }
 $runArgs = @('-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'run_game.ps1'), '-Seconds', "$Seconds",
