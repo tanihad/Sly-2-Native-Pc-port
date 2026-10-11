@@ -170,14 +170,24 @@ runtime/recompiler problems at the root (crash, hang, missing syscall/RPC, rende
   16-minute boss soak; all unit tests + run_tests.py pass. (threads.c is "integrator-owned" per
   hle-architecture.md: flagged in the report.)
 
+- Regression with the fix: standard path 70 s (149 MB flat), debug build m5_kidnap (Murray's
+  Binocucom "Kidnap the General / Bring General to safehouse", walking to the General; 149-150 MB),
+  release t5_heist_free_carmelita_freed -> freed cutscene -> world 17 -> Neyla chase (151 MB).
+  Screens ep5_kidnap_murray_debug.png, ep5_heist_freed_to_neyla_chase_sheet.png.
+
+## Status: Episode 5 covered end to end
+Every job type and stage starts and plays; all three chalk talks, ThiefNet purchase, job-end
+autosaves, heist chain and episode end (-> Episode 6 menu) verified in context; VU recompiler exact
+in 12 ep5 scenes; one runtime fix (fiber leak, 9d6c24c). Not done: finishing jobs by pure play
+(kidnap carry, mojo defence, chases need real steering), PS2_PERF on a quiet machine.
+
 ## In progress
-- (none): hub run (build\live\ct2, warp --job m5_ghost), set the stage before each
-  final task (2661 ghost_drop, 2679 ewok water, 2685 kidnap carry) and let the game finish the jobs.
+- (none)
 
 ## Next
-1. PS2_PERF (release) on hub, boss 1, battlezone tank, ewok trap, hack minigame while quiet.
-2. Chalk talks (t5_chalktalk1..3): warp with recon complete + chalktalk1 active?
-3. Complete a job live (e.g. recon photos or hack path) -> checkpoint autosave mid-episode.
+1. When the machine is quiet: PS2_PERF (release) in the hub street (Sly walking), boss 1,
+   battlezone tank, hack minigame; GS thread was 15-18 ms/VBlank under load.
+2. Optional: finish a job by play (kidnap carry to the safehouse) with live steering.
 
 ## Findings / traps
 - The machine runs 10+ other sly2 instances (CPU 100%): debug build ~18-30 VBlanks/s, release
