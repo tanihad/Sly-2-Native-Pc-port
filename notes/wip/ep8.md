@@ -132,6 +132,13 @@ frames in build\screenshots\ep8_*.png.
   Murray above the engine room with 8 red switch pedestals and spark enemies (they shock him).
   3439-3447:2 -> the game completes destroy_switches 3448 (cutscene) and activates 3449; 3449:2
   set directly shows nothing (that job's end is level-script driven; skipped). Flop not played.
+- Turret audio (-Wav, s9_tur/s9_tursnd): music/explosions until "Job Failed!", then 116-203 s of
+  digital silence. PS2_LOG_SND shows the game's own fade: 989snd cmd 9 (master volume, groups 0/1)
+  0x3DD -> 0 over v6684-6721, then SUKR proc 3 on stream channels 3/4 (pause) => intended.
+  6 underruns in 410 s at 100% CPU, clicks only on explosion transients.
+- A run of mine died at v73 with a truncated log line (no crash report; not reproducible): my
+  perfrun.ps1 used the exe name sly2.exe, which other agents stop by name. Helpers now always copy
+  the exe as sly2_ep8_<name>.exe (stage_end.ps1, perfrun.ps1 in build\ep8tools).
 
 ## In progress
 - Boss Murray stage (t8_open_head_intro, release, head3..5 with PS2_POKE=3D4AE0=3C): Murray walks
