@@ -190,6 +190,10 @@ recompiler problem found at its root, with tests; frames in build\screenshots\ep
   load (c1: 91.95-92.68 s), so nothing is heard.
 - Session 5 end state: all unit tests + tests\run_tests.py (16/16) pass on 20ddfd9+.
 
+- Session 6 (2026-10-11 13:20, after the usage-limit pause): main unchanged (2d00835, already
+  merged); build\rel (09:47) is current. Machine QUIET (0 other game instances, CPU ~0%) ->
+  doing Next 1 (RC chopper battle at full speed) and Next 3 (perf) first.
+
 ## Next
 0. (DONE: stall = speed-dependent deploy altitude, faithful; checkpoint saves verified for bear
    cubs, recon, RC chopper; music stop = IOP lateness, fixed by next/ep1's IOP thread.)
