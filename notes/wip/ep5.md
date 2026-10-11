@@ -178,11 +178,17 @@ runtime/recompiler problems at the root (crash, hang, missing syscall/RPC, rende
 ## Status: Episode 5 covered end to end
 Every job type and stage starts and plays; all three chalk talks, ThiefNet purchase, job-end
 autosaves, heist chain and episode end (-> Episode 6 menu) verified in context; VU recompiler exact
-in 12 ep5 scenes; one runtime fix (fiber leak, 9d6c24c). Not done: finishing jobs by pure play
-(kidnap carry, mojo defence, chases need real steering), PS2_PERF on a quiet machine.
+in 12 ep5 scenes; one runtime fix (fiber leak, 9d6c24c, now on main as 81186bf). Session 5: clue
+bottle pickup (30/30) verified, hub perf shown to be lighter than scenes that hold 60 (GS replay +
+side-by-side thread CPU), PS2_POKE condition tool. Not done: finishing jobs by pure play (kidnap
+carry, mojo defence, chases need real steering), the vault (no vault object in the hub at the
+episode start), an absolute PS2_PERF on a quiet machine (never quiet).
 
 ## In progress
-- Session 5: merged main 2d00835 (has the threads fix as 81186bf; only notes/progress.md new) ->
+- (none)
+
+## Session 5 (2026-10-11)
+- Merged main 2d00835 (has the threads fix as 81186bf; only notes/progress.md new) ->
   857b74c. Machine quieter now (1 other sly2, ~50% CPU): doing Next 1 (PS2_PERF).
 - Hub perf (release, PS2_PERF, Sly walking in the street; 5-7 other games started meanwhile): 15-50
   VBlanks/s, EE busy 7.4-14 ms, GS thread 15-37 ms/VBlank: load again, no quiet window.
@@ -222,11 +228,14 @@ in 12 ep5 scenes; one runtime fix (fiber leak, 9d6c24c). Not done: finishing job
   holds 60 on main's quiet regression) 28.5 VBlanks/s, 23.6 / 13.9 / 12.6 ms, all 76.0 ms. The
   hub costs less than a scene that holds 60 when quiet: no ep5 perf problem (with the GS replay
   bench above, this closes Next 1).
+- Screens: ep5_clue_bottle.png (bottle moved next to the spawn), ep5_clue_bottle_30of30.png,
+  ep5_clue_bottle_pickup_sheet.png (bottle shatters, HUD 30/30), ep5_hub_binocucom_markers.png.
+- All unit tests and run_tests.py pass after the PS2_POKE change.
 
 ## Next
-1. When the machine is quiet: PS2_PERF (release) in the hub street (Sly walking), boss 1,
-   battlezone tank, hack minigame; GS thread was 15-18 ms/VBlank under load.
-2. Optional: finish a job by play (kidnap carry to the safehouse) with live steering.
+1. Optional (gameplay, not runtime): finish a job by play; the vault in a later hub state (check
+   for an object with +0xC == 0x2D5B30 in a RAM dump of the hub after more jobs).
+2. If the machine is ever quiet: absolute PS2_PERF in the hub (expected to hold 60, see above).
 
 ## Findings / traps
 - The machine runs 10+ other sly2 instances (CPU 100%): debug build ~18-30 VBlanks/s, release
