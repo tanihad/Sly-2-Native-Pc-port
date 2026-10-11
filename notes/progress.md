@@ -2,6 +2,14 @@
 
 ## Resume here (read first in a new session)
 
+**Main 125390a (2026-10-11):** the VU microcode recompiler and the warp tool's release-build
+direct starts are merged. Release regression: 60 fps, VU 100% recompiled (2.2 ns/pair), EE thread
+7.7 ms/frame (was ~14), GS thread ~16.4 ms/frame (now the busiest: the game draws more detail when
+it has time; the Direct3D 11 renderer is the fix), audio 0 underruns. Still unmerged: next/ep1..8
+(episode testers; ep7 verified the Episode 7 -> 8 transition; ep6 investigates Neyla chopper
+stages ending in "Job Failed"); the VU review and the integrate step are pending in the
+resumed workflow.
+
 **RESUMED on 2026-10-11:** workflow `whole-game-sweep` (run wf_1f8b6c38-938) is running again:
 episode testers continue from their checkpoints, then the VU recompiler review and the integrate
 step. The state below is the pause point.
