@@ -87,6 +87,8 @@ tools/, orig/ and .venv/ only exist in the main checkout
   `PS2_POKE=<hexaddr>=<hexvalue>[,...]` writes 32-bit words every VBlank (debug aid, off by default),
   e.g. `PS2_POKE=3D4AC8=28` holds Bentley's health (game state `bentley.hpCur`, scripts/warp_schema.txt)
   to reach the later stages of a fight that scripted input cannot win.
+  `PS2_POKE_FILE=<path>`: the same `<hexaddr>=<hexvalue>[,...]` lines appended to the file while the
+  game runs are written once (checked every 15 VBlanks, logged as `[poke]`), for live sessions.
 - Scripted input (`PS2_INPUT`, runtime/window.c header): absolute `<padframe>:<button>[:<hold>]`,
   relative `+n:...`, anchored to game code `@<func>[/<ra>][+n]:...` (after a call of a recompiled
   function, optionally from the call site returning to ra) and `@!<func>[+n]:...` (after it went

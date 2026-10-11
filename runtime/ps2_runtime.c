@@ -446,6 +446,30 @@ static void vblank(ps2_ctx* ctx) {
         unsigned addr = 0, val = 0;
         if (sscanf(s, "%x=%x", &addr, &val) == 2) ps2_w32(ctx, addr & ~3u, val);
     }
+    /* PS2_POKE_FILE=<path> (debugging, off by default): lines "<hexaddr>=<hexvalue>[,...]" appended
+     * while the game runs are written once, at the next VBlank (looked at every 15 VBlanks). */
+    static const char* poke_file = (const char*)1;
+    static long poke_pos;
+    if (poke_file == (const char*)1) poke_file = getenv("PS2_POKE_FILE");
+    if (poke_file && *poke_file && vblank_count % 15 == 0) {
+        FILE* f = fopen(poke_file, "rb");
+        char buf[1024];
+        size_t n = 0;
+        if (f && fseek(f, poke_pos, SEEK_SET) == 0) {
+            n = fread(buf, 1, sizeof buf - 1, f);
+            while (n > 0 && buf[n - 1] != '\n') n--;    /* whole lines only */
+            buf[n] = 0;
+            poke_pos += (long)n;
+        }
+        if (f) fclose(f);
+        for (char* s = n ? buf : NULL; s && *s; s++) {
+            unsigned addr = 0, val = 0;
+            if ((s == buf || s[-1] == ',' || s[-1] == '\n') && sscanf(s, "%x=%x", &addr, &val) == 2) {
+                ps2_w32(ctx, addr & ~3u, val);
+                fprintf(stderr, "[poke] v%u: %08X = %08X\n", vblank_count, addr & ~3u, val);
+            }
+        }
+    }
     intc_raise(INTC_VBLANK_S);
     intc_raise(INTC_VBLANK_E);
 }
