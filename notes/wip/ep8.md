@@ -106,6 +106,21 @@ frames in build\screenshots\ep8_*.png.
   blimp 81%, m8_tntbarrel complete, t8_chalktalk2 3, t8_megajump_intro 1.
   build\screenshots\ep8_chalktalk2_*.png, ep8_after_chalktalk2_safehouse.png.
 - Live frames: PS2_DUMP_RING=200 x DumpEvery 30 keeps only ~2 min: copy frames right away.
+- Mega-jump in context (direct m8_megajump, build\warp\s9_mj): 3456/3458/3460 -> HUD 3/4, 3462 ->
+  the game's flow: switch towers power up (cutscene), "Job Completed!" (Sly), autosave, turret
+  intro cutscene (Carmelita: "I need an experienced tail gunner"), turret gameplay.
+  ep8_megajump_complete_to_turret_sheet.png.
+- Stuck "y|" subtitle under a letterboxed "Job Failed!" (s9_mj) = my own doing: the turret job had
+  already failed (idle, ~40 s) when I set 3469:2; the completion cutscene started behind the
+  paused failure box. Repro without the tool (s9_tur): normal failure box over the turret view.
+- Turret in context (direct m8_turret, 3469:2 while playing, build\warp\s9_tur2): completion
+  cutscene ("You should have been a cop! That was some terrific shooting!"), blimp explodes,
+  Bentley "Clock-La is looking mighty upset", Sly-mask load of world 43, debris-fall gameplay.
+  => natural chain recon -> chalk talk 1 -> TNT -> chalk talk 2 -> mega-jump -> turret -> boss
+  (-> ending, session 4) verified. ep8_turret_complete_to_boss_sheet.png.
+- Per-instance CPU: other agents' sly2 instances use 5-6.5 cores each (pixel workers spin 20000
+  pauses before WaitOnAddress, gs_draw_pixel.c WORKER_SPINS); with 4-6 games the machine is at
+  99% and every game is GS-bound (GS thread 20-90 ms/VBlank in s9_tur). Not changed (generic).
 
 ## In progress
 - Boss Murray stage (t8_open_head_intro, release, head3..5 with PS2_POKE=3D4AE0=3C): Murray walks
