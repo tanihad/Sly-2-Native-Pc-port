@@ -47,6 +47,15 @@ warp saves / direct job starts; fix every runtime/recompiler problem found at it
   Unit test gs-draw test_gs_draw_late_workers (GS_TEST_WORKER_DELAY_MS=300) fails without the fix.
   24 boot runs (6 parallel) after the fix: 0 hangs.
 
+- Session 3 (2026-10-11): committed PS2_POKE_FILE (fa2cf07), merged main (ca9f1d3: VU recompiler);
+  release + debug builds OK, all unit tests + run_tests.py pass after the merge.
+- Live input token `pause` (204385d, test window test_live_pause): the EE waits in the pad read at
+  the next dumped VBlank until the next input line. Needed because a look-and-steer round trip
+  takes 10-40 s of game time (the turret attempt is over in 53 s). build\tools\live3.ps1 now takes
+  -Ring (build\tools\live_game2.ps1 = scripts\live_game.ps1 with a ring size parameter).
+- Turret: lower-case stick hex only (lxFF was dropped as an unknown button). lxff turns the view
+  right; the "dam" ticker reads "Destroy the dam."; the attempt fails after ~53 s every time.
+
 ## Next
 1. Perf: machine is shared by ~15 game instances (100% CPU), so PS2_PERF numbers are inflated
    (VU 24-27 ns/pair instead of ~11). GS replay, interleaved, same load: title (build\gsrec\
