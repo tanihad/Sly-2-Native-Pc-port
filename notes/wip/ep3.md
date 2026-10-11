@@ -30,6 +30,16 @@ warp saves / direct job starts; fix every runtime/recompiler problem found at it
   autosave (save1: episode.temple.percent_complete 100, episodeBest 3, t3_complete state 1) ->
   episode 4 title card. Mid-job tasks without a start warp (-1) just resume Sly on the hub hill.
 - Merged next/warp again (7729410: entry hooks, PS2_WARP_TASK and @187D80 anchors in release).
+- Cherry-picked from next/ep7: PS2_POKE (11b4ac8) and the PS2_INPUT_FILE long-session fix (1df4920:
+  a live session stopped taking input after 4096 tokens) - identical patches, merge cleanly.
+- Audio, hub (release, -Wav, build\audio_hub): continuous music/rain, no underruns, silences only
+  at the safehouse->hub load; one small click at 19.4 s (title). OK.
+- Turret (Blow the Dam), live: the chopper flies a fixed path, turret yaw is limited (~30 deg
+  right), R1 fires (bottom bar = gun heat, overheat works); top-left "C" gauge darkens with damage;
+  without shooting back the chopper is destroyed after ~50 s of game time -> "Job Failed! You must
+  destroy the dam" (legit). A full-width blue-gray band seen once = the Job Failed box's opening
+  animation (GS trace: untextured tristrips 334C6680 at UI z, x -317..219 -> -10..526). Not a bug.
+  Chopper health is not bentley.hpCur (0x3D4AC8 stays 0x28); address not found yet.
 
 ## Next
 1. Perf: machine is shared by ~15 game instances (100% CPU), so PS2_PERF numbers are inflated
