@@ -232,6 +232,15 @@ episode start), an absolute PS2_PERF on a quiet machine (never quiet).
   ep5_clue_bottle_pickup_sheet.png (bottle shatters, HUD 30/30), ep5_hub_binocucom_markers.png.
 - All unit tests and run_tests.py pass after the PS2_POKE change.
 
+## Session 6 (2026-10-11, after the usage-limit reset)
+- main unchanged (2d00835). The machine looked quiet at the start (17% CPU, no sly2), but 5 other
+  agents' sly2 instances started within seconds of mine (ep8 "quiet_hub" too) -> 100% CPU again.
+  Hub (release, PS2_PERF, Sly walking, 5 other games): 99 samples avg 55.1 VBlanks/s, 43 flips/s,
+  EE busy 8.6 ms, GS thread 15.0 ms/VBlank, 149 MB committed (flat). Before the others started
+  (boot, t<7 s) it held 60/60. Still no absolute quiet number; consistent with sessions 3-5.
+- Vault hunt: world 18 ("interior" in the schema level list) is no task's start world -> try
+  loading it with PS2_WARP_TASK=<oid>:18 (direct.ps1 -World 18).
+
 ## Next
 1. Optional (gameplay, not runtime): finish a job by play; the vault in a later hub state (check
    for an object with +0xC == 0x2D5B30 in a RAM dump of the hub after more jobs).
