@@ -91,7 +91,10 @@ tools/, orig/ and .venv/ only exist in the main checkout
   game runs are written once (checked every 15 VBlanks, logged as `[poke]`), for live sessions.
 - Live input (`PS2_INPUT_FILE`, `scripts\live_game.ps1`): the token `pause` stops the game at the next
   dumped VBlank (latest.png shows it) until the next line arrives, so real-time sections (turrets,
-  boss fights) can be played step by step: end each line with e.g. `+30:pause`. Tokens are not
+  boss fights) can be played step by step: end each line with e.g. `+30:pause`. The EE timers stand
+  still while paused (`timer_hold`), so no game time passes: Sly 2 takes its frame time from T2,
+  and before, each step saw the whole wait as elapsed time (the dance minigame's beats ran on while
+  paused; now they come every ~15 VBlanks however long the steps take). Tokens are not
   case-sensitive (`lxFF` = `lxff`; before, an upper-case token was dropped as an unknown button).
 - Scripted input (`PS2_INPUT`, runtime/window.c header): absolute `<padframe>:<button>[:<hold>]`,
   relative `+n:...`, anchored to game code `@<func>[/<ra>][+n]:...` (after a call of a recompiled

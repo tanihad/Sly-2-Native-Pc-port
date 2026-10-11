@@ -72,7 +72,8 @@ static uint64_t qpc_now(void) { LARGE_INTEGER t; QueryPerformanceCounter(&t); re
 
 static uint64_t (*host_now)(void);
 static uint64_t host_freq, host_epoch;
-static int ready;
+static uint64_t hold_at;                     /* timer_hold: host time at which EE time stopped */
+static int ready, held;
 static unsigned gate_logged;
 
 static void timers_init(void) {
@@ -83,6 +84,7 @@ static void timers_init(void) {
         host_freq = (uint64_t)f.QuadPart;
     }
     host_epoch = host_now();
+    held = 0;
     memset(timers, 0, sizeof timers);
     ready = 1;
 }
@@ -96,8 +98,18 @@ void timer_set_host_clock(uint64_t (*now)(void), uint64_t freq) {
 }
 
 static uint64_t bus_now(void) {
-    uint64_t h = host_now(), dt = h > host_epoch ? h - host_epoch : 0;
+    uint64_t h = held ? hold_at : host_now(), dt = h > host_epoch ? h - host_epoch : 0;
     return dt / host_freq * BUS_HZ + dt % host_freq * BUS_HZ / host_freq;   /* exact, no 64-bit overflow */
+}
+
+/* Debug pause (the live input token 'pause', window.c): EE time stands still while the EE waits for
+ * the next input line, and continues from there afterwards. Sly 2 takes its frame time from T2
+ * (the libkernel system time), so without this every resumed step would see the whole wait pass as
+ * game time (the dance minigame's beats ran on while it was paused). EE thread only. */
+void timer_hold(int on) {
+    if (!ready) timers_init();
+    if (on && !held) { hold_at = host_now(); held = 1; }
+    else if (!on && held) { uint64_t h = host_now(); host_epoch += h > hold_at ? h - hold_at : 0; held = 0; }
 }
 
 static uint64_t clock_ticks(uint32_t mode, uint64_t bus) {
