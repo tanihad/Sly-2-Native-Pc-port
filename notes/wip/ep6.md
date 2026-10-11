@@ -147,6 +147,13 @@ recompiler problem found at its root, with tests; frames in build\screenshots\ep
   (GS-wait hook): 69-98 late per 10 s, max 45-61 ms. r16 (ep1 exe + PS2_LOG_SD=1, async log):
   music refills continue 117 s+ after the level load (721 refills), vs ~25 s on my build.
   => ep6's music stop is fixed by next/ep1's IOP thread; nothing to do here (do not duplicate).
+- Took ep8's PS2_TASK_SET/PS2_TASK_FILE tool verbatim (cherry-pick of ep1's b662346 = ep8 content,
+  3cb9c82). g1: paraglide live (briefing "vacuum backpack... land on the caboose", glide, Sly
+  explodes on hazards near the trestle -> retry; steering too slow to finish live).
+- b1 (bear cubs direct + PS2_TASK_FILE): tasks 2932, 2933, 2937, 2938, 2939 -> 2 one by one;
+  intermediate tasks do not save; job completion (2940 -> state 3) AUTOSAVED save1 (09:56:07):
+  m6_kidnap_bearcubs.is_complete = 1, all t6_kidnap_* state 3, train percent 72. Murray then
+  fights lumberjacks in the town (fire/explosions/coins render). Checkpoint saving works.
 
 ## Next
 0. RC chopper battle stall: rerun with less load, dump RAM often after the launchers; if it stalls
