@@ -15,16 +15,27 @@ frames in build\screenshots\ep8_*.png.
   t8_engine_room_murray_hack_path2 (Bentley 1/3), t8_engine_room_murray_open_door (world 40,
   Murray), m8_turret, m8_boss (world 43 cutscene with Carmelita's helicopter, Sly on the blimp).
 
+- m8_megajump (Sly on the blimp), t8_open_head_intro (Clock-La's head in Paris cutscene, then
+  Murray stage: lasers from the head, bombs) load and play.
+- Boss live (build\warp\live_boss): debris-fall chase (Sly on falling blimp pieces, free fall,
+  "Catch up to Clock-La") plays; not won by blind input.
+- Red band in world 42: not reproduced in a second run with dumps every 6 VBlanks (900 VBlanks);
+  looks like a translucent light cone (guard flashlight?) near the camera; left as game effect.
+- NEW debug tool (runtime/warp.c): PS2_TASK_SET=<oid>:<state>[@vblank] / PS2_TASK_FILE=<path>
+  (debug builds): calls the game's own task-state change 0x164DF0 (object found with 0x15E938) at
+  the top of the main loop (entry of 0x20E890, called from 0x1A7588) to complete a stage.
+
 ## In progress
-- Survey chain: m8_megajump, t8_open_head_intro.
+- Testing PS2_TASK_FILE on the boss: live_end session (t8_open_head_intro, task file
+  build\warp\live_end\task.txt): complete 3484 (murray_open_head) -> Bentley stage 3488 ->
+  complete -> 3492 heist_done -> ending.
 
 ## Next
-1. Check the red translucent band sweeping across world 42 (s_t8_engine_room_jt_open_door frames
-   3720/3840): game effect (alarm light?) or rendering bug? Dump every 5 frames + GS trace.
+1. Ending/credits after the boss (t8_heist_done -> t8_complete).
 2. Live play (build\ep8tools\live.ps1 -Job <job>): hacking minigame (engine_room_murray
-   hack_station), turret (m8_turret), boss (m8_boss), Murray throws (jt), TNT run, megajump.
-3. Ending/credits after the boss (t8_heist_done -> t8_complete).
-4. Audio (-Wav) and perf (PS2_PERF) when the machine is less loaded.
+   hack_station), turret (m8_turret), Murray throws (jt), TNT run, megajump.
+3. Audio (-Wav) and perf (PS2_PERF) when the machine is less loaded.
+4. Document PS2_TASK_SET/FILE in notes/warp.md + hle-architecture.md.
 
 ## Findings / traps
 - The machine is shared with 6+ other sly2 instances (CPU 100%): debug runs reach only ~18
