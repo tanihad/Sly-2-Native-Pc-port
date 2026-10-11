@@ -113,6 +113,13 @@ build\screenshots\ep7_*.png.
   ending at a house window); Binocucom shows "Use crystals to free book / Laser Redirection"; level
   text: "Use O to place crystals at the end of the laser". Guard fight: knocked-down Sly with stars,
   ghosting afterimages (game's own feedback blur, judged OK), coins burst. Fell in the water (respawn).
+- Episode 6 -> 7 in the game's own flow (build\ep7intro: direct t6_heist_complete): ep6 ending
+  cutscenes, "Job Completed!", ep6 ending movie, Episode 7 card (slideshow; START = "We'll be right
+  back!" menu, X = episode menu "Menace in the North, Eh? X: Start Episode 0% 0:00"), X -> ep7 intro
+  movie (Bison story), "Sly Cooper and the Gang in: Menace from the North, eh!" title card, safehouse,
+  X -> Sly in the hub; autosave save1 (episodeCurrent 7, widCurrent 32). ep7_title_card.png,
+  ep7_intro_movie_sheet.png, ep7_hub_after_intro.png. Log: one more "[sd] VoiceTrans ... overwrites the
+  block voice c0 v9 is playing" at a level load (same game-side pattern as before).
 
 ## In progress
 - Perf sweep (release, PS2_PERF) of the ep7 hub and the heavy job levels while the machine is quiet.
