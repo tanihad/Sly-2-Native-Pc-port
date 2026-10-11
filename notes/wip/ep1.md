@@ -170,6 +170,13 @@ runtime/recompiler problem found at its root (with tests); frames in build\scree
   60 VBlanks/s were serviced: the game's time follows serviced VBlanks (slow motion under load,
   not bigger steps), so physics/timing behave as on a PS2 that runs slow.
 - Frames: ep1_harpoon_caught.png, ep1_siege_start.png, ep1_siege_job_failed.png.
+- Live 'pause' token for step-by-step real-time play (commits fd5cd4c..9788649, partly cherry-picked
+  from ep2): the game waits in the pad read until the next PS2_INPUT_FILE line; while held, EE
+  timers, IOP time, the SPU2 mixer and the VBlank schedule stand still. Tests: window
+  test_live_pause, timer, iop_kernel, sd. Helpers build\tools\step.ps1 / steps.ps1 (one paused step
+  per line, contact sheet build\<run>\steps.png). hp2 used it on the siege (not beaten).
+- wav_m1_disco (release, m1_disco direct, 8 min WAV): 0 underruns, voice transfers steady 254-259/10 s
+  after the load, levels steady -17..-20 dB, no silence. Disco audio fine.
 
 ## Next
 1. Chalk talk test (ct1: m1_recon direct + task file: 1793/1794/1795 -> 2 -> recon complete ->
