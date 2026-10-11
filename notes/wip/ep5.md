@@ -123,9 +123,25 @@ runtime/recompiler problems at the root (crash, hang, missing syscall/RPC, rende
   (150-370 ms/s) and CLUT syncs (~55/s, 130-230 ms/s): GS-bound under load, as main's regression
   note says for every scene (D3D11 renderer is the planned fix).
 
+- Hub GS-thread profile (PS2_PROFILE=gs, 9 games running): 35% ntdll, 25% db_submit (queue-full
+  wait loop that helps draw), 9% run_bands, 7% gs_draw_sync_why: the GS thread waits for the
+  pixel workers, which compete with the other games for cores. Generic, not ep5.
+- PS2_VU_VERIFY=1 (release, recompiled VU checked against the interpreter) on 8 ep5 scenes:
+  battlezone tank, hack minigame, boss 1, boss 2 (hypnosis), turret, ewok trap, Neyla chase,
+  waterrails interior: 2-6M programs each, 0 mismatches.
+- Chalk talk 3 in context: direct m5_battlezone with `--complete m5_pickpocket --complete
+  t5_pickpocket --complete m5_hack --complete t5_hack`; PS2_TASK_FILE 2717-2721:2 -> HUD 5/6;
+  2722:2 -> the game's own flow: last tank explodes, "Job Completed!" book (Murray, 55%), autosave
+  (castle 77%, battlezone complete, chalktalk3 state 1), chalk talk 3 "Operation: High Road"
+  (chalk X's, arrows, blimp, Contessa) -> safehouse. Screens ep5_battlezone_*, ep5_chalktalk3_*.
+- ThiefNet paraglide purchase (warp --job t5_paraglide_purchase --coins 1000, no direct):
+  safehouse LEFT x2 -> Bentley's laptop, X -> Buy Gadgets list, Paraglide 600 at the bottom, X, X
+  -> 400 coins left, item gone; leaving ThiefNet (TRIANGLE): t5_paraglide_purchase 3,
+  t5_heist_intro 1, autosave (castle 79%, mppukfAcquired bit 27 = warp.py's STORY_GADGETS).
+  Screen ep5_thiefnet_paraglide_bought.png. Menu input: presses must be ~40 frames apart under
+  load (shorter gaps get lost).
+
 ## In progress
-- PS2_VU_VERIFY=1 batch over 12 ep5 jobs (build\warp\v_<job>, scratchpad\ep5\batch.ps1 -Prefix v_).
-- Hub GS profile (build\live\hubprof, PS2_PROFILE=gs, PS2_GS_STATS).
 - Chalk talk 2 in context: hub run (build\live\ct2, warp --job m5_ghost), set the stage before each
   final task (2661 ghost_drop, 2679 ewok water, 2685 kidnap carry) and let the game finish the jobs.
 
