@@ -124,6 +124,18 @@ runtime/recompiler problem found at its root (with tests); frames in build\scree
   Completed!" page and no chalk talk; Save and Quit (pause: Keep Playing / Save and Quit / Exit to
   Episode Menu, confirm) + Resume -> safehouse with only Sly / ThiefNet options. Chalk talk needs
   the real completion trigger (tool limitation, not a runtime problem).
+- disco2 (m1_disco direct, live): pause -> Controls shows Bentley's layout (triangle drop bomb,
+  square swing dart gun, R1 run/fire dart, circle sneak/activate); bombs drop with a red blast
+  circle; a door marked red -> "Job Abandoned!" page -> iris wipe -> hub as Bentley (green tint near
+  the job marker fades when walking away: game effect). Frame ep1_controls_bentley.png.
+- shop1 (--job m1_bug --coins 5000): safehouse -> right -> "Connecting to ThiefNet..." -> Buy
+  Gadgets list (Trigger Bomb 200, Fists of Flame 400, Smoke Bomb 300) -> buy + confirm -> 4800
+  coins, card saved; Sly's Gadget Grid says no powerups (Trigger Bomb is Bentley's). Works.
+- build\tools\burst.ps1: send a live line and get the next N dumps as one contact sheet
+  (build\<run>\burst.png) - much faster live play than single frames.
+- Boss mechanic (slycooper.wiki.gg walkthrough): Dimitri is only open after his ring jams on
+  the 4th bolt; melee near him does nothing. build\tools\boss_bot2.py kites at a distance, then
+  rushes and swings, in a drifting cycle.
 
 ## Next
 1. Chalk talk test (ct1: m1_recon direct + task file: 1793/1794/1795 -> 2 -> recon complete ->
