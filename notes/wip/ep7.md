@@ -147,6 +147,20 @@ build\screenshots\ep7_*.png.
   crossing, latency ~4.4 VBlanks) froze it within +-30 px of the centre; on this 100%-loaded machine
   the game's frame steps vary (2-10 px per VBlank), so prediction is loose. Log split after ~10 hits ->
   "Job Failed! You need to break the log in fewer hits to beat Jean Bison", X retry works.
+  (next/ep2 has 'pause' holding the EE timers and the IOP too (6df1c88, 29ef294); with it the game's
+  dt would not jump across pauses and the bot could be exact. Not taken: ep2's to merge.)
+- Heist 1 -> 2 by PS2_TASK_FILE 3205:2 (power chop done): dissolve, Bison's own chop, then Bentley on
+  the shore with no HUD and no control (forced task state, not a level start: game logic). Direct
+  start t7_heist2_intro instead: HUD (health, timer meter, "Place the egg on Jean Bison before he
+  finishes chopping"), Bentley moves (focus 758 -> 1245), idle -> Bison chops ("The wood never knew
+  what hit it!") -> "Job Failed! You didn't get to Jean Bison quick enough." Renders right.
+- GS profile, ep7 hub (release, PS2_PROFILE=gs + PS2_GS_STATS, machine at 100%): GS thread waits
+  ~260-310 ms/s for a free batch slot (queue full) and ~150-230 ms/s on syncs (CLUT 45/s); 740-870
+  batches/s of ~7 bands, ~350 prims; batch splits mostly "snapshot" (~420/s: primitives sampling
+  pages the batch writes); pixel work ~1.8 s/s on 8 workers, critical path ~0.67 s/s. Self time:
+  ntdll 20% (waits), db_submit 18%, draw 11%, gs_draw_sync_why 8%, gs_batch_span 8%, run_bands 7%.
+  = the software GS + CPU contention (8 workers per game, 8+ games): nothing ep7-specific; the D3D11
+  renderer is the plan.
 
 ## In progress
 - Perf sweep (release, PS2_PERF) of the ep7 hub and the heavy job levels while the machine is quiet.
