@@ -113,6 +113,13 @@ warp saves / direct job starts; fix every runtime/recompiler problem found at it
   as Bentley" -> Bentley in the hub; autosave (temple 80%, chalktalk3 3, t3_heist_intro 1).
   2297 -> 2 (heist intro) just activates heist1_intro (a location trigger). Frames
   ep3_chalktalk3_movie, ep3_turret_job_completed.
+- Free the Elephant (live, direct start): spice HUD 0/6; spice tasks 2197..2207 -> 2 via the task
+  file count up to 6/6 and the ticker asks for the feed basket; walked there (live_goto) and pressed
+  O at the basket by gameplay -> elephant cutscene ("Sayonara satellite array!"), Job Completed
+  book, autosave (free_elephant complete, temple 30%). Frame ep3_free_elephant_cutscene.
+- build\tools\objpos.py <ram> <regex>: level objects by name with instance positions (name table
+  'FK$X'+name: -0x18 instance array, -0x14 count, -8 oid; props pos at +0x90, pickups +0x180,
+  actors +0x230). Boss level: rajan at (6, 4177, 3600), Murray at the start (-1402, -1641, 1195).
 - build\tools\taskcap.ps1: the input parameter was named $Input (PowerShell's automatic $input
   enumerator), so input lines were never written; now -Line.
 
