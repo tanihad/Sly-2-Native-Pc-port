@@ -7,7 +7,8 @@
 # Peeks the player/camera positions (PS2_PEEK 2DE1C0, 2DDFD0) for scripts\live_goto.py.
 param([Parameter(Mandatory = $true)][int]$Episode, [string]$Job = "", [switch]$Direct, [switch]$Release,
       [string]$Name = "", [int]$DumpEvery = 30, [string]$Pad = "", [int]$Minutes = 60, [int]$TitleFrame = 2400,
-      [string]$Set = "")   # -Set "path=value,...": raw save edits (warp.py make --set)
+      [string]$Set = "",   # -Set "path=value,...": raw save edits (warp.py make --set)
+      [string]$Build = "")  # -Build build\x: another build directory (default build\rel or build\sly2)
 $root = Split-Path $PSScriptRoot -Parent
 $py = 'C:\Users\tanih\Projects\sly2-decomp\.venv\Scripts\python.exe'
 if ($Direct -and $Release) { "-Direct needs the debug build"; exit 1 }
@@ -27,7 +28,7 @@ if ($Direct) {
     $w = $made | Select-String 'PS2_WARP_TASK=(\S+)' | Select-Object -First 1
     $env:PS2_WARP_TASK = $w.Matches[0].Groups[1].Value
 }
-$build = Join-Path $root $(if ($Release) { 'build\rel' } else { 'build\sly2' })
+$build = Join-Path $root $(if ($Build) { $Build } elseif ($Release) { 'build\rel' } else { 'build\sly2' })
 $exe = Join-Path $dir "sly2_$Name.exe"
 Copy-Item (Join-Path $build 'sly2.exe') $exe -Force
 $env:PS2_MEMCARD_DIR = $card

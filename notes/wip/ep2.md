@@ -32,8 +32,27 @@ build\screenshots\ep2_*.png.
   are shown (e.g. triangle triangle triangle, then triangle triangle circle), then "? ? ?" while the
   player repeats them; no input -> "Oow, my feet can't take any more", Job Failed.
 
+- Episode menu + movies (live_warp -Set episode.palace.percent_complete=100, release): resume opens
+  the van episode wheel (Episode 3 preselected, up: Episode 2 -> "A Starry Eyed Encounter, X: Start
+  Episode, 95%"); the wheel's top entry is "Watch a Movie": a film strip of unlocked movies;
+  "Prelude" plays as an IPU movie (Neyla/Carmelita, Clockwerk wings) with sound.
+
+  Movies end and return to the film strip; Episode 2 "The Setup" (Rajan's backstory) plays at
+  59-60 VBlanks/s with sound (build\screenshots\ep2_movie_*.png, ep2_episode_menu.png).
+- BUG (audio): the episode menu's music stream (spiop -> 989snd VAG stream, 44.1 kHz, 2 voices,
+  half buffers 0x1000 at SPU 9040/13040 (L) and A040/14040 (R)) stops for good a few seconds after
+  it starts (hard cut to silence; also after a movie). Root cause chain (PS2_LOG_SD + temporary
+  caller/NAX logging): 989snd's stream tick (989snd 0x12CCC) watches NAX; the voice reached the end
+  of half A while LSAX still pointed at A (989snd sets LSAX to the other half after it sees the
+  half change, 0x12EC8), so the voice looped inside A; 989snd sees NAX go backwards inside the same
+  half (0x13058) -> error 0x37 -> stream stopped (0x1255C -> KOFF v0/v1). The IOP was 130 ms late
+  (one half = 162 ms). IOP gaps measured (temporary PS2_IOP_GAP instrument): 1-2 s while the EE
+  thread waits for the GS thread (gswait: gs_thread.c ee_wait_change does not run the IOP) and
+  50-300 ms "EE" gaps; the machine is saturated (13 sly2 instances, CPU 100%).
+
 ## In progress
-- movie: episode 2 at 100% -> episode menu (dvd_menu world) -> "Watch a Movie" (IPU).
+- Fix: run the IOP while the EE thread waits for the GS thread (gs_set_wait_hook -> ps2_poll_iop),
+  unit test in gs-draw (TEST_ASYNC: present blocks until the hook ran).
 
 ## Next
 1. Dance minigame: scripted presses during "? ? ?" (timing in real time? game time?).
