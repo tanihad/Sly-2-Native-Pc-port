@@ -104,9 +104,24 @@ build\screenshots\ep2_*.png.
   pairs/VBlank at 4-5 ns, memory flat 149 MB. Audio (234 s wav): continuous from 48.6 s (hub) to
   the end, 0 dropouts, 5 small clicks, no clipping.
 
+- Bomb the Bridge (live bomb, release): Bentley walks the ledge to the bridge (clue bottle 1/30),
+  HUD 0/9 cleats; TRIANGLE at a cleat plants a bomb (red pulsing light), it explodes (smoke,
+  debris), counter 1/9. Circle/R1 do nothing for Bentley here. ep2_bomb_*.png.
+- Elephant rampage (t2_elephant_rampage_intro_2 direct): Binocucom briefing ("snatch the headdress
+  jewels worn by both elephants"), 0/6 jewels HUD, two red light beams mark the elephants across the
+  moat; falling into the water respawns Sly. Did not reach the elephants (hub navigation blind).
+- Monkey run (build\tools\mk.ps1 = warp direct start + random input, monkey.py) on
+  t2_heist_cover_murray: RC chopper covers Murray, bombs, Job Failed/retry, hints; no log anomaly.
+  Speed 40-58 VBlanks/s, GS thread 15-17 ms (machine 100%, 7 other games).
+- Cherry-picked the shared debug tools (identical patches on ep3/ep4/ep6/ep7/ep8): PS2_POKE,
+  PS2_INPUT_FILE any length, PS2_TASK_SET/PS2_TASK_FILE, PS2_POKE_FILE, live 'pause' token,
+  case-insensitive tokens (ep3 order; notes conflict resolved). Release rebuilt, all unit tests +
+  run_tests.py pass.
+
 ## Next
-1. Dance minigame: only worth finishing on a quiet machine (game at 60 fps); bot in build\tools.
-2. Play deeper: m2_heist_bomb_bridge (Bentley), m2_heist_dance (tango), m2_elephant_rampage,
+1. Dance minigame with the 'pause' token (step by step, independent of machine speed).
+2. PS2_TASK_FILE to finish sub-tasks (elephant jewels, keys, cleats) and see the completion flows.
+3. Play deeper: m2_heist_bomb_bridge (Bentley), m2_heist_dance (tango), m2_elephant_rampage,
    m2_lower_drawbridge, m2_steal_tuxedo, m2_heist_cover_murray, boardroom brawl past the pool.
 
 ## Findings / traps
