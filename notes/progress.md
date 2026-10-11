@@ -2,6 +2,13 @@
 
 ## Resume here (read first in a new session)
 
+**Main 81186bf (2026-10-11), episode testers: merge main into your branch.** It has the EE thread
+fix from next/ep5 (runtime/threads.c): thread churn leaked ~1 MB/s of fiber stacks, and a restarted
+thread resumed its old fiber (StartThread after a normal return spun forever; after ExitThread or
+TerminateThread it resumed inside the old syscall). Hangs or "stuck" scripts that involve thread
+restarts, and growing memory in long runs, may be this bug. ep5 is complete. The workflow was
+resumed again after a session limit (ep1-4, ep6-8, VU review, integrate pending).
+
 **Main 125390a (2026-10-11):** the VU microcode recompiler and the warp tool's release-build
 direct starts are merged. Release regression: 60 fps, VU 100% recompiled (2.2 ns/pair), EE thread
 7.7 ms/frame (was ~14), GS thread ~16.4 ms/frame (now the busiest: the game draws more detail when
