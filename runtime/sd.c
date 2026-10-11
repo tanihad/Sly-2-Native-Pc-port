@@ -98,6 +98,11 @@ static int16_t  g_gauss[512];
 static int      g_log = -1;
 static uint64_t g_trans_overlaps;      /* VoiceTrans writes into a block a voice was playing */
 static uint64_t g_bad_blocks;          /* audible ADPCM blocks with impossible headers */
+static int64_t  g_driver_limit = -1;   /* frames the voices may play past the IOP's last pass; 0 = off */
+static int64_t  g_seen_run;            /* iop_last_run_time() when g_unseen was reset */
+static uint64_t g_unseen;              /* frames rendered since the IOP last ran */
+static uint64_t g_holds, g_hold_frames;
+static int      g_holding;
 
 #define LOCK()   AcquireSRWLockExclusive(&g_lock)
 #define UNLOCK() ReleaseSRWLockExclusive(&g_lock)
@@ -145,6 +150,11 @@ static void global_init(void) {          /* call with the lock held */
     if (g_log < 0) {
         const char* e = getenv("PS2_LOG_SD");      /* 1: KON/KOFF/transfers, 2: also volumes, pitch */
         g_log = e && *e && *e != '0' ? (atoi(e) > 1 ? atoi(e) : 1) : 0;
+    }
+    if (g_driver_limit < 0) {
+        const char* e = getenv("PS2_AUDIO_IOP_LIMIT");   /* ms of sound, 0 = never hold the voices */
+        int ms = e && *e ? atoi(e) : 60;
+        g_driver_limit = ms > 0 ? (int64_t)ms * (SD_SAMPLE_RATE / 1000) : 0;
     }
     g_ready = 1;
 }
@@ -489,13 +499,45 @@ static void render_chunk(int16_t* out, uint32_t n) {
     g_frames += n;
 }
 
+/* ---- the driver's pace ------------------------------------------------------------------------
+ * On the PS2 the SPU2 plays in step with an IOP that never stops. Here the IOP (989snd, spiop) only
+ * runs when the emulation thread reaches a safe point, while this mixer runs on the output thread in
+ * real time. When the emulation thread stalls (a long frame, the GS thread, a busy machine
+ * descheduling it), the voices play on with nobody refilling the streams: 989snd's stream code
+ * notices less than one half buffer (0x1000 bytes, 162 ms at 44.1 kHz) of unseen playback too late,
+ * the voice loops inside the half being refilled, 989snd sees NAX run backwards (error 0x37) and
+ * stops the stream for good, which silences a level's music until the next level load.
+ * So the SPU2 never plays more than the driver limit (PS2_AUDIO_IOP_LIMIT ms of sound, default 60;
+ * the IOP is normally at most ~35 ms late) past the IOP's last pass: the frames rendered since the
+ * IOP last ran are counted (in sound time, so a burst of rendering after the output thread itself
+ * was held up counts too), and once they reach the limit sd_render outputs silence and leaves every
+ * voice, envelope and sound-data input where it is, as if the SPU2 were paused, until the IOP has
+ * run again. */
+
+__attribute__((weak)) int64_t iop_last_run_time(void) { return 0; }   /* no IOP side: never hold */
+
+static int driver_behind(uint32_t n) {     /* call with the lock held; n = frames about to be rendered */
+    int64_t last = iop_last_run_time();
+    if (last != g_seen_run) { g_seen_run = last; g_unseen = 0; }   /* the IOP has run since */
+    return g_driver_limit && last && g_unseen + n > (uint64_t)g_driver_limit;
+}
+
 void sd_render(int16_t* out, uint32_t frames) {
     while (frames) {
         uint32_t n = frames < CHUNK ? frames : CHUNK;
         int irq[2];
         LOCK();
         global_init();
-        render_chunk(out, n);
+        if (driver_behind(n)) {
+            memset(out, 0, (size_t)n * 4);
+            if (!g_holding) { g_holding = 1; g_holds++; SDLOG("holding the voices: the IOP has not run\n"); }
+            g_hold_frames += n;
+            g_frames += n;                      /* the audio clock (log times = WAV position) runs on */
+        } else {
+            if (g_holding) { g_holding = 0; SDLOG("the IOP ran: voices continue\n"); }
+            render_chunk(out, n);
+            g_unseen += n;
+        }
         irq[0] = g_irq_pending[0]; irq[1] = g_irq_pending[1];
         g_irq_pending[0] = g_irq_pending[1] = 0;
         UNLOCK();
@@ -517,6 +559,20 @@ void sd_health(uint64_t* trans_overlaps, uint64_t* bad_blocks) {
     LOCK();
     *trans_overlaps = g_trans_overlaps;
     *bad_blocks = g_bad_blocks;
+    UNLOCK();
+}
+
+void sd_driver_holds(uint64_t* holds, uint64_t* frames) {
+    LOCK();
+    *holds = g_holds;
+    *frames = g_hold_frames;
+    UNLOCK();
+}
+
+void sd_set_driver_limit_ms(uint32_t ms) {
+    LOCK();
+    global_init();
+    g_driver_limit = (int64_t)ms * (SD_SAMPLE_RATE / 1000);
     UNLOCK();
 }
 

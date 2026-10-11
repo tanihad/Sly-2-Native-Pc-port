@@ -17,6 +17,11 @@ uint64_t sd_frames_rendered(void);   /* total frames rendered since start (an au
 /* Integration health counters: VoiceTrans writes into the block an audible voice was playing (a
  * stream refill too late or too early), and audible ADPCM blocks with impossible headers. */
 void     sd_health(uint64_t* trans_overlaps, uint64_t* bad_blocks);
+/* Times the voices were held because the IOP had not run for longer than the driver limit, and the
+ * frames of silence output meanwhile (see "the driver's pace" in sd.c). */
+void     sd_driver_holds(uint64_t* holds, uint64_t* frames);
+/* The driver limit in ms (0 = never hold). Default: PS2_AUDIO_IOP_LIMIT, else 60. Tests only. */
+void     sd_set_driver_limit_ms(uint32_t ms);
 
 /* ---- building blocks, exposed for the unit tests -------------------------------------------- */
 

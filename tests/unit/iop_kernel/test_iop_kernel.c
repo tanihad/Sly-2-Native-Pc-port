@@ -450,8 +450,11 @@ static void test_slice(void) {
     CHECK(!spin_done && ms < 100, "iop_run returned after %.1f ms (spin done %d)", ms, spin_done);
     CHECK(spin_polls > 0, "no polls");
     spin_release = 1;
+    int64_t before = iop_now();
     iop_run();
     CHECK(spin_done, "spinning thread did not resume");
+    /* the end of every pass is published for the mixer (sd.c holds the voices when it gets old) */
+    CHECK(iop_last_run_time() >= before && iop_last_run_time() <= iop_now(), "iop_last_run_time not updated by iop_run");
 }
 
 static void test_libs(void) {

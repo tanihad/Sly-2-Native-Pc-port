@@ -15,6 +15,7 @@
  * Semantics follow the IOP kernel documentation and ps2sdk's headers (thbase.h, thsemap.h,
  * thevent.h, intrman.h, timrman.h, sysmem.h, kerr.h). */
 #include "iop_internal.h"
+#include "sd.h"
 
 #include <stdlib.h>
 #include <windows.h>
@@ -858,6 +859,9 @@ static void deliver_interrupts(void) {
 }
 
 static int64_t busy_ticks;                 /* host time spent running the IOP (status line) */
+static volatile int64_t last_run_end;      /* read by the mixer thread (sd.c holds the voices when old) */
+
+int64_t iop_last_run_time(void) { return last_run_end; }
 
 void iop_run(void) {
     if (in_run || in_intr) return;
@@ -876,7 +880,9 @@ void iop_run(void) {
         SwitchToFiber(th[next].fiber);
         cur = 0;
     }
-    busy_ticks += iop_now() - t0;
+    int64_t t1 = iop_now();
+    busy_ticks += t1 - t0;
+    last_run_end = t1;
     in_run = 0;
 }
 

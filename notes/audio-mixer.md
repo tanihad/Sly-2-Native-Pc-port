@@ -131,6 +131,7 @@ every event to keep the target queued. Environment:
 | `PS2_AUDIO_WAV=<file>` | also write everything rendered to a WAV (header refreshed every 250 ms, since the game may leave with ExitProcess) |
 | `PS2_AUDIO_TEST=1` | 440 Hz sine at -12 dBFS instead of the game's sound |
 | `PS2_AUDIO_LATENCY=<ms>` | target queued audio, 10-500 (default 40) |
+| `PS2_AUDIO_IOP_LIMIT=<ms>` | driver limit (default 60, 0 = off): while the IOP has not run for longer than this, the mixer outputs silence and holds every voice (see "The driver's pace" below) |
 | `PS2_LOG_SD=1` | log sceSdInit, KON (voice, SSA, pitch, ADSR, volume), KOFF, transfers (marked "(silence)" when the data is all zero samples), BlockTrans, SetEffectAttr; every line starts with the audio clock (= position in the WAV) |
 | `PS2_LOG_SD=2` | also every VOLL/VOLR/PITCH/SSA/LSAX write (a lot) |
 
@@ -139,12 +140,34 @@ rises from ~0.2% to ~10% and its threads start using up time slices. Use it for 
 
 Every 10 s the output thread prints a health line:
 `[audio] status: <s> of audio, <n> underruns, mixer <x>% of a core, late/early stream refills <n>,
-invalid ADPCM blocks <n>`. Underruns: WASAPI found its buffer empty (`GetCurrentPadding` = 0; the
-first five are logged with their time) or the null sink fell more than 100 ms behind. Late/early
-stream refills: a `sceSdVoiceTrans` wrote into the block an audible voice was playing (the first 20
-are logged with voice and address). Invalid ADPCM blocks: an audible voice decoded a header with
-shift 13-15 or filter 5-7, which Sony's encoder never produces (a voice playing PCM or a wrong
-address).
+invalid ADPCM blocks <n>, voices held for the IOP <n> times (<s> s)`. Underruns: WASAPI found its
+buffer empty (`GetCurrentPadding` = 0; the first five are logged with their time) or the null sink
+fell more than 100 ms behind. Late/early stream refills: a `sceSdVoiceTrans` wrote into the block an
+audible voice was playing (the first 20 are logged with voice and address). Invalid ADPCM blocks: an
+audible voice decoded a header with shift 13-15 or filter 5-7, which Sony's encoder never produces
+(a voice playing PCM or a wrong address). Voices held: see below.
+
+### The driver's pace (`PS2_AUDIO_IOP_LIMIT`, 2026-10-11, branch next/ep1)
+
+The IOP (989snd, spiop) only runs when the emulation thread reaches a safe point; the mixer runs in
+real time on the output thread. When the emulation thread stalls (a long frame, waiting for the GS
+thread, the OS descheduling it on a busy machine), the voices played on unrefilled. 989snd's stream
+code needs to see a stream voice in each half of its SPU buffer (0x1000 bytes: 162 ms at 44.1 kHz,
+224 ms at 32 kHz); after a longer gap the voice loops inside the half 989snd is refilling, 989snd
+sees NAX run backwards (error 0x37, analysed in next/ep2) and keys the stream off for good: spiop's
+channel thread then finds a sub-stream no longer playing (snd989 export 25 = 0), stops reading the
+disc and exits. The level's music stayed silent until the next level load (seen in the Paris hub
+after 205 s and 868 s, and at the title within 40 s with `PS2_LOG_SD=1` slowing the IOP; the IOP
+status lines showed 300-950 ms late timer deliveries on a machine running ~10 game instances).
+
+Now `iop_run()` publishes the end of each pass (`iop_last_run_time()`, sd.h), and `sd_render`
+checks it every 64 frames: while the IOP's last pass is older than the limit (60 ms; the IOP is
+normally at most ~35 ms late), it outputs silence and advances nothing (voices, envelopes, sweeps,
+noise, reverb, sound-data input), as if the SPU2 were paused, and continues where it stopped once
+the IOP has run again. The audio clock (log times, WAV position) keeps running. A long stall
+therefore costs a gap of silence instead of the music. Unit test: `test_driver_pace` in
+tests/unit/sd (held NAX/ENVX, silence, counters, resume, limit 0); tests/unit/iop_kernel checks
+the published time.
 
 ## Tests (`tests/unit/sd/run.ps1 [-Audible]`)
 

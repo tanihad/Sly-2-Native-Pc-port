@@ -111,11 +111,13 @@ static void status_tick(void) {
     double audio_s = (double)(w - g_status_frames) / RATE;
     double cpu = 100.0 * (double)(g_render_ticks - (uint64_t)g_status_ticks) / (double)f.QuadPart / audio_s;
     uint32_t u = (uint32_t)g_underruns;
-    uint64_t overlaps, bad;
+    uint64_t overlaps, bad, holds, hold_frames;
     sd_health(&overlaps, &bad);
+    sd_driver_holds(&holds, &hold_frames);
     fprintf(stderr, "[audio] status: %.1f s of audio, %u underruns (%u in the last %.0f s), mixer %.1f%% of a core, "
-                    "late/early stream refills %llu, invalid ADPCM blocks %llu\n",
-            (double)w / RATE, u, u - g_status_underruns, audio_s, cpu, (unsigned long long)overlaps, (unsigned long long)bad);
+                    "late/early stream refills %llu, invalid ADPCM blocks %llu, voices held for the IOP %llu times (%.2f s)\n",
+            (double)w / RATE, u, u - g_status_underruns, audio_s, cpu, (unsigned long long)overlaps, (unsigned long long)bad,
+            (unsigned long long)holds, (double)hold_frames / RATE);
     g_status_frames = w;
     g_status_ticks = (int64_t)g_render_ticks;
     g_status_underruns = u;

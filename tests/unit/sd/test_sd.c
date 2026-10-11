@@ -18,6 +18,8 @@ uint8_t* iop_mem(uint32_t a) {
     return a < sizeof g_iop ? g_iop + a : NULL;
 }
 void iop_sd_transfer_done(int channel) { g_done[channel & 1]++; }
+static int64_t g_iop_last;                 /* the IOP's last pass (QPC); 0 = no IOP: never hold */
+int64_t iop_last_run_time(void) { return g_iop_last; }
 
 /* ---- test plumbing -------------------------------------------------------------------------- */
 
@@ -622,6 +624,69 @@ static void test_reverb(void) {
     free(b);
 }
 
+/* The voices never play more than the driver limit (60 ms = 2880 frames of sound) past the IOP's last
+ * pass, however the rendering is spread out, so 989snd never finds a stream voice further on than it
+ * can refill. "The IOP ran" = iop_last_run_time() changed. */
+static int all_zero(const int16_t* b, uint32_t frames) {
+    for (uint32_t i = 0; i < 2 * frames; i++) if (b[i]) return 0;
+    return 1;
+}
+
+static void test_driver_pace(void) {
+    printf("driver pace (voices held while the IOP does not run)\n");
+    const uint32_t lim = 2880;
+    mix_setup();
+    sd_set_driver_limit_ms(60);
+    put_sine_loop(0x20000, 12, 48, 12000);
+    voice_start(0, 4, 0x20000, 0x1000, 0x000F, 0x1FC0, 0x3FFF);
+    g_iop_last = 1;                                       /* the IOP has run */
+    int16_t* b = render(2000);
+    CHECK(rms(b + 2 * 1000, 1000, 2) > 5000, "plays while the IOP keeps up: rms %.0f", rms(b + 2 * 1000, 1000, 2));
+    free(b);
+    g_iop_last = 2;                                       /* it ran again: a fresh allowance */
+    uint64_t h0, f0, h1, f1, clock0 = sd_frames_rendered();
+    sd_driver_holds(&h0, &f0);
+    b = render(4800);                                     /* no pass during these 100 ms */
+    CHECK(rms(b + 2 * (lim - 1000), 1000, 2) > 5000 && all_zero(b + 2 * lim, 4800 - lim),
+          "plays the first %u frames, then silence (rms %.0f before)", lim, rms(b + 2 * (lim - 1000), 1000, 2));
+    free(b);
+    uint32_t nax = sceSdGetAddr(VA(NAX, 0, 4));
+    uint16_t env = sceSdGetParam(VP(ENVX, 0, 4));
+    b = render(4800);
+    CHECK(all_zero(b, 4800), "silence while the IOP stays behind");
+    free(b);
+    sd_driver_holds(&h1, &f1);
+    CHECK(sceSdGetAddr(VA(NAX, 0, 4)) == nax, "NAX held: %X -> %X", nax, sceSdGetAddr(VA(NAX, 0, 4)));
+    CHECK(sceSdGetParam(VP(ENVX, 0, 4)) == env, "envelope held");
+    CHECK(h1 == h0 + 1 && f1 - f0 == 9600 - lim, "one hold of %u frames (%llu holds, %llu frames)", 9600 - lim,
+          (unsigned long long)(h1 - h0), (unsigned long long)(f1 - f0));
+    CHECK(sd_frames_rendered() - clock0 == 9600, "the audio clock runs on during a hold");
+    /* the IOP ran: the voice continues where it stopped */
+    g_iop_last = 3;
+    b = render(28 * 4);
+    uint32_t nax2 = sceSdGetAddr(VA(NAX, 0, 4));
+    int moved = (((int)nax2 - (int)nax) % (12 * 16) + 12 * 16) % (12 * 16);   /* inside the 12-block loop */
+    CHECK(moved >= 4 * 16 - 16 && moved <= 4 * 16 + 16,
+          "continues from the held position: NAX %X -> %X after 4 blocks (%d bytes)", nax, nax2, moved);
+    CHECK(rms(b, 28 * 4, 2) > 5000, "audible again: rms %.0f", rms(b, 28 * 4, 2));
+    free(b);
+    /* a burst (the output thread catching up after it was held up itself) counts in sound time too */
+    g_iop_last = 4;
+    b = render(9600);
+    CHECK(!all_zero(b + 2 * (lim - 64), 64) && all_zero(b + 2 * lim, 9600 - lim), "a burst also stops at the limit");
+    free(b);
+    /* limit 0, or no IOP side: never hold */
+    sd_set_driver_limit_ms(0);
+    b = render(4800);
+    CHECK(rms(b + 2 * 3800, 1000, 2) > 5000, "limit 0 never holds");
+    free(b);
+    sd_set_driver_limit_ms(60);
+    g_iop_last = 0;
+    b = render(4800);
+    CHECK(rms(b + 2 * 3800, 1000, 2) > 5000, "no IOP side: never holds");
+    free(b);
+}
+
 static void test_perf(void) {
     printf("performance\n");
     mix_setup();
@@ -655,6 +720,7 @@ int main(void) {
     test_adma();
     test_routing();
     test_reverb();
+    test_driver_pace();
     test_perf();
     printf("%d checks, %d failed\n", g_checks, g_failed);
     return g_failed ? 1 : 0;
