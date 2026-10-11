@@ -120,6 +120,15 @@ warp saves / direct job starts; fix every runtime/recompiler problem found at it
 - build\tools\objpos.py <ram> <regex>: level objects by name with instance positions (name table
   'FK$X'+name: -0x18 instance array, -0x14 count, -8 oid; props pos at +0x90, pickups +0x180,
   actors +0x230). Boss level: rajan at (6, 4177, 3600), Murray at the start (-1402, -1641, 1195).
+- Movie audio: build\tools\pss_audio.py <iso> --scan finds the ~45 movies inside the packed
+  archive (no ISO directory entries; Sly 2's own pack header 00000000 011E..., resync on 000001BD)
+  and checks L/R: the 22050 Hz movies (chalk talks) and the boot movie are mono on the disc
+  (identical L/R blocks), the 44100/48000 Hz ones are stereo. Chalk talk 3 (WAV, wav_ct3):
+  43 s continuous, corr 1.00 = source. Episode 3 intro comic (lba 124141, stereo; live_ep3intro
+  with -Wav -LogSif): output corr 0.76, so stereo movies stay stereo. But 650 "late/early stream
+  refills" (VoiceTrans into the 1 KB block the movie voice c0 v0/v1 plays, rings 0x19040/0x1A040)
+  during that run: EE at ~35 VBlanks/s (100% machine load + PS2_LOG_SIF), so the movie decoder
+  fed the audio late. wav_ct3 (no SIF log) had 0-1. Re-check on a quiet machine with PS2_PERF.
 - build\tools\taskcap.ps1: the input parameter was named $Input (PowerShell's automatic $input
   enumerator), so input lines were never written; now -Line.
 
