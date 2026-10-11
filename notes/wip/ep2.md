@@ -118,6 +118,20 @@ build\screenshots\ep2_*.png.
   case-insensitive tokens (ep3 order; notes conflict resolved). Release rebuilt, all unit tests +
   run_tests.py pass.
 
+- FIX (debug tool): live 'pause' now freezes the whole PS2 (ps2_debug_hold: VBlank schedule moved
+  by the pause, EE timers timer_hold, IOP time iop_time_hold, SPU2 mixer sd_hold). Found with the
+  dance: Sly 2's frame time comes from T2 and 989snd's music tick from the IOP hard timer, both
+  real time, so each step saw the wait as elapsed time; and a VBlank fell due at once on every
+  resume (2-frame steps held ~1 frame of time). Commits 6df1c88, 29ef294 (+ VBlank shift, pending
+  commit). Tests: timer debug_pause_hold, sd debug_hold, iop_kernel time_hold, window live_pause.
+- Dance mechanics (paused stepping, build\tools\step_dance2/3.py, dance_track.py = blue beat
+  cursor x + prompt classification per frame): show phase = cursor walks slots 0-2 one beat
+  (~13 VBlanks) each while the partner's moves light up; then "? ? ?" (Q) and the cursor walks
+  again; icons get revealed in the answer phase (slot 0 at Q+2..4 in every run, even with no
+  press). Fixed offsets (Q+14/29/44, Q+16/31/46, Q+18/33/48) pass round 1 at best, round 2 fails.
+  The dance does not use the pad test 0x187D80 (PS2_WATCH): only the cutscene skip 0x211D38 does.
+  Pad object 0x2DFC00: +0x10B4 held, +0x10B8 pressed (latched until consumed by 0x187DE0), +0x10BC.
+
 ## Next
 1. Dance minigame with the 'pause' token (step by step, independent of machine speed).
 2. PS2_TASK_FILE to finish sub-tasks (elephant jewels, keys, cleats) and see the completion flows.
