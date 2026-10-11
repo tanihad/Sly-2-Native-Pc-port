@@ -110,8 +110,12 @@ recompiler problem found at its root, with tests; frames in build\screenshots\ep
   the fight works). Game dt (0x2DDEE0, clamped to 1/30) sat at 1/30 in the slow runs: the game ran
   below 30 frames/s on this overloaded machine (9 instances, CPU 100%) during the deploy, so game
   time fell behind real time while the deploy dialogue stream plays in real time -> different
-  deploy altitude. Faithful to PS2 behaviour at < 30 fps; not a port bug. Causality check: p8
-  (normal) vs p9 (same, CPU affinity 2 cores) with PS2_PEEK A98338 + 2DDEE0.
+  deploy altitude. Faithful to PS2 behaviour at < 30 fps; not a port bug. Causality CONFIRMED:
+  p8 (normal, ~18% of frames at the dt clamp) deploys at z 2826.4; p9 (identical, but process
+  affinity 2 cores -> ~6-10 VBlanks/s) deploys at z 1353.5. The z jumps 0 -> final value in one
+  step at deploy (v~4000-4140). Only remedy is speed (GS thread is the bottleneck, 14-17 ms/VBlank
+  even before contention). n3 SD log: 5 voices on for 13+ min (ssa F8D60/102A50/105B80 = engine /
+  rotor loops while their objects exist) - expected, not stuck.
 
 ## Next
 0. RC chopper battle stall: rerun with less load, dump RAM often after the launchers; if it stalls
