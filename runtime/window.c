@@ -84,7 +84,8 @@ static const struct { const char* name; int axis, value; } script_sticks[] = {
  * nothing (a pure wait point for the tokens after it). Partial stick deflection: "lxHH", "lyHH",
  * "rxHH", "ryHH" set that axis to the hex value HH (00 left/up, 80 centre, FF right/down).
  * "ram" writes EE RAM to <dump dir>/ram_<vblank>.bin (debugging); "calls:<n>" prints the recompiled
- * functions called in the next n VBlanks, like PS2_CALLS (debug builds).
+ * functions called in the next n VBlanks, like PS2_CALLS, and "watch:<n>" logs every call of the
+ * PS2_WATCH functions in the next n VBlanks (debug builds).
  *   "t<seconds>:<button>[:<hold>]"      at a wall-clock time since the first pad read, e.g.
  *       "t95:start": scenes synchronised to sound (the intro cutscene follows its music stream)
  *       last a fixed real time, however fast the game runs.
@@ -111,8 +112,10 @@ static double script_seconds(void) {
 #define SCRIPT_AXIS  (-3)                 /* lxHH etc.: axis/value in the token */
 #define SCRIPT_RAM   (-4)                 /* "ram": dump EE RAM (debug) */
 #define SCRIPT_CALLS (-5)                 /* "calls:<n>": call profile of the next n VBlanks (debug) */
+#define SCRIPT_WATCH (-6)                 /* "watch:<n>": PS2_WATCH logs every call for n VBlanks */
 void ps2_request_ram_dump(void);
 void ps2_request_calls_window(uint32_t frames);
+void ps2_request_watch_window(uint32_t frames);
 static struct { uint32_t frame, hold, start, addr, ra, base, last; int button, kind, armed, seen, axis, value; }
     script[SCRIPT_MAX];
 static int script_n = -1;
@@ -150,7 +153,7 @@ static void script_parse(const char* s) {
             if (*p != ':' || sscanf(p + 1, "%31[a-z0-9]:%u", name, &hold) < 1) continue;
         } else if (sscanf(tok, "%u:%31[a-z0-9]:%u", &frame, name, &hold) < 2) continue;
         int found = !strcmp(name, "none") ? SCRIPT_NONE : !strcmp(name, "ram") ? SCRIPT_RAM :
-                    !strcmp(name, "calls") ? SCRIPT_CALLS : -1, axis = 0, value = 0x80;
+                    !strcmp(name, "calls") ? SCRIPT_CALLS : !strcmp(name, "watch") ? SCRIPT_WATCH : -1, axis = 0, value = 0x80;
         for (int b = 0; b < SCRIPT_NBUTTONS; b++)
             if (!strcmp(name, script_buttons[b].name)) found = b;
         for (int b = 0; b < (int)(sizeof script_sticks / sizeof script_sticks[0]); b++)
@@ -186,7 +189,7 @@ static void script_compact(uint32_t now) {
 }
 
 static const char* script_name(int b) {
-    return b == SCRIPT_NONE ? "none" : b == SCRIPT_AXIS ? "axis" : b == SCRIPT_RAM ? "ram" : b == SCRIPT_CALLS ? "calls" :
+    return b == SCRIPT_NONE ? "none" : b == SCRIPT_AXIS ? "axis" : b == SCRIPT_RAM ? "ram" : b == SCRIPT_CALLS ? "calls" : b == SCRIPT_WATCH ? "watch" :
            b >= SCRIPT_NBUTTONS ? script_sticks[b - SCRIPT_NBUTTONS].name : script_buttons[b].name;
 }
 
@@ -293,6 +296,7 @@ static void script_apply(int port, pad_input* in) {
         if (b == SCRIPT_NONE) continue;
         if (b == SCRIPT_RAM) { if (now == script[i].start) ps2_request_ram_dump(); continue; }
         if (b == SCRIPT_CALLS) { if (now == script[i].start) ps2_request_calls_window(script[i].hold); continue; }
+        if (b == SCRIPT_WATCH) { if (now == script[i].start) ps2_request_watch_window(script[i].hold); continue; }
         if (b == SCRIPT_AXIS) {
             uint8_t v = (uint8_t)script[i].value;
             switch (script[i].axis) {
