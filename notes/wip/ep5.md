@@ -191,6 +191,19 @@ in 12 ep5 scenes; one runtime fix (fiber leak, 9d6c24c). Not done: finishing job
   fix-perf briefing recording, 8 workers, same load: hub 32.5/33.8/34.6/36.3 ms per VBlank vs
   briefing 42.1/36.1/34.8. The rainy hub street is no heavier on the GS than the briefing (8.9 ms
   quiet, holds 60): no ep5-specific GS cost.
+- Audio scan of all 80 ep5 run logs: underruns 0-9 per run (27 in a 1-hour run) under heavy load,
+  invalid ADPCM 0; the "late/early stream refills 1" in almost every run is the sound-bank load
+  019040+BE200 at a level load overwriting a still-sounding voice (game behaviour), plus 1-2
+  real 4-KB stream refills per 15 min in boss runs under load. Fine.
+- Clue bottles / vault (not covered before): warp save with afClue bits set
+  (`--set episode.castle.level.exterior.afClue[i]=1`). Hub RE: 30 clue objects (vtable 0x2D5DC8,
+  0x110 bytes, index at +0x100 from the world counter 0x3DD490+0x4760, position at +0x90, active
+  one has +0x2C 0x100FFF00), addresses deterministic (idx 25 at 0xDD1680). Steering helper
+  scratchpad\ep5\steer.py (PS2_PEEK_EVERY=10 + camera/player peeks -> lxHH/lyHH, LOWERCASE hex:
+  the token parser takes [a-z0-9] only). Steering off the safehouse roof: Sly fell, died in the
+  water and respawned at the safehouse (death/respawn flow fine).
+- PS2_POKE "?addr=val" condition (runtime/ps2_runtime.c, debug only): write only while a word holds
+  a value, e.g. while a level object's vtable is in place. Used to move bottle 25 next to the spawn.
 
 ## Next
 1. When the machine is quiet: PS2_PERF (release) in the hub street (Sly walking), boss 1,
