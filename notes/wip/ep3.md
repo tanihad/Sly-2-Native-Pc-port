@@ -103,6 +103,18 @@ warp saves / direct job starts; fix every runtime/recompiler problem found at it
 - Boss (live): direct start = Sly beside Murray on the temple roof; walking forward leads to the
   lily-pad pool; boss tasks via PS2_TASK_FILE change state but not the fight (own state machine).
 - PS2_INPUT tokens now case-insensitive (2c3c73d).
+- Session 3 (cont.): heist live session (build\live_heist2, not noted before the interruption):
+  Murray walks/fights to the elephant's mouth (heist1), heist2 lift via task file, heist3 Bentley
+  turret: hunter-seeker bombs fly in, ticker text scrolls; all rendered fine.
+
+- Session 4 (2026-10-11): merged main (2d00835, EE thread fiber-leak fix); release build OK.
+- Chalk talk 3 (live, turret direct start, --complete ruby/heartneela/tntbarrel, task file
+  2284 -> 2): "Job Completed!" book, chalk talk 3 MPEG movie (clean), safehouse "Press X to play
+  as Bentley" -> Bentley in the hub; autosave (temple 80%, chalktalk3 3, t3_heist_intro 1).
+  2297 -> 2 (heist intro) just activates heist1_intro (a location trigger). Frames
+  ep3_chalktalk3_movie, ep3_turret_job_completed.
+- build\tools\taskcap.ps1: the input parameter was named $Input (PowerShell's automatic $input
+  enumerator), so input lines were never written; now -Line.
 
 ## Next
 1. Perf: machine is shared by ~15 game instances (100% CPU), so PS2_PERF numbers are inflated
