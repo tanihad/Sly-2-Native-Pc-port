@@ -131,7 +131,7 @@ every event to keep the target queued. Environment:
 | `PS2_AUDIO_WAV=<file>` | also write everything rendered to a WAV (header refreshed every 250 ms, since the game may leave with ExitProcess) |
 | `PS2_AUDIO_TEST=1` | 440 Hz sine at -12 dBFS instead of the game's sound |
 | `PS2_AUDIO_LATENCY=<ms>` | target queued audio, 10-500 (default 40) |
-| `PS2_AUDIO_IOP_LIMIT=<ms>` | driver limit (default 60, 0 = off): while the IOP has not run for longer than this, the mixer outputs silence and holds every voice (see "The driver's pace" below) |
+| `PS2_AUDIO_IOP_LIMIT=<ms>` | driver limit (default 100, 0 = off): while the IOP has not run for longer than this, the mixer outputs silence and holds every voice (see "The driver's pace" below) |
 | `PS2_LOG_SD=1` | log sceSdInit, KON (voice, SSA, pitch, ADSR, volume), KOFF, transfers (marked "(silence)" when the data is all zero samples), BlockTrans, SetEffectAttr; every line starts with the audio clock (= position in the WAV) |
 | `PS2_LOG_SD=2` | also every VOLL/VOLR/PITCH/SSA/LSAX write (a lot) |
 | `PS2_LOG_SD_VOICES=<hex>[,<hex>]` | voice masks for core 0 (and 1): loop-end jumps, loop-start blocks, pitch changes, SSA/LSAX writes of those voices (stream double buffers; implies `PS2_LOG_SD=1`); `scripts\stream_loops.py <log>` lists jumps back into the half just played (no LSAX write since the previous jump) |
@@ -168,7 +168,7 @@ after 205 s and 868 s, and at the title within 40 s with `PS2_LOG_SD=1` slowing 
 status lines showed 300-950 ms late timer deliveries on a machine running ~10 game instances).
 
 Now `iop_run()` publishes the end of each pass (`iop_last_run_time()`, sd.h), and `sd_render`
-checks it every 64 frames: while the IOP's last pass is older than the limit (60 ms; with its own
+checks it every 64 frames: while the IOP's last pass is older than the limit (100 ms; with its own
 thread the IOP runs every few ms), it outputs silence and advances nothing (voices, envelopes, sweeps,
 noise, reverb, sound-data input), as if the SPU2 were paused, and continues where it stopped once
 the IOP has run again. The audio clock (log times, WAV position) keeps running. A long stall

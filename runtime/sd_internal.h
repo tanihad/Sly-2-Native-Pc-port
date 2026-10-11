@@ -22,7 +22,7 @@ uint64_t sd_voice_trans_writes(void);
 /* Times the voices were held because the IOP had not run for longer than the driver limit, and the
  * frames of silence output meanwhile (see "the driver's pace" in sd.c). */
 void     sd_driver_holds(uint64_t* holds, uint64_t* frames);
-/* The driver limit in ms (0 = never hold). Default: PS2_AUDIO_IOP_LIMIT, else 60. Tests only. */
+/* The driver limit in ms (0 = never hold). Default: PS2_AUDIO_IOP_LIMIT, else 100. Tests only. */
 void     sd_set_driver_limit_ms(uint32_t ms);
 
 /* ---- building blocks, exposed for the unit tests -------------------------------------------- */

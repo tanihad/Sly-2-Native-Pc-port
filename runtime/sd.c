@@ -163,7 +163,7 @@ static void global_init(void) {          /* call with the lock held */
     }
     if (g_driver_limit < 0) {
         const char* e = getenv("PS2_AUDIO_IOP_LIMIT");   /* ms of sound, 0 = never hold the voices */
-        int ms = e && *e ? atoi(e) : 60;
+        int ms = e && *e ? atoi(e) : 100;
         g_driver_limit = ms > 0 ? (int64_t)ms * (SD_SAMPLE_RATE / 1000) : 0;
     }
     g_ready = 1;
@@ -520,15 +520,16 @@ static void render_chunk(int16_t* out, uint32_t n) {
 }
 
 /* ---- the driver's pace ------------------------------------------------------------------------
- * On the PS2 the SPU2 plays in step with an IOP that never stops. Here the IOP (989snd, spiop) only
- * runs when the emulation thread reaches a safe point, while this mixer runs on the output thread in
- * real time. When the emulation thread stalls (a long frame, the GS thread, a busy machine
- * descheduling it), the voices play on with nobody refilling the streams: 989snd's stream code
- * notices less than one half buffer (0x1000 bytes, 162 ms at 44.1 kHz) of unseen playback too late,
- * the voice loops inside the half being refilled, 989snd sees NAX run backwards (error 0x37) and
- * stops the stream for good, which silences a level's music until the next level load.
- * So the SPU2 never plays more than the driver limit (PS2_AUDIO_IOP_LIMIT ms of sound, default 60;
- * the IOP is normally at most ~35 ms late) past the IOP's last pass: the frames rendered since the
+ * On the PS2 the SPU2 plays in step with an IOP that never stops. Here the IOP (989snd, spiop) runs
+ * on a host thread of its own (iop_kernel.c) and this mixer on the output thread, both in real time.
+ * If the IOP thread is held up anyway (a debugger, a blocked stderr write, a machine starved of
+ * CPU), the voices would play on with nobody refilling the streams: 989snd's stream code needs to
+ * move a stream voice's LSAX within one half buffer (0x1000 bytes, 163 ms at 44.1 kHz) of each half
+ * change, else the voice loops inside the half it just played, 989snd sees NAX run backwards (error
+ * 0x37) and stops the stream for good, which silences a level's music until the next level load.
+ * So the SPU2 never plays more than the driver limit (PS2_AUDIO_IOP_LIMIT ms of sound, default 100,
+ * leaving 989snd ~60 ms of the half for its own refill chain; the IOP thread normally runs every
+ * few ms, and a limit of 60 cost audible gaps for harmless delays) past the IOP's last pass: the frames rendered since the
  * IOP last ran are counted (in sound time, so a burst of rendering after the output thread itself
  * was held up counts too), and once they reach the limit sd_render outputs silence and leaves every
  * voice, envelope and sound-data input where it is, as if the SPU2 were paused, until the IOP has
