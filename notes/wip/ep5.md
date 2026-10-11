@@ -95,8 +95,28 @@ runtime/recompiler problems at the root (crash, hang, missing syscall/RPC, rende
   t5_heist_free_carmelita_complete (cutscene -> Neyla chase -> failed): all load/play, logs clean
   (the trailing "[watchdog] 0 function calls" in release logs is the exit dump, not a hang).
 
+- Session 3 perf (release, PS2_PERF, no other sly2 but ~45% CPU from other processes): hub
+  29-40 VBlanks/s, 880k VU pairs/VBlank at ~20 ns/pair (VU = 62% of the EE thread). The intro
+  cutscene on the standard path, measured right after under the same load, ran at only 25-28
+  VBlanks/s (it is 59.9 on a quiet machine), so the hub is not heavier than scenes that hold 60:
+  machine load + VU interpreter cost (next/vu-recomp is the planned fix), nothing ep5-specific.
+- Cherry-picked debug tools (same content as next/ep4/ep6/ep8): PS2_POKE, PS2_INPUT_FILE fix,
+  PS2_TASK_SET/PS2_TASK_FILE (entry hook 0x20E890; rebuilt rel + debug). Helper direct.ps1 now sets
+  PS2_TASK_FILE=<dir>\tasks.txt.
+- Recon finished in context (t5_recon_interior_intro direct, release): Binocucom in the tower works
+  (target list Old Terminal / Clockwerk's Eyes / Carmelita / Shadow Guard, R1 "Too far, use right
+  analog stick zoom in", right stick zooms). Spy targets 2634-2638 set to 2 with PS2_TASK_FILE ->
+  2639 active; closing the Binocucom completed it -> "Job Completed!" book -> chalk talk 1 (slides
+  with chalk arrows/circles, ~3000 VBlanks) -> safehouse. Autosave: m5_recon complete,
+  t5_chalktalk1 state 3, ghost/ewok/kidnap intros active, castle 15%. Screens ep5_recon_job_completed,
+  ep5_chalktalk1_*.png, ep5_safehouse_after_recon.png.
+- Then in the hub: 2662/2681/2686 (the three job *_complete tasks) set to 2 directly -> "Job
+  Completed" for Bentley and Murray, saving icon, safehouse; chalktalk2 went 1 -> 3 without any
+  slides. Setting a job's final task directly probably bypasses the game's job-end flow.
+
 ## In progress
-- Session 3: machine quiet (no other sly2 running): PS2_PERF on heavy ep5 scenes.
+- Chalk talk 2 in context: hub run (build\live\ct2, warp --job m5_ghost), set the stage before each
+  final task (2661 ghost_drop, 2679 ewok water, 2685 kidnap carry) and let the game finish the jobs.
 
 ## Next
 1. PS2_PERF (release) on hub, boss 1, battlezone tank, ewok trap, hack minigame while quiet.
