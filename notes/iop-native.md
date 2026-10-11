@@ -159,12 +159,15 @@ Execution model:
   and the longest hold of the IOP lock by another thread; then every IOP thread that used up 2 ms
   time slices without blocking since the last line (busy-waiting, or the IOP thread descheduled /
   blocked meanwhile: slices count wall time; debug builds add the function entered last). The
-  IOP thread hands this text to a writer thread (`log_async`): a write to stderr can block for
-  100 ms and more on a busy machine.
-- **Logging perturbs the IOP's timing**: every `fprintf` on the IOP thread (`PS2_LOG_SD`, `PS2_LOG_SND`,
-  `PS2_LOG_IOP`, `PS2_IOP_WATCH`) can block 50-300 ms on a loaded machine (another thread holding the
-  CRT stream lock is descheduled), which alone breaks streams. Judge stream health without them:
-  the `[audio] status` line counts voice transfers per 10 s (steady while the streams play).
+  IOP thread hands this text to a writer thread (`host_log_async`, audio_out.c): a write to stderr
+  can block for 100 ms and more on a busy machine.
+- **Logging and the IOP's timing**: a direct `fprintf` on the IOP thread can block 50-300 ms on a
+  loaded machine (another thread holding the CRT stream lock is descheduled), which alone broke
+  streams in early runs. The status lines, `PS2_LOG_SD*` (sd.c) and the output thread's lines now
+  go through `host_log_async`; with `PS2_LOG_SD_VOICES` on, the safehouse's streams ran clean
+  (989snd moved LSAX 4 ms after a half change at the median, 8 ms at p99). Still direct, so still
+  perturbing: `PS2_LOG_SND`, `PS2_LOG_IOP`, `PS2_IOP_WATCH`, 989snd's own printf. Stream health
+  without any log: the `[audio] status` line counts voice transfers per 10 s.
 - `PS2_PROFILE=iop`: the sampling profiler (perf.c) samples the IOP thread, only while a pass of it
   has run longer than 4 ms: shows where long passes block or spin (report at exit).
 - `PS2_IOP_WATCH=<hex>[,<hex>...]` (debug builds): logs every entry to those recompiled IOP

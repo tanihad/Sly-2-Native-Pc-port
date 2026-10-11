@@ -119,9 +119,25 @@ static void log_once(int* flag, const char* fmt, ...) {
     fputc('\n', stderr);
     va_end(ap);
 }
-/* Log lines carry the audio clock (seconds of rendered audio = position in a PS2_AUDIO_WAV file). */
-#define SDLOG(...) do { if (g_log > 0) { fprintf(stderr, "[sd %8.3f] ", (double)g_frames / 48000.0); \
-                                         fprintf(stderr, __VA_ARGS__); } } while (0)
+/* Log lines carry the audio clock (seconds of rendered audio = position in a PS2_AUDIO_WAV file).
+ * They come from the IOP thread and the output thread, so they go through audio_out.c's writer
+ * thread (host_log_async): writing stderr directly could block those threads for 100 ms and more
+ * on a busy machine, enough to break 989snd's streams. The weak default (tests without
+ * audio_out.c) writes directly. */
+void host_log_async(const char* text);
+__attribute__((weak)) void host_log_async(const char* text) { fputs(text, stderr); }
+
+static void sdlog(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
+static void sdlog(const char* fmt, ...) {
+    char buf[512];
+    int n = snprintf(buf, sizeof buf, "[sd %8.3f] ", (double)g_frames / 48000.0);
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf + n, sizeof buf - (size_t)n, fmt, ap);
+    va_end(ap);
+    host_log_async(buf);
+}
+#define SDLOG(...) do { if (g_log > 0) sdlog(__VA_ARGS__); } while (0)
 
 static inline int32_t clamp16(int32_t v) { return v < -32768 ? -32768 : v > 32767 ? 32767 : v; }
 static inline int32_t mul15(int32_t a, int32_t b) { return (a * b) >> 15; }
@@ -942,8 +958,8 @@ int sceSdVoiceTrans(int16_t channel, uint16_t mode, uint32_t iop_addr, uint32_t 
     uint64_t overlaps = g_trans_overlaps;
     UNLOCK();
     if (hits && (overlaps <= 20 || g_log > 0))
-        fprintf(stderr, "[sd %8.3f] VoiceTrans to %06X+%X overwrites the block voice c%u v%u is playing (%llu so far)\n",
-                (double)g_frames / 48000.0, spu_addr, size, hit_core, hit_voice, (unsigned long long)overlaps);
+        sdlog("VoiceTrans to %06X+%X overwrites the block voice c%u v%u is playing (%llu so far)\n",
+              spu_addr, size, hit_core, hit_voice, (unsigned long long)overlaps);
     int silent = 1;                                          /* data whose samples are all zero */
     for (uint32_t k = 0; g_log > 0 && iop && k + 16 <= len && silent; k += 16)
         for (int b = 2; b < 16; b++) if (iop[k + b]) { silent = 0; break; }

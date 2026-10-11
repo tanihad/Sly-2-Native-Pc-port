@@ -979,40 +979,14 @@ void iop_run(void) {
     iop_unlock();
 }
 
-/* Text the IOP thread wants on stderr goes through a writer thread: a write to stderr can block for
- * 100 ms and more on a busy machine (another thread holding the CRT's stream lock is descheduled,
- * the file write itself), and the IOP thread must not stall (989snd's tick). Without the IOP thread
- * the text is written directly. If the writer is behind, text that does not fit is dropped. */
-static SRWLOCK log_lock = SRWLOCK_INIT;
-static char log_buf[16384];
-static size_t log_len;
-static HANDLE log_event;
-
-static DWORD WINAPI log_writer(LPVOID arg) {
-    (void)arg;
-    static char local[sizeof log_buf + 1];
-    for (;;) {
-        WaitForSingleObject(log_event, INFINITE);
-        AcquireSRWLockExclusive(&log_lock);
-        size_t n = log_len;
-        memcpy(local, log_buf, n);
-        log_len = 0;
-        ReleaseSRWLockExclusive(&log_lock);
-        local[n] = 0;
-        if (n) fputs(local, stderr);
-    }
-}
+/* The status text goes to stderr through audio_out.c's writer thread: a write to stderr can block
+ * for 100 ms and more on a busy machine (another thread holding the CRT's stream lock is
+ * descheduled, the file write itself), and the IOP thread must not stall (989snd's tick). The weak
+ * default (builds without audio_out.c: unit tests) writes directly. */
+void host_log_async(const char* text);
+__attribute__((weak)) void host_log_async(const char* text) { fputs(text, stderr); }
 
 static volatile int threaded;              /* the IOP thread runs the IOP (iop_thread_start) */
-
-static void log_async(const char* text) {
-    if (!threaded || !log_event) { fputs(text, stderr); return; }
-    size_t n = strlen(text);
-    AcquireSRWLockExclusive(&log_lock);
-    if (log_len + n <= sizeof log_buf) { memcpy(log_buf + log_len, text, n); log_len += n; }
-    ReleaseSRWLockExclusive(&log_lock);
-    SetEvent(log_event);
-}
 
 /* Every 10 s while the recompiled modules run: one line showing the IOP is alive. */
 static void status_line(void) {
@@ -1064,7 +1038,7 @@ static void status_line(void) {
         if (n < sizeof out) n += (size_t)snprintf(out + n, sizeof out - n, "\n");
         t->slices_seen = t->slices;
     }
-    log_async(out);
+    host_log_async(out);
 }
 
 static HANDLE kick_event;                  /* iop_kick: wakes the IOP thread before its 1 ms timer */
@@ -1149,10 +1123,6 @@ void iop_thread_start(void) {
     const char* e = getenv("PS2_IOP_THREAD");
     if (e && *e == '0') return;
     kick_event = CreateEventW(NULL, FALSE, FALSE, NULL);   /* auto-reset */
-    log_event = CreateEventW(NULL, FALSE, FALSE, NULL);
-    HANDLE w = log_event ? CreateThread(NULL, 64 * 1024, log_writer, NULL, 0, NULL) : NULL;
-    if (w) CloseHandle(w);
-    else if (log_event) { CloseHandle(log_event); log_event = NULL; }   /* log_async writes directly */
     if (!kick_event) {
         fprintf(stderr, "[iop] cannot create the IOP thread's event (%lu); the IOP runs at the EE's safe points\n", GetLastError());
         return;

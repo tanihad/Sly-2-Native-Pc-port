@@ -136,9 +136,10 @@ every event to keep the target queued. Environment:
 | `PS2_LOG_SD=2` | also every VOLL/VOLR/PITCH/SSA/LSAX write (a lot) |
 | `PS2_LOG_SD_VOICES=<hex>[,<hex>]` | voice masks for core 0 (and 1): loop-end jumps, loop-start blocks, pitch changes, SSA/LSAX writes of those voices (stream double buffers; implies `PS2_LOG_SD=1`); `scripts\stream_loops.py <log>` lists jumps back into the half just played (no LSAX write since the previous jump) |
 
-Logging goes to unbuffered stderr from the IOP thread: a write can block 50-300 ms on a busy
-machine, which by itself makes 989snd's streams fail (notes/iop-native.md, "Debugging"). Use it for
-short runs, and judge stream health from the status line instead.
+Log lines (and the status line below) go through a writer thread (`host_log_async`, audio_out.c):
+the IOP thread and this output thread never write stderr themselves, since a write can block
+50-300 ms on a busy machine, which by itself made 989snd's streams fail (notes/iop-native.md,
+"Debugging"). If the writer falls more than 1 MB behind, lines are dropped.
 
 Every 10 s the output thread prints a health line:
 `[audio] status: <s> of audio, <n> underruns, mixer <x>% of a core, late/early stream refills <n>,
