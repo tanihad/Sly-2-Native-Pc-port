@@ -117,6 +117,9 @@ recompiler problem found at its root, with tests; frames in build\screenshots\ep
   even before contention). n3 SD log: 5 voices on for 13+ min (ssa F8D60/102A50/105B80 = engine /
   rotor loops while their objects exist) - expected, not stuck.
 
+- Session 5 (2026-10-11 08:30): merged main 2d00835 (EE thread fiber fix), rebuilt rel + debug.
+  Machine quieter (1 other game instance). r1 = RC chopper battle rerun at full speed.
+
 ## Next
 0. RC chopper battle stall: rerun with less load, dump RAM often after the launchers; if it stalls
    again find what the wave logic waits for.
