@@ -103,6 +103,18 @@ recompiler problem found at its root (with tests), save frames to build\screensh
   ("RC chopper always flies, stick steers") or a port bug - still undecided; the thrust comes from
   the Splice script (no ELF strings: Splice names live in the level data). JOY struct at 0x2E0BC0
   is not referenced by lui+imm anywhere (build\tools\luiref.py), so the reader is still unknown.
+  **Resolved as game design** (experiment build build\exprel / build\expr from build\shadow, a
+  copy of runtime/recomp/scripts patched by build\tools\xw_patch.py: PS2_EXP_XWATCH=<lo>:<len>:rw
+  logs guest loads/stores by function, PS2_EXP_EE_MXCSR sets the EE thread's MXCSR):
+  the pad object is JOY at 0x2DFC00 (second at 0x2E0D00; FUN_001c4468 picks by 0x2DFBC0 & 2):
+  +0x103C/+0x1040 left x/y, +0x1044 magnitude, +0x1048/9 raw bytes, +0x1070/74 right x/y,
+  +0x10B4 buttons. FUN_00187768 (raw -> floats, auto-calibrated 4-direction dead zone 0.35) gives
+  x 0, y -0.0, magnitude 0 at rest; FUN_001c4468 (per input object, every frame, called from the
+  world update FUN_00226550) copies them and FUN_001c4330 derives angle/magnitude with a 0.2/frame
+  release decay -> exactly 0 at rest. So the chopper sees a neutral stick and the Splice script still
+  thrusts (+105/frame to 2100 along its heading): it always flies forward and the stick steers it
+  (velocity turns toward the stick direction at constant speed). Same with the EE FPU in
+  round-toward-zero (MXCSR 7F80, PS2-like): identical trajectory. Not a port bug.
 
 ## In progress
 - RC chopper (m4_rc_chopper, lw\rc*): with the stick released the chopper keeps swaying ~+-500
