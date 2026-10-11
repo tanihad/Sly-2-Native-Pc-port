@@ -175,6 +175,8 @@ folds operations on constants with round-to-nearest and IEEE denormals: e.g. `lo
 then `addi.w vf25, vf00, I` (1.00787... rounds differently), or `loi -6.68e-39` (a denormal) then
 `mulai ACC, vf07, I` (DAZ makes I zero for the U flag). So generated files have `#pragma STDC
 FENV_ACCESS ON`, and LOI immediates, MFIR values and vf00 pass through an empty asm (`vuc_opaque`).
+They also have `#pragma clang fp exceptions(ignore)`: nothing reads the host's FP exception flags,
+so float operations whose results are unused (flag inputs nobody reads) can still be removed.
 
 **Code shape and build time.** VF registers and ACC live in a local struct whose address escapes
 (`RG->vf[n]`); with 32 vector locals live across hundreds of blocks clang's register coalescer
@@ -195,7 +197,11 @@ pairs that ran in recompiled code.
   from `PS2_VU_RECORD`, results from the interpreter) through the dispatcher; prints differences
   field by field. Recordings of the intro cutscene, title, briefing and museum gameplay: 0
   differences, 100% of programs compiled.
-- In-game `PS2_VU_VERIFY`: 0 mismatches over millions of programs (standard path, museum).
+- In-game `PS2_VU_VERIFY` with the final generator: 0 mismatches over 3.1M programs (release:
+  intro cutscene, attract, title) and 12.6M programs (debug build: memory-card prompt, intro, title,
+  Binocucom briefing, museum gameplay); the data memory is hashed at every XGKICK, so the GIF
+  packets, and with them the frames, are the interpreter's. (Frame dumps of two runs cannot be
+  compared directly: VBlanks follow the wall clock, so two interpreter runs differ as well.)
 - `tests/unit/vu_recomp/run.ps1`: random programs of every instruction (results read 0-4 pairs
   after their writes, flag reads near writers, Q/P around DIV/EFU, branches on just-written VI
   registers, loops, BAL/JR, JR to non-return points, branches in delay slots, a runaway program)
@@ -205,8 +211,17 @@ pairs that ran in recompiled code.
 - Debugging aids: `-DVU_TRACE` makes interpreter and compiled code print every pair's address and
   issue cycle; `VU_FUZZ_ONLY=<program>:<state>` runs one random case.
 
-Speed: see `notes/performance.md` (recompiled ~1.9-2.1 ns per pair against ~8 for the interpreter
-on the same recordings, pinned to a P-core).
+Speed: see `notes/performance.md`. On the same recordings, pinned to one core: recompiled ~2 ns per
+pair against ~8 for the interpreter on a quiet machine, 2-3.5 against 15-21 on a loaded one; in game
+the VU share of the EE thread drops from ~60% to ~10-15%.
+
+Steps while building it: the first version (static timing, flags folded eagerly) ran the replays
+at 2.1-3.3 ns per pair against 9-11 interpreted on a loaded machine; FMAC flags as lazy lane masks
+made it ~15% faster; VF/ACC in memory instead of 32 vector locals cut the compile time (330 s ->
+~25 s for the largest image) without a measurable cost; the sticky-bit specialisation (with all
+sticky bits set, as in gameplay, only a block's last FMAC op computes flags) and compiling the
+generated code with FP exceptions ignored (dead flag computations become removable: ~17% less
+code in the sticky-F functions) reduce the flag work further.
 
 ## Disassembler
 

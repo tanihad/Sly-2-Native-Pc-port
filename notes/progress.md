@@ -2,6 +2,16 @@
 
 ## Resume here (read first in a new session)
 
+**next/vu-recomp (2026-10-10):** the game's VU microcode is statically recompiled to C at build
+time (`recomp/vu_recomp.py`: all 8 overlays of `.vutext`, the VU1 renderers and the VU0 library);
+`runtime/vu.c` runs the compiled program whenever micro memory holds a compiled image, the
+interpreter otherwise (logged once; `PS2_VU_INTERP=1` forces it). Exact against the interpreter
+(registers, flags, Q/P, data memory, XGKICK addresses and cycles, pair/cycle counts): recordings of
+intro, title, briefing and museum gameplay replay with 0 differences, in-game `PS2_VU_VERIFY`
+found 0 mismatches in 15.7M programs, and `tests\unit\vu_recomp` runs random programs differentially.
+VU cost per pair 4-7x lower; the VU share of the EE thread drops from ~60% to ~10-15%. Numbers:
+`notes/performance.md`; design: `notes/vu-microcode.md` (Recompiler).
+
 **fix/fix-perf (2026-10-10):** the release build (and the -O1 default build) runs at full speed,
 59.94 VBlanks/s and ~60 game flips/s, on the movie, memory-card prompt, intro cutscene, title and
 Binocucom briefing (main before: 22-32 VBlanks/s in the 3D scenes). GS on its own thread with

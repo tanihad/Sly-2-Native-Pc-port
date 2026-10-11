@@ -47,10 +47,15 @@ memory they cover, interpreter stays as reference/fallback; measure and document
 - Frames between two runs are not comparable (frames_interp vs frames_interp2 differ too: wall-clock
   VBlanks); identity follows from VERIFY (data memory hashed at every XGKICK = GIF packets).
 
+- Debug in-game PS2_VU_VERIFY (build\verdbg, 420 s, memcard prompt -> museum gameplay): 12.6M
+  programs, 0 mismatches; frames look right (build\verdbg\sheet.png).
+- In-game vu_ab.ps1 (2 runs x 70 s, ~88% load): VU 24-27 -> 4-6 ns/pair, EE busy 13-29 -> 4-8 ms;
+  both modes GS-bound (GS thread 15-22 ms, gswait 57% in compiled), so headroom.ps1 not usable now.
+- Docs written: notes/performance.md (VU recompiler section), notes/vu-microcode.md, progress.md.
+
 ## Next
-1. Debug in-game PS2_VU_VERIFY into museum gameplay (build\verdbg running), check frames.
-2. In-game vu_ab.ps1 (release) + headroom.ps1 on the intro cutscene, compiled vs interp.
-3. Docs: notes/performance.md (VU section, before/after, threads table), notes/progress.md.
+1. Final review of the diff (c8cc6ef..HEAD) for leftovers; commit. Done otherwise.
+2. Optional, on a quiet machine: headroom.ps1 intro cutscene with the recompiled VU.
 
 ## Findings / traps
 - 376110651 uses a software return stack in vf02 and `jalr vi15, vi01` (target from data memory).
