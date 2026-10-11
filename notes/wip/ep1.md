@@ -78,15 +78,25 @@ runtime/recompiler problem found at its root (with tests); frames in build\scree
     another thread; [audio] status: voice transfers per 10 s (steady ~440-490 when the safehouse
     streams live; a drop = a stream stopped).
   * Without logging (r6/r7, 420 s) the safehouse streams all survived (486 transfers/10 s steady).
-  * Remaining: the IOP thread's 1 ms sleep sometimes takes 40-120 ms on this loaded machine (r9,
-    HIGHEST). Experiment running: pa (HIGHEST) / pb (TIME_CRITICAL) / pc (MMCSS Pro Audio) via
-    temporary PS2_IOP_THREAD_PRIO (remove before commit).
+  * The IOP thread's 1 ms sleep sometimes took 40-120 ms at HIGHEST on this loaded machine (r9).
+    pa/pb/pc A/B/C: HIGHEST ~ MMCSS (gaps 5-13 ms), TIME_CRITICAL worse (15-48 ms, noise?). Chose
+    MMCSS "Pro Audio" like the audio thread (fallback HIGHEST): commit 4ce81aa.
+  * m1 (release, safehouse, 960 s, WAV): 9 streams steady (485/10 s) all along, IOP gaps <= 28 ms,
+    WAV continuous after the level load except one 30 ms hold at 340 s -> driver limit default
+    raised 60 -> 100 ms (d8469b8): 100 ms still leaves 989snd ~60 ms of the 163 ms half.
+  * h1 (release, Paris hub roof, Sly idle, 25 min, WAV build\h1\h1.wav): streams steady at 750 s
+    (the old failure was at ~205 s).
+- Merged main (8e05f84: VU recompiler) - clean; all unit tests + run_tests.py pass.
+- Cherry-picked the PS2_TASK_SET / PS2_TASK_FILE tool (be8ede3 from next/ep3 = ep8's tool).
+- Docs: notes/iop-native.md ("When the IOP runs", "Why its own thread", Debugging), audio-mixer.md;
+  scripts/stream_loops.py (from build\tools\loops.py).
 
 ## Next
-1. Pick the IOP thread priority from pa/pb/pc (sleep latency), remove PS2_IOP_THREAD_PRIO, commit
-   the IOP thread work (tests: iop_kernel, sd, run_tests.py). Then merge main (VU recompiler).
-2. PS2_PERF in release when the machine is quieter.
-3. If time: boss again without the poke, using cover (barrels/glass) and the 3rd/4th-shot jam.
+1. h1 result (status lines + WAV analysis); screenshot to build\screenshots.
+2. PS2_PERF in release (VU recompiler merged).
+3. Boss again (m1_boss direct start), now that the VU recompiler makes it faster; try to win without
+   the poke; else use PS2_TASK_SET to look at the post-boss sequence / episode end.
+4. Play more of the jobs live (recon, bug, disco hacking, waterpump, theater, heist stages).
 
 ## Findings / traps
 - The scratchpad dir is shared with other agents (a file there was overwritten): keep helper
