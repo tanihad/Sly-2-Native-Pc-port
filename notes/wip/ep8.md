@@ -76,6 +76,16 @@ frames in build\screenshots\ep8_*.png.
   Start Episode / 95%"). No runtime problem seen; frames build\screenshots\ep8_boss_*,
   ep8_hate_chip_title, ep8_ending_*, ep8_credits*, ep8_after_credits_menu.
   Bentley dies fast without held health -> death mask -> the stage restarts at Murray.
+- Second complete run with -Wav (build\warp\bossrun): ending + credits audio (455-875 s) clean:
+  no dropouts inside sound, clicks only on percussive transients (explosions), peaks -0.6 dBFS
+  in the comic/credits music, 1 underrun in the whole run (machine at 100% CPU).
+- Turret (m8_turret, release): shooting works (blue shots, overheat bar), missiles hit the
+  chopper, "Job Failed!" box (no hint line: the level has no hint string; default "" is right).
+- Mega-jump (m8_megajump): R2 launches Sly high over the blimp and lands; 0/4 switches.
+- jt door (t8_engine_room_jt_lift): circle at the door didn't grab from where I stood (Murray
+  punched instead); same pry code as the beak (levels 0/1), not pursued.
+- NEW scripts\ep8_finale.ps1 (+ scripts\live_waitpos.py): unattended final boss -> Hate Chip ->
+  ending -> credits -> autosave (exit 0), optional -Wav: a regression run for the end of the game.
 
 ## In progress
 - Boss Murray stage (t8_open_head_intro, release, head3..5 with PS2_POKE=3D4AE0=3C): Murray walks
