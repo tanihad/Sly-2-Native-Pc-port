@@ -92,6 +92,11 @@ build\screenshots\ep2_*.png.
   One R1 of 4 frames with the green circle did nothing; the next (10 frames) worked. Frames
   ep2_recon_*.png.
 
+- Boardroom brawl start (live brawl2): Sly starts in a pool (the job's start warp), swims with
+  the left stick (position changes, upright swim animation, underwater part tinted), camera turns;
+  did not find the way out of the pool in a few tries. Elephant rampage (live ele): Job Help text
+  "Break Rajan's prize elephants out of their pens..."; walking in the hub fine.
+
 ## Next
 1. Dance minigame: only worth finishing on a quiet machine (game at 60 fps); bot in build\tools.
 2. Audio run (-Wav + PS2_LOG_SND, release hub) - first attempt starved by machine load.
