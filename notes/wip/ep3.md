@@ -24,16 +24,20 @@ warp saves / direct job starts; fix every runtime/recompiler problem found at it
 - Episode menu (save with episode.temple.percent_complete=100): shows Episode 4 "Jailbreak",
   Start Episode -> episode 4 intro comic cutscene plays (the ep3 -> ep4 transition works).
 - Frames: build\screenshots\ep3_*.png.
-
-## In progress
-- Does the game try to autosave at heist stage changes? (heist4 -> heist5 did not rewrite save1;
-  direct starts never rewrite it). Run with PS2_WATCH=1D84B0,164DF0 (build\warp\watch_t3_heist4_intro).
+- Heist stage changes do not autosave (PS2_WATCH=1D84B0,164DF0: 0x164DF0 state changes during
+  heist4 -> heist5, no 0x1D84B0 save call) - as in the game, which saves at job/episode ends.
+- Episode end: direct start of t3_boss_complete (2342) -> Neyla/Carmelita/Contessa cutscene ->
+  autosave (save1: episode.temple.percent_complete 100, episodeBest 3, t3_complete state 1) ->
+  episode 4 title card. Mid-job tasks without a start warp (-1) just resume Sly on the hub hill.
+- Merged next/warp again (7729410: entry hooks, PS2_WARP_TASK and @187D80 anchors in release).
 
 ## Next
 1. Perf: machine is shared by ~15 game instances (100% CPU), so PS2_PERF numbers are inflated
-   (VU 24-27 ns/pair instead of ~11). GS replay of the world-13 interior (build\gsrec\recon_int.gsrec,
-   240 VBlanks): 69 ms/VBlank vs 40 ms for fix-perf's rv_brief.gsrec in the same conditions ->
-   ~1.7x the briefing's GS cost (~15 ms/VBlank unloaded?). Re-measure when the machine is quiet.
+   (VU 24-27 ns/pair instead of ~11). GS replay, interleaved, same load: title (build\gsrec\
+   brief.gsrec, actually the title menu) 21-24 ms/VBlank vs world-13 interior (recon_int.gsrec)
+   30-36 ms -> ~1.45x the title (title = 7.0 ms unloaded -> ~10 ms?). In-game release run in the
+   interior under load: 22-30 VBlanks/s, same as the briefing baseline in the same minute (both
+   load-bound). Re-measure when the machine is quiet.
 2. Audio: -Wav in the hub (rain ambience, music).
 3. More gameplay: turret dam, boss to the end (t3_complete -> episode end).
 
