@@ -119,6 +119,30 @@ recompiler problem found at its root, with tests; frames in build\screenshots\ep
 
 - Session 5 (2026-10-11 08:30): merged main 2d00835 (EE thread fiber fix), rebuilt rel + debug.
   Machine quieter (1 other game instance). r1 = RC chopper battle rerun at full speed.
+  Machine got loaded again (8-9 instances): r1 deployed at z 2461 (stall case again).
+- AUDIO: "VoiceTrans to 00C040+1000 overwrites the block voice c0 v7" every 0.33 s right after
+  the RC chopper battle level load (r1 14x, lrc3 375x over 2 min, r6 16x; not in r2-r5, r7).
+  spiop music channel 1 = 5 voices, halves A = 0x9040+0x1000*i, B = 0x13040+0x1000*i (44.1 kHz,
+  0.16 s per half), 989snd tracks the half from the first voice's NAX (func 0x12CCC in 989snd).
+  r6 (richer report): v7 = channel 3 of the stream parked at its SSA 0C070 with PITCH 0 (env
+  6FFF, sustain, LSAX = B 16040) while the other channels play -> one music layer never got
+  its start pitch. Tested + reverted: SPU "LSAX written while on locks out loop-start flags"
+  (no such event in this content). Added per-voice register history (KON/KOFF/PITCH/SSA/LSAX)
+  to the overlap report (sd.c) -> r8/r9 to see who skips the pitch.
+  RESOLVED (r11/r12): v7 is the level's WIND, a noise voice (NON 000080) keyed on without SSA/
+  PITCH writes -> keeps the stale registers of its previous use as music channel 3. Harmless
+  false positive. Commit 20ddfd9: check skips noise voices (+ unit test), report shows the voice
+  history, PS2_LOG_SD levels 1 (+NON) / 2 (+PITCH/SSA/LSAX) / 3 (+VOLL/R).
+- REAL audio problem found on the way: the 44.1 kHz music stream of the RC chopper level stops
+  for good after 0.3 s .. 30 s (r5, r10-r13; lrc3 at full speed played 2+ min). 989snd sets
+  LSAX=B in its first position check after the start; if the IOP runs > ~0.16 s late the voice
+  loops into LSAX 0x5000 / its own half, 989snd's NAX check fails and the stream is stopped.
+  The IOP is late because it only runs at EE safe points: 500-1400 of 2400 timer ticks per 10 s
+  more than 8 ms late, worst 100-650 ms on this loaded machine. Fixes elsewhere: next/ep2 (and
+  ep3 verbatim) keep the IOP polled while the EE waits for the GS (cherry-picked: 31bd93f);
+  next/ep1 runs the IOP on its own OS thread (778e8e1, MMCSS) + async logging (d4dd3c8).
+  With 31bd93f alone (r12/r13): still 500-700 late ticks, music stops after ~25 s.
+  r14 = ep1's exe (copied to build\ep1rel) vs r15 = mine on the same start, -Wav, no SD log.
 
 ## Next
 0. RC chopper battle stall: rerun with less load, dump RAM often after the launchers; if it stalls
