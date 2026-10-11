@@ -78,8 +78,9 @@ static const struct { const char* name; int axis, value; } script_sticks[] = {
  *   "@!<hexaddr>[/<hexra>][+<n>]:<button>[:<hold>]"
  *       once the function has been called and then not called for n frames (default 30), e.g.
  *       "@!227820+60:none" = when the Binocucom dialogue has been gone for 60 frames.
- * Anchors need the debug build (function tracing); the runtime counts their calls
- * (ps2_func_calls). A token waits until the one before it has started. The button "none" presses
+ * Anchors need the debug build (function tracing), except on the functions with an entry hook
+ * (recomp/hooks.py: @187D80/1DD96C, the title's START, works in release builds); the runtime
+ * counts their calls (ps2_func_calls). A token waits until the one before it has started. The button "none" presses
  * nothing (a pure wait point for the tokens after it). Partial stick deflection: "lxHH", "lyHH",
  * "rxHH", "ryHH" set that axis to the hex value HH (00 left/up, 80 centre, FF right/down).
  * "ram" writes EE RAM to <dump dir>/ram_<vblank>.bin (debugging).

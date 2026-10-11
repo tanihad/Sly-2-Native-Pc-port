@@ -16,15 +16,15 @@ powershell -ExecutionPolicy Bypass -File scripts\warp_run.ps1 -Episode 4 -Play
 powershell -ExecutionPolicy Bypass -File scripts\warp_run.ps1 -Episode 4 -Play -Release
 # a job: everything it depends on is done, the hub opens with the job available:
 powershell -ExecutionPolicy Bypass -File scripts\warp_run.ps1 -Episode 1 -Job m1_brawl -Play
-# a job started by the game itself (debug build only): title -> job briefing -> playing the job
-powershell -ExecutionPolicy Bypass -File scripts\warp_run.ps1 -Episode 1 -Job m1_brawl -Direct
+# a job started by the game itself (any build): title -> job briefing -> playing the job
+powershell -ExecutionPolicy Bypass -File scripts\warp_run.ps1 -Episode 1 -Job m1_brawl -Direct -Release
 ```
 
 Each run gets `build\warp\<name>\` (card, a copy of the exe so runs can go in parallel, run.log,
 frames with latest.png). Options: `-Seconds 150`, `-DumpEvery 120`, `-Window` (visible window with
 sound), `-Pad "<more PS2_INPUT tokens>"` (after the START press, e.g. `"+2400:ram"`), `-Name`,
-`-Set "path=value,..."`, `-Make "<more warp.py make options>"`, `-TitleFrame` (release: pad frame of
-the START press, default 2400).
+`-Set "path=value,..."`, `-Make "<more warp.py make options>"`, `-TitleFrame N` (press START at pad
+frame N instead of the title anchor; only for an exe built before the entry hooks).
 
 To play from an episode or job in a window, with sound:
 
@@ -34,13 +34,24 @@ powershell -ExecutionPolicy Bypass -File scripts\play.ps1
 ```
 
 then press START on the title screen ("Press START button to Resume Game") and X at the safehouse.
+To be dropped straight into a job instead, add `--direct` and set the variable it prints in the
+same PowerShell before play.ps1 (and remove it afterwards, or it applies to the next game too):
+
+```powershell
+python scripts\warp.py make --job m1_brawl --direct    # prints "direct start: PS2_WARP_TASK=1585:2"
+$env:PS2_WARP_TASK = "1585:2"; powershell -ExecutionPolicy Bypass -File scripts\play.ps1
+Remove-Item Env:\PS2_WARP_TASK
+```
+
 `warp.py make` writes the save into slot 1 of `build\rel\memcard\slot0` (play.ps1's card) unless
 `--card` names another directory, empties the other two slots (`--keep-others` keeps them) and first
 copies any save it replaces to `<card>.warp-backup-<time>\`. Any exe can use another card through
 `PS2_MEMCARD_DIR=<card dir>` (run_game.ps1 `-Card`); without it the card is `memcard\slot0` next to
-the exe. Scripted input: debug builds can anchor START to the title (`@187D80/1DD96C+30:start:10`),
-release builds press it at a frame (`2400:start:10`); the safehouse menu is up ~1500 frames later
-(`+1500:cross:6`).
+the exe. Scripted input: anchor START to the title (`@187D80/1DD96C+30:start:10`, both builds: the
+function has an entry hook, recomp/hooks.py; other `@` anchors still need the debug build). A fixed
+frame (`2400:start:10`) is unreliable: the title came up between pad frames ~2070 and ~2720 in
+these runs, depending on build and machine load. The safehouse menu is up ~1500 frames after
+START (`+1500:cross:6`).
 
 ## warp.py
 
@@ -96,12 +107,12 @@ m1_boss, m2_rc_chopper, m3_heist, m4_hack, m5_hack, m6_paraglide, m7_boss, m8_bo
 
 Without `--direct` the tester walks to the job's marker in the hub (as in the game, the hub
 character is Sly - Bentley at the start of episode 4 - and the game switches to the job's
-character when the job starts). With `--direct` / `-Direct` (debug build) the game starts the job
-itself straight from the title: verified for m1_brawl (Murray, hub), m1_moulin_power (another
-level, world 6), t1_heist_5_peacock_climb (a stage in the middle of a heist), m8_boss (the final
-fight, world 43) and the later parts of the prologue that scripted play has not reached:
-t0_chase_hallway_start (the chase in the Clockwerk hallway) and t0_rooftop_start (the rooftop
-chase). Frames: `build\screenshots\warp_job_*.png`.
+character when the job starts). With `--direct` / `-Direct` (any build) the game starts the job
+itself straight from the title: verified for m1_brawl (Murray, hub; debug and release),
+m1_moulin_power (another level, world 6), t1_heist_5_peacock_climb (a stage in the middle of a
+heist), m8_boss (the final fight, world 43), m3_heist (release) and the later parts of the prologue
+that scripted play has not reached: t0_chase_hallway_start (the chase in the Clockwerk hallway)
+and t0_rooftop_start (the rooftop chase). Frames: `build\screenshots\warp_job_*.png`.
 
 Gadgets: the story makes the player buy the Paraglide (episode 5, `t5_paraglide_purchase`) and the
 Alarm Clock (episode 7, `t7_alarmclock_purchase`); warp saves own them once those tasks are done.
@@ -146,12 +157,24 @@ the frontier itself. Loading (FUN_00164270) turns job tasks saved in state 1 or 
 job interrupted by quitting restarts), so finished tasks are saved as 3. scripts/warp_tasks.txt is
 the graph read from these objects (`warp.py tasks --ram`, one dump per episode hub).
 
-**Direct job start** (runtime/warp.c, `PS2_WARP_TASK=<task oid>[:<world id>]`, debug builds only,
-off by default): when the game starts a job that lives in another level (FUN_001651d8) it stores the
+**Direct job start** (runtime/warp.c, `PS2_WARP_TASK=<task oid>[:<world id>]`, every build, off
+by default): when the game starts a job that lives in another level (FUN_001651d8) it stores the
 task in 0x2DEB48, loads that level with transition flag 8, and after the load FUN_00165280 starts
 the task (state 1, its character, its start warp). The hook catches the resume's call of the
 transition function 0x22B490 (return address 0x165FE4, caller bytes checked) and turns it into that
-load. It touches nothing else.
+load. It touches nothing else. 0x22B490 has an entry hook (recomp/hooks.py: the recompiled function
+starts with `PS2_HOOK`, a test of a flag that only debug tools set, so release builds keep it;
+notes/recompiler-design.md "Entry hooks"). The pad-button test 0x187D80 has one too, which is what
+makes the title-screen START anchor work in release builds.
+
+**Task states while playing** (runtime/warp.c, every build, off by default):
+`PS2_TASK_SET=<task oid>:<state>[@<vblank>],...` or `PS2_TASK_FILE=<path>` (lines `<oid>:<state>`
+appended while the game runs; `<oid>:?` prints the state). At the top of the main loop (entry hook
+on 0x20E890) the hook finds the task object with the game's 0x15E938 (world 0x3DD490, class 0x105)
+and calls the game's own 0x164DF0 (task, state), which propagates the change to the successors and
+autosaves, as when a stage is won. Useful for stage tasks whose next stage is driven by the task
+graph; a boss's stages follow its own state machine, so completing a boss task (e.g. m8_boss's
+3484/3488/3492) does not end the stage being played.
 
 **Power-ups**: table at 0x2BCD00 (32-byte records: kind, character, cost, ?, ThiefNet position,
 name/description text ids); bits 7-14 Bentley's gadgets, 15-22 Murray's, 23-30 Sly's (26 Alarm
@@ -160,16 +183,18 @@ Clock, 27 Paraglide, confirmed in ThiefNet), 31-42 free moves.
 ## Runtime findings
 
 Every episode hub and the sampled job levels loaded and played without a crash, hang, missing
-syscall/RPC or broken rendering (debug build; release spot-checked on episodes 0, 4 and 7 at 60
-fps: the episode 7 snow hub uses ~14.7 of 16.7 ms per VBlank, VU interpreter ~65%). The only log
+syscall/RPC or broken rendering (debug build; release spot-checked on episodes 0, 4, 6 and 7 and
+the direct starts of m1_brawl and m3_heist; at 60 fps on an idle machine the episode 7 snow hub
+uses ~14.7 of 16.7 ms per VBlank, VU interpreter ~65%). The only log
 lines are the known boot-time ones (`syscall 0x5B ... not implemented`, `unimplemented eret at
 0x00239AA4`). Each episode's job content beyond the hub was not played.
 
 ## Files
 
 - `scripts/warp.py`, `scripts/warp_schema.txt`, `scripts/warp_tasks.txt`, `scripts/warp_run.ps1`
-- `scripts/run_game.ps1 -Card`, `runtime/warp.c` (+3 lines in runtime/ps2_runtime.c)
-- `tests/unit/warp/` (no game needed)
+- `scripts/run_game.ps1 -Card`, `runtime/warp.c`, entry hooks: `recomp/hooks.py`, `PS2_HOOK` /
+  `ps2_hook` (runtime/ps2_runtime.h/.c)
+- `tests/unit/warp/` (no game needed); `tests/run_tests.py` checks the hooks' byte guard
 
 ## Appendix: jobs (`warp.py list`)
 

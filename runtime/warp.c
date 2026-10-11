@@ -1,4 +1,4 @@
-/* PS2_WARP_TASK: start the game directly inside a job (debug tool, off by default; debug builds only).
+/* PS2_WARP_TASK: start the game directly inside a job (debug tool, off by default; every build).
  *
  *   PS2_WARP_TASK=<task object id>[:<world id>]
  *
@@ -12,23 +12,25 @@
  * remember the task object id in 0x2DEB48 and set transition flag 8. After the load the game itself
  * starts the task (0x165280: task state 1, the task's character as player, its start point).
  *
- * The hook runs at the entry of the recompiled 0x22B490 (PS2_TRACE -> ps2_calls_record), changes
- * its argument registers once and never touches the game otherwise. It checks the caller's
- * instructions first, so another executable is left alone.
+ * The hook runs at the entry of the recompiled 0x22B490 (an entry hook, recomp/hooks.py: PS2_HOOK ->
+ * ps2_hook, present in release builds too), changes its argument registers once and never touches
+ * the game otherwise. It checks the caller's instructions first, so another executable is left
+ * alone.
  *
  * PS2_TASK_SET / PS2_TASK_FILE: change a task's state the way the game does when a job stage is
- * finished (debug tool, off by default; debug builds only), e.g. to see what follows a boss stage
- * that scripted input cannot win:
+ * finished (debug tool, off by default; every build), e.g. to see what follows a stage that
+ * scripted input cannot win:
  *
- *   PS2_TASK_SET=<task oid>:<state>[@<vblank>],...    (state 2 = completed, 3 = closed)
+ *   PS2_TASK_SET=<task oid>:<state>[@<vblank>],...    (state 2 = completed, 3 = closed; ':?' queries)
  *   PS2_TASK_FILE=<path>                             (lines "<task oid>:<state>" appended while it runs)
  *
- * At the top of the game's main loop (entry of 0x20E890, called first by the loop at 0x1A7588, so no
- * game work is in progress) the hook calls the game's own functions on the main thread: 0x15E938
- * (world 0x3DD490, class 0x105, oid) finds the task object as 0x165280 does, and 0x164DF0 (task,
- * state) changes its state, which the game propagates to the successor tasks (and autosaves). The
- * registers are saved around the calls and restored, so the main loop goes on as if nothing ran.
- * Task oids: scripts/warp_tasks.txt. */
+ * At the top of the game's main loop (entry hook on 0x20E890, called first by the loop at 0x1A7588,
+ * so no game work is in progress) the hook calls the game's own functions on the main thread:
+ * 0x15E938 (world 0x3DD490, class 0x105, oid) finds the task object as 0x165280 does, and 0x164DF0
+ * (task, state) changes its state, which the game propagates to the successor tasks (and autosaves).
+ * The registers are saved around the calls and restored, so the main loop goes on as if nothing ran.
+ * Task oids: scripts/warp_tasks.txt. A boss's stages follow its own state machine, not the task
+ * states: completing a boss task does not end the stage being played. */
 #include "hw.h"
 
 #include <stdlib.h>
@@ -90,10 +92,6 @@ int warp_init(void) {
     const char* e = getenv("PS2_WARP_TASK");
     int any = (e && *e) || (ts && *ts) || task_file;
     if (!any) return 0;
-#ifdef PS2_NO_TRACE
-    fprintf(stderr, "[warp] PS2_WARP_TASK / PS2_TASK_SET / PS2_TASK_FILE need the debug build (function tracing); ignored\n");
-    return 0;
-#else
     if (ts && *ts) task_parse(ts);
     task_on = task_n > 0 || task_file;
     if (!e || !*e) return task_on;
@@ -103,7 +101,6 @@ int warp_init(void) {
     fprintf(stderr, "[warp] will start task %u%s on \"Resume Game\"\n", warp_oid, warp_wid >= 0 ? " in its world" : "");
     warp_state = 1;
     return 1;
-#endif
 }
 
 /* new lines of PS2_TASK_FILE since the last look */
@@ -186,5 +183,3 @@ void warp_on_call(ps2_ctx* ctx, uint32_t addr) {
     fprintf(stderr, "[warp] v%u: resume turned into starting task %u (world %d, descriptor 0x%08X)\n",
             ps2_vblank_count(), warp_oid, warp_wid, ctx->r[REG_A1].uw[0]);
 }
-
-int warp_active(void) { return warp_state == 1 || task_on; }

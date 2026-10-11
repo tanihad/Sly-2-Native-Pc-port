@@ -63,23 +63,29 @@ static int watch_n, watch_all, watch_seen_n, watch_lines, watch_a0_on;
 /* PS2_INPUT "@<hexaddr>[/<hexra>]" tokens (from PS2_INPUT or live PS2_INPUT_FILE lines): window.c's
  * input script waits for calls of these functions (made from the call site returning to <hexra>,
  * if not 0). An anchor is registered by its first query and counted from then on; queries and
- * counting both run on the emulation thread. */
+ * counting both run on the emulation thread. Debug builds count calls of any function (PS2_TRACE ->
+ * ps2_calls_record); release builds only those of functions with an entry hook (ps2_hook). */
 #define ANCHORS_MAX 64
 static uint32_t anchor_addr[ANCHORS_MAX], anchor_ra[ANCHORS_MAX], anchor_calls[ANCHORS_MAX];
 static int anchor_n;
+volatile int ps2_hooks_on;
 
 uint32_t ps2_func_calls(uint32_t addr, uint32_t ra) {
     for (int k = 0; k < anchor_n; k++)
         if (anchor_addr[k] == addr && anchor_ra[k] == ra) return anchor_calls[k];
-#ifdef PS2_NO_TRACE
-    static int warned;
-    if (!warned++) fprintf(stderr, "[ps2] PS2_INPUT: function anchors (@...) need the debug build; they never fire here\n");
-#endif
     if (anchor_n == ANCHORS_MAX) {
         static int full;
         if (!full++) fprintf(stderr, "[ps2] PS2_INPUT: more than %d function anchors; the rest never fire\n", ANCHORS_MAX);
         return 0;
     }
+#ifdef PS2_NO_TRACE
+    int hooked = 0;
+    for (const uint32_t* h = ps2_hook_addrs; *h && !hooked; h++) hooked = *h == addr;
+    if (!hooked)
+        fprintf(stderr, "[ps2] PS2_INPUT: function anchor @%X needs the debug build (release builds: only the "
+                        "functions in recomp/hooks.py); it never fires here\n", addr);
+    ps2_hooks_on = 1;
+#endif
     anchor_addr[anchor_n] = addr;
     anchor_ra[anchor_n] = ra;
     anchor_calls[anchor_n++] = 0;
@@ -87,15 +93,26 @@ uint32_t ps2_func_calls(uint32_t addr, uint32_t ra) {
     return 0;
 }
 
+static void anchors_count(ps2_ctx* ctx, uint32_t addr) {
+    for (int k = 0; k < anchor_n; k++)
+        if (anchor_addr[k] == addr && (!anchor_ra[k] || anchor_ra[k] == ctx->r[REG_RA].uw[0])) anchor_calls[k]++;
+}
+
 /* PS2_WARP_TASK (runtime/warp.c): start a job directly on "Resume Game" (debug tool, off by default). */
 int warp_init(void);
 void warp_on_call(ps2_ctx* ctx, uint32_t addr);
-int warp_active(void);
+
+/* Entry hooks (recomp/hooks.py, every build): called at the entry of the hooked functions while a
+ * tool has set ps2_hooks_on; runs on the thread that made the call. */
+void ps2_hook(ps2_ctx* ctx, uint32_t addr) {
+#ifdef PS2_NO_TRACE
+    anchors_count(ctx, addr);                    /* debug builds count them in ps2_calls_record */
+#endif
+    warp_on_call(ctx, addr);
+}
 
 void ps2_calls_record(ps2_ctx* ctx, uint32_t addr) {
-    warp_on_call(ctx, addr);
-    for (int k = 0; k < anchor_n; k++)
-        if (anchor_addr[k] == addr && (!anchor_ra[k] || anchor_ra[k] == ctx->r[REG_RA].uw[0])) anchor_calls[k]++;
+    anchors_count(ctx, addr);
     for (int i = 0; i < watch_n; i++) {
         if (watch[i] != addr) continue;
         if (watch_a0_on && ctx->r[REG_A0].uw[0] != watch_a0) continue;   /* PS2_WATCH_A0=<hex> */
@@ -155,7 +172,7 @@ static void calls_vblank(uint32_t v) {
     if (v == calls_from) ps2_calls_on = calls_window = 1;
     if (v == calls_from + calls_frames) {
         calls_window = 0;
-        ps2_calls_on = watch_n > 0 || anchor_n > 0 || warp_active();
+        ps2_calls_on = watch_n > 0 || anchor_n > 0;
         static uint32_t rows[CALLS_HASH][3];
         uint32_t n = 0;
         for (uint32_t i = 0; i < CALLS_HASH; i++)
@@ -649,7 +666,7 @@ int main(int argc, char** argv) {
     int dump_regs = argc > 2 && strcmp(argv[2], "--dump-regs") == 0;
     ps2_log_sif = getenv("PS2_LOG_SIF") != NULL;
     watch_init();
-    if (warp_init()) ps2_calls_on = 1;
+    if (warp_init()) ps2_hooks_on = 1;
     headless = dump_regs || getenv("PS2_HEADLESS") != NULL;
     dump_dir = getenv("PS2_DUMP_FRAMES");
     if (getenv("PS2_DUMP_EVERY")) dump_every = atoi(getenv("PS2_DUMP_EVERY")) > 0 ? atoi(getenv("PS2_DUMP_EVERY")) : 60;
