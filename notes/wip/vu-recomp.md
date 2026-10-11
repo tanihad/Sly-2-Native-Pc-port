@@ -53,9 +53,13 @@ memory they cover, interpreter stays as reference/fallback; measure and document
   both modes GS-bound (GS thread 15-22 ms, gswait 57% in compiled), so headroom.ps1 not usable now.
 - Docs written: notes/performance.md (VU recompiler section), notes/vu-microcode.md, progress.md.
 
+- Final review of c8cc6ef..HEAD: build integration (stale generated files removed, unchanged files
+  not rewritten), micro_gen bumps (VIF MPG per chunk, EE stores), VU0 VCALLMS and VU1 paths both
+  through vu_execute. Task complete.
+
 ## Next
-1. Final review of the diff (c8cc6ef..HEAD) for leftovers; commit. Done otherwise.
-2. Optional, on a quiet machine: headroom.ps1 intro cutscene with the recompiled VU.
+1. Optional, on a quiet machine: headroom.ps1 on the intro cutscene with the recompiled VU (the
+   machine was GS-bound at ~88% load from other agents' games when this was finished).
 
 ## Findings / traps
 - 376110651 uses a software return stack in vf02 and `jalr vi15, vi01` (target from data memory).
