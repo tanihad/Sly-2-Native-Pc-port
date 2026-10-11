@@ -311,6 +311,9 @@ static uint32_t dump_from;                       /* PS2_DUMP_FROM=<vblank>: no d
  * Sleep(1)), and wakes an idle EE at once (threads.c waits on ps2_irq_pending). When the EE falls
  * behind, the VBlanks it missed are dropped, not delivered in a burst (ps2_service_irq): the game
  * slows down instead of stuttering through catch-up frames. */
+static volatile LONG vblank_hold;                /* debug pause (ps2_debug_hold): no VBlank is due */
+static volatile LONG64 vblank_shift;             /* QPC ticks the VBlank schedule moved by debug pauses */
+
 static DWORD WINAPI host_timer(LPVOID arg) {
     (void)arg;
     timeBeginPeriod(1);
@@ -320,7 +323,8 @@ static DWORD WINAPI host_timer(LPVOID arg) {
     const int64_t tick = qpc_freq.QuadPart / 1000;
     int64_t next_tick = qpc_start.QuadPart + tick;
     for (uint64_t frame = 1;;) {                 /* NTSC: 59.94 fields per second */
-        int64_t due = qpc_start.QuadPart + (int64_t)(frame * 1001 * (uint64_t)qpc_freq.QuadPart / 60000);
+        if (vblank_hold) { Sleep(1); continue; }
+        int64_t due = qpc_start.QuadPart + vblank_shift + (int64_t)(frame * 1001 * (uint64_t)qpc_freq.QuadPart / 60000);
         QueryPerformanceCounter(&now);
         uint32_t raise = 0;
         if (now.QuadPart >= due) {
@@ -359,11 +363,23 @@ static volatile int ram_dump_request;
 void ps2_request_ram_dump(void) { ram_dump_request = 1; }   /* written at the next VBlank */
 
 /* Debug pause (window.c, the live input token 'pause'; EE thread): the whole PS2 stands still while
- * the EE waits for the next input line - EE timers (the game's frame time), IOP time (989snd's
- * tick: sequenced music) and the SPU2 mixer - so a game played step by step sees the same time
- * passing as at full speed. VBlanks missed meanwhile are dropped as usual (ps2_service_irq). */
+ * the EE waits for the next input line - the VBlank clock, EE timers (the game's frame time), IOP
+ * time (989snd's tick: sequenced music) and the SPU2 mixer - so a game played step by step sees the
+ * same time passing per frame as at full speed. The VBlank schedule moves by the pause, so the next
+ * VBlank comes as long after the resume as it was still away when the pause began (without that, a
+ * VBlank fell due at once on every resume and each 2-frame step held only ~1 frame of time). */
 void sd_hold(int on);
 void ps2_debug_hold(int on) {
+    static int64_t hold_at;
+    LARGE_INTEGER t;
+    QueryPerformanceCounter(&t);
+    if (on && !vblank_hold) {
+        hold_at = t.QuadPart;
+        InterlockedExchange(&vblank_hold, 1);
+    } else if (!on && vblank_hold) {
+        InterlockedExchangeAdd64(&vblank_shift, t.QuadPart - hold_at);
+        InterlockedExchange(&vblank_hold, 0);
+    }
     timer_hold(on);
     iop_time_hold(on);
     sd_hold(on);
