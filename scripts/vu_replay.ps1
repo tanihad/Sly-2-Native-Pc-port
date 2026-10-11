@@ -34,8 +34,10 @@ if ($Compiled) {
     $srcs += (Get-ChildItem $Compiled -Filter *.c | ForEach-Object { $_.FullName })
     $mode = "compiled"
     $tag = "c$([Math]::Abs(($Runtime + $Compiled).GetHashCode()))"
+    $extra0 = @('-fno-slp-vectorize')                    # as scripts/build_game.py compiles generated VU code
 }
 $extra = @()
+if ($Compiled) { $extra += $extra0 }
 if ($DebugInfo) { $extra += '-g'; $tag = "g$tag" }       # -DebugInfo: for llvm-symbolizer on profiles
 $exe = Join-Path $out "vu_replay_$tag$Opt.exe"
 $inputs = @($srcs) + @(Get-ChildItem $Runtime -Filter *.h | ForEach-Object { $_.FullName }) + @($MyInvocation.MyCommand.Path)

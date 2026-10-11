@@ -40,6 +40,10 @@ from .vu_decode import (B_E, B_I, BM_BC, BM_I, BM_Q, BM_VEC, CLIP_READERS, COND_
                         MAC_READERS, STALL_EFU, STALL_P, STALL_Q, STATUS_READERS, VuOp, decode)
 
 KEY_FLAGS_DIRTY = False      # True: unapplied FMAC flags carried across blocks (key bit); False: applied at block ends
+# VF registers and ACC in a local struct whose address escapes (memory) instead of C locals: no PHI
+# nodes for 32 vectors across hundreds of blocks, which made clang's register coalescer superlinear
+REGS_IN_MEMORY = True
+ENTRY_STICKY = (0xF, 0xB, 0x0)  # sticky-bit specialisations of every entry, most specific first
 MAX_VERSIONS_PER_PC = 24
 MAX_VERSIONS = 60000
 ANY = -1                                  # successor that is not known statically
@@ -270,6 +274,7 @@ class Key:
     cq: tuple = ()        # pending clip entries, oldest first (values in cq0..)
     run: tuple = ()       # VI chain run: (reg, ((reads, stalled, writer pc), ...)) newest first
     fd: int = 0           # 1: folded FMAC flags not yet applied to mac/status (in fl/fk)
+    ks: int = 0           # sticky status bits known to be set (Z S U O = bits 0-3 of status >> 6)
 
 
 class Sim:
@@ -285,6 +290,7 @@ class Sim:
         self.cq = [(r, f"cq{i}") for i, r in enumerate(key.cq)]
         self.run = key.run              # () or (reg, entries)
         self.fd = key.fd
+        self.ks = key.ks
 
 
 def _free(used: list, prefix: str, n: int) -> str:
@@ -298,7 +304,12 @@ def _free(used: list, prefix: str, n: int) -> str:
 # ---- code generation ----------------------------------------------------------------------------
 
 def VF(r: int) -> str:
-    return "VF0" if r == 0 else f"vf{r}"
+    if r == 0:
+        return "VF0"
+    return f"RG->vf[{r}]" if REGS_IN_MEMORY else f"vf{r}"
+
+
+ACC = "RG->acc" if REGS_IN_MEMORY else "acc"
 
 
 def VI(r: int) -> str:
@@ -350,10 +361,11 @@ class Unit:
         self.work.append(vid)
         return vid
 
-    def generate(self) -> None:
+    def generate(self, ks: int = 0) -> None:
+        """Explore from every entry with the sticky status bits ks known to be set at the start."""
         self.entry_ids = []
         for e in self.img.entries:
-            self.entry_ids.append(self.version(Key(pc=e)))
+            self.entry_ids.append(self.version(Key(pc=e, ks=ks)))
         while self.work:
             vid = self.work.popleft()
             self.code[vid] = self.block(vid, self.keys[vid])
@@ -366,13 +378,23 @@ class Unit:
     # -- helpers emitting fold code --
     def accumulate(self, sim: Sim, m: str, out: list[str]) -> None:
         """Fold an FMAC result's flags (lane masks, vu_macmask): fl = newest, fk = OR since the last
-        materialize(); mac/status are computed from them only where something reads them."""
-        out.append(f"fl = {m}; fk {'|' if sim.fd else ''}= fl;")
+        materialize() of the components whose sticky bit is not known to be set (sim.ks); mac/status
+        are computed from them only where something reads them. Unneeded components (and the flags
+        of every op but the last before a materialize) are dead code for the C compiler."""
+        need = sum(0xF << (4 * c) for c in range(4) if not (sim.ks >> c) & 1)
+        if need:
+            mk = "fl" if need == 0xFFFF else f"(fl & 0x{need:X}u)"
+            out.append(f"fl = {m}; fk {'|' if sim.fd else ''}= {mk};")
+        else:
+            out.append(f"fl = {m};")
         sim.fd = 1
 
     def materialize(self, sim: Sim, out: list[str]) -> None:
         if sim.fd:
-            out.append("mac = vu_mac_of_mask(fl); status = vu_status_of_masks(status, fl, fk);")
+            if sim.ks == 0xF:            # every sticky bit already set: only Z S U O and MAC change
+                out.append("mac = vu_mac_of_mask(fl); status = (status & ~0xFu) | vu_zsuo_of_mask(fl);")
+            else:
+                out.append("mac = vu_mac_of_mask(fl); status = vu_status_of_masks(status, fl, fk);")
             sim.fd = 0
 
     def fold_flags(self, sim: Sim, upto: int | None, out: list[str]) -> None:
@@ -425,7 +447,7 @@ class Unit:
         run = sim.run
         if run and pc in self.ops and not (self.an.BR[pc][4] >> run[0]) & 1:
             run = ()
-        return Key(pc=pc, vf=vf, vi=vi, q=q, p=p, fq=fq, cq=cq, run=run, fd=sim.fd)
+        return Key(pc=pc, vf=vf, vi=vi, q=q, p=p, fq=fq, cq=cq, run=run, fd=sim.fd, ks=sim.ks)
 
     # -- handoff to the interpreter --
     def handoff(self, sim: Sim, pc_expr: str, npc_expr: str, ending: int, k: int, why: str,
@@ -669,6 +691,7 @@ class Unit:
 
         # ---- upper: compute (reads registers as they were before the pair)
         utarget = None
+        ureg = 0                         # VF register the upper op writes (0: none or ACC)
         up = op.up
         if up in FMAC_KIND or up in ("opmula", "opmsub"):
             self.vf_used.update((op.ufs, op.uft))
@@ -683,12 +706,14 @@ class Unit:
                     b = "vu_vclean(vu_bits(Q))"
                 else:
                     b = "vu_vclean(vu_bits(I))"
-                out.append(f"unsigned z, u; __m128 ur = vu_fmac({FMAC_KIND[up]}, {a}, {b}, acc, {op.udst}, &z, &u);")
-                utarget = "acc" if op.uacc else (VF(op.ufd) if op.ufd else None)
+                out.append(f"unsigned z, u; __m128 ur = vu_fmac({FMAC_KIND[up]}, {a}, {b}, {ACC}, {op.udst}, &z, &u);")
+                utarget = ACC if op.uacc else (VF(op.ufd) if op.ufd else None)
+                ureg = 0 if op.uacc else op.ufd
             else:
                 sub = 1 if up == "opmsub" else 0
-                out.append(f"unsigned z, u; __m128 ur = vu_opm({sub}, {a}, vu_vclean({VF(op.uft)}), acc, {op.udst}, &z, &u);")
-                utarget = (VF(op.ufd) if op.ufd else None) if sub else "acc"
+                out.append(f"unsigned z, u; __m128 ur = vu_opm({sub}, {a}, vu_vclean({VF(op.uft)}), {ACC}, {op.udst}, &z, &u);")
+                utarget = (VF(op.ufd) if op.ufd else None) if sub else ACC
+                ureg = op.ufd if sub else 0
             out.append(f"uint32_t uf = vu_macmask(ur, {op.udst}, z, u);")
             if an.FR[pc][4]:
                 self.fold_flags(sim, t, out)
@@ -708,6 +733,7 @@ class Unit:
                 b = "vu_bits(I)"
             out.append(f"__m128 ur = vu_maxmin({1 if up == 'max' else 0}, {VF(op.ufs)}, {b});")
             utarget = VF(op.ufd) if op.ufd else None
+            ureg = op.ufd
         elif up == "abs" or up.startswith("ftoi") or up.startswith("itof"):
             self.vf_used.add(op.ufs)
             if up == "abs":
@@ -717,6 +743,7 @@ class Unit:
             else:
                 out.append(f"__m128 ur = vu_itof({VF(op.ufs)}, {ISCALE[up[4:]]});")
             utarget = VF(op.uft) if op.uft else None
+            ureg = op.uft
         elif up == "clip":
             self.vf_used.update((op.ufs, op.uft))
             s, w = VF(op.ufs), VF(op.uft)
@@ -744,8 +771,8 @@ class Unit:
 
         # ---- commit the upper result (wins over a lower write to the same field)
         if utarget is not None:
-            if utarget.startswith("vf"):
-                self.vf_written.add(int(utarget[2:]))
+            if ureg:
+                self.vf_written.add(ureg)
             out.append(f"{utarget} = vu_blend({utarget}, ur, {op.udst});")
 
         # ---- timing state: results in flight
@@ -867,6 +894,7 @@ class Unit:
                 setvi(lt, f"((status | 0x{op.imm:X}u) & 0xFFF) == 0xFFF")
             else:
                 L(f"status = (status & 0x3F) | 0x{op.imm & 0xFC0:X}u;")
+                sim.ks = (op.imm >> 6) & 0xF
         elif lo in ("fmeq", "fmand", "fmor"):
             self.fold_flags(sim, t, out)
             self.materialize(sim, out)
@@ -981,12 +1009,20 @@ class Unit:
         L = []
         L.append(f"/* {self.img.name} on VU{self.img.unit}: {len(self.keys)} block versions, "
                  f"{self.stats['pairs']} pairs generated, {self.stats['handoffs']} handoff sites */")
-        L.append(f"static uint32_t {self.fname}(vu_state* st, uint32_t entry) {{")
+        L.append(f"uint32_t {self.fname}(vu_state* st, uint32_t entry) {{")
         L.append("    uint8_t* const dm = st->data;")
         L.append("    const __m128 vf0 = vuc_opaque_v(_mm_setr_ps(0.0f, 0.0f, 0.0f, 1.0f));")
-        for r in vfs:
-            L.append(f"    __m128 vf{r} = _mm_loadu_ps(st->vf[{r}].f);")
-        L.append("    __m128 acc = _mm_loadu_ps(st->acc.f);")
+        if REGS_IN_MEMORY:
+            # the asm makes the struct's address escape: clang keeps it in memory (no SSA values)
+            L.append("    vuc_regs regs, * const __restrict RG = &regs;")
+            L.append('    __asm__ volatile("" : : "r"(RG) : "memory");')
+            for r in vfs:
+                L.append(f"    RG->vf[{r}] = _mm_loadu_ps(st->vf[{r}].f);")
+            L.append("    RG->acc = _mm_loadu_ps(st->acc.f);")
+        else:
+            for r in vfs:
+                L.append(f"    __m128 vf{r} = _mm_loadu_ps(st->vf[{r}].f);")
+            L.append("    __m128 acc = _mm_loadu_ps(st->acc.f);")
         for r in vis:
             L.append(f"    uint16_t vi{r} = st->vi[{r}];")
         L.append("    uint32_t I = st->I, Q = st->Q, P = st->P, R = st->R;")
@@ -1013,8 +1049,8 @@ class Unit:
         writeback = []
         for r in vfs:
             if r in self.vf_written:
-                writeback.append(f"_mm_storeu_ps(st->vf[{r}].f, vf{r});")
-        writeback.append("_mm_storeu_ps(st->acc.f, acc);")
+                writeback.append(f"_mm_storeu_ps(st->vf[{r}].f, {VF(r)});")
+        writeback.append(f"_mm_storeu_ps(st->acc.f, {ACC});")
         for r in vis:
             if r in self.vi_written:
                 writeback.append(f"st->vi[{r}] = vi{r};")
@@ -1055,41 +1091,67 @@ class Unit:
         ])
 
 
-def compile_image(img: Image, cname: str) -> tuple[str, Unit]:
-    u = Unit(img, f"{cname}_run")
-    u.generate()
-    src = "\n".join([
-        f"/* Recompiled VU microcode ({img.name}, VU{img.unit}); generated by recomp/vu_recomp.py. */",
-        "/* The code runs under the VU MXCSR (round toward zero, flush to zero): the compiler must not",
-        " * fold float operations on constants (vf00, LOI immediates) with its own rounding. */",
-        "#pragma STDC FENV_ACCESS ON",
-        '#include "vu_compiled.h"',
+HEADER = [
+    "/* The code runs under the VU MXCSR (round toward zero, flush to zero): the compiler must not",
+    " * fold float operations on constants (vf00, LOI immediates) with its own rounding. */",
+    "#pragma STDC FENV_ACCESS ON",
+    '#include "vu_compiled.h"',
+    "",
+]
+
+
+def compile_image(img: Image, cname: str) -> tuple[list[tuple[str, str]], list[Unit]]:
+    """C files for one image: a function per sticky-bit specialisation (ENTRY_STICKY: what the
+    status register's sticky bits hold when a program starts; separate files so that they compile in
+    parallel and stay small) and the descriptor with a dispatcher picking one at run time."""
+    files, units, calls = [], [], []
+    for ks in ENTRY_STICKY:
+        u = Unit(img, f"{cname}_ks{ks}")
+        u.generate(ks)
+        units.append(u)
+        files.append((f"{cname}_ks{ks}.c", "\n".join([
+            f"/* Recompiled VU microcode ({img.name}, VU{img.unit}), sticky status bits {ks:X} known set at the "
+            "start; generated by recomp/vu_recomp.py. */", *HEADER, u.emit(), ""])))
+        calls.append((ks, u.fname))
+    decls = "\n".join(f"uint32_t {fn}(vu_state* st, uint32_t entry);" for _, fn in calls)
+    body = []
+    for ks, fn in calls:
+        body.append(f"    return {fn}(st, entry);" if ks == 0 else f"    if ((sticky & {ks}u) == {ks}u) return {fn}(st, entry);")
+    disp = "\n".join([
+        decls,
         "",
-        u.emit(),
-        "",
-        u.descriptor(cname),
-        "",
+        "/* Sticky status bits are only ever set (FSSET, the one way to clear them, has a static immediate):",
+        " * the code for the bits set at the start skips accumulating them. */",
+        f"static uint32_t {cname}_run(vu_state* st, uint32_t entry) {{",
+        "    const uint32_t sticky = (st->status >> 6) & 0xF;   /* Z S U O */",
+        *body,
+        "}",
     ])
-    return src, u
+    units[0].fname = f"{cname}_run"                  # the descriptor's function: the dispatcher
+    files.append((f"{cname}.c", "\n".join([
+        f"/* Recompiled VU microcode ({img.name}, VU{img.unit}): image, entries, dispatcher; generated by "
+        "recomp/vu_recomp.py. */", '#include "vu_compiled.h"', "", disp, "", units[0].descriptor(cname), ""])))
+    return files, units
 
 
 def write_units(images: list[Image], out: Path, prefix: str = "vuc") -> list[str]:
-    """Writes one C file per image plus vu_table.c (registration with the runtime). Returns report
-    lines."""
+    """Writes the C files of every image plus <prefix>_table.c (registration with the runtime).
+    Returns report lines."""
     from .__main__ import write_if_changed
     out.mkdir(parents=True, exist_ok=True)
     names, report, written = [], [], set()
     for img in images:
         cname = f"{prefix}_{img.name}_vu{img.unit}"
-        src, u = compile_image(img, cname)
-        fn = f"{cname}.c"
-        write_if_changed(out / fn, src)
-        written.add(fn)
+        files, units = compile_image(img, cname)
+        for fn, src in files:
+            write_if_changed(out / fn, src)
+            written.add(fn)
         names.append(cname)
-        hand = ", ".join(f"{k} {v}" for k, v in sorted(u.handoff_reasons.items()))
-        report.append(f"{img.name} VU{img.unit}: {len(u.ops)} pairs, {len(img.entries)} entries, "
-                      f"{len(u.keys)} block versions, {u.stats['pairs']} pairs generated"
-                      f"{', handoffs: ' + hand if hand else ''}{', capped ' + str(u.stats['capped']) if u.stats['capped'] else ''}")
+        for ks, u in zip(ENTRY_STICKY, units):
+            hand = ", ".join(f"{k} {v}" for k, v in sorted(u.handoff_reasons.items()))
+            report.append(f"{img.name} VU{img.unit} sticky {ks:X}: {len(u.ops)} pairs, {len(img.entries)} entries, "
+                          f"{len(u.keys)} block versions, {u.stats['pairs']} pairs generated"
+                          f"{', handoffs: ' + hand if hand else ''}{', capped ' + str(u.stats['capped']) if u.stats['capped'] else ''}")
     decls = "\n".join(f"extern const vuc_program {n};" for n in names)
     lst = ",\n".join(f"    &{n}" for n in names)
     table = "\n".join([

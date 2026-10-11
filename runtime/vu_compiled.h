@@ -50,6 +50,9 @@ static inline __attribute__((always_inline)) __m128 vuc_opaque_v(__m128 x) {
 }
 #define VF0 vf0                          /* a local of every generated function: (0, 0, 0, 1), opaque */
 
+/* VF registers and ACC of a running program (recomp/vu_recomp.py REGS_IN_MEMORY) */
+typedef struct { __m128 vf[32], acc; } vuc_regs;
+
 /* -DVU_TRACE: every pair prints its address and issue cycle, like vu_exec.c under the same flag. */
 #ifdef VU_TRACE
 #define VUC_TRACE(pc, c) fprintf(stderr, "T %04X %u\n", (unsigned)(pc) * 8u, (unsigned)(c))

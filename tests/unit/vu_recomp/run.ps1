@@ -25,17 +25,21 @@ if ($LASTEXITCODE -ne 0) { Write-Host "generator failed"; exit 1 }
 $rt = Join-Path $root 'runtime'
 $gen = Get-ChildItem (Join-Path $out 'gen') -Filter *.c
 $jobs = @()
+$maxJobs = [Math]::Max(2, [Environment]::ProcessorCount - 4)
 foreach ($c in $gen) {
     $o = Join-Path $out ($c.BaseName + '.o')
-    $p = Start-Process -FilePath $clang -ArgumentList @("-$Opt", '-std=c11', '-w', '-I', "`"$rt`"", '-c', "`"$($c.FullName)`"", '-o', "`"$o`"") -NoNewWindow -PassThru
+    while (@($jobs | Where-Object { -not $_.HasExited }).Count -ge $maxJobs) { Start-Sleep -Milliseconds 100 }
+    $p = Start-Process -FilePath $clang -ArgumentList @("-$Opt", '-fno-slp-vectorize', '-std=c11', '-w', '-I', "`"$rt`"", '-c', "`"$($c.FullName)`"", '-o', "`"$o`"") -NoNewWindow -PassThru
     $null = $p.Handle                    # keeps ExitCode available after the process ends
     $jobs += $p
 }
 foreach ($j in $jobs) { $j.WaitForExit(); if ($j.ExitCode -ne 0) { Write-Host "compiling generated code failed"; exit 1 } }
-$objs = $gen | ForEach-Object { Join-Path $out ($_.BaseName + '.o') }
+$objs = $gen | ForEach-Object { '"' + ((Join-Path $out ($_.BaseName + '.o')) -replace '\\', '/') + '"' }
+$rsp = Join-Path $out 'objs.rsp'                        # hundreds of objects: too long for a command line
+[IO.File]::WriteAllText($rsp, ($objs -join "`n"))
 $exe = Join-Path $out 'test_vu_recomp.exe'
 & $clang "-$Opt" -std=c11 -Wall -Wextra -Werror -I $rt (Join-Path $rt 'vu.c') (Join-Path $rt 'vu_exec.c') `
-    (Join-Path $PSScriptRoot 'test_vu_recomp.c') @objs -o $exe
+    (Join-Path $PSScriptRoot 'test_vu_recomp.c') "@$rsp" -o $exe
 if ($LASTEXITCODE -ne 0) { Write-Host "build failed"; exit 1 }
 
 & $exe (Join-Path $out 'programs.bin') $States

@@ -18,6 +18,10 @@ from paths import CLANG, ELF, ROOT, runtime_sources
 
 def compile_one(src: Path, obj_dir: Path, flags: list[str]) -> tuple[Path, str]:
     obj = obj_dir / src.with_suffix(".o").name     # never next to the source
+    if src.parent.name == "vu":
+        # recompiled VU microcode: already SIMD; clang's SLP vectorizer only costs minutes on these
+        # huge functions (recomp/vu_recomp.py)
+        flags = flags + ["-fno-slp-vectorize"]
     headers = max(h.stat().st_mtime for h in (ROOT / "runtime").glob("*.h"))
     stamp = obj_dir / "flags.txt"
     if obj.exists() and obj.stat().st_mtime > max(src.stat().st_mtime, headers, stamp.stat().st_mtime):
