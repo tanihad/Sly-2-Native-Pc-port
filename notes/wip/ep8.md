@@ -47,6 +47,19 @@ frames in build\screenshots\ep8_*.png.
   moderate "clicks" in music (percussive content), nothing systematic.
 - Cherry-picked the PS2_INPUT_FILE fix (a5a3c3f: lines of any length, one time origin per line).
 
+- Session 4: merged main (VU recompiler) into next/ep8 (6cee235); release + debug rebuilt.
+  New live tokens (debug tools): `+0:calls:<n>` (call profile of the next n VBlanks) and
+  `+0:watch:<n>` (PS2_WATCH logs every call for n VBlanks).
+- Boss Murray stage: circle near the beak = Murray jumps to a pink glowing grab point on the RIGHT
+  side of the beak (letterboxed camera), holds it ~150-200 VBlanks, lets go. Mashing circle / all
+  four buttons / holding circle / stick right / triangle during the hold: no effect. Guides call
+  this step "Lift Clock-La's mouth" (ep3's lever: "press all the buttons rapidly"); ep3 lever
+  (t3_heist4_intro) shows an objective banner + "Job Failed" hint, the beak shows nothing.
+- Level state machines evaluate conditions in 0x1E3890(sm, cond): cond+0 = type (jump table
+  0x2A7D90, types 3..0x5A); type 0x42 = button pressed (mask cond+0x10, via 0x187D80 on JOY
+  0x2DFC00: +0x10B4 held, +0x10B8 pressed). 0x1E3890 is only called near/at the grab point.
+  Global prompt object 0x4435F0 (string id, button mask) stays -1 during the grab.
+
 ## In progress
 - Boss Murray stage (t8_open_head_intro, release, head3..5 with PS2_POKE=3D4AE0=3C): Murray walks
   to Clock-La's head (player pos peek 0x2DE1C0: start (0,-2168), beak front ~(40..250, 200..450));
