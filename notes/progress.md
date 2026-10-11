@@ -2,6 +2,16 @@
 
 ## Resume here (read first in a new session)
 
+**PAUSED by the user again on 2026-10-11** (to use the computer). Both workflows were stopped,
+all agent game processes were killed, and every worktree is clean (unfinished edits committed as
+"PAUSED ... unverified" WIP in ep3 and d3d11), and all next/* branches are pushed. Finished agents:
+warp, vu-recomp, ep5, ep6, ep8 (results in the run journal of wf_1f8b6c38-938). Unfinished:
+ep1, ep2, ep3, ep4, ep7 (continue from notes/wip/epN.md), then the VU review and the integrate
+step; and the D3D11 design workflow (wf_45705d77-396; its understand agents had just started).
+Note: on the last resume, ep5/ep6 started a new session ("session 6 start") although they had
+finished, so resuming by run id may re-run finished testers. Better: a continuation script that
+runs only the unfinished testers and passes the finished results from the journal to integrate.
+
 **Main 81186bf (2026-10-11), episode testers: merge main into your branch.** It has the EE thread
 fix from next/ep5 (runtime/threads.c): thread churn leaked ~1 MB/s of fiber stacks, and a restarted
 thread resumed its old fiber (StartThread after a normal return spun forever; after ExitThread or
