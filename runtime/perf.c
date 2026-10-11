@@ -6,6 +6,7 @@
 
 #include <stdlib.h>
 #include <windows.h>
+#include <psapi.h>
 
 static const char* const cat_names[PERF_N] = { "EE", "GS", "VU", "VIF", "IPU", "IOP", "present", "gswait", "idle" };
 
@@ -325,6 +326,14 @@ void perf_vblank(uint32_t serviced, uint32_t due) {
     fprintf(stderr, "[perf] %6.1fs vblanks %u/%u due (%.1f/s), flips %u (%.1f/s), busy %.2f ms/vblank%s%s |%s\n",
             (double)(now.QuadPart - start_qpc) / (double)qpc_freq.QuadPart, ds, dd, ds / secs, df, df / secs,
             busy_ms, gsthread, vu, cats);
+    /* every 10 s: the process's committed memory (a leak shows as steady growth) */
+    static int mem_tick;
+    if (++mem_tick % 10 == 0) {
+        PROCESS_MEMORY_COUNTERS_EX pm = { .cb = sizeof pm };
+        if (K32GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS*)&pm, sizeof pm))
+            fprintf(stderr, "[perf] memory: %.0f MB committed, %.0f MB working set\n",
+                    pm.PrivateUsage / 1048576.0, pm.WorkingSetSize / 1048576.0);
+    }
     report_qpc = now.QuadPart;
     report_tsc = t;
     report_serviced = serviced;
