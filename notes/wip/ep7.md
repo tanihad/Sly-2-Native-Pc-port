@@ -71,7 +71,20 @@ build\screenshots\ep7_*.png.
   overwrites the block voice c0 v4 is playing" at the hub load (a 776 KB bank load over a voice
   still sounding from the previous level; game-side, at a level load).
 
+- Merged main 8e05f84 (VU microcode recompiler) -> 60268a2; rebuilt rel + debug. Ep7 start
+  (release, PS2_PERF, 6 other games running, CPU 100%): Binocucom briefing and hub render right
+  with the recompiled VU; GS thread 15-30 ms/VBlank is the bottleneck under this load (EE busy 6-10
+  ms), so 30-50 VBlanks/s; not meaningful on this machine (D3D11 renderer is main's plan).
+- Thermal Ride controls (level text + wiki): HOLD R1 in the air = paraglider ("Press &2R&. while
+  jumping"; &2R = R1, &2r = R2, &2L = L1, &2l = L2, &2S/T/O/X = square/triangle/circle/cross,
+  &2+ = d-pad, &2( / &2) = left / right stick). Short R1 taps do nothing. Gliding descends ~5/VBlank;
+  flying low over a burning oil main destroys the glider (pieces fly off, Sly falls) -> "Job
+  Failed! You need to paraglide out to the icebergs using the thermals", X retries on the
+  lighthouse top. 0x2DE1C0 (camera focus) does not follow jumps; Sly's object in this level:
+  0x10E46C0 (vt 2D2E98), position +0x230.
+
 ## In progress
+- Thermal Ride: steering into a thermal column (session build\therm3, PS2_PEEK 10E48F0 every 5).
 
 ## Tools (build\tools, not committed; the scratchpad is shared with other agents!)
 - live7.ps1 -Name x -Make "--episode 7 --job <task> --direct" -Script "@187D80/1DD96C+30:start:10"
