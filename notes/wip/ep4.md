@@ -115,6 +115,15 @@ recompiler problem found at its root (with tests), save frames to build\screensh
   thrusts (+105/frame to 2100 along its heading): it always flies forward and the stick steers it
   (velocity turns toward the stick direction at constant speed). Same with the EE FPU in
   round-toward-zero (MXCSR 7F80, PS2-like): identical trajectory. Not a port bug.
+- Lightning puzzle sites (lw\ltn3/ltn4, build\tools\commonnear.py = vtables with an object near
+  every given point): each of the 5 sites has vt 0x2CABD8 oid 88297, vt 0x2CC7B0 oid 77452/55/57/
+  59/61, vt 0x2D56F8 oid 9334 (rod top, z+550) and a cluster vt 0x2D8C48 oid 88361 + 0x2CAD78 oid
+  9216 + 0x2D1EE8 oid 80398: site 1 (-1537,1471,3886), 2 (4902,4,3891), 3 (2240,-10122,939),
+  4 (-11147,-767,1051), 5 (-4307,-1705,3888). Site 1 reached by play (hop from the start toward
+  (-1537,1440) lands on the ridge, a second hop onto the rod platform; no electrocution with hp
+  held): two insulator poles, red glowing ground wire down to a machine with a dark red octagonal
+  valve, blue Sly-mask sparkle markers (Circle spots). Circle near the machine only crouches; the
+  turn mechanic not found yet. Lightning bolts strike other rods (render fine).
 
 ## In progress
 - RC chopper (m4_rc_chopper, lw\rc*): with the stick released the chopper keeps swaying ~+-500
