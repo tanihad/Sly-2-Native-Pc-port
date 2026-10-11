@@ -62,6 +62,15 @@ build\screenshots\ep7_*.png.
   (fix-perf's build\title.gsrec) + a temporary pixel watch in draw() (build\tools\pixwatch.patch:
   PS2_GS_PIXWATCH=fbp,x,y prints every change of that pixel with the primitive; replay only).
 
+- Episode end (release, live: direct t7_boss_battle_complete, then PS2_TASK_FILE "3290:2" =
+  t7_boss_get_to_battery done): blimp/silo cutscene, "Job Completed!", the ep7 ending story movie,
+  Episode 8 card (START = pause menu "We'll be right back!"), ep8 menu "Anatomy for Disaster / X:
+  Start Episode", X -> ep8 intro movie (Clockwerk story), title card, ep8 safehouse "Press X to
+  play as Sly". save1 rewritten: episodeCurrent 8, sawmill 100%. ep7_ending_sheet.png,
+  ep7_to_ep8_sheet.png, ep7_ep8_safehouse.png. Only log line of note: one "[sd] VoiceTrans ...
+  overwrites the block voice c0 v4 is playing" at the hub load (a 776 KB bank load over a voice
+  still sounding from the previous level; game-side, at a level load).
+
 ## In progress
 
 ## Tools (build\tools, not committed; the scratchpad is shared with other agents!)
