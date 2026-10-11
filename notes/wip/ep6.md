@@ -48,13 +48,24 @@ recompiler problem found at its root, with tests; frames in build\screenshots\ep
   Iron Horse 2, "Job Failed" when it leaves), t6_train_blue_intro (Binocucom, Sly on the cliff, train
   passes). All OK, no log errors. Every ep6 job start has now been seen.
 
+- Live red train intro (lred3): briefing, "Job Failed" + X retry, Bentley jumps from the ledge to the
+  passing train (lands beside the track; job not completed - platforming too timing-critical).
+- Live RC chopper battle (lrc2, lrc3; controls: X = bomb, SQUARE = cannon): car 1 guards and the two
+  side missile launchers (shells split into red bomblets) destroyed with bombs (green blasts, black
+  smoke, debris), camera advances to car 2, enemy choppers attack (red shots, HUD ring drops).
+  Job Help text OK. lrc2 (machine at 13-40 VBlanks/s, camera stayed zoomed in on car 1) never got
+  enemies after the launchers (waited minutes; RAM dump build\lrc2\ram_stalled.bin); lrc3 at full
+  speed progressed normally -> treat as unconfirmed (maybe my play: guards not all killed).
+
 ## Next
-1. Deeper live play in selected jobs (scratchpad\ep6\live6.ps1 -Release -Direct): red train
-   (catch the caboose, interior lasers), RC chopper battle, bear cubs (Murray), paraglide, heist.
+1. Deeper live play in selected jobs (scratchpad\ep6\live6.ps1 -Release -Direct): bear cubs
+   (Murray), paraglide, heist hand car.
 3. Checkpoint saves (complete a job stage -> autosave on the card).
 4. Perf: hub VU ~900k pairs/VBlank, blue train 720k (measure when the machine is quieter).
 
 ## Findings / traps
+- PS2_INPUT_FILE "+n" tokens on one line are CHAINED (each relative to the previous token), not
+  relative to the line start: "+0:lright:40,+5:cross" presses cross 5 frames after lright starts.
 - Machine is shared by ~12 game instances: runs at 20-40 VBlanks/s (VU 25 ns/pair instead of ~11);
   perf numbers taken now are meaningless. Release START at pad frame 2400 can land in the attract
   (title not yet accepting) -> send START live instead.
