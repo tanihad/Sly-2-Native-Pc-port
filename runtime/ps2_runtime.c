@@ -480,6 +480,16 @@ void ps2_poll_iop(void) {
     if (iop_poll_flag && !in_interrupt) iop_service();
 }
 
+/* While the EE thread waits for the GS thread (gs_thread.c). A loaded host can hold the GS thread
+ * back for a second or more; 989snd's VAG streams must still see their voices change buffer halves
+ * within one half (~160 ms), or the voice loops back into the half it is playing and 989snd stops
+ * the stream for good (the episode menu's music fell silent this way). */
+static void gs_wait_poll_iop(void) {
+    int prev = perf_enter(PERF_IOP);
+    ps2_poll_iop();
+    perf_leave(prev);
+}
+
 /* Called at safe points (loop heads, syscall returns, idle) when ps2_irq_pending is set. */
 void ps2_service_irq(ps2_ctx* ctx) {
     if (in_interrupt) return;
@@ -721,6 +731,7 @@ int main(int argc, char** argv) {
         const char* gt = getenv("PS2_GS_THREADS");
         if (gt) workers = atoi(gt);
         gs_thread_start(workers, present_frame);
+        gs_set_wait_hook(gs_wait_poll_iop);
         if (gs_async()) fprintf(stderr, "[ps2] GS thread started with %d pixel workers\n", workers);
         else fprintf(stderr, "[ps2] GS thread could not be started: the GS runs on the EE thread\n");
     }

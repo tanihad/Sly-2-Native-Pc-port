@@ -118,6 +118,9 @@ typedef void (*gs_present_fn)(const uint32_t* frame, int ok, int w, int h, uint3
 void     gs_thread_start(int pixel_workers, gs_present_fn present);
 int      gs_async(void);                 /* the GS thread is running */
 void     gs_queue_vsync(uint32_t vblank);
+/* Called on the EE thread about every millisecond while it waits for the GS thread (the runtime
+ * keeps the IOP running there; NULL: none). */
+void     gs_set_wait_hook(void (*fn)(void));
 
 /* ---- window.c: presentation + input (own OS thread) --------------------------------------------- */
 

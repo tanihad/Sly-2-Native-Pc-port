@@ -26,6 +26,18 @@ static uint32_t synced_mem_read(int psm, uint32_t bp, uint32_t bw, int x, int y)
     return gs_mem_read(psm, bp, bw, x, y);
 }
 #define gs_mem_read synced_mem_read
+
+/* The EE's wait for the GS thread keeps the wait hook (the runtime's IOP service) running. The
+ * picture of VBlank 1 is presented only after the hook has run a few times; queueing VBlank 2 waits
+ * for that picture, so it can only return if the hook runs during the wait. */
+static volatile LONG hook_calls, present_hold;
+static void count_hook(void) { InterlockedIncrement(&hook_calls); }
+static void test_present(const uint32_t* frame, int ok, int w, int h, uint32_t vblank) {
+    (void)frame; (void)ok; (void)w; (void)h; (void)vblank;
+    if (!present_hold) return;
+    for (int ms = 0; ms < 3000 && hook_calls < 5; ms++) Sleep(1);
+    present_hold = 0;
+}
 #endif
 
 /* ---- test helpers --------------------------------------------------------------------------------- */
@@ -1557,42 +1569,26 @@ static void t_texture_cache_random(void) {
     W(TEX1_1, 0); W(CLAMP_1, 0);
 }
 
-#ifdef TEST_LATE_WORKERS
-/* Pixel workers that first run after the first job has started (built with GS_TEST_WORKER_DELAY_MS:
- * each worker sleeps before its first look at the pool, as a new thread can on a loaded machine) must
- * still draw it. They used to read the pool's generation when they started, so all of them skipped
- * the first VBlank picture, it was never presented, and the next gs_queue_vsync waited for it forever
- * (the game hung at boot). A watchdog turns a hang into a failure. */
-static volatile LONG late_presented;
-static void late_present(const uint32_t* frame, int ok, int w, int h, uint32_t vblank) {
-    (void)frame; (void)ok; (void)w; (void)h; (void)vblank;
-    InterlockedIncrement(&late_presented);
-}
-static DWORD WINAPI late_watchdog(LPVOID arg) {
-    (void)arg;
-    Sleep(15000);
-    fprintf(stderr, "FAIL: late-starting pixel workers: VBlank pictures stalled (%ld presented)\n", late_presented);
-    ExitProcess(1);
-    return 0;
-}
-static int t_late_workers(void) {
-    CreateThread(NULL, 0, late_watchdog, NULL, 0, NULL);
-    gs_thread_start(3, late_present);
-    CHECK(gs_async() && gs_draw_workers() == 3, "GS thread and 3 pixel workers running");
-    for (uint32_t v = 1; v <= 4; v++) gs_queue_vsync(v);   /* each waits for the previous picture */
+#ifdef TEST_ASYNC
+static void t_wait_hook(void) {
     gs_sync();
-    CHECK(late_presented >= 3, "VBlank pictures presented with late-starting workers: %ld", late_presented);
-    fprintf(stderr, "late workers: %d/%d checks passed\n", checks - fails, checks);
-    return fails ? 1 : 0;
+    gs_set_wait_hook(count_hook);
+    hook_calls = 0;
+    present_hold = 1;
+    gs_queue_vsync(1);                   /* its picture is held back until the hook ran 5 times */
+    gs_queue_vsync(2);                   /* waits for picture 1 */
+    CHECK(hook_calls >= 5 && !present_hold, "wait hook ran %ld times while the EE waited for the GS thread", hook_calls);
+    gs_sync();
+    gs_set_wait_hook(NULL);
+    LONG before = hook_calls;
+    gs_queue_vsync(3);
+    gs_sync();
+    CHECK(hook_calls == before, "no hook calls once removed (%ld)", hook_calls - before);
 }
 #endif
 
 int main(int argc, char** argv) {
     if (argc > 1) outdir = argv[1];
-#ifdef TEST_LATE_WORKERS
-    gs_swz_init();
-    return t_late_workers();
-#endif
     snprintf(trace_path, sizeof trace_path, "%s/trace.txt", outdir);
     _putenv_s("PS2_GS_TRACE_RECT", "1000,1000,1003,1003");    /* see t_trace */
     _putenv_s("PS2_GS_TRACE_OUT", trace_path);
@@ -1603,8 +1599,9 @@ int main(int argc, char** argv) {
     _putenv_s("PS2_GS_TRACE_MINSIZE", "0");
     gs_swz_init();
 #ifdef TEST_ASYNC
-    gs_thread_start(3, NULL);
+    gs_thread_start(3, test_present);
     CHECK(gs_async() && gs_draw_workers() == 3, "GS thread and 3 pixel workers running");
+    t_wait_hook();
 #endif
 #ifdef FAKE_LINEAR
     CHECK(!gs_swz_fast, "linear fake layout must disable the fast path");
