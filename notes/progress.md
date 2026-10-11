@@ -2,6 +2,10 @@
 
 ## Resume here (read first in a new session)
 
+**RESUMED on 2026-10-11:** workflow `whole-game-sweep` (run wf_1f8b6c38-938) is running again:
+episode testers continue from their checkpoints, then the VU recompiler review and the integrate
+step. The state below is the pause point.
+
 **PAUSED by the user on 2026-10-11** (to use the computer). Nothing is running. Main (78c51f8+)
 has everything up to and including the episode warp tool and is playable (`scripts\play.ps1`).
 Unmerged work, all committed and pushed to GitHub, each with `notes/wip/<task>.md` checkpoints:
