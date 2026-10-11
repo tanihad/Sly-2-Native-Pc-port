@@ -37,9 +37,16 @@ frames in build\screenshots\ep8_*.png.
 - live.ps1 now: direct start in both builds (-Hub = walk in instead), -Extra "VAR=v;VAR2=v".
 
 ## In progress
-- Boss Murray stage (t8_open_head_intro, release, head3 with PS2_POKE=3D4AE0=3C): Murray walks to
-  Clock-La's head; lasers/explosions hurt; RAM strings: murray_stomp, goal_object_murray (thunder
-  flop on targets?), Bentley: bentley_mine, goal_object_bentley.
+- Boss Murray stage (t8_open_head_intro, release, head3..5 with PS2_POKE=3D4AE0=3C): Murray walks
+  to Clock-La's head (player pos peek 0x2DE1C0: start (0,-2168), beak front ~(40..250, 200..450));
+  lasers hit/knock him; guides: "jump over the lasers, reach the head, pry the mouth open". Tried
+  circle (= Murray's high jump-slam, letterboxed camera), triangle/square (attacks) at the beak
+  and at the pink glowing cage right of the beak: no pry yet. Direct start of 3488 (Bentley stage,
+  no start point) leaves a static letterboxed view: not a start point (not a bug).
+  Dialogue: "I'll pry open that beak so that Bentley can go to town with his bombs."
+- Learning the pry from m8_engine_room_jt's door lift (t8_engine_room_jt_lift, world 38, Murray).
+- Helpers: build\ep8tools\strs.py/strrange.py (RAM strings), findword.py, hexf.py, findobj.py
+  (ep7's), arr.py; boss task objects 3484 @0xD5AB00, 3488 @0xD5BB40, 3492 @0xD60AC0.
 
 ## Next
 1. Win Murray stage -> Bentley stage -> ending/credits (t8_heist_done -> t8_complete).
