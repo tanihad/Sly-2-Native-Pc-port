@@ -164,6 +164,7 @@ int      iop_load_module(uint32_t image, const char* args, uint32_t args_len, in
 void     iop_run(void);                /* deliver due interrupts, run threads until all are blocked */
 void     iop_service(void);            /* from the EE's safe points */
 int      iop_in_interrupt(void);       /* QueryIntrContext */
+void     iop_time_hold(int on);        /* debug pause: IOP time stands still while on */
 
 /* RPC server side (iop_sif.c <-> sif.c) */
 typedef struct {

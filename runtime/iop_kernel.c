@@ -126,10 +126,43 @@ void iop_strncpy_from(char* dst, uint32_t src, size_t cap) {
 
 static LARGE_INTEGER qpc_freq;
 
+/* Debug pause (ps2_debug_hold): IOP time stands still while the EE waits for a live input line, so
+ * the hard timers (989snd's tick: sequenced music, stream refills) neither replay the wait as a
+ * burst of ticks afterwards nor drop it. The hold is set on the EE thread while iop_now() runs on
+ * the IOP thread (and the mixer's), so the pair (hold time, total held) is read under a sequence
+ * count: a reader that saw it change (or odd: a change in progress) reads again, so it never mixes
+ * the hold time with the new total (time running backwards by the hold) or the old total without
+ * the hold (a jump forward). */
+static int64_t time_held_at, time_held_total;
+static uint32_t time_seq;
+
 int64_t iop_now(void) {
+    int64_t held, total;
+    uint32_t s;
+    do {
+        s = __atomic_load_n(&time_seq, __ATOMIC_ACQUIRE);
+        held = __atomic_load_n(&time_held_at, __ATOMIC_RELAXED);
+        total = __atomic_load_n(&time_held_total, __ATOMIC_RELAXED);
+        __atomic_thread_fence(__ATOMIC_ACQUIRE);
+    } while ((s & 1) || s != __atomic_load_n(&time_seq, __ATOMIC_RELAXED));
+    if (held) return held - total;
     LARGE_INTEGER t;
     QueryPerformanceCounter(&t);
-    return t.QuadPart;
+    return t.QuadPart - total;
+}
+
+void iop_time_hold(int on) {                 /* EE thread only (one writer) */
+    LARGE_INTEGER t;
+    QueryPerformanceCounter(&t);
+    if (on == (time_held_at != 0)) return;
+    __atomic_store_n(&time_seq, time_seq + 1, __ATOMIC_RELAXED);
+    __atomic_thread_fence(__ATOMIC_RELEASE);
+    if (on) __atomic_store_n(&time_held_at, t.QuadPart, __ATOMIC_RELAXED);
+    else {
+        __atomic_store_n(&time_held_total, time_held_total + (t.QuadPart - time_held_at), __ATOMIC_RELAXED);
+        __atomic_store_n(&time_held_at, 0, __ATOMIC_RELAXED);
+    }
+    __atomic_store_n(&time_seq, time_seq + 1, __ATOMIC_RELEASE);
 }
 
 int64_t iop_usec_to_ticks(uint64_t usec) {
