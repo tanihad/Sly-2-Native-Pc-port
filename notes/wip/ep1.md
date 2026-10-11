@@ -91,12 +91,29 @@ runtime/recompiler problem found at its root (with tests); frames in build\scree
 - Docs: notes/iop-native.md ("When the IOP runs", "Why its own thread", Debugging), audio-mixer.md;
   scripts/stream_loops.py (from build\tools\loops.py).
 
+- h1 (hub, 25 min): streams steady to the end (485-490/10 s). WAV: holes of 20-40 ms exactly at
+  each [audio] status line -> the output thread blocked in fprintf (null sink then caught up in a
+  burst, which tripped the driver hold) -> host_log_async (audio_out.c, d4dd3c8): status lines,
+  underrun lines, sd.c's SDLOG and the IOP status go through a writer thread. With
+  PS2_LOG_SD_VOICES on (r10): no holds, streams clean; 989snd moves LSAX 4 ms (median) / 8 ms (p99)
+  after a half change.
+- PS2_PERF (p1, hub, release, loaded machine): 26-43 VBlanks/s, GS thread ~16-18 ms/VBlank (GS-bound
+  under load), VU 3.7-5 ns/pair 100% recompiled. Not meaningful while ~10 instances run.
+- Job completion flow (js1: m1_sat direct + PS2_TASK_FILE 1762/1764/1766 -> 2): dish counter 1/3,
+  2/3, "Job Completed!" page, autosave (save1 written: m1_sat.is_complete 1, t1_recon_intro.state
+  1), Binocucom briefing of the next job ("Breaking and Entering"), back in the hub. Frames:
+  ep1_sat_job_completed.png, ep1_next_job_briefing.png.
+- Boss again (b3/b4, release): intro cutscene ~3 min (START does not skip), fight starts; Dimitri
+  stands at about (-1180,-1400) at the start; build\tools\boss_bot.py steers Sly there and swings
+  (PEEK 2DE1C0/2DDFD0); melee fights, knock-backs, bolts, lightning effects, camera areas, death ->
+  restart at the fight start all work; Dimitri's health icon never dropped (mechanic unknown; his
+  actor position is not in world coords anywhere in RAM except per-frame render buffers that move).
+  Gave up on winning; no runtime problem seen.
+
 ## Next
-1. h1 result (status lines + WAV analysis); screenshot to build\screenshots.
-2. PS2_PERF in release (VU recompiler merged).
-3. Boss again (m1_boss direct start), now that the VU recompiler makes it faster; try to win without
-   the poke; else use PS2_TASK_SET to look at the post-boss sequence / episode end.
-4. Play more of the jobs live (recon, bug, disco hacking, waterpump, theater, heist stages).
+1. Chalk talk test (ct1: m1_recon direct + task file: 1793/1794/1795 -> 2 -> recon complete ->
+   chalk talk 1 in the safehouse?).
+2. More jobs in depth (disco bombs/lasers, theater, waterpump, neela chase, heist stages).
 
 ## Findings / traps
 - The scratchpad dir is shared with other agents (a file there was overwritten): keep helper
