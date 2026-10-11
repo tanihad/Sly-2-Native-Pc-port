@@ -129,6 +129,13 @@ warp saves / direct job starts; fix every runtime/recompiler problem found at it
   refills" (VoiceTrans into the 1 KB block the movie voice c0 v0/v1 plays, rings 0x19040/0x1A040)
   during that run: EE at ~35 VBlanks/s (100% machine load + PS2_LOG_SIF), so the movie decoder
   fed the audio late. wav_ct3 (no SIF log) had 0-1. Re-check on a quiet machine with PS2_PERF.
+- Boss "Get to Rajan" (job help text; Binocucom shows the same goal): from the roof start, a
+  mushroom bounce pad by the ledge throws Sly up beside the balustrade staircase (z 1300 -> 2250)
+  but not onto it; walking ahead drops into the lily-pad pool pit (13 i_buoy_lillypad). Rajan
+  waits at (6, 4177, 3600). Poking Sly's position (actor oid 7, +0x230 and copies) does not
+  teleport him. Not reached; navigation, not a runtime issue.
+- Rip-off the Ruby (live): Sly on the statue under the ruby; job help "Get Murray to the ruby";
+  2287 completes, 2288 (intro_murray) becomes active (a location/character switch).
 - build\tools\taskcap.ps1: the input parameter was named $Input (PowerShell's automatic $input
   enumerator), so input lines were never written; now -Line.
 
