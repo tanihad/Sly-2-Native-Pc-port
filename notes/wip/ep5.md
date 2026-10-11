@@ -212,6 +212,16 @@ in 12 ep5 scenes; one runtime fix (fiber leak, 9d6c24c). Not done: finishing job
   (R3, full 360 pan) shows only the safehouse triangle and the recon job marker. Class table:
   entries {parent entry, cid, ?, size, ctor} at 0x2BAxxx (clue: cid 7, 0x110 bytes, ctor 0x110BF0).
   Not pursued further (no vault in this hub state; the runtime side - pickup, HUD, state - works).
+- Murray's kidnap by steering (m5_kidnap direct, live): the first move off the start roof landed in
+  the water (death/respawn). Steering by peeked coordinates cannot see the city's geometry; not
+  pursued (gameplay, not runtime).
+- Load-independent comparison (no quiet window): two release instances side by side under the same
+  load, per-thread CPU time (Get-Process threads, scratchpad\ep5\threadcpu.ps1) per serviced
+  VBlank over the same 40 s: Prague hub with Sly walking 43.9 VBlanks/s, busiest threads 15.1 /
+  13.7 / 8.8 ms, all threads 65.5 ms; prologue museum gameplay (new game -> briefing -> museum,
+  holds 60 on main's quiet regression) 28.5 VBlanks/s, 23.6 / 13.9 / 12.6 ms, all 76.0 ms. The
+  hub costs less than a scene that holds 60 when quiet: no ep5 perf problem (with the GS replay
+  bench above, this closes Next 1).
 
 ## Next
 1. When the machine is quiet: PS2_PERF (release) in the hub street (Sly walking), boss 1,
