@@ -81,10 +81,17 @@ runtime/recompiler problems at the root (crash, hang, missing syscall/RPC, rende
 - Chalk talk 1 (warp --job t5_chalktalk1, no direct): safehouse as usual, X -> hub, no chalk talk
   (it is started by the recon-complete event, which a warp save does not replay).
 
+- Batch of direct starts (scratchpad\ep5\batch.ps1 -> build\warp\b_<job>\sheet.png; under this
+  load the title needs ~3400 pad frames = 4-5 min, so -Seconds 540): all load and play, logs
+  clean: t5_recon_interior_intro (world 22: Contessa/Carmelita cutscene, Sly at the window),
+  t5_heist_boss_1_complete (cutscene -> tank chase intro -> chase -> failed), t5_hack_path2/3
+  (Bentley with the battery, 1/3 2/3), t5_pickpocket_guardsneak_intro (hub), _interior (world 20).
+- Tank chase with lup held + R1 (build\warp\tank_chase_play): the tank drives at a normal pace,
+  hits the wall at the first bend and falls (camera z to -767) -> Job Failed: needs steering.
+- Ewok water (last mojo-trap stage) live: spamming O does not save the collector (gameplay).
+
 ## In progress
-- batch of direct starts (scratchpad\ep5\batch.ps1 -> build\warp\b_<job>\sheet.png): recon
-  interior, boss_1_complete, hack_path2/3, guardsneak intro/interior, waterrails intro, ghost
-  pictures, pickpocket intro, free_carmelita_complete.
+- batch rest: waterrails intro, ghost pictures, pickpocket intro, free_carmelita_complete.
 
 ## Next
 1. Heist stages not yet started: t5_heist_intro (Murray), free_carmelita_intro (22),
