@@ -154,6 +154,14 @@ recompiler problem found at its root, with tests; frames in build\screenshots\ep
   intermediate tasks do not save; job completion (2940 -> state 3) AUTOSAVED save1 (09:56:07):
   m6_kidnap_bearcubs.is_complete = 1, all t6_kidnap_* state 3, train percent 72. Murray then
   fights lumberjacks in the town (fire/explosions/coins render). Checkpoint saving works.
+- b2: fresh boot on b1's game-written card, START -> Resume: Murray at the safehouse door (po 9)
+  in the hub = the game-written save loads. (TRAP: never Stop-Process -Name sly2 - other agents'
+  runs are named sly2 too; kill by unique name/path only.)
+- t1: red train interior (Bentley HP held by PS2_POKE 3D4AC8=28): car 1 -> door -> car 2 rotating
+  red laser fan renders right (screenshot ep6_train_red_laser_fan); Bentley knocked aside by
+  lasers; game at the 1/30 dt clamp (machine). Not finished live.
+- c1: recon blueprint 3 direct start + task file -> complete recon -> chalk talk 1 (cutscene type
+  not yet seen in ep6).
 
 ## Next
 0. RC chopper battle stall: rerun with less load, dump RAM often after the launchers; if it stalls
