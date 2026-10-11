@@ -100,6 +100,19 @@ recompiler problem found at its root, with tests; frames in build\screenshots\ep
   on car 1) - same symptom as lrc2 (slow machine); lrc3 at full speed progressed to car 2. RAM dump
   build\p5\frames\ram_028636.bin. Suspect timing-dependent stall -> rerun when the machine is quieter.
 
+- RC chopper battle stall ANALYSED (p5/p6/p7, lrc2 RAM): player chopper = object 0xA98080 (vt
+  0x2D5898 at +0xC, oid 50723; local pos +0x2B0, rig-frame pos +0x2F0), enemy choppers = two vt
+  0x2D4B78 oid 51711 objects at 0xABE210/0xAC1E50 (pos +0x1F0, always z = 2850.0; two more parked
+  at (0,-8724,2850)). The player's altitude (local z, 0xA98338) is set once when the chopper is
+  deployed and differs per run: lrc2 1404, p5 2091, p6 2542 (all stalled: enemies hover ~300
+  units above, our shots pass under them, they can't hurt us either) vs p7 2849.7 / 2833.5 / 2850.0
+  (at the enemies' altitude: planes crash into the chopper -> "Your chopper got destroyed", i.e.
+  the fight works). Game dt (0x2DDEE0, clamped to 1/30) sat at 1/30 in the slow runs: the game ran
+  below 30 frames/s on this overloaded machine (9 instances, CPU 100%) during the deploy, so game
+  time fell behind real time while the deploy dialogue stream plays in real time -> different
+  deploy altitude. Faithful to PS2 behaviour at < 30 fps; not a port bug. Causality check: p8
+  (normal) vs p9 (same, CPU affinity 2 cores) with PS2_PEEK A98338 + 2DDEE0.
+
 ## Next
 0. RC chopper battle stall: rerun with less load, dump RAM often after the launchers; if it stalls
    again find what the wave logic waits for.
