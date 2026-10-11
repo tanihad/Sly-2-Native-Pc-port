@@ -21,17 +21,32 @@ runtime/recompiler problems at the root (crash, hang, missing syscall/RPC, rende
   - t5_heist_turret_intro direct: Bentley's turret vs. green biplanes in the rain; "Job Failed!
     Press X to try again" when idle.
 
+  - m5_ghost (Sly on the cathedral roof, stained glass), t5_ghost_enter_tomb (wolftomb, world 21).
+  - m5_ewok_trap (ewoktrainer 23: Binocucom briefing, Bentley at the glowing trap), ewokhall 25,
+    ewoktomb 24, ewokwater 26: mojo-trap gameplay ("Use O to activate the traps", meter, enemies,
+    "Job Failed! The Bad Mojo collector was destroyed").
+  - m5_kidnap (Murray on the roofs), t5_pickpocket_guardbreak_interior (20),
+    t5_pickpocket_waterrails_interior (19: water, waterfalls, drowning).
+  - t5_heist_paraglide_to_blimp: Gadget Grid (SELECT, exit with TRIANGLE), R1 in a jump deploys the
+    paraglider; landing on the disk below replays Bentley's "grab the rope" cutscene.
+  - t5_heist_boss_1_intro: letterboxed intro (Contessa as a spider), fight, death -> restart intro.
+  - Episode menu: --set episode.castle.percent_complete=100 -> resume opens the dvd_menu world
+    (Episode 6 / UP -> Episode 5 "A Tangled Web", X: Start Episode -> safehouse). No movie for ep5.
+  - --activate t5_intro changes nothing (safehouse as usual).
+- Perf under load: boss fight GS recording (240 VBlanks) replays at 36.3 ms/VBlank vs the
+  fix-perf briefing recording at 36.0 on the same loaded machine (8.9 when quiet): not heavier.
+  EE waits on the GS thread (gswait 50-90%) everywhere incl. boot: machine load, not ep5.
+- Screenshots: build\screenshots\ep5_*.png (hub, menu, tank, hack minigame, turret, boss1, crypt,
+  ewok levels, guardbreak, waterrails, wolftomb, kidnap).
+
 ## In progress
-- m5_ghost and m5_ewok_trap direct starts (ghost run tries START presses at 400/800/1200/1600 to
-  skip the boot intro).
+- (survey of all levels done; world 18 "interior" has no task with a start point)
 
 ## Next
-1. Remaining direct starts: t5_ghost_enter_tomb (21), t5_ewok_trap_hall/tomb/water (25/24/26),
-   m5_kidnap, m5_pickpocket + guardbreak_interior (20) + waterrails_interior (19),
-   t5_recon_interior_intro (22), heist: t5_heist_intro, paraglide_to_blimp, free_carmelita_intro,
-   neela_chase_intro, boss_1_intro, tank_chase_intro, boss_2_intro.
-2. Chalk talks (t5_chalktalk1..3) and the episode menu / movies (--set episode.<ep5>.percent_complete).
-3. Audio (-Wav) on the hub and a job; perf (PS2_PERF) when the machine is less loaded.
+1. Heist stages not yet started: t5_heist_intro (Murray), free_carmelita_intro (22),
+   neela_chase_intro, tank_chase_intro, boss_2_intro; recon interior (22).
+2. Chalk talks (t5_chalktalk1..3): warp with recon complete + chalktalk1 active?
+3. Audio (-Wav) on the hub and a job; checkpoint autosave (complete a task).
 
 ## Findings / traps
 - The machine runs 10+ other sly2 instances (CPU 100%): debug build ~18-30 VBlanks/s, release
