@@ -97,11 +97,16 @@ build\screenshots\ep2_*.png.
   did not find the way out of the pool in a few tries. Elephant rampage (live ele): Job Help text
   "Break Rajan's prize elephants out of their pens..."; walking in the hub fine.
 
+- 2026-10-11 (session 3): merged main 2d00835 (thread churn fix). Hub run (release, live hubperf,
+  PS2_PERF + -Wav, 2 other sly2 running, ~90% CPU): walking, combat with guards fine; 49-58
+  VBlanks/s, flips 33-50/s, EE busy 9-13 ms, GS thread 14-17 ms/VBlank = the limit (known, main's
+  notes: GS thread ~16.4 ms, fix = Direct3D 11 renderer; not duplicated here). VU 600-820k
+  pairs/VBlank at 4-5 ns, memory flat 149 MB. Audio (234 s wav): continuous from 48.6 s (hub) to
+  the end, 0 dropouts, 5 small clicks, no clipping.
+
 ## Next
 1. Dance minigame: only worth finishing on a quiet machine (game at 60 fps); bot in build\tools.
-2. Audio run (-Wav + PS2_LOG_SND, release hub) - first attempt starved by machine load.
-3. Perf: machine heavily loaded by other agents (~12 sly2.exe at once; release hub ran at 15-27
-   VBlanks/s, VU 25-50 ns/pair) - hub VU load 850-970k pairs/VBlank ~ the intro cutscene (60 fps
-   with 2 ms headroom on a quiet machine).
+2. Play deeper: m2_heist_bomb_bridge (Bentley), m2_heist_dance (tango), m2_elephant_rampage,
+   m2_lower_drawbridge, m2_steal_tuxedo, m2_heist_cover_murray, boardroom brawl past the pool.
 
 ## Findings / traps
