@@ -2,6 +2,84 @@
 # (warp.py tasks --ram <dump>). <task> <object id> <job (mission)> <prerequisite tasks>
 # <start world> <start warp oid> <character oid: 7 Sly, 8 Bentley, 9 Murray>; '-' = none,
 # -1 = not a start point. A job's first task is its mission object's start task (+0x64).
+# 'job <mission> <title>' lines: the name the game shows (Job Help), mission object +0x6C.
+job m0_intro Cairo Museum Break-in
+job m1_boss Printing Press Duel
+job m1_brawl Silence the Alarms
+job m1_bug Bug Dimitri's Office
+job m1_disco Disco Demolitions
+job m1_follow_dimitri Follow Dimitri
+job m1_heist Operation: Thunder Beak
+job m1_moulin_power Theater Pickpocketing
+job m1_neela Moonlight Rendezvous
+job m1_recon Breaking and Entering
+job m1_sat Satellite Sabotage
+job m1_waterpump Waterpump Destruction
+job m2_boardroom_brawl Boardroom Brawl
+job m2_dance_audition Dominate the Dance Floor
+job m2_dance_audition_fake Ballroom Dance Party
+job m2_elephant_rampage Elephant Rampage
+job m2_heist_bomb_bridge Bomb the Bridge
+job m2_heist_cover_murray Clear the way for Murray
+job m2_heist_dance Tango with Carmelita
+job m2_lower_drawbridge Lower the Drawbridge
+job m2_rc_chopper RC Bombing Run
+job m2_recon Recon the Ballroom
+job m2_steal_tuxedo Steal a Tuxedo
+job m2_turret Battle the Chopper
+job m3_boss Showdown with Rajan
+job m3_free_elephant Freeing the Elephant
+job m3_heartneela Neyla's Secret
+job m3_heist Operation: Wet Tiger
+job m3_lead_rajan Leading Rajan
+job m3_recon Spice Room Recon
+job m3_steal_ruby Rip-off the Ruby
+job m3_tntbarrel Spice Grinder Destruction
+job m3_turret Blow the Dam
+job m3_waterbug Water Bug Run
+job m4_bomb_bridge Disguise Bridge
+job m4_brawl Big House Brawl
+job m4_hack Train Hack
+job m4_heist Operation: Trojan Tank
+job m4_lightning Lightning Action
+job m4_pickpocket Close to Contessa
+job m4_rc_chopper Wall Bombing
+job m4_recon Eavesdrop on Contessa
+job m4_spycam Code Capture
+job m5_battlezone Tank Showdown
+job m5_ewok_trap Mojo Trap Action
+job m5_ghost Ghost Capture
+job m5_hack Crypt Hack
+job m5_heist Operation: High Road
+job m5_kidnap Kidnap the General
+job m5_pickpocket Stealing Voices
+job m5_recon Know Your Enemy
+job m6_carmelita A Friend in Need
+job m6_heist Operation: "Choo-Choo"
+job m6_kidnap_bearcubs Bear Cub Kidnapping
+job m6_paraglide Spice in the Sky
+job m6_rc_chopper Aerial Assault
+job m6_recon Cabin Crimes
+job m6_train_blue Theft on the Rails
+job m6_train_red Ride the Iron Horse
+job m7_bear Old Grizzle Face
+job m7_bearcave Bearcave Bugging
+job m7_boat_hack Boat Hack
+job m7_boss Brains over Brawn
+job m7_heist Operation: Canada Games
+job m7_laser Laser Redirection
+job m7_lighthouse Lighthouse Break In
+job m7_recon Recon the Sawmill
+job m7_robot_war RC Combat Club
+job m7_thermals Thermal Ride
+job m8_boss Showdown with Clock-La
+job m8_engine_room_bentley Sly/Bentley Conspire
+job m8_engine_room_jt Murray/Sly Tag Team
+job m8_engine_room_murray Bentley/Murray Team Up
+job m8_megajump Mega-Jump Job
+job m8_recon Blimp HQ Recon
+job m8_tntbarrel Charged TNT Run
+job m8_turret Carmelita's Gunner
 t0_attract_mode 1582 - t0_rooftop_runup -1 -1 -1
 t0_chase_hallway_complete 1696 m0_intro t0_chase_hallway_start -1 -1 -1
 t0_chase_hallway_start 1689 m0_intro t0_clockwerk_room 0 150528 7

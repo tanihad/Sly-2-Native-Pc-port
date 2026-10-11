@@ -165,12 +165,21 @@ class Task:
 def load_tasks(path=TASKS_FILE):
     tasks = {}
     for line in path.read_text().splitlines():
-        if not line or line.startswith("#"):
+        if not line or line.startswith("#") or line.startswith("job "):
             continue
         name, oid, mission, pre, wid, warp, po = line.split()
         tasks[name] = Task(name, int(oid), None if mission == "-" else mission, [] if pre == "-" else pre.split(","),
                            int(wid), int(warp), int(po))
     return tasks
+
+
+def load_job_titles(path=TASKS_FILE):
+    titles = {}
+    for line in path.read_text().splitlines():
+        if line.startswith("job "):
+            _, m, title = line.split(" ", 2)
+            titles[m] = title
+    return titles
 
 
 def episode_of(name):
@@ -435,8 +444,30 @@ def task_objects(ram):
     return {a: n for a, n in found if ram.u32(a + 0xC) == vt}
 
 
+def ram_text(ram, tid):
+    """A string of the loaded level's text bank: {id, char *} pairs (English: the language setting)."""
+    def string_at(p):
+        if not 0x100000 <= p < 0x2000000:
+            return None
+        s = ram.cstr(p)
+        return s if len(s) > 2 and all(32 <= ord(c) < 127 for c in s) else None
+
+    key = struct.pack("<I", tid)
+    pos = ram.b.find(key, 0x100000)
+    while pos != -1:
+        # a table entry: its neighbours are {id, string} pairs too
+        if not pos & 3 and ((ram.u32(pos + 8) < 0x10000 and string_at(ram.u32(pos + 12)))
+                            or (ram.u32(pos - 8) < 0x10000 and string_at(ram.u32(pos - 4)))):
+            s = string_at(ram.u32(pos + 4))
+            if s:
+                return s
+        pos = ram.b.find(key, pos + 1)
+    return None
+
+
 def cmd_tasks(schema_unused, args):
     graph = load_tasks() if TASKS_FILE.exists() else {}
+    titles = load_job_titles() if TASKS_FILE.exists() else {}
     for dump in args.ram:
         ram = Ram(dump)
         objs = task_objects(ram)
@@ -445,13 +476,21 @@ def cmd_tasks(schema_unused, args):
         for a, n in objs.items():
             pre = [objs.get(ram.u32(ram.u32(a + 0x98) + 4 * k)) for k in range(max(0, min(ram.i32(a + 0x94), 64)))]
             m = ram.u32(a + 0x7C)
-            graph[n] = Task(n, ram.i32(a + 0x18), ram.path_name(m + 0xD0) if m else None, [p for p in pre if p],
+            mission = ram.path_name(m + 0xD0) if m else None
+            graph[n] = Task(n, ram.i32(a + 0x18), mission, [p for p in pre if p],
                             ram.i32(a + 0xBC), ram.i32(a + 0xB8), ram.i32(a + 0xC0))
+            if mission and mission not in titles:      # mission object +0x6C: the job's name (text id)
+                t = ram_text(ram, ram.u32(m + 0x6C))
+                if t:
+                    titles[mission] = t
         print(f"{dump}: {len(objs)} tasks of episode(s) {sorted(eps)}")
     lines = ["# Sly 2 task graph, read from the game's task objects in EE RAM dumps of each episode hub",
              "# (warp.py tasks --ram <dump>). <task> <object id> <job (mission)> <prerequisite tasks>",
              "# <start world> <start warp oid> <character oid: 7 Sly, 8 Bentley, 9 Murray>; '-' = none,",
-             "# -1 = not a start point. A job's first task is its mission object's start task (+0x64)."]
+             "# -1 = not a start point. A job's first task is its mission object's start task (+0x64).",
+             "# 'job <mission> <title>' lines: the name the game shows (Job Help), mission object +0x6C."]
+    for m in sorted(titles, key=lambda m: (episode_of(m), m)):
+        lines.append(f"job {m} {titles[m]}")
     for n in sorted(graph, key=lambda n: (episode_of(n), n)):
         t = graph[n]
         lines.append(f"{n} {t.oid} {t.mission or '-'} {','.join(t.pre) or '-'} {t.wid} {t.warp} {t.po}")
@@ -488,15 +527,16 @@ def cmd_schema(schema_unused, args):
 
 def cmd_list(schema, args):
     tasks = load_tasks() if TASKS_FILE.exists() else {}
+    titles = load_job_titles() if TASKS_FILE.exists() else {}
     for i, (name, title, place, hub) in enumerate(EPISODES):
         if args.episode is not None and i != args.episode:
             continue
-        print(f"{i}  {title} ({place}), hub world {hub}")
+        print(f"{i}  {title} ({place}), hub world {hub}  [jobs in play order: name, title, first task, played as]")
         if any(episode_of(t) == i for t in tasks):
             for m in job_order(tasks, i):
                 e = mission_entry(tasks, m)
                 po = next((tasks[t].po for t in topo(tasks, mission_tasks(tasks, m)) if tasks[t].po != -1), -1)
-                print(f"   {m:28} first task {e:34} {CHAR_NAMES.get(po, '?')}")
+                print(f"   {m:24} {titles.get(m, '?'):30} {e:34} {CHAR_NAMES.get(po, '?')}")
         else:
             print("   jobs: " + " ".join(schema.groups(f"m{i}_")))
 
