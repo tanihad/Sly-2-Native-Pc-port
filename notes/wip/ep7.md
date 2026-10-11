@@ -15,8 +15,23 @@ build\screenshots\ep7_*.png.
 - Machine is shared and at 100% CPU (other ep testers): release runs at 20-40 VBlanks/s, so perf
   numbers from now are not meaningful.
 
+- Survey of interiors and heist stages (t7_*_intro_int, t7_boss_battle, t7_heist1..6_intro): all
+  load and render right (Murray power-chop minigame, Bison cutscenes, log flume stages).
+- Audio: build\recon\audio.wav (11 min, hub + Binocucom): no dropouts, no clicks (wav_analyze).
+- Autosave: the game writes save1 itself after the episode start (dt 108.9, ice_wall_trainer seen).
+- Recon: Binocucom (R3), photo targets shown as blue pins; aim = left stick (with acceleration,
+  vertical inverted), R1 = take picture ("&2R&.: take picture" in level text), right stick zoom.
+- Power chop (t7_heist1): marker sweeps, CROSS chops; needs frame-exact timing, not finished.
+
 ## In progress
-- Survey of interiors and heist stages (t7_*_intro_int, t7_boss_battle, t7_heist1..6_intro).
+- Boss battle (t7_boss_battle direct, world 37) by button mashing, to reach the episode end.
+
+## Tools (build\tools, not committed; the scratchpad is shared with other agents!)
+- live7.ps1 -Name x -Make "--episode 7 --job <task> --direct" -Script "@187D80/1DD96C+30:start:10"
+  -Debug: live session with warp card, PS2_PEEK player/camera; sheet.ps1 contact sheets.
+- findobj.py ram.bin 7 8 9: character objects (+0xC vtable in .data, +0x18 oid; 7 Sly, 8 Bentley,
+  9 Murray), world position at +0x230 (player: same as 0x2DE1C0 focus minus 125 in z).
+  hexf.py ram.bin addr: words as hex+float. RAM dump: live token "+0:ram".
 
 ## Next
 1. Episode start: `scripts\warp_run.ps1 -Episode 7 -Play -Release`, look at hub, PS2_PERF.
