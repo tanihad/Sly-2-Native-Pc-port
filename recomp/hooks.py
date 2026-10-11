@@ -32,6 +32,10 @@ HOOKS: dict[int, Hook] = {
         "level_transition", "9191080cf69aee0a7881377bfb31eb6c706a54bf",
         "queues a level load (world, descriptor, start point, ?, flags); PS2_WARP_TASK "
         "(runtime/warp.c) turns the title screen's Resume Game call into a job start"),
+    0x0020E890: Hook(
+        "main_loop_top", "a1d64fd38e1e249357732434a68c2a101d2d9193",
+        "first call of the main loop (jal at 0x1A7588), no game work in progress: PS2_TASK_SET / "
+        "PS2_TASK_FILE (runtime/warp.c) change task states there through the game's own 0x164DF0"),
 }
 
 
