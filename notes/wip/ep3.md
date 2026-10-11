@@ -55,6 +55,16 @@ warp saves / direct job starts; fix every runtime/recompiler problem found at it
   -Ring (build\tools\live_game2.ps1 = scripts\live_game.ps1 with a ring size parameter).
 - Turret: lower-case stick hex only (lxFF was dropped as an unknown button). lxff turns the view
   right; the "dam" ticker reads "Destroy the dam."; the attempt fails after ~53 s every time.
+  With pause: firing (green tracers, heat bar), enemy gunships + ground fire, retry all work; the
+  dam was not found/destroyed (game skill, not a runtime issue). Game clock (0x14D0B8): dt from
+  COP0 Count, clamped to [1/60, 1/30] s, so a pause costs at most one 1/30 s step.
+- Recon (live, release, t3_recon_int_intro direct + PS2_TASK_FILE 2174/2175/2176 -> 2): Binocucom
+  camera mode (checklist Rajan / Crane Controls / Clockwerk's Heart / Entrance, R1 shutter effect,
+  "No item of interest in view", target brackets, "Object hidden, move to new location") works;
+  spytargets 2178-2181 -> 2: all ticked, Sly's "bring those photos back" cutscene, job-complete
+  book splash, chalk talk 1 MPEG movie (pre-rendered guard/crane/fountain scenes, clean), load,
+  safehouse "Press X to play as Sly"; autosave save1 (recon_complete 3, chalktalk1 3, temple 17%).
+  Frames ep3_recon_spycam, ep3_recon_complete_book, ep3_chalktalk1_movie, ep3_safehouse_after_recon.
 
 ## Next
 1. Perf: machine is shared by ~15 game instances (100% CPU), so PS2_PERF numbers are inflated
