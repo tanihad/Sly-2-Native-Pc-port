@@ -72,9 +72,25 @@ recompiler problem found at its root, with tests; frames in build\screenshots\ep
   Neyla with SQUARE, avoid her missiles; stage 2: X bombs when she dives, SQUARE when she rises).
   So "Job Failed" = chopper shot down; next: hold 500618=42C80000 with PS2_POKE and keep shooting.
 
+- p1 (release, heist chopper 1, chopper HP held): SQUARE hits drain Neyla's pink ring, small green
+  planes appear, she retreats in flames, cutscene ("You rummy blighter", "Whatever you say Poodle"),
+  control returns to Sly on train_2 = stage WORKS. Earlier failures were play (chopper shot down).
+- Added PS2_POKE=@file (live poke list) + uppercase hex in lxHH tokens (commit d5dadaa).
+- p2 (train_2 direct, sly.hpCur 3D4AB0=28 held): ladder, roof (trackside trees/poles and an eagle
+  knock Sly; falling off respawns at checkpoints), flatcar with 3 lantern lumberjack guards - Sly
+  gets knocked off repeatedly (play, not a bug). Not completed.
+- p3 (chopper 2 direct, chopper HP cell 500618 = Splice var sym 9B7 held, same address as stage 1):
+  Neyla dives (X bombs) and rises (SQUARE); her HP is a float at 0x5030A8 (200 -> 0). Defeated ->
+  "Stand clear Sly" cutscene, furnace explodes, "Clockwerk's Stomach" loot card, 2D ending movie
+  (Carmelita/Neyla/Sly), AUTOSAVE (save1: episode.train.percent_complete=100), Episode 7 slideshow
+  and "Menace in the North, Eh?" start menu. Whole end-of-episode flow works.
+  Perf note: in-level 45-58 VBlanks/s with GS thread 14-24 ms/VBlank on the shared machine (the GS
+  thread is the known bottleneck; D3D11 renderer is the planned fix); movie/menus 60.
+
 ## Next
-0. Heist RC chopper vs Neyla with PS2_POKE=500618=42C80000 (chopper HP) and SQUARE fire: does she
-   retreat? If yes, the stage works; continue train_2 -> chopper 2 -> heist complete -> save.
+1. Deeper live play: bear cubs (Murray), paraglide, heist train_1 (lasers, Bison car), recon
+   (cabin), train_blue; capture -Wav in one of them and analyse.
+2. Perf when the machine is quieter.
 1. Deeper live play in selected jobs (scratchpad\ep6\live6.ps1 -Release -Direct): bear cubs
    (Murray), paraglide, heist hand car.
 3. Checkpoint saves (complete a job stage -> autosave on the card).
