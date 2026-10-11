@@ -68,8 +68,18 @@ build\screenshots\ep2_*.png.
   with Episode 3 selected. The game saved (save1: palace 100%, m2_heist_cover_murray complete,
   t2_done state 1). No new log lines. Frames ep2_end_*.png.
 
+- Dance minigame (m2_dance_audition): input works. Rules seen: the dancer shows 3 prompts (lit dot
+  of a button diamond: top/green = triangle, right/red = circle), then "? ? ?" = the player's turn;
+  a press during the show phase fails at once ("Oow, my feet..."); 3 correct presses right after
+  "? ? ?" appears (12 frames apart) pass the round (the icons are revealed one by one). The phase
+  start drifts +-30 frames between runs (loading time), so fixed scripted frames are unreliable:
+  build\tools\dance_bot.py (not committed) reads the prompt band from frames\latest.png every 2
+  VBlanks and answers through the live input file; build\tools\dance_live.ps1 starts it.
+  Completion-task direct starts: t2_dance_audition_complete -> Sly at the hub safehouse (no
+  cutscene); t2_bomb_bridge_lower_collapse -> 2104:8 = Bentley on the upper bridge, debris falling.
+
 ## Next
-1. Dance minigame: scripted presses during "? ? ?" (timing in real time? game time?).
+1. Dance minigame: finish with the bot (round 2 failed in dl1; frames kept in dl2).
 2. Audio run (-Wav + PS2_LOG_SND, release hub) - first attempt starved by machine load.
 3. Perf: machine heavily loaded by other agents (~12 sly2.exe at once; release hub ran at 15-27
    VBlanks/s, VU 25-50 ns/pair) - hub VU load 850-970k pairs/VBlank ~ the intro cutscene (60 fps
