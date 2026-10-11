@@ -103,7 +103,9 @@ tools/, orig/ and .venv/ only exist in the main checkout
 - Start at any episode or job (memory-card saves, `notes/warp.md`): `scripts\warp_run.ps1 -Episode N
   [-Job <job>] [-Direct] -Play`; `scripts\warp.py make|list|dump`; `run_game.ps1 -Card <dir>`
   (PS2_MEMCARD_DIR); `PS2_WARP_TASK=<task oid>[:<world>]` (any build: an entry hook,
-  recomp/hooks.py) starts a job on "Resume".
+  recomp/hooks.py) starts a job on "Resume"; `PS2_TASK_SET=<task oid>:<state>[@<vblank>],...` /
+  `PS2_TASK_FILE=<path>` (lines appended while it runs; `<oid>:?` prints the state) change a task's
+  state through the game's own 0x164DF0 at the top of the main loop (entry hook on 0x20E890).
 - VU microcode is recompiled (`recomp/vu_recomp.py`, `notes/vu-microcode.md`): `PS2_VU_INTERP=1`
   runs the interpreter instead; `PS2_VU_VERIFY=1` runs every recompiled program and the interpreter
   on a copy and compares registers, flags, data memory, XGKICKs (with the data memory at each kick)
