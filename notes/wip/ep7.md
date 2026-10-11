@@ -45,6 +45,15 @@ build\screenshots\ep7_*.png.
   VRAM swizzles so the aliasing is faithful). Not reproduced in two release runs; judged a one-frame
   game artifact (old sky colour/frustum on the cut frame), not investigated further.
 - Job Failed panel (RC combat "Your robot tank has been destroyed", post boss) renders right.
+- Boat hack (release direct t7_boat_hack_intro): briefing, Bentley in the hub, found Murray with
+  findobj (oid 9 vt 2D44C8 at -10463,5028,-732) + live_goto; triangle next to Murray = Murray
+  throws Bentley (once), elsewhere = Bentley's bomb (explosion, damage, respawn). Water, explosion
+  and respawn render right. Throw aim not worked out; hack minigame not reached (ep4/ep5 have
+  direct-start hack jobs).
+- Old Grizzle Face (release direct t7_bear_intro): briefing (Bentley bombs the water, fish fly,
+  Murray throws them at the "oil machines" so the bear smashes them): fish fly and land, circle
+  picks one up / throws it, bear and guards walk around; station not hit (aim). Logs clean.
+- Machine very loaded (7 games at once): release runs at 20-35 VBlanks/s, IOP timer 165-240/s.
 
 ## In progress
 
