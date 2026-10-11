@@ -65,6 +65,20 @@ warp saves / direct job starts; fix every runtime/recompiler problem found at it
   book splash, chalk talk 1 MPEG movie (pre-rendered guard/crane/fountain scenes, clean), load,
   safehouse "Press X to play as Sly"; autosave save1 (recon_complete 3, chalktalk1 3, temple 17%).
   Frames ep3_recon_spycam, ep3_recon_complete_book, ep3_chalktalk1_movie, ep3_safehouse_after_recon.
+- Turret again with m3_turret.suck_value=1.0 (the game's own easing after failures; warp.py --set)
+  and a pause-stepped time-lapse (build\tools: append "+0:none,+90:pause" in a loop, copy
+  latest.png): 22 x 90 frames without a hit on the dam; the waterfall/dam stays at the lower right
+  under the HUD's temple icon, the turret's pitch/yaw limits keep it ~50 px below the crosshair at
+  that point of the path. Turret dialogue strings: "Nice shooting Bentley! Hope Rajan knows how to
+  swim." / "Whuh? A piece of the dam struck the chopper!" follow a successful run. Left as game skill.
+- Spice Grinder (TNT, live): Sly in the catacombs next to the TNT barrel (red "!" marker), jumped,
+  mask transition + respawn at the entrance arch with a blue glow (death/checkpoint). Not completed.
+- Lead Rajan (live, release): Bentley's dart gun view (R3) + R1 dart works; 0/3 blueprint counter.
+  Not completed (lead Rajan to the watermelon with darts, then pickpocket).
+- Perf after the main merge (release, VU 100% recompiled, 4.0-6.5 ns/pair), machine at 100% CPU
+  with ~10 game instances: hub GS thread 18-28 ms/VBlank, world-13 interior 21-36 ms, EE busy
+  6-13 ms; the EE waits for the GS (gswait 50-85%). GS-bound (software rasterizer; the planned
+  Direct3D 11 renderer is the fix). Not measurable properly until the machine is quiet.
 
 ## Next
 1. Perf: machine is shared by ~15 game instances (100% CPU), so PS2_PERF numbers are inflated
