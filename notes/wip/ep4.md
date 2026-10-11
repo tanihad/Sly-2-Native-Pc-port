@@ -35,6 +35,19 @@ recompiler problem found at its root (with tests), save frames to build\screensh
   -Wav, -Exe; decomp.ps1 = headless Ghidra on the shared scratchpad project, read-only;
   objnear.py / owner.py / objdiff.py / velfind.py RAM-dump helpers).
 
+- Session 3: merged main (8e05f84: VU recompiler) into next/ep4 (63d79a9), rebuilt build\rel and
+  build\sly2. Release boots ~60 vblanks/s when the machine is not saturated.
+- m4_hack live (lw\hk, release, PS2_PEEK E952B0 = the train): the train shuttles on one line
+  between a dead end at y=-17500 and the far east (x>8000): passes the start (-6390,-9280)
+  southbound, turns at the dead end ~900 frames later, passes the start northbound, ~4550-frame
+  cycle (build\tools\trainwait.py waits for the northbound pass). Station 1's green sparkle /
+  terminal ~(-6386,-7896,-57) (objects at the path2 warp 60450), across a canal from the track
+  ledge at (-6525,-8720,-88); hopping over the rail costs health; not reached yet (falls into the
+  canal). Bentley respawns at (-6729,-9721).
+- Heist 4 (lw\h4k, PS2_TASK_FILE): completing t4_heist4_get_to_keypad1 (2558:2) only activates
+  hack1 (no minigame: it starts from the keypad interaction); completing hack1 (2560:2) puts Sly
+  at keypad 1 (-4651,2798,417 feet). No memory-card write on these intermediate task changes.
+
 ## In progress
 - RC chopper (m4_rc_chopper, lw\rc*): with the stick released the chopper keeps swaying ~+-500
   units at near full speed (never settles); ep2's RC chopper trace shows the same. Not a dt effect:
