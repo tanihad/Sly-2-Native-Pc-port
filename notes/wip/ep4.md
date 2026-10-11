@@ -76,6 +76,8 @@ recompiler problem found at its root (with tests), save frames to build\screensh
   hack1 (no minigame: it starts from the keypad interaction); completing hack1 (2560:2) puts Sly
   at keypad 1 (-4651,2798,417 feet). No memory-card write on these intermediate task changes.
 
+- Session 4: merged main (2d00835: EE thread fiber fix from ep5) -> d1d912d; rebuilt rel + debug.
+
 ## In progress
 - RC chopper (m4_rc_chopper, lw\rc*): with the stick released the chopper keeps swaying ~+-500
   units at near full speed (never settles); ep2's RC chopper trace shows the same. Not a dt effect:
