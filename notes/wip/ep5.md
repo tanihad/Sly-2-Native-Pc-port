@@ -156,6 +156,20 @@ runtime/recompiler problems at the root (crash, hang, missing syscall/RPC, rende
 - Rule learned: set the stage tasks *before* a job's final task (tank kills, photo targets, drop)
   and the game runs its own job-end flow; setting the *_complete task itself skips it.
 
+- GS replay bench (8 workers, machine at 100% CPU): safehouse recording (240 VBlanks, 627 MB)
+  54.0 ms/VBlank vs the fix-perf briefing 51.3: about as heavy as the briefing. (The t75 X press
+  came before the safehouse accepted it, so the recording is the safehouse, not the hub street.)
+- **FIXED (9d6c24c): ~1 MB/s committed-memory leak in every scene.** Soak in boss 1 (release):
+  private bytes 278 -> 1001 MB in 15 min, working set flat ~155 MB. PS2_LOG_THREADS: the game
+  creates/starts/ExitDeleteThreads thread #6 (entry 0x1AAF18) ~once a second; CreateThread's memset
+  wiped the slot's fiber pointer -> one leaked fiber (CreateFiber(1 MB) = 1 MB committed) per cycle.
+  Same bookkeeping also resumed stale fibers on restart (restart after return spun forever, after
+  ExitThread/TerminateThread resumed inside the old syscall). runtime/threads.c: parked fibers are
+  reused, fibers stopped mid-way deleted (the exiting one by the next fiber to run). New
+  tests/unit/threads; PS2_PERF prints "[perf] memory:" every 10 s. After: flat 149-151 MB over a
+  16-minute boss soak; all unit tests + run_tests.py pass. (threads.c is "integrator-owned" per
+  hle-architecture.md: flagged in the report.)
+
 ## In progress
 - (none): hub run (build\live\ct2, warp --job m5_ghost), set the stage before each
   final task (2661 ghost_drop, 2679 ewok water, 2685 kidnap carry) and let the game finish the jobs.
