@@ -90,14 +90,18 @@ runtime/recompiler problems at the root (crash, hang, missing syscall/RPC, rende
   hits the wall at the first bend and falls (camera z to -767) -> Job Failed: needs steering.
 - Ewok water (last mojo-trap stage) live: spamming O does not save the collector (gameplay).
 
+- Batch rest (session 3 check): t5_pickpocket_waterrails_intro, t5_ghost_take_pictures,
+  t5_pickpocket_intro (Binocucom briefing with its scanline overlay, then Sly on the roofs),
+  t5_heist_free_carmelita_complete (cutscene -> Neyla chase -> failed): all load/play, logs clean
+  (the trailing "[watchdog] 0 function calls" in release logs is the exit dump, not a hang).
+
 ## In progress
-- batch rest: waterrails intro, ghost pictures, pickpocket intro, free_carmelita_complete.
+- Session 3: machine quiet (no other sly2 running): PS2_PERF on heavy ep5 scenes.
 
 ## Next
-1. Heist stages not yet started: t5_heist_intro (Murray), free_carmelita_intro (22),
-   neela_chase_intro, tank_chase_intro, boss_2_intro; recon interior (22).
+1. PS2_PERF (release) on hub, boss 1, battlezone tank, ewok trap, hack minigame while quiet.
 2. Chalk talks (t5_chalktalk1..3): warp with recon complete + chalktalk1 active?
-3. Audio (-Wav) on the hub and a job; checkpoint autosave (complete a task).
+3. Complete a job live (e.g. recon photos or hack path) -> checkpoint autosave mid-episode.
 
 ## Findings / traps
 - The machine runs 10+ other sly2 instances (CPU 100%): debug build ~18-30 VBlanks/s, release
