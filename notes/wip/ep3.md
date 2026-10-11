@@ -139,10 +139,17 @@ warp saves / direct job starts; fix every runtime/recompiler problem found at it
 - VU recompiler on Episode 3 content (merged from main this session): build\tools\vuverify.ps1
   runs direct starts with PS2_VU_VERIFY=1 (each compiled microprogram also interpreted and
   compared), 540 s each, own exe names. hub, recon_int (world 13), heist3 turret, turret, boss
-  Murray-vs-Rajan pool fight (lightning), tntbarrel (world 13): 10-14.7M programs each, 0
-  mismatches, no interpreted fallbacks. (A first 240 s sweep over all 19 start tasks: 0
+  Murray-vs-Rajan pool fight (lightning), tntbarrel (world 13), waterbug, heartneela interior
+  checkpoint (world 13), lead Rajan: 10-14.7M programs each (~115M in all), 0 mismatches, no
+  interpreted fallbacks. (A first 240 s sweep over all 19 start tasks: 0
   mismatches too, but mostly title/load content; its waterbug run was killed externally after
   22 s - warp_run's exe is named sly2.exe.) Frame ep3_boss_murray_pool_fight.
+- Salmon/red climbing ropes in the hub and on the boss roof checked (GS record at VBlank 7700 +
+  replay with PS2_GS_TRACE_RECT on one rope pixel, build\tools\trace_prims.py /
+  trace_texcolors.py): Sly 2 draws every model twice with two CLUTs of the same 4-bit texture -
+  a grey "shadow" CLUT with normal blending (ATST GEQUAL 7E), then the coloured CLUT additively
+  (A0 B2 C0 D1) weighted by the vertex alpha. The rope texture (TBP 12542, 32x16 T4) is
+  red-brown in its coloured CLUT (avg 69,40,35), so the pink rope is game data, not a CLUT bug.
 - build\tools\taskcap.ps1: the input parameter was named $Input (PowerShell's automatic $input
   enumerator), so input lines were never written; now -Line.
 
