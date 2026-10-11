@@ -77,6 +77,21 @@ recompiler problem found at its root (with tests), save frames to build\screensh
   at keypad 1 (-4651,2798,417 feet). No memory-card write on these intermediate task changes.
 
 - Session 4: merged main (2d00835: EE thread fiber fix from ep5) -> d1d912d; rebuilt rel + debug.
+- Heist 4 live (lw\h4b, release direct t4_heist4_intro): cutscene ("defended by laser barriers.
+  When you get close I'll hack..."), Sly at (-1266,184,-472). Sweeping floor lasers burn Sly: hp
+  (sly.hpCur 0x3D4AB0, 0x28 full) -20 per hit, death mask + respawn at the second; held with a
+  background loop appending `3D4AB0=28` to PS2_POKE_FILE. Walked past the lasers: big hall with
+  hypno-speaker niches (green spiral + speakers; heist5's targets), bleachers west, dining tables
+  at (-3400..-4100, 2600, -275). Keypad 1 is on an upper level: objects near (-4651,2798,417):
+  oid 77563 (vt 0x2DD090, the post-hack warp), oid 2562 (vt 0x2D8C48) at (-4502,2469,515). Route
+  up not found; ep5 already reached the (same) hack minigame (t5_heist_free_carmelita_hack).
+- **Brawl won by play** (lw\br2, release direct t4_brawl_intro_int, PS2_POKE=3D4AE0=28 holds
+  murray.hpCur, background driver build\lw\br2\fight.ps1 = stick direction + SQUARE x9 + TRIANGLE
+  every ~2 s): intro cutscene (Murray behind bars), beatdown in the yard with the wall counter of
+  KOs, ZONK! comic text, coins (107), yellow searchlight cones; t4_brawl_beatdown 1 -> 3 after
+  ~6 min, outro cutscene (Murray to solitary), Job Completed (Murray), safehouse. **Checkpoint
+  autosave**: save1 written right after (m4_brawl complete, prison 33%, oidPoCurrent 9).
+  Screens ep4_brawl_outro.png, ep4_brawl_job_completed.png. Log clean (only the boot-time eret).
 
 ## In progress
 - RC chopper (m4_rc_chopper, lw\rc*): with the stick released the chopper keeps swaying ~+-500
