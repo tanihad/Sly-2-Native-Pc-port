@@ -92,6 +92,17 @@ recompiler problem found at its root (with tests), save frames to build\screensh
   ~6 min, outro cutscene (Murray to solitary), Job Completed (Murray), safehouse. **Checkpoint
   autosave**: save1 written right after (m4_brawl complete, prison 33%, oidPoCurrent 9).
   Screens ep4_brawl_outro.png, ep4_brawl_job_completed.png. Log clean (only the boot-time eret).
+- RC chopper again (lw\rc5, release direct, PS2_PEEK 972A80 local pos / 972AC0 world / 972B00 local
+  velocity): control starts ~33 VBlanks after the first X; the chopper then accelerates +105 per
+  frame along local +x to 2100 and flies straight at full speed (~600 frames, 15700 units) over the
+  city and past the lit area to local x ~17000, where it bounces around (boundary?) until the wall
+  turret shoots it down ("Your chopper got destroyed", X retries: identical path). Stick test
+  (ldown/lright/lup/lleft 90 frames each): the velocity direction turns toward the stick direction
+  (lright -> local -x, lup -> -y, lleft -> +x), speed stays ~2100, and after release it keeps flying
+  at full speed (never decelerates). So with a neutral stick it flies as if pushed LEFT. Design
+  ("RC chopper always flies, stick steers") or a port bug - still undecided; the thrust comes from
+  the Splice script (no ELF strings: Splice names live in the level data). JOY struct at 0x2E0BC0
+  is not referenced by lui+imm anywhere (build\tools\luiref.py), so the reader is still unknown.
 
 ## In progress
 - RC chopper (m4_rc_chopper, lw\rc*): with the stick released the chopper keeps swaying ~+-500
