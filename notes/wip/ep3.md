@@ -40,6 +40,12 @@ warp saves / direct job starts; fix every runtime/recompiler problem found at it
   destroy the dam" (legit). A full-width blue-gray band seen once = the Job Failed box's opening
   animation (GS trace: untextured tristrips 334C6680 at UI z, x -317..219 -> -10..526). Not a bug.
   Chopper health is not bentley.hpCur (0x3D4AC8 stays 0x28); address not found yet.
+- FIXED boot hang under load (1 in ~100 headless runs at 100% CPU, build\tools\bootloop.ps1):
+  pixel workers read pool.gen when their thread first ran; a worker starting after the first job
+  (first VBlank picture) skipped it, and if all did, the picture was never drawn and
+  gs_queue_vsync waited forever. Workers now start from the generation at creation (gen0).
+  Unit test gs-draw test_gs_draw_late_workers (GS_TEST_WORKER_DELAY_MS=300) fails without the fix.
+  24 boot runs (6 parallel) after the fix: 0 hangs.
 
 ## Next
 1. Perf: machine is shared by ~15 game instances (100% CPU), so PS2_PERF numbers are inflated
