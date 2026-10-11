@@ -180,6 +180,14 @@ recompiler problem found at its root, with tests; frames in build\screenshots\ep
   three moose guards with flashlights, spotted, brawl (hit sparks, damage outline, foreground
   seats fading for the camera) - renders right (screenshot ep6_train_blue_moose_guards).
 
+- k1: heist train 1 live (Sly HP held): caboose -> passenger car with moose guards, brawl at the
+  next door. With the camera squeezed against a big moose guard the screen shows large shards of
+  the guard's own polygons (screenshot ep6_heist_train1_camera_in_moose) - looks like the camera
+  inside the model (VU output is exact, ADC/XYZ3 handled); not verified against hardware.
+- Level-load overlap now explained by the voice history: the hub's looping ambience (ssa 8D220)
+  is still in its release tail when the next level's bank (VoiceTrans 019040+C0xxx) lands on it
+  0.3 s after KOFF (our disc reads are instant); the output is digital silence for the whole
+  load (c1: 91.95-92.68 s), so nothing is heard.
 - Session 5 end state: all unit tests + tests\run_tests.py (16/16) pass on 20ddfd9+.
 
 ## Next
