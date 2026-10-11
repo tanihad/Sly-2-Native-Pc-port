@@ -63,7 +63,9 @@ def main() -> int:
         width = bits // 4 + 2
         print(f"  {'PASS' if ok else 'FAIL'}  ${name:2}: got {got:#0{width}x}  want {want:#0{width}x}")
     print(f"\n{len(checks) - failures}/{len(checks)} passed")
-    return 1 if failures or not check_overrides() else 0
+    overrides_ok = check_overrides()
+    hooks_ok = check_hooks()
+    return 1 if failures or not overrides_ok or not hooks_ok else 0
 
 
 def check_overrides() -> bool:
@@ -88,6 +90,41 @@ def check_overrides() -> bool:
         OVERRIDES.clear()
         OVERRIDES.update(saved)
     print(f"  {'PASS' if ok else 'FAIL'}  native overrides apply only to the expected bytes")
+    return ok
+
+
+def check_hooks() -> bool:
+    """recomp/hooks.py adds PS2_HOOK to a function's entry only if its bytes are the expected ones,
+    and the generated code then calls it outside PS2_TRACE (so release builds keep it)."""
+    sys.path.insert(0, str(ROOT))
+    from recomp.codegen import override_body
+    from recomp.functions import Function
+    from recomp.hooks import HOOKS, Hook, hook_for
+    from recomp.overrides import Override, function_sha1
+
+    class Prog:                                     # 8 words at 0x1000
+        def __init__(self, words): self.words = words
+        def read_u32(self, a): return self.words[(a - 0x1000) // 4] if 0x1000 <= a < 0x1020 else None
+
+    words = [0x3C07FFFF, 0x0000302D, 0x34E7F000, 0, 0x03E00008, 0, 0, 0]
+    prog = Prog(words)
+    saved = dict(HOOKS)
+    try:
+        HOOKS.clear()
+        HOOKS[0x1000] = Hook("t", function_sha1(prog, 0x1000, 0x1020), "test")
+        ok = hook_for(prog, 0x1000, 0x1020) is not None
+        ok &= hook_for(Prog(words[:-1] + [1]), 0x1000, 0x1020) is None          # different bytes
+        ok &= hook_for(prog, 0x1004, 0x1020) is None                             # not in the table
+    finally:
+        HOOKS.clear()
+        HOOKS.update(saved)
+    f = Function(0x1000, 0x1020, "t", [])
+    o = Override("t", "", "return;", "test")
+    ok &= "PS2_HOOK(0x00001000u);" in override_body(f, o, True)
+    ok &= "PS2_HOOK" not in override_body(f, o, False)
+    gen = (ROOT / "build" / "test" / "recomp")
+    ok &= not any("PS2_HOOK(" in p.read_text(encoding="utf-8") for p in gen.glob("funcs_*.c"))  # test ELF: none
+    print(f"  {'PASS' if ok else 'FAIL'}  entry hooks apply only to the expected bytes")
     return ok
 
 
