@@ -102,6 +102,16 @@ Execution model:
   sequenced notes bunched up (the save prompt's arpeggio at 54-78 ms note spacing instead of ~45
   ms) and stream refills waited. With it: 20-80 late ticks per 10 s, at most ~15-35 ms (the rest is
   single DMA tags whose VU1/GS work takes that long).
+- **Waiting for the GS thread** (next/ep2, 2026-10-11): the EE thread blocks in `gs_thread.c`'s
+  `ee_wait_change` when the GS thread's queue is full or the previous picture is not presented yet.
+  On a loaded host that wait lasted 0.2-1 s per VBlank (measured: 124 waits over 150 ms in 160 s
+  of the episode menu with ~10 game instances running), and the IOP stood still with the EE: the
+  episode menu's music stream stopped for good (989snd error 0x37, see notes/wip/ep2.md). The wait
+  now runs a hook about every millisecond (`gs_set_wait_hook`; the runtime installs
+  `ps2_poll_iop`, so not inside a game interrupt handler). Unit test: gs-draw's async build
+  (`t_wait_hook`: a picture held back until the hook ran). What remains are stalls of the EE
+  thread itself (the OS not running it: 150-660 ms gaps with 0-90 ms of EE thread CPU time on the
+  overloaded machine); next/ep1's mixer hold (`PS2_AUDIO_IOP_LIMIT`) covers those.
 - **Interrupts**: hard timers, CD completion, SIF DMA completion callbacks and libsd transfer
   completions are delivered between thread slices and at loop heads of code with interrupts
   enabled (CpuSuspendIntr state is per thread). Handlers run on the interrupt stack with
@@ -175,7 +185,8 @@ Execution model:
 - Only one bank load (the boot bank) happens before the museum prologue; level banks load later
   in the game and take the same path.
 - Reverb (989snd command 14 -> sceSdSetEffectAttr) is not requested up to the first gameplay.
-- The IOP runs only at EE safe points and between DMA tags (`ps2_poll_iop`). A single DMA tag whose
+- The IOP runs only at EE safe points, between DMA tags and while the EE waits for the GS thread
+  (`ps2_poll_iop`). A single DMA tag whose
   VU1/GS work is long still delays it (at most ~15-35 ms in release runs, more in the debug build);
   the stream buffers hold 0.16-0.22 s, and the backend's "late/early stream refills" counter shows
   when it was not enough (none in release runs; two late movie-audio refills in the debug build,

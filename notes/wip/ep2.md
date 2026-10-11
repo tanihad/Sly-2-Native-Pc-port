@@ -50,13 +50,17 @@ build\screenshots\ep2_*.png.
   thread waits for the GS thread (gswait: gs_thread.c ee_wait_change does not run the IOP) and
   50-300 ms "EE" gaps; the machine is saturated (13 sly2 instances, CPU 100%).
 
-## In progress
-- Fix: run the IOP while the EE thread waits for the GS thread (gs_set_wait_hook -> ps2_poll_iop),
-  unit test in gs-draw (TEST_ASYNC: present blocks until the hook ran). Also gs_draw_pixel.c: a
-  pixel worker that starts after the first job was posted skipped it (seen = pool.gen at start) ->
-  starts from generation 0 now (found by that test). Merged main (VU recompiler) on 2026-10-11;
-  release + debug build, all unit tests and run_tests.py pass. Verifying in game (build\live\menufix:
-  episode menu, -Wav, machine at 100% with 8 other sly2 instances).
+- FIX (verified): run the IOP while the EE thread waits for the GS thread (gs_set_wait_hook ->
+  ps2_poll_iop), unit test in gs-draw (TEST_ASYNC t_wait_hook: present blocks until the hook ran).
+  Also gs_draw_pixel.c: a pixel worker that starts after the first job was posted skipped it
+  (seen = pool.gen at start) -> starts from generation 0 now (found by that test). Merged main (VU
+  recompiler) on 2026-10-11; release + debug build, all unit tests and run_tests.py pass.
+  In game (build\live\menufix, menugap with temporary instrumentation build\tools\temp_gap2.patch):
+  no IOP gap from GS waits any more (124 GS waits > 150 ms in 160 s, IOP serviced through them);
+  the remaining IOP gaps (150-660 ms) have 0-90 ms of EE thread CPU time = the OS not running the
+  EE thread (machine at 100%, ~10 sly2 instances). menufix's stream still stopped once at 328 s
+  (EE stall 1.3 s at the same time). That cause is next/ep1's (mixer holds the voices while the
+  IOP has not run, PS2_AUDIO_IOP_LIMIT) - not duplicated here.
 
 ## Next
 1. Dance minigame: scripted presses during "? ? ?" (timing in real time? game time?).
