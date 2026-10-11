@@ -6,6 +6,7 @@
  * never busy as far as VIF, VPU-STAT or the EE can tell.
  */
 #include "vu_record.h"
+#include "vu_compiled.h"
 #include "perf.h"
 
 #include <stdlib.h>
@@ -17,6 +18,7 @@ vu_state vu_st[2];
 
 static uint32_t cmsar0, cmsar1, fbrst;
 static unsigned host_csr;                /* MXCSR of the caller while a microprogram runs */
+static uint32_t micro_gen[2] = { 1, 1 }; /* bumped on every write to a unit's micro memory */
 
 static vu_state* get(int vu) {
     vu_state* st = &vu_st[vu];
@@ -33,22 +35,184 @@ static vu_state* get(int vu) {
 }
 
 uint8_t* vu_data_mem(int vu) { return vu ? vu1_data : vu0_data; }
-uint8_t* vu_micro_mem(int vu) { return vu ? vu1_micro : vu0_micro; }
+/* Callers (VIF MPG, the replay tool, tests) write micro memory through this pointer: the micro
+ * memory generation changes, so the next program start checks which recompiled image it holds. The
+ * interpreter's decoded-instruction cache needs no notification (it compares every pair). */
+uint8_t* vu_micro_mem(int vu) {
+    micro_gen[vu ? 1 : 0]++;
+    return vu ? vu1_micro : vu0_micro;
+}
 
 /* EE view: 0x11000000 VU0 micro, 0x11004000 VU0 data, 0x11008000 VU1 micro, 0x1100C000 VU1 data
- * (VU0's 4 KB areas mirror through their 16 KB windows). Writes to micro memory need no
- * notification: the decoded-instruction cache checks every pair against memory before using it. */
+ * (VU0's 4 KB areas mirror through their 16 KB windows). */
 void vu_mem_access(uint32_t phys, void* data, unsigned size, int is_write) {
     uint32_t off = phys - 0x11000000u;
     uint8_t* mem;
     uint32_t len;
-    if (off < 0x4000)       { mem = vu0_micro; len = sizeof vu0_micro; }
+    if (off < 0x4000)       { mem = vu0_micro; len = sizeof vu0_micro; if (is_write) micro_gen[0]++; }
     else if (off < 0x8000)  { mem = vu0_data;  len = sizeof vu0_data;  off -= 0x4000; }
-    else if (off < 0xC000)  { mem = vu1_micro; len = sizeof vu1_micro; off -= 0x8000; }
+    else if (off < 0xC000)  { mem = vu1_micro; len = sizeof vu1_micro; off -= 0x8000; if (is_write) micro_gen[1]++; }
     else                    { mem = vu1_data;  len = sizeof vu1_data;  off -= 0xC000; }
     off &= len - 1;
     if (off + size > len) { if (!is_write) memset(data, 0, size); return; }
     if (is_write) memcpy(mem + off, data, size); else memcpy(data, mem + off, size);
+}
+
+/* ---- recompiled microprograms ----------------------------------------------------------------------
+ * recomp/vu_recomp.py compiles the game's microcode images (vu_compiled.h); its generated table
+ * registers them at startup. A program start at (unit, pc) uses a unit whose entry list has pc and
+ * whose whole image matches micro memory; the answer is cached per (unit, pc) until micro memory is
+ * written again. Everything else runs in the interpreter (logged once per start address).
+ *   PS2_VU_INTERP=1  interpreter only (A/B comparisons)
+ *   PS2_VU_VERIFY=1  run every compiled program and the interpreter on a copy of the state, compare
+ *                    pairs, cycles, the resulting state and the XGKICKs; print mismatches */
+#define VUC_MAX_PROGS 1024
+static const vuc_program* const* vuc_progs;
+static uint32_t vuc_nprogs;
+static int vuc_mode;                     /* 0 not decided, 1 compiled, 2 interpreter only, 3 verify */
+typedef struct { uint32_t gen; uint16_t prog, idx; } vuc_slot;   /* prog = index + 1, 0 = none */
+static vuc_slot vuc_slots[2][2048];
+static uint32_t vuc_checked[VUC_MAX_PROGS];
+static uint8_t  vuc_match[VUC_MAX_PROGS];
+
+void vu_register_compiled(const vuc_program* const* progs, uint32_t n) {
+    vuc_progs = progs;
+    vuc_nprogs = n < VUC_MAX_PROGS ? n : VUC_MAX_PROGS;
+}
+
+static int vuc_image_matches(const vu_state* st, const vuc_program* p) {
+    const uint32_t* code = p->code;
+    for (uint32_t r = 0; r < p->nranges; r++) {
+        const vuc_range* g = &p->ranges[r];
+        if ((uint32_t)g->start + g->len > st->pcmask + 1u) return 0;
+        if (memcmp(st->micro + g->start * 8u, code, g->len * 8u)) return 0;
+        code += g->len * 2u;
+    }
+    return 1;
+}
+
+static void vuc_lookup(const vu_state* st, uint32_t pc, vuc_slot* s) {
+    const uint32_t u = (uint32_t)st->idx;
+    s->gen = micro_gen[u];
+    s->prog = 0;
+    for (uint32_t k = 0; k < vuc_nprogs; k++) {
+        const vuc_program* p = vuc_progs[k];
+        if (p->unit != u) continue;
+        for (uint32_t i = 0; i < p->nentries; i++) {
+            if (p->entries[i] != pc) continue;
+            if (vuc_checked[k] != s->gen) { vuc_checked[k] = s->gen; vuc_match[k] = (uint8_t)vuc_image_matches(st, p); }
+            if (vuc_match[k]) { s->prog = (uint16_t)(k + 1); s->idx = (uint16_t)i; return; }
+            break;
+        }
+    }
+    static uint8_t logged[2][2048];
+    if (!logged[u][pc]) {
+        logged[u][pc] = 1;
+        uint64_t h = vu_hash_words(VU_HASH_SEED, st->micro, (st->pcmask + 1u) * 8u);
+        fprintf(stderr, "[vu] VU%u program at 0x%04X: no recompiled code for this micro memory (hash %016llX); interpreted\n",
+                u, pc * 8u, (unsigned long long)h);
+    }
+}
+
+void vuc_unknown_jump(const vu_state* st, uint32_t site, uint32_t target) {
+    static uint32_t seen[64], nseen;
+    const uint32_t key = (uint32_t)st->idx << 31 | site << 12 | target;
+    for (uint32_t i = 0; i < nseen; i++) if (seen[i] == key) return;
+    if (nseen < 64) seen[nseen++] = key;
+    else return;
+    fprintf(stderr, "[vu] VU%d: jump from 0x%04X to 0x%04X is not in the recompiled code; continuing in the interpreter\n",
+            st->idx, site * 8u, target * 8u);
+}
+
+/* PS2_VU_VERIFY: the interpreter runs the same program on a snapshot; its XGKICKs only feed a hash.
+ * PS2_VU_VERIFY_DUMP=<file>: mismatching programs are written as a recording (vu_record.h, with
+ * the interpreter's results), for scripts/vu_replay.ps1 -Compiled. */
+static vu_state vuc_shadow;
+static _Alignas(16) uint8_t vuc_shadow_data[16384], vuc_before_data[16384];
+static int vuc_shadow_active, vuc_hashing;
+static uint64_t vuc_khash;
+static uint32_t vuc_kicks, vuc_verified, vuc_mismatches;
+static FILE* vuc_dump;
+
+static void vuc_dump_program(const vu_state* before, uint32_t pc, uint32_t pairs, uint32_t cycles,
+                             uint32_t kicks, uint64_t hash, uint64_t khash) {
+    static int tried;
+    if (!tried) {
+        tried = 1;
+        const char* path = getenv("PS2_VU_VERIFY_DUMP");
+        if (path && *path && !(vuc_dump = fopen(path, "wb"))) fprintf(stderr, "[vu] cannot write %s\n", path);
+    }
+    if (!vuc_dump || vuc_mismatches > 200) return;
+    const uint32_t msize = (before->pcmask + 1) * 8u, dsize = (before->dmask + 1) * 16u;
+    vu_rec_head h;
+    memset(&h, 0, sizeof h);
+    memcpy(h.magic, "VUP1", 4);
+    h.idx = (uint32_t)before->idx; h.addr = pc; h.vblank = ps2_vblank_count();
+    h.micro_size = msize; h.data_size = dsize;
+    memcpy(h.vf, before->vf, sizeof h.vf); h.acc = before->acc; memcpy(h.vi, before->vi, sizeof h.vi);
+    h.I = before->I; h.Q = before->Q; h.P = before->P; h.R = before->R;
+    h.status = before->status; h.mac = before->mac; h.clip = before->clip; h.top = before->top; h.itop = before->itop;
+    vu_rec_tail t = { pairs, cycles, kicks, 0, hash, khash };
+    fwrite(&h, sizeof h, 1, vuc_dump);
+    fwrite(before->micro, msize, 1, vuc_dump);
+    fwrite(vuc_before_data, dsize, 1, vuc_dump);
+    fwrite(&t, sizeof t, 1, vuc_dump);
+    fflush(vuc_dump);
+}
+
+static uint32_t vuc_verify(vu_state* st, uint32_t pc, const vuc_program* p, uint32_t idx) {
+    vuc_shadow = *st;
+    memcpy(vuc_shadow_data, st->data, (st->dmask + 1u) * 16u);
+    memcpy(vuc_before_data, st->data, (st->dmask + 1u) * 16u);
+    vuc_shadow.data = vuc_shadow_data;
+    const uint64_t c0 = st->cycles;
+    vuc_khash = VU_HASH_SEED; vuc_kicks = 0; vuc_hashing = 1;
+    const uint32_t n = p->fn(st, idx);
+    const uint64_t kh = vuc_khash;
+    const uint32_t kn = vuc_kicks;
+    vu_state before = vuc_shadow;
+    vuc_khash = VU_HASH_SEED; vuc_kicks = 0; vuc_shadow_active = 1;
+    const uint32_t n2 = vu_run(&vuc_shadow, pc);
+    vuc_shadow_active = 0; vuc_hashing = 0;
+    vuc_verified++;
+    const uint32_t cyc = (uint32_t)(st->cycles - c0), cyc2 = (uint32_t)(vuc_shadow.cycles - c0);
+    const uint64_t h = vu_state_hash(st), h2 = vu_state_hash(&vuc_shadow);
+    if (n != n2 || cyc != cyc2 || h != h2 || kh != vuc_khash || kn != vuc_kicks) {
+        vuc_dump_program(&before, pc, n2, cyc2, vuc_kicks, h2, vuc_khash);
+        if (vuc_mismatches++ < 20)
+            fprintf(stderr, "[vu] verify: VU%d %s at 0x%04X differs from the interpreter: pairs %u/%u cycles %u/%u kicks %u/%u%s%s "
+                    "(%u programs verified)\n", st->idx, p->name, pc * 8u, n, n2, cyc, cyc2, kn, vuc_kicks,
+                    h != h2 ? " state differs" : "", kh != vuc_khash ? " xgkick cycles/addresses differ" : "", vuc_verified);
+    } else if ((vuc_verified & 0xFFFFF) == 0) {
+        fprintf(stderr, "[vu] verify: %u programs verified, %u mismatches\n", vuc_verified, vuc_mismatches);
+    }
+    return n;
+}
+
+uint32_t vu_execute(vu_state* st, uint32_t pc) {
+    if (!vuc_mode) {
+        const char* e = getenv("PS2_VU_INTERP");
+        const char* v = getenv("PS2_VU_VERIFY");
+        vuc_mode = (e && *e && *e != '0') ? 2 : (v && *v && *v != '0') ? 3 : 1;
+        if (vuc_nprogs)
+            fprintf(stderr, "[vu] %u recompiled microcode units%s\n", vuc_nprogs,
+                    vuc_mode == 2 ? " (not used: PS2_VU_INTERP)" : vuc_mode == 3 ? " (verified against the interpreter: PS2_VU_VERIFY)" : "");
+    }
+    pc &= st->pcmask;
+    if (vuc_mode != 2 && vuc_nprogs) {
+        vuc_slot* s = &vuc_slots[st->idx][pc];
+        if (s->gen != micro_gen[st->idx]) vuc_lookup(st, pc, s);
+        if (s->prog) {
+            const vuc_program* p = vuc_progs[s->prog - 1];
+            const uint32_t n = vuc_mode == 3 ? vuc_verify(st, pc, p, s->idx) : p->fn(st, s->idx);
+            if (n != VUC_NOT_COMPILED) {
+                st->cprograms++;
+                st->cpairs += n;
+                return n;
+            }
+        }
+    }
+    return vu_run(st, pc);
 }
 
 /* ---- recording (PS2_VU_RECORD) ---------------------------------------------------------------------
@@ -125,13 +289,22 @@ static void run(vu_state* st, uint32_t addr_dw) {
     unsigned csr = _mm_getcsr();
     host_csr = csr;
     _mm_setcsr(VU_MXCSR);
-    uint32_t pairs = vu_run(st, addr_dw);
+    uint32_t pairs = vu_execute(st, addr_dw);
     _mm_setcsr(csr);
     if (vrec.state == 3) vrec_end(st, pairs);
     perf_leave(perf_prev);
 }
 
 void vu_xgkick(uint32_t qw_addr) {
+    if (vuc_hashing) {                   /* PS2_VU_VERIFY: hash both runs' kicks; the shadow's go no further */
+        const vu_state* cur = vuc_shadow_active ? &vuc_shadow : &vu_st[1];
+        vuc_khash = vu_kick_hash(vuc_khash, qw_addr, cur->cyc);
+        /* and the whole data memory at the kick: what the GS receives is byte-identical, so are the
+         * pictures (cross-run frame comparisons cannot show this: VBlank timing is wall-clock) */
+        vuc_khash = vu_hash_words(vuc_khash, cur->data, (cur->dmask + 1u) * 16u);
+        vuc_kicks++;
+        if (vuc_shadow_active) return;
+    }
     if (vrec.state == 3) { vrec.khash = vu_kick_hash(vrec.khash, qw_addr, vu_st[1].cyc); vrec.kicks++; }
     _mm_setcsr(host_csr);                /* the GIF/GS code runs in the host's FP mode */
     gif_path1_kick(vu1_data, qw_addr & 0x3FF);

@@ -11,7 +11,7 @@ to 2x: compare interleaved A/B runs, take the minimum of several, and prefer the
 
 | thread | work | per VBlank (briefing) |
 |---|---|---|
-| EE (main) | recompiled game code, VIF/VU microprograms (interpreter), GIF parsing, IOP services | busy ~12 ms, of which VU ~60% |
+| EE (main) | recompiled game code, VIF, recompiled VU microprograms, GIF parsing, IOP services | busy ~12 ms with the VU interpreter (VU ~60%), ~5-8 ms with the recompiled microcode (VU ~10-15%) |
 | GS | GS register stream: primitive setup, texture/CLUT handling, binning spans to bands | ~11 ms |
 | pixel workers (8) | rasterising/texturing/blending the binned spans in parallel (bands = 64-px page columns x page rows); compose + present the VBlank picture | critical path ~7.5 ms at the title (PS2_GS_STATS) |
 | host timer | 59.94 Hz VBlank and tick interrupts (high-resolution waitable timer) | - |
@@ -57,7 +57,8 @@ the "create a save file?" prompt appears first (SQUARE answers it).
 | `PS2_PROFILE=1` / `gs` / `workers` | sampling profiler of the EE thread / GS thread / pixel workers, printed at exit (`PS2_PROFILE_SKIP=<s>` skips the start) |
 | `scripts\headroom.ps1` | headroom test: `PS2_PERF_BURN=<ms>` burns per VBlank on the EE thread, `-Gs` (`PS2_PERF_BURN_GS`) per picture on the GS thread; `-From/-To` (`PS2_PERF_BURN_FROM/_TO`) burn only in a VBlank range so every run reaches the scene in the same state. Prints VBlanks %, flips/s and VU pairs per VBlank per 5-s window |
 | `PS2_GS_RECORD=<file>` (`_FROM=<vblank>`, `_FRAMES=<n>`) + `scripts\gs_replay.ps1 -Rec <file> [-Runtime <dir>] [-Workers n] [-Bench]` | records the GS input stream; replays it with any version of the GS code (old runtime via `git archive`): frames for `scripts\compare_frames.py`, or a GS-only benchmark |
-| `PS2_VU_RECORD=<file>` (`_FROM=<vblank>`, `_COUNT=<programs>`) + `scripts\vu_replay.ps1 -Rec <file> [-Runtime <dir>] [-Passes n]` | records microprograms with their inputs and results; replays them with any interpreter version: ns per pair on real game microcode, and an exactness check (pair/cycle counts, final state hash, XGKICK cycles). `VU_REPLAY_PROFILE=1` samples the instruction pointer |
+| `PS2_VU_RECORD=<file>` (`_FROM=<vblank>`, `_COUNT=<programs>`) + `scripts\vu_replay.ps1 -Rec <file> [-Runtime <dir>] [-Passes n] [-Compiled <out>\vu]` | records microprograms with their inputs and results; replays them with any interpreter version, or (`-Compiled`) through the recompiled microcode: ns per pair on real game microcode, and an exactness check (pair/cycle counts, final state hash, XGKICK cycles). `VU_REPLAY_CPU=<n>` pins the replay to one logical CPU (use a P-core, 0-15 here); `VU_REPLAY_PROFILE=1` samples the instruction pointer |
+| `PS2_VU_INTERP=1`, `scripts\vu_ab.ps1 [-Runs n] [-Seconds s]` | VU microcode in the interpreter instead of the recompiled code; vu_ab.ps1 interleaves runs of both on the standard path and prints the PS2_PERF windows side by side |
 | `PS2_GS_ASYNC=0`, `PS2_GS_THREADS=<n>` | GS on the EE thread (as in the unit tests) / number of pixel workers (default min(8, cores/2 - 1)) |
 
 Notes: the game adapts its own work to the time it has (see the headroom table), so judge
@@ -108,6 +109,46 @@ Offline (same input, interleaved A/B, min of N):
 - VU (`vu_replay`, briefing, 6000 programs / 2.45M pairs): 7.8 ns per pair; in game ~11 ns per
   pair (cache pressure from the rest of the EE thread).
 
+## VU microcode recompiler (next/vu-recomp)
+
+The VU microprograms run as statically recompiled C (`recomp/vu_recomp.py`, design and exactness in
+`notes/vu-microcode.md`); the interpreter remains as reference and fallback (`PS2_VU_INTERP=1`).
+Every compiled program gives the interpreter's results bit for bit, including XGKICK cycles and
+pair/cycle counts, so the game does exactly the same work and only the cost per pair changes.
+
+Offline, `vu_replay.ps1` on the four recordings (6000 programs each, 2.1-3.0M pairs), pinned to one
+logical CPU, fastest of 5-7 passes, interleaved:
+
+| recording | interpreter ns/pair | recompiled ns/pair | |
+|---|---|---|---|
+| intro cutscene (VBlank 700) | 16.9-20.8 | 3.2-3.5 | loaded machine (3-4 other game instances, ~85% CPU) |
+| title (2020) | 17.2-17.4 | 2.5-2.7 | " |
+| briefing (2600) | 16.3-22.7 | 2.5-4.0 | " (CPUs 0, 4, 6, 10, 14) |
+| museum gameplay (5400) | 15.0-17.0 | 2.0-2.3 | " |
+| all four, quieter machine (earlier generator without the sticky specialisation) | 7.9-8.0 | 1.9-2.1 | |
+
+So 4x on a quiet core and 5-7x on a contended one (the interpreter's dependent loads and branches
+suffer more from a busy sibling hyperthread). Compiled code takes 2-3.5 ns per pair, ~10-17 host
+cycles for ~1.1 VU cycles; the interpreter ~40 on a quiet core.
+
+In game (release, `scripts\vu_ab.ps1`: interleaved runs on the standard path, PS2_PERF windows):
+
+| measured | interpreter | recompiled |
+|---|---|---|
+| VU ns per pair in game | 24-27 (loaded) / ~11 (quiet) | 4-6 (loaded) |
+| VU time per VBlank, ~400k pairs (title/briefing) | ~10 ms | ~1.7-2 ms |
+| EE thread busy ms/VBlank (excluding GS wait), 2026-10-10 22:50, ~88% load | 13-29 | 4-8 |
+| EE thread busy ms/VBlank, earlier run, lighter load | 12-17 | 6.5-9.5 |
+| intro cutscene VBlanks serviced, lighter load | 85-92% | 97-100% |
+
+The VU share of the EE thread drops from ~60% to ~10-15%; the EE thread now spends most of a frame
+in the recompiled game code, VIF/GIF work and waiting for the GS thread. With the machine as loaded
+as during the 22:50 run, the GS thread (15-22 ms per VBlank, its pixel workers competing with three
+other games) limits both modes, so `headroom.ps1` could not measure the new EE margin. Estimated
+from the VU time saved: the intro cutscene (~950k pairs per VBlank) needs ~10.5 ms of VU work
+interpreted (~11 ns per pair in game) and ~2.5-4.5 ms compiled, so its EE margin grows from the 2 ms
+in the headroom table above to roughly 8-10 ms.
+
 ## What made the difference (commits on fix/fix-perf)
 
 | change | effect |
@@ -125,9 +166,8 @@ Offline (same input, interleaved A/B, min of N):
 
 ## Next
 
-- VU microcode recompiler (planned separate task): the interpreter is at ~7.7 ns per pair on real
-  game microcode (~35 cycles); hazard tracking is ~20% of it and the flag pipeline ~10%, so only a
-  recompiler gives a large gain. The VU replay is its benchmark and exactness check.
+- VU microcode: recompiled (above). Remaining VU cost is mostly the FMAC arithmetic itself and
+  data-memory traffic; a headroom run on a quiet machine should re-measure the EE margin.
 - EE-side GIF/VIF work (~13% of the EE thread): pass whole PATH1/PATH2 packets to the GS thread.
 - VBlank driven by the display's vsync when it runs at ~60 Hz (smoother presentation).
 - Direct3D 11 renderer (per the native-port plan) replaces the software pixel pipeline.
