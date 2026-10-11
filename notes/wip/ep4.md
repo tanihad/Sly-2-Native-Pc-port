@@ -124,6 +124,17 @@ recompiler problem found at its root (with tests), save frames to build\screensh
   held): two insulator poles, red glowing ground wire down to a machine with a dark red octagonal
   valve, blue Sly-mask sparkle markers (Circle spots). Circle near the machine only crouches; the
   turn mechanic not found yet. Lightning bolts strike other rods (render fine).
+- Bomb bridge retried with the thread fix (lw\bbx, chain.ps1 direct on_top, 2480:2): Sly stands
+  by the truck with a blue Circle marker (no letterbox this time), Circle = hide under the truck,
+  then nothing; 2483 (complete) is already state 3 right after 2480:2, so its stage events never
+  ran - an artifact of forcing on_top (the job's ending cutscene played in an earlier chain).
+- **Hack minigame reached** (lw\hk2, release direct t4_hack_path2 = Bentley at station 1's warp
+  60450, then PS2_TASK_FILE 2414:1 re-activates station 1: HUD 0/6, Bentley next to the green
+  terminal; Circle -> letterboxed hacking cutscene -> the minigame at (x,y,25000): blue cyberspace
+  maze seen from above, Bentley's green ship, red enemies, green pickups, a ring "worm" on the
+  circular track, red dot barriers. Twin-stick: left stick moves (lup = +x, lleft = +y; walls
+  block), right stick fires in its direction (yellow shots). Renders clean.
+  Screens ep4_hack_minigame.png, ep4_hack_minigame_fire.png. Maze not finished.
 
 ## In progress
 - RC chopper (m4_rc_chopper, lw\rc*): with the stick released the chopper keeps swaying ~+-500
