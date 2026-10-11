@@ -83,8 +83,26 @@ build\screenshots\ep7_*.png.
   lighthouse top. 0x2DE1C0 (camera focus) does not follow jumps; Sly's object in this level:
   0x10E46C0 (vt 2D2E98), position +0x230.
 
+- Thermal Ride play (release live sessions build\therm2..5): paraglider + thermals work. Letting
+  go of R1 = the glider comes apart (pieces fly off) and Sly falls: that was every "glider broke"
+  I saw (no bug). PS2_INPUT holds could not be ended early -> added the "release" token
+  (4f432a6, test in tests/unit/window). Thermal columns (objects vt 2D9978, oids 33541..33545, base
+  positions; rising ~9/VBlank inside, constant full-left stick keeps Sly circling inside):
+  T1 (-10046,-270) tops out ~6000, T2 (-7323,5657) ~6900, T3 (-750,5565) ~7550, T4 (2476,984),
+  T5 (-1664,-4454) (T4/T5 not reached yet). Glide: ~8/VBlank forward, ~5 down (ratio ~1.6);
+  arriving at T2 below ~1900 hits its hatch structure. 33549 (-4909,-18578) is probably the
+  iceberg (seen from the lighthouse top). t7_thermals_get_height (3180) stays 1 even at 7558 high;
+  forcing it (PS2_TASK_FILE 3180:2) -> eagle_attack active, camera flips to look at Sly from the
+  front, no eagles seen nearby; Job Failed resets the job's tasks. Water = respawn/Job Failed,
+  underwater view renders right. While the camera faces Sly, the stick is still camera-relative.
+- Tools (build\tools): glide.py (autopilot: @x:y[:oR][:zZ][:tS] waypoints, orbit, camera-relative
+  stick, PS2_PEEK 2DE1C0 + 2DDFD0), ptrace.py (peek values over time), objbox.py / objmove.py
+  (objects by +0x230 position / moving between two RAM dumps), strs.py (level text in a RAM dump),
+  live_game7.ps1 (RING env = PS2_DUMP_RING), live7.ps1 -Extra "K=V;K=V".
+
 ## In progress
-- Thermal Ride: steering into a thermal column (session build\therm3, PS2_PEEK 10E48F0 every 5).
+- Thermal Ride: full tour T1..T5 with glide.py (build\therm5\glide.out) to see where get_height
+  completes.
 
 ## Tools (build\tools, not committed; the scratchpad is shared with other agents!)
 - live7.ps1 -Name x -Make "--episode 7 --job <task> --direct" -Script "@187D80/1DD96C+30:start:10"
