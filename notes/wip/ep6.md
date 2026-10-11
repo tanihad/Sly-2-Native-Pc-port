@@ -176,17 +176,21 @@ recompiler problem found at its root, with tests; frames in build\screenshots\ep
 - h2: RC battle task 2922 -> 2 via task file: job complete AUTOSAVE (m6_rc_chopper.is_complete,
   train 67%), Bentley back in the hub tunnel with electric arcs (screenshot
   ep6_hub_tunnel_electric_arcs).
+- u1: blue train interior live (Sly HP held 3D4AB0=28): caboose -> door -> passenger car with
+  three moose guards with flashlights, spotted, brawl (hit sparks, damage outline, foreground
+  seats fading for the camera) - renders right (screenshot ep6_train_blue_moose_guards).
+
+- Session 5 end state: all unit tests + tests\run_tests.py (16/16) pass on 20ddfd9+.
 
 ## Next
-0. RC chopper battle stall: rerun with less load, dump RAM often after the launchers; if it stalls
-   again find what the wave logic waits for.
-1. Deeper live play: bear cubs (Murray), paraglide, heist train_1 (lasers, Bison car), recon
-   (cabin), train_blue; capture -Wav in one of them and analyse.
-2. Perf when the machine is quieter.
-1. Deeper live play in selected jobs (scratchpad\ep6\live6.ps1 -Release -Direct): bear cubs
-   (Murray), paraglide, heist hand car.
-3. Checkpoint saves (complete a job stage -> autosave on the card).
-4. Perf: hub VU ~900k pairs/VBlank, blue train 720k (measure when the machine is quieter).
+0. (DONE: stall = speed-dependent deploy altitude, faithful; checkpoint saves verified for bear
+   cubs, recon, RC chopper; music stop = IOP lateness, fixed by next/ep1's IOP thread.)
+1. Optional: RC chopper battle played to the end at full speed (needs a machine that holds 60:
+   with ~10 other instances it deploys too low and the enemies stay out of reach).
+2. Optional deeper live play: heist train_1 (lasers, Bison car), red/blue train interiors to the
+   end, paraglide balloons (live steering is too slow on this machine; use PS2_TASK_FILE for flow).
+3. Perf when the machine is quiet: in-game GS thread per VBlank in hub / blue train (VU ~900k /
+   720k pairs); offline replay says ep6 is not heavier than the briefing for the GS.
 
 ## Findings / traps
 - PS2_INPUT_FILE "+n" tokens on one line are CHAINED (each relative to the previous token), not
