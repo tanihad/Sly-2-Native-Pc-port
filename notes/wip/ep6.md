@@ -35,13 +35,20 @@ recompiler problem found at its root, with tests; frames in build\screenshots\ep
   fine, car 2 shows the red laser fan correctly (lasers render). Not reproducible -> not pursued.
   (Game clock 0x14D0B8: dt = Count ticks / 294.912 MHz clamped to [1/60, 1/30].)
 
+- (session 1, after the last commit; recovered from build dirs) lmenu/lmenu5: episode menu, ep6
+  intro movie and title card OK (screenshots ep6_episode_menu, ep6_intro_movie, ep6_title_card,
+  ep6_complete_menu_ep7). lrc: RC chopper battle live (top-down over the train car, chopper is the
+  small green/yellow model with a translucent rotor - renders). lblue: blue train caboose, walking.
+- Session 2: merged next/warp again (entry hooks: PS2_WARP_TASK + @187D80 anchor in RELEASE builds,
+  warp_run -Direct -Release). Scratch scripts now in scratchpad\ep6\ (scratchpad is shared).
+
 ## Next
 1. Review batch frames/logs for each job; then deeper live play in selected jobs
    (scratchpad live6.ps1 = warp card + live_game.ps1 with PS2_WARP_TASK).
 2. Remaining direct starts: t6_heist_rc_chopper_1_intro, t6_heist_train_2_intro,
    t6_heist_rc_chopper_2_intro, t6_train_red_intro (hub part), t6_train_blue_intro.
-3. Episode intro (t6_intro active), episode-menu movie, checkpoint saves.
-4. Perf: hub VU ~900k pairs/VBlank (measure when the machine is quieter).
+3. Checkpoint saves.
+4. Perf: hub VU ~900k pairs/VBlank, blue train 720k (measure when the machine is quieter).
 
 ## Findings / traps
 - Machine is shared by ~12 game instances: runs at 20-40 VBlanks/s (VU 25 ns/pair instead of ~11);
