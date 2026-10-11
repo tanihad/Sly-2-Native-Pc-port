@@ -1,4 +1,4 @@
-﻿# ep8: playtest Episode 8 "Anatomy for Disaster" (final episode)
+# ep8: playtest Episode 8 "Anatomy for Disaster" (final episode)
 
 **Goal**: play Episode 8 (blimp hub world 38; interiors 39-42; final boss world 43) as far as
 scripted/live input allows, fix every runtime/recompiler problem found at its root (with tests),
