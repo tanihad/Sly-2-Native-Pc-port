@@ -43,6 +43,15 @@ recompiler problem found at its root (with tests), save frames to build\screensh
   matrix +0x2C0..+0x2F0, local velocity +0x330 (accelerates without input). Tracing every call
   with a0 = 0x9727D0 (build\expd = debug + PS2_EXP_A0 experiment, lw\rca0) to find the
   controller code. Is the sway the game's design or a recompiler/FPU/VU0 bug? Undecided.
+  Per-frame fit (rcv3, build\tools\swayfit.py): constant accel phases (+1.0/frame up to ~61/frame,
+  then -2.71/frame braking, reversal) = a velocity controller whose desired velocity keeps
+  changing. Store watchpoint on +0x330 (experiment PS2_EXP_WWATCH, debug, build\tools\
+  exp_wwatch_runtime.c/.h, lw\rcww): writers are 0x1F4898 (called by the Splice script VM via
+  0x200950 with a vector arg 105.0: "+105 local x per frame" thrust phases of ~23 frames) and the
+  physics step (fn 0x22DD00 path, ra 0x22E100). So the chopper is driven by a script; the thrust
+  comes in periodic bursts with the stick neutral. PARKED (no evidence yet that it is a port bug).
+- Job Failed screen is digitally silent (rc run: 376 s of zeros after "Your chopper got
+  destroyed"): checking with PS2_LOG_SND whether the game pauses all sound itself (lw\rcsnd).
 
 ## Next
 1. Hacking minigame (m4_hack station, heist4 keypads), lightning puzzle, Murray brawl.
