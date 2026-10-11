@@ -143,6 +143,10 @@ recompiler problem found at its root, with tests; frames in build\screenshots\ep
   next/ep1 runs the IOP on its own OS thread (778e8e1, MMCSS) + async logging (d4dd3c8).
   With 31bd93f alone (r12/r13): still 500-700 late ticks, music stops after ~25 s.
   r14 = ep1's exe (copied to build\ep1rel) vs r15 = mine on the same start, -Wav, no SD log.
+  RESULT (machine at 26-28 VBlanks/s): ep1's IOP thread: 0 late ticks (max 2.5-5.5 ms); mine
+  (GS-wait hook): 69-98 late per 10 s, max 45-61 ms. r16 (ep1 exe + PS2_LOG_SD=1, async log):
+  music refills continue 117 s+ after the level load (721 refills), vs ~25 s on my build.
+  => ep6's music stop is fixed by next/ep1's IOP thread; nothing to do here (do not duplicate).
 
 ## Next
 0. RC chopper battle stall: rerun with less load, dump RAM often after the launchers; if it stalls
