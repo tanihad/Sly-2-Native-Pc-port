@@ -133,6 +133,7 @@ static void script_parse(const char* s) {
             wlog("PS2_INPUT: more than %d pending tokens; '%s' and the rest are dropped", SCRIPT_MAX, tok);
             break;
         }
+        for (char* c = tok; *c; c++) if (*c >= 'A' && *c <= 'Z') *c += 'a' - 'A';   /* "lxFF" = "lxff" */
         char name[32] = { 0 };
         unsigned frame = 0, hold = 6, addr = 0, ra = 0;
         int kind = SCRIPT_ABS;

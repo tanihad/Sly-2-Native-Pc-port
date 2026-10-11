@@ -91,8 +91,8 @@ tools/, orig/ and .venv/ only exist in the main checkout
   game runs are written once (checked every 15 VBlanks, logged as `[poke]`), for live sessions.
 - Live input (`PS2_INPUT_FILE`, `scripts\live_game.ps1`): the token `pause` stops the game at the next
   dumped VBlank (latest.png shows it) until the next line arrives, so real-time sections (turrets,
-  boss fights) can be played step by step: end each line with e.g. `+30:pause`. Stick values are
-  lower-case hex (`lxff`, not `lxFF`: an upper-case token is dropped as an unknown button).
+  boss fights) can be played step by step: end each line with e.g. `+30:pause`. Tokens are not
+  case-sensitive (`lxFF` = `lxff`; before, an upper-case token was dropped as an unknown button).
 - Scripted input (`PS2_INPUT`, runtime/window.c header): absolute `<padframe>:<button>[:<hold>]`,
   relative `+n:...`, anchored to game code `@<func>[/<ra>][+n]:...` (after a call of a recompiled
   function, optionally from the call site returning to ra) and `@!<func>[+n]:...` (after it went
