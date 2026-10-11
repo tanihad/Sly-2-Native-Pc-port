@@ -413,7 +413,8 @@ class FunctionTranslator:
 
     # --- whole function --------------------------------------------------------------------
 
-    def translate(self) -> str:
+    def translate(self, hook: bool = False) -> str:
+        """hook: also call PS2_HOOK at the entry, in every build (recomp/hooks.py)."""
         f = self.f
         # restrict: guest memory (ps2_ram) never overlaps the register file, so stores to guest
         # memory don't force the C compiler to reload registers from ctx. Runtime code that reaches
@@ -421,6 +422,8 @@ class FunctionTranslator:
         # must only do so inside calls that are passed ctx, which the compiler treats as clobbering it.
         out = [f"/* {f.name}: 0x{f.start:08X}-0x{f.end:08X} */", f"void {cname(f.start)}(ps2_ctx* restrict ctx) {{",
                f"    PS2_TRACE(0x{f.start:08X}u);"]
+        if hook:
+            out.append(f"    PS2_HOOK(0x{f.start:08X}u);   /* entry hook: recomp/hooks.py */")
         instrs = f.instrs
         k = 0
         while k < len(instrs):
@@ -451,7 +454,7 @@ class FunctionTranslator:
         return "\n".join(out)
 
 
-def override_body(f: Function, o) -> str:
+def override_body(f: Function, o, hook: bool = False) -> str:
     """C source of a function replaced by native code (recomp/overrides.py)."""
     reason = o.reason.replace("*/", "* /")
     return "\n".join([
@@ -459,6 +462,7 @@ def override_body(f: Function, o) -> str:
         f" * {reason} */",
         f"void {cname(f.start)}(ps2_ctx* restrict ctx) {{",
         f"    PS2_TRACE(0x{f.start:08X}u);",
+        *([f"    PS2_HOOK(0x{f.start:08X}u);   /* entry hook: recomp/hooks.py */"] if hook else []),
         "    (void)ctx;",
         f"    {o.body}",
         "}"])

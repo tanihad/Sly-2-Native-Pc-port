@@ -3,8 +3,10 @@
  *  - a benchmark of real game microcode, without the EE, VIF or GS around it;
  *  - an exactness check: pair and cycle counts, the resulting registers/flags/data memory and the
  *    XGKICKs (address and issue cycle) must match what the recording run produced.
- *   vu_replay <file> [passes]
- * Prints the time of the fastest pass and the number of programs whose results differ. */
+ *   vu_replay <file> [passes] [interp|compiled]
+ * Prints the time of the fastest pass and the number of programs whose results differ. "compiled"
+ * starts programs through vu_execute(), i.e. the recompiled microcode linked in (vu_replay.ps1
+ * -Compiled <dir>), falling back to the interpreter where the runtime would. */
 #include "vu_internal.h"
 #include "vu_record.h"                 /* this checkout's, if -Runtime is an older one */
 
@@ -26,7 +28,7 @@ uint32_t ps2_vblank_count(void) { return 0; }
 
 /* VU_REPLAY_PROFILE=1: sample the replaying thread's instruction pointer every ~50 us and print the
  * hottest addresses as image-relative offsets (match them with llvm-objdump -d of the exe). */
-#define PROF_SLOTS (1u << 20)
+#define PROF_SLOTS (1u << 24)                 /* image offsets up to 16 MB (recompiled microcode is large) */
 static uint32_t* prof_hits;
 static volatile LONG prof_stop;
 static DWORD WINAPI prof_thread(LPVOID arg) {
@@ -57,7 +59,7 @@ static void prof_report(void) {
     for (uint32_t i = 0; i < PROF_SLOTS; i++) idx[i] = i;
     qsort(idx, PROF_SLOTS, sizeof *idx, prof_cmp);
     printf("profile: %llu samples; image base 0x140000000 + offset:\n", (unsigned long long)total);
-    for (int i = 0; i < 600 && prof_hits[idx[i]]; i++)
+    for (int i = 0; i < 4000 && prof_hits[idx[i]]; i++)
         printf("  %6.2f%%  0x%llx\n", 100.0 * prof_hits[idx[i]] / (double)total, 0x140000000ull + idx[i]);
 }
 
@@ -67,10 +69,49 @@ typedef struct {
     const vu_rec_tail* t;
 } rec;
 
+static void load_state(vu_state* st, const rec* r) {
+    memcpy(vu_data_mem((int)r->h->idx), r->data, r->h->data_size);
+    memcpy(st->vf, r->h->vf, sizeof st->vf);
+    st->acc = r->h->acc;
+    memcpy(st->vi, r->h->vi, sizeof st->vi);
+    st->I = r->h->I; st->Q = r->h->Q; st->P = r->h->P; st->R = r->h->R;
+    st->status = r->h->status; st->mac = r->h->mac; st->clip = r->h->clip;
+    st->top = r->h->top; st->itop = r->h->itop;
+}
+
+/* Compiled mode: what exactly differs from the interpreter on this program (registers, flags, data). */
+static void diff_with_interpreter(vu_state* st, const rec* r) {
+    static vu_state got;
+    static uint8_t got_data[16384];
+    got = *st;
+    memcpy(got_data, st->data, r->h->data_size);
+    load_state(st, r);
+    const unsigned csr = _mm_getcsr();
+    _mm_setcsr(VU_MXCSR);
+    vu_run(st, r->h->addr);
+    _mm_setcsr(csr);
+    for (int k = 0; k < 32; k++)
+        if (memcmp(&got.vf[k], &st->vf[k], 16))
+            fprintf(stderr, "    vf%02d compiled %08X %08X %08X %08X interpreter %08X %08X %08X %08X\n", k, got.vf[k].u[0],
+                    got.vf[k].u[1], got.vf[k].u[2], got.vf[k].u[3], st->vf[k].u[0], st->vf[k].u[1], st->vf[k].u[2], st->vf[k].u[3]);
+    if (memcmp(&got.acc, &st->acc, 16)) fprintf(stderr, "    acc differs\n");
+    for (int k = 0; k < 16; k++)
+        if (got.vi[k] != st->vi[k]) fprintf(stderr, "    vi%02d compiled %04X interpreter %04X\n", k, got.vi[k], st->vi[k]);
+    const char* nm[8] = { "I", "Q", "P", "R", "status", "mac", "clip", "tpc" };
+    const uint32_t a[8] = { got.I, got.Q, got.P, got.R, got.status, got.mac, got.clip, got.tpc };
+    const uint32_t b[8] = { st->I, st->Q, st->P, st->R, st->status, st->mac, st->clip, st->tpc };
+    for (int k = 0; k < 8; k++) if (a[k] != b[k]) fprintf(stderr, "    %s compiled %08X interpreter %08X\n", nm[k], a[k], b[k]);
+    int shown = 0;
+    for (uint32_t q = 0; q < r->h->data_size / 16; q++)
+        if (memcmp(got_data + q * 16, st->data + q * 16, 16) && shown++ < 8)
+            fprintf(stderr, "    data qw 0x%03X differs\n", q);
+}
+
 int main(int argc, char** argv) {
     if (argc < 2) { fprintf(stderr, "usage: vu_replay <recording> [passes]\n"); return 2; }
     int passes = argc > 2 ? atoi(argv[2]) : 5;
     if (passes < 1) passes = 1;
+    const int compiled = argc > 3 && !strcmp(argv[3], "compiled");
     FILE* f = fopen(argv[1], "rb");
     if (!f) { fprintf(stderr, "cannot open %s\n", argv[1]); return 2; }
     fseek(f, 0, SEEK_END);
@@ -102,6 +143,13 @@ int main(int argc, char** argv) {
 
     vu_set_vif_tops(0, 0, 0);                                 /* initialises both units */
     vu_set_vif_tops(1, 0, 0);
+    /* VU_REPLAY_CPU=<n>: run on that logical processor at high priority (benchmarks on a hybrid CPU:
+     * pick a P-core; 0-15 on the i7-14700F) */
+    const char* cpu = getenv("VU_REPLAY_CPU");
+    if (cpu && *cpu) {
+        SetThreadAffinityMask(GetCurrentThread(), (DWORD_PTR)1 << atoi(cpu));
+        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+    }
     LARGE_INTEGER fq;
     QueryPerformanceFrequency(&fq);
     double best = 1e30;
@@ -124,20 +172,14 @@ int main(int argc, char** argv) {
             const int u = (int)r->h->idx;
             vu_state* st = &vu_st[u];
             if (loaded[u] != r->micro) { memcpy(vu_micro_mem(u), r->micro, (st->pcmask + 1) * 8u); loaded[u] = r->micro; }
-            memcpy(vu_data_mem(u), r->data, r->h->data_size);
-            memcpy(st->vf, r->h->vf, sizeof st->vf);
-            st->acc = r->h->acc;
-            memcpy(st->vi, r->h->vi, sizeof st->vi);
-            st->I = r->h->I; st->Q = r->h->Q; st->P = r->h->P; st->R = r->h->R;
-            st->status = r->h->status; st->mac = r->h->mac; st->clip = r->h->clip;
-            st->top = r->h->top; st->itop = r->h->itop;
+            load_state(st, r);
             khash = VU_HASH_SEED;
             kicks = 0;
             const uint64_t c0 = st->cycles;
             LARGE_INTEGER t0, t1;
             _mm_setcsr(VU_MXCSR);
             QueryPerformanceCounter(&t0);
-            uint32_t np = vu_run(st, r->h->addr);
+            uint32_t np = compiled ? vu_execute(st, r->h->addr) : vu_run(st, r->h->addr);
             QueryPerformanceCounter(&t1);
             _mm_setcsr(host_csr);
             ticks += t1.QuadPart - t0.QuadPart;
@@ -153,6 +195,7 @@ int main(int argc, char** argv) {
                     fprintf(stderr, "program %zu (VU%d at 0x%04X, VBlank %u): pairs %u/%u cycles %u/%u kicks %u/%u%s\n",
                             i, u, r->h->addr * 8u, r->h->vblank, np, r->t->pairs, nc, r->t->cycles, kicks,
                             r->t->kicks, result ? " results differ" : "");
+                if (compiled && bad <= 3) diff_with_interpreter(st, r);
             }
         }
         double ms = (double)ticks * 1e3 / (double)fq.QuadPart;
@@ -163,9 +206,11 @@ int main(int argc, char** argv) {
         WaitForSingleObject(prof, INFINITE);
         prof_report();
     }
+    const uint64_t cp = vu_st[0].cprograms + vu_st[1].cprograms, ap = vu_st[0].programs + vu_st[1].programs;
     printf("%zu programs (VBlanks %u-%u), %llu pairs, %llu cycles: %.3f ms (fastest of %d passes) = %.2f ns/pair; "
-           "%u programs differ (%u in pair/cycle counts)\n",
+           "%u programs differ (%u in pair/cycle counts)%s",
            n, vb0, vb1, (unsigned long long)pairs, (unsigned long long)cycles, best, passes,
-           best * 1e6 / (double)pairs, bad, bad_timing);
+           best * 1e6 / (double)pairs, bad, bad_timing, compiled ? "; " : "\n");
+    if (compiled) printf("%.1f%% of programs started in recompiled code\n", ap ? 100.0 * (double)cp / (double)ap : 0.0);
     return bad ? 1 : 0;
 }

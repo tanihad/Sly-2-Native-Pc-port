@@ -66,6 +66,20 @@ the first two (0x234F48, 0x235078) are still translated as they are. To add an o
 function's bounds with `recomp/functions.py`, hash its bytes with `overrides.function_sha1`, and add
 an entry with the reason.
 
+## Entry hooks (recomp/hooks.py)
+
+Debug builds trace every function entry (`PS2_TRACE`, which calls `ps2_calls_record` while a tool
+such as PS2_CALLS or an `@` input anchor needs it); release builds compile tracing out. A debug
+tool that must act on a particular call in every build lists the function in `HOOKS` (name, SHA-1
+of its bytes, reason, applied only when the bytes match, like overrides). The generated function
+then starts with `PS2_HOOK(<addr>)` after its `PS2_TRACE`: one test of `ps2_hooks_on` (0 unless a
+tool switched it on) and a call of `ps2_hook(ctx, addr)` in runtime/ps2_runtime.c, which hands it to
+the tool. The game itself is not changed.
+
+| Address    | Function                         | Tool                                                |
+|------------|----------------------------------|-----------------------------------------------------|
+| 0x0022B490 | queue a level load (transition)  | PS2_WARP_TASK, runtime/warp.c (notes/warp.md)        |
+
 ## Known hard parts (in rough order of how much work they are)
 
 1. **Graphics (GS + GIF + VIF + VU1)**: the game draws by sending packets through DMA to the
