@@ -33,8 +33,20 @@ build\screenshots\ep7_*.png.
   damages the enemy; death -> mask wipe -> retry works. Seen once: a thin blue full-width band at
   field rows 107-110 on the frame before the death fade (frame_009750) -> tracing it.
 
+- Merged next/warp again (ce8bff7: entry hooks -> direct starts + title anchor in release builds).
+- FIXED (1df4920) live input: a PS2_INPUT_FILE line > 16 KB was never read and blocked all later
+  lines; a session took no input after 4096 tokens in all (my long mash.py lines did nothing in
+  boss2/rcwar). Test: tests/unit/window test_live_input.
+
+- RC combat blue band (1 frame, camera cuts only: combat start, respawn): brief trace showed it at
+  v4862/4864: tristrips rows 107..111, x shifting -113..423 -> -10..526, rgba 334C6680 (the hub's
+  night-sky blue) at z 1040 / z 16, ZBUF PSMZ16S, FBMSK FF000000; later frames draw the same "far
+  fill" black (trifan rows 66..152, z 1040, ZTST GREATER, Z16S on the Z32 buffer: the GS emulates
+  VRAM swizzles so the aliasing is faithful). Not reproduced in two release runs; judged a one-frame
+  game artifact (old sky colour/frustum on the cut frame), not investigated further.
+- Job Failed panel (RC combat "Your robot tank has been destroyed", post boss) renders right.
+
 ## In progress
-- RC combat blue band: PS2_GS_TRACE_RECT=250,104,252,112 MINSIZE=300 BRIEF, build\rcwar\trace.txt.
 
 ## Tools (build\tools, not committed; the scratchpad is shared with other agents!)
 - live7.ps1 -Name x -Make "--episode 7 --job <task> --direct" -Script "@187D80/1DD96C+30:start:10"
