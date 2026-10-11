@@ -420,6 +420,15 @@ static void vblank(ps2_ctx* ctx) {
             fprintf(stderr, "\n");
         }
     }
+    /* PS2_POKE="<hexaddr>=<hexvalue>[,...]" (debugging, off by default): write these 32-bit words
+     * every VBlank, e.g. hold a character's health (Sly 2: bentley.hpCur, 3D4AC8=28) to test the
+     * later parts of a fight that scripted input cannot win. */
+    static const char* poke = (const char*)1;
+    if (poke == (const char*)1) poke = getenv("PS2_POKE");
+    for (const char* s = poke; s && *s; s = strchr(s, ',') ? strchr(s, ',') + 1 : "") {
+        unsigned addr = 0, val = 0;
+        if (sscanf(s, "%x=%x", &addr, &val) == 2) ps2_w32(ctx, addr & ~3u, val);
+    }
     intc_raise(INTC_VBLANK_S);
     intc_raise(INTC_VBLANK_E);
 }
