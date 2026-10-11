@@ -157,8 +157,8 @@ def parse_value(s):
 # ---- the task graph -------------------------------------------------------------------------------
 
 class Task:
-    def __init__(self, name, mission, pre, wid, warp, po):
-        self.name, self.mission, self.pre = name, mission, pre
+    def __init__(self, name, oid, mission, pre, wid, warp, po):
+        self.name, self.oid, self.mission, self.pre = name, oid, mission, pre
         self.wid, self.warp, self.po = wid, warp, po
 
 
@@ -167,8 +167,8 @@ def load_tasks(path=TASKS_FILE):
     for line in path.read_text().splitlines():
         if not line or line.startswith("#"):
             continue
-        name, mission, pre, wid, warp, po = line.split()
-        tasks[name] = Task(name, None if mission == "-" else mission, [] if pre == "-" else pre.split(","),
+        name, oid, mission, pre, wid, warp, po = line.split()
+        tasks[name] = Task(name, int(oid), None if mission == "-" else mission, [] if pre == "-" else pre.split(","),
                            int(wid), int(warp), int(po))
     return tasks
 
@@ -247,8 +247,17 @@ def complete_group(sv, g, state=TASK_DONE):
             sv.set(f"{g}.{f}", v)
 
 
+def start_point(tasks, entry, mission):
+    """The task the game starts when the player enters the job: the entry itself if it has a start
+    world, else the job's first task (in play order) that comes after it and has one."""
+    if tasks[entry].wid != -1:
+        return entry
+    after = [t for t in topo(tasks, mission_tasks(tasks, mission)) if entry in ancestors(tasks, t)]
+    return next((t for t in after if tasks[t].wid != -1), entry)
+
+
 def build(schema, episode, job=None, sets=(), complete=(), activate=(), character=None, coins=None,
-          gadgets=False):
+          gadgets=False, direct=False):
     sv = Save(schema)
     name, _, _, hub = EPISODES[episode]
     sv.set("episodeCurrent", episode)
@@ -271,19 +280,31 @@ def build(schema, episode, job=None, sets=(), complete=(), activate=(), characte
     if job:
         tasks = load_tasks()
         entry, mission = resolve_job(tasks, job, episode)
+        if direct:                         # the runtime starts this task on resume (PS2_WARP_TASK)
+            entry = start_point(tasks, entry, mission)
+            t = tasks[entry]
+            notes.append(f"direct start (debug build): PS2_WARP_TASK={t.oid}" + (f":{t.wid}" if t.wid != -1 else ""))
         done = ancestors(tasks, entry)
+        ep_tasks = [t for t in tasks if episode_of(t) == episode]
+        # A job whose exit tasks (those later tasks wait for) are done is finished as a whole, side
+        # tasks included.
+        for m in {tasks[t].mission for t in ep_tasks if tasks[t].mission} - {mission}:
+            mt = set(mission_tasks(tasks, m))
+            exits = {p for t in ep_tasks if t not in mt for p in tasks[t].pre if p in mt}
+            if exits and exits <= done:
+                done.update(mt)
         for t in done:
             complete_group(sv, t)
         # Tasks whose prerequisites are now all done are what the game would have made available
         # (state 1): the target job's first task, jobs open in parallel, reminders.
-        ep_tasks = [t for t in tasks if episode_of(t) == episode]
         frontier = [t for t in ep_tasks if t not in done and tasks[t].pre and all(p in done for p in tasks[t].pre)]
         for t in frontier:
             sv.set(f"{t}.state", TASK_ACTIVE)
         for m in {tasks[t].mission for t in ep_tasks if tasks[t].mission}:
             if all(t in done for t in mission_tasks(tasks, m)):
                 complete_group(sv, m)
-        po = next((tasks[t].po for t in topo(tasks, mission_tasks(tasks, mission)) if tasks[t].po != -1), -1)
+        po = tasks[entry].po if tasks[entry].po != -1 else next(
+            (tasks[t].po for t in topo(tasks, mission_tasks(tasks, mission)) if tasks[t].po != -1), -1)
         notes.append(f"job {mission}: first task {entry} active; {len(done)} earlier tasks done; also active: "
                      + (" ".join(t for t in sorted(frontier) if t != entry) or "-"))
         if po in CHAR_NAMES:
@@ -424,15 +445,16 @@ def cmd_tasks(schema_unused, args):
         for a, n in objs.items():
             pre = [objs.get(ram.u32(ram.u32(a + 0x98) + 4 * k)) for k in range(max(0, min(ram.i32(a + 0x94), 64)))]
             m = ram.u32(a + 0x7C)
-            graph[n] = Task(n, ram.path_name(m + 0xD0) if m else None, [p for p in pre if p],
+            graph[n] = Task(n, ram.i32(a + 0x18), ram.path_name(m + 0xD0) if m else None, [p for p in pre if p],
                             ram.i32(a + 0xBC), ram.i32(a + 0xB8), ram.i32(a + 0xC0))
         print(f"{dump}: {len(objs)} tasks of episode(s) {sorted(eps)}")
     lines = ["# Sly 2 task graph, read from the game's task objects in EE RAM dumps of each episode hub",
-             "# (warp.py tasks --ram <dump>). <task> <job (mission)> <prerequisite tasks> <start world>",
-             "# <start warp oid> <character oid: 7 Sly, 8 Bentley, 9 Murray>; '-' = none, -1 = not a start."]
+             "# (warp.py tasks --ram <dump>). <task> <object id> <job (mission)> <prerequisite tasks>",
+             "# <start world> <start warp oid> <character oid: 7 Sly, 8 Bentley, 9 Murray>; '-' = none,",
+             "# -1 = not a start point. A job's first task is its mission object's start task (+0x64)."]
     for n in sorted(graph, key=lambda n: (episode_of(n), n)):
         t = graph[n]
-        lines.append(f"{n} {t.mission or '-'} {','.join(t.pre) or '-'} {t.wid} {t.warp} {t.po}")
+        lines.append(f"{n} {t.oid} {t.mission or '-'} {','.join(t.pre) or '-'} {t.wid} {t.warp} {t.po}")
     TASKS_FILE.write_text("\n".join(lines) + "\n")
     missing = [e for e in range(len(EPISODES)) if not any(episode_of(n) == e for n in graph)]
     print(f"{TASKS_FILE}: {len(graph)} tasks" + (f"; no dump yet for episodes {missing}" if missing else ""))
@@ -497,7 +519,7 @@ def cmd_make(schema, args):
         notes.append("new game (empty slots)")
     else:
         data, notes = build(schema, episode, args.job, args.set or (), args.complete or (), args.activate or (),
-                            args.character, args.coins, args.gadgets)
+                            args.character, args.coins, args.gadgets, args.direct)
     card = args.card or str(ROOT / "build" / "rel" / "memcard" / "slot0")
     f = write_card(card, args.slot, data, args.keep_others)
     print(f"wrote {f} ({EPISODES[episode][1]})")
@@ -549,6 +571,8 @@ def main():
                    help="saved player character (default Sly; Bentley at the start of episode 4)")
     m.add_argument("--coins", type=int, help="coins to spend in ThiefNet (loot.ccoin)")
     m.add_argument("--gadgets", action="store_true", help="own every ThiefNet gadget")
+    m.add_argument("--direct", action="store_true",
+                   help="with --job: also print PS2_WARP_TASK, which makes a debug build start the job itself")
     m.add_argument("--set", action="append", metavar="PATH=VALUE", help="extra field (repeatable)")
     m.add_argument("--complete", action="append", metavar="PREFIX",
                    help="mark every mission/task group starting with PREFIX done (repeatable)")
