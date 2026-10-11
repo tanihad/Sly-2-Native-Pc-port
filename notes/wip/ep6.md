@@ -57,7 +57,17 @@ recompiler problem found at its root, with tests; frames in build\screenshots\ep
   enemies after the launchers (waited minutes; RAM dump build\lrc2\ram_stalled.bin); lrc3 at full
   speed progressed normally -> treat as unconfirmed (maybe my play: guards not all killed).
 
+- Session 3 (recovered from build dirs after the user pause; notes were not checkpointed):
+  committed PS2_POKE (debug aid: hold EE words every VBlank, e.g. 3D4AC8=28 = bentley.hpCur) and the
+  PS2_INPUT_FILE reader fix (long lines / >4096 tokens silently ignored; unit test test_live_input).
+  lbear: bear cubs (Murray) live, screenshot ep6_bearcubs_murray. lneyla/lneyla2/lneyla3: heist RC
+  chopper 1 vs Neyla's plane (cannon hits her, her pink ring drops a little) -> "Job Failed" every
+  time (RAM at failure: build\lneyla2\ram_failed.bin). lfin: heist RC chopper 2 (task 2965), also
+  "Job Failed". Cause of the failures not established (play or bug?) -> Next 0.
+
 ## Next
+0. Heist RC chopper vs Neyla: find what fails the job (chopper health? train health? timer?) and
+   whether a runtime bug (e.g. damage never landing on Neyla) is involved.
 1. Deeper live play in selected jobs (scratchpad\ep6\live6.ps1 -Release -Direct): bear cubs
    (Murray), paraglide, heist hand car.
 3. Checkpoint saves (complete a job stage -> autosave on the card).
