@@ -161,6 +161,14 @@ build\screenshots\ep7_*.png.
   ntdll 20% (waits), db_submit 18%, draw 11%, gs_draw_sync_why 8%, gs_batch_span 8%, run_bands 7%.
   = the software GS + CPU contention (8 workers per game, 8+ games): nothing ep7-specific; the D3D11
   renderer is the plan.
+- Boss arena perf (release, PS2_PERF, 5-6 games running): 43-52 VBlanks/s, 27-39 flips/s, EE busy
+  4-6 ms, GS thread 16-21 ms per VBlank (GS-bound). GS-only replay (build\boss.gsrec, 120 VBlanks
+  from 6400, 8 workers, -Bench, interleaved with fix-perf's brief.gsrec): boss 15.9-16.0 ms per
+  VBlank, briefing 16.3-17.6 ms on the same machine state -> ep7's heaviest arena costs the GS what
+  the reference briefing does (8.9 ms there on a quiet machine): CPU contention, not an ep7 problem.
+- Hub soak (release, 25 min of scripted running/jumping, build\warp\soak_hub): memory flat at
+  149 MB committed, 0 audio underruns at 410 s; with fewer games running the hub reached 56-60
+  VBlanks/s and 47-50 flips/s (GS thread 15-16 ms per VBlank).
 
 ## In progress
 - Perf sweep (release, PS2_PERF) of the ep7 hub and the heavy job levels while the machine is quiet.
