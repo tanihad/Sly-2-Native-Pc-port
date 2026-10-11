@@ -84,6 +84,14 @@ build\screenshots\ep2_*.png.
   Completion-task direct starts: t2_dance_audition_complete -> Sly at the hub safehouse (no
   cutscene); t2_bomb_bridge_lower_collapse -> 2104:8 = Bentley on the upper bridge, debris falling.
 
+- Recon photo (live, release, build\tools\live_direct.ps1 -Job t2_recon_enter_ballroom): R3
+  Binocucom, left stick aims (both axes slow at first; Y inverted), right stick zooms; a target
+  gets a gold circle when in view, "Too far" until zoomed in, then a green circle with its name;
+  R1 then takes the photo: shutter, a Polaroid of the captured scene ("Clockwerk's Wing", the
+  render-to-texture copy is correct), back to the Binocucom with the list item ticked (red check).
+  One R1 of 4 frames with the green circle did nothing; the next (10 frames) worked. Frames
+  ep2_recon_*.png.
+
 ## Next
 1. Dance minigame: only worth finishing on a quiet machine (game at 60 fps); bot in build\tools.
 2. Audio run (-Wav + PS2_LOG_SND, release hub) - first attempt starved by machine load.
