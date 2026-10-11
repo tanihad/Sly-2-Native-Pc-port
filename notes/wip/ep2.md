@@ -52,7 +52,11 @@ build\screenshots\ep2_*.png.
 
 ## In progress
 - Fix: run the IOP while the EE thread waits for the GS thread (gs_set_wait_hook -> ps2_poll_iop),
-  unit test in gs-draw (TEST_ASYNC: present blocks until the hook ran).
+  unit test in gs-draw (TEST_ASYNC: present blocks until the hook ran). Also gs_draw_pixel.c: a
+  pixel worker that starts after the first job was posted skipped it (seen = pool.gen at start) ->
+  starts from generation 0 now (found by that test). Merged main (VU recompiler) on 2026-10-11;
+  release + debug build, all unit tests and run_tests.py pass. Verifying in game (build\live\menufix:
+  episode menu, -Wav, machine at 100% with 8 other sly2 instances).
 
 ## Next
 1. Dance minigame: scripted presses during "? ? ?" (timing in real time? game time?).
