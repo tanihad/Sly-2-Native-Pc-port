@@ -133,10 +133,10 @@ static void script_parse(const char* s) {
         double at = 0;
         if (tok[0] == '+') {
             kind = SCRIPT_REL;
-            if (sscanf(tok + 1, "%u:%31[a-z0-9]:%u", &frame, name, &hold) < 2) continue;
+            if (sscanf(tok + 1, "%u:%31[a-zA-Z0-9]:%u", &frame, name, &hold) < 2) continue;
         } else if (tok[0] == 't') {
             kind = SCRIPT_TIME;
-            if (sscanf(tok + 1, "%lf:%31[a-z0-9]:%u", &at, name, &hold) < 2) continue;
+            if (sscanf(tok + 1, "%lf:%31[a-zA-Z0-9]:%u", &at, name, &hold) < 2) continue;
         } else if (tok[0] == '@') {
             kind = tok[1] == '!' ? SCRIPT_QUIET : SCRIPT_ANCHOR;
             char* p = tok + (kind == SCRIPT_QUIET ? 2 : 1);
@@ -144,8 +144,8 @@ static void script_parse(const char* s) {
             if (*p == '/') ra = (unsigned)strtoul(p + 1, &p, 16);
             if (kind == SCRIPT_QUIET) frame = 30;
             if (*p == '+') frame = (unsigned)strtoul(p + 1, &p, 10);
-            if (*p != ':' || sscanf(p + 1, "%31[a-z0-9]:%u", name, &hold) < 1) continue;
-        } else if (sscanf(tok, "%u:%31[a-z0-9]:%u", &frame, name, &hold) < 2) continue;
+            if (*p != ':' || sscanf(p + 1, "%31[a-zA-Z0-9]:%u", name, &hold) < 1) continue;
+        } else if (sscanf(tok, "%u:%31[a-zA-Z0-9]:%u", &frame, name, &hold) < 2) continue;
         int found = !strcmp(name, "none") ? SCRIPT_NONE : !strcmp(name, "ram") ? SCRIPT_RAM : -1, axis = 0, value = 0x80;
         for (int b = 0; b < SCRIPT_NBUTTONS; b++)
             if (!strcmp(name, script_buttons[b].name)) found = b;

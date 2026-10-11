@@ -65,9 +65,16 @@ recompiler problem found at its root, with tests; frames in build\screenshots\ep
   time (RAM at failure: build\lneyla2\ram_failed.bin). lfin: heist RC chopper 2 (task 2965), also
   "Job Failed". Cause of the failures not established (play or bug?) -> Next 0.
 
+- Session 4: merged main (VU recompiler, 4-7x cheaper VU). Reverted an uncommitted TEMP SD log
+  (loop flags in VoiceTrans data; purpose not recorded). Analysis of session-3 runs: n3 (heist RC
+  chopper 1, no input, 16 min) never fails; n1 dumps: chopper HP float at 0x500618 (100 -> 0 in
+  steps of 20, 5 missile hits) and the job fails when it reaches 0 = normal game rule (wiki: shoot
+  Neyla with SQUARE, avoid her missiles; stage 2: X bombs when she dives, SQUARE when she rises).
+  So "Job Failed" = chopper shot down; next: hold 500618=42C80000 with PS2_POKE and keep shooting.
+
 ## Next
-0. Heist RC chopper vs Neyla: find what fails the job (chopper health? train health? timer?) and
-   whether a runtime bug (e.g. damage never landing on Neyla) is involved.
+0. Heist RC chopper vs Neyla with PS2_POKE=500618=42C80000 (chopper HP) and SQUARE fire: does she
+   retreat? If yes, the stage works; continue train_2 -> chopper 2 -> heist complete -> save.
 1. Deeper live play in selected jobs (scratchpad\ep6\live6.ps1 -Release -Direct): bear cubs
    (Murray), paraglide, heist hand car.
 3. Checkpoint saves (complete a job stage -> autosave on the card).

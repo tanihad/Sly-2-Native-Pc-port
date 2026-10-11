@@ -86,7 +86,9 @@ tools/, orig/ and .venv/ only exist in the main checkout
   `PS2_PEEK=12000000:2,12000070:4` reads the GS privileged registers (PMODE, DISPFB1, ...).
   `PS2_POKE=<hexaddr>=<hexvalue>[,...]` writes 32-bit words every VBlank (debug aid, off by default),
   e.g. `PS2_POKE=3D4AC8=28` holds Bentley's health (game state `bentley.hpCur`, scripts/warp_schema.txt)
-  to reach the later stages of a fight that scripted input cannot win.
+  to reach the later stages of a fight that scripted input cannot win. `PS2_POKE=@<file>` reads the
+  list from that file (re-read every 30 VBlanks; commas, spaces or newlines separate entries), so a
+  live session can start poking a level object's field once that level has loaded.
 - Scripted input (`PS2_INPUT`, runtime/window.c header): absolute `<padframe>:<button>[:<hold>]`,
   relative `+n:...`, anchored to game code `@<func>[/<ra>][+n]:...` (after a call of a recompiled
   function, optionally from the call site returning to ra) and `@!<func>[+n]:...` (after it went
