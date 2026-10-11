@@ -1,4 +1,4 @@
-# ep8: playtest Episode 8 "Anatomy for Disaster" (final episode)
+﻿# ep8: playtest Episode 8 "Anatomy for Disaster" (final episode)
 
 **Goal**: play Episode 8 (blimp hub world 38; interiors 39-42; final boss world 43) as far as
 scripted/live input allows, fix every runtime/recompiler problem found at its root (with tests),
@@ -67,6 +67,15 @@ frames in build\screenshots\ep8_*.png.
   Tables 0x2C0908 (next) / 0x2C0948 (fall back), timer 0x2C0990, rate 0x2C099C. Working input:
   `+0:circle:6,+60:none` + 200 x `,+5:square:2,+5:triangle:2` -> Murray stage won, Bentley
   stage starts (build\screenshots\ep8_boss_bentley_stage.png). Murray actor 0xF745D0 there.
+- GAME COMPLETED (release, build\warp\bent2, PS2_POKE=3D4AE0=3C,3D4AC8=28): Bentley stage =
+  triangle bombs at the two laser emitters on the mouth corners (right ~ (150,320), left ~
+  (-100,300)); after the second: Clock-La cutscene, the Hate Chip appears on the lower jaw:
+  jump in (cross) + circle -> "The Hate Chip" title, ending cutscene ("pick me up... I can't
+  walk"), ending comic (Carmelita, Sly in handcuffs), credits (scrolling mask + voice credits),
+  autosave (save1: episode.blimp.percent_complete 100), episode menu ("Anatomy for Disaster /
+  Start Episode / 95%"). No runtime problem seen; frames build\screenshots\ep8_boss_*,
+  ep8_hate_chip_title, ep8_ending_*, ep8_credits*, ep8_after_credits_menu.
+  Bentley dies fast without held health -> death mask -> the stage restarts at Murray.
 
 ## In progress
 - Boss Murray stage (t8_open_head_intro, release, head3..5 with PS2_POKE=3D4AE0=3C): Murray walks
@@ -81,7 +90,7 @@ frames in build\screenshots\ep8_*.png.
   (ep7's), arr.py; boss task objects 3484 @0xD5AB00, 3488 @0xD5BB40, 3492 @0xD60AC0.
 
 ## Next
-1. Win Murray stage -> Bentley stage -> ending/credits (t8_heist_done -> t8_complete).
+1. (done: boss won, ending, credits, autosave)
 2. Live play (build\ep8tools\live.ps1 -Job <job> -Release): hacking minigame (engine_room_murray
    hack_station), turret (m8_turret), Murray throws (jt), TNT run, megajump.
 3. Audio (-Wav) and perf (PS2_PERF) when the machine is less loaded.
