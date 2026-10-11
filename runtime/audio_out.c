@@ -114,10 +114,14 @@ static void status_tick(void) {
     uint64_t overlaps, bad, holds, hold_frames;
     sd_health(&overlaps, &bad);
     sd_driver_holds(&holds, &hold_frames);
+    static uint64_t last_trans;
+    uint64_t trans = sd_voice_trans_writes();
     fprintf(stderr, "[audio] status: %.1f s of audio, %u underruns (%u in the last %.0f s), mixer %.1f%% of a core, "
-                    "late/early stream refills %llu, invalid ADPCM blocks %llu, voices held for the IOP %llu times (%.2f s)\n",
+                    "late/early stream refills %llu, invalid ADPCM blocks %llu, voices held for the IOP %llu times (%.2f s), "
+                    "%llu voice transfers in the last %.0f s\n",
             (double)w / RATE, u, u - g_status_underruns, audio_s, cpu, (unsigned long long)overlaps, (unsigned long long)bad,
-            (unsigned long long)holds, (double)hold_frames / RATE);
+            (unsigned long long)holds, (double)hold_frames / RATE, (unsigned long long)(trans - last_trans), audio_s);
+    last_trans = trans;
     g_status_frames = w;
     g_status_ticks = (int64_t)g_render_ticks;
     g_status_underruns = u;

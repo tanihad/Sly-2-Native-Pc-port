@@ -134,22 +134,28 @@ int iop_load_module(uint32_t image, const char* args, uint32_t args_len, int32_t
     iop_w32(argv + 4 * n, 0);
     fprintf(stderr, "[iop] %s: running natively at 0x%08X (recompiled), %u args\n", name, d->base, n - 1);
 
-    /* Start it the way modload does: in a thread of the loader, with (argc, argv). */
+    /* Start it the way modload does: in a thread of the loader, with (argc, argv). Kernel state is
+     * shared with the IOP thread (which may also run the start thread): under the IOP lock. */
+    iop_lock();
     int tid = iop_create_kernel_thread(d->entry, 8, 0x4000, n, argv, d->gp);
-    if (tid <= 0) { fprintf(stderr, "[iop] %s: cannot create the start thread (%d)\n", name, tid); return 0; }
+    if (tid <= 0) { iop_unlock(); fprintf(stderr, "[iop] %s: cannot create the start thread (%d)\n", name, tid); return 0; }
     uint32_t ret = 0;
     int64_t give_up = iop_now() + iop_usec_to_ticks(10u * 1000000u);
     for (;;) {
         iop_run();
         if (iop_thread_status_dormant(tid, &ret)) break;
         if (iop_now() > give_up) {
+            iop_unlock();
             fprintf(stderr, "[iop] %s: module start has not returned after 10 s; continuing\n", name);
             *result = 0;
             return 1;
         }
+        iop_unlock();
         Sleep(1);
+        iop_lock();
     }
     iop_delete_kernel_thread(tid);                         /* argv stays: modules may keep pointers into it */
+    iop_unlock();
     *result = (int32_t)ret;
     fprintf(stderr, "[iop] %s: start returned %d\n", name, (int)ret);
     return 1;

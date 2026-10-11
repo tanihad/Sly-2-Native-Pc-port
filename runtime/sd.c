@@ -96,6 +96,7 @@ static uint64_t g_frames;
 static int      g_irq_pending[2];      /* ADMA half-buffer completions to announce */
 static int16_t  g_gauss[512];
 static int      g_log = -1;
+static uint32_t g_vlog[2];             /* PS2_LOG_SD_VOICES: voices whose address events are logged */
 static uint64_t g_trans_overlaps;      /* VoiceTrans writes into a block a voice was playing */
 static uint64_t g_bad_blocks;          /* audible ADPCM blocks with impossible headers */
 static int64_t  g_driver_limit = -1;   /* frames the voices may play past the IOP's last pass; 0 = off */
@@ -150,6 +151,15 @@ static void global_init(void) {          /* call with the lock held */
     if (g_log < 0) {
         const char* e = getenv("PS2_LOG_SD");      /* 1: KON/KOFF/transfers, 2: also volumes, pitch */
         g_log = e && *e && *e != '0' ? (atoi(e) > 1 ? atoi(e) : 1) : 0;
+        /* PS2_LOG_SD_VOICES=<core 0 hex mask>[,<core 1 hex mask>]: also every end-flag jump, loop-start
+         * flag and SSA/LSAX write of those voices (stream double buffers); implies PS2_LOG_SD=1. */
+        const char* m = getenv("PS2_LOG_SD_VOICES");
+        if (m && *m) {
+            char* end;
+            g_vlog[0] = (uint32_t)strtoul(m, &end, 16) & 0xFFFFFFu;
+            if (*end == ',') g_vlog[1] = (uint32_t)strtoul(end + 1, NULL, 16) & 0xFFFFFFu;
+            if (!g_log && (g_vlog[0] | g_vlog[1])) g_log = 1;
+        }
     }
     if (g_driver_limit < 0) {
         const char* e = getenv("PS2_AUDIO_IOP_LIMIT");   /* ms of sound, 0 = never hold the voices */
@@ -279,14 +289,24 @@ static void load_block(sd_voice* vc, int decode) {
  * 3 end+repeat; ENDX is set on both ends and the voice jumps to the loop address). */
 static void next_block(sd_core* k, int v, int decode) {
     sd_voice* vc = &k->v[v];
-    if (vc->flags & 1) {
+    uint32_t from = vc->cur;
+    int jumped = vc->flags & 1, repeat = vc->flags & 2;
+    if (jumped) {
         k->endx |= 1u << v;
         vc->cur = vc->lsa;
-        if (!(vc->flags & 2)) { vc->phase = PH_RELEASE; vc->env = 0; vc->env_counter = 0; }
+        if (!repeat) { vc->phase = PH_RELEASE; vc->env = 0; vc->env_counter = 0; }
     } else {
         vc->cur = (vc->cur + 8) & SD_RAM_MASK;
     }
     load_block(vc, decode);
+    /* PS2_LOG_SD_VOICES: the voice's address events, except a voice parked on a one-block loop
+     * (989snd keeps idle voices on its silence block at 0x5000: thousands of jumps per second) */
+    if ((g_vlog[k - g_core] & (1u << v)) && !(jumped && from == vc->cur)) {
+        if (jumped)
+            SDLOG("c%d v%-2d end%s at %05X -> %05X\n", (int)(k - g_core), v, repeat ? "+repeat" : " (mute)",
+                  from << 1, vc->cur << 1);
+        if (vc->flags & 4) SDLOG("c%d v%-2d loop start at %05X\n", (int)(k - g_core), v, vc->cur << 1);
+    }
 }
 
 static void key_on(sd_core* k, int v) {
@@ -555,6 +575,10 @@ uint64_t sd_frames_rendered(void) {
     return f;
 }
 
+static volatile LONG64 g_trans_writes;
+
+uint64_t sd_voice_trans_writes(void) { return (uint64_t)g_trans_writes; }
+
 void sd_health(uint64_t* trans_overlaps, uint64_t* bad_blocks) {
     LOCK();
     *trans_overlaps = g_trans_overlaps;
@@ -640,6 +664,7 @@ void sceSdSetParam(uint16_t entry, uint16_t value) {
     if (p < 8) {
         if (!bad_voice(voice)) {
             sd_voice* vc = &k->v[voice];
+            uint16_t old_pitch = vc->pitch;
             switch (p) {
             case P_VOLL:  vol_set(&vc->vol[0], value); break;
             case P_VOLR:  vol_set(&vc->vol[1], value); break;
@@ -650,7 +675,8 @@ void sceSdSetParam(uint16_t entry, uint16_t value) {
             case P_VOLXL: vc->vol[0].cur = (int16_t)value; vc->vol[0].level = abs(vc->vol[0].cur); break;
             case P_VOLXR: vc->vol[1].cur = (int16_t)value; vc->vol[1].level = abs(vc->vol[1].cur); break;
             }
-            if (g_log > 1 && (p == P_VOLL || p == P_VOLR || p == P_PITCH))
+            if ((g_log > 1 && (p == P_VOLL || p == P_VOLR || p == P_PITCH)) ||
+                (p == P_PITCH && (g_vlog[core] & (1u << voice)) && old_pitch != value))
                 SDLOG("%s c%d v%-2d %04X\n", p == P_VOLL ? "VOLL " : p == P_VOLR ? "VOLR " : "PITCH", core, voice, value);
         }
     } else {
@@ -795,7 +821,8 @@ void sceSdSetAddr(uint16_t entry, uint32_t value) {
     default:      log_once(&unk, "sceSdSetAddr: unhandled entry 0x%04X", entry); break;
     }
     UNLOCK();
-    if (g_log > 1 && (a == VA_SSA || a == VA_LSAX)) SDLOG("%s c%d v%-2d %05X\n", a == VA_SSA ? "SSA  " : "LSAX ", core, voice, value);
+    if ((g_log > 1 || (voice < 24 && (g_vlog[core] & (1u << voice)))) && (a == VA_SSA || a == VA_LSAX))
+        SDLOG("%s c%d v%-2d %05X\n", a == VA_SSA ? "SSA  " : "LSAX ", core, voice, value);
 }
 
 uint32_t sceSdGetAddr(uint16_t entry) {
@@ -910,6 +937,7 @@ int sceSdVoiceTrans(int16_t channel, uint16_t mode, uint32_t iop_addr, uint32_t 
             if ((b >= lo && b < hi) || (b + 0x200000u / 2 >= lo && b + 0x200000u / 2 < hi)) { hits++; hit_core = (uint32_t)c; hit_voice = (uint32_t)v; }
         }
     if (hits) g_trans_overlaps++;
+    if (dir == TRANS_WRITE) g_trans_writes++;
     uint64_t overlaps = g_trans_overlaps;
     UNLOCK();
     if (hits && (overlaps <= 20 || g_log > 0))

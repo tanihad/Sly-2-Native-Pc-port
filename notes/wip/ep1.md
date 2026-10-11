@@ -48,8 +48,43 @@ runtime/recompiler problem found at its root (with tests); frames in build\scree
   objs.py/vts.py/movers.py (objects in RAM dumps after ep7's findobj: +0xC vtable, +0x18 oid,
   +0x230 position; Sly oid 7 vt 2D2E98, Bentley 8, Murray 9; Dimitri's position is not at +0x230).
 
+- Hub music silence, first fix attempt (WIP commit 159e2de, resumed 2026-10-11): sd.c "driver pace"
+  (PS2_AUDIO_IOP_LIMIT, default 60 ms): the mixer outputs silence and holds every voice while the
+  IOP's last pass (iop_last_run_time) is older than the limit. Unit tests pass (sd 686 checks,
+  iop_kernel). BUT the A/B runs (build\abA old exe, build\abB fix; hub, loaded machine, 890 s) both
+  lost the hub streams: abB transfers stop at ~185 s and ~321 s (EE polls spiop cmd 76 sub 8 for
+  stream 0xB -> 0, then sub 2). abB held the voices 823 times (60 s of 890 s) on this loaded machine.
+  So the hold alone does not explain/fix it. Added PS2_IOP_WATCH (debug builds: log entries to IOP
+  functions, e.g. 22140 = 989snd error report a0=code) to see which 989snd error stops the streams.
+  ep2 (next/ep2, paused) found the same 0x37 mechanism for the episode menu music and runs the IOP
+  while the EE waits for the GS thread (gs_set_wait_hook); different files, merges cleanly.
+
+- Session 2026-10-11 (resumed): the uncommitted WIP moved the IOP onto its own host thread
+  (iop_thread_start, IOP lock, locks in sif.c/cdvd.c/iop_sif.c/loader). Unit tests pass. Findings:
+  * PS2_LOG_SD_VOICES=<hex mask> (sd.c) logs stream voice jumps/loop starts/LSAX writes (one-block
+    self-loops of idle voices on 989snd's silence block at 0x5000 are skipped: they flooded the log).
+    build\tools\loops.py <run.log> reports "late" (no LSAX write since the last jump: voice loops
+    inside its half -> 989snd error 0x37) vs "overridden" (LSAX written but the loop-start flag
+    won). All failures were "late": 989snd's half change -> refill VoiceTrans -> next tick LSAX
+    chain did not finish within the 163 ms half. Not an SPU LSA semantic problem.
+  * Logging itself stalls the IOP thread: fprintf to stderr blocked 50-300 ms (PS2_PROFILE=iop, new:
+    samples the IOP thread only in passes over 4 ms; 98% in fprintf). Runs with PS2_LOG_SD* are
+    not representative for timing. The IOP status line itself (fprintf every 10 s from the IOP
+    thread) caused one long gap per 10 s -> now formatted under the lock and written by a writer
+    thread (log_async).
+  * EE thread held the IOP lock up to 200 ms (sif.c ran iop_run after each RPC; EE thread
+    descheduled meanwhile) -> iop_kick(): wakes the IOP thread via an event instead.
+  * Status line now: IOP thread CPU %, longest gap/pass/lock wait/1 ms sleep, longest lock hold by
+    another thread; [audio] status: voice transfers per 10 s (steady ~440-490 when the safehouse
+    streams live; a drop = a stream stopped).
+  * Without logging (r6/r7, 420 s) the safehouse streams all survived (486 transfers/10 s steady).
+  * Remaining: the IOP thread's 1 ms sleep sometimes takes 40-120 ms on this loaded machine (r9,
+    HIGHEST). Experiment running: pa (HIGHEST) / pb (TIME_CRITICAL) / pc (MMCSS Pro Audio) via
+    temporary PS2_IOP_THREAD_PRIO (remove before commit).
+
 ## Next
-1. Hub music silence: PS2_LOG_SND run in the hub, see whether proc 6 volumes go to 0.
+1. Pick the IOP thread priority from pa/pb/pc (sleep latency), remove PS2_IOP_THREAD_PRIO, commit
+   the IOP thread work (tests: iop_kernel, sd, run_tests.py). Then merge main (VU recompiler).
 2. PS2_PERF in release when the machine is quieter.
 3. If time: boss again without the poke, using cover (barrels/glass) and the 3rd/4th-shot jam.
 

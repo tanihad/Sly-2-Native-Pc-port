@@ -138,7 +138,12 @@ extern uint32_t iop_trace_pos;
 #ifdef PS2_NO_TRACE
 #define IOP_TRACE(addr) ((void)0)
 #else
-#define IOP_TRACE(addr) (iop_trace[iop_trace_pos++ & (IOP_TRACE_SIZE - 1)] = (addr))
+/* Debug builds: PS2_IOP_WATCH="<hexaddr>[,...]" logs every entry to those recompiled IOP functions
+ * with a0-a3, ra, thread and time (iop_kernel.c); `c` is the function's context. */
+extern int iop_watch_on;
+void iop_watch_hit(const iop_ctx* c, uint32_t addr);
+#define IOP_TRACE(addr) (iop_trace[iop_trace_pos++ & (IOP_TRACE_SIZE - 1)] = (addr), \
+                         iop_watch_on ? iop_watch_hit(c, (addr)) : (void)0)
 #endif
 
 /* ---- native kernel API used by the rest of the runtime ------------------------------------------ */
@@ -162,8 +167,24 @@ int      iop_load_module(uint32_t image, const char* args, uint32_t args_len, in
 
 /* Running IOP threads */
 void     iop_run(void);                /* deliver due interrupts, run threads until all are blocked */
-void     iop_service(void);            /* from the EE's safe points */
+void     iop_service(void);            /* from the EE's safe points (nothing to do once the IOP has its thread) */
 int      iop_in_interrupt(void);       /* QueryIntrContext */
+
+/* The IOP's own host thread (like the PS2's IOP CPU, independent of the EE): runs iop_run() every
+ * millisecond, so 989snd's tick and the stream refills keep real time whatever the EE thread does
+ * (long frames, waits for the GS thread, being descheduled). Started by the runtime once (not in
+ * unit tests; PS2_IOP_THREAD=0 keeps the old way: the IOP runs at the EE's safe points). While it
+ * runs, every access to IOP kernel state from another thread (sif.c, iop_modules.c, the loader)
+ * holds the IOP lock; iop_run() takes it itself. The lock is recursive. */
+void     iop_thread_start(void);
+int      iop_threaded(void);           /* the IOP thread is running */
+/* New work for the IOP (an RPC request): wake the IOP thread for a pass now; without the IOP thread,
+ * run the IOP here unless called from an EE interrupt handler. The EE side never runs IOP passes
+ * itself while the IOP thread exists: a normal-priority EE thread holding the IOP lock through a
+ * pass, and being descheduled meanwhile on a busy machine, held up 989snd's tick for up to 200 ms. */
+void     iop_kick(int ee_in_interrupt);
+void     iop_lock(void);
+void     iop_unlock(void);
 
 /* RPC server side (iop_sif.c <-> sif.c) */
 typedef struct {

@@ -684,6 +684,7 @@ int main(int argc, char** argv) {
     if (wd && atoi(wd) > 0) CreateThread(NULL, 0, watchdog, (LPVOID)(uintptr_t)atoi(wd), 0, NULL);
     if (!headless) window_init();
     if (!dump_regs) audio_init();                /* sound output thread (sd.c mixer -> WASAPI) */
+    if (!dump_regs && iop_native_audio()) iop_thread_start();   /* the IOP on its own thread (iop.h) */
 
     /* The GS on its own thread plus pixel workers (PS2_GS_ASYNC=0: synchronous, as in the unit
      * tests; PS2_GS_THREADS=<n>: pixel workers, default half the logical processors minus one, at
