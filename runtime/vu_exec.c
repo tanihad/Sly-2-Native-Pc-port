@@ -16,12 +16,12 @@
  * MINI, ABS, MOVE, loads and stores work on raw bits, as on hardware.
  */
 #include "vu_internal.h"
+#include "vu_ops.h"                      /* operation semantics, shared with the compiled programs */
 
 #include <math.h>
 
-/* The game build compiles the runtime at -O1, which does not inline these helpers on its own; the
- * per-op handlers rely on them being inlined with constant arguments. */
-#define VU_INLINE static inline __attribute__((always_inline))
+/* The game build compiles the runtime at -O1, which does not inline helpers on its own; the per-op
+ * handlers rely on them (VU_INLINE, vu_ops.h) being inlined with constant arguments. */
 
 /* ---- operation ids ------------------------------------------------------------------------- */
 
@@ -50,7 +50,7 @@ enum {
 /* ---- decode tables -------------------------------------------------------------------------- */
 
 /* The instruction's 4-bit dest field has x in bit 3; internally lane 0 = x is bit 0. */
-static const uint8_t REV4[16] = { 0, 8, 4, 12, 2, 10, 6, 14, 1, 9, 5, 13, 3, 11, 7, 15 };
+#define REV4 VU_REV4
 
 typedef struct { uint8_t op, bm, acc; } uent;
 #define BC4(o, a) { o, BM_BC, a }, { o, BM_BC, a }, { o, BM_BC, a }, { o, BM_BC, a }
@@ -105,7 +105,7 @@ static const uint8_t LOWER_S2[128] = {
     [0x7B] = LOP_WAITP, [0x7C] = LOP_ESIN, [0x7D] = LOP_EATAN, [0x7E] = LOP_EEXP,
 };
 
-/* EFU latencies in cycles (ps2tek). */
+/* EFU latencies in cycles (ps2tek). Mirrored in recomp/vu_decode.py. */
 static uint8_t efu_latency(unsigned lop) {
     switch (lop) {
     case LOP_ESADD: return 11;
@@ -118,52 +118,16 @@ static uint8_t efu_latency(unsigned lop) {
     }
 }
 
-/* ---- vector helpers --------------------------------------------------------------------------- */
-
-#define LM(m) { (m) & 1 ? ~0u : 0u, (m) & 2 ? ~0u : 0u, (m) & 4 ? ~0u : 0u, (m) & 8 ? ~0u : 0u }
-static const union { uint32_t u[16][4]; __m128i v[16]; } LANEMASK = { {
-    LM(0), LM(1), LM(2), LM(3), LM(4), LM(5), LM(6), LM(7),
-    LM(8), LM(9), LM(10), LM(11), LM(12), LM(13), LM(14), LM(15) } };
+/* ---- vector helpers (the operation semantics are in vu_ops.h) ------------------------------------ */
 
 VU_INLINE __m128 vld(const vf128* v) { return _mm_loadu_ps(v->f); }
 VU_INLINE void   vst(vf128* v, __m128 x) { _mm_storeu_ps(v->f, x); }
-VU_INLINE __m128 vblend(__m128 old, __m128 nw, unsigned lanes) {
-    __m128 m = _mm_castsi128_ps(LANEMASK.v[lanes]);
-    return _mm_or_ps(_mm_and_ps(m, nw), _mm_andnot_ps(m, old));
-}
-VU_INLINE void vwrite(vf128* v, __m128 x, unsigned lanes) { vst(v, vblend(vld(v), x, lanes)); }
-VU_INLINE __m128 vbits(uint32_t b) { return _mm_castsi128_ps(_mm_set1_epi32((int)b)); }
-
-/* PS2 floats with exponent 255 are ordinary (huge) numbers; the host would see Inf/NaN.
- * Clamp them to +-FLT_MAX (keeping the sign) before arithmetic. */
-VU_INLINE __m128 vclean(__m128 v) {
-    const __m128i E = _mm_set1_epi32(0x7F800000);
-    __m128i i = _mm_castps_si128(v);
-    __m128i big = _mm_cmpeq_epi32(_mm_and_si128(i, E), E);
-    i = _mm_xor_si128(i, _mm_and_si128(big, _mm_set1_epi32(0x00800000)));
-    i = _mm_or_si128(i, _mm_and_si128(big, _mm_set1_epi32(0x007FFFFF)));
-    return _mm_castsi128_ps(i);
-}
-VU_INLINE float sclean(uint32_t b) {
-    if ((b & 0x7F800000u) == 0x7F800000u) b = (b & 0x80000000u) | 0x7F7FFFFFu;
-    float f; memcpy(&f, &b, 4); return f;
-}
-VU_INLINE uint32_t fbits(float f) {   /* host result -> PS2 bits (no Inf/NaN, no denormals) */
-    uint32_t b; memcpy(&b, &f, 4);
-    if ((b & 0x7F800000u) == 0x7F800000u) b = (b & 0x80000000u) | 0x7F7FFFFFu;
-    if ((b & 0x7F800000u) == 0) b &= 0x80000000u;
-    return b;
-}
-VU_INLINE unsigned zlanes(__m128 v) { return (unsigned)_mm_movemask_ps(_mm_cmpeq_ps(v, _mm_setzero_ps())); }
-VU_INLINE unsigned nelanes(__m128 a, __m128 b) { return (unsigned)_mm_movemask_ps(_mm_cmpneq_ps(a, b)); }
-VU_INLINE __m128 vneg(__m128 v) { return _mm_xor_ps(v, vbits(0x80000000u)); }
-
-/* Sign-magnitude ordering key for MAX/MINI (compares raw bits, denormals included). */
-VU_INLINE __m128i fkey(__m128 v) {
-    __m128i i = _mm_castps_si128(v);
-    return _mm_xor_si128(i, _mm_and_si128(_mm_srai_epi32(i, 31), _mm_set1_epi32(0x7FFFFFFF)));
-}
-
+VU_INLINE void vwrite(vf128* v, __m128 x, unsigned lanes) { vst(v, vu_blend(vld(v), x, lanes)); }
+#define vbits vu_bits
+#define vblend vu_blend
+#define vclean vu_vclean
+#define sclean vu_sclean
+#define fbits vu_fbits
 /* ---- pipelines ---------------------------------------------------------------------------------- */
 
 /* Results in flight (MAC/status flags, clip flags, Q, P) are folded into the visible registers
@@ -209,14 +173,12 @@ VU_INLINE void retire(vu_state* st, uint32_t cyc) {
  * FMAC op issues per cycle and results land 4 cycles later, so when all 8 slots are taken the
  * oldest result is certainly visible already: fold it to make room. */
 VU_INLINE void push_mac(vu_state* st, __m128 r, unsigned dst, unsigned z, unsigned u) {
-    unsigned s = (unsigned)_mm_movemask_ps(r) & dst;
-    __m128i a = _mm_and_si128(_mm_castps_si128(r), _mm_set1_epi32(0x7FFFFFFF));
-    unsigned o = (unsigned)_mm_movemask_ps(_mm_castsi128_ps(_mm_cmpeq_epi32(a, _mm_set1_epi32(0x7F7FFFFF)))) & dst;
+    const uint32_t f = vu_macflags(r, dst, z, u);
     if (st->fq_tail - st->fq_head == 8) fold_flags(st);
     vu_flagent* e = &st->fq[st->fq_tail++ & 7];
     e->ready = st->cyc + 4;
-    e->mac = (uint16_t)(REV4[z] | REV4[s] << 4 | REV4[u] << 8 | REV4[o] << 12);
-    e->zsuo = (uint16_t)((z ? 1 : 0) | (s ? 2 : 0) | (u ? 4 : 0) | (o ? 8 : 0));
+    e->mac = (uint16_t)f;
+    e->zsuo = (uint16_t)(f >> 16);
 }
 
 /* Conditional branches read a VI register before a chain of up to four immediately preceding
@@ -287,32 +249,13 @@ VU_INLINE vf128* utarget(vu_state* st, const vu_op* op) {
     return op->uacc ? &st->acc : op->ufd ? &st->vf[op->ufd] : NULL;
 }
 
-enum { K_ADD, K_SUB, K_MUL, K_MADD, K_MSUB };
 /* ADD/SUB/MUL/MADD/MSUB in all operand forms; flags per lane: Z, S, O (result clamped to
  * +-FLT_MAX), U (result flushed to zero although the exact result was not zero). */
 VU_INLINE vf128* fmac(vu_state* st, const vu_op* op, __m128* out, int kind, int bm) {
     const unsigned dst = op->udst;
-    __m128 a = vclean(vld(&st->vf[op->ufs])), b = opb(st, op, bm), r;
-    unsigned z, u = 0;
-    if (kind == K_ADD) {
-        r = _mm_add_ps(a, b);
-        z = zlanes(r) & dst;
-        if (z) u = z & nelanes(a, vneg(b));
-    } else if (kind == K_SUB) {
-        r = _mm_sub_ps(a, b);
-        z = zlanes(r) & dst;
-        if (z) u = z & nelanes(a, b);
-    } else if (kind == K_MUL) {
-        r = _mm_mul_ps(a, b);
-        z = zlanes(r) & dst;
-        if (z) u = z & ~zlanes(a) & ~zlanes(b);
-    } else {
-        __m128 p = _mm_mul_ps(a, b), acc = vld(&st->acc);
-        r = kind == K_MADD ? _mm_add_ps(acc, p) : _mm_sub_ps(acc, p);
-        z = zlanes(r) & dst;
-        if (z) u = z & ((kind == K_MADD ? nelanes(acc, vneg(p)) : nelanes(acc, p)) |
-                        (zlanes(p) & ~zlanes(a) & ~zlanes(b)));
-    }
+    __m128 a = vclean(vld(&st->vf[op->ufs])), b = opb(st, op, bm);
+    unsigned z, u;
+    __m128 r = vu_fmac(kind, a, b, kind >= VU_K_MADD ? vld(&st->acc) : _mm_setzero_ps(), dst, &z, &u);
     push_mac(st, r, dst, z, u);
     *out = r;
     return utarget(st, op);
@@ -321,11 +264,11 @@ VU_INLINE vf128* fmac(vu_state* st, const vu_op* op, __m128* out, int kind, int 
     static vf128* name(vu_state* st, const vu_op* op, __m128* out) { return fmac(st, op, out, kind, bm); }
 #define FMAC_ALL(n, kind) FMAC_FN(u_##n##_v, kind, BM_VEC) FMAC_FN(u_##n##_bc, kind, BM_BC) \
                           FMAC_FN(u_##n##_q, kind, BM_Q) FMAC_FN(u_##n##_i, kind, BM_I)
-FMAC_ALL(add, K_ADD)
-FMAC_ALL(sub, K_SUB)
-FMAC_ALL(mul, K_MUL)
-FMAC_ALL(madd, K_MADD)
-FMAC_ALL(msub, K_MSUB)
+FMAC_ALL(add, VU_K_ADD)
+FMAC_ALL(sub, VU_K_SUB)
+FMAC_ALL(mul, VU_K_MUL)
+FMAC_ALL(madd, VU_K_MADD)
+FMAC_ALL(msub, VU_K_MSUB)
 static const vu_ufn FMAC_TAB[5][4] = {
     { u_add_v, u_add_bc, u_add_q, u_add_i }, { u_sub_v, u_sub_bc, u_sub_q, u_sub_i },
     { u_mul_v, u_mul_bc, u_mul_q, u_mul_i }, { u_madd_v, u_madd_bc, u_madd_q, u_madd_i },
@@ -336,8 +279,7 @@ static const vu_ufn FMAC_TAB[5][4] = {
 VU_INLINE vf128* maxmin(vu_state* st, const vu_op* op, __m128* out, int is_max, int bm) {
     __m128 a = vld(&st->vf[op->ufs]);
     __m128 b = bm == BM_VEC ? vld(&st->vf[op->uft]) : bm == BM_BC ? vbits(st->vf[op->uft].u[op->ubc]) : vbits(st->I);
-    __m128 pick_a = _mm_castsi128_ps(is_max ? _mm_cmpgt_epi32(fkey(a), fkey(b)) : _mm_cmpgt_epi32(fkey(b), fkey(a)));
-    *out = _mm_or_ps(_mm_and_ps(pick_a, a), _mm_andnot_ps(pick_a, b));
+    *out = vu_maxmin(is_max, a, b);
     return op->ufd ? &st->vf[op->ufd] : NULL;
 }
 static vf128* u_max_v(vu_state* st, const vu_op* op, __m128* o)   { return maxmin(st, op, o, 1, BM_VEC); }
@@ -350,21 +292,9 @@ static vf128* u_mini_i(vu_state* st, const vu_op* op, __m128* o)  { return maxmi
 /* OPMULA ACC.xyz = fs.yzx * ft.zxy; OPMSUB fd.xyz = ACC - fs.yzx * ft.zxy (cross product pair). */
 VU_INLINE vf128* opm(vu_state* st, const vu_op* op, __m128* out, int sub) {
     __m128 a = vclean(vld(&st->vf[op->ufs])), b = vclean(vld(&st->vf[op->uft]));
-    a = _mm_shuffle_ps(a, a, _MM_SHUFFLE(3, 0, 2, 1));
-    b = _mm_shuffle_ps(b, b, _MM_SHUFFLE(3, 1, 0, 2));
     const unsigned dst = op->udst;
-    __m128 p = _mm_mul_ps(a, b), r;
-    unsigned z, u = 0;
-    if (!sub) {
-        r = p;
-        z = zlanes(r) & dst;
-        if (z) u = z & ~zlanes(a) & ~zlanes(b);
-    } else {
-        __m128 acc = vld(&st->acc);
-        r = _mm_sub_ps(acc, p);
-        z = zlanes(r) & dst;
-        if (z) u = z & (nelanes(acc, p) | (zlanes(p) & ~zlanes(a) & ~zlanes(b)));
-    }
+    unsigned z, u;
+    __m128 r = vu_opm(sub, a, b, sub ? vld(&st->acc) : _mm_setzero_ps(), dst, &z, &u);
     push_mac(st, r, dst, z, u);
     *out = r;
     return sub ? (op->ufd ? &st->vf[op->ufd] : NULL) : &st->acc;
@@ -373,16 +303,13 @@ static vf128* u_opmula(vu_state* st, const vu_op* op, __m128* o) { return opm(st
 static vf128* u_opmsub(vu_state* st, const vu_op* op, __m128* o) { return opm(st, op, o, 1); }
 
 static vf128* u_abs(vu_state* st, const vu_op* op, __m128* out) {
-    *out = _mm_and_ps(vld(&st->vf[op->ufs]), vbits(0x7FFFFFFFu));
+    *out = vu_abs(vld(&st->vf[op->ufs]));
     return op->uft ? &st->vf[op->uft] : NULL;
 }
 
 /* FTOIn: truncate toward zero, saturating to 0x7FFFFFFF / 0x80000000. */
 VU_INLINE vf128* ftoi(vu_state* st, const vu_op* op, __m128* out, float scale) {
-    __m128 v = _mm_mul_ps(vclean(vld(&st->vf[op->ufs])), _mm_set1_ps(scale));
-    __m128i i = _mm_cvttps_epi32(v);                               /* out of range -> 0x80000000 */
-    __m128i pos = _mm_castps_si128(_mm_cmpge_ps(v, _mm_set1_ps(2147483648.0f)));
-    *out = _mm_castsi128_ps(_mm_or_si128(_mm_andnot_si128(pos, i), _mm_and_si128(pos, _mm_set1_epi32(0x7FFFFFFF))));
+    *out = vu_ftoi(vld(&st->vf[op->ufs]), scale);
     return op->uft ? &st->vf[op->uft] : NULL;
 }
 static vf128* u_ftoi0(vu_state* st, const vu_op* op, __m128* o)  { return ftoi(st, op, o, 1.0f); }
@@ -391,8 +318,7 @@ static vf128* u_ftoi12(vu_state* st, const vu_op* op, __m128* o) { return ftoi(s
 static vf128* u_ftoi15(vu_state* st, const vu_op* op, __m128* o) { return ftoi(st, op, o, 32768.0f); }
 
 VU_INLINE vf128* itof(vu_state* st, const vu_op* op, __m128* out, float scale) {
-    __m128 v = _mm_cvtepi32_ps(_mm_castps_si128(vld(&st->vf[op->ufs])));   /* rounds toward zero */
-    *out = scale == 1.0f ? v : _mm_mul_ps(v, _mm_set1_ps(scale));
+    *out = vu_itof(vld(&st->vf[op->ufs]), scale);
     return op->uft ? &st->vf[op->uft] : NULL;
 }
 static vf128* u_itof0(vu_state* st, const vu_op* op, __m128* o)  { return itof(st, op, o, 1.0f); }
@@ -400,15 +326,11 @@ static vf128* u_itof4(vu_state* st, const vu_op* op, __m128* o)  { return itof(s
 static vf128* u_itof12(vu_state* st, const vu_op* op, __m128* o) { return itof(st, op, o, 1.0f / 4096.0f); }
 static vf128* u_itof15(vu_state* st, const vu_op* op, __m128* o) { return itof(st, op, o, 1.0f / 32768.0f); }
 
-VU_INLINE float lanef(const vf128* v, unsigned lane) { return sclean(v->u[lane]); }
-
 /* CLIP: judge fs.xyz against +-|ft.w|; the clip flag register shifts in 6 new bits. */
 static vf128* u_clip(vu_state* st, const vu_op* op, __m128* out) {
     (void)out;
     const vf128* s = &st->vf[op->ufs];
-    float w = fabsf(lanef(&st->vf[op->uft], 3)), x = lanef(s, 0), y = lanef(s, 1), z = lanef(s, 2);
-    uint32_t j = (uint32_t)(x > w) | (uint32_t)(x < -w) << 1 | (uint32_t)(y > w) << 2 |
-                 (uint32_t)(y < -w) << 3 | (uint32_t)(z > w) << 4 | (uint32_t)(z < -w) << 5;
+    uint32_t j = vu_clip_judge(s->u[0], s->u[1], s->u[2], st->vf[op->uft].u[3]);
     st->clip_pipe = ((st->clip_pipe << 6) | j) & 0xFFFFFF;
     if (st->cq_tail - st->cq_head == 8) st->clip = st->cq[st->cq_head++ & 7].clip;   /* landed (see push_mac) */
     vu_clipent* e = &st->cq[st->cq_tail++ & 7];
@@ -416,7 +338,6 @@ static vf128* u_clip(vu_state* st, const vu_op* op, __m128* out) {
     e->clip = st->clip_pipe;
     return NULL;
 }
-
 static vf128* u_invalid(vu_state* st, const vu_op* op, __m128* out) {
     (void)out;
     log_invalid(st, op, "upper");
@@ -513,36 +434,24 @@ VU_INLINE void start_fdiv(vu_state* st, uint32_t lat, uint32_t q, uint32_t flags
     st->q_pend = 1; st->q_next = q; st->q_ready = st->cyc + lat; st->q_flags = flags;
 }
 LFN(l_div) {
-    uint32_t sb = st->vf[op->ls].u[op->fsf], tb = st->vf[op->lt].u[op->ftf];
-    float s = sclean(sb), t = sclean(tb);
-    if (t == 0.0f) start_fdiv(st, 7, ((sb ^ tb) & 0x80000000u) | 0x7FFFFFFFu, s == 0.0f ? 0x10 : 0x20);
-    else start_fdiv(st, 7, fbits(s / t), 0);
+    uint32_t fl, q = vu_div(st->vf[op->ls].u[op->fsf], st->vf[op->lt].u[op->ftf], &fl);
+    start_fdiv(st, 7, q, fl);
     return npc;
 }
 LFN(l_sqrt) {
-    float t = sclean(st->vf[op->lt].u[op->ftf]);
-    start_fdiv(st, 7, fbits(sqrtf(fabsf(t))), t < 0.0f ? 0x10 : 0);
+    uint32_t fl, q = vu_sqrt(st->vf[op->lt].u[op->ftf], &fl);
+    start_fdiv(st, 7, q, fl);
     return npc;
 }
 LFN(l_rsqrt) {
-    uint32_t sb = st->vf[op->ls].u[op->fsf];
-    float s = sclean(sb), t = sclean(st->vf[op->lt].u[op->ftf]);
-    if (t == 0.0f) start_fdiv(st, 13, (sb & 0x80000000u) | 0x7FFFFFFFu, s == 0.0f ? 0x10 : 0x20);
-    else start_fdiv(st, 13, fbits(s / sqrtf(fabsf(t))), t < 0.0f ? 0x10 : 0);
+    uint32_t fl, q = vu_rsqrt(st->vf[op->ls].u[op->fsf], st->vf[op->lt].u[op->ftf], &fl);
+    start_fdiv(st, 13, q, fl);
     return npc;
 }
 LFN(l_mtir) { SETVI(op->lt, st->vf[op->ls].u[op->fsf]); return npc; }
 LFN(l_mfir) { vwrite(&st->vf[op->lt], vbits((uint32_t)(int32_t)(int16_t)VI(op->ls)), op->ldst); return npc; }
 
-/* 23-bit maximal-length LFSR (x^23 + x^18 + 1) for RNEXT. Sony documents R as an M-sequence but
- * not its polynomial; games only use it for visual noise. */
-static uint32_t rnext(uint32_t r) {
-    uint32_t x = r & 0x7FFFFF;
-    if (!x) x = 0x5A5A5A;
-    uint32_t bit = ((x >> 22) ^ (x >> 17)) & 1;
-    return 0x3F800000u | (((x << 1) | bit) & 0x7FFFFF);
-}
-LFN(l_rnext) { st->R = rnext(st->R); if (op->lt) vwrite(&st->vf[op->lt], vbits(st->R), op->ldst); return npc; }
+LFN(l_rnext) { st->R = vu_rnext(st->R); if (op->lt) vwrite(&st->vf[op->lt], vbits(st->R), op->ldst); return npc; }
 LFN(l_rget)  { vwrite(&st->vf[op->lt], vbits(st->R), op->ldst); return npc; }
 LFN(l_mfp)   { sync_p(st, st->cyc); vwrite(&st->vf[op->lt], vbits(st->P), op->ldst); return npc; }
 LFN(l_rinit) { st->R = 0x3F800000u | (st->vf[op->ls].u[op->fsf] & 0x7FFFFF); return npc; }
@@ -555,37 +464,28 @@ LFN(l_xgkick) {
     return npc;
 }
 
-VU_INLINE float sdiv(float a, float b) {   /* division with the VU's divide-by-zero result */
-    if (b == 0.0f) return (signbit(a) != signbit(b)) ? -FLT_MAX : FLT_MAX;
-    return a / b;
-}
 /* EFU (VU1 only on hardware; harmless on VU0): P arrives op->imm cycles after issue. The op may
  * issue one cycle before the previous EFU result lands (see stall_until), so results queue. */
+static int efu_kind(unsigned lop) {
+    switch (lop) {
+    case LOP_ESADD: return VU_E_ESADD;     case LOP_ERSADD: return VU_E_ERSADD;
+    case LOP_ELENG: return VU_E_ELENG;     case LOP_ERLENG: return VU_E_ERLENG;
+    case LOP_EATANXY: return VU_E_EATANXY; case LOP_EATANXZ: return VU_E_EATANXZ;
+    case LOP_ESUM: return VU_E_ESUM;       case LOP_ESQRT: return VU_E_ESQRT;
+    case LOP_ERSQRT: return VU_E_ERSQRT;   case LOP_ERCPR: return VU_E_ERCPR;
+    case LOP_ESIN: return VU_E_ESIN;       case LOP_EATAN: return VU_E_EATAN;
+    default: return VU_E_EEXP;
+    }
+}
 LFN(l_efu) {
     const vf128* v = &st->vf[op->ls];
-    float x = lanef(v, 0), y = lanef(v, 1), z = lanef(v, 2), w = lanef(v, 3), f = lanef(v, op->fsf), p;
-    switch (op->lo) {
-    case LOP_ESADD:   p = x * x + y * y + z * z; break;
-    case LOP_ERSADD:  p = sdiv(1.0f, x * x + y * y + z * z); break;
-    case LOP_ELENG:   p = sqrtf(x * x + y * y + z * z); break;
-    case LOP_ERLENG:  p = sdiv(1.0f, sqrtf(x * x + y * y + z * z)); break;
-    case LOP_EATANXY: p = atanf(sdiv(y, x)); break;
-    case LOP_EATANXZ: p = atanf(sdiv(z, x)); break;
-    case LOP_ESUM:    p = x + y + z + w; break;
-    case LOP_ESQRT:   p = sqrtf(fabsf(f)); break;
-    case LOP_ERSQRT:  p = sdiv(1.0f, sqrtf(fabsf(f))); break;
-    case LOP_ERCPR:   p = sdiv(1.0f, f); break;
-    case LOP_ESIN:    p = sinf(f); break;
-    case LOP_EATAN:   p = atanf(f); break;
-    default:          p = expf(-f); break;     /* EEXP */
-    }
+    const uint32_t p = vu_efu(efu_kind(op->lo), v->u[0], v->u[1], v->u[2], v->u[3], v->u[op->fsf]);
     sync_p(st, st->cyc);
     const uint32_t k = st->p_pend++;         /* at most one older result is still in flight */
-    st->p_next[k] = fbits(p);
+    st->p_next[k] = p;
     st->p_ready[k] = st->cyc + (uint32_t)op->imm;
     return npc;
-}
-LFN(l_invalid) { log_invalid(st, op, "lower"); return npc; }
+}LFN(l_invalid) { log_invalid(st, op, "lower"); return npc; }
 
 static const vu_lfn LOWER_FN[LOP_COUNT] = {
     [LOP_INVALID] = l_invalid,
@@ -911,7 +811,7 @@ static void mark_writes(vu_state* st, const vu_op* op, uint32_t cyc) {
     if (op->viw) st->vi_ready[op->viw] = cyc + op->viwlat;
 }
 
-#define VU_MAX_PAIRS (1u << 24)          /* runaway guard: ~0.1 s of VU time */
+static uint32_t vu_loop(vu_state* st, uint32_t pc, uint32_t npc, uint32_t cyc, uint32_t n, int ending);
 
 uint32_t vu_run(vu_state* st, uint32_t pc) {
     /* fresh pipeline: everything from the previous program drained when it ended */
@@ -923,13 +823,21 @@ uint32_t vu_run(vu_state* st, uint32_t pc) {
     st->q_pend = st->p_pend = 0;
     st->next_event = UINT32_MAX;
     st->clip_pipe = st->clip;
+    pc &= st->pcmask;
+    return vu_loop(st, pc, (pc + 1) & st->pcmask, 0, 0, 0);
+}
 
+/* Continue a program that recompiled code started (vu_compiled.h): the registers and the pipeline
+ * (scoreboard, flag/clip queues, Q/P in flight, VI history) are in st as this loop keeps them, the
+ * next pair is at pc with npc after it, cyc/n count what already ran. */
+uint32_t vu_resume(vu_state* st, uint32_t pc, uint32_t npc, uint32_t cyc, uint32_t n, int ending) {
+    return vu_loop(st, pc & st->pcmask, npc & st->pcmask, cyc, n, ending);
+}
+
+static uint32_t vu_loop(vu_state* st, uint32_t pc, uint32_t npc, uint32_t cyc, uint32_t n, int ending) {
     vu_op* const cache = st->cache;
     const uint8_t* const micro = st->micro;
     const uint32_t pcmask = st->pcmask;
-    pc &= pcmask;
-    uint32_t npc = (pc + 1) & pcmask, cyc = 0, n = 0;
-    int ending = 0;
     const uint32_t start = pc;
 
     for (;;) {
@@ -948,6 +856,9 @@ uint32_t vu_run(vu_state* st, uint32_t pc) {
         }
         st->cyc = cyc;
         st->stalled = stalled;
+#ifdef VU_TRACE                          /* debugging the recompiler: compare with VUC_TRACE output */
+        fprintf(stderr, "T %04X %u\n", (unsigned)(op - cache) * 8, cyc);
+#endif
         st->hpos = n;
 
         /* upper reads its operands, the lower executes, then the upper result is committed (it
