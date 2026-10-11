@@ -150,18 +150,21 @@ warp saves / direct job starts; fix every runtime/recompiler problem found at it
   a grey "shadow" CLUT with normal blending (ATST GEQUAL 7E), then the coloured CLUT additively
   (A0 B2 C0 D1) weighted by the vertex alpha. The rope texture (TBP 12542, 32x16 T4) is
   red-brown in its coloured CLUT (avg 69,40,35), so the pink rope is game data, not a CLUT bug.
+- GS cost of the hub (load-independent ratio): build\gsrec\hub.gsrec (240 VBlanks of hub
+  gameplay from VBlank 7000) vs brief.gsrec (title) and recon_int.gsrec, gs_replay -Workers 8
+  -Bench interleaved at 100% machine load: hub 21.2/24.6 ms, title 14.6/17.2, interior
+  19.9/23.6 -> hub = 1.43x the title (7.0 ms unloaded) = ~10 ms per VBlank: fits 60 fps on a
+  quiet machine. In-game PS2_GS_STATS at 100% load: the GS thread mostly waits for the pixel
+  workers (queue full ~400 ms/s, CLUT syncs ~36/s); i.e. CPU-starved, not a hot spot.
 - build\tools\taskcap.ps1: the input parameter was named $Input (PowerShell's automatic $input
   enumerator), so input lines were never written; now -Line.
 
 ## Next
-1. Perf: machine is shared by ~15 game instances (100% CPU), so PS2_PERF numbers are inflated
-   (VU 24-27 ns/pair instead of ~11). GS replay, interleaved, same load: title (build\gsrec\
-   brief.gsrec, actually the title menu) 21-24 ms/VBlank vs world-13 interior (recon_int.gsrec)
-   30-36 ms -> ~1.45x the title (title = 7.0 ms unloaded -> ~10 ms?). In-game release run in the
-   interior under load: 22-30 VBlanks/s, same as the briefing baseline in the same minute (both
-   load-bound). Re-measure when the machine is quiet.
-2. Audio: -Wav in the hub (rain ambience, music).
-3. More gameplay: turret dam, boss to the end (t3_complete -> episode end).
+1. Soak: 20 min hub with input and PS2_PERF memory lines (build\warp\soak_hub) - check result.
+2. On a quiet machine: in-game PS2_PERF in the hub / world 13 (expect 60/60 from the GS replay
+   ratio), and the episode-3 intro comic (stereo movie) for late movie-audio refills.
+3. Gameplay left (skill/navigation, no runtime blockers known): turret dam hit, boss "Get to
+   Rajan" route, heist chain by play, ruby carry, Neyla keys, TNT barrel run.
 
 ## Findings / traps
 - Episode 3 tasks: scripts\warp_tasks.txt (t3_*), oids 2167-2350. Level names in the save schema:
