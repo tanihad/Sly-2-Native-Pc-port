@@ -60,7 +60,13 @@ build\screenshots\ep2_*.png.
   the remaining IOP gaps (150-660 ms) have 0-90 ms of EE thread CPU time = the OS not running the
   EE thread (machine at 100%, ~10 sly2 instances). menufix's stream still stopped once at 328 s
   (EE stall 1.3 s at the same time). That cause is next/ep1's (mixer holds the voices while the
-  IOP has not run, PS2_AUDIO_IOP_LIMIT) - not duplicated here.
+  IOP has not run, PS2_AUDIO_IOP_LIMIT) - not duplicated here. menugap: the menu music played
+  for 6+ minutes to the end of the run (before the fix it stopped within seconds).
+- Episode end (release, warp_run -Job t2_heist_complete -Direct, build\warp\ep2_heist_complete_direct):
+  van escape cutscene ("Punch it!" subtitles), "Job Completed!" notebook, Sly-logo wipe, the
+  illustrated Episode 3 story (Rajan, the jungle, the eyes), van + logo, then the episode wheel
+  with Episode 3 selected. The game saved (save1: palace 100%, m2_heist_cover_murray complete,
+  t2_done state 1). No new log lines. Frames ep2_end_*.png.
 
 ## Next
 1. Dance minigame: scripted presses during "? ? ?" (timing in real time? game time?).
