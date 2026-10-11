@@ -2,6 +2,23 @@
 
 ## Resume here (read first in a new session)
 
+**PAUSED by the user on 2026-10-11** (to use the computer). Nothing is running. Main (78c51f8+)
+has everything up to and including the episode warp tool and is playable (`scripts\play.ps1`).
+Unmerged work, all committed and pushed to GitHub, each with `notes/wip/<task>.md` checkpoints:
+- `next/vu-recomp` (worktree `sly2-worktrees\vu-recomp`): VU microcode recompiler, COMPLETE per its
+  checkpoint (exact vs the interpreter on recordings + fuzzing). Its independent review was
+  interrupted; run the review (prompt in the `whole-game-sweep` workflow script), then merge.
+- `next/ep1`..`next/ep8`: per-episode playtesting/fixes. Every job type tested starts in every
+  episode; no runtime blockers reported. ep1/ep2/ep3 end with a "PAUSED mid-edit" commit holding
+  unfinished, untested fixes (ep1: audio/IOP timing in sd.c/iop_kernel.c; ep2/ep3: GS thread /
+  pixel workers) — finish and verify those before merging. Notable open finding (ep2): menu
+  music stream can stop when the IOP runs late while the EE waits for the GS.
+- To resume: same session -> `Workflow({scriptPath: <whole-game-sweep script>, resumeFromRunId:
+  "wf_1f8b6c38-938"})` (finished agents replay from cache; the others continue from their
+  checkpoints), then the `integrate` step merges everything and runs the full regression.
+  New session -> start one agent per unfinished branch with its checkpoint, then integrate.
+Next after that: Direct3D 11 renderer (resolution scaling), widescreen, 60 Hz-synced pacing.
+
 **warp (2026-10-10):** start the game at any episode or job without playing up to it:
 `scripts\warp_run.ps1 -Episode N [-Job m3_heist] [-Direct] -Play [-Release]`, or
 `scripts\warp.py make --episode N` / `--job <job>` then `scripts\play.ps1`. Memory-card saves built
