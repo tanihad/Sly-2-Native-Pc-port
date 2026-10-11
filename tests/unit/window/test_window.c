@@ -359,6 +359,70 @@ static void test_input_script(void) {
     script_n = 0;                                         /* leave scripting off for the other tests */
 }
 
+/* PS2_INPUT_FILE live input: a line longer than any fixed buffer (24 KB), two lines appended at once
+ * (each starts at the moment it is read), and more tokens over a session than the script holds at a
+ * time (finished ones are dropped when a line arrives). */
+static void append_line(const char* path, const char* pre, int fillers, const char* post) {
+    FILE* f = fopen(path, "ab");
+    if (!f) return;
+    fputs(pre, f);
+    for (int i = 0; i < fillers; i++) fputs("+0:none,", f);
+    fprintf(f, "%s\r\n", post);
+    fclose(f);
+}
+
+static void test_live_input(void) {
+    char path[MAX_PATH + 32];
+    DWORD n = GetTempPathA(MAX_PATH, path);
+    snprintf(path + n, sizeof path - n, "sly2_live_input_%lu.txt", GetCurrentProcessId());
+    FILE* f = fopen(path, "wb");
+    CHECK(f != NULL, "cannot create %s", path);
+    if (!f) return;
+    fclose(f);
+    script_path = path;
+    script_offset = 0;
+    script_n = 0;
+    script_frame = 0;
+    append_line(path, "", 3000, "+5:circle:1");           /* read at frame 0 (lines are read every 8) */
+    int circle_at = -1, pad_frames = 0;
+    for (int f = 0; f < 16; f++, pad_frames++) {
+        pad_input p;
+        pad_clear(&p);
+        script_apply(0, &p);
+        if (p.buttons & PAD_CIRCLE) { CHECK(circle_at < 0, "circle twice"); circle_at = f; }
+    }
+    CHECK(circle_at == 5, "long line: circle at frame %d (want 5)", circle_at);
+    append_line(path, "+2:cross:1,", 0, "+0:none");       /* two lines at once: read at frame 16 */
+    append_line(path, "+3:square:1,", 0, "+0:none");
+    int cross_at = -1, square_at = -1;
+    for (int f = 16; f < 24; f++, pad_frames++) {
+        pad_input p;
+        pad_clear(&p);
+        script_apply(0, &p);
+        if (p.buttons & PAD_CROSS) cross_at = f;
+        if (p.buttons & PAD_SQUARE) square_at = f;
+    }
+    CHECK(cross_at == 18 && square_at == 19, "two lines: cross at %d (want 18), square at %d (want 19)",
+          cross_at, square_at);
+    int sent = 0, seen = 0;                               /* 10 lines of 3000 tokens: > SCRIPT_MAX in all */
+    for (int k = 0; k < 10; k++) {
+        append_line(path, "", 3000, "+1:triangle:1");
+        sent += 3002;
+        for (int f = 0; f < 8; f++, pad_frames++) {
+            pad_input p;
+            pad_clear(&p);
+            script_apply(0, &p);
+            if (p.buttons & PAD_TRIANGLE) seen++;
+        }
+    }
+    CHECK(sent > SCRIPT_MAX && seen == 10, "%d tokens sent, triangle seen %d times (want 10), %d pending",
+          sent, seen, script_n);
+    CHECK(script_n < 3100, "%d tokens still held", script_n);
+    script_path = NULL;                                   /* leave scripting off for the other tests */
+    script_n = 0;
+    remove(path);
+}
+
 /* ---- presenter checks: the GDI and Direct3D 11 presenters drawing into a test window of their own
  * (shown without activation, before window_init, so the window thread is not involved) ---------- */
 
@@ -754,6 +818,7 @@ int main(int argc, char** argv) {
     test_frame_handoff_stress();
     test_headless_input();
     test_input_script();
+    test_live_input();
     printf("unit checks: %d, failures: %d\n", checks, failures);
     if (!unit_only) {
         typedef HANDLE (WINAPI* set_dpi_fn)(HANDLE);      /* real pixels, like the window thread */
