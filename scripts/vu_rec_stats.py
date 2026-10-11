@@ -58,15 +58,16 @@ def main() -> int:
     unknown = {}
     for path in args.recs:
         for idx, addr, vb, micro, np, nc in records(path):
+            pc = addr & (0x7FF if idx else 0x1FF)
             match = None
-            for img, chunks, _ in imgs:
+            for img, chunks, _ in imgs:          # a matching image, preferably one with this entry
                 if img.unit != idx:
                     continue
                 ok = all(micro[s * 8:(s + len(r)) * 8] == b"".join(struct.pack("<Q", x) for x in r) for s, r in chunks)
-                if ok:
+                if ok and (match is None or pc in img.entries):
                     match = img
-                    break
-            pc = addr & (0x7FF if idx else 0x1FF)
+                    if pc in img.entries:
+                        break
             if match is None:
                 key = (idx, pc, "no image")
                 unknown[(idx, pc)] = micro

@@ -299,6 +299,9 @@ void vu_xgkick(uint32_t qw_addr) {
     if (vuc_hashing) {                   /* PS2_VU_VERIFY: hash both runs' kicks; the shadow's go no further */
         const vu_state* cur = vuc_shadow_active ? &vuc_shadow : &vu_st[1];
         vuc_khash = vu_kick_hash(vuc_khash, qw_addr, cur->cyc);
+        /* and the whole data memory at the kick: what the GS receives is byte-identical, so are the
+         * pictures (cross-run frame comparisons cannot show this: VBlank timing is wall-clock) */
+        vuc_khash = vu_hash_words(vuc_khash, cur->data, (cur->dmask + 1u) * 16u);
         vuc_kicks++;
         if (vuc_shadow_active) return;
     }

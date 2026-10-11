@@ -1,9 +1,16 @@
 # VU micro mode: implementation notes and Sly 2's microcode
 
-Files: `runtime/vu.c` (EE-facing API, memory, VU0 control registers), `runtime/vu_exec.c`
-(decoder + interpreter), `runtime/vu_internal.h` (state shared with the unit tests).
+The game's microprograms are **statically recompiled** to C at build time (`recomp/vu_recomp.py`,
+section "Recompiler" below), like the EE code; the interpreter is the reference and the fallback.
+
+Files: `runtime/vu.c` (EE-facing API, memory, VU0 control registers, dispatch to recompiled code,
+recording, verification), `runtime/vu_exec.c` (decoder + interpreter), `runtime/vu_ops.h` (the
+semantics of every operation, shared by interpreter and recompiled code), `runtime/vu_compiled.h`
+(interface of the generated code), `runtime/vu_internal.h` (state shared with the unit tests).
+Recompiler: `recomp/vu_decode.py` (decoder, a mirror of vu_exec.c's), `recomp/vu_recomp.py`.
 Tests and tools: `tests/unit/vu/` (`run.ps1`, `test_vu.c`, `vuasm.h` mini assembler,
-`vudis.py` disassembler).
+`vudis.py` disassembler), `tests/unit/vu_recomp/` (random programs: recompiled vs interpreter),
+`scripts/vu_replay.ps1` (recordings), `scripts/vu_rec_stats.py`.
 
 Sources: Sony's VU User's Manual (instruction set, encodings, flags), ps2tek
 (https://psi-rockin.github.io/ps2tek/: pipelines, latencies, flag layouts), the PCSX2 team's
@@ -99,14 +106,107 @@ Known deviations (documented, deliberate):
   FBRST (RS0/RS1 reset flags/TPC; DE/TE bits read back), VPU-STAT (0), CMSAR1 (write starts VU1).
 - XGKICK calls `gif_path1_kick(vu_data_mem(1), addr & 0x3FF)` synchronously at the instruction.
 
-## Performance
+## Interpreter performance
 
 i7-14700F, game build flags (-O1): about 6 ns per pair on a transform/perspective/clip loop
-(`bench` in `test_vu.c`, ~1.5 VU cycles per pair) and 1.8 ns per NOP pair, i.e. roughly
-150 M pairs/s against the VU1's 295 M pairs/s peak. Half of Sly 2's slots are NOPs. Hot helpers
-are forced inline because -O1 doesn't inline them (that alone was a 2x difference). The next
-step, if VU1 shows up in profiles, is to translate the eight fixed microprograms ahead of time
-(like the EE code), resolving hazards per basic block.
+(`bench` in `test_vu.c`, ~1.5 VU cycles per pair) and 1.8 ns per NOP pair. On real game microcode
+(recordings, pinned to a P-core) ~8 ns per pair; in the game ~11-13 ns (cache pressure from the
+rest of the EE thread). Hot helpers are forced inline because -O1 doesn't inline them.
+
+## Recompiler (`recomp/vu_recomp.py`)
+
+Native-port principle 1: game code is compiled. `python -m recomp vu <elf> -o <dir>` (run by
+`scripts/build_game.py` into `<out>/vu/`) translates every microcode image of the game to C;
+`runtime/vu.c` runs the compiled program whenever micro memory holds a compiled image, the
+interpreter otherwise. The compiled code is exact against the interpreter: same registers, flags,
+Q/P/R/I, TPC and data memory, same XGKICK addresses *and issue cycles*, same pair and cycle counts.
+
+**What gets compiled.** Every dvp-as overlay in `.vutext` (`.DVP.ovlytab`: chunks and their VU
+addresses) is an image, compiled for VU1, and for VU0 when it fits 4 KB and uses no VU1-only
+instruction. Entry points: the image start and every routine start, i.e. the pair after the delay
+slot of an E bit (also where VIF MSCNT continues) or of an unconditional B/JR. The game starts
+programs at such routine starts through VIF MSCAL (376110651 at 0x2E20, 0x2EE8, 0x2FC8, ...), and
+it uploads the 2-pair stub 376110587 (`[E] nop; nop`) over 376110651, whose first two pairs are the
+same. One image is one C function per "sticky" specialisation (below) plus a dispatcher.
+
+**Static timing: block versions.** The interpreter's timing model (vu_internal.h) is resolved at
+compile time. Code is generated per *block version* = (start pc, timing state), where the state is
+what is in flight at the block's first issue cycle, relative to it: VF fields and ILW results not
+yet ready (<= 3 cycles), the Q result and up to two P results with their ready times, MAC/status
+and clip results queued but not landed, the run of chained VI writes the branch quirk can reach,
+and which sticky status bits are known to be set. Inside a version every stall, issue cycle and
+landing is a compile-time constant; the generated code only adds constants to its cycle and pair
+counters and folds Q/P/flag results at the points where the interpreter would see them. A block
+reached in another state gets another version (376110651: 1932 pairs -> ~650 versions, ~3400
+pairs of code; capped at 24 versions per block, beyond which the program continues in the
+interpreter). Branch targets, return points and routine starts split blocks.
+
+**Flags.** An FMAC op's MAC/status result lands 4 cycles after issue. If no instruction within the
+next 3 pairs (including its own pair, along any path) reads the flags, it is folded at once; it is
+then not observable when. Folding is lazy: each result is a packed lane mask (`vu_macmask`), `fl`
+keeps the newest and `fk` the OR of the sticky components, and MAC/status are computed from them
+only at a reader, at block ends and at the end. Sticky bits are only ever set (FSSET, the one way
+to clear them, has an immediate known at compile time), so code specialised for "sticky Z S U O
+already set" skips accumulating those: each image has functions for sticky bits F (all), B (Z S O)
+and 0, picked at program start from `(status >> 6) & 0xF`. Sly 2 starts VU1 programs with 0x2C0
+(intro), 0x7C0 (briefing) or 0xFC0 (gameplay) and VU0 programs with 0x2C0; with all set, only the
+last FMAC op of a block computes flags. Results near a reader stay queued (fq0-3) and land exactly.
+Clip results work the same way.
+
+**VI branch quirk.** The state keeps the run of consecutive chained writes of one VI register
+before the current pair (pruned when no conditional branch within 4 pairs reads it); a writer
+whose old value a branch may need saves it (`vho_<pc>`), and the branch reads it statically.
+
+**JR/JALR.** Targets are dynamic (376110651 keeps return addresses on a stack in vf02 and calls
+`jalr vi15, vi01` with vi01 loaded from data memory). A JR dispatches with a switch over candidates:
+the return points of the calls to every subroutine whose body contains it (bodies from BAL targets,
+calls assumed to return); JALR: subroutine entries and routine starts. Any other target hands over
+to the interpreter (logged once: `jump from ... is not in the recompiled code`); none in Sly 2.
+
+**Handoff.** Where compiled code cannot continue (unknown jump target, branch in a delay slot,
+invalid instruction, version cap, and backward jumps once a program nears the interpreter's
+runaway limit, so that a program without an E bit stops exactly where the interpreter stops it)
+it writes the registers and the pipeline exactly as `vu_exec.c` keeps it (scoreboard, queued flag
+and clip entries, Q/P in flight, VI history) and calls `vu_resume()`.
+
+**Floating point.** Every operation's semantics comes from `runtime/vu_ops.h`, shared with the
+interpreter. The generated code runs under the VU MXCSR (round toward zero, FTZ/DAZ), but clang
+folds operations on constants with round-to-nearest and IEEE denormals: e.g. `loi 0.00787...`
+then `addi.w vf25, vf00, I` (1.00787... rounds differently), or `loi -6.68e-39` (a denormal) then
+`mulai ACC, vf07, I` (DAZ makes I zero for the U flag). So generated files have `#pragma STDC
+FENV_ACCESS ON`, and LOI immediates, MFIR values and vf00 pass through an empty asm (`vuc_opaque`).
+
+**Code shape and build time.** VF registers and ACC live in a local struct whose address escapes
+(`RG->vf[n]`); with 32 vector locals live across hundreds of blocks clang's register coalescer
+went superlinear (330 s for one image), and its SLP vectorizer (useless on intrinsics) cost
+minutes, so `build_game.py` compiles `<out>/vu/*.c` with `-fno-slp-vectorize` (~25 s CPU for the
+largest file, files in parallel).
+
+**Run time.** `vu_execute()` (vu.c): a write to micro memory (`vu_micro_mem()`, the pointer VIF
+MPG writes through, or an EE store) bumps the unit's generation; a program start at (unit, pc)
+looks up a slot cached per generation, checking candidate images with memcmp of their chunks.
+`PS2_VU_INTERP=1` runs the interpreter only; `PS2_VU_VERIFY=1` runs every compiled program and the
+interpreter on a copy of the state and compares everything (`PS2_VU_VERIFY_DUMP=<file>` writes
+mismatching programs as a recording for `vu_replay.ps1 -Compiled`). `PS2_PERF` shows the share of
+pairs that ran in recompiled code.
+
+**Verification.**
+- `scripts/vu_replay.ps1 -Rec <recording> -Compiled <out>\vu`: runs recorded game programs (inputs
+  from `PS2_VU_RECORD`, results from the interpreter) through the dispatcher; prints differences
+  field by field. Recordings of the intro cutscene, title, briefing and museum gameplay: 0
+  differences, 100% of programs compiled.
+- In-game `PS2_VU_VERIFY`: 0 mismatches over millions of programs (standard path, museum).
+- `tests/unit/vu_recomp/run.ps1`: random programs of every instruction (results read 0-4 pairs
+  after their writes, flag reads near writers, Q/P around DIV/EFU, branches on just-written VI
+  registers, loops, BAL/JR, JR to non-return points, branches in delay slots, a runaway program)
+  on random states including denormals and exponent-255 values. It found three real bugs: a 1-cycle
+  VI write after an ILW replaces the ILW's ready time in the interpreter's scoreboard; clang's
+  constant folding under DAZ; inexact runaway stops.
+- Debugging aids: `-DVU_TRACE` makes interpreter and compiled code print every pair's address and
+  issue cycle; `VU_FUZZ_ONLY=<program>:<state>` runs one random case.
+
+Speed: see `notes/performance.md` (recompiled ~1.9-2.1 ns per pair against ~8 for the interpreter
+on the same recordings, pinned to a P-core).
 
 ## Disassembler
 
