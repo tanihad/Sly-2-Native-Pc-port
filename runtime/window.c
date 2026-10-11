@@ -83,7 +83,8 @@ static const struct { const char* name; int axis, value; } script_sticks[] = {
  * counts their calls (ps2_func_calls). A token waits until the one before it has started. The button "none" presses
  * nothing (a pure wait point for the tokens after it). Partial stick deflection: "lxHH", "lyHH",
  * "rxHH", "ryHH" set that axis to the hex value HH (00 left/up, 80 centre, FF right/down).
- * "ram" writes EE RAM to <dump dir>/ram_<vblank>.bin (debugging).
+ * "ram" writes EE RAM to <dump dir>/ram_<vblank>.bin (debugging). "release" ends every press and
+ * stick hold still in progress (e.g. a long "r1:30000" paraglider hold in a live session).
  *   "t<seconds>:<button>[:<hold>]"      at a wall-clock time since the first pad read, e.g.
  *       "t95:start": scenes synchronised to sound (the intro cutscene follows its music stream)
  *       last a fixed real time, however fast the game runs.
@@ -109,6 +110,7 @@ static double script_seconds(void) {
 #define SCRIPT_NONE  (-2)
 #define SCRIPT_AXIS  (-3)                 /* lxHH etc.: axis/value in the token */
 #define SCRIPT_RAM   (-4)                 /* "ram": dump EE RAM (debug) */
+#define SCRIPT_RELEASE (-5)               /* "release": end the holds in progress */
 void ps2_request_ram_dump(void);
 static struct { uint32_t frame, hold, start, addr, ra, base, last; int button, kind, armed, seen, axis, value; }
     script[SCRIPT_MAX];
@@ -146,7 +148,8 @@ static void script_parse(const char* s) {
             if (*p == '+') frame = (unsigned)strtoul(p + 1, &p, 10);
             if (*p != ':' || sscanf(p + 1, "%31[a-z0-9]:%u", name, &hold) < 1) continue;
         } else if (sscanf(tok, "%u:%31[a-z0-9]:%u", &frame, name, &hold) < 2) continue;
-        int found = !strcmp(name, "none") ? SCRIPT_NONE : !strcmp(name, "ram") ? SCRIPT_RAM : -1, axis = 0, value = 0x80;
+        int found = !strcmp(name, "none") ? SCRIPT_NONE : !strcmp(name, "ram") ? SCRIPT_RAM :
+                    !strcmp(name, "release") ? SCRIPT_RELEASE : -1, axis = 0, value = 0x80;
         for (int b = 0; b < SCRIPT_NBUTTONS; b++)
             if (!strcmp(name, script_buttons[b].name)) found = b;
         for (int b = 0; b < (int)(sizeof script_sticks / sizeof script_sticks[0]); b++)
@@ -183,6 +186,7 @@ static void script_compact(uint32_t now) {
 
 static const char* script_name(int b) {
     return b == SCRIPT_NONE ? "none" : b == SCRIPT_AXIS ? "axis" : b == SCRIPT_RAM ? "ram" :
+           b == SCRIPT_RELEASE ? "release" :
            b >= SCRIPT_NBUTTONS ? script_sticks[b - SCRIPT_NBUTTONS].name : script_buttons[b].name;
 }
 
@@ -280,13 +284,18 @@ static void script_apply(int port, pad_input* in) {
     script_poll_file(now);
     if (!script_n) return;
     script_resolve(now);
+    for (int i = 0; i < script_n; i++)                       /* "release": cut the holds before it */
+        if (script[i].button == SCRIPT_RELEASE && script[i].start == now)
+            for (int j = 0; j < i; j++)
+                if (script[j].start != SCRIPT_UNSET && script[j].start < now && now < script[j].start + script[j].hold)
+                    script[j].hold = now - script[j].start;
     for (int i = 0; i < script_n; i++) {
         if (script[i].start == SCRIPT_UNSET) continue;
         if (now < script[i].start || now >= script[i].start + script[i].hold) continue;
         int b = script[i].button;
         if (now == script[i].start && b != SCRIPT_NONE)       /* calibrate pad frames vs VBlanks */
             wlog("pad frame %u (VBlank %u): %s (%u frames)", now, ps2_vblank_count(), script_name(b), script[i].hold);
-        if (b == SCRIPT_NONE) continue;
+        if (b == SCRIPT_NONE || b == SCRIPT_RELEASE) continue;
         if (b == SCRIPT_RAM) { if (now == script[i].start) ps2_request_ram_dump(); continue; }
         if (b == SCRIPT_AXIS) {
             uint8_t v = (uint8_t)script[i].value;

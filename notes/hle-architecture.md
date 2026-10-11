@@ -90,7 +90,8 @@ tools/, orig/ and .venv/ only exist in the main checkout
 - Scripted input (`PS2_INPUT`, runtime/window.c header): absolute `<padframe>:<button>[:<hold>]`,
   relative `+n:...`, anchored to game code `@<func>[/<ra>][+n]:...` (after a call of a recompiled
   function, optionally from the call site returning to ra) and `@!<func>[+n]:...` (after it went
-  quiet for n frames), `none`, partial sticks `lxHH/lyHH/rxHH/ryHH`, `ram` (EE RAM dump). Sly 2:
+  quiet for n frames), `none`, partial sticks `lxHH/lyHH/rxHH/ryHH`, `ram` (EE RAM dump), `release` (ends the holds in
+  progress, e.g. a long `r1:30000` paraglider hold). Sly 2:
   `@187D80/1DD96C+30:start` presses START once the title screen accepts it; `@!227820+90:none` waits
   for the end of a Binocucom conversation. Anchors need the debug build.
 - Live play: `scripts\live_game.ps1` starts the game in the background with `PS2_INPUT_FILE`
