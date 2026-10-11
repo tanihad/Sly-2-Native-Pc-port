@@ -148,25 +148,25 @@ frames in build\screenshots\ep8_*.png.
 - Regression after the main merge: scripts\ep8_finale.ps1 -Release -Wav (build\warp\finale3):
   boss Murray + Bentley stages, Hate Chip, autosave (blimp 100%), ending + credits 8 min, episode
   menu; exit 0, 1 underrun in 1100 s, log clean. All unit tests + run_tests.py pass.
+- Red band in world 42 (t8_engine_room_jt_open_door) explained: reproduced (build\warp\s9_red,
+  redscan.py): a translucent red slab sweeps right to left every ~1620 VBlanks (~165 VBlanks per
+  pass), depth-composited with Sly and the crates (his tail is inside it while his body is not).
+  PS2_GS_TRACE (BRIEF, MINSIZE 150) at v3482: the game draws it as a textured trifan/tristrips,
+  rgba 31000067 modulated, additive ALPHA (Cs-0)*As+Cd, Z-tested (z 171987): a 3D light volume (the
+  room's sweeping red alarm beam). Game effect, not a renderer bug. build\screenshots\ep8_red_sweep.png.
 
-## In progress
-- Boss Murray stage (t8_open_head_intro, release, head3..5 with PS2_POKE=3D4AE0=3C): Murray walks
-  to Clock-La's head (player pos peek 0x2DE1C0: start (0,-2168), beak front ~(40..250, 200..450));
-  lasers hit/knock him; guides: "jump over the lasers, reach the head, pry the mouth open". Tried
-  circle (= Murray's high jump-slam, letterboxed camera), triangle/square (attacks) at the beak
-  and at the pink glowing cage right of the beak: no pry yet. Direct start of 3488 (Bentley stage,
-  no start point) leaves a static letterboxed view: not a start point (not a bug).
-  Dialogue: "I'll pry open that beak so that Bentley can go to town with his bombs."
-- Learning the pry from m8_engine_room_jt's door lift (t8_engine_room_jt_lift, world 38, Murray).
-- Helpers: build\ep8tools\strs.py/strrange.py (RAM strings), findword.py, hexf.py, findobj.py
-  (ep7's), arr.py; boss task objects 3484 @0xD5AB00, 3488 @0xD5BB40, 3492 @0xD60AC0.
+## Status
+Episode 8 covered end to end: every job loads and plays; the natural chain recon -> chalk talk 1 ->
+TNT -> chalk talk 2 -> mega-jump -> turret -> final boss -> ending -> credits -> autosave -> episode
+menu runs on the game's own flow (stage tasks set with PS2_TASK_FILE where blind play cannot finish
+a stage; the boss is won by play). No runtime/recompiler problem found in ep8 (all anomalies traced
+to game behaviour or my debug tools); ep8 scenes need less GS work than the reference briefing.
+Not done by play: hacking minigame in ep8 (ep5 verified it), TNT barrel carry, Murray flops/throws,
+Bentley boxes; PS2_PERF on a quiet machine (never quiet during this task).
 
 ## Next
-1. (done: boss won, ending, credits, autosave)
-2. Live play (build\ep8tools\live.ps1 -Job <job> -Release): hacking minigame (engine_room_murray
-   hack_station), turret (m8_turret), Murray throws (jt), TNT run, megajump.
-3. Audio (-Wav) and perf (PS2_PERF) when the machine is less loaded.
-4. Representative frames into build\screenshots\ep8_*.png (survey dirs build\warp\s_*).
+1. If the machine is ever quiet: PS2_PERF (release) in the hub, safehouse and debris fall.
+2. Optional play: reach a hack terminal (L3 shows Bentley's waypoint arrow, ep4 note), TNT carry.
 
 ## Findings / traps
 - The machine is shared with 6+ other sly2 instances (CPU 100%): debug runs reach only ~18
