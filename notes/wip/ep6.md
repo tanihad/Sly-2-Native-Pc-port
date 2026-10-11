@@ -166,6 +166,16 @@ recompiler problem found at its root, with tests; frames in build\screenshots\ep
   annotations, spice balloons; screenshots ep6_chalktalk1_circle/_arrow) with 44 s of mono
   narration+music (-12..-17 dB RMS, peaks -0.4 dBFS, no clipping), 1.2 s silence, safehouse
   "Press X to play as Sly". All fine.
+- g1 paraglide death analysed: an eagle flies into Sly -> fire explosion -> retry (gameplay).
+- GS cost of ep6 (offline gs_replay -Bench, 8 workers, interleaved on the same loaded machine):
+  RC chopper battle recording (build\gsrec\rc_battle.gsrec, 120 VBlanks from v10000) 16-18 ms
+  per VBlank vs fix-perf's briefing recording 23-32 ms -> ep6 is not heavier for the GS than
+  the scenes that run at 60 on a quiet machine; the in-game GS thread 15-20 ms/VBlank is machine
+  load. No ep6-specific GS hot spot.
+- h1: RC battle at High priority class still 46-48 VBlanks/s, deploy altitude 2538 (stall case).
+- h2: RC battle task 2922 -> 2 via task file: job complete AUTOSAVE (m6_rc_chopper.is_complete,
+  train 67%), Bentley back in the hub tunnel with electric arcs (screenshot
+  ep6_hub_tunnel_electric_arcs).
 
 ## Next
 0. RC chopper battle stall: rerun with less load, dump RAM often after the launchers; if it stalls
