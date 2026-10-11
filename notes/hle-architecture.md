@@ -111,5 +111,6 @@ tools/, orig/ and .venv/ only exist in the main checkout
   `scripts\vu_replay.ps1 -Rec <file> [-Compiled <out>\vu]` replays recorded programs;
   `scripts\vu_rec_stats.py` lists the images/entries a recording uses; `tests\unit\vu_recomp`.
 - Frame dumps: `PS2_DUMP_FROM=<vblank>`, `PS2_DUMP_RING=<n>` (keep the newest n), `latest.png`;
-  `PS2_DUMP_RAM=<vblank>,...`; `PS2_CALLS=<from>:<n>,...` (up to 8 call-profile windows);
+  `PS2_DUMP_RAM=<vblank>,...`; `PS2_CALLS=<from>:<n>,...` (up to 8 call-profile windows; live
+  input tokens `+0:ram` dump EE RAM and `+0:calls:<n>` profiles the next n VBlanks, debug builds);
   `scripts\contact_sheet.py out.png frames... [--cols --scale --crop x0,y0,x1,y1 --zoom n]`.

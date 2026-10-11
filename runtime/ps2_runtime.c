@@ -152,9 +152,19 @@ static int calls_cmp(const void* a, const void* b) {
     return x < y ? -1 : x > y;
 }
 
+/* Live input token "calls" (window.c, "+0:calls:<frames>"): a call-profile window from the next
+ * VBlank, once no PS2_CALLS window is open or pending (debug builds). */
+static volatile uint32_t calls_request;
+void ps2_request_calls_window(uint32_t frames) { calls_request = frames ? frames : 1; }
+
 static void calls_vblank(uint32_t v) {
     static int init, next;
     static uint32_t windows[9][2];
+    if (calls_request && init && !calls_from) {
+        calls_from = v + 1;
+        calls_frames = calls_request;
+        calls_request = 0;
+    }
     if (!init) {                                 /* "<from>[:<frames>],..." up to 8 windows */
         init = 1;
         const char* e = getenv("PS2_CALLS");
