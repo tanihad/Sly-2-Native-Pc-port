@@ -93,7 +93,11 @@ static const struct { const char* name; int axis, value; } script_sticks[] = {
  * it is read ("+0:lup:60,+60:cross"), so a running game can be steered step by step (anchors work
  * there too: the runtime starts counting a function's calls when the script first asks for them).
  * Lines may be of any length; finished tokens are dropped when a line arrives, so a session can run
- * for hours (at most SCRIPT_MAX tokens pending at a time). */
+ * for hours (at most SCRIPT_MAX tokens pending at a time).
+ * "pause" (live input only) stops the game at the next VBlank whose picture is dumped
+ * (PS2_DUMP_EVERY; latest.png then shows it) until the next line arrives, e.g. "+0:r1:20,+20:pause":
+ * real-time sections can be played step by step however long it takes to look at a frame. The EE
+ * waits inside the pad read; the VBlanks it misses are dropped (no catch-up), IOP and sound go on. */
 enum { SCRIPT_ABS, SCRIPT_REL, SCRIPT_ANCHOR, SCRIPT_QUIET, SCRIPT_TIME };
 #define SCRIPT_MAX   16384
 static double script_at[SCRIPT_MAX];       /* SCRIPT_TIME tokens: seconds since the first pad read */
@@ -109,6 +113,8 @@ static double script_seconds(void) {
 #define SCRIPT_NONE  (-2)
 #define SCRIPT_AXIS  (-3)                 /* lxHH etc.: axis/value in the token */
 #define SCRIPT_RAM   (-4)                 /* "ram": dump EE RAM (debug) */
+#define SCRIPT_PAUSE (-5)                 /* "pause": stop until the next live input line */
+static int script_pause_req;
 void ps2_request_ram_dump(void);
 static struct { uint32_t frame, hold, start, addr, ra, base, last; int button, kind, armed, seen, axis, value; }
     script[SCRIPT_MAX];
@@ -146,7 +152,8 @@ static void script_parse(const char* s) {
             if (*p == '+') frame = (unsigned)strtoul(p + 1, &p, 10);
             if (*p != ':' || sscanf(p + 1, "%31[a-z0-9]:%u", name, &hold) < 1) continue;
         } else if (sscanf(tok, "%u:%31[a-z0-9]:%u", &frame, name, &hold) < 2) continue;
-        int found = !strcmp(name, "none") ? SCRIPT_NONE : !strcmp(name, "ram") ? SCRIPT_RAM : -1, axis = 0, value = 0x80;
+        int found = !strcmp(name, "none") ? SCRIPT_NONE : !strcmp(name, "ram") ? SCRIPT_RAM :
+                    !strcmp(name, "pause") ? SCRIPT_PAUSE : -1, axis = 0, value = 0x80;
         for (int b = 0; b < SCRIPT_NBUTTONS; b++)
             if (!strcmp(name, script_buttons[b].name)) found = b;
         for (int b = 0; b < (int)(sizeof script_sticks / sizeof script_sticks[0]); b++)
@@ -182,7 +189,7 @@ static void script_compact(uint32_t now) {
 }
 
 static const char* script_name(int b) {
-    return b == SCRIPT_NONE ? "none" : b == SCRIPT_AXIS ? "axis" : b == SCRIPT_RAM ? "ram" :
+    return b == SCRIPT_NONE ? "none" : b == SCRIPT_AXIS ? "axis" : b == SCRIPT_RAM ? "ram" : b == SCRIPT_PAUSE ? "pause" :
            b >= SCRIPT_NBUTTONS ? script_sticks[b - SCRIPT_NBUTTONS].name : script_buttons[b].name;
 }
 
@@ -190,7 +197,7 @@ static const char* script_name(int b) {
 static const char* script_path = (const char*)1;              /* (const char*)1: not looked up yet */
 static long script_offset;
 
-static void script_poll_file(uint32_t now) {
+static void script_poll_file(uint32_t now, int force) {
     if (script_path == (const char*)1) {
         script_path = getenv("PS2_INPUT_FILE");
         if (script_path) {                                    /* ignore what is already there */
@@ -199,7 +206,7 @@ static void script_poll_file(uint32_t now) {
             wlog("live input from %s", script_path);
         }
     }
-    if (!script_path || now % 8) return;
+    if (!script_path || (now % 8 && !force)) return;
     long offset = script_offset;
     FILE* f = fopen(script_path, "rb");
     if (!f) return;
@@ -234,6 +241,32 @@ static void script_poll_file(uint32_t now) {
              len > 300 ? " ..." : "");
     }
     free(buf);
+}
+
+/* "pause": due at a VBlank whose picture is dumped, so latest.png shows where the game stopped. */
+static int script_pause_due(void) {
+    static int every = -1;
+    if (every < 0) {
+        const char* e = getenv("PS2_DUMP_EVERY");
+        every = !getenv("PS2_DUMP_FRAMES") ? 1 : e && atoi(e) > 0 ? atoi(e) : 60;
+    }
+    return ps2_vblank_count() % (uint32_t)every == 0;
+}
+
+/* The EE waits here, inside the pad read, until a complete line follows what was read. */
+static void script_wait_line(uint32_t now) {
+    wlog("pad frame %u (VBlank %u): paused until the next line in %s", now, ps2_vblank_count(), script_path);
+    for (;;) {
+        FILE* f = fopen(script_path, "rb");
+        int line = 0;
+        if (f) {
+            if (fseek(f, script_offset, SEEK_SET) == 0)
+                for (int c; !line && (c = fgetc(f)) != EOF;) line = c == '\n';
+            fclose(f);
+        }
+        if (line) return;
+        Sleep(20);
+    }
 }
 
 /* Give relative and anchored tokens their start frame once the token before them has started. */
@@ -277,7 +310,13 @@ static void script_apply(int port, pad_input* in) {
     }
     if (port != 0) return;
     uint32_t now = script_frame++;
-    script_poll_file(now);
+    int resumed = 0;
+    if (script_pause_req && script_path && script_path != (const char*)1 && script_pause_due()) {
+        script_pause_req = 0;
+        script_wait_line(now);
+        resumed = 1;                                          /* take the new line at once */
+    }
+    script_poll_file(now, resumed);
     if (!script_n) return;
     script_resolve(now);
     for (int i = 0; i < script_n; i++) {
@@ -288,6 +327,7 @@ static void script_apply(int port, pad_input* in) {
             wlog("pad frame %u (VBlank %u): %s (%u frames)", now, ps2_vblank_count(), script_name(b), script[i].hold);
         if (b == SCRIPT_NONE) continue;
         if (b == SCRIPT_RAM) { if (now == script[i].start) ps2_request_ram_dump(); continue; }
+        if (b == SCRIPT_PAUSE) { if (now == script[i].start) script_pause_req = 1; continue; }
         if (b == SCRIPT_AXIS) {
             uint8_t v = (uint8_t)script[i].value;
             switch (script[i].axis) {
