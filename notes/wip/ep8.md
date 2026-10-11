@@ -36,6 +36,17 @@ frames in build\screenshots\ep8_*.png.
   build\screenshots\ep8_episode_menu.png.
 - live.ps1 now: direct start in both builds (-Hub = walk in instead), -Extra "VAR=v;VAR2=v".
 
+- Session 3 (quiet machine for ~5 min): perf of the hub (release, build\warp\perf_hub, PS2_PERF):
+  attract flyover 32-39 VBlanks/s and safehouse 30-45/s with VU 1.0-1.1M pairs/VBlank at 13-21
+  ns/pair (VU = 65-70% of EE busy); blimp hub 55-59/s (VU 550-620k). Root cause = VU interpreter
+  cost; next/vu-recomp fixes it: temporary merge (--no-commit, built build\vurel, merge aborted):
+  safehouse VU ~4 ns/pair, EE busy 10 ms, 54-58/s, then GS thread ~16 ms/VBlank is the limit
+  (machine got loaded again mid-run). PS2_VU_VERIFY with build\vurel on m8_boss (debris chase),
+  t8_open_head_intro, m8_turret (turret shooting): 7.3M + 8.4M + 8.4M programs, 0 mismatches.
+- Audio of the hub run (-Wav, wav_analyze): music/sfx throughout, only silences at loads; a few
+  moderate "clicks" in music (percussive content), nothing systematic.
+- Cherry-picked the PS2_INPUT_FILE fix (a5a3c3f: lines of any length, one time origin per line).
+
 ## In progress
 - Boss Murray stage (t8_open_head_intro, release, head3..5 with PS2_POKE=3D4AE0=3C): Murray walks
   to Clock-La's head (player pos peek 0x2DE1C0: start (0,-2168), beak front ~(40..250, 200..450));
