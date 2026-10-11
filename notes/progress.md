@@ -2,6 +2,13 @@
 
 ## Resume here (read first in a new session)
 
+**warp (2026-10-10):** start the game at any episode or job without playing up to it:
+`scripts\warp_run.ps1 -Episode N [-Job m3_heist] [-Direct] -Play [-Release]`, or
+`scripts\warp.py make --episode N` / `--job <job>` then `scripts\play.ps1`. Memory-card saves built
+from the reverse-engineered progress blob (schema + task graph read from the game), plus a
+debug-only hook that starts a job directly (runtime/warp.c, PS2_WARP_TASK). All 9 episode starts
+and 10 sampled jobs verified, no runtime blockers found. Guide and format: `notes/warp.md`.
+
 **fix/fix-perf (2026-10-10):** the release build (and the -O1 default build) runs at full speed,
 59.94 VBlanks/s and ~60 game flips/s, on the movie, memory-card prompt, intro cutscene, title and
 Binocucom briefing (main before: 22-32 VBlanks/s in the 3D scenes). GS on its own thread with

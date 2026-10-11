@@ -41,11 +41,11 @@ EPISODES = [
     ("intro",     "Prologue: Cairo Museum Break-In", "Cairo", 0),
     ("nightclub", "Episode 1: The Black Chateau", "Paris", 2),
     ("palace",    "Episode 2: A Starry Eyed Encounter", "India", 8),
-    ("temple",    "Episode 3: The Predator Awakens", "India", 12),
+    ("temple",    "Episode 3: The Predator Awakes", "India", 12),
     ("prison",    "Episode 4: Jailbreak", "Prague", 14),
     ("castle",    "Episode 5: A Tangled Web", "Prague", 17),
     ("train",     "Episode 6: He Who Tames the Iron Horse", "Canada", 27),
-    ("sawmill",   "Episode 7: Menace from the North, Eh!", "Canada", 32),
+    ("sawmill",   "Episode 7: Menace in the North, Eh?", "Canada", 32),
     ("blimp",     "Episode 8: Anatomy for Disaster", "Blimp", 38),
 ]
 CHARACTERS = {"sly": 7, "bentley": 8, "murray": 9}       # player object ids (oidPoCurrent)
@@ -356,8 +356,18 @@ def jst_now(offset_s=0):
 
 
 def write_card(card, slot, data, keep_others):
-    """Write the save into <card>/BASCUS-97316YAOTWTD!/save<slot> (runtime/mc.c's host layout)."""
+    """Write the save into <card>/BASCUS-97316YAOTWTD!/save<slot> (runtime/mc.c's host layout).
+    Saves that would be overwritten (play time not 0) are copied to <card>.warp-backup-<time>/ first."""
     d = Path(card) / SAVE_DIR
+    olds = [f for f in sorted(d.glob("save[123]")) if f.stat().st_size == SAVE_SIZE
+            and struct.unpack_from("<f", f.read_bytes(), 0x10)[0] != 0.0
+            and (f.name == f"save{slot}" or not keep_others)]
+    if olds:
+        bak = Path(f"{Path(card).resolve()}.warp-backup-{datetime.datetime.now():%Y%m%d-%H%M%S}") / SAVE_DIR
+        bak.mkdir(parents=True, exist_ok=True)
+        for f in olds:
+            (bak / f.name).write_bytes(f.read_bytes())
+        print(f"kept the saves it replaces in {bak}")
     d.mkdir(parents=True, exist_ok=True)
     tag = d / SAVE_DIR
     if not tag.exists():

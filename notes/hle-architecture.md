@@ -94,6 +94,9 @@ tools/, orig/ and .venv/ only exist in the main checkout
   "+0:lup:60" -Wait 3` sends input and tiles the newest frames into build\live\look.png;
   `scripts\live_goto.py x,y ...` steers Sly to world positions, `scripts\live_hop.py` jumps towards
   one (both need `PS2_PEEK="2DE1C0:4,2DDFD0:4"`: player focus and camera position).
+- Start at any episode or job (memory-card saves, `notes/warp.md`): `scripts\warp_run.ps1 -Episode N
+  [-Job <job>] [-Direct] -Play`; `scripts\warp.py make|list|dump`; `run_game.ps1 -Card <dir>`
+  (PS2_MEMCARD_DIR); `PS2_WARP_TASK=<task oid>[:<world>]` (debug build) starts a job on "Resume".
 - Frame dumps: `PS2_DUMP_FROM=<vblank>`, `PS2_DUMP_RING=<n>` (keep the newest n), `latest.png`;
   `PS2_DUMP_RAM=<vblank>,...`; `PS2_CALLS=<from>:<n>,...` (up to 8 call-profile windows);
   `scripts\contact_sheet.py out.png frames... [--cols --scale --crop x0,y0,x1,y1 --zoom n]`.
