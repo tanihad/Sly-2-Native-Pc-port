@@ -144,6 +144,14 @@ runtime/recompiler problem found at its root (with tests); frames in build\scree
   around, and after ~4 min the outro comic played (mugshot, jail, van Paris -> Monaco, card game)
   -> episode menu "Episode 2". Frames ep1_boss_won_outro.png, ep1_outro_*.png. So the whole
   episode is completable; no runtime problem in the fight.
+- Recon in depth (rc1/rc2): binocucom (R3) works anywhere; the photo (R1/X) only counts at the
+  printing press window (wiki route: wine cellar -> lasers -> flashlight guards -> vent ->
+  backstage -> yellow laser wall + flashlight guard -> orange lasers + warthog -> rat room -> vent ->
+  window). PS2_WARP_TASK=1784:3 (+ warp --complete of the earlier recon tasks) starts at
+  checkpoint 2 (backstage, Sly at (6628,2440)): stealth slam (behind the guard: triangle, square)
+  knocked the flashlight guard over once; normal combos knock him out too; a second guard then
+  beats Sly (health pie, coins drop) -> death -> restart at the checkpoint. All game behaviour;
+  the window was not reached (live stealth at ~30 fps with seconds of latency).
 
 ## Next
 1. Chalk talk test (ct1: m1_recon direct + task file: 1793/1794/1795 -> 2 -> recon complete ->
