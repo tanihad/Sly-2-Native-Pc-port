@@ -55,6 +55,13 @@ build\screenshots\ep7_*.png.
   picks one up / throws it, bear and guards walk around; station not hit (aim). Logs clean.
 - Machine very loaded (7 games at once): release runs at 20-35 VBlanks/s, IOP timer 165-240/s.
 
+- FIXED (1d1a7a6) dark speckled bottom picture line (output line 446) in every frame: PCRTC field
+  mode gave circuit 1 (anti-flicker, DBY 1, DH 446) 224 lines in one field, so its last line read
+  buffer row 224 (Z buffer / other buffer) and was mixed 50% into the picture. Now (DH+1)/2 lines
+  per field, rounded down (PCSX2's GSdx does the same). Found with the GS recording replay
+  (fix-perf's build\title.gsrec) + a temporary pixel watch in draw() (build\tools\pixwatch.patch:
+  PS2_GS_PIXWATCH=fbp,x,y prints every change of that pixel with the primitive; replay only).
+
 ## In progress
 
 ## Tools (build\tools, not committed; the scratchpad is shared with other agents!)
