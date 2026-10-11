@@ -65,7 +65,8 @@ tools/, orig/ and .venv/ only exist in the main checkout
 - clang: `C:\Users\tanih\Projects\sly2-decomp\tools\llvm-mingw\bin\clang.exe`
 - git: `C:\Users\tanih\Projects\sly2-decomp\tools\git\cmd\git.exe`
 - Recompiler tests: `<python> tests\run_tests.py`
-- Full game build: `<python> scripts\build_game.py` (40 s, output in `build\sly2\` of your tree)
+- Full game build: `<python> scripts\build_game.py` (1.5-4 min from scratch, the recompiled VU
+  microcode files are the largest; output in `build\sly2\` of your tree)
 - Run: `powershell -ExecutionPolicy Bypass -File scripts\run_game.ps1 -Seconds 8 [-Dump <dir>]`
   (headless; `-Dump` writes displayed frames as PNG every 60 VBlanks; `PS2_LOG_SIF=1` logs IOP
   traffic; the watchdog prints the hottest recompiled functions when it stops the game)
@@ -105,6 +106,12 @@ tools/, orig/ and .venv/ only exist in the main checkout
   recomp/hooks.py) starts a job on "Resume"; `PS2_TASK_SET=<task oid>:<state>[@<vblank>],...` /
   `PS2_TASK_FILE=<path>` (lines appended while it runs; `<oid>:?` prints the state) change a task's
   state through the game's own 0x164DF0 at the top of the main loop (entry hook on 0x20E890).
+- VU microcode is recompiled (`recomp/vu_recomp.py`, `notes/vu-microcode.md`): `PS2_VU_INTERP=1`
+  runs the interpreter instead; `PS2_VU_VERIFY=1` runs every recompiled program and the interpreter
+  on a copy and compares registers, flags, data memory, XGKICKs (with the data memory at each kick)
+  and timing (`PS2_VU_VERIFY_DUMP=<file>`: mismatches as a recording); `PS2_VU_RECORD` +
+  `scripts\vu_replay.ps1 -Rec <file> [-Compiled <out>\vu]` replays recorded programs;
+  `scripts\vu_rec_stats.py` lists the images/entries a recording uses; `tests\unit\vu_recomp`.
 - Frame dumps: `PS2_DUMP_FROM=<vblank>`, `PS2_DUMP_RING=<n>` (keep the newest n), `latest.png`;
   `PS2_DUMP_RAM=<vblank>,...`; `PS2_CALLS=<from>:<n>,...` (up to 8 call-profile windows);
   `scripts\contact_sheet.py out.png frames... [--cols --scale --crop x0,y0,x1,y1 --zoom n]`.

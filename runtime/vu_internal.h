@@ -100,6 +100,7 @@ typedef struct vu_state {
 
     /* statistics */
     uint64_t programs, pairs, cycles;
+    uint64_t cprograms, cpairs;          /* of these, started in recompiled code (vu.c) */
 } vu_state;
 
 extern vu_state vu_st[2];
@@ -108,6 +109,13 @@ void     vu_init_state(vu_state* st);
 /* Run from instruction address pc (64-bit units) until the pair after an E bit. Requires the VU
  * MXCSR mode (vu.c sets it). Returns the number of pairs executed. */
 uint32_t vu_run(vu_state* st, uint32_t pc);
+/* Continue a program handed over by recompiled code (vu_compiled.h) with its pipeline state in st. */
+uint32_t vu_resume(vu_state* st, uint32_t pc, uint32_t npc, uint32_t cyc, uint32_t n, int ending);
+/* Start a program the way the game does: the recompiled version of the micro memory's program if
+ * there is one (vu.c), the interpreter otherwise. */
+uint32_t vu_execute(vu_state* st, uint32_t pc);
+
+#define VU_MAX_PAIRS (1u << 24)          /* runaway guard: ~0.1 s of VU time */
 /* XGKICK from VU1 (implemented in vu.c: restores the host FP mode around the GIF call). */
 void     vu_xgkick(uint32_t qw_addr);
 /* VU1 registers as VU0 sees them at data addresses 0x4000-0x43FF (quadword index 0-63). */
