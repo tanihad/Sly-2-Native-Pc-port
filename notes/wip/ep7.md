@@ -129,6 +129,15 @@ build\screenshots\ep7_*.png.
   right (ep7_boss_flames.png). Traps per level data: c_ewok_trap_fire_pad / _circular_saw / _log.
   With PS2_POKE health hold Bison pins Bentley in an endless hit loop (as before) -> not won;
   parked (game logic, no runtime issue seen).
+- Laser job finished in context (build\laser3, PS2_TASK_FILE crystals 3099..3113 -> 2): laser melts
+  the ice block (steam where the beam hits), a mammoth walks out, "Log Chopping Guide!" loot card,
+  "Job Completed!" book, autosave icon; save1: m7_laser complete, t7_laser_complete state 3,
+  sawmill 25%. 3069/3083 (bearcave/robot war complete) set from state 0 -> chalktalk2 (3118) state 1
+  but no chalk talk (it plays in context only; chalk talks verified by ep2/ep3/ep5).
+- Heist 4 (wall hook cheat, Murray, build\wallhook): cutscene (judges with score cards, Bison climbs
+  the ice wall), idle -> "Job Failed! Jean Bison was able to make it to the top of the wall in
+  time", X retry, hint marquee. Renders right. (--job t7_heist3_wall_hook starts heist4_intro: tasks
+  without a world go to the next stage with one.)
 
 ## In progress
 - Perf sweep (release, PS2_PERF) of the ep7 hub and the heavy job levels while the machine is quiet.
