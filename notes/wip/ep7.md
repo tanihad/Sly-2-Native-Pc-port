@@ -141,6 +141,12 @@ build\screenshots\ep7_*.png.
 - VU recompiler check on ep7 content (release, PS2_VU_VERIFY=1, build\warp\vv_*): hub gameplay
   9.4M programs, RC combat (world 33) 9.4M, lighthouse interior (35) 5.2M, bear cave (36) 5.2M, boss
   arena (37) 5.2M: 0 mismatches.
+- Power chop (heist1, Murray, build\chop): meter marker (green inside the log icon, red outside)
+  sweeps ~60 VBlanks per pass; CROSS freezes it and Murray chops (strength by distance from the
+  centre: wood chips + growing crack). Bot build\tools\chop.py (pause token, predicts the centre
+  crossing, latency ~4.4 VBlanks) froze it within +-30 px of the centre; on this 100%-loaded machine
+  the game's frame steps vary (2-10 px per VBlank), so prediction is loose. Log split after ~10 hits ->
+  "Job Failed! You need to break the log in fewer hits to beat Jean Bison", X retry works.
 
 ## In progress
 - Perf sweep (release, PS2_PERF) of the ep7 hub and the heavy job levels while the machine is quiet.
