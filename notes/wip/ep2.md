@@ -75,11 +75,17 @@ build\screenshots\ep2_*.png.
   start drifts +-30 frames between runs (loading time), so fixed scripted frames are unreliable:
   build\tools\dance_bot.py (not committed) reads the prompt band from frames\latest.png every 2
   VBlanks and answers through the live input file; build\tools\dance_live.ps1 starts it.
+  Bot results (dl2-dl4, release): rounds 1 (TTT) and 2 (TTO) passed, round 3 (O T X) failed; a
+  press made before the previous slot's reveal counts for that slot (double press = fail). The
+  game ran at ~25 VBlanks/s on the overloaded machine while the music plays in real time, and the
+  live input file is only read every 8 pad frames (0.3 s at that speed), so the bot's timing
+  (0.3-0.5 s) is about one beat: not reliable enough to finish. No runtime problem seen (inputs,
+  prompts, reveals, failure path all behave). Frames ep2_dance_*.png.
   Completion-task direct starts: t2_dance_audition_complete -> Sly at the hub safehouse (no
   cutscene); t2_bomb_bridge_lower_collapse -> 2104:8 = Bentley on the upper bridge, debris falling.
 
 ## Next
-1. Dance minigame: finish with the bot (round 2 failed in dl1; frames kept in dl2).
+1. Dance minigame: only worth finishing on a quiet machine (game at 60 fps); bot in build\tools.
 2. Audio run (-Wav + PS2_LOG_SND, release hub) - first attempt starved by machine load.
 3. Perf: machine heavily loaded by other agents (~12 sly2.exe at once; release hub ran at 15-27
    VBlanks/s, VU 25-50 ns/pair) - hub VU load 850-970k pairs/VBlank ~ the intro cutscene (60 fps
