@@ -59,6 +59,14 @@ frames in build\screenshots\ep8_*.png.
   0x2A7D90, types 3..0x5A); type 0x42 = button pressed (mask cond+0x10, via 0x187D80 on JOY
   0x2DFC00: +0x10B4 held, +0x10B8 pressed). 0x1E3890 is only called near/at the grab point.
   Global prompt object 0x4435F0 (string id, button mask) stays -1 during the grab.
+- SOLVED (game mechanic, not a bug): Murray's pry (state 6 at actor+0x13D0, update 0x1B5820) is a
+  button mash: anims 0x1CB..0x1CF are stages of 1.5 s; each needs int(4*1.5)=6 presses of any
+  face button (mask 0xF0 via 0x1C46C0 on the press timestamps at joy+0x88) with gaps <= 1 s,
+  else it falls back a stage (0x1CB -> 0x1CA = let go). Difficulty actor+0x1534 (beak: 2 = all
+  5 stages, ~7.5 s of mashing after the ~2 s grab animation; door lift levels 0/1 fewer stages).
+  Tables 0x2C0908 (next) / 0x2C0948 (fall back), timer 0x2C0990, rate 0x2C099C. Working input:
+  `+0:circle:6,+60:none` + 200 x `,+5:square:2,+5:triangle:2` -> Murray stage won, Bentley
+  stage starts (build\screenshots\ep8_boss_bentley_stage.png). Murray actor 0xF745D0 there.
 
 ## In progress
 - Boss Murray stage (t8_open_head_intro, release, head3..5 with PS2_POKE=3D4AE0=3C): Murray walks
