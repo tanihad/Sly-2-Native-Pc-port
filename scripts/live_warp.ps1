@@ -6,7 +6,8 @@
 # -Direct (debug build): the game starts the job by itself (PS2_WARP_TASK, notes/warp.md).
 # Peeks the player/camera positions (PS2_PEEK 2DE1C0, 2DDFD0) for scripts\live_goto.py.
 param([Parameter(Mandatory = $true)][int]$Episode, [string]$Job = "", [switch]$Direct, [switch]$Release,
-      [string]$Name = "", [int]$DumpEvery = 30, [string]$Pad = "", [int]$Minutes = 60, [int]$TitleFrame = 2400)
+      [string]$Name = "", [int]$DumpEvery = 30, [string]$Pad = "", [int]$Minutes = 60, [int]$TitleFrame = 2400,
+      [string]$Set = "")   # -Set "path=value,...": raw save edits (warp.py make --set)
 $root = Split-Path $PSScriptRoot -Parent
 $py = 'C:\Users\tanih\Projects\sly2-decomp\.venv\Scripts\python.exe'
 if ($Direct -and $Release) { "-Direct needs the debug build"; exit 1 }
@@ -18,6 +19,7 @@ Remove-Item -Recurse -Force $card -ErrorAction SilentlyContinue
 $mk = @((Join-Path $root 'scripts\warp.py'), 'make', '--episode', "$Episode", '--card', $card)
 if ($Job) { $mk += @('--job', $Job) }
 if ($Direct) { $mk += '--direct' }
+foreach ($s in ($Set -split ',' | Where-Object { $_ })) { $mk += @('--set', $s.Trim()) }
 $made = & $py @mk
 $made
 Remove-Item Env:\PS2_WARP_TASK -ErrorAction SilentlyContinue
