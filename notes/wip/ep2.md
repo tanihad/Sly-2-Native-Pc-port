@@ -13,13 +13,25 @@ build\screenshots\ep2_*.png.
   m2_steal_tuxedo (world 9): all load and play, no new log lines (only one
   "[sd] VoiceTrans ... overwrites the block voice c0 v4 is playing" at a level load).
 
+- All 12 job starts load and play: also m2_dance_audition (dance minigame prompts, fails without
+  input: "Job Failed!"), m2_boardroom_brawl (world 10; Sly swims in a pool - the game has
+  swimming), m2_elephant_rampage, m2_heist_bomb_bridge (Binocucom briefing + camera tour, then
+  Bentley), m2_heist_dance (world 11, dance), m2_heist_cover_murray (Clockwerk's Wings title card,
+  RC chopper). t2_intro / t2_chalktalk1/3 direct: just Sly at the safehouse (triggered elsewhere).
+- Live (scripts\live_warp.ps1, new): RC chopper flies, bombs drop (smoke). Recon in the ballroom
+  (t2_recon_enter_ballroom): Binocucom view, R1 photos with shutter, the game judges framing
+  ("Too far, use right analog stick zoom in" / "Bad framing, point at object"); Binocucom Y aim is
+  inverted. Autosave writes save1 after level loads in the hub.
+
 ## In progress
-- Direct starts batch 3: m2_dance_audition, m2_boardroom_brawl, m2_elephant_rampage.
+- fake_long (dance_audition_fake to its end, job completion + autosave), audio\hub (-Wav + PS2_LOG_SND
+  release hub), turret_attack (t2_turret_attack_chopper with inputs), elephant2.
 
 ## Next
-1. Direct starts: m2_heist_bomb_bridge, m2_heist_dance, m2_heist_cover_murray.
-2. Live play inside jobs (debug build + PS2_INPUT_FILE): rc_chopper bombs, turret, dance minigame.
-3. Audio (-Wav) and perf (PS2_PERF) checks in the hub and a job (machine is heavily loaded by
-   other agents: ~11 sly2.exe at once, release hub ran at 15-27 VBlanks/s, VU 25-50 ns/pair).
+1. Dance minigame: dense dumps, work out prompts, try scripted presses.
+2. Audio analysis (wav_analyze.py, audio_streams.py) of the hub run.
+3. Perf: machine heavily loaded by other agents (~12 sly2.exe at once; release hub ran at 15-27
+   VBlanks/s, VU 25-50 ns/pair) - hub VU load 850-970k pairs/VBlank ~ the intro cutscene (60 fps
+   with 2 ms headroom on a quiet machine).
 
 ## Findings / traps
