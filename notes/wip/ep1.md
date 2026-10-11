@@ -118,6 +118,12 @@ runtime/recompiler problem found at its root (with tests); frames in build\scree
   ep1_boss_outro_comic.png, ep1_episode2_menu.png, ep1_to_ep2_start_episode.png.
 - ct2 (warp --job m1_recon --complete t1_recon --complete m1_recon --activate t1_chalktalk1): Sly
   in the hub, no chalk talk (it is started by the recon completion event, not by its state).
+- ct3 (m1_recon direct + task file 1776..1790 -> 2, spytargets 1793-1795 -> 2): the game made
+  1796 (recon_complete) active, not complete (it waits for a trigger, unlike sat_complete); 1796 -> 2
+  by hand: Job Help shows all goals ticked and the job ticked, chalktalk1 active, but no "Job
+  Completed!" page and no chalk talk; Save and Quit (pause: Keep Playing / Save and Quit / Exit to
+  Episode Menu, confirm) + Resume -> safehouse with only Sly / ThiefNet options. Chalk talk needs
+  the real completion trigger (tool limitation, not a runtime problem).
 
 ## Next
 1. Chalk talk test (ct1: m1_recon direct + task file: 1793/1794/1795 -> 2 -> recon complete ->
