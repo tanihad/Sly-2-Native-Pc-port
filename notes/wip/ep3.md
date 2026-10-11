@@ -159,8 +159,13 @@ warp saves / direct job starts; fix every runtime/recompiler problem found at it
 - build\tools\taskcap.ps1: the input parameter was named $Input (PowerShell's automatic $input
   enumerator), so input lines were never written; now -Line.
 
+- Session 5 (2026-10-11 13:20): the soak_hub run had stopped after 25 s (killed by the usage-limit
+  interruption; memory 149 MB committed, flat). Machine was idle at 13:22, but 4 other testers
+  started their own "quiet machine" hub perf runs within the same minute, so perf_hub (release,
+  120 s) is contaminated again: ~46 VBlanks/s, GS thread 15-24 ms/VBlank, EE busy 8-10 ms.
+
 ## Next
-1. Soak: 20 min hub with input and PS2_PERF memory lines (build\warp\soak_hub) - check result.
+1. Soak: 20 min hub with input and PS2_PERF memory lines - rerun (first one was cut off).
 2. On a quiet machine: in-game PS2_PERF in the hub / world 13 (expect 60/60 from the GS replay
    ratio), and the episode-3 intro comic (stereo movie) for late movie-audio refills.
 3. Gameplay left (skill/navigation, no runtime blockers known): turret dam hit, boss "Get to
