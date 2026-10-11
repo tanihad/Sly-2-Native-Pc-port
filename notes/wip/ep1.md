@@ -136,6 +136,14 @@ runtime/recompiler problem found at its root (with tests); frames in build\scree
 - Boss mechanic (slycooper.wiki.gg walkthrough): Dimitri is only open after his ring jams on
   the 4th bolt; melee near him does nothing. build\tools\boss_bot2.py kites at a distance, then
   rushes and swings, in a drifting cycle.
+- **Boss won legitimately (boss7, release, PS2_POKE=3D4AB0=28)**: Dimitri's position is the float
+  triple at 0x685620 (object 0x685460, vt 2D9978, oid 13105, +0x1C0; found with
+  build\tools\objmove.py = objects whose position-like triples moved between two RAM dumps, then
+  checked against his known start spot (-1194,-1364)). boss_bot2.py --target 685620 --far 800
+  --hold 6 --rush 4 --range 230: his health pie (portrait, top right) went down, he teleported
+  around, and after ~4 min the outro comic played (mugshot, jail, van Paris -> Monaco, card game)
+  -> episode menu "Episode 2". Frames ep1_boss_won_outro.png, ep1_outro_*.png. So the whole
+  episode is completable; no runtime problem in the fight.
 
 ## Next
 1. Chalk talk test (ct1: m1_recon direct + task file: 1793/1794/1795 -> 2 -> recon complete ->
