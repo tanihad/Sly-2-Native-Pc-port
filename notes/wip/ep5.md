@@ -182,7 +182,8 @@ in 12 ep5 scenes; one runtime fix (fiber leak, 9d6c24c). Not done: finishing job
 (kidnap carry, mojo defence, chases need real steering), PS2_PERF on a quiet machine.
 
 ## In progress
-- (none)
+- Session 5: merged main 2d00835 (has the threads fix as 81186bf; only notes/progress.md new) ->
+  857b74c. Machine quieter now (1 other sly2, ~50% CPU): doing Next 1 (PS2_PERF).
 
 ## Next
 1. When the machine is quiet: PS2_PERF (release) in the hub street (Sly walking), boss 1,
