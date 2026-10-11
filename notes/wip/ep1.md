@@ -110,6 +110,15 @@ runtime/recompiler problem found at its root (with tests); frames in build\scree
   actor position is not in world coords anywhere in RAM except per-frame render buffers that move).
   Gave up on winning; no runtime problem seen.
 
+- Session 3 (2026-10-11): merged main (2d00835: EE thread fiber fix). Episode end (boss5, release,
+  m1_boss direct + PS2_TASK_FILE): fight started, 1929 (boss_fight) -> 2 did nothing visible,
+  1931 (boss_complete) 0 -> 2 played the outro comic cutscene, autosaved (save1: m1_boss complete,
+  t1_complete active, nightclub percent 100, widCurrent 1) and loaded the episode menu: "Episode 2"
+  -> X -> "A Starry Eyed Encounter, Start Episode 0%" -> X -> Episode 2 intro comic. Frames:
+  ep1_boss_outro_comic.png, ep1_episode2_menu.png, ep1_to_ep2_start_episode.png.
+- ct2 (warp --job m1_recon --complete t1_recon --complete m1_recon --activate t1_chalktalk1): Sly
+  in the hub, no chalk talk (it is started by the recon completion event, not by its state).
+
 ## Next
 1. Chalk talk test (ct1: m1_recon direct + task file: 1793/1794/1795 -> 2 -> recon complete ->
    chalk talk 1 in the safehouse?).
