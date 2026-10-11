@@ -27,9 +27,22 @@ recompiler problem found at its root (with tests), save frames to build\screensh
   positioned stream). 0 underruns. One "[sd] VoiceTrans ... overwrites the block voice c0 v4 is
   playing" at the title->hub bank load (load screen, inaudible).
 
+- Batch C direct starts (brawl_intro_int, heist2_sly_hide_under_tank, bomb_bridge_on_top,
+  spycam_picture1) load and play, clean logs. Brawl live (lw\brawl): Murray punches guards; a big
+  white translucent shape over the yard (frame 16110) is most likely a searchlight cone.
+- Session 2: merged next/warp again (entry hooks: @187D80 anchor + PS2_WARP_TASK in RELEASE).
+  Helper scripts moved to build\tools (lw.ps1 now: anchor in both builds, PS2_PEEK 2DE1C0/2DDFD0,
+  -Wav, -Exe; decomp.ps1 = headless Ghidra on the shared scratchpad project, read-only;
+  objnear.py / owner.py / objdiff.py / velfind.py RAM-dump helpers).
+
 ## In progress
-- hack2: m4_hack direct with PS2_PEEK position, to reach a hack terminal (minigame).
-- batch C: brawl_intro_int, heist2, bomb_bridge_on_top, spycam_picture1 direct starts.
+- RC chopper (m4_rc_chopper, lw\rc*): with the stick released the chopper keeps swaying ~+-500
+  units at near full speed (never settles); ep2's RC chopper trace shows the same. Not a dt effect:
+  same with Count tied to VBlanks (rcv) and to flips (rcv3: dt exactly 1/60). Chopper = object
+  0x9727D0 (vt 0x2D5898), child of a parent at (5270,-5779) (rotated); local pos +0x2B0, world
+  matrix +0x2C0..+0x2F0, local velocity +0x330 (accelerates without input). Tracing every call
+  with a0 = 0x9727D0 (build\expd = debug + PS2_EXP_A0 experiment, lw\rca0) to find the
+  controller code. Is the sway the game's design or a recompiler/FPU/VU0 bug? Undecided.
 
 ## Next
 1. Hacking minigame (m4_hack station, heist4 keypads), lightning puzzle, Murray brawl.
