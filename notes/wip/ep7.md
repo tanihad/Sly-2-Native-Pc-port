@@ -23,8 +23,18 @@ build\screenshots\ep7_*.png.
   vertical inverted), R1 = take picture ("&2R&.: take picture" in level text), right stick zoom.
 - Power chop (t7_heist1): marker sweeps, CROSS chops; needs frame-exact timing, not finished.
 
+- Boss battle (t7_boss_battle, world 37): Bentley vs Bison, "Press O for Flames, /\ for Saws, [] for
+  Logs"; mashing loses (turtle-soup game over + retry work). PS2_POKE=3D4AC8=28 (committed debug aid)
+  holds Bentley's health but Bison then pins him in a hit loop: not won.
+- Post boss (direct t7_boss_battle_complete, hub): "Get to the silo before the blimp has taken off"
+  timed run as Bentley; silo location unknown; timeout -> "Job Failed! ... Press X to try again"
+  works (ep7_postboss_*.png). SELECT = Gadget Grid (no map).
+- RC Combat Club (direct t7_robot_war, world 33): Murray's RC tank vs moose tanks; mashing r1/[]/O/X
+  damages the enemy; death -> mask wipe -> retry works. Seen once: a thin blue full-width band at
+  field rows 107-110 on the frame before the death fade (frame_009750) -> tracing it.
+
 ## In progress
-- Boss battle (t7_boss_battle direct, world 37) by button mashing, to reach the episode end.
+- RC combat blue band: PS2_GS_TRACE_RECT=250,104,252,112 MINSIZE=300 BRIEF, build\rcwar\trace.txt.
 
 ## Tools (build\tools, not committed; the scratchpad is shared with other agents!)
 - live7.ps1 -Name x -Make "--episode 7 --job <task> --direct" -Script "@187D80/1DD96C+30:start:10"
