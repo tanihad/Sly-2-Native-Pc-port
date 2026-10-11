@@ -100,9 +100,24 @@ build\screenshots\ep7_*.png.
   (objects by +0x230 position / moving between two RAM dumps), strs.py (level text in a RAM dump),
   live_game7.ps1 (RING env = PS2_DUMP_RING), live7.ps1 -Extra "K=V;K=V".
 
+- Session 3 (resumed after the session limit): merged main 2d00835 (EE thread fiber leak fix) ->
+  177c3ff; rebuilt rel + debug. Cherry-picked next/ep3's live 'pause' token (204385d -> 5685f68;
+  conflict with my 'release' token resolved: PAUSE -5, RELEASE -6; window unit test passes).
+- Hub perf (release, PS2_PERF, 4-5 other games): 45-55 VBlanks/s, 30-43 flips/s; GS thread 15-19 ms
+  per VBlank is the bottleneck (EE busy 7-10 ms, VU 100% recompiled 4-6 ns/pair); memory flat 149 MB
+  (thread fix works). Later the machine went to 100% CPU (10 games): no perf numbers from then on.
+- New direct starts (release): t7_laser_outside (laser intro cutscene with the beam, Sly in the hub
+  with a red "!" alert marker), t7_bearcave_back_outside ("have to place the radio", Sly in the snow),
+  t7_robot_war_sly_get_costume (world 33 interior): all load and render right.
+- Laser live (build\laser2): laser beam = thin red/orange additive line (seen from a distance and
+  ending at a house window); Binocucom shows "Use crystals to free book / Laser Redirection"; level
+  text: "Use O to place crystals at the end of the laser". Guard fight: knocked-down Sly with stars,
+  ghosting afterimages (game's own feedback blur, judged OK), coins burst. Fell in the water (respawn).
+
 ## In progress
+- Perf sweep (release, PS2_PERF) of the ep7 hub and the heavy job levels while the machine is quiet.
 - Thermal Ride: full tour T1..T5 with glide.py (build\therm5\glide.out) to see where get_height
-  completes.
+  completes (gameplay only, lower priority).
 
 ## Tools (build\tools, not committed; the scratchpad is shared with other agents!)
 - live7.ps1 -Name x -Make "--episode 7 --job <task> --direct" -Script "@187D80/1DD96C+30:start:10"
