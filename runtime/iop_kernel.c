@@ -1096,17 +1096,14 @@ static DWORD WINAPI iop_thread_main(LPVOID arg) {
         threaded = 0;
         return 1;
     }
-    const char* pe = getenv("PS2_IOP_THREAD_PRIO");        /* EXPERIMENT: mmcss, or a priority */
-    if (pe && !strcmp(pe, "mmcss")) {
-        typedef HANDLE(WINAPI * mm_fn)(LPCWSTR, LPDWORD);
-        HMODULE avrt = LoadLibraryW(L"avrt.dll");
-        mm_fn mm = avrt ? (mm_fn)(void*)GetProcAddress(avrt, "AvSetMmThreadCharacteristicsW") : NULL;
-        DWORD task = 0;
-        if (!mm || !mm(L"Pro Audio", &task)) fprintf(stderr, "[iop] MMCSS failed\n");
-        else fprintf(stderr, "[iop] IOP thread: MMCSS Pro Audio\n");
-    } else {
-        SetThreadPriority(GetCurrentThread(), pe ? atoi(pe) : THREAD_PRIORITY_HIGHEST);
-    }
+    /* The IOP runs the sound driver: schedule it like the sound output thread (audio_out.c), as an
+     * MMCSS "Pro Audio" thread, so a busy machine does not make its 1 ms sleeps last 40-120 ms (seen
+     * with THREAD_PRIORITY_HIGHEST on a machine running ~10 game instances). It uses ~1% of a core. */
+    typedef HANDLE(WINAPI * mm_fn)(LPCWSTR, LPDWORD);
+    HMODULE avrt = LoadLibraryW(L"avrt.dll");
+    mm_fn mm = avrt ? (mm_fn)(void*)GetProcAddress(avrt, "AvSetMmThreadCharacteristicsW") : NULL;
+    DWORD task = 0;
+    if (!mm || !mm(L"Pro Audio", &task)) SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
     HANDLE timer = CreateWaitableTimerExW(NULL, NULL, 0x2 /* CREATE_WAITABLE_TIMER_HIGH_RESOLUTION */, TIMER_ALL_ACCESS);
     HANDLE waits[2] = { kick_event, timer };
     iop_thread_id = GetCurrentThreadId();
