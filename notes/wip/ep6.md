@@ -24,6 +24,16 @@ recompiler problem found at its root, with tests; frames in build\screenshots\ep
   knocked down the car). The wiki says car 1 has moving lasers; NO laser beams are visible in our
   frames (level has laser_beam_render_red / laser_beam_glow objects). Suspect: lasers not drawn.
   Tracing all primitives from v3140 (build\warp\red_trace2.txt, frames every 5 VBlanks).
+  Trace result: the red outline is the game's own (character outline lines drawn with rgba
+  96010180 instead of 10101080 = damage flash). Laser beams are additive untextured gouraud
+  tristrips rgba 80310440/80311840 (ALPHA 0201); in that frame they are only at the far door
+  (car 2's diamond lasers, z ~11800), none in car 1. Under trace the debug build ran 3-7 VBlanks
+  per game frame; the game's dt comes from the COP0 Count (real time) -> large physics steps.
+  Hypothesis: damage/knockback is a slowness artifact. Building -O2 WITH tracing (build\o2:
+  build_game.py -O 2 --out build\o2) so -Direct works at near-release speed.
+  RESULT: with build\o2 (lred2) Bentley lands without damage; walking forward through car 1 is
+  fine, car 2 shows the red laser fan correctly (lasers render). Not reproducible -> not pursued.
+  (Game clock 0x14D0B8: dt = Count ticks / 294.912 MHz clamped to [1/60, 1/30].)
 
 ## Next
 1. Review batch frames/logs for each job; then deeper live play in selected jobs
