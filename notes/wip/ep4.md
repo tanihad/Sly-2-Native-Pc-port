@@ -135,6 +135,21 @@ recompiler problem found at its root (with tests), save frames to build\screensh
   circular track, red dot barriers. Twin-stick: left stick moves (lup = +x, lleft = +y; walls
   block), right stick fires in its direction (yellow shots). Renders clean.
   Screens ep4_hack_minigame.png, ep4_hack_minigame_fire.png. Maze not finished.
+  hk3 (same start; NO PS2_POKE health hold - with hp held Bentley falling into the canal never
+  dies and stays stuck swimming): maze explored with build\tools\probe.py (live stick probes +
+  position; ship start (923,-855), room x 889..1600, y -926..-74; up the left corridor at
+  y -160 to (2075,-115); right to y -640; a double row of red dots blocks the corridor: shooting
+  (rup) removes them dot by dot, then through to the top area (3326,-644); red tank enemies shoot
+  back (portrait health ring drains). Forcing 2414:2 inside the minigame does not end it (the
+  minigame's own state machine does). Goal not reached. Everything renders and behaves sanely.
+- Heist 1 (lw\h1b, release direct, -Wav): Bentley in the Prague streets at night, "Hijack the
+  tank" (Job Help: "Use one of Contessa's tanks to secretly get into the prison"), L3 HUD (coins,
+  0/30 clue bottles), two tank clusters patrol (objects 0x923B30/0x911B20, vt 0x2D6E08), guards
+  with flashlights spot him (alarm). Audio 400 s: 0 underruns, zero runs only at load screens,
+  8 isolated clicks, alarm music peaks at 0 dBFS with 11 clipped samples in 25 s (game mix).
+- PS2_INPUT relative tokens chain (each +n counts from the previous token), so lw.ps1's four
+  "+700/+760/+820/+880:cross" presses land at ~+0.7k/1.5k/2.3k/3.2k frames: the last ones are
+  jumps in gameplay, which explains Bentley jumping into the canal at the m4_hack starts.
 
 ## In progress
 - RC chopper (m4_rc_chopper, lw\rc*): with the stick released the chopper keeps swaying ~+-500
