@@ -184,6 +184,13 @@ in 12 ep5 scenes; one runtime fix (fiber leak, 9d6c24c). Not done: finishing job
 ## In progress
 - Session 5: merged main 2d00835 (has the threads fix as 81186bf; only notes/progress.md new) ->
   857b74c. Machine quieter now (1 other sly2, ~50% CPU): doing Next 1 (PS2_PERF).
+- Hub perf (release, PS2_PERF, Sly walking in the street; 5-7 other games started meanwhile): 15-50
+  VBlanks/s, EE busy 7.4-14 ms, GS thread 15-37 ms/VBlank: load again, no quiet window.
+- GS replay bench of the hub *street* (recorded VBlank 6400-6640 while walking, build\gsrec\
+  hub_street.gsrec 623 MB; the session-3 recording was the safehouse), interleaved with the
+  fix-perf briefing recording, 8 workers, same load: hub 32.5/33.8/34.6/36.3 ms per VBlank vs
+  briefing 42.1/36.1/34.8. The rainy hub street is no heavier on the GS than the briefing (8.9 ms
+  quiet, holds 60): no ep5-specific GS cost.
 
 ## Next
 1. When the machine is quiet: PS2_PERF (release) in the hub street (Sly walking), boss 1,
