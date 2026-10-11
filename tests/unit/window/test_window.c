@@ -346,7 +346,7 @@ static void test_input_script(void) {
     script_n = 0;
     script_frame = 0;
     ram_dumps = 0;
-    script_parse("2:lx40:3,+1:ryc0:1,+0:ram");
+    script_parse("2:lx40:3,+1:ryC0:1,+0:RAM");          /* upper case works too */
     CHECK(script_n == 3, "parsed %d tokens", script_n);
     for (int f = 0; f < 8; f++) {
         pad_input p;
