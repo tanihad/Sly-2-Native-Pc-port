@@ -436,6 +436,49 @@ static void test_live_input(void) {
     remove(path);
 }
 
+/* "pause": the pad read after the pause token blocks until the next line arrives, and that line's
+ * "+0" tokens apply in the same pad frame. */
+static volatile LONG line_appended;
+static DWORD WINAPI append_later(LPVOID path) {
+    Sleep(150);
+    append_line((const char*)path, "+0:cross:1,", 0, "+0:none");
+    InterlockedExchange(&line_appended, 1);
+    return 0;
+}
+
+static void test_live_pause(void) {
+    char path[MAX_PATH + 32];
+    DWORD n = GetTempPathA(MAX_PATH, path);
+    snprintf(path + n, sizeof path - n, "sly2_live_pause_%lu.txt", GetCurrentProcessId());
+    FILE* f = fopen(path, "wb");
+    CHECK(f != NULL, "cannot create %s", path);
+    if (!f) return;
+    fclose(f);
+    script_path = path;
+    script_offset = 0;
+    script_n = 0;
+    script_frame = 0;
+    append_line(path, "+2:pause,", 0, "+0:none");       /* read at frame 0, pause from frame 3 */
+    int blocked_at = -1, cross_at = -1;
+    HANDLE t = NULL;
+    line_appended = 0;
+    for (int fr = 0; fr < 8; fr++) {
+        if (fr == 3) t = CreateThread(NULL, 0, append_later, path, 0, NULL);
+        LONG before = line_appended;                      /* a call that waited for the line */
+        pad_input p;
+        pad_clear(&p);
+        script_apply(0, &p);
+        if (!before && line_appended) blocked_at = fr;
+        if (p.buttons & PAD_CROSS) cross_at = fr;
+    }
+    if (t) { WaitForSingleObject(t, INFINITE); CloseHandle(t); }
+    CHECK(blocked_at == 3 && cross_at == 3, "pause: blocked at frame %d, cross at %d (want 3, 3)",
+          blocked_at, cross_at);
+    script_path = NULL;
+    script_n = 0;
+    remove(path);
+}
+
 /* ---- presenter checks: the GDI and Direct3D 11 presenters drawing into a test window of their own
  * (shown without activation, before window_init, so the window thread is not involved) ---------- */
 
@@ -832,6 +875,7 @@ int main(int argc, char** argv) {
     test_headless_input();
     test_input_script();
     test_live_input();
+    test_live_pause();
     printf("unit checks: %d, failures: %d\n", checks, failures);
     if (!unit_only) {
         typedef HANDLE (WINAPI* set_dpi_fn)(HANDLE);      /* real pixels, like the window thread */
