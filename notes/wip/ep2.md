@@ -23,13 +23,21 @@ build\screenshots\ep2_*.png.
   ("Too far, use right analog stick zoom in" / "Bad framing, point at object"); Binocucom Y aim is
   inverted. Autosave writes save1 after level loads in the hub.
 
+- Job completion end to end: m2_dance_audition_fake (cutscene at the ballroom door) completes,
+  the game returns to the hub, autosaves (warp.py dump: m2_dance_audition_fake.is_complete 1,
+  t2_steal_tuxedo_intro.state 1 = next job open).
+- Turret (t2_turret_attack_chopper direct, anchored input): Murray's turret aims and fires
+  (muzzle flashes), "Job Failed! You must destroy the chopper." when not destroyed.
+- Dance minigame (m2_dance_audition, dumps every 10 frames): a memory game - three button prompts
+  are shown (e.g. triangle triangle triangle, then triangle triangle circle), then "? ? ?" while the
+  player repeats them; no input -> "Oow, my feet can't take any more", Job Failed.
+
 ## In progress
-- fake_long (dance_audition_fake to its end, job completion + autosave), audio\hub (-Wav + PS2_LOG_SND
-  release hub), turret_attack (t2_turret_attack_chopper with inputs), elephant2.
+- movie: episode 2 at 100% -> episode menu (dvd_menu world) -> "Watch a Movie" (IPU).
 
 ## Next
-1. Dance minigame: dense dumps, work out prompts, try scripted presses.
-2. Audio analysis (wav_analyze.py, audio_streams.py) of the hub run.
+1. Dance minigame: scripted presses during "? ? ?" (timing in real time? game time?).
+2. Audio run (-Wav + PS2_LOG_SND, release hub) - first attempt starved by machine load.
 3. Perf: machine heavily loaded by other agents (~12 sly2.exe at once; release hub ran at 15-27
    VBlanks/s, VU 25-50 ns/pair) - hub VU load 850-970k pairs/VBlank ~ the intro cutscene (60 fps
    with 2 ms headroom on a quiet machine).
