@@ -1,3 +1,5 @@
+**Status: complete**
+
 # warp: start the game at any episode / job
 
 **Goal**: a reliable way (scripts/warp.py + notes/warp.md) to start Sly 2 at the beginning of any
@@ -12,15 +14,18 @@ episode (Prologue, Episodes 1-8) and ideally at a chosen job, verified by loadin
 - Job warps verified via Job Help (check marks = done, target available): m1_brawl, m1_disco,
   m1_boss, m2_rc_chopper, m3_heist, m4_hack (as Bentley), m5_hack, m6_paraglide, m7_boss, m8_boss.
 - Direct job start (runtime/warp.c, PS2_WARP_TASK, debug build): m1_brawl (Murray, hub),
-  m1_moulin_power (world 6), t1_heist_5_peacock_climb (mid-heist stage) all start the job by itself.
+  m1_moulin_power (world 6), t1_heist_5_peacock_climb (mid-heist stage), m8_boss (world 43),
+  t0_chase_hallway_start, t0_rooftop_start (prologue parts never reached by play) all start by themselves.
+- notes/warp.md written; progress.md / hle-architecture.md pointers.
 - Story gadgets (Paraglide bit 27, Alarm Clock bit 26) confirmed in ThiefNet.
 - tests/unit/warp (113 checks); all unit tests + run_tests.py pass; release build OK.
 
 ## In progress
-- notes/warp.md (usage guide), progress.md/hle-architecture.md pointers, final commit.
+- (none)
 
 ## Next
-1. Write notes/warp.md; mark this file complete.
+- Optional: walk-free job markers in release builds would need a release-build hook (the direct
+  start uses function tracing). Only the hubs and sampled job starts were played.
 
 ## Findings / traps
 - Save file = the game-state blob at EE 0x3D4A60 (0x5408 bytes), laid out by a schema loaded from

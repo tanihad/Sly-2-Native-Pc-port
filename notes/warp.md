@@ -98,7 +98,10 @@ Without `--direct` the tester walks to the job's marker in the hub (as in the ga
 character is Sly - Bentley at the start of episode 4 - and the game switches to the job's
 character when the job starts). With `--direct` / `-Direct` (debug build) the game starts the job
 itself straight from the title: verified for m1_brawl (Murray, hub), m1_moulin_power (another
-level, world 6) and t1_heist_5_peacock_climb (a stage in the middle of a heist).
+level, world 6), t1_heist_5_peacock_climb (a stage in the middle of a heist), m8_boss (the final
+fight, world 43) and the later parts of the prologue that scripted play has not reached:
+t0_chase_hallway_start (the chase in the Clockwerk hallway) and t0_rooftop_start (the rooftop
+chase). Frames: `build\screenshots\warp_job_*.png`.
 
 Gadgets: the story makes the player buy the Paraglide (episode 5, `t5_paraglide_purchase`) and the
 Alarm Clock (episode 7, `t7_alarmclock_purchase`); warp saves own them once those tasks are done.
