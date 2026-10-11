@@ -59,7 +59,19 @@ recompiler problem found at its root (with tests), save frames to build\screensh
   with subtitles, Thievius Raccoonus page wipe, back in the hub as Bentley; save1 has m4_recon
   complete, t4_hack_intro active. Job Help: "Shoot Contessa with darts"; Binocucom: left stick aims
   (inverted Y), right stick zooms, R1 fires.
-- Cherry-picked ep3's PS2_POKE_FILE (fa2cf07) for one-shot writes in live sessions.
+- Cherry-picked ep3's PS2_POKE_FILE (fa2cf07) for one-shot writes in live sessions. Teleport by
+  poking Bentley's position copies (obj 0x1031D20 +0x230/+0xA00/+0xA20) does NOT move him (the
+  game rewrites them from elsewhere) - not a usable teleport.
+- Lightning completed in context (lw\ltn2, PS2_TASK_FILE 2456/59/62/65/68 then the five
+  puzzleN_complete 2458..2470): Job Help "Disable all lightning rods", HUD 1/5.., then the robot
+  struck by lightning cutscene (bolts/explosion render, build\screenshots\ep4_lightning_robot_struck
+  .png), job-complete wipe, back in the hub, save1 written.
+- Bomb bridge (lw\bb, bb2, bb3; build\tools\chain.ps1 drives task chains): under -> relocate ->
+  on_top play; on_top = "protect Bentley, hide as a statue to sneak attack patrolling guards"
+  (Job Failed text), Job Failed -> X retry works. Forcing on_top (2480:2) leaves the complete
+  stage (2483 active) in a letterboxed shot of Sly by the truck with a sparkle, forever, no input
+  accepted (twice, also without forcing 2483). Most likely an artifact of skipping on_top's own
+  events (unverified: on_top not won by play).
 - Heist 4 (lw\h4k, PS2_TASK_FILE): completing t4_heist4_get_to_keypad1 (2558:2) only activates
   hack1 (no minigame: it starts from the keypad interaction); completing hack1 (2560:2) puts Sly
   at keypad 1 (-4651,2798,417 feet). No memory-card write on these intermediate task changes.
