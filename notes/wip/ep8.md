@@ -139,6 +139,15 @@ frames in build\screenshots\ep8_*.png.
 - A run of mine died at v73 with a truncated log line (no crash report; not reproducible): my
   perfrun.ps1 used the exe name sly2.exe, which other agents stop by name. Helpers now always copy
   the exe as sly2_ep8_<name>.exe (stage_end.ps1, perfrun.ps1 in build\ep8tools).
+- Bentley engine room (direct t8_engine_room_bentley_open_door, world 41, s9_ben): Bentley at the
+  exit door ("Warning! Using this passageway will abandon your current job!"); 3414/3416:2 ->
+  cutscene, boxes stage (17551) starts; 3417:2 leaves 3418 active (needs play). No problems.
+- Hack station (hack_path2): Bentley at the wall near the station, searchlight alert; terminal
+  prompt not found by blind steering (prompt object 0x4435F0 stays -1). The minigame itself is
+  verified in ep5 (same code); not pursued.
+- Regression after the main merge: scripts\ep8_finale.ps1 -Release -Wav (build\warp\finale3):
+  boss Murray + Bentley stages, Hate Chip, autosave (blimp 100%), ending + credits 8 min, episode
+  menu; exit 0, 1 underrun in 1100 s, log clean. All unit tests + run_tests.py pass.
 
 ## In progress
 - Boss Murray stage (t8_open_head_intro, release, head3..5 with PS2_POKE=3D4AE0=3C): Murray walks
