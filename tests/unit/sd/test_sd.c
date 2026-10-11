@@ -418,6 +418,36 @@ static void test_loops(void) {
     CHECK(nax == 0x40000 + 150 * 16 + 2, "NAX of a silent voice = %X (want %X)", nax, 0x40000 + 150 * 16 + 2);
 }
 
+/* sd_hold (the debug pause): silence, no voice moves, the audio clock keeps counting. */
+static void test_debug_hold(void) {
+    printf("debug pause hold\n");
+    mix_setup();
+    put_sine_loop(0x60000, 8, 56.0, 12000);
+    voice_start(0, 3, 0x60000, 0x1000, 0x000F, 0x1FC0, 0x3FFF);
+    int16_t* a = render(4800);
+    CHECK(rms(a + 2 * 2400, 2400, 2) > 1000, "playing before the hold: rms %.0f", rms(a + 2 * 2400, 2400, 2));
+    free(a);
+    uint32_t nax = sceSdGetAddr(VA(NAX, 0, 3));
+    uint16_t env = sceSdGetParam(VP(ENVX, 0, 3));
+    uint64_t clock = sd_frames_rendered();
+    sd_hold(1);
+    int16_t* h = render(9600);
+    int loud = 0;
+    for (int i = 0; i < 2 * 9600; i++) loud |= h[i];
+    free(h);
+    CHECK(!loud, "silence while held");
+    CHECK(sceSdGetAddr(VA(NAX, 0, 3)) == nax, "NAX moved while held: %X -> %X", nax, sceSdGetAddr(VA(NAX, 0, 3)));
+    CHECK(sceSdGetParam(VP(ENVX, 0, 3)) == env, "envelope moved while held");
+    CHECK(sd_frames_rendered() == clock + 9600, "audio clock while held: +%llu (want 9600)",
+          (unsigned long long)(sd_frames_rendered() - clock));
+    sd_hold(0);
+    int16_t* b = render(4800);
+    CHECK(rms(b + 2 * 2400, 2400, 2) > 1000, "playing after the hold: rms %.0f", rms(b + 2 * 2400, 2400, 2));
+    free(b);
+    CHECK(sceSdGetAddr(VA(NAX, 0, 3)) != nax, "NAX moves again after the hold");
+    sceSdSetSwitch(SW(KOFF, 0), 1u << 3);
+}
+
 static void test_transfers(void) {
     printf("VoiceTrans\n");
     mix_setup();
@@ -716,6 +746,7 @@ int main(void) {
     test_adsr();
     test_pitch();
     test_loops();
+    test_debug_hold();
     test_transfers();
     test_adma();
     test_routing();

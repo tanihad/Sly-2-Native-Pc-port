@@ -427,7 +427,7 @@ static void test_live_input(void) {
  * "+0" tokens apply in the same pad frame. */
 static volatile LONG line_appended, held_while_waiting;
 static volatile LONG timer_held, timer_holds;
-void timer_hold(int on) { InterlockedExchange(&timer_held, on); if (on) InterlockedIncrement(&timer_holds); }
+void ps2_debug_hold(int on) { InterlockedExchange(&timer_held, on); if (on) InterlockedIncrement(&timer_holds); }
 static DWORD WINAPI append_later(LPVOID path) {
     Sleep(150);
     InterlockedExchange(&held_while_waiting, timer_held);  /* EE time stands still during the wait */
@@ -465,7 +465,7 @@ static void test_live_pause(void) {
     CHECK(blocked_at == 3 && cross_at == 3, "pause: blocked at frame %d, cross at %d (want 3, 3)",
           blocked_at, cross_at);
     CHECK(held_while_waiting == 1 && timer_held == 0 && timer_holds == 1,
-          "pause: EE timers held while waiting %ld, held after %ld, holds %ld (want 1, 0, 1)",
+          "pause: PS2 time held while waiting %ld, held after %ld, holds %ld (want 1, 0, 1)",
           (long)held_while_waiting, (long)timer_held, (long)timer_holds);
     script_path = NULL;
     script_n = 0;

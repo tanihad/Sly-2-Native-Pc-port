@@ -558,8 +558,20 @@ static int driver_behind(uint32_t n) {     /* call with the lock held; n = frame
     if (last != g_seen_run) { g_seen_run = last; g_unseen = 0; }   /* the IOP has run since */
     return g_driver_limit && last && g_unseen + n > (uint64_t)g_driver_limit;
 }
+/* Debug pause (ps2_debug_hold): while the EE waits for a live input line the SPU2 stands still too:
+ * silence, no voice, envelope or stream position moves (989snd's streams would otherwise run out
+ * of data with the IOP stopped). The audio clock keeps counting, so it stays the WAV position. */
+static volatile LONG g_hold;
+void sd_hold(int on) { InterlockedExchange(&g_hold, on ? 1 : 0); }
 
 void sd_render(int16_t* out, uint32_t frames) {
+    if (g_hold) {
+        memset(out, 0, (size_t)frames * 2 * sizeof *out);
+        LOCK();
+        g_frames += frames;
+        UNLOCK();
+        return;
+    }
     while (frames) {
         uint32_t n = frames < CHUNK ? frames : CHUNK;
         int irq[2];

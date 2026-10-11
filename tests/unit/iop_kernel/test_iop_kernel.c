@@ -352,6 +352,46 @@ static void test_timer(void) {
     CHECK(CALL(timrman_FreeHardTimer, &c, (uint32_t)id, 0, 0, 0) == 0, "FreeHardTimer");
 }
 
+/* iop_time_hold (the debug pause): IOP time stands still, and a running hard timer neither replays
+ * the held time as a burst afterwards nor loses its rate. */
+static void test_time_hold(void) {
+    printf("debug pause: IOP time hold\n");
+    iop_ctx c = { 0 };
+    int64_t t0 = iop_now();
+    iop_time_hold(1);
+    int64_t h0 = iop_now();
+    Sleep(60);
+    CHECK(iop_now() == h0, "IOP time moved while held");
+    iop_time_hold(0);
+    double ms = (double)(iop_now() - t0) * 1000.0 / (double)iop_usec_to_ticks(1000000u);
+    CHECK(ms < 30, "the held 60 ms counted as IOP time: %.1f ms passed", ms);
+
+    int id = (int)CALL(timrman_AllocHardTimer, &c, 1, 32, 1, 0);
+    timer_calls = 0;
+    timer_wake_sema = 0;
+    timer_limit = 100000;
+    CALL(timrman_SetTimerHandler, &c, (uint32_t)id, 36864 /* 1 ms of SYSCLOCK */, G_TIMER, 36864);
+    CALL(timrman_SetupHardTimer, &c, (uint32_t)id, 1, 0, 1);
+    CALL(timrman_StartHardTimer, &c, (uint32_t)id, 0, 0, 0);
+    for (int i = 0; i < 20; i++) { iop_service(); Sleep(1); }
+    iop_service();
+    uint32_t before = timer_calls;
+    iop_time_hold(1);
+    Sleep(100);
+    iop_service();                                            /* inside the hold: nothing is due */
+    uint32_t during = timer_calls;
+    iop_time_hold(0);
+    iop_service();
+    uint32_t after = timer_calls;
+    CHECK(during == before, "%u timer calls while held", during - before);
+    CHECK(after - before < 20, "%u timer calls right after a 100 ms hold (want no burst)", after - before);
+    int64_t t1 = iop_now();
+    while (iop_now() - t1 < iop_usec_to_ticks(50000u)) { iop_service(); Sleep(1); }
+    CHECK(timer_calls - after >= 40, "the timer kept its rate after the hold: %u calls in 50 ms", timer_calls - after);
+    CALL(timrman_StopHardTimer, &c, (uint32_t)id, 0, 0, 0);
+    CALL(timrman_FreeHardTimer, &c, (uint32_t)id, 0, 0, 0);
+}
+
 static void test_event_flags(void) {
     printf("event flags\n");
     iop_ctx c = { 0 };
@@ -570,6 +610,7 @@ int main(void) {
     test_priority();
     test_sleep_delay();
     test_timer();
+    test_time_hold();
     test_event_flags();
     test_rpc();
     test_completions();

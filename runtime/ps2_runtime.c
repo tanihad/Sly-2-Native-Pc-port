@@ -358,6 +358,17 @@ uint32_t ps2_vblank_count(void) { return vblank_count; }
 static volatile int ram_dump_request;
 void ps2_request_ram_dump(void) { ram_dump_request = 1; }   /* written at the next VBlank */
 
+/* Debug pause (window.c, the live input token 'pause'; EE thread): the whole PS2 stands still while
+ * the EE waits for the next input line - EE timers (the game's frame time), IOP time (989snd's
+ * tick: sequenced music) and the SPU2 mixer - so a game played step by step sees the same time
+ * passing as at full speed. VBlanks missed meanwhile are dropped as usual (ps2_service_irq). */
+void sd_hold(int on);
+void ps2_debug_hold(int on) {
+    timer_hold(on);
+    iop_time_hold(on);
+    sd_hold(on);
+}
+
 /* The picture of VBlank `vb` (ok = 0: display off). Runs on the GS thread when there is one. */
 static void present_frame(const uint32_t* frame, int ok, int w, int h, uint32_t vb) {
     if (!ok) {                                   /* display off: show black, not a stale frame */
