@@ -136,6 +136,13 @@ warp saves / direct job starts; fix every runtime/recompiler problem found at it
   teleport him. Not reached; navigation, not a runtime issue.
 - Rip-off the Ruby (live): Sly on the statue under the ruby; job help "Get Murray to the ruby";
   2287 completes, 2288 (intro_murray) becomes active (a location/character switch).
+- VU recompiler on Episode 3 content (merged from main this session): build\tools\vuverify.ps1
+  runs direct starts with PS2_VU_VERIFY=1 (each compiled microprogram also interpreted and
+  compared), 540 s each, own exe names. hub, recon_int (world 13), heist3 turret, turret, boss
+  Murray-vs-Rajan pool fight (lightning), tntbarrel (world 13): 10-14.7M programs each, 0
+  mismatches, no interpreted fallbacks. (A first 240 s sweep over all 19 start tasks: 0
+  mismatches too, but mostly title/load content; its waterbug run was killed externally after
+  22 s - warp_run's exe is named sly2.exe.) Frame ep3_boss_murray_pool_fight.
 - build\tools\taskcap.ps1: the input parameter was named $Input (PowerShell's automatic $input
   enumerator), so input lines were never written; now -Line.
 
