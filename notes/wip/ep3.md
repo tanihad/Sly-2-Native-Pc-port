@@ -164,11 +164,29 @@ warp saves / direct job starts; fix every runtime/recompiler problem found at it
   started their own "quiet machine" hub perf runs within the same minute, so perf_hub (release,
   120 s) is contaminated again: ~46 VBlanks/s, GS thread 15-24 ms/VBlank, EE busy 8-10 ms.
 
+- Session 6 (2026-10-11 23:30): the PAUSED commit held only notes; merged main (411bb22, notes
+  only, builds still current). Machine quiet (16%) for the first 20 s of the hub soak (soak_hub2,
+  release, walking + jumping input, PS2_PERF): 60/60 VBlanks, 57-60 flips/s, GS thread
+  15.6 ms/VBlank, EE busy 9 ms, idle 23% -> the hub runs at 60 fps on a quiet machine (item 2
+  of the old Next list for the hub). Five other instances started at 23:33:50, the rest of the
+  soak is a memory check only (149 MB committed, flat so far).
+- Job-completion flows by task file (release, live3.ps1 -Direct, no log errors):
+  waterbug: 2189 (deposit) -> 2 does nothing visible, 2190 -> 2 = "Job Completed!" book, back
+  at the fountain, autosave (m3_waterbug.is_complete 1, temple 21%). Frame
+  ep3_waterbug_job_completed. Ruby: 2288, 2289, 2290, 2291 -> 2, then 2292 -> 2 = hooded-figure
+  cutscene with subtitles ("...provide a Cherry Bomb 500 at the time she requested"), Murray's
+  "Job Completed!" card, coin-reward HUD in the hub, autosave (m3_steal_ruby.is_complete 1,
+  temple 59%). Frames ep3_ruby_complete_cutscene, ep3_ruby_job_completed.
+- live3.ps1 must be launched with Start-Process from the agent shell (the game inherits the
+  shell's stdout pipe, so a direct call blocks until the game exits).
+
 ## Next
-1. Soak: 20 min hub with input and PS2_PERF memory lines - rerun (first one was cut off).
-2. On a quiet machine: in-game PS2_PERF in the hub / world 13 (expect 60/60 from the GS replay
-   ratio), and the episode-3 intro comic (stereo movie) for late movie-audio refills.
-3. Gameplay left (skill/navigation, no runtime blockers known): turret dam hit, boss "Get to
+1. Job-completion flows left: heartneela (keys 2225/2226, drop_heart 2228 -> complete 2230),
+   tntbarrel (fences 2266-2269, 2270, 2271, 2272 -> complete 2273), heist5 destructo 2321 ->
+   boss intro 2327 (sessions neyla2 / tnt3 running).
+2. Soak result (build\warp\soak_hub2\run.log: memory lines, errors) when it ends (~23:55).
+3. Episode-3 intro comic (stereo movie) late-refill check on a quiet machine (if one comes).
+4. Gameplay left (skill/navigation, no runtime blockers known): turret dam hit, boss "Get to
    Rajan" route, heist chain by play, ruby carry, Neyla keys, TNT barrel run.
 
 ## Findings / traps
