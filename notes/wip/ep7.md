@@ -173,13 +173,25 @@ build\screenshots\ep7_*.png.
 - Session 4: merged main 9e8092a (progress notes only) -> d0bdbce; run_tests.py 16/16 + hook
   guards pass; builds (rel 08:42, debug 08:27) are newer than the last code change (5685f68).
 
+- Session 4 direct starts (release, build\warp\s_*, 200 s each, logs clean): t7_heist0_intro
+  (Operation start: letterboxed cutscene with the gang, Bentley in the hub with the "keep up with
+  Jean Bison" marquee), t7_recon_inside_lighthouse (Sly on the lighthouse's wooden floors, lantern
+  shelves), t7_lighthouse_open_door (cutscene Murray/Bentley/Sly, "Flip the switch at the top of
+  the lighthouse before it's too late", lantern ring + red attractor glow inside), t7_thermals_
+  return_to_safehouse (Sly on the egg nest, "...to the safe house, Sly!"). ep7_heist0_gang.png,
+  ep7_lighthouse_inside.png, ep7_recon_lighthouse_int.png, ep7_thermal_egg_nest.png.
+- Task-file flows (release live sessions build\fl_*): recon outside photos 3027..3030 -> 2: the game
+  completes outside_done (3031) itself and activates inside_lighthouse (3033); lighthouse on_top
+  3122 -> 2 activates intro_int (3124). Both then wait for Sly to climb to the hatch on top (the
+  briefing: "the front door is locked ... climb up to the hatch on top"): a real climb, not done.
+  Boat hack: throw1 3148 -> 2 activates station1 (3152); 3152 -> 2 = camera behind the orange
+  grapple launcher on the boat (grapple1 stage); 3153 -> 2 = station1_complete: Bentley on the
+  boat deck next to the hack terminal, counter 1/3 (ep7_boat_hack_deck.png). All in the hub world,
+  renders right, log clean apart from one game-side "[sd] VoiceTrans ... overwrites" at the load.
+
 ## In progress
-- Session 4: direct starts of the stages never started before (release, build\warp\s_*):
-  t7_heist0_intro (Bentley), t7_recon_inside_lighthouse, t7_lighthouse_open_door (world 35),
-  t7_thermals_return_to_safehouse. Then completion flows through PS2_TASK_FILE: recon (outside
-  photos -> lighthouse interior transition), lighthouse (on_top -> interior -> door -> battery),
-  boat hack (throw1 -> station1 = hack minigame?), bear (stations -> complete), thermals (-> chalk
-  talk 3 -> alarm clock purchase -> heist0).
+- Flows in other worlds: bear (hub stations 3139..3142), RC combat won (3081 -> 2 in world 33: back
+  to the hub?), bear cave radios (3047..3052 in world 36 -> back_outside 3055 in the hub?).
 - Thermal Ride: full tour T1..T5 with glide.py (build\therm5\glide.out) to see where get_height
   completes (gameplay only, lower priority).
 
