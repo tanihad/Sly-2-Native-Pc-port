@@ -155,6 +155,17 @@ recompiler problem found at its root (with tests), save frames to build\screensh
   'pause' token cherry-picks (ep1/ep2) from an integrate step; rebuilt build\rel and build\sly2,
   tests\run_tests.py 16/16 + hook guards pass. Remaining: completion flows (task tool) of
   pickpocket, spycam, hack, rc_chopper and the heist stage chain (level transitions 14 -> 15 -> 14).
+- Completion flows through chain.ps1 (release direct start of the job's intro, then every stage
+  completed with PS2_TASK_FILE, all clean logs, each followed by the game's autosave):
+  - pickpocket (lw\pp): Binocucom briefing, items 1..3 (the game completes the item_N_complete
+    stages itself), letterboxed outro, Thievius Raccoonus wipe, hub; save1 m4_pickpocket complete,
+    prison 37%. Screens ep4_pickpocket_briefing/_job_completed.png.
+  - spycam (lw\sc): camera HUD 3/4 while the chain ran, job over in the hub; save1 m4_spycam
+    complete, prison 43%. Screen ep4_spycam_3of4.png.
+  - hack (lw\hkc): station1 -> path2 -> ... station6 -> hack_complete all 1 -> 2 (nothing is
+    completed by the game itself: each station is the minigame, each path a walk), "Job
+    Completed!" Bentley page, hub; save1 m4_hack complete, prison 19%, rc_chopper_intro active.
+    Screens ep4_hack_job_completed.png, ep4_hack_job_completed_hub.png.
 
 ## In progress
 - RC chopper (m4_rc_chopper, lw\rc*): with the stick released the chopper keeps swaying ~+-500
