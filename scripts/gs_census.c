@@ -97,7 +97,7 @@ static void rect_pages(int psm, uint32_t bp, uint32_t bw, int x0, int y0, int x1
 }
 
 /* ---- counting tables ------------------------------------------------------------------------------ */
-typedef struct { uint64_t key; uint64_t count; uint32_t first, last; int has_rect, rx0, ry0, rx1, ry1; char desc[200]; } ent;
+typedef struct { uint64_t key; uint64_t count; uint32_t first, last; int has_rect, rx0, ry0, rx1, ry1; char desc[256]; } ent;
 static void ent_rect(ent* e, int x0, int y0, int x1, int y1) {
     if (!e || x1 <= x0 || y1 <= y0) return;
     if (!e->has_rect) { e->has_rect = 1; e->rx0 = x0; e->ry0 = y0; e->rx1 = x1; e->ry1 = y1; return; }
@@ -173,7 +173,8 @@ typedef struct {
 } pagew;
 static pagew pages[512];
 static uint32_t draw_seq;
-static uint32_t clut_version;
+static uint32_t clut_version;            /* bumped on every CLUT load (cache misses: see clut_ident) */
+static uint64_t clut_ident;              /* identity of the loaded CLUT: CBP/CSA/CPSM + last write to its pages */
 static uint32_t cbp0, cbp1;              /* CLUT compare registers */
 
 /* per-frame counters */
@@ -348,7 +349,7 @@ static void kick(int type, const vtx* a, const vtx* b, const vtx* c) {
     if (!wr_fb && !wr_z) F.kicks_nodraw++;
     if (wr_z) F.zwrite++;
 
-    char d[200];
+    char d[256];
     /* pass signature: everything but the texture identity and the primitive type */
     {
         int tpsm = tme ? (int)((tex0 >> 20) & 0x3F) : -1;
@@ -442,7 +443,7 @@ static void kick(int type, const vtx* a, const vtx* b, const vtx* c) {
         int mtba = (int)((tex1 >> 9) & 1), L = (int)((tex1 >> 19) & 3), K = (int)((tex1 >> 32) & 0xFFF);
         skey = fnv(&tex0, 8, skey); skey = fnv(&tex1, 8, skey); skey = fnv(&clamp, 8, skey); skey = fnv(&reg[R_TEXA], 8, skey);
         if (mxl) { skey = fnv(&reg[R_MIPTBP1_1 + ctx], 8, skey); skey = fnv(&reg[R_MIPTBP2_1 + ctx], 8, skey); }
-        if (psm_indexed(tpsm)) skey = fnv(&clut_version, 4, skey);
+        if (psm_indexed(tpsm)) skey = fnv(&clut_ident, 8, skey);
         if (uniq_add(&u_tex, tex0 & ~((1ull << 34) | (3ull << 35) | (7ull << 61)))) F.tex_uniq++;
 
         snprintf(d, sizeof d, "TEX0 %s tbw=%d %dx%d tcc=%d tfx=%s%s", psm_name(tpsm), tbw, tw, th, tcc, tfx_names[tfx],
@@ -530,11 +531,11 @@ static void kick(int type, const vtx* a, const vtx* b, const vtx* c) {
             if (inplace) F.inplace++;
             int uw = u1 - u0, uh = v1 - v0;
             F.fb_area += area;
-            snprintf(d, sizeof d, "%s %s%s%s: read %s tbp=%04X tbw=%d %dx%d (texels %dx%d at %d,%d) <- written as %s base=%03X %s; dst fbp=%03X %s %dx%d at %d,%d abe=%d alpha=%d%d%d%d/%d tfx=%d tcc=%d atst=%s z=%s%s fbmsk=%08X",
+            snprintf(d, sizeof d, "%s %s%s%s: read %s tbp=%04X tbw=%d %dx%d (texels %dx%d at %d,%d) <- written as %s base=%03X %s; dst fbp=%03X %s fbmsk=%08X %dx%d at %d,%d abe=%d alpha=%d%d%d%d/%d tfx=%d tcc=%d atst=%s z=%s%s",
                      type_names[type], m & 1 ? "SAME" : m & 2 ? "PREV" : m & 4 ? "Z" : "COPY", (m & 4) ? "+Z" : "", inplace ? " INPLACE" : "", psm_name(tpsm), tbp0, tbw,
-                     tw, th, uw, uh, u0, v0, wpsm >= 0 ? psm_name(wpsm) : "?", wbase, wkind == 2 ? "ZBUF" : wkind == 4 ? "copy" : "FRAME", fbp, psm_name(fpsm), w, h, bx0, by0,
+                     tw, th, uw, uh, u0, v0, wpsm >= 0 ? psm_name(wpsm) : "?", wbase, wkind == 2 ? "ZBUF" : wkind == 4 ? "copy" : "FRAME", fbp, psm_name(fpsm), fbmsk, w, h, bx0, by0,
                      abe, (int)(alpha & 3), (int)((alpha >> 2) & 3), (int)((alpha >> 4) & 3), (int)((alpha >> 6) & 3), (int)((alpha >> 32) & 0xFF), tfx,
-                     tcc, ate ? atst_names[atst] : "off", ztst_names[ztst], zmsk ? "" : "+zw", fbmsk);
+                     tcc, ate ? atst_names[atst] : "off", ztst_names[ztst], zmsk ? "" : "+zw");
             /* group: drop the exact texel/pixel sizes from the key */
             char kd[200];
             snprintf(kd, sizeof kd, "%s %d %d %d %04X %d %d %d %d %03X %d %03X %d %d %llx %d %d %08X", type_names[type], m & 7, inplace, tpsm, tbp0, tbw, tw, th,
@@ -548,7 +549,7 @@ static void kick(int type, const vtx* a, const vtx* b, const vtx* c) {
         uint64_t g[G_COUNT];
         g[G_ATTR] = attr & 0x7F8;
         g[G_TEX] = tme ? (tex0 & ~((1ull << 34) | (3ull << 35) | (7ull << 61))) : 0;
-        g[G_CLUT] = (tme && psm_indexed((int)((tex0 >> 20) & 0x3F))) ? clut_version : 0;
+        g[G_CLUT] = (tme && psm_indexed((int)((tex0 >> 20) & 0x3F))) ? clut_ident : 0;
         g[G_TEXENV] = tme ? fnv(&tex1, 8, fnv(&clamp, 8, fnv(&reg[R_TEXA], 8, fnv(&reg[R_MIPTBP1_1 + ctx], 8, FNV0)))) | (tex0 >> 34 & 7) << 60 : 0;
         g[G_TARGET] = fnv(&frame, 8, fnv(&zbuf, 8, fnv(&sc, 8, fnv(&xyo, 8, FNV0))));
         g[G_TEST] = test;
@@ -601,6 +602,7 @@ static void trxdir(uint32_t dir) {
     char d[200];
     xfer_dir = (int)dir;
     xfer_bytes = 0;
+    if (dir == 0 || dir == 2) draw_seq++;    /* a write: CLUT identities and page versions see it */
     if (dir == 0) {
         pset ds = { { 0 } };
         rect_pages(dpsm, (uint32_t)dbp, (uint32_t)dbw, dsax, dsay, dsax + rrw, dsay + rrh, &ds);
@@ -677,6 +679,13 @@ static void tex0_write(int ctx, uint64_t v) {
     }
     int wpsm, wbase, wframe;
     int m = classify_read(&cs, &wpsm, &wbase, &wframe);
+    {
+        uint32_t wseq = 0;
+        for (int i = 0; i < 512; i++)
+            if ((cs.b[i >> 6] >> (i & 63) & 1) && pages[i].seq > wseq) wseq = pages[i].seq;
+        uint32_t id[4] = { cbp, (uint32_t)csa, (uint32_t)cpsm | (uint32_t)csm << 8, wseq };
+        clut_ident = fnv(id, sizeof id, FNV0);
+    }
     char d[200];
     snprintf(d, sizeof d, "CLUT %s %d entries cpsm=%s csm=%d csa=%d cld=%d cbp=%04X src=%s", psm_name(tpsm), n, psm_name(cpsm), csm, csa, cld, cbp,
              (m & (1 | 2 | 32)) ? "DRAWN" : (m & 4) ? "ZBUF" : (m & 16) ? "copy" : (m & 8) ? "uploaded this frame" : "resident");
