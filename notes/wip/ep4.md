@@ -172,6 +172,42 @@ recompiler problem found at its root (with tests), save frames to build\screensh
     safehouse with Sly back ("Press X to play as Sly"); save1 m4_rc_chopper complete, prison 30%,
     chalktalk2 closed. Screens ep4_rc_chopper_job_completed/_murray_hypnosis/_hypnosis_blur.png,
     ep4_safehouse_sly_returns.png.
+  - heist stage chain (lw\hst, heist1_intro direct then 2538, 2540, ...): the states flip but the
+    game stays in world 14 with Bentley: a forced "complete" of hide_under_tank (2540) skips the
+    stage script that switches to Sly, drives the tank in and loads world 15, so nothing after
+    2540 is meaningful (same artifact as bomb_bridge on_top). The task tool only drives a
+    cross-level transition when the stage's script itself watches the task states.
+  - **heist6 -> heist7 transition by the game** (lw\h6t, heist6_intro direct, world 15, then
+    2593:2 and 2592:2 live): with both levers done the game plays the Sly-mask "Let's go!" wipe,
+    loads world 14 and runs the heist7 intro cutscene (Contessa on the spider walker, subtitles),
+    then Murray and Sly escape over the bridges. Screen ep4_heist6_to_heist7_transition.png.
+  - brawl_intro_ext direct (lw\brx, world 14): Binocucom briefing ("...thrown into solitary
+    confinement"), then Sly free on a roof; the stage waits for Sly to reach the prison (not
+    followed; the brawl's own 15 -> 14 return was verified by play in br2).
+- Memory soak (lw\perf, release hub, PS2_PERF, 9 min wandering as Bentley): 149 MB committed
+  from the first to the last report (working set 95 -> 141 MB = paging in), no growth.
+- All session-5 logs scanned: only the known boot-time lines ([sif] fn 34 / 0x8000059C fn 0
+  zeros, syscall 0x5B, the eret, the title->hub VoiceTrans overlap); the "hex" lines are [peek]
+  and [dump] lines torn by concurrent stderr writes.
+- Audio under load (lw\rcc): "late/early stream refills" rose 1 -> 70 during ~40 s of the RC
+  chopper section (every refill of one 44.1 kHz stream's half at 0x9040, 0.325 s apart, hit the
+  half voice c0 v2 was playing) and stayed flat afterwards. The IOP status lines of that run show
+  1000-1700 of 2400 ticks per 10 s more than 8 ms late with maxima of 190-990 ms (three of my
+  instances plus the other testers' were running), far beyond the 0.16 s a stream half holds; the
+  earlier RC chopper run rc5 (1080 s, lighter load) had 0 overlaps and 0 refill problems. Machine
+  starvation of the IOP thread, not a mixer or driver bug; nothing to fix in the runtime.
+
+## Status: COMPLETE (session 5)
+Every job of Episode 4 has been started and its flow checked (recon, hack, rc_chopper,
+bomb_bridge, brawl, lightning, spycam, pickpocket, heist stages 1-7), job completion flows and
+autosaves verified for all of them (by play for the brawl, through the task tool for the rest),
+the episode end (heist7 -> ending movie -> episode menu -> episode 5 intro movie) verified, the
+hub explored, audio and memory checked. No reproducible runtime bug is open. Not won by play
+(gameplay skill, not runtime problems): the hack minigame maze, the lightning rod wheels, Sly's
+tank hide (heist2), bomb_bridge on_top, the heist4 keypad route. RC chopper always-forward flight
+is the game's design (traced to the Splice script with a verified neutral stick).
+
+## Earlier notes (kept for reference)
 
 ## In progress
 - RC chopper (m4_rc_chopper, lw\rc*): with the stick released the chopper keeps swaying ~+-500
@@ -203,8 +239,8 @@ recompiler problem found at its root (with tests), save frames to build\screensh
   is at (400,-4960,2693), next to the heist7 start.
 
 ## Next
-1. Hacking minigame (m4_hack station, heist4 keypads), lightning puzzle, Murray brawl.
-2. Saving at a checkpoint (complete a task -> autosave), audio in a job.
+Nothing: COMPLETE (see the status above). If the episode is revisited, the items "not won by
+play" are the only ones left, and they need real play (live input with the 'pause' token).
 
 ## Findings / traps
 - The machine is at 100% CPU (other testers' games): debug build runs 8-30 fps, release ~15-35.
