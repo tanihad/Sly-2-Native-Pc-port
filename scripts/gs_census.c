@@ -201,9 +201,14 @@ static int uniq_add(uset* s, uint64_t k) {
 }
 
 static tab t_frame, t_zbuf, t_framez, t_tex0, t_texsz, t_tex1, t_clamp, t_texa, t_alpha, t_test, t_ztst, t_feedback, t_upload,
-    t_readback, t_copy, t_clut, t_display, t_fx, t_fogcol, t_xyoff, t_prim, t_scissor, t_dimx, t_target_frames, t_sprite;
+    t_readback, t_copy, t_clut, t_display, t_fx, t_fogcol, t_xyoff, t_prim, t_scissor, t_dimx, t_target_frames, t_sprite, t_pass;
 static uint64_t prev_key;
 static int prev_type = -1;
+/* what changed between consecutive draw states */
+enum { G_ATTR, G_TEX, G_CLUT, G_TEXENV, G_TARGET, G_TEST, G_ALPHA, G_FOG, G_COUNT };
+static const char* g_names[G_COUNT] = { "attr(IIP/TME/FGE/ABE/AA1/FST/CTX)", "TEX0 texture", "CLUT reload only", "TEX1/CLAMP/TEXA/MIPTBP",
+                                        "FRAME/ZBUF/SCISSOR/XYOFFSET", "TEST", "ALPHA/PABE/FBA/COLCLAMP/DTHE", "FOGCOL" };
+static uint64_t g_prev[G_COUNT], g_changes[G_COUNT], g_only[G_COUNT];
 static pset frame_fb_pages;              /* pages drawn as FRAME this frame (for display matching) */
 static pset prev_fb_pages;
 static int frame_fbps[64], frame_nfbp;   /* FRAME FBPs drawn this frame */
@@ -344,6 +349,17 @@ static void kick(int type, const vtx* a, const vtx* b, const vtx* c) {
     if (wr_z) F.zwrite++;
 
     char d[200];
+    /* pass signature: everything but the texture identity and the primitive type */
+    {
+        int tpsm = tme ? (int)((tex0 >> 20) & 0x3F) : -1;
+        snprintf(d, sizeof d, "PASS iip=%d tme=%d fge=%d abe=%d fst=%d | fbmsk=%08X | %s %s zmsk=%d | ate=%d %s %d %s date=%d | (%s-%s)*%s+%s %d fba=%d cc=%d | tex=%s tfx=%d tcc=%d %s/%s %s",
+                 iip, tme, fge, abe, fst, fbmsk, psm_name(fpsm), ztst_names[ztst], zmsk, ate, atst_names[atst], aref, afail_names[afail], date,
+                 ab_names[alpha & 3], ab_names[(alpha >> 2) & 3], c_names[(alpha >> 4) & 3], ab_names[(alpha >> 6) & 3], (int)((alpha >> 32) & 0xFF),
+                 (int)(reg[R_FBA_1 + ctx] & 1), (int)(reg[R_COLCLAMP] & 1), tme ? psm_name(tpsm) : "-", tme ? (int)((tex0 >> 35) & 3) : 0,
+                 tme ? (int)((tex0 >> 34) & 1) : 0, tme ? clamp_names[clamp & 3] : "-", tme ? clamp_names[(clamp >> 2) & 3] : "-",
+                 tme ? (((tex1 >> 5) & 1) ? "LIN" : "NEAR") : "");
+        tab_add(t_pass, fnv(d, strlen(d), FNV0), 1, d);
+    }
     pset fbs = { { 0 } }, zbs = { { 0 } };
     if (visible) {
         rect_pages(fpsm, (uint32_t)fbp * 32, (uint32_t)fbw, bx0, by0, bx1, by1, &fbs);
@@ -356,8 +372,9 @@ static void kick(int type, const vtx* a, const vtx* b, const vtx* c) {
         uint64_t k = fnv(&frame, 8, fnv(&sc, 8, fnv(&xyo, 8, FNV0)));
         ent* e = tab_add(t_frame, k, 1, d);
         if (visible && (wr_fb || wr_z)) ent_rect(e, bx0, by0, bx1, by1);
-        snprintf(d, sizeof d, "ZBUF zbp=%03X %s zmsk=%d  with FRAME fbp=%03X fbw=%d %s", zbp, psm_name(zpsm), zmsk, fbp, fbw, psm_name(fpsm));
-        uint64_t zk = fnv(&zbuf, 8, fnv(&frame, 4, FNV0));
+        snprintf(d, sizeof d, "ZBUF zbp=%03X %s zmsk=%d ztst=%s zwrite=%d  with FRAME fbp=%03X fbw=%d %s fbmsk=%08X", zbp, psm_name(zpsm), zmsk,
+                 ztst_names[ztst], wr_z, fbp, fbw, psm_name(fpsm), fbmsk);
+        uint64_t zk = fnv(d, strlen(d), FNV0);
         tab_add(t_zbuf, zk, 1, d);
         /* per-frame target list */
         note_fbp(fbp);
@@ -502,7 +519,22 @@ static void kick(int type, const vtx* a, const vtx* b, const vtx* c) {
             if (verbose) printf("  f%u #%u %s\n", cur_frame, draw_seq, d);
         }
     }
-    if (skey != prev_key) { F.states++; prev_key = skey; }
+    if (skey != prev_key) {
+        F.states++; prev_key = skey;
+        uint64_t g[G_COUNT];
+        g[G_ATTR] = attr & 0x7F8;
+        g[G_TEX] = tme ? (tex0 & ~((1ull << 34) | (3ull << 35) | (7ull << 61))) : 0;
+        g[G_CLUT] = (tme && psm_indexed((int)((tex0 >> 20) & 0x3F))) ? clut_version : 0;
+        g[G_TEXENV] = tme ? fnv(&tex1, 8, fnv(&clamp, 8, fnv(&reg[R_TEXA], 8, fnv(&reg[R_MIPTBP1_1 + ctx], 8, FNV0)))) | (tex0 >> 34 & 7) << 60 : 0;
+        g[G_TARGET] = fnv(&frame, 8, fnv(&zbuf, 8, fnv(&sc, 8, fnv(&xyo, 8, FNV0))));
+        g[G_TEST] = test;
+        g[G_ALPHA] = abe ? fnv(&alpha, 8, fnv(&reg[R_PABE], 8, fnv(&reg[R_FBA_1 + ctx], 8, fnv(&reg[R_COLCLAMP], 8, fnv(&reg[R_DTHE], 8, FNV0))))) : 0;
+        g[G_FOG] = fge ? reg[R_FOGCOL] : 0;
+        int n = 0, which = -1;
+        for (int i = 0; i < G_COUNT; i++) if (g[i] != g_prev[i]) { g_changes[i]++; n++; which = i; }
+        if (n == 1) g_only[which]++;
+        memcpy(g_prev, g, sizeof g);
+    }
     if (type != prev_type) { F.type_changes++; prev_type = type; }
     if (uniq_add(&u_state, skey)) F.states_uniq++;
 }
@@ -764,6 +796,7 @@ int main(int argc, char** argv) {
     tab_init(&t_ztst, 64); tab_init(&t_feedback, 8192); tab_init(&t_upload, 4096); tab_init(&t_readback, 1024); tab_init(&t_copy, 4096);
     tab_init(&t_clut, 1024); tab_init(&t_display, 1024); tab_init(&t_fx, 1024); tab_init(&t_fogcol, 1024); tab_init(&t_xyoff, 1024);
     tab_init(&t_prim, 1024); tab_init(&t_scissor, 1024); tab_init(&t_dimx, 64); tab_init(&t_target_frames, 64); tab_init(&t_sprite, 8192);
+    tab_init(&t_pass, 8192);
     printf("# gs_census %s\n", argv[1]);
     {
         uint64_t t0 = reg[R_TEX0_1];
@@ -815,6 +848,12 @@ int main(int argc, char** argv) {
     printf("transfers: uploads=%llu (%.1f/frame, %.1f KB/frame, %llu px) to drawn targets=%llu | copies=%llu (%llu px) | readbacks=%llu (%llu bytes) | area %.1f Mpx/frame (bbox estimate)\n",
            (unsigned long long)T.uploads, AVG(uploads), AVG(upload_bytes) / 1024.0, (unsigned long long)T.upload_px, (unsigned long long)T.upload_to_fb,
            (unsigned long long)T.copies, (unsigned long long)T.copy_px, (unsigned long long)T.readbacks, (unsigned long long)T.readback_bytes, AVG(area) / 1048576.0);
+    printf("state changes by register group (a change may count in several groups; 'alone' = the only group that changed):\n");
+    for (int i = 0; i < G_COUNT; i++)
+        printf("  %-36s %10llu changes (%5.1f%%)  alone %10llu (%5.1f%%)\n", g_names[i], (unsigned long long)g_changes[i],
+               T.states ? 100.0 * (double)g_changes[i] / (double)T.states : 0.0, (unsigned long long)g_only[i],
+               T.states ? 100.0 * (double)g_only[i] / (double)T.states : 0.0);
+    tab_print(&t_pass, "pass signatures (state without texture identity / primitive type)", 60);
     tab_print(&t_prim, "primitive attribute combos", 40);
     tab_print(&t_frame, "FRAME targets (+scissor, xyoffset)", 60);
     tab_print(&t_zbuf, "ZBUF with FRAME", 40);

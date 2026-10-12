@@ -28,8 +28,11 @@ $known = @(
 if ($All) { $Rec += $known }
 foreach ($r in $Rec) {
     if (-not (Test-Path $r)) { Write-Host "missing $r"; continue }
-    $tag = (Split-Path (Split-Path (Split-Path $r -Parent) -Parent) -Parent | Split-Path -Leaf)
-    if ($tag -eq 'build') { $tag = Split-Path (Split-Path (Split-Path $r -Parent) -Parent) -Parent | Split-Path -Leaf }
+    $full = (Resolve-Path $r).Path
+    $tag = 'rec'
+    if ($full.StartsWith($wt, [StringComparison]::OrdinalIgnoreCase)) {    # worktree name
+        $tag = ($full.Substring($wt.Length).TrimStart('\') -split '\\')[0]
+    }
     $name = "$tag-" + [IO.Path]::GetFileNameWithoutExtension($r) + '.txt'
     $args = @($r); if ($Verb) { $args += '-v' }
     Write-Host "census $r -> $name"
