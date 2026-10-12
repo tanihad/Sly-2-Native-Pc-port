@@ -178,10 +178,40 @@ runtime/recompiler problem found at its root (with tests); frames in build\scree
 - wav_m1_disco (release, m1_disco direct, 8 min WAV): 0 underruns, voice transfers steady 254-259/10 s
   after the load, levels steady -17..-20 dB, no silence. Disco audio fine.
 
+- Session 4 (2026-10-11, resumed after the user's pause): merged main (9e8092a, notes only);
+  branch clean, no PAUSED edit. Episode 1 has no hacking/RC stage (Thunder Beak's Bentley stages
+  are fight_guards / open_piperoom / piperoom). Plan: drive the completion flow of every job not yet
+  driven (waterpump, brawl, neela, moulin, disco, follow, bug, heist chain) with build\tools\flow.ps1
+  (direct start + timed PS2_TASK_FILE lines + log filter + contact sheet build\<run>\flow.png) and
+  check the job-world -> hub transitions, "Job Completed!" pages, autosaves and chalk talks.
+
+- Flows checked (release, direct starts, task file; all logs clean = only the known lines):
+  * wp1 Waterpump Destruction (world 7): boxes, guard, break tank -> tank cutscene -> 1885 completes
+    by itself -> "Job Completed!" -> autosave -> Murray at the pump door in the hub ("Press O to go
+    through door"). WAV 546 s: no dropouts/clicks, silence only at the two level loads (8.5 s, 10 s).
+  * br1 Silence the Alarms (hub): 1/3, 2/3 -> "Job Completed!" -> autosave -> 1807 closed (3).
+  * ne1 Moonlight Rendezvous: intro cutscene with Neyla (subtitles), chase start; Sly idle ->
+    "Job Failed! Neyla got bored waiting for you..." (game logic); 1858 waits for a trigger -> 2 by
+    hand -> "Job Completed!" + autosave over the failed page. Streams drop to 0 transfers at the
+    chase fade (and in the pause menu / level loads: disco2); hp1's siege "Job Failed" kept ~485.
+  * mo1 Theater Pickpocketing (world 6): keys 1-6 -> 1845 completes itself, fans 1846 -> 1848 waits
+    for a trigger -> 2 by hand -> "Job Completed!" + autosave; Sly stays in the theater (flashlight
+    guard patrols). WAV recorded (mo1.wav).
+  * **ck1 chalk talk 2 works** (waterpump with `--complete t1_bug`): after "Job Completed!" the
+    game cut to the hub, then Bentley's chalk talk (in-engine scenes with yellow arrows/rings: alarm
+    boxes, theater chandelier + guards, disco ball, white-flash slide transitions) -> safehouse
+    "Press X to play as Murray". Frames ep1_chalktalk2_alarms.png, ep1_chalktalk2_disco.png,
+    ep1_safehouse_after_chalktalk.png. So chalk talks need the job's real completion event
+    (0x164DF0 propagation), which the task file gives; a save-state activation does not.
+  * Paris safehouse door (hub position after "Press X"): about (-1930, -4050, 585).
+- Under 4 parallel instances the game ran at 5-30 VBlanks/s (loads took 40 s); the machine also
+  carries other agents' processes (LoadPercentage 83 before I started). Not measured further.
+
 ## Next
-1. Chalk talk test (ct1: m1_recon direct + task file: 1793/1794/1795 -> 2 -> recon complete ->
-   chalk talk 1 in the safehouse?).
-2. More jobs in depth (disco bombs/lasers, theater, waterpump, neela chase, heist stages).
+1. Flows still running/pending: di1 (disco bombs, 1875 -> 2 by hand), ne2 (chase Job Failed -> X
+   retries: do the streams come back? WAV), fo1 (follow 1819/1821/1822), bu1 (t1_bug_intro direct,
+   world 4: 1812-1814 -> 2), then the heist chain he1 (1893..1911 one by one in the hub).
+2. Mark COMPLETE when the flows are checked and no runtime bug is open.
 
 ## Findings / traps
 - The scratchpad dir is shared with other agents (a file there was overwritten): keep helper
