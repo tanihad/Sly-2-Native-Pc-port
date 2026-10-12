@@ -166,6 +166,12 @@ recompiler problem found at its root (with tests), save frames to build\screensh
     completed by the game itself: each station is the minigame, each path a walk), "Job
     Completed!" Bentley page, hub; save1 m4_hack complete, prison 19%, rc_chopper_intro active.
     Screens ep4_hack_job_completed.png, ep4_hack_job_completed_hub.png.
+  - rc_chopper (lw\rcc): guards 1..7 -> guards_dead (completed by the game) -> sly_escape ->
+    "Job Completed!" (Sly) -> the letterboxed Murray-hypnosis cutscene (clean close-ups of Murray
+    with bubbles; the dumps in between are its zoom-blur transitions, smeared on purpose) -> the
+    safehouse with Sly back ("Press X to play as Sly"); save1 m4_rc_chopper complete, prison 30%,
+    chalktalk2 closed. Screens ep4_rc_chopper_job_completed/_murray_hypnosis/_hypnosis_blur.png,
+    ep4_safehouse_sly_returns.png.
 
 ## In progress
 - RC chopper (m4_rc_chopper, lw\rc*): with the stick released the chopper keeps swaying ~+-500
