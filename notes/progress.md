@@ -2,12 +2,36 @@
 
 ## Resume here (read first in a new session)
 
+**RESUMED 2026-10-11 (after the pause below):** continuation workflow `whole-game-sweep-continue`
+(run wf_1522fb31-777) runs only the unfinished testers ep1, ep2, ep3, ep4, ep7, then the VU
+review, then integrate (finished reports passed in as args; full copies in
+build\sweep-finished.json). The D3D11 design workflow resumed as wf_45705d77-396. Resume either
+with its `resumeFromRunId`.
+
+**PAUSED by the user on 2026-10-11** (to use the computer). Both workflows were stopped,
+all agent game processes were killed, and every worktree is clean (unfinished edits committed as
+"PAUSED ... unverified" WIP in ep3 and d3d11), and all next/* branches are pushed. Finished agents:
+warp, vu-recomp, ep5, ep6, ep8 (results in the run journal of wf_1f8b6c38-938). Unfinished:
+ep1, ep2, ep3, ep4, ep7 (continue from notes/wip/epN.md), then the VU review and the integrate
+step; and the D3D11 design workflow (wf_45705d77-396; its understand agents had just started).
+Note: on the last resume, ep5/ep6 started a new session ("session 6 start") although they had
+finished, so resuming by run id may re-run finished testers. Better: a continuation script that
+runs only the unfinished testers and passes the finished results from the journal to integrate.
+
 **Main 81186bf (2026-10-11), episode testers: merge main into your branch.** It has the EE thread
 fix from next/ep5 (runtime/threads.c): thread churn leaked ~1 MB/s of fiber stacks, and a restarted
 thread resumed its old fiber (StartThread after a normal return spun forever; after ExitThread or
 TerminateThread it resumed inside the old syscall). Hangs or "stuck" scripts that involve thread
-restarts, and growing memory in long runs, may be this bug. ep5 is complete. The workflow was
-resumed again after a session limit (ep1-4, ep6-8, VU review, integrate pending).
+restarts, and growing memory in long runs, may be this bug. ep5, ep6, ep8 are complete; the
+workflow was resumed again (ep1-4, ep7, VU review, integrate pending).
+
+**Direct3D 11 renderer design (2026-10-11), running in parallel:** workflow
+`d3d11-renderer-design` (run wf_45705d77-396; worktree `sly2-worktrees\d3d11`, branch
+next/d3d11): renderer map + census of Sly 2's GS usage over the .gsrec corpus + prior art, then
+3 competing designs (high-level translation / GPU-exact compute / Sly-specialised hybrid), a
+3-lens judge panel, and the final design in `notes/d3d11-renderer.md` on next/d3d11. Each agent
+checkpoints to `notes/wip/d3d11-*.md` there. Resume: `Workflow({scriptPath: <session>\workflows\
+scripts\d3d11-renderer-design-wf_45705d77-396.js, resumeFromRunId: "wf_45705d77-396"})`.
 
 **Main 125390a (2026-10-11):** the VU microcode recompiler and the warp tool's release-build
 direct starts are merged. Release regression: 60 fps, VU 100% recompiled (2.2 ns/pair), EE thread
