@@ -206,8 +206,17 @@ build\screenshots\ep7_*.png.
   back_outside (3055) active; the cave exit is a walk (not steered). Cave renders right (sleeping bear
   with Z's, hint marquee).
 
+- Boat hack static view RESOLVED as game logic: the game's own stage start (direct
+  t7_boat_hack_station3_complete, build\warp\s_boat3) plays the same ending (beams cutscene, "Job
+  Completed!", autosave: m7_boat_hack.is_complete 1, time_played 9.4) and leaves Bentley playable on
+  the boat deck, guards passing, for the rest of the run. In the forced session Bentley stood on
+  another boat when grapple3 was marked done, fell in the water (drowning) and the RAM dump has no
+  Bentley character object left (only Sly 0x10E46C0 and Murray 0x12ABBA0 with 0x2D vtables): the
+  respawn actor was gone, so the camera parked. Not a runtime issue.
+
 ## In progress
-- Boat hack post-completion static view: see above (s_boat3 reproduction).
+- Operation stage chain by task file (build\fl_heist: 3200, 3205, 3216, 3230, 3236, 3251, 3258) and
+  Thermal Ride stages (build\fl_therm: 3180, 3181, 3183, 3185).
 - Thermal Ride: full tour T1..T5 with glide.py (build\therm5\glide.out) to see where get_height
   completes (gameplay only, lower priority).
 
