@@ -2,7 +2,13 @@
 
 ## Resume here (read first in a new session)
 
-**PAUSED by the user again on 2026-10-11** (to use the computer). Both workflows were stopped,
+**RESUMED 2026-10-11 (after the pause below):** continuation workflow `whole-game-sweep-continue`
+(run wf_1522fb31-777) runs only the unfinished testers ep1, ep2, ep3, ep4, ep7, then the VU
+review, then integrate (finished reports passed in as args; full copies in
+build\sweep-finished.json). The D3D11 design workflow resumed as wf_45705d77-396. Resume either
+with its `resumeFromRunId`.
+
+**PAUSED by the user on 2026-10-11** (to use the computer). Both workflows were stopped,
 all agent game processes were killed, and every worktree is clean (unfinished edits committed as
 "PAUSED ... unverified" WIP in ep3 and d3d11), and all next/* branches are pushed. Finished agents:
 warp, vu-recomp, ep5, ep6, ep8 (results in the run journal of wf_1f8b6c38-938). Unfinished:
