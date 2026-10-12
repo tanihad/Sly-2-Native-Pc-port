@@ -151,6 +151,11 @@ recompiler problem found at its root (with tests), save frames to build\screensh
   "+700/+760/+820/+880:cross" presses land at ~+0.7k/1.5k/2.3k/3.2k frames: the last ones are
   jumps in gameplay, which explains Bentley jumping into the canal at the m4_hack starts.
 
+- Session 5: merged main (9e8092a, notes only) -> e0783d2; the branch already carried the live
+  'pause' token cherry-picks (ep1/ep2) from an integrate step; rebuilt build\rel and build\sly2,
+  tests\run_tests.py 16/16 + hook guards pass. Remaining: completion flows (task tool) of
+  pickpocket, spycam, hack, rc_chopper and the heist stage chain (level transitions 14 -> 15 -> 14).
+
 ## In progress
 - RC chopper (m4_rc_chopper, lw\rc*): with the stick released the chopper keeps swaying ~+-500
   units at near full speed (never settles); ep2's RC chopper trace shows the same. Not a dt effect:
