@@ -170,8 +170,16 @@ build\screenshots\ep7_*.png.
   149 MB committed, 0 audio underruns at 410 s; with fewer games running the hub reached 56-60
   VBlanks/s and 47-50 flips/s (GS thread 15-16 ms per VBlank).
 
+- Session 4: merged main 9e8092a (progress notes only) -> d0bdbce; run_tests.py 16/16 + hook
+  guards pass; builds (rel 08:42, debug 08:27) are newer than the last code change (5685f68).
+
 ## In progress
-- Perf sweep (release, PS2_PERF) of the ep7 hub and the heavy job levels while the machine is quiet.
+- Session 4: direct starts of the stages never started before (release, build\warp\s_*):
+  t7_heist0_intro (Bentley), t7_recon_inside_lighthouse, t7_lighthouse_open_door (world 35),
+  t7_thermals_return_to_safehouse. Then completion flows through PS2_TASK_FILE: recon (outside
+  photos -> lighthouse interior transition), lighthouse (on_top -> interior -> door -> battery),
+  boat hack (throw1 -> station1 = hack minigame?), bear (stations -> complete), thermals (-> chalk
+  talk 3 -> alarm clock purchase -> heist0).
 - Thermal Ride: full tour T1..T5 with glide.py (build\therm5\glide.out) to see where get_height
   completes (gameplay only, lower priority).
 
