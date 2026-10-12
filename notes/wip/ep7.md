@@ -189,9 +189,25 @@ build\screenshots\ep7_*.png.
   boat deck next to the hack terminal, counter 1/3 (ep7_boat_hack_deck.png). All in the hub world,
   renders right, log clean apart from one game-side "[sd] VoiceTrans ... overwrites" at the load.
 
+- Boat hack to the end (3159..3170 -> 2, VBlank-spaced): station3_complete = red beams on the
+  lighthouse cutscene ("That did it...", "Chamber empty, we'll be all set to move in!"), "Job
+  Completed!" book, autosave icon; save1: m7_boat_hack.is_complete 1, sawmill 57%. Then Bentley swims
+  in the water, a letterboxed shot of him on a boat deck and the view parks on a static boat with
+  the camera focus (0x2DE1C0) frozen at (-10573,-10640,-846): main loop and audio keep running, pad
+  input is read (pad lines) but nothing changes. Reproducing through the game's own stage start
+  (direct t7_boat_hack_station3_complete, build\warp\s_boat3) to tell a forced-state artifact from
+  a runtime hang. ep7_boat_hack_end_sheet.png.
+- RC combat won in context (3081 -> 2 inside world 33): moose cutscene ("You won!" ... "On whether or
+  not you know the location"), "Job Completed!", autosave, the hub (world 32) with Murray, guards
+  fight him, knock-down/respawn: all right (ep7_rc_combat_won_sheet.png). m7_robot_war closed.
+- Bear job (hub stations 3139..3142 -> 2): cutscene, bear flash, "Job Completed!", autosave, hub as
+  Murray; t7_thermals_intro active (ep7_bear_completed_sheet.png).
+- Bear cave (world 36, radios 3047..3052 -> 2): radio_collect_complete (3054) completes itself,
+  back_outside (3055) active; the cave exit is a walk (not steered). Cave renders right (sleeping bear
+  with Z's, hint marquee).
+
 ## In progress
-- Flows in other worlds: bear (hub stations 3139..3142), RC combat won (3081 -> 2 in world 33: back
-  to the hub?), bear cave radios (3047..3052 in world 36 -> back_outside 3055 in the hub?).
+- Boat hack post-completion static view: see above (s_boat3 reproduction).
 - Thermal Ride: full tour T1..T5 with glide.py (build\therm5\glide.out) to see where get_height
   completes (gameplay only, lower priority).
 
