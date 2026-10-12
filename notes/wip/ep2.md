@@ -132,10 +132,31 @@ build\screenshots\ep2_*.png.
   The dance does not use the pad test 0x187D80 (PS2_WATCH): only the cutscene skip 0x211D38 does.
   Pad object 0x2DFC00: +0x10B4 held, +0x10B8 pressed (latched until consumed by 0x187DE0), +0x10BC.
 
+- 2026-10-12 (session 4): merged main 411bb22 (notes only). Stepped dance runs after the VBlank
+  shift: dR4 (quiet machine) ball lands on the slots ~33 VBlanks apart (= real time, 0.55 s), dA1
+  (loaded machine) 12-20 VBlanks apart -> a time source still ran during the pause.
+- FIX: COP0 Count (ps2_mfc0 reg 9) came from raw host time; it is now timer_cop0_count() on timer.c's
+  held time base (2 x bus cycles). Test timer cop0_count_hold; run_tests.py and timer suite pass.
+  Commit 89e93a6. (The game measures real time with Count: dialogue, the dance beat.)
+- Dance rules (dR4 + dA1 + the real-time runs): the icon reveal of slot k is not the cue. With no
+  press the reveal comes when the blue ball lands on the slot (the beat); a press reveals the icon
+  ~12 VBlanks later; pressing after a slot's auto-reveal counts for the next slot (dR4: three late
+  presses = an extra press -> fail after slot 2); pressing all three right after "? ? ?" 12-16
+  VBlanks apart (dA1) failed in round 2. Probably a rhythm window around each landing; the stepped
+  bot is step_dance4.py (press slot 0 at Q, slot k+1 at reveal k; frames must be stable 2 steps -
+  the loading screen produced fake prompts). Under 13 game instances the stepping runs at 2
+  VBlanks/s (each step waits for the GS thread's PNG), too slow to finish a dance.
+- Job flows through PS2_TASK_FILE (build\tools\taskflow.ps1 = live_direct + task lines + frames):
+  m2_lower_drawbridge (dbr2): keys 2004-2008 -> HUD 5/5, keys_complete 2009 auto 2, 2010 active;
+  2010:2 -> "Job Completed!" notebook, back to the hub, 2010 state 3, t2_turret_intro 2013 active,
+  autosave written. Frame ep2_drawbridge_completed.png. Setting 2013:2 in the same session only
+  activates 2014 (Sly stays in the hub): each job needs its own direct start.
+
 ## Next
-1. Dance minigame with the 'pause' token (step by step, independent of machine speed).
-2. PS2_TASK_FILE to finish sub-tasks (elephant jewels, keys, cleats) and see the completion flows.
-3. Play deeper: m2_heist_bomb_bridge (Bentley), m2_heist_dance (tango), m2_elephant_rampage,
-   m2_lower_drawbridge, m2_steal_tuxedo, m2_heist_cover_murray, boardroom brawl past the pool.
+1. Flows (taskflow.ps1): elephant (ele2), tuxedo (tux2) running; then recon, bomb bridge (lower ->
+   collapse -> upper), boardroom brawl, rc chopper, turret, heist dance, dance audition (2059:2).
+2. Dance minigame: longer stepped run (-Every 4, 60 min) when the machine is quieter; try pressing
+   when the ball lands (cursor x near the slot, wide y band) if the anticipating rule fails again.
+3. Play deeper: m2_heist_bomb_bridge (Bentley), m2_heist_dance (tango), boardroom brawl past the pool.
 
 ## Findings / traps
