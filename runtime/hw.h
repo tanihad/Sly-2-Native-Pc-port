@@ -54,6 +54,7 @@ uint8_t* hw_dma_ptr(uint32_t addr, uint32_t bytes);
 void timer_access(uint32_t phys, void* data, unsigned size, int is_write);
 void timer_service(void);                /* called often (>= 1 kHz): raise INTC_TIM* for due events */
 void timer_hold(int on);                 /* debug pause: EE timer time stands still while on */
+uint32_t timer_cop0_count(void);         /* COP0 Count (294.912 MHz) on the timers' held time base */
 
 /* ---- dma.c: DMA controller (0x10008000-0x1000EFFF, 0x1000F500-0x1000F5FF) ------------------------ */
 
