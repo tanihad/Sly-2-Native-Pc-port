@@ -474,9 +474,33 @@ static void kick(int type, const vtx* a, const vtx* b, const vtx* c) {
                 tab_add(t_texa, fnv(d, strlen(d), FNV0), 1, d);
         }
 
-        /* texel bbox -> pages read (level 0 and mips) */
+        /* texel bbox -> pages read (level 0 and mips); a sprite clipped by the scissor only reads the
+         * texels of its visible part (texture coordinates are linear across it) */
         int u0, u1, v0, v1;
         pset ts = { { 0 } };
+        vtx sv[2];
+        if (type == 6 && visible && (x1 > x0) && (y1 > y0)) {
+            const vtx *p = a, *q = b;
+            if (p->x > q->x || (p->x == q->x && p->y > q->y)) { p = b; q = a; }
+            sv[0] = *p; sv[1] = *q;
+            /* visible rect in vertex units */
+            float fx0 = (float)(bx0 * 16 + 8), fx1 = (float)(bx1 * 16 - 8), fy0 = (float)(by0 * 16 + 8), fy1 = (float)(by1 * 16 - 8);
+            float ax = (float)(p->x - ofx), bxx = (float)(q->x - ofx), ay = (float)(p->y - ofy), byy = (float)(q->y - ofy);
+            float tx0 = bxx != ax ? (fx0 - ax) / (bxx - ax) : 0.0f, tx1 = bxx != ax ? (fx1 - ax) / (bxx - ax) : 1.0f;
+            float ty0, ty1;
+            if (ay <= byy) { ty0 = byy != ay ? (fy0 - ay) / (byy - ay) : 0.0f; ty1 = byy != ay ? (fy1 - ay) / (byy - ay) : 1.0f; }
+            else { ty0 = (fy1 - ay) / (byy - ay); ty1 = (fy0 - ay) / (byy - ay); }
+            if (tx0 < 0.0f) tx0 = 0.0f; if (tx1 > 1.0f) tx1 = 1.0f; if (ty0 < 0.0f) ty0 = 0.0f; if (ty1 > 1.0f) ty1 = 1.0f;
+            if (fst) {
+                sv[0].u = p->u + (int)((float)(q->u - p->u) * tx0); sv[1].u = p->u + (int)((float)(q->u - p->u) * tx1);
+                sv[0].v = p->v + (int)((float)(q->v - p->v) * ty0); sv[1].v = p->v + (int)((float)(q->v - p->v) * ty1);
+            } else {
+                sv[0].s = p->s + (q->s - p->s) * tx0; sv[1].s = p->s + (q->s - p->s) * tx1;
+                sv[0].t = p->t + (q->t - p->t) * ty0; sv[1].t = p->t + (q->t - p->t) * ty1;
+                sv[0].q = sv[1].q = q->q;
+            }
+            v[0] = &sv[0]; v[1] = &sv[1];
+        }
         if (tex_bbox(v, n, fst, tw, th, clamp, &u0, &u1, &v0, &v1)) {
             rect_pages(tpsm, (uint32_t)tbp0, (uint32_t)tbw, u0, v0, u1, v1, &ts);
             if (mxl > 0 && (lcm == 0 || K > 0)) {
