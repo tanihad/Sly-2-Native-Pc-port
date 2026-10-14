@@ -33,6 +33,10 @@ static uint32_t npend;
 static uint8_t page_full[512];           /* blocks of the page with every word CPU-valid */
 static uint8_t page_pend[512];           /* blocks of the page with a pending patch */
 static uint32_t serial_ctr = 1, upload_ctr;
+static uint32_t change_gen;               /* bumped whenever any block's writer, serial or CPU mask changes */
+uint32_t own_upload_gen;                  /* bumped by every upload (texture source caches) */
+uint32_t own_epoch;
+static uint32_t next_serial(void) { change_gen++; return ++serial_ctr; }
 
 /* block lists of the op being built */
 static uint16_t load_list[GPU_BLOCKS], dl_list[GPU_BLOCKS];
@@ -40,7 +44,7 @@ static uint32_t nload, ndl;
 
 void own_reset(void) {
     for (int i = 1; i <= GPU_MAX_TARGETS; i++) {
-        free(gt[i].babs); free(gt[i].vs); free(gt[i].sdirty);
+        free(gt[i].babs); free(gt[i].vs); free(gt[i].sdirty); free(gt[i].inv);
     }
     memset(gt, 0, sizeof gt);
     memset(blk_writer, 0, sizeof blk_writer);
@@ -67,6 +71,7 @@ int own_target_kind_of_zpsm(int zpsm) {
 static void set_cpu(uint32_t b, uint64_t m) {
     uint64_t old = blk_cpu[b];
     if (old == m) return;
+    change_gen++;
     if (old == ALL) page_full[b >> 5]--;
     if (m == ALL) page_full[b >> 5]++;
     if (old & ~m) own_gen++;
@@ -95,9 +100,10 @@ static void target_layout(gpu_target* T, int rows) {
             babs[by * bcols + bx] = (uint16_t)(gs_swz_addr(T->fmt, T->base, T->fbw, bx * T->bw, by * T->bh) >> 8);
             if (T->vs && by < T->brows) vs[by * bcols + bx] = T->vs[by * T->bcols + bx];
         }
-    free(T->babs); free(T->vs); free(T->sdirty);
-    T->babs = babs; T->vs = vs; T->sdirty = sd;
+    free(T->babs); free(T->vs); free(T->sdirty); free(T->inv);
+    T->babs = babs; T->vs = vs; T->sdirty = sd; T->inv = NULL;
     T->shadow_valid = 0;
+    T->clean = 0;
     T->bcols = bcols; T->brows = brows; T->rows = rows;
     target_pages(T, rows, T->pages);
 }
@@ -115,9 +121,18 @@ static void set_scale(gpu_target* T) {
 }
 
 gpu_target* own_find(int kind, uint32_t base, uint32_t fbw) {
+    static int last[TGT_N][2];           /* two most recent hits per kind */
+    for (int j = 0; j < 2; j++) {
+        gpu_target* T = &gt[last[kind][j]];
+        if (last[kind][j] && T->used && T->kind == kind && T->base == base && T->fbw == fbw) return T;
+    }
     for (int i = 1; i <= GPU_MAX_TARGETS; i++) {
         gpu_target* T = &gt[i];
-        if (T->used && T->kind == kind && T->base == base && T->fbw == fbw) return T;
+        if (T->used && T->kind == kind && T->base == base && T->fbw == fbw) {
+            last[kind][1] = last[kind][0];
+            last[kind][0] = i;
+            return T;
+        }
     }
     return NULL;
 }
@@ -140,10 +155,12 @@ gpu_target* own_target(int kind, int psm, uint32_t base, uint32_t fbw, int rows)
         T->last_used = gf_frame;
         return T;
     }
-    /* a target of the same kind whose pages contain this base (a sub-buffer of it): PUNT */
+    /* A target of the same kind whose pages contain this base (the ep2 photo's copy at 070 inside
+     * a field buffer drawn taller than 224 rows): with per-block ownership this is ordinary
+     * aliasing, exact and counted (loads/downloads), so it is a separate target, not a PUNT. */
     for (int i = 1; i <= GPU_MAX_TARGETS; i++) {
         gpu_target* U = &gt[i];
-        if (U->used && U->kind == kind && (U->pages[base >> 6] >> (base & 63) & 1)) return NULL;
+        if (U->used && U->kind == kind && (U->pages[base >> 6] >> (base & 63) & 1)) { gf.target_overlaps++; break; }
     }
     int id = 0;
     for (int i = 1; i <= GPU_MAX_TARGETS && !id; i++) if (!gt[i].used) id = i;
@@ -224,13 +241,40 @@ static void load_block(gpu_target* T, int i, uint32_t b) {
     T->vs[i] = blk_serial[b];
 }
 
+void own_grow(gpu_target* T, int rows) {
+    int ph = 1 << T->fmt->ph_shift;
+    rows = (rows + ph - 1) / ph * ph;
+    if (rows > 2048) rows = 2048;
+    if (rows <= T->rows) return;
+    target_layout(T, rows);              /* recreate + copy */
+    emit_target(T, GPU_FOP_TARGET);
+}
+
+/* T holds every one of its blocks, current and GPU-only: nothing to check until some block changes */
+static void scan_clean(gpu_target* T) {
+    int n = T->bcols * T->brows, clean = 1;
+    for (int i = 0; i < n && clean; i++) {
+        uint32_t b = T->babs[i];
+        clean = T->vs[i] == blk_serial[b] && blk_writer[b] == T->id && !blk_cpu[b];
+    }
+    T->clean = clean;
+    T->clean_gen = change_gen;
+    T->slow_calls = 0;
+}
+
 void own_draw(gpu_target* T, int x0, int y0, int x1, int y1, int writes, int opaque) {
+    if (y1 >= T->rows) own_grow(T, y1 + 1);
     if (x0 < 0) x0 = 0;
     if (y0 < 0) y0 = 0;
     int bx0 = x0 / T->bw, by0 = y0 / T->bh, bx1 = x1 / T->bw, by1 = y1 / T->bh;
     if (bx1 >= T->bcols) bx1 = T->bcols - 1;
     if (by1 >= T->brows) by1 = T->brows - 1;
     T->last_used = gf_frame;
+    if (T->clean && T->clean_gen == change_gen) {     /* fast path: only the feedback bookkeeping */
+        if (writes && T->shadow_valid)
+            for (int by = by0; by <= by1; by++) memset(T->sdirty + by * T->bcols + bx0, 1, (size_t)(bx1 - bx0 + 1));
+        return;
+    }
     for (int by = by0; by <= by1; by++) {
         int fully_y = by * T->bh >= y0 && by * T->bh + T->bh - 1 <= y1;
         for (int bx = bx0; bx <= bx1; bx++) {
@@ -243,7 +287,7 @@ void own_draw(gpu_target* T, int x0, int y0, int x1, int y1, int writes, int opa
             if (writes) {
                 if (blk_writer[b] != T->id) {
                     blk_writer[b] = T->id;
-                    blk_serial[b] = ++serial_ctr;
+                    blk_serial[b] = next_serial();
                     set_cpu(b, 0);
                 } else if (blk_cpu[b]) set_cpu(b, 0);
                 T->vs[i] = blk_serial[b];
@@ -252,9 +296,39 @@ void own_draw(gpu_target* T, int x0, int y0, int x1, int y1, int writes, int opa
         }
     }
     if (nload || ndl) flush_lists(T);
+    if (T->clean_gen != change_gen && ++T->slow_calls >= 16) scan_clean(T);
+}
+
+void own_blocks(gpu_target* T, const uint16_t* blocks, int n, int writes) {
+    if (!T->inv) {                       /* absolute block -> local block (-1: not T's) */
+        T->inv = malloc(GPU_BLOCKS * sizeof *T->inv);
+        memset(T->inv, 0xFF, GPU_BLOCKS * sizeof *T->inv);
+        for (int i = T->bcols * T->brows - 1; i >= 0; i--) T->inv[T->babs[i]] = (int16_t)i;
+    }
+    for (int k = 0; k < n; k++) {
+        int i = T->inv[blocks[k]];
+        if (i < 0) continue;
+        int bx = i % T->bcols, by = i / T->bcols;
+        own_draw(T, bx * T->bw, by * T->bh, bx * T->bw + T->bw - 1, by * T->bh + T->bh - 1, writes, 0);
+    }
 }
 
 void own_clear(gpu_target* T) { own_draw(T, 0, 0, T->bcols * T->bw - 1, T->rows - 1, 1, 1); }
+
+void own_punt(gpu_target* T, int x0, int y0, int x1, int y1) {
+    /* the software rasterizer draws it into memory: GPU data under the rect goes down first, then
+     * the rect is CPU data (an upload, as far as every target is concerned) */
+    if (y1 >= T->rows) own_grow(T, y1 + 1);
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    for (int y = y0; y <= y1; y += T->bh)
+        for (int x = x0; x <= x1; x += T->bw) {
+            uint32_t b = gs_swz_addr(T->fmt, T->base, T->fbw, x, y) >> 8;
+            if (blk_cpu[b] != ALL) download_block(b);
+        }
+    flush_lists(NULL);
+    own_upload(T->psm, (uint32_t)T->base * 32, T->fbw, x0, y0, x1 + 1, y1 + 1);
+}
 
 void own_view_read(gpu_target* T, int x0, int y0, int x1, int y1) { own_draw(T, x0, y0, x1, y1, 0, 0); }
 
@@ -309,6 +383,16 @@ static uint32_t word_of(int psm, uint32_t bp, uint32_t bw, uint32_t x, uint32_t 
     }
 }
 
+/* the GS block (256 bytes) of each format, in texels */
+static void block_dims(int psm, int* w, int* h) {
+    switch (psm) {
+    case PSMCT16: case PSMCT16S: case PSMZ16: case PSMZ16S: *w = 16; *h = 8; break;
+    case PSMT8: *w = 16; *h = 16; break;
+    case PSMT4: *w = 32; *h = 16; break;
+    default: *w = 8; *h = 8; break;
+    }
+}
+
 /* mode 0: test only; 1: flush/download as needed */
 static int mem_check(int psm, uint32_t bp, uint32_t bw, int u0, int v0, int u1, int v1, int act) {
     if (u0 < 0) u0 = 0;
@@ -325,17 +409,26 @@ static int mem_check(int psm, uint32_t bp, uint32_t bw, int u0, int v0, int u1, 
             if (page_full[p] != 32 || page_pend[p]) { slow = 1; break; }
         }
     if (!slow) return 0;
-    /* exact: every texel's word (texture rectangles here are small or rare) */
-    int gpu = 0;
-    for (int v = v0; v <= v1; v++)
-        for (int u = u0; u <= u1; u++) {
-            uint32_t w = word_of(psm, bp, bw, (uint32_t)u, (uint32_t)v), b = w >> 6;
+    /* per block of the texture's own block grid (the base is block-aligned); texel by texel only
+     * inside blocks that are partly CPU data (an upload over part of a GPU-written block) */
+    int gpu = 0, bwp, bhp;
+    block_dims(psm, &bwp, &bhp);
+    for (int by = v0 / bhp; by <= v1 / bhp; by++)
+        for (int bx = u0 / bwp; bx <= u1 / bwp; bx++) {
+            uint32_t b = word_of(psm, bp, bw, (uint32_t)(bx * bwp), (uint32_t)(by * bhp)) >> 6;
             if (act && pending(b)) own_flush_patches();
-            if (!(blk_cpu[b] >> (w & 63) & 1)) {
-                gpu = 1;
-                if (!act) return 1;
-                download_block(b);
-            }
+            if (blk_cpu[b] == ALL) continue;
+            int ua = bx * bwp > u0 ? bx * bwp : u0, ub = bx * bwp + bwp - 1 < u1 ? bx * bwp + bwp - 1 : u1;
+            int va = by * bhp > v0 ? by * bhp : v0, vb = by * bhp + bhp - 1 < v1 ? by * bhp + bhp - 1 : v1;
+            for (int v = va; v <= vb; v++)
+                for (int u = ua; u <= ub; u++) {
+                    uint32_t w = word_of(psm, bp, bw, (uint32_t)u, (uint32_t)v);
+                    if (blk_cpu[w >> 6] >> (w & 63) & 1) continue;
+                    gpu = 1;
+                    if (!act) return 1;
+                    download_block(w >> 6);
+                    v = vb; break;
+                }
         }
     if (act && ndl) flush_lists(NULL);
     return gpu;
@@ -356,6 +449,7 @@ void own_upload(int psm, uint32_t bp, uint32_t bw, int x0, int y0, int x1, int y
     if (y1 > 2048) { y0 = 0; y1 = 2048; }
     if (gs_psm_bpp(psm) == 0) psm = PSMCT32;
     upload_ctr++;
+    own_upload_gen++;
     /* PSMCT24/Z24 (low 3 bytes) and T8H/T4HL/T4HH (part of the top byte) uploads keep the rest of
      * each word: such a word is CPU-valid afterwards only if it was before */
     int partial_word = psm == PSMCT24 || psm == PSMZ24 || psm == PSMT8H || psm == PSMT4HL || psm == PSMT4HH;
@@ -367,9 +461,9 @@ void own_upload(int psm, uint32_t bp, uint32_t bw, int x0, int y0, int x1, int y
                 if (blk_writer[b] || blk_cpu[b] != ALL) {
                     /* GPU-written block (or partly): every target copy goes stale */
                     blk_writer[b] = 0;
-                    blk_serial[b] = ++serial_ctr;
+                    blk_serial[b] = next_serial();
                 } else {
-                    blk_serial[b] = ++serial_ctr;          /* targets that loaded it are stale too */
+                    blk_serial[b] = next_serial();          /* targets that loaded it are stale too */
                 }
                 if (!pending(b)) {
                     blk_pend[b >> 6] |= 1ull << (b & 63);
@@ -412,9 +506,10 @@ static void release(gpu_target* T) {
     }
     flush_lists(NULL);
     emit_target(T, GPU_FOP_RELEASE);
-    free(T->babs); free(T->vs); free(T->sdirty);
-    T->babs = NULL; T->vs = NULL; T->sdirty = NULL;
+    free(T->babs); free(T->vs); free(T->sdirty); free(T->inv);
+    T->babs = NULL; T->vs = NULL; T->sdirty = NULL; T->inv = NULL;
     T->used = 0;
+    own_epoch++;
     gf.targets_evicted++;
 }
 

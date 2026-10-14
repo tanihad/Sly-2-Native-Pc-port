@@ -24,7 +24,15 @@ typedef struct {
 /* ---- numeric helpers ----------------------------------------------------------------------------- */
 GS_AI int32_t gs_d2i32(double v) { return v > 2147483000.0 ? 2147483000 : v < -2147483000.0 ? -2147483000 : (int32_t)v; }
 GS_AI int64_t gs_d2i64(double v) { return v > 9.0e18 ? (int64_t)9.0e18 : v < -9.0e18 ? -(int64_t)9.0e18 : (int64_t)v; }
-GS_AI int64_t gs_fx_round(double v) { return v > 9.0e18 ? (int64_t)9.0e18 : v < -9.0e18 ? -(int64_t)9.0e18 : (int64_t)llround(v); }
+/* llround (half away from zero) without the C library call: v - trunc(v) is exact in a double, so
+ * comparing it with +-0.5 decides the rounding exactly as llround does (|v| <= 9e18 here; a NaN
+ * converts to INT64_MIN either way). */
+GS_AI int64_t gs_llround(double v) {
+    int64_t i = (int64_t)v;
+    double d = v - (double)i;
+    return d >= 0.5 ? i + 1 : d <= -0.5 ? i - 1 : i;
+}
+GS_AI int64_t gs_fx_round(double v) { return v > 9.0e18 ? (int64_t)9.0e18 : v < -9.0e18 ? -(int64_t)9.0e18 : gs_llround(v); }
 GS_AI int32_t gs_sat32(int64_t v) { return v > INT32_MAX ? INT32_MAX : v < INT32_MIN ? INT32_MIN : (int32_t)v; }
 
 /* ---- attribute planes ---------------------------------------------------------------------------- */

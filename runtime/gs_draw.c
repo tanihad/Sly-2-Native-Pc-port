@@ -150,7 +150,8 @@ static void bind_textures(int ctx) {
             t.tw = t0.tw > (uint32_t)l ? t0.tw - (uint32_t)l : 0;
             t.th = t0.th > (uint32_t)l ? t0.th - (uint32_t)l : 0;
         }
-        if (P.texm == 3 || l == P.cur_level) gs_tex_bind(&P.lvl[l], &t, &ta, clamp, l);
+        /* (the texture cache binding is the software rasterizer's; a frontend alone needs none) */
+        if ((P.texm == 3 || l == P.cur_level) && gs_sw_draw) gs_tex_bind(&P.lvl[l], &t, &ta, clamp, l);
     }
 }
 

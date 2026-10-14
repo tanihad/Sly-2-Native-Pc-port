@@ -18,7 +18,7 @@
 # A replay without progress for 60 s prints its state and exits with code 4 (watchdog).
 # Every run prints "sw-hash", a hash of all sw pictures (unchanged renderer -> unchanged hash).
 param([Parameter(Mandatory = $true)][string]$Rec, [string]$Out = "", [string]$Runtime = "", [int]$Workers = 0,
-      [switch]$Bench, [ValidateSet('sw', 'hw', 'both', 'hwdry')][string]$Backend = 'sw', [switch]$FrontOnly, [switch]$Ref, [switch]$StraddleRov, [switch]$SelfCheck,
+      [switch]$Bench, [ValidateSet('sw', 'hw', 'both', 'hwdry')][string]$Backend = 'sw', [switch]$FrontOnly, [switch]$Ref, [switch]$StraddleRov, [switch]$SelfCheck, [switch]$DecodeOnly, [string[]]$Define = @(),
       [ValidateSet('hw', 'warp')][string]$Adapter = 'hw', [string]$Metrics = "", [string]$Log = "", [string]$VramHash = "")
 $root = Split-Path $PSScriptRoot -Parent
 $main = $root
@@ -38,7 +38,7 @@ $names = @('gs.c', 'gs_draw.c', 'gs_draw_pixel.c', 'gs_draw_tex.c', 'gs_draw_swz
 $src = @($names | ForEach-Object { Join-Path $Runtime $_ } | Where-Object { Test-Path $_ })
 $src += @(Get-ChildItem $Runtime -Filter 'gs_mem*.c' | ForEach-Object { $_.FullName })
 $src += Join-Path $PSScriptRoot 'gs_replay.c'
-$flags = @('-O2', '-std=c11', '-w', '-I', $Runtime)
+$flags = @('-O2', '-std=c11', '-w', '-I', $Runtime) + @($Define | ForEach-Object { '-D' + $_ })
 $libs = @('-lsynchronization')
 $gpuDir = Join-Path $Runtime 'gpu'
 if (Test-Path (Join-Path $gpuDir 'gpu.h')) {                           # runtimes with the GPU backend
@@ -62,6 +62,7 @@ if ($FrontOnly) { $runArgs += '--front-only' }
 if ($Ref) { $runArgs += '--ref' }
 if ($StraddleRov) { $runArgs += '--straddle-rov' }
 if ($SelfCheck) { $runArgs += '--selfcheck' }
+if ($DecodeOnly) { $runArgs += '--decode-only' }
 if ($Log) {
     # real redirection by cmd: nested PowerShell pipes of a chatty native stderr are slow and once
     # stalled a corpus run (notes/wip/gpu-M0.md)

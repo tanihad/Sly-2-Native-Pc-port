@@ -30,6 +30,19 @@ uint32_t gf_frame;
 typedef struct { uint8_t* p; size_t n, cap; } arena;
 static arena A_cmd, A_vtx, A_idx, A_rec, A_state, A_data;
 
+static void* ar_reserve(arena* a, size_t bytes) {         /* not zeroed */
+    if (a->n + bytes > a->cap) {
+        size_t c = a->cap ? a->cap : 1 << 16;
+        while (c < a->n + bytes) c *= 2;
+        a->p = realloc(a->p, c);
+        if (!a->p) { fprintf(stderr, "[gpu_front] out of memory\n"); exit(1); }
+        a->cap = c;
+    }
+    void* r = a->p + a->n;
+    a->n += bytes;
+    return r;
+}
+
 static void* ar_alloc(arena* a, size_t bytes) {
     if (a->n + bytes > a->cap) {
         size_t c = a->cap ? a->cap : 1 << 16;
@@ -121,7 +134,7 @@ typedef struct {
     int reads_dest;                      /* needs the current destination contents */
     int opaque;                          /* a sprite writes every unmasked bit of its rectangle */
     int fatst;
-    int apre[257];                       /* prefix sums of the alpha test pass table */
+    int atst, aref;                      /* real alpha test (FATST_*) */
     int cd_dep, c_as;                    /* lerp blend (Cs-Cd)*C+Cd; C = As */
     int blend;
     int fill;                            /* clear candidate: untextured, unfogged, blend-free opaque sprite */
@@ -137,9 +150,22 @@ typedef struct {
     /* StateRec */
     uint32_t state_index, state_texsrc;
     int state_valid;
+    /* memory-source cache: texels in tc[] are CPU data as of (tc_own_gen, tc_up_gen) */
+    int tc_valid, tc_kind, tc[4];
+    uint32_t tc_own_gen, tc_up_gen;
 } fstate;
 
-static fstate S;
+/* The analysis of the last few distinct states, keyed by the registers it depends on: Sly alternates
+ * pass A / pass B and rewrites TEX0 (with a CLUT reload of the same palette) for every draw, so most
+ * state versions repeat a recent state. */
+#define SC_N 32
+#define SIG_N 24
+static fstate SC[SC_N];
+static uint64_t SC_sig[SC_N][SIG_N], SC_hash[SC_N];
+static uint32_t SC_age[SC_N], sc_clock, sc_epoch;
+static int SC_used[SC_N];
+static fstate* Sp = &SC[0];
+#define S (*Sp)
 static int prev_state_index = -1;
 
 /* StateRec (96 bytes, 3.5) */
@@ -166,7 +192,7 @@ static uint32_t staterec_index(const staterec* r) {
     uint64_t h = hash_bytes(r, sizeof *r);
     uint32_t i = (uint32_t)h & (SMAP_N - 1);
     for (int n = 0; n < SMAP_N && smap_idx[i]; n++, i = (i + 1) & (SMAP_N - 1))
-        if (smap_hash[i] == h && !memcmp(A_state.p + (size_t)(smap_idx[i] - 1) * sizeof *r, r, sizeof *r))
+        if (smap_hash[i] == h && gf_eq64(A_state.p + (size_t)(smap_idx[i] - 1) * sizeof *r, r, sizeof *r / 8))
             return smap_idx[i] - 1;
     if (nstates >= SMAP_N / 2) return 0;   /* (never: Sly uses < 500 per frame) */
     memcpy(ar_alloc(&A_state, sizeof *r), r, sizeof *r);
@@ -178,6 +204,60 @@ static uint32_t staterec_index(const staterec* r) {
 }
 
 static int clamp_byte(int v) { return v < 0 ? 0 : v > 255 ? 255 : v; }
+
+/* how many source alphas in [lo, hi] pass the alpha test (gs_prim_finalize's table, closed form) */
+static int atst_count(int atst, int ref, int lo, int hi) {
+    int a, b, in = ref >= lo && ref <= hi;
+    switch (atst) {
+    case 0: return 0;                                          /* NEVER */
+    case 1: return hi - lo + 1;                                /* ALWAYS */
+    case 2: a = lo; b = hi < ref - 1 ? hi : ref - 1; break;    /* LESS */
+    case 3: a = lo; b = hi < ref ? hi : ref; break;            /* LEQUAL */
+    case 4: return in;                                         /* EQUAL */
+    case 5: a = lo > ref ? lo : ref; b = hi; break;            /* GEQUAL */
+    case 6: a = lo > ref + 1 ? lo : ref + 1; b = hi; break;    /* GREATER */
+    default: return hi - lo + 1 - in;                          /* NOTEQUAL */
+    }
+    return b >= a ? b - a + 1 : 0;
+}
+
+static void state_update(const gs_env_view* ev);
+
+static uint64_t n_lookups, n_misses, n_prims;
+static void state_lookup(const gs_env_view* ev) {
+    n_lookups++;
+    const uint64_t* r = ev->reg;
+    int ctx = ev->ctx;
+    uint64_t attr = (r[0x1A] & 1) ? r[0x00] : r[0x1B];
+    uint64_t sig[SIG_N] = {
+        (attr & 0x7F8) | (uint64_t)ctx << 32, r[R_FRAME_1 + ctx], r[R_ZBUF_1 + ctx], r[R_TEST_1 + ctx], r[R_ALPHA_1 + ctx],
+        r[R_TEX0_1 + ctx] & ~(7ull << 61), r[R_TEX1_1 + ctx], r[R_CLAMP_1 + ctx], r[R_TEXA], r[R_FOGCOL],
+        r[R_SCISSOR_1 + ctx], r[R_XYOFFSET_1 + ctx], r[R_PABE], r[R_FBA_1 + ctx], r[R_COLCLAMP], r[R_DTHE], r[0x44],
+        r[0x22], r[0x34 + ctx], r[0x36 + ctx], 0, 0, 0, 0 };
+    uint32_t psm = (uint32_t)((r[R_TEX0_1 + ctx] >> 20) & 0x3F);
+    if ((attr & 0x10) && (psm == PSMT8 || psm == PSMT4 || psm == PSMT8H || psm == PSMT4HL || psm == PSMT4HH))
+        sig[20] = (uint64_t)clut_current_slot() + 1;   /* the palette's ring slot: repeats hit */
+    if (sc_epoch != own_epoch) { memset(SC_used, 0, sizeof SC_used); sc_epoch = own_epoch; }
+    uint64_t h = 0x9E3779B97F4A7C15ull;
+    for (int i = 0; i < SIG_N; i++) { h ^= sig[i]; h *= 0xFF51AFD7ED558CCDull; h ^= h >> 29; }
+    int victim = 0;
+    for (int i = 0; i < SC_N; i++) {
+        if (SC_used[i] && SC_hash[i] == h && gf_eq64(SC_sig[i], sig, SIG_N)) {
+            Sp = &SC[i];
+            SC_age[i] = ++sc_clock;
+            S.version = gs_prim_version;
+            return;
+        }
+        if (!SC_used[i] || (SC_used[victim] && SC_age[i] < SC_age[victim])) victim = i;
+    }
+    Sp = &SC[victim];
+    n_misses++;
+    state_update(ev);
+    memcpy(SC_sig[victim], sig, sizeof sig);
+    SC_hash[victim] = h;
+    SC_used[victim] = 1;
+    SC_age[victim] = ++sc_clock;
+}
 
 static void state_update(const gs_env_view* ev) {
     const gs_prim* P = ev->P;
@@ -202,9 +282,8 @@ static void state_update(const gs_env_view* ev) {
         S.fatst = FATST_NONE;
     } else if (ate) {
         S.fatst = afail == 0 ? FATST_DISCARD : FATST_SPLIT;
-        int c = 0;
-        for (int a = 0; a < 256; a++) { S.apre[a] = c; c += P->apass[a]; }
-        S.apre[256] = c;
+        S.atst = atst;
+        S.aref = P->aref;
     }
     if (P->zfmt && P->ztst == 0) S.skip = 1;                         /* ZTST NEVER */
 
@@ -319,21 +398,20 @@ static void state_update(const gs_env_view* ev) {
              P->scanmsk < 2 && (S.cwrite || S.zwrite);
 
     /* ---- targets ---- */
-    int rows = P->scy1 + 1;
     if (P->ffmt->bits == 16) {
         /* CT16 frame: an ALIAS16 view of the C32 target at the same base and width (created when
          * the 16-bit view comes first, e.g. a recording that starts between the two) */
         gpu_target* T = own_find(TGT_C32, P->fpage, P->fbw);
-        if (!T) T = own_target(TGT_C32, PSMCT32, P->fpage, P->fbw, (rows + 1) / 2);
+        if (!T) T = own_target(TGT_C32, PSMCT32, P->fpage, P->fbw, 1);
         if (T) S.alias = 1, S.ct = T;
         else S.punt = GPU_PUNT_TARGET_OVERLAP + 1;
     } else if (S.cwrite || P->date || (S.reads_dest && P->abe)) {
-        S.ct = own_target(TGT_C32, PSMCT32, P->fpage, P->fbw, rows);
+        S.ct = own_target(TGT_C32, PSMCT32, P->fpage, P->fbw, 1);   /* rows grow with the drawing */
         if (!S.ct) S.punt = GPU_PUNT_TARGET_OVERLAP + 1;
     }
     if (zuse && !S.alias) {
         int kind = own_target_kind_of_zpsm(P->zpsm);
-        S.zt = own_target(kind, P->zpsm, P->zpage, P->zbw, rows);
+        S.zt = own_target(kind, P->zpsm, P->zpage, P->zbw, 1);
         if (!S.zt) S.punt = GPU_PUNT_TARGET_OVERLAP + 1;
         else if (S.ct) S.zt->family = S.ct->family;
     }
@@ -441,9 +519,7 @@ typedef struct {
     uint32_t first, count;
 } alias_batch;
 static alias_batch AB;
-static uint64_t* aw_bits;                /* halfwords written / read in the open ALIAS16 dispatch */
-static uint64_t* ar_bits;
-static uint64_t* ad_bits;                /* this sprite's writes (self-overlap) */
+static int nar;                          /* rectangles of the open ALIAS16 dispatch */
 
 static void close_draw(void) {
     if (!OD.open) return;
@@ -489,8 +565,7 @@ static void close_alias(void) {
     a->target = AB.T->id; a->first = AB.first; a->count = AB.count;
     gf.alias16_dispatches++;
     if (trace_on) fprintf(stderr, "[front] alias16 dispatch target %u sprites %u\n", AB.T->id, AB.count);
-    memset(aw_bits, 0, (1u << 21) / 8);
-    memset(ar_bits, 0, (1u << 21) / 8);
+    nar = 0;
 }
 
 static void flush_open(void) {
@@ -521,14 +596,15 @@ static int vcache_n, vcache_pos;
 
 static uint32_t emit_vertex(const gs_vtx* v, const gs_env_view* ev, uint32_t state) {
     for (int i = 0; i < vcache_n; i++)
-        if (vcache_state[i] == state && !memcmp(&vcache[i], v, sizeof *v)) return vcache_idx[i];
-    gvtx* o = ar_alloc(&A_vtx, sizeof *o);
-    o->x = (float)(v->x - ev->ofx) / 16.0f;
-    o->y = (float)(v->y - ev->ofy) / 16.0f;
+        if (vcache_state[i] == state && gf_eq64(&vcache[i], v, sizeof *v / 8)) return vcache_idx[i];
+    gvtx* o = ar_reserve(&A_vtx, sizeof *o);
+    o->x = (float)(v->x - ev->ofx) * (1.0f / 16.0f);
+    o->y = (float)(v->y - ev->ofy) * (1.0f / 16.0f);
     o->rgba = (uint32_t)v->r | (uint32_t)v->g << 8 | (uint32_t)v->b << 16 | (uint32_t)v->a << 24;
     o->fog_state = (uint32_t)(v->f & 0xFF) | state << 8;
-    if (ev->P->fst) { o->s = (float)v->u; o->t = (float)v->v; }
+    if (ev->P->fst) { o->s = (float)v->u; o->t = (float)v->v; o->q = 1.0f; }
     else { o->s = v->s; o->t = v->t; o->q = v->q; }
+    o->pad = v->z;                       /* (vertex Z, for an interpolated-depth variant) */
     uint32_t idx = (uint32_t)(A_vtx.n / sizeof *o) - 1;
     vcache[vcache_pos] = *v; vcache_idx[vcache_pos] = idx; vcache_state[vcache_pos] = state;
     vcache_pos = (vcache_pos + 1) % 3;
@@ -612,9 +688,21 @@ static void tex_source(const gs_env_view* ev, int u0, int v0, int u1, int v1, te
     memset(ts, 0, sizeof *ts);
     ts->u0 = u0; ts->v0 = v0; ts->u1 = u1; ts->v1 = v1;
     int psm = S.tpsm;
-    if (!own_mem_is_gpu(psm, S.tbp, S.tbw, u0, v0, u1, v1)) {   /* memory source (vram_buf) */
-        own_mem_read(psm, S.tbp, S.tbw, u0, v0, u1, v1);       /* flushes pending patches */
+    if (S.tc_valid && S.tc_own_gen == own_gen && S.tc_up_gen == own_upload_gen && u0 >= S.tc[0] && v0 >= S.tc[1] &&
+        u1 <= S.tc[2] && v1 <= S.tc[3]) {
+        ts->kind = S.tc_kind;            /* checked for this state already, nothing changed since */
+        return;
+    }
+    /* small textures: check the whole of it once per state (later primitives hit the cache) */
+    int a0 = u0, b0 = v0, a1 = u1, b1 = v1;
+    if (S.tw * S.th <= 65536) { a0 = 0; b0 = 0; a1 = S.tw - 1; b1 = S.th - 1; }
+    if (own_mem_is_gpu(psm, S.tbp, S.tbw, a0, b0, a1, b1)) { a0 = u0; b0 = v0; a1 = u1; b1 = v1; }
+    if (!own_mem_is_gpu(psm, S.tbp, S.tbw, a0, b0, a1, b1)) {   /* memory source (vram_buf) */
+        own_mem_read(psm, S.tbp, S.tbw, a0, b0, a1, b1);       /* flushes pending patches */
         ts->kind = S.indexed ? TK_VRAM_IDX : TK_VRAM_DIRECT;
+        S.tc_valid = 1; S.tc_kind = ts->kind;
+        S.tc[0] = a0; S.tc[1] = b0; S.tc[2] = a1; S.tc[3] = b1;
+        S.tc_own_gen = own_gen; S.tc_up_gen = own_upload_gen;
         return;
     }
     gpu_target* T = (S.tbp & 31) == 0 ? own_find(TGT_C32, S.tbp >> 5, S.tbw) : NULL;
@@ -643,92 +731,76 @@ static void feedback_check(gpu_target* T, int x0, int y0, int x1, int y1) {
     if (trace_on) fprintf(stderr, "[front] shadow copy target %u %d,%d-%d,%d\n", T->id, x0, y0, x1, y1);
 }
 
-/* ---- ALIAS16 ------------------------------------------------------------------------------------- */
-static const uint16_t* tab16(int psm) { return psm == PSMCT16S ? gs_swz_ct16s : gs_swz_ct16; }
-#define BIT_GET(m, i) ((m)[(i) >> 6] >> ((i) & 63) & 1)
-#define BIT_SET(m, i) ((m)[(i) >> 6] |= 1ull << ((i) & 63))
+/* ---- ALIAS16 -------------------------------------------------------------------------------------
+ * CT16 sprites over CT32 targets run as one compute dispatch while no sprite depends on another one
+ * of the same dispatch (5.2). Hazards are decided on rectangles: within one view (same base, width
+ * and 16-bit PSM) the GS address mapping is a bijection, so disjoint pixel rectangles are disjoint
+ * halfword sets; different views of overlapping pages count as a hazard (conservative). */
+typedef struct { uint32_t bp, bw; int psm, w; int r[4]; uint64_t pages[8]; } arect;
+#define AR_N 512
+static arect AR[AR_N];
 
-static uint16_t ablk_d[GPU_BLOCKS], ablk_s[GPU_BLOCKS];
-static uint32_t ablk_stamp[GPU_BLOCKS], ablk_ctr;
-
-static void own_abs_blocks(gpu_target* T, const uint16_t* list, int n, int writes) {
-    /* absolute blocks of a CT16 view -> the C32 target's local blocks */
-    for (int k = 0; k < n; k++) {
-        uint32_t b = list[k], page = b >> 5;
-        int rel = (int)((page - T->base) & 511u);
-        int prow = rel / T->fbw, pcol = rel % T->fbw;
-        if (prow * 32 >= T->rows) continue;
-        /* find the local block of this page holding b (8 x 4 blocks per CT32 page) */
-        for (int j = 0; j < 32; j++) {
-            int bx = pcol * 8 + (j & 7), by = prow * 4 + (j >> 3);
-            if (T->babs[by * T->bcols + bx] == b) {
-                own_draw(T, bx * 8, by * 8, bx * 8 + 7, by * 8 + 7, writes, 0);
-                break;
-            }
-        }
-    }
+static void arect_make(arect* a, uint32_t bp, uint32_t bw, int psm, int w, int x0, int y0, int x1, int y1) {
+    a->bp = bp; a->bw = bw; a->psm = psm; a->w = w;
+    a->r[0] = x0; a->r[1] = y0; a->r[2] = x1; a->r[3] = y1;
+    memset(a->pages, 0, sizeof a->pages);
+    gs_rect_pages(psm, bp, bw, x0, y0, x1 + 1, y1 + 1, a->pages);
 }
+
+static int arect_overlap(const arect* a, const arect* b) {
+    int pg = 0;
+    for (int k = 0; k < 8; k++) pg |= (a->pages[k] & b->pages[k]) != 0;
+    if (!pg) return 0;
+    if (a->bp != b->bp || a->bw != b->bw || a->psm != b->psm) return 1;
+    return !(a->r[2] < b->r[0] || b->r[2] < a->r[0] || a->r[3] < b->r[1] || b->r[3] < a->r[1]);
+}
+
+/* the 256-byte blocks a CT16 rectangle touches */
+static int ct16_blocks(int psm, uint32_t bp, uint32_t bw, int x0, int y0, int x1, int y1, uint16_t* out, int max) {
+    const uint16_t* tab = psm == PSMCT16S ? gs_swz_ct16s : gs_swz_ct16;
+    int n = 0;
+    for (int y = y0 & ~7; y <= y1 && n < max; y += 8)
+        for (int x = x0 & ~15; x <= x1 && n < max; x += 16)
+            out[n++] = (uint16_t)(gs_addr16(tab, bp, bw, (uint32_t)x & 2047u, (uint32_t)y & 2047u) >> 7);
+    return n;
+}
+
+static uint16_t ablk[GPU_BLOCKS];
 
 static int alias_sprite(const gs_env_view* ev, const gs_sprite* sp, const texsrc_t* ts, uint32_t state) {
     const gs_prim* P = ev->P;
     gpu_target* T = S.ct;
-    const uint16_t* tf = tab16(P->fpsm);
-    const uint16_t* tt = S.tme ? tab16(S.tpsm) : NULL;
     uint32_t fbp = P->fpage * 32;
-    int hazard = 0, self = 0;
-    ablk_ctr++;
-    int nd = 0, ns = 0;
-    /* pass 1: hazards against the open dispatch, this sprite's own writes */
-    for (int y = sp->py0; y <= sp->py1; y++) {
-        for (int x = sp->px0; x <= sp->px1; x++) {
-            uint32_t h = gs_addr16(tf, fbp, P->fbw, (uint32_t)x, (uint32_t)y);
-            if (BIT_GET(aw_bits, h) || BIT_GET(ar_bits, h)) hazard = 1;
-            BIT_SET(ad_bits, h);
-            uint32_t b = h >> 7;
-            if (ablk_stamp[b] != ablk_ctr) { ablk_stamp[b] = ablk_ctr; ablk_d[nd++] = (uint16_t)b; }
-        }
+    own_grow(T, (sp->py1 + 2) / 2);       /* CT16 rows are half CT32 rows */
+    arect d, s;
+    arect_make(&d, fbp, P->fbw, P->fpsm, 1, sp->px0, sp->py0, sp->px1, sp->py1);
+    int have_s = S.tme;
+    if (have_s) {
+        int32_t ub = sp->ua + sp->du * (sp->px1 - sp->px0);
+        int u0 = (sp->ua < ub ? sp->ua : ub) >> GS_UVSH >> 4, u1 = (sp->ua < ub ? ub : sp->ua) >> GS_UVSH >> 4;
+        int v0 = (sp->va < sp->vb ? sp->va : sp->vb) >> GS_UVSH >> 4, v1 = (sp->va < sp->vb ? sp->vb : sp->va) >> GS_UVSH >> 4;
+        arect_make(&s, S.tbp, S.tbw, S.tpsm, 0, u0 & 2047, v0 & 2047, u1 & 2047, v1 & 2047);
     }
-    ablk_ctr++;
-    if (tt) {
-        for (int y = sp->py0; y <= sp->py1; y++) {
-            int32_t vv = gs_d2i32((sp->pl.v.c0 + sp->pl.v.cy * y) * (double)(1 << GS_UVSH)) >> GS_UVSH >> 4;
-            int32_t uu = sp->ua;
-            for (int x = sp->px0; x <= sp->px1; x++, uu += sp->du) {
-                uint32_t h = gs_addr16(tt, S.tbp, S.tbw, (uint32_t)(uu >> GS_UVSH >> 4) & 2047u, (uint32_t)vv & 2047u);
-                if (BIT_GET(aw_bits, h)) hazard = 1;
-                if (BIT_GET(ad_bits, h)) self = 1;
-                uint32_t b = h >> 7;
-                if (ablk_stamp[b] != ablk_ctr) { ablk_stamp[b] = ablk_ctr; ablk_s[ns++] = (uint16_t)b; }
-            }
-        }
+    int hazard = nar + 2 > AR_N;
+    for (int i = 0; i < nar && !hazard; i++) {
+        if (AR[i].w && (arect_overlap(&AR[i], &d) || (have_s && arect_overlap(&AR[i], &s)))) hazard = 1;   /* WAW, RAW */
+        if (!AR[i].w && arect_overlap(&AR[i], &d)) hazard = 1;                                           /* WAR */
     }
     if (hazard && AB.open) close_alias();
+    /* a sprite that reads what it writes samples a snapshot (the sw rule): a shadow copy */
+    if (have_s && arect_overlap(&d, &s)) { gf.alias16_selfcopy++; gf.shadow_copies++; }
     /* ownership: source reads, destination writes (both lanes) */
-    if (tt) {
-        if (ts->T) own_abs_blocks(ts->T, ablk_s, ns, 0);
+    if (have_s) {
+        if (ts->T) own_blocks(ts->T, ablk, ct16_blocks(S.tpsm, S.tbp, S.tbw, s.r[0], s.r[1], s.r[2], s.r[3], ablk, GPU_BLOCKS), 0);
         else own_mem_read(S.tpsm, S.tbp, S.tbw, ts->u0, ts->v0, ts->u1, ts->v1);
     }
-    if (self) { gf.alias16_selfcopy++; gf.shadow_copies++; }
-    own_abs_blocks(T, ablk_d, nd, 1);
-    /* pass 2: record the sprite in the dispatch */
-    for (int y = sp->py0; y <= sp->py1; y++)
-        for (int x = sp->px0; x <= sp->px1; x++) {
-            uint32_t h = gs_addr16(tf, fbp, P->fbw, (uint32_t)x, (uint32_t)y);
-            BIT_SET(aw_bits, h);
-            ad_bits[h >> 6] = 0;
-        }
-    if (tt) {
-        for (int y = sp->py0; y <= sp->py1; y++) {
-            int32_t vv = gs_d2i32((sp->pl.v.c0 + sp->pl.v.cy * y) * (double)(1 << GS_UVSH)) >> GS_UVSH >> 4;
-            int32_t uu = sp->ua;
-            for (int x = sp->px0; x <= sp->px1; x++, uu += sp->du)
-                BIT_SET(ar_bits, gs_addr16(tt, S.tbp, S.tbw, (uint32_t)(uu >> GS_UVSH >> 4) & 2047u, (uint32_t)vv & 2047u));
-        }
-    }
+    own_blocks(T, ablk, ct16_blocks(P->fpsm, fbp, P->fbw, d.r[0], d.r[1], d.r[2], d.r[3], ablk, GPU_BLOCKS), 1);
     if (!AB.open || AB.T != T) {
         if (AB.open) close_alias();
         AB.open = 1; AB.T = T; AB.first = rec_count(sizeof(spriterec)); AB.count = 0;
     }
+    AR[nar++] = d;
+    if (have_s) AR[nar++] = s;
     spriterec* r = ar_alloc(&A_rec, sizeof *r);
     r->x0 = (int16_t)sp->px0; r->y0 = (int16_t)sp->py0; r->x1 = (int16_t)(sp->px1 + 1); r->y1 = (int16_t)(sp->py1 + 1);
     r->ua = sp->ua; r->du = sp->du; r->va = sp->va; r->dv = gs_d2i32(sp->pl.v.cy * (double)(1 << GS_UVSH));
@@ -802,15 +874,29 @@ static uint32_t zclamp(const gs_prim* P, int64_t z) {
     return zi < 0 ? 0 : zi > (int64_t)P->zmax ? P->zmax : (uint32_t)zi;
 }
 
+#ifdef GPU_FRONT_PROF                    /* section profile of fr_prim (build with -DGPU_FRONT_PROF) */
+static uint64_t prof[12], prof_t;
+static int prof_emit;
+#define PROF_MARK(i) do { uint64_t n_ = __rdtsc(); prof[i] += n_ - prof_t; prof_t = n_; } while (0)
+#define PROF_START() (prof_t = __rdtsc())
+#else
+#define PROF_MARK(i) do { } while (0)
+#define PROF_START() do { } while (0)
+#endif
 static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_vtx* b, const gs_vtx* c) {
-    uint64_t t0 = __rdtsc();
+    /* time every 16th primitive (rdtsc costs about as much as a cheap primitive) */
+    int timed = (gf.kicks & 15) == 0;
+    uint64_t t0 = timed ? __rdtsc() : 0;
+    PROF_START();
+    n_prims++;
     const gs_prim* P = ev->P;
     gf.kicks++;
     if (!ev->draws) { gf.nowrite++; goto out; }
-    if (S.version != gs_prim_version || S.ctx != ev->ctx || !S.version) state_update(ev);
+    if (S.version != gs_prim_version || S.ctx != ev->ctx || !S.version) state_lookup(ev);
     if (S.skip) { gf.skipped++; goto out; }
     int cls = pc_of(type);
 
+    PROF_MARK(0);
     /* ---- geometry: pixel rectangle, culling (the sw rules) ---- */
     gs_tri T;
     gs_sprite sp;
@@ -852,6 +938,7 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
     }
     gf.cls[cls]++;
 
+    PROF_MARK(1);
     /* ---- per-primitive inputs: alpha range, Z range ---- */
     int aa = cls == GPU_PC_LINEPIX && ev->aa1 && P->abe;
     int va_lo = 255, va_hi = 0;
@@ -885,6 +972,7 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
         if (f == GPU_ZF_32 && zh > 0x3F000000u) { z32_high = 1; gf.z32_over++; if (S.zt) S.zt->z_high = 1; }
     }
 
+    PROF_MARK(2);
     /* ---- texture source ---- */
     texsrc_t ts;
     memset(&ts, 0, sizeof ts);
@@ -901,6 +989,7 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
         if (S.tbw & (S.tbw - 1)) gf.tbw_npot++;
     }
 
+    PROF_MARK(3);
     /* ---- tier ---- */
     int tier = GPU_TIER_FF, why = -1, punt = S.punt;
     if (!punt && ts.punt) punt = ts.punt;
@@ -913,7 +1002,12 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
     if (!punt && !S.alias && ts.kind == TK_ALIAS16) punt = GPU_PUNT_TEX_FMT + 1;   /* CT16 view outside ALIAS16 */
     int outcome = 0;
     if (S.fatst == FATST_SPLIT) {
-        int n = S.apre[as_hi + 1] - S.apre[as_lo];
+        int n = atst_count(S.atst, S.aref, as_lo, as_hi);
+        if (gf_cfg.selfcheck) {          /* against the sw alpha test table */
+            int m = 0;
+            for (int x = as_lo; x <= as_hi; x++) m += P->apass[x];
+            if (m != n) gf.selfcheck_bad++;
+        }
         outcome = n == as_hi - as_lo + 1 ? 1 : n == 0 ? 2 : 4;
         gf.atst_kicks++;
         if (outcome == 1) gf.atst_pass++; else if (outcome == 2) gf.atst_fail++; else gf.atst_straddle++;
@@ -932,8 +1026,10 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
     if (why >= 0) gf.rov_why[why]++;
     if (punt) {
         gf.punt_why[punt - 1]++;
-        /* PUNT (5.4): flush, download the pages it touches, sw draws it, reload: counted only here */
+        /* PUNT (5.4): flush, download what it touches, the sw rasterizer draws it into memory */
         flush_open();
+        if (!S.alias && S.ct && S.cwrite) own_punt(S.ct, x0, y0, x1, y1);
+        if (!S.alias && S.zt && S.zwrite) own_punt(S.zt, x0, y0, x1, y1);
         goto out;
     }
     if (P->tme) {
@@ -955,6 +1051,7 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
     }
     if (AB.open) close_alias();
 
+    PROF_MARK(4);
     /* ---- ownership: texture views, feedback, destination ---- */
     if (ts.T) {
         own_view_read(ts.T, ts.u0, ts.v0, ts.u1, ts.v1);
@@ -966,6 +1063,7 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
     if (S.zt) own_draw(S.zt, x0, y0, x1, y1, S.zwrite, opaque && !S.zread);
     if (S.ct) S.ct->last_used = gf_frame;
 
+    PROF_MARK(5);
     /* ---- pipeline key and draw merging ---- */
     int tk = P->tme ? ts.kind : TK_NONE;
     int zmode = S.zfi >= 0 ? (rov ? 2 : 1) : 0;
@@ -1019,14 +1117,19 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
     if (!OD.prims) { OD.alpha = ev->reg[R_ALPHA_1 + ev->ctx]; OD.test = ev->reg[R_TEST_1 + ev->ctx]; OD.frame = ev->reg[R_FRAME_1 + ev->ctx]; }
     OD.prims++;
 
+    PROF_MARK(6);
+#ifdef GPU_FRONT_PROF
+    prof_emit = 1;
+#endif
     /* ---- emission ---- */
     switch (cls) {
     case GPU_PC_TRI: {
-        uint32_t* ix = ar_alloc(&A_idx, 12);
+        uint32_t* ix = ar_reserve(&A_idx, 12);
         for (int i = 0; i < 3; i++) ix[i] = emit_vertex(vs[i], ev, state);
         gf.indices += 3;
         gf.idx_bytes += 12;
         OD.d.count += 3;
+        PROF_MARK(8);
         if (rov) {
             gs_planes pl;
             gs_tri_planes(&T, vs, ev->iip, P->fge, P->zuse, P->tme, P->fst, &pl);
@@ -1044,8 +1147,9 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
         } else if (zmode) {
             gs_plane zp;
             gs_tri_plane(&T, &zp, a->z, b->z, c->z);
-            zrec* r = ar_alloc(&A_rec, sizeof *r);
+            zrec* r = ar_reserve(&A_rec, sizeof *r);
             gs_rowstep_attr(&zp, T.by0, 65536.0, 1, &r->row, &r->dy, &r->dx);
+            r->pad = 0;
             r->by0 = (int16_t)T.by0;
             r->zfmt = (uint16_t)P->zpsm;
             gf.records_z++;
@@ -1076,8 +1180,18 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
         break;
     }
     case GPU_PC_LINEPIX: {
+        /* the sw DDA pixel by pixel (gs_line_step); attribute values as gs_span_start_at computes
+         * them at (t, 0), only those the draw uses (the others are constant or unused) */
         gs_planes pl;
         gs_line_planes(a, b, ev->iip, &pl);
+        int need_z = S.zfi >= 0, need_c = ev->iip, need_f = P->fge, need_t = P->tme;
+        uint32_t rgba0 = (uint32_t)clamp_byte(b->r) | (uint32_t)clamp_byte(b->g) << 8 | (uint32_t)clamp_byte(b->b) << 16 |
+                         (uint32_t)clamp_byte(b->a) << 24;
+        size_t maxn = (size_t)(L.p1 - L.p0 + 1) * 2;
+        linerec* r0 = (linerec*)ar_reserve(&A_rec, maxn * sizeof(linerec));
+        linerec* r = r0;
+        const double y = 0;
+#define LEV(f) (pl.f.c0 + pl.f.cx * t + pl.f.cy * y)
         for (int p = L.p0; p <= L.p1; p++) {
             int q, qn, cov[2];
             double t = gs_line_step(&L, p, aa, &q, cov, &qn);
@@ -1085,22 +1199,36 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
                 if (!cov[k]) continue;
                 int px = L.xmajor ? p : q + k, py = L.xmajor ? q + k : p;
                 if (px < P->scx0 || px > P->scx1 || py < P->scy0 || py > P->scy1 || row_masked(P, py)) continue;
-                gs_span_start st;
-                gs_span_start_at(&pl, t, 0, &st);
-                if (aa) st.a = cov[k] << 16;
-                linerec* r = ar_alloc(&A_rec, sizeof *r);
                 r->px = (int16_t)px; r->py = (int16_t)py;
-                r->z = S.zfi >= 0 ? zclamp(P, st.z) : 0;
-                r->rgba = (uint32_t)clamp_byte(st.r >> 16) | (uint32_t)clamp_byte(st.g >> 16) << 8 |
-                          (uint32_t)clamp_byte(st.b >> 16) << 16 | (uint32_t)clamp_byte(st.a >> 16) << 24;
-                r->fog_state = (uint32_t)clamp_byte(st.f >> 16) | state << 8;
-                if (P->fst) { r->s = (float)st.u; r->t = (float)st.v; } else { r->s = st.s; r->t = st.t; r->q = st.q; }
-                gf.linepix++;
-                gf.records_linepix++;
-                gf.rec_bytes += sizeof *r;
-                OD.d.count++;
+                r->z = need_z ? zclamp(P, gs_d2i64(LEV(z) * 65536.0)) : 0;
+                uint32_t rgba = rgba0;
+                if (need_c)
+                    rgba = (uint32_t)clamp_byte(gs_d2i32(LEV(r) * 65536.0) >> 16) |
+                           (uint32_t)clamp_byte(gs_d2i32(LEV(g) * 65536.0) >> 16) << 8 |
+                           (uint32_t)clamp_byte(gs_d2i32(LEV(b) * 65536.0) >> 16) << 16 |
+                           (uint32_t)clamp_byte(gs_d2i32(LEV(a) * 65536.0) >> 16) << 24;
+                if (aa) rgba = (rgba & 0xFFFFFFu) | (uint32_t)clamp_byte(cov[k]) << 24;
+                r->rgba = rgba;
+                r->fog_state = (uint32_t)(need_f ? clamp_byte(gs_d2i32(LEV(f) * 65536.0) >> 16) : clamp_byte(b->f)) | state << 8;
+                r->s = r->t = r->q = 0;
+                if (need_t) {
+                    if (P->fst) {
+                        r->s = (float)gs_d2i32(LEV(u) * (double)(1 << GS_UVSH));
+                        r->t = (float)gs_d2i32(LEV(v) * (double)(1 << GS_UVSH));
+                    } else { r->s = (float)LEV(s); r->t = (float)LEV(t); r->q = (float)LEV(q); }
+                }
+                r->pad = 0;
+                r++;
             }
         }
+#undef LEV
+        uint32_t n = (uint32_t)(r - r0);
+        PROF_MARK(10);
+        A_rec.n -= (maxn - n) * sizeof(linerec);
+        gf.linepix += n;
+        gf.records_linepix += n;
+        gf.rec_bytes += n * sizeof(linerec);
+        OD.d.count += n;
         break;
     }
     default: {
@@ -1119,7 +1247,11 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
     }
     if (cls != GPU_PC_SPRITE) FA.active = 0;
 out:
-    tsc_acc += __rdtsc() - t0;
+    if (timed) tsc_acc += (__rdtsc() - t0) * 16;
+#ifdef GPU_FRONT_PROF
+    if (prof_emit) PROF_MARK(7); else PROF_MARK(11);
+    prof_emit = 0;
+#endif
 }
 
 /* ---- transfers, CLUT, reset ------------------------------------------------------------------------ */
@@ -1177,8 +1309,9 @@ static void frame_begin(void) {
     A_cmd.n = A_vtx.n = A_idx.n = A_rec.n = A_state.n = A_data.n = 0;
     memset(smap_idx, 0, sizeof smap_idx);
     nstates = 0;
-    S.state_valid = 0;
-    S.version = 0;                       /* targets may have been released */
+    memset(SC_used, 0, sizeof SC_used);  /* targets may have been released; StateRecs are per frame */
+    Sp = &SC[0];
+    S.version = 0;
     prev_state_index = -1;
     vcache_n = 0;
     cw_n = 0;
@@ -1188,14 +1321,12 @@ void gpu_front_start(const gpu_front_config* cfg) {
     memset(&gf_cfg, 0, sizeof gf_cfg);
     if (cfg) gf_cfg = *cfg;
     GS_INIT();
-    if (!aw_bits) {
-        aw_bits = calloc(1, (1u << 21) / 8);
-        ar_bits = calloc(1, (1u << 21) / 8);
-        ad_bits = calloc(1, (1u << 21) / 8);
-    }
+    nar = 0;
     own_reset();
     clut_reset();
-    memset(&S, 0, sizeof S);
+    memset(SC, 0, sizeof SC);
+    memset(SC_used, 0, sizeof SC_used);
+    Sp = &SC[0];
     memset(&OD, 0, sizeof OD);
     memset(&RR, 0, sizeof RR);
     memset(&AB, 0, sizeof AB);
@@ -1213,6 +1344,12 @@ void gpu_front_start(const gpu_front_config* cfg) {
 }
 
 void gpu_front_stop(void) {
+#ifdef GPU_FRONT_PROF
+    fprintf(stderr, "[gpu_front] profile (Mcycles): state %.1f geometry %.1f inputs %.1f texture %.1f tier %.1f ownership %.1f key %.1f emission %.1f\n",
+            prof[0] / 1e6, prof[1] / 1e6, prof[2] / 1e6, prof[3] / 1e6, prof[4] / 1e6, prof[5] / 1e6, prof[6] / 1e6, prof[7] / 1e6);
+    fprintf(stderr, "[gpu_front] prims %llu, state lookups %llu, misses %llu\n", (unsigned long long)n_prims, (unsigned long long)n_lookups, (unsigned long long)n_misses);
+    fprintf(stderr, "[gpu_front] emission: tri vertices %.1f, line pixels %.1f, rest (records) %.1f; early exits %.1f\n", prof[8] / 1e6, prof[10] / 1e6, prof[7] / 1e6, prof[11] / 1e6);
+#endif
     gs_front = NULL;
     gs_sw_draw = 1;
 }

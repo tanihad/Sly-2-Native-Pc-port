@@ -4,6 +4,20 @@
 #include "gpu_front.h"
 #include "gs_setup.h"
 
+/* equality of n 64-bit words (memcmp of the C library compares bytes) */
+static inline int gf_eq64(const void* a, const void* b, size_t n) {
+    const unsigned char* x = a;
+    const unsigned char* y = b;
+    uint64_t d = 0;
+    for (size_t i = 0; i < n; i++) {
+        uint64_t u, v;
+        memcpy(&u, x + 8 * i, 8);
+        memcpy(&v, y + 8 * i, 8);
+        d |= u ^ v;
+    }
+    return d == 0;
+}
+
 /* ---- frame output: counters and arenas (gpu_front.c) ------------------------------------------- */
 extern gpu_front_frame gf;               /* counters of the frame being built */
 extern gpu_front_config gf_cfg;
@@ -31,16 +45,21 @@ typedef struct gpu_target {
     int bcols, brows;
     uint16_t* babs;                      /* local block -> absolute 256-byte block */
     uint32_t* vs;                        /* per local block: blk_serial value it is current for */
+    int16_t* inv;                        /* absolute block -> local block (built on demand) */
     uint64_t pages[8];
     uint32_t last_used;                  /* gf_frame of the last draw or read */
     uint8_t* sdirty;                     /* per local block: written since the shadow copy */
     int shadow_valid;                    /* the shadow copy exists (feedback, 5.1) */
     int copy_rect[4];                    /* own_shadow_need full == 2: the rect to copy */
+    int clean, slow_calls;               /* every block current and only T's (as of clean_gen) */
+    uint32_t clean_gen;
     int z_high;                          /* Z32 above 0x3F000000 seen: zpatch as depth until a full clear */
 } gpu_target;
 
 extern gpu_target gt[GPU_MAX_TARGETS + 1];          /* [id] */
 extern uint32_t own_gen;                 /* bumped when a block stops being CPU-valid (texture source checks) */
+extern uint32_t own_upload_gen;          /* bumped by every upload */
+extern uint32_t own_epoch;               /* bumped when a target is released (cached target pointers) */
 
 void own_reset(void);
 /* The target of exactly (kind, base, fbw), created (or grown to `rows` native rows) if needed.
@@ -52,6 +71,11 @@ gpu_target* own_find(int kind, uint32_t base, uint32_t fbw);
  * unless the draw overwrites them whole (opaque: every pixel of the rect is written regardless of
  * the destination); writes: the blocks become T's. */
 void own_draw(gpu_target* T, int x0, int y0, int x1, int y1, int writes, int opaque);
+void own_grow(gpu_target* T, int rows);  /* taller use: recreate + copy */
+/* A PUNTed primitive's rect: drawn by the software rasterizer into memory. */
+void own_punt(gpu_target* T, int x0, int y0, int x1, int y1);
+/* Absolute 256-byte blocks of T touched through another view (ALIAS16 CT16 views). */
+void own_blocks(gpu_target* T, const uint16_t* blocks, int n, int writes);
 /* Every block of T written (a recognised full clear). */
 void own_clear(gpu_target* T);
 /* A memory-source read of texels [u0,u1] x [v0,v1] (inclusive, inside 0..2047) of a buffer in
@@ -77,6 +101,7 @@ void clut_reset(void);
 void clut_mark_dirty(void);              /* a TEX0 write may have loaded the CLUT */
 /* The ring slot holding the current CLUT buffer (snapshot uploaded on a miss: counted). */
 uint32_t clut_current_slot(void);
+uint32_t clut_content_id(void);         /* changes whenever the CLUT buffer's content does */
 /* min/max alpha over the palette entries an indexed texture (tex0, TEXA) can use. */
 void clut_alpha_range(uint32_t slot, uint64_t tex0, uint64_t texa, int* amin, int* amax);
 void clut_frame_end(void);

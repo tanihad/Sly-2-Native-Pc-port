@@ -20,6 +20,11 @@
  * bbox, D3D calls, front/render/GPU ms. Uses only the public GS entry points, so it builds with
  * older GS code too. */
 #include "gs_draw.h"
+#if __has_include("gs_setup.h")
+#include "gs_setup.h"                  /* gs_sw_draw (--decode-only) */
+#define GS_REPLAY_SETUP 1
+#endif
+#include <x86intrin.h>
 
 #include <stdlib.h>
 #include <windows.h>
@@ -220,7 +225,7 @@ static const struct { const char* name; size_t off; int kind; } front_fields[] =
     U32F(alias16_sprites), U32F(alias16_dispatches), U32F(alias16_selfcopy), U32F(clears_c), U32F(clears_z),
     U32F(loads), U32F(load_blocks), U32F(shadow_copies), U32F(downloads), U32F(download_blocks), U32F(patches),
     U32F(patch_bytes), U32F(xfers), U32F(xfer_bytes), U32F(xfer_local), U32F(xfer_read), U32F(clut_loads),
-    U32F(clut_slots), U32F(clut_new), U32F(targets_live), U32F(targets_created), U32F(targets_evicted),
+    U32F(clut_slots), U32F(clut_new), U32F(targets_live), U32F(targets_created), U32F(targets_evicted), U32F(target_overlaps),
     U32F(state_changes), U32F(states), U32F(vertices), U32F(indices), U32F(records_z), U32F(records_full),
     U32F(records_sprite), U32F(records_linepix), U64F(vtx_bytes), U64F(idx_bytes), U64F(rec_bytes), U64F(state_bytes),
     U64F(cmd_bytes), U64F(data_bytes), U32F(atst_kicks), U32F(atst_pass), U32F(atst_fail), U32F(atst_straddle),
@@ -303,9 +308,9 @@ static void front_report(const char* metrics, const char* rec, double replay_ms,
             sum.z32_over, sum.clears_c, sum.clears_z, sum.loads, sum.load_blocks, sum.shadow_copies, sum.downloads,
             sum.download_blocks, sum.alias16_selfcopy);
     fprintf(stderr, "hwdry: uploads %u (%u bytes) -> %u patches (%u bytes), max %u patches/VBlank; TRXDIR=1 %u, TRXDIR=2 %u; "
-                    "CLUT new slots %u, max distinct/VBlank %u; targets created %u evicted %u max live %u\n",
+                    "CLUT new slots %u, max distinct/VBlank %u; targets created %u evicted %u max live %u, same-kind overlaps %u\n",
             sum.xfers, sum.xfer_bytes, sum.patches, sum.patch_bytes, mx.patches, sum.xfer_read, sum.xfer_local, sum.clut_new,
-            mx.clut_slots, sum.targets_created, sum.targets_evicted, mx.targets_live);
+            mx.clut_slots, sum.targets_created, sum.targets_evicted, mx.targets_live, sum.target_overlaps);
     fprintf(stderr, "hwdry: textures: vram %u, CT32 target views %u, alpha-index views %u, CT16 (ALIAS16) %u; REGION_CLAMP %u, "
                     "TBW not 2^n %u; selfcheck mismatches %u\n",
             sum.tex_vram, sum.tex_view_c32, sum.tex_view_alpha, sum.tex_alias16, sum.region_clamp, sum.tbw_npot, sum.selfcheck_bad);
@@ -410,7 +415,7 @@ int main(int argc, char** argv) {
         return 2;
     }
     outdir = argv[2];
-    int workers = 0, front_only = 0, front_ref = 0, front_straddle = 0, front_selfcheck = 0;
+    int workers = 0, decode_only = 0, front_only = 0, front_ref = 0, front_straddle = 0, front_selfcheck = 0;
     const char* adapter = "hw";
     const char* metrics = NULL;
     for (int i = 3; i < argc; i++) {
@@ -421,6 +426,7 @@ int main(int argc, char** argv) {
         } else if (!strcmp(argv[i], "--adapter") && i + 1 < argc) adapter = argv[++i];
         else if (!strcmp(argv[i], "--metrics") && i + 1 < argc) metrics = argv[++i];
         else if (!strcmp(argv[i], "--front-only")) front_only = 1;
+        else if (!strcmp(argv[i], "--decode-only")) decode_only = 1;
         else if (!strcmp(argv[i], "--ref")) front_ref = 1;
         else if (!strcmp(argv[i], "--straddle-rov")) front_straddle = 1;
         else if (!strcmp(argv[i], "--selfcheck")) front_selfcheck = 1;
@@ -511,6 +517,14 @@ int main(int argc, char** argv) {
     fclose(f);
     LARGE_INTEGER q0, q1, qf;
     QueryPerformanceFrequency(&qf);
+#ifdef GS_REPLAY_SETUP
+    if (decode_only) gs_sw_draw = 0;     /* register decode and vertex queue only: the cost every backend pays */
+#else
+    (void)decode_only;
+#endif
+    ULONG64 tc0 = 0, tc1 = 0;
+    QueryThreadCycleTime(GetCurrentThread(), &tc0);
+    uint64_t r0 = __rdtsc();
     QueryPerformanceCounter(&q0);
     uint32_t frames = 0;
     for (size_t pos = 0; pos + 8 <= size;) {
@@ -555,7 +569,14 @@ int main(int argc, char** argv) {
     progress++;
     if (workers > 0) gs_sync();
     QueryPerformanceCounter(&q1);
+    uint64_t r1 = __rdtsc();
+    QueryThreadCycleTime(GetCurrentThread(), &tc1);
     double ms = (double)(q1.QuadPart - q0.QuadPart) * 1000.0 / (double)qf.QuadPart;
+    {   /* CPU time of this thread (robust against a loaded machine), TSC cycles converted with the TSC rate */
+        double tsc_hz = ms > 0 ? (double)(r1 - r0) / (ms / 1000.0) : 1;
+        double cpu_ms = (double)(tc1 - tc0) / tsc_hz * 1000.0;
+        fprintf(stderr, "replay thread CPU %.1f ms (%.3f ms per VBlank)\n", cpu_ms, frames ? cpu_ms / frames : 0.0);
+    }
     fprintf(stderr, "replayed %u VBlanks in %.1f ms (%.2f ms per VBlank, %d pixel workers)\n", frames, ms,
             frames ? ms / frames : 0.0, workers);
     fprintf(stderr, "sw-hash %016llx over %u pictures\n", (unsigned long long)sw_hash, pictures);

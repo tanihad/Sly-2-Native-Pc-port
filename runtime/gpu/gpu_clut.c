@@ -15,6 +15,9 @@ static uint32_t next_slot, filled;
 static uint32_t map_slot[MAP_N];         /* slot + 1, 0 = empty; open addressing on the hash */
 static uint64_t map_hash[MAP_N];
 static int dirty = 1;
+static uint16_t last[512];               /* the CLUT buffer as last seen */
+static int have_last;
+static uint32_t content_id;
 static uint32_t cur_slot;
 static uint64_t used[GPU_CLUT_SLOTS / 64];  /* slots used this frame */
 
@@ -37,6 +40,7 @@ void clut_reset(void) {
     memset(acache, 0, sizeof acache);
     memset(used, 0, sizeof used);
     dirty = 1;
+    have_last = 0;
 }
 
 void clut_mark_dirty(void) { dirty = 1; }
@@ -63,15 +67,22 @@ static void map_remove(uint64_t h, uint32_t slot) {
         }
 }
 
-uint32_t clut_current_slot(void) {
+
+/* a TEX0 write may have reloaded the CLUT: see whether its content changed (Sly reloads the same
+ * palette on almost every TEX0, so most loads change nothing) */
+static void refresh(void) {
     if (!ring) clut_reset();
     if (dirty) {
         dirty = 0;
         const uint16_t* c = gs_clut_buffer();
+        if (have_last && gf_eq64(c, last, sizeof last / 8)) return;
+        memcpy(last, c, sizeof last);
+        have_last = 1;
+        content_id++;
         uint64_t h = hash1k(c);
         uint32_t i = (uint32_t)h & (MAP_N - 1), found = 0xFFFFFFFFu;
         for (int n = 0; n < MAP_N && map_slot[i]; n++, i = (i + 1) & (MAP_N - 1))
-            if (map_hash[i] == h && !memcmp(ring[map_slot[i] - 1].data, c, 1024)) { found = map_slot[i] - 1; break; }
+            if (map_hash[i] == h && gf_eq64(ring[map_slot[i] - 1].data, c, 128)) { found = map_slot[i] - 1; break; }
         if (found == 0xFFFFFFFFu) {      /* miss: next ring slot, snapshot uploaded */
             found = next_slot;
             next_slot = (next_slot + 1) % GPU_CLUT_SLOTS;
@@ -91,6 +102,12 @@ uint32_t clut_current_slot(void) {
         cur_slot = found;
         gf.clut_loads++;
     }
+}
+
+uint32_t clut_content_id(void) { refresh(); return content_id; }
+
+uint32_t clut_current_slot(void) {
+    refresh();
     if (!(used[cur_slot >> 6] & (1ull << (cur_slot & 63)))) {
         used[cur_slot >> 6] |= 1ull << (cur_slot & 63);
         gf.clut_slots++;
