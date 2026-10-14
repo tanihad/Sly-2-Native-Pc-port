@@ -207,6 +207,10 @@ hub explored, audio and memory checked. No reproducible runtime bug is open. Not
 tank hide (heist2), bomb_bridge on_top, the heist4 keypad route. RC chopper always-forward flight
 is the game's design (traced to the Splice script with a verified neutral stick).
 
+Session 6 (resume after the pause): no PAUSED WIP commit on the branch; merged main (3be5093,
+notes + CLAUDE.md only, no code) -> 27cd27b; tests\run_tests.py 16/16 + hook guards pass. Status
+unchanged: COMPLETE.
+
 ## Earlier notes (kept for reference)
 
 ## In progress
