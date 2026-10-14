@@ -450,6 +450,20 @@ int own_mem_is_gpu(int psm, uint32_t bp, uint32_t bw, int u0, int v0, int u1, in
     return mem_check(psm, bp, bw, u0, v0, u1, v1, 0);
 }
 
+int own_rect_blocks(int psm, uint32_t bp, uint32_t bw, int x0, int y0, int x1, int y1, uint16_t* out, int max) {
+    if (x1 > 2048) { x0 = 0; x1 = 2048; }
+    if (y1 > 2048) { y0 = 0; y1 = 2048; }
+    if (gs_psm_bpp(psm) == 0) psm = PSMCT32;
+    if (x0 >= x1 || y0 >= y1) return 0;
+    int bwp, bhp, n = 0;
+    block_dims(psm, &bwp, &bhp);
+    /* the buffer's own block grid (its base is block-aligned): one block per grid cell */
+    for (int by = y0 / bhp; by <= (y1 - 1) / bhp && n < max; by++)
+        for (int bx = x0 / bwp; bx <= (x1 - 1) / bwp && n < max; bx++)
+            out[n++] = (uint16_t)(word_of(psm, bp, bw, (uint32_t)(bx * bwp), (uint32_t)(by * bhp)) >> 6);
+    return n;
+}
+
 /* ---- uploads -------------------------------------------------------------------------------------- */
 
 void own_upload(int psm, uint32_t bp, uint32_t bw, int x0, int y0, int x1, int y1) {
@@ -492,7 +506,7 @@ void own_flush_patches(void) {
     uint8_t* d = gf_data_ptr(off);
     for (uint32_t i = 0; i < npend; i++) {
         uint32_t b = pend_list[i];
-        memcpy(d + (size_t)i * 256, gs_vram + (size_t)b * 256, 256);
+        memcpy(d + (size_t)i * 256, (gf_vram ? gf_vram : gs_vram) + (size_t)b * 256, 256);
         blk_pend[b >> 6] &= ~(1ull << (b & 63));
         page_pend[b >> 5]--;
     }

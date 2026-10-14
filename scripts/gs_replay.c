@@ -353,6 +353,22 @@ static void front_report(const char* metrics, const char* rec, double replay_ms,
     fclose(f);
 }
 
+/* --stream-hash (hwdry): a hash of every frame's command stream and data, so frontend optimisations
+ * that must not change its output can be checked */
+static uint64_t stream_hash = 1469598103934665603ull;
+static void hash_bytes_into(const void* p, size_t n) {
+    const uint8_t* b = p;
+    uint64_t h = stream_hash;
+    for (size_t i = 0; i < n; i++) { h ^= b[i]; h *= 1099511628211ull; }
+    h ^= n; h *= 1099511628211ull;
+    stream_hash = h;
+}
+static void stream_sink(const gpu_front_frame_data* fd, void* user) {
+    (void)user;
+    hash_bytes_into(fd->cmd, fd->cmd_bytes); hash_bytes_into(fd->vtx, fd->vtx_bytes); hash_bytes_into(fd->idx, fd->idx_count * 4);
+    hash_bytes_into(fd->rec, fd->rec_bytes); hash_bytes_into(fd->states, fd->state_count * 96); hash_bytes_into(fd->data, fd->data_bytes);
+}
+
 /* ---- hwsubmit (M2): the render thread executed every frame; its per-frame costs ---- */
 static double pct(double* v, size_t n, double p) {
     if (!n) return 0;
@@ -477,6 +493,125 @@ static void hash_vram(uint32_t vblank) {
     vram_hash_all = (vram_hash_all ^ h) * 1099511628211ull;
 }
 
+/* --profile: a sampling profiler of the replay thread (the GS thread's work: decode, frontend or sw
+ * rasterizer). Every 0.25 ms the replay thread is suspended, the function it is in (self) and the
+ * functions on its stack (inclusive, x64 unwind) are counted by the executable's COFF symbols (the
+ * method of runtime/perf.c's PS2_PROFILE). Printed at the end. */
+typedef struct { uint32_t rva; const char* name; } psym;
+static psym* psyms;
+static int npsyms;
+static uint8_t* pimage;
+static uint64_t pimage_size;
+static uint32_t *pself, *pincl, psamples, poutside;
+static HANDLE ptarget;
+static volatile LONG pstop;
+
+static int psym_cmp(const void* a, const void* b) {
+    uint32_t x = ((const psym*)a)->rva, y = ((const psym*)b)->rva;
+    return x < y ? -1 : x > y;
+}
+
+static void prof_symbols(void) {
+    pimage = (uint8_t*)GetModuleHandleW(NULL);
+    const IMAGE_NT_HEADERS64* mnt = (const IMAGE_NT_HEADERS64*)(pimage + ((const IMAGE_DOS_HEADER*)pimage)->e_lfanew);
+    pimage_size = mnt->OptionalHeader.SizeOfImage;
+    wchar_t path[MAX_PATH];
+    if (!GetModuleFileNameW(NULL, path, MAX_PATH)) return;
+    FILE* f = _wfopen(path, L"rb");
+    if (!f) return;
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    uint8_t* buf = malloc((size_t)size);
+    if (!buf || fread(buf, 1, (size_t)size, f) != (size_t)size) { fclose(f); return; }
+    fclose(f);
+    const IMAGE_NT_HEADERS64* nt = (const IMAGE_NT_HEADERS64*)(buf + ((const IMAGE_DOS_HEADER*)buf)->e_lfanew);
+    const IMAGE_FILE_HEADER* fh = &nt->FileHeader;
+    const IMAGE_SECTION_HEADER* sec = IMAGE_FIRST_SECTION(nt);
+    if (!fh->PointerToSymbolTable) { fprintf(stderr, "[profile] no COFF symbols\n"); return; }
+    const uint8_t* tab = buf + fh->PointerToSymbolTable;
+    const char* strtab = (const char*)tab + fh->NumberOfSymbols * 18ull;
+    psyms = malloc(sizeof(psym) * fh->NumberOfSymbols);
+    for (uint32_t i = 0; i < fh->NumberOfSymbols; i++) {
+        const IMAGE_SYMBOL* s = (const IMAGE_SYMBOL*)(tab + 18ull * i);
+        int sn = s->SectionNumber;
+        if (sn > 0 && sn <= fh->NumberOfSections && (sec[sn - 1].Characteristics & IMAGE_SCN_CNT_CODE) &&
+            (s->StorageClass == IMAGE_SYM_CLASS_EXTERNAL || s->StorageClass == IMAGE_SYM_CLASS_STATIC)) {
+            const char* name;
+            if (s->N.Name.Short) { char* n = calloc(1, 9); memcpy(n, s->N.ShortName, 8); name = n; }
+            else name = strtab + s->N.Name.Long;
+            if (name[0] != '.') psyms[npsyms++] = (psym){ sec[sn - 1].VirtualAddress + s->Value, name };
+        }
+        i += s->NumberOfAuxSymbols;
+    }
+    qsort(psyms, (size_t)npsyms, sizeof(psym), psym_cmp);
+    pself = calloc((size_t)npsyms + 1, 4);
+    pincl = calloc((size_t)npsyms + 1, 4);
+}
+
+static int psym_of(uint64_t pc) {
+    if (pc < (uint64_t)pimage || pc >= (uint64_t)pimage + pimage_size) return -1;
+    uint32_t rva = (uint32_t)(pc - (uint64_t)pimage);
+    int lo = 0, hi = npsyms;
+    while (lo < hi) { int mid = (lo + hi) / 2; if (psyms[mid].rva <= rva) lo = mid + 1; else hi = mid; }
+    return lo - 1;
+}
+
+static DWORD WINAPI prof_main(LPVOID arg) {
+    (void)arg;
+    HANDLE timer = CreateWaitableTimerExW(NULL, NULL, 0x2, TIMER_ALL_ACCESS);
+    while (!pstop) {
+        LARGE_INTEGER due;
+        due.QuadPart = -2500;
+        if (timer && SetWaitableTimer(timer, &due, 0, NULL, NULL, FALSE)) WaitForSingleObject(timer, INFINITE);
+        else Sleep(1);
+        CONTEXT c;
+        memset(&c, 0, sizeof c);
+        c.ContextFlags = CONTEXT_FULL;
+        if (SuspendThread(ptarget) == (DWORD)-1) continue;
+        if (!GetThreadContext(ptarget, &c)) { ResumeThread(ptarget); continue; }
+        MEMORY_BASIC_INFORMATION mbi;
+        uint64_t lo = c.Rsp, hi = 0;
+        if (VirtualQuery((LPCVOID)(uintptr_t)c.Rsp, &mbi, sizeof mbi)) hi = (uint64_t)(uintptr_t)mbi.BaseAddress + mbi.RegionSize;
+        int seen[32], nseen = 0;
+        for (int depth = 0; depth < 32 && c.Rip && c.Rsp >= lo && c.Rsp + 8 <= hi; depth++) {
+            int s = psym_of(c.Rip);
+            if (depth == 0) { if (s >= 0) pself[s]++; else poutside++; }
+            if (s >= 0) {
+                int dup = 0;
+                for (int k = 0; k < nseen; k++) dup |= seen[k] == s;
+                if (!dup) { seen[nseen++] = s; pincl[s]++; }
+            }
+            DWORD64 base = 0, prev = c.Rsp;
+            PRUNTIME_FUNCTION fe = RtlLookupFunctionEntry(c.Rip, &base, NULL);
+            if (!fe) { c.Rip = *(const DWORD64*)(uintptr_t)c.Rsp; c.Rsp += 8; }
+            else { PVOID hd; DWORD64 fr; RtlVirtualUnwind(UNW_FLAG_NHANDLER, base, c.Rip, fe, &c, &hd, &fr, NULL); }
+            if (c.Rsp <= prev) break;
+        }
+        ResumeThread(ptarget);
+        psamples++;
+    }
+    if (timer) CloseHandle(timer);
+    return 0;
+}
+
+typedef struct { const char* name; uint32_t n; } phit;
+static int phit_cmp(const void* a, const void* b) { uint32_t x = ((const phit*)a)->n, y = ((const phit*)b)->n; return x > y ? -1 : x < y; }
+
+static void prof_report(void) {
+    if (!psamples) return;
+    phit* h = calloc((size_t)npsyms + 2, sizeof *h);
+    for (int pass = 0; pass < 2; pass++) {
+        int nh = 0;
+        for (int s = 0; s < npsyms; s++) { uint32_t v = pass ? pincl[s] : pself[s]; if (v) h[nh++] = (phit){ psyms[s].name, v }; }
+        if (!pass && poutside) h[nh++] = (phit){ "[outside the executable]", poutside };
+        qsort(h, (size_t)nh, sizeof *h, phit_cmp);
+        fprintf(stderr, "[profile] %u samples of the replay thread, %s:\n", psamples, pass ? "inclusive" : "self");
+        for (int k = 0; k < nh && k < (pass ? 30 : 40); k++) fprintf(stderr, "  %6.2f%%  %7u  %s\n", 100.0 * h[k].n / psamples, h[k].n, h[k].name);
+    }
+    free(h);
+}
+
 /* Watchdog: a replay that makes no progress for 60 s prints where it is and exits with code 4, so
  * a harness (gpu_diff_all.ps1) never waits forever on a deadlock. */
 static DWORD WINAPI watchdog(LPVOID arg) {
@@ -509,7 +644,7 @@ int main(int argc, char** argv) {
         return 2;
     }
     outdir = argv[2];
-    int workers = 0, decode_only = 0, front_only = 0, front_ref = 0, front_straddle = 0, front_selfcheck = 0, with_sw = 0, scale = 1, pace = 0;
+    int workers = 0, decode_only = 0, front_only = 0, front_ref = 0, front_straddle = 0, front_selfcheck = 0, with_sw = 0, scale = 1, pace = 0, profile = 0, shash = 0, front_thread = 0;
     const char* adapter = "hw";
     const char* metrics = NULL;
     for (int i = 3; i < argc; i++) {
@@ -526,6 +661,9 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--selfcheck")) front_selfcheck = 1;
         else if (!strcmp(argv[i], "--with-sw")) with_sw = 1;
         else if (!strcmp(argv[i], "--pace")) pace = 1;
+        else if (!strcmp(argv[i], "--profile")) profile = 1;
+        else if (!strcmp(argv[i], "--stream-hash")) shash = 1;
+        else if (!strcmp(argv[i], "--front-thread")) front_thread = 1;
         else if (!strcmp(argv[i], "--scale") && i + 1 < argc) scale = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--vram-hash") && i + 1 < argc) {
             vram_hash_file = fopen(argv[++i], "w");
@@ -598,9 +736,12 @@ int main(int argc, char** argv) {
         fc.ref = front_ref;
         fc.straddle_rov = front_straddle;
         fc.selfcheck = front_selfcheck;
+        fc.thread = front_thread && !fc.sw;    /* (the frontend thread needs the software rasterizer off) */
+        if (front_thread && fc.sw) fprintf(stderr, "--front-thread ignored: the software rasterizer is on\n");
         fc.scale = scale > 0 ? scale : 1;
         gpu_front_start(&fc);
         if (backend == B_HWSUB) gpu_front_set_sink(gpu_submit_sink, NULL);   /* frames -> render thread (M2) */
+        else if (shash) gpu_front_set_sink(stream_sink, NULL);
     }
 #endif
 
@@ -626,6 +767,14 @@ int main(int argc, char** argv) {
                      (decode_only || (backend == B_HWDRY && front_only) || (backend == B_HWSUB && !with_sw));
     /* --pace: VBlanks at 59.94 Hz, as in the game (render-thread times without a GPU backlog) */
     HANDLE pace_timer = pace ? CreateWaitableTimerExW(NULL, NULL, 0x2 /* HIGH_RESOLUTION */, TIMER_ALL_ACCESS) : NULL;
+    HANDLE prof_thread = NULL;
+    if (profile) {
+        prof_symbols();
+        DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &ptarget,
+                        THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, 0);
+        prof_thread = CreateThread(NULL, 0, prof_main, NULL, 0, NULL);
+        if (prof_thread) SetThreadPriority(prof_thread, THREAD_PRIORITY_TIME_CRITICAL);
+    }
     ULONG64 tc0 = 0, tc1 = 0, rt0 = 0, rt1 = 0;
     FILETIME pc0[4], pc1[4];
     GetProcessTimes(GetCurrentProcess(), &pc0[0], &pc0[1], &pc0[2], &pc0[3]);
@@ -690,6 +839,7 @@ int main(int argc, char** argv) {
     progress++;
     if (workers > 0) gs_sync();
 #ifdef GS_REPLAY_GPU
+    if (FRONT_MODE(backend)) gpu_front_drain();       /* the frontend thread has processed everything */
     if (backend == B_HWSUB) gpu_submit_wait_idle();   /* every frame executed: the render thread's CPU is complete */
 #endif
     QueryPerformanceCounter(&q1);
@@ -700,11 +850,16 @@ int main(int argc, char** argv) {
 #endif
     GetProcessTimes(GetCurrentProcess(), &pc1[0], &pc1[1], &pc1[2], &pc1[3]);
     if (pace_timer) CloseHandle(pace_timer);
+    if (prof_thread) { pstop = 1; WaitForSingleObject(prof_thread, INFINITE); prof_report(); }
     double ms = (double)(q1.QuadPart - q0.QuadPart) * 1000.0 / (double)qf.QuadPart;
     {   /* CPU time of this thread (robust against a loaded machine), TSC cycles converted with the TSC rate */
         double tsc_hz = ms > 0 ? (double)(r1 - r0) / (ms / 1000.0) : 1;
         double cpu_ms = (double)(tc1 - tc0) / tsc_hz * 1000.0;
         fprintf(stderr, "replay thread CPU %.1f ms (%.3f ms per VBlank)\n", cpu_ms, frames ? cpu_ms / frames : 0.0);
+        if (FRONT_MODE(backend) && front_thread) {
+            double ft_ms = (double)gpu_front_thread_cycles() / tsc_hz * 1000.0;
+            fprintf(stderr, "frontend thread CPU %.1f ms (%.3f ms per VBlank)\n", ft_ms, frames ? ft_ms / frames : 0.0);
+        }
         if (backend == B_HWSUB) {    /* the render thread, and every other thread (D3D driver workers, ...) */
             double rt_ms = (double)(rt1 - rt0) / tsc_hz * 1000.0;
             uint64_t k0 = (uint64_t)pc0[2].dwHighDateTime << 32 | pc0[2].dwLowDateTime, u0 = (uint64_t)pc0[3].dwHighDateTime << 32 | pc0[3].dwLowDateTime;
@@ -727,6 +882,7 @@ int main(int argc, char** argv) {
     if (backend == B_HWDRY) {
         take_front();
         front_report(metrics, argv[1], ms, frames);
+        if (shash) fprintf(stderr, "stream-hash %016llx\n", (unsigned long long)stream_hash);
         gpu_front_stop();
         uint32_t punts = 0;
         for (size_t i = 0; i < nff; i++) punts += ff[i].tier[GPU_TIER_PUNT];

@@ -16,6 +16,7 @@ typedef struct {
     int scale;                   /* N (target sample factors; 0 = 1) */
     int sw;                      /* also run the software rasterizer (hwdry default 1) */
     int selfcheck;               /* recompute Z records with the sw row stepping and compare (cost) */
+    int thread;                  /* the frontend on its own thread, the GS thread only decodes (needs sw = 0) */
 } gpu_front_config;
 
 enum { GPU_TIER_FF, GPU_TIER_ROV, GPU_TIER_ALIAS16, GPU_TIER_PUNT, GPU_TIER_N };
@@ -73,7 +74,9 @@ typedef struct {
 } gpu_front_frame;
 
 void gpu_front_start(const gpu_front_config* cfg);   /* installs the gs_draw.c hooks */
-void gpu_front_stop(void);
+void gpu_front_stop(void);                          /* (drains the frontend thread first) */
+void gpu_front_drain(void);                         /* frontend thread: wait until it processed everything posted */
+uint64_t gpu_front_thread_cycles(void);             /* frontend thread CPU (QueryThreadCycleTime), 0 without */
 /* VBlank (stream order, before the picture): closes the frame. priv: the display registers
  * (gs_priv_snapshot order) for the display target family. */
 void gpu_front_vblank(const uint64_t priv[16], uint32_t vblank);

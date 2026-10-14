@@ -32,6 +32,7 @@ gs_stats_t gs_stats;
 uint8_t gs_fb_yfrac[512] = { [0 ... 511] = 0xFF }, gs_fb_psm[512];
 static uint64_t reg[0x64];
 static vtx vq[3];
+static uint32_t vtx_serial;
 static int vcount;
 static int env_dirty = 1, env_ok;
 static gs_prim P;
@@ -641,7 +642,7 @@ static void draw(int type, const vtx* a, const vtx* b, const vtx* c) {
     }
     if (gs_front && env_ok) {            /* GPU frontend (gs_setup.h): sees every primitive */
         uint64_t attr = (reg[R_PRMODECONT] & 1) ? reg[R_PRIM] : reg[R_PRMODE];
-        gs_env_view ev = { &P, reg, (int)((attr >> 9) & 1), ofx, ofy, prim_iip, prim_aa1, prim_draws };
+        gs_env_view ev = { &P, reg, (int)((attr >> 9) & 1), ofx, ofy, prim_iip, prim_aa1, prim_draws, gs_prim_version };
         gs_front->prim(&ev, type, a, b, c);
     }
     if (!env_ok || !prim_draws || !gs_sw_draw) return;
@@ -669,6 +670,7 @@ static void vertex(uint64_t xyz, int has_f, int kick) {
     n->t = asf((uint32_t)(reg[R_ST] >> 32) & 0xFFFFFF00u);
     n->u = (int)(reg[R_UV] & 0x3FFF);
     n->v = (int)((reg[R_UV] >> 16) & 0x3FFF);
+    n->serial = ++vtx_serial;
     vcount++;
 
     int type = (int)(reg[R_PRIM] & 7);

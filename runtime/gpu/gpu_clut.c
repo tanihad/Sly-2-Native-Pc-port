@@ -74,7 +74,7 @@ static void refresh(void) {
     if (!ring) clut_reset();
     if (dirty) {
         dirty = 0;
-        const uint16_t* c = gs_clut_buffer();
+        const uint16_t* c = gf_clut_src ? gf_clut_src : gs_clut_buffer();
         if (have_last && gf_eq64(c, last, sizeof last / 8)) return;
         memcpy(last, c, sizeof last);
         have_last = 1;

@@ -25,6 +25,9 @@
 gpu_front_frame gf;
 gpu_front_config gf_cfg;
 uint32_t gf_frame;
+const uint8_t* gf_vram;
+const uint16_t* gf_clut_src;
+int gf_clut_hint = -1;
 
 /* ---- arenas ------------------------------------------------------------------------------------- */
 typedef struct { uint8_t* p; size_t n, cap; } arena;
@@ -125,16 +128,19 @@ void* gf_data_ptr(uint32_t off) { return A_data.p + off; }
 /* ---- completed frames ----------------------------------------------------------------------------- */
 static gpu_front_frame* done;
 static size_t ndone, capdone;
+static SRWLOCK done_lock = SRWLOCK_INIT;            /* frames are closed on the frontend thread */
 static void (*sink_fn)(const gpu_front_frame_data*, void*);
 static void* sink_user;
 
 void gpu_front_set_sink(void (*sink)(const gpu_front_frame_data* fd, void* user), void* user) { sink_fn = sink; sink_user = user; }
 
 int gpu_front_take_frames(gpu_front_frame* out, int max) {
+    AcquireSRWLockExclusive(&done_lock);
     int n = (int)(ndone < (size_t)max ? ndone : (size_t)max);
     memcpy(out, done, (size_t)n * sizeof *out);
     memmove(done, done + n, (ndone - (size_t)n) * sizeof *done);
     ndone -= (size_t)n;
+    ReleaseSRWLockExclusive(&done_lock);
     return n;
 }
 
@@ -284,7 +290,7 @@ static void state_lookup(const gs_env_view* ev) {
         if (SC_used[i] && SC_hash[i] == h && gf_eq64(SC_sig[i], sig, SIG_N)) {
             Sp = &SC[i];
             SC_age[i] = ++sc_clock;
-            S.version = gs_prim_version;
+            S.version = ev->version;
             return;
         }
         if (!SC_used[i] || (SC_used[victim] && SC_age[i] < SC_age[victim])) victim = i;
@@ -303,7 +309,7 @@ static void state_update(const gs_env_view* ev) {
     const uint64_t* reg = ev->reg;
     int ctx = ev->ctx;
     memset(&S, 0, sizeof S);
-    S.version = gs_prim_version;
+    S.version = ev->version;
     S.ctx = ctx;
     S.zfi = -1;
 
@@ -635,7 +641,7 @@ static int vcache_n, vcache_pos;
 
 static uint32_t emit_vertex(const gs_vtx* v, const gs_env_view* ev, uint32_t state) {
     for (int i = 0; i < vcache_n; i++)
-        if (vcache_state[i] == state && gf_eq64(&vcache[i], v, sizeof *v / 8)) return vcache_idx[i];
+        if (vcache_state[i] == state && !memcmp(&vcache[i], v, offsetof(gs_vtx, serial))) return vcache_idx[i];   /* (values, not the serial) */
     gvtx* o = ar_reserve(&A_vtx, sizeof *o);
     o->x = (float)(v->x - ev->ofx) * (1.0f / 16.0f);
     o->y = (float)(v->y - ev->ofy) * (1.0f / 16.0f);
@@ -981,7 +987,7 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
     const gs_prim* P = ev->P;
     gf.kicks++;
     if (!ev->draws) { gf.nowrite++; goto out; }
-    if (S.version != gs_prim_version || S.ctx != ev->ctx || !S.version) state_lookup(ev);
+    if (S.version != ev->version || S.ctx != ev->ctx || !S.version) state_lookup(ev);
     if (S.skip) { gf.skipped++; goto out; }
     int cls = pc_of(type);
 
@@ -1355,13 +1361,15 @@ static void fr_tex0(int ctx, uint64_t tex0, int clut_loaded) {
         if (own_mem_flush(cpsm == PSMCT16 || cpsm == PSMCT16S ? (int)cpsm : PSMCT32, cbp, 1, 0, 0, t8 ? 15 : 7, t8 ? 15 : 1))
             gf.clut_gpu_reads++;
     }
-    clut_mark_dirty();
+    /* (frontend thread: the GS thread compared the loaded entries and says whether they changed) */
+    if (gf_clut_hint != 0) clut_mark_dirty();
     tsc_acc += __rdtsc() - t0;
 }
 
 static void fr_reset(void) { flush_open(); }
 
 static const gs_front_hooks hooks = { fr_prim, fr_xfer_start, fr_xfer_data, fr_tex0, fr_reset };
+const gs_front_hooks* gf_hooks(void) { return &hooks; }
 
 /* ---- start / stop / VBlank ------------------------------------------------------------------------- */
 static void frame_begin(void) {
@@ -1400,10 +1408,18 @@ void gpu_front_start(const gpu_front_config* cfg) {
     const char* tr = getenv("PS2_GPU_FRONT_TRACE");
     trace_vblank = tr ? (uint32_t)strtoul(tr, NULL, 0) : 0xFFFFFFFFu;
     trace_on = 0;
-    gs_front = &hooks;
+    gf_vram = NULL;
+    gf_clut_src = NULL;
+    gf_clut_hint = -1;
+    if (gf_cfg.thread) fthread_start();   /* proxy hooks on this thread, the frontend on its own */
+    else gs_front = &hooks;
 }
 
+void gpu_front_drain(void) { if (gf_cfg.thread) fthread_drain(); }
+uint64_t gpu_front_thread_cycles(void) { return gf_cfg.thread ? fthread_cycles() : 0; }
+
 void gpu_front_stop(void) {
+    if (gf_cfg.thread) fthread_stop();
 #ifdef GPU_FRONT_PROF
     fprintf(stderr, "[gpu_front] profile (Mcycles): state %.1f geometry %.1f inputs %.1f texture %.1f tier %.1f ownership %.1f key %.1f emission %.1f\n",
             prof[0] / 1e6, prof[1] / 1e6, prof[2] / 1e6, prof[3] / 1e6, prof[4] / 1e6, prof[5] / 1e6, prof[6] / 1e6, prof[7] / 1e6);
@@ -1415,6 +1431,11 @@ void gpu_front_stop(void) {
 }
 
 void gpu_front_vblank(const uint64_t priv[16], uint32_t vblank) {
+    if (gf_cfg.thread) fthread_vblank(priv, vblank);
+    else gf_vblank_impl(priv, vblank);
+}
+
+void gf_vblank_impl(const uint64_t priv[16], uint32_t vblank) {
     uint64_t t0 = __rdtsc();
     flush_open();
     own_frame_end(priv);
@@ -1439,12 +1460,14 @@ void gpu_front_vblank(const uint64_t priv[16], uint32_t vblank) {
         sink_fn(&fd, sink_user);
         in_sink = 0;
     }
+    AcquireSRWLockExclusive(&done_lock);
     if (ndone == capdone) {
         capdone = capdone ? capdone * 2 : 1024;
         done = realloc(done, capdone * sizeof *done);
         if (!done) { fprintf(stderr, "[gpu_front] out of memory\n"); exit(1); }
     }
     done[ndone++] = gf;
+    ReleaseSRWLockExclusive(&done_lock);
     tsc_acc = 0;
     gf_frame++;
     frame_begin();

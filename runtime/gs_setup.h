@@ -19,6 +19,7 @@ typedef struct {
     int r, g, b, a, f;
     float s, t, q;
     int u, v;                            /* 1/16 texel */
+    uint32_t serial;                     /* the decoder's vertex number (a frontend thread finds strip reuse by it) */
 } gs_vtx;
 
 /* ---- numeric helpers ----------------------------------------------------------------------------- */
@@ -246,6 +247,7 @@ typedef struct {
     int ofx, ofy;                        /* XYOFFSET, 12.4 */
     int iip, aa1;                        /* PRIM.IIP, PRIM.AA1 */
     int draws;                           /* 0: the primitive can write nothing (FBMSK all ones, no Z write) */
+    uint32_t version;                    /* gs_prim_version of *P (a frontend on another thread gets copies) */
 } gs_env_view;
 
 typedef struct {
