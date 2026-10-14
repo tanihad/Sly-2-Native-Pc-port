@@ -233,12 +233,8 @@ void ps2_call(ps2_ctx* ctx, uint32_t addr) {
 static LARGE_INTEGER qpc_freq, qpc_start;
 
 uint32_t ps2_mfc0(ps2_ctx* ctx, int reg) {
-    if (reg == 9) {                              /* Count: EE clock, 294.912 MHz */
-        LARGE_INTEGER now;
-        QueryPerformanceCounter(&now);
-        double secs = (double)(now.QuadPart - qpc_start.QuadPart) / (double)qpc_freq.QuadPart;
-        return (uint32_t)(uint64_t)(secs * 294912000.0);
-    }
+    if (reg == 9) return timer_cop0_count();     /* Count: EE clock, 294.912 MHz, on the timers' held host time
+                                                  * base (timer.c), so a debug pause stops it like everything else */
     if (reg == 12) return 0x70000001u | (ctx->ie ? 0x10000u : 0);   /* Status: CU0-2, IE, EIE */
     if (reg == 15) return 0x00002E20u;           /* PRId: R5900 */
     return 0;
@@ -363,8 +359,8 @@ static volatile int ram_dump_request;
 void ps2_request_ram_dump(void) { ram_dump_request = 1; }   /* written at the next VBlank */
 
 /* Debug pause (window.c, the live input token 'pause'; EE thread): the whole PS2 stands still while
- * the EE waits for the next input line - the VBlank clock, EE timers (the game's frame time), IOP
- * time (989snd's tick: sequenced music) and the SPU2 mixer - so a game played step by step sees the
+ * the EE waits for the next input line - the VBlank clock, the COP0 Count, EE timers (the game's
+ * frame time), IOP time (989snd's tick: sequenced music) and the SPU2 mixer - so a game played step by step sees the
  * same time passing per frame as at full speed. The VBlank schedule moves by the pause, so the next
  * VBlank comes as long after the resume as it was still away when the pause began (without that, a
  * VBlank fell due at once on every resume and each 2-frame step held only ~1 frame of time). */
@@ -505,6 +501,17 @@ static void vblank(ps2_ctx* ctx) {
  * like sif.c it is not run from inside a game interrupt handler. */
 void ps2_poll_iop(void) {
     if (iop_poll_flag && !in_interrupt) iop_service();
+}
+
+/* While the EE thread waits for the GS thread (gs_thread.c), when the IOP has no thread of its own
+ * (PS2_IOP_THREAD=0; next/ep2's fix, superseded by next/ep1's IOP thread otherwise). A loaded host can hold the GS thread
+ * back for a second or more; 989snd's VAG streams must still see their voices change buffer halves
+ * within one half (~160 ms), or the voice loops back into the half it is playing and 989snd stops
+ * the stream for good (the episode menu's music fell silent this way). */
+static void gs_wait_poll_iop(void) {
+    int prev = perf_enter(PERF_IOP);
+    ps2_poll_iop();
+    perf_leave(prev);
 }
 
 /* Called at safe points (loop heads, syscall returns, idle) when ps2_irq_pending is set. */
@@ -749,6 +756,9 @@ int main(int argc, char** argv) {
         const char* gt = getenv("PS2_GS_THREADS");
         if (gt) workers = atoi(gt);
         gs_thread_start(workers, present_frame);
+        /* Only without the IOP thread (PS2_IOP_THREAD=0): with it the IOP keeps running by itself
+         * while the EE waits, and the hook would only add 1 ms wake-ups. */
+        if (!iop_threaded()) gs_set_wait_hook(gs_wait_poll_iop);
         if (gs_async()) fprintf(stderr, "[ps2] GS thread started with %d pixel workers\n", workers);
         else fprintf(stderr, "[ps2] GS thread could not be started: the GS runs on the EE thread\n");
     }

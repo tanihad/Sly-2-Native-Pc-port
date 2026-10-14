@@ -112,6 +112,14 @@ void timer_hold(int on) {
     else if (!on && held) { uint64_t h = host_now(); host_epoch += h > hold_at ? h - hold_at : 0; held = 0; }
 }
 
+/* COP0 Count (mfc0 $9, ps2_mfc0): the EE core clock, two cycles per bus cycle (294.912 MHz), on the
+ * same held time base as the timers, so a debug pause stops it too and leaves no gap afterwards.
+ * The game measures real time with it (dialogue, the dance minigame's beat). EE thread only. */
+uint32_t timer_cop0_count(void) {
+    if (!ready) timers_init();
+    return (uint32_t)(bus_now() * 2);
+}
+
 static uint64_t clock_ticks(uint32_t mode, uint64_t bus) {
     switch (mode & MODE_CLKS) {
     case 0:  return bus;

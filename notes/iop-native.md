@@ -113,6 +113,32 @@ Execution model:
   also cost the EE time (ps2_poll_iop between DMA tags). Measured on a loaded machine: before, 20-80
   ticks per 10 s more than 8 ms late (up to 360 ms); with the IOP thread the longest gap between
   passes is ~5-15 ms (rarely ~30 ms), and the safehouse's 9 streams ran 16 minutes without a stop.
+- **Without the IOP thread** (`PS2_IOP_THREAD=0`, the model before next/ep1; this item and the
+  next two describe it): `iop_run()` runs threads until all are blocked. It is called from
+  `ps2_service_irq` (`iop_service`, about 1 kHz plus every EE safe point), after an RPC request is
+  queued, while binding, and by the loader. A thread that runs for more than 2 ms without blocking
+  (a busy-wait) is preempted at its next loop head and continued at the next service, so the EE
+  never stalls on the IOP.
+- **Long runtime operations**: a DMA chain started by one CHCR write renders a whole frame (VIF,
+  VU1, software GS) before the EE gets back to a safe point: 60-360 ms in release runs. `dma.c`
+  therefore calls `ps2_poll_iop()` between tags and rounds, which runs the IOP when its 1 ms poll
+  flag is set (not inside a game interrupt handler). Without it 989snd's 240 Hz tick ran in bursts
+  (1600-2000 of 2400 ticks per 10 s more than 8 ms late, up to 140 ms, 364 ms at gameplay start):
+  sequenced notes bunched up (the save prompt's arpeggio at 54-78 ms note spacing instead of ~45
+  ms) and stream refills waited. With it: 20-80 late ticks per 10 s, at most ~15-35 ms (the rest is
+  single DMA tags whose VU1/GS work takes that long).
+- **Waiting for the GS thread** (next/ep2, 2026-10-11): the EE thread blocks in `gs_thread.c`'s
+  `ee_wait_change` when the GS thread's queue is full or the previous picture is not presented yet.
+  On a loaded host that wait lasted 0.2-1 s per VBlank (measured: 124 waits over 150 ms in 160 s
+  of the episode menu with ~10 game instances running), and the IOP stood still with the EE: the
+  episode menu's music stream stopped for good (989snd error 0x37, see notes/wip/ep2.md). The wait
+  now runs a hook about every millisecond (`gs_set_wait_hook`; the runtime installs
+  `ps2_poll_iop`, so not inside a game interrupt handler). Unit test: gs-draw's async build
+  (`t_wait_hook`: a picture held back until the hook ran). What remains are stalls of the EE
+  thread itself (the OS not running it: 150-660 ms gaps with 0-90 ms of EE thread CPU time on the
+  overloaded machine); next/ep1's mixer hold (`PS2_AUDIO_IOP_LIMIT`) covers those. Since the
+  integration (next/integrate) the hook is installed only when the IOP has no thread of its own:
+  the IOP thread keeps running while the EE waits, and `iop_service` does nothing then.
 - **Interrupts**: hard timers, CD completion, SIF DMA completion callbacks and libsd transfer
   completions are delivered between thread slices and at loop heads of code with interrupts
   enabled (CpuSuspendIntr state is per thread). Handlers run on the interrupt stack with
