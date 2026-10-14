@@ -6,9 +6,35 @@ Role: gs-census. Branch next/d3d11, worktree C:\Users\tanih\Projects\sly2-worktr
 - [x] 0 read the recording format (runtime/gs_record.c), gs_replay.c, register decode conventions in gs_draw.c
 - [x] 1 tool: scripts/gs_census.c (+ scripts/gs_census.ps1, scripts/census_summary.py): standalone .gsrec parser
       with GS state tracking (commits 11ff9cc, cb7a15e)
-- [~] 2 run over all 13 recordings (outputs in build/census/<worktree>-<name>.txt, not committed):
-      fix-perf x4, ep3 x4 read; ep5/ep6/ep7/ep8 running
-- [ ] 3 census tables + ranked hard cases below (interim findings written, final pass pending)
+- [x] 2 run over all 13 recordings (outputs in build/census/<worktree>-<name>.txt + tables.md via
+      scripts/census_table.py, not committed)
+- [x] 2b scripts/gs_post_probe.c (+ .ps1): replays a recording through runtime/ GS synchronously and
+      snapshots both frame buffers at every FRAME change -> exact per-channel effect of each post step
+      (resolved the shadow / channel-shuffle pipeline below; rope VBlank 5-6, fix-perf brief 3-4)
+- [x] 3 census tables + ranked hard cases: final report returned to the orchestrator (see "Shadow
+      pipeline (resolved)" below for the new part)
+
+## Shadow pipeline (resolved with gs_post_probe, every recording, every game frame)
+B = buffer being drawn, A = the other (displayed) buffer. All post passes run in field space.
+1. Scene into B (CT32 512x224). FBA=1 meshes force alpha bit 7 (exempt from shadows).
+2. Shuffle 1 (32 sprites 8x448, CTX2, FRAME = A as CT16 FBMSK 00003FFF = write bits 8-15 of each
+   halfword, texture = B as CT16, u+8 offset): A.alpha <- B.G exactly (green saved in A's alpha byte;
+   display ignores alpha, MMOD=1).
+3. G channel becomes a stencil counter: 16 full-screen sprites FBMSK FFFF00FF set/offset G (abe 0
+   or (Cs-0)*FIX+Cd 128 cc0), then the shadow volumes (untextured tristrips/trifans, FBMSK FFFF00FF,
+   (0-Cs)*128+Cd / (Cs-0)*128+Cd with COLCLAMP=0 = wrapping 8-bit +-, ZTST GREATER/GEQUAL no Z
+   write, ATST NEVER AFAIL FB_ONLY, DATE=1 DATM=0 on most). Some scenes (ep3 brief/recon, ep6, all
+   fix-perf ones) then do bit-plane logic: FBMSK FFFF80FF (write G bits 0-6) + (0-Cs)*128+Cd, and
+   FBMSK FFFFFEFF (write G bit 0 only) with (Cd-0)*FIX(2)+0 = G bit0 <- G bit6.
+4. Shuffle 2 (in place, B CT16 FBMSK 7FFFBFFF = halfword bits 8 and 15): B.alpha bit0/bit7 <-
+   B.G bit0/bit7 (stencil result into alpha).
+5. Shuffle 3 (B CT16 FBMSK 3FFF, texture A CT16): B.G <- A.alpha exactly (green restored).
+6. 16 sprites 32x224 read B as T8H (alpha byte -> 256-entry CLUT at CBP 1800) blending into B
+   itself: darkens shadowed pixels (~20k px in rope); then alpha reset to 0x80 everywhere.
+7. Z16S at ZBP 070 (16-bit view of the Z32 memory) cleared by 16 Z-only sprites, then HUD-ish 3D
+   objects drawn with it (FBMSK FF000000 / 0).
+8. Binocucom: RTTs 0A0/0A8 (+Z32 0B8) drawn after 6., sampled in the same frame.
+9. Next VBlank: motion blur, 16 sprites 32x222 blend A (CT32, TCC 0) into B at FIX 48.
 
 ## Tool design (scripts/gs_census.c)
 - Parses GSREC001 directly (no renderer link): header (4 MB VRAM, CLUT, 0x64 regs), then records
