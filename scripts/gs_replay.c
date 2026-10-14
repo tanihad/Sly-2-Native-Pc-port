@@ -225,7 +225,7 @@ static const struct { const char* name; size_t off; int kind; } front_fields[] =
     U32F(alias16_sprites), U32F(alias16_dispatches), U32F(alias16_selfcopy), U32F(clears_c), U32F(clears_z),
     U32F(loads), U32F(load_blocks), U32F(shadow_copies), U32F(downloads), U32F(download_blocks), U32F(patches),
     U32F(patch_bytes), U32F(xfers), U32F(xfer_bytes), U32F(xfer_local), U32F(xfer_read), U32F(clut_loads),
-    U32F(clut_slots), U32F(clut_new), U32F(targets_live), U32F(targets_created), U32F(targets_evicted), U32F(target_overlaps),
+    U32F(clut_slots), U32F(clut_new), U32F(clut_gpu_reads), U32F(targets_live), U32F(targets_created), U32F(targets_evicted), U32F(target_overlaps),
     U32F(state_changes), U32F(states), U32F(vertices), U32F(indices), U32F(records_z), U32F(records_full),
     U32F(records_sprite), U32F(records_linepix), U64F(vtx_bytes), U64F(idx_bytes), U64F(rec_bytes), U64F(state_bytes),
     U64F(cmd_bytes), U64F(data_bytes), U32F(atst_kicks), U32F(atst_pass), U32F(atst_fail), U32F(atst_straddle),
@@ -308,9 +308,9 @@ static void front_report(const char* metrics, const char* rec, double replay_ms,
             sum.z32_over, sum.clears_c, sum.clears_z, sum.loads, sum.load_blocks, sum.shadow_copies, sum.downloads,
             sum.download_blocks, sum.alias16_selfcopy);
     fprintf(stderr, "hwdry: uploads %u (%u bytes) -> %u patches (%u bytes), max %u patches/VBlank; TRXDIR=1 %u, TRXDIR=2 %u; "
-                    "CLUT new slots %u, max distinct/VBlank %u; targets created %u evicted %u max live %u, same-kind overlaps %u\n",
+                    "CLUT new slots %u, max distinct/VBlank %u, loads over GPU words %u; targets created %u evicted %u max live %u, same-kind overlaps %u\n",
             sum.xfers, sum.xfer_bytes, sum.patches, sum.patch_bytes, mx.patches, sum.xfer_read, sum.xfer_local, sum.clut_new,
-            mx.clut_slots, sum.targets_created, sum.targets_evicted, mx.targets_live, sum.target_overlaps);
+            mx.clut_slots, sum.clut_gpu_reads, sum.targets_created, sum.targets_evicted, mx.targets_live, sum.target_overlaps);
     fprintf(stderr, "hwdry: textures: vram %u, CT32 target views %u, alpha-index views %u, CT16 (ALIAS16) %u; REGION_CLAMP %u, "
                     "TBW not 2^n %u; selfcheck mismatches %u\n",
             sum.tex_vram, sum.tex_view_c32, sum.tex_view_alpha, sum.tex_alias16, sum.region_clamp, sum.tbw_npot, sum.selfcheck_bad);

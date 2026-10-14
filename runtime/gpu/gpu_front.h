@@ -51,7 +51,8 @@ typedef struct {
     uint32_t patches, patch_bytes;        /* vram_buf patch ops after batching, bytes */
     uint32_t xfers, xfer_bytes;           /* host->local transfers seen, bytes */
     uint32_t xfer_local, xfer_read;       /* TRXDIR=2 / TRXDIR=1 */
-    uint32_t clut_loads, clut_slots, clut_new;   /* CLUT changes used by draws, distinct slots this frame, new ring slots */
+    uint32_t clut_loads, clut_slots, clut_new;   /* CLUT content changes, distinct slots this frame, new ring slots */
+    uint32_t clut_gpu_reads;             /* CLUT loads whose 16x16/8x2 block holds GPU-written words (not downloaded) */
     uint32_t targets_live, targets_created, targets_evicted;
     uint32_t target_overlaps;            /* targets created inside another target of the same kind (aliasing) */
     /* state */

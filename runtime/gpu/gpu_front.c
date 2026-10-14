@@ -59,7 +59,8 @@ static void* ar_alloc(arena* a, size_t bytes) {
 
 static void flush_open(void);
 static int in_flush, cw_barrier;
-static int trace_on;                     /* PS2_GPU_FRONT_TRACE=<vblank>: log that VBlank's draws */
+int gf_trace;
+#define trace_on gf_trace                     /* PS2_GPU_FRONT_TRACE=<vblank>: log that VBlank's draws */
 
 void* gf_cmd(uint16_t op, uint32_t bytes) {
     /* an op that reads GPU data the open draw may write (download, shadow copy) or changes memory
@@ -223,9 +224,14 @@ static int atst_count(int atst, int ref, int lo, int hi) {
 
 static void state_update(const gs_env_view* ev);
 
+#ifdef GPU_FRONT_PROF
 static uint64_t n_lookups, n_misses, n_prims;
+#define PCOUNT(x) ((x)++)
+#else
+#define PCOUNT(x) ((void)0)
+#endif
 static void state_lookup(const gs_env_view* ev) {
-    n_lookups++;
+    PCOUNT(n_lookups);
     const uint64_t* r = ev->reg;
     int ctx = ev->ctx;
     uint64_t attr = (r[0x1A] & 1) ? r[0x00] : r[0x1B];
@@ -251,7 +257,7 @@ static void state_lookup(const gs_env_view* ev) {
         if (!SC_used[i] || (SC_used[victim] && SC_age[i] < SC_age[victim])) victim = i;
     }
     Sp = &SC[victim];
-    n_misses++;
+    PCOUNT(n_misses);
     state_update(ev);
     memcpy(SC_sig[victim], sig, sizeof sig);
     SC_hash[victim] = h;
@@ -888,7 +894,7 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
     int timed = (gf.kicks & 15) == 0;
     uint64_t t0 = timed ? __rdtsc() : 0;
     PROF_START();
-    n_prims++;
+    PCOUNT(n_prims);
     const gs_prim* P = ev->P;
     gf.kicks++;
     if (!ev->draws) { gf.nowrite++; goto out; }
@@ -1293,7 +1299,13 @@ static void fr_tex0(int ctx, uint64_t tex0, int clut_loaded) {
     uint32_t csm = (uint32_t)((tex0 >> 55) & 1);
     if ((psm == PSMT8 || psm == PSMT4 || psm == PSMT8H || psm == PSMT4HL || psm == PSMT4HH) && !csm) {
         int t8 = psm == PSMT8 || psm == PSMT8H;
-        own_mem_read(cpsm == PSMCT16 || cpsm == PSMCT16S ? (int)cpsm : PSMCT32, cbp, 1, 0, 0, t8 ? 15 : 7, t8 ? 15 : 1);
+        if (gf_trace) fprintf(stderr, "[front] CLUT load CBP %04X %s CPSM %02X\n", cbp, t8 ? "T8" : "T4", cpsm);
+        /* A CLUT load reads all 16/256 entries; Sly uploads only the colours a texture uses, so the
+         * rest of the 16x16 block can be Z-buffer data drawn over it in an earlier frame. Those
+         * entries are never indexed (else the PS2 would show Z garbage too): no download (it would
+         * stall every frame); counted, and lockstep (M3+) compares the result. */
+        if (own_mem_flush(cpsm == PSMCT16 || cpsm == PSMCT16S ? (int)cpsm : PSMCT32, cbp, 1, 0, 0, t8 ? 15 : 7, t8 ? 15 : 1))
+            gf.clut_gpu_reads++;
     }
     clut_mark_dirty();
     tsc_acc += __rdtsc() - t0;

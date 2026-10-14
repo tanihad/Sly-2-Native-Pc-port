@@ -22,6 +22,7 @@ static inline int gf_eq64(const void* a, const void* b, size_t n) {
 extern gpu_front_frame gf;               /* counters of the frame being built */
 extern gpu_front_config gf_cfg;
 extern uint32_t gf_frame;                /* frame (VBlank) number since start */
+extern int gf_trace;                     /* PS2_GPU_FRONT_TRACE: this frame is logged to stderr */
 
 void* gf_cmd(uint16_t op, uint32_t bytes);          /* append a command (zeroed), returns it */
 uint32_t gf_data(const void* src, uint32_t bytes);  /* append to the data arena (src NULL: zeroed), returns offset */
@@ -82,6 +83,8 @@ void own_clear(gpu_target* T);
  * format psm at bp (blocks), bw: makes sure gs_vram/vram_buf hold them (pending patches flushed,
  * GPU-written data downloaded: counted). Returns 1 when some texel was GPU data (download). */
 int  own_mem_read(int psm, uint32_t bp, uint32_t bw, int u0, int v0, int u1, int v1);
+/* Pending patches of the rect flushed, nothing downloaded; returns 1 when some texel is GPU data. */
+int  own_mem_flush(int psm, uint32_t bp, uint32_t bw, int u0, int v0, int u1, int v1);
 /* 1 when any texel of the rect is GPU-written data not in memory (no side effects). */
 int  own_mem_is_gpu(int psm, uint32_t bp, uint32_t bw, int u0, int v0, int u1, int v1);
 /* A target view read of T's native rect: stale blocks loaded. */

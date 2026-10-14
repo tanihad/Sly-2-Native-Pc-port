@@ -216,6 +216,9 @@ static int pending(uint32_t b) { return (int)(blk_pend[b >> 6] >> (b & 63) & 1);
 
 /* GPU data of block b that the CPU side lacks goes to vram_buf (sample 0 of its writer) */
 static void download_block(uint32_t b) {
+    if (gf_trace)
+        fprintf(stderr, "[front] download block %04X (page %03X) writer %u cpu %016llX\n", b, b >> 5, blk_writer[b],
+                (unsigned long long)blk_cpu[b]);
     dl_list[ndl++] = (uint16_t)b;
     set_cpu(b, ALL);
 }
@@ -426,6 +429,7 @@ static int mem_check(int psm, uint32_t bp, uint32_t bw, int u0, int v0, int u1, 
                     if (blk_cpu[w >> 6] >> (w & 63) & 1) continue;
                     gpu = 1;
                     if (!act) return 1;
+                    if (act == 2) { v = vb; break; }     /* flush only: the caller decides */
                     download_block(w >> 6);
                     v = vb; break;
                 }
@@ -436,6 +440,10 @@ static int mem_check(int psm, uint32_t bp, uint32_t bw, int u0, int v0, int u1, 
 
 int own_mem_read(int psm, uint32_t bp, uint32_t bw, int u0, int v0, int u1, int v1) {
     return mem_check(psm, bp, bw, u0, v0, u1, v1, 1);
+}
+
+int own_mem_flush(int psm, uint32_t bp, uint32_t bw, int u0, int v0, int u1, int v1) {
+    return mem_check(psm, bp, bw, u0, v0, u1, v1, 2);
 }
 
 int own_mem_is_gpu(int psm, uint32_t bp, uint32_t bw, int u0, int v0, int u1, int v1) {
