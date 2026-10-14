@@ -218,11 +218,46 @@ build\screenshots\ep7_*.png.
   (CLAUDE.md only) -> builds still current. fl_heist/fl_therm from session 4 never got their task
   lines (input empty): redone as fl_heist5 / fl_therm5.
 
-## In progress
-- Operation stage chain by task file (build\fl_heist: 3200, 3205, 3216, 3230, 3236, 3251, 3258) and
-  Thermal Ride stages (build\fl_therm: 3180, 3181, 3183, 3185).
-- Thermal Ride: full tour T1..T5 with glide.py (build\therm5\glide.out) to see where get_height
-  completes (gameplay only, lower priority).
+- Operation chain from the start (release, build\fl_heist5, direct t7_heist0_intro, PS2_TASK_FILE):
+  3200 -> 2 = Bison cutscene, heist0_complete closes itself, heist1 power chop starts in the game's
+  flow; 3205, 3216 -> next stages (Bentley shore, Sly at the ice wall with climb points:
+  ep7_heist3_ice_wall.png); judges cutscene, Murray/Bentley cutscene, log flume stage all render.
+  After 3230 (wall hook forced while Sly was mid-stage) Sly's object was gone and the later
+  "_complete" tasks waited (forced-state artifact, same as the boat hack case) -> heist ending
+  checked through the game's own stage start instead:
+- Heist 6 -> boss (build\fl_h6, direct t7_heist6_intro, Sly on the log flume, then 3258 -> 2): Bison
+  catches the gang ("You aren't the judges I hired!"), sawmill control room cutscene (Bentley,
+  Sly, Murray: "Bison must have thrown us in here for interrogation", Bentley drops through the
+  hole), world 37 loads, Bison/Bentley confrontation, boss fight playable ("Press O for Flames, /\
+  for Saws"). ep7_heist6_to_boss_sheet.png, ep7_boss_after_heist.png. (No autosave here: the
+  operation runs straight into the boss; the episode-end flow saves, verified earlier.)
+- Thermal Ride completion (build\fl_therm6, direct t7_thermals_return_to_safehouse, 3185 -> 2): "Job
+  Completed!" book, autosave (m7_thermals.is_complete 1, sawmill 55%), Sly back on the egg nest.
+  Forcing 3180 with Sly on the ground (build\fl_therm5) = the game's own "Job Failed" (needs Sly in
+  the air), as in session 3. ep7_thermals_completed_sheet.png.
+- Recon completion (build\fl_recon, direct t7_recon_inside_lighthouse, world 35: 3034/3035/3036 ->
+  spytarget_one_more closes itself, 3039 jean, 3040 bison_confront -> 2): "Job Completed!", the
+  game's chalk talk (Bison/sawmill/lighthouse film-strip briefing, battery sketch), safehouse "Press
+  X to play as Sly"; save: m7_recon.is_complete 1, sawmill 14%. ep7_recon_completed_chalktalk_sheet.png.
+- Lighthouse completion (build\fl_lh, direct t7_lighthouse_open_door, 3131 battery -> 2): "We did
+  it! The collection mechanism is overloading!" red glow cutscene, "Job Completed!", autosave
+  (m7_lighthouse.is_complete 1, sawmill 51%), Sly back inside. ep7_lighthouse_completed_sheet.png.
+- Bear cave completion (build\fl_cave, direct t7_bearcave_back_outside, radios 3056..3066 -> 2):
+  "Job Completed!", autosave (m7_bearcave.is_complete 1, sawmill 28%), Sly in the hub.
+  ep7_bearcave_completed_sheet.png.
+- All five session-5 logs: only the known boot lines (syscall 0x5B, eret at 0x239AA4).
+- Tests: run_tests.py 16/16 + hook guards; all 17 tests\unit suites pass (window -UnitOnly).
+
+## STATUS: COMPLETE
+Every ep7 job (m7_recon, m7_bearcave, m7_robot_war, m7_laser, m7_lighthouse, m7_boat_hack, m7_bear,
+m7_thermals, m7_heist, m7_boss) has been started (direct starts, every stage intro) and its
+completion flow checked ("Job Completed!" + autosave; recon -> chalk talk; heist -> boss world 37);
+the episode end (boss -> silo run -> ending movie -> Episode 8 card -> ep8 start, save rewritten)
+is verified. Runtime fixes on this branch: live-input long lines (1df4920), PCRTC field-mode bottom
+line (1d1a7a6), PS2_INPUT 'release' token (4f432a6), debug PS2_POKE. No open runtime bug that I can
+reproduce. Not done (gameplay skill, not runtime): winning the boss fight and the power chop by
+play, the thermal tour and the boat-hack throw aim by scripted input (their stages were completed
+through the task-state tool instead). Perf: GS-bound software renderer (D3D11 is main's plan).
 
 ## Tools (build\tools, not committed; the scratchpad is shared with other agents!)
 - live7.ps1 -Name x -Make "--episode 7 --job <task> --direct" -Script "@187D80/1DD96C+30:start:10"
