@@ -1,0 +1,9 @@
+# Shader permutations compiled at build time by scripts/hlslc.c into build/gen/gpu_shaders.h.
+# name              file                entry             profile   [DEFINE[=value] ...]
+vs_fullscreen       present.hlsl        vs_fullscreen     vs_5_0
+ps_compose          present.hlsl        ps_compose        ps_5_0
+ps_present          present.hlsl        ps_present        ps_5_0
+cs_conformance      conformance.hlsl    cs_conformance    cs_5_0
+ps_depth_write      conformance.hlsl    ps_depth_write    ps_5_0
+ps_depth_test       conformance.hlsl    ps_depth_test     ps_5_0
+cs_depth_read       conformance.hlsl    cs_depth_read     cs_5_0

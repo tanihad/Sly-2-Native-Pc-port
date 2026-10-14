@@ -885,6 +885,50 @@ Remaining open questions:
 
 ---
 
+## Appendix B. As built: M0 (branch gpu/M0)
+
+- **Interface** `runtime/gpu/gpu.h`: `gpu_start(cfg)` (adapter hw/WARP, `hwnd` or headless offscreen
+  present target, timestamps) creates the render thread, which creates the device (FL 11_1, falls
+  back to 11_0 with `caps.full = 0`), checks caps and, with a window, the swap chain
+  (FLIP_DISCARD, 3 buffers, waitable object with latency 1, ALLOW_TEARING when supported).
+  `gpu_picture()` = the all-fallback backend (sw picture -> data ring -> upload -> `ps_compose`
+  into `picture[3]` -> present). `gpu_read_picture()` = asynchronous read-back (staging ring of 4,
+  `Map DO_NOT_WAIT`). `gpu_run_sync(fn)` runs code on the render thread (used by the conformance
+  test; M1-M3 can use it for bring-up). `gpu_take_frame_stats()` = per-picture D3D call counts,
+  front/render CPU ms, GPU ms (timestamp queries). `gpu_debug_state()` for hang diagnostics.
+- **Command rings** `gpu_cmd.c/.h`: SPSC byte rings with free-running 64-bit positions (4 MB
+  commands published every 64 KB or on flush, 64 MB data arena freed by `data_end` per command).
+  Exactly one producer at a time; the picture callback on gs_thread's pixel worker is one.
+- **Render thread loop** (`gpu_d3d11.c`): execute commands; when idle, Flush, finish pending
+  read-backs (blocking only when nothing else is queued), then sleep in WaitOnAddress.
+- **Shaders**: `runtime/gpu/shaders/perms.txt` -> `scripts/hlslc.c` (System32 d3dcompiler_47,
+  `/O3`, strictness, warnings as errors) -> `build/gen/gpu_shaders.h` (`gpu_shaders[]`,
+  `GPU_SH_<name>`; shader objects created lazily by `gpu_vs/ps/cs(id)`). Built by
+  `scripts/build_game.py`, `scripts/gpu_shaders.ps1` (replay, unit tests). Runtime shader
+  directory (`PS2_GPU_SHADER_DIR`) is not implemented yet.
+- **Conformance** `gpu_conf.c` + `shaders/int64.hlsli`, `conformance.hlsl`: int64 add/sub/mul/
+  mul_i32/asr/shl/floor-div-small, the exact Z formula of 3.6 (`gs_z16`, `gs_z_clamp`), the
+  encoding, plus an SV_Depth round trip through D32S8 (raw bits, SRV decode, GREATER/GEQUAL ties).
+  2 x 131072 vectors + 65536 texels: **0 mismatches on the RTX 4060 Ti and on WARP**.
+- **Caps found**: 4060 Ti and WARP both FL 11_1 with ROVsSupported=1,
+  TypedUAVLoadAdditionalFormats=1, dual source, ConstantBufferOffsetting=1, doubles=1; swap chain
+  waitable and tearing on this machine. WARP can therefore run ROV-tier tests headless.
+- **fxc pitfall** (found by the conformance kernel): `(uint)clamp((int)u + d, 0, K)` with a uint
+  `u` compiles to `iadd; umin` (no max with 0, unsigned min). Clamp signed values built from uint
+  casts with explicit comparisons only, and give every new integer helper a conformance case.
+- **Harness**: `scripts/gs_replay.ps1 -Backend sw|hw|both -Adapter hw|warp -Metrics f.json -Log f`
+  (sw-hash of all sw pictures in every mode; both: exit 3 on any differing pixel; watchdog exit 4
+  after 60 s without progress). `scripts/gpu_diff_all.ps1 [-Update]` gates the 13 recordings
+  against `tests/gpu/baseline.json` (frames, sw hash, max_diff_px 0, min_psnr). M0 result: 13/13,
+  2036 pictures, 0 differing pixels; render-thread median ~0.15 ms, GPU ~0.17 ms per picture.
+- **Unit tests** `tests/unit/gs-hw/run.ps1 [-Adapter hw|warp|both] [-NoWindow]`: caps,
+  conformance, ring stress (both rings wrap, SKIP padding, run_sync), picture round trip (sizes
+  1x1 .. 1024x1024, display off), 120 GS scenes through gs_thread with 3 workers in "both" mode,
+  restart, swap chain on a small window with a resize.
+- **Game**: `scripts/build_game.py` compiles the shaders and links `runtime/gpu/*.c`;
+  `PS2_GS_BACKEND` defaults to sw and anything else only logs that the GPU backend is not in the
+  game yet (M6 wires it to window.c).
+
 ## Appendix A. Per-thread budget targets (ep8 boss, S=3)
 
 | thread | today (sw) | target (hw) |
