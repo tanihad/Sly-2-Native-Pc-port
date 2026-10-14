@@ -9,6 +9,7 @@
 # tolerances stay as they are). Recordings are read in place and never modified.
 param([ValidateSet('hw', 'warp')][string]$Adapter = 'hw', [int]$Workers = 4, [string[]]$Only = @(), [switch]$Update,
       [string]$CorpusRoot = "", [switch]$AllowMissing)
+$Only = @($Only | ForEach-Object { $_ -split ',' } | Where-Object { $_ })   # -File passes "a,b" as one string
 $root = Split-Path $PSScriptRoot -Parent
 $main = $root
 if (-not (Test-Path (Join-Path $root 'tools\llvm-mingw'))) {
@@ -84,5 +85,6 @@ if ($Update) {
     Write-Host "baseline updated: $baselinePath"
 }
 if ($failed) { Write-Host "gpu_diff_all: $failed recording(s) FAILED"; exit 1 }
-Write-Host "gpu_diff_all: all passed"
+if (-not $results.Count) { Write-Host "gpu_diff_all: no recording matched -Only"; exit 1 }
+Write-Host "gpu_diff_all: all $($results.Count) passed"
 exit 0

@@ -2,7 +2,7 @@
 
 **Goal**: milestone M0 of notes/d3d11-renderer.md section 11 on branch gpu/M0.
 
-Status: in progress
+Status: complete
 
 ## Plan (file layout)
 - runtime/gpu/gpu.h            backend interface (config, caps, picture, readback, stats)
@@ -40,12 +40,16 @@ Status: in progress
   smoke run with PS2_GS_BACKEND=hw logs the "not in the game yet; using sw" line and renders.
 - notes/d3d11-renderer.md appendix B (as built).
 
-## In progress
-- final verification: run_tests.py + every tests/unit/*/run.ps1 (scratch script all_tests.ps1),
-  then final gpu_diff_all (gate mode, no -Update) and gs-hw.
+- Final verification: tests/run_tests.py 16/16; every tests/unit/*/run.ps1 exit 0 (dma, gif,
+  gs-draw 4 variants 170/171/170/170, gs-hw 109 checks, gs-mem, iop_kernel, iop_recomp, ipu, mc,
+  pad, sd, threads, timer, vif, vu, vu_recomp, warp, window); gpu_diff_all gate mode 13/13 0 diff
+  on the 4060 Ti; WARP subset (title, ep8/boss) 0 diff (GPU ~1.55 ms/picture on WARP).
 
-## Next
-1. if all green: Status complete, final commit, report.
+## Next (M1 and later, not this task)
+- M1: gpu_front/gpu_own/gpu_clut + gs_setup refactor; add `-Backend hwdry` to gs_replay.c
+  (the backend switch and metrics writer are there); keep gpu_diff_all/baseline as the gate.
+- M6: wire PS2_GS_BACKEND=hw in ps2_runtime.c to gpu_start(hwnd from window.c) + gpu_picture.
+- Not done in M0 (design 9 "development"): PS2_GPU_SHADER_DIR run-time shader compile.
 
 ## Findings / traps
 - Caps (D3D11, FL 11_1 on both): RTX 4060 Ti (10DE:2803, driver 32.0.16.1656) and WARP
