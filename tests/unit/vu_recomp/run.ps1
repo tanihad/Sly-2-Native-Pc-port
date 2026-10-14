@@ -44,5 +44,14 @@ if ($LASTEXITCODE -ne 0) { Write-Host "build failed"; exit 1 }
 
 & $exe (Join-Path $out 'programs.bin') $States
 $rc = $LASTEXITCODE
+
+# runtime dispatch (vu.c): entries, stale code after micro memory writes, overlaps, VU0 vs VU1
+$lk = @(Get-ChildItem (Join-Path $out 'lk') -Filter *.c | ForEach-Object { $_.FullName })
+$exe2 = Join-Path $out 'test_vu_lookup.exe'
+& $clang "-$Opt" -fno-slp-vectorize -std=c11 -w -I $rt (Join-Path $rt 'vu.c') (Join-Path $rt 'vu_exec.c') `
+    (Join-Path $PSScriptRoot 'test_vu_lookup.c') @lk -o $exe2
+if ($LASTEXITCODE -ne 0) { Write-Host "lookup test build failed"; exit 1 }
+& $exe2
+if ($LASTEXITCODE -ne 0) { $rc = 1 }
 if ($rc -eq 0) { Write-Host "VU recompiler tests passed" } else { Write-Host "VU recompiler tests FAILED" }
 exit $rc

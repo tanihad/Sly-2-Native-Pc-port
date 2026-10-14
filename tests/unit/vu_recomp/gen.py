@@ -302,6 +302,18 @@ class Gen:
         return [u << 32 | l for u, l in self.pairs]
 
 
+def lookup_images() -> list[Image]:
+    """Small hand-made images for test_vu_lookup.c (runtime/vu.c's choice of compiled code: entries,
+    stale code after micro memory writes, partial overlaps, VU0 vs VU1, code that runs off its image)."""
+    e = U_NOP | 0x08 << 27
+    la = [U_NOP << 32 | iaddiu(1, 0, 0x11), e << 32 | L_NOP, U_NOP << 32 | L_NOP,      # routine 0x0000
+          U_NOP << 32 | iaddiu(1, 0, 0x22), U_NOP << 32 | iaddiu(2, 1, 1),             # routine 0x0018
+          e << 32 | L_NOP, U_NOP << 32 | L_NOP]
+    lb = [e << 32 | iaddiu(1, 0, 0x33), U_NOP << 32 | L_NOP]                            # over la's start
+    lc = [U_NOP << 32 | iaddiu(3, 0, 5), U_NOP << 32 | lo_s1("iaddi", 3, 3, 1)]          # at 8, no E bit
+    return [Image("la", 1, [(0, la)]), Image("lb", 1, [(0, lb)]), Image("lc", 1, [(8, lc)])]
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("out")
@@ -334,6 +346,7 @@ def main() -> int:
         blob += struct.pack("<III", img.unit, len(raws), len(ents)) + b"".join(struct.pack("<I", e) for e in ents)
         blob += b"".join(struct.pack("<Q", x) for x in raws)
     (out / "programs.bin").write_bytes(bytes(blob))
+    write_units(lookup_images(), out / "lk", "lk")
     hand = sum(1 for line in report if "handoffs" in line)
     print(f"{len(images)} random programs, {hand} with handoff sites -> {out}")
     return 0
