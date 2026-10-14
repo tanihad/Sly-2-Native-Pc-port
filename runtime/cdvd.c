@@ -4,6 +4,7 @@
 #include "ps2_internal.h"
 
 #include <stdlib.h>
+#include <windows.h>
 
 #define SECTOR 2048u
 
@@ -18,8 +19,9 @@
 
 static FILE* iso;
 static uint64_t iso_sectors;
+static SRWLOCK iso_lock = SRWLOCK_INIT;   /* the EE thread and the IOP thread both read the disc */
 
-static void open_iso(void) {
+static void open_iso_locked(void) {
     static int tried;
     if (tried) return;
     tried = 1;
@@ -32,21 +34,31 @@ static void open_iso(void) {
     fprintf(stderr, "[cdvd] disc image %s (%llu sectors)\n", path, (unsigned long long)iso_sectors);
 }
 
+static void open_iso(void) {
+    AcquireSRWLockExclusive(&iso_lock);
+    open_iso_locked();
+    ReleaseSRWLockExclusive(&iso_lock);
+}
+
 static void put32(uint8_t* out, uint32_t recv_size, uint32_t off, uint32_t v) {
     if (off + 4 <= recv_size) memcpy(out + off, &v, 4);
 }
 
 /* Read `count` 2048-byte sectors starting at `lbn` into a host buffer; 1 on success. The one ISO
- * reader: shared with the native IOP's cdvdman (iop_sif.c, reads into IOP RAM) and with snd.c's
- * fallback stream model. All callers run on the emulation thread. */
+ * reader: shared with the native IOP's cdvdman (iop_sif.c, reads into IOP RAM, on the IOP thread)
+ * and with snd.c's fallback stream model, so each seek + read holds a lock. */
 int cdvd_read_host(uint32_t lbn, uint32_t count, void* dst) {
-    open_iso();
+    AcquireSRWLockExclusive(&iso_lock);
+    open_iso_locked();
+    int ok = 0;
     if (!iso || (uint64_t)lbn + count > iso_sectors) {
         fprintf(stderr, "[cdvd] read lbn %u x%u out of range\n", lbn, count);
-        return 0;
+    } else {
+        _fseeki64(iso, (int64_t)lbn * SECTOR, SEEK_SET);
+        ok = fread(dst, SECTOR, count, iso) == count;
     }
-    _fseeki64(iso, (int64_t)lbn * SECTOR, SEEK_SET);
-    return fread(dst, SECTOR, count, iso) == count;
+    ReleaseSRWLockExclusive(&iso_lock);
+    return ok;
 }
 
 /* Read `count` 2048-byte sectors starting at `lbn` into EE memory at `dst`. */

@@ -7,7 +7,8 @@ if (-not $Dir) { $Dir = Join-Path $root 'build\live' }
 $py = 'C:\Users\tanih\Projects\sly2-decomp\.venv\Scripts\python.exe'
 if ($Send) { Add-Content -Path (Join-Path $Dir 'input.txt') -Value $Send -Encoding ascii }
 if ($Wait -gt 0) { Start-Sleep -Milliseconds ([int]($Wait * 1000)) }
-$frames = Get-ChildItem (Join-Path $Dir 'frames') -Filter 'frame_*.png' | Sort-Object Name | Select-Object -Last $Count
+$frames = Get-ChildItem (Join-Path $Dir 'frames') -Filter 'frame_*.png' | Sort-Object LastWriteTime | Select-Object -Last ($Count + 1) |
+    Select-Object -First $Count | Sort-Object Name     # newest complete dumps (the newest may still be written)
 $sheet = Join-Path $Dir 'look.png'
 & $py (Join-Path $root 'scripts\contact_sheet.py') $sheet ($frames | ForEach-Object { $_.FullName }) --cols $Cols --scale $Scale | Out-Null
 "frames: $(($frames | ForEach-Object { $_.BaseName -replace 'frame_0*', '' }) -join ' ')"

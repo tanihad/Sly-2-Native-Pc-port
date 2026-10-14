@@ -207,7 +207,24 @@ pairs that ran in recompiled code.
   registers, loops, BAL/JR, JR to non-return points, branches in delay slots, a runaway program)
   on random states including denormals and exponent-255 values. It found three real bugs: a 1-cycle
   VI write after an ILW replaces the ILW's ready time in the interpreter's scoreboard; clang's
-  constant folding under DAZ; inexact runaway stops.
+  constant folding under DAZ; inexact runaway stops. Since the independent review it also starts
+  every program at each of its routine starts (not only 0), and generates JALR, E bits on branch
+  pairs, branches in E delay slots, E bits in branch delay slots, M/D/T bits, invalid instructions
+  and XGKICK on VU0; `-Cap N` lowers the versions-per-block cap so that the version-cap handoff runs
+  (cap 1 and 2: 0 differences). `test_vu_lookup.c` (same run.ps1) checks vu.c's dispatch: entries,
+  a start inside an image that is not an entry, stale code after MPG and EE writes, a smaller image
+  over a larger one, a VU1 image in VU0's memory, code that runs off its image, and handoffs from
+  the delay slot of IBNE/JR/IBEQ (the review's one bug: an invalid instruction or a VU0 XGKICK in
+  the delay slot of a conditional branch or JR made the recompiler assert; the handoff now continues
+  at the branch target; Sly 2's microcode has no such pair, so the game's code was unaffected).
+- Independent review (notes/wip/review-vu-recomp.md): new recordings of scenes the implementer did
+  not use (Episode 2 India hub, Episode 4 prison interior `m4_brawl`, Murray's `m1_brawl`, the
+  prologue rooftop chase, Rajan's level `m3_boss`; 6000 programs each) replay with 0 differences
+  through the interpreter and the compiled code, 100% compiled; in-game `PS2_VU_VERIFY` (release)
+  in those scenes plus `m4_hack` and the final boss `m8_boss`: 67M programs, 0 mismatches.
+- Known limit of `PS2_VU_VERIFY`: the interpreter's shadow run shares VU1's registers, so a VU0
+  program that writes VU1 registers through data addresses 0x4000-0x43FF would have them written
+  twice (and could report a false mismatch). Sly 2's VU0 library has no load/store at all.
 - Debugging aids: `-DVU_TRACE` makes interpreter and compiled code print every pair's address and
   issue cycle; `VU_FUZZ_ONLY=<program>:<state>` runs one random case.
 

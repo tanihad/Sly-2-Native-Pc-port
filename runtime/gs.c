@@ -344,7 +344,11 @@ int gs_compose(const gs_display_snap* snap, uint32_t* dst, int stride, int* w, i
         for (int i = 0; i < 2; i++) {
             if (!en[i] || L < c[i].dy || L > c[i].dy + c[i].dh) continue;
             int rel = (L - c[i].dy) / (c[i].magv + 1);
-            if (field_mode) rel >>= 1;
+            /* field mode: a circuit shows (DH + 1) / 2 buffer lines in each field, rounded down (as
+             * PCSX2 does). Sly 2's anti-flicker circuit 1 (DBY 1, DH 446 over circuit 2's DBY 0,
+             * DH 447) otherwise read the line under its 224-line buffer on the last line of one
+             * field: a dark, speckled bottom line (in a TV's overscan) in every frame. */
+            if (field_mode && (rel >>= 1) >= ((c[i].dh + 1) / (c[i].magv + 1)) >> 1) continue;
             if (c[i].dby + rel != last_fy[i]) {          /* line doubling / MAGV: reuse the row */
                 read_row(&c[i], c[i].dby + rel, xs[i], W, row[i]);
                 last_fy[i] = c[i].dby + rel;

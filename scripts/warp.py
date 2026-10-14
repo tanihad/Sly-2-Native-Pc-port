@@ -281,7 +281,10 @@ def build(schema, episode, job=None, sets=(), complete=(), activate=(), characte
         sv.set(f"{who}.mpCur", 100)
     for e in range(episode):               # earlier episodes: every job and task finished
         en = EPISODES[e][0]
-        sv.set(f"episode.{en}.percent_complete", 1)
+        # 100 as the game saves a finished episode (seen after episode 5's last stage). The game's own
+        # save at the next episode's menu has episodeCurrent 0, and resume then opens the episode
+        # menu only if the prologue is above 99 (1 here resumed into the Cairo museum).
+        sv.set(f"episode.{en}.percent_complete", 100)
         for g in schema.groups(f"m{e}_") + schema.groups(f"t{e}_"):
             complete_group(sv, g)
     notes = []

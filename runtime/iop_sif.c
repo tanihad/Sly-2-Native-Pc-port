@@ -74,15 +74,22 @@ void iop_imp_sifcmd_sceSifRegisterRpc(iop_ctx* c) {
             s.sid, sd, s.buff, q ? q->thread : -1);
 }
 
+/* The next three are called by the EE side (sif.c): under the IOP lock (the IOP thread). */
 int iop_rpc_find_server(uint32_t sid, uint32_t* sd, uint32_t* buff) {
-    for (int i = 0; i < nservers; i++)
-        if (servers[i].sid == sid) { *sd = servers[i].sd; *buff = servers[i].buff; return 1; }
-    return 0;
+    int found = 0;
+    iop_lock();
+    for (int i = 0; i < nservers && !found; i++)
+        if (servers[i].sid == sid) { *sd = servers[i].sd; *buff = servers[i].buff; found = 1; }
+    iop_unlock();
+    return found;
 }
 
 int iop_rpc_is_server(uint32_t sd) {
-    for (int i = 0; i < nservers; i++) if (servers[i].sd == sd) return 1;
-    return 0;
+    int found = 0;
+    iop_lock();
+    for (int i = 0; i < nservers && !found; i++) found = servers[i].sd == sd;
+    iop_unlock();
+    return found;
 }
 
 static rpc_server* server_by_sd(uint32_t sd) {
@@ -90,7 +97,15 @@ static rpc_server* server_by_sd(uint32_t sd) {
     return NULL;
 }
 
+static void rpc_request(const iop_rpc_req* r);
+
 void iop_rpc_request(const iop_rpc_req* r) {
+    iop_lock();
+    rpc_request(r);
+    iop_unlock();
+}
+
+static void rpc_request(const iop_rpc_req* r) {
     rpc_server* s = server_by_sd(r->server);
     rpc_queue* q = s ? queue_by_addr(s->qd) : NULL;
     if (!q) { fprintf(stderr, "[iop] RPC request for unknown server 0x%08X\n", r->server); return; }

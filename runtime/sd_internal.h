@@ -14,9 +14,17 @@
  * slices so the emulation thread is never blocked for long. */
 void     sd_render(int16_t* out, uint32_t frames);
 uint64_t sd_frames_rendered(void);   /* total frames rendered since start (an audio clock) */
+void     sd_hold(int on);            /* debug pause: render silence and advance nothing while on */
 /* Integration health counters: VoiceTrans writes into the block an audible voice was playing (a
  * stream refill too late or too early), and audible ADPCM blocks with impossible headers. */
 void     sd_health(uint64_t* trans_overlaps, uint64_t* bad_blocks);
+/* VoiceTrans writes so far: streams refill at a steady rate, so a drop shows a stream that stopped. */
+uint64_t sd_voice_trans_writes(void);
+/* Times the voices were held because the IOP had not run for longer than the driver limit, and the
+ * frames of silence output meanwhile (see "the driver's pace" in sd.c). */
+void     sd_driver_holds(uint64_t* holds, uint64_t* frames);
+/* The driver limit in ms (0 = never hold). Default: PS2_AUDIO_IOP_LIMIT, else 100. Tests only. */
+void     sd_set_driver_limit_ms(uint32_t ms);
 
 /* ---- building blocks, exposed for the unit tests -------------------------------------------- */
 

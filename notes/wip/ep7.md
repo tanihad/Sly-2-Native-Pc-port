@@ -1,0 +1,275 @@
+# ep7: playtest Episode 7 "Menace from the North, Eh!" (Canada)
+
+**Goal**: play Episode 7 (hub world 32, jobs m7_*) as far as possible with warp saves and scripted /
+live input; fix every runtime/recompiler problem found at its root (with tests); frames in
+build\screenshots\ep7_*.png.
+
+## Done
+- Merged next/warp (178353c). Built release (build\rel) and debug (build\sly2).
+- Episode start (release, warp save): title -> safehouse -> X -> Binocucom briefing -> Sly in the
+  snow hub, running around: all rendered right, no log problems (ep7_safehouse.png, ep7_hub_start.png).
+- Survey: direct starts (debug, warp_run -Direct, 240 s each; build\warp\s_<job>) of m7_bearcave,
+  m7_robot_war, m7_laser (world 34), m7_lighthouse, m7_boat_hack, m7_bear, m7_thermals, m7_heist,
+  m7_boss (world 37) + interiors: every intro (Binocucom briefings, letterboxed cutscenes) and the
+  first gameplay frames look right; logs only have the known boot lines.
+- Machine is shared and at 100% CPU (other ep testers): release runs at 20-40 VBlanks/s, so perf
+  numbers from now are not meaningful.
+
+- Survey of interiors and heist stages (t7_*_intro_int, t7_boss_battle, t7_heist1..6_intro): all
+  load and render right (Murray power-chop minigame, Bison cutscenes, log flume stages).
+- Audio: build\recon\audio.wav (11 min, hub + Binocucom): no dropouts, no clicks (wav_analyze).
+- Autosave: the game writes save1 itself after the episode start (dt 108.9, ice_wall_trainer seen).
+- Recon: Binocucom (R3), photo targets shown as blue pins; aim = left stick (with acceleration,
+  vertical inverted), R1 = take picture ("&2R&.: take picture" in level text), right stick zoom.
+- Power chop (t7_heist1): marker sweeps, CROSS chops; needs frame-exact timing, not finished.
+
+- Boss battle (t7_boss_battle, world 37): Bentley vs Bison, "Press O for Flames, /\ for Saws, [] for
+  Logs"; mashing loses (turtle-soup game over + retry work). PS2_POKE=3D4AC8=28 (committed debug aid)
+  holds Bentley's health but Bison then pins him in a hit loop: not won.
+- Post boss (direct t7_boss_battle_complete, hub): "Get to the silo before the blimp has taken off"
+  timed run as Bentley; silo location unknown; timeout -> "Job Failed! ... Press X to try again"
+  works (ep7_postboss_*.png). SELECT = Gadget Grid (no map).
+- RC Combat Club (direct t7_robot_war, world 33): Murray's RC tank vs moose tanks; mashing r1/[]/O/X
+  damages the enemy; death -> mask wipe -> retry works. Seen once: a thin blue full-width band at
+  field rows 107-110 on the frame before the death fade (frame_009750) -> tracing it.
+
+- Merged next/warp again (ce8bff7: entry hooks -> direct starts + title anchor in release builds).
+- FIXED (1df4920) live input: a PS2_INPUT_FILE line > 16 KB was never read and blocked all later
+  lines; a session took no input after 4096 tokens in all (my long mash.py lines did nothing in
+  boss2/rcwar). Test: tests/unit/window test_live_input.
+
+- RC combat blue band (1 frame, camera cuts only: combat start, respawn): brief trace showed it at
+  v4862/4864: tristrips rows 107..111, x shifting -113..423 -> -10..526, rgba 334C6680 (the hub's
+  night-sky blue) at z 1040 / z 16, ZBUF PSMZ16S, FBMSK FF000000; later frames draw the same "far
+  fill" black (trifan rows 66..152, z 1040, ZTST GREATER, Z16S on the Z32 buffer: the GS emulates
+  VRAM swizzles so the aliasing is faithful). Not reproduced in two release runs; judged a one-frame
+  game artifact (old sky colour/frustum on the cut frame), not investigated further.
+- Job Failed panel (RC combat "Your robot tank has been destroyed", post boss) renders right.
+- Boat hack (release direct t7_boat_hack_intro): briefing, Bentley in the hub, found Murray with
+  findobj (oid 9 vt 2D44C8 at -10463,5028,-732) + live_goto; triangle next to Murray = Murray
+  throws Bentley (once), elsewhere = Bentley's bomb (explosion, damage, respawn). Water, explosion
+  and respawn render right. Throw aim not worked out; hack minigame not reached (ep4/ep5 have
+  direct-start hack jobs).
+- Old Grizzle Face (release direct t7_bear_intro): briefing (Bentley bombs the water, fish fly,
+  Murray throws them at the "oil machines" so the bear smashes them): fish fly and land, circle
+  picks one up / throws it, bear and guards walk around; station not hit (aim). Logs clean.
+- Machine very loaded (7 games at once): release runs at 20-35 VBlanks/s, IOP timer 165-240/s.
+
+- FIXED (1d1a7a6) dark speckled bottom picture line (output line 446) in every frame: PCRTC field
+  mode gave circuit 1 (anti-flicker, DBY 1, DH 446) 224 lines in one field, so its last line read
+  buffer row 224 (Z buffer / other buffer) and was mixed 50% into the picture. Now (DH+1)/2 lines
+  per field, rounded down (PCSX2's GSdx does the same). Found with the GS recording replay
+  (fix-perf's build\title.gsrec) + a temporary pixel watch in draw() (build\tools\pixwatch.patch:
+  PS2_GS_PIXWATCH=fbp,x,y prints every change of that pixel with the primitive; replay only).
+
+- Episode end (release, live: direct t7_boss_battle_complete, then PS2_TASK_FILE "3290:2" =
+  t7_boss_get_to_battery done): blimp/silo cutscene, "Job Completed!", the ep7 ending story movie,
+  Episode 8 card (START = pause menu "We'll be right back!"), ep8 menu "Anatomy for Disaster / X:
+  Start Episode", X -> ep8 intro movie (Clockwerk story), title card, ep8 safehouse "Press X to
+  play as Sly". save1 rewritten: episodeCurrent 8, sawmill 100%. ep7_ending_sheet.png,
+  ep7_to_ep8_sheet.png, ep7_ep8_safehouse.png. Only log line of note: one "[sd] VoiceTrans ...
+  overwrites the block voice c0 v4 is playing" at the hub load (a 776 KB bank load over a voice
+  still sounding from the previous level; game-side, at a level load).
+
+- Merged main 8e05f84 (VU microcode recompiler) -> 60268a2; rebuilt rel + debug. Ep7 start
+  (release, PS2_PERF, 6 other games running, CPU 100%): Binocucom briefing and hub render right
+  with the recompiled VU; GS thread 15-30 ms/VBlank is the bottleneck under this load (EE busy 6-10
+  ms), so 30-50 VBlanks/s; not meaningful on this machine (D3D11 renderer is main's plan).
+- Thermal Ride controls (level text + wiki): HOLD R1 in the air = paraglider ("Press &2R&. while
+  jumping"; &2R = R1, &2r = R2, &2L = L1, &2l = L2, &2S/T/O/X = square/triangle/circle/cross,
+  &2+ = d-pad, &2( / &2) = left / right stick). Short R1 taps do nothing. Gliding descends ~5/VBlank;
+  flying low over a burning oil main destroys the glider (pieces fly off, Sly falls) -> "Job
+  Failed! You need to paraglide out to the icebergs using the thermals", X retries on the
+  lighthouse top. 0x2DE1C0 (camera focus) does not follow jumps; Sly's object in this level:
+  0x10E46C0 (vt 2D2E98), position +0x230.
+
+- Thermal Ride play (release live sessions build\therm2..5): paraglider + thermals work. Letting
+  go of R1 = the glider comes apart (pieces fly off) and Sly falls: that was every "glider broke"
+  I saw (no bug). PS2_INPUT holds could not be ended early -> added the "release" token
+  (4f432a6, test in tests/unit/window). Thermal columns (objects vt 2D9978, oids 33541..33545, base
+  positions; rising ~9/VBlank inside, constant full-left stick keeps Sly circling inside):
+  T1 (-10046,-270) tops out ~6000, T2 (-7323,5657) ~6900, T3 (-750,5565) ~7550, T4 (2476,984),
+  T5 (-1664,-4454) (T4/T5 not reached yet). Glide: ~8/VBlank forward, ~5 down (ratio ~1.6);
+  arriving at T2 below ~1900 hits its hatch structure. 33549 (-4909,-18578) is probably the
+  iceberg (seen from the lighthouse top). t7_thermals_get_height (3180) stays 1 even at 7558 high;
+  forcing it (PS2_TASK_FILE 3180:2) -> eagle_attack active, camera flips to look at Sly from the
+  front, no eagles seen nearby; Job Failed resets the job's tasks. Water = respawn/Job Failed,
+  underwater view renders right. While the camera faces Sly, the stick is still camera-relative.
+- Tools (build\tools): glide.py (autopilot: @x:y[:oR][:zZ][:tS] waypoints, orbit, camera-relative
+  stick, PS2_PEEK 2DE1C0 + 2DDFD0), ptrace.py (peek values over time), objbox.py / objmove.py
+  (objects by +0x230 position / moving between two RAM dumps), strs.py (level text in a RAM dump),
+  live_game7.ps1 (RING env = PS2_DUMP_RING), live7.ps1 -Extra "K=V;K=V".
+
+- Session 3 (resumed after the session limit): merged main 2d00835 (EE thread fiber leak fix) ->
+  177c3ff; rebuilt rel + debug. Cherry-picked next/ep3's live 'pause' token (204385d -> 5685f68;
+  conflict with my 'release' token resolved: PAUSE -5, RELEASE -6; window unit test passes).
+- Hub perf (release, PS2_PERF, 4-5 other games): 45-55 VBlanks/s, 30-43 flips/s; GS thread 15-19 ms
+  per VBlank is the bottleneck (EE busy 7-10 ms, VU 100% recompiled 4-6 ns/pair); memory flat 149 MB
+  (thread fix works). Later the machine went to 100% CPU (10 games): no perf numbers from then on.
+- New direct starts (release): t7_laser_outside (laser intro cutscene with the beam, Sly in the hub
+  with a red "!" alert marker), t7_bearcave_back_outside ("have to place the radio", Sly in the snow),
+  t7_robot_war_sly_get_costume (world 33 interior): all load and render right.
+- Laser live (build\laser2): laser beam = thin red/orange additive line (seen from a distance and
+  ending at a house window); Binocucom shows "Use crystals to free book / Laser Redirection"; level
+  text: "Use O to place crystals at the end of the laser". Guard fight: knocked-down Sly with stars,
+  ghosting afterimages (game's own feedback blur, judged OK), coins burst. Fell in the water (respawn).
+- Episode 6 -> 7 in the game's own flow (build\ep7intro: direct t6_heist_complete): ep6 ending
+  cutscenes, "Job Completed!", ep6 ending movie, Episode 7 card (slideshow; START = "We'll be right
+  back!" menu, X = episode menu "Menace in the North, Eh? X: Start Episode 0% 0:00"), X -> ep7 intro
+  movie (Bison story), "Sly Cooper and the Gang in: Menace from the North, eh!" title card, safehouse,
+  X -> Sly in the hub; autosave save1 (episodeCurrent 7, widCurrent 32). ep7_title_card.png,
+  ep7_intro_movie_sheet.png, ep7_hub_after_intro.png. Log: one more "[sd] VoiceTrans ... overwrites the
+  block voice c0 v9 is playing" at a level load (same game-side pattern as before).
+- Heist 6 (log flume cheat, Sly, hub): Bison log-rolling, judge on a platform, gadget meter; Gadget
+  Grid -> Alarm Clock assigned to L1 (button glyphs L1/L2/R2 render), L1 = aim arc, L1 = throw (meter
+  drops). "Lure the guards into the cave with your Alarm Clock gadget." Not completed (cave unknown).
+- Boss (build\boss3/boss4, pause-token stepping, build\tools\step.ps1): Bentley vs Bison; idle =
+  "Looks like I'm tougher than you are clever!" game-over cutscene + mask wipe + retry. SQUARE fires
+  the fire-pad grates (big flame burst ~30 frames later, Bentley burns and is charred): fire renders
+  right (ep7_boss_flames.png). Traps per level data: c_ewok_trap_fire_pad / _circular_saw / _log.
+  With PS2_POKE health hold Bison pins Bentley in an endless hit loop (as before) -> not won;
+  parked (game logic, no runtime issue seen).
+- Laser job finished in context (build\laser3, PS2_TASK_FILE crystals 3099..3113 -> 2): laser melts
+  the ice block (steam where the beam hits), a mammoth walks out, "Log Chopping Guide!" loot card,
+  "Job Completed!" book, autosave icon; save1: m7_laser complete, t7_laser_complete state 3,
+  sawmill 25%. 3069/3083 (bearcave/robot war complete) set from state 0 -> chalktalk2 (3118) state 1
+  but no chalk talk (it plays in context only; chalk talks verified by ep2/ep3/ep5).
+- Heist 4 (wall hook cheat, Murray, build\wallhook): cutscene (judges with score cards, Bison climbs
+  the ice wall), idle -> "Job Failed! Jean Bison was able to make it to the top of the wall in
+  time", X retry, hint marquee. Renders right. (--job t7_heist3_wall_hook starts heist4_intro: tasks
+  without a world go to the next stage with one.)
+- VU recompiler check on ep7 content (release, PS2_VU_VERIFY=1, build\warp\vv_*): hub gameplay
+  9.4M programs, RC combat (world 33) 9.4M, lighthouse interior (35) 5.2M, bear cave (36) 5.2M, boss
+  arena (37) 5.2M: 0 mismatches.
+- Power chop (heist1, Murray, build\chop): meter marker (green inside the log icon, red outside)
+  sweeps ~60 VBlanks per pass; CROSS freezes it and Murray chops (strength by distance from the
+  centre: wood chips + growing crack). Bot build\tools\chop.py (pause token, predicts the centre
+  crossing, latency ~4.4 VBlanks) froze it within +-30 px of the centre; on this 100%-loaded machine
+  the game's frame steps vary (2-10 px per VBlank), so prediction is loose. Log split after ~10 hits ->
+  "Job Failed! You need to break the log in fewer hits to beat Jean Bison", X retry works.
+  (next/ep2 has 'pause' holding the EE timers and the IOP too (6df1c88, 29ef294); with it the game's
+  dt would not jump across pauses and the bot could be exact. Not taken: ep2's to merge.)
+- Heist 1 -> 2 by PS2_TASK_FILE 3205:2 (power chop done): dissolve, Bison's own chop, then Bentley on
+  the shore with no HUD and no control (forced task state, not a level start: game logic). Direct
+  start t7_heist2_intro instead: HUD (health, timer meter, "Place the egg on Jean Bison before he
+  finishes chopping"), Bentley moves (focus 758 -> 1245), idle -> Bison chops ("The wood never knew
+  what hit it!") -> "Job Failed! You didn't get to Jean Bison quick enough." Renders right.
+- GS profile, ep7 hub (release, PS2_PROFILE=gs + PS2_GS_STATS, machine at 100%): GS thread waits
+  ~260-310 ms/s for a free batch slot (queue full) and ~150-230 ms/s on syncs (CLUT 45/s); 740-870
+  batches/s of ~7 bands, ~350 prims; batch splits mostly "snapshot" (~420/s: primitives sampling
+  pages the batch writes); pixel work ~1.8 s/s on 8 workers, critical path ~0.67 s/s. Self time:
+  ntdll 20% (waits), db_submit 18%, draw 11%, gs_draw_sync_why 8%, gs_batch_span 8%, run_bands 7%.
+  = the software GS + CPU contention (8 workers per game, 8+ games): nothing ep7-specific; the D3D11
+  renderer is the plan.
+- Boss arena perf (release, PS2_PERF, 5-6 games running): 43-52 VBlanks/s, 27-39 flips/s, EE busy
+  4-6 ms, GS thread 16-21 ms per VBlank (GS-bound). GS-only replay (build\boss.gsrec, 120 VBlanks
+  from 6400, 8 workers, -Bench, interleaved with fix-perf's brief.gsrec): boss 15.9-16.0 ms per
+  VBlank, briefing 16.3-17.6 ms on the same machine state -> ep7's heaviest arena costs the GS what
+  the reference briefing does (8.9 ms there on a quiet machine): CPU contention, not an ep7 problem.
+- Hub soak (release, 25 min of scripted running/jumping, build\warp\soak_hub): memory flat at
+  149 MB committed, 0 audio underruns at 410 s; with fewer games running the hub reached 56-60
+  VBlanks/s and 47-50 flips/s (GS thread 15-16 ms per VBlank).
+
+- Session 4: merged main 9e8092a (progress notes only) -> d0bdbce; run_tests.py 16/16 + hook
+  guards pass; builds (rel 08:42, debug 08:27) are newer than the last code change (5685f68).
+
+- Session 4 direct starts (release, build\warp\s_*, 200 s each, logs clean): t7_heist0_intro
+  (Operation start: letterboxed cutscene with the gang, Bentley in the hub with the "keep up with
+  Jean Bison" marquee), t7_recon_inside_lighthouse (Sly on the lighthouse's wooden floors, lantern
+  shelves), t7_lighthouse_open_door (cutscene Murray/Bentley/Sly, "Flip the switch at the top of
+  the lighthouse before it's too late", lantern ring + red attractor glow inside), t7_thermals_
+  return_to_safehouse (Sly on the egg nest, "...to the safe house, Sly!"). ep7_heist0_gang.png,
+  ep7_lighthouse_inside.png, ep7_recon_lighthouse_int.png, ep7_thermal_egg_nest.png.
+- Task-file flows (release live sessions build\fl_*): recon outside photos 3027..3030 -> 2: the game
+  completes outside_done (3031) itself and activates inside_lighthouse (3033); lighthouse on_top
+  3122 -> 2 activates intro_int (3124). Both then wait for Sly to climb to the hatch on top (the
+  briefing: "the front door is locked ... climb up to the hatch on top"): a real climb, not done.
+  Boat hack: throw1 3148 -> 2 activates station1 (3152); 3152 -> 2 = camera behind the orange
+  grapple launcher on the boat (grapple1 stage); 3153 -> 2 = station1_complete: Bentley on the
+  boat deck next to the hack terminal, counter 1/3 (ep7_boat_hack_deck.png). All in the hub world,
+  renders right, log clean apart from one game-side "[sd] VoiceTrans ... overwrites" at the load.
+
+- Boat hack to the end (3159..3170 -> 2, VBlank-spaced): station3_complete = red beams on the
+  lighthouse cutscene ("That did it...", "Chamber empty, we'll be all set to move in!"), "Job
+  Completed!" book, autosave icon; save1: m7_boat_hack.is_complete 1, sawmill 57%. Then Bentley swims
+  in the water, a letterboxed shot of him on a boat deck and the view parks on a static boat with
+  the camera focus (0x2DE1C0) frozen at (-10573,-10640,-846): main loop and audio keep running, pad
+  input is read (pad lines) but nothing changes. Reproducing through the game's own stage start
+  (direct t7_boat_hack_station3_complete, build\warp\s_boat3) to tell a forced-state artifact from
+  a runtime hang. ep7_boat_hack_end_sheet.png.
+- RC combat won in context (3081 -> 2 inside world 33): moose cutscene ("You won!" ... "On whether or
+  not you know the location"), "Job Completed!", autosave, the hub (world 32) with Murray, guards
+  fight him, knock-down/respawn: all right (ep7_rc_combat_won_sheet.png). m7_robot_war closed.
+- Bear job (hub stations 3139..3142 -> 2): cutscene, bear flash, "Job Completed!", autosave, hub as
+  Murray; t7_thermals_intro active (ep7_bear_completed_sheet.png).
+- Bear cave (world 36, radios 3047..3052 -> 2): radio_collect_complete (3054) completes itself,
+  back_outside (3055) active; the cave exit is a walk (not steered). Cave renders right (sleeping bear
+  with Z's, hint marquee).
+
+- Boat hack static view RESOLVED as game logic: the game's own stage start (direct
+  t7_boat_hack_station3_complete, build\warp\s_boat3) plays the same ending (beams cutscene, "Job
+  Completed!", autosave: m7_boat_hack.is_complete 1, time_played 9.4) and leaves Bentley playable on
+  the boat deck, guards passing, for the rest of the run. In the forced session Bentley stood on
+  another boat when grapple3 was marked done, fell in the water (drowning) and the RAM dump has no
+  Bentley character object left (only Sly 0x10E46C0 and Murray 0x12ABBA0 with 0x2D vtables): the
+  respawn actor was gone, so the camera parked. Not a runtime issue.
+
+- Session 5 (resumed after the pause): branch had no unfinished WIP edit; merged main 618be3f
+  (CLAUDE.md only) -> builds still current. fl_heist/fl_therm from session 4 never got their task
+  lines (input empty): redone as fl_heist5 / fl_therm5.
+
+- Operation chain from the start (release, build\fl_heist5, direct t7_heist0_intro, PS2_TASK_FILE):
+  3200 -> 2 = Bison cutscene, heist0_complete closes itself, heist1 power chop starts in the game's
+  flow; 3205, 3216 -> next stages (Bentley shore, Sly at the ice wall with climb points:
+  ep7_heist3_ice_wall.png); judges cutscene, Murray/Bentley cutscene, log flume stage all render.
+  After 3230 (wall hook forced while Sly was mid-stage) Sly's object was gone and the later
+  "_complete" tasks waited (forced-state artifact, same as the boat hack case) -> heist ending
+  checked through the game's own stage start instead:
+- Heist 6 -> boss (build\fl_h6, direct t7_heist6_intro, Sly on the log flume, then 3258 -> 2): Bison
+  catches the gang ("You aren't the judges I hired!"), sawmill control room cutscene (Bentley,
+  Sly, Murray: "Bison must have thrown us in here for interrogation", Bentley drops through the
+  hole), world 37 loads, Bison/Bentley confrontation, boss fight playable ("Press O for Flames, /\
+  for Saws"). ep7_heist6_to_boss_sheet.png, ep7_boss_after_heist.png. (No autosave here: the
+  operation runs straight into the boss; the episode-end flow saves, verified earlier.)
+- Thermal Ride completion (build\fl_therm6, direct t7_thermals_return_to_safehouse, 3185 -> 2): "Job
+  Completed!" book, autosave (m7_thermals.is_complete 1, sawmill 55%), Sly back on the egg nest.
+  Forcing 3180 with Sly on the ground (build\fl_therm5) = the game's own "Job Failed" (needs Sly in
+  the air), as in session 3. ep7_thermals_completed_sheet.png.
+- Recon completion (build\fl_recon, direct t7_recon_inside_lighthouse, world 35: 3034/3035/3036 ->
+  spytarget_one_more closes itself, 3039 jean, 3040 bison_confront -> 2): "Job Completed!", the
+  game's chalk talk (Bison/sawmill/lighthouse film-strip briefing, battery sketch), safehouse "Press
+  X to play as Sly"; save: m7_recon.is_complete 1, sawmill 14%. ep7_recon_completed_chalktalk_sheet.png.
+- Lighthouse completion (build\fl_lh, direct t7_lighthouse_open_door, 3131 battery -> 2): "We did
+  it! The collection mechanism is overloading!" red glow cutscene, "Job Completed!", autosave
+  (m7_lighthouse.is_complete 1, sawmill 51%), Sly back inside. ep7_lighthouse_completed_sheet.png.
+- Bear cave completion (build\fl_cave, direct t7_bearcave_back_outside, radios 3056..3066 -> 2):
+  "Job Completed!", autosave (m7_bearcave.is_complete 1, sawmill 28%), Sly in the hub.
+  ep7_bearcave_completed_sheet.png.
+- All five session-5 logs: only the known boot lines (syscall 0x5B, eret at 0x239AA4).
+- Tests: run_tests.py 16/16 + hook guards; all 17 tests\unit suites pass (window -UnitOnly).
+
+## STATUS: COMPLETE
+Every ep7 job (m7_recon, m7_bearcave, m7_robot_war, m7_laser, m7_lighthouse, m7_boat_hack, m7_bear,
+m7_thermals, m7_heist, m7_boss) has been started (direct starts, every stage intro) and its
+completion flow checked ("Job Completed!" + autosave; recon -> chalk talk; heist -> boss world 37);
+the episode end (boss -> silo run -> ending movie -> Episode 8 card -> ep8 start, save rewritten)
+is verified. Runtime fixes on this branch: live-input long lines (1df4920), PCRTC field-mode bottom
+line (1d1a7a6), PS2_INPUT 'release' token (4f432a6), debug PS2_POKE. No open runtime bug that I can
+reproduce. Not done (gameplay skill, not runtime): winning the boss fight and the power chop by
+play, the thermal tour and the boat-hack throw aim by scripted input (their stages were completed
+through the task-state tool instead). Perf: GS-bound software renderer (D3D11 is main's plan).
+
+## Tools (build\tools, not committed; the scratchpad is shared with other agents!)
+- live7.ps1 -Name x -Make "--episode 7 --job <task> --direct" -Script "@187D80/1DD96C+30:start:10"
+  -Debug: live session with warp card, PS2_PEEK player/camera; sheet.ps1 contact sheets.
+- findobj.py ram.bin 7 8 9: character objects (+0xC vtable in .data, +0x18 oid; 7 Sly, 8 Bentley,
+  9 Murray), world position at +0x230 (player: same as 0x2DE1C0 focus minus 125 in z).
+  hexf.py ram.bin addr: words as hex+float. RAM dump: live token "+0:ram".
+
+## Next
+1. Episode start: `scripts\warp_run.ps1 -Episode 7 -Play -Release`, look at hub, PS2_PERF.
+2. Jobs in order (warp.py list --episode 7): m7_recon, m7_bearcave, m7_robot_war, m7_laser,
+   m7_lighthouse, m7_boat_hack, m7_bear, m7_thermals, m7_heist, m7_boss. Direct starts (debug).
+3. Cutscenes/movies, checkpoint saves, audio (-Wav), perf.
+
+## Findings / traps
