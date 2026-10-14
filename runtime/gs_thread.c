@@ -192,9 +192,14 @@ void gs_queue_vsync(uint32_t vblank) {
  * instead of waiting for the drawing to drain. At most one is in flight (gs_queue_vsync waits for the
  * previous one to be presented), so pictures are composed one after another (gs_compose and
  * deinterlace keep static state) and the ring of 4 is never reused early. */
-typedef struct { gs_display_snap snap; uint32_t vblank; } picture;
+typedef struct { gs_display_snap snap; uint32_t vblank; int content43; } picture;
 static picture pictures[4];
 static uint32_t picture_next;
+static int present_43;                   /* ASPECT_4_3 hint state of the picture being presented */
+
+/* The present callback asks whether its picture is 4:3 content (gs_hint.h): the hint state at that
+ * VBlank's place in the stream (synchronous GS: the state now). */
+int gs_picture_content43(void) { return async_on ? present_43 : gs_hint_content43(); }
 
 static void picture_done(void) {
     atomic_fetch_add_explicit(&vsync_done, 1, memory_order_seq_cst);
@@ -206,6 +211,7 @@ static void picture_run(void* arg) {
     static uint32_t frame[1024 * 1024];
     int w = 0, h = 0;
     int ok = gs_compose(&p->snap, frame, 1024, &w, &h);
+    present_43 = p->content43;
     if (present) present(frame, ok, w, h, p->vblank);
     picture_done();
 }
@@ -215,6 +221,7 @@ static void vblank_picture(const slot* s) {
     picture* p = &pictures[picture_next++ & 3];
     gs_display_snapshot(&p->snap, (const uint64_t*)(const void*)(s + 1));
     p->vblank = s->len;
+    p->content43 = gs_hint_content43();
     uint64_t reads[8] = { 0 };
     gs_display_pages(p->snap.priv, reads);         /* transfers into the shown buffers wait for it */
     gs_draw_queue_job(picture_run, p, reads);

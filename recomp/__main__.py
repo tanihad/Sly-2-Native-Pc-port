@@ -13,6 +13,7 @@ from .elf import load
 from .functions import find_functions
 from .hooks import hook_for
 from .overrides import override_for
+from .patches import patches_for
 
 
 def translate_all(path: str):
@@ -25,11 +26,14 @@ def translate_all(path: str):
         hook = hook_for(prog, f.start, f.end) is not None   # entry hook (recomp/hooks.py)
         stats["entry hooks"] += hook
         o = override_for(prog, f.start, f.end)        # native replacement (recomp/overrides.py)
+        p = patches_for(prog, f.start, f.end)         # instruction patches (recomp/patches.py)
         if o:
+            if p:
+                raise ValueError(f"f_{f.start:08X} has both a native override and instruction patches")
             stats["native overrides"] += 1
             bodies.append(override_body(f, o, hook))
         else:
-            bodies.append(FunctionTranslator(f, starts, stats).translate(hook))
+            bodies.append(FunctionTranslator(f, starts, stats).translate(hook, p))
     return prog, funcs, bodies, stats
 
 
@@ -98,7 +102,8 @@ def cmd_generate(args) -> None:
     unimpl = sum(v for k, v in stats.items() if k.startswith("UNIMPL "))
     files = (len(bodies) + args.per_file - 1) // args.per_file
     print(f"wrote {len(funcs):,} functions in {files} files to {out} ({unimpl:,} untranslated instructions, "
-          f"{stats['native overrides']} native overrides, {stats['entry hooks']} entry hooks)")
+          f"{stats['native overrides']} native overrides, {stats['entry hooks']} entry hooks, "
+          f"{stats['instruction patches']} instruction patches)")
 
 
 def cmd_iop(args) -> None:

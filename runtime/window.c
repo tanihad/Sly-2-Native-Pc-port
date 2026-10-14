@@ -20,6 +20,7 @@
  */
 #define COBJMACROS
 #include "hw.h"
+#include "settings.h"
 
 #include <stdarg.h>
 #include <windows.h>
@@ -379,19 +380,23 @@ static void script_apply(int port, pad_input* in) {
 
 typedef struct { int x, y, w, h; } wrect;
 
-/* The largest 4:3 rectangle centred in a cw x ch client area. */
-static wrect letterbox(int cw, int ch) {
+/* The largest aw:ah rectangle centred in a cw x ch client area (widths and heights rounded to the
+ * nearest pixel). */
+static wrect fit_aspect(int cw, int ch, int aw, int ah) {
     wrect r = { 0, 0, cw, ch };
-    if (cw <= 0 || ch <= 0) { r.w = r.h = 0; return r; }
-    if ((int64_t)cw * 3 > (int64_t)ch * 4) {         /* wider than 4:3: bars left and right */
-        r.w = (int)(((int64_t)ch * 4 + 1) / 3);
+    if (cw <= 0 || ch <= 0 || aw <= 0 || ah <= 0) { r.w = r.h = 0; return r; }
+    if ((int64_t)cw * ah > (int64_t)ch * aw) {       /* wider than aw:ah: bars left and right */
+        r.w = (int)(((int64_t)ch * aw * 2 + ah) / (2 * (int64_t)ah));
         r.x = (cw - r.w) / 2;
     } else {                                         /* taller: bars top and bottom */
-        r.h = (int)(((int64_t)cw * 3 + 2) / 4);
+        r.h = (int)(((int64_t)cw * ah * 2 + aw) / (2 * (int64_t)aw));
         r.y = (ch - r.h) / 2;
     }
     return r;
 }
+
+/* The largest 4:3 rectangle centred in a cw x ch client area. */
+static wrect letterbox(int cw, int ch) { return fit_aspect(cw, ch, 4, 3); }
 
 /* Indices into pad_input.pressure */
 enum { PR_RIGHT, PR_LEFT, PR_UP, PR_DOWN, PR_TRIANGLE, PR_CIRCLE, PR_CROSS, PR_SQUARE,
@@ -499,6 +504,7 @@ static void kb_to_pad(const uint8_t down[256], pad_input* p) {
  * producer owns its buffer), so the lock is held for an index swap only. */
 static uint32_t fb_pix[3][FRAME_MAX * FRAME_MAX];
 static int fb_w[3], fb_h[3];
+static int fb_aw[3] = { 4, 4, 4 }, fb_ah[3] = { 3, 3, 3 };   /* display aspect of each frame */
 static int fb_write = 0, fb_ready = 1, fb_read = 2, fb_fresh;
 static SRWLOCK fb_lock = SRWLOCK_INIT;
 static HANDLE fb_event;                  /* auto-reset: a fresh frame is waiting */
@@ -519,8 +525,15 @@ static int fb_take(void) {
     return got;
 }
 
-void window_present(const uint32_t* bgrx, int w, int h, int stride) {
+void window_present_aspect(const uint32_t* bgrx, int w, int h, int stride, int aspect_w, int aspect_h);
+
+void window_present(const uint32_t* bgrx, int w, int h, int stride) { window_present_aspect(bgrx, w, h, stride, 4, 3); }
+
+/* window_present for a picture shown at aspect_w:aspect_h (widescreen: the display aspect, or 4:3 for
+ * pictures of 4:3 content, which are then pillarboxed; ps2_runtime.c's present_frame decides). */
+void window_present_aspect(const uint32_t* bgrx, int w, int h, int stride, int aspect_w, int aspect_h) {
     if (!win_accepting) return;
+    if (aspect_w <= 0 || aspect_h <= 0) { aspect_w = 4; aspect_h = 3; }
     if (!bgrx || w <= 0 || h <= 0 || stride < w) {
         static int logged;
         if (!logged) { logged = 1; wlog("window_present: bad frame %dx%d stride %d ignored", w, h, stride); }
@@ -538,6 +551,8 @@ void window_present(const uint32_t* bgrx, int w, int h, int stride) {
     else for (int y = 0; y < h; y++) memcpy(dst + (size_t)y * w, bgrx + (size_t)y * stride, (size_t)w * 4);
     fb_w[b] = w;
     fb_h[b] = h;
+    fb_aw[b] = aspect_w;
+    fb_ah[b] = aspect_h;
 
     AcquireSRWLockExclusive(&fb_lock);   /* publish: the written buffer becomes "ready" */
     fb_write = fb_ready;
@@ -873,7 +888,7 @@ static int d3d_upload(const uint32_t* px, int w, int h) {
 }
 
 /* Draw the current frame (px may be NULL: black) and present with vsync. */
-static HRESULT d3d_render(HWND hwnd, const uint32_t* px, int fw, int fh, unsigned seq) {
+static HRESULT d3d_render(HWND hwnd, const uint32_t* px, int fw, int fh, unsigned seq, int aw, int ah) {
     RECT rc;
     GetClientRect(hwnd, &rc);
     if (rc.right <= 0 || rc.bottom <= 0) return S_OK;        /* minimised */
@@ -888,7 +903,7 @@ static HRESULT d3d_render(HWND hwnd, const uint32_t* px, int fw, int fh, unsigne
     ID3D11DeviceContext_OMSetRenderTargets(d3d.ctx, 1, &d3d.rtv, NULL);
     ID3D11DeviceContext_ClearRenderTargetView(d3d.ctx, d3d.rtv, black);
     if (px && d3d.srv) {
-        wrect r = letterbox(rc.right, rc.bottom);
+        wrect r = fit_aspect(rc.right, rc.bottom, aw, ah);
         D3D11_VIEWPORT vp = { (FLOAT)r.x, (FLOAT)r.y, (FLOAT)r.w, (FLOAT)r.h, 0.0f, 1.0f };
         ID3D11DeviceContext_RSSetViewports(d3d.ctx, 1, &vp);
         ID3D11DeviceContext_IASetInputLayout(d3d.ctx, NULL);
@@ -907,7 +922,7 @@ static HRESULT d3d_render(HWND hwnd, const uint32_t* px, int fw, int fh, unsigne
 typedef HRESULT (WINAPI* dwm_flush_fn)(void);
 static dwm_flush_fn dwm_flush;
 
-static void gdi_render(HWND hwnd, const uint32_t* px, int fw, int fh) {
+static void gdi_render(HWND hwnd, const uint32_t* px, int fw, int fh, int aw, int ah) {
     RECT rc;
     GetClientRect(hwnd, &rc);
     if (rc.right <= 0 || rc.bottom <= 0) return;
@@ -915,7 +930,7 @@ static void gdi_render(HWND hwnd, const uint32_t* px, int fw, int fh) {
     if (!dc) return;
     HBRUSH black = (HBRUSH)GetStockObject(BLACK_BRUSH);
     if (px) {
-        wrect r = letterbox(rc.right, rc.bottom);
+        wrect r = fit_aspect(rc.right, rc.bottom, aw, ah);
         BITMAPINFO bi;
         memset(&bi, 0, sizeof bi);
         bi.bmiHeader.biSize = sizeof bi.bmiHeader;
@@ -951,10 +966,10 @@ static volatile LONG frames_shown;       /* new frames presented by the window t
 static void render(HWND hwnd) {
     if (!win_ready) return;
     const uint32_t* px = cur_seq ? fb_pix[fb_read] : NULL;
-    int fw = fb_w[fb_read], fh = fb_h[fb_read];
-    if (!use_d3d) { gdi_render(hwnd, px, fw, fh); return; }
+    int fw = fb_w[fb_read], fh = fb_h[fb_read], aw = fb_aw[fb_read], ah = fb_ah[fb_read];
+    if (!use_d3d) { gdi_render(hwnd, px, fw, fh, aw, ah); return; }
 
-    HRESULT hr = d3d_render(hwnd, px, fw, fh, cur_seq);
+    HRESULT hr = d3d_render(hwnd, px, fw, fh, cur_seq, aw, ah);
     if (SUCCEEDED(hr)) return;
     static int logged, losses;
     if (hr != DXGI_ERROR_DEVICE_REMOVED && hr != DXGI_ERROR_DEVICE_RESET) {
@@ -967,9 +982,9 @@ static void render(HWND hwnd) {
     use_d3d = ++losses <= 3 && d3d_init(hwnd);   /* a device that keeps dying: settle for GDI */
     if (!use_d3d) {
         dwm_flush = (dwm_flush_fn)dll_proc(LoadLibraryW(L"dwmapi.dll"), "DwmFlush");
-        gdi_render(hwnd, px, fw, fh);
+        gdi_render(hwnd, px, fw, fh, aw, ah);
     } else {
-        d3d_render(hwnd, px, fw, fh, cur_seq);
+        d3d_render(hwnd, px, fw, fh, cur_seq, aw, ah);
     }
 }
 
@@ -1062,7 +1077,15 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
-/* Default 1280x960 client area (or the largest 4:3 that fits the work area), centred. */
+/* The display aspect (settings.h, notes/settings.md): 4:3 or wider. */
+static void display_aspect(int* w, int* h) {
+    *w = ps2_settings.aspect_w;
+    *h = ps2_settings.aspect_h;
+    if (*w <= 0 || *h <= 0) { *w = 4; *h = 3; }
+}
+
+/* Default client area DEFAULT_CLIENT_H (960) high at the display aspect (1280x960 at 4:3, 1707x960
+ * at 16:9), or the largest of that aspect that fits the work area; centred. */
 static void place_window(HWND hwnd) {
     RECT wr, cr;
     MONITORINFO mi;
@@ -1071,8 +1094,10 @@ static void place_window(HWND hwnd) {
         !GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY), &mi)) return;
     int ncw = (wr.right - wr.left) - cr.right, nch = (wr.bottom - wr.top) - cr.bottom;
     int aw = mi.rcWork.right - mi.rcWork.left - ncw, ah = mi.rcWork.bottom - mi.rcWork.top - nch;
-    int cw = DEFAULT_CLIENT_W, ch = DEFAULT_CLIENT_H;
-    if (cw > aw || ch > ah) { wrect r = letterbox(aw, ah); cw = r.w; ch = r.h; }
+    int dw, dh;
+    display_aspect(&dw, &dh);
+    int cw = (int)(((int64_t)DEFAULT_CLIENT_H * dw * 2 + dh) / (2 * (int64_t)dh)), ch = DEFAULT_CLIENT_H;
+    if (cw > aw || ch > ah) { wrect r = fit_aspect(aw, ah, dw, dh); cw = r.w; ch = r.h; }
     if (cw < 320 || ch < 240) { cw = 320; ch = 240; }
     int x = mi.rcWork.left + (aw - cw) / 2, y = mi.rcWork.top + (ah - ch) / 2;
     SetWindowPos(hwnd, NULL, x, y, cw + ncw, ch + nch, SWP_NOZORDER | SWP_NOACTIVATE);
@@ -1107,6 +1132,7 @@ static DWORD WINAPI window_thread(LPVOID arg) {
                                 DEFAULT_CLIENT_W, DEFAULT_CLIENT_H, NULL, NULL, inst, NULL);
     if (!hwnd) { wlog("CreateWindow failed (error %lu): no window", (unsigned long)GetLastError()); return 0; }
     place_window(hwnd);
+    settings_save_if_missing();          /* sly2.ini template next to the exe (settings.c) */
 
     const char* force_gdi = getenv("PS2_WINDOW_GDI");
     use_d3d = !(force_gdi && *force_gdi && *force_gdi != '0') && d3d_init(hwnd);

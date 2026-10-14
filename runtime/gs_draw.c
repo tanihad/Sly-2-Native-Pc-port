@@ -5,6 +5,7 @@
  * functions with a top-left fill rule; sprites cover [X0, X1) x [Y0, Y1). Attributes are
  * interpolated as planes evaluated at the first pixel of each span, then stepped per pixel. */
 #include "gs_draw.h"
+#include "gs_hint.h"
 
 #include <math.h>
 #include <stdlib.h>
@@ -795,9 +796,49 @@ static void trace_prim(int type, const vtx* const* vs, int nv) {
     if (trace_texels_on) trace_texels(umin, umax, vmin, vmax);
 }
 
+/* ---- side-band hints (GS register 0x7F, gs_hint.h) ----------------------------------------------
+ * HUD_BEGIN/END: X of every vertex in between is scaled about the anchor (left edge, centre or right
+ * edge of the drawing buffer's FRAME width, after XYOFFSET), so 2D content drawn for a 4:3 screen
+ * keeps its proportions in a picture shown stretched to a wider aspect. ASPECT_4_3_BEGIN/END mark
+ * pictures the presenter shows pillarboxed at 4:3 (gs_hint_content43). Nothing else changes: a
+ * stream without hints (every 4:3 stream) draws exactly as before. */
+static int hud_on, hud_anchor, hint_43;
+static double hud_scale = 1.0;
+
+int gs_hint_content43(void) { return hint_43; }
+
+/* x: 12.4 window coordinate as written to XYZ (before XYOFFSET) */
+int32_t gs_hud_transform_x(int32_t x, uint64_t xyoffset, uint64_t frame, int anchor, double scale) {
+    int64_t w16 = (int64_t)((frame >> 16) & 0x3F) * 64 * 16;          /* FRAME width, 1/16 pixels */
+    int64_t c = (int64_t)(xyoffset & 0xFFFF) + (anchor == GS_HINT_ANCHOR_C ? w16 / 2 : anchor == GS_HINT_ANCHOR_R ? w16 : 0);
+    int64_t v = c + llround((double)(x - c) * scale);
+    return (int32_t)(v < 0 ? 0 : v > 0xFFFF ? 0xFFFF : v);
+}
+
+static void hint_write(uint64_t v) {
+    uint32_t kind = gs_hint_kind(v), value = gs_hint_value(v);
+    switch (kind) {
+    case GS_HINT_HUD_BEGIN: {
+        float s;
+        memcpy(&s, &value, 4);
+        hud_on = 1;
+        hud_anchor = (int)gs_hint_arg(v);
+        hud_scale = value && s > 0.0f && s <= 4.0f ? (double)s : 1.0;
+        break;
+    }
+    case GS_HINT_HUD_END: hud_on = 0; break;
+    case GS_HINT_ASPECT_4_3_BEGIN: hint_43 = 1; break;
+    case GS_HINT_ASPECT_4_3_END: hint_43 = 0; break;
+    default: break;                      /* PHASE and unknown kinds: diagnostics only */
+    }
+    if (trace_on > 0 && trace_left > 0 && gs_stream_vsync >= trace_from)
+        fprintf(trace_out, "[gstrace] v%u hint kind %u arg %u value 0x%08X\n", gs_stream_vsync, kind,
+                gs_hint_arg(v), value);
+}
+
 /* ---- vertex queue -------------------------------------------------------------------------------- */
 
-static void draw(int type, const vtx* a, const vtx* b, const vtx* c) {
+static void draw_prim(int type, const vtx* a, const vtx* b, const vtx* c) {
     if (env_dirty) env_update();
     gs_stats.prims++;
     if (trace_on) {
@@ -822,6 +863,28 @@ static void draw(int type, const vtx* a, const vtx* b, const vtx* c) {
     case PRIM_SPRITE: gs_stats.sprites++; draw_sprite(a, b); break;
     default: break;
     }
+}
+
+/* A primitive kicked between HUD_BEGIN and HUD_END is drawn with its vertices' X scaled about the
+ * anchor - unless it spans the whole FRAME width (a full-screen fill, fade or bar): that one still
+ * covers the whole widened picture. The vertex queue keeps the game's coordinates (strips and fans
+ * share vertices between primitives). */
+static void draw(int type, const vtx* a, const vtx* b, const vtx* c) {
+    if (!hud_on) { draw_prim(type, a, b, c); return; }
+    int n = type == PRIM_POINT ? 1 : (type == PRIM_TRI || type == PRIM_TRISTRIP || type == PRIM_TRIFAN) ? 3 : 2;
+    const vtx* in[3] = { a, b, c };
+    int ctx = (int)((((reg[R_PRMODECONT] & 1) ? reg[R_PRIM] : reg[R_PRMODE]) >> 9) & 1);
+    uint64_t xyo = reg[R_XYOFFSET_1 + ctx], frame = reg[R_FRAME_1 + ctx];
+    int32_t left = (int32_t)(xyo & 0xFFFF), right = left + (int32_t)((frame >> 16) & 0x3F) * 64 * 16;
+    int32_t x0 = in[0]->x, x1 = in[0]->x;
+    for (int i = 1; i < n; i++) { x0 = in[i]->x < x0 ? in[i]->x : x0; x1 = in[i]->x > x1 ? in[i]->x : x1; }
+    if (x0 <= left + 16 && x1 >= right - 16) { draw_prim(type, a, b, c); return; }
+    vtx t[3];
+    for (int i = 0; i < n; i++) {
+        t[i] = *in[i];
+        t[i].x = gs_hud_transform_x(t[i].x, xyo, frame, hud_anchor, hud_scale);
+    }
+    draw_prim(type, &t[0], n > 1 ? &t[1] : NULL, n > 2 ? &t[2] : NULL);
 }
 
 static void vertex(uint64_t xyz, int has_f, int kick) {
@@ -1031,6 +1094,9 @@ void gs_exec_write_reg(uint32_t r, uint64_t v) {
     case R_FINISH: gs_csr_finish(); break;
     case R_LABEL: gs_csr_label((uint32_t)v, (uint32_t)(v >> 32)); break;
     case 0x0E: case 0x0F:                /* A+D / NOP descriptors: nothing to do */
+        break;
+    case GS_HINT_REG:                    /* the PC port's side-band hints (gs_hint.h) */
+        hint_write(v);
         break;
     default:
         if (r < 0x64) reg[r] = v;
