@@ -56,9 +56,15 @@ static uint32_t calls_from, calls_frames;
 static int calls_window;
 
 /* PS2_WATCH="<hexaddr>,...": log calls of these functions with $ra and $a0-$a3, each distinct
- * caller once (PS2_WATCH_ALL=1: every call, up to 5000 lines). */
+ * caller once (PS2_WATCH_ALL=1: every call, up to 5000 lines). The live input token "watch:<n>"
+ * (window.c) logs every call for the next n VBlanks, up to 5000 more lines. */
 static uint32_t watch[16], watch_seen[256][2], watch_a0;
 static int watch_n, watch_all, watch_seen_n, watch_lines, watch_a0_on;
+static volatile uint32_t watch_all_until;
+void ps2_request_watch_window(uint32_t frames) {
+    watch_lines = 0;
+    watch_all_until = ps2_vblank_count() + (frames ? frames : 1);
+}
 
 /* PS2_INPUT "@<hexaddr>[/<hexra>]" tokens (from PS2_INPUT or live PS2_INPUT_FILE lines): window.c's
  * input script waits for calls of these functions (made from the call site returning to <hexra>,
@@ -120,7 +126,7 @@ void ps2_calls_record(ps2_ctx* ctx, uint32_t addr) {
         int seen = 0;
         for (int k = 0; k < watch_seen_n && !seen; k++) seen = watch_seen[k][0] == addr && watch_seen[k][1] == ra;
         if (!seen && watch_seen_n < 256) { watch_seen[watch_seen_n][0] = addr; watch_seen[watch_seen_n++][1] = ra; }
-        if ((!seen || watch_all) && watch_lines++ < 5000)
+        if ((!seen || watch_all || ps2_vblank_count() < watch_all_until) && watch_lines++ < 5000)
             fprintf(stderr, "[watch] v%u #%d %08X ra %08X a0 %08X a1 %08X a2 %08X a3 %08X\n", ps2_vblank_count(),
                     thread_current_id(), addr, ra, ctx->r[REG_A0].uw[0], ctx->r[REG_A1].uw[0],
                     ctx->r[REG_A2].uw[0], ctx->r[REG_A3].uw[0]);
@@ -152,9 +158,19 @@ static int calls_cmp(const void* a, const void* b) {
     return x < y ? -1 : x > y;
 }
 
+/* Live input token "calls" (window.c, "+0:calls:<frames>"): a call-profile window from the next
+ * VBlank, once no PS2_CALLS window is open or pending (debug builds). */
+static volatile uint32_t calls_request;
+void ps2_request_calls_window(uint32_t frames) { calls_request = frames ? frames : 1; }
+
 static void calls_vblank(uint32_t v) {
     static int init, next;
     static uint32_t windows[9][2];
+    if (calls_request && init && !calls_from) {
+        calls_from = v + 1;
+        calls_frames = calls_request;
+        calls_request = 0;
+    }
     if (!init) {                                 /* "<from>[:<frames>],..." up to 8 windows */
         init = 1;
         const char* e = getenv("PS2_CALLS");

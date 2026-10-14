@@ -305,8 +305,11 @@ uint32_t ps2_func_calls(uint32_t addr, uint32_t ra) {
     return addr == 0x187D80 && ra == 0x1DD96C ? fake_anchor_calls : 0;
 }
 uint32_t ps2_vblank_count(void) { return 0; }
-static int ram_dumps;
+static int ram_dumps, calls_requests, watch_requests;
+static uint32_t calls_frames, watch_frames;
 void ps2_request_ram_dump(void) { ram_dumps++; }
+void ps2_request_calls_window(uint32_t frames) { calls_requests++; calls_frames = frames; }
+void ps2_request_watch_window(uint32_t frames) { watch_requests++; watch_frames = frames; }
 
 static void test_input_script(void) {
     script_n = 0;
@@ -369,6 +372,21 @@ static void test_input_script(void) {
         CHECK((p.lx == 0x20) == (f >= 1 && f < 6), "lx at frame %d: %02X", f, p.lx);
         CHECK(!!(p.buttons & PAD_CROSS) == (f == 6 || f == 7), "cross at frame %d", f);
     }
+    /* debug windows: "calls:<n>" and "watch:<n>" ask once, at their start frame, for n VBlanks */
+    script_n = 0;
+    script_frame = 0;
+    calls_requests = watch_requests = 0;
+    script_parse("1:calls:120,+2:watch:30");
+    CHECK(script_n == 2, "parsed %d tokens", script_n);
+    for (int f = 0; f < 40; f++) {
+        pad_input p;
+        pad_clear(&p);
+        script_apply(0, &p);
+        CHECK(!p.buttons, "no buttons from debug tokens at frame %d", f);
+        CHECK(calls_requests == (f >= 1), "calls requests at frame %d: %d", f, calls_requests);
+        CHECK(watch_requests == (f >= 3), "watch requests at frame %d: %d", f, watch_requests);
+    }
+    CHECK(calls_frames == 120 && watch_frames == 30, "window lengths %u %u", calls_frames, watch_frames);
     script_n = 0;                                         /* leave scripting off for the other tests */
 }
 

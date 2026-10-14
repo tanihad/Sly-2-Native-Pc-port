@@ -85,6 +85,8 @@ static const struct { const char* name; int axis, value; } script_sticks[] = {
  * "rxHH", "ryHH" set that axis to the hex value HH (00 left/up, 80 centre, FF right/down).
  * "ram" writes EE RAM to <dump dir>/ram_<vblank>.bin (debugging). "release" ends every press and
  * stick hold still in progress (e.g. a long "r1:30000" paraglider hold in a live session).
+ * "calls:<n>" prints the recompiled functions called in the next n VBlanks, like PS2_CALLS, and
+ * "watch:<n>" logs every call of the PS2_WATCH functions in the next n VBlanks (debug builds).
  *   "t<seconds>:<button>[:<hold>]"      at a wall-clock time since the first pad read, e.g.
  *       "t95:start": scenes synchronised to sound (the intro cutscene follows its music stream)
  *       last a fixed real time, however fast the game runs.
@@ -98,7 +100,8 @@ static const struct { const char* name; int axis, value; } script_sticks[] = {
  * "pause" (live input only) stops the game at the next VBlank whose picture is dumped
  * (PS2_DUMP_EVERY; latest.png then shows it) until the next line arrives, e.g. "+0:r1:20,+20:pause":
  * real-time sections can be played step by step however long it takes to look at a frame. The EE
- * waits inside the pad read; the VBlanks it misses are dropped (no catch-up), IOP and sound go on. */
+ * waits inside the pad read; meanwhile the whole PS2 stands still (ps2_debug_hold: VBlank clock,
+ * COP0 Count, EE timers, IOP time, SPU2 mixer), so no game time passes during the wait. */
 enum { SCRIPT_ABS, SCRIPT_REL, SCRIPT_ANCHOR, SCRIPT_QUIET, SCRIPT_TIME };
 #define SCRIPT_MAX   16384
 static double script_at[SCRIPT_MAX];       /* SCRIPT_TIME tokens: seconds since the first pad read */
@@ -116,8 +119,12 @@ static double script_seconds(void) {
 #define SCRIPT_RAM   (-4)                 /* "ram": dump EE RAM (debug) */
 #define SCRIPT_PAUSE (-5)                 /* "pause": stop until the next live input line */
 #define SCRIPT_RELEASE (-6)               /* "release": end the holds in progress */
+#define SCRIPT_CALLS (-7)                 /* "calls:<n>": call profile of the next n VBlanks (debug) */
+#define SCRIPT_WATCH (-8)                 /* "watch:<n>": PS2_WATCH logs every call for n VBlanks */
 static int script_pause_req;
 void ps2_request_ram_dump(void);
+void ps2_request_calls_window(uint32_t frames);
+void ps2_request_watch_window(uint32_t frames);
 void ps2_debug_hold(int on);              /* runtime: EE timers, IOP time and the SPU2 stand still */
 static struct { uint32_t frame, hold, start, addr, ra, base, last; int button, kind, armed, seen, axis, value; }
     script[SCRIPT_MAX];
@@ -157,7 +164,8 @@ static void script_parse(const char* s) {
             if (*p != ':' || sscanf(p + 1, "%31[a-z0-9]:%u", name, &hold) < 1) continue;
         } else if (sscanf(tok, "%u:%31[a-z0-9]:%u", &frame, name, &hold) < 2) continue;
         int found = !strcmp(name, "none") ? SCRIPT_NONE : !strcmp(name, "ram") ? SCRIPT_RAM :
-                    !strcmp(name, "release") ? SCRIPT_RELEASE : !strcmp(name, "pause") ? SCRIPT_PAUSE : -1,
+                    !strcmp(name, "release") ? SCRIPT_RELEASE : !strcmp(name, "pause") ? SCRIPT_PAUSE :
+                    !strcmp(name, "calls") ? SCRIPT_CALLS : !strcmp(name, "watch") ? SCRIPT_WATCH : -1,
             axis = 0, value = 0x80;
         for (int b = 0; b < SCRIPT_NBUTTONS; b++)
             if (!strcmp(name, script_buttons[b].name)) found = b;
@@ -195,7 +203,7 @@ static void script_compact(uint32_t now) {
 
 static const char* script_name(int b) {
     return b == SCRIPT_NONE ? "none" : b == SCRIPT_AXIS ? "axis" : b == SCRIPT_RAM ? "ram" : b == SCRIPT_PAUSE ? "pause" :
-           b == SCRIPT_RELEASE ? "release" :
+           b == SCRIPT_RELEASE ? "release" : b == SCRIPT_CALLS ? "calls" : b == SCRIPT_WATCH ? "watch" :
            b >= SCRIPT_NBUTTONS ? script_sticks[b - SCRIPT_NBUTTONS].name : script_buttons[b].name;
 }
 
@@ -340,6 +348,8 @@ static void script_apply(int port, pad_input* in) {
         if (b == SCRIPT_NONE || b == SCRIPT_RELEASE) continue;
         if (b == SCRIPT_RAM) { if (now == script[i].start) ps2_request_ram_dump(); continue; }
         if (b == SCRIPT_PAUSE) { if (now == script[i].start) script_pause_req = 1; continue; }
+        if (b == SCRIPT_CALLS) { if (now == script[i].start) ps2_request_calls_window(script[i].hold); continue; }
+        if (b == SCRIPT_WATCH) { if (now == script[i].start) ps2_request_watch_window(script[i].hold); continue; }
         if (b == SCRIPT_AXIS) {
             uint8_t v = (uint8_t)script[i].value;
             switch (script[i].axis) {
