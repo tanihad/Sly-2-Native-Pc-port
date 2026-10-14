@@ -180,13 +180,19 @@ warp saves / direct job starts; fix every runtime/recompiler problem found at it
 - live3.ps1 must be launched with Start-Process from the agent shell (the game inherits the
   shell's stdout pipe, so a direct call blocks until the game exits).
 
+- Session 7 (2026-10-14): merged main (fca3680, CLAUDE.md only). Results of the sessions that
+  ran when the machine was paused: heartneela (live_neyla2: 2225/2226 keys, 2228, 2230 -> 2) =
+  "Job Completed!" book + autosave (m3_heartneela.is_complete 1, temple 60%); tntbarrel
+  (live_tnt3: 2266-2269, 2270, 2271, 2272, 2273 -> 2) = book + autosave (m3_tntbarrel 1, temple
+  56%). Frames ep3_heartneela_job_completed, ep3_heartneela_reward_interior,
+  ep3_tntbarrel_job_completed. Hub soak (soak_hub2, ~20 min): memory flat 149-150 MB committed,
+  no errors; IOP hard timer late ticks only during the other instances' load.
+
 ## Next
-1. Job-completion flows left: heartneela (keys 2225/2226, drop_heart 2228 -> complete 2230),
-   tntbarrel (fences 2266-2269, 2270, 2271, 2272 -> complete 2273), heist5 destructo 2321 ->
-   boss intro 2327 (sessions neyla2 / tnt3 running).
-2. Soak result (build\warp\soak_hub2\run.log: memory lines, errors) when it ends (~23:55).
-3. Episode-3 intro comic (stereo movie) late-refill check on a quiet machine (if one comes).
-4. Gameplay left (skill/navigation, no runtime blockers known): turret dam hit, boss "Get to
+1. Job-completion flow left: heist5 destructo 2321 -> boss intro 2327 (live_h5 had not queued
+   anything yet).
+2. Episode-3 intro comic (stereo movie) late-refill check on a quiet machine (if one comes).
+3. Gameplay left (skill/navigation, no runtime blockers known): turret dam hit, boss "Get to
    Rajan" route, heist chain by play, ruby carry, Neyla keys, TNT barrel run.
 
 ## Findings / traps
