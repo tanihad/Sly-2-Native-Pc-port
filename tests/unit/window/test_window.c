@@ -851,7 +851,9 @@ static void interactive(double seconds, int do_fullscreen) {
     RECT cr;
     GetClientRect(h, &cr);
     printf("client area %ldx%ld\n", cr.right, cr.bottom);
-    CHECK(labs(cr.right * 3 - cr.bottom * 4) <= 4, "default client area is not 4:3");
+    int dw, dh;
+    display_aspect(&dw, &dh);                            /* the settings' aspect (16:9 by default) */
+    CHECK(labs(cr.right * dh - cr.bottom * dw) <= dw + dh, "default client area is not %d:%d", dw, dh);
 
     static const int sizes[][2] = { { 640, 448 }, { 512, 448 }, { 640, 480 }, { 320, 240 }, { 720, 480 }, { 256, 224 } };
     int frames = (int)(seconds * 60.0), shown0 = frames_shown;
