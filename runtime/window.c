@@ -7,7 +7,10 @@
  * from sly2.ini - 16:9 by default, the 512-wide picture stretched - or 4:3 for movies and plain
  * window_present callers; notes/widescreen.md), with Direct3D 11 (one textured triangle,
  * bilinear filtering, vsync'd flip-model present) or, if Direct3D 11 is unavailable, with GDI
- * StretchDIBits. Alt+Enter / F11 toggle borderless fullscreen; closing the window ends the process.
+ * StretchDIBits. Alt+Enter / F11 toggle borderless fullscreen. The window opens where it was when
+ * it was last closed (size, position, maximized, fullscreen: [window] in sly2.ini), else centred at
+ * a default size; closing it writes that state back and ends the process (through
+ * window_exit_hook: launch.c lets a memory card operation in progress finish first).
  * Persistence of the user settings is the window's: it writes the sly2.ini template when it opens
  * and none exists (settings.c, notes/settings.md).
  *
@@ -41,6 +44,9 @@
 #define DEFAULT_CLIENT_W 1280
 #define DEFAULT_CLIENT_H 960
 #define WINDOW_CLASS     L"Sly2Window"
+#define WINDOW_TITLE     "Sly 2: Band of Thieves"
+
+void (*window_exit_hook)(int code);      /* set by main (launch_exit); NULL: ExitProcess */
 #define LIVE_RESIZE_TIMER 1
 
 static void wlog(const char* fmt, ...) {
@@ -1022,10 +1028,63 @@ static void toggle_fullscreen(HWND hwnd) {
     }                                    /* the resulting WM_SIZE redraws */
 }
 
+/* [window] in sly2.ini: the windowed placement (the one saved before fullscreen, if fullscreen),
+ * maximized, fullscreen. */
+static void save_window_state(HWND hwnd) {
+    WINDOWPLACEMENT wp;
+    wp.length = sizeof wp;
+    if (win_fullscreen) wp = win_placement;
+    else if (!GetWindowPlacement(hwnd, &wp)) return;
+    const RECT* r = &wp.rcNormalPosition;
+    if (r->right - r->left < 100 || r->bottom - r->top < 100) return;
+    int maximized = wp.showCmd == SW_SHOWMAXIMIZED || (wp.showCmd == SW_SHOWMINIMIZED && (wp.flags & WPF_RESTORETOMAXIMIZED));
+    char x[16], y[16], w[16], h[16];
+    snprintf(x, sizeof x, "%ld", r->left);
+    snprintf(y, sizeof y, "%ld", r->top);
+    snprintf(w, sizeof w, "%ld", r->right - r->left);
+    snprintf(h, sizeof h, "%ld", r->bottom - r->top);
+    const char* const kv[][3] = { { "window", "fullscreen", win_fullscreen ? "on" : "off" }, { "window", "x", x },
+                                  { "window", "y", y }, { "window", "width", w }, { "window", "height", h },
+                                  { "window", "maximized", maximized ? "on" : "off" } };
+    if (!settings_set(kv, 6)) wlog("cannot write the window state to sly2.ini");
+}
+
+/* The remembered placement, if it is still on a monitor (one may have been unplugged); 1 if used.
+ * The window stays hidden; window_thread shows it (maximized if it was). */
+static int restore_window_state(HWND hwnd) {
+    const ps2_settings_t* s = &ps2_settings;
+    if (s->win_w < 100 || s->win_h < 100) return 0;
+    RECT r = { s->win_x, s->win_y, s->win_x + s->win_w, s->win_y + s->win_h };
+    HMONITOR mon = MonitorFromRect(&r, MONITOR_DEFAULTTONULL);
+    MONITORINFO mi;
+    mi.cbSize = sizeof mi;
+    RECT vis;
+    if (!mon || !GetMonitorInfoW(mon, &mi) || !IntersectRect(&vis, &r, &mi.rcWork) ||
+        vis.right - vis.left < 64 || vis.bottom - vis.top < 32) return 0;   /* too little of it visible */
+    WINDOWPLACEMENT wp;
+    memset(&wp, 0, sizeof wp);
+    wp.length = sizeof wp;
+    wp.showCmd = SW_HIDE;
+    wp.rcNormalPosition = r;
+    return SetWindowPlacement(hwnd, &wp) != 0;
+}
+
+static void close_window(HWND hwnd) {
+    save_window_state(hwnd);
+    if (window_exit_hook) window_exit_hook(0);
+    ExitProcess(0);
+}
+
 static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
     case WM_CLOSE:
-        ExitProcess(0);
+        close_window(hwnd);
+        return 0;
+    case WM_QUERYENDSESSION:             /* Windows is logging off / shutting down */
+        return TRUE;
+    case WM_ENDSESSION:
+        if (wp) close_window(hwnd);
+        return 0;
     case WM_ERASEBKGND:
         return 1;                        /* every pixel is drawn by render() */
     case WM_PAINT: {
@@ -1107,9 +1166,13 @@ static void place_window(HWND hwnd) {
     SetWindowPos(hwnd, NULL, x, y, cw + ncw, ch + nch, SWP_NOZORDER | SWP_NOACTIVATE);
 }
 
+/* "Sly 2: Band of Thieves", with the frame rate when [window] show_fps is on (PS2_SHOW_FPS=1). */
 static void set_title(HWND hwnd, double fps) {
-    char t[64];
-    snprintf(t, sizeof t, "Sly 2 - %.1f fps%s", fps, use_d3d ? "" : " (GDI)");
+    char t[96];
+    if (ps2_settings.show_fps) snprintf(t, sizeof t, WINDOW_TITLE " - %.1f fps%s", fps, use_d3d ? "" : " (GDI)");
+    else snprintf(t, sizeof t, WINDOW_TITLE);
+    char cur[96];
+    if (GetWindowTextA(hwnd, cur, sizeof cur) && !strcmp(cur, t)) return;
     SetWindowTextA(hwnd, t);
 }
 
@@ -1129,14 +1192,16 @@ static DWORD WINAPI window_thread(LPVOID arg) {
     wc.lpfnWndProc = wndproc;
     wc.hInstance = inst;
     wc.hCursor = LoadCursorW(NULL, (LPCWSTR)IDC_ARROW);
-    wc.hIcon = LoadIconW(NULL, (LPCWSTR)IDI_APPLICATION);
+    /* the executable's icon (resource 1: the packaged build, scripts/build_game.py --package) */
+    wc.hIcon = LoadIconW(inst, MAKEINTRESOURCEW(1));
+    if (!wc.hIcon) wc.hIcon = LoadIconW(NULL, (LPCWSTR)IDI_APPLICATION);
     wc.lpszClassName = WINDOW_CLASS;
     RegisterClassExW(&wc);
-    HWND hwnd = CreateWindowExW(0, WINDOW_CLASS, L"Sly 2", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT,
+    HWND hwnd = CreateWindowExW(0, WINDOW_CLASS, L"" WINDOW_TITLE, WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT,
                                 DEFAULT_CLIENT_W, DEFAULT_CLIENT_H, NULL, NULL, inst, NULL);
     if (!hwnd) { wlog("CreateWindow failed (error %lu): no window", (unsigned long)GetLastError()); return 0; }
-    place_window(hwnd);
-    settings_save_if_missing();          /* sly2.ini template next to the exe (settings.c) */
+    if (!restore_window_state(hwnd)) place_window(hwnd);
+    settings_save_if_missing();          /* sly2.ini template in the user data folder (settings.c) */
 
     const char* force_gdi = getenv("PS2_WINDOW_GDI");
     use_d3d = !(force_gdi && *force_gdi && *force_gdi != '0') && d3d_init(hwnd);
@@ -1146,7 +1211,8 @@ static DWORD WINAPI window_thread(LPVOID arg) {
     }
     win_ready = 1;
     set_title(hwnd, 0.0);
-    ShowWindow(hwnd, SW_SHOW);
+    ShowWindow(hwnd, ps2_settings.win_w && ps2_settings.win_maximized ? SW_SHOWMAXIMIZED : SW_SHOW);
+    if (ps2_settings.win_fullscreen) toggle_fullscreen(hwnd);
     SetForegroundWindow(hwnd);
     render(hwnd);
     g_hwnd = hwnd;

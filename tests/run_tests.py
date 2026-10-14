@@ -26,7 +26,6 @@ def main() -> int:
     BUILD.mkdir(parents=True)
     elf = BUILD / "test.elf"
     elf.write_bytes(make_test_elf.build())
-
     gen = run([sys.executable, "-m", "recomp", "generate", elf, "-o", BUILD / "recomp"])
     if gen.returncode:
         print(gen.stdout, gen.stderr)

@@ -42,6 +42,8 @@ typedef struct { uint32_t addr; ps2_func fn; } ps2_func_entry;
 extern const ps2_func_entry ps2_funcs[];
 extern const size_t ps2_func_count;
 extern const uint32_t ps2_entry_point;
+extern const uint32_t ps2_elf_size;       /* the ELF the code was recompiled from: its size and */
+extern const char ps2_elf_sha256[];       /* SHA-256 (lower-case hex), to recognise it on a disc */
 
 /* ---- memory ---------------------------------------------------------------------------- */
 

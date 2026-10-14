@@ -22,6 +22,9 @@
 
 #include <stdlib.h>
 
+#define FPS_TITLE     WINDOW_TITLE " - "                /* with show_fps on */
+#define FPS_TITLE_LEN (sizeof FPS_TITLE - 1)
+
 static int checks, failures;
 #define CHECK(cond, ...)                                                                           \
     do {                                                                                           \
@@ -145,6 +148,53 @@ static void test_settings(void) {
     back.aspect_w = 1;
     warn_count = 0;
     CHECK(settings_parse(text, &back, count_warn, NULL) == 0 && !memcmp(&back, &d, sizeof d), "template round trip");
+
+    /* [game] disc (quoted: ; and # inside), [window] keys */
+    settings_defaults(&s);
+    warn_count = 0;
+    n = settings_parse("[game]\ndisc = \"D:\\Games #2\\Sly 2; USA.iso\"   ; my disc\n[window]\nx = -1200\ny = 40\n"
+                       "width = 1600\nheight = 900\nmaximized = on\nfullscreen = yes\nshow_fps = 1\n", &s, count_warn, NULL);
+    CHECK(n == 0, "game/window keys: %d problems", n);
+    CHECK(!strcmp(s.disc, "D:\\Games #2\\Sly 2; USA.iso"), "quoted disc path '%s'", s.disc);
+    CHECK(s.win_x == -1200 && s.win_y == 40 && s.win_w == 1600 && s.win_h == 900 && s.win_maximized &&
+          s.win_fullscreen && s.show_fps, "window keys");
+    n = settings_parse("[window]\nwidth = 5\nfullscreen = maybe\n", &s, count_warn, NULL);
+    CHECK(n == 2 && s.win_w == 1600 && s.win_fullscreen == 1, "bad window values ignored");
+
+    /* key-by-key updates keep the rest of the file */
+    char out[8192];
+    const char* user = "; mine\r\n[display]\r\naspect = 4:3 ; old TV\r\n\r\n[window]\r\nfullscreen = off\r\n\r\n; later\r\n[graphics]\r\n";
+    int len = settings_update_text(user, "display", "aspect", "21:9", out, sizeof out);
+    CHECK(len > 0 && strstr(out, "aspect = 21:9   ; old TV\r\n") && strstr(out, "; mine\r\n") && strstr(out, "; later\r\n[graphics]"),
+          "rewrite keeps the comment and the other lines:\n%s", out);
+    len = settings_update_text(user, "window", "width", "1707", out, sizeof out);
+    CHECK(len > 0 && strstr(out, "fullscreen = off\r\nwidth = 1707\r\n\r\n; later"), "new key at the end of its section:\n%s", out);
+    len = settings_update_text(user, "game", "disc", "C:\\a;b.iso", out, sizeof out);
+    CHECK(len > 0 && strstr(out, "[graphics]\r\n\r\n[game]\r\ndisc = \"C:\\a;b.iso\"\r\n"), "new section, quoted value:\n%s", out);
+    settings_defaults(&s);
+    settings_parse(out, &s, NULL, NULL);
+    CHECK(!strcmp(s.disc, "C:\\a;b.iso") && s.aspect_w == 4, "updated text parses back");
+    len = settings_update_text("[game]\r\ndisc = a.iso\r\n\r\n", "window", "x", "5", out, sizeof out);
+    CHECK(len > 0 && !strcmp(out, "[game]\r\ndisc = a.iso\r\n\r\n[window]\r\nx = 5\r\n"), "one blank line between sections: '%s'", out);
+    len = settings_update_text("", "window", "x", "5", out, sizeof out);
+    CHECK(len > 0 && !strcmp(out, "[window]\nx = 5\n"), "empty file: '%s'", out);
+    len = settings_update_text("aspect = 4:3", "display", "aspect", "16:9", out, sizeof out);
+    CHECK(len > 0 && !strcmp(out, "aspect = 16:9"), "keys before any header are [display]: '%s'", out);
+    CHECK(settings_update_text(user, "window", "width", "1707", out, 20) < 0, "overflow reported");
+
+    /* the user data folder (PS2_USER_DIR, set by main) and a write + read back through the file */
+    const wchar_t* dir = settings_user_dir();
+    CHECK(dir && settings_portable() && GetFileAttributesW(dir) != INVALID_FILE_ATTRIBUTES, "user dir %ls", dir);
+    const char* const kv[][3] = { { "window", "width", "1500" }, { "window", "height", "844" }, { "game", "disc", "x.iso" } };
+    CHECK(settings_set(kv, 3), "settings_set");
+    settings_load();
+    CHECK(ps2_settings.win_w == 1500 && ps2_settings.win_h == 844 && !strcmp(ps2_settings.disc, "x.iso") &&
+          ps2_settings.aspect_w == 16, "stored keys load back (%d x %d, '%s')", ps2_settings.win_w, ps2_settings.win_h,
+          ps2_settings.disc);
+    wchar_t ini[MAX_PATH + 80];
+    settings_user_path(L"sly2.ini", ini, MAX_PATH + 80);
+    DeleteFileW(ini);                                    /* the interactive run starts at the default place */
+    settings_load();
 }
 
 static void test_xinput_mapping(void) {
@@ -833,6 +883,7 @@ static void interactive(double seconds, int do_fullscreen) {
      * 60 per second. Calls made by the unit checks above don't count either. */
     InterlockedExchange(&fb_presented, 0);
     double t0 = now_ms(), early_due = t0;
+    ps2_settings.show_fps = 1;                           /* the FPS checks below read it from the title */
     window_init();
     pattern(frame, FRAME_MAX, 640, 448, 0);
     for (int n = 0; n < 60; n++) window_present(frame, 640, 448, FRAME_MAX);
@@ -875,8 +926,8 @@ static void interactive(double seconds, int do_fullscreen) {
         if (first_fps < 0 && i % 6 == 3) {               /* the first FPS value the title shows */
             char t[128];
             GetWindowTextA(h, t, sizeof t);
-            if (!strncmp(t, "Sly 2 - ", 8) && strncmp(t + 8, "0.0 ", 4)) {
-                first_fps = atof(t + 8);
+            if (!strncmp(t, FPS_TITLE, FPS_TITLE_LEN) && strncmp(t + FPS_TITLE_LEN, "0.0 ", 4)) {
+                first_fps = atof(t + FPS_TITLE_LEN);
                 printf("first title FPS reading: \"%s\" (frame %d)\n", t, i);
             }
         }
@@ -920,10 +971,15 @@ static void interactive(double seconds, int do_fullscreen) {
     char title[128];
     GetWindowTextA(h, title, sizeof title);
     printf("title: \"%s\"\n", title);
-    CHECK(strncmp(title, "Sly 2 - ", 8) == 0 && strstr(title, " fps"), "title has no FPS counter");
-    double fps = atof(title + 8);
+    CHECK(strncmp(title, FPS_TITLE, FPS_TITLE_LEN) == 0 && strstr(title, " fps"), "title has no FPS counter");
+    double fps = atof(title + FPS_TITLE_LEN);
     CHECK(fps > 40 && fps < 75, "title FPS %.1f while presenting at 60", fps);
     CHECK(first_fps > 54 && first_fps < 66, "first title FPS %.1f while presenting at 60 from the start", first_fps);
+    ps2_settings.show_fps = 0;                           /* the default: just the game's name */
+    set_title(h, 60.0);
+    GetWindowTextA(h, title, sizeof title);
+    CHECK(!strcmp(title, WINDOW_TITLE), "plain title \"%s\"", title);
+    ps2_settings.show_fps = 1;
 
     /* Picture check at a wide client size: letterbox bars must be black, the image exact. */
     set_client_size(h, 900, 450);
@@ -963,6 +1019,19 @@ static int close_test(void) {
 }
 
 int main(int argc, char** argv) {
+    /* sly2.ini and the window state go to a folder of the test's own (never the player's
+     * %LOCALAPPDATA%\Sly2), starting without a file: the window opens at its default place. */
+    wchar_t dir[MAX_PATH + 32], env[MAX_PATH + 64];
+    DWORD dn = GetModuleFileNameW(NULL, dir, MAX_PATH);
+    wchar_t* slash = dn ? wcsrchr(dir, L'\\') : NULL;
+    if (slash) wcscpy(slash, L"\\userdata"); else wcscpy(dir, L"userdata");
+    swprintf(env, MAX_PATH + 64, L"PS2_USER_DIR=%ls", dir);
+    _wputenv(env);
+    wchar_t ini[MAX_PATH + 48];
+    settings_user_path(L"sly2.ini", ini, MAX_PATH + 48);
+    DeleteFileW(ini);
+    settings_load();
+
     int unit_only = 0, fullscreen = 1;
     double seconds = 3.0;
     for (int i = 1; i < argc; i++) {

@@ -2,18 +2,110 @@
 
 Usage (from the project root or a worktree):
     <main checkout>\\.venv\\Scripts\\python.exe scripts\\build_game.py [--release] [-O 1] [--out build/sly2]
+                                                                     [--package dist/Sly2]
 
 --release: -O2 and no function tracing (the watchdog then can't report locations).
+--package DIR: also link the player's build into DIR (scripts/package.py, notes/install.md): the same
+  objects as <out>\\sly2.exe, linked as a Windows GUI program (no console window; the log goes to
+  sly2.log in the user data folder) with an icon, version information and a manifest. Its user data
+  lives in %LOCALAPPDATA%\\Sly2 unless DIR holds a portable.txt.
+
+Development builds (<out>\\sly2.exe) are console programs: their settings, memory card and logs stay
+next to the exe as always (runtime/settings.h).
 """
 import argparse
 import os
+import shutil
 import subprocess
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from paths import CLANG, ELF, ROOT, runtime_sources
+from paths import CLANG, ELF, ROOT, TOOLS, runtime_sources
+
+LIBS = ["-lwinmm", "-lgdi32", "-luser32", "-lxinput1_4", "-lsynchronization"]
+WINDRES = TOOLS / "llvm-mingw" / "bin" / "x86_64-w64-mingw32-windres.exe"
+GIT = TOOLS / "git" / "cmd" / "git.exe"
+
+
+MANIFEST = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
+  <assemblyIdentity type="win32" name="Sly2.PC" version="{ver}"/>
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+    <security><requestedPrivileges><requestedExecutionLevel level="asInvoker" uiAccess="false"/></requestedPrivileges></security>
+  </trustInfo>
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application><supportedOS Id="{{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}}"/></application>
+  </compatibility>
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true/pm</dpiAware>
+      <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2, PerMonitor</dpiAwareness>
+      <longPathAware xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">true</longPathAware>
+    </windowsSettings>
+  </application>
+  <dependency><dependentAssembly>
+    <assemblyIdentity type="win32" name="Microsoft.Windows.Common-Controls" version="6.0.0.0"
+                      processorArchitecture="*" publicKeyToken="6595b64144ccf1df" language="*"/>
+  </dependentAssembly></dependency>
+</assembly>
+"""
+
+RC = """#include <winver.h>
+1 ICON "sly2.ico"
+1 24 "sly2.manifest"
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION {v0},{v1},{v2},0
+PRODUCTVERSION {v0},{v1},{v2},0
+FILEFLAGSMASK 0x3F
+FILEFLAGS 0
+FILEOS VOS_NT_WINDOWS32
+FILETYPE VFT_APP
+FILESUBTYPE 0
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904B0"
+    BEGIN
+      VALUE "CompanyName", "sly2-decomp (unofficial fan port)"
+      VALUE "FileDescription", "Sly 2: Band of Thieves"
+      VALUE "FileVersion", "{v0}.{v1}.{v2}"
+      VALUE "InternalName", "sly2"
+      VALUE "OriginalFilename", "sly2.exe"
+      VALUE "ProductName", "Sly 2: Band of Thieves (native PC port)"
+      VALUE "ProductVersion", "{v0}.{v1}.{v2} ({hash})"
+      VALUE "Comments", "Recompiled from the player's own disc; runs from that disc image."
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x409, 1200
+  END
+END
+"""
+
+README = """Sly 2: Band of Thieves - native PC port (unofficial)
+=====================================================
+
+Start sly2.exe. On the first start it asks for your disc image: an .iso of your own
+Sly 2: Band of Thieves (USA, SCUS-97316) disc. The game checks that it is that disc and
+remembers where it is. The image is read while you play, so leave it where it is (if you
+move it, the game asks again).
+
+Your settings (sly2.ini), memory card saves (memcard\\slot0) and the log (sly2.log) are in
+%LOCALAPPDATA%\\Sly2. Put a file named portable.txt next to sly2.exe to keep them in this
+folder instead.
+
+Alt+Enter or F11: fullscreen. Closing the window ends the game; the window's size, position
+and fullscreen state are remembered. Controls: an Xbox-style controller, or the keyboard.
+
+Saves from an older build (a memcard\\slot0 folder next to an older sly2.exe) are not moved
+automatically: copy that memcard folder into %LOCALAPPDATA%\\Sly2 (or next to this exe in
+portable mode) while the game is not running.
+
+Build {ver} ({hash}).
+"""
 
 
 def compile_one(src: Path, obj_dir: Path, flags: list[str]) -> tuple[Path, str]:
@@ -32,12 +124,53 @@ def compile_one(src: Path, obj_dir: Path, flags: list[str]) -> tuple[Path, str]:
     return obj, (res.stderr if res.returncode else "")
 
 
+def _version() -> tuple[int, str]:
+    """(commit count, short hash) of the source tree, for the version resource."""
+    git = str(GIT) if GIT.exists() else "git"
+    try:
+        n = subprocess.run([git, "rev-list", "--count", "HEAD"], cwd=ROOT, capture_output=True, text=True).stdout
+        h = subprocess.run([git, "rev-parse", "--short", "HEAD"], cwd=ROOT, capture_output=True, text=True).stdout
+        return int(n.strip() or 0), h.strip() or "unknown"
+    except (OSError, ValueError):
+        return 0, "unknown"
+
+
+def package(objs: list[Path], out: Path, dest: Path) -> int:
+    """Link the player's build (GUI subsystem, icon, version info, manifest) into dest."""
+    import make_icon
+    work = out / "package"
+    work.mkdir(parents=True, exist_ok=True)
+    count, ghash = _version()
+    v = (0, 1, count)
+    make_icon.make_ico(work / "sly2.ico")
+    (work / "sly2.manifest").write_text(MANIFEST.format(ver=f"{v[0]}.{v[1]}.{v[2]}.0"), encoding="utf-8")
+    (work / "sly2.rc").write_text(RC.format(v0=v[0], v1=v[1], v2=v[2], hash=ghash), encoding="utf-8")
+    res = work / "sly2_res.o"
+    rc = subprocess.run([str(WINDRES), "-I", str(work), "sly2.rc", "-O", "coff", "-o", str(res)],
+                        cwd=work, capture_output=True, text=True)
+    if rc.returncode:
+        print("resource compiler failed:\n" + (rc.stderr or rc.stdout)[:4000])
+        return 1
+    exe = work / "sly2.exe"
+    link = subprocess.run([str(CLANG), *map(str, objs), str(res), "-mwindows", *LIBS, "-o", str(exe)],
+                          capture_output=True, text=True)
+    if link.returncode:
+        print(link.stderr[:6000])
+        return 1
+    dest.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(exe, dest / "sly2.exe")
+    (dest / "README.txt").write_text(README.format(ver=f"{v[0]}.{v[1]}.{v[2]}", hash=ghash), encoding="utf-8")
+    print(f"packaged {dest / 'sly2.exe'} ({exe.stat().st_size / 1e6:.1f} MB, version {v[0]}.{v[1]}.{v[2]} {ghash})")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--elf", default=str(ELF))
     ap.add_argument("-O", dest="opt", default=None, help="clang optimization level (default 1, or 2 with --release)")
     ap.add_argument("--release", action="store_true")
     ap.add_argument("--out", default=str(ROOT / "build" / "sly2"))
+    ap.add_argument("--package", default=None, metavar="DIR", help="also link the player's build into DIR")
     args = ap.parse_args()
     out = Path(args.out)
     # -fno-auto-import: globals are in this executable, so access them directly instead of through
@@ -85,12 +218,15 @@ def main() -> int:
     print(f"compiled {len(sources)} files ({' '.join(flags)}) in {time.time() - t0:.0f}s")
 
     exe = out / "sly2.exe"
-    link = subprocess.run([str(CLANG), *map(str, objs), "-lwinmm", "-lgdi32", "-luser32", "-lxinput1_4",
-                           "-lsynchronization", "-o", str(exe)], capture_output=True, text=True)
+    link = subprocess.run([str(CLANG), *map(str, objs), *LIBS, "-o", str(exe)], capture_output=True, text=True)
     if link.returncode:
         print(link.stderr[:6000])
         return 1
     print(f"linked {exe} ({exe.stat().st_size / 1e6:.1f} MB) in {time.time() - t0:.0f}s total")
+    if args.package:
+        if not args.release:
+            print("note: --package without --release packages a debug build (-O1, function tracing)")
+        return package(objs, out, Path(args.package))
     return 0
 
 

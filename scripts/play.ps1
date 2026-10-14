@@ -1,8 +1,11 @@
-# Launch Sly 2 (native PC build) in a window, with sound.
+# Launch Sly 2 (native PC build) in a window, with sound, from the source tree.
 #   powershell -ExecutionPolicy Bypass -File scripts\play.ps1 [-Rebuild]
-# Builds the release version on first use (about a minute). Needs your disc image in orig\disc\.
+# Builds the release version on first use (a minute or two). Needs your disc image in orig\disc\.
 # Controls: notes\controls.md (keyboard, or an Xbox-style controller). Alt+Enter / F11: fullscreen.
-# Saves go to build\rel\memcard\slot0 (a PS2 memory card as plain files).
+# Saves go to build\rel\memcard\slot0 (a PS2 memory card as plain files), settings to
+# build\rel\sly2.ini: development builds keep their data next to the exe.
+# For a game folder to start by double-click (no console window, data in %LOCALAPPDATA%\Sly2, the
+# game executable read from the disc image): scripts\package.py -> dist\Sly2 (notes/install.md).
 param([switch]$Rebuild)
 $root = Split-Path $PSScriptRoot -Parent
 $out  = Join-Path $root 'build\rel'
@@ -20,4 +23,7 @@ $env:PS2_ISO = $iso.FullName
 foreach ($v in 'PS2_HEADLESS', 'PS2_WATCHDOG', 'PS2_DUMP_FRAMES', 'PS2_INPUT', 'PS2_AUDIO_NULL', 'PS2_AUDIO_WAV') {
     Remove-Item "Env:\$v" -ErrorAction SilentlyContinue
 }
-Start-Process -FilePath $exe -ArgumentList "`"$elf`"" -WorkingDirectory $out
+# The extracted executable if there is one (any build); without it the game reads it from the disc
+# image (builds with runtime/launch.c).
+if (Test-Path $elf) { Start-Process -FilePath $exe -ArgumentList "`"$elf`"" -WorkingDirectory $out }
+else { Start-Process -FilePath $exe -WorkingDirectory $out }

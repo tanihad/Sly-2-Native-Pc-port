@@ -12,6 +12,7 @@ SLPS_*
 
 # Generated
 build/
+dist/
 asm/
 ghidra/
 
