@@ -1,6 +1,6 @@
 # WIP gpu-C: corpus extension for the D3D11 renderer (notes/d3d11-renderer.md section 11 "C")
 
-**Status: complete** (pending only the final unit-suite run noted below).
+**Status: complete.** tests/run_tests.py 16/16 and all 19 tests/unit/*/run.ps1 suites pass after the runtime change.
 
 **Goal**: new .gsrec recordings (prologue, ep1 hub + m1_brawl, ep2 hub + photo mission, ep4 hub +
 m4_hack, FMV, loading screen, pause/save/ThiefNet menus) with the sw renderer, census on each,
