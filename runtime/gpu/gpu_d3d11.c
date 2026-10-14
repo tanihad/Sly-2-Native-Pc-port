@@ -181,6 +181,15 @@ static void signal_done(volatile long* done) {
     WakeByAddressAll((PVOID)done);
 }
 
+volatile long gpu_rt_phase;             /* what the render thread does now (hang diagnostics) */
+
+void gpu_debug_state(char* buf, size_t n) {
+    char cmd[256];
+    gpu_cmd_debug(cmd, sizeof cmd);
+    long ph = gpu_rt_phase;
+    snprintf(buf, n, "render thread phase %ld (op %ld) | %s", ph & 0xFF, ph >> 8, cmd);
+}
+
 static DWORD WINAPI rt_main(LPVOID arg) {
     (void)arg;
     rt_ok = device_create() && gpu_present_init();
@@ -188,6 +197,7 @@ static DWORD WINAPI rt_main(LPVOID arg) {
     SetEvent(rt_started);
     if (!rt_ok) return 1;
     for (;;) {
+        gpu_rt_phase = GPU_PH_POLL;
         const gpu_cmd* c = gpu_cmd_next(0);
         if (!c) {
             ID3D11DeviceContext_Flush(gpu_rt.ctx);        /* idle: let the GPU start what is queued */
@@ -195,8 +205,10 @@ static DWORD WINAPI rt_main(LPVOID arg) {
                 gpu_present_poll(1);
                 continue;
             }
+            gpu_rt_phase = GPU_PH_IDLE;
             c = gpu_cmd_next(-1);
         }
+        gpu_rt_phase = GPU_PH_EXEC | (long)c->op << 8;
         int stop = 0;
         switch (c->op) {
         case GPU_OP_NOP: break;

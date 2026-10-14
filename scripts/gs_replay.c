@@ -43,6 +43,7 @@ static const char* outdir;
 static int backend = B_SW;
 static uint64_t sw_hash = 1469598103934665603ull;
 static uint32_t pictures;
+static volatile long progress, stage;    /* watchdog: stage 0 replay, 1 GS sync, 2 verify flush, 3 GPU finish */
 
 static void hash_picture(const uint32_t* frame, int ok, int w, int h, int stride) {
     uint64_t hsh = sw_hash;
@@ -112,6 +113,7 @@ static void verify_cb(const gpu_pic_diff* d, const uint32_t* sw, const uint32_t*
         recs = realloc(recs, caprecs * sizeof *recs);
         if (!recs) { fprintf(stderr, "out of memory\n"); exit(1); }
     }
+    progress++;
     memset(&recs[nrecs], 0, sizeof recs[nrecs]);
     recs[nrecs++].d = *d;
     if (d->diff_px) {
@@ -192,6 +194,7 @@ static void write_metrics(const char* path, const char* rec, const char* adapter
 /* the picture of a VBlank (on the GS thread's pixel worker with workers, else on this thread) */
 static void picture(const uint32_t* frame, int ok, int w, int h, uint32_t vblank) {
     pictures++;
+    progress++;
     hash_picture(frame, ok, w, h, 1024);
 #ifdef GS_REPLAY_GPU
     if (backend != B_SW) { gpu_verify_picture(frame, ok, w, h, 1024, vblank); return; }
@@ -200,6 +203,31 @@ static void picture(const uint32_t* frame, int ok, int w, int h, uint32_t vblank
 }
 
 static int rd(FILE* f, void* p, size_t n) { return fread(p, 1, n, f) == n; }
+
+/* Watchdog: a replay that makes no progress for 60 s prints where it is and exits with code 4, so
+ * a harness (gpu_diff_all.ps1) never waits forever on a deadlock. */
+static DWORD WINAPI watchdog(LPVOID arg) {
+    (void)arg;
+    long last = -1;
+    int still = 0;
+    for (;;) {
+        Sleep(1000);
+        long p = progress;
+        if (p != last) { last = p; still = 0; continue; }
+        if (++still < 60) continue;
+        fprintf(stderr, "WATCHDOG: no progress for 60 s (stage %ld, %u pictures delivered)\n", stage, pictures);
+#ifdef GS_REPLAY_GPU
+        if (backend != B_SW) {
+            char buf[512];
+            gpu_debug_state(buf, sizeof buf);
+            fprintf(stderr, "WATCHDOG: %zu compared, verify waits for vblank %ld | %s\n", nrecs, gpu_verify_waiting - 1, buf);
+        }
+#endif
+        fflush(stderr);
+        ExitProcess(4);
+    }
+    return 0;
+}
 
 int main(int argc, char** argv) {
     if (argc < 3) {
@@ -220,6 +248,7 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--metrics") && i + 1 < argc) metrics = argv[++i];
         else workers = atoi(argv[i]);
     }
+    CreateThread(NULL, 0, watchdog, NULL, 0, NULL);
 #ifndef GS_REPLAY_GPU
     if (backend != B_SW) { fprintf(stderr, "this runtime has no GPU backend (runtime/gpu): only --backend sw\n"); return 2; }
     (void)adapter; (void)metrics;
@@ -303,6 +332,7 @@ int main(int argc, char** argv) {
             gs_image_write(all + pos, h[1]);
             pos += (h[1] + 3) & ~3u;
         } else if (h[0] == 3) {
+            progress++;
             uint64_t snap[GS_PRIV_SNAPSHOT];
             if (pos + sizeof snap > size) break;
             memcpy(snap, all + pos, sizeof snap);
@@ -322,6 +352,8 @@ int main(int argc, char** argv) {
             return 1;
         }
     }
+    stage = 1;
+    progress++;
     if (workers > 0) gs_sync();
     QueryPerformanceCounter(&q1);
     double ms = (double)(q1.QuadPart - q0.QuadPart) * 1000.0 / (double)qf.QuadPart;
@@ -331,7 +363,11 @@ int main(int argc, char** argv) {
     int rc = 0;
 #ifdef GS_REPLAY_GPU
     if (backend != B_SW) {
+        stage = 2;
+        progress++;
         gpu_verify_flush();                      /* the GS thread is idle: this thread is the producer now */
+        stage = 3;
+        progress++;
         gpu_finish();
         take_stats();
         fprintf(stderr, "%s: %zu pictures compared, %u differ (%llu pixels), min PSNR %.2f dB\n",

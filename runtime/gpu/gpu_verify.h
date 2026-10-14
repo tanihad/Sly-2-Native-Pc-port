@@ -26,3 +26,4 @@ int  gpu_verify_init(int depth, gpu_verify_cb cb, void* user);   /* depth: pictu
 void gpu_verify_picture(const uint32_t* frame, int ok, int w, int h, int stride, uint32_t vblank);
 void gpu_verify_flush(void);             /* compare everything still in flight */
 void gpu_verify_free(void);
+extern volatile long gpu_verify_waiting;   /* 1 + VBlank whose read-back is awaited (diagnostics) */

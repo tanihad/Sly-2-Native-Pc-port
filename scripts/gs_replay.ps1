@@ -10,10 +10,12 @@
 #                         (exit code 3 when any pixel differs; differing frames as _sw/_hw/_diff.png)
 #   -Adapter hw|warp      hardware adapter (default) or the WARP software rasterizer
 #   -Metrics <file.json>  per-VBlank comparison counts and D3D/CPU/GPU timings
+#   -Log <file>           the replay's stderr goes to this file
+# A replay without progress for 60 s prints its state and exits with code 4 (watchdog).
 # Every run prints "sw-hash", a hash of all sw pictures (unchanged renderer -> unchanged hash).
 param([Parameter(Mandatory = $true)][string]$Rec, [string]$Out = "", [string]$Runtime = "", [int]$Workers = 0,
       [switch]$Bench, [ValidateSet('sw', 'hw', 'both')][string]$Backend = 'sw',
-      [ValidateSet('hw', 'warp')][string]$Adapter = 'hw', [string]$Metrics = "")
+      [ValidateSet('hw', 'warp')][string]$Adapter = 'hw', [string]$Metrics = "", [string]$Log = "")
 $root = Split-Path $PSScriptRoot -Parent
 $main = $root
 if (-not (Test-Path (Join-Path $root 'tools\llvm-mingw'))) {            # worktree: tools live in the main checkout
@@ -51,7 +53,14 @@ $run = Join-Path $Out ("gs_replay_{0}.exe" -f $PID)
 Copy-Item $exe $run -Force
 $runArgs = @($Rec, $(if ($Bench) { '-' } else { $Out }), $Workers, '--backend', $Backend, '--adapter', $Adapter)
 if ($Metrics) { $runArgs += @('--metrics', $Metrics) }
-& $run @runArgs
+if ($Log) {
+    # real redirection by cmd: nested PowerShell pipes of a chatty native stderr are slow and once
+    # stalled a corpus run (notes/wip/gpu-M0.md)
+    $quoted = ($runArgs | ForEach-Object { '"' + $_ + '"' }) -join ' '
+    & cmd /c "`"`"$run`" $quoted 2>`"$Log`"`""
+} else {
+    & $run @runArgs
+}
 $rc = $LASTEXITCODE
 Remove-Item $run -ErrorAction SilentlyContinue
 exit $rc

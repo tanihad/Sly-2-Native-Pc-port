@@ -16,20 +16,50 @@ from pathlib import Path
 from paths import CLANG, ELF, ROOT, runtime_sources
 
 
+GPU_DIR = ROOT / "runtime" / "gpu"
+GEN_DIR = ROOT / "build" / "gen"                   # generated headers (build/gen/gpu_shaders.h)
+
+
 def compile_one(src: Path, obj_dir: Path, flags: list[str]) -> tuple[Path, str]:
-    obj = obj_dir / src.with_suffix(".o").name     # never next to the source
+    gpu = src.parent == GPU_DIR
+    obj = obj_dir / (("gpu_" if gpu and not src.name.startswith("gpu_") else "") + src.with_suffix(".o").name)
     if src.parent.name == "vu":
         # recompiled VU microcode: already SIMD; clang's SLP vectorizer only costs minutes on these
         # huge functions (recomp/vu_recomp.py)
         flags = flags + ["-fno-slp-vectorize"]
-    headers = max(h.stat().st_mtime for h in (ROOT / "runtime").glob("*.h"))
+    deps = list((ROOT / "runtime").glob("*.h"))
+    if gpu:                                        # only the GPU backend depends on its headers/shaders
+        deps += list(GPU_DIR.glob("*.h")) + [GEN_DIR / "gpu_shaders.h"]
+    headers = max(h.stat().st_mtime for h in deps)
     stamp = obj_dir / "flags.txt"
     if obj.exists() and obj.stat().st_mtime > max(src.stat().st_mtime, headers, stamp.stat().st_mtime):
         return obj, ""
     res = subprocess.run([str(CLANG), *flags, "-std=c11", "-c", "-Wno-unused-label", "-Wno-unused-variable",
-                          "-I", str(ROOT / "runtime"), "-I", str(src.parent), str(src), "-o", str(obj)],
+                          "-I", str(ROOT / "runtime"), "-I", str(src.parent), "-I", str(GEN_DIR), str(src),
+                          "-o", str(obj)],
                          capture_output=True, text=True)
     return obj, (res.stderr if res.returncode else "")
+
+
+def build_shaders() -> str:
+    """scripts/hlslc.c -> build/tools/hlslc.exe, then runtime/gpu/shaders/perms.txt ->
+    build/gen/gpu_shaders.h with the System32 d3dcompiler_47.dll (notes/d3d11-renderer.md 9).
+    Returns an error message, or "" on success."""
+    hlslc_src = ROOT / "scripts" / "hlslc.c"
+    hlslc = ROOT / "build" / "tools" / "hlslc.exe"
+    hlslc.parent.mkdir(parents=True, exist_ok=True)
+    GEN_DIR.mkdir(parents=True, exist_ok=True)
+    if not hlslc.exists() or hlslc.stat().st_mtime < hlslc_src.stat().st_mtime:
+        res = subprocess.run([str(CLANG), "-O1", "-std=c11", "-Wall", "-Wextra", "-o", str(hlslc), str(hlslc_src)],
+                             capture_output=True, text=True)
+        if res.returncode:
+            return "hlslc build failed:\n" + res.stderr
+    res = subprocess.run([str(hlslc), str(GPU_DIR / "shaders" / "perms.txt"), str(GEN_DIR / "gpu_shaders.h")],
+                         capture_output=True, text=True)
+    if res.returncode:
+        return "shader compilation failed:\n" + res.stdout + res.stderr
+    print(res.stdout.strip())
+    return ""
 
 
 def main() -> int:
@@ -71,8 +101,15 @@ def main() -> int:
     if not stamp.exists() or stamp.read_text() != " ".join(flags):
         stamp.write_text(" ".join(flags))              # flag change: rebuild everything
 
+    # The Direct3D 11 GS backend (runtime/gpu, notes/d3d11-renderer.md): shaders first, compile
+    # errors fail the build. Selected at run time by PS2_GS_BACKEND (default sw).
+    err = build_shaders()
+    if err:
+        print(err[:6000])
+        return 1
+
     sources = (sorted((out / "recomp").glob("*.c")) + sorted((out / "iop").glob("*.c")) +
-               sorted((out / "vu").glob("*.c")) + runtime_sources())
+               sorted((out / "vu").glob("*.c")) + runtime_sources() + sorted(GPU_DIR.glob("*.c")))
     objs, errors = [], []
     with ThreadPoolExecutor(max_workers=os.cpu_count()) as pool:
         for obj, err in pool.map(lambda s: compile_one(s, obj_dir, flags), sources):

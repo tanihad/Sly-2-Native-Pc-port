@@ -31,6 +31,9 @@ typedef struct {
 
 extern gpu_rt_state gpu_rt;
 
+enum { GPU_PH_IDLE = 1, GPU_PH_POLL, GPU_PH_EXEC, GPU_PH_MAP_WAIT, GPU_PH_TS_WAIT, GPU_PH_SWAP_WAIT };
+extern volatile long gpu_rt_phase;
+
 void gpu_log(const char* fmt, ...);
 
 /* shader objects created on first use from the build-time blobs (build/gen/gpu_shaders.h) */

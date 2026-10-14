@@ -679,6 +679,12 @@ int main(int argc, char** argv) {
     /* The GS on its own thread plus pixel workers (PS2_GS_ASYNC=0: synchronous, as in the unit
      * tests; PS2_GS_THREADS=<n>: pixel workers, default half the logical processors minus one, at
      * most 8). */
+    /* PS2_GS_BACKEND=sw|hw: GS backend (notes/d3d11-renderer.md). The Direct3D 11 backend
+     * (runtime/gpu) runs in scripts/gs_replay only until it is wired into the game (milestone M6),
+     * so the software renderer is the default and, for now, the only in-game backend. */
+    const char* gb = getenv("PS2_GS_BACKEND");
+    if (gb && strcmp(gb, "sw") != 0)
+        fprintf(stderr, "[ps2] PS2_GS_BACKEND=%s: the GPU backend is not available in the game yet; using sw\n", gb);
     const char* ga = getenv("PS2_GS_ASYNC");
     if (!dump_regs && !(ga && atoi(ga) == 0)) {
         int ncpu = (int)GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);

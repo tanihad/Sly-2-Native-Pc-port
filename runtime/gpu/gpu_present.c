@@ -264,10 +264,13 @@ static int ts_complete(int block) {             /* oldest timestamp set; returns
     D3D11_QUERY_DATA_TIMESTAMP_DISJOINT dj;
     UINT flags = block ? 0 : D3D11_ASYNC_GETDATA_DONOTFLUSH;
     HRESULT hr;
+    long ph = gpu_rt_phase;
+    if (block) gpu_rt_phase = GPU_PH_TS_WAIT;
     while ((hr = ID3D11DeviceContext_GetData(gpu_rt.ctx, (ID3D11Asynchronous*)P.ts[i].dis, &dj, sizeof dj, flags)) == S_FALSE) {
-        if (!block) return 1;
+        if (!block) { gpu_rt_phase = ph; return 1; }
         SwitchToThread();
     }
+    gpu_rt_phase = ph;
     UINT64 t0 = 0, t1 = 0;
     if (hr == S_OK) {
         while (ID3D11DeviceContext_GetData(gpu_rt.ctx, (ID3D11Asynchronous*)P.ts[i].t0, &t0, sizeof t0, 0) == S_FALSE) SwitchToThread();
@@ -395,7 +398,12 @@ void gpu_exec_present(const void* payload) {
             P.bb_w = rc.right;
             P.bb_h = rc.bottom;
         }
-        if (P.waitable) WaitForSingleObjectEx(P.waitable, 100, TRUE);
+        if (P.waitable) {
+            long ph = gpu_rt_phase;
+            gpu_rt_phase = GPU_PH_SWAP_WAIT;
+            WaitForSingleObjectEx(P.waitable, 100, TRUE);
+            gpu_rt_phase = ph;
+        }
     }
     static const float black[4] = { 0, 0, 0, 1 };
     ID3D11DeviceContext_ClearRenderTargetView(gpu_rt.ctx, P.rtv, black);
@@ -441,8 +449,11 @@ static void pend_complete(int block) {
     int i = P.pend_head;
     ID3D11Texture2D* st = P.stage[P.pend[i].slot];
     D3D11_MAPPED_SUBRESOURCE m;
+    long ph = gpu_rt_phase;
+    if (block) gpu_rt_phase = GPU_PH_MAP_WAIT;
     HRESULT hr = ID3D11DeviceContext_Map(gpu_rt.ctx, (ID3D11Resource*)st, 0, D3D11_MAP_READ,
                                          block ? 0 : D3D11_MAP_FLAG_DO_NOT_WAIT, &m);
+    gpu_rt_phase = ph;
     if (hr == DXGI_ERROR_WAS_STILL_DRAWING) return;
     gpu_readback* rb = P.pend[i].rb;
     int w = P.pend[i].w, h = P.pend[i].h, status = 0;

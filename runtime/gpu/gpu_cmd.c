@@ -2,6 +2,7 @@
 #include "gpu_cmd.h"
 
 #include <stdatomic.h>
+#include <stdio.h>
 #include <string.h>
 #include <windows.h>
 
@@ -123,6 +124,13 @@ void gpu_cmd_commit(void) {
 }
 
 uint64_t gpu_cmd_written(void) { return cmd_wr; }
+
+void gpu_cmd_debug(char* buf, size_t n) {
+    snprintf(buf, n, "cmd wr %llu pub %llu rd %llu cons %llu | data wr %llu rd %llu | sleeping %d waiting %d",
+             (unsigned long long)cmd_wr, (unsigned long long)atomic_load(&cmd_pub), (unsigned long long)atomic_load(&cmd_rd),
+             (unsigned long long)cons_rd, (unsigned long long)data_wr, (unsigned long long)atomic_load(&data_rd),
+             atomic_load(&cons_sleeping), atomic_load(&prod_waiting));
+}
 
 /* ---- consumer ---- */
 

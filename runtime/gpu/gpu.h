@@ -76,6 +76,8 @@ void gpu_wait_readback(gpu_readback* rb);
 void gpu_run_sync(void (*fn)(void* arg), void* arg);
 /* Wait until the render thread has executed everything queued so far and the GPU is idle. */
 void gpu_finish(void);
+/* One line describing the render thread and the command rings (hang diagnostics; any thread). */
+void gpu_debug_state(char* buf, size_t n);
 
 /* Per-picture statistics, completed in order (GPU time needs the timestamp queries to resolve). */
 typedef struct {

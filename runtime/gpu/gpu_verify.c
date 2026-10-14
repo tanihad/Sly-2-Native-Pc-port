@@ -74,9 +74,13 @@ int gpu_verify_init(int depth, gpu_verify_cb cb, void* user) {
     return 1;
 }
 
+volatile long gpu_verify_waiting;        /* 1 + vblank whose read-back is being waited for, else 0 */
+
 static void retire(void) {
     slot* s = &slots[head];
+    gpu_verify_waiting = (long)s->vblank + 1;
     gpu_wait_readback(&s->rb);
+    gpu_verify_waiting = 0;
     gpu_pic_diff d;
     memset(&d, 0, sizeof d);
     d.vblank = s->vblank;

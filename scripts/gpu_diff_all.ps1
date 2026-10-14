@@ -9,7 +9,6 @@
 # tolerances stay as they are). Recordings are read in place and never modified.
 param([ValidateSet('hw', 'warp')][string]$Adapter = 'hw', [int]$Workers = 4, [string[]]$Only = @(), [switch]$Update,
       [string]$CorpusRoot = "", [switch]$AllowMissing)
-$ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 $main = $root
 if (-not (Test-Path (Join-Path $root 'tools\llvm-mingw'))) {
@@ -46,10 +45,10 @@ foreach ($r in $baseline.recordings) {
     $metrics = Join-Path $out 'metrics.json'
     if (Test-Path $metrics) { Remove-Item $metrics }
     $t0 = Get-Date
-    $log = & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'gs_replay.ps1') -Rec $rec -Out $out `
-        -Workers $Workers -Backend both -Adapter $Adapter -Metrics $metrics 2>&1 | ForEach-Object { "$_" }
+    $logFile = Join-Path $out 'replay.log'
+    & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'gs_replay.ps1') -Rec $rec -Out $out `
+        -Workers $Workers -Backend both -Adapter $Adapter -Metrics $metrics -Log $logFile | Out-Null
     $code = $LASTEXITCODE
-    $log | Set-Content (Join-Path $out 'replay.log')
     $row.seconds = [math]::Round(((Get-Date) - $t0).TotalSeconds, 1)
     if (-not (Test-Path $metrics)) {
         $row.status = 'FAIL'; $row.why = "replay failed (exit $code), see $out\replay.log"; $failed++

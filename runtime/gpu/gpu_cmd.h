@@ -41,6 +41,7 @@ void* gpu_cmd_alloc(uint32_t op, uint32_t payload_bytes);   /* returns the paylo
 void  gpu_cmd_commit(void);               /* the command allocated last is complete */
 void  gpu_cmd_publish(void);              /* make everything committed visible now */
 uint64_t gpu_cmd_written(void);           /* bytes of commands committed so far (for tests) */
+void  gpu_cmd_debug(char* buf, size_t n); /* ring positions, for hang diagnostics */
 
 /* ---- consumer ---- */
 /* Next command, or NULL when none arrives within wait_ms (0: poll, < 0: wait forever). */
