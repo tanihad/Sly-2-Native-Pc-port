@@ -2,6 +2,20 @@
 
 ## Resume here (read first in a new session)
 
+**Main 60f11e6 (2026-10-14): whole-game sweep COMPLETE and merged.** Prologue and Episodes 1-8 were
+each played end to end by a tester (every job started, completion flows + autosaves checked,
+every episode transition through the Episode 8 credits). Merged: next/integrate (all ep branches,
+VU review fix 11a6c10, IOP on its own host thread with MMCSS + mixer hold PS2_AUDIO_IOP_LIMIT,
+async host logging, PCRTC field-mode fix, pixel-worker start-race fix, sd.c noise-voice fix, debug
+tools PS2_TASK_SET/FILE, PS2_POKE variants, live 'pause'/'release'/'calls'/'watch' tokens).
+Regression on main (release, quiet-ish machine): boot -> museum 200 s, 60.0 VBlanks/s average
+(min 58), 0 underruns, 153 MB committed flat; all 17 unit suites + run_tests pass.
+Open (from notes/wip/integrate.md on next/integrate): one 5.07 s EE stall seen once under load at
+the briefing->museum load (not reproduced); music-stop-under-heavy-load fix merged but not
+re-verified with ~10 games running; ep6 moose "polygon shards" when the camera is inside the
+model (unverified, probably game-side); ep7 one-frame blue band at an RC camera cut (not
+reproduced). Performance limit: the software GS thread (~16 ms/VBlank) -> the GPU renderer.
+
 **GPU renderer (2026-10-14):** design finished: `notes/d3d11-renderer.md` on branch next/gpu
 (= next/d3d11). Design 1 (GS draws -> D3D11 draws at an integer internal scale, exact integer depth,
 ROV paths for what fixed-function blending can't express; software renderer stays the default and
