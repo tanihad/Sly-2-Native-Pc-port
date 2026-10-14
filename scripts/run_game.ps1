@@ -6,8 +6,11 @@
 # Headless by default (no window, audio rendered in real time into a null sink); -Window shows it
 # and plays sound through the default device. -Wav also records everything the mixer renders.
 # Works from a git worktree too.
+# -Exe <name>: run <Out>\<name> instead of <Out>\sly2.exe. When other game instances run on this
+# machine, run a copy under a unique name (sly2_<who>_<run>.exe): an exe named sly2.exe can be
+# killed by someone else's kill-by-name.
 param([int]$Seconds = 5, [int]$Skip = 0, [string]$Out = "", [string]$Dump = "", [int]$DumpEvery = 60,
-      [switch]$Window, [string]$Wav = "", [string]$Pad = "", [string]$Card = "")
+      [switch]$Window, [string]$Wav = "", [string]$Pad = "", [string]$Card = "", [string]$Exe = "")
 $root = Split-Path $PSScriptRoot -Parent
 $main = $root
 if (-not (Test-Path (Join-Path $root 'orig\SCUS_973.16'))) {   # worktree: find the main checkout
@@ -18,7 +21,7 @@ if (-not (Test-Path (Join-Path $root 'orig\SCUS_973.16'))) {   # worktree: find 
     }
 }
 if (-not $Out) { $Out = Join-Path $root 'build\sly2' }
-$exe = Join-Path $Out 'sly2.exe'
+$exe = Join-Path $Out $(if ($Exe) { $Exe } else { 'sly2.exe' })
 $log = Join-Path $Out 'run.log'
 
 $env:PS2_WATCHDOG = "$Seconds"

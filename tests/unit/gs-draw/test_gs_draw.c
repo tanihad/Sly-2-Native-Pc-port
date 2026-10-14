@@ -26,6 +26,18 @@ static uint32_t synced_mem_read(int psm, uint32_t bp, uint32_t bw, int x, int y)
     return gs_mem_read(psm, bp, bw, x, y);
 }
 #define gs_mem_read synced_mem_read
+
+/* The EE's wait for the GS thread keeps the wait hook (the runtime's IOP service) running. The
+ * picture of VBlank 1 is presented only after the hook has run a few times; queueing VBlank 2 waits
+ * for that picture, so it can only return if the hook runs during the wait. */
+static volatile LONG hook_calls, present_hold;
+static void count_hook(void) { InterlockedIncrement(&hook_calls); }
+static void test_present(const uint32_t* frame, int ok, int w, int h, uint32_t vblank) {
+    (void)frame; (void)ok; (void)w; (void)h; (void)vblank;
+    if (!present_hold) return;
+    for (int ms = 0; ms < 3000 && hook_calls < 5; ms++) Sleep(1);
+    present_hold = 0;
+}
 #endif
 
 /* ---- test helpers --------------------------------------------------------------------------------- */
@@ -916,6 +928,23 @@ static void t_display(void) {
     uint32_t c2 = gs_mem_read(PSMCT32, 56 * 32, 8, 256, 150);   /* circuit 2 behind output (256, 300) */
     CHECK((c2 & 0xFFFFFF) && out[1024 * 300 + 256] == (((c2 & 0xFF) << 16) | (c2 & 0xFF00) | ((c2 >> 16) & 0xFF)),
           "merge MMOD=0, circuit-1 alpha 0: circuit 2 shows, %06X", out[1024 * 300 + 256]);
+    /* Sly 2's anti-flicker merge: circuit 1 one line down (DBY 1, DH 446), circuit 2 (DBY 0, DH 447),
+     * 50% each. In field mode a circuit shows (DH + 1) / 2 lines per field, rounded down: circuit 1
+     * has 223, so the last output line is circuit 2's line 223 alone, never a mix with the line under
+     * the 224-line buffer (red here) */
+    frame(56, 8, PSMCT32, 0);
+    scissor(0, 511, 0, 224);
+    sprite(0, 0, 512, 224, 255, 255, 255, 0x80);
+    sprite(0, 224, 512, 225, 255, 0, 0, 0x80);
+    v = 0x8027; gs_priv_access(0x12000000, &v, 8, 1);    /* EN1 | EN2, MMOD = 1, ALP = 0x80 */
+    v = 0x1000 | 56 | (1ull << 43); gs_priv_access(0x12000070, &v, 8, 1);   /* DISPFB1: page 56, DBY 1 */
+    v = 0x1BE9FF0203227Cull; gs_priv_access(0x12000080, &v, 8, 1);          /* DISPLAY1: DH 446 */
+    v = 0x1038; gs_priv_access(0x12000090, &v, 8, 1);
+    v = 0x1BF9FF0203227Cull; gs_priv_access(0x120000A0, &v, 8, 1);
+    gs_display(out, 1024, &w, &h);
+    CHECK(h == 448 && out[1024 * 445 + 10] == 0xFFFFFF && out[1024 * 446 + 10] == 0xFFFFFF &&
+          out[1024 * 447 + 10] == 0xFFFFFF, "field mode, circuit 1 with an odd DH: last lines %06X %06X %06X",
+          out[1024 * 445 + 10], out[1024 * 446 + 10], out[1024 * 447 + 10]);
     v = 0; gs_priv_access(0x12000000, &v, 8, 1);
     CHECK(gs_display(out, 1024, &w, &h) == 0, "display off");
 }
@@ -1557,6 +1586,24 @@ static void t_texture_cache_random(void) {
     W(TEX1_1, 0); W(CLAMP_1, 0);
 }
 
+#ifdef TEST_ASYNC
+static void t_wait_hook(void) {
+    gs_sync();
+    gs_set_wait_hook(count_hook);
+    hook_calls = 0;
+    present_hold = 1;
+    gs_queue_vsync(1);                   /* its picture is held back until the hook ran 5 times */
+    gs_queue_vsync(2);                   /* waits for picture 1 */
+    CHECK(hook_calls >= 5 && !present_hold, "wait hook ran %ld times while the EE waited for the GS thread", hook_calls);
+    gs_sync();
+    gs_set_wait_hook(NULL);
+    LONG before = hook_calls;
+    gs_queue_vsync(3);
+    gs_sync();
+    CHECK(hook_calls == before, "no hook calls once removed (%ld)", hook_calls - before);
+}
+#endif
+
 int main(int argc, char** argv) {
     if (argc > 1) outdir = argv[1];
     snprintf(trace_path, sizeof trace_path, "%s/trace.txt", outdir);
@@ -1569,8 +1616,9 @@ int main(int argc, char** argv) {
     _putenv_s("PS2_GS_TRACE_MINSIZE", "0");
     gs_swz_init();
 #ifdef TEST_ASYNC
-    gs_thread_start(3, NULL);
+    gs_thread_start(3, test_present);
     CHECK(gs_async() && gs_draw_workers() == 3, "GS thread and 3 pixel workers running");
+    t_wait_hook();
 #endif
 #ifdef FAKE_LINEAR
     CHECK(!gs_swz_fast, "linear fake layout must disable the fast path");

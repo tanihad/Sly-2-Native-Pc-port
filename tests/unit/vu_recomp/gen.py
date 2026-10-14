@@ -45,6 +45,8 @@ LS2 = {"move": 0x30, "mr32": 0x31, "lqi": 0x34, "sqi": 0x35, "lqd": 0x36, "sqd":
        "esum": 0x76, "esqrt": 0x78, "ersqrt": 0x79, "ercpr": 0x7A, "waitp": 0x7B, "esin": 0x7C, "eatan": 0x7D,
        "eexp": 0x7E}
 L_NOP = 0x8000033C
+INVALID_UPPER = 0x000007FC                  # bits 5-2 = 1111, index 0x7C: no such upper op
+INVALID_LOWER = 0x04000000                  # lower opcode 0x02: no such lower op
 U_NOP = 0x000002FF
 EFU = ["esadd", "ersadd", "eleng", "erleng", "eatanxy", "eatanxz", "esum", "esqrt", "ersqrt", "ercpr", "esin",
        "eatan", "eexp"]
@@ -99,6 +101,10 @@ class Gen:
     def rand_upper(self, flags=0):
         r = self.r
         k = r.random()
+        if r.random() < 0.03:
+            flags |= r.choice([0x01, 0x02, 0x04])  # T, D, M bits: ignored by both (D/T logged once)
+        if r.random() < 0.004:
+            return INVALID_UPPER | flags << 27     # invalid instruction: the compiled code hands over
         if k < 0.3:
             return U_NOP | flags << 27
         if k < 0.55:
@@ -127,6 +133,10 @@ class Gen:
             ops += EFU + ["mfp", "waitp"]
             if allow_kick:
                 ops += ["xgkick"]
+        elif allow_kick and r.random() < 0.02:
+            ops += ["xgkick"]                      # on VU0: invalid (logged), the compiled code hands over
+        if r.random() < 0.004:
+            return INVALID_LOWER | r.randrange(1 << 25)
         op = r.choice(ops)
         lane = 1 << r.randrange(4)
         if op == "nop":
@@ -190,6 +200,8 @@ class Gen:
         loop_at = r.randrange(n) if r.random() < 0.5 else -1
         sub_at = r.randrange(n) if r.random() < 0.5 else -1
         jr_at = r.randrange(n) if r.random() < 0.15 else -1
+        jalr_at = r.randrange(n) if r.random() < 0.25 else -1
+        mid_e_at = r.randrange(n) if r.random() < 0.3 else -1
         fixups = []
         loops = []                       # (counter init, last pair) of each loop: no jumps into them
         loop_start = None
@@ -220,6 +232,17 @@ class Gen:
                 self.emit(U_NOP, lo7("jr", 0, 0, 12))
                 self.emit(self.rand_upper(), self.rand_lower())
                 jr_at = -1
+            elif len(self.pairs) == jalr_at:
+                # JALR through vi13: to the subroutine (a routine start: compiled) or elsewhere (handoff)
+                fixups.append(("jalr", self.emit(U_NOP, 0), r.random() < 0.7))
+                self.emit(self.rand_upper(), lo7("jalr", 0, 14, 13))
+                self.emit(self.rand_upper(), self.rand_lower())
+                jalr_at = -1
+            elif len(self.pairs) == mid_e_at:
+                # end of a routine in the middle: the pair after its delay slot is another entry
+                self.emit(self.rand_upper(0x08), self.rand_lower(False))
+                self.emit(self.rand_upper(), self.rand_lower(False))
+                mid_e_at = -1
             elif kind < 0.08 and len(self.pairs) + 3 < n:
                 # forward conditional branch, often on a just-written VI register
                 b = r.choice(["ibeq", "ibne", "ibltz", "ibgtz", "iblez", "ibgez"])
@@ -232,7 +255,8 @@ class Gen:
                 ds = self.rand_lower()
                 if r.random() < 0.03:
                     ds = lo7("b", 0, 0, 0, r.randrange(1, 4))                         # branch in the delay slot
-                self.emit(self.rand_upper(), ds)
+                # E bit in a branch delay slot: the pair at the target is the E delay slot
+                self.emit(self.rand_upper(0x08 if r.random() < 0.04 else 0), ds)
             elif kind < 0.1 and len(self.pairs) + 3 < n:
                 fixups.append(("b", self.emit(self.rand_upper(), lo7("b")), r.randrange(2, 8)))
                 self.emit(self.rand_upper(), self.rand_lower())
@@ -246,10 +270,21 @@ class Gen:
             k = self.emit(self.rand_upper(), lo7("b", 0, 0, 0, -1))
             self.emit(self.rand_upper(), self.rand_lower())
         end = len(self.pairs)
-        self.emit(self.rand_upper(0x08), self.rand_lower(False) if r.random() < 0.7 else L_NOP)   # E bit
-        self.emit(self.rand_upper(), self.rand_lower(False))                                        # delay slot
+        kind = r.random()
+        if kind < 0.12:                                    # E bit on a branch: TPC = its target
+            fixups.append(("tosub", self.emit(self.rand_upper(0x08), lo7("b"))))
+        elif kind < 0.24:
+            fixups.append(("tosub", self.emit(self.rand_upper(0x08), lo7(
+                r.choice(["ibeq", "ibne", "ibltz", "ibgtz", "iblez", "ibgez"]), 0, r.choice(VIW), r.choice(VIW)))))
+        else:
+            self.emit(self.rand_upper(0x08), self.rand_lower(False) if r.random() < 0.7 else L_NOP)   # E bit
+        if kind >= 0.24 and r.random() < 0.15:             # a branch in the E delay slot (BAL writes its link)
+            fixups.append(("tosub", self.emit(self.rand_upper(), lo7(r.choice(["b", "bal"]), 0, 14))))
+        else:
+            self.emit(self.rand_upper(), self.rand_lower(False))                                    # delay slot
         # subroutine after the end: a few pairs, JR vi14
         sub = len(self.pairs)
+        self.sub = sub
         for _ in range(r.randrange(1, 5)):
             self.emit(self.rand_upper(), self.rand_lower())
         self.emit(U_NOP, lo7("jr", 0, 0, 14))
@@ -265,10 +300,38 @@ class Gen:
                 self.pairs[k][1] = lo7("bal", 0, 14, 0, sub - (k + 1))
             elif f[0] == "jr":
                 self.pairs[k][1] = iaddiu(12, 0, outside_loops(min(k + 3 + r.randrange(0, 6), end)))
+            elif f[0] == "jalr":
+                self.pairs[k][1] = iaddiu(13, 0, sub if f[2] else outside_loops(min(k + 3 + r.randrange(0, 6), end)))
+            elif f[0] == "tosub":
+                self.pairs[k][1] = (self.pairs[k][1] & ~0x7FF) | ((sub - (k + 1)) & 0x7FF)
             else:
                 tgt = outside_loops(min(k + f[2], end))
                 self.pairs[k][1] = (self.pairs[k][1] & ~0x7FF) | ((tgt - (k + 1)) & 0x7FF)
         return [u << 32 | l for u, l in self.pairs]
+
+
+def lookup_images() -> list[Image]:
+    """Small hand-made images for test_vu_lookup.c (runtime/vu.c's choice of compiled code: entries,
+    stale code after micro memory writes, partial overlaps, VU0 vs VU1, code that runs off its image)."""
+    e = U_NOP | 0x08 << 27
+    la = [U_NOP << 32 | iaddiu(1, 0, 0x11), e << 32 | L_NOP, U_NOP << 32 | L_NOP,      # routine 0x0000
+          U_NOP << 32 | iaddiu(1, 0, 0x22), U_NOP << 32 | iaddiu(2, 1, 1),             # routine 0x0018
+          e << 32 | L_NOP, U_NOP << 32 | L_NOP]
+    lb = [e << 32 | iaddiu(1, 0, 0x33), U_NOP << 32 | L_NOP]                            # over la's start
+    lc = [U_NOP << 32 | iaddiu(3, 0, 5), U_NOP << 32 | lo_s1("iaddi", 3, 3, 1)]          # at 8, no E bit
+    # a pair the compiled code cannot run (invalid instruction, XGKICK on VU0) in the delay slot of a
+    # conditional branch or JR: the interpreter takes over at the delay slot and must continue at the
+    # branch target
+    ld = [U_NOP << 32 | iaddiu(1, 0, 3), U_NOP << 32 | lo7("ibne", 0, 1, 0, 4 - 2),   # ibne vi1, vi0 -> 4
+          U_NOP << 32 | INVALID_LOWER, U_NOP << 32 | iaddiu(2, 0, 0x77),
+          e << 32 | iaddiu(3, 0, 0x99), U_NOP << 32 | L_NOP]
+    le = [U_NOP << 32 | iaddiu(5, 0, 4), U_NOP << 32 | lo7("jr", 0, 0, 5),             # jr vi5 -> 4
+          INVALID_UPPER << 32 | L_NOP, U_NOP << 32 | iaddiu(2, 0, 0x77),
+          e << 32 | iaddiu(3, 0, 0x99), U_NOP << 32 | L_NOP]
+    lf = [U_NOP << 32 | lo7("ibeq", 0, 0, 0, 3 - 1), U_NOP << 32 | lo_s2("xgkick", 0, 0, 0),  # VU0
+          U_NOP << 32 | iaddiu(2, 0, 0x77), e << 32 | iaddiu(3, 0, 0x99), U_NOP << 32 | L_NOP]
+    return [Image("la", 1, [(0, la)]), Image("lb", 1, [(0, lb)]), Image("lc", 1, [(8, lc)]),
+            Image("ld", 1, [(0, ld)]), Image("le", 1, [(0, le)]), Image("lf", 0, [(0, lf)])]
 
 
 def main() -> int:
@@ -276,10 +339,15 @@ def main() -> int:
     ap.add_argument("out")
     ap.add_argument("--count", type=int, default=160)
     ap.add_argument("--seed", type=int, default=1)
+    ap.add_argument("--cap", type=int, default=0, help="versions per block (recomp default if 0): low "
+                    "values exercise the version-cap handoff")
     args = ap.parse_args()
+    if args.cap:
+        import recomp.vu_recomp as vr
+        vr.MAX_VERSIONS_PER_PC = args.cap
     out = Path(args.out)
     rng = random.Random(args.seed)
-    images, blob = [], bytearray()
+    images, subs = [], []
     for i in range(args.count):
         unit = 1 if i % 4 else 0
         g = Gen(rng, unit)
@@ -288,12 +356,29 @@ def main() -> int:
             raws = raws[:500]
         for pc, raw in enumerate(raws):                                  # the encoder must round-trip
             op = decode(raw, pc, 0x7FF if unit else 0x1FF)
-            assert op.up != "invalid" and op.lo != "invalid", (i, pc, hex(raw))
-        images.append(Image(f"fuzz{i}", unit, [(0, raws)], [0]))
-        blob += struct.pack("<II", unit, len(raws)) + b"".join(struct.pack("<Q", x) for x in raws)
+            assert op.up != "invalid" or (raw >> 32) & 0x07FFFFFF == INVALID_UPPER, (i, pc, hex(raw))
+            assert op.lo != "invalid" or raw & 0xFE000000 == INVALID_LOWER, (i, pc, hex(raw))
+        # entries: the image start and every routine start (recomp default_entries), as the game uses
+        images.append(Image(f"fuzz{i}", unit, [(0, raws)]))
+        subs.append(g.sub)
     out.mkdir(parents=True, exist_ok=True)
-    (out / "programs.bin").write_bytes(bytes(blob))
     report = write_units(images, out / "gen", "fz")
+    # programs.bin: unit, pair count, entry count, entries (all but those in the subroutine after the
+    # end, which returns through a random vi14), pairs
+    blob = bytearray()
+    for img, sub in zip(images, subs):
+        raws = img.chunks[0][1]
+        ents = [e for e in img.entries if e < sub]
+        blob += struct.pack("<III", img.unit, len(raws), len(ents)) + b"".join(struct.pack("<I", e) for e in ents)
+        blob += b"".join(struct.pack("<Q", x) for x in raws)
+    (out / "programs.bin").write_bytes(bytes(blob))
+    lk = lookup_images()
+    write_units(lk, out / "lk", "lk")
+    blob = bytearray()                       # lk_images.bin: unit, start, pair count, pairs (per image)
+    for img in lk:
+        start, raws = img.chunks[0]
+        blob += struct.pack("<III", img.unit, start, len(raws)) + b"".join(struct.pack("<Q", x) for x in raws)
+    (out / "lk_images.bin").write_bytes(bytes(blob))
     hand = sum(1 for line in report if "handoffs" in line)
     print(f"{len(images)} random programs, {hand} with handoff sites -> {out}")
     return 0

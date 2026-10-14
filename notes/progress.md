@@ -2,12 +2,64 @@
 
 ## Resume here (read first in a new session)
 
+**Main 60f11e6 (2026-10-14): whole-game sweep COMPLETE and merged.** Prologue and Episodes 1-8 were
+each played end to end by a tester (every job started, completion flows + autosaves checked,
+every episode transition through the Episode 8 credits). Merged: next/integrate (all ep branches,
+VU review fix 11a6c10, IOP on its own host thread with MMCSS + mixer hold PS2_AUDIO_IOP_LIMIT,
+async host logging, PCRTC field-mode fix, pixel-worker start-race fix, sd.c noise-voice fix, debug
+tools PS2_TASK_SET/FILE, PS2_POKE variants, live 'pause'/'release'/'calls'/'watch' tokens).
+Regression on main (release, quiet-ish machine): boot -> museum 200 s, 60.0 VBlanks/s average
+(min 58), 0 underruns, 153 MB committed flat; all 17 unit suites + run_tests pass.
+Open (from notes/wip/integrate.md on next/integrate): one 5.07 s EE stall seen once under load at
+the briefing->museum load (not reproduced); music-stop-under-heavy-load fix merged but not
+re-verified with ~10 games running; ep6 moose "polygon shards" when the camera is inside the
+model (unverified, probably game-side); ep7 one-frame blue band at an RC camera cut (not
+reproduced). Performance limit: the software GS thread (~16 ms/VBlank) -> the GPU renderer.
+
+**GPU renderer (2026-10-14):** design finished: `notes/d3d11-renderer.md` on branch next/gpu
+(= next/d3d11). Design 1 (GS draws -> D3D11 draws at an integer internal scale, exact integer depth,
+ROV paths for what fixed-function blending can't express; software renderer stays the default and
+the reference until M11). Milestones C (corpus extension, worktree gpu-C, branch gpu/C) and M0
+(harness, render thread, all-fallback backend; worktree gpu-M0, branch gpu/M0) are running as
+background agents with checkpoints notes/wip/gpu-C.md / gpu-M0.md. UPDATE: M0 and C are complete
+and merged into next/gpu (M0: 0 differing pixels on all 13 recordings, conformance exact on the
+4060 Ti and WARP, both support ROV; C: 11 more recordings, 24 total in tests/gpu/corpus.txt, and
+no GS readbacks anywhere in the game). M1 (frontend dry run) is running in worktree gpu-M1
+(branch gpu/M1); merge it into next/gpu from the coordinator worktree `sly2-worktrees\gpu-integ`
+when it passes. Then M2
+(go/no-go benchmark, needs a quiet machine), M3... per section 11 of the design.
+The sweep continuation (wf_1522fb31-777) was resumed again on 2026-10-14; ep4 is COMPLETE.
+
+**RESUMED 2026-10-11 (after the pause below):** continuation workflow `whole-game-sweep-continue`
+(run wf_1522fb31-777) runs only the unfinished testers ep1, ep2, ep3, ep4, ep7, then the VU
+review, then integrate (finished reports passed in as args; full copies in
+build\sweep-finished.json). The D3D11 design workflow resumed as wf_45705d77-396. Resume either
+with its `resumeFromRunId`.
+
+**PAUSED by the user on 2026-10-11** (to use the computer). Both workflows were stopped,
+all agent game processes were killed, and every worktree is clean (unfinished edits committed as
+"PAUSED ... unverified" WIP in ep3 and d3d11), and all next/* branches are pushed. Finished agents:
+warp, vu-recomp, ep5, ep6, ep8 (results in the run journal of wf_1f8b6c38-938). Unfinished:
+ep1, ep2, ep3, ep4, ep7 (continue from notes/wip/epN.md), then the VU review and the integrate
+step; and the D3D11 design workflow (wf_45705d77-396; its understand agents had just started).
+Note: on the last resume, ep5/ep6 started a new session ("session 6 start") although they had
+finished, so resuming by run id may re-run finished testers. Better: a continuation script that
+runs only the unfinished testers and passes the finished results from the journal to integrate.
+
 **Main 81186bf (2026-10-11), episode testers: merge main into your branch.** It has the EE thread
 fix from next/ep5 (runtime/threads.c): thread churn leaked ~1 MB/s of fiber stacks, and a restarted
 thread resumed its old fiber (StartThread after a normal return spun forever; after ExitThread or
 TerminateThread it resumed inside the old syscall). Hangs or "stuck" scripts that involve thread
-restarts, and growing memory in long runs, may be this bug. ep5 is complete. The workflow was
-resumed again after a session limit (ep1-4, ep6-8, VU review, integrate pending).
+restarts, and growing memory in long runs, may be this bug. ep5, ep6, ep8 are complete; the
+workflow was resumed again (ep1-4, ep7, VU review, integrate pending).
+
+**Direct3D 11 renderer design (2026-10-11), running in parallel:** workflow
+`d3d11-renderer-design` (run wf_45705d77-396; worktree `sly2-worktrees\d3d11`, branch
+next/d3d11): renderer map + census of Sly 2's GS usage over the .gsrec corpus + prior art, then
+3 competing designs (high-level translation / GPU-exact compute / Sly-specialised hybrid), a
+3-lens judge panel, and the final design in `notes/d3d11-renderer.md` on next/d3d11. Each agent
+checkpoints to `notes/wip/d3d11-*.md` there. Resume: `Workflow({scriptPath: <session>\workflows\
+scripts\d3d11-renderer-design-wf_45705d77-396.js, resumeFromRunId: "wf_45705d77-396"})`.
 
 **Main 125390a (2026-10-11):** the VU microcode recompiler and the warp tool's release-build
 direct starts are merged. Release regression: 60 fps, VU 100% recompiled (2.2 ns/pair), EE thread

@@ -57,15 +57,22 @@ static void publish(void) {
     if (atomic_load_explicit(&gs_sleeping, memory_order_seq_cst)) WakeByAddressSingle((PVOID)&q_wr);
 }
 
-/* Block until `*addr` != `val`, spinning first. The other side wakes us when `ee_waiting` is set. */
+static void (*wait_hook)(void);
+void gs_set_wait_hook(void (*fn)(void)) { wait_hook = fn; }
+
+/* Block until `*addr` != `val`, spinning first. The other side wakes us when `ee_waiting` is set.
+ * While blocked, the wait hook runs about every millisecond: the GS thread can fall behind for
+ * whole seconds on a loaded host, and the IOP (sound streams) must not stop with the EE. */
 static void ee_wait_change(_Atomic uint32_t* addr, uint32_t val) {
     for (int i = 0; i < SPINS; i++) {
         if (atomic_load_explicit(addr, memory_order_acquire) != val) return;
         _mm_pause();
     }
     atomic_store_explicit(&ee_waiting, 1, memory_order_seq_cst);
-    while (atomic_load_explicit(addr, memory_order_seq_cst) == val)
-        WaitOnAddress((volatile VOID*)addr, &val, sizeof val, 10);
+    while (atomic_load_explicit(addr, memory_order_seq_cst) == val) {
+        WaitOnAddress((volatile VOID*)addr, &val, sizeof val, wait_hook ? 1 : 10);
+        if (wait_hook && atomic_load_explicit(addr, memory_order_seq_cst) == val) wait_hook();
+    }
     atomic_store_explicit(&ee_waiting, 0, memory_order_relaxed);
 }
 

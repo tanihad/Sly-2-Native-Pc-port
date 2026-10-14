@@ -305,10 +305,13 @@ uint32_t ps2_func_calls(uint32_t addr, uint32_t ra) {
     return addr == 0x187D80 && ra == 0x1DD96C ? fake_anchor_calls : 0;
 }
 uint32_t ps2_vblank_count(void) { return 0; }
-static int ram_dumps;
+static int ram_dumps, calls_requests, watch_requests;
+static uint32_t calls_frames, watch_frames;
 void ps2_request_ram_dump(void) { ram_dumps++; }
 static int rec_starts;
 void gs_record_start_now(void) { rec_starts++; }
+void ps2_request_calls_window(uint32_t frames) { calls_requests++; calls_frames = frames; }
+void ps2_request_watch_window(uint32_t frames) { watch_requests++; watch_frames = frames; }
 
 static void test_input_script(void) {
     script_n = 0;
@@ -349,7 +352,7 @@ static void test_input_script(void) {
     script_frame = 0;
     ram_dumps = 0;
     rec_starts = 0;
-    script_parse("2:lx40:3,+1:ryc0:1,+0:ram,+2:rec");      /* + the GS recording start (gs_record.c) */
+    script_parse("2:lx40:3,+1:ryC0:1,+0:RAM,+2:rec");   /* upper case works too; + the GS recording start */
     CHECK(script_n == 4, "parsed %d tokens", script_n);
     for (int f = 0; f < 8; f++) {
         pad_input p;
@@ -360,7 +363,148 @@ static void test_input_script(void) {
     }
     CHECK(ram_dumps == 1, "%d RAM dumps", ram_dumps);
     CHECK(rec_starts == 1, "%d GS recording starts", rec_starts);
+    /* "release" ends the holds in progress (r1, lx) but not a press that starts with it */
+    script_n = 0;
+    script_frame = 0;
+    script_parse("1:r1:1000,1:lx20:1000,6:release,6:cross:2,+3:r1:2");
+    CHECK(script_n == 5, "parsed %d tokens", script_n);
+    for (int f = 0; f < 14; f++) {
+        pad_input p;
+        pad_clear(&p);
+        script_apply(0, &p);
+        CHECK(!!(p.buttons & PAD_R1) == ((f >= 1 && f < 6) || f == 9 || f == 10), "r1 at frame %d", f);
+        CHECK((p.lx == 0x20) == (f >= 1 && f < 6), "lx at frame %d: %02X", f, p.lx);
+        CHECK(!!(p.buttons & PAD_CROSS) == (f == 6 || f == 7), "cross at frame %d", f);
+    }
+    /* debug windows: "calls:<n>" and "watch:<n>" ask once, at their start frame, for n VBlanks */
+    script_n = 0;
+    script_frame = 0;
+    calls_requests = watch_requests = 0;
+    script_parse("1:calls:120,+2:watch:30");
+    CHECK(script_n == 2, "parsed %d tokens", script_n);
+    for (int f = 0; f < 40; f++) {
+        pad_input p;
+        pad_clear(&p);
+        script_apply(0, &p);
+        CHECK(!p.buttons, "no buttons from debug tokens at frame %d", f);
+        CHECK(calls_requests == (f >= 1), "calls requests at frame %d: %d", f, calls_requests);
+        CHECK(watch_requests == (f >= 3), "watch requests at frame %d: %d", f, watch_requests);
+    }
+    CHECK(calls_frames == 120 && watch_frames == 30, "window lengths %u %u", calls_frames, watch_frames);
     script_n = 0;                                         /* leave scripting off for the other tests */
+}
+
+/* PS2_INPUT_FILE live input: a line longer than any fixed buffer (24 KB), two lines appended at once
+ * (each starts at the moment it is read), and more tokens over a session than the script holds at a
+ * time (finished ones are dropped when a line arrives). */
+static void append_line(const char* path, const char* pre, int fillers, const char* post) {
+    FILE* f = fopen(path, "ab");
+    if (!f) return;
+    fputs(pre, f);
+    for (int i = 0; i < fillers; i++) fputs("+0:none,", f);
+    fprintf(f, "%s\r\n", post);
+    fclose(f);
+}
+
+static void test_live_input(void) {
+    char path[MAX_PATH + 32];
+    DWORD n = GetTempPathA(MAX_PATH, path);
+    snprintf(path + n, sizeof path - n, "sly2_live_input_%lu.txt", GetCurrentProcessId());
+    FILE* f = fopen(path, "wb");
+    CHECK(f != NULL, "cannot create %s", path);
+    if (!f) return;
+    fclose(f);
+    script_path = path;
+    script_offset = 0;
+    script_n = 0;
+    script_frame = 0;
+    append_line(path, "", 3000, "+5:circle:1");           /* read at frame 0 (lines are read every 8) */
+    int circle_at = -1, pad_frames = 0;
+    for (int f = 0; f < 16; f++, pad_frames++) {
+        pad_input p;
+        pad_clear(&p);
+        script_apply(0, &p);
+        if (p.buttons & PAD_CIRCLE) { CHECK(circle_at < 0, "circle twice"); circle_at = f; }
+    }
+    CHECK(circle_at == 5, "long line: circle at frame %d (want 5)", circle_at);
+    append_line(path, "+2:cross:1,", 0, "+0:none");       /* two lines at once: read at frame 16 */
+    append_line(path, "+3:square:1,", 0, "+0:none");
+    int cross_at = -1, square_at = -1;
+    for (int f = 16; f < 24; f++, pad_frames++) {
+        pad_input p;
+        pad_clear(&p);
+        script_apply(0, &p);
+        if (p.buttons & PAD_CROSS) cross_at = f;
+        if (p.buttons & PAD_SQUARE) square_at = f;
+    }
+    CHECK(cross_at == 18 && square_at == 19, "two lines: cross at %d (want 18), square at %d (want 19)",
+          cross_at, square_at);
+    int sent = 0, seen = 0;                               /* 10 lines of 3000 tokens: > SCRIPT_MAX in all */
+    for (int k = 0; k < 10; k++) {
+        append_line(path, "", 3000, "+1:triangle:1");
+        sent += 3002;
+        for (int f = 0; f < 8; f++, pad_frames++) {
+            pad_input p;
+            pad_clear(&p);
+            script_apply(0, &p);
+            if (p.buttons & PAD_TRIANGLE) seen++;
+        }
+    }
+    CHECK(sent > SCRIPT_MAX && seen == 10, "%d tokens sent, triangle seen %d times (want 10), %d pending",
+          sent, seen, script_n);
+    CHECK(script_n < 3100, "%d tokens still held", script_n);
+    script_path = NULL;                                   /* leave scripting off for the other tests */
+    script_n = 0;
+    remove(path);
+}
+
+/* "pause": the pad read after the pause token blocks until the next line arrives, and that line's
+ * "+0" tokens apply in the same pad frame. */
+static volatile LONG line_appended, held_while_waiting;
+static volatile LONG timer_held, timer_holds;
+void ps2_debug_hold(int on) { InterlockedExchange(&timer_held, on); if (on) InterlockedIncrement(&timer_holds); }
+static DWORD WINAPI append_later(LPVOID path) {
+    Sleep(150);
+    InterlockedExchange(&held_while_waiting, timer_held);  /* EE time stands still during the wait */
+    append_line((const char*)path, "+0:cross:1,", 0, "+0:none");
+    InterlockedExchange(&line_appended, 1);
+    return 0;
+}
+
+static void test_live_pause(void) {
+    char path[MAX_PATH + 32];
+    DWORD n = GetTempPathA(MAX_PATH, path);
+    snprintf(path + n, sizeof path - n, "sly2_live_pause_%lu.txt", GetCurrentProcessId());
+    FILE* f = fopen(path, "wb");
+    CHECK(f != NULL, "cannot create %s", path);
+    if (!f) return;
+    fclose(f);
+    script_path = path;
+    script_offset = 0;
+    script_n = 0;
+    script_frame = 0;
+    append_line(path, "+2:pause,", 0, "+0:none");       /* read at frame 0, pause from frame 3 */
+    int blocked_at = -1, cross_at = -1;
+    HANDLE t = NULL;
+    line_appended = 0;
+    for (int fr = 0; fr < 8; fr++) {
+        if (fr == 3) t = CreateThread(NULL, 0, append_later, path, 0, NULL);
+        LONG before = line_appended;                      /* a call that waited for the line */
+        pad_input p;
+        pad_clear(&p);
+        script_apply(0, &p);
+        if (!before && line_appended) blocked_at = fr;
+        if (p.buttons & PAD_CROSS) cross_at = fr;
+    }
+    if (t) { WaitForSingleObject(t, INFINITE); CloseHandle(t); }
+    CHECK(blocked_at == 3 && cross_at == 3, "pause: blocked at frame %d, cross at %d (want 3, 3)",
+          blocked_at, cross_at);
+    CHECK(held_while_waiting == 1 && timer_held == 0 && timer_holds == 1,
+          "pause: PS2 time held while waiting %ld, held after %ld, holds %ld (want 1, 0, 1)",
+          (long)held_while_waiting, (long)timer_held, (long)timer_holds);
+    script_path = NULL;
+    script_n = 0;
+    remove(path);
 }
 
 /* ---- presenter checks: the GDI and Direct3D 11 presenters drawing into a test window of their own
@@ -758,6 +902,8 @@ int main(int argc, char** argv) {
     test_frame_handoff_stress();
     test_headless_input();
     test_input_script();
+    test_live_input();
+    test_live_pause();
     printf("unit checks: %d, failures: %d\n", checks, failures);
     if (!unit_only) {
         typedef HANDLE (WINAPI* set_dpi_fn)(HANDLE);      /* real pixels, like the window thread */

@@ -96,8 +96,21 @@ static uint64_t g_frames;
 static int      g_irq_pending[2];      /* ADMA half-buffer completions to announce */
 static int16_t  g_gauss[512];
 static int      g_log = -1;
+static uint32_t g_vlog[2];             /* PS2_LOG_SD_VOICES: voices whose address events are logged */
 static uint64_t g_trans_overlaps;      /* VoiceTrans writes into a block a voice was playing */
 static uint64_t g_bad_blocks;          /* audible ADPCM blocks with impossible headers */
+static int64_t  g_driver_limit = -1;   /* frames the voices may play past the IOP's last pass; 0 = off */
+static int64_t  g_seen_run;            /* iop_last_run_time() when g_unseen was reset */
+static uint64_t g_unseen;              /* frames rendered since the IOP last ran */
+static uint64_t g_holds, g_hold_frames;
+static int      g_holding;
+/* The last register events of every voice (KON, KOFF, PITCH, SSA, LSAX with the audio clock),
+ * printed with a stream-refill overlap so the voice's story is known without PS2_LOG_SD (which
+ * slows the IOP enough to change stream timing). */
+enum { HIST_N = 8 };
+typedef struct { uint64_t frame; uint32_t value; char what; } sd_hist;
+static sd_hist  g_hist[2][24][HIST_N];
+static uint8_t  g_hist_pos[2][24];
 
 #define LOCK()   AcquireSRWLockExclusive(&g_lock)
 #define UNLOCK() ReleaseSRWLockExclusive(&g_lock)
@@ -113,9 +126,45 @@ static void log_once(int* flag, const char* fmt, ...) {
     fputc('\n', stderr);
     va_end(ap);
 }
-/* Log lines carry the audio clock (seconds of rendered audio = position in a PS2_AUDIO_WAV file). */
-#define SDLOG(...) do { if (g_log > 0) { fprintf(stderr, "[sd %8.3f] ", (double)g_frames / 48000.0); \
-                                         fprintf(stderr, __VA_ARGS__); } } while (0)
+/* Log lines carry the audio clock (seconds of rendered audio = position in a PS2_AUDIO_WAV file).
+ * They come from the IOP thread and the output thread, so they go through audio_out.c's writer
+ * thread (host_log_async): writing stderr directly could block those threads for 100 ms and more
+ * on a busy machine, enough to break 989snd's streams. The weak default (tests without
+ * audio_out.c) writes directly. */
+void host_log_async(const char* text);
+__attribute__((weak)) void host_log_async(const char* text) { fputs(text, stderr); }
+
+static void sdlog(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
+static void sdlog(const char* fmt, ...) {
+    char buf[1024];                        /* the refill-overlap report carries ~400 bytes of history */
+    int n = snprintf(buf, sizeof buf, "[sd %8.3f] ", (double)g_frames / 48000.0);
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf + n, sizeof buf - (size_t)n, fmt, ap);
+    va_end(ap);
+    host_log_async(buf);
+}
+#define SDLOG(...) do { if (g_log > 0) sdlog(__VA_ARGS__); } while (0)
+
+static inline void hist_add(int core, int voice, char what, uint32_t value) {   /* lock held */
+    uint8_t* p = &g_hist_pos[core][voice];
+    g_hist[core][voice][*p] = (sd_hist){ g_frames, value, what };
+    *p = (uint8_t)((*p + 1) % HIST_N);
+}
+
+/* "  KON 09070 @95.030, PITCH 0EB3 @112.140, ..." oldest first (lock held). */
+static void hist_format(int core, int voice, char* out, size_t size) {
+    size_t n = 0;
+    out[0] = 0;
+    for (int i = 0; i < HIST_N && n + 32 < size; i++) {
+        const sd_hist* h = &g_hist[core][voice][(g_hist_pos[core][voice] + i) % HIST_N];
+        if (!h->what) continue;
+        const char* name = h->what == 'K' ? "KON" : h->what == 'O' ? "KOFF" : h->what == 'P' ? "PITCH" :
+                           h->what == 'S' ? "SSA" : "LSAX";
+        n += (size_t)snprintf(out + n, size - n, "%s%s %0*X @%.3f", n ? ", " : "", name,
+                              h->what == 'P' ? 4 : 5, h->value, (double)h->frame / 48000.0);
+    }
+}
 
 static inline int32_t clamp16(int32_t v) { return v < -32768 ? -32768 : v > 32767 ? 32767 : v; }
 static inline int32_t mul15(int32_t a, int32_t b) { return (a * b) >> 15; }
@@ -143,8 +192,22 @@ static void global_init(void) {          /* call with the lock held */
     gauss_init();
     sd_reverb_init();
     if (g_log < 0) {
-        const char* e = getenv("PS2_LOG_SD");      /* 1: KON/KOFF/transfers, 2: also volumes, pitch */
+        const char* e = getenv("PS2_LOG_SD");      /* 1: KON/KOFF/transfers, 2: + PITCH/SSA/LSAX, 3: + VOLL/R */
         g_log = e && *e && *e != '0' ? (atoi(e) > 1 ? atoi(e) : 1) : 0;
+        /* PS2_LOG_SD_VOICES=<core 0 hex mask>[,<core 1 hex mask>]: also every end-flag jump, loop-start
+         * flag and SSA/LSAX write of those voices (stream double buffers); implies PS2_LOG_SD=1. */
+        const char* m = getenv("PS2_LOG_SD_VOICES");
+        if (m && *m) {
+            char* end;
+            g_vlog[0] = (uint32_t)strtoul(m, &end, 16) & 0xFFFFFFu;
+            if (*end == ',') g_vlog[1] = (uint32_t)strtoul(end + 1, NULL, 16) & 0xFFFFFFu;
+            if (!g_log && (g_vlog[0] | g_vlog[1])) g_log = 1;
+        }
+    }
+    if (g_driver_limit < 0) {
+        const char* e = getenv("PS2_AUDIO_IOP_LIMIT");   /* ms of sound, 0 = never hold the voices */
+        int ms = e && *e ? atoi(e) : 100;
+        g_driver_limit = ms > 0 ? (int64_t)ms * (SD_SAMPLE_RATE / 1000) : 0;
     }
     g_ready = 1;
 }
@@ -269,14 +332,24 @@ static void load_block(sd_voice* vc, int decode) {
  * 3 end+repeat; ENDX is set on both ends and the voice jumps to the loop address). */
 static void next_block(sd_core* k, int v, int decode) {
     sd_voice* vc = &k->v[v];
-    if (vc->flags & 1) {
+    uint32_t from = vc->cur;
+    int jumped = vc->flags & 1, repeat = vc->flags & 2;
+    if (jumped) {
         k->endx |= 1u << v;
         vc->cur = vc->lsa;
-        if (!(vc->flags & 2)) { vc->phase = PH_RELEASE; vc->env = 0; vc->env_counter = 0; }
+        if (!repeat) { vc->phase = PH_RELEASE; vc->env = 0; vc->env_counter = 0; }
     } else {
         vc->cur = (vc->cur + 8) & SD_RAM_MASK;
     }
     load_block(vc, decode);
+    /* PS2_LOG_SD_VOICES: the voice's address events, except a voice parked on a one-block loop
+     * (989snd keeps idle voices on its silence block at 0x5000: thousands of jumps per second) */
+    if ((g_vlog[k - g_core] & (1u << v)) && !(jumped && from == vc->cur)) {
+        if (jumped)
+            SDLOG("c%d v%-2d end%s at %05X -> %05X\n", (int)(k - g_core), v, repeat ? "+repeat" : " (mute)",
+                  from << 1, vc->cur << 1);
+        if (vc->flags & 4) SDLOG("c%d v%-2d loop start at %05X\n", (int)(k - g_core), v, vc->cur << 1);
+    }
 }
 
 static void key_on(sd_core* k, int v) {
@@ -489,13 +562,58 @@ static void render_chunk(int16_t* out, uint32_t n) {
     g_frames += n;
 }
 
+/* ---- the driver's pace ------------------------------------------------------------------------
+ * On the PS2 the SPU2 plays in step with an IOP that never stops. Here the IOP (989snd, spiop) runs
+ * on a host thread of its own (iop_kernel.c) and this mixer on the output thread, both in real time.
+ * If the IOP thread is held up anyway (a debugger, a blocked stderr write, a machine starved of
+ * CPU), the voices would play on with nobody refilling the streams: 989snd's stream code needs to
+ * move a stream voice's LSAX within one half buffer (0x1000 bytes, 163 ms at 44.1 kHz) of each half
+ * change, else the voice loops inside the half it just played, 989snd sees NAX run backwards (error
+ * 0x37) and stops the stream for good, which silences a level's music until the next level load.
+ * So the SPU2 never plays more than the driver limit (PS2_AUDIO_IOP_LIMIT ms of sound, default 100,
+ * leaving 989snd ~60 ms of the half for its own refill chain; the IOP thread normally runs every
+ * few ms, and a limit of 60 cost audible gaps for harmless delays) past the IOP's last pass: the frames rendered since the
+ * IOP last ran are counted (in sound time, so a burst of rendering after the output thread itself
+ * was held up counts too), and once they reach the limit sd_render outputs silence and leaves every
+ * voice, envelope and sound-data input where it is, as if the SPU2 were paused, until the IOP has
+ * run again. */
+
+__attribute__((weak)) int64_t iop_last_run_time(void) { return 0; }   /* no IOP side: never hold */
+
+static int driver_behind(uint32_t n) {     /* call with the lock held; n = frames about to be rendered */
+    int64_t last = iop_last_run_time();
+    if (last != g_seen_run) { g_seen_run = last; g_unseen = 0; }   /* the IOP has run since */
+    return g_driver_limit && last && g_unseen + n > (uint64_t)g_driver_limit;
+}
+/* Debug pause (ps2_debug_hold): while the EE waits for a live input line the SPU2 stands still too:
+ * silence, no voice, envelope or stream position moves (989snd's streams would otherwise run out
+ * of data with the IOP stopped). The audio clock keeps counting, so it stays the WAV position. */
+static volatile LONG g_hold;
+void sd_hold(int on) { InterlockedExchange(&g_hold, on ? 1 : 0); }
+
 void sd_render(int16_t* out, uint32_t frames) {
+    if (g_hold) {
+        memset(out, 0, (size_t)frames * 2 * sizeof *out);
+        LOCK();
+        g_frames += frames;
+        UNLOCK();
+        return;
+    }
     while (frames) {
         uint32_t n = frames < CHUNK ? frames : CHUNK;
         int irq[2];
         LOCK();
         global_init();
-        render_chunk(out, n);
+        if (driver_behind(n)) {
+            memset(out, 0, (size_t)n * 4);
+            if (!g_holding) { g_holding = 1; g_holds++; SDLOG("holding the voices: the IOP has not run\n"); }
+            g_hold_frames += n;
+            g_frames += n;                      /* the audio clock (log times = WAV position) runs on */
+        } else {
+            if (g_holding) { g_holding = 0; SDLOG("the IOP ran: voices continue\n"); }
+            render_chunk(out, n);
+            g_unseen += n;
+        }
         irq[0] = g_irq_pending[0]; irq[1] = g_irq_pending[1];
         g_irq_pending[0] = g_irq_pending[1] = 0;
         UNLOCK();
@@ -513,10 +631,28 @@ uint64_t sd_frames_rendered(void) {
     return f;
 }
 
+static volatile LONG64 g_trans_writes;
+
+uint64_t sd_voice_trans_writes(void) { return (uint64_t)g_trans_writes; }
+
 void sd_health(uint64_t* trans_overlaps, uint64_t* bad_blocks) {
     LOCK();
     *trans_overlaps = g_trans_overlaps;
     *bad_blocks = g_bad_blocks;
+    UNLOCK();
+}
+
+void sd_driver_holds(uint64_t* holds, uint64_t* frames) {
+    LOCK();
+    *holds = g_holds;
+    *frames = g_hold_frames;
+    UNLOCK();
+}
+
+void sd_set_driver_limit_ms(uint32_t ms) {
+    LOCK();
+    global_init();
+    g_driver_limit = (int64_t)ms * (SD_SAMPLE_RATE / 1000);
     UNLOCK();
 }
 
@@ -584,17 +720,19 @@ void sceSdSetParam(uint16_t entry, uint16_t value) {
     if (p < 8) {
         if (!bad_voice(voice)) {
             sd_voice* vc = &k->v[voice];
+            uint16_t old_pitch = vc->pitch;
             switch (p) {
             case P_VOLL:  vol_set(&vc->vol[0], value); break;
             case P_VOLR:  vol_set(&vc->vol[1], value); break;
-            case P_PITCH: vc->pitch = value; break;
+            case P_PITCH: vc->pitch = value; hist_add(core, voice, 'P', value); break;
             case P_ADSR1: vc->adsr1 = value; break;
             case P_ADSR2: vc->adsr2 = value; break;
             case P_ENVX:  vc->env = value & 0x7FFF; break;
             case P_VOLXL: vc->vol[0].cur = (int16_t)value; vc->vol[0].level = abs(vc->vol[0].cur); break;
             case P_VOLXR: vc->vol[1].cur = (int16_t)value; vc->vol[1].level = abs(vc->vol[1].cur); break;
             }
-            if (g_log > 1 && (p == P_VOLL || p == P_VOLR || p == P_PITCH))
+            if ((g_log > 1 && p == P_PITCH) || (g_log > 2 && (p == P_VOLL || p == P_VOLR)) ||
+                (p == P_PITCH && (g_vlog[core] & (1u << voice)) && old_pitch != value))
                 SDLOG("%s c%d v%-2d %04X\n", p == P_VOLL ? "VOLL " : p == P_VOLR ? "VOLR " : "PITCH", core, voice, value);
         }
     } else {
@@ -669,7 +807,10 @@ void sceSdSetSwitch(uint16_t entry, uint32_t value) {
     sd_core* k = &g_core[core];
     switch (s) {
     case S_PMON:   k->pmon = value; break;
-    case S_NON:    k->non = value; break;
+    case S_NON:
+        if (value != k->non) SDLOG("NON  c%d %06X\n", core, value);
+        k->non = value;
+        break;
     case S_VMIXL:  k->vmixl = value; break;
     case S_VMIXEL: k->vmixel = value; break;
     case S_VMIXR:  k->vmixr = value; break;
@@ -679,15 +820,16 @@ void sceSdSetSwitch(uint16_t entry, uint32_t value) {
         for (int v = 0; v < 24; v++)
             if (value & (1u << v)) {
                 key_on(k, v);
-                SDLOG("KON  c%d v%-2d ssa %05X pitch %04X adsr %04X/%04X vol %04X/%04X\n", core, v,
+                hist_add(core, v, 'K', k->v[v].ssa << 1);
+                SDLOG("KON  c%d v%-2d ssa %05X pitch %04X adsr %04X/%04X vol %04X/%04X%s\n", core, v,
                       k->v[v].ssa << 1, k->v[v].pitch, k->v[v].adsr1, k->v[v].adsr2,
-                      k->v[v].vol[0].reg, k->v[v].vol[1].reg);
+                      k->v[v].vol[0].reg, k->v[v].vol[1].reg, (k->non >> v) & 1 ? " noise" : "");
             }
         break;
     case S_KOFF:
         k->koff = value;
         for (int v = 0; v < 24; v++)
-            if (value & (1u << v)) key_off(k, v);
+            if (value & (1u << v)) { key_off(k, v); hist_add(core, v, 'O', k->v[v].cur << 1); }
         if (value) SDLOG("KOFF c%d %06X\n", core, value);
         break;
     case S_ENDX:   k->endx = 0; break;        /* a write clears the end flags */
@@ -733,13 +875,14 @@ void sceSdSetAddr(uint16_t entry, uint32_t value) {
     case A_EEA:   k->eea_hi = (value >> 17) & 0xF; break;
     case A_TSA:   k->tsa = hw; break;
     case A_IRQA:  k->irqa = hw; break;
-    case VA_SSA:  if (!bad_voice(voice)) k->v[voice].ssa = hw; break;
-    case VA_LSAX: if (!bad_voice(voice)) k->v[voice].lsa = hw; break;
+    case VA_SSA:  if (!bad_voice(voice)) { k->v[voice].ssa = hw; hist_add(core, voice, 'S', hw << 1); } break;
+    case VA_LSAX: if (!bad_voice(voice)) { k->v[voice].lsa = hw; hist_add(core, voice, 'L', hw << 1); } break;
     case VA_NAX:  log_once(&nax, "sceSdSetAddr(NAX) ignored"); break;
     default:      log_once(&unk, "sceSdSetAddr: unhandled entry 0x%04X", entry); break;
     }
     UNLOCK();
-    if (g_log > 1 && (a == VA_SSA || a == VA_LSAX)) SDLOG("%s c%d v%-2d %05X\n", a == VA_SSA ? "SSA  " : "LSAX ", core, voice, value);
+    if ((g_log > 1 || (voice < 24 && (g_vlog[core] & (1u << voice)))) && (a == VA_SSA || a == VA_LSAX))
+        SDLOG("%s c%d v%-2d %05X\n", a == VA_SSA ? "SSA  " : "LSAX ", core, voice, value);
 }
 
 uint32_t sceSdGetAddr(uint16_t entry) {
@@ -844,21 +987,33 @@ int sceSdVoiceTrans(int16_t channel, uint16_t mode, uint32_t iop_addr, uint32_t 
     }
     g_core[ch].tsa = ((spu_addr + n) >> 1) & SD_RAM_MASK;
     /* Stream health: a write into the block an audible voice is playing means a stream refill came
-     * too late (or too early) and that voice glitches. 989snd/spiop refill the half not playing. */
+     * too late (or too early) and that voice glitches. 989snd/spiop refill the half not playing.
+     * Noise voices do not count: their sample data is not heard, and 989snd keys them on without
+     * writing SSA, so they can sit on whatever block the voice last played (Sly 2's wind in Episode 6
+     * sat on a music stream buffer with pitch 0 and was reported at every refill). */
     uint32_t lo = (spu_addr >> 1) & SD_RAM_MASK, hi = lo + (len >> 1), hit_core = 0, hit_voice = 0, hits = 0;
+    sd_voice hv = { 0 };
     for (int c = 0; dir == TRANS_WRITE && c < 2; c++)
         for (int v = 0; v < 24; v++) {
             const sd_voice* vc = &g_core[c].v[v];
-            if (vc->phase == PH_RELEASE && vc->env == 0) continue;
+            if ((vc->phase == PH_RELEASE && vc->env == 0) || ((g_core[c].non >> v) & 1)) continue;
             uint32_t b = vc->cur & ~7u;
-            if ((b >= lo && b < hi) || (b + 0x200000u / 2 >= lo && b + 0x200000u / 2 < hi)) { hits++; hit_core = (uint32_t)c; hit_voice = (uint32_t)v; }
+            if ((b >= lo && b < hi) || (b + 0x200000u / 2 >= lo && b + 0x200000u / 2 < hi)) {
+                hits++; hit_core = (uint32_t)c; hit_voice = (uint32_t)v; hv = *vc;
+            }
         }
     if (hits) g_trans_overlaps++;
+    if (dir == TRANS_WRITE) g_trans_writes++;
     uint64_t overlaps = g_trans_overlaps;
+    char hist[400] = "";
+    int report = hits && (overlaps <= 20 || g_log > 0);
+    if (report) hist_format((int)hit_core, (int)hit_voice, hist, sizeof hist);
     UNLOCK();
-    if (hits && (overlaps <= 20 || g_log > 0))
-        fprintf(stderr, "[sd %8.3f] VoiceTrans to %06X+%X overwrites the block voice c%u v%u is playing (%llu so far)\n",
-                (double)g_frames / 48000.0, spu_addr, size, hit_core, hit_voice, (unsigned long long)overlaps);
+    if (report)
+        sdlog("VoiceTrans to %06X+%X overwrites the block voice c%u v%u is playing (%llu so far; "
+              "at %05X lsa %05X pitch %04X env %04X; %s)\n",
+              spu_addr, size, hit_core, hit_voice, (unsigned long long)overlaps,
+              (hv.cur & ~7u) << 1, hv.lsa << 1, hv.pitch, hv.env, hist);
     int silent = 1;                                          /* data whose samples are all zero */
     for (uint32_t k = 0; g_log > 0 && iop && k + 16 <= len && silent; k += 16)
         for (int b = 2; b < 16; b++) if (iop[k + b]) { silent = 0; break; }

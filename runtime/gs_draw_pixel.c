@@ -911,7 +911,11 @@ static void run_bands(uint32_t g, wctx* w) {
 
 static DWORD WINAPI pixel_worker(LPVOID arg) {
     wctx* w = arg;
-    uint32_t seen = atomic_load_explicit(&pool.gen, memory_order_acquire);
+    /* Generation 0: no job yet. All workers are created before the first job is started (nothing is
+     * deferred before pool.n is set), but a thread may begin running only after that job was posted:
+     * reading pool.gen here would make it skip that job, and with every worker late and the drawing
+     * thread idle, nobody would ever draw it (the first VBlank picture then never came). */
+    uint32_t seen = 0;
     for (;;) {
         uint32_t g;
         int spins = 0;

@@ -16,6 +16,7 @@
 #include "iop.h"
 
 #include <stdlib.h>
+#include <windows.h>
 
 int ps2_log_sif;
 
@@ -93,6 +94,7 @@ static uint32_t next_dma_id = 1;
 typedef struct { uint8_t data[128]; uint32_t size; } packet;
 static packet   queue[64];
 static unsigned q_head, q_tail;
+static SRWLOCK  q_lock = SRWLOCK_INIT;  /* replies come from the IOP thread too (iop.h) */
 
 static void send_to_ee(uint32_t cid, const void* body, uint32_t body_size);
 
@@ -110,13 +112,20 @@ static void rpc_end(const uint32_t echo[4], uint32_t cid, uint32_t server, uint3
 }
 
 static void send_to_ee(uint32_t cid, const void* body, uint32_t body_size) {
-    if (q_tail - q_head >= 64) { fprintf(stderr, "[sif] IOP->EE queue full, dropping cid 0x%08X\n", cid); return; }
-    packet* p = &queue[q_tail++ & 63];
+    AcquireSRWLockExclusive(&q_lock);
+    if (q_tail - q_head >= 64) {
+        ReleaseSRWLockExclusive(&q_lock);
+        fprintf(stderr, "[sif] IOP->EE queue full, dropping cid 0x%08X\n", cid);
+        return;
+    }
+    packet* p = &queue[q_tail & 63];
     uint32_t size = 16 + body_size;
     uint32_t hdr[4] = { size & 0xFF, 0, cid, 0 };     /* psize, dsize/dest unused, cid, opt */
     memcpy(p->data, hdr, 16);
     memcpy(p->data + 16, body, body_size);
     p->size = size;
+    q_tail++;
+    ReleaseSRWLockExclusive(&q_lock);
 }
 
 /* Hand the next queued packet to the EE: copy it into the receive buffer and raise the SIF0
@@ -124,17 +133,23 @@ static void send_to_ee(uint32_t cid, const void* body, uint32_t body_size) {
  * handler has taken this one (its D_STAT bit acknowledged) and SIF0 interrupts are enabled. */
 void sif_deliver(ps2_ctx* ctx) {
     (void)ctx;
-    if (q_head == q_tail || !ee_pktbuf) return;
+    if (!ee_pktbuf) return;
     if (!dmac_mask_enabled(DMA_SIF0) || (dmac_stat_read() & (1u << DMA_SIF0))) return;
-    packet* p = &queue[q_head & 63];
     uint8_t* dst = ps2_fast(ee_pktbuf);
-    if (!dst) { fprintf(stderr, "[sif] EE receive buffer 0x%08X not in RAM\n", ee_pktbuf); return; }
-    memcpy(dst, p->data, p->size);
-    q_head++;
-    if (ps2_log_sif) {
-        uint32_t cid; memcpy(&cid, p->data + 8, 4);
-        fprintf(stderr, "[sif] IOP->EE cid 0x%08X (%u bytes)\n", cid, p->size);
+    AcquireSRWLockExclusive(&q_lock);
+    if (q_head == q_tail) { ReleaseSRWLockExclusive(&q_lock); return; }
+    if (!dst) {
+        ReleaseSRWLockExclusive(&q_lock);
+        fprintf(stderr, "[sif] EE receive buffer 0x%08X not in RAM\n", ee_pktbuf);
+        return;
     }
+    packet* p = &queue[q_head & 63];
+    uint32_t size = p->size, cid;
+    memcpy(dst, p->data, size);
+    memcpy(&cid, p->data + 8, 4);
+    q_head++;
+    ReleaseSRWLockExclusive(&q_lock);
+    if (ps2_log_sif) fprintf(stderr, "[sif] IOP->EE cid 0x%08X (%u bytes)\n", cid, size);
     dmac_raise(DMA_SIF0);
 }
 
@@ -189,7 +204,7 @@ static void handle_rpc_call(const uint8_t* pkt) {
         iop_rpc_req r = { { f[0], f[1], f[2], f[3] }, handle, fno, send_size, receive, recv_size, f[8] };
         if (ps2_log_sif) fprintf(stderr, "[sif] RPC call fn %u to IOP server 0x%08X (%u bytes)\n", fno, handle, send_size);
         iop_rpc_request(&r);
-        if (!ps2_in_interrupt()) iop_run();  /* usually replies before the EE polls */
+        iop_kick(ps2_in_interrupt());        /* usually replies before the EE polls */
         return;
     }
 

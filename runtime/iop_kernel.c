@@ -5,9 +5,10 @@
  * - threads: each IOP thread is a Windows fiber with its own register context and a stack in IOP
  *   RAM. Scheduling follows the IOP kernel: the ready thread with the lowest priority number runs
  *   and keeps the CPU until it blocks or a higher-priority thread becomes ready. Threads only run
- *   inside iop_run(), which the EE side calls at its safe points and after RPC requests; iop_run
- *   returns when every IOP thread is blocked (or after a time slice, so a busy-waiting IOP thread
- *   cannot stall the game).
+ *   inside iop_run(), which the IOP's own host thread calls every millisecond ("the IOP thread"
+ *   below; without it, the EE side at its safe points) and the EE side after RPC requests, under
+ *   the IOP lock; iop_run returns when every IOP thread is blocked (or after a time slice, so a
+ *   busy-waiting IOP thread cannot hold the lock for long).
  * - interrupts: there is no interrupt hardware. Interrupt sources (hard timers, CD and SIF DMA
  *   completion, libsd transfers) are polled between thread slices and at loop heads of code that
  *   has interrupts enabled; handlers run on the interrupt stack with QueryIntrContext() true.
@@ -15,6 +16,7 @@
  * Semantics follow the IOP kernel documentation and ps2sdk's headers (thbase.h, thsemap.h,
  * thevent.h, intrman.h, timrman.h, sysmem.h, kerr.h). */
 #include "iop_internal.h"
+#include "sd.h"
 
 #include <stdlib.h>
 #include <windows.h>
@@ -56,6 +58,36 @@ static iop_func find_func(uint32_t addr) {
         if (funcs[mid].addr < addr) lo = mid + 1; else hi = mid;
     }
     return (lo < nfuncs && funcs[lo].addr == addr) ? funcs[lo].fn : NULL;
+}
+
+/* PS2_IOP_WATCH="<hexaddr>[,...]" (debug builds, off by default): one line per entry to a listed
+ * recompiled IOP function, e.g. 22140 = 989snd's error report (a0 = error code, a2 = voice NAX). The
+ * time is the audio clock, as in PS2_LOG_SD lines (= position in a PS2_AUDIO_WAV recording). */
+int iop_watch_on;
+static uint32_t watch_addr[16];
+static int watch_n;
+__attribute__((weak)) uint64_t sd_frames_rendered(void) { return 0; }   /* sd.c */
+
+static void watch_init(void) {
+    const char* e = getenv("PS2_IOP_WATCH");
+    for (const char* s = e; s && *s && watch_n < 16;) {
+        char* end;
+        unsigned long a = strtoul(s, &end, 16);
+        if (end == s) break;
+        watch_addr[watch_n++] = (uint32_t)a;
+        s = *end == ',' ? end + 1 : end;
+    }
+    iop_watch_on = watch_n > 0;
+}
+
+void iop_watch_hit(const iop_ctx* c, uint32_t addr) {
+    for (int i = 0; i < watch_n; i++) {
+        if (watch_addr[i] != addr) continue;
+        fprintf(stderr, "[iop-watch %8.3f] %05X a0=%08X a1=%08X a2=%08X a3=%08X ra=%08X thread %d\n",
+                (double)sd_frames_rendered() / 48000.0, addr, c->r[4], c->r[5], c->r[6], c->r[7], c->r[31],
+                iop_thread_current());
+        return;
+    }
 }
 
 void iop_dump_trace(const char* why) {
@@ -126,10 +158,43 @@ void iop_strncpy_from(char* dst, uint32_t src, size_t cap) {
 
 static LARGE_INTEGER qpc_freq;
 
+/* Debug pause (ps2_debug_hold): IOP time stands still while the EE waits for a live input line, so
+ * the hard timers (989snd's tick: sequenced music, stream refills) neither replay the wait as a
+ * burst of ticks afterwards nor drop it. The hold is set on the EE thread while iop_now() runs on
+ * the IOP thread (and the mixer's), so the pair (hold time, total held) is read under a sequence
+ * count: a reader that saw it change (or odd: a change in progress) reads again, so it never mixes
+ * the hold time with the new total (time running backwards by the hold) or the old total without
+ * the hold (a jump forward). */
+static int64_t time_held_at, time_held_total;
+static uint32_t time_seq;
+
 int64_t iop_now(void) {
+    int64_t held, total;
+    uint32_t s;
+    do {
+        s = __atomic_load_n(&time_seq, __ATOMIC_ACQUIRE);
+        held = __atomic_load_n(&time_held_at, __ATOMIC_RELAXED);
+        total = __atomic_load_n(&time_held_total, __ATOMIC_RELAXED);
+        __atomic_thread_fence(__ATOMIC_ACQUIRE);
+    } while ((s & 1) || s != __atomic_load_n(&time_seq, __ATOMIC_RELAXED));
+    if (held) return held - total;
     LARGE_INTEGER t;
     QueryPerformanceCounter(&t);
-    return t.QuadPart;
+    return t.QuadPart - total;
+}
+
+void iop_time_hold(int on) {                 /* EE thread only (one writer) */
+    LARGE_INTEGER t;
+    QueryPerformanceCounter(&t);
+    if (on == (time_held_at != 0)) return;
+    __atomic_store_n(&time_seq, time_seq + 1, __ATOMIC_RELAXED);
+    __atomic_thread_fence(__ATOMIC_RELEASE);
+    if (on) __atomic_store_n(&time_held_at, t.QuadPart, __ATOMIC_RELAXED);
+    else {
+        __atomic_store_n(&time_held_total, time_held_total + (t.QuadPart - time_held_at), __ATOMIC_RELAXED);
+        __atomic_store_n(&time_held_at, 0, __ATOMIC_RELAXED);
+    }
+    __atomic_store_n(&time_seq, time_seq + 1, __ATOMIC_RELEASE);
 }
 
 int64_t iop_usec_to_ticks(uint64_t usec) {
@@ -140,6 +205,39 @@ int64_t iop_usec_to_ticks(uint64_t usec) {
 static int64_t sysclock_to_ticks(uint64_t cycles, uint32_t hz) {
     if (!qpc_freq.QuadPart) QueryPerformanceFrequency(&qpc_freq);
     return (int64_t)(cycles * (uint64_t)qpc_freq.QuadPart / hz);
+}
+
+/* ---- the IOP lock (iop.h) ------------------------------------------------------------------------
+ * Recursive: the EE side may hold it while it runs the IOP itself (RPC calls, module loading), and
+ * IOP code may call back into locking functions. Waiters are counted so that the IOP thread lets a
+ * waiting EE thread in between back-to-back passes (an SRW lock is not fair). */
+static SRWLOCK lock_srw = SRWLOCK_INIT;
+static volatile DWORD lock_owner;
+static int lock_depth;
+static volatile LONG lock_waiters;
+static DWORD iop_thread_id;                /* the IOP thread (0 before it starts) */
+static int64_t lock_taken_at;              /* status line: the longest hold of the lock by another thread */
+static int64_t stat_other_hold_max;
+
+void iop_lock(void) {
+    DWORD me = GetCurrentThreadId();
+    if (lock_owner == me) { lock_depth++; return; }
+    InterlockedIncrement(&lock_waiters);
+    AcquireSRWLockExclusive(&lock_srw);
+    InterlockedDecrement(&lock_waiters);
+    lock_owner = me;
+    lock_depth = 1;
+    lock_taken_at = iop_now();
+}
+
+void iop_unlock(void) {
+    if (--lock_depth) return;
+    if (lock_owner != iop_thread_id) {
+        int64_t held = iop_now() - lock_taken_at;
+        if (held > stat_other_hold_max) stat_other_hold_max = held;
+    }
+    lock_owner = 0;
+    ReleaseSRWLockExclusive(&lock_srw);
 }
 
 /* ---- sysmem ------------------------------------------------------------------------------------------ */
@@ -179,18 +277,34 @@ static uint32_t sysmem_alloc(int mode, uint32_t size, uint32_t want) {
     return best;
 }
 
-uint32_t iop_alloc(uint32_t size) { return sysmem_alloc(0, size, 0); }
-uint32_t iop_alloc_at(uint32_t addr, uint32_t size) { return sysmem_alloc(2, size, addr); }
+/* The EE side allocates too (IOPHEAP RPC, RPC server buffers): under the IOP lock. */
+uint32_t iop_alloc(uint32_t size) {
+    iop_lock();
+    uint32_t a = sysmem_alloc(0, size, 0);
+    iop_unlock();
+    return a;
+}
+
+uint32_t iop_alloc_at(uint32_t addr, uint32_t size) {
+    iop_lock();
+    uint32_t a = sysmem_alloc(2, size, addr);
+    iop_unlock();
+    return a;
+}
 
 int iop_free(uint32_t addr) {
     addr &= 0x1FFFFFFFu;
+    iop_lock();
+    int r = -1;
     for (int i = 0; i < nblocks; i++) {
         if (blocks[i].addr != addr) continue;
         memmove(&blocks[i], &blocks[i + 1], (size_t)(nblocks - i - 1) * sizeof *blocks);
         nblocks--;
-        return 0;
+        r = 0;
+        break;
     }
-    return -1;
+    iop_unlock();
+    return r;
 }
 
 uint32_t iop_max_free(void) {
@@ -215,6 +329,7 @@ void iop_init(void) {
     if (inited) return;
     inited = 1;
     iop_log = getenv("PS2_LOG_IOP") != NULL;
+    watch_init();
     QueryPerformanceFrequency(&qpc_freq);
     nblocks = 0;
     for (size_t i = 0; i < nmods; i++)                     /* the recompiled modules' fixed homes */
@@ -261,6 +376,7 @@ typedef struct {
     void*    fiber;
     int      fiber_stale;                  /* fiber stopped mid-way (ExitThread): replace on start */
     uint32_t slices, slices_seen;          /* time slices used up without blocking (busy-waiting) */
+    uint32_t slice_fn;                     /* debug builds: the IOP function entered last when one ran out */
     iop_ctx  ctx;
 } iop_thread;
 
@@ -274,7 +390,7 @@ static uint32_t run_pass;
 static int64_t run_deadline;
 static iop_ctx intr_ctx;
 
-#define SLICE_USEC 2000                    /* longest uninterrupted IOP run before the EE continues */
+#define SLICE_USEC 2000                    /* longest pass of iop_run (holding the IOP lock) */
 
 int iop_thread_current(void) { return in_intr ? 0 : cur; }
 int iop_in_interrupt(void) { return in_intr; }
@@ -858,27 +974,52 @@ static void deliver_interrupts(void) {
 }
 
 static int64_t busy_ticks;                 /* host time spent running the IOP (status line) */
+static volatile int64_t last_run_end;      /* read by the mixer thread (sd.c holds the voices when old) */
+
+int64_t iop_last_run_time(void) { return last_run_end; }
+
+static int run_unfinished;                 /* the last pass ended at its deadline with threads ready */
+static int64_t stat_pass_max;              /* status line: the longest pass, and on the IOP thread the */
+static int64_t stat_gap_max, stat_wait_max; /* longest time between passes and wait for the lock */
+static volatile int64_t pass_start;        /* the IOP thread's pass in progress (0: none), for PS2_PROFILE=iop */
+static int64_t stat_sleep_max;             /* the longest 1 ms sleep of the IOP thread */
 
 void iop_run(void) {
-    if (in_run || in_intr) return;
+    iop_lock();
+    if (in_run || in_intr) { iop_unlock(); return; }
     in_run = 1;
     run_pass++;
     sched_fiber = GetCurrentFiber();
     int64_t t0 = iop_now();
     run_deadline = t0 + iop_usec_to_ticks(SLICE_USEC);
+    run_unfinished = 0;
     for (;;) {
         iop_poll_flag = 0;
         deliver_interrupts();
         int next = pick_next();
-        if (!next || iop_now() > run_deadline) break;
+        if (!next) break;
+        if (iop_now() > run_deadline) { run_unfinished = 1; break; }
         cur = next;
         th[next].status = TS_RUNNING;
         SwitchToFiber(th[next].fiber);
         cur = 0;
     }
-    busy_ticks += iop_now() - t0;
+    int64_t t1 = iop_now();
+    busy_ticks += t1 - t0;
+    if (t1 - t0 > stat_pass_max) stat_pass_max = t1 - t0;
+    last_run_end = t1;
     in_run = 0;
+    iop_unlock();
 }
+
+/* The status text goes to stderr through audio_out.c's writer thread: a write to stderr can block
+ * for 100 ms and more on a busy machine (another thread holding the CRT's stream lock is
+ * descheduled, the file write itself), and the IOP thread must not stall (989snd's tick). The weak
+ * default (builds without audio_out.c: unit tests) writes directly. */
+void host_log_async(const char* text);
+__attribute__((weak)) void host_log_async(const char* text) { fputs(text, stderr); }
+
+static volatile int threaded;              /* the IOP thread runs the IOP (iop_thread_start) */
 
 /* Every 10 s while the recompiled modules run: one line showing the IOP is alive. */
 static void status_line(void) {
@@ -893,31 +1034,147 @@ static void status_line(void) {
     last = now;
     last_ticks = timer_ticks_total;
     last_busy = busy_ticks;
-    char sif[512];
+    char sif[512], out[4096];
+    size_t n = 0;
     iop_sif_report(sif, sizeof sif);
     int ready = 0, waiting = 0;
     for (int i = 1; i < MAX_THREADS; i++) { ready += th[i].status == TS_READY; waiting += th[i].status == TS_WAIT; }
-    fprintf(stderr, "[iop] status: hard timer handler %llu calls (%.1f/s over the last %.0f s, %llu of them more than "
-                    "%u ms late, at most %.1f ms), IOP code %.2f%% of the time, threads %d waiting/%d ready, free IOP "
-                    "memory 0x%X; %s\n",
+    n += (size_t)snprintf(out + n, sizeof out - n,
+            "[iop] status: hard timer handler %llu calls (%.1f/s over the last %.0f s, %llu of them more than "
+            "%u ms late, at most %.1f ms), IOP code %.2f%% of the time, threads %d waiting/%d ready, free IOP "
+            "memory 0x%X; %s\n",
             (unsigned long long)timer_ticks_total, rate, secs, (unsigned long long)timer_late_count,
             TIMER_LATE_USEC / 1000u, (double)timer_late_max * 1000.0 / (double)qpc_freq.QuadPart, load, waiting,
             ready, iop_total_free(), sif);
+    double ms = 1000.0 / (double)qpc_freq.QuadPart;
+    if (iop_thread_id == GetCurrentThreadId() && n < sizeof out) {   /* CPU time the OS gave the IOP thread */
+        static uint64_t last_cpu;
+        FILETIME ct, et, kt, ut;
+        GetThreadTimes(GetCurrentThread(), &ct, &et, &kt, &ut);
+        uint64_t cpu = ((uint64_t)kt.dwHighDateTime << 32 | kt.dwLowDateTime) + ((uint64_t)ut.dwHighDateTime << 32 | ut.dwLowDateTime);
+        n += (size_t)snprintf(out + n, sizeof out - n,
+                "[iop]   IOP thread: CPU %.1f%%, longest gap between passes %.1f ms (waiting for the lock %.1f ms, "
+                "longest 1 ms sleep %.1f ms), longest pass %.1f ms, longest hold of the lock by another thread %.1f ms\n",
+                (double)(cpu - last_cpu) / 1e5 / secs, (double)stat_gap_max * ms, (double)stat_wait_max * ms,
+                (double)stat_sleep_max * ms, (double)stat_pass_max * ms, (double)stat_other_hold_max * ms);
+        last_cpu = cpu;
+    }
+    stat_gap_max = stat_wait_max = stat_pass_max = stat_other_hold_max = stat_sleep_max = 0;
     timer_late_count = 0;
     timer_late_max = 0;
-    for (int i = 1; i < MAX_THREADS; i++) {                /* threads that busy-waited since the last line */
+    for (int i = 1; i < MAX_THREADS && n < sizeof out; i++) {   /* threads that busy-waited since the last line */
         iop_thread* t = &th[i];
         if (t->status == TS_FREE || t->slices == t->slices_seen) continue;
-        fprintf(stderr, "[iop]   thread %d (entry 0x%05X, prio %d) used up %u time slices without blocking\n",
-                i, t->entry, t->prio, t->slices - t->slices_seen);
+        n += (size_t)snprintf(out + n, sizeof out - n, "[iop]   thread %d (entry 0x%05X, prio %d) used up %u time slices without blocking",
+                              i, t->entry, t->prio, t->slices - t->slices_seen);
+        if (t->slice_fn && n < sizeof out) n += (size_t)snprintf(out + n, sizeof out - n, " (last in function 0x%05X)", t->slice_fn);
+        if (n < sizeof out) n += (size_t)snprintf(out + n, sizeof out - n, "\n");
         t->slices_seen = t->slices;
+    }
+    host_log_async(out);
+}
+
+static HANDLE kick_event;                  /* iop_kick: wakes the IOP thread before its 1 ms timer */
+static HANDLE iop_thread_handle;
+
+int iop_threaded(void) { return threaded; }
+
+void iop_service(void) {
+    if (!inited || threaded) return;
+    iop_run();
+    if (timer_ticks_total) status_line();
+}
+
+/* ---- the IOP thread -----------------------------------------------------------------------------------
+ * On the PS2 the IOP is a CPU of its own: 989snd's 240 Hz tick and the stream threads refill the
+ * SPU2's double buffers in real time whatever the EE does. Run at the EE's safe points only, the
+ * IOP stopped whenever the EE thread did (a long frame, waiting for the GS thread, the OS running
+ * something else): a stream voice then played through both halves of its buffer unrefilled, or
+ * looped inside the half 989snd was refilling, 989snd saw its NAX run backwards (error 0x37) and
+ * stopped the stream for good (the level's music fell silent; seen in the Paris hub and at the
+ * episode menu on a loaded machine). This thread runs a pass every millisecond (the IOP's timers
+ * and completions have that granularity) and right away again when a pass ended at its time slice
+ * with threads still ready, after letting a waiting EE thread take the lock. */
+static DWORD WINAPI iop_thread_main(LPVOID arg) {
+    (void)arg;
+    if (!ConvertThreadToFiber(NULL)) {
+        fprintf(stderr, "[iop] IOP thread: ConvertThreadToFiber failed (%lu); the IOP runs at the EE's safe points\n",
+                GetLastError());
+        threaded = 0;
+        return 1;
+    }
+    /* The IOP runs the sound driver: schedule it like the sound output thread (audio_out.c), as an
+     * MMCSS "Pro Audio" thread, so a busy machine does not make its 1 ms sleeps last 40-120 ms (seen
+     * with THREAD_PRIORITY_HIGHEST on a machine running ~10 game instances). It uses ~1% of a core. */
+    typedef HANDLE(WINAPI * mm_fn)(LPCWSTR, LPDWORD);
+    HMODULE avrt = LoadLibraryW(L"avrt.dll");
+    mm_fn mm = avrt ? (mm_fn)(void*)GetProcAddress(avrt, "AvSetMmThreadCharacteristicsW") : NULL;
+    DWORD task = 0;
+    if (!mm || !mm(L"Pro Audio", &task)) SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+    HANDLE timer = CreateWaitableTimerExW(NULL, NULL, 0x2 /* CREATE_WAITABLE_TIMER_HIGH_RESOLUTION */, TIMER_ALL_ACCESS);
+    HANDLE waits[2] = { kick_event, timer };
+    iop_thread_id = GetCurrentThreadId();
+    int64_t prev = 0;
+    for (;;) {
+        int64_t w0 = iop_now();
+        iop_lock();
+        int64_t w1 = iop_now();
+        if (w1 - w0 > stat_wait_max) stat_wait_max = w1 - w0;
+        if (prev && w1 - prev > stat_gap_max) stat_gap_max = w1 - prev;
+        prev = w1;
+        pass_start = w1;
+        iop_run();
+        pass_start = 0;
+        int again = run_unfinished;
+        if (timer_ticks_total) status_line();
+        iop_unlock();
+        if (again) {                                       /* busy threads: continue after any waiter */
+            while (lock_waiters) SwitchToThread();
+            continue;
+        }
+        int64_t s0 = iop_now();
+        if (timer) {                                       /* 1 ms, or at once when kicked */
+            LARGE_INTEGER due;
+            due.QuadPart = -10000;                         /* relative, 100 ns units */
+            SetWaitableTimer(timer, &due, 0, NULL, NULL, FALSE);
+            WaitForMultipleObjects(2, waits, FALSE, INFINITE);
+        } else {
+            WaitForSingleObject(kick_event, 1);
+        }
+        int64_t s1 = iop_now();
+        if (s1 - s0 > stat_sleep_max) stat_sleep_max = s1 - s0;
     }
 }
 
-void iop_service(void) {
-    if (!inited) return;
-    iop_run();
-    if (timer_ticks_total) status_line();
+void iop_kick(int ee_in_interrupt) {
+    if (threaded) SetEvent(kick_event);
+    else if (!ee_in_interrupt) iop_run();
+}
+
+void iop_thread_start(void) {
+    if (threaded || !inited) return;
+    const char* e = getenv("PS2_IOP_THREAD");
+    if (e && *e == '0') return;
+    kick_event = CreateEventW(NULL, FALSE, FALSE, NULL);   /* auto-reset */
+    if (!kick_event) {
+        fprintf(stderr, "[iop] cannot create the IOP thread's event (%lu); the IOP runs at the EE's safe points\n", GetLastError());
+        return;
+    }
+    threaded = 1;                                          /* from now on the EE's safe points leave it alone */
+    iop_thread_handle = CreateThread(NULL, 256 * 1024, iop_thread_main, NULL, 0, NULL);
+    if (!iop_thread_handle) {
+        threaded = 0;
+        fprintf(stderr, "[iop] cannot create the IOP thread (%lu); the IOP runs at the EE's safe points\n", GetLastError());
+        return;
+    }
+    fprintf(stderr, "[iop] IOP thread started\n");
+}
+
+/* PS2_PROFILE=iop (perf.c): the thread to sample, and only while a pass of it has run over 4 ms */
+void* iop_thread_os_handle(void) { return iop_thread_handle; }
+int iop_pass_overdue(void) {
+    int64_t t0 = pass_start;
+    return t0 && iop_now() - t0 > iop_usec_to_ticks(4000);
 }
 
 /* Loop heads of recompiled code (IOP_POLL): pending interrupts, preemption, end of the time slice. */
@@ -926,7 +1183,14 @@ void iop_poll(iop_ctx* c) {
     iop_poll_flag = 0;
     if (in_intr || !cur) return;
     if (!th[cur].intr_disabled) deliver_interrupts();
-    if (iop_now() > run_deadline) { th[cur].slices++; yield_running(); return; }
+    if (iop_now() > run_deadline) {
+        th[cur].slices++;
+#ifndef PS2_NO_TRACE
+        th[cur].slice_fn = iop_trace[(iop_trace_pos - 1) & (IOP_TRACE_SIZE - 1)];
+#endif
+        yield_running();
+        return;
+    }
     iop_check_preempt();
 }
 

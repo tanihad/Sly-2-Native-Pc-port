@@ -89,7 +89,32 @@ Execution model:
   the IOP kernel: the ready thread with the lowest priority number runs until it blocks or a
   higher-priority thread becomes ready (checked after every waking call: StartThread,
   SignalSema, WakeupThread, SetEventFlag, ChangeThreadPriority).
-- **When the IOP runs**: `iop_run()` runs threads until all are blocked. It is called from
+- **When the IOP runs** (2026-10-11, next/ep1): like the PS2's IOP CPU, on a host thread of its own
+  ("the IOP thread", `iop_thread_start`, started by `main` when the recompiled modules are present).
+  It runs a pass of `iop_run()` (threads until all are blocked, or 2 ms) every millisecond, at
+  once when kicked (`iop_kick`: sif.c after queuing an RPC request), and again right away after a
+  pass that ended at its time slice with threads still ready. A thread that runs for more than 2 ms
+  without blocking (a busy-wait) is preempted at its next loop head and continued in the next pass.
+  The IOP thread is an MMCSS "Pro Audio" thread like the sound output thread (fallback:
+  THREAD_PRIORITY_HIGHEST, whose 1 ms sleeps took 40-120 ms on a machine running ~10 games).
+  All IOP kernel state is guarded by the IOP lock (recursive; `iop_lock`/`iop_unlock`, iop.h): the
+  IOP thread holds it for each pass; the EE side takes it for its few direct calls (RPC queueing
+  and server lookup, IOPHEAP alloc/free, module loading and binding, which still run passes on the
+  EE thread: boot only). The IOP->EE packet queue (sif.c) and the ISO reader (cdvd.c) have locks of
+  their own; libsd calls take sd.c's lock as before. `PS2_IOP_THREAD=0` restores the old model.
+- **Why its own thread**: the IOP used to run only at the EE's safe points (`ps2_service_irq` ~1 kHz,
+  between DMA tags via `ps2_poll_iop`, after RPC requests). Whenever the EE thread stopped (a long
+  frame, waiting for the GS thread, descheduled on a busy machine) the IOP stopped too, and 989snd's
+  stream chain (half change seen by the 240 Hz tick -> refill VoiceTrans by the stream thread ->
+  LSAX moved to the other half by a later tick) did not finish within one half buffer (0x1000 bytes,
+  163 ms at 44.1 kHz): the voice looped inside the half it had just played, 989snd saw NAX run
+  backwards (error 0x37 at 0x33058) and stopped the stream for good: the Paris hub's and safehouse's
+  ambience/music went silent, as did ep2's episode menu music. Running the IOP from the EE side
+  also cost the EE time (ps2_poll_iop between DMA tags). Measured on a loaded machine: before, 20-80
+  ticks per 10 s more than 8 ms late (up to 360 ms); with the IOP thread the longest gap between
+  passes is ~5-15 ms (rarely ~30 ms), and the safehouse's 9 streams ran 16 minutes without a stop.
+- **Without the IOP thread** (`PS2_IOP_THREAD=0`, the model before next/ep1; this item and the
+  next two describe it): `iop_run()` runs threads until all are blocked. It is called from
   `ps2_service_irq` (`iop_service`, about 1 kHz plus every EE safe point), after an RPC request is
   queued, while binding, and by the loader. A thread that runs for more than 2 ms without blocking
   (a busy-wait) is preempted at its next loop head and continued at the next service, so the EE
@@ -102,6 +127,18 @@ Execution model:
   sequenced notes bunched up (the save prompt's arpeggio at 54-78 ms note spacing instead of ~45
   ms) and stream refills waited. With it: 20-80 late ticks per 10 s, at most ~15-35 ms (the rest is
   single DMA tags whose VU1/GS work takes that long).
+- **Waiting for the GS thread** (next/ep2, 2026-10-11): the EE thread blocks in `gs_thread.c`'s
+  `ee_wait_change` when the GS thread's queue is full or the previous picture is not presented yet.
+  On a loaded host that wait lasted 0.2-1 s per VBlank (measured: 124 waits over 150 ms in 160 s
+  of the episode menu with ~10 game instances running), and the IOP stood still with the EE: the
+  episode menu's music stream stopped for good (989snd error 0x37, see notes/wip/ep2.md). The wait
+  now runs a hook about every millisecond (`gs_set_wait_hook`; the runtime installs
+  `ps2_poll_iop`, so not inside a game interrupt handler). Unit test: gs-draw's async build
+  (`t_wait_hook`: a picture held back until the hook ran). What remains are stalls of the EE
+  thread itself (the OS not running it: 150-660 ms gaps with 0-90 ms of EE thread CPU time on the
+  overloaded machine); next/ep1's mixer hold (`PS2_AUDIO_IOP_LIMIT`) covers those. Since the
+  integration (next/integrate) the hook is installed only when the IOP has no thread of its own:
+  the IOP thread keeps running while the EE waits, and `iop_service` does nothing then.
 - **Interrupts**: hard timers, CD completion, SIF DMA completion callbacks and libsd transfer
   completions are delivered between thread slices and at loop heads of code with interrupts
   enabled (CpuSuspendIntr state is per thread). Handlers run on the interrupt stack with
@@ -122,8 +159,9 @@ Execution model:
   completion (completions are counted per channel, not merged).
 - **RPC receive buffers**: the EE DMAs a call's arguments into the server's single buffer before
   the call packet, so a call that arrives while an earlier one for the same server is still queued
-  has overwritten its arguments. sif.c runs the IOP right after queuing, so this does not happen
-  in practice; `iop_rpc_request` logs it if it ever does ("arguments overwritten").
+  has overwritten its arguments (as on the PS2, where the IOP runs independently too; the game's
+  EE side waits for each reply). `iop_rpc_request` logs it if it ever happens ("arguments
+  overwritten"); not seen in any run.
 - **lgaud**: spiop polls #18 (device count, written through a0) every 500 ms; it reports 0, every
   other call fails with -1 (they are only reached with a headset present).
 
@@ -141,10 +179,30 @@ Execution model:
 
 - `PS2_LOG_IOP=1`: kernel calls (threads, memory, RPC replies with their first word, CD reads).
 - A status line every 10 s: timer rate, how many timer interrupts were delivered more than 8 ms
-  late and the worst lateness (the IOP waits for EE safe points; see "Long runtime operations"),
-  IOP CPU share, thread states, free IOP memory, RPC calls per server, CD reads; below it every
-  thread that used up 2 ms time slices without blocking since the last line (busy-waiting, or
-  slowed down by logging).
+  late and the worst lateness, IOP share of wall time, thread states, free IOP memory, RPC calls
+  per server, CD reads; then the IOP thread's line: its CPU time, the longest gap between passes
+  (and within it the longest wait for the IOP lock and the longest 1 ms sleep), the longest pass,
+  and the longest hold of the IOP lock by another thread; then every IOP thread that used up 2 ms
+  time slices without blocking since the last line (busy-waiting, or the IOP thread descheduled /
+  blocked meanwhile: slices count wall time; debug builds add the function entered last). The
+  IOP thread hands this text to a writer thread (`host_log_async`, audio_out.c): a write to stderr
+  can block for 100 ms and more on a busy machine.
+- **Logging and the IOP's timing**: a direct `fprintf` on the IOP thread can block 50-300 ms on a
+  loaded machine (another thread holding the CRT stream lock is descheduled), which alone broke
+  streams in early runs. The status lines, `PS2_LOG_SD*` (sd.c) and the output thread's lines now
+  go through `host_log_async`; with `PS2_LOG_SD_VOICES` on, the safehouse's streams ran clean
+  (989snd moved LSAX 4 ms after a half change at the median, 8 ms at p99). Still direct, so still
+  perturbing: `PS2_LOG_SND`, `PS2_LOG_IOP`, `PS2_IOP_WATCH`, 989snd's own printf. Stream health
+  without any log: the `[audio] status` line counts voice transfers per 10 s.
+- `PS2_PROFILE=iop`: the sampling profiler (perf.c) samples the IOP thread, only while a pass of it
+  has run longer than 4 ms: shows where long passes block or spin (report at exit).
+- `PS2_IOP_WATCH=<hex>[,<hex>...]` (debug builds): logs every entry to those recompiled IOP
+  functions with a0-a3, ra and thread, e.g. 22140 = 989snd's error report (a0 = code: 0x37 = a
+  stream voice's NAX ran backwards inside a half, 0x34/0x35 = NAX outside the buffer, 0x48 ...).
+- `PS2_LOG_SD_VOICES=<core 0 hex mask>[,<core 1 mask>]` (sd.c): loop-end jumps, loop-start blocks,
+  pitch changes and SSA/LSAX writes of those voices (idle voices parked on a one-block loop are
+  skipped). A stream failure shows as a jump back into the half just played with no LSAX write
+  since the previous jump.
 - `PS2_LOG_SND=1`: every 989snd command the EE sends, with its data words and result
   (`[snd] v<vblank> cmd <n> (<bytes>): ... -> <result>`; direct calls are marked "direct"), the
   same format as the fallback snd.c. spiop's procs are commands 76/104 with 'SUKR' (524B5553) and
@@ -168,19 +226,19 @@ Execution model:
   FIFO), sleep/wakeup counting, DelayThread timing, a 1 kHz hard timer (interrupt context,
   iSignalSema, stopping), event flags, the RPC loop (deferred replies, queued requests), CD
   read/sync/callback, ISO 9660 SearchFile, SIF DMA and libsd completion callbacks, the time slice
-  of a busy-waiting thread, sysclib, printf with stack arguments.
+  of a busy-waiting thread, then the IOP thread (a 1 kHz timer, DelayThread and an RPC reply in
+  real time with nobody calling `iop_run` on the test thread; nothing runs while the test holds the
+  IOP lock and the missed ticks follow; `iop_service` no longer runs the IOP), sysclib, printf with
+  stack arguments.
 
 ## Open points
 
 - Only one bank load (the boot bank) happens before the museum prologue; level banks load later
   in the game and take the same path.
 - Reverb (989snd command 14 -> sceSdSetEffectAttr) is not requested up to the first gameplay.
-- The IOP runs only at EE safe points and between DMA tags (`ps2_poll_iop`). A single DMA tag whose
-  VU1/GS work is long still delays it (at most ~15-35 ms in release runs, more in the debug build);
-  the stream buffers hold 0.16-0.22 s, and the backend's "late/early stream refills" counter shows
-  when it was not enough (none in release runs; two late movie-audio refills in the debug build,
-  where the EE itself fed the movie audio late). A finer poll (per VIF command) or an IOP on its
-  own OS thread would remove the rest.
+- The IOP has its own OS thread now (see "When the IOP runs"). Stream data still comes from
+  `sceCdRead`, which reads the ISO synchronously on the IOP thread (fast from the file cache; a
+  cold, busy disk would stall the IOP for the read).
 - ADMA streaming (`sceSdBlockTrans` loop mode) is not used by what has run so far; the backend
   already announces each consumed half buffer (`iop_sd_transfer_done()`, unit-tested in
   tests/unit/sd), but no game path has exercised it.

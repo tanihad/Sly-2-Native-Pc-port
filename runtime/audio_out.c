@@ -15,6 +15,7 @@
 #include <audioclient.h>
 
 #include <math.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -96,6 +97,62 @@ static void tone_render(int16_t* out, uint32_t frames) {
     }
 }
 
+/* ---- stderr without blocking -------------------------------------------------------------------
+ * The real-time threads (this output thread, the IOP thread) must not write to stderr themselves: on
+ * a busy machine a write can block for 20-300 ms (another thread holding the CRT's stream lock is
+ * descheduled; the file write itself), which cost an underrun or a hole in the stream every time a
+ * status line was printed. host_log_async() queues the text for a writer thread of normal priority,
+ * started on first use; text that does not fit while the writer is behind is dropped. */
+static SRWLOCK     g_log_lock = SRWLOCK_INIT;
+static char        g_log_buf[1 << 20];   /* PS2_LOG_SD bursts */
+static size_t      g_log_len;
+static HANDLE      g_log_event;
+static INIT_ONCE   g_log_once = INIT_ONCE_STATIC_INIT;
+
+static DWORD WINAPI log_writer(LPVOID arg) {
+    (void)arg;
+    static char local[sizeof g_log_buf + 1];
+    for (;;) {
+        WaitForSingleObject(g_log_event, INFINITE);
+        AcquireSRWLockExclusive(&g_log_lock);
+        size_t n = g_log_len;
+        memcpy(local, g_log_buf, n);
+        g_log_len = 0;
+        ReleaseSRWLockExclusive(&g_log_lock);
+        local[n] = 0;
+        if (n) fputs(local, stderr);
+    }
+}
+
+static BOOL CALLBACK log_start(PINIT_ONCE once, PVOID param, PVOID* ctx) {
+    (void)once; (void)param; (void)ctx;
+    g_log_event = CreateEventW(NULL, FALSE, FALSE, NULL);
+    HANDLE t = g_log_event ? CreateThread(NULL, 64 * 1024, log_writer, NULL, 0, NULL) : NULL;
+    if (t) CloseHandle(t);
+    else if (g_log_event) { CloseHandle(g_log_event); g_log_event = NULL; }
+    return TRUE;
+}
+
+void host_log_async(const char* text) {
+    InitOnceExecuteOnce(&g_log_once, log_start, NULL, NULL);
+    if (!g_log_event) { fputs(text, stderr); return; }    /* no writer thread: write directly */
+    size_t n = strlen(text);
+    AcquireSRWLockExclusive(&g_log_lock);
+    if (g_log_len + n <= sizeof g_log_buf) { memcpy(g_log_buf + g_log_len, text, n); g_log_len += n; }
+    ReleaseSRWLockExclusive(&g_log_lock);
+    SetEvent(g_log_event);
+}
+
+static void alog(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
+static void alog(const char* fmt, ...) {
+    char buf[1024];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof buf, fmt, ap);
+    va_end(ap);
+    host_log_async(buf);
+}
+
 /* ---- health: underruns and render cost, reported every 10 s when something happened ---------- */
 
 static volatile LONG g_underruns;          /* device ran dry (WASAPI) / null sink fell >100 ms behind */
@@ -111,11 +168,17 @@ static void status_tick(void) {
     double audio_s = (double)(w - g_status_frames) / RATE;
     double cpu = 100.0 * (double)(g_render_ticks - (uint64_t)g_status_ticks) / (double)f.QuadPart / audio_s;
     uint32_t u = (uint32_t)g_underruns;
-    uint64_t overlaps, bad;
+    uint64_t overlaps, bad, holds, hold_frames;
     sd_health(&overlaps, &bad);
-    fprintf(stderr, "[audio] status: %.1f s of audio, %u underruns (%u in the last %.0f s), mixer %.1f%% of a core, "
-                    "late/early stream refills %llu, invalid ADPCM blocks %llu\n",
-            (double)w / RATE, u, u - g_status_underruns, audio_s, cpu, (unsigned long long)overlaps, (unsigned long long)bad);
+    sd_driver_holds(&holds, &hold_frames);
+    static uint64_t last_trans;
+    uint64_t trans = sd_voice_trans_writes();
+    alog("[audio] status: %.1f s of audio, %u underruns (%u in the last %.0f s), mixer %.1f%% of a core, "
+         "late/early stream refills %llu, invalid ADPCM blocks %llu, voices held for the IOP %llu times (%.2f s), "
+         "%llu voice transfers in the last %.0f s\n",
+            (double)w / RATE, u, u - g_status_underruns, audio_s, cpu, (unsigned long long)overlaps, (unsigned long long)bad,
+            (unsigned long long)holds, (double)hold_frames / RATE, (unsigned long long)(trans - last_trans), audio_s);
+    last_trans = trans;
     g_status_frames = w;
     g_status_ticks = (int64_t)g_render_ticks;
     g_status_underruns = u;
@@ -247,7 +310,7 @@ static int wasapi_run(int quiet) {
         if (FAILED(hr)) break;
         if (pad == 0) {                            /* the device played everything we gave it */
             LONG n = InterlockedIncrement(&g_underruns);
-            if (n <= 5) fprintf(stderr, "[audio] underrun at %.3f s of audio\n", (double)g_written / RATE);
+            if (n <= 5) alog("[audio] underrun at %.3f s of audio\n", (double)g_written / RATE);
         }
         if (pad >= target) continue;
         UINT32 n = target - pad;

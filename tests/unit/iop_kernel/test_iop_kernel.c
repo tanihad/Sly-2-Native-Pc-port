@@ -352,6 +352,46 @@ static void test_timer(void) {
     CHECK(CALL(timrman_FreeHardTimer, &c, (uint32_t)id, 0, 0, 0) == 0, "FreeHardTimer");
 }
 
+/* iop_time_hold (the debug pause): IOP time stands still, and a running hard timer neither replays
+ * the held time as a burst afterwards nor loses its rate. */
+static void test_time_hold(void) {
+    printf("debug pause: IOP time hold\n");
+    iop_ctx c = { 0 };
+    int64_t t0 = iop_now();
+    iop_time_hold(1);
+    int64_t h0 = iop_now();
+    Sleep(60);
+    CHECK(iop_now() == h0, "IOP time moved while held");
+    iop_time_hold(0);
+    double ms = (double)(iop_now() - t0) * 1000.0 / (double)iop_usec_to_ticks(1000000u);
+    CHECK(ms < 30, "the held 60 ms counted as IOP time: %.1f ms passed", ms);
+
+    int id = (int)CALL(timrman_AllocHardTimer, &c, 1, 32, 1, 0);
+    timer_calls = 0;
+    timer_wake_sema = 0;
+    timer_limit = 100000;
+    CALL(timrman_SetTimerHandler, &c, (uint32_t)id, 36864 /* 1 ms of SYSCLOCK */, G_TIMER, 36864);
+    CALL(timrman_SetupHardTimer, &c, (uint32_t)id, 1, 0, 1);
+    CALL(timrman_StartHardTimer, &c, (uint32_t)id, 0, 0, 0);
+    for (int i = 0; i < 20; i++) { iop_service(); Sleep(1); }
+    iop_service();
+    uint32_t before = timer_calls;
+    iop_time_hold(1);
+    Sleep(100);
+    iop_service();                                            /* inside the hold: nothing is due */
+    uint32_t during = timer_calls;
+    iop_time_hold(0);
+    iop_service();
+    uint32_t after = timer_calls;
+    CHECK(during == before, "%u timer calls while held", during - before);
+    CHECK(after - before < 20, "%u timer calls right after a 100 ms hold (want no burst)", after - before);
+    int64_t t1 = iop_now();
+    while (iop_now() - t1 < iop_usec_to_ticks(50000u)) { iop_service(); Sleep(1); }
+    CHECK(timer_calls - after >= 40, "the timer kept its rate after the hold: %u calls in 50 ms", timer_calls - after);
+    CALL(timrman_StopHardTimer, &c, (uint32_t)id, 0, 0, 0);
+    CALL(timrman_FreeHardTimer, &c, (uint32_t)id, 0, 0, 0);
+}
+
 static void test_event_flags(void) {
     printf("event flags\n");
     iop_ctx c = { 0 };
@@ -450,8 +490,75 @@ static void test_slice(void) {
     CHECK(!spin_done && ms < 100, "iop_run returned after %.1f ms (spin done %d)", ms, spin_done);
     CHECK(spin_polls > 0, "no polls");
     spin_release = 1;
+    int64_t before = iop_now();
     iop_run();
     CHECK(spin_done, "spinning thread did not resume");
+    /* the end of every pass is published for the mixer (sd.c holds the voices when it gets old) */
+    CHECK(iop_last_run_time() >= before && iop_last_run_time() <= iop_now(), "iop_last_run_time not updated by iop_run");
+}
+
+/* The IOP thread (iop.h): with the "EE" (this thread) no longer running the IOP at all, the IOP's
+ * timers, delays and RPC replies still happen in real time; while the EE side holds the IOP lock
+ * nothing runs, and the missed timer interrupts are delivered afterwards. */
+static volatile uint32_t* vol(uint32_t* p) { return (volatile uint32_t*)p; }
+
+static void test_iop_thread(void) {
+    printf("IOP thread (the IOP keeps running while the EE does not)\n");
+    iop_thread_start();
+    CHECK(iop_threaded(), "IOP thread not running");
+    iop_ctx c = { 0 };
+    /* a 1 kHz hard timer: 100 ticks in ~100 ms with nobody calling iop_run here */
+    iop_lock();                                       /* kernel calls from this thread: under the lock */
+    timer_calls = 0; timer_limit = 100; timer_wake_sema = 0;
+    int id = (int)CALL(timrman_AllocHardTimer, &c, 1, 32, 1, 0);
+    CALL(timrman_SetTimerHandler, &c, (uint32_t)id, 36864, G_TIMER, 36864);
+    CALL(timrman_SetupHardTimer, &c, (uint32_t)id, 1, 0, 1);
+    int64_t t0 = iop_now();
+    CALL(timrman_StartHardTimer, &c, (uint32_t)id, 0, 0, 0);
+    iop_unlock();
+    while (*vol(&timer_calls) < 30 && iop_now() - t0 < iop_usec_to_ticks(2000000u)) Sleep(1);
+    /* the EE side holds the lock for 40 ms: no tick runs meanwhile, the missed ones come after */
+    iop_lock();
+    uint32_t held_at = *vol(&timer_calls);
+    Sleep(40);
+    uint32_t after_hold = *vol(&timer_calls);
+    iop_unlock();
+    CHECK(after_hold == held_at, "timer ran while the lock was held (%u -> %u)", held_at, after_hold);
+    while (*vol(&timer_calls) < 100 && iop_now() - t0 < iop_usec_to_ticks(2000000u)) Sleep(1);
+    double ms = (double)(iop_now() - t0) * 1000.0 / (double)iop_usec_to_ticks(1000000u);
+    CHECK(*vol(&timer_calls) == 100 && ms >= 98 && ms < 400, "100 ticks: %u calls in %.1f ms", *vol(&timer_calls), ms);
+    iop_lock();
+    CALL(timrman_FreeHardTimer, &c, (uint32_t)id, 0, 0, 0);
+    iop_unlock();
+
+    /* DelayThread wakes in real time */
+    delay_done = 0;
+    iop_lock();
+    start(new_thread(G_DELAY, 30), 0);
+    iop_unlock();
+    t0 = iop_now();
+    while (!delay_done && iop_now() - t0 < iop_usec_to_ticks(1000000u)) Sleep(1);
+    ms = (double)(iop_now() - t0) * 1000.0 / (double)iop_usec_to_ticks(1000000u);
+    CHECK(delay_done && ms < 250, "DelayThread(20 ms) on the IOP thread: done %d after %.1f ms", delay_done, ms);
+
+    /* an RPC request from the EE side is served by the IOP thread (test_rpc's server is waiting);
+     * iop_kick (as sif.c does) wakes the IOP thread instead of running the IOP on this one */
+    uint32_t before = *vol(&replies);
+    iop_w32(rpc_buf, 7);
+    iop_rpc_req r = { { 1, 2, 3, 4 }, rpc_sd, 9, 4, 0x00400000u, 4, 0 };
+    iop_rpc_request(&r);
+    iop_kick(0);
+    t0 = iop_now();
+    while (*vol(&replies) == before && iop_now() - t0 < iop_usec_to_ticks(1000000u)) Sleep(1);
+    ms = (double)(iop_now() - t0) * 1000.0 / (double)iop_usec_to_ticks(1000000u);
+    CHECK(*vol(&replies) == before + 1 && iop_r32(rpc_out) == 25 && ms < 100, "RPC on the IOP thread: %u replies, result %u, %.1f ms",
+          *vol(&replies) - before, iop_r32(rpc_out), ms);
+    /* the EE's safe points no longer run the IOP */
+    iop_lock();
+    uint32_t pass_check = *vol(&timer_calls);
+    iop_unlock();
+    iop_service();
+    CHECK(*vol(&timer_calls) == pass_check, "iop_service ran the IOP although it has its own thread");
 }
 
 static void test_libs(void) {
@@ -503,11 +610,15 @@ int main(void) {
     test_priority();
     test_sleep_delay();
     test_timer();
+    test_time_hold();
     test_event_flags();
     test_rpc();
     test_completions();
     test_slice();
+    test_iop_thread();                              /* from here on the IOP runs on its own thread */
+    iop_lock();                                     /* test_libs calls kernel code from this thread */
     test_libs();                                    /* last: it redirects stderr */
+    iop_unlock();
     printf(failures ? "%d failure(s)\n" : "all passed\n", failures);
     return failures ? 1 : 0;
 }
