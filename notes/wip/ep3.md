@@ -188,12 +188,30 @@ warp saves / direct job starts; fix every runtime/recompiler problem found at it
   ep3_tntbarrel_job_completed. Hub soak (soak_hub2, ~20 min): memory flat 149-150 MB committed,
   no errors; IOP hard timer late ticks only during the other instances' load.
 
-## Next
-1. Job-completion flow left: heist5 destructo 2321 -> boss intro 2327 (live_h5 had not queued
-   anything yet).
-2. Episode-3 intro comic (stereo movie) late-refill check on a quiet machine (if one comes).
-3. Gameplay left (skill/navigation, no runtime blockers known): turret dam hit, boss "Get to
-   Rajan" route, heist chain by play, ruby carry, Neyla keys, TNT barrel run.
+- Heist 5 -> boss (live_h6, release, t3_heist5_intro direct): Sly at the start by the van
+  ("Get the TNT barrel ... mouth" ticker); 2321 (destructo) -> 2 makes 2327 (boss intro) state 1
+  (available); Sly took damage at that moment (HUD icon flashes red, red character outlines = the
+  game's own damage flash, see ep6.md; Sly stood next to the forced explosion). No autosave on a
+  heist stage change (as before). t3_boss_intro direct start (live_bi): Rajan lightning cutscene
+  (letterboxed), then Sly + Murray on the temple roof. Frames ep3_heist5_destructo_damage,
+  ep3_boss_intro_lightning, ep3_boss_intro_roof.
+- run_tests.py 16/16 and every tests\unit\*\run.ps1 (window -UnitOnly) pass after the merge.
+
+## STATUS: COMPLETE (2026-10-14)
+Every Episode 3 job has been started (direct warps) and its flow checked: recon (spycam, chalk
+talk 1), waterbug, free the elephant, lead Rajan (chalk talk 2), turret / blow the dam (chalk
+talk 3), rip-off the ruby, heart of Neyla, TNT barrel / spice grinder, the heist operation
+(heist1-5: Murray, lift, Bentley turret, lever mash, TNT), the boss (intro cutscene, Murray vs
+Rajan pool fight, Sly capture, boss complete). Job-completion books + autosaves verified for every
+job; the episode 2 -> 3 and 3 -> 4 transitions and the episode-end autosave are verified. Runtime
+bugs found and fixed on this branch: boot hang (pixel worker generation race, taken from ep2's
+identical fix), 989snd hard timer starved while the EE waited for the GS (ep2's wait hook),
+PS2_INPUT_FILE long-session stop, case-insensitive input tokens, live `pause` token. No open
+runtime bug reproduces. Hub: 60 fps on a quiet machine, memory flat (149-150 MB) over a 20 min soak.
+
+Left (not runtime problems): by-play completion of the turret dam shot, the boss "Get to Rajan"
+route, and the heist/ruby/Neyla/TNT runs (completed through the task-state tool instead); the
+stereo intro-comic movie's late audio refills were seen only at 100% machine load + SIF logging.
 
 ## Findings / traps
 - Episode 3 tasks: scripts\warp_tasks.txt (t3_*), oids 2167-2350. Level names in the save schema:
