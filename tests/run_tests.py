@@ -26,6 +26,7 @@ def main() -> int:
     BUILD.mkdir(parents=True)
     elf = BUILD / "test.elf"
     elf.write_bytes(make_test_elf.build())
+    (BUILD / "portable.txt").write_text("user data next to the exe (runtime/settings.h)\n")
 
     gen = run([sys.executable, "-m", "recomp", "generate", elf, "-o", BUILD / "recomp"])
     if gen.returncode:

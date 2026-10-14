@@ -4,6 +4,7 @@
 #include "iop.h"
 #include "audio_out.h"
 #include "settings.h"
+#include "launch.h"
 
 #include <stdlib.h>
 #include <windows.h>
@@ -206,10 +207,7 @@ static void calls_vblank(uint32_t v) {
 }
 
 static void die(const char* fmt, uint32_t v) {
-    fprintf(stderr, "[ps2] fatal: ");
-    fprintf(stderr, fmt, v);
-    fprintf(stderr, "\n");
-    exit(1);
+    launch_fatal(fmt, v);                        /* logged; a message box when there is no console */
 }
 
 /* ---- memory: the cases the inline accessors (ps2_runtime.h) leave out ------------------------- */
@@ -736,27 +734,23 @@ done:
 static uint32_t rd32(const uint8_t* p) { uint32_t v; memcpy(&v, p, 4); return v; }
 static uint16_t rd16(const uint8_t* p) { uint16_t v; memcpy(&v, p, 2); return v; }
 
-static void load_elf(const char* path) {
-    FILE* f = fopen(path, "rb");
-    if (!f) { fprintf(stderr, "[ps2] cannot open %s\n", path); exit(1); }
-    fseek(f, 0, SEEK_END); long size = ftell(f); fseek(f, 0, SEEK_SET);
-    uint8_t* buf = malloc((size_t)size);
-    if (!buf || fread(buf, 1, (size_t)size, f) != (size_t)size) die("cannot read ELF (%u bytes)", (uint32_t)size);
-    fclose(f);
-
+/* The executable's loadable segments into EE RAM (from the file on the command line or from the
+ * disc image: launch_load_game). */
+static void load_elf(const uint8_t* buf, size_t size) {
     if (size < 52 || memcmp(buf, "\x7f" "ELF", 4) != 0) die("not an ELF file (%u)", 0);
     uint32_t phoff = rd32(buf + 28);
     uint16_t phentsize = rd16(buf + 42), phnum = rd16(buf + 44);
+    if ((uint64_t)phoff + (uint64_t)phnum * phentsize > size) die("damaged ELF file (%u)", 1);
     for (uint16_t i = 0; i < phnum; i++) {
         const uint8_t* ph = buf + phoff + (size_t)i * phentsize;
         if (rd32(ph) != 1) continue;             /* PT_LOAD */
         uint32_t off = rd32(ph + 4), vaddr = rd32(ph + 8), filesz = rd32(ph + 16), memsz = rd32(ph + 20);
         uint8_t* dst = ps2_fast(vaddr);
         if (!dst || (vaddr & (PS2_RAM_SIZE - 1)) + memsz > PS2_RAM_SIZE) die("segment at 0x%08X outside RAM", vaddr);
+        if ((uint64_t)off + filesz > size || filesz > memsz) die("damaged ELF file (%u)", 2);
         memcpy(dst, buf + off, filesz);
         memset(dst + filesz, 0, memsz - filesz);
     }
-    free(buf);
 }
 
 /* A crash in any thread: say what and where (as an offset into the executable, for llvm-nm/objdump),
@@ -793,27 +787,37 @@ static void request_high_qos(void) {
     }
 }
 
+/* Usage: sly2.exe                     the disc image from PS2_ISO or sly2.ini (or a file dialog)
+ *        sly2.exe <image.iso>         that disc image
+ *        sly2.exe <SCUS_973.16> [--dump-regs]   the extracted executable (development, tests)
+ * runtime/launch.c, notes/install.md. */
 int main(int argc, char** argv) {
-    if (argc < 2) { fprintf(stderr, "usage: %s <path to original PS2 executable>\n", argv[0]); return 2; }
+    launch_init();                               /* user data folder; no console: log to a file */
     SetUnhandledExceptionFilter(crash_report);
     request_high_qos();
     QueryPerformanceFrequency(&qpc_freq);
     QueryPerformanceCounter(&qpc_start);
     perf_init();                                 /* PS2_PERF / PS2_PROFILE */
     atexit(perf_final);
-    settings_load();                             /* sly2.ini next to the exe, PS2_ASPECT */
+    settings_load();                             /* sly2.ini in the user data folder, PS2_ASPECT */
     aspect_init();                               /* widescreen factors (aspect.c) */
+    int dump_regs = argc > 2 && strcmp(argv[2], "--dump-regs") == 0;
+    headless = dump_regs || getenv("PS2_HEADLESS") != NULL;
     ps2_ram = calloc(1, PS2_RAM_SIZE + 16);      /* +16: a 128-bit access at the very end */
     ps2_spr = calloc(1, PS2_SPR_SIZE + 16);
     if (!ps2_ram || !ps2_spr) die("out of memory (%u)", 0);
-    load_elf(argv[1]);
+    size_t elf_size = 0;
+    uint8_t* elf = launch_load_game(argc, argv, headless, &elf_size);   /* argv[1], or the disc image */
+    load_elf(elf, elf_size);
+    free(elf);
+    wchar_t card[MAX_PATH + 80];                 /* memory card: <user data>\memcard\slot0 (PS2_MEMCARD_DIR wins) */
+    if (settings_user_path(L"memcard\\slot0", card, MAX_PATH + 80)) mc_set_default_dir(card);
+    window_exit_hook = launch_exit;              /* closing the window: clean exit */
     iop_init();                                  /* IOP memory map before the EE's first IOP request */
 
-    int dump_regs = argc > 2 && strcmp(argv[2], "--dump-regs") == 0;
     ps2_log_sif = getenv("PS2_LOG_SIF") != NULL;
     watch_init();
     if (warp_init()) ps2_hooks_on = 1;
-    headless = dump_regs || getenv("PS2_HEADLESS") != NULL;
     dump_dir = getenv("PS2_DUMP_FRAMES");
     if (getenv("PS2_DUMP_EVERY")) dump_every = atoi(getenv("PS2_DUMP_EVERY")) > 0 ? atoi(getenv("PS2_DUMP_EVERY")) : 60;
     if (getenv("PS2_DUMP_FROM")) dump_from = (uint32_t)atoi(getenv("PS2_DUMP_FROM"));

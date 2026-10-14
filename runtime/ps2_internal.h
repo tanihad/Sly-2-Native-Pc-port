@@ -3,6 +3,7 @@
 #include "ps2_runtime.h"
 
 #include <stdio.h>
+#include <wchar.h>
 
 /* Debug output of rendered frames (debug.c): PS2_DUMP_FRAMES=<dir> */
 void debug_write_png(const char* path, const uint32_t* bgrx, int w, int h, int stride);
@@ -43,6 +44,13 @@ extern int ps2_log_sif;                    /* PS2_LOG_SIF=1 */
 int cdvd_rpc(ps2_ctx* ctx, uint32_t sid, uint32_t fno, const uint8_t* args, uint32_t send_size,
              uint8_t* out, uint32_t recv_size);
 int cdvd_read_host(uint32_t lbn, uint32_t count, void* dst);   /* disc sectors into host memory */
+void cdvd_set_image(const wchar_t* path);  /* the disc image (launch.c); without one, PS2_ISO */
+/* Memory card (mc.c): its folder unless PS2_MEMCARD_DIR is set (launch.c: <user data>\memcard\slot0),
+ * and the exit barrier: waits for a card operation in progress, then lets none start (launch.c). */
+void mc_set_default_dir(const wchar_t* dir);
+void mc_quiesce(void);
+/* window.c: called when the window is closed, after its state is saved (main sets launch_exit). */
+extern void (*window_exit_hook)(int code);
 int iop_modules_rpc(ps2_ctx* ctx, uint32_t sid, uint32_t fno, const uint8_t* args, uint32_t send_size,
                     uint8_t* out, uint32_t recv_size);
 

@@ -1,11 +1,20 @@
-/* User settings: sly2.ini next to the executable (format and keys: notes/settings.md).
+/* User settings: sly2.ini in the user data folder (format and keys: notes/settings.md).
+ *
+ * The user data folder (settings_user_dir) holds sly2.ini, the memory card and the log:
+ * PS2_USER_DIR if set, else the executable's folder when a file "portable.txt" is next to the
+ * executable (development builds always have one: scripts/build_game.py writes it), else
+ * %LOCALAPPDATA%\Sly2.
  *
  * Loaded once at start-up (settings_load, before the game runs), overridden per key by environment
- * variables for testing (PS2_ASPECT=16:9|4:3|<w>:<h>), written by window.c (the owner of
- * persistence) as a commented template when the window opens and no file exists yet.
- * settings_parse is pure (no I/O) so the unit tests can drive it directly. */
+ * variables for testing (PS2_ASPECT=16:9|4:3|<w>:<h>, PS2_SHOW_FPS=1), written by window.c (the owner
+ * of persistence) as a commented template when the window opens and no file exists yet. Values the
+ * game remembers (the disc image, the window's placement) are written back key by key
+ * (settings_set), keeping the rest of the file - comments included - as the user left it; environment
+ * overrides are never written. settings_parse and settings_update_text are pure (no I/O) so the unit
+ * tests can drive them directly. */
 #pragma once
 #include <stddef.h>
+#include <wchar.h>
 
 typedef struct {
     /* [display] */
@@ -18,6 +27,12 @@ typedef struct {
     int motion_blur;             /* 1 on, 0 off, -1 (default) the preset's value */
     int flicker_filter;
     int interlacing;
+    /* [game] */
+    char disc[1024];             /* disc image path (UTF-8), "" = not chosen yet (runtime/launch.c) */
+    /* [window] - remembered when the window closes (window.c) */
+    int win_x, win_y, win_w, win_h;   /* the window's normal (not maximized) rectangle; win_w 0 = none */
+    int win_maximized, win_fullscreen;
+    int show_fps;                /* frame rate in the title bar */
 } ps2_settings_t;
 
 /* The preset's value where a toggle is -1: Modern = motion blur on, flicker filter off, progressive;
@@ -42,8 +57,22 @@ int settings_parse_aspect(const char* v, int* w, int* h);
 /* The file's text for s (a commented template with every key). Returns the length written
  * (snprintf semantics). */
 int settings_format(const ps2_settings_t* s, char* out, size_t cap);
+/* Set `key` in `[section]` to `value` in INI text: the key's line is rewritten (a comment after the
+ * value is kept), or added at the end of its section, or the section is appended. Every other line
+ * stays as it was. Values with ; # or leading/trailing blanks are written in double quotes. Returns
+ * the new length, or -1 if it does not fit in cap. */
+int settings_update_text(const char* text, const char* section, const char* key, const char* value,
+                         char* out, size_t cap);
 
-/* sly2.ini next to the executable, then the environment (PS2_ASPECT). Logs what it uses. */
+/* The user data folder (created if missing; no trailing backslash), and a file in it. */
+const wchar_t* settings_user_dir(void);
+int settings_user_path(const wchar_t* name, wchar_t* out, size_t cap);
+int settings_portable(void);              /* 1: the folder is the executable's (portable.txt, or PS2_USER_DIR) */
+
+/* sly2.ini from the user data folder, then the environment (PS2_ASPECT, PS2_SHOW_FPS). Logs what it uses. */
 void settings_load(void);
-/* Write sly2.ini next to the executable if there is none (window.c, when the window opens). */
+/* Write sly2.ini if there is none (window.c, when the window opens). */
 void settings_save_if_missing(void);
+/* Write keys into sly2.ini (created from the template if missing): n triples section, key, value.
+ * Returns 1 on success. Does not change ps2_settings. */
+int settings_set(const char* const kv[][3], int n);

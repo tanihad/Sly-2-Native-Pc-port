@@ -1,5 +1,6 @@
 /* High-level emulation of the IOP's CD/DVD driver (Sony libcdvd RPC servers), backed by an ISO.
- * Set PS2_ISO to the disc image path. Server IDs and function numbers follow Sony's libcdvd
+ * The disc image is the one launch.c chose (cdvd_set_image: command line, PS2_ISO, sly2.ini or the
+ * file dialog), else the PS2_ISO environment variable (unit tests, tools). Server IDs and function numbers follow Sony's libcdvd
  * (also documented by ps2sdk). */
 #include "ps2_internal.h"
 
@@ -20,18 +21,28 @@
 static FILE* iso;
 static uint64_t iso_sectors;
 static SRWLOCK iso_lock = SRWLOCK_INIT;   /* the EE thread and the IOP thread both read the disc */
+static wchar_t iso_path[1024];            /* cdvd_set_image (launch.c), else PS2_ISO */
+
+void cdvd_set_image(const wchar_t* path) {
+    if (path && wcslen(path) < sizeof iso_path / sizeof iso_path[0]) wcscpy(iso_path, path);
+}
 
 static void open_iso_locked(void) {
     static int tried;
     if (tried) return;
     tried = 1;
-    const char* path = getenv("PS2_ISO");
-    if (!path) { fprintf(stderr, "[cdvd] PS2_ISO not set: no disc\n"); return; }
-    iso = fopen(path, "rb");
-    if (!iso) { fprintf(stderr, "[cdvd] cannot open %s\n", path); return; }
+    if (!iso_path[0]) {
+        const wchar_t* env = _wgetenv(L"PS2_ISO");
+        if (!env || !*env) { fprintf(stderr, "[cdvd] no disc image (PS2_ISO not set, none chosen): no disc\n"); return; }
+        cdvd_set_image(env);
+    }
+    char u8[3 * 1024];                    /* for the log: UTF-8 (%ls stops at non-ASCII characters) */
+    if (!WideCharToMultiByte(CP_UTF8, 0, iso_path, -1, u8, sizeof u8, NULL, NULL)) strcpy(u8, "?");
+    iso = _wfopen(iso_path, L"rb");
+    if (!iso) { fprintf(stderr, "[cdvd] cannot open %s\n", u8); return; }
     _fseeki64(iso, 0, SEEK_END);
     iso_sectors = (uint64_t)_ftelli64(iso) / SECTOR;
-    fprintf(stderr, "[cdvd] disc image %s (%llu sectors)\n", path, (unsigned long long)iso_sectors);
+    fprintf(stderr, "[cdvd] disc image %s (%llu sectors)\n", u8, (unsigned long long)iso_sectors);
 }
 
 static void open_iso(void) {

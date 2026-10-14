@@ -91,13 +91,18 @@ def cmd_generate(args) -> None:
 
     table = ",\n".join(f"    {{ 0x{f.start:08X}u, {cname(f.start)} }}" for f in funcs)
     hooked = "".join(f"0x{f.start:08X}u, " for f in funcs if hook_for(prog, f.start, f.end))
+    elf = Path(args.elf).read_bytes()
     write_if_changed(out / "func_table.c",
                      '#include "recomp_funcs.h"\n\n'
                      f"const ps2_func_entry ps2_funcs[] = {{\n{table}\n}};\n"
                      f"const size_t ps2_func_count = {len(funcs)};\n"
                      f"const uint32_t ps2_entry_point = 0x{prog.entry:08X}u;\n"
                      "/* functions with an entry hook (recomp/hooks.py), 0-terminated */\n"
-                     f"const uint32_t ps2_hook_addrs[] = {{ {hooked}0 }};\n")
+                     f"const uint32_t ps2_hook_addrs[] = {{ {hooked}0 }};\n"
+                     "/* the executable this code was recompiled from: a disc image must hold exactly this\n"
+                     " * one to be run without an ELF on the command line (runtime/launch.c) */\n"
+                     f"const uint32_t ps2_elf_size = {len(elf)}u;\n"
+                     f'const char ps2_elf_sha256[] = "{hashlib.sha256(elf).hexdigest()}";\n')
 
     unimpl = sum(v for k, v in stats.items() if k.startswith("UNIMPL "))
     files = (len(bodies) + args.per_file - 1) // args.per_file
