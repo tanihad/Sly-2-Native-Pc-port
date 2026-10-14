@@ -14,19 +14,21 @@ culling / 2D, HUD hints via GS reg 0x7F, sw-renderer HUD transform, 16:9 present
   PS2_DUMP_RAW=1 raw), window.c (fit_aspect, per-frame aspect, default 1707x960 at 16:9,
   settings_save_if_missing).
 
+- 14F308/14F268/1CD7E0 patches, movie ASPECT_4_3 hints (f_1B3BD0 entry/return), temp debug removed.
+- Tests: gs-draw t_hud_hints, window test_fit_aspect/test_settings, run_tests.py check_patches; all
+  tests/unit/*/run.ps1 pass (window also full run -NoFullscreen), run_tests.py 16/16 + guards.
+- Docs: notes/widescreen.md, notes/settings.md, recompiler-design.md, controls.md.
+- Verified 16:9: title, briefing (portraits fine without the 0x1BE808 patch), museum, pause,
+  hubs ep1-5, ep1 boss (health pie), Binocucom (ep3 recon), memcard prompt, boot movie pillarboxed
+  (content width 443 px of 796 = 4:3). Screenshots build/screenshots/ws_*.png.
+- 4:3 identity: gs_replay of main recordings (title 30, museum 150, ep2 photo 240 VBlanks) with main
+  vs this runtime: all identical; a 4:3 recording of this build has 0 hints (16:9: 28+28 per 60 VB).
+
 ## In progress
-- verify first 16:9 frames (museum, pause) with HUD_BEGIN(C) around rp21 entries.
+- camera-turn edge check (ws_ep2turn), chalk-talk movie attempt (ws_ep3movie).
 
 ## Next
-1. 14F308 (x 4:3-normalised: f4 *= (4/3)/A after 0x14F36C) + inverse 14F268 (0x14F2B4 f2) + 1CD7E0 size.
-2. Portrait classes 8/9 (rp 15/18): check visually; probably wrap in HUD_BEGIN(C) instead of the
-   community 0x1BE808 patch.
-3. Movies -> ASPECT_4_3 hint (find movie player start/stop; gs_write_reg direct is OK: EE time).
-4. Remove aspect_debug_trace (TEMP) from aspect.c/.h.
-5. Unit tests: settings parser, HUD transform (gs-draw), window fit_aspect; run_tests.py guard test
-   for patches; all tests/unit/*/run.ps1.
-6. Verification runs + screenshots build/screenshots/ws_*.png; 4:3 bit-identity vs main (gs_replay).
-7. notes/widescreen.md, notes/settings.md, recompiler-design.md section, controls.md.
+1. Final report (SubagentHandback).
 
 ## Findings / traps
 - CM (camera) is the global at 0x2DDF40: +0x20 fov, +0x3C aspect (1.2987 = 640/492.8), +0x40 xRange
