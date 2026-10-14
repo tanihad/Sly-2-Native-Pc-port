@@ -20,7 +20,7 @@ $gen = Join-Path $root 'build\gen'
 if ($LASTEXITCODE -ne 0) { Write-Host 'shader build failed'; exit 1 }
 
 $rt = Join-Path $root 'runtime'
-$src = @('gs.c', 'gs_draw.c', 'gs_draw_pixel.c', 'gs_draw_tex.c', 'gs_draw_swz.c', 'gs_thread.c', 'gs_record.c', 'debug.c') | ForEach-Object { Join-Path $rt $_ }
+$src = @('gs.c', 'gs_draw.c', 'gs_draw_pixel.c', 'gs_draw_tex.c', 'gs_draw_swz.c', 'gs_setup.c', 'gs_thread.c', 'gs_record.c', 'debug.c') | ForEach-Object { Join-Path $rt $_ }
 $src += @(Get-ChildItem $rt -Filter 'gs_mem*.c' | ForEach-Object { $_.FullName })
 $src += @(Get-ChildItem (Join-Path $rt 'gpu') -Filter '*.c' | ForEach-Object { $_.FullName })
 $src += Join-Path $PSScriptRoot 'test_gs_hw.c'

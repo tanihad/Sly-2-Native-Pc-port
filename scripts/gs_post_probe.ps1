@@ -16,7 +16,7 @@ $clang = Join-Path $main 'tools\llvm-mingw\bin\clang.exe'
 $Runtime = Join-Path $root 'runtime'
 if (-not $Out) { $Out = Join-Path $root 'build\census' }
 New-Item -ItemType Directory -Force $Out | Out-Null
-$names = @('gs.c', 'gs_draw.c', 'gs_draw_pixel.c', 'gs_draw_tex.c', 'gs_draw_swz.c', 'gs_thread.c', 'gs_record.c', 'debug.c')
+$names = @('gs.c', 'gs_draw.c', 'gs_draw_pixel.c', 'gs_draw_tex.c', 'gs_draw_swz.c', 'gs_setup.c', 'gs_thread.c', 'gs_record.c', 'debug.c')
 $src = @($names | ForEach-Object { Join-Path $Runtime $_ } | Where-Object { Test-Path $_ })
 $src += @(Get-ChildItem $Runtime -Filter 'gs_mem*.c' | ForEach-Object { $_.FullName })
 $src += Join-Path $PSScriptRoot 'gs_post_probe.c'

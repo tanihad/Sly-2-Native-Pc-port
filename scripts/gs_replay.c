@@ -20,13 +20,20 @@
  * bbox, D3D calls, front/render/GPU ms. Uses only the public GS entry points, so it builds with
  * older GS code too. */
 #include "gs_draw.h"
+#if __has_include("gs_setup.h")
+#include "gs_setup.h"                  /* gs_sw_draw (--decode-only) */
+#define GS_REPLAY_SETUP 1
+#endif
+#include <x86intrin.h>
 
 #include <stdlib.h>
 #include <windows.h>
 
 #ifdef GS_REPLAY_GPU
 #include "gpu/gpu.h"
+#include "gpu/gpu_front.h"
 #include "gpu/gpu_verify.h"
+#include <stddef.h>
 #endif
 
 void debug_write_png(const char* path, const uint32_t* bgrx, int w, int h, int stride);   /* debug.c */
@@ -38,7 +45,7 @@ void hw_log_unhandled(const char* unit, uint32_t phys, const void* data, unsigne
     (void)unit; (void)phys; (void)data; (void)size; (void)is_write;
 }
 
-enum { B_SW, B_HW, B_BOTH };
+enum { B_SW, B_HW, B_BOTH, B_HWDRY };
 static const char* outdir;
 static int backend = B_SW;
 static uint64_t sw_hash = 1469598103934665603ull;
@@ -189,6 +196,159 @@ static void write_metrics(const char* path, const char* rec, const char* adapter
     free(gm);
     fclose(f);
 }
+
+/* ---- hwdry: frontend counters per VBlank (notes/d3d11-renderer.md M1) ---- */
+static gpu_front_frame* ff;
+static size_t nff, capff;
+
+static void take_front(void) {
+    gpu_front_frame b[64];
+    int n;
+    while ((n = gpu_front_take_frames(b, 64)) > 0)
+        for (int i = 0; i < n; i++) {
+            if (nff == capff) {
+                capff = capff ? capff * 2 : 1024;
+                ff = realloc(ff, capff * sizeof *ff);
+                if (!ff) { fprintf(stderr, "out of memory\n"); exit(1); }
+            }
+            ff[nff++] = b[i];
+        }
+}
+
+#define U32F(name) { #name, offsetof(gpu_front_frame, name), 0 }
+#define U64F(name) { #name, offsetof(gpu_front_frame, name), 1 }
+#define ARRF(name, n) { #name, offsetof(gpu_front_frame, name), 2 + (n) }
+static const struct { const char* name; size_t off; int kind; } front_fields[] = {
+    U32F(kicks), U32F(nowrite), U32F(culled), U32F(skipped), ARRF(tier, GPU_TIER_N), ARRF(cls, GPU_PC_N), U32F(linepix),
+    ARRF(rov_why, GPU_ROV_N), ARRF(punt_why, GPU_PUNT_N),
+    U32F(d3d_draws), U32F(d3d_draws_commute), U32F(ff_draws), U32F(rov_draws), U32F(split_extra), U32F(rov_runs), U32F(zresolves),
+    U32F(alias16_sprites), U32F(alias16_dispatches), U32F(alias16_selfcopy), U32F(clears_c), U32F(clears_z),
+    U32F(loads), U32F(load_blocks), U32F(shadow_copies), U32F(downloads), U32F(download_blocks), U32F(patches),
+    U32F(patch_bytes), U32F(xfers), U32F(xfer_bytes), U32F(xfer_local), U32F(xfer_read), U32F(clut_loads),
+    U32F(clut_slots), U32F(clut_new), U32F(clut_gpu_reads), U32F(targets_live), U32F(targets_created), U32F(targets_evicted), U32F(target_overlaps),
+    U32F(state_changes), U32F(states), U32F(vertices), U32F(indices), U32F(records_z), U32F(records_full),
+    U32F(records_sprite), U32F(records_linepix), U64F(vtx_bytes), U64F(idx_bytes), U64F(rec_bytes), U64F(state_bytes),
+    U64F(cmd_bytes), U64F(data_bytes), U32F(atst_kicks), U32F(atst_pass), U32F(atst_fail), U32F(atst_straddle),
+    U32F(cd_as_kicks), U32F(as_over128), ARRF(zprims, GPU_ZF_N), ARRF(zmin, GPU_ZF_N), ARRF(zmax, GPU_ZF_N),
+    U32F(z32_over), U32F(tex_vram), U32F(tex_view_c32), U32F(tex_view_alpha), U32F(tex_alias16), U32F(region_clamp),
+    U32F(tbw_npot), U32F(selfcheck_bad),
+};
+
+static void json_front(FILE* f, const gpu_front_frame* g) {
+    fprintf(f, "\"vblank\": %u, \"front_ms\": %.4f", g->vblank, g->front_ms);
+    for (size_t k = 0; k < sizeof front_fields / sizeof *front_fields; k++) {
+        const uint8_t* p = (const uint8_t*)g + front_fields[k].off;
+        if (front_fields[k].kind == 0) fprintf(f, ", \"%s\": %u", front_fields[k].name, *(const uint32_t*)p);
+        else if (front_fields[k].kind == 1) fprintf(f, ", \"%s\": %llu", front_fields[k].name, (unsigned long long)*(const uint64_t*)p);
+        else {
+            fprintf(f, ", \"%s\": [", front_fields[k].name);
+            for (int i = 0; i < front_fields[k].kind - 2; i++) fprintf(f, "%s%u", i ? ", " : "", ((const uint32_t*)p)[i]);
+            fprintf(f, "]");
+        }
+    }
+}
+
+/* summary: sums over all VBlanks and maxima per VBlank, plus the worst VBlanks */
+static void front_report(const char* metrics, const char* rec, double replay_ms, uint32_t frames) {
+    gpu_front_frame sum, mx;
+    memset(&sum, 0, sizeof sum);
+    memset(&mx, 0, sizeof mx);
+    double fms_sum = 0, fms_max = 0;
+    uint32_t zlo[GPU_ZF_N], zhi[GPU_ZF_N];
+    for (int i = 0; i < GPU_ZF_N; i++) { zlo[i] = 0xFFFFFFFFu; zhi[i] = 0; }
+    for (size_t i = 0; i < nff; i++) {
+        const gpu_front_frame* g = &ff[i];
+        fms_sum += g->front_ms;
+        if (g->front_ms > fms_max) fms_max = g->front_ms;
+        for (size_t k = 0; k < sizeof front_fields / sizeof *front_fields; k++) {
+            size_t off = front_fields[k].off;
+            int n = front_fields[k].kind >= 2 ? front_fields[k].kind - 2 : 1;
+            if (front_fields[k].kind == 1) {
+                uint64_t v = *(const uint64_t*)((const uint8_t*)g + off);
+                *(uint64_t*)((uint8_t*)&sum + off) += v;
+                if (v > *(uint64_t*)((uint8_t*)&mx + off)) *(uint64_t*)((uint8_t*)&mx + off) = v;
+            } else
+                for (int j = 0; j < n; j++) {
+                    uint32_t v = ((const uint32_t*)((const uint8_t*)g + off))[j];
+                    ((uint32_t*)((uint8_t*)&sum + off))[j] += v;
+                    if (v > ((uint32_t*)((uint8_t*)&mx + off))[j]) ((uint32_t*)((uint8_t*)&mx + off))[j] = v;
+                }
+        }
+        for (int z = 0; z < GPU_ZF_N; z++)
+            if (g->zprims[z]) { if (g->zmin[z] < zlo[z]) zlo[z] = g->zmin[z]; if (g->zmax[z] > zhi[z]) zhi[z] = g->zmax[z]; }
+    }
+    double n = nff ? (double)nff : 1;
+    fprintf(stderr, "hwdry: %zu VBlanks (%u replayed), frontend %.3f ms/VBlank mean, %.3f max\n", nff, frames, fms_sum / n, fms_max);
+    fprintf(stderr, "hwdry: tiers FF %u ROV %u ALIAS16 %u PUNT %u | classes tri %u sprite %u line %u point %u, %u line pixels\n",
+            sum.tier[0], sum.tier[1], sum.tier[2], sum.tier[3], sum.cls[0], sum.cls[1], sum.cls[2], sum.cls[3], sum.linepix);
+    fprintf(stderr, "hwdry: per VBlank max: D3D draws %u (FF %u, ROV %u, split +%u, zresolves %u), ROV runs %u, ALIAS16 %u sprites / %u dispatches, "
+                    "states %u, state changes %u, records %u, vertices %u, kicks %u\n",
+            mx.d3d_draws, mx.ff_draws, mx.rov_draws, mx.split_extra, mx.zresolves, mx.rov_runs, mx.alias16_sprites,
+            mx.alias16_dispatches, mx.states, mx.state_changes,
+            mx.records_z + mx.records_full + mx.records_sprite + mx.records_linepix, mx.vertices, mx.kicks);
+    fprintf(stderr, "hwdry: commutation batching estimate: max %u D3D draws per VBlank, mean %.1f\n", mx.d3d_draws_commute, sum.d3d_draws_commute / n);
+    fprintf(stderr, "hwdry: per VBlank mean: D3D draws %.1f, ROV runs %.2f, ALIAS16 sprites %.1f / dispatches %.2f, states %.1f, "
+                    "upload MB vtx %.2f idx %.2f rec %.2f\n",
+            sum.d3d_draws / n, sum.rov_runs / n, sum.alias16_sprites / n, sum.alias16_dispatches / n, sum.states / n,
+            sum.vtx_bytes / n / 1e6, sum.idx_bytes / n / 1e6, sum.rec_bytes / n / 1e6);
+    fprintf(stderr, "hwdry: ROV why: ref %u colclamp %u fbmsk %u date %u blend %u C>128 %u pabe/dthe %u z32-high %u straddle %u\n",
+            sum.rov_why[0], sum.rov_why[1], sum.rov_why[2], sum.rov_why[3], sum.rov_why[4], sum.rov_why[5], sum.rov_why[6],
+            sum.rov_why[7], sum.rov_why[8]);
+    fprintf(stderr, "hwdry: PUNT %u (target overlap %u, frame fmt %u, tex foreign %u, tex fmt %u, alias16 prim %u, alias16 tex %u)\n",
+            sum.tier[3], sum.punt_why[0], sum.punt_why[1], sum.punt_why[2], sum.punt_why[3], sum.punt_why[4], sum.punt_why[5]);
+    fprintf(stderr, "hwdry: pass A (ATST + AFAIL != KEEP) %u kicks: all-pass %u all-fail %u straddle %u (%.2f%%); lerp blends with C=As %u, As > 128 %u (%.2f%%)\n",
+            sum.atst_kicks, sum.atst_pass, sum.atst_fail, sum.atst_straddle,
+            sum.atst_kicks ? 100.0 * sum.atst_straddle / sum.atst_kicks : 0.0, sum.cd_as_kicks, sum.as_over128,
+            sum.cd_as_kicks ? 100.0 * sum.as_over128 / sum.cd_as_kicks : 0.0);
+    static const char* zn[GPU_ZF_N] = { "Z32", "Z24", "Z16", "Z16S" };
+    for (int z = 0; z < GPU_ZF_N; z++)
+        if (sum.zprims[z]) fprintf(stderr, "hwdry: %s: %u prims, vertex Z %08X..%08X\n", zn[z], sum.zprims[z], zlo[z], zhi[z]);
+    fprintf(stderr, "hwdry: Z32 vertices above 0x3F000000: %u; clears colour %u Z %u; loads %u (%u blocks), shadow copies %u, "
+                    "downloads %u (%u blocks), alias16 self-copies %u\n",
+            sum.z32_over, sum.clears_c, sum.clears_z, sum.loads, sum.load_blocks, sum.shadow_copies, sum.downloads,
+            sum.download_blocks, sum.alias16_selfcopy);
+    fprintf(stderr, "hwdry: uploads %u (%u bytes) -> %u patches (%u bytes), max %u patches/VBlank; TRXDIR=1 %u, TRXDIR=2 %u; "
+                    "CLUT new slots %u, max distinct/VBlank %u, loads over GPU words %u; targets created %u evicted %u max live %u, same-kind overlaps %u\n",
+            sum.xfers, sum.xfer_bytes, sum.patches, sum.patch_bytes, mx.patches, sum.xfer_read, sum.xfer_local, sum.clut_new,
+            mx.clut_slots, sum.clut_gpu_reads, sum.targets_created, sum.targets_evicted, mx.targets_live, sum.target_overlaps);
+    fprintf(stderr, "hwdry: textures: vram %u, CT32 target views %u, alpha-index views %u, CT16 (ALIAS16) %u; REGION_CLAMP %u, "
+                    "TBW not 2^n %u; selfcheck mismatches %u\n",
+            sum.tex_vram, sum.tex_view_c32, sum.tex_view_alpha, sum.tex_alias16, sum.region_clamp, sum.tbw_npot, sum.selfcheck_bad);
+    /* the three VBlanks with the most predicted D3D draws */
+    size_t picked[3];
+    for (int w = 0; w < 3 && w < (int)nff; w++) {
+        size_t best = 0;
+        int have = 0;
+        for (size_t i = 0; i < nff; i++) {
+            int seen = 0;
+            for (int j = 0; j < w; j++) seen |= picked[j] == i;
+            if (!seen && (!have || ff[i].d3d_draws > ff[best].d3d_draws)) { best = i; have = 1; }
+        }
+        picked[w] = best;
+        const gpu_front_frame* g = &ff[best];
+        fprintf(stderr, "hwdry: worst VBlank %u: %u D3D draws, %u ROV runs, %u states, %u records, %u kicks, %.3f ms\n",
+                g->vblank, g->d3d_draws, g->rov_runs, g->states,
+                g->records_z + g->records_full + g->records_sprite + g->records_linepix, g->kicks, g->front_ms);
+    }
+    gpu_front_dump_targets(stderr);
+    if (!metrics) return;
+    FILE* f = fopen(metrics, "w");
+    if (!f) { fprintf(stderr, "cannot write %s\n", metrics); return; }
+    fprintf(f, "{\n  \"recording\": \"");
+    for (const char* p = rec; *p; p++) fprintf(f, *p == '\\' ? "\\\\" : *p == '"' ? "\\\"" : "%c", *p);
+    fprintf(f, "\",\n  \"backend\": \"hwdry\",\n  \"replay_ms\": %.1f,\n  \"frames\": [\n", replay_ms);
+    for (size_t i = 0; i < nff; i++) {
+        fprintf(f, "    {");
+        json_front(f, &ff[i]);
+        fprintf(f, "}%s\n", i + 1 < nff ? "," : "");
+    }
+    fprintf(f, "  ],\n  \"sum\": {");
+    json_front(f, &sum);
+    fprintf(f, "},\n  \"max\": {");
+    json_front(f, &mx);
+    fprintf(f, "},\n  \"front_ms_mean\": %.4f, \"front_ms_max\": %.4f\n}\n", fms_sum / n, fms_max);
+    fclose(f);
+}
 #endif
 
 /* the picture of a VBlank (on the GS thread's pixel worker with workers, else on this thread) */
@@ -197,12 +357,31 @@ static void picture(const uint32_t* frame, int ok, int w, int h, uint32_t vblank
     progress++;
     hash_picture(frame, ok, w, h, 1024);
 #ifdef GS_REPLAY_GPU
-    if (backend != B_SW) { gpu_verify_picture(frame, ok, w, h, 1024, vblank); return; }
+    if (backend != B_SW && backend != B_HWDRY) { gpu_verify_picture(frame, ok, w, h, 1024, vblank); return; }
 #endif
     if (ok) save_png("", frame, w, h, 1024, vblank);
 }
 
 static int rd(FILE* f, void* p, size_t n) { return fread(p, 1, n, f) == n; }
+
+/* --vram-hash: a 64-bit hash of all of gs_vram after every VBlank (synchronous replay only), one
+ * line "vblank hash" per VBlank, so refactors that must not change the software renderer can be
+ * checked on every byte of GS memory, not only on the displayed pictures. */
+static FILE* vram_hash_file;
+static uint64_t vram_hash_all = 1469598103934665603ull;
+
+static void hash_vram(uint32_t vblank) {
+    const uint64_t* w = (const uint64_t*)gs_vram;
+    uint64_t h = 1469598103934665603ull;
+    for (size_t i = 0; i < GS_VRAM_SIZE / 8; i += 4) {
+        h = (h ^ w[i]) * 1099511628211ull;
+        h = (h ^ w[i + 1]) * 1099511628211ull;
+        h = (h ^ w[i + 2]) * 1099511628211ull;
+        h = (h ^ w[i + 3]) * 1099511628211ull;
+    }
+    fprintf(vram_hash_file, "%u %016llx\n", vblank, (unsigned long long)h);
+    vram_hash_all = (vram_hash_all ^ h) * 1099511628211ull;
+}
 
 /* Watchdog: a replay that makes no progress for 60 s prints where it is and exits with code 4, so
  * a harness (gpu_diff_all.ps1) never waits forever on a deadlock. */
@@ -236,24 +415,34 @@ int main(int argc, char** argv) {
         return 2;
     }
     outdir = argv[2];
-    int workers = 0;
+    int workers = 0, decode_only = 0, front_only = 0, front_ref = 0, front_straddle = 0, front_selfcheck = 0;
     const char* adapter = "hw";
     const char* metrics = NULL;
     for (int i = 3; i < argc; i++) {
         if (!strcmp(argv[i], "--backend") && i + 1 < argc) {
             const char* b = argv[++i];
-            backend = !strcmp(b, "hw") ? B_HW : !strcmp(b, "both") ? B_BOTH : B_SW;
+            backend = !strcmp(b, "hw") ? B_HW : !strcmp(b, "both") ? B_BOTH : !strcmp(b, "hwdry") ? B_HWDRY : B_SW;
             if (strcmp(b, "sw") && backend == B_SW) { fprintf(stderr, "unknown backend %s\n", b); return 2; }
         } else if (!strcmp(argv[i], "--adapter") && i + 1 < argc) adapter = argv[++i];
         else if (!strcmp(argv[i], "--metrics") && i + 1 < argc) metrics = argv[++i];
-        else workers = atoi(argv[i]);
+        else if (!strcmp(argv[i], "--front-only")) front_only = 1;
+        else if (!strcmp(argv[i], "--decode-only")) decode_only = 1;
+        else if (!strcmp(argv[i], "--ref")) front_ref = 1;
+        else if (!strcmp(argv[i], "--straddle-rov")) front_straddle = 1;
+        else if (!strcmp(argv[i], "--selfcheck")) front_selfcheck = 1;
+        else if (!strcmp(argv[i], "--vram-hash") && i + 1 < argc) {
+            vram_hash_file = fopen(argv[++i], "w");
+            if (!vram_hash_file) { fprintf(stderr, "cannot write %s\n", argv[i]); return 1; }
+        } else workers = atoi(argv[i]);
     }
+    if (vram_hash_file && workers > 0) { fprintf(stderr, "--vram-hash needs a synchronous replay (workers 0)\n"); return 2; }
     CreateThread(NULL, 0, watchdog, NULL, 0, NULL);
 #ifndef GS_REPLAY_GPU
     if (backend != B_SW) { fprintf(stderr, "this runtime has no GPU backend (runtime/gpu): only --backend sw\n"); return 2; }
-    (void)adapter; (void)metrics;
+    (void)adapter; (void)metrics; (void)front_only; (void)front_ref; (void)front_straddle; (void)front_selfcheck;
 #else
-    if (backend != B_SW) {
+    if (backend == B_HWDRY && workers > 0) { fprintf(stderr, "--backend hwdry replays synchronously (workers 0)\n"); return 2; }
+    if (backend != B_SW && backend != B_HWDRY) {
         gpu_config cfg;
         memset(&cfg, 0, sizeof cfg);
         cfg.adapter = !strcmp(adapter, "warp") ? GPU_ADAPTER_WARP : GPU_ADAPTER_HW;
@@ -304,6 +493,18 @@ int main(int argc, char** argv) {
     }
     memcpy(gs_vram, vram, sizeof vram);
     gs_tex_flush_all();                          /* nothing decoded from the CLUT upload area stays */
+#ifdef GS_REPLAY_GPU
+    if (backend == B_HWDRY) {                    /* the frontend consumes the stream next to (or instead of) sw */
+        gpu_front_config fc;
+        memset(&fc, 0, sizeof fc);
+        fc.sw = !front_only;
+        fc.ref = front_ref;
+        fc.straddle_rov = front_straddle;
+        fc.selfcheck = front_selfcheck;
+        fc.scale = 1;
+        gpu_front_start(&fc);
+    }
+#endif
 
     if (workers > 0) gs_thread_start(workers, picture);
     /* the recording is read into memory first, so the timing below is the GS's alone */
@@ -316,6 +517,14 @@ int main(int argc, char** argv) {
     fclose(f);
     LARGE_INTEGER q0, q1, qf;
     QueryPerformanceFrequency(&qf);
+#ifdef GS_REPLAY_SETUP
+    if (decode_only) gs_sw_draw = 0;     /* register decode and vertex queue only: the cost every backend pays */
+#else
+    (void)decode_only;
+#endif
+    ULONG64 tc0 = 0, tc1 = 0;
+    QueryThreadCycleTime(GetCurrentThread(), &tc0);
+    uint64_t r0 = __rdtsc();
     QueryPerformanceCounter(&q0);
     uint32_t frames = 0;
     for (size_t pos = 0; pos + 8 <= size;) {
@@ -338,6 +547,9 @@ int main(int argc, char** argv) {
             memcpy(snap, all + pos, sizeof snap);
             pos += sizeof snap;
             for (int i = 0; i < 15; i++) gs_priv_access(0x12000000u + 16u * (uint32_t)i, &snap[i], 8, 1);
+#ifdef GS_REPLAY_GPU
+            if (backend == B_HWDRY) { gpu_front_vblank(snap, h[1]); if ((frames & 63) == 63) take_front(); }
+#endif
             gs_vsync();
             if (workers > 0) gs_queue_vsync(h[1]);
             else {
@@ -345,6 +557,7 @@ int main(int argc, char** argv) {
                 int w = 0, hh = 0;
                 int ok = gs_display(frame, 1024, &w, &hh);
                 picture(frame, ok, w, hh, h[1]);
+                if (vram_hash_file) hash_vram(h[1]);
             }
             frames++;
         } else {
@@ -356,13 +569,32 @@ int main(int argc, char** argv) {
     progress++;
     if (workers > 0) gs_sync();
     QueryPerformanceCounter(&q1);
+    uint64_t r1 = __rdtsc();
+    QueryThreadCycleTime(GetCurrentThread(), &tc1);
     double ms = (double)(q1.QuadPart - q0.QuadPart) * 1000.0 / (double)qf.QuadPart;
+    {   /* CPU time of this thread (robust against a loaded machine), TSC cycles converted with the TSC rate */
+        double tsc_hz = ms > 0 ? (double)(r1 - r0) / (ms / 1000.0) : 1;
+        double cpu_ms = (double)(tc1 - tc0) / tsc_hz * 1000.0;
+        fprintf(stderr, "replay thread CPU %.1f ms (%.3f ms per VBlank)\n", cpu_ms, frames ? cpu_ms / frames : 0.0);
+    }
     fprintf(stderr, "replayed %u VBlanks in %.1f ms (%.2f ms per VBlank, %d pixel workers)\n", frames, ms,
             frames ? ms / frames : 0.0, workers);
     fprintf(stderr, "sw-hash %016llx over %u pictures\n", (unsigned long long)sw_hash, pictures);
+    if (vram_hash_file) {
+        fprintf(stderr, "vram-hash %016llx over %u VBlanks\n", (unsigned long long)vram_hash_all, frames);
+        fclose(vram_hash_file);
+    }
     int rc = 0;
 #ifdef GS_REPLAY_GPU
-    if (backend != B_SW) {
+    if (backend == B_HWDRY) {
+        take_front();
+        front_report(metrics, argv[1], ms, frames);
+        gpu_front_stop();
+        uint32_t punts = 0;
+        for (size_t i = 0; i < nff; i++) punts += ff[i].tier[GPU_TIER_PUNT];
+        if (punts) rc = 5;                       /* the M1 gate: no PUNT */
+    }
+    if (backend != B_SW && backend != B_HWDRY) {
         stage = 2;
         progress++;
         gpu_verify_flush();                      /* the GS thread is idle: this thread is the producer now */
