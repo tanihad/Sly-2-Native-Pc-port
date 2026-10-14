@@ -2,6 +2,15 @@
 
 ## Resume here (read first in a new session)
 
+**Widescreen merged into main (2026-10-14):** 16:9 by default (sly2.ini `[display] aspect`,
+PS2_ASPECT override; notes/widescreen.md, notes/settings.md). Instruction patches
+(recomp/patches.py) widen the camera aspect/frustum and keep screen-space projections 4:3; HUD and
+2D get GS register 0x7F side-band hints (runtime/gs_hint.h) that the sw renderer applies at kick;
+movies are pillarboxed. 4:3 is pixel-identical to before. Regression: 60.1 VBlanks/s avg, 0
+underruns. Limits: HUD is centre-anchored (sits in the 4:3 safe area), aspect read at start-up.
+The `[graphics]` settings (internal_scale, outlines, filters + toggles) are parsed but only take
+effect with the GPU renderer. The GPU renderer's M10 must implement the same hint contract.
+
 **GPU renderer status (2026-10-14, later):** M0, C, M1 merged into next/gpu (coordinator worktree
 `sly2-worktrees\gpu-integ`), and main merged into next/gpu (4b5b1da; window.c 'rec' token now -9).
 M2 (go/no-go submission benchmark + baseline refresh for the PCRTC fix) running in worktree
