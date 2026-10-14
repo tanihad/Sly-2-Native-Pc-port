@@ -31,16 +31,21 @@ Status: in progress
 - tests/unit/gs-hw (run.ps1, test_gs_hw.c): 109 checks pass on 4060 Ti and WARP
   (conformance 2 seeds x 131072 vectors + 65536 depth texels: 0 mismatches on both).
 
+- scripts/gs_replay.c/.ps1: -Backend sw|hw|both, -Adapter, -Metrics, -Log, sw-hash, watchdog
+  (exit 4 after 60 s without progress, prints render-thread phase + ring positions).
+- sw unchanged: old gs_replay.c (2571d8e) vs new -Backend sw vs new -Backend hw PNGs byte
+  identical on rv_intro (16) and title (30); runtime/gs*.c untouched by M0.
+- scripts/gpu_diff_all.ps1 + tests/gpu/baseline.json: 13/13 recordings, 2036 pictures, 0 diff.
+- build_game.py: hlslc + shaders + runtime/gpu/*.c; debug and --release build; release game
+  smoke run with PS2_GS_BACKEND=hw logs the "not in the game yet; using sw" line and renders.
+- notes/d3d11-renderer.md appendix B (as built).
+
 ## In progress
-- gs_replay -Backend sw|hw|both, -Adapter, -Metrics
+- final verification: run_tests.py + every tests/unit/*/run.ps1 (scratch script all_tests.ps1),
+  then final gpu_diff_all (gate mode, no -Update) and gs-hw.
 
 ## Next
-1. gs_replay backends + metrics (+ sw picture hash); gs_replay.ps1 builds gpu sources when
-   runtime/gpu exists (old runtimes still build without it)
-2. gpu_diff_all.ps1 + tests/gpu/baseline.json over the 13 recordings (0 diff)
-3. sw hashes unchanged: old gs_replay vs new -Backend sw PNGs on a couple of recordings
-4. build_game integration (debug + release), PS2_GS_BACKEND (default sw)
-5. run all unit suites + run_tests.py; notes; final report
+1. if all green: Status complete, final commit, report.
 
 ## Findings / traps
 - Caps (D3D11, FL 11_1 on both): RTX 4060 Ti (10DE:2803, driver 32.0.16.1656) and WARP
@@ -53,5 +58,11 @@ Status: in progress
   conformance kernel. Rule for the ubershader: never clamp an int built from a uint cast; use
   explicit comparisons (as gs_z_clamp in int64.hlsli does) and keep conformance coverage for any
   such helper.
+- The first corpus run stalled once on ep3/rope (gs_replay idle, 1.4 s CPU) when its stderr went
+  through nested PowerShell pipes (gpu_diff_all -> powershell gs_replay.ps1 -> exe 2>&1 | ...).
+  20 direct reruns never hung. Now the replay's stderr goes to a file through `cmd /c ... 2>log`
+  and the watchdog guarantees an exit with diagnostics if a real deadlock ever happens.
+- Stopping processes by PID is refused by the agent's permission classifier; stop a background
+  task with TaskStop instead (it took the stuck replay with it).
 - No D3D debug layer installed (d3d11_3SDKLayers.dll absent): debug flag must fall back.
 - llvm-mingw headers have D3D11_FEATURE_D3D11_OPTIONS2 (ROVsSupported etc.) and dxgi1_2..1_6.
