@@ -7,7 +7,12 @@
 ROV paths for what fixed-function blending can't express; software renderer stays the default and
 the reference until M11). Milestones C (corpus extension, worktree gpu-C, branch gpu/C) and M0
 (harness, render thread, all-fallback backend; worktree gpu-M0, branch gpu/M0) are running as
-background agents with checkpoints notes/wip/gpu-C.md / gpu-M0.md. Next: M1 after M0, then M2
+background agents with checkpoints notes/wip/gpu-C.md / gpu-M0.md. UPDATE: M0 and C are complete
+and merged into next/gpu (M0: 0 differing pixels on all 13 recordings, conformance exact on the
+4060 Ti and WARP, both support ROV; C: 11 more recordings, 24 total in tests/gpu/corpus.txt, and
+no GS readbacks anywhere in the game). M1 (frontend dry run) is running in worktree gpu-M1
+(branch gpu/M1); merge it into next/gpu from the coordinator worktree `sly2-worktrees\gpu-integ`
+when it passes. Then M2
 (go/no-go benchmark, needs a quiet machine), M3... per section 11 of the design.
 The sweep continuation (wf_1522fb31-777) was resumed again on 2026-10-14; ep4 is COMPLETE.
 
