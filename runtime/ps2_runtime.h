@@ -300,6 +300,10 @@ extern const uint32_t ps2_hook_addrs[];  /* the hooked functions, 0-terminated (
 void ps2_hook(ps2_ctx* ctx, uint32_t addr);
 #define PS2_HOOK(addr) (ps2_hooks_on ? ps2_hook(ctx, addr) : (void)0)
 
+/* Instruction patches (recomp/patches.py) call into the widescreen support (runtime/aspect.c). */
+#include "aspect.h"
+#include "gs_hint.h"
+
 /* ---- interrupts: set asynchronously by host timers, serviced at loop heads -------------------- */
 
 #define PS2_IRQ_VBLANK 1u                /* host VBlank timer fired */

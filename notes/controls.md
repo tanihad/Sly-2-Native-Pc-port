@@ -55,6 +55,8 @@ passed to the game (Alt+Enter, Alt+Tab, Alt+F4 are window shortcuts).
 | Leave fullscreen               | Esc (only while fullscreen) |
 | Quit                           | close the window or Alt+F4  |
 
-The picture is always shown at 4:3, letterboxed in the window. The title bar shows the frame rate
+The picture is shown at the display aspect from sly2.ini (default 16:9; 4:3 is the PS2 picture
+as it was; notes/widescreen.md, notes/settings.md), fitted into the window with black bars; movies
+are pillarboxed to 4:3. The title bar shows the frame rate
 (frames the game presents per second). `PS2_WINDOW_GDI=1` forces the GDI presenter instead of
 Direct3D 11.

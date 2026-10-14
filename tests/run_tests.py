@@ -65,7 +65,8 @@ def main() -> int:
     print(f"\n{len(checks) - failures}/{len(checks)} passed")
     overrides_ok = check_overrides()
     hooks_ok = check_hooks()
-    return 1 if failures or not overrides_ok or not hooks_ok else 0
+    patches_ok = check_patches()
+    return 1 if failures or not overrides_ok or not hooks_ok or not patches_ok else 0
 
 
 def check_overrides() -> bool:
@@ -125,6 +126,54 @@ def check_hooks() -> bool:
     gen = (ROOT / "build" / "test" / "recomp")
     ok &= not any("PS2_HOOK(" in p.read_text(encoding="utf-8") for p in gen.glob("funcs_*.c"))  # test ELF: none
     print(f"  {'PASS' if ok else 'FAIL'}  entry hooks apply only to the expected bytes")
+    return ok
+
+
+def check_patches() -> bool:
+    """recomp/patches.py inserts code at an instruction only if the function's bytes are the expected
+    ones, before/after exactly that instruction, refuses delay slots and 'after' a jump; the test ELF
+    gets none; every widescreen patch tests the aspect first (a no-op at 4:3)."""
+    sys.path.insert(0, str(ROOT))
+    from collections import Counter
+    from recomp.codegen import FunctionTranslator
+    from recomp.decode import decode
+    from recomp.functions import Function
+    from recomp.overrides import function_sha1
+    from recomp import patches as P
+
+    class Prog:                                     # 8 words at 0x1000
+        def __init__(self, words): self.words = words
+        def read_u32(self, a): return self.words[(a - 0x1000) // 4] if 0x1000 <= a < 0x1020 else None
+
+    # lui a3,0xFFFF; daddu a2,zero,zero; ori a3,a3,0xF000; nop; jr ra; nop; nop; nop
+    words = [0x3C07FFFF, 0x0000302D, 0x34E7F000, 0, 0x03E00008, 0, 0, 0]
+    prog = Prog(words)
+    sha = function_sha1(prog, 0x1000, 0x1020)
+    saved = list(P.PATCHES)
+    ok = True
+    try:
+        P.PATCHES[:] = [P.Patch("b", 0x1000, sha, 0x1008, "before", "MARK_B();", "t"),
+                        P.Patch("a", 0x1000, sha, 0x1008, "after", "MARK_A();", "t")]
+        got = P.patches_for(prog, 0x1000, 0x1020)
+        ok &= sorted(p.name for p in got.get(0x1008, [])) == ["a", "b"]
+        ok &= P.patches_for(Prog(words[:-1] + [1]), 0x1000, 0x1020) == {}     # different bytes
+        f = Function(0x1000, 0x1020, "t", [decode(w, 0x1000 + 4 * i) for i, w in enumerate(words)])
+        src = FunctionTranslator(f, {0x1000}, Counter()).translate(False, got)
+        b, ins, a = src.find("MARK_B();"), src.find("/* 00001008:"), src.find("MARK_A();")
+        ok &= 0 <= b < ins < a < src.find("/* 0000100C:")
+        for bad in (P.Patch("d", 0x1000, sha, 0x1014, "before", "X();", "t"),       # delay slot of jr
+                    P.Patch("j", 0x1000, sha, 0x1010, "after", "X();", "t")):       # after a jump
+            try:
+                FunctionTranslator(f, {0x1000}, Counter()).translate(False, {bad.at: [bad]})
+                ok = False
+            except ValueError:
+                pass
+    finally:
+        P.PATCHES[:] = saved
+    ok &= all(p.code.startswith("if (ps2_aspect.wide)") for p in P.PATCHES if p.name.startswith("ws_"))
+    gen = (ROOT / "build" / "test" / "recomp")
+    ok &= not any("recomp/patches.py" in p.read_text(encoding="utf-8") for p in gen.glob("funcs_*.c"))  # test ELF
+    print(f"  {'PASS' if ok else 'FAIL'}  instruction patches apply only to the expected bytes and places")
     return ok
 
 
