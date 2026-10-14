@@ -23,6 +23,7 @@ enum {
     GPU_OP_PRESENT,                       /* { vblank } */
     GPU_OP_READBACK,                      /* { gpu_readback* } */
     GPU_OP_STOP,                          /* end the render thread */
+    GPU_OP_FRAME,                         /* a frontend frame (gpu_exec.c, M2) */
     GPU_OP_COUNT
 };
 

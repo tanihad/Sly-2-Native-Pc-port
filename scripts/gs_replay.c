@@ -45,11 +45,14 @@ void hw_log_unhandled(const char* unit, uint32_t phys, const void* data, unsigne
     (void)unit; (void)phys; (void)data; (void)size; (void)is_write;
 }
 
-enum { B_SW, B_HW, B_BOTH, B_HWDRY };
+enum { B_SW, B_HW, B_BOTH, B_HWDRY, B_HWSUB };
+#define FRONT_MODE(b) ((b) == B_HWDRY || (b) == B_HWSUB)        /* the GPU frontend consumes the stream */
+#define VERIFY_MODE(b) ((b) == B_HW || (b) == B_BOTH)            /* hw pictures compared with sw */
 static const char* outdir;
 static int backend = B_SW;
 static uint64_t sw_hash = 1469598103934665603ull;
 static uint32_t pictures;
+static double other_ms_per_vblank;       /* hwsubmit: CPU of threads other than replay + render (driver) */
 static volatile long progress, stage;    /* watchdog: stage 0 replay, 1 GS sync, 2 verify flush, 3 GPU finish */
 
 static void hash_picture(const uint32_t* frame, int ok, int w, int h, int stride) {
@@ -349,6 +352,97 @@ static void front_report(const char* metrics, const char* rec, double replay_ms,
     fprintf(f, "},\n  \"front_ms_mean\": %.4f, \"front_ms_max\": %.4f\n}\n", fms_sum / n, fms_max);
     fclose(f);
 }
+
+/* ---- hwsubmit (M2): the render thread executed every frame; its per-frame costs ---- */
+static double pct(double* v, size_t n, double p) {
+    if (!n) return 0;
+    qsort(v, n, sizeof *v, cmp_dbl);
+    size_t i = (size_t)(p * (double)(n - 1) + 0.5);
+    return v[i < n ? i : n - 1];
+}
+
+static int submit_report(const char* metrics, const char* rec, double replay_ms, uint32_t frames) {
+    (void)frames;
+    size_t n = nsts < nff ? nsts : nff;
+    if (nsts != nff) fprintf(stderr, "hwsubmit: %zu render frames vs %zu frontend frames\n", nsts, nff);
+    double *r = malloc((n + 1) * sizeof *r), *c = malloc((n + 1) * sizeof *c), *u = malloc((n + 1) * sizeof *u);
+    double *g = malloc((n + 1) * sizeof *g), *fr = malloc((n + 1) * sizeof *fr), *sb = malloc((n + 1) * sizeof *sb);
+    double sum_sub = 0, sum_cpu = 0, sum_draws = 0, sum_calls = 0;
+    size_t ng = 0, ngpu = 0, worst = 0, nstart = 0;
+    double rmax_st = 0, cmax_st = 0, gmax_st = 0;
+    uint32_t worst_st = 0;
+    uint32_t draws_max = 0, calls_max = 0, pred_max = 0;
+    for (size_t i = 0; i < n; i++) {
+        const gpu_frame_stats* s = &sts[i];
+        const gpu_front_frame* q = &ff[i];
+        if (s->vblank != q->vblank) { fprintf(stderr, "hwsubmit: frame order mismatch at %zu (%u vs %u)\n", i, s->vblank, q->vblank); return 1; }
+        if (s->render_ms > sts[worst].render_ms) worst = i;
+        if (s->draws > draws_max) draws_max = s->draws;
+        if (s->state_calls > calls_max) calls_max = s->state_calls;
+        if (q->d3d_draws > pred_max) pred_max = q->d3d_draws;
+        if (q->kicks < 1000) continue;    /* game frames (as gpu_front_bench.ps1) */
+        r[ng] = s->render_ms; c[ng] = s->render_cpu_ms; u[ng] = s->upload_ms; fr[ng] = q->front_ms;
+        sb[ng] = s->render_ms - s->upload_ms;
+        if (s->gpu_ms >= 0) g[ngpu++] = s->gpu_ms;
+        sum_sub += s->render_ms - s->upload_ms;
+        sum_cpu += s->render_cpu_ms;
+        sum_draws += s->draws;
+        sum_calls += s->draws + s->dispatches + s->copies + s->uploads + s->state_calls;
+        ng++;
+        /* steady state: not a replay-start frame (targets created, downloads: the first frames) */
+        if (q->targets_created || q->downloads) { nstart++; continue; }
+        if (s->render_ms > rmax_st) { rmax_st = s->render_ms; worst_st = s->vblank; }
+        if (s->render_cpu_ms > cmax_st) cmax_st = s->render_cpu_ms;
+        if (s->gpu_ms > gmax_st) gmax_st = s->gpu_ms;
+    }
+    double us_draw = sum_draws ? sum_sub * 1000.0 / sum_draws : 0;
+    double us_call = sum_calls ? sum_sub * 1000.0 / sum_calls : 0;
+    double rmed = pct(r, ng, 0.5), rmax = pct(r, ng, 1.0), r95 = pct(r, ng, 0.95);
+    double cmed = pct(c, ng, 0.5), cmax = pct(c, ng, 1.0), umed = pct(u, ng, 0.5), umax = pct(u, ng, 1.0);
+    double smed = pct(sb, ng, 0.5), smax = pct(sb, ng, 1.0);
+    double gmed = pct(g, ngpu, 0.5), gmax = pct(g, ngpu, 1.0), fmed = pct(fr, ng, 0.5), fmax = pct(fr, ng, 1.0);
+    const gpu_frame_stats* w = n ? &sts[worst] : NULL;
+    fprintf(stderr, "hwsubmit: %zu frames (%zu game frames); render thread per game frame: wall median %.3f ms, p95 %.3f, max %.3f; "
+                    "CPU median %.3f, max %.3f; upload median %.3f, max %.3f; submit (wall - upload) median %.3f, max %.3f\n",
+            n, ng, rmed, r95, rmax, cmed, cmax, umed, umax, smed, smax);
+    fprintf(stderr, "hwsubmit: D3D draws max %u (frontend predicted %u), state calls max %u; %.3f us per draw, %.3f us per D3D call "
+                    "(submit wall / count, game frames); GPU median %.3f ms, max %.3f; frontend median %.3f ms, max %.3f\n",
+            draws_max, pred_max, calls_max, us_draw, us_call, gmed, gmax, fmed, fmax);
+    if (w)
+        fprintf(stderr, "hwsubmit: worst frame vblank %u: %.3f ms wall (%.3f CPU, %.3f upload), %u draws, %u dispatches, %u copies, "
+                        "%u uploads (%u bytes), %u state calls, GPU %.3f ms\n",
+                w->vblank, w->render_ms, w->render_cpu_ms, w->upload_ms, w->draws, w->dispatches, w->copies, w->uploads,
+                w->upload_bytes, w->state_calls, w->gpu_ms);
+    /* one machine-readable line for scripts/gpu_submit_bench.ps1 */
+    fprintf(stderr, "submit-bench frames=%zu game=%zu render_med=%.4f render_p95=%.4f render_max=%.4f cpu_med=%.4f cpu_max=%.4f "
+                    "upload_med=%.4f upload_max=%.4f submit_med=%.4f submit_max=%.4f us_draw=%.4f us_call=%.4f draws_max=%u pred_max=%u "
+                    "gpu_med=%.4f gpu_max=%.4f front_med=%.4f front_max=%.4f other_ms=%.4f other_game_ms=%.4f render_max_steady=%.4f cpu_max_steady=%.4f gpu_max_steady=%.4f start_frames=%zu worst_steady_vblank=%u\n",
+            n, ng, rmed, r95, rmax, cmed, cmax, umed, umax, smed, smax, us_draw, us_call, draws_max, pred_max, gmed, gmax, fmed, fmax,
+            other_ms_per_vblank, ng ? other_ms_per_vblank * (double)n / (double)ng : 0.0, rmax_st, cmax_st, gmax_st, nstart, worst_st);
+    fprintf(stderr, "hwsubmit: steady state (game frames without target creation or downloads, %zu start frames left out): worst %.3f ms wall at vblank %u, CPU max %.3f, GPU max %.3f\n",
+            nstart, rmax_st, worst_st, cmax_st, gmax_st);
+    if (metrics) {
+        FILE* f = fopen(metrics, "w");
+        if (f) {
+            fprintf(f, "{\n  \"recording\": \"");
+            for (const char* p = rec; *p; p++) fprintf(f, *p == '\\' ? "\\\\" : *p == '"' ? "\\\"" : "%c", *p);
+            fprintf(f, "\",\n  \"backend\": \"hwsubmit\",\n  \"replay_ms\": %.1f,\n  \"frames\": [\n", replay_ms);
+            for (size_t i = 0; i < n; i++) {
+                const gpu_frame_stats* s = &sts[i];
+                fprintf(f, "    {\"vblank\": %u, \"render_ms\": %.4f, \"render_cpu_ms\": %.4f, \"upload_ms\": %.4f, \"gpu_ms\": %.4f, "
+                           "\"draws\": %u, \"dispatches\": %u, \"copies\": %u, \"uploads\": %u, \"upload_bytes\": %u, \"state_calls\": %u, ",
+                        s->vblank, s->render_ms, s->render_cpu_ms, s->upload_ms, s->gpu_ms, s->draws, s->dispatches, s->copies,
+                        s->uploads, s->upload_bytes, s->state_calls);
+                json_front(f, &ff[i]);
+                fprintf(f, "}%s\n", i + 1 < n ? "," : "");
+            }
+            fprintf(f, "  ]\n}\n");
+            fclose(f);
+        }
+    }
+    free(r); free(c); free(u); free(g); free(fr); free(sb);
+    return 0;
+}
 #endif
 
 /* the picture of a VBlank (on the GS thread's pixel worker with workers, else on this thread) */
@@ -357,7 +451,7 @@ static void picture(const uint32_t* frame, int ok, int w, int h, uint32_t vblank
     progress++;
     hash_picture(frame, ok, w, h, 1024);
 #ifdef GS_REPLAY_GPU
-    if (backend != B_SW && backend != B_HWDRY) { gpu_verify_picture(frame, ok, w, h, 1024, vblank); return; }
+    if (VERIFY_MODE(backend)) { gpu_verify_picture(frame, ok, w, h, 1024, vblank); return; }
 #endif
     if (ok) save_png("", frame, w, h, 1024, vblank);
 }
@@ -415,13 +509,13 @@ int main(int argc, char** argv) {
         return 2;
     }
     outdir = argv[2];
-    int workers = 0, decode_only = 0, front_only = 0, front_ref = 0, front_straddle = 0, front_selfcheck = 0;
+    int workers = 0, decode_only = 0, front_only = 0, front_ref = 0, front_straddle = 0, front_selfcheck = 0, with_sw = 0, scale = 1, pace = 0;
     const char* adapter = "hw";
     const char* metrics = NULL;
     for (int i = 3; i < argc; i++) {
         if (!strcmp(argv[i], "--backend") && i + 1 < argc) {
             const char* b = argv[++i];
-            backend = !strcmp(b, "hw") ? B_HW : !strcmp(b, "both") ? B_BOTH : !strcmp(b, "hwdry") ? B_HWDRY : B_SW;
+            backend = !strcmp(b, "hw") ? B_HW : !strcmp(b, "both") ? B_BOTH : !strcmp(b, "hwdry") ? B_HWDRY : !strcmp(b, "hwsubmit") ? B_HWSUB : B_SW;
             if (strcmp(b, "sw") && backend == B_SW) { fprintf(stderr, "unknown backend %s\n", b); return 2; }
         } else if (!strcmp(argv[i], "--adapter") && i + 1 < argc) adapter = argv[++i];
         else if (!strcmp(argv[i], "--metrics") && i + 1 < argc) metrics = argv[++i];
@@ -430,6 +524,9 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--ref")) front_ref = 1;
         else if (!strcmp(argv[i], "--straddle-rov")) front_straddle = 1;
         else if (!strcmp(argv[i], "--selfcheck")) front_selfcheck = 1;
+        else if (!strcmp(argv[i], "--with-sw")) with_sw = 1;
+        else if (!strcmp(argv[i], "--pace")) pace = 1;
+        else if (!strcmp(argv[i], "--scale") && i + 1 < argc) scale = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--vram-hash") && i + 1 < argc) {
             vram_hash_file = fopen(argv[++i], "w");
             if (!vram_hash_file) { fprintf(stderr, "cannot write %s\n", argv[i]); return 1; }
@@ -439,9 +536,9 @@ int main(int argc, char** argv) {
     CreateThread(NULL, 0, watchdog, NULL, 0, NULL);
 #ifndef GS_REPLAY_GPU
     if (backend != B_SW) { fprintf(stderr, "this runtime has no GPU backend (runtime/gpu): only --backend sw\n"); return 2; }
-    (void)adapter; (void)metrics; (void)front_only; (void)front_ref; (void)front_straddle; (void)front_selfcheck;
+    (void)adapter; (void)metrics; (void)front_only; (void)front_ref; (void)front_straddle; (void)front_selfcheck; (void)with_sw; (void)scale;
 #else
-    if (backend == B_HWDRY && workers > 0) { fprintf(stderr, "--backend hwdry replays synchronously (workers 0)\n"); return 2; }
+    if (FRONT_MODE(backend) && workers > 0) { fprintf(stderr, "--backend hwdry/hwsubmit replay synchronously (workers 0)\n"); return 2; }
     if (backend != B_SW && backend != B_HWDRY) {
         gpu_config cfg;
         memset(&cfg, 0, sizeof cfg);
@@ -449,7 +546,7 @@ int main(int argc, char** argv) {
         cfg.timestamps = 1;
         if (!gpu_start(&cfg)) { fprintf(stderr, "GPU backend unavailable\n"); return 1; }
         gpu_caps_print(gpu_get_caps());
-        if (!gpu_verify_init(4, verify_cb, NULL)) { fprintf(stderr, "out of memory\n"); return 1; }
+        if (VERIFY_MODE(backend) && !gpu_verify_init(4, verify_cb, NULL)) { fprintf(stderr, "out of memory\n"); return 1; }
     }
 #endif
     FILE* f = fopen(argv[1], "rb");
@@ -494,15 +591,16 @@ int main(int argc, char** argv) {
     memcpy(gs_vram, vram, sizeof vram);
     gs_tex_flush_all();                          /* nothing decoded from the CLUT upload area stays */
 #ifdef GS_REPLAY_GPU
-    if (backend == B_HWDRY) {                    /* the frontend consumes the stream next to (or instead of) sw */
+    if (FRONT_MODE(backend)) {                   /* the frontend consumes the stream next to (or instead of) sw */
         gpu_front_config fc;
         memset(&fc, 0, sizeof fc);
-        fc.sw = !front_only;
+        fc.sw = backend == B_HWSUB ? with_sw : !front_only;
         fc.ref = front_ref;
         fc.straddle_rov = front_straddle;
         fc.selfcheck = front_selfcheck;
-        fc.scale = 1;
+        fc.scale = scale > 0 ? scale : 1;
         gpu_front_start(&fc);
+        if (backend == B_HWSUB) gpu_front_set_sink(gpu_submit_sink, NULL);   /* frames -> render thread (M2) */
     }
 #endif
 
@@ -522,7 +620,18 @@ int main(int argc, char** argv) {
 #else
     (void)decode_only;
 #endif
-    ULONG64 tc0 = 0, tc1 = 0;
+    /* benchmarks of the decode / frontend alone: the hw backend never composes a software picture, so
+     * gs_display is skipped there (outdir "-") */
+    int no_picture = !strcmp(outdir, "-") && !vram_hash_file &&
+                     (decode_only || (backend == B_HWDRY && front_only) || (backend == B_HWSUB && !with_sw));
+    /* --pace: VBlanks at 59.94 Hz, as in the game (render-thread times without a GPU backlog) */
+    HANDLE pace_timer = pace ? CreateWaitableTimerExW(NULL, NULL, 0x2 /* HIGH_RESOLUTION */, TIMER_ALL_ACCESS) : NULL;
+    ULONG64 tc0 = 0, tc1 = 0, rt0 = 0, rt1 = 0;
+    FILETIME pc0[4], pc1[4];
+    GetProcessTimes(GetCurrentProcess(), &pc0[0], &pc0[1], &pc0[2], &pc0[3]);
+#ifdef GS_REPLAY_GPU
+    if (backend == B_HWSUB) rt0 = gpu_render_thread_cycles();
+#endif
     QueryThreadCycleTime(GetCurrentThread(), &tc0);
     uint64_t r0 = __rdtsc();
     QueryPerformanceCounter(&q0);
@@ -548,10 +657,22 @@ int main(int argc, char** argv) {
             pos += sizeof snap;
             for (int i = 0; i < 15; i++) gs_priv_access(0x12000000u + 16u * (uint32_t)i, &snap[i], 8, 1);
 #ifdef GS_REPLAY_GPU
-            if (backend == B_HWDRY) { gpu_front_vblank(snap, h[1]); if ((frames & 63) == 63) take_front(); }
+            if (FRONT_MODE(backend)) { gpu_front_vblank(snap, h[1]); if ((frames & 63) == 63) take_front(); }
 #endif
             gs_vsync();
-            if (workers > 0) gs_queue_vsync(h[1]);
+            if (pace) {
+                LARGE_INTEGER now, due;
+                QueryPerformanceCounter(&now);
+                double target = (double)(frames + 1) * (1000.0 / 59.94);
+                double el = (double)(now.QuadPart - q0.QuadPart) * 1000.0 / (double)qf.QuadPart;
+                if (el < target) {
+                    due.QuadPart = -(LONGLONG)((target - el) * 10000.0);
+                    if (pace_timer && SetWaitableTimer(pace_timer, &due, 0, NULL, NULL, FALSE)) WaitForSingleObject(pace_timer, INFINITE);
+                    else Sleep((DWORD)(target - el));
+                }
+            }
+            if (no_picture) { pictures++; progress++; }
+            else if (workers > 0) gs_queue_vsync(h[1]);
             else {
                 static uint32_t frame[1024 * 1024];
                 int w = 0, hh = 0;
@@ -568,14 +689,31 @@ int main(int argc, char** argv) {
     stage = 1;
     progress++;
     if (workers > 0) gs_sync();
+#ifdef GS_REPLAY_GPU
+    if (backend == B_HWSUB) gpu_submit_wait_idle();   /* every frame executed: the render thread's CPU is complete */
+#endif
     QueryPerformanceCounter(&q1);
     uint64_t r1 = __rdtsc();
     QueryThreadCycleTime(GetCurrentThread(), &tc1);
+#ifdef GS_REPLAY_GPU
+    if (backend == B_HWSUB) rt1 = gpu_render_thread_cycles();
+#endif
+    GetProcessTimes(GetCurrentProcess(), &pc1[0], &pc1[1], &pc1[2], &pc1[3]);
+    if (pace_timer) CloseHandle(pace_timer);
     double ms = (double)(q1.QuadPart - q0.QuadPart) * 1000.0 / (double)qf.QuadPart;
     {   /* CPU time of this thread (robust against a loaded machine), TSC cycles converted with the TSC rate */
         double tsc_hz = ms > 0 ? (double)(r1 - r0) / (ms / 1000.0) : 1;
         double cpu_ms = (double)(tc1 - tc0) / tsc_hz * 1000.0;
         fprintf(stderr, "replay thread CPU %.1f ms (%.3f ms per VBlank)\n", cpu_ms, frames ? cpu_ms / frames : 0.0);
+        if (backend == B_HWSUB) {    /* the render thread, and every other thread (D3D driver workers, ...) */
+            double rt_ms = (double)(rt1 - rt0) / tsc_hz * 1000.0;
+            uint64_t k0 = (uint64_t)pc0[2].dwHighDateTime << 32 | pc0[2].dwLowDateTime, u0 = (uint64_t)pc0[3].dwHighDateTime << 32 | pc0[3].dwLowDateTime;
+            uint64_t k1 = (uint64_t)pc1[2].dwHighDateTime << 32 | pc1[2].dwLowDateTime, u1 = (uint64_t)pc1[3].dwHighDateTime << 32 | pc1[3].dwLowDateTime;
+            double proc_ms = (double)((k1 - k0) + (u1 - u0)) / 10000.0;
+            fprintf(stderr, "render thread CPU %.1f ms (%.3f ms per VBlank); process CPU %.1f ms, other threads (driver) %.3f ms per VBlank\n",
+                    rt_ms, frames ? rt_ms / frames : 0.0, proc_ms, frames ? (proc_ms - cpu_ms - rt_ms) / frames : 0.0);
+            other_ms_per_vblank = frames ? (proc_ms - cpu_ms - rt_ms) / frames : 0.0;
+        }
     }
     fprintf(stderr, "replayed %u VBlanks in %.1f ms (%.2f ms per VBlank, %d pixel workers)\n", frames, ms,
             frames ? ms / frames : 0.0, workers);
@@ -594,10 +732,21 @@ int main(int argc, char** argv) {
         for (size_t i = 0; i < nff; i++) punts += ff[i].tier[GPU_TIER_PUNT];
         if (punts) rc = 5;                       /* the M1 gate: no PUNT */
     }
-    if (backend != B_SW && backend != B_HWDRY) {
+    if (backend == B_HWSUB) {
+        stage = 3;
+        progress++;
+        gpu_submit_wait_idle();
+        gpu_finish();
+        take_stats();
+        take_front();
+        rc = submit_report(metrics, argv[1], ms, frames);
+        gpu_front_stop();
+        gpu_stop();
+    }
+    if (VERIFY_MODE(backend)) {
         stage = 2;
         progress++;
-        gpu_verify_flush();                      /* the GS thread is idle: this thread is the producer now */
+        gpu_verify_flush();                     /* the GS thread is idle: this thread is the producer now */
         stage = 3;
         progress++;
         gpu_finish();

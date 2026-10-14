@@ -285,7 +285,13 @@ static int ts_complete(int block) {             /* oldest timestamp set; returns
     return 0;
 }
 
-static void frame_begin(uint32_t vblank, double front_ms) {
+#define frame_begin gpu_stats_begin
+#define frame_end gpu_stats_end
+gpu_frame_stats* gpu_stats_cur(void) { return &P.st; }
+
+void gpu_stats_begin(uint32_t vblank, double front_ms) {
+    /* a full timestamp ring waits for the GPU before this picture's time starts */
+    if (gpu_rt.cfg.timestamps && P.ts_n == NTS) ts_complete(1);
     QueryPerformanceCounter(&P.t_start);
     memset(&P.st, 0, sizeof P.st);
     P.st.vblank = vblank;
@@ -294,7 +300,6 @@ static void frame_begin(uint32_t vblank, double front_ms) {
     gpu_rt.n_draws = gpu_rt.n_dispatches = gpu_rt.n_copies = gpu_rt.n_uploads = gpu_rt.upload_bytes = 0;
     P.ts_cur = -1;
     if (gpu_rt.cfg.timestamps) {
-        if (P.ts_n == NTS) ts_complete(1);
         int i = (P.ts_head + P.ts_n) % NTS;
         ID3D11DeviceContext_Begin(gpu_rt.ctx, (ID3D11Asynchronous*)P.ts[i].dis);
         ID3D11DeviceContext_End(gpu_rt.ctx, (ID3D11Asynchronous*)P.ts[i].t0);
@@ -302,7 +307,7 @@ static void frame_begin(uint32_t vblank, double front_ms) {
     }
 }
 
-static void frame_end(void) {
+void gpu_stats_end(void) {
     LARGE_INTEGER t;
     QueryPerformanceCounter(&t);
     P.st.draws = gpu_rt.n_draws;

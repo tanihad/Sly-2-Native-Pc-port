@@ -85,10 +85,24 @@ typedef struct {
     uint32_t draws, dispatches, copies, uploads;   /* D3D calls made for this picture */
     uint32_t upload_bytes;
     double front_ms;                      /* producer time in gpu_* calls for this picture */
-    double render_ms;                     /* render-thread CPU time for this picture */
+    double render_ms;                     /* render-thread wall time for this picture */
     double gpu_ms;                        /* GPU time (timestamps; -1: not measured) */
+    /* frontend frames (gpu_exec.c, M2): */
+    double render_cpu_ms;                 /* render-thread CPU time (QueryThreadCycleTime) */
+    double upload_ms;                     /* of render_ms: Map + copy of vertices, indices, records, constants */
+    uint32_t state_calls;                 /* state-setting D3D calls (after redundancy filtering) */
 } gpu_frame_stats;
 int gpu_take_frame_stats(gpu_frame_stats* out, int max);   /* returns how many were taken */
+
+/* ---- frontend frames (M2 submission benchmark, gpu_exec.c) -------------------------------------------
+ * gpu_submit_sink is a gpu_front_set_sink callback: it takes the closed frame's buffers
+ * (gpu_front_detach) and queues them; the render thread executes the GPU_FOP stream with real D3D11
+ * objects and trivial shaders and records gpu_frame_stats per frame. At most 3 frames are in flight
+ * (the sink waits). gpu_submit_wait_idle: every queued frame finished. */
+#include "gpu_front.h"
+void gpu_submit_sink(const gpu_front_frame_data* fd, void* user);
+void gpu_submit_wait_idle(void);
+uint64_t gpu_render_thread_cycles(void);  /* QueryThreadCycleTime of the render thread (TSC ticks) */
 
 /* ---- conformance (gpu_conf.c) ----------------------------------------------------------------------
  * cs_conformance (int64 helpers, exact integer Z formula, depth encoding) against the C reference,

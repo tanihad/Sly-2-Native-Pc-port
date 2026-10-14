@@ -128,3 +128,8 @@ typedef struct {
 } gpu_front_frame_data;
 /* Called at every VBlank with the frame just closed (before its buffers are reused). NULL: none. */
 void gpu_front_set_sink(void (*sink)(const gpu_front_frame_data* fd, void* user), void* user);
+/* Inside the sink: take ownership of the frame's buffers (fd's pointers stay valid until
+ * gpu_front_release(handle), which any thread may call); the frontend continues with other buffers.
+ * Returns the handle (NULL outside a sink call). */
+void* gpu_front_detach(void);
+void  gpu_front_release(void* handle);

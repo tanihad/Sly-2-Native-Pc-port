@@ -7,3 +7,39 @@ cs_conformance      conformance.hlsl    cs_conformance    cs_5_0
 ps_depth_write      conformance.hlsl    ps_depth_write    ps_5_0
 ps_depth_test       conformance.hlsl    ps_depth_test     ps_5_0
 cs_depth_read       conformance.hlsl    cs_depth_read     cs_5_0
+
+# submission benchmark (M2, gpu_exec.c): trivial shaders with the real bindings
+vs_tri              submit.hlsl         vs_tri            vs_5_0
+vs_sprite           submit.hlsl         vs_sprite         vs_5_0
+vs_linepix          submit.hlsl         vs_linepix        vs_5_0
+vs_quad             submit.hlsl         vs_quad           vs_5_0
+ps_depth            submit.hlsl         ps_depth          ps_5_0
+ps_flat             submit.hlsl         ps_flat           ps_5_0
+cs_touch            submit.hlsl         cs_touch          cs_5_0
+ps_rov_t0            submit.hlsl         ps_rov            ps_5_0    TEX=0
+ps_rov_t1            submit.hlsl         ps_rov            ps_5_0    TEX=1
+ps_rov_t2            submit.hlsl         ps_rov            ps_5_0    TEX=2
+ps_ff_d0z0x0t0     submit.hlsl         ps_ff             ps_5_0    TEX=0
+ps_ff_d0z0x0t1     submit.hlsl         ps_ff             ps_5_0    TEX=1
+ps_ff_d0z0x0t2     submit.hlsl         ps_ff             ps_5_0    TEX=2
+ps_ff_d0z0x1t0     submit.hlsl         ps_ff             ps_5_0    TEX=0 DISCARD
+ps_ff_d0z0x1t1     submit.hlsl         ps_ff             ps_5_0    TEX=1 DISCARD
+ps_ff_d0z0x1t2     submit.hlsl         ps_ff             ps_5_0    TEX=2 DISCARD
+ps_ff_d0z1x0t0     submit.hlsl         ps_ff             ps_5_0    TEX=0 ZOUT
+ps_ff_d0z1x0t1     submit.hlsl         ps_ff             ps_5_0    TEX=1 ZOUT
+ps_ff_d0z1x0t2     submit.hlsl         ps_ff             ps_5_0    TEX=2 ZOUT
+ps_ff_d0z1x1t0     submit.hlsl         ps_ff             ps_5_0    TEX=0 ZOUT DISCARD
+ps_ff_d0z1x1t1     submit.hlsl         ps_ff             ps_5_0    TEX=1 ZOUT DISCARD
+ps_ff_d0z1x1t2     submit.hlsl         ps_ff             ps_5_0    TEX=2 ZOUT DISCARD
+ps_ff_d1z0x0t0     submit.hlsl         ps_ff             ps_5_0    TEX=0 DUAL
+ps_ff_d1z0x0t1     submit.hlsl         ps_ff             ps_5_0    TEX=1 DUAL
+ps_ff_d1z0x0t2     submit.hlsl         ps_ff             ps_5_0    TEX=2 DUAL
+ps_ff_d1z0x1t0     submit.hlsl         ps_ff             ps_5_0    TEX=0 DUAL DISCARD
+ps_ff_d1z0x1t1     submit.hlsl         ps_ff             ps_5_0    TEX=1 DUAL DISCARD
+ps_ff_d1z0x1t2     submit.hlsl         ps_ff             ps_5_0    TEX=2 DUAL DISCARD
+ps_ff_d1z1x0t0     submit.hlsl         ps_ff             ps_5_0    TEX=0 DUAL ZOUT
+ps_ff_d1z1x0t1     submit.hlsl         ps_ff             ps_5_0    TEX=1 DUAL ZOUT
+ps_ff_d1z1x0t2     submit.hlsl         ps_ff             ps_5_0    TEX=2 DUAL ZOUT
+ps_ff_d1z1x1t0     submit.hlsl         ps_ff             ps_5_0    TEX=0 DUAL ZOUT DISCARD
+ps_ff_d1z1x1t1     submit.hlsl         ps_ff             ps_5_0    TEX=1 DUAL ZOUT DISCARD
+ps_ff_d1z1x1t2     submit.hlsl         ps_ff             ps_5_0    TEX=2 DUAL ZOUT DISCARD

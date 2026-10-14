@@ -11,6 +11,10 @@
 #   -Backend hwdry        the GPU frontend dry run (M1): classification, records, ownership, counters
 #                         (synchronous; exit code 5 on any PUNT); -FrontOnly: without the software
 #                         rasterizer (frontend timing), -Ref, -StraddleRov, -SelfCheck (Z records vs sw)
+#   -Backend hwsubmit     M2 submission benchmark: the frontend's frames executed on the render thread with
+#                         real D3D11 objects and trivial shaders (gpu_exec.c); prints render-thread ms per
+#                         frame, us per D3D draw, GPU ms ('submit-bench' line); -Scale N target scale,
+#                         -WithSw also runs the software rasterizer, -Pace replays VBlanks at 59.94 Hz
 #   -Adapter hw|warp      hardware adapter (default) or the WARP software rasterizer
 #   -Metrics <file.json>  per-VBlank comparison counts and D3D/CPU/GPU timings
 #   -Log <file>           the replay's stderr goes to this file
@@ -18,7 +22,7 @@
 # A replay without progress for 60 s prints its state and exits with code 4 (watchdog).
 # Every run prints "sw-hash", a hash of all sw pictures (unchanged renderer -> unchanged hash).
 param([Parameter(Mandatory = $true)][string]$Rec, [string]$Out = "", [string]$Runtime = "", [int]$Workers = 0,
-      [switch]$Bench, [ValidateSet('sw', 'hw', 'both', 'hwdry')][string]$Backend = 'sw', [switch]$FrontOnly, [switch]$Ref, [switch]$StraddleRov, [switch]$SelfCheck, [switch]$DecodeOnly, [string[]]$Define = @(),
+      [switch]$Bench, [ValidateSet('sw', 'hw', 'both', 'hwdry', 'hwsubmit')][string]$Backend = 'sw', [int]$Scale = 1, [switch]$WithSw, [switch]$Pace, [switch]$FrontOnly, [switch]$Ref, [switch]$StraddleRov, [switch]$SelfCheck, [switch]$DecodeOnly, [string[]]$Define = @(),
       [ValidateSet('hw', 'warp')][string]$Adapter = 'hw', [string]$Metrics = "", [string]$Log = "", [string]$VramHash = "")
 $root = Split-Path $PSScriptRoot -Parent
 $main = $root
@@ -63,6 +67,9 @@ if ($Ref) { $runArgs += '--ref' }
 if ($StraddleRov) { $runArgs += '--straddle-rov' }
 if ($SelfCheck) { $runArgs += '--selfcheck' }
 if ($DecodeOnly) { $runArgs += '--decode-only' }
+if ($Scale -ne 1) { $runArgs += @('--scale', $Scale) }
+if ($WithSw) { $runArgs += '--with-sw' }
+if ($Pace) { $runArgs += '--pace' }
 if ($Log) {
     # real redirection by cmd: nested PowerShell pipes of a chatty native stderr are slow and once
     # stalled a corpus run (notes/wip/gpu-M0.md)
