@@ -150,24 +150,40 @@ static int dialog_retry(const wchar_t* path, const char* why) {
     return a == IDRETRY;
 }
 
-static uint8_t* read_file(const char* path, size_t* size) {
-    wchar_t w[1024];
-    FILE* f = utf8_to_wide(path, w, 1024) ? _wfopen(w, L"rb") : NULL;
-    if (!f) f = fopen(path, "rb");                   /* a name in the ANSI code page */
+/* The whole file if it is an ELF executable (else NULL, *is_file says whether it could be opened). */
+static uint8_t* read_elf_file(const wchar_t* path, size_t* size, int* is_file) {
+    FILE* f = _wfopen(path, L"rb");
+    *is_file = f != NULL;
+    *size = 0;
     if (!f) return NULL;
-    _fseeki64(f, 0, SEEK_END);
-    int64_t n = _ftelli64(f);
-    _fseeki64(f, 0, SEEK_SET);
-    uint8_t* buf = n > 0 && n < (1 << 30) ? malloc((size_t)n) : NULL;
-    if (buf && fread(buf, 1, (size_t)n, f) != (size_t)n) { free(buf); buf = NULL; }
+    uint8_t magic[4] = { 0 };
+    uint8_t* buf = NULL;
+    if (fread(magic, 1, 4, f) == 4 && !memcmp(magic, "\x7f" "ELF", 4)) {   /* a disc image is not read here */
+        _fseeki64(f, 0, SEEK_END);
+        int64_t n = _ftelli64(f);
+        _fseeki64(f, 0, SEEK_SET);
+        buf = n > 0 && n < (256 << 20) ? malloc((size_t)n) : NULL;
+        if (buf && fread(buf, 1, (size_t)n, f) != (size_t)n) { free(buf); buf = NULL; }
+        if (buf) *size = (size_t)n;
+    }
     fclose(f);
-    *size = buf ? (size_t)n : 0;
     return buf;
 }
 
-/* A path from the command line or the environment, as a wide string. */
-static void arg_to_wide(const char* s, wchar_t* out, size_t cap) {
-    if (!utf8_to_wide(s, out, cap)) MultiByteToWideChar(CP_ACP, 0, s, -1, out, (int)cap);
+/* argv[1] as Windows passed it (UTF-16: any character), from GetCommandLineW, if that is the
+ * argument main got (the ANSI argv loses characters outside the code page); else argv[1] read as
+ * UTF-8, then as ANSI. shell32 is loaded when needed, like comdlg32. */
+typedef LPWSTR*(WINAPI* split_fn)(LPCWSTR, int*);
+static void arg1_wide(const char* arg, wchar_t* out, size_t cap) {
+    split_fn split = (split_fn)(void*)GetProcAddress(LoadLibraryW(L"shell32.dll"), "CommandLineToArgvW");
+    int n = 0;
+    LPWSTR* w = split ? split(GetCommandLineW(), &n) : NULL;
+    char back[3 * 1024];
+    int same = w && n > 1 && wcslen(w[1]) < cap &&
+               WideCharToMultiByte(CP_ACP, 0, w[1], -1, back, sizeof back, NULL, NULL) && !strcmp(back, arg);
+    if (same) wcscpy(out, w[1]);
+    else if (!utf8_to_wide(arg, out, cap)) MultiByteToWideChar(CP_ACP, 0, arg, -1, out, (int)cap);
+    if (w) LocalFree(w);
 }
 
 uint8_t* launch_load_game(int argc, char** argv, int headless, size_t* size) {
@@ -175,15 +191,16 @@ uint8_t* launch_load_game(int argc, char** argv, int headless, size_t* size) {
     const wchar_t* env = _wgetenv(L"PS2_ISO");
     if (headless) show_boxes = 0;
     if (argc > 1) {
-        uint8_t* buf = read_file(argv[1], size);
-        if (!buf) launch_fatal("cannot open %s", argv[1]);
-        if (*size >= 4 && !memcmp(buf, "\x7f" "ELF", 4)) {   /* the executable itself (development) */
+        arg1_wide(argv[1], disc, 1024);
+        int is_file;
+        uint8_t* buf = read_elf_file(disc, size, &is_file);
+        if (!is_file) launch_fatal("cannot open %s", u8(disc));
+        if (buf) {                                   /* the executable itself (development, tests) */
             if (env && *env) cdvd_set_image(env);
             else if (ps2_settings.disc[0] && utf8_to_wide(ps2_settings.disc, disc, 1024)) cdvd_set_image(disc);
             return buf;
         }
-        free(buf);
-        arg_to_wide(argv[1], disc, 1024);           /* a disc image (dropped on the exe, or "sly2.exe x.iso") */
+        /* else a disc image (dropped on the exe, or "sly2.exe x.iso") */
     } else if (env && *env) {
         wcsncpy(disc, env, 1023);
     } else if (ps2_settings.disc[0]) {
