@@ -18,8 +18,6 @@ meaningful step, so an interrupted run resumes where it stopped instead of start
 
 ## Rules
 
-- Never download game ISOs/executables or copyrighted assets. Original files come only from the
-  user's own dump in `orig/`.
 - Never commit anything from `orig/`, `build/`, `asm/`, `ghidra/`, or tool binaries.
 - A function is only "matched" when objdiff reports 100% against the original. Don't record
   partial matches as done.
