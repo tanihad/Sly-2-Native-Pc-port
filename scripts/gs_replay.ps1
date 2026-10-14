@@ -5,8 +5,15 @@
 # older version exported with `git archive`, to compare two renderers on the same input:
 #   scripts\compare_frames.py build\replay_old build\replay_new
 # -Workers > 0 renders through the GS thread with that many pixel workers (deferred drawing).
+# GPU backend (runtime/gpu, notes/d3d11-renderer.md 10.1):
+#   -Backend sw|hw|both   sw pictures (default) / GPU pictures read back / both, compared per VBlank
+#                         (exit code 3 when any pixel differs; differing frames as _sw/_hw/_diff.png)
+#   -Adapter hw|warp      hardware adapter (default) or the WARP software rasterizer
+#   -Metrics <file.json>  per-VBlank comparison counts and D3D/CPU/GPU timings
+# Every run prints "sw-hash", a hash of all sw pictures (unchanged renderer -> unchanged hash).
 param([Parameter(Mandatory = $true)][string]$Rec, [string]$Out = "", [string]$Runtime = "", [int]$Workers = 0,
-      [switch]$Bench)
+      [switch]$Bench, [ValidateSet('sw', 'hw', 'both')][string]$Backend = 'sw',
+      [ValidateSet('hw', 'warp')][string]$Adapter = 'hw', [string]$Metrics = "")
 $root = Split-Path $PSScriptRoot -Parent
 $main = $root
 if (-not (Test-Path (Join-Path $root 'tools\llvm-mingw'))) {            # worktree: tools live in the main checkout
@@ -25,8 +32,26 @@ $names = @('gs.c', 'gs_draw.c', 'gs_draw_pixel.c', 'gs_draw_tex.c', 'gs_draw_swz
 $src = @($names | ForEach-Object { Join-Path $Runtime $_ } | Where-Object { Test-Path $_ })
 $src += @(Get-ChildItem $Runtime -Filter 'gs_mem*.c' | ForEach-Object { $_.FullName })
 $src += Join-Path $PSScriptRoot 'gs_replay.c'
+$flags = @('-O2', '-std=c11', '-w', '-I', $Runtime)
+$libs = @('-lsynchronization')
+$gpuDir = Join-Path $Runtime 'gpu'
+if (Test-Path (Join-Path $gpuDir 'gpu.h')) {                           # runtimes with the GPU backend
+    $gen = Join-Path $Out 'gen'                                           # that runtime's shaders
+    & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'gpu_shaders.ps1') -Root $root -Gen $gen -Shaders (Join-Path $gpuDir 'shaders') | Out-Null
+    if ($LASTEXITCODE -ne 0) { Write-Host 'shader build failed'; exit 1 }
+    $src += @(Get-ChildItem $gpuDir -Filter '*.c' | ForEach-Object { $_.FullName })
+    $flags += @('-DGS_REPLAY_GPU', '-I', $gpuDir, '-I', $gen)
+    $libs += @('-luser32', '-lgdi32')
+} elseif ($Backend -ne 'sw') { Write-Host "$Runtime has no GPU backend: only -Backend sw"; exit 2 }
 $exe = Join-Path $Out 'gs_replay.exe'
-& $clang -O2 -std=c11 -w -I $Runtime @src -lsynchronization -o $exe
+& $clang @flags @src @libs -o $exe
 if ($LASTEXITCODE -ne 0) { Write-Host 'gs_replay build failed'; exit 1 }
-& $exe $Rec $(if ($Bench) { '-' } else { $Out }) $Workers
-exit $LASTEXITCODE
+# run a uniquely named copy (other agents run replays on this machine too)
+$run = Join-Path $Out ("gs_replay_{0}.exe" -f $PID)
+Copy-Item $exe $run -Force
+$runArgs = @($Rec, $(if ($Bench) { '-' } else { $Out }), $Workers, '--backend', $Backend, '--adapter', $Adapter)
+if ($Metrics) { $runArgs += @('--metrics', $Metrics) }
+& $run @runArgs
+$rc = $LASTEXITCODE
+Remove-Item $run -ErrorAction SilentlyContinue
+exit $rc
