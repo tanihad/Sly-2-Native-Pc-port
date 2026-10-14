@@ -99,6 +99,8 @@ class Gen:
     def rand_upper(self, flags=0):
         r = self.r
         k = r.random()
+        if r.random() < 0.03:
+            flags |= r.choice([0x01, 0x02, 0x04])  # T, D, M bits: ignored by both (D/T logged once)
         if k < 0.3:
             return U_NOP | flags << 27
         if k < 0.55:
@@ -190,6 +192,8 @@ class Gen:
         loop_at = r.randrange(n) if r.random() < 0.5 else -1
         sub_at = r.randrange(n) if r.random() < 0.5 else -1
         jr_at = r.randrange(n) if r.random() < 0.15 else -1
+        jalr_at = r.randrange(n) if r.random() < 0.25 else -1
+        mid_e_at = r.randrange(n) if r.random() < 0.3 else -1
         fixups = []
         loops = []                       # (counter init, last pair) of each loop: no jumps into them
         loop_start = None
@@ -220,6 +224,17 @@ class Gen:
                 self.emit(U_NOP, lo7("jr", 0, 0, 12))
                 self.emit(self.rand_upper(), self.rand_lower())
                 jr_at = -1
+            elif len(self.pairs) == jalr_at:
+                # JALR through vi13: to the subroutine (a routine start: compiled) or elsewhere (handoff)
+                fixups.append(("jalr", self.emit(U_NOP, 0), r.random() < 0.7))
+                self.emit(self.rand_upper(), lo7("jalr", 0, 14, 13))
+                self.emit(self.rand_upper(), self.rand_lower())
+                jalr_at = -1
+            elif len(self.pairs) == mid_e_at:
+                # end of a routine in the middle: the pair after its delay slot is another entry
+                self.emit(self.rand_upper(0x08), self.rand_lower(False))
+                self.emit(self.rand_upper(), self.rand_lower(False))
+                mid_e_at = -1
             elif kind < 0.08 and len(self.pairs) + 3 < n:
                 # forward conditional branch, often on a just-written VI register
                 b = r.choice(["ibeq", "ibne", "ibltz", "ibgtz", "iblez", "ibgez"])
@@ -232,7 +247,8 @@ class Gen:
                 ds = self.rand_lower()
                 if r.random() < 0.03:
                     ds = lo7("b", 0, 0, 0, r.randrange(1, 4))                         # branch in the delay slot
-                self.emit(self.rand_upper(), ds)
+                # E bit in a branch delay slot: the pair at the target is the E delay slot
+                self.emit(self.rand_upper(0x08 if r.random() < 0.04 else 0), ds)
             elif kind < 0.1 and len(self.pairs) + 3 < n:
                 fixups.append(("b", self.emit(self.rand_upper(), lo7("b")), r.randrange(2, 8)))
                 self.emit(self.rand_upper(), self.rand_lower())
@@ -246,10 +262,21 @@ class Gen:
             k = self.emit(self.rand_upper(), lo7("b", 0, 0, 0, -1))
             self.emit(self.rand_upper(), self.rand_lower())
         end = len(self.pairs)
-        self.emit(self.rand_upper(0x08), self.rand_lower(False) if r.random() < 0.7 else L_NOP)   # E bit
-        self.emit(self.rand_upper(), self.rand_lower(False))                                        # delay slot
+        kind = r.random()
+        if kind < 0.12:                                    # E bit on a branch: TPC = its target
+            fixups.append(("tosub", self.emit(self.rand_upper(0x08), lo7("b"))))
+        elif kind < 0.24:
+            fixups.append(("tosub", self.emit(self.rand_upper(0x08), lo7(
+                r.choice(["ibeq", "ibne", "ibltz", "ibgtz", "iblez", "ibgez"]), 0, r.choice(VIW), r.choice(VIW)))))
+        else:
+            self.emit(self.rand_upper(0x08), self.rand_lower(False) if r.random() < 0.7 else L_NOP)   # E bit
+        if kind >= 0.24 and r.random() < 0.15:             # a branch in the E delay slot (BAL writes its link)
+            fixups.append(("tosub", self.emit(self.rand_upper(), lo7(r.choice(["b", "bal"]), 0, 14))))
+        else:
+            self.emit(self.rand_upper(), self.rand_lower(False))                                    # delay slot
         # subroutine after the end: a few pairs, JR vi14
         sub = len(self.pairs)
+        self.sub = sub
         for _ in range(r.randrange(1, 5)):
             self.emit(self.rand_upper(), self.rand_lower())
         self.emit(U_NOP, lo7("jr", 0, 0, 14))
@@ -265,6 +292,10 @@ class Gen:
                 self.pairs[k][1] = lo7("bal", 0, 14, 0, sub - (k + 1))
             elif f[0] == "jr":
                 self.pairs[k][1] = iaddiu(12, 0, outside_loops(min(k + 3 + r.randrange(0, 6), end)))
+            elif f[0] == "jalr":
+                self.pairs[k][1] = iaddiu(13, 0, sub if f[2] else outside_loops(min(k + 3 + r.randrange(0, 6), end)))
+            elif f[0] == "tosub":
+                self.pairs[k][1] = (self.pairs[k][1] & ~0x7FF) | ((sub - (k + 1)) & 0x7FF)
             else:
                 tgt = outside_loops(min(k + f[2], end))
                 self.pairs[k][1] = (self.pairs[k][1] & ~0x7FF) | ((tgt - (k + 1)) & 0x7FF)
@@ -279,7 +310,7 @@ def main() -> int:
     args = ap.parse_args()
     out = Path(args.out)
     rng = random.Random(args.seed)
-    images, blob = [], bytearray()
+    images, subs = [], []
     for i in range(args.count):
         unit = 1 if i % 4 else 0
         g = Gen(rng, unit)
@@ -289,11 +320,20 @@ def main() -> int:
         for pc, raw in enumerate(raws):                                  # the encoder must round-trip
             op = decode(raw, pc, 0x7FF if unit else 0x1FF)
             assert op.up != "invalid" and op.lo != "invalid", (i, pc, hex(raw))
-        images.append(Image(f"fuzz{i}", unit, [(0, raws)], [0]))
-        blob += struct.pack("<II", unit, len(raws)) + b"".join(struct.pack("<Q", x) for x in raws)
+        # entries: the image start and every routine start (recomp default_entries), as the game uses
+        images.append(Image(f"fuzz{i}", unit, [(0, raws)]))
+        subs.append(g.sub)
     out.mkdir(parents=True, exist_ok=True)
-    (out / "programs.bin").write_bytes(bytes(blob))
     report = write_units(images, out / "gen", "fz")
+    # programs.bin: unit, pair count, entry count, entries (all but those in the subroutine after the
+    # end, which returns through a random vi14), pairs
+    blob = bytearray()
+    for img, sub in zip(images, subs):
+        raws = img.chunks[0][1]
+        ents = [e for e in img.entries if e < sub]
+        blob += struct.pack("<III", img.unit, len(raws), len(ents)) + b"".join(struct.pack("<I", e) for e in ents)
+        blob += b"".join(struct.pack("<Q", x) for x in raws)
+    (out / "programs.bin").write_bytes(bytes(blob))
     hand = sum(1 for line in report if "handoffs" in line)
     print(f"{len(images)} random programs, {hand} with handoff sites -> {out}")
     return 0

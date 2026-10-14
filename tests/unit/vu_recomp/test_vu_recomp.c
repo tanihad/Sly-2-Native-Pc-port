@@ -130,13 +130,17 @@ int main(int argc, char** argv) {
     if (only) sscanf(only, "%d:%d", &only_prog, &only_state);
     static uint8_t data_before[16384], vu1_data_before[16384];
     static regs vu1_before;
-    int programs = 0, runs = 0, failures = 0;
+    int programs = 0, runs = 0, failures = 0, other_entries = 0;
     uint64_t compiled_starts = 0, pairs = 0;
-    for (long pos = 0; pos + 8 <= size;) {
-        uint32_t unit, np;
+    for (long pos = 0; pos + 12 <= size;) {
+        uint32_t unit, np, ne, ents[64];
         memcpy(&unit, buf + pos, 4);
         memcpy(&np, buf + pos + 4, 4);
-        pos += 8;
+        memcpy(&ne, buf + pos + 8, 4);
+        pos += 12;
+        if (ne < 1 || ne > 64) { fprintf(stderr, "bad entry count %u\n", ne); return 2; }
+        memcpy(ents, buf + pos, ne * 4u);
+        pos += (long)ne * 4;
         vu_state* st = &vu_st[unit];
         uint8_t* micro = vu_micro_mem((int)unit);
         memset(micro, 0, (st->pcmask + 1u) * 8u);
@@ -151,29 +155,31 @@ int main(int argc, char** argv) {
             memcpy(data_before, st->data, (st->dmask + 1u) * 16u);
             save(&vu1_before, &vu_st[1]);
             memcpy(vu1_data_before, vu_data_mem(1), 16384);
-            const result a = run((int)unit, 0, 0);
+            const uint32_t entry = ents[s % ne];             /* every routine start in turn */
+            const result a = run((int)unit, entry, 0);
             load(st, &before);
             memcpy(st->data, data_before, (st->dmask + 1u) * 16u);
             load(&vu_st[1], &vu1_before);
             memcpy(vu_data_mem(1), vu1_data_before, 16384);
             const uint64_t cs = vu_st[unit].cprograms;
             if (only_prog >= 0) fprintf(stderr, "--- compiled\n");
-            const result b = run((int)unit, 0, 1);
+            const result b = run((int)unit, entry, 1);
             compiled_starts += vu_st[unit].cprograms - cs;
             pairs += a.pairs;
             runs++;
+            other_entries += entry != 0;
             if (a.pairs != b.pairs || a.cycles != b.cycles || a.kicks != b.kicks || a.khash != b.khash ||
                 a.hash != b.hash || a.vu1hash != b.vu1hash) {
                 if (failures++ < 12) {
-                    printf("program %d (VU%u, %u pairs), state %d: compiled code differs from the interpreter\n",
-                           programs, unit, np, s);
+                    printf("program %d (VU%u, %u pairs), state %d, entry 0x%04X: compiled code differs from the interpreter\n",
+                           programs, unit, np, s, entry * 8u);
                     diff(&a, &b);
                 }
             }
         }
         programs++;
     }
-    printf("%d programs x %d states (%llu pairs): %d differ; %llu of %d runs started in recompiled code\n", programs,
-           nstates, (unsigned long long)pairs, failures, (unsigned long long)compiled_starts, runs);
+    printf("%d programs x %d states (%llu pairs, %d runs at a routine start other than 0): %d differ; %llu of %d runs started in recompiled code\n", programs,
+           nstates, (unsigned long long)pairs, other_entries, failures, (unsigned long long)compiled_starts, runs);
     return failures || compiled_starts != (uint64_t)runs || !runs ? 1 : 0;
 }
