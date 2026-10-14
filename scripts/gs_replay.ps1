@@ -11,11 +11,12 @@
 #   -Adapter hw|warp      hardware adapter (default) or the WARP software rasterizer
 #   -Metrics <file.json>  per-VBlank comparison counts and D3D/CPU/GPU timings
 #   -Log <file>           the replay's stderr goes to this file
+#   -VramHash <file>      (synchronous, -Workers 0) a hash of all GS memory after every VBlank, one line each
 # A replay without progress for 60 s prints its state and exits with code 4 (watchdog).
 # Every run prints "sw-hash", a hash of all sw pictures (unchanged renderer -> unchanged hash).
 param([Parameter(Mandatory = $true)][string]$Rec, [string]$Out = "", [string]$Runtime = "", [int]$Workers = 0,
       [switch]$Bench, [ValidateSet('sw', 'hw', 'both')][string]$Backend = 'sw',
-      [ValidateSet('hw', 'warp')][string]$Adapter = 'hw', [string]$Metrics = "", [string]$Log = "")
+      [ValidateSet('hw', 'warp')][string]$Adapter = 'hw', [string]$Metrics = "", [string]$Log = "", [string]$VramHash = "")
 $root = Split-Path $PSScriptRoot -Parent
 $main = $root
 if (-not (Test-Path (Join-Path $root 'tools\llvm-mingw'))) {            # worktree: tools live in the main checkout
@@ -30,7 +31,7 @@ if (-not $Runtime) { $Runtime = Join-Path $root 'runtime' }
 $Runtime = (Resolve-Path $Runtime).Path
 if (-not $Out) { $Out = Join-Path $root 'build\gs_replay' }
 New-Item -ItemType Directory -Force $Out | Out-Null
-$names = @('gs.c', 'gs_draw.c', 'gs_draw_pixel.c', 'gs_draw_tex.c', 'gs_draw_swz.c', 'gs_thread.c', 'gs_record.c', 'debug.c')
+$names = @('gs.c', 'gs_draw.c', 'gs_draw_pixel.c', 'gs_draw_tex.c', 'gs_draw_swz.c', 'gs_setup.c', 'gs_thread.c', 'gs_record.c', 'debug.c')
 $src = @($names | ForEach-Object { Join-Path $Runtime $_ } | Where-Object { Test-Path $_ })
 $src += @(Get-ChildItem $Runtime -Filter 'gs_mem*.c' | ForEach-Object { $_.FullName })
 $src += Join-Path $PSScriptRoot 'gs_replay.c'
@@ -53,6 +54,7 @@ $run = Join-Path $Out ("gs_replay_{0}.exe" -f $PID)
 Copy-Item $exe $run -Force
 $runArgs = @($Rec, $(if ($Bench) { '-' } else { $Out }), $Workers, '--backend', $Backend, '--adapter', $Adapter)
 if ($Metrics) { $runArgs += @('--metrics', $Metrics) }
+if ($VramHash) { $runArgs += @('--vram-hash', $VramHash) }
 if ($Log) {
     # real redirection by cmd: nested PowerShell pipes of a chatty native stderr are slow and once
     # stalled a corpus run (notes/wip/gpu-M0.md)

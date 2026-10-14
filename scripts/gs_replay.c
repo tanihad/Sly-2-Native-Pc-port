@@ -204,6 +204,25 @@ static void picture(const uint32_t* frame, int ok, int w, int h, uint32_t vblank
 
 static int rd(FILE* f, void* p, size_t n) { return fread(p, 1, n, f) == n; }
 
+/* --vram-hash: a 64-bit hash of all of gs_vram after every VBlank (synchronous replay only), one
+ * line "vblank hash" per VBlank, so refactors that must not change the software renderer can be
+ * checked on every byte of GS memory, not only on the displayed pictures. */
+static FILE* vram_hash_file;
+static uint64_t vram_hash_all = 1469598103934665603ull;
+
+static void hash_vram(uint32_t vblank) {
+    const uint64_t* w = (const uint64_t*)gs_vram;
+    uint64_t h = 1469598103934665603ull;
+    for (size_t i = 0; i < GS_VRAM_SIZE / 8; i += 4) {
+        h = (h ^ w[i]) * 1099511628211ull;
+        h = (h ^ w[i + 1]) * 1099511628211ull;
+        h = (h ^ w[i + 2]) * 1099511628211ull;
+        h = (h ^ w[i + 3]) * 1099511628211ull;
+    }
+    fprintf(vram_hash_file, "%u %016llx\n", vblank, (unsigned long long)h);
+    vram_hash_all = (vram_hash_all ^ h) * 1099511628211ull;
+}
+
 /* Watchdog: a replay that makes no progress for 60 s prints where it is and exits with code 4, so
  * a harness (gpu_diff_all.ps1) never waits forever on a deadlock. */
 static DWORD WINAPI watchdog(LPVOID arg) {
@@ -246,8 +265,12 @@ int main(int argc, char** argv) {
             if (strcmp(b, "sw") && backend == B_SW) { fprintf(stderr, "unknown backend %s\n", b); return 2; }
         } else if (!strcmp(argv[i], "--adapter") && i + 1 < argc) adapter = argv[++i];
         else if (!strcmp(argv[i], "--metrics") && i + 1 < argc) metrics = argv[++i];
-        else workers = atoi(argv[i]);
+        else if (!strcmp(argv[i], "--vram-hash") && i + 1 < argc) {
+            vram_hash_file = fopen(argv[++i], "w");
+            if (!vram_hash_file) { fprintf(stderr, "cannot write %s\n", argv[i]); return 1; }
+        } else workers = atoi(argv[i]);
     }
+    if (vram_hash_file && workers > 0) { fprintf(stderr, "--vram-hash needs a synchronous replay (workers 0)\n"); return 2; }
     CreateThread(NULL, 0, watchdog, NULL, 0, NULL);
 #ifndef GS_REPLAY_GPU
     if (backend != B_SW) { fprintf(stderr, "this runtime has no GPU backend (runtime/gpu): only --backend sw\n"); return 2; }
@@ -345,6 +368,7 @@ int main(int argc, char** argv) {
                 int w = 0, hh = 0;
                 int ok = gs_display(frame, 1024, &w, &hh);
                 picture(frame, ok, w, hh, h[1]);
+                if (vram_hash_file) hash_vram(h[1]);
             }
             frames++;
         } else {
@@ -360,6 +384,10 @@ int main(int argc, char** argv) {
     fprintf(stderr, "replayed %u VBlanks in %.1f ms (%.2f ms per VBlank, %d pixel workers)\n", frames, ms,
             frames ? ms / frames : 0.0, workers);
     fprintf(stderr, "sw-hash %016llx over %u pictures\n", (unsigned long long)sw_hash, pictures);
+    if (vram_hash_file) {
+        fprintf(stderr, "vram-hash %016llx over %u VBlanks\n", (unsigned long long)vram_hash_all, frames);
+        fclose(vram_hash_file);
+    }
     int rc = 0;
 #ifdef GS_REPLAY_GPU
     if (backend != B_SW) {
