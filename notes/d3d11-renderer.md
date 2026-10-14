@@ -1025,3 +1025,77 @@ events with the drawing that last wrote the source pages, so a future recording 
 shows where its data came from. `PS2_INPUT` token `rec` (+ `PS2_GS_RECORD_FROM=-1`,
 `PS2_DUMP_FROM=rec`) starts a recording at a chosen moment, also live through `PS2_INPUT_FILE`
 (`scripts\gs_record_scene.ps1 -Live`); `scripts\gsrec_cut.py` shortens a recording.
+
+## Appendix C. As built: M1 frontend dry run (branch gpu/M1)
+
+- **Shared setup** `runtime/gs_setup.c/.h`: vertices, attribute planes (`gs_tri_setup/planes`),
+  the 16.16 row stepping (`gs_rowstep_init`, `gs_rowstep_attr`), edges, the sprite rule, the line
+  DDA step, the point pixel and `gs_llround` (exact llround without the libcall) moved out of
+  gs_draw.c; both backends call them. Proof: GS memory hashed after every VBlank of all 24 recordings
+  identical before/after (`scripts/gs_vram_hashes.ps1`, `tests/gpu/vram_hashes.txt`), also with the
+  frontend running alongside (`scripts/gpu_hwdry_all.ps1`). Hooks: `gs_front` (prim, transfer
+  start/data, TEX0, reset), NULL by default; `gs_sw_draw` switches the software rasterizer off.
+- **Frontend** `runtime/gpu/gpu_front.c` (+ `gpu_front.h`, `gpu_front_int.h`): per-state analysis
+  cached by a register signature (32 entries; CLUT by ring slot); tier rule 4.1 with per-primitive As
+  range (closed-form alpha-test counts) and Z32 check; StateRec 96 B deduplicated per frame; 32-B
+  vertices with a 3-entry reuse cache + u32 indices; records Z 32 B / full 128 B / sprite 48 B /
+  line pixel 32 B; pipeline-key draw merging, two-draw split marking, ROV runs (bound by colour
+  target; depth joins), ALIAS16 dispatches split at halfword-rectangle hazards, tiled fills -> clears,
+  a commutation-batching estimate; command stream `GPU_FOP_*` + arenas per frame
+  (`gpu_front_set_sink` for M2).
+- **Ownership** `gpu_own.c`: per 256-byte block a last writer, a serial and a CPU 32-bit-word mask;
+  a target's copy is current iff it holds the block's serial. Loads (stale blocks, bulk per target),
+  downloads, vram_buf patches batched until something reads them, feedback shadow copies of the blocks
+  written since the last copy, rows that grow with the drawing, eviction after 120 unused frames,
+  clean-target fast path. **CLUT ring** `gpu_clut.c`: content change detection, 4096 slots,
+  min/max alpha cache.
+- **Tools**: `gs_replay -Backend hwdry` (`-FrontOnly`, `-Ref`, `-StraddleRov`, `-SelfCheck`,
+  `-DecodeOnly`, `-VramHash`, `-Define`, exit 5 on PUNT, per-VBlank JSON); `PS2_GPU_FRONT_TRACE=<vblank>`
+  logs one frame's draws/ops; `scripts/gpu_hwdry_all.ps1`, `scripts/gpu_front_bench.ps1`;
+  `tests/unit/gs-front` (24 checks).
+- **Decisions that differ from the text above**: same-kind overlapping targets are aliasing, not PUNT
+  (3.4); the T8H darken is a feedback copy because it writes alpha (5.1); CLUT loads over Z-written
+  words are counted, not downloaded (7); targets created by a CT16 FRAME when the 16-bit view comes
+  first (recording starts).
+
+Results on all 24 recordings (hwdry with sw alongside, `-SelfCheck`): **0 PUNT**, VRAM unchanged,
+0 Z-record / alpha-count mismatches against the sw code, Z32 vertex maximum 0x7F5C3 (never above
+0x3F000000), 96 ALIAS16 sprites in 3 dispatches per game frame wherever the shadow pipeline runs (0 in
+the hack minigame and the FMV), shadow volumes on the ROV tier (COLCLAMP/DATE/FBMSK reasons), two
+ZB_ONLY/opaque Z clears (Z32 + Z16S) and one colour fill recognised per game frame, steady-state loads
+and downloads 0 (only replay-start and eviction ones), uploads -> at most 1 patch per VBlank (FMV:
+121200 macroblock uploads), REGION_CLAMP views of the photo target for its 180 frames, TBW 12 FMV
+sprites as plain vram sampling.
+
+| recording | VBlanks | D3D draws max / mean | commute est. max | ROV draws / runs max | Z resolves max | StateRecs max | StateRec changes max | records max | prims max | ALIAS16 / frame | pass-A straddle % | As>128 % of lerp kicks |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| fix-perf_rv_prompt | 20 | 606 / 470.6 | 453 | 6 / 4 | 0 | 109 | 486 | 8717 | 16152 | 96 | 52.54 | 0 |
+| fix-perf_rv_intro | 16 | 662 / 408.6 | 531 | 12 / 9 | 1 | 132 | 561 | 5804 | 12362 | 96 | 36 | 1.63 |
+| fix-perf_title | 30 | 1475 / 688.8 | 1087 | 10 / 7 | 0 | 152 | 1468 | 25100 | 12346 | 96 | 39.19 | 0 |
+| fix-perf_brief | 30 | 2226 / 1028.1 | 1642 | 20 / 17 | 2 | 253 | 2010 | 29694 | 26398 | 96 | 39.99 | 0 |
+| ep3_hub | 240 | 4633 / 1541.9 | 3373 | 61 / 61 | 52 | 536 | 4044 | 37904 | 50027 | 96 | 38.2 | 3.93 |
+| ep3_recon_int | 240 | 2742 / 937.8 | 2101 | 71 / 68 | 67 | 242 | 2548 | 24084 | 29631 | 96 | 27.76 | 8.26 |
+| ep3_rope | 20 | 4049 / 1814.1 | 3235 | 39 / 39 | 36 | 481 | 3511 | 35854 | 42664 | 96 | 47.56 | 2.47 |
+| ep3_brief | 240 | 2059 / 584.4 | 1524 | 13 / 10 | 0 | 166 | 1947 | 24698 | 16599 | 96 | 40.49 | 0 |
+| ep5_hub_street | 240 | 4745 / 1773 | 3487 | 80 / 80 | 68 | 662 | 4365 | 39842 | 42774 | 96 | 22.48 | 2.85 |
+| ep6_rc_battle | 120 | 1654 / 532.2 | 1223 | 51 / 48 | 47 | 220 | 1766 | 15334 | 19305 | 96 | 31.35 | 2.99 |
+| ep7_boss | 120 | 3744 / 1627.3 | 2918 | 215 / 215 | 214 | 193 | 3361 | 34150 | 23774 | 96 | 63.83 | 22.45 |
+| ep8_hub | 240 | 1593 / 677 | 1229 | 40 / 40 | 39 | 96 | 1541 | 10939 | 8558 | 96 | 28.52 | 14.56 |
+| ep8_boss | 240 | 5909 / 2390.3 | 5198 | 97 / 97 | 96 | 553 | 5810 | 30981 | 40379 | 96 | 11.08 | 6.54 |
+| gpu-C_ep0_museum | 150 | 3046 / 1329.7 | 2240 | 40 / 37 | 1 | 362 | 2676 | 23567 | 24812 | 96 | 46.14 | 0 |
+| gpu-C_ep1_hub | 180 | 4315 / 1791.1 | 3281 | 88 / 88 | 75 | 592 | 4023 | 32182 | 35808 | 96 | 28.16 | 4.15 |
+| gpu-C_m1_brawl | 180 | 3587 / 1258.5 | 2483 | 83 / 83 | 77 | 497 | 3319 | 30447 | 31362 | 96 | 28.18 | 8.97 |
+| gpu-C_ep2_hub | 180 | 5958 / 2290.6 | 4079 | 25 / 25 | 18 | 574 | 5498 | 54985 | 55791 | 96 | 29.02 | 0.62 |
+| gpu-C_ep2_photo | 240 | 4390 / 101.5 | 3384 | 86 / 83 | 76 | 196 | 3913 | 38308 | 37760 | 96 | 51.94 | 2.89 |
+| gpu-C_ep4_hub | 180 | 4185 / 1922.9 | 3111 | 77 / 74 | 65 | 609 | 3750 | 34042 | 40801 | 96 | 18.95 | 0.85 |
+| gpu-C_hack_minigame | 180 | 372 / 300.6 | 222 | 1 / 1 | 1 | 21 | 370 | 15584 | 2194 | 0 | 55.8 | 0 |
+| gpu-C_fmv | 240 | 28 / 5 | 22 | 0 / 0 | 0 | 7 | 22 | 6524 | 3892 | 0 | 0 | 0 |
+| gpu-C_load_m3 | 240 | 2450 / 1011.6 | 1798 | 18 / 18 | 15 | 175 | 2369 | 21041 | 16589 | 96 | 24.33 | 2.75 |
+| gpu-C_pause_save | 150 | 4388 / 1696.5 | 3232 | 18 / 18 | 12 | 498 | 4021 | 45460 | 54584 | 96 | 27.42 | 0.46 |
+| gpu-C_thiefnet | 100 | 6512 / 3126.2 | 4862 | 146 / 146 | 122 | 772 | 6207 | 71138 | 53907 | 96 | 25.58 | 4.97 |
+
+GS-thread CPU per game frame (replay thread CPU time, median of 3, machine at 40-90% load from other
+agents): decode alone 4.3-6.7 ms, frontend 4.4-9.0 ms (ep3 hub 4.4, ep8 boss 5.8, ep5 street 6.7,
+ep2 hub 8.2, ThiefNet 9.0); the synchronous sw rasterizer 39-79 ms. Decode + frontend is 9-16 ms,
+above the 6 ms GS budget: M2 must measure on a quiet machine and plan the split (frontend on its own
+thread after decode, or cheaper decode).
