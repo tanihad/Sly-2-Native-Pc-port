@@ -1,4 +1,4 @@
-﻿/* DMA controller (DMAC): ten channels with normal, source chain, destination chain and interleave
+/* DMA controller (DMAC): ten channels with normal, source chain, destination chain and interleave
  * modes, MFIFO and stall control.
  *
  * Synchronous model (see hw.h): a channel runs as soon as CHCR.STR is set (DMAC enabled, not
@@ -11,7 +11,6 @@
  * transfer nothing: the IOP side is emulated at a higher level (sif.c).
  */
 #include "hw.h"
-#include <stdlib.h> /* TEMP */
 
 enum { NCH = 10 };
 
@@ -229,19 +228,6 @@ static void set_pce(uint64_t tag) {                  /* DMAtag PCE field: 2 = PC
 static void chan_start(int ch) {
     chan* c = &ch_[ch];
     int m = mode_of(ch);
-#ifndef PS2_NO_TRACE
-    { /* TEMP widescreen investigation */
-        static int on = -1; if (on < 0) on = getenv("WS_DMALOG") != NULL;
-        extern uint32_t ps2_vblank_count(void);
-        if (on && ch != 3 && ch != 4 && ch != 5 && ch != 6 && ch != 7 && ps2_vblank_count() >= (uint32_t)atoi(getenv("WS_DMALOG")) &&
-            ps2_vblank_count() < (uint32_t)atoi(getenv("WS_DMALOG")) + 3) {
-            fprintf(stderr, "[dmalog] v%u ch%d mode %d madr %08X tadr %08X qwc %u trace:", ps2_vblank_count(), ch, m,
-                    c->madr, c->tadr, c->qwc);
-            for (int k = 1; k <= 24; k++) fprintf(stderr, " %06X", ps2_trace[(ps2_trace_pos - k) & (PS2_TRACE_SIZE - 1)]);
-            fprintf(stderr, "\n");
-        }
-    }
-#endif
     c->tte_pend = c->waiting = 0;
     c->il_pos = 0;
     c->tag_end = c->refs = c->cnts = 0;
