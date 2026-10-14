@@ -1,14 +1,31 @@
 # Settings (sly2.ini)
 
-`sly2.ini` next to the executable, read once at start-up (runtime/settings.c, `settings_load`,
-before the game runs). When the window opens and there is no file yet, window.c writes a commented
-template with the defaults (`settings_save_if_missing`); headless runs (PS2_HEADLESS) never write
-one. Delete the file to get the defaults back.
+`sly2.ini` in the user data folder (see below), read once at start-up (runtime/settings.c,
+`settings_load`, before the game runs). When the window opens and there is no file yet, window.c
+writes a commented template with the defaults (`settings_save_if_missing`); headless runs
+(PS2_HEADLESS) never write one. Delete the file to get the defaults back (the game then asks for
+the disc image again).
 
-Format: INI. `key = value`, comments start with `;` or `#` (also after a value), `[section]`
-headers; keys before the first header belong to `[display]`. Unknown keys and bad values are
-reported on stderr (`[settings] <path>: line N: ...`) and ignored; the other keys still apply. A
-UTF-8 BOM (Notepad) is accepted.
+## Where: the user data folder
+
+`settings_user_dir()` (runtime/settings.c) holds `sly2.ini`, the memory card (`memcard\slot0`) and,
+for the GUI build, the log (`sly2.log`, the previous run's `sly2.previous.log`):
+
+1. `PS2_USER_DIR=<folder>` if set (tests, tools);
+2. the executable's folder for a **console** program - every development build
+   (`scripts\build_game.py` without `--package`) and every test: data stays next to the exe exactly
+   as before, wherever the exe is copied;
+3. the executable's folder if a file `portable.txt` is next to it (portable install);
+4. otherwise (the player's GUI build, `dist\Sly2\sly2.exe`) `%LOCALAPPDATA%\Sly2`.
+
+The memory card folder can still be overridden with `PS2_MEMCARD_DIR` (tests, scripts\warp.py).
+
+## Format
+
+INI. `key = value`, comments start with `;` or `#` (also after a value), `[section]` headers; keys
+before the first header belong to `[display]`. A value in double quotes keeps `;` and `#` (paths).
+Unknown keys and bad values are reported on stderr (`[settings] <path>: line N: ...`) and ignored;
+the other keys still apply. A UTF-8 BOM (Notepad) is accepted; the file is UTF-8 (non-ASCII paths).
 
 ```ini
 [display]
@@ -21,14 +38,37 @@ filters = modern       ; modern | faithful (preset for the three toggles below)
 motion_blur = preset   ; on | off | preset   (modern: on,  faithful: on)
 flicker_filter = preset;                      (modern: off, faithful: on)
 interlacing = preset   ;                      (modern: off, faithful: on)
+
+[game]
+disc = D:\Games\Sly 2 - Band of Thieves (USA).iso   ; written by the game when you choose the image
+
+[window]               ; written by the game when the window closes
+fullscreen = off       ; on: start in borderless fullscreen (Alt+Enter / F11 switch)
+show_fps = off         ; on: frame rate in the title bar
+x = 418                ; the window's position and size (not maximized), physical pixels;
+y = 204                ;   ignored if no longer on a monitor (the window is then centred)
+width = 1723
+height = 999
+maximized = off
 ```
 
 | key | values | effect |
 |---|---|---|
 | display.aspect | W:H, W/H or a ratio between 1 and 4 | display aspect; 4:3 = exactly the PS2 picture (notes/widescreen.md) |
 | graphics.* | see above | read and kept in `ps2_settings` for the GPU renderer (notes/d3d11-renderer.md section 13) |
+| game.disc | path of a .iso | the disc image (runtime/launch.c; notes/install.md). Empty or unusable: asked for with a file dialog (GUI build) |
+| window.fullscreen | on/off | start fullscreen; remembered on close |
+| window.x/y/width/height/maximized | integers / on/off | the window's normal placement; remembered on close |
+| window.show_fps | on/off | title "Sly 2: Band of Thieves - 59.9 fps" instead of "Sly 2: Band of Thieves" |
 
-Environment overrides (for testing; they win over the file): `PS2_ASPECT=16:9|4:3|<W>:<H>`.
+Environment overrides (for testing; they win over the file and are never written to it):
+`PS2_ASPECT=16:9|4:3|<W>:<H>`, `PS2_SHOW_FPS=1`, `PS2_ISO=<image>` (the disc, see notes/install.md).
+
+Writing: the game changes only the keys it remembers (`settings_set` -> `settings_update_text`, a
+pure function): the key's line is rewritten in place (a comment after the value is kept), a missing
+key is added at the end of its section, a missing section at the end of the file; every other line,
+including the player's comments, stays as it was. The file is replaced atomically (written to
+`sly2.ini.tmp`, then moved over it).
 
 Applying changes: the aspect is read at start-up (the camera's frustum is recomputed by the game
 whenever its field of view changes, so a run-time switch would need an in-game options screen that
