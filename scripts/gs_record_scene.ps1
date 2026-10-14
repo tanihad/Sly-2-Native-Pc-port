@@ -34,6 +34,7 @@ $card = Join-Path $dir 'card'
 $fdir = Join-Path $dir 'frames'
 New-Item -ItemType Directory -Force $dir, $fdir | Out-Null
 Remove-Item (Join-Path $fdir '*.png') -ErrorAction SilentlyContinue
+Remove-Item -Recurse -Force (Join-Path $dir 'rec_frames') -ErrorAction SilentlyContinue
 Remove-Item -Recurse -Force $card -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $card | Out-Null
 
@@ -102,17 +103,31 @@ $p = Start-Process -FilePath $exe -ArgumentList (Join-Path $main 'orig\SCUS_973.
     -RedirectStandardError $log -RedirectStandardOutput (Join-Path $dir 'run.out') -PassThru -NoNewWindow
 $t0 = Get-Date
 $done = $false
+$recdir = Join-Path $dir 'rec_frames'          # the live frames of the recorded VBlanks, kept apart
+function Save-RecFrames {                      # (-Live's dump ring would delete them later)
+    $m = Select-String -Path $log -Pattern 'recording the GS stream from VBlank (\d+) for (\d+) VBlanks' | Select-Object -First 1
+    if (-not $m) { return }
+    $v0 = [int]$m.Matches[0].Groups[1].Value; $nv = [int]$m.Matches[0].Groups[2].Value
+    New-Item -ItemType Directory -Force $recdir | Out-Null
+    Get-ChildItem $fdir -Filter 'frame_*.png' | Where-Object {
+        $v = [int]($_.BaseName.Substring(6)); $v -ge $v0 -and $v -lt $v0 + $nv } | Copy-Item -Destination $recdir
+    "-- live frames of VBlanks $v0..$($v0 + $nv - 1) -> $recdir ($(@(Get-ChildItem $recdir -Filter 'frame_*.png').Count) frames)"
+}
 while (-not $p.HasExited) {
     Start-Sleep -Seconds 2
     if (((Get-Date) - $t0).TotalSeconds -gt $Seconds + 20) { Stop-Process -Id $p.Id -Force; "-- killed (watchdog didn't fire)"; break }
-    if ($recording -and -not $KeepRunning -and -not $done -and (Select-String -Path $log -Pattern 'GS recording complete' -Quiet)) {
+    if ($recording -and -not $done -and (Select-String -Path $log -Pattern 'GS recording complete' -Quiet)) {
         $done = $true
         Start-Sleep -Seconds 3                      # the last dumps are written by the GS thread
-        Stop-Process -Id $p.Id -Force
-        "-- recording complete, stopped"
-        break
+        Save-RecFrames
+        if (-not $KeepRunning) {
+            Stop-Process -Id $p.Id -Force
+            "-- recording complete, stopped"
+            break
+        }
     }
 }
+if ($recording -and -not $done -and (Select-String -Path $log -Pattern 'GS recording complete' -Quiet)) { Save-RecFrames }
 "-- ran $([int]((Get-Date) - $t0).TotalSeconds) s"
 Remove-Item Env:\PS2_GS_RECORD, Env:\PS2_GS_RECORD_FROM, Env:\PS2_GS_RECORD_FRAMES, Env:\PS2_DUMP_FROM, Env:\PS2_WARP_TASK,
             Env:\PS2_INPUT_FILE, Env:\PS2_DUMP_RING -ErrorAction SilentlyContinue
