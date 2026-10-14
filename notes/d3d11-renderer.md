@@ -503,9 +503,9 @@ signature. Gate: zero on the corpus.
 | 10 | Pass A ATST GEQUAL 126 FB_ONLY with Z write | As-range single draw, else two-draw split; measured against REF; escalation to ROV tier (exact via zpatch) if visible. |
 | 11 | Binocucom 128x128 RTTs drawn and sampled in the same frame | Square targets found by exact base; ordered in the command stream; scaled bilinear read clamped to UV bbox. |
 | 12 | Display: 512x224 field buffers, flicker filter (EN1+EN2 same FBP, DBY 1/0, ALP 128, MMOD 1), half-line OFY on one VBlank, DY 51 phase | Display family renders at `ky = 2kx` (true 448N progressive lines); the standard flicker pattern is recognised by `gs_display_decode` and circuit 2 is shown; the OFY half-line fraction is ignored in progressive mode (toggle for tests); other PMODE patterns use the GPU two-circuit mix; reference compose (download + `gs_compose`) for S=1 picture tests. |
-| 13 | FMV and uploaded loading screens in display pages | CPU-owned display pages are presented from `vram_buf` via `cs_upload_target` at native resolution (bilinear/bicubic to the output). A movie hint (8.3) pillarboxes. When movies move to native playback (principles), the decoded frame is presented directly. |
+| 13 | FMV and uploaded loading screens in display pages | CPU-owned display pages are presented from `vram_buf` via `cs_upload_target` at native resolution (bilinear/bicubic to the output). A movie hint (8.3) pillarboxes. When movies move to native playback (principles), the decoded frame is presented directly. **Measured (milestone C, appendix B): Sly never uploads into display pages.** Movies (and the SCEA legal still) are ~600 16x16 CT32 macroblock uploads per frame into a TBW 12 (768-wide) texture at TBP 1800, drawn by one 512x224 DECAL sprite per field into the normal frame buffer; the loading screen is drawn geometry. So FMV is an ordinary upload + textured sprite (needs upload coalescing and non-power-of-two TBW); `cs_upload_target` stays only as the generic fallback. |
 | 14 | Exact Z (13-17-bit scene Z, ties decide outlines and decals) | Section 3.6. |
-| 15 | Readbacks (TRXDIR=1, suspected in the ep2 photo mission), CLUT from drawn pages, TRXDIR=2 | Download of sample 0 (exact at any scale) then the existing CPU code; TRXDIR=2 between compatible targets with exact geometry is a scaled CopySubresourceRegion, otherwise download + CPU transfer + invalidate. Counted. |
+| 15 | Readbacks (TRXDIR=1, suspected in the ep2 photo mission), CLUT from drawn pages, TRXDIR=2 | Download of sample 0 (exact at any scale) then the existing CPU code; TRXDIR=2 between compatible targets with exact geometry is a scaled CopySubresourceRegion, otherwise download + CPU transfer + invalidate. Counted. **Measured (milestone C, appendix B): none of the three occurs in any of the 24 recordings, the ep2 photo included** (the photo is a GPU-side 2:1 copy of both field buffers into the Z pages at FBP 070, sampled with REGION_CLAMP; the framing test is EE-side). The paths stay as untested safety nets with a counter. |
 | 16 | Memory sources: T4 60-65% / T8 35-40% of textured prims, CT32 CLUTs CSM1, sizes 8x8..256x128, REPEAT/CLAMP, no mipmaps | `vram_buf` direct sampling through `swz_tab`, CLUT slot lookup, GS 4-bit bilinear after palette lookup, wrap modes in integer texel space; MIPTBP/LOD supported generically (unused by Sly). Index atlas in M9. |
 | 17 | Unrecorded content (ep1, ep2, ep4, menus, save, FMV) | Milestone C records it before GPU bring-up; generic tiers mean variants (Gouraud G, other FBMSK) stay exact on the GPU; PUNT counter + in-game verify (10.5). |
 | 18 | Widescreen HUD | Hint register 0x7F from EE hooks; VS HUD transform (8.3). |
@@ -657,7 +657,8 @@ Read in place, never modified:
 `sly2-worktrees\ep7\build\boss.gsrec`, `sly2-worktrees\ep8\build\gsrec\{hub,boss}.gsrec`;
 plus milestone C's new recordings (ep1 hub + mission, ep2 hub + photo mission, ep4 hub + mission,
 prologue, an FMV, a loading screen, pause and save menus, the ThiefNet/safehouse menus), stored under
-the C worktree's `build\gsrec\` and listed in `tests/gpu/corpus.txt`.
+the C worktree's `build\gsrec\` and listed in `tests/gpu/corpus.txt` (all 24 with scene, VBlanks and
+what each exercises; census results in appendix B).
 
 ### 10.5 In-game checks
 
@@ -877,3 +878,81 @@ Total ~45-55 agent-days. The software renderer stays the default until M11.
 | GS (frontend) | ~16.4 ms + 8 workers | <= 6 ms (decode 2-3, classification/records 1-2, ownership 0.5-1) |
 | render | - | <= 8 ms (submission; M2 gate) |
 | GPU | - | <= 8 ms (estimate 2-4 ms at 3x before M9) |
+
+## Appendix B. Corpus extension census (milestone C)
+
+Eleven new recordings (gpu-C worktree, `build\gsrec\`, not committed; list, scenes and how each was
+made in `tests/gpu/corpus.txt`): prologue museum gameplay, ep1 hub, m1_brawl, ep2 hub, the ep2 photo
+(m2_recon ballroom: Binocucom lock, R1, Polaroid), ep4 hub (Bentley), Bentley's hack minigame (the
+m4_hack minigame, reached through ep5's `t5_heist_free_carmelita_hack`: a direct m4_hack start puts
+Bentley at an already-hacked station), an IPU movie ("Prelude" from the episode menu), a level load
+(title -> loading screen -> m3_heist cutscene), pause menu -> Save and Quit -> "Saving..." ->
+restart, and ThiefNet "Buy Gadgets". Every one replays through `gs_replay` (software) to the same
+pictures as the live run's dumps (`scripts\gs_corpus_verify.ps1`: 225/226 dumped frames identical at
+tolerance 0; the one exception is a recording's very first VBlank, whose alternate lines differ
+because the display's field state from before the recording is not part of the stream - a replay
+start artefact, not a renderer difference). Census: `gs_census -a` (new: `hazards:` line, every table
+entry) over all 24, `census_table.py --new "gpu-C-*"`.
+
+**GPU hazards (TRXDIR=1 readbacks, TRXDIR=2 copies, CLUT loads from drawn pages): zero in all 24
+recordings** (old 13: 0 of 2.34M CLUT loads; new 11: 0 of 2.14M). In particular:
+
+- **The ep2 photo does not read GS memory back.** At the shutter the game renders the scene into
+  both field buffers, then two ABE=0 CTX2 sprites (FST, `(0-0)*FIX+Cs` unused) copy them 2:1
+  horizontally (texels 511x223 -> 256x224) into **FBP 070 = the Z buffer's base**, as a CT32 512x224
+  image (left half from 038, right half from 000). The 3D world then stops (20 prims/frame) and the
+  Polaroid (4 tristrips + a flat frame) samples TBP 0E00 (= page 070) with **REGION_CLAMP**
+  (minu 0 maxu 512 minv 0 maxv 224) for ~180 frames. The framing judgement ("Too far", green lock)
+  issues no transfer either (a recording of a failed R1 also showed 0 readbacks), so it is EE-side.
+  Design impact: none beyond 5.1/5.3 - a colour target at the Z base whose pages are sampled long
+  after they were drawn (page ownership must keep them GPU-owned across frames, not only "this or
+  previous frame"), plus REGION_CLAMP in the sampler (first use seen; the old census had none).
+- **FMV is not "display pages written by the CPU" (hard case 13).** The movie is 640x480: 1200
+  16x16 CT32 macroblock uploads per movie frame (every second VBlank, 1.2 MB) into a texture at TBP
+  1800 with **TBW 12** (768 wide; TEX0 1024x1024), then one 512x224 sprite per field (DECAL, TCC 0,
+  FST, CLAMP, LINEAR) scales it into the ordinary double buffer. The SCEA legal still after a
+  restart uses the same path (16.8k uploads in pause_save). Needs: upload coalescing (600 1 KB
+  transfers per VBlank), non-power-of-two TBW in `swz_tab` sampling, and the movie hint for
+  pillarboxing; at S>1 the 640x480 source can be sampled at output resolution. TBP 1800 is also the
+  T8H darken CLUT's CBP (never both at once).
+- **The loading screen** is drawn geometry (black + a dim Sly-mask icon, flat `(Cs-Cd)*As+Cd`
+  triangles), no upload; loads from host files last ~0.5 s.
+
+New combinations (no new texture or target formats, no new ALPHA forms; every line below is a
+known pass form on a texture/test combination the old 13 did not have):
+
+| recording | novel (vs the old 13) | handling |
+|---|---|---|
+| ep2_photo | REGION_CLAMP CT32 sampling of the Z-page photo; flat ABE=0 colour-only (ATST NEVER FB_ONLY) quads; 2:1 field copy sprites into FBP 070 | sampler wrap modes in integer texel space (4.5); target-as-texture (5.1) |
+| fmv, pause_save | CT32 TBW 12 DECAL TCC 0 sprite from uploaded macroblocks | ordinary upload + sprite (FF) |
+| ep1_hub, m1_brawl, thiefnet, pause_save, ep2_hub | outline-style pass pairs `ATST NEVER AFAIL RGB_ONLY` with `(Cs-0)*As+Cd` / `(Cs-Cd)*As+Cd` on T8 and CLAMP/CLAMP textures (old: T4 REPEAT only); `(Cs-Cs)*As+Cd` + `ATST GREATER 0 KEEP` + Z write (= alpha-tested Z and destination-alpha write, RGB kept) on T8 and on CLAMP/CLAMP NEAREST | same FF classes, texture combo is data |
+| ep0_museum | pass B with ZTST GREATER (old: GEQUAL); untextured `FBMSK FFFF80FF (Cs-0)*FIX(128)+Cd COLCLAMP 0` (G bits 0-6 wrapping add, old bit-plane step used ABE=0) | ROV tier (per-bit FBMSK, wrap) |
+| ep2_hub, ep4_hub, hack_minigame | the pass-A test (`ATST GEQUAL 126 FB_ONLY`, ZTST GREATER, Z write) with the additive blend `(Cs-0)*As+Cd` on T4 REPEAT (old: pass A always `(Cs-Cd)*As+Cd`) | As-range split / ROV escalation as hard case 10 |
+| load_m3 | flat untextured `(Cs-Cd)*As+Cd` triangles (fades) | FF |
+
+New maxima (M2 submission budget): 55.8k triangles in one game frame (ep2_hub; old max 50.0k,
+ep3 hub), 6.8k draw-state changes and 436 distinct states per game frame (thiefnet: the ThiefNet UI
+is drawn over the full safehouse scene; old max 6.07k, ep8 boss); pause menu and ThiefNet keep
+rendering the 3D scene behind the 2D UI (52.8k / 53.7k tris), so menus are not cheap frames. The
+hack minigame runs a game frame every VBlank (176 of 180) but is light (1.8k tris).
+
+| recording | VBlanks | game frames | tris/frame (max) | state changes/frame (max) | distinct textures | distinct CLUTs | ~Mpx/frame | uploads |
+|---|---|---|---|---|---|---|---|---|
+| ep0_museum | 150 | 67 | 23852 (24812) | 2964 (3028) | 203 | 221 | 5.5 | 402 |
+| ep1_hub | 180 | 87 | 32249 (35808) | 3893 (4378) | 308 | 343 | 3.5 | 696 |
+| m1_brawl | 180 | 86 | 20091 (31362) | 2813 (3738) | 223 | 253 | 4.3 | 688 |
+| ep2_hub | 180 | 88 | 46209 (55791) | 4991 (5917) | 269 | 290 | 4.0 | 528 |
+| ep2_photo | 240 | 51 | 20877 (37760) | 2807 (4607) | 76 | 86 | 6.6 | 0 |
+| ep4_hub | 180 | 88 | 35903 (40801) | 3961 (4178) | 364 | 410 | 4.3 | 352 |
+| hack_minigame | 180 | 176 | 1841 (2194) | 426 (490) | 6 | 5 | 1.2 | 0 |
+| fmv | 240 | 36* | 3892 (3892) | 166 (166) | 2 | 1 | 1.0 | 121200 |
+| load_m3 | 240 | 107 | 13186 (16589) | 2459 (2636) | 120 | 130 | 3.3 | 2200 |
+| pause_save | 150 | 58 | 52824 (54584) | 4835 (4889) | 279 | 302 | 4.1 | 17148 |
+| thiefnet | 100 | 48 | 53684 (53907) | 6818 (6827) | 399 | 430 | 3.7 | 384 |
+
+(*game frame = VBlank with >= 1000 primitives; the movie frames have fewer.) Tools: the census
+summary prints the hazards per recording and the first 64 READBACK / COPY and 16 CLUT-FROM-DRAWN
+events with the drawing that last wrote the source pages, so a future recording with a readback
+shows where its data came from. `PS2_INPUT` token `rec` (+ `PS2_GS_RECORD_FROM=-1`,
+`PS2_DUMP_FROM=rec`) starts a recording at a chosen moment, also live through `PS2_INPUT_FILE`
+(`scripts\gs_record_scene.ps1 -Live`); `scripts\gsrec_cut.py` shortens a recording.
