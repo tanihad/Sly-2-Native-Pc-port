@@ -218,10 +218,29 @@ runtime/recompiler problem found at its root (with tests); frames in build\scree
   * he1 heist chain: 1893..1902 accepted one by one (hub), streams steady; run ended at 1902.
   * ne2 never reached the job (title not started before the pause) -> rerun.
 
-## Next
-1. ne2 rerun (chase Job Failed -> X retry: do the streams come back?), he2 (heist chain from 1902 to
-   1911 and the episode's heist completion).
-2. Mark COMPLETE when the flows are checked and no runtime bug is open.
+  * ne2 (m1_neela direct, WAV): Sly idle -> "Job Failed! Neyla got bored..." -> X -> iris -> chase
+    restarts; three fail/retry cycles. Streams play during each chase (190-300 transfers/10 s) and
+    stop on each Job Failed page, then come back on the retry: the music cut is the game's fail
+    behaviour, not a stream loss. Frames ep1_neela_job_failed.png, ep1_neela_retry.png.
+  * he2 (t1_heist_4_hijack_truck direct): 1904/1906/1909 -> 2: truck drive cutscene, harpoon turret,
+    siege; the truck dies (no Sly on the rope) -> "Job Failed!" page held. he3/he4
+    (t1_heist_7_shoot_harpoon direct): 1909 -> 2 starts the siege at once; 1911 -> 2 or 3 does not
+    end it (the siege stage runs its own state machine, like the boss); 1918 (boss intro) stays
+    available (1). The boss start and the whole boss -> outro -> Episode 2 flow were verified
+    earlier (boss5/boss7), so only the siege-win cutscene itself is unseen (scripted play limit).
+  * Unit tests (17 suites) and tests\run_tests.py (16/16) pass after the merge.
+
+## Status: COMPLETE (2026-10-14)
+Every Episode 1 job has been started (direct starts) and its flow checked: sat, recon (+ chalk talk
+1 needs the real trigger), bug, follow, waterpump (+ chalk talk 2), brawl, neela (fail/retry), moulin,
+disco, heist chain (fight guards, piperoom, pickpocket, rendezvous, hijack truck, peacock climb,
+harpoon, siege), boss (won legitimately -> outro comic -> autosave -> Episode 2 menu/start). Job
+Completed pages and autosaves work; ThiefNet shop, pause menu, Job Help, controls pages work.
+Runtime fixes on this branch: IOP on its own host thread (stream loss in the hub), driver pace
+hold, async host logging, MMCSS IOP thread, live 'pause' token (whole PS2 stands still), case-
+insensitive input tokens, debug aids (PS2_IOP_WATCH, PS2_LOG_SD_VOICES, PS2_PROFILE=iop). No open
+runtime bug that I can reproduce. Unseen only because scripted play cannot win them: the siege win
+cutscene and the recon window photo (chalk talk 1).
 
 ## Findings / traps
 - The scratchpad dir is shared with other agents (a file there was overwritten): keep helper
