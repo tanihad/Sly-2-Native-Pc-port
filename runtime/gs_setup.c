@@ -53,11 +53,7 @@ void gs_rowstep_init(gs_rowstep* rs, const gs_planes* pl, int py0) {
     const gs_plane* p[GS_A_N] = { &pl->r, &pl->g, &pl->b, &pl->a, &pl->f, &pl->z, &pl->u, &pl->v };
     static const double scale[GS_A_N] = { 65536.0, 65536.0, 65536.0, 65536.0, 65536.0, 65536.0,
                                           (double)(1 << GS_UVSH), (double)(1 << GS_UVSH) };
-    for (int k = 0; k < GS_A_N; k++) {
-        rs->row[k] = gs_fx_round((p[k]->c0 + p[k]->cy * py0) * scale[k]);
-        rs->dy[k] = gs_fx_round(p[k]->cy * scale[k]);
-        rs->dx[k] = k == GS_A_Z ? gs_fx_round(p[k]->cx * scale[k]) : gs_sat32(gs_fx_round(p[k]->cx * scale[k]));
-    }
+    for (int k = 0; k < GS_A_N; k++) gs_rowstep_attr(p[k], py0, scale[k], k == GS_A_Z, &rs->row[k], &rs->dy[k], &rs->dx[k]);
     rs->s = pl->s.c0 + pl->s.cy * py0; rs->sdy = pl->s.cy; rs->sdx = pl->s.cx;
     rs->t = pl->t.c0 + pl->t.cy * py0; rs->tdy = pl->t.cy; rs->tdx = pl->t.cx;
     rs->q = pl->q.c0 + pl->q.cy * py0; rs->qdy = pl->q.cy; rs->qdx = pl->q.cx;

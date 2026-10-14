@@ -8,6 +8,9 @@
 # GPU backend (runtime/gpu, notes/d3d11-renderer.md 10.1):
 #   -Backend sw|hw|both   sw pictures (default) / GPU pictures read back / both, compared per VBlank
 #                         (exit code 3 when any pixel differs; differing frames as _sw/_hw/_diff.png)
+#   -Backend hwdry        the GPU frontend dry run (M1): classification, records, ownership, counters
+#                         (synchronous; exit code 5 on any PUNT); -FrontOnly: without the software
+#                         rasterizer (frontend timing), -Ref, -StraddleRov, -SelfCheck (Z records vs sw)
 #   -Adapter hw|warp      hardware adapter (default) or the WARP software rasterizer
 #   -Metrics <file.json>  per-VBlank comparison counts and D3D/CPU/GPU timings
 #   -Log <file>           the replay's stderr goes to this file
@@ -15,7 +18,7 @@
 # A replay without progress for 60 s prints its state and exits with code 4 (watchdog).
 # Every run prints "sw-hash", a hash of all sw pictures (unchanged renderer -> unchanged hash).
 param([Parameter(Mandatory = $true)][string]$Rec, [string]$Out = "", [string]$Runtime = "", [int]$Workers = 0,
-      [switch]$Bench, [ValidateSet('sw', 'hw', 'both')][string]$Backend = 'sw',
+      [switch]$Bench, [ValidateSet('sw', 'hw', 'both', 'hwdry')][string]$Backend = 'sw', [switch]$FrontOnly, [switch]$Ref, [switch]$StraddleRov, [switch]$SelfCheck,
       [ValidateSet('hw', 'warp')][string]$Adapter = 'hw', [string]$Metrics = "", [string]$Log = "", [string]$VramHash = "")
 $root = Split-Path $PSScriptRoot -Parent
 $main = $root
@@ -55,6 +58,10 @@ Copy-Item $exe $run -Force
 $runArgs = @($Rec, $(if ($Bench) { '-' } else { $Out }), $Workers, '--backend', $Backend, '--adapter', $Adapter)
 if ($Metrics) { $runArgs += @('--metrics', $Metrics) }
 if ($VramHash) { $runArgs += @('--vram-hash', $VramHash) }
+if ($FrontOnly) { $runArgs += '--front-only' }
+if ($Ref) { $runArgs += '--ref' }
+if ($StraddleRov) { $runArgs += '--straddle-rov' }
+if ($SelfCheck) { $runArgs += '--selfcheck' }
 if ($Log) {
     # real redirection by cmd: nested PowerShell pipes of a chatty native stderr are slow and once
     # stalled a corpus run (notes/wip/gpu-M0.md)

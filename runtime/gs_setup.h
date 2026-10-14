@@ -81,6 +81,15 @@ typedef struct {
 
 void gs_rowstep_init(gs_rowstep* rs, const gs_planes* pl, int py0);
 
+/* One attribute of gs_rowstep_init: fixed-point value at x = 0 of row py0, per-row and per-pixel
+ * steps (scale 65536 or 1 << GS_UVSH; the per-pixel step saturates to 32 bits except for Z). The
+ * GPU's exact Z record (row, dy, dx at by0) is GS_A_Z of this. */
+GS_AI void gs_rowstep_attr(const gs_plane* p, int py0, double scale, int is_z, int64_t* row, int64_t* dy, int64_t* dx) {
+    *row = gs_fx_round((p->c0 + p->cy * py0) * scale);
+    *dy = gs_fx_round(p->cy * scale);
+    *dx = is_z ? gs_fx_round(p->cx * scale) : gs_sat32(gs_fx_round(p->cx * scale));
+}
+
 GS_AI void gs_rowstep_start(const gs_rowstep* rs, int64_t x, gs_span_start* st) {
     st->r = gs_sat32(rs->row[GS_A_R] + rs->dx[GS_A_R] * x); st->g = gs_sat32(rs->row[GS_A_G] + rs->dx[GS_A_G] * x);
     st->b = gs_sat32(rs->row[GS_A_B] + rs->dx[GS_A_B] * x); st->a = gs_sat32(rs->row[GS_A_A] + rs->dx[GS_A_A] * x);
