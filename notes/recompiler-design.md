@@ -66,6 +66,18 @@ the first two (0x234F48, 0x235078) are still translated as they are. To add an o
 function's bounds with `recomp/functions.py`, hash its bytes with `overrides.function_sha1`, and add
 an entry with the reason.
 
+## Instruction patches (recomp/patches.py)
+
+Features the PC port adds to the game itself (widescreen first) need smaller changes than a whole
+override: a `Patch` (name, function start, SHA-1 of the function's original bytes, instruction
+address, "before" or "after", C statements, reason) makes the recompiler emit the C right before or
+right after one instruction of the translated function. "before" runs on every path reaching the
+instruction (after its label; for a branch or jump also before its delay slot); "after" is only
+allowed on plain instructions and runs on the fall-through path. Delay slots are refused. Like the
+other tables, a patch applies only when the function's bytes match (tests/run_tests.py checks the
+guard and the placement). A patch must change nothing while its feature is off; the widescreen
+patches start with `if (ps2_aspect.wide)` (runtime/aspect.c, notes/widescreen.md).
+
 ## Entry hooks (recomp/hooks.py)
 
 Debug builds trace every function entry (`PS2_TRACE`, which calls `ps2_calls_record` while a tool

@@ -3,9 +3,13 @@
  * The window lives on its own OS thread with its own message loop. The emulation thread hands
  * finished frames over through a triple buffer: window_present copies the picture into the free
  * buffer, publishes it with a pointer swap under a lock and returns at once. The window thread
- * then shows the newest frame, letterboxed at 4:3, with Direct3D 11 (one textured triangle,
+ * then shows the newest frame, fitted with black bars at the frame's display aspect (the aspect
+ * from sly2.ini - 16:9 by default, the 512-wide picture stretched - or 4:3 for movies and plain
+ * window_present callers; notes/widescreen.md), with Direct3D 11 (one textured triangle,
  * bilinear filtering, vsync'd flip-model present) or, if Direct3D 11 is unavailable, with GDI
  * StretchDIBits. Alt+Enter / F11 toggle borderless fullscreen; closing the window ends the process.
+ * Persistence of the user settings is the window's: it writes the sly2.ini template when it opens
+ * and none exists (settings.c, notes/settings.md).
  *
  * Input (window_get_input, called on the emulation thread): XInput controllers, the first
  * connected one being port 0 and the second port 1, plus the keyboard on port 0 while the window
