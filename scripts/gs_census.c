@@ -161,7 +161,7 @@ static void tab_print(tab* t, const char* title, int max) {
 static uint64_t reg[0x64];
 static int verbose;
 
-typedef struct { int x, y; uint32_t z; float s, t, q; int u, v; } vtx;
+typedef struct { int x, y; uint32_t z; float s, t, q; int u, v; uint32_t rgba; } vtx;
 static vtx vq[3];
 static int vcount;
 
@@ -348,6 +348,20 @@ static void kick(int type, const vtx* a, const vtx* b, const vtx* c) {
     }
     if (!wr_fb && !wr_z) F.kicks_nodraw++;
     if (wr_z) F.zwrite++;
+    /* verbose: a sample of the primitives using odd Z formats, and every clear-like sprite (Z-only, or
+     * ZTST ALWAYS with Z write, or untextured with ZTST ALWAYS covering >= 32 rows) */
+    int clearish = type == 6 && visible && h >= 32 && !tme && ((ate && atst == 0 && afail == 2) || (ztst == 1 && wr_z) || (ztst == 1 && wr_fb && w * h >= 64 * 224));
+    if (verbose && (zpsm != PSMZ32 || clearish)) {
+        static uint32_t shown_frame = ~0u, shown;
+        if (shown_frame != cur_frame) { shown_frame = cur_frame; shown = 0; }
+        if ((clearish || (type == 6 ? shown : shown + 16) < 40) && shown++ < 400)
+            printf("  f%u #%u %s %s ZBUF %s %s zmsk=%d fbmsk=%08X ate=%d %s afail=%s alpha=%d%d%d%d/%d tme=%d iip=%d | v0 %d,%d z=%u rgba=%08X | v1 %d,%d z=%u | v2 %d,%d z=%u rgba=%08X\n",
+                   cur_frame, draw_seq, type_names[type], psm_name(fpsm), psm_name(zpsm), ztst_names[ztst], zmsk, fbmsk, ate, atst_names[atst],
+                   afail_names[afail], (int)(alpha & 3), (int)((alpha >> 2) & 3), (int)((alpha >> 4) & 3), (int)((alpha >> 6) & 3),
+                   (int)((alpha >> 32) & 0xFF), tme, iip, (a->x - ofx) >> 4, (a->y - ofy) >> 4, a->z, a->rgba,
+                   n > 1 ? (b->x - ofx) >> 4 : 0, n > 1 ? (b->y - ofy) >> 4 : 0, n > 1 ? b->z : 0, n > 2 ? (c->x - ofx) >> 4 : 0,
+                   n > 2 ? (c->y - ofy) >> 4 : 0, n > 2 ? c->z : 0, n > 2 ? c->rgba : (n > 1 ? b->rgba : a->rgba));
+    }
 
     char d[256];
     /* pass signature: everything but the texture identity and the primitive type */
@@ -524,6 +538,14 @@ static void kick(int type, const vtx* a, const vtx* b, const vtx* c) {
 
         int wpsm, wbase, wframe;
         int m = classify_read(&ts, &wpsm, &wbase, &wframe);
+        if (verbose && (m & 8)) {        /* samples a texture uploaded this frame */
+            static uint32_t up_frame = ~0u, up_shown;
+            if (up_frame != cur_frame) { up_frame = cur_frame; up_shown = 0; }
+            if (up_shown++ < 24)
+                printf("  f%u #%u %s samples upload: %s tbp=%04X %dx%d (texels %dx%d at %d,%d) -> fbp=%03X %s %dx%d at %d,%d ztst=%s%s\n", cur_frame, draw_seq,
+                       type_names[type], psm_name(tpsm), tbp0, tw, th, u1 - u0, v1 - v0, u0, v0, fbp, psm_name(fpsm), w, h, bx0, by0, ztst_names[ztst],
+                       wr_z ? "+zw" : "");
+        }
         if (m & (1 | 2 | 4 | 16)) {
             if (m & 1) F.feedback++; else F.feedback_prev++;
             if (m & 4) F.zread++;
@@ -570,6 +592,7 @@ static void vertex(uint64_t xyz, int has_f, int kk) {
     nv->y = (int32_t)((xyz >> 16) & 0xFFFF);
     nv->z = has_f ? (uint32_t)((xyz >> 32) & 0xFFFFFF) : (uint32_t)(xyz >> 32);
     uint64_t c = reg[R_RGBAQ];
+    nv->rgba = (uint32_t)c;
     nv->q = asf((uint32_t)(c >> 32));
     nv->s = asf((uint32_t)(reg[R_ST] & 0xFFFFFF00u));
     nv->t = asf((uint32_t)(reg[R_ST] >> 32) & 0xFFFFFF00u);
@@ -617,6 +640,7 @@ static void trxdir(uint32_t dir) {
         snprintf(kd, sizeof kd, "%d %d %d %d %d", dpsm, dbw, rrw, rrh, to_fb);
         tab_add(t_upload, fnv(kd, strlen(kd), FNV0), 1, d);
         mark_pages(&ds, 3, dpsm, (uint32_t)dbp >> 5, 0);
+        if (verbose) printf("  f%u #%u %s (pages %03X..)\n", cur_frame, draw_seq, d, (uint32_t)dbp >> 5);
     } else if (dir == 1) {
         pset ss = { { 0 } };
         rect_pages(spsm, (uint32_t)sbp, (uint32_t)sbw, ssax, ssay, ssax + rrw, ssay + rrh, &ss);
