@@ -2,6 +2,10 @@
 
 ## Resume here (read first in a new session)
 
+**CONTINUED (owner said "continue" = finish everything):** M2 resumed in gpu-M2; HUD edge
+anchoring + live aspect switch + Binocucom overlay running in worktree `hud` (branch next/hud,
+notes/wip/hud.md). Then M3..M11 one agent per milestone.
+
 **PAUSED by the user (2026-10-14).** Nothing is running. Only unfinished task: GPU milestone M2
 (worktree `sly2-worktrees\gpu-M2`, branch gpu/M2, pushed). Done there: baseline refresh (b5a6253),
 render-thread executor of the frontend stream + gs_replay -Backend hwsubmit + bench script
