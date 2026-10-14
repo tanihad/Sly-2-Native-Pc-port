@@ -2,6 +2,15 @@
 
 ## Resume here (read first in a new session)
 
+**GPU renderer (2026-10-14):** design finished: `notes/d3d11-renderer.md` on branch next/gpu
+(= next/d3d11). Design 1 (GS draws -> D3D11 draws at an integer internal scale, exact integer depth,
+ROV paths for what fixed-function blending can't express; software renderer stays the default and
+the reference until M11). Milestones C (corpus extension, worktree gpu-C, branch gpu/C) and M0
+(harness, render thread, all-fallback backend; worktree gpu-M0, branch gpu/M0) are running as
+background agents with checkpoints notes/wip/gpu-C.md / gpu-M0.md. Next: M1 after M0, then M2
+(go/no-go benchmark, needs a quiet machine), M3... per section 11 of the design.
+The sweep continuation (wf_1522fb31-777) was resumed again on 2026-10-14; ep4 is COMPLETE.
+
 **RESUMED 2026-10-11 (after the pause below):** continuation workflow `whole-game-sweep-continue`
 (run wf_1522fb31-777) runs only the unfinished testers ep1, ep2, ep3, ep4, ep7, then the VU
 review, then integrate (finished reports passed in as args; full copies in
