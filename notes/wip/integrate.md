@@ -24,8 +24,15 @@ keeping one copy of the shared fixes/tools, then run all tests, builds and the r
 - PS2_TASK_SET/FILE (warp.c, hooks.py): identical blob on all branches.
 - ep7 gs.c field-mode fix, ep5 warp.py percent_complete 100, ep8 scripts: taken as is.
 
+- All 17 unit test folders pass; tests/run_tests.py 16/16 + hook guards; debug and release build OK.
+- scripts/run_game.ps1 -Exe and warp_run.ps1 unique exe names (sly2_warp_<name>.exe).
+- Boot regression (release, build\reg\boot, 1 other game instance running): prompt (square),
+  intro, title (t95 start), briefing, museum gameplay all reached; 0 underruns, 0 late IOP ticks,
+  memory flat 152 MB committed; VBlanks 92-98% of due per phase, GS thread ~16 ms/VBlank (the
+  known GS bound), EE busy 6-7 ms; VU 100% recompiled. WAV: sound all the way (-20..-29 dBFS).
+
 ## In progress
-- Full unit tests + tests/run_tests.py, debug + release builds.
+- Baseline A/B: same run with next/vu-recomp's release exe (build\reg\boot_base).
 
 ## Next
 1. All unit tests, run_tests.py, debug build, release build (--out build\rel).
