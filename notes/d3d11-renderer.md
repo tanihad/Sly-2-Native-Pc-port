@@ -851,7 +851,23 @@ Total ~45-55 agent-days. The software renderer stays the default until M11.
 
 ---
 
-## 13. Open questions for the owner
+## 13. Owner decisions (2026-10-14) — binding for M6-M11
+
+- **Default quality: 3x internal + sharp downscale** to the window/monitor (as proposed in Q1).
+- **Widescreen: 16:9 by default** once the EE projection patch and HUD hints exist; 4:3 stays an
+  option.
+- **Outlines: BOTH, as a user setting.** "PS2" (one native pixel wide, exact) and "Thin" (analytic
+  hi-res outlines). Both must be implemented (M7) and switchable at run time; default "PS2".
+- **PS2-era image filters: user settings, with presets.** The owner wants to see both a modern
+  look and a faithful old look. Provide individual toggles — motion blur (the game's own effect;
+  the "No Motion Blur" switch at 0x160FA0), TV flicker filter, field interlacing (weave) — and two
+  presets: **Modern** (default: motion blur on, flicker filter off, progressive) and **Faithful**
+  (everything as on a PS2 on a TV). This means the GPU path must also be able to reproduce the
+  flicker filter and field display (M7), not drop them.
+- All of these settings belong in one settings file / in-game options surface (window.c owns
+  persistence), applied without restart where possible.
+
+Remaining open questions:
 
 1. **Default quality**: proposed 3x internal (1536x1344 for 4:3) with Lanczos downsample, VRR when
    available. Acceptable, or prefer a resolution-target setting (e.g. "match window")?
