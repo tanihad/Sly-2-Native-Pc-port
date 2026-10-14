@@ -928,6 +928,23 @@ static void t_display(void) {
     uint32_t c2 = gs_mem_read(PSMCT32, 56 * 32, 8, 256, 150);   /* circuit 2 behind output (256, 300) */
     CHECK((c2 & 0xFFFFFF) && out[1024 * 300 + 256] == (((c2 & 0xFF) << 16) | (c2 & 0xFF00) | ((c2 >> 16) & 0xFF)),
           "merge MMOD=0, circuit-1 alpha 0: circuit 2 shows, %06X", out[1024 * 300 + 256]);
+    /* Sly 2's anti-flicker merge: circuit 1 one line down (DBY 1, DH 446), circuit 2 (DBY 0, DH 447),
+     * 50% each. In field mode a circuit shows (DH + 1) / 2 lines per field, rounded down: circuit 1
+     * has 223, so the last output line is circuit 2's line 223 alone, never a mix with the line under
+     * the 224-line buffer (red here) */
+    frame(56, 8, PSMCT32, 0);
+    scissor(0, 511, 0, 224);
+    sprite(0, 0, 512, 224, 255, 255, 255, 0x80);
+    sprite(0, 224, 512, 225, 255, 0, 0, 0x80);
+    v = 0x8027; gs_priv_access(0x12000000, &v, 8, 1);    /* EN1 | EN2, MMOD = 1, ALP = 0x80 */
+    v = 0x1000 | 56 | (1ull << 43); gs_priv_access(0x12000070, &v, 8, 1);   /* DISPFB1: page 56, DBY 1 */
+    v = 0x1BE9FF0203227Cull; gs_priv_access(0x12000080, &v, 8, 1);          /* DISPLAY1: DH 446 */
+    v = 0x1038; gs_priv_access(0x12000090, &v, 8, 1);
+    v = 0x1BF9FF0203227Cull; gs_priv_access(0x120000A0, &v, 8, 1);
+    gs_display(out, 1024, &w, &h);
+    CHECK(h == 448 && out[1024 * 445 + 10] == 0xFFFFFF && out[1024 * 446 + 10] == 0xFFFFFF &&
+          out[1024 * 447 + 10] == 0xFFFFFF, "field mode, circuit 1 with an odd DH: last lines %06X %06X %06X",
+          out[1024 * 445 + 10], out[1024 * 446 + 10], out[1024 * 447 + 10]);
     v = 0; gs_priv_access(0x12000000, &v, 8, 1);
     CHECK(gs_display(out, 1024, &w, &h) == 0, "display off");
 }

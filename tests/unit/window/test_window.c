@@ -356,6 +356,19 @@ static void test_input_script(void) {
         CHECK((p.ry == 0xC0) == (f == 3), "ry at frame %d: %02X", f, p.ry);
     }
     CHECK(ram_dumps == 1, "%d RAM dumps", ram_dumps);
+    /* "release" ends the holds in progress (r1, lx) but not a press that starts with it */
+    script_n = 0;
+    script_frame = 0;
+    script_parse("1:r1:1000,1:lx20:1000,6:release,6:cross:2,+3:r1:2");
+    CHECK(script_n == 5, "parsed %d tokens", script_n);
+    for (int f = 0; f < 14; f++) {
+        pad_input p;
+        pad_clear(&p);
+        script_apply(0, &p);
+        CHECK(!!(p.buttons & PAD_R1) == ((f >= 1 && f < 6) || f == 9 || f == 10), "r1 at frame %d", f);
+        CHECK((p.lx == 0x20) == (f >= 1 && f < 6), "lx at frame %d: %02X", f, p.lx);
+        CHECK(!!(p.buttons & PAD_CROSS) == (f == 6 || f == 7), "cross at frame %d", f);
+    }
     script_n = 0;                                         /* leave scripting off for the other tests */
 }
 
