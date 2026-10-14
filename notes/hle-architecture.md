@@ -89,7 +89,9 @@ tools/, orig/ and .venv/ only exist in the main checkout
   to reach the later stages of a fight that scripted input cannot win. An entry
   `<hexaddr>=<hexvalue>?<hexaddr2>=<hexvalue2>` writes only while word addr2 holds value2 (e.g. a
   level object's vtable), so heap objects of a level that loads later can be held.
-  `PS2_POKE_FILE=<path>`: the same `<hexaddr>=<hexvalue>[,...]` lines appended to the file while the
+  `PS2_POKE=@<file>` reads the list from that file (re-read every 30 VBlanks; commas, spaces or
+  newlines separate entries), so a live session can change what is held every VBlank.
+  `PS2_POKE_FILE=<path>` (one-shot): the same `<hexaddr>=<hexvalue>[,...]` lines appended to the file while the
   game runs are written once (checked every 15 VBlanks, logged as `[poke]`), for live sessions.
 - Live input (`PS2_INPUT_FILE`, `scripts\live_game.ps1`): the token `pause` stops the game at the next
   dumped VBlank (latest.png shows it) until the next line arrives, so real-time sections (turrets,

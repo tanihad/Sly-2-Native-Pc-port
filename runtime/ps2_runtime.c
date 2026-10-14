@@ -464,10 +464,24 @@ static void vblank(ps2_ctx* ctx) {
      * these 32-bit words every VBlank, e.g. hold a character's health (Sly 2: bentley.hpCur,
      * 3D4AC8=28) to test the later parts of a fight that scripted input cannot win. With "?a=v" only
      * while word a holds v, e.g. while a level object's vtable is in place (move a heap object of a
-     * level that loads later without writing into the heap before that). */
+     * level that loads later without writing into the heap before that). PS2_POKE=@<file>: the list
+     * is read from that file instead, re-read every 30 VBlanks, so pokes can be changed while the
+     * game runs (an object's field is only poked once the level that owns it has loaded). */
     static const char* poke = (const char*)1;
+    static char poke_file_list[1024];
     if (poke == (const char*)1) poke = getenv("PS2_POKE");
-    for (const char* s = poke; s && *s; s = strchr(s, ',') ? strchr(s, ',') + 1 : "") {
+    const char* pokes = poke;
+    if (poke && poke[0] == '@') {
+        if (vblank_count % 30 == 0) {
+            FILE* pf = fopen(poke + 1, "rb");
+            size_t n = pf ? fread(poke_file_list, 1, sizeof poke_file_list - 1, pf) : 0;
+            if (pf) fclose(pf);
+            poke_file_list[n] = 0;
+            for (char* c = poke_file_list; *c; c++) if (*c == '\r' || *c == '\n' || *c == ' ') *c = ',';
+        }
+        pokes = poke_file_list;
+    }
+    for (const char* s = pokes; s && *s; s = strchr(s, ',') ? strchr(s, ',') + 1 : "") {
         unsigned addr = 0, val = 0, cond = 0, want = 0;
         int n = sscanf(s, "%x=%x?%x=%x", &addr, &val, &cond, &want);
         if (n == 2 || (n == 4 && ps2_r32(ctx, cond & ~3u) == want)) ps2_w32(ctx, addr & ~3u, val);

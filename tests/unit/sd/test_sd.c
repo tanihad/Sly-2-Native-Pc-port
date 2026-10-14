@@ -470,6 +470,27 @@ static void test_transfers(void) {
     r = sceSdVoiceTrans(0, 0, 0x10000, 0x1FFFC0, 128);
     CHECK(r == 128 && memcmp(ram + 0x1FFFC0, g_iop + 0x10000, 64) == 0 && memcmp(ram, g_iop + 0x10040, 64) == 0,
           "transfer wraps at 2 MB");
+
+    /* stream health: a write into the block a voice is playing is counted (late/early refill), but
+     * not for a voice in noise mode, whose sample data is not heard (989snd keys noise voices on
+     * without setting SSA, so they sit wherever the voice last played, e.g. a stream buffer) */
+    uint64_t ov0, ov1, ov2, bad;
+    memset(g_iop + 0x30000, 0, 0x1000);
+    sceSdVoiceTrans(0, 0, 0x30000, 0x60000, 0x1000);
+    sd_health(&ov0, &bad);
+    voice_start(0, 3, 0x60030, 0, 0x000F, 0x1FC0, 0x3FFF);     /* parked: pitch 0 */
+    free(render(64));
+    sceSdVoiceTrans(0, 0, 0x30000, 0x60000, 0x1000);
+    sd_health(&ov1, &bad);
+    CHECK(ov1 == ov0 + 1, "refill into a playing voice's block counted (%llu -> %llu)",
+          (unsigned long long)ov0, (unsigned long long)ov1);
+    sceSdSetSwitch(SW(NON, 0), 1u << 3);
+    sceSdVoiceTrans(0, 0, 0x30000, 0x60000, 0x1000);
+    sd_health(&ov2, &bad);
+    CHECK(ov2 == ov1, "noise voice on the block not counted (%llu -> %llu)",
+          (unsigned long long)ov1, (unsigned long long)ov2);
+    sceSdSetSwitch(SW(NON, 0), 0);
+    sceSdSetSwitch(SW(KOFF, 0), 1u << 3);
 }
 
 /* four 1.15 volume stages (BVOL, MVOL core 0, AVOL core 1, MVOL core 1) each lose up to 1 LSB */
