@@ -207,10 +207,20 @@ runtime/recompiler problem found at its root (with tests); frames in build\scree
 - Under 4 parallel instances the game ran at 5-30 VBlanks/s (loads took 40 s); the machine also
   carries other agents' processes (LoadPercentage 83 before I started). Not measured further.
 
+- Session 5 (2026-10-14, resumed after the pause): merged main (3be5093, CLAUDE.md only); rebuilt
+  release. Results of the runs that finished before the pause (all logs clean):
+  * di1 Disco Bombs (m1_disco): bomb counter 0/4..3/4, 1875 then completed by itself (state 3):
+    disco ball cutscene -> "Job Completed!" -> autosave -> Bentley back in the disco. Streams steady.
+  * fo1 Follow Dimitri: 1819/1821 -> 2, 1822 waits -> 2 by hand -> "Job Completed!" (Sly) ->
+    autosave -> Sly on the canal. Streams 485-490.
+  * bu1 Bug (theater world, painting swap prompt): 1812-1814 -> 2, 1815 -> 2 -> "Job Completed!" ->
+    autosave. Streams 254-259 steady.
+  * he1 heist chain: 1893..1902 accepted one by one (hub), streams steady; run ended at 1902.
+  * ne2 never reached the job (title not started before the pause) -> rerun.
+
 ## Next
-1. Flows still running/pending: di1 (disco bombs, 1875 -> 2 by hand), ne2 (chase Job Failed -> X
-   retries: do the streams come back? WAV), fo1 (follow 1819/1821/1822), bu1 (t1_bug_intro direct,
-   world 4: 1812-1814 -> 2), then the heist chain he1 (1893..1911 one by one in the hub).
+1. ne2 rerun (chase Job Failed -> X retry: do the streams come back?), he2 (heist chain from 1902 to
+   1911 and the episode's heist completion).
 2. Mark COMPLETE when the flows are checked and no runtime bug is open.
 
 ## Findings / traps
