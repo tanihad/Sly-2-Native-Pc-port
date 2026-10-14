@@ -86,7 +86,9 @@ tools/, orig/ and .venv/ only exist in the main checkout
   `PS2_PEEK=12000000:2,12000070:4` reads the GS privileged registers (PMODE, DISPFB1, ...).
   `PS2_POKE=<hexaddr>=<hexvalue>[,...]` writes 32-bit words every VBlank (debug aid, off by default),
   e.g. `PS2_POKE=3D4AC8=28` holds Bentley's health (game state `bentley.hpCur`, scripts/warp_schema.txt)
-  to reach the later stages of a fight that scripted input cannot win.
+  to reach the later stages of a fight that scripted input cannot win. An entry
+  `<hexaddr>=<hexvalue>?<hexaddr2>=<hexvalue2>` writes only while word addr2 holds value2 (e.g. a
+  level object's vtable), so heap objects of a level that loads later can be held.
   `PS2_POKE_FILE=<path>`: the same `<hexaddr>=<hexvalue>[,...]` lines appended to the file while the
   game runs are written once (checked every 15 VBlanks, logged as `[poke]`), for live sessions.
 - Live input (`PS2_INPUT_FILE`, `scripts\live_game.ps1`): the token `pause` stops the game at the next

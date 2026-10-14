@@ -460,14 +460,17 @@ static void vblank(ps2_ctx* ctx) {
             fprintf(stderr, "\n");
         }
     }
-    /* PS2_POKE="<hexaddr>=<hexvalue>[,...]" (debugging, off by default): write these 32-bit words
-     * every VBlank, e.g. hold a character's health (Sly 2: bentley.hpCur, 3D4AC8=28) to test the
-     * later parts of a fight that scripted input cannot win. */
+    /* PS2_POKE="<hexaddr>=<hexvalue>[?<hexaddr>=<hexvalue>][,...]" (debugging, off by default): write
+     * these 32-bit words every VBlank, e.g. hold a character's health (Sly 2: bentley.hpCur,
+     * 3D4AC8=28) to test the later parts of a fight that scripted input cannot win. With "?a=v" only
+     * while word a holds v, e.g. while a level object's vtable is in place (move a heap object of a
+     * level that loads later without writing into the heap before that). */
     static const char* poke = (const char*)1;
     if (poke == (const char*)1) poke = getenv("PS2_POKE");
     for (const char* s = poke; s && *s; s = strchr(s, ',') ? strchr(s, ',') + 1 : "") {
-        unsigned addr = 0, val = 0;
-        if (sscanf(s, "%x=%x", &addr, &val) == 2) ps2_w32(ctx, addr & ~3u, val);
+        unsigned addr = 0, val = 0, cond = 0, want = 0;
+        int n = sscanf(s, "%x=%x?%x=%x", &addr, &val, &cond, &want);
+        if (n == 2 || (n == 4 && ps2_r32(ctx, cond & ~3u) == want)) ps2_w32(ctx, addr & ~3u, val);
     }
     /* PS2_POKE_FILE=<path> (debugging, off by default): lines "<hexaddr>=<hexvalue>[,...]" appended
      * while the game runs are written once, at the next VBlank (looked at every 15 VBlanks). */
