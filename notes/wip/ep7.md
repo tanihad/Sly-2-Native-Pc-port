@@ -214,6 +214,10 @@ build\screenshots\ep7_*.png.
   Bentley character object left (only Sly 0x10E46C0 and Murray 0x12ABBA0 with 0x2D vtables): the
   respawn actor was gone, so the camera parked. Not a runtime issue.
 
+- Session 5 (resumed after the pause): branch had no unfinished WIP edit; merged main 618be3f
+  (CLAUDE.md only) -> builds still current. fl_heist/fl_therm from session 4 never got their task
+  lines (input empty): redone as fl_heist5 / fl_therm5.
+
 ## In progress
 - Operation stage chain by task file (build\fl_heist: 3200, 3205, 3216, 3230, 3236, 3251, 3258) and
   Thermal Ride stages (build\fl_therm: 3180, 3181, 3183, 3185).
