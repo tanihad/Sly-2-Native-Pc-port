@@ -10,11 +10,16 @@
 #    games run in parallel and nobody kills processes by name);
 #  - -From/-Frames record VBlanks [From, From+Frames) into build\gsrec\<Name>.gsrec and dump every
 #    -RecDumpEvery-th VBlank of that window as frames\frame_<vblank>.png (outside it every -DumpEvery-th);
+#  - a "rec" token in -Pad (e.g. "+600:rec", relative to the token before it) starts the recording
+#    instead of -From; frames are then dumped from the recording's start (PS2_DUMP_FROM=rec);
+#  - -Live: steer the running game by appending PS2_INPUT lines to build\gsrec\<Name>\input.txt
+#    (e.g. "+0:r3:10", then "+0:rec" when the scene is right); every -RecDumpEvery-th VBlank is dumped
+#    all along (frames\latest.png to look at), the oldest deleted after -Ring dumps;
 #  - -NoCard runs without a warp card (a fresh card directory: new game, no save).
 # The run stops by itself (PS2_WATCHDOG) -Seconds after the start, or soon after the recording ends.
 param([Parameter(Mandatory = $true)][string]$Name, [int]$Episode = 0, [string]$Job = "", [switch]$Direct,
-      [switch]$Play, [switch]$NoCard, [switch]$NoStart, [int]$Seconds = 300, [switch]$Debug, [string]$Pad = "",
-      [int]$From = 0, [int]$Frames = 120, [int]$DumpEvery = 60, [int]$RecDumpEvery = 10,
+      [switch]$Play, [switch]$NoCard, [switch]$NoStart, [int]$Seconds = 300, [switch]$DebugBuild, [string]$Pad = "",
+      [int]$From = 0, [int]$Frames = 120, [int]$DumpEvery = 60, [int]$RecDumpEvery = 10, [switch]$Live, [int]$Ring = 300,
       [string]$Set = "", [string]$Make = "", [switch]$KeepRunning)
 $root = Split-Path $PSScriptRoot -Parent
 $main = $root
@@ -26,9 +31,9 @@ $py = Join-Path $main '.venv\Scripts\python.exe'
 if ($Direct -and -not $Job) { "-Direct needs -Job"; exit 1 }
 $dir = Join-Path $root "build\gsrec\$Name"
 $card = Join-Path $dir 'card'
-$frames = Join-Path $dir 'frames'
-New-Item -ItemType Directory -Force $dir, $frames | Out-Null
-Remove-Item (Join-Path $frames '*.png') -ErrorAction SilentlyContinue
+$fdir = Join-Path $dir 'frames'
+New-Item -ItemType Directory -Force $dir, $fdir | Out-Null
+Remove-Item (Join-Path $fdir '*.png') -ErrorAction SilentlyContinue
 Remove-Item -Recurse -Force $card -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $card | Out-Null
 
@@ -52,7 +57,7 @@ if (-not $NoCard) {
     }
 }
 
-$build = Join-Path $root $(if ($Debug) { 'build\sly2' } else { 'build\rel' })
+$build = Join-Path $root $(if ($DebugBuild) { 'build\sly2' } else { 'build\rel' })
 $exe = Join-Path $dir "sly2_gpuC_$Name.exe"
 Copy-Item (Join-Path $build 'sly2.exe') $exe -Force
 $script = if ($NoStart) { '' } else { '@187D80/1DD96C+30:start:10' }
@@ -60,14 +65,25 @@ if ($Play -and -not $Direct -and $Episode -gt 0) { $script += ',+1500:cross:6' }
 if ($Pad) { $script = if ($script) { "$script,$Pad" } else { $Pad } }
 
 $rec = Join-Path $root "build\gsrec\$Name.gsrec"
-Remove-Item Env:\PS2_GS_RECORD, Env:\PS2_GS_RECORD_FROM, Env:\PS2_GS_RECORD_FRAMES, Env:\PS2_DUMP_FROM -ErrorAction SilentlyContinue
+Remove-Item Env:\PS2_GS_RECORD, Env:\PS2_GS_RECORD_FROM, Env:\PS2_GS_RECORD_FRAMES, Env:\PS2_DUMP_FROM,
+            Env:\PS2_INPUT_FILE, Env:\PS2_DUMP_RING -ErrorAction SilentlyContinue
 $every = $DumpEvery
-if ($From -gt 0) {
+$token = $script -match ':rec(\b|$)'
+$recording = $From -gt 0 -or $token -or $Live
+if ($recording) {
+    Remove-Item $rec -ErrorAction SilentlyContinue
     $env:PS2_GS_RECORD = $rec
-    $env:PS2_GS_RECORD_FROM = "$From"
+    $env:PS2_GS_RECORD_FROM = if ($From -gt 0) { "$From" } else { '-1' }   # -1: only the "rec" token
     $env:PS2_GS_RECORD_FRAMES = "$Frames"
     $every = $RecDumpEvery
-    $env:PS2_DUMP_FROM = "$From"
+    if ($From -gt 0) { $env:PS2_DUMP_FROM = "$From" } elseif (-not $Live) { $env:PS2_DUMP_FROM = 'rec' }
+}
+if ($Live) {
+    $inp = Join-Path $dir 'input.txt'
+    Set-Content -Path $inp -Value '' -Encoding ascii
+    $env:PS2_INPUT_FILE = $inp
+    $env:PS2_DUMP_RING = "$Ring"
+    "live input: append lines to $inp"
 }
 $env:PS2_WATCHDOG = "$Seconds"
 $env:PS2_HEADLESS = "1"
@@ -75,7 +91,7 @@ $env:PS2_AUDIO_NULL = "1"
 Remove-Item Env:\PS2_AUDIO_WAV -ErrorAction SilentlyContinue
 $env:PS2_INPUT = $script
 $env:PS2_MEMCARD_DIR = $card
-$env:PS2_DUMP_FRAMES = $frames
+$env:PS2_DUMP_FRAMES = $fdir
 $env:PS2_DUMP_EVERY = "$every"
 $iso = Get-ChildItem (Join-Path $main 'orig\disc') -Filter *.iso -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($iso) { $env:PS2_ISO = $iso.FullName }
@@ -89,7 +105,7 @@ $done = $false
 while (-not $p.HasExited) {
     Start-Sleep -Seconds 2
     if (((Get-Date) - $t0).TotalSeconds -gt $Seconds + 20) { Stop-Process -Id $p.Id -Force; "-- killed (watchdog didn't fire)"; break }
-    if ($From -gt 0 -and -not $KeepRunning -and -not $done -and (Select-String -Path $log -Pattern 'GS recording complete' -Quiet)) {
+    if ($recording -and -not $KeepRunning -and -not $done -and (Select-String -Path $log -Pattern 'GS recording complete' -Quiet)) {
         $done = $true
         Start-Sleep -Seconds 3                      # the last dumps are written by the GS thread
         Stop-Process -Id $p.Id -Force
@@ -98,9 +114,10 @@ while (-not $p.HasExited) {
     }
 }
 "-- ran $([int]((Get-Date) - $t0).TotalSeconds) s"
-Remove-Item Env:\PS2_GS_RECORD, Env:\PS2_GS_RECORD_FROM, Env:\PS2_GS_RECORD_FRAMES, Env:\PS2_DUMP_FROM, Env:\PS2_WARP_TASK -ErrorAction SilentlyContinue
+Remove-Item Env:\PS2_GS_RECORD, Env:\PS2_GS_RECORD_FROM, Env:\PS2_GS_RECORD_FRAMES, Env:\PS2_DUMP_FROM, Env:\PS2_WARP_TASK,
+            Env:\PS2_INPUT_FILE, Env:\PS2_DUMP_RING -ErrorAction SilentlyContinue
 Select-String -Path $log -Pattern '\[warp\]|\[gs\]|not implemented|unhandled|error|assert|crash|exception|fatal' |
     Where-Object { $_.Line -notmatch 'syscall 0x5B' } | Select-Object -First 30 | ForEach-Object { $_.Line }
 if (Test-Path $rec) { "recording: $rec ($([int]((Get-Item $rec).Length / 1MB)) MB)" }
-$n = @(Get-ChildItem $frames -Filter 'frame_*.png').Count
-"frames: $frames ($n dumps; latest.png)"
+$n = @(Get-ChildItem $fdir -Filter 'frame_*.png').Count
+"frames: $fdir ($n dumps; latest.png)"

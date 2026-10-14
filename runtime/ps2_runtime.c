@@ -304,6 +304,8 @@ static uint32_t vblank_count;
 static const char* dump_dir;
 static int dump_every = 60, headless;
 static uint32_t dump_from;                       /* PS2_DUMP_FROM=<vblank>: no dumps before it */
+static int dump_from_rec;                        /* PS2_DUMP_FROM=rec: none before the GS recording */
+extern volatile uint32_t gs_record_first;        /* gs_record.c: its first VBlank, 0 = not started */
 
 /* VBlank pacing: VBlanks are due at exact multiples of 1/59.94 s of host time (QPC), so the game
  * never runs faster than real time. The thread sleeps until the next VBlank or 1 ms housekeeping
@@ -366,7 +368,8 @@ static void present_frame(const uint32_t* frame, int ok, int w, int h, uint32_t 
         return;
     }
     if (!headless) window_present(frame, w, h, 1024);
-    if (dump_dir && vb % (uint32_t)dump_every == 0 && vb >= dump_from) {
+    if (dump_dir && vb % (uint32_t)dump_every == 0 && vb >= dump_from &&
+        (!dump_from_rec || (gs_record_first && vb >= gs_record_first))) {
         char path[512];
         snprintf(path, sizeof path, "%s/frame_%06u.png", dump_dir, vb);
         debug_write_png(path, frame, w, h, 1024);
@@ -670,7 +673,10 @@ int main(int argc, char** argv) {
     headless = dump_regs || getenv("PS2_HEADLESS") != NULL;
     dump_dir = getenv("PS2_DUMP_FRAMES");
     if (getenv("PS2_DUMP_EVERY")) dump_every = atoi(getenv("PS2_DUMP_EVERY")) > 0 ? atoi(getenv("PS2_DUMP_EVERY")) : 60;
-    if (getenv("PS2_DUMP_FROM")) dump_from = (uint32_t)atoi(getenv("PS2_DUMP_FROM"));
+    if (getenv("PS2_DUMP_FROM")) {
+        dump_from = (uint32_t)atoi(getenv("PS2_DUMP_FROM"));
+        dump_from_rec = !strcmp(getenv("PS2_DUMP_FROM"), "rec");
+    }
     const char* wd = getenv("PS2_WATCHDOG");
     if (wd && atoi(wd) > 0) CreateThread(NULL, 0, watchdog, (LPVOID)(uintptr_t)atoi(wd), 0, NULL);
     if (!headless) window_init();

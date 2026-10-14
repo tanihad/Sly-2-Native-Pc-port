@@ -307,6 +307,8 @@ uint32_t ps2_func_calls(uint32_t addr, uint32_t ra) {
 uint32_t ps2_vblank_count(void) { return 0; }
 static int ram_dumps;
 void ps2_request_ram_dump(void) { ram_dumps++; }
+static int rec_starts;
+void gs_record_start_now(void) { rec_starts++; }
 
 static void test_input_script(void) {
     script_n = 0;
@@ -346,8 +348,9 @@ static void test_input_script(void) {
     script_n = 0;
     script_frame = 0;
     ram_dumps = 0;
-    script_parse("2:lx40:3,+1:ryc0:1,+0:ram");
-    CHECK(script_n == 3, "parsed %d tokens", script_n);
+    rec_starts = 0;
+    script_parse("2:lx40:3,+1:ryc0:1,+0:ram,+2:rec");      /* + the GS recording start (gs_record.c) */
+    CHECK(script_n == 4, "parsed %d tokens", script_n);
     for (int f = 0; f < 8; f++) {
         pad_input p;
         pad_clear(&p);
@@ -356,6 +359,7 @@ static void test_input_script(void) {
         CHECK((p.ry == 0xC0) == (f == 3), "ry at frame %d: %02X", f, p.ry);
     }
     CHECK(ram_dumps == 1, "%d RAM dumps", ram_dumps);
+    CHECK(rec_starts == 1, "%d GS recording starts", rec_starts);
     script_n = 0;                                         /* leave scripting off for the other tests */
 }
 

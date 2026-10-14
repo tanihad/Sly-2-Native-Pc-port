@@ -3,6 +3,9 @@
  *   PS2_GS_RECORD=<file>        record what the EE sends to the GS ...
  *   PS2_GS_RECORD_FROM=<vblank> ... from this VBlank on (default 600) ...
  *   PS2_GS_RECORD_FRAMES=<n>    ... for n VBlanks (default 60).
+ * The PS2_INPUT token "rec" (window.c, e.g. "+300:rec" or a live PS2_INPUT_FILE line "+0:rec") starts
+ * the recording at the next VBlank instead; PS2_GS_RECORD_FROM=-1 then means "only when asked".
+ * PS2_DUMP_FROM=rec (ps2_runtime.c) dumps frames only from the recording's first VBlank on.
  *
  * File: "GSREC001", then the GS state at the first VBlank (4 MB of VRAM, the 1 KB CLUT buffer, the
  * 0x64 general registers as last written), then records { u32 tag, u32 len, payload }:
@@ -22,7 +25,11 @@ static FILE* rec;
 static int rec_init;
 int gs_recording;                         /* records are being written (gs_thread.c checks it) */
 static uint32_t rec_from = 600, rec_frames = 60, rec_seen;
+static volatile int rec_now;              /* the "rec" input token: start at the next VBlank */
+volatile uint32_t gs_record_first;        /* VBlank the recording started at (0: not started) */
 uint64_t gs_reg_mirror[0x64];             /* every general register as last written (gs_thread.c) */
+
+void gs_record_start_now(void) { rec_now = 1; }
 
 static void put(uint32_t tag, uint32_t len, const void* p, size_t n) {
     uint32_t h[2] = { tag, len };
@@ -54,7 +61,8 @@ void gs_record_vsync(uint32_t vblank) {
     }
     if (!rec) return;
     if (!gs_recording) {
-        if (vblank < rec_from) return;
+        if (vblank < rec_from && !rec_now) return;
+        gs_record_first = vblank;
         gs_sync();                               /* the state below is the GS's at this point */
         fwrite("GSREC001", 8, 1, rec);
         fwrite(gs_vram, GS_VRAM_SIZE, 1, rec);

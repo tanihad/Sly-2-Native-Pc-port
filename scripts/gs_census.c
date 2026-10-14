@@ -3,7 +3,8 @@
  * tracks the GS register state like runtime/gs_draw.c does (vertex queue, PRMODECONT contexts, TEX2
  * folded into TEX0, CLD rules), without rendering.
  *
- *   gs_census <recording> [-v]        report to stdout (-v: also every feedback draw)
+ *   gs_census <recording> [-v] [-a]   report to stdout (-v: also every feedback draw; -a: every entry
+ *                                     of every table, for comparing recordings: census_table.py --new)
  *
  * Per VBlank interval ("frame") it counts primitives by type and attribute, vertices, draw-state
  * changes, render targets, transfers, CLUT loads and feedback draws (textures sampling pages that
@@ -146,7 +147,9 @@ static int cmp_ent(const void* a, const void* b) {
     const ent *x = a, *y = b;
     return x->count < y->count ? 1 : x->count > y->count ? -1 : strcmp(x->desc, y->desc);
 }
+static int print_all;                    /* -a: every table entry, not just the most frequent */
 static void tab_print(tab* t, const char* title, int max) {
+    if (print_all) max = 1 << 30;
     ent* v = malloc((size_t)t->n * sizeof(ent));
     int n = 0;
     for (int i = 0; i < t->cap; i++) if (t->e[i].key && t->e[i].count) v[n++] = t->e[i];
@@ -874,8 +877,11 @@ static void vblank(uint32_t vb, const uint64_t* snap) {
 static int rd(FILE* f, void* p, size_t n) { return fread(p, 1, n, f) == n; }
 
 int main(int argc, char** argv) {
-    if (argc < 2) { fprintf(stderr, "usage: gs_census <recording> [-v]\n"); return 2; }
-    verbose = argc > 2 && !strcmp(argv[2], "-v");
+    if (argc < 2) { fprintf(stderr, "usage: gs_census <recording> [-v] [-a]\n"); return 2; }
+    for (int i = 2; i < argc; i++) {
+        if (!strcmp(argv[i], "-v")) verbose = 1;
+        else if (!strcmp(argv[i], "-a")) print_all = 1;
+    }
     FILE* f = fopen(argv[1], "rb");
     if (!f) { fprintf(stderr, "cannot open %s\n", argv[1]); return 1; }
     setvbuf(f, NULL, _IOFBF, 1 << 22);
