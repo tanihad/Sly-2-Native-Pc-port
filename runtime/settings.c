@@ -337,7 +337,11 @@ int settings_update_text(const char* text, const char* section, const char* key,
     } else {
         PUT(text, tl);
         if (tl && text[tl - 1] != '\n') PUT(nl, strlen(nl));
-        if (tl) PUT(nl, strlen(nl));
+        size_t e = tl;                             /* a blank line before the new section, unless one is there */
+        while (e > 0 && (text[e - 1] == '\n' || text[e - 1] == '\r')) e--;
+        int newlines = 0;
+        for (size_t k = e; k < tl; k++) newlines += text[k] == '\n';
+        if (e > 0 && newlines < 2) PUT(nl, strlen(nl));
         char hdr[64];
         snprintf(hdr, sizeof hdr, "[%s]", section);
         PUT(hdr, strlen(hdr));

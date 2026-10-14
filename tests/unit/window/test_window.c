@@ -174,6 +174,10 @@ static void test_settings(void) {
     settings_defaults(&s);
     settings_parse(out, &s, NULL, NULL);
     CHECK(!strcmp(s.disc, "C:\\a;b.iso") && s.aspect_w == 4, "updated text parses back");
+    len = settings_update_text("[game]\r\ndisc = a.iso\r\n\r\n", "window", "x", "5", out, sizeof out);
+    CHECK(len > 0 && !strcmp(out, "[game]\r\ndisc = a.iso\r\n\r\n[window]\r\nx = 5\r\n"), "one blank line between sections: '%s'", out);
+    len = settings_update_text("", "window", "x", "5", out, sizeof out);
+    CHECK(len > 0 && !strcmp(out, "[window]\nx = 5\n"), "empty file: '%s'", out);
     len = settings_update_text("aspect = 4:3", "display", "aspect", "16:9", out, sizeof out);
     CHECK(len > 0 && !strcmp(out, "aspect = 16:9"), "keys before any header are [display]: '%s'", out);
     CHECK(settings_update_text(user, "window", "width", "1707", out, 20) < 0, "overflow reported");
