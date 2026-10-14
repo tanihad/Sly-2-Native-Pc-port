@@ -5,7 +5,19 @@ Output: notes/d3d11-renderer.md (on next/d3d11).
 ## Status
 - [x] Inputs read (map, census, prior art, 3 designs, 3 judgements, native-port-principles.md,
       gs_draw.c Z/attribute arithmetic: rowstep_init/rowstep_start, draw_line).
-- [ ] notes/d3d11-renderer.md written and committed.
+- [x] notes/d3d11-renderer.md written and committed (final design, 13 sections + appendix).
+
+Refinements made while writing (recorded in the design):
+- No separate "grouped" tier: the ROV tier reads Z from the depth SRV (read-only DSV) and writes
+  conditional Z into a ROV zpatch UAV (z, run serial), resolved into the DSV by ps_zresolve after the
+  run. Exact for pass A with As>128 and for self-overlapping draws. REF mode = every draw ROV.
+- FF (0-Cs)*C+Cd needs o = (Cs*C+127)>>7 (GS floors the negative term).
+- Lines exact first: CPU DDA per native pixel -> native-pixel quads; analytic thin mode optional (M7).
+- Milestones: C (corpus, parallel), M0 harness/all-fallback, M1 hwdry, M2 submission go/no-go,
+  M3 REF core, M4 exact effects, M5 FF tier, M6 in-game opt-in, M7 scaling, M8 sweep/corpus gate,
+  M9 perf, M10 widescreen, M11 hardening + default switch. Integration branch next/gpu.
+
+Status: done.
 
 ## Decision (fixed; do not re-litigate on resume)
 - Backbone: design 1 (draws -> D3D11, GPU render targets at scale, generic per-draw exact paths
