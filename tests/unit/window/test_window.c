@@ -18,6 +18,7 @@
  *        (PS2_WINDOW_GDI=1 in the environment tests the GDI presenter)
  */
 #include "window.c"
+#include "settings.c"
 
 #include <stdlib.h>
 
@@ -63,6 +64,87 @@ static void test_letterbox(void) {
                 CHECK(0, "letterbox(%d,%d) = %d %d %d %d", cw, ch, r.x, r.y, r.w, r.h);
             }
         }
+}
+
+/* Widescreen presentation: any aspect fits (16:9 fills a 16:9 window, 4:3 content is pillarboxed
+ * in it), and frames carry their aspect through the triple buffer. */
+static void test_fit_aspect(void) {
+    wrect r = fit_aspect(1920, 1080, 16, 9);
+    CHECK(r.x == 0 && r.y == 0 && r.w == 1920 && r.h == 1080, "%d %d %d %d", r.x, r.y, r.w, r.h);
+    r = fit_aspect(1920, 1080, 4, 3);
+    CHECK(r.x == 240 && r.w == 1440 && r.h == 1080, "pillarbox %d %d %d %d", r.x, r.y, r.w, r.h);
+    r = fit_aspect(1280, 960, 16, 9);
+    CHECK(r.x == 0 && r.y == 120 && r.w == 1280 && r.h == 720, "letterbox %d %d %d %d", r.x, r.y, r.w, r.h);
+    r = fit_aspect(3440, 1440, 21, 9);
+    CHECK(r.w == 3360 && r.h == 1440 && r.x == 40, "21:9 %d %d %d %d", r.x, r.y, r.w, r.h);
+    int bad = 0;
+    for (int cw = 1; cw < 4000 && !bad; cw += 13)
+        for (int ch = 1; ch < 3000 && !bad; ch += 17) {
+            wrect a = fit_aspect(cw, ch, 4, 3), b = letterbox(cw, ch);
+            if (memcmp(&a, &b, sizeof a)) { bad = 1; CHECK(0, "fit_aspect 4:3 != letterbox at %dx%d", cw, ch); }
+            r = fit_aspect(cw, ch, 16, 9);
+            int fits = r.x >= 0 && r.y >= 0 && r.x + r.w <= cw && r.y + r.h <= ch && (r.w == cw || r.h == ch);
+            if (!fits || llabs((long long)r.w * 9 - (long long)r.h * 16) > 16) {
+                bad = 1;
+                CHECK(0, "fit_aspect(%d,%d,16,9) = %d %d %d %d", cw, ch, r.x, r.y, r.w, r.h);
+            }
+        }
+    static uint32_t img[16];
+    win_accepting = 1;
+    window_present_aspect(img, 4, 4, 4, 16, 9);
+    fb_take();
+    CHECK(fb_aw[fb_read] == 16 && fb_ah[fb_read] == 9, "aspect travels with the frame (%d:%d)", fb_aw[fb_read], fb_ah[fb_read]);
+    window_present(img, 4, 4, 4);
+    fb_take();
+    CHECK(fb_aw[fb_read] == 4 && fb_ah[fb_read] == 3, "window_present is 4:3 (%d:%d)", fb_aw[fb_read], fb_ah[fb_read]);
+    win_accepting = 0;
+}
+
+/* settings.c: the sly2.ini parser and its aspect values */
+static int warn_count;
+static void count_warn(void* user, const char* msg) { (void)user; (void)msg; warn_count++; }
+
+static void test_settings(void) {
+    ps2_settings_t s;
+    settings_defaults(&s);
+    CHECK(s.aspect_w == 16 && s.aspect_h == 9 && s.internal_scale == 3 && !s.outlines_thin && !s.filters_faithful,
+          "defaults");
+    CHECK(settings_motion_blur(&s) == 1 && settings_flicker_filter(&s) == 0 && settings_interlacing(&s) == 0, "modern preset");
+    int w, h;
+    CHECK(settings_parse_aspect("4:3", &w, &h) && w == 4 && h == 3, "4:3");
+    CHECK(settings_parse_aspect(" 32:18 ", &w, &h) && w == 16 && h == 9, "reduced");
+    CHECK(settings_parse_aspect("21/9", &w, &h) && w == 7 && h == 3, "21/9 -> 7:3");
+    CHECK(settings_parse_aspect("1.7778", &w, &h) && w == 889 && h == 500, "decimal ratio %d:%d", w, h);
+    CHECK(!settings_parse_aspect("wide", &w, &h) && !settings_parse_aspect("16:", &w, &h) &&
+          !settings_parse_aspect("1:3", &w, &h) && !settings_parse_aspect("", &w, &h), "rejects garbage");
+
+    warn_count = 0;
+    int n = settings_parse("\xEF\xBB\xBF; comment\r\n[display]\r\naspect = 4:3   ; old TV\r\n\r\n[graphics]\n"
+                           "internal_scale=2\noutlines = Thin\nfilters = faithful\nmotion_blur = off\n"
+                           "interlacing = preset\n", &s, count_warn, NULL);
+    CHECK(n == 0 && warn_count == 0, "clean file: %d problems", n);
+    CHECK(s.aspect_w == 4 && s.aspect_h == 3, "aspect %d:%d", s.aspect_w, s.aspect_h);
+    CHECK(s.internal_scale == 2 && s.outlines_thin == 1 && s.filters_faithful == 1, "graphics keys");
+    CHECK(settings_motion_blur(&s) == 0 && settings_flicker_filter(&s) == 1 && settings_interlacing(&s) == 1,
+          "faithful preset with motion blur off");
+
+    settings_defaults(&s);
+    warn_count = 0;
+    n = settings_parse("aspect = 21:9\nbogus line\n[graphics]\ninternal_scale = 99\ncolour = red\n[broken\n", &s,
+                       count_warn, NULL);
+    CHECK(n == 4 && warn_count == 4, "four problems reported (%d, %d)", n, warn_count);
+    CHECK(s.aspect_w == 7 && s.aspect_h == 3 && s.internal_scale == 3, "good keys still apply, bad ones don't");
+
+    /* the template written next to the exe parses back to the defaults */
+    char text[4096];
+    ps2_settings_t d, back;
+    settings_defaults(&d);
+    settings_format(&d, text, sizeof text);
+    memset(&back, 0x55, sizeof back);
+    settings_defaults(&back);
+    back.aspect_w = 1;
+    warn_count = 0;
+    CHECK(settings_parse(text, &back, count_warn, NULL) == 0 && !memcmp(&back, &d, sizeof d), "template round trip");
 }
 
 static void test_xinput_mapping(void) {
@@ -575,7 +657,7 @@ static void test_gdi_bars(void) {
         HDC dc = GetDC(h);
         FillRect(dc, &rc, (HBRUSH)GetStockObject(WHITE_BRUSH));
         ReleaseDC(h, dc);
-        gdi_render(h, solid, 320, 224);
+        gdi_render(h, solid, 320, 224, 4, 3);
         if (!read_client(h, shot, cw, ch, 0)) { CHECK(0, "cannot read the client area"); break; }
         wrect r = letterbox(cw, ch);
         int unpainted = 0, fx = -1, fy = -1;
@@ -605,22 +687,22 @@ static void test_d3d_resize_failure(void) {
         return;
     }
     for (int i = 0; i < 640 * 480; i++) solid[i] = 0x7FFF0000u;             /* red */
-    HRESULT hr = d3d_render(h, solid, 640, 480, 1);
+    HRESULT hr = d3d_render(h, solid, 640, 480, 1, 4, 3);
     CHECK(SUCCEEDED(hr) && d3d.bb_w == 640 && d3d.bb_h == 480, "first frame: hr %08lX, back buffer %dx%d",
           (unsigned long)hr, d3d.bb_w, d3d.bb_h);
     ID3D11Texture2D* held = NULL;
     IDXGISwapChain_GetBuffer(d3d.sc, 0, &IID_ID3D11Texture2D_, (void**)&held);
     set_client_size(h, 700, 500);
-    hr = d3d_render(h, solid, 640, 480, 1);
+    hr = d3d_render(h, solid, 640, 480, 1, 4, 3);
     CHECK(FAILED(hr), "resize with a back buffer still referenced succeeded (hr %08lX)", (unsigned long)hr);
     RELEASE(held);
     set_client_size(h, 640, 480);                                           /* back to the old size */
     for (int i = 0; i < 640 * 480; i++) solid[i] = 0x7F00FF00u;             /* green */
-    hr = d3d_render(h, solid, 640, 480, 2);
+    hr = d3d_render(h, solid, 640, 480, 2, 4, 3);
     CHECK(SUCCEEDED(hr) && d3d.rtv != NULL && d3d.bb_w == 640 && d3d.bb_h == 480,
           "frame after a failed resize: hr %08lX, render target %p, back buffer %dx%d", (unsigned long)hr,
           (void*)d3d.rtv, d3d.bb_w, d3d.bb_h);
-    hr = d3d_render(h, solid, 640, 480, 2);                                 /* flip model: show it twice */
+    hr = d3d_render(h, solid, 640, 480, 2, 4, 3);                                 /* flip model: show it twice */
     Sleep(100);
     if (read_client(h, shot, 640, 480, 1) && shot[240 * 640 + 320] != 0x5A5A5A) {
         uint32_t c = shot[240 * 640 + 320];
@@ -892,6 +974,8 @@ int main(int argc, char** argv) {
     timeBeginPeriod(1);
 
     test_letterbox();
+    test_fit_aspect();
+    test_settings();
     test_xinput_mapping();
     test_keyboard_mapping();
     test_frame_handoff_basic();
