@@ -152,11 +152,38 @@ build\screenshots\ep2_*.png.
   autosave written. Frame ep2_drawbridge_completed.png. Setting 2013:2 in the same session only
   activates 2014 (Sly stays in the hub): each job needs its own direct start.
 
+- 2026-10-14 (session 5): merged main 618be3f (CLAUDE.md only); release rebuilt. Job completion
+  flows through PS2_TASK_FILE (taskflow.ps1, release), every job now checked to its end:
+  - m2_recon (rec3: 1986-1989, 1991-1995, 1996:2): completes, chalk-talk drawing, safehouse.
+  - m2_steal_tuxedo (tux3: pieces 2041/2043/2045/2047/2049 -> 2053 auto 3): Sly wipe, "Job
+    Completed!", autosave, back in world 9.
+  - m2_elephant_rampage (ele2: 2076-2081): "Job Completed!", hub.
+  - m2_rc_chopper (rc2: 2067:2 -> 2068 auto 3): "Nice flying partner..." cutscene, Bentley wipe,
+    autosave, Bentley on the hub rooftop.
+  - m2_turret (tur4: 2016:2 -> 2018 auto 2): Murray wipe, "Job Completed!" (Murray), hub. Setting
+    2018 while it is still state 0 (tur3) does nothing visible - the job must reach it.
+  - m2_boardroom_brawl (bra2: 1589, 2024, 1590, 1591 -> 2032 auto 3): Murray cutscene ("I'm
+    unstoppable"), "Job Completed!", back in world 10.
+  - m2_dance_audition (da3: 2060:2 after the failure screen): Sly wipe, "Job Completed!", autosave, hub.
+  - m2_heist_bomb_bridge (bb2: lower 2091-2100, 2104, upper 2105-2112): flows into the tango
+    (2117 opening: Neyla "Miss Fox, I believe you owe me a dance?").
+  - m2_heist_dance (hd3: 2118:2): flows into "Clockwerk's Wings" Murray title card and the
+    cover-Murray RC chopper section (t2_heist_cover_murray).
+  - earlier: m2_dance_audition_fake, m2_lower_drawbridge, episode end t2_heist_complete.
+  No new log lines in any run (only the known boot syscall 0x5B). Frames ep2_*_completed.png etc.
+
+## STATUS: COMPLETE (2026-10-14)
+All 12 jobs of Episode 2 started (direct warp) and their flows checked to "Job Completed!" /
+the next stage, the episode end (van escape -> Episode 3 story -> episode wheel, save) verified,
+hub/movies/autosaves checked. Runtime fixes on this branch: IOP runs while the EE waits for the GS
+thread (menu music stream stop), pixel worker generation start, COP0 Count + timers/IOP/SPU2/VBlank
+held during the live 'pause' debug token, case-insensitive input tokens. No reproducible open
+runtime bug left for ep2. Not finished by play: the dance minigame rounds 3+ (no runtime problem
+seen; scripted timing too coarse) - completed through the task tool instead. Remaining known
+issue owned elsewhere: the music stream can still stop when the OS starves the EE thread for >1 s
+under heavy load (next/ep1, PS2_AUDIO_IOP_LIMIT).
+
 ## Next
-1. Flows (taskflow.ps1): elephant (ele2), tuxedo (tux2) running; then recon, bomb bridge (lower ->
-   collapse -> upper), boardroom brawl, rc chopper, turret, heist dance, dance audition (2059:2).
-2. Dance minigame: longer stepped run (-Every 4, 60 min) when the machine is quieter; try pressing
-   when the ball lands (cursor x near the slot, wide y band) if the anticipating rule fails again.
-3. Play deeper: m2_heist_bomb_bridge (Bentley), m2_heist_dance (tango), boardroom brawl past the pool.
+(none - complete)
 
 ## Findings / traps
