@@ -2,6 +2,11 @@
 
 ## Resume here (read first in a new session)
 
+**PC packaging merged into main (2026-10-14):** `python scripts\package.py` -> dist\Sly2\sly2.exe
+(GUI, icon, version info; reads SCUS_973.16 straight from the validated disc image; first run asks
+for the .iso; data in %LOCALAPPDATA%\Sly2 or next to the exe with portable.txt; window state
+remembered). Dev/console builds and all scripts behave as before. notes/install.md.
+
 **Widescreen merged into main (2026-10-14):** 16:9 by default (sly2.ini `[display] aspect`,
 PS2_ASPECT override; notes/widescreen.md, notes/settings.md). Instruction patches
 (recomp/patches.py) widen the camera aspect/frustum and keep screen-space projections 4:3; HUD and
