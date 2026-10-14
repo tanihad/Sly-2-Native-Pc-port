@@ -22,20 +22,36 @@ Status: in progress
 - ps2_runtime.c                PS2_GS_BACKEND (default sw; hw -> message until M6)
 
 ## Done
-(nothing yet)
+- scripts/hlslc.c + scripts/gpu_shaders.ps1 (build/tools/hlslc.exe -> build/gen/gpu_shaders.h;
+  warnings are errors, verified it fails on an uninitialised variable).
+- runtime/gpu: gpu.h, gpu_cmd.c/.h, gpu_internal.h, gpu_d3d11.c (render thread, device, caps),
+  gpu_present.c (picture upload/compose, readback ring, swap chain / offscreen, timestamps, stats),
+  gpu_conf.c (conformance), gpu_verify.c/.h (picture compare + "both" verifier),
+  shaders/{int64.hlsli, present.hlsl, conformance.hlsl, perms.txt}.
+- tests/unit/gs-hw (run.ps1, test_gs_hw.c): 109 checks pass on 4060 Ti and WARP
+  (conformance 2 seeds x 131072 vectors + 65536 depth texels: 0 mismatches on both).
 
 ## In progress
-- writing runtime/gpu skeleton
+- gs_replay -Backend sw|hw|both, -Adapter, -Metrics
 
 ## Next
-1. hlslc.c + shaders + gpu_shaders.ps1
-2. gpu_cmd + render thread + device/caps
-3. conformance kernel + unit test (hw, WARP)
-4. all-fallback picture path + readback + swapchain
-5. gs_replay backends + metrics; gpu_diff_all + baseline over 13 recordings
-6. build_game integration (debug + release), PS2_GS_BACKEND
-7. run all unit suites + run_tests.py; sw hashes unchanged check
+1. gs_replay backends + metrics (+ sw picture hash); gs_replay.ps1 builds gpu sources when
+   runtime/gpu exists (old runtimes still build without it)
+2. gpu_diff_all.ps1 + tests/gpu/baseline.json over the 13 recordings (0 diff)
+3. sw hashes unchanged: old gs_replay vs new -Backend sw PNGs on a couple of recordings
+4. build_game integration (debug + release), PS2_GS_BACKEND (default sw)
+5. run all unit suites + run_tests.py; notes; final report
 
 ## Findings / traps
+- Caps (D3D11, FL 11_1 on both): RTX 4060 Ti (10DE:2803, driver 32.0.16.1656) and WARP
+  ("Microsoft Basic Render Driver" 1414:008C) both report ROVsSupported=1,
+  TypedUAVLoadAdditionalFormats=1, dual source, ConstantBufferOffsetting=1, partial CB update,
+  MapNoOverwriteOnDynamicConstantBuffer=1, doubles=1. Swap chain: waitable=1, tearing=1.
+  So WARP can run the ROV tier in headless tests (risk in section 12 does not materialise).
+- **fxc miscompile**: `(uint)clamp((int)u + delta, 0, K)` with `u` a uint compiles to
+  `iadd; umin` (the max with 0 is dropped and the min is unsigned), so -1 becomes K. Found by the
+  conformance kernel. Rule for the ubershader: never clamp an int built from a uint cast; use
+  explicit comparisons (as gs_z_clamp in int64.hlsli does) and keep conformance coverage for any
+  such helper.
 - No D3D debug layer installed (d3d11_3SDKLayers.dll absent): debug flag must fall back.
 - llvm-mingw headers have D3D11_FEATURE_D3D11_OPTIONS2 (ROVsSupported etc.) and dxgi1_2..1_6.
