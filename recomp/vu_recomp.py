@@ -504,9 +504,11 @@ class Unit:
         ending = 0
         k = 0
         while True:
-            # pc is static here; npc may be the dynamic marker "D"
+            # pc is static here; npc may be the dynamic marker "D" (pc is the delay slot of a
+            # conditional branch or JR/JALR): a handoff then continues at the branch's target
+            npc_expr = self.dyn_pc_expr(dyn) if npc == "D" else str(npc)
             if pc not in ops:
-                self.handoff(sim, str(pc), str(npc) if npc != "D" else "0", ending, k, "outside the image", out)
+                self.handoff(sim, str(pc), npc_expr, ending, k, "outside the image", out)
                 return out
             op = ops[pc]
             why = None
@@ -519,8 +521,7 @@ class Unit:
                 if ds is None or (ds.is_branch and not ds.bits & B_I) or (ds.bits & B_E and not op.bits & B_E):
                     why = "branch delay slot"
             if why:
-                assert npc != "D"
-                self.handoff(sim, str(pc), str(npc), ending, k, why, out)
+                self.handoff(sim, str(pc), npc_expr, ending, k, why, out)
                 return out
             new_pc = npc
             new_npc = "D" if npc == "D" else (npc + 1) & m

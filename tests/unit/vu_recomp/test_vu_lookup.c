@@ -2,9 +2,10 @@
  * the unit's micro memory holds a compiled image of that unit and the start address is one of its
  * entries; every write to micro memory (vu_micro_mem(), EE stores) makes it look again. Images from
  * gen.py lookup_images(): la (VU1: routines at 0x0000 and 0x0018), lb (VU1: 2 pairs over la's
- * start), lc (VU1: 2 pairs at 0x0040 without an E bit). Every run is also compared with the
+ * start), lc (VU1: 2 pairs at 0x0040 without an E bit), ld/le/lf (a pair the compiled code cannot
+ * run in the delay slot of IBNE / JR / IBEQ on VU0). Every run is also compared with the
  * interpreter on the same state.
- *   test_vu_lookup */
+ *   test_vu_lookup <lk_images.bin> */
 #include "vu_internal.h"
 #include "vu_record.h"
 
@@ -69,7 +70,37 @@ static void check(const char* what, int unit, uint32_t pc, int want_compiled, un
     }
 }
 
-int main(void) {
+/* lk_images.bin (gen.py): unit, start, pair count, pairs, per image in lookup_images() order */
+static uint8_t* images;
+static long images_size;
+static void load_image(int k) {
+    long pos = 0;
+    for (int i = 0; pos + 12 <= images_size; i++) {
+        uint32_t unit, start, np;
+        memcpy(&unit, images + pos, 4); memcpy(&start, images + pos + 4, 4); memcpy(&np, images + pos + 8, 4);
+        pos += 12;
+        if (i == k) {
+            uint8_t* m = vu_micro_mem((int)unit);
+            memset(m, 0, unit ? 16384 : 4096);
+            memcpy(m + start * 8, images + pos, np * 8u);
+            return;
+        }
+        pos += (long)np * 8;
+    }
+    printf("no image %d\n", k);
+    exit(2);
+}
+
+int main(int argc, char** argv) {
+    if (argc < 2) { fprintf(stderr, "usage: test_vu_lookup <lk_images.bin>\n"); return 2; }
+    FILE* f = fopen(argv[1], "rb");
+    if (!f) { fprintf(stderr, "cannot open %s\n", argv[1]); return 2; }
+    fseek(f, 0, SEEK_END);
+    images_size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    images = malloc((size_t)images_size);
+    if (fread(images, 1, (size_t)images_size, f) != (size_t)images_size) return 2;
+    fclose(f);
     vu_set_vif_tops(0, 0, 0);                                 /* initialises both units */
     vu_set_vif_tops(1, 0, 0);
     uint32_t w;
@@ -113,6 +144,13 @@ int main(void) {
     put(1, 11, U_NOP, L_NOP);
     check("lc continues outside its image", 1, 8, 1, 3, 6);
     if (vu_st[1].tpc != 12) { printf("FAIL lc: tpc 0x%X, want 0x60\n", vu_st[1].tpc * 8); failures++; }
+
+    load_image(3);                                            /* invalid instruction in an IBNE delay slot */
+    check("ld: invalid lower op in a conditional branch's delay slot", 1, 0, 1, 3, 0x99);
+    load_image(4);                                            /* invalid upper op in a JR delay slot */
+    check("le: invalid upper op in a JR delay slot", 1, 0, 1, 3, 0x99);
+    load_image(5);                                            /* XGKICK on VU0 in an IBEQ delay slot */
+    check("lf: XGKICK on VU0 in a conditional branch's delay slot", 0, 0, 1, 3, 0x99);
 
     printf("%s\n", failures ? "VU lookup tests FAILED" : "VU lookup tests passed");
     return failures ? 1 : 0;

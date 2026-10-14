@@ -45,6 +45,8 @@ LS2 = {"move": 0x30, "mr32": 0x31, "lqi": 0x34, "sqi": 0x35, "lqd": 0x36, "sqd":
        "esum": 0x76, "esqrt": 0x78, "ersqrt": 0x79, "ercpr": 0x7A, "waitp": 0x7B, "esin": 0x7C, "eatan": 0x7D,
        "eexp": 0x7E}
 L_NOP = 0x8000033C
+INVALID_UPPER = 0x000007FC                  # bits 5-2 = 1111, index 0x7C: no such upper op
+INVALID_LOWER = 0x04000000                  # lower opcode 0x02: no such lower op
 U_NOP = 0x000002FF
 EFU = ["esadd", "ersadd", "eleng", "erleng", "eatanxy", "eatanxz", "esum", "esqrt", "ersqrt", "ercpr", "esin",
        "eatan", "eexp"]
@@ -101,6 +103,8 @@ class Gen:
         k = r.random()
         if r.random() < 0.03:
             flags |= r.choice([0x01, 0x02, 0x04])  # T, D, M bits: ignored by both (D/T logged once)
+        if r.random() < 0.004:
+            return INVALID_UPPER | flags << 27     # invalid instruction: the compiled code hands over
         if k < 0.3:
             return U_NOP | flags << 27
         if k < 0.55:
@@ -129,6 +133,10 @@ class Gen:
             ops += EFU + ["mfp", "waitp"]
             if allow_kick:
                 ops += ["xgkick"]
+        elif allow_kick and r.random() < 0.02:
+            ops += ["xgkick"]                      # on VU0: invalid (logged), the compiled code hands over
+        if r.random() < 0.004:
+            return INVALID_LOWER | r.randrange(1 << 25)
         op = r.choice(ops)
         lane = 1 << r.randrange(4)
         if op == "nop":
@@ -311,7 +319,19 @@ def lookup_images() -> list[Image]:
           e << 32 | L_NOP, U_NOP << 32 | L_NOP]
     lb = [e << 32 | iaddiu(1, 0, 0x33), U_NOP << 32 | L_NOP]                            # over la's start
     lc = [U_NOP << 32 | iaddiu(3, 0, 5), U_NOP << 32 | lo_s1("iaddi", 3, 3, 1)]          # at 8, no E bit
-    return [Image("la", 1, [(0, la)]), Image("lb", 1, [(0, lb)]), Image("lc", 1, [(8, lc)])]
+    # a pair the compiled code cannot run (invalid instruction, XGKICK on VU0) in the delay slot of a
+    # conditional branch or JR: the interpreter takes over at the delay slot and must continue at the
+    # branch target
+    ld = [U_NOP << 32 | iaddiu(1, 0, 3), U_NOP << 32 | lo7("ibne", 0, 1, 0, 4 - 2),   # ibne vi1, vi0 -> 4
+          U_NOP << 32 | INVALID_LOWER, U_NOP << 32 | iaddiu(2, 0, 0x77),
+          e << 32 | iaddiu(3, 0, 0x99), U_NOP << 32 | L_NOP]
+    le = [U_NOP << 32 | iaddiu(5, 0, 4), U_NOP << 32 | lo7("jr", 0, 0, 5),             # jr vi5 -> 4
+          INVALID_UPPER << 32 | L_NOP, U_NOP << 32 | iaddiu(2, 0, 0x77),
+          e << 32 | iaddiu(3, 0, 0x99), U_NOP << 32 | L_NOP]
+    lf = [U_NOP << 32 | lo7("ibeq", 0, 0, 0, 3 - 1), U_NOP << 32 | lo_s2("xgkick", 0, 0, 0),  # VU0
+          U_NOP << 32 | iaddiu(2, 0, 0x77), e << 32 | iaddiu(3, 0, 0x99), U_NOP << 32 | L_NOP]
+    return [Image("la", 1, [(0, la)]), Image("lb", 1, [(0, lb)]), Image("lc", 1, [(8, lc)]),
+            Image("ld", 1, [(0, ld)]), Image("le", 1, [(0, le)]), Image("lf", 0, [(0, lf)])]
 
 
 def main() -> int:
@@ -319,7 +339,12 @@ def main() -> int:
     ap.add_argument("out")
     ap.add_argument("--count", type=int, default=160)
     ap.add_argument("--seed", type=int, default=1)
+    ap.add_argument("--cap", type=int, default=0, help="versions per block (recomp default if 0): low "
+                    "values exercise the version-cap handoff")
     args = ap.parse_args()
+    if args.cap:
+        import recomp.vu_recomp as vr
+        vr.MAX_VERSIONS_PER_PC = args.cap
     out = Path(args.out)
     rng = random.Random(args.seed)
     images, subs = [], []
@@ -331,7 +356,8 @@ def main() -> int:
             raws = raws[:500]
         for pc, raw in enumerate(raws):                                  # the encoder must round-trip
             op = decode(raw, pc, 0x7FF if unit else 0x1FF)
-            assert op.up != "invalid" and op.lo != "invalid", (i, pc, hex(raw))
+            assert op.up != "invalid" or (raw >> 32) & 0x07FFFFFF == INVALID_UPPER, (i, pc, hex(raw))
+            assert op.lo != "invalid" or raw & 0xFE000000 == INVALID_LOWER, (i, pc, hex(raw))
         # entries: the image start and every routine start (recomp default_entries), as the game uses
         images.append(Image(f"fuzz{i}", unit, [(0, raws)]))
         subs.append(g.sub)
@@ -346,7 +372,13 @@ def main() -> int:
         blob += struct.pack("<III", img.unit, len(raws), len(ents)) + b"".join(struct.pack("<I", e) for e in ents)
         blob += b"".join(struct.pack("<Q", x) for x in raws)
     (out / "programs.bin").write_bytes(bytes(blob))
-    write_units(lookup_images(), out / "lk", "lk")
+    lk = lookup_images()
+    write_units(lk, out / "lk", "lk")
+    blob = bytearray()                       # lk_images.bin: unit, start, pair count, pairs (per image)
+    for img in lk:
+        start, raws = img.chunks[0]
+        blob += struct.pack("<III", img.unit, start, len(raws)) + b"".join(struct.pack("<Q", x) for x in raws)
+    (out / "lk_images.bin").write_bytes(bytes(blob))
     hand = sum(1 for line in report if "handoffs" in line)
     print(f"{len(images)} random programs, {hand} with handoff sites -> {out}")
     return 0
