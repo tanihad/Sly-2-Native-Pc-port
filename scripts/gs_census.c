@@ -3,7 +3,8 @@
  * tracks the GS register state like runtime/gs_draw.c does (vertex queue, PRMODECONT contexts, TEX2
  * folded into TEX0, CLD rules), without rendering.
  *
- *   gs_census <recording> [-v]        report to stdout (-v: also every feedback draw)
+ *   gs_census <recording> [-v] [-a]   report to stdout (-v: also every feedback draw; -a: every entry
+ *                                     of every table, for comparing recordings: census_table.py --new)
  *
  * Per VBlank interval ("frame") it counts primitives by type and attribute, vertices, draw-state
  * changes, render targets, transfers, CLUT loads and feedback draws (textures sampling pages that
@@ -13,7 +14,11 @@
  * Memory overlap is tracked at page (8 KB) granularity from the pixel bounding box of every
  * primitive (XYOFFSET and SCISSOR applied) and the texel bounding box of its texture coordinates
  * (CLAMP modes applied, mip levels via MIPTBP or MTBA): precise enough for a census. Built and run
- * by scripts/gs_census.ps1. */
+ * by scripts/gs_census.ps1.
+ *
+ * GPU hazards are counted separately (the "hazards:" summary line, plus the first 64 events of each
+ * kind printed where they happen): TRXDIR=1 local->host readbacks, TRXDIR=2 local->local copies and
+ * CLUT loads, each with whether its source pages were last written by drawing (and when). */
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -142,7 +147,9 @@ static int cmp_ent(const void* a, const void* b) {
     const ent *x = a, *y = b;
     return x->count < y->count ? 1 : x->count > y->count ? -1 : strcmp(x->desc, y->desc);
 }
+static int print_all;                    /* -a: every table entry, not just the most frequent */
 static void tab_print(tab* t, const char* title, int max) {
+    if (print_all) max = 1 << 30;
     ent* v = malloc((size_t)t->n * sizeof(ent));
     int n = 0;
     for (int i = 0; i < t->cap; i++) if (t->e[i].key && t->e[i].count) v[n++] = t->e[i];
@@ -182,7 +189,11 @@ typedef struct {
     uint64_t prims, verts, kicks_nodraw, types[8], aa1, iip, tme, fge, abe, fst, ctx2, fix, states, states_uniq, tex_binds,
         clut_loads, clut_from_draw, area, feedback, feedback_prev, inplace, zread, uploads, upload_bytes, upload_px,
         readbacks, readback_bytes, copies, copy_px, texflush, fb_targets, z_targets, upload_to_fb, date, ate, pabe, fba,
-        dthe, colclamp0, ztst_on, zwrite, sprites_fullscreen, type_changes, regs, fb_area, clut_uniq, tex_uniq;
+        dthe, colclamp0, ztst_on, zwrite, sprites_fullscreen, type_changes, regs, fb_area, clut_uniq, tex_uniq,
+        /* GPU-backend hazards (EE-visible or GPU-to-CPU dependencies): TRXDIR=1 readbacks and TRXDIR=2
+         * copies whose source pages were drawn (FRAME or ZBUF, any earlier frame of the recording), CLUT
+         * loads from drawn pages split by when they were drawn */
+        readbacks_drawn, readbacks_z, copies_drawn, copies_overlap, clut_same, clut_prev, clut_old, clut_z, clut_copy;
 } counters;
 static counters F, T;                    /* frame / total */
 
@@ -255,6 +266,22 @@ static int classify_read(const pset* s, int* wpsm, int* wbase, int* wframe) {
         }
     }
     return m;
+}
+
+/* the most recent drawing (FRAME / ZBUF / copy of drawn data) that wrote any page of s, any age:
+ * "<psm> base=<page> <FRAME|ZBUF|copy> f<frame>" or "never drawn" */
+static const char* last_drawn(const pset* s) {
+    static char b[4][80];
+    static int bi;
+    char* d = b[bi++ & 3];
+    const pagew* best = NULL;
+    for (int i = 0; i < 512; i++)
+        if ((s->b[i >> 6] >> (i & 63) & 1) && (pages[i].kind == 1 || pages[i].kind == 2 || (pages[i].kind == 4 && pages[i].from_draw)) &&
+            (!best || pages[i].seq > best->seq))
+            best = &pages[i];
+    if (!best) snprintf(d, 80, "never drawn");
+    else snprintf(d, 80, "%s base=%03X %s f%d", psm_name(best->psm), best->base, best->kind == 2 ? "ZBUF" : best->kind == 4 ? "copy" : "FRAME", (int)best->frame - 1);
+    return d;
 }
 
 /* texel bbox of a primitive for level 0, in texels; returns 0 when unusable */
@@ -647,11 +674,14 @@ static void trxdir(uint32_t dir) {
         int wpsm, wbase, wframe;
         int m = classify_read(&ss, &wpsm, &wbase, &wframe);
         F.readbacks++; F.readback_bytes += (uint64_t)rrw * (uint64_t)rrh * (uint64_t)psm_bits(spsm) / 8;
+        if (m & (1 | 2 | 16 | 32)) F.readbacks_drawn++;
+        if (m & 4) F.readbacks_z++;
         snprintf(d, sizeof d, "READBACK %s sbw=%d %dx%d at %d,%d sbp=%04X (%llu bytes) src %s", psm_name(spsm), sbw, rrw, rrh, ssax, ssay, sbp,
                  (unsigned long long)rrw * (unsigned long long)rrh * (unsigned long long)psm_bits(spsm) / 8,
-                 (m & 1) ? "drawn this frame" : (m & 2) ? "drawn prev frame" : (m & 4) ? "zbuf" : (m & 32) ? "drawn earlier" : "not drawn");
+                 (m & 1) ? "drawn this frame" : (m & 2) ? "drawn prev frame" : (m & 4) ? "zbuf" : (m & 32) ? "drawn earlier" : (m & 8) ? "uploaded" : "not drawn");
         tab_add(t_readback, fnv(d, strlen(d), FNV0), 1, d);
-        if (verbose) printf("  f%u %s\n", cur_frame, d);
+        if (verbose || T.readbacks + F.readbacks <= 64)          /* rare and important: the first 64 always */
+            printf("  f%u READBACK #%llu %s; last drawn by %s\n", cur_frame, (unsigned long long)(T.readbacks + F.readbacks), d, last_drawn(&ss));
     } else if (dir == 2) {
         pset ss = { { 0 } }, ds = { { 0 } };
         rect_pages(spsm, (uint32_t)sbp, (uint32_t)sbw, ssax, ssay, ssax + rrw, ssay + rrh, &ss);
@@ -660,14 +690,18 @@ static void trxdir(uint32_t dir) {
         int m = classify_read(&ss, &wpsm, &wbase, &wframe);
         F.copies++; F.copy_px += (uint64_t)rrw * (uint64_t)rrh;
         int from_draw = (m & (1 | 2 | 4 | 16)) != 0;
+        if (m & (1 | 2 | 4 | 16 | 32)) F.copies_drawn++;
+        if (ps_inter(&ss, &ds)) F.copies_overlap++;
         snprintf(d, sizeof d, "COPY %s sbp=%04X sbw=%d %d,%d -> %s dbp=%04X dbw=%d %d,%d  %dx%d dir=%d src %s%s", psm_name(spsm), sbp, sbw, ssax, ssay,
-                 psm_name(dpsm), dbp, dbw, dsax, dsay, rrw, rrh, ddir, (m & 1) ? "drawn this frame" : (m & 2) ? "drawn prev frame" : (m & 4) ? "zbuf" : (m & 32) ? "drawn earlier" : "not drawn",
+                 psm_name(dpsm), dbp, dbw, dsax, dsay, rrw, rrh, ddir,
+                 (m & 1) ? "drawn this frame" : (m & 2) ? "drawn prev frame" : (m & 4) ? "zbuf" : (m & 16) ? "copy of drawn" : (m & 32) ? "drawn earlier" : (m & 8) ? "uploaded" : "not drawn",
                  ps_inter(&ss, &ds) ? " OVERLAP" : "");
         char kd[100];
         snprintf(kd, sizeof kd, "%d %d %d %d %d %d %d %d", spsm, sbp, dpsm, dbp, rrw, rrh, ddir, from_draw);
         tab_add(t_copy, fnv(kd, strlen(kd), FNV0), 1, d);
         mark_pages(&ds, 4, spsm, (uint32_t)sbp >> 5, from_draw);
-        if (verbose) printf("  f%u %s\n", cur_frame, d);
+        if (verbose || T.copies + F.copies <= 64)
+            printf("  f%u COPY #%llu %s; src last drawn by %s\n", cur_frame, (unsigned long long)(T.copies + F.copies), d, last_drawn(&ss));
     }
 }
 
@@ -713,7 +747,13 @@ static void tex0_write(int ctx, uint64_t v) {
     char d[200];
     snprintf(d, sizeof d, "CLUT %s %d entries cpsm=%s csm=%d csa=%d cld=%d cbp=%04X src=%s", psm_name(tpsm), n, psm_name(cpsm), csm, csa, cld, cbp,
              (m & (1 | 2 | 32)) ? "DRAWN" : (m & 4) ? "ZBUF" : (m & 16) ? "copy" : (m & 8) ? "uploaded this frame" : "resident");
-    if (m & (1 | 2 | 4 | 16 | 32)) F.clut_from_draw++;
+    if (m & (1 | 2 | 4 | 16 | 32)) {
+        F.clut_from_draw++;
+        if (m & 1) F.clut_same++; else if (m & 2) F.clut_prev++; else if (m & 4) F.clut_z++; else if (m & 16) F.clut_copy++; else F.clut_old++;
+        if (verbose || T.clut_from_draw + F.clut_from_draw <= 16)
+            printf("  f%u CLUT-FROM-DRAWN #%llu cbp=%04X %s %s csm=%d csa=%d <- %s\n", cur_frame,
+                   (unsigned long long)(T.clut_from_draw + F.clut_from_draw), cbp, psm_name(tpsm), psm_name(cpsm), csm, csa, last_drawn(&cs));
+    }
     if (uniq_add(&u_cbp, (uint64_t)cbp << 8 | (uint64_t)csa << 1 | 1)) F.clut_uniq++;
     char kd[100];
     snprintf(kd, sizeof kd, "%d %d %d %d %d %d", tpsm, cpsm, csm, csa, cld, m);
@@ -837,8 +877,11 @@ static void vblank(uint32_t vb, const uint64_t* snap) {
 static int rd(FILE* f, void* p, size_t n) { return fread(p, 1, n, f) == n; }
 
 int main(int argc, char** argv) {
-    if (argc < 2) { fprintf(stderr, "usage: gs_census <recording> [-v]\n"); return 2; }
-    verbose = argc > 2 && !strcmp(argv[2], "-v");
+    if (argc < 2) { fprintf(stderr, "usage: gs_census <recording> [-v] [-a]\n"); return 2; }
+    for (int i = 2; i < argc; i++) {
+        if (!strcmp(argv[i], "-v")) verbose = 1;
+        else if (!strcmp(argv[i], "-a")) print_all = 1;
+    }
     FILE* f = fopen(argv[1], "rb");
     if (!f) { fprintf(stderr, "cannot open %s\n", argv[1]); return 1; }
     setvbuf(f, NULL, _IOFBF, 1 << 22);
@@ -905,6 +948,11 @@ int main(int argc, char** argv) {
     printf("transfers: uploads=%llu (%.1f/frame, %.1f KB/frame, %llu px) to drawn targets=%llu | copies=%llu (%llu px) | readbacks=%llu (%llu bytes) | area %.1f Mpx/frame (bbox estimate)\n",
            (unsigned long long)T.uploads, AVG(uploads), AVG(upload_bytes) / 1024.0, (unsigned long long)T.upload_px, (unsigned long long)T.upload_to_fb,
            (unsigned long long)T.copies, (unsigned long long)T.copy_px, (unsigned long long)T.readbacks, (unsigned long long)T.readback_bytes, AVG(area) / 1048576.0);
+    printf("hazards: trxdir1=%llu (%llu bytes, src drawn=%llu, src zbuf=%llu) trxdir2=%llu (src drawn=%llu, overlapping=%llu) clut_from_drawn=%llu (same frame=%llu, prev=%llu, older=%llu, zbuf=%llu, copy=%llu) of %llu clut loads\n",
+           (unsigned long long)T.readbacks, (unsigned long long)T.readback_bytes, (unsigned long long)T.readbacks_drawn, (unsigned long long)T.readbacks_z,
+           (unsigned long long)T.copies, (unsigned long long)T.copies_drawn, (unsigned long long)T.copies_overlap, (unsigned long long)T.clut_from_draw,
+           (unsigned long long)T.clut_same, (unsigned long long)T.clut_prev, (unsigned long long)T.clut_old, (unsigned long long)T.clut_z,
+           (unsigned long long)T.clut_copy, (unsigned long long)T.clut_loads);
     printf("state changes by register group (a change may count in several groups; 'alone' = the only group that changed):\n");
     for (int i = 0; i < G_COUNT; i++)
         printf("  %-36s %10llu changes (%5.1f%%)  alone %10llu (%5.1f%%)\n", g_names[i], (unsigned long long)g_changes[i],

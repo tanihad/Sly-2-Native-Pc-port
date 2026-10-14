@@ -1,13 +1,48 @@
 """Cross-recording tables from gs_census reports (scripts/gs_census.ps1 output).
 
     python scripts/census_table.py build/census/*.txt
+    python scripts/census_table.py build/census/*.txt --new "gpu-C-*" [--novel-only]
 
 Prints Markdown tables: per-recording totals (per game frame = VBlank with work), primitive mix,
+GPU hazards (TRXDIR=1 readbacks, TRXDIR=2 copies, CLUT loads from drawn memory: the `hazards:` line),
 targets other than the main double buffer, every distinct ZBUF/TEX1/CLAMP/TEXA/ALPHA/TEST/CLUT/
-transfer/display line that is not part of the common pattern, and the non-sprite feedback draws."""
+transfer/display line that is not part of the common pattern, and the non-sprite feedback draws.
+
+--new <glob,...>: the reports whose names match are the new recordings, all others the baseline;
+prints, per new recording, every table line (pass signature, primitive combo, target/texture format,
+ALPHA, TEST, TEX1, CLAMP, TEXA, CLUT, display, transfers, feedback, large sprites) whose content
+(counts, frame ranges and drawn rectangles removed) appears in no baseline report. Reports made with
+gs_census -a (gs_census.ps1 -Full) list every entry, so nothing is "new" just because a top-N list
+cut it. --novel-only prints only that part."""
+import fnmatch
 import glob
 import re
 import sys
+
+NOVEL_SECTIONS = ('pass signatures', 'primitive attribute combos', 'FRAME targets', 'ZBUF with FRAME', 'TEX0',
+                  'texture sizes', 'TEX1', 'CLAMP', 'TEXA', 'CLUT loads', 'ALPHA', 'TEST', 'DIMX',
+                  'feedback: textures reading drawn memory', 'large sprites', 'host->local uploads',
+                  'local->local copies', 'local->host readbacks', 'display registers')
+
+
+def norm(line):
+    """a table line without its count, frame range and drawn rectangle, and with addresses, buffer
+    widths, sizes and positions wildcarded: what is left is the kind of operation (formats, masks,
+    blend/test forms, attributes)"""
+    s = re.sub(r'^\s*\d+\s+f\d+-\d+\s+', '', line.strip())
+    s = re.sub(r'\s+drawn=\S+ \(\d+x\d+\)$', '', s)
+    s = re.sub(r'\b(tbp|base|fbp|dbp|sbp|zbp|cbp|tbw|dbw|sbw|fbw)=-?[0-9A-F]+(\(\d+px\))?', r'\1=*', s)
+    s = re.sub(r'\b\d+x\d+\b', 'WxH', s)
+    s = re.sub(r'\bat -?\d+,-?\d+', 'at *', s)
+    s = re.sub(r'\b(scissor|xyoff)=\S+', r'\1=*', s)
+    s = re.sub(r'\b-?\d+,-?\d+ ', '*,* ', s)
+    s = re.sub(r'\(\d+ bytes\)', '', s)
+    return s
+
+
+def hazards(lines):
+    h = next((l for l in lines if l.startswith('hazards:')), '')
+    return h[len('hazards: '):] if h else '(no hazards line: report from an older gs_census)'
 
 
 def sections(lines):
@@ -29,13 +64,32 @@ def num(pat, s, default=0):
 
 def main():
     files = []
-    for a in sys.argv[1:]:
-        files.extend(sorted(glob.glob(a)) or [a])
+    new_pats = []
+    novel_only = False
+    argv = sys.argv[1:]
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == '--new':
+            new_pats += [p for p in argv[i + 1].split(',') if p]
+            i += 2
+            continue
+        if a == '--novel-only':
+            novel_only = True
+        else:
+            files.extend(sorted(glob.glob(a)) or [a])
+        i += 1
     rows = []
     odd = {}
+    haz = []
+    keys = {}                      # name -> {section: {normalised line: original line}}
     for f in files:
         lines = open(f, encoding='utf-8-sig').read().splitlines()
         name = re.sub(r'\.txt$', '', f.replace('\\', '/').split('/')[-1])
+        haz.append((name, hazards(lines)))
+        sec_all = sections(lines)
+        keys[name] = {s: {norm(l): l.strip() for l in sec_all.get(s, []) if not l.strip().startswith('...')}
+                      for s in NOVEL_SECTIONS}
         tot = next((l for l in lines if l.startswith('# totals')), '')
         prims = next((l for l in lines if l.startswith('prims=')), '')
         types = next((l for l in lines if l.startswith('types:')), '')
@@ -104,6 +158,41 @@ def main():
         for l in sec.get('distinct FRAME FBPs per frame', []):
             o.append(('NTARGETS', l.strip()))
 
+    is_new = {n: any(fnmatch.fnmatch(n, p) for p in new_pats) for n in keys}
+    if new_pats:
+        base = {}
+        for n, secs in keys.items():
+            if not is_new[n]:
+                for s, d in secs.items():
+                    base.setdefault(s, set()).update(d)
+        print('## Novel versus the baseline (%s)' % ', '.join(n for n in keys if not is_new[n]))
+        print()
+        seen_new = {}
+        for n, secs in keys.items():
+            if not is_new[n]:
+                continue
+            out = []
+            for s in NOVEL_SECTIONS:
+                for k, l in secs[s].items():
+                    if k not in base.get(s, set()):
+                        first = (s, k) not in seen_new
+                        seen_new.setdefault((s, k), n)
+                        out.append((s, l, '' if first else ' (also in %s)' % seen_new[(s, k)]))
+            print('### %s: %d novel lines' % (n, len(out)))
+            last = None
+            for s, l, also in out:
+                if s != last:
+                    print('- **%s**' % s)
+                    last = s
+                print('  - `%s`%s' % (l, also))
+            print()
+    print('| recording | GPU hazards (gs_census `hazards:`) |')
+    print('|---|---|')
+    for n, h in haz:
+        print('| %s | %s |' % (n, h))
+    print()
+    if novel_only:
+        return
     print('| recording | VBlanks | game frames | tris/frame (max) | verts/frame | state changes/frame (max) | distinct states | distinct textures | distinct CLUTs | ~Mpx/frame | upload KB/frame |')
     print('|---|---|---|---|---|---|---|---|---|---|---|')
     for r in rows:

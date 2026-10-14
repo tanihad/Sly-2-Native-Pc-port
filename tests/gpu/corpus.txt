@@ -1,0 +1,37 @@
+# GS recording corpus for the Direct3D 11 renderer (notes/d3d11-renderer.md 10.4, appendix B).
+# Recordings are PS2_GS_RECORD streams (runtime/gs_record.c), made with the software renderer from
+# the user's own disc; they are never committed. Paths are relative to C:\Users\tanih\Projects\
+# sly2-worktrees and read in place. Replay: scripts\gs_replay.ps1 -Rec <path> -Out <dir>.
+# Census: scripts\gs_census.ps1 -Rec <path> -Full; tables: scripts\census_table.py ... --new "gpu-C-*".
+# New recordings (gpu-C) are made with scripts\gs_record_scene.ps1 (the "how" column) and checked
+# with scripts\gs_corpus_verify.ps1 against the frames the live run dumped (frames | verified).
+#
+# Columns (|-separated): path | scene | VBlanks (first-last) | MB | exercises | how | verified
+#
+# ---- the 13 recordings the design was based on ---------------------------------------------------------
+fix-perf\build\rv_prompt.gsrec | memory card prompt "create a Sly 2 save file? Yes/No" over black (boot) | 540-559 | 32 | 2D menu text, display flicker filter, 30 fps pattern | - | -
+fix-perf\build\rv_intro.gsrec | prologue intro cutscene (museum sign, Cairo night) | 1000-1015 | 27 | in-engine cutscene, half-line OFY field offset | - | -
+fix-perf\build\title.gsrec | "Sly Cooper the thief" title card | 1750-1779 | 35 | title art, 3D background | - | -
+fix-perf\build\brief.gsrec | prologue Binocucom briefing (Bentley/Sly portraits) | 2500-2529 | 50 | Binocucom RTTs 0A0/0A8 + Z 0B8 in main-Z pages, bit-plane shadow steps | - | -
+ep3\build\gsrec\hub.gsrec | ep3 hub, jungle (rain), Sly walking | 7000-7239 | 595 | full hub load, shadows, outlines, T4/T8 churn | - | -
+ep3\build\gsrec\recon_int.gsrec | ep3 world 13 interior (spice room) | 4700-4939 | 369 | interior, high fill (5.8 Mpx/frame) | - | -
+ep3\build\gsrec\rope.gsrec | ep3 Sly on a rope (jungle) | 7700-7719 | 62 | shadow pipeline probe (gs_post_probe) | - | -
+ep3\build\gsrec\brief.gsrec | title card + menu (ep3 card) | 2900-3139 | 205 | title / menu at load | - | -
+ep5\build\gsrec\hub_street.gsrec | ep5 hub, Prague street | 6400-6639 | 594 | big hub, 4.4k state changes/frame | - | -
+ep6\build\gsrec\rc_battle.gsrec | ep6 RC chopper battle over the train (top-down) | 10000-10119 | 102 | bit-plane shadow logic, top-down camera | - | -
+ep7\build\boss.gsrec | ep7 boss fight (bear, "Press O for flames") | 6400-6519 | 164 | boss arena, no uploads | - | -
+ep8\build\gsrec\hub.gsrec | ep8 hub on the blimp | 5400-5639 | 129 | light scene | - | -
+ep8\build\gsrec\boss.gsrec | ep8 boss (debris fall) | 6600-6839 | 522 | 6k state changes/frame, 385k lines | - | -
+#
+# ---- milestone C (gpu-C worktree, build\gsrec) ------------------------------------------------------------
+gpu-C\build\gsrec\ep0_museum.gsrec | prologue gameplay: Sly in the Cairo museum hall, walking/jumping/attacking | 5106-5255 | 244 | ZTST GREATER on the additive pass B, FBMSK FFFF80FF G add (bit-plane variant), museum shadows | -Episode 0, Pad "+2850:rec,+20:lup:100,+100:lright:60,+60:cross:6,+20:lup:80,+80:square:6,+40:rright:90,+90:lup:120" -Frames 150 | 15/15 identical
+gpu-C\build\gsrec\ep1_hub.gsrec | ep1 hub (Paris rooftops), Sly running and jumping | 7079-7258 | 421 | Paris rooftops; known pass forms on new texture combos: ATST NEVER + AFAIL RGB_ONLY pass pairs on T8 and CLAMP/CLAMP textures, (Cs-Cs)*As+Cd alpha-only write with ATST GREATER 0 KEEP + Z write on T4 CLAMP/CLAMP NEAREST | -Episode 1 -Live, X at START+1800/+1890, live "+0:rec,+10:lup:90,+90:rright:60,+60:lup:60,+60:cross:6,+30:lleft:60" | 18/18 identical
+gpu-C\build\gsrec\m1_brawl.gsrec | ep1 job "Silence the Alarms": Murray on the roofs, punching | 4813-4992 | 270 | Murray, RGB_ONLY pass pairs on T8 REPEAT/CLAMP, job HUD | -Episode 1 -Job m1_brawl -Direct, Pad "+2500:rec,+10:lup:60,+60:square:6,+30:square:6,+30:lright:60,+60:triangle:6,+40:lup:60" | 18/18 identical
+gpu-C\build\gsrec\ep2_hub.gsrec | ep2 hub (palace grounds, jungle night), Sly walking | 4680-4859 | 580 | heaviest frame so far (55.8k tris), (Cs-Cs)*As+Cd GREATER 0 KEEP on T8 (was T4 only), DATE on 244k prims, trifans | -Episode 2, Pad "+1800:cross:10,+90:cross:10,+450:rec,+20:lup:90,+90:rright:60,+60:lup:60,+60:cross:6,+30:lleft:60" | 18/18 identical
+gpu-C\build\gsrec\ep2_photo.gsrec | ep2 m2_recon ballroom: Binocucom locked on Clockwerk's Wing, R1 photo, shutter, Polaroid shown | 9114-9353 | 110 | THE PHOTO: no readback; 2 sprites copy both field buffers 2:1 into FBP 070 (Z pages) as CT32, Polaroid samples it with REGION_CLAMP for 180 frames; Binocucom view | -Episode 2 -Job t2_recon_enter_ballroom -Direct -Live (aim: notes/wip/gpu-C.md), "+0:rec,+16:r1:10" | 24/24 identical
+gpu-C\build\gsrec\ep4_hub.gsrec | ep4 hub (Prague), Bentley walking | 4701-4880 | 490 | Bentley, 408 distinct states/frame | -Episode 4, Pad as ep2_hub | 18/18 identical
+gpu-C\build\gsrec\hack_minigame.gsrec | Bentley's hacking minigame (cyberspace maze, ship moving and firing); the m4_hack minigame, started through ep5's t5_heist_free_carmelita_hack (a direct m4_hack start puts Bentley at an already-hacked station) | 3790-3969 | 34 | 60 fps (game frame every VBlank), small scene | -Episode 5 -Job t5_heist_free_carmelita_hack -Direct -Live, "+0:rec,+5:lup:60,+0:rleft:50,+60:lleft:50,+0:rup:50,+50:lright:60,+0:rright:60" | 17/18 (first VBlank: alternate lines, see appendix B)
+gpu-C\build\gsrec\fmv.gsrec | episode menu "Watch a Movie" film strip -> "Prelude" movie (IPU FMV) | 9852-10091 | 134 | FMV path: ~600 16x16 CT32 macroblock uploads/frame into a 768-wide texture at TBP 1800, one 512x224 DECAL sprite per field into the frame buffer (not uploads into display pages) | -Episode 2 -Set episode.palace.percent_complete=100 -Live: up x3, cross, "+0:rec,+30:cross:10" | 24/24 identical
+gpu-C\build\gsrec\load_m3.gsrec | title "Resume Game" -> level load (black, dim Sly-mask loading icon) -> m3_heist letterboxed intro cutscene | 2326-2565 | 258 | loading screen, flat untextured (Cs-Cd)*As+Cd triangles, letterbox, cutscene | -Episode 3 -Job m3_heist -Direct, Pad "+0:rec" -RecDumpEvery 5 | 48/48 identical
+gpu-C\build\gsrec\pause_save.gsrec | pause menu "We'll be right back!" -> Save and Quit -> "Yes, Quit" -> "Saving..." notice -> restart (SCEA legal still) | 6835-6984 | 420 | pause menu over the live 3D scene (52.8k tris), memory-card save notice, legal still decoded through the FMV path (16.8k macroblock uploads) | -Episode 2 -Live, X at START+1800, START, down, cross, "+0:rec,+20:up:10,+50:cross:10"; cut to 150 VBlanks (gsrec_cut.py) | 15/15 identical
+gpu-C\build\gsrec\thiefnet.gsrec | safehouse laptop -> ThiefNet "Buy Gadgets" list, selection moving | 4358-4457 | 342 | ThiefNet 2D UI over the safehouse 3D scene: 53.7k tris and 6.8k state changes per game frame (new maximum) | -Episode 1 -Make "--coins 5000", Pad "+1700:right:10,+60:right:10,+60:left:10,+60:cross:10,+200:rec,+10:down:10,+30:down:10,+30:up:10" -Frames 100 | 10/10 identical
