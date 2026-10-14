@@ -11,21 +11,15 @@
 
 ps2_aspect_t ps2_aspect = { 0, 4.0f / 3.0f, 1.0f, 1.0f };
 
-/* TEMP investigation */
-#include <stdlib.h>
-uint32_t ps2_vblank_count(void);
-void aspect_debug_trace(struct ps2_ctx* ctx, uint32_t tag) {
-#ifndef PS2_NO_TRACE
-    static int from = -1;
-    if (from < 0) from = getenv("WS_DEBUG") ? atoi(getenv("WS_DEBUG")) : 0;
-    if (!from || ps2_vblank_count() < (uint32_t)from || ps2_vblank_count() > (uint32_t)from + 12) return;
-    fprintf(stderr, "[wsdbg] v%u %06X a0 %08X a1 %08X a2 %08X a3 %08X v0 %08X ra %08X trace:", ps2_vblank_count(), tag,
-            ctx->r[4].uw[0], ctx->r[5].uw[0], ctx->r[6].uw[0], ctx->r[7].uw[0], ctx->r[2].uw[0], ctx->r[31].uw[0]);
-    for (int k = 1; k <= 20; k++) fprintf(stderr, " %06X", ps2_trace[(ps2_trace_pos - k) & (PS2_TRACE_SIZE - 1)]);
-    fprintf(stderr, "\n");
-#else
-    (void)ctx; (void)tag;
-#endif
+void gs_write_reg(uint32_t r, uint64_t v);      /* hw.h */
+
+/* A hint at the EE's present moment in the GS stream, for code that draws outside the frame's DMA
+ * chain (the movie player sends its pictures itself). */
+void aspect_hint_now(uint32_t kind, uint32_t arg) {
+    if (!ps2_aspect.wide) return;
+    uint32_t value = 0;
+    if (kind == GS_HINT_HUD_BEGIN) memcpy(&value, &ps2_aspect.hud_x, 4);
+    gs_write_reg(GS_HINT_REG, gs_hint_make(kind, arg, value));
 }
 
 void aspect_init(void) {

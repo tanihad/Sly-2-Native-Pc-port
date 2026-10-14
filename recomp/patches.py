@@ -39,6 +39,10 @@ class Patch:
 CM_RECALC = (0x0014DB70, "a5e0071f09d2ab6393d169c298376bc420f63da7")     # camera: frustum from FOV/aspect
 FRAME_DRAW = (0x00157FA0, "3f04dc1f6453a3e67b0819ad931ccfd5f8c146ed")    # frame: sorted render list -> DMA chain
 RENDER_ALLOC = (0x001CD998, "63ce148130315b99fedecd0f519809d70bbf643c")  # allocate a render-list entry
+CM_PROJECT = (0x0014F308, "cc5768df6f4e07553979ba8ad0e9d47a88160e3f")    # world point -> screen [-1, 1]
+CM_UNPROJECT = (0x0014F268, "a51f27e60bf66bc9db7b3c9a54ff5409f03b8db9")  # screen [-1, 1] -> world point
+WORLD_LABEL = (0x001CD780, "ae9904c7f2fc8c1f1c4aef1f72d62aaf10898610")   # text label at a world point
+MOVIE_PLAY = (0x001B3BD0, "7eee24abd101fcdd6690561742906d524523e157")    # play one movie (sceMpeg loop)
 
 PATCHES: list[Patch] = [
     Patch("ws_projection", *CM_RECALC, 0x0014DBA4, "after",
@@ -47,6 +51,31 @@ PATCHES: list[Patch] = [
           "for the X range (tan(fov/2) * aspect -> +0x40), the near-clip radius (+0x48) and the "
           "projection matrix (0x11C448) - which also drive the view frustum planes (0x14DC58). Widened "
           "by A/(4/3) here, the stored aspect stays the game's own"),
+    Patch("ws_screen_project", *CM_PROJECT, 0x0014F36C, "after",
+          "if (ps2_aspect.wide) ctx->f[4].f *= ps2_aspect.hud_x;",
+          "lwc1 $f4, 0x40($s0) loads the camera's X range for 'world point -> screen position in "
+          "[-1, 1]' (x = -y / (xrange * depth)). Its callers place 2D things at world points (labels "
+          "0x1CD780, markers 0x202D38/0x218220, flying pick-ups 0x1D04E8) and test whether something is "
+          "on screen (0x173768 via 0x173588, 0x14AA30). With the 4:3 X range the answer is the game's "
+          "own: 2D content is laid out on the 4:3 screen and drawn with the HUD transform, which puts "
+          "it on the world point of the wider view; on-screen tests keep the 4:3 area (the community "
+          "16:9 patch's 'widescreen bug fix' at 0x14F370 does the same)"),
+    Patch("ws_screen_unproject", *CM_UNPROJECT, 0x0014F2B4, "after",
+          "if (ps2_aspect.wide) ctx->f[2].f *= ps2_aspect.hud_x;",
+          "the inverse of 0x14F308 (screen position -> world point; 0x1D05A0 and 0x2236E8 use the two "
+          "together): the same 4:3 X range, so the round trip stays exact"),
+    Patch("ws_label_size", *WORLD_LABEL, 0x001CD7E0, "after",
+          "if (ps2_aspect.wide) ctx->f[0].f *= ps2_aspect.hud_x;",
+          "a text label at a world point is scaled by 1 / (xrange * depth): with the 4:3 X range it keeps "
+          "its size next to the 3D object once the HUD transform draws it at 4:3 proportions"),
+    Patch("ws_movie_begin", *MOVIE_PLAY, 0x001B3BD0, "before",
+          "if (ps2_aspect.wide) aspect_hint_now(GS_HINT_ASPECT_4_3_BEGIN, 0);",
+          "entry of the movie player (one movie: sceMpeg decode loop with its own GS output, called "
+          "by the playlist 0x1B3B08 from the main loop's top): the pictures until it returns are 4:3 "
+          "video, shown pillarboxed. Outside the frame's DMA chain, so the hint goes to the GS directly"),
+    Patch("ws_movie_end", *MOVIE_PLAY, 0x001B3EB4, "before",
+          "if (ps2_aspect.wide) aspect_hint_now(GS_HINT_ASPECT_4_3_END, 0);",
+          "the movie player's only return"),
     Patch("ws_render_alloc", *RENDER_ALLOC, 0x001CD9D4, "before",
           "if (ps2_aspect.wide) aspect_render_entry_alloc(ctx);",
           "jr $ra of the render-list entry allocator: $v0 = the new entry, $ra = who draws it. "
