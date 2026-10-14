@@ -256,6 +256,9 @@ typedef struct gpu_target {
   aliased blocks performs download (sample 0) then load, exact and counted; in Sly each aliased
   target is cleared before use, so this never happens.
 - Height from SCISSOR.Y1+1 rounded to page height; a taller later use recreates and copies.
+  *(M1: rows grow with the drawn/read extent instead; a scissor taller than the drawing made a field
+  buffer overlap the ep2 photo copy. Same-kind targets overlapping at another base are separate
+  targets too: per-block ownership makes the aliasing exact and counted, no PUNT. Appendix C.)*
   Targets unused for 120 frames are released (after a download if GPU-newer).
 
 ### 3.5 StateRec, vertices, records
@@ -449,6 +452,9 @@ When TBP0's page equals a live colour target's base and TBW equals its FBW:
   PS reads `.a` (or a nibble of it) through the UINT SRV at the same sample, then the CLUT slot.
 - **Other formats of a target** (T8/T4/CT16 texture over CT32 outside ALIAS16): PUNT.
 
+*(M1: the T8H darken writes alpha too (FBMSK 0), so it is a real feedback hazard: one shadow copy
+of the blocks written since the last copy per darken pass, about one per game frame. Appendix C.)*
+
 **Feedback** (sampling the bound target): D3D11 cannot bind one subresource as SRV and RTV, so
 `OP_COPY_SHADOW(T, rect)` copies the page-rounded texel bbox into `T.shadow`. The shadow stays valid
 while reads avoid blocks written since the copy (bitmap); a read of such a block re-copies, which
@@ -524,6 +530,9 @@ signature. Gate: zero on the corpus.
   existing `gs_mem_xfer_read`. Cost ~0.5-2 ms, only when the game reads back.
 - **Host->local**: existing CPU path into `gs_vram`, plus a `vram_buf` patch op (ordered in the
   stream) and invalidation. Partial-page uploads into GPU-owned pages download first.
+- *(M1: ep4/ep5 load a 256-entry CLUT at CBP 1000 every frame whose 16x16 block holds only ~112
+  uploaded entries; the rest was last written by the Z buffer. Those entries are never indexed, so
+  the frontend counts such loads and does not download; lockstep checks it. Appendix C.)*
 - **CLUT load (TEX0 CLD)**: from CPU pages via the existing `gs_clut_on_tex0` (all of Sly); from GPU
   pages after a download.
 - **CSR.RESET**: `gs_sync` + `gs_draw_reset` + `gpu_reset` (submit pending work, drop the vertex

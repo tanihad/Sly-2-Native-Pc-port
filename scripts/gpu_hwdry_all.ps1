@@ -5,7 +5,7 @@
 #   powershell -ExecutionPolicy Bypass -File scripts\gpu_hwdry_all.ps1 [-Only ep2_hub,title] [-FrontOnly]
 #       [-StraddleRov] [-Out build\m1\hwdry] [-CorpusRoot <dir>]
 # -FrontOnly: without the software rasterizer (frontend timing; VRAM hashes not checked).
-param([string[]]$Only = @(), [switch]$FrontOnly, [switch]$StraddleRov, [string]$Out = "", [string]$CorpusRoot = "")
+param([string[]]$Only = @(), [switch]$FrontOnly, [switch]$StraddleRov, [switch]$SelfCheck, [string]$Out = "", [string]$CorpusRoot = "")
 $Only = @($Only | ForEach-Object { $_ -split ',' } | Where-Object { $_ })
 $root = Split-Path $PSScriptRoot -Parent
 $main = $root
@@ -39,6 +39,7 @@ foreach ($rel in $recs) {
            '-Out', (Join-Path $Out 'bin'), '-Bench', '-Workers', '0', '-Backend', 'hwdry', '-Metrics', $json, '-Log', $log)
     if ($FrontOnly) { $a += '-FrontOnly' } else { $a += @('-VramHash', $hash) }
     if ($StraddleRov) { $a += '-StraddleRov' }
+    if ($SelfCheck) { $a += '-SelfCheck' }
     $t0 = Get-Date
     & powershell @a | Out-Null
     $code = $LASTEXITCODE
@@ -54,6 +55,10 @@ foreach ($rel in $recs) {
     if ($why.Count) { $failed++ }
     if (Test-Path $json) {
         $m = Get-Content $json -Raw | ConvertFrom-Json
+        $cpu = 0
+        $cl = (Get-Content $log | Where-Object { $_ -like 'replay thread CPU*' }) -join ''
+        if ($cl -match '\(([\d.]+) ms per VBlank\)') { $cpu = [double]$matches[1] }
+        if ($m.sum.selfcheck_bad -gt 0) { $why += "selfcheck $($m.sum.selfcheck_bad)"; $failed++ }
         $s = $m.sum; $x = $m.max; $n = [math]::Max(1, $m.frames.Count)
         $zr = @()
         $zn = @('Z32', 'Z24', 'Z16', 'Z16S')
@@ -79,7 +84,7 @@ foreach ($rel in $recs) {
             downloads = $s.downloads; shadow = $s.shadow_copies; selfcopy = $s.alias16_selfcopy
             xfers = $s.xfers; patches_max = $x.patches; clut_new = $s.clut_new; region_clamp = $s.region_clamp; tbw_npot = $s.tbw_npot
             views_c32 = $s.tex_view_c32; views_alpha = $s.tex_view_alpha; targets_max = $x.targets_live
-            rov_why = ($s.rov_why -join '/'); front_ms_mean = [math]::Round($m.front_ms_mean, 2); front_ms_max = [math]::Round($m.front_ms_max, 2)
+            rov_why = ($s.rov_why -join '/'); front_ms_mean = [math]::Round($m.front_ms_mean, 2); front_ms_max = [math]::Round($m.front_ms_max, 2); cpu_ms = $cpu; clut_gpu = $s.clut_gpu_reads; overlaps = $s.target_overlaps
             status = $(if ($why.Count) { $why -join '; ' } else { 'ok' }); seconds = $secs
         }
     }
@@ -90,15 +95,15 @@ foreach ($rel in $recs) {
 }
 $rows | ConvertTo-Json -Depth 3 | Set-Content (Join-Path $Out 'summary.json')
 $md = @('| recording | VBlanks | PUNT | D3D draws max / mean | commute max | ROV draws max | ROV runs max | zresolves max | states max | state changes max | records max | ALIAS16 sprites / dispatches max | pass-A straddle % | As>128 % | Z range | front ms mean / max |',
-        '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|')
+        '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|')
 foreach ($r in $rows) {
     $md += "| $($r.name) | $($r.vblanks) | $($r.punt) | $($r.draws_max) / $($r.draws_mean) | $($r.commute_max) | $($r.rov_draws_max) | $($r.rov_runs_max) | $($r.zresolves_max) | $($r.states_max) | $($r.state_changes_max) | $($r.records_max) | $($r.alias_sprites_max) / $($r.alias_disp_max) | $($r.straddle_pct) | $($r.as128_pct) | $($r.z) | $($r.front_ms_mean) / $($r.front_ms_max) |"
 }
 $md += ''
-$md += '| recording | clears Z / colour | loads (blocks) | downloads | shadow copies | ALIAS16 self-copies | uploads -> max patches/VBlank | new CLUT slots | REGION_CLAMP prims | TBW not 2^n prims | CT32 / alpha views | max targets | ROV why (ref/colclamp/fbmsk/date/blend/C>128/pabe-dthe/z32/straddle) |'
-$md += '|---|---|---|---|---|---|---|---|---|---|---|---|---|'
+$md += '| recording | clears Z / colour | loads (blocks) | downloads | shadow copies | ALIAS16 self-copies | uploads -> max patches/VBlank | new CLUT slots | CLUT loads over GPU words | REGION_CLAMP prims | TBW not 2^n prims | CT32 / alpha views | max targets | ROV why (ref/colclamp/fbmsk/date/blend/C>128/pabe-dthe/z32/straddle) |'
+$md += '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|'
 foreach ($r in $rows) {
-    $md += "| $($r.name) | $($r.clears_z) / $($r.clears_c) | $($r.loads) ($($r.load_blocks)) | $($r.downloads) | $($r.shadow) | $($r.selfcopy) | $($r.xfers) -> $($r.patches_max) | $($r.clut_new) | $($r.region_clamp) | $($r.tbw_npot) | $($r.views_c32) / $($r.views_alpha) | $($r.targets_max) | $($r.rov_why) |"
+    $md += "| $($r.name) | $($r.clears_z) / $($r.clears_c) | $($r.loads) ($($r.load_blocks)) | $($r.downloads) | $($r.shadow) | $($r.selfcopy) | $($r.xfers) -> $($r.patches_max) | $($r.clut_new) | $($r.clut_gpu) | $($r.region_clamp) | $($r.tbw_npot) | $($r.views_c32) / $($r.views_alpha) | $($r.targets_max) | $($r.rov_why) |"
 }
 Set-Content (Join-Path $Out 'table.md') $md
 if ($failed) { Write-Host "gpu_hwdry_all: $failed problem(s)"; exit 1 }
