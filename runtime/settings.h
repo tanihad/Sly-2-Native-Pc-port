@@ -1,9 +1,9 @@
 /* User settings: sly2.ini in the user data folder (format and keys: notes/settings.md).
  *
  * The user data folder (settings_user_dir) holds sly2.ini, the memory card and the log:
- * PS2_USER_DIR if set, else the executable's folder when a file "portable.txt" is next to the
- * executable (development builds always have one: scripts/build_game.py writes it), else
- * %LOCALAPPDATA%\Sly2.
+ * PS2_USER_DIR if set; else the executable's folder for a console program (every development build
+ * and test: data stays next to the exe as it always did) or when a file "portable.txt" is next to
+ * the executable; else (the player's GUI build, scripts/build_game.py --package) %LOCALAPPDATA%\Sly2.
  *
  * Loaded once at start-up (settings_load, before the game runs), overridden per key by environment
  * variables for testing (PS2_ASPECT=16:9|4:3|<w>:<h>, PS2_SHOW_FPS=1), written by window.c (the owner
@@ -67,7 +67,7 @@ int settings_update_text(const char* text, const char* section, const char* key,
 /* The user data folder (created if missing; no trailing backslash), and a file in it. */
 const wchar_t* settings_user_dir(void);
 int settings_user_path(const wchar_t* name, wchar_t* out, size_t cap);
-int settings_portable(void);              /* 1: the folder is the executable's (portable.txt, or PS2_USER_DIR) */
+int settings_portable(void);              /* 1: not %LOCALAPPDATA%\Sly2 (exe folder, or PS2_USER_DIR) */
 
 /* sly2.ini from the user data folder, then the environment (PS2_ASPECT, PS2_SHOW_FPS). Logs what it uses. */
 void settings_load(void);

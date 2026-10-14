@@ -10,8 +10,8 @@ Usage (from the project root or a worktree):
   sly2.log in the user data folder) with an icon, version information and a manifest. Its user data
   lives in %LOCALAPPDATA%\\Sly2 unless DIR holds a portable.txt.
 
-Development builds (<out>\\sly2.exe) are console programs and get a portable.txt next to them, so
-their settings, memory card and logs stay next to the exe as always (runtime/settings.h).
+Development builds (<out>\\sly2.exe) are console programs: their settings, memory card and logs stay
+next to the exe as always (runtime/settings.h).
 """
 import argparse
 import os
@@ -28,8 +28,6 @@ LIBS = ["-lwinmm", "-lgdi32", "-luser32", "-lxinput1_4", "-lsynchronization"]
 WINDRES = TOOLS / "llvm-mingw" / "bin" / "x86_64-w64-mingw32-windres.exe"
 GIT = TOOLS / "git" / "cmd" / "git.exe"
 
-PORTABLE_TXT = ("This file makes the game keep its settings (sly2.ini), memory card (memcard\\slot0) and\n"
-                "log next to the executable instead of in %LOCALAPPDATA%\\Sly2. Delete it to use that folder.\n")
 
 MANIFEST = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
@@ -224,9 +222,6 @@ def main() -> int:
     if link.returncode:
         print(link.stderr[:6000])
         return 1
-    portable = out / "portable.txt"              # development build: user data next to the exe
-    if not portable.exists():
-        portable.write_text(PORTABLE_TXT, encoding="utf-8")
     print(f"linked {exe} ({exe.stat().st_size / 1e6:.1f} MB) in {time.time() - t0:.0f}s total")
     if args.package:
         if not args.release:

@@ -3,6 +3,7 @@
 
 #include <ctype.h>
 #include <stdarg.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -378,6 +379,16 @@ static void mkdir_p(const wchar_t* dir) {
     CreateDirectoryW(tmp, NULL);
 }
 
+/* A console program (every development build and test) rather than the player's GUI build
+ * (scripts/build_game.py --package): the subsystem in the executable's own PE header. */
+static int exe_is_console(void) {
+    const uint8_t* base = (const uint8_t*)GetModuleHandleW(NULL);
+    const IMAGE_DOS_HEADER* dos = (const IMAGE_DOS_HEADER*)base;
+    if (!base || dos->e_magic != IMAGE_DOS_SIGNATURE) return 1;
+    const IMAGE_NT_HEADERS* nt = (const IMAGE_NT_HEADERS*)(base + dos->e_lfanew);
+    return nt->Signature != IMAGE_NT_SIGNATURE || nt->OptionalHeader.Subsystem != IMAGE_SUBSYSTEM_WINDOWS_GUI;
+}
+
 const wchar_t* settings_user_dir(void) {
     if (user_dir[0]) return user_dir;
     const size_t cap = sizeof user_dir / sizeof user_dir[0];
@@ -391,7 +402,7 @@ const wchar_t* settings_user_dir(void) {
     if (env && *env && wcslen(env) < cap - 16) {
         wcscpy(user_dir, env);
         user_portable = 1;
-    } else if (exe[0] && GetFileAttributesW(probe) != INVALID_FILE_ATTRIBUTES) {
+    } else if (exe[0] && (exe_is_console() || GetFileAttributesW(probe) != INVALID_FILE_ATTRIBUTES)) {
         wcscpy(user_dir, exe);
         user_portable = 1;
     } else if (local && *local && wcslen(local) < cap - 16) {
