@@ -49,12 +49,14 @@ if ($Direct) {
 }
 
 $build = Join-Path $root $(if ($Release) { 'build\rel' } else { 'build\sly2' })
-Copy-Item (Join-Path $build 'sly2.exe') (Join-Path $dir 'sly2.exe') -Force   # own exe: parallel runs
+$exeName = "sly2_warp_$Name.exe"                # own exe and a unique process name: parallel runs
+Copy-Item (Join-Path $build 'sly2.exe') (Join-Path $dir $exeName) -Force
 $script = if ($TitleFrame -gt 0) { "${TitleFrame}:start:10" } else { '@187D80/1DD96C+30:start:10' }
 if ($Play -and -not $Direct -and $Episode -gt 0) { $script += ',+1500:cross:6' }
 if ($Pad) { $script += ",$Pad" }
 $runArgs = @('-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'run_game.ps1'), '-Seconds', "$Seconds",
-             '-Out', $dir, '-Card', $card, '-Dump', $frames, '-DumpEvery', "$DumpEvery", '-Pad', $script)
+             '-Out', $dir, '-Card', $card, '-Dump', $frames, '-DumpEvery', "$DumpEvery", '-Pad', $script,
+             '-Exe', $exeName)
 if ($Window) { $runArgs += '-Window' }
 & powershell @runArgs | Select-Object -First 1
 "log: $dir\run.log; frames: $frames (latest.png)"
