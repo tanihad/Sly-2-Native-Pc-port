@@ -463,7 +463,7 @@ void settings_load(void) {
     }
     e = getenv("PS2_SHOW_FPS");
     if (e && *e) ps2_settings.show_fps = atoi(e) != 0;
-    fprintf(stderr, "[settings] %s: aspect %d:%d\n", upath, ps2_settings.aspect_w, ps2_settings.aspect_h);
+    fprintf(stderr, "[settings] aspect %d:%d\n", ps2_settings.aspect_w, ps2_settings.aspect_h);
 }
 
 static int write_text(const wchar_t* path, const char* text, size_t n) {

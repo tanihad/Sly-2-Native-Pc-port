@@ -199,7 +199,8 @@ uint8_t* launch_load_game(int argc, char** argv, int headless, size_t* size) {
         if (!from_ini || !show_boxes)
             launch_fatal("the disc image %s cannot be used: %s.%s", u, disc_why(err),
                          from_ini ? " Set [game] disc in sly2.ini to your Sly 2 (USA) disc image." : "");
-        if (!dialog_retry(disc, disc_why(err))) exit(1);
+        fprintf(stderr, "[launch] the disc image in sly2.ini, %s, cannot be used: %s\n", u, disc_why(err));
+        if (!dialog_retry(disc, disc_why(err))) { fprintf(stderr, "[launch] no disc image chosen\n"); exit(1); }
     }
     if (err) {                                       /* nothing usable configured */
         if (!show_boxes)
