@@ -52,6 +52,9 @@ int      sceSdClearEffectWorkArea(int core, int channel, int effect_mode);
  * safe point. May be called from the audio thread for ADMA; must be thread-safe. */
 void     iop_sd_transfer_done(int channel);
 uint8_t* iop_mem(uint32_t iop_addr);     /* guest IOP RAM (sif.c) */
+/* When the IOP last ran: QueryPerformanceCounter value at the end of its last scheduling pass, 0
+ * before it first ran (iop_kernel.c). The mixer does not play on far past it (sd.c, "driver"). */
+int64_t  iop_last_run_time(void);
 
 /* ---- output (audio_out.c) ---------------------------------------------------------------------- */
 

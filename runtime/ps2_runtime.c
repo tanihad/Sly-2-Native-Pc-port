@@ -311,6 +311,9 @@ static uint32_t dump_from;                       /* PS2_DUMP_FROM=<vblank>: no d
  * Sleep(1)), and wakes an idle EE at once (threads.c waits on ps2_irq_pending). When the EE falls
  * behind, the VBlanks it missed are dropped, not delivered in a burst (ps2_service_irq): the game
  * slows down instead of stuttering through catch-up frames. */
+static volatile LONG vblank_hold;                /* debug pause (ps2_debug_hold): no VBlank is due */
+static volatile LONG64 vblank_shift;             /* QPC ticks the VBlank schedule moved by debug pauses */
+
 static DWORD WINAPI host_timer(LPVOID arg) {
     (void)arg;
     timeBeginPeriod(1);
@@ -320,7 +323,8 @@ static DWORD WINAPI host_timer(LPVOID arg) {
     const int64_t tick = qpc_freq.QuadPart / 1000;
     int64_t next_tick = qpc_start.QuadPart + tick;
     for (uint64_t frame = 1;;) {                 /* NTSC: 59.94 fields per second */
-        int64_t due = qpc_start.QuadPart + (int64_t)(frame * 1001 * (uint64_t)qpc_freq.QuadPart / 60000);
+        if (vblank_hold) { Sleep(1); continue; }
+        int64_t due = qpc_start.QuadPart + vblank_shift + (int64_t)(frame * 1001 * (uint64_t)qpc_freq.QuadPart / 60000);
         QueryPerformanceCounter(&now);
         uint32_t raise = 0;
         if (now.QuadPart >= due) {
@@ -357,6 +361,29 @@ uint32_t ps2_vblank_count(void) { return vblank_count; }
 
 static volatile int ram_dump_request;
 void ps2_request_ram_dump(void) { ram_dump_request = 1; }   /* written at the next VBlank */
+
+/* Debug pause (window.c, the live input token 'pause'; EE thread): the whole PS2 stands still while
+ * the EE waits for the next input line - the VBlank clock, EE timers (the game's frame time), IOP
+ * time (989snd's tick: sequenced music) and the SPU2 mixer - so a game played step by step sees the
+ * same time passing per frame as at full speed. The VBlank schedule moves by the pause, so the next
+ * VBlank comes as long after the resume as it was still away when the pause began (without that, a
+ * VBlank fell due at once on every resume and each 2-frame step held only ~1 frame of time). */
+void sd_hold(int on);
+void ps2_debug_hold(int on) {
+    static int64_t hold_at;
+    LARGE_INTEGER t;
+    QueryPerformanceCounter(&t);
+    if (on && !vblank_hold) {
+        hold_at = t.QuadPart;
+        InterlockedExchange(&vblank_hold, 1);
+    } else if (!on && vblank_hold) {
+        InterlockedExchangeAdd64(&vblank_shift, t.QuadPart - hold_at);
+        InterlockedExchange(&vblank_hold, 0);
+    }
+    timer_hold(on);
+    iop_time_hold(on);
+    sd_hold(on);
+}
 
 /* The picture of VBlank `vb` (ok = 0: display off). Runs on the GS thread when there is one. */
 static void present_frame(const uint32_t* frame, int ok, int w, int h, uint32_t vb) {
@@ -435,6 +462,39 @@ static void vblank(ps2_ctx* ctx) {
             fprintf(stderr, "[peek] v%u %08X:", vblank_count, addr);
             for (unsigned k = 0; k < words && k < 16; k++) fprintf(stderr, " %08X", ps2_r32(ctx, addr + 4 * k));
             fprintf(stderr, "\n");
+        }
+    }
+    /* PS2_POKE="<hexaddr>=<hexvalue>[,...]" (debugging, off by default): write these 32-bit words
+     * every VBlank, e.g. hold a character's health (Sly 2: bentley.hpCur, 3D4AC8=28) to test the
+     * later parts of a fight that scripted input cannot win. */
+    static const char* poke = (const char*)1;
+    if (poke == (const char*)1) poke = getenv("PS2_POKE");
+    for (const char* s = poke; s && *s; s = strchr(s, ',') ? strchr(s, ',') + 1 : "") {
+        unsigned addr = 0, val = 0;
+        if (sscanf(s, "%x=%x", &addr, &val) == 2) ps2_w32(ctx, addr & ~3u, val);
+    }
+    /* PS2_POKE_FILE=<path> (debugging, off by default): lines "<hexaddr>=<hexvalue>[,...]" appended
+     * while the game runs are written once, at the next VBlank (looked at every 15 VBlanks). */
+    static const char* poke_file = (const char*)1;
+    static long poke_pos;
+    if (poke_file == (const char*)1) poke_file = getenv("PS2_POKE_FILE");
+    if (poke_file && *poke_file && vblank_count % 15 == 0) {
+        FILE* f = fopen(poke_file, "rb");
+        char buf[1024];
+        size_t n = 0;
+        if (f && fseek(f, poke_pos, SEEK_SET) == 0) {
+            n = fread(buf, 1, sizeof buf - 1, f);
+            while (n > 0 && buf[n - 1] != '\n') n--;    /* whole lines only */
+            buf[n] = 0;
+            poke_pos += (long)n;
+        }
+        if (f) fclose(f);
+        for (char* s = n ? buf : NULL; s && *s; s++) {
+            unsigned addr = 0, val = 0;
+            if ((s == buf || s[-1] == ',' || s[-1] == '\n') && sscanf(s, "%x=%x", &addr, &val) == 2) {
+                ps2_w32(ctx, addr & ~3u, val);
+                fprintf(stderr, "[poke] v%u: %08X = %08X\n", vblank_count, addr & ~3u, val);
+            }
         }
     }
     intc_raise(INTC_VBLANK_S);
@@ -675,6 +735,7 @@ int main(int argc, char** argv) {
     if (wd && atoi(wd) > 0) CreateThread(NULL, 0, watchdog, (LPVOID)(uintptr_t)atoi(wd), 0, NULL);
     if (!headless) window_init();
     if (!dump_regs) audio_init();                /* sound output thread (sd.c mixer -> WASAPI) */
+    if (!dump_regs && iop_native_audio()) iop_thread_start();   /* the IOP on its own thread (iop.h) */
 
     /* The GS on its own thread plus pixel workers (PS2_GS_ASYNC=0: synchronous, as in the unit
      * tests; PS2_GS_THREADS=<n>: pixel workers, default half the logical processors minus one, at

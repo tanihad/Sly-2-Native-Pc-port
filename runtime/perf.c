@@ -147,8 +147,11 @@ static void prof_sample(void) {
 void* gs_thread_os_handle(void);           /* gs_thread.c */
 void* gs_draw_worker_handle(int i);        /* gs_draw_pixel.c */
 int   gs_draw_workers(void);
+void* iop_thread_os_handle(void);          /* iop_kernel.c */
+int   iop_pass_overdue(void);
 static int prof_gs;                         /* PS2_PROFILE=gs: sample the GS thread instead */
 static int prof_workers;                    /* PS2_PROFILE=workers: the pixel workers, in turn */
+static int prof_iop;                        /* PS2_PROFILE=iop: the IOP thread, only in passes running long */
 
 static DWORD WINAPI prof_thread(LPVOID arg) {
     (void)arg;
@@ -177,12 +180,13 @@ static DWORD WINAPI prof_thread(LPVOID arg) {
             }
             prof_target = workers[turn++ % nworkers];
         }
-        if (!prof_target) {                    /* the GS thread starts after perf_init */
-            HANDLE h = prof_gs ? gs_thread_os_handle() : NULL;
+        if (!prof_target) {                    /* the GS and IOP threads start after perf_init */
+            HANDLE h = prof_gs ? gs_thread_os_handle() : prof_iop ? iop_thread_os_handle() : NULL;
             if (!h || !DuplicateHandle(GetCurrentProcess(), h, GetCurrentProcess(), &prof_target,
                                        THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, 0))
                 continue;
         }
+        if (prof_iop && !iop_pass_overdue()) continue;
         LARGE_INTEGER now;
         QueryPerformanceCounter(&now);
         if (now.QuadPart >= prof_skip_qpc) prof_sample();
@@ -233,7 +237,7 @@ static void profile_report(void) {
 
     fprintf(stderr, "\n[profile] %u samples of the %s thread (self time): %.1f%% recompiled game code (f_*), "
                     "%.1f%% runtime, %.1f%% system DLLs\n",
-            n, prof_gs ? "GS" : prof_workers ? "pixel worker" : "EE", 100.0 * prof_game_self / n, 100.0 * (n - prof_game_self - outside_n) / n,
+            n, prof_gs ? "GS" : prof_workers ? "pixel worker" : prof_iop ? "IOP (passes over 4 ms only)" : "EE", 100.0 * prof_game_self / n, 100.0 * (n - prof_game_self - outside_n) / n,
             100.0 * outside_n / n);
     int nh = 0;
     for (int s = 0; s < nsyms; s++) if (prof_self[s]) hits[nh++] = (hit){ syms[s].name, prof_self[s] };
@@ -272,8 +276,9 @@ void perf_init(void) {
         outside_rip = malloc(OUTSIDE_MAX * sizeof(uint64_t));
         prof_gs = !strcmp(p, "gs");
         prof_workers = !strcmp(p, "workers");
+        prof_iop = !strcmp(p, "iop");
         if (prof_self && prof_incl && outside_rip &&
-            (prof_gs || prof_workers || DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &prof_target,
+            (prof_gs || prof_workers || prof_iop || DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &prof_target,
                                         THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, 0))) {
             prof_thread_handle = CreateThread(NULL, 0, prof_thread, NULL, 0, NULL);
             if (prof_thread_handle) SetThreadPriority(prof_thread_handle, THREAD_PRIORITY_TIME_CRITICAL);

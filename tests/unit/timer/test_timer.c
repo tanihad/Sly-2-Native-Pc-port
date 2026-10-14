@@ -660,8 +660,37 @@ static void test_time_going_backwards(void) {
     CHECK_EQ(rd(COUNT(0)), 1100);
 }
 
+/* timer_hold (the debug 'pause'): no EE time passes while held, and none is made up afterwards. */
+static void test_debug_pause_hold(void) {
+    reset(BUS);
+    wr(MODE(2), CUE | CLK_256 | CMPE | OVFE);                    /* Sly 2's system time setup */
+    wr(COMP(2), 0xFFFF);
+    advance(256 * 1000);
+    CHECK_EQ(rd(COUNT(2)), 1000);
+    timer_hold(1);
+    timer_hold(1);                                               /* a second hold changes nothing */
+    advance(256 * 0x20000);                                      /* two whole laps while paused */
+    timer_service();
+    CHECK_EQ(rd(COUNT(2)), 1000);
+    CHECK_EQ(irqs[INTC_TIM2], 0);
+    CHECK_EQ(rd(MODE(2)) & (EQUF | OVFF), 0);
+    timer_hold(0);
+    advance(256 * 10);
+    CHECK_EQ(rd(COUNT(2)), 1010);                                /* continues from where it stopped */
+    timer_hold(0);                                               /* release without hold: no effect */
+    advance(256 * 5);
+    CHECK_EQ(rd(COUNT(2)), 1015);
+    timer_hold(1);
+    advance(256 * 100);
+    reset(BUS);                                                  /* a reset clears a hold */
+    wr(MODE(2), CUE | CLK_256);
+    advance(256 * 3);
+    CHECK_EQ(rd(COUNT(2)), 3);
+}
+
 int main(void) {
     struct { const char* name; void (*fn)(void); } tests[] = {
+        { "debug_pause_hold", test_debug_pause_hold },
         { "rates", test_rates },
         { "host_clock_conversion", test_host_clock_conversion },
         { "prescaler_grid", test_prescaler_grid },

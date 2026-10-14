@@ -84,6 +84,19 @@ tools/, orig/ and .venv/ only exist in the main checkout
   `PS2_GS_TRACE_FROM=<vsync>`, `PS2_GS_TRACE_MAX=<n>` (default 64), `PS2_GS_TRACE_BRIEF=1` (one line
   per primitive), `PS2_GS_TRACE_MINSIZE=<px>` (skip small ones), `PS2_GS_TRACE_TEXELS=0`.
   `PS2_PEEK=12000000:2,12000070:4` reads the GS privileged registers (PMODE, DISPFB1, ...).
+  `PS2_POKE=<hexaddr>=<hexvalue>[,...]` writes 32-bit words every VBlank (debug aid, off by default),
+  e.g. `PS2_POKE=3D4AC8=28` holds Bentley's health (game state `bentley.hpCur`, scripts/warp_schema.txt)
+  to reach the later stages of a fight that scripted input cannot win.
+  `PS2_POKE_FILE=<path>`: the same `<hexaddr>=<hexvalue>[,...]` lines appended to the file while the
+  game runs are written once (checked every 15 VBlanks, logged as `[poke]`), for live sessions.
+- Live input (`PS2_INPUT_FILE`, `scripts\live_game.ps1`): the token `pause` stops the game at the next
+  dumped VBlank (latest.png shows it) until the next line arrives, so real-time sections (turrets,
+  boss fights) can be played step by step: end each line with e.g. `+30:pause`. While paused the
+  whole PS2 stands still (`ps2_debug_hold`: EE timers, IOP time, SPU2 mixer), so no game time
+  passes: Sly 2 takes its frame time from T2 and 989snd its tick (sequenced music) from the IOP
+  hard timer; before, each step saw the whole wait as elapsed time (the dance minigame's beats ran
+  on while paused) and the mixer played the music streams dry. Tokens are not
+  case-sensitive (`lxFF` = `lxff`; before, an upper-case token was dropped as an unknown button).
 - Scripted input (`PS2_INPUT`, runtime/window.c header): absolute `<padframe>:<button>[:<hold>]`,
   relative `+n:...`, anchored to game code `@<func>[/<ra>][+n]:...` (after a call of a recompiled
   function, optionally from the call site returning to ra) and `@!<func>[+n]:...` (after it went
@@ -98,7 +111,9 @@ tools/, orig/ and .venv/ only exist in the main checkout
 - Start at any episode or job (memory-card saves, `notes/warp.md`): `scripts\warp_run.ps1 -Episode N
   [-Job <job>] [-Direct] -Play`; `scripts\warp.py make|list|dump`; `run_game.ps1 -Card <dir>`
   (PS2_MEMCARD_DIR); `PS2_WARP_TASK=<task oid>[:<world>]` (any build: an entry hook,
-  recomp/hooks.py) starts a job on "Resume".
+  recomp/hooks.py) starts a job on "Resume"; `PS2_TASK_SET=<task oid>:<state>[@<vblank>],...` /
+  `PS2_TASK_FILE=<path>` (lines appended while it runs; `<oid>:?` prints the state) change a task's
+  state through the game's own 0x164DF0 at the top of the main loop (entry hook on 0x20E890).
 - VU microcode is recompiled (`recomp/vu_recomp.py`, `notes/vu-microcode.md`): `PS2_VU_INTERP=1`
   runs the interpreter instead; `PS2_VU_VERIFY=1` runs every recompiled program and the interpreter
   on a copy and compares registers, flags, data memory, XGKICKs (with the data memory at each kick)
