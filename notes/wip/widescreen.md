@@ -24,11 +24,16 @@ culling / 2D, HUD hints via GS reg 0x7F, sw-renderer HUD transform, 16:9 present
 - 4:3 identity: gs_replay of main recordings (title 30, museum 150, ep2 photo 240 VBlanks) with main
   vs this runtime: all identical; a 4:3 recording of this build has 0 hints (16:9: 28+28 per 60 VB).
 
-## In progress
-- camera-turn edge check (ws_ep2turn), chalk-talk movie attempt (ws_ep3movie).
+- Camera turn (ep2 hub, right stick held, frames every 4 VBlanks): objects enter at the extended
+  edges smoothly, no pop-in (ws_turn_169_a/b). Chalk-talk 1 MPEG movie (ep3 recon completed via
+  PS2_TASK_SET + R3/R1) pillarboxed (ws_movie_chalktalk_169).
 
-## Next
-1. Final report (SubagentHandback).
+**Status: complete** (branch next/widescreen, not merged).
+
+## Possible follow-ups
+- L/R anchors for edge HUD widgets (needs 2D scene extents at the EE); Binocucom frame is 4:3 with
+  the dimmed periphery visible at the sides.
+- Run-time aspect switch (needs an options screen that also re-runs the camera's frustum update).
 
 ## Findings / traps
 - CM (camera) is the global at 0x2DDF40: +0x20 fov, +0x3C aspect (1.2987 = 640/492.8), +0x40 xRange
