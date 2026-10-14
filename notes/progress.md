@@ -2,6 +2,12 @@
 
 ## Resume here (read first in a new session)
 
+**GPU renderer status (2026-10-14, later):** M0, C, M1 merged into next/gpu (coordinator worktree
+`sly2-worktrees\gpu-integ`), and main merged into next/gpu (4b5b1da; window.c 'rec' token now -9).
+M2 (go/no-go submission benchmark + baseline refresh for the PCRTC fix) running in worktree
+gpu-M2 (branch gpu/M2; checkpoint notes/wip/gpu-M2.md). Widescreen (EE patch + sw HUD hints +
+settings file) running in worktree `widescreen` (branch next/widescreen; notes/wip/widescreen.md).
+
 **Main 60f11e6 (2026-10-14): whole-game sweep COMPLETE and merged.** Prologue and Episodes 1-8 were
 each played end to end by a tester (every job started, completion flows + autosaves checked,
 every episode transition through the Episode 8 credits). Merged: next/integrate (all ep branches,
