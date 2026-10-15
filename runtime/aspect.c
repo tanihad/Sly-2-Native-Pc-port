@@ -143,7 +143,8 @@ void aspect_hint_value(struct ps2_ctx* ctx, uint32_t dmas, uint32_t kind, uint32
  *            Z buffer over the whole screen (the 2D shapes are layered with ZTST GREATER): drawn as
  *            is, so it still covers the whole widened picture;
  *   every other creator (shapes 0x2174C8/0x2177E0, passes 0x217298, text 0x216750/0x2163B0):
- *            2D content laid out for a 4:3 screen: HUD_BEGIN(centre). */
+ *            2D content laid out for a 4:3 screen: HUD_BEGIN(anchor), the anchor of the scene's
+ *            widget the entry belongs to (below; C for everything outside scenes). */
 #define RENDER_LIST 0x003B3980u
 #define RENDER_LIST_MAX 0x2000u
 enum { UI_DRAW_HUD = 0, UI_DRAW_AS_IS = 1 };

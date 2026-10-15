@@ -8,7 +8,9 @@ and makes the game draw for it:
   view is unchanged (Hor+). Culling follows, since the frustum planes come from the same numbers;
 - **2D content keeps its 4:3 proportions**: HUD, menus, text and the vector-art screens are drawn
   scaled by (4/3)/A about the screen centre (they sit in the centre 4:3 area), except primitives that
-  span the whole width (backgrounds, fades, bars), which still cover the whole picture;
+  span the whole width (backgrounds, fades, bars), which still cover the whole picture; with
+  `hud = edges` (default) the HUD widgets at the sides (health meter, boss meters, counters) are
+  scaled about the left / right edge instead, so they sit at the display's edges ("HUD anchors");
 - **movies are pillarboxed** (shown at 4:3 with black bars).
 
 At 4:3 none of this happens: every patch tests `ps2_aspect.wide` first, no hint is emitted, frames
@@ -86,7 +88,8 @@ position is its matrix translation, set by the scene's timeline (the art is auth
 | 0x36B health meter + gadget gauge | HUD manager 0x3D9E70 +0x10 (0x1D9968 / 0x1D9DF8) | by root: L (top left) |
 | boss health meters (level objects, e.g. ep1 Dimitri 0x78A) | boss classes: +0x2A0 (0x17FD08/0x180100), +0x568 (0x1D4940/0x1D4C88), script command 0x10DD08 | by root: R (top right) |
 | 0x36D coin counter, 0x36E pick-up counter, 0x36F timed counter | world +0x3BAC/+0x3BB8/+0x3BC4 (0x20F710; shown by 0x161868, 0x1618B0, 0x1618F8; L3 shows them) | by root |
-| everything else: ticker 0x371, letterbox + subtitles 0x373, briefings 0x35F-0x36A, pause menu, gadget menus 0x375-0x377, ThiefNet, title / episode menus, level-specific scenes | | C |
+| Binocucom frame 0x35F / 0x360 / 0x361 | 0x19D540 (per player character) | C, then SIDE_FILL (below) |
+| everything else: ticker 0x371, letterbox + subtitles 0x373, briefing portraits 0x368-0x36A, pause menu, gadget menus 0x375-0x377, ThiefNet, title / episode menus, level-specific scenes | | C |
 | 2D outside scenes (text labels at world points 0x1CD780, dance prompts 0x152C58, gadget button glyphs 0x1DAC58) | | C |
 
 "By root": each root-level object is anchored by the third of the scene's width its origin (tx) is
@@ -99,6 +102,19 @@ those scenes: in general a root's art can be far from its origin (the ticker's r
 The anchor travels per render-list entry (allocated while the item is drawn); f_00157FA0's loop
 emits HUD_BEGIN(anchor) whenever the anchor changes between 2D entries (no HUD_END in between),
 HUD_END when 2D stops. Full-width primitives stay exempt, whatever the anchor.
+
+## Binocucom frame
+
+The Binocucom (R3 view, and the job briefings) is a full-screen 4:3 overlay: scenes 0x35F / 0x360 /
+0x361 (one per player character, found by 0x19D540), a navy (0, 0, 25) border filling the 4:3
+screen's corners around a lens that is wider than the screen; the lens tint and the scan lines are
+full-width primitives. Centred at 16:9, the 3D view showed at the sides between a stretched lens tint
+and the scan lines. Now, after the frame scene's last render-list entry, aspect.c emits SIDE_FILL
+(gs_hint.h) with the navy: the renderer fills the FRAME width outside the centre 4:3 area, so the
+Binocucom covers the wide picture like the PS2 picture pillarboxed in the frame's own colour (no
+part of the frame is distorted), and the view shows exactly the 4:3 area the game's photo and
+on-screen tests use (ws_screen_project). The cutscene letterbox bars (scene 0x373) are full-width
+primitives and already cover the whole width.
 
 ## Run-time switch (F7 / F8)
 
@@ -155,6 +171,9 @@ verification notes for whether they need the HUD transform (they are not in prio
   presenter reads ps2_aspect / ps2_settings when it presents) and the HUD scale from each hint,
   never cache them at start-up. After a switch to 4:3 the stream has no hints at all.
 - PHASE hints (diagnostics, PS2_HUD_LOG=1 only) label 2D entries; ignore them.
+- SIDE_FILL (value = colour 0x00BBGGRR): fill the FRAME width outside the centre 4:3 area (scale of
+  the last HUD_BEGIN) over the scissor height, opaque, untextured, no tests, Z not written, in stream
+  order (the sw renderer draws two flat sprites with its own state, then restores the game's).
 - Hints arrive inside the frame's VIF1 chain (PATH2 DIRECT, an A+D write of register 0x7F), and from
   the movie player as direct writes; both go through gs_write_reg like any register.
 - Pillarbox: use the ASPECT_4_3 state at the VBlank (gs_picture_content43 in the sw path).
