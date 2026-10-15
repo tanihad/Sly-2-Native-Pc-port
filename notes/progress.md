@@ -1,4 +1,4 @@
-﻿# Progress log
+# Progress log
 
 ## Resume here (read first in a new session)
 
@@ -115,7 +115,7 @@ Unmerged work, all committed and pushed to GitHub, each with `notes/wip/<task>.m
 - `next/ep1`..`next/ep8`: per-episode playtesting/fixes. Every job type tested starts in every
   episode; no runtime blockers reported. ep1/ep2/ep3 end with a "PAUSED mid-edit" commit holding
   unfinished, untested fixes (ep1: audio/IOP timing in sd.c/iop_kernel.c; ep2/ep3: GS thread /
-  pixel workers) â€” finish and verify those before merging. Notable open finding (ep2): menu
+  pixel workers) — finish and verify those before merging. Notable open finding (ep2): menu
   music stream can stop when the IOP runs late while the EE waits for the GS.
 - To resume: same session -> `Workflow({scriptPath: <whole-game-sweep script>, resumeFromRunId:
   "wf_1f8b6c38-938"})` (finished agents replay from cache; the others continue from their
