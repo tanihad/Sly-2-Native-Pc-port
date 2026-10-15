@@ -162,10 +162,11 @@ static uint32_t ui_label;
 /* ---- HUD anchors (hud = edges) -------------------------------------------------------------------
  * Every 2D entry gets an anchor; with hud = edges the HUD_BEGIN hint carries it. A scene's policy
  * comes from its object id (+0x18; the HUD manager 0x1D9520 and the other owners find their scenes
- * by these ids with 0x15E938): a fixed anchor, or POLICY_BY_ROOT - each root-level object of the
- * scene's display list (one widget) is anchored by the third of the screen its origin is in. Scenes
- * not listed (menus, the pause screen, ThiefNet, briefings, the Binocucom, the ticker, level-specific
- * scenes) are centred layouts and stay centred. */
+ * by these ids with 0x15E938), its class (the job counters) or its content (meters): a fixed anchor,
+ * or POLICY_BY_ROOT - each root-level object of the scene's display list (one widget) is anchored
+ * by the third of the screen its origin is in. Everything else (menus, the pause screen, ThiefNet,
+ * briefings, the ticker, subtitles, other level-specific scenes, 2D drawn outside scenes) is a
+ * centred layout and stays centred. notes/widescreen.md "HUD anchors". */
 enum { POLICY_BY_ROOT = 3 };
 #define BINOCUCOM_NAVY 0x00190000u               /* the Binocucom frame's colour (0, 0, 25) */
 #define SIDE_FILL_ON 0x01000000u
@@ -189,7 +190,7 @@ static uint32_t ui_fill_pending;         /* the 2D entries just emitted belong t
 static uint8_t ui_entry_anchor[RENDER_LIST_MAX];
 static int ui_scene_policy = GS_HINT_ANCHOR_C;
 static float ui_scene_w = 640.0f;        /* the scene's width in its own units (+0x94) */
-static uint8_t ui_item_anchor = GS_HINT_ANCHOR_C, ui_text_anchor = GS_HINT_ANCHOR_C;
+static uint8_t ui_item_anchor = GS_HINT_ANCHOR_C;
 static int ui_hud_anchor = GS_HINT_ANCHOR_C;
 
 /* A HUD meter: a scene with a "meter fill" sprite instance, id 0x34F or 0x350 - what the game's
@@ -243,7 +244,8 @@ void aspect_scene_begin(struct ps2_ctx* ctx) {
         static int nseen;
         for (int k = 0; k < nseen; k++) if (seen[k] == ui_scene) return;
         if (nseen < 256) seen[nseen++] = ui_scene;
-        fprintf(stderr, "[hud] scene %08X vt %08X", ui_scene, ps2_r32(ctx, ui_scene));
+        fprintf(stderr, "[hud] scene %08X oid %X vt %08X policy %d", ui_scene, oid, ps2_r32(ctx, ui_scene + 0x0C),
+                ui_scene_policy);
         for (uint32_t o = 0; o < 0x120; o += 4) {
             if (!(o & 0x1F)) fprintf(stderr, "\n[hud]   +%03X:", o);
             fprintf(stderr, " %08X", ps2_r32(ctx, ui_scene + o));
@@ -320,7 +322,7 @@ void aspect_render_entry_alloc(struct ps2_ctx* ctx) {
     ui_entry_scene[i] = ui_entry_kind[i] == UI_DRAW_HUD ? ui_scene : 0;
     ui_entry_root[i] = ui_entry_kind[i] == UI_DRAW_HUD && ui_scene ? ui_item_root : 0;
     ui_entry_ra[i] = ctx->r[31].uw[0];
-    ui_entry_anchor[i] = ui_scene ? ui_item_anchor : ui_text_anchor;
+    ui_entry_anchor[i] = ui_scene ? ui_item_anchor : GS_HINT_ANCHOR_C;   /* outside scenes: centred */
     ui_entry_fill[i] = ui_scene && ui_entry_kind[i] == UI_DRAW_HUD ? ui_scene_fill : 0;
 }
 

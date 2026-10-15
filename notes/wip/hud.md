@@ -22,14 +22,20 @@
   16:9 -> 4:3 -> 16:9 -> centered -> edges. gs_replay of the widescreen worktree's museum 4:3 and
   16:9 recordings: main runtime vs this one, 60/60 identical each.
 
-## In progress
-- m1_brawl job counter "0/3" (bottom right, level-specific scene) is centred: find its scene /
-  owner (run build\warp\hud_log_brawl, PS2_HUD_LOG + RAM dump) and anchor it if generic.
+- Job counters: scene subclass vtable 0x2DAD90 (counts its tasks, 0x211F90) -> by root (m1_brawl
+  "1/3" bottom right at the edge).
+- Live 4:3 recording (ep2 hub, 120 VBlanks from 6800, PS2_ASPECT=4:3): 0 register 0x7F writes;
+  replayed with main's runtime (git archive bab84fb) and this one: 120/120 identical.
+- More shots: ep2 hub 4:3 / 16:9 edges / 16:9 centered (same moment), gadget grid (C), ep5 hub,
+  job counter. Release and debug builds link.
 
-## Next
-1. Live 4:3 recording (PS2_ASPECT=4:3 PS2_GS_RECORD) -> 0 hints (scratchpad hints.py counts them).
-2. 4:3 screenshots (museum / hub) and a 16:9 centered hub; one more episode hub (ep2 or ep4).
-3. Final: checkpoint Status complete; report.
+**Status: complete** (branch next/hud, not merged).
+
+## Possible follow-ups
+- Other level-specific HUD scenes at a side that are neither meters nor job counters stay centred
+  (none seen in ep1/2/3/5 play; PS2_HUD_LOG=1 lists scenes with object id, class and policy).
+- The Binocucom side fill is opaque from the frame's first frame (no fade with the frame's
+  transition).
 
 ## Findings / traps
 - 2D = Flash-like scenes (class vt +0xC 0x2DAF30 / 0x2C9670, size 640x480 at +0x94/+0x98, GS
