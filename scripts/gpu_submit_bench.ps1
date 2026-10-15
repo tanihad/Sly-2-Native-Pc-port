@@ -41,6 +41,7 @@ foreach ($rel in $recs) {
     $runsData = @()
     for ($i = 0; $i -lt $Runs; $i++) {
         $log = Join-Path $Out "$name.run$i.log"
+        $runLoad = [math]::Round(((Get-Counter '\Processor(_Total)\% Processor Time' -SampleInterval 1 -MaxSamples 1).CounterSamples | Measure-Object CookedValue -Average).Average)
         $runArgs = @($rec, '-', '0', '--backend', 'hwsubmit', '--scale', $Scale)
         if (-not $SameThread) { $runArgs += '--front-thread' }
         if (-not $NoPace) { $runArgs += '--pace' }
@@ -66,6 +67,7 @@ foreach ($rel in $recs) {
         foreach ($t in ($tb -replace '^thread-bench ', '') -split ' ') { $p = $t -split '='; if ($p.Count -eq 2 -and $p[0] -ne 'game') { $kv['t_' + $p[0]] = [double]$p[1] } }
         $cl = (Get-Content $log | Where-Object { $_ -like 'replay thread CPU*' }) -join ''
         if ($cl -match 'CPU ([\d.]+) ms') { $kv['replay_cpu_ms'] = [double]$matches[1] }
+        $kv['load'] = $runLoad
         $runsData += $kv
     }
     if (-not $runsData.Count) { continue }
@@ -82,6 +84,7 @@ foreach ($rel in $recs) {
         gs_thread_median_ms = & $med 't_gs_med'; gs_thread_worst_steady_ms = & $med 't_gs_max_steady'
         frontend_thread_median_ms = & $med 't_ft_med'; frontend_thread_worst_steady_ms = & $med 't_ft_max_steady'
         replay_thread_cpu_per_game_frame_ms = [math]::Round((Median @($runsData | ForEach-Object { $_['replay_cpu_ms'] / [math]::Max(1, $_['game']) })), 3)
+        machine_load_per_run = (@($runsData | ForEach-Object { $_['load'] }) -join ' ')
         worst_steady_runs = (@($runsData | ForEach-Object { [math]::Round($_['render_max_steady'], 2) }) -join ' ') }
     $rows += [pscustomobject]$row
     Write-Host ($rows[-1] | Format-List | Out-String).Trim()

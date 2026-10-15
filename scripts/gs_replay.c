@@ -959,9 +959,11 @@ int main(int argc, char** argv) {
             uint64_t k0 = (uint64_t)pc0[2].dwHighDateTime << 32 | pc0[2].dwLowDateTime, u0 = (uint64_t)pc0[3].dwHighDateTime << 32 | pc0[3].dwLowDateTime;
             uint64_t k1 = (uint64_t)pc1[2].dwHighDateTime << 32 | pc1[2].dwLowDateTime, u1 = (uint64_t)pc1[3].dwHighDateTime << 32 | pc1[3].dwLowDateTime;
             double proc_ms = (double)((k1 - k0) + (u1 - u0)) / 10000.0;
+            double fth_ms = front_thread ? (double)gpu_front_thread_cycles() / tsc_hz * 1000.0 : 0.0;   /* (frontend thread) */
+            double other = proc_ms - cpu_ms - rt_ms - fth_ms;
             fprintf(stderr, "render thread CPU %.1f ms (%.3f ms per VBlank); process CPU %.1f ms, other threads (driver) %.3f ms per VBlank\n",
-                    rt_ms, frames ? rt_ms / frames : 0.0, proc_ms, frames ? (proc_ms - cpu_ms - rt_ms) / frames : 0.0);
-            other_ms_per_vblank = frames ? (proc_ms - cpu_ms - rt_ms) / frames : 0.0;
+                    rt_ms, frames ? rt_ms / frames : 0.0, proc_ms, frames ? other / frames : 0.0);
+            other_ms_per_vblank = frames ? other / frames : 0.0;
         }
     }
     fprintf(stderr, "replayed %u VBlanks in %.1f ms (%.2f ms per VBlank, %d pixel workers)\n", frames, ms,
