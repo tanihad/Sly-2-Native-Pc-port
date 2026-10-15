@@ -60,3 +60,24 @@ cs_clear            mem.hlsl            cs_clear          cs_5_0
 cs_a16_gather       alias16.hlsl        cs_a16_gather     cs_5_0
 cs_a16_scatter      alias16.hlsl        cs_a16_scatter    cs_5_0
 cs_xcopy            mem.hlsl            cs_xcopy          cs_5_0
+# M5: FF tier (gs.hlsl ps_ff: the REF fragment pipeline + output-merger blend/depth) and the mixed-frame depth sync
+vs_ff_tri           gs.hlsl             vs_ff_tri         vs_5_0
+ps_ff_t000       gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=0 DUAL=0 ZOUT=0 STQ_FAST=0 TRI_REC=256u
+ps_ff_t001       gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=0 DUAL=0 ZOUT=0 STQ_FAST=1 TRI_REC=128u
+ps_ff_t010       gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=0 DUAL=0 ZOUT=1 STQ_FAST=0 TRI_REC=256u
+ps_ff_t011       gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=0 DUAL=0 ZOUT=1 STQ_FAST=1 TRI_REC=128u
+ps_ff_t100       gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=0 DUAL=1 ZOUT=0 STQ_FAST=0 TRI_REC=256u
+ps_ff_t101       gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=0 DUAL=1 ZOUT=0 STQ_FAST=1 TRI_REC=128u
+ps_ff_t110       gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=0 DUAL=1 ZOUT=1 STQ_FAST=0 TRI_REC=256u
+ps_ff_t111       gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=0 DUAL=1 ZOUT=1 STQ_FAST=1 TRI_REC=128u
+ps_ff_s00        gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=1 DUAL=0 ZOUT=0
+ps_ff_s01        gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=1 DUAL=0 ZOUT=1
+ps_ff_s10        gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=1 DUAL=1 ZOUT=0
+ps_ff_s11        gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=1 DUAL=1 ZOUT=1
+ps_ff_l00        gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=2 DUAL=0 ZOUT=0
+ps_ff_l01        gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=2 DUAL=0 ZOUT=1
+ps_ff_l10        gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=2 DUAL=1 ZOUT=0
+ps_ff_l11        gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=2 DUAL=1 ZOUT=1
+vs_zquad            zsync.hlsl          vs_zquad          vs_5_0
+ps_zresolve         zsync.hlsl          ps_zresolve       ps_5_0
+cs_zsync            zsync.hlsl          cs_zsync          cs_5_0

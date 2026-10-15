@@ -20,15 +20,25 @@ typedef struct {
     int display_ky2;             /* display-family targets get ky = 2N (3.1). M3 (REF at S=1) runs 1x1 samples
                                     everywhere (0); M2's benchmark used 1. M7 turns it on with Z targets that
                                     follow their colour target's factors. */
+    int mixed;                   /* M5: frames are executed for real with FF and ROV draws (GPU_FD_MIXED); 0 with
+                                    ref = 0: M2's submission benchmark (trivial shaders) */
+    int ff_stq_exact;            /* FF triangles carry the full 256-byte record and step S/T/Q exactly as the
+                                    software renderer (verification); 0: 128-byte records, S/T/Q interpolated */
+    uint32_t ff_rov_mask;        /* GPU_FFC_* classes kept on the ROV tier (moving classes one at a time, tests) */
 } gpu_front_config;
 
 enum { GPU_TIER_FF, GPU_TIER_ROV, GPU_TIER_ALIAS16, GPU_TIER_PUNT, GPU_TIER_N };
 enum { GPU_PC_TRI, GPU_PC_SPRITE, GPU_PC_LINEPIX, GPU_PC_POINT, GPU_PC_N };
 enum { GPU_ZF_32, GPU_ZF_24, GPU_ZF_16, GPU_ZF_16S, GPU_ZF_N };
+/* FF classes (gpu_front_config.ff_rov_mask): blend class, ATST split, texture views (incl. feedback through
+ * a shadow copy), primitive classes */
+enum { GPU_FFC_OFF = 1 << 0, GPU_FFC_NOCOLOR = 1 << 1, GPU_FFC_ADD = 1 << 2, GPU_FFC_REVSUB = 1 << 3,
+       GPU_FFC_DUAL = 1 << 4, GPU_FFC_SPLIT = 1 << 5, GPU_FFC_VIEW = 1 << 6, GPU_FFC_LINE = 1 << 7,
+       GPU_FFC_SPRITE = 1 << 8, GPU_FFC_TRI = 1 << 9, GPU_FFC_DEPTH = 1 << 10, GPU_FFC_ALL = (1 << 11) - 1 };
 
 /* why a primitive went to the ROV tier (first matching rule of 4.1) */
 enum { GPU_ROV_REF, GPU_ROV_COLCLAMP, GPU_ROV_FBMSK, GPU_ROV_DATE, GPU_ROV_BLEND, GPU_ROV_C_OVER128,
-       GPU_ROV_PABE_DTHE, GPU_ROV_Z32_HIGH, GPU_ROV_STRADDLE, GPU_ROV_N };
+       GPU_ROV_PABE_DTHE, GPU_ROV_Z32_HIGH, GPU_ROV_STRADDLE, GPU_ROV_CLASS /* (ff_rov_mask) */, GPU_ROV_N };
 /* why a primitive was PUNTed (5.4) */
 enum { GPU_PUNT_TARGET_OVERLAP, GPU_PUNT_FRAME_FMT, GPU_PUNT_TEX_FOREIGN, GPU_PUNT_TEX_FMT, GPU_PUNT_FORCED,
        GPU_PUNT_READBACK_DIFF /* (not a reason: PUNTs whose read-back differed from gs_vram, both mode) */, GPU_PUNT_N };
@@ -97,6 +107,8 @@ void gpu_front_vblank(const uint64_t priv[16], uint32_t vblank);
 int  gpu_front_take_frames(gpu_front_frame* out, int max);
 /* One line per live target (id, kind, base, FBW, rows, family, last use) to f. */
 void gpu_front_dump_targets(FILE* f);
+/* the kind of target id: 0 colour (C32), 1 Z32, 2 Z24, 3 Z16, 4 Z16S; -1 none (lockstep tolerance classes) */
+int gpu_front_target_kind(uint32_t id);
 
 /* ---- the command stream of a frame (consumed by M2's render thread) ------------------------------ */
 enum {
@@ -134,21 +146,26 @@ typedef struct { uint16_t local, abs; uint32_t pad; uint64_t words; } gpu_dl_ent
 typedef struct { gpu_fop h; uint16_t target, pad; int16_t x0, y0, x1, y1; } gpu_fop_shadow;
 typedef struct {
     gpu_fop h;
-    uint8_t tier, cls, blend, depth;     /* GPU_TIER_*, GPU_PC_*, blend-state class, depth-state class */
+    uint8_t tier, cls, blend, depth;     /* GPU_TIER_*, GPU_PC_*, blend-state class, depth-state class (ztst * 2 + zwrite) */
     uint32_t ps_key;                     /* permutation (4.5) */
     uint16_t ct, zt, tex;                /* target ids (0: none), texture SRV (0: vram_buf, else target id) */
-    uint8_t wmask, split;                /* RenderTargetWriteMask; 1: ATST two-draw split */
+    uint8_t wmask, split;                /* RenderTargetWriteMask; ATST split (FF): 1 the pass draw, 2 the fail draw,
+                                            3 both (the two-draw split of 4.2) */
     int16_t sc[4];                       /* scissor x0, y0, x1, y1 */
     uint32_t first, count;               /* first index / instance, count (indices or instances) */
     uint32_t vtx_first, rec_first;       /* vertex base, first record */
+    int16_t bbox[4];                     /* native pixels the primitives touch: x0, y0, x1, y1 (inclusive) */
+    uint8_t zw, afail;                   /* some primitive may write Z; AFAIL of an ATST split */
+    uint16_t pad;
 } gpu_fop_draw;
+enum { GPU_PSK_FF_FAST = 1 << 12 };      /* gpu_fop_draw.ps_key: FF triangles with 128-byte records (hardware S/T/Q) */
 typedef struct { gpu_fop h; uint16_t ct, zt; uint32_t zresolve; int16_t bbox[4]; } gpu_fop_rov_end;
 /* rect [x0, x1) x [y0, y1) in pixels of the 16-bit frame (whole 16x8 blocks) */
 typedef struct { gpu_fop h; uint16_t target, psm; int16_t x0, y0, x1, y1; } gpu_fop_alias16;
 typedef struct { gpu_fop h; uint16_t target, src; uint32_t n, data_off; } gpu_fop_xcopy;
 typedef struct { gpu_fop h; uint32_t vblank; } gpu_fop_present;
 
-enum { GPU_FD_PARTIAL = 1, GPU_FD_REF = 2 };
+enum { GPU_FD_PARTIAL = 1, GPU_FD_REF = 2, GPU_FD_MIXED = 4 };
 typedef struct {
     const uint8_t* cmd; size_t cmd_bytes;          /* gpu_fop records */
     const uint8_t* vtx; size_t vtx_bytes;          /* 32-byte vertices */
@@ -158,7 +175,8 @@ typedef struct {
     const uint8_t* data; size_t data_bytes;        /* patches, CLUT snapshots, block lists, batch-cut tables */
     uint32_t vblank;
     uint32_t flags;                                /* GPU_FD_PARTIAL: a checkpoint inside the VBlank (no PRESENT);
-                                                      GPU_FD_REF: REF mode (every draw ROV, depth in zpatch) */
+                                                      GPU_FD_REF: REF mode (every draw ROV, depth in zpatch);
+                                                      GPU_FD_MIXED: FF and ROV draws (M5) */
 } gpu_front_frame_data;
 /* Called at every VBlank with the frame just closed (before its buffers are reused), and at every
  * checkpoint (gpu_front_checkpoint) with the commands built since. NULL: none. */

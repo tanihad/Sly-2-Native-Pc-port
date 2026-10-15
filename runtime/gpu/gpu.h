@@ -110,7 +110,12 @@ void gpu_submit_wait_idle(void);
 int gpu_exec_read_memory(const gpu_dl_entry* entries, const uint16_t* writers, int n, uint8_t* out);
 /* statistics of the frames executed so far: draws skipped because the REF tier cannot render them
  * yet (ALIAS16 batches), checkpoint frames */
-typedef struct { uint64_t frames, partial_frames, ref_draws, alias16_runs, downloads, loads, patches, clears, xcopies; } gpu_exec_counters;
+typedef struct {
+    uint64_t frames, partial_frames, ref_draws, alias16_runs, downloads, loads, patches, clears, xcopies;
+    uint64_t ff_draws, rov_draws;        /* M5 mixed frames: D3D draws on the FF tier (split halves counted), on the ROV tier */
+    uint64_t zresolves, zsyncs;          /* zpatch -> DSV quads (ps_zresolve), DSV -> zpatch dispatches (cs_zsync) */
+    uint64_t zresolve_px, zsync_px;      /* their pixels (samples) */
+} gpu_exec_counters;
 void gpu_exec_get_counters(gpu_exec_counters* out);
 uint64_t gpu_render_thread_cycles(void);  /* QueryThreadCycleTime of the render thread (TSC ticks) */
 void gpu_render_thread_affinity(uint64_t mask);   /* benchmarks: pin the render thread */
