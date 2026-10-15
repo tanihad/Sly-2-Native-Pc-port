@@ -805,6 +805,53 @@ static void trace_prim(int type, const vtx* const* vs, int nv) {
 static int hud_on, hud_anchor, hint_43;
 static double hud_scale = 1.0;
 
+/* PS2_HUD_LOG=1 (with the EE side, aspect.c): PHASE hints label the 2D render-list entries by scene
+ * (or creator | 0x80000000); the X/Y extent (pixels, before the HUD transform) drawn under each label
+ * is printed every 60th frame. Diagnostics only. */
+static int hudlog = -1;
+static uint32_t hudlog_label, hudlog_frame;
+static struct { uint32_t label; int32_t x0, x1, y0, y1, n, anchor; } hudlog_t[64];
+static int hudlog_n;
+
+static void hudlog_prim(const vtx* const* in, int n, uint64_t xyo) {
+    if (!hudlog_label || hudlog_label == 0xFFFFFFFFu) return;
+    int k = 0;
+    while (k < hudlog_n && hudlog_t[k].label != hudlog_label) k++;
+    if (k == hudlog_n) {
+        if (hudlog_n == 64) return;
+        hudlog_n++;
+        hudlog_t[k].label = hudlog_label;
+        hudlog_t[k].x0 = hudlog_t[k].y0 = 1 << 30;
+        hudlog_t[k].x1 = hudlog_t[k].y1 = -(1 << 30);
+        hudlog_t[k].n = 0;
+    }
+    hudlog_t[k].anchor = hud_on ? hud_anchor : -1;
+    for (int i = 0; i < n; i++) {
+        int32_t x = (in[i]->x - (int32_t)(xyo & 0xFFFF)) / 16, y = (in[i]->y - (int32_t)((xyo >> 32) & 0xFFFF)) / 16;
+        if (x < hudlog_t[k].x0) hudlog_t[k].x0 = x;
+        if (x > hudlog_t[k].x1) hudlog_t[k].x1 = x;
+        if (y < hudlog_t[k].y0) hudlog_t[k].y0 = y;
+        if (y > hudlog_t[k].y1) hudlog_t[k].y1 = y;
+    }
+    hudlog_t[k].n++;
+}
+
+static void hudlog_phase(uint32_t label) {
+    if (hudlog < 0) { const char* e = getenv("PS2_HUD_LOG"); hudlog = e && *e && *e != '0'; }
+    if (!hudlog) return;
+    if (label == 0xFFFFFFFFu) {
+        if (hudlog_frame++ % 60 == 0) {
+            fprintf(stderr, "[hudlog] v%u:", gs_stream_vsync);
+            for (int k = 0; k < hudlog_n; k++)
+                fprintf(stderr, " %08X[%d..%d,%d..%d n%d a%d]", hudlog_t[k].label, hudlog_t[k].x0, hudlog_t[k].x1,
+                        hudlog_t[k].y0, hudlog_t[k].y1, hudlog_t[k].n, hudlog_t[k].anchor);
+            fprintf(stderr, "\n");
+        }
+        hudlog_n = 0;
+    }
+    hudlog_label = label;
+}
+
 int gs_hint_content43(void) { return hint_43; }
 
 /* x: 12.4 window coordinate as written to XYZ (before XYOFFSET) */
@@ -829,7 +876,8 @@ static void hint_write(uint64_t v) {
     case GS_HINT_HUD_END: hud_on = 0; break;
     case GS_HINT_ASPECT_4_3_BEGIN: hint_43 = 1; break;
     case GS_HINT_ASPECT_4_3_END: hint_43 = 0; break;
-    default: break;                      /* PHASE and unknown kinds: diagnostics only */
+    case GS_HINT_PHASE: hudlog_phase(value); break;
+    default: break;                      /* unknown kinds: ignored */
     }
     if (trace_on > 0 && trace_left > 0 && gs_stream_vsync >= trace_from)
         fprintf(trace_out, "[gstrace] v%u hint kind %u arg %u value 0x%08X\n", gs_stream_vsync, kind,
@@ -870,11 +918,13 @@ static void draw_prim(int type, const vtx* a, const vtx* b, const vtx* c) {
  * covers the whole widened picture. The vertex queue keeps the game's coordinates (strips and fans
  * share vertices between primitives). */
 static void draw(int type, const vtx* a, const vtx* b, const vtx* c) {
-    if (!hud_on) { draw_prim(type, a, b, c); return; }
+    if (!hud_on && hudlog_label == 0) { draw_prim(type, a, b, c); return; }
     int n = type == PRIM_POINT ? 1 : (type == PRIM_TRI || type == PRIM_TRISTRIP || type == PRIM_TRIFAN) ? 3 : 2;
     const vtx* in[3] = { a, b, c };
     int ctx = (int)((((reg[R_PRMODECONT] & 1) ? reg[R_PRIM] : reg[R_PRMODE]) >> 9) & 1);
     uint64_t xyo = reg[R_XYOFFSET_1 + ctx], frame = reg[R_FRAME_1 + ctx];
+    if (hudlog_label) hudlog_prim(in, n, xyo);
+    if (!hud_on) { draw_prim(type, a, b, c); return; }
     int32_t left = (int32_t)(xyo & 0xFFFF), right = left + (int32_t)((frame >> 16) & 0x3F) * 64 * 16;
     int32_t x0 = in[0]->x, x1 = in[0]->x;
     for (int i = 1; i < n; i++) { x0 = in[i]->x < x0 ? in[i]->x : x0; x1 = in[i]->x > x1 ? in[i]->x : x1; }

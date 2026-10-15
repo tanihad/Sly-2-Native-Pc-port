@@ -31,3 +31,13 @@ void aspect_hint_now(uint32_t kind, uint32_t arg);   /* straight into the GS str
 void aspect_render_entry_alloc(struct ps2_ctx* ctx);
 void aspect_render_entry(struct ps2_ctx* ctx, uint32_t dmas, uint32_t entry, uint32_t rp);
 void aspect_render_done(struct ps2_ctx* ctx, uint32_t dmas);
+/* A 2D scene's draw method (0x213300) starts / returns: its render-list entries belong to it. */
+void aspect_scene_begin(struct ps2_ctx* ctx);
+void aspect_scene_end(struct ps2_ctx* ctx);
+/* The scene queues its items: display list 0x21A998 entered / left, a root-level object is visited,
+ * an item is queued (0x215960, 0x21A998); then each queued item is drawn (0x213300's loop). */
+void aspect_dl_begin(struct ps2_ctx* ctx);
+void aspect_dl_end(struct ps2_ctx* ctx);
+void aspect_dl_object(struct ps2_ctx* ctx);
+void aspect_item_queued(struct ps2_ctx* ctx);
+void aspect_item_draw(struct ps2_ctx* ctx);

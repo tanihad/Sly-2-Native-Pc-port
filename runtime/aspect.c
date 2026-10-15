@@ -7,6 +7,7 @@
 #include "settings.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 ps2_aspect_t ps2_aspect = { 0, 4.0f / 3.0f, 1.0f, 1.0f };
@@ -96,17 +97,101 @@ void aspect_hint_value(struct ps2_ctx* ctx, uint32_t dmas, uint32_t kind, uint32
 #define RENDER_LIST_MAX 0x2000u
 enum { UI_DRAW_HUD = 0, UI_DRAW_AS_IS = 1 };
 static uint8_t ui_entry_kind[RENDER_LIST_MAX];
+static uint32_t ui_entry_scene[RENDER_LIST_MAX], ui_entry_ra[RENDER_LIST_MAX], ui_entry_root[RENDER_LIST_MAX];
 static int ui_hud_on;                    /* a HUD_BEGIN has been emitted into this frame's chain */
+static uint32_t ui_scene;                /* the 2D scene being drawn (0x213300), 0 outside */
+static int ui_dl_depth;                  /* display-list nesting while the scene queues its items */
+static uint32_t ui_root, ui_item_root;   /* root-level object being queued / of the item being drawn */
+#define ITEM_MAP 2048u
+static uint32_t ui_item_key[ITEM_MAP], ui_item_val[ITEM_MAP], ui_item_gen[ITEM_MAP], ui_gen;
+static int hud_log = -1;                 /* PS2_HUD_LOG=1: diagnostics (PHASE hints, scene list) */
+static uint32_t ui_label;
+
+static void hud_log_init(void) {
+    if (hud_log < 0) { const char* e = getenv("PS2_HUD_LOG"); hud_log = e && *e && *e != '0'; }
+}
+
+void aspect_scene_begin(struct ps2_ctx* ctx) {
+    ui_scene = ctx->r[4].uw[0];
+    ui_dl_depth = 0;
+    ui_root = ui_item_root = 0;
+    ui_gen++;
+    hud_log_init();
+    if (hud_log) {
+        static uint32_t seen[256];
+        static int nseen;
+        for (int k = 0; k < nseen; k++) if (seen[k] == ui_scene) return;
+        if (nseen < 256) seen[nseen++] = ui_scene;
+        fprintf(stderr, "[hud] scene %08X vt %08X", ui_scene, ps2_r32(ctx, ui_scene));
+        for (uint32_t o = 0; o < 0x120; o += 4) {
+            if (!(o & 0x1F)) fprintf(stderr, "\n[hud]   +%03X:", o);
+            fprintf(stderr, " %08X", ps2_r32(ctx, ui_scene + o));
+        }
+        fprintf(stderr, "\n");
+    }
+}
+
+void aspect_scene_end(struct ps2_ctx* ctx) { (void)ctx; ui_scene = 0; ui_dl_depth = 0; ui_item_root = 0; }
+
+/* Items queued while the scene's root display list is walked: which root-level object they belong to. */
+static uint32_t item_hash(uint32_t a) { return (a * 2654435761u) >> (32 - 11); }
+
+void aspect_dl_begin(struct ps2_ctx* ctx) { (void)ctx; if (ui_scene) ui_dl_depth++; }
+void aspect_dl_end(struct ps2_ctx* ctx) { (void)ctx; if (ui_dl_depth) ui_dl_depth--; }
+void aspect_dl_object(struct ps2_ctx* ctx) {
+    if (!ui_scene || ui_dl_depth != 1) return;
+    ui_root = ctx->r[16].uw[0];
+    if (hud_log > 0) {
+        static uint32_t seen[1024];
+        static int nseen;
+        for (int k = 0; k < nseen; k++) if (seen[k] == ui_root) return;
+        if (nseen < 1024) seen[nseen++] = ui_root;
+        fprintf(stderr, "[hud] root %08X scene %08X oid %X:", ui_root, ui_scene, ps2_r32(ctx, ui_scene + 0x18));
+        for (uint32_t o = 0; o < 0x70; o += 4) {
+            uint32_t w = ps2_r32(ctx, ui_root + o);
+            float f;
+            memcpy(&f, &w, 4);
+            if (o >= 0x10 && o < 0x30) fprintf(stderr, " %g", f); else fprintf(stderr, " %X", w);
+        }
+        fprintf(stderr, "\n");
+    }
+}
+
+void aspect_item_queued(struct ps2_ctx* ctx) {
+    if (!ui_scene) return;
+    uint32_t item = ctx->r[5].uw[0];
+    for (uint32_t h = item_hash(item), n = 0; n < ITEM_MAP; n++, h = (h + 1) & (ITEM_MAP - 1))
+        if (ui_item_gen[h] != ui_gen || ui_item_key[h] == item) {
+            ui_item_gen[h] = ui_gen; ui_item_key[h] = item; ui_item_val[h] = ui_root;
+            return;
+        }
+}
+
+void aspect_item_draw(struct ps2_ctx* ctx) {
+    uint32_t item = ctx->r[16].uw[0];
+    ui_item_root = 0;
+    for (uint32_t h = item_hash(item), n = 0; n < ITEM_MAP && ui_item_gen[h] == ui_gen; n++, h = (h + 1) & (ITEM_MAP - 1))
+        if (ui_item_key[h] == item) { ui_item_root = ui_item_val[h]; break; }
+}
 
 void aspect_render_entry_alloc(struct ps2_ctx* ctx) {
     uint32_t i = (ctx->r[2].uw[0] - RENDER_LIST) / 16u;
-    if (i < RENDER_LIST_MAX) ui_entry_kind[i] = ctx->r[31].uw[0] == 0x00213278u ? UI_DRAW_AS_IS : UI_DRAW_HUD;
+    if (i >= RENDER_LIST_MAX) return;
+    ui_entry_kind[i] = ctx->r[31].uw[0] == 0x00213278u ? UI_DRAW_AS_IS : UI_DRAW_HUD;
+    ui_entry_scene[i] = ui_entry_kind[i] == UI_DRAW_HUD ? ui_scene : 0;
+    ui_entry_root[i] = ui_entry_kind[i] == UI_DRAW_HUD && ui_scene ? ui_item_root : 0;
+    ui_entry_ra[i] = ctx->r[31].uw[0];
 }
 
 void aspect_render_entry(struct ps2_ctx* ctx, uint32_t dmas, uint32_t entry, uint32_t rp) {
     if (!ps2_aspect.wide) return;
     uint32_t i = (entry - RENDER_LIST) / 16u;
     int hud = rp == 21 && i < RENDER_LIST_MAX && ui_entry_kind[i] == UI_DRAW_HUD;
+    if (hud_log > 0) {
+        uint32_t label = rp != 21 || i >= RENDER_LIST_MAX ? 0 : ui_entry_root[i] ? ui_entry_root[i]
+                       : ui_entry_scene[i] ? ui_entry_scene[i] | 0x40000000u : ui_entry_ra[i] | 0x80000000u;
+        if (label != ui_label) { aspect_hint_value(ctx, dmas, GS_HINT_PHASE, 0, label); ui_label = label; }
+    }
     if (hud && !ui_hud_on) aspect_hint(ctx, dmas, GS_HINT_HUD_BEGIN, GS_HINT_ANCHOR_C);
     else if (!hud && ui_hud_on) aspect_hint(ctx, dmas, GS_HINT_HUD_END, 0);
     ui_hud_on = hud;
@@ -115,4 +200,5 @@ void aspect_render_entry(struct ps2_ctx* ctx, uint32_t dmas, uint32_t entry, uin
 void aspect_render_done(struct ps2_ctx* ctx, uint32_t dmas) {
     if (ui_hud_on) aspect_hint(ctx, dmas, GS_HINT_HUD_END, 0);
     ui_hud_on = 0;
+    if (hud_log > 0) { aspect_hint_value(ctx, dmas, GS_HINT_PHASE, 0, 0xFFFFFFFFu); ui_label = 0; }
 }
