@@ -266,6 +266,8 @@ int gpu_start(const gpu_config* cfg) {
 
 int gpu_running(void) { return running; }
 
+void gpu_render_thread_affinity(uint64_t mask) { if (rt_thread && mask) SetThreadAffinityMask(rt_thread, (DWORD_PTR)mask); }
+
 uint64_t gpu_render_thread_cycles(void) {
     ULONG64 c = 0;
     if (rt_thread) QueryThreadCycleTime(rt_thread, &c);

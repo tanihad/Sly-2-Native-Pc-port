@@ -63,16 +63,21 @@ static HANDLE thread;
 static void publish(void) {
     unpublished = 0;
     if (atomic_load_explicit(&pub, memory_order_relaxed) == wr) return;
+    _mm_sfence();                        /* the records were written with non-temporal stores */
     atomic_store_explicit(&pub, wr, memory_order_seq_cst);
     if (atomic_load_explicit(&cons_sleeping, memory_order_seq_cst)) WakeByAddressSingle((PVOID)&pub);
 }
 
 static int drop_mode;                    /* (diagnostics: PS2_GPU_FTHREAD_DROP=1 measures the proxy alone) */
-static _Alignas(64) uint8_t drop_buf[8u << 20];
+/* Records are built in a small staging buffer (hot in L1) and streamed into the ring with
+ * non-temporal stores: a normal store to a ring line the frontend thread read last would first fetch
+ * it from that core (read for ownership), about one cross-core transfer per 64 bytes on each side. */
+static _Alignas(64) uint8_t stage[(2u << 20) + 64];
+static uint64_t stage_pos;              /* ring position of the staged record */
 
 static void* reserve(uint32_t kind, uint32_t bytes) {
-    bytes = (bytes + 7) & ~7u;
-    if (drop_mode) { fr_hdr* h = (fr_hdr*)drop_buf; h->kind = kind; h->size = bytes; return h; }
+    bytes = (bytes + 15) & ~15u;
+    if (drop_mode) { fr_hdr* h = (fr_hdr*)stage; h->kind = kind; h->size = bytes; return h; }
     uint64_t pos = wr % RING;
     uint64_t pad = pos + bytes > RING ? RING - pos : 0;
     for (int spins = 0; wr + pad + bytes > room_end; spins++) {
@@ -96,19 +101,23 @@ static void* reserve(uint32_t kind, uint32_t bytes) {
         p->size = (uint32_t)pad;
         wr += pad;
     }
-    fr_hdr* h = (fr_hdr*)(ring + wr % RING);
+    stage_pos = wr % RING;
+    fr_hdr* h = (fr_hdr*)stage;
     h->kind = kind;
     h->size = bytes;
     return h;
 }
 
-static uint64_t st_n[16], st_b[16];      /* records / bytes per kind (PS2_GPU_FTHREAD_STATS) */
+static uint64_t st_n[16], st_b[16], st_empty_state;      /* records / bytes per kind (PS2_GPU_FTHREAD_STATS) */
 
 static void commit(const void* rec) {
     uint32_t n = ((const fr_hdr*)rec)->size;
     st_n[((const fr_hdr*)rec)->kind & 15]++;
     st_b[((const fr_hdr*)rec)->kind & 15] += n;
     if (drop_mode) return;
+    const __m128i* s = (const __m128i*)rec;
+    __m128i* d = (__m128i*)(ring + stage_pos);
+    for (uint32_t i = 0; i < n / 16; i++) _mm_stream_si128(d + i, _mm_load_si128(s + i));
     wr += n;
     unpublished += n;
     if (unpublished >= PUBLISH_EVERY) publish();
@@ -118,7 +127,8 @@ static void commit(const void* rec) {
 #define P_WORDS (sizeof(gs_prim) / 8)
 static uint64_t sentP[P_WORDS], sentR[0x64];
 static uint32_t sent_version;
-static int have_sent, sent_env[6];
+static int have_sent, sent_env[6], clut_pending;
+static uint32_t front_version;            /* the frontend's state version: bumped only when something it reads changed */
 static uint32_t p_list_n;              /* wlist entries that are gs_prim words */
 static uint16_t pclut[512];
 static int xfer_open, xfer_data_seen;    /* a transfer whose blocks go out with the next record */
@@ -203,12 +213,19 @@ static void send_state(const gs_env_view* ev) {
             dtmp[n++].val = w;
         }
     }
-    have_sent = 1;
+    int env_same = have_sent && ev->ctx == sent_env[0] && ev->ofx == sent_env[1] && ev->ofy == sent_env[2] && ev->iip == sent_env[3] &&
+                   ev->aa1 == sent_env[4] && ev->draws == sent_env[5];
     sent_version = ev->version;
+    /* Nothing the frontend reads changed (Sly rewrites TEX0 with the same value for ~40% of its draws
+     * in ep8): no new version for the frontend, which then skips its state lookup. A CLUT change
+     * always starts one (the frontend's state includes the palette's ring slot). */
+    if (!n && env_same && !clut_pending) { st_empty_state++; return; }
+    clut_pending = 0;
+    have_sent = 1;
     sent_env[0] = ev->ctx; sent_env[1] = ev->ofx; sent_env[2] = ev->ofy; sent_env[3] = ev->iip; sent_env[4] = ev->aa1; sent_env[5] = ev->draws;
     fr_state* s = reserve(FR_STATE, (uint32_t)(sizeof(fr_state) + n * sizeof(fr_word)));
     s->n = n;
-    s->version = ev->version;
+    s->version = ++front_version;
     s->ofx = ev->ofx; s->ofy = ev->ofy;
     s->ctx = (uint8_t)ev->ctx; s->iip = (uint8_t)ev->iip; s->aa1 = (uint8_t)ev->aa1; s->draws = (uint8_t)ev->draws;
     memset(s->pad, 0, sizeof s->pad);
@@ -307,6 +324,7 @@ static void px_tex0(int ctx, uint64_t tex0, int clut_loaded) {
             memcpy(r->c, c, sizeof r->c);
             commit(r);
             flags |= 2;
+            clut_pending = 1;
         }
     }
     fr_tex0* t = reserve(FR_TEX0, sizeof *t);
@@ -461,6 +479,8 @@ void fthread_start(void) {
     atomic_store(&pub, 0);
     atomic_store(&rd, 0);
     have_sent = 0;
+    clut_pending = 0;
+    front_version = 0;
     xfer_open = xfer_data_seen = 0;
     memset(vserial, 0, sizeof vserial);
     build_wlist(getenv("PS2_GPU_FTHREAD_FULL") != NULL, gf_cfg.selfcheck);
@@ -486,14 +506,16 @@ void fthread_stop(void) {
     WaitForSingleObject(thread, INFINITE);
     CloseHandle(thread);
     if (getenv("PS2_GPU_FTHREAD_STATS"))
-        fprintf(stderr, "[fthread] records/MB: prim %llu/%.1f state %llu/%.1f xfer %llu blocks %llu/%.1f clut %llu tex0 %llu vblank %llu\n",
-                (unsigned long long)st_n[FR_PRIM], st_b[FR_PRIM] / 1e6, (unsigned long long)st_n[FR_STATE], st_b[FR_STATE] / 1e6,
+        fprintf(stderr, "[fthread] empty state records %llu; records/MB: prim %llu/%.1f state %llu/%.1f xfer %llu blocks %llu/%.1f clut %llu tex0 %llu vblank %llu\n",
+                (unsigned long long)st_empty_state, (unsigned long long)st_n[FR_PRIM], st_b[FR_PRIM] / 1e6, (unsigned long long)st_n[FR_STATE], st_b[FR_STATE] / 1e6,
                 (unsigned long long)st_n[FR_XFER], (unsigned long long)st_n[FR_BLOCKS], st_b[FR_BLOCKS] / 1e6,
                 (unsigned long long)st_n[FR_CLUT], (unsigned long long)st_n[FR_TEX0], (unsigned long long)st_n[FR_VBLANK]);
     thread = NULL;
     gf_vram = NULL;
     gf_clut_src = NULL;
 }
+
+void fthread_affinity(uint64_t mask) { if (thread && mask) SetThreadAffinityMask(thread, (DWORD_PTR)mask); }
 
 uint64_t fthread_cycles(void) {
     ULONG64 c = 0;

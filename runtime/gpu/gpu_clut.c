@@ -15,6 +15,7 @@ static uint32_t next_slot, filled;
 static uint32_t map_slot[MAP_N];         /* slot + 1, 0 = empty; open addressing on the hash */
 static uint64_t map_hash[MAP_N];
 static int dirty = 1;
+static int dirty_changed;                 /* the caller knows the content changed (frontend thread hint) */
 static uint16_t last[512];               /* the CLUT buffer as last seen */
 static int have_last;
 static uint32_t content_id;
@@ -26,10 +27,16 @@ static uint64_t used[GPU_CLUT_SLOTS / 64];  /* slots used this frame */
 typedef struct { uint64_t key; uint64_t hash; int16_t amin, amax; } alpha_entry;
 static alpha_entry acache[AC_N];
 
-static uint64_t hash1k(const uint16_t* c) {
+static uint64_t hash1k(const uint16_t* c) {          /* four independent lanes (latency-bound otherwise) */
     const uint64_t* w = (const uint64_t*)c;
-    uint64_t h = 0x9E3779B97F4A7C15ull;
-    for (int i = 0; i < 128; i++) { h ^= w[i]; h *= 0xFF51AFD7ED558CCDull; h ^= h >> 32; }
+    uint64_t h0 = 0x9E3779B97F4A7C15ull, h1 = 0xC2B2AE3D27D4EB4Full, h2 = 0x165667B19E3779F9ull, h3 = 0x27D4EB2F165667C5ull;
+    for (int i = 0; i < 128; i += 4) {
+        h0 = (h0 ^ w[i]) * 0xFF51AFD7ED558CCDull; h1 = (h1 ^ w[i + 1]) * 0xFF51AFD7ED558CCDull;
+        h2 = (h2 ^ w[i + 2]) * 0xFF51AFD7ED558CCDull; h3 = (h3 ^ w[i + 3]) * 0xFF51AFD7ED558CCDull;
+        h0 ^= h0 >> 32; h1 ^= h1 >> 32; h2 ^= h2 >> 32; h3 ^= h3 >> 32;
+    }
+    uint64_t h = ((h0 * 31 + h1) * 31 + h2) * 31 + h3;
+    h ^= h >> 29;
     return h ? h : 1;
 }
 
@@ -43,7 +50,8 @@ void clut_reset(void) {
     have_last = 0;
 }
 
-void clut_mark_dirty(void) { dirty = 1; }
+void clut_mark_dirty(void) { dirty = 1; dirty_changed = 0; }
+void clut_mark_changed(void) { dirty = 1; dirty_changed = 1; }
 
 static void map_remove(uint64_t h, uint32_t slot) {
     uint32_t i = (uint32_t)h & (MAP_N - 1);
@@ -75,9 +83,12 @@ static void refresh(void) {
     if (dirty) {
         dirty = 0;
         const uint16_t* c = gf_clut_src ? gf_clut_src : gs_clut_buffer();
-        if (have_last && gf_eq64(c, last, sizeof last / 8)) return;
-        memcpy(last, c, sizeof last);
-        have_last = 1;
+        if (dirty_changed) have_last = 0;  /* (no compare, no copy: nothing compares with it later) */
+        else {
+            if (have_last && gf_eq64(c, last, sizeof last / 8)) return;
+            memcpy(last, c, sizeof last);
+            have_last = 1;
+        }
         content_id++;
         uint64_t h = hash1k(c);
         uint32_t i = (uint32_t)h & (MAP_N - 1), found = 0xFFFFFFFFu;

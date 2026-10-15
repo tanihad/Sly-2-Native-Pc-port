@@ -18,6 +18,7 @@
 #   -Profile              sampling profile of the replay thread (self / inclusive per function)
 #   -StreamHash           (hwdry) hash of the frontend's command stream and data of every frame
 #   -FrontThread          (hwdry -FrontOnly, hwsubmit) the frontend on its own thread, the replay thread only decodes
+#   -Pin                  (hwdry, hwsubmit) replay / frontend / render threads each on its own performance core
 #   -Adapter hw|warp      hardware adapter (default) or the WARP software rasterizer
 #   -Metrics <file.json>  per-VBlank comparison counts and D3D/CPU/GPU timings
 #   -Log <file>           the replay's stderr goes to this file
@@ -25,7 +26,7 @@
 # A replay without progress for 60 s prints its state and exits with code 4 (watchdog).
 # Every run prints "sw-hash", a hash of all sw pictures (unchanged renderer -> unchanged hash).
 param([Parameter(Mandatory = $true)][string]$Rec, [string]$Out = "", [string]$Runtime = "", [int]$Workers = 0,
-      [switch]$Bench, [ValidateSet('sw', 'hw', 'both', 'hwdry', 'hwsubmit')][string]$Backend = 'sw', [int]$Scale = 1, [switch]$WithSw, [switch]$Pace, [switch]$Profile, [switch]$StreamHash, [switch]$FrontThread, [switch]$FrontOnly, [switch]$Ref, [switch]$StraddleRov, [switch]$SelfCheck, [switch]$DecodeOnly, [string[]]$Define = @(),
+      [switch]$Bench, [ValidateSet('sw', 'hw', 'both', 'hwdry', 'hwsubmit')][string]$Backend = 'sw', [int]$Scale = 1, [switch]$WithSw, [switch]$Pace, [switch]$Profile, [switch]$StreamHash, [switch]$FrontThread, [switch]$Pin, [switch]$FrontOnly, [switch]$Ref, [switch]$StraddleRov, [switch]$SelfCheck, [switch]$DecodeOnly, [string[]]$Define = @(),
       [ValidateSet('hw', 'warp')][string]$Adapter = 'hw', [string]$Metrics = "", [string]$Log = "", [string]$VramHash = "")
 $root = Split-Path $PSScriptRoot -Parent
 $main = $root
@@ -76,6 +77,7 @@ if ($Pace) { $runArgs += '--pace' }
 if ($Profile) { $runArgs += '--profile' }
 if ($StreamHash) { $runArgs += '--stream-hash' }
 if ($FrontThread) { $runArgs += '--front-thread' }
+if ($Pin) { $runArgs += '--pin' }
 if ($Log) {
     # real redirection by cmd: nested PowerShell pipes of a chatty native stderr are slow and once
     # stalled a corpus run (notes/wip/gpu-M0.md)

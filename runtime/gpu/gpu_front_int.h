@@ -117,11 +117,13 @@ void fthread_stop(void);                 /* drains and ends it */
 void fthread_vblank(const uint64_t priv[16], uint32_t vblank);
 void fthread_drain(void);                /* everything posted so far has been processed */
 uint64_t fthread_cycles(void);           /* QueryThreadCycleTime of the frontend thread */
+void fthread_affinity(uint64_t mask);
 
 /* ---- CLUT ring (gpu_clut.c) --------------------------------------------------------------------- */
 #define GPU_CLUT_SLOTS 4096
 void clut_reset(void);
 void clut_mark_dirty(void);              /* a TEX0 write may have loaded the CLUT */
+void clut_mark_changed(void);            /* a TEX0 write loaded different CLUT content (known) */
 /* The ring slot holding the current CLUT buffer (snapshot uploaded on a miss: counted). */
 uint32_t clut_current_slot(void);
 uint32_t clut_content_id(void);         /* changes whenever the CLUT buffer's content does */

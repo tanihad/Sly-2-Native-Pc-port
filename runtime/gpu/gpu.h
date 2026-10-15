@@ -103,6 +103,7 @@ int gpu_take_frame_stats(gpu_frame_stats* out, int max);   /* returns how many w
 void gpu_submit_sink(const gpu_front_frame_data* fd, void* user);
 void gpu_submit_wait_idle(void);
 uint64_t gpu_render_thread_cycles(void);  /* QueryThreadCycleTime of the render thread (TSC ticks) */
+void gpu_render_thread_affinity(uint64_t mask);   /* benchmarks: pin the render thread */
 
 /* ---- conformance (gpu_conf.c) ----------------------------------------------------------------------
  * cs_conformance (int64 helpers, exact integer Z formula, depth encoding) against the C reference,

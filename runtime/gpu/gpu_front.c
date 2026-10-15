@@ -1362,7 +1362,8 @@ static void fr_tex0(int ctx, uint64_t tex0, int clut_loaded) {
             gf.clut_gpu_reads++;
     }
     /* (frontend thread: the GS thread compared the loaded entries and says whether they changed) */
-    if (gf_clut_hint != 0) clut_mark_dirty();
+    if (gf_clut_hint > 0) clut_mark_changed();
+    else if (gf_clut_hint < 0) clut_mark_dirty();
     tsc_acc += __rdtsc() - t0;
 }
 
@@ -1417,6 +1418,7 @@ void gpu_front_start(const gpu_front_config* cfg) {
 
 void gpu_front_drain(void) { if (gf_cfg.thread) fthread_drain(); }
 uint64_t gpu_front_thread_cycles(void) { return gf_cfg.thread ? fthread_cycles() : 0; }
+void gpu_front_thread_affinity(uint64_t mask) { if (gf_cfg.thread) fthread_affinity(mask); }
 
 void gpu_front_stop(void) {
     if (gf_cfg.thread) fthread_stop();
@@ -1451,6 +1453,13 @@ void gf_vblank_impl(const uint64_t priv[16], uint32_t vblank) {
     if (secs > 0.05) tsc_hz = (double)(__rdtsc() - tsc_start) / secs;
     gf.vblank = vblank;
     gf.front_ms = (double)tsc_acc * 1000.0 / tsc_hz;
+    {
+        static ULONG64 last_cyc;
+        ULONG64 cyc = 0;
+        QueryThreadCycleTime(GetCurrentThread(), &cyc);
+        gf.thread_ms = last_cyc && cyc > last_cyc ? (double)(cyc - last_cyc) * 1000.0 / tsc_hz : 0;
+        last_cyc = cyc;
+    }
     gf.cmd_bytes = A_cmd.n;
     gf.data_bytes = A_data.n;
     if (sink_fn) {

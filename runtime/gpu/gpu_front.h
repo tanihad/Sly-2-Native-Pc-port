@@ -34,6 +34,8 @@ enum { GPU_PUNT_TARGET_OVERLAP, GPU_PUNT_FRAME_FMT, GPU_PUNT_TEX_FOREIGN, GPU_PU
 typedef struct {
     uint32_t vblank;
     double front_ms;             /* time spent in the frontend hooks */
+    double thread_ms;            /* CPU of the thread running the frontend since the previous VBlank (QueryThreadCycleTime;
+                                    the frontend thread, or the GS thread with the decode when same-thread) */
     /* primitives */
     uint32_t kicks;              /* primitives kicked (env valid) */
     uint32_t nowrite, culled, skipped;   /* nothing writable / zero area or outside scissor / ATST or ZTST NEVER drop */
@@ -77,6 +79,7 @@ void gpu_front_start(const gpu_front_config* cfg);   /* installs the gs_draw.c h
 void gpu_front_stop(void);                          /* (drains the frontend thread first) */
 void gpu_front_drain(void);                         /* frontend thread: wait until it processed everything posted */
 uint64_t gpu_front_thread_cycles(void);             /* frontend thread CPU (QueryThreadCycleTime), 0 without */
+void gpu_front_thread_affinity(uint64_t mask);       /* benchmarks: pin the frontend thread */
 /* VBlank (stream order, before the picture): closes the frame. priv: the display registers
  * (gs_priv_snapshot order) for the display target family. */
 void gpu_front_vblank(const uint64_t priv[16], uint32_t vblank);
