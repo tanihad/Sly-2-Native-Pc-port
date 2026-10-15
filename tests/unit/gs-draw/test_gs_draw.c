@@ -1638,6 +1638,22 @@ static void t_hud_hints(void) {
     CHECK(lit(0, 55) && lit(639, 55), "full-width sprite under an edge anchor covers the whole width");
     CHECK(!lit(378, 75) && lit(382, 75) && lit(528, 75) && !lit(532, 75), "back to the centre anchor: 380..530");
 
+    /* SIDE_FILL: the FRAME width outside the centre 4:3 area (last HUD_BEGIN's scale 3/4: 80 px at
+     * each side of 640) in one colour, over everything, with the game's state left as it was */
+    clear(0, 0, 0, 0);
+    hint(GS_HINT_HUD_BEGIN, GS_HINT_ANCHOR_C, 0.75f);
+    sprite(0, 90, 640, 100, 0xFF, 0xFF, 0xFF, 0x80);     /* full width, under the fill */
+    W(GS_HINT_REG, gs_hint_make(GS_HINT_SIDE_FILL, 0, 0x00190000u));
+    sprite(100, 110, 200, 120, 0xFF, 0, 0, 0x80);        /* after it: the game's state is back */
+    hint(GS_HINT_HUD_END, 0, 0);
+    gs_sync();
+    CHECK(rgb(px(0, 95)) == rgb(px(79, 5)) && (rgb(px(79, 5)) & 0xFFFFFF) != 0 && rgb(px(639, 5)) == rgb(px(79, 5)),
+          "both sides filled (%08X)", rgb(px(79, 5)));
+    CHECK(!lit(80, 5) && !lit(559, 5), "the 4:3 area is left alone");
+    CHECK(lit(320, 95) && rgb(px(320, 95)) != rgb(px(0, 95)), "full-width sprite visible in the 4:3 area only");
+    CHECK(!lit(152, 115) && lit(157, 115) && lit(228, 115) && rgb(px(157, 115)) != rgb(px(0, 95)),
+          "the next primitive draws with the game's own state (155..230)");
+
     CHECK(gs_hint_content43() == 0, "no 4:3 content by default");
     hint(GS_HINT_ASPECT_4_3_BEGIN, 0, 0);
     gs_sync();

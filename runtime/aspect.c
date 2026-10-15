@@ -166,12 +166,24 @@ static uint32_t ui_label;
  * not listed (menus, the pause screen, ThiefNet, briefings, the Binocucom, the ticker, level-specific
  * scenes) are centred layouts and stay centred. */
 enum { POLICY_BY_ROOT = 3 };
-static const struct { uint16_t oid; uint8_t policy; const char* what; } scene_policies[] = {
-    { 0x36B, POLICY_BY_ROOT, "player's health meter and gadget gauge (top left; HUD manager 0x3D9E80, 0x1D9968)" },
-    { 0x36D, POLICY_BY_ROOT, "coin counter (world +0x3BAC, shown by 0x161868 when the coin count changes)" },
-    { 0x36E, POLICY_BY_ROOT, "pick-up counter (world +0x3BB8, shown by 0x1618B0 from the pick-ups 0x1C7EE8, 0x1C8AF0)" },
-    { 0x36F, POLICY_BY_ROOT, "timed counter (world +0x3BC4, shown by 0x1618F8 for a time, hidden by 0x161958)" },
+#define BINOCUCOM_NAVY 0x00190000u               /* the Binocucom frame's colour (0, 0, 25) */
+#define SIDE_FILL_ON 0x01000000u
+static const struct { uint16_t oid; uint8_t policy; uint32_t side_fill; const char* what; } scene_policies[] = {
+    { 0x36B, POLICY_BY_ROOT, 0, "player's health meter and gadget gauge (top left; HUD manager 0x3D9E80, 0x1D9968)" },
+    { 0x36D, POLICY_BY_ROOT, 0, "coin counter (world +0x3BAC, shown by 0x161868 when the coin count changes; L3)" },
+    { 0x36E, POLICY_BY_ROOT, 0, "clue bottle counter (world +0x3BB8, shown by 0x1618B0 from the pick-ups 0x1C7EE8, 0x1C8AF0; L3)" },
+    { 0x36F, POLICY_BY_ROOT, 0, "timed counter (world +0x3BC4, shown by 0x1618F8 for a time, hidden by 0x161958)" },
+    /* The Binocucom frame (R3 view, briefings), one per character (0x19D540): a full-screen 4:3
+     * overlay whose navy border fills the 4:3 screen's corners. Centred, and the sides of the wide
+     * picture are filled in its colour after it (SIDE_FILL), so it covers the display as on a TV and
+     * the view shows the 4:3 area the game's photo / on-screen tests use (ws_screen_project). */
+    { 0x35F, GS_HINT_ANCHOR_C, BINOCUCOM_NAVY | SIDE_FILL_ON, "Binocucom frame (player class 0x35, Sly)" },
+    { 0x360, GS_HINT_ANCHOR_C, BINOCUCOM_NAVY | SIDE_FILL_ON, "Binocucom frame (player class 0x37)" },
+    { 0x361, GS_HINT_ANCHOR_C, BINOCUCOM_NAVY | SIDE_FILL_ON, "Binocucom frame (player class 0x36)" },
 };
+static uint32_t ui_scene_fill;           /* SIDE_FILL_ON | colour: the scene being drawn wants a side fill */
+static uint32_t ui_entry_fill[RENDER_LIST_MAX];
+static uint32_t ui_fill_pending;         /* the 2D entries just emitted belong to a side-fill scene */
 static uint8_t ui_entry_anchor[RENDER_LIST_MAX];
 static int ui_scene_policy = GS_HINT_ANCHOR_C;
 static float ui_scene_w = 640.0f;        /* the scene's width in its own units (+0x94) */
@@ -215,8 +227,9 @@ void aspect_scene_begin(struct ps2_ctx* ctx) {
     int w = (int)ps2_r32(ctx, ui_scene + 0x94);
     ui_scene_w = w > 0 && w < 4096 ? (float)w : 640.0f;
     ui_scene_policy = -1;
+    ui_scene_fill = 0;
     for (size_t k = 0; k < sizeof scene_policies / sizeof scene_policies[0]; k++)
-        if (scene_policies[k].oid == oid) ui_scene_policy = scene_policies[k].policy;
+        if (scene_policies[k].oid == oid) { ui_scene_policy = scene_policies[k].policy; ui_scene_fill = scene_policies[k].side_fill; }
     if (ui_scene_policy < 0) ui_scene_policy = scene_is_meter(ctx, ui_scene, oid) ? POLICY_BY_ROOT : GS_HINT_ANCHOR_C;
     ui_item_anchor = ui_scene_policy == POLICY_BY_ROOT ? GS_HINT_ANCHOR_C : (uint8_t)ui_scene_policy;
     hud_log_init();
@@ -303,6 +316,7 @@ void aspect_render_entry_alloc(struct ps2_ctx* ctx) {
     ui_entry_root[i] = ui_entry_kind[i] == UI_DRAW_HUD && ui_scene ? ui_item_root : 0;
     ui_entry_ra[i] = ctx->r[31].uw[0];
     ui_entry_anchor[i] = ui_scene ? ui_item_anchor : ui_text_anchor;
+    ui_entry_fill[i] = ui_scene && ui_entry_kind[i] == UI_DRAW_HUD ? ui_scene_fill : 0;
 }
 
 void aspect_render_entry(struct ps2_ctx* ctx, uint32_t dmas, uint32_t entry, uint32_t rp) {
@@ -314,6 +328,10 @@ void aspect_render_entry(struct ps2_ctx* ctx, uint32_t dmas, uint32_t entry, uin
                        : ui_entry_scene[i] ? ui_entry_scene[i] | 0x40000000u : ui_entry_ra[i] | 0x80000000u;
         if (label != ui_label) { aspect_hint_value(ctx, dmas, GS_HINT_PHASE, 0, label); ui_label = label; }
     }
+    uint32_t fill = hud ? ui_entry_fill[i] : 0;
+    if (ui_fill_pending && fill != ui_fill_pending && ui_hud_on)      /* a side-fill scene's entries end */
+        aspect_hint_value(ctx, dmas, GS_HINT_SIDE_FILL, 0, ui_fill_pending & 0xFFFFFFu);
+    ui_fill_pending = fill;
     int anchor = hud && ps2_aspect.hud_edges ? ui_entry_anchor[i] : GS_HINT_ANCHOR_C;
     if (hud && (!ui_hud_on || anchor != ui_hud_anchor)) aspect_hint(ctx, dmas, GS_HINT_HUD_BEGIN, (uint32_t)anchor);
     else if (!hud && ui_hud_on) aspect_hint(ctx, dmas, GS_HINT_HUD_END, 0);
@@ -322,6 +340,8 @@ void aspect_render_entry(struct ps2_ctx* ctx, uint32_t dmas, uint32_t entry, uin
 }
 
 void aspect_render_done(struct ps2_ctx* ctx, uint32_t dmas) {
+    if (ui_fill_pending && ui_hud_on) aspect_hint_value(ctx, dmas, GS_HINT_SIDE_FILL, 0, ui_fill_pending & 0xFFFFFFu);
+    ui_fill_pending = 0;
     if (ui_hud_on) aspect_hint(ctx, dmas, GS_HINT_HUD_END, 0);
     ui_hud_on = 0;
     if (hud_log > 0) { aspect_hint_value(ctx, dmas, GS_HINT_PHASE, 0, 0xFFFFFFFFu); ui_label = 0; }

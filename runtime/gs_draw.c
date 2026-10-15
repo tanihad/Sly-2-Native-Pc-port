@@ -862,6 +862,42 @@ int32_t gs_hud_transform_x(int32_t x, uint64_t xyoffset, uint64_t frame, int anc
     return (int32_t)(v < 0 ? 0 : v > 0xFFFF ? 0xFFFF : v);
 }
 
+static void draw_prim(int type, const vtx* a, const vtx* b, const vtx* c);
+
+/* SIDE_FILL: the FRAME width outside the centre 4:3 area (scale of the last HUD_BEGIN) in one
+ * colour, drawn as two flat sprites with a state of its own (no texture, blending, fog, alpha or
+ * Z test, Z not written, no dithering); the game's registers are put back afterwards. */
+static void side_fill(uint32_t rgb) {
+    if (!(hud_scale > 0.0 && hud_scale < 1.0)) return;
+    int ctx = (int)((((reg[R_PRMODECONT] & 1) ? reg[R_PRIM] : reg[R_PRMODE]) >> 9) & 1);
+    uint64_t sv_prim = reg[R_PRIM], sv_cont = reg[R_PRMODECONT], sv_test = reg[R_TEST_1 + ctx];
+    uint64_t sv_zbuf = reg[R_ZBUF_1 + ctx], sv_dthe = reg[R_DTHE], sv_fba = reg[R_FBA_1 + ctx];
+    reg[R_PRMODECONT] = 1;
+    reg[R_PRIM] = PRIM_SPRITE | ((uint64_t)ctx << 9);
+    reg[R_TEST_1 + ctx] = 0;                     /* no alpha / destination alpha / Z test */
+    reg[R_ZBUF_1 + ctx] = sv_zbuf | (1ull << 32);    /* ZMSK */
+    reg[R_DTHE] = 0;
+    reg[R_FBA_1 + ctx] = 0;
+    env_dirty = 1;
+    uint64_t xyo = reg[R_XYOFFSET_1 + ctx], frame = reg[R_FRAME_1 + ctx], sc = reg[R_SCISSOR_1 + ctx];
+    int32_t ox = (int32_t)(xyo & 0xFFFF), oy = (int32_t)((xyo >> 32) & 0xFFFF);
+    int32_t w16 = (int32_t)((frame >> 16) & 0x3F) * 64 * 16;
+    int32_t side = (int32_t)llround((double)w16 * (1.0 - hud_scale) / 2.0);
+    int32_t y0 = oy + (int32_t)((sc >> 32) & 0x7FF) * 16, y1 = oy + ((int32_t)((sc >> 48) & 0x7FF) + 1) * 16;
+    vtx a, b;
+    memset(&a, 0, sizeof a);
+    a.r = (int)(rgb & 0xFF); a.g = (int)((rgb >> 8) & 0xFF); a.b = (int)((rgb >> 16) & 0xFF); a.a = 0x80;
+    a.q = 1.0f;
+    b = a;
+    a.x = ox; a.y = y0; b.x = ox + side; b.y = y1;
+    draw_prim(PRIM_SPRITE, &a, &b, NULL);
+    a.x = ox + w16 - side; b.x = ox + w16;
+    draw_prim(PRIM_SPRITE, &a, &b, NULL);
+    reg[R_PRIM] = sv_prim; reg[R_PRMODECONT] = sv_cont; reg[R_TEST_1 + ctx] = sv_test;
+    reg[R_ZBUF_1 + ctx] = sv_zbuf; reg[R_DTHE] = sv_dthe; reg[R_FBA_1 + ctx] = sv_fba;
+    env_dirty = 1;
+}
+
 static void hint_write(uint64_t v) {
     uint32_t kind = gs_hint_kind(v), value = gs_hint_value(v);
     switch (kind) {
@@ -877,6 +913,7 @@ static void hint_write(uint64_t v) {
     case GS_HINT_ASPECT_4_3_BEGIN: hint_43 = 1; break;
     case GS_HINT_ASPECT_4_3_END: hint_43 = 0; break;
     case GS_HINT_PHASE: hudlog_phase(value); break;
+    case GS_HINT_SIDE_FILL: side_fill(value); break;
     default: break;                      /* unknown kinds: ignored */
     }
     if (trace_on > 0 && trace_left > 0 && gs_stream_vsync >= trace_from)
