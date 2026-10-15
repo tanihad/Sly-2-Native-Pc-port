@@ -5,7 +5,7 @@ C:\Users\tanih\Projects\sly2-worktrees\gpu-M4): ALIAS16, target views, 1:1 rule,
 byte-lane hazards, stale loads/downloads, aliased targets, PUNT path, phase labels; lockstep REF
 --no-resync clean on all 24 recordings.
 
-**Status**: complete pending the last regression runs (see In progress); design appendix F written.
+**Status**: complete (verification passed; design appendix F written).
 
 ## Baseline (start, d6e5dc2)
 - gs-hw -RefOnly on hw: 1162 comparisons, 0 scenes differ, 2 differ only with M4 effects
@@ -54,11 +54,8 @@ byte-lane hazards, stale loads/downloads, aliased targets, PUNT path, phase labe
   gpu_diff_all 13/13; VRAM hashes sw 24/24 and hwdry 24/24 = tests/gpu/vram_hashes.txt; build_game
   debug + --release OK; PS2_GS_BACKEND default sw; unit scene t_target_views added (hw + WARP identical).
 
-## In progress
-- gpu_fthread_check (build\m4_fthread.txt), last recordings.
-
 ## Next
-1. Check it; rerun any failing pair; mark complete.
+- Nothing: M4 complete (gpu_fthread_check 24/24 identical as the last check).
 
 ## Findings / traps
 - (M3) PowerShell ReadAllText + .Replace on CRLF files silently does nothing: use the Edit tool.
