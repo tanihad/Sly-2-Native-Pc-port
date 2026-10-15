@@ -395,7 +395,7 @@ float step_span(float s0, float ds, int xl, int x, int cutx) {
         s = s + p;
         xs = nb;
     }
-    [loop] for (int k = xs; k < x; k++) s = s + ds;
+    [loop] for (int k = xs; k < x && k < xs + 64; k++) s = s + ds;     // (< 64: pieces end at columns)
     return s;
 }
 
@@ -468,6 +468,7 @@ void ps_gs(VR i
                                    recs.Load2(rb + 208u + 8u * e), rows);
                 xl = m > xl ? m : xl;
             }
+            xl = xl > px ? px : xl;      // (the pixel is inside its span: bounded loops whatever the estimate)
             int cutx = -1;
             uint ncuts = recs.Load(rb + 232u);
             if (ncuts != 0u) {
@@ -483,7 +484,7 @@ void ps_gs(VR i
             double srow = asdouble(w0.z, w0.w), trow = asdouble(w1.x, w1.y), qrow = asdouble(w1.z, w1.w);
             double sdy = asdouble(w2.x, w2.y), tdy = asdouble(w2.z, w2.w), qdy = asdouble(w3.x, w3.y);
             double sdx = asdouble(w3.z, w3.w), tdx = asdouble(w4.x, w4.y), qdx = asdouble(w4.z, w4.w);
-            [loop] for (int r = 0; r < rows; r++) { srow = srow + sdy; trow = trow + tdy; qrow = qrow + qdy; }
+            [loop] for (int r = 0; r < rows && r < 2048; r++) { srow = srow + sdy; trow = trow + tdy; qrow = qrow + qdy; }
             double dxl = (double)xl;
             precise double ps = dmul_r(sdx, dxl), pt = dmul_r(tdx, dxl), pq = dmul_r(qdx, dxl);
             precise double ss = srow + ps, st2 = trow + pt, sq = qrow + pq;
@@ -499,7 +500,7 @@ void ps_gs(VR i
             f.U = f2i(su16);
             f.V = f2i(tv16);
             f.lq = q;
-            dbg_s = asfloat(w0.z); dbg_t = asfloat(w0.w); dbg_q = asfloat(w1.x); dbg_xl = (int)w1.y;
+            dbg_s = s; dbg_t = t; dbg_q = q; dbg_xl = xl;
         }
     }
 #elif PRIM == 1

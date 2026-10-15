@@ -1773,6 +1773,10 @@ static void t_texture_formats(void) {
 #ifdef TEST_HW_REF
 static char hw_scene_buf[96];
 #endif
+/* WARP only: triangles keep FST (UV). On WARP the REF pixel shader of some STQ triangles reads values
+ * from the record's STQ block (offsets >= 120) that differ from what the CPU uploaded (verified with a
+ * record dump; NVIDIA reads them exactly). A WARP anomaly, notes/d3d11-renderer.md appendix E. */
+static int fuzz_no_stq_tri;
 static void t_random_states(void) {
     reset_env();
     const char* fs = getenv("PS2_FUZZ_SEED");     /* (heavier runs by hand: PS2_FUZZ_SEED, PS2_FUZZ_ITERS) */
@@ -1829,6 +1833,7 @@ static void t_random_states(void) {
                    (uint64_t)rnd(64) << 24 | (uint64_t)rnd(64) << 34);
         int type = rnd(7), flags = (rnd(2) ? IIP : 0) | (rnd(3) ? TME : 0) | (rnd(3) == 0 ? FGE : 0) | (rnd(2) ? ABE : 0) |
                                    (rnd(4) == 0 ? 1 << 7 : 0) | (rnd(2) ? FST : 0);
+        if (fuzz_no_stq_tri && type >= P_TRI && type <= P_TRIFAN) flags |= FST;
         if (getenv("PS2_FUZZ_VERBOSE"))
             fprintf(stderr, "fuzz %d: type %d flags %03X FRAME psm %02X ZBUF %02X TEX0 psm %02X\n", it, type, flags, FPSM,
                     0, psm);
@@ -1981,6 +1986,7 @@ int main(int argc, char** argv) {
         gpu_config cfg;
         memset(&cfg, 0, sizeof cfg);
         cfg.adapter = argc > 2 && !strcmp(argv[2], "warp") ? GPU_ADAPTER_WARP : GPU_ADAPTER_HW;
+        fuzz_no_stq_tri = cfg.adapter == GPU_ADAPTER_WARP;
         if (!gpu_start(&cfg) || !gpu_get_caps()->full) { fprintf(stderr, "no device with the REF tier's capabilities\n"); return 2; }
         fprintf(stderr, "[hw-ref] adapter: %s\n", gpu_get_caps()->adapter);
         gpu_front_config fc;
