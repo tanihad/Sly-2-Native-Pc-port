@@ -1335,7 +1335,9 @@ first frames except the FMV recording's one eviction (below). gs_post_probe's ch
 changes and VBlank ends) computed from GPU memory (`gs_replay --post-probe`) is identical line for
 line to the software one on ep3 rope VBlanks 5-6 (70 lines) and fix-perf brief 3-4 (120 lines).
 Unit scenes (`tests/unit/gs-hw/run.ps1 -RefOnly`): 0 differing scenes on the RTX 4060 Ti and on WARP,
-t_frame16 and t_formats_contexts included (the harness now counts every differing scene); with
+t_frame16 and t_formats_contexts included (the harness now counts every differing scene), plus a new
+scene t_target_views (in-place T8H read with disjoint byte lanes, in-place CT16 strips in both
+directions, a 1:1 bilinear CT32 view); with
 `PS2_GPU_PUNT=3:15` (every third primitive PUNTed) 1078 PUNTs, all exact, read-backs equal to gs_vram.
 PUNT on recordings: title with every fifth primitive PUNTed is lockstep-clean in "both" mode (184/0),
 and in hw-only mode (read-back into gs_vram, the software rasterizer drawing only the PUNTed

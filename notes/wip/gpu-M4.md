@@ -40,8 +40,8 @@ byte-lane hazards, stale loads/downloads, aliased targets, PUNT path, phase labe
 
 ## Verification (final code unless noted)
 - Lockstep REF --no-resync S=1, hw: 24 recordings, 24,092 comparisons, 0 differ, pictures 0 diff
-  (build\m4_lockstep_final.txt). WARP: all 24, 24,092 comparisons, 0 differ (before the vertex-cache
-  fix; build\lk\summary_warp*.txt). --scale 2 title/rope clean.
+  (build\m4_lockstep_final.txt). WARP: all 24, 24,092 comparisons, 0 differ (final code,
+  build\m4_lockstep_warp.txt). --scale 2 title/rope clean.
 - Unit REF scenes: 0 differing on hw and WARP (1162 comparisons each), t_frame16 /
   t_formats_contexts included; forced PUNT 3:15 1078 PUNTs exact.
 - PUNT on recordings: title 5:15 both-mode lockstep 184/0; hw-only pictures = REF: title 5:15,
@@ -51,14 +51,14 @@ byte-lane hazards, stale loads/downloads, aliased targets, PUNT path, phase labe
 - GPU ms per game frame REF S=1 (median/worst): ep8 boss 14.6/15.9, ep3 hub 7.5/8.6, ep5 street
   7.7/10.2, ep2 hub 9.8/12.6, ThiefNet 14.8/15.7.
 - run_tests.py 16/16; all 20 unit suites (before the vertex-cache fix; gs-hw REF rerun after: pass);
-  gpu_diff_all 13/13; VRAM hashes sw 24/24 = tests/gpu/vram_hashes.txt; build_game debug + --release
-  OK; PS2_GS_BACKEND default sw.
+  gpu_diff_all 13/13; VRAM hashes sw 24/24 and hwdry 24/24 = tests/gpu/vram_hashes.txt; build_game
+  debug + --release OK; PS2_GS_BACKEND default sw; unit scene t_target_views added (hw + WARP identical).
 
 ## In progress
-- VRAM hashes hwdry (build\m4_vram_hwdry.txt), gpu_fthread_check (build\m4_fthread.txt).
+- gpu_fthread_check (build\m4_fthread.txt), last recordings.
 
 ## Next
-1. Check both results above; rerun any fthread pair that fails; commit the WIP note as complete.
+1. Check it; rerun any failing pair; mark complete.
 
 ## Findings / traps
 - (M3) PowerShell ReadAllText + .Replace on CRLF files silently does nothing: use the Edit tool.
