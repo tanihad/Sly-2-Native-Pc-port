@@ -1007,9 +1007,30 @@ typedef struct {
     uint32_t color, z, wmask, zw;
     int64_t area;
     int x0, y0, x1, y1;
+    int droppable;                       /* (M5) the fill's sprites opened the draw they are in */
+    size_t start_cmd;                    /* the command arena when the first sprite's draw began */
+    uint32_t prims;
 } fill_acc;
 static fill_acc FA;
 static uint32_t zclamp(const gs_prim* P, int64_t z);
+
+/* a recognised full clear: the FF draws of its sprites (nothing but them since start_cmd) are dropped,
+ * the clear does the same (4.1, "tiled fill -> Clear"; REF mode keeps drawing them) */
+static void fill_drop_draws(void) {
+    if (!FA.droppable || gf_cfg.ref || !OD.open || OD.d.tier != GPU_TIER_FF || OD.prims > FA.prims) return;
+    uint32_t n = 0;
+    for (size_t pos = FA.start_cmd; pos < A_cmd.n;) {
+        const gpu_fop* h = (const gpu_fop*)(A_cmd.p + pos);
+        if (h->op != GPU_FOP_DRAW || ((const gpu_fop_draw*)h)->tier != GPU_TIER_FF) return;
+        n++;
+        pos += h->size;
+    }
+    A_cmd.n = FA.start_cmd;
+    OD.open = 0;
+    gf.d3d_draws -= n;
+    gf.ff_draws -= n;
+    gf.fill_draws_dropped += n + 1;
+}
 
 static void fill_add(const gs_env_view* ev, const gs_sprite* sp, const gs_vtx* v1) {
     const gs_prim* P = ev->P;
@@ -1020,7 +1041,10 @@ static void fill_add(const gs_env_view* ev, const gs_sprite* sp, const gs_vtx* v
         memset(&FA, 0, sizeof FA);
         FA.active = 1; FA.ct = ct; FA.zt = zt; FA.color = color; FA.z = v1->z; FA.wmask = (uint32_t)S.wmask;
         FA.x0 = sp->px0; FA.y0 = sp->py0; FA.x1 = sp->px1; FA.y1 = sp->py1;
+        FA.droppable = OD.open && OD.prims == 1;   /* (this sprite opened the open draw) */
+        FA.start_cmd = A_cmd.n;
     }
+    FA.prims++;
     FA.area += (int64_t)(sp->px1 - sp->px0 + 1) * (sp->py1 - sp->py0 + 1);
     if (sp->px0 < FA.x0) FA.x0 = sp->px0;
     if (sp->py0 < FA.y0) FA.y0 = sp->py0;
@@ -1031,6 +1055,7 @@ static void fill_add(const gs_env_view* ev, const gs_sprite* sp, const gs_vtx* v
     int w = T->fbw * 64, h = P->scy1 + 1;
     if (h > T->rows) h = T->rows;
     if (FA.x0 == 0 && FA.y0 == 0 && FA.x1 >= w - 1 && FA.y1 >= h - 1 && FA.area == (int64_t)w * h) {
+        fill_drop_draws();
         if (ct) {
             gpu_fop_clear* c = gf_cmd(GPU_FOP_CLEAR, sizeof *c);
             c->target = ct->id; c->value = color; c->mask = (uint32_t)S.wmask;

@@ -61,6 +61,7 @@ typedef struct {
     uint32_t d3d_draws_commute;          /* d3d_draws if disjoint same-key draws were batched (estimate) */
     uint32_t alias16_sprites, alias16_dispatches, alias16_selfcopy;
     uint32_t clears_c, clears_z; /* recognised full-target tiled fills (colour / Z) */
+    uint32_t fill_draws_dropped; /* (M5) FF draws of recognised fills not emitted (the clear does it) */
     uint32_t loads, load_blocks; /* OP_UPLOAD_TARGET (stale blocks loaded from vram_buf) */
     uint32_t xcopies, xcopy_blocks;  /* stale blocks copied from the target that wrote them (same kind and scale) */
     uint32_t shadow_copies;      /* feedback copies */

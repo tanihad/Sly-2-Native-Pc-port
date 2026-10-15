@@ -546,44 +546,49 @@ static int read_hw(void) {
     return n;
 }
 
-/* mixed mode (M5) tolerance classes of a comparison (notes/d3d11-renderer.md 10.2): colour words of GPU
- * colour targets by their largest R/G/B difference, their alpha byte, Z words, CPU-owned words */
-typedef struct { uint64_t c1, c2, c16, cbig, a1, abig, z, cpu; } tol_stats;
+/* mixed mode (M5) tolerance classes of a comparison (notes/d3d11-renderer.md 10.2): words of GPU colour
+ * targets by their largest byte difference (R, G, B or A: alpha bytes also hold colour moved by the channel
+ * shuffles, and alpha-tested perspective-textured fragments take the perspective-texturing tolerance), how
+ * many of them have a differing alpha byte, Z words, CPU-owned words. A comparison is within tolerance
+ * when CPU data is equal, at most 0.5% of the GPU colour words differ by more than 2 and 0.1% by more than
+ * 16, and at most 0.1% of the Z words differ (alpha-test outcomes of perspective-textured fragments). */
+typedef struct { uint64_t c1, c2, c16, cbig, adiff, z, cpu, nc, nz; } tol_stats;
 static tol_stats lk_tol;                         /* totals */
-static uint64_t lk_tol_max_c2;                   /* the most colour words above +-2 in one comparison */
+static double lk_tol_worst_c2, lk_tol_worst_c16, lk_tol_worst_z;   /* worst fractions of one comparison */
 static uint32_t lk_tol_compares;                 /* comparisons with tolerated differences only */
 
-/* blocks of hw memory differing from gs_vram (mixed mode: beyond tolerance); details of the first few */
+/* blocks of hw memory differing from gs_vram (mixed mode: 1 when beyond tolerance); details of the first few */
 static uint32_t mem_compare(int verbose, int n) {
     static uint16_t writer[16384];
     memset(writer, 0, sizeof writer);
     for (int i = 0; i < n; i++) writer[lk_e[i].abs] = lk_w[i];
     uint32_t blocks = 0, words = 0, gpu_blocks = 0, tolerated = 0;
+    int tol = mixed_mode && !lk_exact;
     tol_stats ts;
     memset(&ts, 0, sizeof ts);
     for (uint32_t b = 0; b < 16384; b++) {
         const uint32_t* x = (const uint32_t*)(hwmem + (size_t)b * 256);
         const uint32_t* y = (const uint32_t*)(gs_vram + (size_t)b * 256);
+        int kind = tol && writer[b] ? gpu_front_target_kind(writer[b]) : -1;
+        if (kind == 0) ts.nc += 64; else if (kind > 0) ts.nz += 64;
         if (!memcmp(x, y, 256)) continue;
-        if (mixed_mode && !lk_exact) {
-            int kind = writer[b] ? gpu_front_target_kind(writer[b]) : -1, bad = 0;
+        if (tol) {
+            int cpu = 0;
             for (int k = 0; k < 64; k++) {
                 if (x[k] == y[k]) continue;
                 if (kind == 0) {
                     int m = 0;
-                    for (int c = 0; c < 24; c += 8) {
+                    for (int c = 0; c < 32; c += 8) {
                         int dd = (int)((x[k] >> c) & 255) - (int)((y[k] >> c) & 255);
                         if (dd < 0) dd = -dd;
                         if (dd > m) m = dd;
                     }
-                    int da = (int)(x[k] >> 24) - (int)(y[k] >> 24);
-                    if (da < 0) da = -da;
-                    if (m == 1) ts.c1++; else if (m == 2) ts.c2++; else if (m > 2 && m <= 16) ts.c16++; else if (m > 16) { ts.cbig++; bad = 1; }
-                    if (da == 1) { ts.a1++; bad = 1; } else if (da > 1) { ts.abig++; bad = 1; }
-                } else if (kind > 0) { ts.z++; bad = 1; }
-                else { ts.cpu++; bad = 1; }
+                    ts.adiff += (x[k] >> 24) != (y[k] >> 24);
+                    if (m == 1) ts.c1++; else if (m == 2) ts.c2++; else if (m <= 16) ts.c16++; else ts.cbig++;
+                } else if (kind > 0) ts.z++;
+                else { ts.cpu++; cpu = 1; }
             }
-            if (!bad) { tolerated++; continue; }
+            if (!cpu) { tolerated++; continue; }
         }
         blocks++;
         gpu_blocks += writer[b] != 0;
@@ -601,15 +606,22 @@ static uint32_t mem_compare(int verbose, int n) {
     }
     if (verbose && blocks)
         fprintf(stderr, "  %u blocks differ (%u GPU-written), %u words\n", blocks, gpu_blocks, words);
-    if (mixed_mode && !lk_exact) {
+    if (tol) {
+        double f2 = ts.nc ? (double)(ts.c16 + ts.cbig) / (double)ts.nc : 0, f16 = ts.nc ? (double)ts.cbig / (double)ts.nc : 0;
+        double fz = ts.nz ? (double)ts.z / (double)ts.nz : 0;
+        int over = f2 > 0.005 || f16 > 0.001 || fz > 0.001;
         if (verbose && (blocks || tolerated))
-            fprintf(stderr, "  tolerance: colour words +-1 %llu, +-2 %llu, 3..16 %llu, > 16 %llu; alpha +-1 %llu, more %llu; Z %llu; CPU %llu\n",
+            fprintf(stderr, "  tolerance: colour words +-1 %llu, +-2 %llu, 3..16 %llu, > 16 %llu (of %llu; alpha differs in %llu); Z %llu (of %llu); CPU %llu%s\n",
                     (unsigned long long)ts.c1, (unsigned long long)ts.c2, (unsigned long long)ts.c16, (unsigned long long)ts.cbig,
-                    (unsigned long long)ts.a1, (unsigned long long)ts.abig, (unsigned long long)ts.z, (unsigned long long)ts.cpu);
-        lk_tol.c1 += ts.c1; lk_tol.c2 += ts.c2; lk_tol.c16 += ts.c16; lk_tol.cbig += ts.cbig;
-        lk_tol.a1 += ts.a1; lk_tol.abig += ts.abig; lk_tol.z += ts.z; lk_tol.cpu += ts.cpu;
-        if (ts.c16 + ts.cbig > lk_tol_max_c2) lk_tol_max_c2 = ts.c16 + ts.cbig;
-        if (!blocks && tolerated) lk_tol_compares++;
+                    (unsigned long long)ts.nc, (unsigned long long)ts.adiff, (unsigned long long)ts.z, (unsigned long long)ts.nz,
+                    (unsigned long long)ts.cpu, over ? " OVER BUDGET" : "");
+        lk_tol.c1 += ts.c1; lk_tol.c2 += ts.c2; lk_tol.c16 += ts.c16; lk_tol.cbig += ts.cbig; lk_tol.adiff += ts.adiff;
+        lk_tol.z += ts.z; lk_tol.cpu += ts.cpu; lk_tol.nc += ts.nc; lk_tol.nz += ts.nz;
+        if (f2 > lk_tol_worst_c2) lk_tol_worst_c2 = f2;
+        if (f16 > lk_tol_worst_c16) lk_tol_worst_c16 = f16;
+        if (fz > lk_tol_worst_z) lk_tol_worst_z = fz;
+        if (!blocks && tolerated && !over) lk_tol_compares++;
+        if (!blocks && over) blocks = 1;
     }
     return blocks;
 }
@@ -1537,6 +1549,26 @@ int main(int argc, char** argv) {
                 if (ff[j].vblank == sts[i].vblank) { if (ff[j].kicks >= 1000 && j >= 2) g[ngf++] = sts[i].gpu_ms; break; }
         }
         double gfmed = median(g, ngf), gfmax = ngf ? g[ngf - 1] : 0;
+        /* (M5) render thread per game frame: D3D draws, CPU ms, wall ms */
+        double* gd = malloc((nsts + 1) * sizeof *gd);
+        double* gc = malloc((nsts + 1) * sizeof *gc);
+        double* gw = malloc((nsts + 1) * sizeof *gw);
+        size_t ngr = 0;
+        for (size_t i = 0; gd && gc && gw && i < nsts; i++) {
+            if (sts[i].partial) continue;
+            for (size_t j = 0; j < nff; j++)
+                if (ff[j].vblank == sts[i].vblank) {
+                    if (ff[j].kicks >= 1000 && j >= 2) { gd[ngr] = sts[i].draws; gc[ngr] = sts[i].render_cpu_ms; gw[ngr] = sts[i].render_ms; ngr++; }
+                    break;
+                }
+        }
+        if (gd && gc && gw) {
+            double dmd = median(gd, ngr), dmx = ngr ? gd[ngr - 1] : 0, cmd = median(gc, ngr), cmx = ngr ? gc[ngr - 1] : 0;
+            double wmd = median(gw, ngr), wmx = ngr ? gw[ngr - 1] : 0;
+            fprintf(stderr, "render-bench game_frames=%zu draws_med=%.0f draws_max=%.0f render_cpu_med=%.3f render_cpu_max=%.3f "
+                            "render_wall_med=%.3f render_wall_max=%.3f\n", ngr, dmd, dmx, cmd, cmx, wmd, wmx);
+        }
+        free(gd); free(gc); free(gw);
         free(g);
         fprintf(stderr, "ref: %u frames (%llu checkpoint frames), %llu REF draws, %llu ALIAS16 runs, %u post-pass prims, "
                         "%u STQ triangles with batch cuts, %u lost writers; loads %llu downloads %llu patches %llu clears %llu\n",
@@ -1562,11 +1594,12 @@ int main(int argc, char** argv) {
                 fprintf(stderr, "both mixed: %u pictures beyond the picture gate (PSNR < 40 dB or > 0.2%% pixels above 16)\n", pic_tol_frames);
         }
         if (lockstep && mixed_mode && !lk_exact)
-            fprintf(stderr, "lockstep tolerance: %u comparisons with tolerated differences only; colour words +-1 %llu, +-2 %llu, 3..16 %llu "
-                            "(max %llu in one comparison), > 16 %llu; alpha +-1 %llu, more %llu; Z %llu; CPU %llu\n", lk_tol_compares,
-                    (unsigned long long)lk_tol.c1, (unsigned long long)lk_tol.c2, (unsigned long long)lk_tol.c16, (unsigned long long)lk_tol_max_c2,
-                    (unsigned long long)lk_tol.cbig, (unsigned long long)lk_tol.a1, (unsigned long long)lk_tol.abig, (unsigned long long)lk_tol.z,
-                    (unsigned long long)lk_tol.cpu);
+            fprintf(stderr, "lockstep tolerance: %u comparisons with tolerated differences only; colour words +-1 %llu, +-2 %llu, 3..16 %llu, "
+                            "> 16 %llu of %llu compared (alpha differs in %llu); Z %llu of %llu; CPU %llu; worst comparison: %.4f%% > 2, "
+                            "%.4f%% > 16, Z %.4f%%\n", lk_tol_compares,
+                    (unsigned long long)lk_tol.c1, (unsigned long long)lk_tol.c2, (unsigned long long)lk_tol.c16, (unsigned long long)lk_tol.cbig,
+                    (unsigned long long)lk_tol.nc, (unsigned long long)lk_tol.adiff, (unsigned long long)lk_tol.z, (unsigned long long)lk_tol.nz,
+                    (unsigned long long)lk_tol.cpu, 100.0 * lk_tol_worst_c2, 100.0 * lk_tol_worst_c16, 100.0 * lk_tol_worst_z);
         if (lockstep)
             fprintf(stderr, "lockstep: %u comparisons, %u differ, %u resyncs%s; %s\n", lk_compares,
                     lk_diff_compares, lk_resyncs, lk_resync ? "" : " (--no-resync)",
