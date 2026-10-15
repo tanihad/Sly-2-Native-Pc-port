@@ -9,12 +9,18 @@
  *   emission  StateRec (deduplicated per frame), 32-byte vertices + u32 indices for triangles,
  *             records (exact Z 32 B, full 128 B for ROV triangles, sprite 48 B, line pixel 32 B),
  *             commands (gpu_front.h). Consecutive primitives with the same pipeline key merge into
- *             one D3D draw; ROV-tier primitives on one target pair form a ROV run; CT16 sprites over
- *             CT32 targets batch into ALIAS16 dispatches split at halfword hazards.
- *   ownership targets, block validity, uploads (gpu_own.c), CLUT ring (gpu_clut.c).
+ *             one D3D draw; ROV-tier primitives on one target pair form a ROV run; primitives into 16-bit
+ *             frames over C32 targets form ALIAS16 runs (staging gather / ROV draws / scatter) split at
+ *             read-after-write hazards (M4).
+ *   views     textures that are live colour targets (CT32/CT24, alpha index, CT16) read the target;
+ *             feedback reads of written byte lanes take a shadow copy of the blocks written since the
+ *             last copy, reads of lanes the draw does not write read the bound target (M4).
+ *   PUNT      (5.4) the software rasterizer draws the primitive into gs_vram (same-thread frontend):
+ *             touched GPU data is downloaded and read back first, the written blocks patched after.
+ *   ownership targets, block validity, uploads, cross-target copies (gpu_own.c), CLUT ring (gpu_clut.c).
  *
- * M1 is a dry run: nothing reaches a GPU; gs_replay -Backend hwdry prints and records the counters
- * (gpu_front_frame) and M2 replays the per-frame command stream on the render thread. */
+ * M1 was a dry run (gs_replay -Backend hwdry still is); M2 executes the per-frame command stream on the
+ * render thread (gpu_exec.c), M3 the REF tier, M4 the exact effects. */
 #include "gpu_front_int.h"
 #include "gs_mem_swizzle.h"
 

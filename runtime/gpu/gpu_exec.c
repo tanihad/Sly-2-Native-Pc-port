@@ -8,10 +8,16 @@
  *
  *   memory      vram_buf (4 MB raw buffer, SRV + UAV) holds GS memory as the GPU knows it: patches
  *               write the uploaded bits (cs_patch), downloads the GPU words of a writer target's
- *               blocks (cs_download, sample 0); loads fill target blocks from it (cs_load); swz_tab
- *               holds the swizzle tables (gs_mem_swizzle.h, built from the same arrays at start).
- *   targets     colour R8G8B8A8_TYPELESS (raw GS bytes; RTV UNORM, SRV UNORM + UINT, UAV UINT);
- *               depth D32S8 (DSV, SRV) and zpatch R32_UINT (UAV: the stored Z word).
+ *               blocks (cs_download, sample 0); loads fill target blocks from it (cs_load); cross copies
+ *               move blocks between targets of one kind and scale, every sample (cs_xcopy, M4); swz_tab
+ *               holds the swizzle tables (gs_mem_swizzle.h, built from the same arrays at start) and the
+ *               inverse CT32 table (16-bit views and frames over C32 targets).
+ *   targets     colour R8G8B8A8_TYPELESS (raw GS bytes; RTV UNORM, SRV UNORM + UINT, UAV UINT and
+ *               R32_UINT); depth D32S8 (DSV, SRV) and zpatch R32_UINT (UAV: the stored Z word); shadow
+ *               copies for feedback reads (5.1).
+ *   ALIAS16     (M4) a run of draws into a 16-bit frame over a C32 target: gather (target halfwords ->
+ *               R32_UINT staging texture in the frame's pixel space), REF draws on the staging texture,
+ *               scatter (shaders/alias16.hlsl).
  *   REF frames  (GPU_FD_REF, M3): every draw is a ROV draw through shaders/gs.hlsl: no RTV/DSV, the
  *               colour UAV and zpatch UAV rasterizer-ordered, a 16384-pixel viewport (power of two:
  *               the GS 12.4 vertices map exactly onto D3D's 1/256 grid), records and StateRecs as

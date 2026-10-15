@@ -8,10 +8,14 @@
 //                its span pieces (64-pixel columns, batch cuts from the frontend's table);
 //   texture      direct sampling from vram_buf through the swizzle tables (all PSMs incl. T8H/T4HL/
 //                T4HH), CLUT ring, TEXA, GS 4-bit bilinear, REPEAT/CLAMP/REGION modes, LOD and mipmaps;
-//                or a target view (CT32/CT24/alpha index) at sample 0 (M4 refines);
+//                or a target view (M4, 5.1): CT32/CT24, alpha index (T8H/T4HL/T4HH) and CT16/CT16S
+//                (words mapped to the target's pixels) through the target's SRV, its shadow copy or, for
+//                byte lanes the draw does not write, the bound target itself; 1:1 sprite reads take the
+//                fragment's own sample of each texel, other reads sample 0;
 //   TFX, fog, alpha test + AFAIL, DATE/DATM, Z test + write (zpatch holds the stored Z word),
-//   blend ((A-B)*C>>7)+D with COLCLAMP or wrap, PABE, FBA, FBMSK per bit.
-// Colour targets hold the raw GS bytes (R8G8B8A8_UINT); 16-bit frames are ALIAS16 (M4).
+//   blend ((A-B)*C>>7)+D with COLCLAMP or wrap, PABE, FBA, FBMSK per bit, DTHE (16-bit frames).
+// Colour targets are bound as R32_UINT (the raw GS word); in an ALIAS16 run (16-bit frame over a C32
+// target, shaders/alias16.hlsl) u0 is the staging texture holding each 16-bit pixel's value.
 #include "int64.hlsli"
 #include "gsmem.hlsli"
 

@@ -482,6 +482,13 @@ dispatch when a sprite reads something written earlier in it or writes a 32-bit 
 in it (two halfwords of one uint must not race). Expected 3-6 dispatches per frame. Exact at any scale
 because sample (i, j) of one native pixel corresponds to sample (i, j) of every other.
 
+*(M4: built as **ALIAS16 runs** instead of a sprite-only CS: a gather CS copies the run's rectangle of
+the target's halfwords into an R32_UINT staging texture in the 16-bit frame's own pixel space (every
+sample), the run's primitives - any class, with Z, DATE, DTHE - are ordinary REF/ROV draws on it with
+`ps_gs` in 16-bit mode, and a scatter CS writes the words back. ROV order makes overlapping writes
+exact, so only a read of something written earlier in the run splits it. No PUNT for 16-bit frames.
+Appendix F.)*
+
 ### 5.3 Z-region aliasing
 
 - Uploads into 080-0A3 (inside main Z32) are memory sources sampled from `vram_buf`.
@@ -495,6 +502,12 @@ Flush; download sample 0 of the affected pages; run the sw rasteriser synchronou
 (`gs_sw_draw_record`, the existing code); mark the pages CPU-owned and reload them into the target,
 replicated to all samples. Exact at sample 0, blocky at scale, slow. Counted and logged per state
 signature. Gate: zero on the corpus.
+
+*(M4: the frontend sets `gs_front_swdraw`, gs_draw.c rasterizes that primitive into gs_vram and calls
+the `sw_done` hook; the touched GPU data is downloaded and read back into gs_vram first (compared
+with it when the software renderer runs too). Same-thread frontend only. Remaining triggers: textures
+reading GPU data not at a target's base/width, or a target in a format other than CT32/24, CT16 or
+an alpha index. `PS2_GPU_PUNT` forces PUNTs for tests. Appendix F.)*
 
 ---
 

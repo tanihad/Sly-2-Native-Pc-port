@@ -48,18 +48,23 @@ byte-lane hazards, stale loads/downloads, aliased targets, PUNT path, phase labe
   (M3 bug: ep6 divergence). Baseline 13: all lockstep --no-resync clean except ep6 before the key fix;
   ep6 1062/0 after.
 
+- f640111: loads mark sdirty (ep2 photo stale shadow), phase labels, gs_replay --post-probe.
+- next: XCOPY cross-target copies (photo 0 downloads); ref-bench game-frame GPU ms.
+- Verification so far: lockstep --no-resync all 24 on hw: 24,092 comparisons, 0 differ, pictures
+  0 diff; WARP lockstep clean on rv_prompt, title, rope, rv_intro, ep6, ep8 hub, photo, hack (rest
+  running); --scale 2 title/rope clean; post-probe rope 5-6 (70 lines) / brief 3-4 (120 lines)
+  identical; hwdry: 0 PUNT, 0 steady downloads (FMV: 2 at an eviction, v10009); GPU ms REF S=1 per
+  game frame median/worst: ep8 boss 14.6/15.9, ep3 hub 7.5/8.6, ep5 street 7.7/10.2, ep2 hub
+  9.8/12.6, ThiefNet 14.8/15.7; run_tests.py 16/16; all 20 unit suites pass (gs-hw full incl. REF on
+  hw + WARP; window/warp -UnitOnly).
+
 ## In progress
-- lockstep --no-resync on all 24 (scratchpad lk_all.ps1 -> build\lk\summary_all.txt).
+- VRAM hashes sw + hwdry (build\m4_vram_*.txt), WARP lockstep rest (build\lk\summary_warp2.txt).
 
 ## Next
-1. Steady-state downloads/PUNT per recording (dry.ps1, hwdry -Ref metrics) on all 24.
-2. Phase labels in traces/metrics.
-3. gs_post_probe comparison ep3 rope f5-f6, fix-perf brief f3-f4.
-4. GPU ms REF S=1: ep8 boss, ep3 hub, ep5 street, ep2 hub, ThiefNet.
-5. Full regression: run_tests.py, unit suites (gs-front may need updated expectations), gpu_diff_all,
-   VRAM hashes, fthread check, builds debug/release; WARP unit scenes.
-6. (bonus) lockstep at --scale 2 (sample 0) on a few recordings: scale-readiness of ALIAS16/views.
-7. Design appendix F, WIP final.
+1. Compare VRAM hashes with tests/gpu/vram_hashes.txt (sw and hwdry).
+2. gpu_fthread_check, gpu_diff_all 13/13, build_game.py debug + --release, PS2_GS_BACKEND default sw.
+3. Append design appendix F (draft in scratchpad appF.md; copy text from there or rewrite), WIP final.
 
 ## Findings / traps
 - (M3) PowerShell ReadAllText + .Replace on CRLF files silently does nothing: use the Edit tool.

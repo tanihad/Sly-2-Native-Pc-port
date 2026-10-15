@@ -12,13 +12,16 @@
  * copy inside the main Z pages) are separate targets, and every cross-copy is counted:
  *   load      target <- vram_buf (stale block read or partially written by a draw);
  *   download  vram_buf <- target, sample 0, the GPU words only (the CPU side or another target needs
- *             GPU-written data).
+ *             GPU-written data);
+ *   xcopy     target <- the target of the same kind and scale that wrote the whole block, every sample
+ *             (M4: instead of download + load; e.g. the darken reads one row past its frame buffer,
+ *             which is the other frame buffer's memory).
  * Uploads are queued as vram_buf patches and flushed in one op when something reads a pending block,
  * or at the end of the frame (FMV: ~1200 macroblocks -> one patch). A patch writes only the bits the
  * uploads wrote (per-word bit masks): gs_vram is the source of uploaded data, not of the rest (the hw
- * backend never draws into it). An upload over a block holding GPU words that it does not overwrite
- * completely downloads that block first, so the block's other words reach vram_buf before the patch
- * (M3: no writer is ever lost). */
+ * backend never draws into it). Words an upload writes whole become CPU data while the block's other
+ * GPU words stay its writer's (M4: a CLUT uploaded into Z pages costs no download); a GPU word the
+ * upload writes only partly is downloaded first (no writer is ever lost). */
 #include "gpu_front_int.h"
 #include "gs_mem_swizzle.h"
 
