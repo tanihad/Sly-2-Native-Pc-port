@@ -240,7 +240,7 @@ static const struct { const char* name; size_t off; int kind; } front_fields[] =
     U64F(cmd_bytes), U64F(data_bytes), U32F(atst_kicks), U32F(atst_pass), U32F(atst_fail), U32F(atst_straddle),
     U32F(cd_as_kicks), U32F(as_over128), ARRF(zprims, GPU_ZF_N), ARRF(zmin, GPU_ZF_N), ARRF(zmax, GPU_ZF_N),
     U32F(z32_over), U32F(tex_vram), U32F(tex_view_c32), U32F(tex_view_alpha), U32F(tex_alias16), U32F(region_clamp),
-    U32F(tbw_npot), U32F(selfcheck_bad), U32F(lost_writer), U32F(post_prims), U32F(stq_cuts), U32F(checkpoints),
+    U32F(tbw_npot), U32F(selfcheck_bad), U32F(lost_writer), U32F(post_prims), U32F(stq_cuts), U32F(checkpoints), ARRF(phase_prims, GPU_PH_N),
 };
 
 static void json_front(FILE* f, const gpu_front_frame* g) {
@@ -797,6 +797,99 @@ static void ref_vblank(uint32_t vblank, uint32_t post_prims) {
     if ((nrecs & 63) == 0) take_stats();
 }
 
+/* --post-probe F:L (both --ref): scripts/gs_post_probe.c's report of the two 512x224 frame buffers at every
+ * FRAME_1/FRAME_2 change and VBlank end of VBlank indices F..L, from the GPU's memory (sample 0) instead
+ * of the software renderer's; printed to stdout in the same format, so the two outputs can be compared */
+static int pp_on, pp_first, pp_last, pp_vb, pp_armed;
+static uint64_t pp_frame1, pp_frame2, pp_tex0, pp_alpha, pp_test, pp_zbuf;
+#define PP_W 512
+#define PP_H 224
+static uint32_t pp_prev[2][PP_W * PP_H], pp_cur[2][PP_W * PP_H];
+
+static void pp_grab(uint32_t out[2][PP_W * PP_H]) {
+    static const uint32_t fbp_of[2] = { 0x000, 0x038 };
+    gpu_front_checkpoint();
+    read_hw();
+    for (int b = 0; b < 2; b++)
+        for (int y = 0; y < PP_H; y++)
+            for (int x = 0; x < PP_W; x++)
+                memcpy(&out[b][y * PP_W + x], hwmem + (size_t)gs_addr32(gs_swz_ct32, fbp_of[b] * 32, 8, (uint32_t)x, (uint32_t)y) * 4, 4);
+}
+
+static int pp_ch(uint32_t p, int c) { return (int)((p >> (8 * c)) & 0xFF); }
+
+static void pp_report(const char* why) {
+    static const char* cn = "RGBA";
+    static const uint32_t fbp_of[2] = { 0x000, 0x038 };
+    pp_grab(pp_cur);
+    printf("%s\n", why);
+    for (int b = 0; b < 2; b++) {
+        for (int c = 0; c < 4; c++) {
+            int changed = 0;
+            for (int i = 0; i < PP_W * PP_H; i++) changed += pp_ch(pp_cur[b][i], c) != pp_ch(pp_prev[b][i], c);
+            if (!changed) continue;
+            int best = -1, bestn = -1;
+            for (int sb = 0; sb < 2; sb++)
+                for (int sc = 0; sc < 4; sc++) {
+                    int n = 0;
+                    for (int i = 0; i < PP_W * PP_H; i++)
+                        if (pp_ch(pp_cur[b][i], c) != pp_ch(pp_prev[b][i], c)) n += pp_ch(pp_cur[b][i], c) == pp_ch(pp_prev[sb][i], sc);
+                    if (n > bestn) { bestn = n; best = sb * 4 + sc; }
+                }
+            int dmin = 999, dmax = -999;
+            long long dsum = 0;
+            for (int i = 0; i < PP_W * PP_H; i++)
+                if (pp_ch(pp_cur[b][i], c) != pp_ch(pp_prev[b][i], c)) {
+                    int d = pp_ch(pp_cur[b][i], c) - pp_ch(pp_prev[b][i], c);
+                    if (d < dmin) dmin = d;
+                    if (d > dmax) dmax = d;
+                    dsum += d;
+                }
+            printf("   buf %03X %c: %6d px changed (delta %d..%d avg %.1f); best exact source %03X.%c %d/%d\n", fbp_of[b],
+                   cn[c], changed, dmin, dmax, (double)dsum / changed, fbp_of[best / 4], cn[best % 4], bestn, changed);
+        }
+        int hist[8] = { 0 };
+        for (int i = 0; i < PP_W * PP_H; i++) hist[pp_ch(pp_cur[b][i], 3) >> 5]++;
+        printf("   buf %03X alpha /32 histogram:", fbp_of[b]);
+        for (int k = 0; k < 8; k++) printf(" %d", hist[k]);
+        printf("\n");
+    }
+    memcpy(pp_prev, pp_cur, sizeof pp_prev);
+}
+
+/* a register write of the stream (before it is applied) */
+static void pp_reg(uint32_t r, uint64_t v) {
+    int inr = pp_vb >= pp_first && pp_vb <= pp_last;
+    if (inr && !pp_armed) { pp_grab(pp_prev); pp_armed = 1; printf("== VBlank index %d: start\n", pp_vb); }
+    if (inr && (r == 0x4C || r == 0x4D)) {
+        uint64_t* fr = r == 0x4C ? &pp_frame1 : &pp_frame2;
+        if (v != *fr) {
+            char why[256];
+            snprintf(why, sizeof why, "-- before FRAME_%d <- FBP %03X FBW %u PSM %02X FBMSK %08X | previous step: TEX0 %016llX ALPHA %010llX TEST %05llX ZBUF %08llX",
+                     r == 0x4C ? 1 : 2, (unsigned)(v & 0x1FF), (unsigned)((v >> 16) & 0x3F), (unsigned)((v >> 24) & 0x3F),
+                     (unsigned)(v >> 32), (unsigned long long)pp_tex0, (unsigned long long)pp_alpha, (unsigned long long)pp_test,
+                     (unsigned long long)pp_zbuf);
+            pp_report(why);
+        }
+        *fr = v;
+    }
+    if (r == 0x06) pp_tex0 = v;
+    if (r == 0x42) pp_alpha = v;
+    if (r == 0x47) pp_test = v;
+    if (r == 0x4E) pp_zbuf = v;
+}
+
+/* a VBlank record of the stream (before it is applied); display register snapshot */
+static void pp_vblank(const uint64_t snap[GS_PRIV_SNAPSHOT]) {
+    if (pp_vb >= pp_first && pp_vb <= pp_last) {
+        char why[64];
+        snprintf(why, sizeof why, "-- VBlank index %d ends (DISPFB2 FBP %03X)", pp_vb, (unsigned)(snap[9] & 0x1FF));
+        pp_report(why);
+        fflush(stdout);
+    }
+    pp_vb++;
+}
+
 /* the first divergence, bisected by a second run of this program with --bisect */
 static void bisect_spawn(void) {
     wchar_t* cl = GetCommandLineW();
@@ -1054,6 +1147,9 @@ int main(int argc, char** argv) {
 #ifdef GS_REPLAY_GPU
         else if (!strcmp(argv[i], "--lockstep")) lockstep = 1;
         else if (!strcmp(argv[i], "--no-resync")) lk_resync = 0;
+        else if (!strcmp(argv[i], "--post-probe") && i + 1 < argc) {
+            if (sscanf(argv[++i], "%d:%d", &pp_first, &pp_last) == 2) pp_on = 1;
+        }
         else if (!strcmp(argv[i], "--bisect") && i + 1 < argc) {
             if (sscanf(argv[++i], "%u:%u:%u", &bisect_v, &bisect_a, &bisect_b) == 3) bisect_on = 1;
         }
@@ -1126,6 +1222,9 @@ int main(int argc, char** argv) {
     }
     memcpy(gs_vram, vram, sizeof vram);
     gs_tex_flush_all();                          /* nothing decoded from the CLUT upload area stays */
+#ifdef GS_REPLAY_GPU
+    pp_frame1 = regs[0x4C]; pp_frame2 = regs[0x4D]; pp_tex0 = regs[0x06]; pp_alpha = regs[0x42]; pp_test = regs[0x47]; pp_zbuf = regs[0x4E];
+#endif
 #ifdef GS_REPLAY_GPU
     if (FRONT_MODE(backend) || ref_mode) {       /* the frontend consumes the stream next to (or instead of) sw */
         gpu_front_config fc;
@@ -1217,6 +1316,9 @@ int main(int argc, char** argv) {
 #ifdef GS_REPLAY_GPU
             if (h[1] == 0x53 && (v & 3) != 3) stream_xfers++;
 #endif
+#ifdef GS_REPLAY_GPU
+            if (pp_on) pp_reg(h[1], v);
+#endif
             gs_write_reg(h[1], v);
         } else if (h[0] == 2) {
             if (pos + h[1] > size) break;
@@ -1227,6 +1329,9 @@ int main(int argc, char** argv) {
             uint64_t snap[GS_PRIV_SNAPSHOT];
             if (pos + sizeof snap > size) break;
             memcpy(snap, all + pos, sizeof snap);
+#ifdef GS_REPLAY_GPU
+            if (pp_on) pp_vblank(snap);
+#endif
             pos += sizeof snap;
             for (int i = 0; i < 15; i++) gs_priv_access(0x12000000u + 16u * (uint32_t)i, &snap[i], 8, 1);
 #ifdef GS_REPLAY_GPU

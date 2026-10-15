@@ -293,6 +293,7 @@ static void load_block(gpu_target* T, int i, uint32_t b) {
             if (T->vs[k] != blk_serial[a] && blk_cpu[a] == ALL) {
                 load_list[nload++] = (uint16_t)k;
                 T->vs[k] = blk_serial[a];
+                T->sdirty[k] = 1;        /* (the shadow copy predates the load: M4 photo finding) */
             }
         }
     }
@@ -300,6 +301,7 @@ static void load_block(gpu_target* T, int i, uint32_t b) {
     if (blk_cpu[b] != ALL) download_block(b);    /* another target's (or a lost writer's) data */
     load_list[nload++] = (uint16_t)i;
     T->vs[i] = blk_serial[b];
+    T->sdirty[i] = 1;
 }
 
 void own_grow(gpu_target* T, int rows) {

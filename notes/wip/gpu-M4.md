@@ -34,25 +34,37 @@ byte-lane hazards, stale loads/downloads, aliased targets, PUNT path, phase labe
 - Lockstep: no skip after post passes; resync after a differing VBlank only without --no-resync.
 
 ## Done
-- (nothing yet)
+- 611feda: R32_UINT colour UAV (rov_c uint); StateRec 128 B (DIMX, phase, hint label); ALIAS16 runs
+  (frontend alias_prim/close_alias, GPU_FOP_ALIAS16 begin + ALIAS16_END, executor exec_alias16,
+  shaders/alias16.hlsl gather/scatter, ps_gs FB16 mode incl. DTHE/DIMX, 16-bit DATE/blend/FBA/mask);
+  CT16 views anywhere (view_word_at + SWZ_ICT32 inverse table); TS_SELF reads; 1:1 sprite flag +
+  vflags; PUNT path (punt_prim/fr_sw_done, gs_front_swdraw in gs_draw.c, mem reader, PS2_GPU_PUNT);
+  phase hint forwarded (gs_env_view.phase, fthread); lockstep compares post passes, resync only after
+  a differing frame without --no-resync. Unit REF: 0 differing scenes on hw and WARP (t_frame16,
+  t_formats_contexts included); forced PUNT every 3rd prim: 1078 PUNTs exact, read-backs equal.
+- 919a5b1: fix: blends reading Cd were taken for tiled fills (bit-plane steps -> a colour clear).
+- next commit: uploads over GPU words keep untouched words GPU (no download; was 34 downloads per
+  game frame in title), opaque sprites in every tier (Z clear loads gone), ROV draw key includes ct/zt
+  (M3 bug: ep6 divergence). Baseline 13: all lockstep --no-resync clean except ep6 before the key fix;
+  ep6 1062/0 after.
 
 ## In progress
-- R32 UAV + gs.hlsl rov_c as uint.
+- lockstep --no-resync on all 24 (scratchpad lk_all.ps1 -> build\lk\summary_all.txt).
 
 ## Next
-1. R32_UINT UAV for colour targets; rov_c uint; unit scenes still 0 diff (hw).
-2. StateRec 128 B (+DIMX); FB16 mode in ps_gs; gather/scatter CS; frontend ALIAS16 runs as draws;
-   executor staging; t_frame16 / t_formats_contexts identical; unit harness counts M4 scenes as bad.
-3. Views: CT16 views anywhere (no TEX_FMT PUNT for CT16), self-UAV reads, 1:1 sample offset,
-   shadow resize on target growth.
-4. Lockstep without skip; --no-resync on the 13 baseline recordings, fix divergences.
-5. The 11 corpus-extension recordings.
-6. PUNT path + forced-punt tests (unit scenes both mode; hw-only replay pictures).
-7. Phase labels.
-8. gs_post_probe comparison ep3 rope f5-f6, fix-perf brief f3-f4.
-9. GPU ms REF S=1: ep8 boss, ep3 hub, ep5 street, ep2 hub, ThiefNet.
-10. Full regression: run_tests.py, unit suites, gpu_diff_all, VRAM hashes, fthread check, builds.
-11. Design appendix F, WIP final.
+1. Steady-state downloads/PUNT per recording (dry.ps1, hwdry -Ref metrics) on all 24.
+2. Phase labels in traces/metrics.
+3. gs_post_probe comparison ep3 rope f5-f6, fix-perf brief f3-f4.
+4. GPU ms REF S=1: ep8 boss, ep3 hub, ep5 street, ep2 hub, ThiefNet.
+5. Full regression: run_tests.py, unit suites (gs-front may need updated expectations), gpu_diff_all,
+   VRAM hashes, fthread check, builds debug/release; WARP unit scenes.
+6. (bonus) lockstep at --scale 2 (sample 0) on a few recordings: scale-readiness of ALIAS16/views.
+7. Design appendix F, WIP final.
 
 ## Findings / traps
 - (M3) PowerShell ReadAllText + .Replace on CRLF files silently does nothing: use the Edit tool.
+  (Also: a .Replace of a multi-line literal can hit an identical declaration elsewhere - check.)
+- `half` is an HLSL keyword (type).
+- The lockstep bisection child replays with a checkpoint before every primitive of the range; a
+  divergence that disappears there points at draw merging / run batching (ep6: ROV key without zt).
+- PS2_GPU_PROBE=x,y now also logs every non-draw op the executor runs (op number, target).

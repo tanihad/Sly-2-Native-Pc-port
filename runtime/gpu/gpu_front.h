@@ -80,6 +80,8 @@ typedef struct {
     uint32_t post_prims;                 /* primitives the REF tier does not render yet (ALIAS16, target views, PUNT) */
     uint32_t stq_cuts;                   /* STQ triangles with batch cuts (gpu_rec_tri.cuts) */
     uint32_t checkpoints;                /* partial frames handed to the sink (lockstep) */
+    uint32_t phase_prims[6];             /* drawn primitives per phase label (GPU_PH_*: scene, fill, ROV read-modify-write,
+                                            ALIAS16, target view, feedback) */
 } gpu_front_frame;
 
 void gpu_front_start(const gpu_front_config* cfg);   /* installs the gs_draw.c hooks */
@@ -196,7 +198,7 @@ enum {                                          /* gpu_staterec.flags */
 enum { GPU_TS_SELF = 1 << 16 };                 /* gpu_staterec.texsrc: the view is the bound colour target (byte lanes
                                                    the draw does not write: read in place, no copy) */
 /* phase labels (diagnostic, gpu_staterec.phase and traces): what a draw is, from its own state */
-enum { GPU_PH_SCENE, GPU_PH_FILL, GPU_PH_ROV_RMW, GPU_PH_ALIAS16, GPU_PH_VIEW, GPU_PH_FEEDBACK, GPU_PH_HINT = 0x100 };
+enum { GPU_PH_SCENE, GPU_PH_FILL, GPU_PH_ROV_RMW, GPU_PH_ALIAS16, GPU_PH_VIEW, GPU_PH_FEEDBACK, GPU_PH_N, GPU_PH_HINT = 0x100 };
 #define GPU_STATE_BYTES 128
 typedef struct {                                /* StateRec, 128 bytes */
     uint64_t tex0, clamp, tex1;                 /* TEX0 (CLD cleared), CLAMP, TEX1 of the context */

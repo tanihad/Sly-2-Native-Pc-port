@@ -595,6 +595,7 @@ typedef struct {
     uint32_t prims;                      /* (trace) */
     uint64_t alpha, test, frame;
     int bbox[4];                         /* pixels touched (union of the primitives' rectangles) */
+    uint32_t phase;                      /* phase label of its first primitive (trace) */
 } open_draw;
 static open_draw OD;
 
@@ -654,6 +655,8 @@ typedef struct {
 static alias_batch AB;
 static int nar;                          /* hazard rectangles of the open ALIAS16 run */
 
+static const char* const phase_names[GPU_PH_N] = { "scene", "fill", "rov-rmw", "alias16", "view", "feedback" };
+
 static void close_draw(void) {
     if (!OD.open) return;
     OD.open = 0;
@@ -673,8 +676,8 @@ static void close_draw(void) {
             gf.d3d_draws_commute += 1 + split;
     }
     if (trace_on)
-        fprintf(stderr, "[front] draw %s cls %d prims %u count %u ct %u zt %u tex %u ps %03X blend %d depth %d wmask %X split %d "
-                        "FRAME %016llX ALPHA %010llX TEST %05llX\n", OD.d.tier == GPU_TIER_ROV ? "ROV" : OD.d.tier == GPU_TIER_ALIAS16 ? "A16" : "FF ", OD.d.cls,
+        fprintf(stderr, "[front] draw %s %-8s cls %d prims %u count %u ct %u zt %u tex %u ps %03X blend %d depth %d wmask %X split %d "
+                        "FRAME %016llX ALPHA %010llX TEST %05llX\n", OD.d.tier == GPU_TIER_ROV ? "ROV" : OD.d.tier == GPU_TIER_ALIAS16 ? "A16" : "FF ", phase_names[OD.phase % GPU_PH_N], OD.d.cls,
                 OD.prims, OD.d.count, OD.d.ct, OD.d.zt, OD.d.tex, OD.d.ps_key, OD.d.blend, OD.d.depth, OD.d.wmask, split,
                 (unsigned long long)OD.frame, (unsigned long long)OD.alpha, (unsigned long long)OD.test);
 }
@@ -1378,6 +1381,8 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
     uint32_t texsrc = P->tme ? (uint32_t)ts.kind | (ts.T ? (uint32_t)ts.T->id << 8 : 0) | self : 0;
     uint32_t state = state_for(ev, texsrc);
     if ((int)state != prev_state_index) { gf.state_changes++; prev_state_index = (int)state; }
+    uint32_t phase = phase_of(texsrc);
+    gf.phase_prims[phase]++;
 
     if (tier != GPU_TIER_ALIAS16 && AB.open) close_alias();
 
@@ -1461,6 +1466,7 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
         memset(&OD.d, 0, sizeof OD.d);
         OD.d.tier = (uint8_t)tier; OD.d.cls = (uint8_t)cls; OD.d.blend = (uint8_t)S.blend; OD.d.depth = (uint8_t)S.depth_class;
         OD.d.ps_key = ps_key; OD.d.ct = ctid; OD.d.zt = ztid; OD.d.tex = texid; OD.d.wmask = (uint8_t)S.wmask;
+        OD.phase = phase;
         OD.d.sc[0] = (int16_t)P->scx0; OD.d.sc[1] = (int16_t)P->scy0; OD.d.sc[2] = (int16_t)P->scx1; OD.d.sc[3] = (int16_t)P->scy1;
         OD.d.first = cls == GPU_PC_TRI ? (uint32_t)(A_idx.n / 4) : 0;
         OD.d.vtx_first = (uint32_t)(A_vtx.n / sizeof(gvtx));
