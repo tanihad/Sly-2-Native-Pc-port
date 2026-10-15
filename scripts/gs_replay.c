@@ -1471,6 +1471,14 @@ int main(int argc, char** argv) {
         size_t nd = 0;                           /* (30 fps games: VBlanks with draws only) */
         for (size_t i = 0; i < nsts; i++) if (sts[i].gpu_ms >= 0 && sts[i].draws) g[nd++] = sts[i].gpu_ms;
         double dmed = median(g, nd);
+        /* game frames (M4: VBlanks with >= 1000 primitives, as M2 counts them; replay start excluded) */
+        size_t ngf = 0;
+        for (size_t i = 0; i < nsts; i++) {
+            if (sts[i].gpu_ms < 0 || sts[i].partial) continue;
+            for (size_t j = 0; j < nff; j++)
+                if (ff[j].vblank == sts[i].vblank) { if (ff[j].kicks >= 1000 && j >= 2) g[ngf++] = sts[i].gpu_ms; break; }
+        }
+        double gfmed = median(g, ngf), gfmax = ngf ? g[ngf - 1] : 0;
         free(g);
         fprintf(stderr, "ref: %u frames (%llu checkpoint frames), %llu REF draws, %llu ALIAS16 runs, %u post-pass prims, "
                         "%u STQ triangles with batch cuts, %u lost writers; loads %llu downloads %llu patches %llu clears %llu\n",
@@ -1479,8 +1487,9 @@ int main(int argc, char** argv) {
                 (unsigned long long)xc.clears);
         fprintf(stderr, "ref: GPU ms per VBlank median %.3f, mean %.3f, max %.3f (%zu frames with timestamps); "
                         "median over the %zu VBlanks with draws %.3f\n", gmed, ng ? gsum / (double)ng : 0.0, gmax, ng, nd, dmed);
-        fprintf(stderr, "ref-bench frames=%zu gpu_med=%.4f gpu_mean=%.4f gpu_max=%.4f draw_frames=%zu gpu_med_draws=%.4f\n", ng, gmed,
-                ng ? gsum / (double)ng : 0.0, gmax, nd, dmed);
+        fprintf(stderr, "ref-bench frames=%zu gpu_med=%.4f gpu_mean=%.4f gpu_max=%.4f draw_frames=%zu gpu_med_draws=%.4f "
+                        "game_frames=%zu gpu_med_game=%.4f gpu_max_game=%.4f\n", ng, gmed,
+                ng ? gsum / (double)ng : 0.0, gmax, nd, dmed, ngf, gfmed, gfmax);
         if (backend == B_BOTH)
             fprintf(stderr, "both ref: %u pictures compared, %u differ (%llu pixels), min PSNR %.2f dB\n", ref_frames, ref_diff_frames,
                     (unsigned long long)ref_diff_px, min_psnr);
