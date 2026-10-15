@@ -5,9 +5,11 @@
 # frames), median frame, CPU time, us per D3D draw, GPU ms, the D3D driver threads' CPU, and the
 # frontend's own time. -Pace (default on) replays VBlanks at 59.94 Hz as the game does, so a GPU
 # backlog does not inflate the render thread's wall time. Game frame = VBlank with >= 1000 primitives.
+# The frontend runs on its own thread (gpu_fthread.c) unless -SameThread; the GS-side columns are the
+# per-game-frame CPU of the decoding (GS) thread and of the frontend thread (median / worst steady).
 #   powershell -ExecutionPolicy Bypass -File scripts\gpu_submit_bench.ps1 [-Only ep8_boss,ep3_hub] [-Runs 5] [-NoPace] [-Scale 1]
 param([string[]]$Only = @('ep8_boss', 'ep3_hub', 'ep5_hub_street', 'gpu-C_ep2_hub', 'gpu-C_thiefnet'), [int]$Runs = 5,
-      [switch]$NoPace, [int]$Scale = 1, [string]$CorpusRoot = "", [string]$Out = "")
+      [switch]$NoPace, [switch]$SameThread, [int]$Scale = 1, [string]$CorpusRoot = "", [string]$Out = "")
 $Only = @($Only | ForEach-Object { $_ -split ',' } | Where-Object { $_ })
 $root = Split-Path $PSScriptRoot -Parent
 $main = $root
@@ -40,11 +42,13 @@ foreach ($rel in $recs) {
     for ($i = 0; $i -lt $Runs; $i++) {
         $log = Join-Path $Out "$name.run$i.log"
         $runArgs = @($rec, '-', '0', '--backend', 'hwsubmit', '--scale', $Scale)
+        if (-not $SameThread) { $runArgs += '--front-thread' }
         if (-not $NoPace) { $runArgs += '--pace' }
         if (-not $built) {
             $a = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'gs_replay.ps1'), '-Rec', $rec,
                    '-Out', $bin, '-Bench', '-Workers', '0', '-Backend', 'hwsubmit', '-Scale', $Scale, '-Log', $log)
             if (-not $NoPace) { $a += '-Pace' }
+            if (-not $SameThread) { $a += '-FrontThread' }
             & powershell @a | Out-Null
             $built = $true
         } else {
@@ -58,6 +62,8 @@ foreach ($rel in $recs) {
         if (-not $line) { Write-Host "$name run $i : no result (see $log)"; continue }
         $kv = @{}
         foreach ($t in ($line -replace '^submit-bench ', '') -split ' ') { $p = $t -split '='; if ($p.Count -eq 2) { $kv[$p[0]] = [double]$p[1] } }
+        $tb = (Get-Content $log | Where-Object { $_ -like 'thread-bench *' }) -join ''
+        foreach ($t in ($tb -replace '^thread-bench ', '') -split ' ') { $p = $t -split '='; if ($p.Count -eq 2 -and $p[0] -ne 'game') { $kv['t_' + $p[0]] = [double]$p[1] } }
         $cl = (Get-Content $log | Where-Object { $_ -like 'replay thread CPU*' }) -join ''
         if ($cl -match 'CPU ([\d.]+) ms') { $kv['replay_cpu_ms'] = [double]$matches[1] }
         $runsData += $kv
@@ -73,10 +79,12 @@ foreach ($rel in $recs) {
         upload_median_ms = & $med 'upload_med'; us_per_draw = & $med 'us_draw'
         gpu_median_ms = & $med 'gpu_med'; gpu_worst_steady_ms = & $med 'gpu_max_steady'
         front_median_ms = & $med 'front_med'; front_worst_ms = & $med 'front_max'
+        gs_thread_median_ms = & $med 't_gs_med'; gs_thread_worst_steady_ms = & $med 't_gs_max_steady'
+        frontend_thread_median_ms = & $med 't_ft_med'; frontend_thread_worst_steady_ms = & $med 't_ft_max_steady'
         replay_thread_cpu_per_game_frame_ms = [math]::Round((Median @($runsData | ForEach-Object { $_['replay_cpu_ms'] / [math]::Max(1, $_['game']) })), 3)
         worst_steady_runs = (@($runsData | ForEach-Object { [math]::Round($_['render_max_steady'], 2) }) -join ' ') }
     $rows += [pscustomobject]$row
     Write-Host ($rows[-1] | Format-List | Out-String).Trim()
     Write-Host ''
 }
-$rows | ConvertTo-Json | Set-Content (Join-Path $Out ("bench_s{0}{1}.json" -f $Scale, $(if ($NoPace) { '_nopace' } else { '' })))
+$rows | ConvertTo-Json | Set-Content (Join-Path $Out ("bench_s{0}{1}{2}.json" -f $Scale, $(if ($NoPace) { '_nopace' } else { '' }), $(if ($SameThread) { '_same' } else { '' })))

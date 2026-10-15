@@ -700,9 +700,32 @@ static void exec_download(const gpu_fop_blocks* o) {
         ID3D11DeviceContext_Unmap(gpu_rt.ctx, (ID3D11Resource*)t->stage, 0);
 }
 
+/* vram_buf patches. Many runs (a replay start or a level load patches all 4 MB in ~1000 runs) go
+ * through a CPU mirror of vram_buf and one UpdateSubresource of the covered range; a few runs (Sly's
+ * frames) are updated run by run. M3: whatever else writes vram_buf (downloads) must update the
+ * mirror too. */
+static uint8_t* vram_mirror;
+
 static void exec_patch(const gpu_front_frame_data* fd, const gpu_fop_blocks* o) {
     const uint16_t* list = (const uint16_t*)(fd->data + o->data_off);
     const uint8_t* bytes = fd->data + o->data_off + ((o->n * 2 + 15) & ~15u);
+    if (!vram_mirror) vram_mirror = calloc(1, 4u << 20);
+    uint32_t runs = 0, lo = 0xFFFF, hi = 0;
+    for (uint32_t i = 0; i < o->n; i++) {
+        uint32_t b = list[i] & 16383u;
+        if (vram_mirror) memcpy(vram_mirror + (size_t)b * 256, bytes + (size_t)i * 256, 256);
+        runs += !i || list[i] != list[i - 1] + 1;
+        if (b < lo) lo = b;
+        if (b > hi) hi = b;
+    }
+    /* (vram_buf and the mirror start equal (zero) and only patches write either) */
+    if (vram_mirror && runs > 16) {
+        D3D11_BOX box = { lo * 256u, 0, 0, (hi + 1u) * 256u, 1, 1 };
+        ID3D11DeviceContext_UpdateSubresource(gpu_rt.ctx, (ID3D11Resource*)X.vram, 0, &box, vram_mirror + (size_t)lo * 256, 0, 0);
+        gpu_rt.n_uploads++;
+        gpu_rt.upload_bytes += (hi + 1 - lo) * 256;
+        return;
+    }
     for (uint32_t i = 0; i < o->n;) {
         uint32_t j = i + 1;
         while (j < o->n && list[j] == list[j - 1] + 1) j++;          /* runs of consecutive blocks */
@@ -785,6 +808,8 @@ void gpu_exec_release(void) {
     GPU_RELEASE(X.st.srv); GPU_RELEASE(X.st.buf); GPU_RELEASE(X.cb.buf);
     GPU_RELEASE(X.vram_srv); GPU_RELEASE(X.vram); GPU_RELEASE(X.clut_srv); GPU_RELEASE(X.clut);
     GPU_RELEASE(X.layout); GPU_RELEASE(X.rs); GPU_RELEASE(X.ds_off); GPU_RELEASE(X.ds_write);
+    free(vram_mirror);                   /* (vram_buf starts at zero again with the next device) */
+    vram_mirror = NULL;
     for (int i = 0; i < 8; i++) GPU_RELEASE(X.ds[i]);
     for (int a = 0; a < BL_N; a++) for (int b = 0; b < 16; b++) GPU_RELEASE(X.bs[a][b]);
     X.init = 0;
