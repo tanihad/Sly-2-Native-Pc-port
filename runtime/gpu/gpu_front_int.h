@@ -27,6 +27,7 @@ extern int gf_trace;                     /* PS2_GPU_FRONT_TRACE: this frame is l
 void* gf_cmd(uint16_t op, uint32_t bytes);          /* append a command (zeroed), returns it */
 uint32_t gf_data(const void* src, uint32_t bytes);  /* append to the data arena (src NULL: zeroed), returns offset */
 void* gf_data_ptr(uint32_t off);
+void gf_target_op(uint16_t id);                     /* an op on target id follows: an ALIAS16 run on it ends first */
 
 /* ---- targets and ownership (gpu_own.c) ---------------------------------------------------------- */
 enum { TGT_C32, TGT_Z32, TGT_Z24, TGT_Z16, TGT_Z16S, TGT_N };
@@ -73,8 +74,6 @@ gpu_target* own_find(int kind, uint32_t base, uint32_t fbw);
  * the destination); writes: the blocks become T's. */
 void own_draw(gpu_target* T, int x0, int y0, int x1, int y1, int writes, int opaque);
 void own_grow(gpu_target* T, int rows);  /* taller use: recreate + copy */
-/* A PUNTed primitive's rect: drawn by the software rasterizer into memory. */
-void own_punt(gpu_target* T, int x0, int y0, int x1, int y1);
 /* Absolute 256-byte blocks of T touched through another view (ALIAS16 CT16 views). */
 void own_blocks(gpu_target* T, const uint16_t* blocks, int n, int writes);
 /* Every block of T written (a recognised full clear). */
@@ -101,6 +100,7 @@ int  own_gpu_blocks(gpu_dl_entry* out, uint16_t* writers, int max);   /* gpu_fro
 /* 1 when a block of the rect holds downloaded GPU data that gs_vram lacks (CLUT loads read gs_vram) */
 int  own_mem_vstale(int psm, uint32_t bp, uint32_t bw, int u0, int v0, int u1, int v1);
 int  own_target_kind_of_zpsm(int zpsm);
+int  own_readback_apply(const uint8_t* mem, int write);   /* PUNT: gs_vram <- downloaded blocks (or compare) */
 
 /* The 256-byte blocks of a transfer rectangle [x0,x1) x [y0,y1) (psm units; the own_upload rule for
  * rectangles past 2048), at most max; any thread (pure geometry). */

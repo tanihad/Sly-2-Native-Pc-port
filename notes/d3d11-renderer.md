@@ -482,6 +482,13 @@ dispatch when a sprite reads something written earlier in it or writes a 32-bit 
 in it (two halfwords of one uint must not race). Expected 3-6 dispatches per frame. Exact at any scale
 because sample (i, j) of one native pixel corresponds to sample (i, j) of every other.
 
+*(M4: built as **ALIAS16 runs** instead of a sprite-only CS: a gather CS copies the run's rectangle of
+the target's halfwords into an R32_UINT staging texture in the 16-bit frame's own pixel space (every
+sample), the run's primitives - any class, with Z, DATE, DTHE - are ordinary REF/ROV draws on it with
+`ps_gs` in 16-bit mode, and a scatter CS writes the words back. ROV order makes overlapping writes
+exact, so only a read of something written earlier in the run splits it. No PUNT for 16-bit frames.
+Appendix F.)*
+
 ### 5.3 Z-region aliasing
 
 - Uploads into 080-0A3 (inside main Z32) are memory sources sampled from `vram_buf`.
@@ -495,6 +502,12 @@ Flush; download sample 0 of the affected pages; run the sw rasteriser synchronou
 (`gs_sw_draw_record`, the existing code); mark the pages CPU-owned and reload them into the target,
 replicated to all samples. Exact at sample 0, blocky at scale, slow. Counted and logged per state
 signature. Gate: zero on the corpus.
+
+*(M4: the frontend sets `gs_front_swdraw`, gs_draw.c rasterizes that primitive into gs_vram and calls
+the `sw_done` hook; the touched GPU data is downloaded and read back into gs_vram first (compared
+with it when the software renderer runs too). Same-thread frontend only. Remaining triggers: textures
+reading GPU data not at a target's base/width, or a target in a format other than CT32/24, CT16 or
+an alpha index. `PS2_GPU_PUNT` forces PUNTs for tests. Appendix F.)*
 
 ---
 
@@ -1310,3 +1323,155 @@ the correctness tier; FF (M5) carries the speed.
   because REF skips ALIAS16); t_texture_cache, t_deferred_hazards and t_direct_order already pass
   while using M4 effects.
 - Z targets must get their colour target's scale factors before display_ky2 can be re-enabled (M7).
+
+## Appendix F. As built: M4 exact effects (branch gpu/M4)
+
+**Result.** With every post pass rendered on the GPU, lockstep in REF mode at S=1 with `--no-resync`
+(GS memory compared with the software renderer's, all 4 MB, at every FRAME/ZBUF change and every
+VBlank, nothing restarted from sw memory) finds **0 differences in 24,092 comparisons on all 24
+recordings** on the RTX 4060 Ti **and on WARP**, and every reference-composed picture is identical
+(0 pixels); the WARP STQ anomaly of appendix E did not show up in any recording. 0 PUNT; 0 downloads after the
+first frames except the FMV recording's one eviction (below). gs_post_probe's channel report (FRAME
+changes and VBlank ends) computed from GPU memory (`gs_replay --post-probe`) is identical line for
+line to the software one on ep3 rope VBlanks 5-6 (70 lines) and fix-perf brief 3-4 (120 lines).
+Unit scenes (`tests/unit/gs-hw/run.ps1 -RefOnly`): 0 differing scenes on the RTX 4060 Ti and on WARP,
+t_frame16 and t_formats_contexts included (the harness now counts every differing scene), plus a new
+scene t_target_views (in-place T8H read with disjoint byte lanes, in-place CT16 strips in both
+directions, a 1:1 bilinear CT32 view); with
+`PS2_GPU_PUNT=3:15` (every third primitive PUNTed) 1078 PUNTs, all exact, read-backs equal to gs_vram.
+PUNT on recordings: title with every fifth primitive PUNTed is lockstep-clean in "both" mode (184/0),
+and in hw-only mode (read-back into gs_vram, the software rasterizer drawing only the PUNTed
+primitives) the pictures equal the REF pictures (which equal sw's): title (every 5th primitive, 30
+pictures), ep3 rope (every 7th, 20), rv_prompt with every 16-bit-frame primitive PUNTed (no ALIAS16 run
+left, 20).
+
+| recording | VBlanks | lockstep comparisons | differ | pictures differ | ALIAS16 runs | post-pass prims |
+|---|---|---|---|---|---|---|
+| fix-perf rv_prompt | 20 | 196 | 0 | 0 | 48 | 2048 |
+| fix-perf rv_intro | 16 | 126 | 0 | 0 | 30 | 1280 |
+| fix-perf title | 30 | 184 | 0 | 0 | 42 | 1792 |
+| fix-perf brief | 30 | 338 | 0 | 0 | 42 | 1832 |
+| ep3 hub | 240 | 1427 | 0 | 0 | 297 | 12656 |
+| ep3 recon_int | 240 | 1484 | 0 | 0 | 249 | 10608 |
+| ep3 rope | 20 | 127 | 0 | 0 | 27 | 1136 |
+| ep3 brief | 240 | 1208 | 0 | 0 | 264 | 11264 |
+| ep5 hub_street | 240 | 1403 | 0 | 0 | 291 | 12400 |
+| ep6 rc_battle | 120 | 1062 | 0 | 0 | 123 | 5232 |
+| ep7 boss | 120 | 1165 | 0 | 0 | 165 | 7040 |
+| ep8 hub | 240 | 1920 | 0 | 0 | 315 | 13440 |
+| ep8 boss | 240 | 1203 | 0 | 0 | 300 | 12800 |
+| C ep0_museum | 150 | 1155 | 0 | 0 | 201 | 8576 |
+| C ep1_hub | 180 | 1224 | 0 | 0 | 261 | 11120 |
+| C m1_brawl | 180 | 1213 | 0 | 0 | 258 | 11008 |
+| C ep2_hub | 180 | 1500 | 0 | 0 | 264 | 11264 |
+| C ep2_photo | 240 | 1432 | 0 | 0 | 153 | 7246 |
+| C ep4_hub | 180 | 1499 | 0 | 0 | 264 | 11248 |
+| C hack_minigame | 180 | 1412 | 0 | 0 | 0 | 2800 |
+| C fmv | 240 | 549 | 0 | 0 | 0 | 560 |
+| C load_m3 | 240 | 1140 | 0 | 0 | 321 | 14080 |
+| C pause_save | 150 | 642 | 0 | 0 | 174 | 7424 |
+| C thiefnet | 100 | 483 | 0 | 0 | 144 | 6128 |
+
+(Post-pass prims: ALIAS16 primitives, target-view reads and PUNTs. Steady-state downloads per
+recording from `gs_replay -Backend hwdry -Ref` metrics after the first 4 VBlanks: 0 everywhere; loads
+0 except ep8 hub 3 and ep8 boss 2 (targets created later in the recording); FMV: 2 downloads (1792
+blocks) at VBlank 10009, the eviction of the 3D scene's targets after 120 unused frames - a
+transition, by design. A `--scale 2` lockstep (sample 0) of title and ep3 rope is clean too.)
+
+**What was built**
+- **ALIAS16 runs** (5.2, generalised): primitives into a 16-bit frame (CT16/CT16S) over a C32 target
+  with the same base and width form a run: `GPU_FOP_ALIAS16` gathers the run's rectangle (whole 16x8
+  blocks, bbox filled in when the run closes) of the target's halfwords into an R32_UINT staging
+  texture in the frame's own pixel space (every sample), the run's draws (tier `GPU_TIER_ALIAS16`, any
+  primitive class, with Z/DATE/DTHE) are REF draws on it (`ps_gs` with `GPU_SF_FB16`: 16-bit Cd
+  expansion, DATE on bit 15, DIMX dither before COLCLAMP, 5551 packing, 16-bit FBMSK), and
+  `GPU_FOP_ALIAS16_END` scatters the words back (one thread per word: pixels x and x + 8 of a block row
+  share it). Shaders: `shaders/alias16.hlsl`. Reads of the target (CT16 views of it) come from its SRV,
+  i.e. the state before the run, so the frontend splits a run only at a read-after-write hazard
+  (rectangles: exact within one view, page overlap across views). A load, grow or other op on the
+  run's target ends the run first (`gf_target_op`). The Sly shuffles: 2-3 runs per game frame.
+- **Target views** (5.1): CT32/CT24, alpha-index and now CT16/CT16S views of a C32 target anywhere
+  (`view_word_at`: GS word address -> page relative to the target's base -> inverse CT32 table
+  `SWZ_ICT32` in swz_tab). Feedback with overlapping byte lanes: shadow copy of the blocks written (or
+  loaded) since the last copy; disjoint lanes: `GPU_TS_SELF`, the shader reads the bound target in
+  place (no copy). 1:1 rule: sprites stepping one texel per pixel and row carry a record flag; with
+  the view on the target's sample grid (`vflags`) each fragment reads its own sample (i, j) of the
+  native texels (so bilinear taps stay native rows/columns at any scale); other reads take sample 0
+  (scaled bilinear for non-1:1 reads is M7).
+- **Colour targets as R32_UINT** in the REF pixel shader (a UAV with the typeless 32-bit format cast;
+  mem.hlsl keeps the R8G8B8A8_UINT view). StateRec grew to **128 B** (DIMX, phase label, hint label).
+- **Ownership** (gpu_own.c): uploads keep a block's untouched GPU words with their writer (only words
+  the upload writes partly are downloaded); **cross-target copies** `GPU_FOP_XCOPY` / `cs_xcopy` (a
+  stale block wholly written by another target of the same kind and scale is copied over, every
+  sample, instead of download + load); loads mark blocks written-since-copy for the shadow.
+- **PUNT path** (5.4): `punt_prim` downloads what the primitive touches, hands everything to the
+  render thread (checkpoint), reads vram_buf back through a reader the integrator installs
+  (`gpu_front_set_mem_reader`; gs_replay and the unit harness use `gpu_exec_read_memory`) into gs_vram
+  (hw-only) or compares it with gs_vram (software renderer running: counted in
+  `punt_why[GPU_PUNT_READBACK_DIFF]`), sets `gs_front_swdraw`; gs_draw.c binds the textures, rasterizes
+  the primitive into gs_vram, syncs and calls the new `sw_done` hook, which patches the written rects
+  (CPU data: every target reloads them, replicated). `PS2_GPU_PUNT=<every N>[:<class mask, 16: 16-bit
+  frames only>]` forces PUNTs.
+- **Phase labels**: every StateRec carries a phase (scene, fill, ROV read-modify-write, ALIAS16, view,
+  feedback; plus the label of the last `PHASE` hint, now forwarded in `gs_env_view.phase` and by the
+  frontend thread); per-phase primitive counters in the metrics (`phase_prims`) and in the draw trace.
+- **Lockstep** compares post passes; without `--no-resync` a differing frame restarts the next one from
+  sw memory. `--post-probe F:L` prints gs_post_probe's report from GPU memory. `PS2_GPU_PROBE` also logs
+  every non-draw op the executor runs and the sample position of probe writes. `ref-bench` reports GPU
+  ms per game frame (>= 1000 primitives).
+
+**Fixes of earlier milestones found by the whole-frame lockstep**
+- A blend reading Cd (`(Cd-0)*2>>7`, the bit-plane steps) was taken for a tiled fill (S.blend stays
+  BL_OFF for forms outside the FF table): its full-screen strips became a colour clear (title, all
+  recordings with shadows).
+- The ROV draw key had no targets: a run's draw opened by a primitive without Z merged later primitives
+  with Z, which then ran without their depth target (ep6; the bisection child, which checkpoints before
+  every primitive, did not reproduce it - a sign of merging/batching).
+- Steady-state downloads (34 per game frame in title: an upload of CLUT entries into Z pages
+  downloaded the Z words around them) and Z-clear loads (opaque sprites were not opaque on the ROV
+  tier) - gone.
+- A shadow copy taken before a load of the same blocks went stale (ep2 photo: the darken reads one row
+  past its frame buffer, i.e. the other buffer's memory).
+- The vertex reuse cache kept its ring position across arena resets (VBlank, checkpoint): a stale entry
+  could return the index of a vertex of the previous arena. Found by forced PUNTs inside strips
+  (a checkpoint between two triangles that share vertices).
+
+**GPU ms per game frame at S=1, REF** (RTX 4060 Ti, `gs_replay --backend hw --ref`, bench path without
+read-backs, GPU timestamps; game frame = VBlank with >= 1000 primitives; medians of runs 2-4 of 4)
+
+| recording | median | worst | mean per VBlank |
+|---|---|---|---|
+| ep8 boss | 14.6 | 15.9 | 6.2 |
+| ep3 hub | 7.5 | 8.6 | 3.0 |
+| ep5 street | 7.7 | 10.2 | 3.4 |
+| ep2 hub | 9.8 | 12.6 | 4.9 |
+| ThiefNet | 14.8 | 15.7 | 7.4 |
+
+REF is the correctness tier (every pixel through the integer ROV pipeline); the FF tier (M5) carries
+the speed.
+
+**Deviations from the design**
+- ALIAS16 is staging-based for any primitive class, not a sprite CS with a halfword hazard bitmap; no
+  PUNT for 16-bit frames (5.2 note).
+- CT16 views of C32 targets are allowed outside ALIAS16 (feedback rules apply); TEX_FMT PUNT remains
+  only for T8/T4 (and other non-C32) reads of target data.
+- Byte-lane "no copy" reads are a ROV-tier mechanism (the shader reads its own UAV); FF draws cannot
+  read their RTV.
+- Partial uploads over GPU words no longer download (word-level ownership with the writer kept).
+- PUNT needs the same-thread frontend; on the frontend thread a PUNT is counted and not drawn.
+
+**What M5 (FF fast path) must know**
+- Lockstep `--no-resync` on all 24 recordings is the gate to keep (`scripts/gpu_lockstep_all.ps1
+  [-Adapter warp] [-Scale N]`); run it for every class moved from ROV to FF. gs_replay's lockstep is
+  wired to `--ref` today: the mixed FF/ROV mode needs the same comparison.
+- ALIAS16 draws always execute on the REF path (`exec_draw_ref`), also in non-REF frames: their Z (none
+  in Sly's shuffles) is zpatch; in a mixed frame a 16-bit run with Z must see the DSV's depth (resolve
+  before / zpatch after).
+- `GPU_TS_SELF` (disjoint-lane self reads) only works on the ROV tier; an FF draw with such a view
+  needs a shadow copy (or the ROV tier).
+- The ROV key now includes ct/zt and the scissor; FF keys already did. The FF classes must keep a
+  draw's scissor equal for all its primitives (the executor uses the first one's).
+- Fills: `S.fill` now requires `!S.reads_dest`; the FF clear path depends on it.
+- Opaque sprites revalidate blocks in every tier; cross-target copies (XCOPY) and loads mark
+  `sdirty` - an FF feedback read must keep using `own_shadow_need`.
+- REF GPU cost per game frame is 7.5-15 ms at S=1 (above): FF must take the bulk of the draws.

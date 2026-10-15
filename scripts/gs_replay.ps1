@@ -18,9 +18,12 @@
 #   -Ref (hw / both)      M3 REF tier: the GPU draws every primitive exactly (ROV pixel pipeline, shaders/gs.hlsl);
 #                         pictures composed from the GPU's GS memory (reference compose); both: compared with sw
 #                         (exit 3 on differing pixels); synchronous (-Workers 0); -Bench with hw: GPU ms only
-#   -Lockstep             (both -Ref) GS memory compared with sw at every FRAME/ZBUF change and VBlank, up to
-#                         each frame's first post pass (M4); the first divergence is bisected to its primitive
-#                         (dump + bisect_{hw,sw,diff}.png crops in -Out); exit 6 on divergence; -NoResync
+#   -Lockstep             (both -Ref) GS memory compared with sw at every FRAME/ZBUF change and VBlank, post
+#                         passes included (M4); the first divergence is bisected to its primitive (dump +
+#                         bisect_{hw,sw,diff}.png crops in -Out); exit 6 on divergence; -NoResync: no restart from
+#                         sw memory after a differing frame (the gate)
+#   -PostProbe F:L        (-Ref) scripts/gs_post_probe.c's channel report of the two frame buffers for VBlank indices
+#                         F..L from the GPU's memory, on stdout (compare with gs_post_probe.ps1's)
 #   -Profile              sampling profile of the replay thread (self / inclusive per function)
 #   -StreamHash           (hwdry) hash of the frontend's command stream and data of every frame
 #   -FrontThread          (hwdry -FrontOnly, hwsubmit) the frontend on its own thread, the replay thread only decodes
@@ -32,7 +35,7 @@
 # A replay without progress for 60 s prints its state and exits with code 4 (watchdog).
 # Every run prints "sw-hash", a hash of all sw pictures (unchanged renderer -> unchanged hash).
 param([Parameter(Mandatory = $true)][string]$Rec, [string]$Out = "", [string]$Runtime = "", [int]$Workers = 0,
-      [switch]$Bench, [ValidateSet('sw', 'hw', 'both', 'hwdry', 'hwsubmit')][string]$Backend = 'sw', [int]$Scale = 1, [switch]$WithSw, [switch]$Pace, [switch]$Profile, [switch]$StreamHash, [switch]$FrontThread, [switch]$Pin, [switch]$FrontOnly, [switch]$Ref, [switch]$StraddleRov, [switch]$SelfCheck, [switch]$DecodeOnly, [switch]$Lockstep, [switch]$NoResync, [string[]]$Define = @(),
+      [switch]$Bench, [ValidateSet('sw', 'hw', 'both', 'hwdry', 'hwsubmit')][string]$Backend = 'sw', [int]$Scale = 1, [switch]$WithSw, [switch]$Pace, [switch]$Profile, [switch]$StreamHash, [switch]$FrontThread, [switch]$Pin, [switch]$FrontOnly, [switch]$Ref, [switch]$StraddleRov, [switch]$SelfCheck, [switch]$DecodeOnly, [switch]$Lockstep, [switch]$NoResync, [string]$PostProbe = "", [string[]]$Define = @(),
       [ValidateSet('hw', 'warp')][string]$Adapter = 'hw', [string]$Metrics = "", [string]$Log = "", [string]$VramHash = "")
 $root = Split-Path $PSScriptRoot -Parent
 $main = $root
@@ -78,6 +81,7 @@ if ($StraddleRov) { $runArgs += '--straddle-rov' }
 if ($SelfCheck) { $runArgs += '--selfcheck' }
 if ($Lockstep) { $runArgs += '--lockstep' }
 if ($NoResync) { $runArgs += '--no-resync' }
+if ($PostProbe) { $runArgs += @('--post-probe', $PostProbe) }
 if ($DecodeOnly) { $runArgs += '--decode-only' }
 if ($Scale -ne 1) { $runArgs += @('--scale', $Scale) }
 if ($WithSw) { $runArgs += '--with-sw' }

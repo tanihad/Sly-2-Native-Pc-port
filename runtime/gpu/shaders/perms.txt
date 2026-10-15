@@ -55,3 +55,8 @@ cs_patch            mem.hlsl            cs_patch          cs_5_0
 cs_load             mem.hlsl            cs_load           cs_5_0
 cs_download         mem.hlsl            cs_download       cs_5_0
 cs_clear            mem.hlsl            cs_clear          cs_5_0
+
+# M4: ALIAS16 runs (16-bit frames over C32 targets: staging gather / scatter)
+cs_a16_gather       alias16.hlsl        cs_a16_gather     cs_5_0
+cs_a16_scatter      alias16.hlsl        cs_a16_scatter    cs_5_0
+cs_xcopy            mem.hlsl            cs_xcopy          cs_5_0

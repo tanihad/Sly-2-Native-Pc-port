@@ -8,10 +8,14 @@
 //                its span pieces (64-pixel columns, batch cuts from the frontend's table);
 //   texture      direct sampling from vram_buf through the swizzle tables (all PSMs incl. T8H/T4HL/
 //                T4HH), CLUT ring, TEXA, GS 4-bit bilinear, REPEAT/CLAMP/REGION modes, LOD and mipmaps;
-//                or a target view (CT32/CT24/alpha index) at sample 0 (M4 refines);
+//                or a target view (M4, 5.1): CT32/CT24, alpha index (T8H/T4HL/T4HH) and CT16/CT16S
+//                (words mapped to the target's pixels) through the target's SRV, its shadow copy or, for
+//                byte lanes the draw does not write, the bound target itself; 1:1 sprite reads take the
+//                fragment's own sample of each texel, other reads sample 0;
 //   TFX, fog, alpha test + AFAIL, DATE/DATM, Z test + write (zpatch holds the stored Z word),
-//   blend ((A-B)*C>>7)+D with COLCLAMP or wrap, PABE, FBA, FBMSK per bit.
-// Colour targets hold the raw GS bytes (R8G8B8A8_UINT); 16-bit frames are ALIAS16 (M4).
+//   blend ((A-B)*C>>7)+D with COLCLAMP or wrap, PABE, FBA, FBMSK per bit, DTHE (16-bit frames).
+// Colour targets are bound as R32_UINT (the raw GS word); in an ALIAS16 run (16-bit frame over a C32
+// target, shaders/alias16.hlsl) u0 is the staging texture holding each 16-bit pixel's value.
 #include "int64.hlsli"
 #include "gsmem.hlsli"
 
@@ -27,7 +31,9 @@ cbuffer draw_cb : register(b0) {
     uint vkx, vky;                       // texture view target samples
     uint probe_x, probe_y;               // debug probe pixel (PS2_GPU_PROBE; ~0: off)
     float one;                           // 1.0: products multiplied by it are rounded before any add
-    uint3 pad1;                          //   (drivers may fuse a*b+c into an FMA despite `precise`)
+                                         //   (drivers may fuse a*b+c into an FMA despite `precise`)
+    uint vbase, vfbw;                    // texture view target: base page, width (CT16 views map words to its pixels)
+    uint vflags;                         // 1: the view has the bound target's sample grid (1:1 reads use the fragment's sample)
 };
 
 // a * b rounded to the type's precision as the C reference rounds it (never fused with a later add)
@@ -41,7 +47,9 @@ ByteAddressBuffer states : register(t4);
 ByteAddressBuffer clut : register(t5);
 ByteAddressBuffer fdata : register(t7);
 
-RasterizerOrderedTexture2D<uint4> rov_c : register(u0);
+// colour: the C32 target as R32_UINT (the raw GS word), or in a 16-bit frame run (ALIAS16) the
+// staging texture in the frame's own pixel space holding each pixel's 16-bit value
+RasterizerOrderedTexture2D<uint> rov_c : register(u0);
 RasterizerOrderedTexture2D<uint> rov_z : register(u1);
 RWByteAddressBuffer dbg : register(u2);  // probe records (gpu_exec.c, PS2_GPU_PROBE)
 
@@ -113,10 +121,13 @@ struct St {
     uint2 tex1;
     uint texa, clut_slot, texsrc, fogcol, test, fmask, flags, alpha, zinfo, tlev;
     uint mip[6];
+    uint2 dimx;                          // DIMX register (dither matrix, 16-bit frames)
 };
 
+#define STATE_BYTES 128u
+
 St load_state(uint idx) {
-    uint b = idx * 96u;
+    uint b = idx * STATE_BYTES;
     St s;
     s.tex0clamp = states.Load4(b);
     s.tex1 = states.Load2(b + 16u);
@@ -127,6 +138,7 @@ St load_state(uint idx) {
     s.mip[0] = d.z; s.mip[1] = d.w;
     uint4 e = states.Load4(b + 72u);
     s.mip[2] = e.x; s.mip[3] = e.y; s.mip[4] = e.z; s.mip[5] = e.w;
+    s.dimx = states.Load2(b + 96u);
     return s;
 }
 
@@ -140,6 +152,9 @@ St load_state(uint idx) {
 #define SF_PABE 1024u
 #define SF_TME 4096u
 #define SF_FB24 8192u
+#define SF_FB16 0x20000u
+#define SF_DTHE 2048u
+#define TS_SELF 0x10000u                 // StateRec texsrc: the view is the bound colour target (disjoint byte lanes)
 
 // ---- numeric helpers (gs_draw_pixel.c) -----------------------------------------------------------
 uint clamp255i(int v) { return v < 0 ? 0u : v > 255 ? 255u : (uint)v; }
@@ -239,9 +254,25 @@ uint clut_lookup(St st, uint idx) {
     return clut_half(st.clut_slot, p) | (clut_half(st.clut_slot, p ^ 256u) << 16);
 }
 
+// target views (notes/d3d11-renderer.md 5.1): texel (x, y) is the view target's native pixel (x, y);
+// its sample is g_vsample (the fragment's own sample for 1:1 reads, else sample 0)
+static uint2 g_vsample = uint2(0u, 0u);
+static bool g_vself = false;             // read the bound colour target itself (byte lanes it does not write)
+
 uint view_word(uint x, uint y) {
-    uint4 c = view.Load(int3((int)(x * vkx), (int)(y * vky), 0));
+    int2 s = int2((int)(x * vkx + g_vsample.x), (int)(y * vky + g_vsample.y));
+    if (g_vself) return rov_c[s];
+    uint4 c = view.Load(int3(s, 0));
     return c.x | (c.y << 8) | (c.z << 16) | (c.w << 24);
+}
+
+// the view's word at GS word address w (CT16/CT16S views of a C32 target with the same base and width:
+// 16-bit page n is 32-bit page n, so the word's page and its CT32 position in the page give the pixel)
+uint view_word_at(uint w) {
+    uint fbw = vfbw > 0u ? vfbw : 1u;
+    uint p = ((w >> 11) - vbase) & 511u;
+    uint ixy = swz_at(SWZ_ICT32, w & 2047u);
+    return view_word((p % fbw) * 64u + (ixy & 63u), (p / fbw) * 32u + (ixy >> 8));
 }
 
 // one texel (x, y wrapped, 0..2047) of level L as 0xAABBGGRR (gs_tex_fetch)
@@ -251,7 +282,8 @@ uint texel(St st, Lvl L, uint x, uint y) {
     uint res;
     if (psm == PSMCT16 || psm == PSMCT16S || psm == PSMZ16 || psm == PSMZ16S) {
         uint h = gs_addr16(swz_tab_of(psm), L.bp, L.bw, x, y);
-        res = expand16((vw(h >> 1) >> ((h & 1u) * 16u)) & 0xFFFFu, st.texa);
+        uint w16 = isview ? view_word_at(h >> 1) : vw(h >> 1);
+        res = expand16((w16 >> ((h & 1u) * 16u)) & 0xFFFFu, st.texa);
     } else if (psm == PSMT8) {
         uint a = gs_addr8(L.bp, L.bw, x, y);
         res = clut_lookup(st, (vw(a >> 2) >> ((a & 3u) * 8u)) & 0xFFu);
@@ -422,6 +454,7 @@ void ps_gs(VR i
     f.U = 0; f.V = 0; f.lq = 1.0;
     float dbg_s = 0.0, dbg_t = 0.0, dbg_q = 0.0;
     int dbg_xl = 0;
+    bool one_to_one = false;             // a sprite stepping one texel per pixel (1:1 rule)
 #if PRIM == 0
     uint rb = rec_first + prim * 256u;
     f.state = recs.Load(rb + 112u);
@@ -510,6 +543,7 @@ void ps_gs(VR i
     f.z = r.y;
     f.fog = r.z & 255u;
     f.lq = asfloat(recs.Load(rb + 48u));
+    one_to_one = (recs.Load(rb + 60u) & 1u) != 0u;
     if (tme) {
         int x0 = (int)(recs.Load(rb) << 16) >> 16;
         int ua = asint(recs.Load(rb + 24u)), du = asint(recs.Load(rb + 28u));
@@ -547,6 +581,9 @@ void ps_gs(VR i
     // ---- texture, TFX, fog ----
     uint col = f.col;
     if (tme && (st.tlev & 3u) != 0u) {
+        // target views: 1:1 reads take the fragment's own sample of each texel (5.1), others sample 0
+        g_vself = (st.texsrc & TS_SELF) != 0u;
+        if ((vflags & 1u) != 0u && one_to_one) g_vsample = uint2((uint)P.x % kx, (uint)P.y % ky);
         uint t = tex_sample(st, f.U, f.V, f.lq);
         col = tfx((st.flags >> 2) & 3u, (st.flags & SF_TCC) != 0u, col, t);
     }
@@ -562,6 +599,8 @@ void ps_gs(VR i
     if (probing) probe_rec(1u, rb, f.state, f.U, f.V, col, f.col, f.z, dbg_s, dbg_t, dbg_q, dbg_xl, 0u, 0u, 0u, px, py);
 
     // ---- tests: alpha, destination alpha, Z (+ Z write) ----
+    // 16-bit frames (ALIAS16 runs): rov_c is the staging texture holding the pixel's 16-bit value
+    bool fb16 = (st.flags & SF_FB16) != 0u;
     uint As = col >> 24;
     uint test = st.test;
     int mode = 1;
@@ -576,11 +615,10 @@ void ps_gs(VR i
     bool hasc = (draw_flags & 1u) != 0u, hasz = (draw_flags & 2u) != 0u;
     uint dst = 0u;
     bool have = false;
-    if ((test >> 14) & 1u) {                     // DATE (32-bit frames)
-        uint4 d4 = hasc ? rov_c[P] : uint4(0, 0, 0, 0);
-        dst = d4.x | (d4.y << 8) | (d4.z << 16) | (d4.w << 24);
+    if ((test >> 14) & 1u) {                     // DATE: bit 31 (bit 15 of 16-bit frames)
+        dst = hasc ? rov_c[P] : 0u;
         have = true;
-        if (((dst >> 31) & 1u) != ((test >> 15) & 1u)) return;
+        if (((dst >> (fb16 ? 15u : 31u)) & 1u) != ((test >> 15) & 1u)) return;
     }
     if (((st.zinfo >> 3) & 1u) != 0u && hasz) {
         uint ztst = st.zinfo & 3u, zmsk = (st.zinfo >> 2) & 1u;
@@ -595,38 +633,51 @@ void ps_gs(VR i
     }
     if (mode == 0 || !hasc) return;
 
-    // ---- blend, FBA, write mask ----
-    uint m = st.fmask;
-    if (mode == 2) m |= 0xFF000000u;
+    // ---- blend, dither, FBA, write mask (gs_draw_pixel.c write_seg) ----
+    uint m = st.fmask;                           // (16-bit frames: the 16-bit form)
+    if (mode == 2) m |= fb16 ? 0x8000u : 0xFF000000u;
     uint c = col;
     bool fb24 = (st.flags & SF_FB24) != 0u;
+    bool dthe = fb16 && (st.flags & SF_DTHE) != 0u;
+    int dm = 0;
+    if (dthe) {                                  // DIMX entry (row y & 3, column x & 3), 3-bit signed
+        uint sh = ((uint)py & 3u) * 16u + ((uint)px & 3u) * 4u;
+        uint e = ((sh < 32u ? st.dimx.x >> sh : st.dimx.y >> (sh - 32u))) & 7u;
+        dm = e >= 4u ? (int)e - 8 : (int)e;
+    }
+    bool clampc = (st.flags & SF_COLCLAMP) != 0u;
     if ((st.flags & SF_ABE) && (!(st.flags & SF_PABE) || (As & 0x80u))) {
         if (!have) {
-            uint4 d4 = rov_c[P];
-            dst = d4.x | (d4.y << 8) | (d4.z << 16) | (d4.w << 24);
+            dst = rov_c[P];
             have = true;
         }
         uint al = st.alpha;
         uint asel = al & 3u, bsel = (al >> 2) & 3u, csel = (al >> 4) & 3u, dsel = (al >> 6) & 3u, fix = (al >> 8) & 255u;
-        int ea = fb24 ? 0x80 : (int)(dst >> 24);
+        uint dx = fb16 ? ((dst << 3) & 0xF8u) | ((dst << 6) & 0xF800u) | ((dst << 9) & 0xF80000u) : dst;
+        int ea = fb16 ? ((dst & 0x8000u) != 0u ? 0x80 : 0) : fb24 ? 0x80 : (int)(dst >> 24);
         int cc = csel == 0u ? (int)As : csel == 1u ? ea : (int)fix;
         uint o = 0u;
         [unroll] for (uint ch = 0u; ch < 24u; ch += 8u) {
-            int cs = (int)((col >> ch) & 255u), cd = (int)((dst >> ch) & 255u);
-            int v = (((sel3(asel, cs, cd) - sel3(bsel, cs, cd)) * cc) >> 7) + sel3(dsel, cs, cd);
-            uint u = (st.flags & SF_COLCLAMP) ? clamp255i(v) : ((uint)v & 255u);
+            int cs = (int)((col >> ch) & 255u), cd = (int)((dx >> ch) & 255u);
+            int v = (((sel3(asel, cs, cd) - sel3(bsel, cs, cd)) * cc) >> 7) + sel3(dsel, cs, cd) + dm;
+            uint u = clampc ? clamp255i(v) : ((uint)v & 255u);
             o |= u << ch;
+        }
+        c = o | (col & 0xFF000000u);
+    } else if (dthe) {
+        uint o = 0u;
+        [unroll] for (uint ch = 0u; ch < 24u; ch += 8u) {
+            int v = (int)((col >> ch) & 255u) + dm;
+            o |= (clampc ? clamp255i(v) : ((uint)v & 255u)) << ch;
         }
         c = o | (col & 0xFF000000u);
     }
     if (st.flags & SF_FBA) c |= 0x80000000u;
+    if (fb16) c = ((c >> 3) & 0x1Fu) | ((c >> 6) & 0x3E0u) | ((c >> 9) & 0x7C00u) | ((c >> 16) & 0x8000u);
     if (m != 0u) {
-        if (!have) {
-            uint4 d4 = rov_c[P];
-            dst = d4.x | (d4.y << 8) | (d4.z << 16) | (d4.w << 24);
-        }
+        if (!have) dst = rov_c[P];
         c = (dst & m) | (c & ~m);
     }
-    rov_c[P] = uint4(c & 255u, (c >> 8) & 255u, (c >> 16) & 255u, c >> 24);
-    if (probing) probe_rec(2u, rb, f.state, f.U, f.V, col, f.col, f.z, 0.0, 0.0, 0.0, mode, 0u, dst, c, px, py);
+    rov_c[P] = c;
+    if (probing) probe_rec(2u, rb, f.state, f.U, f.V, col, f.col, f.z, 0.0, 0.0, 0.0, mode, 0u, dst, c, P.x, P.y);   // (the sample position)
 }

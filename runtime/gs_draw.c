@@ -631,6 +631,7 @@ static void trace_prim(int type, const vtx* const* vs, int nv) {
  * pictures the presenter shows pillarboxed at 4:3 (gs_hint_content43). Nothing else changes: a
  * stream without hints (every 4:3 stream) draws exactly as before. */
 static int hud_on, hud_anchor, hint_43;
+static uint32_t hint_phase;              /* label of the last PHASE hint (GPU frontend: phase labels of its draws) */
 static double hud_scale = 1.0;
 
 /* PS2_HUD_LOG=1 (with the EE side, aspect.c): PHASE hints label the 2D render-list entries by scene
@@ -740,7 +741,7 @@ static void hint_write(uint64_t v) {
     case GS_HINT_HUD_END: hud_on = 0; break;
     case GS_HINT_ASPECT_4_3_BEGIN: hint_43 = 1; break;
     case GS_HINT_ASPECT_4_3_END: hint_43 = 0; break;
-    case GS_HINT_PHASE: hudlog_phase(value); break;
+    case GS_HINT_PHASE: hint_phase = value; hudlog_phase(value); break;
     case GS_HINT_SIDE_FILL: side_fill(value); break;
     default: break;                      /* unknown kinds: ignored */
     }
@@ -754,6 +755,7 @@ static void hint_write(uint64_t v) {
 static void draw_prim(int type, const vtx* a, const vtx* b, const vtx* c) {
     if (env_dirty) env_update();
     gs_stats.prims++;
+    int swnow = 0;
     if (trace_on) {
         if (trace_on < 0) trace_init();
         if (trace_on && trace_left > 0 && gs_stream_vsync >= trace_from) {
@@ -768,10 +770,19 @@ static void draw_prim(int type, const vtx* a, const vtx* b, const vtx* c) {
     }
     if (gs_front && env_ok) {            /* GPU frontend (gs_setup.h): sees every primitive */
         uint64_t attr = (reg[R_PRMODECONT] & 1) ? reg[R_PRIM] : reg[R_PRMODE];
-        gs_env_view ev = { &P, reg, (int)((attr >> 9) & 1), ofx, ofy, prim_iip, prim_aa1, prim_draws, gs_prim_version };
+        gs_env_view ev = { &P, reg, (int)((attr >> 9) & 1), ofx, ofy, prim_iip, prim_aa1, prim_draws, gs_prim_version, hint_phase };
+        gs_front_swdraw = 0;
         gs_front->prim(&ev, type, a, b, c);
+        swnow = gs_front_swdraw;         /* the frontend PUNTs it: the software rasterizer draws it now */
+        gs_front_swdraw = 0;
     }
-    if (!env_ok || !prim_draws || !gs_sw_draw) return;
+    if (!env_ok || !prim_draws || (!gs_sw_draw && !swnow)) return;
+    int sw_off = !gs_sw_draw;
+    if (sw_off) {                        /* (the frontend alone: bind the textures for this primitive) */
+        gs_sw_draw = 1;
+        gs_tex_flush_all();
+        env_update();
+    }
     if (prim_aa1 && type != PRIM_LINE && type != PRIM_LINESTRIP)
         log_once("antialiasing (AA1) of points/triangles/sprites requested; drawn without it", 1);
     switch (type) {
@@ -780,6 +791,11 @@ static void draw_prim(int type, const vtx* a, const vtx* b, const vtx* c) {
     case PRIM_TRI: case PRIM_TRISTRIP: case PRIM_TRIFAN: gs_stats.tris++; draw_triangle(a, b, c); break;
     case PRIM_SPRITE: gs_stats.sprites++; draw_sprite(a, b); break;
     default: break;
+    }
+    if (swnow) {
+        if (sw_off) { gs_sw_draw = 0; env_dirty = 1; }
+        gs_draw_sync();
+        if (gs_front && gs_front->sw_done) gs_front->sw_done();
     }
 }
 

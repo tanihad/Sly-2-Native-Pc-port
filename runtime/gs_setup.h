@@ -248,6 +248,7 @@ typedef struct {
     int iip, aa1;                        /* PRIM.IIP, PRIM.AA1 */
     int draws;                           /* 0: the primitive can write nothing (FBMSK all ones, no Z write) */
     uint32_t version;                    /* gs_prim_version of *P (a frontend on another thread gets copies) */
+    uint32_t phase;                      /* label of the last PHASE hint (gs_hint.h; 0: none), diagnostics */
 } gs_env_view;
 
 typedef struct {
@@ -260,8 +261,14 @@ typedef struct {
     /* TEX0/TEX2 written (after the CLUT load it may have caused); clut_loaded: the CLUT changed */
     void (*tex0)(int ctx, uint64_t tex0, int clut_loaded);
     void (*reset)(void);                 /* CSR.RESET (gs_draw_reset) */
+    /* the software rasterizer drew the primitive the frontend asked for (gs_front_swdraw), and it is
+     * in gs_vram (NULL: never asked) */
+    void (*sw_done)(void);
 } gs_front_hooks;
 
 /* NULL: software only. sw: 0 when the software rasterizer is off (the frontend alone). */
 extern const gs_front_hooks* gs_front;
 extern int gs_sw_draw;
+/* Set by the prim hook: draw this primitive with the software rasterizer into gs_vram now (also when
+ * gs_sw_draw is 0), then call sw_done (the GPU backend's PUNT, notes/d3d11-renderer.md 5.4). */
+extern int gs_front_swdraw;

@@ -115,6 +115,8 @@ static void hw_compare(void) {
     hw_scene_words += words;
 }
 
+static int hw_read_vram(uint8_t* out, void* user) { (void)user; return gpu_exec_read_memory(NULL, NULL, 0, out); }
+
 static uint32_t hw_mem_read(int psm, uint32_t bp, uint32_t bw, int x, int y) {
     hw_compare();
     return gs_mem_read(psm, bp, bw, x, y);
@@ -133,10 +135,10 @@ static void hw_scene_end(void) {
     hw_last_regs = 0xFFFFFFFFu;
     hw_compare();
     uint32_t post = gpu_front_post_prims() - hw_post0;
-    if (hw_scene_diffs && post) hw_m4_scenes++;
-    else if (hw_scene_diffs) hw_bad_scenes++;
+    if (hw_scene_diffs) hw_bad_scenes++;
+    if (post) hw_m4_scenes++;
     fprintf(stderr, "  [hw-ref] %-28s %4u comparisons, %s (%llu word differences)%s\n", hw_scene, hw_scene_compares,
-            hw_scene_diffs ? "DIFFERENT" : "identical", (unsigned long long)hw_scene_words, post ? " (uses M4 effects: ALIAS16 / target views)" : "");
+            hw_scene_diffs ? "DIFFERENT" : "identical", (unsigned long long)hw_scene_words, post ? " (post passes: ALIAS16 / target views / PUNT)" : "");
 }
 #define SCENE(call) do { hw_scene_begin(#call); call; hw_scene_end(); } while (0)
 #else
@@ -1874,6 +1876,56 @@ static void hint(uint32_t kind, uint32_t arg, float scale) {
 }
 static int lit(int x, int y) { return rgb(px(x, y)) != 0; }
 
+/* Target views and post-pass forms (the GPU backend's M4 paths; the software renderer is the
+ * reference): (1) the frame's own alpha read as T8H through a CLUT while writing RGB only (byte lanes
+ * disjoint: read in place), (2) in-place CT16 strip copies over the CT32 frame, left to right (each
+ * reads what the next one overwrites) and right to left (each reads what the previous one wrote),
+ * (3) a CT32 view of that frame read 1:1 with a bilinear tap at (+0.5, +1.0) into another buffer. */
+static void t_target_views(void) {
+    reset_env();
+    clear(0, 0, 0, 0);
+    for (int i = 0; i < 16; i++) sprite(i * 16, 0, i * 16 + 16, 64, 0x10 * (i & 7), 0x20 + i, 0x40, i * 8);
+    static uint32_t pal[256];
+    for (int k = 0; k < 256; k++) pal[k] = 0x80000000u | (uint32_t)k | (uint32_t)(255 - k) << 8 | (uint32_t)(k / 2) << 16;
+    upload_clut8(3000, pal);
+    /* (1) RGB of rows 0..63 <- palette[alpha of the pixel 8 to the right] */
+    W(TEX0_1, tex0(0, 10, PSMT8H, 10, 10, 0, 1, 3000, 0, 0, 1));
+    W(TEX1_1, 0);
+    frame(0, 10, PSMCT32, 0xFF000000u);
+    prim(P_SPRITE, TME | FST);
+    rgba(0x80, 0x80, 0x80, 0x80);
+    uv(8 * 16, 0); xyz(0, 0, 0);
+    uv(264 * 16, 64 * 16); xyz(256, 64, 0);
+    CHECK(rgb(px(3, 10)) == 0x00FF00 && rgb(px(10, 10)) == 0x04F708 && chan(px(10, 10), 3) == 0,
+          "T8H in-place read: %08X %08X", px(3, 10), px(10, 10));
+    /* (2) CT16 strips over the same memory (PSMCT16 frame and texture at FBP 0, FBW 10) */
+    frame(0, 10, PSMCT16, 0);
+    W(TEX0_1, tex0(0, 10, PSMCT16, 10, 10, 1, 1, 0, 0, 0, 0));
+    alpha_reg(2, 2, 2, 0, 0);            /* (0-0)*FIX+Cs: copy */
+    prim(P_SPRITE, TME | FST | ABE);
+    for (int x = 0; x < 128; x += 16) {  /* left to right, reading x + 16 */
+        uv((x + 16) * 16, 0); xyz(x, 0, 0);
+        uv((x + 32) * 16, 64 * 16); xyz(x + 16, 64, 0);
+    }
+    for (int x = 368; x >= 256; x -= 16) {   /* right to left, reading x + 16: written just before */
+        uv((x + 16) * 16, 64 * 16); xyz(x, 64, 0);
+        uv((x + 32) * 16, 128 * 16); xyz(x + 16, 128, 0);
+    }
+    /* (3) CT32 view, 1:1 with a bilinear tap at (+0.5, +1.0), into FBP 200 */
+    frame(200, 10, PSMCT32, 0);
+    alpha_reg(0, 1, 0, 1, 0);
+    W(TEX0_1, tex0(0, 10, PSMCT32, 10, 10, 1, 1, 0, 0, 0, 0));
+    W(TEX1_1, 0x61);                     /* LCM, bilinear */
+    prim(P_SPRITE, TME | FST);
+    rgba(0x80, 0x80, 0x80, 0x80);
+    uv(8 + 8, 16 + 8); xyz(0, 0, 0);
+    uv(256 * 16 + 16, 128 * 16 + 24); xyz(256, 128, 0);
+    W(TEX1_1, 0);
+    alpha_reg(0, 1, 0, 1, 0);
+    frame(0, 10, PSMCT32, 0);
+    save("target_views", 0, 10, PSMCT32, 640, 448);
+}
+
 static void t_hud_hints(void) {
     /* the transform itself: FRAME 640 wide (FBW 10), XYOFFSET 100 px, scale 3/4 */
     uint64_t fr = (uint64_t)10 << 16, xo = 100 * 16;
@@ -1996,6 +2048,7 @@ int main(int argc, char** argv) {
         fc.scale = 1;
         gpu_front_start(&fc);
         gpu_front_set_sink(gpu_submit_sink, NULL);
+        gpu_front_set_mem_reader(hw_read_vram, NULL);   /* (PUNT read-backs, compared with gs_vram) */
     }
 #endif
     SCENE(t_trace());                    /* first: no other primitive may use up PS2_GS_TRACE_MAX */
@@ -2031,9 +2084,18 @@ int main(int argc, char** argv) {
     SCENE(t_direct_order());
     SCENE(t_display_weave());
     SCENE(t_hud_hints());
+    SCENE(t_target_views());
 #ifdef TEST_HW_REF
-    fprintf(stderr, "[hw-ref] %u comparisons; %d scenes differ, %d more differ only with M4 effects (ALIAS16, target views)\n",
-            hw_compares, hw_bad_scenes, hw_m4_scenes);
+    {
+        gpu_front_frame fr[64];
+        uint32_t punts = 0, rbdiff = 0;
+        gpu_front_vblank(NULL, 0);       /* (closes the frame: its counters) */
+        for (int n; (n = gpu_front_take_frames(fr, 64)) > 0;)
+            for (int i = 0; i < n; i++) { punts += fr[i].tier[GPU_TIER_PUNT]; rbdiff += fr[i].punt_why[GPU_PUNT_READBACK_DIFF]; }
+        fprintf(stderr, "[hw-ref] %u comparisons; %d scenes differ (%d use post passes: ALIAS16, target views, PUNT); "
+                        "%u PUNTs, %u PUNT read-backs differing from gs_vram\n", hw_compares, hw_bad_scenes, hw_m4_scenes, punts, rbdiff);
+        if (rbdiff) hw_bad_scenes++;
+    }
     gpu_front_stop();
     gpu_stop();
     fprintf(stderr, "%s: %d/%d checks passed\n", argv[0], checks - fails, checks);

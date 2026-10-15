@@ -12,13 +12,16 @@
  * copy inside the main Z pages) are separate targets, and every cross-copy is counted:
  *   load      target <- vram_buf (stale block read or partially written by a draw);
  *   download  vram_buf <- target, sample 0, the GPU words only (the CPU side or another target needs
- *             GPU-written data).
+ *             GPU-written data);
+ *   xcopy     target <- the target of the same kind and scale that wrote the whole block, every sample
+ *             (M4: instead of download + load; e.g. the darken reads one row past its frame buffer,
+ *             which is the other frame buffer's memory).
  * Uploads are queued as vram_buf patches and flushed in one op when something reads a pending block,
  * or at the end of the frame (FMV: ~1200 macroblocks -> one patch). A patch writes only the bits the
  * uploads wrote (per-word bit masks): gs_vram is the source of uploaded data, not of the rest (the hw
- * backend never draws into it). An upload over a block holding GPU words that it does not overwrite
- * completely downloads that block first, so the block's other words reach vram_buf before the patch
- * (M3: no writer is ever lost). */
+ * backend never draws into it). Words an upload writes whole become CPU data while the block's other
+ * GPU words stay its writer's (M4: a CLUT uploaded into Z pages costs no download); a GPU word the
+ * upload writes only partly is downloaded first (no writer is ever lost). */
 #include "gpu_front_int.h"
 #include "gs_mem_swizzle.h"
 
@@ -38,6 +41,7 @@ static uint32_t npend;
 static uint32_t pend_mask[GPU_BLOCKS * 64];   /* bits of each word written by the pending uploads */
 static uint32_t up_mask[GPU_BLOCKS * 64];     /* bits of each word written by the upload being marked */
 static uint8_t up_full[GPU_BLOCKS];            /* words of the block that upload wrote completely */
+static uint64_t up_fullw[GPU_BLOCKS];          /* (the same as a word mask) */
 static uint16_t up_list[GPU_BLOCKS];           /* blocks it touches */
 static uint8_t blk_vstale[GPU_BLOCKS];         /* downloaded GPU data in vram_buf that gs_vram lacks */
 static uint8_t page_full[512];           /* blocks of the page with every word CPU-valid */
@@ -52,7 +56,7 @@ static uint32_t next_serial(void) { change_gen++; return ++serial_ctr; }
 static uint16_t load_list[GPU_BLOCKS];
 static gpu_dl_entry dl_list[GPU_BLOCKS], dl_tmp[GPU_BLOCKS];
 static uint16_t dl_writer[GPU_BLOCKS];
-static uint32_t nload, ndl;
+static uint32_t nload, ndl, nxc;
 
 void own_reset(void) {
     for (int i = 1; i <= GPU_MAX_TARGETS; i++) {
@@ -66,7 +70,7 @@ void own_reset(void) {
     memset(pend_mask, 0, sizeof pend_mask);
     memset(blk_vstale, 0, sizeof blk_vstale);
     npend = 0;
-    nload = ndl = 0;
+    nload = ndl = nxc = 0;
     memset(page_full, 32, sizeof page_full);
     memset(page_pend, 0, sizeof page_pend);
     serial_ctr = 1;
@@ -136,6 +140,7 @@ static void target_layout(gpu_target* T, int rows) {
 }
 
 static void emit_target(const gpu_target* T, uint16_t op) {
+    gf_target_op(T->id);
     gpu_fop_target* o = gf_cmd(op, sizeof *o);
     o->id = T->id; o->kind = T->kind; o->base = T->base; o->fbw = T->fbw; o->rows = (uint16_t)T->rows;
     o->kx = T->kx; o->ky = T->ky; o->family = T->family;
@@ -237,9 +242,43 @@ static void flush_downloads(void) {
     }
 }
 
+/* cross-target copies into the target being loaded: (source local block, destination local block)
+ * pairs, grouped by source target */
+static uint16_t xc_list[GPU_BLOCKS][2], xc_src[GPU_BLOCKS];
+
+static void flush_xcopies(const gpu_target* T) {
+    while (nxc) {
+        uint16_t w = xc_src[0];
+        uint32_t n = 0, k = 0;
+        static uint16_t tmp[GPU_BLOCKS][2];
+        for (uint32_t i = 0; i < nxc; i++) {
+            if (xc_src[i] == w) { tmp[n][0] = xc_list[i][0]; tmp[n][1] = xc_list[i][1]; n++; }
+            else { xc_list[k][0] = xc_list[i][0]; xc_list[k][1] = xc_list[i][1]; xc_src[k] = xc_src[i]; k++; }
+        }
+        nxc = k;
+        if (gf_trace) fprintf(stderr, "[front] cross copy target %u -> %u: %u blocks\n", w, T->id, n);
+        gf_target_op(T->id);
+        gf_target_op(w);
+        gpu_fop_xcopy* o = gf_cmd(GPU_FOP_XCOPY, sizeof *o);
+        o->target = T->id;
+        o->src = w;
+        o->n = n;
+        o->data_off = gf_data(tmp, n * 4);
+        gf.xcopies++;
+        gf.xcopy_blocks += n;
+    }
+}
+
 static void flush_lists(const gpu_target* T) {
     if (ndl) flush_downloads();
+    if (nxc) flush_xcopies(T);
     if (nload) {
+        if (gf_trace) {
+            fprintf(stderr, "[front] load target %u: %u blocks:", T->id, nload);
+            for (uint32_t i = 0; i < nload && i < 16; i++) fprintf(stderr, " %04X", T->babs[load_list[i]]);
+            fprintf(stderr, "\n");
+        }
+        gf_target_op(T->id);
         gpu_fop_blocks* o = gf_cmd(GPU_FOP_LOAD, sizeof *o);
         o->target = T->id;
         o->n = nload;
@@ -285,13 +324,27 @@ static void load_block(gpu_target* T, int i, uint32_t b) {
             if (T->vs[k] != blk_serial[a] && blk_cpu[a] == ALL) {
                 load_list[nload++] = (uint16_t)k;
                 T->vs[k] = blk_serial[a];
+                T->sdirty[k] = 1;        /* (the shadow copy predates the load: M4 photo finding) */
             }
         }
     }
     if (T->vs[i] == blk_serial[b]) return;
+    if (!blk_cpu[b]) {                   /* all of it another target's: copied over directly, every sample (M4) */
+        gpu_target* W = blk_writer[b] ? &gt[blk_writer[b]] : NULL;
+        int wl = W && W->used && W != T ? target_local(W, b) : -1;
+        if (wl >= 0 && W->vs[wl] == blk_serial[b] && W->kind == T->kind && W->kx == T->kx && W->ky == T->ky) {
+            xc_list[nxc][0] = (uint16_t)wl;
+            xc_list[nxc][1] = (uint16_t)i;
+            xc_src[nxc++] = W->id;
+            T->vs[i] = blk_serial[b];
+            T->sdirty[i] = 1;
+            return;
+        }
+    }
     if (blk_cpu[b] != ALL) download_block(b);    /* another target's (or a lost writer's) data */
     load_list[nload++] = (uint16_t)i;
     T->vs[i] = blk_serial[b];
+    T->sdirty[i] = 1;
 }
 
 void own_grow(gpu_target* T, int rows) {
@@ -353,7 +406,7 @@ void own_draw(gpu_target* T, int x0, int y0, int x1, int y1, int writes, int opa
             }
         }
     }
-    if (nload || ndl) flush_lists(T);
+    if (nload || ndl || nxc) flush_lists(T);
     if (T->clean_gen != change_gen && ++T->slow_calls >= 16) scan_clean(T);
 }
 
@@ -367,21 +420,6 @@ void own_blocks(gpu_target* T, const uint16_t* blocks, int n, int writes) {
 }
 
 void own_clear(gpu_target* T) { own_draw(T, 0, 0, T->bcols * T->bw - 1, T->rows - 1, 1, 1); }
-
-void own_punt(gpu_target* T, int x0, int y0, int x1, int y1) {
-    /* the software rasterizer draws it into memory: GPU data under the rect goes down first, then
-     * the rect is CPU data (an upload, as far as every target is concerned) */
-    if (y1 >= T->rows) own_grow(T, y1 + 1);
-    if (x0 < 0) x0 = 0;
-    if (y0 < 0) y0 = 0;
-    for (int y = y0; y <= y1; y += T->bh)
-        for (int x = x0; x <= x1; x += T->bw) {
-            uint32_t b = gs_swz_addr(T->fmt, T->base, T->fbw, x, y) >> 8;
-            if (blk_cpu[b] != ALL) download_block(b);
-        }
-    flush_lists(NULL);
-    own_upload(T->psm, (uint32_t)T->base * 32, T->fbw, x0, y0, x1 + 1, y1 + 1);
-}
 
 void own_view_read(gpu_target* T, int x0, int y0, int x1, int y1) { own_draw(T, x0, y0, x1, y1, 0, 0); }
 
@@ -565,18 +603,30 @@ void own_upload(int psm, uint32_t bp, uint32_t bw, int x0, int y0, int x1, int y
             if (o != 0xFFFFFFFFu && (o | m) == 0xFFFFFFFFu) up_full[b]++;
             up_mask[w] = o | m;
         }
-    /* GPU words the upload does not overwrite completely reach vram_buf first (download), so the
-     * block is all vram_buf data afterwards and the patch only adds the uploaded bits */
+    /* Words the upload writes whole become CPU data; GPU words it does not touch stay GPU data of the
+     * block's writer (an upload of a CLUT into Z pages: the rest of the block is still the Z buffer's,
+     * M4: no download). Only a GPU word the upload writes partly (T8/T4/16-bit texels, CT24) goes to
+     * vram_buf first (download), so the patch adds the uploaded bits to the right word. */
     for (int i = 0; i < n; i++) {
         uint32_t b = up_list[i];
-        if (blk_cpu[b] != ALL && up_full[b] != 64) download_block(b);
+        const uint32_t* um = up_mask + (size_t)b * 64;
+        uint64_t full = 0, touched = 0;
+        for (int k = 0; k < 64; k++) {
+            if (um[k]) touched |= 1ull << k;
+            if (um[k] == 0xFFFFFFFFu) full |= 1ull << k;
+        }
+        up_fullw[b] = full;
+        if (touched & ~full & ~blk_cpu[b]) download_block(b);
     }
     if (ndl) flush_downloads();
     for (int i = 0; i < n; i++) {
         uint32_t b = up_list[i];
-        blk_writer[b] = 0;
-        blk_serial[b] = next_serial();   /* every target copy (writer or loaded) goes stale */
-        set_cpu(b, ALL);
+        uint64_t cpu = blk_cpu[b] | up_fullw[b];
+        if (gf_trace) fprintf(stderr, "[front] upload block %04X: CPU words %016llX -> %016llX writer %u\n", b,
+                              (unsigned long long)blk_cpu[b], (unsigned long long)cpu, blk_writer[b]);
+        if (cpu == ALL) blk_writer[b] = 0;
+        blk_serial[b] = next_serial();   /* every target copy (the writer's too: some words changed) goes stale */
+        set_cpu(b, cpu);
         if (up_full[b] == 64) blk_vstale[b] = 0;
         pend_add(b);
         uint32_t* pm = pend_mask + (size_t)b * 64;
@@ -651,6 +701,30 @@ void gpu_front_debug_block(uint32_t b, FILE* f) {
         fprintf(f, "      target %d %s base %03X FBW %u: local block %d (x %d y %d), %s\n", i, kinds[T->kind], T->base, T->fbw, k,
                 (k % T->bcols) * T->bw, (k / T->bcols) * T->bh, T->vs[k] == blk_serial[b] ? "current" : "stale");
     }
+}
+
+/* PUNT read-back (5.4): mem is vram_buf as read back after the downloads. write: gs_vram takes every
+ * block whose downloaded GPU data it lacks; else (the software renderer keeps gs_vram itself, "both"
+ * mode) those blocks are compared. Returns the number of differing blocks. */
+int own_readback_apply(const uint8_t* mem, int write) {
+    int diff = 0;
+    for (uint32_t b = 0; b < GPU_BLOCKS; b++) {
+        if (!blk_vstale[b] || blk_cpu[b] != ALL || pending(b)) continue;
+        if (write) {
+            memcpy(gs_vram + (size_t)b * 256, mem + (size_t)b * 256, 256);
+            blk_vstale[b] = 0;
+        } else if (memcmp(gs_vram + (size_t)b * 256, mem + (size_t)b * 256, 256)) {
+            diff++;
+            if (gf_trace) {
+                const uint32_t *x = (const uint32_t*)(mem + (size_t)b * 256), *y = (const uint32_t*)(gs_vram + (size_t)b * 256);
+                int k = 0;
+                while (k < 63 && x[k] == y[k]) k++;
+                fprintf(stderr, "[front] PUNT read-back differs: block %04X word %d: vram_buf %08X gs_vram %08X (writer %u)\n", b, k, x[k],
+                        y[k], blk_writer[b]);
+            }
+        }
+    }
+    return diff;
 }
 
 /* some block of the rect holds downloaded data gs_vram lacks (CLUT loads read gs_vram) */
