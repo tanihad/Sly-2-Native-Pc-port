@@ -26,7 +26,13 @@ cbuffer draw_cb : register(b0) {
     float2 ndc_scale, ndc_bias;          // NDC = d3d pixel * scale + bias (power-of-two viewport: exact)
     uint vkx, vky;                       // texture view target samples
     uint probe_x, probe_y;               // debug probe pixel (PS2_GPU_PROBE; ~0: off)
+    float one;                           // 1.0: products multiplied by it are rounded before any add
+    uint3 pad1;                          //   (drivers may fuse a*b+c into an FMA despite `precise`)
 };
+
+// a * b rounded to the type's precision as the C reference rounds it (never fused with a later add)
+double dmul_r(double a, double b) { precise double p = a * b; precise double q = p * (double)one; return q; }
+float fmul_r(float a, float b) { precise float p = a * b; precise float q = p * one; return q; }
 
 ByteAddressBuffer vram : register(t0);
 Texture2D<uint4> view : register(t1);
@@ -151,9 +157,9 @@ float rcp_exact(float q) {
     precise float r0 = 1.0 / q;
     if (!(abs(q) > 0.0) || !(abs(r0) < 3.0e38) || !(abs(r0) > 1.0e-37)) return r0;
     double dq = (double)q, d0 = (double)r0;
-    precise double qd = dq * d0;
+    precise double qd = dmul_r(dq, d0);
     precise double c2 = 2.0L - qd;
-    precise double d1 = d0 * c2;
+    precise double d1 = dmul_r(d0, c2);
     float r = (float)d1;
     float best = r;
     precise double rq = (double)r * dq;
@@ -384,7 +390,7 @@ float step_span(float s0, float ds, int xl, int x, int cutx) {
         int nb = (xs & ~63) + 64;
         if (cutx > xs && cutx < nb) nb = cutx;
         if (nb > x) break;
-        precise float p = ds * (float)(nb - xs);
+        precise float p = fmul_r(ds, (float)(nb - xs));
         s = s + p;
         xs = nb;
     }
@@ -481,7 +487,7 @@ void ps_gs(VR i
             double qdx = asdouble(recs.Load(rb + 184u), recs.Load(rb + 188u));
             [loop] for (int r = 0; r < rows; r++) { srow = srow + sdy; trow = trow + tdy; qrow = qrow + qdy; }
             double dxl = (double)xl;
-            precise double ps = sdx * dxl, pt = tdx * dxl, pq = qdx * dxl;
+            precise double ps = dmul_r(sdx, dxl), pt = dmul_r(tdx, dxl), pq = dmul_r(qdx, dxl);
             precise double ss = srow + ps, st2 = trow + pt, sq = qrow + pq;
             float s0 = (float)ss, tt0 = (float)st2, q0 = (float)sq;
             float s = step_span(s0, (float)sdx, xl, px, cutx);
@@ -510,7 +516,7 @@ void ps_gs(VR i
         int ua = asint(recs.Load(rb + 24u)), du = asint(recs.Load(rb + 28u));
         f.U = asint((uint)ua + (uint)du * (uint)(px - x0)) >> 12;
         double vc0 = asdouble(recs.Load(rb + 32u), recs.Load(rb + 36u)), vcy = asdouble(recs.Load(rb + 40u), recs.Load(rb + 44u));
-        precise double vp = vcy * (double)py;
+        precise double vp = dmul_r(vcy, (double)py);
         precise double vs = vc0 + vp;
         precise double v = vs * 4096.0L;
         int vi = v > 2147483000.0L ? 2147483000 : v < -2147483000.0L ? -2147483000 : (int)v;

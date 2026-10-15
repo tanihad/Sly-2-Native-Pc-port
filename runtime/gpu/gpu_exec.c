@@ -535,7 +535,9 @@ typedef struct {
     uint32_t rec_first, flags, kx, ky;
     float ndc_scale[2], ndc_bias[2];
     uint32_t vkx, vky, probe_x, probe_y;
-    uint32_t fill[52];
+    float one;
+    uint32_t pad1[3];
+    uint32_t fill[48];
 } draw_consts;
 _Static_assert(sizeof(draw_consts) == DRAW_CB_BYTES, "per-draw constants are one 256-byte window");
 
@@ -581,7 +583,7 @@ static uint32_t build_constants(const gpu_front_frame_data* fd, int ref) {
         if (h->op == GPU_FOP_DRAW) {
             const gpu_fop_draw* d = (const gpu_fop_draw*)h;
             draw_consts* k = (draw_consts*)(cb_cpu + (size_t)i * DRAW_CB_BYTES);
-            memset(k, 0, 48);
+            memset(k, 0, 64);
             int id = d->ct ? d->ct : d->zt;
             int w = id <= MAX_TARGETS && dim[id].w ? dim[id].w : 640, hh = id <= MAX_TARGETS && dim[id].h ? dim[id].h : 448;
             int kx = id <= MAX_TARGETS ? dim[id].kx : 1, ky = id <= MAX_TARGETS ? dim[id].ky : 1;
@@ -597,6 +599,7 @@ static uint32_t build_constants(const gpu_front_frame_data* fd, int ref) {
                 k->vky = (uint32_t)(vt ? dim[vt].ky : 1);
                 k->probe_x = X.probe ? (uint32_t)X.probe_x : 0xFFFFFFFFu;
                 k->probe_y = X.probe ? (uint32_t)X.probe_y : 0xFFFFFFFFu;
+                k->one = 1.0f;
             } else {
                 k->flags = d->zt != 0;
                 k->ndc_scale[0] = 2.0f * (float)kx / (float)w;

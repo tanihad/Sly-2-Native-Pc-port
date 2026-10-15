@@ -51,6 +51,7 @@ static void test_present(const uint32_t* frame, int ok, int w, int h, uint32_t v
  * ALIAS16, target views of the frame) are reported but not counted. */
 #include "gpu/gpu.h"
 #include "gpu/gpu_front.h"
+#include "gs_mem_swizzle.h"
 static const char* hw_scene = "start";
 static uint32_t hw_last_regs = 0xFFFFFFFFu, hw_compares, hw_scene_compares, hw_scene_diffs, hw_post0;
 static uint64_t hw_scene_words;
@@ -73,9 +74,16 @@ static void hw_compare(void) {
     for (uint32_t i = 0; i < GS_VRAM_SIZE / 4; i++)
         if (a[i] != b[i]) { if (!words) first = i; words++; }
     if (!words) return;
-    if (!hw_scene_diffs)
+    if (!hw_scene_diffs) {
         fprintf(stderr, "  [hw-ref] %s: %u words differ, first word %05X (block %04X, page %03X): hw %08X sw %08X\n", hw_scene, words,
                 first, first >> 6, first >> 11, a[first], b[first]);
+        int shown = 0;                   /* the first differing pixels of the 640x448 CT32 frame at page 0 */
+        for (int y = 0; y < 448 && shown < 6; y++)
+            for (int x = 0; x < 640 && shown < 6; x++) {
+                uint32_t w = gs_addr32(gs_swz_ct32, 0, 10, (uint32_t)x, (uint32_t)y);
+                if (a[w] != b[w]) { fprintf(stderr, "    frame pixel (%d,%d): hw %08X sw %08X\n", x, y, a[w], b[w]); shown++; }
+            }
+    }
     hw_scene_diffs++;
     hw_scene_words += words;
 }
@@ -1654,6 +1662,81 @@ static void t_texture_cache_random(void) {
     W(TEX1_1, 0); W(CLAMP_1, 0);
 }
 
+/* Every texture format read straight from memory (CT32/24/16/16S, Z32/24/16/16S, T8, T4, T8H, T4HL,
+ * T4HH) over random data, with CT32 and CT16 CLUTs at two CSA, TEXA with and without AEM, the four
+ * wrap modes, point and bilinear sampling, UV sprites, scaled sprites and perspective triangles,
+ * MODULATE and DECAL. The 1:1 point-sampled sprites must show gs_tex_fetch's texels; the GPU
+ * backend's REF tier (TEST_HW_REF) compares everything else with the software renderer. */
+static void t_texture_formats(void) {
+    reset_env();
+    clear(0, 0, 0, 0);
+    rng_state = 4242;
+    static uint32_t raw[64 * 64], pal[256];
+    static uint16_t pal16[256];
+    for (int i = 0; i < 64 * 64; i++) raw[i] = (uint32_t)rnd(65536) << 16 | (uint32_t)rnd(65536);
+    for (int i = 0; i < 64 * 16; i += 37) raw[i] &= 0xFF000000u;           /* some RGB = 0 texels (AEM) */
+    for (int i = 0; i < 64 * 16; i += 53) raw[i] &= 0x80008000u;           /* some 16-bit RGB = 0 halves */
+    const uint32_t tbp = 300 * 32, cbp32 = 306 * 32, cbp16 = 307 * 32;   /* (past the frame 0-139 and Z 160-299 pages) */
+    upload(tbp, 1, PSMCT32, 0, 0, 64, 64, raw, sizeof raw);                 /* 16 KB of texel data, any format */
+    for (int i = 0; i < 256; i++) { pal[i] = (uint32_t)rnd(65536) << 16 | (uint32_t)rnd(65536); pal16[i] = (uint16_t)rnd(65536); }
+    upload_clut8(cbp32, pal);
+    upload(cbp16, 1, PSMCT16, 0, 0, 16, 16, pal16, sizeof pal16);
+    static const uint32_t psms[13] = { PSMCT32, PSMCT24, PSMCT16, PSMCT16S, PSMZ32, PSMZ24, PSMZ16, PSMZ16S,
+                                       PSMT8, PSMT4, PSMT8H, PSMT4HL, PSMT4HH };
+    int bad = 0;
+    for (int i = 0; i < 13; i++) {
+        uint32_t psm = psms[i];
+        int c16 = i & 1, csa = (i >> 1) & 1 ? 3 : 0;
+        W(TEXA, (i % 3 == 0 ? 0x40ull : 0xC0ull) | (uint64_t)(i % 3 == 1) << 15 | (uint64_t)(i % 4 == 2 ? 0x20 : 0xFF) << 32);
+        W(TEX0_1, tex0(tbp, 1, psm, 5, 5, 1, 1 /*DECAL*/, c16 ? cbp16 : cbp32, c16 ? PSMCT16 : PSMCT32,
+                       psm == PSMT4 || psm == PSMT4HL || psm == PSMT4HH ? (uint32_t)csa : 0, 1));
+        int wm = i % 4;                  /* REPEAT, CLAMP, REGION_CLAMP 3..28, REGION_REPEAT (u & 15) | 8 */
+        uint64_t cl = (uint64_t)wm | (uint64_t)wm << 2;
+        if (wm == 2) cl |= 3ull << 4 | 28ull << 14 | 3ull << 24 | 28ull << 34;
+        if (wm == 3) cl |= 15ull << 4 | 8ull << 14 | 15ull << 24 | 8ull << 34;
+        W(CLAMP_1, cl);
+        int x0 = (i % 7) * 88, y0 = (i / 7) * 220;
+        /* 1:1, point sampled (UV): texel (u, v) at pixel (x0 + u, y0 + v) */
+        W(TEX1_1, 0);
+        prim(P_SPRITE, TME | FST);
+        rgba(0x80, 0x80, 0x80, 0x80);
+        uv(0, 0); xyz(x0, y0, 0);
+        uv(32 * 16, 32 * 16); xyz(x0 + 32, y0 + 32, 0);
+        if (wm <= 1) {
+            gs_tex0 t;
+            memset(&t, 0, sizeof t);
+            t.tbp0 = tbp; t.tbw = 1; t.psm = psm; t.tw = 5; t.th = 5; t.tcc = 1; t.cbp = c16 ? cbp16 : cbp32;
+            t.cpsm = c16 ? PSMCT16 : PSMCT32;
+            t.csa = psm == PSMT4 || psm == PSMT4HL || psm == PSMT4HH ? (uint32_t)csa : 0;
+            gs_texa ta = { i % 3 == 0 ? 0x40u : 0xC0u, (uint32_t)(i % 3 == 1), i % 4 == 2 ? 0x20u : 0xFFu };
+            for (int v = 0; v < 32; v += 3)
+                for (int u = 0; u < 32; u += 5)
+                    if (px(x0 + u, y0 + v) != gs_tex_fetch(&t, &ta, u, v)) bad++;
+        }
+        /* scaled, bilinear (UV with fractions) and MODULATE with a vertex colour */
+        W(TEX1_1, 1 << 5 | 1 << 6);
+        W(TEX0_1, tex0(tbp, 1, psm, 5, 5, 1, 0 /*MODULATE*/, c16 ? cbp16 : cbp32, c16 ? PSMCT16 : PSMCT32, 0, 0));
+        prim(P_SPRITE, TME | FST);
+        rgba(0x90, 0x70, 0x40, 0x60);
+        uv(3 * 16 + 5, 7 * 16 + 11); xyz(x0 + 40, y0, 0);
+        uv(30 * 16 + 2, 25 * 16 + 9); xyz(x0 + 40 + 45, y0 + 60, 0);
+        /* perspective triangles over the texture, past its edges (wrap modes), bilinear */
+        prim(P_TRI, TME | IIP);
+        rgbaq(0x80, 0x80, 0x80, 0x80, 1.0f); st(-0.3f, -0.2f); xyz(x0, y0 + 70, 0);
+        rgbaq(0x60, 0x80, 0xA0, 0x70, 0.5f); st(0.7f, -0.1f); xyz(x0 + 80, y0 + 75, 0);
+        rgbaq(0x80, 0x40, 0x80, 0x80, 2.0f); st(2.6f, 3.1f); xyz(x0 + 30, y0 + 210, 0);
+        W(TEX1_1, 0);
+        prim(P_TRI, TME);
+        rgbaq(0x80, 0x80, 0x80, 0x80, 1.5f); st(0.1f, 0.2f); xyz(x0 + 60, y0 + 100, 0);
+        rgbaq(0x80, 0x80, 0x80, 0x80, 0.25f); st(0.2f, 0.05f); xyz(x0 + 87, y0 + 120, 0);
+        rgbaq(0x80, 0x80, 0x80, 0x80, 1.0f); st(1.3f, 1.2f); xyz(x0 + 45, y0 + 215, 0);
+    }
+    CHECK(bad == 0, "1:1 sprites of every texture format vs gs_tex_fetch: %d texels differ", bad);
+    W(CLAMP_1, 0);
+    W(TEX1_1, 0);
+    W(TEXA, 0x80ull << 32 | 0x80);
+}
+
 /* Side-band hints (register 0x7F, gs_hint.h): the HUD transform about the anchors, full-width
  * primitives drawn as they are, strips keeping the game's shared vertices, and the 4:3 state. */
 static void hint(uint32_t kind, uint32_t arg, float scale) {
@@ -1809,6 +1892,7 @@ int main(int argc, char** argv) {
     SCENE(t_lines_points());
     SCENE(t_coverage_reference());
     SCENE(t_texture_cache_random());
+    SCENE(t_texture_formats());
     SCENE(t_stq_negative_coords());
     SCENE(t_csr());
     SCENE(t_display());
