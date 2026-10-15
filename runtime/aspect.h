@@ -15,12 +15,20 @@ typedef struct {
     float ratio;         /* A = width / height of the displayed picture */
     float proj_x;        /* A / (4/3): how much wider the 3D view is */
     float hud_x;         /* (4/3) / A: X scale that keeps 4:3 content's proportions */
+    int hud_edges;       /* hud = edges: HUD widgets at the 4:3 screen's sides go to the display's edges */
 } ps2_aspect_t;
 
 extern ps2_aspect_t ps2_aspect;
 
 struct ps2_ctx;
 void aspect_init(void);                      /* from ps2_settings (settings_load first) */
+/* Run-time switch: ask (any thread) for aspect w:h (<= 0: unchanged) and HUD mode (hud_centered,
+ * -1: unchanged); the game applies it at the top of its next frame (aspect_apply, called by the
+ * aspect_switch patch in the main loop when ps2_aspect_pending is set). */
+extern volatile int ps2_aspect_pending;
+void aspect_request(int w, int h, int hud_centered);
+void aspect_target(int* w, int* h, int* hud_centered);   /* what the game has once requests apply */
+void aspect_apply(struct ps2_ctx* ctx);
 /* Append a GS side-band hint (gs_hint.h) to the DMA chain the game's frame builder (DMAS object at
  * guest address `dmas`) is writing, so it reaches the GS between the draws around it. */
 void aspect_hint(struct ps2_ctx* ctx, uint32_t dmas, uint32_t kind, uint32_t arg);
@@ -31,3 +39,13 @@ void aspect_hint_now(uint32_t kind, uint32_t arg);   /* straight into the GS str
 void aspect_render_entry_alloc(struct ps2_ctx* ctx);
 void aspect_render_entry(struct ps2_ctx* ctx, uint32_t dmas, uint32_t entry, uint32_t rp);
 void aspect_render_done(struct ps2_ctx* ctx, uint32_t dmas);
+/* A 2D scene's draw method (0x213300) starts / returns: its render-list entries belong to it. */
+void aspect_scene_begin(struct ps2_ctx* ctx);
+void aspect_scene_end(struct ps2_ctx* ctx);
+/* The scene queues its items: display list 0x21A998 entered / left, a root-level object is visited,
+ * an item is queued (0x215960, 0x21A998); then each queued item is drawn (0x213300's loop). */
+void aspect_dl_begin(struct ps2_ctx* ctx);
+void aspect_dl_end(struct ps2_ctx* ctx);
+void aspect_dl_object(struct ps2_ctx* ctx);
+void aspect_item_queued(struct ps2_ctx* ctx);
+void aspect_item_draw(struct ps2_ctx* ctx);

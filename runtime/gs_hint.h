@@ -21,6 +21,11 @@
  *               screens) is 4:3 content: the presenter pillarboxes those pictures to 4:3 instead of
  *               stretching them. The state at a VBlank decides how that VBlank's picture is shown.
  *   PHASE       value = label (diagnostics only: renderers ignore it).
+ *   SIDE_FILL   value = colour 0x00BBGGRR. Fill the parts of the FRAME width outside the centre 4:3
+ *               area - W * (1 - s) / 2 pixels at each side, s = the scale of the last HUD_BEGIN -
+ *               over the scissor's height, opaque, untextured, Z neither tested nor written, now (it
+ *               is drawn between the primitives around it). Used after a full-screen 4:3 overlay
+ *               (the Binocucom frame) so it covers the wide picture like a pillarbox in its colour.
  *
  * See notes/widescreen.md; the GPU renderer's contract is notes/d3d11-renderer.md section 8.3. */
 #pragma once
@@ -34,6 +39,7 @@ enum {
     GS_HINT_ASPECT_4_3_BEGIN = 3,
     GS_HINT_ASPECT_4_3_END = 4,
     GS_HINT_PHASE = 5,
+    GS_HINT_SIDE_FILL = 6,
 };
 
 enum { GS_HINT_ANCHOR_L = 0, GS_HINT_ANCHOR_C = 1, GS_HINT_ANCHOR_R = 2 };

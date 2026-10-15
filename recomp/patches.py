@@ -43,6 +43,10 @@ CM_PROJECT = (0x0014F308, "cc5768df6f4e07553979ba8ad0e9d47a88160e3f")    # world
 CM_UNPROJECT = (0x0014F268, "a51f27e60bf66bc9db7b3c9a54ff5409f03b8db9")  # screen [-1, 1] -> world point
 WORLD_LABEL = (0x001CD780, "ae9904c7f2fc8c1f1c4aef1f72d62aaf10898610")   # text label at a world point
 MOVIE_PLAY = (0x001B3BD0, "7eee24abd101fcdd6690561742906d524523e157")    # play one movie (sceMpeg loop)
+SCENE_DRAW = (0x00213300, "be7f4567e360dea5be27cff355abccd397b3d7f9")    # 2D scene: draw (vtable method)
+DL_QUEUE = (0x0021A998, "67ef1d52df4bab0890b10adcafb8f699de8ba55a")      # 2D: queue a display list's items
+ITEM_QUEUE = (0x00215960, "9e5c686306164bd9a4c1fdd5fe87f35fdffea152")    # 2D: queue one placed object
+MAIN_LOOP = (0x001A7518, "a1bf2357cbfd44da199858e87f269865b5ea7ea0")     # the game's main loop
 
 PATCHES: list[Patch] = [
     Patch("ws_projection", *CM_RECALC, 0x0014DBA4, "after",
@@ -89,6 +93,41 @@ PATCHES: list[Patch] = [
     Patch("ws_render_done", *FRAME_DRAW, 0x001583FC, "before",
           "if (ps2_aspect.wide) aspect_render_done(ctx, 0x002DEA28u);",
           "after the last render class's end function: close an open HUD_BEGIN"),
+    Patch("ws_scene_begin", *SCENE_DRAW, 0x00213300, "before",
+          "if (ps2_aspect.wide) aspect_scene_begin(ctx);",
+          "entry of a 2D scene's draw method ($a0 = the scene): the render-list entries allocated until "
+          "it returns belong to that scene (aspect.c picks the scene's HUD anchor)"),
+    Patch("ws_scene_end", *SCENE_DRAW, 0x002137E8, "before",
+          "if (ps2_aspect.wide) aspect_scene_end(ctx);",
+          "the scene draw method's only return"),
+    Patch("ws_item_draw", *SCENE_DRAW, 0x00213408, "before",
+          "if (ps2_aspect.wide) aspect_item_draw(ctx);",
+          "head of the scene's loop over its queued items ($s0 = the item): its render-list entries get "
+          "the anchor of the root-level object the item was queued under"),
+    Patch("ws_dl_begin", *DL_QUEUE, 0x0021A998, "before",
+          "if (ps2_aspect.wide) aspect_dl_begin(ctx);",
+          "entry of 'queue a display list's placed objects' (recursive through nested sprites): nesting "
+          "depth, so aspect.c knows the root-level objects (one per HUD widget)"),
+    Patch("ws_dl_end", *DL_QUEUE, 0x0021AA54, "before",
+          "if (ps2_aspect.wide) aspect_dl_end(ctx);",
+          "its only return"),
+    Patch("ws_dl_object", *DL_QUEUE, 0x0021A9F8, "before",
+          "if (ps2_aspect.wide) aspect_dl_object(ctx);",
+          "head of its loop over the placed objects ($s0 = the object)"),
+    Patch("ws_dl_queue_mask", *DL_QUEUE, 0x0021AA24, "before",
+          "if (ps2_aspect.wide) aspect_item_queued(ctx);",
+          "a mask-end object is queued ($a1 = the object)"),
+    Patch("ws_item_queue", *ITEM_QUEUE, 0x002159CC, "before",
+          "if (ps2_aspect.wide) aspect_item_queued(ctx);",
+          "a shape or text object is queued into the scene's item list ($a1 = the object)"),
+    # Not a ws_ patch: it must also run at 4:3 (to switch to a wide aspect); it does nothing unless
+    # the player asked for a switch (F7/F8), and a switch to 4:3 leaves the game's own numbers.
+    Patch("aspect_switch", *MAIN_LOOP, 0x001A75A8, "before",
+          "if (ps2_aspect_pending) aspect_apply(ctx);",
+          "main loop, right after the camera's per-frame update (jal 0x14D470) and before anything of "
+          "the frame is drawn (0x1CDA80, 0x157FA0): a run-time aspect / HUD switch asked for by "
+          "window.c takes effect here, for the whole frame; aspect_apply recomputes the camera's "
+          "frustum with the game's 0x14DB70"),
 ]
 
 

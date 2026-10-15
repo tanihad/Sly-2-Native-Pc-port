@@ -138,6 +138,24 @@ static void test_settings(void) {
     CHECK(n == 4 && warn_count == 4, "four problems reported (%d, %d)", n, warn_count);
     CHECK(s.aspect_w == 7 && s.aspect_h == 3 && s.internal_scale == 3, "good keys still apply, bad ones don't");
 
+    /* [display] hud = edges (default) | centered */
+    settings_defaults(&s);
+    CHECK(s.hud_centered == 0, "hud defaults to edges");
+    warn_count = 0;
+    n = settings_parse("[display]\nhud = Centered ; keep it in the middle\n", &s, count_warn, NULL);
+    CHECK(n == 0 && s.hud_centered == 1, "hud = centered (%d, %d)", n, s.hud_centered);
+    n = settings_parse("hud = edges\n", &s, count_warn, NULL);
+    CHECK(n == 0 && s.hud_centered == 0, "hud = edges");
+    n = settings_parse("hud = centred\n", &s, count_warn, NULL);
+    CHECK(n == 0 && s.hud_centered == 1, "hud = centred (British spelling)");
+    n = settings_parse("hud = left\n", &s, count_warn, NULL);
+    CHECK(n == 1 && warn_count == 1 && s.hud_centered == 1, "bad hud value reported and ignored");
+    char tmpl[4096];
+    settings_defaults(&s);
+    s.hud_centered = 1;
+    settings_format(&s, tmpl, sizeof tmpl);
+    CHECK(strstr(tmpl, "\nhud = centered\n") != NULL, "template writes the hud key");
+
     /* the template written next to the exe parses back to the defaults */
     char text[4096];
     ps2_settings_t d, back;
@@ -191,10 +209,54 @@ static void test_settings(void) {
     CHECK(ps2_settings.win_w == 1500 && ps2_settings.win_h == 844 && !strcmp(ps2_settings.disc, "x.iso") &&
           ps2_settings.aspect_w == 16, "stored keys load back (%d x %d, '%s')", ps2_settings.win_w, ps2_settings.win_h,
           ps2_settings.disc);
+    /* [display] read again while the game runs (sly2.ini edited meanwhile); environment overrides win */
+    const char* const kd[][3] = { { "display", "aspect", "4:3" }, { "display", "hud", "centered" } };
+    CHECK(settings_set(kd, 2), "settings_set display");
+    int rw = 0, rh = 0, rhud = -1;
+    CHECK(settings_read_display(&rw, &rh, &rhud) && rw == 4 && rh == 3 && rhud == 1, "read back %d:%d hud %d", rw, rh, rhud);
+    _putenv("PS2_ASPECT=21:9");
+    _putenv("PS2_HUD=edges");
+    settings_load();
+    CHECK(ps2_settings.aspect_w == 7 && ps2_settings.aspect_h == 3 && !ps2_settings.hud_centered, "env overrides at load");
+    CHECK(settings_read_display(&rw, &rh, &rhud) && rw == 7 && rh == 3 && rhud == 0, "env keys keep their values (%d:%d %d)",
+          rw, rh, rhud);
+    _putenv("PS2_ASPECT=");
+    _putenv("PS2_HUD=");
     wchar_t ini[MAX_PATH + 80];
     settings_user_path(L"sly2.ini", ini, MAX_PATH + 80);
     DeleteFileW(ini);                                    /* the interactive run starts at the default place */
     settings_load();
+    CHECK(!settings_read_display(&rw, &rh, &rhud), "no file: nothing to read");
+}
+
+/* F7 / F8 (window.c): what they ask aspect.c for. aspect.c is not linked here: these stand-ins apply a
+ * request at once, as the game does at its next frame. */
+static int stub_requests;
+void aspect_request(int w, int h, int hud_centered) {
+    stub_requests++;
+    if (w > 0 && h > 0) { ps2_settings.aspect_w = w; ps2_settings.aspect_h = h; }
+    if (hud_centered >= 0) ps2_settings.hud_centered = hud_centered;
+}
+void aspect_target(int* w, int* h, int* hud_centered) {
+    *w = ps2_settings.aspect_w; *h = ps2_settings.aspect_h; *hud_centered = ps2_settings.hud_centered;
+}
+
+static void test_display_switch(void) {
+    ps2_settings.aspect_w = 16; ps2_settings.aspect_h = 9; ps2_settings.hud_centered = 0;
+    switch_aspect();
+    CHECK(ps2_settings.aspect_w == 4 && ps2_settings.aspect_h == 3, "F7: 16:9 -> 4:3");
+    switch_aspect();
+    CHECK(ps2_settings.aspect_w == 16 && ps2_settings.aspect_h == 9, "F7: 4:3 -> 16:9");
+    ps2_settings.aspect_w = 7; ps2_settings.aspect_h = 3;
+    switch_aspect();
+    switch_aspect();
+    CHECK(ps2_settings.aspect_w == 7 && ps2_settings.aspect_h == 3, "F7 twice from 21:9 comes back to 21:9");
+    switch_hud();
+    CHECK(ps2_settings.hud_centered == 1 && ps2_settings.aspect_w == 7, "F8: edges -> centered, aspect kept");
+    switch_hud();
+    CHECK(ps2_settings.hud_centered == 0, "F8: centered -> edges");
+    CHECK(stub_requests == 6, "one request per key (%d)", stub_requests);
+    ps2_settings.aspect_w = 16; ps2_settings.aspect_h = 9;
 }
 
 static void test_xinput_mapping(void) {
@@ -1047,6 +1109,7 @@ int main(int argc, char** argv) {
     test_letterbox();
     test_fit_aspect();
     test_settings();
+    test_display_switch();
     test_xinput_mapping();
     test_keyboard_mapping();
     test_frame_handoff_basic();

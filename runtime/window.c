@@ -26,6 +26,7 @@
  * Environment: PS2_WINDOW_GDI=1 forces the GDI presenter.
  */
 #define COBJMACROS
+#include "aspect.h"
 #include "hw.h"
 #include "settings.h"
 
@@ -98,6 +99,7 @@ static const struct { const char* name; int axis, value; } script_sticks[] = {
  * stick hold still in progress (e.g. a long "r1:30000" paraglider hold in a live session).
  * "calls:<n>" prints the recompiled functions called in the next n VBlanks, like PS2_CALLS, and
  * "watch:<n>" logs every call of the PS2_WATCH functions in the next n VBlanks (debug builds).
+ * "aspect" and "hud" switch the display aspect / the HUD mode as F7 / F8 do (aspect.c).
  *   "t<seconds>:<button>[:<hold>]"      at a wall-clock time since the first pad read, e.g.
  *       "t95:start": scenes synchronised to sound (the intro cutscene follows its music stream)
  *       last a fixed real time, however fast the game runs.
@@ -132,6 +134,10 @@ static double script_seconds(void) {
 #define SCRIPT_RELEASE (-6)               /* "release": end the holds in progress */
 #define SCRIPT_CALLS (-7)                 /* "calls:<n>": call profile of the next n VBlanks (debug) */
 #define SCRIPT_WATCH (-8)                 /* "watch:<n>": PS2_WATCH logs every call for n VBlanks */
+#define SCRIPT_ASPECT (-9)                /* "aspect": as F7 (wide <-> 4:3) */
+#define SCRIPT_HUD   (-10)                /* "hud": as F8 (HUD edges <-> centred) */
+static void switch_aspect(void);
+static void switch_hud(void);
 static int script_pause_req;
 void ps2_request_ram_dump(void);
 void ps2_request_calls_window(uint32_t frames);
@@ -176,7 +182,8 @@ static void script_parse(const char* s) {
         } else if (sscanf(tok, "%u:%31[a-z0-9]:%u", &frame, name, &hold) < 2) continue;
         int found = !strcmp(name, "none") ? SCRIPT_NONE : !strcmp(name, "ram") ? SCRIPT_RAM :
                     !strcmp(name, "release") ? SCRIPT_RELEASE : !strcmp(name, "pause") ? SCRIPT_PAUSE :
-                    !strcmp(name, "calls") ? SCRIPT_CALLS : !strcmp(name, "watch") ? SCRIPT_WATCH : -1,
+                    !strcmp(name, "calls") ? SCRIPT_CALLS : !strcmp(name, "watch") ? SCRIPT_WATCH :
+                    !strcmp(name, "aspect") ? SCRIPT_ASPECT : !strcmp(name, "hud") ? SCRIPT_HUD : -1,
             axis = 0, value = 0x80;
         for (int b = 0; b < SCRIPT_NBUTTONS; b++)
             if (!strcmp(name, script_buttons[b].name)) found = b;
@@ -215,6 +222,7 @@ static void script_compact(uint32_t now) {
 static const char* script_name(int b) {
     return b == SCRIPT_NONE ? "none" : b == SCRIPT_AXIS ? "axis" : b == SCRIPT_RAM ? "ram" : b == SCRIPT_PAUSE ? "pause" :
            b == SCRIPT_RELEASE ? "release" : b == SCRIPT_CALLS ? "calls" : b == SCRIPT_WATCH ? "watch" :
+           b == SCRIPT_ASPECT ? "aspect" : b == SCRIPT_HUD ? "hud" :
            b >= SCRIPT_NBUTTONS ? script_sticks[b - SCRIPT_NBUTTONS].name : script_buttons[b].name;
 }
 
@@ -361,6 +369,8 @@ static void script_apply(int port, pad_input* in) {
         if (b == SCRIPT_PAUSE) { if (now == script[i].start) script_pause_req = 1; continue; }
         if (b == SCRIPT_CALLS) { if (now == script[i].start) ps2_request_calls_window(script[i].hold); continue; }
         if (b == SCRIPT_WATCH) { if (now == script[i].start) ps2_request_watch_window(script[i].hold); continue; }
+        if (b == SCRIPT_ASPECT) { if (now == script[i].start) switch_aspect(); continue; }
+        if (b == SCRIPT_HUD) { if (now == script[i].start) switch_hud(); continue; }
         if (b == SCRIPT_AXIS) {
             uint8_t v = (uint8_t)script[i].value;
             switch (script[i].axis) {
@@ -1049,6 +1059,49 @@ static void save_window_state(HWND hwnd) {
     if (!settings_set(kv, 6)) wlog("cannot write the window state to sly2.ini");
 }
 
+/* ---- run-time display switches (aspect.c applies them at the game's next frame) -------------------
+ * F7: wide <-> 4:3 (back to the wide aspect the game had last, 16:9 if it started at 4:3); F8: HUD at
+ * the edges <-> centred. Remembered in sly2.ini ([display] aspect / hud) unless the key comes from an
+ * environment override or there is no window (headless runs, PS2_INPUT "aspect"/"hud" tokens). An
+ * edit of sly2.ini's [display] while the game runs applies when its window is activated again. */
+static int wide_w = 16, wide_h = 9;
+
+static void remember_display(const char* key, const char* value, const char* env) {
+    if (!g_hwnd || (getenv(env) && *getenv(env))) return;
+    const char* const kv[][3] = { { "display", key, value } };
+    if (!settings_set(kv, 1)) wlog("cannot write display.%s to sly2.ini", key);
+}
+
+static void switch_aspect(void) {
+    int w, h, hud;
+    aspect_target(&w, &h, &hud);
+    if (w * 3 != h * 4) { wide_w = w; wide_h = h; w = 4; h = 3; }
+    else { w = wide_w; h = wide_h; }
+    aspect_request(w, h, -1);
+    char v[32];
+    snprintf(v, sizeof v, "%d:%d", w, h);
+    wlog("aspect %s (F7)", v);
+    remember_display("aspect", v, "PS2_ASPECT");
+}
+
+static void switch_hud(void) {
+    int w, h, hud;
+    aspect_target(&w, &h, &hud);
+    aspect_request(0, 0, !hud);
+    wlog("hud %s (F8)", hud ? "edges" : "centered");
+    remember_display("hud", hud ? "edges" : "centered", "PS2_HUD");
+}
+
+static void reread_display(void) {
+    int w, h, hud, cw, ch, chud;
+    if (!settings_read_display(&w, &h, &hud)) return;
+    aspect_target(&cw, &ch, &chud);
+    if (w * ch == h * cw && hud == chud) return;
+    if (w * 3 != h * 4) { wide_w = w; wide_h = h; }
+    aspect_request(w, h, hud);
+    wlog("sly2.ini changed: aspect %d:%d, hud %s", w, h, hud ? "centered" : "edges");
+}
+
 /* The remembered placement, if it is still on a monitor (one may have been unplugged); 1 if used.
  * The window stays hidden; window_thread shows it (maximized if it was). */
 static int restore_window_state(HWND hwnd) {
@@ -1129,7 +1182,12 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_KEYDOWN:
         if (wp == VK_F11 && !(lp & (1 << 30))) toggle_fullscreen(hwnd);
         else if (wp == VK_ESCAPE && win_fullscreen) toggle_fullscreen(hwnd);
+        else if (wp == VK_F7 && !(lp & (1 << 30))) switch_aspect();
+        else if (wp == VK_F8 && !(lp & (1 << 30))) switch_hud();
         return 0;                        /* game keys are read with GetAsyncKeyState */
+    case WM_ACTIVATEAPP:
+        if (wp) reread_display();        /* sly2.ini may have been edited meanwhile */
+        break;
     case WM_SYSCHAR:
         if (wp != ' ') return 0;         /* no beep for Alt+key; Alt+Space still opens the system menu */
         break;

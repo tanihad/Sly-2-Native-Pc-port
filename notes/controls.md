@@ -53,6 +53,8 @@ passed to the game (Alt+Enter, Alt+Tab, Alt+F4 are window shortcuts).
 |--------------------------------|-----------------------------|
 | Borderless fullscreen on/off   | F11 or Alt+Enter            |
 | Leave fullscreen               | Esc (only while fullscreen) |
+| Widescreen (16:9) <-> 4:3      | F7                          |
+| HUD at the edges <-> centred   | F8 (wide aspects)           |
 | Quit                           | close the window or Alt+F4  |
 
 The picture is shown at the display aspect from sly2.ini (default 16:9; 4:3 is the PS2 picture

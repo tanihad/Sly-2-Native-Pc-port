@@ -11,7 +11,7 @@
 #include <windows.h>
 #endif
 
-ps2_settings_t ps2_settings = { 16, 9, 3, 0, 0, -1, -1, -1, "", 0, 0, 0, 0, 0, 0, 0 };
+ps2_settings_t ps2_settings = { 16, 9, 0, 3, 0, 0, -1, -1, -1, "", 0, 0, 0, 0, 0, 0, 0 };
 
 void settings_defaults(ps2_settings_t* s) {
     memset(s, 0, sizeof *s);
@@ -91,6 +91,12 @@ static int apply(ps2_settings_t* s, const char* key, const char* v, settings_war
         int w, h;
         if (!settings_parse_aspect(v, &w, &h)) { warnf(warn, user, line, "aspect '%s' is not W:H (16:9, 4:3)", v); return 1; }
         s->aspect_w = w; s->aspect_h = h;
+        return 0;
+    }
+    if (!_stricmp(key, "display.hud")) {
+        if (!_stricmp(v, "edges")) s->hud_centered = 0;
+        else if (!_stricmp(v, "centered") || !_stricmp(v, "centred")) s->hud_centered = 1;
+        else { warnf(warn, user, line, "hud '%s' is not edges or centered", v); return 1; }
         return 0;
     }
     if (!_stricmp(key, "graphics.internal_scale")) {
@@ -236,7 +242,11 @@ int settings_format(const ps2_settings_t* s, char* out, size_t cap) {
         "[display]\n"
         "; Display aspect ratio: 16:9 (default) or 4:3. Other ratios (e.g. 21:9) work the same way.\n"
         "; 4:3 shows the game exactly as on a PS2. Environment override: PS2_ASPECT=4:3\n"
+        "; F7 in the game switches between 16:9 and 4:3 (and remembers it here).\n"
         "aspect = %d:%d\n"
+        "; Widescreen HUD: edges (default: the HUD's corner widgets move to the screen's edges) or\n"
+        "; centered (the whole HUD stays in the centre 4:3 area). F8 in the game switches it.\n"
+        "hud = %s\n"
         "\n"
         "[graphics]\n"
         "; Used by the Direct3D 11 renderer (the software renderer ignores them).\n"
@@ -261,7 +271,7 @@ int settings_format(const ps2_settings_t* s, char* out, size_t cap) {
         "; Show the frame rate in the title bar.\n"
         "show_fps = %s\n"
         "%s",
-        s->aspect_w, s->aspect_h, s->internal_scale, s->outlines_thin ? "thin" : "ps2",
+        s->aspect_w, s->aspect_h, s->hud_centered ? "centered" : "edges", s->internal_scale, s->outlines_thin ? "thin" : "ps2",
         s->filters_faithful ? "faithful" : "modern", tog[s->motion_blur + 1], tog[s->flicker_filter + 1],
         tog[s->interlacing + 1], ini_value(s->disc, disc, sizeof disc), s->win_fullscreen ? "on" : "off",
         s->show_fps ? "on" : "off", win);
@@ -461,9 +471,34 @@ void settings_load(void) {
         if (settings_parse_aspect(e, &w, &h)) { ps2_settings.aspect_w = w; ps2_settings.aspect_h = h; }
         else fprintf(stderr, "[settings] PS2_ASPECT='%s' is not W:H (16:9, 4:3): ignored\n", e);
     }
+    e = getenv("PS2_HUD");
+    if (e && *e) {
+        if (!_stricmp(e, "edges")) ps2_settings.hud_centered = 0;
+        else if (!_stricmp(e, "centered") || !_stricmp(e, "centred")) ps2_settings.hud_centered = 1;
+        else fprintf(stderr, "[settings] PS2_HUD='%s' is not edges or centered: ignored\n", e);
+    }
     e = getenv("PS2_SHOW_FPS");
     if (e && *e) ps2_settings.show_fps = atoi(e) != 0;
-    fprintf(stderr, "[settings] aspect %d:%d\n", ps2_settings.aspect_w, ps2_settings.aspect_h);
+    fprintf(stderr, "[settings] aspect %d:%d, hud %s\n", ps2_settings.aspect_w, ps2_settings.aspect_h,
+            ps2_settings.hud_centered ? "centered" : "edges");
+}
+
+/* [display] as sly2.ini says now (the player may edit it while the game runs): 1 and aspect / hud
+ * if the file is there. A key set by an environment override (PS2_ASPECT, PS2_HUD) keeps the
+ * current value. */
+int settings_read_display(int* aspect_w, int* aspect_h, int* hud_centered) {
+    wchar_t path[MAX_PATH + 80];
+    static char text[65536];
+    if (!settings_path(path, sizeof path / sizeof path[0]) || read_text(path, text, sizeof text) == (size_t)-1) return 0;
+    ps2_settings_t s;
+    settings_defaults(&s);
+    settings_parse(text, &s, NULL, NULL);
+    const char* e = getenv("PS2_ASPECT");
+    *aspect_w = e && *e ? ps2_settings.aspect_w : s.aspect_w;
+    *aspect_h = e && *e ? ps2_settings.aspect_h : s.aspect_h;
+    e = getenv("PS2_HUD");
+    *hud_centered = e && *e ? ps2_settings.hud_centered : s.hud_centered;
+    return 1;
 }
 
 static int write_text(const wchar_t* path, const char* text, size_t n) {
