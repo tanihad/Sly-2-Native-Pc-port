@@ -232,7 +232,7 @@ static const struct { const char* name; size_t off; int kind; } front_fields[] =
     ARRF(rov_why, GPU_ROV_N), ARRF(punt_why, GPU_PUNT_N),
     U32F(d3d_draws), U32F(d3d_draws_commute), U32F(ff_draws), U32F(rov_draws), U32F(split_extra), U32F(rov_runs), U32F(zresolves),
     U32F(alias16_sprites), U32F(alias16_dispatches), U32F(alias16_selfcopy), U32F(clears_c), U32F(clears_z),
-    U32F(loads), U32F(load_blocks), U32F(shadow_copies), U32F(downloads), U32F(download_blocks), U32F(patches),
+    U32F(loads), U32F(load_blocks), U32F(xcopies), U32F(xcopy_blocks), U32F(shadow_copies), U32F(downloads), U32F(download_blocks), U32F(patches),
     U32F(patch_bytes), U32F(xfers), U32F(xfer_bytes), U32F(xfer_local), U32F(xfer_read), U32F(clut_loads),
     U32F(clut_slots), U32F(clut_new), U32F(clut_gpu_reads), U32F(targets_live), U32F(targets_created), U32F(targets_evicted), U32F(target_overlaps),
     U32F(state_changes), U32F(states), U32F(vertices), U32F(indices), U32F(records_z), U32F(records_full),

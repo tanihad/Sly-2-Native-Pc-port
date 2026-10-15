@@ -52,6 +52,7 @@ typedef struct {
     uint32_t alias16_sprites, alias16_dispatches, alias16_selfcopy;
     uint32_t clears_c, clears_z; /* recognised full-target tiled fills (colour / Z) */
     uint32_t loads, load_blocks; /* OP_UPLOAD_TARGET (stale blocks loaded from vram_buf) */
+    uint32_t xcopies, xcopy_blocks;  /* stale blocks copied from the target that wrote them (same kind and scale) */
     uint32_t shadow_copies;      /* feedback copies */
     uint32_t downloads, download_blocks;  /* sample-0 downloads (GPU data the CPU side needs) */
     uint32_t patches, patch_bytes;        /* vram_buf patch ops after batching, bytes */
@@ -117,6 +118,8 @@ enum {
                                     (tier GPU_TIER_ALIAS16) write the staging texture */
     GPU_FOP_PRESENT,             /* gpu_fop_present */
     GPU_FOP_ALIAS16_END,         /* gpu_fop_alias16: the run ends: scatter the rect back into the target */
+    GPU_FOP_XCOPY,               /* gpu_fop_xcopy: target blocks <- blocks of another target of the same kind and scale,
+                                    every sample (data: n x (u16 source local block, u16 destination local block)) */
 };
 typedef struct { uint16_t op, size; } gpu_fop;       /* size in bytes, header included, 4-byte multiple */
 typedef struct { gpu_fop h; uint16_t id, kind, base, fbw, rows, kx, ky, family; } gpu_fop_target;
@@ -142,6 +145,7 @@ typedef struct {
 typedef struct { gpu_fop h; uint16_t ct, zt; uint32_t zresolve; int16_t bbox[4]; } gpu_fop_rov_end;
 /* rect [x0, x1) x [y0, y1) in pixels of the 16-bit frame (whole 16x8 blocks) */
 typedef struct { gpu_fop h; uint16_t target, psm; int16_t x0, y0, x1, y1; } gpu_fop_alias16;
+typedef struct { gpu_fop h; uint16_t target, src; uint32_t n, data_off; } gpu_fop_xcopy;
 typedef struct { gpu_fop h; uint32_t vblank; } gpu_fop_present;
 
 enum { GPU_FD_PARTIAL = 1, GPU_FD_REF = 2 };

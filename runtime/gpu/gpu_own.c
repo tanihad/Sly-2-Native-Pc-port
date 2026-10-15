@@ -53,7 +53,7 @@ static uint32_t next_serial(void) { change_gen++; return ++serial_ctr; }
 static uint16_t load_list[GPU_BLOCKS];
 static gpu_dl_entry dl_list[GPU_BLOCKS], dl_tmp[GPU_BLOCKS];
 static uint16_t dl_writer[GPU_BLOCKS];
-static uint32_t nload, ndl;
+static uint32_t nload, ndl, nxc;
 
 void own_reset(void) {
     for (int i = 1; i <= GPU_MAX_TARGETS; i++) {
@@ -67,7 +67,7 @@ void own_reset(void) {
     memset(pend_mask, 0, sizeof pend_mask);
     memset(blk_vstale, 0, sizeof blk_vstale);
     npend = 0;
-    nload = ndl = 0;
+    nload = ndl = nxc = 0;
     memset(page_full, 32, sizeof page_full);
     memset(page_pend, 0, sizeof page_pend);
     serial_ctr = 1;
@@ -239,8 +239,36 @@ static void flush_downloads(void) {
     }
 }
 
+/* cross-target copies into the target being loaded: (source local block, destination local block)
+ * pairs, grouped by source target */
+static uint16_t xc_list[GPU_BLOCKS][2], xc_src[GPU_BLOCKS];
+
+static void flush_xcopies(const gpu_target* T) {
+    while (nxc) {
+        uint16_t w = xc_src[0];
+        uint32_t n = 0, k = 0;
+        static uint16_t tmp[GPU_BLOCKS][2];
+        for (uint32_t i = 0; i < nxc; i++) {
+            if (xc_src[i] == w) { tmp[n][0] = xc_list[i][0]; tmp[n][1] = xc_list[i][1]; n++; }
+            else { xc_list[k][0] = xc_list[i][0]; xc_list[k][1] = xc_list[i][1]; xc_src[k] = xc_src[i]; k++; }
+        }
+        nxc = k;
+        if (gf_trace) fprintf(stderr, "[front] cross copy target %u -> %u: %u blocks\n", w, T->id, n);
+        gf_target_op(T->id);
+        gf_target_op(w);
+        gpu_fop_xcopy* o = gf_cmd(GPU_FOP_XCOPY, sizeof *o);
+        o->target = T->id;
+        o->src = w;
+        o->n = n;
+        o->data_off = gf_data(tmp, n * 4);
+        gf.xcopies++;
+        gf.xcopy_blocks += n;
+    }
+}
+
 static void flush_lists(const gpu_target* T) {
     if (ndl) flush_downloads();
+    if (nxc) flush_xcopies(T);
     if (nload) {
         if (gf_trace) {
             fprintf(stderr, "[front] load target %u: %u blocks:", T->id, nload);
@@ -298,6 +326,18 @@ static void load_block(gpu_target* T, int i, uint32_t b) {
         }
     }
     if (T->vs[i] == blk_serial[b]) return;
+    if (!blk_cpu[b]) {                   /* all of it another target's: copied over directly, every sample (M4) */
+        gpu_target* W = blk_writer[b] ? &gt[blk_writer[b]] : NULL;
+        int wl = W && W->used && W != T ? target_local(W, b) : -1;
+        if (wl >= 0 && W->vs[wl] == blk_serial[b] && W->kind == T->kind && W->kx == T->kx && W->ky == T->ky) {
+            xc_list[nxc][0] = (uint16_t)wl;
+            xc_list[nxc][1] = (uint16_t)i;
+            xc_src[nxc++] = W->id;
+            T->vs[i] = blk_serial[b];
+            T->sdirty[i] = 1;
+            return;
+        }
+    }
     if (blk_cpu[b] != ALL) download_block(b);    /* another target's (or a lost writer's) data */
     load_list[nload++] = (uint16_t)i;
     T->vs[i] = blk_serial[b];
@@ -363,7 +403,7 @@ void own_draw(gpu_target* T, int x0, int y0, int x1, int y1, int writes, int opa
             }
         }
     }
-    if (nload || ndl) flush_lists(T);
+    if (nload || ndl || nxc) flush_lists(T);
     if (T->clean_gen != change_gen && ++T->slow_calls >= 16) scan_clean(T);
 }
 

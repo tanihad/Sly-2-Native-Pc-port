@@ -145,3 +145,26 @@ void cs_clear(uint3 id : SV_DispatchThreadID) {
             }
     }
 }
+
+// cross-target copy (M4): blocks of target t <- the same blocks of the target that wrote them (same
+// kind and scale), every sample; entries u16 source local block | u16 destination local block << 16
+RWTexture2D<uint4> csrc : register(u3);
+RWTexture2D<uint> zsrc : register(u4);
+
+[numthreads(128, 1, 1)]
+void cs_xcopy(uint3 g : SV_GroupID, uint3 t : SV_GroupThreadID) {
+    uint i = group_base + g.x;
+    if (i >= n) return;
+    bool is16 = psm_is16(tpsm());
+    if (!is16 && t.x >= 64u) return;
+    uint e = data.Load(list_off + i * 4u);
+    uint bw = is16 ? 16u : 8u, ks = e & 0xFFFFu, kd = e >> 16, p = t.x;
+    uint2 d = uint2((kd % bcols) * bw + p % bw, (kd / bcols) * 8u + p / bw);
+    uint2 s = uint2((ks % value) * bw + p % bw, (ks / value) * 8u + p / bw);
+    for (uint j = 0u; j < ky; j++)
+        for (uint q = 0u; q < kx; q++) {
+            uint2 a = uint2(d.x * kx + q, d.y * ky + j), b = uint2(s.x * kx + q, s.y * ky + j);
+            if (tkind == 0u) ctgt[a] = csrc[b];
+            else ztgt[a] = zsrc[b];
+        }
+}

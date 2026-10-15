@@ -409,8 +409,8 @@ static void unbind_all(void) {
     ID3D11ShaderResourceView* none[2] = { NULL, NULL };
     ID3D11DeviceContext_PSSetShaderResources(c, 1, 2, none);
     ID3D11DeviceContext_OMSetRenderTargets(c, 0, NULL, NULL);
-    ID3D11UnorderedAccessView* nu[3] = { NULL, NULL, NULL };
-    ID3D11DeviceContext_CSSetUnorderedAccessViews(c, 0, 3, nu, NULL);
+    ID3D11UnorderedAccessView* nu[5] = { NULL, NULL, NULL, NULL, NULL };
+    ID3D11DeviceContext_CSSetUnorderedAccessViews(c, 0, 5, nu, NULL);
     X.mode = 0;
     X.b_ct = X.b_zt = -1;
     X.b_t1 = X.b_t2 = NULL;
@@ -662,6 +662,7 @@ static void set_consts(uint32_t slot) {
 
 /* a cs over n groups (in dispatches of at most 65535 groups) with the given views; the pixel pipeline's
  * bindings are dropped first (a resource may not be an OM UAV and a CS UAV at once) */
+static ID3D11UnorderedAccessView *mem_u3, *mem_u4;   /* (cs_xcopy's source target: set around its dispatch) */
 static void mem_dispatch(int cs, mem_consts* k, uint32_t n, uint32_t gy, ID3D11ShaderResourceView* t0,
                          ID3D11ShaderResourceView* t7, ID3D11UnorderedAccessView* u0, ID3D11UnorderedAccessView* u1,
                          ID3D11UnorderedAccessView* u2) {
@@ -676,8 +677,8 @@ static void mem_dispatch(int cs, mem_consts* k, uint32_t n, uint32_t gy, ID3D11S
     ID3D11DeviceContext_CSSetShaderResources(c, 0, 1, &srv0);
     ID3D11ShaderResourceView* t67[2] = { X.swz_srv, t7 };
     ID3D11DeviceContext_CSSetShaderResources(c, 6, 2, t67);
-    ID3D11UnorderedAccessView* u[3] = { u0, u1, u2 };
-    ID3D11DeviceContext_CSSetUnorderedAccessViews(c, 0, 3, u, NULL);
+    ID3D11UnorderedAccessView* u[5] = { u0, u1, u2, mem_u3, mem_u4 };
+    ID3D11DeviceContext_CSSetUnorderedAccessViews(c, 0, 5, u, NULL);
     for (uint32_t done = 0; done < n;) {
         uint32_t g = n - done > 65535 ? 65535 : n - done;
         k->group_base = gy > 1 ? 0 : done;
@@ -692,8 +693,8 @@ static void mem_dispatch(int cs, mem_consts* k, uint32_t n, uint32_t gy, ID3D11S
         done += g;
         if (gy > 1) break;               /* (2D dispatches: one) */
     }
-    ID3D11UnorderedAccessView* nu[3] = { NULL, NULL, NULL };
-    ID3D11DeviceContext_CSSetUnorderedAccessViews(c, 0, 3, nu, NULL);
+    ID3D11UnorderedAccessView* nu[5] = { NULL, NULL, NULL, NULL, NULL };
+    ID3D11DeviceContext_CSSetUnorderedAccessViews(c, 0, 5, nu, NULL);
     ID3D11ShaderResourceView* ns[2] = { NULL, NULL };
     ID3D11DeviceContext_CSSetShaderResources(c, 0, 1, ns);
     /* vram_buf as a CS UAV unbinds its SRV everywhere: the pixel pipeline's t0 again */
@@ -733,6 +734,22 @@ static void exec_load(const gpu_fop_blocks* o) {
     k.list_off = o->data_off;
     mem_dispatch(GPU_SH_cs_load, &k, o->n, 1, X.vram_srv, X.dat.srv, NULL, t->depth ? NULL : t->uav, t->depth ? t->zp_uav : NULL);
     XC.loads++;
+}
+
+/* target blocks <- blocks of the target that wrote them (same kind and scale), every sample */
+static void exec_xcopy(const gpu_fop_xcopy* o) {
+    xtarget *t = tgt(o->target), *s = tgt(o->src);
+    if (!t || !s || !o->n || t->depth != s->depth) return;
+    mem_consts k;
+    target_consts(t, &k);
+    k.n = o->n;
+    k.list_off = o->data_off;
+    k.value = (uint32_t)s->bcols;        /* (the source's blocks per row) */
+    mem_u3 = t->depth ? NULL : s->uav;
+    mem_u4 = t->depth ? s->zp_uav : NULL;
+    mem_dispatch(GPU_SH_cs_xcopy, &k, o->n, 1, NULL, X.dat.srv, NULL, t->depth ? NULL : t->uav, t->depth ? t->zp_uav : NULL);
+    mem_u3 = mem_u4 = NULL;
+    XC.xcopies++;
 }
 
 /* the GPU words of writer t's blocks -> dst (vram_buf, or the read-back scratch copy) */
@@ -1130,6 +1147,7 @@ void gpu_exec_frame(const void* payload) {
         case GPU_FOP_PATCH: exec_patch((const gpu_fop_blocks*)h); break;
         case GPU_FOP_CLUT: exec_clut(fd, (const gpu_fop_clut*)h); break;
         case GPU_FOP_LOAD: exec_load((const gpu_fop_blocks*)h); break;
+        case GPU_FOP_XCOPY: exec_xcopy((const gpu_fop_xcopy*)h); break;
         case GPU_FOP_DOWNLOAD: exec_download((const gpu_fop_blocks*)h); break;
         case GPU_FOP_CLEAR: exec_clear((const gpu_fop_clear*)h); break;
         case GPU_FOP_COPY_SHADOW: exec_shadow((const gpu_fop_shadow*)h); break;

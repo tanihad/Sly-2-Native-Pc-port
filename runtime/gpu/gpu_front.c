@@ -104,7 +104,7 @@ void* gf_cmd(uint16_t op, uint32_t bytes) {
      * overtakes drawing already merged. Target creation, CLUT ring slots (always a fresh slot),
      * loads (only stale blocks, which the open draw has not touched) and clears (the same pixels
      * as the fill sprites before them) need no ordering against the open draw. */
-    if ((op == GPU_FOP_PATCH || op == GPU_FOP_DOWNLOAD || op == GPU_FOP_COPY_SHADOW || op == GPU_FOP_RELEASE) && !in_flush) {
+    if ((op == GPU_FOP_PATCH || op == GPU_FOP_DOWNLOAD || op == GPU_FOP_COPY_SHADOW || op == GPU_FOP_RELEASE || op == GPU_FOP_XCOPY) && !in_flush) {
         if (trace_on) fprintf(stderr, "[front] op %u\n", op);
         flush_open();
     }
