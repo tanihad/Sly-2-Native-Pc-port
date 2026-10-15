@@ -10,7 +10,7 @@ exactly at S=1; lockstep against the software renderer with bisection.
 - `-Backend both` / `hw` without `-Ref` stay the M0 all-fallback path (gpu_diff_all keeps its 13/13
   0-diff baseline). `-Ref` selects the real GPU path: frontend (REF: every draw ROV) + render-thread
   executor (gpu_exec.c) + reference compose of the hw memory image.
-- Depth truth in REF mode = zpatch (R32G32_UINT UAV, .x = raw Z word: Z32/Z24 full 32-bit word so the
+- Depth truth in REF mode = zpatch (R32_UINT UAV, raw Z word: Z32/Z24 full 32-bit word so the
   Z24 top byte survives, Z16 16-bit value). No DSV use in REF mode; resolves ignored in REF.
 - vram_buf: DEFAULT raw buffer with SRV + UAV. Patches carry per-word bit masks (only uploaded bits are
   written: gs_vram's other bits are not trusted, hw mode never draws into gs_vram), applied by a CS.
@@ -42,10 +42,16 @@ exactly at S=1; lockstep against the software renderer with bisection.
   primitive dump, differing pixels, crops).
 - Lockstep (hw adapter): title 58 compares 0 differ, rv_prompt 39/0, ep8 hub 418/0 (commit 7d463bd+).
 
+- Unit harness (tests/unit/gs-hw run.ps1 -RefOnly): gs-draw scenes with -DTEST_HW_REF compare hw
+  memory vs sw before every pixel read; new scenes t_texture_formats and t_random_states (fuzz).
+  hw and WARP: 0 differing scenes (t_frame16 / t_formats_contexts = CT16 frames, ALIAS16 = M4).
+  Fixed on the way: PABE with A==B,D==Cd; serial bump on writer rewrite after download; NVIDIA
+  fused dmul+dadd (dmul_r/fmul_r with runtime `one`); WARP viewport clipping (centred viewport).
+  hw fuzz: 400 its default + seeds 1-6, 111213 x3000 identical. WARP: STQ triangle record-read
+  anomaly (shader reads wrong doubles at record offsets >= 120; CPU data verified) -> WARP fuzz keeps
+  triangles on UV; fixed STQ scenes (t_texture_formats, t_perspective, t_stq_negative_coords) pass on WARP.
+
 ## Next
-1. Unit harness: gs-draw scenes through both -Ref (lockstep compare at every pixel read) on hw and
-   WARP (tests/unit/gs-hw run.ps1 variant), fix divergences.
-2. Conformance for rcp_exact / double plane eval (optional; lockstep covers).
 3. Regression: run_tests.py, all unit suites, gpu_diff_all 13/13, VRAM hashes, fthread check,
    gs-front, debug+release game builds; GPU ms (hw -Ref -Bench) on title/rv_prompt/ep8 hub.
 4. Design appendix E + WIP final + report.
