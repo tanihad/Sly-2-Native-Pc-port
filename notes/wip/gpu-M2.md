@@ -5,7 +5,7 @@ C:\Users\tanih\Projects\sly2-worktrees\gpu-M2): execute hwdry's GPU_FOP stream o
 with real D3D11 objects and a trivial PS, measure render-thread submit ms and GS-thread frontend ms,
 decide GO / NO-GO.
 
-**Status: in progress (final measurements + docs).**
+**Status: complete. Verdict GO** (design appendix D).
 
 ## Done
 - Step 0 (baseline refresh, commit b5a6253): next/gpu's merge of main brought the PCRTC field-mode
@@ -49,13 +49,18 @@ decide GO / NO-GO.
   frontend thread 5.03 / 5.38. ThiefNet: same-thread 9.92 / 10.34; threaded GS 6.78 / 7.09, frontend
   7.71 / 8.03.
 
-## In progress
-- Final quiet-window run: build\m2\final_submit (gpu_submit_bench, frontend thread, 5 runs) + modes.ps1
-  (scratchpad) on ep8 boss, ep3 hub, ep5 street, ep2 hub, ThiefNet. Then design appendix D + verdict.
+## Final results (quiet windows, 5 runs; design appendix D has the tables)
+- Render thread, paced, frontend thread on: worst steady frame ep8 boss 4.93 ms (gate 8), ep3 hub 5.27,
+  ep5 street 5.07, ep2 hub 4.90, ThiefNet 6.73; incl. replay-start frame 7.9-10.8; median 1.1-1.9;
+  render CPU worst 1.2-1.8; 0.25-0.31 us per draw (wall); GPU median 1.6-3.3 ms; driver threads 1.4-3.2.
+- GS side per game frame (median / worst steady), frontend thread: ep8 boss GS 5.39 / 5.76, frontend
+  5.26 / 5.61 (gate 6); ep3 5.80 / 5.68; ep5 5.37 / 5.52; ep2 hub 5.86 / 6.23; ThiefNet 6.70 / 7.10.
+  Same thread: ep8 7.16, ep3 8.25, ep5 7.74, ep2 8.73, ThiefNet 9.76 (NO-GO without the thread).
+- GO for M3; ThiefNet / ep2 hub frontend over 6 ms -> M9 frontend hot spots (appendix D list).
 
-## Next
-1. Final numbers into appendix D (notes/d3d11-renderer.md) and this note; GO/NO-GO.
-2. Mark complete, final commit (never push / merge).
+## Next (later milestones)
+- M3: see design appendix D, "What M3 must know".
+- M9: frontend hot spots; GPU front-end cost of 5-6.5k draws.
 
 ## Findings / traps
 - Wall time of the render thread tracks GPU time when frames are submitted back to back (GPU-bound:
