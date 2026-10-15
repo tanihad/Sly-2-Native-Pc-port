@@ -2,6 +2,8 @@
 
 ## Resume here (read first in a new session)
 
+**PAUSED by the user (2026-10-14, 22:25).** Nothing is running. Unfinished: GPU M3 in worktree `sly2-worktrees\gpu-M3` (branch gpu/M3, pushed). Its last commit 2200666 holds an unverified mid-edit (a PABE shortcut fix in the frontend: A==B, D==Cd is not 'colour unchanged' when PABE is on and As < 0x80). Verify that first, then continue from notes/wip/gpu-M3.md. On "continue": finish M3, then M4..M11 (merge each into next/gpu from `sly2-worktrees\gpu-integ`), sending the owner short progress updates.
+
 **GPU: M2 = GO, merged; main merged into next/gpu (0f3fa1b). M3 (exact REF tier at S=1) running in worktree gpu-M3 (branch gpu/M3, notes/wip/gpu-M3.md).** Earlier: M2 resumed in gpu-M2. HUD edge
 anchoring (hud = edges|centered), live F7 aspect / F8 HUD switch and the Binocucom side fill are
 MERGED into main (next/hud; notes/widescreen.md 'HUD anchors'). Then M3..M11 one agent per milestone.
