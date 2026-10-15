@@ -3,7 +3,7 @@
 //   cs_load      target blocks <- vram_buf (stale blocks; every sample of a native pixel)
 //   cs_download  vram_buf (or a snapshot copy) <- the GPU words of a writer target's blocks, sample 0
 //   cs_clear     a recognised full fill (colour under a byte mask, or Z)
-// Targets: colour = R8G8B8A8_UINT UAV (raw GS bytes R, G, B, A), depth = zpatch R32G32_UINT (.x the
+// Targets: colour = R8G8B8A8_UINT UAV (raw GS bytes R, G, B, A), depth = zpatch R32_UINT (the
 // stored Z word: Z32/Z24 the whole 32-bit word, Z16 the 16-bit value).
 #include "gsmem.hlsli"
 
@@ -27,7 +27,7 @@ ByteAddressBuffer data : register(t7);
 ByteAddressBuffer vram_src : register(t0);
 RWByteAddressBuffer vram_dst : register(u0);
 RWTexture2D<uint4> ctgt : register(u1);
-RWTexture2D<uint2> ztgt : register(u2);
+RWTexture2D<uint> ztgt : register(u2);
 
 uint tpsm() {
     switch (tkind) {
@@ -73,7 +73,7 @@ void store_samples_c(uint2 px, uint v) {
 }
 void store_samples_z(uint2 px, uint v) {
     for (uint j = 0u; j < ky; j++)
-        for (uint i = 0u; i < kx; i++) ztgt[uint2(px.x * kx + i, px.y * ky + j)] = uint2(v, 0u);
+        for (uint i = 0u; i < kx; i++) ztgt[uint2(px.x * kx + i, px.y * ky + j)] = v;
 }
 
 [numthreads(128, 1, 1)]
@@ -98,7 +98,7 @@ void cs_load(uint3 g : SV_GroupID, uint3 t : SV_GroupThreadID) {
 
 uint target_value(uint2 px) {
     uint2 s = uint2(px.x * kx, px.y * ky);           // sample 0
-    return tkind == 0u ? pack4(ctgt[s]) : ztgt[s].x;
+    return tkind == 0u ? pack4(ctgt[s]) : ztgt[s];
 }
 
 // entries: gpu_dl_entry { u16 local, u16 abs; u32 pad; u64 words }
@@ -141,8 +141,7 @@ void cs_clear(uint3 id : SV_DispatchThreadID) {
         for (uint j = 0u; j < ky; j++)
             for (uint i = 0u; i < kx; i++) {
                 uint2 s = uint2(id.x * kx + i, id.y * ky + j);
-                uint z = tkind == 2u ? (ztgt[s].x & 0xFF000000u) | (value & 0xFFFFFFu) : value;
-                ztgt[s] = uint2(z, 0u);
+                ztgt[s] = tkind == 2u ? (ztgt[s] & 0xFF000000u) | (value & 0xFFFFFFu) : value;
             }
     }
 }

@@ -1040,7 +1040,7 @@ static uint32_t emit_linepix(const gs_env_view* ev, const gs_line* L, const gs_v
 }
 
 /* lockstep checkpoints (gpu_front_set_checkpoint_hook) */
-static void (*cp_hook)(uint32_t index, int frame_changed, void* user);
+static void (*cp_hook)(uint32_t index, int frame_changed, const void* ev, int type, const void* const* v, void* user);
 static void* cp_user;
 static uint64_t cp_frame = ~0ull, cp_zbuf = ~0ull;
 static uint32_t cp_vblank;               /* the VBlank the frame being built ends with (last + 1) */
@@ -1100,7 +1100,8 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
         int changed = fr != cp_frame || zb != cp_zbuf;
         cp_frame = fr;
         cp_zbuf = zb;
-        cp_hook(gf.kicks, changed, cp_user);
+        const void* vv[3] = { a, b, c };
+        cp_hook(gf.kicks, changed, ev, type, vv, cp_user);
     }
     gf.kicks++;
     if (!ev->draws) { gf.nowrite++; goto out; }
@@ -1543,7 +1544,7 @@ static void sink_frame(uint32_t vblank, uint32_t flags) {
     in_sink = 0;
 }
 
-void gpu_front_set_checkpoint_hook(void (*hook)(uint32_t index, int frame_changed, void* user), void* user) {
+void gpu_front_set_checkpoint_hook(void (*hook)(uint32_t index, int frame_changed, const void* ev, int type, const void* const* v, void* user), void* user) {
     cp_hook = hook;
     cp_user = user;
     cp_frame = cp_zbuf = ~0ull;
@@ -1581,6 +1582,7 @@ void gpu_front_start(const gpu_front_config* cfg) {
     GS_INIT();
     nar = 0;
     own_reset();
+    own_resync();                        /* GS memory as it is now goes to vram_buf (one patch of everything) */
     clut_reset();
     memset(SC, 0, sizeof SC);
     memset(SC_used, 0, sizeof SC_used);

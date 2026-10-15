@@ -91,6 +91,7 @@ typedef struct {
     double render_cpu_ms;                 /* render-thread CPU time (QueryThreadCycleTime) */
     double upload_ms;                     /* of render_ms: Map + copy of vertices, indices, records, constants */
     uint32_t state_calls;                 /* state-setting D3D calls (after redundancy filtering) */
+    int partial;                          /* a checkpoint frame (lockstep), not a VBlank */
 } gpu_frame_stats;
 int gpu_take_frame_stats(gpu_frame_stats* out, int max);   /* returns how many were taken */
 
@@ -102,6 +103,15 @@ int gpu_take_frame_stats(gpu_frame_stats* out, int max);   /* returns how many w
 #include "gpu_front.h"
 void gpu_submit_sink(const gpu_front_frame_data* fd, void* user);
 void gpu_submit_wait_idle(void);
+/* M3 REF tier: frames flagged GPU_FD_REF are drawn exactly (every draw through shaders/gs.hlsl on
+ * the ROV path, depth in zpatch). The GS memory image as the GPU sees it after everything queued so
+ * far: vram_buf with the GPU words of `n` blocks (gpu_front_gpu_blocks: entries and writer targets)
+ * from their writers (sample 0); vram_buf itself is not changed. out: 4 MB. Returns 1 on success. */
+int gpu_exec_read_memory(const gpu_dl_entry* entries, const uint16_t* writers, int n, uint8_t* out);
+/* statistics of the frames executed so far: draws skipped because the REF tier cannot render them
+ * yet (ALIAS16 batches), checkpoint frames */
+typedef struct { uint64_t frames, partial_frames, ref_draws, alias16_skipped, downloads, loads, patches, clears; } gpu_exec_counters;
+void gpu_exec_get_counters(gpu_exec_counters* out);
 uint64_t gpu_render_thread_cycles(void);  /* QueryThreadCycleTime of the render thread (TSC ticks) */
 void gpu_render_thread_affinity(uint64_t mask);   /* benchmarks: pin the render thread */
 

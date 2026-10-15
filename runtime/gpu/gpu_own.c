@@ -144,7 +144,7 @@ static void emit_target(const gpu_target* T, uint16_t op) {
 static void set_scale(gpu_target* T) {
     int n = gf_cfg.scale > 0 ? gf_cfg.scale : 1;
     T->kx = (uint8_t)n;
-    T->ky = (uint8_t)(T->family == FAM_DISPLAY ? 2 * n : n);
+    T->ky = (uint8_t)(T->family == FAM_DISPLAY && gf_cfg.display_ky2 ? 2 * n : n);
 }
 
 gpu_target* own_find(int kind, uint32_t base, uint32_t fbw) {

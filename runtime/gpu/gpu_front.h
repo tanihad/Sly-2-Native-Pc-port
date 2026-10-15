@@ -17,6 +17,9 @@ typedef struct {
     int sw;                      /* also run the software rasterizer (hwdry default 1) */
     int selfcheck;               /* recompute Z records with the sw row stepping and compare (cost) */
     int thread;                  /* the frontend on its own thread, the GS thread only decodes (needs sw = 0) */
+    int display_ky2;             /* display-family targets get ky = 2N (3.1). M3 (REF at S=1) runs 1x1 samples
+                                    everywhere (0); M2's benchmark used 1. M7 turns it on with Z targets that
+                                    follow their colour target's factors. */
 } gpu_front_config;
 
 enum { GPU_TIER_FF, GPU_TIER_ROV, GPU_TIER_ALIAS16, GPU_TIER_PUNT, GPU_TIER_N };
@@ -157,7 +160,7 @@ void gpu_front_set_sink(void (*sink)(const gpu_front_frame_data* fd, void* user)
  * drawing primitive's. Inside the hook, gpu_front_checkpoint() hands everything built so far to the sink
  * as a partial frame (pending patches flushed), so hw memory can be compared with the software
  * renderer's, which has drawn every earlier primitive. */
-void gpu_front_set_checkpoint_hook(void (*hook)(uint32_t index, int frame_changed, void* user), void* user);
+void gpu_front_set_checkpoint_hook(void (*hook)(uint32_t index, int frame_changed, const void* ev, int type, const void* const* v, void* user), void* user);
 void gpu_front_checkpoint(void);
 /* The blocks whose truth is in a target (GPU-written words), as download entries grouped by writer:
  * writers[i] is the writer target of out[i]. Returns the count (<= max). */

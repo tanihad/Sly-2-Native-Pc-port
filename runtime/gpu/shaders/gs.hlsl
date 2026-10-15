@@ -25,7 +25,7 @@ cbuffer draw_cb : register(b0) {
     uint kx, ky;                         // samples per native pixel of the bound targets
     float2 ndc_scale, ndc_bias;          // NDC = d3d pixel * scale + bias (power-of-two viewport: exact)
     uint vkx, vky;                       // texture view target samples
-    uint2 pad0;
+    uint probe_x, probe_y;               // debug probe pixel (PS2_GPU_PROBE; ~0: off)
 };
 
 ByteAddressBuffer vram : register(t0);
@@ -36,7 +36,21 @@ ByteAddressBuffer clut : register(t5);
 ByteAddressBuffer fdata : register(t7);
 
 RasterizerOrderedTexture2D<uint4> rov_c : register(u0);
-RasterizerOrderedTexture2D<uint2> rov_z : register(u1);
+RasterizerOrderedTexture2D<uint> rov_z : register(u1);
+RWByteAddressBuffer dbg : register(u2);  // probe records (gpu_exec.c, PS2_GPU_PROBE)
+
+// a probe record: 16 words (kind, record, state, U, V, texel, colour, Z, S, T, Q, xl, Z old, Cd, written, pixel)
+void probe_rec(uint kind, uint rb, uint state, int U, int V, uint t, uint col, uint z, float s, float tt, float q, int xl,
+               uint zold, uint dst, uint cw, int px, int py) {
+    uint slot;
+    dbg.InterlockedAdd(0, 1u, slot);
+    if (slot >= 255u) return;
+    uint o = 64u + slot * 64u;
+    dbg.Store4(o, uint4(0xDB000000u | kind, rb, state, asuint(U)));
+    dbg.Store4(o + 16u, uint4(asuint(V), t, col, z));
+    dbg.Store4(o + 32u, uint4(asuint(s), asuint(tt), asuint(q), asuint(xl)));
+    dbg.Store4(o + 48u, uint4(zold, dst, cw, (uint)px | ((uint)py << 16)));
+}
 
 // ---- vertex shaders --------------------------------------------------------------------------------
 struct VR {
@@ -399,6 +413,8 @@ void ps_gs(VR i
     int px = (int)((uint)P.x / kx), py = (int)((uint)P.y / ky);
     Frag f;
     f.U = 0; f.V = 0; f.lq = 1.0;
+    float dbg_s = 0.0, dbg_t = 0.0, dbg_q = 0.0;
+    int dbg_xl = 0;
 #if PRIM == 0
     uint rb = rec_first + prim * 256u;
     f.state = recs.Load(rb + 112u);
@@ -479,6 +495,7 @@ void ps_gs(VR i
             f.U = f2i(su16);
             f.V = f2i(tv16);
             f.lq = q;
+            dbg_s = s; dbg_t = t; dbg_q = q; dbg_xl = xl;
         }
     }
 #elif PRIM == 1
@@ -536,6 +553,9 @@ void ps_gs(VR i
         col = r | (g << 8) | (b << 16) | (col & 0xFF000000u);
     }
 
+    bool probing = (uint)px == probe_x && (uint)py == probe_y;
+    if (probing) probe_rec(1u, rb, f.state, f.U, f.V, col, f.col, f.z, dbg_s, dbg_t, dbg_q, dbg_xl, 0u, 0u, 0u, px, py);
+
     // ---- tests: alpha, destination alpha, Z (+ Z write) ----
     uint As = col >> 24;
     uint test = st.test;
@@ -559,13 +579,14 @@ void ps_gs(VR i
     }
     if (((st.zinfo >> 3) & 1u) != 0u && hasz) {
         uint ztst = st.zinfo & 3u, zmsk = (st.zinfo >> 2) & 1u;
-        uint zold = rov_z[P].x;
+        uint zold = rov_z[P];
         uint zb = zbits == 1u ? zold & 0xFFFFu : zbits == 2u ? zold & 0xFFFFFFu : zold;
         uint zv = f.z;
         if (ztst == 0u) return;                  // NEVER
         if (ztst == 2u && zv < zb) return;       // GEQUAL
         if (ztst == 3u && zv <= zb) return;      // GREATER
-        if (zw && zmsk == 0u) rov_z[P] = uint2(zbits == 2u ? (zold & 0xFF000000u) | zv : zv, 0u);
+        if (zw && zmsk == 0u) rov_z[P] = zbits == 2u ? (zold & 0xFF000000u) | zv : zv;
+        if (probing) probe_rec(3u, rb, f.state, f.U, f.V, col, (zw ? 1u : 0u) | (st.zinfo << 4) | (draw_flags << 16), zv, 0.0, 0.0, 0.0, mode, zold, rov_z[P], 0u, px, py);
     }
     if (mode == 0 || !hasc) return;
 
@@ -602,4 +623,5 @@ void ps_gs(VR i
         c = (dst & m) | (c & ~m);
     }
     rov_c[P] = uint4(c & 255u, (c >> 8) & 255u, (c >> 16) & 255u, c >> 24);
+    if (probing) probe_rec(2u, rb, f.state, f.U, f.V, col, f.col, f.z, 0.0, 0.0, 0.0, mode, 0u, dst, c, px, py);
 }
