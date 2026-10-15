@@ -374,7 +374,8 @@ int sel3(uint s, int src, int dst) { return s == 0u ? src : s == 1u ? dst : 0; }
 // the first pixel of row py inside the left edges (gs_tri_row's xl)
 int edge_min_x(int a, int dc, i64 c0, int rows) {
     i64 c = i64_add(c0, i64_mul_i32(i64_make(dc), rows));
-    float est = ceil(-(float)i64_to_double(c) / (float)a);
+    float cf = (float)asint(c.y) * 4294967296.0 + (float)c.x;   // (an estimate: corrected exactly below)
+    float est = ceil(-cf / (float)a);
     int x = est < -4096.0 ? -4096 : est > 4096.0 ? 4096 : (int)est;
     [loop] for (int i1 = 0; i1 < 64 && i64_is_neg(i64_add(i64_mul_i32(i64_make(a), x), c)); i1++) x++;
     [loop] for (int i2 = 0; i2 < 64 && !i64_is_neg(i64_add(i64_mul_i32(i64_make(a), x - 1), c)); i2++) x--;
@@ -476,15 +477,12 @@ void ps_gs(VR i
                     if ((int)(e2 << 16) >> 16 == py) { cutx = (int)e2 >> 16; break; }
                 }
             }
-            precise double srow = asdouble(recs.Load(rb + 120u), recs.Load(rb + 124u));
-            precise double trow = asdouble(recs.Load(rb + 128u), recs.Load(rb + 132u));
-            precise double qrow = asdouble(recs.Load(rb + 136u), recs.Load(rb + 140u));
-            double sdy = asdouble(recs.Load(rb + 144u), recs.Load(rb + 148u));
-            double tdy = asdouble(recs.Load(rb + 152u), recs.Load(rb + 156u));
-            double qdy = asdouble(recs.Load(rb + 160u), recs.Load(rb + 164u));
-            double sdx = asdouble(recs.Load(rb + 168u), recs.Load(rb + 172u));
-            double tdx = asdouble(recs.Load(rb + 176u), recs.Load(rb + 180u));
-            double qdx = asdouble(recs.Load(rb + 184u), recs.Load(rb + 188u));
+            // (16-byte loads of the record's S/T/Q block at 112..191)
+            uint4 w0 = recs.Load4(rb + 112u), w1 = recs.Load4(rb + 128u), w2 = recs.Load4(rb + 144u), w3 = recs.Load4(rb + 160u),
+                  w4 = recs.Load4(rb + 176u);
+            double srow = asdouble(w0.z, w0.w), trow = asdouble(w1.x, w1.y), qrow = asdouble(w1.z, w1.w);
+            double sdy = asdouble(w2.x, w2.y), tdy = asdouble(w2.z, w2.w), qdy = asdouble(w3.x, w3.y);
+            double sdx = asdouble(w3.z, w3.w), tdx = asdouble(w4.x, w4.y), qdx = asdouble(w4.z, w4.w);
             [loop] for (int r = 0; r < rows; r++) { srow = srow + sdy; trow = trow + tdy; qrow = qrow + qdy; }
             double dxl = (double)xl;
             precise double ps = dmul_r(sdx, dxl), pt = dmul_r(tdx, dxl), pq = dmul_r(qdx, dxl);
@@ -501,7 +499,7 @@ void ps_gs(VR i
             f.U = f2i(su16);
             f.V = f2i(tv16);
             f.lq = q;
-            dbg_s = s; dbg_t = t; dbg_q = q; dbg_xl = xl;
+            dbg_s = asfloat(w0.z); dbg_t = asfloat(w0.w); dbg_q = asfloat(w1.x); dbg_xl = (int)w1.y;
         }
     }
 #elif PRIM == 1

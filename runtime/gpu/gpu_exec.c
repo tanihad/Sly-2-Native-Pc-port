@@ -996,9 +996,9 @@ static void probe_report(const gpu_front_frame_data* fd) {
         memcpy(&s, &r[8], 4); memcpy(&t, &r[9], 4); memcpy(&q, &r[10], 4);
         uint32_t k = r[0] & 3;
         if (k == 1)
-            gpu_log("probe v%u%s %s rec %u state %u: U %d V %d colour %08X (vertex/record %08X) z %08X s %.9g t %.9g q %.9g xl %d",
+            gpu_log("probe v%u%s %s rec %u state %u: U %d V %d colour %08X (vertex/record %08X) z %08X s %.9g t %.9g q %.9g xl %d [s %08X t %08X q %08X]",
                     fd->vblank, fd->flags & GPU_FD_PARTIAL ? "p" : "", kinds[k], r[1], r[2], (int)r[3], (int)r[4], r[5], r[6], r[7],
-                    s, t, q, (int)r[11]);
+                    s, t, q, (int)r[11], r[8], r[9], r[10]);
         else if (k == 3)
             gpu_log("probe v%u%s %s rec %u: zv %08X zold %08X after %08X written/zinfo/flags %X mode %d", fd->vblank, fd->flags & GPU_FD_PARTIAL ? "p" : "",
                     kinds[k], r[1], r[7], r[12], r[13], r[6], (int)r[11]);

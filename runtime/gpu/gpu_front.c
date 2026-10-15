@@ -1386,6 +1386,9 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
                 if (e[k].a > 0 && ne < 2) { r->ea[ne] = (int32_t)e[k].a; r->edc[ne] = (int32_t)e[k].dc; r->ec[ne] = e[k].c; ne++; }
             r->nedge = ne;
             if (P->tme && !P->fst && (int64_t)(T.bx1 - T.bx0 + 1) * (T.by1 - T.by0 + 1) > GS_MAX_SPAN) stq_cuts(&T, P, r);
+            if (trace_on)
+                fprintf(stderr, "[front] tri record %u: by0 %d bx0 %d s0 %.17g sdy %.17g sdx %.17g q0 %.17g edges %u\n",
+                        rec_count(sizeof *r) - 1, r->by0, r->bx0, r->s0, r->sdy, r->sdx, r->q0, r->nedge);
             gf.records_full++;
             gf.rec_bytes += sizeof *r;
         } else if (zmode) {
