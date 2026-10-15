@@ -342,7 +342,12 @@ void own_draw(gpu_target* T, int x0, int y0, int x1, int y1, int writes, int opa
                     blk_writer[b] = T->id;
                     blk_serial[b] = next_serial();
                     set_cpu(b, 0);
-                } else if (blk_cpu[b]) set_cpu(b, 0);
+                } else if (blk_cpu[b]) {
+                    /* the writer writes again after a download made the block readable: targets that
+                     * loaded it since hold the serial too and must go stale (M3 fuzz finding) */
+                    set_cpu(b, 0);
+                    blk_serial[b] = next_serial();
+                }
                 T->vs[i] = blk_serial[b];
                 T->sdirty[i] = 1;
             }
@@ -630,6 +635,22 @@ int own_gpu_blocks(gpu_dl_entry* out, uint16_t* writers, int max) {
         }
     }
     return n;
+}
+
+/* (debugging) what the frontend knows about block b */
+void gpu_front_debug_block(uint32_t b, FILE* f) {
+    b &= GPU_BLOCKS - 1;
+    static const char* kinds[TGT_N] = { "C32", "Z32", "Z24", "Z16", "Z16S" };
+    fprintf(f, "    block %04X: writer %u serial %u CPU words %016llX%s%s\n", b, blk_writer[b], blk_serial[b],
+            (unsigned long long)blk_cpu[b], pending(b) ? " (patch pending)" : "", blk_vstale[b] ? " (vstale)" : "");
+    for (int i = 1; i <= GPU_MAX_TARGETS; i++) {
+        gpu_target* T = &gt[i];
+        if (!T->used) continue;
+        int k = target_local(T, b);
+        if (k < 0) continue;
+        fprintf(f, "      target %d %s base %03X FBW %u: local block %d (x %d y %d), %s\n", i, kinds[T->kind], T->base, T->fbw, k,
+                (k % T->bcols) * T->bw, (k / T->bcols) * T->bh, T->vs[k] == blk_serial[b] ? "current" : "stale");
+    }
 }
 
 /* some block of the rect holds downloaded data gs_vram lacks (CLUT loads read gs_vram) */

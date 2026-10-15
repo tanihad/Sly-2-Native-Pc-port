@@ -83,6 +83,33 @@ static void hw_compare(void) {
                 uint32_t w = gs_addr32(gs_swz_ct32, 0, 10, (uint32_t)x, (uint32_t)y);
                 if (a[w] != b[w]) { fprintf(stderr, "    frame pixel (%d,%d): hw %08X sw %08X\n", x, y, a[w], b[w]); shown++; }
             }
+        extern uint64_t hw_regs[0x80];
+        gpu_front_debug_block(first >> 6, stderr);
+        {                                /* the first differing pixels of the Z buffer at page 160 in its format */
+            uint32_t zpsm = 0x30 | (uint32_t)((hw_regs[0x4E] >> 24) & 0xF);
+            int z16 = zpsm == PSMZ16 || zpsm == PSMZ16S;
+            const uint16_t* tab = zpsm == PSMZ16 ? gs_swz_z16 : zpsm == PSMZ16S ? gs_swz_z16s : gs_swz_z32;
+            int zshown = 0;
+            for (int y = 0; y < 448 && zshown < 6; y++)
+                for (int x = 0; x < 640 && zshown < 6; x++) {
+                    uint32_t hv, sv;
+                    if (z16) {
+                        uint32_t h = gs_addr16(tab, 160 * 32, 10, (uint32_t)x, (uint32_t)y);
+                        hv = (a[h >> 1] >> ((h & 1) * 16)) & 0xFFFF; sv = (b[h >> 1] >> ((h & 1) * 16)) & 0xFFFF;
+                    } else {
+                        uint32_t w = gs_addr32(tab, 160 * 32, 10, (uint32_t)x, (uint32_t)y);
+                        hv = a[w]; sv = b[w];
+                    }
+                    if (hv != sv) { fprintf(stderr, "    Z (psm %02X) pixel (%d,%d): hw %08X sw %08X\n", zpsm, x, y, hv, sv); zshown++; }
+                }
+        }
+        fprintf(stderr, "    state: PRIM %llX FRAME %llX ZBUF %llX TEST %llX ALPHA %llX TEX0 %llX TEX1 %llX CLAMP %llX TEXA %llX\n"
+                        "           SCISSOR %llX FBA %llX PABE %llX COLCLAMP %llX SCANMSK %llX FOGCOL %llX\n",
+                (unsigned long long)hw_regs[0x00], (unsigned long long)hw_regs[0x4C], (unsigned long long)hw_regs[0x4E],
+                (unsigned long long)hw_regs[0x47], (unsigned long long)hw_regs[0x42], (unsigned long long)hw_regs[0x06],
+                (unsigned long long)hw_regs[0x14], (unsigned long long)hw_regs[0x08], (unsigned long long)hw_regs[0x3B],
+                (unsigned long long)hw_regs[0x40], (unsigned long long)hw_regs[0x4A], (unsigned long long)hw_regs[0x49],
+                (unsigned long long)hw_regs[0x46], (unsigned long long)hw_regs[0x22], (unsigned long long)hw_regs[0x3D]);
     }
     hw_scene_diffs++;
     hw_scene_words += words;
@@ -138,7 +165,8 @@ enum { P_POINT, P_LINE, P_LINESTRIP, P_TRI, P_TRISTRIP, P_TRIFAN, P_SPRITE };
 #define FST (1 << 8)
 #define CTXT2 (1 << 9)
 
-static void W(uint32_t r, uint64_t v) { gs_write_reg(r, v); }
+uint64_t hw_regs[0x80];                  /* (TEST_HW_REF: the registers as written, for divergence reports) */
+static void W(uint32_t r, uint64_t v) { if (r < 0x80) hw_regs[r] = v; gs_write_reg(r, v); }
 
 static uint32_t FBP = 0, FBW = 10;       /* current frame buffer (pages, 64-px units) */
 static int FPSM = PSMCT32;
@@ -1737,6 +1765,87 @@ static void t_texture_formats(void) {
     W(TEXA, 0x80ull << 32 | 0x80);
 }
 
+/* Random drawing states and primitives over random memory: every primitive type (AA1 lines too),
+ * blend forms, alpha test + AFAIL, DATE, Z formats and tests, partial FBMSK, COLCLAMP, PABE, FBA, fog,
+ * scan masks, CT32/CT24 frames, textures of every format with random filters, wrap modes, TEXA,
+ * mipmaps (LCM / LOD). No reference here (the software renderer must not crash); TEST_HW_REF compares
+ * the GPU's REF tier with it after every iteration. */
+#ifdef TEST_HW_REF
+static char hw_scene_buf[96];
+#endif
+static void t_random_states(void) {
+    reset_env();
+    const char* fs = getenv("PS2_FUZZ_SEED");     /* (heavier runs by hand: PS2_FUZZ_SEED, PS2_FUZZ_ITERS) */
+    const char* fi = getenv("PS2_FUZZ_ITERS");
+    rng_state = fs ? (uint32_t)strtoul(fs, NULL, 0) : 777;
+    int iters = fi ? atoi(fi) : 400;
+    static uint32_t raw[128 * 64];
+    for (int i = 0; i < 128 * 64; i++) raw[i] = (uint32_t)rnd(65536) << 16 | (uint32_t)rnd(65536);
+    upload(310 * 32, 2, PSMCT32, 0, 0, 128, 64, raw, sizeof raw);     /* textures, CLUTs (pages 310-317) */
+    for (int i = 0; i < 128 * 64; i++) raw[i] = (uint32_t)rnd(65536) << 16 | (uint32_t)rnd(65536);
+    upload(0, 10, PSMCT32, 0, 0, 128, 64, raw, sizeof raw);           /* random frame contents (alpha for DATE) */
+    upload(160 * 32, 10, PSMCT32, 0, 0, 128, 64, raw, sizeof raw);    /* and Z */
+    static const uint32_t psms[13] = { PSMCT32, PSMCT24, PSMCT16, PSMCT16S, PSMZ32, PSMZ24, PSMZ16, PSMZ16S,
+                                       PSMT8, PSMT4, PSMT8H, PSMT4HL, PSMT4HH };
+    static const uint32_t zpsms[4] = { PSMZ32, PSMZ24, PSMZ16, PSMZ16S };
+    static const uint32_t fbmsks[6] = { 0, 0, 0xFF000000u, 0x00FF00FFu, 0xFFFF80FFu, 0x0F0F0F0Fu };
+    for (int it = 0; it < iters; it++) {
+#ifdef TEST_HW_REF
+        snprintf(hw_scene_buf, sizeof hw_scene_buf, "t_random_states() iteration %d", it);
+        hw_scene = hw_scene_buf;
+#endif
+        frame(0, 10, rnd(4) ? PSMCT32 : PSMCT24, rnd(3) ? 0 : fbmsks[rnd(6)]);
+        zbuf(160, (int)zpsms[rnd(4)], rnd(4) == 0);
+        scissor(rnd(20), 100 + rnd(100), rnd(20), 100 + rnd(100));
+        test_reg(rnd(2), rnd(8), rnd(256), rnd(4), rnd(4) == 0, rnd(2), 1, rnd(4));
+        alpha_reg(rnd(3), rnd(3), rnd(3), rnd(3), rnd(256));
+        W(COLCLAMP, rnd(3) != 0); W(PABE, rnd(4) == 0); W(FBA_1, rnd(4) == 0); W(DTHE, rnd(2));
+        W(SCANMSK, rnd(5) == 0 ? 2 + rnd(2) : 0);
+        W(FOGCOL, (uint64_t)rnd(1 << 24));
+        W(TEXA, (uint64_t)rnd(256) | (uint64_t)rnd(2) << 15 | (uint64_t)rnd(256) << 32);
+        uint32_t psm = psms[rnd(13)];
+        int tw = 3 + rnd(4), th = 3 + rnd(4);
+        W(TEX0_1, tex0(310 * 32 + (uint32_t)rnd(4) * 32, 2, psm, (uint32_t)tw, (uint32_t)th, (uint32_t)rnd(2), (uint32_t)rnd(4),
+                       314 * 32 + (uint32_t)rnd(8) * 4, rnd(2) ? PSMCT16 : PSMCT32, (uint32_t)rnd(16), 1));
+        int mmin = rnd(6), mxl = rnd(4);
+        W(TEX1_1, (uint64_t)rnd(2) | (uint64_t)mxl << 2 | (uint64_t)rnd(2) << 5 | (uint64_t)mmin << 6 | (uint64_t)rnd(2) << 9 |
+                  (uint64_t)rnd(4) << 19 | (uint64_t)((rnd(256) - 128) & 0xFFF) << 32);
+        W(MIPTBP1_1, (uint64_t)(311 * 32) | 1ull << 14 | (uint64_t)(312 * 32) << 20 | 1ull << 34 | (uint64_t)(313 * 32) << 40 | 1ull << 54);
+        W(CLAMP_1, (uint64_t)rnd(4) | (uint64_t)rnd(4) << 2 | (uint64_t)rnd(64) << 4 | (uint64_t)rnd(64) << 14 |
+                   (uint64_t)rnd(64) << 24 | (uint64_t)rnd(64) << 34);
+        int type = rnd(7), flags = (rnd(2) ? IIP : 0) | (rnd(3) ? TME : 0) | (rnd(3) == 0 ? FGE : 0) | (rnd(2) ? ABE : 0) |
+                                   (rnd(4) == 0 ? 1 << 7 : 0) | (rnd(2) ? FST : 0);
+        if (getenv("PS2_FUZZ_VERBOSE"))
+            fprintf(stderr, "fuzz %d: type %d flags %03X FRAME psm %02X ZBUF %02X TEX0 psm %02X\n", it, type, flags, FPSM,
+                    0, psm);
+#ifdef TEST_HW_REF
+        {   /* PS2_FUZZ_TRACE=<iteration>: the frontend's trace of that iteration's draws and memory ops */
+            extern int gf_trace;
+            const char* tr = getenv("PS2_FUZZ_TRACE");
+            gf_trace = tr && atoi(tr) == it;
+        }
+#endif
+        prim(type, flags);
+        int nv = type == P_POINT ? 1 + rnd(3) : type == P_LINE || type == P_SPRITE ? 2 * (1 + rnd(2)) : 3 + rnd(3);
+        for (int k = 0; k < nv; k++) {
+            float q = 0.25f + (float)rndf() * 1.75f;
+            rgbaq(rnd(256), rnd(256), rnd(256), rnd(256), q);
+            st((float)(rndf() * 3.0 - 1.0) * q, (float)(rndf() * 3.0 - 1.0) * q);
+            uv(rnd(1 << 14), rnd(1 << 14));
+            double x = 10 + rndf() * 180, y = 10 + rndf() * 180;
+            uint32_t z = (uint32_t)rnd(1 << 16) | (uint32_t)rnd(1 << 16) << 16;
+            if (rnd(2)) xyzf(x, y, z, rnd(256));
+            else xyz(x, y, z);
+        }
+        (void)px(0, 0);                  /* (TEST_HW_REF: compare after every iteration) */
+#ifdef TEST_HW_REF
+        const char* fb = getenv("PS2_FUZZ_BLOCK");   /* (debugging: that block's ownership after every iteration) */
+        if (fb) { fprintf(stderr, "after fuzz %d:\n", it); gpu_front_debug_block((uint32_t)strtoul(fb, NULL, 16), stderr); }
+#endif
+    }
+    reset_env();
+}
+
 /* Side-band hints (register 0x7F, gs_hint.h): the HUD transform about the anchors, full-width
  * primitives drawn as they are, strips keeping the game's shared vertices, and the 4:3 state. */
 static void hint(uint32_t kind, uint32_t arg, float scale) {
@@ -1893,6 +2002,7 @@ int main(int argc, char** argv) {
     SCENE(t_coverage_reference());
     SCENE(t_texture_cache_random());
     SCENE(t_texture_formats());
+    SCENE(t_random_states());
     SCENE(t_stq_negative_coords());
     SCENE(t_csr());
     SCENE(t_display());

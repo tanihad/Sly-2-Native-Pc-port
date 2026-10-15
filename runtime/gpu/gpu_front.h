@@ -171,6 +171,8 @@ void gpu_front_resync(void);
 /* Primitives of this VBlank so far that the REF tier cannot render exactly yet (ALIAS16, target views,
  * PUNT): the frame's first "post pass" (M4). */
 uint32_t gpu_front_post_prims(void);
+/* (debugging) the frontend's ownership record of 256-byte block b and every target holding it */
+void gpu_front_debug_block(uint32_t b, FILE* f);
 
 /* ---- per-draw data read by the shaders (runtime/gpu/shaders/gs.hlsl, byte offsets there) ------------ */
 enum {                                          /* gpu_staterec.flags */
