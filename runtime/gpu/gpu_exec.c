@@ -909,8 +909,10 @@ static void exec_alias16(const gpu_fop_alias16* o, int end) {
     target_consts(t, &k);
     k.cx0 = (uint32_t)o->x0; k.cy0 = (uint32_t)o->y0; k.cx1 = (uint32_t)o->x1; k.cy1 = (uint32_t)o->y1;
     k.psm16 = o->psm;
-    mem_dispatch(end ? GPU_SH_cs_a16_scatter : GPU_SH_cs_a16_gather, &k, (uint32_t)(o->x1 - o->x0 + 7) / 8,
-                 (uint32_t)(o->y1 - o->y0 + 7) / 8, NULL, X.dat.srv, X.a16_uav, t->uav32, NULL);
+    uint32_t wx = (uint32_t)(o->x1 - o->x0);
+    if (end) wx /= 2;                    /* (scatter: a thread per word, two 16-bit pixels) */
+    mem_dispatch(end ? GPU_SH_cs_a16_scatter : GPU_SH_cs_a16_gather, &k, (wx + 7) / 8,
+                 (uint32_t)(o->y1 - o->y0 + 7) / 8, NULL, X.dat.srv, X.a16_uav, t->uav, NULL);
     if (end) XC.alias16_runs++;
 }
 
@@ -1046,8 +1048,8 @@ static void probe_report(const gpu_front_frame_data* fd) {
             gpu_log("probe v%u%s %s rec %u: zv %08X zold %08X after %08X written/zinfo/flags %X mode %d", fd->vblank, fd->flags & GPU_FD_PARTIAL ? "p" : "",
                     kinds[k], r[1], r[7], r[12], r[13], r[6], (int)r[11]);
         else
-            gpu_log("probe v%u%s %s rec %u: colour %08X Cd %08X written %08X mode %d", fd->vblank, fd->flags & GPU_FD_PARTIAL ? "p" : "",
-                    kinds[k], r[1], r[5], r[13], r[14], (int)r[11]);
+            gpu_log("probe v%u%s %s rec %u: colour %08X Cd %08X written %08X mode %d at sample (%u,%u)", fd->vblank,
+                    fd->flags & GPU_FD_PARTIAL ? "p" : "", kinds[k], r[1], r[5], r[13], r[14], (int)r[11], r[15] & 0xFFFF, r[15] >> 16);
     }
     ID3D11DeviceContext_Unmap(c, (ID3D11Resource*)X.dbg_stage, 0);
     static const uint32_t zero[4] = { 0, 0, 0, 0 };
@@ -1120,6 +1122,8 @@ void gpu_exec_frame(const void* payload) {
     for (size_t pos = 0; ok && pos + sizeof(gpu_fop) <= fd->cmd_bytes;) {
         const gpu_fop* h = (const gpu_fop*)(fd->cmd + pos);
         if (!h->size) break;
+        if (X.probe && h->op != GPU_FOP_DRAW && h->op != GPU_FOP_CLUT && h->op != GPU_FOP_PATCH)   /* (debugging: the memory ops) */
+            gpu_log("exec v%u%s op %u target %u", fd->vblank, fd->flags & GPU_FD_PARTIAL ? "p" : "", h->op, ((const uint16_t*)h)[2]);
         switch (h->op) {
         case GPU_FOP_TARGET: exec_target((const gpu_fop_target*)h); break;
         case GPU_FOP_RELEASE: exec_release((const gpu_fop_target*)h); break;

@@ -675,5 +675,5 @@ void ps_gs(VR i
         c = (dst & m) | (c & ~m);
     }
     rov_c[P] = c;
-    if (probing) probe_rec(2u, rb, f.state, f.U, f.V, col, f.col, f.z, 0.0, 0.0, 0.0, mode, 0u, dst, c, px, py);
+    if (probing) probe_rec(2u, rb, f.state, f.U, f.V, col, f.col, f.z, 0.0, 0.0, 0.0, mode, 0u, dst, c, P.x, P.y);   // (the sample position)
 }

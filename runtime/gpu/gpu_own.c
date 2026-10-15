@@ -241,6 +241,11 @@ static void flush_downloads(void) {
 static void flush_lists(const gpu_target* T) {
     if (ndl) flush_downloads();
     if (nload) {
+        if (gf_trace) {
+            fprintf(stderr, "[front] load target %u: %u blocks:", T->id, nload);
+            for (uint32_t i = 0; i < nload && i < 16; i++) fprintf(stderr, " %04X", T->babs[load_list[i]]);
+            fprintf(stderr, "\n");
+        }
         gf_target_op(T->id);
         gpu_fop_blocks* o = gf_cmd(GPU_FOP_LOAD, sizeof *o);
         o->target = T->id;

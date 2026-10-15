@@ -441,7 +441,9 @@ static void state_update(const gs_env_view* ev) {
     /* tiled-fill candidate: constant value per pixel, written whatever the destination holds (byte
      * masks allowed: the alpha reset is a fill of the alpha byte) */
     S.fill = !P->tme && !P->fge && S.blend == BL_OFF && !P->date && S.fatst == FATST_NONE && !S.zread &&
-             P->scanmsk < 2 && (S.cwrite || S.zwrite) && P->ffmt->bits != 16;
+             P->scanmsk < 2 && (S.cwrite || S.zwrite) && P->ffmt->bits != 16 && !S.reads_dest;
+    /* (M4: a blend that reads Cd is no fill, e.g. the bit-plane steps (Cd-0)*2>>7 under FBMSK FFFFFEFF;
+     * BL_OFF only says the FF table has no class for that blend) */
 
     /* ---- targets ---- */
     if (P->ffmt->bits == 16) {
