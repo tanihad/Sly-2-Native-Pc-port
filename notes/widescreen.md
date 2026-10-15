@@ -87,7 +87,8 @@ position is its matrix translation, set by the scene's timeline (the art is auth
 |---|---|---|
 | 0x36B health meter + gadget gauge | HUD manager 0x3D9E70 +0x10 (0x1D9968 / 0x1D9DF8) | by root: L (top left) |
 | boss health meters (level objects, e.g. ep1 Dimitri 0x78A) | boss classes: +0x2A0 (0x17FD08/0x180100), +0x568 (0x1D4940/0x1D4C88), script command 0x10DD08 | by root: R (top right) |
-| 0x36D coin counter, 0x36E pick-up counter, 0x36F timed counter | world +0x3BAC/+0x3BB8/+0x3BC4 (0x20F710; shown by 0x161868, 0x1618B0, 0x1618F8; L3 shows them) | by root |
+| 0x36D coin counter, 0x36E clue bottle counter, 0x36F timed counter | world +0x3BAC/+0x3BB8/+0x3BC4 (0x20F710; shown by 0x161868, 0x1618B0, 0x1618F8; L3 shows coins and bottles) | by root: R (top right) |
+| job counters ("0/3 alarms", per level, any id) | scene subclass vtable 0x2DAD90 (counts its tasks' states, 0x211F90) | by root (m1_brawl's: R, bottom right) |
 | Binocucom frame 0x35F / 0x360 / 0x361 | 0x19D540 (per player character) | C, then SIDE_FILL (below) |
 | everything else: ticker 0x371, letterbox + subtitles 0x373, briefing portraits 0x368-0x36A, pause menu, gadget menus 0x375-0x377, ThiefNet, title / episode menus, level-specific scenes | | C |
 | 2D outside scenes (text labels at world points 0x1CD780, dance prompts 0x152C58, gadget button glyphs 0x1DAC58) | | C |

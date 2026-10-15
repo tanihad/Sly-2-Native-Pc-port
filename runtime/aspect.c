@@ -169,6 +169,7 @@ static uint32_t ui_label;
 enum { POLICY_BY_ROOT = 3 };
 #define BINOCUCOM_NAVY 0x00190000u               /* the Binocucom frame's colour (0, 0, 25) */
 #define SIDE_FILL_ON 0x01000000u
+#define SCENE_VT_JOB_COUNTER 0x002DAD90u        /* vtable of the job counter scene class */
 static const struct { uint16_t oid; uint8_t policy; uint32_t side_fill; const char* what; } scene_policies[] = {
     { 0x36B, POLICY_BY_ROOT, 0, "player's health meter and gadget gauge (top left; HUD manager 0x3D9E80, 0x1D9968)" },
     { 0x36D, POLICY_BY_ROOT, 0, "coin counter (world +0x3BAC, shown by 0x161868 when the coin count changes; L3)" },
@@ -231,6 +232,9 @@ void aspect_scene_begin(struct ps2_ctx* ctx) {
     ui_scene_fill = 0;
     for (size_t k = 0; k < sizeof scene_policies / sizeof scene_policies[0]; k++)
         if (scene_policies[k].oid == oid) { ui_scene_policy = scene_policies[k].policy; ui_scene_fill = scene_policies[k].side_fill; }
+    /* the job counter class ("0/3": counts its tasks' states, 0x211F90; vtable 0x2DAD90, a scene
+     * subclass): every job's counter, placed in a corner by its level */
+    if (ui_scene_policy < 0 && ps2_r32(ctx, ui_scene + 0x0C) == SCENE_VT_JOB_COUNTER) ui_scene_policy = POLICY_BY_ROOT;
     if (ui_scene_policy < 0) ui_scene_policy = scene_is_meter(ctx, ui_scene, oid) ? POLICY_BY_ROOT : GS_HINT_ANCHOR_C;
     ui_item_anchor = ui_scene_policy == POLICY_BY_ROOT ? GS_HINT_ANCHOR_C : (uint8_t)ui_scene_policy;
     hud_log_init();
