@@ -33,6 +33,8 @@
 #include "gpu/gpu.h"
 #include "gpu/gpu_front.h"
 #include "gpu/gpu_verify.h"
+#include "gs_mem_swizzle.h"                /* (lockstep crops) */
+#include <wchar.h>
 #include <stddef.h>
 #endif
 
@@ -87,11 +89,14 @@ static uint32_t diff_frames, png_diffs;
 static uint64_t diff_pixels;
 static double min_psnr = 999.0;
 
+static int ref_mode;                             /* hw / both with --ref: the REF tier draws (M3) */
+
 static void take_stats(void) {
     gpu_frame_stats st[256];
     int n;
     while ((n = gpu_take_frame_stats(st, 256)) > 0)
         for (int i = 0; i < n; i++) {
+            if (st[i].partial) continue;        /* (lockstep checkpoint frames) */
             if (nsts == capsts) {
                 capsts = capsts ? capsts * 2 : 4096;
                 sts = realloc(sts, capsts * sizeof *sts);
@@ -164,7 +169,7 @@ static void write_metrics(const char* path, const char* rec, const char* adapter
     const char* json_rec = rec;
     fprintf(f, "{\n  \"recording\": \"");
     for (const char* p = json_rec; *p; p++) fprintf(f, *p == '\\' ? "\\\\" : *p == '"' ? "\\\"" : "%c", *p);
-    fprintf(f, "\",\n  \"backend\": \"%s\",\n  \"adapter\": \"%s\",\n", backend == B_HW ? "hw" : "both", adapter);
+    fprintf(f, "\",\n  \"backend\": \"%s%s\",\n  \"adapter\": \"%s\",\n", backend == B_HW ? "hw" : "both", ref_mode ? " ref" : "", adapter);
     fprintf(f, "  \"caps\": {\"name\": \"%s\", \"feature_level\": \"%x\", \"rov\": %d, \"typed_uav_load\": %d, "
                "\"dual_source\": %d, \"cb_offsets\": %d, \"full\": %d},\n",
             c->adapter, c->feature_level, c->rovs, c->typed_uav_load, c->dual_source, c->cb_offsets, c->full);
@@ -235,7 +240,7 @@ static const struct { const char* name; size_t off; int kind; } front_fields[] =
     U64F(cmd_bytes), U64F(data_bytes), U32F(atst_kicks), U32F(atst_pass), U32F(atst_fail), U32F(atst_straddle),
     U32F(cd_as_kicks), U32F(as_over128), ARRF(zprims, GPU_ZF_N), ARRF(zmin, GPU_ZF_N), ARRF(zmax, GPU_ZF_N),
     U32F(z32_over), U32F(tex_vram), U32F(tex_view_c32), U32F(tex_view_alpha), U32F(tex_alias16), U32F(region_clamp),
-    U32F(tbw_npot), U32F(selfcheck_bad),
+    U32F(tbw_npot), U32F(selfcheck_bad), U32F(lost_writer), U32F(post_prims), U32F(stq_cuts), U32F(checkpoints),
 };
 
 static void json_front(FILE* f, const gpu_front_frame* g) {
@@ -493,6 +498,324 @@ static int submit_report(const char* metrics, const char* rec, double replay_ms,
     free(r); free(c); free(u); free(g); free(fr); free(sb);
     return 0;
 }
+
+/* ---- REF tier (M3): reference compose, lockstep with bisection ------------------------------------------
+ * --ref with hw / both: the frontend (same thread) in REF mode feeds gpu_exec.c, which draws every
+ * primitive through the ROV pixel pipeline (shaders/gs.hlsl). Pictures are composed from the GPU's GS
+ * memory (sample 0 of every GPU-written block, read back) by the software display code
+ * (gs_compose_from). --lockstep (both): before every primitive whose FRAME or ZBUF differs from the
+ * previous one, and at every VBlank, the GPU's memory is compared with the software renderer's (all
+ * 4 MB); comparisons stop at the frame's first primitive the REF tier does not render yet (ALIAS16,
+ * target views: M4) and memory is resynced from the software renderer at that VBlank. The first
+ * divergence is bisected to its primitive by a second run of this program (--bisect V:A:B: compare
+ * before every primitive A..B of the frame after VBlank V), which dumps that primitive's state and
+ * vertices and crops of the frame buffer around it. */
+static gs_compose_hist* hw_hist;
+static uint8_t* hwmem;
+static gpu_dl_entry* lk_e;
+static uint16_t* lk_w;
+static int lockstep, lk_resync = 1, bisect_on;
+static uint32_t bisect_v, bisect_a, bisect_b;
+static uint32_t lk_vblank;                       /* the frame being built follows this VBlank */
+static uint32_t lk_compares, lk_diff_compares, lk_skipped_post, lk_resyncs, lk_last_ok;
+static int lk_failed;
+static uint32_t lk_fail_v, lk_fail_a, lk_fail_b, lk_fail_blocks;
+static uint32_t stream_xfers, lk_xfers_at;       /* host->local transfers in the stream */
+static uint32_t ref_frames, ref_diff_frames;
+static uint64_t ref_diff_px;
+
+typedef struct { uint64_t reg[0x64]; int type, ctx, ofx, ofy; gs_vtx v[3]; uint32_t index; int valid; } saved_prim;
+static saved_prim lk_prev;
+
+static int read_hw(void) {
+    if (!hwmem) {
+        hwmem = malloc(GS_VRAM_SIZE);
+        lk_e = malloc(16384 * sizeof *lk_e);
+        lk_w = malloc(16384 * sizeof *lk_w);
+        if (!hwmem || !lk_e || !lk_w) { fprintf(stderr, "out of memory\n"); exit(1); }
+    }
+    int n = gpu_front_gpu_blocks(lk_e, lk_w, 16384);
+    if (!gpu_exec_read_memory(lk_e, lk_w, n, hwmem)) { fprintf(stderr, "GPU memory read-back failed\n"); exit(1); }
+    return n;
+}
+
+/* blocks of hw memory differing from gs_vram; details of the first few */
+static uint32_t mem_compare(int verbose, int n) {
+    static uint16_t writer[16384];
+    memset(writer, 0, sizeof writer);
+    for (int i = 0; i < n; i++) writer[lk_e[i].abs] = lk_w[i];
+    uint32_t blocks = 0, words = 0, gpu_blocks = 0;
+    for (uint32_t b = 0; b < 16384; b++) {
+        const uint32_t* x = (const uint32_t*)(hwmem + (size_t)b * 256);
+        const uint32_t* y = (const uint32_t*)(gs_vram + (size_t)b * 256);
+        if (!memcmp(x, y, 256)) continue;
+        blocks++;
+        gpu_blocks += writer[b] != 0;
+        int nw = 0, first = -1;
+        for (int k = 0; k < 64; k++) if (x[k] != y[k]) { nw++; if (first < 0) first = k; }
+        words += (uint32_t)nw;
+        if (verbose && blocks <= 6) {
+            int ei = -1;
+            for (int i = 0; i < n && ei < 0; i++) if (lk_e[i].abs == b) ei = i;
+            fprintf(stderr, "  block %04X (page %03X) %s %u: %d words differ, first word %d: hw %08X sw %08X", b, b >> 5,
+                    writer[b] ? "GPU, target" : "CPU", writer[b], nw, first, x[first], y[first]);
+            if (ei >= 0) fprintf(stderr, " (local block %u, GPU words %016llX)", lk_e[ei].local, (unsigned long long)lk_e[ei].words);
+            fprintf(stderr, "\n");
+        }
+    }
+    if (verbose && blocks)
+        fprintf(stderr, "  %u blocks differ (%u GPU-written), %u words\n", blocks, gpu_blocks, words);
+    return blocks;
+}
+
+/* a magnified crop of a CT32 frame buffer from a memory image around pixel rect r (x0, y0, x1, y1) */
+static void crop_png(const char* name, const uint8_t* mem, const uint8_t* other, uint64_t frame, const int r[4]) {
+    if (!strcmp(outdir, "-")) return;
+    uint32_t fbp = (uint32_t)(frame & 0x1FF), fbw = (uint32_t)((frame >> 16) & 0x3F);
+    int x0 = r[0] - 8, y0 = r[1] - 8, x1 = r[2] + 8, y1 = r[3] + 8;
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > (int)fbw * 64 - 1) x1 = (int)fbw * 64 - 1;
+    if (y1 > 1023) y1 = 1023;
+    if (x1 - x0 > 255) x1 = x0 + 255;
+    if (y1 - y0 > 255) y1 = y0 + 255;
+    if (x1 < x0 || y1 < y0) return;
+    const int Z = 4, W = (x1 - x0 + 1) * Z, H = (y1 - y0 + 1) * Z;
+    static uint32_t img[1024 * 1024];
+    for (int y = y0; y <= y1; y++)
+        for (int x = x0; x <= x1; x++) {
+            uint32_t a = gs_addr32(gs_swz_ct32, fbp * 32, fbw, (uint32_t)x & 2047, (uint32_t)y & 2047), v, o;
+            memcpy(&v, mem + (size_t)a * 4, 4);
+            memcpy(&o, other + (size_t)a * 4, 4);
+            uint32_t c = other == mem ? 0 : 1;
+            uint32_t px = ((v & 0xFF) << 16) | (v & 0xFF00) | ((v >> 16) & 0xFF);
+            if (c && v != o) px = 0xFF00FF;            /* (the diff crop marks differing pixels) */
+            for (int j = 0; j < Z; j++)
+                for (int i = 0; i < Z; i++) img[((y - y0) * Z + j) * W + (x - x0) * Z + i] = px;
+        }
+    char path[1024];
+    snprintf(path, sizeof path, "%s/%s.png", outdir, name);
+    debug_write_png(path, img, W, H, W);
+}
+
+static void dump_prim(const saved_prim* p) {
+    static const char* names[8] = { "point", "line", "linestrip", "tri", "tristrip", "trifan", "sprite", "prim7" };
+    const uint64_t* r = p->reg;
+    int c = p->ctx;
+    fprintf(stderr, "lockstep: first diverging primitive: index %u of the frame after VBlank %u: %s, context %d\n", p->index,
+            lk_vblank, names[p->type & 7], c + 1);
+    int nv = p->type == 0 ? 1 : p->type >= 3 && p->type <= 5 ? 3 : 2;
+    for (int i = 0; i < nv; i++) {
+        const gs_vtx* v = &p->v[i];
+        fprintf(stderr, "  v%d xy (%.4f, %.4f) z %u rgba %02X %02X %02X %02X f %d stq %g %g %g uv %.4f %.4f\n", i,
+                (v->x - p->ofx) / 16.0, (v->y - p->ofy) / 16.0, v->z, v->r, v->g, v->b, v->a, v->f, v->s, v->t, v->q,
+                v->u / 16.0, v->v / 16.0);
+    }
+    fprintf(stderr, "  PRIM %016llX FRAME %016llX ZBUF %016llX TEST %016llX ALPHA %016llX\n", (unsigned long long)((r[0x1A] & 1) ? r[0x00] : r[0x1B]),
+            (unsigned long long)r[0x4C + c], (unsigned long long)r[0x4E + c], (unsigned long long)r[0x47 + c], (unsigned long long)r[0x42 + c]);
+    fprintf(stderr, "  TEX0 %016llX TEX1 %016llX CLAMP %016llX TEXA %016llX FOGCOL %06llX MIPTBP %016llX %016llX\n",
+            (unsigned long long)r[0x06 + c], (unsigned long long)r[0x14 + c], (unsigned long long)r[0x08 + c], (unsigned long long)r[0x3B],
+            (unsigned long long)r[0x3D], (unsigned long long)r[0x34 + c], (unsigned long long)r[0x36 + c]);
+    fprintf(stderr, "  SCISSOR %016llX XYOFFSET %016llX PABE %llu FBA %llu COLCLAMP %llu DTHE %llu SCANMSK %llu\n",
+            (unsigned long long)r[0x40 + c], (unsigned long long)r[0x18 + c], (unsigned long long)r[0x49], (unsigned long long)r[0x4A + c],
+            (unsigned long long)r[0x46], (unsigned long long)r[0x45], (unsigned long long)r[0x22]);
+}
+
+static void bisect_report(int culprit_known) {
+    if (!culprit_known || !lk_prev.valid) {
+        fprintf(stderr, "lockstep: divergence before primitive %u, no drawing primitive compared before it in the range "
+                        "(a transfer or a checkpoint-level effect)\n", lk_prev.index);
+        return;
+    }
+    dump_prim(&lk_prev);
+    if (stream_xfers != lk_xfers_at) fprintf(stderr, "  (a host->local transfer also happened before this comparison)\n");
+    int rect[4] = { 1 << 30, 1 << 30, -(1 << 30), -(1 << 30) };
+    int nv = lk_prev.type == 0 ? 1 : lk_prev.type >= 3 && lk_prev.type <= 5 ? 3 : 2;
+    for (int i = 0; i < nv; i++) {
+        int x = (lk_prev.v[i].x - lk_prev.ofx) >> 4, y = (lk_prev.v[i].y - lk_prev.ofy) >> 4;
+        if (x < rect[0]) rect[0] = x;
+        if (y < rect[1]) rect[1] = y;
+        if (x > rect[2]) rect[2] = x;
+        if (y > rect[3]) rect[3] = y;
+    }
+    uint64_t frame = lk_prev.reg[0x4C + lk_prev.ctx], zbuf = lk_prev.reg[0x4E + lk_prev.ctx];
+    /* the differing pixels of its frame and Z buffers (32-bit layouts) inside the bounding box */
+    for (int which = 0; which < 2; which++) {
+        uint32_t base = which ? (uint32_t)(zbuf & 0x1FF) : (uint32_t)(frame & 0x1FF), fbw = (uint32_t)((frame >> 16) & 0x3F);
+        uint32_t psm = which ? 0x30u | (uint32_t)((zbuf >> 24) & 0xF) : (uint32_t)((frame >> 24) & 0x3F);
+        if (psm != 0x00 && psm != 0x01 && psm != 0x30 && psm != 0x31) continue;
+        const uint16_t* tab = which ? gs_swz_z32 : gs_swz_ct32;
+        int shown = 0, count = 0;
+        for (int y = rect[1] < 0 ? 0 : rect[1]; y <= rect[3] && y < 2048; y++)
+            for (int x = rect[0] < 0 ? 0 : rect[0]; x <= rect[2] && x < (int)fbw * 64; x++) {
+                uint32_t a = gs_addr32(tab, base * 32, fbw, (uint32_t)x, (uint32_t)y), hv, sv;
+                memcpy(&hv, hwmem + (size_t)a * 4, 4);
+                memcpy(&sv, gs_vram + (size_t)a * 4, 4);
+                if (hv == sv) continue;
+                count++;
+                if (shown++ < 8) fprintf(stderr, "  %s pixel (%d,%d): hw %08X sw %08X\n", which ? "Z" : "colour", x, y, hv, sv);
+            }
+        if (count) fprintf(stderr, "  %s: %d pixels differ in the bounding box (PS2_GPU_PROBE=x,y traces one on the GPU)\n",
+                           which ? "Z" : "colour", count);
+    }
+    crop_png("bisect_hw", hwmem, hwmem, frame, rect);
+    crop_png("bisect_sw", gs_vram, gs_vram, frame, rect);
+    crop_png("bisect_diff", hwmem, gs_vram, frame, rect);
+    fprintf(stderr, "lockstep: crops of FRAME %03X around (%d,%d)-(%d,%d) in %s\\bisect_{hw,sw,diff}.png\n",
+            (unsigned)(frame & 0x1FF), rect[0], rect[1], rect[2], rect[3], outdir);
+}
+
+static void lock_hook(uint32_t index, int changed, const void* evp, int type, const void* const* vp, void* user) {
+    (void)user;
+    int want = changed;
+    if (bisect_on) want = lk_vblank == bisect_v && index >= bisect_a && index <= bisect_b;
+    if (want && !bisect_on && gpu_front_post_prims()) { want = 0; lk_skipped_post++; }
+    if (want) {
+        gpu_front_checkpoint();
+        int n = read_hw();
+        uint32_t d = mem_compare(bisect_on ? 0 : !lk_failed, n);
+        lk_compares++;
+        if (d) {
+            if (bisect_on) {
+                fprintf(stderr, "lockstep: memory differs before primitive %u (%u blocks)\n", index, d);
+                mem_compare(1, n);
+                bisect_report(lk_prev.valid && lk_prev.index + 1 >= index);
+                fflush(stderr);
+                ExitProcess(6);
+            }
+            lk_diff_compares++;
+            if (!lk_failed) {
+                lk_failed = 1;
+                lk_fail_v = lk_vblank; lk_fail_a = lk_last_ok; lk_fail_b = index; lk_fail_blocks = d;
+                fprintf(stderr, "lockstep: FIRST DIVERGENCE before primitive %u of the frame after VBlank %u (last match before primitive %u)\n",
+                        index, lk_vblank, lk_last_ok);
+            }
+        } else {
+            lk_last_ok = index;
+        }
+        lk_xfers_at = stream_xfers;
+    }
+    /* this primitive, for the bisection's report */
+    const gs_env_view* ev = evp;
+    memcpy(lk_prev.reg, ev->reg, sizeof lk_prev.reg);
+    lk_prev.type = type; lk_prev.ctx = ev->ctx; lk_prev.ofx = ev->ofx; lk_prev.ofy = ev->ofy;
+    int nv = type == 0 ? 1 : type >= 3 && type <= 5 ? 3 : 2;
+    for (int i = 0; i < nv; i++) lk_prev.v[i] = *(const gs_vtx*)vp[i];
+    lk_prev.index = index;
+    lk_prev.valid = 1;
+}
+
+/* the VBlank's comparison (after the frame was closed) and pictures */
+static void ref_vblank(uint32_t vblank, uint32_t post_prims) {
+    static uint32_t swf[1024 * 1024], hwf[1024 * 1024];
+    if (!lockstep && backend == B_HW && !strcmp(outdir, "-")) {   /* benchmark: no read-backs */
+        lk_vblank = vblank;
+        pictures++;
+        progress++;
+        ref_frames++;
+        if ((ref_frames & 63) == 0) take_stats();
+        return;
+    }
+    int n = read_hw();
+    if (lockstep) {
+        if (!post_prims || bisect_on) {
+            uint32_t d = mem_compare(!lk_failed && !bisect_on, n);
+            lk_compares++;
+            if (d && bisect_on && lk_vblank == bisect_v) {
+                fprintf(stderr, "lockstep: memory differs at VBlank %u (%u blocks)\n", vblank, d);
+                mem_compare(1, n);
+                bisect_report(lk_prev.valid);
+                fflush(stderr);
+                ExitProcess(6);
+            }
+            if (d) {
+                lk_diff_compares++;
+                if (!lk_failed) {
+                    lk_failed = 1;
+                    lk_fail_v = lk_vblank; lk_fail_a = lk_last_ok; lk_fail_b = 0xFFFFFFFFu; lk_fail_blocks = d;
+                    fprintf(stderr, "lockstep: FIRST DIVERGENCE at VBlank %u (frame after VBlank %u, last match before primitive %u)\n",
+                            vblank, lk_vblank, lk_last_ok);
+                }
+            }
+        } else {
+            lk_skipped_post++;
+        }
+        if (post_prims && lk_resync) { gpu_front_resync(); lk_resyncs++; }
+    }
+    lk_vblank = vblank;
+    lk_last_ok = 0;
+    lk_prev.valid = 0;
+    uint64_t pr[GS_PRIV_SNAPSHOT];
+    gs_priv_snapshot(pr);
+    static gs_display_snap s;
+    gs_display_snapshot(&s, pr);
+    int w = 0, h = 0, sw_ok = 0, sw_w = 0, sw_h = 0;
+    if (backend == B_BOTH) {
+        sw_ok = gs_display(swf, 1024, &sw_w, &sw_h);
+        hash_picture(swf, sw_ok, sw_w, sw_h, 1024);
+    }
+    if (!hw_hist) hw_hist = gs_compose_hist_new();
+    int ok = gs_compose_from(&s, hwmem, hw_hist, hwf, 1024, &w, &h);
+    pictures++;
+    progress++;
+    ref_frames++;
+    gpu_pic_diff d;
+    memset(&d, 0, sizeof d);
+    d.vblank = vblank;
+    if (backend == B_BOTH) {
+        if (sw_ok && ok && sw_w == w && sw_h == h) gpu_pic_compare(swf, 1024, hwf, 1024, w, h, &d);
+        else if (sw_ok != ok || sw_w != w || sw_h != h) { d.size_mismatch = 1; d.diff_px = 1; }
+        d.vblank = vblank;
+        d.w = sw_w; d.h = sw_h; d.hw_w = w; d.hw_h = h;
+        if (d.diff_px) {
+            ref_diff_frames++;
+            ref_diff_px += d.diff_px;
+            if (png_diffs < 20 && ok && sw_ok && sw_w == w && sw_h == h) {
+                png_diffs++;
+                save_png("_sw", swf, w, h, 1024, vblank);
+                save_png("_hw", hwf, w, h, 1024, vblank);
+                static uint32_t a2[1024 * 1024], b2[1024 * 1024];
+                for (int y = 0; y < h; y++) { memcpy(a2 + (size_t)y * w, swf + (size_t)y * 1024, (size_t)w * 4); memcpy(b2 + (size_t)y * w, hwf + (size_t)y * 1024, (size_t)w * 4); }
+                diff_png(&d, a2, b2);
+            }
+        }
+    } else {
+        d.w = w; d.h = h; d.psnr = 999.0;
+        if (ok) save_png("", hwf, w, h, 1024, vblank);
+    }
+    if (nrecs == caprecs) {
+        caprecs = caprecs ? caprecs * 2 : 4096;
+        recs = realloc(recs, caprecs * sizeof *recs);
+        if (!recs) { fprintf(stderr, "out of memory\n"); exit(1); }
+    }
+    recs[nrecs++].d = d;
+    if (d.psnr < min_psnr) min_psnr = d.psnr;
+    if ((nrecs & 63) == 0) take_stats();
+}
+
+/* the first divergence, bisected by a second run of this program with --bisect */
+static void bisect_spawn(void) {
+    wchar_t* cl = GetCommandLineW();
+    size_t n = wcslen(cl) + 128;
+    wchar_t* cmd = malloc(n * sizeof *cmd);
+    if (!cmd) return;
+    swprintf(cmd, n, L"%ls --bisect %u:%u:%u", cl, lk_fail_v, lk_fail_a, lk_fail_b == 0xFFFFFFFFu ? 0x7FFFFFFFu : lk_fail_b);
+    STARTUPINFOW si;
+    PROCESS_INFORMATION pi;
+    memset(&si, 0, sizeof si);
+    si.cb = sizeof si;
+    fprintf(stderr, "lockstep: bisecting the frame after VBlank %u, primitives %u..%u\n", lk_fail_v, lk_fail_a, lk_fail_b);
+    fflush(stderr);
+    if (CreateProcessW(NULL, cmd, NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi)) {
+        WaitForSingleObject(pi.hProcess, INFINITE);
+        DWORD code = 0;
+        GetExitCodeProcess(pi.hProcess, &code);
+        fprintf(stderr, "lockstep: bisection run exit code %lu\n", (unsigned long)code);
+        CloseHandle(pi.hProcess);
+        CloseHandle(pi.hThread);
+    }
+    free(cmd);
+}
 #endif
 
 /* the picture of a VBlank (on the GS thread's pixel worker with workers, else on this thread) */
@@ -724,6 +1047,13 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--stream-hash")) shash = 1;
         else if (!strcmp(argv[i], "--front-thread")) front_thread = 1;
         else if (!strcmp(argv[i], "--pin")) pin = 1;
+#ifdef GS_REPLAY_GPU
+        else if (!strcmp(argv[i], "--lockstep")) lockstep = 1;
+        else if (!strcmp(argv[i], "--no-resync")) lk_resync = 0;
+        else if (!strcmp(argv[i], "--bisect") && i + 1 < argc) {
+            if (sscanf(argv[++i], "%u:%u:%u", &bisect_v, &bisect_a, &bisect_b) == 3) bisect_on = 1;
+        }
+#endif
         else if (!strcmp(argv[i], "--scale") && i + 1 < argc) scale = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--vram-hash") && i + 1 < argc) {
             vram_hash_file = fopen(argv[++i], "w");
@@ -737,6 +1067,9 @@ int main(int argc, char** argv) {
     (void)adapter; (void)metrics; (void)front_only; (void)front_ref; (void)front_straddle; (void)front_selfcheck; (void)with_sw; (void)scale;
 #else
     if (FRONT_MODE(backend) && workers > 0) { fprintf(stderr, "--backend hwdry/hwsubmit replay synchronously (workers 0)\n"); return 2; }
+    ref_mode = (backend == B_HW || backend == B_BOTH) && front_ref;
+    if (ref_mode && workers > 0) { fprintf(stderr, "--ref replays synchronously (workers 0)\n"); return 2; }
+    if (lockstep && !(ref_mode && backend == B_BOTH)) { fprintf(stderr, "--lockstep needs --backend both --ref\n"); return 2; }
     if (backend != B_SW && backend != B_HWDRY) {
         gpu_config cfg;
         memset(&cfg, 0, sizeof cfg);
@@ -744,7 +1077,8 @@ int main(int argc, char** argv) {
         cfg.timestamps = 1;
         if (!gpu_start(&cfg)) { fprintf(stderr, "GPU backend unavailable\n"); return 1; }
         gpu_caps_print(gpu_get_caps());
-        if (VERIFY_MODE(backend) && !gpu_verify_init(4, verify_cb, NULL)) { fprintf(stderr, "out of memory\n"); return 1; }
+        if (VERIFY_MODE(backend) && !ref_mode && !gpu_verify_init(4, verify_cb, NULL)) { fprintf(stderr, "out of memory\n"); return 1; }
+        if (ref_mode && !gpu_get_caps()->full) { fprintf(stderr, "the REF tier needs ROV and typed UAV loads\n"); return 1; }
     }
 #endif
     FILE* f = fopen(argv[1], "rb");
@@ -789,10 +1123,12 @@ int main(int argc, char** argv) {
     memcpy(gs_vram, vram, sizeof vram);
     gs_tex_flush_all();                          /* nothing decoded from the CLUT upload area stays */
 #ifdef GS_REPLAY_GPU
-    if (FRONT_MODE(backend)) {                   /* the frontend consumes the stream next to (or instead of) sw */
+    if (FRONT_MODE(backend) || ref_mode) {       /* the frontend consumes the stream next to (or instead of) sw */
         gpu_front_config fc;
         memset(&fc, 0, sizeof fc);
-        fc.sw = backend == B_HWSUB ? with_sw : !front_only;
+        fc.sw = ref_mode ? backend == B_BOTH : backend == B_HWSUB ? with_sw : !front_only;
+        if (ref_mode) front_thread = 0;          /* (checkpoints and read-backs on this thread) */
+        fc.display_ky2 = !ref_mode;              /* (M2's benchmark: display targets 2N rows; REF at S=1: 1x1) */
         fc.ref = front_ref;
         fc.straddle_rov = front_straddle;
         fc.selfcheck = front_selfcheck;
@@ -800,7 +1136,8 @@ int main(int argc, char** argv) {
         if (front_thread && fc.sw) fprintf(stderr, "--front-thread ignored: the software rasterizer is on\n");
         fc.scale = scale > 0 ? scale : 1;
         gpu_front_start(&fc);
-        if (backend == B_HWSUB) gpu_front_set_sink(gpu_submit_sink, NULL);   /* frames -> render thread (M2) */
+        if (backend == B_HWSUB || ref_mode) gpu_front_set_sink(gpu_submit_sink, NULL);   /* frames -> render thread */
+        if (lockstep) gpu_front_set_checkpoint_hook(lock_hook, NULL);
         if (pin) {
             find_pcores();
             if (npcores >= 4) {
@@ -872,6 +1209,9 @@ int main(int argc, char** argv) {
             uint64_t v;
             memcpy(&v, all + pos, 8);
             pos += 8;
+#ifdef GS_REPLAY_GPU
+            if (h[1] == 0x53 && (v & 3) != 3) stream_xfers++;
+#endif
             gs_write_reg(h[1], v);
         } else if (h[0] == 2) {
             if (pos + h[1] > size) break;
@@ -885,7 +1225,8 @@ int main(int argc, char** argv) {
             pos += sizeof snap;
             for (int i = 0; i < 15; i++) gs_priv_access(0x12000000u + 16u * (uint32_t)i, &snap[i], 8, 1);
 #ifdef GS_REPLAY_GPU
-            if (FRONT_MODE(backend)) {
+            uint32_t post_prims = ref_mode ? gpu_front_post_prims() : 0;
+            if (FRONT_MODE(backend) || ref_mode) {
                 gpu_front_vblank(snap, h[1]);
                 if ((frames & 63) == 63) take_front();
                 static ULONG64 last_tc;
@@ -908,6 +1249,10 @@ int main(int argc, char** argv) {
                     else Sleep((DWORD)(target - el));
                 }
             }
+#ifdef GS_REPLAY_GPU
+            if (ref_mode) ref_vblank(h[1], post_prims);
+            else
+#endif
             if (no_picture) { pictures++; progress++; }
             else if (workers > 0) gs_queue_vsync(h[1]);
             else {
@@ -997,7 +1342,53 @@ int main(int argc, char** argv) {
         gpu_front_stop();
         gpu_stop();
     }
-    if (VERIFY_MODE(backend)) {
+    if (ref_mode) {
+        stage = 3;
+        progress++;
+        gpu_submit_wait_idle();
+        gpu_finish();
+        take_stats();
+        take_front();
+        uint32_t posts = 0, stq_cuts = 0, lost = 0;
+        for (size_t i = 0; i < nff; i++) { posts += ff[i].post_prims; stq_cuts += ff[i].stq_cuts; lost += ff[i].lost_writer; }
+        gpu_exec_counters xc;
+        gpu_exec_get_counters(&xc);
+        double* g = malloc((nsts + 1) * sizeof *g);
+        size_t ng = 0;
+        for (size_t i = 0; i < nsts; i++) if (sts[i].gpu_ms >= 0) g[ng++] = sts[i].gpu_ms;
+        double gmed = median(g, ng), gmax = ng ? g[ng - 1] : 0, gsum = 0;
+        for (size_t i = 0; i < ng; i++) gsum += g[i];
+        size_t nd = 0;                           /* (30 fps games: VBlanks with draws only) */
+        for (size_t i = 0; i < nsts; i++) if (sts[i].gpu_ms >= 0 && sts[i].draws) g[nd++] = sts[i].gpu_ms;
+        double dmed = median(g, nd);
+        free(g);
+        fprintf(stderr, "ref: %u frames (%llu checkpoint frames), %llu REF draws, %llu ALIAS16 batches skipped (M4), %u post-pass prims, "
+                        "%u STQ triangles with batch cuts, %u lost writers; loads %llu downloads %llu patches %llu clears %llu\n",
+                ref_frames, (unsigned long long)xc.partial_frames, (unsigned long long)xc.ref_draws, (unsigned long long)xc.alias16_skipped,
+                posts, stq_cuts, lost, (unsigned long long)xc.loads, (unsigned long long)xc.downloads, (unsigned long long)xc.patches,
+                (unsigned long long)xc.clears);
+        fprintf(stderr, "ref: GPU ms per VBlank median %.3f, mean %.3f, max %.3f (%zu frames with timestamps); "
+                        "median over the %zu VBlanks with draws %.3f\n", gmed, ng ? gsum / (double)ng : 0.0, gmax, ng, nd, dmed);
+        fprintf(stderr, "ref-bench frames=%zu gpu_med=%.4f gpu_mean=%.4f gpu_max=%.4f draw_frames=%zu gpu_med_draws=%.4f\n", ng, gmed,
+                ng ? gsum / (double)ng : 0.0, gmax, nd, dmed);
+        if (backend == B_BOTH)
+            fprintf(stderr, "both ref: %u pictures compared, %u differ (%llu pixels), min PSNR %.2f dB\n", ref_frames, ref_diff_frames,
+                    (unsigned long long)ref_diff_px, min_psnr);
+        if (lockstep)
+            fprintf(stderr, "lockstep: %u comparisons, %u differ, %u skipped after a post pass (M4), %u resyncs; %s\n", lk_compares,
+                    lk_diff_compares, lk_skipped_post, lk_resyncs,
+                    lk_failed ? "DIVERGED" : "no divergence before the first post pass of any frame");
+        diff_frames = ref_diff_frames;
+        diff_pixels = ref_diff_px;
+        if (metrics) write_metrics(metrics, argv[1], adapter, ms);
+        gpu_front_stop();
+        gpu_stop();
+        if (backend == B_BOTH && ref_diff_frames) rc = 3;
+        if (lockstep && lk_failed) {
+            rc = 6;
+            if (!bisect_on) bisect_spawn();
+        }
+    } else if (VERIFY_MODE(backend)) {
         stage = 2;
         progress++;
         gpu_verify_flush();                     /* the GS thread is idle: this thread is the producer now */

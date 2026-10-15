@@ -43,3 +43,15 @@ ps_ff_d1z1x0t2     submit.hlsl         ps_ff             ps_5_0    TEX=2 DUAL ZO
 ps_ff_d1z1x1t0     submit.hlsl         ps_ff             ps_5_0    TEX=0 DUAL ZOUT DISCARD
 ps_ff_d1z1x1t1     submit.hlsl         ps_ff             ps_5_0    TEX=1 DUAL ZOUT DISCARD
 ps_ff_d1z1x1t2     submit.hlsl         ps_ff             ps_5_0    TEX=2 DUAL ZOUT DISCARD
+
+# REF tier (M3, gpu_exec.c): the GS pixel pipeline on ROV, memory <-> target compute
+vs_ref_tri          gs.hlsl             vs_ref_tri        vs_5_0
+vs_ref_sprite       gs.hlsl             vs_ref_sprite     vs_5_0
+vs_ref_linepix      gs.hlsl             vs_ref_linepix    vs_5_0
+ps_gs_tri           gs.hlsl             ps_gs             ps_5_0    PRIM=0
+ps_gs_sprite        gs.hlsl             ps_gs             ps_5_0    PRIM=1
+ps_gs_linepix       gs.hlsl             ps_gs             ps_5_0    PRIM=2
+cs_patch            mem.hlsl            cs_patch          cs_5_0
+cs_load             mem.hlsl            cs_load           cs_5_0
+cs_download         mem.hlsl            cs_download       cs_5_0
+cs_clear            mem.hlsl            cs_clear          cs_5_0

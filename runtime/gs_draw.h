@@ -47,6 +47,12 @@ typedef struct {
 void gs_display_snapshot(gs_display_snap* s, const uint64_t pr[GS_PRIV_SNAPSHOT]);
 /* Compose the picture from VRAM as it is (no sync: the caller orders it after the drawing). */
 int  gs_compose(const gs_display_snap* s, uint32_t* dst, int stride, int* w, int* h);
+/* The same from another 4 MB GS memory image with a field history of its own (the GPU backend's
+ * reference compose, notes/d3d11-renderer.md 10.1); hist NULL: gs_compose's. */
+typedef struct gs_compose_hist gs_compose_hist;
+gs_compose_hist* gs_compose_hist_new(void);
+int  gs_compose_from(const gs_display_snap* s, const uint8_t* mem, gs_compose_hist* hist, uint32_t* dst, int stride,
+                     int* w, int* h);
 /* The 8 KB pages the displayed buffers occupy. */
 void gs_display_pages(const uint64_t pr[GS_PRIV_SNAPSHOT], uint64_t set[8]);
 

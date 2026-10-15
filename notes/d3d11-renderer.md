@@ -1214,3 +1214,99 @@ of logic plus ~1 ms of ring traffic in ep8 boss (2-4 MB per game frame). Fronten
 - GPU front-end time with trivial shaders is already 1.5-3.3 ms median (5 ms worst) at S=1 for
   5-6.5k draws: draw count reduction (commutation batching, M9) also matters for the GPU budget.
 - Replay-start / level-load frames cost 8-11 ms on the render thread (target creation, 4 MB patch).
+
+## Appendix E. As built: M3 REF tier core at S=1 (branch gpu/M3)
+
+**Result.** Every draw runs on the ROV tier (`ps_gs`) and matches the software renderer bit for bit
+wherever M3's scope reaches: lockstep (hw adapter) title 58 comparisons / 0 differ, rv_prompt 39 / 0,
+ep8 hub 418 / 0 (also brief 58 / 0, ep3 rope 37 / 0, rv_intro 31 / 0, ep7 boss 230 / 0), no divergence
+before the first post pass of any frame; with `-Ref` alone the pictures of title and rv_prompt are
+identical, ep8 hub differs where post passes run (M4). gs-draw unit scenes through the REF tier
+(`tests/unit/gs-hw/run.ps1 -RefOnly`): 1162 memory comparisons per adapter, **0 differing scenes on
+the RTX 4060 Ti and on WARP**; the two scenes with CT16 frames (t_frame16, t_formats_contexts) need
+ALIAS16 (M4). No tolerance was needed for perspective texturing: STQ is emulated exactly (below).
+
+**What was built**
+- Frontend (gpu_front.c/h, gpu_own.c): full records. `gpu_staterec` (96 B: TEX0/CLAMP/TEX1/TEXA,
+  CLUT slot, finalized TEST/ALPHA/FBMSK/Z info, texture levels with MIPTBP replicated from
+  `bind_textures`), `gpu_rec_tri` (256 B: colour/fog/UV attributes as the GS's 32-bit wrapped
+  row + dy*rows + dx*x, Z as int64, left edges in 64-bit fixed point, S/T/Q as doubles plus the CPU
+  renderer's batch-cut table), `gpu_rec_sprite` (64 B, V as a double plane per row like gs_draw),
+  `gpu_rec_linepix` (32 B, integer U/V for FST). Checkpoints (`gpu_front_checkpoint` + hook: a partial
+  frame closed without PRESENT at FRAME/ZBUF changes and VBlank), `gpu_front_resync`,
+  `gpu_front_gpu_blocks`, post-pass counter, `display_ky2` config.
+- Ownership (gpu_own.c): patches carry **per-word bit masks** (only the bits a transfer wrote; the M2
+  CPU mirror of vram_buf is gone); downloads are GPU-side (writer target sample 0 -> vram_buf, masked
+  to the GPU-owned words, `gpu_dl_entry`); an upload that partially covers a GPU-written block
+  downloads the block first; `blk_cpu` now means "vram_buf holds the truth"; the initial memory of a
+  recording is a full resync.
+- Shaders: `gsmem.hlsli` (addressing through `swz_tab`, all PSMs), `mem.hlsl` (cs_patch, cs_load,
+  cs_download, cs_clear), `gs.hlsl` (REF VS for triangles / sprite quads / line-pixel quads and the
+  `ps_gs` pipeline: exact coverage from the record, Z in integers, ZTST/ATST/AFAIL/DATE/blend/COLCLAMP/
+  FBA/FBMSK/PABE/DTHE/SCANMSK, every PSM sampled from vram_buf incl. T8H/4HL/4HH and CLUT CSM1/2, GS
+  bilinear, CLAMP/REGION, TEXA, LOD and mipmaps).
+- Executor (gpu_exec.c): vram_buf (raw SRV + UAV), swz_tab, zpatch R32_UINT per depth target, REF
+  draws as UAV-only passes (u0 colour ROV R8G8B8A8_UINT, u1 zpatch ROV, u2 probe), `gpu_exec_read_memory`
+  (4 MB hw image = scratch copy of vram_buf + downloads), counters, `PS2_GPU_PROBE=x,y`.
+- gs.c: `gs_compose_from(snapshot, memory, history, ...)` (the reference compose of a hw memory
+  image; `gs_compose` calls it with gs_vram, sw output unchanged).
+- gs_replay: `--ref` (hw / both: reference compose, picture compare, GPU ms), `--lockstep`
+  (`-Lockstep` in gs_replay.ps1: 4 MB compare per checkpoint; skips after the frame's first post pass;
+  resyncs at VBlank after one, `--no-resync`), automatic bisection (a child run with
+  `--bisect V:A:B` dumps the culprit primitive, differing colour/Z pixels and PNG crops).
+- Unit harness: gs-draw with `-DTEST_HW_REF` compares the hw memory with sw before every pixel read
+  (`tests/unit/gs-hw/run.ps1`, `-RefOnly`, both adapters); new scenes `t_texture_formats` (every PSM
+  from memory, CLUT/TEXA/wrap/bilinear/STQ) and `t_random_states` (fuzz: random states, PSMs,
+  filters, LOD, uploads of every format; `PS2_FUZZ_SEED` / `PS2_FUZZ_ITERS`, default 400 iterations).
+  On hw additionally seeds 1-6 and 111213 x 3000 iterations (1-4 again with uploads) were identical.
+
+**GPU ms per frame at S=1, REF** (RTX 4060 Ti, `gs_replay --backend hw --ref`, bench path without
+read-backs, GPU timestamps, median of the per-run values of runs 2-4; run 1 has a ~1 s first-use spike)
+
+| recording | median per VBlank | median per VBlank with draws | mean | worst |
+|---|---|---|---|---|
+| title | 2.5 | 2.9 | 2.9 | 6.3 |
+| rv_prompt | 1.9 | 1.9 | 1.9 | 4.3 |
+| ep8 hub (30 fps) | 0.03 | 6.0 | 2.7 | 6.7 |
+
+(ep8 hub: one rendered frame per two VBlanks, ~6 ms per rendered frame.) With `--lockstep` the
+per-VBlank numbers are lower (title 0.8, ep8 hub 1.3) because checkpoint frames are excluded. REF is
+the correctness tier; FF (M5) carries the speed.
+
+**Deviations from the design and why**
+- Depth truth in REF mode is **zpatch (R32_UINT, raw Z word)**; no DSV is bound in REF and Z resolves
+  are ignored. Z24 keeps the stored top byte (the word is written whole, as the GS does).
+- vram_buf has **no CPU mirror**: masked patches by CS; CPU copies of hw memory (lockstep, compose)
+  download every GPU block into a scratch copy and read that back.
+- **Display-family targets run 1x1 in REF** (`display_ky2 = 0`): at S=1 the display family had ky = 2
+  while its Z target kept ky = 1, so Z landed on the wrong rows. M7 must give Z targets the factors
+  of their colour target.
+- REF viewport is 16384 x 16384 **centred on the origin** (TopLeftX/Y = -8192): WARP clipped
+  primitives at negative coordinates otherwise. NDC = d3d * 2 / 16384 exactly.
+- **Products are rounded before adds** (`dmul_r` / `fmul_r`: multiply by a runtime `one` from the
+  cbuffer): the NVIDIA compiler fused dmul + dadd into an FMA despite `precise`.
+- STQ is emulated exactly instead of within a tolerance: per-row double accumulation, span start
+  `(float)(srow + sdx*xl)`, float stepping in 64-pixel column pieces with the CPU renderer's batch
+  cuts (table in the record), 1/q by Newton in double plus a residual-checked neighbour pick, f2i.
+- Fixes found by the fuzz scenes (also in the sw-matching logic of the frontend): PABE with A == B,
+  D == Cd is not "colour unchanged" (As < 0x80 writes Cs); a writer that rewrites a block after a
+  download bumps the block serial so other targets' copies go stale.
+- **WARP anomaly**: in some STQ triangles of the fuzz scene WARP's `ps_gs` reads values from the
+  triangle record's STQ block (offsets >= 120) that differ from what the CPU uploaded (verified with a
+  record dump; NVIDIA reads them exactly; /O0 shaders, Load4 and reordering did not change it). The
+  fixed STQ scenes pass on WARP; the fuzz scene keeps triangles on UV when the adapter is WARP. Loops
+  in `ps_gs` are bounded so that a bad record cannot hang the device.
+
+**What M4 must know**
+- REF skips ALIAS16 batches (counter `alias16_skipped`); post passes (target views, ALIAS16) are
+  counted by the frontend (`post_prims`), and lockstep stops comparing a frame after its first one and
+  resyncs vram_buf from gs_vram at the next VBlank. M4 removes the skip and must turn
+  `--no-resync` on to prove whole frames (gate: all 13 recordings, every VBlank and FRAME change).
+- The bisection child (`--bisect`) and `gpu_front_debug_block` (ownership of one block) are the tools
+  for post-pass divergences; `PS2_GPU_PROBE=x,y` prints the probe pixel's record values on the GPU.
+- Downloads are per writer and masked; anything that writes vram_buf outside patches/downloads (M4's
+  ALIAS16 CS, shadow copies) must keep `blk_cpu` / serials / masks consistent with gpu_own.c.
+- Unit scenes t_frame16 and t_formats_contexts are the first ALIAS16 targets (they differ now only
+  because REF skips ALIAS16); t_texture_cache, t_deferred_hazards and t_direct_order already pass
+  while using M4 effects.
+- Z targets must get their colour target's scale factors before display_ky2 can be re-enabled (M7).

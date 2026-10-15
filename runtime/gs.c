@@ -146,6 +146,19 @@ static void decode_circuit(const uint64_t* priv, int i, circuit* c) {
     if (!c->fmt) c->fmt = gs_fmt_of(PSMCT32);
 }
 
+/* The memory a picture is composed from (gs_vram, or another image: gs_compose_from) and the field
+ * history of its deinterlacer. */
+struct gs_compose_hist {
+    uint32_t rows[2][512 * 1024];        /* last field of each parity: [(oy >> 1) * 1024 + x] */
+    uint32_t when[2];                    /* vsync + 1 when it was shown, 0 = none */
+    int dims[2][2];
+};
+static gs_compose_hist hist_default;
+static const uint8_t* cmem;
+static gs_compose_hist* chist = &hist_default;
+
+gs_compose_hist* gs_compose_hist_new(void) { return calloc(1, sizeof(gs_compose_hist)); }
+
 /* One output row of a circuit as 0xAARRGGBB (alpha in the GS's 8-bit form); x < 0 = outside. */
 static void read_row(const circuit* c, int fy, const int* xs, int w, uint32_t* out) {
     const gs_fmt* f = c->fmt;
@@ -156,10 +169,10 @@ static void read_row(const circuit* c, int fy, const int* xs, int w, uint32_t* o
         int fx = xs[i];
         if (fx < 0) { out[i] = 0; continue; }
         uint32_t v;
-        if (gs_swz_fast) {
+        if (gs_swz_fast || cmem != gs_vram) {
             uint32_t a = (((prow + ((uint32_t)fx >> 6)) & 511u) << 13) | ((uint32_t)trow[fx & 63] << f->elem_shift);
-            if (f->bits == 16) { uint16_t h; memcpy(&h, gs_vram + a, 2); v = h; }
-            else memcpy(&v, gs_vram + a, 4);
+            if (f->bits == 16) { uint16_t h; memcpy(&h, cmem + a, 2); v = h; }
+            else memcpy(&v, cmem + a, 4);
         } else {
             v = gs_mem_read(c->psm, (uint32_t)c->fbp * 32, (uint32_t)c->fbw, fx, fy);
         }
@@ -211,9 +224,9 @@ static uint32_t px_avg(uint32_t a, uint32_t b) {
 static void deinterlace(uint32_t* dst, int stride, int W, int H, const circuit* ref, const gs_display_snap* s) {
     /* Runs where the picture is composed (in order, one picture at a time): s holds the GS stream's
      * field state (gs_fb_yfrac/psm) at this VBlank and the VBlank count of the register snapshot. */
-    static uint32_t rows[2][512 * 1024];          /* last field of each parity: [(oy >> 1) * 1024 + x] */
-    static uint32_t when[2];                      /* vsync + 1 when it was shown, 0 = none */
-    static int dims[2][2];
+    uint32_t (*rows)[512 * 1024] = chist->rows;  /* last field of each parity: [(oy >> 1) * 1024 + x] */
+    uint32_t* when = chist->when;                 /* vsync + 1 when it was shown, 0 = none */
+    int (*dims)[2] = chist->dims;
     static uint8_t still[1024];                   /* per pixel of an output row: no motion around it */
     const uint32_t vsync = (uint32_t)s->priv[S_VSYNC];
     int f = s->fb_psm[ref->fbp & 511] == ref->psm ? s->fb_yfrac[ref->fbp & 511] : 0xFF;
@@ -287,6 +300,13 @@ int gs_display_regs(const uint64_t priv[GS_PRIV_SNAPSHOT], uint32_t* dst, int st
 }
 
 int gs_compose(const gs_display_snap* snap, uint32_t* dst, int stride, int* w, int* h) {
+    return gs_compose_from(snap, gs_vram, NULL, dst, stride, w, h);
+}
+
+int gs_compose_from(const gs_display_snap* snap, const uint8_t* mem, gs_compose_hist* hist, uint32_t* dst, int stride,
+                    int* w, int* h) {
+    cmem = mem;
+    chist = hist ? hist : &hist_default;
     const uint64_t* priv = snap->priv;
     uint64_t pmode = priv[P_PMODE];
     int en[2] = { (int)(pmode & 1), (int)((pmode >> 1) & 1) };
