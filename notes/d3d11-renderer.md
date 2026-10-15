@@ -1329,8 +1329,8 @@ the correctness tier; FF (M5) carries the speed.
 **Result.** With every post pass rendered on the GPU, lockstep in REF mode at S=1 with `--no-resync`
 (GS memory compared with the software renderer's, all 4 MB, at every FRAME/ZBUF change and every
 VBlank, nothing restarted from sw memory) finds **0 differences in 24,092 comparisons on all 24
-recordings** (hw adapter), and every reference-composed picture is identical (0 pixels). WARP: the
-same on rv_prompt, title, ep3 rope (lockstep) and the unit scenes. 0 PUNT; 0 downloads after the
+recordings** on the RTX 4060 Ti **and on WARP**, and every reference-composed picture is identical
+(0 pixels); the WARP STQ anomaly of appendix E did not show up in any recording. 0 PUNT; 0 downloads after the
 first frames except the FMV recording's one eviction (below). gs_post_probe's channel report (FRAME
 changes and VBlank ends) computed from GPU memory (`gs_replay --post-probe`) is identical line for
 line to the software one on ep3 rope VBlanks 5-6 (70 lines) and fix-perf brief 3-4 (120 lines).

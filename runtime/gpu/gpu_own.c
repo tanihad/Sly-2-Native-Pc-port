@@ -622,6 +622,8 @@ void own_upload(int psm, uint32_t bp, uint32_t bw, int x0, int y0, int x1, int y
     for (int i = 0; i < n; i++) {
         uint32_t b = up_list[i];
         uint64_t cpu = blk_cpu[b] | up_fullw[b];
+        if (gf_trace) fprintf(stderr, "[front] upload block %04X: CPU words %016llX -> %016llX writer %u\n", b,
+                              (unsigned long long)blk_cpu[b], (unsigned long long)cpu, blk_writer[b]);
         if (cpu == ALL) blk_writer[b] = 0;
         blk_serial[b] = next_serial();   /* every target copy (the writer's too: some words changed) goes stale */
         set_cpu(b, cpu);
@@ -713,6 +715,13 @@ int own_readback_apply(const uint8_t* mem, int write) {
             blk_vstale[b] = 0;
         } else if (memcmp(gs_vram + (size_t)b * 256, mem + (size_t)b * 256, 256)) {
             diff++;
+            if (gf_trace) {
+                const uint32_t *x = (const uint32_t*)(mem + (size_t)b * 256), *y = (const uint32_t*)(gs_vram + (size_t)b * 256);
+                int k = 0;
+                while (k < 63 && x[k] == y[k]) k++;
+                fprintf(stderr, "[front] PUNT read-back differs: block %04X word %d: vram_buf %08X gs_vram %08X (writer %u)\n", b, k, x[k],
+                        y[k], blk_writer[b]);
+            }
         }
     }
     return diff;

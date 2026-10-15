@@ -762,8 +762,10 @@ static uint32_t vcache_idx[3], vcache_state[3];
 static int vcache_n, vcache_pos;
 
 static uint32_t emit_vertex(const gs_vtx* v, const gs_env_view* ev, uint32_t state) {
+#ifndef GPU_NO_VCACHE
     for (int i = 0; i < vcache_n; i++)
         if (vcache_state[i] == state && !memcmp(&vcache[i], v, offsetof(gs_vtx, serial))) return vcache_idx[i];   /* (values, not the serial) */
+#endif
     gvtx* o = ar_reserve(&A_vtx, sizeof *o);
     o->x = (float)(v->x - ev->ofx) * (1.0f / 16.0f);
     o->y = (float)(v->y - ev->ofy) * (1.0f / 16.0f);
@@ -1202,7 +1204,7 @@ static void punt_prim(const gs_env_view* ev, int cls, const texsrc_t* ts, int x0
     PP.zpsm = S.zwrite ? P->zpsm : -1; PP.zbp = P->zpage * 32; PP.zbw = P->zbw;
     PP.r[0] = x0; PP.r[1] = y0; PP.r[2] = x1; PP.r[3] = y1;
     gs_front_swdraw = 1;
-    if (trace_on) fprintf(stderr, "[front] PUNT (%d,%d)-(%d,%d) FRAME psm %02X\n", x0, y0, x1, y1, P->fpsm);
+    if (trace_on) fprintf(stderr, "[front] PUNT prim %u (%d,%d)-(%d,%d) FRAME psm %02X\n", gf.kicks - 1, x0, y0, x1, y1, P->fpsm);
 }
 
 static void fr_sw_done(void) {
@@ -1211,6 +1213,7 @@ static void fr_sw_done(void) {
     /* (the rect's blocks were all made current in gs_vram first: patching the whole rect is exact) */
     if (PP.cpsm >= 0) own_upload(PP.cpsm, PP.cbp, PP.cbw, PP.r[0], PP.r[1], PP.r[2] + 1, PP.r[3] + 1);
     if (PP.zpsm >= 0) own_upload(PP.zpsm, PP.zbp, PP.zbw, PP.r[0], PP.r[1], PP.r[2] + 1, PP.r[3] + 1);
+    own_flush_patches();                 /* (now: gs_vram holds the state right after this primitive) */
 }
 
 #ifdef GPU_FRONT_PROF                    /* section profile of fr_prim (build with -DGPU_FRONT_PROF) */
@@ -1675,7 +1678,7 @@ static void frame_begin(void) {
     Sp = &SC[0];
     S.version = 0;
     prev_state_index = -1;
-    vcache_n = 0;
+    vcache_n = vcache_pos = 0;           /* (M4 fix: a stale ring position kept old entries valid) */
     cw_n = 0;
 }
 
@@ -1708,7 +1711,7 @@ void gpu_front_checkpoint(void) {
     nstates = 0;
     for (int i = 0; i < SC_N; i++) SC[i].state_valid = 0;
     prev_state_index = -1;
-    vcache_n = 0;
+    vcache_n = vcache_pos = 0;           /* (M4 fix: a stale ring position kept old entries valid) */
     cw_n = 0;
 }
 
