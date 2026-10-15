@@ -41,6 +41,73 @@ static void test_present(const uint32_t* frame, int ok, int w, int h, uint32_t v
 }
 #endif
 
+#ifdef TEST_HW_REF
+/* The same scenes with the Direct3D 11 backend's REF tier alongside (notes/d3d11-renderer.md M3,
+ * 10.3; built by tests/unit/gs-hw/run.ps1): the GPU frontend in REF mode consumes the same register
+ * stream and gpu_exec.c draws every primitive through the ROV pixel pipeline. Before every read of GS
+ * memory (and at the end of every scene) the GPU's memory (sample 0 of every GPU-written block, plus
+ * vram_buf) is compared with the software renderer's, all 4 MB, exactly. Each scene starts from the
+ * software renderer's memory (resync). Scenes that use what the REF tier leaves to M4 (16-bit frames:
+ * ALIAS16, target views of the frame) are reported but not counted. */
+#include "gpu/gpu.h"
+#include "gpu/gpu_front.h"
+static const char* hw_scene = "start";
+static uint32_t hw_last_regs = 0xFFFFFFFFu, hw_compares, hw_scene_compares, hw_scene_diffs, hw_post0;
+static uint64_t hw_scene_words;
+static int hw_bad_scenes, hw_m4_scenes;
+static uint8_t hw_mem[GS_VRAM_SIZE];
+static gpu_dl_entry hw_e[16384];
+static uint16_t hw_w[16384];
+
+static void hw_compare(void) {
+    if (gs_stats.regs == hw_last_regs) return;
+    hw_last_regs = gs_stats.regs;
+    gpu_front_checkpoint();
+    int n = gpu_front_gpu_blocks(hw_e, hw_w, 16384);
+    if (!gpu_exec_read_memory(hw_e, hw_w, n, hw_mem)) { fprintf(stderr, "GPU memory read-back failed\n"); exit(2); }
+    hw_compares++;
+    hw_scene_compares++;
+    const uint32_t* a = (const uint32_t*)hw_mem;
+    const uint32_t* b = (const uint32_t*)gs_vram;
+    uint32_t words = 0, first = 0;
+    for (uint32_t i = 0; i < GS_VRAM_SIZE / 4; i++)
+        if (a[i] != b[i]) { if (!words) first = i; words++; }
+    if (!words) return;
+    if (!hw_scene_diffs)
+        fprintf(stderr, "  [hw-ref] %s: %u words differ, first word %05X (block %04X, page %03X): hw %08X sw %08X\n", hw_scene, words,
+                first, first >> 6, first >> 11, a[first], b[first]);
+    hw_scene_diffs++;
+    hw_scene_words += words;
+}
+
+static uint32_t hw_mem_read(int psm, uint32_t bp, uint32_t bw, int x, int y) {
+    hw_compare();
+    return gs_mem_read(psm, bp, bw, x, y);
+}
+#define gs_mem_read hw_mem_read
+
+static void hw_scene_begin(const char* name) {
+    hw_scene = name;
+    hw_scene_compares = hw_scene_diffs = 0;
+    hw_scene_words = 0;
+    gpu_front_resync();                  /* (the scene starts from the software renderer's memory) */
+    hw_post0 = gpu_front_post_prims();
+}
+
+static void hw_scene_end(void) {
+    hw_last_regs = 0xFFFFFFFFu;
+    hw_compare();
+    uint32_t post = gpu_front_post_prims() - hw_post0;
+    if (hw_scene_diffs && post) hw_m4_scenes++;
+    else if (hw_scene_diffs) hw_bad_scenes++;
+    fprintf(stderr, "  [hw-ref] %-28s %4u comparisons, %s (%llu word differences)%s\n", hw_scene, hw_scene_compares,
+            hw_scene_diffs ? "DIFFERENT" : "identical", (unsigned long long)hw_scene_words, post ? " (uses M4 effects: ALIAS16 / target views)" : "");
+}
+#define SCENE(call) do { hw_scene_begin(#call); call; hw_scene_end(); } while (0)
+#else
+#define SCENE(call) call
+#endif
+
 /* ---- test helpers --------------------------------------------------------------------------------- */
 
 static int fails, checks;
@@ -1703,38 +1770,63 @@ int main(int argc, char** argv) {
 #else
     CHECK(gs_swz_fast, "documented layout must enable the fast path");
 #endif
-    t_trace();                           /* first: no other primitive may use up PS2_GS_TRACE_MAX */
-    t_sprite_coverage();
-    t_fill_rule();
-    t_gouraud();
-    t_clut_textures();
-    t_bilinear();
-    t_blend();
-    t_ztest(PSMZ32);
-    t_ztest(PSMZ24);
-    t_ztest(PSMZ16);
-    t_ztest(PSMZ16S);
-    t_region_clamp();
-    t_formats_contexts();
-    t_scissor_offset();
-    t_alpha_tests();
-    t_fog_tfx();
-    t_frame16();
-    t_perspective();
-    t_mipmap();
-    t_texture_cache();
-    t_lines_points();
-    t_coverage_reference();
-    t_texture_cache_random();
-    t_stq_negative_coords();
-    t_csr();
-    t_display();
-    t_deferred_hazards();
-    t_partial_invalidation_clut();
-    t_direct_order();
-    t_display_weave();
-    t_hud_hints();
+#ifdef TEST_HW_REF
+    {   /* argv[2]: adapter hw | warp */
+        gpu_config cfg;
+        memset(&cfg, 0, sizeof cfg);
+        cfg.adapter = argc > 2 && !strcmp(argv[2], "warp") ? GPU_ADAPTER_WARP : GPU_ADAPTER_HW;
+        if (!gpu_start(&cfg) || !gpu_get_caps()->full) { fprintf(stderr, "no device with the REF tier's capabilities\n"); return 2; }
+        fprintf(stderr, "[hw-ref] adapter: %s\n", gpu_get_caps()->adapter);
+        gpu_front_config fc;
+        memset(&fc, 0, sizeof fc);
+        fc.ref = 1;
+        fc.sw = 1;
+        fc.scale = 1;
+        gpu_front_start(&fc);
+        gpu_front_set_sink(gpu_submit_sink, NULL);
+    }
+#endif
+    SCENE(t_trace());                    /* first: no other primitive may use up PS2_GS_TRACE_MAX */
+    SCENE(t_sprite_coverage());
+    SCENE(t_fill_rule());
+    SCENE(t_gouraud());
+    SCENE(t_clut_textures());
+    SCENE(t_bilinear());
+    SCENE(t_blend());
+    SCENE(t_ztest(PSMZ32));
+    SCENE(t_ztest(PSMZ24));
+    SCENE(t_ztest(PSMZ16));
+    SCENE(t_ztest(PSMZ16S));
+    SCENE(t_region_clamp());
+    SCENE(t_formats_contexts());
+    SCENE(t_scissor_offset());
+    SCENE(t_alpha_tests());
+    SCENE(t_fog_tfx());
+    SCENE(t_frame16());
+    SCENE(t_perspective());
+    SCENE(t_mipmap());
+    SCENE(t_texture_cache());
+    SCENE(t_lines_points());
+    SCENE(t_coverage_reference());
+    SCENE(t_texture_cache_random());
+    SCENE(t_stq_negative_coords());
+    SCENE(t_csr());
+    SCENE(t_display());
+    SCENE(t_deferred_hazards());
+    SCENE(t_partial_invalidation_clut());
+    SCENE(t_direct_order());
+    SCENE(t_display_weave());
+    SCENE(t_hud_hints());
+#ifdef TEST_HW_REF
+    fprintf(stderr, "[hw-ref] %u comparisons; %d scenes differ, %d more differ only with M4 effects (ALIAS16, target views)\n",
+            hw_compares, hw_bad_scenes, hw_m4_scenes);
+    gpu_front_stop();
+    gpu_stop();
+    fprintf(stderr, "%s: %d/%d checks passed\n", argv[0], checks - fails, checks);
+    return fails || hw_bad_scenes ? 1 : 0;
+#else
     bench();
     fprintf(stderr, "%s: %d/%d checks passed\n", argv[0], checks - fails, checks);
     return fails ? 1 : 0;
+#endif
 }

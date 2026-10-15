@@ -408,9 +408,12 @@ static void unbind_all(void) {
     X.state_calls += 3;
 }
 
+/* (w < 0: the REF viewport, -w pixels centred on the origin, so vertices at negative GS coordinates
+ * are inside it too and nothing is clipped) */
 static void set_viewport(int w, int h) {
     if (X.b_vp_w == w && X.b_vp_h == h) return;
     D3D11_VIEWPORT vp = { 0, 0, (FLOAT)w, (FLOAT)h, 0.0f, 1.0f };
+    if (w < 0) { vp.TopLeftX = (FLOAT)(w / 2); vp.TopLeftY = (FLOAT)(h / 2); vp.Width = (FLOAT)-w; vp.Height = (FLOAT)-h; }
     ID3D11DeviceContext_RSSetViewports(gpu_rt.ctx, 1, &vp);
     X.b_vp_w = w;
     X.b_vp_h = h;
@@ -523,7 +526,7 @@ static void bind_ref(int ct, int zt) {
     X.mode = 4;
     X.b_ct = ct;
     X.b_zt = zt;
-    set_viewport(REF_VP, REF_VP);
+    set_viewport(-REF_VP, -REF_VP);
 }
 
 /* ---- per-frame upload and constants ------------------------------------------------------------- */
@@ -588,7 +591,7 @@ static uint32_t build_constants(const gpu_front_frame_data* fd, int ref) {
             if (ref) {                   /* gs.hlsl: d3d pixel -> NDC through the power-of-two viewport */
                 k->flags = (d->ct ? 1u : 0u) | (d->zt ? 2u : 0u);
                 k->ndc_scale[0] = k->ndc_scale[1] = 2.0f / (float)REF_VP;
-                k->ndc_bias[0] = k->ndc_bias[1] = -1.0f;
+                k->ndc_bias[0] = k->ndc_bias[1] = 0.0f;   /* (viewport centred on the origin) */
                 int vt = d->tex <= MAX_TARGETS ? d->tex : 0;
                 k->vkx = (uint32_t)(vt ? dim[vt].kx : 1);
                 k->vky = (uint32_t)(vt ? dim[vt].ky : 1);
