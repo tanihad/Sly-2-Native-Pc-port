@@ -15,6 +15,7 @@ typedef struct {
     float ratio;         /* A = width / height of the displayed picture */
     float proj_x;        /* A / (4/3): how much wider the 3D view is */
     float hud_x;         /* (4/3) / A: X scale that keeps 4:3 content's proportions */
+    int hud_edges;       /* hud = edges: HUD widgets at the 4:3 screen's sides go to the display's edges */
 } ps2_aspect_t;
 
 extern ps2_aspect_t ps2_aspect;

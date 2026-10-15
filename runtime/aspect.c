@@ -10,7 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-ps2_aspect_t ps2_aspect = { 0, 4.0f / 3.0f, 1.0f, 1.0f };
+ps2_aspect_t ps2_aspect = { 0, 4.0f / 3.0f, 1.0f, 1.0f, 1 };
 
 void gs_write_reg(uint32_t r, uint64_t v);      /* hw.h */
 
@@ -24,6 +24,7 @@ void aspect_hint_now(uint32_t kind, uint32_t arg) {
 }
 
 void aspect_init(void) {
+    ps2_aspect.hud_edges = !ps2_settings.hud_centered;
     int w = ps2_settings.aspect_w, h = ps2_settings.aspect_h;
     if (w <= 0 || h <= 0) { w = 4; h = 3; }
     ps2_aspect.wide = w * 3 != h * 4;
@@ -107,6 +108,50 @@ static uint32_t ui_item_key[ITEM_MAP], ui_item_val[ITEM_MAP], ui_item_gen[ITEM_M
 static int hud_log = -1;                 /* PS2_HUD_LOG=1: diagnostics (PHASE hints, scene list) */
 static uint32_t ui_label;
 
+/* ---- HUD anchors (hud = edges) -------------------------------------------------------------------
+ * Every 2D entry gets an anchor; with hud = edges the HUD_BEGIN hint carries it. A scene's policy
+ * comes from its object id (+0x18; the HUD manager 0x1D9520 and the other owners find their scenes
+ * by these ids with 0x15E938): a fixed anchor, or POLICY_BY_ROOT - each root-level object of the
+ * scene's display list (one widget) is anchored by the third of the screen its origin is in. Scenes
+ * not listed (menus, the pause screen, ThiefNet, briefings, the Binocucom, the ticker, level-specific
+ * scenes) are centred layouts and stay centred. */
+enum { POLICY_BY_ROOT = 3 };
+static const struct { uint16_t oid; uint8_t policy; const char* what; } scene_policies[] = {
+    { 0x36B, POLICY_BY_ROOT, "player's health meter and gadget gauge (top left; HUD manager 0x3D9E80, 0x1D9968)" },
+    { 0x36D, POLICY_BY_ROOT, "coin counter (world +0x3BAC, shown by 0x161868 when the coin count changes)" },
+    { 0x36E, POLICY_BY_ROOT, "pick-up counter (world +0x3BB8, shown by 0x1618B0 from the pick-ups 0x1C7EE8, 0x1C8AF0)" },
+    { 0x36F, POLICY_BY_ROOT, "timed counter (world +0x3BC4, shown by 0x1618F8 for a time, hidden by 0x161958)" },
+};
+static uint8_t ui_entry_anchor[RENDER_LIST_MAX];
+static int ui_scene_policy = GS_HINT_ANCHOR_C;
+static float ui_scene_w = 640.0f;        /* the scene's width in its own units (+0x94) */
+static uint8_t ui_item_anchor = GS_HINT_ANCHOR_C, ui_text_anchor = GS_HINT_ANCHOR_C;
+static int ui_hud_anchor = GS_HINT_ANCHOR_C;
+
+/* A HUD meter: a scene with a "meter fill" sprite instance, id 0x34F or 0x350 - what the game's
+ * 0x212E40 (set a sprite's position in its timeline by a fraction) is called with by the health
+ * meter (0x1D9968, 0x1D9DF8) and by every boss's health meter (0x180100, 0x1D4C88, script command
+ * 0x10DD08). Sprite instances: scene +0x80 count (u16), +0x84 array of 0x30 bytes {u16 states,
+ * +4 states (0x18 bytes, id at +0x14)}, as 0x212E40 walks them. Cached by (scene, object id). */
+static int scene_is_meter(struct ps2_ctx* ctx, uint32_t scene, uint32_t oid) {
+    static struct { uint32_t scene, oid; int meter; } cache[64];
+    static unsigned next;
+    for (int k = 0; k < 64; k++)
+        if (cache[k].scene == scene && cache[k].oid == oid) return cache[k].meter;
+    int meter = 0;
+    uint32_t n = ps2_r32(ctx, scene + 0x80) & 0xFFFF, spr = ps2_r32(ctx, scene + 0x84);
+    for (uint32_t i = 0; i < n && i < 1024 && !meter && spr; i++) {
+        uint32_t s = spr + i * 0x30, cnt = ps2_r32(ctx, s) & 0xFFFF, arr = ps2_r32(ctx, s + 4);
+        for (uint32_t j = 0; j < cnt && j < 1024 && arr; j++) {
+            uint32_t id = ps2_r32(ctx, arr + j * 0x18 + 0x14);
+            if (id == 0x34F || id == 0x350) { meter = 1; break; }
+        }
+    }
+    cache[next].scene = scene; cache[next].oid = oid; cache[next].meter = meter;
+    next = (next + 1) & 63;
+    return meter;
+}
+
 static void hud_log_init(void) {
     if (hud_log < 0) { const char* e = getenv("PS2_HUD_LOG"); hud_log = e && *e && *e != '0'; }
 }
@@ -116,6 +161,14 @@ void aspect_scene_begin(struct ps2_ctx* ctx) {
     ui_dl_depth = 0;
     ui_root = ui_item_root = 0;
     ui_gen++;
+    uint32_t oid = ps2_r32(ctx, ui_scene + 0x18);
+    int w = (int)ps2_r32(ctx, ui_scene + 0x94);
+    ui_scene_w = w > 0 && w < 4096 ? (float)w : 640.0f;
+    ui_scene_policy = -1;
+    for (size_t k = 0; k < sizeof scene_policies / sizeof scene_policies[0]; k++)
+        if (scene_policies[k].oid == oid) ui_scene_policy = scene_policies[k].policy;
+    if (ui_scene_policy < 0) ui_scene_policy = scene_is_meter(ctx, ui_scene, oid) ? POLICY_BY_ROOT : GS_HINT_ANCHOR_C;
+    ui_item_anchor = ui_scene_policy == POLICY_BY_ROOT ? GS_HINT_ANCHOR_C : (uint8_t)ui_scene_policy;
     hud_log_init();
     if (hud_log) {
         static uint32_t seen[256];
@@ -131,7 +184,13 @@ void aspect_scene_begin(struct ps2_ctx* ctx) {
     }
 }
 
-void aspect_scene_end(struct ps2_ctx* ctx) { (void)ctx; ui_scene = 0; ui_dl_depth = 0; ui_item_root = 0; }
+void aspect_scene_end(struct ps2_ctx* ctx) {
+    (void)ctx;
+    ui_scene = 0;
+    ui_dl_depth = 0;
+    ui_item_root = 0;
+    ui_item_anchor = GS_HINT_ANCHOR_C;
+}
 
 /* Items queued while the scene's root display list is walked: which root-level object they belong to. */
 static uint32_t item_hash(uint32_t a) { return (a * 2654435761u) >> (32 - 11); }
@@ -167,11 +226,23 @@ void aspect_item_queued(struct ps2_ctx* ctx) {
         }
 }
 
+/* The anchor of a root-level object of an edge-anchored scene: the third of the scene's width its
+ * origin (the matrix translation, +0x20) is in. */
+static uint8_t root_anchor(struct ps2_ctx* ctx, uint32_t root) {
+    if (!root) return GS_HINT_ANCHOR_C;
+    uint32_t w = ps2_r32(ctx, root + 0x20);
+    float tx;
+    memcpy(&tx, &w, 4);
+    if (!(tx == tx)) return GS_HINT_ANCHOR_C;
+    return tx < ui_scene_w / 3.0f ? GS_HINT_ANCHOR_L : tx > ui_scene_w * 2.0f / 3.0f ? GS_HINT_ANCHOR_R : GS_HINT_ANCHOR_C;
+}
+
 void aspect_item_draw(struct ps2_ctx* ctx) {
     uint32_t item = ctx->r[16].uw[0];
     ui_item_root = 0;
     for (uint32_t h = item_hash(item), n = 0; n < ITEM_MAP && ui_item_gen[h] == ui_gen; n++, h = (h + 1) & (ITEM_MAP - 1))
         if (ui_item_key[h] == item) { ui_item_root = ui_item_val[h]; break; }
+    ui_item_anchor = ui_scene_policy == POLICY_BY_ROOT ? root_anchor(ctx, ui_item_root) : (uint8_t)ui_scene_policy;
 }
 
 void aspect_render_entry_alloc(struct ps2_ctx* ctx) {
@@ -181,6 +252,7 @@ void aspect_render_entry_alloc(struct ps2_ctx* ctx) {
     ui_entry_scene[i] = ui_entry_kind[i] == UI_DRAW_HUD ? ui_scene : 0;
     ui_entry_root[i] = ui_entry_kind[i] == UI_DRAW_HUD && ui_scene ? ui_item_root : 0;
     ui_entry_ra[i] = ctx->r[31].uw[0];
+    ui_entry_anchor[i] = ui_scene ? ui_item_anchor : ui_text_anchor;
 }
 
 void aspect_render_entry(struct ps2_ctx* ctx, uint32_t dmas, uint32_t entry, uint32_t rp) {
@@ -192,9 +264,11 @@ void aspect_render_entry(struct ps2_ctx* ctx, uint32_t dmas, uint32_t entry, uin
                        : ui_entry_scene[i] ? ui_entry_scene[i] | 0x40000000u : ui_entry_ra[i] | 0x80000000u;
         if (label != ui_label) { aspect_hint_value(ctx, dmas, GS_HINT_PHASE, 0, label); ui_label = label; }
     }
-    if (hud && !ui_hud_on) aspect_hint(ctx, dmas, GS_HINT_HUD_BEGIN, GS_HINT_ANCHOR_C);
+    int anchor = hud && ps2_aspect.hud_edges ? ui_entry_anchor[i] : GS_HINT_ANCHOR_C;
+    if (hud && (!ui_hud_on || anchor != ui_hud_anchor)) aspect_hint(ctx, dmas, GS_HINT_HUD_BEGIN, (uint32_t)anchor);
     else if (!hud && ui_hud_on) aspect_hint(ctx, dmas, GS_HINT_HUD_END, 0);
     ui_hud_on = hud;
+    ui_hud_anchor = anchor;
 }
 
 void aspect_render_done(struct ps2_ctx* ctx, uint32_t dmas) {

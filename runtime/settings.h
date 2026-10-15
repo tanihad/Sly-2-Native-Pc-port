@@ -19,6 +19,7 @@
 typedef struct {
     /* [display] */
     int aspect_w, aspect_h;      /* display aspect, reduced: 16:9 (default) or 4:3, any w:h */
+    int hud_centered;            /* hud = edges (0, default: HUD widgets at the screen's edges) | centered (1) */
     /* [graphics] - read and kept for the GPU renderer (notes/d3d11-renderer.md section 13);
      * the software renderer ignores them. */
     int internal_scale;          /* 1..8, default 3 */
@@ -69,7 +70,7 @@ const wchar_t* settings_user_dir(void);
 int settings_user_path(const wchar_t* name, wchar_t* out, size_t cap);
 int settings_portable(void);              /* 1: not %LOCALAPPDATA%\Sly2 (exe folder, or PS2_USER_DIR) */
 
-/* sly2.ini from the user data folder, then the environment (PS2_ASPECT, PS2_SHOW_FPS). Logs what it uses. */
+/* sly2.ini from the user data folder, then the environment (PS2_ASPECT, PS2_HUD, PS2_SHOW_FPS). Logs what it uses. */
 void settings_load(void);
 /* Write sly2.ini if there is none (window.c, when the window opens). */
 void settings_save_if_missing(void);
