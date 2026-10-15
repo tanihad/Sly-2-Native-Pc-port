@@ -926,6 +926,10 @@ int main(int argc, char** argv) {
     stage = 1;
     progress++;
     if (workers > 0) gs_sync();
+    ULONG64 tc_pre = 0;
+    QueryThreadCycleTime(GetCurrentThread(), &tc_pre);
+    LARGE_INTEGER q_pre;
+    QueryPerformanceCounter(&q_pre);
 #ifdef GS_REPLAY_GPU
     if (FRONT_MODE(backend)) gpu_front_drain();       /* the frontend thread has processed everything */
     if (backend == B_HWSUB) gpu_submit_wait_idle();   /* every frame executed: the render thread's CPU is complete */
@@ -944,6 +948,8 @@ int main(int argc, char** argv) {
         double tsc_hz = ms > 0 ? (double)(r1 - r0) / (ms / 1000.0) : 1;
         double cpu_ms = (double)(tc1 - tc0) / tsc_hz * 1000.0;
         fprintf(stderr, "replay thread CPU %.1f ms (%.3f ms per VBlank)\n", cpu_ms, frames ? cpu_ms / frames : 0.0);
+        fprintf(stderr, "  (at the end of the stream, before waiting for the other threads: CPU %.1f ms, wall %.1f ms)\n",
+                (double)(tc_pre - tc0) / tsc_hz * 1000.0, (double)(q_pre.QuadPart - q0.QuadPart) * 1000.0 / (double)qf.QuadPart);
         if (FRONT_MODE(backend) && front_thread) {
             double ft_ms = (double)gpu_front_thread_cycles() / tsc_hz * 1000.0;
             fprintf(stderr, "frontend thread CPU %.1f ms (%.3f ms per VBlank)\n", ft_ms, frames ? ft_ms / frames : 0.0);

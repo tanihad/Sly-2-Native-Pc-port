@@ -25,7 +25,7 @@
 
 #define RING (8u << 20)                  /* small enough to stay in the L3 cache */
 #define PUBLISH_EVERY (64u << 10)
-#define SPINS 4000
+#define SPINS 400                        /* pause loops before sleeping (a pause is 40-140 cycles) */
 
 enum { FR_PAD, FR_PRIM, FR_STATE, FR_XFER, FR_XDATA, FR_BLOCKS, FR_CLUT, FR_TEX0, FR_RESET, FR_VBLANK, FR_FENCE, FR_STOP };
 typedef struct { uint32_t kind, size; } fr_hdr;            /* size: whole record, multiple of 8 */
@@ -41,7 +41,7 @@ typedef struct { fr_hdr h; uint32_t n, version; int32_t ofx, ofy; uint8_t ctx, i
 typedef struct { fr_hdr h; uint64_t bb, pos, rr; uint32_t dir, pad; } fr_xfer;
 typedef struct { fr_hdr h; uint32_t bytes, pad; } fr_xdata;
 typedef struct { fr_hdr h; uint32_t n, pad; uint16_t id[]; } fr_blocks;   /* ids padded to 8, then n x 256 bytes */
-typedef struct { fr_hdr h; uint16_t c[512]; } fr_clut;
+typedef struct { fr_hdr h; uint64_t mask; uint16_t c[]; } fr_clut;   /* 16-byte pieces of the CLUT buffer (mask bit i: halves 8i..8i+7) */
 typedef struct { fr_hdr h; uint32_t ctx, flags; uint64_t tex0; } fr_tex0;   /* flags: 1 loaded, 2 changed */
 typedef struct { fr_hdr h; uint64_t priv[16]; uint32_t vblank, pad; } fr_vblank;
 typedef struct { fr_hdr h; volatile long* done; } fr_fence;
@@ -55,6 +55,7 @@ static _Alignas(64) _Atomic uint64_t rd;             /* consumed by the frontend
 static _Alignas(64) _Atomic int cons_sleeping;
 static _Alignas(64) _Atomic int prod_waiting;
 static _Atomic uint64_t prod_need;      /* a waiting producer is woken once rd reaches this */
+static _Alignas(64) _Atomic uint32_t prod_wake;   /* bumped (and woken) when it does */
 static _Alignas(64) uint64_t wr, unpublished, room_end;   /* producer */
 static HANDLE thread;
 
@@ -91,7 +92,13 @@ static void* reserve(uint32_t kind, uint32_t bytes) {
         uint64_t need = wr + pad + bytes - RING + RING / 4;
         atomic_store_explicit(&prod_need, need, memory_order_seq_cst);
         atomic_store_explicit(&prod_waiting, 1, memory_order_seq_cst);
-        while ((r = atomic_load_explicit(&rd, memory_order_seq_cst)) < need) WaitOnAddress((volatile VOID*)&rd, &r, sizeof r, 5);
+        /* sleep on a word of its own: rd keeps moving while the frontend works, and WaitOnAddress
+         * returns at once when the word differs from the value given (a busy loop on rd) */
+        for (;;) {
+            uint32_t w = atomic_load_explicit(&prod_wake, memory_order_seq_cst);
+            if ((r = atomic_load_explicit(&rd, memory_order_seq_cst)) >= need) break;
+            WaitOnAddress((volatile VOID*)&prod_wake, &w, sizeof w, 5);
+        }
         atomic_store_explicit(&prod_waiting, 0, memory_order_relaxed);
         room_end = r + RING;
     }
@@ -317,11 +324,23 @@ static void px_tex0(int ctx, uint64_t tex0, int clut_loaded) {
     send_blocks();
     uint32_t flags = clut_loaded ? 1u : 0u;
     if (clut_loaded) {
+        /* the 16-byte pieces of the CLUT buffer that differ from what was sent (a 16-entry load
+         * changes a few of the 64) */
         const uint16_t* c = gs_clut_buffer();
-        if (memcmp(c, pclut, sizeof pclut)) {
-            memcpy(pclut, c, sizeof pclut);
-            fr_clut* r = reserve(FR_CLUT, sizeof *r);
-            memcpy(r->c, c, sizeof r->c);
+        uint64_t mask = 0;
+        for (int i = 0; i < 64; i++) {
+            __m128i x = _mm_loadu_si128((const __m128i*)(c + 8 * i)), y = _mm_loadu_si128((const __m128i*)(pclut + 8 * i));
+            if (_mm_movemask_epi8(_mm_cmpeq_epi8(x, y)) != 0xFFFF) mask |= 1ull << i;
+        }
+        if (mask) {
+            fr_clut* r = reserve(FR_CLUT, (uint32_t)(sizeof(fr_clut) + 16 * (size_t)__builtin_popcountll(mask)));
+            r->mask = mask;
+            int k = 0;
+            for (uint64_t m = mask; m; m &= m - 1) {
+                int i = __builtin_ctzll(m);
+                memcpy(pclut + 8 * i, c + 8 * i, 16);
+                memcpy(r->c + 8 * k++, c + 8 * i, 16);
+            }
             commit(r);
             flags |= 2;
             clut_pending = 1;
@@ -375,8 +394,10 @@ static uint64_t cons_rd, pub_seen, rd_stored;
 static void store_rd(void) {
     rd_stored = cons_rd;
     atomic_store_explicit(&rd, cons_rd, memory_order_seq_cst);
-    if (atomic_load_explicit(&prod_waiting, memory_order_seq_cst) && cons_rd >= atomic_load_explicit(&prod_need, memory_order_relaxed))
-        WakeByAddressSingle((PVOID)&rd);
+    if (atomic_load_explicit(&prod_waiting, memory_order_seq_cst) && cons_rd >= atomic_load_explicit(&prod_need, memory_order_relaxed)) {
+        atomic_fetch_add_explicit(&prod_wake, 1, memory_order_seq_cst);
+        WakeByAddressSingle((PVOID)&prod_wake);
+    }
 }
 
 static const fr_hdr* next_rec(void) {
@@ -404,7 +425,9 @@ static const fr_hdr* next_rec(void) {
 
 static void done_rec(const fr_hdr* h) {
     cons_rd += h->size;
-    if (cons_rd - rd_stored >= PUBLISH_EVERY || atomic_load_explicit(&prod_waiting, memory_order_relaxed)) store_rd();
+    if (cons_rd - rd_stored >= PUBLISH_EVERY ||
+        (atomic_load_explicit(&prod_waiting, memory_order_relaxed) && cons_rd >= atomic_load_explicit(&prod_need, memory_order_relaxed)))
+        store_rd();
 }
 
 static DWORD WINAPI fthread_main(LPVOID arg) {
@@ -444,7 +467,12 @@ static DWORD WINAPI fthread_main(LPVOID arg) {
             for (uint32_t k = 0; k < b->n; k++) memcpy(fvram + (size_t)b->id[k] * 256, data + (size_t)k * 256, 256);
             break;
         }
-        case FR_CLUT: memcpy(fclut, ((const fr_clut*)h)->c, sizeof fclut); break;
+        case FR_CLUT: {
+            const fr_clut* r = (const fr_clut*)h;
+            int k = 0;
+            for (uint64_t m = r->mask; m; m &= m - 1) memcpy(fclut + 8 * __builtin_ctzll(m), r->c + 8 * k++, 16);
+            break;
+        }
         case FR_TEX0: {
             const fr_tex0* t = (const fr_tex0*)h;
             gf_clut_hint = (t->flags & 2) ? 1 : 0;
