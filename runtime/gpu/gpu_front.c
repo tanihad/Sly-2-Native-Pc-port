@@ -351,7 +351,9 @@ static void state_update(const gs_env_view* ev) {
     if (P->abe) {
         uses_cd = A == 1 || B == 1 || C == 1 || D == 1;
         if (A == B) {
-            if (D == 1) { S.blend = BL_NOCOLOR; wm &= 8; uses_cd = 0; }   /* colour unchanged */
+            /* colour unchanged - unless PABE skips blending for source alpha < 0x80, which then
+             * writes Cs (M3 fuzz finding) */
+            if (D == 1 && !P->pabe) { S.blend = BL_NOCOLOR; wm &= 8; uses_cd = 0; }
         } else if (!uses_cd) {
             S.blend = BL_OFF;                                             /* the PS computes it exactly */
         } else if (C != 1 && A == 0 && B == 2 && D == 1) {

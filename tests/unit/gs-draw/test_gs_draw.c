@@ -1794,6 +1794,20 @@ static void t_random_states(void) {
         snprintf(hw_scene_buf, sizeof hw_scene_buf, "t_random_states() iteration %d", it);
         hw_scene = hw_scene_buf;
 #endif
+        if (rnd(6) == 0) {               /* an upload of any format over drawn memory (frame, Z, textures) */
+            static uint8_t up[40 * 40 * 4];
+            static const uint32_t bps[3] = { 0, 160 * 32, 310 * 32 };
+            uint32_t upsm = psms[rnd(13)], ubp = bps[rnd(3)];
+            int ux = rnd(150), uy = rnd(150), uw = 1 + rnd(40), uh = 1 + rnd(40);
+            int bpp = upsm == PSMT4 || upsm == PSMT4HL || upsm == PSMT4HH ? 4 : upsm == PSMT8 || upsm == PSMT8H ? 8 :
+                      upsm == PSMCT16 || upsm == PSMCT16S || upsm == PSMZ16 || upsm == PSMZ16S ? 16 :
+                      upsm == PSMCT24 || upsm == PSMZ24 ? 24 : 32;
+            if (bpp == 4 && (uw & 1)) uw++;  /* (whole bytes) */
+            uint32_t bytes = (uint32_t)(uw * uh * bpp / 8);
+            bytes = (bytes + 15) & ~15u;     /* (whole qwords: the transfer ends padded) */
+            for (uint32_t i = 0; i < bytes; i++) up[i] = (uint8_t)rnd(256);
+            upload(ubp, ubp ? 10 : 10, (int)upsm, ux, uy, uw, uh, up, bytes);
+        }
         frame(0, 10, rnd(4) ? PSMCT32 : PSMCT24, rnd(3) ? 0 : fbmsks[rnd(6)]);
         zbuf(160, (int)zpsms[rnd(4)], rnd(4) == 0);
         scissor(rnd(20), 100 + rnd(100), rnd(20), 100 + rnd(100));
