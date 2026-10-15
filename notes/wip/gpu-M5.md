@@ -29,19 +29,35 @@ a mixed frame, pass-A straddle escalation flag; classes moved ROV -> FF one at a
 - Classes moved one at a time with `gpu_front_config.ff_mask` (`--ff-mask`).
 
 ## Done (commits on gpu/M5)
-- (none yet)
+- dd341c7 mixed frames: gs.hlsl split into gs_frag (shared) + ps_gs (REF/ROV) + ps_ff (FF, `FF=1` perms without
+  UAVs); zsync.hlsl (ps_zresolve, cs_zsync); gpu_exec.c exec_draw_ff, per-tile depth sync, mixed clears, draw
+  slots for split halves; gpu_front.c FF records (128/256 B), FF key, split halves, ff_rov_mask classes;
+  gs_replay --mixed / --ff-stq-exact / --ff-rov-mask / --lockstep-exact.
+- 60dcf4a fill -> clear drops the fill's FF draws; statistical gate for the default mode; render-bench line;
+  gpu_lockstep_all -Mixed -Exact -StqExact -FfRovMask -Exe.
+- Class progression (exact lockstep, S/T/Q exact, 8 recordings: title, brief, rope, ep3 brief, ep6, ep8 hub,
+  ep2 photo, hack minigame; 7683 comparisons each step, 0 differ): A OFF sprites, B +depth, C +triangles,
+  D +lines/points, E +NOCOLOR, F +ADD, G +REVSUB, H +target views/feedback, I +ATST split (build\m5_prog.txt).
+
+## Dual-source blend precision (scratch test blendtest.c: every Cs, Cd, C 0..128 on a UNORM8 target)
+- WARP (fp32 blender): unbiased round-to-nearest gives +1 in 48.5%; source lowered by 0.496/a LSB: exact
+  except Cs*C < 64 (0.37%).
+- RTX 4060 Ti: the blender works at about fp16 precision (+-0.125 LSB): even a = 1 (C = 128) with a bias
+  fails; no bias can be exact. Best bias ~0.45: 80% exact, rest +-1 (never 2). Chosen: bias 0.45/a for
+  0 < C < 128, none at C = 0 and 128 (exact there). => DUAL stays the design's +-1 class; exact verification
+  runs keep DUAL on the ROV tier (ff_rov_mask 0x10).
 
 ## In progress
-- Step 1: executor mixed path + FF shaders + depth tile sync; frontend FF records/keys; gs_replay --mixed.
+- Full corpus (build\m5_full): exact mode (-Exact -StqExact -FfRovMask 0x10) then default mode.
 
 ## Next
-1. gs_replay --mixed (+ ps1 -Mixed), lockstep in mixed mode with tolerance classes; gpu_lockstep_all -Mixed.
-2. ff_mask = 0 (everything ROV through the mixed path): lockstep 0 diff (proves the sync machinery).
-3. Move classes: fills/BL_OFF opaque, NOCOLOR, ADD, REVSUB, DUAL, ATST split, views/feedback, lines.
-4. Fast STQ (128 B records) default; tolerance stats.
-5. Tiled fill -> Clear without the sprite draws; FF key without texture kind / STQ.
-6. Pass-A split report (split vs --straddle-rov vs sw); escalation default decision.
-7. Unit tests mixed mode (gs-hw run.ps1), perf (render ms, GPU ms vs REF), appendix G, full regression.
+1. Split report: mask 0 + stq exact + tolerance (Z diffs and >2 diffs come only from the split) vs the same
+   with --straddle-rov; decide the escalation default.
+2. Unit tests mixed mode (gs-hw run.ps1: exact variant mask 0x10 + stq exact; default variant reported).
+3. Perf: render-thread draws/ms, GPU ms per game frame vs REF (ep8 boss, ep3 hub, ep5 street, ep2 hub,
+   ThiefNet), Z resolve/sync counts; reduce if needed.
+4. WARP subset; appendix G; regression (run_tests, unit suites, gpu_diff_all, VRAM hashes, fthread check,
+   REF lockstep 24/24, builds).
 
 ## Findings / traps
 - (M4) PowerShell ReadAllText + .Replace on CRLF files silently does nothing: use the Edit tool.
