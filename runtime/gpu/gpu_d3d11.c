@@ -152,6 +152,7 @@ static int device_create(void) {
 }
 
 static void device_release(void) {
+    gpu_exec_release();
     gpu_present_release();
     gpu_shaders_release();
     if (gpu_rt.ctx) { ID3D11DeviceContext_ClearState(gpu_rt.ctx); ID3D11DeviceContext_Flush(gpu_rt.ctx); }
@@ -223,6 +224,10 @@ static DWORD WINAPI rt_main(LPVOID arg) {
         case GPU_OP_PRESENT: if (!gpu_rt.lost) gpu_exec_present(c + 1); break;
         case GPU_OP_READBACK: gpu_exec_readback(c + 1); break;
         case GPU_OP_STOP: stop = 1; break;
+        case GPU_OP_FRAME:
+            if (!gpu_rt.lost) gpu_exec_frame(c + 1);
+            gpu_exec_frame_done(c + 1);
+            break;
         default: gpu_log("bad command %u", c->op); break;
         }
         gpu_cmd_done(c);
@@ -260,6 +265,14 @@ int gpu_start(const gpu_config* cfg) {
 }
 
 int gpu_running(void) { return running; }
+
+void gpu_render_thread_affinity(uint64_t mask) { if (rt_thread && mask) SetThreadAffinityMask(rt_thread, (DWORD_PTR)mask); }
+
+uint64_t gpu_render_thread_cycles(void) {
+    ULONG64 c = 0;
+    if (rt_thread) QueryThreadCycleTime(rt_thread, &c);
+    return c;
+}
 const gpu_caps* gpu_get_caps(void) { return &caps_copy; }
 
 static void wait_done(volatile long* done) {

@@ -118,6 +118,11 @@ Timer, audio   unchanged
 In hw mode the 8 pixel workers are not started. The EE observes exactly what it observes today
 (section 7).
 
+*(M2: decode and frontend together cost 7-10 ms per game frame, over the GS budget, so the frontend
+runs on a **frontend thread** of its own: the GS thread decodes and a proxy ships primitives, state
+deltas, transfer contents, CLUT changes and VBlanks through an SPSC ring (`gpu_fthread.c`); the
+frontend's output is identical to the same-thread one. Appendix D.)*
+
 ### 2.2 Files
 
 New directory `runtime/gpu/` (non-frozen; the frozen `hw.h` and `gs_internal.h` do not change):
@@ -1099,3 +1104,113 @@ agents): decode alone 4.3-6.7 ms, frontend 4.4-9.0 ms (ep3 hub 4.4, ep8 boss 5.8
 ep2 hub 8.2, ThiefNet 9.0); the synchronous sw rasterizer 39-79 ms. Decode + frontend is 9-16 ms,
 above the 6 ms GS budget: M2 must measure on a quiet machine and plan the split (frontend on its own
 thread after decode, or cheaper decode).
+
+## Appendix D. M2 submission go/no-go (branch gpu/M2)
+
+**Verdict: GO** for M3. ep8 boss: render-thread worst steady-state frame 4.9 ms (median of 5 runs,
+gate 8 ms); GS side 5.4 ms decode thread and 5.3 ms frontend thread per game frame (median, gate
+6 ms) with the frontend on its own thread. The same-thread frontend would be NO-GO (7.2 ms). Over the
+6 ms GS budget remain ThiefNet (6.7 / 7.1 ms) and the ep2 hub's frontend thread (6.2 ms): M9's
+"frontend hot spots" must take ~15-20% off the frontend (list below). No render-side mitigation
+(commutation batching, CB-offset batching, deferred contexts) was needed.
+
+**What was built**
+- `gpu_exec.c` + `shaders/submit.hlsl`: the render thread executes the frontend's GPU_FOP stream with
+  real objects: colour (R8G8B8A8_TYPELESS: RTV/SRV/UAV) and depth (R32G8X24: DSV, read-only DSV, SRV)
+  targets at the targets' k, recreated on growth with a copy; vertices, indices, records, StateRecs and
+  per-draw constants in dynamic buffers mapped once per frame (WRITE_DISCARD); per-draw constants
+  bound with `VS/PSSetConstantBuffers1` offsets (256 B per draw); blend (5 classes x write mask) and
+  depth-state caches; a redundancy filter on every binding; FF draws through 24 trivial PS
+  permutations (dual source, SV_Depth from the Z record, discard, texture kind), sprites and line
+  pixels as instanced quads reading records; ATST splits as two draws; ROV draws through
+  `OMSetRenderTargetsAndUnorderedAccessViews` (colour UAV, read-only DSV, depth SRV) and a ROV PS;
+  Z resolves and depth loads as SV_Depth quads; masked clears as quads, full ones as Clear*View;
+  ALIAS16 batches and colour loads as dispatches; shadow copies; vram_buf patches (one update of the
+  covered range through a CPU mirror when a patch has many runs) and CLUT ring slots. Nothing is
+  drawn correctly; every D3D call of the design is made.
+- `gpu_fthread.c` (frontend thread): the GS thread decodes; proxy hooks copy each primitive (8 bytes
+  plus the vertices not in the consumer's 4-entry cache, matched by the decoder's vertex serial
+  `gs_vtx.serial`, 32 bytes each), the changed 8-byte words of the gs_prim fields and registers the
+  frontend reads (a fixed list; no record at all when nothing changed: ~40% of Sly's state versions in
+  ep8 boss are TEX0 rewrites with the same value), transfers with the contents of the blocks they
+  wrote, CLUT buffer changes as changed 16-byte pieces, resets and VBlanks into an 8 MB SPSC ring
+  (records staged in L1 and written with non-temporal stores; shared positions touched every 64 KB;
+  the producer sleeps on a word of its own until a quarter of the ring is free). The frontend thread
+  keeps mirrors of gs_prim, the registers, GS memory and the CLUT buffer and calls the frontend's hooks
+  in stream order. **The command stream and data of every frame are bit-identical to the same-thread
+  frontend on all 24 recordings** (`scripts/gpu_fthread_check.ps1`).
+- Frontend fixes found by the executor: a line whose DDA covers no pixel inside the scissor no longer
+  opens a D3D draw (82k empty draws in ep8 boss; its predicted maximum fell from 5909 to 5079 D3D
+  draws per frame); the vertex reuse compare skipped the last field of gs_vtx.
+- Tools: `gs_replay -Backend hwsubmit` (`-Pace` 59.94 Hz VBlanks, `-Scale`, `-FrontThread`,
+  `-Profile` sampling profiler of the replay thread, `-StreamHash`, `-Pin`), per-frame render stats
+  (`render_ms`, `render_cpu_ms`, `upload_ms`, `state_calls`, GPU timestamps), per-game-frame CPU of the
+  GS and frontend threads (`threads:` / `thread-bench` lines), `scripts/gpu_submit_bench.ps1` (median of
+  N runs, machine load per run).
+
+**Method.** RTX 4060 Ti, i7-14700F, S=1 (CPU submission does not depend on the scale; GPU time at S=3
+is M9's). Replays read the recording into memory first; `-Pace` releases VBlanks at 59.94 Hz so the
+render thread is not throttled by a GPU backlog (back to back, its wall time tracks GPU time: ~0.5 us
+per draw of GPU front-end work even with trivial shaders). Game frame = VBlank with >= 1000
+primitives; "steady" leaves out replay-start frames (targets created, downloads). Medians of 5 runs.
+The machine is shared (another agent runs two game instances at times, doubling every per-thread
+time): the numbers below come from windows with < 10% other load, checked per run.
+
+**Render thread** (paced, frontend thread on, 5 runs; ms per game frame unless noted)
+
+| recording | D3D draws max | worst steady (5 runs) | worst incl. start | median | CPU worst steady / median | us per draw | GPU median / worst | driver threads CPU |
+|---|---|---|---|---|---|---|---|---|
+| ep8 boss | 5081 | **4.93** (4.8-5.4 per run) | 9.1 | 1.60 | 1.15 / 0.61 | 0.30 | 2.5 / 3.9 | 2.0 |
+| ep3 hub | 4630 | 5.27 | 9.6 | 1.11 | 1.53 / 0.53 | 0.27 | 1.7 / 4.4 | 2.7 |
+| ep5 street | 4728 | 5.07 | 8.9 | 1.19 | 1.58 / 0.54 | 0.25 | 2.3 / 5.3 | 3.2 |
+| ep2 hub | 5948 | 4.90 | 7.9 | 1.32 | 1.58 / 0.61 | 0.25 | 1.6 / 3.0 | 1.4 |
+| ThiefNet | 6513 | 6.73 | 10.8 | 1.94 | 1.84 / 0.82 | 0.31 | 3.3 / 5.1 | 2.7 |
+
+The render thread's own CPU is 0.5-1 ms per frame (~0.1 us per D3D call after redundancy
+filtering, 25-32k state calls per frame); its wall time is mostly waiting for the NVIDIA driver's
+worker threads, which use 1.4-3.2 ms per game frame. The replay-start frame (3-4 target creations, a
+4 MB vram_buf patch, loads) is 8-11 ms: a once-per-boot/level-load cost.
+
+**GS side** (front-only replays, unpaced, quiet, 5 alternating runs; per game frame, median / worst
+steady)
+
+| recording | decode only | decode + frontend, one thread | frontend thread: GS (decode + proxy) | frontend thread: frontend |
+|---|---|---|---|---|
+| ep8 boss | 2.6 | 7.16 / 7.59 | **5.39 / 5.76** | **5.26 / 5.61** |
+| ep3 hub | 3.0 | 8.25 / 9.50 | 5.80 / 6.55 | 5.68 / 6.66 |
+| ep5 street | 2.8 | 7.74 / 8.39 | 5.37 / 6.23 | 5.52 / 6.67 |
+| ep2 hub | 3.1 | 8.73 / 10.24 | 5.86 / 6.92 | 6.23 / 7.52 |
+| ThiefNet | 3.5 | 9.76 / 9.93 | 6.70 / 7.24 | 7.10 / 7.54 |
+
+Paced together with the render thread (the submit bench) the two threads read 0.3-0.7 ms higher
+(ep8 boss 5.8 / 5.7 median): threads that sleep between frames run on colder caches and clocks, and
+Windows may move them to efficiency cores.
+
+**Where the GS-side time goes** (sampling profiles, `gs_replay -Profile`; frontend sections with
+`-Define GPU_FRONT_PROF`): decode = vertex queue ~20%, CLUT loads (`clut_load`, 256 swizzled reads per
+T8 load, 4-7k loads per frame) ~18%, register dispatch ~25%, env_update / gs_prim_finalize ~10% (Sly
+starts a new state version for almost every draw by rewriting TEX0). Proxy = ~1.4 ms per game frame
+of logic plus ~1 ms of ring traffic in ep8 boss (2-4 MB per game frame). Frontend = state lookups
+19%, tier/records 14%, ownership 12%, pipeline key 10%, vertices 10%, records 8%, texel rectangles 9%
+(double math), geometry 7%; nothing dominates.
+
+**What M3 (and later) must know**
+- D3D11 needs equal dimensions for the bound RTV and DSV: colour and depth targets that are bound
+  together must be allocated at the same size (gpu_exec.c grows the smaller of a pair; M3 should size
+  pairs together from the start). Targets are allocated in steps of 64 native rows.
+- Records are addressed by byte offset (`rec_first`) and per-draw constants by 256-byte constant
+  buffer windows; at ~6.5k draws that is 1.7 MB of constants per frame, mapped once.
+- The frontend thread is the GS-side architecture from now on: anything the frontend starts to read
+  from gs_prim or the registers must be added to `p_fields` / `r_used` in gpu_fthread.c (or it reads a
+  stale value on the frontend thread); `gpu_fthread_check.ps1` catches omissions on the corpus and
+  `PS2_GPU_FTHREAD_FULL=1` sends every word. Anything the frontend reads from GS memory or the CLUT
+  buffer goes through `gf_vram` / `gf_clut_src` (the frontend thread's mirrors). Downloads (M3/M4)
+  that patch gs_vram must synchronise with the decode thread (gpu_front_drain) and update the mirrors;
+  writes into vram_buf other than patches must update gpu_exec.c's vram_buf mirror.
+- The CPU budget is met on ep8 boss but ThiefNet / ep2 hub exceed 6 ms on the frontend thread; cheap
+  candidates for M9: texel rectangles in integers, the state lookup signature (24 words per version),
+  a faster `clut_load` in the decoder (fixed offsets for CSM1 CT32), fewer bytes per primitive (no ST/Q
+  for FST or untextured vertices), the remaining ~1 ms of ring traffic.
+- GPU front-end time with trivial shaders is already 1.5-3.3 ms median (5 ms worst) at S=1 for
+  5-6.5k draws: draw count reduction (commutation batching, M9) also matters for the GPU budget.
+- Replay-start / level-load frames cost 8-11 ms on the render thread (target creation, 4 MB patch).

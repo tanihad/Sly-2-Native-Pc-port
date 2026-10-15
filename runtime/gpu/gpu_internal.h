@@ -50,6 +50,15 @@ void gpu_exec_present(const void* payload);
 void gpu_exec_readback(const void* payload);
 int  gpu_present_poll(int block);        /* finish read-backs / timestamps; returns 1 while some pending */
 void gpu_present_drain(void);            /* block until every read-back and timestamp has completed */
+/* per-picture statistics and timestamps around a frame (gpu_present.c) */
+void gpu_stats_begin(uint32_t vblank, double front_ms);
+gpu_frame_stats* gpu_stats_cur(void);
+void gpu_stats_end(void);
+
+/* gpu_exec.c: frontend frames (M2 submission) */
+void gpu_exec_frame(const void* payload);
+void gpu_exec_frame_done(const void* payload);   /* always, also when the device is lost */
+void gpu_exec_release(void);
 
 /* payloads */
 typedef struct {

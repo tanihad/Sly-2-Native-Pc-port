@@ -16,6 +16,7 @@ typedef struct {
     int scale;                   /* N (target sample factors; 0 = 1) */
     int sw;                      /* also run the software rasterizer (hwdry default 1) */
     int selfcheck;               /* recompute Z records with the sw row stepping and compare (cost) */
+    int thread;                  /* the frontend on its own thread, the GS thread only decodes (needs sw = 0) */
 } gpu_front_config;
 
 enum { GPU_TIER_FF, GPU_TIER_ROV, GPU_TIER_ALIAS16, GPU_TIER_PUNT, GPU_TIER_N };
@@ -33,6 +34,8 @@ enum { GPU_PUNT_TARGET_OVERLAP, GPU_PUNT_FRAME_FMT, GPU_PUNT_TEX_FOREIGN, GPU_PU
 typedef struct {
     uint32_t vblank;
     double front_ms;             /* time spent in the frontend hooks */
+    double thread_ms;            /* CPU of the thread running the frontend since the previous VBlank (QueryThreadCycleTime;
+                                    the frontend thread, or the GS thread with the decode when same-thread) */
     /* primitives */
     uint32_t kicks;              /* primitives kicked (env valid) */
     uint32_t nowrite, culled, skipped;   /* nothing writable / zero area or outside scissor / ATST or ZTST NEVER drop */
@@ -73,7 +76,10 @@ typedef struct {
 } gpu_front_frame;
 
 void gpu_front_start(const gpu_front_config* cfg);   /* installs the gs_draw.c hooks */
-void gpu_front_stop(void);
+void gpu_front_stop(void);                          /* (drains the frontend thread first) */
+void gpu_front_drain(void);                         /* frontend thread: wait until it processed everything posted */
+uint64_t gpu_front_thread_cycles(void);             /* frontend thread CPU (QueryThreadCycleTime), 0 without */
+void gpu_front_thread_affinity(uint64_t mask);       /* benchmarks: pin the frontend thread */
 /* VBlank (stream order, before the picture): closes the frame. priv: the display registers
  * (gs_priv_snapshot order) for the display target family. */
 void gpu_front_vblank(const uint64_t priv[16], uint32_t vblank);
@@ -128,3 +134,8 @@ typedef struct {
 } gpu_front_frame_data;
 /* Called at every VBlank with the frame just closed (before its buffers are reused). NULL: none. */
 void gpu_front_set_sink(void (*sink)(const gpu_front_frame_data* fd, void* user), void* user);
+/* Inside the sink: take ownership of the frame's buffers (fd's pointers stay valid until
+ * gpu_front_release(handle), which any thread may call); the frontend continues with other buffers.
+ * Returns the handle (NULL outside a sink call). */
+void* gpu_front_detach(void);
+void  gpu_front_release(void* handle);

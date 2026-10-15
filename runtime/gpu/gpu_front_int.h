@@ -98,10 +98,32 @@ void own_flush_patches(void);
 void own_frame_end(const uint64_t priv[16]);        /* families, eviction, counters */
 int  own_target_kind_of_zpsm(int zpsm);
 
+/* The 256-byte blocks of a transfer rectangle [x0,x1) x [y0,y1) (psm units; the own_upload rule for
+ * rectangles past 2048), at most max; any thread (pure geometry). */
+int own_rect_blocks(int psm, uint32_t bp, uint32_t bw, int x0, int y0, int x1, int y1, uint16_t* out, int max);
+
+/* ---- frontend thread (gpu_fthread.c, M2) ---------------------------------------------------------
+ * With gpu_front_config.thread the GS thread only decodes: proxy hooks copy each primitive (vertices,
+ * changed state words, changed registers), transfers (with the written blocks' contents), CLUT
+ * changes and VBlanks into a ring, and the frontend runs on its own thread. The frontend then reads
+ * GS memory and the CLUT buffer from its own mirrors: */
+extern const uint8_t* gf_vram;           /* NULL: gs_vram (same thread) */
+extern const uint16_t* gf_clut_src;      /* NULL: gs_clut_buffer() */
+extern int gf_clut_hint;                 /* tex0 hook: -1 unknown, 0 the loaded entries did not change, 1 changed */
+void gf_vblank_impl(const uint64_t priv[16], uint32_t vblank);   /* the VBlank on the frontend's thread */
+const gs_front_hooks* gf_hooks(void);    /* the frontend's own hooks */
+void fthread_start(void);                /* installs the proxy hooks, starts the thread */
+void fthread_stop(void);                 /* drains and ends it */
+void fthread_vblank(const uint64_t priv[16], uint32_t vblank);
+void fthread_drain(void);                /* everything posted so far has been processed */
+uint64_t fthread_cycles(void);           /* QueryThreadCycleTime of the frontend thread */
+void fthread_affinity(uint64_t mask);
+
 /* ---- CLUT ring (gpu_clut.c) --------------------------------------------------------------------- */
 #define GPU_CLUT_SLOTS 4096
 void clut_reset(void);
 void clut_mark_dirty(void);              /* a TEX0 write may have loaded the CLUT */
+void clut_mark_changed(void);            /* a TEX0 write loaded different CLUT content (known) */
 /* The ring slot holding the current CLUT buffer (snapshot uploaded on a miss: counted). */
 uint32_t clut_current_slot(void);
 uint32_t clut_content_id(void);         /* changes whenever the CLUT buffer's content does */
