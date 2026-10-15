@@ -1,10 +1,10 @@
-# Progress log
+﻿# Progress log
 
 ## Resume here (read first in a new session)
 
-**CONTINUED (owner said "continue" = finish everything):** M2 resumed in gpu-M2; HUD edge
-anchoring + live aspect switch + Binocucom overlay running in worktree `hud` (branch next/hud,
-notes/wip/hud.md). Then M3..M11 one agent per milestone.
+**CONTINUED (owner said "continue" = finish everything):** M2 resumed in gpu-M2. HUD edge
+anchoring (hud = edges|centered), live F7 aspect / F8 HUD switch and the Binocucom side fill are
+MERGED into main (next/hud; notes/widescreen.md 'HUD anchors'). Then M3..M11 one agent per milestone.
 
 **PAUSED by the user (2026-10-14).** Nothing is running. Only unfinished task: GPU milestone M2
 (worktree `sly2-worktrees\gpu-M2`, branch gpu/M2, pushed). Done there: baseline refresh (b5a6253),
@@ -115,7 +115,7 @@ Unmerged work, all committed and pushed to GitHub, each with `notes/wip/<task>.m
 - `next/ep1`..`next/ep8`: per-episode playtesting/fixes. Every job type tested starts in every
   episode; no runtime blockers reported. ep1/ep2/ep3 end with a "PAUSED mid-edit" commit holding
   unfinished, untested fixes (ep1: audio/IOP timing in sd.c/iop_kernel.c; ep2/ep3: GS thread /
-  pixel workers) — finish and verify those before merging. Notable open finding (ep2): menu
+  pixel workers) â€” finish and verify those before merging. Notable open finding (ep2): menu
   music stream can stop when the IOP runs late while the EE waits for the GS.
 - To resume: same session -> `Workflow({scriptPath: <whole-game-sweep script>, resumeFromRunId:
   "wf_1f8b6c38-938"})` (finished agents replay from cache; the others continue from their
