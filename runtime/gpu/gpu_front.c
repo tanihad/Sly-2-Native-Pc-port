@@ -1402,7 +1402,8 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
     }
     int alias = tier == GPU_TIER_ALIAS16;
     int rov = tier == GPU_TIER_ROV || alias;  /* (ALIAS16 draws are ROV draws on the staging texture) */
-    int opaque = cls == GPU_PC_SPRITE && S.opaque && !rov;
+    /* (an opaque sprite overwrites its rect whatever the tier: the REF tier reads nothing there either) */
+    int opaque = cls == GPU_PC_SPRITE && S.opaque && !alias;
     if (alias) {                         /* the 16-bit rect's blocks of T (both halfwords of a word: never opaque) */
         own_grow(S.ct, rows16(y1));
         own_blocks(S.ct, ablk, ct16_blocks(P->fpsm, P->fpage * 32, P->fbw, x0, y0, x1, y1, ablk, GPU_BLOCKS), S.cwrite);
@@ -1442,10 +1443,10 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
     }
     uint64_t key;
     /* ROV tier: blend, masks, tests and Z mode are StateRec data (uniform branches), so only the
-     * texture kind, primitive class, STQ, the bound texture and the scissor split its draws (the run
-     * fixes the targets); ALIAS16 draws: also their targets */
-    if (rov) key = (uint64_t)(ps_key & ~(3u << 7)) | (uint64_t)texid << 32 | 1ull << 63 |
-                   (alias ? (uint64_t)ctid << 12 | (uint64_t)ztid << 20 : 0);
+     * texture kind, primitive class, STQ, the bound texture, the scissor and the targets split its draws
+     * (M4: a run can bind a depth target after draws without one; the draw binds the targets of its first
+     * primitive) */
+    if (rov) key = (uint64_t)(ps_key & ~(3u << 7)) | (uint64_t)texid << 32 | 1ull << 63 | (uint64_t)ctid << 12 | (uint64_t)ztid << 20;
     else key = (uint64_t)ps_key | (uint64_t)S.blend << 12 | (uint64_t)S.depth_class << 16 | (uint64_t)S.wmask << 20 |
                (uint64_t)(S.fatst == FATST_SPLIT) << 24 | (uint64_t)ctid << 32 | (uint64_t)ztid << 40 | (uint64_t)texid << 48;
     uint64_t sckey = (uint64_t)P->scx0 | (uint64_t)P->scy0 << 11 | (uint64_t)P->scx1 << 22 | (uint64_t)P->scy1 << 33;

@@ -38,6 +38,7 @@ static uint32_t npend;
 static uint32_t pend_mask[GPU_BLOCKS * 64];   /* bits of each word written by the pending uploads */
 static uint32_t up_mask[GPU_BLOCKS * 64];     /* bits of each word written by the upload being marked */
 static uint8_t up_full[GPU_BLOCKS];            /* words of the block that upload wrote completely */
+static uint64_t up_fullw[GPU_BLOCKS];          /* (the same as a word mask) */
 static uint16_t up_list[GPU_BLOCKS];           /* blocks it touches */
 static uint8_t blk_vstale[GPU_BLOCKS];         /* downloaded GPU data in vram_buf that gs_vram lacks */
 static uint8_t page_full[512];           /* blocks of the page with every word CPU-valid */
@@ -557,18 +558,28 @@ void own_upload(int psm, uint32_t bp, uint32_t bw, int x0, int y0, int x1, int y
             if (o != 0xFFFFFFFFu && (o | m) == 0xFFFFFFFFu) up_full[b]++;
             up_mask[w] = o | m;
         }
-    /* GPU words the upload does not overwrite completely reach vram_buf first (download), so the
-     * block is all vram_buf data afterwards and the patch only adds the uploaded bits */
+    /* Words the upload writes whole become CPU data; GPU words it does not touch stay GPU data of the
+     * block's writer (an upload of a CLUT into Z pages: the rest of the block is still the Z buffer's,
+     * M4: no download). Only a GPU word the upload writes partly (T8/T4/16-bit texels, CT24) goes to
+     * vram_buf first (download), so the patch adds the uploaded bits to the right word. */
     for (int i = 0; i < n; i++) {
         uint32_t b = up_list[i];
-        if (blk_cpu[b] != ALL && up_full[b] != 64) download_block(b);
+        const uint32_t* um = up_mask + (size_t)b * 64;
+        uint64_t full = 0, touched = 0;
+        for (int k = 0; k < 64; k++) {
+            if (um[k]) touched |= 1ull << k;
+            if (um[k] == 0xFFFFFFFFu) full |= 1ull << k;
+        }
+        up_fullw[b] = full;
+        if (touched & ~full & ~blk_cpu[b]) download_block(b);
     }
     if (ndl) flush_downloads();
     for (int i = 0; i < n; i++) {
         uint32_t b = up_list[i];
-        blk_writer[b] = 0;
-        blk_serial[b] = next_serial();   /* every target copy (writer or loaded) goes stale */
-        set_cpu(b, ALL);
+        uint64_t cpu = blk_cpu[b] | up_fullw[b];
+        if (cpu == ALL) blk_writer[b] = 0;
+        blk_serial[b] = next_serial();   /* every target copy (the writer's too: some words changed) goes stale */
+        set_cpu(b, cpu);
         if (up_full[b] == 64) blk_vstale[b] = 0;
         pend_add(b);
         uint32_t* pm = pend_mask + (size_t)b * 64;
