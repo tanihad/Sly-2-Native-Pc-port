@@ -30,6 +30,7 @@ the other keys still apply. A UTF-8 BOM (Notepad) is accepted; the file is UTF-8
 ```ini
 [display]
 aspect = 16:9          ; 16:9 (default) or 4:3; any W:H (21:9, 16:10) or a ratio (1.7778)
+hud = edges            ; edges (default): corner HUD widgets at the display's edges | centered
 
 [graphics]             ; for the Direct3D 11 renderer; the software renderer ignores these
 internal_scale = 3     ; 1 (PS2 resolution) .. 8
@@ -54,7 +55,8 @@ maximized = off
 
 | key | values | effect |
 |---|---|---|
-| display.aspect | W:H, W/H or a ratio between 1 and 4 | display aspect; 4:3 = exactly the PS2 picture (notes/widescreen.md) |
+| display.aspect | W:H, W/H or a ratio between 1 and 4 | display aspect; 4:3 = exactly the PS2 picture (notes/widescreen.md). F7 switches wide <-> 4:3 while playing |
+| display.hud | edges / centered (centred) | wide aspects only: the HUD widgets at the sides of the 4:3 screen (health meter, boss meters, counters) sit at the display's edges, or the whole HUD stays in the centre 4:3 area. F8 switches it while playing |
 | graphics.* | see above | read and kept in `ps2_settings` for the GPU renderer (notes/d3d11-renderer.md section 13) |
 | game.disc | path of a .iso | the disc image (runtime/launch.c; notes/install.md). Empty or unusable: asked for with a file dialog (GUI build) |
 | window.fullscreen | on/off | start fullscreen; remembered on close |
@@ -62,7 +64,8 @@ maximized = off
 | window.show_fps | on/off | title "Sly 2: Band of Thieves - 59.9 fps" instead of "Sly 2: Band of Thieves" |
 
 Environment overrides (for testing; they win over the file and are never written to it):
-`PS2_ASPECT=16:9|4:3|<W>:<H>`, `PS2_SHOW_FPS=1`, `PS2_ISO=<image>` (the disc, see notes/install.md).
+`PS2_ASPECT=16:9|4:3|<W>:<H>`, `PS2_HUD=edges|centered`, `PS2_SHOW_FPS=1`, `PS2_ISO=<image>` (the disc,
+see notes/install.md).
 
 Writing: the game changes only the keys it remembers (`settings_set` -> `settings_update_text`, a
 pure function): the key's line is rewritten in place (a comment after the value is kept), a missing
@@ -70,9 +73,14 @@ key is added at the end of its section, a missing section at the end of the file
 including the player's comments, stays as it was. The file is replaced atomically (written to
 `sly2.ini.tmp`, then moved over it).
 
-Applying changes: the aspect is read at start-up (the camera's frustum is recomputed by the game
-whenever its field of view changes, so a run-time switch would need an in-game options screen that
-also re-runs it; not done yet).
+Applying changes: `aspect` and `hud` also change while the game runs. **F7** switches between the
+wide aspect and 4:3 (back to the wide aspect the game had, 16:9 if it started at 4:3), **F8** between
+`hud = edges` and `centered`; both are remembered in sly2.ini (not when the key comes from
+PS2_ASPECT / PS2_HUD). An edit of `[display]` in sly2.ini while the game runs applies when the game's
+window is activated again (`settings_read_display`). The switch takes effect at the top of the
+game's next frame (aspect.c `aspect_apply`, called from the main loop by the `aspect_switch`
+instruction patch, which also recomputes the camera's frustum with the game's 0x14DB70); scripted
+runs can press them with the PS2_INPUT tokens `aspect` and `hud`. The other keys are read at start-up.
 
 For code: `ps2_settings` (settings.h) holds the values; `settings_motion_blur/_flicker_filter/
 _interlacing` resolve the preset. New keys go into `apply()` and `settings_format()` in settings.c,
