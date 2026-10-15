@@ -2,6 +2,39 @@
 
 ## Resume here (read first in a new session)
 
+**CONTINUED (owner said "continue" = finish everything):** M2 resumed in gpu-M2. HUD edge
+anchoring (hud = edges|centered), live F7 aspect / F8 HUD switch and the Binocucom side fill are
+MERGED into main (next/hud; notes/widescreen.md 'HUD anchors'). Then M3..M11 one agent per milestone.
+
+**PAUSED by the user (2026-10-14).** Nothing is running. Only unfinished task: GPU milestone M2
+(worktree `sly2-worktrees\gpu-M2`, branch gpu/M2, pushed). Done there: baseline refresh (b5a6253),
+render-thread executor of the frontend stream + gs_replay -Backend hwsubmit + bench script
+(080ca43); the last commit fb62a15 is an unverified mid-edit (compact prim/state record rewrite):
+verify or finish it first, then continue from notes/wip/gpu-M2.md. On "continue" the owner wants
+EVERYTHING finished: M2..M11 (notes/d3d11-renderer.md section 11), merging each milestone into
+next/gpu from `sly2-worktrees\gpu-integ`, then the GPU-dependent settings, HUD edge anchoring and
+the open items below.
+
+**PC packaging merged into main (2026-10-14):** `python scripts\package.py` -> dist\Sly2\sly2.exe
+(GUI, icon, version info; reads SCUS_973.16 straight from the validated disc image; first run asks
+for the .iso; data in %LOCALAPPDATA%\Sly2 or next to the exe with portable.txt; window state
+remembered). Dev/console builds and all scripts behave as before. notes/install.md.
+
+**Widescreen merged into main (2026-10-14):** 16:9 by default (sly2.ini `[display] aspect`,
+PS2_ASPECT override; notes/widescreen.md, notes/settings.md). Instruction patches
+(recomp/patches.py) widen the camera aspect/frustum and keep screen-space projections 4:3; HUD and
+2D get GS register 0x7F side-band hints (runtime/gs_hint.h) that the sw renderer applies at kick;
+movies are pillarboxed. 4:3 is pixel-identical to before. Regression: 60.1 VBlanks/s avg, 0
+underruns. Limits: HUD is centre-anchored (sits in the 4:3 safe area), aspect read at start-up.
+The `[graphics]` settings (internal_scale, outlines, filters + toggles) are parsed but only take
+effect with the GPU renderer. The GPU renderer's M10 must implement the same hint contract.
+
+**GPU renderer status (2026-10-14, later):** M0, C, M1 merged into next/gpu (coordinator worktree
+`sly2-worktrees\gpu-integ`), and main merged into next/gpu (4b5b1da; window.c 'rec' token now -9).
+M2 (go/no-go submission benchmark + baseline refresh for the PCRTC fix) running in worktree
+gpu-M2 (branch gpu/M2; checkpoint notes/wip/gpu-M2.md). Widescreen (EE patch + sw HUD hints +
+settings file) running in worktree `widescreen` (branch next/widescreen; notes/wip/widescreen.md).
+
 **Main 60f11e6 (2026-10-14): whole-game sweep COMPLETE and merged.** Prologue and Episodes 1-8 were
 each played end to end by a tester (every job started, completion flows + autosaves checked,
 every episode transition through the Episode 8 credits). Merged: next/integrate (all ep branches,

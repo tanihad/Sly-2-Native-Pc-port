@@ -13,6 +13,7 @@ from .elf import load
 from .functions import find_functions
 from .hooks import hook_for
 from .overrides import override_for
+from .patches import patches_for
 
 
 def translate_all(path: str):
@@ -25,11 +26,14 @@ def translate_all(path: str):
         hook = hook_for(prog, f.start, f.end) is not None   # entry hook (recomp/hooks.py)
         stats["entry hooks"] += hook
         o = override_for(prog, f.start, f.end)        # native replacement (recomp/overrides.py)
+        p = patches_for(prog, f.start, f.end)         # instruction patches (recomp/patches.py)
         if o:
+            if p:
+                raise ValueError(f"f_{f.start:08X} has both a native override and instruction patches")
             stats["native overrides"] += 1
             bodies.append(override_body(f, o, hook))
         else:
-            bodies.append(FunctionTranslator(f, starts, stats).translate(hook))
+            bodies.append(FunctionTranslator(f, starts, stats).translate(hook, p))
     return prog, funcs, bodies, stats
 
 
@@ -87,18 +91,24 @@ def cmd_generate(args) -> None:
 
     table = ",\n".join(f"    {{ 0x{f.start:08X}u, {cname(f.start)} }}" for f in funcs)
     hooked = "".join(f"0x{f.start:08X}u, " for f in funcs if hook_for(prog, f.start, f.end))
+    elf = Path(args.elf).read_bytes()
     write_if_changed(out / "func_table.c",
                      '#include "recomp_funcs.h"\n\n'
                      f"const ps2_func_entry ps2_funcs[] = {{\n{table}\n}};\n"
                      f"const size_t ps2_func_count = {len(funcs)};\n"
                      f"const uint32_t ps2_entry_point = 0x{prog.entry:08X}u;\n"
                      "/* functions with an entry hook (recomp/hooks.py), 0-terminated */\n"
-                     f"const uint32_t ps2_hook_addrs[] = {{ {hooked}0 }};\n")
+                     f"const uint32_t ps2_hook_addrs[] = {{ {hooked}0 }};\n"
+                     "/* the executable this code was recompiled from: a disc image must hold exactly this\n"
+                     " * one to be run without an ELF on the command line (runtime/launch.c) */\n"
+                     f"const uint32_t ps2_elf_size = {len(elf)}u;\n"
+                     f'const char ps2_elf_sha256[] = "{hashlib.sha256(elf).hexdigest()}";\n')
 
     unimpl = sum(v for k, v in stats.items() if k.startswith("UNIMPL "))
     files = (len(bodies) + args.per_file - 1) // args.per_file
     print(f"wrote {len(funcs):,} functions in {files} files to {out} ({unimpl:,} untranslated instructions, "
-          f"{stats['native overrides']} native overrides, {stats['entry hooks']} entry hooks)")
+          f"{stats['native overrides']} native overrides, {stats['entry hooks']} entry hooks, "
+          f"{stats['instruction patches']} instruction patches)")
 
 
 def cmd_iop(args) -> None:

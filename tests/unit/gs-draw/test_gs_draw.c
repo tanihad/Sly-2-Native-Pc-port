@@ -2,6 +2,7 @@
  * display. Scenes are drawn through gs_write_reg exactly as the GIF would, read back through the
  * fake gs_mem and written as PNGs to build/unit/gs-draw/ (argv[1]). */
 #include "gs_draw.h"
+#include "gs_hint.h"
 
 #include <math.h>
 #include <stdlib.h>
@@ -1586,6 +1587,83 @@ static void t_texture_cache_random(void) {
     W(TEX1_1, 0); W(CLAMP_1, 0);
 }
 
+/* Side-band hints (register 0x7F, gs_hint.h): the HUD transform about the anchors, full-width
+ * primitives drawn as they are, strips keeping the game's shared vertices, and the 4:3 state. */
+static void hint(uint32_t kind, uint32_t arg, float scale) {
+    uint32_t v = 0;
+    memcpy(&v, &scale, 4);
+    W(GS_HINT_REG, gs_hint_make(kind, arg, kind == GS_HINT_HUD_BEGIN ? v : 0));
+}
+static int lit(int x, int y) { return rgb(px(x, y)) != 0; }
+
+static void t_hud_hints(void) {
+    /* the transform itself: FRAME 640 wide (FBW 10), XYOFFSET 100 px, scale 3/4 */
+    uint64_t fr = (uint64_t)10 << 16, xo = 100 * 16;
+    CHECK(gs_hud_transform_x((100 + 0) * 16, xo, fr, GS_HINT_ANCHOR_C, 0.75) == (100 + 80) * 16, "C: left edge -> 80");
+    CHECK(gs_hud_transform_x((100 + 640) * 16, xo, fr, GS_HINT_ANCHOR_C, 0.75) == (100 + 560) * 16, "C: right edge -> 560");
+    CHECK(gs_hud_transform_x((100 + 320) * 16, xo, fr, GS_HINT_ANCHOR_C, 0.75) == (100 + 320) * 16, "C: centre stays");
+    CHECK(gs_hud_transform_x((100 + 100) * 16, xo, fr, GS_HINT_ANCHOR_L, 0.75) == (100 + 75) * 16, "L: 100 -> 75");
+    CHECK(gs_hud_transform_x((100 + 0) * 16, xo, fr, GS_HINT_ANCHOR_R, 0.75) == (100 + 160) * 16, "R: 0 -> 160");
+    CHECK(gs_hud_transform_x(5, 0, fr, GS_HINT_ANCHOR_C, 1.0) == 5, "scale 1: unchanged");
+    CHECK(gs_hud_transform_x(0, 0, fr, GS_HINT_ANCHOR_C, 4.0) == 0, "clamped at 0");
+
+    reset_env();
+    clear(0, 0, 0, 0);
+    hint(GS_HINT_HUD_BEGIN, GS_HINT_ANCHOR_C, 0.75f);
+    sprite(100, 10, 200, 20, 0xFF, 0, 0, 0x80);          /* -> 155..230 */
+    sprite(0, 30, 640, 40, 0, 0xFF, 0, 0x80);            /* full width: as it is */
+    prim(P_TRISTRIP, 0);                                 /* quad 100..200 x 50..60 as a strip */
+    rgba(0, 0, 0xFF, 0x80);
+    xyz(100, 50, 0); xyz(200, 50, 0); xyz(100, 60, 0); xyz(200, 60, 0);
+    hint(GS_HINT_HUD_END, 0, 0);
+    sprite(100, 70, 200, 80, 0xFF, 0xFF, 0, 0x80);       /* after HUD_END: untransformed */
+    CHECK(!lit(152, 15) && lit(157, 15) && lit(228, 15) && !lit(232, 15), "HUD sprite at 155..230");
+    CHECK(lit(0, 35) && lit(639, 35), "full-width sprite still covers the whole width");
+    CHECK(!lit(152, 55) && lit(157, 55) && lit(228, 55) && !lit(232, 55), "HUD strip at 155..230, both triangles");
+    CHECK(lit(101, 75) && lit(198, 75) && !lit(202, 75), "after HUD_END drawn as given");
+
+    /* edge anchors (hud = edges): a widget at the left keeps its distance to the left edge scaled,
+     * one at the right to the right edge; a new HUD_BEGIN changes the anchor without a HUD_END */
+    clear(0, 0, 0, 0);
+    hint(GS_HINT_HUD_BEGIN, GS_HINT_ANCHOR_L, 0.75f);
+    sprite(100, 10, 200, 20, 0xFF, 0, 0, 0x80);          /* L: -> 75..150 */
+    hint(GS_HINT_HUD_BEGIN, GS_HINT_ANCHOR_R, 0.75f);
+    sprite(400, 30, 600, 40, 0, 0xFF, 0, 0x80);          /* R: -> 460..610 */
+    sprite(0, 50, 640, 60, 0, 0, 0xFF, 0x80);            /* full width under R: as it is */
+    hint(GS_HINT_HUD_BEGIN, GS_HINT_ANCHOR_C, 0.75f);
+    sprite(400, 70, 600, 80, 0xFF, 0xFF, 0, 0x80);       /* C again: -> 380..530 */
+    hint(GS_HINT_HUD_END, 0, 0);
+    CHECK(!lit(73, 15) && lit(77, 15) && lit(148, 15) && !lit(152, 15), "L-anchored sprite at 75..150");
+    CHECK(!lit(458, 35) && lit(462, 35) && lit(608, 35) && !lit(612, 35), "R-anchored sprite at 460..610");
+    CHECK(lit(0, 55) && lit(639, 55), "full-width sprite under an edge anchor covers the whole width");
+    CHECK(!lit(378, 75) && lit(382, 75) && lit(528, 75) && !lit(532, 75), "back to the centre anchor: 380..530");
+
+    /* SIDE_FILL: the FRAME width outside the centre 4:3 area (last HUD_BEGIN's scale 3/4: 80 px at
+     * each side of 640) in one colour, over everything, with the game's state left as it was */
+    clear(0, 0, 0, 0);
+    hint(GS_HINT_HUD_BEGIN, GS_HINT_ANCHOR_C, 0.75f);
+    sprite(0, 90, 640, 100, 0xFF, 0xFF, 0xFF, 0x80);     /* full width, under the fill */
+    W(GS_HINT_REG, gs_hint_make(GS_HINT_SIDE_FILL, 0, 0x00190000u));
+    sprite(100, 110, 200, 120, 0xFF, 0, 0, 0x80);        /* after it: the game's state is back */
+    hint(GS_HINT_HUD_END, 0, 0);
+    gs_sync();
+    CHECK(rgb(px(0, 95)) == rgb(px(79, 5)) && (rgb(px(79, 5)) & 0xFFFFFF) != 0 && rgb(px(639, 5)) == rgb(px(79, 5)),
+          "both sides filled (%08X)", rgb(px(79, 5)));
+    CHECK(!lit(80, 5) && !lit(559, 5), "the 4:3 area is left alone");
+    CHECK(lit(320, 95) && rgb(px(320, 95)) != rgb(px(0, 95)), "full-width sprite visible in the 4:3 area only");
+    CHECK(!lit(152, 115) && lit(157, 115) && lit(228, 115) && rgb(px(157, 115)) != rgb(px(0, 95)),
+          "the next primitive draws with the game's own state (155..230)");
+
+    CHECK(gs_hint_content43() == 0, "no 4:3 content by default");
+    hint(GS_HINT_ASPECT_4_3_BEGIN, 0, 0);
+    gs_sync();
+    CHECK(gs_hint_content43() == 1, "ASPECT_4_3_BEGIN");
+    hint(GS_HINT_PHASE, 7, 0);                            /* diagnostics: no effect */
+    hint(GS_HINT_ASPECT_4_3_END, 0, 0);
+    gs_sync();
+    CHECK(gs_hint_content43() == 0, "ASPECT_4_3_END");
+}
+
 #ifdef TEST_ASYNC
 static void t_wait_hook(void) {
     gs_sync();
@@ -1655,6 +1733,7 @@ int main(int argc, char** argv) {
     t_partial_invalidation_clut();
     t_direct_order();
     t_display_weave();
+    t_hud_hints();
     bench();
     fprintf(stderr, "%s: %d/%d checks passed\n", argv[0], checks - fails, checks);
     return fails ? 1 : 0;

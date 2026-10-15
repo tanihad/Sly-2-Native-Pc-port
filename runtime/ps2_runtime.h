@@ -42,6 +42,8 @@ typedef struct { uint32_t addr; ps2_func fn; } ps2_func_entry;
 extern const ps2_func_entry ps2_funcs[];
 extern const size_t ps2_func_count;
 extern const uint32_t ps2_entry_point;
+extern const uint32_t ps2_elf_size;       /* the ELF the code was recompiled from: its size and */
+extern const char ps2_elf_sha256[];       /* SHA-256 (lower-case hex), to recognise it on a disc */
 
 /* ---- memory ---------------------------------------------------------------------------- */
 
@@ -299,6 +301,10 @@ extern volatile int ps2_hooks_on;
 extern const uint32_t ps2_hook_addrs[];  /* the hooked functions, 0-terminated (generated func_table.c) */
 void ps2_hook(ps2_ctx* ctx, uint32_t addr);
 #define PS2_HOOK(addr) (ps2_hooks_on ? ps2_hook(ctx, addr) : (void)0)
+
+/* Instruction patches (recomp/patches.py) call into the widescreen support (runtime/aspect.c). */
+#include "aspect.h"
+#include "gs_hint.h"
 
 /* ---- interrupts: set asynchronously by host timers, serviced at loop heads -------------------- */
 

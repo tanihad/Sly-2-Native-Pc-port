@@ -5,6 +5,7 @@
  * functions with a top-left fill rule; sprites cover [X0, X1) x [Y0, Y1). Attributes are
  * interpolated as planes evaluated at the first pixel of each span, then stepped per pixel. */
 #include "gs_setup.h"
+#include "gs_hint.h"
 
 #include <math.h>
 #include <stdlib.h>
@@ -623,9 +624,134 @@ static void trace_prim(int type, const vtx* const* vs, int nv) {
     if (trace_texels_on) trace_texels(umin, umax, vmin, vmax);
 }
 
+/* ---- side-band hints (GS register 0x7F, gs_hint.h) ----------------------------------------------
+ * HUD_BEGIN/END: X of every vertex in between is scaled about the anchor (left edge, centre or right
+ * edge of the drawing buffer's FRAME width, after XYOFFSET), so 2D content drawn for a 4:3 screen
+ * keeps its proportions in a picture shown stretched to a wider aspect. ASPECT_4_3_BEGIN/END mark
+ * pictures the presenter shows pillarboxed at 4:3 (gs_hint_content43). Nothing else changes: a
+ * stream without hints (every 4:3 stream) draws exactly as before. */
+static int hud_on, hud_anchor, hint_43;
+static double hud_scale = 1.0;
+
+/* PS2_HUD_LOG=1 (with the EE side, aspect.c): PHASE hints label the 2D render-list entries by scene
+ * (or creator | 0x80000000); the X/Y extent (pixels, before the HUD transform) drawn under each label
+ * is printed every 60th frame. Diagnostics only. */
+static int hudlog = -1;
+static uint32_t hudlog_label, hudlog_frame;
+static struct { uint32_t label; int32_t x0, x1, y0, y1, n, anchor; } hudlog_t[64];
+static int hudlog_n;
+
+static void hudlog_prim(const vtx* const* in, int n, uint64_t xyo) {
+    if (!hudlog_label || hudlog_label == 0xFFFFFFFFu) return;
+    int k = 0;
+    while (k < hudlog_n && hudlog_t[k].label != hudlog_label) k++;
+    if (k == hudlog_n) {
+        if (hudlog_n == 64) return;
+        hudlog_n++;
+        hudlog_t[k].label = hudlog_label;
+        hudlog_t[k].x0 = hudlog_t[k].y0 = 1 << 30;
+        hudlog_t[k].x1 = hudlog_t[k].y1 = -(1 << 30);
+        hudlog_t[k].n = 0;
+    }
+    hudlog_t[k].anchor = hud_on ? hud_anchor : -1;
+    for (int i = 0; i < n; i++) {
+        int32_t x = (in[i]->x - (int32_t)(xyo & 0xFFFF)) / 16, y = (in[i]->y - (int32_t)((xyo >> 32) & 0xFFFF)) / 16;
+        if (x < hudlog_t[k].x0) hudlog_t[k].x0 = x;
+        if (x > hudlog_t[k].x1) hudlog_t[k].x1 = x;
+        if (y < hudlog_t[k].y0) hudlog_t[k].y0 = y;
+        if (y > hudlog_t[k].y1) hudlog_t[k].y1 = y;
+    }
+    hudlog_t[k].n++;
+}
+
+static void hudlog_phase(uint32_t label) {
+    if (hudlog < 0) { const char* e = getenv("PS2_HUD_LOG"); hudlog = e && *e && *e != '0'; }
+    if (!hudlog) return;
+    if (label == 0xFFFFFFFFu) {
+        if (hudlog_frame++ % 60 == 0) {
+            fprintf(stderr, "[hudlog] v%u:", gs_stream_vsync);
+            for (int k = 0; k < hudlog_n; k++)
+                fprintf(stderr, " %08X[%d..%d,%d..%d n%d a%d]", hudlog_t[k].label, hudlog_t[k].x0, hudlog_t[k].x1,
+                        hudlog_t[k].y0, hudlog_t[k].y1, hudlog_t[k].n, hudlog_t[k].anchor);
+            fprintf(stderr, "\n");
+        }
+        hudlog_n = 0;
+    }
+    hudlog_label = label;
+}
+
+int gs_hint_content43(void) { return hint_43; }
+
+/* x: 12.4 window coordinate as written to XYZ (before XYOFFSET) */
+int32_t gs_hud_transform_x(int32_t x, uint64_t xyoffset, uint64_t frame, int anchor, double scale) {
+    int64_t w16 = (int64_t)((frame >> 16) & 0x3F) * 64 * 16;          /* FRAME width, 1/16 pixels */
+    int64_t c = (int64_t)(xyoffset & 0xFFFF) + (anchor == GS_HINT_ANCHOR_C ? w16 / 2 : anchor == GS_HINT_ANCHOR_R ? w16 : 0);
+    int64_t v = c + llround((double)(x - c) * scale);
+    return (int32_t)(v < 0 ? 0 : v > 0xFFFF ? 0xFFFF : v);
+}
+
+static void draw_prim(int type, const vtx* a, const vtx* b, const vtx* c);
+
+/* SIDE_FILL: the FRAME width outside the centre 4:3 area (scale of the last HUD_BEGIN) in one
+ * colour, drawn as two flat sprites with a state of its own (no texture, blending, fog, alpha or
+ * Z test, Z not written, no dithering); the game's registers are put back afterwards. */
+static void side_fill(uint32_t rgb) {
+    if (!(hud_scale > 0.0 && hud_scale < 1.0)) return;
+    int ctx = (int)((((reg[R_PRMODECONT] & 1) ? reg[R_PRIM] : reg[R_PRMODE]) >> 9) & 1);
+    uint64_t sv_prim = reg[R_PRIM], sv_cont = reg[R_PRMODECONT], sv_test = reg[R_TEST_1 + ctx];
+    uint64_t sv_zbuf = reg[R_ZBUF_1 + ctx], sv_dthe = reg[R_DTHE], sv_fba = reg[R_FBA_1 + ctx];
+    reg[R_PRMODECONT] = 1;
+    reg[R_PRIM] = PRIM_SPRITE | ((uint64_t)ctx << 9);
+    reg[R_TEST_1 + ctx] = 0;                     /* no alpha / destination alpha / Z test */
+    reg[R_ZBUF_1 + ctx] = sv_zbuf | (1ull << 32);    /* ZMSK */
+    reg[R_DTHE] = 0;
+    reg[R_FBA_1 + ctx] = 0;
+    env_dirty = 1;
+    uint64_t xyo = reg[R_XYOFFSET_1 + ctx], frame = reg[R_FRAME_1 + ctx], sc = reg[R_SCISSOR_1 + ctx];
+    int32_t ox = (int32_t)(xyo & 0xFFFF), oy = (int32_t)((xyo >> 32) & 0xFFFF);
+    int32_t w16 = (int32_t)((frame >> 16) & 0x3F) * 64 * 16;
+    int32_t side = (int32_t)llround((double)w16 * (1.0 - hud_scale) / 2.0);
+    int32_t y0 = oy + (int32_t)((sc >> 32) & 0x7FF) * 16, y1 = oy + ((int32_t)((sc >> 48) & 0x7FF) + 1) * 16;
+    vtx a, b;
+    memset(&a, 0, sizeof a);
+    a.r = (int)(rgb & 0xFF); a.g = (int)((rgb >> 8) & 0xFF); a.b = (int)((rgb >> 16) & 0xFF); a.a = 0x80;
+    a.q = 1.0f;
+    b = a;
+    a.x = ox; a.y = y0; b.x = ox + side; b.y = y1;
+    draw_prim(PRIM_SPRITE, &a, &b, NULL);
+    a.x = ox + w16 - side; b.x = ox + w16;
+    draw_prim(PRIM_SPRITE, &a, &b, NULL);
+    reg[R_PRIM] = sv_prim; reg[R_PRMODECONT] = sv_cont; reg[R_TEST_1 + ctx] = sv_test;
+    reg[R_ZBUF_1 + ctx] = sv_zbuf; reg[R_DTHE] = sv_dthe; reg[R_FBA_1 + ctx] = sv_fba;
+    env_dirty = 1;
+}
+
+static void hint_write(uint64_t v) {
+    uint32_t kind = gs_hint_kind(v), value = gs_hint_value(v);
+    switch (kind) {
+    case GS_HINT_HUD_BEGIN: {
+        float s;
+        memcpy(&s, &value, 4);
+        hud_on = 1;
+        hud_anchor = (int)gs_hint_arg(v);
+        hud_scale = value && s > 0.0f && s <= 4.0f ? (double)s : 1.0;
+        break;
+    }
+    case GS_HINT_HUD_END: hud_on = 0; break;
+    case GS_HINT_ASPECT_4_3_BEGIN: hint_43 = 1; break;
+    case GS_HINT_ASPECT_4_3_END: hint_43 = 0; break;
+    case GS_HINT_PHASE: hudlog_phase(value); break;
+    case GS_HINT_SIDE_FILL: side_fill(value); break;
+    default: break;                      /* unknown kinds: ignored */
+    }
+    if (trace_on > 0 && trace_left > 0 && gs_stream_vsync >= trace_from)
+        fprintf(trace_out, "[gstrace] v%u hint kind %u arg %u value 0x%08X\n", gs_stream_vsync, kind,
+                gs_hint_arg(v), value);
+}
+
 /* ---- vertex queue -------------------------------------------------------------------------------- */
 
-static void draw(int type, const vtx* a, const vtx* b, const vtx* c) {
+static void draw_prim(int type, const vtx* a, const vtx* b, const vtx* c) {
     if (env_dirty) env_update();
     gs_stats.prims++;
     if (trace_on) {
@@ -655,6 +781,30 @@ static void draw(int type, const vtx* a, const vtx* b, const vtx* c) {
     case PRIM_SPRITE: gs_stats.sprites++; draw_sprite(a, b); break;
     default: break;
     }
+}
+
+/* A primitive kicked between HUD_BEGIN and HUD_END is drawn with its vertices' X scaled about the
+ * anchor - unless it spans the whole FRAME width (a full-screen fill, fade or bar): that one still
+ * covers the whole widened picture. The vertex queue keeps the game's coordinates (strips and fans
+ * share vertices between primitives). */
+static void draw(int type, const vtx* a, const vtx* b, const vtx* c) {
+    if (!hud_on && hudlog_label == 0) { draw_prim(type, a, b, c); return; }
+    int n = type == PRIM_POINT ? 1 : (type == PRIM_TRI || type == PRIM_TRISTRIP || type == PRIM_TRIFAN) ? 3 : 2;
+    const vtx* in[3] = { a, b, c };
+    int ctx = (int)((((reg[R_PRMODECONT] & 1) ? reg[R_PRIM] : reg[R_PRMODE]) >> 9) & 1);
+    uint64_t xyo = reg[R_XYOFFSET_1 + ctx], frame = reg[R_FRAME_1 + ctx];
+    if (hudlog_label) hudlog_prim(in, n, xyo);
+    if (!hud_on) { draw_prim(type, a, b, c); return; }
+    int32_t left = (int32_t)(xyo & 0xFFFF), right = left + (int32_t)((frame >> 16) & 0x3F) * 64 * 16;
+    int32_t x0 = in[0]->x, x1 = in[0]->x;
+    for (int i = 1; i < n; i++) { x0 = in[i]->x < x0 ? in[i]->x : x0; x1 = in[i]->x > x1 ? in[i]->x : x1; }
+    if (x0 <= left + 16 && x1 >= right - 16) { draw_prim(type, a, b, c); return; }
+    vtx t[3];
+    for (int i = 0; i < n; i++) {
+        t[i] = *in[i];
+        t[i].x = gs_hud_transform_x(t[i].x, xyo, frame, hud_anchor, hud_scale);
+    }
+    draw_prim(type, &t[0], n > 1 ? &t[1] : NULL, n > 2 ? &t[2] : NULL);
 }
 
 static void vertex(uint64_t xyz, int has_f, int kick) {
@@ -870,6 +1020,9 @@ void gs_exec_write_reg(uint32_t r, uint64_t v) {
     case R_FINISH: gs_csr_finish(); break;
     case R_LABEL: gs_csr_label((uint32_t)v, (uint32_t)(v >> 32)); break;
     case 0x0E: case 0x0F:                /* A+D / NOP descriptors: nothing to do */
+        break;
+    case GS_HINT_REG:                    /* the PC port's side-band hints (gs_hint.h) */
+        hint_write(v);
         break;
     default:
         if (r < 0x64) reg[r] = v;

@@ -3,9 +3,16 @@
  * The window lives on its own OS thread with its own message loop. The emulation thread hands
  * finished frames over through a triple buffer: window_present copies the picture into the free
  * buffer, publishes it with a pointer swap under a lock and returns at once. The window thread
- * then shows the newest frame, letterboxed at 4:3, with Direct3D 11 (one textured triangle,
+ * then shows the newest frame, fitted with black bars at the frame's display aspect (the aspect
+ * from sly2.ini - 16:9 by default, the 512-wide picture stretched - or 4:3 for movies and plain
+ * window_present callers; notes/widescreen.md), with Direct3D 11 (one textured triangle,
  * bilinear filtering, vsync'd flip-model present) or, if Direct3D 11 is unavailable, with GDI
- * StretchDIBits. Alt+Enter / F11 toggle borderless fullscreen; closing the window ends the process.
+ * StretchDIBits. Alt+Enter / F11 toggle borderless fullscreen. The window opens where it was when
+ * it was last closed (size, position, maximized, fullscreen: [window] in sly2.ini), else centred at
+ * a default size; closing it writes that state back and ends the process (through
+ * window_exit_hook: launch.c lets a memory card operation in progress finish first).
+ * Persistence of the user settings is the window's: it writes the sly2.ini template when it opens
+ * and none exists (settings.c, notes/settings.md).
  *
  * Input (window_get_input, called on the emulation thread): XInput controllers, the first
  * connected one being port 0 and the second port 1, plus the keyboard on port 0 while the window
@@ -19,7 +26,9 @@
  * Environment: PS2_WINDOW_GDI=1 forces the GDI presenter.
  */
 #define COBJMACROS
+#include "aspect.h"
 #include "hw.h"
+#include "settings.h"
 
 #include <stdarg.h>
 #include <windows.h>
@@ -36,6 +45,9 @@
 #define DEFAULT_CLIENT_W 1280
 #define DEFAULT_CLIENT_H 960
 #define WINDOW_CLASS     L"Sly2Window"
+#define WINDOW_TITLE     "Sly 2: Band of Thieves"
+
+void (*window_exit_hook)(int code);      /* set by main (launch_exit); NULL: ExitProcess */
 #define LIVE_RESIZE_TIMER 1
 
 static void wlog(const char* fmt, ...) {
@@ -89,6 +101,7 @@ static const struct { const char* name; int axis, value; } script_sticks[] = {
  * "watch:<n>" logs every call of the PS2_WATCH functions in the next n VBlanks (debug builds).
  * "rec" starts the PS2_GS_RECORD GS recording at the next VBlank (gs_record.c; with
  * PS2_GS_RECORD_FROM=-1 only this starts it).
+ * "aspect" and "hud" switch the display aspect / the HUD mode as F7 / F8 do (aspect.c).
  *   "t<seconds>:<button>[:<hold>]"      at a wall-clock time since the first pad read, e.g.
  *       "t95:start": scenes synchronised to sound (the intro cutscene follows its music stream)
  *       last a fixed real time, however fast the game runs.
@@ -119,12 +132,16 @@ static double script_seconds(void) {
 #define SCRIPT_NONE  (-2)
 #define SCRIPT_AXIS  (-3)                 /* lxHH etc.: axis/value in the token */
 #define SCRIPT_RAM   (-4)                 /* "ram": dump EE RAM (debug) */
-#define SCRIPT_REC   (-9)                 /* "rec": start the GS recording (gs_record.c) */
+#define SCRIPT_REC   (-11)                /* "rec": start the GS recording (gs_record.c) */
 void gs_record_start_now(void);
 #define SCRIPT_PAUSE (-5)                 /* "pause": stop until the next live input line */
 #define SCRIPT_RELEASE (-6)               /* "release": end the holds in progress */
 #define SCRIPT_CALLS (-7)                 /* "calls:<n>": call profile of the next n VBlanks (debug) */
 #define SCRIPT_WATCH (-8)                 /* "watch:<n>": PS2_WATCH logs every call for n VBlanks */
+#define SCRIPT_ASPECT (-9)                /* "aspect": as F7 (wide <-> 4:3) */
+#define SCRIPT_HUD   (-10)                /* "hud": as F8 (HUD edges <-> centred) */
+static void switch_aspect(void);
+static void switch_hud(void);
 static int script_pause_req;
 void ps2_request_ram_dump(void);
 void ps2_request_calls_window(uint32_t frames);
@@ -170,6 +187,7 @@ static void script_parse(const char* s) {
         int found = !strcmp(name, "none") ? SCRIPT_NONE : !strcmp(name, "ram") ? SCRIPT_RAM :
                     !strcmp(name, "release") ? SCRIPT_RELEASE : !strcmp(name, "pause") ? SCRIPT_PAUSE :
                     !strcmp(name, "calls") ? SCRIPT_CALLS : !strcmp(name, "watch") ? SCRIPT_WATCH :
+                    !strcmp(name, "aspect") ? SCRIPT_ASPECT : !strcmp(name, "hud") ? SCRIPT_HUD :
                     !strcmp(name, "rec") ? SCRIPT_REC : -1,
             axis = 0, value = 0x80;
         for (int b = 0; b < SCRIPT_NBUTTONS; b++)
@@ -209,7 +227,7 @@ static void script_compact(uint32_t now) {
 static const char* script_name(int b) {
     return b == SCRIPT_NONE ? "none" : b == SCRIPT_AXIS ? "axis" : b == SCRIPT_RAM ? "ram" : b == SCRIPT_PAUSE ? "pause" :
            b == SCRIPT_RELEASE ? "release" : b == SCRIPT_CALLS ? "calls" : b == SCRIPT_WATCH ? "watch" :
-           b == SCRIPT_REC ? "rec" :
+           b == SCRIPT_ASPECT ? "aspect" : b == SCRIPT_HUD ? "hud" : b == SCRIPT_REC ? "rec" :
            b >= SCRIPT_NBUTTONS ? script_sticks[b - SCRIPT_NBUTTONS].name : script_buttons[b].name;
 }
 
@@ -356,6 +374,8 @@ static void script_apply(int port, pad_input* in) {
         if (b == SCRIPT_PAUSE) { if (now == script[i].start) script_pause_req = 1; continue; }
         if (b == SCRIPT_CALLS) { if (now == script[i].start) ps2_request_calls_window(script[i].hold); continue; }
         if (b == SCRIPT_WATCH) { if (now == script[i].start) ps2_request_watch_window(script[i].hold); continue; }
+        if (b == SCRIPT_ASPECT) { if (now == script[i].start) switch_aspect(); continue; }
+        if (b == SCRIPT_HUD) { if (now == script[i].start) switch_hud(); continue; }
         if (b == SCRIPT_REC) { if (now == script[i].start) gs_record_start_now(); continue; }
         if (b == SCRIPT_AXIS) {
             uint8_t v = (uint8_t)script[i].value;
@@ -386,19 +406,23 @@ static void script_apply(int port, pad_input* in) {
 
 typedef struct { int x, y, w, h; } wrect;
 
-/* The largest 4:3 rectangle centred in a cw x ch client area. */
-static wrect letterbox(int cw, int ch) {
+/* The largest aw:ah rectangle centred in a cw x ch client area (widths and heights rounded to the
+ * nearest pixel). */
+static wrect fit_aspect(int cw, int ch, int aw, int ah) {
     wrect r = { 0, 0, cw, ch };
-    if (cw <= 0 || ch <= 0) { r.w = r.h = 0; return r; }
-    if ((int64_t)cw * 3 > (int64_t)ch * 4) {         /* wider than 4:3: bars left and right */
-        r.w = (int)(((int64_t)ch * 4 + 1) / 3);
+    if (cw <= 0 || ch <= 0 || aw <= 0 || ah <= 0) { r.w = r.h = 0; return r; }
+    if ((int64_t)cw * ah > (int64_t)ch * aw) {       /* wider than aw:ah: bars left and right */
+        r.w = (int)(((int64_t)ch * aw * 2 + ah) / (2 * (int64_t)ah));
         r.x = (cw - r.w) / 2;
     } else {                                         /* taller: bars top and bottom */
-        r.h = (int)(((int64_t)cw * 3 + 2) / 4);
+        r.h = (int)(((int64_t)cw * ah * 2 + aw) / (2 * (int64_t)aw));
         r.y = (ch - r.h) / 2;
     }
     return r;
 }
+
+/* The largest 4:3 rectangle centred in a cw x ch client area. */
+static wrect letterbox(int cw, int ch) { return fit_aspect(cw, ch, 4, 3); }
 
 /* Indices into pad_input.pressure */
 enum { PR_RIGHT, PR_LEFT, PR_UP, PR_DOWN, PR_TRIANGLE, PR_CIRCLE, PR_CROSS, PR_SQUARE,
@@ -506,6 +530,7 @@ static void kb_to_pad(const uint8_t down[256], pad_input* p) {
  * producer owns its buffer), so the lock is held for an index swap only. */
 static uint32_t fb_pix[3][FRAME_MAX * FRAME_MAX];
 static int fb_w[3], fb_h[3];
+static int fb_aw[3] = { 4, 4, 4 }, fb_ah[3] = { 3, 3, 3 };   /* display aspect of each frame */
 static int fb_write = 0, fb_ready = 1, fb_read = 2, fb_fresh;
 static SRWLOCK fb_lock = SRWLOCK_INIT;
 static HANDLE fb_event;                  /* auto-reset: a fresh frame is waiting */
@@ -526,8 +551,15 @@ static int fb_take(void) {
     return got;
 }
 
-void window_present(const uint32_t* bgrx, int w, int h, int stride) {
+void window_present_aspect(const uint32_t* bgrx, int w, int h, int stride, int aspect_w, int aspect_h);
+
+void window_present(const uint32_t* bgrx, int w, int h, int stride) { window_present_aspect(bgrx, w, h, stride, 4, 3); }
+
+/* window_present for a picture shown at aspect_w:aspect_h (widescreen: the display aspect, or 4:3 for
+ * pictures of 4:3 content, which are then pillarboxed; ps2_runtime.c's present_frame decides). */
+void window_present_aspect(const uint32_t* bgrx, int w, int h, int stride, int aspect_w, int aspect_h) {
     if (!win_accepting) return;
+    if (aspect_w <= 0 || aspect_h <= 0) { aspect_w = 4; aspect_h = 3; }
     if (!bgrx || w <= 0 || h <= 0 || stride < w) {
         static int logged;
         if (!logged) { logged = 1; wlog("window_present: bad frame %dx%d stride %d ignored", w, h, stride); }
@@ -545,6 +577,8 @@ void window_present(const uint32_t* bgrx, int w, int h, int stride) {
     else for (int y = 0; y < h; y++) memcpy(dst + (size_t)y * w, bgrx + (size_t)y * stride, (size_t)w * 4);
     fb_w[b] = w;
     fb_h[b] = h;
+    fb_aw[b] = aspect_w;
+    fb_ah[b] = aspect_h;
 
     AcquireSRWLockExclusive(&fb_lock);   /* publish: the written buffer becomes "ready" */
     fb_write = fb_ready;
@@ -880,7 +914,7 @@ static int d3d_upload(const uint32_t* px, int w, int h) {
 }
 
 /* Draw the current frame (px may be NULL: black) and present with vsync. */
-static HRESULT d3d_render(HWND hwnd, const uint32_t* px, int fw, int fh, unsigned seq) {
+static HRESULT d3d_render(HWND hwnd, const uint32_t* px, int fw, int fh, unsigned seq, int aw, int ah) {
     RECT rc;
     GetClientRect(hwnd, &rc);
     if (rc.right <= 0 || rc.bottom <= 0) return S_OK;        /* minimised */
@@ -895,7 +929,7 @@ static HRESULT d3d_render(HWND hwnd, const uint32_t* px, int fw, int fh, unsigne
     ID3D11DeviceContext_OMSetRenderTargets(d3d.ctx, 1, &d3d.rtv, NULL);
     ID3D11DeviceContext_ClearRenderTargetView(d3d.ctx, d3d.rtv, black);
     if (px && d3d.srv) {
-        wrect r = letterbox(rc.right, rc.bottom);
+        wrect r = fit_aspect(rc.right, rc.bottom, aw, ah);
         D3D11_VIEWPORT vp = { (FLOAT)r.x, (FLOAT)r.y, (FLOAT)r.w, (FLOAT)r.h, 0.0f, 1.0f };
         ID3D11DeviceContext_RSSetViewports(d3d.ctx, 1, &vp);
         ID3D11DeviceContext_IASetInputLayout(d3d.ctx, NULL);
@@ -914,7 +948,7 @@ static HRESULT d3d_render(HWND hwnd, const uint32_t* px, int fw, int fh, unsigne
 typedef HRESULT (WINAPI* dwm_flush_fn)(void);
 static dwm_flush_fn dwm_flush;
 
-static void gdi_render(HWND hwnd, const uint32_t* px, int fw, int fh) {
+static void gdi_render(HWND hwnd, const uint32_t* px, int fw, int fh, int aw, int ah) {
     RECT rc;
     GetClientRect(hwnd, &rc);
     if (rc.right <= 0 || rc.bottom <= 0) return;
@@ -922,7 +956,7 @@ static void gdi_render(HWND hwnd, const uint32_t* px, int fw, int fh) {
     if (!dc) return;
     HBRUSH black = (HBRUSH)GetStockObject(BLACK_BRUSH);
     if (px) {
-        wrect r = letterbox(rc.right, rc.bottom);
+        wrect r = fit_aspect(rc.right, rc.bottom, aw, ah);
         BITMAPINFO bi;
         memset(&bi, 0, sizeof bi);
         bi.bmiHeader.biSize = sizeof bi.bmiHeader;
@@ -958,10 +992,10 @@ static volatile LONG frames_shown;       /* new frames presented by the window t
 static void render(HWND hwnd) {
     if (!win_ready) return;
     const uint32_t* px = cur_seq ? fb_pix[fb_read] : NULL;
-    int fw = fb_w[fb_read], fh = fb_h[fb_read];
-    if (!use_d3d) { gdi_render(hwnd, px, fw, fh); return; }
+    int fw = fb_w[fb_read], fh = fb_h[fb_read], aw = fb_aw[fb_read], ah = fb_ah[fb_read];
+    if (!use_d3d) { gdi_render(hwnd, px, fw, fh, aw, ah); return; }
 
-    HRESULT hr = d3d_render(hwnd, px, fw, fh, cur_seq);
+    HRESULT hr = d3d_render(hwnd, px, fw, fh, cur_seq, aw, ah);
     if (SUCCEEDED(hr)) return;
     static int logged, losses;
     if (hr != DXGI_ERROR_DEVICE_REMOVED && hr != DXGI_ERROR_DEVICE_RESET) {
@@ -974,9 +1008,9 @@ static void render(HWND hwnd) {
     use_d3d = ++losses <= 3 && d3d_init(hwnd);   /* a device that keeps dying: settle for GDI */
     if (!use_d3d) {
         dwm_flush = (dwm_flush_fn)dll_proc(LoadLibraryW(L"dwmapi.dll"), "DwmFlush");
-        gdi_render(hwnd, px, fw, fh);
+        gdi_render(hwnd, px, fw, fh, aw, ah);
     } else {
-        d3d_render(hwnd, px, fw, fh, cur_seq);
+        d3d_render(hwnd, px, fw, fh, cur_seq, aw, ah);
     }
 }
 
@@ -1010,10 +1044,106 @@ static void toggle_fullscreen(HWND hwnd) {
     }                                    /* the resulting WM_SIZE redraws */
 }
 
+/* [window] in sly2.ini: the windowed placement (the one saved before fullscreen, if fullscreen),
+ * maximized, fullscreen. */
+static void save_window_state(HWND hwnd) {
+    WINDOWPLACEMENT wp;
+    wp.length = sizeof wp;
+    if (win_fullscreen) wp = win_placement;
+    else if (!GetWindowPlacement(hwnd, &wp)) return;
+    const RECT* r = &wp.rcNormalPosition;
+    if (r->right - r->left < 100 || r->bottom - r->top < 100) return;
+    int maximized = wp.showCmd == SW_SHOWMAXIMIZED || (wp.showCmd == SW_SHOWMINIMIZED && (wp.flags & WPF_RESTORETOMAXIMIZED));
+    char x[16], y[16], w[16], h[16];
+    snprintf(x, sizeof x, "%ld", r->left);
+    snprintf(y, sizeof y, "%ld", r->top);
+    snprintf(w, sizeof w, "%ld", r->right - r->left);
+    snprintf(h, sizeof h, "%ld", r->bottom - r->top);
+    const char* const kv[][3] = { { "window", "fullscreen", win_fullscreen ? "on" : "off" }, { "window", "x", x },
+                                  { "window", "y", y }, { "window", "width", w }, { "window", "height", h },
+                                  { "window", "maximized", maximized ? "on" : "off" } };
+    if (!settings_set(kv, 6)) wlog("cannot write the window state to sly2.ini");
+}
+
+/* ---- run-time display switches (aspect.c applies them at the game's next frame) -------------------
+ * F7: wide <-> 4:3 (back to the wide aspect the game had last, 16:9 if it started at 4:3); F8: HUD at
+ * the edges <-> centred. Remembered in sly2.ini ([display] aspect / hud) unless the key comes from an
+ * environment override or there is no window (headless runs, PS2_INPUT "aspect"/"hud" tokens). An
+ * edit of sly2.ini's [display] while the game runs applies when its window is activated again. */
+static int wide_w = 16, wide_h = 9;
+
+static void remember_display(const char* key, const char* value, const char* env) {
+    if (!g_hwnd || (getenv(env) && *getenv(env))) return;
+    const char* const kv[][3] = { { "display", key, value } };
+    if (!settings_set(kv, 1)) wlog("cannot write display.%s to sly2.ini", key);
+}
+
+static void switch_aspect(void) {
+    int w, h, hud;
+    aspect_target(&w, &h, &hud);
+    if (w * 3 != h * 4) { wide_w = w; wide_h = h; w = 4; h = 3; }
+    else { w = wide_w; h = wide_h; }
+    aspect_request(w, h, -1);
+    char v[32];
+    snprintf(v, sizeof v, "%d:%d", w, h);
+    wlog("aspect %s (F7)", v);
+    remember_display("aspect", v, "PS2_ASPECT");
+}
+
+static void switch_hud(void) {
+    int w, h, hud;
+    aspect_target(&w, &h, &hud);
+    aspect_request(0, 0, !hud);
+    wlog("hud %s (F8)", hud ? "edges" : "centered");
+    remember_display("hud", hud ? "edges" : "centered", "PS2_HUD");
+}
+
+static void reread_display(void) {
+    int w, h, hud, cw, ch, chud;
+    if (!settings_read_display(&w, &h, &hud)) return;
+    aspect_target(&cw, &ch, &chud);
+    if (w * ch == h * cw && hud == chud) return;
+    if (w * 3 != h * 4) { wide_w = w; wide_h = h; }
+    aspect_request(w, h, hud);
+    wlog("sly2.ini changed: aspect %d:%d, hud %s", w, h, hud ? "centered" : "edges");
+}
+
+/* The remembered placement, if it is still on a monitor (one may have been unplugged); 1 if used.
+ * The window stays hidden; window_thread shows it (maximized if it was). */
+static int restore_window_state(HWND hwnd) {
+    const ps2_settings_t* s = &ps2_settings;
+    if (s->win_w < 100 || s->win_h < 100) return 0;
+    RECT r = { s->win_x, s->win_y, s->win_x + s->win_w, s->win_y + s->win_h };
+    HMONITOR mon = MonitorFromRect(&r, MONITOR_DEFAULTTONULL);
+    MONITORINFO mi;
+    mi.cbSize = sizeof mi;
+    RECT vis;
+    if (!mon || !GetMonitorInfoW(mon, &mi) || !IntersectRect(&vis, &r, &mi.rcWork) ||
+        vis.right - vis.left < 64 || vis.bottom - vis.top < 32) return 0;   /* too little of it visible */
+    WINDOWPLACEMENT wp;
+    memset(&wp, 0, sizeof wp);
+    wp.length = sizeof wp;
+    wp.showCmd = SW_HIDE;
+    wp.rcNormalPosition = r;
+    return SetWindowPlacement(hwnd, &wp) != 0;
+}
+
+static void close_window(HWND hwnd) {
+    save_window_state(hwnd);
+    if (window_exit_hook) window_exit_hook(0);
+    ExitProcess(0);
+}
+
 static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
     case WM_CLOSE:
-        ExitProcess(0);
+        close_window(hwnd);
+        return 0;
+    case WM_QUERYENDSESSION:             /* Windows is logging off / shutting down */
+        return TRUE;
+    case WM_ENDSESSION:
+        if (wp) close_window(hwnd);
+        return 0;
     case WM_ERASEBKGND:
         return 1;                        /* every pixel is drawn by render() */
     case WM_PAINT: {
@@ -1058,7 +1188,12 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_KEYDOWN:
         if (wp == VK_F11 && !(lp & (1 << 30))) toggle_fullscreen(hwnd);
         else if (wp == VK_ESCAPE && win_fullscreen) toggle_fullscreen(hwnd);
+        else if (wp == VK_F7 && !(lp & (1 << 30))) switch_aspect();
+        else if (wp == VK_F8 && !(lp & (1 << 30))) switch_hud();
         return 0;                        /* game keys are read with GetAsyncKeyState */
+    case WM_ACTIVATEAPP:
+        if (wp) reread_display();        /* sly2.ini may have been edited meanwhile */
+        break;
     case WM_SYSCHAR:
         if (wp != ' ') return 0;         /* no beep for Alt+key; Alt+Space still opens the system menu */
         break;
@@ -1069,7 +1204,15 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
-/* Default 1280x960 client area (or the largest 4:3 that fits the work area), centred. */
+/* The display aspect (settings.h, notes/settings.md): 4:3 or wider. */
+static void display_aspect(int* w, int* h) {
+    *w = ps2_settings.aspect_w;
+    *h = ps2_settings.aspect_h;
+    if (*w <= 0 || *h <= 0) { *w = 4; *h = 3; }
+}
+
+/* Default client area DEFAULT_CLIENT_H (960) high at the display aspect (1280x960 at 4:3, 1707x960
+ * at 16:9), or the largest of that aspect that fits the work area; centred. */
 static void place_window(HWND hwnd) {
     RECT wr, cr;
     MONITORINFO mi;
@@ -1078,16 +1221,22 @@ static void place_window(HWND hwnd) {
         !GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY), &mi)) return;
     int ncw = (wr.right - wr.left) - cr.right, nch = (wr.bottom - wr.top) - cr.bottom;
     int aw = mi.rcWork.right - mi.rcWork.left - ncw, ah = mi.rcWork.bottom - mi.rcWork.top - nch;
-    int cw = DEFAULT_CLIENT_W, ch = DEFAULT_CLIENT_H;
-    if (cw > aw || ch > ah) { wrect r = letterbox(aw, ah); cw = r.w; ch = r.h; }
+    int dw, dh;
+    display_aspect(&dw, &dh);
+    int cw = (int)(((int64_t)DEFAULT_CLIENT_H * dw * 2 + dh) / (2 * (int64_t)dh)), ch = DEFAULT_CLIENT_H;
+    if (cw > aw || ch > ah) { wrect r = fit_aspect(aw, ah, dw, dh); cw = r.w; ch = r.h; }
     if (cw < 320 || ch < 240) { cw = 320; ch = 240; }
     int x = mi.rcWork.left + (aw - cw) / 2, y = mi.rcWork.top + (ah - ch) / 2;
     SetWindowPos(hwnd, NULL, x, y, cw + ncw, ch + nch, SWP_NOZORDER | SWP_NOACTIVATE);
 }
 
+/* "Sly 2: Band of Thieves", with the frame rate when [window] show_fps is on (PS2_SHOW_FPS=1). */
 static void set_title(HWND hwnd, double fps) {
-    char t[64];
-    snprintf(t, sizeof t, "Sly 2 - %.1f fps%s", fps, use_d3d ? "" : " (GDI)");
+    char t[96];
+    if (ps2_settings.show_fps) snprintf(t, sizeof t, WINDOW_TITLE " - %.1f fps%s", fps, use_d3d ? "" : " (GDI)");
+    else snprintf(t, sizeof t, WINDOW_TITLE);
+    char cur[96];
+    if (GetWindowTextA(hwnd, cur, sizeof cur) && !strcmp(cur, t)) return;
     SetWindowTextA(hwnd, t);
 }
 
@@ -1107,13 +1256,16 @@ static DWORD WINAPI window_thread(LPVOID arg) {
     wc.lpfnWndProc = wndproc;
     wc.hInstance = inst;
     wc.hCursor = LoadCursorW(NULL, (LPCWSTR)IDC_ARROW);
-    wc.hIcon = LoadIconW(NULL, (LPCWSTR)IDI_APPLICATION);
+    /* the executable's icon (resource 1: the packaged build, scripts/build_game.py --package) */
+    wc.hIcon = LoadIconW(inst, MAKEINTRESOURCEW(1));
+    if (!wc.hIcon) wc.hIcon = LoadIconW(NULL, (LPCWSTR)IDI_APPLICATION);
     wc.lpszClassName = WINDOW_CLASS;
     RegisterClassExW(&wc);
-    HWND hwnd = CreateWindowExW(0, WINDOW_CLASS, L"Sly 2", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT,
+    HWND hwnd = CreateWindowExW(0, WINDOW_CLASS, L"" WINDOW_TITLE, WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT,
                                 DEFAULT_CLIENT_W, DEFAULT_CLIENT_H, NULL, NULL, inst, NULL);
     if (!hwnd) { wlog("CreateWindow failed (error %lu): no window", (unsigned long)GetLastError()); return 0; }
-    place_window(hwnd);
+    if (!restore_window_state(hwnd)) place_window(hwnd);
+    settings_save_if_missing();          /* sly2.ini template in the user data folder (settings.c) */
 
     const char* force_gdi = getenv("PS2_WINDOW_GDI");
     use_d3d = !(force_gdi && *force_gdi && *force_gdi != '0') && d3d_init(hwnd);
@@ -1123,7 +1275,8 @@ static DWORD WINAPI window_thread(LPVOID arg) {
     }
     win_ready = 1;
     set_title(hwnd, 0.0);
-    ShowWindow(hwnd, SW_SHOW);
+    ShowWindow(hwnd, ps2_settings.win_w && ps2_settings.win_maximized ? SW_SHOWMAXIMIZED : SW_SHOW);
+    if (ps2_settings.win_fullscreen) toggle_fullscreen(hwnd);
     SetForegroundWindow(hwnd);
     render(hwnd);
     g_hwnd = hwnd;

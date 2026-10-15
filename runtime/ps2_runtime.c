@@ -3,6 +3,8 @@
 #include "perf.h"
 #include "iop.h"
 #include "audio_out.h"
+#include "settings.h"
+#include "launch.h"
 
 #include <stdlib.h>
 #include <windows.h>
@@ -205,10 +207,7 @@ static void calls_vblank(uint32_t v) {
 }
 
 static void die(const char* fmt, uint32_t v) {
-    fprintf(stderr, "[ps2] fatal: ");
-    fprintf(stderr, fmt, v);
-    fprintf(stderr, "\n");
-    exit(1);
+    launch_fatal(fmt, v);                        /* logged; a message box when there is no console */
 }
 
 /* ---- memory: the cases the inline accessors (ps2_runtime.h) leave out ------------------------- */
@@ -399,19 +398,62 @@ void ps2_debug_hold(int on) {
     sd_hold(on);
 }
 
+/* Widescreen (aspect.h): the picture as the window shows it, for frame dumps - stretched from the
+ * game's 512 (or 640) pixels to the display aspect at the picture's height (square pixels), or for
+ * 4:3 content (ASPECT_4_3 hint) at 4:3 with black bars. Bilinear in X. PS2_DUMP_RAW=1 keeps the
+ * picture as the GS composed it. */
+int gs_picture_content43(void);                  /* gs_thread.c */
+void window_present_aspect(const uint32_t* bgrx, int w, int h, int stride, int aspect_w, int aspect_h);   /* window.c */
+
+static const uint32_t* display_shaped(const uint32_t* src, int w, int h, int stride, float aspect, int content43,
+                                      int* ow) {
+    static uint32_t out[2048 * 1024];
+    int W = (int)lroundf((float)h * aspect);     /* the whole display, square pixels */
+    int pw = content43 ? (int)lroundf((float)h * 4.0f / 3.0f) : W;   /* the picture inside it */
+    if (W > 2048 || W <= 0 || h > 1024) { *ow = w; return NULL; }
+    int x0 = (W - pw) / 2;
+    for (int y = 0; y < h; y++) {
+        const uint32_t* s = src + (size_t)y * stride;
+        uint32_t* d = out + (size_t)y * W;
+        for (int x = 0; x < W; x++) {
+            int px = x - x0;
+            if (px < 0 || px >= pw) { d[x] = 0; continue; }
+            float fx = ((float)px + 0.5f) * (float)w / (float)pw - 0.5f;
+            int i0 = (int)floorf(fx);
+            float t = fx - (float)i0;
+            int a = i0 < 0 ? 0 : i0, b = i0 + 1 >= w ? w - 1 : i0 + 1;
+            uint32_t ca = s[a], cb = s[b], c = 0;
+            for (int k = 0; k < 32; k += 8) {
+                float v = (float)((ca >> k) & 0xFF) * (1.0f - t) + (float)((cb >> k) & 0xFF) * t;
+                c |= (uint32_t)lroundf(v) << k;
+            }
+            d[x] = c;
+        }
+    }
+    *ow = W;
+    return out;
+}
+
 /* The picture of VBlank `vb` (ok = 0: display off). Runs on the GS thread when there is one. */
 static void present_frame(const uint32_t* frame, int ok, int w, int h, uint32_t vb) {
+    int content43 = gs_picture_content43();
+    int aw = content43 || !ps2_aspect.wide ? 4 : ps2_settings.aspect_w, ah = content43 || !ps2_aspect.wide ? 3 : ps2_settings.aspect_h;
     if (!ok) {                                   /* display off: show black, not a stale frame */
         static uint32_t black[640 * 448];
-        if (!headless) window_present(black, 640, 448, 640);
+        if (!headless) window_present_aspect(black, 640, 448, 640, aw, ah);
         return;
     }
-    if (!headless) window_present(frame, w, h, 1024);
+    if (!headless) window_present_aspect(frame, w, h, 1024, aw, ah);
     if (dump_dir && vb % (uint32_t)dump_every == 0 && vb >= dump_from &&
         (!dump_from_rec || (gs_record_first && vb >= gs_record_first))) {
         char path[512];
         snprintf(path, sizeof path, "%s/frame_%06u.png", dump_dir, vb);
-        debug_write_png(path, frame, w, h, 1024);
+        static int raw = -1;
+        if (raw < 0) raw = getenv("PS2_DUMP_RAW") && atoi(getenv("PS2_DUMP_RAW")) != 0;
+        int dw = w;
+        const uint32_t* shaped = ps2_aspect.wide && !raw ? display_shaped(frame, w, h, 1024, ps2_aspect.ratio, content43, &dw) : NULL;
+        if (shaped) debug_write_png(path, shaped, dw, h, dw);
+        else debug_write_png(path, frame, w, h, 1024);
         /* audio clock = position in a PS2_AUDIO_WAV recording, to line sound up with pictures */
         if (audio_backend() != AUDIO_OFF)
             fprintf(stderr, "[dump] frame_%06u.png at audio %.2f s\n", vb,
@@ -695,27 +737,23 @@ done:
 static uint32_t rd32(const uint8_t* p) { uint32_t v; memcpy(&v, p, 4); return v; }
 static uint16_t rd16(const uint8_t* p) { uint16_t v; memcpy(&v, p, 2); return v; }
 
-static void load_elf(const char* path) {
-    FILE* f = fopen(path, "rb");
-    if (!f) { fprintf(stderr, "[ps2] cannot open %s\n", path); exit(1); }
-    fseek(f, 0, SEEK_END); long size = ftell(f); fseek(f, 0, SEEK_SET);
-    uint8_t* buf = malloc((size_t)size);
-    if (!buf || fread(buf, 1, (size_t)size, f) != (size_t)size) die("cannot read ELF (%u bytes)", (uint32_t)size);
-    fclose(f);
-
+/* The executable's loadable segments into EE RAM (from the file on the command line or from the
+ * disc image: launch_load_game). */
+static void load_elf(const uint8_t* buf, size_t size) {
     if (size < 52 || memcmp(buf, "\x7f" "ELF", 4) != 0) die("not an ELF file (%u)", 0);
     uint32_t phoff = rd32(buf + 28);
     uint16_t phentsize = rd16(buf + 42), phnum = rd16(buf + 44);
+    if ((uint64_t)phoff + (uint64_t)phnum * phentsize > size) die("damaged ELF file (%u)", 1);
     for (uint16_t i = 0; i < phnum; i++) {
         const uint8_t* ph = buf + phoff + (size_t)i * phentsize;
         if (rd32(ph) != 1) continue;             /* PT_LOAD */
         uint32_t off = rd32(ph + 4), vaddr = rd32(ph + 8), filesz = rd32(ph + 16), memsz = rd32(ph + 20);
         uint8_t* dst = ps2_fast(vaddr);
         if (!dst || (vaddr & (PS2_RAM_SIZE - 1)) + memsz > PS2_RAM_SIZE) die("segment at 0x%08X outside RAM", vaddr);
+        if ((uint64_t)off + filesz > size || filesz > memsz) die("damaged ELF file (%u)", 2);
         memcpy(dst, buf + off, filesz);
         memset(dst + filesz, 0, memsz - filesz);
     }
-    free(buf);
 }
 
 /* A crash in any thread: say what and where (as an offset into the executable, for llvm-nm/objdump),
@@ -752,25 +790,37 @@ static void request_high_qos(void) {
     }
 }
 
+/* Usage: sly2.exe                     the disc image from PS2_ISO or sly2.ini (or a file dialog)
+ *        sly2.exe <image.iso>         that disc image
+ *        sly2.exe <SCUS_973.16> [--dump-regs]   the extracted executable (development, tests)
+ * runtime/launch.c, notes/install.md. */
 int main(int argc, char** argv) {
-    if (argc < 2) { fprintf(stderr, "usage: %s <path to original PS2 executable>\n", argv[0]); return 2; }
+    launch_init();                               /* user data folder; no console: log to a file */
     SetUnhandledExceptionFilter(crash_report);
     request_high_qos();
     QueryPerformanceFrequency(&qpc_freq);
     QueryPerformanceCounter(&qpc_start);
     perf_init();                                 /* PS2_PERF / PS2_PROFILE */
     atexit(perf_final);
+    settings_load();                             /* sly2.ini in the user data folder, PS2_ASPECT */
+    aspect_init();                               /* widescreen factors (aspect.c) */
+    int dump_regs = argc > 2 && strcmp(argv[2], "--dump-regs") == 0;
+    headless = dump_regs || getenv("PS2_HEADLESS") != NULL;
     ps2_ram = calloc(1, PS2_RAM_SIZE + 16);      /* +16: a 128-bit access at the very end */
     ps2_spr = calloc(1, PS2_SPR_SIZE + 16);
     if (!ps2_ram || !ps2_spr) die("out of memory (%u)", 0);
-    load_elf(argv[1]);
+    size_t elf_size = 0;
+    uint8_t* elf = launch_load_game(argc, argv, headless, &elf_size);   /* argv[1], or the disc image */
+    load_elf(elf, elf_size);
+    free(elf);
+    wchar_t card[MAX_PATH + 80];                 /* memory card: <user data>\memcard\slot0 (PS2_MEMCARD_DIR wins) */
+    if (settings_user_path(L"memcard\\slot0", card, MAX_PATH + 80)) mc_set_default_dir(card);
+    window_exit_hook = launch_exit;              /* closing the window: clean exit */
     iop_init();                                  /* IOP memory map before the EE's first IOP request */
 
-    int dump_regs = argc > 2 && strcmp(argv[2], "--dump-regs") == 0;
     ps2_log_sif = getenv("PS2_LOG_SIF") != NULL;
     watch_init();
     if (warp_init()) ps2_hooks_on = 1;
-    headless = dump_regs || getenv("PS2_HEADLESS") != NULL;
     dump_dir = getenv("PS2_DUMP_FRAMES");
     if (getenv("PS2_DUMP_EVERY")) dump_every = atoi(getenv("PS2_DUMP_EVERY")) > 0 ? atoi(getenv("PS2_DUMP_EVERY")) : 60;
     if (getenv("PS2_DUMP_FROM")) {

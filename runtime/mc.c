@@ -3,7 +3,8 @@
  * High-level emulation of the two IOP modules the game ships in its .irx section and loads at
  * boot: XMCSERV 2.10 (SIF RPC server 0x80000400) and XMCMAN 2.26 (the card file system). Port 0
  * slot 0 holds a formatted 8 MB PS2 card whose files live in a host directory (PS2_MEMCARD_DIR,
- * else memcard\slot0 next to the executable); port 1 is empty.
+ * else memcard\slot0 in the user data folder (mc_set_default_dir, launch.c), else memcard\slot0 next
+ * to the executable); port 1 is empty.
  *
  * Everything here follows the game's own code: libmc on the EE side and the mcserv/mcman IRX
  * images that run on the IOP. notes/memcard-protocol.md documents the protocol (function numbers,
@@ -540,6 +541,12 @@ static int set_root(const wchar_t* dir) {
     return 1;
 }
 
+static wchar_t default_dir[HOST_MAX];        /* mc_set_default_dir: <user data>\memcard\slot0 */
+
+void mc_set_default_dir(const wchar_t* dir) {
+    if (dir && wcslen(dir) < HOST_MAX - 64) wcscpy(default_dir, dir);
+}
+
 static void card_setup(void) {
     if (card.init) return;
     card.init = 1;
@@ -547,6 +554,7 @@ static void card_setup(void) {
     wchar_t dir[HOST_MAX];
     const wchar_t* env = _wgetenv(L"PS2_MEMCARD_DIR");
     if (env && *env && wcslen(env) < HOST_MAX - 64) wcscpy(dir, env);
+    else if (default_dir[0]) wcscpy(dir, default_dir);
     else {
         DWORD n = GetModuleFileNameW(NULL, dir, HOST_MAX - 64);
         if (n == 0 || n >= HOST_MAX - 64) { fprintf(stderr, "[mc] cannot locate the executable: no memory card\n"); return; }
@@ -1249,10 +1257,32 @@ static void cstr(const uint8_t* p, char* out, size_t cap) {
     out[n] = 0;
 }
 
+/* Exit barrier: every RPC runs under this lock; mc_quiesce (window closed: launch.c) takes it and
+ * never gives it back, so the process ends between card operations, never inside one (a host file
+ * half written, a directory's %meta out of step with its files). What the operations wrote is in
+ * the OS's file cache by then and reaches the disk without this process. */
+static SRWLOCK mc_lock = SRWLOCK_INIT;
+
+void mc_quiesce(void) {
+    for (int ms = 0; ms < 2000 && !TryAcquireSRWLockExclusive(&mc_lock); ms++) Sleep(1);   /* never hang the exit */
+}
+
+static int mc_rpc_locked(ps2_ctx* ctx, uint32_t sid, uint32_t fno, const uint8_t* args, uint32_t send_size,
+                         uint8_t* out, uint32_t recv_size);
+
 int mc_rpc(ps2_ctx* ctx, uint32_t sid, uint32_t fno, const uint8_t* args, uint32_t send_size,
            uint8_t* out, uint32_t recv_size) {
-    (void)ctx;
     if (sid != MC_SID) return 0;
+    AcquireSRWLockExclusive(&mc_lock);
+    int r = mc_rpc_locked(ctx, sid, fno, args, send_size, out, recv_size);
+    ReleaseSRWLockExclusive(&mc_lock);
+    return r;
+}
+
+static int mc_rpc_locked(ps2_ctx* ctx, uint32_t sid, uint32_t fno, const uint8_t* args, uint32_t send_size,
+                         uint8_t* out, uint32_t recv_size) {
+    (void)ctx;
+    (void)sid;
     memcpy(rbuf, args, send_size < sizeof rbuf ? send_size : sizeof rbuf);
     const uint8_t* b = rbuf;
     /* descriptor calls: fd/port 0x00, port 0x04, slot 0x08, size 0x0C, offset/flag 0x10, origin/flag 0x14,

@@ -33,7 +33,12 @@ if (-not $UnitOnly -and $rc -eq 0) {
     Write-Output "== closing the window ends the process with code 0 =="
     & $exe --close-test
     if ($LASTEXITCODE -ne 0) { Write-Output "FAILED: exit code $LASTEXITCODE"; exit 1 }
-    Write-Output "PASSED"
+    $ini = Join-Path $out 'userdata\sly2.ini'           # the window state written on close
+    $text = if (Test-Path $ini) { Get-Content $ini -Raw } else { '' }
+    if ($text -notmatch '(?m)^width = \d+' -or $text -notmatch '(?m)^fullscreen = off') {
+        Write-Output "FAILED: no window state in $ini"; exit 1
+    }
+    Write-Output "PASSED (window state saved)"
     Write-Output "== test_window (GDI presenter) =="
     $env:PS2_WINDOW_GDI = '1'
     & $exe --seconds 2.5 --no-fullscreen

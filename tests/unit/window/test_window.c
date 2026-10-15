@@ -18,8 +18,12 @@
  *        (PS2_WINDOW_GDI=1 in the environment tests the GDI presenter)
  */
 #include "window.c"
+#include "settings.c"
 
 #include <stdlib.h>
+
+#define FPS_TITLE     WINDOW_TITLE " - "                /* with show_fps on */
+#define FPS_TITLE_LEN (sizeof FPS_TITLE - 1)
 
 static int checks, failures;
 #define CHECK(cond, ...)                                                                           \
@@ -63,6 +67,196 @@ static void test_letterbox(void) {
                 CHECK(0, "letterbox(%d,%d) = %d %d %d %d", cw, ch, r.x, r.y, r.w, r.h);
             }
         }
+}
+
+/* Widescreen presentation: any aspect fits (16:9 fills a 16:9 window, 4:3 content is pillarboxed
+ * in it), and frames carry their aspect through the triple buffer. */
+static void test_fit_aspect(void) {
+    wrect r = fit_aspect(1920, 1080, 16, 9);
+    CHECK(r.x == 0 && r.y == 0 && r.w == 1920 && r.h == 1080, "%d %d %d %d", r.x, r.y, r.w, r.h);
+    r = fit_aspect(1920, 1080, 4, 3);
+    CHECK(r.x == 240 && r.w == 1440 && r.h == 1080, "pillarbox %d %d %d %d", r.x, r.y, r.w, r.h);
+    r = fit_aspect(1280, 960, 16, 9);
+    CHECK(r.x == 0 && r.y == 120 && r.w == 1280 && r.h == 720, "letterbox %d %d %d %d", r.x, r.y, r.w, r.h);
+    r = fit_aspect(3440, 1440, 21, 9);
+    CHECK(r.w == 3360 && r.h == 1440 && r.x == 40, "21:9 %d %d %d %d", r.x, r.y, r.w, r.h);
+    int bad = 0;
+    for (int cw = 1; cw < 4000 && !bad; cw += 13)
+        for (int ch = 1; ch < 3000 && !bad; ch += 17) {
+            wrect a = fit_aspect(cw, ch, 4, 3), b = letterbox(cw, ch);
+            if (memcmp(&a, &b, sizeof a)) { bad = 1; CHECK(0, "fit_aspect 4:3 != letterbox at %dx%d", cw, ch); }
+            r = fit_aspect(cw, ch, 16, 9);
+            int fits = r.x >= 0 && r.y >= 0 && r.x + r.w <= cw && r.y + r.h <= ch && (r.w == cw || r.h == ch);
+            if (!fits || llabs((long long)r.w * 9 - (long long)r.h * 16) > 16) {
+                bad = 1;
+                CHECK(0, "fit_aspect(%d,%d,16,9) = %d %d %d %d", cw, ch, r.x, r.y, r.w, r.h);
+            }
+        }
+    static uint32_t img[16];
+    win_accepting = 1;
+    window_present_aspect(img, 4, 4, 4, 16, 9);
+    fb_take();
+    CHECK(fb_aw[fb_read] == 16 && fb_ah[fb_read] == 9, "aspect travels with the frame (%d:%d)", fb_aw[fb_read], fb_ah[fb_read]);
+    window_present(img, 4, 4, 4);
+    fb_take();
+    CHECK(fb_aw[fb_read] == 4 && fb_ah[fb_read] == 3, "window_present is 4:3 (%d:%d)", fb_aw[fb_read], fb_ah[fb_read]);
+    win_accepting = 0;
+}
+
+/* settings.c: the sly2.ini parser and its aspect values */
+static int warn_count;
+static void count_warn(void* user, const char* msg) { (void)user; (void)msg; warn_count++; }
+
+static void test_settings(void) {
+    ps2_settings_t s;
+    settings_defaults(&s);
+    CHECK(s.aspect_w == 16 && s.aspect_h == 9 && s.internal_scale == 3 && !s.outlines_thin && !s.filters_faithful,
+          "defaults");
+    CHECK(settings_motion_blur(&s) == 1 && settings_flicker_filter(&s) == 0 && settings_interlacing(&s) == 0, "modern preset");
+    int w, h;
+    CHECK(settings_parse_aspect("4:3", &w, &h) && w == 4 && h == 3, "4:3");
+    CHECK(settings_parse_aspect(" 32:18 ", &w, &h) && w == 16 && h == 9, "reduced");
+    CHECK(settings_parse_aspect("21/9", &w, &h) && w == 7 && h == 3, "21/9 -> 7:3");
+    CHECK(settings_parse_aspect("1.7778", &w, &h) && w == 889 && h == 500, "decimal ratio %d:%d", w, h);
+    CHECK(!settings_parse_aspect("wide", &w, &h) && !settings_parse_aspect("16:", &w, &h) &&
+          !settings_parse_aspect("1:3", &w, &h) && !settings_parse_aspect("", &w, &h), "rejects garbage");
+
+    warn_count = 0;
+    int n = settings_parse("\xEF\xBB\xBF; comment\r\n[display]\r\naspect = 4:3   ; old TV\r\n\r\n[graphics]\n"
+                           "internal_scale=2\noutlines = Thin\nfilters = faithful\nmotion_blur = off\n"
+                           "interlacing = preset\n", &s, count_warn, NULL);
+    CHECK(n == 0 && warn_count == 0, "clean file: %d problems", n);
+    CHECK(s.aspect_w == 4 && s.aspect_h == 3, "aspect %d:%d", s.aspect_w, s.aspect_h);
+    CHECK(s.internal_scale == 2 && s.outlines_thin == 1 && s.filters_faithful == 1, "graphics keys");
+    CHECK(settings_motion_blur(&s) == 0 && settings_flicker_filter(&s) == 1 && settings_interlacing(&s) == 1,
+          "faithful preset with motion blur off");
+
+    settings_defaults(&s);
+    warn_count = 0;
+    n = settings_parse("aspect = 21:9\nbogus line\n[graphics]\ninternal_scale = 99\ncolour = red\n[broken\n", &s,
+                       count_warn, NULL);
+    CHECK(n == 4 && warn_count == 4, "four problems reported (%d, %d)", n, warn_count);
+    CHECK(s.aspect_w == 7 && s.aspect_h == 3 && s.internal_scale == 3, "good keys still apply, bad ones don't");
+
+    /* [display] hud = edges (default) | centered */
+    settings_defaults(&s);
+    CHECK(s.hud_centered == 0, "hud defaults to edges");
+    warn_count = 0;
+    n = settings_parse("[display]\nhud = Centered ; keep it in the middle\n", &s, count_warn, NULL);
+    CHECK(n == 0 && s.hud_centered == 1, "hud = centered (%d, %d)", n, s.hud_centered);
+    n = settings_parse("hud = edges\n", &s, count_warn, NULL);
+    CHECK(n == 0 && s.hud_centered == 0, "hud = edges");
+    n = settings_parse("hud = centred\n", &s, count_warn, NULL);
+    CHECK(n == 0 && s.hud_centered == 1, "hud = centred (British spelling)");
+    n = settings_parse("hud = left\n", &s, count_warn, NULL);
+    CHECK(n == 1 && warn_count == 1 && s.hud_centered == 1, "bad hud value reported and ignored");
+    char tmpl[4096];
+    settings_defaults(&s);
+    s.hud_centered = 1;
+    settings_format(&s, tmpl, sizeof tmpl);
+    CHECK(strstr(tmpl, "\nhud = centered\n") != NULL, "template writes the hud key");
+
+    /* the template written next to the exe parses back to the defaults */
+    char text[4096];
+    ps2_settings_t d, back;
+    settings_defaults(&d);
+    settings_format(&d, text, sizeof text);
+    memset(&back, 0x55, sizeof back);
+    settings_defaults(&back);
+    back.aspect_w = 1;
+    warn_count = 0;
+    CHECK(settings_parse(text, &back, count_warn, NULL) == 0 && !memcmp(&back, &d, sizeof d), "template round trip");
+
+    /* [game] disc (quoted: ; and # inside), [window] keys */
+    settings_defaults(&s);
+    warn_count = 0;
+    n = settings_parse("[game]\ndisc = \"D:\\Games #2\\Sly 2; USA.iso\"   ; my disc\n[window]\nx = -1200\ny = 40\n"
+                       "width = 1600\nheight = 900\nmaximized = on\nfullscreen = yes\nshow_fps = 1\n", &s, count_warn, NULL);
+    CHECK(n == 0, "game/window keys: %d problems", n);
+    CHECK(!strcmp(s.disc, "D:\\Games #2\\Sly 2; USA.iso"), "quoted disc path '%s'", s.disc);
+    CHECK(s.win_x == -1200 && s.win_y == 40 && s.win_w == 1600 && s.win_h == 900 && s.win_maximized &&
+          s.win_fullscreen && s.show_fps, "window keys");
+    n = settings_parse("[window]\nwidth = 5\nfullscreen = maybe\n", &s, count_warn, NULL);
+    CHECK(n == 2 && s.win_w == 1600 && s.win_fullscreen == 1, "bad window values ignored");
+
+    /* key-by-key updates keep the rest of the file */
+    char out[8192];
+    const char* user = "; mine\r\n[display]\r\naspect = 4:3 ; old TV\r\n\r\n[window]\r\nfullscreen = off\r\n\r\n; later\r\n[graphics]\r\n";
+    int len = settings_update_text(user, "display", "aspect", "21:9", out, sizeof out);
+    CHECK(len > 0 && strstr(out, "aspect = 21:9   ; old TV\r\n") && strstr(out, "; mine\r\n") && strstr(out, "; later\r\n[graphics]"),
+          "rewrite keeps the comment and the other lines:\n%s", out);
+    len = settings_update_text(user, "window", "width", "1707", out, sizeof out);
+    CHECK(len > 0 && strstr(out, "fullscreen = off\r\nwidth = 1707\r\n\r\n; later"), "new key at the end of its section:\n%s", out);
+    len = settings_update_text(user, "game", "disc", "C:\\a;b.iso", out, sizeof out);
+    CHECK(len > 0 && strstr(out, "[graphics]\r\n\r\n[game]\r\ndisc = \"C:\\a;b.iso\"\r\n"), "new section, quoted value:\n%s", out);
+    settings_defaults(&s);
+    settings_parse(out, &s, NULL, NULL);
+    CHECK(!strcmp(s.disc, "C:\\a;b.iso") && s.aspect_w == 4, "updated text parses back");
+    len = settings_update_text("[game]\r\ndisc = a.iso\r\n\r\n", "window", "x", "5", out, sizeof out);
+    CHECK(len > 0 && !strcmp(out, "[game]\r\ndisc = a.iso\r\n\r\n[window]\r\nx = 5\r\n"), "one blank line between sections: '%s'", out);
+    len = settings_update_text("", "window", "x", "5", out, sizeof out);
+    CHECK(len > 0 && !strcmp(out, "[window]\nx = 5\n"), "empty file: '%s'", out);
+    len = settings_update_text("aspect = 4:3", "display", "aspect", "16:9", out, sizeof out);
+    CHECK(len > 0 && !strcmp(out, "aspect = 16:9"), "keys before any header are [display]: '%s'", out);
+    CHECK(settings_update_text(user, "window", "width", "1707", out, 20) < 0, "overflow reported");
+
+    /* the user data folder (PS2_USER_DIR, set by main) and a write + read back through the file */
+    const wchar_t* dir = settings_user_dir();
+    CHECK(dir && settings_portable() && GetFileAttributesW(dir) != INVALID_FILE_ATTRIBUTES, "user dir %ls", dir);
+    const char* const kv[][3] = { { "window", "width", "1500" }, { "window", "height", "844" }, { "game", "disc", "x.iso" } };
+    CHECK(settings_set(kv, 3), "settings_set");
+    settings_load();
+    CHECK(ps2_settings.win_w == 1500 && ps2_settings.win_h == 844 && !strcmp(ps2_settings.disc, "x.iso") &&
+          ps2_settings.aspect_w == 16, "stored keys load back (%d x %d, '%s')", ps2_settings.win_w, ps2_settings.win_h,
+          ps2_settings.disc);
+    /* [display] read again while the game runs (sly2.ini edited meanwhile); environment overrides win */
+    const char* const kd[][3] = { { "display", "aspect", "4:3" }, { "display", "hud", "centered" } };
+    CHECK(settings_set(kd, 2), "settings_set display");
+    int rw = 0, rh = 0, rhud = -1;
+    CHECK(settings_read_display(&rw, &rh, &rhud) && rw == 4 && rh == 3 && rhud == 1, "read back %d:%d hud %d", rw, rh, rhud);
+    _putenv("PS2_ASPECT=21:9");
+    _putenv("PS2_HUD=edges");
+    settings_load();
+    CHECK(ps2_settings.aspect_w == 7 && ps2_settings.aspect_h == 3 && !ps2_settings.hud_centered, "env overrides at load");
+    CHECK(settings_read_display(&rw, &rh, &rhud) && rw == 7 && rh == 3 && rhud == 0, "env keys keep their values (%d:%d %d)",
+          rw, rh, rhud);
+    _putenv("PS2_ASPECT=");
+    _putenv("PS2_HUD=");
+    wchar_t ini[MAX_PATH + 80];
+    settings_user_path(L"sly2.ini", ini, MAX_PATH + 80);
+    DeleteFileW(ini);                                    /* the interactive run starts at the default place */
+    settings_load();
+    CHECK(!settings_read_display(&rw, &rh, &rhud), "no file: nothing to read");
+}
+
+/* F7 / F8 (window.c): what they ask aspect.c for. aspect.c is not linked here: these stand-ins apply a
+ * request at once, as the game does at its next frame. */
+static int stub_requests;
+void aspect_request(int w, int h, int hud_centered) {
+    stub_requests++;
+    if (w > 0 && h > 0) { ps2_settings.aspect_w = w; ps2_settings.aspect_h = h; }
+    if (hud_centered >= 0) ps2_settings.hud_centered = hud_centered;
+}
+void aspect_target(int* w, int* h, int* hud_centered) {
+    *w = ps2_settings.aspect_w; *h = ps2_settings.aspect_h; *hud_centered = ps2_settings.hud_centered;
+}
+
+static void test_display_switch(void) {
+    ps2_settings.aspect_w = 16; ps2_settings.aspect_h = 9; ps2_settings.hud_centered = 0;
+    switch_aspect();
+    CHECK(ps2_settings.aspect_w == 4 && ps2_settings.aspect_h == 3, "F7: 16:9 -> 4:3");
+    switch_aspect();
+    CHECK(ps2_settings.aspect_w == 16 && ps2_settings.aspect_h == 9, "F7: 4:3 -> 16:9");
+    ps2_settings.aspect_w = 7; ps2_settings.aspect_h = 3;
+    switch_aspect();
+    switch_aspect();
+    CHECK(ps2_settings.aspect_w == 7 && ps2_settings.aspect_h == 3, "F7 twice from 21:9 comes back to 21:9");
+    switch_hud();
+    CHECK(ps2_settings.hud_centered == 1 && ps2_settings.aspect_w == 7, "F8: edges -> centered, aspect kept");
+    switch_hud();
+    CHECK(ps2_settings.hud_centered == 0, "F8: centered -> edges");
+    CHECK(stub_requests == 6, "one request per key (%d)", stub_requests);
+    ps2_settings.aspect_w = 16; ps2_settings.aspect_h = 9;
 }
 
 static void test_xinput_mapping(void) {
@@ -579,7 +773,7 @@ static void test_gdi_bars(void) {
         HDC dc = GetDC(h);
         FillRect(dc, &rc, (HBRUSH)GetStockObject(WHITE_BRUSH));
         ReleaseDC(h, dc);
-        gdi_render(h, solid, 320, 224);
+        gdi_render(h, solid, 320, 224, 4, 3);
         if (!read_client(h, shot, cw, ch, 0)) { CHECK(0, "cannot read the client area"); break; }
         wrect r = letterbox(cw, ch);
         int unpainted = 0, fx = -1, fy = -1;
@@ -609,22 +803,22 @@ static void test_d3d_resize_failure(void) {
         return;
     }
     for (int i = 0; i < 640 * 480; i++) solid[i] = 0x7FFF0000u;             /* red */
-    HRESULT hr = d3d_render(h, solid, 640, 480, 1);
+    HRESULT hr = d3d_render(h, solid, 640, 480, 1, 4, 3);
     CHECK(SUCCEEDED(hr) && d3d.bb_w == 640 && d3d.bb_h == 480, "first frame: hr %08lX, back buffer %dx%d",
           (unsigned long)hr, d3d.bb_w, d3d.bb_h);
     ID3D11Texture2D* held = NULL;
     IDXGISwapChain_GetBuffer(d3d.sc, 0, &IID_ID3D11Texture2D_, (void**)&held);
     set_client_size(h, 700, 500);
-    hr = d3d_render(h, solid, 640, 480, 1);
+    hr = d3d_render(h, solid, 640, 480, 1, 4, 3);
     CHECK(FAILED(hr), "resize with a back buffer still referenced succeeded (hr %08lX)", (unsigned long)hr);
     RELEASE(held);
     set_client_size(h, 640, 480);                                           /* back to the old size */
     for (int i = 0; i < 640 * 480; i++) solid[i] = 0x7F00FF00u;             /* green */
-    hr = d3d_render(h, solid, 640, 480, 2);
+    hr = d3d_render(h, solid, 640, 480, 2, 4, 3);
     CHECK(SUCCEEDED(hr) && d3d.rtv != NULL && d3d.bb_w == 640 && d3d.bb_h == 480,
           "frame after a failed resize: hr %08lX, render target %p, back buffer %dx%d", (unsigned long)hr,
           (void*)d3d.rtv, d3d.bb_w, d3d.bb_h);
-    hr = d3d_render(h, solid, 640, 480, 2);                                 /* flip model: show it twice */
+    hr = d3d_render(h, solid, 640, 480, 2, 4, 3);                                 /* flip model: show it twice */
     Sleep(100);
     if (read_client(h, shot, 640, 480, 1) && shot[240 * 640 + 320] != 0x5A5A5A) {
         uint32_t c = shot[240 * 640 + 320];
@@ -755,6 +949,7 @@ static void interactive(double seconds, int do_fullscreen) {
      * 60 per second. Calls made by the unit checks above don't count either. */
     InterlockedExchange(&fb_presented, 0);
     double t0 = now_ms(), early_due = t0;
+    ps2_settings.show_fps = 1;                           /* the FPS checks below read it from the title */
     window_init();
     pattern(frame, FRAME_MAX, 640, 448, 0);
     for (int n = 0; n < 60; n++) window_present(frame, 640, 448, FRAME_MAX);
@@ -773,7 +968,9 @@ static void interactive(double seconds, int do_fullscreen) {
     RECT cr;
     GetClientRect(h, &cr);
     printf("client area %ldx%ld\n", cr.right, cr.bottom);
-    CHECK(labs(cr.right * 3 - cr.bottom * 4) <= 4, "default client area is not 4:3");
+    int dw, dh;
+    display_aspect(&dw, &dh);                            /* the settings' aspect (16:9 by default) */
+    CHECK(labs(cr.right * dh - cr.bottom * dw) <= dw + dh, "default client area is not %d:%d", dw, dh);
 
     static const int sizes[][2] = { { 640, 448 }, { 512, 448 }, { 640, 480 }, { 320, 240 }, { 720, 480 }, { 256, 224 } };
     int frames = (int)(seconds * 60.0), shown0 = frames_shown;
@@ -795,8 +992,8 @@ static void interactive(double seconds, int do_fullscreen) {
         if (first_fps < 0 && i % 6 == 3) {               /* the first FPS value the title shows */
             char t[128];
             GetWindowTextA(h, t, sizeof t);
-            if (!strncmp(t, "Sly 2 - ", 8) && strncmp(t + 8, "0.0 ", 4)) {
-                first_fps = atof(t + 8);
+            if (!strncmp(t, FPS_TITLE, FPS_TITLE_LEN) && strncmp(t + FPS_TITLE_LEN, "0.0 ", 4)) {
+                first_fps = atof(t + FPS_TITLE_LEN);
                 printf("first title FPS reading: \"%s\" (frame %d)\n", t, i);
             }
         }
@@ -840,10 +1037,15 @@ static void interactive(double seconds, int do_fullscreen) {
     char title[128];
     GetWindowTextA(h, title, sizeof title);
     printf("title: \"%s\"\n", title);
-    CHECK(strncmp(title, "Sly 2 - ", 8) == 0 && strstr(title, " fps"), "title has no FPS counter");
-    double fps = atof(title + 8);
+    CHECK(strncmp(title, FPS_TITLE, FPS_TITLE_LEN) == 0 && strstr(title, " fps"), "title has no FPS counter");
+    double fps = atof(title + FPS_TITLE_LEN);
     CHECK(fps > 40 && fps < 75, "title FPS %.1f while presenting at 60", fps);
     CHECK(first_fps > 54 && first_fps < 66, "first title FPS %.1f while presenting at 60 from the start", first_fps);
+    ps2_settings.show_fps = 0;                           /* the default: just the game's name */
+    set_title(h, 60.0);
+    GetWindowTextA(h, title, sizeof title);
+    CHECK(!strcmp(title, WINDOW_TITLE), "plain title \"%s\"", title);
+    ps2_settings.show_fps = 1;
 
     /* Picture check at a wide client size: letterbox bars must be black, the image exact. */
     set_client_size(h, 900, 450);
@@ -883,6 +1085,19 @@ static int close_test(void) {
 }
 
 int main(int argc, char** argv) {
+    /* sly2.ini and the window state go to a folder of the test's own (never the player's
+     * %LOCALAPPDATA%\Sly2), starting without a file: the window opens at its default place. */
+    wchar_t dir[MAX_PATH + 32], env[MAX_PATH + 64];
+    DWORD dn = GetModuleFileNameW(NULL, dir, MAX_PATH);
+    wchar_t* slash = dn ? wcsrchr(dir, L'\\') : NULL;
+    if (slash) wcscpy(slash, L"\\userdata"); else wcscpy(dir, L"userdata");
+    swprintf(env, MAX_PATH + 64, L"PS2_USER_DIR=%ls", dir);
+    _wputenv(env);
+    wchar_t ini[MAX_PATH + 48];
+    settings_user_path(L"sly2.ini", ini, MAX_PATH + 48);
+    DeleteFileW(ini);
+    settings_load();
+
     int unit_only = 0, fullscreen = 1;
     double seconds = 3.0;
     for (int i = 1; i < argc; i++) {
@@ -896,6 +1111,9 @@ int main(int argc, char** argv) {
     timeBeginPeriod(1);
 
     test_letterbox();
+    test_fit_aspect();
+    test_settings();
+    test_display_switch();
     test_xinput_mapping();
     test_keyboard_mapping();
     test_frame_handoff_basic();

@@ -27,6 +27,11 @@ void gs_draw_reset(void);                /* CSR.RESET: drop the vertex queue, ca
 void     gs_exec_write_reg(uint32_t reg, uint64_t value);
 void     gs_exec_image_write(const void* data, uint32_t bytes);
 uint32_t gs_exec_image_read(void* data, uint32_t bytes);
+/* Side-band hints (register 0x7F, gs_hint.h): the ASPECT_4_3 state at this point of the stream, and
+ * the HUD transform of a vertex X (12.4, before XYOFFSET) about an anchor of the FRAME width. */
+int      gs_hint_content43(void);
+int      gs_picture_content43(void);     /* gs_thread.c: that state for the picture being presented */
+int32_t  gs_hud_transform_x(int32_t x, uint64_t xyoffset, uint64_t frame, int anchor, double scale);
 
 /* ---- gs.c: display -------------------------------------------------------------------------------- */
 #define GS_PRIV_SNAPSHOT 16              /* uint64_t values in a display register snapshot */

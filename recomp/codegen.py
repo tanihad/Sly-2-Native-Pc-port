@@ -413,9 +413,28 @@ class FunctionTranslator:
 
     # --- whole function --------------------------------------------------------------------
 
-    def translate(self, hook: bool = False) -> str:
-        """hook: also call PS2_HOOK at the entry, in every build (recomp/hooks.py)."""
+    def translate(self, hook: bool = False, patches: dict | None = None) -> str:
+        """hook: also call PS2_HOOK at the entry, in every build (recomp/hooks.py).
+        patches: {address: [Patch]} native code inserted at instructions (recomp/patches.py)."""
         f = self.f
+        patches = patches or {}
+        delay_slots = {i.vram + 4 for i in f.instrs if i.isBranch() or i.isJump()}
+        for a, ps in patches.items():
+            for p in ps:
+                if a in delay_slots:
+                    raise ValueError(f"patch {p.name}: 0x{a:08X} is a delay slot")
+                if p.when not in ("before", "after"):
+                    raise ValueError(f"patch {p.name}: bad placement {p.when!r}")
+                ins = next((i for i in f.instrs if i.vram == a), None)
+                if ins is None:
+                    raise ValueError(f"patch {p.name}: no instruction at 0x{a:08X}")
+                if p.when == "after" and (ins.isBranch() or ins.isJump()):
+                    raise ValueError(f"patch {p.name}: 'after' a branch or jump at 0x{a:08X}")
+                self.stats["instruction patches"] += 1
+
+        def patch_lines(addr: int, when: str) -> list[str]:
+            return [f"    {{ {p.code} }}   /* patch '{p.name}': recomp/patches.py */"
+                    for p in patches.get(addr, []) if p.when == when]
         # restrict: guest memory (ps2_ram) never overlaps the register file, so stores to guest
         # memory don't force the C compiler to reload registers from ctx. Runtime code that reaches
         # the register file through another pointer (vif.c: VIF0 MSCAL runs VU0 on thread_ctx())
@@ -433,6 +452,7 @@ class FunctionTranslator:
                 out.append(f"{label(i.vram)}:;")
                 if i.vram in self.loop_heads:
                     out.append(f"    PS2_TRACE(0x{i.vram:08X}u); PS2_POLL_IRQ(ctx);")
+            out += patch_lines(i.vram, "before")
             if i.isBranch() or i.isJump():
                 if k + 1 < len(instrs):
                     slot = instrs[k + 1]
@@ -448,6 +468,7 @@ class FunctionTranslator:
                 self.stats["branch at end of function"] += 1
             out.append(f"    /* {i.vram:08X}: {asm} */")
             out.append(f"    {self.emit(i)}")
+            out += patch_lines(i.vram, "after")
             k += 1
         out.append(f"    {self.call(f.end)} /* fell off the end */")
         out.append("}")
