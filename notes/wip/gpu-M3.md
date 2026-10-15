@@ -4,7 +4,7 @@
 C:\Users\tanih\Projects\sly2-worktrees\gpu-M3): the REF tier (every draw on the ROV path) renders
 exactly at S=1; lockstep against the software renderer with bisection.
 
-**Status**: in progress.
+**Status**: complete (verification passed; see Done).
 
 ## Decisions (M3)
 - `-Backend both` / `hw` without `-Ref` stay the M0 all-fallback path (gpu_diff_all keeps its 13/13
@@ -51,10 +51,17 @@ exactly at S=1; lockstep against the software renderer with bisection.
   anomaly (shader reads wrong doubles at record offsets >= 120; CPU data verified) -> WARP fuzz keeps
   triangles on UV; fixed STQ scenes (t_texture_formats, t_perspective, t_stq_negative_coords) pass on WARP.
 
+- Final verification (after all fixes): lockstep hw title 58/0, rv_prompt 39/0, ep8 hub 418/0;
+  gs-hw -RefOnly both adapters 0 differing scenes; run_tests.py 16/16; all 20 tests\unit\*\run.ps1
+  pass (window/warp -UnitOnly; gs-hw full on hw + WARP); gpu_diff_all 13/13; VRAM hashes sw 24/24
+  equal tests/gpu/vram_hashes.txt, hwdry 24/24 identical to sw; gpu_fthread_check 24/24 identical;
+  build_game.py debug and --release OK; PS2_GS_BACKEND default sw.
+- GPU ms per frame at S=1 REF (hw, bench path, runs 2-4): title 2.5 median per VBlank (2.9 over
+  VBlanks with draws), rv_prompt 1.9, ep8 hub 6.0 per rendered frame (30 fps; 2.7 mean per VBlank).
+  Design appendix E written.
+
 ## Next
-3. Regression: run_tests.py, all unit suites, gpu_diff_all 13/13, VRAM hashes, fthread check,
-   gs-front, debug+release game builds; GPU ms (hw -Ref -Bench) on title/rv_prompt/ep8 hub.
-4. Design appendix E + WIP final + report.
+- Nothing: M3 complete (report to the coordinator).
 
 ## Findings / traps
 - (see design appendices B-D for M0-M2 traps: fxc clamp miscompile, equal RTV/DSV sizes, frontend
