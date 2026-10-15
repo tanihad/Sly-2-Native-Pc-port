@@ -136,6 +136,7 @@ static void target_layout(gpu_target* T, int rows) {
 }
 
 static void emit_target(const gpu_target* T, uint16_t op) {
+    gf_target_op(T->id);
     gpu_fop_target* o = gf_cmd(op, sizeof *o);
     o->id = T->id; o->kind = T->kind; o->base = T->base; o->fbw = T->fbw; o->rows = (uint16_t)T->rows;
     o->kx = T->kx; o->ky = T->ky; o->family = T->family;
@@ -240,6 +241,7 @@ static void flush_downloads(void) {
 static void flush_lists(const gpu_target* T) {
     if (ndl) flush_downloads();
     if (nload) {
+        gf_target_op(T->id);
         gpu_fop_blocks* o = gf_cmd(GPU_FOP_LOAD, sizeof *o);
         o->target = T->id;
         o->n = nload;
@@ -367,21 +369,6 @@ void own_blocks(gpu_target* T, const uint16_t* blocks, int n, int writes) {
 }
 
 void own_clear(gpu_target* T) { own_draw(T, 0, 0, T->bcols * T->bw - 1, T->rows - 1, 1, 1); }
-
-void own_punt(gpu_target* T, int x0, int y0, int x1, int y1) {
-    /* the software rasterizer draws it into memory: GPU data under the rect goes down first, then
-     * the rect is CPU data (an upload, as far as every target is concerned) */
-    if (y1 >= T->rows) own_grow(T, y1 + 1);
-    if (x0 < 0) x0 = 0;
-    if (y0 < 0) y0 = 0;
-    for (int y = y0; y <= y1; y += T->bh)
-        for (int x = x0; x <= x1; x += T->bw) {
-            uint32_t b = gs_swz_addr(T->fmt, T->base, T->fbw, x, y) >> 8;
-            if (blk_cpu[b] != ALL) download_block(b);
-        }
-    flush_lists(NULL);
-    own_upload(T->psm, (uint32_t)T->base * 32, T->fbw, x0, y0, x1 + 1, y1 + 1);
-}
 
 void own_view_read(gpu_target* T, int x0, int y0, int x1, int y1) { own_draw(T, x0, y0, x1, y1, 0, 0); }
 
@@ -651,6 +638,23 @@ void gpu_front_debug_block(uint32_t b, FILE* f) {
         fprintf(f, "      target %d %s base %03X FBW %u: local block %d (x %d y %d), %s\n", i, kinds[T->kind], T->base, T->fbw, k,
                 (k % T->bcols) * T->bw, (k / T->bcols) * T->bh, T->vs[k] == blk_serial[b] ? "current" : "stale");
     }
+}
+
+/* PUNT read-back (5.4): mem is vram_buf as read back after the downloads. write: gs_vram takes every
+ * block whose downloaded GPU data it lacks; else (the software renderer keeps gs_vram itself, "both"
+ * mode) those blocks are compared. Returns the number of differing blocks. */
+int own_readback_apply(const uint8_t* mem, int write) {
+    int diff = 0;
+    for (uint32_t b = 0; b < GPU_BLOCKS; b++) {
+        if (!blk_vstale[b] || blk_cpu[b] != ALL || pending(b)) continue;
+        if (write) {
+            memcpy(gs_vram + (size_t)b * 256, mem + (size_t)b * 256, 256);
+            blk_vstale[b] = 0;
+        } else if (memcmp(gs_vram + (size_t)b * 256, mem + (size_t)b * 256, 256)) {
+            diff++;
+        }
+    }
+    return diff;
 }
 
 /* some block of the rect holds downloaded data gs_vram lacks (CLUT loads read gs_vram) */

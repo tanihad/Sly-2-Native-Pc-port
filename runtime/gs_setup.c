@@ -4,6 +4,7 @@
 
 const gs_front_hooks* gs_front;
 int gs_sw_draw = 1;
+int gs_front_swdraw;
 
 static int imin(int a, int b) { return a < b ? a : b; }
 static int imax(int a, int b) { return a > b ? a : b; }

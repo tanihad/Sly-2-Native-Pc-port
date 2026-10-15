@@ -303,7 +303,7 @@ static void front_report(const char* metrics, const char* rec, double replay_ms,
     fprintf(stderr, "hwdry: ROV why: ref %u colclamp %u fbmsk %u date %u blend %u C>128 %u pabe/dthe %u z32-high %u straddle %u\n",
             sum.rov_why[0], sum.rov_why[1], sum.rov_why[2], sum.rov_why[3], sum.rov_why[4], sum.rov_why[5], sum.rov_why[6],
             sum.rov_why[7], sum.rov_why[8]);
-    fprintf(stderr, "hwdry: PUNT %u (target overlap %u, frame fmt %u, tex foreign %u, tex fmt %u, alias16 prim %u, alias16 tex %u)\n",
+    fprintf(stderr, "hwdry: PUNT %u (target overlap %u, frame fmt %u, tex foreign %u, tex fmt %u, forced %u, punt readback mismatches %u)\n",
             sum.tier[3], sum.punt_why[0], sum.punt_why[1], sum.punt_why[2], sum.punt_why[3], sum.punt_why[4], sum.punt_why[5]);
     fprintf(stderr, "hwdry: pass A (ATST + AFAIL != KEEP) %u kicks: all-pass %u all-fail %u straddle %u (%.2f%%); lerp blends with C=As %u, As > 128 %u (%.2f%%)\n",
             sum.atst_kicks, sum.atst_pass, sum.atst_fail, sum.atst_straddle,
@@ -372,7 +372,7 @@ static void hash_bytes_into(const void* p, size_t n) {
 static void stream_sink(const gpu_front_frame_data* fd, void* user) {
     (void)user;
     hash_bytes_into(fd->cmd, fd->cmd_bytes); hash_bytes_into(fd->vtx, fd->vtx_bytes); hash_bytes_into(fd->idx, fd->idx_count * 4);
-    hash_bytes_into(fd->rec, fd->rec_bytes); hash_bytes_into(fd->states, fd->state_count * 96); hash_bytes_into(fd->data, fd->data_bytes);
+    hash_bytes_into(fd->rec, fd->rec_bytes); hash_bytes_into(fd->states, fd->state_count * GPU_STATE_BYTES); hash_bytes_into(fd->data, fd->data_bytes);
 }
 
 /* ---- hwsubmit (M2): the render thread executed every frame; its per-frame costs ---- */
@@ -514,10 +514,10 @@ static gs_compose_hist* hw_hist;
 static uint8_t* hwmem;
 static gpu_dl_entry* lk_e;
 static uint16_t* lk_w;
-static int lockstep, lk_resync = 1, bisect_on;
+static int lockstep, lk_resync = 1, bisect_on, lk_frame_diff;
 static uint32_t bisect_v, bisect_a, bisect_b;
 static uint32_t lk_vblank;                       /* the frame being built follows this VBlank */
-static uint32_t lk_compares, lk_diff_compares, lk_skipped_post, lk_resyncs, lk_last_ok;
+static uint32_t lk_compares, lk_diff_compares, lk_resyncs, lk_last_ok;
 static int lk_failed;
 static uint32_t lk_fail_v, lk_fail_a, lk_fail_b, lk_fail_blocks;
 static uint32_t stream_xfers, lk_xfers_at;       /* host->local transfers in the stream */
@@ -526,6 +526,9 @@ static uint64_t ref_diff_px;
 
 typedef struct { uint64_t reg[0x64]; int type, ctx, ofx, ofy; gs_vtx v[3]; uint32_t index; int valid; } saved_prim;
 static saved_prim lk_prev;
+
+/* PUNT read-back: vram_buf as the render thread has it (gpu_front_set_mem_reader) */
+static int punt_reader(uint8_t* out, void* user) { (void)user; return gpu_exec_read_memory(NULL, NULL, 0, out); }
 
 static int read_hw(void) {
     if (!hwmem) {
@@ -669,7 +672,6 @@ static void lock_hook(uint32_t index, int changed, const void* evp, int type, co
     (void)user;
     int want = changed;
     if (bisect_on) want = lk_vblank == bisect_v && index >= bisect_a && index <= bisect_b;
-    if (want && !bisect_on && gpu_front_post_prims()) { want = 0; lk_skipped_post++; }
     if (want) {
         gpu_front_checkpoint();
         int n = read_hw();
@@ -684,6 +686,7 @@ static void lock_hook(uint32_t index, int changed, const void* evp, int type, co
                 ExitProcess(6);
             }
             lk_diff_compares++;
+            lk_frame_diff = 1;
             if (!lk_failed) {
                 lk_failed = 1;
                 lk_fail_v = lk_vblank; lk_fail_a = lk_last_ok; lk_fail_b = index; lk_fail_blocks = d;
@@ -718,29 +721,30 @@ static void ref_vblank(uint32_t vblank, uint32_t post_prims) {
     }
     int n = read_hw();
     if (lockstep) {
-        if (!post_prims || bisect_on) {
-            uint32_t d = mem_compare(!lk_failed && !bisect_on, n);
-            lk_compares++;
-            if (d && bisect_on && lk_vblank == bisect_v) {
-                fprintf(stderr, "lockstep: memory differs at VBlank %u (%u blocks)\n", vblank, d);
-                mem_compare(1, n);
-                bisect_report(lk_prev.valid);
-                fflush(stderr);
-                ExitProcess(6);
-            }
-            if (d) {
-                lk_diff_compares++;
-                if (!lk_failed) {
-                    lk_failed = 1;
-                    lk_fail_v = lk_vblank; lk_fail_a = lk_last_ok; lk_fail_b = 0xFFFFFFFFu; lk_fail_blocks = d;
-                    fprintf(stderr, "lockstep: FIRST DIVERGENCE at VBlank %u (frame after VBlank %u, last match before primitive %u)\n",
-                            vblank, lk_vblank, lk_last_ok);
-                }
-            }
-        } else {
-            lk_skipped_post++;
+        /* (M4: post passes are compared too; without --no-resync a VBlank whose memory differs - or
+         * a frame that differed at some checkpoint - restarts the next frame from the software
+         * renderer's memory, so later frames are still compared) */
+        (void)post_prims;
+        uint32_t d = mem_compare(!lk_failed && !bisect_on, n);
+        lk_compares++;
+        if (d && bisect_on && lk_vblank == bisect_v) {
+            fprintf(stderr, "lockstep: memory differs at VBlank %u (%u blocks)\n", vblank, d);
+            mem_compare(1, n);
+            bisect_report(lk_prev.valid);
+            fflush(stderr);
+            ExitProcess(6);
         }
-        if (post_prims && lk_resync) { gpu_front_resync(); lk_resyncs++; }
+        if (d) {
+            lk_diff_compares++;
+            if (!lk_failed) {
+                lk_failed = 1;
+                lk_fail_v = lk_vblank; lk_fail_a = lk_last_ok; lk_fail_b = 0xFFFFFFFFu; lk_fail_blocks = d;
+                fprintf(stderr, "lockstep: FIRST DIVERGENCE at VBlank %u (frame after VBlank %u, last match before primitive %u)\n",
+                        vblank, lk_vblank, lk_last_ok);
+            }
+        }
+        if ((d || lk_frame_diff) && lk_resync && !bisect_on) { gpu_front_resync(); lk_resyncs++; }
+        lk_frame_diff = 0;
     }
     lk_vblank = vblank;
     lk_last_ok = 0;
@@ -1138,6 +1142,7 @@ int main(int argc, char** argv) {
         gpu_front_start(&fc);
         if (backend == B_HWSUB || ref_mode) gpu_front_set_sink(gpu_submit_sink, NULL);   /* frames -> render thread */
         if (lockstep) gpu_front_set_checkpoint_hook(lock_hook, NULL);
+        if (ref_mode) gpu_front_set_mem_reader(punt_reader, NULL);   /* (PUNT read-backs) */
         if (pin) {
             find_pcores();
             if (npcores >= 4) {
@@ -1362,9 +1367,9 @@ int main(int argc, char** argv) {
         for (size_t i = 0; i < nsts; i++) if (sts[i].gpu_ms >= 0 && sts[i].draws) g[nd++] = sts[i].gpu_ms;
         double dmed = median(g, nd);
         free(g);
-        fprintf(stderr, "ref: %u frames (%llu checkpoint frames), %llu REF draws, %llu ALIAS16 batches skipped (M4), %u post-pass prims, "
+        fprintf(stderr, "ref: %u frames (%llu checkpoint frames), %llu REF draws, %llu ALIAS16 runs, %u post-pass prims, "
                         "%u STQ triangles with batch cuts, %u lost writers; loads %llu downloads %llu patches %llu clears %llu\n",
-                ref_frames, (unsigned long long)xc.partial_frames, (unsigned long long)xc.ref_draws, (unsigned long long)xc.alias16_skipped,
+                ref_frames, (unsigned long long)xc.partial_frames, (unsigned long long)xc.ref_draws, (unsigned long long)xc.alias16_runs,
                 posts, stq_cuts, lost, (unsigned long long)xc.loads, (unsigned long long)xc.downloads, (unsigned long long)xc.patches,
                 (unsigned long long)xc.clears);
         fprintf(stderr, "ref: GPU ms per VBlank median %.3f, mean %.3f, max %.3f (%zu frames with timestamps); "
@@ -1375,9 +1380,9 @@ int main(int argc, char** argv) {
             fprintf(stderr, "both ref: %u pictures compared, %u differ (%llu pixels), min PSNR %.2f dB\n", ref_frames, ref_diff_frames,
                     (unsigned long long)ref_diff_px, min_psnr);
         if (lockstep)
-            fprintf(stderr, "lockstep: %u comparisons, %u differ, %u skipped after a post pass (M4), %u resyncs; %s\n", lk_compares,
-                    lk_diff_compares, lk_skipped_post, lk_resyncs,
-                    lk_failed ? "DIVERGED" : "no divergence before the first post pass of any frame");
+            fprintf(stderr, "lockstep: %u comparisons, %u differ, %u resyncs%s; %s\n", lk_compares,
+                    lk_diff_compares, lk_resyncs, lk_resync ? "" : " (--no-resync)",
+                    lk_failed ? "DIVERGED" : "no divergence");
         diff_frames = ref_diff_frames;
         diff_pixels = ref_diff_px;
         if (metrics) write_metrics(metrics, argv[1], adapter, ms);

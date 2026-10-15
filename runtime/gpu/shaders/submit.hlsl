@@ -99,7 +99,7 @@ float4 unpack(uint c) { return float4(c & 0xFF, (c >> 8) & 0xFF, (c >> 16) & 0xF
 float4 tex_fetch(V i) {
 #if TEX == 1
     uint st = i.fog_state >> 8;
-    uint tbp = states.Load(st * 96);                       // StateRec TEX0 low word
+    uint tbp = states.Load(st * 128);                       // StateRec TEX0 low word
     uint a = ((tbp & 0x3FFF) * 256 + ((uint)i.stq.x & 0xFF) * 4) & 0x3FFFFC;
     uint t = vram_buf.Load(a);
     return unpack(clut.Load(((t & 0xFF) * 4) & 0x3FFFFC));

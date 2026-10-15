@@ -55,7 +55,8 @@ typedef struct {
     ID3D11RenderTargetView* rtv;
     ID3D11ShaderResourceView* srv;       /* colour UNORM / depth R32 */
     ID3D11ShaderResourceView* srv_u;     /* colour UINT (texture views) */
-    ID3D11UnorderedAccessView* uav;      /* colour UINT */
+    ID3D11UnorderedAccessView* uav;      /* colour UINT (R8G8B8A8: mem.hlsl) */
+    ID3D11UnorderedAccessView* uav32;    /* colour as R32_UINT (the raw GS word: REF pixel shader, ALIAS16 atomics) */
     ID3D11DepthStencilView *dsv, *dsv_ro;
     ID3D11Texture2D* zp;                 /* depth: zpatch (R32_UINT, the stored Z word) */
     ID3D11UnorderedAccessView* zp_uav;
@@ -69,10 +70,11 @@ typedef struct {
     size_t cap;
 } dynbuf;
 
-typedef struct {                         /* shaders/mem.hlsl mem_cb */
+typedef struct {                         /* shaders/mem.hlsl, alias16.hlsl mem_cb */
     uint32_t n, list_off, data_off, mask_off, tkind, tbase, tfbw, bcols, kx, ky, value, wmask, cx1, cy1, group_base, pad;
+    uint32_t cx0, cy0, psm16, pad2;
 } mem_consts;
-_Static_assert(sizeof(mem_consts) == 64, "mem_cb");
+_Static_assert(sizeof(mem_consts) == 80, "mem_cb");
 
 static struct {
     int init;
@@ -96,7 +98,8 @@ static struct {
     ID3D11DepthStencilState* ds_off;
     ID3D11DepthStencilState* ds_write;   /* Z resolve / depth load: ALWAYS + write */
     /* bound state (redundant calls are filtered here, as a real backend does) */
-    int mode;                            /* 0 none, 1 FF (RTV + DSV), 2 ROV (UAV + read-only DSV), 3 quad DSV, 4 REF (2 UAVs) */
+    int mode;                            /* 0 none, 1 FF (RTV + DSV), 2 ROV (UAV + read-only DSV), 3 quad DSV, 4 REF (2 UAVs),
+                                            5 REF on the ALIAS16 staging texture */
     int b_ct, b_zt;
     void *b_vs, *b_ps, *b_bs, *b_ds, *b_t1, *b_t2;
     int b_topo;
@@ -107,6 +110,10 @@ static struct {
     int probe, probe_x, probe_y;         /* PS2_GPU_PROBE=x,y: gs.hlsl records that pixel's pipeline */
     ID3D11Buffer *dbg, *dbg_stage;
     ID3D11UnorderedAccessView* dbg_uav;
+    /* ALIAS16 runs: the staging texture (R32_UINT, a 16-bit frame's pixel space at the target's samples) */
+    ID3D11Texture2D* a16;
+    ID3D11UnorderedAccessView* a16_uav;
+    int a16_w, a16_h;
 } X;
 
 static gpu_exec_counters XC;
@@ -189,7 +196,7 @@ static ID3D11Buffer* raw_default(UINT bytes, const void* init, ID3D11ShaderResou
 }
 
 static void target_free(xtarget* t) {
-    GPU_RELEASE(t->rtv); GPU_RELEASE(t->srv); GPU_RELEASE(t->srv_u); GPU_RELEASE(t->uav); GPU_RELEASE(t->dsv);
+    GPU_RELEASE(t->rtv); GPU_RELEASE(t->srv); GPU_RELEASE(t->srv_u); GPU_RELEASE(t->uav); GPU_RELEASE(t->uav32); GPU_RELEASE(t->dsv);
     GPU_RELEASE(t->dsv_ro); GPU_RELEASE(t->zp_uav); GPU_RELEASE(t->zp); GPU_RELEASE(t->shadow_srv);
     GPU_RELEASE(t->shadow_srv_u); GPU_RELEASE(t->shadow); GPU_RELEASE(t->tex);
 }
@@ -274,6 +281,8 @@ static int target_alloc(xtarget* t, int w, int h) {
         ud.Format = DXGI_FORMAT_R8G8B8A8_UINT;
         ud.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D;
         if (SUCCEEDED(hr)) hr = ID3D11Device_CreateUnorderedAccessView(gpu_rt.dev, (ID3D11Resource*)nt, &ud, &t->uav);
+        ud.Format = DXGI_FORMAT_R32_UINT;    /* (a 32-bit typeless format may be viewed as R32_UINT) */
+        if (SUCCEEDED(hr)) hr = ID3D11Device_CreateUnorderedAccessView(gpu_rt.dev, (ID3D11Resource*)nt, &ud, &t->uav32);
     }
     if (FAILED(hr)) { gpu_log("cannot create target views (hr=0x%08lX)", (unsigned long)hr); return 0; }
     return 1;
@@ -515,15 +524,17 @@ static void bind_rov(int ct, int zt) {
 }
 
 /* REF binding: colour UAV (u0) and zpatch UAV (u1), both rasterizer ordered in gs.hlsl, no RTV/DSV */
-static void bind_ref(int ct, int zt) {
+static void bind_ref(int ct, int zt, int a16) {
     xtarget *c = tgt((uint32_t)ct), *z = tgt((uint32_t)zt);
-    if (X.mode == 4 && X.b_ct == ct && X.b_zt == zt) return;
+    int mode = a16 ? 5 : 4;
+    if (X.mode == mode && X.b_ct == ct && X.b_zt == zt) return;
     if (X.b_t2) set_t2(NULL);
-    if (X.b_t1 && c && (X.b_t1 == c->srv || X.b_t1 == c->srv_u)) set_t1(NULL);
-    ID3D11UnorderedAccessView* uav[3] = { c ? c->uav : NULL, z ? z->zp_uav : NULL, X.dbg_uav };
+    /* (ALIAS16: the colour target is not bound, its views stay; the staging texture is u0) */
+    if (!a16 && X.b_t1 && c && (X.b_t1 == c->srv || X.b_t1 == c->srv_u)) set_t1(NULL);
+    ID3D11UnorderedAccessView* uav[3] = { a16 ? X.a16_uav : c ? c->uav32 : NULL, z ? z->zp_uav : NULL, X.dbg_uav };
     ID3D11DeviceContext_OMSetRenderTargetsAndUnorderedAccessViews(gpu_rt.ctx, 0, NULL, NULL, 0, X.dbg_uav ? 3 : 2, uav, NULL);
     count_state();
-    X.mode = 4;
+    X.mode = mode;
     X.b_ct = ct;
     X.b_zt = zt;
     set_viewport(-REF_VP, -REF_VP);
@@ -536,7 +547,7 @@ typedef struct {
     float ndc_scale[2], ndc_bias[2];
     uint32_t vkx, vky, probe_x, probe_y;
     float one;
-    uint32_t pad1[3];
+    uint32_t vbase, vfbw, vflags;        /* texture view target: base page, width; 1: its sample grid is the target's */
     uint32_t fill[48];
 } draw_consts;
 _Static_assert(sizeof(draw_consts) == DRAW_CB_BYTES, "per-draw constants are one 256-byte window");
@@ -547,10 +558,11 @@ static size_t cb_cpu_cap;
 /* the constants of every draw of the frame, in order (slot 0: quads); target sizes as they will be
  * when the draw runs (a light pass over the target ops) */
 static uint32_t build_constants(const gpu_front_frame_data* fd, int ref) {
-    struct { int w, h, kx, ky; } dim[MAX_TARGETS + 1];
+    struct { int w, h, kx, ky, base, fbw; } dim[MAX_TARGETS + 1];
     for (int i = 0; i <= MAX_TARGETS; i++) {
         dim[i].w = X.T[i].tex ? X.T[i].w : 0; dim[i].h = X.T[i].tex ? X.T[i].h : 0;
         dim[i].kx = X.T[i].kx ? X.T[i].kx : 1; dim[i].ky = X.T[i].ky ? X.T[i].ky : 1;
+        dim[i].base = X.T[i].base; dim[i].fbw = X.T[i].fbw;
     }
     uint32_t n = 1;
     for (size_t pos = 0; pos + sizeof(gpu_fop) <= fd->cmd_bytes;) {
@@ -561,6 +573,7 @@ static uint32_t build_constants(const gpu_front_frame_data* fd, int ref) {
             if (o->id && o->id <= MAX_TARGETS) {
                 int kx = o->kx ? o->kx : 1, ky = o->ky ? o->ky : 1;
                 dim[o->id].kx = kx; dim[o->id].ky = ky;
+                dim[o->id].base = o->base; dim[o->id].fbw = o->fbw;
                 dim[o->id].w = o->fbw * 64 * kx;
                 int hh = ((o->rows + 63) & ~63) * ky;
                 if (hh > dim[o->id].h) dim[o->id].h = hh;
@@ -590,13 +603,16 @@ static uint32_t build_constants(const gpu_front_frame_data* fd, int ref) {
             k->rec_first = d->rec_first;
             k->kx = (uint32_t)kx;
             k->ky = (uint32_t)ky;
-            if (ref) {                   /* gs.hlsl: d3d pixel -> NDC through the power-of-two viewport */
+            if (ref || d->tier == GPU_TIER_ALIAS16) {   /* gs.hlsl: d3d pixel -> NDC through the power-of-two viewport */
                 k->flags = (d->ct ? 1u : 0u) | (d->zt ? 2u : 0u);
                 k->ndc_scale[0] = k->ndc_scale[1] = 2.0f / (float)REF_VP;
                 k->ndc_bias[0] = k->ndc_bias[1] = 0.0f;   /* (viewport centred on the origin) */
                 int vt = d->tex <= MAX_TARGETS ? d->tex : 0;
                 k->vkx = (uint32_t)(vt ? dim[vt].kx : 1);
                 k->vky = (uint32_t)(vt ? dim[vt].ky : 1);
+                k->vbase = (uint32_t)(vt ? dim[vt].base : 0);
+                k->vfbw = (uint32_t)(vt ? dim[vt].fbw : 0);
+                k->vflags = vt && dim[vt].kx == kx && dim[vt].ky == ky ? 1u : 0u;
                 k->probe_x = X.probe ? (uint32_t)X.probe_x : 0xFFFFFFFFu;
                 k->probe_y = X.probe ? (uint32_t)X.probe_y : 0xFFFFFFFFu;
                 k->one = 1.0f;
@@ -765,6 +781,9 @@ static void draw_quad(void) {
 static ID3D11ShaderResourceView* view_srv(const gpu_fop_draw* d, int uint_view) {
     xtarget* t = tgt(d->tex);
     if (!t || t->depth) return NULL;
+    if (d->tier == GPU_TIER_ALIAS16)     /* (the run's draws write the staging texture: its target is free) */
+        return uint_view ? t->srv_u : t->srv;
+    if ((d->ps_key >> 11) & 1) return NULL;   /* the bound target itself (byte lanes it does not write): read in the shader */
     if (d->tex == d->ct) {               /* feedback: its shadow copy (5.1) */
         if (!shadow_ensure(t)) return NULL;
         return uint_view ? t->shadow_srv_u : t->shadow_srv;
@@ -780,9 +799,9 @@ static void exec_draw_ref(const gpu_fop_draw* d, uint32_t slot) {
     xtarget* sizing = tgt(d->ct) ? tgt(d->ct) : tgt(d->zt);
     if (!sizing) { dbg_nosize++; return; }
     if (!d->count) { dbg_nocount++; return; }
-    bind_ref(d->ct, d->zt);
+    bind_ref(d->ct, d->zt, d->tier == GPU_TIER_ALIAS16);
     int tk = tex_kind(d->ps_key);
-    set_t1(d->tex && (tk == TK_VIEW_C32 || tk == TK_VIEW_ALPHA) ? view_srv(d, 1) : NULL);
+    set_t1(d->tex && (tk == TK_VIEW_C32 || tk == TK_VIEW_ALPHA || tk == TK_ALIAS16) ? view_srv(d, 1) : NULL);
     int kx = sizing->kx, ky = sizing->ky;
     set_scissor(d->sc[0] * kx, d->sc[1] * ky, (d->sc[2] + 1) * kx, (d->sc[3] + 1) * ky);
     set_depth(X.ds_off);
@@ -804,7 +823,7 @@ static void exec_draw_ref(const gpu_fop_draw* d, uint32_t slot) {
 }
 
 static void exec_draw(const gpu_fop_draw* d, uint32_t slot) {
-    if (X.ref) { exec_draw_ref(d, slot); return; }
+    if (X.ref || d->tier == GPU_TIER_ALIAS16) { exec_draw_ref(d, slot); return; }
     ID3D11DeviceContext* c = gpu_rt.ctx;
     int rov = d->tier == GPU_TIER_ROV;
     xtarget* ct = tgt(d->ct);
@@ -860,17 +879,39 @@ static void exec_shadow(const gpu_fop_shadow* o) {
     gpu_rt.n_copies++;
 }
 
-static void dispatch_on(xtarget* t, uint32_t groups) {   /* M2: ALIAS16 batches (cost only) */
-    if (!t || t->depth || !groups) return;
-    if (X.mode) unbind_all();
-    ID3D11DeviceContext* c = gpu_rt.ctx;
-    ID3D11DeviceContext_CSSetShader(c, gpu_cs(GPU_SH_cs_touch), NULL, 0);
-    ID3D11DeviceContext_CSSetUnorderedAccessViews(c, 0, 1, &t->uav, NULL);
-    ID3D11DeviceContext_Dispatch(c, groups > 65535 ? 65535 : groups, 1, 1);
-    ID3D11UnorderedAccessView* nu = NULL;
-    ID3D11DeviceContext_CSSetUnorderedAccessViews(c, 0, 1, &nu, NULL);
-    X.state_calls += 3;
-    gpu_rt.n_dispatches++;
+/* ALIAS16 run begin (gather: target halfwords -> staging) / end (scatter: back), shaders/alias16.hlsl */
+static void exec_alias16(const gpu_fop_alias16* o, int end) {
+    xtarget* t = tgt(o->target);
+    if (!t || t->depth || o->x1 <= o->x0 || o->y1 <= o->y0) return;
+    int w = t->w, h = 2 * t->h;          /* (16-bit rows: two per C32 row) */
+    if (!end && (!X.a16 || X.a16_w < w || X.a16_h < h)) {
+        unbind_all();
+        GPU_RELEASE(X.a16_uav);
+        GPU_RELEASE(X.a16);
+        if (w < X.a16_w) w = X.a16_w;
+        if (h < X.a16_h) h = X.a16_h;
+        X.a16 = tex2d(w, h, DXGI_FORMAT_R32_UINT, D3D11_BIND_UNORDERED_ACCESS);
+        D3D11_UNORDERED_ACCESS_VIEW_DESC ud;
+        memset(&ud, 0, sizeof ud);
+        ud.Format = DXGI_FORMAT_R32_UINT;
+        ud.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D;
+        if (!X.a16 || FAILED(ID3D11Device_CreateUnorderedAccessView(gpu_rt.dev, (ID3D11Resource*)X.a16, &ud, &X.a16_uav))) {
+            gpu_log("cannot create the %dx%d ALIAS16 staging texture", w, h);
+            GPU_RELEASE(X.a16);
+            X.a16_w = X.a16_h = 0;
+            return;
+        }
+        X.a16_w = w;
+        X.a16_h = h;
+    }
+    if (!X.a16_uav) return;
+    mem_consts k;
+    target_consts(t, &k);
+    k.cx0 = (uint32_t)o->x0; k.cy0 = (uint32_t)o->y0; k.cx1 = (uint32_t)o->x1; k.cy1 = (uint32_t)o->y1;
+    k.psm16 = o->psm;
+    mem_dispatch(end ? GPU_SH_cs_a16_scatter : GPU_SH_cs_a16_gather, &k, (uint32_t)(o->x1 - o->x0 + 7) / 8,
+                 (uint32_t)(o->y1 - o->y0 + 7) / 8, NULL, X.dat.srv, X.a16_uav, t->uav32, NULL);
+    if (end) XC.alias16_runs++;
 }
 
 static void exec_clut(const gpu_front_frame_data* fd, const gpu_fop_clut* o) {
@@ -899,8 +940,9 @@ static void exec_rov_end(const gpu_fop_rov_end* o) {
 }
 
 /* swz_tab: the swizzle tables of gs_mem_swizzle.h as u32 entries (shaders/gsmem.hlsli SWZ_*) */
+#define SWZ_ENTRIES 47104                /* shaders/gsmem.hlsli */
 static uint32_t* swz_build(void) {
-    uint32_t* t = malloc(45056 * 4);
+    uint32_t* t = malloc(SWZ_ENTRIES * 4);
     if (!t) return NULL;
     uint32_t o = 0;
     for (int i = 0; i < 2048; i++) t[o++] = gs_swz_ct32[i];
@@ -911,6 +953,7 @@ static uint32_t* swz_build(void) {
     for (int i = 0; i < 4096; i++) t[o++] = gs_swz_z16s[i];
     for (int i = 0; i < 8192; i++) t[o++] = gs_swz_t8[i];
     for (int i = 0; i < 16384; i++) t[o++] = gs_swz_t4[i];
+    for (int i = 0; i < 2048; i++) t[o + gs_swz_ct32[i]] = (uint32_t)(i & 63) | (uint32_t)(i >> 6) << 8;   /* SWZ_ICT32 */
     return t;
 }
 
@@ -921,7 +964,7 @@ static int exec_init(void) {
     X.scratch = raw_default(4u << 20, NULL, NULL, &X.scratch_uav);
     X.clut = raw_default(4096u * 1024u, NULL, &X.clut_srv, NULL);
     uint32_t* swz = swz_build();
-    X.swz = swz ? raw_default(45056u * 4u, swz, &X.swz_srv, NULL) : NULL;
+    X.swz = swz ? raw_default(SWZ_ENTRIES * 4u, swz, &X.swz_srv, NULL) : NULL;
     free(swz);
     if (!X.vram || !X.scratch || !X.clut || !X.swz) { gpu_log("exec: cannot create the memory buffers"); return 0; }
     D3D11_BUFFER_DESC bd;
@@ -1020,7 +1063,7 @@ void gpu_exec_release(void) {
     for (int i = 0; i < 7; i++) { GPU_RELEASE(d[i]->srv); GPU_RELEASE(d[i]->buf); d[i]->cap = 0; }
     GPU_RELEASE(X.vram_srv); GPU_RELEASE(X.vram_uav); GPU_RELEASE(X.vram); GPU_RELEASE(X.scratch_uav); GPU_RELEASE(X.scratch);
     GPU_RELEASE(X.stage); GPU_RELEASE(X.swz_srv); GPU_RELEASE(X.swz); GPU_RELEASE(X.clut_srv); GPU_RELEASE(X.clut);
-    GPU_RELEASE(X.dbg_uav); GPU_RELEASE(X.dbg); GPU_RELEASE(X.dbg_stage);
+    GPU_RELEASE(X.dbg_uav); GPU_RELEASE(X.dbg); GPU_RELEASE(X.dbg_stage); GPU_RELEASE(X.a16_uav); GPU_RELEASE(X.a16);
     GPU_RELEASE(X.mcb); GPU_RELEASE(X.layout); GPU_RELEASE(X.rs); GPU_RELEASE(X.ds_off); GPU_RELEASE(X.ds_write);
     for (int i = 0; i < 8; i++) GPU_RELEASE(X.ds[i]);
     for (int a = 0; a < BL_N; a++) for (int b = 0; b < 16; b++) GPU_RELEASE(X.bs[a][b]);
@@ -1067,7 +1110,7 @@ void gpu_exec_frame(const void* payload) {
     int ok = dyn_fill(&X.vb, fd->vtx, fd->vtx_bytes, D3D11_BIND_VERTEX_BUFFER, 0) &&
              dyn_fill(&X.ib, fd->idx, fd->idx_count * 4, D3D11_BIND_INDEX_BUFFER, 0) &&
              dyn_fill(&X.rec, fd->rec, fd->rec_bytes, D3D11_BIND_SHADER_RESOURCE, 1) &&
-             dyn_fill(&X.st, fd->states, fd->state_count * 96, D3D11_BIND_SHADER_RESOURCE, 1) &&
+             dyn_fill(&X.st, fd->states, fd->state_count * GPU_STATE_BYTES, D3D11_BIND_SHADER_RESOURCE, 1) &&
              dyn_fill(&X.dat, fd->data, fd->data_bytes, D3D11_BIND_SHADER_RESOURCE, 1) &&
              dyn_fill(&X.cb, cb_cpu, (size_t)ncb * DRAW_CB_BYTES, D3D11_BIND_CONSTANT_BUFFER, 0);
     double t1 = qpc_ms();
@@ -1088,12 +1131,8 @@ void gpu_exec_frame(const void* payload) {
         case GPU_FOP_COPY_SHADOW: exec_shadow((const gpu_fop_shadow*)h); break;
         case GPU_FOP_DRAW: exec_draw((const gpu_fop_draw*)h, slot++); break;
         case GPU_FOP_ROV_END: exec_rov_end((const gpu_fop_rov_end*)h); break;
-        case GPU_FOP_ALIAS16: {
-            const gpu_fop_alias16* a = (const gpu_fop_alias16*)h;
-            if (X.ref) XC.alias16_skipped++;     /* (M4) */
-            else dispatch_on(tgt(a->target), a->count);
-            break;
-        }
+        case GPU_FOP_ALIAS16: exec_alias16((const gpu_fop_alias16*)h, 0); break;
+        case GPU_FOP_ALIAS16_END: exec_alias16((const gpu_fop_alias16*)h, 1); break;
         case GPU_FOP_PRESENT: break;
         default: break;
         }

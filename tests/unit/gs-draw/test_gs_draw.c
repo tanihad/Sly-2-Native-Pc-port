@@ -115,6 +115,8 @@ static void hw_compare(void) {
     hw_scene_words += words;
 }
 
+static int hw_read_vram(uint8_t* out, void* user) { (void)user; return gpu_exec_read_memory(NULL, NULL, 0, out); }
+
 static uint32_t hw_mem_read(int psm, uint32_t bp, uint32_t bw, int x, int y) {
     hw_compare();
     return gs_mem_read(psm, bp, bw, x, y);
@@ -133,10 +135,10 @@ static void hw_scene_end(void) {
     hw_last_regs = 0xFFFFFFFFu;
     hw_compare();
     uint32_t post = gpu_front_post_prims() - hw_post0;
-    if (hw_scene_diffs && post) hw_m4_scenes++;
-    else if (hw_scene_diffs) hw_bad_scenes++;
+    if (hw_scene_diffs) hw_bad_scenes++;
+    if (post) hw_m4_scenes++;
     fprintf(stderr, "  [hw-ref] %-28s %4u comparisons, %s (%llu word differences)%s\n", hw_scene, hw_scene_compares,
-            hw_scene_diffs ? "DIFFERENT" : "identical", (unsigned long long)hw_scene_words, post ? " (uses M4 effects: ALIAS16 / target views)" : "");
+            hw_scene_diffs ? "DIFFERENT" : "identical", (unsigned long long)hw_scene_words, post ? " (post passes: ALIAS16 / target views / PUNT)" : "");
 }
 #define SCENE(call) do { hw_scene_begin(#call); call; hw_scene_end(); } while (0)
 #else
@@ -1996,6 +1998,7 @@ int main(int argc, char** argv) {
         fc.scale = 1;
         gpu_front_start(&fc);
         gpu_front_set_sink(gpu_submit_sink, NULL);
+        gpu_front_set_mem_reader(hw_read_vram, NULL);   /* (PUNT read-backs, compared with gs_vram) */
     }
 #endif
     SCENE(t_trace());                    /* first: no other primitive may use up PS2_GS_TRACE_MAX */
@@ -2032,8 +2035,16 @@ int main(int argc, char** argv) {
     SCENE(t_display_weave());
     SCENE(t_hud_hints());
 #ifdef TEST_HW_REF
-    fprintf(stderr, "[hw-ref] %u comparisons; %d scenes differ, %d more differ only with M4 effects (ALIAS16, target views)\n",
-            hw_compares, hw_bad_scenes, hw_m4_scenes);
+    {
+        gpu_front_frame fr[64];
+        uint32_t punts = 0, rbdiff = 0;
+        gpu_front_vblank(NULL, 0);       /* (closes the frame: its counters) */
+        for (int n; (n = gpu_front_take_frames(fr, 64)) > 0;)
+            for (int i = 0; i < n; i++) { punts += fr[i].tier[GPU_TIER_PUNT]; rbdiff += fr[i].punt_why[GPU_PUNT_READBACK_DIFF]; }
+        fprintf(stderr, "[hw-ref] %u comparisons; %d scenes differ (%d use post passes: ALIAS16, target views, PUNT); "
+                        "%u PUNTs, %u PUNT read-backs differing from gs_vram\n", hw_compares, hw_bad_scenes, hw_m4_scenes, punts, rbdiff);
+        if (rbdiff) hw_bad_scenes++;
+    }
     gpu_front_stop();
     gpu_stop();
     fprintf(stderr, "%s: %d/%d checks passed\n", argv[0], checks - fails, checks);

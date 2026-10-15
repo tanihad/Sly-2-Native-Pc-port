@@ -178,7 +178,9 @@ typedef struct {
     int cd_dep, c_as;                    /* lerp blend (Cs-Cd)*C+Cd; C = As */
     int blend;
     int fill;                            /* clear candidate: untextured, unfogged, blend-free opaque sprite */
+    int rmw;                             /* a read-modify-write form only the ROV tier does (wrap, bit masks, DATE, blend) */
     int depth_class;
+    uint32_t phase_hint;                 /* PHASE hint label the StateRec was built with */
     /* texture */
     int tme, tpsm, tw, th, wms, wmt, minu, maxu, minv, maxv, bil, stq;
     uint32_t tbp, tbw;
@@ -208,9 +210,9 @@ static fstate* Sp = &SC[0];
 #define S (*Sp)
 static int prev_state_index = -1;
 
-/* StateRec (96 bytes, 3.5): gpu_front.h gpu_staterec */
+/* StateRec (128 bytes, 3.5): gpu_front.h gpu_staterec */
 typedef gpu_staterec staterec;
-_Static_assert(sizeof(staterec) == 96, "StateRec is 96 bytes");
+_Static_assert(sizeof(staterec) == GPU_STATE_BYTES, "StateRec size (shaders/gs.hlsl STATE_BYTES)");
 
 #define SMAP_N 65536
 static uint64_t smap_hash[SMAP_N];
@@ -439,7 +441,7 @@ static void state_update(const gs_env_view* ev) {
     /* tiled-fill candidate: constant value per pixel, written whatever the destination holds (byte
      * masks allowed: the alpha reset is a fill of the alpha byte) */
     S.fill = !P->tme && !P->fge && S.blend == BL_OFF && !P->date && S.fatst == FATST_NONE && !S.zread &&
-             P->scanmsk < 2 && (S.cwrite || S.zwrite);
+             P->scanmsk < 2 && (S.cwrite || S.zwrite) && P->ffmt->bits != 16;
 
     /* ---- targets ---- */
     if (P->ffmt->bits == 16) {
@@ -453,7 +455,7 @@ static void state_update(const gs_env_view* ev) {
         S.ct = own_target(TGT_C32, PSMCT32, P->fpage, P->fbw, 1);   /* rows grow with the drawing */
         if (!S.ct) S.punt = GPU_PUNT_TARGET_OVERLAP + 1;
     }
-    if (zuse && !S.alias) {
+    if (zuse) {
         int kind = own_target_kind_of_zpsm(P->zpsm);
         S.zt = own_target(kind, P->zpsm, P->zpage, P->zbw, 1);
         if (!S.zt) S.punt = GPU_PUNT_TARGET_OVERLAP + 1;
@@ -461,6 +463,7 @@ static void state_update(const gs_env_view* ev) {
     }
 
     /* ---- state-level ROV reasons, in the order of 4.1 ---- */
+    S.rmw = rov_cc || (S.cwrite && !bytes_ok) || P->date || rov_blend;
     if (gf_cfg.ref) S.rov = GPU_ROV_REF + 1;
     else if (rov_cc) S.rov = GPU_ROV_COLCLAMP + 1;
     else if (S.cwrite && !bytes_ok) S.rov = GPU_ROV_FBMSK + 1;
@@ -528,8 +531,19 @@ static void tex_levels(const uint64_t* reg, int ctx, staterec* r) {
               (uint32_t)lcm << 12 | (uint32_t)lshift << 13 | ((uint32_t)k & 0xFFFu) << 16;
 }
 
+/* phase label (diagnostic) of a draw: what it is, from its own state */
+static uint32_t phase_of(uint32_t texsrc) {
+    uint32_t k = texsrc & 0xFF, view = k >= TK_VIEW_C32;
+    if (S.alias) return GPU_PH_ALIAS16;
+    if (view && S.ct && (texsrc >> 8 & 0xFF) == S.ct->id) return GPU_PH_FEEDBACK;
+    if (view) return GPU_PH_VIEW;
+    if (S.fill) return GPU_PH_FILL;
+    if (S.rmw) return GPU_PH_ROV_RMW;
+    return GPU_PH_SCENE;
+}
+
 static uint32_t state_for(const gs_env_view* ev, uint32_t texsrc) {
-    if (S.state_valid && S.state_texsrc == texsrc) return S.state_index;
+    if (S.state_valid && S.state_texsrc == texsrc && S.phase_hint == ev->phase) return S.state_index;
     const gs_prim* P = ev->P;
     const uint64_t* reg = ev->reg;
     int ctx = ev->ctx;
@@ -554,7 +568,10 @@ static uint32_t state_for(const gs_env_view* ev, uint32_t texsrc) {
               (P->tcc ? GPU_SF_TCC : 0) | (P->fge ? GPU_SF_FGE : 0) | (P->iip ? GPU_SF_IIP : 0) | (P->fst ? GPU_SF_FST : 0) |
               (P->abe ? GPU_SF_ABE : 0) | (ev->aa1 ? GPU_SF_AA1 : 0) | (P->pabe ? GPU_SF_PABE : 0) |
               (P->dthe ? GPU_SF_DTHE : 0) | (P->tme ? GPU_SF_TME : 0) | (P->ffmt->bits == 24 ? GPU_SF_FB24 : 0) |
-              (uint32_t)P->scanmsk << GPU_SF_SCANMSK_SHIFT | (ctx ? GPU_SF_CTX : 0);
+              (uint32_t)P->scanmsk << GPU_SF_SCANMSK_SHIFT | (ctx ? GPU_SF_CTX : 0) | (P->ffmt->bits == 16 ? GPU_SF_FB16 : 0);
+    if (P->ffmt->bits == 16 && P->dthe) r.dimx = reg[0x44];   /* DIMX */
+    r.phase = phase_of(texsrc) | (ev->phase ? GPU_PH_HINT : 0);
+    r.pad2[0] = ev->phase;               /* (the PHASE hint's label) */
     r.alpha = P->abe ? (uint32_t)P->asel | (uint32_t)P->bsel << 2 | (uint32_t)P->csel << 4 | (uint32_t)P->dsel << 6 |
                        (uint32_t)P->fix << 8 : 0;
     uint32_t zb = !P->zfmt ? 0 : P->zfmt->bits == 16 ? 1 : P->zfmt->bits == 24 ? 2 : 3;
@@ -562,6 +579,7 @@ static uint32_t state_for(const gs_env_view* ev, uint32_t texsrc) {
     r.xyoffset = (uint32_t)(ev->ofx & 0xFFFF) | (uint32_t)ev->ofy << 16;
     S.state_index = staterec_index(&r);
     S.state_texsrc = texsrc;
+    S.phase_hint = ev->phase;
     S.state_valid = 1;
     return S.state_index;
 }
@@ -621,13 +639,18 @@ typedef struct {
 } rov_run;
 static rov_run RR;
 
+/* ALIAS16 run (5.2): primitives into a 16-bit frame over the C32 target T, between a gather (T's
+ * halfwords -> staging texture in the frame's pixel space) and a scatter (back); bbox in 16-bit pixels */
 typedef struct {
     int open;
     gpu_target* T;
-    uint32_t first, count;
+    int psm;
+    uint32_t begin_off;                  /* byte offset of the begin op in the command arena (bbox filled at close) */
+    int bbox[4];
+    uint32_t prims;
 } alias_batch;
 static alias_batch AB;
-static int nar;                          /* rectangles of the open ALIAS16 dispatch */
+static int nar;                          /* hazard rectangles of the open ALIAS16 run */
 
 static void close_draw(void) {
     if (!OD.open) return;
@@ -641,7 +664,7 @@ static void close_draw(void) {
     d->split = (uint8_t)split;
     gf.d3d_draws += 1 + split;
     gf.split_extra += split;
-    if (OD.d.tier == GPU_TIER_ROV) { gf.rov_draws++; cw_reset(); gf.d3d_draws_commute++; }
+    if (OD.d.tier == GPU_TIER_ROV || OD.d.tier == GPU_TIER_ALIAS16) { gf.rov_draws++; cw_reset(); gf.d3d_draws_commute++; }
     else {
         gf.ff_draws += 1 + split;
         if (!cw_add(OD.key ^ (uint64_t)split << 62, OD.bbox, OD.d.ct, OD.d.zt, OD.d.tex, OD.d.wmask != 0, (OD.d.depth & 1) != 0))
@@ -649,7 +672,7 @@ static void close_draw(void) {
     }
     if (trace_on)
         fprintf(stderr, "[front] draw %s cls %d prims %u count %u ct %u zt %u tex %u ps %03X blend %d depth %d wmask %X split %d "
-                        "FRAME %016llX ALPHA %010llX TEST %05llX\n", OD.d.tier == GPU_TIER_ROV ? "ROV" : "FF ", OD.d.cls,
+                        "FRAME %016llX ALPHA %010llX TEST %05llX\n", OD.d.tier == GPU_TIER_ROV ? "ROV" : OD.d.tier == GPU_TIER_ALIAS16 ? "A16" : "FF ", OD.d.cls,
                 OD.prims, OD.d.count, OD.d.ct, OD.d.zt, OD.d.tex, OD.d.ps_key, OD.d.blend, OD.d.depth, OD.d.wmask, split,
                 (unsigned long long)OD.frame, (unsigned long long)OD.alpha, (unsigned long long)OD.test);
 }
@@ -668,12 +691,31 @@ static void close_run(void) {
 
 static void close_alias(void) {
     if (!AB.open) return;
+    close_draw();
     AB.open = 0;
-    gpu_fop_alias16* a = gf_cmd(GPU_FOP_ALIAS16, sizeof *a);
-    a->target = AB.T->id; a->first = AB.first; a->count = AB.count;
+    /* the gather and scatter cover whole 16x8 blocks (= whole 32-bit words: both halfwords of every
+     * word are staged; pixels no primitive wrote go back unchanged) */
+    int x0 = AB.bbox[0] & ~15, y0 = AB.bbox[1] & ~7, x1 = (AB.bbox[2] | 15) + 1, y1 = (AB.bbox[3] | 7) + 1;
+    gpu_fop_alias16* b = (gpu_fop_alias16*)(A_cmd.p + AB.begin_off);
+    b->x0 = (int16_t)x0; b->y0 = (int16_t)y0; b->x1 = (int16_t)x1; b->y1 = (int16_t)y1;
+    gpu_fop_alias16* e = gf_cmd(GPU_FOP_ALIAS16_END, sizeof *e);
+    b = (gpu_fop_alias16*)(A_cmd.p + AB.begin_off);   /* (the arena may have moved) */
+    *e = *b;
+    e->h.op = GPU_FOP_ALIAS16_END;
     gf.alias16_dispatches++;
-    if (trace_on) fprintf(stderr, "[front] alias16 dispatch target %u sprites %u\n", AB.T->id, AB.count);
+    if (trace_on)
+        fprintf(stderr, "[front] alias16 run end target %u psm %02X prims %u (%d,%d)-(%d,%d)\n", AB.T->id, AB.psm, AB.prims, x0, y0, x1, y1);
     nar = 0;
+}
+
+/* gpu_own.c: an op on target id (create/grow, load) is about to be emitted: an ALIAS16 run on it ends
+ * first (its staging copy was gathered before the op) */
+void gf_target_op(uint16_t id) {
+    if (AB.open && AB.T->id == id && !in_flush) {
+        in_flush = 1;
+        close_alias();
+        in_flush = 0;
+    }
 }
 
 static void flush_open(void) {
@@ -846,10 +888,15 @@ static void feedback_check(gpu_target* T, int x0, int y0, int x1, int y1) {
 }
 
 /* ---- ALIAS16 -------------------------------------------------------------------------------------
- * CT16 sprites over CT32 targets run as one compute dispatch while no sprite depends on another one
- * of the same dispatch (5.2). Hazards are decided on rectangles: within one view (same base, width
- * and 16-bit PSM) the GS address mapping is a bijection, so disjoint pixel rectangles are disjoint
- * halfword sets; different views of overlapping pages count as a hazard (conservative). */
+ * Primitives into a 16-bit frame (CT16/CT16S) over a C32 target T (same base and width: 16-bit page n
+ * is 32-bit page n) form an ALIAS16 run: the render thread gathers the run's rectangle of T's
+ * halfwords into a staging texture in the frame's own pixel space, the run's draws are ordinary ROV
+ * draws (any primitive class) on that texture in 16-bit mode, and the rectangle is scattered back. ROV
+ * order makes overlapping writes exact; reads of T (CT16 or C32 views) come from T as it was before
+ * the run, so a primitive that reads what an earlier one of the run wrote starts a new run (the
+ * software renderer samples the state before each primitive). Hazards are decided on rectangles:
+ * within one view (same base, width and PSM) the GS address mapping is a bijection, so disjoint pixel
+ * rectangles are disjoint halfword sets; different views of overlapping pages count as a hazard. */
 typedef struct { uint32_t bp, bw; int psm, w; int r[4]; uint64_t pages[8]; } arect;
 #define AR_N 512
 static arect AR[AR_N];
@@ -881,49 +928,60 @@ static int ct16_blocks(int psm, uint32_t bp, uint32_t bw, int x0, int y0, int x1
 
 static uint16_t ablk[GPU_BLOCKS];
 
-static int alias_sprite(const gs_env_view* ev, const gs_sprite* sp, const texsrc_t* ts, uint32_t state) {
+/* C32 rows a 16-bit rectangle down to row y1 needs (a 16-bit page is 64 rows over a 32-row C32 page) */
+static int rows16(int y1) { return (y1 / 64 + 1) * 32; }
+
+/* a 16-bit rectangle's C32 pixel bounds (whole pages: conservative) */
+static void rect16_to32(int x0, int y0, int x1, int y1, int r[4]) {
+    r[0] = x0 & ~63; r[1] = (y0 / 64) * 32; r[2] = x1 | 63; r[3] = (y1 / 64) * 32 + 31;
+}
+
+/* ownership of a target view read: C32 / alpha views read T's pixels (texel = pixel), CT16 views the
+ * blocks their rectangle covers */
+static void view_read(const texsrc_t* ts) {
+    gpu_target* T = ts->T;
+    if (S.tpsm == PSMCT16 || S.tpsm == PSMCT16S) {
+        own_grow(T, rows16(ts->v1));
+        own_blocks(T, ablk, ct16_blocks(S.tpsm, S.tbp, S.tbw, ts->u0, ts->v0, ts->u1, ts->v1, ablk, GPU_BLOCKS), 0);
+    } else {
+        own_view_read(T, ts->u0, ts->v0, ts->u1, ts->v1);
+    }
+}
+
+/* an ALIAS16 primitive (pixel rect [x0,x1] x [y0,y1] of the 16-bit frame), after its ownership: the
+ * run it belongs to (a new one at a read-after-write hazard) */
+static void alias_prim(const gs_env_view* ev, const texsrc_t* ts, int x0, int y0, int x1, int y1) {
     const gs_prim* P = ev->P;
     gpu_target* T = S.ct;
-    uint32_t fbp = P->fpage * 32;
-    own_grow(T, (sp->py1 + 2) / 2);       /* CT16 rows are half CT32 rows */
     arect d, s;
-    arect_make(&d, fbp, P->fbw, P->fpsm, 1, sp->px0, sp->py0, sp->px1, sp->py1);
-    int have_s = S.tme;
-    if (have_s) {
-        int32_t ub = sp->ua + sp->du * (sp->px1 - sp->px0);
-        int u0 = (sp->ua < ub ? sp->ua : ub) >> GS_UVSH >> 4, u1 = (sp->ua < ub ? ub : sp->ua) >> GS_UVSH >> 4;
-        int v0 = (sp->va < sp->vb ? sp->va : sp->vb) >> GS_UVSH >> 4, v1 = (sp->va < sp->vb ? sp->vb : sp->va) >> GS_UVSH >> 4;
-        arect_make(&s, S.tbp, S.tbw, S.tpsm, 0, u0 & 2047, v0 & 2047, u1 & 2047, v1 & 2047);
-    }
-    int hazard = nar + 2 > AR_N;
-    for (int i = 0; i < nar && !hazard; i++) {
-        if (AR[i].w && (arect_overlap(&AR[i], &d) || (have_s && arect_overlap(&AR[i], &s)))) hazard = 1;   /* WAW, RAW */
-        if (!AR[i].w && arect_overlap(&AR[i], &d)) hazard = 1;                                           /* WAR */
-    }
-    if (hazard && AB.open) close_alias();
-    /* a sprite that reads what it writes samples a snapshot (the sw rule): a shadow copy */
-    if (have_s && arect_overlap(&d, &s)) { gf.alias16_selfcopy++; gf.shadow_copies++; }
-    /* ownership: source reads, destination writes (both lanes) */
-    if (have_s) {
-        if (ts->T) own_blocks(ts->T, ablk, ct16_blocks(S.tpsm, S.tbp, S.tbw, s.r[0], s.r[1], s.r[2], s.r[3], ablk, GPU_BLOCKS), 0);
-        else own_mem_read(S.tpsm, S.tbp, S.tbw, ts->u0, ts->v0, ts->u1, ts->v1);
-    }
-    own_blocks(T, ablk, ct16_blocks(P->fpsm, fbp, P->fbw, d.r[0], d.r[1], d.r[2], d.r[3], ablk, GPU_BLOCKS), 1);
-    if (!AB.open || AB.T != T) {
-        if (AB.open) close_alias();
-        AB.open = 1; AB.T = T; AB.first = rec_count(sizeof(spriterec)); AB.count = 0;
+    arect_make(&d, P->fpage * 32, P->fbw, P->fpsm, 1, x0, y0, x1, y1);
+    int have_s = P->tme != 0;
+    if (have_s) arect_make(&s, S.tbp, S.tbw, S.tpsm, 0, ts->u0, ts->v0, ts->u1, ts->v1);
+    int hazard = AB.open && (AB.T != T || AB.psm != P->fpsm || nar + 2 > AR_N);
+    for (int i = 0; i < nar && !hazard && have_s; i++)
+        if (AR[i].w && arect_overlap(&AR[i], &s)) hazard = 1;
+    if (hazard) close_alias();
+    if (have_s && arect_overlap(&d, &s)) gf.alias16_selfcopy++;     /* (in place: reads the state before the run) */
+    if (!AB.open) {
+        close_draw();
+        close_run();
+        gpu_fop_alias16* b = gf_cmd(GPU_FOP_ALIAS16, sizeof *b);
+        b->target = T->id;
+        b->psm = (uint16_t)P->fpsm;
+        AB.begin_off = (uint32_t)((uint8_t*)b - A_cmd.p);
+        AB.open = 1; AB.T = T; AB.psm = P->fpsm; AB.prims = 0;
+        AB.bbox[0] = x0; AB.bbox[1] = y0; AB.bbox[2] = x1; AB.bbox[3] = y1;
+        nar = 0;
+    } else {
+        if (x0 < AB.bbox[0]) AB.bbox[0] = x0;
+        if (y0 < AB.bbox[1]) AB.bbox[1] = y0;
+        if (x1 > AB.bbox[2]) AB.bbox[2] = x1;
+        if (y1 > AB.bbox[3]) AB.bbox[3] = y1;
     }
     AR[nar++] = d;
     if (have_s) AR[nar++] = s;
-    spriterec* r = ar_alloc(&A_rec, sizeof *r);
-    r->x0 = (int16_t)sp->px0; r->y0 = (int16_t)sp->py0; r->x1 = (int16_t)(sp->px1 + 1); r->y1 = (int16_t)(sp->py1 + 1);
-    r->ua = sp->ua; r->du = sp->du; r->va = sp->va; r->dv = gs_d2i32(sp->pl.v.cy * (double)(1 << GS_UVSH));
-    r->state = state;
-    gf.records_sprite++;
-    gf.rec_bytes += sizeof *r;
-    AB.count++;
+    AB.prims++;
     gf.alias16_sprites++;
-    return 1;
 }
 
 /* ---- tiled fills -> clears ------------------------------------------------------------------------ */
@@ -1081,6 +1139,69 @@ static void stq_cuts(const gs_tri* T, const gs_prim* P, fullrec* r) {
     }
 }
 
+/* ---- PUNT (5.4) ---------------------------------------------------------------------------------- */
+static int (*mem_reader)(uint8_t* out, void* user);
+static void* mem_reader_user;
+static uint8_t* punt_mem;
+static int force_every = -1, force_mask;
+static uint32_t force_ctr;
+static struct { int on, cpsm, zpsm; uint32_t cbp, cbw, zbp, zbw; int r[4]; } PP;   /* the PUNT being drawn */
+
+void gpu_front_set_mem_reader(int (*reader)(uint8_t* out4mb, void* user), void* user) { mem_reader = reader; mem_reader_user = user; }
+
+static int gf_force_punt(const gs_env_view* ev, int cls) {
+    if (force_every < 0) {
+        const char* e = getenv("PS2_GPU_PUNT");
+        force_every = 0;
+        force_mask = 15;
+        if (e && *e) sscanf(e, "%d:%d", &force_every, &force_mask);
+    }
+    if (force_every <= 0 || gf_cfg.thread) return 0;
+    if (!(force_mask & (1 << cls))) return 0;
+    if ((force_mask & 16) && ev->P->ffmt->bits != 16) return 0;
+    return ++force_ctr % (uint32_t)force_every == 0;
+}
+
+/* the software rasterizer draws it: the GPU data it reads or writes goes to vram_buf (download) and
+ * from there into gs_vram (read back), gs_draw.c draws it into gs_vram, fr_sw_done patches the written
+ * blocks back (they are CPU data now: every target reloads them, replicated to all samples) */
+static void punt_prim(const gs_env_view* ev, int cls, const texsrc_t* ts, int x0, int y0, int x1, int y1) {
+    const gs_prim* P = ev->P;
+    (void)cls;
+    flush_open();
+    if (gf_cfg.thread) return;           /* (the frontend thread cannot make the decode thread draw: M6) */
+    if (y1 >= 2048) y1 = 2047;
+    if (x1 >= 2048) x1 = 2047;
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    int cw = S.cwrite || S.reads_dest || P->date, zw = S.zfi >= 0;
+    if (cw) own_mem_read(P->fpsm, P->fpage * 32, P->fbw, x0, y0, x1, y1);
+    if (zw) own_mem_read(P->zpsm, P->zpage * 32, P->zbw, x0, y0, x1, y1);
+    if (P->tme) own_mem_read(S.tpsm, S.tbp, S.tbw, ts->u0, ts->v0, ts->u1, ts->v1);
+    if (mem_reader) {
+        gpu_front_checkpoint();          /* everything so far to the render thread */
+        if (!punt_mem && !(punt_mem = malloc(GS_VRAM_SIZE))) { fprintf(stderr, "[gpu_front] out of memory\n"); exit(1); }
+        if (mem_reader(punt_mem, mem_reader_user)) {
+            int d = own_readback_apply(punt_mem, !gf_cfg.sw);
+            if (d) gf.punt_why[GPU_PUNT_READBACK_DIFF]++;
+        }
+    }
+    PP.on = 1;
+    PP.cpsm = S.cwrite ? P->fpsm : -1; PP.cbp = P->fpage * 32; PP.cbw = P->fbw;
+    PP.zpsm = S.zwrite ? P->zpsm : -1; PP.zbp = P->zpage * 32; PP.zbw = P->zbw;
+    PP.r[0] = x0; PP.r[1] = y0; PP.r[2] = x1; PP.r[3] = y1;
+    gs_front_swdraw = 1;
+    if (trace_on) fprintf(stderr, "[front] PUNT (%d,%d)-(%d,%d) FRAME psm %02X\n", x0, y0, x1, y1, P->fpsm);
+}
+
+static void fr_sw_done(void) {
+    if (!PP.on) return;
+    PP.on = 0;
+    /* (the rect's blocks were all made current in gs_vram first: patching the whole rect is exact) */
+    if (PP.cpsm >= 0) own_upload(PP.cpsm, PP.cbp, PP.cbw, PP.r[0], PP.r[1], PP.r[2] + 1, PP.r[3] + 1);
+    if (PP.zpsm >= 0) own_upload(PP.zpsm, PP.zbp, PP.zbw, PP.r[0], PP.r[1], PP.r[2] + 1, PP.r[3] + 1);
+}
+
 #ifdef GPU_FRONT_PROF                    /* section profile of fr_prim (build with -DGPU_FRONT_PROF) */
 static uint64_t prof[12], prof_t;
 static int prof_emit;
@@ -1208,13 +1329,7 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
     /* ---- tier ---- */
     int tier = GPU_TIER_FF, why = -1, punt = S.punt;
     if (!punt && ts.punt) punt = ts.punt;
-    if (!punt && S.alias) {
-        if (cls != GPU_PC_SPRITE) punt = GPU_PUNT_ALIAS16_PRIM + 1;
-        else if (P->tme && (ts.kind == TK_VIEW_C32 || ts.kind == TK_VIEW_ALPHA || (S.tpsm != PSMCT16 && S.tpsm != PSMCT16S) ||
-                            P->texm != 1))
-            punt = GPU_PUNT_ALIAS16_TEX + 1;
-    }
-    if (!punt && !S.alias && ts.kind == TK_ALIAS16) punt = GPU_PUNT_TEX_FMT + 1;   /* CT16 view outside ALIAS16 */
+    if (!punt && gf_force_punt(ev, cls)) punt = GPU_PUNT_FORCED + 1;
     int outcome = 0;
     if (S.fatst == FATST_SPLIT) {
         int n = atst_count(S.atst, S.aref, as_lo, as_hi);
@@ -1239,14 +1354,11 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
     }
     gf.tier[tier]++;
     if (why >= 0) gf.rov_why[why]++;
-    if (tier == GPU_TIER_ALIAS16 || tier == GPU_TIER_PUNT || (P->tme && (ts.kind == TK_VIEW_C32 || ts.kind == TK_VIEW_ALPHA)))
-        gf.post_prims++;                 /* (M4: not rendered exactly by the REF tier yet) */
+    if (tier == GPU_TIER_ALIAS16 || tier == GPU_TIER_PUNT || (P->tme && ts.T))
+        gf.post_prims++;                 /* (post passes: ALIAS16, target views, PUNT) */
     if (punt) {
         gf.punt_why[punt - 1]++;
-        /* PUNT (5.4): flush, download what it touches, the sw rasterizer draws it into memory */
-        flush_open();
-        if (!S.alias && S.ct && S.cwrite) own_punt(S.ct, x0, y0, x1, y1);
-        if (!S.alias && S.zt && S.zwrite) own_punt(S.zt, x0, y0, x1, y1);
+        punt_prim(ev, cls, &ts, x0, y0, x1, y1);
         goto out;
     }
     if (P->tme) {
@@ -1257,16 +1369,15 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
         default: gf.tex_vram++; break;
         }
     }
-    uint32_t texsrc = P->tme ? (uint32_t)ts.kind | (ts.T ? (uint32_t)ts.T->id << 8 : 0) : 0;
+    /* a view of the colour target the primitive writes: overlapping byte lanes need the state before
+     * the primitive (a shadow copy, below); disjoint lanes are read in place (the ROV tier reads the
+     * bound target; the lanes it reads are not written). ALIAS16 runs read T itself, unbound. */
+    uint32_t self = !S.alias && ts.T && ts.T == S.ct && !(S.tex_lanes & S.c_lanes) ? GPU_TS_SELF : 0;
+    uint32_t texsrc = P->tme ? (uint32_t)ts.kind | (ts.T ? (uint32_t)ts.T->id << 8 : 0) | self : 0;
     uint32_t state = state_for(ev, texsrc);
     if ((int)state != prev_state_index) { gf.state_changes++; prev_state_index = (int)state; }
 
-    if (tier == GPU_TIER_ALIAS16) {
-        if (OD.open || RR.open) { close_draw(); close_run(); }
-        alias_sprite(ev, &sp, &ts, state);
-        goto out;
-    }
-    if (AB.open) close_alias();
+    if (tier != GPU_TIER_ALIAS16 && AB.open) close_alias();
 
     /* ---- line pixels first: a line whose DDA covers no pixel inside the scissor draws nothing and
      * must not open a D3D draw (that would also split the draws around it) ---- */
@@ -1280,24 +1391,36 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
     PROF_MARK(4);
     /* ---- ownership: texture views, feedback, destination ---- */
     if (ts.T) {
-        own_view_read(ts.T, ts.u0, ts.v0, ts.u1, ts.v1);
-        if ((ts.T == S.ct && (S.tex_lanes & S.c_lanes)) || ts.T == S.zt) feedback_check(ts.T, ts.u0, ts.v0, ts.u1, ts.v1);
+        view_read(&ts);
+        if (!S.alias && ((ts.T == S.ct && !self) || ts.T == S.zt)) {
+            int r[4] = { ts.u0, ts.v0, ts.u1, ts.v1 };
+            if (S.tpsm == PSMCT16 || S.tpsm == PSMCT16S) rect16_to32(ts.u0, ts.v0, ts.u1, ts.v1, r);
+            feedback_check(ts.T, r[0], r[1], r[2], r[3]);
+        }
     }
-    int rov = tier == GPU_TIER_ROV;
+    int alias = tier == GPU_TIER_ALIAS16;
+    int rov = tier == GPU_TIER_ROV || alias;  /* (ALIAS16 draws are ROV draws on the staging texture) */
     int opaque = cls == GPU_PC_SPRITE && S.opaque && !rov;
-    if (S.ct && (S.cwrite || S.reads_dest || rov)) own_draw(S.ct, x0, y0, x1, y1, S.cwrite, opaque);
+    if (alias) {                         /* the 16-bit rect's blocks of T (both halfwords of a word: never opaque) */
+        own_grow(S.ct, rows16(y1));
+        own_blocks(S.ct, ablk, ct16_blocks(P->fpsm, P->fpage * 32, P->fbw, x0, y0, x1, y1, ablk, GPU_BLOCKS), S.cwrite);
+    } else if (S.ct && (S.cwrite || S.reads_dest || rov)) {
+        own_draw(S.ct, x0, y0, x1, y1, S.cwrite, opaque);
+    }
     /* (Z24 writes keep the top byte of every word: never a full overwrite) */
     if (S.zt) own_draw(S.zt, x0, y0, x1, y1, S.zwrite, opaque && !S.zread && S.zt->kind != TGT_Z24);
     if (S.ct) S.ct->last_used = gf_frame;
+    if (alias) alias_prim(ev, &ts, x0, y0, x1, y1);
 
     PROF_MARK(5);
     /* ---- pipeline key and draw merging ---- */
     int tk = P->tme ? ts.kind : TK_NONE;
     int zmode = S.zfi >= 0 ? (rov ? 2 : 1) : 0;
-    uint32_t ps_key = (uint32_t)(rov ? 2 : S.blend == BL_DUAL ? 0 : 1) | (uint32_t)tk << 2 | (uint32_t)cls << 5 |
-                      (uint32_t)zmode << 7 | (uint32_t)(P->tme && S.stq) << 9 | (uint32_t)(S.fatst == FATST_DISCARD) << 10;
+    uint32_t ps_key = (uint32_t)(alias ? 3 : rov ? 2 : S.blend == BL_DUAL ? 0 : 1) | (uint32_t)tk << 2 | (uint32_t)cls << 5 |
+                      (uint32_t)zmode << 7 | (uint32_t)(P->tme && S.stq) << 9 | (uint32_t)(S.fatst == FATST_DISCARD) << 10 |
+                      (uint32_t)(self != 0) << 11;
     uint16_t ctid = S.ct ? S.ct->id : 0, ztid = S.zt ? S.zt->id : 0, texid = ts.T ? ts.T->id : 0;
-    if (rov) {
+    if (tier == GPU_TIER_ROV) {
         /* a run binds one colour target and (when some draw of it uses Z) one depth target: draws
          * without Z join any run on their colour target */
         if (!RR.open || RR.ct != ctid || (ztid && RR.zt && RR.zt != ztid)) {
@@ -1317,12 +1440,14 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
     }
     uint64_t key;
     /* ROV tier: blend, masks, tests and Z mode are StateRec data (uniform branches), so only the
-     * texture kind, primitive class, STQ and the bound texture split its draws */
-    if (rov) key = (uint64_t)(ps_key & ~(3u << 7)) | (uint64_t)texid << 32 | 1ull << 63;
+     * texture kind, primitive class, STQ, the bound texture and the scissor split its draws (the run
+     * fixes the targets); ALIAS16 draws: also their targets */
+    if (rov) key = (uint64_t)(ps_key & ~(3u << 7)) | (uint64_t)texid << 32 | 1ull << 63 |
+                   (alias ? (uint64_t)ctid << 12 | (uint64_t)ztid << 20 : 0);
     else key = (uint64_t)ps_key | (uint64_t)S.blend << 12 | (uint64_t)S.depth_class << 16 | (uint64_t)S.wmask << 20 |
                (uint64_t)(S.fatst == FATST_SPLIT) << 24 | (uint64_t)ctid << 32 | (uint64_t)ztid << 40 | (uint64_t)texid << 48;
     uint64_t sckey = (uint64_t)P->scx0 | (uint64_t)P->scy0 << 11 | (uint64_t)P->scx1 << 22 | (uint64_t)P->scy1 << 33;
-    if (!rov) key ^= sckey * 0x9E3779B97F4A7C15ull;
+    key ^= sckey * 0x9E3779B97F4A7C15ull;    /* (the draw's scissor is its first primitive's) */
     if (!OD.open || OD.key != key) {
         if (trace_on && OD.open) fprintf(stderr, "[front] key %016llX -> %016llX\n", (unsigned long long)OD.key, (unsigned long long)key);
         close_draw();
@@ -1418,6 +1543,7 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
         r->z = zclamp(P, (int64_t)b->z << 16);
         r->fog = (uint32_t)b->f;
         r->ua = sp.ua; r->va = sp.va; r->du = sp.du; r->dv = gs_d2i32(sp.pl.v.cy * (double)(1 << GS_UVSH));
+        r->flags = sp.du == 16 << GS_UVSH && r->dv == 16 << GS_UVSH;   /* one texel per pixel and row: 1:1 (5.1) */
         /* V of each row as draw_sprite evaluates it (gs_span_start_at at (px0, py)) */
         r->vc0 = sp.pl.v.c0 + sp.pl.v.cx * (double)sp.px0;
         r->vcy = sp.pl.v.cy;
@@ -1521,7 +1647,7 @@ static void fr_tex0(int ctx, uint64_t tex0, int clut_loaded) {
 
 static void fr_reset(void) { flush_open(); }
 
-static const gs_front_hooks hooks = { fr_prim, fr_xfer_start, fr_xfer_data, fr_tex0, fr_reset };
+static const gs_front_hooks hooks = { fr_prim, fr_xfer_start, fr_xfer_data, fr_tex0, fr_reset, fr_sw_done };
 const gs_front_hooks* gf_hooks(void) { return &hooks; }
 
 /* ---- start / stop / VBlank ------------------------------------------------------------------------- */

@@ -30,8 +30,8 @@ enum { GPU_ZF_32, GPU_ZF_24, GPU_ZF_16, GPU_ZF_16S, GPU_ZF_N };
 enum { GPU_ROV_REF, GPU_ROV_COLCLAMP, GPU_ROV_FBMSK, GPU_ROV_DATE, GPU_ROV_BLEND, GPU_ROV_C_OVER128,
        GPU_ROV_PABE_DTHE, GPU_ROV_Z32_HIGH, GPU_ROV_STRADDLE, GPU_ROV_N };
 /* why a primitive was PUNTed (5.4) */
-enum { GPU_PUNT_TARGET_OVERLAP, GPU_PUNT_FRAME_FMT, GPU_PUNT_TEX_FOREIGN, GPU_PUNT_TEX_FMT, GPU_PUNT_ALIAS16_PRIM,
-       GPU_PUNT_ALIAS16_TEX, GPU_PUNT_N };
+enum { GPU_PUNT_TARGET_OVERLAP, GPU_PUNT_FRAME_FMT, GPU_PUNT_TEX_FOREIGN, GPU_PUNT_TEX_FMT, GPU_PUNT_FORCED,
+       GPU_PUNT_READBACK_DIFF /* (not a reason: PUNTs whose read-back differed from gs_vram, both mode) */, GPU_PUNT_N };
 
 /* Counters of one VBlank (one picture). */
 typedef struct {
@@ -110,8 +110,11 @@ enum {
     GPU_FOP_COPY_SHADOW,         /* gpu_fop_shadow */
     GPU_FOP_DRAW,                /* gpu_fop_draw */
     GPU_FOP_ROV_END,             /* gpu_fop_rov_end: end of a ROV run (+ zresolve) */
-    GPU_FOP_ALIAS16,             /* gpu_fop_alias16 */
+    GPU_FOP_ALIAS16,             /* gpu_fop_alias16: an ALIAS16 run begins: gather the rect of the 16-bit frame
+                                    (psm) over C32 target `target` into the staging texture; the run's draws
+                                    (tier GPU_TIER_ALIAS16) write the staging texture */
     GPU_FOP_PRESENT,             /* gpu_fop_present */
+    GPU_FOP_ALIAS16_END,         /* gpu_fop_alias16: the run ends: scatter the rect back into the target */
 };
 typedef struct { uint16_t op, size; } gpu_fop;       /* size in bytes, header included, 4-byte multiple */
 typedef struct { gpu_fop h; uint16_t id, kind, base, fbw, rows, kx, ky, family; } gpu_fop_target;
@@ -135,7 +138,8 @@ typedef struct {
     uint32_t vtx_first, rec_first;       /* vertex base, first record */
 } gpu_fop_draw;
 typedef struct { gpu_fop h; uint16_t ct, zt; uint32_t zresolve; int16_t bbox[4]; } gpu_fop_rov_end;
-typedef struct { gpu_fop h; uint16_t target, pad; uint32_t first, count; } gpu_fop_alias16;
+/* rect [x0, x1) x [y0, y1) in pixels of the 16-bit frame (whole 16x8 blocks) */
+typedef struct { gpu_fop h; uint16_t target, psm; int16_t x0, y0, x1, y1; } gpu_fop_alias16;
 typedef struct { gpu_fop h; uint32_t vblank; } gpu_fop_present;
 
 enum { GPU_FD_PARTIAL = 1, GPU_FD_REF = 2 };
@@ -173,14 +177,28 @@ void gpu_front_resync(void);
 uint32_t gpu_front_post_prims(void);
 /* (debugging) the frontend's ownership record of 256-byte block b and every target holding it */
 void gpu_front_debug_block(uint32_t b, FILE* f);
+/* PUNT (5.4, same-thread frontend): the software rasterizer draws the primitive into gs_vram (gs_draw.c,
+ * gs_front_swdraw) and the written blocks become CPU data patched into vram_buf. Before that the GPU
+ * data it touches is downloaded into vram_buf and read back with this reader (all of vram_buf as the
+ * render thread has it after everything submitted; returns 0 on failure) into gs_vram - or, when the
+ * software renderer also runs (config sw), compared with gs_vram (counted in punt_why[GPU_PUNT_READBACK_DIFF]).
+ * Without a reader nothing is read back. PS2_GPU_PUNT=<every N>[:<class mask: 1 tri, 2 sprite, 4 line,
+ * 8 point, 16 only 16-bit frames>] forces PUNTs (tests). */
+void gpu_front_set_mem_reader(int (*reader)(uint8_t* out4mb, void* user), void* user);
 
 /* ---- per-draw data read by the shaders (runtime/gpu/shaders/gs.hlsl, byte offsets there) ------------ */
 enum {                                          /* gpu_staterec.flags */
     GPU_SF_FBA = 1 << 0, GPU_SF_COLCLAMP = 1 << 1, GPU_SF_TFX_SHIFT = 2, GPU_SF_TCC = 1 << 4, GPU_SF_FGE = 1 << 5,
     GPU_SF_IIP = 1 << 6, GPU_SF_FST = 1 << 7, GPU_SF_ABE = 1 << 8, GPU_SF_AA1 = 1 << 9, GPU_SF_PABE = 1 << 10,
     GPU_SF_DTHE = 1 << 11, GPU_SF_TME = 1 << 12, GPU_SF_FB24 = 1 << 13, GPU_SF_SCANMSK_SHIFT = 14, GPU_SF_CTX = 1 << 16,
+    GPU_SF_FB16 = 1 << 17,                      /* 16-bit frame (ALIAS16 run: the colour is the staging texture) */
 };
-typedef struct {                                /* StateRec, 96 bytes */
+enum { GPU_TS_SELF = 1 << 16 };                 /* gpu_staterec.texsrc: the view is the bound colour target (byte lanes
+                                                   the draw does not write: read in place, no copy) */
+/* phase labels (diagnostic, gpu_staterec.phase and traces): what a draw is, from its own state */
+enum { GPU_PH_SCENE, GPU_PH_FILL, GPU_PH_ROV_RMW, GPU_PH_ALIAS16, GPU_PH_VIEW, GPU_PH_FEEDBACK, GPU_PH_HINT = 0x100 };
+#define GPU_STATE_BYTES 128
+typedef struct {                                /* StateRec, 128 bytes */
     uint64_t tex0, clamp, tex1;                 /* TEX0 (CLD cleared), CLAMP, TEX1 of the context */
     uint32_t texa;                              /* TA0 | AEM << 15 | TA1 << 16 */
     uint32_t clut_slot;                         /* CLUT ring slot (indexed formats), else ~0 */
@@ -196,6 +214,9 @@ typedef struct {                                /* StateRec, 96 bytes */
                                                    lshift << 13 | (K & 0xFFF) << 16 */
     uint32_t mip[6];                            /* mipmap levels 1..6: TBP | TBW << 14 */
     uint32_t xyoffset, pad;
+    uint64_t dimx;                              /* DIMX (16-bit frames with DTHE) */
+    uint32_t phase;                             /* GPU_PH_* (diagnostic; | GPU_PH_HINT + label << 16 from a PHASE hint) */
+    uint32_t pad2[5];
 } gpu_staterec;
 typedef struct {                                /* ROV triangle, 256 bytes (SV_PrimitiveID) */
     int64_t zrow, zdy, zdx;                     /* Z 16.16 at x = 0 of row by0, per-row and per-pixel steps */
@@ -217,8 +238,8 @@ typedef struct {                                /* sprite, 64 bytes (SV_Instance
     int32_t ua, du;                             /* U (1/16 texel << 12) at x0, per pixel */
     double vc0, vcy;                            /* V of row py: trunc((vc0 + vcy * py) * 4096) (gs_span_start_at) */
     float lod_q;
-    int32_t va, dv;                             /* V at y0 and per row (ALIAS16) */
-    uint32_t pad;
+    int32_t va, dv;                             /* V at y0 and per row */
+    uint32_t flags;                             /* 1: steps one texel per pixel and per row (1:1 rule, 5.1) */
 } gpu_rec_sprite;
 typedef struct {                                /* line / point pixel, 32 bytes (SV_InstanceID) */
     int16_t px, py;

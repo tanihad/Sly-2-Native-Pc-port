@@ -14,7 +14,8 @@
 #define SWZ_Z16S  16384u
 #define SWZ_T8    20480u                 // [(y & 63) << 7 | (x & 127)] -> byte in page
 #define SWZ_T4    28672u                 // [(y & 127) << 7 | (x & 127)] -> nibble in page
-#define SWZ_ENTRIES 45056u
+#define SWZ_ICT32 45056u                 // inverse of SWZ_CT32: word in page -> x | y << 8 (x < 64, y < 32)
+#define SWZ_ENTRIES 47104u
 
 // PSM values (runtime/gs_internal.h)
 #define PSMCT32  0x00u
