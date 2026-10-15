@@ -2,7 +2,7 @@
 
 ## Resume here (read first in a new session)
 
-**CONTINUED (owner said "continue" = finish everything):** M2 resumed in gpu-M2. HUD edge
+**GPU: M2 = GO, merged; main merged into next/gpu (0f3fa1b). M3 (exact REF tier at S=1) running in worktree gpu-M3 (branch gpu/M3, notes/wip/gpu-M3.md).** Earlier: M2 resumed in gpu-M2. HUD edge
 anchoring (hud = edges|centered), live F7 aspect / F8 HUD switch and the Binocucom side fill are
 MERGED into main (next/hud; notes/widescreen.md 'HUD anchors'). Then M3..M11 one agent per milestone.
 
