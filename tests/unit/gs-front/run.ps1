@@ -16,7 +16,7 @@ New-Item -ItemType Directory -Force $out | Out-Null
 $rt = Join-Path $root 'runtime'
 $src = @('gs.c', 'gs_draw.c', 'gs_draw_pixel.c', 'gs_draw_tex.c', 'gs_draw_swz.c', 'gs_setup.c', 'gs_thread.c', 'gs_record.c', 'debug.c') | ForEach-Object { Join-Path $rt $_ }
 $src += @(Get-ChildItem $rt -Filter 'gs_mem*.c' | ForEach-Object { $_.FullName })
-$src += @('gpu_front.c', 'gpu_own.c', 'gpu_clut.c') | ForEach-Object { Join-Path (Join-Path $rt 'gpu') $_ }
+$src += @('gpu_front.c', 'gpu_own.c', 'gpu_clut.c', 'gpu_fthread.c') | ForEach-Object { Join-Path (Join-Path $rt 'gpu') $_ }
 $src += Join-Path $PSScriptRoot 'test_gs_front.c'
 $exe = Join-Path $out 'test_gs_front.exe'
 & $clang -O2 -std=c11 -Wall -Wno-comment -I $rt @src -lsynchronization -o $exe
