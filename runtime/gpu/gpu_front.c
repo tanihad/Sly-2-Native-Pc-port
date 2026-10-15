@@ -208,12 +208,8 @@ static fstate* Sp = &SC[0];
 #define S (*Sp)
 static int prev_state_index = -1;
 
-/* StateRec (96 bytes, 3.5) */
-typedef struct {
-    uint64_t tex0, clamp, tex1, texa, alpha, scissor;
-    uint32_t clut_slot, texsrc, fogcol, test, fbmsk, flags, xyoffset, hud, rec_base, phase;
-    uint32_t pad[2];
-} staterec;
+/* StateRec (96 bytes, 3.5): gpu_front.h gpu_staterec */
+typedef gpu_staterec staterec;
 _Static_assert(sizeof(staterec) == 96, "StateRec is 96 bytes");
 
 #define SMAP_N 65536
@@ -434,7 +430,8 @@ static void state_update(const gs_env_view* ev) {
     S.sc[0] = P->scx0; S.sc[1] = P->scy0; S.sc[2] = P->scx1; S.sc[3] = P->scy1;
 
     /* ---- reads of the destination; opaque sprites; fills ---- */
-    int full_wm = P->ffmt->bits == 24 ? 7 : 15;
+    /* (a CT24 frame keeps the top byte of every C32 word: never a full overwrite of the block) */
+    int full_wm = 15;
     S.reads_dest = (P->abe && uses_cd) || S.zread || P->date || (S.cwrite && !bytes_ok);
     S.opaque = !S.reads_dest && S.fatst == FATST_NONE && (!S.cwrite || (wm & full_wm) == full_wm) && P->scanmsk < 2;
     /* tiled-fill candidate: constant value per pixel, written whatever the destination holds (byte
@@ -472,6 +469,63 @@ static void state_update(const gs_env_view* ev) {
 }
 
 /* ---- StateRec for the primitive (texture source is per primitive) ------------------------------- */
+
+/* bits per texel as gs_draw.c's bind_textures counts them for automatic mipmap addresses */
+static uint32_t mip_bpp(uint32_t psm) {
+    switch (psm) {
+    case PSMCT16: case PSMCT16S: case PSMZ16: case PSMZ16S: return 16;
+    case PSMT8: return 8;
+    case PSMT4: return 4;
+    default: return 32;
+    }
+}
+
+/* texture mode, level and mipmap addresses from the registers, exactly as gs_draw.c's bind_textures
+ * derives them (the frontend never reads the software rasterizer's level bindings) */
+static void tex_levels(const uint64_t* reg, int ctx, staterec* r) {
+    uint64_t t0 = reg[R_TEX0_1 + ctx], tex1 = reg[R_TEX1_1 + ctx];
+    uint32_t tbp = (uint32_t)(t0 & 0x3FFF), tbw = (uint32_t)((t0 >> 14) & 0x3F), psm = (uint32_t)((t0 >> 20) & 0x3F);
+    uint32_t th = (uint32_t)((t0 >> 30) & 0xF);
+    if (th > 10) th = 10;
+    int lcm = (int)(tex1 & 1), mxl = (int)((tex1 >> 2) & 7), mmag = (int)((tex1 >> 5) & 1), mmin = (int)((tex1 >> 6) & 7);
+    if (mxl > 6) mxl = 6;
+    if (mmin > 5) mmin = 1;
+    int lshift = (int)((tex1 >> 19) & 3), k = (int)(((int64_t)(tex1 << 20)) >> 52), mtba = (int)((tex1 >> 9) & 1);
+    if (!(mxl > 0 && mmin >= 2)) mxl = 0;
+    int texm, cur = 0;
+    if (lcm || (mmin <= 1 && mmin == mmag)) {
+        int lod = lcm ? k : (mmag ? 1 : 0);
+        if (!lcm || lod <= 0) texm = 1 + mmag;
+        else switch (mmin) {
+        case 0: texm = 1; break;
+        case 1: texm = 2; break;
+        case 2: case 4: texm = mmin == 4 ? 2 : 1; cur = (lod + 8) >> 4 < mxl ? (lod + 8) >> 4 : mxl; break;
+        default:
+            if ((lod >> 4) >= mxl) { texm = mmin == 5 ? 2 : 1; cur = mxl; }
+            else texm = 3;
+            break;
+        }
+    } else {
+        texm = 3;
+    }
+    uint64_t mt1 = reg[0x34 + ctx], mt2 = reg[0x36 + ctx];
+    for (int l = 1; l <= mxl; l++) {
+        if (mtba && l <= 3) {
+            uint32_t ph = 1u << (th > (uint32_t)(l - 1) ? th - (uint32_t)(l - 1) : 0);
+            tbp = (tbp + (tbw * 64u * ph * mip_bpp(psm) / 8u) / 256u) & 0x3FFF;
+            tbw = tbw > 1 ? tbw / 2 : 1;
+        } else {
+            uint64_t m = l <= 3 ? mt1 : mt2;
+            int sh = ((l - 1) % 3) * 20;
+            tbp = (uint32_t)((m >> sh) & 0x3FFF);
+            tbw = (uint32_t)((m >> (sh + 14)) & 0x3F);
+        }
+        r->mip[l - 1] = tbp | tbw << 14;
+    }
+    r->tlev = (uint32_t)texm | (uint32_t)cur << 2 | (uint32_t)mxl << 5 | (uint32_t)mmag << 8 | (uint32_t)mmin << 9 |
+              (uint32_t)lcm << 12 | (uint32_t)lshift << 13 | ((uint32_t)k & 0xFFFu) << 16;
+}
+
 static uint32_t state_for(const gs_env_view* ev, uint32_t texsrc) {
     if (S.state_valid && S.state_texsrc == texsrc) return S.state_index;
     const gs_prim* P = ev->P;
@@ -479,23 +533,30 @@ static uint32_t state_for(const gs_env_view* ev, uint32_t texsrc) {
     int ctx = ev->ctx;
     staterec r;
     memset(&r, 0, sizeof r);
+    r.clut_slot = 0xFFFFFFFFu;
     if (P->tme) {
         r.tex0 = reg[R_TEX0_1 + ctx] & ~(7ull << 61);
         r.clamp = reg[R_CLAMP_1 + ctx];
         r.tex1 = reg[R_TEX1_1 + ctx];
-        r.texa = reg[R_TEXA];
-        r.clut_slot = S.indexed ? S.clut_slot : 0xFFFFFFFFu;
+        uint64_t texa = reg[R_TEXA];
+        r.texa = (uint32_t)(texa & 0xFF) | (uint32_t)((texa >> 15) & 1) << 15 | (uint32_t)((texa >> 32) & 0xFF) << 16;
+        if (S.indexed) r.clut_slot = S.clut_slot;
         r.texsrc = texsrc;
+        tex_levels(reg, ctx, &r);
     }
-    r.alpha = P->abe ? reg[R_ALPHA_1 + ctx] : 0;
-    r.scissor = reg[R_SCISSOR_1 + ctx];
-    r.fogcol = P->fge ? (uint32_t)reg[R_FOGCOL] : 0;
-    r.test = (uint32_t)reg[R_TEST_1 + ctx];
-    r.fbmsk = P->fbmsk;
-    r.flags = (uint32_t)P->fba | (uint32_t)P->colclamp << 8 | (uint32_t)P->tfx << 9 | (uint32_t)P->tcc << 11 |
-              (uint32_t)P->fge << 12 | (uint32_t)ev->iip << 13 | (uint32_t)P->fst << 14 | (uint32_t)P->abe << 15 |
-              (uint32_t)ev->aa1 << 16 | (uint32_t)P->pabe << 17 | (uint32_t)P->dthe << 18 | (uint32_t)ctx << 19 |
-              (uint32_t)P->texm << 20;
+    r.fogcol = P->fge ? (uint32_t)reg[R_FOGCOL] & 0xFFFFFFu : 0;
+    r.test = (uint32_t)P->ate | (uint32_t)P->atst << 1 | (uint32_t)P->aref << 4 | (uint32_t)P->afail << 12 |
+             (uint32_t)P->date << 14 | (uint32_t)P->datm << 15;
+    r.fmask = P->fmask;
+    r.flags = (P->fba ? GPU_SF_FBA : 0) | (P->colclamp ? GPU_SF_COLCLAMP : 0) | (uint32_t)P->tfx << GPU_SF_TFX_SHIFT |
+              (P->tcc ? GPU_SF_TCC : 0) | (P->fge ? GPU_SF_FGE : 0) | (P->iip ? GPU_SF_IIP : 0) | (P->fst ? GPU_SF_FST : 0) |
+              (P->abe ? GPU_SF_ABE : 0) | (ev->aa1 ? GPU_SF_AA1 : 0) | (P->pabe ? GPU_SF_PABE : 0) |
+              (P->dthe ? GPU_SF_DTHE : 0) | (P->tme ? GPU_SF_TME : 0) | (P->ffmt->bits == 24 ? GPU_SF_FB24 : 0) |
+              (uint32_t)P->scanmsk << GPU_SF_SCANMSK_SHIFT | (ctx ? GPU_SF_CTX : 0);
+    r.alpha = P->abe ? (uint32_t)P->asel | (uint32_t)P->bsel << 2 | (uint32_t)P->csel << 4 | (uint32_t)P->dsel << 6 |
+                       (uint32_t)P->fix << 8 : 0;
+    uint32_t zb = !P->zfmt ? 0 : P->zfmt->bits == 16 ? 1 : P->zfmt->bits == 24 ? 2 : 3;
+    r.zinfo = (uint32_t)P->ztst | (uint32_t)(P->zmsk != 0) << 2 | (uint32_t)(P->zuse != 0) << 3 | zb << 4;
     r.xyoffset = (uint32_t)(ev->ofx & 0xFFFF) | (uint32_t)ev->ofy << 16;
     S.state_index = staterec_index(&r);
     S.state_texsrc = texsrc;
@@ -629,11 +690,17 @@ typedef struct {                         /* 32 bytes */
     uint32_t pad;
 } gvtx;
 typedef struct { int64_t row, dy, dx; int16_t by0; uint16_t zfmt; uint32_t pad; } zrec;
-typedef struct { int64_t zrow, zdy, zdx; int32_t row[7], dy[7], dx[7]; int16_t by0; uint16_t flags; uint8_t pad[12]; } fullrec;
-typedef struct { int16_t x0, y0, x1, y1; uint32_t rgba, z, fog, state; int32_t ua, va, du, dv; uint32_t pad[2]; } spriterec;
-typedef struct { int16_t px, py; uint32_t z, rgba, fog_state; float s, t, q; uint32_t pad; } linerec;
-_Static_assert(sizeof(gvtx) == 32 && sizeof(zrec) == 32 && sizeof(fullrec) == 128 && sizeof(spriterec) == 48 &&
+typedef gpu_rec_tri fullrec;
+typedef gpu_rec_sprite spriterec;
+typedef gpu_rec_linepix linerec;
+_Static_assert(sizeof(gvtx) == 32 && sizeof(zrec) == 32 && sizeof(fullrec) == 256 && sizeof(spriterec) == 64 &&
                sizeof(linerec) == 32, "record sizes (3.5)");
+_Static_assert(offsetof(gpu_rec_tri, s0) == 120 && offsetof(gpu_rec_tri, ea) == 192 && offsetof(gpu_rec_tri, ec) == 208 &&
+               offsetof(gpu_rec_tri, nedge) == 224 && offsetof(gpu_rec_sprite, vc0) == 32 && offsetof(gpu_rec_sprite, lod_q) == 48 &&
+               offsetof(gpu_rec_linepix, s) == 16 && offsetof(gpu_staterec, texa) == 24 && offsetof(gpu_staterec, mip) == 64,
+               "record layouts as shaders/gs.hlsl reads them");
+
+static uint32_t f2u(float f) { uint32_t u; memcpy(&u, &f, 4); return u; }
 
 static gs_vtx vcache[3];
 static uint32_t vcache_idx[3], vcache_state[3];
@@ -866,6 +933,7 @@ typedef struct {
     int x0, y0, x1, y1;
 } fill_acc;
 static fill_acc FA;
+static uint32_t zclamp(const gs_prim* P, int64_t z);
 
 static void fill_add(const gs_env_view* ev, const gs_sprite* sp, const gs_vtx* v1) {
     const gs_prim* P = ev->P;
@@ -890,11 +958,13 @@ static void fill_add(const gs_env_view* ev, const gs_sprite* sp, const gs_vtx* v
         if (ct) {
             gpu_fop_clear* c = gf_cmd(GPU_FOP_CLEAR, sizeof *c);
             c->target = ct->id; c->value = color; c->mask = (uint32_t)S.wmask;
+            c->x1 = (int16_t)w; c->y1 = (int16_t)h;
             gf.clears_c++;
         }
         if (zt) {
             gpu_fop_clear* c = gf_cmd(GPU_FOP_CLEAR, sizeof *c);
-            c->target = zt->id; c->zclear = 1; c->value = v1->z;
+            c->target = zt->id; c->zclear = 1; c->value = zclamp(P, (int64_t)v1->z << 16);
+            c->x1 = (int16_t)w; c->y1 = (int16_t)h;
             gf.clears_z++;
             zt->z_high = 0;
         }
@@ -953,13 +1023,13 @@ static uint32_t emit_linepix(const gs_env_view* ev, const gs_line* L, const gs_v
             r->rgba = rgba;
             r->fog_state = (uint32_t)(need_f ? clamp_byte(gs_d2i32(LEV(f) * 65536.0) >> 16) : clamp_byte(b->f)) | state << 8;
             r->s = r->t = r->q = 0;
+            r->lod_q = b->q;                 /* (gs_draw.c draw_line: P.lod_q = v1->q) */
             if (need_t) {
-                if (P->fst) {
-                    r->s = (float)gs_d2i32(LEV(u) * (double)(1 << GS_UVSH));
-                    r->t = (float)gs_d2i32(LEV(v) * (double)(1 << GS_UVSH));
-                } else { r->s = (float)LEV(s); r->t = (float)LEV(t); r->q = (float)LEV(q); }
+                if (P->fst) {                /* exact integers (1/16 texel << 12 exceeds a float's mantissa) */
+                    r->s = (uint32_t)gs_d2i32(LEV(u) * (double)(1 << GS_UVSH));
+                    r->t = (uint32_t)gs_d2i32(LEV(v) * (double)(1 << GS_UVSH));
+                } else { r->s = f2u((float)LEV(s)); r->t = f2u((float)LEV(t)); r->q = f2u((float)LEV(q)); }
             }
-            r->pad = 0;
             r++;
         }
     }
@@ -967,6 +1037,46 @@ static uint32_t emit_linepix(const gs_env_view* ev, const gs_line* L, const gs_v
     uint32_t n = (uint32_t)(r - r0);
     A_rec.n -= (maxn - n) * sizeof(linerec);
     return n;
+}
+
+/* lockstep checkpoints (gpu_front_set_checkpoint_hook) */
+static void (*cp_hook)(uint32_t index, int frame_changed, void* user);
+static void* cp_user;
+static uint64_t cp_frame = ~0ull, cp_zbuf = ~0ull;
+static uint32_t cp_vblank;               /* the VBlank the frame being built ends with (last + 1) */
+
+/* STQ triangles: the software rasterizer steps S/T/Q in floats along a span and restarts each piece
+ * of it with s + ds * take (gs_draw_pixel.c gs_batch_span): pieces end at 64-pixel columns, which the
+ * pixel shader finds itself, and where the primitive's batch is full (2048 pixels), which depends on
+ * every earlier row. The rows with such a cut and its x go into a table (gpu_rec_tri.cuts). */
+static void stq_cuts(const gs_tri* T, const gs_prim* P, fullrec* r) {
+    static int16_t cut[2 * 4096];
+    gs_edge e[3];
+    gs_tri_edges(T, e);
+    int nc = 0, nseg = 0, npix = 0;
+    for (int py = T->by0; py <= T->by1; py++, gs_tri_edges_next(e)) {
+        if (P->scanmsk >= 2 && row_masked(P, py)) continue;
+        int64_t xl, xr;
+        gs_tri_row(e, T->bx0, T->bx1, &xl, &xr);
+        if (xl > xr) continue;
+        int x0 = (int)xl, n = (int)(xr - xl + 1);
+        while (n > 0) {
+            if (nseg == 512 || npix == GS_MAX_SPAN) nseg = npix = 0;     /* (gs_draw_pixel.c MAX_SEGS 512) */
+            int col = 64 - (x0 & 63), room = GS_MAX_SPAN - npix;
+            int take = col < room ? col : room;
+            if (n < take) take = n;
+            if (take < (col < n ? col : n) && nc < 4096) { cut[2 * nc] = (int16_t)py; cut[2 * nc + 1] = (int16_t)(x0 + take); nc++; }
+            nseg++;
+            npix += take;
+            n -= take;
+            x0 += take;
+        }
+    }
+    if (nc) {
+        r->cuts = gf_data(cut, (uint32_t)nc * 4);
+        r->ncuts = (uint32_t)nc;
+        gf.stq_cuts++;
+    }
 }
 
 #ifdef GPU_FRONT_PROF                    /* section profile of fr_prim (build with -DGPU_FRONT_PROF) */
@@ -985,6 +1095,13 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
     PROF_START();
     PCOUNT(n_prims);
     const gs_prim* P = ev->P;
+    if (cp_hook && ev->draws) {          /* lockstep: compare before this primitive */
+        uint64_t fr = ev->reg[R_FRAME_1 + ev->ctx], zb = ev->reg[R_ZBUF_1 + ev->ctx];
+        int changed = fr != cp_frame || zb != cp_zbuf;
+        cp_frame = fr;
+        cp_zbuf = zb;
+        cp_hook(gf.kicks, changed, cp_user);
+    }
     gf.kicks++;
     if (!ev->draws) { gf.nowrite++; goto out; }
     if (S.version != ev->version || S.ctx != ev->ctx || !S.version) state_lookup(ev);
@@ -1119,6 +1236,8 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
     }
     gf.tier[tier]++;
     if (why >= 0) gf.rov_why[why]++;
+    if (tier == GPU_TIER_ALIAS16 || tier == GPU_TIER_PUNT || (P->tme && (ts.kind == TK_VIEW_C32 || ts.kind == TK_VIEW_ALPHA)))
+        gf.post_prims++;                 /* (M4: not rendered exactly by the REF tier yet) */
     if (punt) {
         gf.punt_why[punt - 1]++;
         /* PUNT (5.4): flush, download what it touches, the sw rasterizer draws it into memory */
@@ -1164,7 +1283,8 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
     int rov = tier == GPU_TIER_ROV;
     int opaque = cls == GPU_PC_SPRITE && S.opaque && !rov;
     if (S.ct && (S.cwrite || S.reads_dest || rov)) own_draw(S.ct, x0, y0, x1, y1, S.cwrite, opaque);
-    if (S.zt) own_draw(S.zt, x0, y0, x1, y1, S.zwrite, opaque && !S.zread);
+    /* (Z24 writes keep the top byte of every word: never a full overwrite) */
+    if (S.zt) own_draw(S.zt, x0, y0, x1, y1, S.zwrite, opaque && !S.zread && S.zt->kind != TGT_Z24);
     if (S.ct) S.ct->last_used = gf_frame;
 
     PROF_MARK(5);
@@ -1242,10 +1362,27 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
             fullrec* r = ar_alloc(&A_rec, sizeof *r);
             r->zrow = rs.row[GS_A_Z]; r->zdy = rs.dy[GS_A_Z]; r->zdx = rs.dx[GS_A_Z];
             static const int map[7] = { GS_A_R, GS_A_G, GS_A_B, GS_A_A, GS_A_F, GS_A_U, GS_A_V };
+            /* low 32 bits: the software rasterizer's int32 values per pixel are row + dy * rows +
+             * dx * x modulo 2^32 (its span starts saturate only far outside any real range) */
             for (int k = 0; k < 7; k++) {
-                r->row[k] = gs_sat32(rs.row[map[k]]); r->dy[k] = gs_sat32(rs.dy[map[k]]); r->dx[k] = gs_sat32(rs.dx[map[k]]);
+                r->row[k] = (int32_t)(uint32_t)(uint64_t)rs.row[map[k]];
+                r->dy[k] = (int32_t)(uint32_t)(uint64_t)rs.dy[map[k]];
+                r->dx[k] = (int32_t)(uint32_t)(uint64_t)rs.dx[map[k]];
             }
             r->by0 = (int16_t)T.by0;
+            r->bx0 = (int16_t)T.bx0;
+            r->state = state;
+            r->lod_q = c->q;                     /* (draw_triangle: P.lod_q = v2->q for FST) */
+            r->s0 = rs.s; r->t0 = rs.t; r->q0 = rs.q;
+            r->sdy = rs.sdy; r->tdy = rs.tdy; r->qdy = rs.qdy;
+            r->sdx = rs.sdx; r->tdx = rs.tdx; r->qdx = rs.qdx;
+            gs_edge e[3];
+            gs_tri_edges(&T, e);
+            uint32_t ne = 0;
+            for (int k = 0; k < 3; k++)
+                if (e[k].a > 0 && ne < 2) { r->ea[ne] = (int32_t)e[k].a; r->edc[ne] = (int32_t)e[k].dc; r->ec[ne] = e[k].c; ne++; }
+            r->nedge = ne;
+            if (P->tme && !P->fst && (int64_t)(T.bx1 - T.bx0 + 1) * (T.by1 - T.by0 + 1) > GS_MAX_SPAN) stq_cuts(&T, P, r);
             gf.records_full++;
             gf.rec_bytes += sizeof *r;
         } else if (zmode) {
@@ -1275,6 +1412,10 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
         r->z = zclamp(P, (int64_t)b->z << 16);
         r->fog = (uint32_t)b->f;
         r->ua = sp.ua; r->va = sp.va; r->du = sp.du; r->dv = gs_d2i32(sp.pl.v.cy * (double)(1 << GS_UVSH));
+        /* V of each row as draw_sprite evaluates it (gs_span_start_at at (px0, py)) */
+        r->vc0 = sp.pl.v.c0 + sp.pl.v.cx * (double)sp.px0;
+        r->vcy = sp.pl.v.cy;
+        r->lod_q = b->q;                     /* (draw_sprite: P.lod_q = v1->q) */
         r->state = state;
         gf.records_sprite++;
         gf.rec_bytes += sizeof *r;
@@ -1297,7 +1438,10 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
         r->z = S.zfi >= 0 ? zclamp(P, (int64_t)a->z << 16) : 0;
         r->rgba = (uint32_t)a->r | (uint32_t)a->g << 8 | (uint32_t)a->b << 16 | (uint32_t)a->a << 24;
         r->fog_state = (uint32_t)(a->f & 0xFF) | state << 8;
-        r->s = P->fst ? (float)a->u : a->s; r->t = P->fst ? (float)a->v : a->t; r->q = a->q;
+        r->s = P->fst ? (uint32_t)(a->u << GS_UVSH) : f2u(a->s);
+        r->t = P->fst ? (uint32_t)(a->v << GS_UVSH) : f2u(a->t);
+        r->q = f2u(a->q);
+        r->lod_q = a->q;
         gf.linepix++;
         gf.records_linepix++;
         gf.rec_bytes += sizeof *r;
@@ -1358,7 +1502,9 @@ static void fr_tex0(int ctx, uint64_t tex0, int clut_loaded) {
          * rest of the 16x16 block can be Z-buffer data drawn over it in an earlier frame. Those
          * entries are never indexed (else the PS2 would show Z garbage too): no download (it would
          * stall every frame); counted, and lockstep (M3+) compares the result. */
-        if (own_mem_flush(cpsm == PSMCT16 || cpsm == PSMCT16S ? (int)cpsm : PSMCT32, cbp, 1, 0, 0, t8 ? 15 : 7, t8 ? 15 : 1))
+        int cfmt = cpsm == PSMCT16 || cpsm == PSMCT16S ? (int)cpsm : PSMCT32;
+        if (own_mem_flush(cfmt, cbp, 1, 0, 0, t8 ? 15 : 7, t8 ? 15 : 1) ||
+            own_mem_vstale(cfmt, cbp, 1, 0, 0, t8 ? 15 : 7, t8 ? 15 : 1))   /* (downloaded words gs_vram lacks) */
             gf.clut_gpu_reads++;
     }
     /* (frontend thread: the GS thread compared the loaded entries and says whether they changed) */
@@ -1386,6 +1532,49 @@ static void frame_begin(void) {
     cw_n = 0;
 }
 
+/* hand the arenas to the sink (a VBlank's frame, or a checkpoint's partial frame) */
+static void sink_frame(uint32_t vblank, uint32_t flags) {
+    if (!sink_fn) return;
+    gpu_front_frame_data fd = { A_cmd.p, A_cmd.n, A_vtx.p, A_vtx.n, (const uint32_t*)A_idx.p, A_idx.n / 4,
+                                A_rec.p, A_rec.n, A_state.p, A_state.n / sizeof(staterec), A_data.p, A_data.n, vblank,
+                                flags | (gf_cfg.ref ? GPU_FD_REF : 0) };
+    in_sink = 1;
+    sink_fn(&fd, sink_user);
+    in_sink = 0;
+}
+
+void gpu_front_set_checkpoint_hook(void (*hook)(uint32_t index, int frame_changed, void* user), void* user) {
+    cp_hook = hook;
+    cp_user = user;
+    cp_frame = cp_zbuf = ~0ull;
+}
+
+void gpu_front_checkpoint(void) {
+    flush_open();
+    own_flush_patches();
+    sink_frame(cp_vblank, GPU_FD_PARTIAL);
+    gf.checkpoints++;
+    /* a new partial frame: arenas, StateRecs and vertex reuse start over (counters and state
+     * analyses go on) */
+    A_cmd.n = A_vtx.n = A_idx.n = A_rec.n = A_state.n = A_data.n = 0;
+    memset(smap_idx, 0, sizeof smap_idx);
+    nstates = 0;
+    for (int i = 0; i < SC_N; i++) SC[i].state_valid = 0;
+    prev_state_index = -1;
+    vcache_n = 0;
+    cw_n = 0;
+}
+
+int gpu_front_gpu_blocks(gpu_dl_entry* out, uint16_t* writers, int max) { return own_gpu_blocks(out, writers, max); }
+
+void gpu_front_resync(void) {
+    flush_open();
+    own_resync();
+    cp_frame = cp_zbuf = ~0ull;
+}
+
+uint32_t gpu_front_post_prims(void) { return gf.post_prims; }
+
 void gpu_front_start(const gpu_front_config* cfg) {
     memset(&gf_cfg, 0, sizeof gf_cfg);
     if (cfg) gf_cfg = *cfg;
@@ -1401,6 +1590,8 @@ void gpu_front_start(const gpu_front_config* cfg) {
     memset(&AB, 0, sizeof AB);
     memset(&FA, 0, sizeof FA);
     gf_frame = 0;
+    cp_frame = cp_zbuf = ~0ull;
+    cp_vblank = 0;
     frame_begin();
     tsc_acc = 0;
     tsc_start = __rdtsc();
@@ -1430,6 +1621,7 @@ void gpu_front_stop(void) {
 #endif
     gs_front = NULL;
     gs_sw_draw = 1;
+    cp_hook = NULL;
 }
 
 void gpu_front_vblank(const uint64_t priv[16], uint32_t vblank) {
@@ -1462,13 +1654,8 @@ void gf_vblank_impl(const uint64_t priv[16], uint32_t vblank) {
     }
     gf.cmd_bytes = A_cmd.n;
     gf.data_bytes = A_data.n;
-    if (sink_fn) {
-        gpu_front_frame_data fd = { A_cmd.p, A_cmd.n, A_vtx.p, A_vtx.n, (const uint32_t*)A_idx.p, A_idx.n / 4,
-                                    A_rec.p, A_rec.n, A_state.p, A_state.n / sizeof(staterec), A_data.p, A_data.n, vblank };
-        in_sink = 1;
-        sink_fn(&fd, sink_user);
-        in_sink = 0;
-    }
+    sink_frame(vblank, 0);
+    cp_vblank = vblank + 1;
     AcquireSRWLockExclusive(&done_lock);
     if (ndone == capdone) {
         capdone = capdone ? capdone * 2 : 1024;

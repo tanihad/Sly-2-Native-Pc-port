@@ -73,6 +73,10 @@ typedef struct {
     uint32_t tex_vram, tex_view_c32, tex_view_alpha, tex_alias16;
     uint32_t region_clamp, tbw_npot;     /* REGION_CLAMP/REPEAT sampling; TBW not a power of two (FMV TBW 12) */
     uint32_t selfcheck_bad;              /* Z records differing from the sw row stepping */
+    uint32_t lost_writer;                /* GPU words whose writer target is gone (never) */
+    uint32_t post_prims;                 /* primitives the REF tier does not render yet (ALIAS16, target views, PUNT) */
+    uint32_t stq_cuts;                   /* STQ triangles with batch cuts (gpu_rec_tri.cuts) */
+    uint32_t checkpoints;                /* partial frames handed to the sink (lockstep) */
 } gpu_front_frame;
 
 void gpu_front_start(const gpu_front_config* cfg);   /* installs the gs_draw.c hooks */
@@ -92,10 +96,13 @@ void gpu_front_dump_targets(FILE* f);
 enum {
     GPU_FOP_TARGET = 1,          /* gpu_fop_target: create / grow */
     GPU_FOP_RELEASE,             /* gpu_fop_target: evicted */
-    GPU_FOP_PATCH,               /* gpu_fop_blocks: vram_buf <- blocks (data: n x u16 block numbers, n x 256 B) */
+    GPU_FOP_PATCH,               /* gpu_fop_blocks: vram_buf <- blocks, bits of the uploaded texels only
+                                    (data: n x u16 block numbers (padded to 16 B), n x 256 B data, n x 256 B
+                                    per-word bit masks) */
     GPU_FOP_CLUT,                /* gpu_fop_clut: clut_ring[slot] <- 1 KB (data) */
     GPU_FOP_LOAD,                /* gpu_fop_blocks: target blocks <- vram_buf (data: n x u16 local block numbers) */
-    GPU_FOP_DOWNLOAD,            /* gpu_fop_blocks: vram_buf/gs_vram <- target blocks, sample 0 */
+    GPU_FOP_DOWNLOAD,            /* gpu_fop_blocks: vram_buf <- blocks of the writer target `target`, sample 0,
+                                    only the words of each entry's mask (data: n x gpu_dl_entry) */
     GPU_FOP_CLEAR,               /* gpu_fop_clear */
     GPU_FOP_COPY_SHADOW,         /* gpu_fop_shadow */
     GPU_FOP_DRAW,                /* gpu_fop_draw */
@@ -107,7 +114,12 @@ typedef struct { uint16_t op, size; } gpu_fop;       /* size in bytes, header in
 typedef struct { gpu_fop h; uint16_t id, kind, base, fbw, rows, kx, ky, family; } gpu_fop_target;
 typedef struct { gpu_fop h; uint16_t target, pad; uint32_t n, data_off; } gpu_fop_blocks;
 typedef struct { gpu_fop h; uint32_t slot, data_off; } gpu_fop_clut;
-typedef struct { gpu_fop h; uint16_t target, zclear; uint32_t value, mask; } gpu_fop_clear;
+/* a recognised full fill: rect [0, x1) x [0, y1) of the target (native pixels); colour: value under
+ * the byte write mask `mask` (R1 G2 B4 A8); Z (zclear): the stored Z value (already clamped) */
+typedef struct { gpu_fop h; uint16_t target, zclear; uint32_t value, mask; int16_t x1, y1; } gpu_fop_clear;
+/* one block of a download: the writer target's local block, the absolute 256-byte block, the 32-bit
+ * words of the block to write (the GPU-owned ones) */
+typedef struct { uint16_t local, abs; uint32_t pad; uint64_t words; } gpu_dl_entry;
 typedef struct { gpu_fop h; uint16_t target, pad; int16_t x0, y0, x1, y1; } gpu_fop_shadow;
 typedef struct {
     gpu_fop h;
@@ -123,17 +135,92 @@ typedef struct { gpu_fop h; uint16_t ct, zt; uint32_t zresolve; int16_t bbox[4];
 typedef struct { gpu_fop h; uint16_t target, pad; uint32_t first, count; } gpu_fop_alias16;
 typedef struct { gpu_fop h; uint32_t vblank; } gpu_fop_present;
 
+enum { GPU_FD_PARTIAL = 1, GPU_FD_REF = 2 };
 typedef struct {
     const uint8_t* cmd; size_t cmd_bytes;          /* gpu_fop records */
     const uint8_t* vtx; size_t vtx_bytes;          /* 32-byte vertices */
     const uint32_t* idx; size_t idx_count;
-    const uint8_t* rec; size_t rec_bytes;          /* records (Z 32 B, full 128 B, sprite 48 B, line pixel 32 B) */
+    const uint8_t* rec; size_t rec_bytes;          /* records (Z 32 B, triangle 256 B, sprite 64 B, line pixel 32 B) */
     const uint8_t* states; size_t state_count;     /* 96-byte StateRecs */
-    const uint8_t* data; size_t data_bytes;        /* patches, CLUT snapshots, block lists */
+    const uint8_t* data; size_t data_bytes;        /* patches, CLUT snapshots, block lists, batch-cut tables */
     uint32_t vblank;
+    uint32_t flags;                                /* GPU_FD_PARTIAL: a checkpoint inside the VBlank (no PRESENT);
+                                                      GPU_FD_REF: REF mode (every draw ROV, depth in zpatch) */
 } gpu_front_frame_data;
-/* Called at every VBlank with the frame just closed (before its buffers are reused). NULL: none. */
+/* Called at every VBlank with the frame just closed (before its buffers are reused), and at every
+ * checkpoint (gpu_front_checkpoint) with the commands built since. NULL: none. */
 void gpu_front_set_sink(void (*sink)(const gpu_front_frame_data* fd, void* user), void* user);
+
+/* ---- checkpoints (lockstep, M3) ----------------------------------------------------------------------
+ * Same-thread frontend only. The hook is called from the primitive hook before primitive `index` (the
+ * VBlank's kick count) is processed; frame_changed: its FRAME or ZBUF register differs from the previous
+ * drawing primitive's. Inside the hook, gpu_front_checkpoint() hands everything built so far to the sink
+ * as a partial frame (pending patches flushed), so hw memory can be compared with the software
+ * renderer's, which has drawn every earlier primitive. */
+void gpu_front_set_checkpoint_hook(void (*hook)(uint32_t index, int frame_changed, void* user), void* user);
+void gpu_front_checkpoint(void);
+/* The blocks whose truth is in a target (GPU-written words), as download entries grouped by writer:
+ * writers[i] is the writer target of out[i]. Returns the count (<= max). */
+int gpu_front_gpu_blocks(gpu_dl_entry* out, uint16_t* writers, int max);
+/* All of GS memory becomes CPU data from gs_vram (patched into vram_buf); every target goes stale and
+ * reloads what it reads (lockstep resync after M4-only passes). */
+void gpu_front_resync(void);
+/* Primitives of this VBlank so far that the REF tier cannot render exactly yet (ALIAS16, target views,
+ * PUNT): the frame's first "post pass" (M4). */
+uint32_t gpu_front_post_prims(void);
+
+/* ---- per-draw data read by the shaders (runtime/gpu/shaders/gs.hlsl, byte offsets there) ------------ */
+enum {                                          /* gpu_staterec.flags */
+    GPU_SF_FBA = 1 << 0, GPU_SF_COLCLAMP = 1 << 1, GPU_SF_TFX_SHIFT = 2, GPU_SF_TCC = 1 << 4, GPU_SF_FGE = 1 << 5,
+    GPU_SF_IIP = 1 << 6, GPU_SF_FST = 1 << 7, GPU_SF_ABE = 1 << 8, GPU_SF_AA1 = 1 << 9, GPU_SF_PABE = 1 << 10,
+    GPU_SF_DTHE = 1 << 11, GPU_SF_TME = 1 << 12, GPU_SF_FB24 = 1 << 13, GPU_SF_SCANMSK_SHIFT = 14, GPU_SF_CTX = 1 << 16,
+};
+typedef struct {                                /* StateRec, 96 bytes */
+    uint64_t tex0, clamp, tex1;                 /* TEX0 (CLD cleared), CLAMP, TEX1 of the context */
+    uint32_t texa;                              /* TA0 | AEM << 15 | TA1 << 16 */
+    uint32_t clut_slot;                         /* CLUT ring slot (indexed formats), else ~0 */
+    uint32_t texsrc;                            /* texture kind (gpu_front.c TK_*) | view target id << 8 */
+    uint32_t fogcol;
+    uint32_t test;                              /* as gs_prim_finalize leaves it: ate | atst << 1 | aref << 4 |
+                                                   afail << 12 | date << 14 | datm << 15 */
+    uint32_t fmask;                             /* frame write mask, stored 32-bit form (1 = keep; CT24: FF000000 set) */
+    uint32_t flags;                             /* GPU_SF_* */
+    uint32_t alpha;                             /* asel | bsel << 2 | csel << 4 | dsel << 6 | fix << 8 */
+    uint32_t zinfo;                             /* ztst | zmsk << 2 | zuse << 3 | Z bits (0 none, 1 16, 2 24, 3 32) << 4 */
+    uint32_t tlev;                              /* texm | cur_level << 2 | mxl << 5 | mmag << 8 | mmin << 9 | lcm << 12 |
+                                                   lshift << 13 | (K & 0xFFF) << 16 */
+    uint32_t mip[6];                            /* mipmap levels 1..6: TBP | TBW << 14 */
+    uint32_t xyoffset, pad;
+} gpu_staterec;
+typedef struct {                                /* ROV triangle, 256 bytes (SV_PrimitiveID) */
+    int64_t zrow, zdy, zdx;                     /* Z 16.16 at x = 0 of row by0, per-row and per-pixel steps */
+    int32_t row[7], dy[7], dx[7];               /* R G B A F U V: low 32 bits of the same (wrapping) */
+    int16_t by0, bx0;                           /* first row, first column of the scissored bounding box */
+    uint32_t state;
+    float lod_q;                                /* Q of the LOD of FST triangles (v2) */
+    double s0, t0, q0, sdy, tdy, qdy, sdx, tdx, qdx;   /* S/T/Q at x = 0 of row by0 and steps (gs_rowstep) */
+    int32_t ea[2], edc[2];                      /* left edges (a > 0): inside where ea * x + ec >= 0 */
+    int64_t ec[2];                              /* at row by0; advances by edc per row */
+    uint32_t nedge;
+    uint32_t cuts, ncuts;                       /* STQ batch cuts: byte offset in the frame's data, count of
+                                                   (int16 y, int16 x) entries (0: none) */
+    uint32_t pad[5];
+} gpu_rec_tri;
+typedef struct {                                /* sprite, 64 bytes (SV_InstanceID) */
+    int16_t x0, y0, x1, y1;                     /* native pixels [x0, x1) x [y0, y1) */
+    uint32_t rgba, z, fog, state;               /* flat colour (v1), stored Z (clamped), fog */
+    int32_t ua, du;                             /* U (1/16 texel << 12) at x0, per pixel */
+    double vc0, vcy;                            /* V of row py: trunc((vc0 + vcy * py) * 4096) (gs_span_start_at) */
+    float lod_q;
+    int32_t va, dv;                             /* V at y0 and per row (ALIAS16) */
+    uint32_t pad;
+} gpu_rec_sprite;
+typedef struct {                                /* line / point pixel, 32 bytes (SV_InstanceID) */
+    int16_t px, py;
+    uint32_t z, rgba, fog_state;                /* stored Z, colour (AA1: coverage alpha), fog | state << 8 */
+    uint32_t s, t, q;                           /* STQ (float bits); FST: U, V (int32, 1/16 texel << 12) in s, t */
+    float lod_q;
+} gpu_rec_linepix;
 /* Inside the sink: take ownership of the frame's buffers (fd's pointers stay valid until
  * gpu_front_release(handle), which any thread may call); the frontend continues with other buffers.
  * Returns the handle (NULL outside a sink call). */

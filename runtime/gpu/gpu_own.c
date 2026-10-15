@@ -2,8 +2,8 @@
  *
  * GS memory is tracked per 256-byte block (16384 blocks), the unit of the GS's own layout (8x8
  * pixels of a 32-bit buffer, 16x8 of a 16-bit one):
- *   blk_cpu[b]     which 32-bit words of the block gs_vram / vram_buf hold the truth for (uploads
- *                  set them word-exactly, a GPU write clears them);
+ *   blk_cpu[b]     which 32-bit words of the block vram_buf holds the truth for (once the pending
+ *                  patches are applied); the other words are GPU data held by the block's writer;
  *   blk_writer[b]  the target that wrote the block last (0: the CPU side, i.e. an upload);
  *   blk_serial[b]  bumped whenever the block's last writer changes.
  * A target's copy of one of its blocks is current iff it recorded the block's present serial
@@ -11,9 +11,14 @@
  * reverse mapping, overlapping targets of any kind (Z16S over Z32, the Binocucom RTTs and the photo
  * copy inside the main Z pages) are separate targets, and every cross-copy is counted:
  *   load      target <- vram_buf (stale block read or partially written by a draw);
- *   download  vram_buf <- target, sample 0 (the CPU side or another target needs GPU-written data).
+ *   download  vram_buf <- target, sample 0, the GPU words only (the CPU side or another target needs
+ *             GPU-written data).
  * Uploads are queued as vram_buf patches and flushed in one op when something reads a pending block,
- * or at the end of the frame (FMV: ~1200 macroblocks -> one patch). */
+ * or at the end of the frame (FMV: ~1200 macroblocks -> one patch). A patch writes only the bits the
+ * uploads wrote (per-word bit masks): gs_vram is the source of uploaded data, not of the rest (the hw
+ * backend never draws into it). An upload over a block holding GPU words that it does not overwrite
+ * completely downloads that block first, so the block's other words reach vram_buf before the patch
+ * (M3: no writer is ever lost). */
 #include "gpu_front_int.h"
 #include "gs_mem_swizzle.h"
 
@@ -30,6 +35,11 @@ static uint32_t blk_stamp[GPU_BLOCKS];   /* upload that last touched the block *
 static uint64_t blk_pend[GPU_BLOCKS / 64];
 static uint16_t pend_list[GPU_BLOCKS];
 static uint32_t npend;
+static uint32_t pend_mask[GPU_BLOCKS * 64];   /* bits of each word written by the pending uploads */
+static uint32_t up_mask[GPU_BLOCKS * 64];     /* bits of each word written by the upload being marked */
+static uint8_t up_full[GPU_BLOCKS];            /* words of the block that upload wrote completely */
+static uint16_t up_list[GPU_BLOCKS];           /* blocks it touches */
+static uint8_t blk_vstale[GPU_BLOCKS];         /* downloaded GPU data in vram_buf that gs_vram lacks */
 static uint8_t page_full[512];           /* blocks of the page with every word CPU-valid */
 static uint8_t page_pend[512];           /* blocks of the page with a pending patch */
 static uint32_t serial_ctr = 1, upload_ctr;
@@ -39,7 +49,9 @@ uint32_t own_epoch;
 static uint32_t next_serial(void) { change_gen++; return ++serial_ctr; }
 
 /* block lists of the op being built */
-static uint16_t load_list[GPU_BLOCKS], dl_list[GPU_BLOCKS];
+static uint16_t load_list[GPU_BLOCKS];
+static gpu_dl_entry dl_list[GPU_BLOCKS], dl_tmp[GPU_BLOCKS];
+static uint16_t dl_writer[GPU_BLOCKS];
 static uint32_t nload, ndl;
 
 void own_reset(void) {
@@ -51,11 +63,26 @@ void own_reset(void) {
     for (int i = 0; i < GPU_BLOCKS; i++) { blk_serial[i] = 1; blk_cpu[i] = ALL; }
     memset(blk_stamp, 0, sizeof blk_stamp);
     memset(blk_pend, 0, sizeof blk_pend);
+    memset(pend_mask, 0, sizeof pend_mask);
+    memset(blk_vstale, 0, sizeof blk_vstale);
     npend = 0;
+    nload = ndl = 0;
     memset(page_full, 32, sizeof page_full);
     memset(page_pend, 0, sizeof page_pend);
     serial_ctr = 1;
+    upload_ctr = 0;
     own_gen++;
+}
+
+/* T's local block holding absolute block b, or -1 */
+static int target_local(gpu_target* T, uint32_t b) {
+    if (!T->inv) {                       /* absolute block -> local block (-1: not T's) */
+        T->inv = malloc(GPU_BLOCKS * sizeof *T->inv);
+        if (!T->inv) { fprintf(stderr, "[gpu_front] out of memory\n"); exit(1); }
+        memset(T->inv, 0xFF, GPU_BLOCKS * sizeof *T->inv);
+        for (int i = T->bcols * T->brows - 1; i >= 0; i--) T->inv[T->babs[i]] = (int16_t)i;
+    }
+    return T->inv[b & (GPU_BLOCKS - 1)];
 }
 
 int own_target_kind_of_zpsm(int zpsm) {
@@ -191,16 +218,27 @@ gpu_target* own_target(int kind, int psm, uint32_t base, uint32_t fbw, int rows)
 
 /* ---- loads, downloads ---------------------------------------------------------------------------- */
 
-static void flush_lists(const gpu_target* T) {
-    if (ndl) {
+/* one download op per writer target */
+static void flush_downloads(void) {
+    while (ndl) {
+        uint16_t w = dl_writer[0];
+        uint32_t n = 0, k = 0;
+        for (uint32_t i = 0; i < ndl; i++) {
+            if (dl_writer[i] == w) dl_tmp[n++] = dl_list[i];
+            else { dl_list[k] = dl_list[i]; dl_writer[k] = dl_writer[i]; k++; }
+        }
+        ndl = k;
         gpu_fop_blocks* o = gf_cmd(GPU_FOP_DOWNLOAD, sizeof *o);
-        o->target = T ? T->id : 0;
-        o->n = ndl;
-        o->data_off = gf_data(dl_list, ndl * 2);
+        o->target = w;
+        o->n = n;
+        o->data_off = gf_data(dl_tmp, n * (uint32_t)sizeof *dl_tmp);
         gf.downloads++;
-        gf.download_blocks += ndl;
-        ndl = 0;
+        gf.download_blocks += n;
     }
+}
+
+static void flush_lists(const gpu_target* T) {
+    if (ndl) flush_downloads();
     if (nload) {
         gpu_fop_blocks* o = gf_cmd(GPU_FOP_LOAD, sizeof *o);
         o->target = T->id;
@@ -214,12 +252,24 @@ static void flush_lists(const gpu_target* T) {
 
 static int pending(uint32_t b) { return (int)(blk_pend[b >> 6] >> (b & 63) & 1); }
 
-/* GPU data of block b that the CPU side lacks goes to vram_buf (sample 0 of its writer) */
+/* GPU data of block b that vram_buf lacks goes there (sample 0 of its writer, the GPU words only) */
 static void download_block(uint32_t b) {
     if (gf_trace)
         fprintf(stderr, "[front] download block %04X (page %03X) writer %u cpu %016llX\n", b, b >> 5, blk_writer[b],
                 (unsigned long long)blk_cpu[b]);
-    dl_list[ndl++] = (uint16_t)b;
+    uint64_t words = ~blk_cpu[b];
+    uint16_t w = blk_writer[b];
+    if (words) {
+        int local = w && gt[w].used ? target_local(&gt[w], b) : -1;
+        if (local >= 0) {
+            gpu_dl_entry e = { (uint16_t)local, (uint16_t)b, 0, words };
+            dl_list[ndl] = e;
+            dl_writer[ndl++] = w;
+        } else {
+            gf.lost_writer++;            /* (never: uploads over GPU words download first) */
+        }
+        blk_vstale[b] = 1;               /* vram_buf has data gs_vram lacks */
+    }
     set_cpu(b, ALL);
 }
 
@@ -303,13 +353,8 @@ void own_draw(gpu_target* T, int x0, int y0, int x1, int y1, int writes, int opa
 }
 
 void own_blocks(gpu_target* T, const uint16_t* blocks, int n, int writes) {
-    if (!T->inv) {                       /* absolute block -> local block (-1: not T's) */
-        T->inv = malloc(GPU_BLOCKS * sizeof *T->inv);
-        memset(T->inv, 0xFF, GPU_BLOCKS * sizeof *T->inv);
-        for (int i = T->bcols * T->brows - 1; i >= 0; i--) T->inv[T->babs[i]] = (int16_t)i;
-    }
     for (int k = 0; k < n; k++) {
-        int i = T->inv[blocks[k]];
+        int i = target_local(T, blocks[k]);
         if (i < 0) continue;
         int bx = i % T->bcols, by = i / T->bcols;
         own_draw(T, bx * T->bw, by * T->bh, bx * T->bw + T->bw - 1, by * T->bh + T->bh - 1, writes, 0);
@@ -466,35 +511,73 @@ int own_rect_blocks(int psm, uint32_t bp, uint32_t bw, int x0, int y0, int x1, i
 
 /* ---- uploads -------------------------------------------------------------------------------------- */
 
+/* the 32-bit word texel (x, y) (0..2047) of a psm buffer lives in, and its bits there */
+static uint32_t texel_word(int psm, uint32_t bp, uint32_t bw, uint32_t x, uint32_t y, uint32_t* mask) {
+    uint32_t a;
+    switch (psm) {
+    case PSMCT16: a = gs_addr16(gs_swz_ct16, bp, bw, x, y); *mask = 0xFFFFu << ((a & 1) * 16); return a >> 1;
+    case PSMCT16S: a = gs_addr16(gs_swz_ct16s, bp, bw, x, y); *mask = 0xFFFFu << ((a & 1) * 16); return a >> 1;
+    case PSMZ16: a = gs_addr16(gs_swz_z16, bp, bw, x, y); *mask = 0xFFFFu << ((a & 1) * 16); return a >> 1;
+    case PSMZ16S: a = gs_addr16(gs_swz_z16s, bp, bw, x, y); *mask = 0xFFFFu << ((a & 1) * 16); return a >> 1;
+    case PSMT8: a = gs_addr8(bp, bw, x, y); *mask = 0xFFu << ((a & 3) * 8); return a >> 2;
+    case PSMT4: a = gs_addr4(bp, bw, x, y); *mask = 0xFu << ((a & 7) * 4); return a >> 3;
+    case PSMZ32: *mask = 0xFFFFFFFFu; return gs_addr32(gs_swz_z32, bp, bw, x, y);
+    case PSMZ24: *mask = 0x00FFFFFFu; return gs_addr32(gs_swz_z32, bp, bw, x, y);
+    case PSMCT24: *mask = 0x00FFFFFFu; return gs_addr32(gs_swz_ct32, bp, bw, x, y);
+    case PSMT8H: *mask = 0xFF000000u; return gs_addr32(gs_swz_ct32, bp, bw, x, y);
+    case PSMT4HL: *mask = 0x0F000000u; return gs_addr32(gs_swz_ct32, bp, bw, x, y);
+    case PSMT4HH: *mask = 0xF0000000u; return gs_addr32(gs_swz_ct32, bp, bw, x, y);
+    default: *mask = 0xFFFFFFFFu; return gs_addr32(gs_swz_ct32, bp, bw, x, y);
+    }
+}
+
+static void pend_add(uint32_t b) {
+    if (pending(b)) return;
+    blk_pend[b >> 6] |= 1ull << (b & 63);
+    pend_list[npend++] = (uint16_t)b;
+    page_pend[b >> 5]++;
+}
+
 void own_upload(int psm, uint32_t bp, uint32_t bw, int x0, int y0, int x1, int y1) {
     if (x1 > 2048) { x0 = 0; x1 = 2048; }
     if (y1 > 2048) { y0 = 0; y1 = 2048; }
     if (gs_psm_bpp(psm) == 0) psm = PSMCT32;
     upload_ctr++;
     own_upload_gen++;
-    /* PSMCT24/Z24 (low 3 bytes) and T8H/T4HL/T4HH (part of the top byte) uploads keep the rest of
-     * each word: such a word is CPU-valid afterwards only if it was before */
-    int partial_word = psm == PSMCT24 || psm == PSMZ24 || psm == PSMT8H || psm == PSMT4HL || psm == PSMT4HH;
+    /* the bits of every word this upload writes (PSMCT24/Z24: the low 3 bytes, T8H/T4HL/T4HH: part
+     * of the top byte, 16/8/4-bit formats: their half, byte, nibble) */
+    int n = 0;
     for (int y = y0; y < y1; y++)
         for (int x = x0; x < x1; x++) {
-            uint32_t w = word_of(psm, bp, bw, (uint32_t)x, (uint32_t)y), b = w >> 6;
+            uint32_t m, w = texel_word(psm, bp, bw, (uint32_t)x, (uint32_t)y, &m), b = w >> 6;
             if (blk_stamp[b] != upload_ctr) {
                 blk_stamp[b] = upload_ctr;
-                if (blk_writer[b] || blk_cpu[b] != ALL) {
-                    /* GPU-written block (or partly): every target copy goes stale */
-                    blk_writer[b] = 0;
-                    blk_serial[b] = next_serial();
-                } else {
-                    blk_serial[b] = next_serial();          /* targets that loaded it are stale too */
-                }
-                if (!pending(b)) {
-                    blk_pend[b >> 6] |= 1ull << (b & 63);
-                    pend_list[npend++] = (uint16_t)b;
-                    page_pend[b >> 5]++;
-                }
+                up_full[b] = 0;
+                memset(up_mask + (size_t)b * 64, 0, 256);
+                up_list[n++] = (uint16_t)b;
             }
-            if (!partial_word) set_cpu(b, blk_cpu[b] | 1ull << (w & 63));
+            uint32_t o = up_mask[w];
+            if (o != 0xFFFFFFFFu && (o | m) == 0xFFFFFFFFu) up_full[b]++;
+            up_mask[w] = o | m;
         }
+    /* GPU words the upload does not overwrite completely reach vram_buf first (download), so the
+     * block is all vram_buf data afterwards and the patch only adds the uploaded bits */
+    for (int i = 0; i < n; i++) {
+        uint32_t b = up_list[i];
+        if (blk_cpu[b] != ALL && up_full[b] != 64) download_block(b);
+    }
+    if (ndl) flush_downloads();
+    for (int i = 0; i < n; i++) {
+        uint32_t b = up_list[i];
+        blk_writer[b] = 0;
+        blk_serial[b] = next_serial();   /* every target copy (writer or loaded) goes stale */
+        set_cpu(b, ALL);
+        if (up_full[b] == 64) blk_vstale[b] = 0;
+        pend_add(b);
+        uint32_t* pm = pend_mask + (size_t)b * 64;
+        const uint32_t* um = up_mask + (size_t)b * 64;
+        for (int k = 0; k < 64; k++) pm[k] |= um[k];
+    }
 }
 
 void own_flush_patches(void) {
@@ -502,17 +585,61 @@ void own_flush_patches(void) {
     gpu_fop_blocks* o = gf_cmd(GPU_FOP_PATCH, sizeof *o);
     o->n = npend;
     o->data_off = gf_data(pend_list, npend * 2);
-    uint32_t off = gf_data(NULL, npend * 256);
+    uint32_t off = gf_data(NULL, npend * 512);
     uint8_t* d = gf_data_ptr(off);
+    const uint8_t* src = gf_vram ? gf_vram : gs_vram;
     for (uint32_t i = 0; i < npend; i++) {
         uint32_t b = pend_list[i];
-        memcpy(d + (size_t)i * 256, (gf_vram ? gf_vram : gs_vram) + (size_t)b * 256, 256);
+        memcpy(d + (size_t)i * 256, src + (size_t)b * 256, 256);
+        memcpy(d + (size_t)npend * 256 + (size_t)i * 256, pend_mask + (size_t)b * 64, 256);
+        memset(pend_mask + (size_t)b * 64, 0, 256);
         blk_pend[b >> 6] &= ~(1ull << (b & 63));
         page_pend[b >> 5]--;
     }
     gf.patches++;
     gf.patch_bytes += npend * 256;
     npend = 0;
+}
+
+/* lockstep resync: gs_vram is the truth everywhere (patched whole), every target copy is stale */
+void own_resync(void) {
+    for (uint32_t b = 0; b < GPU_BLOCKS; b++) {
+        blk_writer[b] = 0;
+        blk_serial[b] = next_serial();
+        set_cpu(b, ALL);
+        blk_vstale[b] = 0;
+        pend_add(b);
+        memset(pend_mask + (size_t)b * 64, 0xFF, 256);
+    }
+    own_gen++;
+    own_upload_gen++;
+    for (int i = 1; i <= GPU_MAX_TARGETS; i++) gt[i].clean = 0;
+}
+
+int own_gpu_blocks(gpu_dl_entry* out, uint16_t* writers, int max) {
+    int n = 0;
+    for (int w = 1; w <= GPU_MAX_TARGETS; w++) {
+        gpu_target* T = &gt[w];
+        if (!T->used) continue;
+        for (int i = 0; i < T->bcols * T->brows && n < max; i++) {
+            uint32_t b = T->babs[i];
+            if (blk_writer[b] != w || blk_cpu[b] == ALL || target_local(T, b) != i) continue;
+            gpu_dl_entry e = { (uint16_t)i, (uint16_t)b, 0, ~blk_cpu[b] };
+            out[n] = e;
+            writers[n++] = (uint16_t)w;
+        }
+    }
+    return n;
+}
+
+/* some block of the rect holds downloaded data gs_vram lacks (CLUT loads read gs_vram) */
+int own_mem_vstale(int psm, uint32_t bp, uint32_t bw, int u0, int v0, int u1, int v1) {
+    for (int v = v0; v <= v1; v++)
+        for (int u = u0; u <= u1; u++) {
+            uint32_t m, w = texel_word(psm, bp, bw, (uint32_t)u & 2047u, (uint32_t)v & 2047u, &m);
+            if (blk_vstale[w >> 6]) return 1;
+        }
+    return 0;
 }
 
 /* ---- frame end ----------------------------------------------------------------------------------- */

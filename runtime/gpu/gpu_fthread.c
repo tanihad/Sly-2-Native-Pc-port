@@ -172,9 +172,9 @@ static void send_blocks(void) {
 #define PF(f) offsetof(gs_prim, f)
 static const uint16_t p_fields[] = {
     PF(ffmt), PF(fpsm), PF(fpage), PF(fbw), PF(fbmsk), PF(fmask), PF(zfmt), PF(zpsm), PF(ztst), PF(zmsk), PF(zuse),
-    PF(zpage), PF(zbw), PF(zmax), PF(ate), PF(atst), PF(aref), PF(afail), PF(date), PF(abe), PF(asel), PF(bsel), PF(csel),
+    PF(zpage), PF(zbw), PF(zmax), PF(ate), PF(atst), PF(aref), PF(afail), PF(date), PF(datm), PF(abe), PF(asel), PF(bsel), PF(csel),
     PF(dsel), PF(fix), PF(pabe), PF(fba), PF(colclamp), PF(dthe), PF(fge), PF(tme), PF(fst), PF(tfx), PF(tcc), PF(texm),
-    PF(tw16), PF(th16), PF(scanmsk), PF(scx0), PF(scx1), PF(scy0), PF(scy1),
+    PF(tw16), PF(th16), PF(scanmsk), PF(scx0), PF(scx1), PF(scy0), PF(scy1), PF(iip),
 };
 #undef PF
 static const uint8_t r_used[] = {

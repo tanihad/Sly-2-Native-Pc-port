@@ -96,6 +96,10 @@ int  own_shadow_need(gpu_target* T, int x0, int y0, int x1, int y1, int* full);
 void own_upload(int psm, uint32_t bp, uint32_t bw, int x0, int y0, int x1, int y1);
 void own_flush_patches(void);
 void own_frame_end(const uint64_t priv[16]);        /* families, eviction, counters */
+void own_resync(void);                   /* gpu_front_resync */
+int  own_gpu_blocks(gpu_dl_entry* out, uint16_t* writers, int max);   /* gpu_front_gpu_blocks */
+/* 1 when a block of the rect holds downloaded GPU data that gs_vram lacks (CLUT loads read gs_vram) */
+int  own_mem_vstale(int psm, uint32_t bp, uint32_t bw, int u0, int v0, int u1, int v1);
 int  own_target_kind_of_zpsm(int zpsm);
 
 /* The 256-byte blocks of a transfer rectangle [x0,x1) x [y0,y1) (psm units; the own_upload rule for

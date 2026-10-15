@@ -1,0 +1,605 @@
+// The GS pixel pipeline on the ROV tier (notes/d3d11-renderer.md 4.3, milestone M3 "REF tier"): every
+// fragment runs the software renderer's pipeline (runtime/gs_draw_pixel.c) in integers, in primitive
+// order per pixel (rasterizer-ordered views):
+//   attributes   from the frontend's per-primitive records (gpu_front.h gpu_rec_*): the software
+//                renderer's own 16.16 row stepping (triangles: row + dy * rows + dx * x, modulo 2^32;
+//                Z in 64 bits), sprites' U/V rule, line/point pixels as the DDA produced them;
+//                perspective S/T/Q stepped in floats exactly as the software renderer steps them along
+//                its span pieces (64-pixel columns, batch cuts from the frontend's table);
+//   texture      direct sampling from vram_buf through the swizzle tables (all PSMs incl. T8H/T4HL/
+//                T4HH), CLUT ring, TEXA, GS 4-bit bilinear, REPEAT/CLAMP/REGION modes, LOD and mipmaps;
+//                or a target view (CT32/CT24/alpha index) at sample 0 (M4 refines);
+//   TFX, fog, alpha test + AFAIL, DATE/DATM, Z test + write (zpatch holds the stored Z word),
+//   blend ((A-B)*C>>7)+D with COLCLAMP or wrap, PABE, FBA, FBMSK per bit.
+// Colour targets hold the raw GS bytes (R8G8B8A8_UINT); 16-bit frames are ALIAS16 (M4).
+#include "int64.hlsli"
+#include "gsmem.hlsli"
+
+#ifndef PRIM
+#define PRIM 0                           // 0 triangles, 1 sprites, 2 line / point pixels
+#endif
+
+cbuffer draw_cb : register(b0) {
+    uint rec_first;                      // byte offset of the draw's first record
+    uint draw_flags;                     // 1: colour target bound (u0), 2: depth target bound (u1)
+    uint kx, ky;                         // samples per native pixel of the bound targets
+    float2 ndc_scale, ndc_bias;          // NDC = d3d pixel * scale + bias (power-of-two viewport: exact)
+    uint vkx, vky;                       // texture view target samples
+    uint2 pad0;
+};
+
+ByteAddressBuffer vram : register(t0);
+Texture2D<uint4> view : register(t1);
+ByteAddressBuffer recs : register(t3);
+ByteAddressBuffer states : register(t4);
+ByteAddressBuffer clut : register(t5);
+ByteAddressBuffer fdata : register(t7);
+
+RasterizerOrderedTexture2D<uint4> rov_c : register(u0);
+RasterizerOrderedTexture2D<uint2> rov_z : register(u1);
+
+// ---- vertex shaders --------------------------------------------------------------------------------
+struct VR {
+    float4 pos : SV_Position;
+    nointerpolation uint rec : REC;      // record byte offset (sprites, line pixels)
+};
+
+float4 clip_of(float2 d3d) {             // d3d pixel coordinates -> clip space
+    float2 p = d3d * ndc_scale + ndc_bias;
+    return float4(p.x, -p.y, 0.5, 1.0);
+}
+
+struct VIn {
+    float2 xy : POSITION;                // GS coordinates (12.4 minus XYOFFSET, exact)
+    uint rgba : COLOR0;
+    uint fog_state : COLOR1;
+    float3 stq : TEXCOORD0;
+};
+
+// triangles: D3D pixel x * k + i has its centre at GS position x + i / k (sample 0 = the native pixel)
+VR vs_ref_tri(VIn i) {
+    VR o;
+    o.pos = clip_of(float2(i.xy.x * (float)kx + 0.5, i.xy.y * (float)ky + 0.5));
+    o.rec = 0u;
+    return o;
+}
+
+// sprites: the native rectangle [x0, x1) x [y0, y1), every sample of a native pixel covered (single rate)
+VR vs_ref_sprite(uint vid : SV_VertexID, uint inst : SV_InstanceID) {
+    uint base = rec_first + inst * 64u;
+    uint2 r = recs.Load2(base);
+    float x0 = (float)((int)(r.x << 16) >> 16), y0 = (float)((int)r.x >> 16);
+    float x1 = (float)((int)(r.y << 16) >> 16), y1 = (float)((int)r.y >> 16);
+    VR o;
+    o.pos = clip_of(float2(((vid & 1u) ? x1 : x0) * (float)kx, ((vid & 2u) ? y1 : y0) * (float)ky));
+    o.rec = base;
+    return o;
+}
+
+// line / point pixels: one native pixel each
+VR vs_ref_linepix(uint vid : SV_VertexID, uint inst : SV_InstanceID) {
+    uint base = rec_first + inst * 32u;
+    uint r = recs.Load(base);
+    float px = (float)((int)(r << 16) >> 16), py = (float)((int)r >> 16);
+    VR o;
+    o.pos = clip_of(float2((px + ((vid & 1u) ? 1.0 : 0.0)) * (float)kx, (py + ((vid & 2u) ? 1.0 : 0.0)) * (float)ky));
+    o.rec = base;
+    return o;
+}
+
+// ---- state ------------------------------------------------------------------------------------------
+struct St {
+    uint4 tex0clamp;                     // TEX0 lo, hi, CLAMP lo, hi
+    uint2 tex1;
+    uint texa, clut_slot, texsrc, fogcol, test, fmask, flags, alpha, zinfo, tlev;
+    uint mip[6];
+};
+
+St load_state(uint idx) {
+    uint b = idx * 96u;
+    St s;
+    s.tex0clamp = states.Load4(b);
+    s.tex1 = states.Load2(b + 16u);
+    uint4 a = states.Load4(b + 24u), c = states.Load4(b + 40u), d = states.Load4(b + 56u);
+    s.texa = a.x; s.clut_slot = a.y; s.texsrc = a.z; s.fogcol = a.w;
+    s.test = c.x; s.fmask = c.y; s.flags = c.z; s.alpha = c.w;
+    s.zinfo = d.x; s.tlev = d.y;
+    s.mip[0] = d.z; s.mip[1] = d.w;
+    uint4 e = states.Load4(b + 72u);
+    s.mip[2] = e.x; s.mip[3] = e.y; s.mip[4] = e.z; s.mip[5] = e.w;
+    return s;
+}
+
+#define SF_FBA 1u
+#define SF_COLCLAMP 2u
+#define SF_TCC 16u
+#define SF_FGE 32u
+#define SF_FST 128u
+#define SF_ABE 256u
+#define SF_AA1 512u
+#define SF_PABE 1024u
+#define SF_TME 4096u
+#define SF_FB24 8192u
+
+// ---- numeric helpers (gs_draw_pixel.c) -----------------------------------------------------------
+uint clamp255i(int v) { return v < 0 ? 0u : v > 255 ? 255u : (uint)v; }
+
+int f2i(float x) {                       // floor, saturating, NaN -> large negative
+    if (!(x > -1e8)) return -100000000;
+    if (x > 1e8) return 100000000;
+    int i = (int)x;
+    return (x < (float)i) ? i - 1 : i;
+}
+
+// 1.0f / q correctly rounded (the C division): Newton in double, then the nearest float among the
+// neighbours by the exact residual r * q - 1 (exact in double)
+float rcp_exact(float q) {
+    precise float r0 = 1.0 / q;
+    if (!(abs(q) > 0.0) || !(abs(r0) < 3.0e38) || !(abs(r0) > 1.0e-37)) return r0;
+    double dq = (double)q, d0 = (double)r0;
+    precise double qd = dq * d0;
+    precise double c2 = 2.0L - qd;
+    precise double d1 = d0 * c2;
+    float r = (float)d1;
+    float best = r;
+    precise double rq = (double)r * dq;
+    precise double e = rq - 1.0L;
+    double be = e < 0.0 ? -e : e;
+    [unroll] for (int k = 0; k < 2; k++) {
+        float c = asfloat(k == 0 ? asuint(r) + 1u : asuint(r) - 1u);
+        precise double cq = (double)c * dq;
+        precise double ec = cq - 1.0L;
+        ec = ec < 0.0 ? -ec : ec;
+        if (ec < be) { be = ec; best = c; }
+    }
+    return best;
+}
+
+double i64_to_double(i64 v) { return (double)asint(v.y) * 4294967296.0 + (double)v.x; }
+
+// ---- texture ---------------------------------------------------------------------------------------
+struct Lvl { uint bp, bw, w, h; int ulo, uhi, umsk, ufix, vlo, vhi, vmsk, vfix; };
+
+void axis_params(uint mode, int mn, int mx, int size, uint level, out int lo, out int hi, out int msk, out int fix) {
+    fix = 0;
+    if (mode == 0u) { lo = -536870912; hi = 536870911; msk = size - 1; }                 // REPEAT
+    else if (mode == 1u) { lo = 0; hi = size - 1; msk = -1; }                           // CLAMP
+    else if (mode == 2u) {                                                              // REGION_CLAMP
+        mn >>= level; mx >>= level;
+        hi = mx < size - 1 ? mx : size - 1;
+        lo = mn < hi ? mn : hi;
+        msk = -1;
+    } else { lo = -536870912; hi = 536870911; msk = mn & (size - 1); fix = mx & (size - 1); }   // REGION_REPEAT
+}
+
+Lvl level_of(St st, uint l) {
+    Lvl L;
+    uint t0 = st.tex0clamp.x, t1 = st.tex0clamp.y;
+    uint tw = (t0 >> 26) & 15u, th = ((t0 >> 30) | (t1 << 2)) & 15u;
+    tw = tw > 10u ? 10u : tw;
+    th = th > 10u ? 10u : th;
+    if (l == 0u) { L.bp = t0 & 0x3FFFu; L.bw = (t0 >> 14) & 0x3Fu; }
+    else { uint m = st.mip[l - 1u]; L.bp = m & 0x3FFFu; L.bw = (m >> 14) & 0x3Fu; }
+    uint lw = tw > l ? tw - l : 0u, lh = th > l ? th - l : 0u;
+    L.w = 1u << lw; L.h = 1u << lh;
+    uint c0 = st.tex0clamp.z, c1 = st.tex0clamp.w;
+    uint wms = c0 & 3u, wmt = (c0 >> 2) & 3u;
+    int minu = (int)((c0 >> 4) & 0x3FFu), maxu = (int)((c0 >> 14) & 0x3FFu);
+    int minv = (int)((c0 >> 24) | ((c1 & 3u) << 8)), maxv = (int)((c1 >> 2) & 0x3FFu);
+    axis_params(wms, minu, maxu, (int)L.w, l, L.ulo, L.uhi, L.umsk, L.ufix);
+    axis_params(wmt, minv, maxv, (int)L.h, l, L.vlo, L.vhi, L.vmsk, L.vfix);
+    return L;
+}
+
+int wrapc(int c, int lo, int hi, int msk, int fix) {
+    c = c < lo ? lo : c;
+    c = c > hi ? hi : c;
+    return (c & msk) | fix;
+}
+
+uint vw(uint w) { return vram.Load(w * 4u); }
+
+uint expand16(uint c, uint texa) {
+    uint rgb = ((c & 0x1Fu) << 3) | ((c & 0x3E0u) << 6) | ((c & 0x7C00u) << 9);
+    uint ta0 = texa & 0xFFu, aem = (texa >> 15) & 1u, ta1 = (texa >> 16) & 0xFFu;
+    uint a = (c & 0x8000u) ? ta1 : (aem != 0u && (c & 0x7FFFu) == 0u) ? 0u : ta0;
+    return rgb | (a << 24);
+}
+
+uint clut_half(uint slot, uint p) {
+    uint w = clut.Load(slot * 1024u + (p & ~1u) * 2u);
+    return (p & 1u) ? w >> 16 : w & 0xFFFFu;
+}
+
+uint clut_lookup(St st, uint idx) {
+    uint t1 = st.tex0clamp.y;
+    uint cpsm = (t1 >> 19) & 15u, csa = (t1 >> 24) & 31u;
+    uint p = (csa * 16u + idx) & 511u;
+    if (cpsm == PSMCT16 || cpsm == PSMCT16S) return expand16(clut_half(st.clut_slot, p), st.texa);
+    return clut_half(st.clut_slot, p) | (clut_half(st.clut_slot, p ^ 256u) << 16);
+}
+
+uint view_word(uint x, uint y) {
+    uint4 c = view.Load(int3((int)(x * vkx), (int)(y * vky), 0));
+    return c.x | (c.y << 8) | (c.z << 16) | (c.w << 24);
+}
+
+// one texel (x, y wrapped, 0..2047) of level L as 0xAABBGGRR (gs_tex_fetch)
+uint texel(St st, Lvl L, uint x, uint y) {
+    uint psm = (st.tex0clamp.x >> 20) & 0x3Fu;
+    bool isview = (st.texsrc & 0xFFu) >= 3u;
+    uint res;
+    if (psm == PSMCT16 || psm == PSMCT16S || psm == PSMZ16 || psm == PSMZ16S) {
+        uint h = gs_addr16(swz_tab_of(psm), L.bp, L.bw, x, y);
+        res = expand16((vw(h >> 1) >> ((h & 1u) * 16u)) & 0xFFFFu, st.texa);
+    } else if (psm == PSMT8) {
+        uint a = gs_addr8(L.bp, L.bw, x, y);
+        res = clut_lookup(st, (vw(a >> 2) >> ((a & 3u) * 8u)) & 0xFFu);
+    } else if (psm == PSMT4) {
+        uint n4 = gs_addr4(L.bp, L.bw, x, y);
+        res = clut_lookup(st, (vw(n4 >> 3) >> ((n4 & 7u) * 4u)) & 15u);
+    } else {
+        uint v = isview ? view_word(x, y) : vw(gs_addr32(swz_tab_of(psm), L.bp, L.bw, x, y));
+        if (psm == PSMT8H) res = clut_lookup(st, v >> 24);
+        else if (psm == PSMT4HL) res = clut_lookup(st, (v >> 24) & 15u);
+        else if (psm == PSMT4HH) res = clut_lookup(st, v >> 28);
+        else if (psm == PSMCT24 || psm == PSMZ24) {
+            v &= 0xFFFFFFu;
+            uint ta0 = st.texa & 0xFFu, aem = (st.texa >> 15) & 1u;
+            res = v | (((aem != 0u && v == 0u) ? 0u : ta0) << 24);
+        } else res = v;                  // CT32, Z32 (unknown PSMs read as CT32, as gs_tex_fetch)
+    }
+    return res;
+}
+// GS bilinear: 4-bit weights, sum(texel * wu * wv) >> 8 per channel (gs_draw_pixel.c bilerp)
+uint bilerp(uint a, uint b, uint c, uint d, uint fu, uint fv) {
+    uint r = 0u;
+    [unroll] for (uint ch = 0u; ch < 32u; ch += 8u) {
+        uint vl = ((a >> ch) & 255u) * (16u - fv) + ((c >> ch) & 255u) * fv;
+        uint vr = ((b >> ch) & 255u) * (16u - fv) + ((d >> ch) & 255u) * fv;
+        r |= ((vl * (16u - fu) + vr * fu) >> 8) << ch;
+    }
+    return r;
+}
+
+uint tex_level(St st, uint l, int U, int V, bool bil) {
+    Lvl L = level_of(st, l);
+    U >>= l;
+    V >>= l;
+    uint res;
+    if (!bil) {
+        uint x = (uint)wrapc(U >> 4, L.ulo, L.uhi, L.umsk, L.ufix), y = (uint)wrapc(V >> 4, L.vlo, L.vhi, L.vmsk, L.vfix);
+        res = texel(st, L, x & 2047u, y & 2047u);
+    } else {
+        U -= 8;
+        V -= 8;
+        uint fu = (uint)U & 15u, fv = (uint)V & 15u;
+        int u0 = U >> 4, v0 = V >> 4;
+        uint xa = (uint)wrapc(u0, L.ulo, L.uhi, L.umsk, L.ufix) & 2047u, xb = (uint)wrapc(u0 + 1, L.ulo, L.uhi, L.umsk, L.ufix) & 2047u;
+        uint ya = (uint)wrapc(v0, L.vlo, L.vhi, L.vmsk, L.vfix) & 2047u, yb = (uint)wrapc(v0 + 1, L.vlo, L.vhi, L.vmsk, L.vfix) & 2047u;
+        res = bilerp(texel(st, L, xa, ya), texel(st, L, xb, ya), texel(st, L, xa, yb), texel(st, L, xb, yb), fu, fv);
+    }
+    return res;
+}
+
+uint lerp_rgba(uint a, uint b, uint f) {   // f 0..16
+    uint r = 0u;
+    [unroll] for (uint ch = 0u; ch < 32u; ch += 8u) r |= ((((a >> ch) & 255u) * (16u - f) + ((b >> ch) & 255u) * f) >> 4) << ch;
+    return r;
+}
+
+// LOD in 1/16 units: LCM 0: -(log2|Q| as 4-bit fraction) << L + K, LCM 1: K
+int lod16_of(St st, float q) {
+    int k = (int)(st.tlev << 4) >> 20;   // signed 12 bits at bit 16
+    if ((st.tlev >> 12) & 1u) return k;
+    uint u = asuint(q) & 0x7FFFFFFFu;
+    if (u == 0u) return 0x7FFF;
+    int e = (int)((u >> 23) & 0xFFu) - 127, m = (int)((u >> 19) & 15u);
+    return -(e * 16 + m) * (1 << ((st.tlev >> 13) & 3u)) + k;
+}
+
+uint tex_sample(St st, int U, int V, float lq) {
+    uint texm = st.tlev & 3u, cur = (st.tlev >> 2) & 7u;
+    uint res;
+    if (texm != 3u) res = tex_level(st, cur, U, V, texm == 2u);
+    else {
+        uint mxl = (st.tlev >> 5) & 7u, mmag = (st.tlev >> 8) & 1u, mmin = (st.tlev >> 9) & 7u;
+        int lod = lod16_of(st, lq);
+        if (lod <= 0) res = tex_level(st, 0u, U, V, mmag != 0u);
+        else if (mmin == 0u) res = tex_level(st, 0u, U, V, false);
+        else if (mmin == 1u) res = tex_level(st, 0u, U, V, true);
+        else if (mmin == 2u || mmin == 4u) {                             // *_MIPMAP_NEAREST
+            uint l = (uint)((lod + 8) >> 4);
+            res = tex_level(st, l > mxl ? mxl : l, U, V, mmin == 4u);
+        } else {                                                        // *_MIPMAP_LINEAR
+            uint l = (uint)(lod >> 4);
+            bool bl = mmin == 5u;
+            if (l >= mxl) res = tex_level(st, mxl, U, V, bl);
+            else res = lerp_rgba(tex_level(st, l, U, V, bl), tex_level(st, l + 1u, U, V, bl), (uint)lod & 15u);
+        }
+    }
+    return res;
+}
+// texture function (tfx_batch): colour x texel, GS alpha 0x80 = 1.0
+uint tfx(uint tf, bool tcc, uint c, uint t) {
+    uint cr = c & 255u, cg = (c >> 8) & 255u, cb = (c >> 16) & 255u, ca = c >> 24;
+    uint tr = t & 255u, tg = (t >> 8) & 255u, tb = (t >> 16) & 255u, ta = t >> 24;
+    if (tf == 0u) {                      // MODULATE
+        uint r = min((cr * tr) >> 7, 255u), g = min((cg * tg) >> 7, 255u), b = min((cb * tb) >> 7, 255u);
+        uint a = tcc ? min((ca * ta) >> 7, 255u) : ca;
+        return r | (g << 8) | (b << 16) | (a << 24);
+    }
+    if (tf == 1u) return tcc ? t : (t & 0xFFFFFFu) | (c & 0xFF000000u);   // DECAL
+    uint r = min(((cr * tr) >> 7) + ca, 255u), g = min(((cg * tg) >> 7) + ca, 255u), b = min(((cb * tb) >> 7) + ca, 255u);
+    uint a = !tcc ? ca : tf == 2u ? min(ta + ca, 255u) : ta;              // HIGHLIGHT, HIGHLIGHT2
+    return r | (g << 8) | (b << 16) | (a << 24);
+}
+
+bool atst_pass(uint atst, uint aref, uint a) {
+    switch (atst) {
+    case 0u: return false;
+    case 1u: return true;
+    case 2u: return a < aref;
+    case 3u: return a <= aref;
+    case 4u: return a == aref;
+    case 5u: return a >= aref;
+    case 6u: return a > aref;
+    default: return a != aref;
+    }
+}
+
+int sel3(uint s, int src, int dst) { return s == 0u ? src : s == 1u ? dst : 0; }
+
+// ---- perspective S/T/Q of triangles (gs_draw.c draw_triangle, gs_draw_pixel.c gs_batch_span) ------
+// the first pixel of row py inside the left edges (gs_tri_row's xl)
+int edge_min_x(int a, int dc, i64 c0, int rows) {
+    i64 c = i64_add(c0, i64_mul_i32(i64_make(dc), rows));
+    float est = ceil(-(float)i64_to_double(c) / (float)a);
+    int x = est < -4096.0 ? -4096 : est > 4096.0 ? 4096 : (int)est;
+    [loop] for (int i1 = 0; i1 < 64 && i64_is_neg(i64_add(i64_mul_i32(i64_make(a), x), c)); i1++) x++;
+    [loop] for (int i2 = 0; i2 < 64 && !i64_is_neg(i64_add(i64_mul_i32(i64_make(a), x - 1), c)); i2++) x--;
+    return x;
+}
+
+// S at pixel x of a span starting at xl with value s0: per pixel s += ds, and each new piece
+// (64-pixel columns, the batch cut at cutx) restarts with s + ds * take
+float step_span(float s0, float ds, int xl, int x, int cutx) {
+    precise float s = s0;
+    int xs = xl;
+    [loop] for (int it = 0; it < 64; it++) {
+        int nb = (xs & ~63) + 64;
+        if (cutx > xs && cutx < nb) nb = cutx;
+        if (nb > x) break;
+        precise float p = ds * (float)(nb - xs);
+        s = s + p;
+        xs = nb;
+    }
+    [loop] for (int k = xs; k < x; k++) s = s + ds;
+    return s;
+}
+
+// ---- the pixel shader -------------------------------------------------------------------------------
+#define TK_VIEW_C32 3u
+
+struct Frag {
+    uint col;                            // 0xAABBGGRR
+    uint fog;                            // 0..255
+    uint z;                              // stored-format Z (clamped)
+    int U, V;                            // 1/16 texel
+    float lq;                            // Q for the LOD
+    uint state;
+};
+
+void ps_gs(VR i
+#if PRIM == 0
+           , uint prim : SV_PrimitiveID
+#endif
+           ) {
+    int2 P = (int2)i.pos.xy;
+    int px = (int)((uint)P.x / kx), py = (int)((uint)P.y / ky);
+    Frag f;
+    f.U = 0; f.V = 0; f.lq = 1.0;
+#if PRIM == 0
+    uint rb = rec_first + prim * 256u;
+    f.state = recs.Load(rb + 112u);
+#elif PRIM == 1
+    uint rb = i.rec;
+    f.state = recs.Load(rb + 20u);
+#else
+    uint rb = i.rec;
+    f.state = recs.Load(rb + 12u) >> 8;
+#endif
+    St st = load_state(f.state);
+    uint scanmsk = (st.flags >> 14) & 3u;
+#if PRIM != 2
+    if ((scanmsk == 2u && (py & 1) == 0) || (scanmsk == 3u && (py & 1) != 0)) return;
+#endif
+    bool tme = (st.flags & SF_TME) != 0u, fst = (st.flags & SF_FST) != 0u;
+    uint zbits = (st.zinfo >> 4) & 3u;
+    uint zmax = zbits == 3u ? 0xFFFFFFFFu : zbits == 2u ? 0xFFFFFFu : 0xFFFFu;
+    uint t0 = st.tex0clamp.x, t1 = st.tex0clamp.y;
+    uint tw = (t0 >> 26) & 15u, th = ((t0 >> 30) | (t1 << 2)) & 15u;
+    float tw16 = (float)(16u << (tw > 10u ? 10u : tw)), th16 = (float)(16u << (th > 10u ? 10u : th));
+
+#if PRIM == 0
+    // ---- triangle: the software renderer's fixed-point row stepping ----
+    int by0 = (int)(recs.Load(rb + 108u) << 16) >> 16, bx0 = (int)recs.Load(rb + 108u) >> 16;
+    int rows = py - by0;
+    int a[7];
+    [unroll] for (uint k = 0u; k < 7u; k++)
+        a[k] = asint(recs.Load(rb + 24u + 4u * k) + recs.Load(rb + 52u + 4u * k) * (uint)rows + recs.Load(rb + 80u + 4u * k) * (uint)px);
+    f.col = clamp255i(a[0] >> 16) | (clamp255i(a[1] >> 16) << 8) | (clamp255i(a[2] >> 16) << 16) | (clamp255i(a[3] >> 16) << 24);
+    f.fog = clamp255i(a[4] >> 16);
+    i64 z16 = gs_z16(recs.Load2(rb), recs.Load2(rb + 8u), recs.Load2(rb + 16u), by0, px, py, 0u, 0u, 1u, 1u);
+    f.z = gs_z_clamp(z16, zmax);
+    f.lq = asfloat(recs.Load(rb + 116u));
+    if (tme) {
+        if (fst) { f.U = a[5] >> 12; f.V = a[6] >> 12; }
+        else {
+            // span start: xl from the left edges, S/T/Q of the row (doubles, stepped per row), then
+            // the float steps along the span's pieces
+            int xl = bx0;
+            uint ne = recs.Load(rb + 224u);
+            [loop] for (uint e = 0u; e < ne; e++) {
+                int m = edge_min_x(asint(recs.Load(rb + 192u + 4u * e)), asint(recs.Load(rb + 200u + 4u * e)),
+                                   recs.Load2(rb + 208u + 8u * e), rows);
+                xl = m > xl ? m : xl;
+            }
+            int cutx = -1;
+            uint ncuts = recs.Load(rb + 232u);
+            if (ncuts != 0u) {
+                uint co = recs.Load(rb + 228u);
+                [loop] for (uint c = 0u; c < ncuts; c++) {
+                    uint e2 = fdata.Load(co + 4u * c);
+                    if ((int)(e2 << 16) >> 16 == py) { cutx = (int)e2 >> 16; break; }
+                }
+            }
+            precise double srow = asdouble(recs.Load(rb + 120u), recs.Load(rb + 124u));
+            precise double trow = asdouble(recs.Load(rb + 128u), recs.Load(rb + 132u));
+            precise double qrow = asdouble(recs.Load(rb + 136u), recs.Load(rb + 140u));
+            double sdy = asdouble(recs.Load(rb + 144u), recs.Load(rb + 148u));
+            double tdy = asdouble(recs.Load(rb + 152u), recs.Load(rb + 156u));
+            double qdy = asdouble(recs.Load(rb + 160u), recs.Load(rb + 164u));
+            double sdx = asdouble(recs.Load(rb + 168u), recs.Load(rb + 172u));
+            double tdx = asdouble(recs.Load(rb + 176u), recs.Load(rb + 180u));
+            double qdx = asdouble(recs.Load(rb + 184u), recs.Load(rb + 188u));
+            [loop] for (int r = 0; r < rows; r++) { srow = srow + sdy; trow = trow + tdy; qrow = qrow + qdy; }
+            double dxl = (double)xl;
+            precise double ps = sdx * dxl, pt = tdx * dxl, pq = qdx * dxl;
+            precise double ss = srow + ps, st2 = trow + pt, sq = qrow + pq;
+            float s0 = (float)ss, tt0 = (float)st2, q0 = (float)sq;
+            float s = step_span(s0, (float)sdx, xl, px, cutx);
+            float t = step_span(tt0, (float)tdx, xl, px, cutx);
+            float q = step_span(q0, (float)qdx, xl, px, cutx);
+            float iq = rcp_exact(q);
+            precise float su = s * iq;
+            precise float tv = t * iq;
+            precise float su16 = su * tw16;
+            precise float tv16 = tv * th16;
+            f.U = f2i(su16);
+            f.V = f2i(tv16);
+            f.lq = q;
+        }
+    }
+#elif PRIM == 1
+    // ---- sprite: flat colour, U per pixel, V per row (gs_span_start_at) ----
+    uint4 r = recs.Load4(rb + 8u);
+    f.col = r.x;
+    f.z = r.y;
+    f.fog = r.z & 255u;
+    f.lq = asfloat(recs.Load(rb + 48u));
+    if (tme) {
+        int x0 = (int)(recs.Load(rb) << 16) >> 16;
+        int ua = asint(recs.Load(rb + 24u)), du = asint(recs.Load(rb + 28u));
+        f.U = asint((uint)ua + (uint)du * (uint)(px - x0)) >> 12;
+        double vc0 = asdouble(recs.Load(rb + 32u), recs.Load(rb + 36u)), vcy = asdouble(recs.Load(rb + 40u), recs.Load(rb + 44u));
+        precise double vp = vcy * (double)py;
+        precise double vs = vc0 + vp;
+        precise double v = vs * 4096.0L;
+        int vi = v > 2147483000.0L ? 2147483000 : v < -2147483000.0L ? -2147483000 : (int)v;
+        f.V = vi >> 12;
+    }
+#else
+    // ---- line / point pixel: as the DDA produced it ----
+    uint4 r = recs.Load4(rb);
+    f.z = r.y;
+    f.col = r.z;
+    f.fog = r.w & 255u;
+    uint3 stq = recs.Load3(rb + 16u);
+    f.lq = asfloat(recs.Load(rb + 28u));
+    if (tme) {
+        if (fst) { f.U = asint(stq.x) >> 12; f.V = asint(stq.y) >> 12; }
+        else {
+            float q = asfloat(stq.z), iq = rcp_exact(q);
+            precise float su = asfloat(stq.x) * iq;
+            precise float tv = asfloat(stq.y) * iq;
+            precise float su16 = su * tw16;
+            precise float tv16 = tv * th16;
+            f.U = f2i(su16);
+            f.V = f2i(tv16);
+            f.lq = q;
+        }
+    }
+#endif
+
+    // ---- texture, TFX, fog ----
+    uint col = f.col;
+    if (tme && (st.tlev & 3u) != 0u) {
+        uint t = tex_sample(st, f.U, f.V, f.lq);
+        col = tfx((st.flags >> 2) & 3u, (st.flags & SF_TCC) != 0u, col, t);
+    }
+    if (st.flags & SF_FGE) {
+        uint fv = f.fog, fc = st.fogcol;
+        uint r = (fv * (col & 255u) + (255u - fv) * (fc & 255u)) >> 8;
+        uint g = (fv * ((col >> 8) & 255u) + (255u - fv) * ((fc >> 8) & 255u)) >> 8;
+        uint b = (fv * ((col >> 16) & 255u) + (255u - fv) * ((fc >> 16) & 255u)) >> 8;
+        col = r | (g << 8) | (b << 16) | (col & 0xFF000000u);
+    }
+
+    // ---- tests: alpha, destination alpha, Z (+ Z write) ----
+    uint As = col >> 24;
+    uint test = st.test;
+    int mode = 1;
+    bool zw = true;
+    if ((test & 1u) && !atst_pass((test >> 1) & 7u, (test >> 4) & 0xFFu, As)) {
+        uint afail = (test >> 12) & 3u;
+        if (afail == 0u) return;                 // KEEP
+        if (afail == 1u) zw = false;             // FB_ONLY
+        else if (afail == 2u) mode = 0;          // ZB_ONLY
+        else { zw = false; mode = 2; }           // RGB_ONLY
+    }
+    bool hasc = (draw_flags & 1u) != 0u, hasz = (draw_flags & 2u) != 0u;
+    uint dst = 0u;
+    bool have = false;
+    if ((test >> 14) & 1u) {                     // DATE (32-bit frames)
+        uint4 d4 = hasc ? rov_c[P] : uint4(0, 0, 0, 0);
+        dst = d4.x | (d4.y << 8) | (d4.z << 16) | (d4.w << 24);
+        have = true;
+        if (((dst >> 31) & 1u) != ((test >> 15) & 1u)) return;
+    }
+    if (((st.zinfo >> 3) & 1u) != 0u && hasz) {
+        uint ztst = st.zinfo & 3u, zmsk = (st.zinfo >> 2) & 1u;
+        uint zold = rov_z[P].x;
+        uint zb = zbits == 1u ? zold & 0xFFFFu : zbits == 2u ? zold & 0xFFFFFFu : zold;
+        uint zv = f.z;
+        if (ztst == 0u) return;                  // NEVER
+        if (ztst == 2u && zv < zb) return;       // GEQUAL
+        if (ztst == 3u && zv <= zb) return;      // GREATER
+        if (zw && zmsk == 0u) rov_z[P] = uint2(zbits == 2u ? (zold & 0xFF000000u) | zv : zv, 0u);
+    }
+    if (mode == 0 || !hasc) return;
+
+    // ---- blend, FBA, write mask ----
+    uint m = st.fmask;
+    if (mode == 2) m |= 0xFF000000u;
+    uint c = col;
+    bool fb24 = (st.flags & SF_FB24) != 0u;
+    if ((st.flags & SF_ABE) && (!(st.flags & SF_PABE) || (As & 0x80u))) {
+        if (!have) {
+            uint4 d4 = rov_c[P];
+            dst = d4.x | (d4.y << 8) | (d4.z << 16) | (d4.w << 24);
+            have = true;
+        }
+        uint al = st.alpha;
+        uint asel = al & 3u, bsel = (al >> 2) & 3u, csel = (al >> 4) & 3u, dsel = (al >> 6) & 3u, fix = (al >> 8) & 255u;
+        int ea = fb24 ? 0x80 : (int)(dst >> 24);
+        int cc = csel == 0u ? (int)As : csel == 1u ? ea : (int)fix;
+        uint o = 0u;
+        [unroll] for (uint ch = 0u; ch < 24u; ch += 8u) {
+            int cs = (int)((col >> ch) & 255u), cd = (int)((dst >> ch) & 255u);
+            int v = (((sel3(asel, cs, cd) - sel3(bsel, cs, cd)) * cc) >> 7) + sel3(dsel, cs, cd);
+            uint u = (st.flags & SF_COLCLAMP) ? clamp255i(v) : ((uint)v & 255u);
+            o |= u << ch;
+        }
+        c = o | (col & 0xFF000000u);
+    }
+    if (st.flags & SF_FBA) c |= 0x80000000u;
+    if (m != 0u) {
+        if (!have) {
+            uint4 d4 = rov_c[P];
+            dst = d4.x | (d4.y << 8) | (d4.z << 16) | (d4.w << 24);
+        }
+        c = (dst & m) | (c & ~m);
+    }
+    rov_c[P] = uint4(c & 255u, (c >> 8) & 255u, (c >> 16) & 255u, c >> 24);
+}

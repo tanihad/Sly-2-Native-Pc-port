@@ -235,7 +235,7 @@ static const struct { const char* name; size_t off; int kind; } front_fields[] =
     U64F(cmd_bytes), U64F(data_bytes), U32F(atst_kicks), U32F(atst_pass), U32F(atst_fail), U32F(atst_straddle),
     U32F(cd_as_kicks), U32F(as_over128), ARRF(zprims, GPU_ZF_N), ARRF(zmin, GPU_ZF_N), ARRF(zmax, GPU_ZF_N),
     U32F(z32_over), U32F(tex_vram), U32F(tex_view_c32), U32F(tex_view_alpha), U32F(tex_alias16), U32F(region_clamp),
-    U32F(tbw_npot), U32F(selfcheck_bad),
+    U32F(tbw_npot), U32F(selfcheck_bad), U32F(lost_writer), U32F(post_prims), U32F(stq_cuts), U32F(checkpoints),
 };
 
 static void json_front(FILE* f, const gpu_front_frame* g) {
