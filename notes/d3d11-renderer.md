@@ -1337,6 +1337,11 @@ line to the software one on ep3 rope VBlanks 5-6 (70 lines) and fix-perf brief 3
 Unit scenes (`tests/unit/gs-hw/run.ps1 -RefOnly`): 0 differing scenes on the RTX 4060 Ti and on WARP,
 t_frame16 and t_formats_contexts included (the harness now counts every differing scene); with
 `PS2_GPU_PUNT=3:15` (every third primitive PUNTed) 1078 PUNTs, all exact, read-backs equal to gs_vram.
+PUNT on recordings: title with every fifth primitive PUNTed is lockstep-clean in "both" mode (184/0),
+and in hw-only mode (read-back into gs_vram, the software rasterizer drawing only the PUNTed
+primitives) the pictures equal the REF pictures (which equal sw's): title (every 5th primitive, 30
+pictures), ep3 rope (every 7th, 20), rv_prompt with every 16-bit-frame primitive PUNTed (no ALIAS16 run
+left, 20).
 
 | recording | VBlanks | lockstep comparisons | differ | pictures differ | ALIAS16 runs | post-pass prims |
 |---|---|---|---|---|---|---|
@@ -1425,6 +1430,9 @@ transition, by design. A `--scale 2` lockstep (sample 0) of title and ep3 rope i
   tier) - gone.
 - A shadow copy taken before a load of the same blocks went stale (ep2 photo: the darken reads one row
   past its frame buffer, i.e. the other buffer's memory).
+- The vertex reuse cache kept its ring position across arena resets (VBlank, checkpoint): a stale entry
+  could return the index of a vertex of the previous arena. Found by forced PUNTs inside strips
+  (a checkpoint between two triangles that share vertices).
 
 **GPU ms per game frame at S=1, REF** (RTX 4060 Ti, `gs_replay --backend hw --ref`, bench path without
 read-backs, GPU timestamps; game frame = VBlank with >= 1000 primitives; medians of runs 2-4 of 4)
