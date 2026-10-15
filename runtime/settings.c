@@ -483,6 +483,24 @@ void settings_load(void) {
             ps2_settings.hud_centered ? "centered" : "edges");
 }
 
+/* [display] as sly2.ini says now (the player may edit it while the game runs): 1 and aspect / hud
+ * if the file is there. A key set by an environment override (PS2_ASPECT, PS2_HUD) keeps the
+ * current value. */
+int settings_read_display(int* aspect_w, int* aspect_h, int* hud_centered) {
+    wchar_t path[MAX_PATH + 80];
+    static char text[65536];
+    if (!settings_path(path, sizeof path / sizeof path[0]) || read_text(path, text, sizeof text) == (size_t)-1) return 0;
+    ps2_settings_t s;
+    settings_defaults(&s);
+    settings_parse(text, &s, NULL, NULL);
+    const char* e = getenv("PS2_ASPECT");
+    *aspect_w = e && *e ? ps2_settings.aspect_w : s.aspect_w;
+    *aspect_h = e && *e ? ps2_settings.aspect_h : s.aspect_h;
+    e = getenv("PS2_HUD");
+    *hud_centered = e && *e ? ps2_settings.hud_centered : s.hud_centered;
+    return 1;
+}
+
 static int write_text(const wchar_t* path, const char* text, size_t n) {
     wchar_t tmp[MAX_PATH + 96];
     _snwprintf(tmp, sizeof tmp / sizeof tmp[0], L"%ls.tmp", path);

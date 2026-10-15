@@ -13,6 +13,7 @@
 ps2_aspect_t ps2_aspect = { 0, 4.0f / 3.0f, 1.0f, 1.0f, 1 };
 
 void gs_write_reg(uint32_t r, uint64_t v);      /* hw.h */
+uint32_t ps2_vblank_count(void);                /* ps2_runtime.c */
 
 /* A hint at the EE's present moment in the GS stream, for code that draws outside the frame's DMA
  * chain (the movie player sends its pictures itself). */
@@ -36,6 +37,55 @@ void aspect_init(void) {
     ps2_aspect.ratio = (float)w / (float)h;
     ps2_aspect.proj_x = (float)(3 * w) / (float)(4 * h);
     ps2_aspect.hud_x = (float)(4 * h) / (float)(3 * w);
+}
+
+/* ---- run-time switch -----------------------------------------------------------------------------
+ * window.c (F7 / F8, sly2.ini edited while the game runs, PS2_INPUT "aspect"/"hud" tokens) asks for
+ * a new aspect or HUD mode on its own thread; the game takes it at the top of its next frame
+ * (aspect_apply, instruction patch in the main loop right after the camera's per-frame update), so a
+ * frame is built with one aspect throughout. The camera's X range, projection and frustum planes
+ * depend on the aspect (ws_projection), so they are recomputed there with the game's own 0x14DB70.
+ * Pictures already built are shown with the new display aspect (at most a frame or two). */
+#define CM_CAMERA 0x002DDF40u                    /* the camera (CM) */
+#define FN_CM_RECALC 0x0014DB70u                 /* recompute its frustum from FOV / aspect */
+volatile int ps2_aspect_pending;
+static volatile int req_w, req_h, req_hud;
+
+void aspect_request(int w, int h, int hud_centered) {
+    int pending = __atomic_load_n(&ps2_aspect_pending, __ATOMIC_ACQUIRE);   /* requests add up */
+    int cw = pending ? req_w : ps2_settings.aspect_w, ch = pending ? req_h : ps2_settings.aspect_h;
+    int chud = pending ? req_hud : ps2_settings.hud_centered;
+    req_w = w > 0 && h > 0 ? w : cw;
+    req_h = w > 0 && h > 0 ? h : ch;
+    req_hud = hud_centered < 0 ? chud : hud_centered;
+    __atomic_store_n(&ps2_aspect_pending, 1, __ATOMIC_RELEASE);
+}
+
+/* The aspect / HUD mode the game will have once pending requests are applied (for F7/F8). */
+void aspect_target(int* w, int* h, int* hud_centered) {
+    int pending = __atomic_load_n(&ps2_aspect_pending, __ATOMIC_ACQUIRE);
+    *w = pending ? req_w : ps2_settings.aspect_w;
+    *h = pending ? req_h : ps2_settings.aspect_h;
+    *hud_centered = pending ? req_hud : ps2_settings.hud_centered;
+}
+
+void aspect_apply(struct ps2_ctx* ctx) {
+    if (!__atomic_exchange_n(&ps2_aspect_pending, 0, __ATOMIC_ACQUIRE)) return;
+    int w = req_w, h = req_h, hud = req_hud;
+    int same_aspect = w * ps2_settings.aspect_h == h * ps2_settings.aspect_w;
+    ps2_settings.aspect_w = w;
+    ps2_settings.aspect_h = h;
+    ps2_settings.hud_centered = hud;
+    aspect_init();
+    fprintf(stderr, "[aspect] v%u: now %d:%d, hud %s\n", ps2_vblank_count(), w, h, hud ? "centered" : "edges");
+    if (same_aspect) return;
+    static ps2_ctx saved;                        /* the game's registers stay as they were */
+    saved = *ctx;
+    ctx->r[29].ud[0] = (uint64_t)(int64_t)(int32_t)((ctx->r[29].uw[0] - 0x400u) & ~15u);
+    ctx->r[4].ud[0] = CM_CAMERA;
+    ctx->r[31].ud[0] = saved.r[31].ud[0];
+    ps2_call(ctx, FN_CM_RECALC);
+    *ctx = saved;
 }
 
 /* The game's frame builder (a "DMAS" object; Sly 1 names) as far as the hint needs it:

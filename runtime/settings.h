@@ -72,6 +72,9 @@ int settings_portable(void);              /* 1: not %LOCALAPPDATA%\Sly2 (exe fol
 
 /* sly2.ini from the user data folder, then the environment (PS2_ASPECT, PS2_HUD, PS2_SHOW_FPS). Logs what it uses. */
 void settings_load(void);
+/* [display] aspect and hud as sly2.ini has them now (1), for a file edited while the game runs;
+ * keys overridden by the environment keep the current values. 0: no file. */
+int settings_read_display(int* aspect_w, int* aspect_h, int* hud_centered);
 /* Write sly2.ini if there is none (window.c, when the window opens). */
 void settings_save_if_missing(void);
 /* Write keys into sly2.ini (created from the template if missing): n triples section, key, value.

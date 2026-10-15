@@ -1622,6 +1622,22 @@ static void t_hud_hints(void) {
     CHECK(!lit(152, 55) && lit(157, 55) && lit(228, 55) && !lit(232, 55), "HUD strip at 155..230, both triangles");
     CHECK(lit(101, 75) && lit(198, 75) && !lit(202, 75), "after HUD_END drawn as given");
 
+    /* edge anchors (hud = edges): a widget at the left keeps its distance to the left edge scaled,
+     * one at the right to the right edge; a new HUD_BEGIN changes the anchor without a HUD_END */
+    clear(0, 0, 0, 0);
+    hint(GS_HINT_HUD_BEGIN, GS_HINT_ANCHOR_L, 0.75f);
+    sprite(100, 10, 200, 20, 0xFF, 0, 0, 0x80);          /* L: -> 75..150 */
+    hint(GS_HINT_HUD_BEGIN, GS_HINT_ANCHOR_R, 0.75f);
+    sprite(400, 30, 600, 40, 0, 0xFF, 0, 0x80);          /* R: -> 460..610 */
+    sprite(0, 50, 640, 60, 0, 0, 0xFF, 0x80);            /* full width under R: as it is */
+    hint(GS_HINT_HUD_BEGIN, GS_HINT_ANCHOR_C, 0.75f);
+    sprite(400, 70, 600, 80, 0xFF, 0xFF, 0, 0x80);       /* C again: -> 380..530 */
+    hint(GS_HINT_HUD_END, 0, 0);
+    CHECK(!lit(73, 15) && lit(77, 15) && lit(148, 15) && !lit(152, 15), "L-anchored sprite at 75..150");
+    CHECK(!lit(458, 35) && lit(462, 35) && lit(608, 35) && !lit(612, 35), "R-anchored sprite at 460..610");
+    CHECK(lit(0, 55) && lit(639, 55), "full-width sprite under an edge anchor covers the whole width");
+    CHECK(!lit(378, 75) && lit(382, 75) && lit(528, 75) && !lit(532, 75), "back to the centre anchor: 380..530");
+
     CHECK(gs_hint_content43() == 0, "no 4:3 content by default");
     hint(GS_HINT_ASPECT_4_3_BEGIN, 0, 0);
     gs_sync();

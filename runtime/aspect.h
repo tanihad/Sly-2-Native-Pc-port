@@ -22,6 +22,13 @@ extern ps2_aspect_t ps2_aspect;
 
 struct ps2_ctx;
 void aspect_init(void);                      /* from ps2_settings (settings_load first) */
+/* Run-time switch: ask (any thread) for aspect w:h (<= 0: unchanged) and HUD mode (hud_centered,
+ * -1: unchanged); the game applies it at the top of its next frame (aspect_apply, called by the
+ * aspect_switch patch in the main loop when ps2_aspect_pending is set). */
+extern volatile int ps2_aspect_pending;
+void aspect_request(int w, int h, int hud_centered);
+void aspect_target(int* w, int* h, int* hud_centered);   /* what the game has once requests apply */
+void aspect_apply(struct ps2_ctx* ctx);
 /* Append a GS side-band hint (gs_hint.h) to the DMA chain the game's frame builder (DMAS object at
  * guest address `dmas`) is writing, so it reaches the GS between the draws around it. */
 void aspect_hint(struct ps2_ctx* ctx, uint32_t dmas, uint32_t kind, uint32_t arg);

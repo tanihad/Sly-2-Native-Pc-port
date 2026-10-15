@@ -46,6 +46,7 @@ MOVIE_PLAY = (0x001B3BD0, "7eee24abd101fcdd6690561742906d524523e157")    # play 
 SCENE_DRAW = (0x00213300, "be7f4567e360dea5be27cff355abccd397b3d7f9")    # 2D scene: draw (vtable method)
 DL_QUEUE = (0x0021A998, "67ef1d52df4bab0890b10adcafb8f699de8ba55a")      # 2D: queue a display list's items
 ITEM_QUEUE = (0x00215960, "9e5c686306164bd9a4c1fdd5fe87f35fdffea152")    # 2D: queue one placed object
+MAIN_LOOP = (0x001A7518, "a1bf2357cbfd44da199858e87f269865b5ea7ea0")     # the game's main loop
 
 PATCHES: list[Patch] = [
     Patch("ws_projection", *CM_RECALC, 0x0014DBA4, "after",
@@ -119,6 +120,14 @@ PATCHES: list[Patch] = [
     Patch("ws_item_queue", *ITEM_QUEUE, 0x002159CC, "before",
           "if (ps2_aspect.wide) aspect_item_queued(ctx);",
           "a shape or text object is queued into the scene's item list ($a1 = the object)"),
+    # Not a ws_ patch: it must also run at 4:3 (to switch to a wide aspect); it does nothing unless
+    # the player asked for a switch (F7/F8), and a switch to 4:3 leaves the game's own numbers.
+    Patch("aspect_switch", *MAIN_LOOP, 0x001A75A8, "before",
+          "if (ps2_aspect_pending) aspect_apply(ctx);",
+          "main loop, right after the camera's per-frame update (jal 0x14D470) and before anything of "
+          "the frame is drawn (0x1CDA80, 0x157FA0): a run-time aspect / HUD switch asked for by "
+          "window.c takes effect here, for the whole frame; aspect_apply recomputes the camera's "
+          "frustum with the game's 0x14DB70"),
 ]
 
 
