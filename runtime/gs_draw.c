@@ -683,6 +683,14 @@ static void hudlog_phase(uint32_t label) {
 
 int gs_hint_content43(void) { return hint_43; }
 
+/* The software rasterizer on / off while the GS is idle (M6: live switch between the GPU backend and
+ * this one): textures are rebound and the state re-derived at the next primitive. */
+void gs_draw_set_sw(int on) {
+    gs_sw_draw = on != 0;
+    gs_tex_flush_all();
+    env_dirty = 1;
+}
+
 /* x: 12.4 window coordinate as written to XYZ (before XYOFFSET) */
 int32_t gs_hud_transform_x(int32_t x, uint64_t xyoffset, uint64_t frame, int anchor, double scale) {
     int64_t w16 = (int64_t)((frame >> 16) & 0x3F) * 64 * 16;          /* FRAME width, 1/16 pixels */
@@ -770,7 +778,11 @@ static void draw_prim(int type, const vtx* a, const vtx* b, const vtx* c) {
     }
     if (gs_front && env_ok) {            /* GPU frontend (gs_setup.h): sees every primitive */
         uint64_t attr = (reg[R_PRMODECONT] & 1) ? reg[R_PRIM] : reg[R_PRMODE];
-        gs_env_view ev = { &P, reg, (int)((attr >> 9) & 1), ofx, ofy, prim_iip, prim_aa1, prim_draws, gs_prim_version, hint_phase };
+        float hs = (float)hud_scale;
+        uint32_t hsb;
+        memcpy(&hsb, &hs, 4);
+        gs_env_view ev = { &P, reg, (int)((attr >> 9) & 1), ofx, ofy, prim_iip, prim_aa1, prim_draws, gs_prim_version, hint_phase,
+                           hud_on ? GS_ENV_HUD_ON | (uint32_t)hud_anchor << 1 : 0u, hud_on ? hsb : 0u };
         gs_front_swdraw = 0;
         gs_front->prim(&ev, type, a, b, c);
         swnow = gs_front_swdraw;         /* the frontend PUNTs it: the software rasterizer draws it now */
@@ -819,6 +831,9 @@ static void draw(int type, const vtx* a, const vtx* b, const vtx* c) {
     for (int i = 0; i < n; i++) {
         t[i] = *in[i];
         t[i].x = gs_hud_transform_x(t[i].x, xyo, frame, hud_anchor, hud_scale);
+        /* (a vertex of its own: the GPU frontend thread's vertex cache is keyed by serial, and the next
+         * primitive of a strip may use the untransformed vertex - M6) */
+        t[i].serial = 0;
     }
     draw_prim(type, &t[0], n > 1 ? &t[1] : NULL, n > 2 ? &t[2] : NULL);
 }

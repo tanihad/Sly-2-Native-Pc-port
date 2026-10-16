@@ -5,6 +5,19 @@
 #include "audio_out.h"
 #include "settings.h"
 #include "launch.h"
+#include "window_gpu.h"
+#include "gpu/gpu_hw.h"
+#include "gpu/gpu.h"
+/* The GPU renderer (runtime/gpu) is linked into the game (scripts/build_game.py) but not into every test
+ * program built from the runtime's C files (tests/run_tests.py): weak references, NULL when it is absent. */
+#define GPU_WEAK __attribute__((weak))
+extern int  gpu_hw_start(const gpu_hw_config* cfg) GPU_WEAK;
+extern void gpu_hw_attach_gs(void) GPU_WEAK;
+extern void gpu_hw_ee_vblank(uint32_t vblank) GPU_WEAK;
+extern void gpu_hw_request_switch(void) GPU_WEAK;
+extern void gpu_hw_present_sw(const uint32_t* bgrx, int w, int h, int stride, int aspect_w, int aspect_h) GPU_WEAK;
+extern void gpu_hw_stop(void) GPU_WEAK;
+extern void gpu_simulate_device_lost(void) GPU_WEAK;
 
 #include <stdlib.h>
 #include <windows.h>
@@ -327,6 +340,31 @@ extern volatile uint32_t gs_record_first;        /* gs_record.c: its first VBlan
 static volatile LONG vblank_hold;                /* debug pause (ps2_debug_hold): no VBlank is due */
 static volatile LONG64 vblank_shift;             /* QPC ticks the VBlank schedule moved by debug pauses */
 
+/* [graphics] pacing = display (GPU renderer, notes/d3d11-renderer.md 8.2): on a 59.94/60 Hz display the
+ * display's own VBlanks drive the EE (gpu_hw.c's display clock), which removes the judder of a 59.94 Hz
+ * game on a 60 Hz display (one repeated picture every 16 s). The timer's schedule keeps following and
+ * takes over again when the display's VBlanks stop for 50 ms. */
+static volatile LONG vblank_ext;
+static volatile LONG64 ext_last;                 /* QPC of the last display VBlank */
+
+static void vblank_external(int on) {
+    LARGE_INTEGER t;
+    QueryPerformanceCounter(&t);
+    InterlockedExchange64(&ext_last, t.QuadPart);
+    InterlockedExchange(&vblank_ext, on != 0);
+}
+
+static void display_vblank(void) {
+    if (vblank_hold || !vblank_ext) return;
+    LARGE_INTEGER t;
+    QueryPerformanceCounter(&t);
+    InterlockedExchange64(&ext_last, t.QuadPart);
+    InterlockedIncrement(&frames_behind);
+    InterlockedIncrement(&vblanks_due);
+    InterlockedOr((volatile LONG*)&ps2_irq_pending, (LONG)PS2_IRQ_VBLANK);
+    WakeByAddressAll((PVOID)&ps2_irq_pending);
+}
+
 static DWORD WINAPI host_timer(LPVOID arg) {
     (void)arg;
     timeBeginPeriod(1);
@@ -342,9 +380,12 @@ static DWORD WINAPI host_timer(LPVOID arg) {
         uint32_t raise = 0;
         if (now.QuadPart >= due) {
             frame++;
-            InterlockedIncrement(&frames_behind);
-            InterlockedIncrement(&vblanks_due);
-            raise |= PS2_IRQ_VBLANK;
+            /* (pacing = display: the display raises them while its VBlanks keep coming) */
+            if (!vblank_ext || now.QuadPart - ext_last > qpc_freq.QuadPart / 20) {
+                InterlockedIncrement(&frames_behind);
+                InterlockedIncrement(&vblanks_due);
+                raise |= PS2_IRQ_VBLANK;
+            }
         }
         if (now.QuadPart >= next_tick) {
             next_tick = now.QuadPart + tick;
@@ -434,26 +475,53 @@ static const uint32_t* display_shaped(const uint32_t* src, int w, int h, int str
     return out;
 }
 
+/* The display aspect a picture is shown at: 4:3 content (ASPECT_4_3 hint) and the 4:3 display at 4:3,
+ * else the display's wide aspect (the 512-wide picture stretched; notes/widescreen.md). */
+static void picture_aspect(int content43, int* aw, int* ah) {
+    *aw = content43 || !ps2_aspect.wide ? 4 : ps2_settings.aspect_w;
+    *ah = content43 || !ps2_aspect.wide ? 3 : ps2_settings.aspect_h;
+}
+
+/* PS2_DUMP_FRAMES: this VBlank's picture is written */
+static int dump_wanted(uint32_t vb) {
+    return dump_dir && vb % (uint32_t)dump_every == 0 && vb >= dump_from &&
+           (!dump_from_rec || (gs_record_first && vb >= gs_record_first));
+}
+
+static void dump_picture(const uint32_t* frame, int w, int h, int stride, uint32_t vb, int content43);
+
+/* the GPU renderer's read-back of a picture (its dump thread) */
+static void dump_gpu_picture(const uint32_t* px, int w, int h, uint32_t vb, int content43) {
+    if (px) dump_picture(px, w, h, w, vb, content43);   /* (display off: no dump, as with the software renderer) */
+}
+
 /* The picture of VBlank `vb` (ok = 0: display off). Runs on the GS thread when there is one. */
 static void present_frame(const uint32_t* frame, int ok, int w, int h, uint32_t vb) {
     int content43 = gs_picture_content43();
-    int aw = content43 || !ps2_aspect.wide ? 4 : ps2_settings.aspect_w, ah = content43 || !ps2_aspect.wide ? 3 : ps2_settings.aspect_h;
+    int aw, ah;
+    picture_aspect(content43, &aw, &ah);
     if (!ok) {                                   /* display off: show black, not a stale frame */
         static uint32_t black[640 * 448];
         if (!headless) window_present_aspect(black, 640, 448, 640, aw, ah);
         return;
     }
     if (!headless) window_present_aspect(frame, w, h, 1024, aw, ah);
-    if (dump_dir && vb % (uint32_t)dump_every == 0 && vb >= dump_from &&
-        (!dump_from_rec || (gs_record_first && vb >= gs_record_first))) {
+    if (dump_wanted(vb)) dump_picture(frame, w, h, 1024, vb, content43);
+}
+
+static void dump_picture(const uint32_t* frame, int w, int h, int stride, uint32_t vb, int content43) {
+    static SRWLOCK lock = SRWLOCK_INIT;  /* (display_shaped's buffer: the GPU renderer's dump thread and a
+                                            software picture right after a backend switch) */
+    AcquireSRWLockExclusive(&lock);
+    {
         char path[512];
         snprintf(path, sizeof path, "%s/frame_%06u.png", dump_dir, vb);
         static int raw = -1;
         if (raw < 0) raw = getenv("PS2_DUMP_RAW") && atoi(getenv("PS2_DUMP_RAW")) != 0;
         int dw = w;
-        const uint32_t* shaped = ps2_aspect.wide && !raw ? display_shaped(frame, w, h, 1024, ps2_aspect.ratio, content43, &dw) : NULL;
+        const uint32_t* shaped = ps2_aspect.wide && !raw ? display_shaped(frame, w, h, stride, ps2_aspect.ratio, content43, &dw) : NULL;
         if (shaped) debug_write_png(path, shaped, dw, h, dw);
-        else debug_write_png(path, frame, w, h, 1024);
+        else debug_write_png(path, frame, w, h, stride);
         /* audio clock = position in a PS2_AUDIO_WAV recording, to line sound up with pictures */
         if (audio_backend() != AUDIO_OFF)
             fprintf(stderr, "[dump] frame_%06u.png at audio %.2f s\n", vb,
@@ -468,7 +536,12 @@ static void present_frame(const uint32_t* frame, int ok, int w, int h, uint32_t 
             DeleteFileA(path);
         }
     }
+    ReleaseSRWLockExclusive(&lock);
 }
+
+static int gpu_backend;                          /* the GPU renderer was started (gpu_hw.c) */
+
+static void window_external_off(int on) { window_set_external_presenter(on, on ? gpu_hw_present_sw : NULL); }
 
 static void vblank(ps2_ctx* ctx) {
     vblank_count++;
@@ -477,6 +550,12 @@ static void vblank(ps2_ctx* ctx) {
     calls_vblank(vblank_count);
     gs_vsync();
     int perf_prev = perf_enter(PERF_PRESENT);
+    if (gpu_backend) {                           /* GPU renderer: switches, device loss, its debug keys */
+        int keys = window_take_debug_keys();     /* (also the PS2_INPUT tokens "renderer" / "losedevice") */
+        if (keys & WINDOW_KEY_SWITCH) gpu_hw_request_switch();
+        if (keys & WINDOW_KEY_LOSE_DEVICE) gpu_simulate_device_lost();
+        gpu_hw_ee_vblank(vblank_count);
+    }
     if (gs_async()) {
         gs_queue_vsync(vblank_count);            /* composed and presented by the GS thread */
     } else {
@@ -829,6 +908,15 @@ int main(int argc, char** argv) {
     }
     const char* wd = getenv("PS2_WATCHDOG");
     if (wd && atoi(wd) > 0) CreateThread(NULL, 0, watchdog, (LPVOID)(uintptr_t)atoi(wd), 0, NULL);
+    /* [graphics] renderer = gpu / PS2_GS_BACKEND=hw: the Direct3D 11 GS backend (runtime/gpu/gpu_hw.c,
+     * notes/d3d11-renderer.md) presents on the window's swap chain itself; the window then creates no
+     * presenter of its own (window_gpu.h) */
+    int want_gpu = ps2_settings.renderer_gpu && !dump_regs;
+    if (want_gpu && !gpu_hw_start) {
+        fprintf(stderr, "[ps2] this build has no GPU renderer: using the software renderer\n");
+        want_gpu = 0;
+    }
+    if (want_gpu && !headless) window_set_external_presenter(1, gpu_hw_present_sw);
     if (!headless) window_init();
     if (!dump_regs) audio_init();                /* sound output thread (sd.c mixer -> WASAPI) */
     if (!dump_regs && iop_native_audio()) iop_thread_start();   /* the IOP on its own thread (iop.h) */
@@ -836,13 +924,47 @@ int main(int argc, char** argv) {
     /* The GS on its own thread plus pixel workers (PS2_GS_ASYNC=0: synchronous, as in the unit
      * tests; PS2_GS_THREADS=<n>: pixel workers, default half the logical processors minus one, at
      * most 8). */
-    /* PS2_GS_BACKEND=sw|hw: GS backend (notes/d3d11-renderer.md). The Direct3D 11 backend
-     * (runtime/gpu) runs in scripts/gs_replay only until it is wired into the game (milestone M6),
-     * so the software renderer is the default and, for now, the only in-game backend. */
-    const char* gb = getenv("PS2_GS_BACKEND");
-    if (gb && strcmp(gb, "sw") != 0)
-        fprintf(stderr, "[ps2] PS2_GS_BACKEND=%s: the GPU backend is not available in the game yet; using sw\n", gb);
+    /* PS2_GS_BACKEND=sw|hw / [graphics] renderer: GS backend (notes/d3d11-renderer.md). The GPU
+     * renderer needs the GS thread; it falls back to the software renderer when no capable device is
+     * found. */
+    if (want_gpu) {
+        gpu_hw_config hc;
+        memset(&hc, 0, sizeof hc);
+        hc.hwnd = headless ? NULL : window_hwnd(10000);
+        const char* ad = getenv("PS2_GPU_ADAPTER");
+        hc.adapter = ad && !_stricmp(ad, "warp") ? GPU_ADAPTER_WARP : GPU_ADAPTER_HW;
+        hc.pacing = ps2_settings.pacing;
+        const char* e = getenv("PS2_GS_VERIFY");
+        hc.verify = e ? atoi(e) : 0;
+        e = getenv("PS2_GS_HW_STATS");
+        hc.stats = e ? atoi(e) : 0;              /* 1: per second, 2: also every frame with memory traffic */
+        e = getenv("PS2_GS_SAME_THREAD");
+        hc.same_thread = e && atoi(e) != 0;
+        hc.out_dir = dump_dir;
+        e = getenv("PS2_GS_SCALE");
+        if ((e && atoi(e) > 1) || ps2_settings.internal_scale > 1)
+            fprintf(stderr, "[ps2] GPU renderer: internal scale %d not available yet (M7): drawing at the PS2's resolution\n",
+                    e ? atoi(e) : ps2_settings.internal_scale);
+        hc.client_size = headless ? NULL : window_client_size;
+        hc.presented = headless ? NULL : window_note_presented;
+        hc.aspect = picture_aspect;
+        hc.dump_wanted = dump_wanted;
+        hc.dump = dump_gpu_picture;
+        hc.window_external = headless ? NULL : window_external_off;
+        hc.vblank_external = vblank_external;
+        hc.display_vblank = display_vblank;
+        if ((!headless && !hc.hwnd) || !gpu_hw_start(&hc)) {
+            fprintf(stderr, "[ps2] GPU renderer unavailable: using the software renderer\n");
+            if (!headless) window_set_external_presenter(0, NULL);
+        } else {
+            gpu_backend = 1;
+        }
+    }
     const char* ga = getenv("PS2_GS_ASYNC");
+    if (gpu_backend && ga && atoi(ga) == 0) {
+        fprintf(stderr, "[ps2] PS2_GS_ASYNC=0 ignored: the GPU renderer needs the GS thread\n");
+        ga = NULL;
+    }
     if (!dump_regs && !(ga && atoi(ga) == 0)) {
         int ncpu = (int)GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
         int workers = ncpu / 2 - 1;
@@ -856,6 +978,13 @@ int main(int argc, char** argv) {
         if (!iop_threaded()) gs_set_wait_hook(gs_wait_poll_iop);
         if (gs_async()) fprintf(stderr, "[ps2] GS thread started with %d pixel workers\n", workers);
         else fprintf(stderr, "[ps2] GS thread could not be started: the GS runs on the EE thread\n");
+    }
+    if (gpu_backend && gs_async()) gpu_hw_attach_gs();   /* VBlank pictures and memory read-backs go to the GPU renderer */
+    else if (gpu_backend) {
+        fprintf(stderr, "[ps2] GPU renderer without a GS thread: using the software renderer\n");
+        gpu_hw_stop();
+        gpu_backend = 0;
+        if (!headless) window_set_external_presenter(0, NULL);
     }
 
     static ps2_ctx init;

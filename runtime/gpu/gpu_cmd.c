@@ -52,6 +52,10 @@ void gpu_cmd_reset(void) {
 
 /* ---- producer ---- */
 
+static SRWLOCK prod_lock = SRWLOCK_INIT;
+void gpu_cmd_lock(void) { AcquireSRWLockExclusive(&prod_lock); }
+void gpu_cmd_unlock(void) { ReleaseSRWLockExclusive(&prod_lock); }
+
 void gpu_cmd_publish(void) {
     unpublished = 0;
     if (atomic_load_explicit(&cmd_pub, memory_order_relaxed) == cmd_wr) return;
@@ -134,6 +138,13 @@ void gpu_cmd_debug(char* buf, size_t n) {
 
 /* ---- consumer ---- */
 
+/* (render thread) bytes of commands published after the one being executed: the render thread is behind */
+static uint64_t cur_size;
+uint64_t gpu_cmd_backlog(void) {
+    uint64_t pub = atomic_load_explicit(&cmd_pub, memory_order_acquire);
+    return pub > cons_rd + cur_size ? pub - cons_rd - cur_size : 0;
+}
+
 const gpu_cmd* gpu_cmd_next(int wait_ms) {
     for (;;) {
         uint64_t pub = atomic_load_explicit(&cmd_pub, memory_order_acquire);
@@ -161,6 +172,7 @@ const gpu_cmd* gpu_cmd_next(int wait_ms) {
             atomic_store_explicit(&cmd_rd, cons_rd, memory_order_release);
             continue;
         }
+        cur_size = c->size;
         return c;
     }
 }
@@ -168,6 +180,7 @@ const gpu_cmd* gpu_cmd_next(int wait_ms) {
 void gpu_cmd_done(const gpu_cmd* c) {
     uint64_t data_end = c->data_end;
     cons_rd += c->size;
+    cur_size = 0;
     if (data_end > atomic_load_explicit(&data_rd, memory_order_relaxed))
         atomic_store_explicit(&data_rd, data_end, memory_order_release);
     atomic_store_explicit(&cmd_rd, cons_rd, memory_order_seq_cst);

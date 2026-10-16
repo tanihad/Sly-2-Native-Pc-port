@@ -35,6 +35,11 @@
 #   -FrontThread          (hwdry -FrontOnly, hwsubmit) the frontend on its own thread, the replay thread only decodes
 #   -Pin                  (hwdry, hwsubmit) replay / frontend / render threads each on its own performance core
 #   -Adapter hw|warp      hardware adapter (default) or the WARP software rasterizer
+#   -Game                 (hw) M6: the game's GPU renderer path (runtime/gpu/gpu_hw.c): frontend thread, pictures
+#                         composed on the GPU, each read back and compared with the reference compose of the GPU's
+#                         memory (exact; exit 3 otherwise); -GameVerify N: the frontend on this thread next to sw,
+#                         gpu_hw's memory verifier every Nth VBlank, pictures also compared with sw (picture gate);
+#                         -Bench: no read-backs
 #   -Metrics <file.json>  per-VBlank comparison counts and D3D/CPU/GPU timings
 #   -Log <file>           the replay's stderr goes to this file
 #   -VramHash <file>      (synchronous, -Workers 0) a hash of all GS memory after every VBlank, one line each
@@ -43,7 +48,8 @@
 param([Parameter(Mandatory = $true)][string]$Rec, [string]$Out = "", [string]$Runtime = "", [int]$Workers = 0,
       [switch]$Bench, [ValidateSet('sw', 'hw', 'both', 'hwdry', 'hwsubmit')][string]$Backend = 'sw', [int]$Scale = 1, [switch]$WithSw, [switch]$Pace, [switch]$Profile, [switch]$StreamHash, [switch]$FrontThread, [switch]$Pin, [switch]$FrontOnly, [switch]$Ref, [switch]$StraddleRov, [switch]$SelfCheck, [switch]$DecodeOnly, [switch]$Lockstep, [switch]$NoResync, [string]$PostProbe = "", [string[]]$Define = @(),
       [ValidateSet('hw', 'warp')][string]$Adapter = 'hw', [string]$Metrics = "", [string]$Log = "", [string]$VramHash = "",
-      [switch]$Mixed, [switch]$StqExact, [string]$FfRovMask = "", [switch]$LockstepExact, [switch]$SplitFf)
+      [switch]$Mixed, [switch]$StqExact, [string]$FfRovMask = "", [switch]$LockstepExact, [switch]$SplitFf,
+      [switch]$Game, [int]$GameVerify = 0)
 $root = Split-Path $PSScriptRoot -Parent
 $main = $root
 if (-not (Test-Path (Join-Path $root 'tools\llvm-mingw'))) {            # worktree: tools live in the main checkout
@@ -102,6 +108,8 @@ if ($Profile) { $runArgs += '--profile' }
 if ($StreamHash) { $runArgs += '--stream-hash' }
 if ($FrontThread) { $runArgs += '--front-thread' }
 if ($Pin) { $runArgs += '--pin' }
+if ($Game) { $runArgs += '--game' }
+if ($GameVerify -gt 0) { $runArgs += @('--game-verify', $GameVerify) }
 if ($Log) {
     # real redirection by cmd: nested PowerShell pipes of a chatty native stderr are slow and once
     # stalled a corpus run (notes/wip/gpu-M0.md)

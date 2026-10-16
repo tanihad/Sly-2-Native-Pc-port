@@ -82,3 +82,6 @@ ps_ff_l11        gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=2 DUA
 vs_zquad            zsync.hlsl          vs_zquad          vs_5_0
 ps_zresolve         zsync.hlsl          ps_zresolve       ps_5_0
 cs_zsync            zsync.hlsl          cs_zsync          cs_5_0
+# M6: the PCRTC on the GPU (picture compose + field deinterlacer, gpu_present.c)
+cs_compose          display.hlsl        cs_compose        cs_5_0
+cs_deint            display.hlsl        cs_deint          cs_5_0

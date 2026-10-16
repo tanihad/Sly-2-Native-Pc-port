@@ -18,6 +18,7 @@
 #include "gs_draw.h"
 
 #include <stdlib.h>
+#include <windows.h>
 
 const uint16_t* gs_clut_buffer(void);    /* gs_mem_tex.c */
 
@@ -30,6 +31,18 @@ volatile uint32_t gs_record_first;        /* VBlank the recording started at (0:
 uint64_t gs_reg_mirror[0x64];             /* every general register as last written (gs_thread.c) */
 
 void gs_record_start_now(void) { rec_now = 1; }
+
+/* Record the next `frames` VBlanks into `path` (any thread; M6 in-game verify: the stream after a
+ * mismatch, for offline bisection). Ignored while a recording is being written. */
+static char req_path[512];
+static volatile LONG req_pending;
+static uint32_t req_frames;
+void gs_record_request(const char* path, uint32_t frames) {
+    if (gs_recording || req_pending) return;
+    snprintf(req_path, sizeof req_path, "%s", path);
+    req_frames = frames ? frames : 60;
+    InterlockedExchange(&req_pending, 1);
+}
 
 static void put(uint32_t tag, uint32_t len, const void* p, size_t n) {
     uint32_t h[2] = { tag, len };
@@ -49,6 +62,17 @@ void gs_record_image(const void* data, uint32_t bytes) {
 }
 
 void gs_record_vsync(uint32_t vblank) {
+    if (req_pending && !gs_recording && !rec) {
+        rec_init = 1;
+        rec = fopen(req_path, "wb");
+        if (rec) {
+            setvbuf(rec, NULL, _IOFBF, 1 << 22);
+            rec_frames = req_frames;
+            rec_seen = 0;
+            rec_now = 1;
+        } else fprintf(stderr, "[gs] cannot write the GS recording %s\n", req_path);
+        InterlockedExchange(&req_pending, 0);
+    }
     if (!rec_init) {
         rec_init = 1;
         const char* f = getenv("PS2_GS_RECORD");
@@ -63,7 +87,8 @@ void gs_record_vsync(uint32_t vblank) {
     if (!gs_recording) {
         if (vblank < rec_from && !rec_now) return;
         gs_record_first = vblank;
-        gs_sync();                               /* the state below is the GS's at this point */
+        gs_sync_memory();                        /* the state below is the GS's at this point (GPU data too) */
+        rec_now = 0;
         fwrite("GSREC001", 8, 1, rec);
         fwrite(gs_vram, GS_VRAM_SIZE, 1, rec);
         static uint16_t clut[512];

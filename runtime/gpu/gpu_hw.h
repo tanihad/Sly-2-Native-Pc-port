@@ -1,0 +1,61 @@
+/* The Direct3D 11 GS backend in the game (notes/d3d11-renderer.md 11 M6): PS2_GS_BACKEND=hw or sly2.ini
+ * [graphics] renderer = gpu. Used by ps2_runtime.c (and by scripts/gs_replay --game, headless).
+ *
+ * Threads: the GS thread decodes and hands primitives to the frontend thread (gpu_fthread.c), which
+ * builds a frame per VBlank for the render thread (gpu_d3d11.c / gpu_exec.c). At a VBlank the GS thread
+ * calls gpu_hw_vblank (gs_set_vblank_hook) with the display registers; the frame's last command composes
+ * the picture on the GPU from the displayed buffers (shaders/display.hlsl, exactly gs_compose_from) and
+ * presents it on the window's swap chain; the render thread then reports the picture (picture_done), so
+ * the EE waits at its next VBlank just as with the software renderer. No picture is read back to the CPU
+ * except for frame dumps (PS2_DUMP_FRAMES) and the in-game verifier.
+ *
+ * Environment (besides the settings): PS2_GS_HW_STATS=1 per-second report of per-thread and GPU times;
+ * PS2_GS_VERIFY=N the software renderer also runs and every Nth VBlank both GS memories are compared
+ * (10.2 tolerances; a mismatch dumps both pictures and records the next 60 VBlanks); PS2_GS_DEBUG_KEYS=1
+ * F9 = switch GPU <-> software, Shift+F9 = simulate a device loss (also the PS2_INPUT tokens "renderer" and
+ * "losedevice"); PS2_GPU_LOSE_AT=<vblank>[,...] simulated device losses and PS2_GPU_SWITCH_AT=<vblank>[,...]
+ * backend switches (tests); PS2_GS_SAME_THREAD=1 the frontend on the GS thread. */
+#pragma once
+#include <stdint.h>
+
+#include "gs_draw.h"
+
+typedef struct {
+    void* hwnd;                  /* the game window (window_gpu.h); NULL: headless (offscreen present target) */
+    int adapter;                 /* GPU_ADAPTER_HW / GPU_ADAPTER_WARP */
+    int pacing;                  /* SETTINGS_PACING_*: vsync, vrr (Present without waiting, tearing allowed), display */
+    int verify;                  /* PS2_GS_VERIFY: every Nth VBlank compare with the software renderer (0: off) */
+    int stats;                   /* PS2_GS_HW_STATS */
+    int same_thread;             /* the frontend on the GS thread (verify forces it) */
+    const char* out_dir;         /* where the verifier writes pictures and recordings ("." if NULL) */
+    void (*client_size)(int* w, int* h);                 /* window_client_size (NULL: GetClientRect) */
+    void (*presented)(void);                             /* a picture was presented (window title frame rate) */
+    void (*aspect)(int content43, int* aspect_w, int* aspect_h);   /* the aspect a picture is shown at */
+    int  (*dump_wanted)(uint32_t vblank);                /* PS2_DUMP_FRAMES: read this VBlank's picture back */
+    /* on the dump thread, for every VBlank dump_wanted accepted (px NULL, w = h = 0: no picture - display
+     * off or device lost) */
+    void (*dump)(const uint32_t* px, int w, int h, uint32_t vblank, int content43);
+    void (*window_external)(int on);                     /* window_set_external_presenter (fallback to sw) */
+    void (*vblank_external)(int on);                     /* pacing display: the host timer stops raising VBlanks */
+    void (*display_vblank)(void);                        /* pacing display: a VBlank of the display */
+} gpu_hw_config;
+
+/* Start the render thread (swap chain on cfg->hwnd) and the frontend; the GS must be idle (before
+ * gs_thread_start, or after gs_sync). 0: no capable device (the caller stays with the software renderer). */
+int  gpu_hw_start(const gpu_hw_config* cfg);
+/* The GS thread's hooks: VBlank pictures (gs_set_vblank_hook) and memory read-back (gs_set_read_hook). */
+void gpu_hw_attach_gs(void);
+int  gpu_hw_active(void);                /* the GPU draws (0 after a switch / fall-back to the software renderer) */
+/* GS thread, at each VBlank in stream order (the gs_set_vblank_hook hook). */
+void gpu_hw_vblank(const gs_display_snap* snap, uint32_t vblank, int content43);
+/* EE thread, at each VBlank before it is queued: backend switch requests, device loss recovery, the
+ * frontend thread's PUNT fall-back, statistics. */
+void gpu_hw_ee_vblank(uint32_t vblank);
+void gpu_hw_request_switch(void);        /* GPU <-> software at the next VBlank (debug key) */
+/* window_present_fn: a software picture shown through the render thread (after a switch to sw). */
+void gpu_hw_present_sw(const uint32_t* bgrx, int w, int h, int stride, int aspect_w, int aspect_h);
+void gpu_hw_sync_memory(void);           /* gs_vram <- every GPU-written word (TRXDIR=1, recordings, switch) */
+/* GS memory as the GPU has it after everything queued (4 MB: vram_buf + the GPU words), GS side idle or
+ * the caller; tests (gs_replay --game). */
+int  gpu_hw_read_memory(uint8_t* out);
+void gpu_hw_stop(void);

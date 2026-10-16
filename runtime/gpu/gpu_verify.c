@@ -40,6 +40,36 @@ void gpu_pic_compare(const uint32_t* sw, int sw_stride, const uint32_t* hw, int 
     d->psnr = mse > 0 ? 10.0 * log10(255.0 * 255.0 / mse) : 999.0;
 }
 
+void gpu_mem_compare(const uint8_t* hw, const uint8_t* sw, const uint16_t* writer_of, int (*kind_of)(uint32_t id),
+                     int exact, gpu_mem_diff* d) {
+    memset(d, 0, sizeof *d);
+    d->first_block = -1;
+    for (uint32_t b = 0; b < 16384; b++) {
+        const uint32_t* x = (const uint32_t*)(hw + (size_t)b * 256);
+        const uint32_t* y = (const uint32_t*)(sw + (size_t)b * 256);
+        int kind = writer_of[b] ? kind_of(writer_of[b]) : -1;
+        if (kind == 0) d->nc += 64; else if (kind > 0) d->nz += 64;
+        if (!memcmp(x, y, 256)) continue;
+        d->blocks++;
+        if (d->first_block < 0) d->first_block = (int)b;
+        for (int k = 0; k < 64; k++) {
+            if (x[k] == y[k]) continue;
+            if (kind == 0) {
+                int m = 0;
+                for (int c = 0; c < 32; c += 8) {
+                    int dd = abs((int)((x[k] >> c) & 255) - (int)((y[k] >> c) & 255));
+                    if (dd > m) m = dd;
+                }
+                if (m == 1) d->c1++; else if (m == 2) d->c2++; else if (m <= 16) d->c16++; else d->cbig++;
+            } else if (kind > 0) d->z++;
+            else d->cpu++;
+        }
+    }
+    double f2 = d->nc ? (double)(d->c16 + d->cbig) / (double)d->nc : 0, f16 = d->nc ? (double)d->cbig / (double)d->nc : 0;
+    double fz = d->nz ? (double)d->z / (double)d->nz : 0;
+    d->over = exact ? d->blocks != 0 : (d->cpu != 0 || f2 > 0.025 || f16 > 0.001 || fz > 0.001);
+}
+
 /* ---- verifier ---- */
 
 typedef struct {

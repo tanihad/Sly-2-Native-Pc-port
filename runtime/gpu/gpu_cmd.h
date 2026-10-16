@@ -36,7 +36,12 @@ int   gpu_cmd_init(void);                 /* allocate the rings (idempotent); 0 
 void  gpu_cmd_free(void);
 void  gpu_cmd_reset(void);                /* both sides idle: empty the rings */
 
-/* ---- producer ---- */
+/* ---- producer ----
+ * One producer at a time. In the game several threads queue commands (the frontend thread's frames,
+ * the GS thread's read-backs and calls, a pixel worker's software pictures after a backend switch):
+ * each holds the producer lock from its first alloc to its publish (gpu_cmd_lock, not recursive). */
+void  gpu_cmd_lock(void);
+void  gpu_cmd_unlock(void);
 void* gpu_data_alloc(size_t bytes);       /* contiguous, 16-byte aligned; for the next command */
 void* gpu_cmd_alloc(uint32_t op, uint32_t payload_bytes);   /* returns the payload */
 void  gpu_cmd_commit(void);               /* the command allocated last is complete */
@@ -48,6 +53,7 @@ void  gpu_cmd_debug(char* buf, size_t n); /* ring positions, for hang diagnostic
 /* Next command, or NULL when none arrives within wait_ms (0: poll, < 0: wait forever). */
 const gpu_cmd* gpu_cmd_next(int wait_ms);
 void  gpu_cmd_done(const gpu_cmd* c);     /* the command (and its data) can be reused */
+uint64_t gpu_cmd_backlog(void);           /* bytes published after the command being executed (render thread behind) */
 
 /* counters for tests: times the producer waited for space, chunks published */
 typedef struct { uint64_t cmd_waits, data_waits, publishes, commands; } gpu_cmd_stats;

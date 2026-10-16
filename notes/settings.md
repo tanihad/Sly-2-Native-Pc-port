@@ -32,8 +32,10 @@ the other keys still apply. A UTF-8 BOM (Notepad) is accepted; the file is UTF-8
 aspect = 16:9          ; 16:9 (default) or 4:3; any W:H (21:9, 16:10) or a ratio (1.7778)
 hud = edges            ; edges (default): corner HUD widgets at the display's edges | centered
 
-[graphics]             ; for the Direct3D 11 renderer; the software renderer ignores these
-internal_scale = 3     ; 1 (PS2 resolution) .. 8
+[graphics]
+renderer = software    ; software (default) | gpu (the Direct3D 11 renderer; software if the GPU can't)
+pacing = vsync         ; gpu renderer: vsync (default) | vrr | display
+internal_scale = 3     ; 1 (PS2 resolution) .. 8   (the keys from here on: Direct3D 11 renderer only)
 outlines = ps2         ; ps2 (one PS2 pixel wide, exact) | thin (high-resolution lines)
 filters = modern       ; modern | faithful (preset for the three toggles below)
 motion_blur = preset   ; on | off | preset   (modern: on,  faithful: on)
@@ -57,7 +59,9 @@ maximized = off
 |---|---|---|
 | display.aspect | W:H, W/H or a ratio between 1 and 4 | display aspect; 4:3 = exactly the PS2 picture (notes/widescreen.md). F7 switches wide <-> 4:3 while playing |
 | display.hud | edges / centered (centred) | wide aspects only: the HUD widgets at the sides of the 4:3 screen (health meter, boss meters, counters) sit at the display's edges, or the whole HUD stays in the centre 4:3 area. F8 switches it while playing |
-| graphics.* | see above | read and kept in `ps2_settings` for the GPU renderer (notes/d3d11-renderer.md section 13) |
+| graphics.renderer | software / gpu (also sw / hw / d3d11) | the GS renderer (notes/d3d11-renderer.md, milestone M6: opt-in). gpu needs a Direct3D 11.1 GPU with rasterizer-ordered views (NVIDIA Maxwell 2 and later class); without one the software renderer is used and the log says why |
+| graphics.pacing | vsync / vrr / display | gpu renderer: vsync = Present(1) on the display's refresh (default); vrr = Present(0) with tearing allowed (G-Sync/FreeSync: every picture shown once, as soon as it is ready); display = on a 59.94/60 Hz display (within 0.5%, measured) the display's VBlanks drive the game instead of the 59.94 Hz timer (no repeated picture every 16 s); on other displays the timer stays (logged) |
+| graphics.* (others) | see above | read and kept in `ps2_settings` for the GPU renderer (notes/d3d11-renderer.md section 13); M6 draws at scale 1 whatever internal_scale says (scaling is M7) |
 | game.disc | path of a .iso | the disc image (runtime/launch.c; notes/install.md). Empty or unusable: asked for with a file dialog (GUI build) |
 | window.fullscreen | on/off | start fullscreen; remembered on close |
 | window.x/y/width/height/maximized | integers / on/off | the window's normal placement; remembered on close |
@@ -65,7 +69,10 @@ maximized = off
 
 Environment overrides (for testing; they win over the file and are never written to it):
 `PS2_ASPECT=16:9|4:3|<W>:<H>`, `PS2_HUD=edges|centered`, `PS2_SHOW_FPS=1`, `PS2_ISO=<image>` (the disc,
-see notes/install.md).
+see notes/install.md), `PS2_GS_BACKEND=sw|hw` (renderer), `PS2_GS_PACING=vsync|vrr|display` and
+`PS2_VBLANK=display` (pacing). GPU renderer diagnostics (runtime/gpu/gpu_hw.h): `PS2_GS_HW_STATS=1|2`,
+`PS2_GS_VERIFY=N`, `PS2_GS_DEBUG_KEYS=1` (F9 switch GPU <-> software, Shift+F9 simulated device loss),
+`PS2_GS_SAME_THREAD=1`, `PS2_GS_INFLIGHT=N`, `PS2_GPU_ADAPTER=warp`.
 
 Writing: the game changes only the keys it remembers (`settings_set` -> `settings_update_text`, a
 pure function): the key's line is rewritten in place (a comment after the value is kept), a missing

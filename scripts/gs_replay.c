@@ -32,6 +32,7 @@
 #ifdef GS_REPLAY_GPU
 #include "gpu/gpu.h"
 #include "gpu/gpu_front.h"
+#include "gpu/gpu_hw.h"
 #include "gpu/gpu_verify.h"
 #include "gs_mem_swizzle.h"                /* (lockstep crops) */
 #include <wchar.h>
@@ -1034,6 +1035,122 @@ static void picture(const uint32_t* frame, int ok, int w, int h, uint32_t vblank
     if (ok) save_png("", frame, w, h, 1024, vblank);
 }
 
+#ifdef GS_REPLAY_GPU
+/* ---- --game: the in-game integration (runtime/gpu/gpu_hw.c, M6) -----------------------------------------
+ * The stream goes through the game's GPU renderer path: frontend thread (or, with --game-verify N, the
+ * frontend on this thread next to the software rasterizer and gpu_hw's own memory verifier every Nth
+ * VBlank), mixed frames, the PCRTC composed on the GPU and presented (headless). Every picture is read
+ * back (gpu_hw's dump path) and compared with the reference compose of the GPU's memory (gs_compose_from
+ * of a read-back: must be identical), and with --game-verify with the software renderer's picture
+ * (the picture gate of 10.2). --bench: no read-backs (render-bench line of the game path). */
+static int game_mode, game_verify, game_save;
+static uint32_t game_sw_pics;
+static uint32_t* game_px;
+static int game_w, game_h;
+static volatile LONG game_got;
+static uint32_t game_pics, game_ref_diff, game_sw_beyond, game_sw_diff, game_off;
+static uint64_t game_ref_diff_px;
+
+static void game_dump(const uint32_t* px, int w, int h, uint32_t vblank, int content43) {
+    (void)vblank; (void)content43;
+    if (px) memcpy(game_px, px, (size_t)w * (size_t)h * 4);
+    game_w = px ? w : 0;
+    game_h = px ? h : 0;
+    InterlockedExchange(&game_got, 1);
+    WakeByAddressAll((PVOID)&game_got);
+}
+static int game_dump_wanted(uint32_t vblank) { (void)vblank; return strcmp(outdir, "-") != 0; }
+
+static void game_vblank(uint32_t vblank) {
+    uint64_t pr[GS_PRIV_SNAPSHOT];
+    gs_priv_snapshot(pr);
+    static gs_display_snap s;
+    gs_display_snapshot(&s, pr);
+    gpu_hw_ee_vblank(vblank);            /* (as the game's EE thread: switches, device loss, PUNT fall-back) */
+    pictures++;
+    progress++;
+    if (!gpu_hw_active()) {              /* (fell back to the software renderer: its picture) */
+        static uint32_t swp[1024 * 1024];
+        int w = 0, h = 0;
+        int ok = gs_compose(&s, swp, 1024, &w, &h);
+        game_sw_pics++;
+        if (ok && game_save && strcmp(outdir, "-")) save_png("", swp, w, h, 1024, vblank);
+        return;
+    }
+    InterlockedExchange(&game_got, 0);
+    gpu_hw_vblank(&s, vblank, gs_hint_content43());
+    if (!strcmp(outdir, "-")) return;
+    LONG zero = 0;
+    while (!game_got) WaitOnAddress((volatile VOID*)&game_got, &zero, sizeof zero, 50);
+    game_pics++;
+    if (game_save && game_w) save_png("", game_px, game_w, game_h, game_w, vblank);
+    if (!hwmem) hwmem = malloc(GS_VRAM_SIZE);
+    if (!hw_hist) hw_hist = gs_compose_hist_new();
+    static uint32_t ref[1024 * 1024], swf[1024 * 1024];
+    int w = 0, h = 0;
+    if (!gpu_hw_read_memory(hwmem)) { fprintf(stderr, "GPU memory read-back failed\n"); exit(1); }
+    int ok = gs_compose_from(&s, hwmem, hw_hist, ref, 1024, &w, &h);
+    if (!ok) game_off++;
+    uint32_t d = 0;
+    if (ok != (game_w > 0) || (ok && (w != game_w || h != game_h))) d = 1u << 30;
+    else if (ok)
+        for (int y = 0; y < h; y++)
+            for (int x = 0; x < w; x++) d += ((ref[(size_t)y * 1024 + x] ^ game_px[(size_t)y * w + x]) & 0xFFFFFF) != 0;
+    if (d) {
+        game_ref_diff++;
+        game_ref_diff_px += d;
+        if (game_ref_diff <= 5) {
+            fprintf(stderr, "game: VBlank %u: GPU picture %dx%d differs from the reference compose %dx%d in %u pixels\n", vblank,
+                    game_w, game_h, w, h, d);
+            if (ok && game_w) { save_png("_ref", ref, w, h, 1024, vblank); save_png("_gpu", game_px, game_w, game_h, game_w, vblank); }
+        }
+    } else if (ok && game_pics % 50 == 1) save_png("_gpu", game_px, game_w, game_h, game_w, vblank);
+    if (game_verify) {                   /* the software renderer drew too: its picture */
+        int sw_w = 0, sw_h = 0;
+        int sw_ok = gs_compose(&s, swf, 1024, &sw_w, &sw_h);
+        hash_picture(swf, sw_ok, sw_w, sw_h, 1024);
+        gpu_pic_diff pd;
+        memset(&pd, 0, sizeof pd);
+        if (sw_ok && game_w && sw_w == game_w && sw_h == game_h) {
+            gpu_pic_compare(swf, 1024, game_px, game_w, sw_w, sw_h, &pd);
+            uint32_t big[2] = { 0, 0 };
+            for (int y = 0; y < sw_h; y++)
+                for (int x = 0; x < sw_w; x++) {
+                    uint32_t p = swf[(size_t)y * 1024 + x], q = game_px[(size_t)y * game_w + x];
+                    int m = 0;
+                    for (int c = 0; c < 24; c += 8) { int dd = abs((int)((p >> c) & 255) - (int)((q >> c) & 255)); if (dd > m) m = dd; }
+                    big[y & 1] += m > 16;
+                }
+            uint32_t fb = big[0] < big[1] ? big[0] : big[1];
+            if (pd.diff_px) game_sw_diff++;
+            if (pd.psnr < 40.0 || (double)fb * 2.0 > 0.002 * (double)sw_w * (double)sw_h) {
+                game_sw_beyond++;
+                fprintf(stderr, "game: VBlank %u: picture vs sw beyond the gate: PSNR %.2f, pixels above 16 on even / odd lines %u / %u\n",
+                        vblank, pd.psnr, big[0], big[1]);
+                if (game_sw_beyond <= 5) { save_png("_sw", swf, sw_w, sw_h, 1024, vblank); save_png("_hw", game_px, game_w, game_h, game_w, vblank); }
+            }
+            if (pd.psnr < min_psnr) min_psnr = pd.psnr;
+        } else if (sw_ok != (game_w > 0) || (sw_ok && (sw_w != game_w || sw_h != game_h))) {
+            game_sw_beyond++;
+            fprintf(stderr, "game: VBlank %u: picture size %dx%d vs sw %dx%d\n", vblank, game_w, game_h, sw_w, sw_h);
+        }
+    }
+}
+
+static void game_report(void) {
+    gpu_exec_counters xc;
+    gpu_exec_get_counters(&xc);
+    fprintf(stderr, "game: %u pictures checked (%u display off): %u differ from the reference compose (%llu px)%s; "
+                    "FF draws %llu, ROV draws %llu, frames %llu%s\n",
+            game_pics, game_off, game_ref_diff, (unsigned long long)game_ref_diff_px, game_verify ? "" : " (no sw)",
+            (unsigned long long)xc.ff_draws, (unsigned long long)xc.rov_draws, (unsigned long long)xc.frames,
+            game_sw_pics ? "; software renderer pictures after a fall-back: see below" : "");
+    if (game_sw_pics) fprintf(stderr, "game: %u pictures by the software renderer (fall-back)\n", game_sw_pics);
+    if (game_verify)
+        fprintf(stderr, "game: vs sw: %u pictures differ, %u beyond the picture gate, min PSNR %.2f\n", game_sw_diff, game_sw_beyond, min_psnr);
+}
+#endif
+
 static int rd(FILE* f, void* p, size_t n) { return fread(p, 1, n, f) == n; }
 
 /* --vram-hash: a 64-bit hash of all of gs_vram after every VBlank (synchronous replay only), one
@@ -1272,6 +1389,11 @@ int main(int argc, char** argv) {
         }
 #endif
         else if (!strcmp(argv[i], "--scale") && i + 1 < argc) scale = atoi(argv[++i]);
+#ifdef GS_REPLAY_GPU
+        else if (!strcmp(argv[i], "--game")) game_mode = 1;
+        else if (!strcmp(argv[i], "--game-save")) game_save = 1;   /* (--game: every picture as frame_N.png) */
+        else if (!strcmp(argv[i], "--game-verify") && i + 1 < argc) { game_mode = 1; game_verify = atoi(argv[++i]); }
+#endif
         else if (!strcmp(argv[i], "--vram-hash") && i + 1 < argc) {
             vram_hash_file = fopen(argv[++i], "w");
             if (!vram_hash_file) { fprintf(stderr, "cannot write %s\n", argv[i]); return 1; }
@@ -1284,12 +1406,18 @@ int main(int argc, char** argv) {
     (void)adapter; (void)metrics; (void)front_only; (void)front_ref; (void)front_straddle; (void)front_selfcheck; (void)with_sw; (void)scale;
 #else
     if (FRONT_MODE(backend) && workers > 0) { fprintf(stderr, "--backend hwdry/hwsubmit replay synchronously (workers 0)\n"); return 2; }
+    if (game_mode && (backend != B_HW || workers > 0 || front_ref || front_mixed || lockstep)) {
+        fprintf(stderr, "--game: --backend hw, synchronous, without --ref / --mixed / --lockstep\n");
+        return 2;
+    }
     if (front_ref) front_mixed = 0;
     ref_mode = (backend == B_HW || backend == B_BOTH) && (front_ref || front_mixed);
     mixed_mode = ref_mode && front_mixed;
     if (ref_mode && workers > 0) { fprintf(stderr, "--ref / --mixed replay synchronously (workers 0)\n"); return 2; }
     if (lockstep && !(ref_mode && backend == B_BOTH)) { fprintf(stderr, "--lockstep needs --backend both --ref (or --mixed)\n"); return 2; }
-    if (backend != B_SW && backend != B_HWDRY) {
+    if (game_mode) {
+        if (!(game_px = malloc(1024 * 1024 * 4))) return 1;
+    } else if (backend != B_SW && backend != B_HWDRY) {
         gpu_config cfg;
         memset(&cfg, 0, sizeof cfg);
         cfg.adapter = !strcmp(adapter, "warp") ? GPU_ADAPTER_WARP : GPU_ADAPTER_HW;
@@ -1345,6 +1473,18 @@ int main(int argc, char** argv) {
     pp_frame1 = regs[0x4C]; pp_frame2 = regs[0x4D]; pp_tex0 = regs[0x06]; pp_alpha = regs[0x42]; pp_test = regs[0x47]; pp_zbuf = regs[0x4E];
 #endif
 #ifdef GS_REPLAY_GPU
+    if (game_mode) {                             /* the game's GPU renderer (gpu_hw.c), headless */
+        gpu_hw_config hc;
+        memset(&hc, 0, sizeof hc);
+        hc.adapter = !strcmp(adapter, "warp") ? GPU_ADAPTER_WARP : GPU_ADAPTER_HW;
+        hc.verify = game_verify;
+        hc.stats = getenv("PS2_GS_HW_STATS") ? atoi(getenv("PS2_GS_HW_STATS")) : 0;
+        hc.same_thread = getenv("PS2_GS_SAME_THREAD") && atoi(getenv("PS2_GS_SAME_THREAD"));
+        hc.out_dir = strcmp(outdir, "-") ? outdir : ".";
+        hc.dump_wanted = game_dump_wanted;
+        hc.dump = game_dump;
+        if (!gpu_hw_start(&hc)) { fprintf(stderr, "GPU renderer unavailable\n"); return 1; }
+    } else
     if (FRONT_MODE(backend) || ref_mode) {       /* the frontend consumes the stream next to (or instead of) sw */
         gpu_front_config fc;
         memset(&fc, 0, sizeof fc);
@@ -1483,7 +1623,8 @@ int main(int argc, char** argv) {
                 }
             }
 #ifdef GS_REPLAY_GPU
-            if (ref_mode) ref_vblank(h[1], post_prims);
+            if (game_mode) game_vblank(h[1]);
+            else if (ref_mode) ref_vblank(h[1], post_prims);
             else
 #endif
             if (no_picture) { pictures++; progress++; }
@@ -1553,6 +1694,17 @@ int main(int argc, char** argv) {
     }
     int rc = 0;
 #ifdef GS_REPLAY_GPU
+    if (game_mode) {
+        stage = 3;
+        progress++;
+        gpu_front_drain();
+        gpu_submit_wait_idle();
+        gpu_finish();
+        game_report();
+        gpu_hw_stop();
+        if (game_ref_diff || game_sw_beyond) rc = 3;
+        return rc;
+    }
     if (backend == B_HWDRY) {
         take_front();
         front_report(metrics, argv[1], ms, frames);

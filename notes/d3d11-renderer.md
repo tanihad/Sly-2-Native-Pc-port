@@ -573,6 +573,14 @@ an alpha index. `PS2_GPU_PUNT` forces PUNTs for tests. Appendix F.)*
   sw: `gs_sync`, download all GPU-owned pages, start pixel workers; sw -> hw: `gs_sync`, mark all
   pages CPU-owned. Device loss three times -> automatic switch to sw.
 
+*(M6, as built (appendix H): "done" means the VBlank's frame has been **queued** for the render thread, not
+presented: an EE that waited for Present missed VBlanks whenever the driver lowered the clocks of the lightly
+loaded GPU; up to 6 frames queue while the GPU is slow. TRXDIR=1 and the start of a GS recording read the
+GPU-written words into gs_vram first (`gs_sync_memory`). The pixel workers are started in hw mode too (idle)
+for the switch and the verifier; a switch is `gs_sync` + read-back + frontend stop (hw -> sw) or frontend
+start with a full resync from gs_vram (sw -> hw). Device loss: render thread and frontend restarted, GS memory
+reloaded from gs_vram (which lacks GPU-drawn data); the third loss switches to sw.)*
+
 ---
 
 ## 8. Scaling, AA, widescreen, presentation
@@ -601,6 +609,17 @@ an alpha index. `PS2_GPU_PUNT` forces PUNTs for tests. Appendix F.)*
 - Device lost: GPU contents are gone; recreate device and targets, mark every page CPU-owned and
   reload targets from `gs_vram` (GPU-owned pages are one frame stale there, so at most one frame is
   wrong; Sly redraws everything each frame); after 3 failures switch to sw.
+
+*(M6, as built (appendix H): the picture is composed on the GPU by `shaders/display.hlsl` - gs.c's PCRTC
+(both circuits, MMOD/ALP/SLBG/BGCOLOR, MAGH/MAGV, the field-mode DH rule) and its field deinterlacer - from the
+colour target at the display base when the displayed rect is current there, else from a scratch copy of
+vram_buf with the rect's GPU words downloaded into it; identical to gs_compose_from of the GPU's memory on all
+24 recordings. Present fits it to the display aspect exactly where window.c's presenter puts the software
+picture (no letterbox move into a shared helper: a copy of `fit_aspect`). In hw mode the GS memory of a
+target is never read back for pictures. The display pacing clock is `IDXGIOutput::WaitForVBlank` on a thread
+of its own, used only when the measured refresh is within 0.5% of 59.94 Hz. Device loss: the gs_vram reload
+lacks every GPU-drawn page (gs_vram only receives transfers in hw mode), so feedback effects take ~10 frames
+to look right again.)*
 
 ### 8.3 Widescreen: what the renderer supplies
 
@@ -832,6 +851,7 @@ Total ~45-55 agent-days. The software renderer stays the default until M11.
   the fix-perf scripted path and ep3/ep5/ep8 hubs within 10.2; per-thread ms: GS <= 6, render <= 8,
   60 flips/s on a quiet machine and with the usual background load; 5-minute verify run per hub clean;
   tests/unit/window passes.
+- *(As built: appendix H.)*
 
 ### M7. Resolution scaling and presentation quality
 - **Deliverable**: scale families, sample grid, single-rate sprites at scale, 1:1 reads at scale,
@@ -1670,3 +1690,118 @@ M2 render-thread budget (<= 8 ms) holds with margin on the CPU side.
   (`--ff-stq-exact --ff-rov-mask 0x10 --lockstep-exact`) is the regression gate for everything else, the
   default-mode tolerance gate for the whole.
 - PUNT still needs the same-thread frontend (unchanged from M4).
+
+---
+
+## Appendix H. As built: M6 in-game integration (branch gpu/M6)
+
+**What was built**
+- Selection: `sly2.ini [graphics] renderer = gpu|software` (default software), `PS2_GS_BACKEND=hw|sw`
+  overrides it; `pacing = vsync|vrr|display|uncapped` (`PS2_GS_PACING`). `internal_scale` is read but ignored
+  at M6 (logged: drawing at the PS2's resolution). If the GPU renderer cannot start, the game runs with sw.
+- `runtime/gpu/gpu_hw.c/.h`: the integration used by ps2_runtime.c and by `gs_replay --game`. Starts the
+  render thread (swap chain on the game window, or offscreen when headless), the frontend (mixed = 1, own thread,
+  display_ky2 = 0, S = 1) and the sink; installs the GS thread's VBlank hook (`gpu_hw_vblank`: display snapshot
+  -> `gpu_front_vblank_display`), the read hook (TRXDIR=1 and recordings read GPU words first:
+  `gs_sync_memory`), frame dumps (4 asynchronous read-back slots on a dump thread), `PS2_GS_HW_STATS`,
+  `PS2_GS_VERIFY`, the backend switch and device-loss recovery (`gpu_hw_ee_vblank`, on the EE's VBlank).
+- GPU PCRTC: `shaders/display.hlsl` `cs_compose` reproduces gs_compose_from (both circuits,
+  PMODE MMOD/ALP/SLBG, BGCOLOR, MAGH/MAGV, the field-mode DH rule) and `cs_deint` its field deinterlacer
+  (history per parity). The frontend's `display_sources` picks per circuit the colour target when the
+  displayed rect is current there (`own_rect_current`), otherwise a scratch copy of vram_buf with the rect's
+  GPU words downloaded into it (`own_rect_gpu`: no ownership change). gs.c's compose was refactored onto
+  `gs_display_layout_of` / `gs_display_field_code` (sw VRAM hashes unchanged). Pictures are
+  R8G8B8A8_TYPELESS (UAV R32_UINT for the compose, SRV/RTV UNORM for present).
+- Present (`gpu_present.c`): flip-discard swap chain, waitable object (100 ms wait), ALLOW_TEARING when the
+  system supports it (for vrr / uncapped), picture fitted exactly like window.c's presenter (copy of `fit_aspect`), resize serial
+  and Alt+Enter / F11 borderless fullscreen handled by window.c (remembered window state), the render thread
+  resizes the buffers. Flips are counted at Present (`gpu_set_flip_callback`).
+- Picture done: when the VBlank's frame is queued for the render thread (`GPU_FD_SIGNAL` in
+  `gpu_submit_sink`), not after Present; in-flight depth 6 (`PS2_GS_INFLIGHT`). Display pacing uses
+  `IDXGIOutput::WaitForVBlank` on a clock thread of its own, only when the measured refresh is within 0.5% of
+  59.94 Hz (declined on the owner's 165 Hz monitor, logged).
+- `runtime/window.c` + `window_gpu.h`: external presenter mode (no device of its own; picture hand-off
+  forwarded to the GPU backend; HWND, client size, fullscreen and resize serial exported); title "(GPU)";
+  debug keys F9 (switch) / Shift+F9 (simulated device loss) with `PS2_GS_DEBUG_KEYS=1`; `PS2_INPUT` tokens
+  `renderer` / `losedevice`; own presenter re-initialised after a fallback to sw.
+- Backend switch (F9, `PS2_GPU_SWITCH_AT`): hw -> sw = `gs_sync`, read-back of every GPU-owned page, frontend
+  stop, window presenter back; sw -> hw = frontend start with a full resync from gs_vram. The pixel workers
+  stay started in hw mode (idle) for this and for the verifier.
+- Device loss (`DXGI_ERROR_DEVICE_REMOVED/RESET`, Shift+F9, `PS2_GPU_LOSE_AT`): render thread and frontend
+  restarted, GS memory reloaded from gs_vram; the third loss switches to sw with the window's own presenter.
+- PUNT with the frontend thread: counted, the primitive skipped, the frontend moved to the GS thread at the
+  next VBlank (`gpu_front_set_thread`; exact PUNTs from then on) and back after 600 VBlanks without PUNT.
+- In-game verifier (`PS2_GS_VERIFY=N`: every N VBlanks): same-thread frontend + sw rasterizer, GPU memory
+  compared with gs_vram under the 10.2 tolerances (`gpu_verify.c` `gpu_mem_compare`); a mismatch writes both
+  pictures, records the next 60 VBlanks' GS stream (`gs_record_request`) and resyncs. Tolerance class of a
+  block = its writer's target kind, also for downloaded GPU data later partially overwritten by uploads
+  (`gpu_front_block_origin`). `PS2_GS_VERIFY_DUMP=1` writes every comparison's picture pair.
+- `PS2_GS_HW_STATS=1` (once a second): flips/s, pictures/s, dropped; per game frame GS-thread busy, frontend
+  ms, render CPU / wall, present, GPU ms (median / max), draws, PUNT, downloads; `=2` adds per-frame memory
+  traffic and a slow-frame log.
+- HUD hint plumbing (register 0x7F): `gs_env_view.hud/hud_scale` -> frontend thread (`FR_STATE`) -> StateRec
+  `hud` / `hud_scale` (+ `phase_label`). The decoder still transforms HUD vertices as in sw (transformed copies
+  get vertex serial 0 so the frontend thread's vertex cache cannot alias them); the vertex-shader transform is
+  M10.
+- Tools: `gs_replay --game [--game-verify N] [--game-save]` (the in-game path on a recording, pictures vs the
+  reference compose and vs sw), `scripts/gpu_game_all.ps1 [-Verify N]`; tests/unit/window `--external` test
+  and settings tests for renderer / pacing / env overrides.
+
+**16:9 behaviour at M6**: identical to sw. The 512-wide picture is stretched to the window's aspect (16:9 by
+default); HUD primitives are transformed by the decoder from the 0x7F hints before the frontend sees them;
+movies are pillarboxed to 4:3 by the ASPECT_4_3 hint (`gpu_picture_aspect`). A 16:9 title recording replays
+with 0 downloads and 0 beyond the tolerance in verify mode.
+
+**Verification (release build, RTX 4060 Ti, S = 1)**
+- Corpus `gpu_game_all`: 24/24 recordings, 3816 pictures equal to the reference compose of the GPU's memory
+  (0 px); `-Verify 1`: 24/24, verifier 0 beyond the tolerance, pictures vs sw 0 beyond the picture gate
+  (min PSNR 43.94 dB, gpu-C_load_m3).
+- Game boots to the title and gameplay with hw (headless and windowed; packaged GUI build `dist\Sly2\sly2.exe`
+  in hw mode, imports CRT + system DLLs only).
+- In-game equivalence (same run, verify pairs): fix-perf scripted path (`600:square:12,t95:start:10`),
+  `PS2_GS_VERIFY=20` to VBlank 9600: 480 comparisons, 0 beyond the tolerance (466 with tolerated +-1/+-2
+  differences); picture pairs: 151, 0 beyond the picture gate, min PSNR 51.37 dB. Hubs ep3/ep5/ep8,
+  `PS2_GS_VERIFY=60` for 5 minutes each: 300 comparisons, 0 beyond; memory flat (851-863 MB committed);
+  audio 340 s, 0 underruns. Separate hw and sw runs of a hub are not comparable frame by frame (the game's
+  timing diverges between runs: different animation phases), so hw vs sw equivalence is measured inside one run.
+- Per-thread ms per game frame, windowed hw, hubs (median / max): GS thread (busy, mean) ep3 3.3, ep5 2.9,
+  ep8 4.5; frontend thread 3.9 / 6.8, 3.5 / 5.7, 5.5 / 8.1; render CPU 0.5 / 1.4, 0.5 / 1.7, 0.75 / 1.9;
+  GPU 2.3-3.5 median; 59.9-60.0 flips/s, 0 dropped. Wall / GPU maxima of 25-35 ms about every 2 s are the
+  NVIDIA power-state drops (P0 -> P3/P5 under ~3 ms of GPU work per 16.7 ms); they cost no VBlank since the
+  picture is reported at queue time. Windowed hw: 0-1 missed VBlanks in 38 s (sw 0).
+- Switch hw -> sw -> hw: all pictures within the gate vs sw. Device loss x2: recovers, one picture lost each,
+  ~10 pictures beyond the gate while feedback effects rebuild from gs_vram; x3: sw. Forced PUNT on the
+  frontend thread: same-thread frontend from the next VBlank, 2 pictures miss the PUNTed primitives.
+- Gates: run_tests 16/16; unit suites all pass (gs-hw 195/195 per mode, gs-front, gs-draw, window, ...);
+  `gpu_diff_all` 13/13; `gs_vram_hashes` unchanged; `gpu_fthread_check` (+ `-Mixed`) identical; mixed
+  lockstep and exact lockstep on 5 recordings each clean; debug and release builds; `scripts\package.py`.
+- Screenshots: `build\screenshots\gpu_m6_museum_hw_window.png`, `gpu_m6_ep{3,5,8}_hub_{hw,sw}.png`,
+  `gpu_m6_fixperf_v{003000,006000,009120}_sw_vs_hw.png` (not committed: build/).
+
+**Deviations from the design**
+- Picture done at queue time instead of after Present (the EE would wait for a slow-clocked GPU).
+- No CPU read-back for pictures, but a displayed rect that is not current in a target is composed from a
+  scratch copy of vram_buf + downloaded GPU words (exact, no ownership change), not from a target view.
+- Device loss reloads from gs_vram, which in hw mode lacks every GPU-drawn page (design: "one frame stale"):
+  ~10 frames of wrong feedback effects after a loss.
+- The present fit is a copy of window.c's `fit_aspect` (no shared helper).
+- The verifier needs the same-thread frontend (the sw rasterizer must see the same stream at the same point);
+  verify runs miss VBlanks by design.
+- In-game steady-state downloads exist that the corpus lacks: the intro cutscene (~VBlank 1520-1880) and
+  hubs (~8 per VBlank) have a colour target drawing into main-Z pages that the Z target then tests (download +
+  load, 24-64 blocks per frame). Exact (verify clean) and counted; an M8/M9 item.
+
+**What M7 (resolution scaling + outline / filter settings) must know**
+- `cs_compose` reads target texel (x * kx, y * ky) sample 0 at native resolution: at S > 1 it must compose
+  (or resolve) at scale, with the grid-shift compensation and the selected filter, and the scratch / vram_buf
+  path stays native (upscale it or downsample targets consistently). The deinterlacer runs on the native
+  picture; at scale it needs the scaled history textures (two per parity).
+- `display_ky2` is still 0; Z targets must follow their colour target's factors before it can be 1.
+- `internal_scale` is parsed and logged but ignored; flicker-filter / interlacing toggles are not applied in
+  the GPU compose yet (it reproduces the sw compose bit for bit at S = 1 - keep that as the S = 1 gate:
+  `gpu_game_all.ps1` compares every picture with gs_compose_from of the GPU's memory).
+- HUD state is in StateRec (`hud`, `hud_scale`) for M10; the decoder transform stays until then.
+- Measure with `PS2_GS_HW_STATS=1/2` and verify in game with `PS2_GS_VERIFY=N` (+ `PS2_GS_VERIFY_DUMP=1`);
+  at S > 1 the verifier must decimate sample 0 before comparing (it compares native-resolution memory today).
+- GPU frame times have power-state spikes (25-35 ms); more work at S = 3 will mostly keep the GPU at P0. The
+  in-flight depth (6) absorbs them; do not make the EE wait for Present.
