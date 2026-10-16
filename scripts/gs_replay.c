@@ -77,6 +77,19 @@ static void save_png(const char* suffix, const uint32_t* frame, int w, int h, in
     static int cap = -2, saved;           /* GS_REPLAY_MAX_PNG=<n>: at most n pictures per run (corpus sweeps, disk space) */
     if (cap == -2) cap = getenv("GS_REPLAY_MAX_PNG") ? atoi(getenv("GS_REPLAY_MAX_PNG")) : -1;
     if (cap >= 0 && saved >= cap) return;
+    /* GS_REPLAY_SAVE_VBLANKS=a,b,...: only pictures of these VBlanks (contact sheets) */
+    const char* only = getenv("GS_REPLAY_SAVE_VBLANKS");
+    if (only && *only) {
+        int hit = 0;
+        for (const char* p = only; *p;) {
+            char* e;
+            unsigned long v = strtoul(p, &e, 10);
+            if (e == p) break;
+            if (v == vblank) hit = 1;
+            p = *e ? e + 1 : e;
+        }
+        if (!hit) return;
+    }
     saved++;
     char path[1024];
     snprintf(path, sizeof path, "%s/frame_%06u%s.png", outdir, vblank, suffix);
