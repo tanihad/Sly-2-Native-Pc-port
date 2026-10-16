@@ -114,12 +114,19 @@ int own_rect_blocks(int psm, uint32_t bp, uint32_t bw, int x0, int y0, int x1, i
 extern const uint8_t* gf_vram;           /* NULL: gs_vram (same thread) */
 extern const uint16_t* gf_clut_src;      /* NULL: gs_clut_buffer() */
 extern int gf_clut_hint;                 /* tex0 hook: -1 unknown, 0 the loaded entries did not change, 1 changed */
-void gf_vblank_impl(const uint64_t priv[16], uint32_t vblank);   /* the VBlank on the frontend's thread */
+/* the VBlank on the frontend's thread (di: M6 display info, or NULL) */
+void gf_vblank_impl(const uint64_t priv[16], uint32_t vblank, const gpu_display_info* di);
 const gs_front_hooks* gf_hooks(void);    /* the frontend's own hooks */
 void fthread_start(void);                /* installs the proxy hooks, starts the thread */
 void fthread_stop(void);                 /* drains and ends it */
-void fthread_vblank(const uint64_t priv[16], uint32_t vblank);
+void fthread_vblank(const uint64_t priv[16], uint32_t vblank, const gpu_display_info* di);
 void fthread_drain(void);                /* everything posted so far has been processed */
+void fthread_call(void (*fn)(void*), void* arg);   /* fn(arg) on the frontend thread, in stream order; waits */
+/* (M6) a display rect (inclusive) of a CT32/CT24 buffer is current in colour target T (every block) */
+int  own_rect_current(gpu_target* T, int x0, int y0, int x1, int y1);
+/* (M6) the GPU words of a rect (inclusive) of a psm buffer as download entries and their writers (at most
+ * max; no side effects) */
+int  own_rect_gpu(int psm, uint32_t bp, uint32_t bw, int x0, int y0, int x1, int y1, gpu_dl_entry* out, uint16_t* writers, int max);
 uint64_t fthread_cycles(void);           /* QueryThreadCycleTime of the frontend thread */
 void fthread_affinity(uint64_t mask);
 

@@ -96,6 +96,7 @@ typedef struct {
     uint32_t post_prims;                 /* primitives the REF tier does not render yet (ALIAS16, target views, PUNT) */
     uint32_t stq_cuts;                   /* STQ triangles with batch cuts (gpu_rec_tri.cuts) */
     uint32_t checkpoints;                /* partial frames handed to the sink (lockstep) */
+    uint32_t display_mem;                /* (M6) displayed circuits composed from vram_buf (not current in a target) */
     uint32_t phase_prims[6];             /* drawn primitives per phase label (GPU_PH_*: scene, fill, ROV read-modify-write,
                                             ALIAS16, target view, feedback) */
 } gpu_front_frame;
@@ -108,6 +109,31 @@ void gpu_front_thread_affinity(uint64_t mask);       /* benchmarks: pin the fron
 /* VBlank (stream order, before the picture): closes the frame. priv: the display registers
  * (gs_priv_snapshot order) for the display target family. */
 void gpu_front_vblank(const uint64_t priv[16], uint32_t vblank);
+/* M6: the same with the picture to compose and show on the GPU (the frame's GPU_FOP_PRESENT carries
+ * it to the render thread, gpu_exec.c / gpu_present.c). */
+typedef struct {
+    uint64_t priv[16];                   /* display registers (gs_priv_snapshot order; [15] VBlank count) */
+    uint32_t vblank;
+    uint8_t field_code;                  /* gs_display_field_code: deinterlacer field (0 / 8), 0xFF none */
+    uint8_t content43;                   /* ASPECT_4_3 hint state at this VBlank (pillarboxed at 4:3) */
+    uint8_t flags;                       /* GPU_DI_* */
+    uint8_t pad;
+    uint16_t aspect_w, aspect_h;         /* display aspect the picture is fitted to (4:3 content: 4, 3) */
+    uint32_t pad2;
+    void* rb;                            /* gpu_readback* of the composed picture (dumps), or NULL */
+} gpu_display_info;
+enum { GPU_DI_SHOW = 1,                  /* present it (else compose only: tests, read-backs) */
+       GPU_DI_SIGNAL = 2 };              /* call the picture-done callback (gpu_set_picture_done) after it */
+void gpu_front_vblank_display(const gpu_display_info* di);
+/* Run fn(arg) on the frontend's thread in stream order (everything posted before it has been processed)
+ * and wait for it; same thread: at once. The GS side must be idle or be the caller. */
+void gpu_front_call(void (*fn)(void* arg), void* arg);
+/* Move the frontend between its own thread and the caller's (the GS thread); the GS side must be idle
+ * (gs_sync). PUNT needs the same thread (5.4). */
+void gpu_front_set_thread(int on);
+int  gpu_front_threaded(void);
+/* PUNTs met on the frontend thread (not drawn: the GS thread had moved on), since start. */
+uint32_t gpu_front_thread_punts(void);
 /* Completed frames, oldest first; returns how many were taken. */
 int  gpu_front_take_frames(gpu_front_frame* out, int max);
 /* One line per live target (id, kind, base, FBW, rows, family, last use) to f. */
@@ -168,7 +194,12 @@ typedef struct { gpu_fop h; uint16_t ct, zt; uint32_t zresolve; int16_t bbox[4];
 /* rect [x0, x1) x [y0, y1) in pixels of the 16-bit frame (whole 16x8 blocks) */
 typedef struct { gpu_fop h; uint16_t target, psm; int16_t x0, y0, x1, y1; } gpu_fop_alias16;
 typedef struct { gpu_fop h; uint16_t target, src; uint32_t n, data_off; } gpu_fop_xcopy;
-typedef struct { gpu_fop h; uint32_t vblank; } gpu_fop_present;
+/* VBlank. With a display info (M6, di_off != ~0: a gpu_display_info in the data arena) the picture is
+ * composed on the GPU: circuit i reads colour target src[i] (sample 0 of every native pixel; the
+ * displayed rect is current there), or, src[i] == 0, GS memory: a scratch copy of vram_buf with the GPU
+ * words of the displayed rects (mem_n download entries at mem_off in the data arena, then their writer
+ * target ids as u16) - nothing in vram_buf or the ownership changes. */
+typedef struct { gpu_fop h; uint32_t vblank; uint32_t di_off; uint16_t src[2]; uint32_t mem_off, mem_n; } gpu_fop_present;
 
 enum { GPU_FD_PARTIAL = 1, GPU_FD_REF = 2, GPU_FD_MIXED = 4 };
 typedef struct {

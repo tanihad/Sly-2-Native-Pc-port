@@ -159,8 +159,17 @@ void gs_sync(void) {
     synced_at = wr_local;
 }
 
-uint32_t gs_image_read(void* data, uint32_t bytes) {
+static void (*volatile read_hook)(void);
+void gs_set_read_hook(void (*fn)(void)) { read_hook = fn; }
+
+void gs_sync_memory(void) {
     gs_sync();
+    void (*h)(void) = read_hook;
+    if (h) h();                                         /* (GPU backend: GPU-drawn data into gs_vram) */
+}
+
+uint32_t gs_image_read(void* data, uint32_t bytes) {
+    gs_sync_memory();
     return gs_exec_image_read(data, bytes);
 }
 
@@ -206,6 +215,12 @@ static void picture_done(void) {
     if (atomic_load_explicit(&ee_waiting, memory_order_seq_cst)) WakeByAddressAll((PVOID)&vsync_done);
 }
 
+/* The GPU backend's pictures (gs_set_vblank_hook): the hook runs on this thread at the VBlank's place
+ * in the stream, the picture is presented later by the render thread, which reports it here. */
+static gs_vblank_hook_fn volatile vblank_hook;
+void gs_set_vblank_hook(gs_vblank_hook_fn fn) { vblank_hook = fn; }
+void gs_picture_presented(void) { picture_done(); }
+
 static void picture_run(void* arg) {
     const picture* p = arg;
     static uint32_t frame[1024 * 1024];
@@ -218,6 +233,14 @@ static void picture_run(void* arg) {
 
 static void vblank_picture(const slot* s) {
     if (perf_burn_hook) perf_burn_hook(1);         /* PS2_PERF_BURN_GS headroom test */
+    gs_vblank_hook_fn hook = vblank_hook;
+    if (hook) {                                    /* GPU backend: it composes and presents (picture_done later) */
+        static gs_display_snap snap;
+        gs_display_snapshot(&snap, (const uint64_t*)(const void*)(s + 1));
+        present_43 = gs_hint_content43();
+        hook(&snap, s->len, present_43);
+        return;
+    }
     picture* p = &pictures[picture_next++ & 3];
     gs_display_snapshot(&p->snap, (const uint64_t*)(const void*)(s + 1));
     p->vblank = s->len;

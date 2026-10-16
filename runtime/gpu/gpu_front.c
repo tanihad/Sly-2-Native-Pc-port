@@ -1259,6 +1259,7 @@ static void stq_cuts(const gs_tri* T, const gs_prim* P, fullrec* r) {
 static int (*mem_reader)(uint8_t* out, void* user);
 static void* mem_reader_user;
 static uint8_t* punt_mem;
+static volatile LONG thread_punts;       /* PUNTs met on the frontend thread (gpu_front_thread_punts) */
 static int force_every = -1, force_mask;
 static uint32_t force_ctr;
 static struct { int on, cpsm, zpsm; uint32_t cbp, cbw, zbp, zbw; int r[4]; } PP;   /* the PUNT being drawn */
@@ -1272,7 +1273,7 @@ static int gf_force_punt(const gs_env_view* ev, int cls) {
         force_mask = 15;
         if (e && *e) sscanf(e, "%d:%d", &force_every, &force_mask);
     }
-    if (force_every <= 0 || gf_cfg.thread) return 0;
+    if (force_every <= 0) return 0;      /* (M6: also on the frontend thread: tests of its PUNT fallback) */
     if (!(force_mask & (1 << cls))) return 0;
     if ((force_mask & 16) && ev->P->ffmt->bits != 16) return 0;
     return ++force_ctr % (uint32_t)force_every == 0;
@@ -1285,7 +1286,11 @@ static void punt_prim(const gs_env_view* ev, int cls, const texsrc_t* ts, int x0
     const gs_prim* P = ev->P;
     (void)cls;
     flush_open();
-    if (gf_cfg.thread) return;           /* (the frontend thread cannot make the decode thread draw: M6) */
+    if (gf_cfg.thread) {                 /* the frontend thread cannot make the decode thread draw: counted, not drawn;
+                                            the integrator moves the frontend to the GS thread (gpu_hw.c, M6) */
+        InterlockedIncrement(&thread_punts);
+        return;
+    }
     if (y1 >= 2048) y1 = 2047;
     if (x1 >= 2048) x1 = 2047;
     if (x0 < 0) x0 = 0;
@@ -1941,17 +1946,100 @@ void gpu_front_stop(void) {
 }
 
 void gpu_front_vblank(const uint64_t priv[16], uint32_t vblank) {
-    if (gf_cfg.thread) fthread_vblank(priv, vblank);
-    else gf_vblank_impl(priv, vblank);
+    if (gf_cfg.thread) fthread_vblank(priv, vblank, NULL);
+    else gf_vblank_impl(priv, vblank, NULL);
 }
 
-void gf_vblank_impl(const uint64_t priv[16], uint32_t vblank) {
+void gpu_front_vblank_display(const gpu_display_info* di) {
+    if (gf_cfg.thread) fthread_vblank(di->priv, di->vblank, di);
+    else gf_vblank_impl(di->priv, di->vblank, di);
+}
+
+void gpu_front_call(void (*fn)(void* arg), void* arg) {
+    if (gf_cfg.thread) fthread_call(fn, arg);
+    else fn(arg);
+}
+
+int gpu_front_threaded(void) { return gf_cfg.thread; }
+uint32_t gpu_front_thread_punts(void) { return (uint32_t)thread_punts; }
+
+void gpu_front_set_thread(int on) {
+    on = on != 0;
+    if (on == gf_cfg.thread) return;
+    if (on) {
+        S.version = 0;                   /* (the frontend thread numbers state versions on its own) */
+        gf_cfg.thread = 1;
+        fthread_start();                 /* mirrors from gs_vram / the CLUT buffer as they are now */
+    } else {
+        fthread_stop();                  /* everything posted is processed; mirrors dropped (gf_vram NULL) */
+        gf_cfg.thread = 0;
+        S.version = 0;
+        gs_front = &hooks;
+    }
+}
+
+/* M6: where each displayed circuit's picture comes from. A CT32/CT24 buffer whose displayed rect is
+ * current in the colour target at its base and width is sampled there (no copy; at any scale the
+ * target's samples); anything else is read from a scratch copy of vram_buf with the GPU words of the
+ * rect downloaded into it (exact; vram_buf and the ownership stay as they are). The rect is what
+ * gs_compose_from reads: columns DBX .. DBX + DW / (MAGH + 1), rows DBY .. DBY + DH / (MAGV + 1), in field
+ * mode DBY .. DBY + ((DH + 1) / (MAGV + 1)) / 2 - 1. */
+static gpu_dl_entry dsp_e[GPU_BLOCKS];
+static uint16_t dsp_w[GPU_BLOCKS];
+
+static uint32_t display_sources(const gpu_display_info* di, uint16_t src[2], uint32_t* mem_off) {
+    src[0] = src[1] = 0;
+    uint64_t pmode = di->priv[0];
+    int field = (di->priv[2] & 3) == 3, n = 0;
+    for (int i = 0; i < 2; i++) {
+        if (!((pmode >> i) & 1)) continue;
+        uint64_t fb = di->priv[7 + 2 * i], d = di->priv[8 + 2 * i];
+        uint32_t fbp = (uint32_t)(fb & 0x1FF), fbw = (uint32_t)((fb >> 9) & 0x3F);
+        int psm = (int)((fb >> 15) & 0x1F);
+        int dbx = (int)((fb >> 32) & 0x7FF), dby = (int)((fb >> 43) & 0x7FF);
+        int magh = (int)((d >> 23) & 0xF), magv = (int)((d >> 27) & 3), dw = (int)((d >> 32) & 0xFFF), dh = (int)((d >> 44) & 0x7FF);
+        int x1 = dbx + dw / (magh + 1), y1 = field ? dby + (((dh + 1) / (magv + 1)) >> 1) - 1 : dby + dh / (magv + 1);
+        if (y1 < dby) y1 = dby;
+        int wraps = x1 > 2047 || y1 > 2047;
+        if (!fbw) continue;
+        if ((psm == PSMCT32 || psm == PSMCT24) && !wraps) {
+            gpu_target* T = own_find(TGT_C32, fbp, fbw);
+            if (T && x1 < (int)T->fbw * 64 && own_rect_current(T, dbx, dby, x1, y1)) {
+                T->last_used = gf_frame;
+                src[i] = T->id;
+                continue;
+            }
+        }
+        int mp = gs_fmt_of(psm) ? psm : PSMCT32;
+        if (wraps) { dbx = 0; dby = 0; x1 = x1 > 2047 ? 2047 : x1; y1 = y1 > 2047 ? 2047 : y1; }
+        int n0 = n;
+        n += own_rect_gpu(mp, fbp * 32, fbw, dbx, dby, x1, y1, dsp_e + n, dsp_w + n, GPU_BLOCKS - n);
+        for (int k = n0; k < n; k++) gt[dsp_w[k]].last_used = gf_frame;   /* (no eviction before the picture) */
+        gf.display_mem++;
+    }
+    *mem_off = 0;
+    if (n) {
+        *mem_off = gf_data(dsp_e, (uint32_t)n * (uint32_t)sizeof *dsp_e);
+        gf_data(dsp_w, (uint32_t)n * 2);
+    }
+    return (uint32_t)n;
+}
+
+void gf_vblank_impl(const uint64_t priv[16], uint32_t vblank, const gpu_display_info* di) {
     uint64_t t0 = __rdtsc();
     flush_open();
-    own_frame_end(priv);
+    uint16_t src[2] = { 0, 0 };
+    uint32_t mem_off = 0, mem_n = di ? display_sources(di, src, &mem_off) : 0;   /* (before the eviction: a shown
+                                                                                     target stays in use) */
+    own_frame_end(priv);                 /* (flushes the frame's patches: vram_buf is complete for the picture) */
     clut_frame_end();
     gpu_fop_present* p = gf_cmd(GPU_FOP_PRESENT, sizeof *p);
     p->vblank = vblank;
+    p->di_off = di ? gf_data(di, sizeof *di) : ~0u;
+    p->src[0] = src[0];
+    p->src[1] = src[1];
+    p->mem_off = mem_off;
+    p->mem_n = mem_n;
     tsc_acc += __rdtsc() - t0;
     /* calibrate the TSC against QPC */
     LARGE_INTEGER q, f;

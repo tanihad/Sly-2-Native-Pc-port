@@ -29,6 +29,7 @@
 #include "aspect.h"
 #include "hw.h"
 #include "settings.h"
+#include "window_gpu.h"
 
 #include <stdarg.h>
 #include <windows.h>
@@ -555,9 +556,41 @@ void window_present_aspect(const uint32_t* bgrx, int w, int h, int stride, int a
 
 void window_present(const uint32_t* bgrx, int w, int h, int stride) { window_present_aspect(bgrx, w, h, stride, 4, 3); }
 
+/* ==== external presenter (window_gpu.h) =========================================================== */
+static volatile LONG ext_on;             /* a renderer of its own presents on the window (no device here) */
+static window_present_fn volatile ext_fn;
+static volatile LONG ext_changed;        /* window thread: (re)create or drop the own presenter */
+static volatile LONG client_w, client_h; /* as of the last WM_SIZE */
+static volatile LONG client_known;
+static volatile LONG resize_serial;
+static volatile LONG debug_keys;         /* WINDOW_KEY_* pressed since the last window_take_debug_keys */
+static int debug_keys_on = -1;           /* PS2_GS_DEBUG_KEYS */
+
+void window_set_external_presenter(int on, window_present_fn fn) {
+    ext_fn = fn;
+    if ((LONG)(on != 0) != ext_on) {
+        InterlockedExchange(&ext_on, on != 0);
+        InterlockedExchange(&ext_changed, 1);
+        if (fb_event) SetEvent(fb_event);       /* (wake the window thread) */
+    }
+}
+int window_external_presenter(void) { return ext_on != 0; }
+
+void window_note_presented(void) { InterlockedIncrement(&fb_presented); }
+uint32_t window_resize_serial(void) { return (uint32_t)resize_serial; }
+int window_take_debug_keys(void) { return (int)InterlockedExchange(&debug_keys, 0); }
+
 /* window_present for a picture shown at aspect_w:aspect_h (widescreen: the display aspect, or 4:3 for
  * pictures of 4:3 content, which are then pillarboxed; ps2_runtime.c's present_frame decides). */
 void window_present_aspect(const uint32_t* bgrx, int w, int h, int stride, int aspect_w, int aspect_h) {
+    if (ext_on) {                        /* the external renderer shows it */
+        window_present_fn fn = ext_fn;
+        if (fn && bgrx && w > 0 && h > 0 && stride >= w) {
+            fn(bgrx, w, h, stride, aspect_w, aspect_h);
+            InterlockedIncrement(&fb_presented);
+        }
+        return;
+    }
     if (!win_accepting) return;
     if (aspect_w <= 0 || aspect_h <= 0) { aspect_w = 4; aspect_h = 3; }
     if (!bgrx || w <= 0 || h <= 0 || stride < w) {
@@ -990,7 +1023,7 @@ static unsigned cur_seq;                 /* sequence number of the frame in fb_p
 static volatile LONG frames_shown;       /* new frames presented by the window thread (statistics) */
 
 static void render(HWND hwnd) {
-    if (!win_ready) return;
+    if (!win_ready || ext_on) return;    /* (an external renderer's swap chain: nothing drawn here) */
     const uint32_t* px = cur_seq ? fb_pix[fb_read] : NULL;
     int fw = fb_w[fb_read], fh = fb_h[fb_read], aw = fb_aw[fb_read], ah = fb_ah[fb_read];
     if (!use_d3d) { gdi_render(hwnd, px, fw, fh, aw, ah); return; }
@@ -1153,9 +1186,17 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         render(hwnd);
         return 0;
     }
-    case WM_SIZE:
+    case WM_SIZE: {
+        LONG w = wp == SIZE_MINIMIZED ? 0 : (LONG)LOWORD(lp), h = wp == SIZE_MINIMIZED ? 0 : (LONG)HIWORD(lp);
+        if (w != client_w || h != client_h || !client_known) {
+            InterlockedExchange(&client_w, w);
+            InterlockedExchange(&client_h, h);
+            InterlockedExchange(&client_known, 1);
+            InterlockedIncrement(&resize_serial);
+        }
         if (wp != SIZE_MINIMIZED) render(hwnd);   /* redraw at the new size right away */
         return 0;
+    }
     case WM_ENTERSIZEMOVE:               /* DefWindowProc runs a modal loop: keep frames coming */
         SetTimer(hwnd, LIVE_RESIZE_TIMER, 10, NULL);
         return 0;
@@ -1186,6 +1227,11 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         break;                           /* Alt+F4 etc.: default handling */
     case WM_KEYDOWN:
+        if (wp == VK_F9 && !(lp & (1 << 30))) {                  /* GPU backend debug keys (window_gpu.h) */
+            if (debug_keys_on < 0) { const char* e = getenv("PS2_GS_DEBUG_KEYS"); debug_keys_on = e && *e && *e != '0'; }
+            if (debug_keys_on) InterlockedOr(&debug_keys, GetKeyState(VK_SHIFT) < 0 ? WINDOW_KEY_LOSE_DEVICE : WINDOW_KEY_SWITCH);
+            return 0;
+        }
         if (wp == VK_F11 && !(lp & (1 << 30))) toggle_fullscreen(hwnd);
         else if (wp == VK_ESCAPE && win_fullscreen) toggle_fullscreen(hwnd);
         else if (wp == VK_F7 && !(lp & (1 << 30))) switch_aspect();
@@ -1233,7 +1279,7 @@ static void place_window(HWND hwnd) {
 /* "Sly 2: Band of Thieves", with the frame rate when [window] show_fps is on (PS2_SHOW_FPS=1). */
 static void set_title(HWND hwnd, double fps) {
     char t[96];
-    if (ps2_settings.show_fps) snprintf(t, sizeof t, WINDOW_TITLE " - %.1f fps%s", fps, use_d3d ? "" : " (GDI)");
+    if (ps2_settings.show_fps) snprintf(t, sizeof t, WINDOW_TITLE " - %.1f fps%s", fps, ext_on ? " (GPU)" : use_d3d ? "" : " (GDI)");
     else snprintf(t, sizeof t, WINDOW_TITLE);
     char cur[96];
     if (GetWindowTextA(hwnd, cur, sizeof cur) && !strcmp(cur, t)) return;
@@ -1268,10 +1314,24 @@ static DWORD WINAPI window_thread(LPVOID arg) {
     settings_save_if_missing();          /* sly2.ini template in the user data folder (settings.c) */
 
     const char* force_gdi = getenv("PS2_WINDOW_GDI");
-    use_d3d = !(force_gdi && *force_gdi && *force_gdi != '0') && d3d_init(hwnd);
-    if (!use_d3d) {
-        dwm_flush = (dwm_flush_fn)dll_proc(LoadLibraryW(L"dwmapi.dll"), "DwmFlush");
-        if (force_gdi) wlog("GDI presenter (PS2_WINDOW_GDI)");
+    InterlockedExchange(&ext_changed, 0);
+    if (ext_on) {                        /* an external renderer presents (window_gpu.h): no device here */
+        use_d3d = 0;
+        wlog("presenting through the GPU backend's swap chain");
+    } else {
+        use_d3d = !(force_gdi && *force_gdi && *force_gdi != '0') && d3d_init(hwnd);
+        if (!use_d3d) {
+            dwm_flush = (dwm_flush_fn)dll_proc(LoadLibraryW(L"dwmapi.dll"), "DwmFlush");
+            if (force_gdi) wlog("GDI presenter (PS2_WINDOW_GDI)");
+        }
+    }
+    {
+        RECT rc;
+        if (GetClientRect(hwnd, &rc) && !client_known) {
+            InterlockedExchange(&client_w, rc.right);
+            InterlockedExchange(&client_h, rc.bottom);
+            InterlockedExchange(&client_known, 1);
+        }
     }
     win_ready = 1;
     set_title(hwnd, 0.0);
@@ -1291,6 +1351,17 @@ static DWORD WINAPI window_thread(LPVOID arg) {
             TranslateMessage(&m);
             DispatchMessageW(&m);
         }
+        if (InterlockedExchange(&ext_changed, 0)) {
+            if (ext_on) {                /* an external renderer takes over: drop the own presenter */
+                if (use_d3d) d3d_shutdown();
+                use_d3d = 0;
+            } else if (!use_d3d) {       /* back to the window's own presenter (the external one is gone) */
+                use_d3d = !(force_gdi && *force_gdi && *force_gdi != '0') && d3d_init(hwnd);
+                if (!use_d3d) dwm_flush = (dwm_flush_fn)dll_proc(LoadLibraryW(L"dwmapi.dll"), "DwmFlush");
+                wlog("own presenter again (%s)", use_d3d ? "Direct3D 11" : "GDI");
+                render(hwnd);
+            }
+        }
         pump_frame(hwnd);
         xi_probe_step();
         ULONGLONG now = GetTickCount64();
@@ -1301,6 +1372,22 @@ static DWORD WINAPI window_thread(LPVOID arg) {
         }
     }
 }
+
+void* window_hwnd(int wait_ms) {
+    for (int t = 0; !g_hwnd && t < wait_ms; t += 5) Sleep(5);
+    return (void*)g_hwnd;
+}
+
+void window_client_size(int* w, int* h) {
+    if (!client_known && g_hwnd) {
+        RECT rc;
+        if (GetClientRect(g_hwnd, &rc)) { *w = rc.right; *h = rc.bottom; return; }
+    }
+    *w = (int)client_w;
+    *h = (int)client_h;
+}
+
+int window_fullscreen(void) { return *(volatile int*)&win_fullscreen; }
 
 void window_init(void) {
     static volatile LONG once;

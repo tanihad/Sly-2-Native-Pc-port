@@ -92,8 +92,9 @@ static struct {
     ID3D11Buffer* vram;                  /* 4 MB raw (vram_buf) */
     ID3D11ShaderResourceView* vram_srv;
     ID3D11UnorderedAccessView* vram_uav;
-    ID3D11Buffer* scratch;               /* gpu_exec_read_memory: a copy of vram_buf + the GPU words */
+    ID3D11Buffer* scratch;               /* gpu_exec_read_memory, M6 compose: a copy of vram_buf + the GPU words */
     ID3D11UnorderedAccessView* scratch_uav;
+    ID3D11ShaderResourceView* scratch_srv;
     ID3D11Buffer* stage;                 /* 4 MB read-back */
     ID3D11Buffer* swz;                   /* swz_tab */
     ID3D11ShaderResourceView* swz_srv;
@@ -1297,7 +1298,7 @@ static int exec_init(void) {
     if (X.init) return 1;
     memset(&X, 0, sizeof X);
     X.vram = raw_default(4u << 20, NULL, &X.vram_srv, &X.vram_uav);
-    X.scratch = raw_default(4u << 20, NULL, NULL, &X.scratch_uav);
+    X.scratch = raw_default(4u << 20, NULL, &X.scratch_srv, &X.scratch_uav);
     X.clut = raw_default(4096u * 1024u, NULL, &X.clut_srv, NULL);
     uint32_t* swz = swz_build();
     X.swz = swz ? raw_default(SWZ_ENTRIES * 4u, swz, &X.swz_srv, NULL) : NULL;
@@ -1405,7 +1406,8 @@ void gpu_exec_release(void) {
     GPU_RELEASE(X.ztile_srv); GPU_RELEASE(X.ztile); GPU_RELEASE(X.zcb);
     dynbuf* d[7] = { &X.vb, &X.ib, &X.rec, &X.st, &X.cb, &X.dat, &X.aux };
     for (int i = 0; i < 7; i++) { GPU_RELEASE(d[i]->srv); GPU_RELEASE(d[i]->buf); d[i]->cap = 0; }
-    GPU_RELEASE(X.vram_srv); GPU_RELEASE(X.vram_uav); GPU_RELEASE(X.vram); GPU_RELEASE(X.scratch_uav); GPU_RELEASE(X.scratch);
+    GPU_RELEASE(X.vram_srv); GPU_RELEASE(X.vram_uav); GPU_RELEASE(X.vram); GPU_RELEASE(X.scratch_uav); GPU_RELEASE(X.scratch_srv);
+    GPU_RELEASE(X.scratch);
     GPU_RELEASE(X.stage); GPU_RELEASE(X.swz_srv); GPU_RELEASE(X.swz); GPU_RELEASE(X.clut_srv); GPU_RELEASE(X.clut);
     GPU_RELEASE(X.dbg_uav); GPU_RELEASE(X.dbg); GPU_RELEASE(X.dbg_stage); GPU_RELEASE(X.a16_uav); GPU_RELEASE(X.a16);
     GPU_RELEASE(X.mcb); GPU_RELEASE(X.layout); GPU_RELEASE(X.rs); GPU_RELEASE(X.ds_off); GPU_RELEASE(X.ds_write);
@@ -1438,6 +1440,61 @@ static double thread_ms(void) {
     return (double)c / tsc_per_ms;
 }
 
+/* M6: the VBlank's picture (GPU_FOP_PRESENT with a display info): compose from the targets / vram_buf,
+ * read back if asked, present, report */
+static int present_done;                 /* the frame's PRESENT was handled (gpu_exec_frame_done checks) */
+static int present_bad_src;
+
+static void exec_present(const gpu_front_frame_data* fd, const gpu_fop_present* o) {
+    if (o->di_off == ~0u || o->di_off + sizeof(gpu_display_info) > fd->data_bytes) return;
+    const gpu_display_info* di = (const gpu_display_info*)(fd->data + o->di_off);
+    unbind_all();
+    gpu_compose_in in;
+    memset(&in, 0, sizeof in);
+    in.priv = di->priv;
+    in.vram = X.vram_srv;
+    in.swz = X.swz_srv;
+    in.field_code = di->field_code;
+    if (o->mem_n && o->mem_off + o->mem_n * (sizeof(gpu_dl_entry) + 2) <= fd->data_bytes) {
+        /* circuits shown from memory: vram_buf + the GPU words of their rects, in a scratch copy */
+        const gpu_dl_entry* e = (const gpu_dl_entry*)(fd->data + o->mem_off);
+        const uint16_t* w = (const uint16_t*)(fd->data + o->mem_off + o->mem_n * sizeof(gpu_dl_entry));
+        ID3D11DeviceContext_CopyResource(gpu_rt.ctx, (ID3D11Resource*)X.scratch, (ID3D11Resource*)X.vram);
+        gpu_rt.n_copies++;
+        for (uint32_t i = 0; i < o->mem_n;) {
+            uint32_t j = i;
+            while (j < o->mem_n && w[j] == w[i]) j++;
+            xtarget* t = tgt(w[i]);
+            if (t && t->depth) ensure_zp_all(t);
+            download_into(t, j - i, o->mem_off + i * (uint32_t)sizeof(gpu_dl_entry), X.dat.srv, X.scratch_uav);
+            i = j;
+        }
+        unbind_all();
+        in.vram = X.scratch_srv;
+    }
+    for (int i = 0; i < 2; i++) {
+        if (!o->src[i]) continue;
+        xtarget* t = tgt(o->src[i]);
+        if (t && !t->depth && t->srv_u) {
+            in.tex[i] = t->srv_u;
+            in.kx[i] = t->kx;
+            in.ky[i] = t->ky;
+        } else if (!present_bad_src++) {
+            gpu_log("present: display source target %u missing (composed from vram_buf)", o->src[i]);
+        }
+    }
+    gpu_present_compose(&in);
+    if (di->rb) gpu_present_readback((gpu_readback*)di->rb);
+    if (di->flags & GPU_DI_SHOW) gpu_present_show(di->aspect_w, di->aspect_h);
+    if (di->flags & GPU_DI_SIGNAL) gpu_present_signal(di->vblank);
+    present_done = 1;
+}
+
+void gpu_exec_reset(void) {
+    if (!gpu_running()) return;
+    gpu_run_sync((void (*)(void*))gpu_exec_release, NULL);   /* (exec_init recreates everything on the next frame) */
+}
+
 void gpu_exec_frame(const void* payload) {
     const gpu_op_frame* p = payload;
     const gpu_front_frame_data* fd = &p->fd;
@@ -1446,6 +1503,7 @@ void gpu_exec_frame(const void* payload) {
     gpu_stats_begin(fd->vblank, 0);
     double t0 = qpc_ms(), c0 = thread_ms();
     X.state_calls = 0;
+    uint64_t ff0 = XC.ff_draws, rov0 = XC.rov_draws;
     X.ref = (fd->flags & GPU_FD_REF) != 0;
     X.mixed = !X.ref && (fd->flags & GPU_FD_MIXED) != 0;
     XC.frames++;
@@ -1481,7 +1539,7 @@ void gpu_exec_frame(const void* payload) {
         case GPU_FOP_ROV_END: exec_rov_end((const gpu_fop_rov_end*)h); break;
         case GPU_FOP_ALIAS16: exec_alias16((const gpu_fop_alias16*)h, 0); break;
         case GPU_FOP_ALIAS16_END: exec_alias16((const gpu_fop_alias16*)h, 1); break;
-        case GPU_FOP_PRESENT: break;
+        case GPU_FOP_PRESENT: exec_present(fd, (const gpu_fop_present*)h); break;
         default: break;
         }
         pos += h->size;
@@ -1495,12 +1553,29 @@ void gpu_exec_frame(const void* payload) {
     st->upload_ms = t1 - t0;
     st->state_calls = X.state_calls;
     st->partial = (fd->flags & GPU_FD_PARTIAL) != 0;
+    st->ff_draws = (uint32_t)(XC.ff_draws - ff0);
+    st->rov_draws = (uint32_t)(XC.rov_draws - rov0);
     (void)t2;
     gpu_stats_end();
 }
 
 void gpu_exec_frame_done(const void* payload) {
     const gpu_op_frame* p = payload;
+    if (!present_done) {                 /* not executed (device lost): the VBlank is still reported, in order */
+        const gpu_front_frame_data* fd = &p->fd;
+        for (size_t pos = 0; pos + sizeof(gpu_fop) <= fd->cmd_bytes;) {
+            const gpu_fop* h = (const gpu_fop*)(fd->cmd + pos);
+            if (!h->size) break;
+            const gpu_fop_present* o = (const gpu_fop_present*)h;
+            if (h->op == GPU_FOP_PRESENT && o->di_off != ~0u && o->di_off + sizeof(gpu_display_info) <= fd->data_bytes) {
+                const gpu_display_info* di = (const gpu_display_info*)(fd->data + o->di_off);
+                if (di->rb) gpu_present_readback((gpu_readback*)di->rb);   /* (fails: lost) */
+                if (di->flags & GPU_DI_SIGNAL) gpu_present_signal(di->vblank);
+            }
+            pos += h->size;
+        }
+    }
+    present_done = 0;
     gpu_front_release(p->handle);
     atomic_fetch_sub(&inflight, 1);
     WakeByAddressAll((PVOID)&inflight);
@@ -1593,11 +1668,13 @@ void gpu_submit_sink(const gpu_front_frame_data* fd, void* user) {
     void* h = gpu_front_detach();
     if (!h) return;
     atomic_fetch_add(&inflight, 1);
+    gpu_cmd_lock();
     gpu_op_frame* op = gpu_cmd_alloc(GPU_OP_FRAME, sizeof *op);
     op->fd = *fd;
     op->handle = h;
     gpu_cmd_commit();
     gpu_cmd_publish();
+    gpu_cmd_unlock();
 }
 
 void gpu_submit_wait_idle(void) {

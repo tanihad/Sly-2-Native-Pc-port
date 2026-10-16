@@ -52,6 +52,10 @@ void gpu_cmd_reset(void) {
 
 /* ---- producer ---- */
 
+static SRWLOCK prod_lock = SRWLOCK_INIT;
+void gpu_cmd_lock(void) { AcquireSRWLockExclusive(&prod_lock); }
+void gpu_cmd_unlock(void) { ReleaseSRWLockExclusive(&prod_lock); }
+
 void gpu_cmd_publish(void) {
     unpublished = 0;
     if (atomic_load_explicit(&cmd_pub, memory_order_relaxed) == cmd_wr) return;

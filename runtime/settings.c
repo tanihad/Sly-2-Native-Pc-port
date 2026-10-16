@@ -11,7 +11,20 @@
 #include <windows.h>
 #endif
 
-ps2_settings_t ps2_settings = { 16, 9, 0, 3, 0, 0, -1, -1, -1, "", 0, 0, 0, 0, 0, 0, 0 };
+ps2_settings_t ps2_settings = { 16, 9, 0, 0, 0, 3, 0, 0, -1, -1, -1, "", 0, 0, 0, 0, 0, 0, 0 };
+
+/* renderer / pacing values (sly2.ini and the PS2_GS_BACKEND / PS2_GS_PACING overrides) */
+int settings_parse_renderer(const char* v, int* gpu) {
+    if (!_stricmp(v, "software") || !_stricmp(v, "sw")) { *gpu = 0; return 1; }
+    if (!_stricmp(v, "gpu") || !_stricmp(v, "hw") || !_stricmp(v, "d3d11")) { *gpu = 1; return 1; }
+    return 0;
+}
+int settings_parse_pacing(const char* v, int* pacing) {
+    if (!_stricmp(v, "vsync")) { *pacing = SETTINGS_PACING_VSYNC; return 1; }
+    if (!_stricmp(v, "vrr") || !_stricmp(v, "tearing")) { *pacing = SETTINGS_PACING_VRR; return 1; }
+    if (!_stricmp(v, "display")) { *pacing = SETTINGS_PACING_DISPLAY; return 1; }
+    return 0;
+}
 
 void settings_defaults(ps2_settings_t* s) {
     memset(s, 0, sizeof *s);
@@ -97,6 +110,14 @@ static int apply(ps2_settings_t* s, const char* key, const char* v, settings_war
         if (!_stricmp(v, "edges")) s->hud_centered = 0;
         else if (!_stricmp(v, "centered") || !_stricmp(v, "centred")) s->hud_centered = 1;
         else { warnf(warn, user, line, "hud '%s' is not edges or centered", v); return 1; }
+        return 0;
+    }
+    if (!_stricmp(key, "graphics.renderer")) {
+        if (!settings_parse_renderer(v, &s->renderer_gpu)) { warnf(warn, user, line, "renderer '%s' is not software or gpu", v); return 1; }
+        return 0;
+    }
+    if (!_stricmp(key, "graphics.pacing")) {
+        if (!settings_parse_pacing(v, &s->pacing)) { warnf(warn, user, line, "pacing '%s' is not vsync, vrr or display", v); return 1; }
         return 0;
     }
     if (!_stricmp(key, "graphics.internal_scale")) {
@@ -249,7 +270,13 @@ int settings_format(const ps2_settings_t* s, char* out, size_t cap) {
         "hud = %s\n"
         "\n"
         "[graphics]\n"
-        "; Used by the Direct3D 11 renderer (the software renderer ignores them).\n"
+        "; Renderer: software (default) or gpu (Direct3D 11, needs a GPU with rasterizer-ordered views;\n"
+        "; falls back to software when unavailable). Environment override: PS2_GS_BACKEND=sw|hw\n"
+        "renderer = %s\n"
+        "; gpu renderer: frame pacing. vsync (default), vrr (G-Sync/FreeSync: every picture shown once,\n"
+        "; no wait for the display), display (the game runs at the display's 60 Hz instead of 59.94 Hz).\n"
+        "pacing = %s\n"
+        "; The settings below are used by the Direct3D 11 renderer (the software renderer ignores them).\n"
         "; Internal resolution scale, 1 (PS2: 512x448) to 8.\n"
         "internal_scale = %d\n"
         "; Cel-shading outlines: ps2 (one PS2 pixel wide, exact) or thin (high-resolution lines).\n"
@@ -271,7 +298,9 @@ int settings_format(const ps2_settings_t* s, char* out, size_t cap) {
         "; Show the frame rate in the title bar.\n"
         "show_fps = %s\n"
         "%s",
-        s->aspect_w, s->aspect_h, s->hud_centered ? "centered" : "edges", s->internal_scale, s->outlines_thin ? "thin" : "ps2",
+        s->aspect_w, s->aspect_h, s->hud_centered ? "centered" : "edges", s->renderer_gpu ? "gpu" : "software",
+        s->pacing == SETTINGS_PACING_VRR ? "vrr" : s->pacing == SETTINGS_PACING_DISPLAY ? "display" : "vsync",
+        s->internal_scale, s->outlines_thin ? "thin" : "ps2",
         s->filters_faithful ? "faithful" : "modern", tog[s->motion_blur + 1], tog[s->flicker_filter + 1],
         tog[s->interlacing + 1], ini_value(s->disc, disc, sizeof disc), s->win_fullscreen ? "on" : "off",
         s->show_fps ? "on" : "off", win);
@@ -479,8 +508,16 @@ void settings_load(void) {
     }
     e = getenv("PS2_SHOW_FPS");
     if (e && *e) ps2_settings.show_fps = atoi(e) != 0;
-    fprintf(stderr, "[settings] aspect %d:%d, hud %s\n", ps2_settings.aspect_w, ps2_settings.aspect_h,
-            ps2_settings.hud_centered ? "centered" : "edges");
+    e = getenv("PS2_GS_BACKEND");
+    if (e && *e && !settings_parse_renderer(e, &ps2_settings.renderer_gpu))
+        fprintf(stderr, "[settings] PS2_GS_BACKEND='%s' is not sw or hw: ignored\n", e);
+    e = getenv("PS2_GS_PACING");
+    if (e && *e && !settings_parse_pacing(e, &ps2_settings.pacing))
+        fprintf(stderr, "[settings] PS2_GS_PACING='%s' is not vsync, vrr or display: ignored\n", e);
+    e = getenv("PS2_VBLANK");                    /* (the design's name for the display-driven VBlank) */
+    if (e && !_stricmp(e, "display")) ps2_settings.pacing = SETTINGS_PACING_DISPLAY;
+    fprintf(stderr, "[settings] aspect %d:%d, hud %s, renderer %s\n", ps2_settings.aspect_w, ps2_settings.aspect_h,
+            ps2_settings.hud_centered ? "centered" : "edges", ps2_settings.renderer_gpu ? "gpu" : "software");
 }
 
 /* [display] as sly2.ini says now (the player may edit it while the game runs): 1 and aspect / hud

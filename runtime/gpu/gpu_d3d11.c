@@ -183,6 +183,10 @@ static void signal_done(volatile long* done) {
 }
 
 volatile long gpu_rt_phase;             /* what the render thread does now (hang diagnostics) */
+static volatile LONG sim_lost;          /* gpu_simulate_device_lost: the next frame finds the device lost */
+
+void gpu_simulate_device_lost(void) { InterlockedExchange(&sim_lost, 1); }
+int gpu_device_lost(void) { return running && *(volatile int*)&gpu_rt.lost; }
 
 void gpu_debug_state(char* buf, size_t n) {
     char cmd[256];
@@ -225,8 +229,16 @@ static DWORD WINAPI rt_main(LPVOID arg) {
         case GPU_OP_READBACK: gpu_exec_readback(c + 1); break;
         case GPU_OP_STOP: stop = 1; break;
         case GPU_OP_FRAME:
+            if (InterlockedExchange(&sim_lost, 0) && !gpu_rt.lost) {   /* (tests: gpu_simulate_device_lost) */
+                gpu_log("device lost (simulated)");
+                gpu_rt.lost = 1;
+            }
             if (!gpu_rt.lost) gpu_exec_frame(c + 1);
             gpu_exec_frame_done(c + 1);
+            if (!gpu_rt.lost && ID3D11Device_GetDeviceRemovedReason(gpu_rt.dev) != S_OK) {
+                gpu_log("device lost (reason 0x%08lX)", (unsigned long)ID3D11Device_GetDeviceRemovedReason(gpu_rt.dev));
+                gpu_rt.lost = 1;
+            }
             break;
         default: gpu_log("bad command %u", c->op); break;
         }
@@ -242,6 +254,7 @@ static DWORD WINAPI rt_main(LPVOID arg) {
 int gpu_start(const gpu_config* cfg) {
     if (running) return 1;
     memset(&gpu_rt, 0, sizeof gpu_rt);
+    sim_lost = 0;
     memset(&caps_copy, 0, sizeof caps_copy);
     gpu_rt.cfg = *cfg;
     if (!gpu_cmd_init()) { gpu_log("out of memory for the command rings"); return 0; }
@@ -276,7 +289,6 @@ uint64_t gpu_render_thread_cycles(void) {
 const gpu_caps* gpu_get_caps(void) { return &caps_copy; }
 
 static void wait_done(volatile long* done) {
-    gpu_cmd_publish();
     long zero = 0;
     while (!InterlockedCompareExchange(done, 0, 0)) WaitOnAddress((volatile VOID*)done, &zero, sizeof zero, 50);
 }
@@ -284,11 +296,14 @@ static void wait_done(volatile long* done) {
 void gpu_run_sync(void (*fn)(void*), void* arg) {
     if (!running) return;
     volatile long done = 0;
+    gpu_cmd_lock();
     op_call* p = gpu_cmd_alloc(GPU_OP_CALL, sizeof *p);
     p->fn = fn;
     p->arg = arg;
     p->done = &done;
     gpu_cmd_commit();
+    gpu_cmd_publish();
+    gpu_cmd_unlock();
     wait_done(&done);
 }
 
@@ -311,9 +326,11 @@ void gpu_finish(void) { gpu_run_sync(finish_fn, NULL); }
 
 void gpu_stop(void) {
     if (!running) return;
+    gpu_cmd_lock();
     gpu_cmd_alloc(GPU_OP_STOP, 0);
     gpu_cmd_commit();
     gpu_cmd_publish();
+    gpu_cmd_unlock();
     WaitForSingleObject(rt_thread, INFINITE);
     CloseHandle(rt_thread);
     rt_thread = NULL;

@@ -421,6 +421,35 @@ void own_blocks(gpu_target* T, const uint16_t* blocks, int n, int writes) {
 
 void own_clear(gpu_target* T) { own_draw(T, 0, 0, T->bcols * T->bw - 1, T->rows - 1, 1, 1); }
 
+int own_rect_gpu(int psm, uint32_t bp, uint32_t bw, int x0, int y0, int x1, int y1, gpu_dl_entry* out, uint16_t* writers, int max) {
+    static uint16_t bl[GPU_BLOCKS];
+    int nb = own_rect_blocks(psm, bp, bw, x0, y0, x1 + 1, y1 + 1, bl, GPU_BLOCKS), n = 0;
+    for (int i = 0; i < nb && n < max; i++) {
+        uint32_t b = bl[i];
+        uint16_t w = blk_writer[b];
+        if (blk_cpu[b] == ALL || !w || !gt[w].used) continue;
+        int local = target_local(&gt[w], b);
+        if (local < 0) continue;
+        int dup = 0;                     /* (a rect wider than its buffer wraps onto blocks listed already) */
+        for (int k = n - 1; k >= 0 && k >= n - 64 && !dup; k--) dup = out[k].abs == b;
+        if (dup) continue;
+        gpu_dl_entry e = { (uint16_t)local, (uint16_t)b, 0, ~blk_cpu[b] };
+        out[n] = e;
+        writers[n++] = w;
+    }
+    return n;
+}
+
+int own_rect_current(gpu_target* T, int x0, int y0, int x1, int y1) {
+    if (x0 < 0 || y0 < 0 || x1 < x0 || y1 < y0 || x1 >= T->bcols * T->bw || y1 >= T->brows * T->bh) return 0;
+    for (int by = y0 / T->bh; by <= y1 / T->bh; by++)
+        for (int bx = x0 / T->bw; bx <= x1 / T->bw; bx++) {
+            int i = by * T->bcols + bx;
+            if (T->vs[i] != blk_serial[T->babs[i]]) return 0;
+        }
+    return 1;
+}
+
 void own_view_read(gpu_target* T, int x0, int y0, int x1, int y1) { own_draw(T, x0, y0, x1, y1, 0, 0); }
 
 int own_shadow_need(gpu_target* T, int x0, int y0, int x1, int y1, int* full) {

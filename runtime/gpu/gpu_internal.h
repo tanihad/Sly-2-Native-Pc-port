@@ -43,6 +43,19 @@ ID3D11ComputeShader* gpu_cs(int id);
 void gpu_shaders_release(void);
 
 /* gpu_present.c */
+/* M6: compose a VBlank's picture on the GPU (shaders/display.hlsl) */
+typedef struct {
+    const uint64_t* priv;                /* display registers (16, gs_priv_snapshot order) */
+    ID3D11ShaderResourceView* vram;      /* vram_buf (raw) */
+    ID3D11ShaderResourceView* swz;       /* swz_tab (raw) */
+    ID3D11ShaderResourceView* tex[2];    /* circuit i's colour target (UINT view), NULL: vram_buf */
+    int kx[2], ky[2];
+    int field_code;                      /* gs_display_field_code */
+} gpu_compose_in;
+void gpu_present_compose(const gpu_compose_in* in);
+void gpu_present_show(int aspect_w, int aspect_h);   /* present the last composed picture, fitted to w:h */
+void gpu_present_readback(gpu_readback* rb);          /* read back the last composed picture */
+void gpu_present_signal(uint32_t vblank);             /* the picture-done callback */
 int  gpu_present_init(void);             /* swap chain or offscreen target, samplers, queries */
 void gpu_present_release(void);
 void gpu_exec_picture(const void* payload);
@@ -67,5 +80,5 @@ typedef struct {
     uint32_t vblank;
     double front_ms;
 } gpu_op_picture;
-typedef struct { uint32_t vblank; } gpu_op_present;
+typedef struct { uint32_t vblank; uint16_t aspect_w, aspect_h; } gpu_op_present;
 typedef struct { gpu_readback* rb; } gpu_op_readback;

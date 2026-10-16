@@ -27,7 +27,7 @@
 #define PUBLISH_EVERY (64u << 10)
 #define SPINS 400                        /* pause loops before sleeping (a pause is 40-140 cycles) */
 
-enum { FR_PAD, FR_PRIM, FR_STATE, FR_XFER, FR_XDATA, FR_BLOCKS, FR_CLUT, FR_TEX0, FR_RESET, FR_VBLANK, FR_FENCE, FR_STOP };
+enum { FR_PAD, FR_PRIM, FR_STATE, FR_XFER, FR_XDATA, FR_BLOCKS, FR_CLUT, FR_TEX0, FR_RESET, FR_VBLANK, FR_FENCE, FR_STOP, FR_CALL };
 typedef struct { uint32_t kind, size; } fr_hdr;            /* size: whole record, multiple of 8 */
 /* Primitives are the bulk of the stream (50k per frame): 8 bytes plus the vertices not already in
  * the consumer's 4-entry vertex cache (strips and fans repeat two of three), 32 bytes each (every
@@ -43,8 +43,8 @@ typedef struct { fr_hdr h; uint32_t bytes, pad; } fr_xdata;
 typedef struct { fr_hdr h; uint32_t n, pad; uint16_t id[]; } fr_blocks;   /* ids padded to 8, then n x 256 bytes */
 typedef struct { fr_hdr h; uint64_t mask; uint16_t c[]; } fr_clut;   /* 16-byte pieces of the CLUT buffer (mask bit i: halves 8i..8i+7) */
 typedef struct { fr_hdr h; uint32_t ctx, flags; uint64_t tex0; } fr_tex0;   /* flags: 1 loaded, 2 changed */
-typedef struct { fr_hdr h; uint64_t priv[16]; uint32_t vblank, pad; } fr_vblank;
-typedef struct { fr_hdr h; volatile long* done; } fr_fence;
+typedef struct { fr_hdr h; uint32_t has_di, pad; gpu_display_info di; } fr_vblank;   /* (di.priv, di.vblank always set) */
+typedef struct { fr_hdr h; volatile long* done; void (*fn)(void*); void* arg; } fr_fence;
 
 static uint8_t* ring;
 /* The shared positions sit on their own cache lines and are touched rarely (the producer re-reads
@@ -359,27 +359,41 @@ static void px_reset(void) {
 
 static const gs_front_hooks proxy = { px_prim, px_xfer_start, px_xfer_data, px_tex0, px_reset };
 
-void fthread_vblank(const uint64_t priv[16], uint32_t vblank) {
+void fthread_vblank(const uint64_t priv[16], uint32_t vblank, const gpu_display_info* di) {
     send_blocks();
     fr_vblank* v = reserve(FR_VBLANK, sizeof *v);
-    if (priv) memcpy(v->priv, priv, sizeof v->priv);
-    else memset(v->priv, 0, sizeof v->priv);
-    v->vblank = vblank; v->pad = 0;
+    v->pad = 0;
+    if (di) { v->has_di = 1; v->di = *di; }
+    else {
+        v->has_di = 0;
+        memset(&v->di, 0, sizeof v->di);
+        if (priv) memcpy(v->di.priv, priv, sizeof v->di.priv);
+        v->di.vblank = vblank;
+    }
     commit(v);
     publish();
 }
 
-static void post_wait(uint32_t kind) {
+static void post_wait(uint32_t kind, void (*fn)(void*), void* arg) {
     volatile long done = 0;
     fr_fence* f = reserve(kind, sizeof *f);
     f->done = &done;
+    f->fn = fn;
+    f->arg = arg;
     commit(f);
     publish();
     long zero = 0;
     while (!InterlockedCompareExchange(&done, 0, 0)) WaitOnAddress((volatile VOID*)&done, &zero, sizeof zero, 5);
 }
 
-void fthread_drain(void) { if (thread && !drop_mode) { send_blocks(); post_wait(FR_FENCE); } }
+void fthread_drain(void) { if (thread && !drop_mode) { send_blocks(); post_wait(FR_FENCE, NULL, NULL); } }
+
+/* fn(arg) on the frontend thread after everything posted so far (gpu_front_call) */
+void fthread_call(void (*fn)(void*), void* arg) {
+    if (!thread || drop_mode) { fn(arg); return; }
+    send_blocks();
+    post_wait(FR_CALL, fn, arg);
+}
 
 /* ---- consumer (frontend thread) ------------------------------------------------------------------ */
 
@@ -481,9 +495,11 @@ static DWORD WINAPI fthread_main(LPVOID arg) {
             break;
         }
         case FR_RESET: H->reset(); break;
-        case FR_VBLANK: { const fr_vblank* v = (const fr_vblank*)h; gf_vblank_impl(v->priv, v->vblank); break; }
-        case FR_FENCE: case FR_STOP: {
-            volatile long* d = ((const fr_fence*)h)->done;
+        case FR_VBLANK: { const fr_vblank* v = (const fr_vblank*)h; gf_vblank_impl(v->di.priv, v->di.vblank, v->has_di ? &v->di : NULL); break; }
+        case FR_FENCE: case FR_STOP: case FR_CALL: {
+            const fr_fence* fe = (const fr_fence*)h;
+            volatile long* d = fe->done;
+            if (h->kind == FR_CALL && fe->fn) fe->fn(fe->arg);
             stop = h->kind == FR_STOP;
             done_rec(h);
             InterlockedExchange(d, 1);
@@ -530,7 +546,7 @@ void fthread_stop(void) {
     if (drop_mode) { drop_mode = 0; return; }
     if (!thread) return;
     send_blocks();
-    post_wait(FR_STOP);
+    post_wait(FR_STOP, NULL, NULL);
     WaitForSingleObject(thread, INFINITE);
     CloseHandle(thread);
     if (getenv("PS2_GPU_FTHREAD_STATS"))

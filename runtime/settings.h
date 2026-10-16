@@ -22,6 +22,8 @@ typedef struct {
     int hud_centered;            /* hud = edges (0, default: HUD widgets at the screen's edges) | centered (1) */
     /* [graphics] - read and kept for the GPU renderer (notes/d3d11-renderer.md section 13);
      * the software renderer ignores them. */
+    int renderer_gpu;            /* renderer = software (0, default) | gpu (1: the Direct3D 11 GS backend) */
+    int pacing;                  /* pacing = vsync (0, default) | vrr (1) | display (2): SETTINGS_PACING_* */
     int internal_scale;          /* 1..8, default 3 */
     int outlines_thin;           /* outlines = ps2 (0, default) | thin (1) */
     int filters_faithful;        /* filters = modern (0, default) | faithful (1): preset for the next three */
@@ -35,6 +37,8 @@ typedef struct {
     int win_maximized, win_fullscreen;
     int show_fps;                /* frame rate in the title bar */
 } ps2_settings_t;
+
+enum { SETTINGS_PACING_VSYNC, SETTINGS_PACING_VRR, SETTINGS_PACING_DISPLAY };
 
 /* The preset's value where a toggle is -1: Modern = motion blur on, flicker filter off, progressive;
  * Faithful = all three on (as on a PS2 on a TV). */
@@ -55,6 +59,9 @@ typedef void (*settings_warn_fn)(void* user, const char* msg);
 int settings_parse(const char* text, ps2_settings_t* s, settings_warn_fn warn, void* user);
 /* "16:9", "4:3", "21:9", "1.7777": 1 and the reduced w:h on success. */
 int settings_parse_aspect(const char* v, int* w, int* h);
+/* "software"/"sw" -> 0, "gpu"/"hw"/"d3d11" -> 1; "vsync" / "vrr" ("tearing") / "display" -> SETTINGS_PACING_* */
+int settings_parse_renderer(const char* v, int* gpu);
+int settings_parse_pacing(const char* v, int* pacing);
 /* The file's text for s (a commented template with every key). Returns the length written
  * (snprintf semantics). */
 int settings_format(const ps2_settings_t* s, char* out, size_t cap);

@@ -8,6 +8,7 @@
  * asynchronously (Map with DO_NOT_WAIT while other commands arrive). GPU timestamps around each
  * picture are resolved the same way. Producer-side calls are at the end of the file. */
 #include "gpu_internal.h"
+#include "gs_draw.h"                     /* gs_display_layout_of (the PCRTC layout, shared with gs.c) */
 
 #include <stdatomic.h>
 #include <string.h>
@@ -18,14 +19,26 @@
 #define NSTAGE    4
 #define NTS       8
 #define NSTATS    4096
+#define PICT_MIN  1024                   /* pictures are at least this size (gs_compose: at most 1024 x 1024) */
+
+typedef struct {                         /* shaders/display.hlsl display_cb */
+    uint32_t W, H, ux0, uy0, hs, vs, flags, alp, bg, par, deint_mode, pad0;
+    uint32_t cA[2][4], cB[2][4], cC[2][4], cD[2][4];
+} display_consts;
 
 static struct {
     ID3D11Texture2D* up;                 /* uploaded sw picture (raw BGRX bytes as R8G8B8A8) */
     ID3D11ShaderResourceView* up_srv;
     int up_w, up_h;
-    ID3D11Texture2D* pict[NPICT];
+    ID3D11Texture2D* pict[NPICT];        /* R8G8B8A8_TYPELESS: RTV / SRV UNORM, UAV R32_UINT (GPU compose) */
     ID3D11RenderTargetView* pict_rtv[NPICT];
     ID3D11ShaderResourceView* pict_srv[NPICT];
+    ID3D11UnorderedAccessView* pict_uav[NPICT];
+    ID3D11Texture2D* hist[2];            /* deinterlacer: the last field of each parity (whole picture layout) */
+    ID3D11ShaderResourceView* hist_srv[2];
+    uint32_t hist_when[2];               /* VBlank + 1 when it was shown, 0 = none (gs.c deinterlace) */
+    int hist_dims[2][2];
+    ID3D11Buffer* dcb;                   /* display_consts */
     int pict_w, pict_h;                  /* allocated size */
     int cur, cur_w, cur_h, have;         /* last composed picture */
     uint32_t cur_vblank;
@@ -52,6 +65,15 @@ static struct {
 
 static LARGE_INTEGER qpf;
 
+/* picture done (gpu_set_picture_done): set before or after gpu_start, kept across restarts */
+static void (*volatile done_fn)(uint32_t vblank, void* user);
+static void* volatile done_user;
+void gpu_set_picture_done(void (*fn)(uint32_t vblank, void* user), void* user) { done_user = user; done_fn = fn; }
+void gpu_present_signal(uint32_t vblank) {
+    void (*fn)(uint32_t, void*) = done_fn;
+    if (fn) fn(vblank, done_user);
+}
+
 /* completed stats, handed to the producer */
 static SRWLOCK stats_lock = SRWLOCK_INIT;
 static gpu_frame_stats stats_ring[NSTATS];
@@ -76,6 +98,23 @@ int gpu_take_frame_stats(gpu_frame_stats* out, int max) {
 }
 
 /* ---- resources ------------------------------------------------------------------------------- */
+
+static ID3D11Texture2D* tex_create_fmt(int w, int h, DXGI_FORMAT fmt, UINT bind, D3D11_USAGE usage, UINT cpu) {
+    D3D11_TEXTURE2D_DESC td;
+    memset(&td, 0, sizeof td);
+    td.Width = (UINT)w;
+    td.Height = (UINT)h;
+    td.MipLevels = 1;
+    td.ArraySize = 1;
+    td.Format = fmt;
+    td.SampleDesc.Count = 1;
+    td.Usage = usage;
+    td.BindFlags = bind;
+    td.CPUAccessFlags = cpu;
+    ID3D11Texture2D* t = NULL;
+    if (FAILED(ID3D11Device_CreateTexture2D(gpu_rt.dev, &td, NULL, &t))) return NULL;
+    return t;
+}
 
 static ID3D11Texture2D* tex_create(int w, int h, UINT bind, D3D11_USAGE usage, UINT cpu) {
     D3D11_TEXTURE2D_DESC td;
@@ -112,16 +151,45 @@ static int ensure_upload(int w, int h) {
 static void pend_complete(int block);
 
 static int ensure_pictures(int w, int h) {
+    if (w < PICT_MIN) w = PICT_MIN;
+    if (h < PICT_MIN) h = PICT_MIN;
     if (P.pict[0] && P.pict_w >= w && P.pict_h >= h) return 1;
     while (P.npend) pend_complete(1);           /* staging copies read the old pictures */
     int nw = w > P.pict_w ? w : P.pict_w, nh = h > P.pict_h ? h : P.pict_h;
     for (int i = 0; i < NPICT; i++) {
-        GPU_RELEASE(P.pict_srv[i]); GPU_RELEASE(P.pict_rtv[i]); GPU_RELEASE(P.pict[i]);
-        P.pict[i] = tex_create(nw, nh, D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE, D3D11_USAGE_DEFAULT, 0);
+        GPU_RELEASE(P.pict_uav[i]); GPU_RELEASE(P.pict_srv[i]); GPU_RELEASE(P.pict_rtv[i]); GPU_RELEASE(P.pict[i]);
+        P.pict[i] = tex_create_fmt(nw, nh, DXGI_FORMAT_R8G8B8A8_TYPELESS,
+                                   D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS, D3D11_USAGE_DEFAULT, 0);
+        D3D11_RENDER_TARGET_VIEW_DESC rd;
+        memset(&rd, 0, sizeof rd);
+        rd.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        rd.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+        D3D11_SHADER_RESOURCE_VIEW_DESC sd;
+        memset(&sd, 0, sizeof sd);
+        sd.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        sd.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+        sd.Texture2D.MipLevels = 1;
+        D3D11_UNORDERED_ACCESS_VIEW_DESC ud;
+        memset(&ud, 0, sizeof ud);
+        ud.Format = DXGI_FORMAT_R32_UINT;       /* (a 32-bit typeless format may be viewed as R32_UINT) */
+        ud.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D;
         if (!P.pict[i] ||
-            FAILED(ID3D11Device_CreateRenderTargetView(gpu_rt.dev, (ID3D11Resource*)P.pict[i], NULL, &P.pict_rtv[i])) ||
-            FAILED(ID3D11Device_CreateShaderResourceView(gpu_rt.dev, (ID3D11Resource*)P.pict[i], NULL, &P.pict_srv[i])))
+            FAILED(ID3D11Device_CreateRenderTargetView(gpu_rt.dev, (ID3D11Resource*)P.pict[i], &rd, &P.pict_rtv[i])) ||
+            FAILED(ID3D11Device_CreateShaderResourceView(gpu_rt.dev, (ID3D11Resource*)P.pict[i], &sd, &P.pict_srv[i])) ||
+            FAILED(ID3D11Device_CreateUnorderedAccessView(gpu_rt.dev, (ID3D11Resource*)P.pict[i], &ud, &P.pict_uav[i])))
             return 0;
+    }
+    for (int i = 0; i < 2; i++) {               /* deinterlacer history: same size and layout */
+        GPU_RELEASE(P.hist_srv[i]); GPU_RELEASE(P.hist[i]);
+        P.hist[i] = tex_create_fmt(nw, nh, DXGI_FORMAT_R8G8B8A8_TYPELESS, D3D11_BIND_SHADER_RESOURCE, D3D11_USAGE_DEFAULT, 0);
+        D3D11_SHADER_RESOURCE_VIEW_DESC sd;
+        memset(&sd, 0, sizeof sd);
+        sd.Format = DXGI_FORMAT_R8G8B8A8_UINT;
+        sd.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+        sd.Texture2D.MipLevels = 1;
+        if (!P.hist[i] || FAILED(ID3D11Device_CreateShaderResourceView(gpu_rt.dev, (ID3D11Resource*)P.hist[i], &sd, &P.hist_srv[i])))
+            return 0;
+        P.hist_when[i] = 0;
     }
     for (int i = 0; i < NSTAGE; i++) {
         GPU_RELEASE(P.stage[i]);
@@ -216,6 +284,8 @@ int gpu_present_init(void) {
     bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
     if (FAILED(ID3D11Device_CreateBuffer(gpu_rt.dev, &bd, NULL, &P.cb))) return 0;
+    bd.ByteWidth = (sizeof(display_consts) + 15) & ~15u;
+    if (FAILED(ID3D11Device_CreateBuffer(gpu_rt.dev, &bd, NULL, &P.dcb))) return 0;
     if (gpu_rt.cfg.hwnd) {
         if (!swapchain_create((HWND)gpu_rt.cfg.hwnd)) { gpu_log("cannot create the swap chain"); return 0; }
         P.bb_w = P.bb_h = -1;            /* sized at the first present */
@@ -242,7 +312,9 @@ void gpu_present_release(void) {
     if (!gpu_rt.dev) return;
     for (int i = 0; i < NTS; i++) { GPU_RELEASE(P.ts[i].dis); GPU_RELEASE(P.ts[i].t0); GPU_RELEASE(P.ts[i].t1); }
     for (int i = 0; i < NSTAGE; i++) GPU_RELEASE(P.stage[i]);
-    for (int i = 0; i < NPICT; i++) { GPU_RELEASE(P.pict_srv[i]); GPU_RELEASE(P.pict_rtv[i]); GPU_RELEASE(P.pict[i]); }
+    for (int i = 0; i < NPICT; i++) { GPU_RELEASE(P.pict_uav[i]); GPU_RELEASE(P.pict_srv[i]); GPU_RELEASE(P.pict_rtv[i]); GPU_RELEASE(P.pict[i]); }
+    for (int i = 0; i < 2; i++) { GPU_RELEASE(P.hist_srv[i]); GPU_RELEASE(P.hist[i]); }
+    GPU_RELEASE(P.dcb);
     GPU_RELEASE(P.up_srv); GPU_RELEASE(P.up); GPU_RELEASE(P.linear); GPU_RELEASE(P.cb);
     GPU_RELEASE(P.rtv); GPU_RELEASE(P.off);
     if (P.waitable) CloseHandle(P.waitable);
@@ -381,27 +453,57 @@ void gpu_exec_picture(const void* payload) {
 
 /* ---- present ------------------------------------------------------------------------------------ */
 
-/* 4:3 picture inside a w x h target, centred (the window.c rule) */
-static void letterbox(int w, int h, int* x, int* y, int* lw, int* lh) {
-    if ((int64_t)w * 3 > (int64_t)h * 4) { *lh = h; *lw = h * 4 / 3; }
-    else { *lw = w; *lh = w * 3 / 4; }
-    *x = (w - *lw) / 2;
-    *y = (h - *lh) / 2;
+/* The largest aw:ah rectangle centred in a cw x ch client area, widths and heights rounded to the
+ * nearest pixel (window.c fit_aspect: the hw backend shows a picture exactly where sw does). */
+static void fit_aspect(int cw, int ch, int aw, int ah, int* x, int* y, int* w, int* h) {
+    *x = *y = 0;
+    *w = cw;
+    *h = ch;
+    if (cw <= 0 || ch <= 0 || aw <= 0 || ah <= 0) { *w = *h = 0; return; }
+    if ((int64_t)cw * ah > (int64_t)ch * aw) {
+        *w = (int)(((int64_t)ch * aw * 2 + ah) / (2 * (int64_t)ah));
+        *x = (cw - *w) / 2;
+    } else {
+        *h = (int)(((int64_t)cw * ah * 2 + aw) / (2 * (int64_t)aw));
+        *y = (ch - *h) / 2;
+    }
 }
 
+static void present_fit(int aw, int ah);
+
 void gpu_exec_present(const void* payload) {
-    (void)payload;
+    const gpu_op_present* p = payload;
+    present_fit(p->aspect_w ? p->aspect_w : 4, p->aspect_h ? p->aspect_h : 3);
+    frame_end();
+}
+
+void gpu_present_show(int aspect_w, int aspect_h) { present_fit(aspect_w > 0 ? aspect_w : 4, aspect_h > 0 ? aspect_h : 3); }
+
+static void present_fit(int aw, int ah) {
+    double t0 = now_ms();
     if (P.sc) {
-        RECT rc;
-        GetClientRect((HWND)gpu_rt.cfg.hwnd, &rc);
-        if (rc.right <= 0 || rc.bottom <= 0) { frame_end(); return; }       /* minimised */
-        if (rc.right != P.bb_w || rc.bottom != P.bb_h) {
+        int cw = 0, ch = 0;
+        if (gpu_rt.cfg.client_size) gpu_rt.cfg.client_size(&cw, &ch);
+        else {
+            RECT rc;
+            GetClientRect((HWND)gpu_rt.cfg.hwnd, &rc);
+            cw = rc.right;
+            ch = rc.bottom;
+        }
+        if (cw <= 0 || ch <= 0) return;         /* minimised */
+        if (cw != P.bb_w || ch != P.bb_h) {
             ID3D11DeviceContext_OMSetRenderTargets(gpu_rt.ctx, 0, NULL, NULL);
             GPU_RELEASE(P.rtv);
-            HRESULT hr = IDXGISwapChain1_ResizeBuffers(P.sc, 0, (UINT)rc.right, (UINT)rc.bottom, DXGI_FORMAT_UNKNOWN, P.sc_flags);
-            if (FAILED(hr) || !make_rtv()) { gpu_log("swap chain resize failed (hr=0x%08lX)", (unsigned long)hr); P.bb_w = -1; frame_end(); return; }
-            P.bb_w = rc.right;
-            P.bb_h = rc.bottom;
+            ID3D11DeviceContext_Flush(gpu_rt.ctx);   /* (the old back buffers must not be referenced) */
+            HRESULT hr = IDXGISwapChain1_ResizeBuffers(P.sc, 0, (UINT)cw, (UINT)ch, DXGI_FORMAT_UNKNOWN, P.sc_flags);
+            if (FAILED(hr) || !make_rtv()) {
+                gpu_log("swap chain resize to %dx%d failed (hr=0x%08lX)", cw, ch, (unsigned long)hr);
+                P.bb_w = -1;
+                if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET) gpu_rt.lost = 1;
+                return;
+            }
+            P.bb_w = cw;
+            P.bb_h = ch;
         }
         if (P.waitable) {
             long ph = gpu_rt_phase;
@@ -414,7 +516,7 @@ void gpu_exec_present(const void* payload) {
     ID3D11DeviceContext_ClearRenderTargetView(gpu_rt.ctx, P.rtv, black);
     if (P.have) {
         int x, y, lw, lh;
-        letterbox(P.bb_w, P.bb_h, &x, &y, &lw, &lh);
+        fit_aspect(P.bb_w, P.bb_h, aw, ah, &x, &y, &lw, &lh);
         /* the picture occupies [0, cur_w) x [0, cur_h) of a possibly larger texture: uv scale and
            clamp (half a texel inside, so bilinear taps never reach past the picture) */
         D3D11_MAPPED_SUBRESOURCE m;
@@ -437,9 +539,106 @@ void gpu_exec_present(const void* payload) {
                     (unsigned long)ID3D11Device_GetDeviceRemovedReason(gpu_rt.dev));
             gpu_rt.lost = 1;
         }
+        P.st.presented = 1;
     }
-    frame_end();
+    P.st.present_ms += now_ms() - t0;
 }
+
+/* ---- M6: the picture composed on the GPU (shaders/display.hlsl) ------------------------------------- */
+
+void gpu_present_compose(const gpu_compose_in* in) {
+    ID3D11DeviceContext* c = gpu_rt.ctx;
+    gs_display_layout L;
+    int ok = in->priv && gs_display_layout_of(in->priv, &L);
+    if (!ensure_pictures(PICT_MIN, PICT_MIN)) {
+        gpu_log("cannot allocate the pictures");
+        gpu_rt.lost = 1;
+        return;
+    }
+    int next = (P.cur + 1) % NPICT;
+    P.cur_vblank = in->priv ? (uint32_t)in->priv[15] : 0;
+    if (!ok) {                                  /* display off: black (gs_compose returns no picture) */
+        static const float black[4] = { 0, 0, 0, 1 };
+        ID3D11DeviceContext_ClearRenderTargetView(c, P.pict_rtv[next], black);
+        P.cur = next;
+        P.cur_w = 0;                            /* (a read-back of it fails: nothing to dump, as sw) */
+        P.cur_h = 0;
+        P.have = 0;
+        return;
+    }
+    display_consts k;
+    memset(&k, 0, sizeof k);
+    k.W = (uint32_t)L.W; k.H = (uint32_t)L.H; k.ux0 = (uint32_t)L.ux0; k.uy0 = (uint32_t)L.uy0;
+    k.hs = (uint32_t)L.hs; k.vs = (uint32_t)L.vs;
+    k.flags = (L.mmod ? 1u : 0u) | (L.slbg ? 2u : 0u) | (L.field_mode ? 4u : 0u);
+    k.alp = (uint32_t)L.alp;
+    k.bg = L.bg;
+    for (int i = 0; i < 2; i++) {
+        const gs_circuit* ci = &L.c[i];
+        k.cA[i][0] = (uint32_t)ci->en; k.cA[i][1] = (uint32_t)ci->fbp; k.cA[i][2] = (uint32_t)ci->fbw; k.cA[i][3] = (uint32_t)ci->psm;
+        k.cB[i][0] = (uint32_t)ci->dbx; k.cB[i][1] = (uint32_t)ci->dby; k.cB[i][2] = (uint32_t)ci->dx; k.cB[i][3] = (uint32_t)ci->dy;
+        k.cC[i][0] = (uint32_t)ci->magh; k.cC[i][1] = (uint32_t)ci->magv; k.cC[i][2] = (uint32_t)ci->dw; k.cC[i][3] = (uint32_t)ci->dh;
+        k.cD[i][0] = in->tex[i] ? 1u : 0u;
+        k.cD[i][1] = (uint32_t)(in->kx[i] > 0 ? in->kx[i] : 1);
+        k.cD[i][2] = (uint32_t)(in->ky[i] > 0 ? in->ky[i] : 1);
+    }
+    /* the deinterlacer's history state (gs.c deinterlace): which field this is, what is usable */
+    int f = in->field_code, deint = 0, par = 0, mode = 0;
+    uint32_t now = in->priv ? (uint32_t)in->priv[15] + 1 : 1;
+    if (L.field_mode) {
+        if (f != 0 && f != 8) P.hist_when[0] = P.hist_when[1] = 0;
+        else {
+            par = f == 8;
+            int oth = !par;
+            int have_same = P.hist_when[par] && P.hist_when[par] + 3 >= now && P.hist_dims[par][0] == L.W && P.hist_dims[par][1] == L.H;
+            int have_oth = P.hist_when[oth] && P.hist_when[oth] + 2 >= now && P.hist_dims[oth][0] == L.W && P.hist_dims[oth][1] == L.H;
+            deint = 1 + (par || have_oth);     /* 1: history only, 2: interpolate the other lines too */
+            mode = have_oth && have_same;
+        }
+    }
+    k.par = (uint32_t)par;
+    k.deint_mode = (uint32_t)mode;
+    D3D11_MAPPED_SUBRESOURCE m;
+    if (FAILED(ID3D11DeviceContext_Map(c, (ID3D11Resource*)P.dcb, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) return;
+    memcpy(m.pData, &k, sizeof k);
+    ID3D11DeviceContext_Unmap(c, (ID3D11Resource*)P.dcb, 0);
+    ID3D11DeviceContext_OMSetRenderTargets(c, 0, NULL, NULL);
+    ID3D11ShaderResourceView* srv[7] = { in->vram, in->tex[0], in->tex[1], NULL, NULL, NULL, in->swz };
+    ID3D11DeviceContext_CSSetShader(c, gpu_cs(GPU_SH_cs_compose), NULL, 0);
+    ID3D11DeviceContext_CSSetConstantBuffers(c, 0, 1, &P.dcb);
+    ID3D11DeviceContext_CSSetShaderResources(c, 0, 7, srv);
+    ID3D11DeviceContext_CSSetUnorderedAccessViews(c, 0, 1, &P.pict_uav[next], NULL);
+    ID3D11DeviceContext_Dispatch(c, (UINT)(L.W + 7) / 8, (UINT)(L.H + 7) / 8, 1);
+    gpu_rt.n_dispatches++;
+    if (deint == 2) {
+        int oth = !par, rows = L.H > oth ? (L.H - oth + 1) / 2 : 0;
+        ID3D11ShaderResourceView* hs[2] = { P.hist_srv[par], P.hist_srv[oth] };
+        ID3D11DeviceContext_CSSetShaderResources(c, 3, 2, hs);
+        ID3D11DeviceContext_CSSetShader(c, gpu_cs(GPU_SH_cs_deint), NULL, 0);
+        if (rows) {
+            ID3D11DeviceContext_Dispatch(c, (UINT)(L.W + 7) / 8, (UINT)(rows + 7) / 8, 1);
+            gpu_rt.n_dispatches++;
+        }
+    }
+    ID3D11ShaderResourceView* none[7] = { NULL, NULL, NULL, NULL, NULL, NULL, NULL };
+    ID3D11UnorderedAccessView* nouav = NULL;
+    ID3D11DeviceContext_CSSetShaderResources(c, 0, 7, none);
+    ID3D11DeviceContext_CSSetUnorderedAccessViews(c, 0, 1, &nouav, NULL);
+    if (deint) {                                /* this field's lines become the history of its parity */
+        D3D11_BOX box = { 0, 0, 0, (UINT)L.W, (UINT)L.H, 1 };
+        ID3D11DeviceContext_CopySubresourceRegion(c, (ID3D11Resource*)P.hist[par], 0, 0, 0, 0, (ID3D11Resource*)P.pict[next], 0, &box);
+        gpu_rt.n_copies++;
+        P.hist_when[par] = now;
+        P.hist_dims[par][0] = L.W;
+        P.hist_dims[par][1] = L.H;
+    }
+    P.cur = next;
+    P.cur_w = L.W;
+    P.cur_h = L.H;
+    P.have = 1;
+}
+
+void gpu_present_readback(gpu_readback* rb) { gpu_exec_readback(&rb); }
 
 /* ---- read-back ----------------------------------------------------------------------------------- */
 
@@ -522,11 +721,17 @@ void gpu_present_drain(void) {
 /* ---- producer side --------------------------------------------------------------------------------- */
 
 void gpu_picture(const uint32_t* bgrx, int ok, int w, int h, int stride, uint32_t vblank) {
+    gpu_picture_aspect(bgrx, ok, w, h, stride, vblank, 4, 3);
+}
+
+void gpu_picture_aspect(const uint32_t* bgrx, int ok, int w, int h, int stride, uint32_t vblank, int pic_aspect_w,
+                        int pic_aspect_h) {
     if (!gpu_running()) return;
     double t0 = now_ms();
     gpu_op_picture pic;
     memset(&pic, 0, sizeof pic);
     pic.vblank = vblank;
+    gpu_cmd_lock();
     if (ok && bgrx && w > 0 && h > 0 && w <= stride) {
         uint32_t* d = gpu_data_alloc((size_t)w * (size_t)h * 4);
         if (d) {
@@ -543,18 +748,23 @@ void gpu_picture(const uint32_t* bgrx, int ok, int w, int h, int stride, uint32_
     gpu_cmd_commit();
     gpu_op_present* q = gpu_cmd_alloc(GPU_OP_PRESENT, sizeof *q);
     q->vblank = vblank;
+    q->aspect_w = (uint16_t)pic_aspect_w;
+    q->aspect_h = (uint16_t)pic_aspect_h;
     gpu_cmd_commit();
     gpu_cmd_publish();                          /* a VBlank: show it now */
+    gpu_cmd_unlock();
 }
 
 void gpu_read_picture(gpu_readback* rb) {
     rb->done = 0;
     rb->status = 0;
     if (!gpu_running()) { rb->status = -1; rb->done = 1; return; }
+    gpu_cmd_lock();
     gpu_op_readback* p = gpu_cmd_alloc(GPU_OP_READBACK, sizeof *p);
     p->rb = rb;
     gpu_cmd_commit();
     gpu_cmd_publish();
+    gpu_cmd_unlock();
 }
 
 void gpu_wait_readback(gpu_readback* rb) {
