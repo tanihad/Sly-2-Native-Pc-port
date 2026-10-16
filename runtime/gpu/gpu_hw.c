@@ -425,7 +425,8 @@ void gpu_hw_vblank(const gs_display_snap* snap, uint32_t vblank, int content43) 
 }
 
 /* ---- PS2_GS_VERIFY (GS thread; the frontend runs on it, the software renderer draws too) ----------- */
-static int verify_kind(uint32_t id) { return gpu_front_target_kind(id); }
+/* (ids >= 0x100: downloaded data of a target of kind id - 0x100, gpu_front_block_origin) */
+static int verify_kind(uint32_t id) { return id >= 0x100 ? (int)(id - 0x100) : gpu_front_target_kind(id); }
 
 static void verify_vblank(const gs_display_snap* snap, uint32_t vblank) {
     static uint16_t writer[16384];
@@ -434,6 +435,9 @@ static void verify_vblank(const gs_display_snap* snap, uint32_t vblank) {
     int n = 0;
     if (!read_gpu_memory(&n)) { hlog("verify v%u: GPU memory read-back failed", vblank); return; }
     memset(writer, 0, sizeof writer);
+    /* GPU data downloaded into vram_buf (a memory read of a target's pages, e.g. the hubs' colour target
+     * drawing into main-Z pages) keeps the tolerance class of the target that drew it */
+    for (uint32_t b = 0; b < 16384; b++) writer[b] = (uint16_t)gpu_front_block_origin(b);
     for (int i = 0; i < n; i++) writer[rb_e[i].abs] = rb_w[i];
     gpu_mem_diff d;
     gpu_mem_compare(rb_mem, gs_vram, writer, verify_kind, 0, &d);
@@ -462,6 +466,22 @@ static void verify_vblank(const gs_display_snap* snap, uint32_t vblank) {
              d.first_block >= 0 ? writer[d.first_block] : 0, (unsigned long long)d.c1, (unsigned long long)d.c2,
              (unsigned long long)d.c16, (unsigned long long)d.cbig, (unsigned long long)d.nc, (unsigned long long)d.z,
              (unsigned long long)d.nz, (unsigned long long)d.cpu);
+        if (d.cpu && bad <= 8) {         /* CPU data differs: where (it is exact otherwise) */
+            int shown = 0;
+            for (uint32_t b = 0; b < 16384 && shown < 6; b++) {
+                if (writer[b]) continue;
+                const uint32_t *x = (const uint32_t*)(rb_mem + (size_t)b * 256), *y = (const uint32_t*)(gs_vram + (size_t)b * 256);
+                int k = 0;
+                while (k < 64 && x[k] == y[k]) k++;
+                if (k == 64) continue;
+                int nw = 0;
+                for (int j = 0; j < 64; j++) nw += x[j] != y[j];
+                hlog("verify v%u: CPU block %04X (page %03X): %d words differ, first word %d: GPU %08X software %08X", vblank, b, b >> 5,
+                     nw, k, x[k], y[k]);
+                gpu_front_debug_block(b, stderr);
+                shown++;
+            }
+        }
         if (bad <= 8) {                  /* both pictures, and the stream from here for offline bisection */
             static gs_compose_hist *hs, *hh;
             static uint32_t sw[1024 * 1024], hw[1024 * 1024];

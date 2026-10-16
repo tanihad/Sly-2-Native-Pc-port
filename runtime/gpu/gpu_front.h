@@ -237,6 +237,9 @@ void gpu_front_resync(void);
 /* Primitives of this VBlank so far that the REF tier cannot render exactly yet (ALIAS16, target views,
  * PUNT): the frame's first "post pass" (M4). */
 uint32_t gpu_front_post_prims(void);
+/* (M6 in-game verifier) 0x100 + the kind (gpu_front_target_kind) of the target that drew block b when its
+ * GPU data was downloaded into vram_buf (CPU data now, carrying the GPU's tolerances), else 0 */
+int gpu_front_block_origin(uint32_t b);
 /* (debugging) the frontend's ownership record of 256-byte block b and every target holding it */
 void gpu_front_debug_block(uint32_t b, FILE* f);
 /* PUNT (5.4, same-thread frontend): the software rasterizer draws the primitive into gs_vram (gs_draw.c,

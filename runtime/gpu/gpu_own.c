@@ -44,6 +44,7 @@ static uint8_t up_full[GPU_BLOCKS];            /* words of the block that upload
 static uint64_t up_fullw[GPU_BLOCKS];          /* (the same as a word mask) */
 static uint16_t up_list[GPU_BLOCKS];           /* blocks it touches */
 static uint8_t blk_vstale[GPU_BLOCKS];         /* downloaded GPU data in vram_buf that gs_vram lacks */
+static uint16_t blk_origin[GPU_BLOCKS];        /* (M6 verifier) 0x100 + kind of the target whose data a download put there */
 static uint8_t page_full[512];           /* blocks of the page with every word CPU-valid */
 static uint8_t page_pend[512];           /* blocks of the page with a pending patch */
 static uint32_t serial_ctr = 1, upload_ctr;
@@ -69,6 +70,7 @@ void own_reset(void) {
     memset(blk_pend, 0, sizeof blk_pend);
     memset(pend_mask, 0, sizeof pend_mask);
     memset(blk_vstale, 0, sizeof blk_vstale);
+    memset(blk_origin, 0, sizeof blk_origin);
     npend = 0;
     nload = ndl = nxc = 0;
     memset(page_full, 32, sizeof page_full);
@@ -308,6 +310,7 @@ static void download_block(uint32_t b) {
             gf.lost_writer++;            /* (never: uploads over GPU words download first) */
         }
         blk_vstale[b] = 1;               /* vram_buf has data gs_vram lacks */
+        if (w && gt[w].used) blk_origin[b] = (uint16_t)(0x100 + gt[w].kind);   /* (M6 verifier: its tolerance class) */
     }
     set_cpu(b, ALL);
 }
@@ -438,6 +441,13 @@ int own_rect_gpu(int psm, uint32_t bp, uint32_t bw, int x0, int y0, int x1, int 
         writers[n++] = w;
     }
     return n;
+}
+
+/* (M6 verifier) the target that drew a block whose data was downloaded into vram_buf (now CPU data that
+ * gs_vram lacks), or 0 */
+int gpu_front_block_origin(uint32_t b) {
+    b &= GPU_BLOCKS - 1;
+    return blk_vstale[b] && blk_origin[b] ? blk_origin[b] : 0;
 }
 
 int own_rect_current(gpu_target* T, int x0, int y0, int x1, int y1) {
