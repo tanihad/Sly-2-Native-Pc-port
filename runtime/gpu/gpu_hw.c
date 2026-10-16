@@ -132,8 +132,8 @@ static void dump_queued(void) {
 /* ---- PS2_GS_HW_STATS ----------------------------------------------------------------------------- */
 #define SW 256                           /* samples per report */
 static struct {
-    double front[SW], rcpu[SW], rwall[SW], gpu[SW], pres[SW];
-    int nfront, nr, ngpu;
+    double front[SW], rcpu[SW], rwall[SW], gpu[SW], pres[SW], lat[SW];
+    int nfront, nr, ngpu, nlat;
     uint64_t draws, ff, rov, rov_runs, punts, downloads, loads, display_mem, kicks;
     uint32_t frames, targets, dropped, presented, game_frames;
     uint64_t gs_busy0;                   /* perf_state.gs_busy at the start of the report period (TSC ticks) */
@@ -192,6 +192,7 @@ static void stats_vblank(uint32_t vblank) {
                      fs[i].gpu_ms, fs[i].draws, fs[i].dispatches, fs[i].copies, fs[i].state_calls);
             S.dropped += fs[i].dropped;
             S.presented += fs[i].presented;
+            if (fs[i].latency_ms >= 0 && S.nlat < SW) S.lat[S.nlat++] = fs[i].latency_ms;
             if (fs[i].draws < 200) continue;     /* (per game frame: the VBlanks in between draw nothing) */
             if (S.nr < SW) { S.rcpu[S.nr] = fs[i].render_cpu_ms; S.rwall[S.nr] = fs[i].render_ms; S.pres[S.nr] = fs[i].present_ms; S.nr++; }
             if (fs[i].gpu_ms >= 0 && S.ngpu < SW) S.gpu[S.ngpu++] = fs[i].gpu_ms;
@@ -210,14 +211,15 @@ static void stats_vblank(uint32_t vblank) {
         double gs = S.game_frames ? (double)(busy - S.gs_busy0) / tsc_ms() / S.game_frames : 0;
         double frm = vmax(S.front, S.nfront), rcm = vmax(S.rcpu, S.nr), rwm = vmax(S.rwall, S.nr), gpm = vmax(S.gpu, S.ngpu);
         hlog("stats v%u: %.1f flips/s (%.1f pictures/s, %u dropped) | per game frame (%u, median / max ms): GS thread %.2f (mean) | frontend %s %.2f / %.2f | "
-             "render CPU %.2f / %.2f, wall %.2f / %.2f, present %.2f | GPU %.2f / %.2f | per VBlank: %.0f prims, %.0f draws (FF %.0f, ROV %.0f in %.1f runs), "
-             "PUNT %llu, downloads %.1f, loads %.1f, display from memory %.2f, targets %u",
+             "render CPU %.2f / %.2f, wall %.2f / %.2f, present %.2f | GPU %.2f / %.2f | latency %.2f / %.2f | per VBlank: %.0f prims, "
+             "%.0f draws (FF %.0f, ROV %.0f in %.1f runs), PUNT %llu, downloads %.1f, loads %.1f, display from memory %.2f, targets %u",
              vblank, flips, pics, S.dropped, S.game_frames, gs, front_threaded ? "thread" : "(GS thread)", med(S.front, S.nfront), frm,
-             med(S.rcpu, S.nr), rcm, med(S.rwall, S.nr), rwm, med(S.pres, S.nr), med(S.gpu, S.ngpu), gpm, (double)S.kicks * k,
+             med(S.rcpu, S.nr), rcm, med(S.rwall, S.nr), rwm, med(S.pres, S.nr), med(S.gpu, S.ngpu), gpm, med(S.lat, S.nlat),
+             vmax(S.lat, S.nlat), (double)S.kicks * k,
              (double)S.draws * k, (double)S.ff * k, (double)S.rov * k, (double)S.rov_runs * k, (unsigned long long)S.punts,
              (double)S.downloads * k, (double)S.loads * k, (double)S.display_mem * k, S.targets);
     }
-    S.nfront = S.nr = S.ngpu = 0;
+    S.nfront = S.nr = S.ngpu = S.nlat = 0;
     S.draws = S.ff = S.rov = S.rov_runs = S.punts = S.downloads = S.loads = S.display_mem = S.kicks = 0;
     S.frames = S.dropped = S.presented = S.game_frames = 0;
     S.t0 = t;

@@ -62,12 +62,20 @@ and the owner's settings applied (internal_scale, outlines, filters presets + to
   blocked by the depth encoding: asfloat(z + 0x800000) is near FLT_MIN for Z24, not interpolable (denormal
   products), so it would need per-triangle constant bounds (unique vertices). The 8 ms budget is M9's (design 11).
 
+- Box gate S=2 / S=4 (gpu_game_all -Scale 2/4, 3816 pictures each): 23/24 recordings; rv_prompt 31.42 / 31.20 dB
+  (S=3 31.36): its full-width UI rules are Gouraud strips with sharp horizontal edges at a third of a field row
+  (e.g. 38.33): the native picture takes the row centre's side, the supersampled one the true coverage, so five
+  512-pixel rows differ by 20-40 per channel (diff map: only the rules and glyph edges) - inherent to supersampling,
+  not a defect. Min PSNR otherwise S=2 33.45 (pause_save) .. 47.49, S=4 33.08 .. 46.70; max |mean error| 0.34.
+- f43fb1c contact sheets notes/m7/*.png (scripts/m7_sheet.py: same native box, 3 output px per native px; 1x tile
+  nearest, 3x tile 1:1): shadows (ep5 street v6500), shadows_edge (zoom 6), outlines (ep3 hub v7100: 1x, 3x ps2,
+  3x thin), darken (museum v5200), binocucom (fix-perf brief v2515), presets (ep5: Modern 1x | Faithful 1x /
+  Modern 3x | Faithful 3x, zoom 2).
+
 ## In progress
 
 ## Next
-2. Box gate at S=2 and S=4 (gpu_game_all -Scale 2/4); Modern (--modern) runs.
-3. Contact sheets (notes/m7/*.png, small): shadows, outlines ps2/thin, darken, motion blur on/off (in-game
-   dumps), Binocucom, Modern vs Faithful at 1x/3x.
+3. Motion blur on/off sheet (in-game dumps at 3x).
 4. In-game: hw at 3x hubs ep3/ep5/ep8 windowed, PS2_GS_HW_STATS (GS <= 6, render <= 8, GPU <= 8 ms medians,
    60 flips/s); run-time switching (F2..F6 via PS2_INPUT tokens); memory (850 MB) and present latency.
 5. Gates: run_tests, unit suites (gs-hw, gs-front, gs-draw, window...), gpu_diff_all, VRAM hashes,

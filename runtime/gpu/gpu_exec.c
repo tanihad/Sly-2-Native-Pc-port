@@ -49,6 +49,7 @@ enum { TK_NONE, TK_VRAM_IDX, TK_VRAM_DIRECT, TK_VIEW_C32, TK_VIEW_ALPHA, TK_ALIA
 typedef struct {
     gpu_front_frame_data fd;
     void* handle;                        /* gpu_front_release */
+    double t_queued;                     /* (M7) qpc_ms when gpu_submit_sink queued it (latency statistics) */
 } gpu_op_frame;
 
 /* ---- render-thread state ---------------------------------------------------------------------- */
@@ -1730,6 +1731,7 @@ void gpu_exec_frame(const void* payload) {
     st->partial = (fd->flags & GPU_FD_PARTIAL) != 0;
     st->ff_draws = (uint32_t)(XC.ff_draws - ff0);
     st->rov_draws = (uint32_t)(XC.rov_draws - rov0);
+    st->latency_ms = st->presented && p->t_queued > 0 ? qpc_ms() - p->t_queued : -1.0;
     (void)t2;
     gpu_stats_end();
 }
@@ -1891,6 +1893,7 @@ void gpu_submit_sink(const gpu_front_frame_data* fd, void* user) {
     gpu_op_frame* op = gpu_cmd_alloc(GPU_OP_FRAME, sizeof *op);
     op->fd = *fd;
     op->handle = h;
+    op->t_queued = qpc_ms();
     gpu_cmd_commit();
     gpu_cmd_publish();
     gpu_cmd_unlock();

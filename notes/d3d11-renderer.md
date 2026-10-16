@@ -194,6 +194,18 @@ Edits to existing non-frozen files (all behind `PS2_GS_BACKEND`, sw behaviour by
   - A target sampled 1:1 by another target adopts the sampler's family (motion blur A -> B).
 - Default `N = 3` (1536x1344 internal for 4:3).
 
+*(M7, as built (appendix I): `ky = 2N` for the display family only while progressive (graphics.interlacing
+off, the Modern default); with interlacing on the field buffers are drawn N x N and shown line-doubled, as the
+PS2 sends them. Families are upgrade-only (square -> display): a draw binding a colour and a Z target of
+different factors, or a 1:1 sprite read between them, upgrades both, and a C32 target created at a DISPFB start
+seen before begins as display. A factor change of a live target is a GPU_FOP_TARGET with the new factors; the
+executor rescales its contents (`cs_rescale`: new sample (i, j) <- old sample (i*okx/kx, j*oky/ky), sample 0
+exact; depth through zpatch). Triangles evaluate colour / fog / U / V / S/T/Q at each sample (sample 0 = the
+native integer value bit for bit, the others a float step of the plane from it; Z the exact native value plus a
+float step); sprites and line / point pixels are single-rate and storage-aligned (samples x*k .. x*k+k-1 take the
+native pixel's value - a centred variant broke the CT16 channel shuffles). The presenter removes the resulting
+grid shift.)*
+
 ### 3.2 GPU resources
 
 | resource | format | purpose |
@@ -595,6 +607,15 @@ reloaded from gs_vram (which lacks GPU-drawn data); the third loss switches to s
 - AA1 outlines keep the GS two-pixel coverage (exact) by default; optional thin analytic mode (M7).
 - Optional later post AA (FXAA/SMAA) on the resolved picture: not planned, noted.
 
+*(M7, as built (appendix I): `graphics.internal_scale` 1-8 (default 3; `PS2_GS_SCALE` overrides), changeable while
+playing (F2 / Shift+F2: every target rescaled at the next frame). Present = two separable passes through an
+RGBA16F intermediate into the letterboxed viewport, `graphics.scaler` auto (Lanczos-2 shrinking, Catmull-Rom
+enlarging, point at 1:1) / lanczos / catmull-rom / box / bilinear / point (`PS2_GS_SCALER`), the sample grid
+shift taken out per axis ((P - r) / 2 texels between the picture's and the PS2 grid). Thin outlines: AA1 / plain
+line DDA output replaced at scale > 1 by one analytic record per line (`gpu_rec_thin`, PRIM 3: coverage
+1 - |d| / w for AA1, |d| < w / 2 plain, w = `PS2_GS_THIN_WIDTH` samples, default max(1, N / 2)); `ps2` keeps the
+exact one-native-pixel lines. Memory at 3x: see appendix I.)*
+
 ### 8.2 Presentation and pacing
 
 - Swapchain on `window_hwnd()`, created by the render thread: FLIP_DISCARD, 3 buffers,
@@ -620,6 +641,15 @@ target is never read back for pictures. The display pacing clock is `IDXGIOutput
 of its own, used only when the measured refresh is within 0.5% of 59.94 Hz. Device loss: the gs_vram reload
 lacks every GPU-drawn page (gs_vram only receives transfers in hw mode), so feedback effects take ~10 frames
 to look right again.)*
+
+*(M7, as built (appendix I): the compose runs at scale `so` (picture W*so x H*so, H in frame lines: 1536 x 1344 at
+3x for both field modes): circuits read target samples at sub-pixel rows / columns; field mode reads sample row
+`dby*ky + rel*ky/(2 so)` (line-doubled with interlacing on, the full 2N rows per field row when progressive);
+progressive odd field-coded pictures (half-line offset: movies, the intro) are shifted one frame line down
+instead of woven; the deinterlacer runs at scale (history textures W*so x H*so, lazily created) only with
+interlacing on; flicker filter off = the circuit with the larger DBY of the standard flicker pair disabled.
+The scratch / vram_buf display path stays native and is read nearest. At S = 1 with interlacing and the flicker
+filter on (Faithful) the picture is identical to gs_compose_from of the GPU memory (the M6 gate).)*
 
 ### 8.3 Widescreen: what the renderer supplies
 
@@ -928,6 +958,15 @@ Total ~45-55 agent-days. The software renderer stays the default until M11.
   flicker filter and field display (M7), not drop them.
 - All of these settings belong in one settings file / in-game options surface (window.c owns
   persistence), applied without restart where possible.
+
+*(M7, as built: sly2.ini `[graphics]` internal_scale = 3, outlines = ps2, filters = modern, motion_blur /
+flicker_filter / interlacing = preset, scaler = auto (notes/settings.md); runtime/gfx.c applies them at start and
+while playing - F2 / Shift+F2 scale, F3 outlines, F4 preset, F5 motion blur, F6 flicker filter, Shift+F6
+interlacing (written back to sly2.ini; PS2_INPUT tokens scaleup / scaledown / outlines / filters / blur / flicker /
+interlace), and an edit of the file applies when the window is activated. Motion blur off is the game's own
+switch: instruction patch `motion_blur_off` makes the flag test at 0x160FA0 (word 0x2DEB24, f_00160F98) read 1,
+so the effect function returns before drawing (both renderers). Faithful at internal_scale 1 composes exactly as
+gs.c does (every corpus picture identical to the reference compose of the GPU memory, the M6 gate). Appendix I.)*
 
 Remaining open questions:
 

@@ -115,6 +115,7 @@ typedef struct {
     int presented;                        /* 1: Present was called (0: headless, minimised, lost) */
     int dropped;                          /* not shown: the render thread was behind and the swap chain busy */
     uint32_t ff_draws, rov_draws;         /* D3D draws on the FF / ROV tier in this frame */
+    double latency_ms;                    /* (M7) frame queued (picture reported to the EE) -> Present returned; -1: not shown */
 } gpu_frame_stats;
 int gpu_take_frame_stats(gpu_frame_stats* out, int max);   /* returns how many were taken */
 

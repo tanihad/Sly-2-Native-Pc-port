@@ -406,6 +406,7 @@ void gpu_stats_begin(uint32_t vblank, double front_ms) {
     if (gpu_rt.cfg.timestamps && P.ts_n == NTS) ts_complete(1);
     QueryPerformanceCounter(&P.t_start);
     memset(&P.st, 0, sizeof P.st);
+    P.st.latency_ms = -1.0;
     P.st.vblank = vblank;
     P.st.front_ms = front_ms;
     P.st.gpu_ms = -1.0;
