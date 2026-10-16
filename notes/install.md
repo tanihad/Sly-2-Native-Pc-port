@@ -55,7 +55,13 @@ Move or copy `dist\Sly2` anywhere (e.g. `C:\Games\Sly 2`).
 
 ## While running / exit
 
-- Window title "Sly 2: Band of Thieves" (`[window] show_fps = on` adds the frame rate).
+- Window title "Sly 2: Band of Thieves" (`[window] show_fps = on` adds the frame rate; "(GPU)" with the
+  GPU renderer).
+- Renderer: the software renderer by default; `[graphics] renderer = gpu` in sly2.ini (or
+  `PS2_GS_BACKEND=hw`) uses the Direct3D 11 renderer (opt-in until notes/d3d11-renderer.md M11; draws at
+  the PS2's resolution until M7). It needs a GPU with rasterizer-ordered views; without one, or if
+  the device cannot be created, the log says so and the software renderer runs. A lost device is
+  recreated (twice); a third loss switches to the software renderer for the rest of the session.
 - Alt+Enter / F11: borderless fullscreen; Esc leaves it.
 - Closing the window (or Alt+F4, or Windows logging off): the window's placement and fullscreen
   state go to `[window]` in sly2.ini, then `launch_exit` waits for a memory card operation in

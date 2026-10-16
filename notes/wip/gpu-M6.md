@@ -39,15 +39,27 @@ swap chain, pacing, device loss, verify, stats, live switch, frame dumps, packag
   --game-verify 1: 24/24, gpu_hw verifier 0 beyond tolerance, pictures vs sw 0 beyond the gate, min PSNR as M5.
 - Game (release, headless, hw): boots to the title, 60 flips/s, dumps OK (build\m6_run1).
 
+- Window tests (tests/unit/window/run.ps1): all pass, new --external test (14 checks: no own presenter,
+  forwarding, client size / resize serial, F11 + Alt+Enter under a flip swap chain of another thread, debug
+  keys gating, own presenter back); settings tests for renderer / pacing / env overrides.
+- Title replays (gs_replay --game, build\t_*): switch hw->sw->hw (PS2_GPU_SWITCH_AT) all pictures within the
+  gate vs sw; device loss x2 recovers (one picture lost each, ~10 pictures beyond the gate while the title's
+  feedback effects rebuild from CPU memory), x3 falls back to sw; PS2_GPU_PUNT=5 on the frontend thread:
+  switch to the same thread at the next VBlank, 2 pictures miss the PUNTed primitives, then within the gate.
+- Pacing: picture reported when its frame is queued (GPU_FD_SIGNAL). Windowed hw: 0-1 missed VBlanks in 38 s
+  (signal after Present: 6-9; sw: 0). display pacing declines on this 165 Hz monitor (logged); vrr runs.
+- notes/settings.md, notes/install.md updated.
+
 ## In progress
-- tests for switch / device loss / PUNT fallback (gs_replay --game calls gpu_hw_ee_vblank)
+- hub runs ep3/ep5/ep8 hw + sw (scratchpad hub_runs.ps1 -> build\warp\m6_ep*_{hw,sw})
 
 ## Next
-1. window unit test for the external presenter (window_gpu.h, resize, fullscreen with a flip swap chain).
-2. script tokens for the switch / device loss (headless tests); PUNT fallback test (gs_replay --game PS2_GPU_PUNT).
-3. pacing modes check (windowed), packaged build in hw mode.
-4. Verification runs (fix-perf path to gameplay, ep3/ep5/ep8 hubs hw vs sw dumps, 5-min verify per hub, perf).
-5. Everything else green; notes (settings.md, install.md, design appendix H).
+1. compare hub dumps hw vs sw; 5-min PS2_GS_VERIFY=60 per hub (memory flat, audio underruns).
+2. fix-perf scripted path hw vs sw dumps (150 s), screenshots build\screenshots\gpu_m6_*.png.
+3. packaged build in hw mode (scripts\package.py; imports check), debug build.
+4. run_tests, unit suites (gs-hw, gs-front, gs-draw, ...), gpu_diff_all, VRAM hashes, gpu_fthread_check,
+   mixed lockstep (few), gpu_game_all again (after the pacing change).
+5. design doc: M6 notes in 2.1/7/8.2 + appendix H; WIP final.
 
 ## Findings / traps
 - (M5) PowerShell ReadAllText + .Replace on CRLF files silently does nothing: use the Edit tool.
@@ -56,5 +68,10 @@ swap chain, pacing, device loss, verify, stats, live switch, frame dumps, packag
 - In-game steady-state downloads exist (not in the corpus): the intro cutscene (~VBlank 1520-1880) has a colour
   target writing main-Z pages (page 08F) that the Z target then tests: 8-16 download+load ops (24-64 blocks) per
   frame. Exact (verify clean), counted; an M8/M9 item (xcopy across kinds is not possible: data reinterpretation).
+- NVIDIA power management: with ~3 ms of GPU work per 16.7 ms the RTX 4060 Ti drops from P0 (2565 MHz) to
+  P3/P5 (~900 MHz core, low memory clock) about 2 s after a load spike; frames then take 15-40 ms until the
+  driver raises the clocks again (nvidia-smi -lms 100 during a paced replay). Anything that makes the EE wait
+  for the render thread (picture done after Present) turns that into missed VBlanks; dropping presents made
+  it worse (lower load, longer at low clocks). Fix: report the picture when its frame is queued.
 - GS-thread CPU per VBlank from QueryThreadCycleTime includes the spin-waits (SPINS pause loops before
   sleeping); PS2_PERF's "GS thread ms/vblank" (busy time in the slot loop) is the comparable number.
