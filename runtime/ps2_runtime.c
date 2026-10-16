@@ -8,6 +8,16 @@
 #include "window_gpu.h"
 #include "gpu/gpu_hw.h"
 #include "gpu/gpu.h"
+/* The GPU renderer (runtime/gpu) is linked into the game (scripts/build_game.py) but not into every test
+ * program built from the runtime's C files (tests/run_tests.py): weak references, NULL when it is absent. */
+#define GPU_WEAK __attribute__((weak))
+extern int  gpu_hw_start(const gpu_hw_config* cfg) GPU_WEAK;
+extern void gpu_hw_attach_gs(void) GPU_WEAK;
+extern void gpu_hw_ee_vblank(uint32_t vblank) GPU_WEAK;
+extern void gpu_hw_request_switch(void) GPU_WEAK;
+extern void gpu_hw_present_sw(const uint32_t* bgrx, int w, int h, int stride, int aspect_w, int aspect_h) GPU_WEAK;
+extern void gpu_hw_stop(void) GPU_WEAK;
+extern void gpu_simulate_device_lost(void) GPU_WEAK;
 
 #include <stdlib.h>
 #include <windows.h>
@@ -902,6 +912,10 @@ int main(int argc, char** argv) {
      * notes/d3d11-renderer.md) presents on the window's swap chain itself; the window then creates no
      * presenter of its own (window_gpu.h) */
     int want_gpu = ps2_settings.renderer_gpu && !dump_regs;
+    if (want_gpu && !gpu_hw_start) {
+        fprintf(stderr, "[ps2] this build has no GPU renderer: using the software renderer\n");
+        want_gpu = 0;
+    }
     if (want_gpu && !headless) window_set_external_presenter(1, gpu_hw_present_sw);
     if (!headless) window_init();
     if (!dump_regs) audio_init();                /* sound output thread (sd.c mixer -> WASAPI) */

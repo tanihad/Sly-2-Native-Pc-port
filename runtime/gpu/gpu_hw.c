@@ -6,6 +6,7 @@
 #include "gpu.h"
 #include "gpu_front.h"
 #include "gpu_verify.h"
+#include "perf.h"                        /* perf_state.gs_busy (the GS thread's busy time) */
 #include "settings.h"
 
 #include <dxgi1_2.h>
@@ -115,13 +116,13 @@ static void dump_queued(void) {
 /* ---- PS2_GS_HW_STATS ----------------------------------------------------------------------------- */
 #define SW 256                           /* samples per report */
 static struct {
-    double gs[SW], front[SW], rcpu[SW], rwall[SW], gpu[SW], pres[SW];
-    int ngs, nfront, nr, ngpu;
+    double front[SW], rcpu[SW], rwall[SW], gpu[SW], pres[SW];
+    int nfront, nr, ngpu;
     uint64_t draws, ff, rov, rov_runs, punts, downloads, loads, display_mem, kicks;
-    uint32_t frames, targets, dropped, presented;
+    uint32_t frames, targets, dropped, presented, game_frames;
+    uint64_t gs_busy0;                   /* perf_state.gs_busy at the start of the report period (TSC ticks) */
     LONG presents0;
     LARGE_INTEGER t0;
-    uint64_t gs_cyc;
     double tsc_per_ms;
 } S;
 
@@ -156,7 +157,10 @@ static void stats_vblank(uint32_t vblank) {
                 hlog("frame v%u: downloads %u (%u blocks), loads %u (%u blocks), cross copies %u, PUNT %u, targets created %u",
                      f->vblank, f->downloads, f->download_blocks, f->loads, f->load_blocks, f->xcopies, punts, f->targets_created);
             if (!C.stats) continue;
-            if (S.nfront < SW) S.front[S.nfront++] = f->thread_ms;
+            /* per game frame (>= 1000 primitives; Sly draws every second VBlank in most scenes): the time
+             * spent in the frontend's hooks (its thread's CPU time would include its spin-waits) */
+            if (f->kicks >= 1000 && S.nfront < SW) S.front[S.nfront++] = f->front_ms;
+            if (f->kicks >= 1000) S.game_frames++;
             S.draws += f->d3d_draws; S.ff += f->ff_draws; S.rov += f->rov_draws; S.rov_runs += f->rov_runs;
             S.punts += punts; S.downloads += f->downloads; S.loads += f->loads; S.display_mem += f->display_mem;
             S.kicks += f->kicks;
@@ -170,39 +174,39 @@ static void stats_vblank(uint32_t vblank) {
                 hlog("slow frame v%u: render wall %.2f ms (CPU %.2f, upload %.2f, present %.2f), GPU %.2f ms, %u draws, %u dispatches, "
                      "%u copies, %u state calls", fs[i].vblank, fs[i].render_ms, fs[i].render_cpu_ms, fs[i].upload_ms, fs[i].present_ms,
                      fs[i].gpu_ms, fs[i].draws, fs[i].dispatches, fs[i].copies, fs[i].state_calls);
-            if (S.nr < SW) { S.rcpu[S.nr] = fs[i].render_cpu_ms; S.rwall[S.nr] = fs[i].render_ms; S.pres[S.nr] = fs[i].present_ms; S.nr++; }
             S.dropped += fs[i].dropped;
             S.presented += fs[i].presented;
+            if (fs[i].draws < 200) continue;     /* (per game frame: the VBlanks in between draw nothing) */
+            if (S.nr < SW) { S.rcpu[S.nr] = fs[i].render_cpu_ms; S.rwall[S.nr] = fs[i].render_ms; S.pres[S.nr] = fs[i].present_ms; S.nr++; }
             if (fs[i].gpu_ms >= 0 && S.ngpu < SW) S.gpu[S.ngpu++] = fs[i].gpu_ms;
         }
     if (!C.stats) return;
-    ULONG64 cyc = 0;
-    QueryThreadCycleTime(GetCurrentThread(), &cyc);
-    if (S.gs_cyc && S.ngs < SW) S.gs[S.ngs++] = (double)(cyc - S.gs_cyc) / tsc_ms();
-    S.gs_cyc = cyc;
     if (vblank % 60) return;
     LARGE_INTEGER t, f;
     QueryPerformanceCounter(&t);
     QueryPerformanceFrequency(&f);
     LONG p = presents;
+    uint64_t busy = perf_state.gs_busy;  /* (gs_thread.c: TSC ticks executing the GS stream, as PS2_PERF reports) */
     double secs = S.t0.QuadPart ? (double)(t.QuadPart - S.t0.QuadPart) / (double)f.QuadPart : 0;
     if (secs > 0) {
         double pics = (double)(p - S.presents0) / secs, k = S.frames ? 1.0 / S.frames : 0;
         double flips = C.hwnd ? (double)S.presented / secs : pics;   /* (headless: nothing is flipped; pictures) */
-        double gsm = vmax(S.gs, S.ngs), frm = vmax(S.front, S.nfront), rcm = vmax(S.rcpu, S.nr), rwm = vmax(S.rwall, S.nr), gpm = vmax(S.gpu, S.ngpu);
-        hlog("stats v%u: %.1f flips/s (%.1f pictures/s, %u dropped) | GS thread %.2f / %.2f ms | frontend %s %.2f / %.2f | render CPU %.2f / %.2f, wall %.2f / %.2f, "
-             "present %.2f | GPU %.2f / %.2f | per VBlank: %.0f prims, %.0f draws (FF %.0f, ROV %.0f in %.1f runs), PUNT %llu, "
-             "downloads %.1f, loads %.1f, display from memory %.2f, targets %u  (median / max ms per VBlank)",
-             vblank, flips, pics, S.dropped, med(S.gs, S.ngs), gsm, front_threaded ? "thread" : "(GS thread)", med(S.front, S.nfront), frm,
+        double gs = S.game_frames ? (double)(busy - S.gs_busy0) / tsc_ms() / S.game_frames : 0;
+        double frm = vmax(S.front, S.nfront), rcm = vmax(S.rcpu, S.nr), rwm = vmax(S.rwall, S.nr), gpm = vmax(S.gpu, S.ngpu);
+        hlog("stats v%u: %.1f flips/s (%.1f pictures/s, %u dropped) | per game frame (%u, median / max ms): GS thread %.2f (mean) | frontend %s %.2f / %.2f | "
+             "render CPU %.2f / %.2f, wall %.2f / %.2f, present %.2f | GPU %.2f / %.2f | per VBlank: %.0f prims, %.0f draws (FF %.0f, ROV %.0f in %.1f runs), "
+             "PUNT %llu, downloads %.1f, loads %.1f, display from memory %.2f, targets %u",
+             vblank, flips, pics, S.dropped, S.game_frames, gs, front_threaded ? "thread" : "(GS thread)", med(S.front, S.nfront), frm,
              med(S.rcpu, S.nr), rcm, med(S.rwall, S.nr), rwm, med(S.pres, S.nr), med(S.gpu, S.ngpu), gpm, (double)S.kicks * k,
              (double)S.draws * k, (double)S.ff * k, (double)S.rov * k, (double)S.rov_runs * k, (unsigned long long)S.punts,
              (double)S.downloads * k, (double)S.loads * k, (double)S.display_mem * k, S.targets);
     }
-    S.ngs = S.nfront = S.nr = S.ngpu = 0;
+    S.nfront = S.nr = S.ngpu = 0;
     S.draws = S.ff = S.rov = S.rov_runs = S.punts = S.downloads = S.loads = S.display_mem = S.kicks = 0;
-    S.frames = S.dropped = S.presented = 0;
+    S.frames = S.dropped = S.presented = S.game_frames = 0;
     S.t0 = t;
     S.presents0 = p;
+    S.gs_busy0 = busy;
 }
 
 /* ---- render thread and frontend ---------------------------------------------------------------- */
@@ -324,7 +328,7 @@ int gpu_hw_start(const gpu_hw_config* cfg) {
          front_threaded ? "its own thread" : "the GS thread", C.verify ? ", verify" : "",
          C.pacing == SETTINGS_PACING_VRR ? "vrr" : C.pacing == SETTINGS_PACING_DISPLAY ? "display" : "vsync");
     if (C.pacing == SETTINGS_PACING_DISPLAY && C.hwnd && C.vblank_external && C.display_vblank)
-        clock_thread = CreateThread(NULL, 0, clock_main, NULL, 0, NULL);
+        if (!clock_thread && !(clock_thread = CreateThread(NULL, 0, clock_main, NULL, 0, NULL))) hlog("display pacing: no clock thread");
     return 1;
 }
 
@@ -435,6 +439,22 @@ static void verify_vblank(const gs_display_snap* snap, uint32_t vblank) {
     gpu_mem_compare(rb_mem, gs_vram, writer, verify_kind, 0, &d);
     checks++;
     if (d.blocks && !d.over) tolerated++;
+    static int pair_dump = -1;           /* PS2_GS_VERIFY_DUMP=1: both pictures of every comparison (paired checks) */
+    if (pair_dump < 0) { const char* e = getenv("PS2_GS_VERIFY_DUMP"); pair_dump = e && atoi(e) != 0; }
+    if (pair_dump && !d.over) {
+        static gs_compose_hist *ps, *ph;
+        static uint32_t a[1024 * 1024], b[1024 * 1024];
+        if (!ps) { ps = gs_compose_hist_new(); ph = gs_compose_hist_new(); }
+        const char* dir = C.out_dir && *C.out_dir ? C.out_dir : ".";
+        char path[600];
+        int w = 0, h = 0, w2 = 0, h2 = 0;
+        if (ps && ph && gs_compose_from(snap, gs_vram, ps, a, 1024, &w, &h) && gs_compose_from(snap, rb_mem, ph, b, 1024, &w2, &h2)) {
+            snprintf(path, sizeof path, "%s/pair_%06u_sw.png", dir, vblank);
+            debug_write_png(path, a, w, h, 1024);
+            snprintf(path, sizeof path, "%s/pair_%06u_hw.png", dir, vblank);
+            debug_write_png(path, b, w2, h2, 1024);
+        }
+    }
     if (d.over) {
         bad++;
         hlog("verify v%u: GPU memory differs beyond the tolerance: %u blocks (first %04X, writer %u); colour words +-1 %llu, "
