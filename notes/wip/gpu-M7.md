@@ -34,21 +34,44 @@ and the owner's settings applied (internal_scale, outlines, filters presets + to
   interlacing; persisted like F7/F8.
 
 ## Done
-- (nothing yet)
+- 5215f05 families (upgrade-only; display ky = 2N progressive), cs_rescale on factor change, per-sample triangle
+  attributes, compose at scale (display.hlsl: so, field / progressive, odd-field shift, deinterlacer at scale,
+  flicker strip in gpu_present.c), presenter resample (present.hlsl ps_resample, gpu_present.c present_resample).
+- 80332a8 thin outlines (gpu_rec_thin, PRIM 3, vs_ref_thin, ps_gs_thin, ps_ff_n*), scaled non-1:1 view reads
+  (view_hires at samples != 0), signed 1:1 sample offsets (g_voff), gs_replay --game at scale (centred box +
+  pixel box, field rows, field-coded pictures), gpu_game_all -Scale -Extra.
+- 4837e2c settings: runtime/gfx.c (gfx_apply / gfx_key / gfx_reread), settings scaler key + settings_read_graphics,
+  F2-F6 + PS2_INPUT tokens, motion blur instruction patch (verified with gs_census: FIX 48 pass gone, rest equal),
+  window unit tests 983/983.
+- Results so far: S=1 Faithful game gate 3816/3816 pictures equal; lockstep REF S=2 24092/0 (also S=3 on 6 recs);
+  S=3 box gate: 23/24 recordings >= 32 dB (rv_prompt 31.36: vector UI text), max |mean signed error| 0.32.
 
 ## In progress
-- Families + rescale + per-sample triangle attributes.
+- Lockstep corpus S=2/3/4 REF + mixed (scratchpad lockall.ps1, results build\ls_{ref,mix}{2,3,4}.txt); the first
+  attempt died of a full disk (C: had 28 MB free: keep build outputs small, GS_REPLAY_MAX_PNG=6).
 
 ## Next
-1. Families/rescale/per-sample attributes; lockstep REF at S=2/3 (sample 0) on title, rope, brief, ep8 hub.
-2. View reads at scale; thin lines.
-3. Compose at scale + flicker/interlace options; presenter resolve.
-4. gs_replay: --scale with progressive default, --interlaced, --flicker-off, --thin, picture box-downsample
-   PSNR / mean signed error vs sw; FF vs REF all-sample compare tool.
-5. In-game settings + hotkeys + motion blur patch; PS2_GS_SCALE.
-6. Gates at S=1 (Faithful), lockstep S=2/3/4, FF vs REF S=3, PSNR, contact sheets, in-game hubs at 3x,
-   memory / latency investigation; notes + appendix I.
+1. FF vs REF all-sample compare at S=3 (gs_replay --sample-dump / --sample-compare of every target, 10.2 budget).
+2. Box gate at S=2 and S=4 (gpu_game_all -Scale 2/4); Modern (--modern) runs.
+3. Contact sheets (notes/m7/*.png, small): shadows, outlines ps2/thin, darken, motion blur on/off (in-game
+   dumps), Binocucom, Modern vs Faithful at 1x/3x.
+4. In-game: hw at 3x hubs ep3/ep5/ep8 windowed, PS2_GS_HW_STATS (GS <= 6, render <= 8, GPU <= 8 ms medians,
+   60 flips/s); run-time switching (F2..F6 via PS2_INPUT tokens); memory (850 MB) and present latency.
+5. Gates: run_tests, unit suites (gs-hw, gs-front, gs-draw, window...), gpu_diff_all, VRAM hashes,
+   gpu_fthread_check, lockstep S=1, gpu_game_all S=1, debug + release builds, package.py.
+6. Design doc: 3.1/8.1/8.2 notes, appendix I; WIP complete.
 
 ## Findings / traps
 - (M6) PowerShell ReadAllText + .Replace on CRLF files silently does nothing: use the Edit tool.
 - A release game build takes ~4.5 min (build_game.py --release --out build/rel).
+- Disk C: is nearly full (other agents): pictures at 3x are 6 MB PNGs; delete build outputs after use.
+- `line` is a reserved word in HLSL; fxc treats signed int division as a warning-error (use uint).
+- Single-rate classes must stay storage-aligned (samples x*k .. x*k+k-1 of the native pixel): a centred
+  "nearest native pixel" variant broke the CT16 channel shuffles (16-bit pixel x + 8 -> x, x - 8 -> x + 8: a
+  storage pixel written by its neighbour's sprite) - vertical stripes every 8 px. So sprites / line pixels sit
+  (k-1)/2k px right/down of the triangles' (sample-centred) position; the presenter centres the triangles.
+- The box gate needs two boxes: centred on sample 0 (triangle content) and the native pixel's own samples
+  (single-rate content); the better per picture. Field pictures compare per field row (the reference
+  line-doubles); field-coded pictures (half-line offset: movies) on the field's own lines.
+- Motion blur: f_00160F98 tests *(0x2DEB24) first; nothing writes that word by address (debug flag).
+- powershell -File with an array argument (-Extra 'a','b') passes one string "a,b": split on ','.
