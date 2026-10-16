@@ -726,6 +726,10 @@ static void bisect_report(int culprit_known) {
 static void lock_hook(uint32_t index, int changed, const void* evp, int type, const void* const* vp, void* user) {
     (void)user;
     int want = changed;
+    if (bisect_on && lk_vblank == bisect_v && index > bisect_b) {   /* (past the range, nothing differed: done) */
+        fflush(stderr);
+        ExitProcess(0);
+    }
     if (bisect_on) want = lk_vblank == bisect_v && index >= bisect_a && index <= bisect_b;
     if (want) {
         gpu_front_checkpoint();
