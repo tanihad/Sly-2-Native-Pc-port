@@ -25,6 +25,8 @@ typedef struct {
     int ff_stq_exact;            /* FF triangles carry the full 256-byte record and step S/T/Q exactly as the
                                     software renderer (verification); 0: 128-byte records, S/T/Q interpolated */
     uint32_t ff_rov_mask;        /* GPU_FFC_* classes kept on the ROV tier (moving classes one at a time, tests) */
+    int split_ff;                /* mixed frames: straddling pass-A primitives stay FF (the two-draw split); default 0:
+                                    they take the ROV tier (the escalation; M5 measured visible split differences) */
 } gpu_front_config;
 
 enum { GPU_TIER_FF, GPU_TIER_ROV, GPU_TIER_ALIAS16, GPU_TIER_PUNT, GPU_TIER_N };

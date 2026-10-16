@@ -37,6 +37,7 @@ cbuffer draw_cb : register(b0) {
     uint ff_blend;                       // FF draws (M5): blend class (gpu_front.c BL_*)
     uint atst_mode;                      // FF draws: 0, 1 the pass draw of an ATST split (discard failing fragments),
                                          //   2 its fail draw (discard passing fragments)
+    float dual_bias;                     // FF dual-source blends: LSB the source is lowered by (ps_ff)
 };
 
 // a * b rounded to the type's precision as the C reference rounds it (never fused with a later add)
@@ -654,17 +655,23 @@ bool gs_frag(float4 pos, uint irec, float3 istq, uint prim, out Frag f, out St s
 
 // ---- the REF / ROV pixel shader ------------------------------------------------------------------------
 #if !FF
+#if PRIM == 0 && STQ_FAST
+void ps_gs(VF i, uint prim : SV_PrimitiveID) {   // (mixed frames, default mode: 128-byte records, hardware S/T/Q)
+    float3 istq = i.stq;
+#else
 void ps_gs(VR i
 #if PRIM == 0
            , uint prim : SV_PrimitiveID
 #endif
            ) {
+    float3 istq = float3(0.0, 0.0, 1.0);
+#endif
 #if PRIM != 0
     uint prim = 0u;
 #endif
     Frag f;
     St st;
-    if (!gs_frag(i.pos, i.rec, float3(0.0, 0.0, 1.0), prim, f, st)) return;
+    if (!gs_frag(i.pos, i.rec, istq, prim, f, st)) return;
     int2 P = f.P;
     int px = f.px, py = f.py;
     uint rb = f.rb;
@@ -829,16 +836,17 @@ FOut ps_ff(VR i) {
         if (ff_blend == BL_DUAL) {
             // (Cs - Cd) * C >> 7 + Cd = floor(Cs a + Cd (1 - a)), a = C / 128 <= 1: SRC1_ALPHA = a,
             // INV_SRC1_ALPHA. The output merger rounds to nearest, so for 0 < C < 128 the source is lowered
-            // by 0.45 / a LSB: with an exact blender (WARP: fp32) that gives the floor unless Cs * C < 64,
-            // but the RTX 4060 Ti blends UNORM8 targets at about fp16 precision (+-0.125 LSB), where no bias
-            // can be exact: about 80% of (Cs, Cd, C) combinations exact, the rest +-1 (the design's
-            // tolerance for dual-source blends, 10.2; scratch measurement in notes/wip/gpu-M5.md).
+            // by dual_bias / a LSB (gpu_exec.c). With an exact blender (WARP: fp32) a bias of 0.496 gives the
+            // floor unless Cs * C < 64; the RTX 4060 Ti blends UNORM8 targets at about fp16 precision
+            // (+-0.125 LSB), where no bias is exact: 0.42 makes 80% of (Cs, Cd, C) exact and the +1 and -1
+            // errors equally frequent, so chains of translucent layers do not drift (the design's +-1 class
+            // for dual-source blends, 10.2; measurement in notes/wip/gpu-M5.md).
             // C = 128 (a = 1, As 0x80: the common case) and C = 0 are exact unbiased.
             float a = (float)cc * (1.0 / 128.0);
             a1 = a;
             [unroll] for (uint c2 = 0u; c2 < 3u; c2++) {
                 float s = (float)cs[c2];
-                if (cc > 0 && cc < 128) s = max(s - 0.45 / a, 0.0);
+                if (cc > 0 && cc < 128) s = max(s - dual_bias / a, 0.0);
                 rgb[c2] = s * (1.0 / 255.0);
             }
         }

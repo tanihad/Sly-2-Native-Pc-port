@@ -5,13 +5,13 @@
 # A diverging recording's log (<Out>\<name>\log.txt) holds the bisection of its first divergence.
 #   powershell -ExecutionPolicy Bypass -File scripts\gpu_lockstep_all.ps1 [-Only ep8_boss,gpu-C_thiefnet]
 #       [-Adapter hw|warp] [-Scale N] [-Out build\lockstep] [-CorpusRoot <dir>]
-#       [-Mixed [-Exact] [-StqExact] [-FfRovMask <bits>] [-StraddleRov]]
+#       [-Mixed [-Exact] [-StqExact] [-FfRovMask <bits>] [-StraddleRov] [-SplitFf]]
 # Default: the REF tier (M4 gate, every difference diverges). -Mixed (M5): the FF and ROV tiers in one frame,
 # compared with the tolerances of 10.2 (colour words within 16 tolerated and counted; alpha, Z and CPU data
 # exact; pictures: PSNR >= 40 dB and <= 0.2% pixels above 16); -Exact: mixed mode compared exactly (with
 # -StqExact and -FfRovMask 0x10 every FF class but the dual-source blend must be bit-exact).
 param([string[]]$Only = @(), [ValidateSet('hw', 'warp')][string]$Adapter = 'hw', [int]$Scale = 1, [string]$Out = "",
-      [string]$CorpusRoot = "", [switch]$Mixed, [switch]$Exact, [switch]$StqExact, [string]$FfRovMask = "", [switch]$StraddleRov,
+      [string]$CorpusRoot = "", [switch]$Mixed, [switch]$Exact, [switch]$StqExact, [string]$FfRovMask = "", [switch]$StraddleRov, [switch]$SplitFf,
       [string]$Exe = "")
 $Only = @($Only | ForEach-Object { $_ -split ',' } | Where-Object { $_ })
 $root = Split-Path $PSScriptRoot -Parent
@@ -48,6 +48,7 @@ if ($Mixed) {
     if ($StqExact) { $mode += '--ff-stq-exact' }
     if ($FfRovMask) { $mode += @('--ff-rov-mask', $FfRovMask) }
     if ($StraddleRov) { $mode += '--straddle-rov' }
+    if ($SplitFf) { $mode += '--split-ff' }
 }
 $failed = 0
 $total = 0

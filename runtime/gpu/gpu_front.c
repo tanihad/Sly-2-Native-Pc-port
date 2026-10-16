@@ -187,6 +187,7 @@ typedef struct {
     int rmw;                             /* a read-modify-write form only the ROV tier does (wrap, bit masks, DATE, blend) */
     int depth_class;
     uint32_t phase_hint;                 /* PHASE hint label the StateRec was built with */
+    uint32_t straddle_frame;             /* gf_frame + 1 when a primitive of this state was escalated (sticky) */
     /* texture */
     int tme, tpsm, tw, th, wms, wmt, minu, maxu, minv, maxv, bil, stq;
     uint32_t tbp, tbw;
@@ -1391,7 +1392,17 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
         if (S.rov) why = S.rov - 1;
         else if (S.cd_dep && S.c_as && as_hi > 128) why = GPU_ROV_C_OVER128;
         else if (z32_high || (S.zt && S.zt->z_high)) why = GPU_ROV_Z32_HIGH;
-        else if (outcome == 4 && gf_cfg.straddle_rov) why = GPU_ROV_STRADDLE;
+        else if (outcome && (gf_cfg.straddle_rov || (gf_cfg.mixed && !gf_cfg.split_ff)) &&
+                 (outcome == 4 || S.straddle_frame == gf_frame + 1)) {
+            /* (sticky for the rest of the frame: further primitives of a state that straddled join its ROV
+             * draw instead of alternating FF / ROV draws: every D3D11 draw that writes a UAV waits for the
+             * previous one, and the FF <-> UAV switches cost ~20 us each on the RTX 4060 Ti) */
+            why = GPU_ROV_STRADDLE;
+            S.straddle_frame = gf_frame + 1;
+        }
+        /* (M5 measured the FF two-draw split against REF: it reorders overlapping fragments visibly (ep6, ep2
+         * hub, ep1 hub, m1 brawl: differences above 16), so in mixed frames straddling pass-A primitives take
+         * the ROV tier by default - the design's escalation; split_ff keeps the split) */
         else if (gf_cfg.ff_rov_mask) {   /* (classes kept on the ROV tier: M5 moved them to FF one at a time) */
             static const uint32_t bc[5] = { GPU_FFC_OFF, GPU_FFC_NOCOLOR, GPU_FFC_ADD, GPU_FFC_REVSUB, GPU_FFC_DUAL };
             uint32_t c = bc[S.blend] | (S.fatst == FATST_SPLIT ? GPU_FFC_SPLIT : 0) | (ts.T ? GPU_FFC_VIEW : 0) |
@@ -1469,7 +1480,8 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
     /* ---- pipeline key and draw merging ---- */
     int tk = P->tme ? ts.kind : TK_NONE;
     int zmode = S.zfi >= 0 ? (rov ? 2 : 1) : 0;
-    int ff_fast = !rov && cls == GPU_PC_TRI && !gf_cfg.ff_stq_exact;   /* (FF triangles: 128-byte records) */
+    /* (mixed frames, default mode: FF and ROV triangles carry 128-byte records, S/T/Q interpolated) */
+    int ff_fast = !alias && cls == GPU_PC_TRI && gf_cfg.mixed && !gf_cfg.ref && !gf_cfg.ff_stq_exact;
     uint32_t ps_key = (uint32_t)(alias ? 3 : rov ? 2 : S.blend == BL_DUAL ? 0 : 1) | (uint32_t)tk << 2 | (uint32_t)cls << 5 |
                       (uint32_t)zmode << 7 | (uint32_t)(P->tme && S.stq) << 9 | (uint32_t)(S.fatst == FATST_DISCARD) << 10 |
                       (uint32_t)(self != 0) << 11 | (ff_fast ? (uint32_t)GPU_PSK_FF_FAST : 0u);

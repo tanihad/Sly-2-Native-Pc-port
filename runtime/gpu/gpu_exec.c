@@ -592,7 +592,8 @@ typedef struct {
     float one;
     uint32_t vbase, vfbw, vflags;        /* texture view target: base page, width; 1: its sample grid is the target's */
     uint32_t ff_blend, atst_mode;        /* FF draws (M5): blend class; ATST split half (1 pass draw, 2 fail draw) */
-    uint32_t fill[46];
+    float dual_bias;                     /* FF dual-source blends: source lowered by dual_bias / a LSB */
+    uint32_t fill[45];
 } draw_consts;
 
 /* constant-buffer slots a draw uses: the two halves of an FF ATST split differ in atst_mode */
@@ -667,9 +668,12 @@ static uint32_t build_constants(const gpu_front_frame_data* fd, int ref) {
                 k->one = 1.0f;
                 k->ff_blend = d->blend;
                 k->atst_mode = d->tier == GPU_TIER_FF ? (d->split == 2 ? 2u : d->split ? 1u : 0u) : 0u;
+                /* dual-source source bias (gs.hlsl ps_ff): 0.496 is exact with an fp32 blender (WARP); the
+                 * RTX 4060 Ti's ~fp16 blender is +-1 whatever the bias, 0.42 balances the errors */
+                k->dual_bias = gpu_rt.caps.warp ? 0.49609375f : 0.42f;
                 if (draw_slots(d, ref) == 2) {   /* the fail draw's copy */
                     draw_consts* k2 = (draw_consts*)(cb_cpu + (size_t)(i + 1) * DRAW_CB_BYTES);
-                    memcpy(k2, k, 64 + 8);
+                    memcpy(k2, k, 64 + 12);
                     k2->atst_mode = 2;
                 }
             } else {
@@ -1056,8 +1060,13 @@ static void exec_draw_ref(const gpu_fop_draw* d, uint32_t slot) {
     if (!sizing) { dbg_nosize++; return; }
     if (!d->count) { dbg_nocount++; return; }
     xtarget* zt = X.mixed ? tgt(d->zt) : NULL;
+    static int dbg_skip = -1;            /* PS2_GPU_DBG_ROVSKIP (performance experiments, mixed frames; wrong pictures):
+                                            1 no ROV draw call, 2 no ROV draw at all, 3 ROV draws with a trivial shader */
+    if (dbg_skip < 0) { const char* e = getenv("PS2_GPU_DBG_ROVSKIP"); dbg_skip = e ? atoi(e) : 0; }
+    if (X.mixed && dbg_skip == 2 && d->tier == GPU_TIER_ROV) return;
     if (zt) ensure_zp(zt, d->bbox[0], d->bbox[1], d->bbox[2], d->bbox[3]);
     bind_ref(d->ct, d->zt, d->tier == GPU_TIER_ALIAS16);
+    if (X.mixed && dbg_skip == 1 && d->tier == GPU_TIER_ROV) return;
     int tk = tex_kind(d->ps_key);
     set_t1(d->tex && (tk == TK_VIEW_C32 || tk == TK_VIEW_ALPHA || tk == TK_ALIAS16) ? view_srv(d, 1) : NULL);
     int kx = sizing->kx, ky = sizing->ky;
@@ -1065,9 +1074,10 @@ static void exec_draw_ref(const gpu_fop_draw* d, uint32_t slot) {
     set_depth(X.ds_off);
     set_consts(slot);
     if (d->cls == GPU_PC_TRI) {
+        int fast = (d->ps_key & GPU_PSK_FF_FAST) != 0;   /* (mixed default mode: 128-byte records, hardware S/T/Q) */
         set_topo(0);
-        set_vs(gpu_vs(GPU_SH_vs_ref_tri));
-        set_ps(gpu_ps(GPU_SH_ps_gs_tri));
+        set_vs(gpu_vs(fast ? GPU_SH_vs_ff_tri : GPU_SH_vs_ref_tri));
+        set_ps(gpu_ps(X.mixed && dbg_skip == 3 && fast ? GPU_SH_ps_ff_t001 : fast ? GPU_SH_ps_gs_tri_fast : GPU_SH_ps_gs_tri));
         ID3D11DeviceContext_DrawIndexed(c, d->count, d->first, 0);
     } else {
         set_topo(1);

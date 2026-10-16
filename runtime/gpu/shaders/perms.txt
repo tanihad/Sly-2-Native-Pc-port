@@ -51,6 +51,7 @@ vs_ref_linepix      gs.hlsl             vs_ref_linepix    vs_5_0
 ps_gs_tri           gs.hlsl             ps_gs             ps_5_0    PRIM=0
 ps_gs_sprite        gs.hlsl             ps_gs             ps_5_0    PRIM=1
 ps_gs_linepix       gs.hlsl             ps_gs             ps_5_0    PRIM=2
+ps_gs_tri_fast      gs.hlsl             ps_gs             ps_5_0    PRIM=0 STQ_FAST=1 TRI_REC=128u
 cs_patch            mem.hlsl            cs_patch          cs_5_0
 cs_load             mem.hlsl            cs_load           cs_5_0
 cs_download         mem.hlsl            cs_download       cs_5_0

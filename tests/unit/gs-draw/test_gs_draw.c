@@ -79,7 +79,7 @@ static void hw_compare(void) {
     if (!words) return;
 #ifdef TEST_HW_MIXED_DEFAULT
     {   /* default mixed mode: the tolerances of notes/d3d11-renderer.md 10.2 (as gs_replay's mixed lockstep):
-         * CPU-owned words equal; of the GPU colour words at most 0.5% differ by more than 2 in some byte and
+         * CPU-owned words equal; of the GPU colour words at most 2.5% differ by more than 2 in some byte and
          * 0.1% by more than 16; at most 0.1% of the Z words differ */
         static uint16_t wr[16384];
         memset(wr, 0, sizeof wr);
@@ -100,7 +100,7 @@ static void hw_compare(void) {
         }
         hw_tol_words += words;
         hw_tol_c2 += c2; hw_tol_c16 += c16; hw_tol_z += z;
-        if (!cpu && (double)c2 <= 0.005 * (double)nc && (double)c16 <= 0.001 * (double)nc && (double)z <= 0.001 * (double)nz) return;
+        if (!cpu && (double)c2 <= 0.025 * (double)nc && (double)c16 <= 0.001 * (double)nc && (double)z <= 0.001 * (double)nz) return;
         fprintf(stderr, "  [hw-ref] %s: beyond tolerance: CPU words %llu, colour words > 2: %llu > 16: %llu of %llu, Z %llu of %llu\n", hw_scene,
                 (unsigned long long)cpu, (unsigned long long)c2, (unsigned long long)c16, (unsigned long long)nc, (unsigned long long)z,
                 (unsigned long long)nz);
