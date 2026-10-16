@@ -139,6 +139,7 @@ typedef struct {
     uint64_t ff_draws, rov_draws;        /* M5 mixed frames: D3D draws on the FF tier (split halves counted), on the ROV tier */
     uint64_t zresolves, zsyncs;          /* zpatch -> DSV quads (ps_zresolve), DSV -> zpatch dispatches (cs_zsync) */
     uint64_t zresolve_px, zsync_px;      /* their pixels (samples) */
+    uint64_t rescales;                   /* (M7) live targets whose contents moved to new sample factors */
 } gpu_exec_counters;
 void gpu_exec_get_counters(gpu_exec_counters* out);
 uint64_t gpu_render_thread_cycles(void);  /* QueryThreadCycleTime of the render thread (TSC ticks) */

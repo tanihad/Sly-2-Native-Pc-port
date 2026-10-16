@@ -519,14 +519,24 @@ bool gs_frag(float4 pos, uint irec, float3 istq, uint prim, out Frag f, out St s
 
 #if PRIM == 0
     // ---- triangle: the software renderer's fixed-point row stepping ----
+    // (M7) sample (si, sj) of the native pixel sits at GS (px + si / kx, py + sj / ky): attributes are
+    // evaluated there (Z exactly as 3.6, the others with float sub-steps); sample 0 is the native pixel's
+    // value bit for bit
+    uint si = (uint)f.P.x - (uint)px * kx, sj = (uint)f.P.y - (uint)py * ky;
+    float fi = (float)si / (float)kx, fj = (float)sj / (float)ky;
     int by0 = (int)(recs.Load(rb + 108u) << 16) >> 16, bx0 = (int)recs.Load(rb + 108u) >> 16;
     int rows = py - by0;
     int a[7];
-    [unroll] for (uint k = 0u; k < 7u; k++)
-        a[k] = asint(recs.Load(rb + 24u + 4u * k) + recs.Load(rb + 52u + 4u * k) * (uint)rows + recs.Load(rb + 80u + 4u * k) * (uint)px);
+    [unroll] for (uint k = 0u; k < 7u; k++) {
+        uint dyk = recs.Load(rb + 52u + 4u * k), dxk = recs.Load(rb + 80u + 4u * k);
+        uint v = recs.Load(rb + 24u + 4u * k) + dyk * (uint)rows + dxk * (uint)px;
+        if (sj != 0u) v += (uint)(int)floor((float)asint(dyk) * fj);
+        if (si != 0u) v += (uint)(int)floor((float)asint(dxk) * fi);
+        a[k] = asint(v);
+    }
     f.col = clamp255i(a[0] >> 16) | (clamp255i(a[1] >> 16) << 8) | (clamp255i(a[2] >> 16) << 16) | (clamp255i(a[3] >> 16) << 24);
     f.fog = clamp255i(a[4] >> 16);
-    i64 z16 = gs_z16(recs.Load2(rb), recs.Load2(rb + 8u), recs.Load2(rb + 16u), by0, px, py, 0u, 0u, 1u, 1u);
+    i64 z16 = gs_z16(recs.Load2(rb), recs.Load2(rb + 8u), recs.Load2(rb + 16u), by0, px, py, si, sj, kx, ky);
     f.z = gs_z_clamp(z16, zmax);
     f.lq = asfloat(recs.Load(rb + 116u));
     if (tme) {
@@ -578,6 +588,11 @@ bool gs_frag(float4 pos, uint irec, float3 istq, uint prim, out Frag f, out St s
             float s = step_span(s0, (float)sdx, xl, px, cutx);
             float t = step_span(tt0, (float)tdx, xl, px, cutx);
             float q = step_span(q0, (float)qdx, xl, px, cutx);
+            if ((si | sj) != 0u) {           // (M7) the sample's position inside the native pixel
+                s += (float)sdx * fi + (float)sdy * fj;
+                t += (float)tdx * fi + (float)tdy * fj;
+                q += (float)qdx * fi + (float)qdy * fj;
+            }
             float iq = rcp_exact(q);
             precise float su = s * iq;
             precise float tv = t * iq;
@@ -638,7 +653,8 @@ bool gs_frag(float4 pos, uint irec, float3 istq, uint prim, out Frag f, out St s
     if (tme && (st.tlev & 3u) != 0u) {
         // target views: 1:1 reads take the fragment's own sample of each texel (5.1), others sample 0
         g_vself = (st.texsrc & TS_SELF) != 0u;
-        if ((vflags & 1u) != 0u && one_to_one) g_vsample = uint2((uint)f.P.x % kx, (uint)f.P.y % ky);
+        // (M7: a view with other factors maps the sample to its own grid; the frontend pairs 1:1 families)
+        if (one_to_one) g_vsample = uint2(((uint)f.P.x % kx) * vkx / kx, ((uint)f.P.y % ky) * vky / ky);
         uint t = tex_sample(st, f.U, f.V, f.lq);
         col = tfx((st.flags >> 2) & 3u, (st.flags & SF_TCC) != 0u, col, t);
     }

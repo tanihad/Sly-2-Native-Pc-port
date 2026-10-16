@@ -4,9 +4,16 @@
 // mode with the "DH + 1 over two" field rule - and then gs.c's field deinterlacer (cs_deint). Integer
 // arithmetic throughout: at S=1 the picture equals gs_compose_from of the GPU's memory bit for bit.
 //
-// A circuit reads either a colour target (the frontend proved the displayed rect current there:
-// texel (x * kx, y * ky), sample 0 of the native pixel) or vram_buf through the swizzle tables (the
-// frontend downloaded the GPU words of the rect first).
+// (M7) At scale the picture is so x so pixels per PCRTC output pixel (W * so x H * so): output pixel
+// (ox, oy) sits at PCRTC position (ux0 + ox * hs / so, uy0 + oy * vs / so) in 1/so units, and a circuit
+// reading a target takes the sample there: column dbx * kx + col * kx / so, row dby * ky + rel * ky / so
+// (field mode: rel * ky / (2 so): ky = 2 so is the progressive picture, ky = so the field line doubled as
+// the PS2 shows it). Circuits read from memory (native) repeat each pixel. The deinterlacer works in
+// frame lines of so rows. The odd-field shift (flags 8, progressive pictures of half-line-offset fields)
+// moves target rows down one frame line.
+//
+// A circuit reads either a colour target (the frontend proved the displayed rect current there) or
+// vram_buf through the swizzle tables (the frontend downloaded the GPU words of the rect first).
 //
 // Pictures are R8G8B8A8 (R in the low byte, alpha 255), written through an R32_UINT UAV. Inside the
 // shaders a pixel is gs.c's 0xAARRGGBB form.
@@ -20,9 +27,9 @@ Texture2D<uint4> hist_oth : register(t4);    // deint: the last field of the oth
 RWTexture2D<uint> pict : register(u0);
 
 cbuffer display_cb : register(b0) {
-    uint W, H, ux0, uy0;
-    uint hs, vs, flags, alp;             // flags: 1 MMOD, 2 SLBG, 4 field mode
-    uint bg, par, deint_mode, pad0;      // deint: the field's parity, 0 average only, 1 still detection
+    uint W, H, ux0, uy0;                 // W, H: the picture in PCRTC output pixels (x so)
+    uint hs, vs, flags, alp;             // flags: 1 MMOD, 2 SLBG, 4 field mode, 8 odd-field shift (progressive)
+    uint bg, par, deint_mode, so;        // deint: the field's parity, 0 average only, 1 still detection; so: scale
     uint4 cA[2];                         // en, fbp, fbw, psm
     uint4 cB[2];                         // dbx, dby, dx, dy
     uint4 cC[2];                         // magh, magv, dw, dh
@@ -40,24 +47,39 @@ uint fmt_psm(uint psm) {
     }
 }
 
-// one displayed pixel of circuit i, buffer coordinates fx, fy (0..2047), as gs.c read_row
-uint read_px(uint i, uint fx, uint fy) {
-    uint psm = fmt_psm(cA[i].w);
-    uint v;
-    if (cD[i].x != 0u) {
-        uint4 t = i == 0u ? ctex0.Load(int3(fx * cD[i].y, fy * cD[i].z, 0)) : ctex1.Load(int3(fx * cD[i].y, fy * cD[i].z, 0));
-        v = t.r | (t.g << 8) | (t.b << 16) | (t.a << 24);
-    } else if (psm_is16(psm)) {
-        uint a = gs_addr16(swz_tab_of(psm), cA[i].y * 32u, cA[i].z, fx, fy);
-        uint w = vram.Load((a >> 1) * 4u);
-        v = (a & 1u) != 0u ? w >> 16 : w & 0xFFFFu;
-    } else {
-        v = vram.Load(gs_addr32(swz_tab_of(psm), cA[i].y * 32u, cA[i].z, fx, fy) * 4u);
-    }
+uint convert(uint psm, uint v) {
     if (psm_is16(psm))
         return ((v & 0x1Fu) << 19) | (((v >> 5) & 0x1Fu) << 11) | (((v >> 10) & 0x1Fu) << 3) | ((v & 0x8000u) != 0u ? 0x80000000u : 0u);
     uint top = (psm == PSMCT24 || psm == PSMZ24) ? 0x80000000u : (v & 0xFF000000u);
     return ((v & 0xFFu) << 16) | (v & 0xFF00u) | ((v >> 16) & 0xFFu) | top;
+}
+
+// one displayed pixel of circuit i: column / row in sub-units (col: 1/so buffer pixels, rel: 1/so lines of
+// the circuit's row count, see circuit_y), as gs.c read_row at S=1
+uint read_px(uint i, uint cs, uint rs) {
+    uint psm = fmt_psm(cA[i].w);
+    uint v;
+    bool field = (flags & 4u) != 0u;
+    if (cD[i].x != 0u) {
+        uint kx = cD[i].y, ky = cD[i].z;
+        uint sx = cB[i].x * kx + cs * kx / so;
+        uint ry = rs;
+        if ((flags & 8u) != 0u) ry = ry >= so ? ry - so : 0u;      // (odd field, progressive: one frame line down)
+        uint sy = cB[i].y * ky + (field ? ry * ky / (2u * so) : ry * ky / so);
+        uint4 t = i == 0u ? ctex0.Load(int3(sx, sy, 0)) : ctex1.Load(int3(sx, sy, 0));
+        v = t.r | (t.g << 8) | (t.b << 16) | (t.a << 24);
+    } else {
+        uint fx = (cB[i].x + cs / so) & 2047u;
+        uint fy = (cB[i].y + (field ? (rs / so) >> 1 : rs / so)) & 2047u;
+        if (psm_is16(psm)) {
+            uint a = gs_addr16(swz_tab_of(psm), cA[i].y * 32u, cA[i].z, fx, fy);
+            uint w = vram.Load((a >> 1) * 4u);
+            v = (a & 1u) != 0u ? w >> 16 : w & 0xFFFFu;
+        } else {
+            v = vram.Load(gs_addr32(swz_tab_of(psm), cA[i].y * 32u, cA[i].z, fx, fy) * 4u);
+        }
+    }
+    return convert(psm, v);
 }
 
 uint mix(uint a, uint b, uint al) {      // a * al + b * (255 - al), al 0..255 (gs.c mix)
@@ -67,24 +89,23 @@ uint mix(uint a, uint b, uint al) {      // a * al + b * (255 - al), al 0..255 (
     return (r << 16) | (g << 8) | bl;
 }
 
-// buffer column of output column ox for circuit i, or -1 outside its DISPLAY rect
+// buffer column of output column ox for circuit i in 1/so pixels, or -1 outside its DISPLAY rect
 int circuit_x(uint i, uint ox) {
-    int X = (int)(ux0 + ox * hs), dx = (int)cB[i].z, dw = (int)cC[i].z;
-    if (X < dx || X > dx + dw) return -1;
-    return (int)((cB[i].x + (uint)(X - dx) / (cC[i].x + 1u)) & 2047u);
+    int X = (int)(ux0 * so + ox * hs), dx = (int)(cB[i].z * so), dw = (int)cC[i].z;
+    if (X < dx || X > dx + dw * (int)so + (int)so - 1) return -1;
+    return (int)((uint)(X - dx) / (cC[i].x + 1u));
 }
 
-// buffer row of output row oy for circuit i, or -1 (not shown on this row)
+// buffer row of output row oy for circuit i in 1/so rows (field mode: 1/so frame lines), or -1 (not shown)
 int circuit_y(uint i, uint oy) {
     if (cA[i].x == 0u) return -1;
-    int L = (int)(uy0 + oy * vs), dy = (int)cB[i].w, dh = (int)cC[i].w;
-    if (L < dy || L > dy + dh) return -1;
+    int L = (int)(uy0 * so + oy * vs), dy = (int)(cB[i].w * so), dh = (int)cC[i].w;
+    if (L < dy || L > dy + dh * (int)so + (int)so - 1) return -1;
     uint rel = (uint)(L - dy) / (cC[i].y + 1u);
     if ((flags & 4u) != 0u) {            // field mode: (DH + 1) / (MAGV + 1) / 2 lines per field
-        rel >>= 1;
-        if (rel >= (((uint)dh + 1u) / (cC[i].y + 1u)) >> 1) return -1;
+        if (((rel / so) >> 1) >= (((uint)dh + 1u) / (cC[i].y + 1u)) >> 1) return -1;
     }
-    return (int)((cB[i].y + rel) & 2047u);
+    return (int)rel;
 }
 
 [numthreads(8, 8, 1)]
@@ -123,14 +144,16 @@ bool px_close(uint a, uint b) {
 uint px_avg(uint a, uint b) { return (((a & 0xFEFEFEu) >> 1) + ((b & 0xFEFEFEu) >> 1) + (a & b & 0x010101u)) & 0xFFFFFFu; }
 uint unpack(uint w) { return ((w & 0xFFu) << 16) | (w & 0xFF00u) | ((w >> 16) & 0xFFu); }
 
-// the lines between this field's lines (gs.c deinterlace): thread (x, k) writes output row oth + 2k
+// the frame lines between this field's lines (gs.c deinterlace), so rows each: thread (x, k) writes row
+// sub = k % so of frame line oth + 2 (k / so); H counts picture rows (frame lines x so)
 [numthreads(8, 8, 1)]
 void cs_deint(uint3 id : SV_DispatchThreadID) {
     uint x = id.x, oth = 1u - par;
-    int oy = (int)(oth + 2u * id.y), h = (int)H;
-    if (x >= W || oy >= h) return;
-    int ya = oy - 1 >= 0 ? oy - 1 : oy + 1, yb = oy + 1 < h ? oy + 1 : oy - 1;
-    if (ya < 0 || ya >= h) return;
+    int lines = (int)(H / so), ln = (int)(oth + 2u * (id.y / so)), sub = (int)(id.y % so);
+    if (x >= W || ln >= lines) return;
+    int la = ln - 1 >= 0 ? ln - 1 : ln + 1, lb = ln + 1 < lines ? ln + 1 : ln - 1;
+    if (la < 0 || la >= lines) return;
+    int oy = ln * (int)so + sub, ya = la * (int)so + sub, yb = lb * (int)so + sub;
     uint a = unpack(pict[uint2(x, ya)]), b = unpack(pict[uint2(x, yb)]);
     uint d;
     if (deint_mode != 0u) {

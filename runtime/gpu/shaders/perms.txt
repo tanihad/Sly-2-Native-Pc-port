@@ -85,3 +85,6 @@ cs_zsync            zsync.hlsl          cs_zsync          cs_5_0
 # M6: the PCRTC on the GPU (picture compose + field deinterlacer, gpu_present.c)
 cs_compose          display.hlsl        cs_compose        cs_5_0
 cs_deint            display.hlsl        cs_deint          cs_5_0
+# M7: resolution scaling (target rescale on a factor change)
+cs_rescale          rescale.hlsl        cs_rescale        cs_5_0
+ps_resample         present.hlsl        ps_resample       ps_5_0

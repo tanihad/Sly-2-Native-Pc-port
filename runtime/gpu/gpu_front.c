@@ -469,7 +469,7 @@ static void state_update(const gs_env_view* ev) {
         int kind = own_target_kind_of_zpsm(P->zpsm);
         S.zt = own_target(kind, P->zpsm, P->zpage, P->zbw, 1);
         if (!S.zt) S.punt = GPU_PUNT_TARGET_OVERLAP + 1;
-        else if (S.ct) S.zt->family = S.ct->family;
+        /* (M7: the pair's sample grids are matched per primitive, fr_prim: families change at VBlanks) */
     }
 
     /* ---- state-level ROV reasons, in the order of 4.1 ---- */
@@ -1503,6 +1503,12 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
         punt_prim(ev, cls, &ts, x0, y0, x1, y1);
         goto out;
     }
+    /* (M7, 3.1) one sample grid for the colour and depth targets of a draw, and for a 1:1 read of another
+     * target (the larger family wins; a change rescales the target before this primitive's draw) */
+    if (S.ct && S.zt && (S.ct->kx != S.zt->kx || S.ct->ky != S.zt->ky)) own_pair_family(S.ct, S.zt);
+    if (ts.T && S.ct && ts.T != S.ct && cls == GPU_PC_SPRITE && (ts.T->kx != S.ct->kx || ts.T->ky != S.ct->ky) &&
+        sp.du == 16 << GS_UVSH && gs_d2i32(sp.pl.v.cy * (double)(1 << GS_UVSH)) == 16 << GS_UVSH)
+        own_pair_family(ts.T, S.ct);
     if (P->tme) {
         switch (ts.kind) {
         case TK_VIEW_C32: gf.tex_view_c32++; break;
@@ -2047,6 +2053,7 @@ void gf_vblank_impl(const uint64_t priv[16], uint32_t vblank, const gpu_display_
     p->src[1] = src[1];
     p->mem_off = mem_off;
     p->mem_n = mem_n;
+    p->scale = (uint16_t)(gf_cfg.scale > 0 ? gf_cfg.scale : 1);
     tsc_acc += __rdtsc() - t0;
     /* calibrate the TSC against QPC */
     LARGE_INTEGER q, f;
@@ -2079,6 +2086,18 @@ void gf_vblank_impl(const uint64_t priv[16], uint32_t vblank, const gpu_display_
     gf_frame++;
     frame_begin();
     trace_on = vblank + 1 == trace_vblank;
+    if (di && (di->flags & GPU_DI_CONFIG)) gf_configure(di->scale, (di->gfx & GPU_GFX_PROGRESSIVE) != 0, (di->gfx & GPU_GFX_THIN) != 0);
+}
+
+/* (M7) settings changed at run time: from this frame on (the targets take their new factors before any draw) */
+void gf_configure(int scale, int progressive, int thin) {
+    if (scale < 1) scale = 1;
+    if (scale > 8) scale = 8;
+    gf_cfg.thin = thin;
+    if (scale == (gf_cfg.scale > 0 ? gf_cfg.scale : 1) && progressive == gf_cfg.display_ky2) return;
+    gf_cfg.scale = scale;
+    gf_cfg.display_ky2 = progressive;
+    own_rescale_all();
 }
 
 void gpu_front_dump_targets(FILE* f) {

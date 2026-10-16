@@ -148,10 +148,59 @@ static void emit_target(const gpu_target* T, uint16_t op) {
     o->kx = T->kx; o->ky = T->ky; o->family = T->family;
 }
 
-static void set_scale(gpu_target* T) {
+/* The target's sample factors from its family and the configuration (3.1); 1 when they changed (a live
+ * target's contents are then rescaled by the executor: GPU_FOP_TARGET with the new factors, M7). */
+static int set_scale(gpu_target* T) {
     int n = gf_cfg.scale > 0 ? gf_cfg.scale : 1;
-    T->kx = (uint8_t)n;
-    T->ky = (uint8_t)(T->family == FAM_DISPLAY && gf_cfg.display_ky2 ? 2 * n : n);
+    if (n > 8) n = 8;
+    int kx = n, ky = T->family == FAM_DISPLAY && gf_cfg.display_ky2 ? 2 * n : n;
+    if (T->kx == kx && T->ky == ky) return 0;
+    T->kx = (uint8_t)kx;
+    T->ky = (uint8_t)ky;
+    T->shadow_valid = 0;                 /* (the executor drops the shadow copy with the old samples) */
+    return 1;
+}
+
+/* Families only go up (square -> display): a pair of targets that must share a sample grid (a draw's
+ * colour and depth targets, a 1:1 read between two targets) ends in the larger family, never oscillates. */
+void own_set_family(gpu_target* T, int family) {
+    if (!T || !T->used || family <= T->family) return;
+    T->family = (uint8_t)family;
+    if (set_scale(T)) {
+        if (gf_trace) fprintf(stderr, "[front] target %u -> family %d, %ux%u samples\n", T->id, family, T->kx, T->ky);
+        emit_target(T, GPU_FOP_TARGET);
+        gf.rescales++;
+    }
+}
+
+void own_pair_family(gpu_target* A, gpu_target* B) {
+    if (!A || !B || (A->kx == B->kx && A->ky == B->ky)) return;
+    int f = A->family > B->family ? A->family : B->family;
+    own_set_family(A, f);
+    own_set_family(B, f);
+}
+
+/* (M7) the configuration changed (scale, display rows): every live target takes its new factors */
+void own_rescale_all(void) {
+    for (int i = 1; i <= GPU_MAX_TARGETS; i++) {
+        gpu_target* T = &gt[i];
+        if (T->used && set_scale(T)) { emit_target(T, GPU_FOP_TARGET); gf.rescales++; }
+    }
+}
+
+/* DISPFB buffers (base | FBW << 16) shown at a VBlank: a C32 target created there later starts in the
+ * display family (a recreated target, or a restart, does not rescale again) */
+#define DISP_SEEN 8
+static uint32_t disp_seen[DISP_SEEN];
+static int ndisp_seen;
+static int display_seen(uint32_t base, uint32_t fbw) {
+    for (int i = 0; i < ndisp_seen; i++) if (disp_seen[i] == (base | fbw << 16)) return 1;
+    return 0;
+}
+static void display_remember(uint32_t base, uint32_t fbw) {
+    if (display_seen(base, fbw)) return;
+    if (ndisp_seen == DISP_SEEN) { memmove(disp_seen, disp_seen + 1, (DISP_SEEN - 1) * sizeof *disp_seen); ndisp_seen--; }
+    disp_seen[ndisp_seen++] = base | fbw << 16;
 }
 
 gpu_target* own_find(int kind, uint32_t base, uint32_t fbw) {
@@ -214,7 +263,7 @@ gpu_target* own_target(int kind, int psm, uint32_t base, uint32_t fbw, int rows)
     T->fbw = (uint16_t)fbw;
     T->bw = fmt->bits == 16 ? 16 : 8;
     T->bh = 8;
-    T->family = FAM_SQUARE;
+    T->family = kind == TGT_C32 && display_seen(base, fbw) ? FAM_DISPLAY : FAM_SQUARE;
     set_scale(T);
     T->last_used = gf_frame;
     target_layout(T, rows);
@@ -806,8 +855,10 @@ void own_frame_end(const uint64_t priv[16]) {
             if (!((pmode >> c) & 1)) continue;
             uint64_t dispfb = priv[c == 0 ? 7 : 9];
             uint32_t fbp = (uint32_t)(dispfb & 0x1FF), fbw = (uint32_t)((dispfb >> 9) & 0x3F);
-            gpu_target* T = own_find(TGT_C32, fbp, fbw);
-            if (T && T->family != FAM_DISPLAY) { T->family = FAM_DISPLAY; set_scale(T); emit_target(T, GPU_FOP_TARGET); }
+            int psm = (int)((dispfb >> 15) & 0x1F);
+            if (!fbw || (psm != PSMCT32 && psm != PSMCT24)) continue;
+            display_remember(fbp, fbw);
+            own_set_family(own_find(TGT_C32, fbp, fbw), FAM_DISPLAY);
         }
     }
     int live = 0;

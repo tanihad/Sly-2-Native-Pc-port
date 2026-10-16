@@ -267,22 +267,79 @@ static void copy_old(ID3D11Texture2D* nt, ID3D11Texture2D* ot, int ow, int oh, i
     gpu_rt.n_copies++;
 }
 
-/* (re)create t at w x h pixels; the old contents are copied over */
-static int target_alloc(xtarget* t, int w, int h) {
-    if (t->tex && t->w == w && t->h == h) return 1;
+/* (M7) old contents at new sample factors: new sample (i, j) of a native pixel <- old sample (i * okx / kx,
+ * j * oky / ky) of the same pixel (shaders/rescale.hlsl); colour words, or zpatch for depth targets */
+typedef struct { uint32_t okx, oky, nkx, nky, w, h, ow, oh, depth, pad[3]; } rescale_consts;
+static void rescale_copy(ID3D11ShaderResourceView* src, ID3D11UnorderedAccessView* dst, int depth, int okx, int oky, int ow, int oh,
+                         int nkx, int nky, int w, int h) {
+    ID3D11DeviceContext* c = gpu_rt.ctx;
+    rescale_consts k = { (uint32_t)okx, (uint32_t)oky, (uint32_t)nkx, (uint32_t)nky, (uint32_t)w, (uint32_t)h, (uint32_t)ow,
+                         (uint32_t)oh, (uint32_t)depth, { 0, 0, 0 } };
+    _Static_assert(sizeof(rescale_consts) <= sizeof(mem_consts), "rescale_cb in mem_cb");
+    D3D11_MAPPED_SUBRESOURCE m;
+    if (FAILED(ID3D11DeviceContext_Map(c, (ID3D11Resource*)X.mcb, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) return;
+    memset(m.pData, 0, sizeof(mem_consts));
+    memcpy(m.pData, &k, sizeof k);
+    ID3D11DeviceContext_Unmap(c, (ID3D11Resource*)X.mcb, 0);
+    ID3D11DeviceContext_CSSetShader(c, gpu_cs(GPU_SH_cs_rescale), NULL, 0);
+    ID3D11DeviceContext_CSSetConstantBuffers(c, 0, 1, &X.mcb);
+    ID3D11ShaderResourceView* s[2] = { depth ? NULL : src, depth ? src : NULL };
+    ID3D11DeviceContext_CSSetShaderResources(c, 0, 2, s);
+    ID3D11DeviceContext_CSSetUnorderedAccessViews(c, 0, 1, &dst, NULL);
+    ID3D11DeviceContext_Dispatch(c, (UINT)(w + 7) / 8, (UINT)(h + 7) / 8, 1);
+    gpu_rt.n_dispatches++;
+    ID3D11ShaderResourceView* ns[2] = { NULL, NULL };
+    ID3D11UnorderedAccessView* nu = NULL;
+    ID3D11DeviceContext_CSSetShaderResources(c, 0, 2, ns);
+    ID3D11DeviceContext_CSSetUnorderedAccessViews(c, 0, 1, &nu, NULL);
+    ID3D11DeviceContext_PSSetShaderResources(c, 0, 1, &X.vram_srv);   /* (as mem_dispatch leaves it) */
+}
+
+static int target_views(xtarget* t);
+
+/* (re)create t at w x h samples. The old contents are copied over at the same samples (growing), or, okx > 0,
+ * rescaled from okx x oky samples per native pixel to t->kx x t->ky (M7: depth from zpatch, which must be
+ * current: every tile of the new depth texture is then zpatch-newer) */
+static int target_realloc(xtarget* t, int w, int h, int okx, int oky) {
+    if (t->tex && t->w == w && t->h == h && !okx) return 1;
     unbind_all();
     ID3D11Texture2D* nt = t->depth ? tex2d(w, h, DXGI_FORMAT_R32G8X24_TYPELESS, D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE)
                                    : tex2d(w, h, DXGI_FORMAT_R8G8B8A8_TYPELESS,
                                            D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS);
     ID3D11Texture2D* nz = t->depth ? tex2d(w, h, DXGI_FORMAT_R32_UINT, D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE) : NULL;
     if (!nt || (t->depth && !nz)) { GPU_RELEASE(nt); GPU_RELEASE(nz); gpu_log("cannot create a %dx%d target", w, h); return 0; }
-    copy_old(nt, t->tex, t->w, t->h, w, h);  /* grow: keep what was drawn */
-    copy_old(nz, t->zp, t->w, t->h, w, h);
+    xtarget n;
+    memset(&n, 0, sizeof n);
+    n.depth = t->depth;
+    n.tex = nt;
+    n.zp = nz;
+    if (!target_views(&n)) { target_free(&n); gpu_log("cannot create target views"); return 0; }
+    if (okx && t->tex) {                 /* rescale: sample 0 of every native pixel stays sample 0 */
+        if (t->depth) rescale_copy(t->zp_srv, n.zp_uav, 1, okx, oky, t->w, t->h, t->kx, t->ky, w, h);
+        else rescale_copy(t->srv_u, n.uav32, 0, okx, oky, t->w, t->h, t->kx, t->ky, w, h);
+        XC.rescales++;
+    } else {
+        copy_old(nt, t->tex, t->w, t->h, w, h);  /* grow: keep what was drawn */
+        copy_old(nz, t->zp, t->w, t->h, w, h);
+    }
     target_free(t);
-    t->tex = nt;
-    t->zp = nz;
+    t->tex = n.tex; t->zp = n.zp; t->rtv = n.rtv; t->srv = n.srv; t->srv_u = n.srv_u; t->uav = n.uav; t->uav32 = n.uav32;
+    t->dsv = n.dsv; t->dsv_ro = n.dsv_ro; t->zp_uav = n.zp_uav; t->zp_srv = n.zp_srv;
     t->w = w;
     t->h = h;
+    if (t->depth) {
+        if (okx) { free(t->zts); t->zts = NULL; t->zts_w = t->zts_h = 0; }   /* (all tiles: zpatch newer) */
+        zts_resize(t, w, h);
+    }
+    return 1;
+}
+
+static int target_alloc(xtarget* t, int w, int h) { return target_realloc(t, w, h, 0, 0); }
+
+/* the views of a target's textures (tex, zp) */
+static int target_views(xtarget* t) {
+    ID3D11Texture2D* nt = t->tex;
+    ID3D11Texture2D* nz = t->zp;
     HRESULT hr;
     if (t->depth) {
         D3D11_DEPTH_STENCIL_VIEW_DESC dd;
@@ -305,7 +362,6 @@ static int target_alloc(xtarget* t, int w, int h) {
         if (SUCCEEDED(hr)) hr = ID3D11Device_CreateUnorderedAccessView(gpu_rt.dev, (ID3D11Resource*)nz, &ud, &t->zp_uav);
         sd.Format = DXGI_FORMAT_R32_UINT;
         if (SUCCEEDED(hr)) hr = ID3D11Device_CreateShaderResourceView(gpu_rt.dev, (ID3D11Resource*)nz, &sd, &t->zp_srv);
-        zts_resize(t, w, h);
     } else {
         D3D11_RENDER_TARGET_VIEW_DESC rd;
         memset(&rd, 0, sizeof rd);
@@ -353,17 +409,22 @@ static int alloc_h(const xtarget* t) { return ((t->nat_h + 63) & ~63) * t->ky; }
 static void exec_target(const gpu_fop_target* o) {
     if (o->id == 0 || o->id > MAX_TARGETS) return;
     xtarget* t = &X.T[o->id];
+    int nkx = o->kx ? o->kx : 1, nky = o->ky ? o->ky : 1;
+    /* (M7) new sample factors of a live target (its family or the configuration changed): rescaled */
+    int okx = t->tex ? t->kx : 0, oky = t->tex ? t->ky : 0, rescale = t->tex && (okx != nkx || oky != nky);
+    if (rescale && t->depth) ensure_zp_all(t);   /* (zpatch holds the truth of every tile first) */
     t->used = 1;
     t->kind = o->kind;
     t->depth = o->kind != XK_C32;
-    t->kx = o->kx ? o->kx : 1;
-    t->ky = o->ky ? o->ky : 1;
+    t->kx = nkx;
+    t->ky = nky;
     t->nat_w = o->fbw * 64;
     t->nat_h = o->rows;
     t->base = o->base;
     t->fbw = o->fbw;
     t->bcols = o->fbw * 64 / (o->kind == XK_Z16 || o->kind == XK_Z16S ? 16 : 8);
     int w = t->nat_w * t->kx, h = alloc_h(t);
+    if (rescale) { target_realloc(t, w, h, okx, oky); return; }
     if (t->tex && t->w >= w && t->h >= h && t->w == w) return;   /* (taller allocation kept) */
     if (t->tex && t->h > h) h = t->h;
     target_alloc(t, w, h);
@@ -625,12 +686,17 @@ static uint32_t build_constants(const gpu_front_frame_data* fd, int ref) {
             const gpu_fop_target* o = (const gpu_fop_target*)h;
             if (o->id && o->id <= MAX_TARGETS) {
                 int kx = o->kx ? o->kx : 1, ky = o->ky ? o->ky : 1;
+                /* (exec_target: new factors reallocate at the new size; otherwise the height only grows) */
+                int refactor = dim[o->id].w && (dim[o->id].kx != kx || dim[o->id].ky != ky);
                 dim[o->id].kx = kx; dim[o->id].ky = ky;
                 dim[o->id].base = o->base; dim[o->id].fbw = o->fbw;
                 dim[o->id].w = o->fbw * 64 * kx;
                 int hh = ((o->rows + 63) & ~63) * ky;
-                if (hh > dim[o->id].h) dim[o->id].h = hh;
+                if (refactor || hh > dim[o->id].h) dim[o->id].h = hh;
             }
+        } else if (h->op == GPU_FOP_RELEASE) {
+            const gpu_fop_target* o = (const gpu_fop_target*)h;
+            if (o->id && o->id <= MAX_TARGETS) { dim[o->id].w = dim[o->id].h = 0; dim[o->id].kx = dim[o->id].ky = 1; }
         } else if (h->op == GPU_FOP_DRAW) n += draw_slots((const gpu_fop_draw*)h, ref);
         pos += h->size;
     }
@@ -1457,6 +1523,9 @@ static void exec_present(const gpu_front_frame_data* fd, const gpu_fop_present* 
     in.vram = X.vram_srv;
     in.swz = X.swz_srv;
     in.field_code = di->field_code;
+    in.scale = o->h.size >= sizeof *o && o->scale ? o->scale : 1;
+    in.flicker_off = (di->gfx & GPU_GFX_FLICKER_OFF) != 0;
+    in.fields = (di->gfx & GPU_GFX_FIELDS) != 0;
     if (o->mem_n && o->mem_off + o->mem_n * (sizeof(gpu_dl_entry) + 2) <= fd->data_bytes) {
         /* circuits shown from memory: vram_buf + the GPU words of their rects, in a scratch copy */
         const uint16_t* w = (const uint16_t*)(fd->data + o->mem_off + o->mem_n * sizeof(gpu_dl_entry));
@@ -1487,7 +1556,7 @@ static void exec_present(const gpu_front_frame_data* fd, const gpu_fop_present* 
     gpu_present_compose(&in);
     if (di->rb) gpu_present_readback((gpu_readback*)di->rb);
     /* (the picture was reported when its frame was queued: gpu_submit_sink, GPU_FD_SIGNAL) */
-    if (di->flags & GPU_DI_SHOW) gpu_present_show(di->aspect_w, di->aspect_h);
+    if (di->flags & GPU_DI_SHOW) gpu_present_show(di->aspect_w, di->aspect_h, (int)((di->gfx >> GPU_GFX_SCALER_SHIFT) & 15));
     present_done = 1;
 }
 

@@ -1050,6 +1050,61 @@ static int game_w, game_h;
 static volatile LONG game_got;
 static uint32_t game_pics, game_ref_diff, game_sw_beyond, game_sw_diff, game_off;
 static uint64_t game_ref_diff_px;
+/* (M7) --game at scale or with picture options: the picture (so x so per output pixel) is box-downsampled and
+ * compared with the reference compose (PSNR, mean signed error per channel: 10.2's scaled gates) */
+static int game_scale = 1, game_exact = 1;
+static uint32_t game_gfx;
+static double game_min_psnr = 999.0, game_max_mse;
+static uint32_t game_beyond32;
+static uint32_t* game_box;
+
+/* box average of so x so pixels (0xXXRRGGBB) */
+static void box_down(const uint32_t* src, int sw, int sh, int sstride, int so, uint32_t* dst, int dstride) {
+    int w = sw / so, h = sh / so, n = so * so;
+    for (int y = 0; y < h; y++)
+        for (int x = 0; x < w; x++) {
+            uint32_t acc[3] = { 0, 0, 0 };
+            for (int j = 0; j < so; j++)
+                for (int i = 0; i < so; i++) {
+                    uint32_t p = src[(size_t)(y * so + j) * (size_t)sstride + (size_t)(x * so + i)];
+                    acc[0] += (p >> 16) & 255; acc[1] += (p >> 8) & 255; acc[2] += p & 255;
+                }
+            dst[(size_t)y * (size_t)dstride + (size_t)x] = (uint32_t)((acc[0] + (uint32_t)n / 2) / (uint32_t)n) << 16 |
+                                                          (uint32_t)((acc[1] + (uint32_t)n / 2) / (uint32_t)n) << 8 |
+                                                          (uint32_t)((acc[2] + (uint32_t)n / 2) / (uint32_t)n);
+        }
+}
+
+/* PSNR over RGB and the largest |mean signed error| of a channel (b - a) */
+static void pic_stats(const uint32_t* a, int astride, const uint32_t* b, int bstride, int w, int h, double* psnr, double* mse_max) {
+    double se = 0, sum[3] = { 0, 0, 0 };
+    for (int y = 0; y < h; y++)
+        for (int x = 0; x < w; x++) {
+            uint32_t p = a[(size_t)y * (size_t)astride + (size_t)x], q = b[(size_t)y * (size_t)bstride + (size_t)x];
+            for (int c = 0; c < 3; c++) {
+                int d = (int)((q >> (16 - 8 * c)) & 255) - (int)((p >> (16 - 8 * c)) & 255);
+                se += (double)d * d;
+                sum[c] += d;
+            }
+        }
+    double n = (double)w * h;
+    double mse = se / (3.0 * n);
+    *psnr = mse > 0 ? 10.0 * log10(255.0 * 255.0 / mse) : 999.0;
+    *mse_max = 0;
+    for (int c = 0; c < 3; c++) if (fabs(sum[c] / n) > *mse_max) *mse_max = fabs(sum[c] / n);
+}
+
+/* the standard flicker-filter circuit pair shows one circuit (as gpu_present.c flicker_strip) */
+static void snap_flicker_strip(uint64_t* priv) {
+    uint64_t pmode = priv[0];
+    if ((pmode & 3) != 3 || !((pmode >> 5) & 1)) return;
+    uint64_t f1 = priv[7], f2 = priv[9], d1 = priv[8], d2 = priv[10];
+    const uint64_t fbmask = 0x1FFull | 0x3Full << 9 | 0x1Full << 15 | 0x7FFull << 32;
+    if ((f1 & fbmask) != (f2 & fbmask) || (d1 & 0xFFF) != (d2 & 0xFFF)) return;
+    int dby1 = (int)((f1 >> 43) & 0x7FF), dby2 = (int)((f2 >> 43) & 0x7FF);
+    if (dby1 - dby2 != 1 && dby2 - dby1 != 1) return;
+    priv[0] &= ~(uint64_t)(dby1 > dby2 ? 1 : 2);
+}
 
 static void game_dump(const uint32_t* px, int w, int h, uint32_t vblank, int content43) {
     (void)vblank; (void)content43;
@@ -1089,13 +1144,36 @@ static void game_vblank(uint32_t vblank) {
     static uint32_t ref[1024 * 1024], swf[1024 * 1024];
     int w = 0, h = 0;
     if (!gpu_hw_read_memory(hwmem)) { fprintf(stderr, "GPU memory read-back failed\n"); exit(1); }
-    int ok = gs_compose_from(&s, hwmem, hw_hist, ref, 1024, &w, &h);
+    static gs_display_snap rs;           /* (M7: the reference with the GPU's picture options) */
+    rs = s;
+    if (game_gfx & GPU_GFX_FLICKER_OFF) snap_flicker_strip(rs.priv);
+    int ok = gs_compose_from(&rs, hwmem, hw_hist, ref, 1024, &w, &h);
     if (!ok) game_off++;
     uint32_t d = 0;
-    if (ok != (game_w > 0) || (ok && (w != game_w || h != game_h))) d = 1u << 30;
-    else if (ok)
+    /* (M7) a scaled or progressive picture: box-downsampled to the output size, compared under the scaled gates */
+    const uint32_t* gp = game_px;
+    int gw = game_w, gh = game_h, gstride = game_w;
+    if (!game_exact && game_w) {
+        if (!game_box && !(game_box = malloc(1024 * 1024 * 4))) exit(1);
+        box_down(game_px, game_w, game_h, game_w, game_scale, game_box, 1024);
+        gp = game_box; gw = game_w / game_scale; gh = game_h / game_scale; gstride = 1024;
+    }
+    if (ok != (gw > 0) || (ok && (w != gw || h != gh))) d = 1u << 30;
+    else if (ok && game_exact)
         for (int y = 0; y < h; y++)
             for (int x = 0; x < w; x++) d += ((ref[(size_t)y * 1024 + x] ^ game_px[(size_t)y * w + x]) & 0xFFFFFF) != 0;
+    else if (ok) {
+        double psnr, mse;
+        pic_stats(ref, 1024, gp, gstride, w, h, &psnr, &mse);
+        if (psnr < game_min_psnr) game_min_psnr = psnr;
+        if (mse > game_max_mse) game_max_mse = mse;
+        if (psnr < 32.0 || mse >= 0.5) {
+            d = 1;
+            if (++game_beyond32 <= 5)
+                fprintf(stderr, "game: VBlank %u: box-downsampled picture vs the reference compose: PSNR %.2f dB, mean signed error %.3f\n",
+                        vblank, psnr, mse);
+        }
+    }
     if (d) {
         game_ref_diff++;
         game_ref_diff_px += d;
@@ -1107,30 +1185,31 @@ static void game_vblank(uint32_t vblank) {
     } else if (ok && game_pics % 50 == 1) save_png("_gpu", game_px, game_w, game_h, game_w, vblank);
     if (game_verify) {                   /* the software renderer drew too: its picture */
         int sw_w = 0, sw_h = 0;
-        int sw_ok = gs_compose(&s, swf, 1024, &sw_w, &sw_h);
+        int sw_ok = gs_compose(&rs, swf, 1024, &sw_w, &sw_h);
         hash_picture(swf, sw_ok, sw_w, sw_h, 1024);
         gpu_pic_diff pd;
         memset(&pd, 0, sizeof pd);
-        if (sw_ok && game_w && sw_w == game_w && sw_h == game_h) {
-            gpu_pic_compare(swf, 1024, game_px, game_w, sw_w, sw_h, &pd);
+        if (sw_ok && gw && sw_w == gw && sw_h == gh) {
+            gpu_pic_compare(swf, 1024, gp, gstride, sw_w, sw_h, &pd);
             uint32_t big[2] = { 0, 0 };
             for (int y = 0; y < sw_h; y++)
                 for (int x = 0; x < sw_w; x++) {
-                    uint32_t p = swf[(size_t)y * 1024 + x], q = game_px[(size_t)y * game_w + x];
+                    uint32_t p = swf[(size_t)y * 1024 + x], q = gp[(size_t)y * gstride + x];
                     int m = 0;
                     for (int c = 0; c < 24; c += 8) { int dd = abs((int)((p >> c) & 255) - (int)((q >> c) & 255)); if (dd > m) m = dd; }
                     big[y & 1] += m > 16;
                 }
             uint32_t fb = big[0] < big[1] ? big[0] : big[1];
             if (pd.diff_px) game_sw_diff++;
-            if (pd.psnr < 40.0 || (double)fb * 2.0 > 0.002 * (double)sw_w * (double)sw_h) {
+            /* (M7: a scaled picture, box-downsampled, under the scaled gate: PSNR >= 32 dB) */
+            if (game_exact ? pd.psnr < 40.0 || (double)fb * 2.0 > 0.002 * (double)sw_w * (double)sw_h : pd.psnr < 32.0) {
                 game_sw_beyond++;
                 fprintf(stderr, "game: VBlank %u: picture vs sw beyond the gate: PSNR %.2f, pixels above 16 on even / odd lines %u / %u\n",
                         vblank, pd.psnr, big[0], big[1]);
-                if (game_sw_beyond <= 5) { save_png("_sw", swf, sw_w, sw_h, 1024, vblank); save_png("_hw", game_px, game_w, game_h, game_w, vblank); }
+                if (game_sw_beyond <= 5) { save_png("_sw", swf, sw_w, sw_h, 1024, vblank); save_png("_hw", gp, gw, gh, gstride, vblank); }
             }
             if (pd.psnr < min_psnr) min_psnr = pd.psnr;
-        } else if (sw_ok != (game_w > 0) || (sw_ok && (sw_w != game_w || sw_h != game_h))) {
+        } else if (sw_ok != (gw > 0) || (sw_ok && (sw_w != gw || sw_h != gh))) {
             game_sw_beyond++;
             fprintf(stderr, "game: VBlank %u: picture size %dx%d vs sw %dx%d\n", vblank, game_w, game_h, sw_w, sw_h);
         }
@@ -1146,6 +1225,9 @@ static void game_report(void) {
             (unsigned long long)xc.ff_draws, (unsigned long long)xc.rov_draws, (unsigned long long)xc.frames,
             game_sw_pics ? "; software renderer pictures after a fall-back: see below" : "");
     if (game_sw_pics) fprintf(stderr, "game: %u pictures by the software renderer (fall-back)\n", game_sw_pics);
+    if (!game_exact)
+        fprintf(stderr, "game: scale %d gfx %X: box-downsampled vs the reference compose: min PSNR %.2f dB, max |mean signed error| %.3f, "
+                        "%u beyond (PSNR < 32 dB or |mean signed error| >= 0.5)\n", game_scale, game_gfx, game_min_psnr, game_max_mse, game_beyond32);
     if (game_verify)
         fprintf(stderr, "game: vs sw: %u pictures differ, %u beyond the picture gate, min PSNR %.2f\n", game_sw_diff, game_sw_beyond, min_psnr);
 }
@@ -1349,7 +1431,8 @@ int main(int argc, char** argv) {
     }
     outdir = argv[2];
     int workers = 0, decode_only = 0, front_only = 0, front_ref = 0, front_straddle = 0, front_selfcheck = 0, with_sw = 0, scale = 1, pace = 0, profile = 0, shash = 0, front_thread = 0, pin = 0;
-    int front_mixed = 0, ff_stq_exact = 0, split_ff = 0;
+    int front_mixed = 0, ff_stq_exact = 0, split_ff = 0, ky2_opt = -1, fields_opt = -1;
+    uint32_t gfx_set = 0;
     uint32_t ff_rov_mask = 0;
     const char* adapter = "hw";
     const char* metrics = NULL;
@@ -1389,6 +1472,21 @@ int main(int argc, char** argv) {
         }
 #endif
         else if (!strcmp(argv[i], "--scale") && i + 1 < argc) scale = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--progressive")) ky2_opt = 1;    /* (M7) display targets 2N rows per native row */
+        else if (!strcmp(argv[i], "--interlaced")) ky2_opt = 0;     /* (M7) display targets N rows (field resolution) */
+#ifdef GS_REPLAY_GPU
+        /* (M7, --game) picture options: the Modern / Faithful presets and the single toggles (GPU_GFX_*) */
+        else if (!strcmp(argv[i], "--flicker-off")) gfx_set |= GPU_GFX_FLICKER_OFF;
+        else if (!strcmp(argv[i], "--thin")) gfx_set |= GPU_GFX_THIN;
+        else if (!strcmp(argv[i], "--fields")) fields_opt = 1;
+        else if (!strcmp(argv[i], "--modern")) { ky2_opt = 1; fields_opt = 0; gfx_set |= GPU_GFX_FLICKER_OFF; }
+        else if (!strcmp(argv[i], "--faithful")) { ky2_opt = 0; fields_opt = 1; }
+        else if (!strcmp(argv[i], "--scaler") && i + 1 < argc) {
+            static const char* sn[GPU_SCALER_N] = { "auto", "point", "box", "lanczos", "catmull-rom", "bilinear" };
+            const char* v = argv[++i];
+            for (int k = 0; k < GPU_SCALER_N; k++) if (!strcmp(v, sn[k])) gfx_set |= (uint32_t)k << GPU_GFX_SCALER_SHIFT;
+        }
+#endif
 #ifdef GS_REPLAY_GPU
         else if (!strcmp(argv[i], "--game")) game_mode = 1;
         else if (!strcmp(argv[i], "--game-save")) game_save = 1;   /* (--game: every picture as frame_N.png) */
@@ -1416,7 +1514,14 @@ int main(int argc, char** argv) {
     if (ref_mode && workers > 0) { fprintf(stderr, "--ref / --mixed replay synchronously (workers 0)\n"); return 2; }
     if (lockstep && !(ref_mode && backend == B_BOTH)) { fprintf(stderr, "--lockstep needs --backend both --ref (or --mixed)\n"); return 2; }
     if (game_mode) {
-        if (!(game_px = malloc(1024 * 1024 * 4))) return 1;
+        game_scale = scale > 1 ? (scale > 8 ? 8 : scale) : 1;
+        /* (M7) default: Faithful field display at S = 1 (the M6 gate: identical to the reference compose), progressive
+         * display targets at scale (as --scale for --ref / --mixed) */
+        int prog = ky2_opt >= 0 ? ky2_opt : game_scale > 1;
+        int fields = fields_opt >= 0 ? fields_opt : !prog;
+        game_gfx = gfx_set | (prog ? GPU_GFX_PROGRESSIVE : 0) | (fields ? GPU_GFX_FIELDS : 0);
+        game_exact = game_scale == 1 && !prog && fields;
+        if (!(game_px = malloc((size_t)1024 * 1024 * 4 * (size_t)(game_scale * game_scale)))) return 1;
     } else if (backend != B_SW && backend != B_HWDRY) {
         gpu_config cfg;
         memset(&cfg, 0, sizeof cfg);
@@ -1483,6 +1588,8 @@ int main(int argc, char** argv) {
         hc.out_dir = strcmp(outdir, "-") ? outdir : ".";
         hc.dump_wanted = game_dump_wanted;
         hc.dump = game_dump;
+        hc.scale = game_scale;           /* (M7) */
+        hc.gfx = game_gfx;
         if (!gpu_hw_start(&hc)) { fprintf(stderr, "GPU renderer unavailable\n"); return 1; }
     } else
     if (FRONT_MODE(backend) || ref_mode) {       /* the frontend consumes the stream next to (or instead of) sw */
@@ -1490,7 +1597,9 @@ int main(int argc, char** argv) {
         memset(&fc, 0, sizeof fc);
         fc.sw = ref_mode ? backend == B_BOTH : backend == B_HWSUB ? with_sw : !front_only;
         if (ref_mode) front_thread = 0;          /* (checkpoints and read-backs on this thread) */
-        fc.display_ky2 = !ref_mode && !front_mixed;   /* (M2's benchmark: display targets 2N rows; REF / mixed at S=1: 1x1) */
+        /* (M2's benchmark: display targets 2N rows; REF / mixed at S=1: 1x1 (the field-resolution gate); M7: at scale > 1
+         * progressive (2N rows, the Modern preset) unless --interlaced; --progressive forces it at S=1 too) */
+        fc.display_ky2 = ky2_opt >= 0 ? ky2_opt : (!ref_mode && !front_mixed) || scale > 1;
         fc.ref = front_ref;
         fc.mixed = front_mixed;
         fc.ff_stq_exact = ff_stq_exact;

@@ -38,7 +38,12 @@ typedef struct {
     void (*window_external)(int on);                     /* window_set_external_presenter (fallback to sw) */
     void (*vblank_external)(int on);                     /* pacing display: the host timer stops raising VBlanks */
     void (*display_vblank)(void);                        /* pacing display: a VBlank of the display */
+    int scale;                   /* (M7) internal scale N (1..8; 0: 1) - [graphics] internal_scale, PS2_GS_SCALE */
+    uint32_t gfx;                /* (M7) GPU_GFX_* (gpu_front.h): progressive, thin outlines, flicker off, fields, scaler */
 } gpu_hw_config;
+/* (M7) graphics settings changed while the game runs: the scale and the target configuration apply from the
+ * next frame (targets are rescaled, nothing is lost), picture options from the next VBlank. Any thread. */
+void gpu_hw_set_graphics(int scale, uint32_t gfx);
 
 /* Start the render thread (swap chain on cfg->hwnd) and the frontend; the GS must be idle (before
  * gs_thread_start, or after gs_sync). 0: no capable device (the caller stays with the software renderer). */

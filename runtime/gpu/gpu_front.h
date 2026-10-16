@@ -28,6 +28,7 @@ typedef struct {
     int split_ff;                /* the plain two-draw ATST split (M5 measured it visibly different from REF); default 0:
                                     the exact split (a new draw where a pass-capable primitive covers a pixel of an
                                     earlier fail-capable one of the draw) */
+    int thin;                    /* (M7) outlines = thin: lines drawn as analytic thin lines at scale > 1 (not exact) */
 } gpu_front_config;
 
 enum { GPU_TIER_FF, GPU_TIER_ROV, GPU_TIER_ALIAS16, GPU_TIER_PUNT, GPU_TIER_N };
@@ -76,6 +77,7 @@ typedef struct {
     uint32_t clut_loads, clut_slots, clut_new;   /* CLUT content changes, distinct slots this frame, new ring slots */
     uint32_t clut_gpu_reads;             /* CLUT loads whose 16x16/8x2 block holds GPU-written words (not downloaded) */
     uint32_t targets_live, targets_created, targets_evicted;
+    uint32_t rescales;                   /* (M7) live targets whose sample factors changed (family, configuration) */
     uint32_t target_overlaps;            /* targets created inside another target of the same kind (aliasing) */
     /* state */
     uint32_t state_changes, states;      /* StateRec index changes between primitives, distinct StateRecs */
@@ -117,13 +119,23 @@ typedef struct {
     uint8_t field_code;                  /* gs_display_field_code: deinterlacer field (0 / 8), 0xFF none */
     uint8_t content43;                   /* ASPECT_4_3 hint state at this VBlank (pillarboxed at 4:3) */
     uint8_t flags;                       /* GPU_DI_* */
-    uint8_t pad;
+    uint8_t scale;                       /* (M7, GPU_DI_CONFIG) internal scale N from the next frame on (1..8) */
     uint16_t aspect_w, aspect_h;         /* display aspect the picture is fitted to (4:3 content: 4, 3) */
-    uint32_t pad2;
+    uint32_t gfx;                        /* (M7) GPU_GFX_* graphics settings (compose / present at this VBlank,
+                                            frontend configuration from the next frame with GPU_DI_CONFIG) */
     void* rb;                            /* gpu_readback* of the composed picture (dumps), or NULL */
 } gpu_display_info;
 enum { GPU_DI_SHOW = 1,                  /* present it (else compose only: tests, read-backs) */
-       GPU_DI_SIGNAL = 2 };              /* call the picture-done callback (gpu_set_picture_done) after it */
+       GPU_DI_SIGNAL = 2,                /* call the picture-done callback (gpu_set_picture_done) after it */
+       GPU_DI_CONFIG = 4 };              /* (M7) apply scale and the GPU_GFX_ configuration bits from the next frame */
+/* (M7) graphics settings (notes/settings.md): frontend configuration (progressive display targets, thin
+ * outlines) and picture options (flicker filter, field display, the presenter's scaler) */
+enum { GPU_GFX_PROGRESSIVE = 1,          /* display-family targets 2N rows per native row (interlacing off) */
+       GPU_GFX_THIN = 2,                 /* thin analytic outlines at scale > 1 (outlines = thin) */
+       GPU_GFX_FLICKER_OFF = 4,          /* the standard flicker-filter circuit pair shows one circuit */
+       GPU_GFX_FIELDS = 8,               /* field display as the PS2 (gs.c deinterlacer); else progressive pictures */
+       GPU_GFX_SCALER_SHIFT = 8 };       /* bits 8..11: GPU_SCALER_* of the presenter */
+enum { GPU_SCALER_AUTO, GPU_SCALER_POINT, GPU_SCALER_BOX, GPU_SCALER_LANCZOS, GPU_SCALER_CATMULL, GPU_SCALER_BILINEAR, GPU_SCALER_N };
 void gpu_front_vblank_display(const gpu_display_info* di);
 /* Run fn(arg) on the frontend's thread in stream order (everything posted before it has been processed)
  * and wait for it; same thread: at once. The GS side must be idle or be the caller. */
@@ -199,7 +211,9 @@ typedef struct { gpu_fop h; uint16_t target, src; uint32_t n, data_off; } gpu_fo
  * displayed rect is current there), or, src[i] == 0, GS memory: a scratch copy of vram_buf with the GPU
  * words of the displayed rects (mem_n download entries at mem_off in the data arena, then their writer
  * target ids as u16) - nothing in vram_buf or the ownership changes. */
-typedef struct { gpu_fop h; uint32_t vblank; uint32_t di_off; uint16_t src[2]; uint32_t mem_off, mem_n; } gpu_fop_present;
+/* (M7) scale: the frontend's scale N for this frame's targets (the picture is composed at N x N per output
+ * pixel) */
+typedef struct { gpu_fop h; uint32_t vblank; uint32_t di_off; uint16_t src[2]; uint32_t mem_off, mem_n; uint16_t scale, pad; } gpu_fop_present;
 
 enum { GPU_FD_PARTIAL = 1, GPU_FD_REF = 2, GPU_FD_MIXED = 4,
        GPU_FD_SIGNAL = 8 };                      /* (M6) the frame's picture (GPU_DI_SIGNAL) is reported once the

@@ -51,9 +51,13 @@ typedef struct {
     ID3D11ShaderResourceView* tex[2];    /* circuit i's colour target (UINT view), NULL: vram_buf */
     int kx[2], ky[2];
     int field_code;                      /* gs_display_field_code */
+    int scale;                           /* (M7) the picture's scale: so x so pixels per PCRTC output pixel */
+    int flicker_off;                     /* (M7) drop the second circuit of the standard flicker-filter pattern */
+    int fields;                          /* (M7) field display as the PS2 shows it (deinterlacer); 0: progressive */
 } gpu_compose_in;
 void gpu_present_compose(const gpu_compose_in* in);
-void gpu_present_show(int aspect_w, int aspect_h);   /* present the last composed picture, fitted to w:h */
+/* present the last composed picture, fitted to w:h, resampled with scaler (GPU_SCALER_*, M7) */
+void gpu_present_show(int aspect_w, int aspect_h, int scaler);
 void gpu_present_readback(gpu_readback* rb);          /* read back the last composed picture */
 void gpu_present_signal(uint32_t vblank);             /* the picture-done callback */
 int  gpu_present_init(void);             /* swap chain or offscreen target, samplers, queries */
