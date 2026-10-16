@@ -1034,6 +1034,82 @@ static void zcb_set(const zs_consts* k) {
     }
 }
 
+/* ---- (M7) PS2_GPU_PROF=1: GPU time per kind of work --------------------------------------------------
+ * A timestamp where the kind of work changes (ops, draw classes / tiers, depth resolves and syncs); the frame
+ * waits for its timestamps (profiling only: it serialises CPU and GPU). Averages per frame in the log every
+ * 60 frames. Attribution is approximate (the GPU overlaps neighbouring work). */
+enum { PR_OTHER, PR_TARGET, PR_MEM, PR_CLEAR, PR_SHADOW, PR_FF_FAST, PR_FF_TRI, PR_FF_SPRITE, PR_FF_LINE,
+       PR_REF_TRI, PR_REF_OTHER, PR_A16, PR_ZRESOLVE, PR_ZSYNC, PR_PRESENT, PR_A16_DRAW, PR_N };
+static const char* const pr_names[PR_N] = { "other", "target", "mem", "clear", "shadow", "ff-tri-fast", "ff-tri",
+                                            "ff-sprite", "ff-line", "ref-tri", "ref-other", "alias16", "zresolve",
+                                            "zsync", "present", "alias16-draw" };
+#define PR_MAXQ 8192
+static struct {
+    int on, n, cur;
+    ID3D11Query* dis;
+    ID3D11Query* q[PR_MAXQ];
+    uint8_t cat[PR_MAXQ];
+    double ms[PR_N], total;
+    uint64_t marks[PR_N];
+    uint32_t frames;
+} PR = { -1 };
+
+static void prof_mark(int cat) {
+    if (PR.on <= 0 || PR.n >= PR_MAXQ || (PR.n && cat == PR.cur)) return;
+    if (!PR.q[PR.n]) {
+        D3D11_QUERY_DESC qt = { D3D11_QUERY_TIMESTAMP, 0 };
+        if (FAILED(ID3D11Device_CreateQuery(gpu_rt.dev, &qt, &PR.q[PR.n]))) { PR.on = 0; return; }
+    }
+    ID3D11DeviceContext_End(gpu_rt.ctx, (ID3D11Asynchronous*)PR.q[PR.n]);
+    PR.cat[PR.n++] = (uint8_t)cat;
+    PR.cur = cat;
+    if (cat < PR_N) PR.marks[cat]++;
+}
+
+static void prof_begin(void) {
+    if (PR.on < 0) { const char* e = getenv("PS2_GPU_PROF"); PR.on = e && atoi(e) > 0; }
+    if (!PR.on) return;
+    if (!PR.dis) {
+        D3D11_QUERY_DESC qd = { D3D11_QUERY_TIMESTAMP_DISJOINT, 0 };
+        if (FAILED(ID3D11Device_CreateQuery(gpu_rt.dev, &qd, &PR.dis))) { PR.on = 0; return; }
+    }
+    ID3D11DeviceContext_Begin(gpu_rt.ctx, (ID3D11Asynchronous*)PR.dis);
+    PR.n = 0;
+    prof_mark(PR_OTHER);
+}
+
+static void prof_end(void) {
+    if (PR.on <= 0) return;
+    PR.cur = -1;
+    prof_mark(PR_N);
+    ID3D11DeviceContext_End(gpu_rt.ctx, (ID3D11Asynchronous*)PR.dis);
+    D3D11_QUERY_DATA_TIMESTAMP_DISJOINT dj;
+    while (ID3D11DeviceContext_GetData(gpu_rt.ctx, (ID3D11Asynchronous*)PR.dis, &dj, sizeof dj, 0) == S_FALSE) SwitchToThread();
+    if (dj.Disjoint || !dj.Frequency) return;
+    UINT64 prev = 0;
+    double f[PR_N] = { 0 }, ft = 0;
+    for (int i = 0; i < PR.n; i++) {
+        UINT64 t = 0;
+        while (ID3D11DeviceContext_GetData(gpu_rt.ctx, (ID3D11Asynchronous*)PR.q[i], &t, sizeof t, 0) == S_FALSE) SwitchToThread();
+        if (i) {
+            double ms = (double)(t - prev) * 1000.0 / (double)dj.Frequency;
+            f[PR.cat[i - 1]] += ms;
+            ft += ms;
+        }
+        prev = t;
+    }
+    if (ft > 50.0) return;               /* (loading frames: left out) */
+    for (int c = 0; c < PR_N; c++) PR.ms[c] += f[c];
+    PR.total += ft;
+    if (++PR.frames % 60) return;
+    char line[1024];
+    int o = snprintf(line, sizeof line, "prof: %u frames, GPU ms per frame %.3f:", PR.frames, PR.total / PR.frames);
+    for (int c = 0; c < PR_N && o < (int)sizeof line - 48; c++)
+        if (PR.ms[c] > 0) o += snprintf(line + o, sizeof line - (size_t)o, " %s %.3f (%.0f)", pr_names[c], PR.ms[c] / PR.frames,
+                                         (double)PR.marks[c] / PR.frames);
+    gpu_log("%s", line);
+}
+
 /* zpatch -> DSV over tiles in state ZT_ZP (mode 0), or the constant `value` over the native rect r (mode 1:
  * a depth clear of part of the target); the quad leaves the OM bound to the DSV alone */
 static void zquad(xtarget* t, const int b[4], int mode, uint32_t value) {
@@ -1061,7 +1137,10 @@ static void zquad(xtarget* t, const int b[4], int mode, uint32_t value) {
     ID3D11ShaderResourceView* v8 = X.ztile_srv;
     ID3D11DeviceContext_PSSetShaderResources(gpu_rt.ctx, 8, 1, &v8);
     set_t2(t->zp_srv);
+    int pc = PR.cur;
+    prof_mark(PR_ZRESOLVE);
     ID3D11DeviceContext_Draw(gpu_rt.ctx, 4, 0);
+    prof_mark(pc);
     set_t2(NULL);
     gpu_rt.n_draws++;
     X.state_calls += 2;
@@ -1096,7 +1175,10 @@ static void zsync_dispatch(xtarget* t, const int b[4]) {
     ID3D11UnorderedAccessView* u = t->zp_uav;
     ID3D11DeviceContext_CSSetUnorderedAccessViews(c, 0, 1, &u, NULL);
     ID3D11DeviceContext_CSSetConstantBuffers(c, 0, 1, &X.zcb);
+    int pc = PR.cur;
+    prof_mark(PR_ZSYNC);
     ID3D11DeviceContext_Dispatch(c, (k.x1 - k.x0 + 7) / 8, (k.y1 - k.y0 + 7) / 8, 1);
+    prof_mark(pc);
     ID3D11UnorderedAccessView* nu = NULL;
     ID3D11DeviceContext_CSSetUnorderedAccessViews(c, 0, 1, &nu, NULL);
     ID3D11ShaderResourceView* ns = NULL;
@@ -1226,6 +1308,12 @@ static void exec_draw_ff(const gpu_fop_draw* d, uint32_t slot) {
 }
 
 static void exec_draw(const gpu_fop_draw* d, uint32_t slot) {
+    if (PR.on > 0) {
+        int ff = X.mixed && d->tier == GPU_TIER_FF && !X.ref;
+        prof_mark(d->tier == GPU_TIER_ALIAS16 ? PR_A16_DRAW
+                  : d->cls == GPU_PC_TRI ? (!ff ? PR_REF_TRI : (d->ps_key & GPU_PSK_FF_FAST) ? PR_FF_FAST : PR_FF_TRI)
+                  : !ff ? PR_REF_OTHER : d->cls == GPU_PC_SPRITE ? PR_FF_SPRITE : PR_FF_LINE);
+    }
     if (X.ref || d->tier == GPU_TIER_ALIAS16) { exec_draw_ref(d, slot); return; }
     if (X.mixed) {
         if (d->tier == GPU_TIER_FF) exec_draw_ff(d, slot);
@@ -1478,6 +1566,8 @@ void gpu_exec_release(void) {
     if (dbg_nosize || dbg_nocount) gpu_log("exec: %llu draws without a target, %llu empty draws (cls %llu %llu %llu %llu, tier %llu %llu)", (unsigned long long)dbg_nosize, (unsigned long long)dbg_nocount, (unsigned long long)dbg_cls[0], (unsigned long long)dbg_cls[1], (unsigned long long)dbg_cls[2], (unsigned long long)dbg_cls[3], (unsigned long long)dbg_tier[0], (unsigned long long)dbg_tier[1]);
     for (int i = 0; i <= MAX_TARGETS; i++) { target_free(&X.T[i]); free(X.T[i].zts); X.T[i].zts = NULL; }
     GPU_RELEASE(X.ztile_srv); GPU_RELEASE(X.ztile); GPU_RELEASE(X.zcb);
+    for (int i = 0; i < PR_MAXQ; i++) GPU_RELEASE(PR.q[i]);
+    GPU_RELEASE(PR.dis);
     dynbuf* d[7] = { &X.vb, &X.ib, &X.rec, &X.st, &X.cb, &X.dat, &X.aux };
     for (int i = 0; i < 7; i++) { GPU_RELEASE(d[i]->srv); GPU_RELEASE(d[i]->buf); d[i]->cap = 0; }
     GPU_RELEASE(X.vram_srv); GPU_RELEASE(X.vram_uav); GPU_RELEASE(X.vram); GPU_RELEASE(X.scratch_uav); GPU_RELEASE(X.scratch_srv);
@@ -1595,12 +1685,20 @@ void gpu_exec_frame(const void* payload) {
     double t1 = qpc_ms();
     if (!ok) gpu_log("frame %u: upload failed", fd->vblank);
     bind_frame_buffers();
+    prof_begin();
     uint32_t slot = 1;
     for (size_t pos = 0; ok && pos + sizeof(gpu_fop) <= fd->cmd_bytes;) {
         const gpu_fop* h = (const gpu_fop*)(fd->cmd + pos);
         if (!h->size) break;
         if (X.probe && h->op != GPU_FOP_DRAW && h->op != GPU_FOP_CLUT && h->op != GPU_FOP_PATCH)   /* (debugging: the memory ops) */
             gpu_log("exec v%u%s op %u target %u", fd->vblank, fd->flags & GPU_FD_PARTIAL ? "p" : "", h->op, ((const uint16_t*)h)[2]);
+        if (PR.on > 0 && h->op != GPU_FOP_DRAW)
+            prof_mark(h->op == GPU_FOP_TARGET || h->op == GPU_FOP_RELEASE ? PR_TARGET
+                      : h->op == GPU_FOP_PATCH || h->op == GPU_FOP_LOAD || h->op == GPU_FOP_XCOPY || h->op == GPU_FOP_DOWNLOAD ||
+                        h->op == GPU_FOP_CLUT ? PR_MEM
+                      : h->op == GPU_FOP_CLEAR ? PR_CLEAR : h->op == GPU_FOP_COPY_SHADOW ? PR_SHADOW
+                      : h->op == GPU_FOP_ALIAS16 || h->op == GPU_FOP_ALIAS16_END ? PR_A16
+                      : h->op == GPU_FOP_PRESENT ? PR_PRESENT : PR_OTHER);
         switch (h->op) {
         case GPU_FOP_TARGET: exec_target((const gpu_fop_target*)h); break;
         case GPU_FOP_RELEASE: exec_release((const gpu_fop_target*)h); break;
@@ -1621,6 +1719,7 @@ void gpu_exec_frame(const void* payload) {
         pos += h->size;
     }
     unbind_all();                        /* (targets may be released or recreated before the next frame) */
+    prof_end();
     probe_report(fd);
     ID3D11DeviceContext_Flush(gpu_rt.ctx);
     double t2 = qpc_ms(), c1 = thread_ms();

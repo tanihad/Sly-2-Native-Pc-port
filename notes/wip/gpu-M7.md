@@ -46,12 +46,25 @@ and the owner's settings applied (internal_scale, outlines, filters presets + to
 - Results so far: S=1 Faithful game gate 3816/3816 pictures equal; lockstep REF S=2 24092/0 (also S=3 on 6 recs);
   S=3 box gate: 23/24 recordings >= 32 dB (rv_prompt 31.36: vector UI text), max |mean signed error| 0.32.
 
+- Lockstep corpus S=2/3/4 REF + mixed: 24092 comparisons each, 0 differ (before the bbox / Z changes; sample 0
+  unaffected by them).
+- 13690f3 FF vs REF all-sample compare tool (gs_replay --sample-dump / --sample-compare / --sample-every); fix: REF
+  exact STQ at samples whose native row is above the triangle's first row (rows = -1).
+- cf3674c triangle bbox widened 1 px up/left at scale (Z band in fix-perf brief), gs_z16_sample (float sub-step).
+
+- FF vs REF corpus S=3 (every target, every sample, every 60 VBlanks; 8 for the short recordings): 24/24 within
+  budget, 0 beyond; worst colour words > 2: ep8 boss 1.03% (budget 2.5%), > 16: 0.00008%, Z words 0.00008%.
+- Performance (gs_replay --mixed --bench, game-frame GPU medians, S=1 -> S=3): ep3 hub 3.90 -> 9.50 ms, ep5 street
+  3.70 -> 11.18, ep8 hub 1.80 -> 5.97, ep8 boss 4.24 -> 10.41. Draw count doubles at scale (exact-split bitmap
+  widened) but costs nothing on the GPU (9.42 ms with the widening off). PS2_GPU_PROF=1 (gpu_exec.c): GPU time per
+  kind of work. ep5 S=3: FF fast triangles 47%, ROV triangles 18%, ALIAS16 16%, FF sprites 8%, clears 3%, Z resolve
+  3%. GS texture sampling is 27% of the FF triangle time (experiment: constant texel). Conservative depth (M9) is
+  blocked by the depth encoding: asfloat(z + 0x800000) is near FLT_MIN for Z24, not interpolable (denormal
+  products), so it would need per-triangle constant bounds (unique vertices). The 8 ms budget is M9's (design 11).
+
 ## In progress
-- Lockstep corpus S=2/3/4 REF + mixed (scratchpad lockall.ps1, results build\ls_{ref,mix}{2,3,4}.txt); the first
-  attempt died of a full disk (C: had 28 MB free: keep build outputs small, GS_REPLAY_MAX_PNG=6).
 
 ## Next
-1. FF vs REF all-sample compare at S=3 (gs_replay --sample-dump / --sample-compare of every target, 10.2 budget).
 2. Box gate at S=2 and S=4 (gpu_game_all -Scale 2/4); Modern (--modern) runs.
 3. Contact sheets (notes/m7/*.png, small): shadows, outlines ps2/thin, darken, motion blur on/off (in-game
    dumps), Binocucom, Modern vs Faithful at 1x/3x.
