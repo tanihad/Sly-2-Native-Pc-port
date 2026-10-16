@@ -4,6 +4,7 @@
 #include "iop.h"
 #include "audio_out.h"
 #include "settings.h"
+#include "gfx.h"
 #include "launch.h"
 #include "window_gpu.h"
 #include "gpu/gpu_hw.h"
@@ -883,6 +884,7 @@ int main(int argc, char** argv) {
     atexit(perf_final);
     settings_load();                             /* sly2.ini in the user data folder, PS2_ASPECT */
     aspect_init();                               /* widescreen factors (aspect.c) */
+    gfx_apply();                                 /* graphics settings: motion blur now, the GPU renderer when it starts */
     int dump_regs = argc > 2 && strcmp(argv[2], "--dump-regs") == 0;
     headless = dump_regs || getenv("PS2_HEADLESS") != NULL;
     ps2_ram = calloc(1, PS2_RAM_SIZE + 16);      /* +16: a 128-bit access at the very end */
@@ -941,10 +943,8 @@ int main(int argc, char** argv) {
         e = getenv("PS2_GS_SAME_THREAD");
         hc.same_thread = e && atoi(e) != 0;
         hc.out_dir = dump_dir;
-        e = getenv("PS2_GS_SCALE");
-        if ((e && atoi(e) > 1) || ps2_settings.internal_scale > 1)
-            fprintf(stderr, "[ps2] GPU renderer: internal scale %d not available yet (M7): drawing at the PS2's resolution\n",
-                    e ? atoi(e) : ps2_settings.internal_scale);
+        hc.scale = gfx_scale();                  /* (M7: [graphics] settings, PS2_GS_SCALE; gfx.c changes them at run time) */
+        hc.gfx = gfx_bits();
         hc.client_size = headless ? NULL : window_client_size;
         hc.presented = headless ? NULL : window_note_presented;
         hc.aspect = picture_aspect;

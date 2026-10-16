@@ -19,6 +19,7 @@
  */
 #include "window.c"
 #include "settings.c"
+#include "gfx.c"
 
 #include <stdlib.h>
 
@@ -103,6 +104,44 @@ static void test_fit_aspect(void) {
     win_accepting = 0;
 }
 
+/* (M7) gfx.c: the graphics settings -> the GPU renderer's bits, the keys (not persisted here) */
+static void test_gfx(void) {
+    ps2_settings_t keep = ps2_settings;
+    settings_defaults(&ps2_settings);
+    uint32_t g = gfx_bits();
+    CHECK(gfx_scale() == 3 && (g & GPU_GFX_PROGRESSIVE) && !(g & GPU_GFX_FIELDS) && (g & GPU_GFX_FLICKER_OFF) && !(g & GPU_GFX_THIN),
+          "defaults: 3x, Modern (progressive, flicker filter off), ps2 outlines (%X)", g);
+    gfx_apply();
+    CHECK(!ps2_motion_blur_off, "Modern: motion blur on");
+    CHECK(gfx_key(VK_F4, 0, 0), "F4 handled");
+    g = gfx_bits();
+    CHECK(ps2_settings.filters_faithful && (g & GPU_GFX_FIELDS) && !(g & GPU_GFX_PROGRESSIVE) && !(g & GPU_GFX_FLICKER_OFF) &&
+          !ps2_motion_blur_off, "F4: Faithful (fields, flicker filter, motion blur) %X", g);
+    gfx_key(VK_F5, 0, 0);
+    CHECK(ps2_settings.motion_blur == 0 && ps2_motion_blur_off, "F5: motion blur off");
+    gfx_key(VK_F6, 0, 0);
+    CHECK(ps2_settings.flicker_filter == 0 && (gfx_bits() & GPU_GFX_FLICKER_OFF), "F6: flicker filter off");
+    gfx_key(VK_F6, 1, 0);
+    CHECK(ps2_settings.interlacing == 0 && (gfx_bits() & GPU_GFX_PROGRESSIVE), "Shift+F6: progressive");
+    gfx_key(VK_F4, 0, 0);
+    CHECK(!ps2_settings.filters_faithful && ps2_settings.motion_blur == -1 && ps2_settings.flicker_filter == -1 &&
+          ps2_settings.interlacing == -1 && !ps2_motion_blur_off, "F4 again: Modern, the toggles back to the preset");
+    gfx_key(VK_F3, 0, 0);
+    CHECK(ps2_settings.outlines_thin && (gfx_bits() & GPU_GFX_THIN), "F3: thin outlines");
+    gfx_key(VK_F2, 0, 0);
+    CHECK(gfx_scale() == 4, "F2: scale up (%d)", gfx_scale());
+    ps2_settings.internal_scale = 8;
+    gfx_key(VK_F2, 0, 0);
+    CHECK(gfx_scale() == 1, "F2 at 8: back to 1 (%d)", gfx_scale());
+    gfx_key(VK_F2, 1, 0);
+    CHECK(gfx_scale() == 8, "Shift+F2 at 1: 8 (%d)", gfx_scale());
+    ps2_settings.scaler = SETTINGS_SCALER_POINT;
+    CHECK(((gfx_bits() >> GPU_GFX_SCALER_SHIFT) & 15) == GPU_SCALER_POINT, "scaler bits");
+    CHECK(!gfx_key(VK_F7, 0, 0), "F7 is not a graphics key");
+    ps2_settings = keep;
+    gfx_apply();
+}
+
 /* settings.c: the sly2.ini parser and its aspect values */
 static int warn_count;
 static void count_warn(void* user, const char* msg) { (void)user; (void)msg; warn_count++; }
@@ -137,6 +176,29 @@ static void test_settings(void) {
                        count_warn, NULL);
     CHECK(n == 4 && warn_count == 4, "four problems reported (%d, %d)", n, warn_count);
     CHECK(s.aspect_w == 7 && s.aspect_h == 3 && s.internal_scale == 3, "good keys still apply, bad ones don't");
+
+    /* (M7) graphics.scaler; the template has every graphics key and reads back */
+    settings_defaults(&s);
+    CHECK(s.scaler == SETTINGS_SCALER_AUTO, "scaler defaults to auto");
+    warn_count = 0;
+    n = settings_parse("[graphics]\nscaler = Catmull-Rom\n", &s, count_warn, NULL);
+    CHECK(n == 0 && s.scaler == SETTINGS_SCALER_CATMULL, "scaler = catmull-rom (%d)", s.scaler);
+    n = settings_parse("[graphics]\nscaler = lanczos\n", &s, count_warn, NULL);
+    CHECK(n == 0 && s.scaler == SETTINGS_SCALER_LANCZOS, "scaler = lanczos");
+    n = settings_parse("[graphics]\nscaler = sharp\n", &s, count_warn, NULL);
+    CHECK(n == 1 && s.scaler == SETTINGS_SCALER_LANCZOS, "bad scaler reported and ignored");
+    {
+        static char tpl[8192];
+        ps2_settings_t a, b;
+        settings_defaults(&a);
+        a.internal_scale = 5; a.outlines_thin = 1; a.filters_faithful = 1; a.flicker_filter = 0; a.scaler = SETTINGS_SCALER_BOX;
+        int len = settings_format(&a, tpl, sizeof tpl);
+        settings_defaults(&b);
+        warn_count = 0;
+        n = settings_parse(tpl, &b, count_warn, NULL);
+        CHECK(len > 0 && n == 0 && b.internal_scale == 5 && b.outlines_thin == 1 && b.filters_faithful == 1 && b.flicker_filter == 0 &&
+              b.motion_blur == -1 && b.scaler == SETTINGS_SCALER_BOX, "graphics keys round trip through the template (%d problems)", n);
+    }
 
     /* [display] hud = edges (default) | centered */
     settings_defaults(&s);
@@ -1292,6 +1354,7 @@ int main(int argc, char** argv) {
     test_letterbox();
     test_fit_aspect();
     test_settings();
+    test_gfx();
     test_display_switch();
     test_xinput_mapping();
     test_keyboard_mapping();

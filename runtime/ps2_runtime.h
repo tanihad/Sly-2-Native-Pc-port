@@ -302,9 +302,11 @@ extern const uint32_t ps2_hook_addrs[];  /* the hooked functions, 0-terminated (
 void ps2_hook(ps2_ctx* ctx, uint32_t addr);
 #define PS2_HOOK(addr) (ps2_hooks_on ? ps2_hook(ctx, addr) : (void)0)
 
-/* Instruction patches (recomp/patches.py) call into the widescreen support (runtime/aspect.c). */
+/* Instruction patches (recomp/patches.py) call into the widescreen support (runtime/aspect.c) and read the
+ * graphics settings (runtime/gfx.c: motion blur). */
 #include "aspect.h"
 #include "gs_hint.h"
+#include "gfx.h"
 
 /* ---- interrupts: set asynchronously by host timers, serviced at loop heads -------------------- */
 

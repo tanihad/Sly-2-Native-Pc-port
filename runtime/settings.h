@@ -30,6 +30,8 @@ typedef struct {
     int motion_blur;             /* 1 on, 0 off, -1 (default) the preset's value */
     int flicker_filter;
     int interlacing;
+    int scaler;                  /* scaler = auto (0, default) | point | box | lanczos | catmull-rom | bilinear: the GPU
+                                    renderer's picture -> window filter (SETTINGS_SCALER_*, = GPU_SCALER_*) */
     /* [game] */
     char disc[1024];             /* disc image path (UTF-8), "" = not chosen yet (runtime/launch.c) */
     /* [window] - remembered when the window closes (window.c) */
@@ -39,6 +41,9 @@ typedef struct {
 } ps2_settings_t;
 
 enum { SETTINGS_PACING_VSYNC, SETTINGS_PACING_VRR, SETTINGS_PACING_DISPLAY };
+enum { SETTINGS_SCALER_AUTO, SETTINGS_SCALER_POINT, SETTINGS_SCALER_BOX, SETTINGS_SCALER_LANCZOS, SETTINGS_SCALER_CATMULL,
+       SETTINGS_SCALER_BILINEAR, SETTINGS_SCALER_N };
+extern const char* const settings_scaler_names[SETTINGS_SCALER_N];   /* "auto", "point", ... (sly2.ini values) */
 
 /* The preset's value where a toggle is -1: Modern = motion blur on, flicker filter off, progressive;
  * Faithful = all three on (as on a PS2 on a TV). */
@@ -82,6 +87,9 @@ void settings_load(void);
 /* [display] aspect and hud as sly2.ini has them now (1), for a file edited while the game runs;
  * keys overridden by the environment keep the current values. 0: no file. */
 int settings_read_display(int* aspect_w, int* aspect_h, int* hud_centered);
+/* [graphics] internal_scale, outlines, filters, motion_blur, flicker_filter, interlacing and scaler as sly2.ini
+ * says now (copied into *g, which keeps its other fields): 1 if the file is there (runtime/gfx.c applies them) */
+int settings_read_graphics(ps2_settings_t* g);
 /* Write sly2.ini if there is none (window.c, when the window opens). */
 void settings_save_if_missing(void);
 /* Write keys into sly2.ini (created from the template if missing): n triples section, key, value.

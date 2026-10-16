@@ -74,6 +74,10 @@ static void hash_picture(const uint32_t* frame, int ok, int w, int h, int stride
 
 static void save_png(const char* suffix, const uint32_t* frame, int w, int h, int stride, uint32_t vblank) {
     if (!strcmp(outdir, "-")) return;     /* "-": no pictures (benchmark) */
+    static int cap = -2, saved;           /* GS_REPLAY_MAX_PNG=<n>: at most n pictures per run (corpus sweeps, disk space) */
+    if (cap == -2) cap = getenv("GS_REPLAY_MAX_PNG") ? atoi(getenv("GS_REPLAY_MAX_PNG")) : -1;
+    if (cap >= 0 && saved >= cap) return;
+    saved++;
     char path[1024];
     snprintf(path, sizeof path, "%s/frame_%06u%s.png", outdir, vblank, suffix);
     debug_write_png(path, frame, w, h, stride);
