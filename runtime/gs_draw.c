@@ -778,7 +778,11 @@ static void draw_prim(int type, const vtx* a, const vtx* b, const vtx* c) {
     }
     if (gs_front && env_ok) {            /* GPU frontend (gs_setup.h): sees every primitive */
         uint64_t attr = (reg[R_PRMODECONT] & 1) ? reg[R_PRIM] : reg[R_PRMODE];
-        gs_env_view ev = { &P, reg, (int)((attr >> 9) & 1), ofx, ofy, prim_iip, prim_aa1, prim_draws, gs_prim_version, hint_phase };
+        float hs = (float)hud_scale;
+        uint32_t hsb;
+        memcpy(&hsb, &hs, 4);
+        gs_env_view ev = { &P, reg, (int)((attr >> 9) & 1), ofx, ofy, prim_iip, prim_aa1, prim_draws, gs_prim_version, hint_phase,
+                           hud_on ? GS_ENV_HUD_ON | (uint32_t)hud_anchor << 1 : 0u, hud_on ? hsb : 0u };
         gs_front_swdraw = 0;
         gs_front->prim(&ev, type, a, b, c);
         swnow = gs_front_swdraw;         /* the frontend PUNTs it: the software rasterizer draws it now */

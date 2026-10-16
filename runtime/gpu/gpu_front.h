@@ -278,7 +278,10 @@ typedef struct {                                /* StateRec, 128 bytes */
     uint32_t xyoffset, pad;
     uint64_t dimx;                              /* DIMX (16-bit frames with DTHE) */
     uint32_t phase;                             /* GPU_PH_* (diagnostic; | GPU_PH_HINT + label << 16 from a PHASE hint) */
-    uint32_t pad2[5];
+    uint32_t phase_label;                       /* the PHASE hint's label (diagnostic) */
+    uint32_t hud, hud_scale;                    /* (M6) HUD hint of its primitives: GS_ENV_HUD_ON | anchor << 1, X scale
+                                                   (float bits); the decoder applies it today, the VS at scale in M10 */
+    uint32_t pad2[2];
 } gpu_staterec;
 typedef struct {                                /* ROV triangle, 256 bytes (SV_PrimitiveID) */
     int64_t zrow, zdy, zdx;                     /* Z 16.16 at x = 0 of row by0, per-row and per-pixel steps */

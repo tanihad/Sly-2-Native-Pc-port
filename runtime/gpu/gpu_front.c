@@ -187,6 +187,7 @@ typedef struct {
     int rmw;                             /* a read-modify-write form only the ROV tier does (wrap, bit masks, DATE, blend) */
     int depth_class;
     uint32_t phase_hint;                 /* PHASE hint label the StateRec was built with */
+    uint32_t hud_hint, hud_scale;        /* HUD hint state it was built with (M6) */
     uint32_t straddle_frame;             /* gf_frame + 1 when a primitive of this state was escalated (sticky) */
     /* texture */
     int tme, tpsm, tw, th, wms, wmt, minu, maxu, minv, maxv, bil, stq;
@@ -552,7 +553,9 @@ static uint32_t phase_of(uint32_t texsrc) {
 }
 
 static uint32_t state_for(const gs_env_view* ev, uint32_t texsrc) {
-    if (S.state_valid && S.state_texsrc == texsrc && S.phase_hint == ev->phase) return S.state_index;
+    if (S.state_valid && S.state_texsrc == texsrc && S.phase_hint == ev->phase && S.hud_hint == ev->hud &&
+        S.hud_scale == ev->hud_scale)
+        return S.state_index;
     const gs_prim* P = ev->P;
     const uint64_t* reg = ev->reg;
     int ctx = ev->ctx;
@@ -580,7 +583,9 @@ static uint32_t state_for(const gs_env_view* ev, uint32_t texsrc) {
               (uint32_t)P->scanmsk << GPU_SF_SCANMSK_SHIFT | (ctx ? GPU_SF_CTX : 0) | (P->ffmt->bits == 16 ? GPU_SF_FB16 : 0);
     if (P->ffmt->bits == 16 && P->dthe) r.dimx = reg[0x44];   /* DIMX */
     r.phase = phase_of(texsrc) | (ev->phase ? GPU_PH_HINT : 0);
-    r.pad2[0] = ev->phase;               /* (the PHASE hint's label) */
+    r.phase_label = ev->phase;           /* (the PHASE hint's label) */
+    r.hud = ev->hud;                     /* (M6: HUD hint state, for the M10 vertex-shader transform) */
+    r.hud_scale = ev->hud_scale;
     r.alpha = P->abe ? (uint32_t)P->asel | (uint32_t)P->bsel << 2 | (uint32_t)P->csel << 4 | (uint32_t)P->dsel << 6 |
                        (uint32_t)P->fix << 8 : 0;
     uint32_t zb = !P->zfmt ? 0 : P->zfmt->bits == 16 ? 1 : P->zfmt->bits == 24 ? 2 : 3;
@@ -589,6 +594,8 @@ static uint32_t state_for(const gs_env_view* ev, uint32_t texsrc) {
     S.state_index = staterec_index(&r);
     S.state_texsrc = texsrc;
     S.phase_hint = ev->phase;
+    S.hud_hint = ev->hud;
+    S.hud_scale = ev->hud_scale;
     S.state_valid = 1;
     return S.state_index;
 }

@@ -37,7 +37,7 @@ _Static_assert(sizeof(fr_vtx) == 32, "compact vertex");
 typedef struct { fr_hdr h; uint8_t type, nv, ref[3], pad[3]; fr_vtx v[]; } fr_prim;   /* ref: slot, | 0x80 = next v[] */
 typedef struct { uint32_t idx, pad; uint64_t val; } fr_word;   /* idx < 0x10000: gs_prim word, else register */
 /* the environment of a state version: changed words of gs_prim / registers, and the per-version fields */
-typedef struct { fr_hdr h; uint32_t n, version; int32_t ofx, ofy; uint8_t ctx, iip, aa1, draws; uint32_t phase; fr_word w[]; } fr_state;
+typedef struct { fr_hdr h; uint32_t n, version; int32_t ofx, ofy; uint8_t ctx, iip, aa1, draws; uint32_t phase, hud, hud_scale, pad; fr_word w[]; } fr_state;
 typedef struct { fr_hdr h; uint64_t bb, pos, rr; uint32_t dir, pad; } fr_xfer;
 typedef struct { fr_hdr h; uint32_t bytes, pad; } fr_xdata;
 typedef struct { fr_hdr h; uint32_t n, pad; uint16_t id[]; } fr_blocks;   /* ids padded to 8, then n x 256 bytes */
@@ -134,7 +134,7 @@ static void commit(const void* rec) {
 #define P_WORDS (sizeof(gs_prim) / 8)
 static uint64_t sentP[P_WORDS], sentR[0x64];
 static uint32_t sent_version;
-static int have_sent, sent_env[7], clut_pending;
+static int have_sent, sent_env[9], clut_pending;
 static uint32_t front_version;            /* the frontend's state version: bumped only when something it reads changed */
 static uint32_t p_list_n;              /* wlist entries that are gs_prim words */
 static uint16_t pclut[512];
@@ -221,7 +221,8 @@ static void send_state(const gs_env_view* ev) {
         }
     }
     int env_same = have_sent && ev->ctx == sent_env[0] && ev->ofx == sent_env[1] && ev->ofy == sent_env[2] && ev->iip == sent_env[3] &&
-                   ev->aa1 == sent_env[4] && ev->draws == sent_env[5] && (int)ev->phase == sent_env[6];
+                   ev->aa1 == sent_env[4] && ev->draws == sent_env[5] && (int)ev->phase == sent_env[6] &&
+                   (int)ev->hud == sent_env[7] && (int)ev->hud_scale == sent_env[8];
     sent_version = ev->version;
     /* Nothing the frontend reads changed (Sly rewrites TEX0 with the same value for ~40% of its draws
      * in ep8): no new version for the frontend, which then skips its state lookup. A CLUT change
@@ -230,12 +231,16 @@ static void send_state(const gs_env_view* ev) {
     clut_pending = 0;
     have_sent = 1;
     sent_env[0] = ev->ctx; sent_env[1] = ev->ofx; sent_env[2] = ev->ofy; sent_env[3] = ev->iip; sent_env[4] = ev->aa1; sent_env[5] = ev->draws; sent_env[6] = (int)ev->phase;
+    sent_env[7] = (int)ev->hud; sent_env[8] = (int)ev->hud_scale;
     fr_state* s = reserve(FR_STATE, (uint32_t)(sizeof(fr_state) + n * sizeof(fr_word)));
     s->n = n;
     s->version = ++front_version;
     s->ofx = ev->ofx; s->ofy = ev->ofy;
     s->ctx = (uint8_t)ev->ctx; s->iip = (uint8_t)ev->iip; s->aa1 = (uint8_t)ev->aa1; s->draws = (uint8_t)ev->draws;
     s->phase = ev->phase;
+    s->hud = ev->hud;
+    s->hud_scale = ev->hud_scale;
+    s->pad = 0;
     memcpy(s->w, dtmp, n * sizeof(fr_word));
     commit(s);
 }
@@ -263,7 +268,8 @@ static void px_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
     /* (registers can change without a new state version, e.g. RGBAQ, but the frontend reads only
      * registers whose writes start a new version) */
     if (!have_sent || ev->version != sent_version || ev->ctx != sent_env[0] || ev->ofx != sent_env[1] || ev->ofy != sent_env[2] ||
-        ev->iip != sent_env[3] || ev->aa1 != sent_env[4] || ev->draws != sent_env[5] || (int)ev->phase != sent_env[6])
+        ev->iip != sent_env[3] || ev->aa1 != sent_env[4] || ev->draws != sent_env[5] || (int)ev->phase != sent_env[6] ||
+        (int)ev->hud != sent_env[7] || (int)ev->hud_scale != sent_env[8])
         send_state(ev);
     int nv = type == 0 ? 1 : type == 1 || type == 2 || type == 6 ? 2 : 3;
     const gs_vtx* vs[3] = { a, b, c };
@@ -466,6 +472,7 @@ static DWORD WINAPI fthread_main(LPVOID arg) {
         case FR_STATE: {
             const fr_state* s = (const fr_state*)h;
             fev.ctx = s->ctx; fev.ofx = s->ofx; fev.ofy = s->ofy; fev.iip = s->iip; fev.aa1 = s->aa1; fev.draws = s->draws; fev.phase = s->phase;
+            fev.hud = s->hud; fev.hud_scale = s->hud_scale;
             fev.version = s->version;
             for (uint32_t i = 0; i < s->n; i++) {
                 if (s->w[i].idx < 0x10000u) memcpy((uint8_t*)&fP + (size_t)s->w[i].idx * 8, &s->w[i].val, 8);

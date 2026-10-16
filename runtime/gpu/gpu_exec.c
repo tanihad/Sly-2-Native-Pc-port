@@ -1459,7 +1459,6 @@ static void exec_present(const gpu_front_frame_data* fd, const gpu_fop_present* 
     in.field_code = di->field_code;
     if (o->mem_n && o->mem_off + o->mem_n * (sizeof(gpu_dl_entry) + 2) <= fd->data_bytes) {
         /* circuits shown from memory: vram_buf + the GPU words of their rects, in a scratch copy */
-        const gpu_dl_entry* e = (const gpu_dl_entry*)(fd->data + o->mem_off);
         const uint16_t* w = (const uint16_t*)(fd->data + o->mem_off + o->mem_n * sizeof(gpu_dl_entry));
         ID3D11DeviceContext_CopyResource(gpu_rt.ctx, (ID3D11Resource*)X.scratch, (ID3D11Resource*)X.vram);
         gpu_rt.n_copies++;
