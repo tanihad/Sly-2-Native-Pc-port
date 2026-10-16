@@ -923,7 +923,7 @@ int main(int argc, char** argv) {
         const char* e = getenv("PS2_GS_VERIFY");
         hc.verify = e ? atoi(e) : 0;
         e = getenv("PS2_GS_HW_STATS");
-        hc.stats = e && atoi(e) != 0;
+        hc.stats = e ? atoi(e) : 0;              /* 1: per second, 2: also every frame with memory traffic */
         e = getenv("PS2_GS_SAME_THREAD");
         hc.same_thread = e && atoi(e) != 0;
         hc.out_dir = dump_dir;

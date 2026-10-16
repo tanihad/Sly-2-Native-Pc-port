@@ -142,6 +142,9 @@ static void stats_vblank(uint32_t vblank) {
             const gpu_front_frame* f = &ff[i];
             uint32_t punts = f->tier[GPU_TIER_PUNT];
             if (punts) InterlockedExchange(&last_punt_vblank, (LONG)f->vblank);
+            if (C.stats > 1 && (f->downloads || f->loads || f->xcopies || punts))   /* PS2_GS_HW_STATS=2: per frame */
+                hlog("frame v%u: downloads %u (%u blocks), loads %u (%u blocks), cross copies %u, PUNT %u, targets created %u",
+                     f->vblank, f->downloads, f->download_blocks, f->loads, f->load_blocks, f->xcopies, punts, f->targets_created);
             if (!C.stats) continue;
             if (S.nfront < SW) S.front[S.nfront++] = f->thread_ms;
             S.draws += f->d3d_draws; S.ff += f->ff_draws; S.rov += f->rov_draws; S.rov_runs += f->rov_runs;
