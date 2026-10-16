@@ -541,7 +541,7 @@ static void vblank(ps2_ctx* ctx) {
     gs_vsync();
     int perf_prev = perf_enter(PERF_PRESENT);
     if (gpu_backend) {                           /* GPU renderer: switches, device loss, its debug keys */
-        int keys = headless ? 0 : window_take_debug_keys();
+        int keys = window_take_debug_keys();     /* (also the PS2_INPUT tokens "renderer" / "losedevice") */
         if (keys & WINDOW_KEY_SWITCH) gpu_hw_request_switch();
         if (keys & WINDOW_KEY_LOSE_DEVICE) gpu_simulate_device_lost();
         gpu_hw_ee_vblank(vblank_count);

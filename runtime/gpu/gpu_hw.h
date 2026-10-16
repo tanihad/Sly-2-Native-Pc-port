@@ -12,8 +12,9 @@
  * Environment (besides the settings): PS2_GS_HW_STATS=1 per-second report of per-thread and GPU times;
  * PS2_GS_VERIFY=N the software renderer also runs and every Nth VBlank both GS memories are compared
  * (10.2 tolerances; a mismatch dumps both pictures and records the next 60 VBlanks); PS2_GS_DEBUG_KEYS=1
- * F9 = switch GPU <-> software, Shift+F9 = simulate a device loss; PS2_GPU_LOSE_AT=<vblank>[,...]
- * simulated device losses (tests); PS2_GS_SAME_THREAD=1 the frontend on the GS thread. */
+ * F9 = switch GPU <-> software, Shift+F9 = simulate a device loss (also the PS2_INPUT tokens "renderer" and
+ * "losedevice"); PS2_GPU_LOSE_AT=<vblank>[,...] simulated device losses and PS2_GPU_SWITCH_AT=<vblank>[,...]
+ * backend switches (tests); PS2_GS_SAME_THREAD=1 the frontend on the GS thread. */
 #pragma once
 #include <stdint.h>
 

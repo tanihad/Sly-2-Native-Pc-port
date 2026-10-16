@@ -1043,7 +1043,8 @@ static void picture(const uint32_t* frame, int ok, int w, int h, uint32_t vblank
  * back (gpu_hw's dump path) and compared with the reference compose of the GPU's memory (gs_compose_from
  * of a read-back: must be identical), and with --game-verify with the software renderer's picture
  * (the picture gate of 10.2). --bench: no read-backs (render-bench line of the game path). */
-static int game_mode, game_verify;
+static int game_mode, game_verify, game_save;
+static uint32_t game_sw_pics;
 static uint32_t* game_px;
 static int game_w, game_h;
 static volatile LONG game_got;
@@ -1065,14 +1066,24 @@ static void game_vblank(uint32_t vblank) {
     gs_priv_snapshot(pr);
     static gs_display_snap s;
     gs_display_snapshot(&s, pr);
-    InterlockedExchange(&game_got, 0);
-    gpu_hw_vblank(&s, vblank, gs_hint_content43());
+    gpu_hw_ee_vblank(vblank);            /* (as the game's EE thread: switches, device loss, PUNT fall-back) */
     pictures++;
     progress++;
+    if (!gpu_hw_active()) {              /* (fell back to the software renderer: its picture) */
+        static uint32_t swp[1024 * 1024];
+        int w = 0, h = 0;
+        int ok = gs_compose(&s, swp, 1024, &w, &h);
+        game_sw_pics++;
+        if (ok && game_save && strcmp(outdir, "-")) save_png("", swp, w, h, 1024, vblank);
+        return;
+    }
+    InterlockedExchange(&game_got, 0);
+    gpu_hw_vblank(&s, vblank, gs_hint_content43());
     if (!strcmp(outdir, "-")) return;
     LONG zero = 0;
     while (!game_got) WaitOnAddress((volatile VOID*)&game_got, &zero, sizeof zero, 50);
     game_pics++;
+    if (game_save && game_w) save_png("", game_px, game_w, game_h, game_w, vblank);
     if (!hwmem) hwmem = malloc(GS_VRAM_SIZE);
     if (!hw_hist) hw_hist = gs_compose_hist_new();
     static uint32_t ref[1024 * 1024], swf[1024 * 1024];
@@ -1130,9 +1141,11 @@ static void game_report(void) {
     gpu_exec_counters xc;
     gpu_exec_get_counters(&xc);
     fprintf(stderr, "game: %u pictures checked (%u display off): %u differ from the reference compose (%llu px)%s; "
-                    "FF draws %llu, ROV draws %llu, frames %llu\n",
+                    "FF draws %llu, ROV draws %llu, frames %llu%s\n",
             game_pics, game_off, game_ref_diff, (unsigned long long)game_ref_diff_px, game_verify ? "" : " (no sw)",
-            (unsigned long long)xc.ff_draws, (unsigned long long)xc.rov_draws, (unsigned long long)xc.frames);
+            (unsigned long long)xc.ff_draws, (unsigned long long)xc.rov_draws, (unsigned long long)xc.frames,
+            game_sw_pics ? "; software renderer pictures after a fall-back: see below" : "");
+    if (game_sw_pics) fprintf(stderr, "game: %u pictures by the software renderer (fall-back)\n", game_sw_pics);
     if (game_verify)
         fprintf(stderr, "game: vs sw: %u pictures differ, %u beyond the picture gate, min PSNR %.2f\n", game_sw_diff, game_sw_beyond, min_psnr);
 }
@@ -1378,6 +1391,7 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--scale") && i + 1 < argc) scale = atoi(argv[++i]);
 #ifdef GS_REPLAY_GPU
         else if (!strcmp(argv[i], "--game")) game_mode = 1;
+        else if (!strcmp(argv[i], "--game-save")) game_save = 1;   /* (--game: every picture as frame_N.png) */
         else if (!strcmp(argv[i], "--game-verify") && i + 1 < argc) { game_mode = 1; game_verify = atoi(argv[++i]); }
 #endif
         else if (!strcmp(argv[i], "--vram-hash") && i + 1 < argc) {

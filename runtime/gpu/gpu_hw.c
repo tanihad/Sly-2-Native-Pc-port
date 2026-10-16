@@ -29,6 +29,8 @@ static volatile LONG last_punt_vblank;   /* GS thread (stats drain): the last VB
 static volatile LONG front_threaded;     /* mirror of gpu_front_threaded() for the GS thread */
 static uint32_t lose_at[16];             /* PS2_GPU_LOSE_AT */
 static int nlose_at;
+static uint32_t switch_at[16];           /* PS2_GPU_SWITCH_AT: backend switches at these VBlanks (tests) */
+static int nswitch_at;
 
 static void hlog(const char* fmt, ...) {
     va_list ap;
@@ -292,6 +294,9 @@ int gpu_hw_start(const gpu_hw_config* cfg) {
     const char* e = getenv("PS2_GPU_LOSE_AT");
     for (const char* s = e; s && *s && nlose_at < 16; s = strchr(s, ',') ? strchr(s, ',') + 1 : "")
         lose_at[nlose_at++] = (uint32_t)strtoul(s, NULL, 10);
+    e = getenv("PS2_GPU_SWITCH_AT");
+    for (const char* s = e; s && *s && nswitch_at < 16; s = strchr(s, ',') ? strchr(s, ',') + 1 : "")
+        switch_at[nswitch_at++] = (uint32_t)strtoul(s, NULL, 10);
     gpu_set_picture_done(on_picture_done, NULL);
     if (!render_start()) return 0;
     render_on = 1;
@@ -377,6 +382,7 @@ int gpu_hw_read_memory(uint8_t* out) {
 static void verify_vblank(const gs_display_snap* snap, uint32_t vblank);
 
 void gpu_hw_vblank(const gs_display_snap* snap, uint32_t vblank, int content43) {
+    if (!active) return;                 /* (the software renderer draws: its own pictures) */
     gpu_display_info di;
     memset(&di, 0, sizeof di);
     memcpy(di.priv, snap->priv, sizeof di.priv);
@@ -471,6 +477,8 @@ void gpu_hw_ee_vblank(uint32_t vblank) {
     if (!render_on) return;
     for (int i = 0; i < nlose_at; i++)
         if (lose_at[i] == vblank) { hlog("simulating a device loss at VBlank %u (PS2_GPU_LOSE_AT)", vblank); gpu_simulate_device_lost(); }
+    for (int i = 0; i < nswitch_at; i++)
+        if (switch_at[i] == vblank) InterlockedExchange(&switch_req, 1);
     if (gpu_device_lost()) {
         gs_sync();                       /* (pictures still queued are reported by the render thread as it skips them) */
         losses++;

@@ -103,6 +103,8 @@ static const struct { const char* name; int axis, value; } script_sticks[] = {
  * "rec" starts the PS2_GS_RECORD GS recording at the next VBlank (gs_record.c; with
  * PS2_GS_RECORD_FROM=-1 only this starts it).
  * "aspect" and "hud" switch the display aspect / the HUD mode as F7 / F8 do (aspect.c).
+ * "renderer" switches between the GPU and the software renderer, "losedevice" simulates a GPU device loss
+ * (the debug keys F9 / Shift+F9 of window_gpu.h; GPU renderer only).
  *   "t<seconds>:<button>[:<hold>]"      at a wall-clock time since the first pad read, e.g.
  *       "t95:start": scenes synchronised to sound (the intro cutscene follows its music stream)
  *       last a fixed real time, however fast the game runs.
@@ -134,6 +136,9 @@ static double script_seconds(void) {
 #define SCRIPT_AXIS  (-3)                 /* lxHH etc.: axis/value in the token */
 #define SCRIPT_RAM   (-4)                 /* "ram": dump EE RAM (debug) */
 #define SCRIPT_REC   (-11)                /* "rec": start the GS recording (gs_record.c) */
+#define SCRIPT_GPUSWITCH (-12)            /* "renderer": GPU <-> software renderer (as F9, window_gpu.h) */
+#define SCRIPT_GPULOSE (-13)              /* "losedevice": simulate a GPU device loss (as Shift+F9) */
+static void script_debug_key(int key);
 void gs_record_start_now(void);
 #define SCRIPT_PAUSE (-5)                 /* "pause": stop until the next live input line */
 #define SCRIPT_RELEASE (-6)               /* "release": end the holds in progress */
@@ -189,7 +194,8 @@ static void script_parse(const char* s) {
                     !strcmp(name, "release") ? SCRIPT_RELEASE : !strcmp(name, "pause") ? SCRIPT_PAUSE :
                     !strcmp(name, "calls") ? SCRIPT_CALLS : !strcmp(name, "watch") ? SCRIPT_WATCH :
                     !strcmp(name, "aspect") ? SCRIPT_ASPECT : !strcmp(name, "hud") ? SCRIPT_HUD :
-                    !strcmp(name, "rec") ? SCRIPT_REC : -1,
+                    !strcmp(name, "rec") ? SCRIPT_REC : !strcmp(name, "renderer") ? SCRIPT_GPUSWITCH :
+                    !strcmp(name, "losedevice") ? SCRIPT_GPULOSE : -1,
             axis = 0, value = 0x80;
         for (int b = 0; b < SCRIPT_NBUTTONS; b++)
             if (!strcmp(name, script_buttons[b].name)) found = b;
@@ -229,6 +235,7 @@ static const char* script_name(int b) {
     return b == SCRIPT_NONE ? "none" : b == SCRIPT_AXIS ? "axis" : b == SCRIPT_RAM ? "ram" : b == SCRIPT_PAUSE ? "pause" :
            b == SCRIPT_RELEASE ? "release" : b == SCRIPT_CALLS ? "calls" : b == SCRIPT_WATCH ? "watch" :
            b == SCRIPT_ASPECT ? "aspect" : b == SCRIPT_HUD ? "hud" : b == SCRIPT_REC ? "rec" :
+           b == SCRIPT_GPUSWITCH ? "renderer" : b == SCRIPT_GPULOSE ? "losedevice" :
            b >= SCRIPT_NBUTTONS ? script_sticks[b - SCRIPT_NBUTTONS].name : script_buttons[b].name;
 }
 
@@ -378,6 +385,10 @@ static void script_apply(int port, pad_input* in) {
         if (b == SCRIPT_ASPECT) { if (now == script[i].start) switch_aspect(); continue; }
         if (b == SCRIPT_HUD) { if (now == script[i].start) switch_hud(); continue; }
         if (b == SCRIPT_REC) { if (now == script[i].start) gs_record_start_now(); continue; }
+        if (b == SCRIPT_GPUSWITCH || b == SCRIPT_GPULOSE) {
+            if (now == script[i].start) script_debug_key(b == SCRIPT_GPUSWITCH ? WINDOW_KEY_SWITCH : WINDOW_KEY_LOSE_DEVICE);
+            continue;
+        }
         if (b == SCRIPT_AXIS) {
             uint8_t v = (uint8_t)script[i].value;
             switch (script[i].axis) {
@@ -579,6 +590,7 @@ int window_external_presenter(void) { return ext_on != 0; }
 void window_note_presented(void) { InterlockedIncrement(&fb_presented); }
 uint32_t window_resize_serial(void) { return (uint32_t)resize_serial; }
 int window_take_debug_keys(void) { return (int)InterlockedExchange(&debug_keys, 0); }
+static void script_debug_key(int key) { InterlockedOr(&debug_keys, key); }   /* (scripts: no PS2_GS_DEBUG_KEYS needed) */
 
 /* window_present for a picture shown at aspect_w:aspect_h (widescreen: the display aspect, or 4:3 for
  * pictures of 4:3 content, which are then pillarboxed; ps2_runtime.c's present_frame decides). */
