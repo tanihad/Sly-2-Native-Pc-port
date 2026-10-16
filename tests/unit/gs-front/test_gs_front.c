@@ -132,7 +132,9 @@ int main(void) {
     for (int x = 0; x < 512; x += 32) sprite(x, 0, x + 32, 224, 0);
     gpu_front_frame f = endf();
     CHECK(f.clears_z == 1 && f.clears_c == 0, "Z-only clear: clears_z %u clears_c %u", f.clears_z, f.clears_c);
-    CHECK(f.tier[GPU_TIER_FF] == 16 && f.d3d_draws == 1, "Z clear: FF %u, D3D draws %u", f.tier[GPU_TIER_FF], f.d3d_draws);
+    /* (M5: the fill's FF draw is dropped, the clear does it) */
+    CHECK(f.tier[GPU_TIER_FF] == 16 && f.d3d_draws == 0 && f.fill_draws_dropped == 1, "Z clear: FF %u, D3D draws %u, dropped %u",
+          f.tier[GPU_TIER_FF], f.d3d_draws, f.fill_draws_dropped);
     CHECK(f.loads == 0, "a full overwrite needs no load (%u)", f.loads);
 
     /* 2. a colour clear, then a shadow volume: G-channel wrapping subtract with DATE -> ROV */
@@ -277,14 +279,16 @@ int main(void) {
         f = endf();
         CHECK(f.tex_view_alpha == 16 && f.shadow_copies == 1, "darken: %u alpha views, %u shadow copies", f.tex_view_alpha,
               f.shadow_copies);
-        /* the same with RGB-only writes (FBMSK FF000000): lanes disjoint, no copy */
+        /* the same with RGB-only writes (FBMSK FF000000): lanes disjoint - read in place on the ROV tier, but
+         * this lerp is an FF draw (M5), which cannot sample its render target: one shadow copy */
         clear_frame(0x38, 8, PSMCT32);
         frame(0x38, 8, PSMCT32, 0xFF000000u);
         tex0(0x38 * 32, 8, PSMT8H, 10, 10, 1, 1, 0x3000, 1);
         W(PRIM, P_SPRITE | TME | FST | ABE);
         for (int x = 0; x < 512; x += 32) sprite_uv(x, 0, x + 32, 224, x, 0, x + 32, 224);
         f = endf();
-        CHECK(f.shadow_copies == 0, "darken RGB only: %u shadow copies", f.shadow_copies);
+        CHECK(f.shadow_copies == 1 && f.tier[GPU_TIER_ROV] == 0, "darken RGB only (FF): %u shadow copies, ROV %u", f.shadow_copies,
+              f.tier[GPU_TIER_ROV]);
     }
 
     /* 9. AA1 outline pair: ZB_ONLY line then AA1 RGB_ONLY line, line pixel records */
