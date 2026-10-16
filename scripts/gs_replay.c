@@ -1594,12 +1594,22 @@ int main(int argc, char** argv) {
         double dmed = median(g, nd);
         /* game frames (M4: VBlanks with >= 1000 primitives, as M2 counts them; replay start excluded) */
         size_t ngf = 0;
+        uint32_t worst_v = 0;
+        double worst_g = -1;
         for (size_t i = 0; i < nsts; i++) {
             if (sts[i].gpu_ms < 0 || sts[i].partial) continue;
             for (size_t j = 0; j < nff; j++)
-                if (ff[j].vblank == sts[i].vblank) { if (ff[j].kicks >= 1000 && j >= 2) g[ngf++] = sts[i].gpu_ms; break; }
+                if (ff[j].vblank == sts[i].vblank) {
+                    if (ff[j].kicks >= 1000 && j >= 2) {
+                        g[ngf++] = sts[i].gpu_ms;
+                        if (sts[i].gpu_ms > worst_g) { worst_g = sts[i].gpu_ms; worst_v = sts[i].vblank; }
+                    }
+                    break;
+                }
         }
         double gfmed = median(g, ngf), gfmax = ngf ? g[ngf - 1] : 0;
+        double gfp90 = ngf ? g[(ngf * 9) / 10 < ngf ? (ngf * 9) / 10 : ngf - 1] : 0;
+        fprintf(stderr, "ref-bench-dist game_frames=%zu gpu_p90_game=%.4f worst_vblank=%u\n", ngf, gfp90, worst_v);
         /* (M5) render thread per game frame: D3D draws, CPU ms, wall ms */
         double* gd = malloc((nsts + 1) * sizeof *gd);
         double* gc = malloc((nsts + 1) * sizeof *gc);

@@ -2,8 +2,8 @@
 # corpus recording (tests/gpu/corpus.txt) replayed with the frontend alone (gs_replay -Backend hwdry
 # -FrontOnly -StreamHash) on the decoding thread and on its own thread; the hashes of every frame's
 # command stream and data must be identical (and 0 PUNT).
-#   powershell -ExecutionPolicy Bypass -File scripts\gpu_fthread_check.ps1 [-Only ep8_boss,gpu-C_thiefnet] [-CorpusRoot <dir>]
-param([string[]]$Only = @(), [string]$CorpusRoot = "")
+#   powershell -ExecutionPolicy Bypass -File scripts\gpu_fthread_check.ps1 [-Only ep8_boss,gpu-C_thiefnet] [-CorpusRoot <dir>] [-Mixed]
+param([string[]]$Only = @(), [string]$CorpusRoot = "", [switch]$Mixed)
 $Only = @($Only | ForEach-Object { $_ -split ',' } | Where-Object { $_ })
 $root = Split-Path $PSScriptRoot -Parent
 $main = $root
@@ -32,6 +32,7 @@ foreach ($rel in $recs) {
         $a = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'gs_replay.ps1'), '-Rec', $rec,
                '-Out', (Join-Path $out 'bin'), '-Bench', '-Backend', 'hwdry', '-FrontOnly', '-StreamHash', '-Log', $log)
         if ($t -eq 'thread') { $a += '-FrontThread' }
+        if ($Mixed) { $a += '-Mixed' }        # (M5: the mixed-frame stream: FF records, escalation)
         & powershell @a | Out-Null
         $h[$t] = ((Get-Content $log | Where-Object { $_ -like 'stream-hash*' }) -join '') -replace 'stream-hash ', ''
         $h["$t.rc"] = $LASTEXITCODE

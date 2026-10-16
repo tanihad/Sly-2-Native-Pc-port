@@ -1141,6 +1141,80 @@ static uint32_t emit_linepix(const gs_env_view* ev, const gs_line* L, const gs_v
     return n;
 }
 
+/* ---- the exact ATST split (M5) ----------------------------------------------------------------------
+ * The two-draw split of 4.2 (passing fragments first, then the failing ones) reorders fragments only where
+ * a failing fragment of a primitive is followed, at the same pixel, by a passing fragment of a later
+ * primitive of the same draw (a passing fragment followed by a failing one keeps its order: the pass draw
+ * comes first). So the open split draw keeps a bitmap of the pixels its fail-capable primitives cover (the
+ * software renderer's spans, word operations per row); a pass-capable primitive touching one of them starts
+ * a new draw. M5 measured the plain split visibly different from REF (ep6, ep2 hub, ep1 hub, m1 brawl) and
+ * the ROV escalation slower than REF in the hubs (UAV draws and FF <-> UAV switches). At scale > 1 a
+ * triangle's samples can reach native pixels outside its sample-0 spans: the spans are widened by a pixel. */
+#define SB_W 32                                   /* 64-bit words per row: 2048 pixels */
+static uint64_t sbits[2048][SB_W];
+static int sb_y0 = 2048, sb_y1 = -1, sb_w0 = SB_W, sb_w1 = -1;
+static uint32_t sb_owner, od_serial;              /* the open draw the bitmap belongs to */
+
+static void sb_reset(void) {
+    for (int y = sb_y0; y <= sb_y1; y++) memset(&sbits[y][sb_w0], 0, (size_t)(sb_w1 - sb_w0 + 1) * 8);
+    sb_y0 = 2048; sb_y1 = -1; sb_w0 = SB_W; sb_w1 = -1;
+}
+
+/* pixels [xa, xb] of row y: set (set = 1) or test; returns 1 when a tested pixel is set */
+static int sb_span(int y, int xa, int xb, int set) {
+    if (y < 0 || y > 2047) return 0;
+    if (xa < 0) xa = 0;
+    if (xb > 2047) xb = 2047;
+    if (xa > xb) return 0;
+    int wa = xa >> 6, wb = xb >> 6;
+    if (set) {
+        if (y < sb_y0) sb_y0 = y;
+        if (y > sb_y1) sb_y1 = y;
+        if (wa < sb_w0) sb_w0 = wa;
+        if (wb > sb_w1) sb_w1 = wb;
+    }
+    for (int w = wa; w <= wb; w++) {
+        int lo = w == wa ? xa & 63 : 0, hi = w == wb ? xb & 63 : 63;
+        uint64_t m = (hi == 63 ? ~0ull : (1ull << (hi + 1)) - 1) & ~((1ull << lo) - 1);
+        if (set) sbits[y][w] |= m;
+        else if (sbits[y][w] & m) return 1;
+    }
+    return 0;
+}
+
+/* the primitive's pixels (triangle spans, sprite rectangle, line / point pixel records): set or test */
+static int sb_prim(int cls, const gs_tri* T, const gs_sprite* sp, size_t lp_start, uint32_t lp_n, int px, int py, int set) {
+    int d = gf_cfg.scale > 1;                     /* (widened at scale > 1) */
+    if (cls == GPU_PC_TRI) {
+        gs_edge e[3];
+        gs_tri_edges(T, e);
+        int hit = 0;
+        for (int y = T->by0; y <= T->by1; y++, gs_tri_edges_next(e)) {
+            int64_t xl, xr;
+            gs_tri_row(e, T->bx0, T->bx1, &xl, &xr);
+            if (xl > xr) continue;
+            for (int k = -d; k <= d; k++) hit |= sb_span(y + k, (int)xl - d, (int)xr + d, set);
+            if (hit && !set) return 1;
+        }
+        return hit;
+    }
+    if (cls == GPU_PC_SPRITE) {
+        for (int y = sp->py0 - d; y <= sp->py1 + d; y++)
+            if (sb_span(y, sp->px0 - d, sp->px1 + d, set) && !set) return 1;
+        return 0;
+    }
+    if (cls == GPU_PC_LINEPIX) {
+        const linerec* r = (const linerec*)(A_rec.p + lp_start);
+        for (uint32_t i = 0; i < lp_n; i++)
+            for (int k = -d; k <= d; k++)
+                if (sb_span(r[i].py + k, r[i].px - d, r[i].px + d, set) && !set) return 1;
+        return 0;
+    }
+    for (int k = -d; k <= d; k++)
+        if (sb_span(py + k, px - d, px + d, set) && !set) return 1;
+    return 0;
+}
+
 /* lockstep checkpoints (gpu_front_set_checkpoint_hook) */
 static void (*cp_hook)(uint32_t index, int frame_changed, const void* ev, int type, const void* const* v, void* user);
 static void* cp_user;
@@ -1392,17 +1466,13 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
         if (S.rov) why = S.rov - 1;
         else if (S.cd_dep && S.c_as && as_hi > 128) why = GPU_ROV_C_OVER128;
         else if (z32_high || (S.zt && S.zt->z_high)) why = GPU_ROV_Z32_HIGH;
-        else if (outcome && (gf_cfg.straddle_rov || (gf_cfg.mixed && !gf_cfg.split_ff)) &&
-                 (outcome == 4 || S.straddle_frame == gf_frame + 1)) {
-            /* (sticky for the rest of the frame: further primitives of a state that straddled join its ROV
-             * draw instead of alternating FF / ROV draws: every D3D11 draw that writes a UAV waits for the
-             * previous one, and the FF <-> UAV switches cost ~20 us each on the RTX 4060 Ti) */
+        else if (outcome && gf_cfg.straddle_rov && (outcome == 4 || S.straddle_frame == gf_frame + 1)) {
+            /* (the escalation flag of 4.3, off by default since M5's measurement: the exact split, sb_prim,
+             * does the same on the FF tier. Sticky for the rest of the frame: further primitives of a state
+             * that straddled join its ROV draw instead of alternating FF / ROV draws) */
             why = GPU_ROV_STRADDLE;
             S.straddle_frame = gf_frame + 1;
         }
-        /* (M5 measured the FF two-draw split against REF: it reorders overlapping fragments visibly (ep6, ep2
-         * hub, ep1 hub, m1 brawl: differences above 16), so in mixed frames straddling pass-A primitives take
-         * the ROV tier by default - the design's escalation; split_ff keeps the split) */
         else if (gf_cfg.ff_rov_mask) {   /* (classes kept on the ROV tier: M5 moved them to FF one at a time) */
             static const uint32_t bc[5] = { GPU_FFC_OFF, GPU_FFC_NOCOLOR, GPU_FFC_ADD, GPU_FFC_REVSUB, GPU_FFC_DUAL };
             uint32_t c = bc[S.blend] | (S.fatst == FATST_SPLIT ? GPU_FFC_SPLIT : 0) | (ts.T ? GPU_FFC_VIEW : 0) |
@@ -1523,9 +1593,18 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
     }
     uint64_t sckey = (uint64_t)P->scx0 | (uint64_t)P->scy0 << 11 | (uint64_t)P->scx1 << 22 | (uint64_t)P->scy1 << 33;
     key ^= sckey * 0x9E3779B97F4A7C15ull;    /* (the draw's scissor is its first primitive's) */
+    /* the exact ATST split (above sb_prim): a pass-capable primitive over pixels of an earlier fail-capable
+     * one of the open draw starts a new draw */
+    int xsplit = tier == GPU_TIER_FF && S.fatst == FATST_SPLIT && outcome && !gf_cfg.split_ff;
+    if (xsplit && OD.open && OD.key == key && sb_owner == od_serial && (outcome & 5) &&
+        sb_prim(cls, &T, &sp, lp_start, lp_n, x0, y0, 0)) {
+        close_draw();
+        gf.split_conflicts++;
+    }
     if (!OD.open || OD.key != key) {
         if (trace_on && OD.open) fprintf(stderr, "[front] key %016llX -> %016llX\n", (unsigned long long)OD.key, (unsigned long long)key);
         close_draw();
+        od_serial++;
         OD.open = 1;
         OD.key = key;
         OD.outcomes = 0;
@@ -1542,6 +1621,10 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
     }
     OD.d.zw |= (uint8_t)(S.zwrite != 0);
     OD.outcomes |= outcome;
+    if (xsplit) {
+        if (sb_owner != od_serial) { sb_reset(); sb_owner = od_serial; }
+        if (outcome & 6) sb_prim(cls, &T, &sp, lp_start, lp_n, x0, y0, 1);
+    }
     if (!OD.prims) { OD.bbox[0] = x0; OD.bbox[1] = y0; OD.bbox[2] = x1; OD.bbox[3] = y1; }
     else { if (x0 < OD.bbox[0]) OD.bbox[0] = x0; if (y0 < OD.bbox[1]) OD.bbox[1] = y0; if (x1 > OD.bbox[2]) OD.bbox[2] = x1; if (y1 > OD.bbox[3]) OD.bbox[3] = y1; }
     if (!OD.prims) { OD.alpha = ev->reg[R_ALPHA_1 + ev->ctx]; OD.test = ev->reg[R_TEST_1 + ev->ctx]; OD.frame = ev->reg[R_FRAME_1 + ev->ctx]; }

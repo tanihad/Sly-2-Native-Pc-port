@@ -25,8 +25,9 @@ typedef struct {
     int ff_stq_exact;            /* FF triangles carry the full 256-byte record and step S/T/Q exactly as the
                                     software renderer (verification); 0: 128-byte records, S/T/Q interpolated */
     uint32_t ff_rov_mask;        /* GPU_FFC_* classes kept on the ROV tier (moving classes one at a time, tests) */
-    int split_ff;                /* mixed frames: straddling pass-A primitives stay FF (the two-draw split); default 0:
-                                    they take the ROV tier (the escalation; M5 measured visible split differences) */
+    int split_ff;                /* the plain two-draw ATST split (M5 measured it visibly different from REF); default 0:
+                                    the exact split (a new draw where a pass-capable primitive covers a pixel of an
+                                    earlier fail-capable one of the draw) */
 } gpu_front_config;
 
 enum { GPU_TIER_FF, GPU_TIER_ROV, GPU_TIER_ALIAS16, GPU_TIER_PUNT, GPU_TIER_N };
@@ -64,6 +65,7 @@ typedef struct {
     uint32_t alias16_sprites, alias16_dispatches, alias16_selfcopy;
     uint32_t clears_c, clears_z; /* recognised full-target tiled fills (colour / Z) */
     uint32_t fill_draws_dropped; /* (M5) FF draws of recognised fills not emitted (the clear does it) */
+    uint32_t split_conflicts;    /* (M5) ATST split draws started anew by the exact split */
     uint32_t loads, load_blocks; /* OP_UPLOAD_TARGET (stale blocks loaded from vram_buf) */
     uint32_t xcopies, xcopy_blocks;  /* stale blocks copied from the target that wrote them (same kind and scale) */
     uint32_t shadow_copies;      /* feedback copies */
