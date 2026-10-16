@@ -377,6 +377,13 @@ Colour target bound as `R8G8B8A8_UNORM` RTV holding raw GS bytes. The PS compute
   TEXA, wrap modes live in the StateRec, so CLUT-only and TEX0/FOGCOL changes merge into the current
   draw. Expected 1.5-4k D3D draws per frame, 6-8k in ep8 boss (M2 measures).
 
+*(M5: the FF pixel shader evaluates the fragment exactly like the REF tier from per-primitive records
+(colour, fog, U/V and Z in the software renderer's integer stepping; S/T/Q interpolated by the hardware in
+the default mode), so the only inexact FF class is the dual-source lerp: the RTX 4060 Ti blends UNORM8
+targets at about fp16 precision, +-1 for any source bias (0.42/a balances the errors; WARP is exact with
+0.496/a unless Cs*C < 64). The two-draw ATST split is made exact by starting a new draw where a pass-capable
+primitive covers a pixel of an earlier fail-capable one of the same draw (CPU span bitmap). Appendix G.)*
+
 ### 4.3 ROV tier
 
 Bindings: `OMSetRenderTargetsAndUnorderedAccessViews(no RTV, DSV read-only, UAVs: colour as
@@ -405,6 +412,13 @@ for FF classes at any scale.
 a pixel twice with one fragment failing ATST and the other passing. M5 measures this with lockstep
 (FF vs REF, and vs sw). If any visible difference is found, the escalation flag routes straddling
 pass-A draws to the ROV tier (exact, at the cost of ROV runs; M5 measures that too).
+
+*(M5: the split differed visibly (ep6, ep2 hub, ep1 hub, m1 brawl: differences above 16); the escalation
+made those recordings exact but cost more GPU time than REF in the hubs (every D3D11 draw writing a UAV
+waits for the previous one; each FF <-> UAV switch ~20 us), so the default is the exact split of 4.2 on
+the FF tier; the escalation flag stays (`straddle_rov`). Depth in mixed frames: the DSV and zpatch are
+synced lazily per 16x16-pixel tile instead of the serial scheme above; ROV draws use the REF shader
+with zpatch as depth. Appendix G.)*
 
 ### 4.4 Primitive classes
 
@@ -1475,3 +1489,181 @@ the speed.
 - Opaque sprites revalidate blocks in every tier; cross-target copies (XCOPY) and loads mark
   `sdirty` - an FF feedback read must keep using `own_shadow_need`.
 - REF GPU cost per game frame is 7.5-15 ms at S=1 (above): FF must take the bulk of the draws.
+
+## Appendix G. As built: M5 FF tier behind lockstep (branch gpu/M5)
+
+**Result.** Mixed frames (`gpu_front_config.mixed`, `gs_replay --mixed`): FF draws through RTV + DSV with the
+output merger's blend and depth, the read-modify-write forms on the ROV tier, ALIAS16 runs as in M4. On all
+24 recordings at S=1 on the RTX 4060 Ti:
+- **exact mode** (`--ff-stq-exact --ff-rov-mask 0x10 --lockstep-exact`: S/T/Q stepped exactly, dual-source
+  blends kept on ROV, every other FF class on FF): lockstep `--no-resync` **24,092 comparisons, 0 differ**,
+  every reference-composed picture identical - every FF class except the dual-source lerp is bit-exact
+  (blend OFF/ADD/REVSUB/NOCOLOR, write masks, exact SV_Depth, ATST discard and the exact split, fills ->
+  clears, target views and feedback through shadow copies, sprites, triangles, line pixels, the per-tile
+  DSV/zpatch sync around ROV runs and ALIAS16);
+- **default mode** (hardware S/T/Q, dual source on FF): 24,092 comparisons, 0 beyond the 10.2 budget below,
+  0 pictures beyond the picture gate (min PSNR 43.9 dB, load_m3; others 47-66 dB);
+- REF mode unchanged: 24,092 comparisons, 0 differ.
+WARP (9 recordings: title, both briefs, rope, ep6, ep8 hub, ep2 photo, hack minigame, ThiefNet; 8,166
+comparisons per mode) passes both mixed modes too (exact: 0 differ; default: within the budget, worst
+comparison 0.89% above 2 in ep6, min PSNR 50.9 dB); unit scenes (gs-draw through `tests/unit/gs-hw/run.ps1`,
+variants ref / mixed (exact) / mixdef (default), 1,165 comparisons each): 0 differing scenes on hw and WARP.
+
+Classes were moved ROV -> FF one at a time (`--ff-rov-mask`, GPU_FFC_* bits), each step gated by exact
+lockstep on 8 recordings (7,683 comparisons, 0 differ each): A blend-off sprites without Z, B + depth,
+C + triangles, D + lines/points, E + NOCOLOR, F + ADD, G + REVSUB, H + target views / feedback, I + ATST split
+(plain); then the whole corpus in exact mode, then dual source (tolerance).
+
+**Default-mode lockstep tolerance** (`gs_replay` mixed lockstep, also the unit harness's mixdef variant): CPU
+data equal; per comparison at most 2.5% of the GPU colour words differ by more than 2 in some byte, 0.1% by
+more than 16, and 0.1% of the Z words differ. Measured over the corpus: words above 16: 3 in total
+(load_m3); Z words: 9 in total (ep3 hub 2, ep2 hub 5, load_m3 2: alpha-test outcomes of perspective-textured
+fragments); worst comparison above 2: ep8 boss 1.94%, ep6 0.76%, everything else <= 0.08%. The design's
+"FF chains +-2" did not hold on this GPU: a stack of translucent dual-source layers with alpha a accumulates
+up to ~1/a (ep8 boss debris, ep6), never above 16. Alpha bytes differ only where the channel shuffles moved
+dual-blended green into alpha. The picture gate counts pixels above 16 on one line parity (the reference
+compose's deinterlacer switches whole lines between history and average on a +-1 difference).
+
+| recording | comparisons | +-1 words | +-2 | 3..16 | > 16 | worst comparison > 2 | Z words | min PSNR |
+|---|---|---|---|---|---|---|---|---|
+| ep3_brief | 1208 (0) | 41416798 | 1222745 | 1463 | 0 | 0.0161% | 0 | 50.11 |
+| ep3_hub | 1427 (0) | 33809597 | 95935 | 593 | 0 | 0.0022% | 2 | 58.35 |
+| ep3_recon_int | 1484 (0) | 69927364 | 592318 | 2283 | 0 | 0.0039% | 0 | 56.30 |
+| ep3_rope | 127 (0) | 1108519 | 4104 | 23 | 0 | 0.0004% | 0 | 63.83 |
+| ep5_hub_street | 1403 (0) | 31837805 | 239152 | 8254 | 0 | 0.0105% | 0 | 58.02 |
+| ep6_rc_battle | 1062 (0) | 18400746 | 1271338 | 368977 | 0 | 0.7647% | 0 | 57.30 |
+| ep7_boss | 1165 (0) | 102540291 | 1010919 | 698 | 0 | 0.0017% | 0 | 53.34 |
+| ep8_boss | 1203 (0) | 114975660 | 7214609 | 666213 | 0 | 1.9357% | 0 | 51.70 |
+| ep8_hub | 1920 (0) | 67235641 | 485725 | 23363 | 0 | 0.0087% | 0 | 58.80 |
+| fix-perf_brief | 338 (0) | 10627734 | 40525 | 40 | 0 | 0.0004% | 0 | 60.05 |
+| fix-perf_rv_intro | 126 (0) | 8745533 | 2638951 | 2993 | 0 | 0.0802% | 0 | 47.13 |
+| fix-perf_rv_prompt | 196 (0) | 4142534 | 17448 | 0 | 0 | 0.0000% | 0 | 62.06 |
+| fix-perf_title | 184 (0) | 2281319 | 7051 | 0 | 0 | 0.0000% | 0 | 65.69 |
+| gpu-C_ep0_museum | 1155 (0) | 109922330 | 1512614 | 1705 | 0 | 0.0031% | 0 | 52.03 |
+| gpu-C_ep1_hub | 1224 (0) | 35316231 | 274333 | 40187 | 0 | 0.0283% | 0 | 57.10 |
+| gpu-C_ep2_hub | 1500 (0) | 60442458 | 645532 | 4519 | 0 | 0.0109% | 5 | 56.57 |
+| gpu-C_ep2_photo | 1432 (0) | 42017818 | 926896 | 5950 | 0 | 0.0299% | 0 | 56.70 |
+| gpu-C_ep4_hub | 1499 (0) | 44361468 | 743622 | 7422 | 0 | 0.0135% | 0 | 56.47 |
+| gpu-C_fmv | 549 (0) | 4764768 | 111980 | 2146 | 0 | 0.0166% | 0 | 57.50 |
+| gpu-C_hack_minigame | 1412 (0) | 19379592 | 95788 | 0 | 0 | 0.0000% | 0 | 55.67 |
+| gpu-C_load_m3 | 1140 (0) | 24531705 | 285215 | 2026 | 3 | 0.0249% | 2 | 43.94 |
+| gpu-C_m1_brawl | 1213 (0) | 41389945 | 408322 | 1728 | 0 | 0.0362% | 0 | 56.90 |
+| gpu-C_pause_save | 642 (0) | 12178485 | 338697 | 82 | 0 | 0.0013% | 0 | 50.87 |
+| gpu-C_thiefnet | 483 (0) | 5073585 | 14898 | 1920 | 0 | 0.0061% | 0 | 64.30 |
+
+**Pass-A split report** (decides the escalation default; S/T/Q exact, dual source on FF, tolerance compare,
+`build\m5_split`): the plain two-draw split vs the ROV escalation. Z differs nowhere. The split adds words
+differing by more than 16 in ep6 (186,799 over the recording; 4 pictures beyond the gate, min PSNR 48.7),
+ep2 hub (1,442), m1 brawl (820), ep1 hub (286), and more 3..16 words in ep3 hub (28k vs 7), rope (7.8k vs 0),
+pause_save (15k vs 24), ep2 hub (585k vs 1.6k). In exact mode (dual on ROV) the split alone diverged in ep1 hub
+and m1 brawl (the additive pass A `(Cs-0)*As+Cd`, ATST GEQUAL 126 FB_ONLY: bisected to a primitive whose
+failing fragment was drawn after a later primitive's passing one). Visible, so the design asks for the
+escalation - which made them exact but cost more GPU than REF: ep3 hub 12.2 ms (REF 7.8), ep5 street 10.7
+(8.3), ep2 hub 12.5 (10.1), ep8 boss 7.0 (15.1), ThiefNet 12.4 (15.0) per game frame. A probe
+(`PS2_GPU_DBG_ROVSKIP`) showed the cost is the UAV draws and FF <-> UAV switches (a trivial shader in the ROV
+draws costs the same; keeping the DSV bound changes nothing), not ROV pixel work. **Default: the exact split**
+(4.2 note): the open split draw keeps a bitmap of the pixels its fail-capable primitives cover (the software
+renderer's spans, 64-bit words per row); a pass-capable primitive touching one starts a new draw. Exact
+(ep1 hub, m1 brawl 0 differ in exact mode; ep6 / ep2 hub no word above 16), as fast as the plain split, +2-10%
+D3D draws. `split_ff` (`--split-ff`) gives the plain split, `straddle_rov` (`--straddle-rov`) the escalation.
+
+**GPU ms per game frame at S=1** (RTX 4060 Ti, `gs_replay --backend hw`, no read-backs, timestamps; game frame
+= VBlank with >= 1000 primitives, the first 10 VBlanks left out (`--bench-skip 10`: target creation, first
+use of each pixel shader); median of 3 runs; median / p90 / worst):
+
+| recording | REF | mixed (default) | D3D draws REF / mixed (median, max) | render CPU ms mixed (median / max) |
+|---|---|---|---|---|
+| ep8 boss | 15.02 / 15.45 / 15.96 | **4.08** / 4.35 / 8.32 | 2996, 3140 / 4951, 5133 | 1.33 / 2.32 |
+| ep3 hub | 7.82 / 8.54 / 8.75 | **3.18** / 3.45 / 6.44 | 1064, 1200 / 4349, 5100 | 1.11 / 2.36 |
+| ep5 street | 8.26 / 9.45 / 9.68 | **3.42** / 3.62 / 7.14 | 1117, 1562 / 4488, 4818 | 1.07 / 1.95 |
+| ep2 hub | 10.23 / 12.11 / 12.58 | **3.05** / 3.51 / 6.16 | 1609, 1861 / 5325, 6684 | 1.16 / 1.73 |
+| ThiefNet | 14.93 / 15.10 / 15.35 | **5.95** / 6.02 / 8.49 | 2613 / 6712 | 1.57 / 2.03 |
+
+(The worst mixed frames are the first game frames after the skipped ones: pixel shader permutations first used
+there. ThiefNet's REF draw count equals its draw maximum: every frame is the same UI.) Render-thread wall time
+unpaced median 1.8-2.7 ms, worst steady 7.7-9.6 ms (it waits for the GPU and the driver); with `--pace`
+(59.94 Hz VBlanks as in the game) ep8 boss render CPU median 1.30 / max 3.12 ms, ThiefNet 1.53 / 2.11 ms - the
+M2 render-thread budget (<= 8 ms) holds with margin on the CPU side.
+
+**All recordings, default mixed mode** (one run each, first 10 VBlanks left out; per game frame; rv_prompt has
+3 steady game frames and an idle GPU: 0.9-16 ms between runs, REF 1.7):
+
+| recording | GPU ms median / p90 | D3D draws median / max | render CPU ms median / max | render wall ms median / max |
+|---|---|---|---|---|
+| fix-perf_rv_prompt | 16.20 / 17.20 | 681 / 681 | 0.60 / 0.83 | 1.56 / 22.10 |
+| fix-perf_rv_intro | 1.03 / 1.20 | 710 / 713 | 0.42 / 0.43 | 1.37 / 1.41 |
+| fix-perf_title | 1.84 / 1.97 | 1707 / 1707 | 0.63 / 1.45 | 2.59 / 5.29 |
+| fix-perf_brief | 2.45 / 3.95 | 2442 / 2462 | 0.83 / 1.04 | 3.76 / 5.14 |
+| ep3_hub | 3.23 / 3.52 | 4349 / 5100 | 1.28 / 2.61 | 2.02 / 6.89 |
+| ep3_recon_int | 3.16 / 3.25 | 2757 / 2790 | 0.77 / 1.77 | 1.33 / 5.61 |
+| ep3_rope | 4.35 / 5.25 | 4683 / 4688 | 1.32 / 1.50 | 5.69 / 6.78 |
+| ep3_brief | 1.72 / 1.90 | 1737 / 2344 | 0.47 / 1.74 | 0.86 / 4.75 |
+| ep5_hub_street | 3.43 / 3.66 | 4488 / 4818 | 1.14 / 1.87 | 1.86 / 7.87 |
+| ep6_rc_battle | 1.96 / 2.46 | 1698 / 1857 | 0.58 / 1.43 | 1.02 / 4.86 |
+| ep7_boss | 6.33 / 6.84 | 3662 / 3867 | 1.03 / 1.67 | 1.96 / 7.86 |
+| ep8_hub | 1.60 / 1.85 | 1548 / 1596 | 0.46 / 1.03 | 1.01 / 3.87 |
+| ep8_boss | 4.12 / 4.32 | 4951 / 5133 | 1.17 / 1.59 | 2.33 / 9.91 |
+| gpu-C_ep0_museum | 1.92 / 2.45 | 3156 / 3246 | 0.64 / 1.11 | 1.12 / 6.46 |
+| gpu-C_ep1_hub | 3.44 / 3.78 | 3906 / 4378 | 0.94 / 1.67 | 1.59 / 7.35 |
+| gpu-C_m1_brawl | 2.53 / 3.90 | 2601 / 3695 | 0.62 / 1.36 | 1.12 / 7.15 |
+| gpu-C_ep2_hub | 3.06 / 3.45 | 5325 / 6684 | 1.10 / 1.55 | 1.79 / 9.06 |
+| gpu-C_ep2_photo | 1.49 / 1.68 | 413 / 4380 | 0.33 / 1.58 | 0.73 / 2.77 |
+| gpu-C_ep4_hub | 3.00 / 3.52 | 4139 / 4279 | 0.86 / 1.34 | 1.42 / 9.05 |
+| gpu-C_hack_minigame | 0.45 / 0.77 | 302 / 370 | 0.12 / 0.74 | 0.49 / 2.57 |
+| gpu-C_fmv | 0.20 / 0.40 | 28 / 28 | 0.11 / 0.64 | 0.17 / 2.22 |
+| gpu-C_load_m3 | 1.34 / 1.52 | 2347 / 2526 | 0.46 / 0.90 | 0.96 / 3.80 |
+| gpu-C_pause_save | 2.60 / 3.64 | 4807 / 4810 | 1.04 / 1.60 | 1.64 / 7.73 |
+| gpu-C_thiefnet | 5.99 / 6.04 | 6712 / 6712 | 1.54 / 2.20 | 2.63 / 10.45 |
+
+
+**What was built**
+- `shaders/gs.hlsl`: the fragment evaluation split out of `ps_gs` into `gs_frag` (records -> attributes, texture,
+  TFX, fog), shared by `ps_gs` (REF / ROV, unchanged results) and `ps_ff` (FF: ATST discard / split halves,
+  per-blend-class output, dual source, `SV_Depth = asfloat(z + 0x800000)`). FF permutations
+  `ps_ff_{t,s,l}{dual}{zout}[{fast}]` are compiled with `FF=1` (no UAV declarations: a pixel shader writing
+  render targets cannot have u0); `vs_ff_tri` adds interpolated S/T/Q; `ps_gs_tri_fast` is the ROV shader on
+  128-byte records with hardware S/T/Q (default mixed mode). `shaders/zsync.hlsl`: `ps_zresolve` (zpatch ->
+  DSV, or a constant for partial depth clears) and `cs_zsync` (DSV -> zpatch, Z24 keeps zpatch's top byte),
+  both restricted to the tiles in the needed state.
+- `gpu_exec.c`: mixed frames (`GPU_FD_MIXED`): `exec_draw_ff` (RTV + DSV, REF viewport and vertex shaders so
+  coverage is identical, blend state per class and write mask, depth state class, split halves with the fail
+  draw's state from AFAIL, two constant slots per split draw), ROV draws through `exec_draw_ref`; depth tile
+  states per 16x16 native pixels (SYNC / DSV newer / zpatch newer) with lazy conversion before FF draws,
+  ROV / ALIAS16 draws, loads, downloads, cross copies, clears and read-backs; per-adapter dual bias; counters
+  (FF / ROV draws, Z resolves / syncs and their samples).
+- `gpu_front.c`: FF triangle records (128 B prefix of `gpu_rec_tri`, or 256 B with `ff_stq_exact`), FF key
+  without texture kind / S/T/Q (StateRec data), split halves and AFAIL in the draw, draw bbox and Z-write flag
+  (`gpu_fop_draw`), FF views always through the shadow copy, `ff_rov_mask` classes, the exact split bitmap,
+  tiled fill -> clear dropping the fill's FF draws (`fill_draws_dropped`), escalation flag sticky per state.
+- Tools: `gs_replay --mixed --ff-stq-exact --ff-rov-mask --split-ff --straddle-rov --lockstep-exact
+  --tol-report N --bench-skip N` (tolerance lockstep, picture gate, `render-bench` and `ref-bench-dist` lines),
+  bisection child exits 0 past its range (single-comparison binary search); `gpu_lockstep_all.ps1 -Mixed
+  [-Exact -StqExact -FfRovMask -StraddleRov -SplitFf -Exe]`; `gpu_fthread_check.ps1 -Mixed`; unit harness
+  variants `-DTEST_HW_MIXED[_DEFAULT]` (`tests/unit/gs-hw/run.ps1 -Modes ref,mixed,mixdef`).
+
+**Deviations from the design**
+- Depth: no zpatch serials / read-only DSV for ROV draws; per-tile lazy sync between DSV and zpatch, ROV and
+  ALIAS16 draws keep using zpatch as depth (the REF shader unchanged).
+- FF shading is the REF fragment pipeline (records), not vertex interpolation: colour, fog, U/V and Z are
+  exact; only S/T/Q is hardware-interpolated (and exact with `ff_stq_exact`).
+- Dual source is +-1 on the RTX 4060 Ti whatever the bias (blender ~fp16); chains exceed the design's +-2, so
+  the default-mode budget is 2.5% of colour words above 2 per comparison (measured worst 1.94%).
+- Pass-A split: exact split on FF instead of the ROV escalation (measured slower than REF).
+- Picture gate counts one line parity (deinterlacer heuristic of the reference compose).
+
+**What M6 (in-game integration) must know**
+- Run the frontend with `mixed = 1` (`ref = 0`, `split_ff = 0`, `ff_stq_exact = 0`, `straddle_rov = 0`):
+  frames are flagged `GPU_FD_MIXED`. `display_ky2` must stay 0 until Z targets follow their colour target's
+  factors (M7). The frontend thread produces the same mixed stream (`gpu_fthread_check.ps1 -Mixed`).
+- There is no GPU display path yet: replays compose pictures from downloaded memory (`gs_compose_from`). M6
+  needs compose/present from the colour target SRVs; before sampling a target that way nothing else is
+  needed (colour has one copy); before reading depth on the CPU or in a CS, `ensure_zp` (the read-back path
+  does it for every depth target).
+- Every D3D11 draw that writes a UAV (ROV runs, ALIAS16, REF) serialises the GPU and an FF <-> UAV switch
+  costs ~20 us on the RTX 4060 Ti: keep ROV runs few (tens to ~200 per game frame now, ep7 boss most: shadow
+  volumes, As > 128 pass A). GPU per game frame at S=1 is 3-6 ms in the heavy scenes (REF 8-15 ms); M9's budget at
+  S=3 needs the scale cost measured in M7.
+- The dual-source lerp is the only inexact FF class (+-1 per layer); the exact verification mode
+  (`--ff-stq-exact --ff-rov-mask 0x10 --lockstep-exact`) is the regression gate for everything else, the
+  default-mode tolerance gate for the whole.
+- PUNT still needs the same-thread frontend (unchanged from M4).

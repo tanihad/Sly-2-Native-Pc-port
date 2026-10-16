@@ -560,7 +560,8 @@ typedef struct { uint64_t c1, c2, c16, cbig, adiff, z, cpu, nc, nz; } tol_stats;
 static tol_stats lk_tol;                         /* totals */
 static double lk_tol_worst_c2, lk_tol_worst_c16, lk_tol_worst_z;   /* worst fractions of one comparison */
 static uint32_t lk_tol_compares;                 /* comparisons with tolerated differences only */
-static int lk_tol_newbig, tol_report;            /* this comparison has more words above +-2 than the previous one; --tol-report N */
+static int lk_tol_newbig, tol_report;
+static int bench_skip = 2;                      /* game-frame statistics leave out the first N VBlanks (--bench-skip; replay start) */            /* this comparison has more words above +-2 than the previous one; --tol-report N */
 
 /* blocks of hw memory differing from gs_vram (mixed mode: 1 when beyond tolerance); details of the first few */
 static uint32_t mem_compare(int verbose, int n) {
@@ -1262,6 +1263,7 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--no-resync")) lk_resync = 0;
         else if (!strcmp(argv[i], "--lockstep-exact")) lk_exact = 1;
         else if (!strcmp(argv[i], "--tol-report") && i + 1 < argc) tol_report = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--bench-skip") && i + 1 < argc) bench_skip = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--post-probe") && i + 1 < argc) {
             if (sscanf(argv[++i], "%d:%d", &pp_first, &pp_last) == 2) pp_on = 1;
         }
@@ -1600,7 +1602,7 @@ int main(int argc, char** argv) {
             if (sts[i].gpu_ms < 0 || sts[i].partial) continue;
             for (size_t j = 0; j < nff; j++)
                 if (ff[j].vblank == sts[i].vblank) {
-                    if (ff[j].kicks >= 1000 && j >= 2) {
+                    if (ff[j].kicks >= 1000 && j >= (size_t)bench_skip) {
                         g[ngf++] = sts[i].gpu_ms;
                         if (sts[i].gpu_ms > worst_g) { worst_g = sts[i].gpu_ms; worst_v = sts[i].vblank; }
                     }
@@ -1619,7 +1621,7 @@ int main(int argc, char** argv) {
             if (sts[i].partial) continue;
             for (size_t j = 0; j < nff; j++)
                 if (ff[j].vblank == sts[i].vblank) {
-                    if (ff[j].kicks >= 1000 && j >= 2) { gd[ngr] = sts[i].draws; gc[ngr] = sts[i].render_cpu_ms; gw[ngr] = sts[i].render_ms; ngr++; }
+                    if (ff[j].kicks >= 1000 && j >= (size_t)bench_skip) { gd[ngr] = sts[i].draws; gc[ngr] = sts[i].render_cpu_ms; gw[ngr] = sts[i].render_ms; ngr++; }
                     break;
                 }
         }
