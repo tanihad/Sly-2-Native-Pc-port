@@ -1728,6 +1728,48 @@ int gpu_exec_read_memory(const gpu_dl_entry* entries, const uint16_t* writers, i
 
 void gpu_exec_get_counters(gpu_exec_counters* out) { *out = XC; }
 
+/* (M7) every sample of a target as the render thread has it after everything submitted (tests: FF vs REF at
+ * scale): colour words (R in the low byte) or zpatch words */
+typedef struct { uint32_t id; uint32_t* out; size_t cap; int w, h, kx, ky, depth, ok; } readtgt_args;
+
+static void readtgt_fn(void* arg) {
+    readtgt_args* a = arg;
+    a->ok = 0;
+    if (!X.init) return;
+    xtarget* t = tgt(a->id);
+    if (!t || !t->tex) return;
+    unbind_all();
+    if (t->depth) ensure_zp_all(t);
+    ID3D11Texture2D* src = t->depth ? t->zp : t->tex;
+    D3D11_TEXTURE2D_DESC td;
+    ID3D11Texture2D_GetDesc(src, &td);
+    td.Usage = D3D11_USAGE_STAGING;
+    td.BindFlags = 0;
+    td.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    td.MiscFlags = 0;
+    ID3D11Texture2D* st = NULL;
+    if (FAILED(ID3D11Device_CreateTexture2D(gpu_rt.dev, &td, NULL, &st))) return;
+    ID3D11DeviceContext_CopyResource(gpu_rt.ctx, (ID3D11Resource*)st, (ID3D11Resource*)src);
+    D3D11_MAPPED_SUBRESOURCE m;
+    if (SUCCEEDED(ID3D11DeviceContext_Map(gpu_rt.ctx, (ID3D11Resource*)st, 0, D3D11_MAP_READ, 0, &m))) {
+        int w = (int)td.Width, h = (int)td.Height;
+        if ((size_t)w * (size_t)h <= a->cap) {
+            for (int y = 0; y < h; y++) memcpy(a->out + (size_t)y * (size_t)w, (const uint8_t*)m.pData + (size_t)y * m.RowPitch, (size_t)w * 4);
+            a->w = w; a->h = h; a->kx = t->kx; a->ky = t->ky; a->depth = t->depth;
+            a->ok = 1;
+        }
+        ID3D11DeviceContext_Unmap(gpu_rt.ctx, (ID3D11Resource*)st, 0);
+    }
+    GPU_RELEASE(st);
+}
+
+int gpu_exec_read_target(uint32_t id, uint32_t* out, size_t cap_words, int* w, int* h, int* kx, int* ky, int* depth) {
+    readtgt_args a = { id, out, cap_words, 0, 0, 0, 0, 0, 0 };
+    gpu_run_sync(readtgt_fn, &a);
+    *w = a.w; *h = a.h; *kx = a.kx; *ky = a.ky; *depth = a.depth;
+    return a.ok;
+}
+
 /* ---- producer side (GS thread): the frontend's sink -------------------------------------------------- */
 
 void gpu_submit_sink(const gpu_front_frame_data* fd, void* user) {

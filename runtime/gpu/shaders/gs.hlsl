@@ -625,6 +625,7 @@ bool gs_frag(float4 pos, uint irec, float3 istq, uint prim, out Frag f, out St s
             // (FF fast path: S/T/Q as the hardware interpolates them; the design's tolerance class
             // "perspective-textured")
             float s = istq.x, t = istq.y, q = istq.z;
+            dbg_s = s; dbg_t = t; dbg_q = q;
             float iq = 1.0 / q;
             precise float su = s * iq;
             precise float tv = t * iq;
@@ -667,10 +668,15 @@ bool gs_frag(float4 pos, uint irec, float3 istq, uint prim, out Frag f, out St s
             float s = step_span(s0, (float)sdx, xl, px, cutx);
             float t = step_span(tt0, (float)tdx, xl, px, cutx);
             float q = step_span(q0, (float)qdx, xl, px, cutx);
-            if ((si | sj) != 0u) {           // (M7) the sample's position inside the native pixel
-                s += (float)sdx * fi + (float)sdy * fj;
-                t += (float)tdx * fi + (float)tdy * fj;
-                q += (float)qdx * fi + (float)qdy * fj;
+            if ((si | sj) != 0u) {
+                // (M7) another sample of the pixel: the plane at its position. (Its native row can be the one above
+                // the triangle's first, rows = -1: a sample below that row's centre is covered while the centre is
+                // not - the row loop above never runs backwards, so the plane starts from row by0's values.)
+                double dfx = (double)px + (double)fi, dfy = (double)rows + (double)fj;
+                double s0r = asdouble(w0.z, w0.w), t0r = asdouble(w1.x, w1.y), q0r = asdouble(w1.z, w1.w);
+                s = (float)(s0r + sdy * dfy + sdx * dfx);
+                t = (float)(t0r + tdy * dfy + tdx * dfx);
+                q = (float)(q0r + qdy * dfy + qdx * dfx);
             }
             float iq = rcp_exact(q);
             precise float su = s * iq;

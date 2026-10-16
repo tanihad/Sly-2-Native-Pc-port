@@ -1295,6 +1295,109 @@ static void game_report(void) {
 }
 #endif
 
+#ifdef GS_REPLAY_GPU
+/* ---- (M7) every sample of every target: --sample-dump DIR writes them every --sample-every N VBlanks (default
+ * 60), --sample-compare DIR compares a run in another mode with such a dump (FF vs REF at scale, 10.2: the
+ * mixed-mode budget per target and point - at most 2.5% of the colour words differ by more than 2 in a byte,
+ * 0.1% by more than 16, 0.1% of the Z words), deleting each file it compared. ---- */
+static const char* smp_dir;
+static int smp_compare, smp_every = 60;
+static uint32_t smp_points, smp_targets, smp_beyond, smp_missing;
+static uint64_t smp_cwords, smp_c2, smp_c16, smp_zwords, smp_zdiff;
+static double smp_w2, smp_w16, smp_wz;              /* worst fractions of a single comparison */
+#define SMP_CAP (16u << 20)
+
+static void sample_point(uint32_t vblank) {
+    static uint32_t *buf, *ref;
+    if (!buf) { buf = malloc((size_t)SMP_CAP * 4); ref = malloc((size_t)SMP_CAP * 4); }
+    if (!buf || !ref) { fprintf(stderr, "out of memory\n"); exit(1); }
+    gpu_submit_wait_idle();
+    smp_points++;
+    for (uint32_t id = 1; id <= 64; id++) {
+        if (gpu_front_target_kind(id) < 0) continue;
+        int w, h, kx, ky, depth;
+        if (!gpu_exec_read_target(id, buf, SMP_CAP, &w, &h, &kx, &ky, &depth)) continue;
+        char path[1100];
+        snprintf(path, sizeof path, "%s/v%06u_t%02u.raw", smp_dir, vblank, id);
+        uint32_t hd[8] = { 0x504D5347u /* GSMP */, id, (uint32_t)depth, (uint32_t)w, (uint32_t)h, (uint32_t)kx, (uint32_t)ky, 0 };
+        if (!smp_compare) {
+            FILE* f = fopen(path, "wb");
+            if (!f) { fprintf(stderr, "cannot write %s\n", path); exit(1); }
+            fwrite(hd, sizeof hd, 1, f);
+            fwrite(buf, 4, (size_t)w * (size_t)h, f);
+            fclose(f);
+            continue;
+        }
+        FILE* f = fopen(path, "rb");
+        uint32_t rh[8];
+        if (!f || fread(rh, sizeof rh, 1, f) != 1 || memcmp(rh, hd, sizeof hd) || fread(ref, 4, (size_t)w * (size_t)h, f) != (size_t)w * (size_t)h) {
+            if (f) fclose(f);
+            smp_missing++;
+            fprintf(stderr, "sample-compare v%u target %u: no matching dump (%dx%d k %dx%d)\n", vblank, id, w, h, kx, ky);
+            continue;
+        }
+        fclose(f);
+        remove(path);
+        smp_targets++;
+        size_t n = (size_t)w * (size_t)h;
+        uint64_t c2 = 0, c16 = 0, zd = 0;
+        for (size_t i = 0; i < n; i++) {
+            uint32_t a = buf[i], b = ref[i];
+            if (a == b) continue;
+            if (depth) { zd++; continue; }
+            int m = 0;
+            for (int c = 0; c < 32; c += 8) { int d = abs((int)((a >> c) & 255) - (int)((b >> c) & 255)); if (d > m) m = d; }
+            c2 += m > 2;
+            c16 += m > 16;
+        }
+        double f2 = depth ? 0 : (double)c2 / (double)n, f16 = depth ? 0 : (double)c16 / (double)n, fz = depth ? (double)zd / (double)n : 0;
+        if (depth) { smp_zwords += n; smp_zdiff += zd; } else { smp_cwords += n; smp_c2 += c2; smp_c16 += c16; }
+        if (f2 > smp_w2) smp_w2 = f2;
+        if (f16 > smp_w16) smp_w16 = f16;
+        if (fz > smp_wz) smp_wz = fz;
+        if (f2 > 0.025 || f16 > 0.001 || fz > 0.001) {
+            smp_beyond++;
+            fprintf(stderr, "sample-compare v%u target %u (%s %dx%d, k %dx%d): beyond the budget: > 2: %.4f%%, > 16: %.4f%%, Z: %.4f%%\n", vblank, id,
+                    depth ? "Z" : "colour", w, h, kx, ky, 100 * f2, 100 * f16, 100 * fz);
+            /* the first few: where (SMP_DIFF_PNG=<dir>: white > 16 / Z, grey > 2; and which sample of the pixel) */
+            static int shown;
+            const char* pd = getenv("SMP_DIFF_PNG");
+            if (pd && shown++ < 4) {
+                uint32_t* m = malloc(n * 4);
+                uint64_t by_sample[64] = { 0 };
+                for (size_t i = 0; m && i < n; i++) {
+                    uint32_t a = buf[i], b = ref[i], v = 0;
+                    if (a != b) {
+                        int mm = 0;
+                        for (int c = 0; c < 32; c += 8) { int d = abs((int)((a >> c) & 255) - (int)((b >> c) & 255)); if (d > mm) mm = d; }
+                        v = depth || mm > 16 ? 0xFFFFFF : mm > 2 ? 0x606060 : 0x202020;
+                        if (depth || mm > 16) by_sample[((i / (size_t)w) % (size_t)ky) * 8 + ((i % (size_t)w) % (size_t)kx) & 63]++;
+                    }
+                    m[i] = v;
+                }
+                char pp[1100];
+                snprintf(pp, sizeof pp, "%s/diff_v%06u_t%02u.png", pd, vblank, id);
+                if (m) debug_write_png(pp, m, w, h, w);
+                free(m);
+                fprintf(stderr, "sample-compare: %s; > 16 by sample (row j, column i):", pp);
+                for (int j = 0; j < ky && j < 8; j++) { fprintf(stderr, " j%d:", j); for (int i = 0; i < kx && i < 8; i++) fprintf(stderr, " %llu", (unsigned long long)by_sample[j * 8 + i]); }
+                fprintf(stderr, "\n");
+            }
+        }
+    }
+}
+
+static void sample_report(void) {
+    if (!smp_dir) return;
+    if (!smp_compare) { fprintf(stderr, "sample-dump: %u points written to %s\n", smp_points, smp_dir); return; }
+    fprintf(stderr, "sample-compare: %u points, %u target comparisons, %u beyond the budget, %u missing; colour words > 2: %.4f%% "
+                    "(worst %.4f%%), > 16: %.5f%% (worst %.5f%%); Z words differ: %.5f%% (worst %.5f%%)\n", smp_points, smp_targets, smp_beyond,
+            smp_missing, smp_cwords ? 100.0 * (double)smp_c2 / (double)smp_cwords : 0.0, 100 * smp_w2,
+            smp_cwords ? 100.0 * (double)smp_c16 / (double)smp_cwords : 0.0, 100 * smp_w16,
+            smp_zwords ? 100.0 * (double)smp_zdiff / (double)smp_zwords : 0.0, 100 * smp_wz);
+}
+#endif
+
 static int rd(FILE* f, void* p, size_t n) { return fread(p, 1, n, f) == n; }
 
 /* --vram-hash: a 64-bit hash of all of gs_vram after every VBlank (synchronous replay only), one
@@ -1538,6 +1641,9 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--interlaced")) ky2_opt = 0;     /* (M7) display targets N rows (field resolution) */
 #ifdef GS_REPLAY_GPU
         /* (M7, --game) picture options: the Modern / Faithful presets and the single toggles (GPU_GFX_*) */
+        else if (!strcmp(argv[i], "--sample-dump") && i + 1 < argc) { smp_dir = argv[++i]; smp_compare = 0; }
+        else if (!strcmp(argv[i], "--sample-compare") && i + 1 < argc) { smp_dir = argv[++i]; smp_compare = 1; }
+        else if (!strcmp(argv[i], "--sample-every") && i + 1 < argc) { smp_every = atoi(argv[++i]); if (smp_every < 1) smp_every = 1; }
         else if (!strcmp(argv[i], "--flicker-off")) gfx_set |= GPU_GFX_FLICKER_OFF;
         else if (!strcmp(argv[i], "--thin")) gfx_set |= GPU_GFX_THIN;
         else if (!strcmp(argv[i], "--fields")) fields_opt = 1;
@@ -1795,6 +1901,7 @@ int main(int argc, char** argv) {
                 }
             }
 #ifdef GS_REPLAY_GPU
+            if (ref_mode && smp_dir && frames % (uint32_t)smp_every == (uint32_t)smp_every - 1) sample_point(h[1]);   /* (M7) */
             if (game_mode) game_vblank(h[1]);
             else if (ref_mode) ref_vblank(h[1], post_prims);
             else
@@ -1866,6 +1973,8 @@ int main(int argc, char** argv) {
     }
     int rc = 0;
 #ifdef GS_REPLAY_GPU
+    sample_report();
+    if (smp_compare && (smp_beyond || smp_missing)) rc = 3;
     if (game_mode) {
         stage = 3;
         progress++;

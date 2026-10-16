@@ -143,6 +143,9 @@ typedef struct {
     uint64_t rescales;                   /* (M7) live targets whose contents moved to new sample factors */
 } gpu_exec_counters;
 void gpu_exec_get_counters(gpu_exec_counters* out);
+/* (M7, tests) every sample of target id after everything submitted: w x h words (colour R8G8B8A8, or the zpatch
+ * Z words of a depth target), its factors; 0: no such target or out too small (cap_words) */
+int gpu_exec_read_target(uint32_t id, uint32_t* out, size_t cap_words, int* w, int* h, int* kx, int* ky, int* depth);
 uint64_t gpu_render_thread_cycles(void);  /* QueryThreadCycleTime of the render thread (TSC ticks) */
 void gpu_render_thread_affinity(uint64_t mask);   /* benchmarks: pin the render thread */
 
