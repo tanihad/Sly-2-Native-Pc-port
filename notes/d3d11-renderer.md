@@ -1503,7 +1503,10 @@ output merger's blend and depth, the read-modify-write forms on the ROV tier, AL
   DSV/zpatch sync around ROV runs and ALIAS16);
 - **default mode** (hardware S/T/Q, dual source on FF): 24,092 comparisons, 0 beyond the 10.2 budget below,
   0 pictures beyond the picture gate (min PSNR 43.9 dB, load_m3; others 47-66 dB);
-- REF mode unchanged: 24,092 comparisons, 0 differ.
+- REF mode unchanged: 24,092 comparisons, 0 differ. Also green: `tests/run_tests.py`, every unit suite
+  (gs-front expectations updated: fill draws dropped, the FF darken takes a shadow copy), `gpu_hwdry_all`
+  24/24 (0 PUNT, VRAM unchanged), software VRAM hashes 24/24, `gpu_fthread_check` 24/24 (and `-Mixed`
+  24/24), `gpu_diff_all` 13/13, game builds debug and `--release`; `PS2_GS_BACKEND` still defaults to sw.
 WARP (9 recordings: title, both briefs, rope, ep6, ep8 hub, ep2 photo, hack minigame, ThiefNet; 8,166
 comparisons per mode) passes both mixed modes too (exact: 0 differ; default: within the budget, worst
 comparison 0.89% above 2 in ep6, min PSNR 50.9 dB); unit scenes (gs-draw through `tests/unit/gs-hw/run.ps1`,
