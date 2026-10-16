@@ -132,7 +132,9 @@ static struct {
 
 static gpu_exec_counters XC;
 static atomic_int inflight;             /* frames handed over and not finished */
-#define MAX_INFLIGHT 3
+#define MAX_INFLIGHT 3                   /* (replays; the game sets its own depth: gpu_submit_set_depth) */
+static int inflight_max = MAX_INFLIGHT;
+void gpu_submit_set_depth(int frames) { inflight_max = frames < 1 ? 1 : frames > 16 ? 16 : frames; }
 
 static void count_state(void) { X.state_calls++; }
 
@@ -1485,8 +1487,8 @@ static void exec_present(const gpu_front_frame_data* fd, const gpu_fop_present* 
     }
     gpu_present_compose(&in);
     if (di->rb) gpu_present_readback((gpu_readback*)di->rb);
+    /* (the picture was reported when its frame was queued: gpu_submit_sink, GPU_FD_SIGNAL) */
     if (di->flags & GPU_DI_SHOW) gpu_present_show(di->aspect_w, di->aspect_h);
-    if (di->flags & GPU_DI_SIGNAL) gpu_present_signal(di->vblank);
     present_done = 1;
 }
 
@@ -1570,7 +1572,6 @@ void gpu_exec_frame_done(const void* payload) {
             if (h->op == GPU_FOP_PRESENT && o->di_off != ~0u && o->di_off + sizeof(gpu_display_info) <= fd->data_bytes) {
                 const gpu_display_info* di = (const gpu_display_info*)(fd->data + o->di_off);
                 if (di->rb) gpu_present_readback((gpu_readback*)di->rb);   /* (fails: lost) */
-                if (di->flags & GPU_DI_SIGNAL) gpu_present_signal(di->vblank);
             }
             pos += h->size;
         }
@@ -1657,12 +1658,15 @@ void gpu_exec_get_counters(gpu_exec_counters* out) { *out = XC; }
 
 void gpu_submit_sink(const gpu_front_frame_data* fd, void* user) {
     (void)user;
-    if (!gpu_running()) return;
+    if (!gpu_running()) {                /* (no render thread: the picture is still reported) */
+        if (fd->flags & GPU_FD_SIGNAL) gpu_present_signal(fd->vblank);
+        return;
+    }
     /* at most MAX_INFLIGHT frames queued (the render thread's pace bounds the GS thread's, as VBlank
      * pacing does in the game) */
     for (;;) {
         int n = atomic_load(&inflight);
-        if (n < MAX_INFLIGHT) break;
+        if (n < inflight_max) break;
         WaitOnAddress((volatile VOID*)&inflight, &n, sizeof n, 5);
     }
     void* h = gpu_front_detach();
@@ -1675,6 +1679,11 @@ void gpu_submit_sink(const gpu_front_frame_data* fd, void* user) {
     gpu_cmd_commit();
     gpu_cmd_publish();
     gpu_cmd_unlock();
+    /* M6: the VBlank's picture is reported once its frame is queued: the EE then waits only while the
+     * frontend is behind or the queue is full (a slow GPU: up to gpu_submit_set_depth frames absorb it),
+     * never for the GPU itself or for Present (measured: an EE waiting for the render thread missed VBlanks
+     * whenever NVIDIA's power management slowed a lightly loaded GPU down) */
+    if (fd->flags & GPU_FD_SIGNAL) gpu_present_signal(fd->vblank);
 }
 
 void gpu_submit_wait_idle(void) {

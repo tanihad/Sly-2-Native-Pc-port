@@ -53,6 +53,7 @@ void  gpu_cmd_debug(char* buf, size_t n); /* ring positions, for hang diagnostic
 /* Next command, or NULL when none arrives within wait_ms (0: poll, < 0: wait forever). */
 const gpu_cmd* gpu_cmd_next(int wait_ms);
 void  gpu_cmd_done(const gpu_cmd* c);     /* the command (and its data) can be reused */
+uint64_t gpu_cmd_backlog(void);           /* bytes published after the command being executed (render thread behind) */
 
 /* counters for tests: times the producer waited for space, chunks published */
 typedef struct { uint64_t cmd_waits, data_waits, publishes, commands; } gpu_cmd_stats;

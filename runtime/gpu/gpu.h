@@ -85,6 +85,8 @@ void gpu_run_sync(void (*fn)(void* arg), void* arg);
  * aspect, flip-model swap chain) and then reported here, on the render thread, in VBlank order - also
  * when the device is lost and nothing was drawn. */
 void gpu_set_picture_done(void (*fn)(uint32_t vblank, void* user), void* user);
+/* called on the render thread after every Present (the window title's frame rate) */
+void gpu_set_flip_callback(void (*fn)(void));
 int  gpu_device_lost(void);               /* the device was removed (or a loss simulated): restart or give up */
 void gpu_simulate_device_lost(void);      /* tests: the next frame finds the device lost */
 /* Forget every target (render thread state of a frontend that is restarted). */
@@ -110,6 +112,7 @@ typedef struct {
     /* (M6) the picture: */
     double present_ms;                    /* of render_ms: the frame-latency wait + Present */
     int presented;                        /* 1: Present was called (0: headless, minimised, lost) */
+    int dropped;                          /* not shown: the render thread was behind and the swap chain busy */
     uint32_t ff_draws, rov_draws;         /* D3D draws on the FF / ROV tier in this frame */
 } gpu_frame_stats;
 int gpu_take_frame_stats(gpu_frame_stats* out, int max);   /* returns how many were taken */
@@ -122,6 +125,8 @@ int gpu_take_frame_stats(gpu_frame_stats* out, int max);   /* returns how many w
 #include "gpu_front.h"
 void gpu_submit_sink(const gpu_front_frame_data* fd, void* user);
 void gpu_submit_wait_idle(void);
+/* frames the sink lets queue for the render thread before the producer waits (default 3) */
+void gpu_submit_set_depth(int frames);
 /* M3 REF tier: frames flagged GPU_FD_REF are drawn exactly (every draw through shaders/gs.hlsl on
  * the ROV path, depth in zpatch). The GS memory image as the GPU sees it after everything queued so
  * far: vram_buf with the GPU words of `n` blocks (gpu_front_gpu_blocks: entries and writer targets)

@@ -69,6 +69,8 @@ static LARGE_INTEGER qpf;
 static void (*volatile done_fn)(uint32_t vblank, void* user);
 static void* volatile done_user;
 void gpu_set_picture_done(void (*fn)(uint32_t vblank, void* user), void* user) { done_user = user; done_fn = fn; }
+static void (*volatile flip_fn)(void);
+void gpu_set_flip_callback(void (*fn)(void)) { flip_fn = fn; }
 void gpu_present_signal(uint32_t vblank) {
     void (*fn)(uint32_t, void*) = done_fn;
     if (fn) fn(vblank, done_user);
@@ -506,10 +508,17 @@ static void present_fit(int aw, int ah) {
             P.bb_h = ch;
         }
         if (P.waitable) {
+            /* The waitable object (frame latency 1) is signalled once the GPU has finished the previous
+             * picture; normally long before this one is ready. When the GPU falls behind (NVIDIA's power
+             * management lowers the clocks of a lightly loaded GPU, and frames then take 15-40 ms until
+             * it raises them again), the render thread waits here and the frames queued behind it absorb
+             * the delay (gpu_submit_sink: up to GPU_INFLIGHT_GAME frames) before the EE notices. Dropping
+             * pictures instead was measured worse: the GPU stays lightly loaded and slow for longer. */
             long ph = gpu_rt_phase;
             gpu_rt_phase = GPU_PH_SWAP_WAIT;
-            WaitForSingleObjectEx(P.waitable, 100, TRUE);
+            DWORD w = WaitForSingleObjectEx(P.waitable, 100, TRUE);
             gpu_rt_phase = ph;
+            if (w == WAIT_TIMEOUT) P.st.dropped = 1;   /* (100 ms: presented anyway) */
         }
     }
     static const float black[4] = { 0, 0, 0, 1 };
@@ -540,6 +549,8 @@ static void present_fit(int aw, int ah) {
             gpu_rt.lost = 1;
         }
         P.st.presented = 1;
+        void (*ff)(void) = flip_fn;
+        if (ff) ff();
     }
     P.st.present_ms += now_ms() - t0;
 }

@@ -201,7 +201,9 @@ typedef struct { gpu_fop h; uint16_t target, src; uint32_t n, data_off; } gpu_fo
  * target ids as u16) - nothing in vram_buf or the ownership changes. */
 typedef struct { gpu_fop h; uint32_t vblank; uint32_t di_off; uint16_t src[2]; uint32_t mem_off, mem_n; } gpu_fop_present;
 
-enum { GPU_FD_PARTIAL = 1, GPU_FD_REF = 2, GPU_FD_MIXED = 4 };
+enum { GPU_FD_PARTIAL = 1, GPU_FD_REF = 2, GPU_FD_MIXED = 4,
+       GPU_FD_SIGNAL = 8 };                      /* (M6) the frame's picture (GPU_DI_SIGNAL) is reported once the
+                                                    frame is queued for the render thread (gpu_submit_sink) */
 typedef struct {
     const uint8_t* cmd; size_t cmd_bytes;          /* gpu_fop records */
     const uint8_t* vtx; size_t vtx_bytes;          /* 32-byte vertices */

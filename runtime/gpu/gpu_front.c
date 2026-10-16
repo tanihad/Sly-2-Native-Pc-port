@@ -2058,7 +2058,7 @@ void gf_vblank_impl(const uint64_t priv[16], uint32_t vblank, const gpu_display_
     }
     gf.cmd_bytes = A_cmd.n;
     gf.data_bytes = A_data.n;
-    sink_frame(vblank, 0);
+    sink_frame(vblank, di && (di->flags & GPU_DI_SIGNAL) ? GPU_FD_SIGNAL : 0);
     cp_vblank = vblank + 1;
     AcquireSRWLockExclusive(&done_lock);
     if (ndone == capdone) {

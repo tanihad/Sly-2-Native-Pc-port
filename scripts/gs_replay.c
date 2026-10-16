@@ -1478,7 +1478,7 @@ int main(int argc, char** argv) {
         memset(&hc, 0, sizeof hc);
         hc.adapter = !strcmp(adapter, "warp") ? GPU_ADAPTER_WARP : GPU_ADAPTER_HW;
         hc.verify = game_verify;
-        hc.stats = getenv("PS2_GS_HW_STATS") && atoi(getenv("PS2_GS_HW_STATS"));
+        hc.stats = getenv("PS2_GS_HW_STATS") ? atoi(getenv("PS2_GS_HW_STATS")) : 0;
         hc.same_thread = getenv("PS2_GS_SAME_THREAD") && atoi(getenv("PS2_GS_SAME_THREAD"));
         hc.out_dir = strcmp(outdir, "-") ? outdir : ".";
         hc.dump_wanted = game_dump_wanted;

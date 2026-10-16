@@ -597,10 +597,8 @@ static void script_debug_key(int key) { InterlockedOr(&debug_keys, key); }   /* 
 void window_present_aspect(const uint32_t* bgrx, int w, int h, int stride, int aspect_w, int aspect_h) {
     if (ext_on) {                        /* the external renderer shows it */
         window_present_fn fn = ext_fn;
-        if (fn && bgrx && w > 0 && h > 0 && stride >= w) {
-            fn(bgrx, w, h, stride, aspect_w, aspect_h);
-            InterlockedIncrement(&fb_presented);
-        }
+        /* (the external renderer counts what it shows: window_note_presented) */
+        if (fn && bgrx && w > 0 && h > 0 && stride >= w) fn(bgrx, w, h, stride, aspect_w, aspect_h);
         return;
     }
     if (!win_accepting) return;

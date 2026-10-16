@@ -19,6 +19,15 @@
 void debug_write_png(const char* path, const uint32_t* bgrx, int w, int h, int stride);   /* debug.c */
 void gs_record_request(const char* path, uint32_t frames);                                  /* gs_record.c */
 
+/* Frames queued for the render thread before the frontend waits. Normally the queue is empty (the
+ * render thread needs 1-2 ms per frame); it fills only while the GPU is slow (clock changes): 6 frames
+ * absorb ~0.1 s of GPU frames at twice their usual time before the EE has to wait (PS2_GS_INFLIGHT). */
+#define GPU_INFLIGHT_GAME inflight_game()
+static int inflight_game(void) {
+    const char* e = getenv("PS2_GS_INFLIGHT");
+    return e && atoi(e) > 0 ? atoi(e) : 6;
+}
+
 static gpu_hw_config C;
 static int render_on;                    /* the render thread runs (hw, or sw pictures after a switch) */
 static volatile LONG active;             /* the GPU draws */
@@ -48,7 +57,6 @@ static volatile LONG presents;           /* pictures reported (stats: flips per 
 static void on_picture_done(uint32_t vblank, void* user) {
     (void)vblank; (void)user;
     InterlockedIncrement(&presents);
-    if (C.presented) C.presented();
     gs_picture_presented();
 }
 
@@ -110,7 +118,7 @@ static struct {
     double gs[SW], front[SW], rcpu[SW], rwall[SW], gpu[SW], pres[SW];
     int ngs, nfront, nr, ngpu;
     uint64_t draws, ff, rov, rov_runs, punts, downloads, loads, display_mem, kicks;
-    uint32_t frames, targets;
+    uint32_t frames, targets, dropped, presented;
     LONG presents0;
     LARGE_INTEGER t0;
     uint64_t gs_cyc;
@@ -158,7 +166,13 @@ static void stats_vblank(uint32_t vblank) {
     while ((n = gpu_take_frame_stats(fs, 64)) > 0)
         for (int i = 0; i < n && C.stats; i++) {
             if (fs[i].partial) continue;
+            if (C.stats > 1 && (fs[i].render_ms > 12.0 || fs[i].gpu_ms > 12.0))   /* PS2_GS_HW_STATS=2: slow frames */
+                hlog("slow frame v%u: render wall %.2f ms (CPU %.2f, upload %.2f, present %.2f), GPU %.2f ms, %u draws, %u dispatches, "
+                     "%u copies, %u state calls", fs[i].vblank, fs[i].render_ms, fs[i].render_cpu_ms, fs[i].upload_ms, fs[i].present_ms,
+                     fs[i].gpu_ms, fs[i].draws, fs[i].dispatches, fs[i].copies, fs[i].state_calls);
             if (S.nr < SW) { S.rcpu[S.nr] = fs[i].render_cpu_ms; S.rwall[S.nr] = fs[i].render_ms; S.pres[S.nr] = fs[i].present_ms; S.nr++; }
+            S.dropped += fs[i].dropped;
+            S.presented += fs[i].presented;
             if (fs[i].gpu_ms >= 0 && S.ngpu < SW) S.gpu[S.ngpu++] = fs[i].gpu_ms;
         }
     if (!C.stats) return;
@@ -173,19 +187,20 @@ static void stats_vblank(uint32_t vblank) {
     LONG p = presents;
     double secs = S.t0.QuadPart ? (double)(t.QuadPart - S.t0.QuadPart) / (double)f.QuadPart : 0;
     if (secs > 0) {
-        double fps = (double)(p - S.presents0) / secs, k = S.frames ? 1.0 / S.frames : 0;
+        double pics = (double)(p - S.presents0) / secs, k = S.frames ? 1.0 / S.frames : 0;
+        double flips = C.hwnd ? (double)S.presented / secs : pics;   /* (headless: nothing is flipped; pictures) */
         double gsm = vmax(S.gs, S.ngs), frm = vmax(S.front, S.nfront), rcm = vmax(S.rcpu, S.nr), rwm = vmax(S.rwall, S.nr), gpm = vmax(S.gpu, S.ngpu);
-        hlog("stats v%u: %.1f flips/s | GS thread %.2f / %.2f ms | frontend %s %.2f / %.2f | render CPU %.2f / %.2f, wall %.2f / %.2f, "
+        hlog("stats v%u: %.1f flips/s (%.1f pictures/s, %u dropped) | GS thread %.2f / %.2f ms | frontend %s %.2f / %.2f | render CPU %.2f / %.2f, wall %.2f / %.2f, "
              "present %.2f | GPU %.2f / %.2f | per VBlank: %.0f prims, %.0f draws (FF %.0f, ROV %.0f in %.1f runs), PUNT %llu, "
              "downloads %.1f, loads %.1f, display from memory %.2f, targets %u  (median / max ms per VBlank)",
-             vblank, fps, med(S.gs, S.ngs), gsm, front_threaded ? "thread" : "(GS thread)", med(S.front, S.nfront), frm,
+             vblank, flips, pics, S.dropped, med(S.gs, S.ngs), gsm, front_threaded ? "thread" : "(GS thread)", med(S.front, S.nfront), frm,
              med(S.rcpu, S.nr), rcm, med(S.rwall, S.nr), rwm, med(S.pres, S.nr), med(S.gpu, S.ngpu), gpm, (double)S.kicks * k,
              (double)S.draws * k, (double)S.ff * k, (double)S.rov * k, (double)S.rov_runs * k, (unsigned long long)S.punts,
              (double)S.downloads * k, (double)S.loads * k, (double)S.display_mem * k, S.targets);
     }
     S.ngs = S.nfront = S.nr = S.ngpu = 0;
     S.draws = S.ff = S.rov = S.rov_runs = S.punts = S.downloads = S.loads = S.display_mem = S.kicks = 0;
-    S.frames = 0;
+    S.frames = S.dropped = S.presented = 0;
     S.t0 = t;
     S.presents0 = p;
 }
@@ -223,6 +238,7 @@ static void front_start(void) {
     gpu_exec_reset();                    /* (a restart: the render thread forgets the old targets) */
     gpu_front_start(&fc);
     gpu_front_set_sink(gpu_submit_sink, NULL);
+    gpu_submit_set_depth(GPU_INFLIGHT_GAME);
     gpu_front_set_mem_reader(punt_reader, NULL);
     InterlockedExchange(&front_threaded, fc.thread);
     seen_thread_punts = gpu_front_thread_punts();
@@ -298,6 +314,7 @@ int gpu_hw_start(const gpu_hw_config* cfg) {
     for (const char* s = e; s && *s && nswitch_at < 16; s = strchr(s, ',') ? strchr(s, ',') + 1 : "")
         switch_at[nswitch_at++] = (uint32_t)strtoul(s, NULL, 10);
     gpu_set_picture_done(on_picture_done, NULL);
+    gpu_set_flip_callback(C.presented);
     if (!render_start()) return 0;
     render_on = 1;
     gpu_caps_print(gpu_get_caps());
