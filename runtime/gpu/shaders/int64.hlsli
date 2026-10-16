@@ -100,6 +100,27 @@ i64 gs_z16(i64 row, i64 dy, i64 dx, int by0, int px, int py, uint i, uint j, uin
     return z;
 }
 
+// (M7) a float holding an integer value (|v| < 2^62) as int64: floor(v)
+i64 i64_from_float_floor(float v) {
+    float fv = floor(v);
+    float hi = floor(fv * (1.0 / 4294967296.0));
+    float lo = fv - hi * 4294967296.0;                // 0 <= lo < 2^32, exact (fv and hi * 2^32 share the exponent range)
+    return uint2((uint)lo, asuint((int)hi));
+}
+
+// (M7) the Z of another sample (i, j) of the pixel: the native value (exact) plus the plane's step to the sample
+// in float - the sub-sample offsets need no bit-exactness, only one formula for every tier (FF and ROV), and two
+// integer 64-bit divisions per sample cost more than the rest of the Z work
+i64 gs_z16_sample(i64 row, i64 dy, i64 dx, int by0, int px, int py, uint i, uint j, uint kx, uint ky) {
+    i64 z = i64_add(row, i64_mul_i32(dy, py - by0));
+    z = i64_add(z, i64_mul_i32(dx, px));
+    if ((i | j) != 0u) {
+        float fdy = (float)asint(dy.y) * 4294967296.0 + (float)dy.x, fdx = (float)asint(dx.y) * 4294967296.0 + (float)dx.x;
+        z = i64_add(z, i64_from_float_floor(fdy * ((float)j / (float)ky) + fdx * ((float)i / (float)kx)));
+    }
+    return z;
+}
+
 // tests_batch (runtime/gs_draw_pixel.c): z >> 16 clamped to [0, zmax]
 uint gs_z_clamp(i64 z16, uint zmax) {
     i64 zi = i64_asr(z16, 16u);

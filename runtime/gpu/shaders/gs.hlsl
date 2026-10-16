@@ -615,7 +615,7 @@ bool gs_frag(float4 pos, uint irec, float3 istq, uint prim, out Frag f, out St s
     }
     f.col = clamp255i(a[0] >> 16) | (clamp255i(a[1] >> 16) << 8) | (clamp255i(a[2] >> 16) << 16) | (clamp255i(a[3] >> 16) << 24);
     f.fog = clamp255i(a[4] >> 16);
-    i64 z16 = gs_z16(recs.Load2(rb), recs.Load2(rb + 8u), recs.Load2(rb + 16u), by0, px, py, si, sj, kx, ky);
+    i64 z16 = gs_z16_sample(recs.Load2(rb), recs.Load2(rb + 8u), recs.Load2(rb + 16u), by0, px, py, si, sj, kx, ky);
     f.z = gs_z_clamp(z16, zmax);
     f.lq = asfloat(recs.Load(rb + 116u));
     if (tme) {

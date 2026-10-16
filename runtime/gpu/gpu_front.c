@@ -1710,8 +1710,16 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
         if (sb_owner != od_serial) { sb_reset(); sb_owner = od_serial; }
         if (outcome & 6) sb_prim(scls, &T, spp, lp_start, lp_n, x0, y0, 1);
     }
-    if (!OD.prims) { OD.bbox[0] = x0; OD.bbox[1] = y0; OD.bbox[2] = x1; OD.bbox[3] = y1; }
-    else { if (x0 < OD.bbox[0]) OD.bbox[0] = x0; if (y0 < OD.bbox[1]) OD.bbox[1] = y0; if (x1 > OD.bbox[2]) OD.bbox[2] = x1; if (y1 > OD.bbox[3]) OD.bbox[3] = y1; }
+    /* (M7) at scale a triangle's samples reach into the native row above and the column left of its native
+     * pixels (sample (i, j) of pixel (x, y) sits at x + i / kx, y + j / ky): the draw's bbox (depth tile sync,
+     * shadow copies) covers them, inside the scissor */
+    int bx0 = x0, by0 = y0;
+    if (cls == GPU_PC_TRI && gf_cfg.scale > 1) {
+        if (bx0 > P->scx0) bx0--;
+        if (by0 > P->scy0) by0--;
+    }
+    if (!OD.prims) { OD.bbox[0] = bx0; OD.bbox[1] = by0; OD.bbox[2] = x1; OD.bbox[3] = y1; }
+    else { if (bx0 < OD.bbox[0]) OD.bbox[0] = bx0; if (by0 < OD.bbox[1]) OD.bbox[1] = by0; if (x1 > OD.bbox[2]) OD.bbox[2] = x1; if (y1 > OD.bbox[3]) OD.bbox[3] = y1; }
     if (!OD.prims) { OD.alpha = ev->reg[R_ALPHA_1 + ev->ctx]; OD.test = ev->reg[R_TEST_1 + ev->ctx]; OD.frame = ev->reg[R_FRAME_1 + ev->ctx]; }
     OD.prims++;
 
