@@ -3,6 +3,9 @@
  *   PS2_GS_RECORD=<file>        record what the EE sends to the GS ...
  *   PS2_GS_RECORD_FROM=<vblank> ... from this VBlank on (default 600) ...
  *   PS2_GS_RECORD_FRAMES=<n>    ... for n VBlanks (default 60).
+ * The PS2_INPUT token "rec" (window.c, e.g. "+300:rec" or a live PS2_INPUT_FILE line "+0:rec") starts
+ * the recording at the next VBlank instead; PS2_GS_RECORD_FROM=-1 then means "only when asked".
+ * PS2_DUMP_FROM=rec (ps2_runtime.c) dumps frames only from the recording's first VBlank on.
  *
  * File: "GSREC001", then the GS state at the first VBlank (4 MB of VRAM, the 1 KB CLUT buffer, the
  * 0x64 general registers as last written), then records { u32 tag, u32 len, payload }:
@@ -15,6 +18,7 @@
 #include "gs_draw.h"
 
 #include <stdlib.h>
+#include <windows.h>
 
 const uint16_t* gs_clut_buffer(void);    /* gs_mem_tex.c */
 
@@ -22,7 +26,23 @@ static FILE* rec;
 static int rec_init;
 int gs_recording;                         /* records are being written (gs_thread.c checks it) */
 static uint32_t rec_from = 600, rec_frames = 60, rec_seen;
+static volatile int rec_now;              /* the "rec" input token: start at the next VBlank */
+volatile uint32_t gs_record_first;        /* VBlank the recording started at (0: not started) */
 uint64_t gs_reg_mirror[0x64];             /* every general register as last written (gs_thread.c) */
+
+void gs_record_start_now(void) { rec_now = 1; }
+
+/* Record the next `frames` VBlanks into `path` (any thread; M6 in-game verify: the stream after a
+ * mismatch, for offline bisection). Ignored while a recording is being written. */
+static char req_path[512];
+static volatile LONG req_pending;
+static uint32_t req_frames;
+void gs_record_request(const char* path, uint32_t frames) {
+    if (gs_recording || req_pending) return;
+    snprintf(req_path, sizeof req_path, "%s", path);
+    req_frames = frames ? frames : 60;
+    InterlockedExchange(&req_pending, 1);
+}
 
 static void put(uint32_t tag, uint32_t len, const void* p, size_t n) {
     uint32_t h[2] = { tag, len };
@@ -42,6 +62,17 @@ void gs_record_image(const void* data, uint32_t bytes) {
 }
 
 void gs_record_vsync(uint32_t vblank) {
+    if (req_pending && !gs_recording && !rec) {
+        rec_init = 1;
+        rec = fopen(req_path, "wb");
+        if (rec) {
+            setvbuf(rec, NULL, _IOFBF, 1 << 22);
+            rec_frames = req_frames;
+            rec_seen = 0;
+            rec_now = 1;
+        } else fprintf(stderr, "[gs] cannot write the GS recording %s\n", req_path);
+        InterlockedExchange(&req_pending, 0);
+    }
     if (!rec_init) {
         rec_init = 1;
         const char* f = getenv("PS2_GS_RECORD");
@@ -54,8 +85,10 @@ void gs_record_vsync(uint32_t vblank) {
     }
     if (!rec) return;
     if (!gs_recording) {
-        if (vblank < rec_from) return;
-        gs_sync();                               /* the state below is the GS's at this point */
+        if (vblank < rec_from && !rec_now) return;
+        gs_record_first = vblank;
+        gs_sync_memory();                        /* the state below is the GS's at this point (GPU data too) */
+        rec_now = 0;
         fwrite("GSREC001", 8, 1, rec);
         fwrite(gs_vram, GS_VRAM_SIZE, 1, rec);
         static uint16_t clut[512];

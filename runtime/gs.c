@@ -146,6 +146,19 @@ static void decode_circuit(const uint64_t* priv, int i, circuit* c) {
     if (!c->fmt) c->fmt = gs_fmt_of(PSMCT32);
 }
 
+/* The memory a picture is composed from (gs_vram, or another image: gs_compose_from) and the field
+ * history of its deinterlacer. */
+struct gs_compose_hist {
+    uint32_t rows[2][512 * 1024];        /* last field of each parity: [(oy >> 1) * 1024 + x] */
+    uint32_t when[2];                    /* vsync + 1 when it was shown, 0 = none */
+    int dims[2][2];
+};
+static gs_compose_hist hist_default;
+static const uint8_t* cmem;
+static gs_compose_hist* chist = &hist_default;
+
+gs_compose_hist* gs_compose_hist_new(void) { return calloc(1, sizeof(gs_compose_hist)); }
+
 /* One output row of a circuit as 0xAARRGGBB (alpha in the GS's 8-bit form); x < 0 = outside. */
 static void read_row(const circuit* c, int fy, const int* xs, int w, uint32_t* out) {
     const gs_fmt* f = c->fmt;
@@ -156,10 +169,10 @@ static void read_row(const circuit* c, int fy, const int* xs, int w, uint32_t* o
         int fx = xs[i];
         if (fx < 0) { out[i] = 0; continue; }
         uint32_t v;
-        if (gs_swz_fast) {
+        if (gs_swz_fast || cmem != gs_vram) {
             uint32_t a = (((prow + ((uint32_t)fx >> 6)) & 511u) << 13) | ((uint32_t)trow[fx & 63] << f->elem_shift);
-            if (f->bits == 16) { uint16_t h; memcpy(&h, gs_vram + a, 2); v = h; }
-            else memcpy(&v, gs_vram + a, 4);
+            if (f->bits == 16) { uint16_t h; memcpy(&h, cmem + a, 2); v = h; }
+            else memcpy(&v, cmem + a, 4);
         } else {
             v = gs_mem_read(c->psm, (uint32_t)c->fbp * 32, (uint32_t)c->fbw, fx, fy);
         }
@@ -211,9 +224,9 @@ static uint32_t px_avg(uint32_t a, uint32_t b) {
 static void deinterlace(uint32_t* dst, int stride, int W, int H, const circuit* ref, const gs_display_snap* s) {
     /* Runs where the picture is composed (in order, one picture at a time): s holds the GS stream's
      * field state (gs_fb_yfrac/psm) at this VBlank and the VBlank count of the register snapshot. */
-    static uint32_t rows[2][512 * 1024];          /* last field of each parity: [(oy >> 1) * 1024 + x] */
-    static uint32_t when[2];                      /* vsync + 1 when it was shown, 0 = none */
-    static int dims[2][2];
+    uint32_t (*rows)[512 * 1024] = chist->rows;  /* last field of each parity: [(oy >> 1) * 1024 + x] */
+    uint32_t* when = chist->when;                 /* vsync + 1 when it was shown, 0 = none */
+    int (*dims)[2] = chist->dims;
     static uint8_t still[1024];                   /* per pixel of an output row: no motion around it */
     const uint32_t vsync = (uint32_t)s->priv[S_VSYNC];
     int f = s->fb_psm[ref->fbp & 511] == ref->psm ? s->fb_yfrac[ref->fbp & 511] : 0xFF;
@@ -287,31 +300,71 @@ int gs_display_regs(const uint64_t priv[GS_PRIV_SNAPSHOT], uint32_t* dst, int st
 }
 
 int gs_compose(const gs_display_snap* snap, uint32_t* dst, int stride, int* w, int* h) {
-    const uint64_t* priv = snap->priv;
+    return gs_compose_from(snap, gs_vram, NULL, dst, stride, w, h);
+}
+
+int gs_display_layout_of(const uint64_t priv[GS_PRIV_SNAPSHOT], gs_display_layout* L) {
+    memset(L, 0, sizeof *L);
     uint64_t pmode = priv[P_PMODE];
     int en[2] = { (int)(pmode & 1), (int)((pmode >> 1) & 1) };
-    *w = *h = 0;
-    if (!en[0] && !en[1]) return 0;
-    int mmod = (int)((pmode >> 5) & 1), slbg = (int)((pmode >> 7) & 1), alp = (int)((pmode >> 8) & 0xFF);
-    uint64_t smode2 = priv[P_SMODE2];
-    int field_mode = (smode2 & 3) == 3;  /* interlaced, FFMD: the buffer holds one field */
-
-    circuit c[2];
+    L->mmod = (int)((pmode >> 5) & 1);
+    L->slbg = (int)((pmode >> 7) & 1);
+    L->alp = (int)((pmode >> 8) & 0xFF);
+    L->field_mode = (priv[P_SMODE2] & 3) == 3;   /* interlaced, FFMD: the buffer holds one field */
+    uint32_t bg = (uint32_t)priv[P_BGCOLOR];
+    L->bg = ((bg & 0xFF) << 16) | (bg & 0xFF00) | ((bg >> 16) & 0xFF);
     int ux0 = 1 << 30, uy0 = 1 << 30, ux1 = 0, uy1 = 0;
     for (int i = 0; i < 2; i++) {
-        decode_circuit(priv, i, &c[i]);
+        circuit c;
+        decode_circuit(priv, i, &c);
+        gs_circuit* o = &L->c[i];
+        o->en = en[i];
+        o->fbp = c.fbp; o->fbw = c.fbw; o->psm = c.psm; o->dbx = c.dbx; o->dby = c.dby; o->dx = c.dx; o->dy = c.dy;
+        o->magh = c.magh; o->magv = c.magv; o->dw = c.dw; o->dh = c.dh;
         if (!en[i]) continue;
-        ux0 = c[i].dx < ux0 ? c[i].dx : ux0;
-        uy0 = c[i].dy < uy0 ? c[i].dy : uy0;
-        ux1 = c[i].dx + c[i].dw + 1 > ux1 ? c[i].dx + c[i].dw + 1 : ux1;
-        uy1 = c[i].dy + c[i].dh + 1 > uy1 ? c[i].dy + c[i].dh + 1 : uy1;
+        ux0 = c.dx < ux0 ? c.dx : ux0;
+        uy0 = c.dy < uy0 ? c.dy : uy0;
+        ux1 = c.dx + c.dw + 1 > ux1 ? c.dx + c.dw + 1 : ux1;
+        uy1 = c.dy + c.dh + 1 > uy1 ? c.dy + c.dh + 1 : uy1;
     }
-    const circuit* ref = &c[en[1] ? 1 : 0];
-    int hs = ref->magh + 1, vs = ref->magv + 1;
-    int W = (ux1 - ux0) / hs, H = (uy1 - uy0) / vs;
+    if (!en[0] && !en[1]) return 0;
+    L->ref = en[1] ? 1 : 0;
+    const gs_circuit* ref = &L->c[L->ref];
+    L->hs = ref->magh + 1;
+    L->vs = ref->magv + 1;
+    L->ux0 = ux0;
+    L->uy0 = uy0;
+    int W = (ux1 - ux0) / L->hs, H = (uy1 - uy0) / L->vs;
     if (W > 1024) W = 1024;
     if (H > 1024) H = 1024;
     if (W <= 0 || H <= 0) return 0;
+    L->W = W;
+    L->H = H;
+    return 1;
+}
+
+int gs_display_field_code(const gs_display_snap* s, const gs_display_layout* L) {
+    const gs_circuit* ref = &L->c[L->ref];
+    return s->fb_psm[ref->fbp & 511] == ref->psm ? s->fb_yfrac[ref->fbp & 511] : 0xFF;
+}
+
+int gs_compose_from(const gs_display_snap* snap, const uint8_t* mem, gs_compose_hist* hist, uint32_t* dst, int stride,
+                    int* w, int* h) {
+    cmem = mem;
+    chist = hist ? hist : &hist_default;
+    const uint64_t* priv = snap->priv;
+    *w = *h = 0;
+    gs_display_layout Lo;
+    if (!gs_display_layout_of(priv, &Lo)) return 0;
+    uint64_t pmode = priv[P_PMODE];
+    int en[2] = { Lo.c[0].en, Lo.c[1].en };
+    int mmod = Lo.mmod, slbg = Lo.slbg, alp = Lo.alp;
+    uint64_t smode2 = priv[P_SMODE2];
+    int field_mode = Lo.field_mode;
+    circuit c[2];
+    for (int i = 0; i < 2; i++) decode_circuit(priv, i, &c[i]);
+    const circuit* ref = &c[Lo.ref];
+    int ux0 = Lo.ux0, uy0 = Lo.uy0, hs = Lo.hs, vs = Lo.vs, W = Lo.W, H = Lo.H;
     {                                    /* log each new display configuration once */
         static uint64_t last[5];
         uint64_t now[5] = { pmode & 0xFFFF, smode2 & 3, en[0] ? priv[P_DISPFB1] : 0, en[1] ? priv[P_DISPFB2] : 0,
@@ -335,8 +388,7 @@ int gs_compose(const gs_display_snap* snap, uint32_t* dst, int stride, int* w, i
             xs[i][ox] = (X >= c[i].dx && X <= c[i].dx + c[i].dw) ? (c[i].dbx + (X - c[i].dx) / (c[i].magh + 1)) & 2047 : -1;
         }
     }
-    uint32_t bg = (uint32_t)priv[P_BGCOLOR];
-    bg = ((bg & 0xFF) << 16) | (bg & 0xFF00) | ((bg >> 16) & 0xFF);
+    uint32_t bg = Lo.bg;
 
     int last_fy[2] = { -1, -1 }, last_out = -1;    /* buffer rows in row[] / in the previous output row */
     for (int oy = 0; oy < H; oy++) {

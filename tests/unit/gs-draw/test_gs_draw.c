@@ -41,6 +41,142 @@ static void test_present(const uint32_t* frame, int ok, int w, int h, uint32_t v
 }
 #endif
 
+#ifdef TEST_HW_REF
+/* The same scenes with the Direct3D 11 backend's REF tier alongside (notes/d3d11-renderer.md M3,
+ * 10.3; built by tests/unit/gs-hw/run.ps1): the GPU frontend in REF mode consumes the same register
+ * stream and gpu_exec.c draws every primitive through the ROV pixel pipeline. Before every read of GS
+ * memory (and at the end of every scene) the GPU's memory (sample 0 of every GPU-written block, plus
+ * vram_buf) is compared with the software renderer's, all 4 MB, exactly. Each scene starts from the
+ * software renderer's memory (resync). Scenes that use what the REF tier leaves to M4 (16-bit frames:
+ * ALIAS16, target views of the frame) are reported but not counted. */
+#include "gpu/gpu.h"
+#include "gpu/gpu_front.h"
+#include "gs_mem_swizzle.h"
+static const char* hw_scene = "start";
+static uint32_t hw_last_regs = 0xFFFFFFFFu, hw_compares, hw_scene_compares, hw_scene_diffs, hw_post0;
+static uint64_t hw_scene_words;
+static int hw_bad_scenes, hw_m4_scenes;
+static uint8_t hw_mem[GS_VRAM_SIZE];
+static gpu_dl_entry hw_e[16384];
+static uint16_t hw_w[16384];
+#ifdef TEST_HW_MIXED_DEFAULT
+static uint64_t hw_tol_words, hw_tol_c2, hw_tol_c16, hw_tol_z;   /* tolerated differences (default mixed mode) */
+#endif
+
+static void hw_compare(void) {
+    if (gs_stats.regs == hw_last_regs) return;
+    hw_last_regs = gs_stats.regs;
+    gpu_front_checkpoint();
+    int n = gpu_front_gpu_blocks(hw_e, hw_w, 16384);
+    if (!gpu_exec_read_memory(hw_e, hw_w, n, hw_mem)) { fprintf(stderr, "GPU memory read-back failed\n"); exit(2); }
+    hw_compares++;
+    hw_scene_compares++;
+    const uint32_t* a = (const uint32_t*)hw_mem;
+    const uint32_t* b = (const uint32_t*)gs_vram;
+    uint32_t words = 0, first = 0;
+    for (uint32_t i = 0; i < GS_VRAM_SIZE / 4; i++)
+        if (a[i] != b[i]) { if (!words) first = i; words++; }
+    if (!words) return;
+#ifdef TEST_HW_MIXED_DEFAULT
+    {   /* default mixed mode: the tolerances of notes/d3d11-renderer.md 10.2 (as gs_replay's mixed lockstep):
+         * CPU-owned words equal; of the GPU colour words at most 2.5% differ by more than 2 in some byte and
+         * 0.1% by more than 16; at most 0.1% of the Z words differ */
+        static uint16_t wr[16384];
+        memset(wr, 0, sizeof wr);
+        for (int i = 0; i < n; i++) wr[hw_e[i].abs] = hw_w[i];
+        uint64_t nc = 0, nz = 0, c2 = 0, c16 = 0, z = 0, cpu = 0;
+        for (uint32_t blk = 0; blk < 16384; blk++) {
+            int kind = wr[blk] ? gpu_front_target_kind(wr[blk]) : -1;
+            if (kind == 0) nc += 64; else if (kind > 0) nz += 64;
+            for (uint32_t k = blk * 64; k < blk * 64 + 64; k++) {
+                if (a[k] == b[k]) continue;
+                if (kind == 0) {
+                    int m = 0;
+                    for (int c = 0; c < 32; c += 8) { int d = (int)((a[k] >> c) & 255) - (int)((b[k] >> c) & 255); if (d < 0) d = -d; if (d > m) m = d; }
+                    c2 += m > 2; c16 += m > 16;
+                } else if (kind > 0) z++;
+                else cpu++;
+            }
+        }
+        hw_tol_words += words;
+        hw_tol_c2 += c2; hw_tol_c16 += c16; hw_tol_z += z;
+        if (!cpu && (double)c2 <= 0.025 * (double)nc && (double)c16 <= 0.001 * (double)nc && (double)z <= 0.001 * (double)nz) return;
+        fprintf(stderr, "  [hw-ref] %s: beyond tolerance: CPU words %llu, colour words > 2: %llu > 16: %llu of %llu, Z %llu of %llu\n", hw_scene,
+                (unsigned long long)cpu, (unsigned long long)c2, (unsigned long long)c16, (unsigned long long)nc, (unsigned long long)z,
+                (unsigned long long)nz);
+    }
+#endif
+    if (!hw_scene_diffs) {
+        fprintf(stderr, "  [hw-ref] %s: %u words differ, first word %05X (block %04X, page %03X): hw %08X sw %08X\n", hw_scene, words,
+                first, first >> 6, first >> 11, a[first], b[first]);
+        int shown = 0;                   /* the first differing pixels of the 640x448 CT32 frame at page 0 */
+        for (int y = 0; y < 448 && shown < 6; y++)
+            for (int x = 0; x < 640 && shown < 6; x++) {
+                uint32_t w = gs_addr32(gs_swz_ct32, 0, 10, (uint32_t)x, (uint32_t)y);
+                if (a[w] != b[w]) { fprintf(stderr, "    frame pixel (%d,%d): hw %08X sw %08X\n", x, y, a[w], b[w]); shown++; }
+            }
+        extern uint64_t hw_regs[0x80];
+        gpu_front_debug_block(first >> 6, stderr);
+        {                                /* the first differing pixels of the Z buffer at page 160 in its format */
+            uint32_t zpsm = 0x30 | (uint32_t)((hw_regs[0x4E] >> 24) & 0xF);
+            int z16 = zpsm == PSMZ16 || zpsm == PSMZ16S;
+            const uint16_t* tab = zpsm == PSMZ16 ? gs_swz_z16 : zpsm == PSMZ16S ? gs_swz_z16s : gs_swz_z32;
+            int zshown = 0;
+            for (int y = 0; y < 448 && zshown < 6; y++)
+                for (int x = 0; x < 640 && zshown < 6; x++) {
+                    uint32_t hv, sv;
+                    if (z16) {
+                        uint32_t h = gs_addr16(tab, 160 * 32, 10, (uint32_t)x, (uint32_t)y);
+                        hv = (a[h >> 1] >> ((h & 1) * 16)) & 0xFFFF; sv = (b[h >> 1] >> ((h & 1) * 16)) & 0xFFFF;
+                    } else {
+                        uint32_t w = gs_addr32(tab, 160 * 32, 10, (uint32_t)x, (uint32_t)y);
+                        hv = a[w]; sv = b[w];
+                    }
+                    if (hv != sv) { fprintf(stderr, "    Z (psm %02X) pixel (%d,%d): hw %08X sw %08X\n", zpsm, x, y, hv, sv); zshown++; }
+                }
+        }
+        fprintf(stderr, "    state: PRIM %llX FRAME %llX ZBUF %llX TEST %llX ALPHA %llX TEX0 %llX TEX1 %llX CLAMP %llX TEXA %llX\n"
+                        "           SCISSOR %llX FBA %llX PABE %llX COLCLAMP %llX SCANMSK %llX FOGCOL %llX\n",
+                (unsigned long long)hw_regs[0x00], (unsigned long long)hw_regs[0x4C], (unsigned long long)hw_regs[0x4E],
+                (unsigned long long)hw_regs[0x47], (unsigned long long)hw_regs[0x42], (unsigned long long)hw_regs[0x06],
+                (unsigned long long)hw_regs[0x14], (unsigned long long)hw_regs[0x08], (unsigned long long)hw_regs[0x3B],
+                (unsigned long long)hw_regs[0x40], (unsigned long long)hw_regs[0x4A], (unsigned long long)hw_regs[0x49],
+                (unsigned long long)hw_regs[0x46], (unsigned long long)hw_regs[0x22], (unsigned long long)hw_regs[0x3D]);
+    }
+    hw_scene_diffs++;
+    hw_scene_words += words;
+}
+
+static int hw_read_vram(uint8_t* out, void* user) { (void)user; return gpu_exec_read_memory(NULL, NULL, 0, out); }
+
+static uint32_t hw_mem_read(int psm, uint32_t bp, uint32_t bw, int x, int y) {
+    hw_compare();
+    return gs_mem_read(psm, bp, bw, x, y);
+}
+#define gs_mem_read hw_mem_read
+
+static void hw_scene_begin(const char* name) {
+    hw_scene = name;
+    hw_scene_compares = hw_scene_diffs = 0;
+    hw_scene_words = 0;
+    gpu_front_resync();                  /* (the scene starts from the software renderer's memory) */
+    hw_post0 = gpu_front_post_prims();
+}
+
+static void hw_scene_end(void) {
+    hw_last_regs = 0xFFFFFFFFu;
+    hw_compare();
+    uint32_t post = gpu_front_post_prims() - hw_post0;
+    if (hw_scene_diffs) hw_bad_scenes++;
+    if (post) hw_m4_scenes++;
+    fprintf(stderr, "  [hw-ref] %-28s %4u comparisons, %s (%llu word differences)%s\n", hw_scene, hw_scene_compares,
+            hw_scene_diffs ? "DIFFERENT" : "identical", (unsigned long long)hw_scene_words, post ? " (post passes: ALIAS16 / target views / PUNT)" : "");
+}
+#define SCENE(call) do { hw_scene_begin(#call); call; hw_scene_end(); } while (0)
+#else
+#define SCENE(call) call
+#endif
+
 /* ---- test helpers --------------------------------------------------------------------------------- */
 
 static int fails, checks;
@@ -63,7 +199,8 @@ enum { P_POINT, P_LINE, P_LINESTRIP, P_TRI, P_TRISTRIP, P_TRIFAN, P_SPRITE };
 #define FST (1 << 8)
 #define CTXT2 (1 << 9)
 
-static void W(uint32_t r, uint64_t v) { gs_write_reg(r, v); }
+uint64_t hw_regs[0x80];                  /* (TEST_HW_REF: the registers as written, for divergence reports) */
+static void W(uint32_t r, uint64_t v) { if (r < 0x80) hw_regs[r] = v; gs_write_reg(r, v); }
 
 static uint32_t FBP = 0, FBW = 10;       /* current frame buffer (pages, 64-px units) */
 static int FPSM = PSMCT32;
@@ -1587,6 +1724,181 @@ static void t_texture_cache_random(void) {
     W(TEX1_1, 0); W(CLAMP_1, 0);
 }
 
+/* Every texture format read straight from memory (CT32/24/16/16S, Z32/24/16/16S, T8, T4, T8H, T4HL,
+ * T4HH) over random data, with CT32 and CT16 CLUTs at two CSA, TEXA with and without AEM, the four
+ * wrap modes, point and bilinear sampling, UV sprites, scaled sprites and perspective triangles,
+ * MODULATE and DECAL. The 1:1 point-sampled sprites must show gs_tex_fetch's texels; the GPU
+ * backend's REF tier (TEST_HW_REF) compares everything else with the software renderer. */
+static void t_texture_formats(void) {
+    reset_env();
+    clear(0, 0, 0, 0);
+    rng_state = 4242;
+    static uint32_t raw[64 * 64], pal[256];
+    static uint16_t pal16[256];
+    for (int i = 0; i < 64 * 64; i++) raw[i] = (uint32_t)rnd(65536) << 16 | (uint32_t)rnd(65536);
+    for (int i = 0; i < 64 * 16; i += 37) raw[i] &= 0xFF000000u;           /* some RGB = 0 texels (AEM) */
+    for (int i = 0; i < 64 * 16; i += 53) raw[i] &= 0x80008000u;           /* some 16-bit RGB = 0 halves */
+    const uint32_t tbp = 300 * 32, cbp32 = 306 * 32, cbp16 = 307 * 32;   /* (past the frame 0-139 and Z 160-299 pages) */
+    upload(tbp, 1, PSMCT32, 0, 0, 64, 64, raw, sizeof raw);                 /* 16 KB of texel data, any format */
+    for (int i = 0; i < 256; i++) { pal[i] = (uint32_t)rnd(65536) << 16 | (uint32_t)rnd(65536); pal16[i] = (uint16_t)rnd(65536); }
+    upload_clut8(cbp32, pal);
+    upload(cbp16, 1, PSMCT16, 0, 0, 16, 16, pal16, sizeof pal16);
+    static const uint32_t psms[13] = { PSMCT32, PSMCT24, PSMCT16, PSMCT16S, PSMZ32, PSMZ24, PSMZ16, PSMZ16S,
+                                       PSMT8, PSMT4, PSMT8H, PSMT4HL, PSMT4HH };
+    int bad = 0;
+    for (int i = 0; i < 13; i++) {
+        uint32_t psm = psms[i];
+        int c16 = i & 1, csa = (i >> 1) & 1 ? 3 : 0;
+        W(TEXA, (i % 3 == 0 ? 0x40ull : 0xC0ull) | (uint64_t)(i % 3 == 1) << 15 | (uint64_t)(i % 4 == 2 ? 0x20 : 0xFF) << 32);
+        W(TEX0_1, tex0(tbp, 1, psm, 5, 5, 1, 1 /*DECAL*/, c16 ? cbp16 : cbp32, c16 ? PSMCT16 : PSMCT32,
+                       psm == PSMT4 || psm == PSMT4HL || psm == PSMT4HH ? (uint32_t)csa : 0, 1));
+        int wm = i % 4;                  /* REPEAT, CLAMP, REGION_CLAMP 3..28, REGION_REPEAT (u & 15) | 8 */
+        uint64_t cl = (uint64_t)wm | (uint64_t)wm << 2;
+        if (wm == 2) cl |= 3ull << 4 | 28ull << 14 | 3ull << 24 | 28ull << 34;
+        if (wm == 3) cl |= 15ull << 4 | 8ull << 14 | 15ull << 24 | 8ull << 34;
+        W(CLAMP_1, cl);
+        int x0 = (i % 7) * 88, y0 = (i / 7) * 220;
+        /* 1:1, point sampled (UV): texel (u, v) at pixel (x0 + u, y0 + v) */
+        W(TEX1_1, 0);
+        prim(P_SPRITE, TME | FST);
+        rgba(0x80, 0x80, 0x80, 0x80);
+        uv(0, 0); xyz(x0, y0, 0);
+        uv(32 * 16, 32 * 16); xyz(x0 + 32, y0 + 32, 0);
+        if (wm <= 1) {
+            gs_tex0 t;
+            memset(&t, 0, sizeof t);
+            t.tbp0 = tbp; t.tbw = 1; t.psm = psm; t.tw = 5; t.th = 5; t.tcc = 1; t.cbp = c16 ? cbp16 : cbp32;
+            t.cpsm = c16 ? PSMCT16 : PSMCT32;
+            t.csa = psm == PSMT4 || psm == PSMT4HL || psm == PSMT4HH ? (uint32_t)csa : 0;
+            gs_texa ta = { i % 3 == 0 ? 0x40u : 0xC0u, (uint32_t)(i % 3 == 1), i % 4 == 2 ? 0x20u : 0xFFu };
+            for (int v = 0; v < 32; v += 3)
+                for (int u = 0; u < 32; u += 5)
+                    if (px(x0 + u, y0 + v) != gs_tex_fetch(&t, &ta, u, v)) bad++;
+        }
+        /* scaled, bilinear (UV with fractions) and MODULATE with a vertex colour */
+        W(TEX1_1, 1 << 5 | 1 << 6);
+        W(TEX0_1, tex0(tbp, 1, psm, 5, 5, 1, 0 /*MODULATE*/, c16 ? cbp16 : cbp32, c16 ? PSMCT16 : PSMCT32, 0, 0));
+        prim(P_SPRITE, TME | FST);
+        rgba(0x90, 0x70, 0x40, 0x60);
+        uv(3 * 16 + 5, 7 * 16 + 11); xyz(x0 + 40, y0, 0);
+        uv(30 * 16 + 2, 25 * 16 + 9); xyz(x0 + 40 + 45, y0 + 60, 0);
+        /* perspective triangles over the texture, past its edges (wrap modes), bilinear */
+        prim(P_TRI, TME | IIP);
+        rgbaq(0x80, 0x80, 0x80, 0x80, 1.0f); st(-0.3f, -0.2f); xyz(x0, y0 + 70, 0);
+        rgbaq(0x60, 0x80, 0xA0, 0x70, 0.5f); st(0.7f, -0.1f); xyz(x0 + 80, y0 + 75, 0);
+        rgbaq(0x80, 0x40, 0x80, 0x80, 2.0f); st(2.6f, 3.1f); xyz(x0 + 30, y0 + 210, 0);
+        W(TEX1_1, 0);
+        prim(P_TRI, TME);
+        rgbaq(0x80, 0x80, 0x80, 0x80, 1.5f); st(0.1f, 0.2f); xyz(x0 + 60, y0 + 100, 0);
+        rgbaq(0x80, 0x80, 0x80, 0x80, 0.25f); st(0.2f, 0.05f); xyz(x0 + 87, y0 + 120, 0);
+        rgbaq(0x80, 0x80, 0x80, 0x80, 1.0f); st(1.3f, 1.2f); xyz(x0 + 45, y0 + 215, 0);
+    }
+    CHECK(bad == 0, "1:1 sprites of every texture format vs gs_tex_fetch: %d texels differ", bad);
+    W(CLAMP_1, 0);
+    W(TEX1_1, 0);
+    W(TEXA, 0x80ull << 32 | 0x80);
+}
+
+/* Random drawing states and primitives over random memory: every primitive type (AA1 lines too),
+ * blend forms, alpha test + AFAIL, DATE, Z formats and tests, partial FBMSK, COLCLAMP, PABE, FBA, fog,
+ * scan masks, CT32/CT24 frames, textures of every format with random filters, wrap modes, TEXA,
+ * mipmaps (LCM / LOD). No reference here (the software renderer must not crash); TEST_HW_REF compares
+ * the GPU's REF tier with it after every iteration. */
+#ifdef TEST_HW_REF
+static char hw_scene_buf[96];
+#endif
+/* WARP only: triangles keep FST (UV). On WARP the REF pixel shader of some STQ triangles reads values
+ * from the record's STQ block (offsets >= 120) that differ from what the CPU uploaded (verified with a
+ * record dump; NVIDIA reads them exactly). A WARP anomaly, notes/d3d11-renderer.md appendix E. */
+static int fuzz_no_stq_tri;
+static void t_random_states(void) {
+    reset_env();
+    const char* fs = getenv("PS2_FUZZ_SEED");     /* (heavier runs by hand: PS2_FUZZ_SEED, PS2_FUZZ_ITERS) */
+    const char* fi = getenv("PS2_FUZZ_ITERS");
+    rng_state = fs ? (uint32_t)strtoul(fs, NULL, 0) : 777;
+    int iters = fi ? atoi(fi) : 400;
+    static uint32_t raw[128 * 64];
+    for (int i = 0; i < 128 * 64; i++) raw[i] = (uint32_t)rnd(65536) << 16 | (uint32_t)rnd(65536);
+    upload(310 * 32, 2, PSMCT32, 0, 0, 128, 64, raw, sizeof raw);     /* textures, CLUTs (pages 310-317) */
+    for (int i = 0; i < 128 * 64; i++) raw[i] = (uint32_t)rnd(65536) << 16 | (uint32_t)rnd(65536);
+    upload(0, 10, PSMCT32, 0, 0, 128, 64, raw, sizeof raw);           /* random frame contents (alpha for DATE) */
+    upload(160 * 32, 10, PSMCT32, 0, 0, 128, 64, raw, sizeof raw);    /* and Z */
+    static const uint32_t psms[13] = { PSMCT32, PSMCT24, PSMCT16, PSMCT16S, PSMZ32, PSMZ24, PSMZ16, PSMZ16S,
+                                       PSMT8, PSMT4, PSMT8H, PSMT4HL, PSMT4HH };
+    static const uint32_t zpsms[4] = { PSMZ32, PSMZ24, PSMZ16, PSMZ16S };
+    static const uint32_t fbmsks[6] = { 0, 0, 0xFF000000u, 0x00FF00FFu, 0xFFFF80FFu, 0x0F0F0F0Fu };
+    for (int it = 0; it < iters; it++) {
+#ifdef TEST_HW_REF
+        snprintf(hw_scene_buf, sizeof hw_scene_buf, "t_random_states() iteration %d", it);
+        hw_scene = hw_scene_buf;
+#endif
+        if (rnd(6) == 0) {               /* an upload of any format over drawn memory (frame, Z, textures) */
+            static uint8_t up[40 * 40 * 4];
+            static const uint32_t bps[3] = { 0, 160 * 32, 310 * 32 };
+            uint32_t upsm = psms[rnd(13)], ubp = bps[rnd(3)];
+            int ux = rnd(150), uy = rnd(150), uw = 1 + rnd(40), uh = 1 + rnd(40);
+            int bpp = upsm == PSMT4 || upsm == PSMT4HL || upsm == PSMT4HH ? 4 : upsm == PSMT8 || upsm == PSMT8H ? 8 :
+                      upsm == PSMCT16 || upsm == PSMCT16S || upsm == PSMZ16 || upsm == PSMZ16S ? 16 :
+                      upsm == PSMCT24 || upsm == PSMZ24 ? 24 : 32;
+            if (bpp == 4 && (uw & 1)) uw++;  /* (whole bytes) */
+            uint32_t bytes = (uint32_t)(uw * uh * bpp / 8);
+            bytes = (bytes + 15) & ~15u;     /* (whole qwords: the transfer ends padded) */
+            for (uint32_t i = 0; i < bytes; i++) up[i] = (uint8_t)rnd(256);
+            upload(ubp, ubp ? 10 : 10, (int)upsm, ux, uy, uw, uh, up, bytes);
+        }
+        frame(0, 10, rnd(4) ? PSMCT32 : PSMCT24, rnd(3) ? 0 : fbmsks[rnd(6)]);
+        zbuf(160, (int)zpsms[rnd(4)], rnd(4) == 0);
+        scissor(rnd(20), 100 + rnd(100), rnd(20), 100 + rnd(100));
+        test_reg(rnd(2), rnd(8), rnd(256), rnd(4), rnd(4) == 0, rnd(2), 1, rnd(4));
+        alpha_reg(rnd(3), rnd(3), rnd(3), rnd(3), rnd(256));
+        W(COLCLAMP, rnd(3) != 0); W(PABE, rnd(4) == 0); W(FBA_1, rnd(4) == 0); W(DTHE, rnd(2));
+        W(SCANMSK, rnd(5) == 0 ? 2 + rnd(2) : 0);
+        W(FOGCOL, (uint64_t)rnd(1 << 24));
+        W(TEXA, (uint64_t)rnd(256) | (uint64_t)rnd(2) << 15 | (uint64_t)rnd(256) << 32);
+        uint32_t psm = psms[rnd(13)];
+        int tw = 3 + rnd(4), th = 3 + rnd(4);
+        W(TEX0_1, tex0(310 * 32 + (uint32_t)rnd(4) * 32, 2, psm, (uint32_t)tw, (uint32_t)th, (uint32_t)rnd(2), (uint32_t)rnd(4),
+                       314 * 32 + (uint32_t)rnd(8) * 4, rnd(2) ? PSMCT16 : PSMCT32, (uint32_t)rnd(16), 1));
+        int mmin = rnd(6), mxl = rnd(4);
+        W(TEX1_1, (uint64_t)rnd(2) | (uint64_t)mxl << 2 | (uint64_t)rnd(2) << 5 | (uint64_t)mmin << 6 | (uint64_t)rnd(2) << 9 |
+                  (uint64_t)rnd(4) << 19 | (uint64_t)((rnd(256) - 128) & 0xFFF) << 32);
+        W(MIPTBP1_1, (uint64_t)(311 * 32) | 1ull << 14 | (uint64_t)(312 * 32) << 20 | 1ull << 34 | (uint64_t)(313 * 32) << 40 | 1ull << 54);
+        W(CLAMP_1, (uint64_t)rnd(4) | (uint64_t)rnd(4) << 2 | (uint64_t)rnd(64) << 4 | (uint64_t)rnd(64) << 14 |
+                   (uint64_t)rnd(64) << 24 | (uint64_t)rnd(64) << 34);
+        int type = rnd(7), flags = (rnd(2) ? IIP : 0) | (rnd(3) ? TME : 0) | (rnd(3) == 0 ? FGE : 0) | (rnd(2) ? ABE : 0) |
+                                   (rnd(4) == 0 ? 1 << 7 : 0) | (rnd(2) ? FST : 0);
+        if (fuzz_no_stq_tri && type >= P_TRI && type <= P_TRIFAN) flags |= FST;
+        if (getenv("PS2_FUZZ_VERBOSE"))
+            fprintf(stderr, "fuzz %d: type %d flags %03X FRAME psm %02X ZBUF %02X TEX0 psm %02X\n", it, type, flags, FPSM,
+                    0, psm);
+#ifdef TEST_HW_REF
+        {   /* PS2_FUZZ_TRACE=<iteration>: the frontend's trace of that iteration's draws and memory ops */
+            extern int gf_trace;
+            const char* tr = getenv("PS2_FUZZ_TRACE");
+            gf_trace = tr && atoi(tr) == it;
+        }
+#endif
+        prim(type, flags);
+        int nv = type == P_POINT ? 1 + rnd(3) : type == P_LINE || type == P_SPRITE ? 2 * (1 + rnd(2)) : 3 + rnd(3);
+        for (int k = 0; k < nv; k++) {
+            float q = 0.25f + (float)rndf() * 1.75f;
+            rgbaq(rnd(256), rnd(256), rnd(256), rnd(256), q);
+            st((float)(rndf() * 3.0 - 1.0) * q, (float)(rndf() * 3.0 - 1.0) * q);
+            uv(rnd(1 << 14), rnd(1 << 14));
+            double x = 10 + rndf() * 180, y = 10 + rndf() * 180;
+            uint32_t z = (uint32_t)rnd(1 << 16) | (uint32_t)rnd(1 << 16) << 16;
+            if (rnd(2)) xyzf(x, y, z, rnd(256));
+            else xyz(x, y, z);
+        }
+        (void)px(0, 0);                  /* (TEST_HW_REF: compare after every iteration) */
+#ifdef TEST_HW_REF
+        const char* fb = getenv("PS2_FUZZ_BLOCK");   /* (debugging: that block's ownership after every iteration) */
+        if (fb) { fprintf(stderr, "after fuzz %d:\n", it); gpu_front_debug_block((uint32_t)strtoul(fb, NULL, 16), stderr); }
+#endif
+    }
+    reset_env();
+}
+
 /* Side-band hints (register 0x7F, gs_hint.h): the HUD transform about the anchors, full-width
  * primitives drawn as they are, strips keeping the game's shared vertices, and the 4:3 state. */
 static void hint(uint32_t kind, uint32_t arg, float scale) {
@@ -1595,6 +1907,56 @@ static void hint(uint32_t kind, uint32_t arg, float scale) {
     W(GS_HINT_REG, gs_hint_make(kind, arg, kind == GS_HINT_HUD_BEGIN ? v : 0));
 }
 static int lit(int x, int y) { return rgb(px(x, y)) != 0; }
+
+/* Target views and post-pass forms (the GPU backend's M4 paths; the software renderer is the
+ * reference): (1) the frame's own alpha read as T8H through a CLUT while writing RGB only (byte lanes
+ * disjoint: read in place), (2) in-place CT16 strip copies over the CT32 frame, left to right (each
+ * reads what the next one overwrites) and right to left (each reads what the previous one wrote),
+ * (3) a CT32 view of that frame read 1:1 with a bilinear tap at (+0.5, +1.0) into another buffer. */
+static void t_target_views(void) {
+    reset_env();
+    clear(0, 0, 0, 0);
+    for (int i = 0; i < 16; i++) sprite(i * 16, 0, i * 16 + 16, 64, 0x10 * (i & 7), 0x20 + i, 0x40, i * 8);
+    static uint32_t pal[256];
+    for (int k = 0; k < 256; k++) pal[k] = 0x80000000u | (uint32_t)k | (uint32_t)(255 - k) << 8 | (uint32_t)(k / 2) << 16;
+    upload_clut8(3000, pal);
+    /* (1) RGB of rows 0..63 <- palette[alpha of the pixel 8 to the right] */
+    W(TEX0_1, tex0(0, 10, PSMT8H, 10, 10, 0, 1, 3000, 0, 0, 1));
+    W(TEX1_1, 0);
+    frame(0, 10, PSMCT32, 0xFF000000u);
+    prim(P_SPRITE, TME | FST);
+    rgba(0x80, 0x80, 0x80, 0x80);
+    uv(8 * 16, 0); xyz(0, 0, 0);
+    uv(264 * 16, 64 * 16); xyz(256, 64, 0);
+    CHECK(rgb(px(3, 10)) == 0x00FF00 && rgb(px(10, 10)) == 0x04F708 && chan(px(10, 10), 3) == 0,
+          "T8H in-place read: %08X %08X", px(3, 10), px(10, 10));
+    /* (2) CT16 strips over the same memory (PSMCT16 frame and texture at FBP 0, FBW 10) */
+    frame(0, 10, PSMCT16, 0);
+    W(TEX0_1, tex0(0, 10, PSMCT16, 10, 10, 1, 1, 0, 0, 0, 0));
+    alpha_reg(2, 2, 2, 0, 0);            /* (0-0)*FIX+Cs: copy */
+    prim(P_SPRITE, TME | FST | ABE);
+    for (int x = 0; x < 128; x += 16) {  /* left to right, reading x + 16 */
+        uv((x + 16) * 16, 0); xyz(x, 0, 0);
+        uv((x + 32) * 16, 64 * 16); xyz(x + 16, 64, 0);
+    }
+    for (int x = 368; x >= 256; x -= 16) {   /* right to left, reading x + 16: written just before */
+        uv((x + 16) * 16, 64 * 16); xyz(x, 64, 0);
+        uv((x + 32) * 16, 128 * 16); xyz(x + 16, 128, 0);
+    }
+    /* (3) CT32 view, 1:1 with a bilinear tap at (+0.5, +1.0), into FBP 200 */
+    frame(200, 10, PSMCT32, 0);
+    alpha_reg(0, 1, 0, 1, 0);
+    W(TEX0_1, tex0(0, 10, PSMCT32, 10, 10, 1, 1, 0, 0, 0, 0));
+    W(TEX1_1, 0x61);                     /* LCM, bilinear */
+    prim(P_SPRITE, TME | FST);
+    rgba(0x80, 0x80, 0x80, 0x80);
+    uv(8 + 8, 16 + 8); xyz(0, 0, 0);
+    uv(256 * 16 + 16, 128 * 16 + 24); xyz(256, 128, 0);
+    W(TEX1_1, 0);
+    alpha_reg(0, 1, 0, 1, 0);
+    frame(0, 10, PSMCT32, 0);
+    save("target_views", 0, 10, PSMCT32, 640, 448);
+}
 
 static void t_hud_hints(void) {
     /* the transform itself: FRAME 640 wide (FBW 10), XYOFFSET 100 px, scale 3/4 */
@@ -1703,38 +2065,90 @@ int main(int argc, char** argv) {
 #else
     CHECK(gs_swz_fast, "documented layout must enable the fast path");
 #endif
-    t_trace();                           /* first: no other primitive may use up PS2_GS_TRACE_MAX */
-    t_sprite_coverage();
-    t_fill_rule();
-    t_gouraud();
-    t_clut_textures();
-    t_bilinear();
-    t_blend();
-    t_ztest(PSMZ32);
-    t_ztest(PSMZ24);
-    t_ztest(PSMZ16);
-    t_ztest(PSMZ16S);
-    t_region_clamp();
-    t_formats_contexts();
-    t_scissor_offset();
-    t_alpha_tests();
-    t_fog_tfx();
-    t_frame16();
-    t_perspective();
-    t_mipmap();
-    t_texture_cache();
-    t_lines_points();
-    t_coverage_reference();
-    t_texture_cache_random();
-    t_stq_negative_coords();
-    t_csr();
-    t_display();
-    t_deferred_hazards();
-    t_partial_invalidation_clut();
-    t_direct_order();
-    t_display_weave();
-    t_hud_hints();
+#ifdef TEST_HW_REF
+    {   /* argv[2]: adapter hw | warp */
+        gpu_config cfg;
+        memset(&cfg, 0, sizeof cfg);
+        cfg.adapter = argc > 2 && !strcmp(argv[2], "warp") ? GPU_ADAPTER_WARP : GPU_ADAPTER_HW;
+        fuzz_no_stq_tri = cfg.adapter == GPU_ADAPTER_WARP;
+        if (!gpu_start(&cfg) || !gpu_get_caps()->full) { fprintf(stderr, "no device with the REF tier's capabilities\n"); return 2; }
+        fprintf(stderr, "[hw-ref] adapter: %s\n", gpu_get_caps()->adapter);
+        gpu_front_config fc;
+        memset(&fc, 0, sizeof fc);
+        fc.ref = 1;
+#ifdef TEST_HW_MIXED                     /* (M5) mixed frames: FF + ROV tiers */
+        fc.ref = 0;
+        fc.mixed = 1;
+#ifndef TEST_HW_MIXED_DEFAULT            /* exact variant: S/T/Q stepped exactly, dual-source blends on the ROV tier */
+        fc.ff_stq_exact = 1;
+        fc.ff_rov_mask = GPU_FFC_DUAL;
+#endif
+        fprintf(stderr, "[hw-ref] mixed frames%s\n", fc.ff_stq_exact ? " (exact: S/T/Q exact, dual-source blends on ROV)" : " (default)");
+#endif
+        fc.sw = 1;
+        fc.scale = 1;
+        gpu_front_start(&fc);
+        gpu_front_set_sink(gpu_submit_sink, NULL);
+        gpu_front_set_mem_reader(hw_read_vram, NULL);   /* (PUNT read-backs, compared with gs_vram) */
+    }
+#endif
+    SCENE(t_trace());                    /* first: no other primitive may use up PS2_GS_TRACE_MAX */
+    SCENE(t_sprite_coverage());
+    SCENE(t_fill_rule());
+    SCENE(t_gouraud());
+    SCENE(t_clut_textures());
+    SCENE(t_bilinear());
+    SCENE(t_blend());
+    SCENE(t_ztest(PSMZ32));
+    SCENE(t_ztest(PSMZ24));
+    SCENE(t_ztest(PSMZ16));
+    SCENE(t_ztest(PSMZ16S));
+    SCENE(t_region_clamp());
+    SCENE(t_formats_contexts());
+    SCENE(t_scissor_offset());
+    SCENE(t_alpha_tests());
+    SCENE(t_fog_tfx());
+    SCENE(t_frame16());
+    SCENE(t_perspective());
+    SCENE(t_mipmap());
+    SCENE(t_texture_cache());
+    SCENE(t_lines_points());
+    SCENE(t_coverage_reference());
+    SCENE(t_texture_cache_random());
+    SCENE(t_texture_formats());
+    SCENE(t_random_states());
+    SCENE(t_stq_negative_coords());
+    SCENE(t_csr());
+    SCENE(t_display());
+    SCENE(t_deferred_hazards());
+    SCENE(t_partial_invalidation_clut());
+    SCENE(t_direct_order());
+    SCENE(t_display_weave());
+    SCENE(t_hud_hints());
+    SCENE(t_target_views());
+#ifdef TEST_HW_REF
+    {
+        gpu_front_frame fr[64];
+        uint32_t punts = 0, rbdiff = 0;
+        gpu_front_vblank(NULL, 0);       /* (closes the frame: its counters) */
+        for (int n; (n = gpu_front_take_frames(fr, 64)) > 0;)
+            for (int i = 0; i < n; i++) { punts += fr[i].tier[GPU_TIER_PUNT]; rbdiff += fr[i].punt_why[GPU_PUNT_READBACK_DIFF]; }
+        fprintf(stderr, "[hw-ref] %u comparisons; %d scenes differ (%d use post passes: ALIAS16, target views, PUNT); "
+                        "%u PUNTs, %u PUNT read-backs differing from gs_vram\n", hw_compares, hw_bad_scenes, hw_m4_scenes, punts, rbdiff);
+#ifdef TEST_HW_MIXED_DEFAULT
+        fprintf(stderr, "[hw-ref] default mixed mode, tolerated: %llu differing words in comparisons within tolerance "
+                        "(colour words > 2: %llu, > 16: %llu; Z words %llu, over all comparisons)\n", (unsigned long long)hw_tol_words,
+                (unsigned long long)hw_tol_c2, (unsigned long long)hw_tol_c16, (unsigned long long)hw_tol_z);
+#endif
+        if (rbdiff) hw_bad_scenes++;
+    }
+    gpu_front_stop();
+    gpu_stop();
+    fprintf(stderr, "%s: %d/%d checks passed\n", argv[0], checks - fails, checks);
+    return fails || hw_bad_scenes ? 1 : 0;
+#else
     bench();
     fprintf(stderr, "%s: %d/%d checks passed\n", argv[0], checks - fails, checks);
     return fails ? 1 : 0;
+#endif
 }

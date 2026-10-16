@@ -47,11 +47,50 @@ typedef struct {
 void gs_display_snapshot(gs_display_snap* s, const uint64_t pr[GS_PRIV_SNAPSHOT]);
 /* Compose the picture from VRAM as it is (no sync: the caller orders it after the drawing). */
 int  gs_compose(const gs_display_snap* s, uint32_t* dst, int stride, int* w, int* h);
+/* The same from another 4 MB GS memory image with a field history of its own (the GPU backend's
+ * reference compose, notes/d3d11-renderer.md 10.1); hist NULL: gs_compose's. */
+typedef struct gs_compose_hist gs_compose_hist;
+gs_compose_hist* gs_compose_hist_new(void);
+int  gs_compose_from(const gs_display_snap* s, const uint8_t* mem, gs_compose_hist* hist, uint32_t* dst, int stride,
+                     int* w, int* h);
 /* The 8 KB pages the displayed buffers occupy. */
 void gs_display_pages(const uint64_t pr[GS_PRIV_SNAPSHOT], uint64_t set[8]);
+/* The PCRTC layout gs_compose_from uses (pure, any thread; the GPU backend composes with the same
+ * numbers, notes/d3d11-renderer.md 8.2): per circuit the decoded DISPFB/DISPLAY registers, and the
+ * picture: W x H output pixels from (ux0, uy0) in steps (hs, vs) of the reference circuit's
+ * magnification, PMODE MMOD/SLBG/ALP, BGCOLOR (0xRRGGBB), SMODE2 field mode. Returns 1 when there is a
+ * picture (W, H > 0), 0 for "display off". */
+typedef struct {
+    int en, fbp, fbw, psm, dbx, dby, dx, dy, magh, magv, dw, dh;
+} gs_circuit;
+typedef struct {
+    gs_circuit c[2];
+    int W, H, ux0, uy0, hs, vs;
+    int ref;                             /* the circuit whose field state drives the deinterlacer */
+    int mmod, slbg, alp, field_mode;
+    uint32_t bg;
+} gs_display_layout;
+int  gs_display_layout_of(const uint64_t pr[GS_PRIV_SNAPSHOT], gs_display_layout* L);
+/* The deinterlacer's field code of a picture: the reference circuit's buffer was last drawn with this
+ * XYOFFSET.Y fraction (0 or 8: a field of a weave; anything else (0xFF): no weave). */
+int  gs_display_field_code(const gs_display_snap* s, const gs_display_layout* L);
+
+/* The software rasterizer on / off (the GS must be idle: gs_sync; M6 backend switch). */
+void gs_draw_set_sw(int on);
 
 /* ---- gs_thread.c (see also hw.h) --------------------------------------------------------------------- */
 void gs_sync(void);                      /* wait until everything sent to the GS has executed */
+/* gs_sync, and then GS memory (gs_vram) holds every word: with the GPU backend the GPU-drawn data is read
+ * back first (the read hook). Local->host transfers and the start of a GS recording use it. */
+void gs_sync_memory(void);
+void gs_set_read_hook(void (*fn)(void));
+/* The VBlank picture: by default composed from gs_vram (gs_compose) on a pixel worker and handed to the
+ * present callback. With a hook (the GPU backend) the hook gets the display snapshot in stream order on
+ * the GS thread instead and calls gs_picture_presented() once the picture was shown (any thread, in
+ * order): the EE waits at its next VBlank until then. */
+typedef void (*gs_vblank_hook_fn)(const gs_display_snap* snap, uint32_t vblank, int content43);
+void gs_set_vblank_hook(gs_vblank_hook_fn fn);
+void gs_picture_presented(void);
 
 /* ---- gs_draw_pixel.c: pixel worker threads and deferred drawing ----------------------------------------
  * With workers, spans are recorded and drawn later in parallel bands (gs_draw_pixel.c). Whoever

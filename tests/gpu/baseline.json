@@ -1,0 +1,109 @@
+{
+    "about":  "Gate for scripts/gpu_diff_all.ps1 (notes/d3d11-renderer.md 10.1). Paths are relative to the worktrees directory (sly2-worktrees next to the main checkout); recordings are read in place. frames/sw_hash come from the software renderer (-Update refreshes them); max_diff_px/min_psnr are the hw-vs-sw tolerances (M0 all-fallback backend: exact).",
+    "recordings":  [
+                       {
+                           "name":  "fix-perf/rv_prompt",
+                           "path":  "fix-perf\\build\\rv_prompt.gsrec",
+                           "frames":  20,
+                           "sw_hash":  "c980b51c0459162e",
+                           "max_diff_px":  0,
+                           "min_psnr":  999
+                       },
+                       {
+                           "name":  "fix-perf/rv_intro",
+                           "path":  "fix-perf\\build\\rv_intro.gsrec",
+                           "frames":  16,
+                           "sw_hash":  "36dad3d2b57c525b",
+                           "max_diff_px":  0,
+                           "min_psnr":  999
+                       },
+                       {
+                           "name":  "fix-perf/title",
+                           "path":  "fix-perf\\build\\title.gsrec",
+                           "frames":  30,
+                           "sw_hash":  "3cbeb39ebfb4b2b7",
+                           "max_diff_px":  0,
+                           "min_psnr":  999
+                       },
+                       {
+                           "name":  "fix-perf/brief",
+                           "path":  "fix-perf\\build\\brief.gsrec",
+                           "frames":  30,
+                           "sw_hash":  "392e8d87db122a43",
+                           "max_diff_px":  0,
+                           "min_psnr":  999
+                       },
+                       {
+                           "name":  "ep3/hub",
+                           "path":  "ep3\\build\\gsrec\\hub.gsrec",
+                           "frames":  240,
+                           "sw_hash":  "1303f89488b17c83",
+                           "max_diff_px":  0,
+                           "min_psnr":  999
+                       },
+                       {
+                           "name":  "ep3/recon_int",
+                           "path":  "ep3\\build\\gsrec\\recon_int.gsrec",
+                           "frames":  240,
+                           "sw_hash":  "e66863c5015032df",
+                           "max_diff_px":  0,
+                           "min_psnr":  999
+                       },
+                       {
+                           "name":  "ep3/rope",
+                           "path":  "ep3\\build\\gsrec\\rope.gsrec",
+                           "frames":  20,
+                           "sw_hash":  "84392c291daeaa0f",
+                           "max_diff_px":  0,
+                           "min_psnr":  999
+                       },
+                       {
+                           "name":  "ep3/brief",
+                           "path":  "ep3\\build\\gsrec\\brief.gsrec",
+                           "frames":  240,
+                           "sw_hash":  "45cb931314a36ae7",
+                           "max_diff_px":  0,
+                           "min_psnr":  999
+                       },
+                       {
+                           "name":  "ep5/hub_street",
+                           "path":  "ep5\\build\\gsrec\\hub_street.gsrec",
+                           "frames":  240,
+                           "sw_hash":  "aaedb54b55e1d827",
+                           "max_diff_px":  0,
+                           "min_psnr":  999
+                       },
+                       {
+                           "name":  "ep6/rc_battle",
+                           "path":  "ep6\\build\\gsrec\\rc_battle.gsrec",
+                           "frames":  120,
+                           "sw_hash":  "4ca205175262808b",
+                           "max_diff_px":  0,
+                           "min_psnr":  999
+                       },
+                       {
+                           "name":  "ep7/boss",
+                           "path":  "ep7\\build\\boss.gsrec",
+                           "frames":  120,
+                           "sw_hash":  "1db01e7144f06203",
+                           "max_diff_px":  0,
+                           "min_psnr":  999
+                       },
+                       {
+                           "name":  "ep8/hub",
+                           "path":  "ep8\\build\\gsrec\\hub.gsrec",
+                           "frames":  240,
+                           "sw_hash":  "5830b18a9e52908f",
+                           "max_diff_px":  0,
+                           "min_psnr":  999
+                       },
+                       {
+                           "name":  "ep8/boss",
+                           "path":  "ep8\\build\\gsrec\\boss.gsrec",
+                           "frames":  240,
+                           "sw_hash":  "fd9d2f959133bfcf",
+                           "max_diff_px":  0,
+                           "min_psnr":  999
+                       }
+                   ]
+}

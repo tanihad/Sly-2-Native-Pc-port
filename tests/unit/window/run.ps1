@@ -39,6 +39,9 @@ if (-not $UnitOnly -and $rc -eq 0) {
         Write-Output "FAILED: no window state in $ini"; exit 1
     }
     Write-Output "PASSED (window state saved)"
+    Write-Output "== external presenter (the GPU renderer's swap chain on the window, window_gpu.h) =="
+    & $exe --external
+    if ($LASTEXITCODE -ne 0) { Write-Output "FAILED: external presenter test, exit code $LASTEXITCODE"; exit 1 }
     Write-Output "== test_window (GDI presenter) =="
     $env:PS2_WINDOW_GDI = '1'
     & $exe --seconds 2.5 --no-fullscreen

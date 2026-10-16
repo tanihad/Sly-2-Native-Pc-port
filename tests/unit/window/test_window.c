@@ -156,6 +156,22 @@ static void test_settings(void) {
     settings_format(&s, tmpl, sizeof tmpl);
     CHECK(strstr(tmpl, "\nhud = centered\n") != NULL, "template writes the hud key");
 
+    /* [graphics] renderer = software (default) | gpu, pacing = vsync (default) | vrr | display (M6) */
+    settings_defaults(&s);
+    CHECK(s.renderer_gpu == 0 && s.pacing == SETTINGS_PACING_VSYNC, "renderer / pacing defaults");
+    CHECK(strstr(tmpl, "\nrenderer = software\n") && strstr(tmpl, "\npacing = vsync\n"), "template writes renderer / pacing");
+    warn_count = 0;
+    n = settings_parse("[graphics]\nrenderer = GPU\npacing = vrr\n", &s, count_warn, NULL);
+    CHECK(n == 0 && s.renderer_gpu == 1 && s.pacing == SETTINGS_PACING_VRR, "renderer = gpu, pacing = vrr (%d)", n);
+    n = settings_parse("[graphics]\nrenderer = sw\npacing = display\n", &s, count_warn, NULL);
+    CHECK(n == 0 && s.renderer_gpu == 0 && s.pacing == SETTINGS_PACING_DISPLAY, "renderer = sw, pacing = display");
+    n = settings_parse("[graphics]\nrenderer = vulkan\npacing = fast\n", &s, count_warn, NULL);
+    CHECK(n == 2 && warn_count == 2 && s.renderer_gpu == 0 && s.pacing == SETTINGS_PACING_DISPLAY, "bad renderer / pacing ignored");
+    s.renderer_gpu = 1;
+    s.pacing = SETTINGS_PACING_DISPLAY;
+    settings_format(&s, tmpl, sizeof tmpl);
+    CHECK(strstr(tmpl, "\nrenderer = gpu\n") && strstr(tmpl, "\npacing = display\n"), "template writes renderer = gpu");
+
     /* the template written next to the exe parses back to the defaults */
     char text[4096];
     ps2_settings_t d, back;
@@ -222,6 +238,17 @@ static void test_settings(void) {
           rw, rh, rhud);
     _putenv("PS2_ASPECT=");
     _putenv("PS2_HUD=");
+    _putenv("PS2_GS_BACKEND=hw");
+    _putenv("PS2_VBLANK=display");
+    settings_load();
+    CHECK(ps2_settings.renderer_gpu == 1 && ps2_settings.pacing == SETTINGS_PACING_DISPLAY, "PS2_GS_BACKEND=hw, PS2_VBLANK=display");
+    _putenv("PS2_GS_BACKEND=sw");
+    _putenv("PS2_VBLANK=");
+    _putenv("PS2_GS_PACING=vrr");
+    settings_load();
+    CHECK(ps2_settings.renderer_gpu == 0 && ps2_settings.pacing == SETTINGS_PACING_VRR, "PS2_GS_BACKEND=sw, PS2_GS_PACING=vrr");
+    _putenv("PS2_GS_BACKEND=");
+    _putenv("PS2_GS_PACING=");
     wchar_t ini[MAX_PATH + 80];
     settings_user_path(L"sly2.ini", ini, MAX_PATH + 80);
     DeleteFileW(ini);                                    /* the interactive run starts at the default place */
@@ -502,6 +529,8 @@ uint32_t ps2_vblank_count(void) { return 0; }
 static int ram_dumps, calls_requests, watch_requests;
 static uint32_t calls_frames, watch_frames;
 void ps2_request_ram_dump(void) { ram_dumps++; }
+static int rec_starts;
+void gs_record_start_now(void) { rec_starts++; }
 void ps2_request_calls_window(uint32_t frames) { calls_requests++; calls_frames = frames; }
 void ps2_request_watch_window(uint32_t frames) { watch_requests++; watch_frames = frames; }
 
@@ -543,8 +572,9 @@ static void test_input_script(void) {
     script_n = 0;
     script_frame = 0;
     ram_dumps = 0;
-    script_parse("2:lx40:3,+1:ryC0:1,+0:RAM");          /* upper case works too */
-    CHECK(script_n == 3, "parsed %d tokens", script_n);
+    rec_starts = 0;
+    script_parse("2:lx40:3,+1:ryC0:1,+0:RAM,+2:rec");   /* upper case works too; + the GS recording start */
+    CHECK(script_n == 4, "parsed %d tokens", script_n);
     for (int f = 0; f < 8; f++) {
         pad_input p;
         pad_clear(&p);
@@ -553,6 +583,7 @@ static void test_input_script(void) {
         CHECK((p.ry == 0xC0) == (f == 3), "ry at frame %d: %02X", f, p.ry);
     }
     CHECK(ram_dumps == 1, "%d RAM dumps", ram_dumps);
+    CHECK(rec_starts == 1, "%d GS recording starts", rec_starts);
     /* "release" ends the holds in progress (r1, lx) but not a press that starts with it */
     script_n = 0;
     script_frame = 0;
@@ -1066,6 +1097,157 @@ static void interactive(double seconds, int do_fullscreen) {
     CHECK(present_total / frames < 2.0, "window_present too slow");
 }
 
+/* ---- --external: the window with an external presenter (window_gpu.h; the GPU renderer's render thread) ----
+ * A thread of the test plays the render thread: its own device and flip-model swap chain (FLIP_DISCARD,
+ * waitable object, as runtime/gpu/gpu_present.c) on window_hwnd(), resized to window_client_size() before
+ * each present, filled with one colour. Checks: the window creates no presenter of its own; pictures
+ * given to window_present go to the external function; the client size and resize serial follow size
+ * changes and borderless fullscreen (F11 / Alt+Enter) while the external swap chain presents; the
+ * captured client area shows the external colour; the debug keys need PS2_GS_DEBUG_KEYS; switching back
+ * (window_set_external_presenter(0)) brings the window's own presenter back once the swap chain is gone. */
+static volatile LONG ext_calls, ext_stop, ext_presents, ext_resizes;
+static void ext_present_fn(const uint32_t* px, int w, int h, int stride, int aw, int ah) {
+    (void)px; (void)w; (void)h; (void)stride; (void)aw; (void)ah;
+    InterlockedIncrement(&ext_calls);
+}
+
+static DWORD WINAPI ext_render(LPVOID arg) {
+    HWND hwnd = (HWND)arg;
+    PFN_D3D11_CREATE_DEVICE create = (PFN_D3D11_CREATE_DEVICE)dll_proc(LoadLibraryW(L"d3d11.dll"), "D3D11CreateDevice");
+    ID3D11Device* dev = NULL;
+    ID3D11DeviceContext* ctx = NULL;
+    D3D_FEATURE_LEVEL got;
+    static const D3D_FEATURE_LEVEL lv[] = { D3D_FEATURE_LEVEL_11_0 };
+    if (!create || FAILED(create(NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, 0, lv, 1, D3D11_SDK_VERSION, &dev, &got, &ctx))) return 1;
+    IDXGIDevice* dxdev = NULL;
+    IDXGIAdapter* ad = NULL;
+    IDXGIFactory2* f2 = NULL;
+    IDXGISwapChain1* sc = NULL;
+    HRESULT hr = ID3D11Device_QueryInterface(dev, &IID_IDXGIDevice_, (void**)&dxdev);
+    if (SUCCEEDED(hr)) hr = IDXGIDevice_GetAdapter(dxdev, &ad);
+    if (SUCCEEDED(hr)) hr = IDXGIAdapter_GetParent(ad, &IID_IDXGIFactory2_, (void**)&f2);
+    DXGI_SWAP_CHAIN_DESC1 d;
+    memset(&d, 0, sizeof d);
+    d.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    d.SampleDesc.Count = 1;
+    d.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    d.BufferCount = 3;
+    d.Scaling = DXGI_SCALING_STRETCH;
+    d.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+    d.Flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
+    if (SUCCEEDED(hr)) hr = IDXGIFactory2_CreateSwapChainForHwnd(f2, (IUnknown*)dev, hwnd, &d, NULL, NULL, &sc);
+    if (SUCCEEDED(hr)) IDXGIFactory2_MakeWindowAssociation(f2, hwnd, DXGI_MWA_NO_ALT_ENTER | DXGI_MWA_NO_WINDOW_CHANGES);
+    int bw = -1, bh = -1;
+    ID3D11RenderTargetView* rtv = NULL;
+    while (SUCCEEDED(hr) && !ext_stop) {
+        int cw, ch;
+        window_client_size(&cw, &ch);
+        if (cw <= 0 || ch <= 0) { Sleep(5); continue; }
+        if (cw != bw || ch != bh) {
+            RELEASE(rtv);
+            ID3D11DeviceContext_ClearState(ctx);
+            if (FAILED(IDXGISwapChain1_ResizeBuffers(sc, 0, (UINT)cw, (UINT)ch, DXGI_FORMAT_UNKNOWN, d.Flags))) { Sleep(5); continue; }
+            ID3D11Texture2D* bb = NULL;
+            IDXGISwapChain1_GetBuffer(sc, 0, &IID_ID3D11Texture2D_, (void**)&bb);
+            if (bb) { ID3D11Device_CreateRenderTargetView(dev, (ID3D11Resource*)bb, NULL, &rtv); RELEASE(bb); }
+            bw = cw; bh = ch;
+            InterlockedIncrement(&ext_resizes);
+        }
+        static const float col[4] = { 0.25f, 0.5f, 0.75f, 1.0f };   /* 40 80 BF */
+        if (rtv) ID3D11DeviceContext_ClearRenderTargetView(ctx, rtv, col);
+        IDXGISwapChain1_Present(sc, 1, 0);
+        InterlockedIncrement(&ext_presents);
+    }
+    RELEASE(rtv);
+    if (ctx) { ID3D11DeviceContext_ClearState(ctx); ID3D11DeviceContext_Flush(ctx); }
+    RELEASE(sc); RELEASE(f2); RELEASE(ad); RELEASE(dxdev); RELEASE(ctx); RELEASE(dev);
+    return 0;
+}
+
+static int external_test(void) {
+    typedef HANDLE (WINAPI* set_dpi_fn)(HANDLE);
+    set_dpi_fn set_dpi = (set_dpi_fn)dll_proc(GetModuleHandleW(L"user32.dll"), "SetThreadDpiAwarenessContext");
+    if (set_dpi && !set_dpi((HANDLE)(LONG_PTR)-4)) set_dpi((HANDLE)(LONG_PTR)-3);
+    window_set_external_presenter(1, ext_present_fn);
+    window_init();
+    HWND h = (HWND)window_hwnd(5000);
+    CHECK(h != NULL, "window did not come up");
+    if (!h) return 1;
+    CHECK(window_external_presenter() && !use_d3d && !d3d.dev, "the window made a presenter of its own (use_d3d %d)", use_d3d);
+    pattern(frame, FRAME_MAX, 640, 448, 0);
+    for (int i = 0; i < 5; i++) window_present(frame, 640, 448, FRAME_MAX);
+    CHECK(ext_calls == 5, "window_present -> external presenter: %ld calls of 5", (long)ext_calls);
+    HANDLE rt = CreateThread(NULL, 0, ext_render, h, 0, NULL);
+    Sleep(300);
+    CHECK(ext_presents > 5, "the external swap chain presents (%ld)", (long)ext_presents);
+    int cw, ch;
+    uint32_t s0 = window_resize_serial();
+    set_client_size(h, 700, 500);
+    Sleep(200);
+    window_client_size(&cw, &ch);
+    CHECK(cw == 700 && ch == 500 && window_resize_serial() != s0, "client size %dx%d after a resize to 700x500 (serial %u -> %u)", cw, ch,
+          s0, window_resize_serial());
+    RECT rc;
+    GetClientRect(h, &rc);
+    if (read_client(h, shot, rc.right, rc.bottom, 1) && shot[(size_t)(rc.bottom / 2) * rc.right + rc.right / 2] != 0x5A5A5A) {
+        uint32_t c = shot[(size_t)(rc.bottom / 2) * rc.right + rc.right / 2];
+        printf("external presenter: centre %06X (want 4080BF)\n", c);
+        CHECK(near_rgb(c, 0x4080BF, 3), "external swap chain picture not shown: centre %06X", c);
+    } else printf("external presenter: picture capture unavailable\n");
+    LONG r0 = ext_resizes;
+    PostMessageW(h, WM_KEYDOWN, VK_F11, 0);              /* borderless fullscreen under the external swap chain */
+    Sleep(400);
+    MONITORINFO mi;
+    mi.cbSize = sizeof mi;
+    GetMonitorInfoW(MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST), &mi);
+    window_client_size(&cw, &ch);
+    CHECK(window_fullscreen() && cw == mi.rcMonitor.right - mi.rcMonitor.left && ch == mi.rcMonitor.bottom - mi.rcMonitor.top,
+          "fullscreen %d, client %dx%d", window_fullscreen(), cw, ch);
+    PostMessageW(h, WM_SYSKEYDOWN, VK_RETURN, (LPARAM)1 << 29);   /* Alt+Enter: back */
+    Sleep(400);
+    window_client_size(&cw, &ch);
+    CHECK(!window_fullscreen() && cw == 700 && ch == 500, "after Alt+Enter: fullscreen %d, client %dx%d", window_fullscreen(), cw, ch);
+    CHECK(ext_resizes >= r0 + 2, "the external swap chain followed the size changes (%ld resizes)", (long)(ext_resizes - r0));
+    LONG p0 = ext_presents;
+    Sleep(200);
+    CHECK(ext_presents > p0 + 3, "still presenting after the fullscreen round trip");
+    /* debug keys: off without PS2_GS_DEBUG_KEYS, on with it */
+    window_take_debug_keys();
+    debug_keys_on = -1;
+    _putenv("PS2_GS_DEBUG_KEYS=");
+    PostMessageW(h, WM_KEYDOWN, VK_F9, 0);
+    Sleep(100);
+    CHECK(window_take_debug_keys() == 0, "F9 without PS2_GS_DEBUG_KEYS");
+    debug_keys_on = -1;
+    _putenv("PS2_GS_DEBUG_KEYS=1");
+    PostMessageW(h, WM_KEYDOWN, VK_F9, 0);
+    Sleep(100);
+    CHECK(window_take_debug_keys() == WINDOW_KEY_SWITCH, "F9 with PS2_GS_DEBUG_KEYS=1");
+    /* the external renderer goes away: the window's own presenter comes back */
+    InterlockedExchange(&ext_stop, 1);
+    WaitForSingleObject(rt, 5000);
+    CloseHandle(rt);
+    window_set_external_presenter(0, NULL);
+    for (int i = 0; i < 100 && !use_d3d; i++) Sleep(10);
+    for (int i = 0; i < 10; i++) {
+        for (int y = 0; y < 448; y++)
+            for (int x = 0; x < 640; x++) frame[y * 640 + x] = 0x7F00C000u;   /* green */
+        window_present(frame, 640, 448, 640);
+        Sleep(16);
+    }
+    Sleep(100);
+    CHECK(use_d3d || dwm_flush, "own presenter after the external one (use_d3d %d)", use_d3d);
+    GetClientRect(h, &rc);
+    wrect lb = fit_aspect(rc.right, rc.bottom, 4, 3);
+    if (read_client(h, shot, rc.right, rc.bottom, 1) && shot[(size_t)(lb.y + lb.h / 2) * rc.right + lb.x + lb.w / 2] != 0x5A5A5A) {
+        uint32_t c = shot[(size_t)(lb.y + lb.h / 2) * rc.right + lb.x + lb.w / 2];
+        printf("own presenter again: centre %06X (want 00C000)\n", c);
+        CHECK(near_rgb(c, 0x00C000, 3), "own presenter's picture not shown: centre %06X", c);
+    }
+    printf("%s: %d checks, %d failures\n", failures ? "FAILED" : "PASSED", checks, failures);
+    return failures ? 1 : 0;
+}
+
 /* --close-test: closing the window must end the process with exit code 0 (run.ps1 checks it). */
 static int close_test(void) {
     window_init();
@@ -1098,6 +1280,7 @@ int main(int argc, char** argv) {
     double seconds = 3.0;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--close-test")) return close_test();
+        if (!strcmp(argv[i], "--external")) { setvbuf(stdout, NULL, _IONBF, 0); return external_test(); }
         if (!strcmp(argv[i], "--unit-only")) unit_only = 1;
         else if (!strcmp(argv[i], "--no-fullscreen")) fullscreen = 0;
         else if (!strcmp(argv[i], "--seconds") && i + 1 < argc) seconds = atof(argv[++i]);
