@@ -44,6 +44,9 @@ typedef struct {
 /* (M7) graphics settings changed while the game runs: the scale and the target configuration apply from the
  * next frame (targets are rescaled, nothing is lost), picture options from the next VBlank. Any thread. */
 void gpu_hw_set_graphics(int scale, uint32_t gfx);
+/* (M7) inside the dump callback: the dumped picture's sample-grid shift in picture texels (x, y) - a picture at
+ * scale is offset against one centred on the PS2's pixels (notes/d3d11-renderer.md 8.1) */
+void gpu_hw_dump_shift(float* sx, float* sy);
 
 /* Start the render thread (swap chain on cfg->hwnd) and the frontend; the GS must be idle (before
  * gs_thread_start, or after gs_sync). 0: no capable device (the caller stays with the software renderer). */

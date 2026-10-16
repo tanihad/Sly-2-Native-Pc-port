@@ -88,3 +88,10 @@ cs_deint            display.hlsl        cs_deint          cs_5_0
 # M7: resolution scaling (target rescale on a factor change)
 cs_rescale          rescale.hlsl        cs_rescale        cs_5_0
 ps_resample         present.hlsl        ps_resample       ps_5_0
+# M7: thin analytic outlines (gpu_rec_thin): REF/ROV and FF pixel shaders
+vs_ref_thin         gs.hlsl             vs_ref_thin       vs_5_0
+ps_gs_thin          gs.hlsl             ps_gs             ps_5_0    PRIM=3
+ps_ff_n00        gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=3 DUAL=0 ZOUT=0
+ps_ff_n01        gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=3 DUAL=0 ZOUT=1
+ps_ff_n10        gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=3 DUAL=1 ZOUT=0
+ps_ff_n11        gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=3 DUAL=1 ZOUT=1

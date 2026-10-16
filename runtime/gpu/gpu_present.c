@@ -57,7 +57,7 @@ static struct {
     ID3D11ShaderResourceView* mid_srv;
     int mid_w, mid_h;
     ID3D11Buffer* rcb;                   /* resample_consts */
-    struct { int slot, w, h; uint32_t vblank; gpu_readback* rb; } pend[NSTAGE];
+    struct { int slot, w, h; uint32_t vblank; gpu_readback* rb; float shift[2]; } pend[NSTAGE];
     int npend, pend_head;
     ID3D11SamplerState* linear;
     ID3D11Buffer* cb;                    /* present: uv scale and clamp */
@@ -845,6 +845,8 @@ static void pend_complete(int block) {
     rb->w = w;
     rb->h = h;
     rb->vblank = P.pend[i].vblank;
+    rb->shift[0] = P.pend[i].shift[0];
+    rb->shift[1] = P.pend[i].shift[1];
     P.pend_head = (P.pend_head + 1) % NSTAGE;
     P.npend--;
     rb_finish(rb, status);
@@ -864,6 +866,8 @@ void gpu_exec_readback(const void* payload) {
     P.pend[k].h = P.cur_h;
     P.pend[k].vblank = P.cur_vblank;
     P.pend[k].rb = rb;
+    P.pend[k].shift[0] = P.cur_shift[0];
+    P.pend[k].shift[1] = P.cur_shift[1];
     D3D11_BOX box = { 0, 0, 0, (UINT)P.cur_w, (UINT)P.cur_h, 1 };
     ID3D11DeviceContext_CopySubresourceRegion(gpu_rt.ctx, (ID3D11Resource*)P.stage[k], 0, 0, 0, 0,
                                               (ID3D11Resource*)P.pict[P.cur], 0, &box);

@@ -32,7 +32,9 @@ typedef struct {
 } gpu_front_config;
 
 enum { GPU_TIER_FF, GPU_TIER_ROV, GPU_TIER_ALIAS16, GPU_TIER_PUNT, GPU_TIER_N };
-enum { GPU_PC_TRI, GPU_PC_SPRITE, GPU_PC_LINEPIX, GPU_PC_POINT, GPU_PC_N };
+enum { GPU_PC_TRI, GPU_PC_SPRITE, GPU_PC_LINEPIX, GPU_PC_POINT,
+       GPU_PC_THIN,                      /* (M7) outlines = thin: one analytic line per instance (gpu_rec_thin) */
+       GPU_PC_N };
 enum { GPU_ZF_32, GPU_ZF_24, GPU_ZF_16, GPU_ZF_16S, GPU_ZF_N };
 /* FF classes (gpu_front_config.ff_rov_mask): blend class, ATST split, texture views (incl. feedback through
  * a shadow copy), primitive classes */
@@ -329,6 +331,23 @@ typedef struct {                                /* line / point pixel, 32 bytes 
     uint32_t s, t, q;                           /* STQ (float bits); FST: U, V (int32, 1/16 texel << 12) in s, t */
     float lod_q;
 } gpu_rec_linepix;
+/* (M7) a thin analytic line (outlines = thin, scale > 1; SV_InstanceID), 128 bytes. Positions in 12.4 GS units
+ * (XYOFFSET subtracted), as floats: the line covers major-axis positions [lo, hi) (the DDA's pixel-centre rule);
+ * t = (major - a0) / len; the minor coordinate of the line is o0 + od * t; attributes are c0 + cx * t (the
+ * software renderer's line planes). A sample at minor distance d (native pixels) is covered with 1 - |d| / w
+ * (AA1) or when |d| < w / 2. Not exact: the PS2-mode outlines are (line pixels). */
+typedef struct {
+    float lo, hi, a0, len, o0, od;
+    uint32_t flags;                             /* 1 x-major, 2 AA1 coverage, 4 Gouraud colour, 8 FST */
+    uint32_t state;
+    float zc0, zcx;                             /* Z (stored units) */
+    float cc0[4], ccx[4];                       /* R G B A (0..255) */
+    float fc0, fcx;                             /* fog */
+    float sc0[3], scx[3];                       /* S T Q, or U V (1/16 texel) with FST */
+    float lod_q;
+    float w;                                    /* width (native pixels across the minor axis) */
+    uint32_t pad[4];
+} gpu_rec_thin;
 /* Inside the sink: take ownership of the frame's buffers (fd's pointers stay valid until
  * gpu_front_release(handle), which any thread may call); the frontend continues with other buffers.
  * Returns the handle (NULL outside a sink call). */

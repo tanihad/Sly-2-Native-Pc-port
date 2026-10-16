@@ -72,6 +72,7 @@ typedef struct {
     int w, h, status;
     uint32_t vblank;
     volatile long done;
+    float shift[2];                       /* (M7) the picture's sample-grid shift, texels (gpu_present.c cur_shift) */
 } gpu_readback;
 void gpu_read_picture(gpu_readback* rb);
 void gpu_wait_readback(gpu_readback* rb);

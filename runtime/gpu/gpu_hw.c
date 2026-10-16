@@ -71,6 +71,9 @@ static struct { gpu_readback rb; uint32_t* px; int cap; uint32_t vblank; int con
 static volatile LONG dump_head, dump_tail;   /* queued: [head, tail) */
 static HANDLE dump_thread, dump_event;
 
+static float dump_shift[2];              /* (M7) of the picture being dumped (gpu_hw_dump_shift, dump thread) */
+void gpu_hw_dump_shift(float* sx, float* sy) { *sx = dump_shift[0]; *sy = dump_shift[1]; }
+
 static DWORD WINAPI dump_main(LPVOID arg) {
     (void)arg;
     for (;;) {
@@ -78,6 +81,8 @@ static DWORD WINAPI dump_main(LPVOID arg) {
         while (dump_head != dump_tail) {
             int i = (int)(dump_head % NDUMP);
             gpu_wait_readback(&dumps[i].rb);
+            dump_shift[0] = dumps[i].rb.shift[0];
+            dump_shift[1] = dumps[i].rb.shift[1];
             int ok = dumps[i].rb.status == 0 && dumps[i].rb.w > 0;   /* (no picture: display off, or lost) */
             if (C.dump) C.dump(ok ? dumps[i].px : NULL, ok ? dumps[i].rb.w : 0, ok ? dumps[i].rb.h : 0, dumps[i].vblank, dumps[i].content43);
             InterlockedExchange(&dumps[i].busy, 0);

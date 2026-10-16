@@ -1123,6 +1123,11 @@ static void zt_mark(xtarget* t, int x0, int y0, int x1, int y1, int state) {
     if (t && t->zts && zt_rect(t, x0, y0, x1, y1, r)) zt_set(t, r, -1, state);
 }
 
+/* a draw's scissor in samples: the native rectangle times the factors */
+static void draw_scissor(const gpu_fop_draw* d, int kx, int ky) {
+    set_scissor(d->sc[0] * kx, d->sc[1] * ky, (d->sc[2] + 1) * kx, (d->sc[3] + 1) * ky);
+}
+
 static void exec_draw_ref(const gpu_fop_draw* d, uint32_t slot) {
     ID3D11DeviceContext* c = gpu_rt.ctx;
     xtarget* sizing = tgt(d->ct) ? tgt(d->ct) : tgt(d->zt);
@@ -1139,7 +1144,7 @@ static void exec_draw_ref(const gpu_fop_draw* d, uint32_t slot) {
     int tk = tex_kind(d->ps_key);
     set_t1(d->tex && (tk == TK_VIEW_C32 || tk == TK_VIEW_ALPHA || tk == TK_ALIAS16) ? view_srv(d, 1) : NULL);
     int kx = sizing->kx, ky = sizing->ky;
-    set_scissor(d->sc[0] * kx, d->sc[1] * ky, (d->sc[2] + 1) * kx, (d->sc[3] + 1) * ky);
+    draw_scissor(d, kx, ky);
     set_depth(X.ds_off);
     set_consts(slot);
     if (d->cls == GPU_PC_TRI) {
@@ -1150,9 +1155,9 @@ static void exec_draw_ref(const gpu_fop_draw* d, uint32_t slot) {
         ID3D11DeviceContext_DrawIndexed(c, d->count, d->first, 0);
     } else {
         set_topo(1);
-        int sprite = d->cls == GPU_PC_SPRITE;
-        set_vs(gpu_vs(sprite ? GPU_SH_vs_ref_sprite : GPU_SH_vs_ref_linepix));
-        set_ps(gpu_ps(sprite ? GPU_SH_ps_gs_sprite : GPU_SH_ps_gs_linepix));
+        int sprite = d->cls == GPU_PC_SPRITE, thin = d->cls == GPU_PC_THIN;
+        set_vs(gpu_vs(sprite ? GPU_SH_vs_ref_sprite : thin ? GPU_SH_vs_ref_thin : GPU_SH_vs_ref_linepix));
+        set_ps(gpu_ps(sprite ? GPU_SH_ps_gs_sprite : thin ? GPU_SH_ps_gs_thin : GPU_SH_ps_gs_linepix));
         ID3D11DeviceContext_DrawInstanced(c, 4, d->count, 0, 0);
     }
     gpu_rt.n_draws++;
@@ -1178,7 +1183,7 @@ static void exec_draw_ff(const gpu_fop_draw* d, uint32_t slot) {
     int tk = tex_kind(d->ps_key);
     set_t1(d->tex && (tk == TK_VIEW_C32 || tk == TK_VIEW_ALPHA || tk == TK_ALIAS16) ? view_srv(d, 1) : NULL);
     int kx = sizing->kx, ky = sizing->ky;
-    set_scissor(d->sc[0] * kx, d->sc[1] * ky, (d->sc[2] + 1) * kx, (d->sc[3] + 1) * ky);
+    draw_scissor(d, kx, ky);
     int dual = d->blend == BL_DUAL, zout = zuse;
     int ps;
     if (d->cls == GPU_PC_TRI) {
@@ -1189,11 +1194,12 @@ static void exec_draw_ff(const gpu_fop_draw* d, uint32_t slot) {
         ps = t[dual][zout][(d->ps_key & GPU_PSK_FF_FAST) != 0];
     } else {
         set_topo(1);
-        int sprite = d->cls == GPU_PC_SPRITE;
-        set_vs(gpu_vs(sprite ? GPU_SH_vs_ref_sprite : GPU_SH_vs_ref_linepix));
+        int sprite = d->cls == GPU_PC_SPRITE, thin = d->cls == GPU_PC_THIN;
+        set_vs(gpu_vs(sprite ? GPU_SH_vs_ref_sprite : thin ? GPU_SH_vs_ref_thin : GPU_SH_vs_ref_linepix));
         static const int s[2][2] = { { GPU_SH_ps_ff_s00, GPU_SH_ps_ff_s01 }, { GPU_SH_ps_ff_s10, GPU_SH_ps_ff_s11 } };
         static const int l[2][2] = { { GPU_SH_ps_ff_l00, GPU_SH_ps_ff_l01 }, { GPU_SH_ps_ff_l10, GPU_SH_ps_ff_l11 } };
-        ps = sprite ? s[dual][zout] : l[dual][zout];
+        static const int n[2][2] = { { GPU_SH_ps_ff_n00, GPU_SH_ps_ff_n01 }, { GPU_SH_ps_ff_n10, GPU_SH_ps_ff_n11 } };
+        ps = sprite ? s[dual][zout] : thin ? n[dual][zout] : l[dual][zout];
     }
     set_ps(gpu_ps(ps));
     int zwrote = 0;
@@ -1239,7 +1245,7 @@ static void exec_draw(const gpu_fop_draw* d, uint32_t slot) {
     int tc = tex_class(d->ps_key);
     if (tc == 2 && d->tex) set_t1(view_srv(d, 0));
     int kx = sizing->kx, ky = sizing->ky;
-    set_scissor(d->sc[0] * kx, d->sc[1] * ky, (d->sc[2] + 1) * kx, (d->sc[3] + 1) * ky);
+    draw_scissor(d, kx, ky);
     int strip = d->cls != GPU_PC_TRI;
     set_topo(strip);
     set_vs(gpu_vs(d->cls == GPU_PC_TRI ? GPU_SH_vs_tri : d->cls == GPU_PC_SPRITE ? GPU_SH_vs_sprite : GPU_SH_vs_linepix));
