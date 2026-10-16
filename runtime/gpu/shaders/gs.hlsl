@@ -34,6 +34,10 @@ cbuffer draw_cb : register(b0) {
                                          //   (drivers may fuse a*b+c into an FMA despite `precise`)
     uint vbase, vfbw;                    // texture view target: base page, width (CT16 views map words to its pixels)
     uint vflags;                         // 1: the view has the bound target's sample grid (1:1 reads use the fragment's sample)
+    uint ff_blend;                       // FF draws (M5): blend class (gpu_front.c BL_*)
+    uint atst_mode;                      // FF draws: 0, 1 the pass draw of an ATST split (discard failing fragments),
+                                         //   2 its fail draw (discard passing fragments)
+    float dual_bias;                     // FF dual-source blends: LSB the source is lowered by (ps_ff)
 };
 
 // a * b rounded to the type's precision as the C reference rounds it (never fused with a later add)
@@ -47,6 +51,11 @@ ByteAddressBuffer states : register(t4);
 ByteAddressBuffer clut : register(t5);
 ByteAddressBuffer fdata : register(t7);
 
+#ifndef FF
+#define FF 0                             // 1: the FF pixel shaders (no UAVs: the outputs are render targets)
+#endif
+
+#if !FF
 // colour: the C32 target as R32_UINT (the raw GS word), or in a 16-bit frame run (ALIAS16) the
 // staging texture in the frame's own pixel space holding each pixel's 16-bit value
 RasterizerOrderedTexture2D<uint> rov_c : register(u0);
@@ -65,6 +74,7 @@ void probe_rec(uint kind, uint rb, uint state, int U, int V, uint t, uint col, u
     dbg.Store4(o + 32u, uint4(asuint(s), asuint(tt), asuint(q), asuint(xl)));
     dbg.Store4(o + 48u, uint4(zold, dst, cw, (uint)px | ((uint)py << 16)));
 }
+#endif
 
 // ---- vertex shaders --------------------------------------------------------------------------------
 struct VR {
@@ -112,6 +122,22 @@ VR vs_ref_linepix(uint vid : SV_VertexID, uint inst : SV_InstanceID) {
     VR o;
     o.pos = clip_of(float2((px + ((vid & 1u) ? 1.0 : 0.0)) * (float)kx, (py + ((vid & 2u) ? 1.0 : 0.0)) * (float)ky));
     o.rec = base;
+    return o;
+}
+
+// FF triangles (M5): the same position as vs_ref_tri (identical coverage), plus S/T/Q for the fast
+// perspective path (interpolated linearly in screen space, as the GS steps them)
+struct VF {
+    float4 pos : SV_Position;
+    nointerpolation uint rec : REC;
+    noperspective float3 stq : TEXCOORD0;
+};
+
+VF vs_ff_tri(VIn i) {
+    VF o;
+    o.pos = clip_of(float2(i.xy.x * (float)kx + 0.5, i.xy.y * (float)ky + 0.5));
+    o.rec = 0u;
+    o.stq = i.stq;
     return o;
 }
 
@@ -261,7 +287,9 @@ static bool g_vself = false;             // read the bound colour target itself 
 
 uint view_word(uint x, uint y) {
     int2 s = int2((int)(x * vkx + g_vsample.x), (int)(y * vky + g_vsample.y));
-    if (g_vself) return rov_c[s];
+#if !FF
+    if (g_vself) return rov_c[s];        // (FF draws never read their own target: a shadow copy)
+#endif
     uint4 c = view.Load(int3(s, 0));
     return c.x | (c.y << 8) | (c.z << 16) | (c.w << 24);
 }
@@ -431,44 +459,56 @@ float step_span(float s0, float ds, int xl, int x, int cutx) {
     return s;
 }
 
-// ---- the pixel shader -------------------------------------------------------------------------------
+// ---- fragment evaluation (shared by the REF/ROV pixel shader and the FF pixel shaders) -----------------
 #define TK_VIEW_C32 3u
 
+#ifndef STQ_FAST
+#define STQ_FAST 0                       // FF triangles: S/T/Q interpolated by the hardware (128-byte records)
+#endif
+#ifndef TRI_REC
+#define TRI_REC 256u                     // triangle record stride (FF fast path: the 128-byte prefix)
+#endif
+
 struct Frag {
-    uint col;                            // 0xAABBGGRR
-    uint fog;                            // 0..255
+    uint col;                            // 0xAABBGGRR after texture, TFX and fog
+    uint vcol;                           // the primitive's colour at the pixel (probe)
+    uint fog;                        // 0..255
     uint z;                              // stored-format Z (clamped)
     int U, V;                            // 1/16 texel
     float lq;                            // Q for the LOD
     uint state;
+    uint rb;                             // record byte offset
+    int2 P;                              // D3D pixel (sample)
+    int px, py;                          // native pixel
 };
 
-void ps_gs(VR i
-#if PRIM == 0
-           , uint prim : SV_PrimitiveID
-#endif
-           ) {
-    int2 P = (int2)i.pos.xy;
-    int px = (int)((uint)P.x / kx), py = (int)((uint)P.y / ky);
-    Frag f;
+static float dbg_s = 0.0, dbg_t = 0.0, dbg_q = 0.0;
+static int dbg_xl = 0;
+
+// attributes from the record, texture, TFX, fog; false: the row is masked (SCANMSK)
+bool gs_frag(float4 pos, uint irec, float3 istq, uint prim, out Frag f, out St st) {
+    f.P = (int2)pos.xy;
+    f.px = (int)((uint)f.P.x / kx);
+    f.py = (int)((uint)f.P.y / ky);
+    int px = f.px, py = f.py;
     f.U = 0; f.V = 0; f.lq = 1.0;
-    float dbg_s = 0.0, dbg_t = 0.0, dbg_q = 0.0;
-    int dbg_xl = 0;
+    f.col = 0u; f.vcol = 0u; f.fog = 0u; f.z = 0u;
     bool one_to_one = false;             // a sprite stepping one texel per pixel (1:1 rule)
 #if PRIM == 0
-    uint rb = rec_first + prim * 256u;
+    uint rb = rec_first + prim * TRI_REC;
     f.state = recs.Load(rb + 112u);
 #elif PRIM == 1
-    uint rb = i.rec;
+    uint rb = irec;
     f.state = recs.Load(rb + 20u);
 #else
-    uint rb = i.rec;
+    uint rb = irec;
     f.state = recs.Load(rb + 12u) >> 8;
 #endif
-    St st = load_state(f.state);
+    f.rb = rb;
+    st = load_state(f.state);
     uint scanmsk = (st.flags >> 14) & 3u;
 #if PRIM != 2
-    if ((scanmsk == 2u && (py & 1) == 0) || (scanmsk == 3u && (py & 1) != 0)) return;
+    if ((scanmsk == 2u && (py & 1) == 0) || (scanmsk == 3u && (py & 1) != 0)) return false;
 #endif
     bool tme = (st.flags & SF_TME) != 0u, fst = (st.flags & SF_FST) != 0u;
     uint zbits = (st.zinfo >> 4) & 3u;
@@ -492,6 +532,19 @@ void ps_gs(VR i
     if (tme) {
         if (fst) { f.U = a[5] >> 12; f.V = a[6] >> 12; }
         else {
+#if STQ_FAST
+            // (FF fast path: S/T/Q as the hardware interpolates them; the design's tolerance class
+            // "perspective-textured")
+            float s = istq.x, t = istq.y, q = istq.z;
+            float iq = 1.0 / q;
+            precise float su = s * iq;
+            precise float tv = t * iq;
+            precise float su16 = su * tw16;
+            precise float tv16 = tv * th16;
+            f.U = f2i(su16);
+            f.V = f2i(tv16);
+            f.lq = q;
+#else
             // span start: xl from the left edges, S/T/Q of the row (doubles, stepped per row), then
             // the float steps along the span's pieces
             int xl = bx0;
@@ -534,6 +587,7 @@ void ps_gs(VR i
             f.V = f2i(tv16);
             f.lq = q;
             dbg_s = s; dbg_t = t; dbg_q = q; dbg_xl = xl;
+#endif
         }
     }
 #elif PRIM == 1
@@ -577,13 +631,14 @@ void ps_gs(VR i
         }
     }
 #endif
+    f.vcol = f.col;
 
     // ---- texture, TFX, fog ----
     uint col = f.col;
     if (tme && (st.tlev & 3u) != 0u) {
         // target views: 1:1 reads take the fragment's own sample of each texel (5.1), others sample 0
         g_vself = (st.texsrc & TS_SELF) != 0u;
-        if ((vflags & 1u) != 0u && one_to_one) g_vsample = uint2((uint)P.x % kx, (uint)P.y % ky);
+        if ((vflags & 1u) != 0u && one_to_one) g_vsample = uint2((uint)f.P.x % kx, (uint)f.P.y % ky);
         uint t = tex_sample(st, f.U, f.V, f.lq);
         col = tfx((st.flags >> 2) & 3u, (st.flags & SF_TCC) != 0u, col, t);
     }
@@ -594,9 +649,37 @@ void ps_gs(VR i
         uint b = (fv * ((col >> 16) & 255u) + (255u - fv) * ((fc >> 16) & 255u)) >> 8;
         col = r | (g << 8) | (b << 16) | (col & 0xFF000000u);
     }
+    f.col = col;
+    return true;
+}
+
+// ---- the REF / ROV pixel shader ------------------------------------------------------------------------
+#if !FF
+#if PRIM == 0 && STQ_FAST
+void ps_gs(VF i, uint prim : SV_PrimitiveID) {   // (mixed frames, default mode: 128-byte records, hardware S/T/Q)
+    float3 istq = i.stq;
+#else
+void ps_gs(VR i
+#if PRIM == 0
+           , uint prim : SV_PrimitiveID
+#endif
+           ) {
+    float3 istq = float3(0.0, 0.0, 1.0);
+#endif
+#if PRIM != 0
+    uint prim = 0u;
+#endif
+    Frag f;
+    St st;
+    if (!gs_frag(i.pos, i.rec, istq, prim, f, st)) return;
+    int2 P = f.P;
+    int px = f.px, py = f.py;
+    uint rb = f.rb;
+    uint col = f.col;
+    uint zbits = (st.zinfo >> 4) & 3u;
 
     bool probing = (uint)px == probe_x && (uint)py == probe_y;
-    if (probing) probe_rec(1u, rb, f.state, f.U, f.V, col, f.col, f.z, dbg_s, dbg_t, dbg_q, dbg_xl, 0u, 0u, 0u, px, py);
+    if (probing) probe_rec(1u, rb, f.state, f.U, f.V, col, f.vcol, f.z, dbg_s, dbg_t, dbg_q, dbg_xl, 0u, 0u, 0u, px, py);
 
     // ---- tests: alpha, destination alpha, Z (+ Z write) ----
     // 16-bit frames (ALIAS16 runs): rov_c is the staging texture holding the pixel's 16-bit value
@@ -679,5 +762,102 @@ void ps_gs(VR i
         c = (dst & m) | (c & ~m);
     }
     rov_c[P] = c;
-    if (probing) probe_rec(2u, rb, f.state, f.U, f.V, col, f.col, f.z, 0.0, 0.0, 0.0, mode, 0u, dst, c, P.x, P.y);   // (the sample position)
+    if (probing) probe_rec(2u, rb, f.state, f.U, f.V, col, f.vcol, f.z, 0.0, 0.0, 0.0, mode, 0u, dst, c, P.x, P.y);   // (the sample position)
+}
+#endif
+
+// ---- the FF pixel shaders (M5, notes/d3d11-renderer.md 4.2) -------------------------------------------
+// The fragment is evaluated exactly as above; the output merger does what is left: the Z test and write
+// (exact integer Z through SV_Depth, 3.6), the blend (table 4.2), the byte write mask. Colours are raw GS
+// bytes in a UNORM target: a byte b is output as b / 255 (exact through the UNORM conversion).
+#ifndef DUAL
+#define DUAL 0
+#endif
+#ifndef ZOUT
+#define ZOUT 0
+#endif
+#define BL_OFF 0u
+#define BL_NOCOLOR 1u
+#define BL_ADD 2u
+#define BL_REVSUB 3u
+#define BL_DUAL 4u
+
+struct FOut {
+    float4 c0 : SV_Target0;
+#if DUAL
+    float4 c1 : SV_Target1;
+#endif
+#if ZOUT
+    float z : SV_Depth;
+#endif
+};
+
+float b2f(uint b) { return (float)b * (1.0 / 255.0); }
+
+#if PRIM == 0
+FOut ps_ff(VF i, uint prim : SV_PrimitiveID) {
+    float3 istq = i.stq;
+#else
+FOut ps_ff(VR i) {
+    uint prim = 0u;
+    float3 istq = float3(0.0, 0.0, 1.0);
+#endif
+    Frag f;
+    St st;
+    if (!gs_frag(i.pos, i.rec, istq, prim, f, st)) discard;
+    uint col = f.col;
+    uint As = col >> 24;
+    uint test = st.test;
+    bool apass = (test & 1u) == 0u || atst_pass((test >> 1) & 7u, (test >> 4) & 0xFFu, As);
+    if (!apass && ((test >> 12) & 3u) == 0u) discard;             // AFAIL KEEP
+    if (atst_mode == 1u && !apass) discard;                       // ATST split: the pass draw
+    if (atst_mode == 2u && apass) discard;                        //             the fail draw
+    FOut o;
+    uint cs[3] = { col & 255u, (col >> 8) & 255u, (col >> 16) & 255u };
+    float3 rgb = float3(b2f(cs[0]), b2f(cs[1]), b2f(cs[2]));
+    float a1 = 0.0;
+    if ((st.flags & SF_ABE) != 0u) {
+        uint al = st.alpha;
+        uint asel = al & 3u, bsel = (al >> 2) & 3u, csel = (al >> 4) & 3u, dsel = (al >> 6) & 3u, fix = (al >> 8) & 255u;
+        int cc = csel == 0u ? (int)As : (int)fix;                // (C = Ad is never FF)
+        bool clampc = (st.flags & SF_COLCLAMP) != 0u;
+        [unroll] for (uint ch = 0u; ch < 3u; ch++) {
+            int s = (int)cs[ch];
+            uint u;
+            if (ff_blend == BL_ADD) u = min((uint)(s * cc) >> 7, 255u);                       // + Cd (ONE, ONE, ADD)
+            else if (ff_blend == BL_REVSUB) u = min((uint)(s * cc + 127) >> 7, 255u);         // Cd - (REV_SUBTRACT)
+            else if (ff_blend == BL_DUAL) u = 0u;
+            else {                                               // BL_OFF: no Cd, computed here
+                int v = (((sel3(asel, s, 0) - sel3(bsel, s, 0)) * cc) >> 7) + sel3(dsel, s, 0);
+                u = clampc ? clamp255i(v) : ((uint)v & 255u);
+            }
+            rgb[ch] = b2f(u);
+        }
+        if (ff_blend == BL_DUAL) {
+            // (Cs - Cd) * C >> 7 + Cd = floor(Cs a + Cd (1 - a)), a = C / 128 <= 1: SRC1_ALPHA = a,
+            // INV_SRC1_ALPHA. The output merger rounds to nearest, so for 0 < C < 128 the source is lowered
+            // by dual_bias / a LSB (gpu_exec.c). With an exact blender (WARP: fp32) a bias of 0.496 gives the
+            // floor unless Cs * C < 64; the RTX 4060 Ti blends UNORM8 targets at about fp16 precision
+            // (+-0.125 LSB), where no bias is exact: 0.42 makes 80% of (Cs, Cd, C) exact and the +1 and -1
+            // errors equally frequent, so chains of translucent layers do not drift (the design's +-1 class
+            // for dual-source blends, 10.2; measurement in notes/wip/gpu-M5.md).
+            // C = 128 (a = 1, As 0x80: the common case) and C = 0 are exact unbiased.
+            float a = (float)cc * (1.0 / 128.0);
+            a1 = a;
+            [unroll] for (uint c2 = 0u; c2 < 3u; c2++) {
+                float s = (float)cs[c2];
+                if (cc > 0 && cc < 128) s = max(s - dual_bias / a, 0.0);
+                rgb[c2] = s * (1.0 / 255.0);
+            }
+        }
+    }
+    uint ao = As | (((st.flags & SF_FBA) != 0u) ? 0x80u : 0u);
+    o.c0 = float4(rgb, b2f(ao));
+#if DUAL
+    o.c1 = float4(0.0, 0.0, 0.0, a1);
+#endif
+#if ZOUT
+    o.z = gs_z_encode(f.z);
+#endif
+    return o;
 }

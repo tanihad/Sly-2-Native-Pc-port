@@ -89,7 +89,11 @@ static uint32_t diff_frames, png_diffs;
 static uint64_t diff_pixels;
 static double min_psnr = 999.0;
 
-static int ref_mode;                             /* hw / both with --ref: the REF tier draws (M3) */
+static int ref_mode;                             /* hw / both with --ref (M3: the REF tier draws) or --mixed (M5: FF and
+                                                    ROV tiers): the frontend's frames executed for real */
+static int mixed_mode;                           /* --mixed: lockstep and pictures compared with the tolerances of 10.2 */
+static int lk_exact;                             /* --lockstep-exact: mixed mode compared exactly (any difference diverges) */
+static uint32_t pic_tol_frames;                  /* mixed: pictures beyond the picture gate (PSNR < 40 dB or > 0.2% px > 16) */
 
 static void take_stats(void) {
     gpu_frame_stats st[256];
@@ -300,9 +304,9 @@ static void front_report(const char* metrics, const char* rec, double replay_ms,
                     "upload MB vtx %.2f idx %.2f rec %.2f\n",
             sum.d3d_draws / n, sum.rov_runs / n, sum.alias16_sprites / n, sum.alias16_dispatches / n, sum.states / n,
             sum.vtx_bytes / n / 1e6, sum.idx_bytes / n / 1e6, sum.rec_bytes / n / 1e6);
-    fprintf(stderr, "hwdry: ROV why: ref %u colclamp %u fbmsk %u date %u blend %u C>128 %u pabe/dthe %u z32-high %u straddle %u\n",
+    fprintf(stderr, "hwdry: ROV why: ref %u colclamp %u fbmsk %u date %u blend %u C>128 %u pabe/dthe %u z32-high %u straddle %u class %u\n",
             sum.rov_why[0], sum.rov_why[1], sum.rov_why[2], sum.rov_why[3], sum.rov_why[4], sum.rov_why[5], sum.rov_why[6],
-            sum.rov_why[7], sum.rov_why[8]);
+            sum.rov_why[7], sum.rov_why[8], sum.rov_why[9]);
     fprintf(stderr, "hwdry: PUNT %u (target overlap %u, frame fmt %u, tex foreign %u, tex fmt %u, forced %u, punt readback mismatches %u)\n",
             sum.tier[3], sum.punt_why[0], sum.punt_why[1], sum.punt_why[2], sum.punt_why[3], sum.punt_why[4], sum.punt_why[5]);
     fprintf(stderr, "hwdry: pass A (ATST + AFAIL != KEEP) %u kicks: all-pass %u all-fail %u straddle %u (%.2f%%); lerp blends with C=As %u, As > 128 %u (%.2f%%)\n",
@@ -542,16 +546,56 @@ static int read_hw(void) {
     return n;
 }
 
-/* blocks of hw memory differing from gs_vram; details of the first few */
+/* mixed mode (M5) tolerance classes of a comparison (notes/d3d11-renderer.md 10.2): words of GPU colour
+ * targets by their largest byte difference (R, G, B or A: alpha bytes also hold colour moved by the channel
+ * shuffles, and alpha-tested perspective-textured fragments take the perspective-texturing tolerance), how
+ * many of them have a differing alpha byte, Z words, CPU-owned words. A comparison is within tolerance
+ * when CPU data is equal, at most 2.5% of the GPU colour words differ by more than 2 and 0.1% by more than
+ * 16, and at most 0.1% of the Z words differ (alpha-test outcomes of perspective-textured fragments).
+ * (The 2.5%: the RTX 4060 Ti's dual-source blend is +-1 per layer and a stack of translucent layers with
+ * small alpha accumulates up to about 1/a: measured worst 1.94% of words in 3..16 in one comparison of ep8
+ * boss, never above 16; notes/wip/gpu-M5.md. Every other FF class is checked bit-exact by --lockstep-exact
+ * with --ff-stq-exact --ff-rov-mask 0x10.) */
+typedef struct { uint64_t c1, c2, c16, cbig, adiff, z, cpu, nc, nz; } tol_stats;
+static tol_stats lk_tol;                         /* totals */
+static double lk_tol_worst_c2, lk_tol_worst_c16, lk_tol_worst_z;   /* worst fractions of one comparison */
+static uint32_t lk_tol_compares;                 /* comparisons with tolerated differences only */
+static int lk_tol_newbig, tol_report;
+static int bench_skip = 2;                      /* game-frame statistics leave out the first N VBlanks (--bench-skip; replay start) */            /* this comparison has more words above +-2 than the previous one; --tol-report N */
+
+/* blocks of hw memory differing from gs_vram (mixed mode: 1 when beyond tolerance); details of the first few */
 static uint32_t mem_compare(int verbose, int n) {
     static uint16_t writer[16384];
     memset(writer, 0, sizeof writer);
     for (int i = 0; i < n; i++) writer[lk_e[i].abs] = lk_w[i];
-    uint32_t blocks = 0, words = 0, gpu_blocks = 0;
+    uint32_t blocks = 0, words = 0, gpu_blocks = 0, tolerated = 0;
+    int tol = mixed_mode && !lk_exact;
+    tol_stats ts;
+    memset(&ts, 0, sizeof ts);
     for (uint32_t b = 0; b < 16384; b++) {
         const uint32_t* x = (const uint32_t*)(hwmem + (size_t)b * 256);
         const uint32_t* y = (const uint32_t*)(gs_vram + (size_t)b * 256);
+        int kind = tol && writer[b] ? gpu_front_target_kind(writer[b]) : -1;
+        if (kind == 0) ts.nc += 64; else if (kind > 0) ts.nz += 64;
         if (!memcmp(x, y, 256)) continue;
+        if (tol) {
+            int cpu = 0;
+            for (int k = 0; k < 64; k++) {
+                if (x[k] == y[k]) continue;
+                if (kind == 0) {
+                    int m = 0;
+                    for (int c = 0; c < 32; c += 8) {
+                        int dd = (int)((x[k] >> c) & 255) - (int)((y[k] >> c) & 255);
+                        if (dd < 0) dd = -dd;
+                        if (dd > m) m = dd;
+                    }
+                    ts.adiff += (x[k] >> 24) != (y[k] >> 24);
+                    if (m == 1) ts.c1++; else if (m == 2) ts.c2++; else if (m <= 16) ts.c16++; else ts.cbig++;
+                } else if (kind > 0) ts.z++;
+                else { ts.cpu++; cpu = 1; }
+            }
+            if (!cpu) { tolerated++; continue; }
+        }
         blocks++;
         gpu_blocks += writer[b] != 0;
         int nw = 0, first = -1;
@@ -568,6 +612,26 @@ static uint32_t mem_compare(int verbose, int n) {
     }
     if (verbose && blocks)
         fprintf(stderr, "  %u blocks differ (%u GPU-written), %u words\n", blocks, gpu_blocks, words);
+    if (tol) {
+        double f2 = ts.nc ? (double)(ts.c16 + ts.cbig) / (double)ts.nc : 0, f16 = ts.nc ? (double)ts.cbig / (double)ts.nc : 0;
+        double fz = ts.nz ? (double)ts.z / (double)ts.nz : 0;
+        int over = f2 > 0.025 || f16 > 0.001 || fz > 0.001;
+        if (verbose && (blocks || tolerated))
+            fprintf(stderr, "  tolerance: colour words +-1 %llu, +-2 %llu, 3..16 %llu, > 16 %llu (of %llu; alpha differs in %llu); Z %llu (of %llu); CPU %llu%s\n",
+                    (unsigned long long)ts.c1, (unsigned long long)ts.c2, (unsigned long long)ts.c16, (unsigned long long)ts.cbig,
+                    (unsigned long long)ts.nc, (unsigned long long)ts.adiff, (unsigned long long)ts.z, (unsigned long long)ts.nz,
+                    (unsigned long long)ts.cpu, over ? " OVER BUDGET" : "");
+        lk_tol.c1 += ts.c1; lk_tol.c2 += ts.c2; lk_tol.c16 += ts.c16; lk_tol.cbig += ts.cbig; lk_tol.adiff += ts.adiff;
+        lk_tol.z += ts.z; lk_tol.cpu += ts.cpu; lk_tol.nc += ts.nc; lk_tol.nz += ts.nz;
+        static uint64_t last_big;
+        lk_tol_newbig = ts.c16 + ts.cbig > last_big;
+        last_big = ts.c16 + ts.cbig;
+        if (f2 > lk_tol_worst_c2) lk_tol_worst_c2 = f2;
+        if (f16 > lk_tol_worst_c16) lk_tol_worst_c16 = f16;
+        if (fz > lk_tol_worst_z) lk_tol_worst_z = fz;
+        if (!blocks && tolerated && !over) lk_tol_compares++;
+        if (!blocks && over) blocks = 1;
+    }
     return blocks;
 }
 
@@ -671,12 +735,34 @@ static void bisect_report(int culprit_known) {
 static void lock_hook(uint32_t index, int changed, const void* evp, int type, const void* const* vp, void* user) {
     (void)user;
     int want = changed;
+    if (bisect_on && lk_vblank == bisect_v && index > bisect_b) {   /* (past the range, nothing differed: done) */
+        fflush(stderr);
+        ExitProcess(0);
+    }
     if (bisect_on) want = lk_vblank == bisect_v && index >= bisect_a && index <= bisect_b;
     if (want) {
         gpu_front_checkpoint();
         int n = read_hw();
         uint32_t d = mem_compare(bisect_on ? 0 : !lk_failed, n);
         lk_compares++;
+        if (tol_report > 0 && lk_tol_newbig && lk_prev.valid) {   /* (--tol-report: where differences above 2 appear) */
+            tol_report--;
+            fprintf(stderr, "tol-report: new differences above 2 before primitive %u of the frame after VBlank %u; the pass before:\n",
+                    index, lk_vblank);
+            dump_prim(&lk_prev);
+            uint64_t fr = lk_prev.reg[0x4C + lk_prev.ctx];
+            uint32_t fbp = (uint32_t)(fr & 0x1FF), fbw = (uint32_t)((fr >> 16) & 0x3F);
+            int shown = 0;
+            for (int y = 0; y < 512 && shown < 8; y++)
+                for (int x = 0; x < (int)fbw * 64 && shown < 8; x++) {
+                    uint32_t a = gs_addr32(gs_swz_ct32, fbp * 32, fbw, (uint32_t)x, (uint32_t)y), hv, sv;
+                    memcpy(&hv, hwmem + (size_t)a * 4, 4);
+                    memcpy(&sv, gs_vram + (size_t)a * 4, 4);
+                    int m = 0;
+                    for (int c = 0; c < 32; c += 8) { int dd = (int)((hv >> c) & 255) - (int)((sv >> c) & 255); if (dd < 0) dd = -dd; if (dd > m) m = dd; }
+                    if (m > 2) { fprintf(stderr, "  FRAME %03X pixel (%d,%d): hw %08X sw %08X\n", fbp, x, y, hv, sv); shown++; }
+                }
+        }
         if (d) {
             if (bisect_on) {
                 fprintf(stderr, "lockstep: memory differs before primitive %u (%u blocks)\n", index, d);
@@ -771,6 +857,28 @@ static void ref_vblank(uint32_t vblank, uint32_t post_prims) {
         else if (sw_ok != ok || sw_w != w || sw_h != h) { d.size_mismatch = 1; d.diff_px = 1; }
         d.vblank = vblank;
         d.w = sw_w; d.h = sw_h; d.hw_w = w; d.hw_h = h;
+        if (mixed_mode && d.diff_px) {
+            /* 10.2 whole-picture gate: PSNR >= 40 dB, <= 0.2% of pixels above 16. Counted on the scanlines
+             * of one parity, the one with fewer: in field mode the reference compose's deinterlacer fills
+             * the other field's lines from history where the picture is "still" (px_close, a threshold of 6),
+             * so a +-1 difference near the threshold switches whole lines between history and average */
+            uint32_t big[2] = { 0, 0 };
+            if (!d.size_mismatch)
+                for (int y = 0; y < h; y++)
+                    for (int x = 0; x < w; x++) {
+                        uint32_t p = swf[(size_t)y * 1024 + x], q = hwf[(size_t)y * 1024 + x];
+                        int m = 0;
+                        for (int c = 0; c < 24; c += 8) { int dd = (int)((p >> c) & 255) - (int)((q >> c) & 255); if (dd < 0) dd = -dd; if (dd > m) m = dd; }
+                        big[y & 1] += m > 16;
+                    }
+            uint32_t fb = big[0] < big[1] ? big[0] : big[1];
+            if (d.psnr < 40.0 || (double)fb * 2.0 > 0.002 * (double)w * (double)h || d.size_mismatch) {
+                pic_tol_frames++;
+                fprintf(stderr, "picture gate: VBlank %u beyond: PSNR %.2f dB, pixels above 16 on even / odd lines %u / %u (%dx%d)%s\n", vblank,
+                        d.psnr, big[0], big[1], w, h, d.size_mismatch ? ", size mismatch" : "");
+            } else if (big[0] + big[1])
+                fprintf(stderr, "picture gate: VBlank %u: pixels above 16 on even / odd lines %u / %u (within the gate)\n", vblank, big[0], big[1]);
+        }
         if (d.diff_px) {
             ref_diff_frames++;
             ref_diff_px += d.diff_px;
@@ -1124,6 +1232,8 @@ int main(int argc, char** argv) {
     }
     outdir = argv[2];
     int workers = 0, decode_only = 0, front_only = 0, front_ref = 0, front_straddle = 0, front_selfcheck = 0, with_sw = 0, scale = 1, pace = 0, profile = 0, shash = 0, front_thread = 0, pin = 0;
+    int front_mixed = 0, ff_stq_exact = 0, split_ff = 0;
+    uint32_t ff_rov_mask = 0;
     const char* adapter = "hw";
     const char* metrics = NULL;
     for (int i = 3; i < argc; i++) {
@@ -1136,7 +1246,11 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--front-only")) front_only = 1;
         else if (!strcmp(argv[i], "--decode-only")) decode_only = 1;
         else if (!strcmp(argv[i], "--ref")) front_ref = 1;
+        else if (!strcmp(argv[i], "--mixed")) front_mixed = 1;
+        else if (!strcmp(argv[i], "--ff-stq-exact")) ff_stq_exact = 1;
+        else if (!strcmp(argv[i], "--ff-rov-mask") && i + 1 < argc) ff_rov_mask = (uint32_t)strtoul(argv[++i], NULL, 0);
         else if (!strcmp(argv[i], "--straddle-rov")) front_straddle = 1;
+        else if (!strcmp(argv[i], "--split-ff")) split_ff = 1;
         else if (!strcmp(argv[i], "--selfcheck")) front_selfcheck = 1;
         else if (!strcmp(argv[i], "--with-sw")) with_sw = 1;
         else if (!strcmp(argv[i], "--pace")) pace = 1;
@@ -1147,6 +1261,9 @@ int main(int argc, char** argv) {
 #ifdef GS_REPLAY_GPU
         else if (!strcmp(argv[i], "--lockstep")) lockstep = 1;
         else if (!strcmp(argv[i], "--no-resync")) lk_resync = 0;
+        else if (!strcmp(argv[i], "--lockstep-exact")) lk_exact = 1;
+        else if (!strcmp(argv[i], "--tol-report") && i + 1 < argc) tol_report = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--bench-skip") && i + 1 < argc) bench_skip = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--post-probe") && i + 1 < argc) {
             if (sscanf(argv[++i], "%d:%d", &pp_first, &pp_last) == 2) pp_on = 1;
         }
@@ -1167,9 +1284,11 @@ int main(int argc, char** argv) {
     (void)adapter; (void)metrics; (void)front_only; (void)front_ref; (void)front_straddle; (void)front_selfcheck; (void)with_sw; (void)scale;
 #else
     if (FRONT_MODE(backend) && workers > 0) { fprintf(stderr, "--backend hwdry/hwsubmit replay synchronously (workers 0)\n"); return 2; }
-    ref_mode = (backend == B_HW || backend == B_BOTH) && front_ref;
-    if (ref_mode && workers > 0) { fprintf(stderr, "--ref replays synchronously (workers 0)\n"); return 2; }
-    if (lockstep && !(ref_mode && backend == B_BOTH)) { fprintf(stderr, "--lockstep needs --backend both --ref\n"); return 2; }
+    if (front_ref) front_mixed = 0;
+    ref_mode = (backend == B_HW || backend == B_BOTH) && (front_ref || front_mixed);
+    mixed_mode = ref_mode && front_mixed;
+    if (ref_mode && workers > 0) { fprintf(stderr, "--ref / --mixed replay synchronously (workers 0)\n"); return 2; }
+    if (lockstep && !(ref_mode && backend == B_BOTH)) { fprintf(stderr, "--lockstep needs --backend both --ref (or --mixed)\n"); return 2; }
     if (backend != B_SW && backend != B_HWDRY) {
         gpu_config cfg;
         memset(&cfg, 0, sizeof cfg);
@@ -1231,8 +1350,12 @@ int main(int argc, char** argv) {
         memset(&fc, 0, sizeof fc);
         fc.sw = ref_mode ? backend == B_BOTH : backend == B_HWSUB ? with_sw : !front_only;
         if (ref_mode) front_thread = 0;          /* (checkpoints and read-backs on this thread) */
-        fc.display_ky2 = !ref_mode;              /* (M2's benchmark: display targets 2N rows; REF at S=1: 1x1) */
+        fc.display_ky2 = !ref_mode && !front_mixed;   /* (M2's benchmark: display targets 2N rows; REF / mixed at S=1: 1x1) */
         fc.ref = front_ref;
+        fc.mixed = front_mixed;
+        fc.ff_stq_exact = ff_stq_exact;
+        fc.ff_rov_mask = ff_rov_mask;
+        fc.split_ff = split_ff;
         fc.straddle_rov = front_straddle;
         fc.selfcheck = front_selfcheck;
         fc.thread = front_thread && !fc.sw;    /* (the frontend thread needs the software rasterizer off) */
@@ -1473,12 +1596,42 @@ int main(int argc, char** argv) {
         double dmed = median(g, nd);
         /* game frames (M4: VBlanks with >= 1000 primitives, as M2 counts them; replay start excluded) */
         size_t ngf = 0;
+        uint32_t worst_v = 0;
+        double worst_g = -1;
         for (size_t i = 0; i < nsts; i++) {
             if (sts[i].gpu_ms < 0 || sts[i].partial) continue;
             for (size_t j = 0; j < nff; j++)
-                if (ff[j].vblank == sts[i].vblank) { if (ff[j].kicks >= 1000 && j >= 2) g[ngf++] = sts[i].gpu_ms; break; }
+                if (ff[j].vblank == sts[i].vblank) {
+                    if (ff[j].kicks >= 1000 && j >= (size_t)bench_skip) {
+                        g[ngf++] = sts[i].gpu_ms;
+                        if (sts[i].gpu_ms > worst_g) { worst_g = sts[i].gpu_ms; worst_v = sts[i].vblank; }
+                    }
+                    break;
+                }
         }
         double gfmed = median(g, ngf), gfmax = ngf ? g[ngf - 1] : 0;
+        double gfp90 = ngf ? g[(ngf * 9) / 10 < ngf ? (ngf * 9) / 10 : ngf - 1] : 0;
+        fprintf(stderr, "ref-bench-dist game_frames=%zu gpu_p90_game=%.4f worst_vblank=%u\n", ngf, gfp90, worst_v);
+        /* (M5) render thread per game frame: D3D draws, CPU ms, wall ms */
+        double* gd = malloc((nsts + 1) * sizeof *gd);
+        double* gc = malloc((nsts + 1) * sizeof *gc);
+        double* gw = malloc((nsts + 1) * sizeof *gw);
+        size_t ngr = 0;
+        for (size_t i = 0; gd && gc && gw && i < nsts; i++) {
+            if (sts[i].partial) continue;
+            for (size_t j = 0; j < nff; j++)
+                if (ff[j].vblank == sts[i].vblank) {
+                    if (ff[j].kicks >= 1000 && j >= (size_t)bench_skip) { gd[ngr] = sts[i].draws; gc[ngr] = sts[i].render_cpu_ms; gw[ngr] = sts[i].render_ms; ngr++; }
+                    break;
+                }
+        }
+        if (gd && gc && gw) {
+            double dmd = median(gd, ngr), dmx = ngr ? gd[ngr - 1] : 0, cmd = median(gc, ngr), cmx = ngr ? gc[ngr - 1] : 0;
+            double wmd = median(gw, ngr), wmx = ngr ? gw[ngr - 1] : 0;
+            fprintf(stderr, "render-bench game_frames=%zu draws_med=%.0f draws_max=%.0f render_cpu_med=%.3f render_cpu_max=%.3f "
+                            "render_wall_med=%.3f render_wall_max=%.3f\n", ngr, dmd, dmx, cmd, cmx, wmd, wmx);
+        }
+        free(gd); free(gc); free(gw);
         free(g);
         fprintf(stderr, "ref: %u frames (%llu checkpoint frames), %llu REF draws, %llu ALIAS16 runs, %u post-pass prims, "
                         "%u STQ triangles with batch cuts, %u lost writers; loads %llu downloads %llu patches %llu clears %llu\n",
@@ -1493,6 +1646,23 @@ int main(int argc, char** argv) {
         if (backend == B_BOTH)
             fprintf(stderr, "both ref: %u pictures compared, %u differ (%llu pixels), min PSNR %.2f dB\n", ref_frames, ref_diff_frames,
                     (unsigned long long)ref_diff_px, min_psnr);
+        if (mixed_mode) {
+            uint32_t ffp = 0, rovp = 0, a16p = 0;
+            for (size_t i = 0; i < nff; i++) { ffp += ff[i].tier[GPU_TIER_FF]; rovp += ff[i].tier[GPU_TIER_ROV]; a16p += ff[i].tier[GPU_TIER_ALIAS16]; }
+            fprintf(stderr, "mixed: primitives FF %u ROV %u ALIAS16 %u; D3D draws FF %llu ROV/ALIAS16 %llu; Z resolves %llu (%llu samples), "
+                            "Z syncs %llu (%llu samples)\n", ffp, rovp, a16p, (unsigned long long)xc.ff_draws, (unsigned long long)xc.ref_draws,
+                    (unsigned long long)xc.zresolves, (unsigned long long)xc.zresolve_px, (unsigned long long)xc.zsyncs,
+                    (unsigned long long)xc.zsync_px);
+            if (backend == B_BOTH)
+                fprintf(stderr, "both mixed: %u pictures beyond the picture gate (PSNR < 40 dB or > 0.2%% pixels above 16)\n", pic_tol_frames);
+        }
+        if (lockstep && mixed_mode && !lk_exact)
+            fprintf(stderr, "lockstep tolerance: %u comparisons with tolerated differences only; colour words +-1 %llu, +-2 %llu, 3..16 %llu, "
+                            "> 16 %llu of %llu compared (alpha differs in %llu); Z %llu of %llu; CPU %llu; worst comparison: %.4f%% > 2, "
+                            "%.4f%% > 16, Z %.4f%%\n", lk_tol_compares,
+                    (unsigned long long)lk_tol.c1, (unsigned long long)lk_tol.c2, (unsigned long long)lk_tol.c16, (unsigned long long)lk_tol.cbig,
+                    (unsigned long long)lk_tol.nc, (unsigned long long)lk_tol.adiff, (unsigned long long)lk_tol.z, (unsigned long long)lk_tol.nz,
+                    (unsigned long long)lk_tol.cpu, 100.0 * lk_tol_worst_c2, 100.0 * lk_tol_worst_c16, 100.0 * lk_tol_worst_z);
         if (lockstep)
             fprintf(stderr, "lockstep: %u comparisons, %u differ, %u resyncs%s; %s\n", lk_compares,
                     lk_diff_compares, lk_resyncs, lk_resync ? "" : " (--no-resync)",
@@ -1502,7 +1672,7 @@ int main(int argc, char** argv) {
         if (metrics) write_metrics(metrics, argv[1], adapter, ms);
         gpu_front_stop();
         gpu_stop();
-        if (backend == B_BOTH && ref_diff_frames) rc = 3;
+        if (backend == B_BOTH && (mixed_mode && !lk_exact ? pic_tol_frames != 0 : ref_diff_frames != 0)) rc = 3;
         if (lockstep && lk_failed) {
             rc = 6;
             if (!bisect_on) bisect_spawn();

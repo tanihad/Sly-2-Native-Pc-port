@@ -3,7 +3,11 @@
 # "both" mode on GS scenes, the swap chain on a small window, and (M3) the gs-draw scenes with the REF
 # tier alongside: GS memory of the GPU compared with the software renderer's before every read.
 #   powershell -ExecutionPolicy Bypass -File tests\unit\gs-hw\run.ps1 [-Adapter hw|warp|both] [-NoWindow] [-RefOnly]
-param([string]$Adapter = 'both', [switch]$NoWindow, [int]$Vectors = 131072, [switch]$RefOnly)
+#       [-Modes ref,mixed,mixdef]
+# -RefOnly: only the gs-draw scenes (REF tier, and since M5 the mixed FF/ROV frames: exact and default);
+# -Modes: which of those variants (default all three).
+param([string]$Adapter = 'both', [switch]$NoWindow, [int]$Vectors = 131072, [switch]$RefOnly, [string[]]$Modes = @())
+$Modes = @($Modes | ForEach-Object { $_ -split ',' } | Where-Object { $_ })
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path
 $main = $root
 if (-not (Test-Path (Join-Path $root 'tools\llvm-mingw'))) {            # worktree: tools live in the main checkout
@@ -45,22 +49,31 @@ if (-not $RefOnly) {
 # the REF tier alongside, on each adapter
 $gd = Join-Path $root 'tests\unit\gs-draw'
 $refsrc = $common + @((Join-Path $gd 'test_gs_draw.c'), (Join-Path $gd 'real_gs_mem_glue.c'))
-$refexe = Join-Path $out 'test_gs_draw_hwref.exe'
-& $clang -O2 -std=c11 -Wall -Wno-comment -Wno-unused-function -DTEST_HW_REF -I $rt -I (Join-Path $rt 'gpu') -I $gen @refsrc `
-    -lsynchronization -luser32 -lgdi32 -o $refexe
-if ($LASTEXITCODE -ne 0) { Write-Host 'gs-draw REF build failed'; exit 1 }
+# M5: the same scenes in mixed frames (FF + ROV tiers): "mixed" exact (S/T/Q stepped exactly, dual-source
+# blends on the ROV tier: every FF class bit-exact) and "mixdef" the default mode (hardware S/T/Q, dual-source
+# blends +-1: the tolerances of notes/d3d11-renderer.md 10.2)
+$variants = @(@('ref', @('-DTEST_HW_REF')), @('mixed', @('-DTEST_HW_REF', '-DTEST_HW_MIXED')),
+              @('mixdef', @('-DTEST_HW_REF', '-DTEST_HW_MIXED', '-DTEST_HW_MIXED_DEFAULT')))
+if ($Modes.Count) { $variants = @($variants | Where-Object { $Modes -contains $_[0] }) }
 $adapters = if ($Adapter -eq 'both') { @('hw', 'warp') } else { @($Adapter) }
 $refFailed = $false
-foreach ($a in $adapters) {
-    $dir = Join-Path $out ('ref_' + $a)
-    New-Item -ItemType Directory -Force $dir | Out-Null
-    $rrun = Join-Path $out ("test_gs_draw_hwref_{0}_{1}.exe" -f $a, $PID)
-    Copy-Item $refexe $rrun -Force
-    Write-Host "gs-draw scenes with the REF tier on $a"
-    & $rrun $dir $a
-    if ($LASTEXITCODE -ne 0) { $refFailed = $true }
-    Remove-Item $rrun -ErrorAction SilentlyContinue
+foreach ($v in $variants) {
+    $refexe = Join-Path $out ('test_gs_draw_hw' + $v[0] + '.exe')
+    $defs = $v[1]
+    & $clang -O2 -std=c11 -Wall -Wno-comment -Wno-unused-function @defs -I $rt -I (Join-Path $rt 'gpu') -I $gen @refsrc `
+        -lsynchronization -luser32 -lgdi32 -o $refexe
+    if ($LASTEXITCODE -ne 0) { Write-Host "gs-draw $($v[0]) build failed"; exit 1 }
+    foreach ($a in $adapters) {
+        $dir = Join-Path $out ($v[0] + '_' + $a)
+        New-Item -ItemType Directory -Force $dir | Out-Null
+        $rrun = Join-Path $out ("test_gs_draw_hw{0}_{1}_{2}.exe" -f $v[0], $a, $PID)
+        Copy-Item $refexe $rrun -Force
+        Write-Host "gs-draw scenes on $a ($($v[0]))"
+        & $rrun $dir $a
+        if ($LASTEXITCODE -ne 0) { $refFailed = $true; Write-Host "gs-hw $($v[0]) scenes on $a FAILED" }
+        Remove-Item $rrun -ErrorAction SilentlyContinue
+    }
 }
-if ($refFailed) { Write-Host 'gs-hw REF scenes FAILED'; exit 1 }
+if ($refFailed) { Write-Host 'gs-hw REF / mixed scenes FAILED'; exit 1 }
 Write-Host 'gs-hw unit tests passed'
 exit 0

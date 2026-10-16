@@ -187,6 +187,7 @@ typedef struct {
     int rmw;                             /* a read-modify-write form only the ROV tier does (wrap, bit masks, DATE, blend) */
     int depth_class;
     uint32_t phase_hint;                 /* PHASE hint label the StateRec was built with */
+    uint32_t straddle_frame;             /* gf_frame + 1 when a primitive of this state was escalated (sticky) */
     /* texture */
     int tme, tpsm, tw, th, wms, wmt, minu, maxu, minv, maxv, bil, stq;
     uint32_t tbp, tbw;
@@ -670,9 +671,12 @@ static void close_draw(void) {
     *d = OD.d;
     d->h.op = GPU_FOP_DRAW;
     d->h.size = sizeof *d;
+    for (int i = 0; i < 4; i++) d->bbox[i] = (int16_t)(OD.bbox[i] < -32768 ? -32768 : OD.bbox[i] > 32767 ? 32767 : OD.bbox[i]);
     if (cw_barrier) { cw_reset(); cw_barrier = 0; }
-    int split = OD.d.tier == GPU_TIER_FF && ((OD.outcomes & 4) || (OD.outcomes & 3) == 3);
-    d->split = (uint8_t)split;
+    /* ATST split (FF): the pass draw for primitives that can pass, the fail draw for those that can fail */
+    int halves = OD.d.tier != GPU_TIER_FF || !OD.outcomes ? 0 : ((OD.outcomes & 5) ? 1 : 0) | ((OD.outcomes & 6) ? 2 : 0);
+    int split = halves == 3;
+    d->split = (uint8_t)halves;
     gf.d3d_draws += 1 + split;
     gf.split_extra += split;
     if (OD.d.tier == GPU_TIER_ROV || OD.d.tier == GPU_TIER_ALIAS16) { gf.rov_draws++; cw_reset(); gf.d3d_draws_commute++; }
@@ -1004,9 +1008,30 @@ typedef struct {
     uint32_t color, z, wmask, zw;
     int64_t area;
     int x0, y0, x1, y1;
+    int droppable;                       /* (M5) the fill's sprites opened the draw they are in */
+    size_t start_cmd;                    /* the command arena when the first sprite's draw began */
+    uint32_t prims;
 } fill_acc;
 static fill_acc FA;
 static uint32_t zclamp(const gs_prim* P, int64_t z);
+
+/* a recognised full clear: the FF draws of its sprites (nothing but them since start_cmd) are dropped,
+ * the clear does the same (4.1, "tiled fill -> Clear"; REF mode keeps drawing them) */
+static void fill_drop_draws(void) {
+    if (!FA.droppable || gf_cfg.ref || !OD.open || OD.d.tier != GPU_TIER_FF || OD.prims > FA.prims) return;
+    uint32_t n = 0;
+    for (size_t pos = FA.start_cmd; pos < A_cmd.n;) {
+        const gpu_fop* h = (const gpu_fop*)(A_cmd.p + pos);
+        if (h->op != GPU_FOP_DRAW || ((const gpu_fop_draw*)h)->tier != GPU_TIER_FF) return;
+        n++;
+        pos += h->size;
+    }
+    A_cmd.n = FA.start_cmd;
+    OD.open = 0;
+    gf.d3d_draws -= n;
+    gf.ff_draws -= n;
+    gf.fill_draws_dropped += n + 1;
+}
 
 static void fill_add(const gs_env_view* ev, const gs_sprite* sp, const gs_vtx* v1) {
     const gs_prim* P = ev->P;
@@ -1017,7 +1042,10 @@ static void fill_add(const gs_env_view* ev, const gs_sprite* sp, const gs_vtx* v
         memset(&FA, 0, sizeof FA);
         FA.active = 1; FA.ct = ct; FA.zt = zt; FA.color = color; FA.z = v1->z; FA.wmask = (uint32_t)S.wmask;
         FA.x0 = sp->px0; FA.y0 = sp->py0; FA.x1 = sp->px1; FA.y1 = sp->py1;
+        FA.droppable = OD.open && OD.prims == 1;   /* (this sprite opened the open draw) */
+        FA.start_cmd = A_cmd.n;
     }
+    FA.prims++;
     FA.area += (int64_t)(sp->px1 - sp->px0 + 1) * (sp->py1 - sp->py0 + 1);
     if (sp->px0 < FA.x0) FA.x0 = sp->px0;
     if (sp->py0 < FA.y0) FA.y0 = sp->py0;
@@ -1028,6 +1056,7 @@ static void fill_add(const gs_env_view* ev, const gs_sprite* sp, const gs_vtx* v
     int w = T->fbw * 64, h = P->scy1 + 1;
     if (h > T->rows) h = T->rows;
     if (FA.x0 == 0 && FA.y0 == 0 && FA.x1 >= w - 1 && FA.y1 >= h - 1 && FA.area == (int64_t)w * h) {
+        fill_drop_draws();
         if (ct) {
             gpu_fop_clear* c = gf_cmd(GPU_FOP_CLEAR, sizeof *c);
             c->target = ct->id; c->value = color; c->mask = (uint32_t)S.wmask;
@@ -1110,6 +1139,80 @@ static uint32_t emit_linepix(const gs_env_view* ev, const gs_line* L, const gs_v
     uint32_t n = (uint32_t)(r - r0);
     A_rec.n -= (maxn - n) * sizeof(linerec);
     return n;
+}
+
+/* ---- the exact ATST split (M5) ----------------------------------------------------------------------
+ * The two-draw split of 4.2 (passing fragments first, then the failing ones) reorders fragments only where
+ * a failing fragment of a primitive is followed, at the same pixel, by a passing fragment of a later
+ * primitive of the same draw (a passing fragment followed by a failing one keeps its order: the pass draw
+ * comes first). So the open split draw keeps a bitmap of the pixels its fail-capable primitives cover (the
+ * software renderer's spans, word operations per row); a pass-capable primitive touching one of them starts
+ * a new draw. M5 measured the plain split visibly different from REF (ep6, ep2 hub, ep1 hub, m1 brawl) and
+ * the ROV escalation slower than REF in the hubs (UAV draws and FF <-> UAV switches). At scale > 1 a
+ * triangle's samples can reach native pixels outside its sample-0 spans: the spans are widened by a pixel. */
+#define SB_W 32                                   /* 64-bit words per row: 2048 pixels */
+static uint64_t sbits[2048][SB_W];
+static int sb_y0 = 2048, sb_y1 = -1, sb_w0 = SB_W, sb_w1 = -1;
+static uint32_t sb_owner, od_serial;              /* the open draw the bitmap belongs to */
+
+static void sb_reset(void) {
+    for (int y = sb_y0; y <= sb_y1; y++) memset(&sbits[y][sb_w0], 0, (size_t)(sb_w1 - sb_w0 + 1) * 8);
+    sb_y0 = 2048; sb_y1 = -1; sb_w0 = SB_W; sb_w1 = -1;
+}
+
+/* pixels [xa, xb] of row y: set (set = 1) or test; returns 1 when a tested pixel is set */
+static int sb_span(int y, int xa, int xb, int set) {
+    if (y < 0 || y > 2047) return 0;
+    if (xa < 0) xa = 0;
+    if (xb > 2047) xb = 2047;
+    if (xa > xb) return 0;
+    int wa = xa >> 6, wb = xb >> 6;
+    if (set) {
+        if (y < sb_y0) sb_y0 = y;
+        if (y > sb_y1) sb_y1 = y;
+        if (wa < sb_w0) sb_w0 = wa;
+        if (wb > sb_w1) sb_w1 = wb;
+    }
+    for (int w = wa; w <= wb; w++) {
+        int lo = w == wa ? xa & 63 : 0, hi = w == wb ? xb & 63 : 63;
+        uint64_t m = (hi == 63 ? ~0ull : (1ull << (hi + 1)) - 1) & ~((1ull << lo) - 1);
+        if (set) sbits[y][w] |= m;
+        else if (sbits[y][w] & m) return 1;
+    }
+    return 0;
+}
+
+/* the primitive's pixels (triangle spans, sprite rectangle, line / point pixel records): set or test */
+static int sb_prim(int cls, const gs_tri* T, const gs_sprite* sp, size_t lp_start, uint32_t lp_n, int px, int py, int set) {
+    int d = gf_cfg.scale > 1;                     /* (widened at scale > 1) */
+    if (cls == GPU_PC_TRI) {
+        gs_edge e[3];
+        gs_tri_edges(T, e);
+        int hit = 0;
+        for (int y = T->by0; y <= T->by1; y++, gs_tri_edges_next(e)) {
+            int64_t xl, xr;
+            gs_tri_row(e, T->bx0, T->bx1, &xl, &xr);
+            if (xl > xr) continue;
+            for (int k = -d; k <= d; k++) hit |= sb_span(y + k, (int)xl - d, (int)xr + d, set);
+            if (hit && !set) return 1;
+        }
+        return hit;
+    }
+    if (cls == GPU_PC_SPRITE) {
+        for (int y = sp->py0 - d; y <= sp->py1 + d; y++)
+            if (sb_span(y, sp->px0 - d, sp->px1 + d, set) && !set) return 1;
+        return 0;
+    }
+    if (cls == GPU_PC_LINEPIX) {
+        const linerec* r = (const linerec*)(A_rec.p + lp_start);
+        for (uint32_t i = 0; i < lp_n; i++)
+            for (int k = -d; k <= d; k++)
+                if (sb_span(r[i].py + k, r[i].px - d, r[i].px + d, set) && !set) return 1;
+        return 0;
+    }
+    for (int k = -d; k <= d; k++)
+        if (sb_span(py + k, px - d, px + d, set) && !set) return 1;
+    return 0;
 }
 
 /* lockstep checkpoints (gpu_front_set_checkpoint_hook) */
@@ -1363,7 +1466,20 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
         if (S.rov) why = S.rov - 1;
         else if (S.cd_dep && S.c_as && as_hi > 128) why = GPU_ROV_C_OVER128;
         else if (z32_high || (S.zt && S.zt->z_high)) why = GPU_ROV_Z32_HIGH;
-        else if (outcome == 4 && gf_cfg.straddle_rov) why = GPU_ROV_STRADDLE;
+        else if (outcome && gf_cfg.straddle_rov && (outcome == 4 || S.straddle_frame == gf_frame + 1)) {
+            /* (the escalation flag of 4.3, off by default since M5's measurement: the exact split, sb_prim,
+             * does the same on the FF tier. Sticky for the rest of the frame: further primitives of a state
+             * that straddled join its ROV draw instead of alternating FF / ROV draws) */
+            why = GPU_ROV_STRADDLE;
+            S.straddle_frame = gf_frame + 1;
+        }
+        else if (gf_cfg.ff_rov_mask) {   /* (classes kept on the ROV tier: M5 moved them to FF one at a time) */
+            static const uint32_t bc[5] = { GPU_FFC_OFF, GPU_FFC_NOCOLOR, GPU_FFC_ADD, GPU_FFC_REVSUB, GPU_FFC_DUAL };
+            uint32_t c = bc[S.blend] | (S.fatst == FATST_SPLIT ? GPU_FFC_SPLIT : 0) | (ts.T ? GPU_FFC_VIEW : 0) |
+                         (cls == GPU_PC_TRI ? GPU_FFC_TRI : cls == GPU_PC_SPRITE ? GPU_FFC_SPRITE : GPU_FFC_LINE) |
+                         (S.zfi >= 0 ? GPU_FFC_DEPTH : 0);
+            if (c & gf_cfg.ff_rov_mask) why = GPU_ROV_CLASS;
+        }
         if (why >= 0) tier = GPU_TIER_ROV;
     }
     gf.tier[tier]++;
@@ -1386,7 +1502,8 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
     /* a view of the colour target the primitive writes: overlapping byte lanes need the state before
      * the primitive (a shadow copy, below); disjoint lanes are read in place (the ROV tier reads the
      * bound target; the lanes it reads are not written). ALIAS16 runs read T itself, unbound. */
-    uint32_t self = !S.alias && ts.T && ts.T == S.ct && !(S.tex_lanes & S.c_lanes) ? GPU_TS_SELF : 0;
+    uint32_t self = tier == GPU_TIER_ROV && ts.T && ts.T == S.ct && !(S.tex_lanes & S.c_lanes) ? GPU_TS_SELF : 0;
+    /* (FF draws cannot read their render target: such a view is a feedback read through the shadow copy) */
     uint32_t texsrc = P->tme ? (uint32_t)ts.kind | (ts.T ? (uint32_t)ts.T->id << 8 : 0) | self : 0;
     uint32_t state = state_for(ev, texsrc);
     if ((int)state != prev_state_index) { gf.state_changes++; prev_state_index = (int)state; }
@@ -1433,9 +1550,11 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
     /* ---- pipeline key and draw merging ---- */
     int tk = P->tme ? ts.kind : TK_NONE;
     int zmode = S.zfi >= 0 ? (rov ? 2 : 1) : 0;
+    /* (mixed frames, default mode: FF and ROV triangles carry 128-byte records, S/T/Q interpolated) */
+    int ff_fast = !alias && cls == GPU_PC_TRI && gf_cfg.mixed && !gf_cfg.ref && !gf_cfg.ff_stq_exact;
     uint32_t ps_key = (uint32_t)(alias ? 3 : rov ? 2 : S.blend == BL_DUAL ? 0 : 1) | (uint32_t)tk << 2 | (uint32_t)cls << 5 |
                       (uint32_t)zmode << 7 | (uint32_t)(P->tme && S.stq) << 9 | (uint32_t)(S.fatst == FATST_DISCARD) << 10 |
-                      (uint32_t)(self != 0) << 11;
+                      (uint32_t)(self != 0) << 11 | (ff_fast ? (uint32_t)GPU_PSK_FF_FAST : 0u);
     uint16_t ctid = S.ct ? S.ct->id : 0, ztid = S.zt ? S.zt->id : 0, texid = ts.T ? ts.T->id : 0;
     if (tier == GPU_TIER_ROV) {
         /* a run binds one colour target and (when some draw of it uses Z) one depth target: draws
@@ -1461,13 +1580,31 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
      * (M4: a run can bind a depth target after draws without one; the draw binds the targets of its first
      * primitive) */
     if (rov) key = (uint64_t)(ps_key & ~(3u << 7)) | (uint64_t)texid << 32 | 1ull << 63 | (uint64_t)ctid << 12 | (uint64_t)ztid << 20;
-    else key = (uint64_t)ps_key | (uint64_t)S.blend << 12 | (uint64_t)S.depth_class << 16 | (uint64_t)S.wmask << 20 |
-               (uint64_t)(S.fatst == FATST_SPLIT) << 24 | (uint64_t)ctid << 32 | (uint64_t)ztid << 40 | (uint64_t)texid << 48;
+    else {
+        /* FF (M5): texture kind, STQ/UV, the alpha test and fog are StateRec data the pixel shader branches
+         * on, so only the blend and depth state, the write mask, the ATST split (with its AFAIL), the
+         * primitive class, the shader output set and the bindings split draws (the M2 benchmark path took
+         * the texture kind of a draw's first primitive) */
+        int split = S.fatst == FATST_SPLIT;
+        key = (uint64_t)(ps_key & 3u) | (uint64_t)cls << 5 | (uint64_t)zmode << 7 | (uint64_t)ff_fast << 9 |
+              (uint64_t)S.blend << 12 | (uint64_t)S.depth_class << 16 | (uint64_t)S.wmask << 20 | (uint64_t)split << 24 |
+              (uint64_t)(split ? P->afail : 0) << 25 | (uint64_t)ctid << 32 | (uint64_t)ztid << 40 | (uint64_t)texid << 48;
+        if (!gf_cfg.mixed) key |= (uint64_t)(ps_key & 0x1Cu) << 56;   /* (the M2 benchmark shaders: texture class) */
+    }
     uint64_t sckey = (uint64_t)P->scx0 | (uint64_t)P->scy0 << 11 | (uint64_t)P->scx1 << 22 | (uint64_t)P->scy1 << 33;
     key ^= sckey * 0x9E3779B97F4A7C15ull;    /* (the draw's scissor is its first primitive's) */
+    /* the exact ATST split (above sb_prim): a pass-capable primitive over pixels of an earlier fail-capable
+     * one of the open draw starts a new draw */
+    int xsplit = tier == GPU_TIER_FF && S.fatst == FATST_SPLIT && outcome && !gf_cfg.split_ff;
+    if (xsplit && OD.open && OD.key == key && sb_owner == od_serial && (outcome & 5) &&
+        sb_prim(cls, &T, &sp, lp_start, lp_n, x0, y0, 0)) {
+        close_draw();
+        gf.split_conflicts++;
+    }
     if (!OD.open || OD.key != key) {
         if (trace_on && OD.open) fprintf(stderr, "[front] key %016llX -> %016llX\n", (unsigned long long)OD.key, (unsigned long long)key);
         close_draw();
+        od_serial++;
         OD.open = 1;
         OD.key = key;
         OD.outcomes = 0;
@@ -1480,8 +1617,14 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
         OD.d.first = cls == GPU_PC_TRI ? (uint32_t)(A_idx.n / 4) : 0;
         OD.d.vtx_first = (uint32_t)(A_vtx.n / sizeof(gvtx));
         OD.d.rec_first = (uint32_t)(cls == GPU_PC_LINEPIX ? lp_start : A_rec.n);
+        OD.d.afail = (uint8_t)(S.fatst == FATST_SPLIT ? P->afail : 0);
     }
+    OD.d.zw |= (uint8_t)(S.zwrite != 0);
     OD.outcomes |= outcome;
+    if (xsplit) {
+        if (sb_owner != od_serial) { sb_reset(); sb_owner = od_serial; }
+        if (outcome & 6) sb_prim(cls, &T, &sp, lp_start, lp_n, x0, y0, 1);
+    }
     if (!OD.prims) { OD.bbox[0] = x0; OD.bbox[1] = y0; OD.bbox[2] = x1; OD.bbox[3] = y1; }
     else { if (x0 < OD.bbox[0]) OD.bbox[0] = x0; if (y0 < OD.bbox[1]) OD.bbox[1] = y0; if (x1 > OD.bbox[2]) OD.bbox[2] = x1; if (y1 > OD.bbox[3]) OD.bbox[3] = y1; }
     if (!OD.prims) { OD.alpha = ev->reg[R_ALPHA_1 + ev->ctx]; OD.test = ev->reg[R_TEST_1 + ev->ctx]; OD.frame = ev->reg[R_FRAME_1 + ev->ctx]; }
@@ -1500,7 +1643,29 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
         gf.idx_bytes += 12;
         OD.d.count += 3;
         PROF_MARK(8);
-        if (rov) {
+        if (ff_fast && gf_cfg.mixed) {
+            /* FF triangle (M5): the integer part of the record (128 bytes: Z, colour, fog, U/V rows), S/T/Q
+             * interpolated by the hardware */
+            gs_planes pl;
+            gs_tri_planes(&T, vs, ev->iip, P->fge, P->zuse, P->tme, P->fst, &pl);
+            gs_rowstep rs;
+            gs_rowstep_init(&rs, &pl, T.by0);
+            fullrec* r = ar_reserve(&A_rec, 128);
+            r->zrow = rs.row[GS_A_Z]; r->zdy = rs.dy[GS_A_Z]; r->zdx = rs.dx[GS_A_Z];
+            static const int map7[7] = { GS_A_R, GS_A_G, GS_A_B, GS_A_A, GS_A_F, GS_A_U, GS_A_V };
+            for (int k = 0; k < 7; k++) {
+                r->row[k] = (int32_t)(uint32_t)(uint64_t)rs.row[map7[k]];
+                r->dy[k] = (int32_t)(uint32_t)(uint64_t)rs.dy[map7[k]];
+                r->dx[k] = (int32_t)(uint32_t)(uint64_t)rs.dx[map7[k]];
+            }
+            r->by0 = (int16_t)T.by0;
+            r->bx0 = (int16_t)T.bx0;
+            r->state = state;
+            r->lod_q = c->q;
+            memset((uint8_t*)r + 120, 0, 8);
+            gf.records_full++;
+            gf.rec_bytes += 128;
+        } else if (rov || gf_cfg.mixed) {
             gs_planes pl;
             gs_tri_planes(&T, vs, ev->iip, P->fge, P->zuse, P->tme, P->fst, &pl);
             gs_rowstep rs;
@@ -1687,7 +1852,7 @@ static void sink_frame(uint32_t vblank, uint32_t flags) {
     if (!sink_fn) return;
     gpu_front_frame_data fd = { A_cmd.p, A_cmd.n, A_vtx.p, A_vtx.n, (const uint32_t*)A_idx.p, A_idx.n / 4,
                                 A_rec.p, A_rec.n, A_state.p, A_state.n / sizeof(staterec), A_data.p, A_data.n, vblank,
-                                flags | (gf_cfg.ref ? GPU_FD_REF : 0) };
+                                flags | (gf_cfg.ref ? GPU_FD_REF : gf_cfg.mixed ? GPU_FD_MIXED : 0) };
     in_sink = 1;
     sink_fn(&fd, sink_user);
     in_sink = 0;
@@ -1830,3 +1995,5 @@ void gpu_front_dump_targets(FILE* f) {
                 T->base, T->fbw, T->rows, T->family == FAM_DISPLAY ? "display" : "square ", T->kx, T->ky, T->last_used);
     }
 }
+
+int gpu_front_target_kind(uint32_t id) { return id && id <= GPU_MAX_TARGETS && gt[id].used ? gt[id].kind : -1; }

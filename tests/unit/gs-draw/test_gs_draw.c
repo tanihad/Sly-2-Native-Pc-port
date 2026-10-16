@@ -59,6 +59,9 @@ static int hw_bad_scenes, hw_m4_scenes;
 static uint8_t hw_mem[GS_VRAM_SIZE];
 static gpu_dl_entry hw_e[16384];
 static uint16_t hw_w[16384];
+#ifdef TEST_HW_MIXED_DEFAULT
+static uint64_t hw_tol_words, hw_tol_c2, hw_tol_c16, hw_tol_z;   /* tolerated differences (default mixed mode) */
+#endif
 
 static void hw_compare(void) {
     if (gs_stats.regs == hw_last_regs) return;
@@ -74,6 +77,35 @@ static void hw_compare(void) {
     for (uint32_t i = 0; i < GS_VRAM_SIZE / 4; i++)
         if (a[i] != b[i]) { if (!words) first = i; words++; }
     if (!words) return;
+#ifdef TEST_HW_MIXED_DEFAULT
+    {   /* default mixed mode: the tolerances of notes/d3d11-renderer.md 10.2 (as gs_replay's mixed lockstep):
+         * CPU-owned words equal; of the GPU colour words at most 2.5% differ by more than 2 in some byte and
+         * 0.1% by more than 16; at most 0.1% of the Z words differ */
+        static uint16_t wr[16384];
+        memset(wr, 0, sizeof wr);
+        for (int i = 0; i < n; i++) wr[hw_e[i].abs] = hw_w[i];
+        uint64_t nc = 0, nz = 0, c2 = 0, c16 = 0, z = 0, cpu = 0;
+        for (uint32_t blk = 0; blk < 16384; blk++) {
+            int kind = wr[blk] ? gpu_front_target_kind(wr[blk]) : -1;
+            if (kind == 0) nc += 64; else if (kind > 0) nz += 64;
+            for (uint32_t k = blk * 64; k < blk * 64 + 64; k++) {
+                if (a[k] == b[k]) continue;
+                if (kind == 0) {
+                    int m = 0;
+                    for (int c = 0; c < 32; c += 8) { int d = (int)((a[k] >> c) & 255) - (int)((b[k] >> c) & 255); if (d < 0) d = -d; if (d > m) m = d; }
+                    c2 += m > 2; c16 += m > 16;
+                } else if (kind > 0) z++;
+                else cpu++;
+            }
+        }
+        hw_tol_words += words;
+        hw_tol_c2 += c2; hw_tol_c16 += c16; hw_tol_z += z;
+        if (!cpu && (double)c2 <= 0.025 * (double)nc && (double)c16 <= 0.001 * (double)nc && (double)z <= 0.001 * (double)nz) return;
+        fprintf(stderr, "  [hw-ref] %s: beyond tolerance: CPU words %llu, colour words > 2: %llu > 16: %llu of %llu, Z %llu of %llu\n", hw_scene,
+                (unsigned long long)cpu, (unsigned long long)c2, (unsigned long long)c16, (unsigned long long)nc, (unsigned long long)z,
+                (unsigned long long)nz);
+    }
+#endif
     if (!hw_scene_diffs) {
         fprintf(stderr, "  [hw-ref] %s: %u words differ, first word %05X (block %04X, page %03X): hw %08X sw %08X\n", hw_scene, words,
                 first, first >> 6, first >> 11, a[first], b[first]);
@@ -2044,6 +2076,15 @@ int main(int argc, char** argv) {
         gpu_front_config fc;
         memset(&fc, 0, sizeof fc);
         fc.ref = 1;
+#ifdef TEST_HW_MIXED                     /* (M5) mixed frames: FF + ROV tiers */
+        fc.ref = 0;
+        fc.mixed = 1;
+#ifndef TEST_HW_MIXED_DEFAULT            /* exact variant: S/T/Q stepped exactly, dual-source blends on the ROV tier */
+        fc.ff_stq_exact = 1;
+        fc.ff_rov_mask = GPU_FFC_DUAL;
+#endif
+        fprintf(stderr, "[hw-ref] mixed frames%s\n", fc.ff_stq_exact ? " (exact: S/T/Q exact, dual-source blends on ROV)" : " (default)");
+#endif
         fc.sw = 1;
         fc.scale = 1;
         gpu_front_start(&fc);
@@ -2094,6 +2135,11 @@ int main(int argc, char** argv) {
             for (int i = 0; i < n; i++) { punts += fr[i].tier[GPU_TIER_PUNT]; rbdiff += fr[i].punt_why[GPU_PUNT_READBACK_DIFF]; }
         fprintf(stderr, "[hw-ref] %u comparisons; %d scenes differ (%d use post passes: ALIAS16, target views, PUNT); "
                         "%u PUNTs, %u PUNT read-backs differing from gs_vram\n", hw_compares, hw_bad_scenes, hw_m4_scenes, punts, rbdiff);
+#ifdef TEST_HW_MIXED_DEFAULT
+        fprintf(stderr, "[hw-ref] default mixed mode, tolerated: %llu differing words in comparisons within tolerance "
+                        "(colour words > 2: %llu, > 16: %llu; Z words %llu, over all comparisons)\n", (unsigned long long)hw_tol_words,
+                (unsigned long long)hw_tol_c2, (unsigned long long)hw_tol_c16, (unsigned long long)hw_tol_z);
+#endif
         if (rbdiff) hw_bad_scenes++;
     }
     gpu_front_stop();

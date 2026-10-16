@@ -22,6 +22,12 @@
 #                         passes included (M4); the first divergence is bisected to its primitive (dump +
 #                         bisect_{hw,sw,diff}.png crops in -Out); exit 6 on divergence; -NoResync: no restart from
 #                         sw memory after a differing frame (the gate)
+#   -Mixed (hw / both)    M5 default mode: FF tier (RTV + DSV, OM blend) and ROV tier in one frame; -Lockstep compares
+#                         with the tolerances of 10.2 (colour +-16 tolerated and counted; alpha, Z, CPU data exact;
+#                         -LockstepExact: everything exact); pictures gated by PSNR >= 40 dB and <= 0.2% pixels > 16
+#                         (exit 3 beyond); -StqExact: FF triangles step S/T/Q exactly (256-byte records);
+#                         -FfRovMask <GPU_FFC_* bits>: classes kept on the ROV tier; straddling pass-A primitives take the ROV tier
+#                         (escalation, default) unless -SplitFf (the FF two-draw split)
 #   -PostProbe F:L        (-Ref) scripts/gs_post_probe.c's channel report of the two frame buffers for VBlank indices
 #                         F..L from the GPU's memory, on stdout (compare with gs_post_probe.ps1's)
 #   -Profile              sampling profile of the replay thread (self / inclusive per function)
@@ -36,7 +42,8 @@
 # Every run prints "sw-hash", a hash of all sw pictures (unchanged renderer -> unchanged hash).
 param([Parameter(Mandatory = $true)][string]$Rec, [string]$Out = "", [string]$Runtime = "", [int]$Workers = 0,
       [switch]$Bench, [ValidateSet('sw', 'hw', 'both', 'hwdry', 'hwsubmit')][string]$Backend = 'sw', [int]$Scale = 1, [switch]$WithSw, [switch]$Pace, [switch]$Profile, [switch]$StreamHash, [switch]$FrontThread, [switch]$Pin, [switch]$FrontOnly, [switch]$Ref, [switch]$StraddleRov, [switch]$SelfCheck, [switch]$DecodeOnly, [switch]$Lockstep, [switch]$NoResync, [string]$PostProbe = "", [string[]]$Define = @(),
-      [ValidateSet('hw', 'warp')][string]$Adapter = 'hw', [string]$Metrics = "", [string]$Log = "", [string]$VramHash = "")
+      [ValidateSet('hw', 'warp')][string]$Adapter = 'hw', [string]$Metrics = "", [string]$Log = "", [string]$VramHash = "",
+      [switch]$Mixed, [switch]$StqExact, [string]$FfRovMask = "", [switch]$LockstepExact, [switch]$SplitFf)
 $root = Split-Path $PSScriptRoot -Parent
 $main = $root
 if (-not (Test-Path (Join-Path $root 'tools\llvm-mingw'))) {            # worktree: tools live in the main checkout
@@ -77,6 +84,11 @@ if ($Metrics) { $runArgs += @('--metrics', $Metrics) }
 if ($VramHash) { $runArgs += @('--vram-hash', $VramHash) }
 if ($FrontOnly) { $runArgs += '--front-only' }
 if ($Ref) { $runArgs += '--ref' }
+if ($Mixed) { $runArgs += '--mixed' }
+if ($StqExact) { $runArgs += '--ff-stq-exact' }
+if ($FfRovMask) { $runArgs += @('--ff-rov-mask', $FfRovMask) }
+if ($LockstepExact) { $runArgs += '--lockstep-exact' }
+if ($SplitFf) { $runArgs += '--split-ff' }
 if ($StraddleRov) { $runArgs += '--straddle-rov' }
 if ($SelfCheck) { $runArgs += '--selfcheck' }
 if ($Lockstep) { $runArgs += '--lockstep' }
