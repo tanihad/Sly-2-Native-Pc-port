@@ -23,5 +23,5 @@ if (-not (Test-Path $exe) -or (Get-Item $src).LastWriteTime -gt (Get-Item $exe).
     if ($LASTEXITCODE -ne 0) { Write-Host 'hlslc build failed'; exit 1 }
 }
 if (-not $Shaders) { $Shaders = Join-Path $Root 'runtime\gpu\shaders' }
-& $exe (Join-Path $Shaders 'perms.txt') (Join-Path $Gen 'gpu_shaders.h')
+& $exe (Join-Path $Shaders 'perms.txt') (Join-Path $Gen 'gpu_shaders.h') (Join-Path $Root 'build\hlslc_cache')   # (compiled shaders kept per source content)
 exit $LASTEXITCODE

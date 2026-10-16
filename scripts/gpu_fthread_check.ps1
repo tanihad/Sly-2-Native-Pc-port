@@ -21,6 +21,15 @@ $recs = Get-Content (Join-Path $root 'tests\gpu\corpus.txt') | Where-Object { $_
     ForEach-Object { ($_ -split '\|')[0].Trim() }
 $failed = 0
 $n = 0
+# gs_replay is built once (a short software replay), then run directly (a uniquely named copy)
+$bin = Join-Path $out 'bin'
+$exe = Join-Path $bin 'gs_replay.exe'
+Remove-Item $exe -ErrorAction SilentlyContinue
+& powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'gs_replay.ps1') -Rec (Join-Path $CorpusRoot $recs[0]) `
+    -Out $bin -Bench -Backend sw -Log (Join-Path $out 'build.log') | Out-Null
+if (-not (Test-Path $exe)) { Write-Host 'gs_replay build failed'; exit 1 }
+$run = Join-Path $bin ("gs_replay_{0}.exe" -f $PID)
+Copy-Item $exe $run -Force
 foreach ($rel in $recs) {
     $name = ($rel -replace '\\build\\gsrec\\', '_' -replace '\\build\\', '_' -replace '\.gsrec$', '')
     if ($Only.Count -and -not ($Only | Where-Object { $name -eq $_ })) { continue }
@@ -29,19 +38,19 @@ foreach ($rel in $recs) {
     $h = @{}
     foreach ($t in 'same', 'thread') {
         $log = Join-Path $out "$name.$t.log"
-        $a = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'gs_replay.ps1'), '-Rec', $rec,
-               '-Out', (Join-Path $out 'bin'), '-Bench', '-Backend', 'hwdry', '-FrontOnly', '-StreamHash', '-Log', $log)
-        if ($t -eq 'thread') { $a += '-FrontThread' }
-        if ($Mixed) { $a += '-Mixed' }        # (M5: the mixed-frame stream: FF records, escalation)
-        & powershell @a | Out-Null
-        $h[$t] = ((Get-Content $log | Where-Object { $_ -like 'stream-hash*' }) -join '') -replace 'stream-hash ', ''
+        $a = "`"$rec`" - 0 --backend hwdry --adapter hw --front-only --stream-hash"
+        if ($t -eq 'thread') { $a += ' --front-thread' }
+        if ($Mixed) { $a += ' --mixed' }       # (M5: the mixed-frame stream: FF records, the exact split)
+        & cmd /c "`"`"$run`" $a 2>`"$log`"`""
         $h["$t.rc"] = $LASTEXITCODE
+        $h[$t] = ((Get-Content $log | Where-Object { $_ -like 'stream-hash*' }) -join '') -replace 'stream-hash ', ''
     }
     $n++
     $ok = $h['same'] -and $h['same'] -eq $h['thread'] -and $h['same.rc'] -eq 0 -and $h['thread.rc'] -eq 0
     if (-not $ok) { $failed++ }
     Write-Host ("{0,-28} {1,-4} same {2} thread {3} (exit {4}/{5})" -f $name, $(if ($ok) { 'ok' } else { 'FAIL' }), $h['same'], $h['thread'], $h['same.rc'], $h['thread.rc'])
 }
+Remove-Item $run -ErrorAction SilentlyContinue
 if ($failed) { Write-Host "gpu_fthread_check: $failed of $n FAILED"; exit 1 }
 Write-Host "gpu_fthread_check: $n recording(s) identical"
 exit 0

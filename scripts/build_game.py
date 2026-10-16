@@ -146,7 +146,8 @@ def build_shaders() -> str:
                              capture_output=True, text=True)
         if res.returncode:
             return "hlslc build failed:\n" + res.stderr
-    res = subprocess.run([str(hlslc), str(GPU_DIR / "shaders" / "perms.txt"), str(GEN_DIR / "gpu_shaders.h")],
+    res = subprocess.run([str(hlslc), str(GPU_DIR / "shaders" / "perms.txt"), str(GEN_DIR / "gpu_shaders.h"),
+                          str(ROOT / "build" / "hlslc_cache")],   # (compiled shaders kept per source content)
                          capture_output=True, text=True)
     if res.returncode:
         return "shader compilation failed:\n" + res.stdout + res.stderr
