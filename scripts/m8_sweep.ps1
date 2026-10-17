@@ -12,7 +12,7 @@
 param([Parameter(Mandatory = $true)][string]$Name, [Parameter(Mandatory = $true)][int]$Episode, [string]$Job = "",
       [switch]$Direct, [switch]$Play, [int]$Seconds = 150, [string]$Pad = "", [int]$Verify = 60, [int]$DumpEvery = 600,
       [int]$Scale = 3, [switch]$Sw, [string]$Set = "", [string]$Make = "", [int]$StatsSkip = 5, [switch]$Window,
-      [string]$Extra = "", [switch]$Live)
+      [string]$Extra = "", [switch]$Live, [int]$StatsFrom = 0)
 $root = Split-Path $PSScriptRoot -Parent
 $runName = "m8_$Name"
 $dir = Join-Path $root "build\warp\$runName"
@@ -58,7 +58,7 @@ foreach ($l in $lines) {
         downloads = [double]$g[24].Value; loads = [double]$g[25].Value }
 }
 $rows | Export-Csv (Join-Path $dir 'stats.csv') -NoTypeInformation
-$use = @($rows | Select-Object -Skip $StatsSkip)
+$use = @($rows | Select-Object -Skip $StatsSkip | Where-Object { $_.vblank -ge $StatsFrom -and $_.frames -gt 0 })
 $verifyBad = @($lines | Select-String 'GPU memory differs beyond').Count
 $verifyLast = ($lines | Select-String 'verify v\d+: \d+ comparisons' | Select-Object -Last 1).Line
 $punts = @($lines | Select-String 'PUNT on the frontend thread').Count

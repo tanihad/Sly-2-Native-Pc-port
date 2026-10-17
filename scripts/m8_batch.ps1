@@ -4,7 +4,8 @@
 # -Part/-Parts: every Parts-th scene starting at Part (two batches in parallel = two game instances).
 # One line per scene (the summary's verify / PUNT / stats lines) in build\warp\m8_batch_<part>.txt.
 param([string[]]$Only = @(), [int]$Part = 0, [int]$Parts = 1, [int]$Verify = 60, [int]$Scale = 3, [switch]$Sw,
-      [string]$Suffix = "", [int]$DumpFrom = 3000, [int]$DumpEvery = 600, [string]$Extra = "")
+      [string]$Suffix = "", [int]$DumpFrom = 3000, [int]$DumpEvery = 600, [string]$Extra = "", [int]$StatsFrom = 0,
+      [int]$Seconds = 0)
 $Only = @($Only | ForEach-Object { $_ -split ',' } | Where-Object { $_ })
 $root = Split-Path $PSScriptRoot -Parent
 $GP = '+2600:lup:90,+90:rright:60,+60:lup:60,+60:cross:6,+30:square:6,+30:lleft:60,+200:lup:120,+120:rleft:80,+100:cross:6,+300:lup:200,+200:circle:6,+300:lup:150,+150:square:6'
@@ -18,7 +19,8 @@ foreach ($line in $scenes) {
     if ($Only.Count) { if (-not ($Only -contains $name)) { continue } }
     else { $i++; if ($i % $Parts -ne $Part) { continue } }
     $a = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'm8_sweep.ps1'), '-Name', "$name$Suffix",
-           '-Episode', $f[1], '-Seconds', $f[4], '-Verify', "$Verify", '-Scale', "$Scale", '-DumpEvery', "$DumpEvery")
+           '-Episode', $f[1], '-Seconds', $(if ($Seconds -gt 0) { "$Seconds" } else { $f[4] }), '-Verify', "$Verify", '-Scale', "$Scale",
+           '-DumpEvery', "$DumpEvery", '-StatsFrom', "$StatsFrom")
     if ($f[2]) { $a += @('-Job', $f[2]) }
     $envx = @()
     foreach ($fl in ($f[3] -split ' ' | Where-Object { $_ })) {
