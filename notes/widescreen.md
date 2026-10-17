@@ -179,3 +179,11 @@ verification notes for whether they need the HUD transform (they are not in prio
   the movie player as direct writes; both go through gs_write_reg like any register.
 - Pillarbox: use the ASPECT_4_3 state at the VBlank (gs_picture_content43 in the sw path).
 - 4:3 setting: the stream has no 0x7F writes at all.
+
+**As built (M10, notes/d3d11-renderer.md appendix K)**: the transform is `gs_hud_prim` (gs_draw.c), one function for
+both renderers - the decoder hands the GPU frontend the game's vertices plus the hint state (gs_env_view.hud /
+hud_scale, kept in the StateRec) and the frontend transforms them before any setup, so positions and every exact
+record use the same 12.4 coordinates as the software rasterizer (sample 0 identical); SIDE_FILL is the decoder's two
+flat sprites, kicked with the HUD hint off. The displayed buffers are anamorphic at internal scale >= 2 (round(N * W)
+sample columns per pixel, W = A / (4/3), per picture from the game's aspect, so F7 rescales them at the next frame);
+4:3 content is pillarboxed by the presenter from the ASPECT_4_3 state of each VBlank, as the sw presenter does.

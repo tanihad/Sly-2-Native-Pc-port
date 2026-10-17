@@ -53,6 +53,7 @@ enum { B_SW, B_HW, B_BOTH, B_HWDRY, B_HWSUB };
 #define VERIFY_MODE(b) ((b) == B_HW || (b) == B_BOTH)            /* hw pictures compared with sw */
 static const char* outdir;
 static int backend = B_SW;
+static int game_aw = 4, game_ah = 3;     /* (M10) --aspect W:H: the display aspect (anamorphic display targets at scale) */
 static uint64_t sw_hash = 1469598103934665603ull;
 static uint32_t pictures;
 static double other_ms_per_vblank;
@@ -1070,7 +1071,13 @@ static uint64_t game_ref_diff_px;
 /* (M7) --game at scale or with picture options: the picture (so x so per output pixel) is box-downsampled and
  * compared with the reference compose (PSNR, mean signed error per channel: 10.2's scaled gates) */
 static int game_scale = 1, game_exact = 1;
+static int game_sox = 1;                 /* (M10) picture columns per output pixel: the display family's kx (--aspect) */
 static uint32_t game_gfx;
+/* (M10) the aspect a picture is shown at (gpu_hw_config.aspect): 4:3 content pillarboxed, else --aspect */
+static void game_aspect(int content43, int* aw, int* ah) {
+    *aw = content43 ? 4 : game_aw;
+    *ah = content43 ? 3 : game_ah;
+}
 static double game_min_psnr = 999.0, game_max_mse, game_min_psnr_c = 999.0, game_min_psnr_s = 999.0;
 static uint32_t game_beyond32;
 static uint32_t *game_box, *game_box2;
@@ -1192,7 +1199,7 @@ static void game_vblank(uint32_t vblank) {
     if (!game_exact && game_w) {
         if (!game_box && !(game_box = malloc(1024 * 1024 * 4))) exit(1);
         rstep = (rs.priv[2] & 3) == 3 ? 2 : 1;
-        gw = game_w / game_scale;
+        gw = game_w / game_sox;          /* (M10: anamorphic pictures have sox columns per output pixel) */
         gh = game_h / (game_scale * rstep);
         /* field-coded pictures (the game draws odd fields half a line lower: movies, the intro): the reference
          * weaves the fields (gs.c deinterlace), so it is compared on the field's own lines - the progressive
@@ -1215,8 +1222,8 @@ static void game_vblank(uint32_t vblank) {
          * native pixel's own samples [x, x + 1) (the single-rate classes - sprites, line pixels - fill them with
          * the native value); a picture is mostly one or the other, the gate takes the better match (below) */
         if (!game_box2 && !(game_box2 = malloc(1024 * 1024 * 4))) exit(1);
-        box_centred(game_px, game_w, game_h, game_w, game_scale, game_scale * rstep, shx, shy, gw, gh, game_box, 1024);
-        box_centred(game_px, game_w, game_h, game_w, game_scale, game_scale * rstep, 0.0,
+        box_centred(game_px, game_w, game_h, game_w, game_sox, game_scale * rstep, shx, shy, gw, gh, game_box, 1024);
+        box_centred(game_px, game_w, game_h, game_w, game_sox, game_scale * rstep, 0.0,
                     coded && !(game_gfx & GPU_GFX_FIELDS) ? -(double)(game_scale * par) : 0.0, gw, gh, game_box2, 1024);
         gp = game_box; gstride = 1024;
     }
@@ -1650,6 +1657,9 @@ int main(int argc, char** argv) {
         }
 #endif
         else if (!strcmp(argv[i], "--scale") && i + 1 < argc) scale = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--aspect") && i + 1 < argc) {   /* (M10) display aspect W:H: anamorphic display targets */
+            if (sscanf(argv[++i], "%d:%d", &game_aw, &game_ah) != 2 || game_aw <= 0 || game_ah <= 0) { game_aw = 4; game_ah = 3; }
+        }
         else if (!strcmp(argv[i], "--progressive")) ky2_opt = 1;    /* (M7) display targets 2N rows per native row */
         else if (!strcmp(argv[i], "--interlaced")) ky2_opt = 0;     /* (M7) display targets N rows (field resolution) */
 #ifdef GS_REPLAY_GPU
@@ -1701,8 +1711,9 @@ int main(int argc, char** argv) {
         int prog = ky2_opt >= 0 ? ky2_opt : game_scale > 1;
         int fields = fields_opt >= 0 ? fields_opt : !prog;
         game_gfx = gfx_set | (prog ? GPU_GFX_PROGRESSIVE : 0) | (fields ? GPU_GFX_FIELDS : 0);
-        game_exact = game_scale == 1 && !prog && fields;
-        if (!(game_px = malloc((size_t)1024 * 1024 * 4 * (size_t)(game_scale * game_scale)))) return 1;
+        game_sox = gpu_display_kx(game_scale, game_aw, game_ah);   /* (M10: anamorphic pictures, sox x N per output pixel) */
+        game_exact = game_scale == 1 && game_sox == 1 && !prog && fields;
+        if (!(game_px = malloc((size_t)1024 * 1024 * 4 * (size_t)(game_scale * game_sox)))) return 1;
     } else if (backend != B_SW && backend != B_HWDRY) {
         gpu_config cfg;
         memset(&cfg, 0, sizeof cfg);
@@ -1771,6 +1782,7 @@ int main(int argc, char** argv) {
         hc.dump = game_dump;
         hc.scale = game_scale;           /* (M7) */
         hc.gfx = game_gfx;
+        hc.aspect = game_aspect;         /* (M10: --aspect; anamorphic display targets at scale) */
         if (!gpu_hw_start(&hc)) { fprintf(stderr, "GPU renderer unavailable\n"); return 1; }
     } else
     if (FRONT_MODE(backend) || ref_mode) {       /* the frontend consumes the stream next to (or instead of) sw */
@@ -1791,6 +1803,7 @@ int main(int argc, char** argv) {
         fc.thread = front_thread && !fc.sw;    /* (the frontend thread needs the software rasterizer off) */
         if (front_thread && fc.sw) fprintf(stderr, "--front-thread ignored: the software rasterizer is on\n");
         fc.scale = scale > 0 ? scale : 1;
+        fc.display_kx = gpu_display_kx(fc.scale, game_aw, game_ah);   /* (M10: --aspect) */
         fc.thin = (gfx_set & GPU_GFX_THIN) != 0;   /* (M7: --thin) */
         gpu_front_start(&fc);
         if (backend == B_HWSUB || ref_mode) gpu_front_set_sink(gpu_submit_sink, NULL);   /* frames -> render thread */
@@ -1988,6 +2001,20 @@ int main(int argc, char** argv) {
 #ifdef GS_REPLAY_GPU
     sample_report();
     if (smp_compare && (smp_beyond || smp_missing)) rc = 3;
+    if (game_mode || FRONT_MODE(backend) || ref_mode) {   /* (M10) the GPU frontend's HUD transform */
+        gpu_front_drain();
+        gpu_hud_stats hs;
+        gpu_front_hud_stats(&hs);
+        if (hs.prims[0] + hs.prims[1] + hs.prims[2] + hs.full) {
+            double s = hs.scale_max, w = hs.frame_w, lo = w * (1.0 - s) / 2.0, hi = w * (1.0 + s) / 2.0;
+            fprintf(stderr, "hud: transformed L %llu, C %llu, R %llu primitives, %llu full-width drawn as given; scale %.4f..%.4f, "
+                            "FRAME width %u: L x %d..%d, C x %d..%d (centre 4:3 band %.1f..%.1f%s), R x %d..%d\n",
+                    (unsigned long long)hs.prims[0], (unsigned long long)hs.prims[1], (unsigned long long)hs.prims[2],
+                    (unsigned long long)hs.full, hs.scale_min, hs.scale_max, hs.frame_w, hs.x0[0], hs.x1[0], hs.x0[1], hs.x1[1], lo, hi,
+                    hs.prims[1] && (hs.x0[1] < lo - 1.0 || hs.x1[1] > hi + 1.0) ? ": beyond it = 2D placed off the 4:3 screen" : ": inside",
+                    hs.x0[2], hs.x1[2]);
+        }
+    }
     if (game_mode) {
         stage = 3;
         progress++;

@@ -250,11 +250,15 @@ typedef struct {
     uint32_t version;                    /* gs_prim_version of *P (a frontend on another thread gets copies) */
     uint32_t phase;                      /* label of the last PHASE hint (gs_hint.h; 0: none), diagnostics */
     /* (M6) the HUD hint state of the primitive (gs_hint.h): GS_ENV_HUD_ON | anchor << 1, and the X scale
-     * (float bits). The decoder still applies the transform to the vertices (gs_draw.c draw()); the GPU
-     * frontend records it per StateRec so the vertex shader can take it over at scale (M10). */
+     * (float bits). (M10) The vertices handed to a frontend are the game's: the frontend applies the
+     * transform itself (gs_hud_prim); the decoder transforms only the software rasterizer's copies. */
     uint32_t hud, hud_scale;
 } gs_env_view;
 #define GS_ENV_HUD_ON 1u
+/* (M10) the HUD transform of a primitive of n vertices under hint state hud / hud_scale (gs_env_view) with
+ * the context's XYOFFSET and FRAME (gs_draw.c, shared by both renderers): 1 with the transformed vertices in
+ * t[0..n-1], 0 when it does not apply (no HUD hint, or the primitive spans the whole FRAME width) */
+int gs_hud_prim(const gs_vtx* const* in, int n, uint64_t xyoffset, uint64_t frame, uint32_t hud, uint32_t hud_scale, gs_vtx* t);
 
 typedef struct {
     /* a primitive kicked (type: PRIM type 0-6; a/b/c as many vertices as the type uses) */

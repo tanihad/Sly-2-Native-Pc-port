@@ -1396,6 +1396,16 @@ static int prof_emit;
 #define PROF_MARK(i) do { } while (0)
 #define PROF_START() do { } while (0)
 #endif
+/* (M10) HUD transform statistics (gpu_front_hud_stats) */
+static gpu_hud_stats hud_st;
+static void hud_stats_reset(void) {
+    memset(&hud_st, 0, sizeof hud_st);
+    for (int i = 0; i < 3; i++) { hud_st.x0[i] = 1 << 30; hud_st.x1[i] = -(1 << 30); }
+    hud_st.scale_min = 1e9f;
+    hud_st.scale_max = -1e9f;
+}
+void gpu_front_hud_stats(gpu_hud_stats* out) { *out = hud_st; }
+
 static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_vtx* b, const gs_vtx* c) {
     /* time every 16th primitive (rdtsc costs about as much as a cheap primitive) */
     int timed = (gf.kicks & 15) == 0;
@@ -1403,6 +1413,34 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
     PROF_START();
     PCOUNT(n_prims);
     const gs_prim* P = ev->P;
+    /* (M10, 8.3) the HUD transform: between HUD_BEGIN and HUD_END (the StateRec's hint state, ev->hud) the game's
+     * vertices are scaled about the anchor (left edge, centre, right edge of the FRAME width), full-width
+     * primitives exempt - gs_hud_prim, the software renderer's rule. Positions and every record (Z rows, sprite
+     * rects, edges, line pixels) are computed from the transformed vertices, so sample 0 stays exact. */
+    gs_vtx hv[3];
+    if (ev->hud & GS_ENV_HUD_ON) {
+        int n = type == PRIM_POINT ? 1 : type == PRIM_TRI || type == PRIM_TRISTRIP || type == PRIM_TRIFAN ? 3 : 2;
+        const gs_vtx* in[3] = { a, b, c };
+        if (gs_hud_prim(in, n, ev->reg[R_XYOFFSET_1 + ev->ctx], ev->reg[R_FRAME_1 + ev->ctx], ev->hud, ev->hud_scale, hv)) {
+            a = &hv[0];
+            b = n > 1 ? &hv[1] : NULL;
+            c = n > 2 ? &hv[2] : NULL;
+            int an = (int)(ev->hud >> 1) & 3;
+            if (an < 3) {                /* (statistics: gpu_front_hud_stats) */
+                hud_st.prims[an]++;
+                for (int i = 0; i < n; i++) {
+                    int32_t x = (hv[i].x - (int32_t)(ev->reg[R_XYOFFSET_1 + ev->ctx] & 0xFFFF)) >> 4;
+                    if (x < hud_st.x0[an]) hud_st.x0[an] = x;
+                    if (x > hud_st.x1[an]) hud_st.x1[an] = x;
+                }
+                hud_st.frame_w = (uint32_t)((ev->reg[R_FRAME_1 + ev->ctx] >> 16) & 0x3F) * 64;
+                float s;
+                memcpy(&s, &ev->hud_scale, 4);
+                if (s < hud_st.scale_min) hud_st.scale_min = s;
+                if (s > hud_st.scale_max) hud_st.scale_max = s;
+            }
+        } else hud_st.full++;
+    }
     if (cp_hook && ev->draws) {          /* lockstep: compare before this primitive */
         uint64_t fr = ev->reg[R_FRAME_1 + ev->ctx], zb = ev->reg[R_ZBUF_1 + ev->ctx];
         int changed = fr != cp_frame || zb != cp_zbuf;
@@ -1993,6 +2031,7 @@ void gpu_front_start(const gpu_front_config* cfg) {
     if (cfg) gf_cfg = *cfg;
     GS_INIT();
     nar = 0;
+    hud_stats_reset();
     own_reset();
     own_resync();                        /* GS memory as it is now goes to vram_buf (one patch of everything) */
     clut_reset();
@@ -2134,6 +2173,7 @@ void gf_vblank_impl(const uint64_t priv[16], uint32_t vblank, const gpu_display_
     p->mem_off = mem_off;
     p->mem_n = mem_n;
     p->scale = (uint16_t)(gf_cfg.scale > 0 ? gf_cfg.scale : 1);
+    p->scale_x = (uint16_t)(gf_cfg.display_kx > p->scale ? (gf_cfg.display_kx > 16 ? 16 : gf_cfg.display_kx) : p->scale);   /* (M10) */
     tsc_acc += __rdtsc() - t0;
     /* calibrate the TSC against QPC */
     LARGE_INTEGER q, f;
@@ -2166,17 +2206,22 @@ void gf_vblank_impl(const uint64_t priv[16], uint32_t vblank, const gpu_display_
     gf_frame++;
     frame_begin();
     trace_on = vblank + 1 == trace_vblank;
-    if (di && (di->flags & GPU_DI_CONFIG)) gf_configure(di->scale, (di->gfx & GPU_GFX_PROGRESSIVE) != 0, (di->gfx & GPU_GFX_THIN) != 0);
+    if (di && (di->flags & GPU_DI_CONFIG))
+        gf_configure(di->scale, (di->gfx & GPU_GFX_PROGRESSIVE) != 0, (di->gfx & GPU_GFX_THIN) != 0, di->scale_x);
 }
 
-/* (M7) settings changed at run time: from this frame on (the targets take their new factors before any draw) */
-void gf_configure(int scale, int progressive, int thin) {
+/* (M7) settings changed at run time: from this frame on (the targets take their new factors before any draw);
+ * (M10) display_kx: the display family's kx (anamorphic widescreen, the aspect switched with F7) */
+void gf_configure(int scale, int progressive, int thin, int display_kx) {
     if (scale < 1) scale = 1;
     if (scale > 8) scale = 8;
+    if (display_kx <= scale) display_kx = 0;
+    if (display_kx > 16) display_kx = 16;
     gf_cfg.thin = thin;
-    if (scale == (gf_cfg.scale > 0 ? gf_cfg.scale : 1) && progressive == gf_cfg.display_ky2) return;
+    if (scale == (gf_cfg.scale > 0 ? gf_cfg.scale : 1) && progressive == gf_cfg.display_ky2 && display_kx == gf_cfg.display_kx) return;
     gf_cfg.scale = scale;
     gf_cfg.display_ky2 = progressive;
+    gf_cfg.display_kx = display_kx;
     own_rescale_all();
 }
 

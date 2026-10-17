@@ -58,7 +58,7 @@ maximized = off
 
 | key | values | effect |
 |---|---|---|
-| display.aspect | W:H, W/H or a ratio between 1 and 4 | display aspect; 4:3 = exactly the PS2 picture (notes/widescreen.md). F7 switches wide <-> 4:3 while playing |
+| display.aspect | W:H, W/H or a ratio between 1 and 4 | display aspect; 4:3 = exactly the PS2 picture (notes/widescreen.md). F7 switches wide <-> 4:3 while playing. gpu renderer at internal_scale >= 2: the displayed buffers get round(N * W) columns of samples per PS2 pixel (W = aspect / (4/3): 4 at 3x 16:9), so the 512-wide picture stretched to the wide display keeps the horizontal resolution of 4:3 at N (anamorphic; notes/d3d11-renderer.md appendix K) |
 | display.hud | edges / centered (centred) | wide aspects only: the HUD widgets at the sides of the 4:3 screen (health meter, boss meters, counters) sit at the display's edges, or the whole HUD stays in the centre 4:3 area. F8 switches it while playing |
 | graphics.renderer | software / gpu (also sw / hw / d3d11) | the GS renderer (notes/d3d11-renderer.md, milestone M6: opt-in). gpu needs a Direct3D 11.1 GPU with rasterizer-ordered views (NVIDIA Maxwell 2 and later class); without one the software renderer is used and the log says why |
 | graphics.pacing | vsync / vrr / display | gpu renderer: vsync = Present(1) on the display's refresh (default); vrr = Present(0) with tearing allowed (G-Sync/FreeSync: every picture shown once, as soon as it is ready); display = on a 59.94/60 Hz display (within 0.5%, measured) the display's VBlanks drive the game instead of the 59.94 Hz timer (no repeated picture every 16 s); on other displays the timer stays (logged) |
@@ -81,6 +81,8 @@ see notes/install.md), `PS2_GS_BACKEND=sw|hw` (renderer), `PS2_GS_PACING=vsync|v
 `PS2_GS_VERIFY=N`, `PS2_GS_DEBUG_KEYS=1` (F9 switch GPU <-> software, Shift+F9 simulated device loss),
 `PS2_GS_SAME_THREAD=1`, `PS2_GS_INFLIGHT=N`, `PS2_GPU_ADAPTER=warp`. Graphics (M7): `PS2_GS_SCALE=1..8` (internal
 scale), `PS2_GS_SCALER=auto|lanczos|catmull-rom|box|bilinear|point`, `PS2_GS_THIN_WIDTH=<samples>` (thin outlines).
+Widescreen (M10): `PS2_GS_ASPECT=W:H` - the aspect the GPU renderer widens its displayed buffers for (default: the
+game's display aspect, per picture; e.g. `4:3` keeps N x N samples at 16:9, the M7 behaviour).
 
 Writing: the game changes only the keys it remembers (`settings_set` -> `settings_update_text`, a
 pure function): the key's line is rewritten in place (a comment after the value is kept), a missing

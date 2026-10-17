@@ -30,7 +30,11 @@ New-Item -ItemType Directory -Force $Out | Out-Null
 # build gs_replay once (a short benchmark replay of the first recording)
 $recs = Get-Content (Join-Path $root 'tests\gpu\corpus.txt') | Where-Object { $_ -and -not $_.StartsWith('#') } |
     ForEach-Object { ($_ -split '\|')[0].Trim() }
-if ($Exe) {                              # a prebuilt gs_replay (a series of runs with one build)
+# (M10) widescreen recordings: "aspect=W:H" in their corpus line (anamorphic display targets at -Scale > 1)
+$aspects = @{}
+Get-Content (Join-Path $root 'tests\gpu\corpus.txt') | Where-Object { $_ -and -not $_.StartsWith('#') -and $_ -match 'aspect=(\d+:\d+)' } |
+    ForEach-Object { $aspects[($_ -split '\|')[0].Trim()] = $Matches[1] }
+if ($Exe) {                             # a prebuilt gs_replay (a series of runs with one build)
     New-Item -ItemType Directory -Force $Out | Out-Null
     Copy-Item $Exe (Join-Path $Out 'gs_replay.exe') -Force
     $exe = Join-Path $Out 'gs_replay.exe'
@@ -62,7 +66,8 @@ foreach ($rel in $recs) {
     $run = Join-Path $o ("gs_replay_{0}.exe" -f $PID)      # (a uniquely named copy)
     Copy-Item $exe $run -Force
     $t0 = Get-Date
-    & $run $rec $o 0 --backend both --adapter $Adapter @mode --lockstep --no-resync --scale $Scale 2> (Join-Path $o 'log.txt') | Out-Null
+    $asp = if ($aspects.ContainsKey($rel)) { @('--aspect', $aspects[$rel]) } else { @() }
+    & $run $rec $o 0 --backend both --adapter $Adapter @mode --lockstep --no-resync --scale $Scale @asp 2> (Join-Path $o 'log.txt') | Out-Null
     $rc = $LASTEXITCODE
     Remove-Item $run -ErrorAction SilentlyContinue
     $secs = [int]((Get-Date) - $t0).TotalSeconds
