@@ -8,7 +8,7 @@
 #   powershell -ExecutionPolicy Bypass -File scripts\gpu_game_all.ps1 [-Only ep8_boss,gpu-C_thiefnet]
 #       [-Verify N] [-Adapter hw|warp] [-Out build\game] [-CorpusRoot <dir>] [-Exe <gs_replay.exe>]
 param([string[]]$Only = @(), [int]$Verify = 0, [ValidateSet('hw', 'warp')][string]$Adapter = 'hw', [string]$Out = "",
-      [string]$CorpusRoot = "", [string]$Exe = "")
+      [string]$CorpusRoot = "", [string]$Exe = "", [int]$Scale = 1, [string[]]$Extra = @())
 $Only = @($Only | ForEach-Object { $_ -split ',' } | Where-Object { $_ })
 $root = Split-Path $PSScriptRoot -Parent
 $main = $root
@@ -35,6 +35,9 @@ else {
 }
 $mode = @('--game')
 if ($Verify -gt 0) { $mode = @('--game-verify', "$Verify") }
+if ($Scale -gt 1) { $mode += @('--scale', "$Scale") }                     # (M7: pictures at scale, box-downsample gate)
+$Extra = @($Extra | ForEach-Object { $_ -split ',' } | Where-Object { $_ })
+if ($Extra.Count) { $mode += $Extra }
 $failed = 0
 $pics = 0
 foreach ($rel in $recs) {
@@ -60,8 +63,10 @@ foreach ($rel in $recs) {
     $ok = $rc -eq 0 -and $m.Success -and $m.Groups[3].Value -eq '0' -and $v -eq 0
     if ($Verify -gt 0) { $ok = $ok -and "$s" -match ', 0 beyond the picture gate' }
     if (-not $ok) { $failed++ }
-    $extra = if ($Verify -gt 0) { " | $s | verify beyond: $v" } else { '' }
-    Write-Host ("{0,-24} {1,-6} {2,4} s  {3}{4}" -f $name, $(if ($ok) { 'ok' } else { 'FAILED' }), $secs, $g, $extra)
+    $tail = if ($Verify -gt 0) { " | $s | verify beyond: $v" } else { '' }
+    $q = (Select-String -Path $log -Pattern '^game: scale' | Select-Object -First 1).Line
+    if ($q) { $tail += " | " + ($q -replace '^game: ', '') }
+    Write-Host ("{0,-24} {1,-6} {2,4} s  {3}{4}" -f $name, $(if ($ok) { 'ok' } else { 'FAILED' }), $secs, $g, $tail)
 }
 Write-Host "gpu_game_all: $pics pictures; $failed recording(s) failed"
 if ($failed) { exit 1 }

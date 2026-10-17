@@ -30,7 +30,11 @@ static int inflight_game(void) {
 }
 
 static gpu_hw_config C;
-static int render_on;                    /* the render thread runs (hw, or sw pictures after a switch) */
+/* (M7) graphics settings: the requested ones (any thread) and those the frontend runs with (GS thread) */
+static volatile LONG want_scale = 1, want_gfx;
+static int run_scale = 1;
+static uint32_t run_gfx;
+static int render_on;                   /* the render thread runs (hw, or sw pictures after a switch) */
 static volatile LONG active;             /* the GPU draws */
 static volatile LONG switch_req;
 static int losses;
@@ -63,9 +67,12 @@ static void on_picture_done(uint32_t vblank, void* user) {
 
 /* ---- frame dumps: read-backs completed on a thread of their own ------------------------------------ */
 #define NDUMP 4
-static struct { gpu_readback rb; uint32_t* px; uint32_t vblank; int content43; volatile LONG busy; } dumps[NDUMP];
+static struct { gpu_readback rb; uint32_t* px; int cap; uint32_t vblank; int content43; volatile LONG busy; } dumps[NDUMP];
 static volatile LONG dump_head, dump_tail;   /* queued: [head, tail) */
 static HANDLE dump_thread, dump_event;
+
+static float dump_shift[2];              /* (M7) of the picture being dumped (gpu_hw_dump_shift, dump thread) */
+void gpu_hw_dump_shift(float* sx, float* sy) { *sx = dump_shift[0]; *sy = dump_shift[1]; }
 
 static DWORD WINAPI dump_main(LPVOID arg) {
     (void)arg;
@@ -74,6 +81,8 @@ static DWORD WINAPI dump_main(LPVOID arg) {
         while (dump_head != dump_tail) {
             int i = (int)(dump_head % NDUMP);
             gpu_wait_readback(&dumps[i].rb);
+            dump_shift[0] = dumps[i].rb.shift[0];
+            dump_shift[1] = dumps[i].rb.shift[1];
             int ok = dumps[i].rb.status == 0 && dumps[i].rb.w > 0;   /* (no picture: display off, or lost) */
             if (C.dump) C.dump(ok ? dumps[i].px : NULL, ok ? dumps[i].rb.w : 0, ok ? dumps[i].rb.h : 0, dumps[i].vblank, dumps[i].content43);
             InterlockedExchange(&dumps[i].busy, 0);
@@ -86,8 +95,6 @@ static DWORD WINAPI dump_main(LPVOID arg) {
 static gpu_readback* dump_slot(uint32_t vblank, int content43) {
     if (!C.dump || !C.dump_wanted || !C.dump_wanted(vblank)) return NULL;
     if (!dump_thread) {
-        for (int i = 0; i < NDUMP; i++)
-            if (!(dumps[i].px = malloc(1024 * 1024 * 4))) return NULL;
         dump_event = CreateEventW(NULL, FALSE, FALSE, NULL);
         dump_thread = CreateThread(NULL, 0, dump_main, NULL, 0, NULL);
         if (!dump_thread) return NULL;
@@ -99,12 +106,21 @@ static gpu_readback* dump_slot(uint32_t vblank, int content43) {
         if (!logged++) hlog("frame dump of VBlank %u skipped: the dump thread is behind", vblank);
         return NULL;
     }
+    /* (M7: the picture is up to 1024 x 1024 output pixels times the scale squared) */
+    int s = (int)want_scale > run_scale ? (int)want_scale : run_scale;
+    int need = 1024 * 1024 * s * s;
+    if (dumps[i].cap < need) {
+        free(dumps[i].px);
+        dumps[i].px = malloc((size_t)need * 4);
+        dumps[i].cap = dumps[i].px ? need : 0;
+        if (!dumps[i].px) return NULL;
+    }
     dumps[i].busy = 1;
     dumps[i].vblank = vblank;
     dumps[i].content43 = content43;
     memset(&dumps[i].rb, 0, sizeof dumps[i].rb);
     dumps[i].rb.dst = dumps[i].px;
-    dumps[i].rb.cap_pixels = 1024 * 1024;
+    dumps[i].rb.cap_pixels = dumps[i].cap;
     return &dumps[i].rb;
 }
 
@@ -116,8 +132,8 @@ static void dump_queued(void) {
 /* ---- PS2_GS_HW_STATS ----------------------------------------------------------------------------- */
 #define SW 256                           /* samples per report */
 static struct {
-    double front[SW], rcpu[SW], rwall[SW], gpu[SW], pres[SW];
-    int nfront, nr, ngpu;
+    double front[SW], rcpu[SW], rwall[SW], gpu[SW], pres[SW], lat[SW];
+    int nfront, nr, ngpu, nlat;
     uint64_t draws, ff, rov, rov_runs, punts, downloads, loads, display_mem, kicks;
     uint32_t frames, targets, dropped, presented, game_frames;
     uint64_t gs_busy0;                   /* perf_state.gs_busy at the start of the report period (TSC ticks) */
@@ -176,6 +192,7 @@ static void stats_vblank(uint32_t vblank) {
                      fs[i].gpu_ms, fs[i].draws, fs[i].dispatches, fs[i].copies, fs[i].state_calls);
             S.dropped += fs[i].dropped;
             S.presented += fs[i].presented;
+            if (fs[i].latency_ms >= 0 && S.nlat < SW) S.lat[S.nlat++] = fs[i].latency_ms;
             if (fs[i].draws < 200) continue;     /* (per game frame: the VBlanks in between draw nothing) */
             if (S.nr < SW) { S.rcpu[S.nr] = fs[i].render_cpu_ms; S.rwall[S.nr] = fs[i].render_ms; S.pres[S.nr] = fs[i].present_ms; S.nr++; }
             if (fs[i].gpu_ms >= 0 && S.ngpu < SW) S.gpu[S.ngpu++] = fs[i].gpu_ms;
@@ -194,14 +211,15 @@ static void stats_vblank(uint32_t vblank) {
         double gs = S.game_frames ? (double)(busy - S.gs_busy0) / tsc_ms() / S.game_frames : 0;
         double frm = vmax(S.front, S.nfront), rcm = vmax(S.rcpu, S.nr), rwm = vmax(S.rwall, S.nr), gpm = vmax(S.gpu, S.ngpu);
         hlog("stats v%u: %.1f flips/s (%.1f pictures/s, %u dropped) | per game frame (%u, median / max ms): GS thread %.2f (mean) | frontend %s %.2f / %.2f | "
-             "render CPU %.2f / %.2f, wall %.2f / %.2f, present %.2f | GPU %.2f / %.2f | per VBlank: %.0f prims, %.0f draws (FF %.0f, ROV %.0f in %.1f runs), "
-             "PUNT %llu, downloads %.1f, loads %.1f, display from memory %.2f, targets %u",
+             "render CPU %.2f / %.2f, wall %.2f / %.2f, present %.2f | GPU %.2f / %.2f | latency %.2f / %.2f | per VBlank: %.0f prims, "
+             "%.0f draws (FF %.0f, ROV %.0f in %.1f runs), PUNT %llu, downloads %.1f, loads %.1f, display from memory %.2f, targets %u",
              vblank, flips, pics, S.dropped, S.game_frames, gs, front_threaded ? "thread" : "(GS thread)", med(S.front, S.nfront), frm,
-             med(S.rcpu, S.nr), rcm, med(S.rwall, S.nr), rwm, med(S.pres, S.nr), med(S.gpu, S.ngpu), gpm, (double)S.kicks * k,
+             med(S.rcpu, S.nr), rcm, med(S.rwall, S.nr), rwm, med(S.pres, S.nr), med(S.gpu, S.ngpu), gpm, med(S.lat, S.nlat),
+             vmax(S.lat, S.nlat), (double)S.kicks * k,
              (double)S.draws * k, (double)S.ff * k, (double)S.rov * k, (double)S.rov_runs * k, (unsigned long long)S.punts,
              (double)S.downloads * k, (double)S.loads * k, (double)S.display_mem * k, S.targets);
     }
-    S.nfront = S.nr = S.ngpu = 0;
+    S.nfront = S.nr = S.ngpu = S.nlat = 0;
     S.draws = S.ff = S.rov = S.rov_runs = S.punts = S.downloads = S.loads = S.display_mem = S.kicks = 0;
     S.frames = S.dropped = S.presented = S.game_frames = 0;
     S.t0 = t;
@@ -231,12 +249,24 @@ static int render_start(void) {
 
 static int punt_reader(uint8_t* out, void* user) { (void)user; return gpu_exec_read_memory(NULL, NULL, 0, out); }
 
+#define GFX_FRONT (GPU_GFX_PROGRESSIVE | GPU_GFX_THIN)   /* the bits the frontend's configuration depends on */
+
+void gpu_hw_set_graphics(int scale, uint32_t gfx) {
+    if (scale < 1) scale = 1;
+    if (scale > 8) scale = 8;
+    InterlockedExchange(&want_gfx, (LONG)gfx);
+    InterlockedExchange(&want_scale, scale);
+}
+
 static void front_start(void) {
     gpu_front_config fc;
     memset(&fc, 0, sizeof fc);
     fc.mixed = 1;                        /* FF + ROV frames, the M5 default mode */
-    fc.scale = 1;                        /* (M7: scaling) */
-    fc.display_ky2 = 0;
+    run_scale = (int)want_scale;
+    run_gfx = (uint32_t)want_gfx;
+    fc.scale = run_scale;                /* (M7) */
+    fc.display_ky2 = (run_gfx & GPU_GFX_PROGRESSIVE) != 0;
+    fc.thin = (run_gfx & GPU_GFX_THIN) != 0;
     fc.sw = C.verify > 0;                /* verify: the software renderer draws too (same thread) */
     fc.thread = !fc.sw && !C.same_thread;
     gpu_exec_reset();                    /* (a restart: the render thread forgets the old targets) */
@@ -311,6 +341,7 @@ static DWORD WINAPI clock_main(LPVOID arg) {
 int gpu_hw_start(const gpu_hw_config* cfg) {
     C = *cfg;
     if (C.verify) C.same_thread = 1;
+    gpu_hw_set_graphics(C.scale > 0 ? C.scale : 1, C.gfx);
     const char* e = getenv("PS2_GPU_LOSE_AT");
     for (const char* s = e; s && *s && nlose_at < 16; s = strchr(s, ',') ? strchr(s, ',') + 1 : "")
         lose_at[nlose_at++] = (uint32_t)strtoul(s, NULL, 10);
@@ -416,6 +447,18 @@ void gpu_hw_vblank(const gs_display_snap* snap, uint32_t vblank, int content43) 
     di.aspect_w = (uint16_t)aw;
     di.aspect_h = (uint16_t)ah;
     di.flags = GPU_DI_SHOW | GPU_DI_SIGNAL;
+    /* (M7) graphics settings: picture options now, the frontend's configuration from the next frame */
+    int ws = (int)want_scale;
+    uint32_t wg = (uint32_t)want_gfx;
+    di.scale = (uint8_t)ws;
+    di.gfx = wg;
+    if (ws != run_scale || ((wg ^ run_gfx) & GFX_FRONT)) {
+        di.flags |= GPU_DI_CONFIG;
+        hlog("graphics: internal scale %d, %s display targets, outlines %s (from VBlank %u)", ws,
+             (wg & GPU_GFX_PROGRESSIVE) ? "progressive" : "field-resolution", (wg & GPU_GFX_THIN) ? "thin" : "ps2", vblank + 1);
+    }
+    run_scale = ws;
+    run_gfx = wg;
     gpu_readback* rb = dump_slot(vblank, content43);
     di.rb = rb;
     gpu_front_vblank_display(&di);

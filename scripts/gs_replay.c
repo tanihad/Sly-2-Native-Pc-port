@@ -74,6 +74,23 @@ static void hash_picture(const uint32_t* frame, int ok, int w, int h, int stride
 
 static void save_png(const char* suffix, const uint32_t* frame, int w, int h, int stride, uint32_t vblank) {
     if (!strcmp(outdir, "-")) return;     /* "-": no pictures (benchmark) */
+    static int cap = -2, saved;           /* GS_REPLAY_MAX_PNG=<n>: at most n pictures per run (corpus sweeps, disk space) */
+    if (cap == -2) cap = getenv("GS_REPLAY_MAX_PNG") ? atoi(getenv("GS_REPLAY_MAX_PNG")) : -1;
+    if (cap >= 0 && saved >= cap) return;
+    /* GS_REPLAY_SAVE_VBLANKS=a,b,...: only pictures of these VBlanks (contact sheets) */
+    const char* only = getenv("GS_REPLAY_SAVE_VBLANKS");
+    if (only && *only) {
+        int hit = 0;
+        for (const char* p = only; *p;) {
+            char* e;
+            unsigned long v = strtoul(p, &e, 10);
+            if (e == p) break;
+            if (v == vblank) hit = 1;
+            p = *e ? e + 1 : e;
+        }
+        if (!hit) return;
+    }
+    saved++;
     char path[1024];
     snprintf(path, sizeof path, "%s/frame_%06u%s.png", outdir, vblank, suffix);
     debug_write_png(path, frame, w, h, stride);
@@ -1050,10 +1067,81 @@ static int game_w, game_h;
 static volatile LONG game_got;
 static uint32_t game_pics, game_ref_diff, game_sw_beyond, game_sw_diff, game_off;
 static uint64_t game_ref_diff_px;
+/* (M7) --game at scale or with picture options: the picture (so x so per output pixel) is box-downsampled and
+ * compared with the reference compose (PSNR, mean signed error per channel: 10.2's scaled gates) */
+static int game_scale = 1, game_exact = 1;
+static uint32_t game_gfx;
+static double game_min_psnr = 999.0, game_max_mse, game_min_psnr_c = 999.0, game_min_psnr_s = 999.0;
+static uint32_t game_beyond32;
+static uint32_t *game_box, *game_box2;
+
+/* (M7) the box of each output pixel centred on its PS2 pixel: the picture's sample grid is shifted by sh
+ * texels against a picture centred on the PS2's pixels (gpu_present.c cur_shift), so output pixel (x, y) is
+ * the overlap-weighted average of picture texels [x * px - shx, (x + 1) * px - shx) x [y * py - shy, ...),
+ * edge texels repeated. px, py: picture texels per output pixel. */
+static void box_centred(const uint32_t* src, int sw, int sh, int sstride, double px, double py, double shx, double shy, int ow,
+                        int oh, uint32_t* dst, int dstride) {
+    for (int y = 0; y < oh; y++) {
+        double y0 = y * py - shy, y1 = (y + 1) * py - shy;
+        for (int x = 0; x < ow; x++) {
+            double x0 = x * px - shx, x1 = (x + 1) * px - shx, acc[3] = { 0, 0, 0 }, ws = 0;
+            for (int ty = (int)floor(y0); ty < (int)ceil(y1); ty++) {
+                double wy = fmin(ty + 1, y1) - fmax(ty, y0);
+                if (wy <= 0) continue;
+                int cy = ty < 0 ? 0 : ty >= sh ? sh - 1 : ty;
+                for (int tx = (int)floor(x0); tx < (int)ceil(x1); tx++) {
+                    double wx = fmin(tx + 1, x1) - fmax(tx, x0);
+                    if (wx <= 0) continue;
+                    int cx = tx < 0 ? 0 : tx >= sw ? sw - 1 : tx;
+                    uint32_t p = src[(size_t)cy * (size_t)sstride + (size_t)cx];
+                    double w = wx * wy;
+                    acc[0] += w * ((p >> 16) & 255); acc[1] += w * ((p >> 8) & 255); acc[2] += w * (p & 255);
+                    ws += w;
+                }
+            }
+            uint32_t o = 0;
+            for (int c = 0; c < 3; c++) o |= (uint32_t)lround(ws > 0 ? acc[c] / ws : 0) << (16 - 8 * c);
+            dst[(size_t)y * (size_t)dstride + (size_t)x] = o;
+        }
+    }
+}
+static float game_shift[2];
+
+/* PSNR over RGB and the largest |mean signed error| of a channel (b - a) */
+static void pic_stats(const uint32_t* a, int astride, const uint32_t* b, int bstride, int w, int h, double* psnr, double* mse_max) {
+    double se = 0, sum[3] = { 0, 0, 0 };
+    for (int y = 0; y < h; y++)
+        for (int x = 0; x < w; x++) {
+            uint32_t p = a[(size_t)y * (size_t)astride + (size_t)x], q = b[(size_t)y * (size_t)bstride + (size_t)x];
+            for (int c = 0; c < 3; c++) {
+                int d = (int)((q >> (16 - 8 * c)) & 255) - (int)((p >> (16 - 8 * c)) & 255);
+                se += (double)d * d;
+                sum[c] += d;
+            }
+        }
+    double n = (double)w * h;
+    double mse = se / (3.0 * n);
+    *psnr = mse > 0 ? 10.0 * log10(255.0 * 255.0 / mse) : 999.0;
+    *mse_max = 0;
+    for (int c = 0; c < 3; c++) if (fabs(sum[c] / n) > *mse_max) *mse_max = fabs(sum[c] / n);
+}
+
+/* the standard flicker-filter circuit pair shows one circuit (as gpu_present.c flicker_strip) */
+static void snap_flicker_strip(uint64_t* priv) {
+    uint64_t pmode = priv[0];
+    if ((pmode & 3) != 3 || !((pmode >> 5) & 1)) return;
+    uint64_t f1 = priv[7], f2 = priv[9], d1 = priv[8], d2 = priv[10];
+    const uint64_t fbmask = 0x1FFull | 0x3Full << 9 | 0x1Full << 15 | 0x7FFull << 32;
+    if ((f1 & fbmask) != (f2 & fbmask) || (d1 & 0xFFF) != (d2 & 0xFFF)) return;
+    int dby1 = (int)((f1 >> 43) & 0x7FF), dby2 = (int)((f2 >> 43) & 0x7FF);
+    if (dby1 - dby2 != 1 && dby2 - dby1 != 1) return;
+    priv[0] &= ~(uint64_t)(dby1 > dby2 ? 1 : 2);
+}
 
 static void game_dump(const uint32_t* px, int w, int h, uint32_t vblank, int content43) {
     (void)vblank; (void)content43;
     if (px) memcpy(game_px, px, (size_t)w * (size_t)h * 4);
+    gpu_hw_dump_shift(&game_shift[0], &game_shift[1]);   /* (M7: the picture's sample-grid shift) */
     game_w = px ? w : 0;
     game_h = px ? h : 0;
     InterlockedExchange(&game_got, 1);
@@ -1089,48 +1177,113 @@ static void game_vblank(uint32_t vblank) {
     static uint32_t ref[1024 * 1024], swf[1024 * 1024];
     int w = 0, h = 0;
     if (!gpu_hw_read_memory(hwmem)) { fprintf(stderr, "GPU memory read-back failed\n"); exit(1); }
-    int ok = gs_compose_from(&s, hwmem, hw_hist, ref, 1024, &w, &h);
+    static gs_display_snap rs;           /* (M7: the reference with the GPU's picture options) */
+    rs = s;
+    if (game_gfx & GPU_GFX_FLICKER_OFF) snap_flicker_strip(rs.priv);
+    int ok = gs_compose_from(&rs, hwmem, hw_hist, ref, 1024, &w, &h);
     if (!ok) game_off++;
     uint32_t d = 0;
-    if (ok != (game_w > 0) || (ok && (w != game_w || h != game_h))) d = 1u << 30;
-    else if (ok)
+    /* (M7) a scaled or progressive picture: box-downsampled to the output size, compared under the scaled gates */
+    const uint32_t* gp = game_px;
+    int gw = game_w, gh = game_h, gstride = game_w;
+    /* (M7) field display: the reference shows each field row on two lines; the scaled picture is compared per field
+     * row (the reference's even lines), each output pixel the box centred on its PS2 pixel (box_centred) */
+    int rstep = 1, rstart = 0;
+    if (!game_exact && game_w) {
+        if (!game_box && !(game_box = malloc(1024 * 1024 * 4))) exit(1);
+        rstep = (rs.priv[2] & 3) == 3 ? 2 : 1;
+        gw = game_w / game_scale;
+        gh = game_h / (game_scale * rstep);
+        /* field-coded pictures (the game draws odd fields half a line lower: movies, the intro): the reference
+         * weaves the fields (gs.c deinterlace), so it is compared on the field's own lines - the progressive
+         * picture has the odd field one frame line lower (compose odd-field shift), the field display at scale
+         * shows the field's own lines at their frame lines */
+        gs_display_layout dl;
+        int fc = rstep == 2 && gs_display_layout_of(rs.priv, &dl) ? gs_display_field_code(&rs, &dl) : 0xFF;
+        static uint32_t last_odd;
+        if (fc == 8) last_odd = vblank + 1;
+        int coded = fc == 8 || (fc == 0 && last_odd && vblank + 1 - last_odd <= 3);
+        int par = fc == 8;
+        double shx = game_shift[0], shy = game_shift[1];
+        if (coded && !(game_gfx & GPU_GFX_FIELDS)) { rstart = par; shy -= (double)(game_scale * par); }
+        if (coded && (game_gfx & GPU_GFX_FIELDS)) {   /* (both deinterlaced: every frame line, uncentred) */
+            rstep = 1;
+            gh = game_h / game_scale;
+            shx = shy = 0.0;
+        }
+        /* two boxes: centred on sample 0 (the triangles' samples sit at x + i / k: the presenter's grid) and the
+         * native pixel's own samples [x, x + 1) (the single-rate classes - sprites, line pixels - fill them with
+         * the native value); a picture is mostly one or the other, the gate takes the better match (below) */
+        if (!game_box2 && !(game_box2 = malloc(1024 * 1024 * 4))) exit(1);
+        box_centred(game_px, game_w, game_h, game_w, game_scale, game_scale * rstep, shx, shy, gw, gh, game_box, 1024);
+        box_centred(game_px, game_w, game_h, game_w, game_scale, game_scale * rstep, 0.0,
+                    coded && !(game_gfx & GPU_GFX_FIELDS) ? -(double)(game_scale * par) : 0.0, gw, gh, game_box2, 1024);
+        gp = game_box; gstride = 1024;
+    }
+    if (ok != (gw > 0) || (ok && (w != gw || h / rstep != gh))) d = 1u << 30;
+    else if (ok && game_exact)
         for (int y = 0; y < h; y++)
             for (int x = 0; x < w; x++) d += ((ref[(size_t)y * 1024 + x] ^ game_px[(size_t)y * w + x]) & 0xFFFFFF) != 0;
+    else if (ok) {
+        double psnr, mse;
+        int ch = gh > 0 && rstart + (gh - 1) * rstep >= h ? gh - 1 : gh;
+        pic_stats(ref + (size_t)rstart * 1024, 1024 * rstep, gp, gstride, w, ch, &psnr, &mse);
+        double psnr2, mse2;
+        pic_stats(ref + (size_t)rstart * 1024, 1024 * rstep, game_box2, 1024, w, ch, &psnr2, &mse2);
+        if (psnr < game_min_psnr_c) game_min_psnr_c = psnr;
+        if (psnr2 < game_min_psnr_s) game_min_psnr_s = psnr2;
+        if (psnr2 > psnr) { psnr = psnr2; mse = mse2; gp = game_box2; }
+        if (psnr < game_min_psnr) game_min_psnr = psnr;
+        if (mse > game_max_mse) game_max_mse = mse;
+        if (psnr < 32.0 || mse >= 0.5) {
+            d = 1;
+            if (++game_beyond32 <= 5) {
+                fprintf(stderr, "game: VBlank %u: box-downsampled picture vs the reference compose: PSNR %.2f dB, mean signed error %.3f "
+                                "(rows from %d step %d, shift %.2f %.2f)\n", vblank, psnr, mse, rstart, rstep, game_shift[0], game_shift[1]);
+                save_png("_box", gp, gw, gh, gstride, vblank);
+            }
+        }
+    }
     if (d) {
         game_ref_diff++;
         game_ref_diff_px += d;
         if (game_ref_diff <= 5) {
             fprintf(stderr, "game: VBlank %u: GPU picture %dx%d differs from the reference compose %dx%d in %u pixels\n", vblank,
                     game_w, game_h, w, h, d);
-            if (ok && game_w) { save_png("_ref", ref, w, h, 1024, vblank); save_png("_gpu", game_px, game_w, game_h, game_w, vblank); }
+            if (ok && game_w) { save_png("_ref", ref, w, h / rstep, 1024 * rstep, vblank); save_png("_gpu", game_px, game_w, game_h, game_w, vblank); }
         }
     } else if (ok && game_pics % 50 == 1) save_png("_gpu", game_px, game_w, game_h, game_w, vblank);
     if (game_verify) {                   /* the software renderer drew too: its picture */
         int sw_w = 0, sw_h = 0;
-        int sw_ok = gs_compose(&s, swf, 1024, &sw_w, &sw_h);
+        int sw_ok = gs_compose(&rs, swf, 1024, &sw_w, &sw_h);
         hash_picture(swf, sw_ok, sw_w, sw_h, 1024);
         gpu_pic_diff pd;
         memset(&pd, 0, sizeof pd);
-        if (sw_ok && game_w && sw_w == game_w && sw_h == game_h) {
-            gpu_pic_compare(swf, 1024, game_px, game_w, sw_w, sw_h, &pd);
+        if (sw_ok && gw && sw_w == gw && sw_h / rstep == gh) {
+            int sw_h0 = sw_h;
+            sw_h /= rstep;                   /* (M7: per field row, as above) */
+            if (sw_h > 0 && rstart + (sw_h - 1) * rstep >= sw_h0) sw_h--;
+            const uint32_t* swr = swf + (size_t)rstart * 1024;
+            gpu_pic_compare(swr, 1024 * rstep, gp, gstride, sw_w, sw_h, &pd);
             uint32_t big[2] = { 0, 0 };
             for (int y = 0; y < sw_h; y++)
                 for (int x = 0; x < sw_w; x++) {
-                    uint32_t p = swf[(size_t)y * 1024 + x], q = game_px[(size_t)y * game_w + x];
+                    uint32_t p = swr[(size_t)y * 1024 * rstep + x], q = gp[(size_t)y * gstride + x];
                     int m = 0;
                     for (int c = 0; c < 24; c += 8) { int dd = abs((int)((p >> c) & 255) - (int)((q >> c) & 255)); if (dd > m) m = dd; }
                     big[y & 1] += m > 16;
                 }
             uint32_t fb = big[0] < big[1] ? big[0] : big[1];
             if (pd.diff_px) game_sw_diff++;
-            if (pd.psnr < 40.0 || (double)fb * 2.0 > 0.002 * (double)sw_w * (double)sw_h) {
+            /* (M7: a scaled picture, box-downsampled, under the scaled gate: PSNR >= 32 dB) */
+            if (game_exact ? pd.psnr < 40.0 || (double)fb * 2.0 > 0.002 * (double)sw_w * (double)sw_h : pd.psnr < 32.0) {
                 game_sw_beyond++;
                 fprintf(stderr, "game: VBlank %u: picture vs sw beyond the gate: PSNR %.2f, pixels above 16 on even / odd lines %u / %u\n",
                         vblank, pd.psnr, big[0], big[1]);
-                if (game_sw_beyond <= 5) { save_png("_sw", swf, sw_w, sw_h, 1024, vblank); save_png("_hw", game_px, game_w, game_h, game_w, vblank); }
+                if (game_sw_beyond <= 5) { save_png("_sw", swf, sw_w, sw_h, 1024, vblank); save_png("_hw", gp, gw, gh, gstride, vblank); }
             }
             if (pd.psnr < min_psnr) min_psnr = pd.psnr;
-        } else if (sw_ok != (game_w > 0) || (sw_ok && (sw_w != game_w || sw_h != game_h))) {
+        } else if (sw_ok != (gw > 0) || (sw_ok && (sw_w != gw || sw_h != gh))) {
             game_sw_beyond++;
             fprintf(stderr, "game: VBlank %u: picture size %dx%d vs sw %dx%d\n", vblank, game_w, game_h, sw_w, sw_h);
         }
@@ -1146,8 +1299,115 @@ static void game_report(void) {
             (unsigned long long)xc.ff_draws, (unsigned long long)xc.rov_draws, (unsigned long long)xc.frames,
             game_sw_pics ? "; software renderer pictures after a fall-back: see below" : "");
     if (game_sw_pics) fprintf(stderr, "game: %u pictures by the software renderer (fall-back)\n", game_sw_pics);
+    if (!game_exact)
+        fprintf(stderr, "game: scale %d gfx %X: box-downsampled vs the reference compose: min PSNR %.2f dB, max |mean signed error| %.3f, "
+                        "%u beyond (PSNR < 32 dB or |mean signed error| >= 0.5); min PSNR centred box %.2f, pixel box %.2f\n", game_scale, game_gfx,
+                game_min_psnr, game_max_mse, game_beyond32, game_min_psnr_c, game_min_psnr_s);
     if (game_verify)
         fprintf(stderr, "game: vs sw: %u pictures differ, %u beyond the picture gate, min PSNR %.2f\n", game_sw_diff, game_sw_beyond, min_psnr);
+}
+#endif
+
+#ifdef GS_REPLAY_GPU
+/* ---- (M7) every sample of every target: --sample-dump DIR writes them every --sample-every N VBlanks (default
+ * 60), --sample-compare DIR compares a run in another mode with such a dump (FF vs REF at scale, 10.2: the
+ * mixed-mode budget per target and point - at most 2.5% of the colour words differ by more than 2 in a byte,
+ * 0.1% by more than 16, 0.1% of the Z words), deleting each file it compared. ---- */
+static const char* smp_dir;
+static int smp_compare, smp_every = 60;
+static uint32_t smp_points, smp_targets, smp_beyond, smp_missing;
+static uint64_t smp_cwords, smp_c2, smp_c16, smp_zwords, smp_zdiff;
+static double smp_w2, smp_w16, smp_wz;              /* worst fractions of a single comparison */
+#define SMP_CAP (16u << 20)
+
+static void sample_point(uint32_t vblank) {
+    static uint32_t *buf, *ref;
+    if (!buf) { buf = malloc((size_t)SMP_CAP * 4); ref = malloc((size_t)SMP_CAP * 4); }
+    if (!buf || !ref) { fprintf(stderr, "out of memory\n"); exit(1); }
+    gpu_submit_wait_idle();
+    smp_points++;
+    for (uint32_t id = 1; id <= 64; id++) {
+        if (gpu_front_target_kind(id) < 0) continue;
+        int w, h, kx, ky, depth;
+        if (!gpu_exec_read_target(id, buf, SMP_CAP, &w, &h, &kx, &ky, &depth)) continue;
+        char path[1100];
+        snprintf(path, sizeof path, "%s/v%06u_t%02u.raw", smp_dir, vblank, id);
+        uint32_t hd[8] = { 0x504D5347u /* GSMP */, id, (uint32_t)depth, (uint32_t)w, (uint32_t)h, (uint32_t)kx, (uint32_t)ky, 0 };
+        if (!smp_compare) {
+            FILE* f = fopen(path, "wb");
+            if (!f) { fprintf(stderr, "cannot write %s\n", path); exit(1); }
+            fwrite(hd, sizeof hd, 1, f);
+            fwrite(buf, 4, (size_t)w * (size_t)h, f);
+            fclose(f);
+            continue;
+        }
+        FILE* f = fopen(path, "rb");
+        uint32_t rh[8];
+        if (!f || fread(rh, sizeof rh, 1, f) != 1 || memcmp(rh, hd, sizeof hd) || fread(ref, 4, (size_t)w * (size_t)h, f) != (size_t)w * (size_t)h) {
+            if (f) fclose(f);
+            smp_missing++;
+            fprintf(stderr, "sample-compare v%u target %u: no matching dump (%dx%d k %dx%d)\n", vblank, id, w, h, kx, ky);
+            continue;
+        }
+        fclose(f);
+        remove(path);
+        smp_targets++;
+        size_t n = (size_t)w * (size_t)h;
+        uint64_t c2 = 0, c16 = 0, zd = 0;
+        for (size_t i = 0; i < n; i++) {
+            uint32_t a = buf[i], b = ref[i];
+            if (a == b) continue;
+            if (depth) { zd++; continue; }
+            int m = 0;
+            for (int c = 0; c < 32; c += 8) { int d = abs((int)((a >> c) & 255) - (int)((b >> c) & 255)); if (d > m) m = d; }
+            c2 += m > 2;
+            c16 += m > 16;
+        }
+        double f2 = depth ? 0 : (double)c2 / (double)n, f16 = depth ? 0 : (double)c16 / (double)n, fz = depth ? (double)zd / (double)n : 0;
+        if (depth) { smp_zwords += n; smp_zdiff += zd; } else { smp_cwords += n; smp_c2 += c2; smp_c16 += c16; }
+        if (f2 > smp_w2) smp_w2 = f2;
+        if (f16 > smp_w16) smp_w16 = f16;
+        if (fz > smp_wz) smp_wz = fz;
+        if (f2 > 0.025 || f16 > 0.001 || fz > 0.001) {
+            smp_beyond++;
+            fprintf(stderr, "sample-compare v%u target %u (%s %dx%d, k %dx%d): beyond the budget: > 2: %.4f%%, > 16: %.4f%%, Z: %.4f%%\n", vblank, id,
+                    depth ? "Z" : "colour", w, h, kx, ky, 100 * f2, 100 * f16, 100 * fz);
+            /* the first few: where (SMP_DIFF_PNG=<dir>: white > 16 / Z, grey > 2; and which sample of the pixel) */
+            static int shown;
+            const char* pd = getenv("SMP_DIFF_PNG");
+            if (pd && shown++ < 4) {
+                uint32_t* m = malloc(n * 4);
+                uint64_t by_sample[64] = { 0 };
+                for (size_t i = 0; m && i < n; i++) {
+                    uint32_t a = buf[i], b = ref[i], v = 0;
+                    if (a != b) {
+                        int mm = 0;
+                        for (int c = 0; c < 32; c += 8) { int d = abs((int)((a >> c) & 255) - (int)((b >> c) & 255)); if (d > mm) mm = d; }
+                        v = depth || mm > 16 ? 0xFFFFFF : mm > 2 ? 0x606060 : 0x202020;
+                        if (depth || mm > 16) by_sample[((i / (size_t)w) % (size_t)ky) * 8 + ((i % (size_t)w) % (size_t)kx) & 63]++;
+                    }
+                    m[i] = v;
+                }
+                char pp[1100];
+                snprintf(pp, sizeof pp, "%s/diff_v%06u_t%02u.png", pd, vblank, id);
+                if (m) debug_write_png(pp, m, w, h, w);
+                free(m);
+                fprintf(stderr, "sample-compare: %s; > 16 by sample (row j, column i):", pp);
+                for (int j = 0; j < ky && j < 8; j++) { fprintf(stderr, " j%d:", j); for (int i = 0; i < kx && i < 8; i++) fprintf(stderr, " %llu", (unsigned long long)by_sample[j * 8 + i]); }
+                fprintf(stderr, "\n");
+            }
+        }
+    }
+}
+
+static void sample_report(void) {
+    if (!smp_dir) return;
+    if (!smp_compare) { fprintf(stderr, "sample-dump: %u points written to %s\n", smp_points, smp_dir); return; }
+    fprintf(stderr, "sample-compare: %u points, %u target comparisons, %u beyond the budget, %u missing; colour words > 2: %.4f%% "
+                    "(worst %.4f%%), > 16: %.5f%% (worst %.5f%%); Z words differ: %.5f%% (worst %.5f%%)\n", smp_points, smp_targets, smp_beyond,
+            smp_missing, smp_cwords ? 100.0 * (double)smp_c2 / (double)smp_cwords : 0.0, 100 * smp_w2,
+            smp_cwords ? 100.0 * (double)smp_c16 / (double)smp_cwords : 0.0, 100 * smp_w16,
+            smp_zwords ? 100.0 * (double)smp_zdiff / (double)smp_zwords : 0.0, 100 * smp_wz);
 }
 #endif
 
@@ -1349,7 +1609,8 @@ int main(int argc, char** argv) {
     }
     outdir = argv[2];
     int workers = 0, decode_only = 0, front_only = 0, front_ref = 0, front_straddle = 0, front_selfcheck = 0, with_sw = 0, scale = 1, pace = 0, profile = 0, shash = 0, front_thread = 0, pin = 0;
-    int front_mixed = 0, ff_stq_exact = 0, split_ff = 0;
+    int front_mixed = 0, ff_stq_exact = 0, split_ff = 0, ky2_opt = -1, fields_opt = -1;
+    uint32_t gfx_set = 0;
     uint32_t ff_rov_mask = 0;
     const char* adapter = "hw";
     const char* metrics = NULL;
@@ -1389,6 +1650,24 @@ int main(int argc, char** argv) {
         }
 #endif
         else if (!strcmp(argv[i], "--scale") && i + 1 < argc) scale = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--progressive")) ky2_opt = 1;    /* (M7) display targets 2N rows per native row */
+        else if (!strcmp(argv[i], "--interlaced")) ky2_opt = 0;     /* (M7) display targets N rows (field resolution) */
+#ifdef GS_REPLAY_GPU
+        /* (M7, --game) picture options: the Modern / Faithful presets and the single toggles (GPU_GFX_*) */
+        else if (!strcmp(argv[i], "--sample-dump") && i + 1 < argc) { smp_dir = argv[++i]; smp_compare = 0; }
+        else if (!strcmp(argv[i], "--sample-compare") && i + 1 < argc) { smp_dir = argv[++i]; smp_compare = 1; }
+        else if (!strcmp(argv[i], "--sample-every") && i + 1 < argc) { smp_every = atoi(argv[++i]); if (smp_every < 1) smp_every = 1; }
+        else if (!strcmp(argv[i], "--flicker-off")) gfx_set |= GPU_GFX_FLICKER_OFF;
+        else if (!strcmp(argv[i], "--thin")) gfx_set |= GPU_GFX_THIN;
+        else if (!strcmp(argv[i], "--fields")) fields_opt = 1;
+        else if (!strcmp(argv[i], "--modern")) { ky2_opt = 1; fields_opt = 0; gfx_set |= GPU_GFX_FLICKER_OFF; }
+        else if (!strcmp(argv[i], "--faithful")) { ky2_opt = 0; fields_opt = 1; }
+        else if (!strcmp(argv[i], "--scaler") && i + 1 < argc) {
+            static const char* sn[GPU_SCALER_N] = { "auto", "point", "box", "lanczos", "catmull-rom", "bilinear" };
+            const char* v = argv[++i];
+            for (int k = 0; k < GPU_SCALER_N; k++) if (!strcmp(v, sn[k])) gfx_set |= (uint32_t)k << GPU_GFX_SCALER_SHIFT;
+        }
+#endif
 #ifdef GS_REPLAY_GPU
         else if (!strcmp(argv[i], "--game")) game_mode = 1;
         else if (!strcmp(argv[i], "--game-save")) game_save = 1;   /* (--game: every picture as frame_N.png) */
@@ -1416,7 +1695,14 @@ int main(int argc, char** argv) {
     if (ref_mode && workers > 0) { fprintf(stderr, "--ref / --mixed replay synchronously (workers 0)\n"); return 2; }
     if (lockstep && !(ref_mode && backend == B_BOTH)) { fprintf(stderr, "--lockstep needs --backend both --ref (or --mixed)\n"); return 2; }
     if (game_mode) {
-        if (!(game_px = malloc(1024 * 1024 * 4))) return 1;
+        game_scale = scale > 1 ? (scale > 8 ? 8 : scale) : 1;
+        /* (M7) default: Faithful field display at S = 1 (the M6 gate: identical to the reference compose), progressive
+         * display targets at scale (as --scale for --ref / --mixed) */
+        int prog = ky2_opt >= 0 ? ky2_opt : game_scale > 1;
+        int fields = fields_opt >= 0 ? fields_opt : !prog;
+        game_gfx = gfx_set | (prog ? GPU_GFX_PROGRESSIVE : 0) | (fields ? GPU_GFX_FIELDS : 0);
+        game_exact = game_scale == 1 && !prog && fields;
+        if (!(game_px = malloc((size_t)1024 * 1024 * 4 * (size_t)(game_scale * game_scale)))) return 1;
     } else if (backend != B_SW && backend != B_HWDRY) {
         gpu_config cfg;
         memset(&cfg, 0, sizeof cfg);
@@ -1483,6 +1769,8 @@ int main(int argc, char** argv) {
         hc.out_dir = strcmp(outdir, "-") ? outdir : ".";
         hc.dump_wanted = game_dump_wanted;
         hc.dump = game_dump;
+        hc.scale = game_scale;           /* (M7) */
+        hc.gfx = game_gfx;
         if (!gpu_hw_start(&hc)) { fprintf(stderr, "GPU renderer unavailable\n"); return 1; }
     } else
     if (FRONT_MODE(backend) || ref_mode) {       /* the frontend consumes the stream next to (or instead of) sw */
@@ -1490,7 +1778,9 @@ int main(int argc, char** argv) {
         memset(&fc, 0, sizeof fc);
         fc.sw = ref_mode ? backend == B_BOTH : backend == B_HWSUB ? with_sw : !front_only;
         if (ref_mode) front_thread = 0;          /* (checkpoints and read-backs on this thread) */
-        fc.display_ky2 = !ref_mode && !front_mixed;   /* (M2's benchmark: display targets 2N rows; REF / mixed at S=1: 1x1) */
+        /* (M2's benchmark: display targets 2N rows; REF / mixed at S=1: 1x1 (the field-resolution gate); M7: at scale > 1
+         * progressive (2N rows, the Modern preset) unless --interlaced; --progressive forces it at S=1 too) */
+        fc.display_ky2 = ky2_opt >= 0 ? ky2_opt : (!ref_mode && !front_mixed) || scale > 1;
         fc.ref = front_ref;
         fc.mixed = front_mixed;
         fc.ff_stq_exact = ff_stq_exact;
@@ -1501,6 +1791,7 @@ int main(int argc, char** argv) {
         fc.thread = front_thread && !fc.sw;    /* (the frontend thread needs the software rasterizer off) */
         if (front_thread && fc.sw) fprintf(stderr, "--front-thread ignored: the software rasterizer is on\n");
         fc.scale = scale > 0 ? scale : 1;
+        fc.thin = (gfx_set & GPU_GFX_THIN) != 0;   /* (M7: --thin) */
         gpu_front_start(&fc);
         if (backend == B_HWSUB || ref_mode) gpu_front_set_sink(gpu_submit_sink, NULL);   /* frames -> render thread */
         if (lockstep) gpu_front_set_checkpoint_hook(lock_hook, NULL);
@@ -1623,6 +1914,7 @@ int main(int argc, char** argv) {
                 }
             }
 #ifdef GS_REPLAY_GPU
+            if (ref_mode && smp_dir && frames % (uint32_t)smp_every == (uint32_t)smp_every - 1) sample_point(h[1]);   /* (M7) */
             if (game_mode) game_vblank(h[1]);
             else if (ref_mode) ref_vblank(h[1], post_prims);
             else
@@ -1694,6 +1986,8 @@ int main(int argc, char** argv) {
     }
     int rc = 0;
 #ifdef GS_REPLAY_GPU
+    sample_report();
+    if (smp_compare && (smp_beyond || smp_missing)) rc = 3;
     if (game_mode) {
         stage = 3;
         progress++;

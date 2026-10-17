@@ -74,6 +74,12 @@ gpu_target* own_find(int kind, uint32_t base, uint32_t fbw);
  * the destination); writes: the blocks become T's. */
 void own_draw(gpu_target* T, int x0, int y0, int x1, int y1, int writes, int opaque);
 void own_grow(gpu_target* T, int rows);  /* taller use: recreate + copy */
+/* (M7) sample families (3.1): upgrade T to `family` (square -> display only); a pair that must share a sample
+ * grid takes the larger family; every live target takes the factors of the current configuration. A factor
+ * change emits GPU_FOP_TARGET: the executor rescales the contents (sample 0 kept). */
+void own_set_family(gpu_target* T, int family);
+void own_pair_family(gpu_target* A, gpu_target* B);
+void own_rescale_all(void);
 /* Absolute 256-byte blocks of T touched through another view (ALIAS16 CT16 views). */
 void own_blocks(gpu_target* T, const uint16_t* blocks, int n, int writes);
 /* Every block of T written (a recognised full clear). */
@@ -116,6 +122,7 @@ extern const uint16_t* gf_clut_src;      /* NULL: gs_clut_buffer() */
 extern int gf_clut_hint;                 /* tex0 hook: -1 unknown, 0 the loaded entries did not change, 1 changed */
 /* the VBlank on the frontend's thread (di: M6 display info, or NULL) */
 void gf_vblank_impl(const uint64_t priv[16], uint32_t vblank, const gpu_display_info* di);
+void gf_configure(int scale, int progressive, int thin);   /* (M7) run-time settings, between two frames */
 const gs_front_hooks* gf_hooks(void);    /* the frontend's own hooks */
 void fthread_start(void);                /* installs the proxy hooks, starts the thread */
 void fthread_stop(void);                 /* drains and ends it */

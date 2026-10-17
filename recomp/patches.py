@@ -47,6 +47,7 @@ SCENE_DRAW = (0x00213300, "be7f4567e360dea5be27cff355abccd397b3d7f9")    # 2D sc
 DL_QUEUE = (0x0021A998, "67ef1d52df4bab0890b10adcafb8f699de8ba55a")      # 2D: queue a display list's items
 ITEM_QUEUE = (0x00215960, "9e5c686306164bd9a4c1fdd5fe87f35fdffea152")    # 2D: queue one placed object
 MAIN_LOOP = (0x001A7518, "a1bf2357cbfd44da199858e87f269865b5ea7ea0")     # the game's main loop
+MOTION_BLUR = (0x00160F98, "fb6879611634e74a6c18e8c7bda1b2f7eeb43407")   # the motion blur post effect
 
 PATCHES: list[Patch] = [
     Patch("ws_projection", *CM_RECALC, 0x0014DBA4, "after",
@@ -120,6 +121,15 @@ PATCHES: list[Patch] = [
     Patch("ws_item_queue", *ITEM_QUEUE, 0x002159CC, "before",
           "if (ps2_aspect.wide) aspect_item_queued(ctx);",
           "a shape or text object is queued into the scene's item list ($a1 = the object)"),
+    # Graphics settings (runtime/gfx.c, notes/settings.md): motion_blur = off is the game's own switch.
+    Patch("motion_blur_off", *MOTION_BLUR, 0x00160FA0, "after",
+          "if (ps2_motion_blur_off) ctx->r[3].ud[0] = 1;",
+          "lw $v1, -0x14DC($v0) loads the word at 0x2DEB24, which the motion blur function (f_00160F98: "
+          "previous frame blended into the new one, FIX 48, the 16 32x222 sprites of notes/wip/d3d11-census.md) "
+          "tests first: nonzero returns at once (bne -> 0x161218), before any GS work. Nothing in the "
+          "game's code writes that word by address (a debug switch); the community 'No Motion Blur' "
+          "patch nops this load instead, which leaves $v1 at whatever the caller had. motion_blur = off "
+          "makes the load read 1: the game's own off path, nothing else changes"),
     # Not a ws_ patch: it must also run at 4:3 (to switch to a wide aspect); it does nothing unless
     # the player asked for a switch (F7/F8), and a switch to 4:3 leaves the game's own numbers.
     Patch("aspect_switch", *MAIN_LOOP, 0x001A75A8, "before",

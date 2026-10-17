@@ -49,6 +49,7 @@ enum { TK_NONE, TK_VRAM_IDX, TK_VRAM_DIRECT, TK_VIEW_C32, TK_VIEW_ALPHA, TK_ALIA
 typedef struct {
     gpu_front_frame_data fd;
     void* handle;                        /* gpu_front_release */
+    double t_queued;                     /* (M7) qpc_ms when gpu_submit_sink queued it (latency statistics) */
 } gpu_op_frame;
 
 /* ---- render-thread state ---------------------------------------------------------------------- */
@@ -267,22 +268,79 @@ static void copy_old(ID3D11Texture2D* nt, ID3D11Texture2D* ot, int ow, int oh, i
     gpu_rt.n_copies++;
 }
 
-/* (re)create t at w x h pixels; the old contents are copied over */
-static int target_alloc(xtarget* t, int w, int h) {
-    if (t->tex && t->w == w && t->h == h) return 1;
+/* (M7) old contents at new sample factors: new sample (i, j) of a native pixel <- old sample (i * okx / kx,
+ * j * oky / ky) of the same pixel (shaders/rescale.hlsl); colour words, or zpatch for depth targets */
+typedef struct { uint32_t okx, oky, nkx, nky, w, h, ow, oh, depth, pad[3]; } rescale_consts;
+static void rescale_copy(ID3D11ShaderResourceView* src, ID3D11UnorderedAccessView* dst, int depth, int okx, int oky, int ow, int oh,
+                         int nkx, int nky, int w, int h) {
+    ID3D11DeviceContext* c = gpu_rt.ctx;
+    rescale_consts k = { (uint32_t)okx, (uint32_t)oky, (uint32_t)nkx, (uint32_t)nky, (uint32_t)w, (uint32_t)h, (uint32_t)ow,
+                         (uint32_t)oh, (uint32_t)depth, { 0, 0, 0 } };
+    _Static_assert(sizeof(rescale_consts) <= sizeof(mem_consts), "rescale_cb in mem_cb");
+    D3D11_MAPPED_SUBRESOURCE m;
+    if (FAILED(ID3D11DeviceContext_Map(c, (ID3D11Resource*)X.mcb, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) return;
+    memset(m.pData, 0, sizeof(mem_consts));
+    memcpy(m.pData, &k, sizeof k);
+    ID3D11DeviceContext_Unmap(c, (ID3D11Resource*)X.mcb, 0);
+    ID3D11DeviceContext_CSSetShader(c, gpu_cs(GPU_SH_cs_rescale), NULL, 0);
+    ID3D11DeviceContext_CSSetConstantBuffers(c, 0, 1, &X.mcb);
+    ID3D11ShaderResourceView* s[2] = { depth ? NULL : src, depth ? src : NULL };
+    ID3D11DeviceContext_CSSetShaderResources(c, 0, 2, s);
+    ID3D11DeviceContext_CSSetUnorderedAccessViews(c, 0, 1, &dst, NULL);
+    ID3D11DeviceContext_Dispatch(c, (UINT)(w + 7) / 8, (UINT)(h + 7) / 8, 1);
+    gpu_rt.n_dispatches++;
+    ID3D11ShaderResourceView* ns[2] = { NULL, NULL };
+    ID3D11UnorderedAccessView* nu = NULL;
+    ID3D11DeviceContext_CSSetShaderResources(c, 0, 2, ns);
+    ID3D11DeviceContext_CSSetUnorderedAccessViews(c, 0, 1, &nu, NULL);
+    ID3D11DeviceContext_PSSetShaderResources(c, 0, 1, &X.vram_srv);   /* (as mem_dispatch leaves it) */
+}
+
+static int target_views(xtarget* t);
+
+/* (re)create t at w x h samples. The old contents are copied over at the same samples (growing), or, okx > 0,
+ * rescaled from okx x oky samples per native pixel to t->kx x t->ky (M7: depth from zpatch, which must be
+ * current: every tile of the new depth texture is then zpatch-newer) */
+static int target_realloc(xtarget* t, int w, int h, int okx, int oky) {
+    if (t->tex && t->w == w && t->h == h && !okx) return 1;
     unbind_all();
     ID3D11Texture2D* nt = t->depth ? tex2d(w, h, DXGI_FORMAT_R32G8X24_TYPELESS, D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE)
                                    : tex2d(w, h, DXGI_FORMAT_R8G8B8A8_TYPELESS,
                                            D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS);
     ID3D11Texture2D* nz = t->depth ? tex2d(w, h, DXGI_FORMAT_R32_UINT, D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE) : NULL;
     if (!nt || (t->depth && !nz)) { GPU_RELEASE(nt); GPU_RELEASE(nz); gpu_log("cannot create a %dx%d target", w, h); return 0; }
-    copy_old(nt, t->tex, t->w, t->h, w, h);  /* grow: keep what was drawn */
-    copy_old(nz, t->zp, t->w, t->h, w, h);
+    xtarget n;
+    memset(&n, 0, sizeof n);
+    n.depth = t->depth;
+    n.tex = nt;
+    n.zp = nz;
+    if (!target_views(&n)) { target_free(&n); gpu_log("cannot create target views"); return 0; }
+    if (okx && t->tex) {                 /* rescale: sample 0 of every native pixel stays sample 0 */
+        if (t->depth) rescale_copy(t->zp_srv, n.zp_uav, 1, okx, oky, t->w, t->h, t->kx, t->ky, w, h);
+        else rescale_copy(t->srv_u, n.uav32, 0, okx, oky, t->w, t->h, t->kx, t->ky, w, h);
+        XC.rescales++;
+    } else {
+        copy_old(nt, t->tex, t->w, t->h, w, h);  /* grow: keep what was drawn */
+        copy_old(nz, t->zp, t->w, t->h, w, h);
+    }
     target_free(t);
-    t->tex = nt;
-    t->zp = nz;
+    t->tex = n.tex; t->zp = n.zp; t->rtv = n.rtv; t->srv = n.srv; t->srv_u = n.srv_u; t->uav = n.uav; t->uav32 = n.uav32;
+    t->dsv = n.dsv; t->dsv_ro = n.dsv_ro; t->zp_uav = n.zp_uav; t->zp_srv = n.zp_srv;
     t->w = w;
     t->h = h;
+    if (t->depth) {
+        if (okx) { free(t->zts); t->zts = NULL; t->zts_w = t->zts_h = 0; }   /* (all tiles: zpatch newer) */
+        zts_resize(t, w, h);
+    }
+    return 1;
+}
+
+static int target_alloc(xtarget* t, int w, int h) { return target_realloc(t, w, h, 0, 0); }
+
+/* the views of a target's textures (tex, zp) */
+static int target_views(xtarget* t) {
+    ID3D11Texture2D* nt = t->tex;
+    ID3D11Texture2D* nz = t->zp;
     HRESULT hr;
     if (t->depth) {
         D3D11_DEPTH_STENCIL_VIEW_DESC dd;
@@ -305,7 +363,6 @@ static int target_alloc(xtarget* t, int w, int h) {
         if (SUCCEEDED(hr)) hr = ID3D11Device_CreateUnorderedAccessView(gpu_rt.dev, (ID3D11Resource*)nz, &ud, &t->zp_uav);
         sd.Format = DXGI_FORMAT_R32_UINT;
         if (SUCCEEDED(hr)) hr = ID3D11Device_CreateShaderResourceView(gpu_rt.dev, (ID3D11Resource*)nz, &sd, &t->zp_srv);
-        zts_resize(t, w, h);
     } else {
         D3D11_RENDER_TARGET_VIEW_DESC rd;
         memset(&rd, 0, sizeof rd);
@@ -353,17 +410,22 @@ static int alloc_h(const xtarget* t) { return ((t->nat_h + 63) & ~63) * t->ky; }
 static void exec_target(const gpu_fop_target* o) {
     if (o->id == 0 || o->id > MAX_TARGETS) return;
     xtarget* t = &X.T[o->id];
+    int nkx = o->kx ? o->kx : 1, nky = o->ky ? o->ky : 1;
+    /* (M7) new sample factors of a live target (its family or the configuration changed): rescaled */
+    int okx = t->tex ? t->kx : 0, oky = t->tex ? t->ky : 0, rescale = t->tex && (okx != nkx || oky != nky);
+    if (rescale && t->depth) ensure_zp_all(t);   /* (zpatch holds the truth of every tile first) */
     t->used = 1;
     t->kind = o->kind;
     t->depth = o->kind != XK_C32;
-    t->kx = o->kx ? o->kx : 1;
-    t->ky = o->ky ? o->ky : 1;
+    t->kx = nkx;
+    t->ky = nky;
     t->nat_w = o->fbw * 64;
     t->nat_h = o->rows;
     t->base = o->base;
     t->fbw = o->fbw;
     t->bcols = o->fbw * 64 / (o->kind == XK_Z16 || o->kind == XK_Z16S ? 16 : 8);
     int w = t->nat_w * t->kx, h = alloc_h(t);
+    if (rescale) { target_realloc(t, w, h, okx, oky); return; }
     if (t->tex && t->w >= w && t->h >= h && t->w == w) return;   /* (taller allocation kept) */
     if (t->tex && t->h > h) h = t->h;
     target_alloc(t, w, h);
@@ -625,12 +687,17 @@ static uint32_t build_constants(const gpu_front_frame_data* fd, int ref) {
             const gpu_fop_target* o = (const gpu_fop_target*)h;
             if (o->id && o->id <= MAX_TARGETS) {
                 int kx = o->kx ? o->kx : 1, ky = o->ky ? o->ky : 1;
+                /* (exec_target: new factors reallocate at the new size; otherwise the height only grows) */
+                int refactor = dim[o->id].w && (dim[o->id].kx != kx || dim[o->id].ky != ky);
                 dim[o->id].kx = kx; dim[o->id].ky = ky;
                 dim[o->id].base = o->base; dim[o->id].fbw = o->fbw;
                 dim[o->id].w = o->fbw * 64 * kx;
                 int hh = ((o->rows + 63) & ~63) * ky;
-                if (hh > dim[o->id].h) dim[o->id].h = hh;
+                if (refactor || hh > dim[o->id].h) dim[o->id].h = hh;
             }
+        } else if (h->op == GPU_FOP_RELEASE) {
+            const gpu_fop_target* o = (const gpu_fop_target*)h;
+            if (o->id && o->id <= MAX_TARGETS) { dim[o->id].w = dim[o->id].h = 0; dim[o->id].kx = dim[o->id].ky = 1; }
         } else if (h->op == GPU_FOP_DRAW) n += draw_slots((const gpu_fop_draw*)h, ref);
         pos += h->size;
     }
@@ -968,6 +1035,82 @@ static void zcb_set(const zs_consts* k) {
     }
 }
 
+/* ---- (M7) PS2_GPU_PROF=1: GPU time per kind of work --------------------------------------------------
+ * A timestamp where the kind of work changes (ops, draw classes / tiers, depth resolves and syncs); the frame
+ * waits for its timestamps (profiling only: it serialises CPU and GPU). Averages per frame in the log every
+ * 60 frames. Attribution is approximate (the GPU overlaps neighbouring work). */
+enum { PR_OTHER, PR_TARGET, PR_MEM, PR_CLEAR, PR_SHADOW, PR_FF_FAST, PR_FF_TRI, PR_FF_SPRITE, PR_FF_LINE,
+       PR_REF_TRI, PR_REF_OTHER, PR_A16, PR_ZRESOLVE, PR_ZSYNC, PR_PRESENT, PR_A16_DRAW, PR_N };
+static const char* const pr_names[PR_N] = { "other", "target", "mem", "clear", "shadow", "ff-tri-fast", "ff-tri",
+                                            "ff-sprite", "ff-line", "ref-tri", "ref-other", "alias16", "zresolve",
+                                            "zsync", "present", "alias16-draw" };
+#define PR_MAXQ 8192
+static struct {
+    int on, n, cur;
+    ID3D11Query* dis;
+    ID3D11Query* q[PR_MAXQ];
+    uint8_t cat[PR_MAXQ];
+    double ms[PR_N], total;
+    uint64_t marks[PR_N];
+    uint32_t frames;
+} PR = { -1 };
+
+static void prof_mark(int cat) {
+    if (PR.on <= 0 || PR.n >= PR_MAXQ || (PR.n && cat == PR.cur)) return;
+    if (!PR.q[PR.n]) {
+        D3D11_QUERY_DESC qt = { D3D11_QUERY_TIMESTAMP, 0 };
+        if (FAILED(ID3D11Device_CreateQuery(gpu_rt.dev, &qt, &PR.q[PR.n]))) { PR.on = 0; return; }
+    }
+    ID3D11DeviceContext_End(gpu_rt.ctx, (ID3D11Asynchronous*)PR.q[PR.n]);
+    PR.cat[PR.n++] = (uint8_t)cat;
+    PR.cur = cat;
+    if (cat < PR_N) PR.marks[cat]++;
+}
+
+static void prof_begin(void) {
+    if (PR.on < 0) { const char* e = getenv("PS2_GPU_PROF"); PR.on = e && atoi(e) > 0; }
+    if (!PR.on) return;
+    if (!PR.dis) {
+        D3D11_QUERY_DESC qd = { D3D11_QUERY_TIMESTAMP_DISJOINT, 0 };
+        if (FAILED(ID3D11Device_CreateQuery(gpu_rt.dev, &qd, &PR.dis))) { PR.on = 0; return; }
+    }
+    ID3D11DeviceContext_Begin(gpu_rt.ctx, (ID3D11Asynchronous*)PR.dis);
+    PR.n = 0;
+    prof_mark(PR_OTHER);
+}
+
+static void prof_end(void) {
+    if (PR.on <= 0) return;
+    PR.cur = -1;
+    prof_mark(PR_N);
+    ID3D11DeviceContext_End(gpu_rt.ctx, (ID3D11Asynchronous*)PR.dis);
+    D3D11_QUERY_DATA_TIMESTAMP_DISJOINT dj;
+    while (ID3D11DeviceContext_GetData(gpu_rt.ctx, (ID3D11Asynchronous*)PR.dis, &dj, sizeof dj, 0) == S_FALSE) SwitchToThread();
+    if (dj.Disjoint || !dj.Frequency) return;
+    UINT64 prev = 0;
+    double f[PR_N] = { 0 }, ft = 0;
+    for (int i = 0; i < PR.n; i++) {
+        UINT64 t = 0;
+        while (ID3D11DeviceContext_GetData(gpu_rt.ctx, (ID3D11Asynchronous*)PR.q[i], &t, sizeof t, 0) == S_FALSE) SwitchToThread();
+        if (i) {
+            double ms = (double)(t - prev) * 1000.0 / (double)dj.Frequency;
+            f[PR.cat[i - 1]] += ms;
+            ft += ms;
+        }
+        prev = t;
+    }
+    if (ft > 50.0) return;               /* (loading frames: left out) */
+    for (int c = 0; c < PR_N; c++) PR.ms[c] += f[c];
+    PR.total += ft;
+    if (++PR.frames % 60) return;
+    char line[1024];
+    int o = snprintf(line, sizeof line, "prof: %u frames, GPU ms per frame %.3f:", PR.frames, PR.total / PR.frames);
+    for (int c = 0; c < PR_N && o < (int)sizeof line - 48; c++)
+        if (PR.ms[c] > 0) o += snprintf(line + o, sizeof line - (size_t)o, " %s %.3f (%.0f)", pr_names[c], PR.ms[c] / PR.frames,
+                                         (double)PR.marks[c] / PR.frames);
+    gpu_log("%s", line);
+}
+
 /* zpatch -> DSV over tiles in state ZT_ZP (mode 0), or the constant `value` over the native rect r (mode 1:
  * a depth clear of part of the target); the quad leaves the OM bound to the DSV alone */
 static void zquad(xtarget* t, const int b[4], int mode, uint32_t value) {
@@ -995,7 +1138,10 @@ static void zquad(xtarget* t, const int b[4], int mode, uint32_t value) {
     ID3D11ShaderResourceView* v8 = X.ztile_srv;
     ID3D11DeviceContext_PSSetShaderResources(gpu_rt.ctx, 8, 1, &v8);
     set_t2(t->zp_srv);
+    int pc = PR.cur;
+    prof_mark(PR_ZRESOLVE);
     ID3D11DeviceContext_Draw(gpu_rt.ctx, 4, 0);
+    prof_mark(pc);
     set_t2(NULL);
     gpu_rt.n_draws++;
     X.state_calls += 2;
@@ -1030,7 +1176,10 @@ static void zsync_dispatch(xtarget* t, const int b[4]) {
     ID3D11UnorderedAccessView* u = t->zp_uav;
     ID3D11DeviceContext_CSSetUnorderedAccessViews(c, 0, 1, &u, NULL);
     ID3D11DeviceContext_CSSetConstantBuffers(c, 0, 1, &X.zcb);
+    int pc = PR.cur;
+    prof_mark(PR_ZSYNC);
     ID3D11DeviceContext_Dispatch(c, (k.x1 - k.x0 + 7) / 8, (k.y1 - k.y0 + 7) / 8, 1);
+    prof_mark(pc);
     ID3D11UnorderedAccessView* nu = NULL;
     ID3D11DeviceContext_CSSetUnorderedAccessViews(c, 0, 1, &nu, NULL);
     ID3D11ShaderResourceView* ns = NULL;
@@ -1057,6 +1206,11 @@ static void zt_mark(xtarget* t, int x0, int y0, int x1, int y1, int state) {
     if (t && t->zts && zt_rect(t, x0, y0, x1, y1, r)) zt_set(t, r, -1, state);
 }
 
+/* a draw's scissor in samples: the native rectangle times the factors */
+static void draw_scissor(const gpu_fop_draw* d, int kx, int ky) {
+    set_scissor(d->sc[0] * kx, d->sc[1] * ky, (d->sc[2] + 1) * kx, (d->sc[3] + 1) * ky);
+}
+
 static void exec_draw_ref(const gpu_fop_draw* d, uint32_t slot) {
     ID3D11DeviceContext* c = gpu_rt.ctx;
     xtarget* sizing = tgt(d->ct) ? tgt(d->ct) : tgt(d->zt);
@@ -1073,7 +1227,7 @@ static void exec_draw_ref(const gpu_fop_draw* d, uint32_t slot) {
     int tk = tex_kind(d->ps_key);
     set_t1(d->tex && (tk == TK_VIEW_C32 || tk == TK_VIEW_ALPHA || tk == TK_ALIAS16) ? view_srv(d, 1) : NULL);
     int kx = sizing->kx, ky = sizing->ky;
-    set_scissor(d->sc[0] * kx, d->sc[1] * ky, (d->sc[2] + 1) * kx, (d->sc[3] + 1) * ky);
+    draw_scissor(d, kx, ky);
     set_depth(X.ds_off);
     set_consts(slot);
     if (d->cls == GPU_PC_TRI) {
@@ -1084,9 +1238,9 @@ static void exec_draw_ref(const gpu_fop_draw* d, uint32_t slot) {
         ID3D11DeviceContext_DrawIndexed(c, d->count, d->first, 0);
     } else {
         set_topo(1);
-        int sprite = d->cls == GPU_PC_SPRITE;
-        set_vs(gpu_vs(sprite ? GPU_SH_vs_ref_sprite : GPU_SH_vs_ref_linepix));
-        set_ps(gpu_ps(sprite ? GPU_SH_ps_gs_sprite : GPU_SH_ps_gs_linepix));
+        int sprite = d->cls == GPU_PC_SPRITE, thin = d->cls == GPU_PC_THIN;
+        set_vs(gpu_vs(sprite ? GPU_SH_vs_ref_sprite : thin ? GPU_SH_vs_ref_thin : GPU_SH_vs_ref_linepix));
+        set_ps(gpu_ps(sprite ? GPU_SH_ps_gs_sprite : thin ? GPU_SH_ps_gs_thin : GPU_SH_ps_gs_linepix));
         ID3D11DeviceContext_DrawInstanced(c, 4, d->count, 0, 0);
     }
     gpu_rt.n_draws++;
@@ -1112,7 +1266,7 @@ static void exec_draw_ff(const gpu_fop_draw* d, uint32_t slot) {
     int tk = tex_kind(d->ps_key);
     set_t1(d->tex && (tk == TK_VIEW_C32 || tk == TK_VIEW_ALPHA || tk == TK_ALIAS16) ? view_srv(d, 1) : NULL);
     int kx = sizing->kx, ky = sizing->ky;
-    set_scissor(d->sc[0] * kx, d->sc[1] * ky, (d->sc[2] + 1) * kx, (d->sc[3] + 1) * ky);
+    draw_scissor(d, kx, ky);
     int dual = d->blend == BL_DUAL, zout = zuse;
     int ps;
     if (d->cls == GPU_PC_TRI) {
@@ -1123,11 +1277,12 @@ static void exec_draw_ff(const gpu_fop_draw* d, uint32_t slot) {
         ps = t[dual][zout][(d->ps_key & GPU_PSK_FF_FAST) != 0];
     } else {
         set_topo(1);
-        int sprite = d->cls == GPU_PC_SPRITE;
-        set_vs(gpu_vs(sprite ? GPU_SH_vs_ref_sprite : GPU_SH_vs_ref_linepix));
+        int sprite = d->cls == GPU_PC_SPRITE, thin = d->cls == GPU_PC_THIN;
+        set_vs(gpu_vs(sprite ? GPU_SH_vs_ref_sprite : thin ? GPU_SH_vs_ref_thin : GPU_SH_vs_ref_linepix));
         static const int s[2][2] = { { GPU_SH_ps_ff_s00, GPU_SH_ps_ff_s01 }, { GPU_SH_ps_ff_s10, GPU_SH_ps_ff_s11 } };
         static const int l[2][2] = { { GPU_SH_ps_ff_l00, GPU_SH_ps_ff_l01 }, { GPU_SH_ps_ff_l10, GPU_SH_ps_ff_l11 } };
-        ps = sprite ? s[dual][zout] : l[dual][zout];
+        static const int n[2][2] = { { GPU_SH_ps_ff_n00, GPU_SH_ps_ff_n01 }, { GPU_SH_ps_ff_n10, GPU_SH_ps_ff_n11 } };
+        ps = sprite ? s[dual][zout] : thin ? n[dual][zout] : l[dual][zout];
     }
     set_ps(gpu_ps(ps));
     int zwrote = 0;
@@ -1154,6 +1309,12 @@ static void exec_draw_ff(const gpu_fop_draw* d, uint32_t slot) {
 }
 
 static void exec_draw(const gpu_fop_draw* d, uint32_t slot) {
+    if (PR.on > 0) {
+        int ff = X.mixed && d->tier == GPU_TIER_FF && !X.ref;
+        prof_mark(d->tier == GPU_TIER_ALIAS16 ? PR_A16_DRAW
+                  : d->cls == GPU_PC_TRI ? (!ff ? PR_REF_TRI : (d->ps_key & GPU_PSK_FF_FAST) ? PR_FF_FAST : PR_FF_TRI)
+                  : !ff ? PR_REF_OTHER : d->cls == GPU_PC_SPRITE ? PR_FF_SPRITE : PR_FF_LINE);
+    }
     if (X.ref || d->tier == GPU_TIER_ALIAS16) { exec_draw_ref(d, slot); return; }
     if (X.mixed) {
         if (d->tier == GPU_TIER_FF) exec_draw_ff(d, slot);
@@ -1173,7 +1334,7 @@ static void exec_draw(const gpu_fop_draw* d, uint32_t slot) {
     int tc = tex_class(d->ps_key);
     if (tc == 2 && d->tex) set_t1(view_srv(d, 0));
     int kx = sizing->kx, ky = sizing->ky;
-    set_scissor(d->sc[0] * kx, d->sc[1] * ky, (d->sc[2] + 1) * kx, (d->sc[3] + 1) * ky);
+    draw_scissor(d, kx, ky);
     int strip = d->cls != GPU_PC_TRI;
     set_topo(strip);
     set_vs(gpu_vs(d->cls == GPU_PC_TRI ? GPU_SH_vs_tri : d->cls == GPU_PC_SPRITE ? GPU_SH_vs_sprite : GPU_SH_vs_linepix));
@@ -1406,6 +1567,8 @@ void gpu_exec_release(void) {
     if (dbg_nosize || dbg_nocount) gpu_log("exec: %llu draws without a target, %llu empty draws (cls %llu %llu %llu %llu, tier %llu %llu)", (unsigned long long)dbg_nosize, (unsigned long long)dbg_nocount, (unsigned long long)dbg_cls[0], (unsigned long long)dbg_cls[1], (unsigned long long)dbg_cls[2], (unsigned long long)dbg_cls[3], (unsigned long long)dbg_tier[0], (unsigned long long)dbg_tier[1]);
     for (int i = 0; i <= MAX_TARGETS; i++) { target_free(&X.T[i]); free(X.T[i].zts); X.T[i].zts = NULL; }
     GPU_RELEASE(X.ztile_srv); GPU_RELEASE(X.ztile); GPU_RELEASE(X.zcb);
+    for (int i = 0; i < PR_MAXQ; i++) GPU_RELEASE(PR.q[i]);
+    GPU_RELEASE(PR.dis);
     dynbuf* d[7] = { &X.vb, &X.ib, &X.rec, &X.st, &X.cb, &X.dat, &X.aux };
     for (int i = 0; i < 7; i++) { GPU_RELEASE(d[i]->srv); GPU_RELEASE(d[i]->buf); d[i]->cap = 0; }
     GPU_RELEASE(X.vram_srv); GPU_RELEASE(X.vram_uav); GPU_RELEASE(X.vram); GPU_RELEASE(X.scratch_uav); GPU_RELEASE(X.scratch_srv);
@@ -1457,6 +1620,9 @@ static void exec_present(const gpu_front_frame_data* fd, const gpu_fop_present* 
     in.vram = X.vram_srv;
     in.swz = X.swz_srv;
     in.field_code = di->field_code;
+    in.scale = o->h.size >= sizeof *o && o->scale ? o->scale : 1;
+    in.flicker_off = (di->gfx & GPU_GFX_FLICKER_OFF) != 0;
+    in.fields = (di->gfx & GPU_GFX_FIELDS) != 0;
     if (o->mem_n && o->mem_off + o->mem_n * (sizeof(gpu_dl_entry) + 2) <= fd->data_bytes) {
         /* circuits shown from memory: vram_buf + the GPU words of their rects, in a scratch copy */
         const uint16_t* w = (const uint16_t*)(fd->data + o->mem_off + o->mem_n * sizeof(gpu_dl_entry));
@@ -1487,7 +1653,7 @@ static void exec_present(const gpu_front_frame_data* fd, const gpu_fop_present* 
     gpu_present_compose(&in);
     if (di->rb) gpu_present_readback((gpu_readback*)di->rb);
     /* (the picture was reported when its frame was queued: gpu_submit_sink, GPU_FD_SIGNAL) */
-    if (di->flags & GPU_DI_SHOW) gpu_present_show(di->aspect_w, di->aspect_h);
+    if (di->flags & GPU_DI_SHOW) gpu_present_show(di->aspect_w, di->aspect_h, (int)((di->gfx >> GPU_GFX_SCALER_SHIFT) & 15));
     present_done = 1;
 }
 
@@ -1520,12 +1686,20 @@ void gpu_exec_frame(const void* payload) {
     double t1 = qpc_ms();
     if (!ok) gpu_log("frame %u: upload failed", fd->vblank);
     bind_frame_buffers();
+    prof_begin();
     uint32_t slot = 1;
     for (size_t pos = 0; ok && pos + sizeof(gpu_fop) <= fd->cmd_bytes;) {
         const gpu_fop* h = (const gpu_fop*)(fd->cmd + pos);
         if (!h->size) break;
         if (X.probe && h->op != GPU_FOP_DRAW && h->op != GPU_FOP_CLUT && h->op != GPU_FOP_PATCH)   /* (debugging: the memory ops) */
             gpu_log("exec v%u%s op %u target %u", fd->vblank, fd->flags & GPU_FD_PARTIAL ? "p" : "", h->op, ((const uint16_t*)h)[2]);
+        if (PR.on > 0 && h->op != GPU_FOP_DRAW)
+            prof_mark(h->op == GPU_FOP_TARGET || h->op == GPU_FOP_RELEASE ? PR_TARGET
+                      : h->op == GPU_FOP_PATCH || h->op == GPU_FOP_LOAD || h->op == GPU_FOP_XCOPY || h->op == GPU_FOP_DOWNLOAD ||
+                        h->op == GPU_FOP_CLUT ? PR_MEM
+                      : h->op == GPU_FOP_CLEAR ? PR_CLEAR : h->op == GPU_FOP_COPY_SHADOW ? PR_SHADOW
+                      : h->op == GPU_FOP_ALIAS16 || h->op == GPU_FOP_ALIAS16_END ? PR_A16
+                      : h->op == GPU_FOP_PRESENT ? PR_PRESENT : PR_OTHER);
         switch (h->op) {
         case GPU_FOP_TARGET: exec_target((const gpu_fop_target*)h); break;
         case GPU_FOP_RELEASE: exec_release((const gpu_fop_target*)h); break;
@@ -1546,6 +1720,7 @@ void gpu_exec_frame(const void* payload) {
         pos += h->size;
     }
     unbind_all();                        /* (targets may be released or recreated before the next frame) */
+    prof_end();
     probe_report(fd);
     ID3D11DeviceContext_Flush(gpu_rt.ctx);
     double t2 = qpc_ms(), c1 = thread_ms();
@@ -1556,6 +1731,7 @@ void gpu_exec_frame(const void* payload) {
     st->partial = (fd->flags & GPU_FD_PARTIAL) != 0;
     st->ff_draws = (uint32_t)(XC.ff_draws - ff0);
     st->rov_draws = (uint32_t)(XC.rov_draws - rov0);
+    st->latency_ms = st->presented && p->t_queued > 0 ? qpc_ms() - p->t_queued : -1.0;
     (void)t2;
     gpu_stats_end();
 }
@@ -1653,6 +1829,48 @@ int gpu_exec_read_memory(const gpu_dl_entry* entries, const uint16_t* writers, i
 
 void gpu_exec_get_counters(gpu_exec_counters* out) { *out = XC; }
 
+/* (M7) every sample of a target as the render thread has it after everything submitted (tests: FF vs REF at
+ * scale): colour words (R in the low byte) or zpatch words */
+typedef struct { uint32_t id; uint32_t* out; size_t cap; int w, h, kx, ky, depth, ok; } readtgt_args;
+
+static void readtgt_fn(void* arg) {
+    readtgt_args* a = arg;
+    a->ok = 0;
+    if (!X.init) return;
+    xtarget* t = tgt(a->id);
+    if (!t || !t->tex) return;
+    unbind_all();
+    if (t->depth) ensure_zp_all(t);
+    ID3D11Texture2D* src = t->depth ? t->zp : t->tex;
+    D3D11_TEXTURE2D_DESC td;
+    ID3D11Texture2D_GetDesc(src, &td);
+    td.Usage = D3D11_USAGE_STAGING;
+    td.BindFlags = 0;
+    td.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    td.MiscFlags = 0;
+    ID3D11Texture2D* st = NULL;
+    if (FAILED(ID3D11Device_CreateTexture2D(gpu_rt.dev, &td, NULL, &st))) return;
+    ID3D11DeviceContext_CopyResource(gpu_rt.ctx, (ID3D11Resource*)st, (ID3D11Resource*)src);
+    D3D11_MAPPED_SUBRESOURCE m;
+    if (SUCCEEDED(ID3D11DeviceContext_Map(gpu_rt.ctx, (ID3D11Resource*)st, 0, D3D11_MAP_READ, 0, &m))) {
+        int w = (int)td.Width, h = (int)td.Height;
+        if ((size_t)w * (size_t)h <= a->cap) {
+            for (int y = 0; y < h; y++) memcpy(a->out + (size_t)y * (size_t)w, (const uint8_t*)m.pData + (size_t)y * m.RowPitch, (size_t)w * 4);
+            a->w = w; a->h = h; a->kx = t->kx; a->ky = t->ky; a->depth = t->depth;
+            a->ok = 1;
+        }
+        ID3D11DeviceContext_Unmap(gpu_rt.ctx, (ID3D11Resource*)st, 0);
+    }
+    GPU_RELEASE(st);
+}
+
+int gpu_exec_read_target(uint32_t id, uint32_t* out, size_t cap_words, int* w, int* h, int* kx, int* ky, int* depth) {
+    readtgt_args a = { id, out, cap_words, 0, 0, 0, 0, 0, 0 };
+    gpu_run_sync(readtgt_fn, &a);
+    *w = a.w; *h = a.h; *kx = a.kx; *ky = a.ky; *depth = a.depth;
+    return a.ok;
+}
+
 /* ---- producer side (GS thread): the frontend's sink -------------------------------------------------- */
 
 void gpu_submit_sink(const gpu_front_frame_data* fd, void* user) {
@@ -1675,6 +1893,7 @@ void gpu_submit_sink(const gpu_front_frame_data* fd, void* user) {
     gpu_op_frame* op = gpu_cmd_alloc(GPU_OP_FRAME, sizeof *op);
     op->fd = *fd;
     op->handle = h;
+    op->t_queued = qpc_ms();
     gpu_cmd_commit();
     gpu_cmd_publish();
     gpu_cmd_unlock();
