@@ -1887,7 +1887,12 @@ int main(int argc, char** argv) {
     HANDLE prof_thread = NULL;
     if (profile) {
         prof_symbols();
-        DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &ptarget,
+        HANDLE pt = GetCurrentThread();
+#if defined(GS_REPLAY_GPU) && defined(GPU_FRONT_THREAD_HANDLE)
+        /* (M9) GS_REPLAY_PROFILE_FRONT=1 with --front-thread: sample the frontend thread instead */
+        if (getenv("GS_REPLAY_PROFILE_FRONT") && gpu_front_thread_handle()) pt = (HANDLE)gpu_front_thread_handle();
+#endif
+        DuplicateHandle(GetCurrentProcess(), pt, GetCurrentProcess(), &ptarget,
                         THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, 0);
         prof_thread = CreateThread(NULL, 0, prof_main, NULL, 0, NULL);
         if (prof_thread) SetThreadPriority(prof_thread, THREAD_PRIORITY_TIME_CRITICAL);

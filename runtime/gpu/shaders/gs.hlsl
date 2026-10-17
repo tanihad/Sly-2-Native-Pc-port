@@ -23,22 +23,35 @@
 #define PRIM 0                           // 0 triangles, 1 sprites, 2 line / point pixels
 #endif
 
-cbuffer draw_cb : register(b0) {
-    uint rec_first;                      // byte offset of the draw's first record
-    uint draw_flags;                     // 1: colour target bound (u0), 2: depth target bound (u1)
-    uint kx, ky;                         // samples per native pixel of the bound targets
-    float2 ndc_scale, ndc_bias;          // NDC = d3d pixel * scale + bias (power-of-two viewport: exact)
-    uint vkx, vky;                       // texture view target samples
-    uint probe_x, probe_y;               // debug probe pixel (PS2_GPU_PROBE; ~0: off)
-    float one;                           // 1.0: products multiplied by it are rounded before any add
+// Per-draw constants (gpu_exec.c draw_consts, 256 bytes per draw slot). (M9) Read from the buffer drawc by the draw's
+// slot, which every draw passes as its StartInstanceLocation (the vertex shader's per-instance input DRAWID, the
+// executor's iota vertex buffer) and the vertex shader hands to the pixel shader: no constant buffer is rebound per
+// draw (binding a constant-buffer window per draw cost the GPU ~0.2 us per draw at 3x).
+ByteAddressBuffer drawc : register(t9);
+static uint rec_first;                   // byte offset of the draw's first record
+static uint draw_flags;                  // 1: colour target bound (u0), 2: depth target bound (u1)
+static uint kx, ky;                      // samples per native pixel of the bound targets
+static float2 ndc_scale, ndc_bias;       // NDC = d3d pixel * scale + bias (power-of-two viewport: exact)
+static uint vkx, vky;                    // texture view target samples
+static uint probe_x, probe_y;            // debug probe pixel (PS2_GPU_PROBE; ~0: off)
+static float one;                        // 1.0: products multiplied by it are rounded before any add
                                          //   (drivers may fuse a*b+c into an FMA despite `precise`)
-    uint vbase, vfbw;                    // texture view target: base page, width (CT16 views map words to its pixels)
-    uint vflags;                         // 1: the view has the bound target's sample grid (1:1 reads use the fragment's sample)
-    uint ff_blend;                       // FF draws (M5): blend class (gpu_front.c BL_*)
-    uint atst_mode;                      // FF draws: 0, 1 the pass draw of an ATST split (discard failing fragments),
+static uint vbase, vfbw;                 // texture view target: base page, width (CT16 views map words to its pixels)
+static uint vflags;                      // 1: the view has the bound target's sample grid (1:1 reads use the fragment's sample)
+static uint ff_blend;                    // FF draws (M5): blend class (gpu_front.c BL_*)
+static uint atst_mode;                   // FF draws: 0, 1 the pass draw of an ATST split (discard failing fragments),
                                          //   2 its fail draw (discard passing fragments)
-    float dual_bias;                     // FF dual-source blends: LSB the source is lowered by (ps_ff)
-};
+static float dual_bias;                  // FF dual-source blends: LSB the source is lowered by (ps_ff)
+
+void load_draw(uint did) {
+    uint b = did * 256u;
+    uint4 a = drawc.Load4(b), c = drawc.Load4(b + 16u), d = drawc.Load4(b + 32u), e = drawc.Load4(b + 48u), f = drawc.Load4(b + 64u);
+    rec_first = a.x; draw_flags = a.y; kx = a.z; ky = a.w;
+    ndc_scale = asfloat(c.xy); ndc_bias = asfloat(c.zw);
+    vkx = d.x; vky = d.y; probe_x = d.z; probe_y = d.w;
+    one = asfloat(e.x); vbase = e.y; vfbw = e.z; vflags = e.w;
+    ff_blend = f.x; atst_mode = f.y; dual_bias = asfloat(f.z);
+}
 
 // a * b rounded to the type's precision as the C reference rounds it (never fused with a later add)
 double dmul_r(double a, double b) { precise double p = a * b; precise double q = p * (double)one; return q; }
@@ -80,6 +93,7 @@ void probe_rec(uint kind, uint rb, uint state, int U, int V, uint t, uint col, u
 struct VR {
     float4 pos : SV_Position;
     nointerpolation uint rec : REC;      // record byte offset (sprites, line pixels)
+    nointerpolation uint did : DID;      // (M9) the draw's slot (load_draw)
 };
 
 float4 clip_of(float2 d3d) {             // d3d pixel coordinates -> clip space
@@ -92,11 +106,14 @@ struct VIn {
     uint rgba : COLOR0;
     uint fog_state : COLOR1;
     float3 stq : TEXCOORD0;
+    uint did : DRAWID;                   // (M9) the draw's slot: per-instance element, StartInstanceLocation
 };
 
 // triangles: D3D pixel x * k + i has its centre at GS position x + i / k (sample 0 = the native pixel)
 VR vs_ref_tri(VIn i) {
+    load_draw(i.did);
     VR o;
+    o.did = i.did;
     o.pos = clip_of(float2(i.xy.x * (float)kx + 0.5, i.xy.y * (float)ky + 0.5));
     o.rec = 0u;
     return o;
@@ -110,7 +127,10 @@ VR vs_ref_tri(VIn i) {
 float2 single_rate_pos(float x, float y) { return float2(x * (float)kx, y * (float)ky); }
 
 // sprites: the native rectangle [x0, x1) x [y0, y1), every sample of a native pixel covered (single rate)
-VR vs_ref_sprite(uint vid : SV_VertexID, uint inst : SV_InstanceID) {
+VR vs_ref_sprite(VIn vin, uint vid : SV_VertexID, uint inst : SV_InstanceID) {
+    uint did = vin.did - inst;           // (M9: element StartInstanceLocation + instance of the iota buffer; VIn keeps the
+                                         //  input registers of the shared input layout)
+    load_draw(did);
     uint base = rec_first + inst * 64u;
     uint2 r = recs.Load2(base);
     float x0 = (float)((int)(r.x << 16) >> 16), y0 = (float)((int)r.x >> 16);
@@ -118,23 +138,31 @@ VR vs_ref_sprite(uint vid : SV_VertexID, uint inst : SV_InstanceID) {
     VR o;
     o.pos = clip_of(single_rate_pos((vid & 1u) ? x1 : x0, (vid & 2u) ? y1 : y0));
     o.rec = base;
+    o.did = did;
     return o;
 }
 
 // line / point pixels: one native pixel each
-VR vs_ref_linepix(uint vid : SV_VertexID, uint inst : SV_InstanceID) {
+VR vs_ref_linepix(VIn vin, uint vid : SV_VertexID, uint inst : SV_InstanceID) {
+    uint did = vin.did - inst;           // (M9: element StartInstanceLocation + instance of the iota buffer; VIn keeps the
+                                         //  input registers of the shared input layout)
+    load_draw(did);
     uint base = rec_first + inst * 32u;
     uint r = recs.Load(base);
     float px = (float)((int)(r << 16) >> 16), py = (float)((int)r >> 16);
     VR o;
     o.pos = clip_of(single_rate_pos(px + ((vid & 1u) ? 1.0 : 0.0), py + ((vid & 2u) ? 1.0 : 0.0)));
     o.rec = base;
+    o.did = did;
     return o;
 }
 
 // (M7) thin analytic lines (outlines = thin, gpu_rec_thin): a quad around the line, wide enough for its
 // coverage plus a sample; the pixel shader decides every sample from its distance to the line
-VR vs_ref_thin(uint vid : SV_VertexID, uint inst : SV_InstanceID) {
+VR vs_ref_thin(VIn vin, uint vid : SV_VertexID, uint inst : SV_InstanceID) {
+    uint did = vin.did - inst;           // (M9: element StartInstanceLocation + instance of the iota buffer; VIn keeps the
+                                         //  input registers of the shared input layout)
+    load_draw(did);
     uint base = rec_first + inst * 128u;
     float4 g = asfloat(recs.Load4(base));            // lo, hi, a0, len (12.4)
     float2 o = asfloat(recs.Load2(base + 16u));      // o0, od (12.4)
@@ -150,6 +178,7 @@ VR vs_ref_thin(uint vid : SV_VertexID, uint inst : SV_InstanceID) {
     VR r;
     r.pos = clip_of(float2(p.x * (float)kx + 0.5, p.y * (float)ky + 0.5));
     r.rec = base;
+    r.did = did;
     return r;
 }
 
@@ -159,10 +188,13 @@ struct VF {
     float4 pos : SV_Position;
     nointerpolation uint rec : REC;
     noperspective float3 stq : TEXCOORD0;
+    nointerpolation uint did : DID;      // (M9) the draw's slot
 };
 
 VF vs_ff_tri(VIn i) {
+    load_draw(i.did);
     VF o;
+    o.did = i.did;
     o.pos = clip_of(float2(i.xy.x * (float)kx + 0.5, i.xy.y * (float)ky + 0.5));
     o.rec = 0u;
     o.stq = i.stq;
@@ -832,6 +864,7 @@ void ps_gs(VR i
 #if PRIM != 0
     uint prim = 0u;
 #endif
+    load_draw(i.did);
     Frag f;
     St st;
     if (!gs_frag(i.pos, i.rec, istq, prim, f, st)) return;
@@ -842,7 +875,7 @@ void ps_gs(VR i
     uint zbits = (st.zinfo >> 4) & 3u;
 
     bool probing = (uint)px == probe_x && (uint)py == probe_y;
-    if (probing) probe_rec(1u, rb, f.state, f.U, f.V, col, f.vcol, f.z, dbg_s, dbg_t, dbg_q, dbg_xl, 0u, 0u, 0u, px, py);
+    if (probing) probe_rec(1u, rb, f.state, f.U, f.V, col, f.vcol, f.z, dbg_s, dbg_t, dbg_q, dbg_xl, i.did, 0u, 0u, px, py);
 
     // ---- tests: alpha, destination alpha, Z (+ Z write) ----
     // 16-bit frames (ALIAS16 runs): rov_c is the staging texture holding the pixel's 16-bit value
@@ -965,6 +998,7 @@ FOut ps_ff(VR i) {
     uint prim = 0u;
     float3 istq = float3(0.0, 0.0, 1.0);
 #endif
+    load_draw(i.did);
     Frag f;
     St st;
     if (!gs_frag(i.pos, i.rec, istq, prim, f, st)) discard;

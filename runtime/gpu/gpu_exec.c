@@ -90,6 +90,10 @@ static struct {
     int init;
     xtarget T[MAX_TARGETS + 1];
     dynbuf vb, ib, rec, st, cb, dat, aux;
+    dynbuf dc;                           /* (M9) the per-draw constants as a raw buffer (gs.hlsl load_draw, t9) */
+    ID3D11Buffer* iota;                  /* (M9) uint i at element i: the DRAWID per-instance element (vertex buffer slot 1) */
+    uint32_t iota_n;
+    int clearview;                       /* (M9) ID3D11DeviceContext1::ClearView supported (D3D11_FEATURE_D3D11_OPTIONS) */
     ID3D11Buffer* vram;                  /* 4 MB raw (vram_buf) */
     ID3D11ShaderResourceView* vram_srv;
     ID3D11UnorderedAccessView* vram_uav;
@@ -669,6 +673,7 @@ _Static_assert(sizeof(draw_consts) == DRAW_CB_BYTES, "per-draw constants are one
 
 static uint8_t* cb_cpu;
 static size_t cb_cpu_cap;
+static uint32_t bc_maxid;                /* (M9) build_constants: iota elements the frame's draws read */
 
 /* the constants of every draw of the frame, in order (slot 0: quads); target sizes as they will be
  * when the draw runs (a light pass over the target ops). ref: REF or mixed frame (real drawing) */
@@ -680,6 +685,7 @@ static uint32_t build_constants(const gpu_front_frame_data* fd, int ref) {
         dim[i].base = X.T[i].base; dim[i].fbw = X.T[i].fbw;
     }
     uint32_t n = 1;
+    bc_maxid = 1;
     for (size_t pos = 0; pos + sizeof(gpu_fop) <= fd->cmd_bytes;) {
         const gpu_fop* h = (const gpu_fop*)(fd->cmd + pos);
         if (!h->size) break;
@@ -698,7 +704,13 @@ static uint32_t build_constants(const gpu_front_frame_data* fd, int ref) {
         } else if (h->op == GPU_FOP_RELEASE) {
             const gpu_fop_target* o = (const gpu_fop_target*)h;
             if (o->id && o->id <= MAX_TARGETS) { dim[o->id].w = dim[o->id].h = 0; dim[o->id].kx = dim[o->id].ky = 1; }
-        } else if (h->op == GPU_FOP_DRAW) n += draw_slots((const gpu_fop_draw*)h, ref);
+        } else if (h->op == GPU_FOP_DRAW) {
+            const gpu_fop_draw* d = (const gpu_fop_draw*)h;
+            n += draw_slots(d, ref);
+            /* (M9) the DRAWID element of the last instance: slot + instance (iota_ensure) */
+            uint32_t top = n + (d->cls == GPU_PC_TRI ? 0u : d->count);
+            if (top > bc_maxid) bc_maxid = top;
+        }
         pos += h->size;
     }
     size_t bytes = (size_t)n * DRAW_CB_BYTES;
@@ -766,6 +778,8 @@ static void bind_frame_buffers(void) {
     ID3D11DeviceContext* c = gpu_rt.ctx;
     UINT stride = 32, off = 0;
     ID3D11DeviceContext_IASetVertexBuffers(c, 0, 1, &X.vb.buf, &stride, &off);
+    UINT stride1 = 4;                    /* (M9) slot 1: the draw slot per instance (StartInstanceLocation) */
+    ID3D11DeviceContext_IASetVertexBuffers(c, 1, 1, &X.iota, &stride1, &off);
     ID3D11DeviceContext_IASetIndexBuffer(c, X.ib.buf, DXGI_FORMAT_R32_UINT, 0);
     ID3D11DeviceContext_IASetInputLayout(c, X.layout);
     ID3D11ShaderResourceView* t0 = X.vram_srv;
@@ -773,12 +787,36 @@ static void bind_frame_buffers(void) {
     ID3D11DeviceContext_PSSetShaderResources(c, 0, 1, &t0);
     ID3D11DeviceContext_PSSetShaderResources(c, 3, 5, t34567);
     ID3D11DeviceContext_VSSetShaderResources(c, 3, 1, &X.rec.srv);
+    ID3D11DeviceContext_PSSetShaderResources(c, 9, 1, &X.dc.srv);   /* (M9) per-draw constants */
+    ID3D11DeviceContext_VSSetShaderResources(c, 9, 1, &X.dc.srv);
     ID3D11DeviceContext_RSSetState(c, X.rs);
-    X.state_calls += 8;
+    X.state_calls += 11;
     X.b_topo = 0;
     X.b_vs = X.b_ps = X.b_bs = X.b_ds = NULL;
     X.b_vp_w = X.b_vp_h = -1;
     memset(&X.b_sc, 0xFF, sizeof X.b_sc);
+}
+
+/* (M9) the iota vertex buffer for at least n draw slots (element i holds i) */
+static int iota_ensure(uint32_t n) {
+    if (X.iota && X.iota_n >= n) return 1;
+    uint32_t cap = 65536;
+    while (cap < n) cap *= 2;
+    uint32_t* v = malloc((size_t)cap * 4);
+    if (!v) return 0;
+    for (uint32_t i = 0; i < cap; i++) v[i] = i;
+    D3D11_BUFFER_DESC bd;
+    memset(&bd, 0, sizeof bd);
+    bd.ByteWidth = cap * 4;
+    bd.Usage = D3D11_USAGE_IMMUTABLE;
+    bd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+    D3D11_SUBRESOURCE_DATA sd = { v, 0, 0 };
+    GPU_RELEASE(X.iota);
+    HRESULT hr = ID3D11Device_CreateBuffer(gpu_rt.dev, &bd, &sd, &X.iota);
+    free(v);
+    if (FAILED(hr)) { X.iota_n = 0; gpu_log("cannot create the draw-slot buffer"); return 0; }
+    X.iota_n = cap;
+    return 1;
 }
 
 static void set_consts(uint32_t slot) {
@@ -925,14 +963,34 @@ static void exec_clear(const gpu_fop_clear* o) {
         ensure_zp(t, 0, 0, x1 - 1, y1 - 1);
         full = x1 * t->kx >= t->w && y1 * t->ky >= t->h;
     }
-    mem_consts k;
-    target_consts(t, &k);
-    k.value = o->value;
-    k.wmask = o->zclear ? 15 : o->mask & 15;
-    k.cx1 = (uint32_t)x1;
-    k.cy1 = (uint32_t)y1;
-    mem_dispatch(GPU_SH_cs_clear, &k, (uint32_t)(x1 + 7) / 8, (uint32_t)(y1 + 7) / 8, NULL, X.dat.srv, NULL,
-                 t->depth ? NULL : t->uav, t->depth ? t->zp_uav : NULL);
+    /* (M9) hardware clears where they write exactly what cs_clear writes: a colour clear of every byte (ClearView on
+     * the UNORM RTV: byte b as b / 255 converts back to b), a Z32 / Z16 zpatch clear of the whole target (the stored
+     * word; Z24 keeps zpatch's top byte: cs_clear) */
+    int fullrect = x1 * t->kx >= t->w && y1 * t->ky >= t->h, hw = 0;
+    static int nohw = -1;                /* (PS2_GPU_NO_HWCLEAR=1: every clear through cs_clear, comparisons) */
+    if (nohw < 0) { const char* e = getenv("PS2_GPU_NO_HWCLEAR"); nohw = e && atoi(e); }
+    if (nohw) fullrect = 0;
+    if (!t->depth && (o->mask & 15) == 15 && X.clearview && t->rtv && !nohw) {
+        D3D11_RECT rc = { 0, 0, x1 * t->kx < t->w ? x1 * t->kx : t->w, y1 * t->ky < t->h ? y1 * t->ky : t->h };
+        float col[4] = { (float)(o->value & 255) / 255.0f, (float)((o->value >> 8) & 255) / 255.0f,
+                         (float)((o->value >> 16) & 255) / 255.0f, (float)(o->value >> 24) / 255.0f };
+        ID3D11DeviceContext1_ClearView(gpu_rt.ctx1, (ID3D11View*)t->rtv, col, &rc, 1);
+        hw = 1;
+    } else if (t->depth && fullrect && t->kind != XK_Z24 && t->zp_uav) {
+        UINT v[4] = { o->value, o->value, o->value, o->value };
+        ID3D11DeviceContext_ClearUnorderedAccessViewUint(gpu_rt.ctx, t->zp_uav, v);
+        hw = 1;
+    }
+    if (!hw) {
+        mem_consts k;
+        target_consts(t, &k);
+        k.value = o->value;
+        k.wmask = o->zclear ? 15 : o->mask & 15;
+        k.cx1 = (uint32_t)x1;
+        k.cy1 = (uint32_t)y1;
+        mem_dispatch(GPU_SH_cs_clear, &k, (uint32_t)(x1 + 7) / 8, (uint32_t)(y1 + 7) / 8, NULL, X.dat.srv, NULL,
+                     t->depth ? NULL : t->uav, t->depth ? t->zp_uav : NULL);
+    }
     if (o->zclear && X.mixed && t->zts) {
         uint32_t zv = (uint32_t)o->value & (zbits_of(t) == 1 ? 0xFFFFu : zbits_of(t) == 2 ? 0xFFFFFFu : 0xFFFFFFFFu);
         if (full) {
@@ -1266,19 +1324,19 @@ static void exec_draw_ref(const gpu_fop_draw* d, uint32_t slot) {
     int kx = sizing->kx, ky = sizing->ky;
     draw_scissor(d, kx, ky);
     set_depth(X.ds_off);
-    set_consts(slot);
+    /* (M9) the draw's constants by its slot: StartInstanceLocation -> DRAWID (gs.hlsl load_draw), no constant buffer */
     if (d->cls == GPU_PC_TRI) {
         int fast = (d->ps_key & GPU_PSK_FF_FAST) != 0;   /* (mixed default mode: 128-byte records, hardware S/T/Q) */
         set_topo(0);
         set_vs(gpu_vs(fast ? GPU_SH_vs_ff_tri : GPU_SH_vs_ref_tri));
         set_ps(gpu_ps(X.mixed && dbg_skip == 3 && fast ? GPU_SH_ps_ff_t001 : fast ? GPU_SH_ps_gs_tri_fast : GPU_SH_ps_gs_tri));
-        ID3D11DeviceContext_DrawIndexed(c, d->count, d->first, 0);
+        ID3D11DeviceContext_DrawIndexedInstanced(c, d->count, 1, d->first, 0, slot);
     } else {
         set_topo(1);
         int sprite = d->cls == GPU_PC_SPRITE, thin = d->cls == GPU_PC_THIN;
         set_vs(gpu_vs(sprite ? GPU_SH_vs_ref_sprite : thin ? GPU_SH_vs_ref_thin : GPU_SH_vs_ref_linepix));
         set_ps(gpu_ps(sprite ? GPU_SH_ps_gs_sprite : thin ? GPU_SH_ps_gs_thin : GPU_SH_ps_gs_linepix));
-        ID3D11DeviceContext_DrawInstanced(c, 4, d->count, 0, 0);
+        ID3D11DeviceContext_DrawInstanced(c, 4, d->count, 0, slot);
     }
     gpu_rt.n_draws++;
     XC.ref_draws++;
@@ -1334,13 +1392,14 @@ static void exec_draw_ff(const gpu_fop_draw* d, uint32_t slot) {
         }
         if (!wm && !(depth & 1)) continue;
         static int dbgd = -1;                /* (M9 experiments, wrong pictures: PS2_GPU_DBG_DRAW bits: 1 keep the first blend /
-                                                depth states, 2 keep the first constants, 4 skip the draw, 8 one primitive) */
+                                                depth states, 4 skip the draw, 8 one primitive) */
         if (dbgd < 0) { const char* e = getenv("PS2_GPU_DBG_DRAW"); dbgd = e ? atoi(e) : 0; }
         if (dbgd & 4) continue;
-        if (!(dbgd & 2) || !X.b_bs) set_consts(slot + (uint32_t)(half && d->split == 3));
         if (!(dbgd & 1) || !X.b_bs) { set_blend(blend_state(d->blend, wm)); set_depth(depth_state(depth)); }
-        if (d->cls == GPU_PC_TRI) ID3D11DeviceContext_DrawIndexed(c, (dbgd & 8) ? 3 : d->count, d->first, 0);
-        else ID3D11DeviceContext_DrawInstanced(c, 4, (dbgd & 8) ? 1 : d->count, 0, 0);
+        /* (M9) the constants by the draw's slot (StartInstanceLocation -> DRAWID); the fail half of a split is the next slot */
+        UINT s = slot + (uint32_t)(half && d->split == 3);
+        if (d->cls == GPU_PC_TRI) ID3D11DeviceContext_DrawIndexedInstanced(c, (dbgd & 8) ? 3 : d->count, 1, d->first, 0, s);
+        else ID3D11DeviceContext_DrawInstanced(c, 4, (dbgd & 8) ? 1 : d->count, 0, s);
         gpu_rt.n_draws++;
         XC.ff_draws++;
         zwrote |= depth & 1;
@@ -1449,8 +1508,9 @@ static void exec_alias16(const gpu_fop_alias16* o, int end) {
     k.psm16 = o->psm;
     uint32_t wx = (uint32_t)(o->x1 - o->x0);
     if (end) wx /= 2;                    /* (scatter: a thread per word, two 16-bit pixels) */
-    mem_dispatch(end ? GPU_SH_cs_a16_scatter : GPU_SH_cs_a16_gather, &k, (wx + 7) / 8,
-                 (uint32_t)(o->y1 - o->y0 + 7) / 8, NULL, X.dat.srv, X.a16_uav, t->uav, NULL);
+    /* (M9) a thread per sample, the target as R32_UINT */
+    mem_dispatch(end ? GPU_SH_cs_a16_scatter : GPU_SH_cs_a16_gather, &k, (wx * (uint32_t)t->kx + 7) / 8,
+                 ((uint32_t)(o->y1 - o->y0) * (uint32_t)t->ky + 7) / 8, NULL, X.dat.srv, X.a16_uav, t->uav32, NULL);
     if (end) XC.alias16_runs++;
 }
 
@@ -1525,9 +1585,20 @@ static int exec_init(void) {
         { "COLOR", 0, DXGI_FORMAT_R32_UINT, 0, 8, D3D11_INPUT_PER_VERTEX_DATA, 0 },
         { "COLOR", 1, DXGI_FORMAT_R32_UINT, 0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0 },
         { "TEXCOORD", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 16, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+        /* (M9) the draw's slot: element StartInstanceLocation + instance of the iota buffer (the vertex shaders of the
+         * instanced classes - sprites, line pixels - subtract SV_InstanceID; a larger step rate was not divided the
+         * documented way on the RTX 4060 Ti) */
+        { "DRAWID", 0, DXGI_FORMAT_R32_UINT, 1, 0, D3D11_INPUT_PER_INSTANCE_DATA, 1 },
     };
-    const gpu_shader_blob* vb = &gpu_shaders[GPU_SH_vs_tri];
-    if (FAILED(ID3D11Device_CreateInputLayout(gpu_rt.dev, el, 4, vb->code, vb->size, &X.layout))) { gpu_log("input layout failed"); return 0; }
+    const gpu_shader_blob* vb = &gpu_shaders[GPU_SH_vs_ff_tri];   /* (the input signature with DRAWID) */
+    if (FAILED(ID3D11Device_CreateInputLayout(gpu_rt.dev, el, 5, vb->code, vb->size, &X.layout))) { gpu_log("input layout failed"); return 0; }
+    if (!iota_ensure(65536)) return 0;
+    {
+        D3D11_FEATURE_DATA_D3D11_OPTIONS fo;
+        memset(&fo, 0, sizeof fo);
+        X.clearview = gpu_rt.ctx1 && SUCCEEDED(ID3D11Device_CheckFeatureSupport(gpu_rt.dev, D3D11_FEATURE_D3D11_OPTIONS, &fo, sizeof fo)) &&
+                      fo.ClearView;
+    }
     D3D11_RASTERIZER_DESC rd;
     memset(&rd, 0, sizeof rd);
     rd.FillMode = D3D11_FILL_SOLID;
@@ -1547,7 +1618,7 @@ static int exec_init(void) {
     /* the per-frame buffers start at a size that holds Sly's heaviest frames */
     if (!dyn_ensure(&X.vb, 8u << 20, D3D11_BIND_VERTEX_BUFFER, 0) || !dyn_ensure(&X.ib, 2u << 20, D3D11_BIND_INDEX_BUFFER, 0) ||
         !dyn_ensure(&X.rec, 8u << 20, D3D11_BIND_SHADER_RESOURCE, 1) || !dyn_ensure(&X.st, 1u << 20, D3D11_BIND_SHADER_RESOURCE, 1) ||
-        !dyn_ensure(&X.cb, 4u << 20, D3D11_BIND_CONSTANT_BUFFER, 0) || !dyn_ensure(&X.dat, 1u << 20, D3D11_BIND_SHADER_RESOURCE, 1) ||
+        !dyn_ensure(&X.dc, 1u << 20, D3D11_BIND_SHADER_RESOURCE, 1) || !dyn_ensure(&X.dat, 1u << 20, D3D11_BIND_SHADER_RESOURCE, 1) ||
         !dyn_ensure(&X.aux, 1u << 20, D3D11_BIND_SHADER_RESOURCE, 1))
         return 0;
     /* every shader object up front (no creation inside a measured frame) */
@@ -1587,9 +1658,9 @@ static void probe_report(const gpu_front_frame_data* fd) {
         memcpy(&s, &r[8], 4); memcpy(&t, &r[9], 4); memcpy(&q, &r[10], 4);
         uint32_t k = r[0] & 3;
         if (k == 1)
-            gpu_log("probe v%u%s %s rec %u state %u: U %d V %d colour %08X (vertex/record %08X) z %08X s %.9g t %.9g q %.9g xl %d [s %08X t %08X q %08X]",
+            gpu_log("probe v%u%s %s rec %u state %u: U %d V %d colour %08X (vertex/record %08X) z %08X s %.9g t %.9g q %.9g xl %d [s %08X t %08X q %08X] draw slot %u",
                     fd->vblank, fd->flags & GPU_FD_PARTIAL ? "p" : "", kinds[k], r[1], r[2], (int)r[3], (int)r[4], r[5], r[6], r[7],
-                    s, t, q, (int)r[11], r[8], r[9], r[10]);
+                    s, t, q, (int)r[11], r[8], r[9], r[10], r[12]);
         else if (k == 3)
             gpu_log("probe v%u%s %s rec %u: zv %08X zold %08X after %08X written/zinfo/flags %X mode %d", fd->vblank, fd->flags & GPU_FD_PARTIAL ? "p" : "",
                     kinds[k], r[1], r[7], r[12], r[13], r[6], (int)r[11]);
@@ -1610,8 +1681,10 @@ void gpu_exec_release(void) {
     GPU_RELEASE(X.ztile_srv); GPU_RELEASE(X.ztile); GPU_RELEASE(X.zcb);
     for (int i = 0; i < PR_MAXQ; i++) { GPU_RELEASE(PR.q[i]); GPU_RELEASE(PR.sq[i]); GPU_RELEASE(PR.oq[i]); }
     GPU_RELEASE(PR.dis);
-    dynbuf* d[7] = { &X.vb, &X.ib, &X.rec, &X.st, &X.cb, &X.dat, &X.aux };
-    for (int i = 0; i < 7; i++) { GPU_RELEASE(d[i]->srv); GPU_RELEASE(d[i]->buf); d[i]->cap = 0; }
+    dynbuf* d[8] = { &X.vb, &X.ib, &X.rec, &X.st, &X.cb, &X.dat, &X.aux, &X.dc };
+    for (int i = 0; i < 8; i++) { GPU_RELEASE(d[i]->srv); GPU_RELEASE(d[i]->buf); d[i]->cap = 0; }
+    GPU_RELEASE(X.iota);
+    X.iota_n = 0;
     GPU_RELEASE(X.vram_srv); GPU_RELEASE(X.vram_uav); GPU_RELEASE(X.vram); GPU_RELEASE(X.scratch_uav); GPU_RELEASE(X.scratch_srv);
     GPU_RELEASE(X.scratch);
     GPU_RELEASE(X.stage); GPU_RELEASE(X.swz_srv); GPU_RELEASE(X.swz); GPU_RELEASE(X.clut_srv); GPU_RELEASE(X.clut);
@@ -1724,7 +1797,8 @@ void gpu_exec_frame(const void* payload) {
              dyn_fill(&X.rec, fd->rec, fd->rec_bytes, D3D11_BIND_SHADER_RESOURCE, 1) &&
              dyn_fill(&X.st, fd->states, fd->state_count * GPU_STATE_BYTES, D3D11_BIND_SHADER_RESOURCE, 1) &&
              dyn_fill(&X.dat, fd->data, fd->data_bytes, D3D11_BIND_SHADER_RESOURCE, 1) &&
-             dyn_fill(&X.cb, cb_cpu, (size_t)ncb * DRAW_CB_BYTES, D3D11_BIND_CONSTANT_BUFFER, 0);
+             (X.ref || X.mixed ? dyn_fill(&X.dc, cb_cpu, (size_t)ncb * DRAW_CB_BYTES, D3D11_BIND_SHADER_RESOURCE, 1) && iota_ensure(bc_maxid)
+                               : dyn_fill(&X.cb, cb_cpu, (size_t)ncb * DRAW_CB_BYTES, D3D11_BIND_CONSTANT_BUFFER, 0));
     double t1 = qpc_ms();
     if (!ok) gpu_log("frame %u: upload failed", fd->vblank);
     bind_frame_buffers();

@@ -126,6 +126,8 @@ void gpu_front_stop(void);                          /* (drains the frontend thre
 void gpu_front_drain(void);                         /* frontend thread: wait until it processed everything posted */
 uint64_t gpu_front_thread_cycles(void);             /* frontend thread CPU (QueryThreadCycleTime), 0 without */
 void gpu_front_thread_affinity(uint64_t mask);       /* benchmarks: pin the frontend thread */
+void* gpu_front_thread_handle(void);                 /* (M9) the frontend thread's HANDLE (profiling), NULL without */
+#define GPU_FRONT_THREAD_HANDLE 1
 /* VBlank (stream order, before the picture): closes the frame. priv: the display registers
  * (gs_priv_snapshot order) for the display target family. */
 void gpu_front_vblank(const uint64_t priv[16], uint32_t vblank);

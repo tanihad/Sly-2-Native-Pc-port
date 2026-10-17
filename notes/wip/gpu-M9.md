@@ -40,19 +40,32 @@ Render CPU 1.3-3.7 ms. (In game M8: GPU 8.1-12.1, GS 7-8, frontend up to 10.8.)
 - D32S8 -> D32 depth: no speed change, half the depth memory (kept; exact).
 
 ## Done
-- 46673ef tools; (next commit) m9_exact.ps1, --sample-hash, game-pic-hash, D32 depth, trace bbox, DBG_DRAW.
+- 46673ef tools; 3e8c202 m9_exact.ps1, --sample-hash, game-pic-hash, D32 depth, trace bbox, DBG_DRAW.
+- ROV run absorption (FF gaps between ROV draws executed on ROV): measured WORSE (ep8 boss 11.6 -> 21.4 ms): every ROV
+  D3D draw costs ~20-40 us (UAV draws serialise), so more ROV draws = slower. Removed.
+- b513aee **source-alpha bound from the palette entries the texels use** (gpu_front.c tex_used_alpha, gpu_own.c
+  own_rect_serials, gpu_clut.c clut_entry_alpha): 100% of the corpus' "As > 128" pass-A lerps never use a palette entry
+  above 0x80 (measured by scanning their texel rects) -> they take the FF dual tier instead of ROV runs; ATST straddles
+  (22-64% of pass-A kicks) mostly become all-pass / all-fail (exact). ROV runs per VBlank: ep7 90.7 -> 1.8, ep5 29 -> 4.6.
+  GPU 3x 16:9: ep8 11.6->8.2, ep3 12.4->9.8, ep5 13.1->10.1, ep1 13.9->10.4, ep7 20.4->12.9, load_m3 9.3->8.1,
+  ws_ep3 14.7->12.1. Exactness: PS2_GPU_NO_TEX_ALPHA=2 (bound used for ATST outcomes only) is bit-identical to 829070e on
+  all 27 recordings at S=1 and S=3 (m9_exact -Every 7); the full mode moves those primitives from ROV (exact) to the FF
+  dual-source class (+-1 per blend, the 10.2 tolerance class every other As <= 128 lerp is in): lockstep mixed S=1
+  ep7/ep8 boss, ep5, ep3, ep1: 0 beyond, e.g. ep7 +-1 words 102.5M -> 104.0M, +-2 1.01M -> 1.23M, min PSNR 53.34 -> 53.30.
+  RECORDED TRADE: exact -> +-1 for these primitives. New exactness baseline for later steps: build\basert2 (b513aee).
+- ALIAS16 gather/scatter: a thread per sample, the target as R32_UINT: 0.56 -> 0.25 ms per VBlank (ep5), bit-identical.
 
 ## In progress
-- ROV run absorption (executor): FF draws sandwiched between ROV draws on the same targets run on the ROV tier
-  (same records: FF fast and ROV fast triangles share the 128-byte layout). Exact for every FF class except the
-  dual-source lerp (ROV exact, FF +-1): record + verify with dual absorption off.
+- Per-draw constants by draw slot (gs.hlsl load_draw from t9 + DRAWID per-instance element via StartInstanceLocation,
+  gpu_exec.c iota buffer) instead of a constant-buffer window per draw; hardware clears (ClearView / ClearUAV).
+  First try wrong: per-instance step rate 2^30 + StartInstanceLocation gave slot 0 (start applied before the division?);
+  now step rate 1 and the instanced VSs subtract SV_InstanceID.
 
 ## Next
-1. ROV absorption; measure; m9_exact.
-2. Per-draw constants without CB rebinding (draw id via a per-instance vertex element + StartInstanceLocation).
-3. ALIAS16 cost (~2 ms per game frame), clears via ClearView, texture sampling (CLUT words, swizzle in ALU / atlas).
-4. Frontend / GS thread profiles (gs_replay --profile), downloads pattern, latency/in-flight, memory.
-5. Gates, in-game sweep subset, appendix L, WIP complete.
+1. Draw slots + clears: m9_exact vs basert2, bench.
+2. Frontend / GS thread profiles (GS_REPLAY_PROFILE_FRONT=1 + --front-thread), downloads pattern, latency/in-flight, memory.
+3. Texture sampling (CLUT words, swizzle in ALU / atlas), sprites, remaining ROV (ep7 shadow volumes).
+4. Gates, in-game sweep subset, appendix L, WIP complete.
 
 ## Findings / traps
 - DayZ (the owner's game) may be running: check `nvidia-smi --query-gpu=utilization.gpu` before timing runs.
