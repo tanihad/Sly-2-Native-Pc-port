@@ -486,9 +486,11 @@ static void verify_vblank(const gs_display_snap* snap, uint32_t vblank) {
     gpu_mem_compare(rb_mem, gs_vram, writer, verify_kind, 0, &d);
     checks++;
     if (d.blocks && !d.over) tolerated++;
-    static int pair_dump = -1;           /* PS2_GS_VERIFY_DUMP=1: both pictures of every comparison (paired checks) */
-    if (pair_dump < 0) { const char* e = getenv("PS2_GS_VERIFY_DUMP"); pair_dump = e && atoi(e) != 0; }
-    if (pair_dump && !d.over) {
+    /* PS2_GS_VERIFY_DUMP=1: both pictures of every comparison (paired checks); =K > 1: of the comparisons at VBlanks
+     * that are multiples of K (M8 sweeps: K = PS2_DUMP_EVERY pairs them with the frame dumps at scale) */
+    static int pair_dump = -1;
+    if (pair_dump < 0) { const char* e = getenv("PS2_GS_VERIFY_DUMP"); pair_dump = e && atoi(e) > 0 ? atoi(e) : 0; }
+    if (pair_dump && !d.over && vblank % (uint32_t)pair_dump == 0) {
         static gs_compose_hist *ps, *ph;
         static uint32_t a[1024 * 1024], b[1024 * 1024];
         if (!ps) { ps = gs_compose_hist_new(); ph = gs_compose_hist_new(); }
