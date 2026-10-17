@@ -1,15 +1,17 @@
 # M9 replay benchmark (notes/d3d11-renderer.md M9): GPU / render-thread time per game frame of the GPU renderer's
 # mixed frames (gs_replay --backend hw --mixed, no read-backs) on the target recordings, interleaved runs, medians.
 #   powershell -ExecutionPolicy Bypass -File scripts\m9_bench.ps1 -Exe build\base\gs_replay.exe [-Runs 3] [-Scale 3]
-#       [-Aspect 16:9] [-Only ep8_boss,ep3_hub] [-Extra "--thin"] [-Prof] [-Label base] [-Csv out.csv]
+#       [-Aspect 16:9] [-Only ep8_boss,ep3_hub] [-Extra "--thin"] [-Prof] [-Label base] [-Csv out.csv] [-EnvVars "A=1,B=2"]
 # One line per recording: GPU ms per game frame (median of the runs' medians, and their p90), D3D draws, render-thread
 # CPU ms; -Prof also prints PS2_GPU_PROF's split (GPU ms per VBlank per kind of work, last report of the last run).
 # The GPU utilisation (nvidia-smi) before each run is printed: other programs on the GPU make timings meaningless.
 param([Parameter(Mandatory = $true)][string]$Exe, [int]$Runs = 3, [int]$Scale = 3, [string]$Aspect = "16:9",
       [string[]]$Only = @(), [string[]]$Extra = @(), [switch]$Prof, [string]$Label = "", [string]$Csv = "",
-      [string]$CorpusRoot = "C:\Users\tanih\Projects\sly2-worktrees", [int]$Skip = 10, [hashtable]$EnvVars = @{})
+      [string]$CorpusRoot = "C:\Users\tanih\Projects\sly2-worktrees", [int]$Skip = 10, [string]$EnvVars = "")
 $Only = @($Only | ForEach-Object { $_ -split ',' } | Where-Object { $_ })
 $Extra = @($Extra | ForEach-Object { $_ -split ' ' } | Where-Object { $_ })
+$envs = @{}
+foreach ($kv in ($EnvVars -split ',' | Where-Object { $_ })) { $q = $kv -split '=', 2; $envs[$q[0]] = $q[1] }
 $recs = [ordered]@{
     'ep8_boss'   = 'ep8\build\gsrec\boss.gsrec'
     'ep3_hub'    = 'ep3\build\gsrec\hub.gsrec'
@@ -38,13 +40,13 @@ foreach ($r in 1..$Runs) {
         if ($Aspect) { $a += @('--aspect', $Aspect) }
         $a += $Extra
         $saved = @{}
-        foreach ($e in $EnvVars.Keys) { $saved[$e] = [Environment]::GetEnvironmentVariable($e); [Environment]::SetEnvironmentVariable($e, [string]$EnvVars[$e]) }
+        foreach ($e in $envs.Keys) { $saved[$e] = [Environment]::GetEnvironmentVariable($e); [Environment]::SetEnvironmentVariable($e, [string]$envs[$e]) }
         if ($Prof) { $env:PS2_GPU_PROF = '1' }
         $quoted = ($a | ForEach-Object { '"' + $_ + '"' }) -join ' '
         & cmd /c "`"`"$run`" $quoted 2>`"$log`"`""
         $rc = $LASTEXITCODE
         if ($Prof) { Remove-Item Env:PS2_GPU_PROF -ErrorAction SilentlyContinue }
-        foreach ($e in $EnvVars.Keys) { [Environment]::SetEnvironmentVariable($e, $saved[$e]) }
+        foreach ($e in $envs.Keys) { [Environment]::SetEnvironmentVariable($e, $saved[$e]) }
         $txt = Get-Content $log
         $rb = $txt | Where-Object { $_ -match '^ref-bench ' } | Select-Object -Last 1
         $rd = $txt | Where-Object { $_ -match '^ref-bench-dist ' } | Select-Object -Last 1

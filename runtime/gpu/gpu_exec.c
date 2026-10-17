@@ -304,7 +304,7 @@ static int target_views(xtarget* t);
 static int target_realloc(xtarget* t, int w, int h, int okx, int oky) {
     if (t->tex && t->w == w && t->h == h && !okx) return 1;
     unbind_all();
-    ID3D11Texture2D* nt = t->depth ? tex2d(w, h, DXGI_FORMAT_R32G8X24_TYPELESS, D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE)
+    ID3D11Texture2D* nt = t->depth ? tex2d(w, h, DXGI_FORMAT_R32_TYPELESS, D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE)
                                    : tex2d(w, h, DXGI_FORMAT_R8G8B8A8_TYPELESS,
                                            D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS);
     ID3D11Texture2D* nz = t->depth ? tex2d(w, h, DXGI_FORMAT_R32_UINT, D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE) : NULL;
@@ -345,14 +345,14 @@ static int target_views(xtarget* t) {
     if (t->depth) {
         D3D11_DEPTH_STENCIL_VIEW_DESC dd;
         memset(&dd, 0, sizeof dd);
-        dd.Format = DXGI_FORMAT_D32_FLOAT_S8X24_UINT;
+        dd.Format = DXGI_FORMAT_D32_FLOAT;
         dd.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2D;
         hr = ID3D11Device_CreateDepthStencilView(gpu_rt.dev, (ID3D11Resource*)nt, &dd, &t->dsv);
-        dd.Flags = D3D11_DSV_READ_ONLY_DEPTH | D3D11_DSV_READ_ONLY_STENCIL;
+        dd.Flags = D3D11_DSV_READ_ONLY_DEPTH;
         if (SUCCEEDED(hr)) hr = ID3D11Device_CreateDepthStencilView(gpu_rt.dev, (ID3D11Resource*)nt, &dd, &t->dsv_ro);
         D3D11_SHADER_RESOURCE_VIEW_DESC sd;
         memset(&sd, 0, sizeof sd);
-        sd.Format = DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS;
+        sd.Format = DXGI_FORMAT_R32_FLOAT;
         sd.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
         sd.Texture2D.MipLevels = 1;
         if (SUCCEEDED(hr)) hr = ID3D11Device_CreateShaderResourceView(gpu_rt.dev, (ID3D11Resource*)nt, &sd, &t->srv);
@@ -1333,11 +1333,14 @@ static void exec_draw_ff(const gpu_fop_draw* d, uint32_t slot) {
             else { depth &= ~1; if (d->afail == 3) wm &= 7; } /* FB_ONLY, RGB_ONLY */
         }
         if (!wm && !(depth & 1)) continue;
-        set_consts(slot + (uint32_t)(half && d->split == 3));
-        set_blend(blend_state(d->blend, wm));
-        set_depth(depth_state(depth));
-        if (d->cls == GPU_PC_TRI) ID3D11DeviceContext_DrawIndexed(c, d->count, d->first, 0);
-        else ID3D11DeviceContext_DrawInstanced(c, 4, d->count, 0, 0);
+        static int dbgd = -1;                /* (M9 experiments, wrong pictures: PS2_GPU_DBG_DRAW bits: 1 keep the first blend /
+                                                depth states, 2 keep the first constants, 4 skip the draw, 8 one primitive) */
+        if (dbgd < 0) { const char* e = getenv("PS2_GPU_DBG_DRAW"); dbgd = e ? atoi(e) : 0; }
+        if (dbgd & 4) continue;
+        if (!(dbgd & 2) || !X.b_bs) set_consts(slot + (uint32_t)(half && d->split == 3));
+        if (!(dbgd & 1) || !X.b_bs) { set_blend(blend_state(d->blend, wm)); set_depth(depth_state(depth)); }
+        if (d->cls == GPU_PC_TRI) ID3D11DeviceContext_DrawIndexed(c, (dbgd & 8) ? 3 : d->count, d->first, 0);
+        else ID3D11DeviceContext_DrawInstanced(c, 4, (dbgd & 8) ? 1 : d->count, 0, 0);
         gpu_rt.n_draws++;
         XC.ff_draws++;
         zwrote |= depth & 1;

@@ -695,9 +695,9 @@ static void close_draw(void) {
     }
     if (trace_on)
         fprintf(stderr, "[front] draw %s %-8s cls %d prims %u count %u ct %u zt %u tex %u ps %03X blend %d depth %d wmask %X split %d "
-                        "FRAME %016llX ALPHA %010llX TEST %05llX\n", OD.d.tier == GPU_TIER_ROV ? "ROV" : OD.d.tier == GPU_TIER_ALIAS16 ? "A16" : "FF ", phase_names[OD.phase % GPU_PH_N], OD.d.cls,
+                        "FRAME %016llX ALPHA %010llX TEST %05llX bbox %d %d %d %d\n", OD.d.tier == GPU_TIER_ROV ? "ROV" : OD.d.tier == GPU_TIER_ALIAS16 ? "A16" : "FF ", phase_names[OD.phase % GPU_PH_N], OD.d.cls,
                 OD.prims, OD.d.count, OD.d.ct, OD.d.zt, OD.d.tex, OD.d.ps_key, OD.d.blend, OD.d.depth, OD.d.wmask, split,
-                (unsigned long long)OD.frame, (unsigned long long)OD.alpha, (unsigned long long)OD.test);
+                (unsigned long long)OD.frame, (unsigned long long)OD.alpha, (unsigned long long)OD.test, OD.bbox[0], OD.bbox[1], OD.bbox[2], OD.bbox[3]);
 }
 
 static void close_run(void) {

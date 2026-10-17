@@ -1149,6 +1149,8 @@ static void snap_flicker_strip(uint64_t* priv) {
     priv[0] &= ~(uint64_t)(dby1 > dby2 ? 1 : 2);
 }
 
+static uint64_t game_pic_hash = 0xCBF29CE484222325ull;
+
 static void game_dump(const uint32_t* px, int w, int h, uint32_t vblank, int content43) {
     (void)vblank; (void)content43;
     if (px) memcpy(game_px, px, (size_t)w * (size_t)h * 4);
@@ -1182,6 +1184,11 @@ static void game_vblank(uint32_t vblank) {
     LONG zero = 0;
     while (!game_got) WaitOnAddress((volatile VOID*)&game_got, &zero, sizeof zero, 50);
     game_pics++;
+    {   /* (M9) a hash of every GPU picture (hw-vs-hw exactness of optimisations: game-pic-hash in the report) */
+        game_pic_hash ^= (uint64_t)game_w << 32 | (uint64_t)game_h;
+        game_pic_hash *= 0x100000001B3ull;
+        for (size_t i = 0, n = (size_t)game_w * (size_t)game_h; i < n; i++) { game_pic_hash ^= game_px[i] & 0xFFFFFF; game_pic_hash *= 0x100000001B3ull; game_pic_hash ^= game_pic_hash >> 29; }
+    }
     if (game_save && game_w) save_png("", game_px, game_w, game_h, game_w, vblank);
     if (!hwmem) hwmem = malloc(GS_VRAM_SIZE);
     if (!hw_hist) hw_hist = gs_compose_hist_new();
@@ -1310,6 +1317,7 @@ static void game_report(void) {
             (unsigned long long)xc.ff_draws, (unsigned long long)xc.rov_draws, (unsigned long long)xc.frames,
             game_sw_pics ? "; software renderer pictures after a fall-back: see below" : "");
     if (game_sw_pics) fprintf(stderr, "game: %u pictures by the software renderer (fall-back)\n", game_sw_pics);
+    fprintf(stderr, "game-pic-hash %016llx over %u pictures\n", (unsigned long long)game_pic_hash, game_pics);
     if (!game_exact)
         fprintf(stderr, "game: scale %d gfx %X: box-downsampled vs the reference compose: min PSNR %.2f dB, max |mean signed error| %.3f, "
                         "%u beyond (PSNR < 32 dB or |mean signed error| >= 0.5); min PSNR centred box %.2f, pixel box %.2f\n", game_scale, game_gfx,
@@ -1331,6 +1339,10 @@ static uint64_t smp_cwords, smp_c2, smp_c16, smp_zwords, smp_zdiff;
 static double smp_w2, smp_w16, smp_wz;              /* worst fractions of a single comparison */
 #define SMP_CAP (16u << 20)
 
+/* (M9) --sample-hash FILE: instead of dumps, one line per target and point with a hash of all its samples (colour words,
+ * zpatch words), for hw-vs-hw exactness checks of optimisations (scripts/m9_hashcmp.py compares two files) */
+static FILE* smp_hash_file;
+
 static void sample_point(uint32_t vblank) {
     static uint32_t *buf, *ref;
     if (!buf) { buf = malloc((size_t)SMP_CAP * 4); ref = malloc((size_t)SMP_CAP * 4); }
@@ -1341,6 +1353,13 @@ static void sample_point(uint32_t vblank) {
         if (gpu_front_target_kind(id) < 0) continue;
         int w, h, kx, ky, depth;
         if (!gpu_exec_read_target(id, buf, SMP_CAP, &w, &h, &kx, &ky, &depth)) continue;
+        if (smp_hash_file) {
+            uint64_t hv = 0xCBF29CE484222325ull;
+            size_t n = (size_t)w * (size_t)h;
+            for (size_t i = 0; i < n; i++) { hv ^= buf[i]; hv *= 0x100000001B3ull; hv ^= hv >> 29; }
+            fprintf(smp_hash_file, "v%06u t%02u %s %dx%d k%dx%d %016llx\n", vblank, id, depth ? "Z" : "C", w, h, kx, ky, (unsigned long long)hv);
+            continue;
+        }
         char path[1100];
         snprintf(path, sizeof path, "%s/v%06u_t%02u.raw", smp_dir, vblank, id);
         uint32_t hd[8] = { 0x504D5347u /* GSMP */, id, (uint32_t)depth, (uint32_t)w, (uint32_t)h, (uint32_t)kx, (uint32_t)ky, 0 };
@@ -1413,6 +1432,7 @@ static void sample_point(uint32_t vblank) {
 
 static void sample_report(void) {
     if (!smp_dir) return;
+    if (smp_hash_file) { fclose(smp_hash_file); smp_hash_file = NULL; fprintf(stderr, "sample-hash: %u points\n", smp_points); return; }
     if (!smp_compare) { fprintf(stderr, "sample-dump: %u points written to %s\n", smp_points, smp_dir); return; }
     fprintf(stderr, "sample-compare: %u points, %u target comparisons, %u beyond the budget, %u missing; colour words > 2: %.4f%% "
                     "(worst %.4f%%), > 16: %.5f%% (worst %.5f%%); Z words differ: %.5f%% (worst %.5f%%)\n", smp_points, smp_targets, smp_beyond,
@@ -1671,6 +1691,10 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--sample-dump") && i + 1 < argc) { smp_dir = argv[++i]; smp_compare = 0; }
         else if (!strcmp(argv[i], "--sample-compare") && i + 1 < argc) { smp_dir = argv[++i]; smp_compare = 1; }
         else if (!strcmp(argv[i], "--sample-every") && i + 1 < argc) { smp_every = atoi(argv[++i]); if (smp_every < 1) smp_every = 1; }
+        else if (!strcmp(argv[i], "--sample-hash") && i + 1 < argc) {   /* (M9) hashes of every sample of every target */
+            if (!(smp_hash_file = fopen(argv[++i], "w"))) { fprintf(stderr, "cannot write %s\n", argv[i]); return 1; }
+            smp_dir = "-"; smp_compare = 0;
+        }
         else if (!strcmp(argv[i], "--flicker-off")) gfx_set |= GPU_GFX_FLICKER_OFF;
         else if (!strcmp(argv[i], "--thin")) gfx_set |= GPU_GFX_THIN;
         else if (!strcmp(argv[i], "--fields")) fields_opt = 1;
