@@ -20,16 +20,18 @@ foreach ($line in $scenes) {
     $a = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'm8_sweep.ps1'), '-Name', "$name$Suffix",
            '-Episode', $f[1], '-Seconds', $f[4], '-Verify', "$Verify", '-Scale', "$Scale", '-DumpEvery', "$DumpEvery")
     if ($f[2]) { $a += @('-Job', $f[2]) }
+    $envx = @()
     foreach ($fl in ($f[3] -split ' ' | Where-Object { $_ })) {
         if ($fl -eq 'direct') { $a += '-Direct' }
         elseif ($fl -eq 'play') { $a += '-Play' }
         elseif ($fl -like 'set=*') { $a += @('-Set', $fl.Substring(4)) }
         elseif ($fl -like 'make=*') { $a += @('-Make', ($fl.Substring(5) -replace '_', ' ')) }
+        elseif ($fl -like 'env=*') { $envx += @($fl.Substring(4)) }
     }
     $pad = $f[5] -replace '^GP$', $GP -replace '^HP$', $HP
     if ($pad) { $a += @('-Pad', $pad) }
     if ($Sw) { $a += '-Sw' }
-    $ex = @("PS2_DUMP_FROM=$DumpFrom") + @($Extra -split ';' | Where-Object { $_ })
+    $ex = @("PS2_DUMP_FROM=$DumpFrom") + $envx + @($Extra -split ';' | Where-Object { $_ })
     $a += @('-Extra', ($ex -join ';'))
     $res = & powershell @a
     $res | Select-Object -First 12 | ForEach-Object { "$name$Suffix | $_" } | Add-Content $out

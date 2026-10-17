@@ -85,7 +85,7 @@ if ($np -gt 0) {                     # picture checks (scripts/m8_check.py): nat
     if (-not (Test-Path $py)) { $py = Join-Path $root '.venv\Scripts\python.exe' }
     $chk = & $py (Join-Path $PSScriptRoot 'm8_check.py') $frames
     $chk | Set-Content (Join-Path $dir 'check.txt')
-    $sum += @($chk | Select-Object -Last 1) + @($chk | Where-Object { $_ -match 'FLAG' } | Select-Object -First 5)
+    $sum += @($chk | Select-Object -Last 1) + @($chk | Where-Object { $_ -cmatch 'FLAG$' } | Select-Object -First 5)
 }
 $sum += @($errs | ForEach-Object { "log: $_" })
 $sum | Set-Content (Join-Path $dir 'summary.txt')

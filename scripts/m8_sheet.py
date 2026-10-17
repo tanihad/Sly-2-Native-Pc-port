@@ -41,7 +41,7 @@ def area(w, h, rgb, x0, y0, x1, y1, tw, th):
 
 
 def write_png_up(path: Path, w: int, h: int, rgb: bytearray) -> None:
-    """8-bit RGB PNG with the Up filter on every row (much smaller than unfiltered for these pictures)."""
+    """8-bit RGB PNG, each row with the PNG filter (Sub / Up / Paeth) of the smallest sum of absolute residuals."""
     import struct
     import zlib
     stride = w * 3
@@ -49,7 +49,18 @@ def write_png_up(path: Path, w: int, h: int, rgb: bytearray) -> None:
     prev = bytes(stride)
     for y in range(h):
         line = bytes(rgb[y * stride:(y + 1) * stride])
-        rows.append(b"\2" + bytes((a - b) & 255 for a, b in zip(line, prev)))
+        left = bytes(3) + line[:-3]
+        upleft = bytes(3) + prev[:-3]
+        sub = bytes((a - b) & 255 for a, b in zip(line, left))
+        up = bytes((a - b) & 255 for a, b in zip(line, prev))
+        pa = bytearray(stride)
+        for i in range(stride):
+            a_, b_, c_ = left[i], prev[i], upleft[i]
+            p = a_ + b_ - c_
+            da, db, dc = abs(p - a_), abs(p - b_), abs(p - c_)
+            pa[i] = (line[i] - (a_ if da <= db and da <= dc else b_ if db <= dc else c_)) & 255
+        best = min(((1, sub), (2, up), (4, bytes(pa))), key=lambda t: sum(v if v < 128 else 256 - v for v in t[1]))
+        rows.append(bytes((best[0],)) + best[1])
         prev = line
 
     def chunk(t, b):

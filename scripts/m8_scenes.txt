@@ -1,5 +1,8 @@
 # In-game sweep scenes for the GPU renderer (M8; scripts\m8_batch.ps1 runs them through scripts\m8_sweep.ps1).
-# name | episode | job (mission, or task for a later stage) | flags (direct, play, set=..., make=... with _ for spaces) | seconds | pad (after START; after X with play)
+# name | episode | job (mission, or task for a later stage) | flags (direct, play, set=..., make=... with _ for spaces,
+#   env=NAME=value) | seconds | pad (after START; after X with play)
+# m1_chalk: chalk talk 2 needs the job's real completion event (notes/wip/ep1.md ck1): waterpump with bug done, its last
+# task 1885 completed through PS2_TASK_SET -> "Job Completed!" -> Bentley's chalk talk.
 # Pads: GP = generic job play (walk, turn the camera, jump, attack), HP = hub play after X. Release build, verify 60.
 # ---- prologue
 p0_newgame | 0 | | | 330 | +2900:lup:100,+100:lright:60,+60:cross:6,+20:lup:80,+80:square:6,+40:rright:90,+90:lup:120,+150:square:6,+60:lup:200
@@ -12,7 +15,7 @@ m1_follow | 1 | m1_follow_dimitri | direct | 280 | GP
 m1_disco | 1 | m1_disco | direct | 280 | GP
 m1_heist | 1 | m1_heist | direct | 280 | GP
 m1_boss | 1 | m1_boss | direct | 300 | GP
-m1_chalk | 1 | t1_chalktalk2 | play | 300 | HP
+m1_chalk | 1 | m1_waterpump | direct make=--complete_t1_bug env=PS2_TASK_SET=1885:2@6500 | 360 |
 # ---- episode 2 (India 1)
 ep2_hub | 2 | | play | 300 | HP
 m2_turret | 2 | m2_turret | direct | 280 | GP
