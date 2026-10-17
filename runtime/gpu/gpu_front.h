@@ -29,7 +29,17 @@ typedef struct {
                                     the exact split (a new draw where a pass-capable primitive covers a pixel of an
                                     earlier fail-capable one of the draw) */
     int thin;                    /* (M7) outlines = thin: lines drawn as analytic thin lines at scale > 1 (not exact) */
+    int display_kx;              /* (M10, 8.3) anamorphic display targets: kx of the display family, round(N * W) at a
+                                    wide aspect A (W = A / (4/3)); 0 or <= scale: kx = N */
 } gpu_front_config;
+/* (M10) the display family's kx for internal scale n at display aspect aw:ah: round(n * W), W = (aw/ah) / (4/3), never
+ * below n (a narrower aspect keeps n), at most 16 */
+static inline int gpu_display_kx(int n, int aw, int ah) {
+    if (n < 1) n = 1;
+    if (aw <= 0 || ah <= 0) return n;
+    int k = (int)((double)n * (double)aw * 3.0 / ((double)ah * 4.0) + 0.5);
+    return k < n ? n : k > 16 ? 16 : k;
+}
 
 enum { GPU_TIER_FF, GPU_TIER_ROV, GPU_TIER_ALIAS16, GPU_TIER_PUNT, GPU_TIER_N };
 enum { GPU_PC_TRI, GPU_PC_SPRITE, GPU_PC_LINEPIX, GPU_PC_POINT,
@@ -125,7 +135,10 @@ typedef struct {
     uint16_t aspect_w, aspect_h;         /* display aspect the picture is fitted to (4:3 content: 4, 3) */
     uint32_t gfx;                        /* (M7) GPU_GFX_* graphics settings (compose / present at this VBlank,
                                             frontend configuration from the next frame with GPU_DI_CONFIG) */
-    void* rb;                            /* gpu_readback* of the composed picture (dumps), or NULL */
+    uint16_t scale_x;                    /* (M10, GPU_DI_CONFIG) kx of the display family from the next frame on
+                                            (anamorphic widescreen, gpu_display_kx; 0: = scale) */
+    uint16_t pad16;
+    void* rb;                          /* gpu_readback* of the composed picture (dumps), or NULL */
 } gpu_display_info;
 enum { GPU_DI_SHOW = 1,                  /* present it (else compose only: tests, read-backs) */
        GPU_DI_SIGNAL = 2,                /* call the picture-done callback (gpu_set_picture_done) after it */
@@ -214,8 +227,9 @@ typedef struct { gpu_fop h; uint16_t target, src; uint32_t n, data_off; } gpu_fo
  * words of the displayed rects (mem_n download entries at mem_off in the data arena, then their writer
  * target ids as u16) - nothing in vram_buf or the ownership changes. */
 /* (M7) scale: the frontend's scale N for this frame's targets (the picture is composed at N x N per output
- * pixel) */
-typedef struct { gpu_fop h; uint32_t vblank; uint32_t di_off; uint16_t src[2]; uint32_t mem_off, mem_n; uint16_t scale, pad; } gpu_fop_present;
+ * pixel); (M10) scale_x: the display family's kx (anamorphic widescreen: the picture is scale_x x N per output
+ * pixel; 0: N) */
+typedef struct { gpu_fop h; uint32_t vblank; uint32_t di_off; uint16_t src[2]; uint32_t mem_off, mem_n; uint16_t scale, scale_x; } gpu_fop_present;
 
 enum { GPU_FD_PARTIAL = 1, GPU_FD_REF = 2, GPU_FD_MIXED = 4,
        GPU_FD_SIGNAL = 8 };                      /* (M6) the frame's picture (GPU_DI_SIGNAL) is reported once the

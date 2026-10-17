@@ -24,6 +24,7 @@
 typedef struct {                         /* shaders/display.hlsl display_cb */
     uint32_t W, H, ux0, uy0, hs, vs, flags, alp, bg, par, deint_mode, so;
     uint32_t cA[2][4], cB[2][4], cC[2][4], cD[2][4];
+    uint32_t sox, pad[3];                /* (M10) columns per output pixel (anamorphic widescreen) */
 } display_consts;
 
 typedef struct {                         /* shaders/present.hlsl resample_cb */
@@ -703,7 +704,8 @@ void gpu_present_compose(const gpu_compose_in* in) {
     }
     int ok = in->priv && gs_display_layout_of(priv, &L);
     int so = in->scale > 0 ? in->scale : 1;
-    if (!ensure_pictures(ok ? L.W * so : PICT_MIN, ok ? L.H * so : PICT_MIN)) {
+    int sox = in->scale_x > 0 ? in->scale_x : so;   /* (M10: anamorphic widescreen, the display family's kx) */
+    if (!ensure_pictures(ok ? L.W * sox : PICT_MIN, ok ? L.H * so : PICT_MIN)) {
         gpu_log("cannot allocate the pictures");
         gpu_rt.lost = 1;
         return;
@@ -719,7 +721,7 @@ void gpu_present_compose(const gpu_compose_in* in) {
         P.have = 0;
         return;
     }
-    int W = L.W * so, H = L.H * so;      /* (M7: the picture at so x so pixels per output pixel) */
+    int W = L.W * sox, H = L.H * so;     /* (M7: the picture at so x so pixels per output pixel; M10: sox x so) */
     display_consts k;
     memset(&k, 0, sizeof k);
     k.W = (uint32_t)W; k.H = (uint32_t)H; k.ux0 = (uint32_t)L.ux0; k.uy0 = (uint32_t)L.uy0;
@@ -731,6 +733,7 @@ void gpu_present_compose(const gpu_compose_in* in) {
     k.alp = (uint32_t)L.alp;
     k.bg = L.bg;
     k.so = (uint32_t)so;
+    k.sox = (uint32_t)sox;
     for (int i = 0; i < 2; i++) {
         const gs_circuit* ci = &L.c[i];
         k.cA[i][0] = (uint32_t)ci->en; k.cA[i][1] = (uint32_t)ci->fbp; k.cA[i][2] = (uint32_t)ci->fbw; k.cA[i][3] = (uint32_t)ci->psm;
@@ -798,7 +801,7 @@ void gpu_present_compose(const gpu_compose_in* in) {
     int rc = L.ref;
     P.cur_shift[0] = P.cur_shift[1] = 0.0f;
     if (in->tex[rc] && in->kx[rc] > 0 && in->ky[rc] > 0) {
-        float px = (float)so, py = (float)(so * (L.field_mode ? 2 : 1));
+        float px = (float)sox, py = (float)(so * (L.field_mode ? 2 : 1));
         float rx = px / (float)in->kx[rc], ry = py / (float)in->ky[rc];
         P.cur_shift[0] = (px - rx) * 0.5f;
         P.cur_shift[1] = (py - ry) * 0.5f;

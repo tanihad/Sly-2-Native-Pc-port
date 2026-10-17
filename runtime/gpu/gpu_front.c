@@ -1403,6 +1403,20 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
     PROF_START();
     PCOUNT(n_prims);
     const gs_prim* P = ev->P;
+    /* (M10, 8.3) the HUD transform: between HUD_BEGIN and HUD_END (the StateRec's hint state, ev->hud) the game's
+     * vertices are scaled about the anchor (left edge, centre, right edge of the FRAME width), full-width
+     * primitives exempt - gs_hud_prim, the software renderer's rule. Positions and every record (Z rows, sprite
+     * rects, edges, line pixels) are computed from the transformed vertices, so sample 0 stays exact. */
+    gs_vtx hv[3];
+    if (ev->hud & GS_ENV_HUD_ON) {
+        int n = type == PRIM_POINT ? 1 : type == PRIM_TRI || type == PRIM_TRISTRIP || type == PRIM_TRIFAN ? 3 : 2;
+        const gs_vtx* in[3] = { a, b, c };
+        if (gs_hud_prim(in, n, ev->reg[R_XYOFFSET_1 + ev->ctx], ev->reg[R_FRAME_1 + ev->ctx], ev->hud, ev->hud_scale, hv)) {
+            a = &hv[0];
+            b = n > 1 ? &hv[1] : NULL;
+            c = n > 2 ? &hv[2] : NULL;
+        }
+    }
     if (cp_hook && ev->draws) {          /* lockstep: compare before this primitive */
         uint64_t fr = ev->reg[R_FRAME_1 + ev->ctx], zb = ev->reg[R_ZBUF_1 + ev->ctx];
         int changed = fr != cp_frame || zb != cp_zbuf;
@@ -2134,6 +2148,7 @@ void gf_vblank_impl(const uint64_t priv[16], uint32_t vblank, const gpu_display_
     p->mem_off = mem_off;
     p->mem_n = mem_n;
     p->scale = (uint16_t)(gf_cfg.scale > 0 ? gf_cfg.scale : 1);
+    p->scale_x = (uint16_t)(gf_cfg.display_kx > p->scale ? (gf_cfg.display_kx > 16 ? 16 : gf_cfg.display_kx) : p->scale);   /* (M10) */
     tsc_acc += __rdtsc() - t0;
     /* calibrate the TSC against QPC */
     LARGE_INTEGER q, f;
@@ -2166,17 +2181,22 @@ void gf_vblank_impl(const uint64_t priv[16], uint32_t vblank, const gpu_display_
     gf_frame++;
     frame_begin();
     trace_on = vblank + 1 == trace_vblank;
-    if (di && (di->flags & GPU_DI_CONFIG)) gf_configure(di->scale, (di->gfx & GPU_GFX_PROGRESSIVE) != 0, (di->gfx & GPU_GFX_THIN) != 0);
+    if (di && (di->flags & GPU_DI_CONFIG))
+        gf_configure(di->scale, (di->gfx & GPU_GFX_PROGRESSIVE) != 0, (di->gfx & GPU_GFX_THIN) != 0, di->scale_x);
 }
 
-/* (M7) settings changed at run time: from this frame on (the targets take their new factors before any draw) */
-void gf_configure(int scale, int progressive, int thin) {
+/* (M7) settings changed at run time: from this frame on (the targets take their new factors before any draw);
+ * (M10) display_kx: the display family's kx (anamorphic widescreen, the aspect switched with F7) */
+void gf_configure(int scale, int progressive, int thin, int display_kx) {
     if (scale < 1) scale = 1;
     if (scale > 8) scale = 8;
+    if (display_kx <= scale) display_kx = 0;
+    if (display_kx > 16) display_kx = 16;
     gf_cfg.thin = thin;
-    if (scale == (gf_cfg.scale > 0 ? gf_cfg.scale : 1) && progressive == gf_cfg.display_ky2) return;
+    if (scale == (gf_cfg.scale > 0 ? gf_cfg.scale : 1) && progressive == gf_cfg.display_ky2 && display_kx == gf_cfg.display_kx) return;
     gf_cfg.scale = scale;
     gf_cfg.display_ky2 = progressive;
+    gf_cfg.display_kx = display_kx;
     own_rescale_all();
 }
 

@@ -1621,6 +1621,7 @@ static void exec_present(const gpu_front_frame_data* fd, const gpu_fop_present* 
     in.swz = X.swz_srv;
     in.field_code = di->field_code;
     in.scale = o->h.size >= sizeof *o && o->scale ? o->scale : 1;
+    in.scale_x = o->h.size >= sizeof *o && o->scale_x ? o->scale_x : in.scale;   /* (M10: anamorphic widescreen) */
     in.flicker_off = (di->gfx & GPU_GFX_FLICKER_OFF) != 0;
     in.fields = (di->gfx & GPU_GFX_FIELDS) != 0;
     if (o->mem_n && o->mem_off + o->mem_n * (sizeof(gpu_dl_entry) + 2) <= fd->data_bytes) {
