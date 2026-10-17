@@ -2033,8 +2033,27 @@ field-coded pictures on the field's own lines. Gate: PSNR >= 32 dB and |mean sig
   software renderer's hud_pause_169), F7 -> 4:3 (pillarboxed, targets 3 x 6) -> F7 16:9 (4 x 6) -> F8 centered ->
   F8 edges: each applied from the next frame, logged `display targets 3x6 / 4x6 samples per pixel`.
   `notes/m10/scene.png` / `hud_counters.png`: the same crop at 1x | 3x with kx = 3 (M7 at 16:9) | 3x with kx = 4.
+- In-game verifier at 3x 16:9 (ep3 hub with L3 counters, the Binocucom and walking, `PS2_GS_VERIFY=60`): 180
+  comparisons, 0 beyond the tolerance.
+- 4:3 unchanged / gates (26 recordings): run_tests 16/16; unit suites pass (gs-hw hardware + WARP, gs-draw,
+  gs-front, window 983 unit checks, ...); `gs_vram_hashes -Backend hwdry` identical to e1fce93 (git archive) on all
+  26; `gpu_fthread_check` and `-Mixed` 26/26 identical; `gpu_diff_all` 13/13; lockstep S = 1 REF and mixed 25994
+  comparisons each, 0 failed; `gpu_game_all` S = 1 4076 pictures, 0 differ; `-Scale 3` on the two 16:9 recordings
+  (box gate) 260 pictures, 0 beyond; debug and release builds; `scripts\package.py`.
 
-PERF
+**Performance (3x, 16:9 = kx 4 vs 4:3 = kx 3 targets, same streams; the GPU was at 86-99% utilisation from other
+programs (a game and the M8 agent's runs) during every measurement, so absolute times are 3-4x M7's quiet numbers -
+only the ratio is meaningful)**
+- Replay, mixed frames, game-frame GPU medians, 3 interleaved rounds each (`gs_replay --mixed --bench --scale 3
+  --aspect 16:9 | 4:3`): ep3 HUD recording 44.4 / 36.5 ms (rounds 44.4, 46.9, 38.7 vs 37.4, 36.5, 33.3: +22%);
+  museum 42.6 / 32.2 ms (42.6, 42.7, 40.2 vs 35.0, 31.5, 32.2: +32%). Expected: the display targets (most of the
+  fill) have 4/3 the samples; square-family targets (Binocucom RTTs) and the per-primitive work are unchanged.
+- In game (release, headless, museum, PS2_GS_HW_STATS=1, median of the last 15 one-second medians): GPU 32.95 ms at
+  16:9 vs 25.08 ms with `PS2_GS_ASPECT=4:3` (+31%); GS thread and frontend times are the scene's (aspect
+  independent).
+- Memory: a display colour target at 3x is 2048 x 1344 x 4 B = 11 MB (8.3 MB at 4:3), its depth (D32S8) and zpatch
+  22 MB each (16.5 MB): about +16 MB for the two field buffers and the main Z with its zpatch, plus their shadow
+  copies. M9's GPU budget (8 ms at 3x) must be met at 16:9, the default.
 
 **Deviations from the design**
 - No vertex-shader transform (8.3.3): the frontend transforms (above). A vertex-shader copy would have to reproduce
