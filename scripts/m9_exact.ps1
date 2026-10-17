@@ -5,7 +5,7 @@
 # GPU picture (--game, game-pic-hash); the two must be identical.
 #   powershell -ExecutionPolicy Bypass -File scripts\m9_exact.ps1 -Exe build\cur\gs_replay.exe -BaseExe build\basert\gs_replay.exe
 #       [-Scales 1,3] [-Every 20] [-Only ep8_boss,gpu-C_ep1_hub] [-Out build\exact] [-Game] [-Extra "--x"] [-BaseExtra "--y"]
-# Baseline hashes are kept in -Out\base_S<scale>\ and reused (delete them after a baseline change). One line per
+# Baseline hashes are kept in -Out\base_S<scale>_E<every>\ and reused (delete them after a baseline change). One line per
 # recording and scale; exit 1 on any difference.
 param([Parameter(Mandatory = $true)][string]$Exe, [Parameter(Mandatory = $true)][string]$BaseExe, [string]$Scales = "1,3",
       [int]$Every = 20, [string[]]$Only = @(), [string]$Out = "", [switch]$Game, [string]$Extra = "", [string]$BaseExtra = "",
@@ -40,7 +40,7 @@ foreach ($line in $lines) {
     if (-not (Test-Path $rec)) { Write-Host "$name : MISSING"; $failed++; continue }
     foreach ($s in ($Scales -split ',')) {
         $s = [int]$s
-        $bdir = Join-Path $Out "base_S$s"; New-Item -ItemType Directory -Force $bdir | Out-Null
+        $bdir = Join-Path $Out ("base_S{0}_E{1}" -f $s, $Every); New-Item -ItemType Directory -Force $bdir | Out-Null
         $suffix = if ($Game) { 'game' } else { 'smp' }
         $bh = Join-Path $bdir "$name.$suffix.txt"
         $oh = Join-Path $Out "$name.S$s.$suffix.txt"

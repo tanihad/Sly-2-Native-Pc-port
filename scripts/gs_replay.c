@@ -268,6 +268,7 @@ static const struct { const char* name; size_t off; int kind; } front_fields[] =
     U32F(cd_as_kicks), U32F(as_over128), ARRF(zprims, GPU_ZF_N), ARRF(zmin, GPU_ZF_N), ARRF(zmax, GPU_ZF_N),
     U32F(z32_over), U32F(tex_vram), U32F(tex_view_c32), U32F(tex_view_alpha), U32F(tex_alias16), U32F(region_clamp),
     U32F(tbw_npot), U32F(selfcheck_bad), U32F(lost_writer), U32F(post_prims), U32F(stq_cuts), U32F(checkpoints), ARRF(phase_prims, GPU_PH_N),
+    U32F(tex_alpha_refined), U32F(tex_used_scans),
 };
 
 static void json_front(FILE* f, const gpu_front_frame* g) {
@@ -330,6 +331,7 @@ static void front_report(const char* metrics, const char* rec, double replay_ms,
     fprintf(stderr, "hwdry: ROV why: ref %u colclamp %u fbmsk %u date %u blend %u C>128 %u pabe/dthe %u z32-high %u straddle %u class %u\n",
             sum.rov_why[0], sum.rov_why[1], sum.rov_why[2], sum.rov_why[3], sum.rov_why[4], sum.rov_why[5], sum.rov_why[6],
             sum.rov_why[7], sum.rov_why[8], sum.rov_why[9]);
+    fprintf(stderr, "hwdry: source-alpha bounds from the texels' palette entries: %u primitives, %u texture scans\n", sum.tex_alpha_refined, sum.tex_used_scans);
     fprintf(stderr, "hwdry: PUNT %u (target overlap %u, frame fmt %u, tex foreign %u, tex fmt %u, forced %u, punt readback mismatches %u)\n",
             sum.tier[3], sum.punt_why[0], sum.punt_why[1], sum.punt_why[2], sum.punt_why[3], sum.punt_why[4], sum.punt_why[5]);
     fprintf(stderr, "hwdry: pass A (ATST + AFAIL != KEEP) %u kicks: all-pass %u all-fail %u straddle %u (%.2f%%); lerp blends with C=As %u, As > 128 %u (%.2f%%)\n",

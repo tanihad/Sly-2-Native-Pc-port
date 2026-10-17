@@ -31,6 +31,9 @@ typedef struct {
     int thin;                    /* (M7) outlines = thin: lines drawn as analytic thin lines at scale > 1 (not exact) */
     int display_kx;              /* (M10, 8.3) anamorphic display targets: kx of the display family, round(N * W) at a
                                     wide aspect A (W = A / (4/3)); 0 or <= scale: kx = N */
+    int no_tex_alpha;            /* (M9) 1: the source-alpha bound of indexed textures from the whole palette only (the
+                                    M8 rule), not from the palette entries the texels use (comparisons); 2: the tighter
+                                    bound only for ATST split outcomes (bit-identical output), not for the As > 128 rule */
 } gpu_front_config;
 /* (M10) the display family's kx for internal scale n at display aspect aw:ah: round(n * W), W = (aw/ah) / (4/3), never
  * below n (a narrower aspect keeps n), at most 16. At n = 1 the PS2's own pixels (1 x 1: the picture identical to the
@@ -114,6 +117,8 @@ typedef struct {
     uint32_t display_mem;                /* (M6) displayed circuits composed from vram_buf (not current in a target) */
     uint32_t phase_prims[6];             /* drawn primitives per phase label (GPU_PH_*: scene, fill, ROV read-modify-write,
                                             ALIAS16, target view, feedback) */
+    uint32_t tex_alpha_refined;          /* (M9) primitives whose source-alpha bound came from the texels' palette entries */
+    uint32_t tex_used_scans;             /* (M9) textures scanned for the palette entries they use */
 } gpu_front_frame;
 
 void gpu_front_start(const gpu_front_config* cfg);   /* installs the gs_draw.c hooks */

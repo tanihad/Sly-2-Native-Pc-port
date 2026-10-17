@@ -818,6 +818,25 @@ int own_readback_apply(const uint8_t* mem, int write) {
     return diff;
 }
 
+/* (M9) bumped whenever any block's writer, serial or CPU mask changes */
+uint32_t own_change_gen(void) { return change_gen; }
+
+/* (M9) a hash of the serials of the blocks of the rect [x0, x1] x [y0, y1] of a psm buffer, or 0 when one of them holds
+ * GPU-written words or downloaded data gs_vram lacks (gs_vram is not the truth there): the texel contents seen in
+ * gs_vram are unchanged while the hash is */
+uint64_t own_rect_serials(int psm, uint32_t bp, uint32_t bw, int x0, int y0, int x1, int y1) {
+    static uint16_t bl[GPU_BLOCKS];
+    int n = own_rect_blocks(psm, bp, bw, x0, y0, x1 + 1, y1 + 1, bl, GPU_BLOCKS);
+    uint64_t h = 0x9E3779B97F4A7C15ull;
+    for (int i = 0; i < n; i++) {
+        uint32_t b = bl[i];
+        if (blk_cpu[b] != ALL || blk_vstale[b]) return 0;
+        h = (h ^ blk_serial[b] ^ (uint64_t)b << 32) * 0xFF51AFD7ED558CCDull;
+        h ^= h >> 29;
+    }
+    return h ? h : 1;
+}
+
 /* some block of the rect holds downloaded data gs_vram lacks (CLUT loads read gs_vram) */
 int own_mem_vstale(int psm, uint32_t bp, uint32_t bw, int u0, int v0, int u1, int v1) {
     for (int v = v0; v <= v1; v++)

@@ -152,4 +152,18 @@ void clut_alpha_range(uint32_t slot, uint64_t tex0, uint64_t texa, int* amin, in
     *amin = lo; *amax = hi;
 }
 
+/* (M9) the alpha of palette entry idx of an indexed texture (as clut_alpha_range reads it) */
+int clut_entry_alpha(uint32_t slot, uint64_t tex0, uint64_t texa, uint32_t idx) {
+    uint32_t cpsm = (uint32_t)((tex0 >> 51) & 0xF), csa = (uint32_t)((tex0 >> 56) & 0x1F);
+    int c16 = cpsm == PSMCT16 || cpsm == PSMCT16S;
+    const clut_slot* s = &ring[slot];
+    uint32_t p = (csa * 16u + idx) & 511u;
+    if (c16) {
+        uint32_t ta0 = (uint32_t)(texa & 0xFF), aem = (uint32_t)((texa >> 15) & 1), ta1 = (uint32_t)((texa >> 32) & 0xFF);
+        uint32_t c = s->data[p];
+        return (int)((c & 0x8000u) ? ta1 : (aem && !(c & 0x7FFFu)) ? 0 : ta0);
+    }
+    return (int)((uint32_t)s->data[p ^ 256u] >> 8);
+}
+
 void clut_frame_end(void) { memset(used, 0, sizeof used); }

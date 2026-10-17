@@ -203,6 +203,10 @@ typedef struct {
     /* memory-source cache: texels in tc[] are CPU data as of (tc_own_gen, tc_up_gen) */
     int tc_valid, tc_kind, tc[4];
     uint32_t tc_own_gen, tc_up_gen;
+    /* (M9) alpha range of the palette entries the texture's texels actually use (T8/T4 from memory), as of own
+     * change generation tu_gen - 1 (0: not computed); tu_lo > tu_hi: unknown */
+    uint32_t tu_gen;
+    int tu_lo, tu_hi;
 } fstate;
 
 /* The analysis of the last few distinct states, keyed by the registers it depends on: Sly alternates
@@ -899,6 +903,64 @@ static void tex_source(const gs_env_view* ev, int u0, int v0, int u1, int v1, te
     (void)ev;
 }
 
+/* (M9) The source-alpha bound of an indexed texture from the palette entries its texels use, not the whole
+ * palette (the CLUT slot's min/max, clut_alpha_range). Sly's palettes hold entries with alpha above 0x80 that the
+ * texels drawn with them never use: every "As > 128" pass-A lerp of the corpus (gpu_front C>128 counter: 105k
+ * primitives in the ep7 boss, 80k ep8 boss, 40k ep5 street) has no texel above 0x80 in its texel rect, and those
+ * primitives were the ROV runs that dominate the GPU time of such scenes. The used-index set (256 bits) is kept per
+ * texture (TBP, TBW, PSM, size) and recomputed from gs_vram when a block of it changes (block serials); it is sound
+ * for every texel the primitive can sample (the whole texture). Textures in GPU-written or downloaded memory have
+ * no set (the palette bound stays). */
+#define TU_N 512
+typedef struct { uint64_t key, serials; uint32_t gen; int valid; uint64_t used[4]; } tu_entry;
+static tu_entry TU[TU_N];
+
+static int tex_used_indices(uint64_t used[4]) {
+    if ((S.tpsm != PSMT8 && S.tpsm != PSMT4) || S.tw * S.th > 512 * 512) return 0;
+    uint64_t key = (uint64_t)S.tbp | (uint64_t)S.tbw << 14 | (uint64_t)S.tpsm << 20 | (uint64_t)S.tw << 26 | (uint64_t)S.th << 38 | 1ull << 63;
+    uint64_t hk = key * 0x9E3779B97F4A7C15ull;
+    tu_entry* e = &TU[(hk >> 40) & (TU_N - 1)];
+    uint32_t g = own_change_gen();
+    if (e->valid && e->key == key && e->gen == g) { memcpy(used, e->used, 32); return 1; }
+    uint64_t sh = own_rect_serials(S.tpsm, S.tbp, S.tbw, 0, 0, S.tw - 1, S.th - 1);
+    if (!sh) return 0;
+    if (!(e->valid && e->key == key && e->serials == sh)) {
+        const uint8_t* vm = gf_vram ? gf_vram : gs_vram;
+        memset(e->used, 0, sizeof e->used);
+        for (int y = 0; y < S.th; y++)
+            for (int x = 0; x < S.tw; x++) {
+                uint32_t idx;
+                if (S.tpsm == PSMT8) idx = vm[gs_addr8(S.tbp, S.tbw, (uint32_t)x, (uint32_t)y)];
+                else { uint32_t na = gs_addr4(S.tbp, S.tbw, (uint32_t)x, (uint32_t)y); idx = (vm[na >> 1] >> ((na & 1) * 4)) & 15; }
+                e->used[idx >> 6] |= 1ull << (idx & 63);
+            }
+        e->key = key;
+        e->serials = sh;
+        e->valid = 1;
+        gf.tex_used_scans++;
+    }
+    e->gen = g;
+    memcpy(used, e->used, 32);
+    return 1;
+}
+
+/* the alpha range of the palette entries the current state's texture uses (S.tu_lo/tu_hi; lo > hi: unknown) */
+static void tex_used_alpha(const gs_env_view* ev) {
+    uint32_t g = own_change_gen() + 1;
+    if (S.tu_gen == g) return;
+    S.tu_gen = g;
+    S.tu_lo = 255; S.tu_hi = -1;
+    uint64_t used[4];
+    if (!tex_used_indices(used)) return;
+    uint64_t t0 = ev->reg[R_TEX0_1 + ev->ctx], texa = ev->reg[R_TEXA];
+    for (uint32_t i = 0; i < 256; i++)
+        if (used[i >> 6] >> (i & 63) & 1) {
+            int a = clut_entry_alpha(S.clut_slot, t0, texa, i);
+            if (a < S.tu_lo) S.tu_lo = a;
+            if (a > S.tu_hi) S.tu_hi = a;
+        }
+}
+
 /* feedback: the primitive samples the target it writes, on a lane it writes */
 static void feedback_check(gpu_target* T, int x0, int y0, int x1, int y1) {
     int full;
@@ -1549,6 +1611,24 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
         if (S.tbw & (S.tbw - 1)) gf.tbw_npot++;
     }
 
+    /* (M9) a tighter source-alpha bound where the palette's decides a tier or an ATST split: the palette entries the
+     * texture's texels use (tex_used_alpha) */
+    int as_hi_pal = as_hi;               /* (the palette bound: the As > 128 rule with PS2_GPU_NO_TEX_ALPHA=2) */
+    if (P->tme && P->tcc && S.indexed && ts.kind == TK_VRAM_IDX && !ts.punt && gf_cfg.no_tex_alpha != 1 &&
+        ((S.cd_dep && S.c_as && as_hi > 128 && !gf_cfg.no_tex_alpha) ||
+         (S.fatst == FATST_SPLIT && atst_count(S.atst, S.aref, as_lo, as_hi) % (as_hi - as_lo + 1) != 0))) {
+        tex_used_alpha(ev);
+        if (S.tu_lo <= S.tu_hi && (S.tu_lo > S.tamin || S.tu_hi < S.tamax)) {
+            switch (P->tfx) {
+            case 0: as_lo = (va_lo * S.tu_lo) >> 7; as_hi = (va_hi * S.tu_hi) >> 7; break;
+            case 2: as_lo = S.tu_lo + va_lo; as_hi = S.tu_hi + va_hi; break;
+            default: as_lo = S.tu_lo; as_hi = S.tu_hi; break;
+            }
+            as_lo = clamp_byte(as_lo); as_hi = clamp_byte(as_hi);
+            gf.tex_alpha_refined++;
+        }
+    }
+
     PROF_MARK(3);
     /* ---- tier ---- */
     int tier = GPU_TIER_FF, why = -1, punt = S.punt;
@@ -1571,7 +1651,7 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
     else if (S.alias) tier = GPU_TIER_ALIAS16;
     else {
         if (S.rov) why = S.rov - 1;
-        else if (S.cd_dep && S.c_as && as_hi > 128) why = GPU_ROV_C_OVER128;
+        else if (S.cd_dep && S.c_as && (gf_cfg.no_tex_alpha == 2 ? as_hi_pal : as_hi) > 128) why = GPU_ROV_C_OVER128;
         else if (dual_exact && S.cd_dep &&       /* (M8 measurement: PS2_GPU_DUAL_EXACT=1 partial-alpha dual-source blends exact) */
                  (S.c_as ? !(as_lo == as_hi && (as_lo == 0 || as_lo == 128)) : (P->fix != 0 && P->fix != 128))) why = GPU_ROV_CLASS;
         else if (z32_high || (S.zt && S.zt->z_high)) why = GPU_ROV_Z32_HIGH;
@@ -2032,6 +2112,11 @@ uint32_t gpu_front_post_prims(void) { return gf.post_prims; }
 void gpu_front_start(const gpu_front_config* cfg) {
     memset(&gf_cfg, 0, sizeof gf_cfg);
     if (cfg) gf_cfg = *cfg;
+    {   /* (M9) PS2_GPU_NO_TEX_ALPHA=1: the M8 source-alpha bound (whole palettes), for comparisons */
+        const char* e = getenv("PS2_GPU_NO_TEX_ALPHA");
+        if (e && atoi(e)) gf_cfg.no_tex_alpha = atoi(e);   /* (2: only for ATST split outcomes, which stay exact) */
+    }
+    memset(TU, 0, sizeof TU);            /* (block serials start over) */
     GS_INIT();
     nar = 0;
     hud_stats_reset();
