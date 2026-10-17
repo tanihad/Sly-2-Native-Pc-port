@@ -27,7 +27,7 @@ foreach ($line in $scenes) {
         if ($fl -eq 'direct') { $a += '-Direct' }
         elseif ($fl -eq 'play') { $a += '-Play' }
         elseif ($fl -like 'set=*') { $a += @('-Set', $fl.Substring(4)) }
-        elseif ($fl -like 'make=*') { $a += @('-Make', ($fl.Substring(5) -replace '_', ' ')) }
+        elseif ($fl -like 'make=*') { $a += @('-Make', ($fl.Substring(5) -replace '~', ' ')) }
         elseif ($fl -like 'env=*') { $envx += @($fl.Substring(4)) }
     }
     $pad = $f[5] -replace '^GP$', $GP -replace '^HP$', $HP

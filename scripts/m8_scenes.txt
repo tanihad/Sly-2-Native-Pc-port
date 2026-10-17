@@ -1,5 +1,5 @@
 # In-game sweep scenes for the GPU renderer (M8; scripts\m8_batch.ps1 runs them through scripts\m8_sweep.ps1).
-# name | episode | job (mission, or task for a later stage) | flags (direct, play, set=..., make=... with _ for spaces,
+# name | episode | job (mission, or task for a later stage) | flags (direct, play, set=..., make=... with ~ for spaces,
 #   env=NAME=value) | seconds | pad (after START; after X with play)
 # m1_chalk: chalk talk 2 needs the job's real completion event (notes/wip/ep1.md ck1): waterpump with bug done, its last
 # task 1885 completed through PS2_TASK_SET -> "Job Completed!" -> Bentley's chalk talk.
@@ -15,7 +15,7 @@ m1_follow | 1 | m1_follow_dimitri | direct | 280 | GP
 m1_disco | 1 | m1_disco | direct | 280 | GP
 m1_heist | 1 | m1_heist | direct | 280 | GP
 m1_boss | 1 | m1_boss | direct | 300 | GP
-m1_chalk | 1 | m1_waterpump | direct make=--complete_t1_bug env=PS2_TASK_SET=1885:2@6500 | 360 |
+m1_chalk | 1 | m1_waterpump | direct make=--complete~t1_bug env=PS2_TASK_SET=1885:2@6500 | 360 |
 # ---- episode 2 (India 1)
 ep2_hub | 2 | | play | 300 | HP
 m2_turret | 2 | m2_turret | direct | 280 | GP
@@ -67,5 +67,5 @@ m8_turret | 8 | m8_turret | direct | 280 | GP
 m8_boss | 8 | m8_boss | direct | 300 | GP
 # ---- menus, movie
 menu_pause_save | 2 | | play | 300 | +900:start:10,+300:down:10,+300:cross:10,+300:up:10,+60:cross:10
-menu_thiefnet | 1 | | make=--coins_5000 | 260 | +1700:right:10,+60:right:10,+60:left:10,+60:cross:10,+300:down:10,+40:down:10,+40:cross:10,+200:circle:10
+menu_thiefnet | 1 | | make=--coins~5000 | 260 | +1700:right:10,+60:right:10,+60:left:10,+60:cross:10,+300:down:10,+40:down:10,+40:cross:10,+200:circle:10
 fmv | 2 | | set=episode.palace.percent_complete=100 | 300 | +1500:up:10,+60:up:10,+60:up:10,+60:cross:10,+300:cross:10

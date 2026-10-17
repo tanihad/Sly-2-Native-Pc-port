@@ -38,9 +38,22 @@ divergence / PUNT (generic fixes only).
 - scripts/m8_check.py: per sweep scene, native hw-vs-sw PSNR of the verifier pairs + the 3x picture box-downsampled vs
   the native GPU compose (coarse; flags < 26 dB). m8_sweep.ps1 appends its result to summary.txt (check.txt).
 
+- In-game sweep (release, hw, 3x Modern, 16:9 default aspect, PS2_GS_VERIFY=60, frames every 600 VBlanks from 3000,
+  verify pairs at the same VBlanks; scripts/m8_scenes.txt): 54 scenes, 9800+ verifier comparisons: 53 scenes 0 beyond
+  the tolerance; m5_battlezone 1 of 240 (finding above, not a bug). PUNT 0 everywhere, downloads 0 (stats median),
+  m8_check 0 flagged (native hw vs sw >= 50.2 dB; 3x box vs native GPU compose >= 29.7 dB).
+- ep2 photo (t2_recon_enter_ballroom, live aim): locked on Clockwerk's Wing, R1 -> Polaroid with the picture at 3x,
+  wing ticked; 300 verifier comparisons 0 beyond; downloads 0, loads 0, PUNT 0 around the shutter (no readback:
+  the game copies the field buffers on the GS). Screenshots build\screenshots\gpu_m8_ep2_photo_*.png.
+- Contact sheets notes/m8/{ep0_prologue,ep2_india1,ep3_india2,ep4_prague1,ep5_prague2,ep6_canada1,ep7_canada2,
+  ep8_blimp,menus_title_fmv}.png (rows: sw native | hw 3x | sw crop x3 nearest | hw crop 1:1); one row each as
+  build\screenshots\gpu_m8_<scene>_v<vblank>.png. Frame dumps deleted after the sheets.
+- Observation (not a divergence): the hubs' distance effect (far scenery drawn from a reduced copy, blocky at 1x) is
+  ~3x finer at 3x because non-1:1 view reads at samples != 0 read the view's own (scaled) grid (M7 design);
+  gpu_m8_ep7_hub_far_scene_v008400.png. Owner decision if the 1x blockiness should be kept at 3x.
+
 ## In progress
-- sweep batches part 0/1 of 2 (background; build\warp\m8_batch_{0,1}.txt, build\warp\m8_<scene>\summary.txt).
-  So far every scene: verify 0 beyond, PUNT 0, check 0 flagged.
+- m1_chalk rerun (waterpump completion -> chalk talk 2), then the ep1 sheet; perf runs (no verify) next.
 
 ## Next
 (see Plan)
