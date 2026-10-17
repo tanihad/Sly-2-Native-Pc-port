@@ -149,6 +149,7 @@ void clut_mark_changed(void);            /* a TEX0 write loaded different CLUT c
 /* The ring slot holding the current CLUT buffer (snapshot uploaded on a miss: counted). */
 uint32_t clut_current_slot(void);
 uint32_t clut_content_id(void);         /* changes whenever the CLUT buffer's content does */
+uint32_t clut_slot_gen(uint32_t slot);  /* (M9) bumped whenever the ring slot takes new content */
 /* min/max alpha over the palette entries an indexed texture (tex0, TEXA) can use. */
 void clut_alpha_range(uint32_t slot, uint64_t tex0, uint64_t texa, int* amin, int* amax);
 int clut_entry_alpha(uint32_t slot, uint64_t tex0, uint64_t texa, uint32_t idx);   /* (M9) one entry's alpha */

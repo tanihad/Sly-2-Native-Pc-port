@@ -7,7 +7,7 @@
 
 #include <stdlib.h>
 
-typedef struct { uint64_t hash; uint16_t data[512]; } clut_slot;
+typedef struct { uint64_t hash; uint32_t gen, pad; uint16_t data[512]; } clut_slot;
 
 static clut_slot* ring;                  /* GPU_CLUT_SLOTS */
 static uint32_t next_slot, filled;
@@ -100,6 +100,7 @@ static void refresh(void) {
             if (filled < GPU_CLUT_SLOTS) filled++;
             else map_remove(ring[found].hash, found);
             ring[found].hash = h;
+            ring[found].gen++;               /* (M9: state analyses keyed by slot see the new content) */
             memcpy(ring[found].data, c, 1024);
             i = (uint32_t)h & (MAP_N - 1);
             while (map_slot[i]) i = (i + 1) & (MAP_N - 1);
@@ -116,6 +117,9 @@ static void refresh(void) {
 }
 
 uint32_t clut_content_id(void) { refresh(); return content_id; }
+
+/* (M9) bumped whenever the slot takes new content (the ring wrapped) */
+uint32_t clut_slot_gen(uint32_t slot) { return ring[slot & (GPU_CLUT_SLOTS - 1)].gen; }
 
 uint32_t clut_current_slot(void) {
     refresh();

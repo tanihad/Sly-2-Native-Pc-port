@@ -212,7 +212,7 @@ typedef struct {
 /* The analysis of the last few distinct states, keyed by the registers it depends on: Sly alternates
  * pass A / pass B and rewrites TEX0 (with a CLUT reload of the same palette) for every draw, so most
  * state versions repeat a recent state. */
-#define SC_N 32
+#define SC_N 1024                        /* (M9: 2-way set associative, state_lookup) */
 #define SIG_N 24
 static fstate SC[SC_N];
 static uint64_t SC_sig[SC_N][SIG_N], SC_hash[SC_N];
@@ -290,13 +290,24 @@ static void state_lookup(const gs_env_view* ev) {
         r[R_SCISSOR_1 + ctx], r[R_XYOFFSET_1 + ctx], r[R_PABE], r[R_FBA_1 + ctx], r[R_COLCLAMP], r[R_DTHE], r[0x44],
         r[0x22], r[0x34 + ctx], r[0x36 + ctx], 0, 0, 0, 0 };
     uint32_t psm = (uint32_t)((r[R_TEX0_1 + ctx] >> 20) & 0x3F);
-    if ((attr & 0x10) && (psm == PSMT8 || psm == PSMT4 || psm == PSMT8H || psm == PSMT4HL || psm == PSMT4HH))
-        sig[20] = (uint64_t)clut_current_slot() + 1;   /* the palette's ring slot: repeats hit */
+    if ((attr & 0x10) && (psm == PSMT8 || psm == PSMT4 || psm == PSMT8H || psm == PSMT4HL || psm == PSMT4HH)) {
+        uint32_t cs = clut_current_slot();             /* the palette's ring slot: repeats hit; (M9) its generation */
+        sig[20] = ((uint64_t)cs + 1) | (uint64_t)clut_slot_gen(cs) << 32;
+    }
     if (sc_epoch != own_epoch) { memset(SC_used, 0, sizeof SC_used); sc_epoch = own_epoch; }
-    uint64_t h = 0x9E3779B97F4A7C15ull;
-    for (int i = 0; i < SIG_N; i++) { h ^= sig[i]; h *= 0xFF51AFD7ED558CCDull; h ^= h >> 29; }
-    int victim = 0;
-    for (int i = 0; i < SC_N; i++) {
+    /* (M9) four independent lanes (a single multiply chain over 24 words is latency-bound) */
+    uint64_t h0 = 0x9E3779B97F4A7C15ull, h1 = 0xC2B2AE3D27D4EB4Full, h2 = 0x165667B19E3779F9ull, h3 = 0x27D4EB2F165667C5ull;
+    for (int i = 0; i < SIG_N; i += 4) {
+        h0 = (h0 ^ sig[i]) * 0xFF51AFD7ED558CCDull; h1 = (h1 ^ sig[i + 1]) * 0xFF51AFD7ED558CCDull;
+        h2 = (h2 ^ sig[i + 2]) * 0xFF51AFD7ED558CCDull; h3 = (h3 ^ sig[i + 3]) * 0xFF51AFD7ED558CCDull;
+        h0 ^= h0 >> 29; h1 ^= h1 >> 29; h2 ^= h2 >> 29; h3 ^= h3 >> 29;
+    }
+    uint64_t h = ((h0 * 31 + h1) * 31 + h2) * 31 + h3;
+    h ^= h >> 32;
+    /* (M9) 2-way set associative over SC_N entries (Sly cycles through 200-600 states per frame: the M2 cache of
+     * the last 32, scanned linearly, missed ~16% of the lookups and every miss re-analyses the state) */
+    int i0 = (int)((h >> 17) & (SC_N - 1)) & ~1, victim = i0;
+    for (int i = i0; i < i0 + 2; i++) {
         if (SC_used[i] && SC_hash[i] == h && gf_eq64(SC_sig[i], sig, SIG_N)) {
             Sp = &SC[i];
             SC_age[i] = ++sc_clock;
@@ -694,7 +705,8 @@ static void close_draw(void) {
     if (OD.d.tier == GPU_TIER_ROV || OD.d.tier == GPU_TIER_ALIAS16) { gf.rov_draws++; cw_reset(); gf.d3d_draws_commute++; }
     else {
         gf.ff_draws += 1 + split;
-        if (!cw_add(OD.key ^ (uint64_t)split << 62, OD.bbox, OD.d.ct, OD.d.zt, OD.d.tex, OD.d.wmask != 0, (OD.d.depth & 1) != 0))
+        /* (the M2 estimate; M9: not in real frames, where it cost frontend time for a statistic) */
+        if (gf_cfg.mixed || !cw_add(OD.key ^ (uint64_t)split << 62, OD.bbox, OD.d.ct, OD.d.zt, OD.d.tex, OD.d.wmask != 0, (OD.d.depth & 1) != 0))
             gf.d3d_draws_commute += 1 + split;
     }
     if (trace_on)
@@ -1311,16 +1323,47 @@ static int sb_span(int y, int xa, int xb, int set) {
 /* the primitive's pixels (triangle spans, sprite rectangle, line / point pixel records): set or test */
 static int sb_prim(int cls, const gs_tri* T, const gs_sprite* sp, size_t lp_start, uint32_t lp_n, int px, int py, int set) {
     int d = gf_cfg.scale > 1;                     /* (widened at scale > 1) */
+    /* (M9) a test outside the rectangle of the bits set so far cannot hit */
+    int qx0 = (cls == GPU_PC_TRI ? T->bx0 : cls == GPU_PC_SPRITE ? sp->px0 : px) - d - 1;
+    int qx1 = (cls == GPU_PC_TRI ? T->bx1 : cls == GPU_PC_SPRITE ? sp->px1 : px) + d + 1;
+    int qy0 = (cls == GPU_PC_TRI ? T->by0 : cls == GPU_PC_SPRITE ? sp->py0 : py) - d - 1;
+    int qy1 = (cls == GPU_PC_TRI ? T->by1 : cls == GPU_PC_SPRITE ? sp->py1 : py) + d + 1;
+    if (!set && cls != GPU_PC_LINEPIX && (qy1 < sb_y0 || qy0 > sb_y1 || (qx1 >> 6) < sb_w0 || (qx0 >> 6) > sb_w1)) return 0;
     if (cls == GPU_PC_TRI) {
         gs_edge e[3];
         gs_tri_edges(T, e);
         int hit = 0;
-        for (int y = T->by0; y <= T->by1; y++, gs_tri_edges_next(e)) {
-            int64_t xl, xr;
-            gs_tri_row(e, T->bx0, T->bx1, &xl, &xr);
-            if (xl > xr) continue;
-            for (int k = -d; k <= d; k++) hit |= sb_span(y + k, (int)xl - d, (int)xr + d, set);
-            if (hit && !set) return 1;
+        if (!d) {
+            for (int y = T->by0; y <= T->by1; y++, gs_tri_edges_next(e)) {
+                int64_t xl, xr;
+                gs_tri_row(e, T->bx0, T->bx1, &xl, &xr);
+                if (xl > xr) continue;
+                hit |= sb_span(y, (int)xl, (int)xr, set);
+                if (hit && !set) return 1;
+            }
+            return hit;
+        }
+        /* (M9) at scale: bitmap row y takes the hull of the spans of rows y - 1, y, y + 1, widened by a pixel - one
+         * span per row instead of three (the hull covers at least their union: conservative, so still exact) */
+        int alo = 1 << 30, ahi = -1;              /* the span of triangle row q - 1 (empty: lo > hi) */
+        int blo = 1 << 30, bhi = -1;              /* of row q */
+        for (int q = T->by0 - 1; q <= T->by1 + 1; q++) {
+            int clo = 1 << 30, chi = -1;          /* of row q + 1 (rows by0 .. by1 in order, edges stepped with them) */
+            if (q + 1 <= T->by1) {
+                int64_t xl, xr;
+                gs_tri_row(e, T->bx0, T->bx1, &xl, &xr);
+                gs_tri_edges_next(e);
+                if (xl <= xr) { clo = (int)xl; chi = (int)xr; }
+            }
+            int lo = alo < blo ? alo : blo, hi = ahi > bhi ? ahi : bhi;
+            if (clo < lo) lo = clo;
+            if (chi > hi) hi = chi;
+            if (hi >= lo) {
+                hit |= sb_span(q, lo - 1, hi + 1, set);
+                if (hit && !set) return 1;
+            }
+            alo = blo; ahi = bhi;
+            blo = clo; bhi = chi;
         }
         return hit;
     }
@@ -1798,6 +1841,7 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
     /* the exact ATST split (above sb_prim): a pass-capable primitive over pixels of an earlier fail-capable
      * one of the open draw starts a new draw (thin lines: their bounding box) */
     int xsplit = tier == GPU_TIER_FF && S.fatst == FATST_SPLIT && outcome && !gf_cfg.split_ff;
+    { static int nosb = -1; if (nosb < 0) { const char* e = getenv("PS2_GPU_DBG_NOSB"); nosb = e && atoi(e); } if (nosb) xsplit = 0; }   /* (M9 measurement: wrong pictures) */
     gs_sprite tbox;
     int scls = cls;
     if (thin) { memset(&tbox, 0, sizeof tbox); tbox.px0 = x0; tbox.py0 = y0; tbox.px1 = x1; tbox.py1 = y1; scls = GPU_PC_SPRITE; }
@@ -1860,18 +1904,37 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
         if (ff_fast && gf_cfg.mixed) {
             /* FF triangle (M5): the integer part of the record (128 bytes: Z, colour, fog, U/V rows), S/T/Q
              * interpolated by the hardware */
-            gs_planes pl;
-            gs_tri_planes(&T, vs, ev->iip, P->fge, P->zuse, P->tme, P->fst, &pl);
-            gs_rowstep rs;
-            gs_rowstep_init(&rs, &pl, T.by0);
+            /* (M9) only the planes this record holds and only where they vary: gs_tri_planes + gs_rowstep_init
+             * computed every plane (S/T/Q too, which this record does not carry); a constant plane gives
+             * row = round(value * scale) and zero steps, exactly what gs_rowstep_attr gives for it */
             fullrec* r = ar_reserve(&A_rec, 128);
-            r->zrow = rs.row[GS_A_Z]; r->zdy = rs.dy[GS_A_Z]; r->zdx = rs.dx[GS_A_Z];
-            static const int map7[7] = { GS_A_R, GS_A_G, GS_A_B, GS_A_A, GS_A_F, GS_A_U, GS_A_V };
-            for (int k = 0; k < 7; k++) {
-                r->row[k] = (int32_t)(uint32_t)(uint64_t)rs.row[map7[k]];
-                r->dy[k] = (int32_t)(uint32_t)(uint64_t)rs.dy[map7[k]];
-                r->dx[k] = (int32_t)(uint32_t)(uint64_t)rs.dx[map7[k]];
+            gs_plane pp;
+            int64_t row, dyy, dxx;
+#define FF_ROW(cond, fld, scale, is_z, ROW, DY, DX)                                                      \
+            do {                                                                                        \
+                if (cond) {                                                                             \
+                    gs_tri_plane(&T, &pp, vs[0]->fld, vs[1]->fld, vs[2]->fld);                          \
+                    gs_rowstep_attr(&pp, T.by0, scale, is_z, &row, &dyy, &dxx);                         \
+                } else {                                                                                \
+                    row = gs_fx_round((double)vs[2]->fld * (scale)); dyy = 0; dxx = 0;                  \
+                }                                                                                       \
+                ROW; DY; DX;                                                                            \
+            } while (0)
+            int iip = ev->iip, uvp = P->tme && P->fst;
+            FF_ROW(P->zuse, z, 65536.0, 1, r->zrow = row, r->zdy = dyy, r->zdx = dxx);
+            FF_ROW(iip, r, 65536.0, 0, r->row[0] = (int32_t)(uint32_t)(uint64_t)row, r->dy[0] = (int32_t)(uint32_t)(uint64_t)dyy, r->dx[0] = (int32_t)(uint32_t)(uint64_t)dxx);
+            FF_ROW(iip, g, 65536.0, 0, r->row[1] = (int32_t)(uint32_t)(uint64_t)row, r->dy[1] = (int32_t)(uint32_t)(uint64_t)dyy, r->dx[1] = (int32_t)(uint32_t)(uint64_t)dxx);
+            FF_ROW(iip, b, 65536.0, 0, r->row[2] = (int32_t)(uint32_t)(uint64_t)row, r->dy[2] = (int32_t)(uint32_t)(uint64_t)dyy, r->dx[2] = (int32_t)(uint32_t)(uint64_t)dxx);
+            FF_ROW(iip, a, 65536.0, 0, r->row[3] = (int32_t)(uint32_t)(uint64_t)row, r->dy[3] = (int32_t)(uint32_t)(uint64_t)dyy, r->dx[3] = (int32_t)(uint32_t)(uint64_t)dxx);
+            FF_ROW(P->fge, f, 65536.0, 0, r->row[4] = (int32_t)(uint32_t)(uint64_t)row, r->dy[4] = (int32_t)(uint32_t)(uint64_t)dyy, r->dx[4] = (int32_t)(uint32_t)(uint64_t)dxx);
+            if (uvp) {
+                FF_ROW(1, u, (double)(1 << GS_UVSH), 0, r->row[5] = (int32_t)(uint32_t)(uint64_t)row, r->dy[5] = (int32_t)(uint32_t)(uint64_t)dyy, r->dx[5] = (int32_t)(uint32_t)(uint64_t)dxx);
+                FF_ROW(1, v, (double)(1 << GS_UVSH), 0, r->row[6] = (int32_t)(uint32_t)(uint64_t)row, r->dy[6] = (int32_t)(uint32_t)(uint64_t)dyy, r->dx[6] = (int32_t)(uint32_t)(uint64_t)dxx);
+            } else {                             /* (U / V planes are 0 without FST texturing) */
+                r->row[5] = r->dy[5] = r->dx[5] = 0;
+                r->row[6] = r->dy[6] = r->dx[6] = 0;
             }
+#undef FF_ROW
             r->by0 = (int16_t)T.by0;
             r->bx0 = (int16_t)T.bx0;
             r->state = state;
@@ -2058,7 +2121,10 @@ static void frame_begin(void) {
     A_cmd.n = A_vtx.n = A_idx.n = A_rec.n = A_state.n = A_data.n = 0;
     memset(smap_idx, 0, sizeof smap_idx);
     nstates = 0;
-    memset(SC_used, 0, sizeof SC_used);  /* targets may have been released; StateRecs are per frame */
+    /* StateRecs are per frame. (M9) The state analyses stay valid across frames (target pointers: own_epoch; CLUT ring
+     * slots: their generation is in the signature; the texture caches carry their own generations): every frame
+     * re-analysed its 200-600 states before */
+    for (int i = 0; i < SC_N; i++) SC[i].state_valid = 0;
     Sp = &SC[0];
     S.version = 0;
     prev_state_index = -1;
