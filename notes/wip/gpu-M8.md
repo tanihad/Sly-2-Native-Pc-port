@@ -28,9 +28,19 @@ divergence / PUNT (generic fixes only).
 - Release build build\rel (1220 s cold; shader cache seeded from gpu-M7\build\hlslc_cache: hlslc is the slow part).
 - gpu_diff_all mixed S=1: the 13 original recordings ok with the baseline sw hashes, 0 beyond, PUNT 0.
 
+- Corpus gates (release gs_replay = build\gs_replay_m8.exe, RTX 4060 Ti), all green:
+  - gpu_diff_all mixed S=1 24/24 and S=3 24/24 (0 pictures beyond the 10.2 gate, PUNT 0; min PSNR 43.94 load_m3);
+    ref S=1 24/24 and S=3 24/24 (0 differing pixels, PUNT 0).
+  - gpu_game_all S=1: 3816 pictures, 0 differ from the reference compose. -Scale 3: 23/24 within the box gate,
+    rv_prompt 31.36 dB (inherent, M7) -> now an explicit waiver with a 31 dB floor (gpu_game_all -Waive).
+  - gpu_lockstep_all -Scale 3 -Mixed: 24092 comparisons, 0 differ.
+  - gpu_sample_all -Scale 3 (new script: FF vs REF every sample of every target): 24/24 within budget, 0 missing.
+- scripts/m8_check.py: per sweep scene, native hw-vs-sw PSNR of the verifier pairs + the 3x picture box-downsampled vs
+  the native GPU compose (coarse; flags < 26 dB). m8_sweep.ps1 appends its result to summary.txt (check.txt).
+
 ## In progress
-- gpu_diff_all mixed S=1 (build\diff_mixed_s1.txt) - gpu-C entries fail only on the empty baseline frames/hash.
 - sweep batches part 0/1 of 2 (background; build\warp\m8_batch_{0,1}.txt, build\warp\m8_<scene>\summary.txt).
+  So far every scene: verify 0 beyond, PUNT 0, check 0 flagged.
 
 ## Next
 (see Plan)

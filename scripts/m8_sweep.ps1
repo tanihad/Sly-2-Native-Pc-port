@@ -78,6 +78,15 @@ $sum = @(
         (Med ($use | ForEach-Object front_max)), (Med ($use | ForEach-Object render)), (Med ($use | ForEach-Object gpu)),
         (Med ($use | ForEach-Object gpu_max)), (Med ($use | ForEach-Object latency)), (Med ($use | ForEach-Object prims)),
         (Med ($use | ForEach-Object draws)), (Med ($use | ForEach-Object downloads)), (($use | Measure-Object dropped -Sum).Sum))
-) + @($errs | ForEach-Object { "log: $_" })
+)
+if ($np -gt 0) {                     # picture checks (scripts/m8_check.py): native hw vs sw, picture at scale vs native
+    $gitdir = ((Get-Content (Join-Path $root '.git') -Raw) -replace '^gitdir:\s*', '').Trim()
+    $py = Join-Path (Split-Path (Split-Path (Split-Path $gitdir -Parent) -Parent) -Parent) '.venv\Scripts\python.exe'
+    if (-not (Test-Path $py)) { $py = Join-Path $root '.venv\Scripts\python.exe' }
+    $chk = & $py (Join-Path $PSScriptRoot 'm8_check.py') $frames
+    $chk | Set-Content (Join-Path $dir 'check.txt')
+    $sum += @($chk | Select-Object -Last 1) + @($chk | Where-Object { $_ -match 'FLAG' } | Select-Object -First 5)
+}
+$sum += @($errs | ForEach-Object { "log: $_" })
 $sum | Set-Content (Join-Path $dir 'summary.txt')
 $sum

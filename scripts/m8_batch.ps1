@@ -32,6 +32,6 @@ foreach ($line in $scenes) {
     $ex = @("PS2_DUMP_FROM=$DumpFrom") + @($Extra -split ';' | Where-Object { $_ })
     $a += @('-Extra', ($ex -join ';'))
     $res = & powershell @a
-    $res | Select-Object -First 5 | ForEach-Object { "$name$Suffix | $_" } | Add-Content $out
+    $res | Select-Object -First 12 | ForEach-Object { "$name$Suffix | $_" } | Add-Content $out
     "$name$Suffix done: $($res | Select-Object -Skip 2 -First 1)"
 }
