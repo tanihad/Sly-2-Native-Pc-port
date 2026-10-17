@@ -25,6 +25,10 @@ if (-not [IO.Path]::IsPathRooted($Out)) { $Out = Join-Path $root $Out }
 New-Item -ItemType Directory -Force $Out | Out-Null
 $recs = Get-Content (Join-Path $root 'tests\gpu\corpus.txt') | Where-Object { $_ -and -not $_.StartsWith('#') } |
     ForEach-Object { ($_ -split '\|')[0].Trim() }
+# (M10) widescreen recordings: "aspect=W:H" in their corpus line (shown at it; anamorphic display targets at scale)
+$aspects = @{}
+Get-Content (Join-Path $root 'tests\gpu\corpus.txt') | Where-Object { $_ -and -not $_.StartsWith('#') -and $_ -match 'aspect=(\d+:\d+)' } |
+    ForEach-Object { $aspects[($_ -split '\|')[0].Trim()] = $Matches[1] }
 $replay = Join-Path $Out 'gs_replay.exe'    # (PowerShell names are case-insensitive: not $exe, that is $Exe)
 if ($Exe) { Copy-Item $Exe $replay -Force }
 else {
@@ -50,7 +54,8 @@ foreach ($rel in $recs) {
     $run = Join-Path $o ("gs_replay_{0}.exe" -f $PID)      # (a uniquely named copy)
     Copy-Item $replay $run -Force
     $t0 = Get-Date
-    & $run $rec $o 0 --backend hw --adapter $Adapter @mode 2> (Join-Path $o 'log.txt') | Out-Null
+    $asp = if ($aspects.ContainsKey($rel)) { @('--aspect', $aspects[$rel]) } else { @() }
+    & $run $rec $o 0 --backend hw --adapter $Adapter @mode @asp 2> (Join-Path $o 'log.txt') | Out-Null
     $rc = $LASTEXITCODE
     Remove-Item $run -ErrorAction SilentlyContinue
     $secs = [int]((Get-Date) - $t0).TotalSeconds
