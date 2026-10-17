@@ -36,6 +36,14 @@ state (anchors L/C/R, full-width exemption), SIDE_FILL, pillarboxing of hinted 4
 - corpus.txt: M10 section (museum169, ws_ep3_hud) with "aspect=16:9"; gpu_game_all / gpu_lockstep_all pass
   --aspect from it.
 
+- Gates so far: run_tests 16/16; unit suites (disc dma gif gs-draw gs-front gs-mem iop_kernel iop_recomp ipu mc pad
+  sd threads timer vif vu vu_recomp warp, window -UnitOnly 983 checks) pass; gs-hw full (hw + WARP) passed;
+  VRAM hashes hwdry vs e1fce93 (git archive) identical on 26 recordings; gpu_fthread_check + -Mixed 26/26
+  identical; gpu_diff_all 13/13; debug + release builds; package.py (dist\Sly2, version 0.1.629 6b8ff31).
+- In game verifier at 3x 16:9 (ep3 hub, L3 / R3 Binocucom / walking, PS2_GS_VERIFY=60): 180 comparisons, 0 beyond.
+- gpu_front_hud_stats + gs_replay "hud:" line; no widening at 1x (gpu_display_kx(1) = 1).
+- Appendix K drafted (PERF placeholder).
+
 ## In progress
 - Perf numbers: the GPU is saturated by other work right now (user's game + M8 runs: 98% util), measurements
   meaningless (ep3 3x 16:9 / 4:3 mixed bench 39-55 / 34 ms). Retry when quiet.

@@ -1979,3 +1979,75 @@ field-coded pictures on the field's own lines. Gate: PSNR >= 32 dB and |mean sig
 - Default settings are 3x, ps2 outlines, Modern; `PS2_GS_SCALE=1` plus `--faithful` (gs_replay) or
   filters = faithful (game) reproduce the M6 S = 1 path exactly.
 - Disk: 3x pictures are 6 MB PNGs; use GS_REPLAY_MAX_PNG / GS_REPLAY_SAVE_VBLANKS.
+
+## Appendix K. As built: M10 widescreen renderer side (branch gpu/M10)
+
+**What was built**
+- Anamorphic display targets (8.3.1): the display family gets `kx = gpu_display_kx(N, A) = max(N, round(N * W))`,
+  W = A / (4/3), at most 16, at internal scale N >= 2 (4 at 3x 16:9, 3 at 2x, 5 at 4x; at N = 1 every target stays
+  1 x 1, so the 1x picture is the software renderer's at any aspect); `ky` and the square family are unchanged.
+  `gpu_hw.c display_kx` reads the game's display aspect at every VBlank (`gpu_hw_config.aspect(0, ...)`, i.e.
+  ps2_aspect / ps2_settings: F7 switches it while playing; 4:3 content keeps the game's factors, so a movie does
+  not rescale anything) and hands a change to the frontend with GPU_DI_CONFIG (`gpu_display_info.scale_x` ->
+  `gf_configure(..., display_kx)` -> `own_rescale_all`: every live display target rescaled before the next frame's
+  first draw, as for an F2 scale change). `PS2_GS_ASPECT=W:H` overrides the aspect the targets are widened for.
+- Compose / present: the PCRTC picture is `sox x N` texels per output pixel (sox = the display family's kx,
+  `gpu_fop_present.scale_x`, `display.hlsl` `sox`: circuit_x / read_px in 1/sox units; memory circuits repeat
+  pixels); 2048 x 1344 at 3x 16:9 (progressive). The presenter resamples it to the letterboxed viewport per axis as
+  before (Lanczos-2 shrinking; the horizontal grid shift is (kx - 1) / 2 texels). Pillarboxing of ASPECT_4_3 content
+  is the M6 path (the aspect of each VBlank's picture); frame dumps are display-shaped as before (2389 x 1344 at 3x).
+- HUD transform (8.3.3): `gs_hud_prim` (gs_draw.c, declared in gs_setup.h) is the one rule - X of each vertex ->
+  c + round((x - c) * s) in 12.4 units about the L / C / R anchor of the FRAME width, primitives spanning the whole
+  FRAME width (within a pixel) exempt. The decoder no longer transforms the GPU backend's vertices: it hands the
+  frontend the game's vertices (strip vertices keep their serials, so the frontend thread's vertex cache works for
+  HUD strips) and the hint state (gs_env_view.hud / hud_scale, in the StateRec since M6); `fr_prim` transforms them
+  before any setup, so positions and every exact record (Z rows, sprite rectangles, ROV edges, line DDA pixels) use
+  the software rasterizer's coordinates. The software rasterizer gets the transformed copies from `draw()` as before.
+  Each HUD_BEGIN replaces anchor and scale (L, R, C in one 2D pass, no HUD_END between them).
+- SIDE_FILL: the decoder's two flat sprites (own state, no tests, no Z write) go to both renderers, kicked with the
+  HUD hint off so the frontend does not transform them.
+- Diagnostics / tools: `gpu_front_hud_stats` and the gs_replay line `hud: transformed L / C / R primitives, full-width
+  drawn as given, X extents per anchor vs the centre 4:3 band`; `gs_replay --aspect W:H` (gs_replay.ps1 `-Aspect`):
+  --game pictures shown at it, display_kx for --ref / --mixed / hwdry, the box gate with kx columns per output
+  pixel; `aspect=W:H` in a tests/gpu/corpus.txt line makes gpu_game_all / gpu_lockstep_all pass it;
+  `scripts/m10_sheet.py` (crops shown as a 16:9 display shows them).
+- Recordings (tests/gpu/corpus.txt, M10 section): `gpu-M10\build\gsrec\ws_museum169.gsrec` (copy of the widescreen
+  task's museum, HUD_BEGIN(C) only) and `gpu-M10\build\gsrec\ws_ep3_hud.gsrec` (ep3 hub 16:9, hud = edges: health L,
+  L3 coin / bottle counters R, R3 Binocucom with SIDE_FILL; 200 VBlanks, 749 MB). HUD statistics: museum C 7028
+  primitives inside the 4:3 band (x 72..181 of 64..448); ep3 L 19327 (x 8..117), C 36014 (x 51..464: the Binocucom
+  lens is wider than the 4:3 screen), R 44482 (x 422..522), 488 full-width primitives drawn as given.
+
+**Verification (release build, RTX 4060 Ti; the GPU was shared with other work the whole time)**
+- S = 1, 16:9 (`--game-verify 1 --aspect 16:9`): museum 60 pictures, ep3 HUD 200 pictures: the in-game verifier 60 /
+  200 comparisons, 0 beyond the tolerance; pictures vs the software renderer 0 beyond the picture gate (min PSNR 55.56 /
+  54.04 dB); `--game` identical to the reference compose (60 / 200 pictures, 0 px).
+- S = 3, 16:9 (kx = 4, ky = 6): box gate museum min PSNR 41.02 dB, max |mean signed error| 0.030; ep3 HUD 37.73 dB,
+  0.114 (0 beyond); lockstep mixed at S = 3 16:9 (sample 0 vs sw at every FRAME / ZBUF change and VBlank): museum
+  481 comparisons, ep3 HUD 1421, 0 differ.
+- gs-hw unit scenes (REF, mixed, default mixed; hardware and WARP): all identical, including t_hud_hints (anchors
+  L / R / C without HUD_END, strips, SIDE_FILL) now transformed by the frontend.
+- In game (release, headless, PS2_GS_BACKEND=hw, 3x, 16:9 + hud = edges defaults; screenshots
+  `build\screenshots\gpu_m10_*.png`, sheets `notes/m10/ingame.png`, `switch.png`): museum (health meter at the left
+  edge), ep3 hub L3 counters at the right edge, ep1 boss (Dimitri's meter top right), Binocucom with the navy side
+  fill, the "Prelude" movie pillarboxed (and the Watch-a-Movie menu wide with centred 2D), the pause menu (as the
+  software renderer's hud_pause_169), F7 -> 4:3 (pillarboxed, targets 3 x 6) -> F7 16:9 (4 x 6) -> F8 centered ->
+  F8 edges: each applied from the next frame, logged `display targets 3x6 / 4x6 samples per pixel`.
+  `notes/m10/scene.png` / `hud_counters.png`: the same crop at 1x | 3x with kx = 3 (M7 at 16:9) | 3x with kx = 4.
+
+PERF
+
+**Deviations from the design**
+- No vertex-shader transform (8.3.3): the frontend transforms (above). A vertex-shader copy would have to reproduce
+  `llround((x - c) * s)` in 12.4 exactly (int64 emulation) and would duplicate what the records already need.
+- At internal scale 1 the targets are not widened (kx = round(W) would be 1 at 16:9 anyway; at 21:9 it would be 2,
+  turning on the per-sample paths of scale > 1 at "PS2 resolution").
+- The replay corpus gets two 16:9 recordings; the design's "synthetic hints" were not needed (the EE patches exist).
+
+**What M11 (default switch) must know**
+- 16:9 is the default aspect (owner decision): with the GPU renderer at 3x the displayed buffers are 4 x 6 samples
+  per pixel (2048 x 1344 + depth + zpatch: about 33% more memory and fill for display targets than 4:3).
+- `PS2_GS_ASPECT=4:3` gives the M7 behaviour at 16:9 for comparisons; at 1x nothing changes with the aspect.
+- 16:9 recordings must be replayed with `--aspect 16:9` at scale (corpus `aspect=` column); at 1x it changes
+  nothing.
+- The HUD transform is in `gs_hud_prim`: any change to it applies to both renderers (the gs-draw t_hud_hints scene
+  checks sw, the gs-hw REF / mixed variants check the GPU path against it).
