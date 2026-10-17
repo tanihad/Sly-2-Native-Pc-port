@@ -72,14 +72,22 @@ and the owner's settings applied (internal_scale, outlines, filters presets + to
   3x thin), darken (museum v5200), binocucom (fix-perf brief v2515), presets (ep5: Modern 1x | Faithful 1x /
   Modern 3x | Faithful 3x, zoom 2).
 
+- Unit suites 21/21 pass (gs-hw 602 s incl. WARP; window 1010 checks); run_tests 16/16.
+- In-game (release, windowed, hw, quiet machine; scratchpad m7game.ps1 = warp_run -Play + PS2_GS_HW_STATS, medians
+  of the last 20 one-second lines; committed = private bytes sampled every 5 s), 3x / 1x:
+  ep3 hub: 59.9 / 59.9 flips/s, GS 10.4 / 10.1, frontend 15.2 / 13.9, render CPU 1.9 / 1.3, GPU 10.6 / 4.6,
+  latency (queued -> Present returned) 3.1 / 2.1 ms, 54.5k prims/VBlank, committed last 935 / 727 MB.
+  ep5 hub: 59.9 / 56.2, GS 8.3 / 7.9, frontend 11.1 / 9.2, render 1.3 / 1.0, GPU 9.5 / 4.7, latency 2.1 / 1.8,
+  44k / 36k prims, 1047 / 924 MB. ep8 hub: 59.9 / 59.9, GS 4.2 / 4.3, frontend 5.3 / 5.1, render 0.8 / 0.7,
+  GPU 8.0 / 4.3, latency 1.6 / 1.4, 21k / 19k prims, 1102 / 898 MB. Peaks 1.4-1.7 GB at load at both scales.
+  ep3 at 4:3 1x: 51k prims (not widescreen). GS / frontend are scene-driven (same at 1x).
+
 ## In progress
 
 ## Next
-3. Motion blur on/off sheet (in-game dumps at 3x).
-4. In-game: hw at 3x hubs ep3/ep5/ep8 windowed, PS2_GS_HW_STATS (GS <= 6, render <= 8, GPU <= 8 ms medians,
-   60 flips/s); run-time switching (F2..F6 via PS2_INPUT tokens); memory (850 MB) and present latency.
-5. Gates: run_tests, unit suites (gs-hw, gs-front, gs-draw, window...), gpu_diff_all, VRAM hashes,
-   gpu_fthread_check, lockstep S=1, gpu_game_all S=1, debug + release builds, package.py.
+3. Motion blur on/off sheet (in-game dumps at 3x); museum in-game (coordinator: frontend 17-21 ms on main).
+4. Run-time switching (PS2_INPUT tokens) in game.
+5. Gates: gpu_diff_all, VRAM hashes, gpu_fthread_check, lockstep S=1, gpu_game_all S=1, debug build, package.py.
 6. Design doc: 3.1/8.1/8.2 notes, appendix I; WIP complete.
 
 ## Findings / traps
