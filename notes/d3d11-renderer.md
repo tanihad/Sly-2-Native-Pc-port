@@ -1937,7 +1937,14 @@ field-coded pictures on the field's own lines. Gate: PSNR >= 32 dB and |mean sig
   street 3.70 -> 11.18, ep8 hub 1.80 -> 5.97, ep8 boss 4.24 -> 10.41. PS2_GPU_PROF on ep5 at 3x: FF fast
   triangles 47%, ROV triangles 18%, ALIAS16 16%, FF sprites 8%, clears 3%, Z resolves 3%; GS texture sampling is
   27% of the FF triangle time.
-- GATES
+- Verifier at scale: downloads read sample 0, so the in-game verifier compares native memory unchanged.
+  `gpu_game_all -Scale 3 -Verify 30` on ep3 hub, ep5 street, ep8 boss, museum, brief, ep2 photo: 1140 pictures,
+  verifier 0 beyond, pictures vs sw 0 beyond the picture gate (min PSNR 33.67 dB); in game, ep3 hub at 3x with
+  `PS2_GS_VERIFY=60`: 60 comparisons, 0 beyond.
+- Gates: run_tests 16/16; unit suites 21/21 (gs-hw incl. WARP, gs-front, gs-draw, window 1010 checks, ...);
+  `gpu_diff_all` 13/13; `gs_vram_hashes -Backend hwdry` identical to cd997cd on 24 recordings;
+  `gpu_fthread_check` and `-Mixed` 24/24 identical; lockstep S = 1 REF and mixed 24092 comparisons, 0 failed;
+  `gpu_game_all` S = 1 3816 pictures, 0 differ; debug and release builds; `scripts\package.py`.
 
 **Deviations from the design**
 - GPU <= 8 ms at S = 3 is not met on the heavy hubs (ep3 10.6, ep5 9.5, museum 9.3; ep8 8.0): the design puts

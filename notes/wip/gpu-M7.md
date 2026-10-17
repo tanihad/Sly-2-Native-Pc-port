@@ -6,7 +6,7 @@ single-rate sprites, 1:1 / scaled view reads, compose at scale (progressive / fi
 (box / Lanczos-2 / Catmull-Rom / point with grid-shift compensation), thin analytic outlines, PS2_GS_SCALE,
 and the owner's settings applied (internal_scale, outlines, filters presets + toggles), at run time.
 
-**Status**: in progress.
+**Status**: complete (see the end of Done).
 
 ## Plan (design decisions)
 - Families: display (DISPFB buffers) kx = N, ky = 2N when progressive (interlacing off), else N; square N x N.
@@ -87,12 +87,12 @@ and the owner's settings applied (internal_scale, outlines, filters presets + to
 - Debug + release builds and package.py OK (disk ran full once: clean build\warp frames etc.).
 - Design doc appendix I written (GATES placeholder for the gate results).
 
-## In progress
-- scratchpad gates.ps1 -> build\gates.txt: diff_all, vram hashes (base = git archive cd997cd runtime, hwdry),
-  fthread (+Mixed), lockstep REF / mixed S=1, gpu_game_all S=1, gpu_game_all -Scale 3 -Verify 30 on 6 recs.
+- Gates: gpu_diff_all 13/13 (title rerun after a disk-full failure), VRAM hashes hwdry identical to cd997cd (base
+  runtime + scripts from git archive, 24/24), fthread + Mixed 24/24, lockstep S=1 REF / mixed 24092 / 0 failed,
+  gpu_game_all S=1 3816 / 0 differ, -Scale 3 -Verify 30 on 6 recordings 0 beyond, in-game PS2_GS_VERIFY=60 at 3x
+  ep3 hub 60 comparisons 0 beyond. Appendix I complete.
 
-## Next
-5. Fill appendix I GATES, WIP complete, final report.
+**Status: complete** (M7 done on gpu/M7; GPU <= 8 ms at 3x on the heavy hubs left to M9, appendix I).
 6. Design doc: 3.1/8.1/8.2 notes, appendix I; WIP complete.
 
 ## Findings / traps
