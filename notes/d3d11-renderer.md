@@ -1993,15 +1993,21 @@ field-coded pictures on the field's own lines. Gate: PSNR >= 32 dB and |mean sig
 - Corpus: `gpu-M8\build\gsrec\m5_battlezone.gsrec` (60 VBlanks recorded by the in-game verifier; deep translucent
   layering), 25 recordings.
 
-**Corpus gate (release gs_replay, RTX 4060 Ti; 24 recordings, then 25 with battlezone)**
+**Corpus gate (release gs_replay of the final source, RTX 4060 Ti; 25 recordings incl. battlezone)**
 
 | gate | S = 1 | S = 3 |
 |---|---|---|
-| gpu_diff_all mixed (0 beyond the 10.2 picture gate, PUNT 0, sw hashes = baseline) | 24/24 | 24/24 |
-| gpu_diff_all ref (0 differing pixels, PUNT 0) | 24/24 | 24/24 |
-| gpu_game_all (S = 1: identical to the reference compose; S = 3: box gate) | 3816 pictures, 0 differ | 23/24 + rv_prompt waived (31.36 dB) |
-| gpu_lockstep_all -Mixed (sample 0 at every FRAME/ZBUF change and VBlank) | (final run) | 24092 comparisons, 0 differ |
-| gpu_sample_all (FF vs REF, every sample) | - | 24/24 within budget, 0 missing |
+| gpu_diff_all mixed (0 beyond the 10.2 picture gate, PUNT 0, sw hashes = baseline) | 25/25 | 25/25 |
+| gpu_diff_all ref (0 differing pixels, PUNT 0) | 25/25 | 25/25 |
+| gpu_game_all (S = 1: identical to the reference compose; S = 3: box gate) | 3876 pictures, 0 differ | 25/25 (rv_prompt waived at 31.36 dB) |
+| gpu_game_all -Verify 30 (brief, ep3 hub, ep5 street, ep8 boss, museum, photo, battlezone) | - | 1200 pictures, verifier 0 beyond, 0 beyond the picture gate |
+| gpu_lockstep_all (sample 0 at every FRAME/ZBUF change and VBlank, --no-resync) | REF 24500 and mixed 24500 comparisons, 0 differ | mixed 24500, 0 differ |
+| gpu_sample_all (FF vs REF, every sample of every target) | - | 25/25 within budget, 0 missing |
+| gpu_fthread_check, -Mixed | 25/25 identical | - |
+| gs_vram_hashes -Backend hwdry vs tests/gpu/vram_hashes.txt | 24/24 identical (battlezone added) | - |
+
+Also green: tests/run_tests.py 16/16; all 20 unit suites (gs-hw 643 s incl. WARP, window 1010 checks, ...); release build +
+`scripts\package.py` (dist\Sly2) and debug build (build\sly2).
 
 **In-game sweep** (release, `renderer = gpu`, defaults: 3x, ps2 outlines, Modern, 16:9; PS2_GS_VERIFY=60; 280-360 s per
 scene; 54 scenes): prologue (new game: title, intro, Binocucom briefing, museum; Clockwerk hallway chase; rooftop chase),
@@ -2038,6 +2044,9 @@ mega-jump, Carmelita's gunner, Clock-La), pause -> Save and Quit -> title, Thief
   every scale by nature.
 - Hubs download 2.7-8 GPU blocks per VBlank in steady state (the M6 item: a colour target drawing into main-Z pages);
   exact, cheap on the render thread (render CPU <= 1.3 ms), an M9 item.
+- M7's watch list: unpaired 1:1 reads (target rescales): 2 at boot (v360), none during play (museum + Binocucom, ep7 hub,
+  the new stats field); CT16 shuffles at scale: no visible difference in any sheet; field-coded content in progressive mode:
+  movies look right at 3x (the field sprites sample the full movie texture per sample), only the coarse m8_check flags them.
 
 **Performance at 3x** (release, headless, no verifier: frontend on its own thread; one game at a time, the machine shared
 with one other agent; medians over ~87 one-second PS2_GS_HW_STATS lines from VBlank 4800 (museum 5400); ms per game frame;

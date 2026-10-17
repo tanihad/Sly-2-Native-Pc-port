@@ -6,7 +6,7 @@ in-game warp sweep with the GPU renderer at 3x over every episode (hub + one job
 PS2_GS_VERIFY sampling, hw vs sw screenshots + contact sheets (notes/m8/), performance table for M9; fix every
 divergence / PUNT (generic fixes only).
 
-**Status**: in progress.
+**Status**: complete (see the end of Done).
 
 ## Plan
 1. Builds: release game (build\rel), gs_replay via the gate scripts.
@@ -62,12 +62,18 @@ divergence / PUNT (generic fixes only).
 - Builds: release + package (dist\Sly2) and debug (build\sly2) OK after the last runtime change.
 - Design appendix J written (3701a98).
 
-## In progress
-- Final gates (build\final\*.txt): diff mixed S1/S3 + ref S1 25/25 so far; game, lockstep, samples, fthread, VRAM
-  hashes running; run_tests + unit suites running (build\final\units.txt).
+- Final gates on the final source (build\final\*.txt), 25 recordings: gpu_diff_all mixed S=1/S=3 and ref S=1/S=3
+  25/25; gpu_game_all S=1 3876 pictures 0 differ, S=3 25/25 (rv_prompt waived), -Verify 30 on 7 recordings at S=3
+  1200 pictures 0 beyond; lockstep REF S=1 / mixed S=1 / mixed S=3 24500 comparisons each, 0 differ; gpu_sample_all
+  S=3 25/25; fthread + -Mixed 25/25 identical; gs_vram_hashes hwdry 24/24 identical to tests/gpu/vram_hashes.txt
+  (battlezone line added); run_tests 16/16; 20/20 unit suites; release + package.py + debug builds.
+
+**Status: complete** (appendix J in notes/d3d11-renderer.md; no renderer divergence needed a fix; the battlezone
+verifier finding and the 3x distance-effect look are reported for owner / M11 decisions).
 
 ## Next
-(see Plan)
+(none) - for M9: the performance table in appendix J; for M11 / owner: dual-source layering vs the verifier budget,
+the distance effect at 3x.
 
 ## Findings / traps
 - m5_battlezone (tank, rain, green gas cloud): 1 of 240 verifier comparisons beyond the tolerance at v4920: 3563
