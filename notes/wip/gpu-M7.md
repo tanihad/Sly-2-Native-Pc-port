@@ -82,12 +82,17 @@ and the owner's settings applied (internal_scale, outlines, filters presets + to
   GPU 8.0 / 4.3, latency 1.6 / 1.4, 21k / 19k prims, 1102 / 898 MB. Peaks 1.4-1.7 GB at load at both scales.
   ep3 at 4:3 1x: 51k prims (not widescreen). GS / frontend are scene-driven (same at 1x).
 
+- 2dccb42 motion_blur.png (in-game 3x ep3 camera turn, on | off); museum in-game 3x / 1x: GS 3.9 / 3.6, frontend
+  6.0 / 5.6, GPU 9.3 / 4.6, 59.9 flips/s (quiet machine); run-time switching in game: all tokens applied, no error.
+- Debug + release builds and package.py OK (disk ran full once: clean build\warp frames etc.).
+- Design doc appendix I written (GATES placeholder for the gate results).
+
 ## In progress
+- scratchpad gates.ps1 -> build\gates.txt: diff_all, vram hashes (base = git archive cd997cd runtime, hwdry),
+  fthread (+Mixed), lockstep REF / mixed S=1, gpu_game_all S=1, gpu_game_all -Scale 3 -Verify 30 on 6 recs.
 
 ## Next
-3. Motion blur on/off sheet (in-game dumps at 3x); museum in-game (coordinator: frontend 17-21 ms on main).
-4. Run-time switching (PS2_INPUT tokens) in game.
-5. Gates: gpu_diff_all, VRAM hashes, gpu_fthread_check, lockstep S=1, gpu_game_all S=1, debug build, package.py.
+5. Fill appendix I GATES, WIP complete, final report.
 6. Design doc: 3.1/8.1/8.2 notes, appendix I; WIP complete.
 
 ## Findings / traps

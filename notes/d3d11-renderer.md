@@ -1844,3 +1844,122 @@ with 0 downloads and 0 beyond the tolerance in verify mode.
   at S > 1 the verifier must decimate sample 0 before comparing (it compares native-resolution memory today).
 - GPU frame times have power-state spikes (25-35 ms); more work at S = 3 will mostly keep the GPU at P0. The
   in-flight depth (6) absorbs them; do not make the EE wait for Present.
+
+## Appendix I. As built: M7 resolution scaling, presentation, graphics settings (branch gpu/M7)
+
+**What was built**
+- Scale families (`gpu_own.c`): display `kx = N`, `ky = 2N` while progressive (`display_ky2`, graphics.interlacing
+  off) else `N`; square `N x N`; N <= 8. Upgrade-only (`own_set_family`): a draw's colour + Z pair and 1:1 sprite
+  view reads are paired to the larger family (`own_pair_family`); the frontend no longer copies the colour
+  target's family onto Z silently. A C32 target created at a DISPFB start shown before (8-entry list) starts in the
+  display family. A factor change is a GPU_FOP_TARGET with new factors: `exec_target` rescales the contents
+  (`shaders/rescale.hlsl cs_rescale`, new sample (i, j) <- old sample (i*okx/kx, j*oky/ky), sample 0 exact; depth:
+  every DSV-newer tile synced into zpatch first, all tiles ZT_ZP afterwards). `gf_configure` (scale, progressive,
+  thin) at a VBlank (GPU_DI_CONFIG) recomputes every live target's factors (`own_rescale_all`): run-time scale /
+  interlacing / outline changes need no restart.
+- Triangles at scale (`shaders/gs.hlsl gs_frag`): sample (si, sj) of native (px, py) evaluates colour, fog, U, V
+  from the 16.16 row values plus `floor(step * fi)` float sub-steps, Z as the exact native value plus a float
+  step of the plane (`int64.hlsli gs_z16_sample`), S/T/Q at non-zero samples from the double plane through the
+  s0 record (`rows + fj`: works for samples whose native row is above the triangle's first, rows = -1). Sample 0
+  is bit-exact (lockstep at every scale). The triangle draw bbox is widened by one native pixel up / left at
+  scale (samples of the row above reach into the triangle: the depth tile sync must cover them), and the exact
+  ATST-split bitmap is widened by a pixel (draw count about doubles; measured: no GPU cost).
+- Single-rate classes (sprites, line / point pixels) stay storage-aligned: samples x*k .. x*k+k-1 take the native
+  value. 1:1 view reads use the fragment's signed sample offset (`g_voff`, also across the neighbouring texel);
+  non-1:1 reads of a scaled view at samples != 0 sample the view's own sample grid (`view_hires`: GS bilinear /
+  nearest in sample units; CT16 views and mipmapped reads keep sample 0) - Binocucom RTTs, motion blur.
+- Thin outlines (graphics.outlines = thin, scale > 1): the frontend replaces a line's DDA pixel records by one
+  `gpu_rec_thin` (128 B; GPU_PC_THIN, PRIM 3, `vs_ref_thin` quad around the line, `ps_gs_thin` / `ps_ff_n*`):
+  coverage `1 - |d| / w` (AA1, replaces alpha) or `|d| < w / 2`, `w = PS2_GS_THIN_WIDTH` samples (default
+  max(1, N/2)) over the minor-axis factor; Z / colour / fog / S/T/Q interpolated along the line.
+- Compose at scale (`shaders/display.hlsl`, `gpu_present.c`): picture W*so x H*so; field rows at
+  `dby*ky + rel*ky/(2 so)`; progressive odd field-coded pictures one frame line down; the deinterlacer (history at
+  scale, lazily created) only with interlacing on; flicker filter off = `flicker_strip` (the standard pair's
+  larger-DBY circuit disabled). The scratch / vram_buf path stays native (nearest).
+- Present (`present.hlsl ps_resample`, `present_resample`): two separable passes through an RGBA16F intermediate
+  into the letterboxed viewport; point / box / Lanczos-2 / Catmull-Rom / bilinear; auto = Lanczos shrinking,
+  Catmull-Rom enlarging, point 1:1; grid shift (P - r)/2 texels per axis (`cur_shift`, also reported with
+  read-backs: `gpu_readback.shift`, `gpu_hw_dump_shift`). `PS2_GS_SCALER` overrides graphics.scaler.
+- Settings (`runtime/gfx.c`, `settings.c`, `window.c`, notes/settings.md): internal_scale (default 3,
+  `PS2_GS_SCALE`), outlines (ps2 default / thin), filters preset (modern default / faithful) + motion_blur /
+  flicker_filter / interlacing toggles, scaler. `gfx_apply` at start, `gfx_key` for F2 / Shift+F2 / F3 / F4 / F5 /
+  F6 / Shift+F6 (written to sly2.ini) and PS2_INPUT tokens scaleup / scaledown / outlines / filters / blur /
+  flicker / interlace, `gfx_reread` on window activation. The GPU side gets them through `gpu_hw_set_graphics`
+  (scale + GPU_GFX_* bits in `gpu_display_info`). Motion blur off = instruction patch `motion_blur_off`
+  (recomp/patches.py) after the load at 0x160FA0 in f_00160F98: $v1 = 1, the function returns before drawing
+  (gs_census: the `(Cs-Cd)*FIX+Cd` FIX 48 pass, 16 sprites per frame, disappears and nothing else changes); the
+  patched function reads `ps2_motion_blur_off` so it switches at run time in both renderers.
+- Tools: `gs_replay --scale N --modern|--faithful|--progressive|--interlaced|--flicker-off|--thin|--fields|--scaler`,
+  game mode at scale with the box gate (below), `--sample-dump DIR / --sample-compare DIR / --sample-every N`
+  (every sample of every target, FF vs REF; `gpu_exec_read_target`), `GS_REPLAY_MAX_PNG`,
+  `GS_REPLAY_SAVE_VBLANKS`; `gpu_game_all.ps1 -Scale N -Extra ...`; `scripts/m7_sheet.py` (contact sheets);
+  `PS2_GPU_PROF=1` (GPU time per kind of work, gpu_exec.c); `PS2_GS_HW_STATS` latency column (frame queued ->
+  Present returned).
+
+**Box gate (game mode at scale)**: every picture box-downsampled to the PS2 grid and compared with the reference
+compose of the GPU memory (sample 0): two boxes - centred on sample 0 (triangle content; the presenter's grid) and
+the native pixel's own samples (single-rate content) - the better one counts; field displays per field row,
+field-coded pictures on the field's own lines. Gate: PSNR >= 32 dB and |mean signed error| < 0.5.
+
+**Verification (release build, RTX 4060 Ti)**
+- Lockstep (sample 0 vs sw, every FRAME/ZBUF change and VBlank) at S = 2, 3, 4, REF and mixed: 24 recordings,
+  24092 comparisons each, 0 differ beyond the tolerance.
+- FF vs REF at S = 3, every sample of every target (every 60 VBlanks, every 8 on the short recordings): 24/24
+  within the 10.2 budget (<= 2.5% colour words > 2, <= 0.1% > 16, <= 0.1% Z words); worst ep8 boss 1.03% > 2,
+  ep2 photo 0.00008% > 16, ep2 hub 0.00008% Z.
+- Box gate, 3816 pictures per scale: S = 2, 3, 4: 23/24 recordings; min PSNR otherwise 33.08-47.49 dB, max
+  |mean signed error| 0.34. The exception, fix-perf rv_prompt (31.20-31.79 dB on 8 of 20 pictures at every
+  scale), is inherent: its full-width UI rules are Gouraud strips whose sharp horizontal edges sit a third of a
+  field row off the row centres (e.g. 38.33); the native picture takes the centre's side, the supersampled one the
+  true coverage, so five 512-pixel rows differ by 20-40 (the diff map holds only the rules and glyph edges).
+- S = 1 (Faithful defaults of the game path): every corpus picture identical to the reference compose (3816).
+- Contact sheets (notes/m7/, 1x tile nearest-enlarged, 3x tile 1:1, same native box): `shadows.png` +
+  `shadows_edge.png` (ep5 street v6500; the bit-plane shadow edge at sample resolution), `outlines.png` (ep3 hub
+  v7100: 1x | 3x ps2 | 3x thin), `darken.png` (museum v5200), `binocucom.png` (fix-perf brief v2515),
+  `presets.png` (ep5: Modern 1x | Faithful 1x / Modern 3x | Faithful 3x), `motion_blur.png` (in game, 3x, ep3 hub
+  during a camera turn: on | off).
+- In game (release, windowed, hw, quiet machine; medians of 20 one-second PS2_GS_HW_STATS lines; committed =
+  private bytes), 3x / 1x at the same spot:
+
+| scene | flips/s | GS thread | frontend | render CPU | GPU | latency | prims/VBlank | committed MB |
+|---|---|---|---|---|---|---|---|---|
+| ep3 hub | 59.9 / 59.9 | 10.4 / 10.1 | 15.2 / 13.9 | 1.9 / 1.3 | 10.6 / 4.6 | 3.1 / 2.1 | 54.5k | 935 / 727 |
+| ep5 hub | 59.9 / 56.2 | 8.3 / 7.9 | 11.1 / 9.2 | 1.3 / 1.0 | 9.5 / 4.7 | 2.1 / 1.8 | 44k / 36k | 1047 / 924 |
+| ep8 hub | 59.9 / 59.9 | 4.2 / 4.3 | 5.3 / 5.1 | 0.8 / 0.7 | 8.0 / 4.3 | 1.6 / 1.4 | 21k / 19k | 1102 / 898 |
+| museum (ep0) | 59.9 / 59.9 | 3.9 / 3.6 | 6.0 / 5.6 | 0.9 / 0.6 | 9.3 / 4.6 | 1.5 / 1.1 | 18k | 1102 / 655 |
+
+  Committed memory peaks at 1.4-1.7 GB while loading, at both scales. The GS and frontend thread times are the
+  scene's (the same at 1x; ep3's spot draws 51k primitives per VBlank at 4:3 too) - the ep3 / ep5 hubs exceed
+  the 6 ms GS budget at every scale, an M9 item; the coordinator's 17-21 ms museum frontend was a loaded machine.
+  Run-time switching in game (PS2_INPUT blur, scaledown, scaleup, outlines x2, filters x2, interlace x2,
+  flicker x2 within 1100 VBlanks): each applied from the next frame, targets rescaled, 59.9 flips/s, no error.
+- Replay GPU medians per game frame (`gs_replay --mixed --bench`), S = 1 -> 3: ep3 hub 3.90 -> 9.50 ms, ep5
+  street 3.70 -> 11.18, ep8 hub 1.80 -> 5.97, ep8 boss 4.24 -> 10.41. PS2_GPU_PROF on ep5 at 3x: FF fast
+  triangles 47%, ROV triangles 18%, ALIAS16 16%, FF sprites 8%, clears 3%, Z resolves 3%; GS texture sampling is
+  27% of the FF triangle time.
+- GATES
+
+**Deviations from the design**
+- GPU <= 8 ms at S = 3 is not met on the heavy hubs (ep3 10.6, ep5 9.5, museum 9.3; ep8 8.0): the design puts
+  that budget in M9 (R8 index atlas: textures are ~27% of FF triangle time; conservative depth). Conservative
+  depth is harder than planned: the depth encoding `asfloat(z + 0x800000)` puts Z24 values next to FLT_MIN, where
+  interpolated depth is not usable (denormal products), so it needs a per-triangle constant bound (unique
+  vertices, or a geometry shader).
+- Box gate: rv_prompt below 32 dB (inherent, above). The gate needed two boxes (centred / pixel) because
+  single-rate classes stay storage-aligned (a centred variant broke the CT16 shuffles).
+- Sub-sample Z is exact native Z plus a float step (not 64-bit integer floor divisions): equal on every tier, two
+  int64 divisions per sample cheaper; sample 0 unchanged.
+- CT16 views and mipmapped reads at samples != 0 read sample 0 (native resolution), so effects built on CT16
+  shuffles keep native-resolution intermediate data where they read across pixels.
+- Widescreen frame dumps (PS2_DUMP_FRAMES) were left unshaped above 1024 lines; the shaping buffer now grows.
+
+**What M8 (episode sweep) must know**
+- Run the sweep at S = 1 (exactness, as before) and at S = 3: `gpu_game_all.ps1 -Scale 3` (box gate) and
+  `gpu_lockstep_all.ps1 -Scale 3 [-Mixed]` (sample 0); `gs_replay --sample-dump/--sample-compare` for FF vs REF
+  on all samples. Expect UI-heavy pictures with thin sub-pixel rules (rv_prompt) just under 32 dB.
+- New content to watch at scale: CT16 shuffles reading across pixels (native data), 1:1 reads between targets of
+  different families (paired by the frontend; a pairing it misses shows as a family upgrade + rescale:
+  `rescales` counter), field-coded pictures in progressive mode (odd fields shifted, not woven).
+- Default settings are 3x, ps2 outlines, Modern; `PS2_GS_SCALE=1` plus `--faithful` (gs_replay) or
+  filters = faithful (game) reproduce the M6 S = 1 path exactly.
+- Disk: 3x pictures are 6 MB PNGs; use GS_REPLAY_MAX_PNG / GS_REPLAY_SAVE_VBLANKS.
