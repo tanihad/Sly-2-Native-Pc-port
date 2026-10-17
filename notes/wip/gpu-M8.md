@@ -46,6 +46,14 @@ divergence / PUNT (generic fixes only).
 (see Plan)
 
 ## Findings / traps
+- m5_battlezone (tank, rain, green gas cloud): 1 of 240 verifier comparisons beyond the tolerance at v4920: 3563
+  blocks (the frame buffer), colour words +-1 82675, +-2 14044, 3..16 10542 (4.3% > 2, budget 2.5%), > 16 0, Z 0.
+  Diff map: the 3..5 differences are inside the gas cloud = ~900 FF draws / 7.4k layered translucent primitives of
+  (Cs-Cd)*As+Cd (BL_DUAL, ps 1284) + Cs*As+Cd (BL_ADD, exact). Dual-source blends are +-1 per blend by design
+  (10.2; M5: the 4060 Ti OM blends UNORM8 at ~fp16 precision, bias 0.42 makes 80% exact, errors unbiased), so deep
+  layering random-walks to +-5. Replay of the 60 recorded VBlanks: lockstep mixed S=3 no divergence (max 1.9% > 2).
+  Exact alternative = DUAL on ROV (--ff-rov-mask 0x10): GPU 4-6x slower on ep5 street / ep8 boss (all DUAL incl.
+  C = 128). Not a renderer bug; reported (tolerance calibration vs deep translucent layering).
 - gpu_diff_all.ps1 as inherited runs `-Backend both` without --ref/--mixed = the M0 all-fallback verify path
   (sw underneath), and only on the 13 original recordings (baseline.json).
 - Disk: delete every dump dir after use; 3x PNG ~6 MB.
