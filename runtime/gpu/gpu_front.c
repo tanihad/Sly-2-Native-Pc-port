@@ -647,6 +647,7 @@ static int cw_add(uint64_t key, const int bbox[4], uint16_t ct, uint16_t zt, uin
     return 0;
 }
 static uint32_t trace_vblank = 0xFFFFFFFFu;
+static int dual_exact;                   /* PS2_GPU_DUAL_EXACT=1: partial-alpha dual-source blends on the ROV tier (M8) */
 
 typedef struct {
     int open;
@@ -1571,6 +1572,8 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
     else {
         if (S.rov) why = S.rov - 1;
         else if (S.cd_dep && S.c_as && as_hi > 128) why = GPU_ROV_C_OVER128;
+        else if (dual_exact && S.cd_dep &&       /* (M8 measurement: PS2_GPU_DUAL_EXACT=1 partial-alpha dual-source blends exact) */
+                 (S.c_as ? !(as_lo == as_hi && (as_lo == 0 || as_lo == 128)) : (P->fix != 0 && P->fix != 128))) why = GPU_ROV_CLASS;
         else if (z32_high || (S.zt && S.zt->z_high)) why = GPU_ROV_Z32_HIGH;
         else if (outcome && gf_cfg.straddle_rov && (outcome == 4 || S.straddle_frame == gf_frame + 1)) {
             /* (the escalation flag of 4.3, off by default since M5's measurement: the exact split, sb_prim,
@@ -2050,6 +2053,7 @@ void gpu_front_start(const gpu_front_config* cfg) {
     tsc_start = __rdtsc();
     QueryPerformanceCounter(&qpc_start);
     gs_sw_draw = gf_cfg.sw;
+    dual_exact = getenv("PS2_GPU_DUAL_EXACT") && atoi(getenv("PS2_GPU_DUAL_EXACT")) != 0;
     const char* tr = getenv("PS2_GPU_FRONT_TRACE");
     trace_vblank = tr ? (uint32_t)strtoul(tr, NULL, 0) : 0xFFFFFFFFu;
     trace_on = 0;

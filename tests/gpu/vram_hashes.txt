@@ -24,3 +24,4 @@ gpu-C_fmv | 0328b8a1520fa0ad | 240
 gpu-C_load_m3 | d2a51d3b7fabece3 | 240
 gpu-C_pause_save | e1e28c9500a330e6 | 150
 gpu-C_thiefnet | 1e9a47bc60a55583 | 100
+gpu-M8_m5_battlezone | 1af16681597b4684 | 60

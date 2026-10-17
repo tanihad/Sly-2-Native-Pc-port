@@ -157,7 +157,8 @@ static struct {
     int nfront, nr, ngpu, nlat;
     uint64_t draws, ff, rov, rov_runs, punts, downloads, loads, display_mem, kicks;
     uint32_t frames, targets, dropped, presented, game_frames;
-    uint64_t gs_busy0;                   /* perf_state.gs_busy at the start of the report period (TSC ticks) */
+    uint32_t rescales, reads;            /* (M8) target rescales (sample-factor changes), TRXDIR=1 reads, per report */
+    uint64_t gs_busy0;                  /* perf_state.gs_busy at the start of the report period (TSC ticks) */
     LONG presents0;
     LARGE_INTEGER t0;
     double tsc_per_ms;
@@ -201,6 +202,7 @@ static void stats_vblank(uint32_t vblank) {
             S.draws += f->d3d_draws; S.ff += f->ff_draws; S.rov += f->rov_draws; S.rov_runs += f->rov_runs;
             S.punts += punts; S.downloads += f->downloads; S.loads += f->loads; S.display_mem += f->display_mem;
             S.kicks += f->kicks;
+            S.rescales += f->rescales; S.reads += f->xfer_read;   /* (M8) */
             S.targets = f->targets_live;
             S.frames++;
         }
@@ -233,15 +235,17 @@ static void stats_vblank(uint32_t vblank) {
         double frm = vmax(S.front, S.nfront), rcm = vmax(S.rcpu, S.nr), rwm = vmax(S.rwall, S.nr), gpm = vmax(S.gpu, S.ngpu);
         hlog("stats v%u: %.1f flips/s (%.1f pictures/s, %u dropped) | per game frame (%u, median / max ms): GS thread %.2f (mean) | frontend %s %.2f / %.2f | "
              "render CPU %.2f / %.2f, wall %.2f / %.2f, present %.2f | GPU %.2f / %.2f | latency %.2f / %.2f | per VBlank: %.0f prims, "
-             "%.0f draws (FF %.0f, ROV %.0f in %.1f runs), PUNT %llu, downloads %.1f, loads %.1f, display from memory %.2f, targets %u",
+             "%.0f draws (FF %.0f, ROV %.0f in %.1f runs), PUNT %llu, downloads %.1f, loads %.1f, display from memory %.2f, targets %u | "
+             "this second: target rescales %u, TRXDIR=1 reads %u",
              vblank, flips, pics, S.dropped, S.game_frames, gs, front_threaded ? "thread" : "(GS thread)", med(S.front, S.nfront), frm,
              med(S.rcpu, S.nr), rcm, med(S.rwall, S.nr), rwm, med(S.pres, S.nr), med(S.gpu, S.ngpu), gpm, med(S.lat, S.nlat),
              vmax(S.lat, S.nlat), (double)S.kicks * k,
              (double)S.draws * k, (double)S.ff * k, (double)S.rov * k, (double)S.rov_runs * k, (unsigned long long)S.punts,
-             (double)S.downloads * k, (double)S.loads * k, (double)S.display_mem * k, S.targets);
+             (double)S.downloads * k, (double)S.loads * k, (double)S.display_mem * k, S.targets, S.rescales, S.reads);
     }
     S.nfront = S.nr = S.ngpu = S.nlat = 0;
     S.draws = S.ff = S.rov = S.rov_runs = S.punts = S.downloads = S.loads = S.display_mem = S.kicks = 0;
+    S.rescales = S.reads = 0;
     S.frames = S.dropped = S.presented = S.game_frames = 0;
     S.t0 = t;
     S.presents0 = p;
@@ -514,9 +518,11 @@ static void verify_vblank(const gs_display_snap* snap, uint32_t vblank) {
     gpu_mem_compare(rb_mem, gs_vram, writer, verify_kind, 0, &d);
     checks++;
     if (d.blocks && !d.over) tolerated++;
-    static int pair_dump = -1;           /* PS2_GS_VERIFY_DUMP=1: both pictures of every comparison (paired checks) */
-    if (pair_dump < 0) { const char* e = getenv("PS2_GS_VERIFY_DUMP"); pair_dump = e && atoi(e) != 0; }
-    if (pair_dump && !d.over) {
+    /* PS2_GS_VERIFY_DUMP=1: both pictures of every comparison (paired checks); =K > 1: of the comparisons at VBlanks
+     * that are multiples of K (M8 sweeps: K = PS2_DUMP_EVERY pairs them with the frame dumps at scale) */
+    static int pair_dump = -1;
+    if (pair_dump < 0) { const char* e = getenv("PS2_GS_VERIFY_DUMP"); pair_dump = e && atoi(e) > 0 ? atoi(e) : 0; }
+    if (pair_dump && !d.over && vblank % (uint32_t)pair_dump == 0) {
         static gs_compose_hist *ps, *ph;
         static uint32_t a[1024 * 1024], b[1024 * 1024];
         if (!ps) { ps = gs_compose_hist_new(); ph = gs_compose_hist_new(); }

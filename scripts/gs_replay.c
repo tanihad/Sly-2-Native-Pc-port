@@ -113,6 +113,8 @@ static int ref_mode;                             /* hw / both with --ref (M3: th
 static int mixed_mode;                           /* --mixed: lockstep and pictures compared with the tolerances of 10.2 */
 static int lk_exact;                             /* --lockstep-exact: mixed mode compared exactly (any difference diverges) */
 static uint32_t pic_tol_frames;                  /* mixed: pictures beyond the picture gate (PSNR < 40 dB or > 0.2% px > 16) */
+static int64_t metrics_punt = -1;                 /* (M8) ref / mixed: PUNT primitives of the run (metrics summary) */
+static int metrics_scale = 1;
 
 static void take_stats(void) {
     gpu_frame_stats st[256];
@@ -222,8 +224,10 @@ static void write_metrics(const char* path, const char* rec, const char* adapter
     fprintf(f, "  ],\n");
     double rmed = median(rm, nr), gmed = median(gm, ng);
     fprintf(f, "  \"summary\": {\"frames\": %zu, \"diff_frames\": %u, \"diff_px\": %llu, \"min_psnr\": %.3f, "
-               "\"sw_hash\": \"%016llx\", \"replay_ms\": %.1f, \"render_ms_median\": %.4f, \"gpu_ms_median\": %.4f}\n}\n",
-            nrecs, diff_frames, (unsigned long long)diff_pixels, min_psnr, (unsigned long long)sw_hash, replay_ms, rmed, gmed);
+               "\"sw_hash\": \"%016llx\", \"replay_ms\": %.1f, \"render_ms_median\": %.4f, \"gpu_ms_median\": %.4f, "
+               "\"punt\": %lld, \"beyond_gate\": %u, \"scale\": %d}\n}\n",
+            nrecs, diff_frames, (unsigned long long)diff_pixels, min_psnr, (unsigned long long)sw_hash, replay_ms, rmed, gmed,
+            (long long)metrics_punt, pic_tol_frames, metrics_scale);
     free(rm);
     free(gm);
     fclose(f);
@@ -2116,14 +2120,17 @@ int main(int argc, char** argv) {
         fprintf(stderr, "ref-bench frames=%zu gpu_med=%.4f gpu_mean=%.4f gpu_max=%.4f draw_frames=%zu gpu_med_draws=%.4f "
                         "game_frames=%zu gpu_med_game=%.4f gpu_max_game=%.4f\n", ng, gmed,
                 ng ? gsum / (double)ng : 0.0, gmax, nd, dmed, ngf, gfmed, gfmax);
+        metrics_punt = 0;
+        metrics_scale = scale;
+        for (size_t i = 0; i < nff; i++) metrics_punt += ff[i].tier[GPU_TIER_PUNT];
         if (backend == B_BOTH)
-            fprintf(stderr, "both ref: %u pictures compared, %u differ (%llu pixels), min PSNR %.2f dB\n", ref_frames, ref_diff_frames,
-                    (unsigned long long)ref_diff_px, min_psnr);
+            fprintf(stderr, "both ref: %u pictures compared, %u differ (%llu pixels), min PSNR %.2f dB; PUNT %lld\n", ref_frames, ref_diff_frames,
+                    (unsigned long long)ref_diff_px, min_psnr, (long long)metrics_punt);
         if (mixed_mode) {
             uint32_t ffp = 0, rovp = 0, a16p = 0;
             for (size_t i = 0; i < nff; i++) { ffp += ff[i].tier[GPU_TIER_FF]; rovp += ff[i].tier[GPU_TIER_ROV]; a16p += ff[i].tier[GPU_TIER_ALIAS16]; }
-            fprintf(stderr, "mixed: primitives FF %u ROV %u ALIAS16 %u; D3D draws FF %llu ROV/ALIAS16 %llu; Z resolves %llu (%llu samples), "
-                            "Z syncs %llu (%llu samples)\n", ffp, rovp, a16p, (unsigned long long)xc.ff_draws, (unsigned long long)xc.ref_draws,
+            fprintf(stderr, "mixed: primitives FF %u ROV %u ALIAS16 %u PUNT %lld; D3D draws FF %llu ROV/ALIAS16 %llu; Z resolves %llu (%llu samples), "
+                            "Z syncs %llu (%llu samples)\n", ffp, rovp, a16p, (long long)metrics_punt, (unsigned long long)xc.ff_draws, (unsigned long long)xc.ref_draws,
                     (unsigned long long)xc.zresolves, (unsigned long long)xc.zresolve_px, (unsigned long long)xc.zsyncs,
                     (unsigned long long)xc.zsync_px);
             if (backend == B_BOTH)
