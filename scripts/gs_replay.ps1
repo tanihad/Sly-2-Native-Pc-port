@@ -47,7 +47,7 @@
 #   -VramHash <file>      (synchronous, -Workers 0) a hash of all GS memory after every VBlank, one line each
 # A replay without progress for 60 s prints its state and exits with code 4 (watchdog).
 # Every run prints "sw-hash", a hash of all sw pictures (unchanged renderer -> unchanged hash).
-param([Parameter(Mandatory = $true)][string]$Rec, [string]$Out = "", [string]$Runtime = "", [int]$Workers = 0,
+param([string]$Rec = "", [switch]$BuildOnly, [string]$Out = "", [string]$Runtime = "", [int]$Workers = 0,
       [switch]$Bench, [ValidateSet('sw', 'hw', 'both', 'hwdry', 'hwsubmit')][string]$Backend = 'sw', [int]$Scale = 1, [switch]$WithSw, [switch]$Pace, [switch]$Profile, [switch]$StreamHash, [switch]$FrontThread, [switch]$Pin, [switch]$FrontOnly, [switch]$Ref, [switch]$StraddleRov, [switch]$SelfCheck, [switch]$DecodeOnly, [switch]$Lockstep, [switch]$NoResync, [string]$PostProbe = "", [string[]]$Define = @(),
       [ValidateSet('hw', 'warp')][string]$Adapter = 'hw', [string]$Metrics = "", [string]$Log = "", [string]$VramHash = "",
       [switch]$Mixed, [switch]$StqExact, [string]$FfRovMask = "", [switch]$LockstepExact, [switch]$SplitFf,
@@ -84,6 +84,7 @@ if (Test-Path (Join-Path $gpuDir 'gpu.h')) {                           # runtime
 $exe = Join-Path $Out 'gs_replay.exe'
 & $clang @flags @src @libs -o $exe
 if ($LASTEXITCODE -ne 0) { Write-Host 'gs_replay build failed'; exit 1 }
+if ($BuildOnly) { exit 0 }                                             # (-BuildOnly: just build $Out\gs_replay.exe)
 # run a uniquely named copy (other agents run replays on this machine too)
 $run = Join-Path $Out ("gs_replay_{0}.exe" -f $PID)
 Copy-Item $exe $run -Force

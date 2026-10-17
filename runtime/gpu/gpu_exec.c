@@ -1040,35 +1040,50 @@ static void zcb_set(const zs_consts* k) {
  * waits for its timestamps (profiling only: it serialises CPU and GPU). Averages per frame in the log every
  * 60 frames. Attribution is approximate (the GPU overlaps neighbouring work). */
 enum { PR_OTHER, PR_TARGET, PR_MEM, PR_CLEAR, PR_SHADOW, PR_FF_FAST, PR_FF_TRI, PR_FF_SPRITE, PR_FF_LINE,
-       PR_REF_TRI, PR_REF_OTHER, PR_A16, PR_ZRESOLVE, PR_ZSYNC, PR_PRESENT, PR_A16_DRAW, PR_N };
+       PR_REF_TRI, PR_REF_OTHER, PR_A16, PR_ZRESOLVE, PR_ZSYNC, PR_PRESENT, PR_A16_DRAW, PR_FF_FAST_Z, PR_N };
 static const char* const pr_names[PR_N] = { "other", "target", "mem", "clear", "shadow", "ff-tri-fast", "ff-tri",
                                             "ff-sprite", "ff-line", "ref-tri", "ref-other", "alias16", "zresolve",
-                                            "zsync", "present", "alias16-draw" };
+                                            "zsync", "present", "alias16-draw", "ff-tri-fast-z" };
 #define PR_MAXQ 8192
 static struct {
     int on, n, cur;
     ID3D11Query* dis;
     ID3D11Query* q[PR_MAXQ];
+    ID3D11Query *sq[PR_MAXQ], *oq[PR_MAXQ];   /* (M9, PS2_GPU_PROF=2) pipeline statistics + occlusion per segment */
     uint8_t cat[PR_MAXQ];
     double ms[PR_N], total;
     uint64_t marks[PR_N];
+    uint64_t ps_inv[PR_N], occl[PR_N], prims[PR_N];
     uint32_t frames;
 } PR = { -1 };
 
 static void prof_mark(int cat) {
-    if (PR.on <= 0 || PR.n >= PR_MAXQ || (PR.n && cat == PR.cur)) return;
+    if (PR.on <= 0 || PR.n >= PR_MAXQ - 1 || (PR.n && cat == PR.cur)) return;
     if (!PR.q[PR.n]) {
         D3D11_QUERY_DESC qt = { D3D11_QUERY_TIMESTAMP, 0 };
         if (FAILED(ID3D11Device_CreateQuery(gpu_rt.dev, &qt, &PR.q[PR.n]))) { PR.on = 0; return; }
     }
     ID3D11DeviceContext_End(gpu_rt.ctx, (ID3D11Asynchronous*)PR.q[PR.n]);
+    if (PR.on >= 2) {                    /* statistics of the segment that ends here, and of the one that begins */
+        if (PR.n) {
+            ID3D11DeviceContext_End(gpu_rt.ctx, (ID3D11Asynchronous*)PR.sq[PR.n - 1]);
+            ID3D11DeviceContext_End(gpu_rt.ctx, (ID3D11Asynchronous*)PR.oq[PR.n - 1]);
+        }
+        if (!PR.sq[PR.n]) {
+            D3D11_QUERY_DESC qs = { D3D11_QUERY_PIPELINE_STATISTICS, 0 }, qo = { D3D11_QUERY_OCCLUSION, 0 };
+            if (FAILED(ID3D11Device_CreateQuery(gpu_rt.dev, &qs, &PR.sq[PR.n])) ||
+                FAILED(ID3D11Device_CreateQuery(gpu_rt.dev, &qo, &PR.oq[PR.n]))) { PR.on = 0; return; }
+        }
+        ID3D11DeviceContext_Begin(gpu_rt.ctx, (ID3D11Asynchronous*)PR.sq[PR.n]);
+        ID3D11DeviceContext_Begin(gpu_rt.ctx, (ID3D11Asynchronous*)PR.oq[PR.n]);
+    }
     PR.cat[PR.n++] = (uint8_t)cat;
     PR.cur = cat;
     if (cat < PR_N) PR.marks[cat]++;
 }
 
 static void prof_begin(void) {
-    if (PR.on < 0) { const char* e = getenv("PS2_GPU_PROF"); PR.on = e && atoi(e) > 0; }
+    if (PR.on < 0) { const char* e = getenv("PS2_GPU_PROF"); PR.on = e && atoi(e) > 0 ? atoi(e) : 0; }
     if (!PR.on) return;
     if (!PR.dis) {
         D3D11_QUERY_DESC qd = { D3D11_QUERY_TIMESTAMP_DISJOINT, 0 };
@@ -1083,12 +1098,17 @@ static void prof_end(void) {
     if (PR.on <= 0) return;
     PR.cur = -1;
     prof_mark(PR_N);
+    if (PR.on >= 2 && PR.n) {
+        ID3D11DeviceContext_End(gpu_rt.ctx, (ID3D11Asynchronous*)PR.sq[PR.n - 1]);
+        ID3D11DeviceContext_End(gpu_rt.ctx, (ID3D11Asynchronous*)PR.oq[PR.n - 1]);
+    }
     ID3D11DeviceContext_End(gpu_rt.ctx, (ID3D11Asynchronous*)PR.dis);
     D3D11_QUERY_DATA_TIMESTAMP_DISJOINT dj;
     while (ID3D11DeviceContext_GetData(gpu_rt.ctx, (ID3D11Asynchronous*)PR.dis, &dj, sizeof dj, 0) == S_FALSE) SwitchToThread();
     if (dj.Disjoint || !dj.Frequency) return;
     UINT64 prev = 0;
     double f[PR_N] = { 0 }, ft = 0;
+    uint64_t fi[PR_N] = { 0 }, fo[PR_N] = { 0 }, fp[PR_N] = { 0 };
     for (int i = 0; i < PR.n; i++) {
         UINT64 t = 0;
         while (ID3D11DeviceContext_GetData(gpu_rt.ctx, (ID3D11Asynchronous*)PR.q[i], &t, sizeof t, 0) == S_FALSE) SwitchToThread();
@@ -1098,17 +1118,34 @@ static void prof_end(void) {
             ft += ms;
         }
         prev = t;
+        if (PR.on >= 2 && i + 1 < PR.n) {
+            D3D11_QUERY_DATA_PIPELINE_STATISTICS ps;
+            UINT64 oc = 0;
+            while (ID3D11DeviceContext_GetData(gpu_rt.ctx, (ID3D11Asynchronous*)PR.sq[i], &ps, sizeof ps, 0) == S_FALSE) SwitchToThread();
+            while (ID3D11DeviceContext_GetData(gpu_rt.ctx, (ID3D11Asynchronous*)PR.oq[i], &oc, sizeof oc, 0) == S_FALSE) SwitchToThread();
+            fi[PR.cat[i]] += ps.PSInvocations;
+            fp[PR.cat[i]] += ps.CPrimitives;
+            fo[PR.cat[i]] += oc;
+        }
     }
     if (ft > 50.0) return;               /* (loading frames: left out) */
-    for (int c = 0; c < PR_N; c++) PR.ms[c] += f[c];
+    for (int c = 0; c < PR_N; c++) { PR.ms[c] += f[c]; PR.ps_inv[c] += fi[c]; PR.occl[c] += fo[c]; PR.prims[c] += fp[c]; }
     PR.total += ft;
     if (++PR.frames % 60) return;
-    char line[1024];
+    char line[2048];
     int o = snprintf(line, sizeof line, "prof: %u frames, GPU ms per frame %.3f:", PR.frames, PR.total / PR.frames);
     for (int c = 0; c < PR_N && o < (int)sizeof line - 48; c++)
         if (PR.ms[c] > 0) o += snprintf(line + o, sizeof line - (size_t)o, " %s %.3f (%.0f)", pr_names[c], PR.ms[c] / PR.frames,
                                          (double)PR.marks[c] / PR.frames);
     gpu_log("%s", line);
+    if (PR.on >= 2) {                    /* per frame: PS invocations (M), samples passing depth (M), primitives (k) */
+        o = snprintf(line, sizeof line, "prof-stats per frame (PS invocations M / samples passed M / primitives k):");
+        for (int c = 0; c < PR_N && o < (int)sizeof line - 64; c++)
+            if (PR.ps_inv[c]) o += snprintf(line + o, sizeof line - (size_t)o, " %s %.2f/%.2f/%.1f", pr_names[c],
+                                            (double)PR.ps_inv[c] / PR.frames / 1e6, (double)PR.occl[c] / PR.frames / 1e6,
+                                            (double)PR.prims[c] / PR.frames / 1e3);
+        gpu_log("%s", line);
+    }
 }
 
 /* zpatch -> DSV over tiles in state ZT_ZP (mode 0), or the constant `value` over the native rect r (mode 1:
@@ -1311,8 +1348,9 @@ static void exec_draw_ff(const gpu_fop_draw* d, uint32_t slot) {
 static void exec_draw(const gpu_fop_draw* d, uint32_t slot) {
     if (PR.on > 0) {
         int ff = X.mixed && d->tier == GPU_TIER_FF && !X.ref;
+        int zo = d->zt && (d->depth >> 1) != 0;
         prof_mark(d->tier == GPU_TIER_ALIAS16 ? PR_A16_DRAW
-                  : d->cls == GPU_PC_TRI ? (!ff ? PR_REF_TRI : (d->ps_key & GPU_PSK_FF_FAST) ? PR_FF_FAST : PR_FF_TRI)
+                  : d->cls == GPU_PC_TRI ? (!ff ? PR_REF_TRI : (d->ps_key & GPU_PSK_FF_FAST) ? (zo ? PR_FF_FAST_Z : PR_FF_FAST) : PR_FF_TRI)
                   : !ff ? PR_REF_OTHER : d->cls == GPU_PC_SPRITE ? PR_FF_SPRITE : PR_FF_LINE);
     }
     if (X.ref || d->tier == GPU_TIER_ALIAS16) { exec_draw_ref(d, slot); return; }
@@ -1567,7 +1605,7 @@ void gpu_exec_release(void) {
     if (dbg_nosize || dbg_nocount) gpu_log("exec: %llu draws without a target, %llu empty draws (cls %llu %llu %llu %llu, tier %llu %llu)", (unsigned long long)dbg_nosize, (unsigned long long)dbg_nocount, (unsigned long long)dbg_cls[0], (unsigned long long)dbg_cls[1], (unsigned long long)dbg_cls[2], (unsigned long long)dbg_cls[3], (unsigned long long)dbg_tier[0], (unsigned long long)dbg_tier[1]);
     for (int i = 0; i <= MAX_TARGETS; i++) { target_free(&X.T[i]); free(X.T[i].zts); X.T[i].zts = NULL; }
     GPU_RELEASE(X.ztile_srv); GPU_RELEASE(X.ztile); GPU_RELEASE(X.zcb);
-    for (int i = 0; i < PR_MAXQ; i++) GPU_RELEASE(PR.q[i]);
+    for (int i = 0; i < PR_MAXQ; i++) { GPU_RELEASE(PR.q[i]); GPU_RELEASE(PR.sq[i]); GPU_RELEASE(PR.oq[i]); }
     GPU_RELEASE(PR.dis);
     dynbuf* d[7] = { &X.vb, &X.ib, &X.rec, &X.st, &X.cb, &X.dat, &X.aux };
     for (int i = 0; i < 7; i++) { GPU_RELEASE(d[i]->srv); GPU_RELEASE(d[i]->buf); d[i]->cap = 0; }
