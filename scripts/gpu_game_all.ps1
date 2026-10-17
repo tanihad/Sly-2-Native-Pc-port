@@ -6,9 +6,13 @@
 # verifier every Nth VBlank with the 10.2 tolerances, and every picture compared with the software
 # renderer's under the picture gate). One line per recording; exit 1 on any failure.
 #   powershell -ExecutionPolicy Bypass -File scripts\gpu_game_all.ps1 [-Only ep8_boss,gpu-C_thiefnet]
-#       [-Verify N] [-Adapter hw|warp] [-Out build\game] [-CorpusRoot <dir>] [-Exe <gs_replay.exe>]
+#       [-Verify N] [-Adapter hw|warp] [-Out build\game] [-CorpusRoot <dir>] [-Exe <gs_replay.exe>] [-Scale N]
+# -Scale N > 1: pictures at scale, box-downsampled and gated (PSNR >= 32 dB, |mean signed error| < 0.5); recordings
+# in $Waive keep a lower PSNR floor of their own (M8: fix-perf rv_prompt's full-width UI rules sit a third of a
+# field row off the row centres, so supersampling them differs from the point-sampled native picture by design).
 param([string[]]$Only = @(), [int]$Verify = 0, [ValidateSet('hw', 'warp')][string]$Adapter = 'hw', [string]$Out = "",
-      [string]$CorpusRoot = "", [string]$Exe = "", [int]$Scale = 1, [string[]]$Extra = @())
+      [string]$CorpusRoot = "", [string]$Exe = "", [int]$Scale = 1, [string[]]$Extra = @(),
+      [hashtable]$Waive = @{ 'fix-perf_rv_prompt' = 31.0 })
 $Only = @($Only | ForEach-Object { $_ -split ',' } | Where-Object { $_ })
 $root = Split-Path $PSScriptRoot -Parent
 $main = $root
@@ -62,10 +66,20 @@ foreach ($rel in $recs) {
     if ($m.Success) { $pics += [int]$m.Groups[1].Value }
     $ok = $rc -eq 0 -and $m.Success -and $m.Groups[3].Value -eq '0' -and $v -eq 0
     if ($Verify -gt 0) { $ok = $ok -and "$s" -match ', 0 beyond the picture gate' }
+    $q = (Select-String -Path $log -Pattern '^game: scale' | Select-Object -First 1).Line
+    # (M8) box-gate waiver at scale: the recording's own PSNR floor (still a regression gate); everything else must pass
+    $waived = ''
+    if (-not $ok -and $Scale -gt 1 -and $Waive.ContainsKey($name) -and ($rc -eq 0 -or $rc -eq 3) -and $m.Success -and $v -eq 0 -and
+        ($Verify -le 0 -or "$s" -match ', 0 beyond the picture gate')) {
+        $wq = [regex]::Match("$q", 'min PSNR ([\d.]+) dB, max \|mean signed error\| ([\d.]+)')
+        if ($wq.Success -and [double]$wq.Groups[1].Value -ge [double]$Waive[$name] -and [double]$wq.Groups[2].Value -lt 0.5) {
+            $ok = $true; $waived = " | WAIVED (box-gate floor $($Waive[$name]) dB)"
+        }
+    }
     if (-not $ok) { $failed++ }
     $tail = if ($Verify -gt 0) { " | $s | verify beyond: $v" } else { '' }
-    $q = (Select-String -Path $log -Pattern '^game: scale' | Select-Object -First 1).Line
     if ($q) { $tail += " | " + ($q -replace '^game: ', '') }
+    $tail += $waived
     Write-Host ("{0,-24} {1,-6} {2,4} s  {3}{4}" -f $name, $(if ($ok) { 'ok' } else { 'FAILED' }), $secs, $g, $tail)
 }
 Write-Host "gpu_game_all: $pics pictures; $failed recording(s) failed"
