@@ -34,6 +34,7 @@
 #include "gpu/gpu_front.h"
 #include "gpu/gpu_hw.h"
 #include "gpu/gpu_verify.h"
+#include "gpu/gpu_front_int.h"              /* (M9 --sample-hash: a target's drawn rows, gt[id].rows) */
 #include "gs_mem_swizzle.h"                /* (lockstep crops) */
 #include <wchar.h>
 #include <stddef.h>
@@ -1356,10 +1357,13 @@ static void sample_point(uint32_t vblank) {
         int w, h, kx, ky, depth;
         if (!gpu_exec_read_target(id, buf, SMP_CAP, &w, &h, &kx, &ky, &depth)) continue;
         if (smp_hash_file) {
+            /* the target's drawn rows only (the allocation's padding rows below them are never drawn, shown or downloaded) */
+            int rows = id <= GPU_MAX_TARGETS && gt[id].used ? (int)gt[id].rows : 0;
+            int hh = rows > 0 && rows * ky < h ? rows * ky : h;
             uint64_t hv = 0xCBF29CE484222325ull;
-            size_t n = (size_t)w * (size_t)h;
+            size_t n = (size_t)w * (size_t)hh;
             for (size_t i = 0; i < n; i++) { hv ^= buf[i]; hv *= 0x100000001B3ull; hv ^= hv >> 29; }
-            fprintf(smp_hash_file, "v%06u t%02u %s %dx%d k%dx%d %016llx\n", vblank, id, depth ? "Z" : "C", w, h, kx, ky, (unsigned long long)hv);
+            fprintf(smp_hash_file, "v%06u t%02u %s %dx%d k%dx%d %016llx\n", vblank, id, depth ? "Z" : "C", w, hh, kx, ky, (unsigned long long)hv);
             continue;
         }
         char path[1100];

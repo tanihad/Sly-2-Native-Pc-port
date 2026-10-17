@@ -72,12 +72,17 @@ void gpu_front_release(void* frame) {
     ReleaseSRWLockExclusive(&free_lock);
 }
 
+/* (M9) the capacity of every frame arena (the building frame's, the frames in flight, the free ones) */
+volatile LONG64 gf_arena_bytes;
+size_t gpu_front_arena_bytes(void) { return (size_t)gf_arena_bytes; }
+
 static void* ar_reserve(arena* a, size_t bytes) {         /* not zeroed */
     if (a->n + bytes > a->cap) {
         size_t c = a->cap ? a->cap : 1 << 16;
         while (c < a->n + bytes) c *= 2;
         a->p = realloc(a->p, c);
         if (!a->p) { fprintf(stderr, "[gpu_front] out of memory\n"); exit(1); }
+        InterlockedAdd64(&gf_arena_bytes, (LONG64)(c - a->cap));
         a->cap = c;
     }
     void* r = a->p + a->n;
@@ -91,6 +96,7 @@ static void* ar_alloc(arena* a, size_t bytes) {
         while (c < a->n + bytes) c *= 2;
         a->p = realloc(a->p, c);
         if (!a->p) { fprintf(stderr, "[gpu_front] out of memory\n"); exit(1); }
+        InterlockedAdd64(&gf_arena_bytes, (LONG64)(c - a->cap));
         a->cap = c;
     }
     void* r = a->p + a->n;

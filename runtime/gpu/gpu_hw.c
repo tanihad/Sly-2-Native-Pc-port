@@ -16,6 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <windows.h>
+#include <psapi.h>                       /* (M9) K32GetProcessMemoryInfo (kernel32) */
 
 void debug_write_png(const char* path, const uint32_t* bgrx, int w, int h, int stride);   /* debug.c */
 void gs_record_request(const char* path, uint32_t frames);                                  /* gs_record.c */
@@ -27,6 +28,12 @@ void gs_record_request(const char* path, uint32_t frames);                      
 static int inflight_game(void) {
     const char* e = getenv("PS2_GS_INFLIGHT");
     return e && atoi(e) > 0 ? atoi(e) : 6;
+}
+/* (M9) ... but only 2 normally: the full depth only for 2 s after a slowdown filled those while the queue had been short
+ * (gpu_submit_set_adaptive). PS2_GS_INFLIGHT_BASE=N (0: always the full depth, the M6 behaviour) */
+static int inflight_base_game(void) {
+    const char* e = getenv("PS2_GS_INFLIGHT_BASE");
+    return e ? atoi(e) : 2;
 }
 
 static gpu_hw_config C;
@@ -153,8 +160,8 @@ static void dump_queued(void) {
 /* ---- PS2_GS_HW_STATS ----------------------------------------------------------------------------- */
 #define SW 256                           /* samples per report */
 static struct {
-    double front[SW], rcpu[SW], rwall[SW], gpu[SW], pres[SW], lat[SW];
-    int nfront, nr, ngpu, nlat;
+    double front[SW], rcpu[SW], rwall[SW], gpu[SW], pres[SW], lat[SW], photon[SW], queued[SW];
+    int nfront, nr, ngpu, nlat, nphoton, nqueued;
     uint64_t draws, ff, rov, rov_runs, punts, downloads, loads, display_mem, kicks;
     uint32_t frames, targets, dropped, presented, game_frames;
     uint32_t rescales, reads;            /* (M8) target rescales (sample-factor changes), TRXDIR=1 reads, per report */
@@ -163,6 +170,8 @@ static struct {
     LARGE_INTEGER t0;
     double tsc_per_ms;
 } S;
+
+static void mem_log(const char* when);
 
 static int dcmp(const void* a, const void* b) { double x = *(const double*)a, y = *(const double*)b; return x < y ? -1 : x > y; }
 static double med(double* v, int n) { if (!n) return 0; qsort(v, (size_t)n, sizeof *v, dcmp); return v[n / 2]; }
@@ -216,11 +225,14 @@ static void stats_vblank(uint32_t vblank) {
             S.dropped += fs[i].dropped;
             S.presented += fs[i].presented;
             if (fs[i].latency_ms >= 0 && S.nlat < SW) S.lat[S.nlat++] = fs[i].latency_ms;
+            if (fs[i].photon_ms >= 0 && S.nphoton < SW) S.photon[S.nphoton++] = fs[i].photon_ms;   /* (M9) */
+            if (S.nqueued < SW) S.queued[S.nqueued++] = fs[i].queued;
             if (fs[i].draws < 200) continue;     /* (per game frame: the VBlanks in between draw nothing) */
             if (S.nr < SW) { S.rcpu[S.nr] = fs[i].render_cpu_ms; S.rwall[S.nr] = fs[i].render_ms; S.pres[S.nr] = fs[i].present_ms; S.nr++; }
             if (fs[i].gpu_ms >= 0 && S.ngpu < SW) S.gpu[S.ngpu++] = fs[i].gpu_ms;
         }
     if (!C.stats) return;
+    if (vblank % 600 == 0) mem_log("now");
     if (vblank % 60) return;
     LARGE_INTEGER t, f;
     QueryPerformanceCounter(&t);
@@ -236,14 +248,16 @@ static void stats_vblank(uint32_t vblank) {
         hlog("stats v%u: %.1f flips/s (%.1f pictures/s, %u dropped) | per game frame (%u, median / max ms): GS thread %.2f (mean) | frontend %s %.2f / %.2f | "
              "render CPU %.2f / %.2f, wall %.2f / %.2f, present %.2f | GPU %.2f / %.2f | latency %.2f / %.2f | per VBlank: %.0f prims, "
              "%.0f draws (FF %.0f, ROV %.0f in %.1f runs), PUNT %llu, downloads %.1f, loads %.1f, display from memory %.2f, targets %u | "
-             "this second: target rescales %u, TRXDIR=1 reads %u",
+             "this second: target rescales %u, TRXDIR=1 reads %u | photon %.2f / %.2f ms, queued frames %.0f / %.0f, absorbed slowdowns %u",
              vblank, flips, pics, S.dropped, S.game_frames, gs, front_threaded ? "thread" : "(GS thread)", med(S.front, S.nfront), frm,
              med(S.rcpu, S.nr), rcm, med(S.rwall, S.nr), rwm, med(S.pres, S.nr), med(S.gpu, S.ngpu), gpm, med(S.lat, S.nlat),
              vmax(S.lat, S.nlat), (double)S.kicks * k,
              (double)S.draws * k, (double)S.ff * k, (double)S.rov * k, (double)S.rov_runs * k, (unsigned long long)S.punts,
-             (double)S.downloads * k, (double)S.loads * k, (double)S.display_mem * k, S.targets, S.rescales, S.reads);
+             (double)S.downloads * k, (double)S.loads * k, (double)S.display_mem * k, S.targets, S.rescales, S.reads,
+             med(S.photon, S.nphoton), vmax(S.photon, S.nphoton), med(S.queued, S.nqueued), vmax(S.queued, S.nqueued),
+             gpu_submit_absorbs());
     }
-    S.nfront = S.nr = S.ngpu = S.nlat = 0;
+    S.nfront = S.nr = S.ngpu = S.nlat = S.nphoton = S.nqueued = 0;
     S.draws = S.ff = S.rov = S.rov_runs = S.punts = S.downloads = S.loads = S.display_mem = S.kicks = 0;
     S.rescales = S.reads = 0;
     S.frames = S.dropped = S.presented = S.game_frames = 0;
@@ -300,6 +314,7 @@ static void front_start(void) {
     gpu_front_start(&fc);
     gpu_front_set_sink(gpu_submit_sink, NULL);
     gpu_submit_set_depth(GPU_INFLIGHT_GAME);
+    gpu_submit_set_adaptive(inflight_base_game());
     gpu_front_set_mem_reader(punt_reader, NULL);
     InterlockedExchange(&front_threaded, fc.thread);
     seen_thread_punts = gpu_front_thread_punts();
@@ -364,6 +379,16 @@ static DWORD WINAPI clock_main(LPVOID arg) {
     }
 }
 
+/* (M9) the process's committed memory (private bytes) and working set, and the frontend's frame arenas */
+static void mem_log(const char* when) {
+    PROCESS_MEMORY_COUNTERS_EX pm;
+    memset(&pm, 0, sizeof pm);
+    pm.cb = sizeof pm;
+    if (K32GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS*)&pm, sizeof pm))
+        hlog("memory %s: committed %.0f MB, working set %.0f MB, frame arenas %.1f MB", when, pm.PrivateUsage / 1048576.0,
+             pm.WorkingSetSize / 1048576.0, gpu_front_arena_bytes() / 1048576.0);
+}
+
 /* ---- start / stop -------------------------------------------------------------------------------- */
 int gpu_hw_start(const gpu_hw_config* cfg) {
     C = *cfg;
@@ -377,9 +402,11 @@ int gpu_hw_start(const gpu_hw_config* cfg) {
         switch_at[nswitch_at++] = (uint32_t)strtoul(s, NULL, 10);
     gpu_set_picture_done(on_picture_done, NULL);
     gpu_set_flip_callback(C.presented);
+    if (C.stats) mem_log("before the GPU renderer");
     if (!render_start()) return 0;
     render_on = 1;
     gpu_caps_print(gpu_get_caps());
+    if (C.stats) mem_log("render thread and device up");
     front_start();
     InterlockedExchange(&active, 1);
     hlog("GPU renderer on (%s, frontend on %s%s, pacing %s)", C.hwnd ? "window" : "headless",

@@ -116,6 +116,9 @@ typedef struct {
     int dropped;                          /* not shown: the render thread was behind and the swap chain busy */
     uint32_t ff_draws, rov_draws;         /* D3D draws on the FF / ROV tier in this frame */
     double latency_ms;                    /* (M7) frame queued (picture reported to the EE) -> Present returned; -1: not shown */
+    double photon_ms;                     /* (M9) frame queued -> the display's vsync that showed it (DXGI frame statistics),
+                                             for the most recent picture the display has shown; -1: not known */
+    int queued;                           /* (M9) frames queued for the render thread when this one was taken */
 } gpu_frame_stats;
 int gpu_take_frame_stats(gpu_frame_stats* out, int max);   /* returns how many were taken */
 
@@ -129,6 +132,10 @@ void gpu_submit_sink(const gpu_front_frame_data* fd, void* user);
 void gpu_submit_wait_idle(void);
 /* frames the sink lets queue for the render thread before the producer waits (default 3) */
 void gpu_submit_set_depth(int frames);
+/* (M9) adaptive: `base` frames normally (0: the fixed depth above), the full depth for 2 s after a slowdown that filled
+ * the base queue while it had been short; gpu_submit_absorbs: how often that happened */
+void gpu_submit_set_adaptive(int base);
+uint32_t gpu_submit_absorbs(void);
 /* M3 REF tier: frames flagged GPU_FD_REF are drawn exactly (every draw through shaders/gs.hlsl on
  * the ROV path, depth in zpatch). The GS memory image as the GPU sees it after everything queued so
  * far: vram_buf with the GPU words of `n` blocks (gpu_front_gpu_blocks: entries and writer targets)

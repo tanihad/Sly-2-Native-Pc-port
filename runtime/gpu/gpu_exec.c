@@ -140,6 +140,13 @@ static atomic_int inflight;             /* frames handed over and not finished *
 #define MAX_INFLIGHT 3                   /* (replays; the game sets its own depth: gpu_submit_set_depth) */
 static int inflight_max = MAX_INFLIGHT;
 void gpu_submit_set_depth(int frames) { inflight_max = frames < 1 ? 1 : frames > 16 ? 16 : frames; }
+/* (M9) adaptive queue depth (gpu_submit_sink): base frames normally, up to the depth above for ADAPT_MS after a slowdown */
+#define ADAPT_MS 2000.0
+static int inflight_base;                /* 0: the fixed depth */
+static double q_short_since = -1, absorb_until;
+static volatile LONG queue_absorbs;
+void gpu_submit_set_adaptive(int base) { inflight_base = base < 0 ? 0 : base; q_short_since = -1; absorb_until = 0; }
+uint32_t gpu_submit_absorbs(void) { return (uint32_t)queue_absorbs; }
 
 static void count_state(void) { X.state_calls++; }
 
@@ -964,11 +971,21 @@ static void exec_clear(const gpu_fop_clear* o) {
         full = x1 * t->kx >= t->w && y1 * t->ky >= t->h;
     }
     /* (M9) hardware clears where they write exactly what cs_clear writes: a colour clear of every byte (ClearView on
-     * the UNORM RTV: byte b as b / 255 converts back to b), a Z32 / Z16 zpatch clear of the whole target (the stored
-     * word; Z24 keeps zpatch's top byte: cs_clear) */
+     * the UNORM RTV: byte b as b / 255 converts back to b); a Z32 / Z16 depth clear of the target's whole drawn size
+     * (the rows past nat_h are the allocation's padding, never drawn, shown or downloaded: a clear of the whole
+     * allocation - zpatch through ClearUnorderedAccessViewUint, the DSV through ClearDepthStencilView - is the same;
+     * Z24 keeps zpatch's top byte: cs_clear) */
     int fullrect = x1 * t->kx >= t->w && y1 * t->ky >= t->h, hw = 0;
     static int nohw = -1;                /* (PS2_GPU_NO_HWCLEAR=1: every clear through cs_clear, comparisons) */
     if (nohw < 0) { const char* e = getenv("PS2_GPU_NO_HWCLEAR"); nohw = e && atoi(e); }
+    if (!nohw && t->depth && x1 >= t->nat_w && y1 >= t->nat_h) {
+        fullrect = 1;
+        if (o->zclear && X.mixed && t->zts) {        /* (every tile cleared in both copies) */
+            int ra[4] = { 0, 0, t->zts_w, t->zts_h };
+            zt_set(t, ra, -1, ZT_SYNC);
+            full = 1;
+        }
+    }
     if (nohw) fullrect = 0;
     if (!t->depth && (o->mask & 15) == 15 && X.clearview && t->rtv && !nohw) {
         D3D11_RECT rc = { 0, 0, x1 * t->kx < t->w ? x1 * t->kx : t->w, y1 * t->ky < t->h ? y1 * t->ky : t->h };
@@ -981,6 +998,9 @@ static void exec_clear(const gpu_fop_clear* o) {
         ID3D11DeviceContext_ClearUnorderedAccessViewUint(gpu_rt.ctx, t->zp_uav, v);
         hw = 1;
     }
+    if (getenv("PS2_GPU_DBG_CLEAR"))
+        gpu_log("clear target %u kind %d %dx%d k %dx%d rect %dx%d mask %X value %08X full %d hw %d", o->target, t->kind, t->w, t->h, t->kx,
+                t->ky, x1, y1, o->mask, o->value, fullrect, hw);
     if (!hw) {
         mem_consts k;
         target_consts(t, &k);
@@ -988,8 +1008,8 @@ static void exec_clear(const gpu_fop_clear* o) {
         k.wmask = o->zclear ? 15 : o->mask & 15;
         k.cx1 = (uint32_t)x1;
         k.cy1 = (uint32_t)y1;
-        mem_dispatch(GPU_SH_cs_clear, &k, (uint32_t)(x1 + 7) / 8, (uint32_t)(y1 + 7) / 8, NULL, X.dat.srv, NULL,
-                     t->depth ? NULL : t->uav, t->depth ? t->zp_uav : NULL);
+        mem_dispatch(GPU_SH_cs_clear, &k, (uint32_t)(x1 * t->kx + 7) / 8, (uint32_t)(y1 * t->ky + 7) / 8, NULL, X.dat.srv, NULL,
+                     t->depth ? NULL : t->uav, t->depth ? t->zp_uav : NULL);   /* (M9: a thread per sample) */
     }
     if (o->zclear && X.mixed && t->zts) {
         uint32_t zv = (uint32_t)o->value & (zbits_of(t) == 1 ? 0xFFFFu : zbits_of(t) == 2 ? 0xFFFFFFu : 0xFFFFFFFFu);
@@ -1783,6 +1803,8 @@ void gpu_exec_frame(const void* payload) {
     if (!exec_init()) { gpu_rt.lost = 1; return; }
     thread_ms();
     gpu_stats_begin(fd->vblank, 0);
+    gpu_rt.cur_queued_ms = p->t_queued;  /* (M9: photon latency, gpu_present.c) */
+    gpu_stats_cur()->queued = atomic_load(&inflight);
     double t0 = qpc_ms(), c0 = thread_ms();
     X.state_calls = 0;
     uint64_t ff0 = XC.ff_draws, rov0 = XC.rov_draws;
@@ -1996,10 +2018,25 @@ void gpu_submit_sink(const gpu_front_frame_data* fd, void* user) {
         return;
     }
     /* at most MAX_INFLIGHT frames queued (the render thread's pace bounds the GS thread's, as VBlank
-     * pacing does in the game) */
+     * pacing does in the game). (M9) Adaptive (gpu_submit_set_adaptive): inflight_base frames normally; a slowdown that
+     * fills them after the queue had been short (<= 1 frame) for ADAPT_MS - NVIDIA lowering the clocks of a lightly
+     * loaded GPU for a few frames - may queue up to inflight_max for ADAPT_MS. A GPU that is behind for good never
+     * lets the queue drain, so it stays at inflight_base frames of latency (the EE then waits: the game slows down as
+     * it would with any renderer too slow for it). */
+    int limit = inflight_max;
+    if (inflight_base > 0 && inflight_base < inflight_max) {
+        int n = atomic_load(&inflight);
+        double now = qpc_ms();
+        int calm = q_short_since >= 0 && now - q_short_since >= ADAPT_MS;
+        if (n <= 1) { if (q_short_since < 0) q_short_since = now; }
+        else q_short_since = -1;
+        limit = inflight_base;
+        if (now < absorb_until) limit = inflight_max;
+        else if (n >= inflight_base && calm) { absorb_until = now + ADAPT_MS; limit = inflight_max; queue_absorbs++; }
+    }
     for (;;) {
         int n = atomic_load(&inflight);
-        if (n < inflight_max) break;
+        if (n < limit) break;
         WaitOnAddress((volatile VOID*)&inflight, &n, sizeof n, 5);
     }
     void* h = gpu_front_detach();

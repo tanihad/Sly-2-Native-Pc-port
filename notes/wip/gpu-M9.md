@@ -54,18 +54,31 @@ Render CPU 1.3-3.7 ms. (In game M8: GPU 8.1-12.1, GS 7-8, frontend up to 10.8.)
   ep7/ep8 boss, ep5, ep3, ep1: 0 beyond, e.g. ep7 +-1 words 102.5M -> 104.0M, +-2 1.01M -> 1.23M, min PSNR 53.34 -> 53.30.
   RECORDED TRADE: exact -> +-1 for these primitives. New exactness baseline for later steps: build\basert2 (b513aee).
 - ALIAS16 gather/scatter: a thread per sample, the target as R32_UINT: 0.56 -> 0.25 ms per VBlank (ep5), bit-identical.
+- 1b648f0 per-draw constants by draw slot (gs.hlsl load_draw from t9 drawc; slot = StartInstanceLocation -> per-instance
+  element DRAWID of an iota vertex buffer, step rate 1; instanced VSs subtract SV_InstanceID) instead of a CB window per
+  draw; hardware clears (ClearView of full-mask colour rects, ClearUnorderedAccessViewUint of whole Z32/Z16 zpatch).
+  27 recordings bit-identical at S=1 and S=3 vs basert2. GPU: ep8 7.44, ep3 9.20, ep5 9.60, ep1 9.95, ep7 12.27,
+  load_m3 7.56, ws_ep3 11.69 ms (3x 16:9).
+- bc4883b frontend: split bitmap (bitmap row = hull of 3 triangle rows, one span per row; bbox reject), 2-way 1024-entry
+  state cache kept across frames (CLUT ring slot generation in the signature), FF record rows only for varying planes,
+  block-wise uploads (whole blocks at once) and CLUT vstale checks, no commutation estimate in real frames.
+  Frontend thread per game frame (replay, paced): ep1 7.6 -> 5.6, ep3 10.0 -> 6.9, ep5 9.9 -> 7.5 ms. Bit-identical
+  (m9_exact 27/27 S1+S3), gpu_fthread_check -Mixed 27/27.
+- (uncommitted) memory log (PS2_GS_HW_STATS: committed / working set / frame arenas every 10 s and at start), photon
+  latency (DXGI frame statistics: queued -> the vsync that showed it) + queue depth in the stats line, adaptive
+  in-flight queue (PS2_GS_INFLIGHT_BASE default 2, full depth 6 for 2 s after a slowdown that hit 2 after a calm queue),
+  Z clears of the whole drawn size as hardware clears, cs_clear per sample, --sample-hash over drawn rows only.
 
 ## In progress
-- Per-draw constants by draw slot (gs.hlsl load_draw from t9 + DRAWID per-instance element via StartInstanceLocation,
-  gpu_exec.c iota buffer) instead of a constant-buffer window per draw; hardware clears (ClearView / ClearUAV).
-  First try wrong: per-instance step rate 2^30 + StartInstanceLocation gave slot 0 (start applied before the division?);
-  now step rate 1 and the instanced VSs subtract SV_InstanceID.
+- In-game baseline vs current (m8_batch -Only ep1_hub,ep3_hub -Verify 0 -StatsFrom 4800 -DumpEvery 100000; baseline via
+  M9_GAME_EXE=build\base\sly2_base.exe in warp_run.ps1). KEEP THE MACHINE QUIET during in-game runs (ep1 base was
+  disturbed by a replay: GPU 15.2).
 
 ## Next
-1. Draw slots + clears: m9_exact vs basert2, bench.
-2. Frontend / GS thread profiles (GS_REPLAY_PROFILE_FRONT=1 + --front-thread), downloads pattern, latency/in-flight, memory.
-3. Texture sampling (CLUT words, swizzle in ALU / atlas), sprites, remaining ROV (ep7 shadow volumes).
-4. Gates, in-game sweep subset, appendix L, WIP complete.
+1. Gate the clear changes (rebuild basert2 exe with the new --sample-hash), bench; commit.
+2. In-game runs of the six scenes base vs final (quiet machine); latency/memory numbers.
+3. GS thread (decode + proxy): clut_load fast path; texture sampling; sprites; ROV shadow volumes (ep7 ~2.5 ms).
+4. Gates, appendix L, WIP complete.
 
 ## Findings / traps
 - DayZ (the owner's game) may be running: check `nvidia-smi --query-gpu=utilization.gpu` before timing runs.
