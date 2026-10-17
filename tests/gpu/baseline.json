@@ -108,88 +108,88 @@
                        {
                            "name":  "gpu-C/ep0_museum",
                            "path":  "gpu-C\\build\\gsrec\\ep0_museum.gsrec",
-                           "frames":  0,
-                           "sw_hash":  "",
+                           "frames":  150,
+                           "sw_hash":  "b6c6d06df89f75c7",
                            "max_diff_px":  0,
                            "min_psnr":  999
                        },
                        {
                            "name":  "gpu-C/ep1_hub",
                            "path":  "gpu-C\\build\\gsrec\\ep1_hub.gsrec",
-                           "frames":  0,
-                           "sw_hash":  "",
+                           "frames":  180,
+                           "sw_hash":  "28421b46381d0eb7",
                            "max_diff_px":  0,
                            "min_psnr":  999
                        },
                        {
                            "name":  "gpu-C/m1_brawl",
                            "path":  "gpu-C\\build\\gsrec\\m1_brawl.gsrec",
-                           "frames":  0,
-                           "sw_hash":  "",
+                           "frames":  180,
+                           "sw_hash":  "8d7afd081249b2e3",
                            "max_diff_px":  0,
                            "min_psnr":  999
                        },
                        {
                            "name":  "gpu-C/ep2_hub",
                            "path":  "gpu-C\\build\\gsrec\\ep2_hub.gsrec",
-                           "frames":  0,
-                           "sw_hash":  "",
+                           "frames":  180,
+                           "sw_hash":  "a24507e7a19c4b43",
                            "max_diff_px":  0,
                            "min_psnr":  999
                        },
                        {
                            "name":  "gpu-C/ep2_photo",
                            "path":  "gpu-C\\build\\gsrec\\ep2_photo.gsrec",
-                           "frames":  0,
-                           "sw_hash":  "",
+                           "frames":  240,
+                           "sw_hash":  "11af3d1177b0b0d3",
                            "max_diff_px":  0,
                            "min_psnr":  999
                        },
                        {
                            "name":  "gpu-C/ep4_hub",
                            "path":  "gpu-C\\build\\gsrec\\ep4_hub.gsrec",
-                           "frames":  0,
-                           "sw_hash":  "",
+                           "frames":  180,
+                           "sw_hash":  "c38a862d5a7e6913",
                            "max_diff_px":  0,
                            "min_psnr":  999
                        },
                        {
                            "name":  "gpu-C/hack_minigame",
                            "path":  "gpu-C\\build\\gsrec\\hack_minigame.gsrec",
-                           "frames":  0,
-                           "sw_hash":  "",
+                           "frames":  180,
+                           "sw_hash":  "83251ca6063d79f6",
                            "max_diff_px":  0,
                            "min_psnr":  999
                        },
                        {
                            "name":  "gpu-C/fmv",
                            "path":  "gpu-C\\build\\gsrec\\fmv.gsrec",
-                           "frames":  0,
-                           "sw_hash":  "",
+                           "frames":  240,
+                           "sw_hash":  "6caff146dead0c2f",
                            "max_diff_px":  0,
                            "min_psnr":  999
                        },
                        {
                            "name":  "gpu-C/load_m3",
                            "path":  "gpu-C\\build\\gsrec\\load_m3.gsrec",
-                           "frames":  0,
-                           "sw_hash":  "",
+                           "frames":  240,
+                           "sw_hash":  "5022538603eab161",
                            "max_diff_px":  0,
                            "min_psnr":  999
                        },
                        {
                            "name":  "gpu-C/pause_save",
                            "path":  "gpu-C\\build\\gsrec\\pause_save.gsrec",
-                           "frames":  0,
-                           "sw_hash":  "",
+                           "frames":  150,
+                           "sw_hash":  "273accc25daf0440",
                            "max_diff_px":  0,
                            "min_psnr":  999
                        },
                        {
                            "name":  "gpu-C/thiefnet",
                            "path":  "gpu-C\\build\\gsrec\\thiefnet.gsrec",
-                           "frames":  0,
-                           "sw_hash":  "",
+                           "frames":  100,
+                           "sw_hash":  "440255df2d1d1337",
                            "max_diff_px":  0,
                            "min_psnr":  999
                        }
