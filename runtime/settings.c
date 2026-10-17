@@ -11,7 +11,8 @@
 #include <windows.h>
 #endif
 
-ps2_settings_t ps2_settings = { 16, 9, 0, 0, 0, 3, 0, 0, -1, -1, -1, "", 0, 0, 0, 0, 0, 0, 0 };
+ps2_settings_t ps2_settings = { 16, 9, 0, 0, 0, 3, 0, 0, -1, -1, -1, 0, "", 0, 0, 0, 0, 0, 0, 0 };
+const char* const settings_scaler_names[SETTINGS_SCALER_N] = { "auto", "point", "box", "lanczos", "catmull-rom", "bilinear" };
 
 /* renderer / pacing values (sly2.ini and the PS2_GS_BACKEND / PS2_GS_PACING overrides) */
 int settings_parse_renderer(const char* v, int* gpu) {
@@ -138,6 +139,13 @@ static int apply(ps2_settings_t* s, const char* key, const char* v, settings_war
         else if (!_stricmp(v, "faithful")) s->filters_faithful = 1;
         else { warnf(warn, user, line, "filters '%s' is not modern or faithful", v); return 1; }
         return 0;
+    }
+    if (!_stricmp(key, "graphics.scaler")) {
+        for (int i = 0; i < SETTINGS_SCALER_N; i++)
+            if (!_stricmp(v, settings_scaler_names[i])) { s->scaler = i; return 0; }
+        if (!_stricmp(v, "catmull")) { s->scaler = SETTINGS_SCALER_CATMULL; return 0; }
+        warnf(warn, user, line, "scaler '%s' is not auto, lanczos, catmull-rom, box, bilinear or point", v);
+        return 1;
     }
     int* toggle = !_stricmp(key, "graphics.motion_blur") ? &s->motion_blur
                 : !_stricmp(key, "graphics.flicker_filter") ? &s->flicker_filter
@@ -276,8 +284,10 @@ int settings_format(const ps2_settings_t* s, char* out, size_t cap) {
         "; gpu renderer: frame pacing. vsync (default), vrr (G-Sync/FreeSync: every picture shown once,\n"
         "; no wait for the display), display (the game runs at the display's 60 Hz instead of 59.94 Hz).\n"
         "pacing = %s\n"
-        "; The settings below are used by the Direct3D 11 renderer (the software renderer ignores them).\n"
-        "; Internal resolution scale, 1 (PS2: 512x448) to 8.\n"
+        "; The settings below are used by the Direct3D 11 renderer (the software renderer ignores them, except\n"
+        "; motion_blur, the game's own effect). They change while the game runs too: F2 / Shift+F2 scale,\n"
+        "; F3 outlines, F4 filters preset, F5 motion blur, F6 flicker filter, Shift+F6 interlacing.\n"
+        "; Internal resolution scale, 1 (PS2: 512x448) to 8. Environment override: PS2_GS_SCALE=N\n"
         "internal_scale = %d\n"
         "; Cel-shading outlines: ps2 (one PS2 pixel wide, exact) or thin (high-resolution lines).\n"
         "outlines = %s\n"
@@ -287,6 +297,9 @@ int settings_format(const ps2_settings_t* s, char* out, size_t cap) {
         "motion_blur = %s\n"
         "flicker_filter = %s\n"
         "interlacing = %s\n"
+        "; Picture to window: auto (default: Lanczos when shrinking, Catmull-Rom when enlarging), lanczos,\n"
+        "; catmull-rom, box, bilinear or point.\n"
+        "scaler = %s\n"
         "\n"
         "[game]\n"
         "; Your Sly 2: Band of Thieves (USA) disc image (.iso). Asked for on the first start when empty.\n"
@@ -302,7 +315,8 @@ int settings_format(const ps2_settings_t* s, char* out, size_t cap) {
         s->pacing == SETTINGS_PACING_VRR ? "vrr" : s->pacing == SETTINGS_PACING_DISPLAY ? "display" : "vsync",
         s->internal_scale, s->outlines_thin ? "thin" : "ps2",
         s->filters_faithful ? "faithful" : "modern", tog[s->motion_blur + 1], tog[s->flicker_filter + 1],
-        tog[s->interlacing + 1], ini_value(s->disc, disc, sizeof disc), s->win_fullscreen ? "on" : "off",
+        tog[s->interlacing + 1], settings_scaler_names[s->scaler >= 0 && s->scaler < SETTINGS_SCALER_N ? s->scaler : 0],
+        ini_value(s->disc, disc, sizeof disc), s->win_fullscreen ? "on" : "off",
         s->show_fps ? "on" : "off", win);
 }
 
@@ -535,6 +549,23 @@ int settings_read_display(int* aspect_w, int* aspect_h, int* hud_centered) {
     *aspect_h = e && *e ? ps2_settings.aspect_h : s.aspect_h;
     e = getenv("PS2_HUD");
     *hud_centered = e && *e ? ps2_settings.hud_centered : s.hud_centered;
+    return 1;
+}
+
+int settings_read_graphics(ps2_settings_t* g) {
+    wchar_t path[MAX_PATH + 80];
+    static char text[65536];
+    if (!settings_path(path, sizeof path / sizeof path[0]) || read_text(path, text, sizeof text) == (size_t)-1) return 0;
+    ps2_settings_t s;
+    settings_defaults(&s);
+    settings_parse(text, &s, NULL, NULL);
+    g->internal_scale = s.internal_scale;
+    g->outlines_thin = s.outlines_thin;
+    g->filters_faithful = s.filters_faithful;
+    g->motion_blur = s.motion_blur;
+    g->flicker_filter = s.flicker_filter;
+    g->interlacing = s.interlacing;
+    g->scaler = s.scaler;
     return 1;
 }
 

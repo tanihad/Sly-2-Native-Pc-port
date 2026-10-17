@@ -72,6 +72,7 @@ typedef struct {
     int w, h, status;
     uint32_t vblank;
     volatile long done;
+    float shift[2];                       /* (M7) the picture's sample-grid shift, texels (gpu_present.c cur_shift) */
 } gpu_readback;
 void gpu_read_picture(gpu_readback* rb);
 void gpu_wait_readback(gpu_readback* rb);
@@ -114,6 +115,7 @@ typedef struct {
     int presented;                        /* 1: Present was called (0: headless, minimised, lost) */
     int dropped;                          /* not shown: the render thread was behind and the swap chain busy */
     uint32_t ff_draws, rov_draws;         /* D3D draws on the FF / ROV tier in this frame */
+    double latency_ms;                    /* (M7) frame queued (picture reported to the EE) -> Present returned; -1: not shown */
 } gpu_frame_stats;
 int gpu_take_frame_stats(gpu_frame_stats* out, int max);   /* returns how many were taken */
 
@@ -139,8 +141,12 @@ typedef struct {
     uint64_t ff_draws, rov_draws;        /* M5 mixed frames: D3D draws on the FF tier (split halves counted), on the ROV tier */
     uint64_t zresolves, zsyncs;          /* zpatch -> DSV quads (ps_zresolve), DSV -> zpatch dispatches (cs_zsync) */
     uint64_t zresolve_px, zsync_px;      /* their pixels (samples) */
+    uint64_t rescales;                   /* (M7) live targets whose contents moved to new sample factors */
 } gpu_exec_counters;
 void gpu_exec_get_counters(gpu_exec_counters* out);
+/* (M7, tests) every sample of target id after everything submitted: w x h words (colour R8G8B8A8, or the zpatch
+ * Z words of a depth target), its factors; 0: no such target or out too small (cap_words) */
+int gpu_exec_read_target(uint32_t id, uint32_t* out, size_t cap_words, int* w, int* h, int* kx, int* ky, int* depth);
 uint64_t gpu_render_thread_cycles(void);  /* QueryThreadCycleTime of the render thread (TSC ticks) */
 void gpu_render_thread_affinity(uint64_t mask);   /* benchmarks: pin the render thread */
 

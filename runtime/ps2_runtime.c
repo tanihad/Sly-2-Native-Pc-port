@@ -4,6 +4,7 @@
 #include "iop.h"
 #include "audio_out.h"
 #include "settings.h"
+#include "gfx.h"
 #include "launch.h"
 #include "window_gpu.h"
 #include "gpu/gpu_hw.h"
@@ -448,10 +449,17 @@ void window_present_aspect(const uint32_t* bgrx, int w, int h, int stride, int a
 
 static const uint32_t* display_shaped(const uint32_t* src, int w, int h, int stride, float aspect, int content43,
                                       int* ow) {
-    static uint32_t out[2048 * 1024];
+    static uint32_t* out;                        /* (M7: GPU pictures at internal scale N are N times larger) */
+    static size_t cap;
     int W = (int)lroundf((float)h * aspect);     /* the whole display, square pixels */
     int pw = content43 ? (int)lroundf((float)h * 4.0f / 3.0f) : W;   /* the picture inside it */
-    if (W > 2048 || W <= 0 || h > 1024) { *ow = w; return NULL; }
+    if (W > 16384 || W <= 0 || h > 8192) { *ow = w; return NULL; }
+    if ((size_t)W * (size_t)h > cap) {
+        uint32_t* n = realloc(out, (size_t)W * (size_t)h * sizeof *out);
+        if (!n) { *ow = w; return NULL; }
+        out = n;
+        cap = (size_t)W * (size_t)h;
+    }
     int x0 = (W - pw) / 2;
     for (int y = 0; y < h; y++) {
         const uint32_t* s = src + (size_t)y * stride;
@@ -883,6 +891,7 @@ int main(int argc, char** argv) {
     atexit(perf_final);
     settings_load();                             /* sly2.ini in the user data folder, PS2_ASPECT */
     aspect_init();                               /* widescreen factors (aspect.c) */
+    gfx_apply();                                 /* graphics settings: motion blur now, the GPU renderer when it starts */
     int dump_regs = argc > 2 && strcmp(argv[2], "--dump-regs") == 0;
     headless = dump_regs || getenv("PS2_HEADLESS") != NULL;
     ps2_ram = calloc(1, PS2_RAM_SIZE + 16);      /* +16: a 128-bit access at the very end */
@@ -941,10 +950,8 @@ int main(int argc, char** argv) {
         e = getenv("PS2_GS_SAME_THREAD");
         hc.same_thread = e && atoi(e) != 0;
         hc.out_dir = dump_dir;
-        e = getenv("PS2_GS_SCALE");
-        if ((e && atoi(e) > 1) || ps2_settings.internal_scale > 1)
-            fprintf(stderr, "[ps2] GPU renderer: internal scale %d not available yet (M7): drawing at the PS2's resolution\n",
-                    e ? atoi(e) : ps2_settings.internal_scale);
+        hc.scale = gfx_scale();                  /* (M7: [graphics] settings, PS2_GS_SCALE; gfx.c changes them at run time) */
+        hc.gfx = gfx_bits();
         hc.client_size = headless ? NULL : window_client_size;
         hc.presented = headless ? NULL : window_note_presented;
         hc.aspect = picture_aspect;

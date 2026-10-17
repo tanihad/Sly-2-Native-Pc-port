@@ -49,7 +49,7 @@ param([Parameter(Mandatory = $true)][string]$Rec, [string]$Out = "", [string]$Ru
       [switch]$Bench, [ValidateSet('sw', 'hw', 'both', 'hwdry', 'hwsubmit')][string]$Backend = 'sw', [int]$Scale = 1, [switch]$WithSw, [switch]$Pace, [switch]$Profile, [switch]$StreamHash, [switch]$FrontThread, [switch]$Pin, [switch]$FrontOnly, [switch]$Ref, [switch]$StraddleRov, [switch]$SelfCheck, [switch]$DecodeOnly, [switch]$Lockstep, [switch]$NoResync, [string]$PostProbe = "", [string[]]$Define = @(),
       [ValidateSet('hw', 'warp')][string]$Adapter = 'hw', [string]$Metrics = "", [string]$Log = "", [string]$VramHash = "",
       [switch]$Mixed, [switch]$StqExact, [string]$FfRovMask = "", [switch]$LockstepExact, [switch]$SplitFf,
-      [switch]$Game, [int]$GameVerify = 0)
+      [switch]$Game, [int]$GameVerify = 0, [switch]$Progressive, [switch]$Interlaced, [string[]]$Extra = @())
 $root = Split-Path $PSScriptRoot -Parent
 $main = $root
 if (-not (Test-Path (Join-Path $root 'tools\llvm-mingw'))) {            # worktree: tools live in the main checkout
@@ -110,6 +110,9 @@ if ($FrontThread) { $runArgs += '--front-thread' }
 if ($Pin) { $runArgs += '--pin' }
 if ($Game) { $runArgs += '--game' }
 if ($GameVerify -gt 0) { $runArgs += @('--game-verify', $GameVerify) }
+if ($Progressive) { $runArgs += '--progressive' }
+if ($Interlaced) { $runArgs += '--interlaced' }
+if ($Extra.Count) { $runArgs += $Extra }
 if ($Log) {
     # real redirection by cmd: nested PowerShell pipes of a chatty native stderr are slow and once
     # stalled a corpus run (notes/wip/gpu-M0.md)

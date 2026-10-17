@@ -29,6 +29,7 @@
 #include "aspect.h"
 #include "hw.h"
 #include "settings.h"
+#include "gfx.h"
 #include "window_gpu.h"
 
 #include <stdarg.h>
@@ -103,6 +104,8 @@ static const struct { const char* name; int axis, value; } script_sticks[] = {
  * "rec" starts the PS2_GS_RECORD GS recording at the next VBlank (gs_record.c; with
  * PS2_GS_RECORD_FROM=-1 only this starts it).
  * "aspect" and "hud" switch the display aspect / the HUD mode as F7 / F8 do (aspect.c).
+ * "scaleup", "scaledown", "outlines", "filters", "blur", "flicker", "interlace" change the graphics settings as
+ * F2, Shift+F2, F3, F4, F5, F6, Shift+F6 do (gfx.h), without writing sly2.ini.
  * "renderer" switches between the GPU and the software renderer, "losedevice" simulates a GPU device loss
  * (the debug keys F9 / Shift+F9 of window_gpu.h; GPU renderer only).
  *   "t<seconds>:<button>[:<hold>]"      at a wall-clock time since the first pad read, e.g.
@@ -146,6 +149,13 @@ void gs_record_start_now(void);
 #define SCRIPT_WATCH (-8)                 /* "watch:<n>": PS2_WATCH logs every call for n VBlanks */
 #define SCRIPT_ASPECT (-9)                /* "aspect": as F7 (wide <-> 4:3) */
 #define SCRIPT_HUD   (-10)                /* "hud": as F8 (HUD edges <-> centred) */
+/* graphics keys (gfx.h): "scaleup" F2, "scaledown" Shift+F2, "outlines" F3, "filters" F4, "blur" F5, "flicker" F6,
+ * "interlace" Shift+F6 (not written to sly2.ini) */
+#define SCRIPT_GFX0  (-20)
+static const struct { const char* name; unsigned vk; int shift; } script_gfx[] = {
+    { "scaleup", VK_F2, 0 }, { "scaledown", VK_F2, 1 }, { "outlines", VK_F3, 0 }, { "filters", VK_F4, 0 },
+    { "blur", VK_F5, 0 }, { "flicker", VK_F6, 0 }, { "interlace", VK_F6, 1 } };
+#define SCRIPT_NGFX ((int)(sizeof script_gfx / sizeof script_gfx[0]))
 static void switch_aspect(void);
 static void switch_hud(void);
 static int script_pause_req;
@@ -197,6 +207,8 @@ static void script_parse(const char* s) {
                     !strcmp(name, "rec") ? SCRIPT_REC : !strcmp(name, "renderer") ? SCRIPT_GPUSWITCH :
                     !strcmp(name, "losedevice") ? SCRIPT_GPULOSE : -1,
             axis = 0, value = 0x80;
+        for (int g = 0; g < SCRIPT_NGFX; g++)
+            if (!strcmp(name, script_gfx[g].name)) found = SCRIPT_GFX0 - g;
         for (int b = 0; b < SCRIPT_NBUTTONS; b++)
             if (!strcmp(name, script_buttons[b].name)) found = b;
         for (int b = 0; b < (int)(sizeof script_sticks / sizeof script_sticks[0]); b++)
@@ -232,6 +244,7 @@ static void script_compact(uint32_t now) {
 }
 
 static const char* script_name(int b) {
+    if (b <= SCRIPT_GFX0 && b > SCRIPT_GFX0 - SCRIPT_NGFX) return script_gfx[SCRIPT_GFX0 - b].name;
     return b == SCRIPT_NONE ? "none" : b == SCRIPT_AXIS ? "axis" : b == SCRIPT_RAM ? "ram" : b == SCRIPT_PAUSE ? "pause" :
            b == SCRIPT_RELEASE ? "release" : b == SCRIPT_CALLS ? "calls" : b == SCRIPT_WATCH ? "watch" :
            b == SCRIPT_ASPECT ? "aspect" : b == SCRIPT_HUD ? "hud" : b == SCRIPT_REC ? "rec" :
@@ -383,6 +396,10 @@ static void script_apply(int port, pad_input* in) {
         if (b == SCRIPT_CALLS) { if (now == script[i].start) ps2_request_calls_window(script[i].hold); continue; }
         if (b == SCRIPT_WATCH) { if (now == script[i].start) ps2_request_watch_window(script[i].hold); continue; }
         if (b == SCRIPT_ASPECT) { if (now == script[i].start) switch_aspect(); continue; }
+        if (b <= SCRIPT_GFX0 && b > SCRIPT_GFX0 - SCRIPT_NGFX) {
+            if (now == script[i].start) gfx_key(script_gfx[SCRIPT_GFX0 - b].vk, script_gfx[SCRIPT_GFX0 - b].shift, 0);
+            continue;
+        }
         if (b == SCRIPT_HUD) { if (now == script[i].start) switch_hud(); continue; }
         if (b == SCRIPT_REC) { if (now == script[i].start) gs_record_start_now(); continue; }
         if (b == SCRIPT_GPUSWITCH || b == SCRIPT_GPULOSE) {
@@ -1246,9 +1263,11 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         else if (wp == VK_ESCAPE && win_fullscreen) toggle_fullscreen(hwnd);
         else if (wp == VK_F7 && !(lp & (1 << 30))) switch_aspect();
         else if (wp == VK_F8 && !(lp & (1 << 30))) switch_hud();
+        else if (wp >= VK_F2 && wp <= VK_F6 && !(lp & (1 << 30)))   /* graphics settings (gfx.h), remembered in sly2.ini */
+            gfx_key((unsigned)wp, GetKeyState(VK_SHIFT) < 0, 1);
         return 0;                        /* game keys are read with GetAsyncKeyState */
     case WM_ACTIVATEAPP:
-        if (wp) reread_display();        /* sly2.ini may have been edited meanwhile */
+        if (wp) { reread_display(); gfx_reread(); }   /* sly2.ini may have been edited meanwhile */
         break;
     case WM_SYSCHAR:
         if (wp != ' ') return 0;         /* no beep for Alt+key; Alt+Space still opens the system menu */

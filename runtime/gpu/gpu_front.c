@@ -469,7 +469,7 @@ static void state_update(const gs_env_view* ev) {
         int kind = own_target_kind_of_zpsm(P->zpsm);
         S.zt = own_target(kind, P->zpsm, P->zpage, P->zbw, 1);
         if (!S.zt) S.punt = GPU_PUNT_TARGET_OVERLAP + 1;
-        else if (S.ct) S.zt->family = S.ct->family;
+        /* (M7: the pair's sample grids are matched per primitive, fr_prim: families change at VBlanks) */
     }
 
     /* ---- state-level ROV reasons, in the order of 4.1 ---- */
@@ -1148,6 +1148,62 @@ static uint32_t emit_linepix(const gs_env_view* ev, const gs_line* L, const gs_v
     return n;
 }
 
+/* (M7) outlines = thin at scale > 1: the line as one analytic record (gpu_rec_thin): its covered major-axis
+ * range and minor-axis position as the DDA computes them, its attribute planes, and a width in native pixels
+ * of PS2_GS_THIN_WIDTH samples across the minor axis (default half the scale, at least one sample; T: the
+ * draw's target, whose factors set the sample size) */
+typedef gpu_rec_thin thinrec;
+_Static_assert(sizeof(thinrec) == 128, "thin line record (shaders/gs.hlsl PRIM 3)");
+
+static float thin_width_samples(void) {
+    static float env = -1.0f;
+    if (env < 0.0f) {
+        const char* e = getenv("PS2_GS_THIN_WIDTH");
+        env = e && atof(e) > 0.0 ? (float)atof(e) : 0.0f;
+    }
+    if (env > 0.0f) return env;
+    float s = (float)(gf_cfg.scale > 0 ? gf_cfg.scale : 1) * 0.5f;
+    return s < 1.0f ? 1.0f : s;
+}
+
+static void emit_thin(const gs_env_view* ev, const gs_line* L, const gs_vtx* a, const gs_vtx* b, int aa, uint32_t state,
+                      const gpu_target* T) {
+    const gs_prim* P = ev->P;
+    gs_planes pl;
+    gs_line_planes(a, b, ev->iip, &pl);
+    thinrec* r = ar_alloc(&A_rec, sizeof *r);
+    int64_t a1 = L->xmajor ? L->X1 : L->Y1;
+    int64_t lo = L->a0 < a1 ? L->a0 : a1, hi = L->a0 < a1 ? a1 : L->a0;
+    r->lo = (float)lo; r->hi = (float)hi;
+    r->a0 = (float)L->a0; r->len = (float)L->len;
+    r->o0 = (float)(L->xmajor ? L->Y0 : L->X0);
+    r->od = (float)(L->xmajor ? L->dy : L->dx);
+    r->flags = (L->xmajor ? 1u : 0u) | (aa ? 2u : 0u) | (ev->iip ? 4u : 0u) | (P->fst ? 8u : 0u);
+    r->state = state;
+    r->zc0 = (float)pl.z.c0; r->zcx = (float)pl.z.cx;
+    if (ev->iip) {
+        const gs_plane* c[4] = { &pl.r, &pl.g, &pl.b, &pl.a };
+        for (int k = 0; k < 4; k++) { r->cc0[k] = (float)c[k]->c0; r->ccx[k] = (float)c[k]->cx; }
+    } else {
+        int v[4] = { b->r, b->g, b->b, b->a };
+        for (int k = 0; k < 4; k++) { r->cc0[k] = (float)clamp_byte(v[k]); r->ccx[k] = 0.0f; }
+    }
+    if (P->fge) { r->fc0 = (float)pl.f.c0; r->fcx = (float)pl.f.cx; }
+    else { r->fc0 = (float)clamp_byte(b->f); r->fcx = 0.0f; }
+    if (P->tme) {
+        if (P->fst) {
+            r->sc0[0] = (float)pl.u.c0; r->scx[0] = (float)pl.u.cx; r->sc0[1] = (float)pl.v.c0; r->scx[1] = (float)pl.v.cx;
+        } else {
+            r->sc0[0] = (float)pl.s.c0; r->scx[0] = (float)pl.s.cx; r->sc0[1] = (float)pl.t.c0; r->scx[1] = (float)pl.t.cx;
+            r->sc0[2] = (float)pl.q.c0; r->scx[2] = (float)pl.q.cx;
+        }
+    }
+    r->lod_q = b->q;
+    int k = T ? (L->xmajor ? T->ky : T->kx) : (gf_cfg.scale > 0 ? gf_cfg.scale : 1);
+    r->w = thin_width_samples() / (float)(k > 0 ? k : 1);
+    if (r->w > 1.0f) r->w = 1.0f;        /* (never wider than the PS2's own line) */
+}
+
 /* ---- the exact ATST split (M5) ----------------------------------------------------------------------
  * The two-draw split of 4.2 (passing fragments first, then the failing ones) reorders fragments only where
  * a failing fragment of a primitive is followed, at the same pixel, by a passing fragment of a later
@@ -1503,6 +1559,12 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
         punt_prim(ev, cls, &ts, x0, y0, x1, y1);
         goto out;
     }
+    /* (M7, 3.1) one sample grid for the colour and depth targets of a draw, and for a 1:1 read of another
+     * target (the larger family wins; a change rescales the target before this primitive's draw) */
+    if (S.ct && S.zt && (S.ct->kx != S.zt->kx || S.ct->ky != S.zt->ky)) own_pair_family(S.ct, S.zt);
+    if (ts.T && S.ct && ts.T != S.ct && cls == GPU_PC_SPRITE && (ts.T->kx != S.ct->kx || ts.T->ky != S.ct->ky) &&
+        sp.du == 16 << GS_UVSH && gs_d2i32(sp.pl.v.cy * (double)(1 << GS_UVSH)) == 16 << GS_UVSH)
+        own_pair_family(ts.T, S.ct);
     if (P->tme) {
         switch (ts.kind) {
         case TK_VIEW_C32: gf.tex_view_c32++; break;
@@ -1528,7 +1590,13 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
      * must not open a D3D draw (that would also split the draws around it) ---- */
     size_t lp_start = A_rec.n;
     uint32_t lp_n = 0;
-    if (cls == GPU_PC_LINEPIX) {
+    /* (M7) outlines = thin at scale > 1: one analytic record instead of the DDA's pixels */
+    int thin = cls == GPU_PC_LINEPIX && gf_cfg.thin && gf_cfg.scale > 1;
+    int dcls = thin ? GPU_PC_THIN : cls;
+    if (thin) {
+        emit_thin(ev, &L, a, b, aa, state, S.ct ? S.ct : S.zt);
+        lp_n = 1;
+    } else if (cls == GPU_PC_LINEPIX) {
         lp_n = emit_linepix(ev, &L, a, b, aa, state);
         if (!lp_n) { gf.culled++; gf.cls[cls]--; goto out; }
     }
@@ -1605,11 +1673,16 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
     }
     uint64_t sckey = (uint64_t)P->scx0 | (uint64_t)P->scy0 << 11 | (uint64_t)P->scx1 << 22 | (uint64_t)P->scy1 << 33;
     key ^= sckey * 0x9E3779B97F4A7C15ull;    /* (the draw's scissor is its first primitive's) */
+    if (thin) key ^= 1ull << 61;             /* (M7: thin lines are their own draws) */
     /* the exact ATST split (above sb_prim): a pass-capable primitive over pixels of an earlier fail-capable
-     * one of the open draw starts a new draw */
+     * one of the open draw starts a new draw (thin lines: their bounding box) */
     int xsplit = tier == GPU_TIER_FF && S.fatst == FATST_SPLIT && outcome && !gf_cfg.split_ff;
+    gs_sprite tbox;
+    int scls = cls;
+    if (thin) { memset(&tbox, 0, sizeof tbox); tbox.px0 = x0; tbox.py0 = y0; tbox.px1 = x1; tbox.py1 = y1; scls = GPU_PC_SPRITE; }
+    const gs_sprite* spp = thin ? &tbox : &sp;
     if (xsplit && OD.open && OD.key == key && sb_owner == od_serial && (outcome & 5) &&
-        sb_prim(cls, &T, &sp, lp_start, lp_n, x0, y0, 0)) {
+        sb_prim(scls, &T, spp, lp_start, lp_n, x0, y0, 0)) {
         close_draw();
         gf.split_conflicts++;
     }
@@ -1622,23 +1695,31 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
         OD.outcomes = 0;
         OD.prims = 0;
         memset(&OD.d, 0, sizeof OD.d);
-        OD.d.tier = (uint8_t)tier; OD.d.cls = (uint8_t)cls; OD.d.blend = (uint8_t)S.blend; OD.d.depth = (uint8_t)S.depth_class;
+        OD.d.tier = (uint8_t)tier; OD.d.cls = (uint8_t)dcls; OD.d.blend = (uint8_t)S.blend; OD.d.depth = (uint8_t)S.depth_class;
         OD.d.ps_key = ps_key; OD.d.ct = ctid; OD.d.zt = ztid; OD.d.tex = texid; OD.d.wmask = (uint8_t)S.wmask;
         OD.phase = phase;
         OD.d.sc[0] = (int16_t)P->scx0; OD.d.sc[1] = (int16_t)P->scy0; OD.d.sc[2] = (int16_t)P->scx1; OD.d.sc[3] = (int16_t)P->scy1;
         OD.d.first = cls == GPU_PC_TRI ? (uint32_t)(A_idx.n / 4) : 0;
         OD.d.vtx_first = (uint32_t)(A_vtx.n / sizeof(gvtx));
-        OD.d.rec_first = (uint32_t)(cls == GPU_PC_LINEPIX ? lp_start : A_rec.n);
+        OD.d.rec_first = (uint32_t)(cls == GPU_PC_LINEPIX ? lp_start : A_rec.n);   /* (thin lines too) */
         OD.d.afail = (uint8_t)(S.fatst == FATST_SPLIT ? P->afail : 0);
     }
     OD.d.zw |= (uint8_t)(S.zwrite != 0);
     OD.outcomes |= outcome;
     if (xsplit) {
         if (sb_owner != od_serial) { sb_reset(); sb_owner = od_serial; }
-        if (outcome & 6) sb_prim(cls, &T, &sp, lp_start, lp_n, x0, y0, 1);
+        if (outcome & 6) sb_prim(scls, &T, spp, lp_start, lp_n, x0, y0, 1);
     }
-    if (!OD.prims) { OD.bbox[0] = x0; OD.bbox[1] = y0; OD.bbox[2] = x1; OD.bbox[3] = y1; }
-    else { if (x0 < OD.bbox[0]) OD.bbox[0] = x0; if (y0 < OD.bbox[1]) OD.bbox[1] = y0; if (x1 > OD.bbox[2]) OD.bbox[2] = x1; if (y1 > OD.bbox[3]) OD.bbox[3] = y1; }
+    /* (M7) at scale a triangle's samples reach into the native row above and the column left of its native
+     * pixels (sample (i, j) of pixel (x, y) sits at x + i / kx, y + j / ky): the draw's bbox (depth tile sync,
+     * shadow copies) covers them, inside the scissor */
+    int bx0 = x0, by0 = y0;
+    if (cls == GPU_PC_TRI && gf_cfg.scale > 1) {
+        if (bx0 > P->scx0) bx0--;
+        if (by0 > P->scy0) by0--;
+    }
+    if (!OD.prims) { OD.bbox[0] = bx0; OD.bbox[1] = by0; OD.bbox[2] = x1; OD.bbox[3] = y1; }
+    else { if (bx0 < OD.bbox[0]) OD.bbox[0] = bx0; if (by0 < OD.bbox[1]) OD.bbox[1] = by0; if (x1 > OD.bbox[2]) OD.bbox[2] = x1; if (y1 > OD.bbox[3]) OD.bbox[3] = y1; }
     if (!OD.prims) { OD.alpha = ev->reg[R_ALPHA_1 + ev->ctx]; OD.test = ev->reg[R_TEST_1 + ev->ctx]; OD.frame = ev->reg[R_FRAME_1 + ev->ctx]; }
     OD.prims++;
 
@@ -1753,6 +1834,11 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
     }
     case GPU_PC_LINEPIX: {
         uint32_t n = lp_n;                   /* the records were emitted before the draw opened */
+        if (thin) {                          /* (M7: one thin-line instance) */
+            gf.rec_bytes += sizeof(thinrec);
+            OD.d.count += 1;
+            break;
+        }
         gf.linepix += n;
         gf.records_linepix += n;
         gf.rec_bytes += n * sizeof(linerec);
@@ -2047,6 +2133,7 @@ void gf_vblank_impl(const uint64_t priv[16], uint32_t vblank, const gpu_display_
     p->src[1] = src[1];
     p->mem_off = mem_off;
     p->mem_n = mem_n;
+    p->scale = (uint16_t)(gf_cfg.scale > 0 ? gf_cfg.scale : 1);
     tsc_acc += __rdtsc() - t0;
     /* calibrate the TSC against QPC */
     LARGE_INTEGER q, f;
@@ -2079,6 +2166,18 @@ void gf_vblank_impl(const uint64_t priv[16], uint32_t vblank, const gpu_display_
     gf_frame++;
     frame_begin();
     trace_on = vblank + 1 == trace_vblank;
+    if (di && (di->flags & GPU_DI_CONFIG)) gf_configure(di->scale, (di->gfx & GPU_GFX_PROGRESSIVE) != 0, (di->gfx & GPU_GFX_THIN) != 0);
+}
+
+/* (M7) settings changed at run time: from this frame on (the targets take their new factors before any draw) */
+void gf_configure(int scale, int progressive, int thin) {
+    if (scale < 1) scale = 1;
+    if (scale > 8) scale = 8;
+    gf_cfg.thin = thin;
+    if (scale == (gf_cfg.scale > 0 ? gf_cfg.scale : 1) && progressive == gf_cfg.display_ky2) return;
+    gf_cfg.scale = scale;
+    gf_cfg.display_ky2 = progressive;
+    own_rescale_all();
 }
 
 void gpu_front_dump_targets(FILE* f) {

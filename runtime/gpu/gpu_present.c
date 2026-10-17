@@ -22,9 +22,15 @@
 #define PICT_MIN  1024                   /* pictures are at least this size (gs_compose: at most 1024 x 1024) */
 
 typedef struct {                         /* shaders/display.hlsl display_cb */
-    uint32_t W, H, ux0, uy0, hs, vs, flags, alp, bg, par, deint_mode, pad0;
+    uint32_t W, H, ux0, uy0, hs, vs, flags, alp, bg, par, deint_mode, so;
     uint32_t cA[2][4], cB[2][4], cC[2][4], cD[2][4];
 } display_consts;
+
+typedef struct {                         /* shaders/present.hlsl resample_cb */
+    float src_n, dst_n, shift, ratio;
+    uint32_t mode, axis, other_n, pad0;
+    float origin[2], pad1[2];
+} resample_consts;
 
 static struct {
     ID3D11Texture2D* up;                 /* uploaded sw picture (raw BGRX bytes as R8G8B8A8) */
@@ -38,13 +44,20 @@ static struct {
     ID3D11ShaderResourceView* hist_srv[2];
     uint32_t hist_when[2];               /* VBlank + 1 when it was shown, 0 = none (gs.c deinterlace) */
     int hist_dims[2][2];
+    int hist_w, hist_h;                  /* allocated size (M7: on first use, the picture's size) */
     ID3D11Buffer* dcb;                   /* display_consts */
     int pict_w, pict_h;                  /* allocated size */
     int cur, cur_w, cur_h, have;         /* last composed picture */
+    float cur_shift[2];                  /* (M7) its sample-grid shift per axis, in picture texels (present resample) */
     uint32_t cur_vblank;
     ID3D11Texture2D* stage[NSTAGE];
     int stage_w, stage_h;
-    struct { int slot, w, h; uint32_t vblank; gpu_readback* rb; } pend[NSTAGE];
+    ID3D11Texture2D* mid;                /* (M7) present: the horizontally resampled picture (RGBA16F) */
+    ID3D11RenderTargetView* mid_rtv;
+    ID3D11ShaderResourceView* mid_srv;
+    int mid_w, mid_h;
+    ID3D11Buffer* rcb;                   /* resample_consts */
+    struct { int slot, w, h; uint32_t vblank; gpu_readback* rb; float shift[2]; } pend[NSTAGE];
     int npend, pend_head;
     ID3D11SamplerState* linear;
     ID3D11Buffer* cb;                    /* present: uv scale and clamp */
@@ -181,7 +194,18 @@ static int ensure_pictures(int w, int h) {
             FAILED(ID3D11Device_CreateUnorderedAccessView(gpu_rt.dev, (ID3D11Resource*)P.pict[i], &ud, &P.pict_uav[i])))
             return 0;
     }
-    for (int i = 0; i < 2; i++) {               /* deinterlacer history: same size and layout */
+    P.pict_w = nw;
+    P.pict_h = nh;
+    P.have = 0;
+    return 1;
+}
+
+/* deinterlacer history (same layout as the pictures), allocated when the deinterlacer first runs (M7: not
+ * at all while pictures are progressive) */
+static int ensure_hist(int w, int h) {
+    if (P.hist[0] && P.hist_w >= w && P.hist_h >= h) return 1;
+    int nw = w > P.hist_w ? w : P.hist_w, nh = h > P.hist_h ? h : P.hist_h;
+    for (int i = 0; i < 2; i++) {
         GPU_RELEASE(P.hist_srv[i]); GPU_RELEASE(P.hist[i]);
         P.hist[i] = tex_create_fmt(nw, nh, DXGI_FORMAT_R8G8B8A8_TYPELESS, D3D11_BIND_SHADER_RESOURCE, D3D11_USAGE_DEFAULT, 0);
         D3D11_SHADER_RESOURCE_VIEW_DESC sd;
@@ -189,18 +213,29 @@ static int ensure_pictures(int w, int h) {
         sd.Format = DXGI_FORMAT_R8G8B8A8_UINT;
         sd.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
         sd.Texture2D.MipLevels = 1;
-        if (!P.hist[i] || FAILED(ID3D11Device_CreateShaderResourceView(gpu_rt.dev, (ID3D11Resource*)P.hist[i], &sd, &P.hist_srv[i])))
+        if (!P.hist[i] || FAILED(ID3D11Device_CreateShaderResourceView(gpu_rt.dev, (ID3D11Resource*)P.hist[i], &sd, &P.hist_srv[i]))) {
+            P.hist_w = P.hist_h = 0;
             return 0;
+        }
         P.hist_when[i] = 0;
     }
+    P.hist_w = nw;
+    P.hist_h = nh;
+    return 1;
+}
+
+/* read-back staging textures, allocated at the first read-back (dumps, tests) */
+static int ensure_stage(int w, int h) {
+    if (P.stage[0] && P.stage_w >= w && P.stage_h >= h) return 1;
+    while (P.npend) pend_complete(1);
+    int nw = w > P.stage_w ? w : P.stage_w, nh = h > P.stage_h ? h : P.stage_h;
     for (int i = 0; i < NSTAGE; i++) {
         GPU_RELEASE(P.stage[i]);
         P.stage[i] = tex_create(nw, nh, 0, D3D11_USAGE_STAGING, D3D11_CPU_ACCESS_READ);
-        if (!P.stage[i]) return 0;
+        if (!P.stage[i]) { P.stage_w = P.stage_h = 0; return 0; }
     }
-    P.pict_w = P.stage_w = nw;
-    P.pict_h = P.stage_h = nh;
-    P.have = 0;
+    P.stage_w = nw;
+    P.stage_h = nh;
     return 1;
 }
 
@@ -288,6 +323,8 @@ int gpu_present_init(void) {
     if (FAILED(ID3D11Device_CreateBuffer(gpu_rt.dev, &bd, NULL, &P.cb))) return 0;
     bd.ByteWidth = (sizeof(display_consts) + 15) & ~15u;
     if (FAILED(ID3D11Device_CreateBuffer(gpu_rt.dev, &bd, NULL, &P.dcb))) return 0;
+    bd.ByteWidth = (sizeof(resample_consts) + 15) & ~15u;
+    if (FAILED(ID3D11Device_CreateBuffer(gpu_rt.dev, &bd, NULL, &P.rcb))) return 0;
     if (gpu_rt.cfg.hwnd) {
         if (!swapchain_create((HWND)gpu_rt.cfg.hwnd)) { gpu_log("cannot create the swap chain"); return 0; }
         P.bb_w = P.bb_h = -1;            /* sized at the first present */
@@ -317,6 +354,7 @@ void gpu_present_release(void) {
     for (int i = 0; i < NPICT; i++) { GPU_RELEASE(P.pict_uav[i]); GPU_RELEASE(P.pict_srv[i]); GPU_RELEASE(P.pict_rtv[i]); GPU_RELEASE(P.pict[i]); }
     for (int i = 0; i < 2; i++) { GPU_RELEASE(P.hist_srv[i]); GPU_RELEASE(P.hist[i]); }
     GPU_RELEASE(P.dcb);
+    GPU_RELEASE(P.mid_srv); GPU_RELEASE(P.mid_rtv); GPU_RELEASE(P.mid); GPU_RELEASE(P.rcb);
     GPU_RELEASE(P.up_srv); GPU_RELEASE(P.up); GPU_RELEASE(P.linear); GPU_RELEASE(P.cb);
     GPU_RELEASE(P.rtv); GPU_RELEASE(P.off);
     if (P.waitable) CloseHandle(P.waitable);
@@ -368,6 +406,7 @@ void gpu_stats_begin(uint32_t vblank, double front_ms) {
     if (gpu_rt.cfg.timestamps && P.ts_n == NTS) ts_complete(1);
     QueryPerformanceCounter(&P.t_start);
     memset(&P.st, 0, sizeof P.st);
+    P.st.latency_ms = -1.0;
     P.st.vblank = vblank;
     P.st.front_ms = front_ms;
     P.st.gpu_ms = -1.0;
@@ -449,6 +488,7 @@ void gpu_exec_picture(const void* payload) {
     P.cur = next;
     P.cur_w = w;
     P.cur_h = h;
+    P.cur_shift[0] = P.cur_shift[1] = 0.0f;
     P.cur_vblank = p->vblank;
     P.have = 1;
 }
@@ -471,17 +511,110 @@ static void fit_aspect(int cw, int ch, int aw, int ah, int* x, int* y, int* w, i
     }
 }
 
-static void present_fit(int aw, int ah);
+static void present_fit(int aw, int ah, int scaler);
 
 void gpu_exec_present(const void* payload) {
     const gpu_op_present* p = payload;
-    present_fit(p->aspect_w ? p->aspect_w : 4, p->aspect_h ? p->aspect_h : 3);
+    present_fit(p->aspect_w ? p->aspect_w : 4, p->aspect_h ? p->aspect_h : 3, GPU_SCALER_AUTO);
     frame_end();
 }
 
-void gpu_present_show(int aspect_w, int aspect_h) { present_fit(aspect_w > 0 ? aspect_w : 4, aspect_h > 0 ? aspect_h : 3); }
+void gpu_present_show(int aspect_w, int aspect_h, int scaler) {
+    present_fit(aspect_w > 0 ? aspect_w : 4, aspect_h > 0 ? aspect_h : 3, scaler);
+}
 
-static void present_fit(int aw, int ah) {
+/* (M7, 8.1) PS2_GS_SCALER overrides the scaler of the settings (tests) */
+static int scaler_override(int scaler) {
+    static int env = -2;
+    if (env == -2) {
+        const char* e = getenv("PS2_GS_SCALER");
+        env = -1;
+        if (e && *e) {
+            static const char* names[GPU_SCALER_N] = { "auto", "point", "box", "lanczos", "catmull-rom", "bilinear" };
+            for (int i = 0; i < GPU_SCALER_N; i++) if (!_stricmp(e, names[i])) env = i;
+            if (!_stricmp(e, "catmull")) env = GPU_SCALER_CATMULL;
+        }
+    }
+    return env >= 0 ? env : scaler;
+}
+
+/* (M7, 8.1) the resampling filter of one axis: auto picks Lanczos-2 to shrink (supersampling: the sharp
+ * downscale), Catmull-Rom to enlarge, point for 1:1 on the grid */
+static int axis_mode(int scaler, int src, int dst, float shift) {
+    int s = scaler == GPU_SCALER_AUTO ? (src > dst ? GPU_SCALER_LANCZOS : src < dst ? GPU_SCALER_CATMULL :
+                                         shift == 0.0f ? GPU_SCALER_POINT : GPU_SCALER_CATMULL)
+                                      : scaler;
+    switch (s) {                         /* shaders/present.hlsl ps_resample modes */
+    case GPU_SCALER_POINT: return 0;
+    case GPU_SCALER_BOX: return 1;
+    case GPU_SCALER_LANCZOS: return 2;
+    case GPU_SCALER_CATMULL: return 3;
+    default: return 4;
+    }
+}
+
+static int ensure_mid(int w, int h) {
+    if (P.mid && P.mid_w >= w && P.mid_h >= h) return 1;
+    GPU_RELEASE(P.mid_srv); GPU_RELEASE(P.mid_rtv); GPU_RELEASE(P.mid);
+    int nw = w > P.mid_w ? w : P.mid_w, nh = h > P.mid_h ? h : P.mid_h;
+    P.mid = tex_create_fmt(nw, nh, DXGI_FORMAT_R16G16B16A16_FLOAT, D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE, D3D11_USAGE_DEFAULT, 0);
+    if (!P.mid || FAILED(ID3D11Device_CreateRenderTargetView(gpu_rt.dev, (ID3D11Resource*)P.mid, NULL, &P.mid_rtv)) ||
+        FAILED(ID3D11Device_CreateShaderResourceView(gpu_rt.dev, (ID3D11Resource*)P.mid, NULL, &P.mid_srv))) {
+        GPU_RELEASE(P.mid_srv); GPU_RELEASE(P.mid_rtv); GPU_RELEASE(P.mid);
+        P.mid_w = P.mid_h = 0;
+        return 0;
+    }
+    P.mid_w = nw;
+    P.mid_h = nh;
+    return 1;
+}
+
+static void resample_pass(ID3D11RenderTargetView* rtv, int vx, int vy, int vw, int vh, ID3D11ShaderResourceView* src,
+                          const resample_consts* k) {
+    D3D11_MAPPED_SUBRESOURCE m;
+    if (SUCCEEDED(ID3D11DeviceContext_Map(gpu_rt.ctx, (ID3D11Resource*)P.rcb, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) {
+        memcpy(m.pData, k, sizeof *k);
+        ID3D11DeviceContext_Unmap(gpu_rt.ctx, (ID3D11Resource*)P.rcb, 0);
+    }
+    ID3D11DeviceContext_PSSetConstantBuffers(gpu_rt.ctx, 1, 1, &P.rcb);
+    fullscreen_pass(rtv, vx, vy, vw, vh, GPU_SH_ps_resample, src);
+}
+
+/* The picture (cur_w x cur_h of a larger texture) into the viewport (x, y, lw, lh) of rtv: separable, the
+ * columns first (into an RGBA16F intermediate of lw x cur_h), then the rows. The picture's sample grid is
+ * shifted by cur_shift texels against a picture whose pixels are centred on the PS2 pixels (8.1: sample 0 is
+ * the native pixel); the resample takes it out. */
+static void present_resample(ID3D11RenderTargetView* rtv, int x, int y, int lw, int lh, int scaler) {
+    if (lw <= 0 || lh <= 0 || !P.cur_w || !P.cur_h) return;
+    scaler = scaler_override(scaler);
+    if (!ensure_mid(lw, P.cur_h)) {      /* (no intermediate: the M6 bilinear present) */
+        D3D11_MAPPED_SUBRESOURCE m;
+        if (SUCCEEDED(ID3D11DeviceContext_Map(gpu_rt.ctx, (ID3D11Resource*)P.cb, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) {
+            float* f = m.pData;
+            f[0] = (float)P.cur_w / (float)P.pict_w; f[1] = (float)P.cur_h / (float)P.pict_h;
+            f[2] = ((float)P.cur_w - 0.5f) / (float)P.pict_w; f[3] = ((float)P.cur_h - 0.5f) / (float)P.pict_h;
+            ID3D11DeviceContext_Unmap(gpu_rt.ctx, (ID3D11Resource*)P.cb, 0);
+        }
+        ID3D11DeviceContext_PSSetConstantBuffers(gpu_rt.ctx, 0, 1, &P.cb);
+        fullscreen_pass(rtv, x, y, lw, lh, GPU_SH_ps_present, P.pict_srv[P.cur]);
+        return;
+    }
+    resample_consts k;
+    memset(&k, 0, sizeof k);
+    k.src_n = (float)P.cur_w; k.dst_n = (float)lw; k.shift = P.cur_shift[0]; k.ratio = (float)P.cur_w / (float)lw;
+    k.mode = (uint32_t)axis_mode(scaler, P.cur_w, lw, P.cur_shift[0]);
+    k.axis = 0;
+    k.other_n = (uint32_t)P.cur_h;
+    resample_pass(P.mid_rtv, 0, 0, lw, P.cur_h, P.pict_srv[P.cur], &k);
+    k.src_n = (float)P.cur_h; k.dst_n = (float)lh; k.shift = P.cur_shift[1]; k.ratio = (float)P.cur_h / (float)lh;
+    k.mode = (uint32_t)axis_mode(scaler, P.cur_h, lh, P.cur_shift[1]);
+    k.axis = 1;
+    k.other_n = (uint32_t)lw;
+    k.origin[0] = (float)x; k.origin[1] = (float)y;
+    resample_pass(rtv, x, y, lw, lh, P.mid_srv, &k);
+}
+
+static void present_fit(int aw, int ah, int scaler) {
     double t0 = now_ms();
     if (P.sc) {
         int cw = 0, ch = 0;
@@ -526,19 +659,7 @@ static void present_fit(int aw, int ah) {
     if (P.have) {
         int x, y, lw, lh;
         fit_aspect(P.bb_w, P.bb_h, aw, ah, &x, &y, &lw, &lh);
-        /* the picture occupies [0, cur_w) x [0, cur_h) of a possibly larger texture: uv scale and
-           clamp (half a texel inside, so bilinear taps never reach past the picture) */
-        D3D11_MAPPED_SUBRESOURCE m;
-        if (SUCCEEDED(ID3D11DeviceContext_Map(gpu_rt.ctx, (ID3D11Resource*)P.cb, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) {
-            float* f = m.pData;
-            f[0] = (float)P.cur_w / (float)P.pict_w;
-            f[1] = (float)P.cur_h / (float)P.pict_h;
-            f[2] = ((float)P.cur_w - 0.5f) / (float)P.pict_w;
-            f[3] = ((float)P.cur_h - 0.5f) / (float)P.pict_h;
-            ID3D11DeviceContext_Unmap(gpu_rt.ctx, (ID3D11Resource*)P.cb, 0);
-        }
-        ID3D11DeviceContext_PSSetConstantBuffers(gpu_rt.ctx, 0, 1, &P.cb);
-        fullscreen_pass(P.rtv, x, y, lw, lh, GPU_SH_ps_present, P.pict_srv[P.cur]);
+        present_resample(P.rtv, x, y, lw, lh, scaler);
     }
     if (P.sc) {
         int tear = gpu_rt.cfg.tearing && gpu_rt.caps.tearing;
@@ -557,11 +678,32 @@ static void present_fit(int aw, int ah) {
 
 /* ---- M6: the picture composed on the GPU (shaders/display.hlsl) ------------------------------------- */
 
+/* (M7) The standard flicker-filter pattern - both circuits on one buffer (FBP, FBW, PSM, DBX, DX equal), one
+ * line apart (DBY), mixed at a fixed ALP (MMOD 1) - shows the circuit with the lower DBY alone: the TV
+ * flicker filter off (Modern). Anything else is composed as programmed. Returns 1 when it changed priv. */
+static int flicker_strip(uint64_t priv[16]) {
+    uint64_t pmode = priv[0];
+    if ((pmode & 3) != 3 || !((pmode >> 5) & 1)) return 0;
+    uint64_t f1 = priv[7], f2 = priv[9], d1 = priv[8], d2 = priv[10];
+    const uint64_t fbmask = 0x1FFull | 0x3Full << 9 | 0x1Full << 15 | 0x7FFull << 32;   /* FBP, FBW, PSM, DBX */
+    if ((f1 & fbmask) != (f2 & fbmask) || (d1 & 0xFFF) != (d2 & 0xFFF)) return 0;
+    int dby1 = (int)((f1 >> 43) & 0x7FF), dby2 = (int)((f2 >> 43) & 0x7FF);
+    if (dby1 - dby2 != 1 && dby2 - dby1 != 1) return 0;
+    priv[0] &= ~(uint64_t)(dby1 > dby2 ? 1 : 2);
+    return 1;
+}
+
 void gpu_present_compose(const gpu_compose_in* in) {
     ID3D11DeviceContext* c = gpu_rt.ctx;
     gs_display_layout L;
-    int ok = in->priv && gs_display_layout_of(in->priv, &L);
-    if (!ensure_pictures(PICT_MIN, PICT_MIN)) {
+    uint64_t priv[16];
+    if (in->priv) {
+        memcpy(priv, in->priv, sizeof priv);
+        if (in->flicker_off) flicker_strip(priv);
+    }
+    int ok = in->priv && gs_display_layout_of(priv, &L);
+    int so = in->scale > 0 ? in->scale : 1;
+    if (!ensure_pictures(ok ? L.W * so : PICT_MIN, ok ? L.H * so : PICT_MIN)) {
         gpu_log("cannot allocate the pictures");
         gpu_rt.lost = 1;
         return;
@@ -577,13 +719,18 @@ void gpu_present_compose(const gpu_compose_in* in) {
         P.have = 0;
         return;
     }
+    int W = L.W * so, H = L.H * so;      /* (M7: the picture at so x so pixels per output pixel) */
     display_consts k;
     memset(&k, 0, sizeof k);
-    k.W = (uint32_t)L.W; k.H = (uint32_t)L.H; k.ux0 = (uint32_t)L.ux0; k.uy0 = (uint32_t)L.uy0;
+    k.W = (uint32_t)W; k.H = (uint32_t)H; k.ux0 = (uint32_t)L.ux0; k.uy0 = (uint32_t)L.uy0;
     k.hs = (uint32_t)L.hs; k.vs = (uint32_t)L.vs;
     k.flags = (L.mmod ? 1u : 0u) | (L.slbg ? 2u : 0u) | (L.field_mode ? 4u : 0u);
+    /* progressive pictures of half-line-offset fields (the game draws an odd field one frame line lower,
+     * gs.c weaves it): the odd field's rows go one frame line down, so the picture does not bob */
+    if (!in->fields && L.field_mode && in->field_code == 8) k.flags |= 8u;
     k.alp = (uint32_t)L.alp;
     k.bg = L.bg;
+    k.so = (uint32_t)so;
     for (int i = 0; i < 2; i++) {
         const gs_circuit* ci = &L.c[i];
         k.cA[i][0] = (uint32_t)ci->en; k.cA[i][1] = (uint32_t)ci->fbp; k.cA[i][2] = (uint32_t)ci->fbw; k.cA[i][3] = (uint32_t)ci->psm;
@@ -594,15 +741,16 @@ void gpu_present_compose(const gpu_compose_in* in) {
         k.cD[i][2] = (uint32_t)(in->ky[i] > 0 ? in->ky[i] : 1);
     }
     /* the deinterlacer's history state (gs.c deinterlace): which field this is, what is usable */
+    /* (M7: only with field display - interlacing on; progressive pictures need no history) */
     int f = in->field_code, deint = 0, par = 0, mode = 0;
     uint32_t now = in->priv ? (uint32_t)in->priv[15] + 1 : 1;
-    if (L.field_mode) {
+    if (L.field_mode && in->fields) {
         if (f != 0 && f != 8) P.hist_when[0] = P.hist_when[1] = 0;
-        else {
+        else if (ensure_hist(W, H)) {
             par = f == 8;
             int oth = !par;
-            int have_same = P.hist_when[par] && P.hist_when[par] + 3 >= now && P.hist_dims[par][0] == L.W && P.hist_dims[par][1] == L.H;
-            int have_oth = P.hist_when[oth] && P.hist_when[oth] + 2 >= now && P.hist_dims[oth][0] == L.W && P.hist_dims[oth][1] == L.H;
+            int have_same = P.hist_when[par] && P.hist_when[par] + 3 >= now && P.hist_dims[par][0] == W && P.hist_dims[par][1] == H;
+            int have_oth = P.hist_when[oth] && P.hist_when[oth] + 2 >= now && P.hist_dims[oth][0] == W && P.hist_dims[oth][1] == H;
             deint = 1 + (par || have_oth);     /* 1: history only, 2: interpolate the other lines too */
             mode = have_oth && have_same;
         }
@@ -619,15 +767,15 @@ void gpu_present_compose(const gpu_compose_in* in) {
     ID3D11DeviceContext_CSSetConstantBuffers(c, 0, 1, &P.dcb);
     ID3D11DeviceContext_CSSetShaderResources(c, 0, 7, srv);
     ID3D11DeviceContext_CSSetUnorderedAccessViews(c, 0, 1, &P.pict_uav[next], NULL);
-    ID3D11DeviceContext_Dispatch(c, (UINT)(L.W + 7) / 8, (UINT)(L.H + 7) / 8, 1);
+    ID3D11DeviceContext_Dispatch(c, (UINT)(W + 7) / 8, (UINT)(H + 7) / 8, 1);
     gpu_rt.n_dispatches++;
     if (deint == 2) {
-        int oth = !par, rows = L.H > oth ? (L.H - oth + 1) / 2 : 0;
+        int oth = !par, rows = L.H > oth ? (L.H - oth + 1) / 2 * so : 0;   /* (frame lines of so rows) */
         ID3D11ShaderResourceView* hs[2] = { P.hist_srv[par], P.hist_srv[oth] };
         ID3D11DeviceContext_CSSetShaderResources(c, 3, 2, hs);
         ID3D11DeviceContext_CSSetShader(c, gpu_cs(GPU_SH_cs_deint), NULL, 0);
         if (rows) {
-            ID3D11DeviceContext_Dispatch(c, (UINT)(L.W + 7) / 8, (UINT)(rows + 7) / 8, 1);
+            ID3D11DeviceContext_Dispatch(c, (UINT)(W + 7) / 8, (UINT)(rows + 7) / 8, 1);
             gpu_rt.n_dispatches++;
         }
     }
@@ -636,16 +784,28 @@ void gpu_present_compose(const gpu_compose_in* in) {
     ID3D11DeviceContext_CSSetShaderResources(c, 0, 7, none);
     ID3D11DeviceContext_CSSetUnorderedAccessViews(c, 0, 1, &nouav, NULL);
     if (deint) {                                /* this field's lines become the history of its parity */
-        D3D11_BOX box = { 0, 0, 0, (UINT)L.W, (UINT)L.H, 1 };
+        D3D11_BOX box = { 0, 0, 0, (UINT)W, (UINT)H, 1 };
         ID3D11DeviceContext_CopySubresourceRegion(c, (ID3D11Resource*)P.hist[par], 0, 0, 0, 0, (ID3D11Resource*)P.pict[next], 0, &box);
         gpu_rt.n_copies++;
         P.hist_when[par] = now;
-        P.hist_dims[par][0] = L.W;
-        P.hist_dims[par][1] = L.H;
+        P.hist_dims[par][0] = W;
+        P.hist_dims[par][1] = H;
+    }
+    /* (M7, 8.1) the sample grid: a target with k samples per native pixel holds sample i at GS x + i / k, so the
+     * picture's pixel centres sit (P - r) / 2 texels left of / above those of a picture centred on the PS2's
+     * pixels, P = picture texels per native pixel (so; field mode: 2 so rows per buffer row), r = texels per
+     * sample (P / k). Circuits read from memory repeat pixels: no shift. (The reference circuit decides.) */
+    int rc = L.ref;
+    P.cur_shift[0] = P.cur_shift[1] = 0.0f;
+    if (in->tex[rc] && in->kx[rc] > 0 && in->ky[rc] > 0) {
+        float px = (float)so, py = (float)(so * (L.field_mode ? 2 : 1));
+        float rx = px / (float)in->kx[rc], ry = py / (float)in->ky[rc];
+        P.cur_shift[0] = (px - rx) * 0.5f;
+        P.cur_shift[1] = (py - ry) * 0.5f;
     }
     P.cur = next;
-    P.cur_w = L.W;
-    P.cur_h = L.H;
+    P.cur_w = W;
+    P.cur_h = H;
     P.have = 1;
 }
 
@@ -686,6 +846,8 @@ static void pend_complete(int block) {
     rb->w = w;
     rb->h = h;
     rb->vblank = P.pend[i].vblank;
+    rb->shift[0] = P.pend[i].shift[0];
+    rb->shift[1] = P.pend[i].shift[1];
     P.pend_head = (P.pend_head + 1) % NSTAGE;
     P.npend--;
     rb_finish(rb, status);
@@ -694,6 +856,7 @@ static void pend_complete(int block) {
 void gpu_exec_readback(const void* payload) {
     gpu_readback* rb = ((const gpu_op_readback*)payload)->rb;
     if (gpu_rt.lost || !P.have) { rb_finish(rb, -1); return; }
+    if (!ensure_stage(P.cur_w, P.cur_h)) { rb_finish(rb, -1); return; }
     if (P.npend == NSTAGE) {
         ID3D11DeviceContext_Flush(gpu_rt.ctx);
         pend_complete(1);
@@ -704,6 +867,8 @@ void gpu_exec_readback(const void* payload) {
     P.pend[k].h = P.cur_h;
     P.pend[k].vblank = P.cur_vblank;
     P.pend[k].rb = rb;
+    P.pend[k].shift[0] = P.cur_shift[0];
+    P.pend[k].shift[1] = P.cur_shift[1];
     D3D11_BOX box = { 0, 0, 0, (UINT)P.cur_w, (UINT)P.cur_h, 1 };
     ID3D11DeviceContext_CopySubresourceRegion(gpu_rt.ctx, (ID3D11Resource*)P.stage[k], 0, 0, 0, 0,
                                               (ID3D11Resource*)P.pict[P.cur], 0, &box);

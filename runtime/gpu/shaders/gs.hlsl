@@ -102,6 +102,13 @@ VR vs_ref_tri(VIn i) {
     return o;
 }
 
+// Single-rate classes (sprites, line / point pixels): every sample of a covered native pixel takes the native
+// pixel's value - the samples stored with it, x * k .. x * k + k - 1 (paraLLEl-GS rule, 4.4). (M7 tried the
+// sample's nearest native pixel instead, centred like the triangles: it breaks passes that map every native
+// pixel differently - the CT16 channel shuffles move 16-bit pixel x + 8 to x and x - 8 to x + 8 - so a storage
+// pixel must only ever be written by the primitive covering its own sample 0.)
+float2 single_rate_pos(float x, float y) { return float2(x * (float)kx, y * (float)ky); }
+
 // sprites: the native rectangle [x0, x1) x [y0, y1), every sample of a native pixel covered (single rate)
 VR vs_ref_sprite(uint vid : SV_VertexID, uint inst : SV_InstanceID) {
     uint base = rec_first + inst * 64u;
@@ -109,7 +116,7 @@ VR vs_ref_sprite(uint vid : SV_VertexID, uint inst : SV_InstanceID) {
     float x0 = (float)((int)(r.x << 16) >> 16), y0 = (float)((int)r.x >> 16);
     float x1 = (float)((int)(r.y << 16) >> 16), y1 = (float)((int)r.y >> 16);
     VR o;
-    o.pos = clip_of(float2(((vid & 1u) ? x1 : x0) * (float)kx, ((vid & 2u) ? y1 : y0) * (float)ky));
+    o.pos = clip_of(single_rate_pos((vid & 1u) ? x1 : x0, (vid & 2u) ? y1 : y0));
     o.rec = base;
     return o;
 }
@@ -120,9 +127,30 @@ VR vs_ref_linepix(uint vid : SV_VertexID, uint inst : SV_InstanceID) {
     uint r = recs.Load(base);
     float px = (float)((int)(r << 16) >> 16), py = (float)((int)r >> 16);
     VR o;
-    o.pos = clip_of(float2((px + ((vid & 1u) ? 1.0 : 0.0)) * (float)kx, (py + ((vid & 2u) ? 1.0 : 0.0)) * (float)ky));
+    o.pos = clip_of(single_rate_pos(px + ((vid & 1u) ? 1.0 : 0.0), py + ((vid & 2u) ? 1.0 : 0.0)));
     o.rec = base;
     return o;
+}
+
+// (M7) thin analytic lines (outlines = thin, gpu_rec_thin): a quad around the line, wide enough for its
+// coverage plus a sample; the pixel shader decides every sample from its distance to the line
+VR vs_ref_thin(uint vid : SV_VertexID, uint inst : SV_InstanceID) {
+    uint base = rec_first + inst * 128u;
+    float4 g = asfloat(recs.Load4(base));            // lo, hi, a0, len (12.4)
+    float2 o = asfloat(recs.Load2(base + 16u));      // o0, od (12.4)
+    uint flags = recs.Load(base + 24u);
+    float w = asfloat(recs.Load(base + 108u));
+    bool xm = (flags & 1u) != 0u;
+    float km = xm ? (float)kx : (float)ky, kn = xm ? (float)ky : (float)kx;
+    float m = ((vid & 1u) ? g.y / 16.0 + 1.0 / km : g.x / 16.0 - 1.0 / km);
+    float t = (m * 16.0 - g.z) / g.w;
+    float h = w + 1.0 / kn;
+    float n = (o.x + o.y * t) / 16.0 + ((vid & 2u) ? h : -h);
+    float2 p = xm ? float2(m, n) : float2(n, m);
+    VR r;
+    r.pos = clip_of(float2(p.x * (float)kx + 0.5, p.y * (float)ky + 0.5));
+    r.rec = base;
+    return r;
 }
 
 // FF triangles (M5): the same position as vs_ref_tri (identical coverage), plus S/T/Q for the fast
@@ -284,6 +312,9 @@ uint clut_lookup(St st, uint idx) {
 // its sample is g_vsample (the fragment's own sample for 1:1 reads, else sample 0)
 static uint2 g_vsample = uint2(0u, 0u);
 static bool g_vself = false;             // read the bound colour target itself (byte lanes it does not write)
+static int2 g_voff = int2(0, 0);         // (M7) 1:1 reads: the fragment's sample offset from its pixel's sample 0 (signed)
+
+int floordiv_u(int a, uint k) { return a >= 0 ? (int)((uint)a / k) : -(int)(((uint)(-a) + k - 1u) / k); }
 
 uint view_word(uint x, uint y) {
     int2 s = int2((int)(x * vkx + g_vsample.x), (int)(y * vky + g_vsample.y));
@@ -307,6 +338,14 @@ uint view_word_at(uint w) {
 uint texel(St st, Lvl L, uint x, uint y) {
     uint psm = (st.tex0clamp.x >> 20) & 0x3Fu;
     bool isview = (st.texsrc & 0xFFu) >= 3u;
+    if (isview && (g_voff.x != 0 || g_voff.y != 0)) {
+        // (M7) a 1:1 read at a signed sample offset: the sample at that offset from the texel's sample 0, which
+        // for a negative offset is a sample of the texel before it (in the view's own texel space: CT16 views too)
+        int ox = floordiv_u(g_voff.x, vkx), oy = floordiv_u(g_voff.y, vky);
+        x = (uint)((int)x + ox) & 2047u;
+        y = (uint)((int)y + oy) & 2047u;
+        g_vsample = uint2((uint)(g_voff.x - ox * (int)vkx), (uint)(g_voff.y - oy * (int)vky));
+    }
     uint res;
     if (psm == PSMCT16 || psm == PSMCT16S || psm == PSMZ16 || psm == PSMZ16S) {
         uint h = gs_addr16(swz_tab_of(psm), L.bp, L.bw, x, y);
@@ -376,6 +415,39 @@ int lod16_of(St st, float q) {
     if (u == 0u) return 0x7FFF;
     int e = (int)((u >> 23) & 0xFFu) - 127, m = (int)((u >> 19) & 15u);
     return -(e * 16 + m) * (1 << ((st.tlev >> 13) & 3u)) + k;
+}
+
+// (M7) a non-1:1 read of a scaled target view at a fragment sample other than sample 0: the view's own sample
+// grid is sampled (texel x's sample i was drawn at texel-space position x + 0.5 + i / vkx), nearest or with the
+// GS's 4-bit bilinear weights in sample units; clamps act on the native texel, an edge texel's outer samples
+// stand for it. Sample 0 keeps the native read (exact).
+uint view_texel_s(St st, Lvl L, int sx, int sy) {
+    int k1 = (int)vkx, k2 = (int)vky;
+    int x = floordiv_u(sx, vkx), y = floordiv_u(sy, vky);
+    int i = sx - x * k1, j = sy - y * k2;
+    if (x < L.ulo) i = 0; else if (x > L.uhi) i = k1 - 1;
+    if (y < L.vlo) j = 0; else if (y > L.vhi) j = k2 - 1;
+    uint xw = (uint)wrapc(x, L.ulo, L.uhi, L.umsk, L.ufix) & 2047u, yw = (uint)wrapc(y, L.vlo, L.vhi, L.vmsk, L.vfix) & 2047u;
+    g_vsample = uint2((uint)i, (uint)j);
+    uint t = texel(st, L, xw, yw);
+    g_vsample = uint2(0u, 0u);
+    return t;
+}
+
+uint view_hires(St st, float uf, float vf, bool bil) {
+    Lvl L = level_of(st, 0u);
+    float ps = (uf - 8.0) * (float)vkx / 16.0, qs = (vf - 8.0) * (float)vky / 16.0;   // sample units
+    uint res;
+    if (!bil) res = view_texel_s(st, L, (int)floor(ps + 0.5), (int)floor(qs + 0.5));
+    else {
+        float fx = floor(ps), fy = floor(qs);
+        int sx = (int)fx, sy = (int)fy;
+        uint fu = (uint)((ps - fx) * 16.0), fv = (uint)((qs - fy) * 16.0);
+        uint t00 = view_texel_s(st, L, sx, sy), t10 = view_texel_s(st, L, sx + 1, sy);
+        uint t01 = view_texel_s(st, L, sx, sy + 1), t11 = view_texel_s(st, L, sx + 1, sy + 1);
+        res = bilerp(t00, t10, t01, t11, fu, fv);
+    }
+    return res;
 }
 
 uint tex_sample(St st, int U, int V, float lq) {
@@ -475,6 +547,7 @@ struct Frag {
     uint fog;                        // 0..255
     uint z;                              // stored-format Z (clamped)
     int U, V;                            // 1/16 texel
+    float uf, vf;                        // (M7) U, V at the fragment's sample, unrounded (scaled view reads)
     float lq;                            // Q for the LOD
     uint state;
     uint rb;                             // record byte offset
@@ -490,8 +563,11 @@ bool gs_frag(float4 pos, uint irec, float3 istq, uint prim, out Frag f, out St s
     f.P = (int2)pos.xy;
     f.px = (int)((uint)f.P.x / kx);
     f.py = (int)((uint)f.P.y / ky);
+    int2 soff = f.P - int2(f.px * (int)kx, f.py * (int)ky);   // the sample's offset from sample 0 of its pixel (0..k-1)
     int px = f.px, py = f.py;
     f.U = 0; f.V = 0; f.lq = 1.0;
+    f.uf = 0.0; f.vf = 0.0;
+    bool uvf = false;                    // (M7) uf, vf set by the primitive class (sprites), else from U, V
     f.col = 0u; f.vcol = 0u; f.fog = 0u; f.z = 0u;
     bool one_to_one = false;             // a sprite stepping one texel per pixel (1:1 rule)
 #if PRIM == 0
@@ -500,6 +576,9 @@ bool gs_frag(float4 pos, uint irec, float3 istq, uint prim, out Frag f, out St s
 #elif PRIM == 1
     uint rb = irec;
     f.state = recs.Load(rb + 20u);
+#elif PRIM == 3
+    uint rb = irec;
+    f.state = recs.Load(rb + 28u);
 #else
     uint rb = irec;
     f.state = recs.Load(rb + 12u) >> 8;
@@ -519,14 +598,24 @@ bool gs_frag(float4 pos, uint irec, float3 istq, uint prim, out Frag f, out St s
 
 #if PRIM == 0
     // ---- triangle: the software renderer's fixed-point row stepping ----
+    // (M7) sample (si, sj) of the native pixel sits at GS (px + si / kx, py + sj / ky): attributes are
+    // evaluated there (Z exactly as 3.6, the others with float sub-steps); sample 0 is the native pixel's
+    // value bit for bit
+    uint si = (uint)f.P.x - (uint)px * kx, sj = (uint)f.P.y - (uint)py * ky;
+    float fi = (float)si / (float)kx, fj = (float)sj / (float)ky;
     int by0 = (int)(recs.Load(rb + 108u) << 16) >> 16, bx0 = (int)recs.Load(rb + 108u) >> 16;
     int rows = py - by0;
     int a[7];
-    [unroll] for (uint k = 0u; k < 7u; k++)
-        a[k] = asint(recs.Load(rb + 24u + 4u * k) + recs.Load(rb + 52u + 4u * k) * (uint)rows + recs.Load(rb + 80u + 4u * k) * (uint)px);
+    [unroll] for (uint k = 0u; k < 7u; k++) {
+        uint dyk = recs.Load(rb + 52u + 4u * k), dxk = recs.Load(rb + 80u + 4u * k);
+        uint v = recs.Load(rb + 24u + 4u * k) + dyk * (uint)rows + dxk * (uint)px;
+        if (sj != 0u) v += (uint)(int)floor((float)asint(dyk) * fj);
+        if (si != 0u) v += (uint)(int)floor((float)asint(dxk) * fi);
+        a[k] = asint(v);
+    }
     f.col = clamp255i(a[0] >> 16) | (clamp255i(a[1] >> 16) << 8) | (clamp255i(a[2] >> 16) << 16) | (clamp255i(a[3] >> 16) << 24);
     f.fog = clamp255i(a[4] >> 16);
-    i64 z16 = gs_z16(recs.Load2(rb), recs.Load2(rb + 8u), recs.Load2(rb + 16u), by0, px, py, 0u, 0u, 1u, 1u);
+    i64 z16 = gs_z16_sample(recs.Load2(rb), recs.Load2(rb + 8u), recs.Load2(rb + 16u), by0, px, py, si, sj, kx, ky);
     f.z = gs_z_clamp(z16, zmax);
     f.lq = asfloat(recs.Load(rb + 116u));
     if (tme) {
@@ -536,6 +625,7 @@ bool gs_frag(float4 pos, uint irec, float3 istq, uint prim, out Frag f, out St s
             // (FF fast path: S/T/Q as the hardware interpolates them; the design's tolerance class
             // "perspective-textured")
             float s = istq.x, t = istq.y, q = istq.z;
+            dbg_s = s; dbg_t = t; dbg_q = q;
             float iq = 1.0 / q;
             precise float su = s * iq;
             precise float tv = t * iq;
@@ -578,6 +668,16 @@ bool gs_frag(float4 pos, uint irec, float3 istq, uint prim, out Frag f, out St s
             float s = step_span(s0, (float)sdx, xl, px, cutx);
             float t = step_span(tt0, (float)tdx, xl, px, cutx);
             float q = step_span(q0, (float)qdx, xl, px, cutx);
+            if ((si | sj) != 0u) {
+                // (M7) another sample of the pixel: the plane at its position. (Its native row can be the one above
+                // the triangle's first, rows = -1: a sample below that row's centre is covered while the centre is
+                // not - the row loop above never runs backwards, so the plane starts from row by0's values.)
+                double dfx = (double)px + (double)fi, dfy = (double)rows + (double)fj;
+                double s0r = asdouble(w0.z, w0.w), t0r = asdouble(w1.x, w1.y), q0r = asdouble(w1.z, w1.w);
+                s = (float)(s0r + sdy * dfy + sdx * dfx);
+                t = (float)(t0r + tdy * dfy + tdx * dfx);
+                q = (float)(q0r + qdy * dfy + qdx * dfx);
+            }
             float iq = rcp_exact(q);
             precise float su = s * iq;
             precise float tv = t * iq;
@@ -608,6 +708,58 @@ bool gs_frag(float4 pos, uint irec, float3 istq, uint prim, out Frag f, out St s
         precise double v = vs * 4096.0L;
         int vi = v > 2147483000.0L ? 2147483000 : v < -2147483000.0L ? -2147483000 : (int)v;
         f.V = vi >> 12;
+        // (M7) at the sample's position (scaled view reads; single-rate otherwise)
+        float si = (float)soff.x / (float)kx, sjf = (float)soff.y / (float)ky;
+        f.uf = ((float)asint((uint)ua + (uint)du * (uint)(px - x0)) + (float)du * si) / 4096.0;
+        f.vf = (float)(vc0 + vcy * ((double)py + (double)sjf));
+        uvf = true;
+    }
+#elif PRIM == 3
+    // ---- (M7) thin analytic line: the sample's distance to the line decides its coverage ----
+    {
+        float4 g = asfloat(recs.Load4(rb));          // lo, hi, a0, len (12.4)
+        float2 o = asfloat(recs.Load2(rb + 16u));    // o0, od
+        uint lf = recs.Load(rb + 24u);
+        bool xm = (lf & 1u) != 0u;
+        float gx = (float)f.P.x / (float)kx, gy = (float)f.P.y / (float)ky;   // the sample's GS position
+        float mj = (xm ? gx : gy) * 16.0, mn = (xm ? gy : gx) * 16.0;
+        if (mj < g.x || mj >= g.y) return false;
+        float t = (mj - g.z) / g.w;
+        float d = (mn - (o.x + o.y * t)) / 16.0;    // native pixels across the minor axis
+        float w = asfloat(recs.Load(rb + 108u));
+        uint cov = 0x80u;
+        if ((lf & 2u) != 0u) {                      // AA1: coverage 1 - |d| / w replaces the alpha
+            float c = 1.0 - abs(d) / w;
+            if (c <= 0.0) return false;
+            cov = (uint)round(c * 128.0);
+            if (cov == 0u) return false;
+        } else if (abs(d) >= w * 0.5) return false;
+        float2 zz = asfloat(recs.Load2(rb + 32u));
+        float zf = floor(zz.x + zz.y * t);
+        f.z = zf <= 0.0 ? 0u : zf >= (float)zmax ? zmax : min((uint)zf, zmax);
+        float4 c0 = asfloat(recs.Load4(rb + 40u)), cx = asfloat(recs.Load4(rb + 56u));
+        float4 cv = floor(c0 + cx * t);
+        uint ca = (lf & 2u) != 0u ? cov : clamp255i((int)cv.w);
+        f.col = clamp255i((int)cv.x) | (clamp255i((int)cv.y) << 8) | (clamp255i((int)cv.z) << 16) | (ca << 24);
+        float2 ff = asfloat(recs.Load2(rb + 72u));
+        f.fog = clamp255i((int)floor(ff.x + ff.y * t));
+        f.lq = asfloat(recs.Load(rb + 104u));
+        if (tme) {
+            float4 s01 = asfloat(recs.Load4(rb + 80u));   // sc0[0..2], scx[0]
+            float2 s23 = asfloat(recs.Load2(rb + 96u));   // scx[1..2]
+            float s = s01.x + s01.w * t, tt = s01.y + s23.x * t;
+            if (fst) { f.U = (int)floor(s); f.V = (int)floor(tt); }
+            else {
+                float q = s01.z + s23.y * t, iq = 1.0 / q;
+                precise float su = s * iq;
+                precise float tv = tt * iq;
+                precise float su16 = su * tw16;
+                precise float tv16 = tv * th16;
+                f.U = f2i(su16);
+                f.V = f2i(tv16);
+                f.lq = q;
+            }
+        }
     }
 #else
     // ---- line / point pixel: as the DDA produced it ----
@@ -638,8 +790,19 @@ bool gs_frag(float4 pos, uint irec, float3 istq, uint prim, out Frag f, out St s
     if (tme && (st.tlev & 3u) != 0u) {
         // target views: 1:1 reads take the fragment's own sample of each texel (5.1), others sample 0
         g_vself = (st.texsrc & TS_SELF) != 0u;
-        if ((vflags & 1u) != 0u && one_to_one) g_vsample = uint2((uint)f.P.x % kx, (uint)f.P.y % ky);
-        uint t = tex_sample(st, f.U, f.V, f.lq);
+        // 1:1 reads: the source sample at the fragment's own offset from the texel (texel(); M7: signed for the
+        // single-rate classes, across the texel's neighbour; a view with other factors maps it to its own grid -
+        // the frontend pairs the families of 1:1 reads)
+        if (one_to_one) g_voff = int2(floordiv_u(soff.x * (int)vkx, kx), floordiv_u(soff.y * (int)vky, ky));
+        uint tk = st.texsrc & 0xFFu, vpsm = (st.tex0clamp.x >> 20) & 0x3Fu;
+        bool s0 = soff.x == 0 && soff.y == 0;
+        uint t;
+        if ((tk == 3u || tk == 4u) && !one_to_one && !g_vself && !s0 && (vkx > 1u || vky > 1u) && (st.tlev & 3u) != 3u &&
+            vpsm != PSMCT16 && vpsm != PSMCT16S) {
+            // (M7) a scaled view read through its own samples (sample 0 stays the native read)
+            if (!uvf) { f.uf = (float)f.U; f.vf = (float)f.V; }
+            t = view_hires(st, f.uf, f.vf, (st.tlev & 3u) == 2u);
+        } else t = tex_sample(st, f.U, f.V, f.lq);
         col = tfx((st.flags >> 2) & 3u, (st.flags & SF_TCC) != 0u, col, t);
     }
     if (st.flags & SF_FGE) {
