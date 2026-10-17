@@ -52,8 +52,19 @@ divergence / PUNT (generic fixes only).
   ~3x finer at 3x because non-1:1 view reads at samples != 0 read the view's own (scaled) grid (M7 design);
   gpu_m8_ep7_hub_far_scene_v008400.png. Owner decision if the 1x blockiness should be kept at 3x.
 
+- m1_chalk rerun (waterpump with bug done + PS2_TASK_SET=1885:2@6500 -> "Job Completed!" -> chalk talk 2): the chalk
+  talk is a movie (census of a recording: 1 sprite per field, 1200 macroblock uploads per movie frame) -> native res at
+  any scale. ep1 sheet done.
+- Performance runs (no verifier, 15 scenes, one game at a time) -> appendix J table. GPU 7-12 ms, GS 2-8 ms, frontend
+  3-11 ms median, 59.9 flips/s everywhere, 0 dropped; hubs download 2.7-8 blocks per VBlank (M6 item).
+- Stats line: per-second `target rescales` / `TRXDIR=1 reads`; in game: 2 rescales at boot (v360), 0 during play in the
+  museum and ep7 hub; TRXDIR=1 reads 0.
+- Builds: release + package (dist\Sly2) and debug (build\sly2) OK after the last runtime change.
+- Design appendix J written (3701a98).
+
 ## In progress
-- m1_chalk rerun (waterpump completion -> chalk talk 2), then the ep1 sheet; perf runs (no verify) next.
+- Final gates (build\final\*.txt): diff mixed S1/S3 + ref S1 25/25 so far; game, lockstep, samples, fthread, VRAM
+  hashes running; run_tests + unit suites running (build\final\units.txt).
 
 ## Next
 (see Plan)
