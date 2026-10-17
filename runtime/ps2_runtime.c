@@ -449,10 +449,17 @@ void window_present_aspect(const uint32_t* bgrx, int w, int h, int stride, int a
 
 static const uint32_t* display_shaped(const uint32_t* src, int w, int h, int stride, float aspect, int content43,
                                       int* ow) {
-    static uint32_t out[2048 * 1024];
+    static uint32_t* out;                        /* (M7: GPU pictures at internal scale N are N times larger) */
+    static size_t cap;
     int W = (int)lroundf((float)h * aspect);     /* the whole display, square pixels */
     int pw = content43 ? (int)lroundf((float)h * 4.0f / 3.0f) : W;   /* the picture inside it */
-    if (W > 2048 || W <= 0 || h > 1024) { *ow = w; return NULL; }
+    if (W > 16384 || W <= 0 || h > 8192) { *ow = w; return NULL; }
+    if ((size_t)W * (size_t)h > cap) {
+        uint32_t* n = realloc(out, (size_t)W * (size_t)h * sizeof *out);
+        if (!n) { *ow = w; return NULL; }
+        out = n;
+        cap = (size_t)W * (size_t)h;
+    }
     int x0 = (W - pw) / 2;
     for (int y = 0; y < h; y++) {
         const uint32_t* s = src + (size_t)y * stride;
