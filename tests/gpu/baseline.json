@@ -192,6 +192,14 @@
                            "sw_hash":  "440255df2d1d1337",
                            "max_diff_px":  0,
                            "min_psnr":  999
+                       },
+                       {
+                           "name":  "gpu-M8/m5_battlezone",
+                           "path":  "gpu-M8\\build\\gsrec\\m5_battlezone.gsrec",
+                           "frames":  60,
+                           "sw_hash":  "c6901705b474b06b",
+                           "max_diff_px":  0,
+                           "min_psnr":  999
                        }
                    ]
 }

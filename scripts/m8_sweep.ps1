@@ -58,6 +58,12 @@ foreach ($l in $lines) {
         downloads = [double]$g[24].Value; loads = [double]$g[25].Value }
 }
 $rows | Export-Csv (Join-Path $dir 'stats.csv') -NoTypeInformation
+# (M8) per-second totals at the end of the stats line: target rescales, TRXDIR=1 reads
+$resc = 0; $reads = 0
+foreach ($l in $lines) {
+    $m = [regex]::Match($l, 'this second: target rescales (\d+), TRXDIR=1 reads (\d+)')
+    if ($m.Success) { $resc += [int]$m.Groups[1].Value; $reads += [int]$m.Groups[2].Value }
+}
 $use = @($rows | Select-Object -Skip $StatsSkip | Where-Object { $_.vblank -ge $StatsFrom -and $_.frames -gt 0 })
 $verifyBad = @($lines | Select-String 'GPU memory differs beyond').Count
 $verifyLast = ($lines | Select-String 'verify v\d+: \d+ comparisons' | Select-Object -Last 1).Line
@@ -72,7 +78,7 @@ $sum = @(
     "scene ${Name}: episode $Episode job '$Job' direct $Direct play $Play; renderer $(if ($Sw) { 'sw' } else { 'hw' }) scale $Scale verify $Verify; $([int]((Get-Date) - $t0).TotalSeconds) s",
     "frames: $nf dumps, $np verify pairs ($frames)",
     "verify: $verifyLast; beyond-tolerance lines $verifyBad",
-    "PUNT: thread-PUNT events $punts, PUNT count (last stats line, per second) max $puntMax",
+    "PUNT: thread-PUNT events $punts, PUNT count (last stats line, per second) max $puntMax; target rescales $resc, TRXDIR=1 reads $reads (whole run)",
     ("stats ({0} lines, {1} used): flips/s {2:N1}, GS {3:N2}, frontend {4:N2} (max {5:N2}), render CPU {6:N2}, GPU {7:N2} (max {8:N2}), latency {9:N2}, prims/VBlank {10:N0}, draws {11:N0}, downloads {12:N1}, dropped {13}" -f `
         $rows.Count, $use.Count, (Med ($use | ForEach-Object flips)), (Med ($use | ForEach-Object gs)), (Med ($use | ForEach-Object front)),
         (Med ($use | ForEach-Object front_max)), (Med ($use | ForEach-Object render)), (Med ($use | ForEach-Object gpu)),

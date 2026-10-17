@@ -897,6 +897,7 @@ Total ~45-55 agent-days. The software renderer stays the default until M11.
   divergence or PUNT found (generic fixes only; any Sly-specific rule needs owner sign-off).
 - **Verification**: `gpu_diff_all.ps1` green on the full corpus at S=1 and S=3 with 0 PUNT; the photo
   mission works with hw at S=3 (readback count logged); sweep screenshots hw vs sw for every episode.
+- *(As built: appendix J.)*
 
 ### M9. Performance
 - **Deliverable**: R8 index atlas for T4/T8 (Gather + CLUT), commutation batching, state/SRV binding
@@ -1970,3 +1971,113 @@ field-coded pictures on the field's own lines. Gate: PSNR >= 32 dB and |mean sig
 - Default settings are 3x, ps2 outlines, Modern; `PS2_GS_SCALE=1` plus `--faithful` (gs_replay) or
   filters = faithful (game) reproduce the M6 S = 1 path exactly.
 - Disk: 3x pictures are 6 MB PNGs; use GS_REPLAY_MAX_PNG / GS_REPLAY_SAVE_VBLANKS.
+
+## Appendix J. As built: M8 episode sweep and corpus gate (branch gpu/M8)
+
+**What was built (tools; the renderer itself needed no fix)**
+- `scripts/gpu_diff_all.ps1 -Mode mixed|ref|fallback -Scale N`: the corpus gate now runs the real GPU tiers (mixed, the
+  game's mode, by default; the M0 all-fallback path stays as `-Mode fallback`), gates PUNT = 0 and the 10.2 picture gate,
+  and covers every recording of tests/gpu/corpus.txt (baseline.json: 25 entries with frames + sw hashes). gs_replay's
+  metrics summary has `punt`, `beyond_gate`, `scale`; the `both ref:` / `mixed:` lines print PUNT.
+- `scripts/gpu_game_all.ps1 -Waive name=floor`: box-gate floor of its own for a recording known to sit below 32 dB at
+  scale (default: fix-perf rv_prompt 31 dB, the inherent sub-pixel UI rules of appendix I).
+- `scripts/gpu_sample_all.ps1 -Scale N`: FF vs REF on every sample of every target over the corpus (M7's
+  --sample-dump / --sample-compare as one gate).
+- In-game sweep: `scripts/m8_sweep.ps1` (one scene: warp_run -Release with the GPU renderer, PS2_GS_VERIFY, stats,
+  frame dumps + verify picture pairs at the same VBlanks, summary.txt / stats.csv / check.txt), `scripts/m8_batch.ps1` +
+  `scripts/m8_scenes.txt` (54 scenes), `scripts/m8_check.py` (native GPU vs sw picture of the verifier pair + the 3x
+  picture box-downsampled vs the native GPU compose; coarse, flags < 26 dB), `scripts/m8_sheet.py` (contact sheets).
+- Runtime: `PS2_GS_VERIFY_DUMP=K` (> 1: picture pairs only at VBlanks % K, so they line up with PS2_DUMP_EVERY = K);
+  PS2_GS_HW_STATS appends per-second `target rescales` and `TRXDIR=1 reads`; `PS2_GPU_DUAL_EXACT=1` (measurement
+  option, off: partial-alpha dual-source blends on the ROV tier).
+- Corpus: `gpu-M8\build\gsrec\m5_battlezone.gsrec` (60 VBlanks recorded by the in-game verifier; deep translucent
+  layering), 25 recordings.
+
+**Corpus gate (release gs_replay, RTX 4060 Ti; 24 recordings, then 25 with battlezone)**
+
+| gate | S = 1 | S = 3 |
+|---|---|---|
+| gpu_diff_all mixed (0 beyond the 10.2 picture gate, PUNT 0, sw hashes = baseline) | 24/24 | 24/24 |
+| gpu_diff_all ref (0 differing pixels, PUNT 0) | 24/24 | 24/24 |
+| gpu_game_all (S = 1: identical to the reference compose; S = 3: box gate) | 3816 pictures, 0 differ | 23/24 + rv_prompt waived (31.36 dB) |
+| gpu_lockstep_all -Mixed (sample 0 at every FRAME/ZBUF change and VBlank) | (final run) | 24092 comparisons, 0 differ |
+| gpu_sample_all (FF vs REF, every sample) | - | 24/24 within budget, 0 missing |
+
+**In-game sweep** (release, `renderer = gpu`, defaults: 3x, ps2 outlines, Modern, 16:9; PS2_GS_VERIFY=60; 280-360 s per
+scene; 54 scenes): prologue (new game: title, intro, Binocucom briefing, museum; Clockwerk hallway chase; rooftop chase),
+every hub 1-8, jobs of each kind (ep1 brawl / follow / disco / heist / boss / waterpump completion -> chalk talk 2; ep2 turret,
+RC chopper, dance, bomb bridge, elephant, photo; ep3 water bug, turret, lead Rajan, heist, boss; ep4 RC chopper, brawl,
+spycam, heist 3; ep5 hack minigame, tank battlezone, ghost, Neyla chase, turret, boss 1; ep6 paraglide, train, RC battle,
+bear cubs, heist RC chopper; ep7 RC combat club, boat hack, Old Grizzle Face, thermals, boss; ep8 TNT run, engine room,
+mega-jump, Carmelita's gunner, Clock-La), pause -> Save and Quit -> title, ThiefNet buy, episode menu film strip + movie.
+- Verifier: ~12,500 comparisons; 53 scenes 0 beyond the tolerance; m5_battlezone 1 of 240 (below). PUNT 0 in every
+  scene; no device loss, no fallback, no error lines.
+- m8_check (51 scenes): native GPU vs sw >= 50.1 dB, 0 pixels > 16; 3x box vs native GPU compose 24.96-42 dB; the only
+  flags (< 26 dB) are 3 movie frames of the fmv scene: the reference is the native field-weave compose, the 3x Modern
+  picture is progressive (expected; the corpus fmv recording passes the proper field-coded box gate at 35.23 dB).
+- ep2 photo (t2_recon_enter_ballroom, aimed live): Binocucom locked on Clockwerk's Wing, R1 -> Polaroid with the picture at
+  3x -> wing ticked in the list. 300 comparisons 0 beyond; downloads 0, loads 0, PUNT 0 around the shutter; the game
+  never reads GS memory back (TRXDIR=1 reads 0): it copies the field buffers on the GS (appendix B).
+- Contact sheets `notes/m8/{ep0_prologue,ep1_paris,ep2_india1,ep3_india2,ep4_prague1,ep5_prague2,ep6_canada1,ep7_canada2,
+  ep8_blimp,menus_title_fmv}.png`: per row sw (native) | GPU 3x | sw crop (nearest x3) | GPU crop (1:1); the same rows at
+  256 px in `build\screenshots\gpu_m8_<scene>_v<vblank>.png` (not committed).
+
+**Findings**
+- *m5_battlezone, v4920, beyond the verifier budget*: 3563 blocks (the frame buffer), colour words +-1 82675, +-2 14044,
+  3..16 10542 (4.3% > 2; budget 2.5%), > 16 0, Z 0. The 3..5 differences sit inside the green gas cloud: ~900 FF draws /
+  7.4k layered translucent primitives per frame of (Cs-Cd)*As+Cd (dual-source, +-1 per blend by design: the 4060 Ti OM blends
+  UNORM8 at ~fp16 precision, M5) and Cs*As+Cd (exact). Deep layering random-walks the +-1 errors. Not a renderer bug; within
+  the per-blend class of 10.2, beyond the verifier's whole-memory budget. Exact alternative measured: partial-alpha DUAL on the
+  ROV tier (`PS2_GPU_DUAL_EXACT=1`) moves ~0.5M primitives per 240 VBlanks to ROV and costs 4-5x GPU time (ep5 street, ep8
+  boss) - not adopted. Owner / M11 decision whether the verifier budget should account for layering.
+- *Distance effect at 3x*: the hubs draw far scenery from a reduced copy (blocky at 1x). Non-1:1 view reads at samples != 0
+  read the view's own sample grid (M7), so at 3x the copy has 3x the samples and the far scene is ~3x finer than the PS2's
+  (gpu_m8_ep7_hub_far_scene_v008400.png; ep3 / ep4 hubs too). Sample 0 is exact. Owner decision whether to keep the 1x
+  blockiness at 3x (a per-effect native read would be a Sly-specific rule).
+- Chalk talks are movies (one 512x224 sprite per field over 1200 macroblock uploads per movie frame): native resolution at
+  every scale by nature.
+- Hubs download 2.7-8 GPU blocks per VBlank in steady state (the M6 item: a colour target drawing into main-Z pages);
+  exact, cheap on the render thread (render CPU <= 1.3 ms), an M9 item.
+
+**Performance at 3x** (release, headless, no verifier: frontend on its own thread; one game at a time, the machine shared
+with one other agent; medians over ~87 one-second PS2_GS_HW_STATS lines from VBlank 4800 (museum 5400); ms per game frame;
+frontend / GPU: median of the per-second medians / 95th percentile of the per-second maxima):
+
+| scene | flips/s | GS thread | frontend | render CPU | GPU | prims/VBlank | D3D draws/VBlank | downloads/VBlank |
+|---|---|---|---|---|---|---|---|---|
+| museum (p0) | 59.9 | 3.42 | 5.04 / 7.97 | 0.64 | 8.14 / 10.61 | 16.4k | 4.2k | 0.0 |
+| ep1 hub | 59.9 | 7.29 | 10.80 / 14.94 | 1.32 | 12.07 / 14.40 | 37.9k | 7.1k | 5.6 |
+| ep2 hub | 59.9 | 5.06 | 7.40 / 18.19 | 0.86 | 8.48 / 11.40 | 25.5k | 6.2k | 5.6 |
+| ep3 hub | 59.9 | 8.06 | 8.72 / 12.07 | 1.07 | 8.44 / 10.74 | 40.1k | 6.4k | 0.3 |
+| ep4 hub | 59.9 | 2.34 | 2.96 / 8.65 | 0.39 | 8.87 / 12.87 | 9.3k | 1.6k | 8.0 |
+| ep5 hub | 59.9 | 7.24 | 9.41 / 13.45 | 1.09 | 9.71 / 12.40 | 36.6k | 5.7k | 0.3 |
+| ep6 hub | 59.9 | 2.07 | 3.16 / 6.13 | 0.50 | 8.28 / 10.30 | 9.9k | 2.6k | 0.0 |
+| ep7 hub | 59.9 | 5.65 | 8.54 / 12.42 | 1.07 | 8.98 / 11.17 | 30.5k | 7.4k | 5.6 |
+| ep8 hub | 59.9 | 7.57 | 8.94 / 13.51 | 1.18 | 8.96 / 11.53 | 26.6k | 5.3k | 5.6 |
+| m2 turret | 59.9 | 6.94 | 9.10 / 15.60 | 1.01 | 8.73 / 12.63 | 33.3k | 6.0k | 2.7 |
+| m3 heist | 59.9 | 3.99 | 4.75 / 18.58 | 0.64 | 10.57 / 15.78 | 17.4k | 3.1k | 8.0 |
+| m5 battlezone | 59.9 | 5.38 | 7.76 / 11.55 | 0.92 | 8.71 / 10.90 | 27.8k | 5.1k | 5.6 |
+| m6 RC battle | 59.9 | 3.22 | 4.29 / 7.32 | 0.60 | 7.03 / 9.85 | 17.1k | 3.1k | 8.0 |
+| m7 boss | 59.9 | 2.03 | 3.12 / 7.85 | 0.58 | 11.34 / 17.11 | 9.2k | 2.9k | 0.0 |
+| m8 boss (Clock-La) | 59.9 | 5.92 | 7.62 / 12.44 | 0.99 | 8.94 / 12.63 | 30.2k | 4.0k | 5.6 |
+
+  Every scene holds 59.9 flips/s with 0 dropped. Over the M9 budgets at 3x: GPU <= 8 ms in 1 of 15 scenes (RC battle 7.03);
+  GS thread <= 6 ms in 9 of 15 (ep1/3/5/8 hubs 7.2-8.1, m2 turret 6.9); frontend medians up to 10.8 ms (ep1 hub). (The
+  hub numbers depend on where the pad script leaves the camera: ep4 / ep6 hubs here drew 9-10k primitives.)
+
+**Deviations from the design**
+- Verifier tolerance vs deep translucent layering (battlezone) is reported, not "fixed": exactness would cost 4-5x GPU.
+- The sweep ran in the default 16:9 aspect (HUD transformed by the decoder as in sw; the M10 HUD work is separate) with
+  PS2_DUMP_RAW frame dumps (unshaped, so they line up with the verifier's native pictures).
+- In-game screenshots per episode are hw 3x vs the verifier's sw picture of the same VBlank in the same run (separate hw and sw
+  runs diverge in game timing, appendix H).
+
+**What M9 must know**
+- Budgets at 3x are not met on the heavy scenes: GPU 8.1-12.1 ms median (ep1 hub 12.1, m7 boss 11.3, m3 heist 10.6),
+  GS thread 7-8 ms on the big hubs, frontend 8.5-10.8 ms (it runs on its own thread, so 60 flips/s hold). Per-scene
+  numbers above; `scripts/m8_batch.ps1 -Only <scenes> -Verify 0 -Suffix _perf -StatsFrom 4800` reproduces them.
+- Steady-state downloads (2.7-8 blocks per VBlank in hubs and several jobs) are the colour-target-into-main-Z pattern.
+- Dual-source exactness is a GPU-cost question (above); any FF -> ROV move for exactness must be measured against these.
+- Keep the gates: gpu_diff_all (mixed / ref, S = 1 / 3), gpu_game_all (S = 1 exact; S = 3 box gate with the rv_prompt
+  waiver), gpu_lockstep_all, gpu_sample_all, gpu_fthread_check, gs_vram_hashes -Backend hwdry, and the in-game sweep
+  (m8_batch with PS2_GS_VERIFY) for every optimisation.
