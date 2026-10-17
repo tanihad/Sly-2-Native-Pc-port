@@ -668,6 +668,14 @@ The projection, culling and portrait patches are EE work (f_0014D6D8 projection 
    heuristic exists only as a debug toggle, default off.
 4. **Pillarbox** of hinted 4:3 content by the presenter.
 
+*(M10, as built (appendix K): 1. display family `kx = max(N, round(N * W))` at N >= 2 (1 x 1 at N = 1, the sw picture),
+W from the game's aspect at every VBlank (F7: GPU_DI_CONFIG, every display target rescaled at the next frame;
+`PS2_GS_ASPECT` overrides); the picture is composed at kx x N per output pixel and resampled to the aspect. 3. the
+transform is applied by the GPU frontend from the StateRec's hint state, not in the vertex shader: every exact record
+(Z rows, sprite rectangles, ROV edges, line pixels) is computed on the CPU from the vertex positions, so the frontend
+must transform them anyway, and a second (vertex shader) evaluation could only disagree; it uses the software
+renderer's `gs_hud_prim`, so sample 0 stays exact. SIDE_FILL is the decoder's pair of flat sprites. 4. as M6.)*
+
 ---
 
 ## 9. Shader build
@@ -912,6 +920,7 @@ Total ~45-55 agent-days. The software renderer stays the default until M11.
 - **Verification**: replays with synthetic hints (`-Aspect 16:9`): HUD-hinted bboxes inside the
   centre 4:3 band, full-screen passes cover the full width, 4:3 output identical to M7; in-game 16:9
   screenshots once the EE patch exists.
+- *(As built: appendix K.)*
 
 ### M11. Hardening and default switch
 - **Deliverable**: eviction, no-ROV copy path (disjoint groups + shadow copies, design 1/3), WARP

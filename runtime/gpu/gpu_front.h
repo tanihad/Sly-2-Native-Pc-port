@@ -33,10 +33,11 @@ typedef struct {
                                     wide aspect A (W = A / (4/3)); 0 or <= scale: kx = N */
 } gpu_front_config;
 /* (M10) the display family's kx for internal scale n at display aspect aw:ah: round(n * W), W = (aw/ah) / (4/3), never
- * below n (a narrower aspect keeps n), at most 16 */
+ * below n (a narrower aspect keeps n), at most 16. At n = 1 the PS2's own pixels (1 x 1: the picture identical to the
+ * software renderer's at any aspect; the per-sample paths of scale > 1 stay off) */
 static inline int gpu_display_kx(int n, int aw, int ah) {
     if (n < 1) n = 1;
-    if (aw <= 0 || ah <= 0) return n;
+    if (n == 1 || aw <= 0 || ah <= 0) return n;
     int k = (int)((double)n * (double)aw * 3.0 / ((double)ah * 4.0) + 0.5);
     return k < n ? n : k > 16 ? 16 : k;
 }
@@ -267,6 +268,12 @@ void gpu_front_resync(void);
 /* Primitives of this VBlank so far that the REF tier cannot render exactly yet (ALIAS16, target views,
  * PUNT): the frame's first "post pass" (M4). */
 uint32_t gpu_front_post_prims(void);
+/* (M10) HUD transform statistics since gpu_front_start: primitives transformed per anchor (L, C, R), primitives
+ * kicked under a HUD hint but drawn as given (full FRAME width), and the X extent (pixels, XYOFFSET subtracted) of the
+ * transformed vertices per anchor and of the FRAME widths seen (x0 > x1: none) - centre-anchored 2D must lie inside
+ * the centre 4:3 band (notes/d3d11-renderer.md M10 verification) */
+typedef struct { uint64_t prims[3], full; int32_t x0[3], x1[3]; uint32_t frame_w; float scale_min, scale_max; } gpu_hud_stats;
+void gpu_front_hud_stats(gpu_hud_stats* out);
 /* (M6 in-game verifier) 0x100 + the kind (gpu_front_target_kind) of the target that drew block b when its
  * GPU data was downloaded into vram_buf (CPU data now, carrying the GPU's tolerances), else 0 */
 int gpu_front_block_origin(uint32_t b);
@@ -313,7 +320,8 @@ typedef struct {                                /* StateRec, 128 bytes */
     uint32_t phase;                             /* GPU_PH_* (diagnostic; | GPU_PH_HINT + label << 16 from a PHASE hint) */
     uint32_t phase_label;                       /* the PHASE hint's label (diagnostic) */
     uint32_t hud, hud_scale;                    /* (M6) HUD hint of its primitives: GS_ENV_HUD_ON | anchor << 1, X scale
-                                                   (float bits); the decoder applies it today, the VS at scale in M10 */
+                                                   (float bits); (M10) the frontend transforms the primitives' vertices
+                                                   with it (gs_hud_prim) before setup: positions and records agree */
     uint32_t pad2[2];
 } gpu_staterec;
 typedef struct {                                /* ROV triangle, 256 bytes (SV_PrimitiveID) */

@@ -1396,6 +1396,16 @@ static int prof_emit;
 #define PROF_MARK(i) do { } while (0)
 #define PROF_START() do { } while (0)
 #endif
+/* (M10) HUD transform statistics (gpu_front_hud_stats) */
+static gpu_hud_stats hud_st;
+static void hud_stats_reset(void) {
+    memset(&hud_st, 0, sizeof hud_st);
+    for (int i = 0; i < 3; i++) { hud_st.x0[i] = 1 << 30; hud_st.x1[i] = -(1 << 30); }
+    hud_st.scale_min = 1e9f;
+    hud_st.scale_max = -1e9f;
+}
+void gpu_front_hud_stats(gpu_hud_stats* out) { *out = hud_st; }
+
 static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_vtx* b, const gs_vtx* c) {
     /* time every 16th primitive (rdtsc costs about as much as a cheap primitive) */
     int timed = (gf.kicks & 15) == 0;
@@ -1415,7 +1425,21 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
             a = &hv[0];
             b = n > 1 ? &hv[1] : NULL;
             c = n > 2 ? &hv[2] : NULL;
-        }
+            int an = (int)(ev->hud >> 1) & 3;
+            if (an < 3) {                /* (statistics: gpu_front_hud_stats) */
+                hud_st.prims[an]++;
+                for (int i = 0; i < n; i++) {
+                    int32_t x = (hv[i].x - (int32_t)(ev->reg[R_XYOFFSET_1 + ev->ctx] & 0xFFFF)) >> 4;
+                    if (x < hud_st.x0[an]) hud_st.x0[an] = x;
+                    if (x > hud_st.x1[an]) hud_st.x1[an] = x;
+                }
+                hud_st.frame_w = (uint32_t)((ev->reg[R_FRAME_1 + ev->ctx] >> 16) & 0x3F) * 64;
+                float s;
+                memcpy(&s, &ev->hud_scale, 4);
+                if (s < hud_st.scale_min) hud_st.scale_min = s;
+                if (s > hud_st.scale_max) hud_st.scale_max = s;
+            }
+        } else hud_st.full++;
     }
     if (cp_hook && ev->draws) {          /* lockstep: compare before this primitive */
         uint64_t fr = ev->reg[R_FRAME_1 + ev->ctx], zb = ev->reg[R_ZBUF_1 + ev->ctx];
@@ -2007,6 +2031,7 @@ void gpu_front_start(const gpu_front_config* cfg) {
     if (cfg) gf_cfg = *cfg;
     GS_INIT();
     nar = 0;
+    hud_stats_reset();
     own_reset();
     own_resync();                        /* GS memory as it is now goes to vram_buf (one patch of everything) */
     clut_reset();

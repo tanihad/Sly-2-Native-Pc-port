@@ -2001,6 +2001,20 @@ int main(int argc, char** argv) {
 #ifdef GS_REPLAY_GPU
     sample_report();
     if (smp_compare && (smp_beyond || smp_missing)) rc = 3;
+    if (game_mode || FRONT_MODE(backend) || ref_mode) {   /* (M10) the GPU frontend's HUD transform */
+        gpu_front_drain();
+        gpu_hud_stats hs;
+        gpu_front_hud_stats(&hs);
+        if (hs.prims[0] + hs.prims[1] + hs.prims[2] + hs.full) {
+            double s = hs.scale_max, w = hs.frame_w, lo = w * (1.0 - s) / 2.0, hi = w * (1.0 + s) / 2.0;
+            fprintf(stderr, "hud: transformed L %llu, C %llu, R %llu primitives, %llu full-width drawn as given; scale %.4f..%.4f, "
+                            "FRAME width %u: L x %d..%d, C x %d..%d (centre 4:3 band %.1f..%.1f%s), R x %d..%d\n",
+                    (unsigned long long)hs.prims[0], (unsigned long long)hs.prims[1], (unsigned long long)hs.prims[2],
+                    (unsigned long long)hs.full, hs.scale_min, hs.scale_max, hs.frame_w, hs.x0[0], hs.x1[0], hs.x0[1], hs.x1[1], lo, hi,
+                    hs.prims[1] && (hs.x0[1] < lo - 1.0 || hs.x1[1] > hi + 1.0) ? ": beyond it = 2D placed off the 4:3 screen" : ": inside",
+                    hs.x0[2], hs.x1[2]);
+        }
+    }
     if (game_mode) {
         stage = 3;
         progress++;
