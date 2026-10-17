@@ -34,6 +34,26 @@ static gpu_hw_config C;
 static volatile LONG want_scale = 1, want_gfx;
 static int run_scale = 1;
 static uint32_t run_gfx;
+static int run_kx = 1;                   /* (M10) the display family's kx the frontend runs with (anamorphic widescreen) */
+static volatile LONG dump_kx = 1;        /* (M10) the largest kx a dumped picture may have (read-back buffer size) */
+static void hlog(const char* fmt, ...);
+
+/* (M10, 8.3) the display family's kx at scale n: round(n * W) for the game's display aspect (the aspect of the
+ * game's pictures, not of 4:3 content shown pillarboxed - targets keep their factors through a movie), read at
+ * every VBlank (F7 switches it while the game runs). PS2_GS_ASPECT=W:H overrides the aspect the targets are
+ * widened for (4:3: the M7 targets, stretched like the software renderer's picture). */
+static int display_kx(int n) {
+    static int env = -1, ew, eh;
+    if (env < 0) {
+        const char* e = getenv("PS2_GS_ASPECT");
+        env = e && sscanf(e, "%d:%d", &ew, &eh) == 2 && ew > 0 && eh > 0;
+        if (env) hlog("PS2_GS_ASPECT=%d:%d: display targets widened for that aspect", ew, eh);
+    }
+    int aw = 4, ah = 3;
+    if (env) { aw = ew; ah = eh; }
+    else if (C.aspect) C.aspect(0, &aw, &ah);
+    return gpu_display_kx(n, aw, ah);
+}
 static int render_on;                   /* the render thread runs (hw, or sw pictures after a switch) */
 static volatile LONG active;             /* the GPU draws */
 static volatile LONG switch_req;
@@ -108,7 +128,8 @@ static gpu_readback* dump_slot(uint32_t vblank, int content43) {
     }
     /* (M7: the picture is up to 1024 x 1024 output pixels times the scale squared) */
     int s = (int)want_scale > run_scale ? (int)want_scale : run_scale;
-    int need = 1024 * 1024 * s * s;
+    int kx = (int)dump_kx > s ? (int)dump_kx : s;   /* (M10: anamorphic pictures are kx columns per output pixel) */
+    int need = 1024 * 1024 * s * kx;
     if (dumps[i].cap < need) {
         free(dumps[i].px);
         dumps[i].px = malloc((size_t)need * 4);
@@ -136,7 +157,8 @@ static struct {
     int nfront, nr, ngpu, nlat;
     uint64_t draws, ff, rov, rov_runs, punts, downloads, loads, display_mem, kicks;
     uint32_t frames, targets, dropped, presented, game_frames;
-    uint64_t gs_busy0;                   /* perf_state.gs_busy at the start of the report period (TSC ticks) */
+    uint32_t rescales, reads;            /* (M8) target rescales (sample-factor changes), TRXDIR=1 reads, per report */
+    uint64_t gs_busy0;                  /* perf_state.gs_busy at the start of the report period (TSC ticks) */
     LONG presents0;
     LARGE_INTEGER t0;
     double tsc_per_ms;
@@ -180,6 +202,7 @@ static void stats_vblank(uint32_t vblank) {
             S.draws += f->d3d_draws; S.ff += f->ff_draws; S.rov += f->rov_draws; S.rov_runs += f->rov_runs;
             S.punts += punts; S.downloads += f->downloads; S.loads += f->loads; S.display_mem += f->display_mem;
             S.kicks += f->kicks;
+            S.rescales += f->rescales; S.reads += f->xfer_read;   /* (M8) */
             S.targets = f->targets_live;
             S.frames++;
         }
@@ -212,15 +235,17 @@ static void stats_vblank(uint32_t vblank) {
         double frm = vmax(S.front, S.nfront), rcm = vmax(S.rcpu, S.nr), rwm = vmax(S.rwall, S.nr), gpm = vmax(S.gpu, S.ngpu);
         hlog("stats v%u: %.1f flips/s (%.1f pictures/s, %u dropped) | per game frame (%u, median / max ms): GS thread %.2f (mean) | frontend %s %.2f / %.2f | "
              "render CPU %.2f / %.2f, wall %.2f / %.2f, present %.2f | GPU %.2f / %.2f | latency %.2f / %.2f | per VBlank: %.0f prims, "
-             "%.0f draws (FF %.0f, ROV %.0f in %.1f runs), PUNT %llu, downloads %.1f, loads %.1f, display from memory %.2f, targets %u",
+             "%.0f draws (FF %.0f, ROV %.0f in %.1f runs), PUNT %llu, downloads %.1f, loads %.1f, display from memory %.2f, targets %u | "
+             "this second: target rescales %u, TRXDIR=1 reads %u",
              vblank, flips, pics, S.dropped, S.game_frames, gs, front_threaded ? "thread" : "(GS thread)", med(S.front, S.nfront), frm,
              med(S.rcpu, S.nr), rcm, med(S.rwall, S.nr), rwm, med(S.pres, S.nr), med(S.gpu, S.ngpu), gpm, med(S.lat, S.nlat),
              vmax(S.lat, S.nlat), (double)S.kicks * k,
              (double)S.draws * k, (double)S.ff * k, (double)S.rov * k, (double)S.rov_runs * k, (unsigned long long)S.punts,
-             (double)S.downloads * k, (double)S.loads * k, (double)S.display_mem * k, S.targets);
+             (double)S.downloads * k, (double)S.loads * k, (double)S.display_mem * k, S.targets, S.rescales, S.reads);
     }
     S.nfront = S.nr = S.ngpu = S.nlat = 0;
     S.draws = S.ff = S.rov = S.rov_runs = S.punts = S.downloads = S.loads = S.display_mem = S.kicks = 0;
+    S.rescales = S.reads = 0;
     S.frames = S.dropped = S.presented = S.game_frames = 0;
     S.t0 = t;
     S.presents0 = p;
@@ -265,6 +290,8 @@ static void front_start(void) {
     run_scale = (int)want_scale;
     run_gfx = (uint32_t)want_gfx;
     fc.scale = run_scale;                /* (M7) */
+    run_kx = display_kx(run_scale);      /* (M10) */
+    fc.display_kx = run_kx;
     fc.display_ky2 = (run_gfx & GPU_GFX_PROGRESSIVE) != 0;
     fc.thin = (run_gfx & GPU_GFX_THIN) != 0;
     fc.sw = C.verify > 0;                /* verify: the software renderer draws too (same thread) */
@@ -452,13 +479,18 @@ void gpu_hw_vblank(const gs_display_snap* snap, uint32_t vblank, int content43) 
     uint32_t wg = (uint32_t)want_gfx;
     di.scale = (uint8_t)ws;
     di.gfx = wg;
-    if (ws != run_scale || ((wg ^ run_gfx) & GFX_FRONT)) {
+    int wk = display_kx(ws);             /* (M10: the game's aspect, per picture: F7 switches it) */
+    di.scale_x = (uint16_t)wk;
+    if (wk > (int)dump_kx) InterlockedExchange(&dump_kx, wk);
+    if (ws != run_scale || ((wg ^ run_gfx) & GFX_FRONT) || wk != run_kx) {
         di.flags |= GPU_DI_CONFIG;
-        hlog("graphics: internal scale %d, %s display targets, outlines %s (from VBlank %u)", ws,
-             (wg & GPU_GFX_PROGRESSIVE) ? "progressive" : "field-resolution", (wg & GPU_GFX_THIN) ? "thin" : "ps2", vblank + 1);
+        hlog("graphics: internal scale %d, display targets %dx%d samples per pixel (%s), outlines %s (from VBlank %u)", ws, wk,
+             (wg & GPU_GFX_PROGRESSIVE) ? 2 * ws : ws, (wg & GPU_GFX_PROGRESSIVE) ? "progressive" : "field-resolution",
+             (wg & GPU_GFX_THIN) ? "thin" : "ps2", vblank + 1);
     }
     run_scale = ws;
     run_gfx = wg;
+    run_kx = wk;
     gpu_readback* rb = dump_slot(vblank, content43);
     di.rb = rb;
     gpu_front_vblank_display(&di);
@@ -486,9 +518,11 @@ static void verify_vblank(const gs_display_snap* snap, uint32_t vblank) {
     gpu_mem_compare(rb_mem, gs_vram, writer, verify_kind, 0, &d);
     checks++;
     if (d.blocks && !d.over) tolerated++;
-    static int pair_dump = -1;           /* PS2_GS_VERIFY_DUMP=1: both pictures of every comparison (paired checks) */
-    if (pair_dump < 0) { const char* e = getenv("PS2_GS_VERIFY_DUMP"); pair_dump = e && atoi(e) != 0; }
-    if (pair_dump && !d.over) {
+    /* PS2_GS_VERIFY_DUMP=1: both pictures of every comparison (paired checks); =K > 1: of the comparisons at VBlanks
+     * that are multiples of K (M8 sweeps: K = PS2_DUMP_EVERY pairs them with the frame dumps at scale) */
+    static int pair_dump = -1;
+    if (pair_dump < 0) { const char* e = getenv("PS2_GS_VERIFY_DUMP"); pair_dump = e && atoi(e) > 0 ? atoi(e) : 0; }
+    if (pair_dump && !d.over && vblank % (uint32_t)pair_dump == 0) {
         static gs_compose_hist *ps, *ph;
         static uint32_t a[1024 * 1024], b[1024 * 1024];
         if (!ps) { ps = gs_compose_hist_new(); ph = gs_compose_hist_new(); }

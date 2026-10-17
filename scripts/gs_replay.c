@@ -53,6 +53,7 @@ enum { B_SW, B_HW, B_BOTH, B_HWDRY, B_HWSUB };
 #define VERIFY_MODE(b) ((b) == B_HW || (b) == B_BOTH)            /* hw pictures compared with sw */
 static const char* outdir;
 static int backend = B_SW;
+static int game_aw = 4, game_ah = 3;     /* (M10) --aspect W:H: the display aspect (anamorphic display targets at scale) */
 static uint64_t sw_hash = 1469598103934665603ull;
 static uint32_t pictures;
 static double other_ms_per_vblank;
@@ -112,6 +113,8 @@ static int ref_mode;                             /* hw / both with --ref (M3: th
 static int mixed_mode;                           /* --mixed: lockstep and pictures compared with the tolerances of 10.2 */
 static int lk_exact;                             /* --lockstep-exact: mixed mode compared exactly (any difference diverges) */
 static uint32_t pic_tol_frames;                  /* mixed: pictures beyond the picture gate (PSNR < 40 dB or > 0.2% px > 16) */
+static int64_t metrics_punt = -1;                 /* (M8) ref / mixed: PUNT primitives of the run (metrics summary) */
+static int metrics_scale = 1;
 
 static void take_stats(void) {
     gpu_frame_stats st[256];
@@ -221,8 +224,10 @@ static void write_metrics(const char* path, const char* rec, const char* adapter
     fprintf(f, "  ],\n");
     double rmed = median(rm, nr), gmed = median(gm, ng);
     fprintf(f, "  \"summary\": {\"frames\": %zu, \"diff_frames\": %u, \"diff_px\": %llu, \"min_psnr\": %.3f, "
-               "\"sw_hash\": \"%016llx\", \"replay_ms\": %.1f, \"render_ms_median\": %.4f, \"gpu_ms_median\": %.4f}\n}\n",
-            nrecs, diff_frames, (unsigned long long)diff_pixels, min_psnr, (unsigned long long)sw_hash, replay_ms, rmed, gmed);
+               "\"sw_hash\": \"%016llx\", \"replay_ms\": %.1f, \"render_ms_median\": %.4f, \"gpu_ms_median\": %.4f, "
+               "\"punt\": %lld, \"beyond_gate\": %u, \"scale\": %d}\n}\n",
+            nrecs, diff_frames, (unsigned long long)diff_pixels, min_psnr, (unsigned long long)sw_hash, replay_ms, rmed, gmed,
+            (long long)metrics_punt, pic_tol_frames, metrics_scale);
     free(rm);
     free(gm);
     fclose(f);
@@ -1070,7 +1075,13 @@ static uint64_t game_ref_diff_px;
 /* (M7) --game at scale or with picture options: the picture (so x so per output pixel) is box-downsampled and
  * compared with the reference compose (PSNR, mean signed error per channel: 10.2's scaled gates) */
 static int game_scale = 1, game_exact = 1;
+static int game_sox = 1;                 /* (M10) picture columns per output pixel: the display family's kx (--aspect) */
 static uint32_t game_gfx;
+/* (M10) the aspect a picture is shown at (gpu_hw_config.aspect): 4:3 content pillarboxed, else --aspect */
+static void game_aspect(int content43, int* aw, int* ah) {
+    *aw = content43 ? 4 : game_aw;
+    *ah = content43 ? 3 : game_ah;
+}
 static double game_min_psnr = 999.0, game_max_mse, game_min_psnr_c = 999.0, game_min_psnr_s = 999.0;
 static uint32_t game_beyond32;
 static uint32_t *game_box, *game_box2;
@@ -1192,7 +1203,7 @@ static void game_vblank(uint32_t vblank) {
     if (!game_exact && game_w) {
         if (!game_box && !(game_box = malloc(1024 * 1024 * 4))) exit(1);
         rstep = (rs.priv[2] & 3) == 3 ? 2 : 1;
-        gw = game_w / game_scale;
+        gw = game_w / game_sox;          /* (M10: anamorphic pictures have sox columns per output pixel) */
         gh = game_h / (game_scale * rstep);
         /* field-coded pictures (the game draws odd fields half a line lower: movies, the intro): the reference
          * weaves the fields (gs.c deinterlace), so it is compared on the field's own lines - the progressive
@@ -1215,8 +1226,8 @@ static void game_vblank(uint32_t vblank) {
          * native pixel's own samples [x, x + 1) (the single-rate classes - sprites, line pixels - fill them with
          * the native value); a picture is mostly one or the other, the gate takes the better match (below) */
         if (!game_box2 && !(game_box2 = malloc(1024 * 1024 * 4))) exit(1);
-        box_centred(game_px, game_w, game_h, game_w, game_scale, game_scale * rstep, shx, shy, gw, gh, game_box, 1024);
-        box_centred(game_px, game_w, game_h, game_w, game_scale, game_scale * rstep, 0.0,
+        box_centred(game_px, game_w, game_h, game_w, game_sox, game_scale * rstep, shx, shy, gw, gh, game_box, 1024);
+        box_centred(game_px, game_w, game_h, game_w, game_sox, game_scale * rstep, 0.0,
                     coded && !(game_gfx & GPU_GFX_FIELDS) ? -(double)(game_scale * par) : 0.0, gw, gh, game_box2, 1024);
         gp = game_box; gstride = 1024;
     }
@@ -1650,6 +1661,9 @@ int main(int argc, char** argv) {
         }
 #endif
         else if (!strcmp(argv[i], "--scale") && i + 1 < argc) scale = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--aspect") && i + 1 < argc) {   /* (M10) display aspect W:H: anamorphic display targets */
+            if (sscanf(argv[++i], "%d:%d", &game_aw, &game_ah) != 2 || game_aw <= 0 || game_ah <= 0) { game_aw = 4; game_ah = 3; }
+        }
         else if (!strcmp(argv[i], "--progressive")) ky2_opt = 1;    /* (M7) display targets 2N rows per native row */
         else if (!strcmp(argv[i], "--interlaced")) ky2_opt = 0;     /* (M7) display targets N rows (field resolution) */
 #ifdef GS_REPLAY_GPU
@@ -1701,8 +1715,9 @@ int main(int argc, char** argv) {
         int prog = ky2_opt >= 0 ? ky2_opt : game_scale > 1;
         int fields = fields_opt >= 0 ? fields_opt : !prog;
         game_gfx = gfx_set | (prog ? GPU_GFX_PROGRESSIVE : 0) | (fields ? GPU_GFX_FIELDS : 0);
-        game_exact = game_scale == 1 && !prog && fields;
-        if (!(game_px = malloc((size_t)1024 * 1024 * 4 * (size_t)(game_scale * game_scale)))) return 1;
+        game_sox = gpu_display_kx(game_scale, game_aw, game_ah);   /* (M10: anamorphic pictures, sox x N per output pixel) */
+        game_exact = game_scale == 1 && game_sox == 1 && !prog && fields;
+        if (!(game_px = malloc((size_t)1024 * 1024 * 4 * (size_t)(game_scale * game_sox)))) return 1;
     } else if (backend != B_SW && backend != B_HWDRY) {
         gpu_config cfg;
         memset(&cfg, 0, sizeof cfg);
@@ -1771,6 +1786,7 @@ int main(int argc, char** argv) {
         hc.dump = game_dump;
         hc.scale = game_scale;           /* (M7) */
         hc.gfx = game_gfx;
+        hc.aspect = game_aspect;         /* (M10: --aspect; anamorphic display targets at scale) */
         if (!gpu_hw_start(&hc)) { fprintf(stderr, "GPU renderer unavailable\n"); return 1; }
     } else
     if (FRONT_MODE(backend) || ref_mode) {       /* the frontend consumes the stream next to (or instead of) sw */
@@ -1791,6 +1807,7 @@ int main(int argc, char** argv) {
         fc.thread = front_thread && !fc.sw;    /* (the frontend thread needs the software rasterizer off) */
         if (front_thread && fc.sw) fprintf(stderr, "--front-thread ignored: the software rasterizer is on\n");
         fc.scale = scale > 0 ? scale : 1;
+        fc.display_kx = gpu_display_kx(fc.scale, game_aw, game_ah);   /* (M10: --aspect) */
         fc.thin = (gfx_set & GPU_GFX_THIN) != 0;   /* (M7: --thin) */
         gpu_front_start(&fc);
         if (backend == B_HWSUB || ref_mode) gpu_front_set_sink(gpu_submit_sink, NULL);   /* frames -> render thread */
@@ -1988,6 +2005,20 @@ int main(int argc, char** argv) {
 #ifdef GS_REPLAY_GPU
     sample_report();
     if (smp_compare && (smp_beyond || smp_missing)) rc = 3;
+    if (game_mode || FRONT_MODE(backend) || ref_mode) {   /* (M10) the GPU frontend's HUD transform */
+        gpu_front_drain();
+        gpu_hud_stats hs;
+        gpu_front_hud_stats(&hs);
+        if (hs.prims[0] + hs.prims[1] + hs.prims[2] + hs.full) {
+            double s = hs.scale_max, w = hs.frame_w, lo = w * (1.0 - s) / 2.0, hi = w * (1.0 + s) / 2.0;
+            fprintf(stderr, "hud: transformed L %llu, C %llu, R %llu primitives, %llu full-width drawn as given; scale %.4f..%.4f, "
+                            "FRAME width %u: L x %d..%d, C x %d..%d (centre 4:3 band %.1f..%.1f%s), R x %d..%d\n",
+                    (unsigned long long)hs.prims[0], (unsigned long long)hs.prims[1], (unsigned long long)hs.prims[2],
+                    (unsigned long long)hs.full, hs.scale_min, hs.scale_max, hs.frame_w, hs.x0[0], hs.x1[0], hs.x0[1], hs.x1[1], lo, hi,
+                    hs.prims[1] && (hs.x0[1] < lo - 1.0 || hs.x1[1] > hi + 1.0) ? ": beyond it = 2D placed off the 4:3 screen" : ": inside",
+                    hs.x0[2], hs.x1[2]);
+        }
+    }
     if (game_mode) {
         stage = 3;
         progress++;
@@ -2089,14 +2120,17 @@ int main(int argc, char** argv) {
         fprintf(stderr, "ref-bench frames=%zu gpu_med=%.4f gpu_mean=%.4f gpu_max=%.4f draw_frames=%zu gpu_med_draws=%.4f "
                         "game_frames=%zu gpu_med_game=%.4f gpu_max_game=%.4f\n", ng, gmed,
                 ng ? gsum / (double)ng : 0.0, gmax, nd, dmed, ngf, gfmed, gfmax);
+        metrics_punt = 0;
+        metrics_scale = scale;
+        for (size_t i = 0; i < nff; i++) metrics_punt += ff[i].tier[GPU_TIER_PUNT];
         if (backend == B_BOTH)
-            fprintf(stderr, "both ref: %u pictures compared, %u differ (%llu pixels), min PSNR %.2f dB\n", ref_frames, ref_diff_frames,
-                    (unsigned long long)ref_diff_px, min_psnr);
+            fprintf(stderr, "both ref: %u pictures compared, %u differ (%llu pixels), min PSNR %.2f dB; PUNT %lld\n", ref_frames, ref_diff_frames,
+                    (unsigned long long)ref_diff_px, min_psnr, (long long)metrics_punt);
         if (mixed_mode) {
             uint32_t ffp = 0, rovp = 0, a16p = 0;
             for (size_t i = 0; i < nff; i++) { ffp += ff[i].tier[GPU_TIER_FF]; rovp += ff[i].tier[GPU_TIER_ROV]; a16p += ff[i].tier[GPU_TIER_ALIAS16]; }
-            fprintf(stderr, "mixed: primitives FF %u ROV %u ALIAS16 %u; D3D draws FF %llu ROV/ALIAS16 %llu; Z resolves %llu (%llu samples), "
-                            "Z syncs %llu (%llu samples)\n", ffp, rovp, a16p, (unsigned long long)xc.ff_draws, (unsigned long long)xc.ref_draws,
+            fprintf(stderr, "mixed: primitives FF %u ROV %u ALIAS16 %u PUNT %lld; D3D draws FF %llu ROV/ALIAS16 %llu; Z resolves %llu (%llu samples), "
+                            "Z syncs %llu (%llu samples)\n", ffp, rovp, a16p, (long long)metrics_punt, (unsigned long long)xc.ff_draws, (unsigned long long)xc.ref_draws,
                     (unsigned long long)xc.zresolves, (unsigned long long)xc.zresolve_px, (unsigned long long)xc.zsyncs,
                     (unsigned long long)xc.zsync_px);
             if (backend == B_BOTH)

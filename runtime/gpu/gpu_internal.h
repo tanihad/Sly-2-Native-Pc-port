@@ -52,6 +52,8 @@ typedef struct {
     int kx[2], ky[2];
     int field_code;                      /* gs_display_field_code */
     int scale;                           /* (M7) the picture's scale: so x so pixels per PCRTC output pixel */
+    int scale_x;                         /* (M10) columns per output pixel (anamorphic widescreen: the display family's
+                                            kx, round(N * W)); 0: scale */
     int flicker_off;                     /* (M7) drop the second circuit of the standard flicker-filter pattern */
     int fields;                          /* (M7) field display as the PS2 shows it (deinterlacer); 0: progressive */
 } gpu_compose_in;

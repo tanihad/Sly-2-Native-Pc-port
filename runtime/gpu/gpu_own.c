@@ -154,6 +154,9 @@ static int set_scale(gpu_target* T) {
     int n = gf_cfg.scale > 0 ? gf_cfg.scale : 1;
     if (n > 8) n = 8;
     int kx = n, ky = T->family == FAM_DISPLAY && gf_cfg.display_ky2 ? 2 * n : n;
+    /* (M10, 8.3) anamorphic widescreen: the display family's 512 columns are shown A / (4/3) wider, so they get
+     * round(N * W) samples each (the picture keeps the horizontal density of 4:3 at N) */
+    if (T->family == FAM_DISPLAY && gf_cfg.display_kx > n) kx = gf_cfg.display_kx > 16 ? 16 : gf_cfg.display_kx;
     if (T->kx == kx && T->ky == ky) return 0;
     T->kx = (uint8_t)kx;
     T->ky = (uint8_t)ky;

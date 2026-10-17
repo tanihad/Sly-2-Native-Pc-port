@@ -122,7 +122,8 @@ extern const uint16_t* gf_clut_src;      /* NULL: gs_clut_buffer() */
 extern int gf_clut_hint;                 /* tex0 hook: -1 unknown, 0 the loaded entries did not change, 1 changed */
 /* the VBlank on the frontend's thread (di: M6 display info, or NULL) */
 void gf_vblank_impl(const uint64_t priv[16], uint32_t vblank, const gpu_display_info* di);
-void gf_configure(int scale, int progressive, int thin);   /* (M7) run-time settings, between two frames */
+void gf_configure(int scale, int progressive, int thin, int display_kx);   /* (M7) run-time settings, between two
+                                                                              frames (M10: + the display family's kx) */
 const gs_front_hooks* gf_hooks(void);    /* the frontend's own hooks */
 void fthread_start(void);                /* installs the proxy hooks, starts the thread */
 void fthread_stop(void);                 /* drains and ends it */

@@ -34,6 +34,8 @@ cbuffer display_cb : register(b0) {
     uint4 cB[2];                         // dbx, dby, dx, dy
     uint4 cC[2];                         // magh, magv, dw, dh
     uint4 cD[2];                         // source (0 vram_buf, 1 target), kx, ky, -
+    uint sox, dpad0, dpad1, dpad2;       // (M10) columns per output pixel: anamorphic widescreen (the display family's kx);
+                                         // so elsewhere (W counts output pixels x sox)
 };
 
 uint pack_rgba(uint c) { return ((c >> 16) & 0xFFu) | (c & 0xFF00u) | ((c & 0xFFu) << 16) | 0xFF000000u; }
@@ -54,7 +56,7 @@ uint convert(uint psm, uint v) {
     return ((v & 0xFFu) << 16) | (v & 0xFF00u) | ((v >> 16) & 0xFFu) | top;
 }
 
-// one displayed pixel of circuit i: column / row in sub-units (col: 1/so buffer pixels, rel: 1/so lines of
+// one displayed pixel of circuit i: column / row in sub-units (col: 1/sox buffer pixels, rel: 1/so lines of
 // the circuit's row count, see circuit_y), as gs.c read_row at S=1
 uint read_px(uint i, uint cs, uint rs) {
     uint psm = fmt_psm(cA[i].w);
@@ -62,14 +64,14 @@ uint read_px(uint i, uint cs, uint rs) {
     bool field = (flags & 4u) != 0u;
     if (cD[i].x != 0u) {
         uint kx = cD[i].y, ky = cD[i].z;
-        uint sx = cB[i].x * kx + cs * kx / so;
+        uint sx = cB[i].x * kx + cs * kx / sox;
         uint ry = rs;
         if ((flags & 8u) != 0u) ry = ry >= so ? ry - so : 0u;      // (odd field, progressive: one frame line down)
         uint sy = cB[i].y * ky + (field ? ry * ky / (2u * so) : ry * ky / so);
         uint4 t = i == 0u ? ctex0.Load(int3(sx, sy, 0)) : ctex1.Load(int3(sx, sy, 0));
         v = t.r | (t.g << 8) | (t.b << 16) | (t.a << 24);
     } else {
-        uint fx = (cB[i].x + cs / so) & 2047u;
+        uint fx = (cB[i].x + cs / sox) & 2047u;
         uint fy = (cB[i].y + (field ? (rs / so) >> 1 : rs / so)) & 2047u;
         if (psm_is16(psm)) {
             uint a = gs_addr16(swz_tab_of(psm), cA[i].y * 32u, cA[i].z, fx, fy);
@@ -89,10 +91,10 @@ uint mix(uint a, uint b, uint al) {      // a * al + b * (255 - al), al 0..255 (
     return (r << 16) | (g << 8) | bl;
 }
 
-// buffer column of output column ox for circuit i in 1/so pixels, or -1 outside its DISPLAY rect
+// buffer column of output column ox for circuit i in 1/sox pixels, or -1 outside its DISPLAY rect
 int circuit_x(uint i, uint ox) {
-    int X = (int)(ux0 * so + ox * hs), dx = (int)(cB[i].z * so), dw = (int)cC[i].z;
-    if (X < dx || X > dx + dw * (int)so + (int)so - 1) return -1;
+    int X = (int)(ux0 * sox + ox * hs), dx = (int)(cB[i].z * sox), dw = (int)cC[i].z;
+    if (X < dx || X > dx + dw * (int)sox + (int)sox - 1) return -1;
     return (int)((uint)(X - dx) / (cC[i].x + 1u));
 }
 

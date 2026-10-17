@@ -699,9 +699,31 @@ int32_t gs_hud_transform_x(int32_t x, uint64_t xyoffset, uint64_t frame, int anc
     return (int32_t)(v < 0 ? 0 : v > 0xFFFF ? 0xFFFF : v);
 }
 
-static void draw_prim(int type, const vtx* a, const vtx* b, const vtx* c);
+/* (M10) The HUD transform of one primitive (hud: gs_env_view.hud, GS_ENV_HUD_ON | anchor << 1; hud_scale: the
+ * X scale's float bits), the one rule both renderers use: the software rasterizer gets the transformed vertices
+ * from draw() below, the GPU backend's frontend transforms the game's vertices itself from its StateRec's hint
+ * state (runtime/gpu/gpu_front.c). A primitive whose X range covers the whole FRAME width (within one pixel) is
+ * drawn as given. Returns 1 with t[0..n-1] the transformed vertices, 0 when nothing changes. */
+int gs_hud_prim(const gs_vtx* const* in, int n, uint64_t xyoffset, uint64_t frame, uint32_t hud, uint32_t hud_scale, gs_vtx* t) {
+    if (!(hud & GS_ENV_HUD_ON)) return 0;
+    int32_t left = (int32_t)(xyoffset & 0xFFFF), right = left + (int32_t)((frame >> 16) & 0x3F) * 64 * 16;
+    int32_t x0 = in[0]->x, x1 = in[0]->x;
+    for (int i = 1; i < n; i++) { x0 = in[i]->x < x0 ? in[i]->x : x0; x1 = in[i]->x > x1 ? in[i]->x : x1; }
+    if (x0 <= left + 16 && x1 >= right - 16) return 0;
+    float s;
+    memcpy(&s, &hud_scale, 4);
+    double scale = hud_scale && s > 0.0f && s <= 4.0f ? (double)s : 1.0;
+    int anchor = (int)(hud >> 1);
+    for (int i = 0; i < n; i++) {
+        t[i] = *in[i];
+        t[i].x = gs_hud_transform_x(t[i].x, xyoffset, frame, anchor, scale);
+    }
+    return 1;
+}
 
-/* SIDE_FILL: the FRAME width outside the centre 4:3 area (scale of the last HUD_BEGIN) in one
+static void draw_prim(int type, const vtx* a, const vtx* b, const vtx* c, const vtx* sa, const vtx* sb, const vtx* sc);
+
+/* SIDE_FILL:the FRAME width outside the centre 4:3 area (scale of the last HUD_BEGIN) in one
  * colour, drawn as two flat sprites with a state of its own (no texture, blending, fog, alpha or
  * Z test, Z not written, no dithering); the game's registers are put back afterwards. */
 static void side_fill(uint32_t rgb) {
@@ -727,9 +749,12 @@ static void side_fill(uint32_t rgb) {
     a.q = 1.0f;
     b = a;
     a.x = ox; a.y = y0; b.x = ox + side; b.y = y1;
-    draw_prim(PRIM_SPRITE, &a, &b, NULL);
+    int sv_hud = hud_on;                 /* (the fill is not HUD content: the GPU frontend must not transform it, M10) */
+    hud_on = 0;
+    draw_prim(PRIM_SPRITE, &a, &b, NULL, &a, &b, NULL);
     a.x = ox + w16 - side; b.x = ox + w16;
-    draw_prim(PRIM_SPRITE, &a, &b, NULL);
+    draw_prim(PRIM_SPRITE, &a, &b, NULL, &a, &b, NULL);
+    hud_on = sv_hud;
     reg[R_PRIM] = sv_prim; reg[R_PRMODECONT] = sv_cont; reg[R_TEST_1 + ctx] = sv_test;
     reg[R_ZBUF_1 + ctx] = sv_zbuf; reg[R_DTHE] = sv_dthe; reg[R_FBA_1 + ctx] = sv_fba;
     env_dirty = 1;
@@ -760,7 +785,9 @@ static void hint_write(uint64_t v) {
 
 /* ---- vertex queue -------------------------------------------------------------------------------- */
 
-static void draw_prim(int type, const vtx* a, const vtx* b, const vtx* c) {
+/* a, b, c: the primitive as the game kicked it (the GPU frontend's: it applies the HUD transform itself, M10);
+ * sa, sb, sc: as the software rasterizer draws it (HUD-transformed by draw()) */
+static void draw_prim(int type, const vtx* a, const vtx* b, const vtx* c, const vtx* sa, const vtx* sb, const vtx* sc) {
     if (env_dirty) env_update();
     gs_stats.prims++;
     int swnow = 0;
@@ -769,7 +796,7 @@ static void draw_prim(int type, const vtx* a, const vtx* b, const vtx* c) {
         if (trace_on && trace_left > 0 && gs_stream_vsync >= trace_from) {
             static uint32_t flushed_at;  /* the process may end without flushing stdio */
             if (flushed_at != gs_stream_vsync) { flushed_at = gs_stream_vsync; fflush(trace_out); }
-            const vtx* vs[3] = { a, b, c };
+            const vtx* vs[3] = { sa, sb, sc };
             trace_prim(type, vs, type == PRIM_POINT ? 1 : type == PRIM_TRI || type == PRIM_TRISTRIP || type == PRIM_TRIFAN ? 3 : 2);
             /* the last record: nothing above flushes after this, and the game ends with ExitProcess,
              * which drops stdio buffers */
@@ -798,10 +825,10 @@ static void draw_prim(int type, const vtx* a, const vtx* b, const vtx* c) {
     if (prim_aa1 && type != PRIM_LINE && type != PRIM_LINESTRIP)
         log_once("antialiasing (AA1) of points/triangles/sprites requested; drawn without it", 1);
     switch (type) {
-    case PRIM_POINT: draw_point(a); break;
-    case PRIM_LINE: case PRIM_LINESTRIP: draw_line(a, b); break;
-    case PRIM_TRI: case PRIM_TRISTRIP: case PRIM_TRIFAN: gs_stats.tris++; draw_triangle(a, b, c); break;
-    case PRIM_SPRITE: gs_stats.sprites++; draw_sprite(a, b); break;
+    case PRIM_POINT: draw_point(sa); break;
+    case PRIM_LINE: case PRIM_LINESTRIP: draw_line(sa, sb); break;
+    case PRIM_TRI: case PRIM_TRISTRIP: case PRIM_TRIFAN: gs_stats.tris++; draw_triangle(sa, sb, sc); break;
+    case PRIM_SPRITE: gs_stats.sprites++; draw_sprite(sa, sb); break;
     default: break;
     }
     if (swnow) {
@@ -813,29 +840,25 @@ static void draw_prim(int type, const vtx* a, const vtx* b, const vtx* c) {
 
 /* A primitive kicked between HUD_BEGIN and HUD_END is drawn with its vertices' X scaled about the
  * anchor - unless it spans the whole FRAME width (a full-screen fill, fade or bar): that one still
- * covers the whole widened picture. The vertex queue keeps the game's coordinates (strips and fans
- * share vertices between primitives). */
+ * covers the whole widened picture (gs_hud_prim). The vertex queue keeps the game's coordinates (strips
+ * and fans share vertices between primitives). (M10) The GPU frontend gets the game's vertices and the
+ * hint state, and transforms them itself; the software rasterizer draws the transformed copies. */
 static void draw(int type, const vtx* a, const vtx* b, const vtx* c) {
-    if (!hud_on && hudlog_label == 0) { draw_prim(type, a, b, c); return; }
+    if (!hud_on && hudlog_label == 0) { draw_prim(type, a, b, c, a, b, c); return; }
     int n = type == PRIM_POINT ? 1 : (type == PRIM_TRI || type == PRIM_TRISTRIP || type == PRIM_TRIFAN) ? 3 : 2;
     const vtx* in[3] = { a, b, c };
     int ctx = (int)((((reg[R_PRMODECONT] & 1) ? reg[R_PRIM] : reg[R_PRMODE]) >> 9) & 1);
     uint64_t xyo = reg[R_XYOFFSET_1 + ctx], frame = reg[R_FRAME_1 + ctx];
     if (hudlog_label) hudlog_prim(in, n, xyo);
-    if (!hud_on) { draw_prim(type, a, b, c); return; }
-    int32_t left = (int32_t)(xyo & 0xFFFF), right = left + (int32_t)((frame >> 16) & 0x3F) * 64 * 16;
-    int32_t x0 = in[0]->x, x1 = in[0]->x;
-    for (int i = 1; i < n; i++) { x0 = in[i]->x < x0 ? in[i]->x : x0; x1 = in[i]->x > x1 ? in[i]->x : x1; }
-    if (x0 <= left + 16 && x1 >= right - 16) { draw_prim(type, a, b, c); return; }
+    float hs = (float)hud_scale;
+    uint32_t hsb;
+    memcpy(&hsb, &hs, 4);
     vtx t[3];
-    for (int i = 0; i < n; i++) {
-        t[i] = *in[i];
-        t[i].x = gs_hud_transform_x(t[i].x, xyo, frame, hud_anchor, hud_scale);
-        /* (a vertex of its own: the GPU frontend thread's vertex cache is keyed by serial, and the next
-         * primitive of a strip may use the untransformed vertex - M6) */
-        t[i].serial = 0;
+    if (!gs_hud_prim(in, n, xyo, frame, hud_on ? GS_ENV_HUD_ON | (uint32_t)hud_anchor << 1 : 0u, hsb, t)) {
+        draw_prim(type, a, b, c, a, b, c);
+        return;
     }
-    draw_prim(type, &t[0], n > 1 ? &t[1] : NULL, n > 2 ? &t[2] : NULL);
+    draw_prim(type, a, b, c, &t[0], n > 1 ? &t[1] : NULL, n > 2 ? &t[2] : NULL);
 }
 
 static void vertex(uint64_t xyz, int has_f, int kick) {

@@ -1,0 +1,71 @@
+# In-game sweep scenes for the GPU renderer (M8; scripts\m8_batch.ps1 runs them through scripts\m8_sweep.ps1).
+# name | episode | job (mission, or task for a later stage) | flags (direct, play, set=..., make=... with ~ for spaces,
+#   env=NAME=value) | seconds | pad (after START; after X with play)
+# m1_chalk: chalk talk 2 needs the job's real completion event (notes/wip/ep1.md ck1): waterpump with bug done, its last
+# task 1885 completed through PS2_TASK_SET -> "Job Completed!" -> Bentley's chalk talk.
+# Pads: GP = generic job play (walk, turn the camera, jump, attack), HP = hub play after X. Release build, verify 60.
+# ---- prologue
+p0_newgame | 0 | | | 330 | +2900:lup:100,+100:lright:60,+60:cross:6,+20:lup:80,+80:square:6,+40:rright:90,+90:lup:120,+150:square:6,+60:lup:200
+p0_chase | 0 | t0_chase_hallway_start | direct | 280 | GP
+p0_rooftop | 0 | t0_rooftop_start | direct | 280 | GP
+# ---- episode 1 (Paris)
+ep1_hub | 1 | | play | 300 | HP
+m1_brawl | 1 | m1_brawl | direct | 280 | GP
+m1_follow | 1 | m1_follow_dimitri | direct | 280 | GP
+m1_disco | 1 | m1_disco | direct | 280 | GP
+m1_heist | 1 | m1_heist | direct | 280 | GP
+m1_boss | 1 | m1_boss | direct | 300 | GP
+m1_chalk | 1 | m1_waterpump | direct make=--complete~t1_bug env=PS2_TASK_SET=1885:2@6500 | 360 |
+# ---- episode 2 (India 1)
+ep2_hub | 2 | | play | 300 | HP
+m2_turret | 2 | m2_turret | direct | 280 | GP
+m2_rc_chopper | 2 | m2_rc_chopper | direct | 280 | GP
+m2_dance | 2 | m2_dance_audition | direct | 280 | GP
+m2_bomb_bridge | 2 | m2_heist_bomb_bridge | direct | 280 | GP
+m2_elephant | 2 | m2_elephant_rampage | direct | 280 | GP
+# ---- episode 3 (India 2)
+ep3_hub | 3 | | play | 300 | HP
+m3_waterbug | 3 | m3_waterbug | direct | 280 | GP
+m3_turret | 3 | m3_turret | direct | 280 | GP
+m3_lead_rajan | 3 | m3_lead_rajan | direct | 280 | GP
+m3_heist | 3 | m3_heist | direct | 280 | GP
+m3_boss | 3 | m3_boss | direct | 300 | GP
+# ---- episode 4 (Prague 1)
+ep4_hub | 4 | | play | 300 | HP
+m4_rc_chopper | 4 | m4_rc_chopper | direct | 280 | GP
+m4_brawl | 4 | m4_brawl | direct | 280 | GP
+m4_spycam | 4 | m4_spycam | direct | 280 | GP
+m4_heist3 | 4 | t4_heist3_intro | direct | 280 | GP
+# ---- episode 5 (Prague 2)
+ep5_hub | 5 | | play | 300 | HP
+m5_hack | 5 | t5_heist_free_carmelita_hack | direct | 260 | +200:lup:60,+0:rleft:50,+60:lleft:50,+0:rup:50,+50:lright:60,+0:rright:60,+100:lup:200,+200:rright:100
+m5_battlezone | 5 | m5_battlezone | direct | 280 | GP
+m5_ghost | 5 | m5_ghost | direct | 280 | GP
+m5_chase | 5 | t5_heist_neela_chase_intro | direct | 280 | GP
+m5_turret | 5 | t5_heist_turret_intro | direct | 280 | GP
+m5_boss | 5 | t5_heist_boss_1_intro | direct | 300 | GP
+# ---- episode 6 (Canada 1)
+ep6_hub | 6 | | play | 300 | HP
+m6_paraglide | 6 | m6_paraglide | direct | 280 | GP
+m6_train_red | 6 | m6_train_red | direct | 280 | GP
+m6_rc_battle | 6 | t6_rc_chopper_battle_intro | direct | 280 | GP
+m6_bearcubs | 6 | m6_kidnap_bearcubs | direct | 280 | GP
+m6_heist_rc | 6 | t6_heist_rc_chopper_1_intro | direct | 280 | GP
+# ---- episode 7 (Canada 2)
+ep7_hub | 7 | | play | 300 | HP
+m7_robot_war | 7 | t7_robot_war_intro_int | direct | 280 | GP
+m7_boat_hack | 7 | m7_boat_hack | direct | 280 | GP
+m7_bear | 7 | m7_bear | direct | 280 | GP
+m7_thermals | 7 | m7_thermals | direct | 280 | GP
+m7_boss | 7 | m7_boss | direct | 300 | GP
+# ---- episode 8 (blimp)
+ep8_hub | 8 | | play | 300 | HP
+m8_tntbarrel | 8 | m8_tntbarrel | direct | 280 | GP
+m8_engine_murray | 8 | m8_engine_room_murray | direct | 280 | GP
+m8_megajump | 8 | m8_megajump | direct | 280 | GP
+m8_turret | 8 | m8_turret | direct | 280 | GP
+m8_boss | 8 | m8_boss | direct | 300 | GP
+# ---- menus, movie
+menu_pause_save | 2 | | play | 300 | +900:start:10,+300:down:10,+300:cross:10,+300:up:10,+60:cross:10
+menu_thiefnet | 1 | | make=--coins~5000 | 260 | +1700:right:10,+60:right:10,+60:left:10,+60:cross:10,+300:down:10,+40:down:10,+40:cross:10,+200:circle:10
+fmv | 2 | | set=episode.palace.percent_complete=100 | 300 | +1500:up:10,+60:up:10,+60:up:10,+60:cross:10,+300:cross:10
