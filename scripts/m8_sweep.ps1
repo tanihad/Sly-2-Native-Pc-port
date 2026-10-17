@@ -22,6 +22,7 @@ else { Remove-Item Env:\PS2_INPUT_FILE -ErrorAction SilentlyContinue }
 $env:PS2_GS_BACKEND = $(if ($Sw) { 'sw' } else { 'hw' })
 $env:PS2_GS_SCALE = "$Scale"
 $env:PS2_GS_HW_STATS = '1'
+$env:PS2_DUMP_RAW = '1'              # (frame dumps unshaped: the picture as composed, so it lines up with the pairs)
 if ($Verify -gt 0 -and -not $Sw) { $env:PS2_GS_VERIFY = "$Verify"; $env:PS2_GS_VERIFY_DUMP = "$DumpEvery" }
 else { Remove-Item Env:\PS2_GS_VERIFY, Env:\PS2_GS_VERIFY_DUMP -ErrorAction SilentlyContinue }
 # more environment (e.g. "PS2_GS_SAME_THREAD=1;PS2_PERF=1")
@@ -37,7 +38,7 @@ if ($Make) { $wa += @('-Make', $Make) }
 if ($Window) { $wa += '-Window' }
 $t0 = Get-Date
 & powershell @wa | Out-Null
-Remove-Item Env:\PS2_GS_BACKEND, Env:\PS2_GS_SCALE, Env:\PS2_GS_HW_STATS, Env:\PS2_GS_VERIFY, Env:\PS2_GS_VERIFY_DUMP, Env:\PS2_INPUT_FILE -ErrorAction SilentlyContinue
+Remove-Item Env:\PS2_GS_BACKEND, Env:\PS2_GS_SCALE, Env:\PS2_GS_HW_STATS, Env:\PS2_GS_VERIFY, Env:\PS2_GS_VERIFY_DUMP, Env:\PS2_INPUT_FILE, Env:\PS2_DUMP_RAW -ErrorAction SilentlyContinue
 foreach ($kv in ($Extra -split ';' | Where-Object { $_ })) { $k = ($kv -split '=', 2)[0]; Remove-Item "Env:\$k" -ErrorAction SilentlyContinue }
 $log = Join-Path $dir 'run.log'
 if (-not (Test-Path $log)) { "no run.log in $dir"; exit 1 }
