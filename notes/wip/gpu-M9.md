@@ -64,10 +64,12 @@ Render CPU 1.3-3.7 ms. (In game M8: GPU 8.1-12.1, GS 7-8, frontend up to 10.8.)
   block-wise uploads (whole blocks at once) and CLUT vstale checks, no commutation estimate in real frames.
   Frontend thread per game frame (replay, paced): ep1 7.6 -> 5.6, ep3 10.0 -> 6.9, ep5 9.9 -> 7.5 ms. Bit-identical
   (m9_exact 27/27 S1+S3), gpu_fthread_check -Mixed 27/27.
-- (uncommitted) memory log (PS2_GS_HW_STATS: committed / working set / frame arenas every 10 s and at start), photon
+- a049c17 memory log (PS2_GS_HW_STATS: committed / working set / frame arenas every 10 s and at start), photon
   latency (DXGI frame statistics: queued -> the vsync that showed it) + queue depth in the stats line, adaptive
   in-flight queue (PS2_GS_INFLIGHT_BASE default 2, full depth 6 for 2 s after a slowdown that hit 2 after a calm queue),
-  Z clears of the whole drawn size as hardware clears, cs_clear per sample, --sample-hash over drawn rows only.
+  Z clears of the whole drawn size as hardware clears, cs_clear per sample, --sample-hash over drawn rows only,
+  CSM1 clut_load offset tables (gs_mem_tex.c, GS thread). m9_exact 27/27 identical S1+S3 (basert2 rebuilt with the
+  drawn-rows hash). GPU 3x 16:9: ep8 7.14, ep3 8.88, ep5 9.20, ep1 9.47, ep7 11.64, load_m3 7.10, ws_ep3 11.10.
 
 ## In progress
 - In-game baseline vs current (m8_batch -Only ep1_hub,ep3_hub -Verify 0 -StatsFrom 4800 -DumpEvery 100000; baseline via
@@ -75,7 +77,7 @@ Render CPU 1.3-3.7 ms. (In game M8: GPU 8.1-12.1, GS 7-8, frontend up to 10.8.)
   disturbed by a replay: GPU 15.2).
 
 ## Next
-1. Gate the clear changes (rebuild basert2 exe with the new --sample-hash), bench; commit.
+1. gs_vram_hashes base sw (build\basert\runtime) vs current hwdry (clut_load change touches the sw path).
 2. In-game runs of the six scenes base vs final (quiet machine); latency/memory numbers.
 3. GS thread (decode + proxy): clut_load fast path; texture sampling; sprites; ROV shadow volumes (ep7 ~2.5 ms).
 4. Gates, appendix L, WIP complete.

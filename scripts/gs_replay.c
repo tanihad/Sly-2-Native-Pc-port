@@ -37,6 +37,7 @@
 #include "gpu/gpu_front_int.h"              /* (M9 --sample-hash: a target's drawn rows, gt[id].rows) */
 #include "gs_mem_swizzle.h"                /* (lockstep crops) */
 #include <wchar.h>
+#include <psapi.h>                         /* (M9 mem-bench) */
 #include <stddef.h>
 #endif
 
@@ -403,6 +404,54 @@ static void stream_sink(const gpu_front_frame_data* fd, void* user) {
     (void)user;
     hash_bytes_into(fd->cmd, fd->cmd_bytes); hash_bytes_into(fd->vtx, fd->vtx_bytes); hash_bytes_into(fd->idx, fd->idx_count * 4);
     hash_bytes_into(fd->rec, fd->rec_bytes); hash_bytes_into(fd->states, fd->state_count * GPU_STATE_BYTES); hash_bytes_into(fd->data, fd->data_bytes);
+}
+
+/* (M9) the process's committed memory (private bytes, now and peak) and working set at the end of a GPU replay */
+static void mem_report(void) {
+    PROCESS_MEMORY_COUNTERS_EX pm;
+    memset(&pm, 0, sizeof pm);
+    pm.cb = sizeof pm;
+    if (K32GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS*)&pm, sizeof pm))
+        fprintf(stderr, "mem-bench committed_mb=%.1f peak_committed_mb=%.1f working_set_mb=%.1f frame_arenas_mb=%.1f\n",
+                pm.PrivateUsage / 1048576.0, pm.PeakPagefileUsage / 1048576.0, pm.WorkingSetSize / 1048576.0,
+#ifdef GPU_FRONT_THREAD_HANDLE
+                gpu_front_arena_bytes() / 1048576.0);
+#else
+                0.0);
+#endif
+    if (!getenv("GS_REPLAY_MEM_MAP")) return;
+    /* committed private memory by allocation (VirtualAlloc reservation): the largest sizes, counted */
+    struct { size_t size; int n; } sz[64];
+    int nsz = 0;
+    size_t other = 0;
+    uint8_t* p = NULL;
+    MEMORY_BASIC_INFORMATION mi;
+    void* cur_base = NULL;
+    size_t cur = 0;
+    for (;;) {
+        if (!VirtualQuery(p, &mi, sizeof mi)) break;
+        if (mi.AllocationBase != cur_base) {
+            if (cur) {
+                int k = 0;
+                while (k < nsz && sz[k].size != cur) k++;
+                if (k < nsz) sz[k].n++;
+                else if (nsz < 64) { sz[nsz].size = cur; sz[nsz].n = 1; nsz++; }
+                else other += cur;
+            }
+            cur_base = mi.AllocationBase;
+            cur = 0;
+        }
+        if (mi.State == MEM_COMMIT && mi.Type == MEM_PRIVATE) cur += mi.RegionSize;
+        uint8_t* q = (uint8_t*)mi.BaseAddress + mi.RegionSize;
+        if (q <= p) break;
+        p = q;
+    }
+    for (int i = 0; i < nsz; i++)
+        for (int j = i + 1; j < nsz; j++)
+            if ((double)sz[j].size * sz[j].n > (double)sz[i].size * sz[i].n) { size_t s = sz[i].size; int n = sz[i].n; sz[i] = sz[j]; sz[j].size = s; sz[j].n = n; }
+    for (int i = 0; i < nsz && i < 16; i++)
+        fprintf(stderr, "mem-map %6.2f MB x %d = %.1f MB\n", sz[i].size / 1048576.0, sz[i].n, sz[i].size * (double)sz[i].n / 1048576.0);
+    fprintf(stderr, "mem-map other sizes %.1f MB\n", other / 1048576.0);
 }
 
 /* ---- hwsubmit (M2): the render thread executed every frame; its per-frame costs ---- */
@@ -2082,6 +2131,7 @@ int main(int argc, char** argv) {
         gpu_finish();
         take_stats();
         take_front();
+        mem_report();
         rc = submit_report(metrics, argv[1], ms, frames);
         thread_report(front_thread);
         gpu_front_stop();
@@ -2094,6 +2144,7 @@ int main(int argc, char** argv) {
         gpu_finish();
         take_stats();
         take_front();
+        mem_report();
         uint32_t posts = 0, stq_cuts = 0, lost = 0;
         for (size_t i = 0; i < nff; i++) { posts += ff[i].post_prims; stq_cuts += ff[i].stq_cuts; lost += ff[i].lost_writer; }
         gpu_exec_counters xc;

@@ -166,12 +166,60 @@ static struct {
     uint32_t frames, targets, dropped, presented, game_frames;
     uint32_t rescales, reads;            /* (M8) target rescales (sample-factor changes), TRXDIR=1 reads, per report */
     uint64_t gs_busy0;                  /* perf_state.gs_busy at the start of the report period (TSC ticks) */
+    uint64_t stats_ticks0;               /* (M9) stats_ticks then */
     LONG presents0;
     LARGE_INTEGER t0;
     double tsc_per_ms;
 } S;
 
 static void mem_log(const char* when);
+static uint64_t stats_ticks;             /* (M9) TSC ticks of stats_vblank on the GS thread (it counts as GS busy time) */
+
+/* (M9) the once-a-second report lines are formatted on the GS thread and written by a logger thread: a
+ * synchronous write to the redirected stderr took ~0.5 ms per game frame of the GS thread's measured time
+ * (PS2_PROFILE=gs, ep1 hub). PS2_GS_STATS_SYNC=1 writes them at once as before. */
+#define LOG_LINES 16
+static char log_q[LOG_LINES][2048];
+static volatile LONG log_w, log_r;
+static HANDLE log_ev, log_thread;
+static int log_sync = -1;
+
+static DWORD WINAPI log_main(LPVOID arg) {
+    (void)arg;
+    for (;;) {
+        WaitForSingleObject(log_ev, INFINITE);
+        while (log_r != log_w) {
+            fputs(log_q[log_r % LOG_LINES], stderr);
+            fflush(stderr);
+            InterlockedIncrement(&log_r);
+        }
+    }
+}
+
+static void slog(const char* fmt, ...) {
+    if (log_sync < 0) {
+        const char* e = getenv("PS2_GS_STATS_SYNC");
+        log_sync = e && atoi(e) > 0;
+        if (!log_sync && (log_ev = CreateEventA(NULL, FALSE, FALSE, NULL)))
+            log_thread = CreateThread(NULL, 0, log_main, NULL, 0, NULL);
+        if (!log_thread) log_sync = 1;
+    }
+    char* b;
+    char tmp[2048];
+    int full = !log_sync && log_w - log_r >= LOG_LINES;
+    b = log_sync || full ? tmp : log_q[log_w % LOG_LINES];
+    int o = snprintf(b, 2048, "[gpu] ");
+    va_list ap;
+    va_start(ap, fmt);
+    o += vsnprintf(b + o, 2048 - (size_t)o, fmt, ap);
+    va_end(ap);
+    if (o > 2046) o = 2046;
+    b[o] = '\n';
+    b[o + 1] = 0;
+    if (log_sync || full) { fputs(b, stderr); fflush(stderr); return; }
+    InterlockedIncrement(&log_w);
+    SetEvent(log_ev);
+}
 
 static int dcmp(const void* a, const void* b) { double x = *(const double*)a, y = *(const double*)b; return x < y ? -1 : x > y; }
 static double med(double* v, int n) { if (!n) return 0; qsort(v, (size_t)n, sizeof *v, dcmp); return v[n / 2]; }
@@ -245,18 +293,21 @@ static void stats_vblank(uint32_t vblank) {
         double flips = C.hwnd ? (double)S.presented / secs : pics;   /* (headless: nothing is flipped; pictures) */
         double gs = S.game_frames ? (double)(busy - S.gs_busy0) / tsc_ms() / S.game_frames : 0;
         double frm = vmax(S.front, S.nfront), rcm = vmax(S.rcpu, S.nr), rwm = vmax(S.rwall, S.nr), gpm = vmax(S.gpu, S.ngpu);
-        hlog("stats v%u: %.1f flips/s (%.1f pictures/s, %u dropped) | per game frame (%u, median / max ms): GS thread %.2f (mean) | frontend %s %.2f / %.2f | "
+        double scost = S.game_frames ? (double)(stats_ticks - S.stats_ticks0) / tsc_ms() / S.game_frames : 0;
+        slog("stats v%u: %.1f flips/s (%.1f pictures/s, %u dropped) | per game frame (%u, median / max ms): GS thread %.2f (mean) | frontend %s %.2f / %.2f | "
              "render CPU %.2f / %.2f, wall %.2f / %.2f, present %.2f | GPU %.2f / %.2f | latency %.2f / %.2f | per VBlank: %.0f prims, "
              "%.0f draws (FF %.0f, ROV %.0f in %.1f runs), PUNT %llu, downloads %.1f, loads %.1f, display from memory %.2f, targets %u | "
-             "this second: target rescales %u, TRXDIR=1 reads %u | photon %.2f / %.2f ms, queued frames %.0f / %.0f, absorbed slowdowns %u",
+             "this second: target rescales %u, TRXDIR=1 reads %u | photon %.2f / %.2f ms, queued frames %.0f / %.0f, absorbed slowdowns %u | "
+             "stats on the GS thread %.3f ms",
              vblank, flips, pics, S.dropped, S.game_frames, gs, front_threaded ? "thread" : "(GS thread)", med(S.front, S.nfront), frm,
              med(S.rcpu, S.nr), rcm, med(S.rwall, S.nr), rwm, med(S.pres, S.nr), med(S.gpu, S.ngpu), gpm, med(S.lat, S.nlat),
              vmax(S.lat, S.nlat), (double)S.kicks * k,
              (double)S.draws * k, (double)S.ff * k, (double)S.rov * k, (double)S.rov_runs * k, (unsigned long long)S.punts,
              (double)S.downloads * k, (double)S.loads * k, (double)S.display_mem * k, S.targets, S.rescales, S.reads,
              med(S.photon, S.nphoton), vmax(S.photon, S.nphoton), med(S.queued, S.nqueued), vmax(S.queued, S.nqueued),
-             gpu_submit_absorbs());
+             gpu_submit_absorbs(), scost);
     }
+    S.stats_ticks0 = stats_ticks;
     S.nfront = S.nr = S.ngpu = S.nlat = S.nphoton = S.nqueued = 0;
     S.draws = S.ff = S.rov = S.rov_runs = S.punts = S.downloads = S.loads = S.display_mem = S.kicks = 0;
     S.rescales = S.reads = 0;
@@ -385,7 +436,7 @@ static void mem_log(const char* when) {
     memset(&pm, 0, sizeof pm);
     pm.cb = sizeof pm;
     if (K32GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS*)&pm, sizeof pm))
-        hlog("memory %s: committed %.0f MB, working set %.0f MB, frame arenas %.1f MB", when, pm.PrivateUsage / 1048576.0,
+        slog("memory %s: committed %.0f MB, working set %.0f MB, frame arenas %.1f MB", when, pm.PrivateUsage / 1048576.0,
              pm.WorkingSetSize / 1048576.0, gpu_front_arena_bytes() / 1048576.0);
 }
 
@@ -523,7 +574,9 @@ void gpu_hw_vblank(const gs_display_snap* snap, uint32_t vblank, int content43) 
     gpu_front_vblank_display(&di);
     if (rb) dump_queued();
     if (C.verify > 0 && vblank % (uint32_t)C.verify == 0) verify_vblank(snap, vblank);
+    uint64_t t0 = __rdtsc();
     stats_vblank(vblank);
+    stats_ticks += __rdtsc() - t0;
 }
 
 /* ---- PS2_GS_VERIFY (GS thread; the frontend runs on it, the software renderer draws too) ----------- */

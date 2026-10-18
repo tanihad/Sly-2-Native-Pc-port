@@ -1633,8 +1633,11 @@ static int exec_init(void) {
     bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
     if (!X.ztile || FAILED(ID3D11Device_CreateBuffer(gpu_rt.dev, &bd, NULL, &X.zcb))) return 0;
     /* the per-frame buffers start at a size that holds Sly's heaviest frames */
-    if (!dyn_ensure(&X.vb, 8u << 20, D3D11_BIND_VERTEX_BUFFER, 0) || !dyn_ensure(&X.ib, 2u << 20, D3D11_BIND_INDEX_BUFFER, 0) ||
-        !dyn_ensure(&X.rec, 8u << 20, D3D11_BIND_SHADER_RESOURCE, 1) || !dyn_ensure(&X.st, 1u << 20, D3D11_BIND_SHADER_RESOURCE, 1) ||
+    static int dbg_small = -1;           /* (M9 memory experiment: PS2_GPU_DBG_DYNSMALL=1 starts them at 1 MB) */
+    if (dbg_small < 0) { const char* e = getenv("PS2_GPU_DBG_DYNSMALL"); dbg_small = e && atoi(e) > 0; }
+    size_t big = dbg_small ? 1u << 20 : 8u << 20, mid = dbg_small ? 1u << 20 : 2u << 20;
+    if (!dyn_ensure(&X.vb, big, D3D11_BIND_VERTEX_BUFFER, 0) || !dyn_ensure(&X.ib, mid, D3D11_BIND_INDEX_BUFFER, 0) ||
+        !dyn_ensure(&X.rec, big, D3D11_BIND_SHADER_RESOURCE, 1) || !dyn_ensure(&X.st, 1u << 20, D3D11_BIND_SHADER_RESOURCE, 1) ||
         !dyn_ensure(&X.dc, 1u << 20, D3D11_BIND_SHADER_RESOURCE, 1) || !dyn_ensure(&X.dat, 1u << 20, D3D11_BIND_SHADER_RESOURCE, 1) ||
         !dyn_ensure(&X.aux, 1u << 20, D3D11_BIND_SHADER_RESOURCE, 1))
         return 0;
