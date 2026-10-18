@@ -998,9 +998,6 @@ static void exec_clear(const gpu_fop_clear* o) {
         ID3D11DeviceContext_ClearUnorderedAccessViewUint(gpu_rt.ctx, t->zp_uav, v);
         hw = 1;
     }
-    if (getenv("PS2_GPU_DBG_CLEAR"))
-        gpu_log("clear target %u kind %d %dx%d k %dx%d rect %dx%d mask %X value %08X full %d hw %d", o->target, t->kind, t->w, t->h, t->kx,
-                t->ky, x1, y1, o->mask, o->value, fullrect, hw);
     if (!hw) {
         mem_consts k;
         target_consts(t, &k);
