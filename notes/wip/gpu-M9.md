@@ -6,7 +6,7 @@ GS <= 6 ms, render <= 8 ms, GPU <= 8 ms, frontend <= 8 ms (medians) on ep8 boss 
 m7 boss / m3 heist; GPU <= 12 ms at S=4/5; frames in flight 2-3 (adaptive), memory waste cut; every optimisation
 bit-exact vs the un-optimised hw output (lockstep hw vs hw at S=1 and S=3).
 
-**Status**: in progress.
+**Status**: complete (appendix L of notes/d3d11-renderer.md has the results; gates green on the final source).
 
 ## Tools (built)
 - `scripts/m9_bench.ps1 -Exe <gs_replay> [-Runs 3] [-Only ..] [-Prof] [-EnvVars "A=1,B=2"]`: replay GPU ms per game frame
@@ -113,8 +113,13 @@ Render CPU 1.3-3.7 ms. (In game M8: GPU 8.1-12.1, GS 7-8, frontend up to 10.8.)
   m7_boss 2.55->1.95 / 3.58->2.66 / 0.70->0.35 / 16.25->10.88 / 1632->776;
   m3_heist 2.76->1.40 / 3.69->1.83 / 0.48->0.29 / 10.06->7.30 / 1021->831.
 
+- 638d100 GPU phases line (PS2_GPU_PROF=1 + PS2_GS_HW_STATS). Windowed ep1: photon (queued -> shown) 14.3 ms median,
+  max 17.5; queue 1 frame with adaptive and with fixed depth alike. S=4/5 replay: see appendix L.
+- 8e010e9 baseline.json 25 -> 27 (M10's ws recordings); eb42f25 gs-front unit test.
+- Gates on the final source: all green (appendix L); in-game verify sweep six scenes 0 beyond, 0 PUNT.
+
 ## Next
-1. Build the GPU phases stats line (638d100); windowed latency runs (ep1: default vs PS2_GS_INFLIGHT_BASE=0).
+- Nothing: M9 done. M11 notes in appendix L.
 2. Memory: target sizes (alloc granularity, taller allocations kept, shadow copies, a16 staging), frame arenas.
 3. GS thread (decode + proxy): clut_load fast path; texture sampling; sprites; ROV shadow volumes (ep7 ~2.5 ms).
 4. Gates, appendix L, WIP complete.

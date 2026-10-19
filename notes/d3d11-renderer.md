@@ -2303,7 +2303,8 @@ M10's ws_museum169 and ws_ep3_hud: corpus.txt had 27); gpu_game_all S=1 4136 pic
 gpu_lockstep_all REF and mixed 26402 comparisons, 0 differ; gpu_sample_all S=3 0 failed; gpu_fthread_check and -Mixed
 27/27 identical; gs_vram_hashes -Backend hwdry 27/27 identical to the software renderer (b513aee runtime); m9_exact 27/27
 identical at S=1 and S=3; tests/run_tests.py and every tests/unit run.ps1 pass (gs-front's T8 test now uses the palette
-entry it changes); debug and release builds; in-game verifier sweep on the six scenes: SWEEP_RESULT.
+entry it changes); debug and release builds and scripts/package.py; in-game verifier sweep (m8_batch -Verify 60) on
+the six scenes: 240 comparisons each, 0 beyond the tolerance, 0 PUNT.
 
 **What M11 must know**
 - Defaults: adaptive queue (base 2, depth 6 for 2 s after a slowdown); `PS2_GPU_NO_TEX_ALPHA` is the switch for the
