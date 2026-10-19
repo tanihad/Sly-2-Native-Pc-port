@@ -436,8 +436,13 @@ static void mem_log(const char* when) {
     memset(&pm, 0, sizeof pm);
     pm.cb = sizeof pm;
     if (K32GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS*)&pm, sizeof pm))
-        slog("memory %s: committed %.0f MB (peak %.0f), working set %.0f MB, frame arenas %.1f MB", when, pm.PrivateUsage / 1048576.0,
-             pm.PeakPagefileUsage / 1048576.0, pm.WorkingSetSize / 1048576.0, gpu_front_arena_bytes() / 1048576.0);
+    {
+        uint64_t vl = 0, vn = 0;
+        gpu_video_memory(&vl, &vn);
+        slog("memory %s: committed %.0f MB (peak %.0f), working set %.0f MB, frame arenas %.1f MB, video memory %.0f MB "
+             "(+ %.0f MB non-local)", when, pm.PrivateUsage / 1048576.0, pm.PeakPagefileUsage / 1048576.0,
+             pm.WorkingSetSize / 1048576.0, gpu_front_arena_bytes() / 1048576.0, vl / 1048576.0, vn / 1048576.0);
+    }
     static int map = -1;                 /* PS2_GS_MEM_MAP=1: committed private memory by allocation size (largest totals) */
     if (map < 0) { const char* e = getenv("PS2_GS_MEM_MAP"); map = e && atoi(e) > 0; }
     if (!map) return;

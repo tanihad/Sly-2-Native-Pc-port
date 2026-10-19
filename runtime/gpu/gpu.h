@@ -152,6 +152,8 @@ typedef struct {
     uint64_t dyn_shrinks;                /* (M9) per-frame upload buffers recreated smaller after a peak */
 } gpu_exec_counters;
 void gpu_exec_get_counters(gpu_exec_counters* out);
+/* (M9) the process's video memory use (bytes): local (on the GPU), non-local (system memory); 0: unknown */
+int gpu_video_memory(uint64_t* local, uint64_t* nonlocal);
 /* (M7, tests) every sample of target id after everything submitted: w x h words (colour R8G8B8A8, or the zpatch
  * Z words of a depth target), its factors; 0: no such target or out too small (cap_words) */
 int gpu_exec_read_target(uint32_t id, uint32_t* out, size_t cap_words, int* w, int* h, int* kx, int* ky, int* depth);

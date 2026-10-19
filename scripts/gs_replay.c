@@ -411,13 +411,17 @@ static void mem_report(void) {
     PROCESS_MEMORY_COUNTERS_EX pm;
     memset(&pm, 0, sizeof pm);
     pm.cb = sizeof pm;
+    uint64_t vl = 0, vn = 0;
+#ifdef GPU_FRONT_THREAD_HANDLE
+    gpu_video_memory(&vl, &vn);
+#endif
     if (K32GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS*)&pm, sizeof pm))
-        fprintf(stderr, "mem-bench committed_mb=%.1f peak_committed_mb=%.1f working_set_mb=%.1f frame_arenas_mb=%.1f\n",
+        fprintf(stderr, "mem-bench committed_mb=%.1f peak_committed_mb=%.1f working_set_mb=%.1f frame_arenas_mb=%.1f video_mb=%.1f\n",
                 pm.PrivateUsage / 1048576.0, pm.PeakPagefileUsage / 1048576.0, pm.WorkingSetSize / 1048576.0,
 #ifdef GPU_FRONT_THREAD_HANDLE
-                gpu_front_arena_bytes() / 1048576.0);
+                gpu_front_arena_bytes() / 1048576.0, vl / 1048576.0);
 #else
-                0.0);
+                0.0, 0.0);
 #endif
     if (!getenv("GS_REPLAY_MEM_MAP")) return;
     /* committed private memory by allocation (VirtualAlloc reservation): the largest sizes, counted */

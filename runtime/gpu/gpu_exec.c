@@ -47,8 +47,11 @@ static void mem_note(const char* what) {
     PROCESS_MEMORY_COUNTERS_EX pm;
     memset(&pm, 0, sizeof pm);
     pm.cb = sizeof pm;
+    uint64_t vl = 0, vn = 0;
+    gpu_video_memory(&vl, &vn);
     if (K32GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS*)&pm, sizeof pm))
-        gpu_log("memory %s: committed %.0f MB (peak %.0f)", what, pm.PrivateUsage / 1048576.0, pm.PeakPagefileUsage / 1048576.0);
+        gpu_log("memory %s: committed %.0f MB (peak %.0f), video %.0f MB", what, pm.PrivateUsage / 1048576.0,
+                pm.PeakPagefileUsage / 1048576.0, vl / 1048576.0);
 }
 
 /* frontend layouts (gpu_front.c / gpu_front_int.h) */
@@ -91,7 +94,6 @@ typedef struct {
     ID3D11Buffer* buf;
     ID3D11ShaderResourceView* srv;
     size_t cap;
-    size_t base;                         /* (M9) the size it was created at (it never shrinks below) */
     size_t hi;                           /* (M9) the largest fill of the current window */
     uint32_t fills;                      /* (M9) fills in the current window */
 } dynbuf;
@@ -168,11 +170,12 @@ static void count_state(void) { X.state_calls++; }
 
 /* ---- resources ---------------------------------------------------------------------------------- */
 
+#define DYN_MIN (256u << 10)
 static int dyn_ensure(dynbuf* d, size_t bytes, UINT bind, int raw) {
     if (d->buf && d->cap >= bytes) return 1;
     GPU_RELEASE(d->srv);
     GPU_RELEASE(d->buf);
-    size_t cap = d->cap ? d->cap : 1 << 20;
+    size_t cap = d->cap ? d->cap : DYN_MIN;
     while (cap < bytes) cap *= 2;
     D3D11_BUFFER_DESC bd;
     memset(&bd, 0, sizeof bd);
@@ -192,20 +195,20 @@ static int dyn_ensure(dynbuf* d, size_t bytes, UINT bind, int raw) {
         if (FAILED(ID3D11Device_CreateShaderResourceView(gpu_rt.dev, (ID3D11Resource*)d->buf, &sd, &d->srv))) return 0;
     }
     d->cap = cap;
-    if (!d->base) d->base = cap;
     return 1;
 }
 
 /* (M9) Every fill maps the buffer with DISCARD, and the driver renames it: a copy of the whole capacity per frame
- * the GPU has not finished, kept in its pool (process memory). A buffer that grew for a few heavy frames (loading:
- * 30 MB of texture patches in the data arena) would keep that many copies of its peak size for good, so a buffer
- * whose fills stayed under a quarter of its capacity for DYN_WINDOW fills is recreated at its start size (or twice
- * the window's largest fill): the driver's copies of the old one go with it. */
+ * the GPU has not finished, kept in its pool - non-local video memory, charged to the process (measured: ~300 MB
+ * with the 8 MB start sizes of M2). The buffers start small and grow to the next power of two a frame needs; one
+ * whose fills stayed under a quarter of its capacity for DYN_WINDOW fills (loading: 30 MB of texture patches in the
+ * data arena, then a few hundred KB) is recreated at twice the window's largest fill, and the driver's copies of
+ * the old one go with it. */
 #define DYN_WINDOW 300
 static int dyn_fill(dynbuf* d, const void* src, size_t bytes, UINT bind, int raw) {
     if (bytes > d->hi) d->hi = bytes;
     if (++d->fills >= DYN_WINDOW) {
-        size_t want = d->base;
+        size_t want = DYN_MIN;
         while (want < 2 * d->hi) want *= 2;
         if (d->buf && d->cap > want && d->cap >= 4 * d->hi) {
             GPU_RELEASE(d->srv);
@@ -1671,12 +1674,9 @@ static int exec_init(void) {
     bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
     if (!X.ztile || FAILED(ID3D11Device_CreateBuffer(gpu_rt.dev, &bd, NULL, &X.zcb))) return 0;
-    /* the per-frame buffers start at a size that holds Sly's heaviest frames */
-    static int dbg_small = -1;           /* (M9 memory experiment: PS2_GPU_DBG_DYNSMALL=1 starts them at 1 MB) */
-    if (dbg_small < 0) { const char* e = getenv("PS2_GPU_DBG_DYNSMALL"); dbg_small = e && atoi(e) > 0; }
-    size_t big = dbg_small ? 1u << 20 : 8u << 20, mid = dbg_small ? 1u << 20 : 2u << 20;
-    if (!dyn_ensure(&X.vb, big, D3D11_BIND_VERTEX_BUFFER, 0) || !dyn_ensure(&X.ib, mid, D3D11_BIND_INDEX_BUFFER, 0) ||
-        !dyn_ensure(&X.rec, big, D3D11_BIND_SHADER_RESOURCE, 1) || !dyn_ensure(&X.st, 1u << 20, D3D11_BIND_SHADER_RESOURCE, 1) ||
+    /* the per-frame buffers start small (M9: they grow to what a frame needs and shrink after peaks, dyn_fill) */
+    if (!dyn_ensure(&X.vb, 1u << 20, D3D11_BIND_VERTEX_BUFFER, 0) || !dyn_ensure(&X.ib, 1u << 20, D3D11_BIND_INDEX_BUFFER, 0) ||
+        !dyn_ensure(&X.rec, 1u << 20, D3D11_BIND_SHADER_RESOURCE, 1) || !dyn_ensure(&X.st, 1u << 20, D3D11_BIND_SHADER_RESOURCE, 1) ||
         !dyn_ensure(&X.dc, 1u << 20, D3D11_BIND_SHADER_RESOURCE, 1) || !dyn_ensure(&X.dat, 1u << 20, D3D11_BIND_SHADER_RESOURCE, 1) ||
         !dyn_ensure(&X.aux, 1u << 20, D3D11_BIND_SHADER_RESOURCE, 1))
         return 0;

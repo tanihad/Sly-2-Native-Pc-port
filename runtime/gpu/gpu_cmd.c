@@ -3,6 +3,7 @@
 
 #include <stdatomic.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <windows.h>
 
@@ -11,6 +12,7 @@
 gpu_cmd_stats gpu_cmd_counters;
 
 static uint8_t *cmd_buf, *data_buf;
+static int data_committed;
 
 /* producer side (one producer at a time) */
 static uint64_t cmd_wr;                  /* committed commands end here */
@@ -28,7 +30,10 @@ static _Atomic int cons_sleeping, prod_waiting;
 int gpu_cmd_init(void) {
     if (cmd_buf) return 1;
     cmd_buf = VirtualAlloc(NULL, GPU_CMD_RING, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
-    data_buf = VirtualAlloc(NULL, GPU_DATA_RING, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    /* (M9) only reserved: the data ring carries the software renderer's pictures alone (gpu_picture), so the GPU
+     * renderer never commits its 64 MB (gpu_data_alloc commits it on first use) */
+    data_buf = VirtualAlloc(NULL, GPU_DATA_RING, MEM_RESERVE, PAGE_READWRITE);
+    data_committed = 0;
     if (!cmd_buf || !data_buf) { gpu_cmd_free(); return 0; }
     gpu_cmd_reset();
     return 1;
@@ -77,6 +82,11 @@ static void prod_wait_change(_Atomic uint64_t* a, uint64_t old) {
 void* gpu_data_alloc(size_t bytes) {
     uint64_t n = ((uint64_t)bytes + 15) & ~15ull;
     if (n > GPU_DATA_RING) return NULL;
+    if (!data_committed) {
+        if (!VirtualAlloc(data_buf, GPU_DATA_RING, MEM_COMMIT, PAGE_READWRITE)) return NULL;
+        data_committed = 1;
+        if (getenv("PS2_GS_MEM_MAP")) fprintf(stderr, "[gpu] data ring committed (first picture: %zu bytes)\n", bytes);
+    }
     uint64_t pos = data_wr % GPU_DATA_RING;
     uint64_t pad = pos + n > GPU_DATA_RING ? GPU_DATA_RING - pos : 0;
     for (;;) {

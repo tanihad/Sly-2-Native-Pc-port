@@ -44,6 +44,8 @@ static arena A_cmd, A_vtx, A_idx, A_rec, A_state, A_data;
  * (from any thread). */
 typedef struct gf_block { struct gf_block* next; arena a[6]; } gf_block;
 static gf_block* free_blocks;
+static int free_count;
+#define FREE_KEEP 3                      /* (M9) free frames kept with their arenas; more (after a deep queue) are freed */
 static SRWLOCK free_lock = SRWLOCK_INIT;
 static int in_sink;
 
@@ -51,7 +53,7 @@ void* gpu_front_detach(void) {
     if (!in_sink) return NULL;
     AcquireSRWLockExclusive(&free_lock);
     gf_block* fresh = free_blocks;
-    if (fresh) free_blocks = fresh->next;
+    if (fresh) { free_blocks = fresh->next; free_count--; }
     ReleaseSRWLockExclusive(&free_lock);
     if (!fresh && !(fresh = calloc(1, sizeof *fresh))) { fprintf(stderr, "[gpu_front] out of memory\n"); exit(1); }
     gf_block* b = malloc(sizeof *b);
@@ -63,17 +65,20 @@ void* gpu_front_detach(void) {
     return b;
 }
 
+/* (M9) the capacity of every frame arena (the building frame's, the frames in flight, the free ones) */
+volatile LONG64 gf_arena_bytes;
+
 void gpu_front_release(void* frame) {
     gf_block* b = frame;
     if (!b) return;
     AcquireSRWLockExclusive(&free_lock);
-    b->next = free_blocks;
-    free_blocks = b;
+    int keep = free_count < FREE_KEEP;
+    if (keep) { b->next = free_blocks; free_blocks = b; free_count++; }
     ReleaseSRWLockExclusive(&free_lock);
+    if (keep) return;
+    for (int i = 0; i < 6; i++) { InterlockedAdd64(&gf_arena_bytes, -(LONG64)b->a[i].cap); free(b->a[i].p); }
+    free(b);
 }
-
-/* (M9) the capacity of every frame arena (the building frame's, the frames in flight, the free ones) */
-volatile LONG64 gf_arena_bytes;
 size_t gpu_front_arena_bytes(void) { return (size_t)gf_arena_bytes; }
 
 static void* ar_reserve(arena* a, size_t bytes) {         /* not zeroed */
