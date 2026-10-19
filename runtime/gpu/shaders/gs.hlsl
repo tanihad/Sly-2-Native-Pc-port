@@ -413,24 +413,32 @@ uint bilerp(uint a, uint b, uint c, uint d, uint fu, uint fv) {
     return r;
 }
 
+// (M9) One texel() in the code: the nearest read is one tap, the bilinear one four taps of a loop. Every call of
+// texel() is inlined with all of its formats, and the unrolled taps of every level read of tex_sample made the
+// pixel shaders ~500 KB of DXBC each (and ~8 MB of driver memory each); the reads and their order are unchanged.
 uint tex_level(St st, uint l, int U, int V, bool bil) {
     Lvl L = level_of(st, l);
     U >>= l;
     V >>= l;
-    uint res;
+    uint fu = 0u, fv = 0u, xa, xb = 0u, ya, yb = 0u, n = 1u;
     if (!bil) {
-        uint x = (uint)wrapc(U >> 4, L.ulo, L.uhi, L.umsk, L.ufix), y = (uint)wrapc(V >> 4, L.vlo, L.vhi, L.vmsk, L.vfix);
-        res = texel(st, L, x & 2047u, y & 2047u);
+        xa = (uint)wrapc(U >> 4, L.ulo, L.uhi, L.umsk, L.ufix) & 2047u;
+        ya = (uint)wrapc(V >> 4, L.vlo, L.vhi, L.vmsk, L.vfix) & 2047u;
     } else {
         U -= 8;
         V -= 8;
-        uint fu = (uint)U & 15u, fv = (uint)V & 15u;
+        fu = (uint)U & 15u; fv = (uint)V & 15u;
         int u0 = U >> 4, v0 = V >> 4;
-        uint xa = (uint)wrapc(u0, L.ulo, L.uhi, L.umsk, L.ufix) & 2047u, xb = (uint)wrapc(u0 + 1, L.ulo, L.uhi, L.umsk, L.ufix) & 2047u;
-        uint ya = (uint)wrapc(v0, L.vlo, L.vhi, L.vmsk, L.vfix) & 2047u, yb = (uint)wrapc(v0 + 1, L.vlo, L.vhi, L.vmsk, L.vfix) & 2047u;
-        res = bilerp(texel(st, L, xa, ya), texel(st, L, xb, ya), texel(st, L, xa, yb), texel(st, L, xb, yb), fu, fv);
+        xa = (uint)wrapc(u0, L.ulo, L.uhi, L.umsk, L.ufix) & 2047u; xb = (uint)wrapc(u0 + 1, L.ulo, L.uhi, L.umsk, L.ufix) & 2047u;
+        ya = (uint)wrapc(v0, L.vlo, L.vhi, L.vmsk, L.vfix) & 2047u; yb = (uint)wrapc(v0 + 1, L.vlo, L.vhi, L.vmsk, L.vfix) & 2047u;
+        n = 4u;
     }
-    return res;
+    uint t0 = 0u, t1 = 0u, t2 = 0u, t3 = 0u;
+    [loop] for (uint k = 0u; k < n; k++) {
+        uint t = texel(st, L, (k & 1u) ? xb : xa, (k & 2u) ? yb : ya);
+        if (k == 0u) t0 = t; else if (k == 1u) t1 = t; else if (k == 2u) t2 = t; else t3 = t;
+    }
+    return bil ? bilerp(t0, t1, t2, t3, fu, fv) : t0;
 }
 
 uint lerp_rgba(uint a, uint b, uint f) {   // f 0..16
@@ -469,40 +477,52 @@ uint view_texel_s(St st, Lvl L, int sx, int sy) {
 uint view_hires(St st, float uf, float vf, bool bil) {
     Lvl L = level_of(st, 0u);
     float ps = (uf - 8.0) * (float)vkx / 16.0, qs = (vf - 8.0) * (float)vky / 16.0;   // sample units
-    uint res;
-    if (!bil) res = view_texel_s(st, L, (int)floor(ps + 0.5), (int)floor(qs + 0.5));
+    // (M9) one view_texel_s() in a loop of one or four taps (as tex_level)
+    int sx, sy;
+    uint fu = 0u, fv = 0u, n = 1u;
+    if (!bil) { sx = (int)floor(ps + 0.5); sy = (int)floor(qs + 0.5); }
     else {
         float fx = floor(ps), fy = floor(qs);
-        int sx = (int)fx, sy = (int)fy;
-        uint fu = (uint)((ps - fx) * 16.0), fv = (uint)((qs - fy) * 16.0);
-        uint t00 = view_texel_s(st, L, sx, sy), t10 = view_texel_s(st, L, sx + 1, sy);
-        uint t01 = view_texel_s(st, L, sx, sy + 1), t11 = view_texel_s(st, L, sx + 1, sy + 1);
-        res = bilerp(t00, t10, t01, t11, fu, fv);
+        sx = (int)fx; sy = (int)fy;
+        fu = (uint)((ps - fx) * 16.0); fv = (uint)((qs - fy) * 16.0);
+        n = 4u;
     }
-    return res;
+    uint t00 = 0u, t10 = 0u, t01 = 0u, t11 = 0u;
+    [loop] for (uint k = 0u; k < n; k++) {
+        uint t = view_texel_s(st, L, sx + (int)(k & 1u), sy + (int)(k >> 1));
+        if (k == 0u) t00 = t; else if (k == 1u) t10 = t; else if (k == 2u) t01 = t; else t11 = t;
+    }
+    return bil ? bilerp(t00, t10, t01, t11, fu, fv) : t00;
 }
 
+// (M9) the level(s) and filter first, then one tex_level() in a loop of one or two levels (see tex_level)
 uint tex_sample(St st, int U, int V, float lq) {
     uint texm = st.tlev & 3u, cur = (st.tlev >> 2) & 7u;
-    uint res;
-    if (texm != 3u) res = tex_level(st, cur, U, V, texm == 2u);
-    else {
+    uint l = cur, nl = 1u, lf = 0u;
+    bool bl = texm == 2u;
+    if (texm == 3u) {
         uint mxl = (st.tlev >> 5) & 7u, mmag = (st.tlev >> 8) & 1u, mmin = (st.tlev >> 9) & 7u;
         int lod = lod16_of(st, lq);
-        if (lod <= 0) res = tex_level(st, 0u, U, V, mmag != 0u);
-        else if (mmin == 0u) res = tex_level(st, 0u, U, V, false);
-        else if (mmin == 1u) res = tex_level(st, 0u, U, V, true);
+        if (lod <= 0) { l = 0u; bl = mmag != 0u; }
+        else if (mmin == 0u) { l = 0u; bl = false; }
+        else if (mmin == 1u) { l = 0u; bl = true; }
         else if (mmin == 2u || mmin == 4u) {                             // *_MIPMAP_NEAREST
-            uint l = (uint)((lod + 8) >> 4);
-            res = tex_level(st, l > mxl ? mxl : l, U, V, mmin == 4u);
+            uint m = (uint)((lod + 8) >> 4);
+            l = m > mxl ? mxl : m;
+            bl = mmin == 4u;
         } else {                                                        // *_MIPMAP_LINEAR
-            uint l = (uint)(lod >> 4);
-            bool bl = mmin == 5u;
-            if (l >= mxl) res = tex_level(st, mxl, U, V, bl);
-            else res = lerp_rgba(tex_level(st, l, U, V, bl), tex_level(st, l + 1u, U, V, bl), (uint)lod & 15u);
+            l = (uint)(lod >> 4);
+            bl = mmin == 5u;
+            if (l >= mxl) l = mxl;
+            else { nl = 2u; lf = (uint)lod & 15u; }
         }
     }
-    return res;
+    uint r0 = 0u, r1 = 0u;
+    [loop] for (uint k = 0u; k < nl; k++) {
+        uint t = tex_level(st, l + k, U, V, bl);
+        if (k == 0u) r0 = t; else r1 = t;
+    }
+    return nl == 2u ? lerp_rgba(r0, r1, lf) : r0;
 }
 // texture function (tfx_batch): colour x texel, GS alpha 0x80 = 1.0
 uint tfx(uint tf, bool tcc, uint c, uint t) {

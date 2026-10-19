@@ -37,6 +37,19 @@
 #include <string.h>
 
 #include "gpu_shaders.h"
+#include <psapi.h>
+
+/* (M9) PS2_GS_MEM_MAP: the process's committed memory at steps of the render thread's set-up */
+static void mem_note(const char* what) {
+    static int on = -1;
+    if (on < 0) { const char* e = getenv("PS2_GS_MEM_MAP"); on = e && atoi(e) > 0; }
+    if (!on) return;
+    PROCESS_MEMORY_COUNTERS_EX pm;
+    memset(&pm, 0, sizeof pm);
+    pm.cb = sizeof pm;
+    if (K32GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS*)&pm, sizeof pm))
+        gpu_log("memory %s: committed %.0f MB (peak %.0f)", what, pm.PrivateUsage / 1048576.0, pm.PeakPagefileUsage / 1048576.0);
+}
 
 /* frontend layouts (gpu_front.c / gpu_front_int.h) */
 enum { XK_C32, XK_Z32, XK_Z24, XK_Z16, XK_Z16S };
@@ -78,6 +91,9 @@ typedef struct {
     ID3D11Buffer* buf;
     ID3D11ShaderResourceView* srv;
     size_t cap;
+    size_t base;                         /* (M9) the size it was created at (it never shrinks below) */
+    size_t hi;                           /* (M9) the largest fill of the current window */
+    uint32_t fills;                      /* (M9) fills in the current window */
 } dynbuf;
 
 typedef struct {                         /* shaders/mem.hlsl, alias16.hlsl mem_cb */
@@ -176,10 +192,31 @@ static int dyn_ensure(dynbuf* d, size_t bytes, UINT bind, int raw) {
         if (FAILED(ID3D11Device_CreateShaderResourceView(gpu_rt.dev, (ID3D11Resource*)d->buf, &sd, &d->srv))) return 0;
     }
     d->cap = cap;
+    if (!d->base) d->base = cap;
     return 1;
 }
 
+/* (M9) Every fill maps the buffer with DISCARD, and the driver renames it: a copy of the whole capacity per frame
+ * the GPU has not finished, kept in its pool (process memory). A buffer that grew for a few heavy frames (loading:
+ * 30 MB of texture patches in the data arena) would keep that many copies of its peak size for good, so a buffer
+ * whose fills stayed under a quarter of its capacity for DYN_WINDOW fills is recreated at its start size (or twice
+ * the window's largest fill): the driver's copies of the old one go with it. */
+#define DYN_WINDOW 300
 static int dyn_fill(dynbuf* d, const void* src, size_t bytes, UINT bind, int raw) {
+    if (bytes > d->hi) d->hi = bytes;
+    if (++d->fills >= DYN_WINDOW) {
+        size_t want = d->base;
+        while (want < 2 * d->hi) want *= 2;
+        if (d->buf && d->cap > want && d->cap >= 4 * d->hi) {
+            GPU_RELEASE(d->srv);
+            GPU_RELEASE(d->buf);
+            d->cap = 0;
+            if (!dyn_ensure(d, want, bind, raw)) return 0;
+            XC.dyn_shrinks++;
+        }
+        d->fills = 0;
+        d->hi = 0;
+    }
     if (!bytes) return dyn_ensure(d, 16, bind, raw);
     if (!dyn_ensure(d, bytes, bind, raw)) return 0;
     D3D11_MAPPED_SUBRESOURCE m;
@@ -320,6 +357,7 @@ static int target_realloc(xtarget* t, int w, int h, int okx, int oky) {
                                            D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS);
     ID3D11Texture2D* nz = t->depth ? tex2d(w, h, DXGI_FORMAT_R32_UINT, D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE) : NULL;
     if (!nt || (t->depth && !nz)) { GPU_RELEASE(nt); GPU_RELEASE(nz); gpu_log("cannot create a %dx%d target", w, h); return 0; }
+    if (getenv("PS2_GS_MEM_MAP")) { char wh[64]; snprintf(wh, sizeof wh, "target %dx%d %s created", w, h, t->depth ? "Z" : "C"); mem_note(wh); }
     xtarget n;
     memset(&n, 0, sizeof n);
     n.depth = t->depth;
@@ -1577,6 +1615,7 @@ static uint32_t* swz_build(void) {
 
 static int exec_init(void) {
     if (X.init) return 1;
+    mem_note("exec init start");
     memset(&X, 0, sizeof X);
     X.vram = raw_default(4u << 20, NULL, &X.vram_srv, &X.vram_uav);
     X.scratch = raw_default(4u << 20, NULL, &X.scratch_srv, &X.scratch_uav);
@@ -1641,11 +1680,20 @@ static int exec_init(void) {
         !dyn_ensure(&X.dc, 1u << 20, D3D11_BIND_SHADER_RESOURCE, 1) || !dyn_ensure(&X.dat, 1u << 20, D3D11_BIND_SHADER_RESOURCE, 1) ||
         !dyn_ensure(&X.aux, 1u << 20, D3D11_BIND_SHADER_RESOURCE, 1))
         return 0;
+    mem_note("exec buffers");
     /* every shader object up front (no creation inside a measured frame) */
     for (int i = 0; i < GPU_SH_COUNT; i++) {
         char k = gpu_shaders[i].profile[0];
+        PROCESS_MEMORY_COUNTERS_EX pm0, pm1;
+        int dbg = getenv("PS2_GS_MEM_MAP") != NULL;
+        if (dbg) { memset(&pm0, 0, sizeof pm0); pm0.cb = sizeof pm0; K32GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS*)&pm0, sizeof pm0); }
         if (k == 'v') gpu_vs(i); else if (k == 'p') gpu_ps(i); else if (k == 'c') gpu_cs(i);
+        if (dbg) {
+            memset(&pm1, 0, sizeof pm1); pm1.cb = sizeof pm1; K32GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS*)&pm1, sizeof pm1);
+            gpu_log("shader %s (%u bytes): +%.2f MB", gpu_shaders[i].name, gpu_shaders[i].size, ((double)pm1.PrivateUsage - (double)pm0.PrivateUsage) / 1048576.0);
+        }
     }
+    mem_note("exec shaders");
     X.b_ct = X.b_zt = -1;
     const char* pr = getenv("PS2_GPU_PROBE");
     if (pr && sscanf(pr, "%d,%d", &X.probe_x, &X.probe_y) == 2) {
@@ -1872,6 +1920,15 @@ void gpu_exec_frame(const void* payload) {
     st->latency_ms = st->presented && p->t_queued > 0 ? qpc_ms() - p->t_queued : -1.0;
     (void)t2;
     gpu_stats_end();
+    if (XC.frames == 1 || XC.frames == 3 || XC.frames == 10 || XC.frames == 60 || XC.frames == 600) {
+        char w[48];
+        snprintf(w, sizeof w, "after frame %u", (unsigned)XC.frames);
+        mem_note(w);
+        if (getenv("PS2_GS_MEM_MAP"))
+            gpu_log("upload buffers (MB): vb %.1f ib %.1f rec %.1f st %.1f dc %.1f dat %.1f; shrinks %llu", X.vb.cap / 1048576.0,
+                    X.ib.cap / 1048576.0, X.rec.cap / 1048576.0, X.st.cap / 1048576.0, X.dc.cap / 1048576.0, X.dat.cap / 1048576.0,
+                    (unsigned long long)XC.dyn_shrinks);
+    }
 }
 
 void gpu_exec_frame_done(const void* payload) {
