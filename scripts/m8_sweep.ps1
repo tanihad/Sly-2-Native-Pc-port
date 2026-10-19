@@ -7,6 +7,7 @@
 # (frame_<v>.png). Then summarizes run.log into <dir>\summary.txt (+ stats.csv: one row per PS2_GS_HW_STATS line).
 #   powershell -ExecutionPolicy Bypass -File scripts\m8_sweep.ps1 -Name ep3_hub -Episode 3 -Play [-Seconds 150]
 #   ... -Name m4_hack -Episode 4 -Job m4_hack -Direct [-Pad "+2500:lup:60"] [-Verify 0] [-Sw] [-Scale 1]
+# (M11) -Scale 0: no PS2_GS_SCALE (internal_scale = auto, the default); the renderer is the default one (the GPU).
 # -Sw: the software renderer instead (comparison runs). -Live: steer through <dir>\input.txt (PS2_INPUT_FILE).
 # Run directory: build\warp\m8_<Name> (exe copy sly2_warp_m8_<Name>.exe). Delete the frames after looking at them.
 param([Parameter(Mandatory = $true)][string]$Name, [Parameter(Mandatory = $true)][int]$Episode, [string]$Job = "",
@@ -19,8 +20,10 @@ $dir = Join-Path $root "build\warp\$runName"
 New-Item -ItemType Directory -Force $dir | Out-Null
 if ($Live) { Set-Content (Join-Path $dir 'input.txt') '' -Encoding ascii; $env:PS2_INPUT_FILE = Join-Path $dir 'input.txt' }
 else { Remove-Item Env:\PS2_INPUT_FILE -ErrorAction SilentlyContinue }
-$env:PS2_GS_BACKEND = $(if ($Sw) { 'sw' } else { 'hw' })
-$env:PS2_GS_SCALE = "$Scale"
+# (M11) the GPU renderer is the default: only -Sw sets the backend; -Scale 0 leaves internal_scale to the settings
+# (auto: 3x on a capable GPU), so the game runs exactly as a player's would
+if ($Sw) { $env:PS2_GS_BACKEND = 'sw' } else { Remove-Item Env:\PS2_GS_BACKEND -ErrorAction SilentlyContinue }
+if ($Scale -gt 0) { $env:PS2_GS_SCALE = "$Scale" } else { Remove-Item Env:\PS2_GS_SCALE -ErrorAction SilentlyContinue }
 $env:PS2_GS_HW_STATS = '1'
 $env:PS2_DUMP_RAW = '1'              # (frame dumps unshaped: the picture as composed, so it lines up with the pairs)
 if ($Verify -gt 0 -and -not $Sw) { $env:PS2_GS_VERIFY = "$Verify"; $env:PS2_GS_VERIFY_DUMP = "$DumpEvery" }
