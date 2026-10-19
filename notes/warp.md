@@ -181,6 +181,14 @@ instead of loading the prison interior; bomb_bridge on_top forced complete leave
 It does drive a transition when the stage's script watches the task states (episode 4's heist6
 lever tasks 2592/2593: the game then plays the wipe and loads world 14 for heist7 by itself).
 
+**Level travel while playing** (M11, same variables): an item `j<task oid>:<world>[@<vblank>]` starts that job the
+way the game does from another level (0x1651D8 (world, descriptor, oid): in place if the task is in the current
+level, else the job's world is loaded with the task pending and the game starts it - the `warp.py make --direct`
+values, e.g. `j2716:17` = m5_battlezone); `w<world>[@<vblank>]` loads a world at its default start point (0x22B490 as
+0x1651D8 calls it, without a task: an episode's hub). Jobs of other episodes start too (an episode 1 save into the
+ep5 tank battle, verified). scripts\m11_long.ps1 uses it to go through every episode in one process (the GPU
+renderer's long-session memory check, notes/d3d11-renderer.md appendix M).
+
 **Power-ups**: table at 0x2BCD00 (32-byte records: kind, character, cost, ?, ThiefNet position,
 name/description text ids); bits 7-14 Bentley's gadgets, 15-22 Murray's, 23-30 Sly's (26 Alarm
 Clock, 27 Paraglide, confirmed in ThiefNet), 31-42 free moves.
