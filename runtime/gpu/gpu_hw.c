@@ -10,6 +10,7 @@
 #include "settings.h"
 
 #include <dxgi1_2.h>
+#include <math.h>
 #include <stdarg.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -180,22 +181,25 @@ static uint64_t stats_ticks;             /* (M9) TSC ticks of stats_vblank on th
 /* ---- (M11) internal_scale = auto ------------------------------------------------------------------------------
  * The highest scale up to auto_max (3: the owner's quality target) whose measured GPU time stays comfortably inside
  * real time. Measure: GPU busy = the GPU time of the pictures finished in a second (timestamps around each picture's
- * work) / that second. GPU time grows with the samples per pixel, so the busy fraction at scale n is predicted as
- * busy * n^2 / s^2. Hysteresis:
+ * work) / that second. GPU time grows with the samples per pixel (and has a per-primitive part), so the busy fraction
+ * at scale n is predicted from a table of measured relative costs (auto_cost). Hysteresis:
  *  - down: busy > AUTO_HIGH (0.85) for AUTO_DOWN_SECS (3) seconds in a row -> the highest lower scale predicted at
  *    <= AUTO_FIT (0.70) (at least one step);
- *  - up: the next scale predicted at <= AUTO_LOW (0.60) for AUTO_UP_SECS (15) seconds in a row, and not if that scale
- *    was left for being too slow within the last AUTO_RETRY_SECS (300) - so a GPU at the edge settles instead of
- *    switching back and forth;
+ *  - up: after AUTO_UP_SECS (15) judged seconds at this scale, the next scale predicted at <= AUTO_LOW (0.70) from the
+ *    lower quartile of those seconds' busy fractions (a lightly loaded GPU lowers its clocks - NVIDIA P-states - and
+ *    then measures up to ~3x longer in alternate seconds: 8.7% / 25% at 1x on the 4060 Ti; the lighter seconds are
+ *    the ones at full clock), and not if that scale was left for being too slow within the back-off time
+ *    (AUTO_RETRY_SECS = 120 s, doubled each time the same scale is left again) - so a GPU at the edge settles
+ *    instead of switching back and forth;
  *  - the AUTO_SETTLE (3) seconds after a change are not judged (target rescale, NVIDIA clock changes).
  * GS thread (stats_vblank, every VBlank). The scale goes to want_scale like an F2 change: the frontend rescales every
  * target from the next frame; gfx.c reads it back (gpu_hw_auto_scale) for its own state and the log. */
 #define AUTO_HIGH 0.85
 #define AUTO_FIT 0.70
-#define AUTO_LOW 0.60
+#define AUTO_LOW 0.70
 #define AUTO_DOWN_SECS 3
 #define AUTO_UP_SECS 15
-#define AUTO_RETRY_SECS 300
+#define AUTO_RETRY_SECS 120
 #define AUTO_SETTLE 3
 static volatile LONG auto_max;           /* 0: off (a fixed scale); else the highest scale auto picks */
 static struct {
@@ -203,8 +207,11 @@ static struct {
     uint32_t frames;
     LARGE_INTEGER t0;
     uint32_t secs;                       /* seconds judged so far (the clock of the rules above) */
-    int over, under, settle;
+    int over, settle;
+    double hist[AUTO_UP_SECS];           /* busy of the judged seconds at this scale (ring) */
+    int nhist;
     uint32_t left_at[9];                 /* secs + 1 when scale n was left for being too slow (0: never) */
+    uint32_t backoff[9];                 /* the back-off before scale n may be tried again (s) */
     uint32_t changes;
     double last_busy;
 } A;
@@ -216,6 +223,21 @@ void gpu_hw_set_auto_scale(int max) {
 }
 int gpu_hw_auto_scale(void) { return auto_max ? (int)want_scale : 0; }
 
+static int dcmp_auto(const void* a, const void* b) { double x = *(const double*)a, y = *(const double*)b; return x < y ? -1 : x > y; }
+/* GPU time at scale n relative to scale s. Not the sample count (1 x 2 samples per pixel at 1x, 3 x 4 at 2x, 4 x 6 at 3x
+ * for 16:9 displays): every primitive also costs something of its own, and 1x skips the per-sample paths altogether.
+ * Relative costs measured on the 4060 Ti, 16:9 (title / intro: 1x 8.7%, 2x 38.2%, 3x 52% GPU busy; replay S=3 -> 4 -> 5
+ * x1.56 / x2.58, appendix L), 6..8 extrapolated. Simple scenes have the steepest 1x -> 2x step (heavy hubs ~2-3x), so
+ * raising from 1x is cautious; a raise that turns out too slow is undone after AUTO_DOWN_SECS and backed off. */
+static double auto_cost(int n, int s) {
+    static const double c[9] = { 0, 1.0, 4.4, 6.0, 9.4, 15.5, 22.0, 30.0, 40.0 };
+    if (n < 1) n = 1;
+    if (n > 8) n = 8;
+    if (s < 1) s = 1;
+    if (s > 8) s = 8;
+    return c[n] / c[s];
+}
+
 static void auto_scale_tick(void) {
     LARGE_INTEGER t, f;
     QueryPerformanceCounter(&t);
@@ -224,30 +246,56 @@ static void auto_scale_tick(void) {
     double ms = (double)(t.QuadPart - A.t0.QuadPart) * 1000.0 / (double)f.QuadPart;
     if (ms < 1000.0) return;
     double busy = A.busy_ms / ms;
+    /* PS2_GS_AUTO_SLOW=<factor>[:<seconds>]: measured GPU time x factor (for the first <seconds> only) - tests of a slower GPU */
+    static double slow = -1;
+    static int slow_secs, ticks;
+    if (slow < 0) {
+        const char* e = getenv("PS2_GS_AUTO_SLOW");
+        slow = e && atof(e) > 0 ? atof(e) : 1.0;
+        slow_secs = e && strchr(e, ':') ? atoi(strchr(e, ':') + 1) : 0;
+    }
+    ticks++;
+    if (!slow_secs || ticks <= slow_secs) busy *= slow;
     uint32_t frames = A.frames;
     A.t0 = t;
     A.busy_ms = 0;
     A.frames = 0;
     int max = (int)auto_max, s = run_scale;
-    if (!max || !active || frames < 10 || s != (int)want_scale) { A.over = A.under = 0; return; }   /* (off, or loading a change) */
+    static int log_ticks = -1;           /* PS2_GS_AUTO_LOG=1: every second's measurement and state */
+    if (log_ticks < 0) { const char* e = getenv("PS2_GS_AUTO_LOG"); log_ticks = e && atoi(e) > 0; }
+    if (log_ticks && max)
+        hlog("internal scale auto: %u pictures, GPU busy %.1f%% at %dx (want %d), over %d, seconds here %d, settle %d, judged %u s, "
+             "left 2x/3x at %u/%u", frames, busy * 100.0, s, (int)want_scale, A.over, A.nhist, A.settle, A.secs, A.left_at[2],
+             A.left_at[3]);
+    if (!max || !active || frames < 10 || s != (int)want_scale) { A.over = 0; return; }   /* (off, or loading a change) */
     A.secs++;
     A.last_busy = busy;
     if (A.settle > 0) { A.settle--; return; }
+    A.hist[A.nhist % AUTO_UP_SECS] = busy;
+    A.nhist++;
     int to = s;
     if (busy > AUTO_HIGH && s > 1) {
         if (++A.over >= AUTO_DOWN_SECS) {
             to = s - 1;
-            while (to > 1 && busy * (double)(to * to) / (double)(s * s) > AUTO_FIT) to--;
+            while (to > 1 && busy * auto_cost(to, s) > AUTO_FIT) to--;
+            static int retry = -1;       /* (PS2_GS_AUTO_RETRY=<s>: the first back-off, tests) */
+            if (retry < 0) { const char* e = getenv("PS2_GS_AUTO_RETRY"); retry = e && atoi(e) > 0 ? atoi(e) : AUTO_RETRY_SECS; }
+            A.backoff[s] = A.left_at[s] ? 2 * A.backoff[s] : (uint32_t)retry;   /* (left again: twice the wait) */
             A.left_at[s] = A.secs + 1;
         }
     } else A.over = 0;
-    double next = s < 8 ? busy * (double)((s + 1) * (s + 1)) / (double)(s * s) : 9.0;
-    if (to == s && s < max && next <= AUTO_LOW && (!A.left_at[s + 1] || A.secs + 1 - A.left_at[s + 1] > AUTO_RETRY_SECS)) {
-        if (++A.under >= AUTO_UP_SECS) to = s + 1;
-    } else A.under = 0;
+    if (to == s && s < max && A.nhist >= AUTO_UP_SECS &&
+        (!A.left_at[s + 1] || A.secs + 1 - A.left_at[s + 1] > A.backoff[s + 1])) {
+        double v[AUTO_UP_SECS];          /* the lower quartile of the last AUTO_UP_SECS seconds */
+        memcpy(v, A.hist, sizeof v);
+        qsort(v, AUTO_UP_SECS, sizeof v[0], dcmp_auto);
+        double q = v[AUTO_UP_SECS / 4];
+        if (q * auto_cost(s + 1, s) <= AUTO_LOW) to = s + 1;
+    }
     if (s > max) to = max;               /* (the maximum was lowered) */
     if (to == s) return;
-    A.over = A.under = 0;
+    A.over = 0;
+    A.nhist = 0;
     A.settle = AUTO_SETTLE;
     A.changes++;
     hlog("internal scale auto: the GPU was busy %.0f%% of the time at %dx -> %dx (change %u)", busy * 100.0, s, to, A.changes);

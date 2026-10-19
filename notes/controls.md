@@ -60,5 +60,23 @@ passed to the game (Alt+Enter, Alt+Tab, Alt+F4 are window shortcuts).
 The picture is shown at the display aspect from sly2.ini (default 16:9; 4:3 is the PS2 picture
 as it was; notes/widescreen.md, notes/settings.md), fitted into the window with black bars; movies
 are pillarboxed to 4:3. The title bar shows the frame rate
-(frames the game presents per second). `PS2_WINDOW_GDI=1` forces the GDI presenter instead of
-Direct3D 11.
+(frames the game presents per second; "(GPU)" with the GPU renderer). `PS2_WINDOW_GDI=1` forces the
+GDI presenter instead of Direct3D 11 (software renderer only).
+
+## Graphics (GPU renderer, the default)
+
+Each change applies from the next frame and is remembered in sly2.ini `[graphics]` (notes/settings.md); the
+software renderer only uses F5 (the game's own motion blur), F7 and F8.
+
+| Action                                                        | Key        |
+|---------------------------------------------------------------|------------|
+| Internal resolution up (1x .. 8x the PS2's, wraps; fixed)     | F2         |
+| Internal resolution down (fixed)                              | Shift+F2   |
+| Internal resolution automatic (3x, lowered on a slow GPU)     | Ctrl+F2    |
+| Outlines: PS2 (one PS2 pixel wide) <-> thin                   | F3         |
+| Filters preset: Modern <-> Faithful (toggles back to preset)  | F4         |
+| Motion blur on / off                                          | F5         |
+| TV flicker filter on / off                                    | F6         |
+| Interlacing (field display) on / off                          | Shift+F6   |
+
+Debug only (`PS2_GS_DEBUG_KEYS=1`): F9 switches GPU <-> software renderer, Shift+F9 simulates a GPU device loss.

@@ -100,6 +100,26 @@ folder instead.
 Alt+Enter or F11: fullscreen. Closing the window ends the game; the window's size, position
 and fullscreen state are remembered. Controls: an Xbox-style controller, or the keyboard.
 
+Graphics: the game draws on your graphics card (Direct3D 11) at 3x the PS2's resolution in
+16:9, sharply scaled to the window, at 60 frames per second. On a graphics card that cannot
+keep up, the resolution is lowered automatically (internal_scale = auto). Keys while playing:
+  F2 / Shift+F2   resolution up / down (1x-8x; fixed from then on), Ctrl+F2 back to automatic
+  F3              outlines: PS2 (one PS2 pixel wide) / thin
+  F4              filters: Modern (motion blur, sharp progressive picture) / Faithful (as a PS2
+                  on a TV: flicker filter, interlacing)
+  F5 motion blur, F6 flicker filter, Shift+F6 interlacing, F7 16:9 / 4:3, F8 HUD at the
+  screen edges / centred
+Every change is remembered in sly2.ini (notes on each setting are in that file).
+
+Requirements: Windows 10 or 11 (64-bit) and a 4-core CPU. Graphics: a Direct3D 11 card
+(feature level 11_0 or 11_1) with typed UAV loads and double-precision shaders, current
+drivers. Rasterizer-ordered views (most cards since about 2015) make it faster; without them
+the same picture takes up to ~1.7x the graphics time. Tested on a GeForce RTX 4060 Ti, where
+3x 16:9 uses about half of the card's time; slower cards get 2x or 1x from the automatic
+setting. If the graphics card renderer cannot start, the game uses its software renderer
+(the PS2's resolution, needs a fast CPU) and sly2.log says why; renderer = software in
+sly2.ini selects it on purpose.
+
 Saves from an older build (a memcard\\slot0 folder next to an older sly2.exe) are not moved
 automatically: copy that memcard folder into %LOCALAPPDATA%\\Sly2 (or next to this exe in
 portable mode) while the game is not running.
