@@ -7,7 +7,7 @@
 
 #include <stdlib.h>
 
-typedef struct { uint64_t hash; uint16_t data[512]; } clut_slot;
+typedef struct { uint64_t hash; uint32_t gen, pad; uint16_t data[512]; } clut_slot;
 
 static clut_slot* ring;                  /* GPU_CLUT_SLOTS */
 static uint32_t next_slot, filled;
@@ -100,6 +100,7 @@ static void refresh(void) {
             if (filled < GPU_CLUT_SLOTS) filled++;
             else map_remove(ring[found].hash, found);
             ring[found].hash = h;
+            ring[found].gen++;               /* (M9: state analyses keyed by slot see the new content) */
             memcpy(ring[found].data, c, 1024);
             i = (uint32_t)h & (MAP_N - 1);
             while (map_slot[i]) i = (i + 1) & (MAP_N - 1);
@@ -116,6 +117,9 @@ static void refresh(void) {
 }
 
 uint32_t clut_content_id(void) { refresh(); return content_id; }
+
+/* (M9) bumped whenever the slot takes new content (the ring wrapped) */
+uint32_t clut_slot_gen(uint32_t slot) { return ring[slot & (GPU_CLUT_SLOTS - 1)].gen; }
 
 uint32_t clut_current_slot(void) {
     refresh();
@@ -150,6 +154,20 @@ void clut_alpha_range(uint32_t slot, uint64_t tex0, uint64_t texa, int* amin, in
     }
     e->hash = s->hash; e->key = key; e->amin = (int16_t)lo; e->amax = (int16_t)hi;
     *amin = lo; *amax = hi;
+}
+
+/* (M9) the alpha of palette entry idx of an indexed texture (as clut_alpha_range reads it) */
+int clut_entry_alpha(uint32_t slot, uint64_t tex0, uint64_t texa, uint32_t idx) {
+    uint32_t cpsm = (uint32_t)((tex0 >> 51) & 0xF), csa = (uint32_t)((tex0 >> 56) & 0x1F);
+    int c16 = cpsm == PSMCT16 || cpsm == PSMCT16S;
+    const clut_slot* s = &ring[slot];
+    uint32_t p = (csa * 16u + idx) & 511u;
+    if (c16) {
+        uint32_t ta0 = (uint32_t)(texa & 0xFF), aem = (uint32_t)((texa >> 15) & 1), ta1 = (uint32_t)((texa >> 32) & 0xFF);
+        uint32_t c = s->data[p];
+        return (int)((c & 0x8000u) ? ta1 : (aem && !(c & 0x7FFFu)) ? 0 : ta0);
+    }
+    return (int)((uint32_t)s->data[p ^ 256u] >> 8);
 }
 
 void clut_frame_end(void) { memset(used, 0, sizeof used); }

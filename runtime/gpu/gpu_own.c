@@ -681,18 +681,42 @@ void own_upload(int psm, uint32_t bp, uint32_t bw, int x0, int y0, int x1, int y
     /* the bits of every word this upload writes (PSMCT24/Z24: the low 3 bytes, T8H/T4HL/T4HH: part
      * of the top byte, 16/8/4-bit formats: their half, byte, nibble) */
     int n = 0;
-    for (int y = y0; y < y1; y++)
-        for (int x = x0; x < x1; x++) {
-            uint32_t m, w = texel_word(psm, bp, bw, (uint32_t)x, (uint32_t)y, &m), b = w >> 6;
-            if (blk_stamp[b] != upload_ctr) {
-                blk_stamp[b] = upload_ctr;
-                up_full[b] = 0;
-                memset(up_mask + (size_t)b * 64, 0, 256);
-                up_list[n++] = (uint16_t)b;
+    /* (M9) per cell of the buffer's block grid: a cell the rect covers whole writes every word of its block whole
+     * in the formats whose texels fill their words (32/16/8/4-bit; not CT24/Z24 and the top-byte formats) - set at
+     * once instead of texel by texel; the cells on the rect's edges go texel by texel as before */
+    int bwp, bhp, whole_ok = psm == PSMCT32 || psm == PSMZ32 || psm == PSMCT16 || psm == PSMCT16S || psm == PSMZ16 ||
+                             psm == PSMZ16S || psm == PSMT8 || psm == PSMT4;
+    block_dims(psm, &bwp, &bhp);
+    for (int cy = y0 / bhp; cy <= (y1 - 1) / bhp && y0 < y1; cy++)
+        for (int cx = x0 / bwp; cx <= (x1 - 1) / bwp && x0 < x1; cx++) {
+            int ua = cx * bwp, va = cy * bhp, ub = ua + bwp, vb = va + bhp;
+            if (whole_ok && ua >= x0 && ub <= x1 && va >= y0 && vb <= y1) {
+                uint32_t m, w = texel_word(psm, bp, bw, (uint32_t)ua, (uint32_t)va, &m), b = w >> 6;
+                if (blk_stamp[b] != upload_ctr) {
+                    blk_stamp[b] = upload_ctr;
+                    up_list[n++] = (uint16_t)b;
+                }
+                up_full[b] = 64;
+                memset(up_mask + (size_t)b * 64, 0xFF, 256);
+                continue;
             }
-            uint32_t o = up_mask[w];
-            if (o != 0xFFFFFFFFu && (o | m) == 0xFFFFFFFFu) up_full[b]++;
-            up_mask[w] = o | m;
+            if (ua < x0) ua = x0;
+            if (va < y0) va = y0;
+            if (ub > x1) ub = x1;
+            if (vb > y1) vb = y1;
+            for (int y = va; y < vb; y++)
+                for (int x = ua; x < ub; x++) {
+                    uint32_t m, w = texel_word(psm, bp, bw, (uint32_t)x, (uint32_t)y, &m), b = w >> 6;
+                    if (blk_stamp[b] != upload_ctr) {
+                        blk_stamp[b] = upload_ctr;
+                        up_full[b] = 0;
+                        memset(up_mask + (size_t)b * 64, 0, 256);
+                        up_list[n++] = (uint16_t)b;
+                    }
+                    uint32_t o = up_mask[w];
+                    if (o != 0xFFFFFFFFu && (o | m) == 0xFFFFFFFFu) up_full[b]++;
+                    up_mask[w] = o | m;
+                }
         }
     /* Words the upload writes whole become CPU data; GPU words it does not touch stay GPU data of the
      * block's writer (an upload of a CLUT into Z pages: the rest of the block is still the Z buffer's,
@@ -818,11 +842,34 @@ int own_readback_apply(const uint8_t* mem, int write) {
     return diff;
 }
 
+/* (M9) bumped whenever any block's writer, serial or CPU mask changes */
+uint32_t own_change_gen(void) { return change_gen; }
+
+/* (M9) a hash of the serials of the blocks of the rect [x0, x1] x [y0, y1] of a psm buffer, or 0 when one of them holds
+ * GPU-written words or downloaded data gs_vram lacks (gs_vram is not the truth there): the texel contents seen in
+ * gs_vram are unchanged while the hash is */
+uint64_t own_rect_serials(int psm, uint32_t bp, uint32_t bw, int x0, int y0, int x1, int y1) {
+    static uint16_t bl[GPU_BLOCKS];
+    int n = own_rect_blocks(psm, bp, bw, x0, y0, x1 + 1, y1 + 1, bl, GPU_BLOCKS);
+    uint64_t h = 0x9E3779B97F4A7C15ull;
+    for (int i = 0; i < n; i++) {
+        uint32_t b = bl[i];
+        if (blk_cpu[b] != ALL || blk_vstale[b]) return 0;
+        h = (h ^ blk_serial[b] ^ (uint64_t)b << 32) * 0xFF51AFD7ED558CCDull;
+        h ^= h >> 29;
+    }
+    return h ? h : 1;
+}
+
 /* some block of the rect holds downloaded data gs_vram lacks (CLUT loads read gs_vram) */
 int own_mem_vstale(int psm, uint32_t bp, uint32_t bw, int u0, int v0, int u1, int v1) {
-    for (int v = v0; v <= v1; v++)
-        for (int u = u0; u <= u1; u++) {
-            uint32_t m, w = texel_word(psm, bp, bw, (uint32_t)u & 2047u, (uint32_t)v & 2047u, &m);
+    /* (M9) per block of the buffer's block grid (the flag is per block): 4 tests for a CLUT instead of 256 */
+    int bwp, bhp;
+    if (gs_psm_bpp(psm) == 0) psm = PSMCT32;
+    block_dims(psm, &bwp, &bhp);
+    for (int by = v0 / bhp; by <= v1 / bhp; by++)
+        for (int bx = u0 / bwp; bx <= u1 / bwp; bx++) {
+            uint32_t m, w = texel_word(psm, bp, bw, (uint32_t)(bx * bwp) & 2047u, (uint32_t)(by * bhp) & 2047u, &m);
             if (blk_vstale[w >> 6]) return 1;
         }
     return 0;

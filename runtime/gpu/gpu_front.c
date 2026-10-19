@@ -44,6 +44,8 @@ static arena A_cmd, A_vtx, A_idx, A_rec, A_state, A_data;
  * (from any thread). */
 typedef struct gf_block { struct gf_block* next; arena a[6]; } gf_block;
 static gf_block* free_blocks;
+static int free_count;
+#define FREE_KEEP 3                      /* (M9) free frames kept with their arenas; more (after a deep queue) are freed */
 static SRWLOCK free_lock = SRWLOCK_INIT;
 static int in_sink;
 
@@ -51,7 +53,7 @@ void* gpu_front_detach(void) {
     if (!in_sink) return NULL;
     AcquireSRWLockExclusive(&free_lock);
     gf_block* fresh = free_blocks;
-    if (fresh) free_blocks = fresh->next;
+    if (fresh) { free_blocks = fresh->next; free_count--; }
     ReleaseSRWLockExclusive(&free_lock);
     if (!fresh && !(fresh = calloc(1, sizeof *fresh))) { fprintf(stderr, "[gpu_front] out of memory\n"); exit(1); }
     gf_block* b = malloc(sizeof *b);
@@ -63,14 +65,21 @@ void* gpu_front_detach(void) {
     return b;
 }
 
+/* (M9) the capacity of every frame arena (the building frame's, the frames in flight, the free ones) */
+volatile LONG64 gf_arena_bytes;
+
 void gpu_front_release(void* frame) {
     gf_block* b = frame;
     if (!b) return;
     AcquireSRWLockExclusive(&free_lock);
-    b->next = free_blocks;
-    free_blocks = b;
+    int keep = free_count < FREE_KEEP;
+    if (keep) { b->next = free_blocks; free_blocks = b; free_count++; }
     ReleaseSRWLockExclusive(&free_lock);
+    if (keep) return;
+    for (int i = 0; i < 6; i++) { InterlockedAdd64(&gf_arena_bytes, -(LONG64)b->a[i].cap); free(b->a[i].p); }
+    free(b);
 }
+size_t gpu_front_arena_bytes(void) { return (size_t)gf_arena_bytes; }
 
 static void* ar_reserve(arena* a, size_t bytes) {         /* not zeroed */
     if (a->n + bytes > a->cap) {
@@ -78,6 +87,7 @@ static void* ar_reserve(arena* a, size_t bytes) {         /* not zeroed */
         while (c < a->n + bytes) c *= 2;
         a->p = realloc(a->p, c);
         if (!a->p) { fprintf(stderr, "[gpu_front] out of memory\n"); exit(1); }
+        InterlockedAdd64(&gf_arena_bytes, (LONG64)(c - a->cap));
         a->cap = c;
     }
     void* r = a->p + a->n;
@@ -91,6 +101,7 @@ static void* ar_alloc(arena* a, size_t bytes) {
         while (c < a->n + bytes) c *= 2;
         a->p = realloc(a->p, c);
         if (!a->p) { fprintf(stderr, "[gpu_front] out of memory\n"); exit(1); }
+        InterlockedAdd64(&gf_arena_bytes, (LONG64)(c - a->cap));
         a->cap = c;
     }
     void* r = a->p + a->n;
@@ -203,12 +214,16 @@ typedef struct {
     /* memory-source cache: texels in tc[] are CPU data as of (tc_own_gen, tc_up_gen) */
     int tc_valid, tc_kind, tc[4];
     uint32_t tc_own_gen, tc_up_gen;
+    /* (M9) alpha range of the palette entries the texture's texels actually use (T8/T4 from memory), as of own
+     * change generation tu_gen - 1 (0: not computed); tu_lo > tu_hi: unknown */
+    uint32_t tu_gen;
+    int tu_lo, tu_hi;
 } fstate;
 
 /* The analysis of the last few distinct states, keyed by the registers it depends on: Sly alternates
  * pass A / pass B and rewrites TEX0 (with a CLUT reload of the same palette) for every draw, so most
  * state versions repeat a recent state. */
-#define SC_N 32
+#define SC_N 1024                        /* (M9: 2-way set associative, state_lookup) */
 #define SIG_N 24
 static fstate SC[SC_N];
 static uint64_t SC_sig[SC_N][SIG_N], SC_hash[SC_N];
@@ -286,13 +301,24 @@ static void state_lookup(const gs_env_view* ev) {
         r[R_SCISSOR_1 + ctx], r[R_XYOFFSET_1 + ctx], r[R_PABE], r[R_FBA_1 + ctx], r[R_COLCLAMP], r[R_DTHE], r[0x44],
         r[0x22], r[0x34 + ctx], r[0x36 + ctx], 0, 0, 0, 0 };
     uint32_t psm = (uint32_t)((r[R_TEX0_1 + ctx] >> 20) & 0x3F);
-    if ((attr & 0x10) && (psm == PSMT8 || psm == PSMT4 || psm == PSMT8H || psm == PSMT4HL || psm == PSMT4HH))
-        sig[20] = (uint64_t)clut_current_slot() + 1;   /* the palette's ring slot: repeats hit */
+    if ((attr & 0x10) && (psm == PSMT8 || psm == PSMT4 || psm == PSMT8H || psm == PSMT4HL || psm == PSMT4HH)) {
+        uint32_t cs = clut_current_slot();             /* the palette's ring slot: repeats hit; (M9) its generation */
+        sig[20] = ((uint64_t)cs + 1) | (uint64_t)clut_slot_gen(cs) << 32;
+    }
     if (sc_epoch != own_epoch) { memset(SC_used, 0, sizeof SC_used); sc_epoch = own_epoch; }
-    uint64_t h = 0x9E3779B97F4A7C15ull;
-    for (int i = 0; i < SIG_N; i++) { h ^= sig[i]; h *= 0xFF51AFD7ED558CCDull; h ^= h >> 29; }
-    int victim = 0;
-    for (int i = 0; i < SC_N; i++) {
+    /* (M9) four independent lanes (a single multiply chain over 24 words is latency-bound) */
+    uint64_t h0 = 0x9E3779B97F4A7C15ull, h1 = 0xC2B2AE3D27D4EB4Full, h2 = 0x165667B19E3779F9ull, h3 = 0x27D4EB2F165667C5ull;
+    for (int i = 0; i < SIG_N; i += 4) {
+        h0 = (h0 ^ sig[i]) * 0xFF51AFD7ED558CCDull; h1 = (h1 ^ sig[i + 1]) * 0xFF51AFD7ED558CCDull;
+        h2 = (h2 ^ sig[i + 2]) * 0xFF51AFD7ED558CCDull; h3 = (h3 ^ sig[i + 3]) * 0xFF51AFD7ED558CCDull;
+        h0 ^= h0 >> 29; h1 ^= h1 >> 29; h2 ^= h2 >> 29; h3 ^= h3 >> 29;
+    }
+    uint64_t h = ((h0 * 31 + h1) * 31 + h2) * 31 + h3;
+    h ^= h >> 32;
+    /* (M9) 2-way set associative over SC_N entries (Sly cycles through 200-600 states per frame: the M2 cache of
+     * the last 32, scanned linearly, missed ~16% of the lookups and every miss re-analyses the state) */
+    int i0 = (int)((h >> 17) & (SC_N - 1)) & ~1, victim = i0;
+    for (int i = i0; i < i0 + 2; i++) {
         if (SC_used[i] && SC_hash[i] == h && gf_eq64(SC_sig[i], sig, SIG_N)) {
             Sp = &SC[i];
             SC_age[i] = ++sc_clock;
@@ -690,14 +716,15 @@ static void close_draw(void) {
     if (OD.d.tier == GPU_TIER_ROV || OD.d.tier == GPU_TIER_ALIAS16) { gf.rov_draws++; cw_reset(); gf.d3d_draws_commute++; }
     else {
         gf.ff_draws += 1 + split;
-        if (!cw_add(OD.key ^ (uint64_t)split << 62, OD.bbox, OD.d.ct, OD.d.zt, OD.d.tex, OD.d.wmask != 0, (OD.d.depth & 1) != 0))
+        /* (the M2 estimate; M9: not in real frames, where it cost frontend time for a statistic) */
+        if (gf_cfg.mixed || !cw_add(OD.key ^ (uint64_t)split << 62, OD.bbox, OD.d.ct, OD.d.zt, OD.d.tex, OD.d.wmask != 0, (OD.d.depth & 1) != 0))
             gf.d3d_draws_commute += 1 + split;
     }
     if (trace_on)
         fprintf(stderr, "[front] draw %s %-8s cls %d prims %u count %u ct %u zt %u tex %u ps %03X blend %d depth %d wmask %X split %d "
-                        "FRAME %016llX ALPHA %010llX TEST %05llX\n", OD.d.tier == GPU_TIER_ROV ? "ROV" : OD.d.tier == GPU_TIER_ALIAS16 ? "A16" : "FF ", phase_names[OD.phase % GPU_PH_N], OD.d.cls,
+                        "FRAME %016llX ALPHA %010llX TEST %05llX bbox %d %d %d %d\n", OD.d.tier == GPU_TIER_ROV ? "ROV" : OD.d.tier == GPU_TIER_ALIAS16 ? "A16" : "FF ", phase_names[OD.phase % GPU_PH_N], OD.d.cls,
                 OD.prims, OD.d.count, OD.d.ct, OD.d.zt, OD.d.tex, OD.d.ps_key, OD.d.blend, OD.d.depth, OD.d.wmask, split,
-                (unsigned long long)OD.frame, (unsigned long long)OD.alpha, (unsigned long long)OD.test);
+                (unsigned long long)OD.frame, (unsigned long long)OD.alpha, (unsigned long long)OD.test, OD.bbox[0], OD.bbox[1], OD.bbox[2], OD.bbox[3]);
 }
 
 static void close_run(void) {
@@ -897,6 +924,64 @@ static void tex_source(const gs_env_view* ev, int u0, int v0, int u1, int v1, te
     }
     ts->T = T;
     (void)ev;
+}
+
+/* (M9) The source-alpha bound of an indexed texture from the palette entries its texels use, not the whole
+ * palette (the CLUT slot's min/max, clut_alpha_range). Sly's palettes hold entries with alpha above 0x80 that the
+ * texels drawn with them never use: every "As > 128" pass-A lerp of the corpus (gpu_front C>128 counter: 105k
+ * primitives in the ep7 boss, 80k ep8 boss, 40k ep5 street) has no texel above 0x80 in its texel rect, and those
+ * primitives were the ROV runs that dominate the GPU time of such scenes. The used-index set (256 bits) is kept per
+ * texture (TBP, TBW, PSM, size) and recomputed from gs_vram when a block of it changes (block serials); it is sound
+ * for every texel the primitive can sample (the whole texture). Textures in GPU-written or downloaded memory have
+ * no set (the palette bound stays). */
+#define TU_N 512
+typedef struct { uint64_t key, serials; uint32_t gen; int valid; uint64_t used[4]; } tu_entry;
+static tu_entry TU[TU_N];
+
+static int tex_used_indices(uint64_t used[4]) {
+    if ((S.tpsm != PSMT8 && S.tpsm != PSMT4) || S.tw * S.th > 512 * 512) return 0;
+    uint64_t key = (uint64_t)S.tbp | (uint64_t)S.tbw << 14 | (uint64_t)S.tpsm << 20 | (uint64_t)S.tw << 26 | (uint64_t)S.th << 38 | 1ull << 63;
+    uint64_t hk = key * 0x9E3779B97F4A7C15ull;
+    tu_entry* e = &TU[(hk >> 40) & (TU_N - 1)];
+    uint32_t g = own_change_gen();
+    if (e->valid && e->key == key && e->gen == g) { memcpy(used, e->used, 32); return 1; }
+    uint64_t sh = own_rect_serials(S.tpsm, S.tbp, S.tbw, 0, 0, S.tw - 1, S.th - 1);
+    if (!sh) return 0;
+    if (!(e->valid && e->key == key && e->serials == sh)) {
+        const uint8_t* vm = gf_vram ? gf_vram : gs_vram;
+        memset(e->used, 0, sizeof e->used);
+        for (int y = 0; y < S.th; y++)
+            for (int x = 0; x < S.tw; x++) {
+                uint32_t idx;
+                if (S.tpsm == PSMT8) idx = vm[gs_addr8(S.tbp, S.tbw, (uint32_t)x, (uint32_t)y)];
+                else { uint32_t na = gs_addr4(S.tbp, S.tbw, (uint32_t)x, (uint32_t)y); idx = (vm[na >> 1] >> ((na & 1) * 4)) & 15; }
+                e->used[idx >> 6] |= 1ull << (idx & 63);
+            }
+        e->key = key;
+        e->serials = sh;
+        e->valid = 1;
+        gf.tex_used_scans++;
+    }
+    e->gen = g;
+    memcpy(used, e->used, 32);
+    return 1;
+}
+
+/* the alpha range of the palette entries the current state's texture uses (S.tu_lo/tu_hi; lo > hi: unknown) */
+static void tex_used_alpha(const gs_env_view* ev) {
+    uint32_t g = own_change_gen() + 1;
+    if (S.tu_gen == g) return;
+    S.tu_gen = g;
+    S.tu_lo = 255; S.tu_hi = -1;
+    uint64_t used[4];
+    if (!tex_used_indices(used)) return;
+    uint64_t t0 = ev->reg[R_TEX0_1 + ev->ctx], texa = ev->reg[R_TEXA];
+    for (uint32_t i = 0; i < 256; i++)
+        if (used[i >> 6] >> (i & 63) & 1) {
+            int a = clut_entry_alpha(S.clut_slot, t0, texa, i);
+            if (a < S.tu_lo) S.tu_lo = a;
+            if (a > S.tu_hi) S.tu_hi = a;
+        }
 }
 
 /* feedback: the primitive samples the target it writes, on a lane it writes */
@@ -1249,16 +1334,47 @@ static int sb_span(int y, int xa, int xb, int set) {
 /* the primitive's pixels (triangle spans, sprite rectangle, line / point pixel records): set or test */
 static int sb_prim(int cls, const gs_tri* T, const gs_sprite* sp, size_t lp_start, uint32_t lp_n, int px, int py, int set) {
     int d = gf_cfg.scale > 1;                     /* (widened at scale > 1) */
+    /* (M9) a test outside the rectangle of the bits set so far cannot hit */
+    int qx0 = (cls == GPU_PC_TRI ? T->bx0 : cls == GPU_PC_SPRITE ? sp->px0 : px) - d - 1;
+    int qx1 = (cls == GPU_PC_TRI ? T->bx1 : cls == GPU_PC_SPRITE ? sp->px1 : px) + d + 1;
+    int qy0 = (cls == GPU_PC_TRI ? T->by0 : cls == GPU_PC_SPRITE ? sp->py0 : py) - d - 1;
+    int qy1 = (cls == GPU_PC_TRI ? T->by1 : cls == GPU_PC_SPRITE ? sp->py1 : py) + d + 1;
+    if (!set && cls != GPU_PC_LINEPIX && (qy1 < sb_y0 || qy0 > sb_y1 || (qx1 >> 6) < sb_w0 || (qx0 >> 6) > sb_w1)) return 0;
     if (cls == GPU_PC_TRI) {
         gs_edge e[3];
         gs_tri_edges(T, e);
         int hit = 0;
-        for (int y = T->by0; y <= T->by1; y++, gs_tri_edges_next(e)) {
-            int64_t xl, xr;
-            gs_tri_row(e, T->bx0, T->bx1, &xl, &xr);
-            if (xl > xr) continue;
-            for (int k = -d; k <= d; k++) hit |= sb_span(y + k, (int)xl - d, (int)xr + d, set);
-            if (hit && !set) return 1;
+        if (!d) {
+            for (int y = T->by0; y <= T->by1; y++, gs_tri_edges_next(e)) {
+                int64_t xl, xr;
+                gs_tri_row(e, T->bx0, T->bx1, &xl, &xr);
+                if (xl > xr) continue;
+                hit |= sb_span(y, (int)xl, (int)xr, set);
+                if (hit && !set) return 1;
+            }
+            return hit;
+        }
+        /* (M9) at scale: bitmap row y takes the hull of the spans of rows y - 1, y, y + 1, widened by a pixel - one
+         * span per row instead of three (the hull covers at least their union: conservative, so still exact) */
+        int alo = 1 << 30, ahi = -1;              /* the span of triangle row q - 1 (empty: lo > hi) */
+        int blo = 1 << 30, bhi = -1;              /* of row q */
+        for (int q = T->by0 - 1; q <= T->by1 + 1; q++) {
+            int clo = 1 << 30, chi = -1;          /* of row q + 1 (rows by0 .. by1 in order, edges stepped with them) */
+            if (q + 1 <= T->by1) {
+                int64_t xl, xr;
+                gs_tri_row(e, T->bx0, T->bx1, &xl, &xr);
+                gs_tri_edges_next(e);
+                if (xl <= xr) { clo = (int)xl; chi = (int)xr; }
+            }
+            int lo = alo < blo ? alo : blo, hi = ahi > bhi ? ahi : bhi;
+            if (clo < lo) lo = clo;
+            if (chi > hi) hi = chi;
+            if (hi >= lo) {
+                hit |= sb_span(q, lo - 1, hi + 1, set);
+                if (hit && !set) return 1;
+            }
+            alo = blo; ahi = bhi;
+            blo = clo; bhi = chi;
         }
         return hit;
     }
@@ -1549,6 +1665,24 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
         if (S.tbw & (S.tbw - 1)) gf.tbw_npot++;
     }
 
+    /* (M9) a tighter source-alpha bound where the palette's decides a tier or an ATST split: the palette entries the
+     * texture's texels use (tex_used_alpha) */
+    int as_hi_pal = as_hi;               /* (the palette bound: the As > 128 rule with PS2_GPU_NO_TEX_ALPHA=2) */
+    if (P->tme && P->tcc && S.indexed && ts.kind == TK_VRAM_IDX && !ts.punt && gf_cfg.no_tex_alpha != 1 &&
+        ((S.cd_dep && S.c_as && as_hi > 128 && !gf_cfg.no_tex_alpha) ||
+         (S.fatst == FATST_SPLIT && atst_count(S.atst, S.aref, as_lo, as_hi) % (as_hi - as_lo + 1) != 0))) {
+        tex_used_alpha(ev);
+        if (S.tu_lo <= S.tu_hi && (S.tu_lo > S.tamin || S.tu_hi < S.tamax)) {
+            switch (P->tfx) {
+            case 0: as_lo = (va_lo * S.tu_lo) >> 7; as_hi = (va_hi * S.tu_hi) >> 7; break;
+            case 2: as_lo = S.tu_lo + va_lo; as_hi = S.tu_hi + va_hi; break;
+            default: as_lo = S.tu_lo; as_hi = S.tu_hi; break;
+            }
+            as_lo = clamp_byte(as_lo); as_hi = clamp_byte(as_hi);
+            gf.tex_alpha_refined++;
+        }
+    }
+
     PROF_MARK(3);
     /* ---- tier ---- */
     int tier = GPU_TIER_FF, why = -1, punt = S.punt;
@@ -1571,7 +1705,7 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
     else if (S.alias) tier = GPU_TIER_ALIAS16;
     else {
         if (S.rov) why = S.rov - 1;
-        else if (S.cd_dep && S.c_as && as_hi > 128) why = GPU_ROV_C_OVER128;
+        else if (S.cd_dep && S.c_as && (gf_cfg.no_tex_alpha == 2 ? as_hi_pal : as_hi) > 128) why = GPU_ROV_C_OVER128;
         else if (dual_exact && S.cd_dep &&       /* (M8 measurement: PS2_GPU_DUAL_EXACT=1 partial-alpha dual-source blends exact) */
                  (S.c_as ? !(as_lo == as_hi && (as_lo == 0 || as_lo == 128)) : (P->fix != 0 && P->fix != 128))) why = GPU_ROV_CLASS;
         else if (z32_high || (S.zt && S.zt->z_high)) why = GPU_ROV_Z32_HIGH;
@@ -1718,6 +1852,7 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
     /* the exact ATST split (above sb_prim): a pass-capable primitive over pixels of an earlier fail-capable
      * one of the open draw starts a new draw (thin lines: their bounding box) */
     int xsplit = tier == GPU_TIER_FF && S.fatst == FATST_SPLIT && outcome && !gf_cfg.split_ff;
+    { static int nosb = -1; if (nosb < 0) { const char* e = getenv("PS2_GPU_DBG_NOSB"); nosb = e && atoi(e); } if (nosb) xsplit = 0; }   /* (M9 measurement: wrong pictures) */
     gs_sprite tbox;
     int scls = cls;
     if (thin) { memset(&tbox, 0, sizeof tbox); tbox.px0 = x0; tbox.py0 = y0; tbox.px1 = x1; tbox.py1 = y1; scls = GPU_PC_SPRITE; }
@@ -1780,18 +1915,37 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
         if (ff_fast && gf_cfg.mixed) {
             /* FF triangle (M5): the integer part of the record (128 bytes: Z, colour, fog, U/V rows), S/T/Q
              * interpolated by the hardware */
-            gs_planes pl;
-            gs_tri_planes(&T, vs, ev->iip, P->fge, P->zuse, P->tme, P->fst, &pl);
-            gs_rowstep rs;
-            gs_rowstep_init(&rs, &pl, T.by0);
+            /* (M9) only the planes this record holds and only where they vary: gs_tri_planes + gs_rowstep_init
+             * computed every plane (S/T/Q too, which this record does not carry); a constant plane gives
+             * row = round(value * scale) and zero steps, exactly what gs_rowstep_attr gives for it */
             fullrec* r = ar_reserve(&A_rec, 128);
-            r->zrow = rs.row[GS_A_Z]; r->zdy = rs.dy[GS_A_Z]; r->zdx = rs.dx[GS_A_Z];
-            static const int map7[7] = { GS_A_R, GS_A_G, GS_A_B, GS_A_A, GS_A_F, GS_A_U, GS_A_V };
-            for (int k = 0; k < 7; k++) {
-                r->row[k] = (int32_t)(uint32_t)(uint64_t)rs.row[map7[k]];
-                r->dy[k] = (int32_t)(uint32_t)(uint64_t)rs.dy[map7[k]];
-                r->dx[k] = (int32_t)(uint32_t)(uint64_t)rs.dx[map7[k]];
+            gs_plane pp;
+            int64_t row, dyy, dxx;
+#define FF_ROW(cond, fld, scale, is_z, ROW, DY, DX)                                                      \
+            do {                                                                                        \
+                if (cond) {                                                                             \
+                    gs_tri_plane(&T, &pp, vs[0]->fld, vs[1]->fld, vs[2]->fld);                          \
+                    gs_rowstep_attr(&pp, T.by0, scale, is_z, &row, &dyy, &dxx);                         \
+                } else {                                                                                \
+                    row = gs_fx_round((double)vs[2]->fld * (scale)); dyy = 0; dxx = 0;                  \
+                }                                                                                       \
+                ROW; DY; DX;                                                                            \
+            } while (0)
+            int iip = ev->iip, uvp = P->tme && P->fst;
+            FF_ROW(P->zuse, z, 65536.0, 1, r->zrow = row, r->zdy = dyy, r->zdx = dxx);
+            FF_ROW(iip, r, 65536.0, 0, r->row[0] = (int32_t)(uint32_t)(uint64_t)row, r->dy[0] = (int32_t)(uint32_t)(uint64_t)dyy, r->dx[0] = (int32_t)(uint32_t)(uint64_t)dxx);
+            FF_ROW(iip, g, 65536.0, 0, r->row[1] = (int32_t)(uint32_t)(uint64_t)row, r->dy[1] = (int32_t)(uint32_t)(uint64_t)dyy, r->dx[1] = (int32_t)(uint32_t)(uint64_t)dxx);
+            FF_ROW(iip, b, 65536.0, 0, r->row[2] = (int32_t)(uint32_t)(uint64_t)row, r->dy[2] = (int32_t)(uint32_t)(uint64_t)dyy, r->dx[2] = (int32_t)(uint32_t)(uint64_t)dxx);
+            FF_ROW(iip, a, 65536.0, 0, r->row[3] = (int32_t)(uint32_t)(uint64_t)row, r->dy[3] = (int32_t)(uint32_t)(uint64_t)dyy, r->dx[3] = (int32_t)(uint32_t)(uint64_t)dxx);
+            FF_ROW(P->fge, f, 65536.0, 0, r->row[4] = (int32_t)(uint32_t)(uint64_t)row, r->dy[4] = (int32_t)(uint32_t)(uint64_t)dyy, r->dx[4] = (int32_t)(uint32_t)(uint64_t)dxx);
+            if (uvp) {
+                FF_ROW(1, u, (double)(1 << GS_UVSH), 0, r->row[5] = (int32_t)(uint32_t)(uint64_t)row, r->dy[5] = (int32_t)(uint32_t)(uint64_t)dyy, r->dx[5] = (int32_t)(uint32_t)(uint64_t)dxx);
+                FF_ROW(1, v, (double)(1 << GS_UVSH), 0, r->row[6] = (int32_t)(uint32_t)(uint64_t)row, r->dy[6] = (int32_t)(uint32_t)(uint64_t)dyy, r->dx[6] = (int32_t)(uint32_t)(uint64_t)dxx);
+            } else {                             /* (U / V planes are 0 without FST texturing) */
+                r->row[5] = r->dy[5] = r->dx[5] = 0;
+                r->row[6] = r->dy[6] = r->dx[6] = 0;
             }
+#undef FF_ROW
             r->by0 = (int16_t)T.by0;
             r->bx0 = (int16_t)T.bx0;
             r->state = state;
@@ -1978,7 +2132,10 @@ static void frame_begin(void) {
     A_cmd.n = A_vtx.n = A_idx.n = A_rec.n = A_state.n = A_data.n = 0;
     memset(smap_idx, 0, sizeof smap_idx);
     nstates = 0;
-    memset(SC_used, 0, sizeof SC_used);  /* targets may have been released; StateRecs are per frame */
+    /* StateRecs are per frame. (M9) The state analyses stay valid across frames (target pointers: own_epoch; CLUT ring
+     * slots: their generation is in the signature; the texture caches carry their own generations): every frame
+     * re-analysed its 200-600 states before */
+    for (int i = 0; i < SC_N; i++) SC[i].state_valid = 0;
     Sp = &SC[0];
     S.version = 0;
     prev_state_index = -1;
@@ -2032,6 +2189,11 @@ uint32_t gpu_front_post_prims(void) { return gf.post_prims; }
 void gpu_front_start(const gpu_front_config* cfg) {
     memset(&gf_cfg, 0, sizeof gf_cfg);
     if (cfg) gf_cfg = *cfg;
+    {   /* (M9) PS2_GPU_NO_TEX_ALPHA=1: the M8 source-alpha bound (whole palettes), for comparisons */
+        const char* e = getenv("PS2_GPU_NO_TEX_ALPHA");
+        if (e && atoi(e)) gf_cfg.no_tex_alpha = atoi(e);   /* (2: only for ATST split outcomes, which stay exact) */
+    }
+    memset(TU, 0, sizeof TU);            /* (block serials start over) */
     GS_INIT();
     nar = 0;
     hud_stats_reset();

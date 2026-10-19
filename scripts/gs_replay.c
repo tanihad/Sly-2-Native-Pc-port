@@ -34,8 +34,10 @@
 #include "gpu/gpu_front.h"
 #include "gpu/gpu_hw.h"
 #include "gpu/gpu_verify.h"
+#include "gpu/gpu_front_int.h"              /* (M9 --sample-hash: a target's drawn rows, gt[id].rows) */
 #include "gs_mem_swizzle.h"                /* (lockstep crops) */
 #include <wchar.h>
+#include <psapi.h>                         /* (M9 mem-bench) */
 #include <stddef.h>
 #endif
 
@@ -268,6 +270,7 @@ static const struct { const char* name; size_t off; int kind; } front_fields[] =
     U32F(cd_as_kicks), U32F(as_over128), ARRF(zprims, GPU_ZF_N), ARRF(zmin, GPU_ZF_N), ARRF(zmax, GPU_ZF_N),
     U32F(z32_over), U32F(tex_vram), U32F(tex_view_c32), U32F(tex_view_alpha), U32F(tex_alias16), U32F(region_clamp),
     U32F(tbw_npot), U32F(selfcheck_bad), U32F(lost_writer), U32F(post_prims), U32F(stq_cuts), U32F(checkpoints), ARRF(phase_prims, GPU_PH_N),
+    U32F(tex_alpha_refined), U32F(tex_used_scans),
 };
 
 static void json_front(FILE* f, const gpu_front_frame* g) {
@@ -330,6 +333,7 @@ static void front_report(const char* metrics, const char* rec, double replay_ms,
     fprintf(stderr, "hwdry: ROV why: ref %u colclamp %u fbmsk %u date %u blend %u C>128 %u pabe/dthe %u z32-high %u straddle %u class %u\n",
             sum.rov_why[0], sum.rov_why[1], sum.rov_why[2], sum.rov_why[3], sum.rov_why[4], sum.rov_why[5], sum.rov_why[6],
             sum.rov_why[7], sum.rov_why[8], sum.rov_why[9]);
+    fprintf(stderr, "hwdry: source-alpha bounds from the texels' palette entries: %u primitives, %u texture scans\n", sum.tex_alpha_refined, sum.tex_used_scans);
     fprintf(stderr, "hwdry: PUNT %u (target overlap %u, frame fmt %u, tex foreign %u, tex fmt %u, forced %u, punt readback mismatches %u)\n",
             sum.tier[3], sum.punt_why[0], sum.punt_why[1], sum.punt_why[2], sum.punt_why[3], sum.punt_why[4], sum.punt_why[5]);
     fprintf(stderr, "hwdry: pass A (ATST + AFAIL != KEEP) %u kicks: all-pass %u all-fail %u straddle %u (%.2f%%); lerp blends with C=As %u, As > 128 %u (%.2f%%)\n",
@@ -400,6 +404,58 @@ static void stream_sink(const gpu_front_frame_data* fd, void* user) {
     (void)user;
     hash_bytes_into(fd->cmd, fd->cmd_bytes); hash_bytes_into(fd->vtx, fd->vtx_bytes); hash_bytes_into(fd->idx, fd->idx_count * 4);
     hash_bytes_into(fd->rec, fd->rec_bytes); hash_bytes_into(fd->states, fd->state_count * GPU_STATE_BYTES); hash_bytes_into(fd->data, fd->data_bytes);
+}
+
+/* (M9) the process's committed memory (private bytes, now and peak) and working set at the end of a GPU replay */
+static void mem_report(void) {
+    PROCESS_MEMORY_COUNTERS_EX pm;
+    memset(&pm, 0, sizeof pm);
+    pm.cb = sizeof pm;
+    uint64_t vl = 0, vn = 0;
+#ifdef GPU_FRONT_THREAD_HANDLE
+    gpu_video_memory(&vl, &vn);
+#endif
+    if (K32GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS*)&pm, sizeof pm))
+        fprintf(stderr, "mem-bench committed_mb=%.1f peak_committed_mb=%.1f working_set_mb=%.1f frame_arenas_mb=%.1f video_mb=%.1f\n",
+                pm.PrivateUsage / 1048576.0, pm.PeakPagefileUsage / 1048576.0, pm.WorkingSetSize / 1048576.0,
+#ifdef GPU_FRONT_THREAD_HANDLE
+                gpu_front_arena_bytes() / 1048576.0, vl / 1048576.0);
+#else
+                0.0, 0.0);
+#endif
+    if (!getenv("GS_REPLAY_MEM_MAP")) return;
+    /* committed private memory by allocation (VirtualAlloc reservation): the largest sizes, counted */
+    struct { size_t size; int n; } sz[64];
+    int nsz = 0;
+    size_t other = 0;
+    uint8_t* p = NULL;
+    MEMORY_BASIC_INFORMATION mi;
+    void* cur_base = NULL;
+    size_t cur = 0;
+    for (;;) {
+        if (!VirtualQuery(p, &mi, sizeof mi)) break;
+        if (mi.AllocationBase != cur_base) {
+            if (cur) {
+                int k = 0;
+                while (k < nsz && sz[k].size != cur) k++;
+                if (k < nsz) sz[k].n++;
+                else if (nsz < 64) { sz[nsz].size = cur; sz[nsz].n = 1; nsz++; }
+                else other += cur;
+            }
+            cur_base = mi.AllocationBase;
+            cur = 0;
+        }
+        if (mi.State == MEM_COMMIT && mi.Type == MEM_PRIVATE) cur += mi.RegionSize;
+        uint8_t* q = (uint8_t*)mi.BaseAddress + mi.RegionSize;
+        if (q <= p) break;
+        p = q;
+    }
+    for (int i = 0; i < nsz; i++)
+        for (int j = i + 1; j < nsz; j++)
+            if ((double)sz[j].size * sz[j].n > (double)sz[i].size * sz[i].n) { size_t s = sz[i].size; int n = sz[i].n; sz[i] = sz[j]; sz[j].size = s; sz[j].n = n; }
+    for (int i = 0; i < nsz && i < 16; i++)
+        fprintf(stderr, "mem-map %6.2f MB x %d = %.1f MB\n", sz[i].size / 1048576.0, sz[i].n, sz[i].size * (double)sz[i].n / 1048576.0);
+    fprintf(stderr, "mem-map other sizes %.1f MB\n", other / 1048576.0);
 }
 
 /* ---- hwsubmit (M2): the render thread executed every frame; its per-frame costs ---- */
@@ -1149,6 +1205,8 @@ static void snap_flicker_strip(uint64_t* priv) {
     priv[0] &= ~(uint64_t)(dby1 > dby2 ? 1 : 2);
 }
 
+static uint64_t game_pic_hash = 0xCBF29CE484222325ull;
+
 static void game_dump(const uint32_t* px, int w, int h, uint32_t vblank, int content43) {
     (void)vblank; (void)content43;
     if (px) memcpy(game_px, px, (size_t)w * (size_t)h * 4);
@@ -1182,6 +1240,11 @@ static void game_vblank(uint32_t vblank) {
     LONG zero = 0;
     while (!game_got) WaitOnAddress((volatile VOID*)&game_got, &zero, sizeof zero, 50);
     game_pics++;
+    {   /* (M9) a hash of every GPU picture (hw-vs-hw exactness of optimisations: game-pic-hash in the report) */
+        game_pic_hash ^= (uint64_t)game_w << 32 | (uint64_t)game_h;
+        game_pic_hash *= 0x100000001B3ull;
+        for (size_t i = 0, n = (size_t)game_w * (size_t)game_h; i < n; i++) { game_pic_hash ^= game_px[i] & 0xFFFFFF; game_pic_hash *= 0x100000001B3ull; game_pic_hash ^= game_pic_hash >> 29; }
+    }
     if (game_save && game_w) save_png("", game_px, game_w, game_h, game_w, vblank);
     if (!hwmem) hwmem = malloc(GS_VRAM_SIZE);
     if (!hw_hist) hw_hist = gs_compose_hist_new();
@@ -1310,6 +1373,7 @@ static void game_report(void) {
             (unsigned long long)xc.ff_draws, (unsigned long long)xc.rov_draws, (unsigned long long)xc.frames,
             game_sw_pics ? "; software renderer pictures after a fall-back: see below" : "");
     if (game_sw_pics) fprintf(stderr, "game: %u pictures by the software renderer (fall-back)\n", game_sw_pics);
+    fprintf(stderr, "game-pic-hash %016llx over %u pictures\n", (unsigned long long)game_pic_hash, game_pics);
     if (!game_exact)
         fprintf(stderr, "game: scale %d gfx %X: box-downsampled vs the reference compose: min PSNR %.2f dB, max |mean signed error| %.3f, "
                         "%u beyond (PSNR < 32 dB or |mean signed error| >= 0.5); min PSNR centred box %.2f, pixel box %.2f\n", game_scale, game_gfx,
@@ -1331,6 +1395,10 @@ static uint64_t smp_cwords, smp_c2, smp_c16, smp_zwords, smp_zdiff;
 static double smp_w2, smp_w16, smp_wz;              /* worst fractions of a single comparison */
 #define SMP_CAP (16u << 20)
 
+/* (M9) --sample-hash FILE: instead of dumps, one line per target and point with a hash of all its samples (colour words,
+ * zpatch words), for hw-vs-hw exactness checks of optimisations (scripts/m9_hashcmp.py compares two files) */
+static FILE* smp_hash_file;
+
 static void sample_point(uint32_t vblank) {
     static uint32_t *buf, *ref;
     if (!buf) { buf = malloc((size_t)SMP_CAP * 4); ref = malloc((size_t)SMP_CAP * 4); }
@@ -1341,6 +1409,16 @@ static void sample_point(uint32_t vblank) {
         if (gpu_front_target_kind(id) < 0) continue;
         int w, h, kx, ky, depth;
         if (!gpu_exec_read_target(id, buf, SMP_CAP, &w, &h, &kx, &ky, &depth)) continue;
+        if (smp_hash_file) {
+            /* the target's drawn rows only (the allocation's padding rows below them are never drawn, shown or downloaded) */
+            int rows = id <= GPU_MAX_TARGETS && gt[id].used ? (int)gt[id].rows : 0;
+            int hh = rows > 0 && rows * ky < h ? rows * ky : h;
+            uint64_t hv = 0xCBF29CE484222325ull;
+            size_t n = (size_t)w * (size_t)hh;
+            for (size_t i = 0; i < n; i++) { hv ^= buf[i]; hv *= 0x100000001B3ull; hv ^= hv >> 29; }
+            fprintf(smp_hash_file, "v%06u t%02u %s %dx%d k%dx%d %016llx\n", vblank, id, depth ? "Z" : "C", w, hh, kx, ky, (unsigned long long)hv);
+            continue;
+        }
         char path[1100];
         snprintf(path, sizeof path, "%s/v%06u_t%02u.raw", smp_dir, vblank, id);
         uint32_t hd[8] = { 0x504D5347u /* GSMP */, id, (uint32_t)depth, (uint32_t)w, (uint32_t)h, (uint32_t)kx, (uint32_t)ky, 0 };
@@ -1413,6 +1491,7 @@ static void sample_point(uint32_t vblank) {
 
 static void sample_report(void) {
     if (!smp_dir) return;
+    if (smp_hash_file) { fclose(smp_hash_file); smp_hash_file = NULL; fprintf(stderr, "sample-hash: %u points\n", smp_points); return; }
     if (!smp_compare) { fprintf(stderr, "sample-dump: %u points written to %s\n", smp_points, smp_dir); return; }
     fprintf(stderr, "sample-compare: %u points, %u target comparisons, %u beyond the budget, %u missing; colour words > 2: %.4f%% "
                     "(worst %.4f%%), > 16: %.5f%% (worst %.5f%%); Z words differ: %.5f%% (worst %.5f%%)\n", smp_points, smp_targets, smp_beyond,
@@ -1671,6 +1750,10 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--sample-dump") && i + 1 < argc) { smp_dir = argv[++i]; smp_compare = 0; }
         else if (!strcmp(argv[i], "--sample-compare") && i + 1 < argc) { smp_dir = argv[++i]; smp_compare = 1; }
         else if (!strcmp(argv[i], "--sample-every") && i + 1 < argc) { smp_every = atoi(argv[++i]); if (smp_every < 1) smp_every = 1; }
+        else if (!strcmp(argv[i], "--sample-hash") && i + 1 < argc) {   /* (M9) hashes of every sample of every target */
+            if (!(smp_hash_file = fopen(argv[++i], "w"))) { fprintf(stderr, "cannot write %s\n", argv[i]); return 1; }
+            smp_dir = "-"; smp_compare = 0;
+        }
         else if (!strcmp(argv[i], "--flicker-off")) gfx_set |= GPU_GFX_FLICKER_OFF;
         else if (!strcmp(argv[i], "--thin")) gfx_set |= GPU_GFX_THIN;
         else if (!strcmp(argv[i], "--fields")) fields_opt = 1;
@@ -1861,7 +1944,12 @@ int main(int argc, char** argv) {
     HANDLE prof_thread = NULL;
     if (profile) {
         prof_symbols();
-        DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &ptarget,
+        HANDLE pt = GetCurrentThread();
+#if defined(GS_REPLAY_GPU) && defined(GPU_FRONT_THREAD_HANDLE)
+        /* (M9) GS_REPLAY_PROFILE_FRONT=1 with --front-thread: sample the frontend thread instead */
+        if (getenv("GS_REPLAY_PROFILE_FRONT") && gpu_front_thread_handle()) pt = (HANDLE)gpu_front_thread_handle();
+#endif
+        DuplicateHandle(GetCurrentProcess(), pt, GetCurrentProcess(), &ptarget,
                         THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, 0);
         prof_thread = CreateThread(NULL, 0, prof_main, NULL, 0, NULL);
         if (prof_thread) SetThreadPriority(prof_thread, THREAD_PRIORITY_TIME_CRITICAL);
@@ -2047,6 +2135,7 @@ int main(int argc, char** argv) {
         gpu_finish();
         take_stats();
         take_front();
+        mem_report();
         rc = submit_report(metrics, argv[1], ms, frames);
         thread_report(front_thread);
         gpu_front_stop();
@@ -2059,6 +2148,7 @@ int main(int argc, char** argv) {
         gpu_finish();
         take_stats();
         take_front();
+        mem_report();
         uint32_t posts = 0, stq_cuts = 0, lost = 0;
         for (size_t i = 0; i < nff; i++) { posts += ff[i].post_prims; stq_cuts += ff[i].stq_cuts; lost += ff[i].lost_writer; }
         gpu_exec_counters xc;

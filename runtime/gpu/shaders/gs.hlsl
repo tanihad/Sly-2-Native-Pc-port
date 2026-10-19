@@ -23,22 +23,35 @@
 #define PRIM 0                           // 0 triangles, 1 sprites, 2 line / point pixels
 #endif
 
-cbuffer draw_cb : register(b0) {
-    uint rec_first;                      // byte offset of the draw's first record
-    uint draw_flags;                     // 1: colour target bound (u0), 2: depth target bound (u1)
-    uint kx, ky;                         // samples per native pixel of the bound targets
-    float2 ndc_scale, ndc_bias;          // NDC = d3d pixel * scale + bias (power-of-two viewport: exact)
-    uint vkx, vky;                       // texture view target samples
-    uint probe_x, probe_y;               // debug probe pixel (PS2_GPU_PROBE; ~0: off)
-    float one;                           // 1.0: products multiplied by it are rounded before any add
+// Per-draw constants (gpu_exec.c draw_consts, 256 bytes per draw slot). (M9) Read from the buffer drawc by the draw's
+// slot, which every draw passes as its StartInstanceLocation (the vertex shader's per-instance input DRAWID, the
+// executor's iota vertex buffer) and the vertex shader hands to the pixel shader: no constant buffer is rebound per
+// draw (binding a constant-buffer window per draw cost the GPU ~0.2 us per draw at 3x).
+ByteAddressBuffer drawc : register(t9);
+static uint rec_first;                   // byte offset of the draw's first record
+static uint draw_flags;                  // 1: colour target bound (u0), 2: depth target bound (u1)
+static uint kx, ky;                      // samples per native pixel of the bound targets
+static float2 ndc_scale, ndc_bias;       // NDC = d3d pixel * scale + bias (power-of-two viewport: exact)
+static uint vkx, vky;                    // texture view target samples
+static uint probe_x, probe_y;            // debug probe pixel (PS2_GPU_PROBE; ~0: off)
+static float one;                        // 1.0: products multiplied by it are rounded before any add
                                          //   (drivers may fuse a*b+c into an FMA despite `precise`)
-    uint vbase, vfbw;                    // texture view target: base page, width (CT16 views map words to its pixels)
-    uint vflags;                         // 1: the view has the bound target's sample grid (1:1 reads use the fragment's sample)
-    uint ff_blend;                       // FF draws (M5): blend class (gpu_front.c BL_*)
-    uint atst_mode;                      // FF draws: 0, 1 the pass draw of an ATST split (discard failing fragments),
+static uint vbase, vfbw;                 // texture view target: base page, width (CT16 views map words to its pixels)
+static uint vflags;                      // 1: the view has the bound target's sample grid (1:1 reads use the fragment's sample)
+static uint ff_blend;                    // FF draws (M5): blend class (gpu_front.c BL_*)
+static uint atst_mode;                   // FF draws: 0, 1 the pass draw of an ATST split (discard failing fragments),
                                          //   2 its fail draw (discard passing fragments)
-    float dual_bias;                     // FF dual-source blends: LSB the source is lowered by (ps_ff)
-};
+static float dual_bias;                  // FF dual-source blends: LSB the source is lowered by (ps_ff)
+
+void load_draw(uint did) {
+    uint b = did * 256u;
+    uint4 a = drawc.Load4(b), c = drawc.Load4(b + 16u), d = drawc.Load4(b + 32u), e = drawc.Load4(b + 48u), f = drawc.Load4(b + 64u);
+    rec_first = a.x; draw_flags = a.y; kx = a.z; ky = a.w;
+    ndc_scale = asfloat(c.xy); ndc_bias = asfloat(c.zw);
+    vkx = d.x; vky = d.y; probe_x = d.z; probe_y = d.w;
+    one = asfloat(e.x); vbase = e.y; vfbw = e.z; vflags = e.w;
+    ff_blend = f.x; atst_mode = f.y; dual_bias = asfloat(f.z);
+}
 
 // a * b rounded to the type's precision as the C reference rounds it (never fused with a later add)
 double dmul_r(double a, double b) { precise double p = a * b; precise double q = p * (double)one; return q; }
@@ -80,6 +93,7 @@ void probe_rec(uint kind, uint rb, uint state, int U, int V, uint t, uint col, u
 struct VR {
     float4 pos : SV_Position;
     nointerpolation uint rec : REC;      // record byte offset (sprites, line pixels)
+    nointerpolation uint did : DID;      // (M9) the draw's slot (load_draw)
 };
 
 float4 clip_of(float2 d3d) {             // d3d pixel coordinates -> clip space
@@ -92,11 +106,14 @@ struct VIn {
     uint rgba : COLOR0;
     uint fog_state : COLOR1;
     float3 stq : TEXCOORD0;
+    uint did : DRAWID;                   // (M9) the draw's slot: per-instance element, StartInstanceLocation
 };
 
 // triangles: D3D pixel x * k + i has its centre at GS position x + i / k (sample 0 = the native pixel)
 VR vs_ref_tri(VIn i) {
+    load_draw(i.did);
     VR o;
+    o.did = i.did;
     o.pos = clip_of(float2(i.xy.x * (float)kx + 0.5, i.xy.y * (float)ky + 0.5));
     o.rec = 0u;
     return o;
@@ -110,7 +127,10 @@ VR vs_ref_tri(VIn i) {
 float2 single_rate_pos(float x, float y) { return float2(x * (float)kx, y * (float)ky); }
 
 // sprites: the native rectangle [x0, x1) x [y0, y1), every sample of a native pixel covered (single rate)
-VR vs_ref_sprite(uint vid : SV_VertexID, uint inst : SV_InstanceID) {
+VR vs_ref_sprite(VIn vin, uint vid : SV_VertexID, uint inst : SV_InstanceID) {
+    uint did = vin.did - inst;           // (M9: element StartInstanceLocation + instance of the iota buffer; VIn keeps the
+                                         //  input registers of the shared input layout)
+    load_draw(did);
     uint base = rec_first + inst * 64u;
     uint2 r = recs.Load2(base);
     float x0 = (float)((int)(r.x << 16) >> 16), y0 = (float)((int)r.x >> 16);
@@ -118,23 +138,31 @@ VR vs_ref_sprite(uint vid : SV_VertexID, uint inst : SV_InstanceID) {
     VR o;
     o.pos = clip_of(single_rate_pos((vid & 1u) ? x1 : x0, (vid & 2u) ? y1 : y0));
     o.rec = base;
+    o.did = did;
     return o;
 }
 
 // line / point pixels: one native pixel each
-VR vs_ref_linepix(uint vid : SV_VertexID, uint inst : SV_InstanceID) {
+VR vs_ref_linepix(VIn vin, uint vid : SV_VertexID, uint inst : SV_InstanceID) {
+    uint did = vin.did - inst;           // (M9: element StartInstanceLocation + instance of the iota buffer; VIn keeps the
+                                         //  input registers of the shared input layout)
+    load_draw(did);
     uint base = rec_first + inst * 32u;
     uint r = recs.Load(base);
     float px = (float)((int)(r << 16) >> 16), py = (float)((int)r >> 16);
     VR o;
     o.pos = clip_of(single_rate_pos(px + ((vid & 1u) ? 1.0 : 0.0), py + ((vid & 2u) ? 1.0 : 0.0)));
     o.rec = base;
+    o.did = did;
     return o;
 }
 
 // (M7) thin analytic lines (outlines = thin, gpu_rec_thin): a quad around the line, wide enough for its
 // coverage plus a sample; the pixel shader decides every sample from its distance to the line
-VR vs_ref_thin(uint vid : SV_VertexID, uint inst : SV_InstanceID) {
+VR vs_ref_thin(VIn vin, uint vid : SV_VertexID, uint inst : SV_InstanceID) {
+    uint did = vin.did - inst;           // (M9: element StartInstanceLocation + instance of the iota buffer; VIn keeps the
+                                         //  input registers of the shared input layout)
+    load_draw(did);
     uint base = rec_first + inst * 128u;
     float4 g = asfloat(recs.Load4(base));            // lo, hi, a0, len (12.4)
     float2 o = asfloat(recs.Load2(base + 16u));      // o0, od (12.4)
@@ -150,6 +178,7 @@ VR vs_ref_thin(uint vid : SV_VertexID, uint inst : SV_InstanceID) {
     VR r;
     r.pos = clip_of(float2(p.x * (float)kx + 0.5, p.y * (float)ky + 0.5));
     r.rec = base;
+    r.did = did;
     return r;
 }
 
@@ -159,10 +188,13 @@ struct VF {
     float4 pos : SV_Position;
     nointerpolation uint rec : REC;
     noperspective float3 stq : TEXCOORD0;
+    nointerpolation uint did : DID;      // (M9) the draw's slot
 };
 
 VF vs_ff_tri(VIn i) {
+    load_draw(i.did);
     VF o;
+    o.did = i.did;
     o.pos = clip_of(float2(i.xy.x * (float)kx + 0.5, i.xy.y * (float)ky + 0.5));
     o.rec = 0u;
     o.stq = i.stq;
@@ -381,24 +413,32 @@ uint bilerp(uint a, uint b, uint c, uint d, uint fu, uint fv) {
     return r;
 }
 
+// (M9) One texel() in the code: the nearest read is one tap, the bilinear one four taps of a loop. Every call of
+// texel() is inlined with all of its formats, and the unrolled taps of every level read of tex_sample made the
+// pixel shaders ~500 KB of DXBC each (and ~8 MB of driver memory each); the reads and their order are unchanged.
 uint tex_level(St st, uint l, int U, int V, bool bil) {
     Lvl L = level_of(st, l);
     U >>= l;
     V >>= l;
-    uint res;
+    uint fu = 0u, fv = 0u, xa, xb = 0u, ya, yb = 0u, n = 1u;
     if (!bil) {
-        uint x = (uint)wrapc(U >> 4, L.ulo, L.uhi, L.umsk, L.ufix), y = (uint)wrapc(V >> 4, L.vlo, L.vhi, L.vmsk, L.vfix);
-        res = texel(st, L, x & 2047u, y & 2047u);
+        xa = (uint)wrapc(U >> 4, L.ulo, L.uhi, L.umsk, L.ufix) & 2047u;
+        ya = (uint)wrapc(V >> 4, L.vlo, L.vhi, L.vmsk, L.vfix) & 2047u;
     } else {
         U -= 8;
         V -= 8;
-        uint fu = (uint)U & 15u, fv = (uint)V & 15u;
+        fu = (uint)U & 15u; fv = (uint)V & 15u;
         int u0 = U >> 4, v0 = V >> 4;
-        uint xa = (uint)wrapc(u0, L.ulo, L.uhi, L.umsk, L.ufix) & 2047u, xb = (uint)wrapc(u0 + 1, L.ulo, L.uhi, L.umsk, L.ufix) & 2047u;
-        uint ya = (uint)wrapc(v0, L.vlo, L.vhi, L.vmsk, L.vfix) & 2047u, yb = (uint)wrapc(v0 + 1, L.vlo, L.vhi, L.vmsk, L.vfix) & 2047u;
-        res = bilerp(texel(st, L, xa, ya), texel(st, L, xb, ya), texel(st, L, xa, yb), texel(st, L, xb, yb), fu, fv);
+        xa = (uint)wrapc(u0, L.ulo, L.uhi, L.umsk, L.ufix) & 2047u; xb = (uint)wrapc(u0 + 1, L.ulo, L.uhi, L.umsk, L.ufix) & 2047u;
+        ya = (uint)wrapc(v0, L.vlo, L.vhi, L.vmsk, L.vfix) & 2047u; yb = (uint)wrapc(v0 + 1, L.vlo, L.vhi, L.vmsk, L.vfix) & 2047u;
+        n = 4u;
     }
-    return res;
+    uint t0 = 0u, t1 = 0u, t2 = 0u, t3 = 0u;
+    [loop] for (uint k = 0u; k < n; k++) {
+        uint t = texel(st, L, (k & 1u) ? xb : xa, (k & 2u) ? yb : ya);
+        if (k == 0u) t0 = t; else if (k == 1u) t1 = t; else if (k == 2u) t2 = t; else t3 = t;
+    }
+    return bil ? bilerp(t0, t1, t2, t3, fu, fv) : t0;
 }
 
 uint lerp_rgba(uint a, uint b, uint f) {   // f 0..16
@@ -437,40 +477,52 @@ uint view_texel_s(St st, Lvl L, int sx, int sy) {
 uint view_hires(St st, float uf, float vf, bool bil) {
     Lvl L = level_of(st, 0u);
     float ps = (uf - 8.0) * (float)vkx / 16.0, qs = (vf - 8.0) * (float)vky / 16.0;   // sample units
-    uint res;
-    if (!bil) res = view_texel_s(st, L, (int)floor(ps + 0.5), (int)floor(qs + 0.5));
+    // (M9) one view_texel_s() in a loop of one or four taps (as tex_level)
+    int sx, sy;
+    uint fu = 0u, fv = 0u, n = 1u;
+    if (!bil) { sx = (int)floor(ps + 0.5); sy = (int)floor(qs + 0.5); }
     else {
         float fx = floor(ps), fy = floor(qs);
-        int sx = (int)fx, sy = (int)fy;
-        uint fu = (uint)((ps - fx) * 16.0), fv = (uint)((qs - fy) * 16.0);
-        uint t00 = view_texel_s(st, L, sx, sy), t10 = view_texel_s(st, L, sx + 1, sy);
-        uint t01 = view_texel_s(st, L, sx, sy + 1), t11 = view_texel_s(st, L, sx + 1, sy + 1);
-        res = bilerp(t00, t10, t01, t11, fu, fv);
+        sx = (int)fx; sy = (int)fy;
+        fu = (uint)((ps - fx) * 16.0); fv = (uint)((qs - fy) * 16.0);
+        n = 4u;
     }
-    return res;
+    uint t00 = 0u, t10 = 0u, t01 = 0u, t11 = 0u;
+    [loop] for (uint k = 0u; k < n; k++) {
+        uint t = view_texel_s(st, L, sx + (int)(k & 1u), sy + (int)(k >> 1));
+        if (k == 0u) t00 = t; else if (k == 1u) t10 = t; else if (k == 2u) t01 = t; else t11 = t;
+    }
+    return bil ? bilerp(t00, t10, t01, t11, fu, fv) : t00;
 }
 
+// (M9) the level(s) and filter first, then one tex_level() in a loop of one or two levels (see tex_level)
 uint tex_sample(St st, int U, int V, float lq) {
     uint texm = st.tlev & 3u, cur = (st.tlev >> 2) & 7u;
-    uint res;
-    if (texm != 3u) res = tex_level(st, cur, U, V, texm == 2u);
-    else {
+    uint l = cur, nl = 1u, lf = 0u;
+    bool bl = texm == 2u;
+    if (texm == 3u) {
         uint mxl = (st.tlev >> 5) & 7u, mmag = (st.tlev >> 8) & 1u, mmin = (st.tlev >> 9) & 7u;
         int lod = lod16_of(st, lq);
-        if (lod <= 0) res = tex_level(st, 0u, U, V, mmag != 0u);
-        else if (mmin == 0u) res = tex_level(st, 0u, U, V, false);
-        else if (mmin == 1u) res = tex_level(st, 0u, U, V, true);
+        if (lod <= 0) { l = 0u; bl = mmag != 0u; }
+        else if (mmin == 0u) { l = 0u; bl = false; }
+        else if (mmin == 1u) { l = 0u; bl = true; }
         else if (mmin == 2u || mmin == 4u) {                             // *_MIPMAP_NEAREST
-            uint l = (uint)((lod + 8) >> 4);
-            res = tex_level(st, l > mxl ? mxl : l, U, V, mmin == 4u);
+            uint m = (uint)((lod + 8) >> 4);
+            l = m > mxl ? mxl : m;
+            bl = mmin == 4u;
         } else {                                                        // *_MIPMAP_LINEAR
-            uint l = (uint)(lod >> 4);
-            bool bl = mmin == 5u;
-            if (l >= mxl) res = tex_level(st, mxl, U, V, bl);
-            else res = lerp_rgba(tex_level(st, l, U, V, bl), tex_level(st, l + 1u, U, V, bl), (uint)lod & 15u);
+            l = (uint)(lod >> 4);
+            bl = mmin == 5u;
+            if (l >= mxl) l = mxl;
+            else { nl = 2u; lf = (uint)lod & 15u; }
         }
     }
-    return res;
+    uint r0 = 0u, r1 = 0u;
+    [loop] for (uint k = 0u; k < nl; k++) {
+        uint t = tex_level(st, l + k, U, V, bl);
+        if (k == 0u) r0 = t; else r1 = t;
+    }
+    return nl == 2u ? lerp_rgba(r0, r1, lf) : r0;
 }
 // texture function (tfx_batch): colour x texel, GS alpha 0x80 = 1.0
 uint tfx(uint tf, bool tcc, uint c, uint t) {
@@ -832,6 +884,7 @@ void ps_gs(VR i
 #if PRIM != 0
     uint prim = 0u;
 #endif
+    load_draw(i.did);
     Frag f;
     St st;
     if (!gs_frag(i.pos, i.rec, istq, prim, f, st)) return;
@@ -842,7 +895,7 @@ void ps_gs(VR i
     uint zbits = (st.zinfo >> 4) & 3u;
 
     bool probing = (uint)px == probe_x && (uint)py == probe_y;
-    if (probing) probe_rec(1u, rb, f.state, f.U, f.V, col, f.vcol, f.z, dbg_s, dbg_t, dbg_q, dbg_xl, 0u, 0u, 0u, px, py);
+    if (probing) probe_rec(1u, rb, f.state, f.U, f.V, col, f.vcol, f.z, dbg_s, dbg_t, dbg_q, dbg_xl, i.did, 0u, 0u, px, py);
 
     // ---- tests: alpha, destination alpha, Z (+ Z write) ----
     // 16-bit frames (ALIAS16 runs): rov_c is the staging texture holding the pixel's 16-bit value
@@ -965,6 +1018,7 @@ FOut ps_ff(VR i) {
     uint prim = 0u;
     float3 istq = float3(0.0, 0.0, 1.0);
 #endif
+    load_draw(i.did);
     Frag f;
     St st;
     if (!gs_frag(i.pos, i.rec, istq, prim, f, st)) discard;

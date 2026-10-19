@@ -75,6 +75,8 @@ static struct {
     gpu_frame_stats st;                  /* picture being built */
     LARGE_INTEGER t_start;
     int ts_cur;                          /* ts slot of the picture being built (-1: none) */
+    double pres_q[64];                   /* (M9) per present count (mod 64): when its frame was queued (qpc ms) */
+    UINT last_pc;                        /* the last present count the frame statistics reported as shown */
 } P;
 
 static LARGE_INTEGER qpf;
@@ -408,6 +410,7 @@ void gpu_stats_begin(uint32_t vblank, double front_ms) {
     QueryPerformanceCounter(&P.t_start);
     memset(&P.st, 0, sizeof P.st);
     P.st.latency_ms = -1.0;
+    P.st.photon_ms = -1.0;
     P.st.vblank = vblank;
     P.st.front_ms = front_ms;
     P.st.gpu_ms = -1.0;
@@ -673,6 +676,18 @@ static void present_fit(int aw, int ah, int scaler) {
         P.st.presented = 1;
         void (*ff)(void) = flip_fn;
         if (ff) ff();
+        /* (M9) photon latency: which present the display showed last and at which vsync (DXGI frame statistics),
+         * against when that present's frame was queued */
+        UINT pc = 0;
+        if (SUCCEEDED(IDXGISwapChain1_GetLastPresentCount(P.sc, &pc))) P.pres_q[pc % 64] = gpu_rt.cur_queued_ms;
+        DXGI_FRAME_STATISTICS fs;
+        memset(&fs, 0, sizeof fs);
+        if (SUCCEEDED(IDXGISwapChain1_GetFrameStatistics(P.sc, &fs)) && fs.PresentCount && fs.PresentCount != P.last_pc &&
+            pc - fs.PresentCount < 60) {
+            double q = P.pres_q[fs.PresentCount % 64], shown = (double)fs.SyncQPCTime.QuadPart * 1000.0 / (double)qpf.QuadPart;
+            if (q > 0 && shown >= q) P.st.photon_ms = shown - q;
+            P.last_pc = fs.PresentCount;
+        }
     }
     P.st.present_ms += now_ms() - t0;
 }

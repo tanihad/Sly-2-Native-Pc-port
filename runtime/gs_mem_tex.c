@@ -25,6 +25,24 @@ static int psm_is_indexed(uint32_t psm) {
 static int psm_is_t8(uint32_t psm) { return psm == PSMT8 || psm == PSMT8H; }
 static int cpsm_is_16(uint32_t cpsm) { return cpsm == PSMCT16 || cpsm == PSMCT16S; }
 
+/* (M9) CSM1 fast path: the entries of a CSM1 CLUT lie in a 16x16 (256 entries) or 8x2 (16) rectangle at CBP with
+ * buffer width 1, inside one page column, so entry i is word (CT32) / halfword (CT16, CT16S) CBP * 64 (128) + a fixed
+ * in-page offset: the address formula below with x, y < 16 and bw = 1, taken once into tables (the GS thread loads
+ * thousands of CLUTs per frame; same reads, same results) */
+static uint16_t clut_off[3][2][256];        /* [CT32, CT16, CT16S][16 entries, 256 entries][entry] */
+static int off_ready;
+
+static void clut_offsets(void) {
+    for (int k = 0; k < 3; k++)
+        for (int big = 0; big < 2; big++)
+            for (uint32_t i = 0; i < (big ? 256u : 16u); i++) {
+                uint32_t x = big ? (i & 7) | ((i >> 1) & 8) : i & 7, y = big ? ((i >> 4) & 14) | ((i >> 3) & 1) : i >> 3;
+                clut_off[k][big][i] = k == 0 ? gs_swz_ct32[(y & 31) << 6 | (x & 63)] : k == 1 ? gs_swz_ct16[(y & 63) << 6 | (x & 63)]
+                                                                                       : gs_swz_ct16s[(y & 63) << 6 | (x & 63)];
+            }
+    off_ready = 1;
+}
+
 static void clut_load(const gs_tex0* t, const gs_texclut* tc) {
     int cpsm = (int)t->cpsm;
     if (cpsm != PSMCT32 && !cpsm_is_16(t->cpsm)) {
@@ -32,6 +50,22 @@ static void clut_load(const gs_tex0* t, const gs_texclut* tc) {
         cpsm = PSMCT32;
     }
     uint32_t n = psm_is_t8(t->psm) ? 256 : 16, base = t->csa * 16u;
+    if (!t->csm) {                                       /* (M9) CSM1: the offset tables */
+        if (!off_ready) clut_offsets();
+        const uint16_t* off = clut_off[cpsm == PSMCT32 ? 0 : cpsm == PSMCT16 ? 1 : 2][n == 256];
+        if (cpsm == PSMCT32) {
+            uint32_t wb = t->cbp * 64u;
+            for (uint32_t i = 0; i < n; i++) {
+                uint32_t c = gs_vram_rd32((wb + off[i]) & 0xFFFFFu), p = (base + i) & 511u;
+                clut[p] = (uint16_t)c;
+                clut[p ^ 256u] = (uint16_t)(c >> 16);
+            }
+        } else {
+            uint32_t hb = t->cbp * 128u;
+            for (uint32_t i = 0; i < n; i++) clut[(base + i) & 511u] = (uint16_t)gs_vram_rd16((hb + off[i]) & 0x1FFFFFu);
+        }
+        return;
+    }
     for (uint32_t i = 0; i < n; i++) {
         uint32_t x, y, bw;
         if (t->csm) {                                    /* CSM2: linear strip */

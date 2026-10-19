@@ -105,6 +105,9 @@ void own_resync(void);                   /* gpu_front_resync */
 int  own_gpu_blocks(gpu_dl_entry* out, uint16_t* writers, int max);   /* gpu_front_gpu_blocks */
 /* 1 when a block of the rect holds downloaded GPU data that gs_vram lacks (CLUT loads read gs_vram) */
 int  own_mem_vstale(int psm, uint32_t bp, uint32_t bw, int u0, int v0, int u1, int v1);
+uint32_t own_change_gen(void);          /* (M9) bumped whenever a block's writer, serial or CPU words change */
+/* (M9) hash of the block serials of a buffer rect (inclusive); 0: some block is not CPU truth in gs_vram */
+uint64_t own_rect_serials(int psm, uint32_t bp, uint32_t bw, int x0, int y0, int x1, int y1);
 int  own_target_kind_of_zpsm(int zpsm);
 int  own_readback_apply(const uint8_t* mem, int write);   /* PUNT: gs_vram <- downloaded blocks (or compare) */
 
@@ -146,6 +149,8 @@ void clut_mark_changed(void);            /* a TEX0 write loaded different CLUT c
 /* The ring slot holding the current CLUT buffer (snapshot uploaded on a miss: counted). */
 uint32_t clut_current_slot(void);
 uint32_t clut_content_id(void);         /* changes whenever the CLUT buffer's content does */
+uint32_t clut_slot_gen(uint32_t slot);  /* (M9) bumped whenever the ring slot takes new content */
 /* min/max alpha over the palette entries an indexed texture (tex0, TEXA) can use. */
 void clut_alpha_range(uint32_t slot, uint64_t tex0, uint64_t texa, int* amin, int* amax);
+int clut_entry_alpha(uint32_t slot, uint64_t tex0, uint64_t texa, uint32_t idx);   /* (M9) one entry's alpha */
 void clut_frame_end(void);

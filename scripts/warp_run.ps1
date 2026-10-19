@@ -50,7 +50,8 @@ if ($Direct) {
 
 $build = Join-Path $root $(if ($Release) { 'build\rel' } else { 'build\sly2' })
 $exeName = "sly2_warp_$Name.exe"                # own exe and a unique process name: parallel runs
-Copy-Item (Join-Path $build 'sly2.exe') (Join-Path $dir $exeName) -Force
+$src = if ($env:M9_GAME_EXE) { $env:M9_GAME_EXE } else { Join-Path $build 'sly2.exe' }   # (M9: M9_GAME_EXE runs another build, e.g. a baseline)
+Copy-Item $src (Join-Path $dir $exeName) -Force
 $script = if ($TitleFrame -gt 0) { "${TitleFrame}:start:10" } else { '@187D80/1DD96C+30:start:10' }
 if ($Play -and -not $Direct -and $Episode -gt 0) { $script += ',+1500:cross:6' }
 if ($Pad) { $script += ",$Pad" }
