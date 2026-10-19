@@ -914,6 +914,7 @@ Total ~45-55 agent-days. The software renderer stays the default until M11.
 - **Verification**: every optimisation bit-exact against the un-optimised hw output at S=1 and S=3
   (lockstep hw vs hw); ep8 boss / ep3 hub / ep5 street at S=3: GS <= 6 ms, render <= 8 ms, GPU
   <= 8 ms (median), and at 4K-class output (S=4/5) GPU <= 12 ms.
+- *(As built: appendix L.)*
 
 ### M10. Widescreen renderer side
 - **Deliverable**: `PS2_GS_ASPECT`, anamorphic `kx`, HUD VS transform with anchors, pillarbox hint,
