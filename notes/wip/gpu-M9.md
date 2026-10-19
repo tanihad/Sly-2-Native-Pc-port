@@ -105,9 +105,16 @@ Render CPU 1.3-3.7 ms. (In game M8: GPU 8.1-12.1, GS 7-8, frontend up to 10.8.)
   (SV_DepthLessEqual, PS position noperspective centroid, VS z = FLT_MIN as a test bound): invocations unchanged
   (14.1M) -> this driver does no early rejection with conservative depth output: the optional variant is dropped.
 
+- In game current (dd67e34 + logger, headless, verify off, from VBlank 3600; base -> current):
+  m8_boss GS 6.70->5.18 front 8.06->5.63 render 1.00->0.68 GPU 11.39->8.50 mem 1533->768;
+  ep3_hub 8.18->6.07 / 8.77->5.74 / 1.06->0.62 / 10.92->9.02 / 1582->830;
+  ep5_hub 7.12->5.41 / 9.49->6.58 / 1.04->0.65 / 12.09->9.21 / 1593->796;
+  ep1_hub 7.47->5.67 / 10.98->7.49 / 1.29->0.73 / 15.08->10.55 / 1609->857;
+  m7_boss 2.55->1.95 / 3.58->2.66 / 0.70->0.35 / 16.25->10.88 / 1632->776;
+  m3_heist 2.76->1.40 / 3.69->1.83 / 0.48->0.29 / 10.06->7.30 / 1021->831.
+
 ## Next
-1. In game current six scenes (running: ingame.ps1 -Suffix _cur); then the phase split in the stats line
-   (PS2_GPU_PROF=1 + PS2_GS_HW_STATS: "GPU phases" line, uncommitted until built).
+1. Build the GPU phases stats line (638d100); windowed latency runs (ep1: default vs PS2_GS_INFLIGHT_BASE=0).
 2. Memory: target sizes (alloc granularity, taller allocations kept, shadow copies, a16 staging), frame arenas.
 3. GS thread (decode + proxy): clut_load fast path; texture sampling; sprites; ROV shadow volumes (ep7 ~2.5 ms).
 4. Gates, appendix L, WIP complete.
