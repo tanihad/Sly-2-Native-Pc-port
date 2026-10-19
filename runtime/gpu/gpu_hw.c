@@ -436,8 +436,44 @@ static void mem_log(const char* when) {
     memset(&pm, 0, sizeof pm);
     pm.cb = sizeof pm;
     if (K32GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS*)&pm, sizeof pm))
-        slog("memory %s: committed %.0f MB, working set %.0f MB, frame arenas %.1f MB", when, pm.PrivateUsage / 1048576.0,
-             pm.WorkingSetSize / 1048576.0, gpu_front_arena_bytes() / 1048576.0);
+        slog("memory %s: committed %.0f MB (peak %.0f), working set %.0f MB, frame arenas %.1f MB", when, pm.PrivateUsage / 1048576.0,
+             pm.PeakPagefileUsage / 1048576.0, pm.WorkingSetSize / 1048576.0, gpu_front_arena_bytes() / 1048576.0);
+    static int map = -1;                 /* PS2_GS_MEM_MAP=1: committed private memory by allocation size (largest totals) */
+    if (map < 0) { const char* e = getenv("PS2_GS_MEM_MAP"); map = e && atoi(e) > 0; }
+    if (!map) return;
+    struct { size_t size; int n; } sz[64];
+    int nsz = 0;
+    size_t other = 0, cur = 0;
+    uint8_t* p = NULL;
+    void* cur_base = NULL;
+    MEMORY_BASIC_INFORMATION mi;
+    for (;;) {
+        int end = !VirtualQuery(p, &mi, sizeof mi);
+        if (end || mi.AllocationBase != cur_base) {
+            if (cur) {
+                int k = 0;
+                while (k < nsz && sz[k].size != cur) k++;
+                if (k < nsz) sz[k].n++;
+                else if (nsz < 64) { sz[nsz].size = cur; sz[nsz].n = 1; nsz++; }
+                else other += cur;
+            }
+            if (end) break;
+            cur_base = mi.AllocationBase;
+            cur = 0;
+        }
+        if (mi.State == MEM_COMMIT && mi.Type == MEM_PRIVATE) cur += mi.RegionSize;
+        uint8_t* q = (uint8_t*)mi.BaseAddress + mi.RegionSize;
+        if (q <= p) break;
+        p = q;
+    }
+    for (int i = 0; i < nsz; i++)
+        for (int j = i + 1; j < nsz; j++)
+            if ((double)sz[j].size * sz[j].n > (double)sz[i].size * sz[i].n) { size_t s = sz[i].size; int n = sz[i].n; sz[i] = sz[j]; sz[j].size = s; sz[j].n = n; }
+    char line[1024];
+    int o = snprintf(line, sizeof line, "memory map %s:", when);
+    for (int i = 0; i < nsz && i < 20 && o < (int)sizeof line - 40; i++)
+        o += snprintf(line + o, sizeof line - (size_t)o, " %.2fMBx%d", sz[i].size / 1048576.0, sz[i].n);
+    slog("%s, other %.1f MB", line, other / 1048576.0);
 }
 
 /* ---- start / stop -------------------------------------------------------------------------------- */
