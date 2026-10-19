@@ -179,6 +179,8 @@ int main(void) {
         uint32_t clut[256], tex[16 * 16 / 4];
         for (int i = 0; i < 256; i++) clut[i] = 0x80000000u | (uint32_t)i;
         memset(tex, 0, sizeof tex);
+        ((uint8_t*)tex)[17] = 7;                         /* (M9: the bounds come from the palette entries the texels use:
+                                                            entry 7 must be one of them) */
         upload(0x3000, 1, PSMCT32, 0, 0, 16, 16, clut, sizeof clut);
         upload(0x3100, 1, PSMT8, 0, 0, 16, 16, tex, sizeof tex);
         frame(0, 8, PSMCT32, 0);
