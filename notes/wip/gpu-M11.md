@@ -41,15 +41,29 @@ automatic internal scale for weaker GPUs, bounded memory over long play, flaky i
   audio 1310 s 0 underruns; auto stayed 3x. Sheet build\screenshots\gpu_m11_long_route.png.
 - gs_vram_hashes: sw 27/27 and hwdry identical to sw 27/27; matches tests/gpu/vram_hashes.txt.
 
+- In game: device loss x3 (PS2_GPU_LOSE_AT=1500,2500,3500): recovered twice (one second at 52.9 flips/s), third ->
+  software, game runs on (audio 0 underruns). No-ROV ep3 hub with the verifier (m8_sweep, 240 s): 180 comparisons, 0
+  beyond. FL 11_0 in game: 59.9 flips/s, GPU 9.0 ms. WARP adapter in game: auto 3x -> 1x at v109, ~12 pictures/s,
+  no error.
+- Packaged GUI build (dist\Sly2 copy in build\guitest\Sly2 + portable.txt + sly2.ini with only [game] disc + a warp
+  ep3 card; no PS2_* variables; Enter/Space by keybd_event): log "renderer gpu", "internal scale auto, now 3x",
+  "presenting through the GPU backend's swap chain", "GPU renderer on (window ...)"; screenshot in the ep3 hub
+  (build\screenshots\gpu_m11_gui_portable.png); exit 0 on close. (Title shows "(GPU)" only with show_fps.)
+- Debug build (build\sly2, 29.1 MB) boots on the GPU. package.py -> dist\Sly2\sly2.exe 0.1.670.
+- Replay gates (build\gates.txt, build\gate_*.txt; release gs_replay of 133a13f source): gpu_diff_all mixed S1 / S3 27/27
+  (min PSNR 43.94), ref S1 / S3 27/27 (0 px); gpu_game_all S1 4136 pictures 0 differ, S3 27/27 (box gate min 33.25 dB
+  without rv_prompt, rv_prompt waived 31.36, max |mse| 0.319); gpu_lockstep_all REF S1, mixed S1, mixed S3: 26402
+  comparisons each, 0 differ; gpu_sample_all S3 0 failed; gpu_fthread_check and -Mixed 27/27 identical; m9_exact vs
+  4eaf32f 27/27 identical S1+S3, and with PS2_GPU_NO_ROV=1 27/27 identical S1+S3 (the no-ROV path is bit-exact).
+
 ## In progress
-- In-game checks: device loss x3, no-ROV in game with verify, FL 11_0 in game, WARP game run, GUI package portable.
+- In-game sweep: m8_batch -Parts 2 (two processes, scratchpad sweep.ps1), -Verify 60 -Scale 3 -DumpEvery 2400
+  -Suffix _m11 (backend now from the default). Results build\warp\m8_batch_{0,1}_m11.txt.
 
 ## Next
-1. Replay gates: gpu_diff_all mixed/ref S1/S3, gpu_game_all S1 + S3 (waiver), gpu_lockstep_all, gpu_sample_all S3,
-   gpu_fthread_check (+ -Mixed), m9_exact full corpus S1/S3 (+ PS2_GPU_NO_ROV=1) vs build\base4eaf.
-2. m8_sweep: backend from the default (only -Sw sets it), -Scale 0 = auto; sweep 54 scenes (-Parts 2).
-3. 200 s boot-to-museum regression windowed default config; debug build; package.py; GUI portable boot.
-4. Appendix M; WIP complete.
+1. Summarize the sweep (verify beyond, PUNT, flips), delete frames.
+2. 200 s boot-to-museum regression windowed default config (warp_run -Episode 0 -Window, stats, memory sampler).
+3. Appendix M; progress.md; WIP complete.
 
 ## Findings / traps
 - Baseline gs_replay for exactness: build\base4eaf (git archive 4eaf32f runtime scripts + a copy of .git so the script
