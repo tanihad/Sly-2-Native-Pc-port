@@ -19,14 +19,16 @@ $env:PS2_TASK_SET = $items -join ','
 $env:PS2_GS_HW_STATS = '1'
 Write-Host "route: $env:PS2_TASK_SET"
 $dir = Join-Path $root "build\warp\$Name"
+New-Item -ItemType Directory -Force $dir | Out-Null
 $csv = Join-Path $dir 'mem.csv'
-$runner = Start-Process -FilePath powershell -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
-    (Join-Path $PSScriptRoot 'warp_run.ps1'), '-Episode', '1', '-Play', '-Release', '-Seconds', "$Seconds",
-    '-DumpEvery', "$DumpEvery", '-Name', $Name) + $(if ($Window) { @('-Window') } else { @() }) -PassThru -NoNewWindow
+$runArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'warp_run.ps1'), '-Episode', '1',
+             '-Play', '-Release', '-Seconds', "$Seconds", '-DumpEvery', "$DumpEvery", '-Name', $Name)
+if ($Window) { $runArgs += '-Window' }
+$runner = Start-Process -FilePath powershell -ArgumentList $runArgs -PassThru -NoNewWindow
+if (-not $runner) { Write-Host 'cannot start warp_run.ps1'; exit 1 }
 Start-Sleep 15
 "t_s,private_mb,working_set_mb" | Set-Content -Encoding ascii $csv
 $t0 = Get-Date
-$exeName = "sly2_$Name"
 while (-not $runner.HasExited) {
     $p = Get-Process | Where-Object { $_.ProcessName -like "*$Name*" } | Select-Object -First 1
     if ($p) { "{0:F0},{1:F1},{2:F1}" -f ((Get-Date) - $t0).TotalSeconds, ($p.PrivateMemorySize64 / 1MB), ($p.WorkingSet64 / 1MB) | Add-Content -Encoding ascii $csv }
