@@ -2191,3 +2191,127 @@ frontend / GPU: median of the per-second medians / 95th percentile of the per-se
 - Keep the gates: gpu_diff_all (mixed / ref, S = 1 / 3), gpu_game_all (S = 1 exact; S = 3 box gate with the rv_prompt
   waiver), gpu_lockstep_all, gpu_sample_all, gpu_fthread_check, gs_vram_hashes -Backend hwdry, and the in-game sweep
   (m8_batch with PS2_GS_VERIFY) for every optimisation.
+
+## Appendix L. As built: M9 performance (branch gpu/M9)
+
+Work in order of measured payoff, on an RTX 4060 Ti, quiet machine, medians of repeated runs. Replay numbers: `scripts/
+m9_bench.ps1` (gs_replay --mixed, 3x 16:9 unless stated, GPU ms per game frame); in game: release build, headless,
+verifier off, stats from VBlank 3600 (`m8_batch.ps1 -Verify 0 -StatsFrom 3600`; baseline = the 829070e exe through
+`M9_GAME_EXE`). Exactness: `scripts/m9_exact.ps1` (hash of every sample of every target every 7 VBlanks, all 27
+recordings, S = 1 and S = 3) against the un-optimised hw output.
+
+**Optimisations (each with its measured effect)**
+1. *Source-alpha bound from the palette entries the texels use* (gpu_front.c tex_used_alpha, gpu_own.c own_rect_serials,
+   gpu_clut.c clut_entry_alpha; per-texture cache keyed by the texture's write serials and the CLUT slot). Every
+   "As > 128" pass-A lerp of the corpus samples only palette entries <= 0x80, so it leaves the ROV tier for the FF
+   dual-source class, and most ATST straddles become all-pass / all-fail. ROV runs per VBlank: ep7 boss 90.7 -> 1.8,
+   ep5 street 29 -> 4.6. GPU: ep8 11.6 -> 8.2, ep3 12.4 -> 9.8, ep5 13.1 -> 10.1, ep1 13.9 -> 10.4, ep7 20.4 -> 12.9.
+   **Recorded trade**: those primitives go from exact (ROV) to the +-1 dual-source class every other As <= 128 lerp is
+   already in (10.2); the ATST part alone is exact (`PS2_GPU_NO_TEX_ALPHA=2`: bit-identical to 829070e on 27/27 at S=1
+   and S=3; `=1` turns the bound off). Lockstep mixed ep7 boss: +-1 words 102.5M -> 104.0M, min PSNR 53.34 -> 53.30.
+   Every later step is exact against this build (build\basert2).
+2. ROV run absorption (FF gaps executed on the ROV tier) measured worse (ep8 11.6 -> 21.4: every UAV draw costs
+   20-40 us): dropped.
+3. ALIAS16 gather/scatter a thread per sample, the target as R32_UINT: 0.56 -> 0.25 ms per VBlank (ep5). Exact.
+4. *Per-draw constants by draw slot* (StartInstanceLocation -> per-instance DRAWID of an iota buffer, gs.hlsl load_draw
+   from a raw buffer at t9) instead of a constant-buffer window per draw, and hardware clears (ClearView on the UNORM RTV,
+   ClearUnorderedAccessViewUint on zpatch, whole-drawn-size Z clears as full DSV + zpatch clears): ep8 8.2 -> 7.4,
+   ep3 9.8 -> 9.2, ep5 10.1 -> 9.6, ep1 10.4 -> 10.0, ep7 12.9 -> 12.3. Exact.
+5. *Frontend hot spots* (profiled with GS_REPLAY_PROFILE_FRONT): split bitmap as the hull of 3 triangle rows (one span
+   per row, bbox reject), a 2-way 1024-entry state cache kept across frames (CLUT slot generation in the signature),
+   FF record rows only for varying planes, block-wise uploads and CLUT checks, no commutation estimate in game frames.
+   Frontend thread per game frame (replay): ep1 7.6 -> 5.6, ep3 10.0 -> 6.9, ep5 9.9 -> 7.5 ms. Exact, stream hashes
+   identical (gpu_fthread_check 27/27).
+6. GS thread: CSM1 clut_load through offset tables (clut_load was ~15% of the GS thread in replay); the stats lines
+   formatted on the GS thread and written by a logger thread (0.044 -> 0.002 ms per game frame).
+7. *Texel reads in loops*: tex_sample's level reads and their bilinear taps each inlined texel() with every format:
+   ~50 copies, 500 KB of DXBC per ps_ff_* and 7-11 MB of NVIDIA driver memory each (163 MB for the 85 shaders). Now one
+   texel() in a 1-or-4-tap loop inside a 1-or-2-level loop (view_hires likewise): DXBC 13.0 -> 1.3 MB, shader build
+   7 min -> 10 s, exe 49.9 -> 26.5 MB, GPU p90 -0.6..-1.1 ms (ep7 median 11.6 -> 11.3). Exact.
+8. *Memory*: upload buffers start at 1 MB, grow to the next power of two and shrink after a 300-fill window under a
+   quarter of capacity (DISCARD renames copies of the whole capacity); the 64 MB data ring (software pictures only) is
+   committed on first use; at most 3 free frame-arena sets are kept. See "Memory" below.
+9. Frames in flight: `gpu_submit_set_adaptive` - 2 frames normally (PS2_GS_INFLIGHT_BASE), the full depth 6
+   (PS2_GS_INFLIGHT) for 2 s after a slowdown that fills 2 frames after a calm queue (NVIDIA lowering the clocks of a
+   lightly loaded GPU); a GPU behind for good stays at 2 frames of latency.
+10. GPU timestamps per phase: `PS2_GPU_PROF=1` (+ PS2_GS_HW_STATS) adds a "GPU phases" line per second (ff-tri,
+   ff-sprite/line, rov, alias16, zsync, other; mean ms per game frame) besides the per-category prof lines (=2: PS
+   invocations, samples passing depth, primitives per category). It waits for the GPU each frame: measurements only.
+
+**Measured and not done**
+- Commutation batching: FF draws cost ~0.28 us each on the GPU (PS2_GPU_DBG_DRAW=8, one primitive per draw: ep1 3.79 ms
+  for all 3.9k draws vs 2.70 with no FF draw); M1's estimate of 12% fewer draws is worth ~0.15 ms.
+- Conservative depth: with SV_DepthLessEqual (PS position `noperspective centroid`) and a test bound below every depth,
+  ff-tri-fast-z still ran 14.1M pixel shaders per VBlank (13.9M before): this driver does no early rejection with
+  conservative depth output. The 60% of FF Z-tested fragments that fail are shaded in full (SV_Depth, 3.6).
+- R8 index atlas for T4/T8 (Gather + CLUT): texture sampling is ~1.1 ms per game frame in total (trivial-texture
+  experiment, ep5), an upper bound on its payoff; not built.
+- Stencil G-counter: ep7 boss's ROV draws are 1.3 ms per VBlank (2.6 ms per game frame) at S=3, over the 2 ms trigger,
+  but they are not only shadow volumes (COLCLAMP / DATE / FBMSK draws of the boss arena); an exact stencil path for the
+  counting passes was not attempted (M11 / later).
+- State/SRV binding caches: the set_* calls already skip unchanged bindings; render CPU is 0.3-0.7 ms per game frame.
+- Steady downloads (the colour-target-into-main-Z pattern): the whole memory phase (patches, loads, downloads, CLUT
+  uploads) is 0.02-0.06 ms per VBlank in the profile split: not worth a change.
+
+**Replay GPU ms per game frame (median; 829070e -> M9)**
+
+| recording | S=3 base | S=3 M9 | p90 M9 | S=4 base | S=4 M9 | S=5 base | S=5 M9 |
+|---|---|---|---|---|---|---|---|
+| ep8 boss | 11.60 | 7.03 | 7.84 | 15.07 | 10.97 | 23.95 | 18.15 |
+| ep3 hub | 12.38 | 8.85 | 9.56 | 17.41 | 13.98 | 29.10 | 23.41 |
+| ep5 street | 13.06 | 9.19 | 9.49 | 17.90 | 14.44 | 29.87 | 24.34 |
+| ep1 hub | 13.87 | 9.46 | 9.78 | 19.10 | 15.15 | 31.88 | 25.84 |
+| ep7 boss (m7) | 20.45 | 11.31 | 12.59 | 25.68 | 18.00 | 42.23 | 30.58 |
+| load_m3 (m3) | 9.26 | 7.18 | 7.49 | 13.83 | 11.57 | 24.13 | 19.74 |
+| ws_ep3_hud | 14.75 | 11.15 | 11.29 | 21.00 | 17.60 | 35.41 | 29.46 |
+
+(S=4 / S=5 at 16:9 are 5x4 / 7x5 samples per native pixel.)
+
+**In game (median per game frame, ms; base -> M9; memory: largest private bytes seen)**
+
+| scene | GS thread | frontend | render CPU | GPU | GPU p90 M9 | memory MB |
+|---|---|---|---|---|---|---|
+| m8 boss | 6.70 -> 5.18 | 8.06 -> 5.63 | 1.00 -> 0.68 | 11.39 -> 8.50 | 9.46 | 1533 -> 768 |
+| ep3 hub | 8.18 -> 6.07 | 8.77 -> 5.74 | 1.06 -> 0.62 | 10.92 -> 9.02 | 9.25 | 1582 -> 830 |
+| ep5 hub | 7.12 -> 5.41 | 9.49 -> 6.58 | 1.04 -> 0.65 | 12.09 -> 9.21 | 9.93 | 1593 -> 796 |
+| ep1 hub | 7.47 -> 5.67 | 10.98 -> 7.49 | 1.29 -> 0.73 | 15.08 -> 10.55 | 10.70 | 1609 -> 857 |
+| m7 boss | 2.55 -> 1.95 | 3.58 -> 2.66 | 0.70 -> 0.35 | 16.25 -> 10.88 | 12.43 | 1632 -> 776 |
+| m3 heist | 2.76 -> 1.40 | 3.69 -> 1.83 | 0.48 -> 0.29 | 10.06 -> 7.30 | 7.71 | 1021 -> 831 |
+
+Targets: frontend <= 8 and render <= 8 met everywhere; GS thread <= 6 met except ep3 hub (6.07); GPU <= 8 met in m3
+heist only (7.30; replay ep8 boss 7.03, load_m3 7.18), 8.5-10.9 elsewhere; GPU <= 12 at S=4/5 met only by ep8 boss and
+load_m3 at S=4. Why: FF pixel work is ~60% of the frame (ep1: ff-tri-fast-z 2.9 of 5.1 ms per VBlank, 13.9M pixel
+shaders per VBlank of which 5.4M pass the depth test) and SV_Depth (exact integer Z) shades every fragment that will
+fail; GPU time grows with the sample count (S=4/5 at 16:9: 20 / 35 samples per pixel). The GS thread in game costs
+~1.5-2x its replay time (ep1: 5.7 vs 3.7 ms): its queue is written by the EE on another core and preemption counts as
+busy time; the proxy (px_prim, 30% of it) and the decoder (vertex, draw_prim) are already lean.
+
+**Latency (ep1 hub, window, 60 Hz display)**: frame queued -> the vsync that showed it (DXGI frame statistics) median
+14.3 ms, max 17.5; queue 1 frame in steady state with the adaptive depth and with the old fixed depth 6 alike (the
+difference is only under slowdowns: 2 frames instead of up to 6). Input -> photon = the game's own pipeline (as on the
+PS2) + this 14.3 ms; a photodiode measurement was not possible here.
+
+**Memory (ep1 hub in game, 3x 16:9)**: before the GPU renderer 118 MB (the software build's runtime); device and render
+thread +57; frontend, rings, arenas +93; upload buffers +24; shader objects +144 (the driver compiles in the
+background; after item 7 the per-object cost is ~0.5 MB); targets and other video memory ~235 MB local (WDDM charges
+process commit for video memory: a 2048x1536 colour target +12 MB, a depth target +24 MB with its zpatch) and 100-280 MB
+non-local (driver pools: command buffers, renamed uploads). Peak 1.7 GB -> 860 MB (the shader-compile transient is gone),
+steady ~1.0-1.15 GB -> 856 MB. The ~150 MB of the software renderer is not reachable with 3x targets on the GPU.
+
+**Gates (final source)**: gpu_diff_all mixed / ref at S=1 and S=3: 27/27 (baseline.json extended from 25 to 27 with
+M10's ws_museum169 and ws_ep3_hud: corpus.txt had 27); gpu_game_all S=1 4136 pictures 0 differ, S=3 box gate 0 failed;
+gpu_lockstep_all REF and mixed 26402 comparisons, 0 differ; gpu_sample_all S=3 0 failed; gpu_fthread_check and -Mixed
+27/27 identical; gs_vram_hashes -Backend hwdry 27/27 identical to the software renderer (b513aee runtime); m9_exact 27/27
+identical at S=1 and S=3; tests/run_tests.py and every tests/unit run.ps1 pass (gs-front's T8 test now uses the palette
+entry it changes); debug and release builds; in-game verifier sweep on the six scenes: SWEEP_RESULT.
+
+**What M11 must know**
+- Defaults: adaptive queue (base 2, depth 6 for 2 s after a slowdown); `PS2_GPU_NO_TEX_ALPHA` is the switch for the
+  recorded +-1 trade of item 1.
+- GPU budget: the remaining cost is FF pixel shading with exact depth. Ideas not tried: depth classes whose hardware
+  interpolation is provably exact (constant-Z triangles), a read-only-DSV + SRV early discard for Z-tested draws without
+  Z write, fewer samples for FF classes at S >= 4.
+- Tools: m9_bench.ps1, m9_exact.ps1 (baseline hashes cached per scale and -Every), gs_replay --sample-hash,
+  mem-bench / GS_REPLAY_MEM_MAP, `--backend hwsubmit --mixed --front-thread` prints `thread-bench` (GS / frontend thread
+  ms per game frame), PS2_GS_MEM_MAP=1 in game (memory map and set-up steps), PS2_GPU_DBG_DRAW / DBG_ROVSKIP
+  (measurement only, wrong pictures).
