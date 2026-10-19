@@ -71,19 +71,35 @@ Render CPU 1.3-3.7 ms. (In game M8: GPU 8.1-12.1, GS 7-8, frontend up to 10.8.)
   CSM1 clut_load offset tables (gs_mem_tex.c, GS thread). m9_exact 27/27 identical S1+S3 (basert2 rebuilt with the
   drawn-rows hash). GPU 3x 16:9: ep8 7.14, ep3 8.88, ep5 9.20, ep1 9.47, ep7 11.64, load_m3 7.10, ws_ep3 11.10.
 
-## In progress
-- In-game baseline vs current (m8_batch -Only ep1_hub,ep3_hub -Verify 0 -StatsFrom 4800 -DumpEvery 100000; baseline via
-  M9_GAME_EXE=build\base\sly2_base.exe in warp_run.ps1). KEEP THE MACHINE QUIET during in-game runs (ep1 base was
-  disturbed by a replay: GPU 15.2).
+- gs_vram_hashes: base sw (build\basert2\runtime; basert's runtime no longer builds with the new gs_replay.c) vs current
+  hwdry: 27/27 identical (after a049c17).
+- b6ffc32 stats lines by a logger thread (GS-thread cost of the stats 0.044 -> 0.002 ms per game frame; PS2_PROFILE=gs
+  attributing 8% to hlog was a sampling artefact), memory peak + PS2_GS_MEM_MAP, gs_replay mem-bench.
+- 5c72f3c (verified: m9_exact 27/27 S1+S3 identical) **texel reads in loops**: every texel() call was inlined with all
+  formats, ~50 copies per pixel shader (tex_sample's 8 level reads x 5 taps + view_hires): ps_ff_* were 500 KB of DXBC
+  each and cost 7-11 MB of NVIDIA driver memory each (163 MB for the 85 shaders, measured per CreatePixelShader). Now
+  one texel() in a 1-or-4-tap loop inside a 1-or-2-level loop: DXBC 13.0 -> 1.3 MB, driver memory 163 -> 40 MB, shader
+  build 7 min -> 10 s. GPU: ep8 7.03, ep3 8.85, ep5 9.19, ep1 9.46, ep7 11.31, load_m3 7.18, ws_ep3 11.15; p90
+  -0.6..-1.1 ms. Also: upload buffers recreated at their start size after a 300-fill window under a quarter of capacity.
+- Memory findings (in game, ep1): 118 MB before the GPU renderer (= the sw build's runtime), device up 240, frontend +
+  rings 332, buffers 372, shaders +148 (now ~+35), first 60 frames up to a 1.7 GB peak, steady 970-1150 MB. WDDM charges
+  process commit for every video-memory allocation: a 2048x1536 colour target +12 MB, a depth target +24 MB (D32 +
+  zpatch); replay ep1 S1 vs S3: +316 MB. Dynamic-buffer renaming is not the cause in game (caps 8/2/8/1/1/16 MB).
+- In-game baseline (829070e exe build\base\sly2_base.exe, headless, verify off, from VBlank 3600, release; scratchpad
+  ingame.ps1 polls private bytes every 5 s): m8_boss GS 6.70 front 8.06 render 1.00 GPU 11.39 mem max 1533 MB; ep3_hub
+  8.18 / 8.77 / 1.06 / 10.92 / 1582; ep5_hub 7.12 / 9.49 / 1.04 / 12.09 / 1593; ep1_hub 7.47 / 10.98 / 1.29 / 15.08 /
+  1609; m7_boss done (build\warp\m8_m7_boss_base, summarise); m3_heist base still to run (paused).
+- In-game GS thread ep1 current 6.2 ms (replay 3.7: cross-core queue reads + preemption counted as busy). Profile: px_prim
+  30% of busy, vertex 15%, draw_prim 13%, px_tex0 9%, reserve 9%, write_reg 8%, finalize 8%, clut_load 3%.
 
 ## Next
-1. gs_vram_hashes base sw (build\basert\runtime) vs current hwdry (clut_load change touches the sw path).
-2. In-game runs of the six scenes base vs final (quiet machine); latency/memory numbers.
+1. m3_heist base in game; the six scenes current (ingame.ps1 -Suffix _cur).
+2. Memory: target sizes (alloc granularity, taller allocations kept, shadow copies, a16 staging), frame arenas.
 3. GS thread (decode + proxy): clut_load fast path; texture sampling; sprites; ROV shadow volumes (ep7 ~2.5 ms).
 4. Gates, appendix L, WIP complete.
 
 ## Findings / traps
 - DayZ (the owner's game) may be running: check `nvidia-smi --query-gpu=utilization.gpu` before timing runs.
-- A gs.hlsl change recompiles every gs.hlsl permutation: ~7.5 min (16 threads). Batch shader experiments.
+- A gs.hlsl change recompiled every permutation in ~7.5 min before 5c72f3c; now ~10 s.
 - PowerShell Set-Content writes a BOM: write sources with [IO.File]::WriteAllText(..., UTF8Encoding($false)).
 - SV_DepthLessEqual needs the PS position declared `noperspective centroid` without MSAA (fxc error otherwise).
