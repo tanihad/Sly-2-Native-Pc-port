@@ -979,6 +979,8 @@ static volatile int64_t last_run_end;      /* read by the mixer thread (sd.c hol
 int64_t iop_last_run_time(void) { return last_run_end; }
 
 static int run_unfinished;                 /* the last pass ended at its deadline with threads ready */
+int iop_run_unfinished(void) { return run_unfinished; }
+uint32_t iop_pass_count(void) { return __atomic_load_n(&run_pass, __ATOMIC_RELAXED); }
 static int64_t stat_pass_max;              /* status line: the longest pass, and on the IOP thread the */
 static int64_t stat_gap_max, stat_wait_max; /* longest time between passes and wait for the lock */
 static volatile int64_t pass_start;        /* the IOP thread's pass in progress (0: none), for PS2_PROFILE=iop */

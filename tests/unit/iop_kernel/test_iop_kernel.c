@@ -12,6 +12,9 @@
 
 #include <stdlib.h>
 #include <windows.h>
+#include <fcntl.h>
+#include <io.h>
+#include <sys/stat.h>
 
 static int failures;
 #define CHECK(cond, ...) do { if (!(cond)) { failures++; printf("  FAIL %s:%d: ", __FILE__, __LINE__); printf(__VA_ARGS__); printf("\n"); } } while (0)
@@ -45,7 +48,14 @@ static uint32_t K(void (*fn)(iop_ctx*), iop_ctx* c, uint32_t a0, uint32_t a1, ui
 uint8_t* iop_mem(uint32_t a) { a &= 0x1FFFFFFFu; return a < IOP_RAM_SIZE ? iop_ram + a : NULL; }
 static iop_rpc_req last_reply_req;
 static uint32_t last_reply_addr, replies;
-void sif_rpc_reply(const iop_rpc_req* r, uint32_t a) { last_reply_req = *r; last_reply_addr = a; replies++; }
+static volatile int64_t reply_at;                /* when, in which IOP pass and on which host thread the last reply was sent */
+static volatile uint32_t reply_pass;
+static volatile DWORD reply_tid;
+void sif_rpc_reply(const iop_rpc_req* r, uint32_t a) {
+    last_reply_req = *r; last_reply_addr = a;
+    reply_at = iop_now(); reply_pass = iop_pass_count(); reply_tid = GetCurrentThreadId();
+    replies++;
+}
 static uint32_t dma_ee, dma_iop, dma_size;
 void sif_iop_to_ee(uint32_t ee, uint32_t iop, uint32_t size) { dma_ee = ee; dma_iop = iop; dma_size = size; }
 int sif_ee_to_iop(uint32_t iop, uint32_t ee, uint32_t size) { (void)iop; (void)ee; (void)size; return 1; }
@@ -127,8 +137,30 @@ static int new_sema(uint32_t attr, int init, int max) {
     return (int)CALL(thsemap_CreateSema, &c, scratch + 0x40, 0, 0, 0);
 }
 static void start(int tid, uint32_t arg) { iop_ctx c = { 0 }; CALL(thbase_StartThread, &c, (uint32_t)tid, arg, 0, 0); }
+/* iop_run until every IOP thread is blocked: one pass also ends at its 2 ms time slice of wall time, which a
+ * descheduled test thread overruns (the M11 flake "order A1" - B had not run yet) */
+static void run_all(void) {
+    for (int i = 0; i < 100000; i++) {
+        iop_run();
+        if (!iop_run_unfinished()) break;
+    }
+}
 static void run_until(volatile int* done, int ms) {
-    for (int i = 0; i < ms && !*done; i++) { iop_run(); if (!*done) Sleep(1); }
+    for (int i = 0; i < ms && !*done; i++) { run_all(); if (!*done) Sleep(1); }
+}
+
+/* Timing checks are written against timestamps taken around the calls under test, never against how long a
+ * Sleep() or a loop took: on a loaded machine the test thread can be descheduled for tens of milliseconds at
+ * any point (the M11 flake: a check like "100 ms hold -> fewer than 20 timer calls after it" also counted the
+ * time the thread waited for a CPU). iop_now() is QueryPerformanceCounter minus the held time, so QPC deltas
+ * bracket IOP time exactly. */
+static int64_t qpc(void) { LARGE_INTEGER t; QueryPerformanceCounter(&t); return t.QuadPart; }
+static double ticks_ms(int64_t t) { return (double)t * 1000.0 / (double)iop_usec_to_ticks(1000000u); }
+static double thread_cpu_ms(void) {
+    FILETIME c, e, k, u;
+    if (!GetThreadTimes(GetCurrentThread(), &c, &e, &k, &u)) return 0;
+    return ((double)(((uint64_t)k.dwHighDateTime << 32) | k.dwLowDateTime) +
+            (double)(((uint64_t)u.dwHighDateTime << 32) | u.dwLowDateTime)) / 10000.0;
 }
 
 /* guest functions, at fake IOP addresses */
@@ -168,11 +200,14 @@ static void sleeper(iop_ctx* c) {
 }
 
 static volatile int delay_done;
-static void delayer(iop_ctx* c) { CALL(thbase_DelayThread, c, 20000, 0, 0, 0); delay_done = 1; }
+static volatile int64_t delay_at;                /* iop_now() when the delay ended */
+static void delayer(iop_ctx* c) { CALL(thbase_DelayThread, c, 20000, 0, 0, 0); delay_at = iop_now(); delay_done = 1; }
 
 static uint32_t timer_calls, timer_limit, timer_in_intr = 1, timer_wake_sema;
+static volatile int64_t timer_last_at;           /* iop_now() at the last handler call */
 static void timer_handler(iop_ctx* c) {          /* returns the next compare value (0 = stop) */
     timer_calls++;
+    timer_last_at = iop_now();
     uint32_t arg = c->r[4];
     iop_ctx q = *c;
     if (!CALL(intrman_QueryIntrContext, &q, 0, 0, 0, 0)) timer_in_intr = 0;
@@ -267,11 +302,11 @@ static void test_priority(void) {
     order[0] = 0;
     sema_a = new_sema(1, 0, 1);
     start(new_thread(G_PRIO_A, 50), 0);
-    iop_run();
+    run_all();
     CHECK(strcmp(order, "A1 B A2 ") == 0, "order \"%s\", want \"A1 B A2 \"", order);
     iop_ctx c = { 0 };
     CALL(thsemap_SignalSema, &c, (uint32_t)sema_a, 0, 0, 0);    /* from outside: A becomes ready */
-    iop_run();
+    run_all();
     CHECK(ab_done && strcmp(order, "A1 B A2 A3") == 0, "after signal: \"%s\"", order);
 
     /* wake order: by priority for SA_THPRI, by arrival for FIFO */
@@ -279,14 +314,14 @@ static void test_priority(void) {
         order[0] = 0;
         sema_w = new_sema(fifo ? 0 : 1, 0, 3);
         start(new_thread(G_WAITER, 30), 'x');        /* they start waiting in the order x y z */
-        iop_run();
+        run_all();
         start(new_thread(G_WAITER, 20), 'y');
-        iop_run();
+        run_all();
         start(new_thread(G_WAITER, 25), 'z');
-        iop_run();
+        run_all();
         for (int k = 0; k < 3; k++) {                /* one at a time: each signal releases one waiter */
             CALL(thsemap_SignalSema, &c, (uint32_t)sema_w, 0, 0, 0);
-            iop_run();
+            run_all();
         }
         const char* want = fifo ? "x y z " : "y z x ";
         CHECK(strcmp(order, want) == 0, "%s wake order \"%s\", want \"%s\"", fifo ? "FIFO" : "priority", order, want);
@@ -298,9 +333,9 @@ static void test_priority(void) {
     order[0] = 0;
     sema_w = new_sema(1, 0, 1);
     start(new_thread(G_WAITER, 30), 'd');
-    iop_run();
+    run_all();
     CALL(thsemap_DeleteSema, &c, (uint32_t)sema_w, 0, 0, 0);
-    iop_run();
+    run_all();
     CHECK(strcmp(order, "d!") == 0, "DeleteSema released waiter: \"%s\"", order);
 }
 
@@ -312,17 +347,28 @@ static void test_sleep_delay(void) {
     start(t, 0);
     CALL(thbase_WakeupThread, &c, (uint32_t)t, 0, 0, 0);    /* before it runs: banked */
     CALL(thbase_WakeupThread, &c, (uint32_t)t, 0, 0, 0);
-    iop_run();
+    run_all();
     CHECK(strcmp(order, "S2 ") == 0 && !sleeps_done, "banked wakeups: \"%s\"", order);
     CALL(thbase_WakeupThread, &c, (uint32_t)t, 0, 0, 0);
-    iop_run();
+    run_all();
     CHECK(sleeps_done && strcmp(order, "S2 S3") == 0, "wakeup of a sleeping thread: \"%s\"", order);
 
+    /* the delay starts inside the first pass (between t0 and t1): it must not end before t0 + 20 ms, and every
+     * pass that begins after t1 + 20 ms must end it (a pass that started later did not, if late > 0) */
     int64_t t0 = iop_now();
     start(new_thread(G_DELAY, 30), 0);
-    run_until(&delay_done, 1000);
-    double ms = (double)(iop_now() - t0) * 1000.0 / (double)iop_usec_to_ticks(1000000u);
-    CHECK(delay_done && ms >= 19.5 && ms < 250, "DelayThread(20 ms) took %.1f ms", ms);
+    run_all();
+    int64_t t1 = iop_now();
+    int late = 0;
+    for (int i = 0; i < 2000 && !delay_done; i++) {
+        Sleep(1);
+        int64_t tb = iop_now();
+        run_all();
+        if (!delay_done && tb - t1 >= iop_usec_to_ticks(20000u)) late++;
+    }
+    double ms = ticks_ms(iop_now() - t0);
+    CHECK(delay_done && ms >= 19.5 && !late, "DelayThread(20 ms): done %d after %.1f ms, %d passes after it expired did not end it",
+          delay_done, ms, late);
 
     CALL(thbase_USec2SysClock, &c, 1000000, scratch + 0x90, 0, 0);
     CHECK(iop_r32(scratch + 0x90) == 36864000u && iop_r32(scratch + 0x94) == 0, "USec2SysClock(1 s) = %u", iop_r32(scratch + 0x90));
@@ -333,18 +379,28 @@ static void test_timer(void) {
     iop_ctx c = { 0 };
     timer_wake_sema = (uint32_t)new_sema(1, 0, 1);
     start(new_thread(G_TIMER_WAITER, 20), 0);
-    iop_run();
+    run_all();
     int id = (int)CALL(timrman_AllocHardTimer, &c, 1, 32, 1, 0);
     CHECK(id > 0, "AllocHardTimer -> %d", id);
     timer_limit = 100;
     CALL(timrman_SetTimerHandler, &c, (uint32_t)id, 36864 /* 1 ms of SYSCLOCK */, G_TIMER, 36864);
     CALL(timrman_SetupHardTimer, &c, (uint32_t)id, 1, 0, 1);
-    int64_t t0 = iop_now();
+    /* the 100th tick is due 100 ms after the start (between s0 and s1): the service that delivered it ended at
+     * or after that (not faster than 1 kHz), the one before it began before it (not slower) */
+    int64_t s0 = iop_now();
     CALL(timrman_StartHardTimer, &c, (uint32_t)id, 0, 0, 0);
-    while (timer_calls < 100 && iop_now() - t0 < iop_usec_to_ticks(2000000u)) { iop_service(); Sleep(1); }
-    double ms = (double)(iop_now() - t0) * 1000.0 / (double)iop_usec_to_ticks(1000000u);
+    int64_t s1 = iop_now(), prev_begin = s1, begin = s1, end = s1;
+    while (timer_calls < 100 && iop_now() - s0 < iop_usec_to_ticks(2000000u)) {
+        Sleep(1);
+        prev_begin = begin;
+        begin = iop_now();
+        iop_service();
+        end = iop_now();
+    }
     CHECK(timer_calls == 100, "handler calls %u", timer_calls);
-    CHECK(ms >= 98 && ms < 400, "100 ticks at 1 kHz took %.1f ms", ms);
+    CHECK(end - s0 >= iop_usec_to_ticks(98000u) && prev_begin - s1 < iop_usec_to_ticks(101000u),
+          "100 ticks at 1 kHz: delivered by the service ending at %.1f ms, not by the one beginning at %.1f ms",
+          ticks_ms(end - s0), ticks_ms(prev_begin - s1));
     CHECK(timer_in_intr, "handler not in interrupt context");
     CHECK(timer_waiter_done, "iSignalSema from the handler did not wake the waiting thread");
     for (int i = 0; i < 20; i++) { iop_service(); Sleep(1); }
@@ -357,14 +413,17 @@ static void test_timer(void) {
 static void test_time_hold(void) {
     printf("debug pause: IOP time hold\n");
     iop_ctx c = { 0 };
-    int64_t t0 = iop_now();
+    /* IOP time from t0 to t1 is only the unheld time: at most (wB - wA) + (wD - wC), whatever the scheduler did */
+    int64_t wA = qpc(), t0 = iop_now();
     iop_time_hold(1);
-    int64_t h0 = iop_now();
+    int64_t wB = qpc(), h0 = iop_now();
     Sleep(60);
     CHECK(iop_now() == h0, "IOP time moved while held");
+    int64_t wC = qpc();
     iop_time_hold(0);
-    double ms = (double)(iop_now() - t0) * 1000.0 / (double)iop_usec_to_ticks(1000000u);
-    CHECK(ms < 30, "the held 60 ms counted as IOP time: %.1f ms passed", ms);
+    int64_t t1 = iop_now(), wD = qpc();
+    CHECK(t1 - t0 <= (wB - wA) + (wD - wC), "the held %.1f ms counted as IOP time: %.1f ms passed, %.2f ms unheld",
+          ticks_ms(wC - wB), ticks_ms(t1 - t0), ticks_ms((wB - wA) + (wD - wC)));
 
     int id = (int)CALL(timrman_AllocHardTimer, &c, 1, 32, 1, 0);
     timer_calls = 0;
@@ -374,20 +433,36 @@ static void test_time_hold(void) {
     CALL(timrman_SetupHardTimer, &c, (uint32_t)id, 1, 0, 1);
     CALL(timrman_StartHardTimer, &c, (uint32_t)id, 0, 0, 0);
     for (int i = 0; i < 20; i++) { iop_service(); Sleep(1); }
+    /* no burst: the ticks delivered across the hold are those of the unheld time only (at most one per ms of
+     * (wB - wA) + (wD - wC), + 1 for the grid), never the 100 held ms */
+    wA = qpc();
     iop_service();
     uint32_t before = timer_calls;
     iop_time_hold(1);
+    wB = qpc();
     Sleep(100);
     iop_service();                                            /* inside the hold: nothing is due */
     uint32_t during = timer_calls;
+    wC = qpc();
     iop_time_hold(0);
     iop_service();
     uint32_t after = timer_calls;
-    CHECK(during == before, "%u timer calls while held", during - before);
-    CHECK(after - before < 20, "%u timer calls right after a 100 ms hold (want no burst)", after - before);
-    int64_t t1 = iop_now();
-    while (iop_now() - t1 < iop_usec_to_ticks(50000u)) { iop_service(); Sleep(1); }
-    CHECK(timer_calls - after >= 40, "the timer kept its rate after the hold: %u calls in 50 ms", timer_calls - after);
+    int64_t tp = iop_now();
+    wD = qpc();
+    double unheld = ticks_ms((wB - wA) + (wD - wC));
+    /* (ticks that fell due between that service and the hold - this thread descheduled in between - are delivered
+     * inside it: at most one per ms of wB - wA, + 1; none for the 100 held ms) */
+    CHECK((double)(during - before) <= ticks_ms(wB - wA) + 1.0, "%u timer calls while held (%.2f ms before the hold)",
+          during - before, ticks_ms(wB - wA));
+    CHECK((double)(after - before) <= unheld + 1.0, "%u timer calls right after a 100 ms hold with %.2f ms unheld (want no burst)",
+          after - before, unheld);
+    /* the rate after the hold: every tick due between the service above and the last one is delivered (one per ms
+     * of the IOP time between tp and tf, - 2 for the grid and the period's rounding) */
+    while (iop_now() - tp < iop_usec_to_ticks(50000u)) { iop_service(); Sleep(1); }
+    int64_t tf = iop_now();
+    iop_service();
+    CHECK((double)(timer_calls - after) >= ticks_ms(tf - tp) - 2.0, "the timer kept its rate after the hold: %u calls in %.1f ms",
+          timer_calls - after, ticks_ms(tf - tp));
     CALL(timrman_StopHardTimer, &c, (uint32_t)id, 0, 0, 0);
     CALL(timrman_FreeHardTimer, &c, (uint32_t)id, 0, 0, 0);
 }
@@ -398,12 +473,12 @@ static void test_event_flags(void) {
     iop_w32(scratch + 0x60, 2); iop_w32(scratch + 0x64, 0); iop_w32(scratch + 0x68, 0);   /* EA_MULTI */
     evf = (int)CALL(thevent_CreateEventFlag, &c, scratch + 0x60, 0, 0, 0);
     start(new_thread(G_EVF, 30), 0);
-    iop_run();
+    run_all();
     CALL(thevent_SetEventFlag, &c, (uint32_t)evf, 0x1, 0, 0);
-    iop_run();
+    run_all();
     CHECK(!evf_done, "AND wait released with only bit 0");
     CALL(thevent_SetEventFlag, &c, (uint32_t)evf, 0x6, 0, 0);
-    iop_run();
+    run_all();
     CHECK(evf_done == 1 && evf_res == 0x7, "AND wait: done %d, bits 0x%X", evf_done, evf_res);
     CHECK((int)CALL(thevent_PollEventFlag, &c, (uint32_t)evf, 0x4, 1, 0) == KE_OK, "bit 2 kept after WEF_CLEAR of 0x3");
     CHECK((int)CALL(thevent_PollEventFlag, &c, (uint32_t)evf, 0x1, 1, 0) == KE_EVF_COND, "bits 0x3 not cleared");
@@ -415,7 +490,7 @@ static void test_rpc(void) {
     printf("RPC server loop\n");
     rpc_qd = scratch + 0x100; rpc_sd = scratch + 0x140; rpc_buf = scratch + 0x200; rpc_out = scratch + 0x280;
     start(new_thread(G_RPC_THREAD, 40), 0);
-    iop_run();
+    run_all();
     uint32_t sd = 0, buff = 0;
     CHECK(iop_rpc_find_server(0x1234, &sd, &buff) && sd == rpc_sd && buff == rpc_buf, "server lookup: sd 0x%X buff 0x%X", sd, buff);
     CHECK(iop_rpc_is_server(rpc_sd) && !iop_rpc_is_server(rpc_buf), "iop_rpc_is_server");
@@ -423,7 +498,7 @@ static void test_rpc(void) {
     iop_rpc_req r = { { 11, 22, 33, 44 }, rpc_sd, 21, 4, 0x00400000u, 4, 0 };
     iop_rpc_request(&r);
     CHECK(replies == 0, "replied before the IOP ran");
-    iop_run();
+    run_all();
     CHECK(replies == 1 && last_reply_addr == rpc_out && iop_r32(rpc_out) == 142, "reply %u at 0x%X = %u", replies,
           last_reply_addr, iop_r32(rpc_out));
     CHECK(last_reply_req.pkt[0] == 11 && last_reply_req.pkt[3] == 44 && last_reply_req.receive == 0x00400000u,
@@ -434,7 +509,7 @@ static void test_rpc(void) {
     iop_rpc_request(&r);
     r.fno = 6;
     iop_rpc_request(&r);
-    iop_run();
+    run_all();
     CHECK(replies == 3 && iop_r32(rpc_out) == 112, "queued requests: %u replies, last %u", replies, iop_r32(rpc_out));
 }
 
@@ -466,18 +541,18 @@ static void test_completions(void) {
     CHECK(id != 0 && dma_iop == 0x1234 && dma_ee == 0x00500000u && dma_size == 0x24, "IOP->EE DMA");
     CHECK(dma_cb_calls == 0, "DMA callback ran inside sceSifSetDmaIntr");
     CHECK((int)CALL(sifman_sceSifDmaStat, &c, id, 0, 0, 0) < 0, "sceSifDmaStat of a finished transfer");
-    iop_run();
+    run_all();
     CHECK(dma_cb_calls == 1 && dma_cb_arg == 0xBEEF, "DMA callback: %u calls, arg 0x%X", dma_cb_calls, dma_cb_arg);
 
     CALL(libsd_sceSdSetTransIntrHandler, &c, 1, G_SD_CB, 0x77, 0);
     iop_sd_transfer_done(1);
     CHECK(iop_poll_flag, "transfer completion does not request a poll");
-    iop_run();
+    run_all();
     CHECK(sd_cb_calls == 1 && sd_cb_ch == 1 && sd_cb_arg == 0x77, "sd handler: %u calls ch %u arg 0x%X", sd_cb_calls,
           sd_cb_ch, sd_cb_arg);
     iop_sd_transfer_done(1);              /* two transfers finished before the handler could run */
     iop_sd_transfer_done(1);
-    iop_run();
+    run_all();
     CHECK(sd_cb_calls == 3, "sd handler: one call per completion expected, %u calls", sd_cb_calls);
 }
 
@@ -485,13 +560,18 @@ static void test_slice(void) {
     printf("time slice of a busy-waiting thread\n");
     start(new_thread(G_SPIN, 30), 0);
     int64_t t0 = iop_now();
+    double cpu0 = thread_cpu_ms();
     iop_run();
-    double ms = (double)(iop_now() - t0) * 1000.0 / (double)iop_usec_to_ticks(1000000u);
-    CHECK(!spin_done && ms < 100, "iop_run returned after %.1f ms (spin done %d)", ms, spin_done);
+    double ms = ticks_ms(iop_now() - t0), cpu = thread_cpu_ms() - cpu0;
+    CHECK(iop_run_unfinished(), "the pass did not end at its time slice");
+    /* (a slice is SLICE_USEC: 2 ms. Wall time alone also counts time the test thread waited for a CPU, so a pass
+     * fails only if it also used >= 100 ms of CPU - GetThreadTimes has the scheduler tick's granularity) */
+    CHECK(!spin_done && (ms < 100 || cpu < 100), "iop_run returned after %.1f ms, %.1f ms of CPU (spin done %d)", ms, cpu,
+          spin_done);
     CHECK(spin_polls > 0, "no polls");
     spin_release = 1;
     int64_t before = iop_now();
-    iop_run();
+    run_all();
     CHECK(spin_done, "spinning thread did not resume");
     /* the end of every pass is published for the mixer (sd.c holds the voices when it gets old) */
     CHECK(iop_last_run_time() >= before && iop_last_run_time() <= iop_now(), "iop_last_run_time not updated by iop_run");
@@ -518,41 +598,55 @@ static void test_iop_thread(void) {
     iop_unlock();
     while (*vol(&timer_calls) < 30 && iop_now() - t0 < iop_usec_to_ticks(2000000u)) Sleep(1);
     /* the EE side holds the lock for 40 ms: no tick runs meanwhile, the missed ones come after */
+    int64_t l0 = qpc();
     iop_lock();
     uint32_t held_at = *vol(&timer_calls);
     Sleep(40);
     uint32_t after_hold = *vol(&timer_calls);
     iop_unlock();
+    double held_ms = ticks_ms(qpc() - l0);
     CHECK(after_hold == held_at, "timer ran while the lock was held (%u -> %u)", held_at, after_hold);
-    while (*vol(&timer_calls) < 100 && iop_now() - t0 < iop_usec_to_ticks(2000000u)) Sleep(1);
-    double ms = (double)(iop_now() - t0) * 1000.0 / (double)iop_usec_to_ticks(1000000u);
-    CHECK(*vol(&timer_calls) == 100 && ms >= 98 && ms < 400, "100 ticks: %u calls in %.1f ms", *vol(&timer_calls), ms);
+    while (*vol(&timer_calls) < 100 && iop_now() - t0 < iop_usec_to_ticks(3000000u)) Sleep(1);
+    /* timed on the IOP thread (the handler's own clock), so this thread's scheduling does not count; the lock
+     * hold above (40 ms, longer if this thread was descheduled while holding it) delays the IOP thread */
+    double ms = ticks_ms(*(volatile int64_t*)&timer_last_at - t0);
+    CHECK(*vol(&timer_calls) == 100 && ms >= 98 && ms < 360 + held_ms, "100 ticks: %u calls, the last at %.1f ms (lock held %.1f ms)",
+          *vol(&timer_calls), ms, held_ms);
     iop_lock();
     CALL(timrman_FreeHardTimer, &c, (uint32_t)id, 0, 0, 0);
     iop_unlock();
 
     /* DelayThread wakes in real time */
+    /* (the thread runs on the IOP thread after the unlock: its delay starts after u0 and before u1) */
     delay_done = 0;
     iop_lock();
     start(new_thread(G_DELAY, 30), 0);
+    int64_t u0 = iop_now();
     iop_unlock();
-    t0 = iop_now();
-    while (!delay_done && iop_now() - t0 < iop_usec_to_ticks(1000000u)) Sleep(1);
-    ms = (double)(iop_now() - t0) * 1000.0 / (double)iop_usec_to_ticks(1000000u);
-    CHECK(delay_done && ms < 250, "DelayThread(20 ms) on the IOP thread: done %d after %.1f ms", delay_done, ms);
+    int64_t u1 = iop_now();
+    while (!delay_done && iop_now() - u1 < iop_usec_to_ticks(3000000u)) Sleep(1);
+    double from0 = ticks_ms(*(volatile int64_t*)&delay_at - u0), from1 = ticks_ms(*(volatile int64_t*)&delay_at - u1);
+    CHECK(delay_done && from0 >= 19.5 && from1 < 250, "DelayThread(20 ms) on the IOP thread: done %d, %.1f ms after the start",
+          delay_done, from1);
 
     /* an RPC request from the EE side is served by the IOP thread (test_rpc's server is waiting);
      * iop_kick (as sif.c does) wakes the IOP thread instead of running the IOP on this one */
+    /* Served by the IOP thread in the first pass that began after the request (+1: a pass that ended at its time
+     * slice). Counted in IOP passes, not milliseconds: on a loaded machine even the IOP thread (MMCSS) waited
+     * 150 ms for a CPU once (M11), which is the scheduler's latency, not this code's. */
     uint32_t before = *vol(&replies);
     iop_w32(rpc_buf, 7);
     iop_rpc_req r = { { 1, 2, 3, 4 }, rpc_sd, 9, 4, 0x00400000u, 4, 0 };
-    iop_rpc_request(&r);
-    iop_kick(0);
     t0 = iop_now();
-    while (*vol(&replies) == before && iop_now() - t0 < iop_usec_to_ticks(1000000u)) Sleep(1);
-    ms = (double)(iop_now() - t0) * 1000.0 / (double)iop_usec_to_ticks(1000000u);
-    CHECK(*vol(&replies) == before + 1 && iop_r32(rpc_out) == 25 && ms < 100, "RPC on the IOP thread: %u replies, result %u, %.1f ms",
-          *vol(&replies) - before, iop_r32(rpc_out), ms);
+    iop_rpc_request(&r);
+    uint32_t pass_at_request = iop_pass_count();
+    iop_kick(0);
+    while (*vol(&replies) == before && iop_now() - t0 < iop_usec_to_ticks(5000000u)) Sleep(1);
+    ms = ticks_ms(*(volatile int64_t*)&reply_at - t0);
+    CHECK(*vol(&replies) == before + 1 && iop_r32(rpc_out) == 25 && reply_pass <= pass_at_request + 2 &&
+          reply_tid != GetCurrentThreadId(), "RPC on the IOP thread: %u replies, result %u, pass %u (request at pass %u), %.1f ms, %s",
+          *vol(&replies) - before, iop_r32(rpc_out), reply_pass, pass_at_request, ms,
+          reply_tid != GetCurrentThreadId() ? "IOP thread" : "served on the EE's thread");
     /* the EE's safe points no longer run the IOP */
     iop_lock();
     uint32_t pass_check = *vol(&timer_calls);
@@ -583,9 +677,13 @@ static void test_libs(void) {
     /* printf with register and stack arguments, captured from stderr */
     char path[MAX_PATH];
     GetTempPathA(sizeof path, path);
-    strcat(path, "iop_printf_test.txt");
+    snprintf(path + strlen(path), sizeof path - strlen(path), "iop_printf_test_%lu.txt", GetCurrentProcessId());   /* (per process) */
+    /* (stderr's descriptor is pointed at the file and back - M11: freopen closed stderr for good, so this test had
+     * to run last, after the IOP thread had started, and a log line the IOP thread wrote meanwhile raced it) */
     fflush(stderr);
-    FILE* f = freopen(path, "w", stderr);
+    int saved = _dup(_fileno(stderr));
+    int fd = _open(path, _O_WRONLY | _O_CREAT | _O_TRUNC, _S_IREAD | _S_IWRITE);
+    if (fd >= 0) _dup2(fd, _fileno(stderr));
     put_str(b + 0x80, "%d|%5s|%-4x|%c|%08X|%%|%s\n");
     put_str(b + 0xC0, "hi");
     put_str(b + 0xD0, "five");
@@ -593,7 +691,8 @@ static void test_libs(void) {
     iop_w32(c.r[29] + 16, 'Q'); iop_w32(c.r[29] + 20, 0xBEEF); iop_w32(c.r[29] + 24, b + 0xD0);
     CALL(stdio_printf, &c, b + 0x80, (uint32_t)-42, b + 0xC0, 0xAB);
     fflush(stderr);
-    if (f) fclose(f);
+    if (saved >= 0) { _dup2(saved, _fileno(stderr)); _close(saved); }
+    if (fd >= 0) _close(fd);
     char line[256] = "";
     FILE* in = fopen(path, "r");
     if (in) { if (!fgets(line, sizeof line, in)) line[0] = 0; fclose(in); }
@@ -615,10 +714,8 @@ int main(void) {
     test_rpc();
     test_completions();
     test_slice();
+    test_libs();                                    /* (redirects stderr for a moment: before any other thread writes) */
     test_iop_thread();                              /* from here on the IOP runs on its own thread */
-    iop_lock();                                     /* test_libs calls kernel code from this thread */
-    test_libs();                                    /* last: it redirects stderr */
-    iop_unlock();
     printf(failures ? "%d failure(s)\n" : "all passed\n", failures);
     return failures ? 1 : 0;
 }
