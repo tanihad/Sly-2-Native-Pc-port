@@ -167,6 +167,8 @@ static struct {
     uint32_t rescales, reads;            /* (M8) target rescales (sample-factor changes), TRXDIR=1 reads, per report */
     uint64_t gs_busy0;                  /* perf_state.gs_busy at the start of the report period (TSC ticks) */
     uint64_t stats_ticks0;               /* (M9) stats_ticks then */
+    double phase[GPU_PHASES];            /* (M9) GPU ms per phase over nphase game frames (PS2_GPU_PROF) */
+    int nphase;
     LONG presents0;
     LARGE_INTEGER t0;
     double tsc_per_ms;
@@ -278,6 +280,10 @@ static void stats_vblank(uint32_t vblank) {
             if (fs[i].draws < 200) continue;     /* (per game frame: the VBlanks in between draw nothing) */
             if (S.nr < SW) { S.rcpu[S.nr] = fs[i].render_cpu_ms; S.rwall[S.nr] = fs[i].render_ms; S.pres[S.nr] = fs[i].present_ms; S.nr++; }
             if (fs[i].gpu_ms >= 0 && S.ngpu < SW) S.gpu[S.ngpu++] = fs[i].gpu_ms;
+            if (fs[i].phases) {          /* (M9) PS2_GPU_PROF: GPU ms per phase, summed over the game frames */
+                for (int k = 0; k < GPU_PHASES; k++) S.phase[k] += fs[i].phase_ms[k];
+                S.nphase++;
+            }
         }
     if (!C.stats) return;
     if (vblank % 600 == 0) mem_log("now");
@@ -306,7 +312,16 @@ static void stats_vblank(uint32_t vblank) {
              (double)S.downloads * k, (double)S.loads * k, (double)S.display_mem * k, S.targets, S.rescales, S.reads,
              med(S.photon, S.nphoton), vmax(S.photon, S.nphoton), med(S.queued, S.nqueued), vmax(S.queued, S.nqueued),
              gpu_submit_absorbs(), scost);
+        if (S.nphase) {                  /* (M9) PS2_GPU_PROF: GPU timestamps per phase */
+            char ph[256];
+            int o = 0;
+            for (int i = 0; i < GPU_PHASES; i++)
+                o += snprintf(ph + o, sizeof ph - (size_t)o, " %s %.2f", gpu_phase_names[i], S.phase[i] / S.nphase);
+            slog("stats v%u: GPU phases (mean ms per game frame, %d frames):%s", vblank, S.nphase, ph);
+        }
     }
+    S.nphase = 0;
+    memset(S.phase, 0, sizeof S.phase);
     S.stats_ticks0 = stats_ticks;
     S.nfront = S.nr = S.ngpu = S.nlat = S.nphoton = S.nqueued = 0;
     S.draws = S.ff = S.rov = S.rov_runs = S.punts = S.downloads = S.loads = S.display_mem = S.kicks = 0;

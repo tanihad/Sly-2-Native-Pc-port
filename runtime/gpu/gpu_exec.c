@@ -1244,6 +1244,16 @@ static void prof_end(void) {
             fo[PR.cat[i]] += oc;
         }
     }
+    {                                    /* (M9) the frame's phases for the stats line (gpu_hw.c, PS2_GS_HW_STATS) */
+        gpu_frame_stats* s = gpu_stats_cur();
+        s->phases = 1;
+        s->phase_ms[0] = (float)(f[PR_FF_FAST] + f[PR_FF_TRI] + f[PR_FF_FAST_Z]);
+        s->phase_ms[1] = (float)(f[PR_FF_SPRITE] + f[PR_FF_LINE]);
+        s->phase_ms[2] = (float)(f[PR_REF_TRI] + f[PR_REF_OTHER]);
+        s->phase_ms[3] = (float)(f[PR_A16] + f[PR_A16_DRAW]);
+        s->phase_ms[4] = (float)(f[PR_ZRESOLVE] + f[PR_ZSYNC]);
+        s->phase_ms[5] = (float)(f[PR_OTHER] + f[PR_TARGET] + f[PR_MEM] + f[PR_CLEAR] + f[PR_SHADOW] + f[PR_PRESENT]);
+    }
     if (ft > 50.0) return;               /* (loading frames: left out) */
     for (int c = 0; c < PR_N; c++) { PR.ms[c] += f[c]; PR.ps_inv[c] += fi[c]; PR.occl[c] += fo[c]; PR.prims[c] += fp[c]; }
     PR.total += ft;

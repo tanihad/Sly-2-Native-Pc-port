@@ -97,6 +97,11 @@ void gpu_finish(void);
 /* One line describing the render thread and the command rings (hang diagnostics; any thread). */
 void gpu_debug_state(char* buf, size_t n);
 
+/* (M9) GPU phases of a frame (PS2_GPU_PROF timestamps, grouped): FF triangles, FF sprites and lines, ROV / REF draws,
+ * ALIAS16 runs (gather, draws, scatter), Z resolve / sync, the rest (memory ops, clears, shadow copies, compose) */
+#define GPU_PHASES 6
+static const char* const gpu_phase_names[GPU_PHASES] = { "ff-tri", "ff-sprite/line", "rov", "alias16", "zsync", "other" };
+
 /* Per-picture statistics, completed in order (GPU time needs the timestamp queries to resolve). */
 typedef struct {
     uint32_t vblank;
@@ -119,6 +124,8 @@ typedef struct {
     double photon_ms;                     /* (M9) frame queued -> the display's vsync that showed it (DXGI frame statistics),
                                              for the most recent picture the display has shown; -1: not known */
     int queued;                           /* (M9) frames queued for the render thread when this one was taken */
+    int phases;                           /* (M9) phase_ms is set (PS2_GPU_PROF: GPU timestamps per phase) */
+    float phase_ms[GPU_PHASES];           /* (M9) GPU ms per phase (gpu_phase_names) */
 } gpu_frame_stats;
 int gpu_take_frame_stats(gpu_frame_stats* out, int max);   /* returns how many were taken */
 

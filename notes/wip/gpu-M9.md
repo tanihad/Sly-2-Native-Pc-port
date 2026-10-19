@@ -92,8 +92,22 @@ Render CPU 1.3-3.7 ms. (In game M8: GPU 8.1-12.1, GS 7-8, frontend up to 10.8.)
 - In-game GS thread ep1 current 6.2 ms (replay 3.7: cross-core queue reads + preemption counted as busy). Profile: px_prim
   30% of busy, vertex 15%, draw_prim 13%, px_tex0 9%, reserve 9%, write_reg 8%, finalize 8%, clut_load 3%.
 
+- dd67e34 memory: upload buffers start at 1 MB (grow to the next power of two, shrink after peaks), the 64 MB data
+  ring (software pictures only) committed on first use, at most 3 free frame-arena sets; video-memory numbers in the
+  memory log (DXGI QueryVideoMemoryInfo). In game ep1: peak 1.7 GB -> 860 MB, steady ~1.0-1.15 GB -> 856 MB (local
+  video 235, non-local 130-280 = driver pools). Replay load_m3 1022 -> 848 MB.
+- m3_heist base: GS 2.76 front 3.69 render 0.48 GPU 10.06 mem max 1021; m7_boss base: GS 2.55 front 3.58 render 0.70
+  GPU 16.25 draws 3457 mem max 1632.
+- FF per-draw overhead (PS2_GPU_DBG_DRAW=8, one primitive per draw): ep1 3.79 / ep5 4.17 ms per game frame with all
+  draws vs 2.70 / 3.19 with no FF draw (=4): ~0.28 us per FF draw, ~1.1 ms for 3.9k draws -> commutation batching
+  (12% fewer draws, M1 estimate) is worth ~0.15 ms: not done. FF pixel work ~5.7 ms of ep1's 9.5.
+- ff-tri-fast-z: 13.9M PS invocations per VBlank, 5.4M pass the depth test (ep1). Conservative depth retried
+  (SV_DepthLessEqual, PS position noperspective centroid, VS z = FLT_MIN as a test bound): invocations unchanged
+  (14.1M) -> this driver does no early rejection with conservative depth output: the optional variant is dropped.
+
 ## Next
-1. m3_heist base in game; the six scenes current (ingame.ps1 -Suffix _cur).
+1. In game current six scenes (running: ingame.ps1 -Suffix _cur); then the phase split in the stats line
+   (PS2_GPU_PROF=1 + PS2_GS_HW_STATS: "GPU phases" line, uncommitted until built).
 2. Memory: target sizes (alloc granularity, taller allocations kept, shadow copies, a16 staging), frame arenas.
 3. GS thread (decode + proxy): clut_load fast path; texture sampling; sprites; ROV shadow volumes (ep7 ~2.5 ms).
 4. Gates, appendix L, WIP complete.
