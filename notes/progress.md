@@ -2,6 +2,13 @@
 
 ## Resume here (read first in a new session)
 
+**GPU renderer M11 (2026-10-19, branch gpu/M11, worktree sly2-worktrees\gpu-M11; not merged by the agent):** the GPU
+renderer is the default (`[graphics] renderer = gpu`, `internal_scale = auto` = 3x lowered on slow GPUs, Ctrl+F2), start-up
+checks + shader warm-up with a one-line software fallback, a bit-exact no-ROV path for GPUs without rasterizer-ordered
+views, level travel for long sessions (PS2_TASK_SET `j<task>:<world>` / `w<world>`), the iop_kernel flaky test fixed,
+docs (settings, install, controls, README, notes/gpu-renderer.md). Results: notes/d3d11-renderer.md appendix M.
+Open for the owner: the ep5 gas cloud drift and the sharp distant hub scenery in Faithful (both left as they are).
+
 **CONTINUED (owner said "continue" = finish everything):** M2 resumed in gpu-M2. HUD edge
 anchoring (hud = edges|centered), live F7 aspect / F8 HUD switch and the Binocucom side fill are
 MERGED into main (next/hud; notes/widescreen.md 'HUD anchors'). Then M3..M11 one agent per milestone.
