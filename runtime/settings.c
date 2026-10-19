@@ -11,7 +11,7 @@
 #include <windows.h>
 #endif
 
-ps2_settings_t ps2_settings = { 16, 9, 0, 0, 0, 3, 0, 0, -1, -1, -1, 0, "", 0, 0, 0, 0, 0, 0, 0 };
+ps2_settings_t ps2_settings = { 16, 9, 0, 1, 0, SETTINGS_SCALE_AUTO, 0, 0, -1, -1, -1, 0, "", 0, 0, 0, 0, 0, 0, 0 };
 const char* const settings_scaler_names[SETTINGS_SCALER_N] = { "auto", "point", "box", "lanczos", "catmull-rom", "bilinear" };
 
 /* renderer / pacing values (sly2.ini and the PS2_GS_BACKEND / PS2_GS_PACING overrides) */
@@ -31,7 +31,8 @@ void settings_defaults(ps2_settings_t* s) {
     memset(s, 0, sizeof *s);
     s->aspect_w = 16;
     s->aspect_h = 9;
-    s->internal_scale = 3;
+    s->renderer_gpu = 1;                           /* (M11: the GPU renderer by default; software if it cannot start) */
+    s->internal_scale = SETTINGS_SCALE_AUTO;
     s->outlines_thin = 0;
     s->filters_faithful = 0;
     s->motion_blur = s->flicker_filter = s->interlacing = -1;
@@ -122,9 +123,10 @@ static int apply(ps2_settings_t* s, const char* key, const char* v, settings_war
         return 0;
     }
     if (!_stricmp(key, "graphics.internal_scale")) {
+        if (!_stricmp(v, "auto")) { s->internal_scale = SETTINGS_SCALE_AUTO; return 0; }
         char* end;
         long n = strtol(v, &end, 10);
-        if (*end || n < 1 || n > 8) { warnf(warn, user, line, "internal_scale '%s' is not 1..8", v); return 1; }
+        if (*end || n < 1 || n > 8) { warnf(warn, user, line, "internal_scale '%s' is not auto or 1..8", v); return 1; }
         s->internal_scale = (int)n;
         return 0;
     }
@@ -262,6 +264,8 @@ int settings_format(const ps2_settings_t* s, char* out, size_t cap) {
     static const char* tog[] = { "preset", "off", "on" };
     char disc[sizeof s->disc + 2];
     char win[256] = "";
+    char scale[16] = "auto";
+    if (s->internal_scale != SETTINGS_SCALE_AUTO) snprintf(scale, sizeof scale, "%d", s->internal_scale);
     if (s->win_w > 0)
         snprintf(win, sizeof win, "x = %d\ny = %d\nwidth = %d\nheight = %d\nmaximized = %s\n", s->win_x, s->win_y,
                  s->win_w, s->win_h, s->win_maximized ? "on" : "off");
@@ -278,17 +282,19 @@ int settings_format(const ps2_settings_t* s, char* out, size_t cap) {
         "hud = %s\n"
         "\n"
         "[graphics]\n"
-        "; Renderer: software (default) or gpu (Direct3D 11, needs a GPU with rasterizer-ordered views;\n"
-        "; falls back to software when unavailable). Environment override: PS2_GS_BACKEND=sw|hw\n"
+        "; Renderer: gpu (default: Direct3D 11, needs a Direct3D 11 graphics card - feature level 11_0) or\n"
+        "; software (the PS2's renderer on the CPU, at the PS2's resolution). When the GPU renderer cannot\n"
+        "; start, the software renderer is used and sly2.log says why. Environment override: PS2_GS_BACKEND=sw|hw\n"
         "renderer = %s\n"
         "; gpu renderer: frame pacing. vsync (default), vrr (G-Sync/FreeSync: every picture shown once,\n"
         "; no wait for the display), display (the game runs at the display's 60 Hz instead of 59.94 Hz).\n"
         "pacing = %s\n"
         "; The settings below are used by the Direct3D 11 renderer (the software renderer ignores them, except\n"
         "; motion_blur, the game's own effect). They change while the game runs too: F2 / Shift+F2 scale,\n"
-        "; F3 outlines, F4 filters preset, F5 motion blur, F6 flicker filter, Shift+F6 interlacing.\n"
-        "; Internal resolution scale, 1 (PS2: 512x448) to 8. Environment override: PS2_GS_SCALE=N\n"
-        "internal_scale = %d\n"
+        "; Ctrl+F2 scale auto, F3 outlines, F4 filters preset, F5 motion blur, F6 flicker filter, Shift+F6 interlacing.\n"
+        "; Internal resolution scale: auto (default: 3x, lowered while the graphics card cannot keep up) or\n"
+        "; 1 (PS2: 512x448) to 8. Environment override: PS2_GS_SCALE=N\n"
+        "internal_scale = %s\n"
         "; Cel-shading outlines: ps2 (one PS2 pixel wide, exact) or thin (high-resolution lines).\n"
         "outlines = %s\n"
         "; Image filters preset: modern (motion blur on, no flicker filter, progressive) or\n"
@@ -313,7 +319,7 @@ int settings_format(const ps2_settings_t* s, char* out, size_t cap) {
         "%s",
         s->aspect_w, s->aspect_h, s->hud_centered ? "centered" : "edges", s->renderer_gpu ? "gpu" : "software",
         s->pacing == SETTINGS_PACING_VRR ? "vrr" : s->pacing == SETTINGS_PACING_DISPLAY ? "display" : "vsync",
-        s->internal_scale, s->outlines_thin ? "thin" : "ps2",
+        scale, s->outlines_thin ? "thin" : "ps2",
         s->filters_faithful ? "faithful" : "modern", tog[s->motion_blur + 1], tog[s->flicker_filter + 1],
         tog[s->interlacing + 1], settings_scaler_names[s->scaler >= 0 && s->scaler < SETTINGS_SCALER_N ? s->scaler : 0],
         ini_value(s->disc, disc, sizeof disc), s->win_fullscreen ? "on" : "off",
@@ -530,8 +536,9 @@ void settings_load(void) {
         fprintf(stderr, "[settings] PS2_GS_PACING='%s' is not vsync, vrr or display: ignored\n", e);
     e = getenv("PS2_VBLANK");                    /* (the design's name for the display-driven VBlank) */
     if (e && !_stricmp(e, "display")) ps2_settings.pacing = SETTINGS_PACING_DISPLAY;
-    fprintf(stderr, "[settings] aspect %d:%d, hud %s, renderer %s\n", ps2_settings.aspect_w, ps2_settings.aspect_h,
-            ps2_settings.hud_centered ? "centered" : "edges", ps2_settings.renderer_gpu ? "gpu" : "software");
+    fprintf(stderr, "[settings] aspect %d:%d, hud %s, renderer %s%s\n", ps2_settings.aspect_w, ps2_settings.aspect_h,
+            ps2_settings.hud_centered ? "centered" : "edges", ps2_settings.renderer_gpu ? "gpu" : "software",
+            getenv("PS2_GS_BACKEND") && *getenv("PS2_GS_BACKEND") ? " (PS2_GS_BACKEND)" : "");
 }
 
 /* [display] as sly2.ini says now (the player may edit it while the game runs): 1 and aspect / hud

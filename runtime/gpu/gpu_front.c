@@ -28,6 +28,9 @@
 #include <windows.h>
 #include <x86intrin.h>
 
+/* (M11) gpu_d3d11.c: the ROV tier without rasterizer-ordered views (weak: the frontend unit tests link no device) */
+extern int gpu_no_rov(void) __attribute__((weak));
+
 gpu_front_frame gf;
 gpu_front_config gf_cfg;
 uint32_t gf_frame;
@@ -1304,6 +1307,35 @@ static uint64_t sbits[2048][SB_W];
 static int sb_y0 = 2048, sb_y1 = -1, sb_w0 = SB_W, sb_w1 = -1;
 static uint32_t sb_owner, od_serial;              /* the open draw the bitmap belongs to */
 
+/* (M11) no rasterizer-ordered views (gf_cfg.no_rov): a ROV-tier or ALIAS16 draw is a plain UAV draw, whose pixel-shader
+ * invocations run in no particular order, so it may only hold primitives that touch disjoint pixels; D3D11 orders the
+ * UAV accesses of consecutive draws, which gives every pixel its primitives in stream order, as the ROV draws do. The
+ * open draw's primitive rectangles (native or 16-bit frame pixels, inclusive; triangles and thin lines grown by one
+ * pixel on every side: the samples of a triangle at scale reach into the row above and the column left, thin lines are
+ * quads around the line) are kept here; an overlapping primitive starts a new draw of the same key in the same run. */
+#define NR_MAX 256
+static int16_t nr_rect[NR_MAX][4];
+static int nr_n, nr_box[4];
+static uint32_t nr_owner;
+static int nr_hit(const int r[4]) {
+    if (nr_n >= NR_MAX) return 1;
+    if (!nr_n || r[2] < nr_box[0] || r[0] > nr_box[2] || r[3] < nr_box[1] || r[1] > nr_box[3]) return 0;
+    for (int i = 0; i < nr_n; i++)
+        if (!(r[2] < nr_rect[i][0] || r[0] > nr_rect[i][2] || r[3] < nr_rect[i][1] || r[1] > nr_rect[i][3])) return 1;
+    return 0;
+}
+static void nr_add(const int r[4]) {
+    if (!nr_n) for (int k = 0; k < 4; k++) nr_box[k] = r[k];
+    else {
+        if (r[0] < nr_box[0]) nr_box[0] = r[0];
+        if (r[1] < nr_box[1]) nr_box[1] = r[1];
+        if (r[2] > nr_box[2]) nr_box[2] = r[2];
+        if (r[3] > nr_box[3]) nr_box[3] = r[3];
+    }
+    for (int k = 0; k < 4; k++) nr_rect[nr_n][k] = (int16_t)(r[k] < -32768 ? -32768 : r[k] > 32767 ? 32767 : r[k]);
+    nr_n++;
+}
+
 static void sb_reset(void) {
     for (int y = sb_y0; y <= sb_y1; y++) memset(&sbits[y][sb_w0], 0, (size_t)(sb_w1 - sb_w0 + 1) * 8);
     sb_y0 = 2048; sb_y1 = -1; sb_w0 = SB_W; sb_w1 = -1;
@@ -1862,6 +1894,15 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
         close_draw();
         gf.split_conflicts++;
     }
+    /* (M11 no-ROV) this primitive's pixels: triangles and thin lines grown by one (samples at scale, rasterizer edges),
+     * sprites and points exactly (single rate: the samples of their own native pixels), line pixels within the line's
+     * box (already one larger) */
+    int nrm = cls == GPU_PC_TRI || thin;
+    int nrr[4] = { x0 - nrm, y0 - nrm, x1 + nrm, y1 + nrm };
+    if (gf_cfg.no_rov && rov && OD.open && OD.key == key && nr_owner == od_serial && nr_hit(nrr)) {
+        close_draw();
+        gf.norov_splits++;
+    }
     if (!OD.open || OD.key != key) {
         if (trace_on && OD.open) fprintf(stderr, "[front] key %016llX -> %016llX\n", (unsigned long long)OD.key, (unsigned long long)key);
         close_draw();
@@ -1882,6 +1923,10 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
     }
     OD.d.zw |= (uint8_t)(S.zwrite != 0);
     OD.outcomes |= outcome;
+    if (gf_cfg.no_rov && rov) {
+        if (nr_owner != od_serial) { nr_n = 0; nr_owner = od_serial; }
+        nr_add(nrr);
+    }
     if (xsplit) {
         if (sb_owner != od_serial) { sb_reset(); sb_owner = od_serial; }
         if (outcome & 6) sb_prim(scls, &T, spp, lp_start, lp_n, x0, y0, 1);
@@ -2193,6 +2238,9 @@ void gpu_front_start(const gpu_front_config* cfg) {
         const char* e = getenv("PS2_GPU_NO_TEX_ALPHA");
         if (e && atoi(e)) gf_cfg.no_tex_alpha = atoi(e);   /* (2: only for ATST split outcomes, which stay exact) */
     }
+    if (!gf_cfg.no_rov && gpu_no_rov && gpu_no_rov()) gf_cfg.no_rov = 1;   /* (M11) */
+    nr_n = 0;
+    nr_owner = 0;
     memset(TU, 0, sizeof TU);            /* (block serials start over) */
     GS_INIT();
     nar = 0;

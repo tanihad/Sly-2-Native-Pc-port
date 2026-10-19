@@ -1393,17 +1393,22 @@ static void exec_draw_ref(const gpu_fop_draw* d, uint32_t slot) {
     draw_scissor(d, kx, ky);
     set_depth(X.ds_off);
     /* (M9) the draw's constants by its slot: StartInstanceLocation -> DRAWID (gs.hlsl load_draw), no constant buffer */
+    /* (M11) without rasterizer-ordered views: the same shaders with plain UAVs (the frontend made the draw's primitives
+     * disjoint, gf_cfg.no_rov) */
+    int nr = gpu_no_rov();
     if (d->cls == GPU_PC_TRI) {
         int fast = (d->ps_key & GPU_PSK_FF_FAST) != 0;   /* (mixed default mode: 128-byte records, hardware S/T/Q) */
         set_topo(0);
         set_vs(gpu_vs(fast ? GPU_SH_vs_ff_tri : GPU_SH_vs_ref_tri));
-        set_ps(gpu_ps(X.mixed && dbg_skip == 3 && fast ? GPU_SH_ps_ff_t001 : fast ? GPU_SH_ps_gs_tri_fast : GPU_SH_ps_gs_tri));
+        set_ps(gpu_ps(X.mixed && dbg_skip == 3 && fast ? GPU_SH_ps_ff_t001
+                      : fast ? (nr ? GPU_SH_ps_gs_tri_fast_nr : GPU_SH_ps_gs_tri_fast) : nr ? GPU_SH_ps_gs_tri_nr : GPU_SH_ps_gs_tri));
         ID3D11DeviceContext_DrawIndexedInstanced(c, d->count, 1, d->first, 0, slot);
     } else {
         set_topo(1);
         int sprite = d->cls == GPU_PC_SPRITE, thin = d->cls == GPU_PC_THIN;
         set_vs(gpu_vs(sprite ? GPU_SH_vs_ref_sprite : thin ? GPU_SH_vs_ref_thin : GPU_SH_vs_ref_linepix));
-        set_ps(gpu_ps(sprite ? GPU_SH_ps_gs_sprite : thin ? GPU_SH_ps_gs_thin : GPU_SH_ps_gs_linepix));
+        set_ps(gpu_ps(sprite ? (nr ? GPU_SH_ps_gs_sprite_nr : GPU_SH_ps_gs_sprite) : thin ? (nr ? GPU_SH_ps_gs_thin_nr : GPU_SH_ps_gs_thin)
+                      : nr ? GPU_SH_ps_gs_linepix_nr : GPU_SH_ps_gs_linepix));
         ID3D11DeviceContext_DrawInstanced(c, 4, d->count, 0, slot);
     }
     gpu_rt.n_draws++;

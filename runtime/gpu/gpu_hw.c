@@ -177,6 +177,83 @@ static struct {
 static void mem_log(const char* when);
 static uint64_t stats_ticks;             /* (M9) TSC ticks of stats_vblank on the GS thread (it counts as GS busy time) */
 
+/* ---- (M11) internal_scale = auto ------------------------------------------------------------------------------
+ * The highest scale up to auto_max (3: the owner's quality target) whose measured GPU time stays comfortably inside
+ * real time. Measure: GPU busy = the GPU time of the pictures finished in a second (timestamps around each picture's
+ * work) / that second. GPU time grows with the samples per pixel, so the busy fraction at scale n is predicted as
+ * busy * n^2 / s^2. Hysteresis:
+ *  - down: busy > AUTO_HIGH (0.85) for AUTO_DOWN_SECS (3) seconds in a row -> the highest lower scale predicted at
+ *    <= AUTO_FIT (0.70) (at least one step);
+ *  - up: the next scale predicted at <= AUTO_LOW (0.60) for AUTO_UP_SECS (15) seconds in a row, and not if that scale
+ *    was left for being too slow within the last AUTO_RETRY_SECS (300) - so a GPU at the edge settles instead of
+ *    switching back and forth;
+ *  - the AUTO_SETTLE (3) seconds after a change are not judged (target rescale, NVIDIA clock changes).
+ * GS thread (stats_vblank, every VBlank). The scale goes to want_scale like an F2 change: the frontend rescales every
+ * target from the next frame; gfx.c reads it back (gpu_hw_auto_scale) for its own state and the log. */
+#define AUTO_HIGH 0.85
+#define AUTO_FIT 0.70
+#define AUTO_LOW 0.60
+#define AUTO_DOWN_SECS 3
+#define AUTO_UP_SECS 15
+#define AUTO_RETRY_SECS 300
+#define AUTO_SETTLE 3
+static volatile LONG auto_max;           /* 0: off (a fixed scale); else the highest scale auto picks */
+static struct {
+    double busy_ms;                      /* GPU ms of the pictures finished since t0 */
+    uint32_t frames;
+    LARGE_INTEGER t0;
+    uint32_t secs;                       /* seconds judged so far (the clock of the rules above) */
+    int over, under, settle;
+    uint32_t left_at[9];                 /* secs + 1 when scale n was left for being too slow (0: never) */
+    uint32_t changes;
+    double last_busy;
+} A;
+
+void gpu_hw_set_auto_scale(int max) {
+    if (max > 8) max = 8;
+    if (max < 0) max = 0;
+    InterlockedExchange(&auto_max, max);
+}
+int gpu_hw_auto_scale(void) { return auto_max ? (int)want_scale : 0; }
+
+static void auto_scale_tick(void) {
+    LARGE_INTEGER t, f;
+    QueryPerformanceCounter(&t);
+    if (!A.t0.QuadPart) { A.t0 = t; A.busy_ms = 0; A.frames = 0; return; }
+    QueryPerformanceFrequency(&f);
+    double ms = (double)(t.QuadPart - A.t0.QuadPart) * 1000.0 / (double)f.QuadPart;
+    if (ms < 1000.0) return;
+    double busy = A.busy_ms / ms;
+    uint32_t frames = A.frames;
+    A.t0 = t;
+    A.busy_ms = 0;
+    A.frames = 0;
+    int max = (int)auto_max, s = run_scale;
+    if (!max || !active || frames < 10 || s != (int)want_scale) { A.over = A.under = 0; return; }   /* (off, or loading a change) */
+    A.secs++;
+    A.last_busy = busy;
+    if (A.settle > 0) { A.settle--; return; }
+    int to = s;
+    if (busy > AUTO_HIGH && s > 1) {
+        if (++A.over >= AUTO_DOWN_SECS) {
+            to = s - 1;
+            while (to > 1 && busy * (double)(to * to) / (double)(s * s) > AUTO_FIT) to--;
+            A.left_at[s] = A.secs + 1;
+        }
+    } else A.over = 0;
+    double next = s < 8 ? busy * (double)((s + 1) * (s + 1)) / (double)(s * s) : 9.0;
+    if (to == s && s < max && next <= AUTO_LOW && (!A.left_at[s + 1] || A.secs + 1 - A.left_at[s + 1] > AUTO_RETRY_SECS)) {
+        if (++A.under >= AUTO_UP_SECS) to = s + 1;
+    } else A.under = 0;
+    if (s > max) to = max;               /* (the maximum was lowered) */
+    if (to == s) return;
+    A.over = A.under = 0;
+    A.settle = AUTO_SETTLE;
+    A.changes++;
+    hlog("internal scale auto: the GPU was busy %.0f%% of the time at %dx -> %dx (change %u)", busy * 100.0, s, to, A.changes);
+    InterlockedExchange(&want_scale, to);
+}
+
 /* (M9) the once-a-second report lines are formatted on the GS thread and written by a logger thread: a
  * synchronous write to the redirected stderr took ~0.5 ms per game frame of the GS thread's measured time
  * (PS2_PROFILE=gs, ep1 hub). PS2_GS_STATS_SYNC=1 writes them at once as before. */
@@ -265,7 +342,9 @@ static void stats_vblank(uint32_t vblank) {
             S.targets = f->targets_live;
             S.frames++;
         }
-    while ((n = gpu_take_frame_stats(fs, 64)) > 0)
+    while ((n = gpu_take_frame_stats(fs, 64)) > 0) {
+        for (int i = 0; i < n; i++)      /* (M11) internal_scale = auto: GPU time per second */
+            if (!fs[i].partial && fs[i].gpu_ms >= 0) { A.busy_ms += fs[i].gpu_ms; A.frames++; }
         for (int i = 0; i < n && C.stats; i++) {
             if (fs[i].partial) continue;
             if (C.stats > 1 && (fs[i].render_ms > 12.0 || fs[i].gpu_ms > 12.0))   /* PS2_GS_HW_STATS=2: slow frames */
@@ -285,6 +364,8 @@ static void stats_vblank(uint32_t vblank) {
                 S.nphase++;
             }
         }
+    }
+    auto_scale_tick();
     if (!C.stats) return;
     if (vblank % 600 == 0) mem_log("now");
     if (vblank % 60) return;
@@ -333,6 +414,8 @@ static void stats_vblank(uint32_t vblank) {
 }
 
 /* ---- render thread and frontend ---------------------------------------------------------------- */
+static char start_err[256];              /* (M11) why the last start failed */
+
 static int render_start(void) {
     gpu_config gc;
     memset(&gc, 0, sizeof gc);
@@ -341,16 +424,17 @@ static int render_start(void) {
     gc.present_w = 1280;
     gc.present_h = 960;
     gc.tearing = C.pacing == SETTINGS_PACING_VRR;
-    gc.timestamps = C.stats != 0;
+    gc.timestamps = 1;                   /* (M11: GPU time per picture also for internal_scale = auto) */
     gc.client_size = C.client_size;
-    if (!gpu_start(&gc)) return 0;
-    if (!gpu_get_caps()->full) {
-        hlog("this GPU lacks what the GPU renderer needs (feature level 11_1, rasterizer-ordered views, typed UAV loads)");
-        gpu_stop();
+    gc.warmup = 1;                       /* (M11) caps checked and every shader created now: failures are start-up failures */
+    if (!gpu_start(&gc)) {
+        snprintf(start_err, sizeof start_err, "%s", gpu_start_error());
         return 0;
     }
     return 1;
 }
+
+const char* gpu_hw_start_error(void) { return start_err[0] ? start_err : "unknown"; }
 
 static int punt_reader(uint8_t* out, void* user) { (void)user; return gpu_exec_read_memory(NULL, NULL, 0, out); }
 

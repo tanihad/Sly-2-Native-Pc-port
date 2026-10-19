@@ -19,6 +19,7 @@ extern void gpu_hw_request_switch(void) GPU_WEAK;
 extern void gpu_hw_present_sw(const uint32_t* bgrx, int w, int h, int stride, int aspect_w, int aspect_h) GPU_WEAK;
 extern void gpu_hw_stop(void) GPU_WEAK;
 extern void gpu_simulate_device_lost(void) GPU_WEAK;
+extern const char* gpu_hw_start_error(void) GPU_WEAK;
 
 #include <stdlib.h>
 #include <windows.h>
@@ -961,7 +962,9 @@ int main(int argc, char** argv) {
         hc.vblank_external = vblank_external;
         hc.display_vblank = display_vblank;
         if ((!headless && !hc.hwnd) || !gpu_hw_start(&hc)) {
-            fprintf(stderr, "[ps2] GPU renderer unavailable: using the software renderer\n");
+            /* (M11) one line saying why; the window gets its own presenter back and the game runs on */
+            fprintf(stderr, "[ps2] GPU renderer unavailable (%s): using the software renderer\n",
+                    !headless && !hc.hwnd ? "no game window" : gpu_hw_start_error ? gpu_hw_start_error() : "?");
             if (!headless) window_set_external_presenter(0, NULL);
         } else {
             gpu_backend = 1;
