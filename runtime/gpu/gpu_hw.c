@@ -16,6 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <windows.h>
+#include <psapi.h>                       /* (M9) K32GetProcessMemoryInfo (kernel32) */
 
 void debug_write_png(const char* path, const uint32_t* bgrx, int w, int h, int stride);   /* debug.c */
 void gs_record_request(const char* path, uint32_t frames);                                  /* gs_record.c */
@@ -27,6 +28,12 @@ void gs_record_request(const char* path, uint32_t frames);                      
 static int inflight_game(void) {
     const char* e = getenv("PS2_GS_INFLIGHT");
     return e && atoi(e) > 0 ? atoi(e) : 6;
+}
+/* (M9) ... but only 2 normally: the full depth only for 2 s after a slowdown filled those while the queue had been short
+ * (gpu_submit_set_adaptive). PS2_GS_INFLIGHT_BASE=N (0: always the full depth, the M6 behaviour) */
+static int inflight_base_game(void) {
+    const char* e = getenv("PS2_GS_INFLIGHT_BASE");
+    return e ? atoi(e) : 2;
 }
 
 static gpu_hw_config C;
@@ -153,16 +160,68 @@ static void dump_queued(void) {
 /* ---- PS2_GS_HW_STATS ----------------------------------------------------------------------------- */
 #define SW 256                           /* samples per report */
 static struct {
-    double front[SW], rcpu[SW], rwall[SW], gpu[SW], pres[SW], lat[SW];
-    int nfront, nr, ngpu, nlat;
+    double front[SW], rcpu[SW], rwall[SW], gpu[SW], pres[SW], lat[SW], photon[SW], queued[SW];
+    int nfront, nr, ngpu, nlat, nphoton, nqueued;
     uint64_t draws, ff, rov, rov_runs, punts, downloads, loads, display_mem, kicks;
     uint32_t frames, targets, dropped, presented, game_frames;
     uint32_t rescales, reads;            /* (M8) target rescales (sample-factor changes), TRXDIR=1 reads, per report */
     uint64_t gs_busy0;                  /* perf_state.gs_busy at the start of the report period (TSC ticks) */
+    uint64_t stats_ticks0;               /* (M9) stats_ticks then */
+    double phase[GPU_PHASES];            /* (M9) GPU ms per phase over nphase game frames (PS2_GPU_PROF) */
+    int nphase;
     LONG presents0;
     LARGE_INTEGER t0;
     double tsc_per_ms;
 } S;
+
+static void mem_log(const char* when);
+static uint64_t stats_ticks;             /* (M9) TSC ticks of stats_vblank on the GS thread (it counts as GS busy time) */
+
+/* (M9) the once-a-second report lines are formatted on the GS thread and written by a logger thread: a
+ * synchronous write to the redirected stderr took ~0.5 ms per game frame of the GS thread's measured time
+ * (PS2_PROFILE=gs, ep1 hub). PS2_GS_STATS_SYNC=1 writes them at once as before. */
+#define LOG_LINES 16
+static char log_q[LOG_LINES][2048];
+static volatile LONG log_w, log_r;
+static HANDLE log_ev, log_thread;
+static int log_sync = -1;
+
+static DWORD WINAPI log_main(LPVOID arg) {
+    (void)arg;
+    for (;;) {
+        WaitForSingleObject(log_ev, INFINITE);
+        while (log_r != log_w) {
+            fputs(log_q[log_r % LOG_LINES], stderr);
+            fflush(stderr);
+            InterlockedIncrement(&log_r);
+        }
+    }
+}
+
+static void slog(const char* fmt, ...) {
+    if (log_sync < 0) {
+        const char* e = getenv("PS2_GS_STATS_SYNC");
+        log_sync = e && atoi(e) > 0;
+        if (!log_sync && (log_ev = CreateEventA(NULL, FALSE, FALSE, NULL)))
+            log_thread = CreateThread(NULL, 0, log_main, NULL, 0, NULL);
+        if (!log_thread) log_sync = 1;
+    }
+    char* b;
+    char tmp[2048];
+    int full = !log_sync && log_w - log_r >= LOG_LINES;
+    b = log_sync || full ? tmp : log_q[log_w % LOG_LINES];
+    int o = snprintf(b, 2048, "[gpu] ");
+    va_list ap;
+    va_start(ap, fmt);
+    o += vsnprintf(b + o, 2048 - (size_t)o, fmt, ap);
+    va_end(ap);
+    if (o > 2046) o = 2046;
+    b[o] = '\n';
+    b[o + 1] = 0;
+    if (log_sync || full) { fputs(b, stderr); fflush(stderr); return; }
+    InterlockedIncrement(&log_w);
+    SetEvent(log_ev);
+}
 
 static int dcmp(const void* a, const void* b) { double x = *(const double*)a, y = *(const double*)b; return x < y ? -1 : x > y; }
 static double med(double* v, int n) { if (!n) return 0; qsort(v, (size_t)n, sizeof *v, dcmp); return v[n / 2]; }
@@ -216,11 +275,18 @@ static void stats_vblank(uint32_t vblank) {
             S.dropped += fs[i].dropped;
             S.presented += fs[i].presented;
             if (fs[i].latency_ms >= 0 && S.nlat < SW) S.lat[S.nlat++] = fs[i].latency_ms;
+            if (fs[i].photon_ms >= 0 && S.nphoton < SW) S.photon[S.nphoton++] = fs[i].photon_ms;   /* (M9) */
+            if (S.nqueued < SW) S.queued[S.nqueued++] = fs[i].queued;
             if (fs[i].draws < 200) continue;     /* (per game frame: the VBlanks in between draw nothing) */
             if (S.nr < SW) { S.rcpu[S.nr] = fs[i].render_cpu_ms; S.rwall[S.nr] = fs[i].render_ms; S.pres[S.nr] = fs[i].present_ms; S.nr++; }
             if (fs[i].gpu_ms >= 0 && S.ngpu < SW) S.gpu[S.ngpu++] = fs[i].gpu_ms;
+            if (fs[i].phases) {          /* (M9) PS2_GPU_PROF: GPU ms per phase, summed over the game frames */
+                for (int k = 0; k < GPU_PHASES; k++) S.phase[k] += fs[i].phase_ms[k];
+                S.nphase++;
+            }
         }
     if (!C.stats) return;
+    if (vblank % 600 == 0) mem_log("now");
     if (vblank % 60) return;
     LARGE_INTEGER t, f;
     QueryPerformanceCounter(&t);
@@ -233,17 +299,31 @@ static void stats_vblank(uint32_t vblank) {
         double flips = C.hwnd ? (double)S.presented / secs : pics;   /* (headless: nothing is flipped; pictures) */
         double gs = S.game_frames ? (double)(busy - S.gs_busy0) / tsc_ms() / S.game_frames : 0;
         double frm = vmax(S.front, S.nfront), rcm = vmax(S.rcpu, S.nr), rwm = vmax(S.rwall, S.nr), gpm = vmax(S.gpu, S.ngpu);
-        hlog("stats v%u: %.1f flips/s (%.1f pictures/s, %u dropped) | per game frame (%u, median / max ms): GS thread %.2f (mean) | frontend %s %.2f / %.2f | "
+        double scost = S.game_frames ? (double)(stats_ticks - S.stats_ticks0) / tsc_ms() / S.game_frames : 0;
+        slog("stats v%u: %.1f flips/s (%.1f pictures/s, %u dropped) | per game frame (%u, median / max ms): GS thread %.2f (mean) | frontend %s %.2f / %.2f | "
              "render CPU %.2f / %.2f, wall %.2f / %.2f, present %.2f | GPU %.2f / %.2f | latency %.2f / %.2f | per VBlank: %.0f prims, "
              "%.0f draws (FF %.0f, ROV %.0f in %.1f runs), PUNT %llu, downloads %.1f, loads %.1f, display from memory %.2f, targets %u | "
-             "this second: target rescales %u, TRXDIR=1 reads %u",
+             "this second: target rescales %u, TRXDIR=1 reads %u | photon %.2f / %.2f ms, queued frames %.0f / %.0f, absorbed slowdowns %u | "
+             "stats on the GS thread %.3f ms",
              vblank, flips, pics, S.dropped, S.game_frames, gs, front_threaded ? "thread" : "(GS thread)", med(S.front, S.nfront), frm,
              med(S.rcpu, S.nr), rcm, med(S.rwall, S.nr), rwm, med(S.pres, S.nr), med(S.gpu, S.ngpu), gpm, med(S.lat, S.nlat),
              vmax(S.lat, S.nlat), (double)S.kicks * k,
              (double)S.draws * k, (double)S.ff * k, (double)S.rov * k, (double)S.rov_runs * k, (unsigned long long)S.punts,
-             (double)S.downloads * k, (double)S.loads * k, (double)S.display_mem * k, S.targets, S.rescales, S.reads);
+             (double)S.downloads * k, (double)S.loads * k, (double)S.display_mem * k, S.targets, S.rescales, S.reads,
+             med(S.photon, S.nphoton), vmax(S.photon, S.nphoton), med(S.queued, S.nqueued), vmax(S.queued, S.nqueued),
+             gpu_submit_absorbs(), scost);
+        if (S.nphase) {                  /* (M9) PS2_GPU_PROF: GPU timestamps per phase */
+            char ph[256];
+            int o = 0;
+            for (int i = 0; i < GPU_PHASES; i++)
+                o += snprintf(ph + o, sizeof ph - (size_t)o, " %s %.2f", gpu_phase_names[i], S.phase[i] / S.nphase);
+            slog("stats v%u: GPU phases (mean ms per game frame, %d frames):%s", vblank, S.nphase, ph);
+        }
     }
-    S.nfront = S.nr = S.ngpu = S.nlat = 0;
+    S.nphase = 0;
+    memset(S.phase, 0, sizeof S.phase);
+    S.stats_ticks0 = stats_ticks;
+    S.nfront = S.nr = S.ngpu = S.nlat = S.nphoton = S.nqueued = 0;
     S.draws = S.ff = S.rov = S.rov_runs = S.punts = S.downloads = S.loads = S.display_mem = S.kicks = 0;
     S.rescales = S.reads = 0;
     S.frames = S.dropped = S.presented = S.game_frames = 0;
@@ -300,6 +380,7 @@ static void front_start(void) {
     gpu_front_start(&fc);
     gpu_front_set_sink(gpu_submit_sink, NULL);
     gpu_submit_set_depth(GPU_INFLIGHT_GAME);
+    gpu_submit_set_adaptive(inflight_base_game());
     gpu_front_set_mem_reader(punt_reader, NULL);
     InterlockedExchange(&front_threaded, fc.thread);
     seen_thread_punts = gpu_front_thread_punts();
@@ -364,6 +445,57 @@ static DWORD WINAPI clock_main(LPVOID arg) {
     }
 }
 
+/* (M9) the process's committed memory (private bytes) and working set, and the frontend's frame arenas */
+static void mem_log(const char* when) {
+    PROCESS_MEMORY_COUNTERS_EX pm;
+    memset(&pm, 0, sizeof pm);
+    pm.cb = sizeof pm;
+    if (K32GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS*)&pm, sizeof pm))
+    {
+        uint64_t vl = 0, vn = 0;
+        gpu_video_memory(&vl, &vn);
+        slog("memory %s: committed %.0f MB (peak %.0f), working set %.0f MB, frame arenas %.1f MB, video memory %.0f MB "
+             "(+ %.0f MB non-local)", when, pm.PrivateUsage / 1048576.0, pm.PeakPagefileUsage / 1048576.0,
+             pm.WorkingSetSize / 1048576.0, gpu_front_arena_bytes() / 1048576.0, vl / 1048576.0, vn / 1048576.0);
+    }
+    static int map = -1;                 /* PS2_GS_MEM_MAP=1: committed private memory by allocation size (largest totals) */
+    if (map < 0) { const char* e = getenv("PS2_GS_MEM_MAP"); map = e && atoi(e) > 0; }
+    if (!map) return;
+    struct { size_t size; int n; } sz[64];
+    int nsz = 0;
+    size_t other = 0, cur = 0;
+    uint8_t* p = NULL;
+    void* cur_base = NULL;
+    MEMORY_BASIC_INFORMATION mi;
+    for (;;) {
+        int end = !VirtualQuery(p, &mi, sizeof mi);
+        if (end || mi.AllocationBase != cur_base) {
+            if (cur) {
+                int k = 0;
+                while (k < nsz && sz[k].size != cur) k++;
+                if (k < nsz) sz[k].n++;
+                else if (nsz < 64) { sz[nsz].size = cur; sz[nsz].n = 1; nsz++; }
+                else other += cur;
+            }
+            if (end) break;
+            cur_base = mi.AllocationBase;
+            cur = 0;
+        }
+        if (mi.State == MEM_COMMIT && mi.Type == MEM_PRIVATE) cur += mi.RegionSize;
+        uint8_t* q = (uint8_t*)mi.BaseAddress + mi.RegionSize;
+        if (q <= p) break;
+        p = q;
+    }
+    for (int i = 0; i < nsz; i++)
+        for (int j = i + 1; j < nsz; j++)
+            if ((double)sz[j].size * sz[j].n > (double)sz[i].size * sz[i].n) { size_t s = sz[i].size; int n = sz[i].n; sz[i] = sz[j]; sz[j].size = s; sz[j].n = n; }
+    char line[1024];
+    int o = snprintf(line, sizeof line, "memory map %s:", when);
+    for (int i = 0; i < nsz && i < 20 && o < (int)sizeof line - 40; i++)
+        o += snprintf(line + o, sizeof line - (size_t)o, " %.2fMBx%d", sz[i].size / 1048576.0, sz[i].n);
+    slog("%s, other %.1f MB", line, other / 1048576.0);
+}
+
 /* ---- start / stop -------------------------------------------------------------------------------- */
 int gpu_hw_start(const gpu_hw_config* cfg) {
     C = *cfg;
@@ -377,9 +509,11 @@ int gpu_hw_start(const gpu_hw_config* cfg) {
         switch_at[nswitch_at++] = (uint32_t)strtoul(s, NULL, 10);
     gpu_set_picture_done(on_picture_done, NULL);
     gpu_set_flip_callback(C.presented);
+    if (C.stats) mem_log("before the GPU renderer");
     if (!render_start()) return 0;
     render_on = 1;
     gpu_caps_print(gpu_get_caps());
+    if (C.stats) mem_log("render thread and device up");
     front_start();
     InterlockedExchange(&active, 1);
     hlog("GPU renderer on (%s, frontend on %s%s, pacing %s)", C.hwnd ? "window" : "headless",
@@ -496,7 +630,9 @@ void gpu_hw_vblank(const gs_display_snap* snap, uint32_t vblank, int content43) 
     gpu_front_vblank_display(&di);
     if (rb) dump_queued();
     if (C.verify > 0 && vblank % (uint32_t)C.verify == 0) verify_vblank(snap, vblank);
+    uint64_t t0 = __rdtsc();
     stats_vblank(vblank);
+    stats_ticks += __rdtsc() - t0;
 }
 
 /* ---- PS2_GS_VERIFY (GS thread; the frontend runs on it, the software renderer draws too) ----------- */

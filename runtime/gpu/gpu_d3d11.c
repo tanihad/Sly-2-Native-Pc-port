@@ -63,6 +63,32 @@ void gpu_shaders_release(void) {
     for (int i = 0; i < GPU_SH_COUNT; i++) GPU_RELEASE(shader_obj[i]);
 }
 
+/* (M9) the process's video memory use on the adapter (DXGI 1.4 QueryVideoMemoryInfo; any thread): local (the GPU's
+ * own memory) and non-local (system memory the GPU reads); 0 when unknown */
+static const IID iid_adapter3 = { 0x645967a4, 0x1392, 0x4310, { 0xa7, 0x98, 0x80, 0x53, 0xce, 0x3e, 0x93, 0xfd } };
+int gpu_video_memory(uint64_t* local, uint64_t* nonlocal) {
+    static IDXGIAdapter3* a3;
+    static volatile LONG tried;
+    *local = *nonlocal = 0;
+    if (!a3 && gpu_rt.dev && !InterlockedExchange(&tried, 1)) {
+        IDXGIDevice* dxdev = NULL;
+        IDXGIAdapter* ad = NULL;
+        if (SUCCEEDED(ID3D11Device_QueryInterface(gpu_rt.dev, &gpu_IID_IDXGIDevice, (void**)&dxdev)) &&
+            SUCCEEDED(IDXGIDevice_GetAdapter(dxdev, &ad)))
+            IDXGIAdapter_QueryInterface(ad, &iid_adapter3, (void**)&a3);
+        if (ad) IDXGIAdapter_Release(ad);
+        if (dxdev) IDXGIDevice_Release(dxdev);
+    }
+    if (!a3) return 0;
+    DXGI_QUERY_VIDEO_MEMORY_INFO li, ni;
+    if (FAILED(IDXGIAdapter3_QueryVideoMemoryInfo(a3, 0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &li)) ||
+        FAILED(IDXGIAdapter3_QueryVideoMemoryInfo(a3, 0, DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL, &ni)))
+        return 0;
+    *local = li.CurrentUsage;
+    *nonlocal = ni.CurrentUsage;
+    return 1;
+}
+
 /* ---- device and capabilities ------------------------------------------------------------------ */
 
 static void adapter_info(gpu_caps* c) {

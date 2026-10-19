@@ -573,3 +573,6 @@ uint64_t fthread_cycles(void) {
     if (thread) QueryThreadCycleTime(thread, &c);
     return c;
 }
+
+/* (M9, gs_replay --profile with GS_REPLAY_PROFILE_FRONT=1: samples of the frontend thread) */
+void* gpu_front_thread_handle(void) { return thread; }

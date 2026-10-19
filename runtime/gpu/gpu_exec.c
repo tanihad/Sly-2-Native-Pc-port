@@ -37,6 +37,22 @@
 #include <string.h>
 
 #include "gpu_shaders.h"
+#include <psapi.h>
+
+/* (M9) PS2_GS_MEM_MAP: the process's committed memory at steps of the render thread's set-up */
+static void mem_note(const char* what) {
+    static int on = -1;
+    if (on < 0) { const char* e = getenv("PS2_GS_MEM_MAP"); on = e && atoi(e) > 0; }
+    if (!on) return;
+    PROCESS_MEMORY_COUNTERS_EX pm;
+    memset(&pm, 0, sizeof pm);
+    pm.cb = sizeof pm;
+    uint64_t vl = 0, vn = 0;
+    gpu_video_memory(&vl, &vn);
+    if (K32GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS*)&pm, sizeof pm))
+        gpu_log("memory %s: committed %.0f MB (peak %.0f), video %.0f MB", what, pm.PrivateUsage / 1048576.0,
+                pm.PeakPagefileUsage / 1048576.0, vl / 1048576.0);
+}
 
 /* frontend layouts (gpu_front.c / gpu_front_int.h) */
 enum { XK_C32, XK_Z32, XK_Z24, XK_Z16, XK_Z16S };
@@ -78,6 +94,8 @@ typedef struct {
     ID3D11Buffer* buf;
     ID3D11ShaderResourceView* srv;
     size_t cap;
+    size_t hi;                           /* (M9) the largest fill of the current window */
+    uint32_t fills;                      /* (M9) fills in the current window */
 } dynbuf;
 
 typedef struct {                         /* shaders/mem.hlsl, alias16.hlsl mem_cb */
@@ -90,6 +108,10 @@ static struct {
     int init;
     xtarget T[MAX_TARGETS + 1];
     dynbuf vb, ib, rec, st, cb, dat, aux;
+    dynbuf dc;                           /* (M9) the per-draw constants as a raw buffer (gs.hlsl load_draw, t9) */
+    ID3D11Buffer* iota;                  /* (M9) uint i at element i: the DRAWID per-instance element (vertex buffer slot 1) */
+    uint32_t iota_n;
+    int clearview;                       /* (M9) ID3D11DeviceContext1::ClearView supported (D3D11_FEATURE_D3D11_OPTIONS) */
     ID3D11Buffer* vram;                  /* 4 MB raw (vram_buf) */
     ID3D11ShaderResourceView* vram_srv;
     ID3D11UnorderedAccessView* vram_uav;
@@ -136,16 +158,24 @@ static atomic_int inflight;             /* frames handed over and not finished *
 #define MAX_INFLIGHT 3                   /* (replays; the game sets its own depth: gpu_submit_set_depth) */
 static int inflight_max = MAX_INFLIGHT;
 void gpu_submit_set_depth(int frames) { inflight_max = frames < 1 ? 1 : frames > 16 ? 16 : frames; }
+/* (M9) adaptive queue depth (gpu_submit_sink): base frames normally, up to the depth above for ADAPT_MS after a slowdown */
+#define ADAPT_MS 2000.0
+static int inflight_base;                /* 0: the fixed depth */
+static double q_short_since = -1, absorb_until;
+static volatile LONG queue_absorbs;
+void gpu_submit_set_adaptive(int base) { inflight_base = base < 0 ? 0 : base; q_short_since = -1; absorb_until = 0; }
+uint32_t gpu_submit_absorbs(void) { return (uint32_t)queue_absorbs; }
 
 static void count_state(void) { X.state_calls++; }
 
 /* ---- resources ---------------------------------------------------------------------------------- */
 
+#define DYN_MIN (256u << 10)
 static int dyn_ensure(dynbuf* d, size_t bytes, UINT bind, int raw) {
     if (d->buf && d->cap >= bytes) return 1;
     GPU_RELEASE(d->srv);
     GPU_RELEASE(d->buf);
-    size_t cap = d->cap ? d->cap : 1 << 20;
+    size_t cap = d->cap ? d->cap : DYN_MIN;
     while (cap < bytes) cap *= 2;
     D3D11_BUFFER_DESC bd;
     memset(&bd, 0, sizeof bd);
@@ -168,7 +198,28 @@ static int dyn_ensure(dynbuf* d, size_t bytes, UINT bind, int raw) {
     return 1;
 }
 
+/* (M9) Every fill maps the buffer with DISCARD, and the driver renames it: a copy of the whole capacity per frame
+ * the GPU has not finished, kept in its pool - non-local video memory, charged to the process (measured: ~300 MB
+ * with the 8 MB start sizes of M2). The buffers start small and grow to the next power of two a frame needs; one
+ * whose fills stayed under a quarter of its capacity for DYN_WINDOW fills (loading: 30 MB of texture patches in the
+ * data arena, then a few hundred KB) is recreated at twice the window's largest fill, and the driver's copies of
+ * the old one go with it. */
+#define DYN_WINDOW 300
 static int dyn_fill(dynbuf* d, const void* src, size_t bytes, UINT bind, int raw) {
+    if (bytes > d->hi) d->hi = bytes;
+    if (++d->fills >= DYN_WINDOW) {
+        size_t want = DYN_MIN;
+        while (want < 2 * d->hi) want *= 2;
+        if (d->buf && d->cap > want && d->cap >= 4 * d->hi) {
+            GPU_RELEASE(d->srv);
+            GPU_RELEASE(d->buf);
+            d->cap = 0;
+            if (!dyn_ensure(d, want, bind, raw)) return 0;
+            XC.dyn_shrinks++;
+        }
+        d->fills = 0;
+        d->hi = 0;
+    }
     if (!bytes) return dyn_ensure(d, 16, bind, raw);
     if (!dyn_ensure(d, bytes, bind, raw)) return 0;
     D3D11_MAPPED_SUBRESOURCE m;
@@ -304,11 +355,12 @@ static int target_views(xtarget* t);
 static int target_realloc(xtarget* t, int w, int h, int okx, int oky) {
     if (t->tex && t->w == w && t->h == h && !okx) return 1;
     unbind_all();
-    ID3D11Texture2D* nt = t->depth ? tex2d(w, h, DXGI_FORMAT_R32G8X24_TYPELESS, D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE)
+    ID3D11Texture2D* nt = t->depth ? tex2d(w, h, DXGI_FORMAT_R32_TYPELESS, D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE)
                                    : tex2d(w, h, DXGI_FORMAT_R8G8B8A8_TYPELESS,
                                            D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS);
     ID3D11Texture2D* nz = t->depth ? tex2d(w, h, DXGI_FORMAT_R32_UINT, D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE) : NULL;
     if (!nt || (t->depth && !nz)) { GPU_RELEASE(nt); GPU_RELEASE(nz); gpu_log("cannot create a %dx%d target", w, h); return 0; }
+    if (getenv("PS2_GS_MEM_MAP")) { char wh[64]; snprintf(wh, sizeof wh, "target %dx%d %s created", w, h, t->depth ? "Z" : "C"); mem_note(wh); }
     xtarget n;
     memset(&n, 0, sizeof n);
     n.depth = t->depth;
@@ -345,14 +397,14 @@ static int target_views(xtarget* t) {
     if (t->depth) {
         D3D11_DEPTH_STENCIL_VIEW_DESC dd;
         memset(&dd, 0, sizeof dd);
-        dd.Format = DXGI_FORMAT_D32_FLOAT_S8X24_UINT;
+        dd.Format = DXGI_FORMAT_D32_FLOAT;
         dd.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2D;
         hr = ID3D11Device_CreateDepthStencilView(gpu_rt.dev, (ID3D11Resource*)nt, &dd, &t->dsv);
-        dd.Flags = D3D11_DSV_READ_ONLY_DEPTH | D3D11_DSV_READ_ONLY_STENCIL;
+        dd.Flags = D3D11_DSV_READ_ONLY_DEPTH;
         if (SUCCEEDED(hr)) hr = ID3D11Device_CreateDepthStencilView(gpu_rt.dev, (ID3D11Resource*)nt, &dd, &t->dsv_ro);
         D3D11_SHADER_RESOURCE_VIEW_DESC sd;
         memset(&sd, 0, sizeof sd);
-        sd.Format = DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS;
+        sd.Format = DXGI_FORMAT_R32_FLOAT;
         sd.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
         sd.Texture2D.MipLevels = 1;
         if (SUCCEEDED(hr)) hr = ID3D11Device_CreateShaderResourceView(gpu_rt.dev, (ID3D11Resource*)nt, &sd, &t->srv);
@@ -669,6 +721,7 @@ _Static_assert(sizeof(draw_consts) == DRAW_CB_BYTES, "per-draw constants are one
 
 static uint8_t* cb_cpu;
 static size_t cb_cpu_cap;
+static uint32_t bc_maxid;                /* (M9) build_constants: iota elements the frame's draws read */
 
 /* the constants of every draw of the frame, in order (slot 0: quads); target sizes as they will be
  * when the draw runs (a light pass over the target ops). ref: REF or mixed frame (real drawing) */
@@ -680,6 +733,7 @@ static uint32_t build_constants(const gpu_front_frame_data* fd, int ref) {
         dim[i].base = X.T[i].base; dim[i].fbw = X.T[i].fbw;
     }
     uint32_t n = 1;
+    bc_maxid = 1;
     for (size_t pos = 0; pos + sizeof(gpu_fop) <= fd->cmd_bytes;) {
         const gpu_fop* h = (const gpu_fop*)(fd->cmd + pos);
         if (!h->size) break;
@@ -698,7 +752,13 @@ static uint32_t build_constants(const gpu_front_frame_data* fd, int ref) {
         } else if (h->op == GPU_FOP_RELEASE) {
             const gpu_fop_target* o = (const gpu_fop_target*)h;
             if (o->id && o->id <= MAX_TARGETS) { dim[o->id].w = dim[o->id].h = 0; dim[o->id].kx = dim[o->id].ky = 1; }
-        } else if (h->op == GPU_FOP_DRAW) n += draw_slots((const gpu_fop_draw*)h, ref);
+        } else if (h->op == GPU_FOP_DRAW) {
+            const gpu_fop_draw* d = (const gpu_fop_draw*)h;
+            n += draw_slots(d, ref);
+            /* (M9) the DRAWID element of the last instance: slot + instance (iota_ensure) */
+            uint32_t top = n + (d->cls == GPU_PC_TRI ? 0u : d->count);
+            if (top > bc_maxid) bc_maxid = top;
+        }
         pos += h->size;
     }
     size_t bytes = (size_t)n * DRAW_CB_BYTES;
@@ -766,6 +826,8 @@ static void bind_frame_buffers(void) {
     ID3D11DeviceContext* c = gpu_rt.ctx;
     UINT stride = 32, off = 0;
     ID3D11DeviceContext_IASetVertexBuffers(c, 0, 1, &X.vb.buf, &stride, &off);
+    UINT stride1 = 4;                    /* (M9) slot 1: the draw slot per instance (StartInstanceLocation) */
+    ID3D11DeviceContext_IASetVertexBuffers(c, 1, 1, &X.iota, &stride1, &off);
     ID3D11DeviceContext_IASetIndexBuffer(c, X.ib.buf, DXGI_FORMAT_R32_UINT, 0);
     ID3D11DeviceContext_IASetInputLayout(c, X.layout);
     ID3D11ShaderResourceView* t0 = X.vram_srv;
@@ -773,12 +835,36 @@ static void bind_frame_buffers(void) {
     ID3D11DeviceContext_PSSetShaderResources(c, 0, 1, &t0);
     ID3D11DeviceContext_PSSetShaderResources(c, 3, 5, t34567);
     ID3D11DeviceContext_VSSetShaderResources(c, 3, 1, &X.rec.srv);
+    ID3D11DeviceContext_PSSetShaderResources(c, 9, 1, &X.dc.srv);   /* (M9) per-draw constants */
+    ID3D11DeviceContext_VSSetShaderResources(c, 9, 1, &X.dc.srv);
     ID3D11DeviceContext_RSSetState(c, X.rs);
-    X.state_calls += 8;
+    X.state_calls += 11;
     X.b_topo = 0;
     X.b_vs = X.b_ps = X.b_bs = X.b_ds = NULL;
     X.b_vp_w = X.b_vp_h = -1;
     memset(&X.b_sc, 0xFF, sizeof X.b_sc);
+}
+
+/* (M9) the iota vertex buffer for at least n draw slots (element i holds i) */
+static int iota_ensure(uint32_t n) {
+    if (X.iota && X.iota_n >= n) return 1;
+    uint32_t cap = 65536;
+    while (cap < n) cap *= 2;
+    uint32_t* v = malloc((size_t)cap * 4);
+    if (!v) return 0;
+    for (uint32_t i = 0; i < cap; i++) v[i] = i;
+    D3D11_BUFFER_DESC bd;
+    memset(&bd, 0, sizeof bd);
+    bd.ByteWidth = cap * 4;
+    bd.Usage = D3D11_USAGE_IMMUTABLE;
+    bd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+    D3D11_SUBRESOURCE_DATA sd = { v, 0, 0 };
+    GPU_RELEASE(X.iota);
+    HRESULT hr = ID3D11Device_CreateBuffer(gpu_rt.dev, &bd, &sd, &X.iota);
+    free(v);
+    if (FAILED(hr)) { X.iota_n = 0; gpu_log("cannot create the draw-slot buffer"); return 0; }
+    X.iota_n = cap;
+    return 1;
 }
 
 static void set_consts(uint32_t slot) {
@@ -925,14 +1011,44 @@ static void exec_clear(const gpu_fop_clear* o) {
         ensure_zp(t, 0, 0, x1 - 1, y1 - 1);
         full = x1 * t->kx >= t->w && y1 * t->ky >= t->h;
     }
-    mem_consts k;
-    target_consts(t, &k);
-    k.value = o->value;
-    k.wmask = o->zclear ? 15 : o->mask & 15;
-    k.cx1 = (uint32_t)x1;
-    k.cy1 = (uint32_t)y1;
-    mem_dispatch(GPU_SH_cs_clear, &k, (uint32_t)(x1 + 7) / 8, (uint32_t)(y1 + 7) / 8, NULL, X.dat.srv, NULL,
-                 t->depth ? NULL : t->uav, t->depth ? t->zp_uav : NULL);
+    /* (M9) hardware clears where they write exactly what cs_clear writes: a colour clear of every byte (ClearView on
+     * the UNORM RTV: byte b as b / 255 converts back to b); a Z32 / Z16 depth clear of the target's whole drawn size
+     * (the rows past nat_h are the allocation's padding, never drawn, shown or downloaded: a clear of the whole
+     * allocation - zpatch through ClearUnorderedAccessViewUint, the DSV through ClearDepthStencilView - is the same;
+     * Z24 keeps zpatch's top byte: cs_clear) */
+    int fullrect = x1 * t->kx >= t->w && y1 * t->ky >= t->h, hw = 0;
+    static int nohw = -1;                /* (PS2_GPU_NO_HWCLEAR=1: every clear through cs_clear, comparisons) */
+    if (nohw < 0) { const char* e = getenv("PS2_GPU_NO_HWCLEAR"); nohw = e && atoi(e); }
+    if (!nohw && t->depth && x1 >= t->nat_w && y1 >= t->nat_h) {
+        fullrect = 1;
+        if (o->zclear && X.mixed && t->zts) {        /* (every tile cleared in both copies) */
+            int ra[4] = { 0, 0, t->zts_w, t->zts_h };
+            zt_set(t, ra, -1, ZT_SYNC);
+            full = 1;
+        }
+    }
+    if (nohw) fullrect = 0;
+    if (!t->depth && (o->mask & 15) == 15 && X.clearview && t->rtv && !nohw) {
+        D3D11_RECT rc = { 0, 0, x1 * t->kx < t->w ? x1 * t->kx : t->w, y1 * t->ky < t->h ? y1 * t->ky : t->h };
+        float col[4] = { (float)(o->value & 255) / 255.0f, (float)((o->value >> 8) & 255) / 255.0f,
+                         (float)((o->value >> 16) & 255) / 255.0f, (float)(o->value >> 24) / 255.0f };
+        ID3D11DeviceContext1_ClearView(gpu_rt.ctx1, (ID3D11View*)t->rtv, col, &rc, 1);
+        hw = 1;
+    } else if (t->depth && fullrect && t->kind != XK_Z24 && t->zp_uav) {
+        UINT v[4] = { o->value, o->value, o->value, o->value };
+        ID3D11DeviceContext_ClearUnorderedAccessViewUint(gpu_rt.ctx, t->zp_uav, v);
+        hw = 1;
+    }
+    if (!hw) {
+        mem_consts k;
+        target_consts(t, &k);
+        k.value = o->value;
+        k.wmask = o->zclear ? 15 : o->mask & 15;
+        k.cx1 = (uint32_t)x1;
+        k.cy1 = (uint32_t)y1;
+        mem_dispatch(GPU_SH_cs_clear, &k, (uint32_t)(x1 * t->kx + 7) / 8, (uint32_t)(y1 * t->ky + 7) / 8, NULL, X.dat.srv, NULL,
+                     t->depth ? NULL : t->uav, t->depth ? t->zp_uav : NULL);   /* (M9: a thread per sample) */
+    }
     if (o->zclear && X.mixed && t->zts) {
         uint32_t zv = (uint32_t)o->value & (zbits_of(t) == 1 ? 0xFFFFu : zbits_of(t) == 2 ? 0xFFFFFFu : 0xFFFFFFFFu);
         if (full) {
@@ -1040,35 +1156,50 @@ static void zcb_set(const zs_consts* k) {
  * waits for its timestamps (profiling only: it serialises CPU and GPU). Averages per frame in the log every
  * 60 frames. Attribution is approximate (the GPU overlaps neighbouring work). */
 enum { PR_OTHER, PR_TARGET, PR_MEM, PR_CLEAR, PR_SHADOW, PR_FF_FAST, PR_FF_TRI, PR_FF_SPRITE, PR_FF_LINE,
-       PR_REF_TRI, PR_REF_OTHER, PR_A16, PR_ZRESOLVE, PR_ZSYNC, PR_PRESENT, PR_A16_DRAW, PR_N };
+       PR_REF_TRI, PR_REF_OTHER, PR_A16, PR_ZRESOLVE, PR_ZSYNC, PR_PRESENT, PR_A16_DRAW, PR_FF_FAST_Z, PR_N };
 static const char* const pr_names[PR_N] = { "other", "target", "mem", "clear", "shadow", "ff-tri-fast", "ff-tri",
                                             "ff-sprite", "ff-line", "ref-tri", "ref-other", "alias16", "zresolve",
-                                            "zsync", "present", "alias16-draw" };
+                                            "zsync", "present", "alias16-draw", "ff-tri-fast-z" };
 #define PR_MAXQ 8192
 static struct {
     int on, n, cur;
     ID3D11Query* dis;
     ID3D11Query* q[PR_MAXQ];
+    ID3D11Query *sq[PR_MAXQ], *oq[PR_MAXQ];   /* (M9, PS2_GPU_PROF=2) pipeline statistics + occlusion per segment */
     uint8_t cat[PR_MAXQ];
     double ms[PR_N], total;
     uint64_t marks[PR_N];
+    uint64_t ps_inv[PR_N], occl[PR_N], prims[PR_N];
     uint32_t frames;
 } PR = { -1 };
 
 static void prof_mark(int cat) {
-    if (PR.on <= 0 || PR.n >= PR_MAXQ || (PR.n && cat == PR.cur)) return;
+    if (PR.on <= 0 || PR.n >= PR_MAXQ - 1 || (PR.n && cat == PR.cur)) return;
     if (!PR.q[PR.n]) {
         D3D11_QUERY_DESC qt = { D3D11_QUERY_TIMESTAMP, 0 };
         if (FAILED(ID3D11Device_CreateQuery(gpu_rt.dev, &qt, &PR.q[PR.n]))) { PR.on = 0; return; }
     }
     ID3D11DeviceContext_End(gpu_rt.ctx, (ID3D11Asynchronous*)PR.q[PR.n]);
+    if (PR.on >= 2) {                    /* statistics of the segment that ends here, and of the one that begins */
+        if (PR.n) {
+            ID3D11DeviceContext_End(gpu_rt.ctx, (ID3D11Asynchronous*)PR.sq[PR.n - 1]);
+            ID3D11DeviceContext_End(gpu_rt.ctx, (ID3D11Asynchronous*)PR.oq[PR.n - 1]);
+        }
+        if (!PR.sq[PR.n]) {
+            D3D11_QUERY_DESC qs = { D3D11_QUERY_PIPELINE_STATISTICS, 0 }, qo = { D3D11_QUERY_OCCLUSION, 0 };
+            if (FAILED(ID3D11Device_CreateQuery(gpu_rt.dev, &qs, &PR.sq[PR.n])) ||
+                FAILED(ID3D11Device_CreateQuery(gpu_rt.dev, &qo, &PR.oq[PR.n]))) { PR.on = 0; return; }
+        }
+        ID3D11DeviceContext_Begin(gpu_rt.ctx, (ID3D11Asynchronous*)PR.sq[PR.n]);
+        ID3D11DeviceContext_Begin(gpu_rt.ctx, (ID3D11Asynchronous*)PR.oq[PR.n]);
+    }
     PR.cat[PR.n++] = (uint8_t)cat;
     PR.cur = cat;
     if (cat < PR_N) PR.marks[cat]++;
 }
 
 static void prof_begin(void) {
-    if (PR.on < 0) { const char* e = getenv("PS2_GPU_PROF"); PR.on = e && atoi(e) > 0; }
+    if (PR.on < 0) { const char* e = getenv("PS2_GPU_PROF"); PR.on = e && atoi(e) > 0 ? atoi(e) : 0; }
     if (!PR.on) return;
     if (!PR.dis) {
         D3D11_QUERY_DESC qd = { D3D11_QUERY_TIMESTAMP_DISJOINT, 0 };
@@ -1083,12 +1214,17 @@ static void prof_end(void) {
     if (PR.on <= 0) return;
     PR.cur = -1;
     prof_mark(PR_N);
+    if (PR.on >= 2 && PR.n) {
+        ID3D11DeviceContext_End(gpu_rt.ctx, (ID3D11Asynchronous*)PR.sq[PR.n - 1]);
+        ID3D11DeviceContext_End(gpu_rt.ctx, (ID3D11Asynchronous*)PR.oq[PR.n - 1]);
+    }
     ID3D11DeviceContext_End(gpu_rt.ctx, (ID3D11Asynchronous*)PR.dis);
     D3D11_QUERY_DATA_TIMESTAMP_DISJOINT dj;
     while (ID3D11DeviceContext_GetData(gpu_rt.ctx, (ID3D11Asynchronous*)PR.dis, &dj, sizeof dj, 0) == S_FALSE) SwitchToThread();
     if (dj.Disjoint || !dj.Frequency) return;
     UINT64 prev = 0;
     double f[PR_N] = { 0 }, ft = 0;
+    uint64_t fi[PR_N] = { 0 }, fo[PR_N] = { 0 }, fp[PR_N] = { 0 };
     for (int i = 0; i < PR.n; i++) {
         UINT64 t = 0;
         while (ID3D11DeviceContext_GetData(gpu_rt.ctx, (ID3D11Asynchronous*)PR.q[i], &t, sizeof t, 0) == S_FALSE) SwitchToThread();
@@ -1098,17 +1234,44 @@ static void prof_end(void) {
             ft += ms;
         }
         prev = t;
+        if (PR.on >= 2 && i + 1 < PR.n) {
+            D3D11_QUERY_DATA_PIPELINE_STATISTICS ps;
+            UINT64 oc = 0;
+            while (ID3D11DeviceContext_GetData(gpu_rt.ctx, (ID3D11Asynchronous*)PR.sq[i], &ps, sizeof ps, 0) == S_FALSE) SwitchToThread();
+            while (ID3D11DeviceContext_GetData(gpu_rt.ctx, (ID3D11Asynchronous*)PR.oq[i], &oc, sizeof oc, 0) == S_FALSE) SwitchToThread();
+            fi[PR.cat[i]] += ps.PSInvocations;
+            fp[PR.cat[i]] += ps.CPrimitives;
+            fo[PR.cat[i]] += oc;
+        }
+    }
+    {                                    /* (M9) the frame's phases for the stats line (gpu_hw.c, PS2_GS_HW_STATS) */
+        gpu_frame_stats* s = gpu_stats_cur();
+        s->phases = 1;
+        s->phase_ms[0] = (float)(f[PR_FF_FAST] + f[PR_FF_TRI] + f[PR_FF_FAST_Z]);
+        s->phase_ms[1] = (float)(f[PR_FF_SPRITE] + f[PR_FF_LINE]);
+        s->phase_ms[2] = (float)(f[PR_REF_TRI] + f[PR_REF_OTHER]);
+        s->phase_ms[3] = (float)(f[PR_A16] + f[PR_A16_DRAW]);
+        s->phase_ms[4] = (float)(f[PR_ZRESOLVE] + f[PR_ZSYNC]);
+        s->phase_ms[5] = (float)(f[PR_OTHER] + f[PR_TARGET] + f[PR_MEM] + f[PR_CLEAR] + f[PR_SHADOW] + f[PR_PRESENT]);
     }
     if (ft > 50.0) return;               /* (loading frames: left out) */
-    for (int c = 0; c < PR_N; c++) PR.ms[c] += f[c];
+    for (int c = 0; c < PR_N; c++) { PR.ms[c] += f[c]; PR.ps_inv[c] += fi[c]; PR.occl[c] += fo[c]; PR.prims[c] += fp[c]; }
     PR.total += ft;
     if (++PR.frames % 60) return;
-    char line[1024];
+    char line[2048];
     int o = snprintf(line, sizeof line, "prof: %u frames, GPU ms per frame %.3f:", PR.frames, PR.total / PR.frames);
     for (int c = 0; c < PR_N && o < (int)sizeof line - 48; c++)
         if (PR.ms[c] > 0) o += snprintf(line + o, sizeof line - (size_t)o, " %s %.3f (%.0f)", pr_names[c], PR.ms[c] / PR.frames,
                                          (double)PR.marks[c] / PR.frames);
     gpu_log("%s", line);
+    if (PR.on >= 2) {                    /* per frame: PS invocations (M), samples passing depth (M), primitives (k) */
+        o = snprintf(line, sizeof line, "prof-stats per frame (PS invocations M / samples passed M / primitives k):");
+        for (int c = 0; c < PR_N && o < (int)sizeof line - 64; c++)
+            if (PR.ps_inv[c]) o += snprintf(line + o, sizeof line - (size_t)o, " %s %.2f/%.2f/%.1f", pr_names[c],
+                                            (double)PR.ps_inv[c] / PR.frames / 1e6, (double)PR.occl[c] / PR.frames / 1e6,
+                                            (double)PR.prims[c] / PR.frames / 1e3);
+        gpu_log("%s", line);
+    }
 }
 
 /* zpatch -> DSV over tiles in state ZT_ZP (mode 0), or the constant `value` over the native rect r (mode 1:
@@ -1229,19 +1392,19 @@ static void exec_draw_ref(const gpu_fop_draw* d, uint32_t slot) {
     int kx = sizing->kx, ky = sizing->ky;
     draw_scissor(d, kx, ky);
     set_depth(X.ds_off);
-    set_consts(slot);
+    /* (M9) the draw's constants by its slot: StartInstanceLocation -> DRAWID (gs.hlsl load_draw), no constant buffer */
     if (d->cls == GPU_PC_TRI) {
         int fast = (d->ps_key & GPU_PSK_FF_FAST) != 0;   /* (mixed default mode: 128-byte records, hardware S/T/Q) */
         set_topo(0);
         set_vs(gpu_vs(fast ? GPU_SH_vs_ff_tri : GPU_SH_vs_ref_tri));
         set_ps(gpu_ps(X.mixed && dbg_skip == 3 && fast ? GPU_SH_ps_ff_t001 : fast ? GPU_SH_ps_gs_tri_fast : GPU_SH_ps_gs_tri));
-        ID3D11DeviceContext_DrawIndexed(c, d->count, d->first, 0);
+        ID3D11DeviceContext_DrawIndexedInstanced(c, d->count, 1, d->first, 0, slot);
     } else {
         set_topo(1);
         int sprite = d->cls == GPU_PC_SPRITE, thin = d->cls == GPU_PC_THIN;
         set_vs(gpu_vs(sprite ? GPU_SH_vs_ref_sprite : thin ? GPU_SH_vs_ref_thin : GPU_SH_vs_ref_linepix));
         set_ps(gpu_ps(sprite ? GPU_SH_ps_gs_sprite : thin ? GPU_SH_ps_gs_thin : GPU_SH_ps_gs_linepix));
-        ID3D11DeviceContext_DrawInstanced(c, 4, d->count, 0, 0);
+        ID3D11DeviceContext_DrawInstanced(c, 4, d->count, 0, slot);
     }
     gpu_rt.n_draws++;
     XC.ref_draws++;
@@ -1296,11 +1459,15 @@ static void exec_draw_ff(const gpu_fop_draw* d, uint32_t slot) {
             else { depth &= ~1; if (d->afail == 3) wm &= 7; } /* FB_ONLY, RGB_ONLY */
         }
         if (!wm && !(depth & 1)) continue;
-        set_consts(slot + (uint32_t)(half && d->split == 3));
-        set_blend(blend_state(d->blend, wm));
-        set_depth(depth_state(depth));
-        if (d->cls == GPU_PC_TRI) ID3D11DeviceContext_DrawIndexed(c, d->count, d->first, 0);
-        else ID3D11DeviceContext_DrawInstanced(c, 4, d->count, 0, 0);
+        static int dbgd = -1;                /* (M9 experiments, wrong pictures: PS2_GPU_DBG_DRAW bits: 1 keep the first blend /
+                                                depth states, 4 skip the draw, 8 one primitive) */
+        if (dbgd < 0) { const char* e = getenv("PS2_GPU_DBG_DRAW"); dbgd = e ? atoi(e) : 0; }
+        if (dbgd & 4) continue;
+        if (!(dbgd & 1) || !X.b_bs) { set_blend(blend_state(d->blend, wm)); set_depth(depth_state(depth)); }
+        /* (M9) the constants by the draw's slot (StartInstanceLocation -> DRAWID); the fail half of a split is the next slot */
+        UINT s = slot + (uint32_t)(half && d->split == 3);
+        if (d->cls == GPU_PC_TRI) ID3D11DeviceContext_DrawIndexedInstanced(c, (dbgd & 8) ? 3 : d->count, 1, d->first, 0, s);
+        else ID3D11DeviceContext_DrawInstanced(c, 4, (dbgd & 8) ? 1 : d->count, 0, s);
         gpu_rt.n_draws++;
         XC.ff_draws++;
         zwrote |= depth & 1;
@@ -1311,8 +1478,9 @@ static void exec_draw_ff(const gpu_fop_draw* d, uint32_t slot) {
 static void exec_draw(const gpu_fop_draw* d, uint32_t slot) {
     if (PR.on > 0) {
         int ff = X.mixed && d->tier == GPU_TIER_FF && !X.ref;
+        int zo = d->zt && (d->depth >> 1) != 0;
         prof_mark(d->tier == GPU_TIER_ALIAS16 ? PR_A16_DRAW
-                  : d->cls == GPU_PC_TRI ? (!ff ? PR_REF_TRI : (d->ps_key & GPU_PSK_FF_FAST) ? PR_FF_FAST : PR_FF_TRI)
+                  : d->cls == GPU_PC_TRI ? (!ff ? PR_REF_TRI : (d->ps_key & GPU_PSK_FF_FAST) ? (zo ? PR_FF_FAST_Z : PR_FF_FAST) : PR_FF_TRI)
                   : !ff ? PR_REF_OTHER : d->cls == GPU_PC_SPRITE ? PR_FF_SPRITE : PR_FF_LINE);
     }
     if (X.ref || d->tier == GPU_TIER_ALIAS16) { exec_draw_ref(d, slot); return; }
@@ -1408,8 +1576,9 @@ static void exec_alias16(const gpu_fop_alias16* o, int end) {
     k.psm16 = o->psm;
     uint32_t wx = (uint32_t)(o->x1 - o->x0);
     if (end) wx /= 2;                    /* (scatter: a thread per word, two 16-bit pixels) */
-    mem_dispatch(end ? GPU_SH_cs_a16_scatter : GPU_SH_cs_a16_gather, &k, (wx + 7) / 8,
-                 (uint32_t)(o->y1 - o->y0 + 7) / 8, NULL, X.dat.srv, X.a16_uav, t->uav, NULL);
+    /* (M9) a thread per sample, the target as R32_UINT */
+    mem_dispatch(end ? GPU_SH_cs_a16_scatter : GPU_SH_cs_a16_gather, &k, (wx * (uint32_t)t->kx + 7) / 8,
+                 ((uint32_t)(o->y1 - o->y0) * (uint32_t)t->ky + 7) / 8, NULL, X.dat.srv, X.a16_uav, t->uav32, NULL);
     if (end) XC.alias16_runs++;
 }
 
@@ -1459,6 +1628,7 @@ static uint32_t* swz_build(void) {
 
 static int exec_init(void) {
     if (X.init) return 1;
+    mem_note("exec init start");
     memset(&X, 0, sizeof X);
     X.vram = raw_default(4u << 20, NULL, &X.vram_srv, &X.vram_uav);
     X.scratch = raw_default(4u << 20, NULL, &X.scratch_srv, &X.scratch_uav);
@@ -1484,9 +1654,20 @@ static int exec_init(void) {
         { "COLOR", 0, DXGI_FORMAT_R32_UINT, 0, 8, D3D11_INPUT_PER_VERTEX_DATA, 0 },
         { "COLOR", 1, DXGI_FORMAT_R32_UINT, 0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0 },
         { "TEXCOORD", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 16, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+        /* (M9) the draw's slot: element StartInstanceLocation + instance of the iota buffer (the vertex shaders of the
+         * instanced classes - sprites, line pixels - subtract SV_InstanceID; a larger step rate was not divided the
+         * documented way on the RTX 4060 Ti) */
+        { "DRAWID", 0, DXGI_FORMAT_R32_UINT, 1, 0, D3D11_INPUT_PER_INSTANCE_DATA, 1 },
     };
-    const gpu_shader_blob* vb = &gpu_shaders[GPU_SH_vs_tri];
-    if (FAILED(ID3D11Device_CreateInputLayout(gpu_rt.dev, el, 4, vb->code, vb->size, &X.layout))) { gpu_log("input layout failed"); return 0; }
+    const gpu_shader_blob* vb = &gpu_shaders[GPU_SH_vs_ff_tri];   /* (the input signature with DRAWID) */
+    if (FAILED(ID3D11Device_CreateInputLayout(gpu_rt.dev, el, 5, vb->code, vb->size, &X.layout))) { gpu_log("input layout failed"); return 0; }
+    if (!iota_ensure(65536)) return 0;
+    {
+        D3D11_FEATURE_DATA_D3D11_OPTIONS fo;
+        memset(&fo, 0, sizeof fo);
+        X.clearview = gpu_rt.ctx1 && SUCCEEDED(ID3D11Device_CheckFeatureSupport(gpu_rt.dev, D3D11_FEATURE_D3D11_OPTIONS, &fo, sizeof fo)) &&
+                      fo.ClearView;
+    }
     D3D11_RASTERIZER_DESC rd;
     memset(&rd, 0, sizeof rd);
     rd.FillMode = D3D11_FILL_SOLID;
@@ -1503,17 +1684,26 @@ static int exec_init(void) {
     bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
     if (!X.ztile || FAILED(ID3D11Device_CreateBuffer(gpu_rt.dev, &bd, NULL, &X.zcb))) return 0;
-    /* the per-frame buffers start at a size that holds Sly's heaviest frames */
-    if (!dyn_ensure(&X.vb, 8u << 20, D3D11_BIND_VERTEX_BUFFER, 0) || !dyn_ensure(&X.ib, 2u << 20, D3D11_BIND_INDEX_BUFFER, 0) ||
-        !dyn_ensure(&X.rec, 8u << 20, D3D11_BIND_SHADER_RESOURCE, 1) || !dyn_ensure(&X.st, 1u << 20, D3D11_BIND_SHADER_RESOURCE, 1) ||
-        !dyn_ensure(&X.cb, 4u << 20, D3D11_BIND_CONSTANT_BUFFER, 0) || !dyn_ensure(&X.dat, 1u << 20, D3D11_BIND_SHADER_RESOURCE, 1) ||
+    /* the per-frame buffers start small (M9: they grow to what a frame needs and shrink after peaks, dyn_fill) */
+    if (!dyn_ensure(&X.vb, 1u << 20, D3D11_BIND_VERTEX_BUFFER, 0) || !dyn_ensure(&X.ib, 1u << 20, D3D11_BIND_INDEX_BUFFER, 0) ||
+        !dyn_ensure(&X.rec, 1u << 20, D3D11_BIND_SHADER_RESOURCE, 1) || !dyn_ensure(&X.st, 1u << 20, D3D11_BIND_SHADER_RESOURCE, 1) ||
+        !dyn_ensure(&X.dc, 1u << 20, D3D11_BIND_SHADER_RESOURCE, 1) || !dyn_ensure(&X.dat, 1u << 20, D3D11_BIND_SHADER_RESOURCE, 1) ||
         !dyn_ensure(&X.aux, 1u << 20, D3D11_BIND_SHADER_RESOURCE, 1))
         return 0;
+    mem_note("exec buffers");
     /* every shader object up front (no creation inside a measured frame) */
     for (int i = 0; i < GPU_SH_COUNT; i++) {
         char k = gpu_shaders[i].profile[0];
+        PROCESS_MEMORY_COUNTERS_EX pm0, pm1;
+        int dbg = getenv("PS2_GS_MEM_MAP") != NULL;
+        if (dbg) { memset(&pm0, 0, sizeof pm0); pm0.cb = sizeof pm0; K32GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS*)&pm0, sizeof pm0); }
         if (k == 'v') gpu_vs(i); else if (k == 'p') gpu_ps(i); else if (k == 'c') gpu_cs(i);
+        if (dbg) {
+            memset(&pm1, 0, sizeof pm1); pm1.cb = sizeof pm1; K32GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS*)&pm1, sizeof pm1);
+            gpu_log("shader %s (%u bytes): +%.2f MB", gpu_shaders[i].name, gpu_shaders[i].size, ((double)pm1.PrivateUsage - (double)pm0.PrivateUsage) / 1048576.0);
+        }
     }
+    mem_note("exec shaders");
     X.b_ct = X.b_zt = -1;
     const char* pr = getenv("PS2_GPU_PROBE");
     if (pr && sscanf(pr, "%d,%d", &X.probe_x, &X.probe_y) == 2) {
@@ -1546,9 +1736,9 @@ static void probe_report(const gpu_front_frame_data* fd) {
         memcpy(&s, &r[8], 4); memcpy(&t, &r[9], 4); memcpy(&q, &r[10], 4);
         uint32_t k = r[0] & 3;
         if (k == 1)
-            gpu_log("probe v%u%s %s rec %u state %u: U %d V %d colour %08X (vertex/record %08X) z %08X s %.9g t %.9g q %.9g xl %d [s %08X t %08X q %08X]",
+            gpu_log("probe v%u%s %s rec %u state %u: U %d V %d colour %08X (vertex/record %08X) z %08X s %.9g t %.9g q %.9g xl %d [s %08X t %08X q %08X] draw slot %u",
                     fd->vblank, fd->flags & GPU_FD_PARTIAL ? "p" : "", kinds[k], r[1], r[2], (int)r[3], (int)r[4], r[5], r[6], r[7],
-                    s, t, q, (int)r[11], r[8], r[9], r[10]);
+                    s, t, q, (int)r[11], r[8], r[9], r[10], r[12]);
         else if (k == 3)
             gpu_log("probe v%u%s %s rec %u: zv %08X zold %08X after %08X written/zinfo/flags %X mode %d", fd->vblank, fd->flags & GPU_FD_PARTIAL ? "p" : "",
                     kinds[k], r[1], r[7], r[12], r[13], r[6], (int)r[11]);
@@ -1567,10 +1757,12 @@ void gpu_exec_release(void) {
     if (dbg_nosize || dbg_nocount) gpu_log("exec: %llu draws without a target, %llu empty draws (cls %llu %llu %llu %llu, tier %llu %llu)", (unsigned long long)dbg_nosize, (unsigned long long)dbg_nocount, (unsigned long long)dbg_cls[0], (unsigned long long)dbg_cls[1], (unsigned long long)dbg_cls[2], (unsigned long long)dbg_cls[3], (unsigned long long)dbg_tier[0], (unsigned long long)dbg_tier[1]);
     for (int i = 0; i <= MAX_TARGETS; i++) { target_free(&X.T[i]); free(X.T[i].zts); X.T[i].zts = NULL; }
     GPU_RELEASE(X.ztile_srv); GPU_RELEASE(X.ztile); GPU_RELEASE(X.zcb);
-    for (int i = 0; i < PR_MAXQ; i++) GPU_RELEASE(PR.q[i]);
+    for (int i = 0; i < PR_MAXQ; i++) { GPU_RELEASE(PR.q[i]); GPU_RELEASE(PR.sq[i]); GPU_RELEASE(PR.oq[i]); }
     GPU_RELEASE(PR.dis);
-    dynbuf* d[7] = { &X.vb, &X.ib, &X.rec, &X.st, &X.cb, &X.dat, &X.aux };
-    for (int i = 0; i < 7; i++) { GPU_RELEASE(d[i]->srv); GPU_RELEASE(d[i]->buf); d[i]->cap = 0; }
+    dynbuf* d[8] = { &X.vb, &X.ib, &X.rec, &X.st, &X.cb, &X.dat, &X.aux, &X.dc };
+    for (int i = 0; i < 8; i++) { GPU_RELEASE(d[i]->srv); GPU_RELEASE(d[i]->buf); d[i]->cap = 0; }
+    GPU_RELEASE(X.iota);
+    X.iota_n = 0;
     GPU_RELEASE(X.vram_srv); GPU_RELEASE(X.vram_uav); GPU_RELEASE(X.vram); GPU_RELEASE(X.scratch_uav); GPU_RELEASE(X.scratch_srv);
     GPU_RELEASE(X.scratch);
     GPU_RELEASE(X.stage); GPU_RELEASE(X.swz_srv); GPU_RELEASE(X.swz); GPU_RELEASE(X.clut_srv); GPU_RELEASE(X.clut);
@@ -1669,6 +1861,8 @@ void gpu_exec_frame(const void* payload) {
     if (!exec_init()) { gpu_rt.lost = 1; return; }
     thread_ms();
     gpu_stats_begin(fd->vblank, 0);
+    gpu_rt.cur_queued_ms = p->t_queued;  /* (M9: photon latency, gpu_present.c) */
+    gpu_stats_cur()->queued = atomic_load(&inflight);
     double t0 = qpc_ms(), c0 = thread_ms();
     X.state_calls = 0;
     uint64_t ff0 = XC.ff_draws, rov0 = XC.rov_draws;
@@ -1683,7 +1877,8 @@ void gpu_exec_frame(const void* payload) {
              dyn_fill(&X.rec, fd->rec, fd->rec_bytes, D3D11_BIND_SHADER_RESOURCE, 1) &&
              dyn_fill(&X.st, fd->states, fd->state_count * GPU_STATE_BYTES, D3D11_BIND_SHADER_RESOURCE, 1) &&
              dyn_fill(&X.dat, fd->data, fd->data_bytes, D3D11_BIND_SHADER_RESOURCE, 1) &&
-             dyn_fill(&X.cb, cb_cpu, (size_t)ncb * DRAW_CB_BYTES, D3D11_BIND_CONSTANT_BUFFER, 0);
+             (X.ref || X.mixed ? dyn_fill(&X.dc, cb_cpu, (size_t)ncb * DRAW_CB_BYTES, D3D11_BIND_SHADER_RESOURCE, 1) && iota_ensure(bc_maxid)
+                               : dyn_fill(&X.cb, cb_cpu, (size_t)ncb * DRAW_CB_BYTES, D3D11_BIND_CONSTANT_BUFFER, 0));
     double t1 = qpc_ms();
     if (!ok) gpu_log("frame %u: upload failed", fd->vblank);
     bind_frame_buffers();
@@ -1735,6 +1930,15 @@ void gpu_exec_frame(const void* payload) {
     st->latency_ms = st->presented && p->t_queued > 0 ? qpc_ms() - p->t_queued : -1.0;
     (void)t2;
     gpu_stats_end();
+    if (XC.frames == 1 || XC.frames == 3 || XC.frames == 10 || XC.frames == 60 || XC.frames == 600) {
+        char w[48];
+        snprintf(w, sizeof w, "after frame %u", (unsigned)XC.frames);
+        mem_note(w);
+        if (getenv("PS2_GS_MEM_MAP"))
+            gpu_log("upload buffers (MB): vb %.1f ib %.1f rec %.1f st %.1f dc %.1f dat %.1f; shrinks %llu", X.vb.cap / 1048576.0,
+                    X.ib.cap / 1048576.0, X.rec.cap / 1048576.0, X.st.cap / 1048576.0, X.dc.cap / 1048576.0, X.dat.cap / 1048576.0,
+                    (unsigned long long)XC.dyn_shrinks);
+    }
 }
 
 void gpu_exec_frame_done(const void* payload) {
@@ -1881,10 +2085,25 @@ void gpu_submit_sink(const gpu_front_frame_data* fd, void* user) {
         return;
     }
     /* at most MAX_INFLIGHT frames queued (the render thread's pace bounds the GS thread's, as VBlank
-     * pacing does in the game) */
+     * pacing does in the game). (M9) Adaptive (gpu_submit_set_adaptive): inflight_base frames normally; a slowdown that
+     * fills them after the queue had been short (<= 1 frame) for ADAPT_MS - NVIDIA lowering the clocks of a lightly
+     * loaded GPU for a few frames - may queue up to inflight_max for ADAPT_MS. A GPU that is behind for good never
+     * lets the queue drain, so it stays at inflight_base frames of latency (the EE then waits: the game slows down as
+     * it would with any renderer too slow for it). */
+    int limit = inflight_max;
+    if (inflight_base > 0 && inflight_base < inflight_max) {
+        int n = atomic_load(&inflight);
+        double now = qpc_ms();
+        int calm = q_short_since >= 0 && now - q_short_since >= ADAPT_MS;
+        if (n <= 1) { if (q_short_since < 0) q_short_since = now; }
+        else q_short_since = -1;
+        limit = inflight_base;
+        if (now < absorb_until) limit = inflight_max;
+        else if (n >= inflight_base && calm) { absorb_until = now + ADAPT_MS; limit = inflight_max; queue_absorbs++; }
+    }
     for (;;) {
         int n = atomic_load(&inflight);
-        if (n < inflight_max) break;
+        if (n < limit) break;
         WaitOnAddress((volatile VOID*)&inflight, &n, sizeof n, 5);
     }
     void* h = gpu_front_detach();

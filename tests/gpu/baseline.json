@@ -1,5 +1,5 @@
 {
-    "about":  "Gate for scripts/gpu_diff_all.ps1 (notes/d3d11-renderer.md 10.1). Paths are relative to the worktrees directory (sly2-worktrees next to the main checkout); recordings are read in place. frames/sw_hash come from the software renderer (-Update refreshes them); max_diff_px/min_psnr are the hw-vs-sw tolerances (M0 all-fallback backend: exact). M8: all 24 corpus recordings; the default mode (mixed) and ref gate PUNT = 0 and the picture gates of 10.2 instead of max_diff_px/min_psnr (those are the fallback mode\u0027s).",
+    "about":  "Gate for scripts/gpu_diff_all.ps1 (notes/d3d11-renderer.md 10.1). Paths are relative to the worktrees directory (sly2-worktrees next to the main checkout); recordings are read in place. frames/sw_hash come from the software renderer (-Update refreshes them); max_diff_px/min_psnr are the hw-vs-sw tolerances (M0 all-fallback backend: exact). M8: all 24 corpus recordings; the default mode (mixed) and ref gate PUNT = 0 and the picture gates of 10.2 instead of max_diff_px/min_psnr (those are the fallback mode\u0027s). M9: 27 recordings (M10\u0027s two widescreen recordings, ws_museum169 and ws_ep3_hud, added; their frames/sw_hash from gpu_diff_all -Update).",
     "recordings":  [
                        {
                            "name":  "fix-perf/rv_prompt",
@@ -198,6 +198,22 @@
                            "path":  "gpu-M8\\build\\gsrec\\m5_battlezone.gsrec",
                            "frames":  60,
                            "sw_hash":  "c6901705b474b06b",
+                           "max_diff_px":  0,
+                           "min_psnr":  999
+                       },
+                       {
+                           "name":  "gpu-M10/ws_museum169",
+                           "path":  "gpu-M10\\build\\gsrec\\ws_museum169.gsrec",
+                           "frames":  60,
+                           "sw_hash":  "1b2a539b41d19923",
+                           "max_diff_px":  0,
+                           "min_psnr":  999
+                       },
+                       {
+                           "name":  "gpu-M10/ws_ep3_hud",
+                           "path":  "gpu-M10\\build\\gsrec\\ws_ep3_hud.gsrec",
+                           "frames":  200,
+                           "sw_hash":  "c661e013dcb6de03",
                            "max_diff_px":  0,
                            "min_psnr":  999
                        }

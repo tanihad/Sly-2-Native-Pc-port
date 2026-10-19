@@ -27,6 +27,7 @@ typedef struct {
     int lost;                            /* device removed: commands are skipped */
     /* per-picture counters (gpu_present.c fills gpu_frame_stats from them) */
     uint32_t n_draws, n_dispatches, n_copies, n_uploads, upload_bytes;
+    double cur_queued_ms;                /* (M9) when the frame being executed was queued (qpc ms; photon latency) */
 } gpu_rt_state;
 
 extern gpu_rt_state gpu_rt;

@@ -126,23 +126,18 @@ void cs_download(uint3 g : SV_GroupID, uint3 t : SV_GroupThreadID) {
     if (m != 0u) vram_dst.Store(w * 4u, v);
 }
 
+// (M9) a thread per sample of the rect [0, cx1 * kx) x [0, cy1 * ky) (coalesced; it was a thread per native pixel
+// looping over its kx * ky samples)
 [numthreads(8, 8, 1)]
 void cs_clear(uint3 id : SV_DispatchThreadID) {
-    if (id.x >= cx1 || id.y >= cy1) return;
+    if (id.x >= cx1 * kx || id.y >= cy1 * ky) return;
+    uint2 s = id.xy;
     if (tkind == 0u) {
         uint m = ((wmask & 1u) ? 0xFFu : 0u) | ((wmask & 2u) ? 0xFF00u : 0u) | ((wmask & 4u) ? 0xFF0000u : 0u) |
                  ((wmask & 8u) ? 0xFF000000u : 0u);
-        for (uint j = 0u; j < ky; j++)
-            for (uint i = 0u; i < kx; i++) {
-                uint2 s = uint2(id.x * kx + i, id.y * ky + j);
-                ctgt[s] = unpack4((pack4(ctgt[s]) & ~m) | (value & m));
-            }
+        ctgt[s] = unpack4((pack4(ctgt[s]) & ~m) | (value & m));
     } else {
-        for (uint j = 0u; j < ky; j++)
-            for (uint i = 0u; i < kx; i++) {
-                uint2 s = uint2(id.x * kx + i, id.y * ky + j);
-                ztgt[s] = tkind == 2u ? (ztgt[s] & 0xFF000000u) | (value & 0xFFFFFFu) : value;
-            }
+        ztgt[s] = tkind == 2u ? (ztgt[s] & 0xFF000000u) | (value & 0xFFFFFFu) : value;
     }
 }
 

@@ -97,6 +97,11 @@ void gpu_finish(void);
 /* One line describing the render thread and the command rings (hang diagnostics; any thread). */
 void gpu_debug_state(char* buf, size_t n);
 
+/* (M9) GPU phases of a frame (PS2_GPU_PROF timestamps, grouped): FF triangles, FF sprites and lines, ROV / REF draws,
+ * ALIAS16 runs (gather, draws, scatter), Z resolve / sync, the rest (memory ops, clears, shadow copies, compose) */
+#define GPU_PHASES 6
+static const char* const gpu_phase_names[GPU_PHASES] = { "ff-tri", "ff-sprite/line", "rov", "alias16", "zsync", "other" };
+
 /* Per-picture statistics, completed in order (GPU time needs the timestamp queries to resolve). */
 typedef struct {
     uint32_t vblank;
@@ -116,6 +121,11 @@ typedef struct {
     int dropped;                          /* not shown: the render thread was behind and the swap chain busy */
     uint32_t ff_draws, rov_draws;         /* D3D draws on the FF / ROV tier in this frame */
     double latency_ms;                    /* (M7) frame queued (picture reported to the EE) -> Present returned; -1: not shown */
+    double photon_ms;                     /* (M9) frame queued -> the display's vsync that showed it (DXGI frame statistics),
+                                             for the most recent picture the display has shown; -1: not known */
+    int queued;                           /* (M9) frames queued for the render thread when this one was taken */
+    int phases;                           /* (M9) phase_ms is set (PS2_GPU_PROF: GPU timestamps per phase) */
+    float phase_ms[GPU_PHASES];           /* (M9) GPU ms per phase (gpu_phase_names) */
 } gpu_frame_stats;
 int gpu_take_frame_stats(gpu_frame_stats* out, int max);   /* returns how many were taken */
 
@@ -129,6 +139,10 @@ void gpu_submit_sink(const gpu_front_frame_data* fd, void* user);
 void gpu_submit_wait_idle(void);
 /* frames the sink lets queue for the render thread before the producer waits (default 3) */
 void gpu_submit_set_depth(int frames);
+/* (M9) adaptive: `base` frames normally (0: the fixed depth above), the full depth for 2 s after a slowdown that filled
+ * the base queue while it had been short; gpu_submit_absorbs: how often that happened */
+void gpu_submit_set_adaptive(int base);
+uint32_t gpu_submit_absorbs(void);
 /* M3 REF tier: frames flagged GPU_FD_REF are drawn exactly (every draw through shaders/gs.hlsl on
  * the ROV path, depth in zpatch). The GS memory image as the GPU sees it after everything queued so
  * far: vram_buf with the GPU words of `n` blocks (gpu_front_gpu_blocks: entries and writer targets)
@@ -142,8 +156,11 @@ typedef struct {
     uint64_t zresolves, zsyncs;          /* zpatch -> DSV quads (ps_zresolve), DSV -> zpatch dispatches (cs_zsync) */
     uint64_t zresolve_px, zsync_px;      /* their pixels (samples) */
     uint64_t rescales;                   /* (M7) live targets whose contents moved to new sample factors */
+    uint64_t dyn_shrinks;                /* (M9) per-frame upload buffers recreated smaller after a peak */
 } gpu_exec_counters;
 void gpu_exec_get_counters(gpu_exec_counters* out);
+/* (M9) the process's video memory use (bytes): local (on the GPU), non-local (system memory); 0: unknown */
+int gpu_video_memory(uint64_t* local, uint64_t* nonlocal);
 /* (M7, tests) every sample of target id after everything submitted: w x h words (colour R8G8B8A8, or the zpatch
  * Z words of a depth target), its factors; 0: no such target or out too small (cap_words) */
 int gpu_exec_read_target(uint32_t id, uint32_t* out, size_t cap_words, int* w, int* h, int* kx, int* ky, int* depth);
