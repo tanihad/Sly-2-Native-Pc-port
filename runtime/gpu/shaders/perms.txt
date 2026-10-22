@@ -95,3 +95,10 @@ ps_ff_n00        gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=3 DUA
 ps_ff_n01        gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=3 DUAL=0 ZOUT=1
 ps_ff_n10        gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=3 DUAL=1 ZOUT=0
 ps_ff_n11        gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=3 DUAL=1 ZOUT=1
+# M11: the ROV-tier pixel shaders with plain UAVs, for GPUs without rasterizer-ordered views (gf_cfg.no_rov: draws of
+# primitives with disjoint rectangles only)
+ps_gs_tri_nr        gs.hlsl             ps_gs             ps_5_0    PRIM=0 NOROV=1
+ps_gs_sprite_nr     gs.hlsl             ps_gs             ps_5_0    PRIM=1 NOROV=1
+ps_gs_linepix_nr    gs.hlsl             ps_gs             ps_5_0    PRIM=2 NOROV=1
+ps_gs_tri_fast_nr   gs.hlsl             ps_gs             ps_5_0    PRIM=0 STQ_FAST=1 TRI_REC=128u NOROV=1
+ps_gs_thin_nr       gs.hlsl             ps_gs             ps_5_0    PRIM=3 NOROV=1

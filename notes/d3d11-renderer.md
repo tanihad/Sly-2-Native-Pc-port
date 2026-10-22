@@ -1,7 +1,8 @@
 # Direct3D 11 renderer for the Sly 2 PC port: final design
 
-Status: design approved by synthesis (branch next/d3d11). The decision is fixed here; implementation
-proceeds by the milestones in section 11. Inputs, all in `notes/wip/` on next/d3d11:
+Status: **implemented, M0-M11 (2026-10-19): the GPU renderer is the game's default** (appendix M; as-built
+map: notes/gpu-renderer.md). Design approved by synthesis (branch next/d3d11). The decision is fixed here; implementation
+proceeded by the milestones in section 11. Inputs, all in `notes/wip/` on next/d3d11:
 `d3d11-map.md` (software GS map), `d3d11-census.md` (what Sly 2 sends the GS, 13 recordings),
 `d3d11-prior-art.md` (paraLLEl-GS, PCSX2, Play!, RT64, Unleashed), the three candidate designs
 (`d3d11-design-high-level.md`, `d3d11-design-gpu-exact.md`, `d3d11-design-sly-specialized.md`) and
@@ -930,6 +931,7 @@ Total ~45-55 agent-days. The software renderer stays the default until M11.
   documentation), then default `PS2_GS_BACKEND=hw` with sw kept as fallback setting.
 - **Verification**: fallbacks exercised by unit tests; full corpus gate green; owner sign-off on
   the default quality settings (section 13).
+- *(As built: appendix M. The GPU renderer is the default; notes/gpu-renderer.md is the as-built map.)*
 
 ---
 
@@ -2316,3 +2318,138 @@ the six scenes: 240 comparisons each, 0 beyond the tolerance, 0 PUNT.
   mem-bench / GS_REPLAY_MEM_MAP, `--backend hwsubmit --mixed --front-thread` prints `thread-bench` (GS / frontend thread
   ms per game frame), PS2_GS_MEM_MAP=1 in game (memory map and set-up steps), PS2_GPU_DBG_DRAW / DBG_ROVSKIP
   (measurement only, wrong pictures).
+
+## Appendix M. As built: M11 hardening and default switch (branch gpu/M11)
+
+**Default switch**
+- `[graphics] renderer` defaults to **gpu** and `internal_scale` to **auto** (settings.c; the template written for a new
+  sly2.ini says so); with 16:9, ps2 outlines and Modern (M7/M10 defaults) the game starts as the owner decided: GPU
+  renderer, 3x, 16:9, Modern, 60 fps. `renderer = software` / `PS2_GS_BACKEND=sw` select the software renderer. A
+  sly2.ini written by an older build keeps its `renderer = software` line (the old template): there was none on the
+  owner's machine (%LOCALAPPDATA%\Sly2 had no file), so no migration was written.
+- Start-up (gpu_d3d11.c, `gpu_config.warmup`, the game only): device at feature level 11_1, else 11_0; `caps.full` =
+  FL >= 11_0 + TypedUAVLoadAdditionalFormats (mem.hlsl loads R8G8B8A8_UINT UAVs) + double-precision shaders (gs.hlsl
+  dmul_r) + dual-source blending. ROVs are no longer required (below); ConstantBufferOffsetting is only used by the M2
+  benchmark path and ClearView only when present, so neither is required. Then the swap chain / presentation resources,
+  then **every shader the game can use is created** (47 objects in 5-30 ms on the 4060 Ti, 51 ms on WARP: drivers
+  compile in the background and keep their own disk cache; the design's "shader cache" item - nothing compiles HLSL at
+  run time, and nothing is first created in the middle of play any more). Any failure: `gpu_start` returns 0 with a
+  reason (`gpu_start_error`), ps2_runtime.c logs one line `[ps2] GPU renderer unavailable (<reason>): using the
+  software renderer` and the window gets its own presenter back (no dialog, no crash). Test switches:
+  `PS2_GPU_FAIL=device|caps|swapchain|shader`, `PS2_GPU_FL=11_0`, `PS2_GPU_NO_ROV=1`.
+- Verified: each PS2_GPU_FAIL value in game -> the line (e.g. "the GPU lacks (PS2_GPU_FAIL=caps)", "the driver cannot
+  create shader ps_gs_sprite") and the game runs on in software (audio 0 underruns); gs-hw `startup_tests` (hardware and
+  WARP): every forced failure fails cleanly with its reason, nothing left running, a start afterwards works, FL 11_0
+  without ROVs starts; feature level 11_0 in game (59.9 flips/s) and m9_exact at FL 11_0 bit-identical (5 recordings, S=1
+  and S=3); device loss x3 in game (PS2_GPU_LOSE_AT): recreated twice (one second at 52.9 flips/s), the third loss
+  switches to software; WARP (`PS2_GPU_ADAPTER=warp`) runs the game at ~12 pictures/s after auto went to 1x.
+- The packaged GUI build (`scripts\package.py` -> dist\Sly2\sly2.exe 0.1.670) copied with a portable.txt, a sly2.ini
+  holding only `[game] disc`, a warp card and no PS2_* variables: "renderer gpu", "internal scale auto, now 3x",
+  "presenting through the GPU backend's swap chain", "GPU renderer on (window ...)", into the ep3 hub at 3x 16:9
+  (screenshot `build\screenshots\gpu_m11_gui_portable.png`), exit code 0 on close. (The title shows "(GPU)" only with
+  `show_fps = on`, as since M6.)
+
+**No-ROV path (GPUs without rasterizer-ordered views)**
+- ROV-tier and ALIAS16 draws need only per-pixel primitive order. Without ROVs the same pixel shaders are compiled with
+  plain `RWTexture2D` UAVs (`NOROV=1`: ps_gs_tri / _tri_fast / _sprite / _linepix / _thin `_nr`, perms.txt) and the
+  frontend (`gf_cfg.no_rov`, set from `gpu_no_rov()`) puts only primitives with disjoint pixel rectangles into one draw
+  (triangles and thin lines grown by one pixel: samples at scale and rasterizer edges; sprites, points and line pixels
+  exact); an overlapping primitive closes the draw and opens one of the same key in the same run. D3D11 orders the UAV
+  accesses of consecutive draws, so every pixel sees its primitives in stream order - the same results. Reads of other
+  pixels were never ordered by ROVs either (shadow copies / disjoint byte lanes, 5.1), so nothing else changes.
+- **Exact**: m9_exact with PS2_GPU_NO_ROV=1 against the 4eaf32f baseline: 27/27 recordings bit-identical at S=1 and S=3
+  (every sample of every target every 7 VBlanks); gs-hw gs-draw scenes REF and mixed without ROVs on hardware and WARP:
+  195/195 each; in game (ep3 hub, verifier every 60 VBlanks, 240 s): 180 comparisons, 0 beyond the tolerance.
+- Cost (replay, 3x 16:9, GPU ms per game frame, ROV -> no ROV): ep7 boss 11.4 -> 19.6, ep1 hub 9.5 -> 13.3, ep3 hub 8.9
+  -> 12.2, ep5 street 9.2 -> 12.8, ep8 boss 7.0 -> 8.9. ROV-tier D3D draws grow ~100x (strip triangles' rectangles
+  always overlap: ep7 boss 2.7k -> 98k draws over 120 VBlanks), each with an implicit UAV barrier. Kept simple: on such
+  GPUs internal_scale = auto picks a lower scale. A layered grouping (a primitive goes to the first draw after every
+  draw it overlaps, records reordered per layer) would cut the draws to the overlap depth - not built.
+
+**internal_scale = auto** (gpu_hw.c `auto_scale_tick`, GS thread, once a second; gfx.c)
+- GPU busy = the GPU time of the pictures finished in the second (timestamps around each picture, now always on) / the
+  second. Down: busy > 0.85 for 3 s in a row -> the highest lower scale predicted to fit 0.70. Up: after 15 judged seconds
+  at a scale, the next scale predicted at <= 0.70 from the **lower quartile** of those seconds, unless that scale was left
+  for being too slow within the back-off (120 s, doubled each time it is left again). 3 s after a change are not judged.
+  Range 1..3: 3 = the owner's quality target (section 13), never below 1.
+- Prediction: GPU time is not proportional to the samples (per-primitive cost; 1x skips the per-sample paths): relative
+  costs from measurements on the 4060 Ti (title/intro at 16:9: 1x 8.7%, 2x 38.2%, 3x 52% busy; replay S=3 -> 4 -> 5
+  x1.56 / x2.58, appendix L): {1, 4.4, 6.0, 9.4, 15.5, 22, 30, 40}.
+- Found while testing: a lightly loaded NVIDIA GPU lowers its clocks, and at 1x the busy fraction alternated 8.7% / 25%
+  second by second, so a raise rule on single seconds (or medians) never fired; hence the lower quartile.
+- Keys: F2 / Shift+F2 step from the scale in use and make it fixed (written as a number); **Ctrl+F2** = auto (written
+  `auto`); PS2_INPUT token `scaleauto`. `PS2_GS_SCALE` still overrides (auto off). Each change is logged.
+- Behaviour here: default runs stay at 3x (GPU 50-65% busy: intro 52%, the 22-minute route below never left 3x).
+  `PS2_GS_AUTO_SLOW=2.5:20` (measured time x2.5 for 20 s) + `PS2_GS_AUTO_RETRY=30`: 3x -> 1x at v483 (133% busy; 2x was
+  predicted at 98%), then 1x -> 2x and 2x -> 3x once the factor ended; WARP: 3x -> 1x within 2 s.
+
+**Long session, memory** (`scripts\m11_long.ps1`: release, headless, default settings, PS2_GS_HW_STATS=1, private bytes
+sampled every 10 s; route through every episode in one process with the new level-travel items of PS2_TASK_SET -
+`j<task>:<world>` starts a job as the game does from another level (0x1651D8), `w<world>` loads a world (0x22B490) -
+runtime/warp.c, notes/warp.md): ep1 hub -> m1_brawl -> ep2 hub -> m2_turret -> ep3 hub -> m3_heist -> ep4 hub ->
+m4_brawl -> ep5 hub -> m5_battlezone -> ep6 hub -> m6_paraglide -> ep7 hub -> m7 boss -> ep8 hub -> m8 boss -> ep1 hub ->
+m3_turret (one travel every 4000 VBlanks, 1320 s; sheet `build\screenshots\gpu_m11_long_route.png`).
+- Private bytes: 787 MB at the title, 1138 MB after the first ep1 loads (t = 130 s), then **1138-1144 MB for the remaining
+  1190 s** through all eight episodes (this run includes ~190 MB of PS2_DUMP_FRAMES read-back buffers at 3x). Video
+  memory local 198-238 MB, non-local 168-321 MB (driver pools); targets live 2-7 (LRU release after 120 frames unused,
+  gpu_own.c); 1317 stats lines, all 59.9-60.0 flips/s, 0 dropped; audio 1310 s, 0 underruns; auto stayed at 3x.
+  Nothing grows: no leak or unbounded cache was found, so nothing needed fixing.
+
+**Flaky test**: tests/unit/iop_kernel timed real-time behaviour with wall-clock assumptions about how long Sleep() and
+loops take. Under 56 spinning threads + 8 parallel instances the old test failed 6 of 32 runs (RPC on the IOP thread
+"126-216 ms" measured on the starved test thread, "the timer kept its rate after the hold: 36 calls in 50 ms", priority
+order "A1" when a 2 ms iop_run slice ended early, printf capture). Now: QPC timestamps bracket the calls (held time vs
+unheld time exactly), every iop_run that must finish loops while `iop_run_unfinished()`, IOP-thread checks are timed by
+the IOP thread itself (handler / delay / reply timestamps) and the RPC latency counted in IOP passes
+(`iop_pass_count()`), the busy-wait slice check also accepts a long wall time with little CPU, printf is captured with
+_dup2 into a per-process file before the IOP thread starts. 0 of 160 runs failed under the same load; mutants (time hold
+off, timer without catch-up) are still caught.
+
+**Bug found by the sweep (pre-existing since M4, fixed)**: the first M11 sweep had verifier comparisons beyond the
+tolerance in m6_rc_battle (11 of 240), m6_heist_rc (2), m6_paraglide (1) and m8_tntbarrel (1), ~250 words > 16 each.
+The verifier's recordings diverged in REF lockstep too, also with the 4eaf32f and the pre-M9 (829070e) builds. A probe
+of one pixel (PS2_GPU_PROBE) showed the bottom strip of a T8H feedback pass over frame buffer 0 (a palette lookup of its
+own alpha, 16 sprites of 32 x 224) sampling row 224 - one row past the 224-row buffer, i.e. frame buffer 0x38's first
+row. Target 1 got that block by an xcopy from target 3 (frame 19 of the recording) and kept it "current" from then on:
+a block's serial moved only when its *writer* changed, and target 3 redrew it every other frame. Fix (gpu_own.c
+`blk_shared`): a block another target xcopied is marked; its writer's next write bumps the serial (the mark also takes
+the writer off its clean fast path), so the copy goes stale and is copied again when read. After the fix the 13 verifier
+recordings of those scenes: REF and mixed lockstep 0 differ. Kept as a corpus recording
+(`gpu-M11\build\gsrec\m6_rc_feedback.gsrec`: corpus and baseline now 28) and a gs-front check (test 10: cross copies
+again after the writer redraws; fails without the fix). m9_exact against 4eaf32f now differs where the old build kept a
+stale copy: m6_rc_feedback (the fix) and gpu-C_ep2_photo (target texels outside what the game reads - its lockstep and
+picture gates are 0-differ before and after). m8_turret's one comparison (+-3..16 only, none > 16) is the dual-source
+layering class of appendix J (exact with PS2_GPU_DUAL_EXACT=1): owner question (a).
+
+**Gates (final source, 28 recordings)**: tests/run_tests.py 16/16; every tests/unit run.ps1 passes (gs-hw 203 checks +
+gs-draw scenes REF / mixed / mixdef on hardware and WARP, REF and mixed also without ROVs; gs-front 25; window 989; warp
+113; iop_kernel, gs-draw, gs-mem, ...); gpu_diff_all mixed / ref at S=1 and S=3 28/28 (mixed min PSNR 43.94 dB, ref 0
+px); gpu_game_all S=1 4196 pictures 0 differ, S=3 28/28 (box gate min 33.25 dB, rv_prompt waived at 31.36, max |mean
+signed error| 0.319); gpu_lockstep_all REF S=1, mixed S=1, mixed S=3: 28343 comparisons each, 0 differ; gpu_sample_all
+S=3 0 failed; gpu_fthread_check and -Mixed 28/28 identical; gs_vram_hashes -Backend hwdry 28/28 identical to sw (and to
+tests/gpu/vram_hashes.txt); m9_exact: the no-ROV path (PS2_GPU_NO_ROV=1) bit-identical to the ROV path on 28/28 at S=1
+and S=3, and before the xcopy fix 27/27 identical to 4eaf32f (after it, the two differences explained above); debug and
+release builds; scripts/package.py (0.1.678).
+
+**In-game sweep** (scripts\m8_batch.ps1 -Parts 2 -Verify 60 -Scale 3 on the final source; m8_sweep.ps1 no longer sets the
+backend, so the game ran with its default renderer; two games at a time): 55 scenes, 13260 verifier comparisons, **3
+beyond the tolerance** - m8_turret 1, m8_tntbarrel 2, all +-3..16 words only (none > 16, Z and CPU data exact): the
+dual-source layering class (their recordings: REF lockstep 0 differ, mixed with PS2_GPU_DUAL_EXACT=1 0 differ; owner
+question (a)). The ep6 scenes of the first sweep: 0 beyond. PUNT 0 in every scene, no device loss, no fallback, no
+error line. (Pictures per second 47-60 in these runs: the verifier draws every primitive in software as well, on the GS
+thread, with two games sharing the machine - by design, as in M8.)
+
+**200 s regression, default configuration** (release console build, a new game from a warp episode-0 card, windowed
+with sound, no settings file - the template it writes says renderer = gpu, internal_scale = auto - boot -> intro ->
+Binocucom briefing -> museum, walking and attacking; PS2_GS_HW_STATS=1, private bytes every 5 s): renderer gpu, auto
+at 3x throughout; 198 one-second lines, all 59.9-60.0 flips/s (mean 59.93), 0 dropped; audio 190 s, 1 underrun at 0.040
+s of audio - the stream's first buffer, before the game makes a sound; the software renderer does the same (4 of 4
+starts of either renderer), so it is not the GPU renderer's; memory 555-618 MB, flat (no frame dumps in this run).
+
+**Deviations from the design**
+- No-ROV: disjoint groups without reordering (the design's "commutation" grouping not built): exact, up to ~1.7x GPU.
+- The design's "WARP run of the game" is a smoke test (12 pictures/s), not a gate.
+- Section 13 question 6 (first release ROV-only?) is moot: GPUs without ROVs run the same pictures.
+
+**Open (owner)**: (a) the ep5 tank gas cloud's +-3-5 colour drift under deep translucent layering (appendix J) and
+(b) distant hub scenery sharp at 3x in Faithful (appendix J) are left as they are.

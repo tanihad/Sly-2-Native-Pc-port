@@ -269,6 +269,40 @@ static void swapchain_test(int adapter) {
     pump();
 }
 
+/* ---- (M11) start-up checks of the game's renderer -----------------------------------------------------------------
+ * cfg.warmup (the game): the device must have what the renderer needs and every game shader is created at start. Each
+ * forced failure (PS2_GPU_FAIL) makes gpu_start return 0 with its reason and leaves nothing running - the game then
+ * uses the software renderer - and a start after a failure works. Feature level 11_0 (PS2_GPU_FL) and a device without
+ * rasterizer-ordered views (PS2_GPU_NO_ROV: the no-ROV shader set) are accepted. */
+static void startup_tests(int adapter) {
+    gpu_config cfg;
+    memset(&cfg, 0, sizeof cfg);
+    cfg.adapter = adapter;
+    cfg.warmup = 1;
+    static const char* const fail[][2] = { { "device", "no Direct3D 11" }, { "caps", "the GPU lacks" },
+                                           { "swapchain", "presentation resources" }, { "shader", "cannot create shader" } };
+    for (int i = 0; i < 4; i++) {
+        _putenv_s("PS2_GPU_FAIL", fail[i][0]);
+        int ok = gpu_start(&cfg);
+        CHECK(!ok && !gpu_running(), "PS2_GPU_FAIL=%s: gpu_start fails cleanly (%d)", fail[i][0], ok);
+        CHECK(strstr(gpu_start_error(), fail[i][1]) != NULL, "PS2_GPU_FAIL=%s: reason '%s'", fail[i][0], gpu_start_error());
+        if (ok) gpu_stop();
+    }
+    _putenv_s("PS2_GPU_FAIL", "");
+    int ok = gpu_start(&cfg);
+    CHECK(ok && gpu_get_caps()->full && !gpu_no_rov(), "start after the failures, with ROVs (%d)", ok);
+    if (ok) { CHECK(pictures_round_trip() == 0, "pictures after the failures"); gpu_stop(); }
+    _putenv_s("PS2_GPU_FL", "11_0");
+    _putenv_s("PS2_GPU_NO_ROV", "1");
+    ok = gpu_start(&cfg);
+    CHECK(ok && gpu_get_caps()->feature_level == 0xb000 && !gpu_get_caps()->rovs && gpu_no_rov(),
+          "feature level 11_0 without ROVs: started (%d), level %x, no-ROV %d", ok, gpu_get_caps()->feature_level, gpu_no_rov());
+    if (ok) { CHECK(pictures_round_trip() == 0, "pictures at 11_0 without ROVs"); gpu_stop(); }
+    _putenv_s("PS2_GPU_FL", "");
+    _putenv_s("PS2_GPU_NO_ROV", "");
+    CHECK(!gpu_no_rov(), "no device: ROVs assumed again");
+}
+
 /* ---- per adapter ---------------------------------------------------------------------------------- */
 
 static void run_adapter(int adapter, int window, int vectors) {
@@ -316,6 +350,7 @@ static void run_adapter(int adapter, int window, int vectors) {
         gpu_stop();
     }
     if (window) swapchain_test(adapter);
+    startup_tests(adapter);
 }
 
 int main(int argc, char** argv) {

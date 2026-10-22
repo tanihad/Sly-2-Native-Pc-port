@@ -149,12 +149,12 @@ void gs_record_start_now(void);
 #define SCRIPT_WATCH (-8)                 /* "watch:<n>": PS2_WATCH logs every call for n VBlanks */
 #define SCRIPT_ASPECT (-9)                /* "aspect": as F7 (wide <-> 4:3) */
 #define SCRIPT_HUD   (-10)                /* "hud": as F8 (HUD edges <-> centred) */
-/* graphics keys (gfx.h): "scaleup" F2, "scaledown" Shift+F2, "outlines" F3, "filters" F4, "blur" F5, "flicker" F6,
- * "interlace" Shift+F6 (not written to sly2.ini) */
+/* graphics keys (gfx.h): "scaleup" F2, "scaledown" Shift+F2, "scaleauto" Ctrl+F2, "outlines" F3, "filters" F4, "blur" F5,
+ * "flicker" F6, "interlace" Shift+F6 (not written to sly2.ini) */
 #define SCRIPT_GFX0  (-20)
 static const struct { const char* name; unsigned vk; int shift; } script_gfx[] = {
     { "scaleup", VK_F2, 0 }, { "scaledown", VK_F2, 1 }, { "outlines", VK_F3, 0 }, { "filters", VK_F4, 0 },
-    { "blur", VK_F5, 0 }, { "flicker", VK_F6, 0 }, { "interlace", VK_F6, 1 } };
+    { "blur", VK_F5, 0 }, { "flicker", VK_F6, 0 }, { "interlace", VK_F6, 1 }, { "scaleauto", VK_F2, 2 } };
 #define SCRIPT_NGFX ((int)(sizeof script_gfx / sizeof script_gfx[0]))
 static void switch_aspect(void);
 static void switch_hud(void);
@@ -1264,7 +1264,7 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         else if (wp == VK_F7 && !(lp & (1 << 30))) switch_aspect();
         else if (wp == VK_F8 && !(lp & (1 << 30))) switch_hud();
         else if (wp >= VK_F2 && wp <= VK_F6 && !(lp & (1 << 30)))   /* graphics settings (gfx.h), remembered in sly2.ini */
-            gfx_key((unsigned)wp, GetKeyState(VK_SHIFT) < 0, 1);
+            gfx_key((unsigned)wp, (GetKeyState(VK_SHIFT) < 0) | (GetKeyState(VK_CONTROL) < 0) << 1, 1);   /* (Ctrl+F2: scale auto) */
         return 0;                        /* game keys are read with GetAsyncKeyState */
     case WM_ACTIVATEAPP:
         if (wp) { reread_display(); gfx_reread(); }   /* sly2.ini may have been edited meanwhile */

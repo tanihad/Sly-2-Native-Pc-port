@@ -22,9 +22,10 @@ typedef struct {
     int hud_centered;            /* hud = edges (0, default: HUD widgets at the screen's edges) | centered (1) */
     /* [graphics] - read and kept for the GPU renderer (notes/d3d11-renderer.md section 13);
      * the software renderer ignores them. */
-    int renderer_gpu;            /* renderer = software (0, default) | gpu (1: the Direct3D 11 GS backend) */
+    int renderer_gpu;            /* renderer = gpu (1, default since M11: the Direct3D 11 GS backend; the software
+                                    renderer when it cannot start) | software (0) */
     int pacing;                  /* pacing = vsync (0, default) | vrr (1) | display (2): SETTINGS_PACING_* */
-    int internal_scale;          /* 1..8, default 3 */
+    int internal_scale;          /* 1..8, or 0 = auto (default since M11: 3x, lowered while the GPU cannot keep up) */
     int outlines_thin;           /* outlines = ps2 (0, default) | thin (1) */
     int filters_faithful;        /* filters = modern (0, default) | faithful (1): preset for the next three */
     int motion_blur;             /* 1 on, 0 off, -1 (default) the preset's value */
@@ -44,6 +45,8 @@ enum { SETTINGS_PACING_VSYNC, SETTINGS_PACING_VRR, SETTINGS_PACING_DISPLAY };
 enum { SETTINGS_SCALER_AUTO, SETTINGS_SCALER_POINT, SETTINGS_SCALER_BOX, SETTINGS_SCALER_LANCZOS, SETTINGS_SCALER_CATMULL,
        SETTINGS_SCALER_BILINEAR, SETTINGS_SCALER_N };
 extern const char* const settings_scaler_names[SETTINGS_SCALER_N];   /* "auto", "point", ... (sly2.ini values) */
+#define SETTINGS_SCALE_AUTO 0            /* internal_scale = auto */
+#define SETTINGS_SCALE_AUTO_MAX 3        /* the scale auto aims for (the owner's decision: 3x on capable GPUs) */
 
 /* The preset's value where a toggle is -1: Modern = motion blur on, flicker filter off, progressive;
  * Faithful = all three on (as on a PS2 on a TV). */

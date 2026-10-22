@@ -25,6 +25,9 @@ typedef struct {
     int timestamps;              /* GPU timestamp queries around each picture (gpu_frame_stats.gpu_ms) */
     /* (M6) the window's client size as the window thread last saw it (window_gpu.h); NULL: GetClientRect */
     void (*client_size)(int* w, int* h);
+    /* (M11) the game: the device must have what the renderer needs (caps.full) and every shader the game can use is
+     * created at start-up (a failure is a start-up failure: gpu_start_error) */
+    int warmup;
 } gpu_config;
 
 typedef struct {
@@ -43,9 +46,16 @@ typedef struct {
     int swapchain;               /* a swap chain exists (windowed) */
     int waitable;                /* frame-latency waitable object */
     int tearing;                 /* DXGI_FEATURE_PRESENT_ALLOW_TEARING */
-    int full;                    /* everything the exact hw tiers need (FL 11_1, ROV, typed UAV loads,
-                                    dual source, cb offsets) */
+    int full;                    /* (M11) everything the game's renderer needs: FL 11_0 or 11_1, typed UAV loads,
+                                    dual source, doubles (ROVs are used when present: gpu_no_rov) */
 } gpu_caps;
+
+/* (M11) why gpu_start failed (one line), what a device lacks (caps.full = 0), and whether the ROV tier runs without
+ * rasterizer-ordered views (none on the device, or PS2_GPU_NO_ROV=1: plain UAV draws of disjoint primitives).
+ * Test switches: PS2_GPU_FAIL=device|caps|swapchain|shader, PS2_GPU_FL=11_0, PS2_GPU_NO_ROV=1. */
+const char* gpu_start_error(void);
+const char* gpu_missing_caps(const gpu_caps* c);
+int gpu_no_rov(void);
 
 /* Start the render thread and create the device (and the swap chain for cfg->hwnd). Returns 1 on
  * success; on failure everything is torn down and gpu_caps()->ok is 0. */

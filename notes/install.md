@@ -57,11 +57,20 @@ Move or copy `dist\Sly2` anywhere (e.g. `C:\Games\Sly 2`).
 
 - Window title "Sly 2: Band of Thieves" (`[window] show_fps = on` adds the frame rate; "(GPU)" with the
   GPU renderer).
-- Renderer: the software renderer by default; `[graphics] renderer = gpu` in sly2.ini (or
-  `PS2_GS_BACKEND=hw`) uses the Direct3D 11 renderer (opt-in until notes/d3d11-renderer.md M11; draws at
-  the PS2's resolution until M7). It needs a GPU with rasterizer-ordered views; without one, or if
-  the device cannot be created, the log says so and the software renderer runs. A lost device is
-  recreated (twice); a third loss switches to the software renderer for the rest of the session.
+- Renderer (since M11): the Direct3D 11 GPU renderer by default - 3x internal resolution (`internal_scale =
+  auto`: lowered automatically on a GPU that cannot keep up), 16:9, Modern filters, 60 fps; keys in
+  notes/controls.md. At start-up it checks the device (feature level 11_0 or 11_1, typed UAV loads,
+  double-precision shaders, dual-source blending; rasterizer-ordered views optional) and creates every shader
+  it uses; if any of that fails the game runs on the software renderer, with one log line
+  `[ps2] GPU renderer unavailable (<reason>): using the software renderer` (and the window's own presenter: no
+  crash, no dialog). `[graphics] renderer = software` (or `PS2_GS_BACKEND=sw`) selects the software renderer.
+  A lost device is recreated (twice); a third loss switches to the software renderer for the rest of the
+  session.
+- System requirements: Windows 10/11 64-bit, a 4-core CPU, a Direct3D 11 GPU as above with current drivers.
+  Measured on the RTX 4060 Ti: 3x 16:9 costs 7-11 ms of GPU time per game frame (about half the GPU's time);
+  GPUs without rasterizer-ordered views need up to ~1.7x that (notes/d3d11-renderer.md appendix M), and the
+  automatic scale picks 2x or 1x where 3x does not fit. The software renderer needs a fast CPU (its GS thread
+  takes ~16 ms per VBlank in heavy scenes).
 - Alt+Enter / F11: borderless fullscreen; Esc leaves it.
 - Closing the window (or Alt+F4, or Windows logging off): the window's placement and fullscreen
   state go to `[window]` in sly2.ini, then `launch_exit` waits for a memory card operation in

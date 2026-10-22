@@ -52,7 +52,14 @@ static int warp_state;                   /* 0 off, 1 waiting for the resume, 2 d
 static uint32_t warp_oid;
 static int warp_wid = -1;
 
-static struct { uint32_t oid, vblank; int state; } task_req[64];   /* PS2_TASK_SET / PS2_TASK_FILE */
+/* PS2_TASK_SET / PS2_TASK_FILE. (M11) Also level travel, for long sessions through many levels in one process:
+ *   j<task oid>:<world id>[@<vblank>]   start that job as the game does from another level (0x1651D8: its world is
+ *                                       loaded and the task started; in place if it is in the current level)
+ *   w<world id>[@<vblank>]              load that world at its default start point (0x22B490, as 0x1651D8 calls it,
+ *                                       without a task: e.g. an episode's hub) */
+#define FN_START_JOB    0x001651D8u      /* (world, descriptor, task oid): start a job, loading its level */
+enum { REQ_STATE, REQ_JOB, REQ_WORLD };
+static struct { uint32_t oid, vblank; int state, kind; } task_req[64];
 static int task_n, task_on;
 static const char* task_file;
 static long task_file_pos;
@@ -64,6 +71,24 @@ static void wr32(uint32_t a, uint32_t v) { memcpy(ps2_ram + (a & (PS2_RAM_SIZE -
 static void task_parse(const char* s) {
     while (s && *s) {
         char* end;
+        if ((*s == 'j' || *s == 'w') && task_n < 64) {   /* (M11) level travel */
+            int job = *s == 'j';
+            const char* p = s + 1;
+            unsigned long a = strtoul(p, &end, 0), wid = a;
+            if (end != p && job && *end == ':') { const char* q = end + 1; wid = strtoul(q, &end, 0); if (end == q) end = (char*)p; }
+            if (end != p) {
+                uint32_t vb = 0;
+                if (*end == '@') vb = (uint32_t)strtoul(end + 1, &end, 0);
+                task_req[task_n].kind = job ? REQ_JOB : REQ_WORLD;
+                task_req[task_n].oid = job ? (uint32_t)a : 0;
+                task_req[task_n].state = (int)wid;
+                task_req[task_n++].vblank = vb;
+                fprintf(stderr, "[task] queued: %s %lu%s\n", job ? "job" : "world", job ? a : wid, vb ? " (at a VBlank)" : "");
+            } else end = (char*)s + 1;
+            s = end;
+            while (*s && (*s == ',' || *s == ' ' || *s == '\r' || *s == '\n' || *s == '\t')) s++;
+            continue;
+        }
         unsigned long oid = strtoul(s, &end, 0);
         if (end != s && *end == ':' && task_n < 64) {
             const char* p = end + 1;
@@ -73,6 +98,7 @@ static void task_parse(const char* s) {
             uint32_t vb = 0;
             if (end != p && *end == '@') vb = (uint32_t)strtoul(end + 1, &end, 0);
             if (end != p) {
+                task_req[task_n].kind = REQ_STATE;
                 task_req[task_n].oid = (uint32_t)oid;
                 task_req[task_n].state = (int)state;
                 task_req[task_n++].vblank = vb;
@@ -127,11 +153,32 @@ static void task_run_requests(ps2_ctx* ctx) {
     for (int i = 0; i < task_n; i++) {
         if (task_req[i].vblank > ps2_vblank_count()) continue;
         uint32_t oid = task_req[i].oid;
-        int state = task_req[i].state;
+        int state = task_req[i].state, kind = task_req[i].kind;
         task_req[i--] = task_req[--task_n];
         busy = 1;
         saved = *ctx;
         ctx->r[REG_SP].ud[0] = (uint64_t)(int64_t)(int32_t)((ctx->r[REG_SP].uw[0] - 0x400u) & ~15u);
+        if (kind != REQ_STATE) {         /* (M11) level travel: the game's own calls, as from a job marker in a hub */
+            uint32_t desc = rd32(WORLD_DESCS) + (uint32_t)state * 0x40u;
+            ctx->r[REG_A0].ud[0] = GAME_WORLD;
+            ctx->r[REG_A1].ud[0] = (uint64_t)(int64_t)(int32_t)desc;
+            ctx->r[REG_RA].ud[0] = FRAME_TOP_RA;
+            if (kind == REQ_JOB) {
+                ctx->r[REG_A2].ud[0] = oid;
+                ps2_call(ctx, FN_START_JOB);
+            } else {
+                ctx->r[REG_A2].ud[0] = 0x189;            /* default start point; no task (flags 0) */
+                ctx->r[REG_A3].ud[0] = (uint64_t)(int64_t)-1;
+                ctx->r[REG_T0].ud[0] = 0;
+                ctx->r[9].ud[0] = (uint64_t)(int64_t)-1;      /* ($t1) */
+                ps2_call(ctx, FN_TRANSITION);
+            }
+            *ctx = saved;
+            busy = 0;
+            fprintf(stderr, "[task] v%u: %s %u (world %d, descriptor 0x%08X)\n", ps2_vblank_count(),
+                    kind == REQ_JOB ? "starting job" : "loading world", kind == REQ_JOB ? oid : (uint32_t)state, state, desc);
+            continue;
+        }
         ctx->r[REG_A0].ud[0] = GAME_WORLD;
         ctx->r[REG_A1].ud[0] = CLASS_TASK;
         ctx->r[REG_A2].ud[0] = oid;

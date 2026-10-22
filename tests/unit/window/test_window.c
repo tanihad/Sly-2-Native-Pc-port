@@ -135,6 +135,15 @@ static void test_gfx(void) {
     CHECK(gfx_scale() == 1, "F2 at 8: back to 1 (%d)", gfx_scale());
     gfx_key(VK_F2, 1, 0);
     CHECK(gfx_scale() == 8, "Shift+F2 at 1: 8 (%d)", gfx_scale());
+    gfx_key(VK_F2, 2, 0);                /* (M11) Ctrl+F2: internal_scale = auto (3x until the GPU renderer lowers it) */
+    CHECK(ps2_settings.internal_scale == SETTINGS_SCALE_AUTO && gfx_scale() == SETTINGS_SCALE_AUTO_MAX, "Ctrl+F2: auto (%d, %d)",
+          ps2_settings.internal_scale, gfx_scale());
+    gfx_key(VK_F2, 1, 0);
+    CHECK(ps2_settings.internal_scale == 2 && gfx_scale() == 2, "Shift+F2 from auto at 3x: fixed 2x (%d)", gfx_scale());
+    gfx_key(VK_F2, 2, 0);
+    _putenv("PS2_GS_SCALE=5");
+    CHECK(gfx_scale() == 5, "PS2_GS_SCALE wins over auto (%d)", gfx_scale());
+    _putenv("PS2_GS_SCALE=");
     ps2_settings.scaler = SETTINGS_SCALER_POINT;
     CHECK(((gfx_bits() >> GPU_GFX_SCALER_SHIFT) & 15) == GPU_SCALER_POINT, "scaler bits");
     CHECK(!gfx_key(VK_F7, 0, 0), "F7 is not a graphics key");
@@ -149,8 +158,8 @@ static void count_warn(void* user, const char* msg) { (void)user; (void)msg; war
 static void test_settings(void) {
     ps2_settings_t s;
     settings_defaults(&s);
-    CHECK(s.aspect_w == 16 && s.aspect_h == 9 && s.internal_scale == 3 && !s.outlines_thin && !s.filters_faithful,
-          "defaults");
+    CHECK(s.aspect_w == 16 && s.aspect_h == 9 && s.internal_scale == SETTINGS_SCALE_AUTO && !s.outlines_thin && !s.filters_faithful &&
+          s.renderer_gpu == 1, "defaults (M11: gpu renderer, internal_scale auto)");
     CHECK(settings_motion_blur(&s) == 1 && settings_flicker_filter(&s) == 0 && settings_interlacing(&s) == 0, "modern preset");
     int w, h;
     CHECK(settings_parse_aspect("4:3", &w, &h) && w == 4 && h == 3, "4:3");
@@ -175,7 +184,14 @@ static void test_settings(void) {
     n = settings_parse("aspect = 21:9\nbogus line\n[graphics]\ninternal_scale = 99\ncolour = red\n[broken\n", &s,
                        count_warn, NULL);
     CHECK(n == 4 && warn_count == 4, "four problems reported (%d, %d)", n, warn_count);
-    CHECK(s.aspect_w == 7 && s.aspect_h == 3 && s.internal_scale == 3, "good keys still apply, bad ones don't");
+    CHECK(s.aspect_w == 7 && s.aspect_h == 3 && s.internal_scale == SETTINGS_SCALE_AUTO, "good keys still apply, bad ones don't");
+    /* (M11) internal_scale = auto */
+    n = settings_parse("[graphics]\ninternal_scale = 4\n", &s, count_warn, NULL);
+    CHECK(n == 0 && s.internal_scale == 4, "internal_scale = 4");
+    n = settings_parse("[graphics]\ninternal_scale = Auto ; let the game choose\n", &s, count_warn, NULL);
+    CHECK(n == 0 && s.internal_scale == SETTINGS_SCALE_AUTO, "internal_scale = auto (%d)", s.internal_scale);
+    n = settings_parse("[graphics]\ninternal_scale = 0\n", &s, count_warn, NULL);
+    CHECK(n == 1 && s.internal_scale == SETTINGS_SCALE_AUTO, "internal_scale = 0 is not a value (auto is)");
 
     /* (M7) graphics.scaler; the template has every graphics key and reads back */
     settings_defaults(&s);
@@ -218,10 +234,11 @@ static void test_settings(void) {
     settings_format(&s, tmpl, sizeof tmpl);
     CHECK(strstr(tmpl, "\nhud = centered\n") != NULL, "template writes the hud key");
 
-    /* [graphics] renderer = software (default) | gpu, pacing = vsync (default) | vrr | display (M6) */
+    /* [graphics] renderer = gpu (default since M11) | software, pacing = vsync (default) | vrr | display (M6) */
     settings_defaults(&s);
-    CHECK(s.renderer_gpu == 0 && s.pacing == SETTINGS_PACING_VSYNC, "renderer / pacing defaults");
-    CHECK(strstr(tmpl, "\nrenderer = software\n") && strstr(tmpl, "\npacing = vsync\n"), "template writes renderer / pacing");
+    CHECK(s.renderer_gpu == 1 && s.pacing == SETTINGS_PACING_VSYNC, "renderer / pacing defaults");
+    CHECK(strstr(tmpl, "\nrenderer = gpu\n") && strstr(tmpl, "\npacing = vsync\n") && strstr(tmpl, "\ninternal_scale = auto\n"),
+          "template writes renderer / pacing / internal_scale");
     warn_count = 0;
     n = settings_parse("[graphics]\nrenderer = GPU\npacing = vrr\n", &s, count_warn, NULL);
     CHECK(n == 0 && s.renderer_gpu == 1 && s.pacing == SETTINGS_PACING_VRR, "renderer = gpu, pacing = vrr (%d)", n);
@@ -229,10 +246,10 @@ static void test_settings(void) {
     CHECK(n == 0 && s.renderer_gpu == 0 && s.pacing == SETTINGS_PACING_DISPLAY, "renderer = sw, pacing = display");
     n = settings_parse("[graphics]\nrenderer = vulkan\npacing = fast\n", &s, count_warn, NULL);
     CHECK(n == 2 && warn_count == 2 && s.renderer_gpu == 0 && s.pacing == SETTINGS_PACING_DISPLAY, "bad renderer / pacing ignored");
-    s.renderer_gpu = 1;
+    s.renderer_gpu = 0;
     s.pacing = SETTINGS_PACING_DISPLAY;
     settings_format(&s, tmpl, sizeof tmpl);
-    CHECK(strstr(tmpl, "\nrenderer = gpu\n") && strstr(tmpl, "\npacing = display\n"), "template writes renderer = gpu");
+    CHECK(strstr(tmpl, "\nrenderer = software\n") && strstr(tmpl, "\npacing = display\n"), "template writes renderer = software");
 
     /* the template written next to the exe parses back to the defaults */
     char text[4096];
