@@ -293,6 +293,26 @@ int main(void) {
               f.tier[GPU_TIER_ROV]);
     }
 
+    /* 10. (M11) a T8H pass over frame buffer 0 that reads one row past its 224 rows - frame buffer 0x38's first row (ep6):
+     * that block is xcopied from the 0x38 target, and copied again after 0x38 is redrawn (by the same writer) */
+    {
+        frame(0x38, 8, PSMCT32, 0);
+        alpha_reg(0, 1, 0, 1, 0);
+        uint32_t xc[2];
+        for (int k = 0; k < 2; k++) {
+            clear_frame(0, 8, PSMCT32);
+            clear_frame(0x38, 8, PSMCT32);
+            frame(0, 8, PSMCT32, 0);
+            tex0(0, 8, PSMT8H, 10, 10, 1, 1, 0x3000, 1);
+            W(PRIM, P_SPRITE | TME | FST | ABE);
+            for (int x = 0; x < 512; x += 32) sprite_uv(x, 0, x + 32, 224, x, 1, x + 32, 225);
+            f = endf();
+            xc[k] = f.xcopies;
+        }
+        CHECK(xc[0] >= 1 && xc[1] >= 1, "row past the frame buffer: cross copies %u, after a redraw of its writer %u (stale copy: 0)",
+              xc[0], xc[1]);
+    }
+
     /* 9. AA1 outline pair: ZB_ONLY line then AA1 RGB_ONLY line, line pixel records */
     frame(0, 8, PSMCT32, 0);
     zbuf(0x70, PSMZ32, 0);

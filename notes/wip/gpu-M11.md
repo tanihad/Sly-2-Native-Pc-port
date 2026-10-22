@@ -56,14 +56,26 @@ automatic internal scale for weaker GPUs, bounded memory over long play, flaky i
   comparisons each, 0 differ; gpu_sample_all S3 0 failed; gpu_fthread_check and -Mixed 27/27 identical; m9_exact vs
   4eaf32f 27/27 identical S1+S3, and with PS2_GPU_NO_ROV=1 27/27 identical S1+S3 (the no-ROV path is bit-exact).
 
+- First sweep (55 scenes, -Parts 2, -Scale 3, completed before the usage-limit stop): 50 scenes 0 beyond; beyond:
+  m6_rc_battle 11/240, m6_heist_rc 2, m6_paraglide 1, m8_tntbarrel 1 (all "> 16" words, ~250) and m8_turret 1 (+-3..16
+  only, > 16 0). Lockstep on the verifier recordings: ep6 ones diverge in REF too, and so do the 4eaf32f and pre-M9
+  (gpu-M9\build\basert) builds -> pre-existing. Cause (PS2_GPU_PROBE 4,223 + a block trace): the T8H feedback pass of
+  frame buffer 0 reads row 224 = frame buffer 0x38's row 0; target 1 xcopied that block once (frame 19) and kept it
+  "current" because the serial only moves when the writer changes, while target 3 redrew it every other frame.
+  Fix da2a721 (gpu_own.c blk_shared: an xcopied block's next write by its writer bumps the serial). After: lockstep REF
+  and mixed 0 differ on all 13 ep6 / m8_tntbarrel verifier recordings. m8_turret = the dual-source layering class
+  (owner question (a)): exact with PS2_GPU_DUAL_EXACT=1.
+- Corpus: gpu-M11\build\gsrec\m6_rc_feedback.gsrec (copy of verify_003240) added to corpus.txt + baseline.json (28).
+  gs-front test 10 (row past the frame buffer: xcopies again after the writer redraws).
+
 ## In progress
-- In-game sweep: m8_batch -Parts 2 (two processes, scratchpad sweep.ps1), -Verify 60 -Scale 3 -DumpEvery 2400
-  -Suffix _m11 (backend now from the default). Results build\warp\m8_batch_{0,1}_m11.txt.
+- Gates rerun after the fix (scratchpad gates.ps1 -> build\gates.txt).
 
 ## Next
-1. Summarize the sweep (verify beyond, PUNT, flips), delete frames.
-2. 200 s boot-to-museum regression windowed default config (warp_run -Episode 0 -Window, stats, memory sampler).
-3. Appendix M; progress.md; WIP complete.
+1. Mutation check of gs-front test 10 (revert the fix branch locally, expect FAIL) after the gates finish.
+2. Release build; full sweep again (-Parts 2, -Scale 3, -Suffix _m11b); summarize; delete frames.
+3. 200 s boot-to-museum regression windowed default config (warp_run -Episode 0 -Window, stats, memory sampler).
+4. gs-hw unit, package.py, appendix M (fix + sweep + regression), WIP complete.
 
 ## Findings / traps
 - Baseline gs_replay for exactness: build\base4eaf (git archive 4eaf32f runtime scripts + a copy of .git so the script

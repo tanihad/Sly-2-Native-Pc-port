@@ -216,6 +216,14 @@
                            "sw_hash":  "c661e013dcb6de03",
                            "max_diff_px":  0,
                            "min_psnr":  999
+                       },
+                       {
+                           "name":  "gpu-M11/m6_rc_feedback",
+                           "path":  "gpu-M11\\build\\gsrec\\m6_rc_feedback.gsrec",
+                           "frames":  60,
+                           "sw_hash":  "f03f37da37b01cff",
+                           "max_diff_px":  0,
+                           "min_psnr":  999
                        }
                    ]
 }
