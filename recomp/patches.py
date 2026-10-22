@@ -48,6 +48,8 @@ DL_QUEUE = (0x0021A998, "67ef1d52df4bab0890b10adcafb8f699de8ba55a")      # 2D: q
 ITEM_QUEUE = (0x00215960, "9e5c686306164bd9a4c1fdd5fe87f35fdffea152")    # 2D: queue one placed object
 MAIN_LOOP = (0x001A7518, "a1bf2357cbfd44da199858e87f269865b5ea7ea0")     # the game's main loop
 MOTION_BLUR = (0x00160F98, "fb6879611634e74a6c18e8c7bda1b2f7eeb43407")   # the motion blur post effect
+TEXT_LOAD = (0x0013DF80, "8dda0003180328c95a6d2446ee5f52e2f2813477")     # read a level's text bank
+CARD_UPDATE = (0x001AB1A0, "1d6ccadcbdefdd6b7e8f0f0d7473c824222ccccb")   # memory card manager, per frame
 
 PATCHES: list[Patch] = [
     Patch("ws_projection", *CM_RECALC, 0x0014DBA4, "after",
@@ -138,6 +140,26 @@ PATCHES: list[Patch] = [
           "the frame is drawn (0x1CDA80, 0x157FA0): a run-time aspect / HUD switch asked for by "
           "window.c takes effect here, for the whole frame; aspect_apply recomputes the camera's "
           "frustum with the game's 0x14DB70"),
+    # PC wording (runtime/pc_text.c, notes/pc-text.md): no PS2 memory-card texts, no boot prompt.
+    Patch("pc_text_bank", *TEXT_LOAD, 0x0013E0A4, "before",
+          "pc_text_bank_loaded(ctx, ctx->r[21].uw[0]);",
+          "the level's text bank has just been read ($s5 = the world 0x3DD490: +0x4640 count, +0x4644 "
+          "{id, text} table; every path of the loader joins here, before its last call 0x210BE0): the "
+          "PS2-specific texts (memory card, console, disc) are replaced in place with PC wording, each "
+          "only when its id and exact original bytes match"),
+    Patch("pc_save_boot_poll", *CARD_UPDATE, 0x001AB1DC, "before",
+          "if (pc_save_boot_pending) pc_save_boot_poll(ctx);",
+          "the card manager's per-frame update ($s0 = 0x2E65E0), past its 'world loading' / 'paused' "
+          "returns and before the 'card job running' and dialog-mode returns: when the boot's silent "
+          "save-data creation (below) has finished with an error, the game's own 'could not create' "
+          "dialog (0x17) is shown, as after a failed Yes"),
+    Patch("pc_save_boot_create", *CARD_UPDATE, 0x001AB360, "before",
+          "if (pc_save_boot_create(ctx)) goto L_001AB380;",
+          "the boot check (dialog mode 1) found a card without the game's save data (state 3) and is "
+          "about to ask 'Do you want to create a Sly 2 Save File?' (0x1ACB58 dialog 0x15). On PC the "
+          "save data is created without asking: pc_save_boot_create starts the game's own create job "
+          "(0x1AAF90 with the PMF at 0x2A6D88, what Yes does in 0x1AD168) and the prompt is skipped "
+          "(L_001AB380 = this function's epilogue). Once per run; otherwise the game asks as before"),
 ]
 
 
