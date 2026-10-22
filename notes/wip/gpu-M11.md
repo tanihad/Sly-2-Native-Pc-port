@@ -3,7 +3,7 @@
 **Goal**: GPU renderer by default (3x, 16:9, Modern, 60 fps) with a robust software fallback, a no-ROV path,
 automatic internal scale for weaker GPUs, bounded memory over long play, flaky iop_kernel test fixed, docs.
 
-**Status**: in progress.
+**Status**: complete (see the end of Done; results in notes/d3d11-renderer.md appendix M).
 
 ## Done
 - e6e1653 iop_kernel test hardened (timestamps around the calls; run_all = iop_run until iop_run_unfinished() is 0;
@@ -68,14 +68,15 @@ automatic internal scale for weaker GPUs, bounded memory over long play, flaky i
 - Corpus: gpu-M11\build\gsrec\m6_rc_feedback.gsrec (copy of verify_003240) added to corpus.txt + baseline.json (28).
   gs-front test 10 (row past the frame buffer: xcopies again after the writer redraws).
 
-## In progress
-- Gates rerun after the fix (scratchpad gates.ps1 -> build\gates.txt).
+- After the fix: gates 28/28 green (lockstep 28343 comparisons x3, game S1 4196 pictures), gs-hw 203, gs-front 25
+  (test 10 fails with the fix reverted), hwdry hashes 28/28, no-ROV vs ROV current build m9_exact 28/28 identical S1+S3.
+- Second sweep (final source, 55 scenes): 13260 comparisons, 3 beyond (m8_turret 1, m8_tntbarrel 2: dual-source
+  layering, REF and DUAL_EXACT lockstep 0 differ), PUNT 0. Frames deleted.
+- 200 s regression windowed default config: 59.9-60.0 flips/s (198 lines), memory 555-618 MB flat, 1 underrun at 0.04 s
+  of audio (stream start; the software renderer does the same).
+- package.py 0.1.678, debug build, run_tests 16/16. Appendix M complete.
 
-## Next
-1. Mutation check of gs-front test 10 (revert the fix branch locally, expect FAIL) after the gates finish.
-2. Release build; full sweep again (-Parts 2, -Scale 3, -Suffix _m11b); summarize; delete frames.
-3. 200 s boot-to-museum regression windowed default config (warp_run -Episode 0 -Window, stats, memory sampler).
-4. gs-hw unit, package.py, appendix M (fix + sweep + regression), WIP complete.
+**Status: complete** (owner questions (a) gas-cloud drift and (b) sharp distant scenery left as they are).
 
 ## Findings / traps
 - Baseline gs_replay for exactness: build\base4eaf (git archive 4eaf32f runtime scripts + a copy of .git so the script

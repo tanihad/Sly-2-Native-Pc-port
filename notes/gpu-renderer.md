@@ -79,9 +79,10 @@ every N VBlanks), `PS2_GS_DEBUG_KEYS=1` (F9 GPU <-> software, Shift+F9 device lo
 | scripts/gpu_fthread_check.ps1 [-Mixed] | frontend thread == same-thread frontend (stream hashes) |
 | scripts/gs_vram_hashes.ps1 -Backend hwdry | the frontend leaves the software renderer bit-identical |
 | scripts/m9_exact.ps1 | every sample of every target bit-identical to a baseline build (optimisations; PS2_GPU_NO_ROV=1: the no-ROV path) |
+| tests/unit/gs-front | frontend counters, incl. xcopy staleness (test 10) |
 | scripts/m8_batch.ps1 (54 scenes) | in-game sweep with the verifier; scripts/m11_long.ps1: 22 min through all episodes (memory) |
 
-Recordings: tests/gpu/corpus.txt (27, made from the owner's disc; never committed).
+Recordings: tests/gpu/corpus.txt (28, made from the owner's disc; never committed).
 
 ## Known limits (owner decisions pending, appendix M)
 

@@ -2421,14 +2421,30 @@ stale copy: m6_rc_feedback (the fix) and gpu-C_ep2_photo (target texels outside 
 picture gates are 0-differ before and after). m8_turret's one comparison (+-3..16 only, none > 16) is the dual-source
 layering class of appendix J (exact with PS2_GPU_DUAL_EXACT=1): owner question (a).
 
-**Gates (final source)**: tests/run_tests.py 16/16; every tests/unit run.ps1 passes (gs-hw 203 checks + gs-draw scenes
-REF / mixed / mixdef on hardware and WARP, REF and mixed also without ROVs; window 989 checks; warp 113; iop_kernel ...);
-gpu_diff_all mixed / ref at S=1 and S=3 27/27 (mixed min PSNR 43.94 dB, ref 0 px); gpu_game_all S=1 4136 pictures 0
-differ, S=3 27/27 (box gate min 33.25 dB, rv_prompt waived at 31.36, max |mean signed error| 0.319); gpu_lockstep_all
-REF S=1, mixed S=1, mixed S=3: 26402 comparisons each, 0 differ; gpu_sample_all S=3 0 failed; gpu_fthread_check and
--Mixed 27/27 identical; gs_vram_hashes -Backend hwdry 27/27 identical to sw (and to tests/gpu/vram_hashes.txt); m9_exact
-27/27 identical to 4eaf32f at S=1 and S=3, with and without PS2_GPU_NO_ROV; debug and release builds; scripts/package.py.
-SWEEP_AND_REGRESSION
+**Gates (final source, 28 recordings)**: tests/run_tests.py 16/16; every tests/unit run.ps1 passes (gs-hw 203 checks +
+gs-draw scenes REF / mixed / mixdef on hardware and WARP, REF and mixed also without ROVs; gs-front 25; window 989; warp
+113; iop_kernel, gs-draw, gs-mem, ...); gpu_diff_all mixed / ref at S=1 and S=3 28/28 (mixed min PSNR 43.94 dB, ref 0
+px); gpu_game_all S=1 4196 pictures 0 differ, S=3 28/28 (box gate min 33.25 dB, rv_prompt waived at 31.36, max |mean
+signed error| 0.319); gpu_lockstep_all REF S=1, mixed S=1, mixed S=3: 28343 comparisons each, 0 differ; gpu_sample_all
+S=3 0 failed; gpu_fthread_check and -Mixed 28/28 identical; gs_vram_hashes -Backend hwdry 28/28 identical to sw (and to
+tests/gpu/vram_hashes.txt); m9_exact: the no-ROV path (PS2_GPU_NO_ROV=1) bit-identical to the ROV path on 28/28 at S=1
+and S=3, and before the xcopy fix 27/27 identical to 4eaf32f (after it, the two differences explained above); debug and
+release builds; scripts/package.py (0.1.678).
+
+**In-game sweep** (scripts\m8_batch.ps1 -Parts 2 -Verify 60 -Scale 3 on the final source; m8_sweep.ps1 no longer sets the
+backend, so the game ran with its default renderer; two games at a time): 55 scenes, 13260 verifier comparisons, **3
+beyond the tolerance** - m8_turret 1, m8_tntbarrel 2, all +-3..16 words only (none > 16, Z and CPU data exact): the
+dual-source layering class (their recordings: REF lockstep 0 differ, mixed with PS2_GPU_DUAL_EXACT=1 0 differ; owner
+question (a)). The ep6 scenes of the first sweep: 0 beyond. PUNT 0 in every scene, no device loss, no fallback, no
+error line. (Pictures per second 47-60 in these runs: the verifier draws every primitive in software as well, on the GS
+thread, with two games sharing the machine - by design, as in M8.)
+
+**200 s regression, default configuration** (release console build, a new game from a warp episode-0 card, windowed
+with sound, no settings file - the template it writes says renderer = gpu, internal_scale = auto - boot -> intro ->
+Binocucom briefing -> museum, walking and attacking; PS2_GS_HW_STATS=1, private bytes every 5 s): renderer gpu, auto
+at 3x throughout; 198 one-second lines, all 59.9-60.0 flips/s (mean 59.93), 0 dropped; audio 190 s, 1 underrun at 0.040
+s of audio - the stream's first buffer, before the game makes a sound; the software renderer does the same (4 of 4
+starts of either renderer), so it is not the GPU renderer's; memory 555-618 MB, flat (no frame dumps in this run).
 
 **Deviations from the design**
 - No-ROV: disjoint groups without reordering (the design's "commutation" grouping not built): exact, up to ~1.7x GPU.
