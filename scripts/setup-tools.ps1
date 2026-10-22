@@ -196,9 +196,11 @@ if ($DryRun) {
     if ($From) {
         $pipArgs += '--offline'
         foreach ($c in @((Join-Path $From 'uv-cache'), (Join-Path $From 'tools\uv-cache'))) {
-            if ((Test-Path $c) -and -not (Test-Path $env:UV_CACHE_DIR)) {
+            if (Test-Path (Join-Path $c 'CACHEDIR.TAG')) {
                 Write-Host "Packages: seeding the uv cache from $c"
-                Copy-Item -Recurse $c $env:UV_CACHE_DIR
+                & robocopy $c $env:UV_CACHE_DIR /E /XF .lock /NFL /NDL /NJH /NJS /NP | Out-Null   # merge into it
+                if ($LASTEXITCODE -ge 8) { throw "copying the uv cache from $c failed" }
+                break
             }
         }
         $wheels = Join-Path $From 'wheels'
