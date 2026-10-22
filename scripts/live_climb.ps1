@@ -1,7 +1,7 @@
 # Sly 2 prologue: from anywhere in the museum hall, bounce on the drum south of the hall centre up
 # onto the whale skeleton's skull (lands at about 5309,-4586,1661). Needs a game from live_game.ps1
 # with PS2_PEEK="2DE1C0:4,2DDFD0:4".
-$py = 'C:\Users\tanih\Projects\sly2-decomp\.venv\Scripts\python.exe'
+. (Join-Path $PSScriptRoot 'project.ps1'); $py = $ProjectPython
 $s = $PSScriptRoot
 & $py (Join-Path $s 'live_goto.py') 5300,-4200 5060,-4740 --timeout 30 --tol 40 | Select-Object -Last 1
 & $py (Join-Path $s 'live_hop.py') 5300,-4586 --hold 20

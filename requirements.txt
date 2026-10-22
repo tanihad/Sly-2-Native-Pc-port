@@ -1,0 +1,51 @@
+# Python packages the recompiler needs to build the game (recomp/: MIPS decoding and ELF reading).
+# Installed into .venv (Python 3.13) by setup.ps1 with --require-hashes; the hashes are the ones
+# PyPI publishes for these exact versions (uv pip compile --generate-hashes, Python 3.13, win_amd64).
+# Reverse-engineering extras (splat, capstone) are in requirements-re.txt (setup.ps1 -WithRE).
+pyelftools==0.33 \
+    --hash=sha256:660d82dcbeb8e83d1702bd97f223f761625da06111c0cc988eac6b8ab0c1b61f \
+    --hash=sha256:f215ad5f47d3f1373a21496a6c9e0707c622840d0622f23ff7ce08678b020036
+rabbitizer==1.16.2 \
+    --hash=sha256:0277d3ce6a3f8e3e5e68712a6a1af3df29fc4f0790651db2416b44ee4a0b3da5 \
+    --hash=sha256:04d6a17a71a84d8c0d8db0d7f84751f16bfc8bbb9ac9b08d3fd702d049d4c16e \
+    --hash=sha256:0bad999993a8f804d25c0fd35df296fe7cdc5db32cbc5e67874f15a243a94e0c \
+    --hash=sha256:0cbf6bde8e7f0be7cc44fd1762b3fd92a82f93572fa12f31469ea0985519ccd8 \
+    --hash=sha256:0f2b2c814b82cfcbd540db7baadc487301f8275c51bd2e6eb415d4e1121c103f \
+    --hash=sha256:1a092a8751ad27fb26d574218923de6397bf820dd86822892483fdc6a7dcb001 \
+    --hash=sha256:29b624573bb57f3287eb4a88f18e5daf5616f22b19230f6c75a7ae3283cdd048 \
+    --hash=sha256:2ab648acb75d4741a548bf00be08dbf8306d4b717730772118f965fbef0be4e5 \
+    --hash=sha256:2e78587226bc4f2a93e2672bd12189b971b4c34df16f6ac9121bb2f5f8dba339 \
+    --hash=sha256:3066c0484b9ea458a5b446ca41cf42b9ee9163f602a7796b699037f2aa9a8524 \
+    --hash=sha256:32ff28c8c85bec9fb7d48d1782049398840747f1d38206d187a03940e091e6c1 \
+    --hash=sha256:344b12c07fec5fb4d5301b58437ac17922ec8a826d9b3096c784dd30d8a0bb88 \
+    --hash=sha256:363aa53083718248c4d69def9e2f719a1387a5ce1c37316144da5f12364bc358 \
+    --hash=sha256:36e4db66ba1439346a3361cfcb38733c3fd1d975a727f8637a25be48e0b6c804 \
+    --hash=sha256:48436b435bdfc61262d17c2ac477e762d0fd6a5e9ef1157d256360d3942524af \
+    --hash=sha256:4c8294d5a2901010d2cd9b06f6e91cbde7ec08d80acab5dfe32633a36fd68438 \
+    --hash=sha256:5527e479427d4ed8856fc1a5fbcf2f9daa7eb75f624d009722de7db255e1c4bd \
+    --hash=sha256:5bbb8e0c75cca9eda74c67931ef9b06461c74af20e342f56bc187e8c33109a82 \
+    --hash=sha256:66806d3d0112ccfd7f50b5d242ebfb4853f60dccdc18af720aea4036a8bcfe68 \
+    --hash=sha256:7086ad7dd15fb2df042271d77e652cd7b1ef90f0e452f5ddd10007f8840af0b3 \
+    --hash=sha256:7b7a7f26b82317c57ab59895924bac66b33e0598e9f367eab6bf00909fdb6e22 \
+    --hash=sha256:8088c8faddb0be8c0505557032d0b13f684e4b4246a7f55cb4d39f685e4ce613 \
+    --hash=sha256:85c7afea910fd70c9591c85ea8ad4912e772173191caf1a0cf4b73923eb3df13 \
+    --hash=sha256:897b0dab691312c5d3840313c9ccecad7c1faa9fa07869cdc40386ba0f4113f4 \
+    --hash=sha256:9472171b224cc505e0aabdf299066eb85777c549f63f8222b7d627c3a78def0e \
+    --hash=sha256:96a4167adb9ba530b8c40c9c15d99d2338efff1513a2c88e2bbb62ec23817ad2 \
+    --hash=sha256:a33ab373aa873d2cc7dc6d4ebdee03050e3f95102eb865b4cbaac84a27597b32 \
+    --hash=sha256:a65ee3fe7649dfcb82841a4aceba5d5baea79e30b7315edf6ef5f58e6936f9e3 \
+    --hash=sha256:a70d8e48f26007fe5020b3b38f46ff84bbad021dfb34a60f116818ab6191938f \
+    --hash=sha256:a972c6a28b974561bbba28b56db6043ffb8b6b0108682364818fc9812e2c8288 \
+    --hash=sha256:ac7925ad8e39c8db153abda8b31032a7aa6f94bef955583883e5f3da3d8f7fdd \
+    --hash=sha256:b189761b8d1c507a28bee7c2f5ae1c887ef6ed67d1f5146d11c323a595b6567f \
+    --hash=sha256:c022275c98ac3d3f7f072e54b8c68fc31c066a03e2fc942bb10e6516419a4e90 \
+    --hash=sha256:c1d9f6fa69c6856f717b52749abf235892876dd4b17c568f78b30a2ef781324b \
+    --hash=sha256:cd4af89e1254bf5e6ceab0bdd2cc15378bc3d1001ee4c45a42f48fdb70c0cb86 \
+    --hash=sha256:d8b4be676cd7be3e2a7471141d21576866a3df5b2e324e05d2aa7afea7ac187f \
+    --hash=sha256:e05a792cc3dd858ec08caf18a6a63fa2691516861b10a31b875f3505b8a00483 \
+    --hash=sha256:e33b3956ba6c3ffbe500d1a0e636763b4ccc87e00d0c0d606ce74d308485d815 \
+    --hash=sha256:e80c8451f12700fae95790f4fb1c79d1a2220d3051ad33036850a536c746f0ca \
+    --hash=sha256:eafe91e07c9f400d2abc44c029c3b380cb68e65d2c32eb7e2015d391a51d2182 \
+    --hash=sha256:f04abbae5cc51d73a80d269dacc58927fbe8143c8d1c559fbbb71fdbdbe39f6c \
+    --hash=sha256:fa28b2ddb0a326b673c8ee66380f3e7acc85e8032306418b5ef35d7c6480b4be \
+    --hash=sha256:fa793d3d6a4386c8c5dd3497b39db379d910d6dd2b2e72cea6fc650ef782b9c8

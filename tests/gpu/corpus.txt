@@ -1,7 +1,8 @@
 # GS recording corpus for the Direct3D 11 renderer (notes/d3d11-renderer.md 10.4, appendix B).
 # Recordings are PS2_GS_RECORD streams (runtime/gs_record.c), made with the software renderer from
-# the user's own disc; they are never committed. Paths are relative to C:\Users\tanih\Projects\
-# sly2-worktrees and read in place. Replay: scripts\gs_replay.ps1 -Rec <path> -Out <dir>.
+# the user's own disc; they are never committed. Paths are relative to the corpus root
+# (-CorpusRoot, else SLY2_GPU_CORPUS, else sly2-worktrees next to the main checkout; scripts\gpu_corpus.ps1;
+# the corpus tools skip with exit 0 when it is absent) and read in place. Replay: scripts\gs_replay.ps1 -Rec <path> -Out <dir>.
 # Census: scripts\gs_census.ps1 -Rec <path> -Full; tables: scripts\census_table.py ... --new "gpu-C-*".
 # New recordings (gpu-C) are made with scripts\gs_record_scene.ps1 (the "how" column) and checked
 # with scripts\gs_corpus_verify.ps1 against the frames the live run dumped (frames | verified).

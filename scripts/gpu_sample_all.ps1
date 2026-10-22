@@ -11,7 +11,8 @@ if (-not (Test-Path (Join-Path $root 'tools\llvm-mingw'))) {
     $gitdir = ((Get-Content (Join-Path $root '.git') -Raw) -replace '^gitdir:\s*', '').Trim()
     $main = Split-Path (Split-Path (Split-Path $gitdir -Parent) -Parent) -Parent
 }
-if (-not $CorpusRoot) { $CorpusRoot = Join-Path (Split-Path $main -Parent) 'sly2-worktrees' }
+. (Join-Path $PSScriptRoot 'gpu_corpus.ps1'); $CorpusRoot = Resolve-GpuCorpus $CorpusRoot $main
+if (-not $CorpusRoot) { exit 0 }
 if (-not $Out) { $Out = Join-Path $root "build\samples_s$Scale" }
 New-Item -ItemType Directory -Force $Out | Out-Null
 $replay = Join-Path $Out 'gs_replay.exe'

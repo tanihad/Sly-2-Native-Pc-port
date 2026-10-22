@@ -4,7 +4,7 @@ $ErrorActionPreference = 'Stop'
 $here = $PSScriptRoot
 $root = (Resolve-Path (Join-Path $here '..\..\..')).Path
 $clang = Join-Path $root 'tools\llvm-mingw\bin\clang.exe'
-if (-not (Test-Path $clang)) { $clang = 'C:\Users\tanih\Projects\sly2-decomp\tools\llvm-mingw\bin\clang.exe' }
+if (-not (Test-Path $clang)) { . (Join-Path $root 'scripts\project.ps1'); $clang = $ProjectClang }   # worktree: the main checkout's
 $out = Join-Path $root 'build\unit\pad'
 New-Item -ItemType Directory -Force $out | Out-Null
 $exe = Join-Path $out 'test_pad.exe'

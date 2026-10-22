@@ -231,6 +231,11 @@ def main() -> int:
         flags.append("-DPS2_NO_TRACE")
 
     t0 = time.time()
+    if not Path(args.elf).exists() and Path(args.elf) == ELF:
+        # a fresh checkout has only the disc image: take the executable from it (scripts/extract_elf.py)
+        import extract_elf
+        if extract_elf.main([]) != 0:
+            return 1
     gen = subprocess.run([sys.executable, "-m", "recomp", "generate", args.elf, "-o", str(out / "recomp")],
                          cwd=ROOT, capture_output=True, text=True)
     print(gen.stdout.strip() or gen.stderr)
