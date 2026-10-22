@@ -2405,6 +2405,22 @@ the IOP thread itself (handler / delay / reply timestamps) and the RPC latency c
 _dup2 into a per-process file before the IOP thread starts. 0 of 160 runs failed under the same load; mutants (time hold
 off, timer without catch-up) are still caught.
 
+**Bug found by the sweep (pre-existing since M4, fixed)**: the first M11 sweep had verifier comparisons beyond the
+tolerance in m6_rc_battle (11 of 240), m6_heist_rc (2), m6_paraglide (1) and m8_tntbarrel (1), ~250 words > 16 each.
+The verifier's recordings diverged in REF lockstep too, also with the 4eaf32f and the pre-M9 (829070e) builds. A probe
+of one pixel (PS2_GPU_PROBE) showed the bottom strip of a T8H feedback pass over frame buffer 0 (a palette lookup of its
+own alpha, 16 sprites of 32 x 224) sampling row 224 - one row past the 224-row buffer, i.e. frame buffer 0x38's first
+row. Target 1 got that block by an xcopy from target 3 (frame 19 of the recording) and kept it "current" from then on:
+a block's serial moved only when its *writer* changed, and target 3 redrew it every other frame. Fix (gpu_own.c
+`blk_shared`): a block another target xcopied is marked; its writer's next write bumps the serial (the mark also takes
+the writer off its clean fast path), so the copy goes stale and is copied again when read. After the fix the 13 verifier
+recordings of those scenes: REF and mixed lockstep 0 differ. Kept as a corpus recording
+(`gpu-M11\build\gsrec\m6_rc_feedback.gsrec`: corpus and baseline now 28) and a gs-front check (test 10: cross copies
+again after the writer redraws; fails without the fix). m9_exact against 4eaf32f now differs where the old build kept a
+stale copy: m6_rc_feedback (the fix) and gpu-C_ep2_photo (target texels outside what the game reads - its lockstep and
+picture gates are 0-differ before and after). m8_turret's one comparison (+-3..16 only, none > 16) is the dual-source
+layering class of appendix J (exact with PS2_GPU_DUAL_EXACT=1): owner question (a).
+
 **Gates (final source)**: tests/run_tests.py 16/16; every tests/unit run.ps1 passes (gs-hw 203 checks + gs-draw scenes
 REF / mixed / mixdef on hardware and WARP, REF and mixed also without ROVs; window 989 checks; warp 113; iop_kernel ...);
 gpu_diff_all mixed / ref at S=1 and S=3 27/27 (mixed min PSNR 43.94 dB, ref 0 px); gpu_game_all S=1 4136 pictures 0
