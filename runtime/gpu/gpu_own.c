@@ -45,6 +45,11 @@ static uint64_t up_fullw[GPU_BLOCKS];          /* (the same as a word mask) */
 static uint16_t up_list[GPU_BLOCKS];           /* blocks it touches */
 static uint8_t blk_vstale[GPU_BLOCKS];         /* downloaded GPU data in vram_buf that gs_vram lacks */
 static uint16_t blk_origin[GPU_BLOCKS];        /* (M6 verifier) 0x100 + kind of the target whose data a download put there */
+/* (M11) another target holds an xcopy of the block at its present serial: the writer's next write must bump the serial,
+ * or that copy stays "current" with old data (the serial only moved when the writer changed). Found in ep6 (RC battle,
+ * heist RC, paraglide): a feedback pass of frame buffer 0 reads one row past its 224 rows - frame buffer 56's first
+ * row - which was xcopied once and never again while buffer 56 was redrawn every other frame. */
+static uint8_t blk_shared[GPU_BLOCKS];
 static uint8_t page_full[512];           /* blocks of the page with every word CPU-valid */
 static uint8_t page_pend[512];           /* blocks of the page with a pending patch */
 static uint32_t serial_ctr = 1, upload_ctr;
@@ -71,6 +76,7 @@ void own_reset(void) {
     memset(pend_mask, 0, sizeof pend_mask);
     memset(blk_vstale, 0, sizeof blk_vstale);
     memset(blk_origin, 0, sizeof blk_origin);
+    memset(blk_shared, 0, sizeof blk_shared);
     npend = 0;
     nload = ndl = nxc = 0;
     memset(page_full, 32, sizeof page_full);
@@ -393,6 +399,8 @@ static void load_block(gpu_target* T, int i, uint32_t b) {
             xc_src[nxc++] = W->id;
             T->vs[i] = blk_serial[b];
             T->sdirty[i] = 1;
+            if (!blk_shared[b]) { blk_shared[b] = 1; change_gen++; }   /* (M11: W's next write of it bumps the serial;
+                                                                          change_gen takes W off its clean fast path) */
             return;
         }
     }
@@ -455,7 +463,10 @@ void own_draw(gpu_target* T, int x0, int y0, int x1, int y1, int writes, int opa
                      * loaded it since hold the serial too and must go stale (M3 fuzz finding) */
                     set_cpu(b, 0);
                     blk_serial[b] = next_serial();
+                } else if (blk_shared[b]) {
+                    blk_serial[b] = next_serial();   /* (M11) ... and after another target xcopied it */
                 }
+                blk_shared[b] = 0;
                 T->vs[i] = blk_serial[b];
                 T->sdirty[i] = 1;
             }

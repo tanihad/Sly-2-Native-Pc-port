@@ -71,6 +71,17 @@ foreach ($v in $variants) {
         Write-Host "gs-draw scenes on $a ($($v[0]))"
         & $rrun $dir $a
         if ($LASTEXITCODE -ne 0) { $refFailed = $true; Write-Host "gs-hw $($v[0]) scenes on $a FAILED" }
+        # (M11) the exact mixed scenes again without rasterizer-ordered views (PS2_GPU_NO_ROV: plain UAV draws of disjoint
+        # primitives) - the same exact results
+        if ($v[0] -eq 'mixed' -or $v[0] -eq 'ref') {
+            $env:PS2_GPU_NO_ROV = '1'
+            $ndir = Join-Path $out ($v[0] + '_norov_' + $a)
+            New-Item -ItemType Directory -Force $ndir | Out-Null
+            Write-Host "gs-draw scenes on $a ($($v[0]), no ROVs)"
+            & $rrun $ndir $a
+            if ($LASTEXITCODE -ne 0) { $refFailed = $true; Write-Host "gs-hw $($v[0]) scenes on $a without ROVs FAILED" }
+            Remove-Item Env:\PS2_GPU_NO_ROV
+        }
         Remove-Item $rrun -ErrorAction SilentlyContinue
     }
 }

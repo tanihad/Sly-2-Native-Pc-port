@@ -38,6 +38,22 @@ void gpu_log(const char* fmt, ...) {
     va_end(ap);
 }
 
+static int env_int(const char* name) {
+    const char* e = getenv(name);
+    return e && *e ? atoi(e) : 0;
+}
+
+/* (M11) PS2_GPU_FAIL=device|caps|swapchain|shader[,...]: that step of the start-up fails (tests of the fallback to
+ * the software renderer) */
+static int fail_test(const char* what) {
+    const char* e = getenv("PS2_GPU_FAIL");
+    if (!e) return 0;
+    size_t n = strlen(what);
+    for (const char* p = e; (p = strstr(p, what)) != NULL; p += n)
+        if ((p == e || p[-1] == ',') && (p[n] == 0 || p[n] == ',')) return 1;
+    return 0;
+}
+
 /* ---- shaders ---------------------------------------------------------------------------------- */
 
 static void* shader_obj[GPU_SH_COUNT];
@@ -139,32 +155,106 @@ static void caps_check(gpu_caps* c) {
     ID3D11BlendState* bs = NULL;
     c->dual_source = SUCCEEDED(ID3D11Device_CreateBlendState(gpu_rt.dev, &bd, &bs)) && bs;
     GPU_RELEASE(bs);
-    c->full = c->feature_level >= D3D_FEATURE_LEVEL_11_1 && c->rovs && c->typed_uav_load && c->dual_source &&
-              c->cb_offsets && gpu_rt.ctx1 != NULL;
+    /* (M11) test switches: PS2_GPU_NO_ROV=1 treats rasterizer-ordered views as unsupported (the no-ROV path);
+     * PS2_GPU_FAIL=caps reports the device as lacking what the renderer needs */
+    if (env_int("PS2_GPU_NO_ROV") > 0 && c->rovs) { c->rovs = 0; gpu_log("PS2_GPU_NO_ROV: rasterizer-ordered views treated as unsupported"); }
+    /* What the game's renderer needs (M11): feature level 11_0 or 11_1, typed UAV loads of R8G8B8A8_UINT (GS memory <->
+     * colour targets, mem.hlsl), double-precision shader arithmetic (perspective S/T/Q as the software renderer
+     * computes it) and dual-source blending. Rasterizer-ordered views are used when present; without them the
+     * ROV-tier draws run as plain UAV draws of disjoint primitives (gpu_no_rov). ConstantBufferOffsetting and
+     * ClearView (11.1) are only used when available. */
+    c->full = c->feature_level >= D3D_FEATURE_LEVEL_11_0 && c->typed_uav_load && c->dual_source && c->doubles;
+    if (fail_test("caps")) c->full = 0;
+}
+
+/* (M11) why the GPU renderer could not start (one line for the log) */
+static char start_error[256];
+static void set_error(const char* fmt, ...) {
+    if (start_error[0]) return;          /* (the first reason is the one that counts) */
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(start_error, sizeof start_error, fmt, ap);
+    va_end(ap);
+}
+const char* gpu_start_error(void) { return start_error[0] ? start_error : "unknown"; }
+
+const char* gpu_missing_caps(const gpu_caps* c) {
+    static char s[160];
+    s[0] = 0;
+    if (c->feature_level < D3D_FEATURE_LEVEL_11_0) strcat(s, " feature-level-11_0");
+    if (!c->typed_uav_load) strcat(s, " typed-UAV-loads");
+    if (!c->dual_source) strcat(s, " dual-source-blending");
+    if (!c->doubles) strcat(s, " double-precision-shaders");
+    if (!s[0] && fail_test("caps")) strcat(s, " (PS2_GPU_FAIL=caps)");
+    return s[0] ? s + 1 : "nothing";
+}
+
+/* (M11) the ROV tier without rasterizer-ordered views: the device has none, or PS2_GPU_NO_ROV=1 (also without a device:
+ * gs_replay -Backend hwdry) */
+int gpu_no_rov(void) {
+    if (running || gpu_rt.dev) return !gpu_rt.caps.rovs;
+    return env_int("PS2_GPU_NO_ROV") > 0;
+}
+
+/* (M11) every shader the game's renderer can use is created when the device starts: a driver that cannot create one
+ * (a missing capability the checks above do not name) is found before the game relies on the GPU, and no shader is
+ * compiled by the driver in the middle of play. Skipped: the M2 submission benchmark and conformance kernels (gs_replay
+ * only) and the variants for the other ROV case. */
+static int shader_warmup(void) {
+    static const char* const skip[] = { "vs_tri", "vs_sprite", "vs_linepix", "vs_quad", "ps_depth", "ps_flat", "cs_touch",
+                                        "ps_rov_t", "ps_ff_d", "cs_conformance", "cs_depth_read", NULL };
+    LARGE_INTEGER f, a, b;
+    QueryPerformanceFrequency(&f);
+    QueryPerformanceCounter(&a);
+    int n = 0;
+    for (int id = 0; id < GPU_SH_COUNT; id++) {
+        const char* nm = gpu_shaders[id].name;
+        int s = 0;
+        for (int k = 0; skip[k] && !s; k++) s = !strncmp(nm, skip[k], strlen(skip[k]));
+        size_t l = strlen(nm);
+        int nr = l > 3 && !strcmp(nm + l - 3, "_nr");
+        if (s || (nr && gpu_rt.caps.rovs) || (!nr && !gpu_rt.caps.rovs && !strncmp(nm, "ps_gs_", 6))) continue;
+        if (!shader_get(id, gpu_shaders[id].profile[0]) || (fail_test("shader") && n == 7)) {
+            set_error("the driver cannot create shader %s", nm);
+            return 0;
+        }
+        n++;
+    }
+    QueryPerformanceCounter(&b);
+    gpu_log("%d shaders created in %.0f ms", n, (double)(b.QuadPart - a.QuadPart) * 1000.0 / (double)f.QuadPart);
+    return 1;
 }
 
 static int device_create(void) {
     static HMODULE m;
     if (!m) m = LoadLibraryW(L"d3d11.dll");
     PFN_D3D11_CREATE_DEVICE create = m ? (PFN_D3D11_CREATE_DEVICE)(void*)GetProcAddress(m, "D3D11CreateDevice") : NULL;
-    if (!create) { gpu_log("d3d11.dll not found"); return 0; }
+    if (!create) { gpu_log("d3d11.dll not found"); set_error("d3d11.dll not found"); return 0; }
     static const D3D_FEATURE_LEVEL levels[] = { D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0 };
     D3D_DRIVER_TYPE type = gpu_rt.cfg.adapter == GPU_ADAPTER_WARP ? D3D_DRIVER_TYPE_WARP : D3D_DRIVER_TYPE_HARDWARE;
     UINT flags = 0;
     const char* dbg = getenv("PS2_GPU_DEBUG");
     if (dbg && atoi(dbg)) flags |= D3D11_CREATE_DEVICE_DEBUG;
+    /* (M11) PS2_GPU_FL=11_0: ask for feature level 11_0 only (tests of the 11_0 path on an 11_1 GPU) */
+    const char* fl = getenv("PS2_GPU_FL");
+    int only110 = fl && !strcmp(fl, "11_0");
     D3D_FEATURE_LEVEL got = 0;
     HRESULT hr = E_FAIL;
-    for (int attempt = 0; attempt < 2 && !gpu_rt.dev; attempt++) {
-        hr = create(NULL, type, NULL, flags, levels, 2, D3D11_SDK_VERSION, &gpu_rt.dev, &got, &gpu_rt.ctx);
-        if (hr == E_INVALIDARG)          /* runtimes without 11_1 reject the whole list */
+    for (int attempt = 0; attempt < 2 && !gpu_rt.dev && !fail_test("device"); attempt++) {
+        hr = create(NULL, type, NULL, flags, levels + only110, 2 - only110, D3D11_SDK_VERSION, &gpu_rt.dev, &got, &gpu_rt.ctx);
+        if (hr == E_INVALIDARG && !only110)   /* runtimes without 11_1 reject the whole list */
             hr = create(NULL, type, NULL, flags, levels + 1, 1, D3D11_SDK_VERSION, &gpu_rt.dev, &got, &gpu_rt.ctx);
         if (FAILED(hr) && (flags & D3D11_CREATE_DEVICE_DEBUG)) {
             gpu_log("debug layer unavailable (hr=0x%08lX), continuing without", (unsigned long)hr);
             flags &= ~(UINT)D3D11_CREATE_DEVICE_DEBUG;
         } else break;
     }
-    if (!gpu_rt.dev) { gpu_log("no feature level 11 %s device (hr=0x%08lX)", type == D3D_DRIVER_TYPE_WARP ? "WARP" : "hardware", (unsigned long)hr); return 0; }
+    if (!gpu_rt.dev) {
+        gpu_log("no feature level 11 %s device (hr=0x%08lX)", type == D3D_DRIVER_TYPE_WARP ? "WARP" : "hardware", (unsigned long)hr);
+        set_error("no Direct3D 11 (feature level 11_0) %s device%s", type == D3D_DRIVER_TYPE_WARP ? "WARP" : "hardware",
+                  fail_test("device") ? " (PS2_GPU_FAIL=device)" : "");
+        return 0;
+    }
     if (FAILED(ID3D11DeviceContext_QueryInterface(gpu_rt.ctx, &gpu_IID_ID3D11DeviceContext1, (void**)&gpu_rt.ctx1)))
         gpu_rt.ctx1 = NULL;
     gpu_caps* c = &gpu_rt.caps;
@@ -196,7 +286,8 @@ void gpu_caps_print(const gpu_caps* c) {
             c->rovs, c->typed_uav_load, c->dual_source, c->cb_offsets, c->cb_partial_update, c->map_no_overwrite_cb,
             c->doubles);
     if (c->swapchain) gpu_log("swap chain: flip-discard, waitable=%d, tearing=%d", c->waitable, c->tearing);
-    gpu_log("exact hw tiers supported: %s", c->full ? "yes" : "NO");
+    gpu_log("what the game's renderer needs: %s%s", c->full ? "present" : "MISSING: ", c->full ? "" : gpu_missing_caps(c));
+    if (c->full && !c->rovs) gpu_log("no rasterizer-ordered views: the ROV-tier draws run as UAV draws of disjoint primitives");
 }
 
 /* ---- render thread ---------------------------------------------------------------------------- */
@@ -223,7 +314,18 @@ void gpu_debug_state(char* buf, size_t n) {
 
 static DWORD WINAPI rt_main(LPVOID arg) {
     (void)arg;
-    rt_ok = device_create() && gpu_present_init();
+    rt_ok = device_create();
+    if (rt_ok && gpu_rt.cfg.warmup && !gpu_rt.caps.full) {   /* (the game: gpu_hw.c reports what is missing) */
+        gpu_caps_print(&gpu_rt.caps);
+        set_error("the GPU lacks %s", gpu_missing_caps(&gpu_rt.caps));
+        rt_ok = 0;
+    }
+    if (rt_ok && (fail_test("swapchain") || !gpu_present_init())) {
+        set_error(gpu_rt.cfg.hwnd ? "cannot create the swap chain%s" : "cannot create the presentation resources%s",
+                  fail_test("swapchain") ? " (PS2_GPU_FAIL=swapchain)" : "");
+        rt_ok = 0;
+    }
+    if (rt_ok && gpu_rt.cfg.warmup && !shader_warmup()) rt_ok = 0;
     if (!rt_ok) device_release();
     SetEvent(rt_started);
     if (!rt_ok) return 1;
@@ -280,6 +382,7 @@ static DWORD WINAPI rt_main(LPVOID arg) {
 int gpu_start(const gpu_config* cfg) {
     if (running) return 1;
     memset(&gpu_rt, 0, sizeof gpu_rt);
+    start_error[0] = 0;
     sim_lost = 0;
     memset(&caps_copy, 0, sizeof caps_copy);
     gpu_rt.cfg = *cfg;

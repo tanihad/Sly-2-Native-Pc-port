@@ -14,11 +14,14 @@
 /* motion blur off (read by the recompiled game code at 0x160FA0; 0 = the game decides, as on a PS2) */
 extern volatile int ps2_motion_blur_off;
 
-int  gfx_scale(void);                    /* the internal scale in use: PS2_GS_SCALE, else internal_scale */
+int  gfx_scale(void);                    /* the internal scale in use: PS2_GS_SCALE, else internal_scale (auto: the scale
+                                            the GPU renderer's auto choice runs at, 3 before it starts) */
 uint32_t gfx_bits(void);                 /* GPU_GFX_* (runtime/gpu/gpu_front.h) of ps2_settings */
 /* ps2_settings -> the renderer and the motion blur flag (logged when something changed) */
 void gfx_apply(void);
-/* a graphics key (VK_F2 .. VK_F6, shift held): 1 if it was one; persist: write the change to sly2.ini */
+/* a graphics key (VK_F2 .. VK_F6; shift: 1 Shift held, 2 Ctrl held): 1 if it was one; persist: write the change to
+ * sly2.ini. (M11) F2 / Shift+F2 step from the scale in use (also when auto picked it) and make it fixed; Ctrl+F2 sets
+ * internal_scale = auto. */
 int  gfx_key(unsigned vk, int shift, int persist);
 /* sly2.ini's [graphics] read again and applied (the window was activated: the file may have been edited) */
 void gfx_reread(void);

@@ -167,6 +167,8 @@ int      iop_load_module(uint32_t image, const char* args, uint32_t args_len, in
 
 /* Running IOP threads */
 void     iop_run(void);                /* deliver due interrupts, run threads until all are blocked */
+int      iop_run_unfinished(void);     /* the last iop_run pass ended at its time slice with threads still ready */
+uint32_t iop_pass_count(void);         /* iop_run passes begun so far (tests: work done in IOP passes, not wall time) */
 void     iop_service(void);            /* from the EE's safe points (nothing to do once the IOP has its thread) */
 int      iop_in_interrupt(void);       /* QueryIntrContext */
 void     iop_time_hold(int on);        /* debug pause: IOP time stands still while on */

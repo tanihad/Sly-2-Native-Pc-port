@@ -2,6 +2,40 @@
 
 ## Resume here (read first in a new session)
 
+**2026-10-22: THE GPU RENDERER IS COMPLETE AND THE DEFAULT (M0-M11 merged into main).** The game
+starts on the Direct3D 11 renderer with internal_scale = auto (3x on the RTX 4060 Ti), 16:9 native,
+ps2 outlines, Modern preset; software renderer selectable ([graphics] renderer = software) and
+the automatic fallback when the GPU path cannot start (one log line). GPUs without ROVs run an
+exact no-ROV path (slower). Docs: notes/gpu-renderer.md (as-built map), notes/d3d11-renderer.md
+(design + appendices A-M), notes/settings.md, notes/controls.md, notes/install.md.
+Final M11 results: all gates green on 28 recordings (bit-exact at S=1; lockstep 28343 comparisons
+0 differ); 55-scene in-game sweep 13,260 verifier comparisons, 3 beyond tolerance (dual-source
+deep-layering drift, owner question (a)); 200 s default regression 59.9-60 flips/s, memory flat
+555-618 MB; 22-minute long session through every episode: no growth, 0 underruns. M11 also fixed
+an M4-era feedback-copy staleness bug (gpu_own.c; ep6 RC) and made tests/unit/iop_kernel robust.
+Open owner questions: (a) accept the gas-cloud +-3..16 colour drift under deep translucent
+layering (exact costs 4-5x GPU); (b) Faithful preset keeping distant hub scenery PS2-blocky
+(needs a Sly-specific rule). Possible follow-ups: faster no-ROV path (layering instead of one draw
+per overlapping primitive); splitting the repo into a reusable PS2 recomp core + per-game folders
+(for Sly 3), which the owner deferred until Sly 2 is finished.
+
+**2026-10-22: THE GPU RENDERER IS COMPLETE AND THE DEFAULT (M0-M11 merged into main).** The game
+starts on the Direct3D 11 renderer with internal_scale = auto (3x on the RTX 4060 Ti), 16:9 native,
+ps2 outlines, Modern preset; software renderer selectable ([graphics] renderer = software) and
+the automatic fallback when the GPU path cannot start (one log line). GPUs without ROVs run an
+exact no-ROV path (slower). Docs: notes/gpu-renderer.md (as-built map), notes/d3d11-renderer.md
+(design + appendices A-M), notes/settings.md, notes/controls.md, notes/install.md.
+Final M11 results: all gates green on 28 recordings (bit-exact at S=1; lockstep 28343 comparisons
+0 differ); 55-scene in-game sweep 13,260 verifier comparisons, 3 beyond tolerance (dual-source
+deep-layering drift, owner question (a)); 200 s default regression 59.9-60 flips/s, memory flat
+555-618 MB; 22-minute long session through every episode: no growth, 0 underruns. M11 also fixed
+an M4-era feedback-copy staleness bug (gpu_own.c; ep6 RC) and made tests/unit/iop_kernel robust.
+Open owner questions: (a) accept the gas-cloud +-3..16 colour drift under deep translucent
+layering (exact costs 4-5x GPU); (b) Faithful preset keeping distant hub scenery PS2-blocky
+(needs a Sly-specific rule). Possible follow-ups: faster no-ROV path (layering instead of one draw
+per overlapping primitive); splitting the repo into a reusable PS2 recomp core + per-game folders
+(for Sly 3), which the owner deferred until Sly 2 is finished.
+
 **2026-10-19: M9 COMPLETE, merged into next/gpu and main (7f661f4): at 3x 16:9 in game GPU 7.3-10.9 ms (was 10-16), frontend -30%, GS thread <= 6 ms except ep3 hub 6.07, peak memory 1.6 GB -> 0.8 GB, adaptive frames in flight (2, up to 6 after slowdowns), latency queue->vsync 14 ms median; one recorded exactness trade (palette-bounded source alpha: affected primitives join the +-1 FF blend class, PS2_GPU_NO_TEX_ALPHA=1 reverts). A stray M9 experiment (conservative depth in runtime/gpu/shaders/gs.hlsl) had been written into the main checkout: saved to the scratchpad and discarded. M11 (default switch, auto internal scale, no-ROV path, long-session memory, flaky iop_kernel test, docs) running in worktree gpu-M11 (branch gpu/M11).** Earlier: **PAUSED by the user (2026-10-18).** Nothing is running. M9 (worktree gpu-M9, branch gpu/M9, pushed) was stopped mid-edit again (memory stats line; last commit unverified): verify it first, then continue from notes/wip/gpu-M9.md, then M11. **2026-10-17 (later): M8 (54-scene sweep: 0 divergence, 0 PUNT) and M10 (native widescreen on the GPU) COMPLETE, merged into next/gpu and main (405ce80); all tests pass; dist rebuilt. M9 (performance) running in worktree gpu-M9 (branch gpu/M9). Open owner questions: accept the ep5 tank gas-cloud +-3..5 colour drift (proposed: accept); distant hub scenery sharper at 3x (proposed: sharp in Modern, PS2-blocky in Faithful). Then M11.** **2026-10-17: M7 COMPLETE, merged into next/gpu and main (2207bb4): 3x default, outlines ps2|thin, Modern/Faithful + toggles, hotkeys F2-F6 (GPU renderer only; software stays default). Disk was full (0.5 GB): deleted 245 GB of regenerable frame dumps/exes/WAVs/RAM dumps from worktree build dirs (corpus .gsrec, screenshots kept); every agent prompt now carries disk-hygiene rules. Running in parallel: M8 (episode sweep, worktree gpu-M8) and M10 (widescreen GPU side, worktree gpu-M10). Then M9 (performance: ep3/ep5 frontend 11-15 ms and GPU 9.5-10.6 ms at 3x over budget), M11. Flaky: tests/unit/iop_kernel failed once under heavy load, passes 3/3 on rerun - make it robust in M11.** Earlier: **PAUSED by the user (2026-10-16).** Nothing is running. M7 (worktree gpu-M7, branch gpu/M7, pushed) was stopped mid-edit (latency measurement; last commit unverified): verify it first, then continue from notes/wip/gpu-M7.md, then M8..M11. **2026-10-16: M6 COMPLETE; next/gpu (M0-M6) MERGED INTO MAIN: GPU renderer opt-in via sly2.ini [graphics] renderer = gpu (or PS2_GS_BACKEND=hw); software stays the default. M7 (3x scaling + outline/filter settings) running in worktree gpu-M7 (branch gpu/M7). For M9: on main in a loaded run (M7 agent busy) the museum had frontend thread 17-21 ms per game frame vs 4-6 ms M6 measured in hubs — re-measure on a quiet machine. Also M6: up to 6 frames in flight (latency) and ~850 MB committed in hw mode.** **2026-10-16: M5 COMPLETE and merged into next/gpu (ee7e27b): GPU 3-6 ms per game frame at S=1 (REF 8-15). M6 (in-game integration, opt-in PS2_GS_BACKEND=hw) running in worktree gpu-M6 (branch gpu/M6, notes/wip/gpu-M6.md).** Earlier: **PAUSED by the user (2026-10-15 11:15).** Nothing is running. M5 (worktree gpu-M5, branch gpu/M5, pushed) was stopped mid-edit (gs_replay options/config wiring; last commit unverified): verify it first, then continue from notes/wip/gpu-M5.md, then M6..M11. **2026-10-15: M3 and M4 COMPLETE and merged into next/gpu (06b9bc5; M4: lockstep 24/24 recordings exact on hw + WARP). M5 (FF fast path) running in worktree gpu-M5 (branch gpu/M5, notes/wip/gpu-M5.md).** Earlier: **PAUSED by the user (2026-10-14, 22:25).** Nothing is running. Unfinished: GPU M3 in worktree `sly2-worktrees\gpu-M3` (branch gpu/M3, pushed). Its last commit 2200666 holds an unverified mid-edit (a PABE shortcut fix in the frontend: A==B, D==Cd is not 'colour unchanged' when PABE is on and As < 0x80). Verify that first, then continue from notes/wip/gpu-M3.md. On "continue": finish M3, then M4..M11 (merge each into next/gpu from `sly2-worktrees\gpu-integ`), sending the owner short progress updates.
 
 **GPU: M2 = GO, merged; main merged into next/gpu (0f3fa1b). M3 (exact REF tier at S=1) running in worktree gpu-M3 (branch gpu/M3, notes/wip/gpu-M3.md).** Earlier: M2 resumed in gpu-M2. HUD edge

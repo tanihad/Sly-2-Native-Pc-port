@@ -34,6 +34,9 @@ typedef struct {
     int no_tex_alpha;            /* (M9) 1: the source-alpha bound of indexed textures from the whole palette only (the
                                     M8 rule), not from the palette entries the texels use (comparisons); 2: the tighter
                                     bound only for ATST split outcomes (bit-identical output), not for the As > 128 rule */
+    int no_rov;                  /* (M11) no rasterizer-ordered views: ROV-tier and ALIAS16 draws hold only primitives with
+                                    disjoint rectangles (plain UAV draws, ordered draw to draw); also set by gpu_front_start
+                                    when gpu_no_rov() (the device has none, or PS2_GPU_NO_ROV=1) */
 } gpu_front_config;
 /* (M10) the display family's kx for internal scale n at display aspect aw:ah: round(n * W), W = (aw/ah) / (4/3), never
  * below n (a narrower aspect keeps n), at most 16. At n = 1 the PS2's own pixels (1 x 1: the picture identical to the
@@ -83,6 +86,7 @@ typedef struct {
     uint32_t clears_c, clears_z; /* recognised full-target tiled fills (colour / Z) */
     uint32_t fill_draws_dropped; /* (M5) FF draws of recognised fills not emitted (the clear does it) */
     uint32_t split_conflicts;    /* (M5) ATST split draws started anew by the exact split */
+    uint32_t norov_splits;       /* (M11) no-ROV path: ROV-tier / ALIAS16 draws started anew because primitives overlapped */
     uint32_t loads, load_blocks; /* OP_UPLOAD_TARGET (stale blocks loaded from vram_buf) */
     uint32_t xcopies, xcopy_blocks;  /* stale blocks copied from the target that wrote them (same kind and scale) */
     uint32_t shadow_copies;      /* feedback copies */

@@ -44,6 +44,13 @@ typedef struct {
 /* (M7) graphics settings changed while the game runs: the scale and the target configuration apply from the
  * next frame (targets are rescaled, nothing is lost), picture options from the next VBlank. Any thread. */
 void gpu_hw_set_graphics(int scale, uint32_t gfx);
+/* (M11) internal_scale = auto: max > 0 lets the renderer lower the scale (to 1 at the least) while the GPU cannot keep
+ * up and raise it again up to max (the owner's 3x) when it can (gpu_hw.c, hysteresis); 0 = the scale of
+ * gpu_hw_set_graphics. gpu_hw_auto_scale: the scale auto runs at now (0: auto off). */
+void gpu_hw_set_auto_scale(int max);
+int  gpu_hw_auto_scale(void);
+/* (M11) why gpu_hw_start returned 0 (one line: no device, missing capabilities, swap chain, shaders) */
+const char* gpu_hw_start_error(void);
 /* (M7) inside the dump callback: the dumped picture's sample-grid shift in picture texels (x, y) - a picture at
  * scale is offset against one centred on the PS2's pixels (notes/d3d11-renderer.md 8.1) */
 void gpu_hw_dump_shift(float* sx, float* sy);

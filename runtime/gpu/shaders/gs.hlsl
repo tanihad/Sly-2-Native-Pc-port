@@ -71,8 +71,16 @@ ByteAddressBuffer fdata : register(t7);
 #if !FF
 // colour: the C32 target as R32_UINT (the raw GS word), or in a 16-bit frame run (ALIAS16) the
 // staging texture in the frame's own pixel space holding each pixel's 16-bit value
+#if NOROV
+// (M11) GPUs without rasterizer-ordered views: plain UAVs. The frontend (gf_cfg.no_rov) then puts only primitives
+// with disjoint rectangles into one draw, so no pixel is written twice within a draw, and D3D11 orders the UAV
+// accesses of consecutive draws: the same per-pixel primitive order as the ROV draws.
+RWTexture2D<uint> rov_c : register(u0);
+RWTexture2D<uint> rov_z : register(u1);
+#else
 RasterizerOrderedTexture2D<uint> rov_c : register(u0);
 RasterizerOrderedTexture2D<uint> rov_z : register(u1);
+#endif
 RWByteAddressBuffer dbg : register(u2);  // probe records (gpu_exec.c, PS2_GPU_PROBE)
 
 // a probe record: 16 words (kind, record, state, U, V, texel, colour, Z, S, T, Q, xl, Z old, Cd, written, pixel)
