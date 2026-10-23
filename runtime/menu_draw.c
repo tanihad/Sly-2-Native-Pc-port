@@ -473,7 +473,8 @@ static void draw_menu(canvas* c, const menu_view* v) {
     }
     int sub = v->page >= MENU_PAGE_N;
     hint(c, L.btn[0], dev, "Esc", G_CIRCLE, sub ? "Back" : "Close", u, v->hover_btn == 0);
-    if (dev != MENU_DEV_KEYBOARD) hint(c, L.btn[1], dev, "", G_START, sub ? "Close" : "Close", u, 0);
+    if (dev != MENU_DEV_KEYBOARD && sub) hint(c, L.btn[1], dev, "", G_START, "Close", u, 0);
+    else if (dev != MENU_DEV_KEYBOARD) hint(c, L.btn[1], dev, "", G_CROSS, "Select", u, 0);
     else hint(c, L.btn[1], dev, "Enter", G_CROSS, "Select", u, 0);
     /* the reset dialog */
     if (v->confirm_reset) {

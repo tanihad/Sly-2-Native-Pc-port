@@ -3,34 +3,32 @@
 **Goal**: a native PC Options menu reached from the game's pause menu (Graphics / Display / Audio / Controls pages,
 presets, live apply, saved to sly2.ini), drawn over the picture by both renderers; typed settings model.
 
-## Done
-- Read: pc-experience.md, settings.md, controls.md, widescreen.md, recompiler-design.md, d3d11 sec 13 / app. M,
-  settings.c/.h, gfx.c/.h, window.c, gpu_present.c (present_fit), ps2_runtime.c main / vblank, window_gpu.h, gpu_hw.h.
-- Baseline builds (before any edit): build\base\sly2_rel_base.exe, build\base\sly2_dbg_base.exe (+ build\dbg_base\recomp
-  generated C for grepping).
-
-## Design (decided)
-- Menu = overlay while the game sits in ITS OWN pause menu (the game keeps running/presenting, so the overlay is
-  composited every frame and graphics changes are visible live behind it). Game pad input is neutral while open.
-- Opening: from the pause menu (prompt drawn by the overlay while the pause scene is up) with a key/button; Esc /
-  controller during gameplay injects START (game pauses itself) then opens. Closing returns to the pause menu.
-- Drawing: the menu is rasterised on the CPU (Direct2D software WIC target + DirectWrite text) into a BGRA premultiplied
-  bitmap at the output (client) size, only when its state changes; both presenters upload it as a texture and blend it:
-  gpu_present.c present_fit (before Present), window.c d3d_render (software renderer, own presenter), gdi_render
-  (AlphaBlend). Weak/registered hook so gpu_present.c changes stay one line.
-- Files: runtime/settings.c/.h (typed option table), runtime/menu.c/.h (pure model + navigation, unit-testable),
-  runtime/menu_draw.c (D2D/DWrite), runtime/menu_overlay.c (D3D11 blend pass), runtime/menu_input.h + weak stubs
-  (pc-input provides the real ones), pacing interface header + weak stubs (pc-pacing).
-
-## In progress
-- Pause-menu RE (scene object id, entries, selection) - subagent or self.
+## Done (commits on next/pc-menu)
+- settings.c/.h: typed option table (settings_opt), settings_change (validate, store, persist keeping comments,
+  re-derive preset, applier callbacks by SET_APPLY_*), presets Original/Performance/Balanced/Quality/Custom,
+  internal_scale native (-1), auto_max, [audio] master/music/effects/background, display.monitor, window.fullscreen
+  off|on|exclusive. [controls] belongs to input.c (merged main 1d7c382: pc-input). gfx.c hotkeys go through the table.
+- menu.c/.h (model, layout, navigation, mouse, bindings via input_config), menu_draw.c (CPU: GDI text + AA shapes),
+  menu_overlay.c (D3D11 pass with state save/restore; GDI AlphaBlend; screenshots "menushot"), menu_game.c (pause
+  entry patches, Esc/PS -> pause -> menu, volumes through the game's 0x1FEA60, master gain audio_out.c, renderer /
+  pacing appliers, host), menu_stubs.c (weak pacing stand-ins), menu_ext.h (pacing interface).
+- recomp/patches.py: pcmenu_list / pcmenu_text / pcmenu_select / pcmenu_start / pcmenu_frame (24 patches total).
+- gpu_present.c: overlay before Present (+ release); gpu_hw.c PS2_GS_PRESENT_SIZE; window.c: overlay in d3d/gdi
+  presenters, menu_tick in the window loop (15 ms open / 40 ms closed), Esc no longer leaves fullscreen, display
+  mode/size/monitor appliers, F7/F8 through settings_change; aspect.c same_aspect vs the applied ratio.
+- tests/unit/menu (216 checks): settings table, presets, persistence with comments, menu nav/mouse/bindings, drawing at
+  4 sizes; -Shots -> build\screenshots\pc_menu_*.png + notes/pc-menu/contact_sheet.png (scripts/menu_shots.py).
+- In game (headless GPU, 2560x1440 present target): pause menu shows "PC Settings", Cross opens the menu, pages
+  switch, Back returns to the pause menu. build\screenshots\pc_menu_ingame_*.png. Run script build\pcmenu_run\run.ps1.
 
 ## Next
-1. settings model refactor (table), keep test_window.c test_settings green.
-2. menu model + tests; drawing; overlay hooks in both presenters; input stubs; open/close + game input suppression.
-3. pause-menu integration; audio volumes (sd.c); presets; docs (settings.md, controls.md, pc-experience.md Interfaces).
-4. Verification: run_tests.py, tests\unit\*\run.ps1 -UnitOnly, gpu_diff_all S=1, gpu_game_all S=1, debug+release,
-   package.py; screenshots build\screenshots\pc_menu_*.png, contact sheet notes/pc-menu/.
+1. In-game checks: preset / resolution / aspect / outlines / volume change + persist after restart (headless run 2
+   with the same user dir); Esc path (menu token) during gameplay; software renderer (GPU started -> "renderer" switch,
+   and a short visible PS2_GS_BACKEND=sw run for window.c's presenter).
+2. Docs: notes/settings.md (table, presets, new keys), notes/controls.md (Esc, PS, menu keys), notes/pc-experience.md
+   ("Interfaces: menu" for pacing), notes/pc-menu.md (design, how reached/drawn, RE of the pause menu), README text.
+3. Gates: tests\run_tests.py, every tests\unit\*\run.ps1 -UnitOnly, gpu_diff_all.ps1 (mixed, S=1), gpu_game_all S=1,
+   debug build, package.py.
 
 ## Pause menu RE (subagent, verified with pokes on the baseline debug exe; details build\re_pause\findings.txt)
 - Menu object M = 0x3D9ED0 (HUD mgr 0x3D9E70+0x60), update f_001AEEE0 every frame. Depth *(s32*)0x3D9EF4 (0 closed,
@@ -39,17 +37,18 @@ presets, live apply, saved to sly2.ini), drawn over the picture by both renderer
   State *(s32*)0x3DA0B8: 7 = idle (only state taking input), 0 closed, 8 closing. Same object reused by title menus.
 - Game frozen while paused (clock scale *(float*)0x2DDED8 = 0); rendering continues.
 - Entry record 32 bytes: +0 text id, +4 select cb, +8 type, +0xC submenu, +0x10 per-frame cb, +0x14 init cb, +0x18 aux,
-  +0x1C flags (bit2 stay open, bit1 back). Top list built by f_001B0290 into 0x2F65D0 (full at 7), then
+  +0x1C flags (&2 stay open, &1 back). Top list built by f_001B0290 into 0x2F65D0 (full at 7), then
   jal f_001AF4D8 at 0x1B0490 (a1 count, a2 list). Text lookup f_0013E368(world, id) (leaf). Cross path in f_001AEEE0:
   s0 = entry at 0x1AF150, `lw v0,4($s0)` at 0x1AF154.
-- Plan (proven by pokes): patch before 0x1B0490 -> copy list to EE 0xFF000 (+our entry {id 0x10000+, flags 2}),
-  a1+1; patch f_0013E368 entry -> v0 = EE string (0xFF200) for our id; patch before 0x1AF154 -> open overlay.
-  EE 0x80000-0xFFFFF unused (zeros). Mask game input while the overlay is open; swallow the closing button.
-- Game Options page: Music vol float 0x3DD190, Effects 0x3DD18C (sound mgr 0x3DD040), applied via f_001FEA60;
-  flags blob 0x3D4A60 (+0x24 fNoVibration, +0x30 reverse look, +0x34 reverse aim). Pad bits: START 0x800, tri 0x10,
-  circle 0x20, cross 0x40, up 0x1000, down 0x4000.
+- Game Options page: Music vol float 0x3DD190, Effects 0x3DD18C (sound mgr 0x3DD040), applied via
+  f_001FEA60(mgr, category, 1, f12): music = category 1, effects = categories 0 and 3 (f_001AF6D0).
 
 ## Findings / traps
-- Build is fast (~45-60 s for all 116 files). New runtime/*.c files are globbed automatically (paths.runtime_sources).
-- test_window.c #includes window.c, settings.c, gfx.c: keep those self-contained (new deps need weak stubs).
+- .NET [IO.File] calls resolve RELATIVE paths against the MAIN checkout (cwd of the process): always absolute paths.
+  (Once created two empty files in the main checkout: deleted, main clean.)
+- PowerShell variables are case-insensitive ($Exe == $exe).
+- Build is fast (~45-70 s). New runtime/*.c files are globbed automatically; run_tests.py links runtime/*.c without
+  runtime/gpu: GPU calls from runtime/*.c must be weak.
+- test_window.c #includes window.c, settings.c, gfx.c: new deps there must be weak externs.
 - Renderer switch live only when the game started on the GPU (gpu_hw_request_switch); sw start -> restart needed.
+- debug_write_png writes uncompressed PNGs (11 MB at 1440p): scripts/shot_small.py recompresses / shrinks.
