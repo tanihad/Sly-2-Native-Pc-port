@@ -156,6 +156,13 @@ static const struct { const char* name; unsigned vk; int shift; } script_gfx[] =
     { "scaleup", VK_F2, 0 }, { "scaledown", VK_F2, 1 }, { "outlines", VK_F3, 0 }, { "filters", VK_F4, 0 },
     { "blur", VK_F5, 0 }, { "flicker", VK_F6, 0 }, { "interlace", VK_F6, 1 }, { "scaleauto", VK_F2, 2 } };
 #define SCRIPT_NGFX ((int)(sizeof script_gfx / sizeof script_gfx[0]))
+/* (pc-menu) the Options menu (menu_game.c menu_script): "menu" opens it as Esc does (or closes it), "mup" "mdown" "mleft"
+ * "mright" "mok" "mback" "mtabn" "mtabp" navigate as a controller does, "menushot" writes the next presented picture with
+ * the menu to PS2_MENU_SHOTS (folder; default the frame dump folder or .) as menu_<n>.png */
+#define SCRIPT_MENU0 (-40)
+static const char* const script_menu[] = { "menu", "mup", "mdown", "mleft", "mright", "mok", "mback", "mtabn", "mtabp", "menushot" };
+#define SCRIPT_NMENU ((int)(sizeof script_menu / sizeof script_menu[0]))
+extern void menu_script(int k) __attribute__((weak));
 static void switch_aspect(void);
 static void switch_hud(void);
 static int script_pause_req;
@@ -209,6 +216,8 @@ static void script_parse(const char* s) {
             axis = 0, value = 0x80;
         for (int g = 0; g < SCRIPT_NGFX; g++)
             if (!strcmp(name, script_gfx[g].name)) found = SCRIPT_GFX0 - g;
+        for (int g = 0; g < SCRIPT_NMENU; g++)
+            if (!strcmp(name, script_menu[g])) found = SCRIPT_MENU0 - g;
         for (int b = 0; b < SCRIPT_NBUTTONS; b++)
             if (!strcmp(name, script_buttons[b].name)) found = b;
         for (int b = 0; b < (int)(sizeof script_sticks / sizeof script_sticks[0]); b++)
@@ -245,6 +254,7 @@ static void script_compact(uint32_t now) {
 
 static const char* script_name(int b) {
     if (b <= SCRIPT_GFX0 && b > SCRIPT_GFX0 - SCRIPT_NGFX) return script_gfx[SCRIPT_GFX0 - b].name;
+    if (b <= SCRIPT_MENU0 && b > SCRIPT_MENU0 - SCRIPT_NMENU) return script_menu[SCRIPT_MENU0 - b];
     return b == SCRIPT_NONE ? "none" : b == SCRIPT_AXIS ? "axis" : b == SCRIPT_RAM ? "ram" : b == SCRIPT_PAUSE ? "pause" :
            b == SCRIPT_RELEASE ? "release" : b == SCRIPT_CALLS ? "calls" : b == SCRIPT_WATCH ? "watch" :
            b == SCRIPT_ASPECT ? "aspect" : b == SCRIPT_HUD ? "hud" : b == SCRIPT_REC ? "rec" :
@@ -398,6 +408,10 @@ static void script_apply(int port, pad_input* in) {
         if (b == SCRIPT_ASPECT) { if (now == script[i].start) switch_aspect(); continue; }
         if (b <= SCRIPT_GFX0 && b > SCRIPT_GFX0 - SCRIPT_NGFX) {
             if (now == script[i].start) gfx_key(script_gfx[SCRIPT_GFX0 - b].vk, script_gfx[SCRIPT_GFX0 - b].shift, 0);
+            continue;
+        }
+        if (b <= SCRIPT_MENU0 && b > SCRIPT_MENU0 - SCRIPT_NMENU) {
+            if (now == script[i].start && menu_script) menu_script(SCRIPT_MENU0 - b);
             continue;
         }
         if (b == SCRIPT_HUD) { if (now == script[i].start) switch_hud(); continue; }
@@ -559,6 +573,7 @@ static HWND volatile g_hwnd;             /* published once the window and render
 void window_get_input(int port, pad_input* out) {
     input_get_pad(port, out);
     script_apply(port, out);                                  /* PS2_INPUT test scripts */
+    if (input_menu_active()) input_pad_clear(out);            /* (scripted presses too: the Options menu is open) */
 }
 
 /* ==== Direct3D 11 presenter ====================================================================== */
@@ -607,7 +622,17 @@ static struct {
     const char* model;                   /* swap model, for the log */
 } d3d;
 
+/* (pc-menu) the Options menu / frame rate counter over the picture (menu_overlay.c; weak: not in the window test) */
+extern void overlay_d3d11_draw(ID3D11Device* dev, ID3D11DeviceContext* ctx, ID3D11RenderTargetView* rtv, int w, int h)
+    __attribute__((weak));
+extern void overlay_d3d11_release(ID3D11Device* dev) __attribute__((weak));
+extern void overlay_gdi_draw(void* hdc, int w, int h) __attribute__((weak));
+extern void overlay_set_fps(double fps) __attribute__((weak));
+extern void menu_tick(void) __attribute__((weak));
+extern int menu_is_open(void) __attribute__((weak));
+
 static void d3d_shutdown(void) {
+    if (d3d.dev && overlay_d3d11_release) overlay_d3d11_release(d3d.dev);
     if (d3d.ctx) { ID3D11DeviceContext_ClearState(d3d.ctx); ID3D11DeviceContext_Flush(d3d.ctx); }
     RELEASE(d3d.srv); RELEASE(d3d.tex); RELEASE(d3d.rtv); RELEASE(d3d.smp); RELEASE(d3d.ps);
     RELEASE(d3d.vs); RELEASE(d3d.sc); RELEASE(d3d.ctx); RELEASE(d3d.dev);
@@ -826,6 +851,7 @@ static HRESULT d3d_render(HWND hwnd, const uint32_t* px, int fw, int fh, unsigne
         ID3D11DeviceContext_PSSetSamplers(d3d.ctx, 0, 1, &d3d.smp);
         ID3D11DeviceContext_Draw(d3d.ctx, 3, 0);
     }
+    if (overlay_d3d11_draw) overlay_d3d11_draw(d3d.dev, d3d.ctx, d3d.rtv, rc.right, rc.bottom);
     return IDXGISwapChain_Present(d3d.sc, 1, 0);
 }
 
@@ -862,6 +888,7 @@ static void gdi_render(HWND hwnd, const uint32_t* px, int fw, int fh, int aw, in
     } else {
         FillRect(dc, &rc, black);
     }
+    if (overlay_gdi_draw) overlay_gdi_draw(dc, rc.right, rc.bottom);   /* (pc-menu) the Options menu */
     ReleaseDC(hwnd, dc);
     if (dwm_flush) dwm_flush();          /* pace to the compositor, like a vsync'd present */
 }
@@ -908,15 +935,78 @@ static void pump_frame(HWND hwnd) {
     InterlockedIncrement(&frames_shown);
 }
 
-/* Borderless fullscreen on the window's monitor, and back to the saved placement. */
+/* ---- monitors (the Options menu: Display > Monitor) ---------------------------------------------- */
+#define WIN_MAX_MONITORS 16
+static struct { HMONITOR h; RECT r; int hz, primary; } mons[WIN_MAX_MONITORS];
+static int nmons;
+
+static BOOL CALLBACK mon_enum(HMONITOR h, HDC dc, LPRECT r, LPARAM lp) {
+    (void)dc; (void)r; (void)lp;
+    if (nmons >= WIN_MAX_MONITORS) return FALSE;
+    MONITORINFOEXW mi;
+    mi.cbSize = sizeof mi;
+    if (!GetMonitorInfoW(h, (MONITORINFO*)&mi)) return TRUE;
+    DEVMODEW dm;
+    memset(&dm, 0, sizeof dm);
+    dm.dmSize = sizeof dm;
+    mons[nmons].h = h;
+    mons[nmons].r = mi.rcMonitor;
+    mons[nmons].hz = EnumDisplaySettingsW(mi.szDevice, ENUM_CURRENT_SETTINGS, &dm) ? (int)dm.dmDisplayFrequency : 0;
+    mons[nmons].primary = (mi.dwFlags & MONITORINFOF_PRIMARY) != 0;
+    nmons++;
+    return TRUE;
+}
+
+static void monitors_scan(void) {
+    nmons = 0;
+    EnumDisplayMonitors(NULL, NULL, mon_enum, 0);
+}
+
+int window_monitor_count(void) { monitors_scan(); return nmons; }
+
+void window_monitor_info(int k, int* w, int* h, int* hz, int* primary) {
+    if (k < 0 || k >= nmons) { *w = *h = *hz = *primary = 0; return; }
+    *w = mons[k].r.right - mons[k].r.left;
+    *h = mons[k].r.bottom - mons[k].r.top;
+    *hz = mons[k].hz;
+    *primary = mons[k].primary;
+}
+
+/* the monitor the game uses: [display] monitor (1..n) if it exists, else the window's */
+static HMONITOR game_monitor(HWND hwnd) {
+    int k = ps2_settings.monitor;
+    if (k > 0) {
+        monitors_scan();
+        if (k <= nmons) return mons[k - 1].h;
+    }
+    return MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+}
+
+void window_display_size(int* w, int* h, int* hz) {
+    *w = *h = *hz = 0;
+    HWND hwnd = g_hwnd;
+    HMONITOR m = hwnd ? MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) : MonitorFromPoint((POINT){ 0, 0 }, MONITOR_DEFAULTTOPRIMARY);
+    MONITORINFOEXW mi;
+    mi.cbSize = sizeof mi;
+    if (!GetMonitorInfoW(m, (MONITORINFO*)&mi)) return;
+    *w = mi.rcMonitor.right - mi.rcMonitor.left;
+    *h = mi.rcMonitor.bottom - mi.rcMonitor.top;
+    DEVMODEW dm;
+    memset(&dm, 0, sizeof dm);
+    dm.dmSize = sizeof dm;
+    if (EnumDisplaySettingsW(mi.szDevice, ENUM_CURRENT_SETTINGS, &dm)) *hz = (int)dm.dmDisplayFrequency;
+}
+
+/* Borderless fullscreen on the window's monitor (or [display] monitor), and back to the saved placement. */
 static void toggle_fullscreen(HWND hwnd) {
     LONG_PTR style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+    settings_touch();                    /* (the Options menu shows the display mode) */
     if (!win_fullscreen) {
         MONITORINFO mi;
         mi.cbSize = sizeof mi;
         win_placement.length = sizeof win_placement;
         if (!GetWindowPlacement(hwnd, &win_placement) ||
-            !GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &mi)) return;
+            !GetMonitorInfoW(game_monitor(hwnd), &mi)) return;
         SetWindowLongPtrW(hwnd, GWL_STYLE, (style & ~(LONG_PTR)WS_OVERLAPPEDWINDOW) | WS_POPUP);
         SetWindowPos(hwnd, HWND_TOP, mi.rcMonitor.left, mi.rcMonitor.top, mi.rcMonitor.right - mi.rcMonitor.left,
                      mi.rcMonitor.bottom - mi.rcMonitor.top, SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
@@ -945,7 +1035,8 @@ static void save_window_state(HWND hwnd) {
     snprintf(y, sizeof y, "%ld", r->top);
     snprintf(w, sizeof w, "%ld", r->right - r->left);
     snprintf(h, sizeof h, "%ld", r->bottom - r->top);
-    const char* const kv[][3] = { { "window", "fullscreen", win_fullscreen ? "on" : "off" }, { "window", "x", x },
+    const char* fs = !win_fullscreen ? "off" : ps2_settings.win_fullscreen == SETTINGS_FULLSCREEN_EXCLUSIVE ? "exclusive" : "on";
+    const char* const kv[][3] = { { "window", "fullscreen", fs }, { "window", "x", x },
                                   { "window", "y", y }, { "window", "width", w }, { "window", "height", h },
                                   { "window", "maximized", maximized ? "on" : "off" } };
     if (!settings_set(kv, 6)) wlog("cannot write the window state to sly2.ini");
@@ -958,30 +1049,108 @@ static void save_window_state(HWND hwnd) {
  * edit of sly2.ini's [display] while the game runs applies when its window is activated again. */
 static int wide_w = 16, wide_h = 9;
 
-static void remember_display(const char* key, const char* value, const char* env) {
-    if (!g_hwnd || (getenv(env) && *getenv(env))) return;
-    const char* const kv[][3] = { { "display", key, value } };
-    if (!settings_set(kv, 1)) wlog("cannot write display.%s to sly2.ini", key);
+/* (pc-menu) [display] aspect / hud changed through the settings table (the Options menu, F7, F8): the game takes
+ * it at its next frame (aspect.c) */
+static void display_applier(int option) {
+    (void)option;
+    if (ps2_settings.aspect_w * 3 != ps2_settings.aspect_h * 4) { wide_w = ps2_settings.aspect_w; wide_h = ps2_settings.aspect_h; }
+    aspect_request(ps2_settings.aspect_w, ps2_settings.aspect_h, ps2_settings.hud_centered);
 }
 
 static void switch_aspect(void) {
     int w, h, hud;
+    settings_on_apply(SET_APPLY_DISPLAY, display_applier);
     aspect_target(&w, &h, &hud);
     if (w * 3 != h * 4) { wide_w = w; wide_h = h; w = 4; h = 3; }
     else { w = wide_w; h = wide_h; }
-    aspect_request(w, h, -1);
-    char v[32];
-    snprintf(v, sizeof v, "%d:%d", w, h);
-    wlog("aspect %s (F7)", v);
-    remember_display("aspect", v, "PS2_ASPECT");
+    wlog("aspect %d:%d (F7)", w, h);
+    /* (remembered in sly2.ini when there is a window and PS2_ASPECT is not set: settings_change) */
+    settings_change_key("display", "aspect", w << 16 | h, g_hwnd != NULL);
 }
 
 static void switch_hud(void) {
     int w, h, hud;
+    settings_on_apply(SET_APPLY_DISPLAY, display_applier);
     aspect_target(&w, &h, &hud);
-    aspect_request(0, 0, !hud);
     wlog("hud %s (F8)", hud ? "edges" : "centered");
-    remember_display("hud", hud ? "edges" : "centered", "PS2_HUD");
+    settings_change_key("display", "hud", !hud, g_hwnd != NULL);
+}
+
+/* ---- (pc-menu) the window options of the Options menu: display mode, size, monitor -------------------
+ * Any thread asks (settings applier, the menu); the window thread does it (WM_APP_WINDOW). */
+#define WM_APP_WINDOW (WM_APP + 0x31)
+#define WM_APP_CLIENT_SIZE (WM_APP + 0x32)
+extern int pacing_exclusive_fullscreen(int on) __attribute__((weak));
+static int win_exclusive;                /* exclusive fullscreen is on (pacing_exclusive_fullscreen) */
+
+int window_mode(void) {
+    return !window_fullscreen() ? SETTINGS_FULLSCREEN_OFF : win_exclusive ? SETTINGS_FULLSCREEN_EXCLUSIVE : SETTINGS_FULLSCREEN_BORDERLESS;
+}
+
+static void window_applier(int option) {
+    (void)option;
+    HWND h = g_hwnd;
+    if (h) PostMessageW(h, WM_APP_WINDOW, 0, 0);
+    settings_touch();
+}
+
+void window_set_client_size(int w, int h) {
+    HWND hw = g_hwnd;
+    if (hw) PostMessageW(hw, WM_APP_CLIENT_SIZE, (WPARAM)w, (LPARAM)h);
+}
+
+/* window thread: make the window what ps2_settings says (fullscreen mode, monitor) */
+static void apply_window_settings(HWND hwnd) {
+    int want = ps2_settings.win_fullscreen;
+    if (win_exclusive && want != SETTINGS_FULLSCREEN_EXCLUSIVE) {
+        if (pacing_exclusive_fullscreen) pacing_exclusive_fullscreen(0);
+        win_exclusive = 0;
+    }
+    if ((want != SETTINGS_FULLSCREEN_OFF) != (win_fullscreen != 0)) toggle_fullscreen(hwnd);
+    else if (win_fullscreen) {           /* fullscreen already: on the chosen monitor */
+        MONITORINFO mi;
+        mi.cbSize = sizeof mi;
+        RECT wr;
+        if (GetMonitorInfoW(game_monitor(hwnd), &mi) && GetWindowRect(hwnd, &wr) && !EqualRect(&wr, &mi.rcMonitor))
+            SetWindowPos(hwnd, HWND_TOP, mi.rcMonitor.left, mi.rcMonitor.top, mi.rcMonitor.right - mi.rcMonitor.left,
+                         mi.rcMonitor.bottom - mi.rcMonitor.top, SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+    } else if (ps2_settings.monitor > 0) {   /* windowed: centred on the chosen monitor if it is not on it */
+        HMONITOR m = game_monitor(hwnd);
+        MONITORINFO mi;
+        mi.cbSize = sizeof mi;
+        RECT wr;
+        if (m != MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) && GetMonitorInfoW(m, &mi) && GetWindowRect(hwnd, &wr)) {
+            int w = wr.right - wr.left, h = wr.bottom - wr.top;
+            SetWindowPos(hwnd, NULL, (mi.rcWork.left + mi.rcWork.right - w) / 2, (mi.rcWork.top + mi.rcWork.bottom - h) / 2, 0, 0,
+                         SWP_NOSIZE | SWP_NOZORDER);
+        }
+    }
+    if (want == SETTINGS_FULLSCREEN_EXCLUSIVE && win_fullscreen && !win_exclusive) {
+        win_exclusive = pacing_exclusive_fullscreen && pacing_exclusive_fullscreen(1);
+        if (!win_exclusive) wlog("exclusive fullscreen is not available: borderless fullscreen");
+    }
+    settings_touch();
+}
+
+/* window thread: the client area w x h (windowed, not maximized), centred where the window was */
+static void apply_client_size(HWND hwnd, int w, int h) {
+    if (win_fullscreen || IsZoomed(hwnd) || w < 240 || h < 200) return;
+    RECT wr, cr;
+    if (!GetWindowRect(hwnd, &wr) || !GetClientRect(hwnd, &cr)) return;
+    int ncw = (wr.right - wr.left) - cr.right, nch = (wr.bottom - wr.top) - cr.bottom;
+    int cx = (wr.left + wr.right) / 2, cy = (wr.top + wr.bottom) / 2;
+    int W = w + ncw, H = h + nch, x = cx - W / 2, y = cy - H / 2;
+    MONITORINFO mi;
+    mi.cbSize = sizeof mi;
+    if (GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &mi)) {   /* keep it on the work area */
+        if (x + W > mi.rcWork.right) x = mi.rcWork.right - W;
+        if (y + H > mi.rcWork.bottom) y = mi.rcWork.bottom - H;
+        if (x < mi.rcWork.left) x = mi.rcWork.left;
+        if (y < mi.rcWork.top) y = mi.rcWork.top;
+    }
+    SetWindowPos(hwnd, NULL, x, y, W, H, SWP_NOZORDER);
+    gfx_output_resized();
+    settings_touch();
 }
 
 static void reread_display(void) {
@@ -1021,6 +1190,8 @@ static void close_window(HWND hwnd) {
     ExitProcess(0);
 }
 
+static int in_size_move;                 /* the user is dragging the window's frame */
+
 static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     if (input_window_message(hwnd, msg, wp, lp)) return 0;   /* the Options menu / binding capture took it */
     switch (msg) {
@@ -1050,13 +1221,23 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             InterlockedIncrement(&resize_serial);
         }
         if (wp != SIZE_MINIMIZED) render(hwnd);   /* redraw at the new size right away */
+        if (wp != SIZE_MINIMIZED && !in_size_move) gfx_output_resized();   /* (internal_scale = native follows) */
         return 0;
     }
     case WM_ENTERSIZEMOVE:               /* DefWindowProc runs a modal loop: keep frames coming */
+        in_size_move = 1;
         SetTimer(hwnd, LIVE_RESIZE_TIMER, 10, NULL);
         return 0;
     case WM_EXITSIZEMOVE:
+        in_size_move = 0;
         KillTimer(hwnd, LIVE_RESIZE_TIMER);
+        gfx_output_resized();
+        return 0;
+    case WM_APP_WINDOW:                  /* (pc-menu) display mode / monitor from the settings */
+        apply_window_settings(hwnd);
+        return 0;
+    case WM_APP_CLIENT_SIZE:
+        apply_client_size(hwnd, (int)wp, (int)lp);
         return 0;
     case WM_TIMER:
         if (wp == LIVE_RESIZE_TIMER) { pump_frame(hwnd); return 0; }
@@ -1087,8 +1268,8 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (debug_keys_on) InterlockedOr(&debug_keys, GetKeyState(VK_SHIFT) < 0 ? WINDOW_KEY_LOSE_DEVICE : WINDOW_KEY_SWITCH);
             return 0;
         }
+        /* (Esc no longer leaves fullscreen: it opens the Options menu - runtime/input.c INPUT_NAV_MENU) */
         if (wp == VK_F11 && !(lp & (1 << 30))) toggle_fullscreen(hwnd);
-        else if (wp == VK_ESCAPE && win_fullscreen) toggle_fullscreen(hwnd);
         else if (wp == VK_F7 && !(lp & (1 << 30))) switch_aspect();
         else if (wp == VK_F8 && !(lp & (1 << 30))) switch_hud();
         else if (wp >= VK_F2 && wp <= VK_F6 && !(lp & (1 << 30)))   /* graphics settings (gfx.h), remembered in sly2.ini */
@@ -1193,7 +1374,7 @@ static DWORD WINAPI window_thread(LPVOID arg) {
     win_ready = 1;
     set_title(hwnd, 0.0);
     ShowWindow(hwnd, ps2_settings.win_w && ps2_settings.win_maximized ? SW_SHOWMAXIMIZED : SW_SHOW);
-    if (ps2_settings.win_fullscreen) toggle_fullscreen(hwnd);
+    if (ps2_settings.win_fullscreen) apply_window_settings(hwnd);
     SetForegroundWindow(hwnd);
     render(hwnd);
     g_hwnd = hwnd;
@@ -1202,7 +1383,10 @@ static DWORD WINAPI window_thread(LPVOID arg) {
     ULONGLONG fps_t0 = GetTickCount64();
     InterlockedExchange(&fb_presented, 0);   /* frames handed over while starting up are not in this interval */
     for (;;) {
-        MsgWaitForMultipleObjectsEx(1, &fb_event, 100, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+        /* (pc-menu) the Options menu reads its input every turn: ~60 times a second while it is open; while it is
+         * closed often enough for the PS button (no window message) to open it without a noticeable delay */
+        int menu_open_now = menu_is_open && menu_is_open();
+        MsgWaitForMultipleObjectsEx(1, &fb_event, menu_open_now ? 15 : 40, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
         MSG m;
         while (PeekMessageW(&m, NULL, 0, 0, PM_REMOVE)) {
             TranslateMessage(&m);
@@ -1219,11 +1403,14 @@ static DWORD WINAPI window_thread(LPVOID arg) {
                 render(hwnd);
             }
         }
+        if (menu_tick) menu_tick();
         pump_frame(hwnd);
         ULONGLONG now = GetTickCount64();
         if (now - fps_t0 >= 1000) {
             LONG n = InterlockedExchange(&fb_presented, 0);
-            set_title(hwnd, (double)n * 1000.0 / (double)(now - fps_t0));
+            double fps = (double)n * 1000.0 / (double)(now - fps_t0);
+            set_title(hwnd, fps);
+            if (overlay_set_fps) overlay_set_fps(fps);    /* (the counter in the picture, show_fps) */
             fps_t0 = now;
         }
     }
@@ -1249,6 +1436,9 @@ void window_init(void) {
     static volatile LONG once;
     if (InterlockedExchange(&once, 1)) return;
     if (!fb_setup()) { wlog("CreateEvent failed: no window"); return; }
+    settings_on_apply(SET_APPLY_DISPLAY, display_applier);   /* (pc-menu) the settings the window applies */
+    settings_on_apply(SET_APPLY_WINDOW, window_applier);
+    gfx_output_size = window_client_size;                    /* internal_scale = native */
     input_init();                        /* controllers: found while the window opens */
     HANDLE t = CreateThread(NULL, 0, window_thread, NULL, 0, NULL);
     if (!t) { wlog("cannot start the window thread (error %lu)", (unsigned long)GetLastError()); return; }
