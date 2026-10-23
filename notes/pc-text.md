@@ -100,7 +100,10 @@ The rest of the menu is unchanged and still works (checked: Vibrations toggles; 
   no other console wording.
 - Tests: `tests/unit/pc_text` (table invariants, in-place replacement, other versions/languages left
   alone, bad pointers, the Options filter); `tests/run_tests.py` checks the four patches against
-  the game's ELF (SHA-1 guards match, the goto label exists).
+  the game's ELF (SHA-1 guards match, the goto label exists); `tests/pc_text_boot.ps1 [-Out
+  build\sly2]` boots a fresh save folder headless with no input and checks: save data created
+  silently, all 19 texts replaced, no memory-card dialog ever shown (PS2_PEEK of 0x2E6590), the
+  title's START check reached (passes on the release and the debug build).
 
 ## Left / not covered
 

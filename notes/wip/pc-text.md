@@ -26,15 +26,20 @@ load / error message, the game's own menus and save logic kept. Worktree
 - Census: episode 1 hub bank has no other PS2 words except "Center Screen..." (id 63).
   The Options menu shows "USB Headset: Off" and "Center Screen..." (PS2 hardware options).
 
+- Before shots (PS2_PC_TEXT=0); error dialogs verified (unusable folder 0x11, full 0x18, failed
+  create 0x17 via a case-clash host dir `bascus-97316yaotwtd!`; a plain file with the save dir's
+  name is NOT an error: the game deletes it).
+- Patch pc_options_hide (0x1B058C): Options without USB Headset / Center Screen; verified.
+- Autosave at episode start (warp ep 2), Exit to Episode Menu -> Start Episode verified.
+- Census of 9 level banks: no other console wording.
+- run_tests.py check_pc_text_patches; tests/pc_text_boot.ps1 (release + debug pass);
+  notes/pc-text.md + notes/pc-text/contact_sheet.png; debug + release builds; package.py OK.
+
 ## In progress
-- "Before" shots with PS2_PC_TEXT=0; error dialogs (full card, unusable folder, create failure).
+- Waiting for the unit gates run (all tests\unit\*\run.ps1).
 
 ## Next
-1. Error scenarios: card full (8 MB file in card root -> dialog 0x18), folder unusable (0x11),
-   create failure (a file named BASCUS-97316YAOTWTD! -> dialog 0x17 via pc_save_boot_poll).
-2. Decide USB Headset / Center Screen (hide from Options? at least document).
-3. run_tests.py guard checks for the 3 patches; all gates; package.py.
-4. notes/pc-text.md + contact sheet notes/pc-text/; census of more levels (warp hubs).
+1. If gates are green: mark Status complete, final commit, report.
 
 ## Findings / traps
 - Scratchpad helpers (session-local): mdis.py, imm.py, textbank.py, ramstr.py, sheet.ps1 (contact
