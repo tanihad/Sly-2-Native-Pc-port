@@ -41,6 +41,7 @@ typedef struct {
     int kind;                            /* MENU_ITEM_* */
     char label[MENU_TEXT];
     char value[MENU_TEXT];               /* the current value's text ("3x - 2048 x 1344", "75") */
+    char value2[MENU_TEXT];              /* BIND: the second key / button ("-" none) */
     char desc[2 * MENU_TEXT];            /* the description line for the selected row */
     char note[MENU_TEXT];                /* "Applies at the next start", "GPU renderer only", ... ("" none) */
     int enabled;                         /* 0: shown dimmed, cannot change (note says why) */
@@ -64,6 +65,7 @@ typedef struct {
     void (*set_client_size)(int w, int h);
     void (*set_monitor)(int k);          /* 0 = keep, 1..n */
     int  (*in_game)(void);               /* the game's audio settings can be reached now (music / effects) */
+    void (*request_open)(void);          /* Esc / PS button with the menu closed (menu_game.c: pause the game first) */
     void (*closed)(void);                /* the menu closed (menu_game.c: back to the pause menu) */
 } menu_host;
 void menu_set_host(const menu_host* h);
@@ -74,8 +76,12 @@ void menu_close(void);
 int  menu_is_open(void);
 /* a navigation event from a device (dev: MENU_DEV_*, the button hints follow it); 1 if the menu used it */
 int  menu_nav_event(menu_nav nav, int dev);
-/* keyboard (window.c WM_KEYDOWN while the menu is open): virtual key, shift state; 1 if used */
-int  menu_key(unsigned vk, int shift);
+/* The window thread, every turn of its loop (~60 times a second while the menu is open): the navigation events of
+ * every device (runtime/input.c input_nav_poll: keyboard, mouse, controllers; Esc / the PS button open the menu
+ * through host.request_open) and a binding being captured (input_capture_poll). */
+void menu_tick(void);
+/* a binding capture finished (INPUT_CAPTURE_KEY / BUTTON / CANCELLED, the key or button) - menu_tick, tests */
+void menu_capture_result(int r, int code);
 /* mouse, client pixels: move (hover), button down (1 left, 2 right), wheel (+1 up / -1 down) */
 void menu_mouse_move(int x, int y);
 void menu_mouse_button(int x, int y, int button);
@@ -87,8 +93,6 @@ int  menu_device(void);
 uint32_t menu_version(void);
 /* binding capture: 1 while the menu waits for a key / button for a binding */
 int  menu_capturing(void);
-/* a controller button for the binding being captured (pad.c button bits; input stream's raw code) */
-void menu_capture_button(int code);
 
 /* ---- what to draw (menu_draw.c) ---- */
 typedef struct {
@@ -99,6 +103,7 @@ typedef struct {
     int nrows;
     menu_row rows[MENU_MAX_ROWS];
     int capture;                         /* waiting for a key/button (sel row) */
+    int bind_slot;                       /* binding pages: the selected column (0 / 1) */
     int confirm_reset;                   /* "Reset <page> to defaults?" shown */
     int device;
     int hover_tab, hover_row, hover_btn; /* mouse (-1 none) */
@@ -116,8 +121,8 @@ typedef struct {
     int row_h, visible;                  /* row height, rows that fit */
     menu_rect rows[MENU_MAX_ROWS];       /* visible rows (index = row - scroll) */
     menu_rect left[MENU_MAX_ROWS], right[MENU_MAX_ROWS];   /* the value's arrows */
-    menu_rect btn[3];                    /* footer buttons, right to left: 0 back (close on a main page), 1 reset to
-                                            defaults, 2 close */
+    menu_rect btn[3];                    /* footer buttons, right to left: 0 back (close on a main page), 1 close
+                                            (controller hint; 2 unused) */
     menu_rect tab_hint[2];               /* the page-switch hints left and right of the tabs (L1 / R1, Q / E) */
     menu_rect dlg, dlg_yes, dlg_no;      /* the "reset to defaults?" dialog and its buttons */
     menu_rect scrollbar;                 /* right of the rows (when they do not all fit) */
@@ -135,6 +140,7 @@ enum {
     MENU_ROW_MODE, MENU_ROW_WINSIZE, MENU_ROW_MONITOR, MENU_ROW_ASPECT, MENU_ROW_HUD, MENU_ROW_PACING, MENU_ROW_FPS,
     MENU_ROW_MASTER, MENU_ROW_MUSIC, MENU_ROW_EFFECTS, MENU_ROW_BACKGROUND,
     MENU_ROW_VIBRATION, MENU_ROW_VIB_STRENGTH, MENU_ROW_INVERT_X, MENU_ROW_INVERT_Y, MENU_ROW_DEADZONE,
+    MENU_ROW_DEADZONE_R, MENU_ROW_LIGHTBAR,
     MENU_ROW_KEYS, MENU_ROW_PAD,
     MENU_ROW_RESET,                      /* "Reset to defaults" (every page) */
     MENU_ROW_BIND0 = 100,                /* binding rows: MENU_ROW_BIND0 + action */

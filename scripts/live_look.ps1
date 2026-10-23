@@ -4,7 +4,7 @@
 param([string]$Send = "", [double]$Wait = 0, [int]$Count = 6, [int]$Cols = 3, [int]$Scale = 2, [string]$Dir = "")
 $root = Split-Path $PSScriptRoot -Parent
 if (-not $Dir) { $Dir = Join-Path $root 'build\live' }
-$py = 'C:\Users\tanih\Projects\sly2-decomp\.venv\Scripts\python.exe'
+. (Join-Path $PSScriptRoot 'project.ps1'); $py = $ProjectPython
 if ($Send) { Add-Content -Path (Join-Path $Dir 'input.txt') -Value $Send -Encoding ascii }
 if ($Wait -gt 0) { Start-Sleep -Milliseconds ([int]($Wait * 1000)) }
 $frames = Get-ChildItem (Join-Path $Dir 'frames') -Filter 'frame_*.png' | Sort-Object LastWriteTime | Select-Object -Last ($Count + 1) |

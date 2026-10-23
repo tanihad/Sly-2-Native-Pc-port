@@ -10,7 +10,7 @@ param([Parameter(Mandatory = $true)][int]$Episode, [string]$Job = "", [switch]$D
       [string]$Set = "",   # -Set "path=value,...": raw save edits (warp.py make --set)
       [string]$Build = "")  # -Build build\x: another build directory (default build\rel or build\sly2)
 $root = Split-Path $PSScriptRoot -Parent
-$py = 'C:\Users\tanih\Projects\sly2-decomp\.venv\Scripts\python.exe'
+. (Join-Path $PSScriptRoot 'project.ps1'); $py = $ProjectPython
 if ($Direct -and $Release) { "-Direct needs the debug build"; exit 1 }
 if (-not $Name) { $Name = "ep$Episode$(if ($Job) { "_$Job" })" }
 $dir = Join-Path $root "build\live\$Name"

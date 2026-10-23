@@ -1,6 +1,7 @@
 /* The Options menu's model: pages, rows, values, navigation, layout (menu.h). */
 #include "menu.h"
 #include "menu_ext.h"
+#include "input.h"
 #include "settings.h"
 #include "gfx.h"
 
@@ -14,6 +15,7 @@ static SRWLOCK lock = SRWLOCK_INIT;
 static menu_host host;
 static struct {
     int open, page, sel, scroll, capture, confirm_reset, device;
+    int bind_slot;                       /* binding pages: the column (0 / 1) left / right picks */
     int hover_tab, hover_row, hover_btn;
     int visible;                         /* rows that fit (from the last layout) */
     int cw, ch;                          /* client size of the last view */
@@ -214,6 +216,7 @@ static void build_choices(int id, choices* c) {
         add(c, SETTINGS_PACING_DISPLAY, "Display-synced (60 Hz displays)");
         break;
     case MENU_ROW_FPS: case MENU_ROW_BACKGROUND: case MENU_ROW_VIBRATION: case MENU_ROW_INVERT_X: case MENU_ROW_INVERT_Y:
+    case MENU_ROW_LIGHTBAR:
         add(c, 0, "Off");
         add(c, 1, "On");
         break;
@@ -222,9 +225,53 @@ static void build_choices(int id, choices* c) {
     (void)buf;
 }
 
+/* [controls] options: runtime/input.c's configuration */
+static int ctl_get(int id) {
+    input_config c;
+    input_config_get(&c);
+    switch (id) {
+    case MENU_ROW_VIBRATION: return c.vibration;
+    case MENU_ROW_VIB_STRENGTH: return c.vibration_strength;
+    case MENU_ROW_INVERT_X: return c.invert_camera_x;
+    case MENU_ROW_INVERT_Y: return c.invert_camera_y;
+    case MENU_ROW_DEADZONE: return c.deadzone_left;
+    case MENU_ROW_DEADZONE_R: return c.deadzone_right;
+    case MENU_ROW_LIGHTBAR: return c.lightbar_on;
+    default: return 0;
+    }
+}
+
+static void ctl_set(int id, int v) {
+    input_config c;
+    input_config_get(&c);
+    switch (id) {
+    case MENU_ROW_VIBRATION: c.vibration = v; break;
+    case MENU_ROW_VIB_STRENGTH: c.vibration_strength = v; break;
+    case MENU_ROW_INVERT_X: c.invert_camera_x = v; break;
+    case MENU_ROW_INVERT_Y: c.invert_camera_y = v; break;
+    case MENU_ROW_DEADZONE: c.deadzone_left = v; break;
+    case MENU_ROW_DEADZONE_R: c.deadzone_right = v; break;
+    case MENU_ROW_LIGHTBAR: c.lightbar_on = v; break;
+    default: return;
+    }
+    input_config_set(&c, 1);
+    settings_touch();
+}
+
+/* a short rumble on every controller that can (the strength being set applies) */
+static void rumble_test(void) {
+    input_device_info d[INPUT_MAX_DEVICES];
+    int n = input_devices(d, INPUT_MAX_DEVICES);
+    for (int k = 0; k < n; k++)
+        if (d[k].can_rumble) input_test_rumble(d[k].id, 255, 255, 400);
+}
+
 /* the current value of a CHOICE row (matched against its choices) */
 static int row_value(int id) {
     switch (id) {
+    case MENU_ROW_VIBRATION: case MENU_ROW_VIB_STRENGTH: case MENU_ROW_INVERT_X: case MENU_ROW_INVERT_Y:
+    case MENU_ROW_DEADZONE: case MENU_ROW_DEADZONE_R: case MENU_ROW_LIGHTBAR:
+        return ctl_get(id);
     case MENU_ROW_PRESET: return ps2_settings.preset;
     case MENU_ROW_RENDERER: return ps2_settings.renderer_gpu;
     case MENU_ROW_SCALE: return ps2_settings.internal_scale;
@@ -243,14 +290,9 @@ static int row_value(int id) {
     case MENU_ROW_PACING: return ps2_settings.pacing;
     case MENU_ROW_FPS: return ps2_settings.show_fps;
     case MENU_ROW_BACKGROUND: return ps2_settings.audio_background;
-    case MENU_ROW_VIBRATION: return ps2_settings.vibration;
-    case MENU_ROW_INVERT_X: return ps2_settings.invert_x;
-    case MENU_ROW_INVERT_Y: return ps2_settings.invert_y;
     case MENU_ROW_MASTER: return ps2_settings.vol_master;
     case MENU_ROW_MUSIC: return ps2_settings.vol_music;
     case MENU_ROW_EFFECTS: return ps2_settings.vol_effects;
-    case MENU_ROW_VIB_STRENGTH: return ps2_settings.vibration_strength;
-    case MENU_ROW_DEADZONE: return ps2_settings.deadzone;
     default: return 0;
     }
 }
@@ -276,14 +318,14 @@ static void row_set(int id, int v) {
     case MENU_ROW_PACING: change("graphics", "pacing", v); break;
     case MENU_ROW_FPS: change("window", "show_fps", v); break;
     case MENU_ROW_BACKGROUND: change("audio", "background", v); break;
-    case MENU_ROW_VIBRATION: change("controls", "vibration", v); break;
-    case MENU_ROW_INVERT_X: change("controls", "invert_camera_x", v); break;
-    case MENU_ROW_INVERT_Y: change("controls", "invert_camera_y", v); break;
     case MENU_ROW_MASTER: change("audio", "master", v); break;
     case MENU_ROW_MUSIC: change("audio", "music", v); break;
     case MENU_ROW_EFFECTS: change("audio", "effects", v); break;
-    case MENU_ROW_VIB_STRENGTH: change("controls", "vibration_strength", v); input_rumble_test(v); break;
-    case MENU_ROW_DEADZONE: change("controls", "stick_deadzone", v); break;
+    case MENU_ROW_VIB_STRENGTH: ctl_set(id, v); rumble_test(); break;
+    case MENU_ROW_VIBRATION: case MENU_ROW_INVERT_X: case MENU_ROW_INVERT_Y: case MENU_ROW_DEADZONE: case MENU_ROW_DEADZONE_R:
+    case MENU_ROW_LIGHTBAR:
+        ctl_set(id, v);
+        break;
     default: break;
     }
 }
@@ -465,27 +507,42 @@ static int build_rows(int page, menu_row* rows) {
                    "Keep playing sound while another window is active. Off: silent until you come back.");
         break;
     case MENU_PAGE_CONTROLS:
-        choice_row(rows, &n, MENU_ROW_VIBRATION, "Vibration", "Controller vibration.");
-        slider_row(rows, &n, MENU_ROW_VIB_STRENGTH, "Vibration strength", "How strongly the controller vibrates.", 0, 100, 10, "%");
-        if (!ps2_settings.vibration) disable(last(rows, n), "Vibration is off");
+        choice_row(rows, &n, MENU_ROW_VIBRATION, "Vibration", "Controller vibration (the game's rumble).");
+        slider_row(rows, &n, MENU_ROW_VIB_STRENGTH, "Vibration strength",
+                   "How strongly the controller vibrates. Each change gives a short test rumble.", 0, 100, 10, "%");
+        if (!ctl_get(MENU_ROW_VIBRATION)) disable(last(rows, n), "Vibration is off");
         choice_row(rows, &n, MENU_ROW_INVERT_X, "Invert camera horizontally", "The right stick turns the camera the other way.");
         choice_row(rows, &n, MENU_ROW_INVERT_Y, "Invert camera vertically", "The right stick tilts the camera the other way.");
-        slider_row(rows, &n, MENU_ROW_DEADZONE, "Stick dead zone",
-                   "How far a stick must move before the game notices. Raise it if Sly creeps with the stick let go.", 0, 50, 2, "%");
-        row_new(rows, &n, MENU_ROW_KEYS, MENU_ITEM_ACTION, "Keyboard controls", "Choose the keys for each of Sly's moves.");
-        row_new(rows, &n, MENU_ROW_PAD, MENU_ITEM_ACTION, "Controller buttons", "Choose the controller button for each of Sly's moves.");
+        slider_row(rows, &n, MENU_ROW_DEADZONE, "Left stick dead zone",
+                   "How far the left stick must move before Sly does. Raise it if he creeps with the stick let go.", 0, 50, 2, "%");
+        slider_row(rows, &n, MENU_ROW_DEADZONE_R, "Right stick dead zone",
+                   "How far the right stick must move before the camera turns.", 0, 50, 2, "%");
+        choice_row(rows, &n, MENU_ROW_LIGHTBAR, "Light bar", "The DualSense / DualShock 4 light bar (Sly blue).");
+        row_new(rows, &n, MENU_ROW_KEYS, MENU_ITEM_ACTION, "Keyboard controls", "Choose the keys for each button (two per button).");
+        row_new(rows, &n, MENU_ROW_PAD, MENU_ITEM_ACTION, "Controller buttons", "Choose the controller buttons for each PS2 button.");
         break;
     case MENU_PAGE_KEYS:
     case MENU_PAGE_PAD: {
-        int dev = page == MENU_PAGE_KEYS ? 0 : 1, cnt = input_bind_count(dev);
+        int dev = page == MENU_PAGE_PAD, cnt = dev ? INPUT_ACT_PAD_COUNT : INPUT_ACT_COUNT;
+        int xbox = st.device == MENU_DEV_XBOX;
+        input_config c;
+        input_config_get(&c);
         for (int a = 0; a < cnt && n < MENU_MAX_ROWS - 1; a++) {
-            r = row_new(rows, &n, MENU_ROW_BIND0 + a, MENU_ITEM_BIND, input_bind_name(dev, a),
-                        dev ? "Select, then press the controller button for this move."
-                            : "Select, then press the key for this move.");
-            input_bind_text(dev, a, r->value, sizeof r->value);
+            r = row_new(rows, &n, MENU_ROW_BIND0 + a, MENU_ITEM_BIND, input_action_label(a),
+                        dev ? "Confirm, then press the controller button for this PS2 button. Left / right: first or second button."
+                            : "Confirm, then press the key for this PS2 button. Left / right: first or second key.");
+            for (int s = 0; s < INPUT_BIND_SLOTS && s < 2; s++) {
+                char* out = s ? r->value2 : r->value;
+                const char* t = NULL;
+                if (dev) t = c.pad[a][s] != INPUT_BTN_NONE ? input_button_label(c.pad[a][s], xbox) : NULL;
+                else t = c.key[a][s] ? input_key_label(c.key[a][s]) : NULL;
+                snprintf(out, MENU_TEXT, "%s", t ? t : "-");
+            }
+            r->can_left = st.bind_slot > 0;
+            r->can_right = st.bind_slot < 1;
         }
         row_new(rows, &n, MENU_ROW_BIND_RESET, MENU_ITEM_ACTION, "Reset to defaults",
-                dev ? "The controller's original buttons." : "The original keys (notes in README.txt).");
+                dev ? "The controller's original buttons." : "The original keys (README.txt).");
         return n;
     }
     default: break;
@@ -530,7 +587,21 @@ static const char* page_section(int page) {
 }
 
 static void reset_page(void) {
-    if (st.page == MENU_PAGE_KEYS || st.page == MENU_PAGE_PAD) { input_bind_reset(st.page == MENU_PAGE_PAD); return; }
+    if (st.page == MENU_PAGE_KEYS || st.page == MENU_PAGE_PAD || st.page == MENU_PAGE_CONTROLS) {
+        input_config c, d;
+        input_config_get(&c);
+        input_config_defaults(&d);
+        if (st.page == MENU_PAGE_KEYS) memcpy(c.key, d.key, sizeof c.key);
+        else if (st.page == MENU_PAGE_PAD) memcpy(c.pad, d.pad, sizeof c.pad);
+        else {                                   /* the options; the bindings have their own pages */
+            memcpy(d.key, c.key, sizeof d.key);
+            memcpy(d.pad, c.pad, sizeof d.pad);
+            c = d;
+        }
+        input_config_set(&c, 1);
+        settings_touch();
+        return;
+    }
     const char* sec = page_section(st.page);
     if (!sec) return;
     if (st.page == MENU_PAGE_DISPLAY) {          /* [display] + the [window] options (not the placement) */
@@ -583,7 +654,9 @@ static void activate(menu_row* r) {
 static void do_close(void) {
     if (!st.open) return;
     st.open = 0;
+    if (st.capture) input_capture_cancel();
     st.capture = st.confirm_reset = 0;
+    input_set_menu_active(0);
     if (host.closed) host.closed();
 }
 
@@ -593,7 +666,7 @@ static int nav(menu_nav ev) {
     int n = rows_now();
     menu_row* r = st.sel >= 0 && st.sel < n ? &rows_buf[st.sel] : NULL;
     if (st.capture) {                            /* waiting for a key: only Back cancels */
-        if (ev == MENU_NAV_BACK || ev == MENU_NAV_CLOSE) st.capture = 0;
+        if (ev == MENU_NAV_BACK || ev == MENU_NAV_CLOSE) { st.capture = 0; input_capture_cancel(); }
         return 1;
     }
     if (st.confirm_reset) {
@@ -610,7 +683,8 @@ static int nav(menu_nav ev) {
     case MENU_NAV_RIGHT: {
         int dir = ev == MENU_NAV_RIGHT ? 1 : -1;
         if (!r || !r->enabled) break;
-        if (r->kind == MENU_ITEM_CHOICE) step_choice(r, dir, 0);
+        if (r->kind == MENU_ITEM_BIND) st.bind_slot = dir > 0 ? 1 : 0;
+        else if (r->kind == MENU_ITEM_CHOICE) step_choice(r, dir, 0);
         else if (r->kind == MENU_ITEM_SLIDER) step_slider(r, dir);
         break;
     }
@@ -618,7 +692,10 @@ static int nav(menu_nav ev) {
         if (!r || !r->enabled) break;
         if (r->kind == MENU_ITEM_CHOICE) step_choice(r, 1, 1);
         else if (r->kind == MENU_ITEM_ACTION) activate(r);
-        else if (r->kind == MENU_ITEM_BIND) st.capture = 1;
+        else if (r->kind == MENU_ITEM_BIND) {
+            st.capture = 1;
+            input_capture_begin(st.page == MENU_PAGE_KEYS ? INPUT_CAPTURE_KEYBOARD : INPUT_CAPTURE_CONTROLLER);
+        }
         break;
     case MENU_NAV_BACK:
         if (st.page == MENU_PAGE_KEYS || st.page == MENU_PAGE_PAD) {
@@ -653,6 +730,8 @@ void menu_open(void) {
         if (st.page >= MENU_PAGE_N) st.page = MENU_PAGE_CONTROLS;
         keep_visible(rows_now());
         st.serial++;
+        input_set_menu_active(1);               /* the game gets a released pad and no keys */
+        input_nav_flush();
     }
     UNLOCK();
 }
@@ -677,59 +756,78 @@ int menu_nav_event(menu_nav ev, int dev) {
     return used;
 }
 
-/* keyboard: arrows / WASD move, Enter / Space confirm, Esc / Backspace back, Tab / Shift+Tab or Q / E pages,
- * Page Up / Down, Home / End, R or Delete: defaults; while capturing, any key binds (Esc cancels) */
-int menu_key(unsigned vk, int shift) {
-    LOCK();
-    int used = 0;
-    if (st.open) {
-        if (st.device != MENU_DEV_KEYBOARD) { st.device = MENU_DEV_KEYBOARD; st.serial++; }
-        if (st.capture) {
-            if (vk == VK_ESCAPE) st.capture = 0;
-            else if (st.page == MENU_PAGE_KEYS) {
-                int n = rows_now();
-                if (st.sel < n && rows_buf[st.sel].kind == MENU_ITEM_BIND) input_bind_set(0, rows_buf[st.sel].id - MENU_ROW_BIND0, (int)vk);
-                st.capture = 0;
-            }
-            st.serial++;
-            UNLOCK();
-            return 1;
-        }
-        menu_nav ev = MENU_NAV_NONE;
-        switch (vk) {
-        case VK_UP: case 'W': ev = MENU_NAV_UP; break;
-        case VK_DOWN: case 'S': ev = MENU_NAV_DOWN; break;
-        case VK_LEFT: case 'A': ev = MENU_NAV_LEFT; break;
-        case VK_RIGHT: case 'D': ev = MENU_NAV_RIGHT; break;
-        case VK_RETURN: case VK_SPACE: ev = MENU_NAV_CONFIRM; break;
-        case VK_ESCAPE: case VK_BACK: ev = MENU_NAV_BACK; break;
-        case VK_TAB: ev = (shift & 1) ? MENU_NAV_TAB_PREV : MENU_NAV_TAB_NEXT; break;
-        case 'Q': ev = MENU_NAV_TAB_PREV; break;
-        case 'E': ev = MENU_NAV_TAB_NEXT; break;
-        case VK_PRIOR: ev = MENU_NAV_PAGE_UP; break;
-        case VK_NEXT: ev = MENU_NAV_PAGE_DOWN; break;
-        case VK_HOME: st.sel = 0; ev = MENU_NAV_NONE; used = 1; break;
-        case VK_END: st.sel = MENU_MAX_ROWS; ev = MENU_NAV_NONE; used = 1; break;
-        case 'R': case VK_DELETE: ev = MENU_NAV_DEFAULTS; break;
-        default: break;
-        }
-        if (ev != MENU_NAV_NONE) used = nav(ev);
-        else if (used) keep_visible(rows_now());
-        if (used) st.serial++;
+/* a binding captured by runtime/input.c (r: INPUT_CAPTURE_KEY / BUTTON / CANCELLED), lock held */
+static void capture_done(int r, int code) {
+    if (!st.capture) return;
+    st.capture = 0;
+    if (r != INPUT_CAPTURE_KEY && r != INPUT_CAPTURE_BUTTON) return;
+    int n = rows_now();
+    if (st.sel >= n || rows_buf[st.sel].kind != MENU_ITEM_BIND) return;
+    int a = rows_buf[st.sel].id - MENU_ROW_BIND0, s = st.bind_slot ? 1 : 0;
+    input_config c;
+    input_config_get(&c);
+    if (st.page == MENU_PAGE_KEYS && r == INPUT_CAPTURE_KEY && a < INPUT_ACT_COUNT) {
+        for (int k = 0; k < INPUT_ACT_COUNT; k++)        /* a key does one thing: taken from where it was */
+            for (int j = 0; j < INPUT_BIND_SLOTS; j++) if (c.key[k][j] == (uint8_t)code) c.key[k][j] = 0;
+        c.key[a][s] = (uint8_t)code;
+    } else if (st.page == MENU_PAGE_PAD && r == INPUT_CAPTURE_BUTTON && a < INPUT_ACT_PAD_COUNT) {
+        for (int k = 0; k < INPUT_ACT_PAD_COUNT; k++)
+            for (int j = 0; j < INPUT_BIND_SLOTS; j++) if (c.pad[k][j] == (uint8_t)code) c.pad[k][j] = INPUT_BTN_NONE;
+        c.pad[a][s] = (uint8_t)code;
+    } else {
+        return;
     }
-    UNLOCK();
-    return used;
+    input_config_set(&c, 1);
+    settings_touch();
 }
 
-void menu_capture_button(int code) {
+void menu_capture_result(int r, int code) {
     LOCK();
-    if (st.open && st.capture && st.page == MENU_PAGE_PAD) {
-        int n = rows_now();
-        if (st.sel < n && rows_buf[st.sel].kind == MENU_ITEM_BIND) input_bind_set(1, rows_buf[st.sel].id - MENU_ROW_BIND0, code);
-        st.capture = 0;
-        st.serial++;
-    }
+    capture_done(r, code);
+    st.serial++;
     UNLOCK();
+}
+
+static int device_of(const input_nav_event* ev) {
+    if (ev->source != INPUT_SRC_CONTROLLER) return MENU_DEV_KEYBOARD;
+    input_device_info d[INPUT_MAX_DEVICES];
+    int n = input_devices(d, INPUT_MAX_DEVICES);
+    for (int k = 0; k < n; k++)
+        if (d[k].id == ev->device_id) return d[k].kind == INPUT_DEV_XINPUT ? MENU_DEV_XBOX : MENU_DEV_PLAYSTATION;
+    return MENU_DEV_PLAYSTATION;
+}
+
+void menu_tick(void) {
+    input_nav_event ev;
+    while (input_nav_poll(&ev)) {
+        if (!menu_is_open()) {                   /* closed: Esc / the PS button open it (host: via the pause menu) */
+            if (ev.nav == INPUT_NAV_MENU) {
+                if (host.request_open) host.request_open();
+                else menu_open();
+            }
+            continue;
+        }
+        int dev = device_of(&ev);
+        switch (ev.nav) {
+        case INPUT_NAV_UP: menu_nav_event(MENU_NAV_UP, dev); break;
+        case INPUT_NAV_DOWN: menu_nav_event(MENU_NAV_DOWN, dev); break;
+        case INPUT_NAV_LEFT: menu_nav_event(MENU_NAV_LEFT, dev); break;
+        case INPUT_NAV_RIGHT: menu_nav_event(MENU_NAV_RIGHT, dev); break;
+        case INPUT_NAV_CONFIRM: menu_nav_event(MENU_NAV_CONFIRM, dev); break;
+        case INPUT_NAV_BACK: menu_nav_event(MENU_NAV_BACK, dev); break;
+        case INPUT_NAV_TAB_NEXT: menu_nav_event(MENU_NAV_TAB_NEXT, dev); break;
+        case INPUT_NAV_TAB_PREV: menu_nav_event(MENU_NAV_TAB_PREV, dev); break;
+        case INPUT_NAV_MENU: menu_nav_event(MENU_NAV_CLOSE, dev); break;
+        case INPUT_NAV_CLICK: menu_mouse_button(ev.x, ev.y, 1); break;
+        case INPUT_NAV_POINTER: menu_mouse_move(ev.x, ev.y); break;
+        default: break;
+        }
+    }
+    if (menu_capturing()) {
+        int code = 0, r = input_capture_poll(&code);
+        if (r == INPUT_CAPTURE_KEY || r == INPUT_CAPTURE_BUTTON || r == INPUT_CAPTURE_CANCELLED || r == INPUT_CAPTURE_IDLE)
+            menu_capture_result(r, code);
+    }
 }
 
 uint32_t menu_version(void) {
@@ -803,7 +901,7 @@ void menu_mouse_move(int x, int y) {
         int ht = -1, hr = -1, hb = -1;
         for (int k = 0; k < MENU_PAGE_N; k++) if (inside(L.tabs[k], x, y)) ht = k;
         for (int k = 0; k < L.visible && st.scroll + k < n; k++) if (inside(L.rows[k], x, y)) hr = st.scroll + k;
-        for (int k = 0; k < 3; k++) if (inside(L.btn[k], x, y)) hb = k;
+        if (inside(L.btn[0], x, y)) hb = 0;
         if (st.confirm_reset) hb = inside(L.dlg_yes, x, y) ? 3 : inside(L.dlg_no, x, y) ? 4 : -1;
         for (int k = 0; k < 2; k++) if (inside(L.tab_hint[k], x, y)) hb = 5 + k;
         if (ht != st.hover_tab || hr != st.hover_row || hb != st.hover_btn || (hr >= 0 && hr != st.sel && !st.capture && !st.confirm_reset)) {
@@ -853,8 +951,6 @@ void menu_mouse_button(int x, int y, int button) {
                 done = 1;
             }
             if (!done && inside(L.btn[0], x, y)) nav(MENU_NAV_BACK);
-            else if (!done && inside(L.btn[1], x, y)) nav(MENU_NAV_DEFAULTS);
-            else if (!done && inside(L.btn[2], x, y)) nav(MENU_NAV_CLOSE);
         }
         if (st.open) keep_visible(rows_now());
         st.serial++;
@@ -888,6 +984,7 @@ void menu_get_view(menu_view* v, int cw, int ch) {
     v->sel = st.sel;
     v->scroll = st.scroll;
     v->capture = st.capture;
+    v->bind_slot = st.bind_slot;
     v->confirm_reset = st.confirm_reset;
     v->device = st.device;
     v->hover_tab = st.hover_tab;

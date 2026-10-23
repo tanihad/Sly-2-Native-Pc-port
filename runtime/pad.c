@@ -491,7 +491,10 @@ void pad_vsync(ps2_ctx* ctx) {
             if (slots[port][slot].open) write_ee(&slots[port][slot], port, slot);
     /* the controllers' own watchdogs keep running when padman is idle or gone */
     for (int port = 0; port < PAD_PORTS && pads_ready; port++)
-        if (pads[port].present) ds2_watchdog(&pads[port], talked[port]);
+        if (pads[port].present) {
+            ds2_watchdog(&pads[port], talked[port]);
+            input_set_rumble(port, pads[port].motor[0], pads[port].motor[1]);   /* the PC controller's motors */
+        }
 }
 
 /* -- RPC commands -- */

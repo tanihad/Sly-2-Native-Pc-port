@@ -17,7 +17,6 @@ ps2_settings_t ps2_settings = {
     .motion_blur = -1, .flicker_filter = -1, .interlacing = -1,
     .preset = SETTINGS_PRESET_BALANCED, .auto_max = SETTINGS_SCALE_AUTO_MAX,
     .vol_master = 100, .vol_music = 100, .vol_effects = 100, .audio_background = 1,
-    .vibration = 1, .vibration_strength = 100, .deadzone = 24,
 };
 const char* const settings_scaler_names[SETTINGS_SCALER_N] = { "auto", "point", "box", "lanczos", "catmull-rom", "bilinear" };
 const char* const settings_preset_names[SETTINGS_PRESET_N] = { "original", "performance", "balanced", "quality", "custom" };
@@ -63,11 +62,6 @@ static const settings_opt opts[] = {
     INT_("audio", "music", vol_music, SET_LIVE, SET_APPLY_AUDIO, 0, 100, 100, NULL, NULL),
     INT_("audio", "effects", vol_effects, SET_LIVE, SET_APPLY_AUDIO, 0, 100, 100, NULL, NULL),
     BOOL_("audio", "background", audio_background, SET_LIVE, SET_APPLY_AUDIO, 1),
-    BOOL_("controls", "vibration", vibration, SET_LIVE, SET_APPLY_INPUT, 1),
-    INT_("controls", "vibration_strength", vibration_strength, SET_LIVE, SET_APPLY_INPUT, 0, 100, 100, NULL, NULL),
-    BOOL_("controls", "invert_camera_x", invert_x, SET_LIVE, SET_APPLY_INPUT, 0),
-    BOOL_("controls", "invert_camera_y", invert_y, SET_LIVE, SET_APPLY_INPUT, 0),
-    INT_("controls", "stick_deadzone", deadzone, SET_LIVE, SET_APPLY_INPUT, 0, 50, 24, NULL, NULL),
     { "game", "disc", SET_STRING, SET_STATE, SET_APPLY_NONE, OFF(disc), 0, 0, 0, NULL, NULL, NULL },
     ENUM_("window", "fullscreen", win_fullscreen, SET_LIVE, SET_APPLY_WINDOW, n_fullscreen, 3, 0,
           "borderless=1|1=1|true=1|yes=1|0=0|false=0|no=0", NULL),
@@ -355,6 +349,7 @@ static void expected(int i, char* out, size_t cap) {
 static int apply(ps2_settings_t* s, const char* section, const char* key, const char* v, settings_warn_fn warn, void* user,
                  int line, int* preset_seen) {
     int i = settings_find(section, key);
+    if (i < 0 && !_stricmp(section, "controls")) return 0;   /* [controls]: runtime/input.c reads it (settings_read_section) */
     if (i < 0) { warnf(warn, user, line, "unknown setting '%s.%s' (ignored)", section, key); return 1; }
     if (opts[i].type == SET_STRING) {
         if (strlen(v) >= sizeof s->disc) { warnf(warn, user, line, "disc path too long (ignored)"); return 1; }
@@ -440,6 +435,44 @@ int settings_parse(const char* text, ps2_settings_t* s, settings_warn_fn warn, v
     return problems;
 }
 
+/* Every key = value of [section], in file order (comments, quotes and blanks as settings_parse
+ * handles them). Returns the number of keys passed to fn. */
+int settings_parse_section(const char* text, const char* section, settings_key_fn fn, void* user) {
+    char cur[32] = "display";
+    int n = 0, line = 0;
+    for (const char* p = text; p && *p;) {
+        line++;
+        const char* eol = strchr(p, '\n');
+        size_t len = eol ? (size_t)(eol - p) : strlen(p);
+        char buf[1200];
+        int fits = len < sizeof buf;
+        if (fits) { memcpy(buf, p, len); buf[len] = 0; }
+        p = eol ? eol + 1 : NULL;
+        if (!fits) continue;
+        if (line == 1 && (unsigned char)buf[0] == 0xEF && (unsigned char)buf[1] == 0xBB && (unsigned char)buf[2] == 0xBF)
+            memmove(buf, buf + 3, strlen(buf + 3) + 1);
+        char* c = cut_comment(buf);
+        if (c) *c = 0;
+        char* b = trim(buf);
+        if (!*b) continue;
+        if (*b == '[') {
+            char* close = strchr(b, ']');
+            if (close && !close[1] && close - b - 1 > 0 && close - b - 1 < (int)sizeof cur) { *close = 0; snprintf(cur, sizeof cur, "%s", b + 1); }
+            continue;
+        }
+        char* eq = strchr(b, '=');
+        if (!eq || _stricmp(cur, section)) continue;
+        *eq = 0;
+        char* key = trim(b);
+        char* v = trim(eq + 1);
+        size_t vl = strlen(v);
+        if (vl >= 2 && v[0] == '"' && v[vl - 1] == '"') { v[vl - 1] = 0; v++; }
+        fn(user, key, v, line);
+        n++;
+    }
+    return n;
+}
+
 /* A value as written to the file: in double quotes if it would not read back otherwise. */
 static const char* ini_value(const char* v, char* buf, size_t cap) {
     size_t n = strlen(v);
@@ -519,16 +552,6 @@ int settings_format(const ps2_settings_t* s, char* out, size_t cap) {
         "; Keep playing sound while the game's window is not the active one: on (default) or off.\n"
         "background = %s\n"
         "\n"
-        "[controls]\n"
-        "; Controller vibration on/off and its strength (0..100).\n"
-        "vibration = %s\n"
-        "vibration_strength = %s\n"
-        "; Invert the camera (right stick) horizontally / vertically.\n"
-        "invert_camera_x = %s\n"
-        "invert_camera_y = %s\n"
-        "; Stick dead zone in percent of the stick's travel (0..50, default 24).\n"
-        "stick_deadzone = %s\n"
-        "\n"
         "[game]\n"
         "; Your Sly 2: Band of Thieves (USA) disc image (.iso). Asked for on the first start when empty.\n"
         "disc = %s\n"
@@ -546,8 +569,6 @@ int settings_format(const ps2_settings_t* s, char* out, size_t cap) {
         T(8, "graphics", "motion_blur"), T(9, "graphics", "flicker_filter"), T(10, "graphics", "interlacing"),
         T(11, "graphics", "scaler"),
         T(12, "audio", "master"), T(13, "audio", "music"), T(14, "audio", "effects"), T(15, "audio", "background"),
-        T(16, "controls", "vibration"), T(17, "controls", "vibration_strength"), T(18, "controls", "invert_camera_x"),
-        T(19, "controls", "invert_camera_y"), T(20, "controls", "stick_deadzone"),
         ini_value(s->disc, disc, sizeof disc), T(21, "window", "fullscreen"), T(22, "window", "show_fps"), win);
 #undef T
 }
@@ -901,6 +922,18 @@ int settings_read_graphics(ps2_settings_t* g) {
     g->preset = settings_detect_preset(g);
     settings_touch();
     return 1;
+}
+
+int settings_read_section(const char* section, settings_key_fn fn, void* user) {
+    wchar_t path[MAX_PATH + 80];
+    static char text[65536];
+    static SRWLOCK lock = SRWLOCK_INIT;                 /* (text is shared) */
+    if (!settings_path(path, sizeof path / sizeof path[0])) return 0;
+    AcquireSRWLockExclusive(&lock);
+    int ok = read_text(path, text, sizeof text) != (size_t)-1;
+    if (ok) settings_parse_section(text, section, fn, user);
+    ReleaseSRWLockExclusive(&lock);
+    return ok;
 }
 
 static int write_text(const wchar_t* path, const char* text, size_t n) {

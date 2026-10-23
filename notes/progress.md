@@ -2,6 +2,12 @@
 
 ## Resume here (read first in a new session)
 
+**2026-10-23: pc-portable MERGED into main (ca6ee02):** fresh clone -> setup.ps1 -> own .iso in orig\disc -> build.ps1 -> dist\Sly2\sly2.exe (tested twice from clean clones, offline via -From); any x86-64 CPU, Windows 10 1809+, system DLLs only; README rewritten. Follow-up queued: GPUs without double-precision shaders (Intel Iris Xe / Arc) fall back to the software renderer - emulate doubles in the shaders (renderer task) after the current streams. Still running: pc-pacing, pc-menu, pc-input, pc-text.
+
+**PAUSED by the user (2026-10-22, shortly after starting the PC-experience streams).** Nothing is running. All five worktrees (pc-pacing, pc-menu, pc-input, pc-text, pc-portable; branches next/pc-*) are committed and pushed; uncommitted edits were saved as 'PAUSED ... unverified' WIP commits (pc-input 8 files, pc-text 4, pc-portable 1). pc-menu had only read code and started a baseline build (no commits yet). On 'continue': resume each agent from its notes/wip/<stream>.md (they are told to run headless; the owner did not like game windows popping up while using the PC).
+
+**2026-10-22 (later): OWNER REJECTED the PS2-style experience** (see notes/pc-experience.md). Four agents running from main e66b3a5, each with notes/wip/<stream>.md checkpoints: pc-pacing (game slows down at high internal scale + judder on the owner's 2560x1440 165 Hz monitor; auto scale dropped 3x->2x in their session), pc-menu (in-game Options menu + graphics presets Original/Performance/Balanced/Quality/Custom + settings model), pc-input (DualSense/DS4 HID USB+BT, rumble, remapping, menu input API; owner uses a PS5 controller, none connected during development - real-hardware check pending with the owner), pc-text (no PS2 memory-card prompts/wording). Merge all four into main when done, then rebuild dist and have the owner test (incl. DualSense).
+
 **2026-10-22: THE GPU RENDERER IS COMPLETE AND THE DEFAULT (M0-M11 merged into main).** The game
 starts on the Direct3D 11 renderer with internal_scale = auto (3x on the RTX 4060 Ti), 16:9 native,
 ps2 outlines, Modern preset; software renderer selectable ([graphics] renderer = software) and

@@ -55,11 +55,7 @@ typedef struct {
     int vol_music;               /* music = 0..100 (default 100): the game's own music volume */
     int vol_effects;             /* effects = 0..100 (default 100): the game's own effects volume */
     int audio_background;        /* background = on (default): keep playing sound while the window is not active */
-    /* [controls] - applied by the input subsystem (pc-input; menu_ext.h input_apply_settings) */
-    int vibration;               /* vibration = on (default) | off */
-    int vibration_strength;      /* vibration_strength = 0..100 (default 100) */
-    int invert_x, invert_y;      /* invert_camera_x / invert_camera_y = off (default) | on: the right stick */
-    int deadzone;                /* stick_deadzone = 0..50 percent (default 24, XInput's own) */
+    /* ([controls] belongs to runtime/input.c: input_config_get / input_config_set) */
     /* [display] (pc-menu) */
     int monitor;                 /* monitor = 0 (default: where the window is) | 1..n: fullscreen / window on monitor n */
 } ps2_settings_t;
@@ -200,6 +196,12 @@ int settings_read_display(int* aspect_w, int* aspect_h, int* hud_centered);
 int settings_read_graphics(ps2_settings_t* g);
 /* Write sly2.ini if there is none (window.c, when the window opens). */
 void settings_save_if_missing(void);
+/* Sections owned by another module ([controls]: runtime/input.c): every key = value of [section], in
+ * file order, passed to fn (key without the section). settings_parse ignores [controls] keys.
+ * settings_parse_section is pure (unit tests); settings_read_section reads sly2.ini now (1 if it exists). */
+typedef void (*settings_key_fn)(void* user, const char* key, const char* value, int line);
+int settings_parse_section(const char* text, const char* section, settings_key_fn fn, void* user);
+int settings_read_section(const char* section, settings_key_fn fn, void* user);
 /* Write keys into sly2.ini (created from the template if missing): n triples section, key, value.
  * Returns 1 on success. Does not change ps2_settings. */
 int settings_set(const char* const kv[][3], int n);

@@ -374,9 +374,21 @@ static void draw_row(canvas* c, const menu_view* v, const menu_layout* L, int k,
         if (v->capture && sel) {
             text(c, vx0, r.y, vx1 - vx0 + lft.w, r.h, v->page == MENU_PAGE_KEYS ? "Press a key...  (Esc: cancel)" :
                  "Press a button...  (Circle: cancel)", px, FW_SEMIBOLD, 1, FACE_UI, C_NOTE, AL_CENTER);
-        } else {
-            int kh = (int)(r.h * 0.70f), kw = key_cap(c, 0, 0, kh, row->value, u, 0);
-            key_cap(c, (vx0 + vx1) / 2 - kw / 2, r.y + (r.h - kh) / 2, kh, row->value, u, 1);
+        } else {                                  /* two columns: the first and the second key / button */
+            int kh = (int)(r.h * 0.70f), colw = (vx1 - vx0) / 2;
+            for (int s = 0; s < 2; s++) {
+                const char* t = s ? row->value2 : row->value;
+                int cx0 = vx0 + s * colw;
+                if (sel && s == v->bind_slot)
+                    rrect(c, cx0 + 6 * u, r.y + 3 * u, colw - 12 * u, r.h - 6 * u, 8 * u, 2 * u, C_GOLD, C_GOLD);
+                if (!strcmp(t, "-")) {
+                    text(c, cx0, r.y, colw, r.h, "-", px, FW_NORMAL, 0, FACE_UI, C_DISABLED, AL_CENTER);
+                    continue;
+                }
+                int kw = key_cap(c, 0, 0, kh, t, u, 0);
+                if (kw > colw - (int)(20 * u)) kw = colw - (int)(20 * u);
+                key_cap(c, cx0 + colw / 2 - kw / 2, r.y + (r.h - kh) / 2, kh, t, u, 1);
+            }
         }
         break;
     }
@@ -466,8 +478,8 @@ static void draw_menu(canvas* c, const menu_view* v) {
     }
     int sub = v->page >= MENU_PAGE_N;
     hint(c, L.btn[0], dev, "Esc", G_CIRCLE, sub ? "Back" : "Close", u, v->hover_btn == 0);
-    hint(c, L.btn[1], dev, "R", G_TRIANGLE, "Defaults", u, v->hover_btn == 1);
-    if (dev != MENU_DEV_KEYBOARD) hint(c, L.btn[2], dev, "", G_START, "Close", u, v->hover_btn == 2);
+    if (dev != MENU_DEV_KEYBOARD) hint(c, L.btn[1], dev, "", G_START, sub ? "Close" : "Close", u, 0);
+    else hint(c, L.btn[1], dev, "Enter", G_CROSS, "Select", u, 0);
     /* the reset dialog */
     if (v->confirm_reset) {
         fill(c, (float)P.x, (float)P.y, (float)P.w, (float)P.h, RGBA(0, 0, 0, 0));
