@@ -524,8 +524,30 @@ static void picture_aspect(int content43, int* aw, int* ah) {
     *ah = content43 || !ps2_aspect.wide ? 3 : ps2_settings.aspect_h;
 }
 
+/* (pc-fps) PS2_DUMP_SECS=<s>: dump a picture every s seconds of wall-clock time instead of every PS2_DUMP_EVERY VBlanks
+ * (runs at different frame rates get pictures at the same times; vblank() marks the VBlanks, the ring holds the last 64) */
+static double dump_secs;
+static volatile uint32_t dump_marked[64];
+static volatile LONG dump_marked_n;
+static void dump_mark(uint32_t vb) {
+    static int64_t next;
+    LARGE_INTEGER t;
+    QueryPerformanceCounter(&t);
+    if (!next) next = t.QuadPart;
+    if (t.QuadPart < next) return;
+    next += (int64_t)(dump_secs * (double)qpc_freq.QuadPart);
+    if (next < t.QuadPart) next = t.QuadPart;
+    LONG n = InterlockedIncrement(&dump_marked_n);
+    dump_marked[(n - 1) & 63] = vb;
+}
+
 /* PS2_DUMP_FRAMES: this VBlank's picture is written */
 static int dump_wanted(uint32_t vb) {
+    if (dump_dir && dump_secs > 0) {
+        if (vb < dump_from) return 0;
+        for (int i = 0; i < 64; i++) if (dump_marked[i] == vb && vb) return 1;
+        return 0;
+    }
     return dump_dir && vb % (uint32_t)dump_every == 0 && vb >= dump_from &&
            (!dump_from_rec || (gs_record_first && vb >= gs_record_first));
 }
@@ -591,6 +613,7 @@ static void vblank(ps2_ctx* ctx) {
     perf_vblank(vblank_count, (uint32_t)vblanks_due);
     if (perf_burn_hook) perf_burn_hook(0);       /* PS2_PERF_BURN headroom test */
     calls_vblank(vblank_count);
+    if (dump_secs > 0 && dump_dir) dump_mark(vblank_count);   /* (pc-fps) PS2_DUMP_SECS */
     gs_vsync();
     int perf_prev = perf_enter(PERF_PRESENT);
     if (gpu_backend) {                           /* GPU renderer: switches, device loss, its debug keys */
@@ -623,12 +646,17 @@ static void vblank(ps2_ctx* ctx) {
     if (fps_trace) {
         LARGE_INTEGER pt;
         QueryPerformanceCounter(&pt);
-        uint32_t w[5] = { ps2_r32(ctx, 0x2DDED0), ps2_r32(ctx, 0x2DDED4), ps2_r32(ctx, 0x2DE1C0), ps2_r32(ctx, 0x2DE1C4),
-                          ps2_r32(ctx, 0x2DE1C8) };
-        float f[5];
+        /* the camera's target (camera 0x2DDF40 +0x260: the player character's object, e.g. Sly 0xCFF160 in the ep2 hub)
+         * at +0x230; else the camera focus 0x2DE1C0 (x, y follow the player, z the ground + 125: no jumps) */
+        uint32_t obj = ps2_r32(ctx, 0x2DE1A0), pos = obj >= 0x100000 && obj < 0x1FF0000 && !(obj & 15) ? obj + 0x230 : 0x2DE1C0;
+        uint32_t w[9] = { ps2_r32(ctx, 0x2DDED0), ps2_r32(ctx, 0x2DDED4), ps2_r32(ctx, pos), ps2_r32(ctx, pos + 4),
+                          ps2_r32(ctx, pos + 8), ps2_r32(ctx, 0x2DDFD0), ps2_r32(ctx, 0x2DDFD4), ps2_r32(ctx, 0x2DDFD8),
+                          pos != 0x2DE1C0 ? ps2_r32(ctx, obj + 0x2198) : 0 };   /* (+0x2190: the model's centre, follows jumps; Sly 2 hub) */
+        float f[9];
         memcpy(f, w, sizeof f);
-        fprintf(fps_trace, "%u %.5f %.5f %.6f %.2f %.2f %.2f\n", vblank_count,
-                (double)(pt.QuadPart - qpc_start.QuadPart) / (double)qpc_freq.QuadPart, f[0], f[1], f[2], f[3], f[4]);
+        fprintf(fps_trace, "%u %.5f %.5f %.6f %.2f %.2f %.2f %.2f %.2f %.2f %.2f\n", vblank_count,   /* + camera position */
+                (double)(pt.QuadPart - qpc_start.QuadPart) / (double)qpc_freq.QuadPart, f[0], f[1], f[2], f[3], f[4], f[5], f[6],
+                f[7], f[8]);
         if (vblank_count % 600 == 0) fflush(fps_trace);
     }
     /* PS2_PEEK="<hexaddr>:<words>[,...]": print EE memory every PS2_PEEK_EVERY VBlanks (default 60) */
@@ -971,6 +999,7 @@ int main(int argc, char** argv) {
     if (warp_init()) ps2_hooks_on = 1;
     dump_dir = getenv("PS2_DUMP_FRAMES");
     if (getenv("PS2_DUMP_EVERY")) dump_every = atoi(getenv("PS2_DUMP_EVERY")) > 0 ? atoi(getenv("PS2_DUMP_EVERY")) : 60;
+    if (getenv("PS2_DUMP_SECS")) dump_secs = atof(getenv("PS2_DUMP_SECS"));   /* (pc-fps) */
     if (getenv("PS2_DUMP_FROM")) {
         dump_from = (uint32_t)atoi(getenv("PS2_DUMP_FROM"));
         dump_from_rec = !strcmp(getenv("PS2_DUMP_FROM"), "rec");

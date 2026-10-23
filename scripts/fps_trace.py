@@ -23,9 +23,11 @@ def load(d):
     rows = []
     for line in (Path(d) / "trace.txt").read_text(encoding="latin-1").splitlines():
         p = line.split()
-        if len(p) == 7:
+        if len(p) in (7, 10, 11):
             try:
-                rows.append((int(p[0]), float(p[1]), float(p[2]), float(p[3]), float(p[4]), float(p[5]), float(p[6])))
+                cam = tuple(float(x) for x in p[7:10]) if len(p) >= 10 else (0.0, 0.0, 0.0)
+                h = float(p[10]) if len(p) == 11 and float(p[10]) != 0 else float(p[6])   # (jump height signal)
+                rows.append((int(p[0]), float(p[1]), float(p[2]), float(p[3]), float(p[4]), float(p[5]), h) + cam)
             except ValueError:
                 pass
     presses = []
@@ -92,6 +94,15 @@ def report(d):
                 f"highest +{zmax[6] - r0[6]:6.1f} after {zmax[2] - r0[2]:.3f} s")
         if down and zmax[6] - r0[6] > 5:
             line += f", back down after {down[2] - r0[2]:.3f} s"
+        if len(r0) >= 10:                    # camera: turn around the player (yaw of camera -> player), distance
+            yaw = lambda r: math.degrees(math.atan2(r[5] - r[8], r[4] - r[7]))
+            turn = 0.0
+            for a, b in zip(seg, seg[1:]):
+                d = yaw(b) - yaw(a)
+                turn += (d + 180) % 360 - 180
+            dist0 = math.dist(r0[4:7], r0[7:10])
+            dist1 = math.dist(seg[-1][4:7], seg[-1][7:10])
+            line += f"; camera turned {turn:+6.1f} deg ({turn / dt_game if dt_game > 0 else 0:+6.1f} deg/s), distance {dist0:.0f} -> {dist1:.0f}"
         print(line)
 
 
