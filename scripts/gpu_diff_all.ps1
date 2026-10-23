@@ -25,7 +25,8 @@ if (-not (Test-Path (Join-Path $root 'tools\llvm-mingw'))) {
         $main = Split-Path (Split-Path (Split-Path $gitdir -Parent) -Parent) -Parent
     }
 }
-if (-not $CorpusRoot) { $CorpusRoot = Join-Path (Split-Path $main -Parent) 'sly2-worktrees' }
+. (Join-Path $PSScriptRoot 'gpu_corpus.ps1'); $CorpusRoot = Resolve-GpuCorpus $CorpusRoot $main
+if (-not $CorpusRoot) { exit 0 }
 if ($Mode -eq 'fallback' -and $Scale -gt 1) { Write-Host '-Mode fallback draws with the software renderer: S = 1 only'; exit 1 }
 $baselinePath = Join-Path $root 'tests\gpu\baseline.json'
 $baseline = Get-Content $baselinePath -Raw | ConvertFrom-Json

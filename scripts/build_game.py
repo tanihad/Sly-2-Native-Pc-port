@@ -124,6 +124,11 @@ Saves from an older build (a memcard\\slot0 folder next to an older sly2.exe) ar
 automatically: copy that memcard folder into %LOCALAPPDATA%\\Sly2 (or next to this exe in
 portable mode) while the game is not running.
 
+"Windows protected your PC" on the first start: this program was built on your own PC and is
+not signed; click More info, then Run anyway. This folder can be copied to your other PCs
+as it is (they need the disc image too). It contains code recompiled from your copy of the
+game: do not share it publicly.
+
 Build {ver} ({hash}).
 """
 
@@ -231,6 +236,11 @@ def main() -> int:
         flags.append("-DPS2_NO_TRACE")
 
     t0 = time.time()
+    if not Path(args.elf).exists() and Path(args.elf) == ELF:
+        # a fresh checkout has only the disc image: take the executable from it (scripts/extract_elf.py)
+        import extract_elf
+        if extract_elf.main([]) != 0:
+            return 1
     gen = subprocess.run([sys.executable, "-m", "recomp", "generate", args.elf, "-o", str(out / "recomp")],
                          cwd=ROOT, capture_output=True, text=True)
     print(gen.stdout.strip() or gen.stderr)

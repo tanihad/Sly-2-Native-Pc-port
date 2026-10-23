@@ -1011,7 +1011,7 @@ int main(int argc, char** argv) {
     test_efu_random_tops();
     test_cache_invalidation();
     test_vu0();
-    test_game_microcode(argc > 1 ? argv[1] : "C:/Users/tanih/Projects/sly2-decomp/orig/SCUS_973.16");
+    test_game_microcode(argc > 1 ? argv[1] : "orig/SCUS_973.16");   /* run.ps1 passes the main checkout's */
     bench();
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
