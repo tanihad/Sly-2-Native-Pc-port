@@ -111,6 +111,9 @@ static void test_gov(void) {
     /* single slow pictures (GPU clock changes) are absorbed */
     for (int i = 0; i < 20; i++) { feed(&g, 1, 2.5 * P, &t); feed(&g, 59, 0.5 * P, &t); }
     CHECK(g.cur == 3, "isolated 2.5-period pictures: stays at 3x (%d)", g.cur);
+    /* a loading burst (5 pictures at 3 periods, 6 at 1.5) between ordinary seconds: absorbed */
+    for (int i = 0; i < 10; i++) { feed(&g, 5, 3.0 * P, &t); feed(&g, 6, 1.5 * P, &t); feed(&g, 120, 0.5 * P, &t); }
+    CHECK(g.cur == 3, "loading bursts: stays at 3x (%d)", g.cur);
     /* auto at 3x, 90% for 3 s: down to the scale predicted at <= 70% */
     int to = feed(&g, 60 * 5, 0.9 * P, &t);
     CHECK(to == 2 && g.cur == 2 && g.reason == PACE_GOV_HIGH, "auto 90%% -> 2x (%d, reason %d)", to, g.reason);
@@ -125,7 +128,7 @@ static void test_gov(void) {
     t = 0;
     int k = 0;
     for (; k < 30 && g.cur == 8; k++) { t += 70; pace_gov_frame(&g, 70, t); }
-    CHECK(g.cur == 3 && k <= 7 && g.reason == PACE_GOV_OVERLOAD, "fixed 8x at 70 ms -> %dx after %d pictures (3x, <= 7)", g.cur, k);
+    CHECK(g.cur == 3 && k <= 12 && g.reason == PACE_GOV_OVERLOAD, "fixed 8x at 70 ms -> %dx after %d pictures (3x, <= 12: < 1 s)", g.cur, k);
     /* at 3x 50%: a fixed scale climbs back towards the player's while the prediction fits 80% */
     feed(&g, 60 * 40, 0.5 * P, &t);
     CHECK(g.cur == 4, "fixed: back up to 4x where 3x at 50%% predicts 78%% (%d)", g.cur);
@@ -167,7 +170,31 @@ static void test_gov(void) {
     CHECK(g.cur < 3, "slow x2.5: 60%% measures 150%% -> lowered (%d)", g.cur);
 }
 
+static void test_res(void) {
+    int w, h;
+    pace_picture_size(1, 16, 9, &w, &h);
+    CHECK(w == 512 && h == 448, "1x 16:9 = PS2 512 x 448 (%d x %d)", w, h);
+    pace_picture_size(3, 16, 9, &w, &h);
+    CHECK(w == 2048 && h == 1344, "3x 16:9 = 2048 x 1344 (%d x %d)", w, h);
+    pace_picture_size(3, 4, 3, &w, &h);
+    CHECK(w == 1536 && h == 1344, "3x 4:3 = 1536 x 1344 (%d x %d)", w, h);
+    pace_picture_size(4, 16, 9, &w, &h);
+    CHECK(w == 2560 && h == 1792, "4x 16:9 = 2560 x 1792 (%d x %d)", w, h);
+    pace_picture_size(2, 16, 9, &w, &h);
+    CHECK(w == 1536 && h == 896, "2x 16:9 = 1536 x 896 (%d x %d)", w, h);
+    CHECK(pace_native_scale(2560, 1440, 16, 9) == 4, "native 1440p 16:9 = 4x");
+    CHECK(pace_native_scale(2560, 1440, 4, 3) == 4, "native 1440p 4:3 (1920 x 1440) = 4x");
+    CHECK(pace_native_scale(1920, 1080, 16, 9) == 3, "native 1080p = 3x");
+    CHECK(pace_native_scale(1280, 720, 16, 9) == 2, "native 720p = 2x");
+    CHECK(pace_native_scale(3840, 2160, 16, 9) == 6, "native 2160p = 6x (%d)", pace_native_scale(3840, 2160, 16, 9));
+    CHECK(pace_native_scale(1723, 999, 16, 9) == 3, "native 1723 x 999 window (1723 x 969 picture) = 3x");
+    CHECK(pace_native_scale(640, 480, 4, 3) == 2, "native 640 x 480 4:3 = 2x (1x is 512 wide)");
+    CHECK(pace_native_scale(0, 0, 16, 9) == 3, "no window: 3x");
+    CHECK(pace_display_kx(3, 21, 9) == 5 && pace_display_kx(8, 16, 9) == 11, "kx 21:9 3x, 16:9 8x");
+}
+
 int main(void) {
+    test_res();
     test_delay();
     test_flags();
     test_disp();

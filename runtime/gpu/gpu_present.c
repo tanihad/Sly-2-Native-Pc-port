@@ -8,9 +8,12 @@
  * asynchronously (Map with DO_NOT_WAIT while other commands arrive). GPU timestamps around each
  * picture are resolved the same way. Producer-side calls are at the end of the file. */
 #include "gpu_internal.h"
+#include "gpu_pace.h"                    /* (pc-pacing) present delay, VRR detection */
 #include "gs_draw.h"                     /* gs_display_layout_of (the PCRTC layout, shared with gs.c) */
 
+#include <math.h>
 #include <stdatomic.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "gpu_shaders.h"
@@ -70,14 +73,41 @@ static struct {
     ID3D11Texture2D* off;                /* headless */
     ID3D11RenderTargetView* rtv;         /* current back buffer / offscreen */
     /* timestamps */
-    struct { ID3D11Query *dis, *t0, *t1; gpu_frame_stats st; int busy; } ts[NTS];
+    /* (pc-pacing) t0..t1 the frame's drawing and compose, t1b..t2 the present (resample), ev: an event query at t1 (when
+     * the picture is ready: the present delay's samples); t1 / t1b / t2 are ended by the present when there is one */
+    struct { ID3D11Query *dis, *t0, *t1, *t1b, *t2, *ev; gpu_frame_stats st; int busy, t1_end, pres, ev_end, ready_done;
+             double vb_ms; } ts[NTS];
     int ts_head, ts_n;
     gpu_frame_stats st;                  /* picture being built */
     LARGE_INTEGER t_start;
     int ts_cur;                          /* ts slot of the picture being built (-1: none) */
     double pres_q[64];                   /* (M9) per present count (mod 64): when its frame was queued (qpc ms) */
     UINT last_pc;                        /* the last present count the frame statistics reported as shown */
+    /* (pc-pacing) */
+    pace_delay pd;                       /* the present delay D (ready latency of the pictures) */
+    pace_disp disp;                      /* VRR detection from the shown presents */
+    double last_sync_ms;                 /* SyncQPCTime of present count last_pc */
+    double pres_target[64], pres_call[64], pres_vb[64];   /* per present count: planned time, Present call, VBlank (ms) */
+    uint32_t pres_vblank[64];
+    int disp_state;                      /* PACE_DISP_* last logged */
+    double disp_t;                       /* when the display was last classified */
+    HANDLE timer;                        /* high-resolution waitable timer (the paced wait) */
+    double last_present_ms;              /* QPC ms of the last Present call (headless paced runs: intervals) */
 } P;
+
+/* (pc-pacing) presentation mode, set from any thread (gpu_present_set_mode), read by the render thread per picture */
+static volatile LONG pace_mode = PACE_MODE_AUTO, pace_vsync = PACE_VSYNC_ON, pace_refresh_x1000;
+static volatile LONG pace_disp_shared = PACE_DISP_UNKNOWN;
+static int pace_log = -1;                /* PS2_PACE_LOG=1: one line per present */
+static int pace_headless = -1;           /* PS2_PACE_HEADLESS=1: pace the offscreen presents too (measurements) */
+void gpu_present_set_mode(int mode, int vsync) {
+    if (mode >= 0 && mode < PACE_MODE_N) InterlockedExchange(&pace_mode, mode);
+    if (vsync >= 0 && vsync < PACE_VSYNC_N) InterlockedExchange(&pace_vsync, vsync);
+}
+void gpu_present_get_mode(int* mode, int* vsync) { *mode = (int)pace_mode; *vsync = (int)pace_vsync; }
+void gpu_present_set_refresh(double hz) { InterlockedExchange(&pace_refresh_x1000, (LONG)(hz * 1000.0)); }
+int gpu_present_display_state(void) { return (int)pace_disp_shared; }
+double gpu_present_delay_ms(void) { return P.pd.delay_ms; }
 
 static LARGE_INTEGER qpf;
 
@@ -340,19 +370,34 @@ int gpu_present_init(void) {
         P.bb_h = h;
     }
     if (gpu_rt.cfg.timestamps) {
-        D3D11_QUERY_DESC qd = { D3D11_QUERY_TIMESTAMP_DISJOINT, 0 }, qt = { D3D11_QUERY_TIMESTAMP, 0 };
+        D3D11_QUERY_DESC qd = { D3D11_QUERY_TIMESTAMP_DISJOINT, 0 }, qt = { D3D11_QUERY_TIMESTAMP, 0 }, qe = { D3D11_QUERY_EVENT, 0 };
         for (int i = 0; i < NTS; i++)
             if (FAILED(ID3D11Device_CreateQuery(gpu_rt.dev, &qd, &P.ts[i].dis)) ||
                 FAILED(ID3D11Device_CreateQuery(gpu_rt.dev, &qt, &P.ts[i].t0)) ||
-                FAILED(ID3D11Device_CreateQuery(gpu_rt.dev, &qt, &P.ts[i].t1)))
+                FAILED(ID3D11Device_CreateQuery(gpu_rt.dev, &qt, &P.ts[i].t1)) ||
+                FAILED(ID3D11Device_CreateQuery(gpu_rt.dev, &qt, &P.ts[i].t1b)) ||
+                FAILED(ID3D11Device_CreateQuery(gpu_rt.dev, &qt, &P.ts[i].t2)) ||
+                FAILED(ID3D11Device_CreateQuery(gpu_rt.dev, &qe, &P.ts[i].ev)))
                 return 0;
     }
+    /* (pc-pacing) */
+    pace_delay_init(&P.pd, PACE_PERIOD_MS);
+    pace_disp_init(&P.disp, pace_refresh_x1000 > 0 ? 1000000.0 / (double)pace_refresh_x1000 : 0, PACE_PERIOD_MS);
+    P.disp_state = PACE_DISP_UNKNOWN;
+    P.timer = CreateWaitableTimerExW(NULL, NULL, 0x2 /* CREATE_WAITABLE_TIMER_HIGH_RESOLUTION */, TIMER_ALL_ACCESS);
+    if (pace_log < 0) { const char* e = getenv("PS2_PACE_LOG"); pace_log = e && atoi(e) > 0; }
+    if (pace_headless < 0) { const char* e = getenv("PS2_PACE_HEADLESS"); pace_headless = e && atoi(e) > 0; }
     return 1;
 }
 
 void gpu_present_release(void) {
     if (!gpu_rt.dev) return;
-    for (int i = 0; i < NTS; i++) { GPU_RELEASE(P.ts[i].dis); GPU_RELEASE(P.ts[i].t0); GPU_RELEASE(P.ts[i].t1); }
+    for (int i = 0; i < NTS; i++) {
+        GPU_RELEASE(P.ts[i].dis); GPU_RELEASE(P.ts[i].t0); GPU_RELEASE(P.ts[i].t1);
+        GPU_RELEASE(P.ts[i].t1b); GPU_RELEASE(P.ts[i].t2); GPU_RELEASE(P.ts[i].ev);
+    }
+    if (P.timer) CloseHandle(P.timer);
+    P.timer = NULL;
     for (int i = 0; i < NSTAGE; i++) GPU_RELEASE(P.stage[i]);
     for (int i = 0; i < NPICT; i++) { GPU_RELEASE(P.pict_uav[i]); GPU_RELEASE(P.pict_srv[i]); GPU_RELEASE(P.pict_rtv[i]); GPU_RELEASE(P.pict[i]); }
     for (int i = 0; i < 2; i++) { GPU_RELEASE(P.hist_srv[i]); GPU_RELEASE(P.hist[i]); }
@@ -373,6 +418,32 @@ static double now_ms(void) {
     return (double)t.QuadPart * 1000.0 / (double)qpf.QuadPart;
 }
 
+/* (pc-pacing) the frame in timestamp slot i: has its picture's GPU work finished (event query at the end of its drawing
+ * and compose)? Then how long after its VBlank - a sample of the present delay. */
+static void ready_note(int i, double ready) {
+    if (P.ts[i].ready_done) return;
+    P.ts[i].ready_done = 1;
+    if (P.ts[i].vb_ms <= 0) return;
+    P.ts[i].st.ready_ms = ready;
+    if (i == P.ts_cur) P.st.ready_ms = ready;
+    pace_delay_sample(&P.pd, ready);
+}
+static int ready_poll(int i) {
+    if (!P.ts[i].ev_end || P.ts[i].ready_done) return 1;
+    BOOL done = FALSE;
+    if (ID3D11DeviceContext_GetData(gpu_rt.ctx, (ID3D11Asynchronous*)P.ts[i].ev, &done, sizeof done, D3D11_ASYNC_GETDATA_DONOTFLUSH) != S_OK ||
+        !done) return 0;
+    ready_note(i, now_ms() - P.ts[i].vb_ms);
+    return 1;
+}
+/* every frame whose event is still pending; returns 1 if one still is */
+static int ready_poll_all(void) {
+    int pending = 0;
+    for (int k = 0; k < P.ts_n; k++) pending |= !ready_poll((P.ts_head + k) % NTS);
+    if (P.ts_cur >= 0) pending |= !ready_poll(P.ts_cur);
+    return pending;
+}
+
 static int ts_complete(int block) {             /* oldest timestamp set; returns 1 if still pending */
     if (!P.ts_n) return 0;
     int i = P.ts_head;
@@ -386,13 +457,20 @@ static int ts_complete(int block) {             /* oldest timestamp set; returns
         SwitchToThread();
     }
     gpu_rt_phase = ph;
-    UINT64 t0 = 0, t1 = 0;
+    UINT64 t0 = 0, t1 = 0, t1b = 0, t2 = 0;
     if (hr == S_OK) {
         while (ID3D11DeviceContext_GetData(gpu_rt.ctx, (ID3D11Asynchronous*)P.ts[i].t0, &t0, sizeof t0, 0) == S_FALSE) SwitchToThread();
         while (ID3D11DeviceContext_GetData(gpu_rt.ctx, (ID3D11Asynchronous*)P.ts[i].t1, &t1, sizeof t1, 0) == S_FALSE) SwitchToThread();
+        if (P.ts[i].pres) {
+            while (ID3D11DeviceContext_GetData(gpu_rt.ctx, (ID3D11Asynchronous*)P.ts[i].t1b, &t1b, sizeof t1b, 0) == S_FALSE) SwitchToThread();
+            while (ID3D11DeviceContext_GetData(gpu_rt.ctx, (ID3D11Asynchronous*)P.ts[i].t2, &t2, sizeof t2, 0) == S_FALSE) SwitchToThread();
+        }
     }
+    ready_poll(i);                               /* (finished: its event is signalled by now, if not seen before) */
     gpu_frame_stats st = P.ts[i].st;
-    st.gpu_ms = hr == S_OK && !dj.Disjoint && dj.Frequency ? (double)(t1 - t0) * 1000.0 / (double)dj.Frequency : -1.0;
+    int ok = hr == S_OK && !dj.Disjoint && dj.Frequency;
+    st.gpu_ms = ok ? (double)(t1 - t0) * 1000.0 / (double)dj.Frequency : -1.0;
+    st.present_gpu_ms = ok && P.ts[i].pres && t2 >= t1b ? (double)(t2 - t1b) * 1000.0 / (double)dj.Frequency : -1.0;
     stats_push(&st);
     P.ts[i].busy = 0;
     P.ts_head = (P.ts_head + 1) % NTS;
@@ -414,10 +492,13 @@ void gpu_stats_begin(uint32_t vblank, double front_ms) {
     P.st.vblank = vblank;
     P.st.front_ms = front_ms;
     P.st.gpu_ms = -1.0;
+    P.st.present_gpu_ms = P.st.ready_ms = P.st.target_ms = -1.0;   /* (pc-pacing) */
     gpu_rt.n_draws = gpu_rt.n_dispatches = gpu_rt.n_copies = gpu_rt.n_uploads = gpu_rt.upload_bytes = 0;
     P.ts_cur = -1;
     if (gpu_rt.cfg.timestamps) {
         int i = (P.ts_head + P.ts_n) % NTS;
+        P.ts[i].t1_end = P.ts[i].pres = P.ts[i].ev_end = P.ts[i].ready_done = 0;
+        P.ts[i].vb_ms = 0;
         ID3D11DeviceContext_Begin(gpu_rt.ctx, (ID3D11Asynchronous*)P.ts[i].dis);
         ID3D11DeviceContext_End(gpu_rt.ctx, (ID3D11Asynchronous*)P.ts[i].t0);
         P.ts_cur = i;
@@ -435,7 +516,7 @@ void gpu_stats_end(void) {
     P.st.render_ms = (double)(t.QuadPart - P.t_start.QuadPart) * 1000.0 / (double)qpf.QuadPart;
     if (P.ts_cur >= 0) {
         int i = P.ts_cur;
-        ID3D11DeviceContext_End(gpu_rt.ctx, (ID3D11Asynchronous*)P.ts[i].t1);
+        if (!P.ts[i].t1_end) ID3D11DeviceContext_End(gpu_rt.ctx, (ID3D11Asynchronous*)P.ts[i].t1);
         ID3D11DeviceContext_End(gpu_rt.ctx, (ID3D11Asynchronous*)P.ts[i].dis);
         P.ts[i].st = P.st;
         P.ts[i].busy = 1;
@@ -618,8 +699,118 @@ static void present_resample(ID3D11RenderTargetView* rtv, int x, int y, int lw, 
     resample_pass(rtv, x, y, lw, lh, P.mid_srv, &k);
 }
 
+/* (pc-pacing) the display's refresh rate (exact rational of the active mode) for the monitor the window is on, Hz; 0 if
+ * unknown. QueryDisplayConfig: the source whose GDI name is the monitor's device. */
+static double window_refresh_hz(HWND hwnd) {
+    MONITORINFOEXW mi;
+    memset(&mi, 0, sizeof mi);
+    mi.cbSize = sizeof mi;
+    if (!hwnd || !GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), (MONITORINFO*)&mi)) return 0;
+    UINT32 np = 0, nm = 0;
+    if (GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &np, &nm) != ERROR_SUCCESS || !np) return 0;
+    DISPLAYCONFIG_PATH_INFO* paths = calloc(np, sizeof *paths);
+    DISPLAYCONFIG_MODE_INFO* modes = calloc(nm ? nm : 1, sizeof *modes);
+    double hz = 0;
+    if (paths && modes && QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &np, paths, &nm, modes, NULL) == ERROR_SUCCESS) {
+        for (UINT32 i = 0; i < np && hz == 0; i++) {
+            DISPLAYCONFIG_SOURCE_DEVICE_NAME sn;
+            memset(&sn, 0, sizeof sn);
+            sn.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
+            sn.header.size = sizeof sn;
+            sn.header.adapterId = paths[i].sourceInfo.adapterId;
+            sn.header.id = paths[i].sourceInfo.id;
+            if (DisplayConfigGetDeviceInfo(&sn.header) != ERROR_SUCCESS || wcscmp(sn.viewGdiDeviceName, mi.szDevice)) continue;
+            DISPLAYCONFIG_RATIONAL r = paths[i].targetInfo.refreshRate;
+            if (r.Denominator) hz = (double)r.Numerator / (double)r.Denominator;
+        }
+    }
+    free(paths);
+    free(modes);
+    if (hz <= 0) {                               /* (fallback: the integer rate of the mode) */
+        DEVMODEW dm;
+        memset(&dm, 0, sizeof dm);
+        dm.dmSize = sizeof dm;
+        if (EnumDisplaySettingsW(mi.szDevice, ENUM_CURRENT_SETTINGS, &dm) && dm.dmDisplayFrequency > 1) hz = dm.dmDisplayFrequency;
+    }
+    return hz;
+}
+
+/* (pc-pacing) wait until `target` (QPC ms), noting meanwhile when the picture's GPU work finishes (timestamp slot tsi) */
+static void pace_wait(double target, int tsi) {
+    long ph = gpu_rt_phase;
+    gpu_rt_phase = GPU_PH_SWAP_WAIT;
+    double limit = now_ms() + 3.0 * PACE_PERIOD_MS;  /* (never more than 3 frames, whatever the clocks say) */
+    if (target > limit) target = limit;
+    for (;;) {
+        if (tsi >= 0) ready_poll(tsi);
+        double left = target - now_ms();
+        if (left <= 0) break;
+        if (left > 1.3 && P.timer) {             /* sleep in steps of at most 1 ms (the ready time's resolution) */
+            LARGE_INTEGER due;
+            due.QuadPart = -(LONGLONG)((left > 2.0 ? 1.0 : left - 0.8) * 10000.0);
+            if (SetWaitableTimer(P.timer, &due, 0, NULL, NULL, FALSE)) WaitForSingleObject(P.timer, 20);
+            else Sleep(1);
+        } else if (left > 1.3) {
+            Sleep(1);
+        } else {
+            SwitchToThread();                    /* (the last ~1 ms: yield-spin for precision) */
+        }
+    }
+    gpu_rt_phase = ph;
+}
+
+/* (pc-pacing) the display's record of the presents (DXGI frame statistics): intervals between consecutive presents as
+ * shown -> VRR detection; PS2_PACE_LOG lines */
+static void pace_statistics(UINT pc) {
+    DXGI_FRAME_STATISTICS fs;
+    memset(&fs, 0, sizeof fs);
+    if (FAILED(IDXGISwapChain1_GetFrameStatistics(P.sc, &fs)) || !fs.PresentCount || fs.PresentCount == P.last_pc ||
+        pc - fs.PresentCount >= 60)
+        return;
+    double shown = (double)fs.SyncQPCTime.QuadPart * 1000.0 / (double)qpf.QuadPart;
+    double q = P.pres_q[fs.PresentCount % 64];   /* (M9) photon latency: frame queued -> shown */
+    if (q > 0 && shown >= q) P.st.photon_ms = shown - q;
+    double iv = fs.PresentCount == P.last_pc + 1 && P.last_sync_ms > 0 ? shown - P.last_sync_ms : -1;
+    if (iv > 0) pace_disp_interval(&P.disp, iv);
+    if (pace_log) {
+        int k = (int)(fs.PresentCount % 64);
+        double vb = P.pres_vb[k];
+        gpu_log("pace: shown present %u (v%u) at %.3f ms: VBlank %.3f, planned +%.2f, Present +%.2f, shown +%.2f, interval %.2f ms",
+                (unsigned)fs.PresentCount, P.pres_vblank[k], shown, vb, P.pres_target[k] > 0 ? P.pres_target[k] - vb : -1.0,
+                P.pres_call[k] - vb, vb > 0 ? shown - vb : -1.0, iv);
+    }
+    P.last_pc = fs.PresentCount;
+    P.last_sync_ms = shown;
+    double now = now_ms();
+    if (now - P.disp_t < 2000.0) return;         /* every 2 s: what the display does with the presents */
+    P.disp_t = now;
+    int s = pace_disp_classify(&P.disp);
+    InterlockedExchange(&pace_disp_shared, s);
+    if (s == P.disp_state || s == PACE_DISP_UNKNOWN) return;
+    P.disp_state = s;
+    double hz = P.disp.refresh_ms > 0 ? 1000.0 / P.disp.refresh_ms : 0;
+    if (s == PACE_DISP_VRR)
+        gpu_log("pace: display %.2f Hz, variable refresh (G-Sync / FreeSync) is on: every picture is shown for 16.68 ms", hz);
+    else if (s == PACE_DISP_FIXED)
+        gpu_log("pace: display %.2f Hz, fixed refresh: a 59.94 Hz picture lasts %.2f refreshes, so pictures alternate between %d and %d "
+                "refreshes (judder). Smooth: turn on G-Sync / FreeSync (variable refresh) or use a 60 / 120 Hz display mode", hz,
+                PACE_PERIOD_MS / P.disp.refresh_ms, (int)(PACE_PERIOD_MS / P.disp.refresh_ms), (int)(PACE_PERIOD_MS / P.disp.refresh_ms) + 1);
+    else
+        gpu_log("pace: display %.2f Hz, %d refreshes per 59.94 Hz picture: even", hz, pace_refresh_multiple(P.disp.refresh_ms, PACE_PERIOD_MS));
+}
+
 static void present_fit(int aw, int ah, int scaler) {
     double t0 = now_ms();
+    int tsi = P.ts_cur;
+    double vb = gpu_rt.cur_vblank_ms;
+    /* (pc-pacing) the frame's drawing and compose end here: its GPU time without the present (and without the paced wait
+     * below, which the old t1 at the frame's end counted as GPU time), and the event that says when its picture is ready */
+    if (tsi >= 0) {
+        if (!P.ts[tsi].t1_end) { ID3D11DeviceContext_End(gpu_rt.ctx, (ID3D11Asynchronous*)P.ts[tsi].t1); P.ts[tsi].t1_end = 1; }
+        ID3D11DeviceContext_End(gpu_rt.ctx, (ID3D11Asynchronous*)P.ts[tsi].ev);
+        P.ts[tsi].ev_end = 1;
+        P.ts[tsi].vb_ms = vb;
+    }
     if (P.sc) {
         int cw = 0, ch = 0;
         if (gpu_rt.cfg.client_size) gpu_rt.cfg.client_size(&cw, &ch);
@@ -643,21 +834,46 @@ static void present_fit(int aw, int ah, int scaler) {
             }
             P.bb_w = cw;
             P.bb_h = ch;
-        }
-        if (P.waitable) {
-            /* The waitable object (frame latency 1) is signalled once the GPU has finished the previous
-             * picture; normally long before this one is ready. When the GPU falls behind (NVIDIA's power
-             * management lowers the clocks of a lightly loaded GPU, and frames then take 15-40 ms until
-             * it raises them again), the render thread waits here and the frames queued behind it absorb
-             * the delay (gpu_submit_sink: up to GPU_INFLIGHT_GAME frames) before the EE notices. Dropping
-             * pictures instead was measured worse: the GPU stays lightly loaded and slow for longer. */
-            long ph = gpu_rt_phase;
-            gpu_rt_phase = GPU_PH_SWAP_WAIT;
-            DWORD w = WaitForSingleObjectEx(P.waitable, 100, TRUE);
-            gpu_rt_phase = ph;
-            if (w == WAIT_TIMEOUT) P.st.dropped = 1;   /* (100 ms: presented anyway) */
+            /* (pc-pacing) the window may be on another monitor now (fullscreen switch, moved): its refresh rate */
+            double hz = window_refresh_hz((HWND)gpu_rt.cfg.hwnd);
+            if (hz > 0 && fabs(1000.0 / hz - P.disp.refresh_ms) > 0.01) {
+                pace_disp_init(&P.disp, 1000.0 / hz, PACE_PERIOD_MS);
+                P.disp_state = PACE_DISP_UNKNOWN;
+                InterlockedExchange(&pace_refresh_x1000, (LONG)(hz * 1000.0));
+                gpu_log("pace: the window's display runs at %.3f Hz (%dx%d)", hz, cw, ch);
+            }
         }
     }
+    /* (pc-pacing) paced: picture v leaves at its VBlank's time + D (gpu_pace.c pace_delay), an even 16.68 ms cadence that a
+     * VRR display shows as such; the render thread takes the next frame only after this present. Behind (a newer
+     * frame already queued and this one more than half a frame late): the present is skipped, the next picture shows. */
+    int mode = (int)pace_mode, vsync = (int)pace_vsync;
+    int paced = (P.sc || pace_headless) && mode != PACE_MODE_IMMEDIATE && vb > 0;
+    double target = paced ? vb + P.pd.delay_ms : 0;
+    if (paced) P.st.target_ms = P.pd.delay_ms;
+    if (gpu_rt.cur_behind && vb > 0 && t0 > vb + P.pd.delay_ms + 0.5 * PACE_PERIOD_MS) {
+        P.st.skipped = 1;
+        P.st.present_ms += now_ms() - t0;
+        return;
+    }
+    if (paced) {
+        ID3D11DeviceContext_Flush(gpu_rt.ctx);   /* (the GPU draws the picture while we wait) */
+        pace_wait(target, tsi);
+    } else if (tsi >= 0) {
+        ready_poll(tsi);
+    }
+    if (P.sc && P.waitable) {
+        /* The waitable object (frame latency 1) is signalled once the GPU has finished the previous picture; normally
+         * long before this one is ready. When the GPU falls behind (NVIDIA's power management lowers the clocks of a
+         * lightly loaded GPU, and frames then take 15-40 ms until it raises them again), the render thread waits here
+         * and the frames queued behind it absorb the delay (gpu_submit_sink) before the game notices. */
+        long ph = gpu_rt_phase;
+        gpu_rt_phase = GPU_PH_SWAP_WAIT;
+        DWORD w = WaitForSingleObjectEx(P.waitable, 100, TRUE);
+        gpu_rt_phase = ph;
+        if (w == WAIT_TIMEOUT) P.st.dropped = 1;   /* (100 ms: presented anyway) */
+    }
+    if (tsi >= 0) { ID3D11DeviceContext_End(gpu_rt.ctx, (ID3D11Asynchronous*)P.ts[tsi].t1b); P.ts[tsi].pres = 1; }
     static const float black[4] = { 0, 0, 0, 1 };
     ID3D11DeviceContext_ClearRenderTargetView(gpu_rt.ctx, P.rtv, black);
     if (P.have) {
@@ -665,9 +881,16 @@ static void present_fit(int aw, int ah, int scaler) {
         fit_aspect(P.bb_w, P.bb_h, aw, ah, &x, &y, &lw, &lh);
         present_resample(P.rtv, x, y, lw, lh, scaler);
     }
+    if (tsi >= 0) ID3D11DeviceContext_End(gpu_rt.ctx, (ID3D11Asynchronous*)P.ts[tsi].t2);
+    double call = now_ms();
+    if (paced) P.st.present_late_ms = call - target;
     if (P.sc) {
-        int tear = gpu_rt.cfg.tearing && gpu_rt.caps.tearing;
-        HRESULT hr = IDXGISwapChain1_Present(P.sc, tear ? 0 : 1, tear ? DXGI_PRESENT_ALLOW_TEARING : 0);
+        int tear = 0;
+        /* (pc-pacing) vsync on: Present(1); off: Present(0) with tearing (the old pacing = vrr); adaptive: on time ->
+         * synced, late -> at once */
+        int interval = pace_present_flags(vsync,
+                                          gpu_rt.caps.tearing, call, target, &tear);
+        HRESULT hr = IDXGISwapChain1_Present(P.sc, (UINT)interval, tear ? DXGI_PRESENT_ALLOW_TEARING : 0);
         if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET) {
             gpu_log("device lost (hr=0x%08lX, reason 0x%08lX)", (unsigned long)hr,
                     (unsigned long)ID3D11Device_GetDeviceRemovedReason(gpu_rt.dev));
@@ -676,19 +899,21 @@ static void present_fit(int aw, int ah, int scaler) {
         P.st.presented = 1;
         void (*ff)(void) = flip_fn;
         if (ff) ff();
-        /* (M9) photon latency: which present the display showed last and at which vsync (DXGI frame statistics),
-         * against when that present's frame was queued */
         UINT pc = 0;
-        if (SUCCEEDED(IDXGISwapChain1_GetLastPresentCount(P.sc, &pc))) P.pres_q[pc % 64] = gpu_rt.cur_queued_ms;
-        DXGI_FRAME_STATISTICS fs;
-        memset(&fs, 0, sizeof fs);
-        if (SUCCEEDED(IDXGISwapChain1_GetFrameStatistics(P.sc, &fs)) && fs.PresentCount && fs.PresentCount != P.last_pc &&
-            pc - fs.PresentCount < 60) {
-            double q = P.pres_q[fs.PresentCount % 64], shown = (double)fs.SyncQPCTime.QuadPart * 1000.0 / (double)qpf.QuadPart;
-            if (q > 0 && shown >= q) P.st.photon_ms = shown - q;
-            P.last_pc = fs.PresentCount;
+        if (SUCCEEDED(IDXGISwapChain1_GetLastPresentCount(P.sc, &pc))) {
+            int k = (int)(pc % 64);
+            P.pres_q[k] = gpu_rt.cur_queued_ms;
+            P.pres_target[k] = target;
+            P.pres_call[k] = call;
+            P.pres_vb[k] = vb;
+            P.pres_vblank[k] = P.st.vblank;
         }
+        pace_statistics(pc);
+    } else if (paced && pace_log) {              /* (headless paced runs: the Present calls' cadence) */
+        gpu_log("pace: offscreen present v%u: VBlank %.3f, planned +%.2f, Present +%.2f, interval %.2f ms", P.st.vblank, vb, target - vb,
+                call - vb, P.last_present_ms > 0 ? call - P.last_present_ms : -1.0);
     }
+    P.last_present_ms = call;
     P.st.present_ms += now_ms() - t0;
 }
 
@@ -893,6 +1118,9 @@ void gpu_exec_readback(const void* payload) {
     gpu_rt.n_copies++;
     P.npend++;
 }
+
+/* (pc-pacing) pictures whose ready time is still unknown (the render thread then polls every millisecond when idle) */
+int gpu_present_events_pending(void) { return ready_poll_all(); }
 
 int gpu_present_poll(int block) {
     while (P.npend) {

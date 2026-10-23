@@ -28,6 +28,8 @@ typedef struct {
     /* per-picture counters (gpu_present.c fills gpu_frame_stats from them) */
     uint32_t n_draws, n_dispatches, n_copies, n_uploads, upload_bytes;
     double cur_queued_ms;                /* (M9) when the frame being executed was queued (qpc ms; photon latency) */
+    double cur_vblank_ms;                /* (pc-pacing) the VBlank of the picture being presented (qpc ms; 0: unknown) */
+    int cur_behind;                      /* (pc-pacing) a newer frame is queued behind the one being executed */
 } gpu_rt_state;
 
 extern gpu_rt_state gpu_rt;
@@ -69,6 +71,7 @@ void gpu_exec_picture(const void* payload);
 void gpu_exec_present(const void* payload);
 void gpu_exec_readback(const void* payload);
 int  gpu_present_poll(int block);        /* finish read-backs / timestamps; returns 1 while some pending */
+int  gpu_present_events_pending(void);   /* (pc-pacing) pictures whose ready time is not known yet (polls them) */
 void gpu_present_drain(void);            /* block until every read-back and timestamp has completed */
 /* per-picture statistics and timestamps around a frame (gpu_present.c) */
 void gpu_stats_begin(uint32_t vblank, double front_ms);

@@ -165,6 +165,9 @@ static double q_short_since = -1, absorb_until;
 static volatile LONG queue_absorbs;
 void gpu_submit_set_adaptive(int base) { inflight_base = base < 0 ? 0 : base; q_short_since = -1; absorb_until = 0; }
 uint32_t gpu_submit_absorbs(void) { return (uint32_t)queue_absorbs; }
+static volatile double stall_ms;         /* (pc-pacing) producer waits for room in the queue (only the sink writes it) */
+double gpu_submit_stall_ms(void) { return stall_ms; }
+int gpu_submit_queued(void) { return atomic_load(&inflight); }
 
 static void count_state(void) { X.state_calls++; }
 
@@ -1850,6 +1853,11 @@ static void exec_present(const gpu_front_frame_data* fd, const gpu_fop_present* 
     }
     gpu_present_compose(&in);
     if (di->rb) gpu_present_readback((gpu_readback*)di->rb);
+    /* (pc-pacing) for the paced present and the internal scale governor: the picture's VBlank time, its scale, whether a
+     * newer frame already waits behind this one */
+    gpu_rt.cur_vblank_ms = di->vblank_ms;
+    gpu_rt.cur_behind = atomic_load(&inflight) > 1;
+    gpu_stats_cur()->scale = in.scale;
     /* (the picture was reported when its frame was queued: gpu_submit_sink, GPU_FD_SIGNAL) */
     if (di->flags & GPU_DI_SHOW) gpu_present_show(di->aspect_w, di->aspect_h, (int)((di->gfx >> GPU_GFX_SCALER_SHIFT) & 15));
     present_done = 1;
@@ -2106,11 +2114,14 @@ void gpu_submit_sink(const gpu_front_frame_data* fd, void* user) {
         if (now < absorb_until) limit = inflight_max;
         else if (n >= inflight_base && calm) { absorb_until = now + ADAPT_MS; limit = inflight_max; queue_absorbs++; }
     }
+    double w0 = -1;
     for (;;) {
         int n = atomic_load(&inflight);
         if (n < limit) break;
+        if (w0 < 0) w0 = qpc_ms();
         WaitOnAddress((volatile VOID*)&inflight, &n, sizeof n, 5);
     }
+    if (w0 >= 0) stall_ms += qpc_ms() - w0;   /* (pc-pacing: what the game lost to the GPU, PS2_GS_HW_STATS) */
     void* h = gpu_front_detach();
     if (!h) return;
     atomic_fetch_add(&inflight, 1);

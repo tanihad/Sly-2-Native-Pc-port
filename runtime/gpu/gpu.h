@@ -98,6 +98,14 @@ void gpu_run_sync(void (*fn)(void* arg), void* arg);
 void gpu_set_picture_done(void (*fn)(uint32_t vblank, void* user), void* user);
 /* called on the render thread after every Present (the window title's frame rate) */
 void gpu_set_flip_callback(void (*fn)(void));
+/* (pc-pacing) presentation (any thread, applies from the next picture): mode PACE_MODE_* (auto / paced: picture v
+ * presented at its VBlank's time + the present delay; immediate: as soon as it is drawn), vsync PACE_VSYNC_* (on /
+ * off: tearing allowed / adaptive: synced when on time, at once when late); -1 keeps a value (gpu_pace.h) */
+void gpu_present_set_mode(int mode, int vsync);
+void gpu_present_get_mode(int* mode, int* vsync);
+void gpu_present_set_refresh(double hz);  /* the display's refresh rate when known elsewhere (render thread measures it too) */
+int  gpu_present_display_state(void);     /* PACE_DISP_*: what the display does with the presents (VRR, fixed refresh, ...) */
+double gpu_present_delay_ms(void);        /* the present delay D now (render thread's value, statistics) */
 int  gpu_device_lost(void);               /* the device was removed (or a loss simulated): restart or give up */
 void gpu_simulate_device_lost(void);      /* tests: the next frame finds the device lost */
 /* Forget every target (render thread state of a frontend that is restarted). */
@@ -136,6 +144,14 @@ typedef struct {
     int queued;                           /* (M9) frames queued for the render thread when this one was taken */
     int phases;                           /* (M9) phase_ms is set (PS2_GPU_PROF: GPU timestamps per phase) */
     float phase_ms[GPU_PHASES];           /* (M9) GPU ms per phase (gpu_phase_names) */
+    /* (pc-pacing) */
+    int scale;                            /* the internal scale the picture was composed at (0: no picture) */
+    double present_gpu_ms;                /* GPU time of the present (resample into the back buffer; -1: none / not measured);
+                                             gpu_ms is the frame's drawing + compose without it and without the wait before it */
+    double ready_ms;                      /* the frame's GPU work finished this long after its VBlank (-1: not known) */
+    double target_ms;                     /* paced present: planned present time - VBlank time (the delay D; -1: not paced) */
+    double present_late_ms;               /* Present called this long after the planned time (only when paced) */
+    int skipped;                          /* the present was skipped: the render thread was behind (a newer picture queued) */
 } gpu_frame_stats;
 int gpu_take_frame_stats(gpu_frame_stats* out, int max);   /* returns how many were taken */
 
@@ -153,6 +169,10 @@ void gpu_submit_set_depth(int frames);
  * the base queue while it had been short; gpu_submit_absorbs: how often that happened */
 void gpu_submit_set_adaptive(int base);
 uint32_t gpu_submit_absorbs(void);
+/* (pc-pacing) total ms the producer (and so the GS thread and, behind it, the game) waited for room in the render
+ * queue - time the game lost to a GPU that could not keep up; frames queued now */
+double gpu_submit_stall_ms(void);
+int gpu_submit_queued(void);
 /* M3 REF tier: frames flagged GPU_FD_REF are drawn exactly (every draw through shaders/gs.hlsl on
  * the ROV path, depth in zpatch). The GS memory image as the GPU sees it after everything queued so
  * far: vram_buf with the GPU words of `n` blocks (gpu_front_gpu_blocks: entries and writer targets)

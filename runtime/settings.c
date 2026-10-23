@@ -20,10 +20,16 @@ int settings_parse_renderer(const char* v, int* gpu) {
     if (!_stricmp(v, "gpu") || !_stricmp(v, "hw") || !_stricmp(v, "d3d11")) { *gpu = 1; return 1; }
     return 0;
 }
+const char* const settings_pacing_names[SETTINGS_PACING_N] = { "auto", "vrr", "display", "paced", "immediate" };
+const char* const settings_vsync_names[SETTINGS_VSYNC_N] = { "on", "off", "adaptive" };
 int settings_parse_pacing(const char* v, int* pacing) {
-    if (!_stricmp(v, "vsync")) { *pacing = SETTINGS_PACING_VSYNC; return 1; }
-    if (!_stricmp(v, "vrr") || !_stricmp(v, "tearing")) { *pacing = SETTINGS_PACING_VRR; return 1; }
-    if (!_stricmp(v, "display")) { *pacing = SETTINGS_PACING_DISPLAY; return 1; }
+    if (!_stricmp(v, "vsync")) { *pacing = SETTINGS_PACING_AUTO; return 1; }   /* (the old default) */
+    if (!_stricmp(v, "tearing")) { *pacing = SETTINGS_PACING_VRR; return 1; }
+    for (int i = 0; i < SETTINGS_PACING_N; i++) if (!_stricmp(v, settings_pacing_names[i])) { *pacing = i; return 1; }
+    return 0;
+}
+int settings_parse_vsync(const char* v, int* vsync) {
+    for (int i = 0; i < SETTINGS_VSYNC_N; i++) if (!_stricmp(v, settings_vsync_names[i])) { *vsync = i; return 1; }
     return 0;
 }
 
@@ -119,15 +125,28 @@ static int apply(ps2_settings_t* s, const char* key, const char* v, settings_war
         return 0;
     }
     if (!_stricmp(key, "graphics.pacing")) {
-        if (!settings_parse_pacing(v, &s->pacing)) { warnf(warn, user, line, "pacing '%s' is not vsync, vrr or display", v); return 1; }
+        if (!settings_parse_pacing(v, &s->pacing)) { warnf(warn, user, line, "pacing '%s' is not auto, paced, immediate, display or vrr", v); return 1; }
+        return 0;
+    }
+    if (!_stricmp(key, "graphics.vsync")) {
+        if (!settings_parse_vsync(v, &s->vsync)) { warnf(warn, user, line, "vsync '%s' is not on, off or adaptive", v); return 1; }
         return 0;
     }
     if (!_stricmp(key, "graphics.internal_scale")) {
         if (!_stricmp(v, "auto")) { s->internal_scale = SETTINGS_SCALE_AUTO; return 0; }
+        if (!_stricmp(v, "native")) { s->internal_scale = SETTINGS_SCALE_NATIVE; return 0; }
         char* end;
         long n = strtol(v, &end, 10);
-        if (*end || n < 1 || n > 8) { warnf(warn, user, line, "internal_scale '%s' is not auto or 1..8", v); return 1; }
+        if (*end || n < 1 || n > 8) { warnf(warn, user, line, "internal_scale '%s' is not auto, native or 1..8", v); return 1; }
         s->internal_scale = (int)n;
+        return 0;
+    }
+    if (!_stricmp(key, "graphics.internal_scale_max")) {   /* (pc-pacing) the highest scale auto picks */
+        if (!_stricmp(v, "native")) { s->scale_max = SETTINGS_SCALE_NATIVE; return 0; }
+        char* end;
+        long n = strtol(v, &end, 10);
+        if (*end || n < 1 || n > 8) { warnf(warn, user, line, "internal_scale_max '%s' is not native or 1..8", v); return 1; }
+        s->scale_max = (int)n;
         return 0;
     }
     if (!_stricmp(key, "graphics.outlines")) {
@@ -265,7 +284,11 @@ int settings_format(const ps2_settings_t* s, char* out, size_t cap) {
     char disc[sizeof s->disc + 2];
     char win[256] = "";
     char scale[16] = "auto";
-    if (s->internal_scale != SETTINGS_SCALE_AUTO) snprintf(scale, sizeof scale, "%d", s->internal_scale);
+    if (s->internal_scale == SETTINGS_SCALE_NATIVE) snprintf(scale, sizeof scale, "native");
+    else if (s->internal_scale != SETTINGS_SCALE_AUTO) snprintf(scale, sizeof scale, "%d", s->internal_scale);
+    char smax[16] = "3";
+    if (s->scale_max == SETTINGS_SCALE_NATIVE) snprintf(smax, sizeof smax, "native");
+    else snprintf(smax, sizeof smax, "%d", s->scale_max >= 1 && s->scale_max <= 8 ? s->scale_max : SETTINGS_SCALE_AUTO_MAX);
     if (s->win_w > 0)
         snprintf(win, sizeof win, "x = %d\ny = %d\nwidth = %d\nheight = %d\nmaximized = %s\n", s->win_x, s->win_y,
                  s->win_w, s->win_h, s->win_maximized ? "on" : "off");
@@ -286,15 +309,23 @@ int settings_format(const ps2_settings_t* s, char* out, size_t cap) {
         "; software (the PS2's renderer on the CPU, at the PS2's resolution). When the GPU renderer cannot\n"
         "; start, the software renderer is used and sly2.log says why. Environment override: PS2_GS_BACKEND=sw|hw\n"
         "renderer = %s\n"
-        "; gpu renderer: frame pacing. vsync (default), vrr (G-Sync/FreeSync: every picture shown once,\n"
-        "; no wait for the display), display (the game runs at the display's 60 Hz instead of 59.94 Hz).\n"
+        "; gpu renderer: frame pacing. auto (default: pictures leave at an even 59.94 Hz cadence - smooth on\n"
+        "; G-Sync/FreeSync displays; on 60/120/240 Hz displays the display's refresh drives the game), paced (the\n"
+        "; even cadence, always on the game's own clock), immediate (each picture as soon as it is drawn: lowest\n"
+        "; latency, uneven), display (the display's 60/120/240 Hz refresh drives the game).\n"
         "pacing = %s\n"
+        "; gpu renderer: vertical sync. on (default: no tearing), off (tearing allowed), adaptive (synced when on\n"
+        "; time, a late picture is shown at once).\n"
+        "vsync = %s\n"
         "; The settings below are used by the Direct3D 11 renderer (the software renderer ignores them, except\n"
         "; motion_blur, the game's own effect). They change while the game runs too: F2 / Shift+F2 scale,\n"
         "; Ctrl+F2 scale auto, F3 outlines, F4 filters preset, F5 motion blur, F6 flicker filter, Shift+F6 interlacing.\n"
-        "; Internal resolution scale: auto (default: 3x, lowered while the graphics card cannot keep up) or\n"
-        "; 1 (PS2: 512x448) to 8. Environment override: PS2_GS_SCALE=N\n"
+        "; Internal resolution scale: auto (default: up to internal_scale_max, lowered while the graphics card cannot keep\n"
+        "; up), native (the window's resolution: 4x at 2560x1440) or 1 (PS2: 512x448) to 8. A scale the graphics card\n"
+        "; cannot draw in real time is drawn lower for the time being: the game never slows down. Override: PS2_GS_SCALE=N\n"
         "internal_scale = %s\n"
+        "; The highest scale auto picks: 1 to 8 or native (default 3).\n"
+        "internal_scale_max = %s\n"
         "; Cel-shading outlines: ps2 (one PS2 pixel wide, exact) or thin (high-resolution lines).\n"
         "outlines = %s\n"
         "; Image filters preset: modern (motion blur on, no flicker filter, progressive) or\n"
@@ -318,8 +349,9 @@ int settings_format(const ps2_settings_t* s, char* out, size_t cap) {
         "show_fps = %s\n"
         "%s",
         s->aspect_w, s->aspect_h, s->hud_centered ? "centered" : "edges", s->renderer_gpu ? "gpu" : "software",
-        s->pacing == SETTINGS_PACING_VRR ? "vrr" : s->pacing == SETTINGS_PACING_DISPLAY ? "display" : "vsync",
-        scale, s->outlines_thin ? "thin" : "ps2",
+        settings_pacing_names[s->pacing >= 0 && s->pacing < SETTINGS_PACING_N ? s->pacing : 0],
+        settings_vsync_names[s->vsync >= 0 && s->vsync < SETTINGS_VSYNC_N ? s->vsync : 0],
+        scale, smax, s->outlines_thin ? "thin" : "ps2",
         s->filters_faithful ? "faithful" : "modern", tog[s->motion_blur + 1], tog[s->flicker_filter + 1],
         tog[s->interlacing + 1], settings_scaler_names[s->scaler >= 0 && s->scaler < SETTINGS_SCALER_N ? s->scaler : 0],
         ini_value(s->disc, disc, sizeof disc), s->win_fullscreen ? "on" : "off",
@@ -533,7 +565,10 @@ void settings_load(void) {
         fprintf(stderr, "[settings] PS2_GS_BACKEND='%s' is not sw or hw: ignored\n", e);
     e = getenv("PS2_GS_PACING");
     if (e && *e && !settings_parse_pacing(e, &ps2_settings.pacing))
-        fprintf(stderr, "[settings] PS2_GS_PACING='%s' is not vsync, vrr or display: ignored\n", e);
+        fprintf(stderr, "[settings] PS2_GS_PACING='%s' is not auto, paced, immediate, display or vrr: ignored\n", e);
+    e = getenv("PS2_GS_VSYNC");                  /* (pc-pacing) */
+    if (e && *e && !settings_parse_vsync(e, &ps2_settings.vsync))
+        fprintf(stderr, "[settings] PS2_GS_VSYNC='%s' is not on, off or adaptive: ignored\n", e);
     e = getenv("PS2_VBLANK");                    /* (the design's name for the display-driven VBlank) */
     if (e && !_stricmp(e, "display")) ps2_settings.pacing = SETTINGS_PACING_DISPLAY;
     fprintf(stderr, "[settings] aspect %d:%d, hud %s, renderer %s%s\n", ps2_settings.aspect_w, ps2_settings.aspect_h,
@@ -567,6 +602,9 @@ int settings_read_graphics(ps2_settings_t* g) {
     settings_defaults(&s);
     settings_parse(text, &s, NULL, NULL);
     g->internal_scale = s.internal_scale;
+    g->scale_max = s.scale_max;
+    if (!getenv("PS2_GS_PACING") && !getenv("PS2_VBLANK")) g->pacing = s.pacing;   /* (pc-pacing; env overrides stay) */
+    if (!getenv("PS2_GS_VSYNC")) g->vsync = s.vsync;
     g->outlines_thin = s.outlines_thin;
     g->filters_faithful = s.filters_faithful;
     g->motion_blur = s.motion_blur;

@@ -173,6 +173,11 @@ uint32_t gs_image_read(void* data, uint32_t bytes) {
     return gs_exec_image_read(data, bytes);
 }
 
+static int64_t vsync_time;                              /* (pc-pacing) EE: the next VBlank's due time (QPC) */
+static int64_t vsync_qpc_now;                           /* GS thread: the due time of the VBlank at the hook */
+void gs_set_vsync_time(int64_t qpc) { vsync_time = qpc; }
+int64_t gs_vsync_qpc(void) { return vsync_qpc_now; }
+
 void gs_queue_vsync(uint32_t vblank) {
     gs_record_vsync(vblank);                            /* PS2_GS_RECORD (gs_record.c) */
     /* at most one picture in flight: wait for the previous VBlank's to be presented */
@@ -188,6 +193,7 @@ void gs_queue_vsync(uint32_t vblank) {
     slot* s = reserve(slots);
     s->kind = K_VSYNC;
     s->len = vblank;
+    s->v = (uint64_t)vsync_time;                        /* (pc-pacing) when it was due: the paced present */
     gs_priv_snapshot((uint64_t*)(void*)(s + 1));
     wr_local += slots;
     vsync_queued++;
@@ -238,6 +244,7 @@ static void vblank_picture(const slot* s) {
         static gs_display_snap snap;
         gs_display_snapshot(&snap, (const uint64_t*)(const void*)(s + 1));
         present_43 = gs_hint_content43();
+        vsync_qpc_now = (int64_t)s->v;
         hook(&snap, s->len, present_43);
         return;
     }

@@ -348,6 +348,8 @@ static volatile LONG64 vblank_shift;             /* QPC ticks the VBlank schedul
  * takes over again when the display's VBlanks stop for 50 ms. */
 static volatile LONG vblank_ext;
 static volatile LONG64 ext_last;                 /* QPC of the last display VBlank */
+static volatile LONG64 vblank_due_qpc;           /* (pc-pacing) when the last raised VBlank was due (QPC): its picture is
+                                                    presented at this + the present delay (gpu_pace.c) */
 
 static void vblank_external(int on) {
     LARGE_INTEGER t;
@@ -361,6 +363,7 @@ static void display_vblank(void) {
     LARGE_INTEGER t;
     QueryPerformanceCounter(&t);
     InterlockedExchange64(&ext_last, t.QuadPart);
+    InterlockedExchange64(&vblank_due_qpc, t.QuadPart);
     InterlockedIncrement(&frames_behind);
     InterlockedIncrement(&vblanks_due);
     InterlockedOr((volatile LONG*)&ps2_irq_pending, (LONG)PS2_IRQ_VBLANK);
@@ -384,6 +387,7 @@ static DWORD WINAPI host_timer(LPVOID arg) {
             frame++;
             /* (pacing = display: the display raises them while its VBlanks keep coming) */
             if (!vblank_ext || now.QuadPart - ext_last > qpc_freq.QuadPart / 20) {
+                InterlockedExchange64(&vblank_due_qpc, due);
                 InterlockedIncrement(&frames_behind);
                 InterlockedIncrement(&vblanks_due);
                 raise |= PS2_IRQ_VBLANK;
@@ -566,6 +570,7 @@ static void vblank(ps2_ctx* ctx) {
         gpu_hw_ee_vblank(vblank_count);
     }
     if (gs_async()) {
+        gs_set_vsync_time(vblank_due_qpc);       /* (pc-pacing: the picture's time for the paced present) */
         gs_queue_vsync(vblank_count);            /* composed and presented by the GS thread */
     } else {
         static uint32_t frame[1024 * 1024];

@@ -339,7 +339,9 @@ static DWORD WINAPI rt_main(LPVOID arg) {
                 continue;
             }
             gpu_rt_phase = GPU_PH_IDLE;
-            c = gpu_cmd_next(-1);
+            /* (pc-pacing) while a picture's ready time is unknown, look every millisecond (the present delay's samples) */
+            c = gpu_cmd_next(gpu_present_events_pending() ? 1 : -1);
+            if (!c) continue;
         }
         gpu_rt_phase = GPU_PH_EXEC | (long)c->op << 8;
         int stop = 0;

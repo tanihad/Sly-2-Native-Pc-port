@@ -93,3 +93,12 @@ int pace_gov_frame(pace_gov* g, double gpu_ms, double now_ms);
 double pace_gov_cost(int n, int s);
 /* the highest scale below cur predicted at <= fit for a load measured at cur (at least one step, at least 1) */
 int pace_gov_fit(int cur, double load, double fit);
+
+/* ---- internal resolution: picture sizes ------------------------------------------------------------------------- */
+/* The picture the GPU renderer composes at internal scale n for a display aspect aw:ah (progressive, the game's 512 x 448
+ * display): 512 * kx x 448 * n, kx = round(n * (aw/ah) / (4/3)) (gpu_front.h gpu_display_kx: anamorphic widescreen), at
+ * 1x the PS2's own 512 x 448. Native: the smallest n whose picture covers the window's picture area (the largest aw:ah
+ * rectangle in out_w x out_h) in both directions - 2560 x 1440 at 16:9: 4x (2560 x 1792); 1920 x 1080: 3x. */
+int  pace_display_kx(int n, int aw, int ah);
+void pace_picture_size(int n, int aw, int ah, int* w, int* h);
+int  pace_native_scale(int out_w, int out_h, int aw, int ah);

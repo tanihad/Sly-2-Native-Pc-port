@@ -129,7 +129,7 @@ int pace_gov_fit(int cur, double load, double fit) {
 #define AUTO_DOWN_SECS 3
 #define AUTO_FIT 0.70
 #define AUTO_UP 0.70
-#define FIXED_HIGH 0.95
+#define FIXED_HIGH 1.0
 #define FIXED_DOWN_SECS 2
 #define FIXED_FIT 0.85
 #define FIXED_UP 0.80
@@ -186,20 +186,21 @@ int pace_gov_frame(pace_gov* g, double gpu_ms, double now_ms) {
     g->fr[g->fpos] = (float)gpu_ms;
     g->fpos = (g->fpos + 1) % PACE_GOV_NFR;
     if (g->nfr < PACE_GOV_NFR) g->nfr++;
-    /* overload: the GPU cannot draw this scale in real time - pictures queue up and the game would wait for them.
-     * Judged on the last few pictures, so the game slows for well under a second: 3 pictures over two periods each,
-     * or the mean of 6+ over 1.1 periods (a single slow picture - a GPU clock change - is absorbed by the queue). */
+    /* overload: the GPU cannot draw this scale in real time - pictures queue up and the game would wait for them. Far
+     * over (the last 12 pictures over 2.5 periods on average, the last 24 over 1.4) it is lowered at once, so the game
+     * slows for about a second at most; a short burst of slow pictures (loading, a GPU clock change, another program
+     * using the GPU) is absorbed by the render queue and judged by the per-second rules below. */
     if (g->cur > 1) {
-        int n = g->nfr;
-        double sum = 0, min3 = 1e9;
-        for (int i = 0; i < n; i++) sum += g->fr[i];
-        for (int i = 1; i <= 3 && i <= n; i++) {
+        double s12 = 0, s24 = 0;
+        for (int i = 1; i <= PACE_GOV_NFR && i <= g->nfr; i++) {
             double v = g->fr[(g->fpos - i + PACE_GOV_NFR) % PACE_GOV_NFR];
-            if (v < min3) min3 = v;
+            if (i <= 12) s12 += v;
+            s24 += v;
         }
-        double mean = n ? sum / n : 0;
-        if ((n >= 3 && min3 > 2.0 * period) || (n >= 6 && mean > 1.1 * period)) {
-            double load = (n >= 6 ? mean : min3) / period;
+        double load = 0;
+        if (g->nfr >= 12 && s12 / 12 > 2.5 * period) load = s12 / 12 / period;
+        if (g->nfr >= 24 && s24 / 24 > 1.4 * period && s24 / 24 / period > load) load = s24 / 24 / period;
+        if (load > 0) {
             int to = pace_gov_fit(g->cur, load, g->fixed ? FIXED_FIT : AUTO_FIT);
             gov_change(g, to, PACE_GOV_OVERLOAD, load);
             return to;
@@ -244,4 +245,33 @@ int pace_gov_frame(pace_gov* g, double gpu_ms, double now_ms) {
     if (to == g->cur) return 0;
     gov_change(g, to, to > g->cur ? PACE_GOV_FITS : to == g->max && g->cur > g->max ? PACE_GOV_MAX : PACE_GOV_HIGH, load);
     return to;
+}
+
+/* ---- internal resolution ---------------------------------------------------------------------------------------- */
+int pace_display_kx(int n, int aw, int ah) {     /* (= gpu_front.h gpu_display_kx) */
+    if (n < 1) n = 1;
+    if (n == 1 || aw <= 0 || ah <= 0) return n;
+    int k = (int)((double)n * (double)aw * 3.0 / ((double)ah * 4.0) + 0.5);
+    return k < n ? n : k > 16 ? 16 : k;
+}
+
+void pace_picture_size(int n, int aw, int ah, int* w, int* h) {
+    if (n < 1) n = 1;
+    if (n > 8) n = 8;
+    *w = 512 * pace_display_kx(n, aw, ah);
+    *h = 448 * n;
+}
+
+int pace_native_scale(int out_w, int out_h, int aw, int ah) {
+    if (aw <= 0 || ah <= 0) { aw = 4; ah = 3; }
+    if (out_w <= 0 || out_h <= 0) return 3;
+    int lw = out_w, lh = out_h;                  /* the picture area: the largest aw:ah rectangle in the window */
+    if ((long long)out_w * ah > (long long)out_h * aw) lw = (int)((long long)out_h * aw / ah);
+    else lh = (int)((long long)out_w * ah / aw);
+    for (int n = 1; n <= 8; n++) {
+        int w, h;
+        pace_picture_size(n, aw, ah, &w, &h);
+        if (w >= lw && h >= lh) return n;
+    }
+    return 8;
 }

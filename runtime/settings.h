@@ -24,7 +24,8 @@ typedef struct {
      * the software renderer ignores them. */
     int renderer_gpu;            /* renderer = gpu (1, default since M11: the Direct3D 11 GS backend; the software
                                     renderer when it cannot start) | software (0) */
-    int pacing;                  /* pacing = vsync (0, default) | vrr (1) | display (2): SETTINGS_PACING_* */
+    int pacing;                  /* pacing = auto (0, default; "vsync" = the same) | vrr (1) | display (2) | paced (3) |
+                                    immediate (4): SETTINGS_PACING_* (notes/settings.md, gpu/gpu_pace.h) */
     int internal_scale;          /* 1..8, or 0 = auto (default since M11: 3x, lowered while the GPU cannot keep up) */
     int outlines_thin;           /* outlines = ps2 (0, default) | thin (1) */
     int filters_faithful;        /* filters = modern (0, default) | faithful (1): preset for the next three */
@@ -39,13 +40,28 @@ typedef struct {
     int win_x, win_y, win_w, win_h;   /* the window's normal (not maximized) rectangle; win_w 0 = none */
     int win_maximized, win_fullscreen;
     int show_fps;                /* frame rate in the title bar */
+    /* (pc-pacing; kept last: ps2_settings' initializer is positional) */
+    int vsync;                   /* [graphics] vsync = on (0, default) | off (1: tearing allowed) | adaptive (2): SETTINGS_VSYNC_* */
+    int scale_max;               /* [graphics] internal_scale_max = 1..8 | native: the highest scale auto picks (0: the default,
+                                    SETTINGS_SCALE_AUTO_MAX) */
 } ps2_settings_t;
 
-enum { SETTINGS_PACING_VSYNC, SETTINGS_PACING_VRR, SETTINGS_PACING_DISPLAY };
+/* graphics.pacing: auto = pictures presented at an even 59.94 Hz cadence (their VBlank's time + a measured delay: smooth
+ * on VRR displays), the game's clock from the display when it runs at 60 / 120 / 240 Hz; paced = the same with the
+ * 59.94 Hz timer always; immediate = each picture as soon as it is drawn (lowest latency, uneven); display = the
+ * display's VBlanks drive the game (60 / 120 / 240 Hz displays); vrr = the old setting: paced + vsync off */
+enum { SETTINGS_PACING_AUTO, SETTINGS_PACING_VRR, SETTINGS_PACING_DISPLAY, SETTINGS_PACING_PACED, SETTINGS_PACING_IMMEDIATE,
+       SETTINGS_PACING_N };
+#define SETTINGS_PACING_VSYNC SETTINGS_PACING_AUTO   /* (the old default's name) */
+enum { SETTINGS_VSYNC_ON, SETTINGS_VSYNC_OFF, SETTINGS_VSYNC_ADAPTIVE, SETTINGS_VSYNC_N };
+extern const char* const settings_pacing_names[SETTINGS_PACING_N];   /* "auto", "vrr", "display", "paced", "immediate" */
+extern const char* const settings_vsync_names[SETTINGS_VSYNC_N];     /* "on", "off", "adaptive" */
 enum { SETTINGS_SCALER_AUTO, SETTINGS_SCALER_POINT, SETTINGS_SCALER_BOX, SETTINGS_SCALER_LANCZOS, SETTINGS_SCALER_CATMULL,
        SETTINGS_SCALER_BILINEAR, SETTINGS_SCALER_N };
 extern const char* const settings_scaler_names[SETTINGS_SCALER_N];   /* "auto", "point", ... (sly2.ini values) */
 #define SETTINGS_SCALE_AUTO 0            /* internal_scale = auto */
+#define SETTINGS_SCALE_NATIVE 100        /* (pc-pacing) internal_scale = native: the smallest scale whose picture covers the
+                                            window's picture area in both directions (1440p 16:9 -> 4x: 2560 x 1792) */
 #define SETTINGS_SCALE_AUTO_MAX 3        /* the scale auto aims for (the owner's decision: 3x on capable GPUs) */
 
 /* The preset's value where a toggle is -1: Modern = motion blur on, flicker filter off, progressive;
@@ -70,6 +86,7 @@ int settings_parse_aspect(const char* v, int* w, int* h);
 /* "software"/"sw" -> 0, "gpu"/"hw"/"d3d11" -> 1; "vsync" / "vrr" ("tearing") / "display" -> SETTINGS_PACING_* */
 int settings_parse_renderer(const char* v, int* gpu);
 int settings_parse_pacing(const char* v, int* pacing);
+int settings_parse_vsync(const char* v, int* vsync);   /* on / off / adaptive */
 /* The file's text for s (a commented template with every key). Returns the length written
  * (snprintf semantics). */
 int settings_format(const ps2_settings_t* s, char* out, size_t cap);
