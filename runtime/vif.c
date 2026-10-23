@@ -27,6 +27,8 @@
 #include "perf.h"
 #include "gfx_async.h"
 
+#include <stdlib.h>
+
 /* ---- register bits --------------------------------------------------------------------------- */
 
 #define ST_VPS_WAIT 0x1u               /* VPS = 1: waiting for the data of a command */
@@ -250,11 +252,128 @@ static void upk_begin(vif_state* v, uint32_t code) {
     v->kind = K_UNPACK;
 }
 
+/* (pc-fps2) Whole vectors of one format, the format and the mask flag known at compile time (Sly 2's chains: V4-5, V1-8
+ * masked, V2-16 with CL > WL, V4-16, V4-8, V3-16 ...): the same writes as upk_decode + upk_write, without their per-vector
+ * dispatch. No filling cycles (CL < WL: the generic loop). Returns the bytes consumed. */
+static inline __attribute__((always_inline)) uint32_t upk_loop(vif_state* v, const uint8_t* src, uint32_t avail,
+                                                               const uint32_t vn, const uint32_t vl, const int masked) {
+    const uint32_t eb = vl == 3 ? 2 : 4u >> vl, vb = vl == 3 ? 2 : eb * (vn + 1);
+    uint32_t* mem = (uint32_t*)vu_data_mem(v->id);
+    const uint32_t qmask = v->qmask, mode = v->mode & 3, wl = v->u_wl, skipq = v->u_cl > wl ? v->u_cl - wl : 0;
+    const int usn = v->u_usn;
+    uint32_t pos = 0, addr = v->u_addr, cyc = v->u_cyc, in = v->u_in, out = v->u_out;
+    while (in) {
+        uint32_t need = vb + (vn == 2 && in > 1 ? eb : 0);
+        if (avail - pos < need) break;
+        const uint8_t* s = src + pos;
+        uint32_t d[4];
+        if (vl == 3) {                                       /* V4-5 */
+            uint16_t h;
+            memcpy(&h, s, 2);
+            d[0] = (h & 0x1Fu) << 3; d[1] = ((h >> 5) & 0x1Fu) << 3; d[2] = ((h >> 10) & 0x1Fu) << 3; d[3] = ((uint32_t)h >> 15) << 7;
+        } else if (vn == 0) {
+            d[0] = d[1] = d[2] = d[3] = ld_elem(s, vl, usn);
+        } else if (vn == 1) {
+            d[0] = d[2] = ld_elem(s, vl, usn);
+            d[1] = d[3] = ld_elem(s + eb, vl, usn);
+        } else if (vn == 2) {
+            d[0] = ld_elem(s, vl, usn); d[1] = ld_elem(s + eb, vl, usn); d[2] = ld_elem(s + 2 * eb, vl, usn);
+            d[3] = in > 1 ? ld_elem(s + 3 * eb, vl, usn) : 0;
+        } else {
+            d[0] = ld_elem(s, vl, usn); d[1] = ld_elem(s + eb, vl, usn); d[2] = ld_elem(s + 2 * eb, vl, usn); d[3] = ld_elem(s + 3 * eb, vl, usn);
+        }
+        uint32_t* dst = mem + ((addr & qmask) << 2);
+        uint32_t m = masked ? (v->mask >> ((cyc < 3 ? cyc : 3) * 8)) & 0xFFu : 0;
+        if (!m && (mode == 0 || mode == 3)) {
+            memcpy(dst, d, 16);
+        } else {
+            uint32_t row = cyc < 3 ? cyc : 3;
+            for (int j = 0; j < 4; j++) {
+                switch ((m >> (j * 2)) & 3) {
+                case 0:
+                    if (mode == 1) dst[j] = d[j] + v->r[j];
+                    else if (mode == 2) dst[j] = v->r[j] += d[j];
+                    else dst[j] = d[j];
+                    break;
+                case 1: dst[j] = v->r[j]; break;
+                case 2: dst[j] = v->c[row]; break;
+                default: break;
+                }
+            }
+        }
+        addr++;
+        out--;
+        if (++cyc >= wl) { cyc = 0; addr += skipq; }
+        in--;
+        pos += vb;
+    }
+    v->u_addr = addr;
+    v->u_cyc = cyc;
+    v->u_in = in;
+    v->u_out = out;
+    v->num = out & 0xFF;
+    return pos;
+}
+
+static uint32_t upk_fast(vif_state* v, const uint8_t* src, uint32_t avail) {
+    switch ((v->u_fmt << 1) | (uint32_t)v->u_masked) {
+#define UPK_CASE(VN, VL) \
+    case ((VN << 2 | VL) << 1): return upk_loop(v, src, avail, VN, VL, 0); \
+    case ((VN << 2 | VL) << 1) | 1: return upk_loop(v, src, avail, VN, VL, 1);
+    UPK_CASE(0, 0) UPK_CASE(0, 1) UPK_CASE(0, 2)
+    UPK_CASE(1, 0) UPK_CASE(1, 1) UPK_CASE(1, 2)
+    UPK_CASE(2, 0) UPK_CASE(2, 1) UPK_CASE(2, 2)
+    UPK_CASE(3, 0) UPK_CASE(3, 1) UPK_CASE(3, 2) UPK_CASE(3, 3)
+#undef UPK_CASE
+    default: return 0;
+    }
+}
+
+static int upk_fast_off = -1;            /* PS2_VIF_UPK_FAST=0: the generic loop only; =check: both, compared (slow) */
+static int upk_check;
+
+static uint32_t upk_data_body(vif_state* v, const uint32_t* w, uint32_t n, int fast);
+
 static uint32_t upk_data(vif_state* v, const uint32_t* w, uint32_t n) {
+    if (upk_fast_off < 0) {
+        const char* e = getenv("PS2_VIF_UPK_FAST");
+        upk_fast_off = e && *e == '0';
+        upk_check = e && !strcmp(e, "check");
+    }
+    if (!upk_check) return upk_data_body(v, w, n, !upk_fast_off);
+    /* the generic loop on copies of the state and the VU memory, then the fast one: everything must agree */
+    static vif_state ref;
+    static _Alignas(16) uint8_t mem_before[16384], mem_ref[16384];
+    static uint64_t checked, bad;
+    uint8_t* mem = vu_data_mem(v->id);
+    uint32_t msize = (v->qmask + 1) * 16;
+    memcpy(mem_before, mem, msize);
+    ref = *v;
+    uint32_t r1 = upk_data_body(&ref, w, n, 0);
+    memcpy(mem_ref, mem, msize);
+    memcpy(mem, mem_before, msize);
+    int ref_done = ref.kind == K_NONE;
+    uint32_t r2 = upk_data_body(v, w, n, 1);
+    checked++;
+    if (r1 != r2 || memcmp(mem, mem_ref, msize) || ref.u_addr != v->u_addr || ref.u_cyc != v->u_cyc || ref.u_in != v->u_in ||
+        ref.u_out != v->u_out || ref.num != v->num || ref.u_buflen != v->u_buflen || memcmp(ref.r, v->r, 16) ||
+        ref_done != (v->kind == K_NONE)) {
+        if (bad++ < 10) fprintf(stderr, "[vif] PS2_VIF_UPK_FAST=check: unpack fmt 0x%X masked %d mode %u cycle 0x%04X differs\n",
+                                v->u_fmt, v->u_masked, v->mode & 3, v->cycle);
+    }
+    if ((checked & 0xFFFFF) == 0) fprintf(stderr, "[vif] PS2_VIF_UPK_FAST=check: %llu unpack calls, %llu differ\n",
+                                          (unsigned long long)checked, (unsigned long long)bad);
+    return r2;
+}
+
+static uint32_t upk_data_body(vif_state* v, const uint32_t* w, uint32_t n, int fast) {
     uint32_t take = n < v->left ? n : v->left;
     const uint8_t* p = (const uint8_t*)w;
     uint32_t bytes = take * 4, pos = 0, vb = v->u_vbytes;
     v->left -= take;
+    /* (pc-fps2) whole vectors without filling cycles: the per-format loops */
+    if (fast && !v->u_buflen && v->u_wl <= v->u_cl && v->u_in && !(v->u_fmt == 0xC && !v->u_masked))
+        pos = upk_fast(v, p, bytes);
 
     /* Fast path: V4-32, no mask, no addition, no skipping/filling. */
     uint32_t mode = v->mode & 3;
@@ -570,6 +689,12 @@ int vif_dma_tag(int vif, const void* tag_qw) {
     if (k == 0) return 0;
     if (k == 1) fifo_push(v, w + 1, 1);
     return 1;
+}
+
+void vif_debug_state(int vif) {                              /* (pc-fps2) diagnostics */
+    const vif_state* v = &vifs[vif & 1];
+    fprintf(stderr, "[vif] VIF%d: stat %08X kind %d left %u code %08X fifo %u vu_wait %d dq_n %u\n", vif, v->stat, v->kind,
+            v->left, v->code, v->fifo_n, v->vu_wait, v->dq_n);
 }
 
 uint32_t vif1_read(void* qw, uint32_t qwc) {

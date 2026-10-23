@@ -23,6 +23,8 @@ __attribute__((selectany)) void (*gfx_wait_fn)(void) = 0;         /* EE: wait fo
 /* worker: an event the EE must see, deferred (kind GFX_EV_*) */
 __attribute__((selectany)) void (*gfx_defer_fn)(int kind, uint32_t a, uint64_t b) = 0;
 enum { GFX_EV_INTC = 1, GFX_EV_DMAC, GFX_EV_GSREG };
+/* (pc-fps2, frame interpolation prototype interp.c) chains re-run by the runtime raise no GS / VIF1 / DMA 1-2 interrupts */
+__attribute__((selectany)) volatile int gfx_quiet = 0;
 
 static inline uint32_t gfx_tid(void) {                            /* TEB ClientId.UniqueThread (x64) */
     uint32_t v;

@@ -12,7 +12,7 @@ import statistics
 import sys
 
 PERF = re.compile(r"\[perf\]\s+([\d.]+)s vblanks (\d+)/(\d+) due \(([\d.]+)/s\), flips (\d+) \(([\d.]+)/s\), busy ([\d.]+) ms/vblank(.*?)\|(.*)$")
-STATS = re.compile(r"stats v(\d+): ([\d.]+) flips/s .*?GS thread ([\d.]+) \(mean\) \| frontend (?:thread|\(GS thread\)) ([\d.]+) / ([\d.]+) \| "
+STATS = re.compile(r"stats v(\d+): ([\d.]+) flips/s \(([\d.]+) pictures/s.*?GS thread ([\d.]+) \(mean\) \| frontend (?:thread|\(GS thread\)) ([\d.]+) / ([\d.]+) \| "
                    r"render CPU ([\d.]+) / ([\d.]+), wall ([\d.]+) / ([\d.]+), present ([\d.]+) \| GPU ([\d.]+) / ([\d.]+)")
 VU = re.compile(r"VU (\d+)k pairs in (\d+) programs/vblank \(([\d.]+) ns per pair")
 EXTRA = re.compile(r"\[fps2\] (.*)$")
@@ -76,11 +76,13 @@ def main():
             continue
         m = STATS.search(line)
         if m:
-            sfl.append(float(m.group(2)))
-            gs.append(float(m.group(3)))
-            fr.append(float(m.group(4)))
-            rc.append(float(m.group(6)))
-            gpu.append(float(m.group(11)))
+            if float(m.group(4)) == 0:           # (a stats line without game frames: a second line of the same VBlank)
+                continue
+            sfl.append(float(m.group(3)))
+            gs.append(float(m.group(4)))
+            fr.append(float(m.group(5)))
+            rc.append(float(m.group(7)))
+            gpu.append(float(m.group(12)))
             continue
         m = EXTRA.search(line)
         if m:
@@ -93,7 +95,7 @@ def main():
         split += f" | worker busy {med(wbusy):.2f} ms/frame: " + " ".join(f"{k} {med(v):.0f}%" for k, v in wcats.items())
     print(f"{name}: fps med {med(fps):.1f} p10 {low(fps):.1f} min {min(fps):.1f} ({len(fps)} s) | EE busy {med(busy):.2f} ms/frame | {split}"
           f" | VU {med(vu):.0f}k pairs/frame | per frame ms: GS thread {med(gs):.2f} frontend {med(fr):.2f} render CPU {med(rc):.2f}"
-          f" GPU {med(gpu):.2f}")
+          f" GPU {med(gpu):.2f} | pictures/s {med(sfl):.1f} p10 {low(sfl):.1f}")
     for e in extra[-3:]:
         print("   ", e)
     if csv:

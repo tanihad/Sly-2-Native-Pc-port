@@ -502,6 +502,15 @@ static void pump(void) {
 void dma_run_owned(int ch) {
     ch_[ch].budget = TAG_BUDGET;
     while (runnable(ch) && run(ch)) {}
+    if (runnable(ch)) {                          /* stalled (VIF stop / interrupt): the EE sees it and goes on */
+        static int logged;
+        if (logged++ < 5) {
+            fprintf(stderr, "[dma] graphics worker: ch%d stalled: CHCR %08X MADR %08X QWC %u TADR %08X\n", ch,
+                    ch_[ch].chcr, ch_[ch].madr, ch_[ch].qwc, ch_[ch].tadr);
+            extern void vif_debug_state(int vif) __attribute__((weak));
+            if (vif_debug_state) vif_debug_state(1);
+        }
+    }
 }
 
 void dma_service(void) { pump(); }
@@ -523,6 +532,8 @@ static void put(void* data, unsigned size, uint32_t phys, uint32_t v) {
     memcpy(data, &v, size < 4 ? size : 4);
 }
 
+extern void chain_dump(uint32_t tadr) __attribute__((weak));   /* chain_dump.c (game build) */
+
 static void chcr_write(int ch, uint32_t v) {
     chan* c = &ch_[ch];
     if (c->chcr & CHCR_STR) {                    /* busy: only STR can change (stop = keep the state) */
@@ -533,6 +544,7 @@ static void chcr_write(int ch, uint32_t v) {
     if (!(c->chcr & CHCR_STR)) return;
     if (is_sif(ch)) { c->chcr &= ~CHCR_STR; return; }   /* IOP link emulated at a higher level */
     chan_start(ch);
+    if (ch == DMA_VIF1 && chain_dump && mode_of(ch) == M_SRC_CHAIN) chain_dump(c->tadr);   /* (pc-fps2) PS2_CHAIN_DUMP */
 }
 
 static void chan_access(uint32_t phys, void* data, unsigned size, int is_write) {

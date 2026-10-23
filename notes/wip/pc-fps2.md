@@ -24,6 +24,20 @@ Per frame (ep1 hub): ~51k prims, ~2.5M VU pairs, ~7500 VU1 programs.
 Per frame DMA (ep1 hub): ch2 normal 9 qw (0x2DEBD0/0x2DECC0), ch1 VIF1 chain (0x35F060 / 0x3070E0 alternating),
 ch2 chain (0x2FD980 / 0x2F7980), ch2 chain 0x442C20 (static).
 
+NOTE: the "ep1 hub" above was really the ep1 safehouse (warp_run -Play's +1500 pad frames come 2x early at 120 fps).
+fps2_scene.ps1 now presses X at r25 s (wall time); ep1_hub = save of job m1_brawl (briefing done) -> Sly on the roofs.
+
+## Prototype (a) A1+A2 vs base, 3x, 120 / 165 (build\warp\fps2_cmp1.txt; 35 s windows, medians)
+| scene | base 120 | a12 120 | base 165 | a12 165 | a12 worker ms | GS thr | front | GPU 3x |
+|---|---|---|---|---|---|---|---|---|
+| ep1 hub | 68.3 (p10 64.8) | 86.7 (83.9) | 71.6 | 87.0 | 8.9 | 7.4 | 9.2 | 11.4 |
+| ep3 hub | 98.0 (67.7) | 100.7 (81.1) | 99.2 | 98.5 (80.5) | 5.5 | 3.7 | 4.0 | 9.6 |
+| ep5 hub | 90.4 (79.5) | 101.9 (96.2) | 92.5 | 102.0 | 7.0 | 5.5 | 7.8 | 9.5 |
+| m8 boss | 118.0 (95.6) | 118.2 (103.9) | 113.0 | 126.7 | 4.6-5.5 | 4.1-5.3 | 4.8-6.2 | 7.5-8.1 |
+| m3 heist | 119.2 | 119.2 | 145.8 | 143.6 | 1.8 | 1.4 | 1.8 | 6.8 |
+With A1+A2 the EE thread is ~2 ms per frame (60-80% idle); at 3x the GPU is the limit everywhere (fps ~ 1000 / GPU ms).
+PS2_GIF_CHECK: 3.1M raw packets, 0 differ.
+
 ## In progress
 - A1 graphics worker (runtime/gfx_async.c/.h, hooks in dma/vif/gif/vu/hw/gs_thread/ps2_runtime/perf) + A2 raw PATH1
   packets (gif_parse.h, gif.c path1_raw, gs_thread.c K_GIF / gs_gif_packet; PS2_GIF_RAW=0 off, PS2_GIF_CHECK=1 checks).

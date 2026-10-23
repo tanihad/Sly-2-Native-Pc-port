@@ -453,6 +453,7 @@ static DWORD WINAPI host_timer(LPVOID arg) {
 }
 
 uint32_t ps2_vblank_count(void) { return vblank_count; }
+int64_t ps2_vblank_due_qpc(void) { return vblank_due_qpc; }   /* (pc-fps2) interp.c: when the last VBlank was due */
 
 static volatile int ram_dump_request;
 void ps2_request_ram_dump(void) { ram_dump_request = 1; }   /* written at the next VBlank */
@@ -549,6 +550,7 @@ static void dump_mark(uint32_t vb) {
 
 /* PS2_DUMP_FRAMES: this VBlank's picture is written */
 static int dump_wanted(uint32_t vb) {
+    if (dump_dir && vb >= 0x40000000u) return 1;  /* (pc-fps2) interp.c prototype: pictures it marks for dumping */
     if (dump_dir && dump_secs > 0) {
         if (vb < dump_from) return 0;
         for (int i = 0; i < 64; i++) if (dump_marked[i] == vb && vb) return 1;

@@ -34,11 +34,13 @@ uint32_t dmac_pending(void) { return (d_stat & 0x63FFu & (d_stat >> 16)) | (d_st
 /* (pc-fps2) raised on the graphics worker (gfx_async.h): applied on the EE when its job ends */
 void intc_raise(int cause) {
     if (gfx_on_worker()) { gfx_defer_fn(GFX_EV_INTC, (uint32_t)cause, 0); return; }
+    if (gfx_quiet && (cause == INTC_GS || cause == INTC_VIF1)) return;
     i_stat |= 1u << cause;
     if (i_mask & (1u << cause)) mark_pending();
 }
 void dmac_raise(int ch) {
     if (gfx_on_worker()) { gfx_defer_fn(GFX_EV_DMAC, (uint32_t)ch, 0); return; }
+    if (gfx_quiet && (ch == DMA_VIF1 || ch == DMA_GIF)) return;
     d_stat |= 1u << ch;
     if (dmac_pending() & (1u << ch)) mark_pending();
 }
