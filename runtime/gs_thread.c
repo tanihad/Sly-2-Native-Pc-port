@@ -20,6 +20,8 @@
  * before they block in WaitOnAddress. */
 #include "gs_draw.h"
 #include "perf.h"
+#include "gfx_async.h"
+#include "gif_parse.h"
 
 #include <stdatomic.h>
 #include <stdlib.h>
@@ -31,7 +33,7 @@
 #define PUBLISH_EVERY  256
 #define SPINS          4000             /* pause iterations before blocking */
 
-enum { K_IMAGE = 0x100, K_SKIP, K_VSYNC, K_SYNC };
+enum { K_IMAGE = 0x100, K_SKIP, K_VSYNC, K_SYNC, K_GIF };   /* (pc-fps2) K_GIF: a raw PATH1 packet (gif_parse.h) */
 enum { R_XYZF2 = 0x04, R_XYZ2 = 0x05, R_SIGNAL = 0x60, R_FINISH = 0x61, R_LABEL = 0x62 };
 
 typedef struct { uint32_t kind, len; uint64_t v; } slot;   /* kind: register number or K_* */
@@ -106,14 +108,21 @@ void gs_record_vsync(uint32_t vblank);
 extern uint64_t gs_reg_mirror[0x64];             /* gs_record.c: every register as last written */
 extern int gs_recording;
 
+/* (pc-fps2) the queue's producer is the graphics worker while it owns the GS (gfx_async.h): the EE waits for it first */
+#define EE_WAIT_WORKER() do { if (gfx_owned && !gfx_on_worker()) gfx_wait_fn(); } while (0)
+
 void gs_write_reg(uint32_t r, uint64_t v) {
-    if (r < 0x64) gs_reg_mirror[r] = v;
+    EE_WAIT_WORKER();
+    /* (pc-fps2) with the GS thread the mirror is kept where the registers execute (raw PATH1 packets are parsed there);
+     * SIGNAL / FINISH / LABEL execute here */
+    if (r < 0x64 && (!async_on || (r >= R_SIGNAL && r <= R_LABEL))) gs_reg_mirror[r] = v;
     if (gs_recording) gs_record_reg(r, v);
-    if (!async_on) { gs_exec_write_reg(r, v); return; }
     if (r == R_SIGNAL || r == R_FINISH || r == R_LABEL) {   /* CSR events: on the EE's timeline */
+        if (gfx_owned && gfx_on_worker()) { gfx_defer_fn(GFX_EV_GSREG, r, v); return; }   /* (pc-fps2) */
         gs_exec_write_reg(r, v);
         return;
     }
+    if (!async_on) { gs_exec_write_reg(r, v); return; }
     /* one slot never needs padding: only check the remembered free space (reserve when it runs out) */
     slot* s = (int32_t)(room_end - (wr_local + 1)) >= 0 ? &q[wr_local & Q_MASK] : reserve(1);
     s->kind = r;
@@ -125,6 +134,7 @@ void gs_write_reg(uint32_t r, uint64_t v) {
 }
 
 void gs_image_write(const void* data, uint32_t bytes) {
+    EE_WAIT_WORKER();
     if (gs_recording) gs_record_image(data, bytes);
     if (!async_on) { gs_exec_image_write(data, bytes); return; }
     const uint8_t* p = data;
@@ -142,7 +152,34 @@ void gs_image_write(const void* data, uint32_t bytes) {
     publish();
 }
 
+/* (pc-fps2) the graphics worker at the end of its job: what it queued goes to the GS thread now */
+void gs_publish(void) { if (async_on && unpublished) publish(); }
+
+/* (pc-fps2) A whole GIF packet (qwc qwords at qword `addr` of a ring of ring_qw qwords, VU1 memory for PATH1) queued
+ * raw: the GS thread parses it (gif_parse.h). 0 = not now (no GS thread, recording): the caller parses it itself.
+ * check: PS2_GIF_CHECK's hash of the caller's own parse of it (0 = none), compared by the GS thread. */
+int gs_gif_packet(const uint8_t* ring, uint32_t addr, uint32_t ring_qw, uint32_t qwc, uint64_t check) {
+    if (!async_on || gs_recording || qwc + 1 >= Q_SLOTS / 4) return 0;
+    EE_WAIT_WORKER();
+    slot* s = reserve(1 + qwc);
+    s->kind = K_GIF;
+    s->len = qwc;
+    s->v = check;
+    uint8_t* d = (uint8_t*)(s + 1);
+    for (uint32_t done = 0; done < qwc;) {
+        uint32_t a = (addr + done) & (ring_qw - 1), c = ring_qw - a;
+        if (c > qwc - done) c = qwc - done;
+        memcpy(d + (size_t)done * 16, ring + (size_t)a * 16, (size_t)c * 16);
+        done += c;
+    }
+    wr_local += 1 + qwc;
+    unpublished += 1 + qwc;
+    if (unpublished >= PUBLISH_EVERY) publish();
+    return 1;
+}
+
 void gs_sync(void) {
+    EE_WAIT_WORKER();
     static uint32_t synced_at = ~0u;                    /* wr_local after the last completed sync */
     if (!async_on || wr_local == synced_at) return;     /* nothing sent since: still in sync */
     slot* s = reserve(1);                               /* the GS thread finishes deferred drawing too */
@@ -179,6 +216,7 @@ void gs_set_vsync_time(int64_t qpc) { vsync_time = qpc; }
 int64_t gs_vsync_qpc(void) { return vsync_qpc_now; }
 
 void gs_queue_vsync(uint32_t vblank) {
+    EE_WAIT_WORKER();
     gs_record_vsync(vblank);                            /* PS2_GS_RECORD (gs_record.c) */
     /* at most one picture in flight: wait for the previous VBlank's to be presented */
     uint32_t done = atomic_load_explicit(&vsync_done, memory_order_acquire);
@@ -257,9 +295,30 @@ static void vblank_picture(const slot* s) {
     gs_draw_queue_job(picture_run, p, reads);
 }
 
+/* (pc-fps2) raw PATH1 packets (K_GIF): parsed here with the same code as gif.c (gif_parse.h) */
+static void exec_reg(uint32_t r, uint64_t v) {
+    if (r < 0x64) gs_reg_mirror[r] = v;
+    gs_exec_write_reg(r, v);
+}
+static uint64_t chk_acc;
+static uint64_t chk_packets, chk_bad;
+static void chk_reg(uint32_t r, uint64_t v) { chk_acc = gifp_hash_reg(chk_acc, r, v); }
+static void chk_img(const void* d, uint32_t n) { chk_acc = gifp_hash_bytes(chk_acc, d, n); }
+static void gif_check_packet(const slot* s) {         /* PS2_GIF_CHECK: this parse == the producer's own (gif.c) */
+    chk_acc = GIFP_HASH_SEED;
+    gifp_packet_run((const uint8_t*)(s + 1), s->len, chk_reg, chk_img);
+    chk_packets++;
+    if (chk_acc != s->v && chk_bad++ < 10)
+        fprintf(stderr, "[gs] PS2_GIF_CHECK: raw PATH1 packet of %u qwords parsed differently (%llu of %llu packets)\n",
+                s->len, (unsigned long long)chk_bad, (unsigned long long)chk_packets);
+    if ((chk_packets & 0xFFFFF) == 0)
+        fprintf(stderr, "[gs] PS2_GIF_CHECK: %llu raw PATH1 packets checked, %llu differ\n", (unsigned long long)chk_packets,
+                (unsigned long long)chk_bad);
+}
+
 static DWORD WINAPI gs_thread_main(LPVOID arg) {
     (void)arg;
-    uint32_t rd = 0;
+    uint32_t rd = 0, rd_stored = 0;
     for (;;) {
         uint32_t wr = atomic_load_explicit(&q_wr, memory_order_acquire);
         if (wr == rd) {
@@ -297,12 +356,18 @@ static DWORD WINAPI gs_thread_main(LPVOID arg) {
                 rd += 1 + GS_PRIV_SNAPSHOT * 8 / 16;
                 atomic_store_explicit(&q_rd, rd, memory_order_release);
                 break;
+            case K_GIF:                                   /* (pc-fps2) a raw PATH1 packet */
+                if (s->v) gif_check_packet(s);
+                gifp_packet_run((const uint8_t*)(s + 1), s->len, exec_reg, gs_exec_image_write);
+                rd += 1 + s->len;
+                break;
             default:
+                if (s->kind < 0x64) gs_reg_mirror[s->kind] = s->v;   /* (pc-fps2: kept where registers execute) */
                 gs_exec_write_reg(s->kind, s->v);
                 rd++;
                 break;
             }
-            if ((rd & 1023) == 0) atomic_store_explicit(&q_rd, rd, memory_order_release);   /* free space */
+            if (rd - rd_stored >= 1024) { rd_stored = rd; atomic_store_explicit(&q_rd, rd, memory_order_release); }   /* free space */
         }
         perf_state.gs_busy += __rdtsc() - t0;                 /* only this thread writes it */
         atomic_store_explicit(&q_rd, rd, memory_order_seq_cst);

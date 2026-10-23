@@ -10,6 +10,7 @@
 #include "window_gpu.h"
 #include "gpu/gpu_hw.h"
 #include "gpu/gpu.h"
+#include "gfx_async.h"
 /* The GPU renderer (runtime/gpu) is linked into the game (scripts/build_game.py) but not into every test
  * program built from the runtime's C files (tests/run_tests.py): weak references, NULL when it is absent. */
 #define GPU_WEAK __attribute__((weak))
@@ -756,7 +757,7 @@ static void vblank(ps2_ctx* ctx) {
 /* Between the steps of long runtime operations (dma.c). The IOP is independent of the EE's state, but
  * like sif.c it is not run from inside a game interrupt handler. */
 void ps2_poll_iop(void) {
-    if (iop_poll_flag && !in_interrupt) iop_service();
+    if (iop_poll_flag && !in_interrupt && !gfx_on_worker()) iop_service();   /* (pc-fps2: the IOP is the EE's) */
 }
 
 /* While the EE thread waits for the GS thread (gs_thread.c), when the IOP has no thread of its own
@@ -772,6 +773,7 @@ static void gs_wait_poll_iop(void) {
 
 /* Called at safe points (loop heads, syscall returns, idle) when ps2_irq_pending is set. */
 void ps2_service_irq(ps2_ctx* ctx) {
+    gfx_poll();                                  /* (pc-fps2) a finished graphics job: its interrupts and GS events */
     if (in_interrupt) return;
     uint32_t p = (uint32_t)InterlockedExchange((volatile LONG*)&ps2_irq_pending, 0);
     if (p & PS2_IRQ_VBLANK) {
@@ -1089,6 +1091,7 @@ int main(int argc, char** argv) {
         gpu_backend = 0;
         if (!headless) window_set_external_presenter(0, NULL);
     }
+    if (gs_async()) gfx_async_init();                    /* (pc-fps2) the VIF1 DMA chain on its own thread (gfx_async.h) */
     menu_game_init(headless);                            /* (pc-menu) the Options menu: runtime/menu_game.c */
 
     static ps2_ctx init;

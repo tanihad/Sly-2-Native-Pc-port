@@ -11,6 +11,7 @@
  * transfer nothing: the IOP side is emulated at a higher level (sif.c).
  */
 #include "hw.h"
+#include "gfx_async.h"
 
 enum { NCH = 10 };
 
@@ -478,15 +479,29 @@ static int run(int ch) {                         /* 1 = something changed */
 static void pump(void) {
     if (pumping) return;
     pumping = 1;
-    for (int ch = 0; ch < NCH; ch++) ch_[ch].budget = TAG_BUDGET;
+    for (int ch = 0; ch < NCH; ch++)
+        if (ch != DMA_VIF1 || !gfx_owned) ch_[ch].budget = TAG_BUDGET;
     for (;;) {
         int progress = 0;
-        for (int ch = 0; ch < NCH; ch++)
+        for (int ch = 0; ch < NCH; ch++) {
+            /* (pc-fps2) a VIF1 chain runs on the graphics worker (gfx_async.h); the GIF waits for it (GS order) */
+            if (ch == DMA_VIF1 && gfx_take_fn) {
+                if (gfx_owned) continue;
+                if (runnable(ch) && mode_of(ch) == M_SRC_CHAIN && gfx_take_fn(ch)) continue;
+            }
+            if (ch == DMA_GIF && gfx_owned && runnable(ch)) gfx_sync();
             if (runnable(ch)) progress |= run(ch);
+        }
         if (!progress) break;
         ps2_poll_iop();
     }
     pumping = 0;
+}
+
+/* (pc-fps2) the graphics worker: channel ch alone, as pump() would run it (no IOP polls: ps2_poll_iop is the EE's) */
+void dma_run_owned(int ch) {
+    ch_[ch].budget = TAG_BUDGET;
+    while (runnable(ch) && run(ch)) {}
 }
 
 void dma_service(void) { pump(); }
@@ -534,6 +549,7 @@ static void chan_access(uint32_t phys, void* data, unsigned size, int is_write) 
         if (!is_write) memset(data, 0, size);
         return;
     }
+    if (ch == DMA_VIF1) gfx_sync();              /* (pc-fps2) the worker's channel: wait for it */
     chan* c = &ch_[ch];
     uint32_t* r = reg == R_CHCR ? &c->chcr : reg == R_MADR ? &c->madr : reg == R_QWC ? &c->qwc :
                   reg == R_TADR ? &c->tadr : reg == R_ASR0 ? &c->asr[0] : reg == R_ASR1 ? &c->asr[1] : &c->sadr;
@@ -570,7 +586,7 @@ void dma_access(uint32_t phys, void* data, unsigned size, int is_write) {
     case 0x1000F590u:                             /* D_ENABLEW (write only); bit 16 = suspend */
         if (sub >= 4) { if (!is_write) memset(data, 0, size); return; }
         if (!is_write) { put(data, size, phys, d_enable); return; }
-        if (base == 0x1000F590u) { d_enable = merge(d_enable, phys, data, size); pump(); }
+        if (base == 0x1000F590u) { gfx_sync(); d_enable = merge(d_enable, phys, data, size); pump(); }
         return;
     default:
         if (!is_write) memset(data, 0, size);
@@ -579,6 +595,7 @@ void dma_access(uint32_t phys, void* data, unsigned size, int is_write) {
     }
     if (sub >= 4) { if (!is_write) memset(data, 0, size); return; }
     if (!is_write) { put(data, size, phys, *r); return; }
+    gfx_sync();                                   /* (pc-fps2) global DMAC state the worker's channel uses */
     *r = merge(*r, phys, data, size) & mask;
     pump();
 }

@@ -155,8 +155,10 @@ static int prof_iop;                        /* PS2_PROFILE=iop: the IOP thread, 
 /* (pc-fps2) PS2_PROFILE=front / render: the GPU renderer's frontend / render thread (linked into the game only) */
 extern void* gpu_fthread_os_handle(void) __attribute__((weak));
 extern void* gpu_rt_os_handle(void) __attribute__((weak));
-static int prof_front, prof_render;
+extern void* gfx_worker_os_handle(void) __attribute__((weak));   /* PS2_PROFILE=worker: the graphics worker */
+static int prof_front, prof_render, prof_worker;
 static void* other_thread_handle(void) {
+    if (prof_worker) return gfx_worker_os_handle ? gfx_worker_os_handle() : NULL;
     if (prof_gs) return gs_thread_os_handle();
     if (prof_iop) return iop_thread_os_handle();
     if (prof_front) return gpu_fthread_os_handle ? gpu_fthread_os_handle() : NULL;
@@ -249,7 +251,7 @@ static void profile_report(void) {
     fprintf(stderr, "\n[profile] %u samples of the %s thread (self time): %.1f%% recompiled game code (f_*), "
                     "%.1f%% runtime, %.1f%% system DLLs\n",
             n, prof_gs ? "GS" : prof_workers ? "pixel worker" : prof_iop ? "IOP (passes over 4 ms only)" :
-               prof_front ? "GPU frontend" : prof_render ? "GPU render" : "EE", 100.0 * prof_game_self / n, 100.0 * (n - prof_game_self - outside_n) / n,
+               prof_front ? "GPU frontend" : prof_render ? "GPU render" : prof_worker ? "graphics worker" : "EE", 100.0 * prof_game_self / n, 100.0 * (n - prof_game_self - outside_n) / n,
             100.0 * outside_n / n);
     int nh = 0;
     for (int s = 0; s < nsyms; s++) if (prof_self[s]) hits[nh++] = (hit){ syms[s].name, prof_self[s] };
@@ -291,8 +293,9 @@ void perf_init(void) {
         prof_iop = !strcmp(p, "iop");
         prof_front = !strcmp(p, "front");
         prof_render = !strcmp(p, "render");
+        prof_worker = !strcmp(p, "worker");
         if (prof_self && prof_incl && outside_rip &&
-            (prof_gs || prof_workers || prof_iop || prof_front || prof_render ||DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &prof_target,
+            (prof_gs || prof_workers || prof_iop || prof_front || prof_render || prof_worker || DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &prof_target,
                                         THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, 0))) {
             prof_thread_handle = CreateThread(NULL, 0, prof_thread, NULL, 0, NULL);
             if (prof_thread_handle) SetThreadPriority(prof_thread_handle, THREAD_PRIORITY_TIME_CRITICAL);
@@ -342,9 +345,19 @@ void perf_vblank(uint32_t serviced, uint32_t due) {
         snprintf(vu, sizeof vu, ", VU %.0fk pairs in %.0f programs/vblank (%.1f ns per pair, %.0f%% recompiled)",
                  (double)dp / ds / 1000.0, (double)dprog / ds, (double)d[PERF_VU] / tsc_hz * 1e9 / (double)dp,
                  100.0 * (double)dcp / (double)dp);
-    fprintf(stderr, "[perf] %6.1fs vblanks %u/%u due (%.1f/s), flips %u (%.1f/s), busy %.2f ms/vblank%s%s |%s\n",
+    /* (pc-fps2) the graphics worker's split (gfx_async.c): busy = not waiting for a job, per VBlank */
+    char wk[256] = "";
+    if (perf_state.worker_tid) {
+        static uint64_t last_w[PERF_N];
+        uint64_t dw[PERF_N], wsum = 0;
+        for (int c = 0; c < PERF_N; c++) { uint64_t a = perf_state.wacc[c]; dw[c] = a - last_w[c]; last_w[c] = a; wsum += dw[c]; }
+        int wl = snprintf(wk, sizeof wk, " | worker busy %.2f ms/vblank:", ds ? (double)(wsum - dw[PERF_IDLE]) / tsc_hz * 1000.0 / ds : 0);
+        for (int c = 0; c < PERF_N && wl < (int)sizeof wk; c++)
+            if (c != PERF_IDLE && dw[c]) wl += snprintf(wk + wl, sizeof wk - (size_t)wl, " %s %.1f%%", cat_names[c], 100.0 * (double)dw[c] / (double)total);
+    }
+    fprintf(stderr, "[perf] %6.1fs vblanks %u/%u due (%.1f/s), flips %u (%.1f/s), busy %.2f ms/vblank%s%s |%s%s\n",
             (double)(now.QuadPart - start_qpc) / (double)qpc_freq.QuadPart, ds, dd, ds / secs, df, df / secs,
-            busy_ms, gsthread, vu, cats);
+            busy_ms, gsthread, vu, cats, wk);
     /* every 10 s: the process's committed memory (a leak shows as steady growth) */
     static int mem_tick;
     if (++mem_tick % 10 == 0) {

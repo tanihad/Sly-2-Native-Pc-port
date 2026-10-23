@@ -46,6 +46,7 @@ def main():
         else:
             i += 1
     fps, busy, cats, vu = [], [], {}, []
+    wbusy, wcats = [], {}
     gs, fr, rc, gpu, sfl = [], [], [], [], []
     started = False
     extra = []
@@ -58,8 +59,15 @@ def main():
             started = True
             fps.append(float(m.group(6)))
             busy.append(float(m.group(7)))
-            for c in re.finditer(r"(\w+) ([\d.]+)%", m.group(9)):
+            ee, _, wk = m.group(9).partition(" | worker busy ")
+            for c in re.finditer(r"(\w+) ([\d.]+)%", ee):
                 cats.setdefault(c.group(1), []).append(float(c.group(2)))
+            if wk:
+                w = re.match(r"([\d.]+) ms/vblank:(.*)", wk)
+                if w:
+                    wbusy.append(float(w.group(1)))
+                    for c in re.finditer(r"(\w+) ([\d.]+)%", w.group(2)):
+                        wcats.setdefault(c.group(1), []).append(float(c.group(2)))
             v = VU.search(m.group(8))
             if v:
                 vu.append(int(v.group(1)))
@@ -81,6 +89,8 @@ def main():
         print(f"{name}: no PS2_PERF lines after {t_from} s")
         return
     split = " ".join(f"{k} {med(v):.0f}%" for k, v in cats.items())
+    if wbusy:
+        split += f" | worker busy {med(wbusy):.2f} ms/frame: " + " ".join(f"{k} {med(v):.0f}%" for k, v in wcats.items())
     print(f"{name}: fps med {med(fps):.1f} p10 {low(fps):.1f} min {min(fps):.1f} ({len(fps)} s) | EE busy {med(busy):.2f} ms/frame | {split}"
           f" | VU {med(vu):.0f}k pairs/frame | per frame ms: GS thread {med(gs):.2f} frontend {med(fr):.2f} render CPU {med(rc):.2f}"
           f" GPU {med(gpu):.2f}")

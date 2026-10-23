@@ -37,6 +37,8 @@
  */
 #include "hw.h"
 #include "perf.h"
+#include "gfx_async.h"
+#include "gif_parse.h"
 
 #include <stdlib.h>
 
@@ -90,7 +92,8 @@ static void log_tag(int path, uint64_t lo, uint64_t hi) {
             ++tags_logged == 100000 ? " (log limit reached)" : "");
 }
 
-static void read_tag(gif_path* p, int path, const uint8_t* qw) {
+/* (pc-fps2) quiet = 1: a check run on a copy of the path state (PS2_GIF_CHECK), no GIF register side effects */
+static inline __attribute__((always_inline)) void read_tag_t(gif_path* p, int path, const uint8_t* qw, gifp_reg_fn out, int quiet) {
     uint64_t lo, hi;
     memcpy(&lo, qw, 8);
     memcpy(&hi, qw + 8, 8);
@@ -104,76 +107,35 @@ static void read_tag(gif_path* p, int path, const uint8_t* qw) {
     p->q = Q_ONE;
     p->tag_lo = (uint32_t)lo;
     p->in_packet = !(p->nloop == 0 && p->eop);
-    last_tag[0] = lo;
-    last_tag[1] = hi;
-    last_path = path;
-    if (log_tags) log_tag(path, lo, hi);
-    if (p->nloop && flg == FLG_PACKED && ((lo >> 46) & 1)) gs_write_reg(GS_PRIM, (lo >> 47) & 0x7FF);
-}
-
-/* ---- data -------------------------------------------------------------------------------------- */
-
-static inline void ad_write(uint32_t reg, uint64_t v) {
-    if (reg == GS_HWREG) gs_image_write(&v, 8);    /* HWREG carries host->local transfer data */
-    else gs_write_reg(reg, v);
-}
-
-static inline void packed_write(gif_path* p, uint32_t desc, uint64_t d0, uint64_t d1) {
-    switch (desc) {
-    case 0x0:                                      /* PRIM */
-        gs_write_reg(GS_PRIM, d0 & 0x7FF);
-        break;
-    case 0x1:                                      /* RGBAQ */
-        gs_write_reg(GS_RGBAQ, (d0 & 0xFF) | ((d0 >> 24) & 0xFF00) | ((d1 & 0xFF) << 16) |
-                               ((d1 >> 8) & 0xFF000000ull) | ((uint64_t)p->q << 32));
-        break;
-    case 0x2:                                      /* ST (+ Q for the next RGBAQ) */
-        p->q = (uint32_t)d1;
-        gs_write_reg(GS_ST, d0);
-        break;
-    case 0x3:                                      /* UV */
-        gs_write_reg(GS_UV, (d0 & 0x3FFF) | ((d0 >> 16) & 0x3FFF0000ull));
-        break;
-    case 0x4:                                      /* XYZF2 / XYZF3 */
-        gs_write_reg((d1 >> 47) & 1 ? GS_XYZF3 : GS_XYZF2,
-                     (d0 & 0xFFFF) | ((d0 >> 16) & 0xFFFF0000ull) | (((d1 >> 4) & 0xFFFFFF) << 32) |
-                     (((d1 >> 36) & 0xFF) << 56));
-        break;
-    case 0x5:                                      /* XYZ2 / XYZ3 */
-        gs_write_reg((d1 >> 47) & 1 ? GS_XYZ3 : GS_XYZ2,
-                     (d0 & 0xFFFF) | ((d0 >> 16) & 0xFFFF0000ull) | (d1 << 32));
-        break;
-    case 0xA:                                      /* FOG */
-        gs_write_reg(GS_FOG, ((d1 >> 36) & 0xFF) << 56);
-        break;
-    case 0xE:                                      /* A+D */
-        ad_write((uint32_t)d1 & 0xFF, d0);
-        break;
-    case 0xF:                                      /* NOP */
-        break;
-    default:                                       /* TEX0_1/2, CLAMP_1/2, 0xB, XYZF3, XYZ3 */
-        gs_write_reg(desc, d0);
-        break;
+    if (!quiet) {
+        last_tag[0] = lo;
+        last_tag[1] = hi;
+        last_path = path;
+        if (log_tags) log_tag(path, lo, hi);
     }
+    if (p->nloop && flg == FLG_PACKED && ((lo >> 46) & 1)) out(GS_PRIM, (lo >> 47) & 0x7FF);
 }
+
+/* ---- data (conversions: gif_parse.h) ------------------------------------------------------------ */
 
 /* Run qwords through one path's state machine; returns how many were consumed.
  * FEED_PATH1 stops right after the packet's EOP tag completes; FEED_PATH3 stops at a packet
  * boundary while PATH3 is masked or paused; FEED_PATH2 consumes everything. */
-static uint32_t gif_feed_body(gif_path* p, int path, const uint8_t* src, uint32_t qwc, int how) {
+static inline __attribute__((always_inline)) uint32_t feed_t(gif_path* p, int path, const uint8_t* src, uint32_t qwc, int how,
+                                                             gifp_reg_fn out, gifp_img_fn img, int quiet) {
     uint32_t i = 0;
     while (i < qwc) {
         const uint8_t* qw = src + (size_t)i * 16;
         if (p->nloop == 0) {                       /* a GIFtag */
             if (how == FEED_PATH3 && !p->in_packet && path3_blocked()) break;
-            read_tag(p, path, qw);
+            read_tag_t(p, path, qw, out, quiet);
             i++;
             if (how == FEED_PATH1 && !p->in_packet) break;   /* NLOOP = 0 with EOP */
             continue;
         }
         if (p->flg == FLG_IMAGE) {
             uint32_t n = qwc - i < p->nloop ? qwc - i : p->nloop;
-            gs_image_write(qw, n * 16);
+            img(qw, n * 16);
             p->nloop -= n;
             i += n;
         } else {
@@ -181,12 +143,12 @@ static uint32_t gif_feed_body(gif_path* p, int path, const uint8_t* src, uint32_
             memcpy(&d0, qw, 8);
             memcpy(&d1, qw + 8, 8);
             if (p->flg == FLG_PACKED) {
-                packed_write(p, (uint32_t)(p->regs >> (p->reg * 4)) & 0xF, d0, d1);
+                gifp_packed(&p->q, (uint32_t)(p->regs >> (p->reg * 4)) & 0xF, d0, d1, out, img);
                 if (++p->reg == p->nreg) { p->reg = 0; p->nloop--; }
             } else {                               /* REGLIST: two registers per qword */
                 for (int h = 0; h < 2; h++) {
                     uint32_t desc = (uint32_t)(p->regs >> (p->reg * 4)) & 0xF;
-                    if (desc < 0xE) gs_write_reg(desc, h ? d1 : d0);
+                    if (desc < 0xE) out(desc, h ? d1 : d0);
                     if (++p->reg == p->nreg) { p->reg = 0; if (--p->nloop == 0) break; }   /* rest is padding */
                 }
             }
@@ -198,6 +160,10 @@ static uint32_t gif_feed_body(gif_path* p, int path, const uint8_t* src, uint32_
         }
     }
     return i;
+}
+
+static uint32_t gif_feed_body(gif_path* p, int path, const uint8_t* src, uint32_t qwc, int how) {
+    return feed_t(p, path, src, qwc, how, gs_write_reg, gs_image_write, 0);
 }
 
 /* Everything the GS draws passes through here: charged to GS time in the PS2_PERF report. */
@@ -244,10 +210,70 @@ uint32_t gif_path2(const void* qw, uint32_t qwc) {
     return gif_feed(&paths[2], 2, (const uint8_t*)qw, qwc, FEED_PATH2);
 }
 
+/* (pc-fps2) A whole PATH1 packet goes to the GS thread as raw qwords and is parsed there (gs_thread.c gs_gif_packet,
+ * gif_parse.h): the producer (EE or graphics worker) only finds the packet's end and copies it, instead of a queue slot
+ * per register. Same register stream (one parser source; PS2_GIF_CHECK=1 compares a hash of this file's parse of every
+ * packet with the GS thread's). PS2_GIF_RAW=0: register by register as before. Not while recording the GS stream or
+ * logging GIFtags, and not for packets with SIGNAL / FINISH / LABEL (CSR events stay on the EE's timeline). */
+extern int gs_gif_packet(const uint8_t* ring, uint32_t addr, uint32_t ring_qw, uint32_t qwc, uint64_t check) __attribute__((weak));
+static int raw_path1 = -1, gif_check;
+static uint64_t chk_acc;
+static void chk_reg(uint32_t r, uint64_t v) { chk_acc = gifp_hash_reg(chk_acc, r, v); }
+static void chk_img(const void* d, uint32_t n) { chk_acc = gifp_hash_bytes(chk_acc, d, n); }
+
+static uint64_t path1_check_hash(const uint8_t* vu1_data, uint32_t addr, uint32_t n) {
+    static _Alignas(16) uint8_t buf[PATH1_MAX * 16];
+    for (uint32_t done = 0; done < n;) {
+        uint32_t a = (addr + done) & (VU1_QWC - 1), c = VU1_QWC - a;
+        if (c > n - done) c = n - done;
+        memcpy(buf + (size_t)done * 16, vu1_data + (size_t)a * 16, (size_t)c * 16);
+        done += c;
+    }
+    gif_path copy = paths[1];
+    chk_acc = GIFP_HASH_SEED;
+    feed_t(&copy, 1, buf, n, FEED_PATH1, chk_reg, chk_img, 1);
+    return chk_acc;
+}
+
+static int path1_raw(const uint8_t* vu1_data, uint32_t addr) {
+    gif_path* p = &paths[1];
+    if (raw_path1 < 0) {
+        const char* e = getenv("PS2_GIF_RAW");
+        raw_path1 = !(e && *e == '0');
+        gif_check = getenv("PS2_GIF_CHECK") && *getenv("PS2_GIF_CHECK") != '0';
+        if (log_tags < 0) log_tags = getenv("PS2_LOG_GIF") != NULL;
+    }
+    if (!raw_path1 || log_tags || !gs_gif_packet || p->nloop || p->in_packet) return 0;
+    uint64_t lt[2];
+    uint32_t n = gifp_packet_len(vu1_data, addr, VU1_QWC, PATH1_MAX, lt);
+    if (!n || !gs_gif_packet(vu1_data, addr, VU1_QWC, n, gif_check ? path1_check_hash(vu1_data, addr, n) : 0)) return 0;
+    /* the path's state after the packet, as the register-by-register parse leaves it */
+    uint32_t nreg = (uint32_t)(lt[0] >> 60), flg = (uint32_t)(lt[0] >> 58) & 3;
+    p->nloop = 0;
+    p->eop = 1;
+    p->in_packet = 0;
+    p->reg = 0;
+    p->regs = lt[1];
+    p->nreg = nreg ? nreg : 16;
+    p->flg = flg > FLG_IMAGE ? FLG_IMAGE : flg;
+    p->tag_lo = (uint32_t)lt[0];
+    last_tag[0] = lt[0];
+    last_tag[1] = lt[1];
+    last_path = 1;
+    vu_addr = (addr + n) & (VU1_QWC - 1);
+    return 1;
+}
+
 void gif_path1_kick(const uint8_t* vu1_data, uint32_t qw_addr) {
     gif_path* p = &paths[1];
     uint32_t addr = qw_addr & (VU1_QWC - 1), total = 0;
     if (!vu1_data) return;
+    if (raw_path1) {
+        int perf_prev = perf_enter(PERF_GS);
+        int done = path1_raw(vu1_data, addr);
+        perf_leave(perf_prev);
+        if (done) return;
+    }
     for (;;) {
         uint32_t len = VU1_QWC - addr;             /* up to the end of VU1 memory, and no further than the limit */
         if (len > PATH1_MAX - total) len = PATH1_MAX - total;
@@ -317,6 +343,7 @@ static int reg_read(uint32_t off, uint32_t* v) {
 }
 
 void gif_access(uint32_t phys, void* data, unsigned size, int is_write) {
+    gfx_sync();                                    /* (pc-fps2) the GIF belongs to the worker while it runs */
     if (phys >= 0x10006000u) {                     /* GIF FIFO (mirrored through the 4 KB page) */
         if (is_write) { fifo_write(phys & 15, data, size); return; }
         memset(data, 0, size);                     /* downloads go through VIF1, not here */

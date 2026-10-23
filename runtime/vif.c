@@ -25,6 +25,7 @@
  */
 #include "hw.h"
 #include "perf.h"
+#include "gfx_async.h"
 
 /* ---- register bits --------------------------------------------------------------------------- */
 
@@ -650,6 +651,7 @@ static void fifo_access(vif_state* v, uint32_t phys, void* data, unsigned size, 
 }
 
 void vif_access(uint32_t phys, void* data, unsigned size, int is_write) {
+    if ((phys >= 0x10004000u ? (phys >> 12) : (phys >> 10)) & 1) gfx_sync();   /* (pc-fps2) VIF1: the worker's */
     if (phys >= 0x10004000u) {                               /* FIFOs: 0x10004000 VIF0, 0x10005000 VIF1 */
         fifo_access(&vifs[(phys >> 12) & 1], phys, data, size, is_write);
         return;
