@@ -224,6 +224,9 @@ static void ps_update_output(hid_dev* d, int force) {
     int port = input_dev_port(d->id);
     o.player_leds = port == 0 ? 0x04 : port == 1 ? 0x0A : 0x00;   /* middle LED / the two around it */
     o.vibration_v2 = d->vib_v2;
+    static int alt_header = -1;                               /* PS2_DS_BT_HEADER=sdl (notes/controls.md) */
+    if (alt_header < 0) { const char* e = getenv("PS2_DS_BT_HEADER"); alt_header = e && !_stricmp(e, "sdl"); }
+    o.bt_alt_header = alt_header;
     uint64_t now = input_now_ms();
     if (d->refresh_stage == 0 && now - d->opened_at >= 1500) { d->refresh_stage = 1; force = 1; }
     if (d->refresh_stage == 1 && now - d->opened_at >= 11000) { d->refresh_stage = 2; force = 1; }
@@ -406,6 +409,9 @@ static void probe(const wchar_t* path) {
             n = get_feature(d, 0x20, feat, sizeof feat);
             unsigned fw = ps_dualsense_fw_version(feat, (size_t)n);
             d->vib_v2 = !n || fw == 0 || fw >= PS_DS_FW_VIBRATION_V2;
+            const char* e = getenv("PS2_DS_RUMBLE");          /* classic | improved: override (hardware tests) */
+            if (e && !_stricmp(e, "classic")) d->vib_v2 = 0;
+            if (e && !_stricmp(e, "improved")) d->vib_v2 = 1;
             hlog("  DualSense firmware update version 0x%04X: %s rumble", fw, d->vib_v2 ? "improved" : "classic");
         }
         ps_update_output(d, 1);

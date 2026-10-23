@@ -39,6 +39,8 @@ typedef struct {
     int release_leds;                            /* DualSense: hand the light bar over from the system's (first report) */
     int vibration_v2;                            /* DualSense firmware >= 2.24: "improved" rumble flag */
     uint8_t seq;                                 /* DualSense BT: 4-bit sequence number (caller increments) */
+    int bt_alt_header;                           /* DualSense BT: SDL's header (byte 1 = 0x02, block at 2) instead of
+                                                    hid-playstation's (PS2_DS_BT_HEADER=sdl, a fallback for testing) */
 } ps_output;
 #define PS_OUTPUT_MAX 78
 /* Build an output report into buf (PS_OUTPUT_MAX bytes, zeroed first); returns its length.

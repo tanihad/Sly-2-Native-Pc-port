@@ -165,7 +165,11 @@ int ps_parse_ds4(const uint8_t* r, size_t n, int bt, ps_report* out) {
 size_t ps_build_dualsense(const ps_output* o, int bt, uint8_t* buf) {
     memset(buf, 0, PS_OUTPUT_MAX);
     uint8_t* c;
-    if (bt) {
+    if (bt && o->bt_alt_header) {
+        buf[0] = 0x31;
+        buf[1] = 0x02;
+        c = buf + 2;
+    } else if (bt) {
         buf[0] = 0x31;
         buf[1] = (uint8_t)((o->seq & 0x0F) << 4);
         buf[2] = 0x10;

@@ -225,8 +225,8 @@ EnterPressMode 29.
   HLE uses IOP RAM below the SIF command buffer at 0x1F000).
 - PortClose takes effect immediately. The per-frame SIF notification (command 0x18, SIF command
   0x80000019 carrying the IOP VBlank count) is not emulated; Sly 2 never enables it.
-- Motor values are kept per port (`pad_get_motors`: small motor 0/1, large motor speed) for a
-  future host rumble hook; nothing drives a real motor yet.
+- Motor values are kept per port (`pad_get_motors`: small motor 0/1, large motor speed) and handed
+  to `input_set_rumble` every VBlank, which drives the PC controller's motors (notes/controls.md).
 - The controller's watchdog is emulated: once configuration mode has been entered, a second
   (60 frames) without any transaction resets it to digital mode, unlocked, with the motors off and
   unmapped (psx-spx, command 43h: "The reset does disable and lock rumble motors, and switches

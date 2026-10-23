@@ -179,6 +179,11 @@ static void test_outputs(void) {
     o.seq = 0x13;                                             /* 4-bit sequence */
     ps_build_dualsense(&o, 1, b);
     CHECK(b[1] == 0x30, "sequence wraps: %02X", b[1]);
+    o.bt_alt_header = 1;                                      /* SDL's header (PS2_DS_BT_HEADER=sdl) */
+    ps_build_dualsense(&o, 1, b);
+    CHECK(b[0] == 0x31 && b[1] == 0x02 && b[2] == 0x02 && b[3] == 0x14 && b[4] == 0x80 && b[46] == 0x28 &&
+          le32(b + 74) == ps_bt_crc(0xA2, b, 78), "sdl header");
+    o.bt_alt_header = 0;
     n = ps_build_dualsense(&o, 0, b);
     CHECK(n == 63 && b[0] == 0x02 && b[1] == 0x02 && b[2] == 0x14 && b[3] == 0x80 && b[4] == 0xFF && b[39] == 0x04 &&
           b[44] == 0x04 && b[45] == 0x28 && b[47] == 0xFF, "ds usb");
