@@ -44,6 +44,7 @@ typedef struct {
     int vsync;                   /* [graphics] vsync = on (0, default) | off (1: tearing allowed) | adaptive (2): SETTINGS_VSYNC_* */
     int scale_max;               /* [graphics] internal_scale_max = 1..8 | native: the highest scale auto picks (0: the default,
                                     SETTINGS_SCALE_AUTO_MAX) */
+    int fullscreen_refresh;      /* [display] fullscreen_refresh = desktop (0, default) | auto (-1) | <Hz>: display_mode.h */
 } ps2_settings_t;
 
 /* graphics.pacing: auto = pictures presented at an even 59.94 Hz cadence (their VBlank's time + a measured delay: smooth

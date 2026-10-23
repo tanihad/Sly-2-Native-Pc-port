@@ -121,6 +121,9 @@ int pace_gov_fit(int cur, double load, double fit) {
 }
 
 #define GOV_SKIP 3                       /* pictures after a change not judged (the rescale itself) */
+/* pictures after a light second (or the start) in which the overload rule does not judge: a GPU that was idle runs at its
+ * lowest clocks and needs a few hundred ms to raise them (NVIDIA: the first 3D frames after the logos took 50-70 ms) */
+#define GOV_WARM 60
 #define GOV_SETTLE 3                     /* seconds after a change not judged by the per-second rules */
 /* per-second rules: auto keeps headroom (down above 85% for 3 s, to 70%; up when the next scale is predicted at
  * <= 70%); a fixed scale is only lowered when it does not fit (above 95% for 2 s, to 85%) and raised back towards
@@ -142,6 +145,7 @@ void pace_gov_init(pace_gov* g, int max, int fixed, int start) {
     g->retry_secs = 120;
     g->slow = 1.0;
     g->sec_t0 = -1;
+    g->warm = GOV_WARM;
 }
 
 static void gov_change(pace_gov* g, int to, int reason, double load) {
@@ -158,6 +162,8 @@ static void gov_change(pace_gov* g, int to, int reason, double load) {
     g->settle = GOV_SETTLE;
     g->sec_gpu = 0;
     g->sec_frames = 0;
+    g->sec_skipped = 0;
+    g->sec_stall_ms = 0;
     g->changes++;
     g->reason = reason;
     g->reason_load = load;
@@ -178,6 +184,11 @@ void pace_gov_set(pace_gov* g, int max, int fixed, double now_ms) {
     if (to != g->cur) gov_change(g, to, PACE_GOV_MAX, g->load);
 }
 
+void pace_gov_evidence(pace_gov* g, int skipped, double stall_ms) {
+    g->sec_skipped += skipped;
+    g->sec_stall_ms += stall_ms;
+}
+
 int pace_gov_frame(pace_gov* g, double gpu_ms, double now_ms) {
     if (!(gpu_ms >= 0)) return 0;
     gpu_ms *= g->slow;
@@ -190,7 +201,8 @@ int pace_gov_frame(pace_gov* g, double gpu_ms, double now_ms) {
      * over (the last 12 pictures over 2.5 periods on average, the last 24 over 1.4) it is lowered at once, so the game
      * slows for about a second at most; a short burst of slow pictures (loading, a GPU clock change, another program
      * using the GPU) is absorbed by the render queue and judged by the per-second rules below. */
-    if (g->cur > 1) {
+    if (g->warm > 0) g->warm--;
+    else if (g->cur > 1) {
         double s12 = 0, s24 = 0;
         for (int i = 1; i <= PACE_GOV_NFR && i <= g->nfr; i++) {
             double v = g->fr[(g->fpos - i + PACE_GOV_NFR) % PACE_GOV_NFR];
@@ -213,9 +225,20 @@ int pace_gov_frame(pace_gov* g, double gpu_ms, double now_ms) {
     if (now_ms - g->sec_t0 < 1000.0) return 0;
     double load = g->sec_frames ? g->sec_gpu / g->sec_frames / period : 0;
     int frames = g->sec_frames;
+    /* the evidence that the GPU did not keep up whatever its timestamps say (another program using the GPU too: the
+     * frames' own GPU time looks fine while the queue grows): the game waited for the render queue, or pictures were
+     * skipped because the renderer was behind - such a second counts as overloaded (105%) */
+    double behind = frames ? (double)g->sec_skipped / frames : 0;
+    g->last_behind = behind;
+    g->last_stall_ms = g->sec_stall_ms;
+    int forced = (behind >= 0.10 || g->sec_stall_ms >= 50.0) && load < 1.05;   /* (then one step down: the times cannot say how far) */
+    if (forced) load = 1.05;
     g->sec_t0 = now_ms;
     g->sec_gpu = 0;
     g->sec_frames = 0;
+    g->sec_skipped = 0;
+    g->sec_stall_ms = 0;
+    if (load < 0.15) g->warm = GOV_WARM;     /* (a light second: the GPU may lower its clocks) */
     if (frames < 10) return 0;
     g->load = load;
     g->secs++;
@@ -226,7 +249,7 @@ int pace_gov_frame(pace_gov* g, double gpu_ms, double now_ms) {
     double high = g->fixed ? FIXED_HIGH : AUTO_HIGH;
     int down_secs = g->fixed ? FIXED_DOWN_SECS : AUTO_DOWN_SECS;
     if (load > high && g->cur > 1) {
-        if (++g->over >= down_secs) to = pace_gov_fit(g->cur, load, g->fixed ? FIXED_FIT : AUTO_FIT);
+        if (++g->over >= down_secs) to = forced ? g->cur - 1 : pace_gov_fit(g->cur, load, g->fixed ? FIXED_FIT : AUTO_FIT);
     } else g->over = 0;
     if (to == g->cur && g->cur < g->max && g->nhist >= PACE_GOV_UP_SECS && !in_backoff(g, g->cur + 1, g->backoff[g->cur + 1])) {
         double v[PACE_GOV_UP_SECS];      /* the lower quartile: a lightly loaded GPU lowers its clocks (NVIDIA P-states)

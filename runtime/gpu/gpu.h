@@ -106,6 +106,7 @@ void gpu_present_get_mode(int* mode, int* vsync);
 void gpu_present_set_refresh(double hz);  /* the display's refresh rate when known elsewhere (render thread measures it too) */
 int  gpu_present_display_state(void);     /* PACE_DISP_*: what the display does with the presents (VRR, fixed refresh, ...) */
 double gpu_present_delay_ms(void);        /* the present delay D now (render thread's value, statistics) */
+double gpu_window_refresh_hz(void* hwnd); /* the refresh rate of the window's display mode (QueryDisplayConfig), 0: unknown */
 int  gpu_device_lost(void);               /* the device was removed (or a loss simulated): restart or give up */
 void gpu_simulate_device_lost(void);      /* tests: the next frame finds the device lost */
 /* Forget every target (render thread state of a frontend that is restarted). */

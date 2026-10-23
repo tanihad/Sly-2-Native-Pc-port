@@ -76,7 +76,7 @@ static struct {
     /* (pc-pacing) t0..t1 the frame's drawing and compose, t1b..t2 the present (resample), ev: an event query at t1 (when
      * the picture is ready: the present delay's samples); t1 / t1b / t2 are ended by the present when there is one */
     struct { ID3D11Query *dis, *t0, *t1, *t1b, *t2, *ev; gpu_frame_stats st; int busy, t1_end, pres, ev_end, ready_done;
-             double vb_ms, self_ms; } ts[NTS];
+             double vb_ms, self_ms, q_ms, s_ms; } ts[NTS];
     int ts_head, ts_n;
     gpu_frame_stats st;                  /* picture being built */
     LARGE_INTEGER t_start;
@@ -388,7 +388,7 @@ int gpu_present_init(void) {
     pace_disp_init(&P.disp, pace_refresh_x1000 > 0 ? 1000000.0 / (double)pace_refresh_x1000 : 0, PACE_PERIOD_MS);
     P.disp_state = PACE_DISP_UNKNOWN;
     P.timer = CreateWaitableTimerExW(NULL, NULL, 0x2 /* CREATE_WAITABLE_TIMER_HIGH_RESOLUTION */, TIMER_ALL_ACCESS);
-    if (pace_log < 0) { const char* e = getenv("PS2_PACE_LOG"); pace_log = e && atoi(e) > 0; }
+    if (pace_log < 0) { const char* e = getenv("PS2_PACE_LOG"); pace_log = e ? atoi(e) : 0; }
     if (pace_headless < 0) { const char* e = getenv("PS2_PACE_HEADLESS"); pace_headless = e && atoi(e) > 0; }
     return 1;
 }
@@ -427,6 +427,9 @@ static void ready_note(int i, double ready) {
     if (P.ts[i].ready_done) return;
     P.ts[i].ready_done = 1;
     if (P.ts[i].vb_ms <= 0) return;
+    if (pace_log > 1)                            /* PS2_PACE_LOG=2: where the time goes */
+        gpu_log("pace: ready v%u: queued +%.2f, started +%.2f, GPU done +%.2f ms after its VBlank", P.ts[i].st.vblank,
+                P.ts[i].q_ms - P.ts[i].vb_ms, P.ts[i].s_ms - P.ts[i].vb_ms, ready);
     ready -= P.ts[i].self_ms;                    /* (not the time it waited behind our own paced wait for the previous picture) */
     P.ts[i].st.ready_ms = ready;
     if (i == P.ts_cur) P.st.ready_ms = ready;
@@ -705,7 +708,8 @@ static void present_resample(ID3D11RenderTargetView* rtv, int x, int y, int lw, 
 
 /* (pc-pacing) the display's refresh rate (exact rational of the active mode) for the monitor the window is on, Hz; 0 if
  * unknown. QueryDisplayConfig: the source whose GDI name is the monitor's device. */
-static double window_refresh_hz(HWND hwnd) {
+double gpu_window_refresh_hz(void* hwnd_) {
+    HWND hwnd = (HWND)hwnd_;
     MONITORINFOEXW mi;
     memset(&mi, 0, sizeof mi);
     mi.cbSize = sizeof mi;
@@ -788,6 +792,15 @@ static void pace_statistics(UINT pc) {
     double now = now_ms();
     if (now - P.disp_t < 2000.0) return;         /* every 2 s: what the display does with the presents */
     P.disp_t = now;
+    double hz_now = gpu_window_refresh_hz(gpu_rt.cfg.hwnd);   /* (the display's mode may have changed: display_mode.c) */
+    if (hz_now > 0 && fabs(1000.0 / hz_now - P.disp.refresh_ms) > 0.05) {
+        pace_disp_init(&P.disp, 1000.0 / hz_now, PACE_PERIOD_MS);
+        P.disp_state = PACE_DISP_UNKNOWN;
+        InterlockedExchange(&pace_disp_shared, PACE_DISP_UNKNOWN);
+        InterlockedExchange(&pace_refresh_x1000, (LONG)(hz_now * 1000.0));
+        gpu_log("pace: the display runs at %.3f Hz now", hz_now);
+        return;
+    }
     int s = pace_disp_classify(&P.disp);
     InterlockedExchange(&pace_disp_shared, s);
     if (s == P.disp_state || s == PACE_DISP_UNKNOWN) return;
@@ -818,6 +831,8 @@ static void present_fit(int aw, int ah, int scaler) {
          * could be ready: ready = (queued - VBlank) + (GPU done - execution start) */
         double q = gpu_rt.cur_queued_ms, s = (double)P.t_start.QuadPart * 1000.0 / (double)qpf.QuadPart;
         P.ts[tsi].self_ms = q > 0 && s > q ? s - q : 0;
+        P.ts[tsi].q_ms = q;
+        P.ts[tsi].s_ms = s;
     }
     if (P.sc) {
         int cw = 0, ch = 0;
@@ -843,7 +858,7 @@ static void present_fit(int aw, int ah, int scaler) {
             P.bb_w = cw;
             P.bb_h = ch;
             /* (pc-pacing) the window may be on another monitor now (fullscreen switch, moved): its refresh rate */
-            double hz = window_refresh_hz((HWND)gpu_rt.cfg.hwnd);
+            double hz = gpu_window_refresh_hz(gpu_rt.cfg.hwnd);
             if (hz > 0 && fabs(1000.0 / hz - P.disp.refresh_ms) > 0.01) {
                 pace_disp_init(&P.disp, 1000.0 / hz, PACE_PERIOD_MS);
                 P.disp_state = PACE_DISP_UNKNOWN;
@@ -856,8 +871,12 @@ static void present_fit(int aw, int ah, int scaler) {
      * VRR display shows as such; the render thread takes the next frame only after this present. Behind (a newer
      * frame already queued and this one more than half a frame late): the present is skipped, the next picture shows. */
     int mode = (int)pace_mode, vsync = (int)pace_vsync;
-    int paced = (P.sc || pace_headless) && mode != PACE_MODE_IMMEDIATE && vb > 0;
-    double target = paced ? vb + P.pd.delay_ms : 0;
+    /* auto: paced until the display's behaviour is known (pace_statistics), then paced on a VRR display only - on a fixed
+     * refresh the picture waits for the display's next refresh anyway (on 60 / 120 / 240 Hz the display's VBlanks drive the
+     * game: every picture lasts the same number of refreshes; on 144 / 165 Hz the 2-or-3-refresh judder is the same paced
+     * or not), so it is presented as soon as it is ready: no added latency */
+    int auto_immediate = mode == PACE_MODE_AUTO && P.sc && (P.disp_state == PACE_DISP_FIXED || P.disp_state == PACE_DISP_MULTIPLE);
+    int paced = (P.sc || pace_headless) && mode != PACE_MODE_IMMEDIATE && !auto_immediate && vb > 0;    double target = paced ? vb + P.pd.delay_ms : 0;
     if (paced) P.st.target_ms = P.pd.delay_ms;
     InterlockedExchange(&pace_extra, paced ? (LONG)ceil(P.pd.delay_ms / PACE_PERIOD_MS) : 0);
     if (paced && gpu_rt.cur_behind) paced = 0;   /* behind (a newer frame waits): no wait, present it now */

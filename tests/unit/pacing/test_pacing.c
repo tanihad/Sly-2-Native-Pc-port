@@ -105,6 +105,9 @@ static void test_gov(void) {
     pace_gov g;
     double t = 0;
     const double P = PACE_PERIOD_MS;
+    /* the first pictures after the start (or a light second) at low GPU clocks: not judged as overload */
+    pace_gov_init(&g, 3, 0, 3);
+    CHECK(feed(&g, 40, 3.0 * P, &t) == 0 && g.cur == 3, "warm-up: 40 slow pictures at the start do not lower it (%d)", g.cur);
     /* auto at 3x, 50% load: stays */
     pace_gov_init(&g, 3, 0, 3);
     CHECK(feed(&g, 60 * 60, 0.5 * P, &t) == 0 && g.cur == 3, "auto 3x at 50%%: stays (%d)", g.cur);
@@ -125,6 +128,7 @@ static void test_gov(void) {
 
     /* the player picks 8x on a GPU that needs 70 ms per picture: lowered within a handful of pictures */
     pace_gov_init(&g, 8, 1, 8);
+    g.warm = 0;                          /* (a player switching while playing: the GPU's clocks are up) */
     t = 0;
     int k = 0;
     for (; k < 30 && g.cur == 8; k++) { t += 70; pace_gov_frame(&g, 70, t); }
@@ -157,6 +161,34 @@ static void test_gov(void) {
     pace_gov_init(&g, 1, 1, 1);
     t = 0;
     CHECK(feed(&g, 600, 3 * P, &t) == 0 && g.cur == 1, "1x overloaded: stays 1x");
+    /* evidence: the GPU times look fine (60%) but the renderer is behind (20% of the pictures skipped) - another program
+     * shares the GPU: auto lowers the scale after its 3 s; waits of the game (50+ ms a second) likewise */
+    pace_gov_init(&g, 3, 0, 3);
+    t = 0;
+    to = 0;
+    for (int s = 0; s < 8 && !to; s++) {
+        for (int i = 0; i < 60 && !to; i++) {
+            if (i % 5 == 0) pace_gov_evidence(&g, 1, 0);
+            t += P;
+            to = pace_gov_frame(&g, 0.6 * P, t);
+        }
+    }
+    CHECK(to == 2 && g.reason == PACE_GOV_HIGH, "behind 20%% at 60%% load: auto 3x -> 2x (%d)", to);
+    pace_gov_init(&g, 4, 1, 4);
+    t = 0;
+    to = 0;
+    for (int s = 0; s < 8 && !to; s++) {
+        pace_gov_evidence(&g, 0, 80.0);
+        for (int i = 0; i < 60 && !to; i++) { t += P; to = pace_gov_frame(&g, 0.7 * P, t); }
+    }
+    CHECK(to == 3, "the game waited 80 ms a second at 70%%: fixed 4x -> 3x (%d)", to);
+    pace_gov_init(&g, 3, 0, 3);
+    t = 0;
+    for (int s = 0; s < 10; s++) {
+        pace_gov_evidence(&g, 2, 20.0);  /* (a little: under the thresholds) */
+        feed(&g, 60, 0.5 * P, &t);
+    }
+    CHECK(g.cur == 3, "a few skips / 20 ms waits a second: stays (%d)", g.cur);
     /* the cost table: fit helper */
     CHECK(pace_gov_fit(3, 0.9, 0.7) == 2, "fit 3x 90%% -> 2");
     CHECK(pace_gov_fit(3, 2.0, 0.7) == 1, "fit 3x 200%% -> 1");
@@ -166,7 +198,7 @@ static void test_gov(void) {
     pace_gov_init(&g, 3, 0, 3);
     g.slow = 2.5;
     t = 0;
-    feed(&g, 30, 0.6 * P, &t);
+    feed(&g, 60 * 5, 0.6 * P, &t);
     CHECK(g.cur < 3, "slow x2.5: 60%% measures 150%% -> lowered (%d)", g.cur);
 }
 

@@ -71,6 +71,7 @@ typedef struct {
     float fr[PACE_GOV_NFR];              /* GPU ms of the last pictures at cur (ring) */
     int nfr, fpos;
     int skip;                            /* pictures not judged after a change (rescale, clocks) */
+    int warm;                            /* pictures the overload rule waits after a light second (GPU clocks rising) */
     double sec_t0, sec_gpu;              /* the current second: start, GPU ms, pictures */
     int sec_frames;
     int over, settle, nhist;
@@ -82,11 +83,17 @@ typedef struct {
     double slow;                         /* tests: measured GPU time x slow (PS2_GS_AUTO_SLOW) */
     int reason;                          /* PACE_GOV_* of the last change */
     double reason_load;                  /* the load that caused it */
+    int sec_skipped;                     /* this second: pictures skipped because the renderer was behind */
+    double sec_stall_ms;                 /* this second: ms the game waited for the render queue */
+    double last_behind, last_stall_ms;   /* the last second's (statistics) */
 } pace_gov;
 void pace_gov_init(pace_gov* g, int max, int fixed, int start);
 /* a new maximum / mode (player's choice): cur becomes the highest scale <= max not left for being too slow within
  * its back-off (the player asked for it again: a fixed scale is tried once more unless it failed in the last 10 s) */
 void pace_gov_set(pace_gov* g, int max, int fixed, double now_ms);
+/* evidence of the current second: pictures skipped because the renderer was behind, ms the game waited for the GPU; a second
+ * with >= 10% skipped or >= 50 ms waited counts as overloaded (105%) whatever the GPU times say (another program on the GPU) */
+void pace_gov_evidence(pace_gov* g, int skipped, double stall_ms);
 /* one picture's GPU time (ms) at the scale drawn now, completed at now_ms; returns the new scale (0: no change) */
 int pace_gov_frame(pace_gov* g, double gpu_ms, double now_ms);
 /* relative GPU time of scale n against scale s (measured table, 16:9) */

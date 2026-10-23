@@ -21,6 +21,7 @@
 #include "settings.c"
 #include "gfx.c"
 #include "gpu/gpu_pace.c"                  /* (pc-pacing: gfx.c's picture sizes) */
+#include "display_mode.c"                  /* (pc-pacing: fullscreen refresh rate) */
 
 #include <stdlib.h>
 
@@ -291,6 +292,28 @@ static void test_settings(void) {
     s.pacing = SETTINGS_PACING_DISPLAY;
     settings_format(&s, tmpl, sizeof tmpl);
     CHECK(strstr(tmpl, "\nrenderer = software\n") && strstr(tmpl, "\npacing = display\n"), "template writes renderer = software");
+    /* (pc-pacing) [display] fullscreen_refresh and its mode choice */
+    settings_defaults(&s);
+    CHECK(s.fullscreen_refresh == 0, "fullscreen_refresh = desktop by default");
+    n = settings_parse("[display]\nfullscreen_refresh = auto\n", &s, count_warn, NULL);
+    CHECK(n == 0 && s.fullscreen_refresh == -1, "fullscreen_refresh = auto");
+    n = settings_parse("[display]\nfullscreen_refresh = 120\n", &s, count_warn, NULL);
+    CHECK(n == 0 && s.fullscreen_refresh == 120, "fullscreen_refresh = 120");
+    warn_count = 0;
+    n = settings_parse("[display]\nfullscreen_refresh = fast\n", &s, count_warn, NULL);
+    CHECK(n == 1 && warn_count == 1 && s.fullscreen_refresh == 120, "bad fullscreen_refresh ignored");
+    settings_format(&s, tmpl, sizeof tmpl);
+    CHECK(strstr(tmpl, "\nfullscreen_refresh = 120\n") != NULL, "template writes fullscreen_refresh");
+    {
+        const int dell[] = { 165, 144, 119, 59 }, hz120[] = { 120, 60 }, odd[] = { 165, 144, 100 };
+        CHECK(display_mode_pick(dell, 4, 165, -1) == 119, "auto on a 165 Hz display offering 119 (119.88) Hz: 119");
+        CHECK(display_mode_pick(dell, 4, 165, 0) == 0, "desktop: never changed");
+        CHECK(display_mode_pick(dell, 4, 119, -1) == 0, "auto when the desktop is 119 Hz already: no change");
+        CHECK(display_mode_pick(hz120, 2, 120, -1) == 0, "auto at 120 Hz: no change");
+        CHECK(display_mode_pick(odd, 3, 165, -1) == 0, "auto without a multiple: no change");
+        CHECK(display_mode_pick(dell, 4, 165, 59) == 59 && display_mode_pick(dell, 4, 165, 75) == 0, "a chosen rate if offered");
+        CHECK(display_mode_pick(dell, 4, 144, -1) == 119, "auto at 144 Hz: 119");
+    }
     /* (pc-pacing) pacing = auto | paced | immediate (vsync = the old default's name = auto), vsync = on | off | adaptive,
      * internal_scale = native, internal_scale_max */
     settings_defaults(&s);

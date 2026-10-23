@@ -441,6 +441,8 @@ static void stats_vblank(uint32_t vblank) {
         }
     while ((n = gpu_take_frame_stats(fs, 64)) > 0) {
         for (int i = 0; i < n; i++)      /* the internal scale governor: GPU time per picture (drawing + compose + present) */
+            if (!fs[i].partial && fs[i].skipped) pace_gov_evidence(&G, 1, 0);   /* (behind: evidence of overload) */
+        for (int i = 0; i < n; i++)
             if (!fs[i].partial && fs[i].gpu_ms >= 0 && fs[i].scale > 0)
                 gov_frame(fs[i].gpu_ms + (fs[i].present_gpu_ms > 0 ? fs[i].present_gpu_ms : 0), fs[i].scale);
         for (int i = 0; i < n && C.stats; i++) {
@@ -466,6 +468,12 @@ static void stats_vblank(uint32_t vblank) {
                 S.nphase++;
             }
         }
+    }
+    {                                    /* the time the game waited for the render queue: evidence of overload */
+        static double last_stall;
+        double s = gpu_submit_stall_ms();
+        if (s > last_stall) pace_gov_evidence(&G, 0, s - last_stall);
+        last_stall = s;
     }
     gov_requests();
     if (!C.stats) return;
@@ -534,6 +542,11 @@ static int render_start(void) {
     gc.hwnd = C.hwnd;
     gc.present_w = 1280;
     gc.present_h = 960;
+    {                                    /* PS2_GPU_PRESENT_SIZE=WxH: the headless present target (pacing measurements at 1440p) */
+        const char* e = getenv("PS2_GPU_PRESENT_SIZE");
+        int w = 0, h = 0;
+        if (e && sscanf(e, "%dx%d", &w, &h) == 2 && w >= 64 && h >= 64 && w <= 8192 && h <= 8192) { gc.present_w = w; gc.present_h = h; }
+    }
     gc.tearing = C.pacing == SETTINGS_PACING_VRR;
     gc.timestamps = 1;                   /* (M11: GPU time per picture also for internal_scale = auto) */
     gc.client_size = C.client_size;
@@ -637,9 +650,10 @@ static DWORD WINAPI clock_main(LPVOID arg) {
         if (!k) {
             hlog("display pacing: the display runs at %.2f Hz, not a multiple of 59.94/60 Hz: the game's 59.94 Hz timer stays", hz);
             /* (the window may go to another display: look again now and then) */
-            for (;;) {
+            for (;;) {                   /* (also when the display's mode changes: fullscreen_refresh, display_mode.c) */
                 Sleep(2000);
-                if (MonitorFromWindow((HWND)C.hwnd, MONITOR_DEFAULTTOPRIMARY) == mon) continue;
+                double now_hz = gpu_window_refresh_hz(C.hwnd);
+                if (MonitorFromWindow((HWND)C.hwnd, MONITOR_DEFAULTTOPRIMARY) == mon && !(now_hz > 0 && fabs(now_hz - hz) > 1.0)) continue;
                 IDXGIOutput_Release(o);
                 if (!(o = find_output())) return 0;
                 break;
@@ -652,7 +666,8 @@ static DWORD WINAPI clock_main(LPVOID arg) {
         for (uint32_t n = 0; !moved; n++) {
             if (FAILED(IDXGIOutput_WaitForVBlank(o))) { Sleep(16); }
             else if (n % (uint32_t)k == 0) C.display_vblank();
-            if ((n & 127) == 127 && MonitorFromWindow((HWND)C.hwnd, MONITOR_DEFAULTTOPRIMARY) != mon) moved = 1;   /* the window moved */
+            if ((n & 127) == 127 && (MonitorFromWindow((HWND)C.hwnd, MONITOR_DEFAULTTOPRIMARY) != mon ||   /* the window moved, */
+                                     fabs(gpu_window_refresh_hz(C.hwnd) - hz) > 1.0)) moved = 1;          /* or the mode changed */
         }
         C.vblank_external(0);
         IDXGIOutput_Release(o);

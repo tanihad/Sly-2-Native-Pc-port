@@ -18,6 +18,10 @@ Options menu. Brief: notes/pc-experience.md.
   classifier from shown-present intervals, GPU load governor for auto AND fixed scales) + tests/unit/pacing (49 checks).
 - scripts/pace_run.ps1: warp + run + summary (EE VBlanks/s, game flips/s, presents/s, GPU ms).
 
+## Real-monitor runs (logged before each, per the coordinator)
+- 2026-10-23 R1-R4: borderless 2560x1440 auto pacing / immediate pacing / windowed maximised / borderless 6x; 50 s each
+  from boot (intro cutscene + attract), PS2_PACE_LOG=1, then the game closes (watchdog).
+
 ## In progress
 - Integrating the governor into gpu_hw.c (replaces auto_scale_tick; fixed scales become "maximum"; PS2_GS_SCALE env
   and PS2_GS_GOVERNOR=0 = strict fixed scale for tests); gpu_frame_stats gets the picture's scale.

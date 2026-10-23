@@ -11,7 +11,7 @@
 #include <windows.h>
 #endif
 
-ps2_settings_t ps2_settings = { 16, 9, 0, 1, 0, SETTINGS_SCALE_AUTO, 0, 0, -1, -1, -1, 0, "", 0, 0, 0, 0, 0, 0, 0, 0, SETTINGS_SCALE_AUTO_MAX };
+ps2_settings_t ps2_settings = { 16, 9, 0, 1, 0, SETTINGS_SCALE_AUTO, 0, 0, -1, -1, -1, 0, "", 0, 0, 0, 0, 0, 0, 0, 0, SETTINGS_SCALE_AUTO_MAX, 0 };
 const char* const settings_scaler_names[SETTINGS_SCALER_N] = { "auto", "point", "box", "lanczos", "catmull-rom", "bilinear" };
 
 /* renderer / pacing values (sly2.ini and the PS2_GS_BACKEND / PS2_GS_PACING overrides) */
@@ -119,6 +119,15 @@ static int apply(ps2_settings_t* s, const char* key, const char* v, settings_war
         if (!_stricmp(v, "edges")) s->hud_centered = 0;
         else if (!_stricmp(v, "centered") || !_stricmp(v, "centred")) s->hud_centered = 1;
         else { warnf(warn, user, line, "hud '%s' is not edges or centered", v); return 1; }
+        return 0;
+    }
+    if (!_stricmp(key, "display.fullscreen_refresh")) {   /* (pc-pacing) display_mode.h */
+        if (!_stricmp(v, "desktop")) { s->fullscreen_refresh = 0; return 0; }
+        if (!_stricmp(v, "auto")) { s->fullscreen_refresh = -1; return 0; }
+        char* end;
+        long n = strtol(v, &end, 10);
+        if (*end || n < 24 || n > 1000) { warnf(warn, user, line, "fullscreen_refresh '%s' is not desktop, auto or a rate in Hz", v); return 1; }
+        s->fullscreen_refresh = (int)n;
         return 0;
     }
     if (!_stricmp(key, "graphics.renderer")) {
@@ -287,6 +296,9 @@ int settings_format(const ps2_settings_t* s, char* out, size_t cap) {
     char scale[16] = "auto";
     if (s->internal_scale == SETTINGS_SCALE_NATIVE) snprintf(scale, sizeof scale, "native");
     else if (s->internal_scale != SETTINGS_SCALE_AUTO) snprintf(scale, sizeof scale, "%d", s->internal_scale);
+    char fsr[16] = "desktop";
+    if (s->fullscreen_refresh < 0) snprintf(fsr, sizeof fsr, "auto");
+    else if (s->fullscreen_refresh > 0) snprintf(fsr, sizeof fsr, "%d", s->fullscreen_refresh);
     char smax[16] = "3";
     if (s->scale_max == SETTINGS_SCALE_NATIVE) snprintf(smax, sizeof smax, "native");
     else snprintf(smax, sizeof smax, "%d", s->scale_max >= 1 && s->scale_max <= 8 ? s->scale_max : SETTINGS_SCALE_AUTO_MAX);
@@ -304,6 +316,9 @@ int settings_format(const ps2_settings_t* s, char* out, size_t cap) {
         "; Widescreen HUD: edges (default: the HUD's corner widgets move to the screen's edges) or\n"
         "; centered (the whole HUD stays in the centre 4:3 area). F8 in the game switches it.\n"
         "hud = %s\n"
+        "; Fullscreen refresh rate: desktop (default: never changed), auto (a multiple of the game's 59.94 Hz, e.g. 120 Hz on a\n"
+        "; 144/165 Hz display without G-Sync/FreeSync: no judder) or a rate in Hz. Only while the game is fullscreen and in front.\n"
+        "fullscreen_refresh = %s\n"
         "\n"
         "[graphics]\n"
         "; Renderer: gpu (default: Direct3D 11, needs a Direct3D 11 graphics card - feature level 11_0) or\n"
@@ -349,7 +364,7 @@ int settings_format(const ps2_settings_t* s, char* out, size_t cap) {
         "; Show the frame rate in the title bar.\n"
         "show_fps = %s\n"
         "%s",
-        s->aspect_w, s->aspect_h, s->hud_centered ? "centered" : "edges", s->renderer_gpu ? "gpu" : "software",
+        s->aspect_w, s->aspect_h, s->hud_centered ? "centered" : "edges", fsr, s->renderer_gpu ? "gpu" : "software",
         settings_pacing_names[s->pacing >= 0 && s->pacing < SETTINGS_PACING_N ? s->pacing : 0],
         settings_vsync_names[s->vsync >= 0 && s->vsync < SETTINGS_VSYNC_N ? s->vsync : 0],
         scale, smax, s->outlines_thin ? "thin" : "ps2",
