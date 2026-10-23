@@ -43,13 +43,15 @@ fix it on our side, log clearly whether VRR is active; (B) a frame-rate setting 
   governor change. M4: display (45 s) with the limiter instead of display VBlanks above 60.
   M5: display (45 s) after: no present skipping / queue 2 / 10 Hz idle VBlanks above 60.
 
-## Next
-1. Job/minigame matrix at 60 vs 165 (and 120/200 for some): m2_dance_audition, m2_turret, m4_hack, m2_rc_chopper,
-   m5_battlezone, a boss; job intro cutscenes; compare traces + fps_sheet pictures by game time.
-2. Movie check at 120 (intro movie duration with the movie patches).
-3. Menu row (menu.c MENU_ROW_FRAME_RATE, Display page) + notes/frame-rate.md + settings.md + pc-experience.md.
-4. Gates (run_tests, unit suites, gpu_diff_all, pc_text_boot, debug + release builds, package.py).
-5. One short real-monitor run with frame_rate = 165 / display (owner's monitor) to see presentation.
+## Status: complete (2026-10-23)
+- Since the checkpoint: RC chopper keeps 60 (keeps_60, vtable 0x2D5898); above 60 no display-clock VBlanks, no skipped presents,
+  queue 2, governor budget 59.94 (no stall evidence), 10 Hz idle VBlanks while frames are slow; VRR log with the driver's exact
+  NvAPI report; Display page read-only Variable refresh row (MENU_ITEM_INFO); tests/unit/pacing/test_frame_rate.c; episode
+  sweep ep1-8 at 165 (all fine); notes/frame-rate.md, settings.md, pc-experience.md, d3d11 appendix O, performance.md.
+- Gates: run_tests 16/16; all tests\unit suites; gpu_diff_all mixed S=1 28/28; pc_text_boot (also at 165); debug + release;
+  package.py (0.1.771).
+- Owner decisions: default frame_rate (recommended 60); turning on VRR on the monitor + NVIDIA per-display tick.
+- Left: hands-on play of bosses / minigames at high rates; EE-side GIF/VIF batching for higher rates in hubs.
 
 ## Findings / traps
 - Game clock f_0014D0B8(a0 = 0x2DDED0 clock, a1): dt = (COP0 Count delta via 0x14D240, 64-bit extended) / 294.912 MHz

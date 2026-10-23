@@ -72,7 +72,7 @@ jumps) and the camera; PS2_DUMP_SECS dumps pictures every N wall seconds.
 | dance audition (no input) | Job Failed at ~74 s wall | | Job Failed at the same time (+-2 s) | | | same |
 | turret (m2_turret start, idle) / hack (m4_hack hub part) | pictures match by game time | | match | | | same |
 | RC chopper, stick released | sways +-1200 sideways, +-500 forward | sideways settles in 5 s | sideways settles | sideways settles, forward sway larger (+-850) | | **differs -> keeps 60** |
-| every episode hub (ep1-8, -Play, walk / jump / camera) at 165 | | | see "Episode sweep" | | | |
+| every episode hub (ep1-8, -Play: walk, jump, camera; 4 instances in parallel) | | | all 8 hubs load and play, no errors; jumps +213..+215 (ep2/3/5/6), ep1 / ep7 in their Binocucom briefing | | | same |
 
 Notes:
 - At 60 the port's game clock runs up to ~4% faster than real time in busy scenes: frames whose dt is under 1/60 (jitter
@@ -82,6 +82,10 @@ Notes:
   is 12 ms instead of 33 ms (no visible effect found).
 - Not covered by these runs (need hands-on play): boss fights, the hack / turret / tank minigames while played, dance with
   input, every job's cutscenes. No frame-rate-dependent code is known there, but the RC chopper shows such code exists.
+
+Gates run on the final state: tests\run_tests.py 16/16, every tests\unit suite (pacing now also builds test_frame_rate.c:
+19 checks; menu 229), gpu_diff_all mixed S=1 28/28, pc_text_boot (also with PS2_FRAME_RATE=165), debug + release builds,
+scripts\package.py.
 
 ## How fast it actually runs (i7-14700F, RTX 4060 Ti, 2560 x 1440)
 
@@ -117,12 +121,17 @@ for the selected display model" if shown, Apply; (3) optionally Display > G-SYNC
 The game's log then says "VRR (at start): ... this display: variable refresh enabled" and, after a few seconds in front,
 "VRR: ACTIVE".
 
-**What the game logs now** (gpu_vrr.c, gpu_present.c): at start the driver's view ("VRR (at start): NVIDIA G-SYNC: <mode>;
-this display: <enabled / not possible / in VRR mode>") and what to change; every display verdict from the DXGI frame
+**What the game logs now** (gpu_vrr.c, gpu_present.c): at start exactly what the driver reports ("VRR (at start):
+NvAPI_Disp_GetVRRInfo: enabled 0, possible 0, requested 0, indicator 0, in VRR mode 0 (flags 0x0); driver profile (global):
+G-SYNC mode 2 (windowed and full screen), Monitor Technology 0 (G-SYNC allowed) -> variable refresh not enabled for this display
+(the driver says it is not possible)") and what to change; every display verdict from the DXGI frame
 statistics as "VRR: ACTIVE ..." / "VRR: NOT ACTIVE - the display refreshes at a fixed X Hz ... presentation <composed |
 independent flip>, game window <in front | NOT in front>"; and "pace: no frame statistics for N s ... the game window is
 not in front" when Windows stops reporting (measured: statistics stop while another window has the focus - every
 agent-launched run, which cannot take the foreground; the earlier "statistics stopped after 2 s" was this).
+The PC Settings Display page shows it read-only: **Variable refresh: Active / Off in the driver / monitor / Off in the driver
+(G-SYNC not enabled) / Not active (fixed 165 Hz) / Not needed (60 Hz display) / Unknown** (MENU_ROW_VRR, a MENU_ITEM_INFO row;
+gpu_vrr_status, updated at start and every 2 s from the frame statistics), with a note on what to turn on.
 DXGI exclusive fullscreen (SetFullscreenState) is refused for swap chains with the frame-latency waitable object; the
 game's "exclusive" mode stays the borderless popup + display mode switch (display_mode.c).
 
