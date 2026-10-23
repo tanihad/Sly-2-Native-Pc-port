@@ -1255,7 +1255,10 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         ((MINMAXINFO*)lp)->ptMinTrackSize.y = 200;
         return 0;
     case WM_SETCURSOR:
-        if (win_fullscreen && LOWORD(lp) == HTCLIENT) { SetCursor(NULL); return TRUE; }
+        if (win_fullscreen && LOWORD(lp) == HTCLIENT) {   /* (the pointer only for the Options menu) */
+            SetCursor(menu_is_open && menu_is_open() ? LoadCursorW(NULL, (LPCWSTR)IDC_ARROW) : NULL);
+            return TRUE;
+        }
         break;
     case WM_SYSKEYDOWN:
         if (wp == VK_RETURN && (lp & (1 << 29))) {                /* Alt+Enter */

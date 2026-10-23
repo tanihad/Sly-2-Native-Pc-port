@@ -478,7 +478,6 @@ static void draw_menu(canvas* c, const menu_view* v) {
     else hint(c, L.btn[1], dev, "Enter", G_CROSS, "Select", u, 0);
     /* the reset dialog */
     if (v->confirm_reset) {
-        fill(c, (float)P.x, (float)P.y, (float)P.w, (float)P.h, RGBA(0, 0, 0, 0));
         rrect(c, (float)P.x, (float)P.y, (float)P.w, (float)P.h, 22 * u, 0, RGBA(0, 0, 0, 120), RGBA(0, 0, 0, 120));
         menu_rect B = L.dlg;
         rrect(c, (float)B.x, (float)B.y, (float)B.w, (float)B.h, 18 * u, 0, C_PANEL_TOP, C_PANEL_BOT);

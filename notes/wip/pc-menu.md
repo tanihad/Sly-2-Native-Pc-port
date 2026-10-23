@@ -21,14 +21,16 @@ presets, live apply, saved to sly2.ini), drawn over the picture by both renderer
 - In game (headless GPU, 2560x1440 present target): pause menu shows "PC Settings", Cross opens the menu, pages
   switch, Back returns to the pause menu. build\screenshots\pc_menu_ingame_*.png. Run script build\pcmenu_run\run.ps1.
 
+- In game verified: Esc path during play (pause -> menu), preset / aspect / volumes changed and persisted across a
+  restart (t2 -> t3), aspect applies live ("[aspect] now 16:9"), live renderer switch GPU <-> software (t4), visible
+  short runs: software renderer own D3D11 presenter (t5) and GDI (t6) with shots. Docs written (pc-menu.md,
+  settings.md, controls.md, pc-experience.md Interfaces: menu, README).
+
 ## Next
-1. In-game checks: preset / resolution / aspect / outlines / volume change + persist after restart (headless run 2
-   with the same user dir); Esc path (menu token) during gameplay; software renderer (GPU started -> "renderer" switch,
-   and a short visible PS2_GS_BACKEND=sw run for window.c's presenter).
-2. Docs: notes/settings.md (table, presets, new keys), notes/controls.md (Esc, PS, menu keys), notes/pc-experience.md
-   ("Interfaces: menu" for pacing), notes/pc-menu.md (design, how reached/drawn, RE of the pause menu), README text.
-3. Gates: tests\run_tests.py, every tests\unit\*\run.ps1 -UnitOnly, gpu_diff_all.ps1 (mixed, S=1), gpu_game_all S=1,
-   debug build, package.py.
+1. Gates (build\pcmenu_run\gates.ps1 -> gates.log): run_tests.py, every tests\unit\*\run.ps1 (-UnitOnly / -NoWindow),
+   gpu_diff_all mixed S=1, gpu_game_all S=1, debug build, package.py. Fix anything red.
+2. Final in-game 1440p shots of every page from the packaged exe (headless GPU, PS2_GS_PRESENT_SIZE=2560x1440) +
+   rebuild the contact sheet; commit; Status: complete.
 
 ## Pause menu RE (subagent, verified with pokes on the baseline debug exe; details build\re_pause\findings.txt)
 - Menu object M = 0x3D9ED0 (HUD mgr 0x3D9E70+0x60), update f_001AEEE0 every frame. Depth *(s32*)0x3D9EF4 (0 closed,
