@@ -3,7 +3,7 @@
 **Goal**: DualSense / DualShock 4 (USB + Bluetooth, native HID), XInput with rumble, generic HID
 pads, hot-plug, data-driven bindings in sly2.ini [controls], a menu input API, `--pad-test`.
 
-**Status**: in progress (code + docs done; gates and in-game keyboard check remaining)
+**Status**: complete (real-controller checks are the owner's: notes/controls.md, last section)
 
 ## Design (decided)
 
@@ -24,13 +24,16 @@ pads, hot-plug, data-driven bindings in sly2.ini [controls], a menu input API, `
 - scripts/pad_test.ps1, package writes "Controller test.cmd", README controls paragraph.
 - notes/controls.md (matrix, mapping, ports, rumble, ini, protocol, hardware checklist),
   notes/pc-experience.md "Interfaces: input", notes/settings.md, notes/pad-protocol.md.
-- tests/run_tests.py 16/16.
+- tests/run_tests.py 16/16; every tests/unit suite green (window full run green; one earlier run had a
+  one-off external-presenter timing failure that passed 5 times on rerun); debug + release builds;
+  package.py (dist\Sly2 with Controller test.cmd).
+- In game (packaged GUI build, portable folder): keyboard F (Square) answered the save prompt, G bound to
+  Start via [controls] key_start = Enter, G started a New Game (title -> intro dialogue); --pad-test runs
+  in the GUI build and logs to sly2.log.
 
 ## Next
 
-1. gates: every tests/unit/*/run.ps1 (window/warp -UnitOnly), debug + release builds, package.py
-2. in-game keyboard check with the packaged build in a portable folder ([game] disc = iso)
-3. final report
+- Owner: real DualSense checks (notes/controls.md). If Bluetooth output is ignored: PS2_DS_BT_HEADER=sdl.
 
 ## Findings / traps
 
