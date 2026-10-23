@@ -3,7 +3,7 @@
 **Goal**: fresh clone -> one setup command -> disc image in orig\disc -> one build command ->
 dist\Sly2\sly2.exe that runs on other Windows 10/11 x64 PCs.
 
-**Status**: in progress
+**Status**: complete
 
 ## Done
 - requirements.txt (rabbitizer 1.16.2 + pyelftools 0.33, PyPI hashes), requirements-re.txt.
@@ -34,13 +34,16 @@ dist\Sly2\sly2.exe that runs on other Windows 10/11 x64 PCs.
   README.txt (SmartScreen + do not share), setup.cmd/build.cmd + .gitattributes.
 - Worktree gates: debug build, package.py (release), run_tests 16/16.
 
-## In progress
-- tests\unit\*\run.ps1 (window/warp -UnitOnly, gs-hw -NoWindow) running.
+- tests\unit\*\run.ps1: all 20 pass (window/warp -UnitOnly, gs-hw -NoWindow).
+- Second fresh clone of 03a6bd0 with a clean PATH (no git): setup.cmd -From <main checkout> 24 s,
+  build.cmd -Iso <image> 88 s, headless boot OK on GPU, software and WARP. No build paths in the exe.
+- Cleaned: %TEMP%\sly2fc, %TEMP%\sly2fc_play, logs, worktree build\ and dist\.
 
-## Next
-1. Unit test results; then a second fresh clone of HEAD (setup.cmd -From, build.cmd) + headless boot.
-2. Delete %TEMP%\sly2fc, %TEMP%\sly2fc_play, sly2fc_*.log, worktree build\ and dist\; final commit,
-   Status: complete.
+## Left for the owner
+- Test dist\Sly2 (or a fresh clone + setup.ps1 online) on another PC, ideally one with an AMD or
+  Intel GPU; the online download path was checked only by inspection + -DryRun (no downloads here).
+- The visible first-run file picker of the GUI build was not opened (owner using the PC); the
+  dialog loop is covered by tests\unit\disc.
 
 ## Findings / traps
 - Build Python deps: only rabbitizer + pyelftools (recomp/). splat/capstone are RE-only.
