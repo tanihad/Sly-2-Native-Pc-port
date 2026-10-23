@@ -68,8 +68,23 @@ typedef struct {
     void (*request_open)(void);          /* Esc / PS button with the menu closed (menu_game.c: pause the game first) */
     void (*tick)(void);                  /* every menu_tick (menu_game.c: a pending open) */
     void (*closed)(void);                /* the menu closed (menu_game.c: back to the pause menu) */
+    /* (pc-polish) */
+    int  (*display_modes)(int* wh, int max);   /* the game monitor's resolutions (w << 16 | h, largest first) */
+    void (*quit)(void);                  /* Quit to desktop confirmed: shut down cleanly (menu_game.c) */
+    unsigned long long (*now_ms)(void);  /* a millisecond clock (NULL: GetTickCount64; the tests' fake clock) */
 } menu_host;
 void menu_set_host(const menu_host* h);
+
+/* (pc-polish) dialogs over the menu (menu_view.dialog) */
+enum { MENU_DLG_NONE, MENU_DLG_RESET, MENU_DLG_QUIT, MENU_DLG_KEEP, MENU_DLG_PENDING };
+#define MENU_KEEP_SECONDS 15             /* "Keep these display settings?" reverts after this long */
+/* Quit to desktop: the confirmation (Confirm quits through host.quit, Back cancels). With the menu closed it opens alone
+ * over the game (the pause menu's "Quit to Desktop", the title menu's, the window's close button); 1 if shown. */
+int  menu_quit_request(void);
+/* the quit confirmation is showing (window.c: a second close button press quits at once) */
+int  menu_quit_showing(void);
+/* settings changed but not applied yet (Display mode, Resolution, Monitor, Renderer) */
+int  menu_pending(void);
 
 /* ---- state ---- */
 void menu_open(void);
@@ -108,8 +123,13 @@ typedef struct {
     int confirm_reset;                   /* "Reset <page> to defaults?" shown */
     int device;
     int hover_tab, hover_row, hover_btn; /* mouse (-1 none) */
-    char title[MENU_TEXT];               /* "PC Settings" */
+    char title[MENU_TEXT];               /* "Options" */
     char page_title[MENU_TEXT];          /* the sub-page's title */
+    /* (pc-polish) */
+    int dialog;                          /* MENU_DLG_* */
+    int dialog_only;                     /* only the dialog (Quit opened from the game's menus / the close button): no panel */
+    char dlg_title[MENU_TEXT], dlg_text[3 * MENU_TEXT], dlg_yes[32], dlg_no[32];
+    int pending;                         /* changes waiting for Apply (the footer's Apply button) */
 } menu_view;
 void menu_get_view(menu_view* v, int client_w, int client_h);
 const char* menu_page_name(int page);
@@ -146,6 +166,12 @@ enum {
     MENU_ROW_RESET,                      /* "Reset to defaults" (every page) */
     MENU_ROW_FRAME_RATE,                 /* (pc-fps) Display > Frame rate: [display] frame_rate */
     MENU_ROW_VRR,                        /* (pc-fps) Display > Variable refresh: read-only status (MENU_ITEM_INFO) */
+    /* (pc-polish) */
+    MENU_ROW_RESOLUTION,                 /* Display > Resolution: window size (windowed) / display mode (fullscreen); staged */
+    MENU_ROW_APPLY,                      /* "Apply changes" (staged options) */
+    MENU_ROW_QUIT,                       /* "Quit to desktop" (every main page) */
+    MENU_ROW_SPEAKERS,                   /* Audio > Speakers: the game's own */
+    MENU_ROW_INV_BINO, MENU_ROW_INV_TURRET,   /* Controls: the game's own Invert Binocucom / Turret */
     MENU_ROW_BIND0 = 100,                /* binding rows: MENU_ROW_BIND0 + action */
     MENU_ROW_BIND_RESET = 99,
 };
