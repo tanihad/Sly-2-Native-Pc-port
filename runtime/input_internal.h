@@ -117,6 +117,7 @@ void input_dev_update(int id, const input_state* st, int battery, int charging, 
  * the input thread. Returns 1 if the device exists. */
 int input_dev_motors(int id, uint8_t* small_motor, uint8_t* large_motor);
 void input_dev_sent(int id, uint8_t small_motor, uint8_t large_motor);   /* what the backend sent (pad test) */
+int input_dev_port(int id);                      /* the PS2 port the device drives, -1 none */
 void input_service(void);                        /* input thread, every wake-up: XInput probing and rumble */
 uint64_t input_now_ms(void);
 /* Unit tests: replace XInputGetState / XInputSetState. */

@@ -14,13 +14,12 @@
  * Persistence of the user settings is the window's: it writes the sly2.ini template when it opens
  * and none exists (settings.c, notes/settings.md).
  *
- * Input (window_get_input, called on the emulation thread): XInput controllers, the first
- * connected one being port 0 and the second port 1, plus the keyboard on port 0 while the window
- * has focus (mapping in notes/controls.md). Controllers are read directly when the game asks
- * (no added latency); empty XInput slots are probed off the emulation thread, since probing an
- * empty slot is slow (Microsoft recommends checking them only every few seconds).
+ * Input (window_get_input, called on the emulation thread): runtime/input.c (controllers of every
+ * kind, the keyboard while the window has focus, mapping in notes/controls.md), then the PS2_INPUT
+ * test scripts below. The window procedure hands every message to input_window_message first (the
+ * Options menu's keys and mouse, binding capture).
  *
- * Every DLL beyond kernel32/user32/gdi32 (d3d11, d3dcompiler_47, xinput, dwmapi) is loaded at run
+ * Every DLL beyond kernel32/user32/gdi32 (d3d11, d3dcompiler_47, dwmapi) is loaded at run
  * time: nothing needs adding to the link line, and a missing component only disables its feature.
  *
  * Environment: PS2_WINDOW_GDI=1 forces the GDI presenter.
@@ -30,6 +29,8 @@
 #include "hw.h"
 #include "settings.h"
 #include "gfx.h"
+#include "input.h"
+#include "input_internal.h"
 #include "window_gpu.h"
 
 #include <stdarg.h>
@@ -37,7 +38,6 @@
 #include <d3d11.h>
 #include <dxgi1_2.h>
 #include <d3dcompiler.h>
-#include <xinput.h>
 
 #ifndef WM_DPICHANGED
 #define WM_DPICHANGED 0x02E0
@@ -453,104 +453,7 @@ static wrect fit_aspect(int cw, int ch, int aw, int ah) {
 /* The largest 4:3 rectangle centred in a cw x ch client area. */
 static wrect letterbox(int cw, int ch) { return fit_aspect(cw, ch, 4, 3); }
 
-/* Indices into pad_input.pressure */
-enum { PR_RIGHT, PR_LEFT, PR_UP, PR_DOWN, PR_TRIANGLE, PR_CIRCLE, PR_CROSS, PR_SQUARE,
-       PR_L1, PR_R1, PR_L2, PR_R2, PR_NONE = -1 };
-
-static void pad_clear(pad_input* p) {
-    memset(p, 0, sizeof *p);
-    p->lx = p->ly = p->rx = p->ry = 0x80;
-}
-
-static uint8_t axis_byte(float v) {                  /* -1..1 -> 0..255, 0 -> 0x80 */
-    int b = (int)floorf(128.0f + v * 128.0f);
-    return (uint8_t)(b < 0 ? 0 : b > 255 ? 255 : b);
-}
-
-/* XInput stick (-32768..32767, +y = up) -> DualShock 2 axes (0..255, centre 0x80, +y = down),
- * with a scaled radial dead zone so small drift reads as centred and full tilt still reaches the end. */
-static void xi_stick(int sx, int sy, int deadzone, uint8_t* ox, uint8_t* oy) {
-    float x = (float)sx, y = (float)sy;
-    float mag = sqrtf(x * x + y * y);
-    if (mag <= (float)deadzone) { *ox = *oy = 0x80; return; }
-    float norm = (mag - (float)deadzone) / (32767.0f - (float)deadzone);
-    if (norm > 1.0f) norm = 1.0f;
-    float k = norm / mag;
-    *ox = axis_byte(x * k);
-    *oy = axis_byte(-y * k);
-}
-
-static const struct { uint16_t xi, pad; int8_t pr; } xi_buttons[] = {
-    { XINPUT_GAMEPAD_DPAD_UP,        PAD_UP,       PR_UP },
-    { XINPUT_GAMEPAD_DPAD_DOWN,      PAD_DOWN,     PR_DOWN },
-    { XINPUT_GAMEPAD_DPAD_LEFT,      PAD_LEFT,     PR_LEFT },
-    { XINPUT_GAMEPAD_DPAD_RIGHT,     PAD_RIGHT,    PR_RIGHT },
-    { XINPUT_GAMEPAD_A,              PAD_CROSS,    PR_CROSS },
-    { XINPUT_GAMEPAD_B,              PAD_CIRCLE,   PR_CIRCLE },
-    { XINPUT_GAMEPAD_X,              PAD_SQUARE,   PR_SQUARE },
-    { XINPUT_GAMEPAD_Y,              PAD_TRIANGLE, PR_TRIANGLE },
-    { XINPUT_GAMEPAD_LEFT_SHOULDER,  PAD_L1,       PR_L1 },
-    { XINPUT_GAMEPAD_RIGHT_SHOULDER, PAD_R1,       PR_R1 },
-    { XINPUT_GAMEPAD_LEFT_THUMB,     PAD_L3,       PR_NONE },
-    { XINPUT_GAMEPAD_RIGHT_THUMB,    PAD_R3,       PR_NONE },
-    { XINPUT_GAMEPAD_BACK,           PAD_SELECT,   PR_NONE },
-    { XINPUT_GAMEPAD_START,          PAD_START,    PR_NONE },
-};
-
-/* Merge an XInput pad into p (buttons OR'd, sticks and trigger pressures overwritten). */
-static void xi_to_pad(const XINPUT_GAMEPAD* g, pad_input* p) {
-    for (size_t i = 0; i < sizeof xi_buttons / sizeof xi_buttons[0]; i++)
-        if (g->wButtons & xi_buttons[i].xi) {
-            p->buttons |= xi_buttons[i].pad;
-            if (xi_buttons[i].pr != PR_NONE) p->pressure[xi_buttons[i].pr] = 0xFF;
-        }
-    if (g->bLeftTrigger > XINPUT_GAMEPAD_TRIGGER_THRESHOLD) { p->buttons |= PAD_L2; p->pressure[PR_L2] = g->bLeftTrigger; }
-    if (g->bRightTrigger > XINPUT_GAMEPAD_TRIGGER_THRESHOLD) { p->buttons |= PAD_R2; p->pressure[PR_R2] = g->bRightTrigger; }
-    xi_stick(g->sThumbLX, g->sThumbLY, XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE, &p->lx, &p->ly);
-    xi_stick(g->sThumbRX, g->sThumbRY, XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE, &p->rx, &p->ry);
-}
-
-/* Keyboard mapping for port 0 (keep notes/controls.md in sync). Virtual-key codes; VK_LCONTROL
- * is the left Ctrl key only. Numpad keys need Num Lock on. */
-static const struct { uint8_t vk; uint16_t pad; int8_t pr; } kb_buttons[] = {
-    { VK_UP,      PAD_UP,       PR_UP },
-    { VK_DOWN,    PAD_DOWN,     PR_DOWN },
-    { VK_LEFT,    PAD_LEFT,     PR_LEFT },
-    { VK_RIGHT,   PAD_RIGHT,    PR_RIGHT },
-    { VK_SPACE,   PAD_CROSS,    PR_CROSS },
-    { VK_LCONTROL,PAD_CIRCLE,   PR_CIRCLE },
-    { 'F',        PAD_SQUARE,   PR_SQUARE },
-    { 'R',        PAD_TRIANGLE, PR_TRIANGLE },
-    { VK_NUMPAD2, PAD_CROSS,    PR_CROSS },
-    { VK_NUMPAD6, PAD_CIRCLE,   PR_CIRCLE },
-    { VK_NUMPAD4, PAD_SQUARE,   PR_SQUARE },
-    { VK_NUMPAD8, PAD_TRIANGLE, PR_TRIANGLE },
-    { 'Q',        PAD_L1,       PR_L1 },
-    { 'E',        PAD_R1,       PR_R1 },
-    { '1',        PAD_L2,       PR_L2 },
-    { '3',        PAD_R2,       PR_R2 },
-    { 'C',        PAD_L3,       PR_NONE },
-    { 'U',        PAD_R3,       PR_NONE },
-    { VK_RETURN,  PAD_START,    PR_NONE },
-    { VK_BACK,    PAD_SELECT,   PR_NONE },
-};
-/* Stick keys: negative / positive direction per axis (lx, ly, rx, ry). */
-static const uint8_t kb_axes[4][2] = { { 'A', 'D' }, { 'W', 'S' }, { 'J', 'L' }, { 'I', 'K' } };
-
-/* Merge keyboard state (down[vk] != 0 = held) into p. A stick axis driven by keys overrides the
- * controller; opposite keys cancel. */
-static void kb_to_pad(const uint8_t down[256], pad_input* p) {
-    for (size_t i = 0; i < sizeof kb_buttons / sizeof kb_buttons[0]; i++)
-        if (down[kb_buttons[i].vk]) {
-            p->buttons |= kb_buttons[i].pad;
-            if (kb_buttons[i].pr != PR_NONE) p->pressure[kb_buttons[i].pr] = 0xFF;
-        }
-    uint8_t* axes[4] = { &p->lx, &p->ly, &p->rx, &p->ry };
-    for (int a = 0; a < 4; a++) {
-        int neg = down[kb_axes[a][0]] != 0, pos = down[kb_axes[a][1]] != 0;
-        if (neg != pos) *axes[a] = neg ? 0x00 : 0xFF;
-    }
-}
+static void pad_clear(pad_input* p) { input_pad_clear(p); }   /* (scripts, tests) */
 
 /* ==== frame hand-off: triple buffer ============================================================== */
 
@@ -649,89 +552,12 @@ void window_present_aspect(const uint32_t* bgrx, int w, int h, int stride, int a
     SetEvent(fb_event);
 }
 
-/* ==== XInput ===================================================================================== */
-
-typedef DWORD (WINAPI* xinput_get_state_fn)(DWORD, XINPUT_STATE*);
-static xinput_get_state_fn xi_get_state;
-static INIT_ONCE xi_once = INIT_ONCE_STATIC_INIT;
-static volatile LONG xi_connected[XUSER_MAX_COUNT];
-static SRWLOCK xi_lock[XUSER_MAX_COUNT];   /* serialises XInputGetState per slot (zero = SRWLOCK_INIT) */
-static volatile LONG xi_probing_thread;    /* the window thread probes empty slots */
-
-/* Read one slot; updates its connected flag. */
-static int xi_poll(DWORD slot, XINPUT_STATE* st) {
-    XINPUT_STATE tmp;
-    AcquireSRWLockExclusive(&xi_lock[slot]);
-    DWORD r = xi_get_state(slot, st ? st : &tmp);
-    ReleaseSRWLockExclusive(&xi_lock[slot]);
-    LONG ok = r == ERROR_SUCCESS;
-    if (InterlockedExchange(&xi_connected[slot], ok) != ok)
-        wlog("XInput controller %lu %s", (unsigned long)slot, ok ? "connected" : "disconnected");
-    return (int)ok;
-}
-
-static BOOL CALLBACK xi_load(PINIT_ONCE once, PVOID param, PVOID* ctx) {
-    (void)once; (void)param; (void)ctx;
-    static const wchar_t* dlls[] = { L"xinput1_4.dll", L"xinput1_3.dll", L"xinput9_1_0.dll" };
-    for (size_t i = 0; i < sizeof dlls / sizeof dlls[0] && !xi_get_state; i++)
-        xi_get_state = (xinput_get_state_fn)dll_proc(LoadLibraryW(dlls[i]), "XInputGetState");
-    if (!xi_get_state) { wlog("XInput unavailable: controllers disabled"); return TRUE; }
-    for (DWORD s = 0; s < XUSER_MAX_COUNT; s++) xi_poll(s, NULL);
-    return TRUE;
-}
-
-/* Probe one empty slot, at most every 500 ms (so each slot every ~2 s). Any thread. */
-static void xi_probe_step(void) {
-    static volatile LONG busy;
-    static ULONGLONG next;
-    static int slot;
-    if (!xi_get_state || InterlockedCompareExchange(&busy, 1, 0)) return;
-    ULONGLONG now = GetTickCount64();
-    if (now >= next) {
-        next = now + 500;
-        for (int k = 0; k < XUSER_MAX_COUNT; k++) {
-            int s = (slot + k) % XUSER_MAX_COUNT;
-            if (!xi_connected[s]) { xi_poll((DWORD)s, NULL); slot = s + 1; break; }
-        }
-    }
-    InterlockedExchange(&busy, 0);
-}
-
-/* Port n = the n-th connected XInput slot. */
-static int xi_slot_for_port(int port) {
-    for (int s = 0, n = 0; s < XUSER_MAX_COUNT; s++)
-        if (xi_connected[s] && n++ == port) return s;
-    return -1;
-}
-
-/* ==== keyboard =================================================================================== */
+/* ==== input (runtime/input.c: controllers, keyboard, the menu's input) ============================= */
 
 static HWND volatile g_hwnd;             /* published once the window and renderer are ready */
 
-/* Snapshot of the mapped keys, if the window has focus. Alt held = window shortcut, not input. */
-static int kb_read(uint8_t down[256]) {
-    HWND h = g_hwnd;
-    if (!h || GetForegroundWindow() != h || GetAsyncKeyState(VK_MENU) < 0) return 0;
-    memset(down, 0, 256);
-    for (size_t i = 0; i < sizeof kb_buttons / sizeof kb_buttons[0]; i++)
-        down[kb_buttons[i].vk] = GetAsyncKeyState(kb_buttons[i].vk) < 0;
-    for (int a = 0; a < 4; a++)
-        for (int d = 0; d < 2; d++) down[kb_axes[a][d]] = GetAsyncKeyState(kb_axes[a][d]) < 0;
-    return 1;
-}
-
 void window_get_input(int port, pad_input* out) {
-    pad_clear(out);
-    if (port < 0 || port > 1) return;
-    InitOnceExecuteOnce(&xi_once, xi_load, NULL, NULL);
-    if (xi_get_state) {
-        if (!xi_probing_thread) xi_probe_step();    /* headless: no window thread to do it */
-        int slot = xi_slot_for_port(port);
-        XINPUT_STATE st;
-        if (slot >= 0 && xi_poll((DWORD)slot, &st)) xi_to_pad(&st.Gamepad, out);
-    }
-    uint8_t down[256];
-    if (port == 0 && kb_read(down)) kb_to_pad(down, out);
+    input_get_pad(port, out);
     script_apply(port, out);                                  /* PS2_INPUT test scripts */
 }
 
@@ -1190,11 +1016,13 @@ static int restore_window_state(HWND hwnd) {
 
 static void close_window(HWND hwnd) {
     save_window_state(hwnd);
+    input_shutdown();                    /* motors off */
     if (window_exit_hook) window_exit_hook(0);
     ExitProcess(0);
 }
 
 static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    if (input_window_message(hwnd, msg, wp, lp)) return 0;   /* the Options menu / binding capture took it */
     switch (msg) {
     case WM_CLOSE:
         close_window(hwnd);
@@ -1369,7 +1197,7 @@ static DWORD WINAPI window_thread(LPVOID arg) {
     SetForegroundWindow(hwnd);
     render(hwnd);
     g_hwnd = hwnd;
-    InterlockedExchange(&xi_probing_thread, 1);
+    input_set_window(hwnd);              /* keyboard input while it has focus */
 
     ULONGLONG fps_t0 = GetTickCount64();
     InterlockedExchange(&fb_presented, 0);   /* frames handed over while starting up are not in this interval */
@@ -1392,7 +1220,6 @@ static DWORD WINAPI window_thread(LPVOID arg) {
             }
         }
         pump_frame(hwnd);
-        xi_probe_step();
         ULONGLONG now = GetTickCount64();
         if (now - fps_t0 >= 1000) {
             LONG n = InterlockedExchange(&fb_presented, 0);
@@ -1422,7 +1249,7 @@ void window_init(void) {
     static volatile LONG once;
     if (InterlockedExchange(&once, 1)) return;
     if (!fb_setup()) { wlog("CreateEvent failed: no window"); return; }
-    InitOnceExecuteOnce(&xi_once, xi_load, NULL, NULL);
+    input_init();                        /* controllers: found while the window opens */
     HANDLE t = CreateThread(NULL, 0, window_thread, NULL, 0, NULL);
     if (!t) { wlog("cannot start the window thread (error %lu)", (unsigned long)GetLastError()); return; }
     CloseHandle(t);

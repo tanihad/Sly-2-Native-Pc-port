@@ -402,6 +402,14 @@ void input_test_rumble(int device_id, uint8_t small_motor, uint8_t large_motor, 
     input_hid_kick();
 }
 
+int input_dev_port(int id) {
+    AcquireSRWLockShared(&dev_lock);
+    const device* d = dev_find(id);
+    int port = d ? d->port : -1;
+    ReleaseSRWLockShared(&dev_lock);
+    return port;
+}
+
 static void motors_for(const device* d, const input_config* c, uint64_t now, uint8_t* s, uint8_t* l) {
     *s = *l = 0;
     int strength = c->vibration_strength;
