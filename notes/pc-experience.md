@@ -55,6 +55,7 @@ Their machine: RTX 4060 Ti, i7-14700F, one monitor **2560x1440 @ 165 Hz**. Their
 - **PS2 wording** (text): no memory-card prompts at boot (save data is a file; create it silently), no
   "memory card (PS2)" / "MEMORY CARD slot 1" / "do not remove the memory card" text; PC wording such as
   "Saving... do not turn off the game" or "Saving...". Keep the game's own save/load flow and menus.
+- **Interfaces: pacing and resolution** (pacing stream, see the section at the end).
 - Every stream keeps the existing tests green, adds its own, keeps `notes/wip/<stream>.md`
   checkpoints, follows disk hygiene (no frame-dump piles), never modifies the main checkout, and
   tests as a player: the packaged build (`scripts\package.py` -> `dist\Sly2\sly2.exe`) on the real

@@ -3,10 +3,11 @@
 # GPU ms per game frame (drawing + compose; median and p90 of the per-second medians), the present's GPU ms (resample to
 # the output), the load (GPU ms per VBlank picture / 16.68 ms) and the game speed.
 #   powershell -ExecutionPolicy Bypass -File scripts\pace_cost.ps1 [-Scenes ep1,ep3,m7] [-Scales 1,2,3,4] [-Size 2560x1440]
-param([string[]]$Scenes = @('ep1', 'ep3', 'm7'), [int[]]$Scales = @(1, 2, 3, 4), [string]$Size = '2560x1440', [int]$Seconds = 125,
+param([string[]]$Scenes = @('ep1', 'ep3', 'm7'), [string[]]$Scales = @('1', '2', '3', '4'), [string]$Size = '2560x1440', [int]$Seconds = 125,
       [string]$Out = "")
 $root = Split-Path $PSScriptRoot -Parent
 $Scenes = @($Scenes | ForEach-Object { $_ -split ',' } | Where-Object { $_ })
+$Scales = @($Scales | ForEach-Object { $_ -split ',' } | Where-Object { $_ })
 $def = @{ ep1 = @('-Episode', '1', '-Play'); ep3 = @('-Episode', '3', '-Play'); m7 = @('-Episode', '7', '-Job', 'm7_boss', '-Direct') }
 if (-not $Out) { $Out = Join-Path $root 'build\pace\cost.txt' }
 foreach ($sc in $Scenes) {

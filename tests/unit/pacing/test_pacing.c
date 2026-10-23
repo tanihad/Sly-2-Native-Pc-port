@@ -117,9 +117,9 @@ static void test_gov(void) {
     /* a loading burst (5 pictures at 3 periods, 6 at 1.5) between ordinary seconds: absorbed */
     for (int i = 0; i < 10; i++) { feed(&g, 5, 3.0 * P, &t); feed(&g, 6, 1.5 * P, &t); feed(&g, 120, 0.5 * P, &t); }
     CHECK(g.cur == 3, "loading bursts: stays at 3x (%d)", g.cur);
-    /* auto at 3x, 90% for 3 s: down to the scale predicted at <= 70% */
-    int to = feed(&g, 60 * 5, 0.9 * P, &t);
-    CHECK(to == 2 && g.cur == 2 && g.reason == PACE_GOV_HIGH, "auto 90%% -> 2x (%d, reason %d)", to, g.reason);
+    /* auto at 3x, 95% for 3 s: down to the scale predicted at <= 80% */
+    int to = feed(&g, 60 * 5, 0.95 * P, &t);
+    CHECK(to == 2 && g.cur == 2 && g.reason == PACE_GOV_HIGH, "auto 95%% -> 2x (%d, reason %d)", to, g.reason);
     /* and not back to 3x within its back-off even when 2x is light */
     feed(&g, 60 * 60, 0.2 * P, &t);
     CHECK(g.cur == 2, "back-off: stays at 2x for 120 s (%d)", g.cur);
@@ -133,11 +133,11 @@ static void test_gov(void) {
     int k = 0;
     for (; k < 30 && g.cur == 8; k++) { t += 70; pace_gov_frame(&g, 70, t); }
     CHECK(g.cur == 3 && k <= 12 && g.reason == PACE_GOV_OVERLOAD, "fixed 8x at 70 ms -> %dx after %d pictures (3x, <= 12: < 1 s)", g.cur, k);
-    /* at 3x 50%: a fixed scale climbs back towards the player's while the prediction fits 80% */
-    feed(&g, 60 * 40, 0.5 * P, &t);
-    CHECK(g.cur == 4, "fixed: back up to 4x where 3x at 50%% predicts 78%% (%d)", g.cur);
+    /* at 3x 40%: a fixed scale climbs back towards the player's while the prediction fits 80% */
+    feed(&g, 60 * 20, 0.4 * P, &t);    /* (one step: 3 s settle + 15 s judged)*/
+    CHECK(g.cur == 4, "fixed: back up to 4x where 3x at 40%% predicts 72%% (%d)", g.cur);
     feed(&g, 60 * 40, 0.78 * P, &t);
-    CHECK(g.cur == 4, "fixed 4x at 78%%: stays (5x predicted 129%%) (%d)", g.cur);
+    CHECK(g.cur == 4, "fixed 4x at 78%%: stays (5x predicted 127%%) (%d)", g.cur);
     /* a fixed scale under 95% stays (no headroom rule) */
     pace_gov_init(&g, 4, 1, 4);
     t = 0;

@@ -168,8 +168,7 @@ static void test_gfx(void) {
     gfx_preset_apply(GFX_PRESET_PERFORMANCE, 0);
     CHECK(ps2_settings.internal_scale == SETTINGS_SCALE_AUTO && ps2_settings.scale_max == 2, "Performance: auto up to 2x");
     gfx_preset_apply(GFX_PRESET_QUALITY, 0);
-    CHECK(ps2_settings.internal_scale == SETTINGS_SCALE_AUTO && ps2_settings.scale_max == SETTINGS_SCALE_NATIVE &&
-          gfx_scale() == gfx_native_scale(), "Quality: auto up to native (%d)", gfx_scale());
+    CHECK(ps2_settings.internal_scale == SETTINGS_SCALE_NATIVE && gfx_scale() == gfx_native_scale(), "Quality: native (%d)", gfx_scale());
     gfx_preset_apply(GFX_PRESET_BALANCED, 0);
     CHECK(ps2_settings.internal_scale == SETTINGS_SCALE_AUTO && ps2_settings.scale_max == 3 && gfx_scale() == 3, "Balanced: auto up to 3x");
     gfx_set_pacing(SETTINGS_PACING_IMMEDIATE, SETTINGS_VSYNC_ADAPTIVE, 0);

@@ -25,7 +25,11 @@ The software renderer (runtime/gs_draw*.c) stays as the fallback and as the orac
 | window | messages, input, fullscreen; no device of its own with the GPU renderer (window_gpu.h) | window.c |
 
 The EE never waits for Present: a VBlank's picture counts as done when its frame is queued (2 frames in flight normally,
-6 for 2 s after a slowdown). In-game integration (start, switch, device loss, verifier, stats, auto scale): gpu_hw.c.
+6 for 2 s after a slowdown, + the frames the paced present holds back). In-game integration (start, switch, device loss,
+verifier, stats, internal scale governor): gpu_hw.c. Game speed never depends on the GPU (pc-pacing, appendix N of
+d3d11-renderer.md): a scale the GPU cannot draw in real time is lowered by the governor (gpu_pace.c) before the render
+queue can hold the game back for more than about a second; presentation (paced / immediate, vsync, VRR detection) is
+gpu_present.c + gpu_pace.c.
 
 ## Files (runtime/gpu)
 
@@ -53,11 +57,15 @@ the third loss switches to software. Test switches: `PS2_GPU_FAIL=device|caps|sw
 `[display] aspect` (F7: anamorphic display targets at 16:9, 4 x 6 samples per pixel at 3x) and `hud` (F8). Everything
 applies from the next frame (targets are rescaled, nothing restarts).
 
-**internal_scale = auto** (gpu_hw.c `auto_scale_tick`): GPU busy = GPU time of the pictures finished per second
-(timestamps). Down when > 85% for 3 s (to the highest scale predicted to fit 70%), up when the lower quartile of 15 s
-predicts the next scale at <= 70% (NVIDIA lowers clocks at light load, so single seconds over-read), with a back-off of
-120 s (doubling) before a scale left for being too slow is tried again; never above 3, never below 1. On the RTX 4060 Ti
-3x keeps the GPU 50-65% busy: auto stays at 3x. `PS2_GS_AUTO_SLOW=<factor>[:<s>]`, `PS2_GS_AUTO_LOG=1` for tests.
+**Internal scale governor** (pc-pacing; gpu_pace.c `pace_gov`, fed by gpu_hw.c on the GS thread): load = GPU ms per VBlank
+picture (drawing + compose + present, timestamps) / 16.68 ms. auto (`internal_scale = auto`, up to `internal_scale_max`,
+default 3): down when > 90% for 3 s (to the scale predicted at <= 80%), up when the next scale is predicted at <= 75% from
+the lower quartile of 15 s (NVIDIA lowers clocks at light load), back-off 120 s doubling. A fixed scale (and `native`) is the
+player's maximum: lowered only when it does not fit (> 100% for 2 s; or the overload rule: the last 12 pictures over 2.5
+frame periods or 24 over 1.4 -> to 85% at once), raised back when it fits. Evidence beats timestamps: a second with >= 10%
+skipped presents or >= 50 ms of the game waiting for the render queue counts as 105% (another program on the GPU). No
+judging for 60 pictures after a light second (GPU clocks rising). Even 1x too slow for 10 s: the software renderer takes
+over. `PS2_GS_SCALE` / `PS2_GS_GOVERNOR=0`: a scale exactly (tests); `PS2_GS_AUTO_SLOW=<factor>[:<s>]`, `PS2_GS_AUTO_LOG=1`.
 
 ## Diagnostics
 

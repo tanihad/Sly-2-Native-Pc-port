@@ -106,6 +106,31 @@ int pace_gov_fit(int cur, double load, double fit);
  * display): 512 * kx x 448 * n, kx = round(n * (aw/ah) / (4/3)) (gpu_front.h gpu_display_kx: anamorphic widescreen), at
  * 1x the PS2's own 512 x 448. Native: the smallest n whose picture covers the window's picture area (the largest aw:ah
  * rectangle in out_w x out_h) in both directions - 2560 x 1440 at 16:9: 4x (2560 x 1792); 1920 x 1080: 3x. */
-int  pace_display_kx(int n, int aw, int ah);
-void pace_picture_size(int n, int aw, int ah, int* w, int* h);
-int  pace_native_scale(int out_w, int out_h, int aw, int ah);
+/* (inline: gfx.c uses them in programs without the GPU renderer) */
+static inline int pace_display_kx(int n, int aw, int ah) {     /* (= gpu_front.h gpu_display_kx) */
+    if (n < 1) n = 1;
+    if (n == 1 || aw <= 0 || ah <= 0) return n;
+    int k = (int)((double)n * (double)aw * 3.0 / ((double)ah * 4.0) + 0.5);
+    return k < n ? n : k > 16 ? 16 : k;
+}
+
+static inline void pace_picture_size(int n, int aw, int ah, int* w, int* h) {
+    if (n < 1) n = 1;
+    if (n > 8) n = 8;
+    *w = 512 * pace_display_kx(n, aw, ah);
+    *h = 448 * n;
+}
+
+static inline int pace_native_scale(int out_w, int out_h, int aw, int ah) {
+    if (aw <= 0 || ah <= 0) { aw = 4; ah = 3; }
+    if (out_w <= 0 || out_h <= 0) return 3;
+    int lw = out_w, lh = out_h;                  /* the picture area: the largest aw:ah rectangle in the window */
+    if ((long long)out_w * ah > (long long)out_h * aw) lw = (int)((long long)out_h * aw / ah);
+    else lh = (int)((long long)out_w * ah / aw);
+    for (int n = 1; n <= 8; n++) {
+        int w, h;
+        pace_picture_size(n, aw, ah, &w, &h);
+        if (w >= lw && h >= lh) return n;
+    }
+    return 8;
+}

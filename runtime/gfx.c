@@ -312,7 +312,7 @@ void gfx_preset_apply(int preset, int persist_it) {
     case GFX_PRESET_ORIGINAL: s->internal_scale = 1; break;
     case GFX_PRESET_PERFORMANCE: s->internal_scale = SETTINGS_SCALE_AUTO; s->scale_max = 2; break;
     case GFX_PRESET_BALANCED: s->internal_scale = SETTINGS_SCALE_AUTO; s->scale_max = 3; break;
-    case GFX_PRESET_QUALITY: s->internal_scale = SETTINGS_SCALE_AUTO; s->scale_max = SETTINGS_SCALE_NATIVE; break;
+    case GFX_PRESET_QUALITY: s->internal_scale = SETTINGS_SCALE_NATIVE; break;   /* (the most the GPU draws in real time) */
     default: return;
     }
     gfx_set_internal_res(s->internal_scale, s->scale_max ? s->scale_max : SETTINGS_SCALE_AUTO_MAX, persist_it);

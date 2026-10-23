@@ -57,7 +57,8 @@ typedef struct {
 } gfx_scale_info;
 void gfx_scale_status(gfx_scale_info* s);
 /* graphics presets - resolution part (the menu sets filters / outlines / aspect itself): Original = 1x; Performance =
- * auto up to 2x; Balanced = auto up to 3x (the default); Quality = auto up to native (4x at 1440p). Auto measures the
- * GPU and stays below what it can draw with headroom, so every preset adapts to the PC it runs on. */
+ * auto up to 2x; Balanced = auto up to 3x (the default); Quality = native (4x at 1440p), drawn lower where the GPU cannot
+ * draw it in real time. Auto measures the GPU and keeps headroom (up to 75-90% of the frame time); every scale is lowered
+ * while the GPU cannot keep up, so every preset adapts to the PC it runs on and none slows the game. */
 enum { GFX_PRESET_ORIGINAL, GFX_PRESET_PERFORMANCE, GFX_PRESET_BALANCED, GFX_PRESET_QUALITY, GFX_PRESET_N };
 void gfx_preset_apply(int preset, int persist);

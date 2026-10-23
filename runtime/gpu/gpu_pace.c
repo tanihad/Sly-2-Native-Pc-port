@@ -103,10 +103,11 @@ int pace_disp_classify(const pace_disp* p) {
 }
 
 /* ---- governor --------------------------------------------------------------------------------------------------- */
-/* Relative GPU time per scale (16:9 display targets): 1x 8.7%, 2x 38.2%, 3x 52% GPU busy at the title (M11); replay
- * S=3 -> 4 -> 5 x1.56 / x2.58 (appendix L); 6x/3x measured x2.6-3.1 in the ep1 hub (pc-pacing), 7x / 8x extrapolated. */
+/* Relative GPU time per scale (16:9 display targets), measured at full GPU clocks (gs_replay back to back, RTX 4060 Ti,
+ * pc-pacing): GPU ms per game frame, median of ep1 / ep3 / ep5 hubs and ep7 / ep8 bosses: 1x 2.0, 2x 5.5, 3x 9.2, 4x 16.6
+ * (appendix L: S=5 ~1.65 x S=4); 6x..8x extrapolated (~ samples per pixel). */
 double pace_gov_cost(int n, int s) {
-    static const double c[9] = { 0, 1.0, 4.4, 6.0, 9.4, 15.5, 22.0, 30.0, 40.0 };
+    static const double c[9] = { 0, 1.0, 2.7, 4.6, 8.3, 13.5, 20.0, 27.0, 36.0 };
     if (n < 1) n = 1;
     if (n > 8) n = 8;
     if (s < 1) s = 1;
@@ -125,13 +126,14 @@ int pace_gov_fit(int cur, double load, double fit) {
  * lowest clocks and needs a few hundred ms to raise them (NVIDIA: the first 3D frames after the logos took 50-70 ms) */
 #define GOV_WARM 60
 #define GOV_SETTLE 3                     /* seconds after a change not judged by the per-second rules */
-/* per-second rules: auto keeps headroom (down above 85% for 3 s, to 70%; up when the next scale is predicted at
- * <= 70%); a fixed scale is only lowered when it does not fit (above 95% for 2 s, to 85%) and raised back towards
+/* per-second rules: auto keeps headroom (down above 90% for 3 s, to 80%; up when the next scale is predicted at
+ * <= 75%); a fixed scale is only lowered when it does not fit (above 95% for 2 s, to 85%) and raised back towards
  * the player's scale when that is predicted at <= 80% */
-#define AUTO_HIGH 0.85
+#define AUTO_HIGH 0.90
 #define AUTO_DOWN_SECS 3
-#define AUTO_FIT 0.70
-#define AUTO_UP 0.70
+#define AUTO_FIT 0.80
+#define AUTO_UP 0.75
+#define OVER_FIT 0.85                    /* the overload rule's target (both modes): it reacts to a short window */
 #define FIXED_HIGH 1.0
 #define FIXED_DOWN_SECS 2
 #define FIXED_FIT 0.85
@@ -213,7 +215,7 @@ int pace_gov_frame(pace_gov* g, double gpu_ms, double now_ms) {
         if (g->nfr >= 12 && s12 / 12 > 2.5 * period) load = s12 / 12 / period;
         if (g->nfr >= 24 && s24 / 24 > 1.4 * period && s24 / 24 / period > load) load = s24 / 24 / period;
         if (load > 0) {
-            int to = pace_gov_fit(g->cur, load, g->fixed ? FIXED_FIT : AUTO_FIT);
+            int to = pace_gov_fit(g->cur, load, OVER_FIT);
             gov_change(g, to, PACE_GOV_OVERLOAD, load);
             return to;
         }
@@ -270,31 +272,3 @@ int pace_gov_frame(pace_gov* g, double gpu_ms, double now_ms) {
     return to;
 }
 
-/* ---- internal resolution ---------------------------------------------------------------------------------------- */
-int pace_display_kx(int n, int aw, int ah) {     /* (= gpu_front.h gpu_display_kx) */
-    if (n < 1) n = 1;
-    if (n == 1 || aw <= 0 || ah <= 0) return n;
-    int k = (int)((double)n * (double)aw * 3.0 / ((double)ah * 4.0) + 0.5);
-    return k < n ? n : k > 16 ? 16 : k;
-}
-
-void pace_picture_size(int n, int aw, int ah, int* w, int* h) {
-    if (n < 1) n = 1;
-    if (n > 8) n = 8;
-    *w = 512 * pace_display_kx(n, aw, ah);
-    *h = 448 * n;
-}
-
-int pace_native_scale(int out_w, int out_h, int aw, int ah) {
-    if (aw <= 0 || ah <= 0) { aw = 4; ah = 3; }
-    if (out_w <= 0 || out_h <= 0) return 3;
-    int lw = out_w, lh = out_h;                  /* the picture area: the largest aw:ah rectangle in the window */
-    if ((long long)out_w * ah > (long long)out_h * aw) lw = (int)((long long)out_h * aw / ah);
-    else lh = (int)((long long)out_w * ah / aw);
-    for (int n = 1; n <= 8; n++) {
-        int w, h;
-        pace_picture_size(n, aw, ah, &w, &h);
-        if (w >= lw && h >= lh) return n;
-    }
-    return 8;
-}
