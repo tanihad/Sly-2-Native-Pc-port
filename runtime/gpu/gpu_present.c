@@ -971,7 +971,15 @@ void gpu_present_compose(const gpu_compose_in* in) {
     uint64_t priv[16];
     if (in->priv) {
         memcpy(priv, in->priv, sizeof priv);
-        if (in->flicker_off) flicker_strip(priv);
+        int stripped = in->flicker_off && flicker_strip(priv);
+        /* PS2_PACE_LOG=3 (pc-pacing, "shake" checks): the circuits shown at each VBlank - enable bits, DBY / DY of each */
+        if (pace_log >= 3) {
+            uint64_t pm = in->priv[0];
+            gpu_log("display v%u: PMODE en %d%d mmod %d -> shown en %d%d%s | DISPFB1 dby %d DISPLAY1 dy %d | DISPFB2 dby %d DISPLAY2 dy %d | field %d",
+                    (unsigned)in->priv[15], (int)(pm & 1), (int)(pm >> 1 & 1), (int)(pm >> 5 & 1), (int)(priv[0] & 1), (int)(priv[0] >> 1 & 1),
+                    stripped ? " (flicker filter off)" : "", (int)(in->priv[7] >> 43 & 0x7FF), (int)(in->priv[8] >> 12 & 0x7FF),
+                    (int)(in->priv[9] >> 43 & 0x7FF), (int)(in->priv[10] >> 12 & 0x7FF), in->field_code);
+        }
     }
     int ok = in->priv && gs_display_layout_of(priv, &L);
     int so = in->scale > 0 ? in->scale : 1;

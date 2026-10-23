@@ -39,6 +39,10 @@ Options menu. Brief: notes/pc-experience.md.
   in the driver or monitor). Paced vs immediate: same 2/3-refresh judder (std 6.4 ms), paced adds ~40 ms latency ->
   auto now presents immediately on fixed displays. 6x borderless: governor 6x -> 4x -> 3x, game 59.9 VBlanks/s.
 
+- 2026-10-23 F1-F4 (final build): borderless auto (3x auto) / windowed maximised auto / borderless native (Quality) /
+  borderless 7x fixed; 50 s each from boot, PS2_PACE_LOG=1, game closes by itself (watchdog). No display mode change
+  (fullscreen_refresh stays desktop: CDS_TEST only, 120 Hz accepted).
+
 ## In progress
 - scripts\pace_cost.ps1 (headless, 2560x1440 offscreen, PS2_GS_SCALE 1..4, ep1/ep3/m7) -> build\pace\cost.txt.
 
