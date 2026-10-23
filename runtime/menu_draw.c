@@ -359,6 +359,9 @@ static void draw_row(canvas* c, const menu_view* v, const menu_layout* L, int k,
         text(c, tx1, r.y, nw + (int)(8 * u), r.h, row->value, px, FW_SEMIBOLD, 0, FACE_UI, vc, AL_RIGHT);
         break;
     }
+    case MENU_ITEM_INFO:                 /* (pc-fps) read-only status: the value, no arrows */
+        text(c, vx0, r.y, vx1 - vx0, r.h, row->value, px, FW_NORMAL, 0, FACE_UI, row->enabled ? C_NOTE : C_DISABLED, AL_CENTER);
+        break;
     case MENU_ITEM_ACTION: {
         float cx = (float)(rgt.x + rgt.w / 2), s = 8 * u;
         seg(c, cx - s * 0.5f, ay - s, cx + s * 0.5f, ay, 3 * u, sel ? C_GOLD : C_GOLD_DIM);

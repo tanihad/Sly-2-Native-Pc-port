@@ -832,6 +832,7 @@ static void pace_statistics(UINT pc) {
     }
     int s = pace_disp_classify(&P.disp);
     InterlockedExchange(&pace_disp_shared, s);
+    gpu_vrr_set_status(NULL, s, P.disp.refresh_ms > 0 ? 1000.0 / P.disp.refresh_ms : 0);   /* (pc-fps) the menu's status */
     if (s == P.disp_state || s == PACE_DISP_UNKNOWN) return;
     P.disp_state = s;
     double hz = P.disp.refresh_ms > 0 ? 1000.0 / P.disp.refresh_ms : 0;
@@ -859,8 +860,9 @@ static void pace_statistics(UINT pc) {
  * can change; at start and when the display is found to refresh at a fixed rate */
 static void vrr_log_driver(const char* when) {
     gpu_vrr_info v;
-    char line[512];
+    char line[768];
     gpu_vrr_query(gpu_rt.cfg.hwnd, &v);
+    gpu_vrr_set_status(&v, P.disp_state, P.disp.refresh_ms > 0 ? 1000.0 / P.disp.refresh_ms : 0);
     gpu_log("VRR (%s): %s", when, gpu_vrr_describe(&v, line, sizeof line));
     const char* advice = gpu_vrr_advice(&v);
     if (advice) gpu_log("VRR: to turn it on: %s", advice);

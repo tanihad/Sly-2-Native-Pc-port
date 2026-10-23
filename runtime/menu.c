@@ -12,6 +12,7 @@
 #include <windows.h>
 
 extern double frame_rate_display_hz(void) __attribute__((weak));   /* (pc-fps) runtime/frame_rate.c: the display's refresh */
+extern int gpu_vrr_status(char* buf, int cap) __attribute__((weak));  /* (pc-fps) gpu/gpu_vrr.c: GPU_VRR_* + text */
 
 static SRWLOCK lock = SRWLOCK_INIT;
 static menu_host host;
@@ -526,6 +527,18 @@ static int build_rows(int page, menu_row* rows) {
         r = last(rows, n);
         if (!gpu) disable(r, gpu_only);
         env_note(r, "graphics", "vsync");
+        r = row_new(rows, &n, MENU_ROW_VRR, MENU_ITEM_INFO, "Variable refresh",
+                    "G-Sync / FreeSync, as the graphics driver and the display report it (read only). Active: every picture is shown "
+                    "when it is ready - smooth at any frame rate.");
+        if (r) {
+            char vb[96] = "Unknown";
+            int vs = gpu_vrr_status ? gpu_vrr_status(vb, sizeof vb) : -1;
+            snprintf(r->value, sizeof r->value, "%s", vb);
+            if (!gpu) disable(r, gpu_only);
+            else if (vs == 2 /* GPU_VRR_OFF_DRIVER */)
+                snprintf(r->note, sizeof r->note, "Turn on FreeSync in the monitor's menu and G-SYNC for this display (NVIDIA: Set up G-SYNC)");
+            else if (vs == 3 /* GPU_VRR_NOT_ACTIVE */) snprintf(r->note, sizeof r->note, "Turn on G-Sync / FreeSync for a smoother picture");
+        }
         choice_row(rows, &n, MENU_ROW_FPS, "Show frame rate", "The frame rate in the top left corner of the picture and in the title bar.");
         env_note(last(rows, n), "window", "show_fps");
         break;

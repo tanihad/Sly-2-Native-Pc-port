@@ -71,7 +71,7 @@ int gpu_vrr_query(void* hwnd, gpu_vrr_info* out) {
     memset(out, 0, sizeof *out);
     out->vendor_known = 0;
     out->mode = out->app_override = -1;
-    out->enabled = out->possible = out->active = -1;
+    out->enabled = out->possible = out->active = out->requested = out->indicator = -1;
     if (!nv_load()) return 0;
     out->vendor_known = 1;
     /* the driver profile: the global G-SYNC mode, the game's own profile if any */
@@ -110,8 +110,11 @@ int gpu_vrr_query(void* hwnd, gpu_vrr_info* out) {
         memset(info, 0, sizeof info);
         info[0] = (uint32_t)sizeof info | 1u << 16;
         if (nv.vrr_info(id, info) == 0) {
+            out->raw = info[1];
             out->enabled = (int)(info[1] & 1);
             out->possible = (int)(info[1] >> 1 & 1);
+            out->requested = (int)(info[1] >> 2 & 1);
+            out->indicator = (int)(info[1] >> 3 & 1);
             out->active = (int)(info[1] >> 4 & 1);
         }
     }
@@ -121,14 +124,51 @@ int gpu_vrr_query(void* hwnd, gpu_vrr_info* out) {
 const char* gpu_vrr_describe(const gpu_vrr_info* v, char* buf, int cap) {
     if (!v->vendor_known) { snprintf(buf, (size_t)cap, "not an NVIDIA driver (no driver details)"); return buf; }
     static const char* const modes[] = { "off", "full screen only", "windowed and full screen" };
-    snprintf(buf, (size_t)cap, "NVIDIA G-SYNC: %s%s%s; this display: %s%s", v->mode >= 0 && v->mode <= 2 ? modes[v->mode] : "mode unknown",
-             v->app_override > 0 ? ", Monitor Technology not G-SYNC for this program" : "", v->app_profile ? " (the game's own driver profile)" : "",
-             v->enabled < 0 ? "state unknown" : v->enabled && v->possible ? "variable refresh enabled" :
-             v->possible ? "variable refresh possible but not enabled" : "variable refresh not enabled / not possible",
-             v->active > 0 ? ", in variable refresh mode now" : "");
+    /* exactly what the driver reports: the display's NV_GET_VRR_INFO flags and the profile's G-SYNC settings */
+    char disp[160];
+    if (v->enabled < 0) snprintf(disp, sizeof disp, "NvAPI_Disp_GetVRRInfo: no answer");
+    else snprintf(disp, sizeof disp, "NvAPI_Disp_GetVRRInfo: enabled %d, possible %d, requested %d, indicator %d, in VRR mode %d (flags 0x%X)",
+                  v->enabled, v->possible, v->requested, v->indicator, v->active, v->raw);
+    snprintf(buf, (size_t)cap, "%s; driver profile%s: G-SYNC mode %d (%s), Monitor Technology %d (%s) -> %s", disp,
+             v->app_profile ? " (the game's own)" : " (global)", v->mode, v->mode >= 0 && v->mode <= 2 ? modes[v->mode] : "unknown",
+             v->app_override, v->app_override == 0 ? "G-SYNC allowed" : v->app_override > 0 ? "not G-SYNC" : "unknown",
+             v->enabled < 0 ? "state unknown" : v->enabled && v->possible ? (v->active > 0 ? "variable refresh in use now" : "variable refresh enabled") :
+             v->possible ? "variable refresh possible but not enabled for this display" :
+             "variable refresh not enabled for this display (the driver says it is not possible)");
     return buf;
 }
 
+static volatile LONG st_code;
+static char st_text[96];
+static SRWLOCK st_lock = SRWLOCK_INIT;
+static gpu_vrr_info st_drv;
+static int st_have_drv;
+
+void gpu_vrr_set_status(const gpu_vrr_info* drv, int disp_state, double hz) {
+    AcquireSRWLockExclusive(&st_lock);
+    if (drv) { st_drv = *drv; st_have_drv = 1; }
+    int code = GPU_VRR_UNKNOWN;
+    char t[96] = "Unknown (measuring...)";
+    int drv_off = st_have_drv && st_drv.vendor_known && (st_drv.enabled == 0 || st_drv.possible == 0);
+    if (disp_state == 1 /* PACE_DISP_VRR */ || (st_have_drv && st_drv.active > 0)) { code = GPU_VRR_ACTIVE; snprintf(t, sizeof t, "Active"); }
+    else if (drv_off) {
+        code = GPU_VRR_OFF_DRIVER;
+        snprintf(t, sizeof t, st_drv.possible == 0 ? "Off in the driver / monitor" : "Off in the driver (G-SYNC not enabled)");
+    } else if (disp_state == 2 /* PACE_DISP_FIXED */) { code = GPU_VRR_NOT_ACTIVE; snprintf(t, sizeof t, "Not active (fixed %.0f Hz)", hz); }
+    else if (disp_state == 3 /* PACE_DISP_MULTIPLE */) { code = GPU_VRR_NOT_NEEDED; snprintf(t, sizeof t, "Not needed (%.0f Hz display)", hz); }
+    else if (st_have_drv && st_drv.vendor_known && st_drv.enabled > 0) { code = GPU_VRR_UNKNOWN; snprintf(t, sizeof t, "Enabled in the driver"); }
+    memcpy(st_text, t, sizeof t);
+    InterlockedExchange(&st_code, code);
+    ReleaseSRWLockExclusive(&st_lock);
+}
+
+int gpu_vrr_status(char* buf, int cap) {
+    AcquireSRWLockShared(&st_lock);
+    snprintf(buf, (size_t)cap, "%s", st_text[0] ? st_text : "Unknown (measuring...)");
+    int c = (int)st_code;
+    ReleaseSRWLockShared(&st_lock);
+    return c;
+}
 const char* gpu_vrr_advice(const gpu_vrr_info* v) {
     if (!v->vendor_known) return "turn on FreeSync / Adaptive-Sync in the graphics driver and in the monitor's own menu";
     if (v->enabled == 0 || v->possible == 0)

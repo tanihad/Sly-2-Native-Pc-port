@@ -324,6 +324,11 @@ static void test_menu_nav(void) {
               !settings_parse_value(fi, "20", &v), "frame_rate parse");
     }
     m_change("display", "frame_rate", 60);
+    view();
+    {                                             /* (pc-fps) the read-only variable refresh status */
+        int k = find_row(&V, MENU_ROW_VRR);
+        CHECK(k >= 0 && V.rows[k].kind == MENU_ITEM_INFO && V.rows[k].value[0], "variable refresh status row ('%s')", k >= 0 ? V.rows[k].value : "");
+    }
     menu_nav_event(MENU_NAV_TAB_NEXT, MENU_DEV_KEYBOARD);
     view();
     CHECK(V.page == MENU_PAGE_AUDIO && V.rows[0].id == MENU_ROW_MASTER && V.rows[0].kind == MENU_ITEM_SLIDER, "Audio, master slider");
