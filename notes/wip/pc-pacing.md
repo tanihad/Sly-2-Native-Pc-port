@@ -43,17 +43,20 @@ Options menu. Brief: notes/pc-experience.md.
   borderless 7x fixed; 50 s each from boot, PS2_PACE_LOG=1, game closes by itself (watchdog). No display mode change
   (fullscreen_refresh stays desktop: CDS_TEST only, 120 Hz accepted).
 
+## Merged main 4c3cf6c (pc-menu etc.) - commit d871088
+- Settings now table-driven (main): my options added as rows (graphics.pacing 5 values, graphics.vsync,
+  display.fullscreen_refresh); main's auto_max / native (-1, height-based) / presets kept; my scale_max, gfx_set_* menu
+  functions and gpu_hw native code dropped (the menu owns them). runtime/pacing_menu.c = menu_ext.h's
+  pacing_apply_mode / pacing_exclusive_fullscreen (display_mode_exclusive). menu.c: Frame pacing choices + VSync row.
+- gs_replay --game sets PS2_GS_GOVERNOR=0 (replays are not real time).
+
 ## In progress
-- scripts\pace_cost.ps1 (headless, 2560x1440 offscreen, PS2_GS_SCALE 1..4, ep1/ep3/m7) -> build\pace\cost.txt.
+- Gates (scratchpad gates.ps1 -> build\gates.txt): run_tests, every unit suite, gpu_diff_all mixed S=1, gpu_game_all
+  S=1, debug + release builds, package.py.
 
 ## Next
-1. Preset table from the cost numbers; docs: pc-experience.md "Interfaces (pacing)", settings.md, gpu-renderer.md,
-   d3d11-renderer.md appendix N, performance.md.
-2. Flicker-filter alternation "shake" check (consecutive 1x dumps of a static scene, vertical shift).
-3. Gates: run_tests.py, all tests\unit\*\run.ps1 (window/warp -UnitOnly), gpu_diff_all mixed S=1, gpu_game_all S=1,
-   debug + release builds, package.py.
-4. Final batched real-monitor runs with the final build (auto immediate on fixed 165 Hz, windowed, 6x), plots.
-
+1. Gates green -> commit. 2. One last short real-monitor run (borderless 7x, auto) on the final build.
+3. Mark complete, report.
 ## Findings / traps
 - Frames cannot be dropped: each frame's GS draws build GS memory later frames read. Only presents are optional.
 - Sly 2 draws a new game frame every VBlank in the ep1 hub (60.9 flips/s), so the GPU budget is 16.7 ms.
