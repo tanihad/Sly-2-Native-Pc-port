@@ -209,10 +209,11 @@ PATCHES: list[Patch] = [
           "the lower bound would make every frame a 1/60 s step (120 fps = double speed): the frame limiter's rates "
           "need it lower (frame_rate.c: 1/625 s; real steps come from the Count). The upper bound stays"),
     Patch("frame_vblank_wait", *VBLANK_WAIT, 0x0016F560, "before",
-          "frame_vblank_request();",
+          "{ uint32_t t_ = ps2_r32(ctx, 0x002DE1A0u); frame_vblank_request(t_ >= 0x100000u && t_ < 0x1FF0000u ? ps2_r32(ctx, t_ + 0xCu) : 0u); }",
           "entry of 'wait for the next VBlank' (sets 0x2DFB58 and waits on the semaphore 0x2DFB4C that the VBlank "
           "handler 0x16F468 signals): called by the render thread (0x160B70 via 0x16F590) right after it kicked a "
-          "frame. Above 60 fps the host timer raises the VBlank now (at most one per 1 / rate s); at 60 it returns at once"),
+          "frame. Above 60 fps the host timer raises the VBlank now (at most one per 1 / rate s); at 60 it returns at once. "
+          "It is passed the vtable of the camera's target (camera 0x2DDF40 +0x260): the RC chopper class (0x2D5898) keeps 60 fps"),
     Patch("frame_movie_begin", *MOVIE_PLAY, 0x001B3BD0, "before",
           "frame_rate_movie(1);",
           "entry of the movie player (one movie: its own decode / display loop, paced by the VBlanks it waits for - at "

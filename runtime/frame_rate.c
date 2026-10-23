@@ -11,6 +11,7 @@ static volatile LONG display_mhz;        /* the display's refresh, mHz (0 = unkn
 static volatile LONG64 request_qpc;
 static HANDLE request_event;
 static volatile LONG movie;              /* a movie plays (patches frame_movie_*) */
+static volatile LONG excluded;           /* the camera follows an object that keeps 60 fps (frame_vblank_request) */
 
 static void update_dt_min(void) {
     /* the game's own 1/60 at 60; above, low enough for any rate the limiter allows (the clamp only guards against a
@@ -49,7 +50,7 @@ double frame_rate_display_hz(void) { return display_mhz > 0 ? (double)display_mh
 
 double frame_rate_target_hz(void) {
     int s = (int)setting;
-    if (movie) return FRAME_RATE_NTSC_HZ;          /* movies: the PS2's rate (their decode loop counts VBlanks) */
+    if (movie || excluded) return FRAME_RATE_NTSC_HZ;   /* movies: the PS2's rate (their decode loop counts VBlanks); RC */
     if (s == FRAME_RATE_UNLIMITED) return 0;
     if (s == FRAME_RATE_DISPLAY) {
         double d = frame_rate_display_hz();
@@ -86,7 +87,20 @@ void* frame_vblank_event(void) {
     return request_event;
 }
 
-void frame_vblank_request(void) {
+/* Objects whose behaviour depends on the frame rate keep the PS2's 60 fps while the camera follows them:
+ *  - 0x2D5898: Bentley's RC chopper (episodes 2, 4, 6: RC Bombing Run, Wall Bombing, Aerial Assault). With the stick released
+ *    it never settles at 60 fps (it keeps swaying sideways ~+-1200 units); at 120 / 200 fps the sideways sway stops after a few
+ *    seconds while the forward / back sway goes on, larger at 200: its controller is not frame-rate independent
+ *    (notes/frame-rate.md). */
+static int keeps_60(uint32_t vt) { return vt == 0x002D5898u; }
+
+void frame_vblank_request(uint32_t target_vt) {
+    int ex = keeps_60(target_vt);
+    if (ex != (int)excluded) {
+        InterlockedExchange(&excluded, ex);
+        update_dt_min();
+        if (setting != 60) fprintf(stderr, "[fps] %s\n", ex ? "RC chopper: 60 fps while it flies" : "back to the frame rate setting");
+    }
     if (!frame_rate_high()) return;
     LARGE_INTEGER t;
     QueryPerformanceCounter(&t);
