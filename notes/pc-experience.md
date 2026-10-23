@@ -115,3 +115,30 @@ clicks and the wheel, so the window does not act on them.
 **Status for messages**: `input_devices(list, max)` (name, kind, bus, port, battery, live state);
 `input_poll_notice(&n)` returns connect / disconnect notices (`n.connected`, `n.name`, `n.port`: 0 =
 the controller that drove the game) for an on-screen message ("Controller disconnected").
+
+## Interfaces: menu (pc-menu; `runtime/settings.h`, `runtime/menu_ext.h`, details in notes/pc-menu.md)
+
+**What the menu uses from input** (as above): `input_set_menu_active`, `input_nav_flush`, `input_nav_poll`
+(every window-thread turn, `menu_tick`), `input_capture_begin / _poll / _cancel`, `input_config_get / _set /
+_defaults`, `input_action_label`, `input_key_label`, `input_button_label`, `input_devices`, `input_test_rumble`.
+INPUT_NAV_MENU while closed asks the game to pause (as START would, patch `pcmenu_start`) and then opens the menu.
+
+**What the menu needs from pacing** (`runtime/menu_ext.h`; weak stand-ins in `runtime/menu_stubs.c` that pc-pacing's
+strong definitions replace at link time - nothing in the menu changes at the merge):
+
+- `int pacing_apply_mode(int pacing)`: `graphics.pacing` changed to SETTINGS_PACING_VSYNC / VRR / DISPLAY (already
+  stored in `ps2_settings.pacing` and sly2.ini): return 1 if it is in effect now, 0 if it applies at the next start.
+  `pacing_apply_mode(-1)` only asks whether changes apply live (the menu then hides "Applies at the next start").
+  Stand-in: 0.
+- `int pacing_exclusive_fullscreen(int on)`: exclusive fullscreen on the GPU renderer's swap chain on / off (the
+  window is already borderless fullscreen on the right monitor when it is called with 1): 1 if done; 0 = not
+  supported (the window stays borderless and the menu says so). Stand-in: 0.
+
+**For any stream: the settings model** (`runtime/settings.h`). A new option is one row of `opts[]` in settings.c
+(section, key, type, range / names, default, flags, applier). `settings_change(i, v, persist)` (or
+`settings_change_key(section, key, v, persist)`) validates, stores into `ps2_settings`, writes sly2.ini keeping
+comments, re-derives the graphics preset and calls the applier registered with `settings_on_apply(SET_APPLY_x, fn)`
+(SET_APPLY_PACING is pacing's to take over from menu_game.c if it wants: register after `menu_game_init`).
+`settings_serial` / `settings_touch()`: the menu redraws. Internal resolution: `internal_scale` 1..8, 0 = auto
+(up to `auto_max`), -1 = native (`gfx_native_scale(client height)`); the GPU renderer gets them through gfx.c as
+before (`gpu_hw_set_graphics`, `gpu_hw_set_auto_scale(auto_max)`).

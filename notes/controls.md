@@ -114,15 +114,32 @@ graphics keys), Alt, Windows keys. Controller button names: `cross circle square
 r2 l3 r3 select start home touchpad mute up down left right`, aliases `a b x y lb rb lt rt ls rs
 back view create share options menu ps guide dpad_up ...`.
 
+## The Options menu ("PC Settings", notes/pc-menu.md)
+
+| Action                                 | Keyboard / mouse                         | DualSense / DualShock 4 | Xbox |
+|----------------------------------------|------------------------------------------|-------------------------|------|
+| Open (pauses the game first)           | Esc, or the pause menu's "PC Settings"    | PS button, or the pause menu's "PC Settings" | the pause menu's "PC Settings" (START, then the entry) |
+| Move / change a value                  | arrows or WASD, mouse wheel; click a row's arrows or a slider's bar | d-pad / left stick | d-pad / left stick |
+| Select (cycle a value, open a page)    | Enter / Space, left click                | Cross                   | A    |
+| Back (close on a main page)            | Esc / Backspace, right click              | Circle                  | B    |
+| Previous / next page                   | Q / E, Shift+Tab / Tab, Page Up / Down, click a tab | L1 / R1      | LB / RB |
+| Close from anywhere                    | Esc on a main page                       | Options or PS button    | Menu |
+
+Closing returns to the game's pause menu ("WE'LL BE RIGHT BACK!"). While the menu is open the game gets no
+input; a button still held when it closes is hidden from the game until released. Remapping: Controls >
+Keyboard controls / Controller buttons, Confirm on a row, then press the key / button (left / right picks the
+first or second binding; Esc or the PS button cancels).
+
 ## Window
 
 | Action                         | Key                         |
 |--------------------------------|-----------------------------|
-| Borderless fullscreen on/off   | F11 or Alt+Enter            |
-| Leave fullscreen               | Esc (only while fullscreen) |
+| Borderless fullscreen on/off   | F11 or Alt+Enter (also Display > Display mode in the menu) |
 | Widescreen (16:9) <-> 4:3      | F7                          |
 | HUD at the edges <-> centred   | F8 (wide aspects)           |
 | Quit                           | close the window or Alt+F4  |
+
+(Esc no longer leaves fullscreen: it opens the Options menu.)
 
 The picture is shown at the display aspect from sly2.ini (default 16:9; 4:3 is the PS2 picture
 as it was; notes/widescreen.md, notes/settings.md), fitted into the window with black bars; movies
@@ -133,7 +150,8 @@ GDI presenter instead of Direct3D 11 (software renderer only).
 ## Graphics (GPU renderer, the default)
 
 Each change applies from the next frame and is remembered in sly2.ini `[graphics]` (notes/settings.md); the
-software renderer only uses F5 (the game's own motion blur), F7 and F8.
+software renderer only uses F5 (the game's own motion blur), F7 and F8. The keys change the same settings as the
+Options menu (settings_change: the graphics preset becomes Custom when they leave it; an open menu shows them).
 
 | Action                                                        | Key        |
 |---------------------------------------------------------------|------------|
