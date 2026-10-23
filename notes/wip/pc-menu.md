@@ -26,11 +26,20 @@ presets, live apply, saved to sly2.ini), drawn over the picture by both renderer
   short runs: software renderer own D3D11 presenter (t5) and GDI (t6) with shots. Docs written (pc-menu.md,
   settings.md, controls.md, pc-experience.md Interfaces: menu, README).
 
-## Next
-1. Gates (build\pcmenu_run\gates.ps1 -> gates.log): run_tests.py, every tests\unit\*\run.ps1 (-UnitOnly / -NoWindow),
-   gpu_diff_all mixed S=1, gpu_game_all S=1, debug build, package.py. Fix anything red.
-2. Final in-game 1440p shots of every page from the packaged exe (headless GPU, PS2_GS_PRESENT_SIZE=2560x1440) +
-   rebuild the contact sheet; commit; Status: complete.
+- Gates (build\pcmenu_run\gates.ps1, 2026-10-23): run_tests.py PASS; every tests\unit\*\run.ps1 green (menu 216,
+  window 500 -UnitOnly, input 961, gs-hw -NoWindow, warp -UnitOnly, ...); gpu_diff_all mixed S=1 28/28; gpu_game_all
+  S=1 4196 pictures 0 differ; debug build; package.py (0.1.731).
+- Final in-game shots from the packaged exe at 2560x1440 (headless GPU): build\screenshots\pc_menu_game1440_*.png and
+  640x360 pc_menu_game_small_*.png; notes/pc-menu/ingame_sheet.png; offline notes/pc-menu/contact_sheet.png.
+
+**Status: complete** (branch next/pc-menu, not merged, not pushed).
+
+## Left for later / owner
+- pc-pacing: pacing_apply_mode / pacing_exclusive_fullscreen (weak stand-ins now: pacing at the next start,
+  exclusive = borderless).
+- No separate Voices volume (the game has none; category 3 unverified).
+- Real-hardware: DualSense PS button opening the menu, mouse in fullscreen, multi-monitor Monitor option (one monitor
+  here), Window size on the owner's desktop - only checked headless / in short windowed runs.
 
 ## Pause menu RE (subagent, verified with pokes on the baseline debug exe; details build\re_pause\findings.txt)
 - Menu object M = 0x3D9ED0 (HUD mgr 0x3D9E70+0x60), update f_001AEEE0 every frame. Depth *(s32*)0x3D9EF4 (0 closed,

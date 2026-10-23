@@ -42,7 +42,7 @@ typedef struct {
     char label[MENU_TEXT];
     char value[MENU_TEXT];               /* the current value's text ("3x - 2048 x 1344", "75") */
     char value2[MENU_TEXT];              /* BIND: the second key / button ("-" none) */
-    char desc[2 * MENU_TEXT];            /* the description line for the selected row */
+    char desc[4 * MENU_TEXT];            /* the description for the selected row (up to three lines) */
     char note[MENU_TEXT];                /* "Applies at the next start", "GPU renderer only", ... ("" none) */
     int enabled;                         /* 0: shown dimmed, cannot change (note says why) */
     int nchoices, cur;                   /* CHOICE: count and current index (-1 none of them) */
