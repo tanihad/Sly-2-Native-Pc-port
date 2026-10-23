@@ -550,6 +550,7 @@ static void dump_picture(const uint32_t* frame, int w, int h, int stride, uint32
 }
 
 static int gpu_backend;                          /* the GPU renderer was started (gpu_hw.c) */
+int ps2_gpu_started(void) { return gpu_backend; }   /* (pc-menu: a live renderer switch is possible) */
 
 static void window_external_off(int on) { window_set_external_presenter(on, on ? gpu_hw_present_sw : NULL); }
 
@@ -999,6 +1000,7 @@ int main(int argc, char** argv) {
         gpu_backend = 0;
         if (!headless) window_set_external_presenter(0, NULL);
     }
+    menu_game_init(headless);                            /* (pc-menu) the Options menu: runtime/menu_game.c */
 
     static ps2_ctx init;
     init.r[29].sd[0] = (int32_t)(PS2_RAM_SIZE - 0x10);   /* provisional stack until SetupThread */

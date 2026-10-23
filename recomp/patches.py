@@ -51,6 +51,11 @@ MOTION_BLUR = (0x00160F98, "fb6879611634e74a6c18e8c7bda1b2f7eeb43407")   # the m
 TEXT_LOAD = (0x0013DF80, "8dda0003180328c95a6d2446ee5f52e2f2813477")     # read a level's text bank
 CARD_UPDATE = (0x001AB1A0, "1d6ccadcbdefdd6b7e8f0f0d7473c824222ccccb")   # memory card manager, per frame
 OPTIONS_BUILD = (0x001B04E0, "6dbf069bc55ffc47d8e36a035831e849f83a9ed9")  # build the Options menu's items
+# (pc-menu) the pause menu (notes/pc-menu.md)
+PAUSE_LIST = (0x001B0290, "ceb3e45c987b7505b4ec7388628233baf720d7cf")    # build the pause menu's entries, push page 1
+TEXT_LOOKUP = (0x0013E368, "70da33a2bc009fbe743fb29e1ef891e60916a5fe")   # text id -> string (the level's text table)
+MENU_UPDATE = (0x001AEEE0, "6f518491757212ff8aaf84c5197d1753ac1bbcaf")   # the menu object's per-frame update (input)
+HUD_UPDATE = (0x001D9648, "d8e9a7bdb104955a41913d2a79b514ebb10cfce0")    # the HUD manager's update (START -> pause)
 
 PATCHES: list[Patch] = [
     Patch("ws_projection", *CM_RECALC, 0x0014DBA4, "after",
@@ -167,6 +172,31 @@ PATCHES: list[Patch] = [
           "the static table 0x2BFEC8 ($s0 = the item; word 0 = its kind = text id) that pass a test "
           "($a0 != 0, tested by the beq here). PS2 hardware options are left out on PC: 'USB Headset' "
           "(0x50, the PS2 USB headset) and 'Center Screen...' (0x3F, moves the picture on a CRT TV)"),
+    # The PC Options menu (runtime/menu_game.c, notes/pc-menu.md). Always on: the pause menu gets a "PC Settings"
+    # entry; the other patches do nothing unless the menu asks for something.
+    Patch("pcmenu_list", *PAUSE_LIST, 0x001B0490, "before",
+          "pcmenu_pause_list(ctx);",
+          "jal f_001AF4D8 (push the menu's page 1) with $a1 = the entry count and $a2 = the list the function just "
+          "filtered from its 7 templates into 0x2F65D0 (full at 7, read by nothing else: the page keeps the pointer). "
+          "menu_game.c copies it to unused EE RAM (0xFF000) with a 'PC Settings' entry after 'Options' (text id "
+          "0x10000, no callbacks, flags 2 = stay open) and passes the copy"),
+    Patch("pcmenu_text", *TEXT_LOOKUP, 0x0013E368, "before",
+          "if (pcmenu_text(ctx)) return;",
+          "entry of the text lookup (a leaf, $a1 = text id, $v0 = the string): the entry's id 0x10000 (the game's own "
+          "ids are below 0xCB3) returns 'PC Settings' (EE 0xFF200); the menu draws it in the game's own font"),
+    Patch("pcmenu_select", *MENU_UPDATE, 0x001AF154, "before",
+          "pcmenu_select(ctx);",
+          "Cross on the highlighted entry of an idle page ($s0 = the entry, before its select callback is loaded): "
+          "ours opens the PC Options menu; its flags keep the pause menu open underneath"),
+    Patch("pcmenu_start", *HUD_UPDATE, 0x001D96EC, "before",
+          "if (pcmenu_pause_req) pcmenu_start(ctx);",
+          "after f_00187D80(pad, START) returned whether START was pressed ($v0), where the HUD manager opens the "
+          "pause menu (jal 0x1B0290): Esc / the PS button pause the game exactly as START does, only where START would"),
+    Patch("pcmenu_frame", *MAIN_LOOP, 0x001A75A8, "before",
+          "pcmenu_ee_frame(ctx);",
+          "main loop (as aspect_switch): the music / effects volumes chosen in the menu go into the game's sound "
+          "manager with the game's own 0x1FEA60, as its Options page does (and again when a loaded save resets them); a menu "
+          "waiting for the pause menu opens"),
 ]
 
 

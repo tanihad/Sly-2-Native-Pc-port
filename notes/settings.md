@@ -27,16 +27,22 @@ before the first header belong to `[display]`. A value in double quotes keeps `;
 Unknown keys and bad values are reported on stderr (`[settings] <path>: line N: ...`) and ignored;
 the other keys still apply. A UTF-8 BOM (Notepad) is accepted; the file is UTF-8 (non-ASCII paths).
 
+Almost every key can also be changed in the game: **pause -> PC Settings** (or Esc / the PS button), the Options
+menu (notes/pc-menu.md); it writes the same keys.
+
 ```ini
 [display]
 aspect = 16:9          ; 16:9 (default) or 4:3; any W:H (21:9, 16:10) or a ratio (1.7778)
 hud = edges            ; edges (default): corner HUD widgets at the display's edges | centered
+monitor = 0            ; 0 (default: where the window is) | 1, 2, ...: fullscreen (and the window) on that monitor
 
 [graphics]
+preset = balanced      ; original | performance | balanced (default) | quality | custom (see "Presets")
 renderer = gpu         ; gpu (default: the Direct3D 11 renderer; software if it can't start) | software
 pacing = vsync         ; gpu renderer: vsync (default) | vrr | display
-internal_scale = auto  ; auto (default: 3x, lowered while the GPU can't keep up) | 1 (PS2 resolution) .. 8
-                       ;   (the keys from here on: Direct3D 11 renderer, except motion_blur)
+internal_scale = auto  ; auto (default: up to auto_max, lowered while the GPU can't keep up) | native |
+                       ;   1 (PS2 resolution) .. 8   (the keys from here on: Direct3D 11 renderer, except motion_blur)
+auto_max = 3           ; the highest scale auto uses (1..8, default 3)
 outlines = ps2         ; ps2 (one PS2 pixel wide, exact) | thin (high-resolution lines)
 filters = modern       ; modern | faithful (preset for the three toggles below)
 motion_blur = preset   ; on | off | preset   (modern: on,  faithful: on)
@@ -44,12 +50,18 @@ flicker_filter = preset;                      (modern: off, faithful: on)
 interlacing = preset   ;                      (modern: off, faithful: on)
 scaler = auto          ; picture -> window: auto | lanczos | catmull-rom | box | bilinear | point
 
+[audio]
+master = 100           ; 0..100: everything (the PC's mixer, audio_out.c)
+music = 100            ; 0..100: the game's own music volume (as its Options page)
+effects = 100          ; 0..100: the game's own effects volume (sound effects and voices)
+background = on        ; off: silent while another window is active
+
 [game]
 disc = D:\Games\Sly 2 - Band of Thieves (USA).iso   ; written by the game when you choose the image
 
 [window]               ; written by the game when the window closes
-fullscreen = off       ; on: start in borderless fullscreen (Alt+Enter / F11 switch)
-show_fps = off         ; on: frame rate in the title bar
+fullscreen = off       ; off | on (borderless fullscreen; Alt+Enter / F11 switch) | exclusive
+show_fps = off         ; on: frame rate in the title bar and in the picture's top left corner
 x = 418                ; the window's position and size (not maximized), physical pixels;
 y = 204                ;   ignored if no longer on a monitor (the window is then centred)
 width = 1723
@@ -70,10 +82,31 @@ maximized = off
 | graphics.flicker_filter | on / off / preset | gpu renderer: the PS2's TV flicker filter (both display circuits on one buffer, one line apart, mixed at ALP 128 - the game alternates it with one circuit every VBlank). off shows the circuit with the lower DBY alone (sharper; the alternation stops flickering). F6 switches |
 | graphics.interlacing | on / off / preset | gpu renderer: on = field display as the PS2 sends it to the TV - the field buffers drawn at field resolution (N rows per PS2 row) and shown line-doubled, fields drawn with the half-line offset (movies, the intro) woven by gs.c's deinterlacer: at internal_scale 1 identical to the software renderer's picture; off = progressive: the field buffers drawn with 2N rows per PS2 row (the full 448-line picture at every scale), odd fields of half-line-offset content shown one frame line lower (no bob). Shift+F6 switches |
 | graphics.scaler | auto / lanczos / catmull-rom / box / bilinear / point | gpu renderer: the filter from the picture to the window (separable, two passes). auto = Lanczos-2 when shrinking (the "sharp downscale" of 3x supersampling), Catmull-Rom when enlarging, point at 1:1. The picture's sample grid (sample 0 at the PS2 pixel) is taken out, so it is centred like the PS2's. `PS2_GS_SCALER` overrides it |
+| graphics.preset | original / performance / balanced / quality / custom | (pc-menu) the graphics preset, see "Presets". A preset other than custom sets its options when the file is read (it wins over them: `preset = custom` to set them by hand); the game writes `custom` as soon as an option leaves the preset (menu or F-keys). A file without the key (older builds): derived from the options |
+| graphics.internal_scale = native | native | (pc-menu) the smallest scale N with 448 N rows >= the window's client height (4x at 1440p, 3x at 1080p, 5x at 2160p), followed when the window is resized (gfx.c gfx_output_resized) |
+| graphics.auto_max | 1..8 (default 3) | (pc-menu) the highest scale `internal_scale = auto` runs at (gpu_hw_set_auto_scale) |
+| display.monitor | 0..16 (default 0) | (pc-menu) 0: the monitor the window is on; n: fullscreen on monitor n (EnumDisplayMonitors order), a window moves there |
+| audio.master | 0..100 (default 100) | (pc-menu) the volume of the PC's mixer output (audio_out.c audio_set_gain, gain (v/100)^2; 100 = untouched, bit-exact) |
+| audio.music / audio.effects | 0..100 (default 100) | (pc-menu) the game's own volumes (its Options page's Music / Effects Volume): put into its sound manager 0x3DD040 with its own function 0x1FEA60 (music: category 1, effects: categories 0 and 3) at the game's next frame; again when a loaded save resets them; changes on the game's own Options page are taken over into sly2.ini (menu_game.c) |
+| audio.background | on / off (default on) | (pc-menu) off: the output is silent while the game's window is not the active one |
 | game.disc | path of a .iso | the disc image (runtime/launch.c; notes/install.md). Empty or unusable: asked for with a file dialog (GUI build) |
-| window.fullscreen | on/off | start fullscreen; remembered on close |
+| window.fullscreen | off / on (borderless) / exclusive | start fullscreen; remembered on close. exclusive: through pc-pacing's `pacing_exclusive_fullscreen` (menu_ext.h); while that is not available the window is borderless fullscreen |
 | window.x/y/width/height/maximized | integers / on/off | the window's normal placement; remembered on close |
-| window.show_fps | on/off | title "Sly 2: Band of Thieves - 59.9 fps" instead of "Sly 2: Band of Thieves" |
+| window.show_fps | on/off | title "Sly 2: Band of Thieves - 59.9 fps" instead of "Sly 2: Band of Thieves", and (pc-menu) a counter in the top left corner of the picture (menu_overlay.c; also fullscreen) |
+
+### Presets (graphics.preset; runtime/settings.c settings_apply_preset / settings_detect_preset)
+
+| preset | internal_scale | auto_max | outlines | filters | motion_blur / flicker_filter / interlacing | scaler | aspect |
+|---|---|---|---|---|---|---|---|
+| **original** | 1 | (3) | ps2 | faithful | preset (all on: as a PS2 on a TV) | auto | 4:3 |
+| **performance** | auto | 2 | ps2 | modern | preset | auto | kept |
+| **balanced** (default) | auto | 3 | ps2 | modern | preset | auto | kept |
+| **quality** | native | (3) | thin | modern | preset | auto | kept |
+| **custom** | anything else | | | | | | |
+
+The renderer is not part of a preset. Choosing a modern preset in the menu while the aspect is the 4:3 that Original
+set returns to 16:9. Detection: a set of options is the preset whose values it has (aspect only matters for Original,
+which needs 4:3); anything else is custom.
 
 `[controls]` (bindings, vibration, dead zones, camera inversion, light bar) belongs to runtime/input.c:
 settings.c accepts its keys without parsing them, and input.c reads the section with
@@ -119,6 +152,20 @@ no lost frame; notes/d3d11-renderer.md appendix I) and the flicker filter and sc
 blur from the game's next frame. PS2_INPUT tokens: `scaleup`, `scaledown`, `scaleauto`, `outlines`, `filters`, `blur`,
 `flicker`, `interlace` (not written to sly2.ini). The renderer and pacing are read at start-up.
 
-For code: `ps2_settings` (settings.h) holds the values; `settings_motion_blur/_flicker_filter/
-_interlacing` resolve the preset. New keys go into `apply()` and `settings_format()` in settings.c,
-with a test in tests/unit/window/test_window.c (`test_settings`).
+For code (pc-menu: the settings model): `ps2_settings` (settings.h) holds the values;
+`settings_motion_blur/_flicker_filter/_interlacing` resolve the filter preset. Every key is one row of the typed
+table `opts[]` in settings.c (`settings_opt`: section, key, type BOOL / ENUM / INT / TRI / ASPECT / STRING, range or
+value names and accepted aliases, default, flags LIVE / PRESET / GPU / STATE, the subsystem that applies it
+SET_APPLY_GFX / DISPLAY / WINDOW / AUDIO / RENDERER / PACING, the environment variable that overrides it). The
+parser, the template, the Options menu and the hotkeys all use it: `settings_change(i, value, persist)` validates,
+stores, writes the key (and `graphics.preset` when it changes; a preset writes all its options) and calls the
+applier registered with `settings_on_apply` (gfx.c: GFX; window.c: DISPLAY, WINDOW; menu_game.c: AUDIO, RENDERER,
+PACING, and DISPLAY when headless); `settings_serial` tells the menu to redraw. A new key: one row in `opts[]`, a line
+in `settings_format()`'s template, a test in tests/unit/menu/test_menu.c (`test_table` checks every row's default and
+text round trip). `[controls]` is input.c's (settings_read_section).
+
+Live or at the next start: everything the menu changes applies at once (graphics from the GPU renderer's next frame,
+aspect / HUD at the game's next frame, volumes at the game's next frame, display mode / size / monitor on the window
+thread), except: `renderer` when the game started on the software renderer (a game started on the GPU renderer
+switches both ways live), `pacing` (at the next start until pc-pacing's `pacing_apply_mode` says otherwise),
+`window.fullscreen = exclusive` (borderless until pc-pacing provides it).

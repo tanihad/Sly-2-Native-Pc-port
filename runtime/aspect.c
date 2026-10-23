@@ -72,7 +72,9 @@ void aspect_target(int* w, int* h, int* hud_centered) {
 void aspect_apply(struct ps2_ctx* ctx) {
     if (!__atomic_exchange_n(&ps2_aspect_pending, 0, __ATOMIC_ACQUIRE)) return;
     int w = req_w, h = req_h, hud = req_hud;
-    int same_aspect = w * ps2_settings.aspect_h == h * ps2_settings.aspect_w;
+    /* (against the aspect in use, not ps2_settings: the Options menu stores its choice there before it applies) */
+    float ratio = w * 3 == h * 4 ? 4.0f / 3.0f : (float)w / (float)h;
+    int same_aspect = ratio == ps2_aspect.ratio;
     ps2_settings.aspect_w = w;
     ps2_settings.aspect_h = h;
     ps2_settings.hud_centered = hud;

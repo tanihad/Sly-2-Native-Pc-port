@@ -471,6 +471,11 @@ static int render_start(void) {
     gc.hwnd = C.hwnd;
     gc.present_w = 1280;
     gc.present_h = 960;
+    {                                    /* (pc-menu) PS2_GS_PRESENT_SIZE=WxH: the headless present target (screenshots) */
+        const char* e = getenv("PS2_GS_PRESENT_SIZE");
+        int w = 0, h = 0;
+        if (e && sscanf(e, "%dx%d", &w, &h) == 2 && w >= 64 && h >= 64 && w <= 8192 && h <= 8192) { gc.present_w = w; gc.present_h = h; }
+    }
     gc.tearing = C.pacing == SETTINGS_PACING_VRR;
     gc.timestamps = 1;                   /* (M11: GPU time per picture also for internal_scale = auto) */
     gc.client_size = C.client_size;
