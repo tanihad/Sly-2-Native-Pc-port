@@ -3,11 +3,24 @@
 **Goal**: smooth 120-165 fps; decide by measurement between (a) pipelining / parallelising the per-frame graphics
 preparation (VIF1 / VU1 / GIF off the EE thread) and (b) frame interpolation at a 60 Hz tick; implement the winner.
 
-Status: in progress (branch next/pc-fps2 from main ff40358).
+Status: complete (branch next/pc-fps2 from main ff40358). Write-up: notes/frame-rate.md "High frame rate: approaches
+compared". Decision: (a) - graphics worker (runtime/gfx_async.c, above 60 fps), raw PATH1 packets (gif_parse.h), VIF
+unpack fast paths. (b) stays as an env-only prototype (runtime/interp.c, PS2_INTERP).
 
 ## Done
-- Read notes (frame-rate, performance, hle-architecture, gpu-renderer, d3d11 appendices L/N/O, widescreen).
-- Release build in build\rel (45 s).
+- Profile (all threads), prototypes (a) and (b), measurements at 3x and 2x, 120 / 165, decision, notes.
+- Correctness: PS2_GIF_CHECK / PS2_VIF_UPK_FAST=check 0 differ over 16 scenes; PS2_GFX_ASYNC_CHECK found the effect-object
+  pool race -> worker only above 60; physics / game speed identical at 60 / 120 / 165 (fps_trace); sw renderer, renderer
+  switch, device loss, pause with the worker.
+- Gates on the final source: tests\run_tests.py 16/16; every tests\unit suite (scripts\fps2_units.ps1: 24 suites, 0 failed;
+  window / warp / menu -UnitOnly, gs-hw -NoWindow); gpu_diff_all mixed S=1 28/28; gpu_game_all S=1 4196 pictures, 0 failed;
+  pc_text_boot (60 and PS2_FRAME_RATE=165); debug + --release builds; scripts\package.py (dist\Sly2).
+- Experiments without effect (frontend priority, P-core CPU sets, pinning, 2 pictures in flight, 32 MB GS queue): code
+  removed, results in frame-rate.md "Left".
+
+## Next (left for later)
+- The GPU frontend thread (~9 ms per frame in the ep1 hub at 2x) limits the heaviest hubs to ~97 fps; GPU-bound at 3x.
+- RC chopper interpolation (pacing + completeness of the prototype) or a frame-rate-independent chopper controller.
 
 ## Baseline (build\base\sly2_base.exe = ff40358 + profiler, headless, alone, 3x, fps2_batch.ps1 -Tag base)
 | scene | 120: fps med / p10 | 165 | EE busy ms | GS thr | front | GPU (3x) |
