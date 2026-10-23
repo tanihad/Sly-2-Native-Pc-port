@@ -1,4 +1,5 @@
-/* User settings file (sly2.ini) and its environment overrides. See settings.h and notes/settings.md. */
+/* User settings file (sly2.ini), its environment overrides and the typed option table. See settings.h and
+ * notes/settings.md. */
 #include "settings.h"
 
 #include <ctype.h>
@@ -11,8 +12,257 @@
 #include <windows.h>
 #endif
 
-ps2_settings_t ps2_settings = { 16, 9, 0, 1, 0, SETTINGS_SCALE_AUTO, 0, 0, -1, -1, -1, 0, "", 0, 0, 0, 0, 0, 0, 0 };
+ps2_settings_t ps2_settings = {
+    .aspect_w = 16, .aspect_h = 9, .renderer_gpu = 1, .internal_scale = SETTINGS_SCALE_AUTO,
+    .motion_blur = -1, .flicker_filter = -1, .interlacing = -1,
+    .preset = SETTINGS_PRESET_BALANCED, .auto_max = SETTINGS_SCALE_AUTO_MAX,
+    .vol_master = 100, .vol_music = 100, .vol_effects = 100, .audio_background = 1,
+    .vibration = 1, .vibration_strength = 100, .deadzone = 24,
+};
 const char* const settings_scaler_names[SETTINGS_SCALER_N] = { "auto", "point", "box", "lanczos", "catmull-rom", "bilinear" };
+const char* const settings_preset_names[SETTINGS_PRESET_N] = { "original", "performance", "balanced", "quality", "custom" };
+volatile long settings_serial;
+
+/* ---- the option table ---------------------------------------------------------------------------- */
+
+static const char* const n_hud[] = { "edges", "centered" };
+static const char* const n_renderer[] = { "software", "gpu" };
+static const char* const n_pacing[] = { "vsync", "vrr", "display" };
+static const char* const n_outlines[] = { "ps2", "thin" };
+static const char* const n_filters[] = { "modern", "faithful" };
+static const char* const n_fullscreen[] = { "off", "on", "exclusive" };
+
+#define OFF(f) ((int)offsetof(ps2_settings_t, f))
+#define BOOL_(sec, key, f, flags, apply, def) { sec, key, SET_BOOL, flags, apply, OFF(f), 0, 1, def, NULL, NULL, NULL }
+#define ENUM_(sec, key, f, flags, apply, names, n, def, aliases, env) \
+    { sec, key, SET_ENUM, flags, apply, OFF(f), 0, (n) - 1, def, names, aliases, env }
+#define INT_(sec, key, f, flags, apply, lo, hi, def, words, env) { sec, key, SET_INT, flags, apply, OFF(f), lo, hi, def, NULL, words, env }
+#define TRI_(sec, key, f) { sec, key, SET_TRI, SET_LIVE | SET_PRESET, SET_APPLY_GFX, OFF(f), -1, 1, -1, NULL, NULL, NULL }
+
+static const settings_opt opts[] = {
+    { "display", "aspect", SET_ASPECT, SET_LIVE, SET_APPLY_DISPLAY, OFF(aspect_w), 0, 0, 16 << 16 | 9, NULL, NULL, "PS2_ASPECT" },
+    ENUM_("display", "hud", hud_centered, SET_LIVE, SET_APPLY_DISPLAY, n_hud, 2, 0, "centred=1", "PS2_HUD"),
+    INT_("display", "monitor", monitor, SET_LIVE, SET_APPLY_WINDOW, 0, 16, 0, NULL, NULL),
+    ENUM_("graphics", "preset", preset, SET_LIVE, SET_APPLY_GFX, settings_preset_names, SETTINGS_PRESET_N,
+          SETTINGS_PRESET_BALANCED, NULL, NULL),
+    ENUM_("graphics", "renderer", renderer_gpu, SET_LIVE, SET_APPLY_RENDERER, n_renderer, 2, 1, "sw=0|hw=1|d3d11=1",
+          "PS2_GS_BACKEND"),
+    ENUM_("graphics", "pacing", pacing, SET_GPU, SET_APPLY_PACING, n_pacing, 3, SETTINGS_PACING_VSYNC, "tearing=1",
+          "PS2_GS_PACING"),
+    INT_("graphics", "internal_scale", internal_scale, SET_LIVE | SET_PRESET | SET_GPU, SET_APPLY_GFX, 1, 8, SETTINGS_SCALE_AUTO,
+         "auto=0|native=-1", "PS2_GS_SCALE"),
+    INT_("graphics", "auto_max", auto_max, SET_LIVE | SET_PRESET | SET_GPU, SET_APPLY_GFX, 1, 8, SETTINGS_SCALE_AUTO_MAX, NULL, NULL),
+    ENUM_("graphics", "outlines", outlines_thin, SET_LIVE | SET_PRESET | SET_GPU, SET_APPLY_GFX, n_outlines, 2, 0, NULL, NULL),
+    ENUM_("graphics", "filters", filters_faithful, SET_LIVE | SET_PRESET, SET_APPLY_GFX, n_filters, 2, 0, NULL, NULL),
+    TRI_("graphics", "motion_blur", motion_blur),
+    TRI_("graphics", "flicker_filter", flicker_filter),
+    TRI_("graphics", "interlacing", interlacing),
+    ENUM_("graphics", "scaler", scaler, SET_LIVE | SET_PRESET | SET_GPU, SET_APPLY_GFX, settings_scaler_names, SETTINGS_SCALER_N,
+          SETTINGS_SCALER_AUTO, "catmull=4", "PS2_GS_SCALER"),
+    INT_("audio", "master", vol_master, SET_LIVE, SET_APPLY_AUDIO, 0, 100, 100, NULL, NULL),
+    INT_("audio", "music", vol_music, SET_LIVE, SET_APPLY_AUDIO, 0, 100, 100, NULL, NULL),
+    INT_("audio", "effects", vol_effects, SET_LIVE, SET_APPLY_AUDIO, 0, 100, 100, NULL, NULL),
+    BOOL_("audio", "background", audio_background, SET_LIVE, SET_APPLY_AUDIO, 1),
+    BOOL_("controls", "vibration", vibration, SET_LIVE, SET_APPLY_INPUT, 1),
+    INT_("controls", "vibration_strength", vibration_strength, SET_LIVE, SET_APPLY_INPUT, 0, 100, 100, NULL, NULL),
+    BOOL_("controls", "invert_camera_x", invert_x, SET_LIVE, SET_APPLY_INPUT, 0),
+    BOOL_("controls", "invert_camera_y", invert_y, SET_LIVE, SET_APPLY_INPUT, 0),
+    INT_("controls", "stick_deadzone", deadzone, SET_LIVE, SET_APPLY_INPUT, 0, 50, 24, NULL, NULL),
+    { "game", "disc", SET_STRING, SET_STATE, SET_APPLY_NONE, OFF(disc), 0, 0, 0, NULL, NULL, NULL },
+    ENUM_("window", "fullscreen", win_fullscreen, SET_LIVE, SET_APPLY_WINDOW, n_fullscreen, 3, 0,
+          "borderless=1|1=1|true=1|yes=1|0=0|false=0|no=0", NULL),
+    BOOL_("window", "show_fps", show_fps, SET_LIVE, SET_APPLY_WINDOW, 0),
+    INT_("window", "x", win_x, SET_STATE, SET_APPLY_NONE, -100000, 100000, 0, NULL, NULL),
+    INT_("window", "y", win_y, SET_STATE, SET_APPLY_NONE, -100000, 100000, 0, NULL, NULL),
+    INT_("window", "width", win_w, SET_STATE, SET_APPLY_NONE, 100, 100000, 0, NULL, NULL),
+    INT_("window", "height", win_h, SET_STATE, SET_APPLY_NONE, 100, 100000, 0, NULL, NULL),
+    BOOL_("window", "maximized", win_maximized, SET_STATE, SET_APPLY_NONE, 0),
+};
+#define NOPTS ((int)(sizeof opts / sizeof opts[0]))
+/* the env name of show_fps is special (any nonzero number), so it is handled in settings_load */
+
+int settings_count(void) { return NOPTS; }
+const settings_opt* settings_opt_at(int i) { return i >= 0 && i < NOPTS ? &opts[i] : NULL; }
+
+int settings_find(const char* section, const char* key) {
+    for (int i = 0; i < NOPTS; i++)
+        if (!_stricmp(opts[i].section, section) && !_stricmp(opts[i].key, key)) return i;
+    return -1;
+}
+
+static int* field(ps2_settings_t* s, int i) { return (int*)((char*)s + opts[i].offset); }
+
+int settings_get(const ps2_settings_t* s, int i) {
+    if (i < 0 || i >= NOPTS || opts[i].type == SET_STRING) return 0;
+    const int* f = (const int*)((const char*)s + opts[i].offset);
+    if (opts[i].type == SET_ASPECT) return f[0] << 16 | (f[1] & 0xFFFF);
+    return *f;
+}
+
+void settings_put(ps2_settings_t* s, int i, int v) {
+    if (i < 0 || i >= NOPTS || opts[i].type == SET_STRING) return;
+    int* f = field(s, i);
+    if (opts[i].type == SET_ASPECT) { f[0] = v >> 16; f[1] = v & 0xFFFF; return; }
+    *f = v;
+}
+
+/* "name=value|name=value": the value of word w (1), or 0 */
+static int alias_lookup(const char* aliases, const char* w, int* v) {
+    if (!aliases) return 0;
+    for (const char* p = aliases; *p;) {
+        const char* eq = strchr(p, '=');
+        const char* bar = strchr(p, '|');
+        if (!eq) break;
+        if ((size_t)(eq - p) == strlen(w) && !_strnicmp(p, w, (size_t)(eq - p))) { *v = atoi(eq + 1); return 1; }
+        if (!bar) break;
+        p = bar + 1;
+    }
+    return 0;
+}
+
+/* the word of value v in aliases (the first one), or NULL */
+static const char* alias_word(const char* aliases, int v, char* buf, size_t cap) {
+    if (!aliases) return NULL;
+    for (const char* p = aliases; *p;) {
+        const char* eq = strchr(p, '=');
+        const char* bar = strchr(p, '|');
+        if (!eq) break;
+        if (atoi(eq + 1) == v && (size_t)(eq - p) < cap) {
+            memcpy(buf, p, (size_t)(eq - p));
+            buf[eq - p] = 0;
+            if (!isdigit((unsigned char)buf[0])) return buf;
+        }
+        if (!bar) break;
+        p = bar + 1;
+    }
+    return NULL;
+}
+
+int settings_valid(int i, int v) {
+    if (i < 0 || i >= NOPTS) return 0;
+    const settings_opt* o = &opts[i];
+    char w[32];
+    switch (o->type) {
+    case SET_BOOL: return v == 0 || v == 1;
+    case SET_TRI: return v >= -1 && v <= 1;
+    case SET_ENUM: return v >= o->lo && v <= o->hi;
+    case SET_INT: return (v >= o->lo && v <= o->hi) || alias_word(o->aliases, v, w, sizeof w) != NULL;
+    case SET_ASPECT: {
+        int aw = v >> 16, ah = v & 0xFFFF;
+        return aw > 0 && ah > 0 && aw >= ah && aw <= 4 * ah;
+    }
+    default: return 0;
+    }
+}
+
+const char* settings_value_text(int i, int v, char* buf, size_t cap) {
+    const settings_opt* o = settings_opt_at(i);
+    if (!o || !cap) return "";
+    buf[0] = 0;
+    switch (o->type) {
+    case SET_BOOL: snprintf(buf, cap, "%s", v ? "on" : "off"); break;
+    case SET_TRI: snprintf(buf, cap, "%s", v < 0 ? "preset" : v ? "on" : "off"); break;
+    case SET_ENUM: snprintf(buf, cap, "%s", v >= o->lo && v <= o->hi ? o->names[v] : o->names[0]); break;
+    case SET_INT: {
+        char w[32];
+        const char* word = alias_word(o->aliases, v, w, sizeof w);
+        if (word) snprintf(buf, cap, "%s", word);
+        else snprintf(buf, cap, "%d", v);
+        break;
+    }
+    case SET_ASPECT: snprintf(buf, cap, "%d:%d", v >> 16, v & 0xFFFF); break;
+    default: break;
+    }
+    return buf;
+}
+
+static int parse_bool(const char* v, int* out) {
+    static const char* yes[] = { "on", "1", "true", "yes" };
+    static const char* no[] = { "off", "0", "false", "no" };
+    for (int i = 0; i < 4; i++) {
+        if (!_stricmp(v, yes[i])) { *out = 1; return 1; }
+        if (!_stricmp(v, no[i])) { *out = 0; return 1; }
+    }
+    return 0;
+}
+
+static int parse_int(const char* v, long lo, long hi, int* out) {
+    char* end;
+    long n = strtol(v, &end, 10);
+    if (end == v || *end || n < lo || n > hi) return 0;
+    *out = (int)n;
+    return 1;
+}
+
+int settings_parse_value(int i, const char* text, int* v) {
+    const settings_opt* o = settings_opt_at(i);
+    if (!o) return 0;
+    switch (o->type) {
+    case SET_BOOL: return parse_bool(text, v);
+    case SET_TRI:
+        if (!_stricmp(text, "preset") || !*text) { *v = -1; return 1; }
+        return parse_bool(text, v);
+    case SET_ENUM:
+        for (int k = o->lo; k <= o->hi; k++)
+            if (!_stricmp(text, o->names[k])) { *v = k; return 1; }
+        return alias_lookup(o->aliases, text, v);
+    case SET_INT:
+        if (alias_lookup(o->aliases, text, v)) return 1;
+        return parse_int(text, o->lo, o->hi, v);
+    case SET_ASPECT: {
+        int w, h;
+        if (!settings_parse_aspect(text, &w, &h)) return 0;
+        *v = w << 16 | h;
+        return 1;
+    }
+    default: return 0;
+    }
+}
+
+int settings_env_locked(int i) {
+    const settings_opt* o = settings_opt_at(i);
+    if (!o) return 0;
+    const char* name = o->env;
+    if (!name && !strcmp(o->key, "show_fps")) name = "PS2_SHOW_FPS";
+    if (!name && !strcmp(o->key, "pacing")) name = "PS2_VBLANK";
+    const char* e = name ? getenv(name) : NULL;
+    return e && *e;
+}
+
+/* ---- presets --------------------------------------------------------------------------------------- */
+
+static int is_43(const ps2_settings_t* s) { return s->aspect_w * 3 == s->aspect_h * 4; }
+
+int settings_detect_preset(const ps2_settings_t* s) {
+    if (s->motion_blur != -1 || s->flicker_filter != -1 || s->interlacing != -1 || s->scaler != SETTINGS_SCALER_AUTO)
+        return SETTINGS_PRESET_CUSTOM;
+    if (s->internal_scale == 1 && s->filters_faithful && !s->outlines_thin && is_43(s)) return SETTINGS_PRESET_ORIGINAL;
+    if (s->filters_faithful) return SETTINGS_PRESET_CUSTOM;
+    if (s->internal_scale == SETTINGS_SCALE_AUTO && !s->outlines_thin && s->auto_max == 2) return SETTINGS_PRESET_PERFORMANCE;
+    if (s->internal_scale == SETTINGS_SCALE_AUTO && !s->outlines_thin && s->auto_max == SETTINGS_SCALE_AUTO_MAX)
+        return SETTINGS_PRESET_BALANCED;
+    if (s->internal_scale == SETTINGS_SCALE_NATIVE && s->outlines_thin) return SETTINGS_PRESET_QUALITY;
+    return SETTINGS_PRESET_CUSTOM;
+}
+
+void settings_apply_preset(ps2_settings_t* s, int p) {
+    if (p < 0 || p >= SETTINGS_PRESET_N) return;
+    s->preset = p;
+    if (p == SETTINGS_PRESET_CUSTOM) return;
+    s->motion_blur = s->flicker_filter = s->interlacing = -1;
+    s->scaler = SETTINGS_SCALER_AUTO;
+    s->filters_faithful = p == SETTINGS_PRESET_ORIGINAL;
+    s->outlines_thin = p == SETTINGS_PRESET_QUALITY;
+    s->auto_max = SETTINGS_SCALE_AUTO_MAX;
+    switch (p) {
+    case SETTINGS_PRESET_ORIGINAL: s->internal_scale = 1; s->aspect_w = 4; s->aspect_h = 3; break;
+    case SETTINGS_PRESET_PERFORMANCE: s->internal_scale = SETTINGS_SCALE_AUTO; s->auto_max = 2; break;
+    case SETTINGS_PRESET_BALANCED: s->internal_scale = SETTINGS_SCALE_AUTO; break;
+    default: s->internal_scale = SETTINGS_SCALE_NATIVE; break;
+    }
+}
+
+/* ---- values ---------------------------------------------------------------------------------------- */
 
 /* renderer / pacing values (sly2.ini and the PS2_GS_BACKEND / PS2_GS_PACING overrides) */
 int settings_parse_renderer(const char* v, int* gpu) {
@@ -29,13 +279,8 @@ int settings_parse_pacing(const char* v, int* pacing) {
 
 void settings_defaults(ps2_settings_t* s) {
     memset(s, 0, sizeof *s);
-    s->aspect_w = 16;
-    s->aspect_h = 9;
-    s->renderer_gpu = 1;                           /* (M11: the GPU renderer by default; software if it cannot start) */
-    s->internal_scale = SETTINGS_SCALE_AUTO;
-    s->outlines_thin = 0;
-    s->filters_faithful = 0;
-    s->motion_blur = s->flicker_filter = s->interlacing = -1;
+    for (int i = 0; i < NOPTS; i++)
+        if (opts[i].type != SET_STRING) settings_put(s, i, opts[i].def);
 }
 
 static int gcd(int a, int b) {
@@ -81,107 +326,51 @@ static void warnf(settings_warn_fn warn, void* user, int line, const char* fmt, 
     warn(user, msg);
 }
 
-static int parse_bool(const char* v, int* out) {
-    static const char* yes[] = { "on", "1", "true", "yes" };
-    static const char* no[] = { "off", "0", "false", "no" };
-    for (int i = 0; i < 4; i++) {
-        if (!_stricmp(v, yes[i])) { *out = 1; return 1; }
-        if (!_stricmp(v, no[i])) { *out = 0; return 1; }
+/* the accepted values of option i, for a warning */
+static void expected(int i, char* out, size_t cap) {
+    const settings_opt* o = &opts[i];
+    out[0] = 0;
+    switch (o->type) {
+    case SET_BOOL: snprintf(out, cap, "on or off"); break;
+    case SET_TRI: snprintf(out, cap, "on, off or preset"); break;
+    case SET_ASPECT: snprintf(out, cap, "W:H (16:9, 4:3)"); break;
+    case SET_ENUM: {
+        size_t n = 0;
+        for (int k = o->lo; k <= o->hi && n + 1 < cap; k++)
+            n += (size_t)snprintf(out + n, cap - n, "%s%s", k == o->lo ? "" : k == o->hi ? " or " : ", ", o->names[k]);
+        break;
     }
-    return 0;
+    case SET_INT: {
+        char w[32];
+        const char* word = NULL;
+        for (int k = -1; k <= 0 && !word; k++) word = alias_word(o->aliases, k, w, sizeof w);
+        snprintf(out, cap, "%s%s%d..%d", word ? word : "", word ? " or " : "", o->lo, o->hi);
+        break;
+    }
+    default: break;
+    }
 }
 
-static int parse_int(const char* v, long lo, long hi, int* out) {
-    char* end;
-    long n = strtol(v, &end, 10);
-    if (end == v || *end || n < lo || n > hi) return 0;
-    *out = (int)n;
-    return 1;
-}
-
-/* One key = value pair (section already folded into key as "section.key"). */
-static int apply(ps2_settings_t* s, const char* key, const char* v, settings_warn_fn warn, void* user, int line) {
-    int b;
-    if (!_stricmp(key, "display.aspect")) {
-        int w, h;
-        if (!settings_parse_aspect(v, &w, &h)) { warnf(warn, user, line, "aspect '%s' is not W:H (16:9, 4:3)", v); return 1; }
-        s->aspect_w = w; s->aspect_h = h;
-        return 0;
-    }
-    if (!_stricmp(key, "display.hud")) {
-        if (!_stricmp(v, "edges")) s->hud_centered = 0;
-        else if (!_stricmp(v, "centered") || !_stricmp(v, "centred")) s->hud_centered = 1;
-        else { warnf(warn, user, line, "hud '%s' is not edges or centered", v); return 1; }
-        return 0;
-    }
-    if (!_stricmp(key, "graphics.renderer")) {
-        if (!settings_parse_renderer(v, &s->renderer_gpu)) { warnf(warn, user, line, "renderer '%s' is not software or gpu", v); return 1; }
-        return 0;
-    }
-    if (!_stricmp(key, "graphics.pacing")) {
-        if (!settings_parse_pacing(v, &s->pacing)) { warnf(warn, user, line, "pacing '%s' is not vsync, vrr or display", v); return 1; }
-        return 0;
-    }
-    if (!_stricmp(key, "graphics.internal_scale")) {
-        if (!_stricmp(v, "auto")) { s->internal_scale = SETTINGS_SCALE_AUTO; return 0; }
-        char* end;
-        long n = strtol(v, &end, 10);
-        if (*end || n < 1 || n > 8) { warnf(warn, user, line, "internal_scale '%s' is not auto or 1..8", v); return 1; }
-        s->internal_scale = (int)n;
-        return 0;
-    }
-    if (!_stricmp(key, "graphics.outlines")) {
-        if (!_stricmp(v, "ps2")) s->outlines_thin = 0;
-        else if (!_stricmp(v, "thin")) s->outlines_thin = 1;
-        else { warnf(warn, user, line, "outlines '%s' is not ps2 or thin", v); return 1; }
-        return 0;
-    }
-    if (!_stricmp(key, "graphics.filters")) {
-        if (!_stricmp(v, "modern")) s->filters_faithful = 0;
-        else if (!_stricmp(v, "faithful")) s->filters_faithful = 1;
-        else { warnf(warn, user, line, "filters '%s' is not modern or faithful", v); return 1; }
-        return 0;
-    }
-    if (!_stricmp(key, "graphics.scaler")) {
-        for (int i = 0; i < SETTINGS_SCALER_N; i++)
-            if (!_stricmp(v, settings_scaler_names[i])) { s->scaler = i; return 0; }
-        if (!_stricmp(v, "catmull")) { s->scaler = SETTINGS_SCALER_CATMULL; return 0; }
-        warnf(warn, user, line, "scaler '%s' is not auto, lanczos, catmull-rom, box, bilinear or point", v);
-        return 1;
-    }
-    int* toggle = !_stricmp(key, "graphics.motion_blur") ? &s->motion_blur
-                : !_stricmp(key, "graphics.flicker_filter") ? &s->flicker_filter
-                : !_stricmp(key, "graphics.interlacing") ? &s->interlacing : NULL;
-    if (toggle) {
-        if (!_stricmp(v, "preset") || !*v) { *toggle = -1; return 0; }
-        if (!parse_bool(v, &b)) { warnf(warn, user, line, "'%s' is not on/off/preset", v); return 1; }
-        *toggle = b;
-        return 0;
-    }
-    if (!_stricmp(key, "game.disc")) {
+/* One key = value pair; returns the number of problems (0 or 1). *preset_seen: a [graphics] preset line. */
+static int apply(ps2_settings_t* s, const char* section, const char* key, const char* v, settings_warn_fn warn, void* user,
+                 int line, int* preset_seen) {
+    int i = settings_find(section, key);
+    if (i < 0) { warnf(warn, user, line, "unknown setting '%s.%s' (ignored)", section, key); return 1; }
+    if (opts[i].type == SET_STRING) {
         if (strlen(v) >= sizeof s->disc) { warnf(warn, user, line, "disc path too long (ignored)"); return 1; }
         strcpy(s->disc, v);
         return 0;
     }
-    int* coord = !_stricmp(key, "window.x") ? &s->win_x : !_stricmp(key, "window.y") ? &s->win_y : NULL;
-    if (coord) {
-        if (!parse_int(v, -100000, 100000, coord)) { warnf(warn, user, line, "'%s' is not a position", v); return 1; }
-        return 0;
+    int x;
+    if (!settings_parse_value(i, v, &x)) {
+        char e[160];
+        expected(i, e, sizeof e);
+        warnf(warn, user, line, "%s '%s' is not %s (ignored)", key, v, e);
+        return 1;
     }
-    int* size = !_stricmp(key, "window.width") ? &s->win_w : !_stricmp(key, "window.height") ? &s->win_h : NULL;
-    if (size) {
-        if (!parse_int(v, 100, 100000, size)) { warnf(warn, user, line, "'%s' is not a window size", v); return 1; }
-        return 0;
-    }
-    int* flag = !_stricmp(key, "window.maximized") ? &s->win_maximized
-              : !_stricmp(key, "window.fullscreen") ? &s->win_fullscreen
-              : !_stricmp(key, "window.show_fps") ? &s->show_fps : NULL;
-    if (flag) {
-        if (!parse_bool(v, flag)) { warnf(warn, user, line, "'%s' is not on/off", v); return 1; }
-        return 0;
-    }
-    warnf(warn, user, line, "unknown setting '%s' (ignored)", key);
-    return 1;
+    settings_put(s, i, x);
+    if (!strcmp(opts[i].key, "preset")) *preset_seen = 1;
+    return 0;
 }
 
 /* Cut a line at its comment (';' or '#' outside double quotes); returns where the comment began. */
@@ -203,7 +392,7 @@ static char* trim(char* b) {
 
 int settings_parse(const char* text, ps2_settings_t* s, settings_warn_fn warn, void* user) {
     char section[32] = "display";                  /* keys before any [section] are display keys */
-    int problems = 0, line = 0;
+    int problems = 0, line = 0, preset_seen = 0;
     const char* p = text;
     while (p && *p) {
         line++;
@@ -243,10 +432,11 @@ int settings_parse(const char* text, ps2_settings_t* s, settings_warn_fn warn, v
         char* v = trim(eq + 1);
         size_t vl = strlen(v);
         if (vl >= 2 && v[0] == '"' && v[vl - 1] == '"') { v[vl - 1] = 0; v++; }   /* "quoted value" */
-        char full[96];
-        snprintf(full, sizeof full, "%s.%s", section, key);
-        problems += apply(s, full, v, warn, user, line);
+        problems += apply(s, section, key, v, warn, user, line, &preset_seen);
     }
+    /* a preset other than custom decides its options; otherwise the preset is what the options make */
+    if (preset_seen && s->preset != SETTINGS_PRESET_CUSTOM) settings_apply_preset(s, s->preset);
+    else s->preset = settings_detect_preset(s);
     return problems;
 }
 
@@ -260,17 +450,22 @@ static const char* ini_value(const char* v, char* buf, size_t cap) {
     return buf;
 }
 
+static const char* text_of(const ps2_settings_t* s, const char* section, const char* key, char* buf, size_t cap) {
+    int i = settings_find(section, key);
+    return settings_value_text(i, settings_get(s, i), buf, cap);
+}
+
 int settings_format(const ps2_settings_t* s, char* out, size_t cap) {
-    static const char* tog[] = { "preset", "off", "on" };
     char disc[sizeof s->disc + 2];
     char win[256] = "";
-    char scale[16] = "auto";
-    if (s->internal_scale != SETTINGS_SCALE_AUTO) snprintf(scale, sizeof scale, "%d", s->internal_scale);
+    char t[24][24];
+#define T(n, sec, key) text_of(s, sec, key, t[n], sizeof t[0])
     if (s->win_w > 0)
         snprintf(win, sizeof win, "x = %d\ny = %d\nwidth = %d\nheight = %d\nmaximized = %s\n", s->win_x, s->win_y,
                  s->win_w, s->win_h, s->win_maximized ? "on" : "off");
     return snprintf(out, cap,
         "; Sly 2 PC settings. Lines starting with ; are comments. Delete this file to get the defaults back.\n"
+        "; Most of these can also be changed in the game: pause (START / Esc) -> PC Settings.\n"
         "\n"
         "[display]\n"
         "; Display aspect ratio: 16:9 (default) or 4:3. Other ratios (e.g. 21:9) work the same way.\n"
@@ -280,8 +475,15 @@ int settings_format(const ps2_settings_t* s, char* out, size_t cap) {
         "; Widescreen HUD: edges (default: the HUD's corner widgets move to the screen's edges) or\n"
         "; centered (the whole HUD stays in the centre 4:3 area). F8 in the game switches it.\n"
         "hud = %s\n"
+        "; Monitor for fullscreen: 0 (default: the one the window is on) or 1, 2, ...\n"
+        "monitor = %s\n"
         "\n"
         "[graphics]\n"
+        "; Preset: original (the PS2's look: 1x, 4:3, TV filters), performance (2x, lowered on a slow\n"
+        "; graphics card), balanced (default: 3x, lowered on a slow graphics card), quality (at least the\n"
+        "; display's resolution, thin outlines) or custom. A preset other than custom sets the options\n"
+        "; below when the game starts: set preset = custom to choose them one by one.\n"
+        "preset = %s\n"
         "; Renderer: gpu (default: Direct3D 11, needs a Direct3D 11 graphics card - feature level 11_0) or\n"
         "; software (the PS2's renderer on the CPU, at the PS2's resolution). When the GPU renderer cannot\n"
         "; start, the software renderer is used and sly2.log says why. Environment override: PS2_GS_BACKEND=sw|hw\n"
@@ -292,9 +494,11 @@ int settings_format(const ps2_settings_t* s, char* out, size_t cap) {
         "; The settings below are used by the Direct3D 11 renderer (the software renderer ignores them, except\n"
         "; motion_blur, the game's own effect). They change while the game runs too: F2 / Shift+F2 scale,\n"
         "; Ctrl+F2 scale auto, F3 outlines, F4 filters preset, F5 motion blur, F6 flicker filter, Shift+F6 interlacing.\n"
-        "; Internal resolution scale: auto (default: 3x, lowered while the graphics card cannot keep up) or\n"
-        "; 1 (PS2: 512x448) to 8. Environment override: PS2_GS_SCALE=N\n"
+        "; Internal resolution scale: auto (default: up to auto_max, lowered while the graphics card cannot keep\n"
+        "; up), native (the smallest scale at least as high as the window) or 1 (PS2: 512x448) to 8.\n"
+        "; Environment override: PS2_GS_SCALE=N\n"
         "internal_scale = %s\n"
+        "auto_max = %s\n"
         "; Cel-shading outlines: ps2 (one PS2 pixel wide, exact) or thin (high-resolution lines).\n"
         "outlines = %s\n"
         "; Image filters preset: modern (motion blur on, no flicker filter, progressive) or\n"
@@ -307,23 +511,45 @@ int settings_format(const ps2_settings_t* s, char* out, size_t cap) {
         "; catmull-rom, box, bilinear or point.\n"
         "scaler = %s\n"
         "\n"
+        "[audio]\n"
+        "; Volumes 0..100. master: everything (the PC's mixer); music and effects: the game's own volumes.\n"
+        "master = %s\n"
+        "music = %s\n"
+        "effects = %s\n"
+        "; Keep playing sound while the game's window is not the active one: on (default) or off.\n"
+        "background = %s\n"
+        "\n"
+        "[controls]\n"
+        "; Controller vibration on/off and its strength (0..100).\n"
+        "vibration = %s\n"
+        "vibration_strength = %s\n"
+        "; Invert the camera (right stick) horizontally / vertically.\n"
+        "invert_camera_x = %s\n"
+        "invert_camera_y = %s\n"
+        "; Stick dead zone in percent of the stick's travel (0..50, default 24).\n"
+        "stick_deadzone = %s\n"
+        "\n"
         "[game]\n"
         "; Your Sly 2: Band of Thieves (USA) disc image (.iso). Asked for on the first start when empty.\n"
         "disc = %s\n"
         "\n"
         "[window]\n"
-        "; Remembered when the game closes: fullscreen (Alt+Enter or F11 switch) and the window's place.\n"
+        "; Remembered when the game closes: fullscreen (off, on = borderless, exclusive; Alt+Enter or F11 switch)\n"
+        "; and the window's place.\n"
         "fullscreen = %s\n"
-        "; Show the frame rate in the title bar.\n"
+        "; Show the frame rate in the title bar and in the top left corner of the picture.\n"
         "show_fps = %s\n"
         "%s",
-        s->aspect_w, s->aspect_h, s->hud_centered ? "centered" : "edges", s->renderer_gpu ? "gpu" : "software",
-        s->pacing == SETTINGS_PACING_VRR ? "vrr" : s->pacing == SETTINGS_PACING_DISPLAY ? "display" : "vsync",
-        scale, s->outlines_thin ? "thin" : "ps2",
-        s->filters_faithful ? "faithful" : "modern", tog[s->motion_blur + 1], tog[s->flicker_filter + 1],
-        tog[s->interlacing + 1], settings_scaler_names[s->scaler >= 0 && s->scaler < SETTINGS_SCALER_N ? s->scaler : 0],
-        ini_value(s->disc, disc, sizeof disc), s->win_fullscreen ? "on" : "off",
-        s->show_fps ? "on" : "off", win);
+        s->aspect_w, s->aspect_h, T(0, "display", "hud"), T(1, "display", "monitor"),
+        settings_preset_names[settings_detect_preset(s)], T(2, "graphics", "renderer"), T(3, "graphics", "pacing"),
+        T(4, "graphics", "internal_scale"), T(5, "graphics", "auto_max"), T(6, "graphics", "outlines"), T(7, "graphics", "filters"),
+        T(8, "graphics", "motion_blur"), T(9, "graphics", "flicker_filter"), T(10, "graphics", "interlacing"),
+        T(11, "graphics", "scaler"),
+        T(12, "audio", "master"), T(13, "audio", "music"), T(14, "audio", "effects"), T(15, "audio", "background"),
+        T(16, "controls", "vibration"), T(17, "controls", "vibration_strength"), T(18, "controls", "invert_camera_x"),
+        T(19, "controls", "invert_camera_y"), T(20, "controls", "stick_deadzone"),
+        ini_value(s->disc, disc, sizeof disc), T(21, "window", "fullscreen"), T(22, "window", "show_fps"), win);
+#undef T
 }
 
 /* ---- key-by-key updates -------------------------------------------------------------------------- */
@@ -411,6 +637,102 @@ int settings_update_text(const char* text, const char* section, const char* key,
 #undef PUT
     out[n] = 0;
     return (int)n;
+}
+
+/* ---- changes (the menu, the hotkeys) ---------------------------------------------------------------- */
+
+static settings_apply_fn appliers[SET_APPLY_N];
+
+void settings_on_apply(int apply, settings_apply_fn fn) {
+    if (apply > 0 && apply < SET_APPLY_N) appliers[apply] = fn;
+}
+
+void settings_touch(void) {
+#ifdef _WIN32
+    InterlockedIncrement(&settings_serial);
+#else
+    settings_serial++;
+#endif
+}
+
+static void run_applier(int apply, int i) {
+    settings_apply_fn fn = apply > 0 && apply < SET_APPLY_N ? appliers[apply] : NULL;
+    if (fn) fn(i);
+}
+
+typedef struct { const char* kv[48][3]; char text[48][32]; int n; } kv_list;
+
+static void kv_add(kv_list* l, int i) {
+    if (i < 0 || settings_env_locked(i)) return;
+    for (int k = 0; k < l->n; k++)
+        if (!strcmp(l->kv[k][0], opts[i].section) && !strcmp(l->kv[k][1], opts[i].key)) {   /* (already listed: new value) */
+            settings_value_text(i, settings_get(&ps2_settings, i), l->text[k], sizeof l->text[0]);
+            return;
+        }
+    if (l->n >= 48) return;
+    settings_value_text(i, settings_get(&ps2_settings, i), l->text[l->n], sizeof l->text[0]);
+    l->kv[l->n][0] = opts[i].section;
+    l->kv[l->n][1] = opts[i].key;
+    l->kv[l->n][2] = l->text[l->n];
+    l->n++;
+}
+
+int settings_set(const char* const kv[][3], int n);
+
+int settings_change(int i, int v, int persist) {
+    if (!settings_valid(i, v)) return 0;
+    const settings_opt* o = &opts[i];
+    static kv_list l;
+    l.n = 0;
+    int is_preset = !strcmp(o->key, "preset") && !strcmp(o->section, "graphics");
+    int old_aspect = settings_get(&ps2_settings, settings_find("display", "aspect"));
+    if (is_preset) {
+        int prev = ps2_settings.preset;
+        settings_apply_preset(&ps2_settings, v);
+        /* leaving Original (4:3) for a modern preset: back to widescreen */
+        if (v != SETTINGS_PRESET_ORIGINAL && v != SETTINGS_PRESET_CUSTOM && prev == SETTINGS_PRESET_ORIGINAL && is_43(&ps2_settings) &&
+            !settings_env_locked(settings_find("display", "aspect"))) {
+            ps2_settings.aspect_w = 16;
+            ps2_settings.aspect_h = 9;
+        }
+        for (int k = 0; k < NOPTS; k++)
+            if (opts[k].flags & SET_PRESET) kv_add(&l, k);
+        kv_add(&l, i);
+    } else {
+        settings_put(&ps2_settings, i, v);
+        kv_add(&l, i);
+        if (o->flags & SET_PRESET || !strcmp(o->key, "aspect")) {
+            int p = settings_detect_preset(&ps2_settings);
+            if (p != ps2_settings.preset) {
+                ps2_settings.preset = p;
+                kv_add(&l, settings_find("graphics", "preset"));
+            }
+        }
+    }
+    int new_aspect = settings_get(&ps2_settings, settings_find("display", "aspect"));
+    if (new_aspect != old_aspect && is_preset) kv_add(&l, settings_find("display", "aspect"));
+#ifdef _WIN32
+    if (persist && l.n && !settings_set((const char* const (*)[3])l.kv, l.n)) fprintf(stderr, "[settings] cannot write %s.%s to sly2.ini\n", o->section, o->key);
+#else
+    (void)persist;
+#endif
+    settings_touch();
+    run_applier(o->apply, i);
+    if (new_aspect != old_aspect && o->apply != SET_APPLY_DISPLAY) run_applier(SET_APPLY_DISPLAY, settings_find("display", "aspect"));
+    return 1;
+}
+
+int settings_change_key(const char* section, const char* key, int v, int persist) {
+    return settings_change(settings_find(section, key), v, persist);
+}
+
+void settings_reset_section(const char* section) {
+    for (int i = 0; i < NOPTS; i++) {
+        if (_stricmp(opts[i].section, section) || opts[i].flags & SET_STATE || opts[i].type == SET_STRING) continue;
+        if (!strcmp(opts[i].key, "renderer") || !strcmp(opts[i].key, "pacing") || !strcmp(opts[i].key, "fullscreen")) continue;
+        if (settings_env_locked(i)) continue;
+        if (settings_get(&ps2_settings, i) != opts[i].def) settings_change(i, opts[i].def, 1);
+    }
 }
 
 /* ---- the user data folder and the file in it ---------------------------------------------------- */
@@ -536,9 +858,11 @@ void settings_load(void) {
         fprintf(stderr, "[settings] PS2_GS_PACING='%s' is not vsync, vrr or display: ignored\n", e);
     e = getenv("PS2_VBLANK");                    /* (the design's name for the display-driven VBlank) */
     if (e && !_stricmp(e, "display")) ps2_settings.pacing = SETTINGS_PACING_DISPLAY;
-    fprintf(stderr, "[settings] aspect %d:%d, hud %s, renderer %s%s\n", ps2_settings.aspect_w, ps2_settings.aspect_h,
+    fprintf(stderr, "[settings] aspect %d:%d, hud %s, renderer %s%s, preset %s\n", ps2_settings.aspect_w, ps2_settings.aspect_h,
             ps2_settings.hud_centered ? "centered" : "edges", ps2_settings.renderer_gpu ? "gpu" : "software",
-            getenv("PS2_GS_BACKEND") && *getenv("PS2_GS_BACKEND") ? " (PS2_GS_BACKEND)" : "");
+            getenv("PS2_GS_BACKEND") && *getenv("PS2_GS_BACKEND") ? " (PS2_GS_BACKEND)" : "",
+            settings_preset_names[ps2_settings.preset]);
+    settings_touch();
 }
 
 /* [display] as sly2.ini says now (the player may edit it while the game runs): 1 and aspect / hud
@@ -565,14 +889,17 @@ int settings_read_graphics(ps2_settings_t* g) {
     if (!settings_path(path, sizeof path / sizeof path[0]) || read_text(path, text, sizeof text) == (size_t)-1) return 0;
     ps2_settings_t s;
     settings_defaults(&s);
+    s.aspect_w = g->aspect_w;                    /* (a preset in the file decides from the aspect in use) */
+    s.aspect_h = g->aspect_h;
     settings_parse(text, &s, NULL, NULL);
-    g->internal_scale = s.internal_scale;
-    g->outlines_thin = s.outlines_thin;
-    g->filters_faithful = s.filters_faithful;
-    g->motion_blur = s.motion_blur;
-    g->flicker_filter = s.flicker_filter;
-    g->interlacing = s.interlacing;
-    g->scaler = s.scaler;
+    for (int i = 0; i < NOPTS; i++) {
+        const settings_opt* o = &opts[i];
+        int ours = !strcmp(o->section, "audio") || !strcmp(o->section, "controls") ||
+                   (!strcmp(o->section, "graphics") && strcmp(o->key, "renderer") && strcmp(o->key, "pacing"));
+        if (ours && !settings_env_locked(i)) settings_put(g, i, settings_get(&s, i));
+    }
+    g->preset = settings_detect_preset(g);
+    settings_touch();
     return 1;
 }
 
@@ -600,19 +927,24 @@ void settings_save_if_missing(void) {
 }
 
 int settings_set(const char* const kv[][3], int n) {
+    static SRWLOCK lock = SRWLOCK_INIT;          /* (the window thread and the EE thread may both write) */
     wchar_t path[MAX_PATH + 80];
     if (!settings_path(path, sizeof path / sizeof path[0])) return 0;
+    AcquireSRWLockExclusive(&lock);
     static char a[65536], b[65536];
+    int ok = 1;
     if (read_text(path, a, sizeof a) == (size_t)-1) {
         ps2_settings_t d;
         settings_defaults(&d);
         int len = settings_format(&d, a, sizeof a);
-        if (len < 0 || (size_t)len >= sizeof a) return 0;
+        if (len < 0 || (size_t)len >= sizeof a) ok = 0;
     }
-    for (int i = 0; i < n; i++) {
-        if (settings_update_text(a, kv[i][0], kv[i][1], kv[i][2], b, sizeof b) < 0) return 0;
-        memcpy(a, b, strlen(b) + 1);
+    for (int i = 0; ok && i < n; i++) {
+        if (settings_update_text(a, kv[i][0], kv[i][1], kv[i][2], b, sizeof b) < 0) ok = 0;
+        else memcpy(a, b, strlen(b) + 1);
     }
-    return write_text(path, a, strlen(a));
+    if (ok) ok = write_text(path, a, strlen(a));
+    ReleaseSRWLockExclusive(&lock);
+    return ok;
 }
 #endif

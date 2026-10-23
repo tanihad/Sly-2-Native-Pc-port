@@ -27,3 +27,9 @@ int  gfx_key(unsigned vk, int shift, int persist);
 void gfx_reread(void);
 /* one line describing the settings in use (the log, the window title's tooltip) */
 void gfx_describe(char* out, int cap);
+/* (pc-menu) internal_scale = native: the smallest scale whose 448 * N rows cover out_h output rows (1..8) */
+int  gfx_native_scale(int out_h);
+/* the output's size for internal_scale = native (window.c sets it to window_client_size; NULL: 3x) */
+extern void (*gfx_output_size)(int* w, int* h);
+/* the window's client size changed (window.c, when a resize ends): internal_scale = native follows it */
+void gfx_output_resized(void);
