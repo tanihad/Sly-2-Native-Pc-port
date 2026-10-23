@@ -180,6 +180,7 @@ static int apply(ps2_settings_t* s, const char* key, const char* v, settings_war
         if (!parse_bool(v, flag)) { warnf(warn, user, line, "'%s' is not on/off", v); return 1; }
         return 0;
     }
+    if (!_strnicmp(key, "controls.", 9)) return 0;   /* [controls]: runtime/input.c reads it (settings_read_section) */
     warnf(warn, user, line, "unknown setting '%s' (ignored)", key);
     return 1;
 }
@@ -248,6 +249,44 @@ int settings_parse(const char* text, ps2_settings_t* s, settings_warn_fn warn, v
         problems += apply(s, full, v, warn, user, line);
     }
     return problems;
+}
+
+/* Every key = value of [section], in file order (comments, quotes and blanks as settings_parse
+ * handles them). Returns the number of keys passed to fn. */
+int settings_parse_section(const char* text, const char* section, settings_key_fn fn, void* user) {
+    char cur[32] = "display";
+    int n = 0, line = 0;
+    for (const char* p = text; p && *p;) {
+        line++;
+        const char* eol = strchr(p, '\n');
+        size_t len = eol ? (size_t)(eol - p) : strlen(p);
+        char buf[1200];
+        int fits = len < sizeof buf;
+        if (fits) { memcpy(buf, p, len); buf[len] = 0; }
+        p = eol ? eol + 1 : NULL;
+        if (!fits) continue;
+        if (line == 1 && (unsigned char)buf[0] == 0xEF && (unsigned char)buf[1] == 0xBB && (unsigned char)buf[2] == 0xBF)
+            memmove(buf, buf + 3, strlen(buf + 3) + 1);
+        char* c = cut_comment(buf);
+        if (c) *c = 0;
+        char* b = trim(buf);
+        if (!*b) continue;
+        if (*b == '[') {
+            char* close = strchr(b, ']');
+            if (close && !close[1] && close - b - 1 > 0 && close - b - 1 < (int)sizeof cur) { *close = 0; snprintf(cur, sizeof cur, "%s", b + 1); }
+            continue;
+        }
+        char* eq = strchr(b, '=');
+        if (!eq || _stricmp(cur, section)) continue;
+        *eq = 0;
+        char* key = trim(b);
+        char* v = trim(eq + 1);
+        size_t vl = strlen(v);
+        if (vl >= 2 && v[0] == '"' && v[vl - 1] == '"') { v[vl - 1] = 0; v++; }
+        fn(user, key, v, line);
+        n++;
+    }
+    return n;
 }
 
 /* A value as written to the file: in double quotes if it would not read back otherwise. */
@@ -574,6 +613,18 @@ int settings_read_graphics(ps2_settings_t* g) {
     g->interlacing = s.interlacing;
     g->scaler = s.scaler;
     return 1;
+}
+
+int settings_read_section(const char* section, settings_key_fn fn, void* user) {
+    wchar_t path[MAX_PATH + 80];
+    static char text[65536];
+    static SRWLOCK lock = SRWLOCK_INIT;                 /* (text is shared) */
+    if (!settings_path(path, sizeof path / sizeof path[0])) return 0;
+    AcquireSRWLockExclusive(&lock);
+    int ok = read_text(path, text, sizeof text) != (size_t)-1;
+    if (ok) settings_parse_section(text, section, fn, user);
+    ReleaseSRWLockExclusive(&lock);
+    return ok;
 }
 
 static int write_text(const wchar_t* path, const char* text, size_t n) {

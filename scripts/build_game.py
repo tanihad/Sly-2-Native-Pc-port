@@ -98,7 +98,14 @@ Your settings (sly2.ini), memory card saves (memcard\\slot0) and the log (sly2.l
 folder instead.
 
 Alt+Enter or F11: fullscreen. Closing the window ends the game; the window's size, position
-and fullscreen state are remembered. Controls: an Xbox-style controller, or the keyboard.
+and fullscreen state are remembered.
+
+Controls: a PlayStation 5 (DualSense) or PlayStation 4 (DualShock 4) controller over USB or
+Bluetooth, an Xbox controller, most other USB gamepads, or the keyboard (WASD to move, IJKL
+camera, Space jump, Left Ctrl / F / R the other face buttons, Enter start). Controllers can be
+connected or disconnected at any time; they rumble and the PlayStation light bar turns blue.
+"Controller test.cmd" (or sly2.exe --pad-test) shows what the game sees from your controller
+and tests its rumble. Keys and buttons can be changed in sly2.ini [controls].
 
 Graphics: the game draws on your graphics card (Direct3D 11) at 3x the PS2's resolution in
 16:9, sharply scaled to the window, at 60 frames per second. On a graphics card that cannot
@@ -216,6 +223,7 @@ def package(objs: list[Path], out: Path, dest: Path) -> int:
     dest.mkdir(parents=True, exist_ok=True)
     shutil.copy2(exe, dest / "sly2.exe")
     (dest / "README.txt").write_text(README.format(ver=f"{v[0]}.{v[1]}.{v[2]}", hash=ghash), encoding="utf-8")
+    (dest / "Controller test.cmd").write_text('@start "" "%~dp0sly2.exe" --pad-test\r\n', encoding="ascii", newline="")   # input_padtest.c
     print(f"packaged {dest / 'sly2.exe'} ({exe.stat().st_size / 1e6:.1f} MB, version {v[0]}.{v[1]}.{v[2]} {ghash})")
     return 0
 

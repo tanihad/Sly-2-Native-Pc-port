@@ -5,6 +5,7 @@
 #include "audio_out.h"
 #include "settings.h"
 #include "gfx.h"
+#include "input.h"
 #include "launch.h"
 #include "window_gpu.h"
 #include "gpu/gpu_hw.h"
@@ -881,6 +882,7 @@ static void request_high_qos(void) {
 /* Usage: sly2.exe                     the disc image from PS2_ISO or sly2.ini (or a file dialog)
  *        sly2.exe <image.iso>         that disc image
  *        sly2.exe <SCUS_973.16> [--dump-regs]   the extracted executable (development, tests)
+ *        sly2.exe --pad-test [--seconds N] [--print]   controller test window (runtime/input_padtest.c)
  * runtime/launch.c, notes/install.md. */
 int main(int argc, char** argv) {
     launch_init();                               /* user data folder; no console: log to a file */
@@ -891,7 +893,8 @@ int main(int argc, char** argv) {
     perf_init();                                 /* PS2_PERF / PS2_PROFILE */
     atexit(perf_final);
     settings_load();                             /* sly2.ini in the user data folder, PS2_ASPECT */
-    aspect_init();                               /* widescreen factors (aspect.c) */
+    if (argc > 1 && !strcmp(argv[1], "--pad-test")) return input_pad_test(argc - 1, argv + 1);   /* controller test (input.h) */
+    aspect_init();                              /* widescreen factors (aspect.c) */
     gfx_apply();                                 /* graphics settings: motion blur now, the GPU renderer when it starts */
     int dump_regs = argc > 2 && strcmp(argv[2], "--dump-regs") == 0;
     headless = dump_regs || getenv("PS2_HEADLESS") != NULL;

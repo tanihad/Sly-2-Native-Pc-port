@@ -75,6 +75,12 @@ maximized = off
 | window.x/y/width/height/maximized | integers / on/off | the window's normal placement; remembered on close |
 | window.show_fps | on/off | title "Sly 2: Band of Thieves - 59.9 fps" instead of "Sly 2: Band of Thieves" |
 
+`[controls]` (bindings, vibration, dead zones, camera inversion, light bar) belongs to runtime/input.c:
+settings.c accepts its keys without parsing them, and input.c reads the section with
+`settings_read_section` and writes it with `settings_set` (keys and values: notes/controls.md). It
+is not in the template; the keys appear when the Options menu saves them, or can be added by hand.
+Environment (hardware tests): `PS2_DS_BT_HEADER=sdl`, `PS2_DS_RUMBLE=classic|improved`.
+
 Environment overrides (for testing; they win over the file and are never written to it):
 `PS2_ASPECT=16:9|4:3|<W>:<H>`, `PS2_HUD=edges|centered`, `PS2_SHOW_FPS=1`, `PS2_ISO=<image>` (the disc,
 see notes/install.md), `PS2_GS_BACKEND=sw|hw` (renderer), `PS2_GS_PACING=vsync|vrr|display` and

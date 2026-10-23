@@ -37,6 +37,14 @@ void window_get_input(int port, pad_input* out) {
 
 void pad_get_motors(int port, uint8_t motors[2]);
 
+static uint8_t rumble[2][2];               /* what pad.c handed to the PC controller (input.c) */
+static int rumble_calls[2];
+void input_set_rumble(int port, uint8_t small_on, uint8_t large_speed) {
+    rumble_calls[port & 1]++;
+    rumble[port & 1][0] = small_on;
+    rumble[port & 1][1] = large_speed;
+}
+
 /* ---- test helpers ------------------------------------------------------------------------------- */
 
 static int failures, checks;
@@ -402,6 +410,9 @@ static void test_game_sequence(void) {
     pad_get_motors(0, m);
     CHECK_EQ(m[0], 1);
     CHECK_EQ(m[1], 0xC0);
+    CHECK_EQ(rumble[0][0], 1);          /* the same values reach the PC controller every VBlank */
+    CHECK_EQ(rumble[0][1], 0xC0);
+    CHECK_EQ(rumble_calls[1], 0);       /* port 1 is empty */
     uint8_t* blk = iop_mem(act_iop_addr[0][0] + 0x20);  /* first send: counter 1 -> second block */
     CHECK_EQ(rd32(blk + 4), 0);         /* padman clears the "new" flag */
     static const uint8_t stop[6] = { 0 };
@@ -410,6 +421,8 @@ static void test_game_sequence(void) {
     pad_get_motors(0, m);
     CHECK_EQ(m[0], 0);
     CHECK_EQ(m[1], 0);
+    CHECK_EQ(rumble[0][0], 0);
+    CHECK_EQ(rumble[0][1], 0);
     /* the RPC variant (command 7) takes effect on the next poll */
     wr32(rpcbuf + 0x0C, 0); memcpy(rpcbuf + 0x0C, act, 6);
     rpc(0x07, 0, 0, NULL, 0);
