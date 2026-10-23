@@ -451,6 +451,10 @@ static DWORD WINAPI input_thread(LPVOID arg) {
         }
         if (!note) hlog("no device notifications: looking for controllers every 2 s");
         scan();
+        int open = 0;
+        for (int i = 0; i < HID_MAX; i++) open += hdev[i].used;
+        hlog("HID: %d interface(s) checked, %d controller(s) open%s", nrejected + open, open,
+             note ? "; plugging in / connecting is noticed at once" : "");
     }
     uint64_t next_scan = input_now_ms() + (note ? 0x7FFFFFFF : 2000), rescan_at = 0;
     for (;;) {

@@ -16,7 +16,9 @@
 
 /* ---- life cycle ------------------------------------------------------------------------------------ */
 void input_init(void);                           /* idempotent; starts the input thread; input_get_pad calls it */
-void input_shutdown(void);                       /* motors off, lights back to the system's; before exiting */
+void input_shutdown(void);                       /* motors off (light bar stays); before exiting */
+/* `sly2.exe --pad-test [--seconds N] [--print]` (input_padtest.c): argv[0] = "--pad-test". Returns the exit code. */
+int input_pad_test(int argc, char** argv);
 void input_set_window(void* hwnd);               /* the game window: keyboard only while it has focus */
 /* Window thread: every message of the game window (keys, mouse wheel and buttons for the menu, capture).
  * Returns 1 if the message was consumed (the window must not act on it), else 0. */
