@@ -12,11 +12,22 @@ fix it on our side, log clearly whether VRR is active; (B) a frame-rate setting 
 - scripts/vrr_probe.c: standalone probe (flip-discard swap chain like the game's) presenting off-grid (10 ms) in
   borderless / borderless+tearing / windowed / exclusive and reading the shown intervals + DXGI composition mode.
 
+- VRR probe results (V1/V2): borderless (foreground, DXGI composition "overlay" = independent flip / MPO), borderless +
+  tearing, windowed (composed), all: 10 ms presents shown on the 6.06 ms grid (6.06 / 12.12 ms) = FIXED 165 Hz.
+  SetFullscreenState(TRUE) fails with DXGI_ERROR_INVALID_CALL even without ALLOW_TEARING (the waitable-object flag is not
+  allowed in exclusive fullscreen with D3D11) - not pursued.
+- NvAPI_Disp_GetVRRInfo (0xDF8FDA57, NV_GET_VRR_INFO_V1 24 bytes; display id via NvAPI_DISP_GetDisplayIdByDisplayName
+  0xAE457190 = 0x80061086 = the GDI primary) on \\.\DISPLAY1 (DELL S2722DGM, DisplayPort, EDID FreeSync VSDB 48-165 Hz):
+  enabled 0, possible 0, requested 0, in VRR mode 0. => the driver has VRR OFF / not possible for this display: the
+  per-display "Enable G-SYNC, G-SYNC Compatible" tick and/or the monitor's own FreeSync / Adaptive-Sync switch is off.
+  Nothing in our swap chain stops it (a minimal flip app in independent flip gets no VRR either).
+
 ## In progress
-- Real-monitor VRR probe run (logged below before each run).
+- (A) game side: NVIDIA status line at start + clear VRR log, composition mode.
 
 ## Real-monitor runs
-- (none yet)
+- 2026-10-23 V1: vrr_probe.exe 3 s x (borderless, borderless+tearing, windowed, exclusive), 10 ms cadence, ~15 s total.
+- 2026-10-23 V2: vrr_probe.exe 4 s borderless + 4 s exclusive (SetFullscreenState, swap chain without tearing).
 
 ## Next
 1. VRR probe on the real monitor (< 20 s), interpret.

@@ -129,6 +129,21 @@ int main(int argc, char** argv) {
         }
         bring_front(hwnd);
         pump();
+        if (excl && (d.Flags & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING)) {   /* (exclusive fullscreen refuses tearing swap chains) */
+            if (media) IDXGISwapChainMedia_Release(media);
+            if (sc2) IDXGISwapChain2_Release(sc2);
+            IDXGISwapChain1_Release(sc);
+            ID3D11DeviceContext_ClearState(ctx);
+            ID3D11DeviceContext_Flush(ctx);
+            media = NULL; sc2 = NULL; sc = NULL; waitable = NULL;
+            d.Flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
+            if (FAILED(IDXGIFactory2_CreateSwapChainForHwnd(f2, (IUnknown*)dev, hwnd, &d, NULL, NULL, &sc))) { printf("no swap chain\n"); return 1; }
+            if (SUCCEEDED(IDXGISwapChain1_QueryInterface(sc, &IID_IDXGISwapChain2, (void**)&sc2))) {
+                IDXGISwapChain2_SetMaximumFrameLatency(sc2, 1);
+                waitable = IDXGISwapChain2_GetFrameLatencyWaitableObject(sc2);
+            }
+            IDXGISwapChain1_QueryInterface(sc, &IID_IDXGISwapChainMedia, (void**)&media);
+        }
         RECT rc;
         GetClientRect(hwnd, &rc);
         IDXGISwapChain1_ResizeBuffers(sc, 0, (UINT)rc.right, (UINT)rc.bottom, DXGI_FORMAT_UNKNOWN, d.Flags);
