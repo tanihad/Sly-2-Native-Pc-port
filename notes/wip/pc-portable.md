@@ -26,16 +26,21 @@ dist\Sly2\sly2.exe that runs on other Windows 10/11 x64 PCs.
   `tzcnt` (19, = `rep bsf` encoding LLVM uses for cttz with nonzero input; runs as BSF on pre-BMI CPUs).
 - GPU boot (visible window, before the owner asked for headless): OK, RTX 4060 Ti.
 
+- Headless boot matrix of the fresh-clone exe (PS2_HEADLESS=1, dumps every 600 VBlanks): gpu, sw,
+  warp, NO_ROV, FL=11_0, FAIL=device/caps/shader (-> software), first run without sly2.ini (PS2_ISO):
+  all reach the first-boot save prompt. FL 11_0 logged 8 "cannot create shader" (gpu_exec pre-created
+  the ROV shaders on a device without ROVs): fixed in gpu_exec.c, verified 0.
+- README.md rewritten, notes/install.md (fresh clone + portability audit), tools/README.md,
+  README.txt (SmartScreen + do not share), setup.cmd/build.cmd + .gitattributes.
+- Worktree gates: debug build, package.py (release), run_tests 16/16.
+
 ## In progress
-- Headless boot matrix of the fresh-clone exe (PS2_HEADLESS=1, frame dumps every 600):
-  gpu, sw, warp, NO_ROV, FL=11_0, FAIL=device/caps/shader/swapchain, first run without ini (PS2_ISO).
-  Script: scratchpad boot_test.ps1 (copy into %TEMP%\sly2fc_play\<name>, portable.txt).
+- tests\unit\*\run.ps1 (window/warp -UnitOnly, gs-hw -NoWindow) running.
 
 ## Next
-1. Finish the boot matrix (headless only; owner is using the PC).
-2. Gates in the worktree: tests\run_tests.py, tests\unit\*\run.ps1, debug + --release, package.py.
-3. README.md rewrite + notes/install.md + tools/README.md.
-4. Delete %TEMP%\sly2fc, %TEMP%\sly2fc_play, logs; final commit, Status: complete.
+1. Unit test results; then a second fresh clone of HEAD (setup.cmd -From, build.cmd) + headless boot.
+2. Delete %TEMP%\sly2fc, %TEMP%\sly2fc_play, sly2fc_*.log, worktree build\ and dist\; final commit,
+   Status: complete.
 
 ## Findings / traps
 - Build Python deps: only rabbitizer + pyelftools (recomp/). splat/capstone are RE-only.
