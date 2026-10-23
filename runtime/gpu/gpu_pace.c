@@ -104,10 +104,10 @@ int pace_disp_classify(const pace_disp* p) {
 
 /* ---- governor --------------------------------------------------------------------------------------------------- */
 /* Relative GPU time per scale (16:9 display targets), measured at full GPU clocks (gs_replay back to back, RTX 4060 Ti,
- * pc-pacing): GPU ms per game frame, median of ep1 / ep3 / ep5 hubs and ep7 / ep8 bosses: 1x 2.0, 2x 5.5, 3x 9.2, 4x 16.6
- * (appendix L: S=5 ~1.65 x S=4); 6x..8x extrapolated (~ samples per pixel). */
+ * pc-pacing): GPU ms per game frame, median of ep1 / ep3 / ep5 hubs and ep7 / ep8 bosses: 1x 2.0, 2x 5.5, 3x 9.2, 4x 16.6;
+ * ep1 / ep3 hubs and ep7 boss: 5x 25.9, 6x 35.2, 8x 64.8 (vs 3x 9.9); 7x interpolated. */
 double pace_gov_cost(int n, int s) {
-    static const double c[9] = { 0, 1.0, 2.7, 4.6, 8.3, 13.5, 20.0, 27.0, 36.0 };
+    static const double c[9] = { 0, 1.0, 2.7, 4.6, 8.1, 12.0, 16.3, 22.0, 29.4 };
     if (n < 1) n = 1;
     if (n > 8) n = 8;
     if (s < 1) s = 1;
@@ -233,7 +233,11 @@ int pace_gov_frame(pace_gov* g, double gpu_ms, double now_ms) {
     double behind = frames ? (double)g->sec_skipped / frames : 0;
     g->last_behind = behind;
     g->last_stall_ms = g->sec_stall_ms;
-    int forced = (behind >= 0.10 || g->sec_stall_ms >= 50.0) && load < 1.05;   /* (then one step down: the times cannot say how far) */
+    /* (only while the GPU is busy enough to be the cause: a present held up by the display or the system with an idle GPU is
+     * not a reason to draw less) */
+    int stalled = g->sec_stall_ms >= 50.0 && load >= 0.7;
+    int forced = (behind >= 0.10 || g->sec_stall_ms >= 50.0) && load >= 0.7 && load < 1.05;   /* (then one step down) */
+    double raw = load;
     if (forced) load = 1.05;
     g->sec_t0 = now_ms;
     g->sec_gpu = 0;
@@ -245,6 +249,12 @@ int pace_gov_frame(pace_gov* g, double gpu_ms, double now_ms) {
     g->load = load;
     g->secs++;
     if (g->settle > 0) { g->settle--; return 0; }
+    /* the game is waiting for the GPU right now (the queue is full) and the GPU is (nearly) saturated: lower it at once */
+    if (stalled && raw >= 0.9 && g->cur > 1) {
+        int to = pace_gov_fit(g->cur, raw > 1.05 ? raw : 1.05, OVER_FIT);
+        gov_change(g, to, PACE_GOV_OVERLOAD, raw);
+        return to;
+    }
     g->hist[g->nhist % PACE_GOV_UP_SECS] = load;
     g->nhist++;
     int to = g->cur;

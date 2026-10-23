@@ -900,9 +900,11 @@ static void present_fit(int aw, int ah, int scaler) {
          * and the frames queued behind it absorb the delay (gpu_submit_sink) before the game notices. */
         long ph = gpu_rt_phase;
         gpu_rt_phase = GPU_PH_SWAP_WAIT;
-        DWORD w = WaitForSingleObjectEx(P.waitable, 100, TRUE);
+        /* (pc-pacing) at most two frame periods (it was 100 ms): a display or system hiccup must not hold the renderer, and
+         * behind it the game, for longer */
+        DWORD w = WaitForSingleObjectEx(P.waitable, 34, TRUE);
         gpu_rt_phase = ph;
-        if (w == WAIT_TIMEOUT) P.st.dropped = 1;   /* (100 ms: presented anyway) */
+        if (w == WAIT_TIMEOUT) P.st.dropped = 1;   /* (presented anyway) */
     }
     if (tsi >= 0) { ID3D11DeviceContext_End(gpu_rt.ctx, (ID3D11Asynchronous*)P.ts[tsi].t1b); P.ts[tsi].pres = 1; }
     static const float black[4] = { 0, 0, 0, 1 };

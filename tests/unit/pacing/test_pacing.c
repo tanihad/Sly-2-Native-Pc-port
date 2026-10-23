@@ -170,18 +170,18 @@ static void test_gov(void) {
         for (int i = 0; i < 60 && !to; i++) {
             if (i % 5 == 0) pace_gov_evidence(&g, 1, 0);
             t += P;
-            to = pace_gov_frame(&g, 0.6 * P, t);
+            to = pace_gov_frame(&g, 0.75 * P, t);
         }
     }
-    CHECK(to == 2 && g.reason == PACE_GOV_HIGH, "behind 20%% at 60%% load: auto 3x -> 2x (%d)", to);
+    CHECK(to == 2 && g.reason == PACE_GOV_HIGH, "behind 20%% at 75%% load: auto 3x -> 2x (%d)", to);
     pace_gov_init(&g, 4, 1, 4);
     t = 0;
     to = 0;
     for (int s = 0; s < 8 && !to; s++) {
         pace_gov_evidence(&g, 0, 80.0);
-        for (int i = 0; i < 60 && !to; i++) { t += P; to = pace_gov_frame(&g, 0.7 * P, t); }
+        for (int i = 0; i < 60 && !to; i++) { t += P; to = pace_gov_frame(&g, 0.75 * P, t); }
     }
-    CHECK(to == 3, "the game waited 80 ms a second at 70%%: fixed 4x -> 3x (%d)", to);
+    CHECK(to == 3, "the game waited 80 ms a second at 75%%: fixed 4x -> 3x (%d)", to);
     pace_gov_init(&g, 3, 0, 3);
     t = 0;
     for (int s = 0; s < 10; s++) {
@@ -189,6 +189,18 @@ static void test_gov(void) {
         feed(&g, 60, 0.5 * P, &t);
     }
     CHECK(g.cur == 3, "a few skips / 20 ms waits a second: stays (%d)", g.cur);
+    /* the game waits (200 ms a second) with the GPU at 50%: a present held up elsewhere - not the GPU: stays */
+    pace_gov_init(&g, 3, 0, 3);
+    t = 0;
+    for (int s = 0; s < 10; s++) { pace_gov_evidence(&g, 20, 200.0); feed(&g, 60, 0.5 * P, &t); }
+    CHECK(g.cur == 3, "stalls with an idle GPU: stays (%d)", g.cur);
+    /* the game waits with the GPU at 95%: lowered within the second */
+    pace_gov_init(&g, 4, 1, 4);
+    t = 0;
+    feed(&g, 60 * 4, 0.6 * P, &t);
+    to = 0;
+    for (int s = 0; s < 2 && !to; s++) { pace_gov_evidence(&g, 0, 150.0); to = feed(&g, 61, 0.95 * P, &t); }
+    CHECK(to == 3 && g.reason == PACE_GOV_OVERLOAD, "stall at 95%%: fixed 4x -> 3x in the first full second (%d)", to);
     /* the cost table: fit helper */
     CHECK(pace_gov_fit(3, 0.9, 0.7) == 2, "fit 3x 90%% -> 2");
     CHECK(pace_gov_fit(3, 2.0, 0.7) == 1, "fit 3x 200%% -> 1");
