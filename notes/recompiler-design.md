@@ -76,7 +76,10 @@ instruction (after its label; for a branch or jump also before its delay slot); 
 allowed on plain instructions and runs on the fall-through path. Delay slots are refused. Like the
 other tables, a patch applies only when the function's bytes match (tests/run_tests.py checks the
 guard and the placement). A patch must change nothing while its feature is off; the widescreen
-patches start with `if (ps2_aspect.wide)` (runtime/aspect.c, notes/widescreen.md).
+patches start with `if (ps2_aspect.wide)` (runtime/aspect.c, notes/widescreen.md). The PC wording
+patches (`pc_*`: texts, boot without the save prompt, Options without PS2 hardware items) call
+runtime/pc_text.c, which does nothing with `PS2_PC_TEXT=0` (notes/pc-text.md); one of them leaves its
+function early with a `goto` to a label of the translated function, which tests/run_tests.py checks.
 
 ## Entry hooks (recomp/hooks.py)
 
