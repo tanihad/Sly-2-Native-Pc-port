@@ -241,9 +241,14 @@ PS2_CHAIN_DUMP=<vblank>:<n>:<file> (chain_dump.c: a VIF1 chain's tags and VIF co
 
 ### Left
 
-- The heaviest hubs stop at ~97 fps (ep1) at 2x: the GPU frontend thread (fr_prim, ~9 ms per frame) and the GS thread
-  (~8 ms, its proxy records waiting for the frontend) are the limit; then the worker (VU1 microcode ~3 ms of 7). Next
-  levers: split the frontend's per-primitive work (setup, texel rects) off its thread, or parallelise VU1 batches.
+- The heaviest hubs stop at ~97 fps (ep1) at 2x: the GPU frontend thread (fr_prim, ~9 ms per frame, ~99% busy in the
+  profile; the GS thread waits on its ring) is the limit; then the GS thread (~8 ms) and the worker (VU1 microcode ~3 ms
+  of 7). Measured without effect (ep1 hub 2x 165, A/B twice each, all within 94-99 fps): the frontend thread at above-
+  normal priority, the process on the performance cores only (CPU sets), the five pipeline threads pinned to separate
+  physical cores, two pictures in flight instead of one, a 32 MB GS queue instead of 4 MB. Offline the frontend needs
+  5.9 ms per game frame of the gpu-C ep1_hub recording (gs_replay --front-thread), in game ~9. Next levers: split the
+  frontend's per-primitive work (setup, culling, texel rects: pure functions of the primitive and its state) onto
+  another thread, or make fr_prim cheaper; then parallelise VU1 batches.
 - At 3x the GPU limits (ep1 hub 11.4 ms per frame): 120+ in heavy scenes needs 2x (the Performance preset).
 - RC chopper at 60: interpolation would need paced in-between pictures (the prototype queues them back to back) and the
   frame's other chains / post effects re-run; or a fix of the chopper controller's frame-rate dependence itself.

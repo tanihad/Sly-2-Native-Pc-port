@@ -218,7 +218,8 @@ int64_t gs_vsync_qpc(void) { return vsync_qpc_now; }
 void gs_queue_vsync(uint32_t vblank) {
     EE_WAIT_WORKER();
     gs_record_vsync(vblank);                            /* PS2_GS_RECORD (gs_record.c) */
-    /* at most one picture in flight: wait for the previous VBlank's to be presented */
+    /* at most one picture in flight: wait for the previous VBlank's to be presented (pc-fps2: two in flight, also with
+     * a 32 MB queue, measured no faster - the GPU frontend thread is the limit then) */
     uint32_t done = atomic_load_explicit(&vsync_done, memory_order_acquire);
     if (vsync_queued != done) {
         publish();
