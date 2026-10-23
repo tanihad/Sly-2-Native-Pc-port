@@ -35,11 +35,10 @@ load / error message, the game's own menus and save logic kept. Worktree
 - run_tests.py check_pc_text_patches; tests/pc_text_boot.ps1 (release + debug pass);
   notes/pc-text.md + notes/pc-text/contact_sheet.png; debug + release builds; package.py OK.
 
-## In progress
-- Waiting for the unit gates run (all tests\unit\*\run.ps1).
+- Gates green: tests\run_tests.py (incl. PC wording patch guards), all 21 tests\unit\*\run.ps1
+  (window/warp -UnitOnly, gs-hw -NoWindow), debug + release builds, scripts\package.py.
 
-## Next
-1. If gates are green: mark Status complete, final commit, report.
+**Status: complete** (notes/pc-text.md is the reference).
 
 ## Findings / traps
 - Scratchpad helpers (session-local): mdis.py, imm.py, textbank.py, ramstr.py, sheet.ps1 (contact
