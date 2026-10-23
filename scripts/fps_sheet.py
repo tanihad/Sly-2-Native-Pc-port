@@ -12,12 +12,12 @@ import sys
 from pathlib import Path
 
 
-def frames_by_t(d):
+def frames_by_t(d, col=2):
     t_of = {}
     for line in (Path(d) / "trace.txt").read_text(encoding="latin-1").splitlines():
         p = line.split()
         if len(p) >= 4:
-            t_of[int(p[0])] = float(p[2])
+            t_of[int(p[0])] = float(p[col])
     out = []
     for f in (Path(d) / "frames").glob("frame_*.png"):
         v = int(f.stem[6:])
@@ -34,8 +34,9 @@ def main():
     ap.add_argument("--step", type=float, default=2.0)
     ap.add_argument("--rows", type=int, default=6)
     ap.add_argument("--scale", type=int, default=3)
+    ap.add_argument("--wall", action="store_true", help="by wall-clock seconds since the start instead of game time")
     a = ap.parse_args()
-    runs = [frames_by_t(d) for d in a.runs]
+    runs = [frames_by_t(d, 1 if a.wall else 2) for d in a.runs]
     pick = []
     for k in range(a.rows):
         t = a.t0 + k * a.step

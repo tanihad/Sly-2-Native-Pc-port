@@ -299,6 +299,31 @@ static void test_menu_nav(void) {
     go(MENU_ROW_PACING);
     view();
     CHECK(!strcmp(V.rows[V.sel].note, "Applies at the next start"), "pacing note (stand-in): '%s'", V.rows[V.sel].note);
+    /* (pc-fps) Frame rate: 60 (original) -> 120 -> ... -> Display -> Unlimited, written to [display] frame_rate */
+    go(MENU_ROW_FRAME_RATE);
+    view();
+    CHECK(V.rows[V.sel].id == MENU_ROW_FRAME_RATE && !strcmp(V.rows[V.sel].value, "60 fps (original)"), "frame rate '%s'",
+          V.rows[V.sel].value);
+    menu_nav_event(MENU_NAV_RIGHT, MENU_DEV_KEYBOARD);
+    view();
+    CHECK(ps2_settings.frame_rate == 120 && !strcmp(V.rows[V.sel].value, "120 fps"), "frame rate 120 (%d, '%s')",
+          ps2_settings.frame_rate, V.rows[V.sel].value);
+    for (int k = 0; k < 4; k++) menu_nav_event(MENU_NAV_RIGHT, MENU_DEV_KEYBOARD);
+    view();
+    CHECK(ps2_settings.frame_rate == -2 && !strcmp(V.rows[V.sel].value, "Display refresh rate"), "frame rate display (%d, '%s')",
+          ps2_settings.frame_rate, V.rows[V.sel].value);
+    menu_nav_event(MENU_NAV_RIGHT, MENU_DEV_KEYBOARD);
+    CHECK(ps2_settings.frame_rate == -1, "frame rate unlimited (%d)", ps2_settings.frame_rate);
+    {
+        char t[64];
+        int fi = settings_find("display", "frame_rate");
+        CHECK(!strcmp(settings_value_text(fi, -1, t, sizeof t), "unlimited") && !strcmp(settings_value_text(fi, 165, t, sizeof t), "165"),
+              "frame_rate ini values");
+        int v = 0;
+        CHECK(settings_parse_value(fi, "display", &v) && v == -2 && settings_parse_value(fi, "144", &v) && v == 144 &&
+              !settings_parse_value(fi, "20", &v), "frame_rate parse");
+    }
+    m_change("display", "frame_rate", 60);
     menu_nav_event(MENU_NAV_TAB_NEXT, MENU_DEV_KEYBOARD);
     view();
     CHECK(V.page == MENU_PAGE_AUDIO && V.rows[0].id == MENU_ROW_MASTER && V.rows[0].kind == MENU_ITEM_SLIDER, "Audio, master slider");

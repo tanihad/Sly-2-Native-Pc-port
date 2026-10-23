@@ -24,7 +24,8 @@ if ($Direct) { $a += '-Direct' }
 if ($Pad) { $a += @('-Pad', $Pad) }
 if ($Set) { $a += @('-Set', $Set) }
 if ($Make) { $a += @('-Make', $Make) }
-& powershell @a | Select-Object -First 3
+$out = & powershell @a                     # (not piped into Select-Object -First: that stops the run)
+$out | Select-Object -First 3
 Remove-Item Env:\PS2_FPS_TRACE, Env:\PS2_FRAME_RATE, Env:\PS2_PERF, Env:\PS2_DUMP_SECS -ErrorAction SilentlyContinue
 Remove-Item (Join-Path $dir 'sly2_warp_*.exe') -ErrorAction SilentlyContinue      # (27 MB each: disk hygiene)
 "log: $dir\run.log, trace: $dir\trace.txt"
