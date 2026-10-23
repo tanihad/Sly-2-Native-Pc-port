@@ -49,6 +49,21 @@ void gpu_hw_set_graphics(int scale, uint32_t gfx);
  * gpu_hw_set_graphics. gpu_hw_auto_scale: the scale auto runs at now (0: auto off). */
 void gpu_hw_set_auto_scale(int max);
 int  gpu_hw_auto_scale(void);
+/* (pc-pacing) the internal scale as the GPU actually draws it: a fixed scale is the player's maximum - the renderer
+ * draws a lower one while the GPU cannot draw it in real time, so the game never waits for the GPU (gpu_pace.c
+ * pace_gov). For the Options menu ("4x requested, drawing 3x: GPU limit"). Any thread. */
+typedef struct {
+    int automatic;               /* internal_scale = auto */
+    int requested;               /* the player's scale (auto: its maximum) */
+    int drawn;                   /* the scale drawn now */
+    int limited;                 /* a fixed scale drawn lower because the GPU cannot keep up */
+    double load;                 /* GPU time per picture / the 16.68 ms frame time, last second (1.0 = the GPU's limit) */
+    int reason;                  /* PACE_GOV_* of the last change (gpu_pace.h) */
+    double stall_ms;             /* total time the game waited for the GPU since the start (0 when it never had to) */
+} gpu_hw_scale_info;
+void gpu_hw_scale_status(gpu_hw_scale_info* s);
+/* (pc-pacing) graphics.pacing changed while the game runs (SETTINGS_PACING_*): the display clock for auto / display */
+void gpu_hw_pacing_changed(int pacing);
 /* (M11) why gpu_hw_start returned 0 (one line: no device, missing capabilities, swap chain, shaders) */
 const char* gpu_hw_start_error(void);
 /* (M7) inside the dump callback: the dumped picture's sample-grid shift in picture texels (x, y) - a picture at

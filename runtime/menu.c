@@ -211,10 +211,17 @@ static void build_choices(int id, choices* c) {
         add(c, 0, "At the screen's edges");
         add(c, 1, "Centered (4:3 area)");
         break;
-    case MENU_ROW_PACING:
-        add(c, SETTINGS_PACING_VSYNC, "VSync");
-        add(c, SETTINGS_PACING_VRR, "Variable refresh (G-Sync / FreeSync)");
-        add(c, SETTINGS_PACING_DISPLAY, "Display-synced (60 Hz displays)");
+    case MENU_ROW_PACING:                /* (pc-pacing: notes/settings.md graphics.pacing) */
+        add(c, SETTINGS_PACING_AUTO, "Automatic");
+        add(c, SETTINGS_PACING_PACED, "Even (G-Sync / FreeSync)");
+        add(c, SETTINGS_PACING_IMMEDIATE, "Lowest latency");
+        add(c, SETTINGS_PACING_DISPLAY, "Display-synced (60 / 120 Hz)");
+        if (ps2_settings.pacing == SETTINGS_PACING_VRR) add(c, SETTINGS_PACING_VRR, "Even, tearing allowed (old setting)");
+        break;
+    case MENU_ROW_VSYNC:
+        add(c, SETTINGS_VSYNC_ON, "On");
+        add(c, SETTINGS_VSYNC_OFF, "Off (tearing allowed)");
+        add(c, SETTINGS_VSYNC_ADAPTIVE, "Adaptive");
         break;
     case MENU_ROW_FPS: case MENU_ROW_BACKGROUND: case MENU_ROW_VIBRATION: case MENU_ROW_INVERT_X: case MENU_ROW_INVERT_Y:
     case MENU_ROW_LIGHTBAR:
@@ -289,6 +296,7 @@ static int row_value(int id) {
     case MENU_ROW_ASPECT: return m_get("display", "aspect");
     case MENU_ROW_HUD: return ps2_settings.hud_centered;
     case MENU_ROW_PACING: return ps2_settings.pacing;
+    case MENU_ROW_VSYNC: return ps2_settings.vsync;
     case MENU_ROW_FPS: return ps2_settings.show_fps;
     case MENU_ROW_BACKGROUND: return ps2_settings.audio_background;
     case MENU_ROW_MASTER: return ps2_settings.vol_master;
@@ -317,6 +325,7 @@ static void row_set(int id, int v) {
     case MENU_ROW_ASPECT: m_change("display", "aspect", v); break;
     case MENU_ROW_HUD: m_change("display", "hud", v); break;
     case MENU_ROW_PACING: m_change("graphics", "pacing", v); break;
+    case MENU_ROW_VSYNC: m_change("graphics", "vsync", v); break;
     case MENU_ROW_FPS: m_change("window", "show_fps", v); break;
     case MENU_ROW_BACKGROUND: m_change("audio", "background", v); break;
     case MENU_ROW_MASTER: m_change("audio", "master", v); break;
@@ -486,12 +495,17 @@ static int build_rows(int page, menu_row* rows) {
         if (ps2_settings.aspect_w * 3 == ps2_settings.aspect_h * 4) disable(last(rows, n), "Widescreen only");
         env_note(last(rows, n), "display", "hud");
         choice_row(rows, &n, MENU_ROW_PACING, "Frame pacing",
-                   "VSync: every picture on a refresh of the display. Variable refresh: G-Sync / FreeSync displays. "
-                   "Display-synced: the game follows a 60 Hz display exactly.");
+                   "Automatic: even on G-Sync / FreeSync displays, lowest latency on others, the display's own rhythm on 60 / 120 Hz. "
+                   "Even: every picture 16.7 ms after the last. Lowest latency: each picture as soon as it is drawn.");
         r = last(rows, n);
         if (!gpu) disable(r, gpu_only);
         else if (!pacing_apply_mode(-1)) snprintf(r->note, sizeof r->note, "Applies at the next start");
         env_note(r, "graphics", "pacing");
+        choice_row(rows, &n, MENU_ROW_VSYNC, "VSync",
+                   "On: no tearing. Off: a picture is shown at once, tearing allowed. Adaptive: synced unless a picture is late.");
+        r = last(rows, n);
+        if (!gpu) disable(r, gpu_only);
+        env_note(r, "graphics", "vsync");
         choice_row(rows, &n, MENU_ROW_FPS, "Show frame rate", "The frame rate in the top left corner of the picture and in the title bar.");
         env_note(last(rows, n), "window", "show_fps");
         break;
@@ -608,8 +622,10 @@ static void reset_page(void) {
     if (st.page == MENU_PAGE_DISPLAY) {          /* [display] + the [window] options (not the placement) */
         settings_reset_section("display");
         if (!settings_env_locked(settings_find("window", "show_fps")) && ps2_settings.show_fps) m_change("window", "show_fps", 0);
-        if (ps2_settings.pacing != SETTINGS_PACING_VSYNC && !settings_env_locked(settings_find("graphics", "pacing")))
-            m_change("graphics", "pacing", SETTINGS_PACING_VSYNC);
+        if (ps2_settings.pacing != SETTINGS_PACING_AUTO && !settings_env_locked(settings_find("graphics", "pacing")))
+            m_change("graphics", "pacing", SETTINGS_PACING_AUTO);
+        if (ps2_settings.vsync != SETTINGS_VSYNC_ON && !settings_env_locked(settings_find("graphics", "vsync")))
+            m_change("graphics", "vsync", SETTINGS_VSYNC_ON);
         return;
     }
     if (st.page == MENU_PAGE_GRAPHICS) {         /* the default preset sets every graphics option */

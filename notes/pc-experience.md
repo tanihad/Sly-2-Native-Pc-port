@@ -55,6 +55,7 @@ Their machine: RTX 4060 Ti, i7-14700F, one monitor **2560x1440 @ 165 Hz**. Their
 - **PS2 wording** (text): no memory-card prompts at boot (save data is a file; create it silently), no
   "memory card (PS2)" / "MEMORY CARD slot 1" / "do not remove the memory card" text; PC wording such as
   "Saving... do not turn off the game" or "Saving...". Keep the game's own save/load flow and menus.
+- **Interfaces: pacing and resolution** (pacing stream, see the section at the end).
 - Every stream keeps the existing tests green, adds its own, keeps `notes/wip/<stream>.md`
   checkpoints, follows disk hygiene (no frame-dump piles), never modifies the main checkout, and
   tests as a player: the packaged build (`scripts\package.py` -> `dist\Sly2\sly2.exe`) on the real
@@ -142,3 +143,75 @@ comments, re-derives the graphics preset and calls the applier registered with `
 `settings_serial` / `settings_touch()`: the menu redraws. Internal resolution: `internal_scale` 1..8, 0 = auto
 (up to `auto_max`), -1 = native (`gfx_native_scale(client height)`); the GPU renderer gets them through gfx.c as
 before (`gpu_hw_set_graphics`, `gpu_hw_set_auto_scale(auto_max)`).
+
+## Interfaces: pacing and resolution (pc-pacing; runtime/gpu/gpu_pace.c, gpu_present.c, gpu_hw.c, runtime/pacing_menu.c)
+
+**Game speed never depends on the GPU.** Root cause of "the game runs slower at a high resolution": a frame the GPU
+cannot draw in real time stays in the render queue; when the queue is full the GS thread, and behind it the EE, waits
+at the next VBlank (gpu_exec.c `gpu_submit_sink`), so the game ran at the GPU's speed (measured, ep1 hub headless: 6x
+-> 42.8 VBlanks/s, 29 game frames/s). Frames cannot be dropped (each frame's drawing builds GS memory that later frames
+read), so the internal scale **governor** (gpu_pace.c `pace_gov`) lowers the scale actually drawn as soon as the GPU
+cannot keep up - for auto and for a fixed scale or native alike (the player's scale is the maximum) - and raises it
+again when it fits. Load = GPU ms per picture / 16.68 ms. Auto: down above 90% for 3 s (to the scale predicted at
+<= 80%), up when the next scale is predicted at <= 75%, back-off 120 s doubling. Fixed / native: down above 100% for
+2 s (to 85%), overload rule at once (12 pictures over 2.5 frame times or 24 over 1.4), or within the second when the
+game waits >= 50 ms with the GPU >= 90% busy; up again at <= 80% predicted. Evidence beats timestamps (another program
+on the GPU): >= 10% skipped presents or >= 50 ms of game waits in a second count as 105% when the GPU is >= 70% busy. No
+judging for 60 pictures after a light second (GPU clocks rising). 1x still too slow for 10 s: the software renderer
+takes over. Tests: `PS2_GS_SCALE` / `PS2_GS_GOVERNOR=0` keep a scale exactly.
+
+**Presentation.** Picture v is presented at its VBlank's due time + D (D = 95th percentile of when pictures are ready +
+1.5 ms) - an even 16.68 ms cadence that a VRR display shows as such - or as soon as it is drawn (immediate). The display's
+own record of the presents (DXGI frame statistics) tells VRR from a fixed refresh (gpu_pace.c `pace_disp`); the log
+says what it found. `graphics.pacing = auto` (default): paced until known; VRR -> paced; a fixed refresh -> immediate
+(pacing cannot beat the refresh grid and only adds latency); 60 / 120 / 240 Hz -> the display's VBlanks drive the game
+(every picture exactly k refreshes). `graphics.vsync` on / off (tearing) / adaptive. Exclusive fullscreen and
+`display.fullscreen_refresh = auto` switch a 144 / 165 Hz display without VRR to 120 Hz while the game is fullscreen and
+in front (the only way to remove the 2-or-3-refresh judder there). The present waits at most 34 ms for the swap chain
+(was 100 ms).
+
+**Functions for the menu** (all any thread, live):
+- `pacing_apply_mode(int pacing)` (menu_ext.h, runtime/pacing_menu.c): -1 -> 1 (pacing and vsync apply while the game
+  runs); else applies `ps2_settings.pacing` / `vsync` to the presenter and the display clock, returns 1.
+- `pacing_exclusive_fullscreen(int on)`: the window stays a popup over the monitor (DXGI flip model: independent flip,
+  exclusive's latency) and the game owns the display mode while in front (display_mode.c: 120 Hz on a 165 Hz display
+  without VRR; the desktop's rate when it is a multiple of 59.94 Hz already). Returns 1.
+- `gfx_apply_pacing()`: pacing / vsync -> renderer (gfx_apply calls it). `gfx_scale_status(gfx_scale_info*)`: requested
+  vs drawn scale, `limited` ("4x requested, drawing 3x: GPU limit"), load, total game wait, picture size.
+- Options: `graphics.pacing` auto | paced | immediate | display | vrr (old), `graphics.vsync` on | off | adaptive,
+  `display.fullscreen_refresh` desktop | auto | Hz (settings.c table rows; the menu's Display page has Frame pacing and
+  VSync rows). Diagnostics: `PS2_PACE_LOG=1|2|3`, `PS2_GS_HW_STATS=1` ("pacing" line per second), scripts/pace_run.ps1,
+  pace_report.ps1, pace_plot.py, pace_cost.ps1.
+
+**Measured on the owner's PC** (RTX 4060 Ti, Dell S2722DGM 2560 x 1440 @ 165 Hz; the display runs a FIXED 165 Hz refresh
+for the game: variable refresh is not active - G-Sync Compatible / FreeSync is off in the driver or the monitor):
+
+| run (50 s from boot, intro + attract) | VBlanks/s (min) | shown intervals | VBlank -> shown |
+|---|---|---|---|
+| before: 6x headless (old code) | 42.8 (29.9) | - | - |
+| borderless, auto, 3x | 59.92 (59.9) | 12.1 / 18.2 ms grid, std 3.4 ms | median 14.7 ms |
+| windowed maximised, auto | 59.92 (59.9) | std 3.3 ms | median 14.8 ms |
+| borderless, paced (first version) | 59.71 | std 6.4 ms | median 51.8 ms |
+| borderless, 7x fixed (governed 7 -> 5 -> 4 -> 3) | 59.26 (46.1 while stepping down) | std 11.6 | median 14.5 |
+| borderless, native (4x -> 3x in the heaviest scenes) | 59.61 | std 10.6 | median 13.2 |
+| headless 1440p, ep1 / ep3 / m7, fixed 1x..4x | 59.6-59.94 at every scale | - | - |
+
+notes/pc-pacing-frametimes.png: the shown intervals, one dot per picture. On the fixed 165 Hz refresh 59.94 Hz pictures
+can only last 2 or 3 refreshes (12.1 / 18.2 ms): that pattern is the owner's "shaking"; with VRR on (or 120 Hz) it goes.
+
+**GPU cost per scale at 1440p 16:9** (gs_replay back to back = full clocks; GPU ms per picture, 16.68 ms budget; the
+present's resample to 2560 x 1440 adds 0.15-0.25 ms; 165 Hz does not add presents - one per picture):
+
+| scale (picture) | ep1 hub | ep3 hub | ep5 street | ep7 boss | ep8 boss | load |
+|---|---|---|---|---|---|---|
+| 1x (512 x 448) | 1.6 | 1.8 | 2.0 | 2.1 | 2.6 | 10-16% |
+| 2x (1536 x 896) | 5.3 | 5.4 | 5.6 | 6.5 | 4.9 | 29-39% |
+| 3x (2048 x 1344) | 9.4 | 8.9 | 9.2 | 11.3 | 7.1 | 43-68% |
+| 4x (2560 x 1792, native 1440p) | 17.6 | 16.3 | 17.6 | 18.7 | 13.3 | 80-112% |
+| 5x / 6x / 8x | 25.1 / 34.2 / 62.6 | 23.0 / 30.9 / 55.8 | - | 29.9 / 40.7 / 76.0 | - | 140-460% |
+
+**Presets (validated, no change to the menu's table)**: Original 1x (~2 ms); Performance auto up to 2x (~5.5 ms, a third
+of the budget: fits weaker GPUs too, lowered to 1x where needed); Balanced auto up to 3x (default; 43-68% here, stays at
+3x); Quality native (4x at 1440p: fits ep3 / ep8, drawn at 3x in the heaviest hubs and the ep7 boss on this GPU - the
+governor decides per scene, the game keeps its speed). Every preset adapts to the PC through the governor's measurement
+(any GPU vendor); the pacing adapts to the display (60 / 120 / 144 / 165 / 240 Hz, VRR or not) through DXGI.

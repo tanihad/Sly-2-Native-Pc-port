@@ -165,6 +165,9 @@ static double q_short_since = -1, absorb_until;
 static volatile LONG queue_absorbs;
 void gpu_submit_set_adaptive(int base) { inflight_base = base < 0 ? 0 : base; q_short_since = -1; absorb_until = 0; }
 uint32_t gpu_submit_absorbs(void) { return (uint32_t)queue_absorbs; }
+static volatile double stall_ms;         /* (pc-pacing) producer waits for room in the queue (only the sink writes it) */
+double gpu_submit_stall_ms(void) { return stall_ms; }
+int gpu_submit_queued(void) { return atomic_load(&inflight); }
 
 static void count_state(void) { X.state_calls++; }
 
@@ -1857,6 +1860,11 @@ static void exec_present(const gpu_front_frame_data* fd, const gpu_fop_present* 
     }
     gpu_present_compose(&in);
     if (di->rb) gpu_present_readback((gpu_readback*)di->rb);
+    /* (pc-pacing) for the paced present and the internal scale governor: the picture's VBlank time, its scale, whether a
+     * newer frame already waits behind this one */
+    gpu_rt.cur_vblank_ms = di->vblank_ms;
+    gpu_rt.cur_behind = atomic_load(&inflight) > 1 + gpu_present_pace_frames();   /* (more queued than the pacing holds back) */
+    gpu_stats_cur()->scale = in.scale;
     /* (the picture was reported when its frame was queued: gpu_submit_sink, GPU_FD_SIGNAL) */
     if (di->flags & GPU_DI_SHOW) gpu_present_show(di->aspect_w, di->aspect_h, (int)((di->gfx >> GPU_GFX_SCALER_SHIFT) & 15));
     present_done = 1;
@@ -2102,22 +2110,28 @@ void gpu_submit_sink(const gpu_front_frame_data* fd, void* user) {
      * loaded GPU for a few frames - may queue up to inflight_max for ADAPT_MS. A GPU that is behind for good never
      * lets the queue drain, so it stays at inflight_base frames of latency (the EE then waits: the game slows down as
      * it would with any renderer too slow for it). */
-    int limit = inflight_max;
+    /* (pc-pacing) the paced present holds back up to `extra` frames on purpose (a picture waits for its time while the
+     * next ones arrive): the queue is that much deeper, so the game never waits for the pacing */
+    int extra = gpu_present_pace_frames();
+    int limit = inflight_max + extra;
     if (inflight_base > 0 && inflight_base < inflight_max) {
-        int n = atomic_load(&inflight);
+        int n = atomic_load(&inflight) - extra;
         double now = qpc_ms();
         int calm = q_short_since >= 0 && now - q_short_since >= ADAPT_MS;
         if (n <= 1) { if (q_short_since < 0) q_short_since = now; }
         else q_short_since = -1;
-        limit = inflight_base;
-        if (now < absorb_until) limit = inflight_max;
-        else if (n >= inflight_base && calm) { absorb_until = now + ADAPT_MS; limit = inflight_max; queue_absorbs++; }
+        limit = inflight_base + extra;
+        if (now < absorb_until) limit = inflight_max + extra;
+        else if (n >= inflight_base && calm) { absorb_until = now + ADAPT_MS; limit = inflight_max + extra; queue_absorbs++; }
     }
+    double w0 = -1;
     for (;;) {
         int n = atomic_load(&inflight);
         if (n < limit) break;
+        if (w0 < 0) w0 = qpc_ms();
         WaitOnAddress((volatile VOID*)&inflight, &n, sizeof n, 5);
     }
+    if (w0 >= 0) stall_ms += qpc_ms() - w0;   /* (pc-pacing: what the game lost to the GPU, PS2_GS_HW_STATS) */
     void* h = gpu_front_detach();
     if (!h) return;
     atomic_fetch_add(&inflight, 1);

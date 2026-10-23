@@ -33,3 +33,14 @@ int  gfx_native_scale(int out_h);
 extern void (*gfx_output_size)(int* w, int* h);
 /* the window's client size changed (window.c, when a resize ends): internal_scale = native follows it */
 void gfx_output_resized(void);
+/* (pc-pacing) what is drawn now (the Options menu, the log): the player's scale, the scale the GPU draws (every scale is a
+ * maximum: limited = drawn lower because the GPU cannot draw it in real time - the game never slows down), the GPU load
+ * (GPU ms per picture / the 16.68 ms frame time), the time the game had to wait for the GPU, the picture's size */
+typedef struct {
+    int automatic, requested, drawn, limited;
+    double load, stall_ms;
+    int w, h;
+} gfx_scale_info;
+void gfx_scale_status(gfx_scale_info* s);
+/* (pc-pacing) graphics.pacing and graphics.vsync -> the GPU renderer's presenter, live (gfx_apply calls it too); 1 if done */
+int  gfx_apply_pacing(void);

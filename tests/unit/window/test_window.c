@@ -20,6 +20,9 @@
 #include "window.c"
 #include "settings.c"
 #include "gfx.c"
+#include "gpu/gpu_pace.c"                  /* (pc-pacing: gfx.c's picture sizes) */
+#include "display_mode.c"                  /* (pc-pacing: fullscreen refresh rate) */
+#include "pacing_menu.c"                   /* (pc-pacing: menu_ext.h) */
 
 #include <stdlib.h>
 
@@ -140,6 +143,23 @@ static void test_gfx(void) {
           ps2_settings.internal_scale, gfx_scale());
     gfx_key(VK_F2, 1, 0);
     CHECK(ps2_settings.internal_scale == 2 && gfx_scale() == 2, "Shift+F2 from auto at 3x: fixed 2x (%d)", gfx_scale());
+    /* (pc-pacing) pacing / vsync through the settings table (live: pacing_apply_mode), the scale status */
+    CHECK(settings_change_key("graphics", "pacing", SETTINGS_PACING_IMMEDIATE, 0) && ps2_settings.pacing == SETTINGS_PACING_IMMEDIATE,
+          "pacing = immediate through the table");
+    CHECK(settings_change_key("graphics", "vsync", SETTINGS_VSYNC_ADAPTIVE, 0) && ps2_settings.vsync == SETTINGS_VSYNC_ADAPTIVE,
+          "vsync = adaptive through the table");
+    CHECK(!settings_change_key("graphics", "vsync", 7, 0) && ps2_settings.vsync == SETTINGS_VSYNC_ADAPTIVE, "a bad vsync is refused");
+    CHECK(pacing_apply_mode(-1) == 1, "pacing applies while the game runs");
+    CHECK(gfx_apply_pacing() == 0, "no presenter in this test: nothing to apply");
+    settings_change_key("graphics", "pacing", SETTINGS_PACING_AUTO, 0);
+    settings_change_key("graphics", "vsync", SETTINGS_VSYNC_ON, 0);
+    settings_change_key("graphics", "internal_scale", SETTINGS_SCALE_AUTO, 0);
+    {
+        gfx_scale_info si;
+        gfx_scale_status(&si);
+        CHECK(si.automatic && si.drawn == 3 && si.w == 2048 && si.h == 1344 && !si.limited, "status without the renderer: 3x 2048 x 1344 (%d %dx%d)",
+              si.drawn, si.w, si.h);
+    }
     gfx_key(VK_F2, 2, 0);
     _putenv("PS2_GS_SCALE=5");
     CHECK(gfx_scale() == 5, "PS2_GS_SCALE wins over auto (%d)", gfx_scale());
@@ -237,7 +257,7 @@ static void test_settings(void) {
     /* [graphics] renderer = gpu (default since M11) | software, pacing = vsync (default) | vrr | display (M6) */
     settings_defaults(&s);
     CHECK(s.renderer_gpu == 1 && s.pacing == SETTINGS_PACING_VSYNC, "renderer / pacing defaults");
-    CHECK(strstr(tmpl, "\nrenderer = gpu\n") && strstr(tmpl, "\npacing = vsync\n") && strstr(tmpl, "\ninternal_scale = auto\n"),
+    CHECK(strstr(tmpl, "\nrenderer = gpu\n") && strstr(tmpl, "\npacing = auto\n") && strstr(tmpl, "\nvsync = on\n") && strstr(tmpl, "\ninternal_scale = auto\n"),
           "template writes renderer / pacing / internal_scale");
     warn_count = 0;
     n = settings_parse("[graphics]\nrenderer = GPU\npacing = vrr\n", &s, count_warn, NULL);
@@ -250,6 +270,44 @@ static void test_settings(void) {
     s.pacing = SETTINGS_PACING_DISPLAY;
     settings_format(&s, tmpl, sizeof tmpl);
     CHECK(strstr(tmpl, "\nrenderer = software\n") && strstr(tmpl, "\npacing = display\n"), "template writes renderer = software");
+    /* (pc-pacing) [display] fullscreen_refresh and its mode choice */
+    settings_defaults(&s);
+    CHECK(s.fullscreen_refresh == 0, "fullscreen_refresh = desktop by default");
+    n = settings_parse("[display]\nfullscreen_refresh = auto\n", &s, count_warn, NULL);
+    CHECK(n == 0 && s.fullscreen_refresh == -1, "fullscreen_refresh = auto");
+    n = settings_parse("[display]\nfullscreen_refresh = 120\n", &s, count_warn, NULL);
+    CHECK(n == 0 && s.fullscreen_refresh == 120, "fullscreen_refresh = 120");
+    warn_count = 0;
+    n = settings_parse("[display]\nfullscreen_refresh = fast\n", &s, count_warn, NULL);
+    CHECK(n == 1 && warn_count == 1 && s.fullscreen_refresh == 120, "bad fullscreen_refresh ignored");
+    settings_format(&s, tmpl, sizeof tmpl);
+    CHECK(strstr(tmpl, "\nfullscreen_refresh = 120\n") != NULL, "template writes fullscreen_refresh");
+    {
+        const int dell[] = { 165, 144, 119, 59 }, hz120[] = { 120, 60 }, odd[] = { 165, 144, 100 };
+        CHECK(display_mode_pick(dell, 4, 165, -1) == 119, "auto on a 165 Hz display offering 119 (119.88) Hz: 119");
+        CHECK(display_mode_pick(dell, 4, 165, 0) == 0, "desktop: never changed");
+        CHECK(display_mode_pick(dell, 4, 119, -1) == 0, "auto when the desktop is 119 Hz already: no change");
+        CHECK(display_mode_pick(hz120, 2, 120, -1) == 0, "auto at 120 Hz: no change");
+        CHECK(display_mode_pick(odd, 3, 165, -1) == 0, "auto without a multiple: no change");
+        CHECK(display_mode_pick(dell, 4, 165, 59) == 59 && display_mode_pick(dell, 4, 165, 75) == 0, "a chosen rate if offered");
+        CHECK(display_mode_pick(dell, 4, 144, -1) == 119, "auto at 144 Hz: 119");
+    }
+    /* (pc-pacing) pacing = auto | paced | immediate | display | vrr (vsync = the old default's name = auto), vsync = on | off |
+     * adaptive */
+    settings_defaults(&s);
+    CHECK(s.pacing == SETTINGS_PACING_AUTO && s.vsync == SETTINGS_VSYNC_ON, "pacing auto, vsync on by default");
+    n = settings_parse("[graphics]\npacing = paced\nvsync = adaptive\n", &s, count_warn, NULL);
+    CHECK(n == 0 && s.pacing == SETTINGS_PACING_PACED && s.vsync == SETTINGS_VSYNC_ADAPTIVE, "pacing = paced, vsync = adaptive (%d)", n);
+    n = settings_parse("[graphics]\npacing = immediate\nvsync = off\n", &s, count_warn, NULL);
+    CHECK(n == 0 && s.pacing == SETTINGS_PACING_IMMEDIATE && s.vsync == SETTINGS_VSYNC_OFF, "pacing = immediate, vsync = off");
+    n = settings_parse("[graphics]\npacing = vsync\n", &s, count_warn, NULL);
+    CHECK(n == 0 && s.pacing == SETTINGS_PACING_AUTO, "pacing = vsync (old files) = auto");
+    warn_count = 0;
+    n = settings_parse("[graphics]\nvsync = sometimes\n", &s, count_warn, NULL);
+    CHECK(n == 1 && warn_count == 1 && s.vsync == SETTINGS_VSYNC_OFF, "bad vsync ignored (%d)", n);
+    s.pacing = SETTINGS_PACING_IMMEDIATE;
+    settings_format(&s, tmpl, sizeof tmpl);
+    CHECK(strstr(tmpl, "\npacing = immediate\n") && strstr(tmpl, "\nvsync = off\n"), "template writes immediate / vsync off");
 
     /* the template written next to the exe parses back to the defaults */
     char text[4096];

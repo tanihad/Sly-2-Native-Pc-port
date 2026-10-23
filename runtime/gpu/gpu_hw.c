@@ -6,6 +6,7 @@
 #include "gpu.h"
 #include "gpu_front.h"
 #include "gpu_verify.h"
+#include "gpu_pace.h"
 #include "perf.h"                        /* perf_state.gs_busy (the GS thread's busy time) */
 #include "settings.h"
 
@@ -163,6 +164,10 @@ static void dump_queued(void) {
 static struct {
     double front[SW], rcpu[SW], rwall[SW], gpu[SW], pres[SW], lat[SW], photon[SW], queued[SW];
     int nfront, nr, ngpu, nlat, nphoton, nqueued;
+    double pgpu[SW], ready[SW], target[SW], late[SW];   /* (pc-pacing) present GPU ms, ready / delay / late after the VBlank */
+    int npg, nready, ntarget;
+    uint32_t skipped;
+    double stall0;
     uint64_t draws, ff, rov, rov_runs, punts, downloads, loads, display_mem, kicks;
     uint32_t frames, targets, dropped, presented, game_frames;
     uint32_t rescales, reads;            /* (M8) target rescales (sample-factor changes), TRXDIR=1 reads, per report */
@@ -178,128 +183,147 @@ static struct {
 static void mem_log(const char* when);
 static uint64_t stats_ticks;             /* (M9) TSC ticks of stats_vblank on the GS thread (it counts as GS busy time) */
 
-/* ---- (M11) internal_scale = auto ------------------------------------------------------------------------------
- * The highest scale up to auto_max (3: the owner's quality target) whose measured GPU time stays comfortably inside
- * real time. Measure: GPU busy = the GPU time of the pictures finished in a second (timestamps around each picture's
- * work) / that second. GPU time grows with the samples per pixel (and has a per-primitive part), so the busy fraction
- * at scale n is predicted from a table of measured relative costs (auto_cost). Hysteresis:
- *  - down: busy > AUTO_HIGH (0.85) for AUTO_DOWN_SECS (3) seconds in a row -> the highest lower scale predicted at
- *    <= AUTO_FIT (0.70) (at least one step);
- *  - up: after AUTO_UP_SECS (15) judged seconds at this scale, the next scale predicted at <= AUTO_LOW (0.70) from the
- *    lower quartile of those seconds' busy fractions (a lightly loaded GPU lowers its clocks - NVIDIA P-states - and
- *    then measures up to ~3x longer in alternate seconds: 8.7% / 25% at 1x on the 4060 Ti; the lighter seconds are
- *    the ones at full clock), and not if that scale was left for being too slow within the back-off time
- *    (AUTO_RETRY_SECS = 120 s, doubled each time the same scale is left again) - so a GPU at the edge settles
- *    instead of switching back and forth;
- *  - the AUTO_SETTLE (3) seconds after a change are not judged (target rescale, NVIDIA clock changes).
- * GS thread (stats_vblank, every VBlank). The scale goes to want_scale like an F2 change: the frontend rescales every
- * target from the next frame; gfx.c reads it back (gpu_hw_auto_scale) for its own state and the log. */
-#define AUTO_HIGH 0.85
-#define AUTO_FIT 0.70
-#define AUTO_LOW 0.70
-#define AUTO_DOWN_SECS 3
-#define AUTO_UP_SECS 15
-#define AUTO_RETRY_SECS 120
-#define AUTO_SETTLE 3
+/* ---- internal scale governor (M11 auto, pc-pacing: every scale) ------------------------------------------------
+ * The game must never wait for the GPU: a scale the GPU cannot draw in real time fills the render queue and the EE then
+ * waits at its VBlank (the game slows down - the owner's "tick speed" at 6-8x). So the scale actually drawn is chosen
+ * by gpu_pace.c's governor (pace_gov) from the GPU time of every picture (timestamps around the frame's drawing and
+ * compose; the present is measured apart and added):
+ *  - internal_scale = auto: the highest scale up to auto_max (3) that keeps the GPU comfortably inside real time
+ *    (down above 85% load for 3 s, to <= 70%; up when the next scale is predicted at <= 70%, with back-off);
+ *  - a fixed internal_scale N is the maximum: it is lowered only when the GPU cannot draw it in real time (overload:
+ *    a few pictures over the frame period, or above 95% for 2 s) and raised back towards N when it fits again.
+ *  Load = GPU ms per picture / 16.68 ms (one picture per VBlank). Strict fixed scale (no governor, tests): the
+ *  PS2_GS_SCALE environment variable or PS2_GS_GOVERNOR=0.
+ * GS thread (stats_vblank). Requests (gfx.c, any thread) are latched in req_* and applied there; the scale goes to
+ * want_scale like an F2 change: the frontend rescales every target from the next frame. */
 static volatile LONG auto_max;           /* 0: off (a fixed scale); else the highest scale auto picks */
-static struct {
-    double busy_ms;                      /* GPU ms of the pictures finished since t0 */
-    uint32_t frames;
-    LARGE_INTEGER t0;
-    uint32_t secs;                       /* seconds judged so far (the clock of the rules above) */
-    int over, settle;
-    double hist[AUTO_UP_SECS];           /* busy of the judged seconds at this scale (ring) */
-    int nhist;
-    uint32_t left_at[9];                 /* secs + 1 when scale n was left for being too slow (0: never) */
-    uint32_t backoff[9];                 /* the back-off before scale n may be tried again (s) */
-    uint32_t changes;
-    double last_busy;
-} A;
+static volatile LONG req_fixed = 1;      /* the player's fixed scale (gpu_hw_set_graphics) */
+static volatile LONG req_serial;         /* bumped by every request */
+static LONG req_seen = -1;
+static pace_gov G;
+static int gov_strict = -1;              /* PS2_GS_SCALE / PS2_GS_GOVERNOR=0: the fixed scale as is */
+static double gov_slow = 1.0;            /* PS2_GS_AUTO_SLOW=<factor>[:<s>] */
+static int gov_slow_secs;
+static double gov_t0;
+static volatile LONG gov_limited;        /* fixed scale: drawn below the player's (status for the menu) */
+static volatile LONG gov_load_x1000;     /* the last second's load x 1000 (status) */
+static volatile LONG gov_reason;
+
+static double now_qpc_ms(void) {
+    LARGE_INTEGER t, f;
+    QueryPerformanceCounter(&t);
+    QueryPerformanceFrequency(&f);
+    return (double)t.QuadPart * 1000.0 / (double)f.QuadPart;
+}
 
 void gpu_hw_set_auto_scale(int max) {
     if (max > 8) max = 8;
     if (max < 0) max = 0;
-    InterlockedExchange(&auto_max, max);
+    if (InterlockedExchange(&auto_max, max) != max) InterlockedIncrement(&req_serial);
 }
 int gpu_hw_auto_scale(void) { return auto_max ? (int)want_scale : 0; }
 
-static int dcmp_auto(const void* a, const void* b) { double x = *(const double*)a, y = *(const double*)b; return x < y ? -1 : x > y; }
-/* GPU time at scale n relative to scale s. Not the sample count (1 x 2 samples per pixel at 1x, 3 x 4 at 2x, 4 x 6 at 3x
- * for 16:9 displays): every primitive also costs something of its own, and 1x skips the per-sample paths altogether.
- * Relative costs measured on the 4060 Ti, 16:9 (title / intro: 1x 8.7%, 2x 38.2%, 3x 52% GPU busy; replay S=3 -> 4 -> 5
- * x1.56 / x2.58, appendix L), 6..8 extrapolated. Simple scenes have the steepest 1x -> 2x step (heavy hubs ~2-3x), so
- * raising from 1x is cautious; a raise that turns out too slow is undone after AUTO_DOWN_SECS and backed off. */
-static double auto_cost(int n, int s) {
-    static const double c[9] = { 0, 1.0, 4.4, 6.0, 9.4, 15.5, 22.0, 30.0, 40.0 };
-    if (n < 1) n = 1;
-    if (n > 8) n = 8;
-    if (s < 1) s = 1;
-    if (s > 8) s = 8;
-    return c[n] / c[s];
+void gpu_hw_scale_status(gpu_hw_scale_info* s) {
+    memset(s, 0, sizeof *s);
+    s->automatic = auto_max != 0;
+    s->requested = auto_max ? (int)auto_max : (int)req_fixed;
+    s->drawn = (int)want_scale;
+    s->limited = !auto_max && (int)want_scale < (int)req_fixed;
+    s->load = (double)gov_load_x1000 / 1000.0;
+    s->reason = (int)gov_reason;
+    s->stall_ms = gpu_submit_stall_ms();
 }
 
-static void auto_scale_tick(void) {
-    LARGE_INTEGER t, f;
-    QueryPerformanceCounter(&t);
-    if (!A.t0.QuadPart) { A.t0 = t; A.busy_ms = 0; A.frames = 0; return; }
-    QueryPerformanceFrequency(&f);
-    double ms = (double)(t.QuadPart - A.t0.QuadPart) * 1000.0 / (double)f.QuadPart;
-    if (ms < 1000.0) return;
-    double busy = A.busy_ms / ms;
-    /* PS2_GS_AUTO_SLOW=<factor>[:<seconds>]: measured GPU time x factor (for the first <seconds> only) - tests of a slower GPU */
-    static double slow = -1;
-    static int slow_secs, ticks;
-    if (slow < 0) {
-        const char* e = getenv("PS2_GS_AUTO_SLOW");
-        slow = e && atof(e) > 0 ? atof(e) : 1.0;
-        slow_secs = e && strchr(e, ':') ? atoi(strchr(e, ':') + 1) : 0;
+static void gov_init(void) {
+    if (gov_strict < 0) {
+        const char* e = getenv("PS2_GS_GOVERNOR");
+        const char* sc = getenv("PS2_GS_SCALE");
+        gov_strict = (e && *e && atoi(e) == 0) || (sc && atoi(sc) >= 1);
+        e = getenv("PS2_GS_AUTO_SLOW");
+        gov_slow = e && atof(e) > 0 ? atof(e) : 1.0;
+        gov_slow_secs = e && strchr(e, ':') ? atoi(strchr(e, ':') + 1) : 0;
     }
-    ticks++;
-    if (!slow_secs || ticks <= slow_secs) busy *= slow;
-    uint32_t frames = A.frames;
-    A.t0 = t;
-    A.busy_ms = 0;
-    A.frames = 0;
-    int max = (int)auto_max, s = run_scale;
-    static int log_ticks = -1;           /* PS2_GS_AUTO_LOG=1: every second's measurement and state */
-    if (log_ticks < 0) { const char* e = getenv("PS2_GS_AUTO_LOG"); log_ticks = e && atoi(e) > 0; }
-    if (log_ticks && max)
-        hlog("internal scale auto: %u pictures, GPU busy %.1f%% at %dx (want %d), over %d, seconds here %d, settle %d, judged %u s, "
-             "left 2x/3x at %u/%u", frames, busy * 100.0, s, (int)want_scale, A.over, A.nhist, A.settle, A.secs, A.left_at[2],
-             A.left_at[3]);
-    if (!max || !active || frames < 10 || s != (int)want_scale) { A.over = 0; return; }   /* (off, or loading a change) */
-    A.secs++;
-    A.last_busy = busy;
-    if (A.settle > 0) { A.settle--; return; }
-    A.hist[A.nhist % AUTO_UP_SECS] = busy;
-    A.nhist++;
-    int to = s;
-    if (busy > AUTO_HIGH && s > 1) {
-        if (++A.over >= AUTO_DOWN_SECS) {
-            to = s - 1;
-            while (to > 1 && busy * auto_cost(to, s) > AUTO_FIT) to--;
-            static int retry = -1;       /* (PS2_GS_AUTO_RETRY=<s>: the first back-off, tests) */
-            if (retry < 0) { const char* e = getenv("PS2_GS_AUTO_RETRY"); retry = e && atoi(e) > 0 ? atoi(e) : AUTO_RETRY_SECS; }
-            A.backoff[s] = A.left_at[s] ? 2 * A.backoff[s] : (uint32_t)retry;   /* (left again: twice the wait) */
-            A.left_at[s] = A.secs + 1;
+    int fixed = auto_max == 0;
+    pace_gov_init(&G, fixed ? (int)req_fixed : (int)auto_max, fixed, (int)want_scale);
+    const char* r = getenv("PS2_GS_AUTO_RETRY");  /* (the first back-off, tests) */
+    if (r && atoi(r) > 0) G.retry_secs = (uint32_t)atoi(r);
+    G.slow = gov_slow;
+    gov_t0 = now_qpc_ms();
+    req_seen = req_serial;
+}
+
+static const char* gov_why(int reason) {
+    switch (reason) {
+    case PACE_GOV_OVERLOAD: return "the GPU could not draw it in real time";
+    case PACE_GOV_HIGH: return "the GPU was too busy";
+    case PACE_GOV_FITS: return "the GPU has room";
+    default: return "requested";
+    }
+}
+
+/* GS thread: a picture's GPU time (gpu_ms + present) at scale `scale` finished */
+static void gov_frame(double gpu_ms, int scale) {
+    if (!active) return;
+    if (gov_slow_secs && now_qpc_ms() - gov_t0 > gov_slow_secs * 1000.0) G.slow = 1.0;
+    if (scale != G.cur || scale != (int)want_scale || scale != run_scale) return;   /* (still pictures of the old scale) */
+    int was = G.cur;
+    int to = pace_gov_frame(&G, gpu_ms, now_qpc_ms());
+    InterlockedExchange(&gov_load_x1000, (LONG)(G.load * 1000.0));
+    static int log_secs = -1;            /* PS2_GS_AUTO_LOG=1: every second's measurement and state */
+    if (log_secs < 0) { const char* e = getenv("PS2_GS_AUTO_LOG"); log_secs = e && atoi(e) > 0; }
+    static uint32_t logged_secs;
+    if (log_secs && G.secs != logged_secs) {
+        logged_secs = G.secs;
+        hlog("internal scale %s: load %.1f%% at %dx (max %d), over %d, seconds here %d, settle %d, judged %u s", G.fixed ? "governor" : "auto",
+             G.load * 100.0, G.cur, G.max, G.over, G.nhist, G.settle, G.secs);
+    }
+    /* even 1x is more than this GPU can draw in real time (10 s over 120%): the software renderer takes over, so the
+     * game keeps its speed (PS2_GS_SW_FALLBACK=0: stay on the GPU) */
+    static uint32_t sw_secs;
+    static int sw_over;
+    if (G.secs != sw_secs) {
+        sw_secs = G.secs;
+        sw_over = G.cur == 1 && G.load > 1.2 ? sw_over + 1 : 0;
+        static int fb = -1;
+        if (fb < 0) { const char* e = getenv("PS2_GS_SW_FALLBACK"); fb = !(e && *e && atoi(e) == 0); }
+        if (sw_over >= 10 && fb && !gov_strict && !C.verify) {
+            sw_over = 0;
+            hlog("the GPU cannot draw even the PS2's resolution in real time (%.0f%% of the frame time at 1x): switching to the "
+                 "software renderer so the game keeps its speed", G.load * 100.0);
+            gpu_hw_request_switch();
         }
-    } else A.over = 0;
-    if (to == s && s < max && A.nhist >= AUTO_UP_SECS &&
-        (!A.left_at[s + 1] || A.secs + 1 - A.left_at[s + 1] > A.backoff[s + 1])) {
-        double v[AUTO_UP_SECS];          /* the lower quartile of the last AUTO_UP_SECS seconds */
-        memcpy(v, A.hist, sizeof v);
-        qsort(v, AUTO_UP_SECS, sizeof v[0], dcmp_auto);
-        double q = v[AUTO_UP_SECS / 4];
-        if (q * auto_cost(s + 1, s) <= AUTO_LOW) to = s + 1;
     }
-    if (s > max) to = max;               /* (the maximum was lowered) */
-    if (to == s) return;
-    A.over = 0;
-    A.nhist = 0;
-    A.settle = AUTO_SETTLE;
-    A.changes++;
-    hlog("internal scale auto: the GPU was busy %.0f%% of the time at %dx -> %dx (change %u)", busy * 100.0, s, to, A.changes);
+    if (!to) return;
+    InterlockedExchange(&gov_reason, G.reason);
+    if (G.fixed)
+        hlog("internal scale %dx: %s (%.0f%% of the frame time at %dx) -> drawing at %dx%s (change %u)", G.max, gov_why(G.reason),
+             G.reason_load * 100.0, was, to, to < G.max ? ", the game keeps its speed" : "", G.changes);
+    else
+        hlog("internal scale auto: %s (%.0f%% of the frame time at %dx) -> %dx (change %u)", gov_why(G.reason), G.reason_load * 100.0,
+             was, to, G.changes);
+    InterlockedExchange(&gov_limited, G.fixed && to < G.max);
     InterlockedExchange(&want_scale, to);
+}
+
+/* GS thread, every VBlank: requests from gfx.c */
+static void gov_requests(void) {
+
+    if (req_seen == req_serial) return;
+    req_seen = req_serial;
+    int fixed = auto_max == 0;
+    int max = fixed ? (int)req_fixed : (int)auto_max;
+    if (fixed && gov_strict) {           /* (tests: exactly the scale asked for) */
+        G.max = G.cur = max;
+        G.fixed = 1;
+        InterlockedExchange(&want_scale, max);
+        return;
+    }
+    int was = G.cur;
+    pace_gov_set(&G, max, fixed, now_qpc_ms());
+    if (G.cur != max) hlog("internal scale %s%d: %dx failed moments ago, drawing at %dx for now", fixed ? "" : "auto, up to ", max, max, G.cur);
+    (void)was;
+    InterlockedExchange(&gov_limited, fixed && G.cur < max);
+    InterlockedExchange(&want_scale, G.cur);
 }
 
 /* (M9) the once-a-second report lines are formatted on the GS thread and written by a logger thread: a
@@ -391,8 +415,11 @@ static void stats_vblank(uint32_t vblank) {
             S.frames++;
         }
     while ((n = gpu_take_frame_stats(fs, 64)) > 0) {
-        for (int i = 0; i < n; i++)      /* (M11) internal_scale = auto: GPU time per second */
-            if (!fs[i].partial && fs[i].gpu_ms >= 0) { A.busy_ms += fs[i].gpu_ms; A.frames++; }
+        for (int i = 0; i < n; i++)      /* the internal scale governor: GPU time per picture (drawing + compose + present) */
+            if (!fs[i].partial && fs[i].skipped) pace_gov_evidence(&G, 1, 0);   /* (behind: evidence of overload) */
+        for (int i = 0; i < n; i++)
+            if (!fs[i].partial && fs[i].gpu_ms >= 0 && fs[i].scale > 0)
+                gov_frame(fs[i].gpu_ms + (fs[i].present_gpu_ms > 0 ? fs[i].present_gpu_ms : 0), fs[i].scale);
         for (int i = 0; i < n && C.stats; i++) {
             if (fs[i].partial) continue;
             if (C.stats > 1 && (fs[i].render_ms > 12.0 || fs[i].gpu_ms > 12.0))   /* PS2_GS_HW_STATS=2: slow frames */
@@ -404,6 +431,10 @@ static void stats_vblank(uint32_t vblank) {
             if (fs[i].latency_ms >= 0 && S.nlat < SW) S.lat[S.nlat++] = fs[i].latency_ms;
             if (fs[i].photon_ms >= 0 && S.nphoton < SW) S.photon[S.nphoton++] = fs[i].photon_ms;   /* (M9) */
             if (S.nqueued < SW) S.queued[S.nqueued++] = fs[i].queued;
+            if (fs[i].present_gpu_ms >= 0 && S.npg < SW) S.pgpu[S.npg++] = fs[i].present_gpu_ms;   /* (pc-pacing) */
+            if (fs[i].ready_ms >= 0 && S.nready < SW) S.ready[S.nready++] = fs[i].ready_ms;
+            if (fs[i].target_ms >= 0 && S.ntarget < SW) { S.target[S.ntarget] = fs[i].target_ms; S.late[S.ntarget++] = fs[i].present_late_ms; }
+            S.skipped += fs[i].skipped;
             if (fs[i].draws < 200) continue;     /* (per game frame: the VBlanks in between draw nothing) */
             if (S.nr < SW) { S.rcpu[S.nr] = fs[i].render_cpu_ms; S.rwall[S.nr] = fs[i].render_ms; S.pres[S.nr] = fs[i].present_ms; S.nr++; }
             if (fs[i].gpu_ms >= 0 && S.ngpu < SW) S.gpu[S.ngpu++] = fs[i].gpu_ms;
@@ -413,7 +444,13 @@ static void stats_vblank(uint32_t vblank) {
             }
         }
     }
-    auto_scale_tick();
+    {                                    /* the time the game waited for the render queue: evidence of overload */
+        static double last_stall;
+        double s = gpu_submit_stall_ms();
+        if (s > last_stall) pace_gov_evidence(&G, 0, s - last_stall);
+        last_stall = s;
+    }
+    gov_requests();
     if (!C.stats) return;
     if (vblank % 600 == 0) mem_log("now");
     if (vblank % 60) return;
@@ -441,6 +478,13 @@ static void stats_vblank(uint32_t vblank) {
              (double)S.downloads * k, (double)S.loads * k, (double)S.display_mem * k, S.targets, S.rescales, S.reads,
              med(S.photon, S.nphoton), vmax(S.photon, S.nphoton), med(S.queued, S.nqueued), vmax(S.queued, S.nqueued),
              gpu_submit_absorbs(), scost);
+        double stall = gpu_submit_stall_ms();   /* (pc-pacing) */
+        slog("stats v%u: pacing | scale drawn %dx (%s %d), load %.0f%% | GPU present %.2f ms | ready %.2f / %.2f ms after the VBlank | "
+             "present delay %.2f / %.2f, late %.2f / %.2f ms | skipped presents %u | game waited for the GPU %.1f ms this second",
+             vblank, (int)want_scale, auto_max ? "auto up to" : "player", auto_max ? (int)auto_max : (int)req_fixed, G.load * 100.0,
+             med(S.pgpu, S.npg), med(S.ready, S.nready), vmax(S.ready, S.nready), med(S.target, S.ntarget), vmax(S.target, S.ntarget),
+             med(S.late, S.ntarget), vmax(S.late, S.ntarget), S.skipped, stall - S.stall0);
+        S.stall0 = stall;
         if (S.nphase) {                  /* (M9) PS2_GPU_PROF: GPU timestamps per phase */
             char ph[256];
             int o = 0;
@@ -453,6 +497,8 @@ static void stats_vblank(uint32_t vblank) {
     memset(S.phase, 0, sizeof S.phase);
     S.stats_ticks0 = stats_ticks;
     S.nfront = S.nr = S.ngpu = S.nlat = S.nphoton = S.nqueued = 0;
+    S.npg = S.nready = S.ntarget = 0;
+    S.skipped = 0;
     S.draws = S.ff = S.rov = S.rov_runs = S.punts = S.downloads = S.loads = S.display_mem = S.kicks = 0;
     S.rescales = S.reads = 0;
     S.frames = S.dropped = S.presented = S.game_frames = 0;
@@ -471,7 +517,8 @@ static int render_start(void) {
     gc.hwnd = C.hwnd;
     gc.present_w = 1280;
     gc.present_h = 960;
-    {                                    /* (pc-menu) PS2_GS_PRESENT_SIZE=WxH: the headless present target (screenshots) */
+    {                                    /* (pc-menu, pc-pacing) PS2_GS_PRESENT_SIZE=WxH: the headless present target (screenshots,
+                                            pacing measurements at 1440p) */
         const char* e = getenv("PS2_GS_PRESENT_SIZE");
         int w = 0, h = 0;
         if (e && sscanf(e, "%dx%d", &w, &h) == 2 && w >= 64 && h >= 64 && w <= 8192 && h <= 8192) { gc.present_w = w; gc.present_h = h; }
@@ -497,7 +544,8 @@ void gpu_hw_set_graphics(int scale, uint32_t gfx) {
     if (scale < 1) scale = 1;
     if (scale > 8) scale = 8;
     InterlockedExchange(&want_gfx, (LONG)gfx);
-    InterlockedExchange(&want_scale, scale);
+    if (!active) InterlockedExchange(&want_scale, scale);   /* (before the start: the scale to start at) */
+    if (!auto_max && InterlockedExchange(&req_fixed, scale) != scale) InterlockedIncrement(&req_serial);
 }
 
 static void front_start(void) {
@@ -550,35 +598,60 @@ static IDXGIOutput* find_output(void) {
     return found;
 }
 
-static DWORD WINAPI clock_main(LPVOID arg) {
-    (void)arg;
-    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
-    IDXGIOutput* o = find_output();
-    if (!o) { hlog("display pacing: no DXGI output for the window: the 59.94 Hz timer stays"); return 0; }
-    /* the display's rate, measured: display pacing only on a 59.94 / 60 Hz display (within 0.5%) */
+/* The display's refresh rate, measured over 30 of its VBlanks (Hz; 0: no output) */
+static double measure_refresh(IDXGIOutput* o) {
     LARGE_INTEGER f, a, b;
     QueryPerformanceFrequency(&f);
-    IDXGIOutput_WaitForVBlank(o);
+    if (FAILED(IDXGIOutput_WaitForVBlank(o))) return 0;
     QueryPerformanceCounter(&a);
     for (int i = 0; i < 30; i++) IDXGIOutput_WaitForVBlank(o);
     QueryPerformanceCounter(&b);
-    double hz = 30.0 * (double)f.QuadPart / (double)(b.QuadPart - a.QuadPart);
-    if (hz < 59.94 * 0.995 || hz > 59.94 * 1.005) {
-        hlog("display pacing: the display runs at %.2f Hz, not 59.94/60: the 59.94 Hz timer stays", hz);
-        IDXGIOutput_Release(o);
-        return 0;
-    }
-    hlog("display pacing: VBlanks from the display (%.3f Hz)", hz);
-    C.vblank_external(1);
-    HMONITOR mon = MonitorFromWindow((HWND)C.hwnd, MONITOR_DEFAULTTOPRIMARY);
-    for (uint32_t n = 0;; n++) {
-        if (FAILED(IDXGIOutput_WaitForVBlank(o))) { Sleep(16); }
-        else C.display_vblank();
-        if ((n & 127) == 127 && MonitorFromWindow((HWND)C.hwnd, MONITOR_DEFAULTTOPRIMARY) != mon) {   /* the window moved */
-            IDXGIOutput_Release(o);
-            if (!(o = find_output())) { C.vblank_external(0); hlog("display pacing: output lost: the 59.94 Hz timer again"); return 0; }
-            mon = MonitorFromWindow((HWND)C.hwnd, MONITOR_DEFAULTTOPRIMARY);
+    return b.QuadPart > a.QuadPart ? 30.0 * (double)f.QuadPart / (double)(b.QuadPart - a.QuadPart) : 0;
+}
+
+/* pacing = display, and (pc-pacing) pacing = auto: the display's VBlanks drive the game when it refreshes at a multiple
+ * k (1..4: 60 / 120 / 240 Hz, within 0.5%) of 59.94 Hz - every k-th display VBlank is a PS2 VBlank, so every picture
+ * stays on screen for exactly k refreshes (no repeated picture every 16 s); otherwise the 59.94 Hz timer stays and
+ * the paced present does what it can (VRR: even; fixed refresh: the gpu_present.c log says why it judders). */
+static volatile LONG clock_pacing;       /* the pacing setting now (gpu_hw_pacing_changed): the clock runs for auto / display */
+static int clock_wanted(void) { return clock_pacing == SETTINGS_PACING_AUTO || clock_pacing == SETTINGS_PACING_DISPLAY; }
+
+static DWORD WINAPI clock_main(LPVOID arg) {
+    int forced = arg != NULL;                /* pacing = display (logged when it cannot); auto (quiet) */
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+    IDXGIOutput* o = find_output();
+    if (!o) { if (forced) hlog("display pacing: no DXGI output for the window: the 59.94 Hz timer stays"); return 0; }
+    for (;;) {
+        while (!clock_wanted()) Sleep(500);  /* (pacing changed to paced / immediate while the game runs) */
+        double hz = measure_refresh(o);
+        if (hz > 0) gpu_present_set_refresh(hz);
+        int k = hz > 0 ? pace_refresh_multiple(1000.0 / hz, PACE_PERIOD_MS) : 0;
+        HMONITOR mon = MonitorFromWindow((HWND)C.hwnd, MONITOR_DEFAULTTOPRIMARY);
+        if (!k) {
+            hlog("display pacing: the display runs at %.2f Hz, not a multiple of 59.94/60 Hz: the game's 59.94 Hz timer stays", hz);
+            /* (the window may go to another display: look again now and then) */
+            for (;;) {                   /* (also when the display's mode changes: fullscreen_refresh, display_mode.c) */
+                Sleep(2000);
+                double now_hz = gpu_window_refresh_hz(C.hwnd);
+                if (MonitorFromWindow((HWND)C.hwnd, MONITOR_DEFAULTTOPRIMARY) == mon && !(now_hz > 0 && fabs(now_hz - hz) > 1.0)) continue;
+                IDXGIOutput_Release(o);
+                if (!(o = find_output())) return 0;
+                break;
+            }
+            continue;
         }
+        hlog("display pacing: VBlanks from the display (%.3f Hz, %d refresh%s per VBlank)", hz, k, k > 1 ? "es" : "");
+        C.vblank_external(1);
+        int moved = 0;
+        for (uint32_t n = 0; !moved; n++) {
+            if (FAILED(IDXGIOutput_WaitForVBlank(o))) { Sleep(16); }
+            else if (n % (uint32_t)k == 0) C.display_vblank();
+            if ((n & 127) == 127 && (MonitorFromWindow((HWND)C.hwnd, MONITOR_DEFAULTTOPRIMARY) != mon ||   /* the window moved, */
+                                     fabs(gpu_window_refresh_hz(C.hwnd) - hz) > 1.0 || !clock_wanted())) moved = 1;   /* the mode or pacing changed */
+        }
+        C.vblank_external(0);
+        IDXGIOutput_Release(o);
+        if (!(o = find_output())) { hlog("display pacing: output lost: the 59.94 Hz timer again"); return 0; }
     }
 }
 
@@ -652,13 +725,26 @@ int gpu_hw_start(const gpu_hw_config* cfg) {
     gpu_caps_print(gpu_get_caps());
     if (C.stats) mem_log("render thread and device up");
     front_start();
+    gov_init();                          /* (pc-pacing: the internal scale governor, from the scale the frontend starts at) */
     InterlockedExchange(&active, 1);
-    hlog("GPU renderer on (%s, frontend on %s%s, pacing %s)", C.hwnd ? "window" : "headless",
-         front_threaded ? "its own thread" : "the GS thread", C.verify ? ", verify" : "",
-         C.pacing == SETTINGS_PACING_VRR ? "vrr" : C.pacing == SETTINGS_PACING_DISPLAY ? "display" : "vsync");
-    if (C.pacing == SETTINGS_PACING_DISPLAY && C.hwnd && C.vblank_external && C.display_vblank)
-        if (!clock_thread && !(clock_thread = CreateThread(NULL, 0, clock_main, NULL, 0, NULL))) hlog("display pacing: no clock thread");
+    int pm, pv;
+    gpu_present_get_mode(&pm, &pv);
+    static const char* const pmn[PACE_MODE_N] = { "auto", "paced", "immediate", "display" }, *const pvn[PACE_VSYNC_N] = { "on", "off", "adaptive" };
+    hlog("GPU renderer on (%s, frontend on %s%s, pacing %s, vsync %s)", C.hwnd ? "window" : "headless",
+         front_threaded ? "its own thread" : "the GS thread", C.verify ? ", verify" : "", pmn[pm], pvn[pv]);
+    /* (pc-pacing) the display's VBlanks drive the game on 60 / 120 / 240 Hz displays: pacing = display, and auto */
+    gpu_hw_pacing_changed(C.pacing);
     return 1;
+}
+
+/* (pc-pacing) graphics.pacing while the game runs: the display clock thread is started for auto / display and stands by
+ * otherwise (the presenter's part: gpu_present_set_mode) */
+void gpu_hw_pacing_changed(int pacing) {
+    InterlockedExchange(&clock_pacing, pacing);
+    C.pacing = pacing;
+    if ((pacing == SETTINGS_PACING_DISPLAY || pacing == SETTINGS_PACING_AUTO) && render_on && C.hwnd && C.vblank_external && C.display_vblank)
+        if (!clock_thread && !(clock_thread = CreateThread(NULL, 0, clock_main, (void*)(intptr_t)(pacing == SETTINGS_PACING_DISPLAY), 0, NULL)))
+            hlog("display pacing: no clock thread");
 }
 
 void gpu_hw_attach_gs(void) {
@@ -737,6 +823,12 @@ void gpu_hw_vblank(const gs_display_snap* snap, uint32_t vblank, int content43) 
     memset(&di, 0, sizeof di);
     memcpy(di.priv, snap->priv, sizeof di.priv);
     di.vblank = vblank;
+    int64_t vq = gs_vsync_qpc();         /* (pc-pacing) when the VBlank was due: the paced present */
+    if (vq > 0) {
+        static LARGE_INTEGER qf;
+        if (!qf.QuadPart) QueryPerformanceFrequency(&qf);
+        di.vblank_ms = (double)vq * 1000.0 / (double)qf.QuadPart;
+    }
     gs_display_layout L;
     di.field_code = (uint8_t)(gs_display_layout_of(snap->priv, &L) && L.field_mode ? gs_display_field_code(snap, &L) : 0xFF);
     di.content43 = (uint8_t)content43;

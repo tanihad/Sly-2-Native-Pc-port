@@ -120,6 +120,11 @@ typedef void (*gs_present_fn)(const uint32_t* frame, int ok, int w, int h, uint3
 void     gs_thread_start(int pixel_workers, gs_present_fn present);
 int      gs_async(void);                 /* the GS thread is running */
 void     gs_queue_vsync(uint32_t vblank);
+/* (pc-pacing) when the next queued VBlank was due (QPC ticks, the host timer's schedule): set by the EE before
+ * gs_queue_vsync, carried in the stream with it; gs_vsync_qpc() is that time for the VBlank whose picture the GS thread
+ * is handing to the vblank hook (0: unknown) - the paced present shows the picture at this + the present delay. */
+void     gs_set_vsync_time(int64_t qpc);
+int64_t  gs_vsync_qpc(void);
 /* Called on the EE thread about every millisecond while it waits for the GS thread (the runtime
  * keeps the IOP running there; NULL: none). */
 void     gs_set_wait_hook(void (*fn)(void));

@@ -2,6 +2,8 @@
 #include "gfx.h"
 #include "settings.h"
 #include "gpu/gpu_front.h"                /* GPU_GFX_*, GPU_SCALER_* */
+#include "gpu/gpu_hw.h"                   /* (pc-pacing) gpu_hw_scale_info */
+#include "gpu/gpu_pace.h"                 /* (pc-pacing) PACE_MODE_*, PACE_VSYNC_*, picture sizes */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -11,6 +13,9 @@
 extern void gpu_hw_set_graphics(int scale, uint32_t gfx) __attribute__((weak));
 extern void gpu_hw_set_auto_scale(int max) __attribute__((weak));
 extern int gpu_hw_auto_scale(void) __attribute__((weak));
+extern void gpu_hw_scale_status(gpu_hw_scale_info* s) __attribute__((weak));   /* (pc-pacing) */
+extern void gpu_present_set_mode(int mode, int vsync) __attribute__((weak));
+extern void gpu_hw_pacing_changed(int pacing) __attribute__((weak));
 void (*gfx_output_size)(int* w, int* h);  /* set by window.c (window_client_size) */
 
 volatile int ps2_motion_blur_off;
@@ -18,6 +23,8 @@ static int auto_was_on;                  /* (M11) internal_scale was auto at the
 
 _Static_assert((int)SETTINGS_SCALER_N == (int)GPU_SCALER_N && (int)SETTINGS_SCALER_LANCZOS == (int)GPU_SCALER_LANCZOS &&
                (int)SETTINGS_SCALER_CATMULL == (int)GPU_SCALER_CATMULL, "scaler values (settings.h, gpu_front.h)");
+_Static_assert((int)SETTINGS_VSYNC_ON == (int)PACE_VSYNC_ON && (int)SETTINGS_VSYNC_OFF == (int)PACE_VSYNC_OFF &&
+               (int)SETTINGS_VSYNC_ADAPTIVE == (int)PACE_VSYNC_ADAPTIVE, "vsync values (settings.h, gpu_pace.h)");
 
 static int env_scale(void) {
     const char* e = getenv("PS2_GS_SCALE");
@@ -78,6 +85,22 @@ void gfx_describe(char* out, int cap) {
 
 static void gfx_applier(int option) { (void)option; gfx_apply(); }
 
+/* (pc-pacing) graphics.pacing / vsync -> the presenter (gpu_present.c); live. Returns 1 if a presenter took it. */
+int gfx_apply_pacing(void) {
+    if (!gpu_present_set_mode) return 0;
+    int mode = PACE_MODE_AUTO, vs = ps2_settings.vsync;
+    switch (ps2_settings.pacing) {
+    case SETTINGS_PACING_PACED: mode = PACE_MODE_PACED; break;
+    case SETTINGS_PACING_IMMEDIATE: mode = PACE_MODE_IMMEDIATE; break;
+    case SETTINGS_PACING_DISPLAY: mode = PACE_MODE_DISPLAY; break;
+    case SETTINGS_PACING_VRR: mode = PACE_MODE_PACED; vs = SETTINGS_VSYNC_OFF; break;   /* (the old "vrr": Present(0) + tearing) */
+    default: break;
+    }
+    gpu_present_set_mode(mode, vs);
+    if (gpu_hw_pacing_changed) gpu_hw_pacing_changed(ps2_settings.pacing);   /* (the display clock: auto / display) */
+    return 1;
+}
+
 void gfx_apply(void) {
     static int logged_scale = -1;
     static uint32_t logged_bits = 0xFFFFFFFFu;
@@ -91,6 +114,7 @@ void gfx_apply(void) {
     if (gpu_hw_set_auto_scale) gpu_hw_set_auto_scale(is_auto ? auto_max() : 0);
     auto_was_on = is_auto;
     if (gpu_hw_set_graphics) gpu_hw_set_graphics(scale, bits);
+    gfx_apply_pacing();
     if (scale != logged_scale || bits != logged_bits || off != logged_blur || is_auto != logged_auto ||
         ps2_settings.preset != logged_preset) {
         logged_auto = is_auto;
@@ -153,4 +177,23 @@ int gfx_key(unsigned vk, int shift, int persist_it) {
 
 void gfx_reread(void) {
     if (settings_read_graphics(&ps2_settings)) gfx_apply();
+}
+
+void gfx_scale_status(gfx_scale_info* st) {
+    memset(st, 0, sizeof *st);
+    st->requested = gfx_scale();
+    st->drawn = st->requested;
+    st->automatic = scale_auto();
+    if (gpu_hw_scale_status) {
+        gpu_hw_scale_info g;
+        gpu_hw_scale_status(&g);
+        if (g.requested > 0) {
+            st->requested = g.requested;
+            st->drawn = g.drawn;
+            st->limited = g.limited;
+            st->load = g.load;
+            st->stall_ms = g.stall_ms;
+        }
+    }
+    pace_picture_size(st->drawn, ps2_settings.aspect_w, ps2_settings.aspect_h, &st->w, &st->h);
 }

@@ -26,7 +26,9 @@ volatile long settings_serial;
 
 static const char* const n_hud[] = { "edges", "centered" };
 static const char* const n_renderer[] = { "software", "gpu" };
-static const char* const n_pacing[] = { "vsync", "vrr", "display" };
+const char* const settings_pacing_names[SETTINGS_PACING_N] = { "auto", "vrr", "display", "paced", "immediate" };   /* (pc-pacing) */
+const char* const settings_vsync_names[SETTINGS_VSYNC_N] = { "on", "off", "adaptive" };
+#define n_pacing settings_pacing_names
 static const char* const n_outlines[] = { "ps2", "thin" };
 static const char* const n_filters[] = { "modern", "faithful" };
 static const char* const n_fullscreen[] = { "off", "on", "exclusive" };
@@ -42,12 +44,16 @@ static const settings_opt opts[] = {
     { "display", "aspect", SET_ASPECT, SET_LIVE, SET_APPLY_DISPLAY, OFF(aspect_w), 0, 0, 16 << 16 | 9, NULL, NULL, "PS2_ASPECT" },
     ENUM_("display", "hud", hud_centered, SET_LIVE, SET_APPLY_DISPLAY, n_hud, 2, 0, "centred=1", "PS2_HUD"),
     INT_("display", "monitor", monitor, SET_LIVE, SET_APPLY_WINDOW, 0, 16, 0, NULL, NULL),
+    /* (pc-pacing) display_mode.c: applied when the window next goes fullscreen (or is activated fullscreen) */
+    INT_("display", "fullscreen_refresh", fullscreen_refresh, SET_LIVE, SET_APPLY_NONE, 0, 1000, 0, "desktop=0|auto=-1", NULL),
     ENUM_("graphics", "preset", preset, SET_LIVE, SET_APPLY_GFX, settings_preset_names, SETTINGS_PRESET_N,
           SETTINGS_PRESET_BALANCED, NULL, NULL),
     ENUM_("graphics", "renderer", renderer_gpu, SET_LIVE, SET_APPLY_RENDERER, n_renderer, 2, 1, "sw=0|hw=1|d3d11=1",
           "PS2_GS_BACKEND"),
-    ENUM_("graphics", "pacing", pacing, SET_GPU, SET_APPLY_PACING, n_pacing, 3, SETTINGS_PACING_VSYNC, "tearing=1",
-          "PS2_GS_PACING"),
+    ENUM_("graphics", "pacing", pacing, SET_LIVE | SET_GPU, SET_APPLY_PACING, n_pacing, SETTINGS_PACING_N, SETTINGS_PACING_AUTO,
+          "vsync=0|tearing=1", "PS2_GS_PACING"),
+    ENUM_("graphics", "vsync", vsync, SET_LIVE | SET_GPU, SET_APPLY_PACING, settings_vsync_names, SETTINGS_VSYNC_N, SETTINGS_VSYNC_ON,
+          NULL, "PS2_GS_VSYNC"),   /* (pc-pacing) */
     INT_("graphics", "internal_scale", internal_scale, SET_LIVE | SET_PRESET | SET_GPU, SET_APPLY_GFX, 1, 8, SETTINGS_SCALE_AUTO,
          "auto=0|native=-1", "PS2_GS_SCALE"),
     INT_("graphics", "auto_max", auto_max, SET_LIVE | SET_PRESET | SET_GPU, SET_APPLY_GFX, 1, 8, SETTINGS_SCALE_AUTO_MAX, NULL, NULL),
@@ -271,9 +277,9 @@ int settings_parse_renderer(const char* v, int* gpu) {
     return 0;
 }
 int settings_parse_pacing(const char* v, int* pacing) {
-    if (!_stricmp(v, "vsync")) { *pacing = SETTINGS_PACING_VSYNC; return 1; }
-    if (!_stricmp(v, "vrr") || !_stricmp(v, "tearing")) { *pacing = SETTINGS_PACING_VRR; return 1; }
-    if (!_stricmp(v, "display")) { *pacing = SETTINGS_PACING_DISPLAY; return 1; }
+    if (!_stricmp(v, "vsync")) { *pacing = SETTINGS_PACING_AUTO; return 1; }   /* (the old default) */
+    if (!_stricmp(v, "tearing")) { *pacing = SETTINGS_PACING_VRR; return 1; }
+    for (int i = 0; i < SETTINGS_PACING_N; i++) if (!_stricmp(v, settings_pacing_names[i])) { *pacing = i; return 1; }
     return 0;
 }
 
@@ -516,6 +522,9 @@ int settings_format(const ps2_settings_t* s, char* out, size_t cap) {
         "hud = %s\n"
         "; Monitor for fullscreen: 0 (default: the one the window is on) or 1, 2, ...\n"
         "monitor = %s\n"
+        "; Fullscreen refresh rate: desktop (default: never changed), auto (a multiple of the game's 59.94 Hz, e.g. 120 Hz on a\n"
+        "; 144/165 Hz display without G-Sync/FreeSync: no judder) or a rate in Hz; only while fullscreen and in front.\n"
+        "fullscreen_refresh = %s\n"
         "\n"
         "[graphics]\n"
         "; Preset: original (the PS2's look: 1x, 4:3, TV filters), performance (2x, lowered on a slow\n"
@@ -527,9 +536,12 @@ int settings_format(const ps2_settings_t* s, char* out, size_t cap) {
         "; software (the PS2's renderer on the CPU, at the PS2's resolution). When the GPU renderer cannot\n"
         "; start, the software renderer is used and sly2.log says why. Environment override: PS2_GS_BACKEND=sw|hw\n"
         "renderer = %s\n"
-        "; gpu renderer: frame pacing. vsync (default), vrr (G-Sync/FreeSync: every picture shown once,\n"
-        "; no wait for the display), display (the game runs at the display's 60 Hz instead of 59.94 Hz).\n"
+        "; gpu renderer: frame pacing. auto (default: an even 59.94 Hz cadence - smooth on G-Sync/FreeSync displays;\n"
+        "; on a fixed refresh each picture as soon as it is drawn, and 60/120/240 Hz displays drive the game), paced (the\n"
+        "; even cadence always), immediate (lowest latency), display (the display's 60/120/240 Hz drives the game).\n"
         "pacing = %s\n"
+        "; gpu renderer: vertical sync. on (default), off (tearing allowed), adaptive (synced unless a picture is late).\n"
+        "vsync = %s\n"
         "; The settings below are used by the Direct3D 11 renderer (the software renderer ignores them, except\n"
         "; motion_blur, the game's own effect). They change while the game runs too: F2 / Shift+F2 scale,\n"
         "; Ctrl+F2 scale auto, F3 outlines, F4 filters preset, F5 motion blur, F6 flicker filter, Shift+F6 interlacing.\n"
@@ -569,8 +581,8 @@ int settings_format(const ps2_settings_t* s, char* out, size_t cap) {
         "; Show the frame rate in the title bar and in the top left corner of the picture.\n"
         "show_fps = %s\n"
         "%s",
-        s->aspect_w, s->aspect_h, T(0, "display", "hud"), T(1, "display", "monitor"),
-        settings_preset_names[settings_detect_preset(s)], T(2, "graphics", "renderer"), T(3, "graphics", "pacing"),
+        s->aspect_w, s->aspect_h, T(0, "display", "hud"), T(1, "display", "monitor"), T(16, "display", "fullscreen_refresh"),
+        settings_preset_names[settings_detect_preset(s)], T(2, "graphics", "renderer"), T(3, "graphics", "pacing"), T(17, "graphics", "vsync"),
         T(4, "graphics", "internal_scale"), T(5, "graphics", "auto_max"), T(6, "graphics", "outlines"), T(7, "graphics", "filters"),
         T(8, "graphics", "motion_blur"), T(9, "graphics", "flicker_filter"), T(10, "graphics", "interlacing"),
         T(11, "graphics", "scaler"),
@@ -882,7 +894,13 @@ void settings_load(void) {
         fprintf(stderr, "[settings] PS2_GS_BACKEND='%s' is not sw or hw: ignored\n", e);
     e = getenv("PS2_GS_PACING");
     if (e && *e && !settings_parse_pacing(e, &ps2_settings.pacing))
-        fprintf(stderr, "[settings] PS2_GS_PACING='%s' is not vsync, vrr or display: ignored\n", e);
+        fprintf(stderr, "[settings] PS2_GS_PACING='%s' is not auto, paced, immediate, display or vrr: ignored\n", e);
+    e = getenv("PS2_GS_VSYNC");                  /* (pc-pacing) */
+    if (e && *e) {
+        int vi = settings_find("graphics", "vsync"), v;
+        if (settings_parse_value(vi, e, &v)) ps2_settings.vsync = v;
+        else fprintf(stderr, "[settings] PS2_GS_VSYNC='%s' is not on, off or adaptive: ignored\n", e);
+    }
     e = getenv("PS2_VBLANK");                    /* (the design's name for the display-driven VBlank) */
     if (e && !_stricmp(e, "display")) ps2_settings.pacing = SETTINGS_PACING_DISPLAY;
     fprintf(stderr, "[settings] aspect %d:%d, hud %s, renderer %s%s, preset %s\n", ps2_settings.aspect_w, ps2_settings.aspect_h,

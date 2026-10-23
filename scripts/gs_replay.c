@@ -1873,7 +1873,8 @@ int main(int argc, char** argv) {
         hc.scale = game_scale;           /* (M7) */
         hc.gfx = game_gfx;
         hc.aspect = game_aspect;         /* (M10: --aspect; anamorphic display targets at scale) */
-        if (!gpu_hw_start(&hc)) { fprintf(stderr, "GPU renderer unavailable\n"); return 1; }
+        _putenv("PS2_GS_GOVERNOR=0");        /* (pc-pacing) a replay is not real time: the scale asked for, never lowered */
+    if (!gpu_hw_start(&hc)) { fprintf(stderr, "GPU renderer unavailable\n"); return 1; }
     } else
     if (FRONT_MODE(backend) || ref_mode) {       /* the frontend consumes the stream next to (or instead of) sw */
         gpu_front_config fc;

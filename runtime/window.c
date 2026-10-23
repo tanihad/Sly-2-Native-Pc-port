@@ -28,6 +28,7 @@
 #include "aspect.h"
 #include "hw.h"
 #include "settings.h"
+#include "display_mode.h"                 /* (pc-pacing) fullscreen refresh rate */
 #include "gfx.h"
 #include "input.h"
 #include "input_internal.h"
@@ -1012,8 +1013,10 @@ static void toggle_fullscreen(HWND hwnd) {
         SetWindowPos(hwnd, HWND_TOP, mi.rcMonitor.left, mi.rcMonitor.top, mi.rcMonitor.right - mi.rcMonitor.left,
                      mi.rcMonitor.bottom - mi.rcMonitor.top, SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
         win_fullscreen = 1;
+        display_mode_fullscreen(hwnd, 1);   /* (pc-pacing) [display] fullscreen_refresh */
     } else {
         win_fullscreen = 0;
+        display_mode_fullscreen(hwnd, 0);
         SetWindowLongPtrW(hwnd, GWL_STYLE, (style & ~(LONG_PTR)WS_POPUP) | WS_OVERLAPPEDWINDOW);
         SetWindowPlacement(hwnd, &win_placement);
         SetWindowPos(hwnd, NULL, 0, 0, 0, 0,
@@ -1281,6 +1284,7 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;                        /* game keys are read with GetAsyncKeyState */
     case WM_ACTIVATEAPP:
         if (wp) { reread_display(); gfx_reread(); }   /* sly2.ini may have been edited meanwhile */
+        if (win_fullscreen) display_mode_fullscreen(hwnd, wp != 0);   /* (pc-pacing) the desktop's rate while in the background */
         if (menu_focus) menu_focus(wp != 0);          /* (pc-menu: silent in the background with [audio] background = off) */
         break;
     case WM_SYSCHAR:

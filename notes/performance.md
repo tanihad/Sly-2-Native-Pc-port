@@ -30,10 +30,9 @@ work); see `runtime/gs_draw_pixel.c` (deferred drawing) and `runtime/gs_thread.c
 - If the emulation is late, missed VBlanks are dropped, not replayed in a burst (no catch-up
   storms); `vblanks N/M due` in PS2_PERF shows when that happens.
 - An idle EE thread sleeps in WaitOnAddress until the next interrupt (no spinning).
-- Presentation: the window thread shows the newest composed picture at every display refresh
-  (triple buffer, Present with sync interval 1). On a 60 Hz display one picture repeats about every
-  17 s (59.94 vs 60 Hz). Driving the VBlank from the display's vsync when it runs at ~60 Hz would
-  remove that; not done (see Next).
+- Presentation (GPU renderer, pc-pacing): see notes/pc-experience.md "Interfaces: pacing and resolution" - paced on VRR
+  displays, immediate on a fixed refresh, the display drives the VBlank on 60 / 120 / 240 Hz; the GPU never slows the game
+  (the internal scale governor). The software renderer's window presenter is unchanged (Present(1) of the newest picture).
 - The process opts out of Windows power throttling (EcoQoS) at startup: a game window that is not
   in front (or a headless run) otherwise lands on E-cores at low clocks (VU 16.5 -> 12 ns/pair,
   EE busy 13.5 -> 12 ms per VBlank). `PS2_HIGH_QOS=0` keeps Windows' default.

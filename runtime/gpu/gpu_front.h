@@ -152,6 +152,8 @@ typedef struct {
                                             (anamorphic widescreen, gpu_display_kx; 0: = scale) */
     uint16_t pad16;
     void* rb;                          /* gpu_readback* of the composed picture (dumps), or NULL */
+    double vblank_ms;                    /* (pc-pacing) when the VBlank was due (QPC in ms, the host timer's clock): the paced
+                                            present shows the picture at this + the present delay; 0: unknown (present at once) */
 } gpu_display_info;
 enum { GPU_DI_SHOW = 1,                  /* present it (else compose only: tests, read-backs) */
        GPU_DI_SIGNAL = 2,                /* call the picture-done callback (gpu_set_picture_done) after it */

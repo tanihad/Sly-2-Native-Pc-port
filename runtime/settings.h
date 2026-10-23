@@ -31,7 +31,8 @@ typedef struct {
      * the software renderer ignores them. */
     int renderer_gpu;            /* renderer = gpu (1, default since M11: the Direct3D 11 GS backend; the software
                                     renderer when it cannot start) | software (0) */
-    int pacing;                  /* pacing = vsync (0, default) | vrr (1) | display (2): SETTINGS_PACING_* */
+    int pacing;                  /* pacing = auto (0, default; "vsync" = the same) | vrr (1) | display (2) | paced (3) |
+                                    immediate (4): SETTINGS_PACING_* (pc-pacing: notes/settings.md, gpu/gpu_pace.h) */
     int internal_scale;          /* 1..8, 0 = auto (default since M11: 3x, lowered while the GPU cannot keep up),
                                     -1 = native (the smallest scale whose height covers the window's) */
     int outlines_thin;           /* outlines = ps2 (0, default) | thin (1) */
@@ -58,9 +59,22 @@ typedef struct {
     /* ([controls] belongs to runtime/input.c: input_config_get / input_config_set) */
     /* [display] (pc-menu) */
     int monitor;                 /* monitor = 0 (default: where the window is) | 1..n: fullscreen / window on monitor n */
+    /* (pc-pacing) */
+    int vsync;                   /* [graphics] vsync = on (0, default) | off (1: tearing allowed) | adaptive (2): SETTINGS_VSYNC_* */
+    int fullscreen_refresh;      /* [display] fullscreen_refresh = desktop (0, default) | auto (-1) | <Hz>: display_mode.h */
 } ps2_settings_t;
 
-enum { SETTINGS_PACING_VSYNC, SETTINGS_PACING_VRR, SETTINGS_PACING_DISPLAY };
+/* graphics.pacing (pc-pacing): auto = pictures presented at an even 59.94 Hz cadence (their VBlank's time + a measured delay:
+ * smooth on VRR displays) until the display is known; on a fixed refresh as soon as they are drawn, and on 60 / 120 / 240 Hz
+ * displays the display's VBlanks drive the game; paced = the even cadence always; immediate = each picture as soon as it is
+ * drawn (lowest latency); display = the display's VBlanks drive the game (60 / 120 / 240 Hz); vrr = the old setting:
+ * paced + vsync off. */
+enum { SETTINGS_PACING_AUTO, SETTINGS_PACING_VRR, SETTINGS_PACING_DISPLAY, SETTINGS_PACING_PACED, SETTINGS_PACING_IMMEDIATE,
+       SETTINGS_PACING_N };
+#define SETTINGS_PACING_VSYNC SETTINGS_PACING_AUTO   /* (the old default's name: "vsync" in sly2.ini is auto) */
+enum { SETTINGS_VSYNC_ON, SETTINGS_VSYNC_OFF, SETTINGS_VSYNC_ADAPTIVE, SETTINGS_VSYNC_N };
+extern const char* const settings_pacing_names[SETTINGS_PACING_N];   /* "auto", "vrr", "display", "paced", "immediate" */
+extern const char* const settings_vsync_names[SETTINGS_VSYNC_N];     /* "on", "off", "adaptive" */
 enum { SETTINGS_SCALER_AUTO, SETTINGS_SCALER_POINT, SETTINGS_SCALER_BOX, SETTINGS_SCALER_LANCZOS, SETTINGS_SCALER_CATMULL,
        SETTINGS_SCALER_BILINEAR, SETTINGS_SCALER_N };
 extern const char* const settings_scaler_names[SETTINGS_SCALER_N];   /* "auto", "point", ... (sly2.ini values) */
