@@ -56,6 +56,13 @@ the EE queues register writes and image data in order and waits only where it ob
 with pixel workers drawing deferred batches (`runtime/gs_draw_pixel.c`); VBlanks come from a host
 timer thread. Measuring and tuning: `notes/performance.md`.
 
+(pc-fps2) Above 60 fps a VIF1 source-chain DMA runs on a **graphics worker** thread (`runtime/gfx_async.h` explains the
+ownership rules): while a job is out, DMA channel 1, VIF1, VU1, the GIF and the GS queue's producer side belong to the
+worker, the EE calls `gfx_sync()` before touching any of them, and `intc_raise` / `dmac_raise` / GS SIGNAL-FINISH-LABEL
+on the worker are deferred to the EE (applied in `ps2_service_irq`). A subsystem change that adds an EE entry point into
+those units must call `gfx_sync()` first; code that may run on the worker must not touch EE-only state (the IOP,
+`ps2_poll_iop` checks `gfx_on_worker()`; perf.h keeps the worker's own split).
+
 ## Building and running from a worktree
 
 tools/, orig/ and .venv/ only exist in the main checkout

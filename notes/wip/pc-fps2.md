@@ -59,6 +59,23 @@ a12v = a12 + VIF unpack fast paths: worker 8.8 -> 7.2 ms (VIF 34% -> 20%), fps u
 - Cost: a re-run of the frame's chains ~5.3-6.8 ms on the worker (= a real frame's job, 6.2-7 ms) + the same GS thread /
   frontend / GPU work per picture.
 
+## (b) measured right (distinct pictures/s, scale 2; build\warp\fps2_cmp3s2.txt) vs (a) a12v
+| scene | (a) 120 | (a) 165 | (b) k=1: game / distinct | (b) k=2: game / distinct |
+|---|---|---|---|---|
+| ep1 hub | 96.2 | 97.0 | 40.3 / 80.7 | 30.0 / 89.9 |
+| ep5 hub | 118.4 | 124.0 | 57.9 / 115.8 | 37.3 / 112.0 |
+| m8 boss | 118.7 | 145.1 | 59.0 / 117.9 | 58.9 / 176.8 (scene differs: at a 60 tick the GP pad ends with Sly falling; clouds only) |
+A re-run costs what a frame costs (same VU1 pairs per job: 470k = 470k); (b) <= (a) where the content is the same, and
+the game tick drops below 60 in heavy scenes. DECISION: (a).
+
+## Correctness sweeps (scripts\fps2_check.ps1; 16 scenes at 120 / 165, 4 in parallel)
+- PS2_GIF_CHECK and PS2_VIF_UPK_FAST=check: 0 differ in every scene (10-20M packets, 14-40M unpack calls per run).
+- PS2_GFX_ASYNC_CHECK: 5-14% of jobs read memory the EE changed after the kick: always the effect-object pool at
+  0x1CBxxxx-0x1CDxxxx (pairs 0x5A0 / 0x840 apart: per-object double buffers), written by f_0015B428 (allocates /
+  initialises effect objects from a pool, 0x1390D8) and the main loop (PS2_WRITE_WATCH=1CC26A0). Same race as on a
+  PS2 (the DMA runs beside the EE there too); effect: those objects one frame early in that frame. So the worker is used
+  only above 60 fps (frame_rate_high()); at 60 the chain runs on the EE as before (exact).
+
 ## In progress
 - A1 graphics worker (runtime/gfx_async.c/.h, hooks in dma/vif/gif/vu/hw/gs_thread/ps2_runtime/perf) + A2 raw PATH1
   packets (gif_parse.h, gif.c path1_raw, gs_thread.c K_GIF / gs_gif_packet; PS2_GIF_RAW=0 off, PS2_GIF_CHECK=1 checks).

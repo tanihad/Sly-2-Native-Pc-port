@@ -201,12 +201,7 @@ _Static_assert(S_VSYNC < GS_PRIV_SNAPSHOT, "display snapshot too small");
  * the one the game draws into now), and a snapshot showing it instead */
 static uint64_t dispfb_before[2];
 int gs_dispfb_swap;
-void gs_note_dispfb(int i, uint64_t old, uint64_t now) {
-    if (old != now) dispfb_before[i] = old;
-    static int n = -1;
-    if (n < 0) n = getenv("PS2_DISPFB_LOG") ? 0 : 1000;
-    if (n < 40 && gs_vsync_count > 3000) { n++; fprintf(stderr, "[gs] v%u DISPFB%d %016llX -> %016llX\n", gs_vsync_count, i + 1, (unsigned long long)old, (unsigned long long)now); }
-}
+void gs_note_dispfb(int i, uint64_t old, uint64_t now) { if (old != now) dispfb_before[i] = old; }
 
 void gs_priv_snapshot(uint64_t out[GS_PRIV_SNAPSHOT]) {
     memset(out, 0, GS_PRIV_SNAPSHOT * sizeof(uint64_t));

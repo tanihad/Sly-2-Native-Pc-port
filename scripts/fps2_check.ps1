@@ -6,6 +6,7 @@
 param([string]$Rate = "120", [string[]]$Scenes = @(), [int]$Seconds = 100, [int]$Parallel = 4, [string]$Exe = "",
       [string]$Tag = "chk", [int]$DumpSecs = 20, [string]$Extra = "")
 $root = Split-Path $PSScriptRoot -Parent
+$Scenes = @($Scenes | ForEach-Object { $_ -split ';' } | Where-Object { $_ })   # (several scenes: "a;b;c")
 if (-not $Scenes.Count) {
     $Scenes = @('2||play|HPT', '2|m2_turret|direct|GP', '2|m2_dance_audition|direct|GP', '2|m2_rc_chopper|direct|GP',
                 '5|t5_heist_free_carmelita_hack|direct|GP', '6|m6_paraglide|direct|GP', '7|m7_boss|direct|GP', '4|m4_brawl|direct|GP')

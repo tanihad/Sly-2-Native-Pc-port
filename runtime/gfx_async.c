@@ -129,6 +129,8 @@ static volatile int check_job;
 static uint64_t chk_jobs, chk_bytes, chk_bad_bytes, chk_bad_jobs;
 static int chk_bad_now;
 static uint32_t job_tadr;
+static uint32_t race_addr[32], race_cnt[32], race_vb[32], race_len[32];
+static int race_n;
 uint32_t dma_debug_tadr(int ch);                 /* dma.c */
 
 static void read_check(uint32_t addr, const uint8_t* p, uint32_t bytes) {   /* worker */
@@ -139,6 +141,10 @@ static void read_check(uint32_t addr, const uint8_t* p, uint32_t bytes) {   /* w
         uint32_t d = 0;
         for (uint32_t i = 0; i < bytes; i++) d += s[i] != p[i];
         chk_bad_bytes += d;
+        int k = 0;                                   /* where: per address, and the VBlank it last happened */
+        while (k < race_n && race_addr[k] != addr) k++;
+        if (k == race_n && race_n < 32) { race_addr[race_n++] = addr; race_cnt[k] = 0; }
+        if (k < race_n) { race_cnt[k]++; race_vb[k] = ps2_vblank_count(); race_len[k] = bytes; }
         if (!chk_bad_now++ && chk_bad_jobs < 10) {
             fprintf(stderr, "[gfx] PS2_GFX_ASYNC_CHECK: the chain read %u bytes at 0x%08X that changed after the kick (%u differ; "
                             "job from TADR 0x%08X, VBlank %u)\n", bytes, addr, d, job_tadr, ps2_vblank_count());
@@ -167,9 +173,14 @@ static int take(int ch) {                        /* EE, dma.c pump */
         if (check_job) {                         /* the previous checked job's verdict */
             chk_jobs++;
             if (chk_bad_now) chk_bad_jobs++;
-            if (chk_jobs % 100 == 0)
+            if (chk_jobs % 100 == 0) {
                 fprintf(stderr, "[gfx] PS2_GFX_ASYNC_CHECK: %llu jobs checked (%.1f MB read), %llu read changed memory (%llu bytes)\n",
                         (unsigned long long)chk_jobs, chk_bytes / 1e6, (unsigned long long)chk_bad_jobs, (unsigned long long)chk_bad_bytes);
+                if (chk_jobs % 1000 == 0)
+                    for (int k = 0; k < race_n; k++)
+                        fprintf(stderr, "[gfx]   changed reads at 0x%08X (%u bytes): %u jobs, last at VBlank %u\n", race_addr[k],
+                                race_len[k], race_cnt[k], race_vb[k]);
+            }
         }
         check_job = (st_jobs % (uint64_t)check_every) == 0;
         chk_bad_now = 0;
