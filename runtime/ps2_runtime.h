@@ -307,6 +307,7 @@ void ps2_hook(ps2_ctx* ctx, uint32_t addr);
 #include "aspect.h"
 #include "gs_hint.h"
 #include "gfx.h"
+#include "pc_text.h"   /* PC wording, boot without the save prompt (runtime/pc_text.c) */
 
 /* ---- interrupts: set asynchronously by host timers, serviced at loop heads -------------------- */
 
