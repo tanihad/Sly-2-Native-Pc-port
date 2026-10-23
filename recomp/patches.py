@@ -213,6 +213,13 @@ PATCHES: list[Patch] = [
           "entry of 'wait for the next VBlank' (sets 0x2DFB58 and waits on the semaphore 0x2DFB4C that the VBlank "
           "handler 0x16F468 signals): called by the render thread (0x160B70 via 0x16F590) right after it kicked a "
           "frame. Above 60 fps the host timer raises the VBlank now (at most one per 1 / rate s); at 60 it returns at once"),
+    Patch("frame_movie_begin", *MOVIE_PLAY, 0x001B3BD0, "before",
+          "frame_rate_movie(1);",
+          "entry of the movie player (one movie: its own decode / display loop, paced by the VBlanks it waits for - at "
+          "120 VBlanks per second a movie played twice as fast, picture and sound apart): movies keep the PS2's 59.94 Hz"),
+    Patch("frame_movie_end", *MOVIE_PLAY, 0x001B3EB4, "before",
+          "frame_rate_movie(0);",
+          "the movie player's only return: the frame rate's VBlanks again"),
 ]
 
 

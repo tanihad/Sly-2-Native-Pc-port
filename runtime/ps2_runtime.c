@@ -611,6 +611,26 @@ static void vblank(ps2_ctx* ctx) {
     perf_leave(perf_prev);
     pad_vsync(ctx);
 
+    /* (pc-fps) PS2_FPS_TRACE=<file>: one buffered line per VBlank - VBlank, wall-clock seconds, the game clock's t and dt
+     * (0x2DDED0 +0 / +4) and the player's position (0x2DE1C0) - for scripts/fps_trace.py (frame-rate tests; cheap, unlike
+     * a PS2_PEEK line per VBlank on the unbuffered log) */
+    static FILE* fps_trace = (FILE*)1;
+    if (fps_trace == (FILE*)1) {
+        const char* e = getenv("PS2_FPS_TRACE");
+        fps_trace = e && *e ? fopen(e, "w") : NULL;
+        if (fps_trace) setvbuf(fps_trace, NULL, _IOFBF, 1 << 16);
+    }
+    if (fps_trace) {
+        LARGE_INTEGER pt;
+        QueryPerformanceCounter(&pt);
+        uint32_t w[5] = { ps2_r32(ctx, 0x2DDED0), ps2_r32(ctx, 0x2DDED4), ps2_r32(ctx, 0x2DE1C0), ps2_r32(ctx, 0x2DE1C4),
+                          ps2_r32(ctx, 0x2DE1C8) };
+        float f[5];
+        memcpy(f, w, sizeof f);
+        fprintf(fps_trace, "%u %.5f %.5f %.6f %.2f %.2f %.2f\n", vblank_count,
+                (double)(pt.QuadPart - qpc_start.QuadPart) / (double)qpc_freq.QuadPart, f[0], f[1], f[2], f[3], f[4]);
+        if (vblank_count % 600 == 0) fflush(fps_trace);
+    }
     /* PS2_PEEK="<hexaddr>:<words>[,...]": print EE memory every PS2_PEEK_EVERY VBlanks (default 60) */
     static const char* peek = (const char*)1;
     static int peek_every = 60;
@@ -641,7 +661,9 @@ static void vblank(ps2_ctx* ctx) {
             if (sscanf(tok, "%x:%u", &addr, &words) < 1) continue;
             fprintf(stderr, "[peek] v%u %08X:", vblank_count, addr);
             for (unsigned k = 0; k < words && k < 16; k++) fprintf(stderr, " %08X", ps2_r32(ctx, addr + 4 * k));
-            fprintf(stderr, "\n");
+            LARGE_INTEGER pt;                    /* (pc-fps) wall-clock seconds since the start: game time vs real time */
+            QueryPerformanceCounter(&pt);
+            fprintf(stderr, " @%.4f\n", (double)(pt.QuadPart - qpc_start.QuadPart) / (double)qpc_freq.QuadPart);
         }
     }
     /* PS2_POKE="<hexaddr>=<hexvalue>[?<hexaddr>=<hexvalue>][,...]" (debugging, off by default): write

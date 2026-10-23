@@ -10,6 +10,7 @@ static volatile LONG setting = 60;
 static volatile LONG display_mhz;        /* the display's refresh, mHz (0 = unknown) */
 static volatile LONG64 request_qpc;
 static HANDLE request_event;
+static volatile LONG movie;              /* a movie plays (patches frame_movie_*) */
 
 static void update_dt_min(void) {
     /* the game's own 1/60 at 60; above, low enough for any rate the limiter allows (the clamp only guards against a
@@ -48,6 +49,7 @@ double frame_rate_display_hz(void) { return display_mhz > 0 ? (double)display_mh
 
 double frame_rate_target_hz(void) {
     int s = (int)setting;
+    if (movie) return FRAME_RATE_NTSC_HZ;          /* movies: the PS2's rate (their decode loop counts VBlanks) */
     if (s == FRAME_RATE_UNLIMITED) return 0;
     if (s == FRAME_RATE_DISPLAY) {
         double d = frame_rate_display_hz();
@@ -90,6 +92,10 @@ void frame_vblank_request(void) {
     QueryPerformanceCounter(&t);
     InterlockedExchange64(&request_qpc, t.QuadPart);
     SetEvent(frame_vblank_event());
+}
+
+void frame_rate_movie(int on) {
+    if (InterlockedExchange(&movie, on != 0) != (on != 0)) update_dt_min();
 }
 
 int64_t frame_vblank_take_request(void) { return InterlockedExchange64(&request_qpc, 0); }

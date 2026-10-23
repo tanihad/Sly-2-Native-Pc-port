@@ -37,6 +37,8 @@ int    frame_rate_high(void);
 double frame_rate_content_ms(void);
 /* the limiter's minimum gap between VBlanks (QPC ticks for qpf), 0 when not high */
 int64_t frame_rate_min_gap(int64_t qpf);
+/* (patches frame_movie_begin / _end) a movie plays: the PS2's 59.94 Hz and the game's own dt clamp until it ends */
+void   frame_rate_movie(int on);
 /* (patch frame_vblank_wait) the game's render thread waits for the next VBlank: its frame is kicked */
 void   frame_vblank_request(void);
 /* ps2_runtime.c: the limiter's request, taken by the host timer (QPC of the request, 0 = none) */

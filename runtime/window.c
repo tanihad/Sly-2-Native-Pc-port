@@ -112,6 +112,9 @@ static const struct { const char* name; int axis, value; } script_sticks[] = {
  *   "t<seconds>:<button>[:<hold>]"      at a wall-clock time since the first pad read, e.g.
  *       "t95:start": scenes synchronised to sound (the intro cutscene follows its music stream)
  *       last a fixed real time, however fast the game runs.
+ *   "r<seconds>:<button>[:<hold>]"      (pc-fps) that many seconds after the previous token started.
+ *   A hold ending in "s" is in seconds ("r0.5:lup:2.5s"): the same real time at any frame rate (frame_rate.h; pad
+ *   frames follow the VBlanks, which follow the frame rate).
  *
  * PS2_INPUT_FILE=<path>: live input. Lines appended to that file while the game runs are read
  * every few frames and added to the script; relative tokens in a new line count from the moment
@@ -124,7 +127,7 @@ static const struct { const char* name; int axis, value; } script_sticks[] = {
  * real-time sections can be played step by step however long it takes to look at a frame. The EE
  * waits inside the pad read; meanwhile the whole PS2 stands still (ps2_debug_hold: VBlank clock,
  * COP0 Count, EE timers, IOP time, SPU2 mixer), so no game time passes during the wait. */
-enum { SCRIPT_ABS, SCRIPT_REL, SCRIPT_ANCHOR, SCRIPT_QUIET, SCRIPT_TIME };
+enum { SCRIPT_ABS, SCRIPT_REL, SCRIPT_ANCHOR, SCRIPT_QUIET, SCRIPT_TIME, SCRIPT_RTIME };
 #define SCRIPT_MAX   16384
 static double script_at[SCRIPT_MAX];       /* SCRIPT_TIME tokens: seconds since the first pad read */
 static double script_t0;
@@ -171,7 +174,8 @@ void ps2_request_ram_dump(void);
 void ps2_request_calls_window(uint32_t frames);
 void ps2_request_watch_window(uint32_t frames);
 void ps2_debug_hold(int on);              /* runtime: EE timers, IOP time and the SPU2 stand still */
-static struct { uint32_t frame, hold, start, addr, ra, base, last; int button, kind, armed, seen, axis, value; }
+static struct { uint32_t frame, hold, start, addr, ra, base, last; int button, kind, armed, seen, axis, value;
+                double hold_s, start_s; }     /* (pc-fps) hold_s > 0: held for that many seconds ("...:2.5s") */
     script[SCRIPT_MAX];
 static int script_n = -1;
 static uint32_t script_frame;
@@ -196,6 +200,9 @@ static void script_parse(const char* s) {
         if (tok[0] == '+') {
             kind = SCRIPT_REL;
             if (sscanf(tok + 1, "%u:%31[a-z0-9]:%u", &frame, name, &hold) < 2) continue;
+        } else if (tok[0] == 'r' && (isdigit((unsigned char)tok[1]) || tok[1] == '.')) {   /* (pc-fps) r<seconds>: relative time */
+            kind = SCRIPT_RTIME;
+            if (sscanf(tok + 1, "%lf:%31[a-z0-9]:%u", &at, name, &hold) < 2) continue;
         } else if (tok[0] == 't') {
             kind = SCRIPT_TIME;
             if (sscanf(tok + 1, "%lf:%31[a-z0-9]:%u", &at, name, &hold) < 2) continue;
@@ -229,6 +236,14 @@ static void script_parse(const char* s) {
                 found = SCRIPT_AXIS; axis = a + 1; value = (int)strtoul(name + 2, NULL, 16);
             }
         if (found == -1) { wlog("PS2_INPUT: unknown button in '%s'", tok); continue; }
+        /* (pc-fps) a hold in seconds ("t3:lup:2.5s", "+0:cross:0.2s"): the same real time at any frame rate */
+        double hold_s = 0;
+        const char* last_colon = strrchr(tok, ':');
+        size_t tl = strlen(tok);
+        if (last_colon && last_colon != strchr(tok, ':') && tl > 1 && tok[tl - 1] == 's')
+            hold_s = atof(last_colon + 1);
+        if (hold_s > 0) hold = 0xFFFFFFF;   /* (until its seconds are over: script_apply) */
+        script[script_n].hold_s = hold_s; script[script_n].start_s = 0;
         script[script_n].axis = axis; script[script_n].value = value;
         script[script_n].frame = frame; script[script_n].hold = hold; script[script_n].button = found;
         script[script_n].kind = kind; script[script_n].addr = addr; script[script_n].ra = ra;
@@ -342,11 +357,22 @@ static void script_wait_line(uint32_t now) {
 
 /* Give relative and anchored tokens their start frame once the token before them has started. */
 static void script_resolve(uint32_t now) {
+    double now_s = script_seconds() - script_t0;               /* (pc-fps) when each token started, in seconds */
+    if (now_s <= 0) now_s = 1e-9;
+    for (int i = 0; i < script_n; i++)
+        if (script[i].start != SCRIPT_UNSET && now >= script[i].start && script[i].start_s <= 0) script[i].start_s = now_s;
     for (int i = 0; i < script_n; i++) {
         if (script[i].start != SCRIPT_UNSET) continue;
         uint32_t prev = i ? script[i - 1].start : 0;
         if (prev == SCRIPT_UNSET || now < prev) continue;        /* previous one hasn't started */
         if (script[i].kind == SCRIPT_REL) { script[i].start = prev + script[i].frame; continue; }
+        if (script[i].kind == SCRIPT_RTIME) {                    /* (pc-fps) seconds after the previous token started */
+            double ps = i ? script[i - 1].start_s : 1e-9;
+            if (ps <= 0 || now_s < ps + script_at[i]) continue;
+            script[i].start = now;
+            script[i].start_s = now_s;
+            continue;
+        }
         if (script[i].kind == SCRIPT_TIME) {
             double secs = script_seconds() - script_t0;
             if (secs < script_at[i]) continue;
@@ -397,6 +423,11 @@ static void script_apply(int port, pad_input* in) {
                     script[j].hold = now - script[j].start;
     for (int i = 0; i < script_n; i++) {
         if (script[i].start == SCRIPT_UNSET) continue;
+        if (script[i].hold_s > 0 && now >= script[i].start && now < script[i].start + script[i].hold) {   /* (pc-fps) */
+            double secs = script_seconds() - script_t0;
+            if (script[i].start_s <= 0) script[i].start_s = secs > 0 ? secs : 1e-9;
+            if (secs - script[i].start_s >= script[i].hold_s) script[i].hold = now > script[i].start ? now - script[i].start : 1;
+        }
         if (now < script[i].start || now >= script[i].start + script[i].hold) continue;
         int b = script[i].button;
         if (now == script[i].start && b != SCRIPT_NONE)       /* calibrate pad frames vs VBlanks */
