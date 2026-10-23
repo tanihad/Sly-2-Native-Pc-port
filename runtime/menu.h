@@ -66,6 +66,7 @@ typedef struct {
     void (*set_monitor)(int k);          /* 0 = keep, 1..n */
     int  (*in_game)(void);               /* the game's audio settings can be reached now (music / effects) */
     void (*request_open)(void);          /* Esc / PS button with the menu closed (menu_game.c: pause the game first) */
+    void (*tick)(void);                  /* every menu_tick (menu_game.c: a pending open) */
     void (*closed)(void);                /* the menu closed (menu_game.c: back to the pause menu) */
 } menu_host;
 void menu_set_host(const menu_host* h);

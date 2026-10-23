@@ -799,6 +799,7 @@ static int device_of(const input_nav_event* ev) {
 }
 
 void menu_tick(void) {
+    if (host.tick) host.tick();
     input_nav_event ev;
     while (input_nav_poll(&ev)) {
         if (!menu_is_open()) {                   /* closed: Esc / the PS button open it (host: via the pause menu) */

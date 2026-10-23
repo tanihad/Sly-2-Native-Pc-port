@@ -307,6 +307,7 @@ void ps2_hook(ps2_ctx* ctx, uint32_t addr);
 #include "aspect.h"
 #include "gs_hint.h"
 #include "gfx.h"
+#include "menu_game.h"                   /* (pc-menu) the pause menu's "PC Settings" entry, the game's volumes */
 
 /* ---- interrupts: set asynchronously by host timers, serviced at loop heads -------------------- */
 

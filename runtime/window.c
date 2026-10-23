@@ -630,6 +630,7 @@ extern void overlay_gdi_draw(void* hdc, int w, int h) __attribute__((weak));
 extern void overlay_set_fps(double fps) __attribute__((weak));
 extern void menu_tick(void) __attribute__((weak));
 extern int menu_is_open(void) __attribute__((weak));
+extern void menu_focus(int active) __attribute__((weak));
 
 static void d3d_shutdown(void) {
     if (d3d.dev && overlay_d3d11_release) overlay_d3d11_release(d3d.dev);
@@ -1277,6 +1278,7 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;                        /* game keys are read with GetAsyncKeyState */
     case WM_ACTIVATEAPP:
         if (wp) { reread_display(); gfx_reread(); }   /* sly2.ini may have been edited meanwhile */
+        if (menu_focus) menu_focus(wp != 0);          /* (pc-menu: silent in the background with [audio] background = off) */
         break;
     case WM_SYSCHAR:
         if (wp != ' ') return 0;         /* no beep for Alt+key; Alt+Space still opens the system menu */
