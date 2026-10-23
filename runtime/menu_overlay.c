@@ -375,5 +375,28 @@ void overlay_gdi_draw(void* hdc, int w, int h) {
         }
         if (mem) DeleteDC(mem);
     }
+    if (InterlockedExchange(&shot_pending, 0)) {  /* the window's picture, as drawn (a requested screenshot) */
+        HDC mem = CreateCompatibleDC((HDC)hdc);
+        BITMAPINFO bi;
+        memset(&bi, 0, sizeof bi);
+        bi.bmiHeader.biSize = sizeof bi.bmiHeader;
+        bi.bmiHeader.biWidth = w;
+        bi.bmiHeader.biHeight = -h;
+        bi.bmiHeader.biPlanes = 1;
+        bi.bmiHeader.biBitCount = 32;
+        bi.bmiHeader.biCompression = BI_RGB;
+        void* bits = NULL;
+        HBITMAP bmp = mem ? CreateDIBSection(mem, &bi, DIB_RGB_COLORS, &bits, NULL, 0) : NULL;
+        if (bmp) {
+            HGDIOBJ old = SelectObject(mem, bmp);
+            BitBlt(mem, 0, 0, w, h, (HDC)hdc, 0, 0, SRCCOPY);
+            GdiFlush();
+            debug_write_png(shot_path, bits, w, h, w);
+            fprintf(stderr, "[menu] screenshot %dx%d (GDI) -> %s\n", w, h, shot_path);
+            SelectObject(mem, old);
+            DeleteObject(bmp);
+        }
+        if (mem) DeleteDC(mem);
+    }
     ReleaseSRWLockExclusive(&lock);
 }

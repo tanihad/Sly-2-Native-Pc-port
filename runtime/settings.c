@@ -164,7 +164,13 @@ const char* settings_value_text(int i, int v, char* buf, size_t cap) {
         else snprintf(buf, cap, "%d", v);
         break;
     }
-    case SET_ASPECT: snprintf(buf, cap, "%d:%d", v >> 16, v & 0xFFFF); break;
+    case SET_ASPECT: {                   /* (stored reduced; written as people name them: 16:10, 21:9) */
+        int w = v >> 16, h = v & 0xFFFF;
+        if (w == 8 && h == 5) { w = 16; h = 10; }
+        else if (w == 7 && h == 3) { w = 21; h = 9; }
+        snprintf(buf, cap, "%d:%d", w, h);
+        break;
+    }
     default: break;
     }
     return buf;

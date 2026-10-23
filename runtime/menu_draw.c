@@ -157,7 +157,7 @@ static HFONT font(int px, int weight, int italic, int face) {
     for (int k = 0; k < nfonts; k++)
         if (fonts[k].px == px && fonts[k].weight == weight && fonts[k].italic == italic && fonts[k].face == face) return fonts[k].f;
     HFONT f = CreateFontW(-px, 0, 0, 0, weight, (DWORD)italic, 0, 0, DEFAULT_CHARSET, OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS,
-                          ANTIALIASED_QUALITY, DEFAULT_PITCH | FF_SWISS, face == FACE_TITLE ? L"Segoe UI Black" : L"Segoe UI");
+                          CLEARTYPE_NATURAL_QUALITY, DEFAULT_PITCH | FF_SWISS, face == FACE_TITLE ? L"Segoe UI Black" : L"Segoe UI");
     if (nfonts == (int)(sizeof fonts / sizeof fonts[0])) {   /* full: drop them all (sizes changed with the window) */
         for (int k = 0; k < nfonts; k++) DeleteObject(fonts[k].f);
         nfonts = 0;

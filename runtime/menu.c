@@ -96,15 +96,16 @@ static int reduce(int* w, int* h) {
 }
 
 static void aspect_choices(choices* c) {
+    /* (values reduced, as settings_parse_aspect stores them: 16:10 = 8:5, 21:9 = 7:3) */
     add(c, 4 << 16 | 3, "4:3 (original)");
-    add(c, 16 << 16 | 10, "16:10");
+    add(c, 8 << 16 | 5, "16:10");
     add(c, 16 << 16 | 9, "16:9 (widescreen)");
     int dw, dh, hz;
     h_display(&dw, &dh, &hz);
     int aw = dw, ah = dh;
     reduce(&aw, &ah);
     double d = (double)dw / dh;
-    if (d >= 21.0 / 9.0 - 0.02) add(c, 21 << 16 | 9, "21:9 (ultrawide)");
+    if (d >= 21.0 / 9.0 - 0.02) add(c, 7 << 16 | 3, "21:9 (ultrawide)");
     if (d >= 32.0 / 9.0 - 0.02) add(c, 32 << 16 | 9, "32:9 (super ultrawide)");
     int own = aw << 16 | ah, found = 0;
     for (int k = 0; k < c->n; k++) found |= c->val[k] == own;

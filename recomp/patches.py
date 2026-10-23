@@ -164,9 +164,10 @@ PATCHES: list[Patch] = [
           "after f_00187D80(pad, START) returned whether START was pressed ($v0), where the HUD manager opens the "
           "pause menu (jal 0x1B0290): Esc / the PS button pause the game exactly as START does, only where START would"),
     Patch("pcmenu_frame", *MAIN_LOOP, 0x001A75A8, "before",
-          "if (pcmenu_ee_pending | pcmenu_open_pending) pcmenu_ee_frame(ctx);",
+          "pcmenu_ee_frame(ctx);",
           "main loop (as aspect_switch): the music / effects volumes chosen in the menu go into the game's sound "
-          "manager with the game's own 0x1FEA60, as its Options page does; a menu waiting for the pause menu opens"),
+          "manager with the game's own 0x1FEA60, as its Options page does (and again when a loaded save resets them); a menu "
+          "waiting for the pause menu opens"),
 ]
 
 

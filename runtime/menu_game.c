@@ -109,13 +109,11 @@ void pcmenu_start(ps2_ctx* ctx) {
 volatile LONG pcmenu_open_pending;
 static volatile ULONGLONG open_deadline;
 
-static void sync_volumes_from_game(void);
-
 /* Esc / PS button / "menu" token: the game's pause menu first (the game is paused while the menu is open), then the
  * menu; where the game cannot pause (title, movies, loading) the menu opens over it after 0.5 s */
 static void request_open(void) {
     if (menu_is_open()) return;
-    if (pause_list_up()) { sync_volumes_from_game(); menu_open(); return; }
+    if (pause_list_up()) { menu_open(); return; }
     open_deadline = GetTickCount64() + 500;
     InterlockedExchange(&pcmenu_open_pending, 1);
     pcmenu_pause_req = 1;
@@ -127,7 +125,6 @@ static void tick(void) {
     if (pause_idle() || GetTickCount64() > open_deadline) {
         if (!InterlockedExchange(&pcmenu_open_pending, 0)) return;
         pcmenu_pause_req = 0;
-        sync_volumes_from_game();
         menu_open();
     }
 }
@@ -150,14 +147,31 @@ void menu_focus(int active) {
     update_gain();
 }
 
-/* the game's own music / effects volumes changed (its Options page, a loaded save): the menu shows and keeps them */
-static void sync_volumes_from_game(void) {
-    if (!ee_applied || !ps2_ram) return;
+/* The game's music / effects volumes (its sound manager: +0x150 = kind 1 category 1, +0x14C = kind 1 category 0)
+ * changed after we set them. On its own Options page (pause menu depth >= 2, page 2 = the options list 0x2F6470)
+ * that is the player: the menu takes the new values over (sly2.ini too). Anywhere else (a loaded save sets the
+ * volumes it was saved with): ours again. */
+#define PM_PAGE2_ENTRIES 0x003D9F18u
+#define GAME_OPTIONS_LIST 0x002F6470u
+static float applied_mu = -1.0f, applied_ef = -1.0f;
+static int adopting;
+
+static int game_options_open(void) {
+    int32_t depth = (int32_t)rd32(PM_DEPTH);
+    return depth >= 2 && depth <= 3 && rd32(PM_PAGE2_ENTRIES) == GAME_OPTIONS_LIST;
+}
+
+static void watch_volumes(void) {
     float mu = rdf(SND_MGR + 0x150), ef = rdf(SND_MGR + 0x14C);
     if (!(mu >= 0.0f && mu <= 1.0f) || !(ef >= 0.0f && ef <= 1.0f)) return;
-    int m = (int)lrintf(mu * 100.0f), e = (int)lrintf(ef * 100.0f);
-    if (abs(m - ps2_settings.vol_music) > 1) settings_change_key("audio", "music", m, 1);
-    if (abs(e - ps2_settings.vol_effects) > 1) settings_change_key("audio", "effects", e, 1);
+    if (fabsf(mu - applied_mu) < 0.002f && fabsf(ef - applied_ef) < 0.002f) return;
+    if (!game_options_open()) { pcmenu_ee_pending = 1; return; }
+    applied_mu = mu;
+    applied_ef = ef;
+    adopting = 1;                        /* (no write back into the game: it has them) */
+    settings_change_key("audio", "music", (int)lrintf(mu * 100.0f), 1);
+    settings_change_key("audio", "effects", (int)lrintf(ef * 100.0f), 1);
+    adopting = 0;
 }
 
 static void call_volume(ps2_ctx* ctx, int category, float v) {
@@ -177,12 +191,15 @@ static void call_volume(ps2_ctx* ctx, int category, float v) {
  * effects = categories 0 and 3 */
 void pcmenu_ee_frame(ps2_ctx* ctx) {
     tick();
+    if (ee_applied && !pcmenu_ee_pending) watch_volumes();
     if (!pcmenu_ee_pending) return;
     pcmenu_ee_pending = 0;
     float mu = ps2_settings.vol_music / 100.0f, ef = ps2_settings.vol_effects / 100.0f;
     call_volume(ctx, 1, mu);
     call_volume(ctx, 0, ef);
     call_volume(ctx, 3, ef);
+    applied_mu = rdf(SND_MGR + 0x150);   /* (what the game stored: the values watched from now on) */
+    applied_ef = rdf(SND_MGR + 0x14C);
     if (!ee_applied) fprintf(stderr, "[menu] game volumes: music %d%%, effects %d%%\n", ps2_settings.vol_music, ps2_settings.vol_effects);
     ee_applied = 1;
 }
@@ -190,7 +207,7 @@ void pcmenu_ee_frame(ps2_ctx* ctx) {
 static void audio_applier(int option) {
     (void)option;
     update_gain();
-    pcmenu_ee_pending = 1;
+    if (!adopting) pcmenu_ee_pending = 1;
 }
 
 /* ---- renderer, pacing ------------------------------------------------------------------------------------------ */
@@ -206,6 +223,13 @@ static void renderer_applier(int option) {
 static void pacing_applier(int option) {
     (void)option;
     if (!pacing_apply_mode(ps2_settings.pacing)) fprintf(stderr, "[menu] frame pacing %d applies at the next start\n", ps2_settings.pacing);
+}
+
+/* [display] aspect / hud without a window (headless runs; window.c registers its own, which also remembers the wide
+ * aspect for F7): the game takes it at its next frame */
+static void display_applier(int option) {
+    (void)option;
+    aspect_request(ps2_settings.aspect_w, ps2_settings.aspect_h, ps2_settings.hud_centered);
 }
 
 /* ---- host ------------------------------------------------------------------------------------------------------ */
@@ -235,6 +259,7 @@ void menu_game_init(int headless) {
     settings_on_apply(SET_APPLY_AUDIO, audio_applier);
     settings_on_apply(SET_APPLY_RENDERER, renderer_applier);
     settings_on_apply(SET_APPLY_PACING, pacing_applier);
+    if (headless) settings_on_apply(SET_APPLY_DISPLAY, display_applier);
     update_gain();
     pcmenu_ee_pending = 1;               /* the [audio] volumes into the game once its main loop runs */
 }
