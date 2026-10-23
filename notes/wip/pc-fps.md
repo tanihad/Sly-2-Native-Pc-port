@@ -38,6 +38,10 @@ fix it on our side, log clearly whether VRR is active; (B) a frame-rate setting 
 ## Real-monitor runs
 - 2026-10-23 V1: vrr_probe.exe 3 s x (borderless, borderless+tearing, windowed, exclusive), 10 ms cadence, ~15 s total.
 - 2026-10-23 V2: vrr_probe.exe 4 s borderless + 4 s exclusive (SetFullscreenState, swap chain without tearing).
+- 2026-10-23 M1/M2: game borderless (pace_run.ps1, 45 s each from boot: movie, intro cutscene, title), frame_rate =
+  display (165) then 120, PS2_PACE_LOG=1, scale 3, the game closes itself (watchdog). M3: display again (45 s) after the
+  governor change. M4: display (45 s) with the limiter instead of display VBlanks above 60.
+  M5: display (45 s) after: no present skipping / queue 2 / 10 Hz idle VBlanks above 60.
 
 ## Next
 1. Job/minigame matrix at 60 vs 165 (and 120/200 for some): m2_dance_audition, m2_turret, m4_hack, m2_rc_chopper,

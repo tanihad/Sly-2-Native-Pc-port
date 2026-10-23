@@ -383,7 +383,7 @@ static DWORD WINAPI host_timer(LPVOID arg) {
     int64_t next_tick = qpc_start.QuadPart + tick;
     /* (pc-fps) the 59.94 Hz schedule is base + n * 1001/60000 s (exact multiples, no drift); the frame limiter moves the base
      * to its last VBlank when it hands back */
-    int64_t base = qpc_start.QuadPart, last_raise = qpc_start.QuadPart, req = 0;
+    int64_t base = qpc_start.QuadPart, last_raise = qpc_start.QuadPart, req = 0, last_req = 0;
     int limiting = 0;
     for (uint64_t frame = 1;;) {                 /* NTSC: 59.94 fields per second */
         if (vblank_hold) { Sleep(1); continue; }
@@ -394,7 +394,7 @@ static DWORD WINAPI host_timer(LPVOID arg) {
         int ext = vblank_ext && now.QuadPart - ext_last <= qpc_freq.QuadPart / 20;
         int64_t gap = ext ? 0 : frame_rate_min_gap(qpc_freq.QuadPart);
         int64_t r = frame_vblank_take_request();
-        if (r) req = r;
+        if (r) req = last_req = r;
         if (gap && !limiting) { limiting = 1; req = 0; }
         else if (!gap && limiting) {             /* back to the timer: its schedule continues from the last VBlank */
             limiting = 0;
@@ -403,7 +403,12 @@ static DWORD WINAPI host_timer(LPVOID arg) {
         }
         int64_t due;
         if (limiting) {
-            due = req ? req : last_raise + ntsc;
+            /* no request: the 59.94 Hz VBlanks of the PS2 - except while the game's frames are just slower than that (a request in
+             * the last 0.25 s): a VBlank without a new frame would only compose and present the same picture again, GPU time
+             * the slow frame needs (a slow GPU was made slower by its own repeated pictures); 10 Hz then keeps the VBlank
+             * handler's display state machine going */
+            int64_t idle = now.QuadPart - last_req < qpc_freq.QuadPart / 4 ? qpc_freq.QuadPart / 10 : ntsc;
+            due = req ? req : last_raise + idle;
             if (due < last_raise + gap) due = last_raise + gap;
         } else {
             due = base + vblank_shift + (int64_t)(frame * 1001 * (uint64_t)qpc_freq.QuadPart / 60000);

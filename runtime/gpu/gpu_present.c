@@ -103,6 +103,7 @@ static struct {
 static void vrr_log_driver(const char* when);    /* (pc-fps) */
 extern void frame_rate_note_display(double hz) __attribute__((weak));   /* (pc-fps) runtime/frame_rate.c */
 extern double frame_rate_target_hz(void) __attribute__((weak));
+extern int frame_rate_high(void) __attribute__((weak));
 
 /* (pc-pacing) presentation mode, set from any thread (gpu_present_set_mode), read by the render thread per picture */
 static volatile LONG pace_mode = PACE_MODE_AUTO, pace_vsync = PACE_VSYNC_ON, pace_refresh_x1000;
@@ -788,9 +789,20 @@ static void pace_wait(double target, int tsi) {
 static void pace_statistics(UINT pc) {
     DXGI_FRAME_STATISTICS fs;
     memset(&fs, 0, sizeof fs);
-    if (FAILED(IDXGISwapChain1_GetFrameStatistics(P.sc, &fs)) || !fs.PresentCount || fs.PresentCount == P.last_pc ||
-        pc - fs.PresentCount >= 60)
+    HRESULT hr = IDXGISwapChain1_GetFrameStatistics(P.sc, &fs);
+    if (FAILED(hr) || !fs.PresentCount || fs.PresentCount == P.last_pc || pc - fs.PresentCount >= 60) {
+        /* (pc-fps) say why the display's record stopped (once per 10 s): no statistics = no VRR verdict */
+        static double said;
+        double t = now_ms();
+        if (P.last_sync_ms > 0 && t - P.last_sync_ms > 3000.0 && t - said > 10000.0) {
+            said = t;
+            HWND fg = GetForegroundWindow();
+            gpu_log("pace: no frame statistics for %.0f s (hr 0x%08lX, shown present %u, presented %u): the game window is %s",
+                    (t - P.last_sync_ms) / 1000.0, (unsigned long)hr, (unsigned)fs.PresentCount, (unsigned)pc,
+                    fg == (HWND)gpu_rt.cfg.hwnd ? "in front" : "not in front (another window has the focus)");
+        }
         return;
+    }
     double shown = (double)fs.SyncQPCTime.QuadPart * 1000.0 / (double)qpf.QuadPart;
     double q = P.pres_q[fs.PresentCount % 64];   /* (M9) photon latency: frame queued -> shown */
     if (q > 0 && shown >= q) P.st.photon_ms = shown - q;
@@ -937,7 +949,10 @@ static void present_fit(int aw, int ah, int scaler) {
     if (paced) P.st.target_ms = P.pd.delay_ms;
     InterlockedExchange(&pace_extra, paced ? (LONG)ceil(P.pd.delay_ms / P.content_ms) : 0);
     if (paced && gpu_rt.cur_behind) paced = 0;   /* behind (a newer frame waits): no wait, present it now */
-    if (gpu_rt.cur_behind && vb > 0 && t0 > vb + P.pd.delay_ms + 0.5 * P.content_ms) {
+    /* (pc-fps) above 60 fps no picture is skipped: when the GPU is slower than the frame limiter every picture is "late" and
+     * a newer one always queued - skipping them would show none; the queue is short there instead (gpu_submit_sink) */
+    int fr_high = frame_rate_high && frame_rate_high();
+    if (gpu_rt.cur_behind && !fr_high && vb > 0 && t0 > vb + P.pd.delay_ms + 0.5 * P.content_ms) {
         P.st.skipped = 1;
         P.st.present_ms += now_ms() - t0;
         return;
