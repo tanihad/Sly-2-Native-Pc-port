@@ -344,11 +344,6 @@ static void draw_row(canvas* c, const menu_view* v, const menu_layout* L, int k,
         if (row->can_right) tri(c, rgt.x + rgt.w / 2.0f + as * 0.6f, ay, rgt.x + rgt.w / 2.0f - as * 0.6f, ay + as, rgt.x + rgt.w / 2.0f - as * 0.6f, ay - as,
                                 sel ? C_GOLD : C_GOLD_DIM);
         text(c, vx0, r.y, vx1 - vx0, r.h, row->value, px, sel ? FW_SEMIBOLD : FW_NORMAL, 0, FACE_UI, vc, AL_CENTER);
-        if (row->nchoices > 1 && row->nchoices <= 12 && sel && row->enabled) {   /* position dots under the value */
-            float dot = 3.0f * u, gap = 12 * u, x0 = (vx0 + vx1) / 2.0f - (row->nchoices - 1) * gap / 2;
-            for (int d = 0; d < row->nchoices; d++)
-                circle(c, x0 + d * gap, (float)(r.y + r.h) - 7 * u, dot, 0, d == row->cur ? C_GOLD : RGBA(90, 110, 160, 255));
-        }
         break;
     case MENU_ITEM_SLIDER: {
         if (row->can_left) tri(c, lft.x + lft.w / 2.0f - as * 0.6f, ay, lft.x + lft.w / 2.0f + as * 0.6f, ay - as, lft.x + lft.w / 2.0f + as * 0.6f, ay + as,
@@ -373,7 +368,7 @@ static void draw_row(canvas* c, const menu_view* v, const menu_layout* L, int k,
     case MENU_ITEM_BIND: {
         if (v->capture && sel) {
             text(c, vx0, r.y, vx1 - vx0 + lft.w, r.h, v->page == MENU_PAGE_KEYS ? "Press a key...  (Esc: cancel)" :
-                 "Press a button...  (Circle: cancel)", px, FW_SEMIBOLD, 1, FACE_UI, C_NOTE, AL_CENTER);
+                 "Press a button...  (PS button: cancel)", px, FW_SEMIBOLD, 1, FACE_UI, C_NOTE, AL_CENTER);
         } else {                                  /* two columns: the first and the second key / button */
             int kh = (int)(r.h * 0.70f), colw = (vx1 - vx0) / 2;
             for (int s = 0; s < 2; s++) {
@@ -467,13 +462,13 @@ static void draw_menu(canvas* c, const menu_view* v) {
         int gh = (int)(F.h * 0.74f), x = F.x, y = F.y + (F.h - gh) / 2, px = (int)(23 * u);
         if (dev == MENU_DEV_KEYBOARD) {
             x += key_cap(c, x, y, gh, "\xE2\x86\x91\xE2\x86\x93", u, 1) + (int)(8 * u);   /* the arrows */
-            x += text(c, x, F.y, (int)(160 * u), F.h, "Select", px, FW_SEMIBOLD, 0, FACE_UI, C_TEXT, AL_LEFT) + (int)(22 * u);
+            x += text(c, x, F.y, (int)(160 * u), F.h, "Move", px, FW_SEMIBOLD, 0, FACE_UI, C_TEXT, AL_LEFT) + (int)(22 * u);
             x += key_cap(c, x, y, gh, "\xE2\x86\x90\xE2\x86\x92", u, 1) + (int)(8 * u);
             text(c, x, F.y, (int)(160 * u), F.h, "Change", px, FW_SEMIBOLD, 0, FACE_UI, C_TEXT, AL_LEFT);
         } else {
             pad_glyph(c, (float)x, (float)y, (float)gh, G_DPAD, 0);
             x += gh + (int)(8 * u);
-            x += text(c, x, F.y, (int)(260 * u), F.h, "Select / Change", px, FW_SEMIBOLD, 0, FACE_UI, C_TEXT, AL_LEFT) + (int)(22 * u);
+            x += text(c, x, F.y, (int)(260 * u), F.h, "Move / Change", px, FW_SEMIBOLD, 0, FACE_UI, C_TEXT, AL_LEFT) + (int)(22 * u);
         }
     }
     int sub = v->page >= MENU_PAGE_N;

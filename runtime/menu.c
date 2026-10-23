@@ -55,9 +55,9 @@ static int h_window_mode(void) { return host.window_mode ? host.window_mode() : 
 
 /* ---- values -------------------------------------------------------------------------------------------------- */
 
-static int opt(const char* section, const char* key) { return settings_find(section, key); }
-static int get(const char* section, const char* key) { return settings_get(&ps2_settings, opt(section, key)); }
-static int change(const char* section, const char* key, int v) { return settings_change(opt(section, key), v, 1); }
+static int m_opt(const char* section, const char* key) { return settings_find(section, key); }
+static int m_get(const char* section, const char* key) { return settings_get(&ps2_settings, m_opt(section, key)); }
+static int m_change(const char* section, const char* key, int v) { return settings_change(m_opt(section, key), v, 1); }
 
 /* the internal resolution's real size at scale n: rows 448 n; columns 512 n at 4:3, at a wider aspect
  * 512 round(n W) (W = aspect / (4/3): the anamorphic display buffers, notes/widescreen.md) from 2x on */
@@ -109,7 +109,7 @@ static void aspect_choices(choices* c) {
     int own = aw << 16 | ah, found = 0;
     for (int k = 0; k < c->n; k++) found |= c->val[k] == own;
     if (!found && d >= 1.0 && d <= 4.0 && aw < 1000) add(c, own, "%d:%d (your display)", aw, ah);
-    int cur = get("display", "aspect");
+    int cur = m_get("display", "aspect");
     found = 0;
     for (int k = 0; k < c->n; k++) found |= c->val[k] == cur;
     if (!found) add(c, cur, "%d:%d", cur >> 16, cur & 0xFFFF);
@@ -285,7 +285,7 @@ static int row_value(int id) {
     case MENU_ROW_MODE: return h_window_mode();
     case MENU_ROW_WINSIZE: { int w, h; h_output(&w, &h); return w << 16 | h; }
     case MENU_ROW_MONITOR: return ps2_settings.monitor;
-    case MENU_ROW_ASPECT: return get("display", "aspect");
+    case MENU_ROW_ASPECT: return m_get("display", "aspect");
     case MENU_ROW_HUD: return ps2_settings.hud_centered;
     case MENU_ROW_PACING: return ps2_settings.pacing;
     case MENU_ROW_FPS: return ps2_settings.show_fps;
@@ -300,27 +300,27 @@ static int row_value(int id) {
 /* set a row's value (choice value or slider value) */
 static void row_set(int id, int v) {
     switch (id) {
-    case MENU_ROW_PRESET: change("graphics", "preset", v); break;
-    case MENU_ROW_RENDERER: change("graphics", "renderer", v); break;
-    case MENU_ROW_SCALE: change("graphics", "internal_scale", v); break;
-    case MENU_ROW_AUTO_MAX: change("graphics", "auto_max", v); break;
-    case MENU_ROW_SCALER: change("graphics", "scaler", v); break;
-    case MENU_ROW_OUTLINES: change("graphics", "outlines", v); break;
-    case MENU_ROW_LOOK: change("graphics", "filters", v); break;
-    case MENU_ROW_BLUR: change("graphics", "motion_blur", v); break;
-    case MENU_ROW_FLICKER: change("graphics", "flicker_filter", v); break;
-    case MENU_ROW_INTERLACE: change("graphics", "interlacing", v); break;
-    case MENU_ROW_MODE: change("window", "fullscreen", v); break;
+    case MENU_ROW_PRESET: m_change("graphics", "preset", v); break;
+    case MENU_ROW_RENDERER: m_change("graphics", "renderer", v); break;
+    case MENU_ROW_SCALE: m_change("graphics", "internal_scale", v); break;
+    case MENU_ROW_AUTO_MAX: m_change("graphics", "auto_max", v); break;
+    case MENU_ROW_SCALER: m_change("graphics", "scaler", v); break;
+    case MENU_ROW_OUTLINES: m_change("graphics", "outlines", v); break;
+    case MENU_ROW_LOOK: m_change("graphics", "filters", v); break;
+    case MENU_ROW_BLUR: m_change("graphics", "motion_blur", v); break;
+    case MENU_ROW_FLICKER: m_change("graphics", "flicker_filter", v); break;
+    case MENU_ROW_INTERLACE: m_change("graphics", "interlacing", v); break;
+    case MENU_ROW_MODE: m_change("window", "fullscreen", v); break;
     case MENU_ROW_WINSIZE: if (host.set_client_size) host.set_client_size(v >> 16, v & 0xFFFF); break;
-    case MENU_ROW_MONITOR: change("display", "monitor", v); break;
-    case MENU_ROW_ASPECT: change("display", "aspect", v); break;
-    case MENU_ROW_HUD: change("display", "hud", v); break;
-    case MENU_ROW_PACING: change("graphics", "pacing", v); break;
-    case MENU_ROW_FPS: change("window", "show_fps", v); break;
-    case MENU_ROW_BACKGROUND: change("audio", "background", v); break;
-    case MENU_ROW_MASTER: change("audio", "master", v); break;
-    case MENU_ROW_MUSIC: change("audio", "music", v); break;
-    case MENU_ROW_EFFECTS: change("audio", "effects", v); break;
+    case MENU_ROW_MONITOR: m_change("display", "monitor", v); break;
+    case MENU_ROW_ASPECT: m_change("display", "aspect", v); break;
+    case MENU_ROW_HUD: m_change("display", "hud", v); break;
+    case MENU_ROW_PACING: m_change("graphics", "pacing", v); break;
+    case MENU_ROW_FPS: m_change("window", "show_fps", v); break;
+    case MENU_ROW_BACKGROUND: m_change("audio", "background", v); break;
+    case MENU_ROW_MASTER: m_change("audio", "master", v); break;
+    case MENU_ROW_MUSIC: m_change("audio", "music", v); break;
+    case MENU_ROW_EFFECTS: m_change("audio", "effects", v); break;
     case MENU_ROW_VIB_STRENGTH: ctl_set(id, v); rumble_test(); break;
     case MENU_ROW_VIBRATION: case MENU_ROW_INVERT_X: case MENU_ROW_INVERT_Y: case MENU_ROW_DEADZONE: case MENU_ROW_DEADZONE_R:
     case MENU_ROW_LIGHTBAR:
@@ -606,16 +606,16 @@ static void reset_page(void) {
     if (!sec) return;
     if (st.page == MENU_PAGE_DISPLAY) {          /* [display] + the [window] options (not the placement) */
         settings_reset_section("display");
-        if (!settings_env_locked(settings_find("window", "show_fps")) && ps2_settings.show_fps) change("window", "show_fps", 0);
+        if (!settings_env_locked(settings_find("window", "show_fps")) && ps2_settings.show_fps) m_change("window", "show_fps", 0);
         if (ps2_settings.pacing != SETTINGS_PACING_VSYNC && !settings_env_locked(settings_find("graphics", "pacing")))
-            change("graphics", "pacing", SETTINGS_PACING_VSYNC);
+            m_change("graphics", "pacing", SETTINGS_PACING_VSYNC);
         return;
     }
     if (st.page == MENU_PAGE_GRAPHICS) {         /* the default preset sets every graphics option */
-        if (!settings_env_locked(settings_find("graphics", "renderer")) && !ps2_settings.renderer_gpu) change("graphics", "renderer", 1);
+        if (!settings_env_locked(settings_find("graphics", "renderer")) && !ps2_settings.renderer_gpu) m_change("graphics", "renderer", 1);
         if (ps2_settings.aspect_w * 3 == ps2_settings.aspect_h * 4 && ps2_settings.preset == SETTINGS_PRESET_ORIGINAL)
-            change("display", "aspect", 16 << 16 | 9);
-        change("graphics", "preset", SETTINGS_PRESET_BALANCED);
+            m_change("display", "aspect", 16 << 16 | 9);
+        m_change("graphics", "preset", SETTINGS_PRESET_BALANCED);
         return;
     }
     settings_reset_section(sec);
@@ -750,6 +750,7 @@ int menu_device(void) { return st.device; }
 int menu_nav_event(menu_nav ev, int dev) {
     LOCK();
     if (dev != st.device) { st.device = dev; st.serial++; }
+    st.hover_row = st.hover_tab = st.hover_btn = -1;      /* (keys / buttons: the mouse highlight goes) */
     int used = nav(ev);
     if (used) st.serial++;
     UNLOCK();
@@ -846,7 +847,7 @@ void menu_compute_layout(int cw, int ch, int nrows, int scroll, menu_layout* L) 
     if (u * 1000.0f > (float)cw * 0.94f) u = (float)cw * 0.94f / 1000.0f;   /* ... unless the window is narrow */
     if (u < 0.30f) u = 0.30f;
     L->u = u;
-    int pw = I(1000 * u), ph = I(860 * u);
+    int pw = I(1000 * u), ph = I(930 * u);
     if (pw > cw) pw = cw;
     if (ph > ch) ph = ch;
     L->panel = (menu_rect){ (cw - pw) / 2, (ch - ph) / 2, pw, ph };
@@ -859,7 +860,7 @@ void menu_compute_layout(int cw, int ch, int nrows, int scroll, menu_layout* L) 
     L->tab_hint[0] = (menu_rect){ x0, ty, hint, th };
     L->tab_hint[1] = (menu_rect){ x0 + iw - hint, ty, hint, th };
     L->footer = (menu_rect){ x0, L->panel.y + ph - I(64 * u), iw, I(44 * u) };
-    L->desc = (menu_rect){ x0, L->footer.y - I(108 * u), iw, I(96 * u) };
+    L->desc = (menu_rect){ x0, L->footer.y - I(144 * u), iw, I(132 * u) };
     int ly = ty + th + I(18 * u);
     L->list = (menu_rect){ x0, ly, iw, L->desc.y - I(10 * u) - ly };
     L->row_h = I(52 * u);
