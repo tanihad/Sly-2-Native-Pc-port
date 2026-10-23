@@ -94,6 +94,10 @@ static uint32_t rd32(const uint8_t* ram, uint32_t ram_size, uint32_t a) {
     return v;
 }
 
+int pc_options_hidden(uint32_t kind) {
+    return (kind == 0x50u || kind == 0x3Fu) && pc_text_enabled();
+}
+
 int pc_text_apply(uint8_t* ram, uint32_t ram_size, uint32_t table, uint32_t count) {
     if (!ram || ram_size < 8 || count > 0x100000u) return 0;
     int done = 0;

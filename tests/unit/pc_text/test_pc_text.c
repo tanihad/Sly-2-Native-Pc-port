@@ -117,7 +117,15 @@ static void test_bad_banks(void) {
     CHECK(pc_text_apply(ram, RAM_SIZE, RAM_SIZE - 4, 4) == 0);      /* a table past the end */
 }
 
+static void test_options(void) {
+    CHECK(pc_options_hidden(0x50));                  /* USB Headset */
+    CHECK(pc_options_hidden(0x3F));                  /* Center Screen... */
+    static const uint32_t kept[] = { 0x3C, 0x3D, 0x3E, 0x4C, 0x67, 0x68, 0x51, 0x53, 0x48, 0x4F, 0 };
+    for (int i = 0; kept[i]; i++) CHECK(!pc_options_hidden(kept[i]));
+}
+
 int main(void) {
+    test_options();
     test_table();
     test_apply();
     test_other_versions_left_alone();

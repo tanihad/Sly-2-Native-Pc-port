@@ -50,6 +50,7 @@ MAIN_LOOP = (0x001A7518, "a1bf2357cbfd44da199858e87f269865b5ea7ea0")     # the g
 MOTION_BLUR = (0x00160F98, "fb6879611634e74a6c18e8c7bda1b2f7eeb43407")   # the motion blur post effect
 TEXT_LOAD = (0x0013DF80, "8dda0003180328c95a6d2446ee5f52e2f2813477")     # read a level's text bank
 CARD_UPDATE = (0x001AB1A0, "1d6ccadcbdefdd6b7e8f0f0d7473c824222ccccb")   # memory card manager, per frame
+OPTIONS_BUILD = (0x001B04E0, "6dbf069bc55ffc47d8e36a035831e849f83a9ed9")  # build the Options menu's items
 
 PATCHES: list[Patch] = [
     Patch("ws_projection", *CM_RECALC, 0x0014DBA4, "after",
@@ -160,6 +161,12 @@ PATCHES: list[Patch] = [
           "save data is created without asking: pc_save_boot_create starts the game's own create job "
           "(0x1AAF90 with the PMF at 0x2A6D88, what Yes does in 0x1AD168) and the prompt is skipped "
           "(L_001AB380 = this function's epilogue). Once per run; otherwise the game asks as before"),
+    Patch("pc_options_hide", *OPTIONS_BUILD, 0x001B058C, "before",
+          "if (pc_options_hidden(ps2_r32(ctx, ctx->r[16].uw[0]))) ctx->r[4].ud[0] = 0;",
+          "the Options menu (title SELECT menu and pause menu: both build it here) copies the items of "
+          "the static table 0x2BFEC8 ($s0 = the item; word 0 = its kind = text id) that pass a test "
+          "($a0 != 0, tested by the beq here). PS2 hardware options are left out on PC: 'USB Headset' "
+          "(0x50, the PS2 USB headset) and 'Center Screen...' (0x3F, moves the picture on a CRT TV)"),
 ]
 
 

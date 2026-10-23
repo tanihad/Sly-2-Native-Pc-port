@@ -34,6 +34,11 @@ int pc_text_enabled(void);  /* PS2_PC_TEXT != "0" */
  * (no game state), so tests/unit/pc_text can run it on a synthetic bank. */
 int pc_text_apply(uint8_t* ram, uint32_t ram_size, uint32_t table, uint32_t count);
 
+/* Patch "pc_options_hide": Options menu items (kind = the item's text id, table 0x2BFEC8) the PC
+ * port leaves out: USB Headset (0x50, the PS2 USB headset) and Center Screen... (0x3F, the picture
+ * position on a CRT TV). Always 0 when PS2_PC_TEXT=0. */
+int pc_options_hidden(uint32_t kind);
+
 struct ps2_ctx;
 /* Patch "pc_text_bank": the text bank of `world` (0x3DD490) has just been loaded. */
 void pc_text_bank_loaded(struct ps2_ctx* ctx, uint32_t world);
