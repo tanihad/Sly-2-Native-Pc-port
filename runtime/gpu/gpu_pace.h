@@ -17,6 +17,11 @@
 
 #define PACE_PERIOD_MS (1000.0 * 1001.0 / 60000.0)   /* one NTSC VBlank: 16.683 ms */
 
+/* (pc-fps) the pictures' cadence now: PACE_PERIOD_MS at frame_rate = 60, the chosen rate's period above (runtime/frame_rate.c;
+ * programs without it - unit tests, gs_replay - get PACE_PERIOD_MS) */
+extern double frame_rate_content_ms(void) __attribute__((weak));
+static inline double pace_content_ms(void) { return frame_rate_content_ms ? frame_rate_content_ms() : PACE_PERIOD_MS; }
+
 /* ---- present delay ---------------------------------------------------------------------------------------------- */
 #define PACE_NLAT 120
 typedef struct {
@@ -86,6 +91,8 @@ typedef struct {
     int sec_skipped;                     /* this second: pictures skipped because the renderer was behind */
     double sec_stall_ms;                 /* this second: ms the game waited for the render queue */
     double last_behind, last_stall_ms;   /* the last second's (statistics) */
+    double period_ms;                    /* (pc-fps) the frame budget: one picture per period (PACE_PERIOD_MS at 60 fps; the
+                                            frame rate's period above, frame_rate.h) */
 } pace_gov;
 void pace_gov_init(pace_gov* g, int max, int fixed, int start);
 /* a new maximum / mode (player's choice): cur becomes the highest scale <= max not left for being too slow within

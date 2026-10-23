@@ -56,6 +56,9 @@ PAUSE_LIST = (0x001B0290, "ceb3e45c987b7505b4ec7388628233baf720d7cf")    # build
 TEXT_LOOKUP = (0x0013E368, "70da33a2bc009fbe743fb29e1ef891e60916a5fe")   # text id -> string (the level's text table)
 MENU_UPDATE = (0x001AEEE0, "6f518491757212ff8aaf84c5197d1753ac1bbcaf")   # the menu object's per-frame update (input)
 HUD_UPDATE = (0x001D9648, "d8e9a7bdb104955a41913d2a79b514ebb10cfce0")    # the HUD manager's update (START -> pause)
+# (pc-fps) the frame rate (runtime/frame_rate.h, notes/frame-rate.md)
+CLOCK_TICK = (0x0014D0B8, "d711437a42a7cf2bf2ab9622a903c33ff5744981")    # the game clock: dt from the COP0 Count
+VBLANK_WAIT = (0x0016F560, "b591b01bb4c0034d517f71d94b8a12f816560883")   # render thread: wait for the next VBlank
 
 PATCHES: list[Patch] = [
     Patch("ws_projection", *CM_RECALC, 0x0014DBA4, "after",
@@ -197,6 +200,19 @@ PATCHES: list[Patch] = [
           "main loop (as aspect_switch): the music / effects volumes chosen in the menu go into the game's sound "
           "manager with the game's own 0x1FEA60, as its Options page does (and again when a loaded save resets them); a menu "
           "waiting for the pause menu opens"),
+    # The frame rate (runtime/frame_rate.h, notes/frame-rate.md): both do nothing at frame_rate = 60 (the default).
+    Patch("frame_dt_min", *CLOCK_TICK, 0x0014D120, "after",
+          "if (ps2_frame_dt_min > 0.0f) ctx->f[2].f = ps2_frame_dt_min;",
+          "the game clock (f_0014D0B8, once per main-loop frame: a0 = the clock at 0x2DDED0) turns the COP0 Count ticks "
+          "since its last call into seconds (x 1/294.912 MHz) and clamps them to [$f2, $f1] = [1/60, 1/30] (mtc1 here "
+          "loads 1/60 = 0x3C888889 into $f2, used only by the clamp at 0x14D134/0x14D140). Above 60 frames per second "
+          "the lower bound would make every frame a 1/60 s step (120 fps = double speed): the frame limiter's rates "
+          "need it lower (frame_rate.c: 1/625 s; real steps come from the Count). The upper bound stays"),
+    Patch("frame_vblank_wait", *VBLANK_WAIT, 0x0016F560, "before",
+          "frame_vblank_request();",
+          "entry of 'wait for the next VBlank' (sets 0x2DFB58 and waits on the semaphore 0x2DFB4C that the VBlank "
+          "handler 0x16F468 signals): called by the render thread (0x160B70 via 0x16F590) right after it kicked a "
+          "frame. Above 60 fps the host timer raises the VBlank now (at most one per 1 / rate s); at 60 it returns at once"),
 ]
 
 

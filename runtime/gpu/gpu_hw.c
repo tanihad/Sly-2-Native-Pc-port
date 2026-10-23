@@ -10,6 +10,8 @@
 #include "perf.h"                        /* perf_state.gs_busy (the GS thread's busy time) */
 #include "settings.h"
 
+extern void frame_rate_note_display(double hz) __attribute__((weak));   /* (pc-fps) runtime/frame_rate.c */
+
 #include <dxgi1_2.h>
 #include <math.h>
 #include <stdarg.h>
@@ -267,6 +269,7 @@ static void gov_frame(double gpu_ms, int scale) {
     if (gov_slow_secs && now_qpc_ms() - gov_t0 > gov_slow_secs * 1000.0) G.slow = 1.0;
     if (scale != G.cur || scale != (int)want_scale || scale != run_scale) return;   /* (still pictures of the old scale) */
     int was = G.cur;
+    G.period_ms = pace_content_ms();      /* (pc-fps) the budget is the frame rate's period */
     int to = pace_gov_frame(&G, gpu_ms, now_qpc_ms());
     InterlockedExchange(&gov_load_x1000, (LONG)(G.load * 1000.0));
     static int log_secs = -1;            /* PS2_GS_AUTO_LOG=1: every second's measurement and state */
@@ -283,7 +286,8 @@ static void gov_frame(double gpu_ms, int scale) {
     static int sw_over;
     if (G.secs != sw_secs) {
         sw_secs = G.secs;
-        sw_over = G.cur == 1 && G.load > 1.2 ? sw_over + 1 : 0;
+        /* (pc-fps: judged against the PS2's 59.94 Hz - a frame rate above it is not a reason for the software renderer) */
+        sw_over = G.cur == 1 && G.load * G.period_ms / PACE_PERIOD_MS > 1.2 ? sw_over + 1 : 0;
         static int fb = -1;
         if (fb < 0) { const char* e = getenv("PS2_GS_SW_FALLBACK"); fb = !(e && *e && atoi(e) == 0); }
         if (sw_over >= 10 && fb && !gov_strict && !C.verify) {
@@ -625,29 +629,33 @@ static DWORD WINAPI clock_main(LPVOID arg) {
         while (!clock_wanted()) Sleep(500);  /* (pacing changed to paced / immediate while the game runs) */
         double hz = measure_refresh(o);
         if (hz > 0) gpu_present_set_refresh(hz);
-        int k = hz > 0 ? pace_refresh_multiple(1000.0 / hz, PACE_PERIOD_MS) : 0;
+        if (hz > 0 && frame_rate_note_display) frame_rate_note_display(hz);   /* (pc-fps: frame_rate = display follows it) */
+        double content = pace_content_ms();  /* (pc-fps) the frame rate's period: 59.94 Hz, or e.g. 165 Hz = the display's own */
+        int k = hz > 0 ? pace_refresh_multiple(1000.0 / hz, content) : 0;
         HMONITOR mon = MonitorFromWindow((HWND)C.hwnd, MONITOR_DEFAULTTOPRIMARY);
         if (!k) {
-            hlog("display pacing: the display runs at %.2f Hz, not a multiple of 59.94/60 Hz: the game's 59.94 Hz timer stays", hz);
+            hlog("display pacing: the display runs at %.2f Hz, not a multiple of the game's %.2f Hz: the game's timer stays", hz, 1000.0 / content);
             /* (the window may go to another display: look again now and then) */
             for (;;) {                   /* (also when the display's mode changes: fullscreen_refresh, display_mode.c) */
                 Sleep(2000);
                 double now_hz = gpu_window_refresh_hz(C.hwnd);
-                if (MonitorFromWindow((HWND)C.hwnd, MONITOR_DEFAULTTOPRIMARY) == mon && !(now_hz > 0 && fabs(now_hz - hz) > 1.0)) continue;
+                if (MonitorFromWindow((HWND)C.hwnd, MONITOR_DEFAULTTOPRIMARY) == mon && !(now_hz > 0 && fabs(now_hz - hz) > 1.0) &&
+                    fabs(pace_content_ms() - content) <= 0.01) continue;
                 IDXGIOutput_Release(o);
                 if (!(o = find_output())) return 0;
                 break;
             }
             continue;
         }
-        hlog("display pacing: VBlanks from the display (%.3f Hz, %d refresh%s per VBlank)", hz, k, k > 1 ? "es" : "");
+        hlog("display pacing: VBlanks from the display (%.3f Hz, %d refresh%s per VBlank, %.2f frames/s)", hz, k, k > 1 ? "es" : "", hz / k);
         C.vblank_external(1);
         int moved = 0;
         for (uint32_t n = 0; !moved; n++) {
             if (FAILED(IDXGIOutput_WaitForVBlank(o))) { Sleep(16); }
             else if (n % (uint32_t)k == 0) C.display_vblank();
             if ((n & 127) == 127 && (MonitorFromWindow((HWND)C.hwnd, MONITOR_DEFAULTTOPRIMARY) != mon ||   /* the window moved, */
-                                     fabs(gpu_window_refresh_hz(C.hwnd) - hz) > 1.0 || !clock_wanted())) moved = 1;   /* the mode or pacing changed */
+                                     fabs(gpu_window_refresh_hz(C.hwnd) - hz) > 1.0 || !clock_wanted() ||
+                                     fabs(pace_content_ms() - content) > 0.01)) moved = 1;   /* the mode, pacing or frame rate changed */
         }
         C.vblank_external(0);
         IDXGIOutput_Release(o);

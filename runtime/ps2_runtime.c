@@ -375,17 +375,44 @@ static DWORD WINAPI host_timer(LPVOID arg) {
     (void)arg;
     timeBeginPeriod(1);
     HANDLE timer = CreateWaitableTimerExW(NULL, NULL, 0x2 /* CREATE_WAITABLE_TIMER_HIGH_RESOLUTION */, TIMER_ALL_ACCESS);
+    HANDLE request = frame_vblank_event();       /* (pc-fps) the frame limiter's wake-up */
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
     LARGE_INTEGER now;
     const int64_t tick = qpc_freq.QuadPart / 1000;
+    const int64_t ntsc = qpc_freq.QuadPart * 1001 / 60000;
     int64_t next_tick = qpc_start.QuadPart + tick;
+    /* (pc-fps) the 59.94 Hz schedule is base + n * 1001/60000 s (exact multiples, no drift); the frame limiter moves the base
+     * to its last VBlank when it hands back */
+    int64_t base = qpc_start.QuadPart, last_raise = qpc_start.QuadPart, req = 0;
+    int limiting = 0;
     for (uint64_t frame = 1;;) {                 /* NTSC: 59.94 fields per second */
         if (vblank_hold) { Sleep(1); continue; }
-        int64_t due = qpc_start.QuadPart + vblank_shift + (int64_t)(frame * 1001 * (uint64_t)qpc_freq.QuadPart / 60000);
         QueryPerformanceCounter(&now);
+        /* (pc-fps) frame rate above 60 (frame_rate.h): a VBlank as soon as the game's render thread waits for one, at most
+         * one per min_gap, and the PS2's 59.94 Hz while it does not ask (movies, loading, a long frame). Not while the
+         * display's own VBlanks drive the game (pacing display / auto on a display whose refresh fits the rate). */
+        int ext = vblank_ext && now.QuadPart - ext_last <= qpc_freq.QuadPart / 20;
+        int64_t gap = ext ? 0 : frame_rate_min_gap(qpc_freq.QuadPart);
+        int64_t r = frame_vblank_take_request();
+        if (r) req = r;
+        if (gap && !limiting) { limiting = 1; req = 0; }
+        else if (!gap && limiting) {             /* back to the timer: its schedule continues from the last VBlank */
+            limiting = 0;
+            base = last_raise - vblank_shift;
+            frame = 1;
+        }
+        int64_t due;
+        if (limiting) {
+            due = req ? req : last_raise + ntsc;
+            if (due < last_raise + gap) due = last_raise + gap;
+        } else {
+            due = base + vblank_shift + (int64_t)(frame * 1001 * (uint64_t)qpc_freq.QuadPart / 60000);
+        }
         uint32_t raise = 0;
         if (now.QuadPart >= due) {
             frame++;
+            last_raise = due;
+            req = 0;
             /* (pacing = display: the display raises them while its VBlanks keep coming) */
             if (!vblank_ext || now.QuadPart - ext_last > qpc_freq.QuadPart / 20) {
                 InterlockedExchange64(&vblank_due_qpc, due);
@@ -410,7 +437,8 @@ static DWORD WINAPI host_timer(LPVOID arg) {
             rel.QuadPart = -(wait * 10000000 / qpc_freq.QuadPart);          /* 100 ns units, relative */
             if (!rel.QuadPart) rel.QuadPart = -1;
             SetWaitableTimer(timer, &rel, 0, NULL, NULL, FALSE);
-            WaitForSingleObject(timer, INFINITE);
+            HANDLE hs[2] = { timer, request };   /* (pc-fps: a frame-limiter request wakes it at once) */
+            WaitForMultipleObjects(limiting && request ? 2 : 1, hs, FALSE, INFINITE);
         } else {
             Sleep(1);
         }
@@ -1013,6 +1041,7 @@ int main(int argc, char** argv) {
     init.ie = 1;
     threads_init(&init);                                 /* main runs as thread 1 */
     ps2_ctx* ctx = thread_ctx();
+    frame_rate_init();                                   /* (pc-fps) [display] frame_rate, before the VBlank clock starts */
     if (!dump_regs) CreateThread(NULL, 0, host_timer, NULL, 0, NULL);
     ps2_call(ctx, ps2_entry_point);
     fprintf(stderr, "[ps2] entry point returned\n");
