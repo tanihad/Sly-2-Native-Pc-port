@@ -29,7 +29,7 @@ downloads, each checked against its published SHA-256. Git is fetched as well if
 
 1. **Get the code**: `git clone https://github.com/tanihad/sly2-decomp` (or download the ZIP from
    GitHub and unpack it), into a short path such as `C:\Games\sly2-decomp`.
-2. **Set up the toolchain** (once), in PowerShell in that folder:
+2. **Set up the toolchain** (once): double-click `setup.cmd`, or in PowerShell in that folder:
 
    ```powershell
    powershell -ExecutionPolicy Bypass -File setup.ps1
@@ -38,6 +38,7 @@ downloads, each checked against its published SHA-256. Git is fetched as well if
 3. **Add your disc image**: make an `.iso` of your own disc with a disc imaging tool and copy it
    into `orig\disc\`. Other formats (`.bin/.cue`, `.chd`, `.cso`) must be converted to `.iso` first.
 4. **Build** (one to a few minutes depending on the CPU; later builds reuse unchanged parts):
+   double-click `build.cmd`, or
 
    ```powershell
    powershell -ExecutionPolicy Bypass -File build.ps1
