@@ -38,6 +38,27 @@ fps2_scene.ps1 now presses X at r25 s (wall time); ep1_hub = save of job m1_braw
 With A1+A2 the EE thread is ~2 ms per frame (60-80% idle); at 3x the GPU is the limit everywhere (fps ~ 1000 / GPU ms).
 PS2_GIF_CHECK: 3.1M raw packets, 0 differ.
 
+## Scale 2 (build\warp\fps2_cmp1s2.txt, fps2_cmp2s2.txt): GPU no longer the limit
+| scene | base 120 | a12 120 | a12v 120 | base 165 | a12 165 | a12v 165 | limit after |
+|---|---|---|---|---|---|---|---|
+| ep1 hub | 69.3 | 96.0 | 96.2 | 69.0 | 96.3 | 97.0 | frontend 9.0 / GS 7.8-9.1 ms (worker 7.2 with VIF fast) |
+| ep3 hub | 117.5 (p10 67) | 118.7 (p10 81) | | 120.6 (p10 66) | 159.6 (p10 81) | | |
+| ep5 hub | 91.1 | 118.2 | 118.4 | 92.2 | 121.0 | 124.0 | frontend 7.4 |
+| m8 boss | 115.0 | 118.7 | 118.7 | 110.8 | 149.7 | 145.1 | frontend 5.8 / GPU 4.8 |
+| m3 heist | 119.5 | 119.0 | | 163.6 | 163.5 | | (light: at the cap) |
+a12v = a12 + VIF unpack fast paths: worker 8.8 -> 7.2 ms (VIF 34% -> 20%), fps unchanged (frontend / GS thread limit).
+
+## Prototype (b) (runtime/interp.c, PS2_INTERP=k at frame_rate 60)
+- Works for camera + rigid objects (world matrix V4-32 x4 to VU1 0x000 in per-frame CNT packets, keyed by the next CALL's
+  static geometry address + occurrence; camera = VU1 0x002/0x006 of the frame's first packet). ~800 matrices / frame in
+  the ep1 hub, ~97% matched. Dumps (N-1, in-between, N) look right in ep1 hub and m8 boss.
+- Traps found: Sly 2 uses the VIF1 i bit (handler 0x167F78 reads VU1 0x320 results, then FBRST.STC) - a re-run chain must
+  resume the VIF itself; at 60 the PS2_PERF "flips" count VBlanks (DISPFB changes per field), not game frames; the
+  prototype runs the in-between chains on the render thread, so the game's own frame rate drops (ep1 hub 60 -> ~42):
+  count distinct pictures ([fps2] interp lines).
+- Cost: a re-run of the frame's chains ~5.3-6.8 ms on the worker (= a real frame's job, 6.2-7 ms) + the same GS thread /
+  frontend / GPU work per picture.
+
 ## In progress
 - A1 graphics worker (runtime/gfx_async.c/.h, hooks in dma/vif/gif/vu/hw/gs_thread/ps2_runtime/perf) + A2 raw PATH1
   packets (gif_parse.h, gif.c path1_raw, gs_thread.c K_GIF / gs_gif_packet; PS2_GIF_RAW=0 off, PS2_GIF_CHECK=1 checks).

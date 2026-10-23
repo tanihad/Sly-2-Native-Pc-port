@@ -27,7 +27,8 @@ typedef struct { uint64_t key; uint8_t* ptr; float v[16]; } mat;
 static mat cur[MAXM], prev[MAXM];
 static uint32_t ncur, nprev;
 static int k_extra = -1;
-static uint32_t dump_list[8], frames, pictures;
+static uint32_t dump_list[8], frames, pictures, nkicks;
+static double kick_ms;
 static LARGE_INTEGER qf;
 
 static const mat* find_prev(uint64_t key) {
@@ -189,8 +190,13 @@ void interp_frame_done(ps2_ctx* ctx) {
             float* dst = (float*)cur[i].ptr;
             for (int c = 0; c < 16; c++) dst[c] = p ? p->v[c] + (cur[i].v[c] - p->v[c]) * t : cur[i].v[c];
         }
+        LARGE_INTEGER k0, k1;
+        QueryPerformanceCounter(&k0);
         kick(DMA_VIF1, vif);
         kick(DMA_GIF, gif);
+        QueryPerformanceCounter(&k1);
+        kick_ms += (double)(k1.QuadPart - k0.QuadPart) * 1000.0 / (double)qf.QuadPart;
+        nkicks++;
         gs_dispfb_swap = 1;
         gs_set_vsync_time(due0 + (int64_t)((double)period * t));
         gs_queue_vsync(dumping ? dbase + (uint32_t)j * 2 : ps2_vblank_count());
@@ -201,7 +207,21 @@ void interp_frame_done(ps2_ctx* ctx) {
     for (uint32_t i = 0; i < ncur; i++) memcpy(cur[i].ptr, cur[i].v, 64);
     memcpy(prev, cur, sizeof(mat) * ncur);
     nprev = ncur;
-    if (frames % 120 == 0)
-        fprintf(stderr, "[interp] frame %u: %u matrices (%u matched, %u moving)%s, %u in-between pictures so far\n", frames,
-                ncur, matched, moved, cut ? ", camera cut" : "", pictures);
+    static int64_t last_log;
+    static uint32_t frames0, pictures0;
+    LARGE_INTEGER now;
+    QueryPerformanceCounter(&now);
+    if (now.QuadPart - last_log >= qf.QuadPart) {
+        double s = last_log ? (double)(now.QuadPart - last_log) / (double)qf.QuadPart : 1.0;
+        /* distinct pictures: the game's frames + the in-between ones (VBlank pictures that repeat a frame are not counted) */
+        fprintf(stderr, "[fps2] interp: %.1f game frames/s + %.1f in-between = %.1f distinct pictures/s | frame %u: %u matrices "
+                        "(%u matched, %u moving)%s, re-run %.2f ms each\n",
+                (frames - frames0) / s, (pictures - pictures0) / s, (frames - frames0 + pictures - pictures0) / s, frames, ncur,
+                matched, moved, cut ? ", camera cut" : "", nkicks ? kick_ms / nkicks : 0.0);
+        frames0 = frames;
+        pictures0 = pictures;
+        last_log = now.QuadPart;
+        kick_ms = 0;
+        nkicks = 0;
+    }
 }

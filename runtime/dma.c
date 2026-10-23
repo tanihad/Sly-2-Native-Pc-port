@@ -291,6 +291,7 @@ static int xfer_out(int ch, int m) {
         if (m == M_INTERLEAVE) want = il_limit(c, want);
         uint8_t* p = mem_span(addr, want, &got);
         if (!p) { bus_error(ch, addr); return -1; }
+        if (gfx_read_hook && gfx_on_worker()) gfx_read_hook(addr, p, got * 16);   /* (pc-fps2) PS2_GFX_ASYNC_CHECK */
         uint32_t n = dev_out(ch, p, got);
         if (n > got) n = got;
         c->madr = addr + n * 16;
@@ -347,6 +348,7 @@ static int read_src_tag(int ch) {
     const uint8_t* p = mem_span(ta, 1, &got);
     if (!p) { bus_error(ch, ta); return -1; }
     c->budget--;
+    if (gfx_read_hook && gfx_on_worker()) gfx_read_hook(ta, p, 16);   /* (pc-fps2) PS2_GFX_ASYNC_CHECK */
 
     uint64_t t;
     memcpy(&t, p, 8);
@@ -497,6 +499,8 @@ static void pump(void) {
     }
     pumping = 0;
 }
+
+uint32_t dma_debug_tadr(int ch) { return ch_[ch].tadr; }   /* (pc-fps2) diagnostics */
 
 /* (pc-fps2) the graphics worker: channel ch alone, as pump() would run it (no IOP polls: ps2_poll_iop is the EE's) */
 void dma_run_owned(int ch) {

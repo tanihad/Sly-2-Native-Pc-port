@@ -47,6 +47,7 @@ def main():
             i += 1
     fps, busy, cats, vu = [], [], {}, []
     wbusy, wcats = [], {}
+    igame, idist = [], []
     gs, fr, rc, gpu, sfl = [], [], [], [], []
     started = False
     extra = []
@@ -87,6 +88,10 @@ def main():
         m = EXTRA.search(line)
         if m:
             extra.append(m.group(1))
+            d = re.search(r"interp: ([\d.]+) game frames/s \+ ([\d.]+) in-between = ([\d.]+) distinct", line)
+            if d:
+                igame.append(float(d.group(1)))
+                idist.append(float(d.group(3)))
     if not fps:
         print(f"{name}: no PS2_PERF lines after {t_from} s")
         return
@@ -96,8 +101,11 @@ def main():
     print(f"{name}: fps med {med(fps):.1f} p10 {low(fps):.1f} min {min(fps):.1f} ({len(fps)} s) | EE busy {med(busy):.2f} ms/frame | {split}"
           f" | VU {med(vu):.0f}k pairs/frame | per frame ms: GS thread {med(gs):.2f} frontend {med(fr):.2f} render CPU {med(rc):.2f}"
           f" GPU {med(gpu):.2f} | pictures/s {med(sfl):.1f} p10 {low(sfl):.1f}")
-    for e in extra[-3:]:
-        print("   ", e)
+    if idist:
+        print(f"    interpolation: game frames/s med {med(igame):.1f} p10 {low(igame):.1f}, distinct pictures/s med {med(idist):.1f} "
+              f"p10 {low(idist):.1f}")
+    elif extra:
+        print("   ", extra[-1])
     if csv:
         with open(csv, "a") as f:
             f.write(f"{name},{med(fps):.1f},{low(fps):.1f},{min(fps):.1f},{med(busy):.2f},{med(gs):.2f},{med(fr):.2f},{med(rc):.2f},{med(gpu):.2f}\n")

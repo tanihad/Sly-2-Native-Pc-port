@@ -88,6 +88,13 @@ static int sym_of(uint64_t pc) {
     return lo - 1;
 }
 
+/* (pc-fps2) a host address's function name (debugging aids, e.g. PS2_WRITE_WATCH); "?" outside the executable */
+const char* perf_sym_name(uint64_t pc) {
+    if (!syms && !image_base) load_symbols();
+    int s = syms ? sym_of(pc) : -1;
+    return s >= 0 ? syms[s].name : "?";
+}
+
 /* ---- sampling profiler -------------------------------------------------------------------------
  * The sampler thread suspends the emulation thread, records the function it is in (self) and walks
  * its stack with the x64 unwind tables (every function on the stack gets an inclusive count, once

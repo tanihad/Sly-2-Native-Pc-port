@@ -34,6 +34,8 @@ static inline uint32_t gfx_tid(void) {                            /* TEB ClientI
 static inline int gfx_on_worker(void) { return gfx_worker_tid && gfx_tid() == gfx_worker_tid; }
 static inline void gfx_sync(void) { if (gfx_owned) gfx_wait_fn(); }   /* EE only */
 
+/* PS2_GFX_ASYNC_CHECK: dma.c on the worker reports every read of memory (address, host pointer, bytes) */
+__attribute__((selectany)) void (*gfx_read_hook)(uint32_t addr, const uint8_t* p, uint32_t bytes) = 0;
 /* dma.c pump, EE: 1 = channel ch belongs to the worker now (or still); NULL without a worker */
 __attribute__((selectany)) int (*gfx_take_fn)(int ch) = 0;
 /* dma.c, worker: run channel ch as pump() would, without the other channels and the IOP */
