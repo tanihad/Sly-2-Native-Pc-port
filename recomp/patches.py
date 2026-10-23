@@ -59,6 +59,7 @@ HUD_UPDATE = (0x001D9648, "d8e9a7bdb104955a41913d2a79b514ebb10cfce0")    # the H
 # (pc-fps) the frame rate (runtime/frame_rate.h, notes/frame-rate.md)
 CLOCK_TICK = (0x0014D0B8, "d711437a42a7cf2bf2ab9622a903c33ff5744981")    # the game clock: dt from the COP0 Count
 VBLANK_WAIT = (0x0016F560, "b591b01bb4c0034d517f71d94b8a12f816560883")   # render thread: wait for the next VBlank
+RENDER_THREAD = (0x00160B70, "ae5d4b497429d76b28da3ae24690c6b58c68d8e4")  # (pc-fps2) render thread main loop
 
 PATCHES: list[Patch] = [
     Patch("ws_projection", *CM_RECALC, 0x0014DBA4, "after",
@@ -214,6 +215,10 @@ PATCHES: list[Patch] = [
           "handler 0x16F468 signals): called by the render thread (0x160B70 via 0x16F590) right after it kicked a "
           "frame. Above 60 fps the host timer raises the VBlank now (at most one per 1 / rate s); at 60 it returns at once. "
           "It is passed the vtable of the camera's target (camera 0x2DDF40 +0x260): the RC chopper class (0x2D5898) keeps 60 fps"),
+    Patch("interp_frame_done", *RENDER_THREAD, 0x00160C68, "before",
+          "{ void interp_frame_done(ps2_ctx*); interp_frame_done(ctx); }",
+          "(pc-fps2 PROTOTYPE, runtime/interp.c, PS2_INTERP only) the render thread before it frees the frame's buffer "
+          "(SignalSema 0x2DEB1C): the frame's DMA is done, its chains can run again with interpolated matrices"),
     Patch("frame_movie_begin", *MOVIE_PLAY, 0x001B3BD0, "before",
           "frame_rate_movie(1);",
           "entry of the movie player (one movie: its own decode / display loop, paced by the VBlanks it waits for - at "

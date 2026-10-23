@@ -100,6 +100,159 @@ the GPU each need 3-11 ms per frame at 3x.
   (dt from real time), but the frame rate varies with the scene. On a fixed-refresh display a varying frame rate judders
   more than a steady 60; with variable refresh it is smooth.
 
+(That was before pc-fps2: the graphics worker below takes the frame's graphics preparation off the EE thread.)
+
+## High frame rate: approaches compared (pc-fps2)
+
+Question: (a) pipeline / parallelise the per-frame graphics preparation (VIF1 unpack + VU1 microcode + GIF on the EE
+thread) or (b) interpolate frames between 60 Hz game ticks (RT64 / Zelda 64 Recompiled style: matrices of two game frames,
+in-between pictures by re-running the frame's VU1 work with interpolated matrices). Decided by measurement. Checkpoint
+history: notes/wip/pc-fps2.md. Measured on the owner's PC (i7-14700F, RTX 4060 Ti), release build, headless, one game at
+a time, 35 s windows of time-based scripted play (scripts/fps2_scene.ps1, fps2_batch.ps1, fps2_sum.py); ep1 hub = Sly
+on the Paris roofs (save of job m1_brawl), ep3 / ep5 hubs after X, m8 boss and m3 heist as direct jobs.
+
+### Step 1: profile (before, 3x, frame_rate 120)
+
+| ep1 hub, per game frame | ms | |
+|---|---|---|
+| EE thread | 13.4 busy, 0% idle | recompiled game code 12%, GIF + GS queue (gs_write_reg) 33%, VU1 microcode 29%, VIF 24% |
+| GS thread | 8.2 | decode, proxy records to the frontend (px_prim, reserve), waits |
+| GPU frontend thread | 9.2 | fr_prim 34% self / 69% incl., own_draw, refresh |
+| render thread CPU | 1.0 | |
+| GPU at 3x | 11.5 | |
+
+Hottest EE functions (PS2_PROFILE): the main VU1 renderer vuc_376110651 24% self, gs_write_reg 22% (a 16-byte queue slot per
+GS register, ~10 ns each: ~450k registers per frame), upk_write 13% (VIF unpacks other than V4-32), gif_feed 11%, feed 9.5%;
+the game's own code ~7%. Per frame in a hub: ~2.5M VU1 pairs in ~7500 microprograms, ~50k primitives. Per frame the render
+thread (0x160B70) kicks one VIF1 chain (0x16F8B8 -> sceDmaSend, then WaitSema 0x2DFB50 until the GS FINISH interrupt),
+one GIF chain, a 9-qword GIF setup transfer; the frame's DMA chain is double-buffered (0x2DEA50 + 0x50 x n, semaphores
+0x2DEB18 / 0x2DEB1C). So the EE thread was the limit everywhere; the GS thread / frontend / GPU were next at 8-11 ms.
+
+### Step 2: the prototypes
+
+**(a) graphics worker + cheaper packets** (runtime/gfx_async.c/.h, gif_parse.h, vif.c):
+- A1 *graphics worker*: a VIF1 source chain is handed to a host thread at its CHCR write; it runs exactly the code the EE
+  ran (dma.c -> vif.c -> vu.c -> gif.c -> the GS queue). The worker owns DMA channel 1, VIF1, VU1, the GIF and the GS
+  queue's producer side while a job is out; the EE waits for it (gfx_sync) before it touches any of them (VIF1 / GIF / VU1
+  registers and memory, DMA ch1 and the global DMAC registers, GIF DMA, any GS queue write, VBlank pictures). Everything
+  the worker causes that the EE can see - INTC (GS, VIF1), DMAC channel ends, GS SIGNAL / FINISH / LABEL - is deferred in
+  order and applied on the EE when the job ends (ps2_service_irq -> gfx_poll), where the synchronous model raised it too.
+  The game's render thread sleeps on its FINISH semaphore, so the main loop builds the next frame meanwhile (as on a PS2).
+  A VIF stop (the i bit: Sly 2's VIF1 handler 0x167F78 reads VU1 results, then FBRST.STC) ends the job; the EE takes it
+  from there and the next pump hands the rest to the worker again.
+- A2 *raw PATH1 packets*: an XGKICK packet goes to the GS thread as one queue record (its qwords copied) and is parsed
+  there (gif_parse.h: one parser source for gif.c and gs_thread.c) instead of a 16-byte slot per register. Not for
+  packets with SIGNAL / FINISH / LABEL (EE timeline), nor while recording the GS stream or logging GIFtags. The GS
+  register mirror for recordings is now kept where registers execute.
+- VIF unpack fast paths: whole vectors of each format (V4-5, V1-8 masked, V2-16 with CL > WL skipping, V4-16, V4-8, ...)
+  in loops specialised at compile time, no filling cycles (those keep the generic loop).
+
+**(b) frame interpolation prototype** (runtime/interp.c, `PS2_INTERP=<k>` at frame_rate 60; patch interp_frame_done before
+the render thread frees the frame's buffer, 0x160C68): the frame's VIF1 chain is walked for the matrices it uploads - the
+camera (VU1 0x002 / 0x006 in the frame's first packet) and every object's world matrix (UNPACK V4-32 x 4 to VU1 0x000 in a
+per-frame CNT packet), keyed by the static geometry the object CALLs next (+ occurrence; ~800 per frame in the ep1 hub, ~97%
+matched); for t = j / (k + 1) the matrices are replaced in EE RAM by lerp(N-1, N, t), the frame's VIF1 and GIF chains run
+again (no interrupts; the VIF i bit resumed by hand), and a picture of the buffer N draws into is queued (display snapshot
+with the other DISPFB). Dumps of N-1 / in-between / N in the ep1 hub and the m8 boss show the camera and objects in between
+(skinned characters, particles and 2D are not interpolated in the prototype).
+
+### Results (fps = game frames per second, median of 35 s; p10 in brackets)
+
+3x (the default Balanced preset):
+
+| scene | before 120 | (a) 120 | before 165 | (a) 165 | (a): GPU ms at 3x |
+|---|---|---|---|---|---|
+| ep1 hub | 68.3 (64.8) | 86.7 (83.9) | 71.6 (66.6) | 87.0 (78.5) | 11.4 |
+| ep3 hub | 98.0 (67.7) | 100.7 (81.1) | 99.2 (66.6) | 98.5 (80.5) | 9.6 |
+| ep5 hub | 90.4 (79.5) | 101.9 (96.2) | 92.5 (78.5) | 102.0 (95.9) | 9.5 |
+| m8 boss | 118.0 (95.6) | 118.2 (103.9) | 113.0 (95.8) | 126.7 (106.4) | 7.6 |
+| m3 heist (light) | 119.2 | 119.2 | 145.8 | 143.6 | 6.8 |
+| ep2 hub (fps_trace run, 165) | | | 74.8 | 95.6 | |
+
+At 3x the GPU is now the limit (fps ~ 1000 / GPU ms). 2x (the Performance preset), where the CPU side shows:
+
+| scene | before 120 | (a) 120 | before 165 | (a) 165 | (a) per frame: worker / GS thread / frontend / GPU ms |
+|---|---|---|---|---|---|
+| ep1 hub | 69.3 (64.0) | 96.2 (90.3) | 69.0 (66.6) | 97.0 (93.2) | 7.2 / 7.8 / 8.9 / 6.6 |
+| ep3 hub | 117.5 (67.1) | 118.7 (81.3) | 120.6 (66.2) | 159.6 (80.7) | 5.4 / 3.5 / 4.1 / 5.2 |
+| ep5 hub | 91.1 (77.9) | 118.4 (102.6) | 92.2 (79.3) | 124.0 (104.1) | 5.5 / 5.6 / 7.4 / 5.5 |
+| m8 boss | 115.0 (96.8) | 118.7 (118.3) | 110.8 (96.0) | 145.1 (124.9) | 4.5 / 4.7 / 5.8 / 4.8 |
+| m3 heist (light) | 119.5 | 119.0 | 163.6 | 163.5 | 1.2 / 1.1 / 1.5 / 4.2 |
+
+With (a) the EE thread needs ~1.5-2 ms per frame (50-80% idle); the worker 1.2-7.2 ms (VU1 ~40%, VIF ~20% of it after the
+unpack fast paths: 8.8 -> 7.2 ms in the ep1 hub); the GPU frontend (fr_prim) and the GS thread are the new limit in the
+heaviest hub (~9 / ~8 ms: ~97 fps at 2x).
+
+(b) at 2x, frame_rate 60, distinct pictures per second (game frames + in-between; VBlank pictures that repeat a frame not
+counted), next to (a):
+
+| scene | (a) 165 | (b) k = 1: game / distinct | (b) k = 2: game / distinct |
+|---|---|---|---|
+| ep1 hub | 97.0 | 40.3 / 80.7 | 30.0 / 89.9 |
+| ep5 hub | 124.0 | 57.9 / 115.8 | 37.3 / 112.0 |
+| m8 boss | 145.1 | 59.0 / 117.9 | (58.9 / 176.8: not comparable - at a 60 Hz tick the scripted fight ended with Sly falling, clouds only) |
+
+An in-between picture costs what a frame costs: the re-run is the same VU1 work (470k pairs per job either way, m8 boss),
+5.3-6.8 ms on the worker in the ep1 hub (a real frame's job: 6.2-7.0 ms), and the same GS thread / frontend / GPU work.
+The game's code, the only part (b) saves, is ~2 ms of a frame and already runs beside the worker with (a).
+
+### Decision: (a)
+
+- (a) gives the higher real frame rate everywhere (ep1 hub 2x: 97 game frames/s against (b)'s 81-90 distinct pictures with
+  only 30-40 game frames/s; ep5 124 against 112-116) and keeps the full game tick: every picture is a real game frame,
+  input is read every frame (ep1 hub: a frame every 10.3 ms instead of a 25-33 ms tick under (b)), and nothing is guessed.
+- (b) cannot be faster than (a): each in-between picture needs the whole per-picture pipeline (VU1 microcode on the CPU,
+  GIF, GS decode, frontend, GPU) - unlike an N64 recompiler, where the GPU redoes the transforms for free. In heavy scenes
+  the in-between pictures take the time the next game frame needs and the game's own tick drops below 60 (ep1 hub 60 ->
+  30-40). It also adds latency (in-between pictures show the past: one tick behind), needs identity matching (instanced
+  objects by occurrence, culling / sorting changes), leaves skinned characters, particles, EE-built geometry and the
+  game's motion blur un-interpolated, and must re-run chains whose VIF interrupts the game handles.
+- The owner's idea is not a win here; the one place it could still help is a scene that must stay at 60 (the RC chopper's
+  controller, frame_rate.c keeps_60): with (a) the chopper keeps 60 game frames; interpolating those pictures would need
+  the prototype's pacing and completeness problems solved first (left, below).
+
+### What was implemented
+
+(a), fully: the graphics worker (default above 60 fps; `PS2_GFX_ASYNC=0` never, `=1` also at 60), raw PATH1 packets
+(`PS2_GIF_RAW=0` off) and the unpack fast paths (`PS2_VIF_UPK_FAST=0` off). At 60 the chain runs on the EE as before
+(the GS stream is the synchronous model's exactly); raw packets and unpack fast paths are exact by construction and
+checked in game. The prototype (b) stays in the tree for measurements (interp.c, only with PS2_INTERP). Tools:
+PS2_PROFILE=front | render | worker (perf.c), the worker's split in the PS2_PERF line, PS2_GFX_ASYNC_LOG,
+PS2_CHAIN_DUMP=<vblank>:<n>:<file> (chain_dump.c: a VIF1 chain's tags and VIF codes as text), PS2_WRITE_WATCH=<addr>
+(gfx_async.c: who writes a 4 KB page of EE RAM).
+
+### Correctness
+
+- In-game checks over 16 scenes (scripts/fps2_check.ps1: hubs, turret, dance, RC chopper, hack, paraglide, train, battle,
+  bosses ep1 / ep7 / ep8, the prologue; 120 and 165): `PS2_GIF_CHECK=1` (each raw packet's register stream hashed by
+  gif.c's own parser and by the GS thread's) 0 differ in 10-20M packets per run; `PS2_VIF_UPK_FAST=check` (fast and generic
+  unpack on copies, VU memory and VIF state compared) 0 differ in 14-40M unpack calls per run.
+- `PS2_GFX_ASYNC_CHECK=<n>` (every n-th job: EE RAM copied at the kick, every byte the worker's DMA reads compared with the
+  copy) found the game writing memory a kicked chain still reads in 5-14% of jobs: always the effect-object pool at
+  0x1CBxxxx-0x1CDxxxx (per-object double buffers 0x5A0 / 0x840 apart), written by f_0015B428 (takes an effect object from
+  a pool, 0x1390D8) and the main loop's updates (found with PS2_WRITE_WATCH). On a PS2 the DMA runs beside the EE the same
+  way; with the worker such a frame shows a few effect objects one frame early. That is why the worker is used only above
+  60 fps: at 60 the stream stays exactly the old one.
+- Game speed / physics (scripts/fps_run.ps1 + fps_trace.py, ep2 hub, the same time-based input): run 338-339 u/s average at
+  60 / 120 / 165 (339 before), jump +213.8 / +214.5 / +214.5 (peak after 0.44 / 0.43 / 0.44 s, air time 0.88 / 0.87 /
+  0.87 s), camera turn 72.0 / 72.2 / 72.2 deg/s, every segment the same game seconds at every rate.
+- Software renderer with the worker (PS2_GS_BACKEND=sw, 165): runs, pictures right, raw packets 0 differ.
+- Gates: see notes/wip/pc-fps2.md (run on the final state).
+
+### Left
+
+- The heaviest hubs stop at ~97 fps (ep1) at 2x: the GPU frontend thread (fr_prim, ~9 ms per frame, ~99% busy in the
+  profile; the GS thread waits on its ring) is the limit; then the GS thread (~8 ms) and the worker (VU1 microcode ~3 ms
+  of 7). Measured without effect (ep1 hub 2x 165, A/B twice each, all within 94-99 fps): the frontend thread at above-
+  normal priority, the process on the performance cores only (CPU sets), the five pipeline threads pinned to separate
+  physical cores, two pictures in flight instead of one, a 32 MB GS queue instead of 4 MB. Offline the frontend needs
+  5.9 ms per game frame of the gpu-C ep1_hub recording (gs_replay --front-thread), in game ~9. Next levers: split the
+  frontend's per-primitive work (setup, culling, texel rects: pure functions of the primitive and its state) onto
+  another thread, or make fr_prim cheaper; then parallelise VU1 batches.
+- At 3x the GPU limits (ep1 hub 11.4 ms per frame): 120+ in heavy scenes needs 2x (the Performance preset).
+- RC chopper at 60: interpolation would need paced in-between pictures (the prototype queues them back to back) and the
+  frame's other chains / post effects re-run; or a fix of the chopper controller's frame-rate dependence itself.
+
 ## VRR (G-Sync / FreeSync) on the owner's PC: why it did not engage
 
 Measured 2026-10-23 (read only, nothing changed):

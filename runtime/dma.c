@@ -11,6 +11,7 @@
  * transfer nothing: the IOP side is emulated at a higher level (sif.c).
  */
 #include "hw.h"
+#include "gfx_async.h"
 
 enum { NCH = 10 };
 
@@ -290,6 +291,7 @@ static int xfer_out(int ch, int m) {
         if (m == M_INTERLEAVE) want = il_limit(c, want);
         uint8_t* p = mem_span(addr, want, &got);
         if (!p) { bus_error(ch, addr); return -1; }
+        if (gfx_read_hook && gfx_on_worker()) gfx_read_hook(addr, p, got * 16);   /* (pc-fps2) PS2_GFX_ASYNC_CHECK */
         uint32_t n = dev_out(ch, p, got);
         if (n > got) n = got;
         c->madr = addr + n * 16;
@@ -346,6 +348,7 @@ static int read_src_tag(int ch) {
     const uint8_t* p = mem_span(ta, 1, &got);
     if (!p) { bus_error(ch, ta); return -1; }
     c->budget--;
+    if (gfx_read_hook && gfx_on_worker()) gfx_read_hook(ta, p, 16);   /* (pc-fps2) PS2_GFX_ASYNC_CHECK */
 
     uint64_t t;
     memcpy(&t, p, 8);
@@ -478,15 +481,40 @@ static int run(int ch) {                         /* 1 = something changed */
 static void pump(void) {
     if (pumping) return;
     pumping = 1;
-    for (int ch = 0; ch < NCH; ch++) ch_[ch].budget = TAG_BUDGET;
+    for (int ch = 0; ch < NCH; ch++)
+        if (ch != DMA_VIF1 || !gfx_owned) ch_[ch].budget = TAG_BUDGET;
     for (;;) {
         int progress = 0;
-        for (int ch = 0; ch < NCH; ch++)
+        for (int ch = 0; ch < NCH; ch++) {
+            /* (pc-fps2) a VIF1 chain runs on the graphics worker (gfx_async.h); the GIF waits for it (GS order) */
+            if (ch == DMA_VIF1 && gfx_take_fn) {
+                if (gfx_owned) continue;
+                if (runnable(ch) && mode_of(ch) == M_SRC_CHAIN && gfx_take_fn(ch)) continue;
+            }
+            if (ch == DMA_GIF && gfx_owned && runnable(ch)) gfx_sync();
             if (runnable(ch)) progress |= run(ch);
+        }
         if (!progress) break;
         ps2_poll_iop();
     }
     pumping = 0;
+}
+
+uint32_t dma_debug_tadr(int ch) { return ch_[ch].tadr; }   /* (pc-fps2) diagnostics */
+
+/* (pc-fps2) the graphics worker: channel ch alone, as pump() would run it (no IOP polls: ps2_poll_iop is the EE's) */
+void dma_run_owned(int ch) {
+    ch_[ch].budget = TAG_BUDGET;
+    while (runnable(ch) && run(ch)) {}
+    if (runnable(ch)) {                          /* stalled (VIF stop / interrupt): the EE sees it and goes on */
+        static int logged;
+        if (logged++ < 5) {
+            fprintf(stderr, "[dma] graphics worker: ch%d stalled: CHCR %08X MADR %08X QWC %u TADR %08X\n", ch,
+                    ch_[ch].chcr, ch_[ch].madr, ch_[ch].qwc, ch_[ch].tadr);
+            extern void vif_debug_state(int vif) __attribute__((weak));
+            if (vif_debug_state) vif_debug_state(1);
+        }
+    }
 }
 
 void dma_service(void) { pump(); }
@@ -508,6 +536,8 @@ static void put(void* data, unsigned size, uint32_t phys, uint32_t v) {
     memcpy(data, &v, size < 4 ? size : 4);
 }
 
+extern void chain_dump(uint32_t tadr) __attribute__((weak));   /* chain_dump.c (game build) */
+
 static void chcr_write(int ch, uint32_t v) {
     chan* c = &ch_[ch];
     if (c->chcr & CHCR_STR) {                    /* busy: only STR can change (stop = keep the state) */
@@ -518,6 +548,7 @@ static void chcr_write(int ch, uint32_t v) {
     if (!(c->chcr & CHCR_STR)) return;
     if (is_sif(ch)) { c->chcr &= ~CHCR_STR; return; }   /* IOP link emulated at a higher level */
     chan_start(ch);
+    if (ch == DMA_VIF1 && chain_dump && mode_of(ch) == M_SRC_CHAIN) chain_dump(c->tadr);   /* (pc-fps2) PS2_CHAIN_DUMP */
 }
 
 static void chan_access(uint32_t phys, void* data, unsigned size, int is_write) {
@@ -534,6 +565,7 @@ static void chan_access(uint32_t phys, void* data, unsigned size, int is_write) 
         if (!is_write) memset(data, 0, size);
         return;
     }
+    if (ch == DMA_VIF1) gfx_sync();              /* (pc-fps2) the worker's channel: wait for it */
     chan* c = &ch_[ch];
     uint32_t* r = reg == R_CHCR ? &c->chcr : reg == R_MADR ? &c->madr : reg == R_QWC ? &c->qwc :
                   reg == R_TADR ? &c->tadr : reg == R_ASR0 ? &c->asr[0] : reg == R_ASR1 ? &c->asr[1] : &c->sadr;
@@ -570,7 +602,7 @@ void dma_access(uint32_t phys, void* data, unsigned size, int is_write) {
     case 0x1000F590u:                             /* D_ENABLEW (write only); bit 16 = suspend */
         if (sub >= 4) { if (!is_write) memset(data, 0, size); return; }
         if (!is_write) { put(data, size, phys, d_enable); return; }
-        if (base == 0x1000F590u) { d_enable = merge(d_enable, phys, data, size); pump(); }
+        if (base == 0x1000F590u) { gfx_sync(); d_enable = merge(d_enable, phys, data, size); pump(); }
         return;
     default:
         if (!is_write) memset(data, 0, size);
@@ -579,6 +611,7 @@ void dma_access(uint32_t phys, void* data, unsigned size, int is_write) {
     }
     if (sub >= 4) { if (!is_write) memset(data, 0, size); return; }
     if (!is_write) { put(data, size, phys, *r); return; }
+    gfx_sync();                                   /* (pc-fps2) global DMAC state the worker's channel uses */
     *r = merge(*r, phys, data, size) & mask;
     pump();
 }

@@ -8,6 +8,7 @@
 #include "vu_record.h"
 #include "vu_compiled.h"
 #include "perf.h"
+#include "gfx_async.h"
 
 #include <stdlib.h>
 #include <xmmintrin.h>
@@ -17,7 +18,8 @@ static vu_op vu0_cache[512], vu1_cache[2048];
 vu_state vu_st[2];
 
 static uint32_t cmsar0, cmsar1, fbrst;
-static unsigned host_csr;                /* MXCSR of the caller while a microprogram runs */
+static unsigned host_csr[2];             /* MXCSR of the caller while a microprogram runs (per unit: (pc-fps2) VU1 can run
+                                            on the graphics worker while the EE runs VU0) */
 static uint32_t micro_gen[2] = { 1, 1 }; /* bumped on every write to a unit's micro memory */
 
 static vu_state* get(int vu) {
@@ -49,6 +51,7 @@ void vu_mem_access(uint32_t phys, void* data, unsigned size, int is_write) {
     uint32_t off = phys - 0x11000000u;
     uint8_t* mem;
     uint32_t len;
+    if (off >= 0x8000) gfx_sync();       /* (pc-fps2) VU1 belongs to the graphics worker while it runs */
     if (off < 0x4000)       { mem = vu0_micro; len = sizeof vu0_micro; if (is_write) micro_gen[0]++; }
     else if (off < 0x8000)  { mem = vu0_data;  len = sizeof vu0_data;  off -= 0x4000; }
     else if (off < 0xC000)  { mem = vu1_micro; len = sizeof vu1_micro; off -= 0x8000; if (is_write) micro_gen[1]++; }
@@ -287,7 +290,7 @@ static void run(vu_state* st, uint32_t addr_dw) {
     int perf_prev = perf_enter(PERF_VU);
     if (vrec.state != 1) vrec_begin(st, addr_dw);
     unsigned csr = _mm_getcsr();
-    host_csr = csr;
+    host_csr[st->idx & 1] = csr;
     _mm_setcsr(VU_MXCSR);
     uint32_t pairs = vu_execute(st, addr_dw);
     _mm_setcsr(csr);
@@ -306,7 +309,7 @@ void vu_xgkick(uint32_t qw_addr) {
         if (vuc_shadow_active) return;
     }
     if (vrec.state == 3) { vrec.khash = vu_kick_hash(vrec.khash, qw_addr, vu_st[1].cyc); vrec.kicks++; }
-    _mm_setcsr(host_csr);                /* the GIF/GS code runs in the host's FP mode */
+    _mm_setcsr(host_csr[1]);             /* the GIF/GS code runs in the host's FP mode */
     gif_path1_kick(vu1_data, qw_addr & 0x3FF);
     _mm_setcsr(VU_MXCSR);
 }
@@ -351,6 +354,7 @@ void vu0_callms(ps2_ctx* ctx, uint32_t addr_dw) {
 /* ---- VU1 registers in VU0's data space (0x4000 + 16 * n) ------------------------------------------ */
 
 void vu1_reg_read(uint32_t idx, uint32_t out[4]) {
+    gfx_sync();                          /* (pc-fps2) */
     vu_state* v = get(1);
     memset(out, 0, 16);
     idx &= 0x3F;
@@ -371,6 +375,7 @@ void vu1_reg_read(uint32_t idx, uint32_t out[4]) {
 }
 
 void vu1_reg_write(uint32_t idx, const uint32_t in[4], unsigned lanes) {
+    gfx_sync();                          /* (pc-fps2) */
     vu_state* v = get(1);
     idx &= 0x3F;
     if (idx < 32) {
@@ -456,6 +461,7 @@ void vu0_ctc2_ctrl(ps2_ctx* ctx, int reg, uint32_t v) {
         fbrst = v & 0x0C0C;
         break;
     case 31:                                                          /* CMSAR1: start VU1 */
+        gfx_sync();                                                   /* (pc-fps2) */
         cmsar1 = v & 0xFFFF;
         vu1_start(cmsar1);
         break;

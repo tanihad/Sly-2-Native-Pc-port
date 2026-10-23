@@ -12,6 +12,7 @@ to 2x: compare interleaved A/B runs, take the minimum of several, and prefer the
 | thread | work | per VBlank (briefing) |
 |---|---|---|
 | EE (main) | recompiled game code, VIF, recompiled VU microprograms, GIF parsing, IOP services | busy ~12 ms with the VU interpreter (VU ~60%), ~5-8 ms with the recompiled microcode (VU ~10-15%) |
+| graphics worker (pc-fps2) | above 60 fps: the frame's VIF1 chain (VIF, VU1 microcode, GIF -> GS queue) beside the EE | ~1-7 ms per frame (hubs) |
 | GS | GS register stream: primitive setup, texture/CLUT handling, binning spans to bands | ~11 ms |
 | pixel workers (8) | rasterising/texturing/blending the binned spans in parallel (bands = 64-px page columns x page rows); compose + present the VBlank picture | critical path ~7.5 ms at the title (PS2_GS_STATS) |
 | host timer | 59.94 Hz VBlank and tick interrupts (high-resolution waitable timer) | - |
@@ -179,10 +180,17 @@ With `[display] frame_rate` above 60 the EE side limits the rate: in the ep2 hub
 gif_feed, feed, upk_write) 37% self. Passing whole PATH1 / PATH2 packets to the GS thread (below) is the main lever for higher
 rates. Never trace with PS2_PEEK every VBlank: the unbuffered log costs ~4 ms per VBlank (use PS2_FPS_TRACE).
 
+pc-fps2 (notes/frame-rate.md "High frame rate: approaches compared"): above 60 fps the frame's VIF1 chain runs on a
+**graphics worker** thread (runtime/gfx_async.c) beside the EE; XGKICK packets go to the GS thread whole (raw PATH1,
+gif_parse.h); VIF unpacks have per-format fast paths. EE thread per frame in the ep1 hub 13.4 -> ~2 ms; worker ~7 ms; the
+GPU frontend (~9 ms) and the GS thread (~8 ms) are the limit at 2x, the GPU at 3x. Measure with scripts/fps2_scene.ps1 /
+fps2_batch.ps1 (PS2_PERF shows the worker's split after "worker busy"); PS2_PROFILE=worker | front | render samples those
+threads.
+
 ## Next
 
 - VU microcode: recompiled (above). Remaining VU cost is mostly the FMAC arithmetic itself and
   data-memory traffic; a headroom run on a quiet machine should re-measure the EE margin.
-- EE-side GIF/VIF work (~13% of the EE thread): pass whole PATH1/PATH2 packets to the GS thread.
+- EE-side GIF/VIF work: done for PATH1 (pc-fps2: raw packets, graphics worker); PATH2 DIRECT still per register.
 - VBlank driven by the display's vsync when it runs at ~60 Hz (smoother presentation).
 - Direct3D 11 renderer (per the native-port plan) replaces the software pixel pipeline.

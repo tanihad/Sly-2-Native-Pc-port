@@ -1,5 +1,6 @@
 /* Hardware register dispatch, interrupt controller state (INTC + DMAC D_STAT), debug UART. */
 #include "hw.h"
+#include "gfx_async.h"
 
 #include <windows.h>
 
@@ -30,8 +31,19 @@ static void mark_pending(void) { InterlockedOr((volatile LONG*)&ps2_irq_pending,
  * BEIS (15, bus error), which cannot be masked. */
 uint32_t dmac_pending(void) { return (d_stat & 0x63FFu & (d_stat >> 16)) | (d_stat & 0x8000u); }
 
-void intc_raise(int cause) { i_stat |= 1u << cause; if (i_mask & (1u << cause)) mark_pending(); }
-void dmac_raise(int ch)    { d_stat |= 1u << ch; if (dmac_pending() & (1u << ch)) mark_pending(); }
+/* (pc-fps2) raised on the graphics worker (gfx_async.h): applied on the EE when its job ends */
+void intc_raise(int cause) {
+    if (gfx_on_worker()) { gfx_defer_fn(GFX_EV_INTC, (uint32_t)cause, 0); return; }
+    if (gfx_quiet && (cause == INTC_GS || cause == INTC_VIF1)) return;
+    i_stat |= 1u << cause;
+    if (i_mask & (1u << cause)) mark_pending();
+}
+void dmac_raise(int ch) {
+    if (gfx_on_worker()) { gfx_defer_fn(GFX_EV_DMAC, (uint32_t)ch, 0); return; }
+    if (gfx_quiet && (ch == DMA_VIF1 || ch == DMA_GIF)) return;
+    d_stat |= 1u << ch;
+    if (dmac_pending() & (1u << ch)) mark_pending();
+}
 
 uint32_t dmac_stat_read(void) { return d_stat; }
 void dmac_stat_write(uint32_t v) {

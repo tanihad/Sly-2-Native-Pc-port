@@ -118,8 +118,11 @@ void gs_priv_access(uint32_t phys, void* data, unsigned size, int is_write) {
     uint64_t merged = (*reg & ~m) | (v & m);
     if (special == 2) imr_write(merged);
     else {
-        if ((reg == &priv[P_DISPFB1] || reg == &priv[P_DISPFB2]) && *reg != merged)
+        if ((reg == &priv[P_DISPFB1] || reg == &priv[P_DISPFB2]) && *reg != merged) {
             perf_state.flips++;          /* PS2_PERF: the game showed another buffer */
+            void gs_note_dispfb(int i, uint64_t old, uint64_t now);
+            gs_note_dispfb(reg == &priv[P_DISPFB2], *reg, merged);
+        }
         *reg = merged;
     }
     if (reg == &priv[P_EXTWRITE] && (merged & 1)) {
@@ -194,10 +197,20 @@ static uint32_t mix(uint32_t a, uint32_t b, uint32_t al) {      /* a*al + b*(255
 enum { S_VSYNC = P_COUNT };
 _Static_assert(S_VSYNC < GS_PRIV_SNAPSHOT, "display snapshot too small");
 
+/* (pc-fps2, frame interpolation prototype: interp.c) the display buffer shown before the current one (double buffering:
+ * the one the game draws into now), and a snapshot showing it instead */
+static uint64_t dispfb_before[2];
+int gs_dispfb_swap;
+void gs_note_dispfb(int i, uint64_t old, uint64_t now) { if (old != now) dispfb_before[i] = old; }
+
 void gs_priv_snapshot(uint64_t out[GS_PRIV_SNAPSHOT]) {
     memset(out, 0, GS_PRIV_SNAPSHOT * sizeof(uint64_t));
     memcpy(out, priv, sizeof priv);
     out[S_VSYNC] = gs_vsync_count;
+    if (gs_dispfb_swap) {
+        if (dispfb_before[0]) out[P_DISPFB1] = dispfb_before[0];
+        if (dispfb_before[1]) out[P_DISPFB2] = dispfb_before[1];
+    }
 }
 
 /* Interlaced field mode (SMODE2 INT = FFMD = 1): each field shows one 224-line buffer on the even or

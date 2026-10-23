@@ -20,6 +20,7 @@
 /* GS: with the GS thread running (gs_thread.c) this is only the EE side (GIF parsing, queueing);
  * GSWAIT: the EE thread waiting for the GS thread (downloads, one frame of lag at most). */
 enum { PERF_EE, PERF_GS, PERF_VU, PERF_VIF, PERF_IPU, PERF_IOP, PERF_PRESENT, PERF_GSWAIT, PERF_IDLE, PERF_N };
+/* (pc-fps2) the graphics worker's categories: PERF_IDLE = waiting for a job, PERF_EE = DMA chain walking */
 
 typedef struct {
     int      on;                   /* PS2_PERF set */
@@ -28,13 +29,32 @@ typedef struct {
     uint64_t acc[PERF_N];          /* TSC ticks charged per category */
     uint32_t flips;                /* displayed-buffer changes (DISPFB writes that change the value) */
     volatile uint64_t gs_busy;     /* TSC ticks the GS thread spent executing (written by it only) */
+    /* (pc-fps2) the graphics worker (gfx_async.h) keeps its own split: OS thread id, category, TSC, ticks */
+    volatile uint32_t worker_tid;
+    int      wcat;
+    uint64_t wt0;
+    uint64_t wacc[PERF_N];
 } perf_state_t;
 
 __attribute__((selectany)) perf_state_t perf_state = { 0 };
 
+static inline int perf_on_worker(void) {
+    if (!perf_state.worker_tid) return 0;
+    uint32_t v;
+    __asm__ volatile("movl %%gs:0x48, %0" : "=r"(v));   /* TEB ClientId.UniqueThread */
+    return v == perf_state.worker_tid;
+}
+
 static inline int perf_enter(int cat) {
     if (!perf_state.on) return -1;
     uint64_t t = __rdtsc();
+    if (perf_on_worker()) {
+        perf_state.wacc[perf_state.wcat] += t - perf_state.wt0;
+        perf_state.wt0 = t;
+        int prev = perf_state.wcat;
+        perf_state.wcat = cat;
+        return prev;
+    }
     perf_state.acc[perf_state.cat] += t - perf_state.t0;
     perf_state.t0 = t;
     int prev = perf_state.cat;
@@ -45,6 +65,12 @@ static inline int perf_enter(int cat) {
 static inline void perf_leave(int prev) {
     if (prev < 0) return;
     uint64_t t = __rdtsc();
+    if (perf_on_worker()) {
+        perf_state.wacc[perf_state.wcat] += t - perf_state.wt0;
+        perf_state.wt0 = t;
+        perf_state.wcat = prev;
+        return;
+    }
     perf_state.acc[perf_state.cat] += t - perf_state.t0;
     perf_state.t0 = t;
     perf_state.cat = prev;
