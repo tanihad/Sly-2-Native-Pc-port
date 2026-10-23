@@ -360,6 +360,7 @@ static BOOL CALLBACK do_init(PINIT_ONCE once, PVOID param, PVOID* ctx) {
     if (xi_get)
         for (DWORD s = 0; s < XUSER_MAX_COUNT; s++) if (xi_read(s, NULL)) xi_connect(s);   /* ready from the first frame */
     input_hid_start();
+    atexit(input_shutdown);                                   /* exit() paths: motors off (the window's close calls it too) */
     return TRUE;
 }
 

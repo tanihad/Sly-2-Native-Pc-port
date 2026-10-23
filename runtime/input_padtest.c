@@ -10,6 +10,7 @@
 #include <windows.h>
 
 static double seconds_limit;
+static int print_mode;
 static ULONGLONG t_start;
 
 static const char* kind_name(int k) {
@@ -56,9 +57,8 @@ static int build_text(char* out, size_t cap) {
     input_config c;
     input_config_get(&c);
     int nd = input_devices(d, INPUT_MAX_DEVICES);
-    int n = snprintf(out, cap,
-                     "Sly 2 controller test.  Keys: 1 = small motor, 2 = large motor, 3 = both (1 s, every controller), Esc = quit.\n"
-                     "Vibration %s %d%%, dead zones %d%% / %d%%, camera inversion X %s Y %s (sly2.ini [controls]).\n\n",
+    int n = snprintf(out, cap, "Sly 2 controller test.%s\nVibration %s %d%%, dead zones %d%% / %d%%, camera inversion X %s Y %s (sly2.ini [controls]).\n\n",
+                     print_mode ? "" : "  Keys: 1 = small motor, 2 = large motor, 3 = both (1 s, every controller), Esc = quit.",
                      c.vibration ? "on" : "off", c.vibration_strength, c.deadzone_left, c.deadzone_right,
                      c.invert_camera_x ? "on" : "off", c.invert_camera_y ? "on" : "off");
     if (!nd) n += snprintf(out + n, cap - (size_t)n, "No controller found. Plug one in (USB) or connect it over Bluetooth; it appears here within a second or two.\n");
@@ -160,6 +160,7 @@ int input_pad_test(int argc, char** argv) {
         if (!strcmp(argv[i], "--seconds") && i + 1 < argc) seconds_limit = atof(argv[++i]);
         else if (!strcmp(argv[i], "--print")) print = 1;
     }
+    print_mode = print;
     t_start = GetTickCount64();
     fprintf(stderr, "[padtest] controller test%s\n", print ? " (console)" : "");
     input_init();
