@@ -20,6 +20,7 @@
 #include "window.c"
 #include "settings.c"
 #include "gfx.c"
+#include "gpu/gpu_pace.c"                  /* (pc-pacing: gfx.c's picture sizes) */
 
 #include <stdlib.h>
 
@@ -140,6 +141,46 @@ static void test_gfx(void) {
           ps2_settings.internal_scale, gfx_scale());
     gfx_key(VK_F2, 1, 0);
     CHECK(ps2_settings.internal_scale == 2 && gfx_scale() == 2, "Shift+F2 from auto at 3x: fixed 2x (%d)", gfx_scale());
+    /* (pc-pacing) the menu's interfaces: internal resolution with pixel sizes, presets, pacing */
+    gfx_set_internal_res(SETTINGS_SCALE_AUTO, 2, 0);
+    CHECK(ps2_settings.internal_scale == SETTINGS_SCALE_AUTO && ps2_settings.scale_max == 2 && gfx_scale() == 2,
+          "auto up to 2x (%d)", gfx_scale());
+    gfx_set_internal_res(5, -1, 0);
+    CHECK(ps2_settings.internal_scale == 5 && ps2_settings.scale_max == 2 && gfx_scale() == 5, "fixed 5x, max kept");
+    gfx_set_internal_res(9, -1, 0);
+    CHECK(ps2_settings.internal_scale == 5, "a bad scale is ignored");
+    gfx_set_internal_res(SETTINGS_SCALE_NATIVE, -1, 0);
+    CHECK(ps2_settings.internal_scale == SETTINGS_SCALE_NATIVE && gfx_scale() == gfx_native_scale() && gfx_scale() >= 1,
+          "native: %dx", gfx_scale());
+    {
+        gfx_res_option o[12];
+        int ro = gfx_res_options(o, 12);
+        CHECK(ro == 10 && o[0].setting == SETTINGS_SCALE_AUTO && o[1].setting == SETTINGS_SCALE_NATIVE && o[2].setting == 1 &&
+              o[9].setting == 8, "resolution list: auto, native, 1..8 (%d)", ro);
+        CHECK(o[2].w == 512 && o[2].h == 448 && strstr(o[2].label, "512 x 448 (1x") != NULL, "1x = 512 x 448: '%s'", o[2].label);
+        CHECK(o[4].w == 2048 && o[4].h == 1344 && !strncmp(o[4].label, "2048 x 1344 (3x", 15), "3x 16:9 = '%s'", o[4].label);
+        CHECK(o[0].scale == 2 && !strcmp(o[0].label, "Auto (up to 1536 x 896)"), "auto entry '%s'", o[0].label);
+        CHECK(gfx_res_options(o, 3) == 3, "the list stops at max");
+    }
+    gfx_preset_apply(GFX_PRESET_ORIGINAL, 0);
+    CHECK(ps2_settings.internal_scale == 1 && gfx_scale() == 1, "Original: 1x");
+    gfx_preset_apply(GFX_PRESET_PERFORMANCE, 0);
+    CHECK(ps2_settings.internal_scale == SETTINGS_SCALE_AUTO && ps2_settings.scale_max == 2, "Performance: auto up to 2x");
+    gfx_preset_apply(GFX_PRESET_QUALITY, 0);
+    CHECK(ps2_settings.internal_scale == SETTINGS_SCALE_AUTO && ps2_settings.scale_max == SETTINGS_SCALE_NATIVE &&
+          gfx_scale() == gfx_native_scale(), "Quality: auto up to native (%d)", gfx_scale());
+    gfx_preset_apply(GFX_PRESET_BALANCED, 0);
+    CHECK(ps2_settings.internal_scale == SETTINGS_SCALE_AUTO && ps2_settings.scale_max == 3 && gfx_scale() == 3, "Balanced: auto up to 3x");
+    gfx_set_pacing(SETTINGS_PACING_IMMEDIATE, SETTINGS_VSYNC_ADAPTIVE, 0);
+    CHECK(ps2_settings.pacing == SETTINGS_PACING_IMMEDIATE && ps2_settings.vsync == SETTINGS_VSYNC_ADAPTIVE, "pacing immediate, vsync adaptive");
+    gfx_set_pacing(-1, SETTINGS_VSYNC_ON, 0);
+    CHECK(ps2_settings.pacing == SETTINGS_PACING_IMMEDIATE && ps2_settings.vsync == SETTINGS_VSYNC_ON, "-1 keeps pacing");
+    gfx_set_pacing(SETTINGS_PACING_AUTO, -1, 0);
+    {
+        gfx_scale_info si;
+        gfx_scale_status(&si);
+        CHECK(si.automatic && si.drawn == 3 && si.w == 2048 && si.h == 1344 && !si.limited, "status without the renderer: 3x 2048 x 1344");
+    }
     gfx_key(VK_F2, 2, 0);
     _putenv("PS2_GS_SCALE=5");
     CHECK(gfx_scale() == 5, "PS2_GS_SCALE wins over auto (%d)", gfx_scale());
@@ -237,7 +278,7 @@ static void test_settings(void) {
     /* [graphics] renderer = gpu (default since M11) | software, pacing = vsync (default) | vrr | display (M6) */
     settings_defaults(&s);
     CHECK(s.renderer_gpu == 1 && s.pacing == SETTINGS_PACING_VSYNC, "renderer / pacing defaults");
-    CHECK(strstr(tmpl, "\nrenderer = gpu\n") && strstr(tmpl, "\npacing = vsync\n") && strstr(tmpl, "\ninternal_scale = auto\n"),
+    CHECK(strstr(tmpl, "\nrenderer = gpu\n") && strstr(tmpl, "\npacing = auto\n") && strstr(tmpl, "\nvsync = on\n") && strstr(tmpl, "\ninternal_scale = auto\n"),
           "template writes renderer / pacing / internal_scale");
     warn_count = 0;
     n = settings_parse("[graphics]\nrenderer = GPU\npacing = vrr\n", &s, count_warn, NULL);
@@ -250,6 +291,28 @@ static void test_settings(void) {
     s.pacing = SETTINGS_PACING_DISPLAY;
     settings_format(&s, tmpl, sizeof tmpl);
     CHECK(strstr(tmpl, "\nrenderer = software\n") && strstr(tmpl, "\npacing = display\n"), "template writes renderer = software");
+    /* (pc-pacing) pacing = auto | paced | immediate (vsync = the old default's name = auto), vsync = on | off | adaptive,
+     * internal_scale = native, internal_scale_max */
+    settings_defaults(&s);
+    CHECK(s.pacing == SETTINGS_PACING_AUTO && s.vsync == SETTINGS_VSYNC_ON && s.scale_max == SETTINGS_SCALE_AUTO_MAX,
+          "pacing auto, vsync on, auto up to 3x by default");
+    n = settings_parse("[graphics]\npacing = paced\nvsync = adaptive\ninternal_scale = native\ninternal_scale_max = 2\n", &s, count_warn, NULL);
+    CHECK(n == 0 && s.pacing == SETTINGS_PACING_PACED && s.vsync == SETTINGS_VSYNC_ADAPTIVE && s.internal_scale == SETTINGS_SCALE_NATIVE &&
+          s.scale_max == 2, "pacing = paced, vsync = adaptive, internal_scale = native, max 2 (%d)", n);
+    n = settings_parse("[graphics]\npacing = immediate\nvsync = off\ninternal_scale_max = native\n", &s, count_warn, NULL);
+    CHECK(n == 0 && s.pacing == SETTINGS_PACING_IMMEDIATE && s.vsync == SETTINGS_VSYNC_OFF && s.scale_max == SETTINGS_SCALE_NATIVE,
+          "pacing = immediate, vsync = off, max native");
+    n = settings_parse("[graphics]\npacing = vsync\n", &s, count_warn, NULL);
+    CHECK(n == 0 && s.pacing == SETTINGS_PACING_AUTO, "pacing = vsync (old files) = auto");
+    warn_count = 0;
+    n = settings_parse("[graphics]\nvsync = sometimes\ninternal_scale = huge\ninternal_scale_max = 9\n", &s, count_warn, NULL);
+    CHECK(n == 3 && warn_count == 3 && s.vsync == SETTINGS_VSYNC_OFF, "bad vsync / scale / max ignored (%d)", n);
+    s.internal_scale = SETTINGS_SCALE_NATIVE;
+    s.scale_max = SETTINGS_SCALE_NATIVE;
+    s.pacing = SETTINGS_PACING_IMMEDIATE;
+    settings_format(&s, tmpl, sizeof tmpl);
+    CHECK(strstr(tmpl, "\ninternal_scale = native\n") && strstr(tmpl, "\ninternal_scale_max = native\n") &&
+          strstr(tmpl, "\npacing = immediate\n") && strstr(tmpl, "\nvsync = off\n"), "template writes native / immediate / vsync off");
 
     /* the template written next to the exe parses back to the defaults */
     char text[4096];

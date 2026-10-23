@@ -17,7 +17,7 @@ extern void gpu_hw_set_native(int which) __attribute__((weak));               /*
 extern int gpu_hw_native_scale(void) __attribute__((weak));
 extern void gpu_hw_scale_status(gpu_hw_scale_info* s) __attribute__((weak));
 extern void gpu_present_set_mode(int mode, int vsync) __attribute__((weak));
-extern void window_client_size(int* w, int* h) __attribute__((weak));
+void window_client_size(int* w, int* h);                                  /* (window.c: always linked with this file) */
 
 volatile int ps2_motion_blur_off;
 static int auto_was_on;                  /* (M11) internal_scale was auto at the last gfx_apply */
@@ -40,7 +40,7 @@ static int scale_native(void) { return !env_scale() && ps2_settings.internal_sca
 static void out_size(int* w, int* h, int* aw, int* ah) {
     *w = 1280;
     *h = 960;
-    if (window_client_size) {
+    {
         int cw = 0, ch = 0;
         window_client_size(&cw, &ch);
         if (cw > 0 && ch > 0) { *w = cw; *h = ch; }

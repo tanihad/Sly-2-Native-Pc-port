@@ -76,7 +76,7 @@ static struct {
     /* (pc-pacing) t0..t1 the frame's drawing and compose, t1b..t2 the present (resample), ev: an event query at t1 (when
      * the picture is ready: the present delay's samples); t1 / t1b / t2 are ended by the present when there is one */
     struct { ID3D11Query *dis, *t0, *t1, *t1b, *t2, *ev; gpu_frame_stats st; int busy, t1_end, pres, ev_end, ready_done;
-             double vb_ms; } ts[NTS];
+             double vb_ms, self_ms; } ts[NTS];
     int ts_head, ts_n;
     gpu_frame_stats st;                  /* picture being built */
     LARGE_INTEGER t_start;
@@ -93,6 +93,7 @@ static struct {
     double disp_t;                       /* when the display was last classified */
     HANDLE timer;                        /* high-resolution waitable timer (the paced wait) */
     double last_present_ms;              /* QPC ms of the last Present call (headless paced runs: intervals) */
+    double wait0, wait1;                 /* the last paced wait (QPC ms): a frame queued meanwhile started late because of it */
 } P;
 
 /* (pc-pacing) presentation mode, set from any thread (gpu_present_set_mode), read by the render thread per picture */
@@ -108,6 +109,8 @@ void gpu_present_get_mode(int* mode, int* vsync) { *mode = (int)pace_mode; *vsyn
 void gpu_present_set_refresh(double hz) { InterlockedExchange(&pace_refresh_x1000, (LONG)(hz * 1000.0)); }
 int gpu_present_display_state(void) { return (int)pace_disp_shared; }
 double gpu_present_delay_ms(void) { return P.pd.delay_ms; }
+static volatile LONG pace_extra;          /* frames the paced present holds back (ceil(D / period)), 0 when not pacing */
+int gpu_present_pace_frames(void) { return (int)pace_extra; }
 
 static LARGE_INTEGER qpf;
 
@@ -424,6 +427,7 @@ static void ready_note(int i, double ready) {
     if (P.ts[i].ready_done) return;
     P.ts[i].ready_done = 1;
     if (P.ts[i].vb_ms <= 0) return;
+    ready -= P.ts[i].self_ms;                    /* (not the time it waited behind our own paced wait for the previous picture) */
     P.ts[i].st.ready_ms = ready;
     if (i == P.ts_cur) P.st.ready_ms = ready;
     pace_delay_sample(&P.pd, ready);
@@ -810,6 +814,10 @@ static void present_fit(int aw, int ah, int scaler) {
         ID3D11DeviceContext_End(gpu_rt.ctx, (ID3D11Asynchronous*)P.ts[tsi].ev);
         P.ts[tsi].ev_end = 1;
         P.ts[tsi].vb_ms = vb;
+        /* the time it waited in the render queue (behind earlier pictures' paced waits, by design) is not part of when it
+         * could be ready: ready = (queued - VBlank) + (GPU done - execution start) */
+        double q = gpu_rt.cur_queued_ms, s = (double)P.t_start.QuadPart * 1000.0 / (double)qpf.QuadPart;
+        P.ts[tsi].self_ms = q > 0 && s > q ? s - q : 0;
     }
     if (P.sc) {
         int cw = 0, ch = 0;
@@ -851,6 +859,8 @@ static void present_fit(int aw, int ah, int scaler) {
     int paced = (P.sc || pace_headless) && mode != PACE_MODE_IMMEDIATE && vb > 0;
     double target = paced ? vb + P.pd.delay_ms : 0;
     if (paced) P.st.target_ms = P.pd.delay_ms;
+    InterlockedExchange(&pace_extra, paced ? (LONG)ceil(P.pd.delay_ms / PACE_PERIOD_MS) : 0);
+    if (paced && gpu_rt.cur_behind) paced = 0;   /* behind (a newer frame waits): no wait, present it now */
     if (gpu_rt.cur_behind && vb > 0 && t0 > vb + P.pd.delay_ms + 0.5 * PACE_PERIOD_MS) {
         P.st.skipped = 1;
         P.st.present_ms += now_ms() - t0;
@@ -858,7 +868,9 @@ static void present_fit(int aw, int ah, int scaler) {
     }
     if (paced) {
         ID3D11DeviceContext_Flush(gpu_rt.ctx);   /* (the GPU draws the picture while we wait) */
+        P.wait0 = now_ms();
         pace_wait(target, tsi);
+        P.wait1 = now_ms();
     } else if (tsi >= 0) {
         ready_poll(tsi);
     }

@@ -441,7 +441,7 @@ static void stats_vblank(uint32_t vblank) {
         }
     while ((n = gpu_take_frame_stats(fs, 64)) > 0) {
         for (int i = 0; i < n; i++)      /* the internal scale governor: GPU time per picture (drawing + compose + present) */
-            if (!fs[i].partial && fs[i].gpu_ms >= 0 && fs[i].scale > 0 && fs[i].upload_bytes < (4u << 20))   /* (not loading frames) */
+            if (!fs[i].partial && fs[i].gpu_ms >= 0 && fs[i].scale > 0)
                 gov_frame(fs[i].gpu_ms + (fs[i].present_gpu_ms > 0 ? fs[i].present_gpu_ms : 0), fs[i].scale);
         for (int i = 0; i < n && C.stats; i++) {
             if (fs[i].partial) continue;

@@ -71,6 +71,7 @@ void gpu_exec_picture(const void* payload);
 void gpu_exec_present(const void* payload);
 void gpu_exec_readback(const void* payload);
 int  gpu_present_poll(int block);        /* finish read-backs / timestamps; returns 1 while some pending */
+int  gpu_present_pace_frames(void);      /* (pc-pacing) frames the paced present holds back on purpose (queue depth) */
 int  gpu_present_events_pending(void);   /* (pc-pacing) pictures whose ready time is not known yet (polls them) */
 void gpu_present_drain(void);            /* block until every read-back and timestamp has completed */
 /* per-picture statistics and timestamps around a frame (gpu_present.c) */

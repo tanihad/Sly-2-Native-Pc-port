@@ -11,7 +11,7 @@
 #include <windows.h>
 #endif
 
-ps2_settings_t ps2_settings = { 16, 9, 0, 1, 0, SETTINGS_SCALE_AUTO, 0, 0, -1, -1, -1, 0, "", 0, 0, 0, 0, 0, 0, 0 };
+ps2_settings_t ps2_settings = { 16, 9, 0, 1, 0, SETTINGS_SCALE_AUTO, 0, 0, -1, -1, -1, 0, "", 0, 0, 0, 0, 0, 0, 0, 0, SETTINGS_SCALE_AUTO_MAX };
 const char* const settings_scaler_names[SETTINGS_SCALER_N] = { "auto", "point", "box", "lanczos", "catmull-rom", "bilinear" };
 
 /* renderer / pacing values (sly2.ini and the PS2_GS_BACKEND / PS2_GS_PACING overrides) */
@@ -39,6 +39,7 @@ void settings_defaults(ps2_settings_t* s) {
     s->aspect_h = 9;
     s->renderer_gpu = 1;                           /* (M11: the GPU renderer by default; software if it cannot start) */
     s->internal_scale = SETTINGS_SCALE_AUTO;
+    s->scale_max = SETTINGS_SCALE_AUTO_MAX;      /* (pc-pacing) */
     s->outlines_thin = 0;
     s->filters_faithful = 0;
     s->motion_blur = s->flicker_filter = s->interlacing = -1;
