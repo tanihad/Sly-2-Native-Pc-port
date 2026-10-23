@@ -20,7 +20,7 @@ Options menu. Brief: notes/pc-experience.md.
   (one step down); warm-up 60 pictures after start / light seconds), picture sizes and native scale.
 - gpu_hw.c: governor replaces auto_scale_tick (fixed scales too; PS2_GS_SCALE / PS2_GS_GOVERNOR=0 strict), native
   scale following the window, software fallback when 1x > 120% for 10 s (PS2_GS_SW_FALLBACK=0 off), stats "pacing" line,
-  display clock for 60/120/240 Hz (pacing auto/display), PS2_GPU_PRESENT_SIZE.
+  display clock for 60/120/240 Hz (pacing auto/display), PS2_GS_PRESENT_SIZE.
 - gpu_present.c: t1 before the present (gpu_ms = drawing + compose), present_gpu_ms, ready event per picture, paced
   present at VBlank due time + D (headless with PS2_PACE_HEADLESS=1), skip when behind, vsync modes, frame statistics ->
   VRR detection + PS2_PACE_LOG lines, refresh from QueryDisplayConfig; auto = immediate once the display is FIXED or a

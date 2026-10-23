@@ -1702,6 +1702,13 @@ static int exec_init(void) {
     /* every shader object up front (no creation inside a measured frame) */
     for (int i = 0; i < GPU_SH_COUNT; i++) {
         char k = gpu_shaders[i].profile[0];
+        const char* nm = gpu_shaders[i].name;
+        size_t nl = strlen(nm);
+        /* (pc-portable) without rasterizer-ordered views the ROV shaders cannot be created (E_INVALIDARG) and are never
+         * used (gpu_no_rov: the _nr variants): skip them instead of logging a failure for each */
+        if (!gpu_rt.caps.rovs && (!strncmp(nm, "ps_rov_t", 8) ||
+                                  (!strncmp(nm, "ps_gs_", 6) && !(nl > 3 && !strcmp(nm + nl - 3, "_nr")))))
+            continue;
         PROCESS_MEMORY_COUNTERS_EX pm0, pm1;
         int dbg = getenv("PS2_GS_MEM_MAP") != NULL;
         if (dbg) { memset(&pm0, 0, sizeof pm0); pm0.cb = sizeof pm0; K32GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS*)&pm0, sizeof pm0); }

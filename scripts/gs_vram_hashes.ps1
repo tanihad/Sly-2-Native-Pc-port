@@ -18,7 +18,8 @@ if (-not (Test-Path (Join-Path $root 'tools\llvm-mingw'))) {
         $main = Split-Path (Split-Path (Split-Path $gitdir -Parent) -Parent) -Parent
     }
 }
-if (-not $CorpusRoot) { $CorpusRoot = Join-Path (Split-Path $main -Parent) 'sly2-worktrees' }
+. (Join-Path $PSScriptRoot 'gpu_corpus.ps1'); $CorpusRoot = Resolve-GpuCorpus $CorpusRoot $main
+if (-not $CorpusRoot) { exit 0 }
 if (-not [IO.Path]::IsPathRooted($Out)) { $Out = Join-Path $root $Out }
 if ($Compare -and -not [IO.Path]::IsPathRooted($Compare)) { $Compare = Join-Path $root $Compare }
 New-Item -ItemType Directory -Force $Out | Out-Null

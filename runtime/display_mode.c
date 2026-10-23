@@ -30,6 +30,17 @@ int display_mode_pick(const int* rates, int n, int desktop_hz, int want) {
 }
 
 static int changed;                      /* the mode was changed (and must be restored) */
+static volatile int exclusive;           /* exclusive fullscreen (the Options menu): the refresh is auto unless set */
+
+int display_mode_exclusive(void* hwnd, int on) {
+    int was = exclusive;
+    exclusive = on != 0;
+    if (was != exclusive && hwnd) {          /* (the window is fullscreen already: the mode for the new choice) */
+        display_mode_fullscreen(hwnd, 0);
+        display_mode_fullscreen(hwnd, 1);
+    }
+    return 1;
+}
 static WCHAR changed_dev[32];
 
 static int monitor_device(HWND hwnd, WCHAR* dev) {
@@ -51,6 +62,7 @@ int display_mode_fullscreen(void* hwnd_, int on) {
         return 1;
     }
     int want = ps2_settings.fullscreen_refresh;
+    if (exclusive && !want) want = -1;       /* exclusive: the game owns the display - a multiple of 59.94 Hz when it has one */
     if (!want || changed) return 0;
     WCHAR dev[32];
     if (!monitor_device(hwnd, dev)) return 0;

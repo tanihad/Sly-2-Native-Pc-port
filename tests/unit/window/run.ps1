@@ -19,6 +19,7 @@ New-Item -ItemType Directory -Force $out | Out-Null
 $exe = Join-Path $out 'test_window.exe'
 
 & $clang -std=c11 -O1 -Wall -Wextra -Werror -I (Join-Path $root 'runtime') (Join-Path $PSScriptRoot 'test_window.c') `
+    @('input.c', 'input_map.c', 'input_ps.c', 'input_hid.c' | ForEach-Object { Join-Path $root "runtime\$_" }) `
     -o $exe -luser32 -lgdi32 -lwinmm
 if ($LASTEXITCODE) { Write-Output "build failed"; exit 1 }
 

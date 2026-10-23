@@ -393,8 +393,14 @@ int gpu_present_init(void) {
     return 1;
 }
 
+/* (pc-menu) the Options menu / frame rate counter over the picture (runtime/menu_overlay.c; weak: not in every test) */
+extern void overlay_d3d11_draw(ID3D11Device* dev, ID3D11DeviceContext* ctx, ID3D11RenderTargetView* rtv, int w, int h)
+    __attribute__((weak));
+extern void overlay_d3d11_release(ID3D11Device* dev) __attribute__((weak));
+
 void gpu_present_release(void) {
     if (!gpu_rt.dev) return;
+    if (overlay_d3d11_release) overlay_d3d11_release(gpu_rt.dev);
     for (int i = 0; i < NTS; i++) {
         GPU_RELEASE(P.ts[i].dis); GPU_RELEASE(P.ts[i].t0); GPU_RELEASE(P.ts[i].t1);
         GPU_RELEASE(P.ts[i].t1b); GPU_RELEASE(P.ts[i].t2); GPU_RELEASE(P.ts[i].ev);
@@ -914,6 +920,7 @@ static void present_fit(int aw, int ah, int scaler) {
         fit_aspect(P.bb_w, P.bb_h, aw, ah, &x, &y, &lw, &lh);
         present_resample(P.rtv, x, y, lw, lh, scaler);
     }
+    if (overlay_d3d11_draw) overlay_d3d11_draw(gpu_rt.dev, gpu_rt.ctx, P.rtv, P.bb_w, P.bb_h);
     if (tsi >= 0) ID3D11DeviceContext_End(gpu_rt.ctx, (ID3D11Asynchronous*)P.ts[tsi].t2);
     double call = now_ms();
     if (paced) P.st.present_late_ms = call - target;

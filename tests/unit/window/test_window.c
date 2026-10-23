@@ -1,7 +1,7 @@
 /* Tests for runtime/window.c.
  *
- * 1. Unit checks (no window): 4:3 letterbox maths, XInput -> DualShock 2 mapping (buttons,
- *    triggers with pressure, sticks with dead zone), keyboard mapping, and the triple-buffer frame
+ * 1. Unit checks (no window): 4:3 letterbox maths (controller and keyboard mapping: tests/unit/input),
+ *    and the triple-buffer frame
  *    hand-off (ordering, cropping, bad input, and a two-thread stress test for torn frames).
  * 2. Presenter checks (small test windows of their own, shown without activation): the GDI
  *    presenter paints every letterbox bar black, including one-pixel bars; the Direct3D 11
@@ -22,6 +22,7 @@
 #include "gfx.c"
 #include "gpu/gpu_pace.c"                  /* (pc-pacing: gfx.c's picture sizes) */
 #include "display_mode.c"                  /* (pc-pacing: fullscreen refresh rate) */
+#include "pacing_menu.c"                   /* (pc-pacing: menu_ext.h) */
 
 #include <stdlib.h>
 
@@ -142,44 +143,22 @@ static void test_gfx(void) {
           ps2_settings.internal_scale, gfx_scale());
     gfx_key(VK_F2, 1, 0);
     CHECK(ps2_settings.internal_scale == 2 && gfx_scale() == 2, "Shift+F2 from auto at 3x: fixed 2x (%d)", gfx_scale());
-    /* (pc-pacing) the menu's interfaces: internal resolution with pixel sizes, presets, pacing */
-    gfx_set_internal_res(SETTINGS_SCALE_AUTO, 2, 0);
-    CHECK(ps2_settings.internal_scale == SETTINGS_SCALE_AUTO && ps2_settings.scale_max == 2 && gfx_scale() == 2,
-          "auto up to 2x (%d)", gfx_scale());
-    gfx_set_internal_res(5, -1, 0);
-    CHECK(ps2_settings.internal_scale == 5 && ps2_settings.scale_max == 2 && gfx_scale() == 5, "fixed 5x, max kept");
-    gfx_set_internal_res(9, -1, 0);
-    CHECK(ps2_settings.internal_scale == 5, "a bad scale is ignored");
-    gfx_set_internal_res(SETTINGS_SCALE_NATIVE, -1, 0);
-    CHECK(ps2_settings.internal_scale == SETTINGS_SCALE_NATIVE && gfx_scale() == gfx_native_scale() && gfx_scale() >= 1,
-          "native: %dx", gfx_scale());
-    {
-        gfx_res_option o[12];
-        int ro = gfx_res_options(o, 12);
-        CHECK(ro == 10 && o[0].setting == SETTINGS_SCALE_AUTO && o[1].setting == SETTINGS_SCALE_NATIVE && o[2].setting == 1 &&
-              o[9].setting == 8, "resolution list: auto, native, 1..8 (%d)", ro);
-        CHECK(o[2].w == 512 && o[2].h == 448 && strstr(o[2].label, "512 x 448 (1x") != NULL, "1x = 512 x 448: '%s'", o[2].label);
-        CHECK(o[4].w == 2048 && o[4].h == 1344 && !strncmp(o[4].label, "2048 x 1344 (3x", 15), "3x 16:9 = '%s'", o[4].label);
-        CHECK(o[0].scale == 2 && !strcmp(o[0].label, "Auto (up to 1536 x 896)"), "auto entry '%s'", o[0].label);
-        CHECK(gfx_res_options(o, 3) == 3, "the list stops at max");
-    }
-    gfx_preset_apply(GFX_PRESET_ORIGINAL, 0);
-    CHECK(ps2_settings.internal_scale == 1 && gfx_scale() == 1, "Original: 1x");
-    gfx_preset_apply(GFX_PRESET_PERFORMANCE, 0);
-    CHECK(ps2_settings.internal_scale == SETTINGS_SCALE_AUTO && ps2_settings.scale_max == 2, "Performance: auto up to 2x");
-    gfx_preset_apply(GFX_PRESET_QUALITY, 0);
-    CHECK(ps2_settings.internal_scale == SETTINGS_SCALE_NATIVE && gfx_scale() == gfx_native_scale(), "Quality: native (%d)", gfx_scale());
-    gfx_preset_apply(GFX_PRESET_BALANCED, 0);
-    CHECK(ps2_settings.internal_scale == SETTINGS_SCALE_AUTO && ps2_settings.scale_max == 3 && gfx_scale() == 3, "Balanced: auto up to 3x");
-    gfx_set_pacing(SETTINGS_PACING_IMMEDIATE, SETTINGS_VSYNC_ADAPTIVE, 0);
-    CHECK(ps2_settings.pacing == SETTINGS_PACING_IMMEDIATE && ps2_settings.vsync == SETTINGS_VSYNC_ADAPTIVE, "pacing immediate, vsync adaptive");
-    gfx_set_pacing(-1, SETTINGS_VSYNC_ON, 0);
-    CHECK(ps2_settings.pacing == SETTINGS_PACING_IMMEDIATE && ps2_settings.vsync == SETTINGS_VSYNC_ON, "-1 keeps pacing");
-    gfx_set_pacing(SETTINGS_PACING_AUTO, -1, 0);
+    /* (pc-pacing) pacing / vsync through the settings table (live: pacing_apply_mode), the scale status */
+    CHECK(settings_change_key("graphics", "pacing", SETTINGS_PACING_IMMEDIATE, 0) && ps2_settings.pacing == SETTINGS_PACING_IMMEDIATE,
+          "pacing = immediate through the table");
+    CHECK(settings_change_key("graphics", "vsync", SETTINGS_VSYNC_ADAPTIVE, 0) && ps2_settings.vsync == SETTINGS_VSYNC_ADAPTIVE,
+          "vsync = adaptive through the table");
+    CHECK(!settings_change_key("graphics", "vsync", 7, 0) && ps2_settings.vsync == SETTINGS_VSYNC_ADAPTIVE, "a bad vsync is refused");
+    CHECK(pacing_apply_mode(-1) == 1, "pacing applies while the game runs");
+    CHECK(gfx_apply_pacing() == 0, "no presenter in this test: nothing to apply");
+    settings_change_key("graphics", "pacing", SETTINGS_PACING_AUTO, 0);
+    settings_change_key("graphics", "vsync", SETTINGS_VSYNC_ON, 0);
+    settings_change_key("graphics", "internal_scale", SETTINGS_SCALE_AUTO, 0);
     {
         gfx_scale_info si;
         gfx_scale_status(&si);
-        CHECK(si.automatic && si.drawn == 3 && si.w == 2048 && si.h == 1344 && !si.limited, "status without the renderer: 3x 2048 x 1344");
+        CHECK(si.automatic && si.drawn == 3 && si.w == 2048 && si.h == 1344 && !si.limited, "status without the renderer: 3x 2048 x 1344 (%d %dx%d)",
+              si.drawn, si.w, si.h);
     }
     gfx_key(VK_F2, 2, 0);
     _putenv("PS2_GS_SCALE=5");
@@ -313,28 +292,22 @@ static void test_settings(void) {
         CHECK(display_mode_pick(dell, 4, 165, 59) == 59 && display_mode_pick(dell, 4, 165, 75) == 0, "a chosen rate if offered");
         CHECK(display_mode_pick(dell, 4, 144, -1) == 119, "auto at 144 Hz: 119");
     }
-    /* (pc-pacing) pacing = auto | paced | immediate (vsync = the old default's name = auto), vsync = on | off | adaptive,
-     * internal_scale = native, internal_scale_max */
+    /* (pc-pacing) pacing = auto | paced | immediate | display | vrr (vsync = the old default's name = auto), vsync = on | off |
+     * adaptive */
     settings_defaults(&s);
-    CHECK(s.pacing == SETTINGS_PACING_AUTO && s.vsync == SETTINGS_VSYNC_ON && s.scale_max == SETTINGS_SCALE_AUTO_MAX,
-          "pacing auto, vsync on, auto up to 3x by default");
-    n = settings_parse("[graphics]\npacing = paced\nvsync = adaptive\ninternal_scale = native\ninternal_scale_max = 2\n", &s, count_warn, NULL);
-    CHECK(n == 0 && s.pacing == SETTINGS_PACING_PACED && s.vsync == SETTINGS_VSYNC_ADAPTIVE && s.internal_scale == SETTINGS_SCALE_NATIVE &&
-          s.scale_max == 2, "pacing = paced, vsync = adaptive, internal_scale = native, max 2 (%d)", n);
-    n = settings_parse("[graphics]\npacing = immediate\nvsync = off\ninternal_scale_max = native\n", &s, count_warn, NULL);
-    CHECK(n == 0 && s.pacing == SETTINGS_PACING_IMMEDIATE && s.vsync == SETTINGS_VSYNC_OFF && s.scale_max == SETTINGS_SCALE_NATIVE,
-          "pacing = immediate, vsync = off, max native");
+    CHECK(s.pacing == SETTINGS_PACING_AUTO && s.vsync == SETTINGS_VSYNC_ON, "pacing auto, vsync on by default");
+    n = settings_parse("[graphics]\npacing = paced\nvsync = adaptive\n", &s, count_warn, NULL);
+    CHECK(n == 0 && s.pacing == SETTINGS_PACING_PACED && s.vsync == SETTINGS_VSYNC_ADAPTIVE, "pacing = paced, vsync = adaptive (%d)", n);
+    n = settings_parse("[graphics]\npacing = immediate\nvsync = off\n", &s, count_warn, NULL);
+    CHECK(n == 0 && s.pacing == SETTINGS_PACING_IMMEDIATE && s.vsync == SETTINGS_VSYNC_OFF, "pacing = immediate, vsync = off");
     n = settings_parse("[graphics]\npacing = vsync\n", &s, count_warn, NULL);
     CHECK(n == 0 && s.pacing == SETTINGS_PACING_AUTO, "pacing = vsync (old files) = auto");
     warn_count = 0;
-    n = settings_parse("[graphics]\nvsync = sometimes\ninternal_scale = huge\ninternal_scale_max = 9\n", &s, count_warn, NULL);
-    CHECK(n == 3 && warn_count == 3 && s.vsync == SETTINGS_VSYNC_OFF, "bad vsync / scale / max ignored (%d)", n);
-    s.internal_scale = SETTINGS_SCALE_NATIVE;
-    s.scale_max = SETTINGS_SCALE_NATIVE;
+    n = settings_parse("[graphics]\nvsync = sometimes\n", &s, count_warn, NULL);
+    CHECK(n == 1 && warn_count == 1 && s.vsync == SETTINGS_VSYNC_OFF, "bad vsync ignored (%d)", n);
     s.pacing = SETTINGS_PACING_IMMEDIATE;
     settings_format(&s, tmpl, sizeof tmpl);
-    CHECK(strstr(tmpl, "\ninternal_scale = native\n") && strstr(tmpl, "\ninternal_scale_max = native\n") &&
-          strstr(tmpl, "\npacing = immediate\n") && strstr(tmpl, "\nvsync = off\n"), "template writes native / immediate / vsync off");
+    CHECK(strstr(tmpl, "\npacing = immediate\n") && strstr(tmpl, "\nvsync = off\n"), "template writes immediate / vsync off");
 
     /* the template written next to the exe parses back to the defaults */
     char text[4096];
@@ -450,143 +423,6 @@ static void test_display_switch(void) {
     ps2_settings.aspect_w = 16; ps2_settings.aspect_h = 9;
 }
 
-static void test_xinput_mapping(void) {
-    XINPUT_GAMEPAD g;
-    pad_input p;
-    memset(&g, 0, sizeof g);
-    pad_clear(&p);
-    xi_to_pad(&g, &p);
-    CHECK(is_cleared(&p), "idle pad not cleared");
-
-    static const struct { WORD xi; uint16_t pad; int pr; } one[] = {
-        { XINPUT_GAMEPAD_A, PAD_CROSS, 6 }, { XINPUT_GAMEPAD_B, PAD_CIRCLE, 5 },
-        { XINPUT_GAMEPAD_X, PAD_SQUARE, 7 }, { XINPUT_GAMEPAD_Y, PAD_TRIANGLE, 4 },
-        { XINPUT_GAMEPAD_LEFT_SHOULDER, PAD_L1, 8 }, { XINPUT_GAMEPAD_RIGHT_SHOULDER, PAD_R1, 9 },
-        { XINPUT_GAMEPAD_DPAD_RIGHT, PAD_RIGHT, 0 }, { XINPUT_GAMEPAD_DPAD_LEFT, PAD_LEFT, 1 },
-        { XINPUT_GAMEPAD_DPAD_UP, PAD_UP, 2 }, { XINPUT_GAMEPAD_DPAD_DOWN, PAD_DOWN, 3 },
-        { XINPUT_GAMEPAD_LEFT_THUMB, PAD_L3, -1 }, { XINPUT_GAMEPAD_RIGHT_THUMB, PAD_R3, -1 },
-        { XINPUT_GAMEPAD_BACK, PAD_SELECT, -1 }, { XINPUT_GAMEPAD_START, PAD_START, -1 },
-    };
-    for (size_t i = 0; i < sizeof one / sizeof one[0]; i++) {
-        memset(&g, 0, sizeof g);
-        g.wButtons = one[i].xi;
-        pad_clear(&p);
-        xi_to_pad(&g, &p);
-        CHECK(p.buttons == one[i].pad, "xinput %04X -> %04X, want %04X", one[i].xi, p.buttons, one[i].pad);
-        for (int k = 0; k < 12; k++)
-            CHECK(p.pressure[k] == (k == one[i].pr ? 0xFF : 0), "xinput %04X pressure[%d] = %02X", one[i].xi, k, p.pressure[k]);
-        CHECK(p.lx == 0x80 && p.ly == 0x80 && p.rx == 0x80 && p.ry == 0x80, "sticks moved");
-    }
-
-    memset(&g, 0, sizeof g);
-    g.bLeftTrigger = XINPUT_GAMEPAD_TRIGGER_THRESHOLD;          /* at the threshold: released */
-    g.bRightTrigger = 200;
-    pad_clear(&p);
-    xi_to_pad(&g, &p);
-    CHECK(p.buttons == PAD_R2 && p.pressure[10] == 0 && p.pressure[11] == 200, "%04X %02X %02X", p.buttons, p.pressure[10], p.pressure[11]);
-    g.bLeftTrigger = 255;
-    pad_clear(&p);
-    xi_to_pad(&g, &p);
-    CHECK(p.buttons == (PAD_L2 | PAD_R2) && p.pressure[10] == 255, "%04X %02X", p.buttons, p.pressure[10]);
-
-    static const struct { SHORT lx, ly, rx, ry; uint8_t elx, ely, erx, ery; } sticks[] = {
-        { 0, 0, 0, 0, 0x80, 0x80, 0x80, 0x80 },
-        { 32767, 0, 0, 0, 0xFF, 0x80, 0x80, 0x80 },
-        { -32768, 0, 0, 0, 0x00, 0x80, 0x80, 0x80 },
-        { 0, 32767, 0, 0, 0x80, 0x00, 0x80, 0x80 },              /* up = smaller */
-        { 0, -32768, 0, 0, 0x80, 0xFF, 0x80, 0x80 },             /* down = larger */
-        { 0, 0, 32767, 0, 0x80, 0x80, 0xFF, 0x80 },
-        { 0, 0, -32768, 0, 0x80, 0x80, 0x00, 0x80 },
-        { 0, 0, 0, -32768, 0x80, 0x80, 0x80, 0xFF },
-        { 0, 0, 0, 32767, 0x80, 0x80, 0x80, 0x00 },
-        { 0, 0, 32767, -32768, 0x80, 0x80, 0xDA, 0xDA },         /* diagonal: on the unit circle */
-        { 5000, -5000, 8000, 3000, 0x80, 0x80, 0x80, 0x80 },     /* inside the dead zones */
-    };
-    for (size_t i = 0; i < sizeof sticks / sizeof sticks[0]; i++) {
-        memset(&g, 0, sizeof g);
-        g.sThumbLX = sticks[i].lx; g.sThumbLY = sticks[i].ly; g.sThumbRX = sticks[i].rx; g.sThumbRY = sticks[i].ry;
-        pad_clear(&p);
-        xi_to_pad(&g, &p);
-        CHECK(p.lx == sticks[i].elx && p.ly == sticks[i].ely && p.rx == sticks[i].erx && p.ry == sticks[i].ery,
-              "stick case %zu: %02X %02X %02X %02X", i, p.lx, p.ly, p.rx, p.ry);
-    }
-    /* Diagonal full tilt: on the unit circle (about 0x80 +- 0x5A), up-right. */
-    memset(&g, 0, sizeof g);
-    g.sThumbLX = 23170; g.sThumbLY = 23170;
-    pad_clear(&p);
-    xi_to_pad(&g, &p);
-    CHECK(p.lx >= 0xD6 && p.lx <= 0xDC && p.ly >= 0x24 && p.ly <= 0x2A, "diagonal %02X %02X", p.lx, p.ly);
-    /* Monotonic in tilt, and just past the dead zone stays near the centre. */
-    int prev = 0x80, mono = 1;
-    for (int v = 0; v <= 32767; v += 97) {
-        uint8_t x, y;
-        xi_stick(v, 0, XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE, &x, &y);
-        if (x < prev || y != 0x80) mono = 0;
-        prev = x;
-    }
-    CHECK(mono && prev == 0xFF, "stick ramp not monotonic (end %02X)", prev);
-    uint8_t x, y;
-    xi_stick(XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE + 300, 0, XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE, &x, &y);
-    CHECK(x >= 0x80 && x <= 0x82, "just past dead zone: %02X", x);
-}
-
-static void test_keyboard_mapping(void) {
-    uint8_t down[256];
-    pad_input p;
-    memset(down, 0, sizeof down);
-    pad_clear(&p);
-    kb_to_pad(down, &p);
-    CHECK(is_cleared(&p), "no keys -> not cleared");
-
-    static const struct { uint8_t vk; uint16_t pad; int pr; } one[] = {
-        { VK_SPACE, PAD_CROSS, 6 }, { VK_LCONTROL, PAD_CIRCLE, 5 }, { 'F', PAD_SQUARE, 7 }, { 'R', PAD_TRIANGLE, 4 },
-        { VK_NUMPAD2, PAD_CROSS, 6 }, { VK_NUMPAD6, PAD_CIRCLE, 5 }, { VK_NUMPAD4, PAD_SQUARE, 7 }, { VK_NUMPAD8, PAD_TRIANGLE, 4 },
-        { 'Q', PAD_L1, 8 }, { 'E', PAD_R1, 9 }, { '1', PAD_L2, 10 }, { '3', PAD_R2, 11 },
-        { VK_UP, PAD_UP, 2 }, { VK_DOWN, PAD_DOWN, 3 }, { VK_LEFT, PAD_LEFT, 1 }, { VK_RIGHT, PAD_RIGHT, 0 },
-        { VK_RETURN, PAD_START, -1 }, { VK_BACK, PAD_SELECT, -1 }, { 'C', PAD_L3, -1 }, { 'U', PAD_R3, -1 },
-    };
-    uint16_t all = 0;
-    for (size_t i = 0; i < sizeof one / sizeof one[0]; i++) {
-        memset(down, 0, sizeof down);
-        down[one[i].vk] = 1;
-        pad_clear(&p);
-        kb_to_pad(down, &p);
-        all |= p.buttons;
-        CHECK(p.buttons == one[i].pad, "key %02X -> %04X, want %04X", one[i].vk, p.buttons, one[i].pad);
-        for (int k = 0; k < 12; k++)
-            CHECK(p.pressure[k] == (k == one[i].pr ? 0xFF : 0), "key %02X pressure[%d] = %02X", one[i].vk, k, p.pressure[k]);
-    }
-    CHECK(all == 0xFFFF, "keyboard reaches buttons %04X, want FFFF", all);
-    memset(down, 0, sizeof down);
-    down[VK_CONTROL] = down[VK_RCONTROL] = 1;              /* right Ctrl is not mapped */
-    pad_clear(&p);
-    kb_to_pad(down, &p);
-    CHECK(is_cleared(&p), "right ctrl mapped");
-
-    static const struct { const char* keys; uint8_t lx, ly, rx, ry; } st[] = {
-        { "W", 0x80, 0x00, 0x80, 0x80 }, { "S", 0x80, 0xFF, 0x80, 0x80 }, { "A", 0x00, 0x80, 0x80, 0x80 },
-        { "D", 0xFF, 0x80, 0x80, 0x80 }, { "WD", 0xFF, 0x00, 0x80, 0x80 }, { "WS", 0x80, 0x80, 0x80, 0x80 },
-        { "I", 0x80, 0x80, 0x80, 0x00 }, { "K", 0x80, 0x80, 0x80, 0xFF }, { "J", 0x80, 0x80, 0x00, 0x80 },
-        { "L", 0x80, 0x80, 0xFF, 0x80 }, { "AJKS", 0x00, 0xFF, 0x00, 0xFF }, { "JL", 0x80, 0x80, 0x80, 0x80 },
-    };
-    for (size_t i = 0; i < sizeof st / sizeof st[0]; i++) {
-        memset(down, 0, sizeof down);
-        for (const char* k = st[i].keys; *k; k++) down[(uint8_t)*k] = 1;
-        pad_clear(&p);
-        kb_to_pad(down, &p);
-        CHECK(p.buttons == 0 && p.lx == st[i].lx && p.ly == st[i].ly && p.rx == st[i].rx && p.ry == st[i].ry,
-              "keys %s: %04X %02X %02X %02X %02X", st[i].keys, p.buttons, p.lx, p.ly, p.rx, p.ry);
-    }
-    /* Keys merge with a controller: buttons OR'd, a key-driven axis overrides, others untouched. */
-    pad_clear(&p);
-    p.buttons = PAD_CIRCLE; p.lx = 0x30; p.ly = 0x40; p.rx = 0x50;
-    memset(down, 0, sizeof down);
-    down['D'] = 1; down[VK_SPACE] = 1;
-    kb_to_pad(down, &p);
-    CHECK(p.buttons == (PAD_CIRCLE | PAD_CROSS) && p.lx == 0xFF && p.ly == 0x40 && p.rx == 0x50,
-          "merge: %04X %02X %02X %02X", p.buttons, p.lx, p.ly, p.rx);
-}
-
 static uint32_t src[FRAME_MAX * 2 * 16];
 
 static void test_frame_handoff_basic(void) {
@@ -677,10 +513,11 @@ static void test_headless_input(void) {
     window_get_input(-1, &p);
     CHECK(is_cleared(&p), "port -1 not cleared");
     window_get_input(1, &p);                             /* no window yet: keyboard ignored */
-    int slots = 0;
-    for (int s = 0; s < XUSER_MAX_COUNT; s++) slots += xi_connected[s] != 0;
-    printf("XInput: %s, %d controller(s) connected\n", xi_get_state ? "loaded" : "unavailable", slots);
-    if (slots < 2) CHECK(is_cleared(&p), "absent port 1 not cleared");
+    input_device_info devs[INPUT_MAX_DEVICES];
+    int n = input_devices(devs, INPUT_MAX_DEVICES), port1 = 0;
+    for (int i = 0; i < n; i++) port1 |= devs[i].port == 1;
+    printf("controllers: %d connected\n", n);
+    if (!port1) CHECK(is_cleared(&p), "absent port 1 not cleared");
 }
 
 /* ---- PS2_INPUT scripts: absolute, relative (+n) and function-anchored (@addr+n) tokens --------- */
@@ -1458,8 +1295,6 @@ int main(int argc, char** argv) {
     test_settings();
     test_gfx();
     test_display_switch();
-    test_xinput_mapping();
-    test_keyboard_mapping();
     test_frame_handoff_basic();
     test_frame_handoff_stress();
     test_headless_input();

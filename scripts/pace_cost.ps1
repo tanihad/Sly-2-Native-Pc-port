@@ -14,7 +14,7 @@ foreach ($sc in $Scenes) {
     foreach ($n in $Scales) {
         $name = "cost_${sc}_${n}x"
         $a = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'pace_run.ps1'), '-Name', $name) + $def[$sc] +
-             @('-Scale', 'env', '-Seconds', "$Seconds", '-From', '90', '-Extra', "PS2_GS_SCALE=$n;PS2_GPU_PRESENT_SIZE=$Size")
+             @('-Scale', 'env', '-Seconds', "$Seconds", '-From', '90', '-Extra', "PS2_GS_SCALE=$n;PS2_GS_PRESENT_SIZE=$Size")
         $res = & powershell @a
         $log = Join-Path $root "build\pace\$name\run.log"
         $g = @(Select-String -Path $log -Pattern '\| GPU ([\d.]+) / ([\d.]+) \|' | ForEach-Object { [double]$_.Matches[0].Groups[1].Value } |

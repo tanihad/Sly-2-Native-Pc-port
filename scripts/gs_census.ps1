@@ -18,7 +18,9 @@ New-Item -ItemType Directory -Force $Out | Out-Null
 $exe = Join-Path $Out 'gs_census.exe'
 & $clang -O2 -std=c11 -Wall -Wextra -Wno-unused-parameter (Join-Path $PSScriptRoot 'gs_census.c') -o $exe
 if ($LASTEXITCODE -ne 0) { Write-Host 'gs_census build failed'; exit 1 }
-$wt = Split-Path $root -Parent                                           # ..\sly2-worktrees
+. (Join-Path $PSScriptRoot 'gpu_corpus.ps1')
+$wt = ''                                                  # the corpus root (recording names: <worktree>-<file>)
+if ($All) { $wt = Resolve-GpuCorpus '' $main; if (-not $wt) { exit 0 } }
 $known = @(
     "$wt\fix-perf\build\rv_prompt.gsrec", "$wt\fix-perf\build\rv_intro.gsrec", "$wt\fix-perf\build\title.gsrec",
     "$wt\fix-perf\build\brief.gsrec", "$wt\ep3\build\gsrec\hub.gsrec", "$wt\ep3\build\gsrec\recon_int.gsrec",
@@ -30,7 +32,7 @@ foreach ($r in $Rec) {
     if (-not (Test-Path $r)) { Write-Host "missing $r"; continue }
     $fullPath = (Resolve-Path $r).Path
     $tag = 'rec'
-    if ($fullPath.StartsWith($wt, [StringComparison]::OrdinalIgnoreCase)) {    # worktree name
+    if ($wt -and $fullPath.StartsWith($wt, [StringComparison]::OrdinalIgnoreCase)) {    # worktree name
         $tag = ($fullPath.Substring($wt.Length).TrimStart('\') -split '\\')[0]
     }
     $name = "$tag-" + [IO.Path]::GetFileNameWithoutExtension($r) + '.txt'

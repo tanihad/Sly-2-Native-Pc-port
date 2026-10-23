@@ -145,6 +145,8 @@ typedef struct {
 void window_init(void);                  /* create the window and its thread; returns immediately */
 void window_present(const uint32_t* bgrx, int w, int h, int stride);   /* copy a finished frame; never blocks for long */
 void window_get_input(int port, pad_input* out);   /* port 0/1; zeroed buttons + centred sticks if absent */
+/* input.c: the DualShock 2 motors of a port (small on/off, large speed), every VBlank -> PC controller rumble */
+void input_set_rumble(int port, uint8_t small_on, uint8_t large_speed);
 
 /* ---- pad.c, mc.c: IOP controller and memory card services --------------------------------------- */
 

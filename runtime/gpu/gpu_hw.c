@@ -305,34 +305,9 @@ static void gov_frame(double gpu_ms, int scale) {
     InterlockedExchange(&want_scale, to);
 }
 
-/* internal_scale = native (or auto up to native): the smallest scale whose picture covers the window's picture area */
-static volatile LONG req_native;         /* 1: the fixed scale is native; 2: auto's maximum is native */
-void gpu_hw_set_native(int which) {
-    if (InterlockedExchange(&req_native, which) != which) InterlockedIncrement(&req_serial);
-}
-static int native_now(void) {
-    int cw = 1280, ch = 960, aw = 4, ah = 3;
-    if (C.hwnd && C.client_size) C.client_size(&cw, &ch);
-    if (C.aspect) C.aspect(0, &aw, &ah);
-    return pace_native_scale(cw, ch, aw, ah);
-}
-int gpu_hw_native_scale(void) { return native_now(); }
-
 /* GS thread, every VBlank: requests from gfx.c */
 static void gov_requests(void) {
-    static uint32_t tick;
-    if (req_native && (++tick % 30 == 0 || req_seen != req_serial)) {   /* (the window's size or the aspect changed) */
-        int n = native_now();
-        if (req_native == 1 && n != (int)req_fixed) {
-            InterlockedExchange(&req_fixed, n);
-            InterlockedIncrement(&req_serial);
-            hlog("internal scale native: %dx for the window's picture area", n);
-        } else if (req_native == 2 && auto_max && n != (int)auto_max) {
-            InterlockedExchange(&auto_max, n);
-            InterlockedIncrement(&req_serial);
-            hlog("internal scale auto: up to %dx (native for the window's picture area)", n);
-        }
-    }
+
     if (req_seen == req_serial) return;
     req_seen = req_serial;
     int fixed = auto_max == 0;
@@ -542,8 +517,9 @@ static int render_start(void) {
     gc.hwnd = C.hwnd;
     gc.present_w = 1280;
     gc.present_h = 960;
-    {                                    /* PS2_GPU_PRESENT_SIZE=WxH: the headless present target (pacing measurements at 1440p) */
-        const char* e = getenv("PS2_GPU_PRESENT_SIZE");
+    {                                    /* (pc-menu, pc-pacing) PS2_GS_PRESENT_SIZE=WxH: the headless present target (screenshots,
+                                            pacing measurements at 1440p) */
+        const char* e = getenv("PS2_GS_PRESENT_SIZE");
         int w = 0, h = 0;
         if (e && sscanf(e, "%dx%d", &w, &h) == 2 && w >= 64 && h >= 64 && w <= 8192 && h <= 8192) { gc.present_w = w; gc.present_h = h; }
     }
@@ -569,7 +545,7 @@ void gpu_hw_set_graphics(int scale, uint32_t gfx) {
     if (scale > 8) scale = 8;
     InterlockedExchange(&want_gfx, (LONG)gfx);
     if (!active) InterlockedExchange(&want_scale, scale);   /* (before the start: the scale to start at) */
-    if (!auto_max && req_native != 1 && InterlockedExchange(&req_fixed, scale) != scale) InterlockedIncrement(&req_serial);
+    if (!auto_max && InterlockedExchange(&req_fixed, scale) != scale) InterlockedIncrement(&req_serial);
 }
 
 static void front_start(void) {
@@ -637,12 +613,16 @@ static double measure_refresh(IDXGIOutput* o) {
  * k (1..4: 60 / 120 / 240 Hz, within 0.5%) of 59.94 Hz - every k-th display VBlank is a PS2 VBlank, so every picture
  * stays on screen for exactly k refreshes (no repeated picture every 16 s); otherwise the 59.94 Hz timer stays and
  * the paced present does what it can (VRR: even; fixed refresh: the gpu_present.c log says why it judders). */
+static volatile LONG clock_pacing;       /* the pacing setting now (gpu_hw_pacing_changed): the clock runs for auto / display */
+static int clock_wanted(void) { return clock_pacing == SETTINGS_PACING_AUTO || clock_pacing == SETTINGS_PACING_DISPLAY; }
+
 static DWORD WINAPI clock_main(LPVOID arg) {
     int forced = arg != NULL;                /* pacing = display (logged when it cannot); auto (quiet) */
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
     IDXGIOutput* o = find_output();
     if (!o) { if (forced) hlog("display pacing: no DXGI output for the window: the 59.94 Hz timer stays"); return 0; }
     for (;;) {
+        while (!clock_wanted()) Sleep(500);  /* (pacing changed to paced / immediate while the game runs) */
         double hz = measure_refresh(o);
         if (hz > 0) gpu_present_set_refresh(hz);
         int k = hz > 0 ? pace_refresh_multiple(1000.0 / hz, PACE_PERIOD_MS) : 0;
@@ -667,7 +647,7 @@ static DWORD WINAPI clock_main(LPVOID arg) {
             if (FAILED(IDXGIOutput_WaitForVBlank(o))) { Sleep(16); }
             else if (n % (uint32_t)k == 0) C.display_vblank();
             if ((n & 127) == 127 && (MonitorFromWindow((HWND)C.hwnd, MONITOR_DEFAULTTOPRIMARY) != mon ||   /* the window moved, */
-                                     fabs(gpu_window_refresh_hz(C.hwnd) - hz) > 1.0)) moved = 1;          /* or the mode changed */
+                                     fabs(gpu_window_refresh_hz(C.hwnd) - hz) > 1.0 || !clock_wanted())) moved = 1;   /* the mode or pacing changed */
         }
         C.vblank_external(0);
         IDXGIOutput_Release(o);
@@ -753,10 +733,18 @@ int gpu_hw_start(const gpu_hw_config* cfg) {
     hlog("GPU renderer on (%s, frontend on %s%s, pacing %s, vsync %s)", C.hwnd ? "window" : "headless",
          front_threaded ? "its own thread" : "the GS thread", C.verify ? ", verify" : "", pmn[pm], pvn[pv]);
     /* (pc-pacing) the display's VBlanks drive the game on 60 / 120 / 240 Hz displays: pacing = display, and auto */
-    if ((C.pacing == SETTINGS_PACING_DISPLAY || C.pacing == SETTINGS_PACING_AUTO) && C.hwnd && C.vblank_external && C.display_vblank)
-        if (!clock_thread && !(clock_thread = CreateThread(NULL, 0, clock_main, (void*)(intptr_t)(C.pacing == SETTINGS_PACING_DISPLAY), 0, NULL)))
-            hlog("display pacing: no clock thread");
+    gpu_hw_pacing_changed(C.pacing);
     return 1;
+}
+
+/* (pc-pacing) graphics.pacing while the game runs: the display clock thread is started for auto / display and stands by
+ * otherwise (the presenter's part: gpu_present_set_mode) */
+void gpu_hw_pacing_changed(int pacing) {
+    InterlockedExchange(&clock_pacing, pacing);
+    C.pacing = pacing;
+    if ((pacing == SETTINGS_PACING_DISPLAY || pacing == SETTINGS_PACING_AUTO) && render_on && C.hwnd && C.vblank_external && C.display_vblank)
+        if (!clock_thread && !(clock_thread = CreateThread(NULL, 0, clock_main, (void*)(intptr_t)(pacing == SETTINGS_PACING_DISPLAY), 0, NULL)))
+            hlog("display pacing: no clock thread");
 }
 
 void gpu_hw_attach_gs(void) {

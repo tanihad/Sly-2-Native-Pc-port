@@ -184,11 +184,22 @@ static void status_tick(void) {
     g_status_underruns = u;
 }
 
+static volatile LONG g_gain_q16 = 65536;      /* (pc-menu) master volume, 16.16; 65536 = untouched */
+
+void audio_set_gain(float gain) {
+    if (!(gain >= 0.0f)) gain = 0.0f;
+    if (gain > 1.0f) gain = 1.0f;
+    InterlockedExchange(&g_gain_q16, (LONG)(gain * 65536.0f + 0.5f));
+}
+
 static void produce(int16_t* out, uint32_t frames) {
     LARGE_INTEGER t0, t1;
     QueryPerformanceCounter(&t0);
     if (g_tone) tone_render(out, frames);
     else        sd_render(out, frames);
+    LONG q = g_gain_q16;
+    if (q != 65536)                               /* (no change at all at full volume) */
+        for (uint32_t i = 0; i < 2 * frames; i++) out[i] = (int16_t)(((int32_t)out[i] * q) >> 16);
     QueryPerformanceCounter(&t1);
     g_render_ticks += (uint64_t)(t1.QuadPart - t0.QuadPart);
     if (g_wav) wav_write(out, frames);

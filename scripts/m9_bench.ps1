@@ -7,8 +7,11 @@
 # The GPU utilisation (nvidia-smi) before each run is printed: other programs on the GPU make timings meaningless.
 param([Parameter(Mandatory = $true)][string]$Exe, [int]$Runs = 3, [int]$Scale = 3, [string]$Aspect = "16:9",
       [string[]]$Only = @(), [string[]]$Extra = @(), [switch]$Prof, [string]$Label = "", [string]$Csv = "",
-      [string]$CorpusRoot = "C:\Users\tanih\Projects\sly2-worktrees", [int]$Skip = 10, [string]$EnvVars = "")
+      [string]$CorpusRoot = "", [int]$Skip = 10, [string]$EnvVars = "")
 $Only = @($Only | ForEach-Object { $_ -split ',' } | Where-Object { $_ })
+. (Join-Path $PSScriptRoot 'project.ps1'); . (Join-Path $PSScriptRoot 'gpu_corpus.ps1')
+$CorpusRoot = Resolve-GpuCorpus $CorpusRoot $MainRoot
+if (-not $CorpusRoot) { exit 0 }
 $Extra = @($Extra | ForEach-Object { $_ -split ' ' } | Where-Object { $_ })
 $envs = @{}
 foreach ($kv in ($EnvVars -split ',' | Where-Object { $_ })) { $q = $kv -split '=', 2; $envs[$q[0]] = $q[1] }
@@ -25,7 +28,7 @@ $Exe = (Resolve-Path $Exe).Path
 $dir = Split-Path $Exe -Parent
 $run = Join-Path $dir ("gs_replay_bench_{0}.exe" -f $PID)
 Copy-Item $Exe $run -Force
-$smi = 'C:\Windows\System32\nvidia-smi.exe'
+$smi = Join-Path $env:SystemRoot 'System32\nvidia-smi.exe'   # (NVIDIA only; '?' elsewhere)
 $res = @{}
 foreach ($k in $recs.Keys) { $res[$k] = New-Object System.Collections.ArrayList }
 $profLine = @{}

@@ -1,0 +1,55 @@
+# WIP: pc-portable (build and run on any Windows PC from the GitHub repo)
+
+**Goal**: fresh clone -> one setup command -> disc image in orig\disc -> one build command ->
+dist\Sly2\sly2.exe that runs on other Windows 10/11 x64 PCs.
+
+**Status**: complete
+
+## Done
+- requirements.txt (rabbitizer 1.16.2 + pyelftools 0.33, PyPI hashes), requirements-re.txt.
+- setup.ps1 (root) -> scripts/setup-tools.ps1: pinned llvm-mingw 20261006, uv 0.13.0, MinGit 2.56.0.2
+  (only without git on PATH) with SHA-256; Python 3.13.16 via uv; -From <dir> offline (archives,
+  tools\python copy, uv-cache seed via robocopy), -DryRun, -WithRE. Verified offline in a fresh clone
+  (the "PAUSED" commit f525417 is the robocopy seeding fix, the exact version that ran there).
+- build.ps1 (root): extract_elf + package.py. scripts/extract_elf.py: SCUS_973.16 from the ISO
+  (SHA-256 checked); build_game.py extracts it automatically when missing.
+- Machine-specific paths removed: scripts/project.ps1 ($MainRoot/$ProjectPython/$ProjectClang),
+  scripts/gpu_corpus.ps1 (Resolve-GpuCorpus: -CorpusRoot, SLY2_GPU_CORPUS, sibling sly2-worktrees;
+  exit 0 SKIPPED when absent) used by gpu_*_all/bench, gs_census, gs_vram_hashes, m9_*; live_*.ps1,
+  pad/vif run.ps1, test_vu.c default, corpus.txt comment.
+- Fresh clone %TEMP%\sly2fc (git clone --no-local -b next/pc-portable): setup -From main checkout
+  11 s, build.ps1 -Iso <iso> 50 s (28 threads) -> dist\Sly2\sly2.exe 27.1 MB.
+- Imports: KERNEL32, USER32, GDI32, WINMM, api-ms-win-core-synch-l1-2-0 (WaitOnAddress), UCRT
+  api-ms-win-crt-*. No MinGW runtime DLLs. Run-time loaded: d3d11, dxgi, d3dcompiler_47 (inbox),
+  xinput, ole32, comdlg32, shell32, avrt, dwmapi.
+- ISA scan (scratchpad isa_scan.py, objdump -M intel): 4.48 M instructions, only SSE2 baseline plus
+  `tzcnt` (19, = `rep bsf` encoding LLVM uses for cttz with nonzero input; runs as BSF on pre-BMI CPUs).
+- GPU boot (visible window, before the owner asked for headless): OK, RTX 4060 Ti.
+
+- Headless boot matrix of the fresh-clone exe (PS2_HEADLESS=1, dumps every 600 VBlanks): gpu, sw,
+  warp, NO_ROV, FL=11_0, FAIL=device/caps/shader (-> software), first run without sly2.ini (PS2_ISO):
+  all reach the first-boot save prompt. FL 11_0 logged 8 "cannot create shader" (gpu_exec pre-created
+  the ROV shaders on a device without ROVs): fixed in gpu_exec.c, verified 0.
+- README.md rewritten, notes/install.md (fresh clone + portability audit), tools/README.md,
+  README.txt (SmartScreen + do not share), setup.cmd/build.cmd + .gitattributes.
+- Worktree gates: debug build, package.py (release), run_tests 16/16.
+
+- tests\unit\*\run.ps1: all 20 pass (window/warp -UnitOnly, gs-hw -NoWindow).
+- Second fresh clone of 03a6bd0 with a clean PATH (no git): setup.cmd -From <main checkout> 24 s,
+  build.cmd -Iso <image> 88 s, headless boot OK on GPU, software and WARP. No build paths in the exe.
+- Cleaned: %TEMP%\sly2fc, %TEMP%\sly2fc_play, logs, worktree build\ and dist\.
+
+## Left for the owner
+- Test dist\Sly2 (or a fresh clone + setup.ps1 online) on another PC, ideally one with an AMD or
+  Intel GPU; the online download path was checked only by inspection + -DryRun (no downloads here).
+- The visible first-run file picker of the GUI build was not opened (owner using the PC); the
+  dialog loop is covered by tests\unit\disc.
+
+## Findings / traps
+- Build Python deps: only rabbitizer + pyelftools (recomp/). splat/capstone are RE-only.
+- uv venv creates tools\uv-cache, so seed the cache by merging (robocopy), not "if missing".
+- uv prints progress on stderr: harmless NativeCommandError noise only when redirected with 2>&1.
+- GPU renderer requires DoublePrecisionFloatShaderOps: Intel Xe/Arc iGPUs/GPUs lack FP64 ->
+  software renderer there (renderer owner's call; documented).
+- All high-res waitable timer users handle NULL (pre-1803) already.
+- Boot tests must be headless (PS2_HEADLESS=1): the owner uses the PC.

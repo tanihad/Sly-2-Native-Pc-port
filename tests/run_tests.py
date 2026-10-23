@@ -173,6 +173,40 @@ def check_patches() -> bool:
     gen = (ROOT / "build" / "test" / "recomp")
     ok &= not any("recomp/patches.py" in p.read_text(encoding="utf-8") for p in gen.glob("funcs_*.c"))  # test ELF
     print(f"  {'PASS' if ok else 'FAIL'}  instruction patches apply only to the expected bytes and places")
+    return ok & check_pc_text_patches()
+
+
+def check_pc_text_patches() -> bool:
+    """The PC wording patches (runtime/pc_text.c, notes/pc-text.md): each one calls into pc_text and
+    is off with PS2_PC_TEXT=0 (the runtime functions test pc_text_enabled). With the game's ELF
+    present (orig/), every one applies to it (the SHA-1 guards match the real functions) and the
+    boot-prompt skip's goto lands on a label that exists in the translated function."""
+    sys.path.insert(0, str(ROOT))
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from collections import Counter
+    from recomp import patches as P
+    from recomp.codegen import FunctionTranslator
+
+    pcs = [p for p in P.PATCHES if p.name.startswith("pc_")]
+    ok = len(pcs) == 4 and all("pc_" in p.code for p in pcs)   # text bank, boot create + poll, options
+    from paths import ELF
+    if not ELF.exists():
+        print(f"  {'PASS' if ok else 'FAIL'}  PC wording patches (game ELF not found: guards not checked)")
+        return ok
+    from recomp.elf import load
+    from recomp.functions import find_functions
+    prog = load(str(ELF))
+    funcs = {f.start: f for f in find_functions(prog) if f.start in {p.func for p in pcs}}
+    starts = set(funcs)
+    for p in pcs:
+        f = funcs.get(p.func)
+        got = P.patches_for(prog, f.start, f.end) if f else {}
+        ok &= p in got.get(p.at, [])
+        if f and "goto " in p.code:
+            label = p.code.split("goto ", 1)[1].split(";")[0].strip()
+            src = FunctionTranslator(f, starts, Counter()).translate(False, got)
+            ok &= f"{label}:" in src
+    print(f"  {'PASS' if ok else 'FAIL'}  PC wording patches apply to the game (SHA-1 guards, goto label)")
     return ok
 
 

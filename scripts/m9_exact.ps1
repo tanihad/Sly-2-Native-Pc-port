@@ -9,8 +9,11 @@
 # recording and scale; exit 1 on any difference.
 param([Parameter(Mandatory = $true)][string]$Exe, [Parameter(Mandatory = $true)][string]$BaseExe, [string]$Scales = "1,3",
       [int]$Every = 20, [string[]]$Only = @(), [string]$Out = "", [switch]$Game, [string]$Extra = "", [string]$BaseExtra = "",
-      [string]$CorpusRoot = "C:\Users\tanih\Projects\sly2-worktrees")
+      [string]$CorpusRoot = "")
 $Only = @($Only | ForEach-Object { $_ -split ',' } | Where-Object { $_ })
+. (Join-Path $PSScriptRoot 'project.ps1'); . (Join-Path $PSScriptRoot 'gpu_corpus.ps1')
+$CorpusRoot = Resolve-GpuCorpus $CorpusRoot $MainRoot
+if (-not $CorpusRoot) { exit 0 }
 $root = Split-Path $PSScriptRoot -Parent
 if (-not $Out) { $Out = Join-Path $root 'build\exact' }
 if (-not [IO.Path]::IsPathRooted($Out)) { $Out = Join-Path $root $Out }

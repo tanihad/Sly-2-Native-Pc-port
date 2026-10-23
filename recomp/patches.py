@@ -48,6 +48,14 @@ DL_QUEUE = (0x0021A998, "67ef1d52df4bab0890b10adcafb8f699de8ba55a")      # 2D: q
 ITEM_QUEUE = (0x00215960, "9e5c686306164bd9a4c1fdd5fe87f35fdffea152")    # 2D: queue one placed object
 MAIN_LOOP = (0x001A7518, "a1bf2357cbfd44da199858e87f269865b5ea7ea0")     # the game's main loop
 MOTION_BLUR = (0x00160F98, "fb6879611634e74a6c18e8c7bda1b2f7eeb43407")   # the motion blur post effect
+TEXT_LOAD = (0x0013DF80, "8dda0003180328c95a6d2446ee5f52e2f2813477")     # read a level's text bank
+CARD_UPDATE = (0x001AB1A0, "1d6ccadcbdefdd6b7e8f0f0d7473c824222ccccb")   # memory card manager, per frame
+OPTIONS_BUILD = (0x001B04E0, "6dbf069bc55ffc47d8e36a035831e849f83a9ed9")  # build the Options menu's items
+# (pc-menu) the pause menu (notes/pc-menu.md)
+PAUSE_LIST = (0x001B0290, "ceb3e45c987b7505b4ec7388628233baf720d7cf")    # build the pause menu's entries, push page 1
+TEXT_LOOKUP = (0x0013E368, "70da33a2bc009fbe743fb29e1ef891e60916a5fe")   # text id -> string (the level's text table)
+MENU_UPDATE = (0x001AEEE0, "6f518491757212ff8aaf84c5197d1753ac1bbcaf")   # the menu object's per-frame update (input)
+HUD_UPDATE = (0x001D9648, "d8e9a7bdb104955a41913d2a79b514ebb10cfce0")    # the HUD manager's update (START -> pause)
 
 PATCHES: list[Patch] = [
     Patch("ws_projection", *CM_RECALC, 0x0014DBA4, "after",
@@ -138,6 +146,57 @@ PATCHES: list[Patch] = [
           "the frame is drawn (0x1CDA80, 0x157FA0): a run-time aspect / HUD switch asked for by "
           "window.c takes effect here, for the whole frame; aspect_apply recomputes the camera's "
           "frustum with the game's 0x14DB70"),
+    # PC wording (runtime/pc_text.c, notes/pc-text.md): no PS2 memory-card texts, no boot prompt.
+    Patch("pc_text_bank", *TEXT_LOAD, 0x0013E0A4, "before",
+          "pc_text_bank_loaded(ctx, ctx->r[21].uw[0]);",
+          "the level's text bank has just been read ($s5 = the world 0x3DD490: +0x4640 count, +0x4644 "
+          "{id, text} table; every path of the loader joins here, before its last call 0x210BE0): the "
+          "PS2-specific texts (memory card, console, disc) are replaced in place with PC wording, each "
+          "only when its id and exact original bytes match"),
+    Patch("pc_save_boot_poll", *CARD_UPDATE, 0x001AB1DC, "before",
+          "if (pc_save_boot_pending) pc_save_boot_poll(ctx);",
+          "the card manager's per-frame update ($s0 = 0x2E65E0), past its 'world loading' / 'paused' "
+          "returns and before the 'card job running' and dialog-mode returns: when the boot's silent "
+          "save-data creation (below) has finished with an error, the game's own 'could not create' "
+          "dialog (0x17) is shown, as after a failed Yes"),
+    Patch("pc_save_boot_create", *CARD_UPDATE, 0x001AB360, "before",
+          "if (pc_save_boot_create(ctx)) goto L_001AB380;",
+          "the boot check (dialog mode 1) found a card without the game's save data (state 3) and is "
+          "about to ask 'Do you want to create a Sly 2 Save File?' (0x1ACB58 dialog 0x15). On PC the "
+          "save data is created without asking: pc_save_boot_create starts the game's own create job "
+          "(0x1AAF90 with the PMF at 0x2A6D88, what Yes does in 0x1AD168) and the prompt is skipped "
+          "(L_001AB380 = this function's epilogue). Once per run; otherwise the game asks as before"),
+    Patch("pc_options_hide", *OPTIONS_BUILD, 0x001B058C, "before",
+          "if (pc_options_hidden(ps2_r32(ctx, ctx->r[16].uw[0]))) ctx->r[4].ud[0] = 0;",
+          "the Options menu (title SELECT menu and pause menu: both build it here) copies the items of "
+          "the static table 0x2BFEC8 ($s0 = the item; word 0 = its kind = text id) that pass a test "
+          "($a0 != 0, tested by the beq here). PS2 hardware options are left out on PC: 'USB Headset' "
+          "(0x50, the PS2 USB headset) and 'Center Screen...' (0x3F, moves the picture on a CRT TV)"),
+    # The PC Options menu (runtime/menu_game.c, notes/pc-menu.md). Always on: the pause menu gets a "PC Settings"
+    # entry; the other patches do nothing unless the menu asks for something.
+    Patch("pcmenu_list", *PAUSE_LIST, 0x001B0490, "before",
+          "pcmenu_pause_list(ctx);",
+          "jal f_001AF4D8 (push the menu's page 1) with $a1 = the entry count and $a2 = the list the function just "
+          "filtered from its 7 templates into 0x2F65D0 (full at 7, read by nothing else: the page keeps the pointer). "
+          "menu_game.c copies it to unused EE RAM (0xFF000) with a 'PC Settings' entry after 'Options' (text id "
+          "0x10000, no callbacks, flags 2 = stay open) and passes the copy"),
+    Patch("pcmenu_text", *TEXT_LOOKUP, 0x0013E368, "before",
+          "if (pcmenu_text(ctx)) return;",
+          "entry of the text lookup (a leaf, $a1 = text id, $v0 = the string): the entry's id 0x10000 (the game's own "
+          "ids are below 0xCB3) returns 'PC Settings' (EE 0xFF200); the menu draws it in the game's own font"),
+    Patch("pcmenu_select", *MENU_UPDATE, 0x001AF154, "before",
+          "pcmenu_select(ctx);",
+          "Cross on the highlighted entry of an idle page ($s0 = the entry, before its select callback is loaded): "
+          "ours opens the PC Options menu; its flags keep the pause menu open underneath"),
+    Patch("pcmenu_start", *HUD_UPDATE, 0x001D96EC, "before",
+          "if (pcmenu_pause_req) pcmenu_start(ctx);",
+          "after f_00187D80(pad, START) returned whether START was pressed ($v0), where the HUD manager opens the "
+          "pause menu (jal 0x1B0290): Esc / the PS button pause the game exactly as START does, only where START would"),
+    Patch("pcmenu_frame", *MAIN_LOOP, 0x001A75A8, "before",
+          "pcmenu_ee_frame(ctx);",
+          "main loop (as aspect_switch): the music / effects volumes chosen in the menu go into the game's sound "
+          "manager with the game's own 0x1FEA60, as its Options page does (and again when a loaded save resets them); a menu "
+          "waiting for the pause menu opens"),
 ]
 
 

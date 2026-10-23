@@ -27,19 +27,24 @@ before the first header belong to `[display]`. A value in double quotes keeps `;
 Unknown keys and bad values are reported on stderr (`[settings] <path>: line N: ...`) and ignored;
 the other keys still apply. A UTF-8 BOM (Notepad) is accepted; the file is UTF-8 (non-ASCII paths).
 
+Almost every key can also be changed in the game: **pause -> PC Settings** (or Esc / the PS button), the Options
+menu (notes/pc-menu.md); it writes the same keys.
+
 ```ini
 [display]
 aspect = 16:9          ; 16:9 (default) or 4:3; any W:H (21:9, 16:10) or a ratio (1.7778)
 hud = edges            ; edges (default): corner HUD widgets at the display's edges | centered
+monitor = 0            ; 0 (default: where the window is) | 1, 2, ...: fullscreen (and the window) on that monitor
 fullscreen_refresh = desktop ; desktop (default) | auto (a multiple of 59.94 Hz while fullscreen) | <Hz>
 
 [graphics]
+preset = balanced      ; original | performance | balanced (default) | quality | custom (see "Presets")
 renderer = gpu         ; gpu (default: the Direct3D 11 renderer; software if it can't start) | software
 pacing = auto          ; gpu renderer: auto (default) | paced | immediate | display | vrr (old: paced + vsync off)
 vsync = on             ; gpu renderer: on (default) | off (tearing allowed) | adaptive
-internal_scale = auto  ; auto (default: up to internal_scale_max, lowered while the GPU can't keep up) | native | 1 .. 8
-internal_scale_max = 3 ; the highest scale auto picks: 1 .. 8 | native
-                       ;   (the keys from here on: Direct3D 11 renderer, except motion_blur)
+internal_scale = auto  ; auto (default: up to auto_max, lowered while the GPU can't keep up) | native |
+                       ;   1 (PS2 resolution) .. 8   (the keys from here on: Direct3D 11 renderer, except motion_blur)
+auto_max = 3           ; the highest scale auto uses (1..8, default 3)
 outlines = ps2         ; ps2 (one PS2 pixel wide, exact) | thin (high-resolution lines)
 filters = modern       ; modern | faithful (preset for the three toggles below)
 motion_blur = preset   ; on | off | preset   (modern: on,  faithful: on)
@@ -47,12 +52,18 @@ flicker_filter = preset;                      (modern: off, faithful: on)
 interlacing = preset   ;                      (modern: off, faithful: on)
 scaler = auto          ; picture -> window: auto | lanczos | catmull-rom | box | bilinear | point
 
+[audio]
+master = 100           ; 0..100: everything (the PC's mixer, audio_out.c)
+music = 100            ; 0..100: the game's own music volume (as its Options page)
+effects = 100          ; 0..100: the game's own effects volume (sound effects and voices)
+background = on        ; off: silent while another window is active
+
 [game]
 disc = D:\Games\Sly 2 - Band of Thieves (USA).iso   ; written by the game when you choose the image
 
 [window]               ; written by the game when the window closes
-fullscreen = off       ; on: start in borderless fullscreen (Alt+Enter / F11 switch)
-show_fps = off         ; on: frame rate in the title bar
+fullscreen = off       ; off | on (borderless fullscreen; Alt+Enter / F11 switch) | exclusive
+show_fps = off         ; on: frame rate in the title bar and in the picture's top left corner
 x = 418                ; the window's position and size (not maximized), physical pixels;
 y = 204                ;   ignored if no longer on a monitor (the window is then centred)
 width = 1723
@@ -65,25 +76,52 @@ maximized = off
 | display.aspect | W:H, W/H or a ratio between 1 and 4 | display aspect; 4:3 = exactly the PS2 picture (notes/widescreen.md). F7 switches wide <-> 4:3 while playing. gpu renderer at internal_scale >= 2: the displayed buffers get round(N * W) columns of samples per PS2 pixel (W = aspect / (4/3): 4 at 3x 16:9), so the 512-wide picture stretched to the wide display keeps the horizontal resolution of 4:3 at N (anamorphic; notes/d3d11-renderer.md appendix K) |
 | display.hud | edges / centered (centred) | wide aspects only: the HUD widgets at the sides of the 4:3 screen (health meter, boss meters, counters) sit at the display's edges, or the whole HUD stays in the centre 4:3 area. F8 switches it while playing |
 | graphics.renderer | gpu / software (also hw / d3d11 / sw) | the GS renderer. **gpu (default since M11)**: the Direct3D 11 renderer (notes/d3d11-renderer.md). It needs a Direct3D 11 device of feature level 11_0 or 11_1 with typed UAV loads (R8G8B8A8_UINT), double-precision shader arithmetic and dual-source blending; rasterizer-ordered views are used when the GPU has them, otherwise the ROV-tier draws run as plain UAV draws of disjoint primitives (same pictures, more GPU time; appendix M). At start-up every shader the game uses is created; if anything fails (no device, a missing capability, the swap chain, a shader) the game runs on the **software renderer** and the log has one line `[ps2] GPU renderer unavailable (<reason>): using the software renderer`. A device lost while playing is recreated (twice); the third loss switches to software. software: the PS2's renderer on the CPU, at the PS2's resolution (the [graphics] keys below except motion_blur do nothing). An existing sly2.ini written by an older build says `renderer = software` (the old default): change it to gpu or delete the file |
-| display.fullscreen_refresh | desktop / auto / Hz | (pc-pacing, runtime/display_mode.c) while the window is fullscreen and in front, the display is switched to this refresh rate at the desktop's resolution (a temporary mode, CDS_FULLSCREEN: Windows restores the desktop's when the game ends; the game restores it when it leaves fullscreen or goes to the background). auto = the highest multiple of 59.94 Hz the display offers (119.88 Hz on the owner's 165 Hz Dell) when the desktop's rate is not one: every picture then lasts exactly 2 refreshes and the display's VBlanks drive the game (no judder on displays without variable refresh). desktop (default) never changes the display |
-| graphics.pacing | auto / paced / immediate / display / vrr (vsync = auto) | (pc-pacing) gpu renderer, how pictures are presented (runtime/gpu/gpu_present.c, gpu_pace.c): **paced** = picture v is presented at its VBlank's due time + D, D = the 95th percentile of how long pictures take to be ready (+1.5 ms), so pictures leave at an even 16.68 ms cadence - a VRR display (G-Sync / FreeSync) shows them exactly so; **immediate** = each picture as soon as it is drawn (lowest latency; uneven by the drawing time's variation); **display** = the display's VBlanks drive the game on a 60 / 120 / 240 Hz display (every k-th refresh is a PS2 VBlank; within 0.5%, measured), else the 59.94 Hz timer (logged); **auto** (default) = paced until the display's own record of the presents (DXGI frame statistics) shows what it does: variable refresh -> paced; a fixed refresh -> immediate (the picture waits for the next refresh anyway: pacing would only add latency), and on 60 / 120 / 240 Hz the display drives the game as with display. The log says what it found: [gpu] pace: display 165.08 Hz, fixed refresh: ... judder ... or ... variable refresh (G-Sync / FreeSync) is on. vrr = the old setting (paced, vsync off) |
-| graphics.vsync | on / off / adaptive | (pc-pacing) gpu renderer: on = Present(1) (no tearing; default); off = Present(0) with tearing allowed (DXGI_PRESENT_ALLOW_TEARING when the system supports it); adaptive = synced when the picture is on time, at once (tearing allowed) when it is more than 2 ms late |
-| graphics.internal_scale | auto (default), native or 1..8 | gpu renderer: the internal resolution, N x the PS2's (512 x 448 -> 1536 x 1344 at 3x), shrunk or enlarged to the window by `scaler` (supersampling: the anti-aliasing). Every target is drawn with N x N samples per PS2 pixel (the displayed buffers N x 2N while progressive, 4 x 6 at 3x 16:9); sample 0 of every pixel is exactly the PS2's. **auto** (M11): 3x (the owner's choice), lowered while the GPU cannot keep up and raised again (never above 3, never below 1) - the renderer measures the GPU time of every picture; when the GPU is busy more than 85% of the time for 3 s in a row it goes to the highest lower scale predicted (time ~ N^2) to fit in 70%; when the next scale up is predicted at <= 60% for 15 s in a row it goes up one, but not to a scale it left for being too slow in the last 120 s; nothing is judged for 3 s after a change. Each change is logged (`[gpu] internal scale auto: the GPU was too busy (92% of the frame time at 3x) -> 2x`). On the RTX 4060 Ti 3x 16:9 keeps the GPU 50-65% busy: auto stays at 3x. (pc-pacing) **Every scale is a maximum**: a fixed scale the GPU cannot draw in real time is drawn lower for the time being (logged: `internal scale 6x: the GPU could not draw it in real time (144% of the frame time at 6x) -> drawing at 4x, the game keeps its speed`) and raised back when it fits - the game's speed never depends on the GPU (gpu_pace.c pace_gov; PS2_GS_SCALE and PS2_GS_GOVERNOR=0 keep a scale exactly, for tests). **native** = the smallest scale whose picture covers the window's picture area (2560 x 1440 at 16:9: 4x, 2560 x 1792; 1920 x 1080: 3x), followed when the window changes. auto goes up to internal_scale_max (default 3; native possible). When even 1x is more than the GPU can draw (above 120% for 10 s) the software renderer takes over (logged; PS2_GS_SW_FALLBACK=0 keeps the GPU). F2 / Shift+F2 step up / down from the scale in use and make it fixed (written as a number), Ctrl+F2 sets auto again; the targets are rescaled at the next frame (nothing restarts). `PS2_GS_SCALE=N` overrides it (not written); `PS2_GS_AUTO_SLOW=<factor>[:<seconds>]` multiplies the measured GPU time (tests of a slower GPU) |
+| graphics.pacing | auto / paced / immediate / display / vrr (vsync = auto) | (pc-pacing, live) gpu renderer, how pictures are presented (runtime/gpu/gpu_present.c, gpu_pace.c): **paced** = picture v is presented at its VBlank's due time + D, D = the 95th percentile of how long pictures take to be ready (+1.5 ms), so pictures leave at an even 16.68 ms cadence - a VRR display (G-Sync / FreeSync) shows them exactly so; **immediate** = each picture as soon as it is drawn (lowest latency; uneven by the drawing time's variation); **display** = the display's VBlanks drive the game on a 60 / 120 / 240 Hz display (every k-th refresh is a PS2 VBlank; within 0.5%, measured), else the 59.94 Hz timer (logged); **auto** (default) = paced until the display's own record of the presents (DXGI frame statistics) shows what it does: variable refresh -> paced; a fixed refresh -> immediate (the picture waits for the next refresh anyway: pacing would only add latency), and on 60 / 120 / 240 Hz the display drives the game as with display. The log says what it found: `[gpu] pace: display 165.08 Hz, fixed refresh: ... judder ...` or `... variable refresh (G-Sync / FreeSync) is on`. vrr = the old setting (paced, vsync off) |
+| graphics.vsync | on / off / adaptive | (pc-pacing, live) gpu renderer: on = Present(1) (no tearing; default); off = Present(0) with tearing allowed (DXGI_PRESENT_ALLOW_TEARING when the system supports it); adaptive = synced when the picture is on time, at once (tearing allowed) when it is more than 2 ms late |
+| display.fullscreen_refresh | desktop / auto / Hz | (pc-pacing, runtime/display_mode.c) while the window is fullscreen and in front, the display is switched to this refresh rate at the desktop's resolution (a temporary mode, CDS_FULLSCREEN: Windows restores the desktop's when the game ends; the game restores it when it leaves fullscreen or goes to the background). auto = the highest multiple of 59.94 Hz the display offers (120 Hz on the owner's 165 Hz Dell) when the desktop's rate is not one: every picture then lasts exactly 2 refreshes and the display's VBlanks drive the game (no judder on displays without variable refresh). desktop (default) never changes the display; window.fullscreen = exclusive uses auto unless a rate is set |
+| graphics.internal_scale | auto (default) or 1..8 | gpu renderer: the internal resolution, N x the PS2's (512 x 448 -> 1536 x 1344 at 3x), shrunk or enlarged to the window by `scaler` (supersampling: the anti-aliasing). Every target is drawn with N x N samples per PS2 pixel (the displayed buffers N x 2N while progressive, 4 x 6 at 3x 16:9); sample 0 of every pixel is exactly the PS2's. **auto** (M11): 3x (the owner's choice), lowered while the GPU cannot keep up and raised again (never above 3, never below 1) - the renderer measures the GPU time of every picture; when the GPU is busy more than 85% of the time for 3 s in a row it goes to the highest lower scale predicted (time ~ N^2) to fit in 70%; when the next scale up is predicted at <= 60% for 15 s in a row it goes up one, but not to a scale it left for being too slow in the last 120 s; nothing is judged for 3 s after a change. Each change is logged. (pc-pacing) The rules now (gpu_pace.c pace_gov): load = GPU ms per picture / 16.68 ms; auto goes down above 90% for 3 s (to the scale predicted at <= 80%) and up when the next scale is predicted at <= 75%; **every scale is a maximum**: a fixed scale (or native) the GPU cannot draw in real time is drawn lower for the time being (logged: `internal scale 7x: the GPU could not draw it in real time (145% of the frame time at 7x) -> drawing at 5x, the game keeps its speed`) and raised back when it fits - the game's speed never depends on the GPU (`PS2_GS_SCALE` and `PS2_GS_GOVERNOR=0` keep a scale exactly, for tests). When even 1x is more than the GPU can draw (above 120% for 10 s) the software renderer takes over (logged; `PS2_GS_SW_FALLBACK=0` keeps the GPU). At 1440p on the RTX 4060 Ti 3x takes 7-11 ms per picture (43-68%), 4x 13-19 ms (80-112%: drawn at 3x in the heaviest scenes), see notes/pc-experience.md. F2 / Shift+F2 step up / down from the scale in use and make it fixed (written as a number), Ctrl+F2 sets auto again; the targets are rescaled at the next frame (nothing restarts). `PS2_GS_SCALE=N` overrides it (not written); `PS2_GS_AUTO_SLOW=<factor>[:<seconds>]` multiplies the measured GPU time (tests of a slower GPU) |
 | graphics.outlines | ps2 / thin | gpu renderer, scale > 1: ps2 = the cel outlines one PS2 pixel wide, as the PS2 draws them (exact; thicker at high resolution); thin = each line drawn analytically at the high resolution (coverage from the distance to the line, width `PS2_GS_THIN_WIDTH` samples, default half the scale), so outlines stay fine at 3x and above (not exact). F3 switches |
 | graphics.filters | modern / faithful | the preset for the three toggles below: modern = motion blur on, flicker filter off, progressive; faithful = everything as a PS2 on a TV. F4 switches the preset and puts the toggles back to `preset` |
 | graphics.motion_blur | on / off / preset | the game's own motion blur (previous frame blended into the new one). off = the game's own switch for it: the flag at 0x2DEB24 the effect's function f_00160F98 tests first reads 1 (instruction patch `motion_blur_off`, recomp/patches.py; both renderers). F5 switches |
 | graphics.flicker_filter | on / off / preset | gpu renderer: the PS2's TV flicker filter (both display circuits on one buffer, one line apart, mixed at ALP 128 - the game alternates it with one circuit every VBlank). off shows the circuit with the lower DBY alone (sharper; the alternation stops flickering). F6 switches |
 | graphics.interlacing | on / off / preset | gpu renderer: on = field display as the PS2 sends it to the TV - the field buffers drawn at field resolution (N rows per PS2 row) and shown line-doubled, fields drawn with the half-line offset (movies, the intro) woven by gs.c's deinterlacer: at internal_scale 1 identical to the software renderer's picture; off = progressive: the field buffers drawn with 2N rows per PS2 row (the full 448-line picture at every scale), odd fields of half-line-offset content shown one frame line lower (no bob). Shift+F6 switches |
 | graphics.scaler | auto / lanczos / catmull-rom / box / bilinear / point | gpu renderer: the filter from the picture to the window (separable, two passes). auto = Lanczos-2 when shrinking (the "sharp downscale" of 3x supersampling), Catmull-Rom when enlarging, point at 1:1. The picture's sample grid (sample 0 at the PS2 pixel) is taken out, so it is centred like the PS2's. `PS2_GS_SCALER` overrides it |
+| graphics.preset | original / performance / balanced / quality / custom | (pc-menu) the graphics preset, see "Presets". A preset other than custom sets its options when the file is read (it wins over them: `preset = custom` to set them by hand); the game writes `custom` as soon as an option leaves the preset (menu or F-keys). A file without the key (older builds): derived from the options |
+| graphics.internal_scale = native | native | (pc-menu) the smallest scale N with 448 N rows >= the window's client height (4x at 1440p, 3x at 1080p, 5x at 2160p), followed when the window is resized (gfx.c gfx_output_resized) |
+| graphics.auto_max | 1..8 (default 3) | (pc-menu) the highest scale `internal_scale = auto` runs at (gpu_hw_set_auto_scale) |
+| display.monitor | 0..16 (default 0) | (pc-menu) 0: the monitor the window is on; n: fullscreen on monitor n (EnumDisplayMonitors order), a window moves there |
+| audio.master | 0..100 (default 100) | (pc-menu) the volume of the PC's mixer output (audio_out.c audio_set_gain, gain (v/100)^2; 100 = untouched, bit-exact) |
+| audio.music / audio.effects | 0..100 (default 100) | (pc-menu) the game's own volumes (its Options page's Music / Effects Volume): put into its sound manager 0x3DD040 with its own function 0x1FEA60 (music: category 1, effects: categories 0 and 3) at the game's next frame; again when a loaded save resets them; changes on the game's own Options page are taken over into sly2.ini (menu_game.c) |
+| audio.background | on / off (default on) | (pc-menu) off: the output is silent while the game's window is not the active one |
 | game.disc | path of a .iso | the disc image (runtime/launch.c; notes/install.md). Empty or unusable: asked for with a file dialog (GUI build) |
-| window.fullscreen | on/off | start fullscreen; remembered on close |
+| window.fullscreen | off / on (borderless) / exclusive | start fullscreen; remembered on close. exclusive (pc-pacing: `pacing_exclusive_fullscreen`, runtime/pacing_menu.c): the window stays a popup over the monitor (DXGI flip model: independent flip, the latency of exclusive fullscreen) and the game owns the display's mode while it is in front: display.fullscreen_refresh = auto unless a rate is set (120 Hz on a 144 / 165 Hz display without variable refresh) |
 | window.x/y/width/height/maximized | integers / on/off | the window's normal placement; remembered on close |
-| window.show_fps | on/off | title "Sly 2: Band of Thieves - 59.9 fps" instead of "Sly 2: Band of Thieves" |
+| window.show_fps | on/off | title "Sly 2: Band of Thieves - 59.9 fps" instead of "Sly 2: Band of Thieves", and (pc-menu) a counter in the top left corner of the picture (menu_overlay.c; also fullscreen) |
+
+### Presets (graphics.preset; runtime/settings.c settings_apply_preset / settings_detect_preset)
+
+| preset | internal_scale | auto_max | outlines | filters | motion_blur / flicker_filter / interlacing | scaler | aspect |
+|---|---|---|---|---|---|---|---|
+| **original** | 1 | (3) | ps2 | faithful | preset (all on: as a PS2 on a TV) | auto | 4:3 |
+| **performance** | auto | 2 | ps2 | modern | preset | auto | kept |
+| **balanced** (default) | auto | 3 | ps2 | modern | preset | auto | kept |
+| **quality** | native | (3) | thin | modern | preset | auto | kept |
+| **custom** | anything else | | | | | | |
+
+The renderer is not part of a preset. Choosing a modern preset in the menu while the aspect is the 4:3 that Original
+set returns to 16:9. Detection: a set of options is the preset whose values it has (aspect only matters for Original,
+which needs 4:3); anything else is custom.
+
+`[controls]` (bindings, vibration, dead zones, camera inversion, light bar) belongs to runtime/input.c:
+settings.c accepts its keys without parsing them, and input.c reads the section with
+`settings_read_section` and writes it with `settings_set` (keys and values: notes/controls.md). It
+is not in the template; the keys appear when the Options menu saves them, or can be added by hand.
+Environment (hardware tests): `PS2_DS_BT_HEADER=sdl`, `PS2_DS_RUMBLE=classic|improved`.
 
 Environment overrides (for testing; they win over the file and are never written to it):
 `PS2_ASPECT=16:9|4:3|<W>:<H>`, `PS2_HUD=edges|centered`, `PS2_SHOW_FPS=1`, `PS2_ISO=<image>` (the disc,
 see notes/install.md), `PS2_GS_BACKEND=sw|hw` (renderer), `PS2_GS_PACING=auto|paced|immediate|display|vrr`, `PS2_GS_VSYNC=on|off|adaptive` and
-`PS2_VBLANK=display` (pacing). Pacing diagnostics (pc-pacing): `PS2_PACE_LOG=1` (one line per shown present: VBlank, planned, Present call, shown, interval; =2 also each picture's ready time), `PS2_PACE_HEADLESS=1` (pace the offscreen presents of a headless run), `PS2_GPU_PRESENT_SIZE=WxH` (headless present target size), `PS2_GS_GOVERNOR=0` (a fixed scale exactly), `PS2_GS_SW_FALLBACK=0`. GPU renderer diagnostics (runtime/gpu/gpu_hw.h): `PS2_GS_HW_STATS=1|2`,
+`PS2_VBLANK=display` (pacing). Pacing diagnostics (pc-pacing): `PS2_PACE_LOG=1` (one line per shown present: VBlank, planned, Present call, shown, interval; =2 also each picture's ready time; =3 also the display circuits of every VBlank), `PS2_PACE_HEADLESS=1` (pace the offscreen presents of a headless run), `PS2_GS_PRESENT_SIZE=WxH` (headless present target size), `PS2_GS_GOVERNOR=0` (a fixed scale exactly), `PS2_GS_SW_FALLBACK=0`. GPU renderer diagnostics (runtime/gpu/gpu_hw.h): `PS2_GS_HW_STATS=1|2`,
 `PS2_GS_VERIFY=N`, `PS2_GS_DEBUG_KEYS=1` (F9 switch GPU <-> software, Shift+F9 simulated device loss),
 `PS2_GS_SAME_THREAD=1`, `PS2_GS_INFLIGHT=N`, `PS2_GPU_ADAPTER=warp`. Start-up tests (M11): `PS2_GPU_FAIL=device|caps|
 swapchain|shader` (that step fails: the software renderer runs), `PS2_GPU_FL=11_0` (a feature level 11_0 device),
@@ -118,6 +156,20 @@ no lost frame; notes/d3d11-renderer.md appendix I) and the flicker filter and sc
 blur from the game's next frame. PS2_INPUT tokens: `scaleup`, `scaledown`, `scaleauto`, `outlines`, `filters`, `blur`,
 `flicker`, `interlace` (not written to sly2.ini). The renderer and pacing are read at start-up.
 
-For code: `ps2_settings` (settings.h) holds the values; `settings_motion_blur/_flicker_filter/
-_interlacing` resolve the preset. New keys go into `apply()` and `settings_format()` in settings.c,
-with a test in tests/unit/window/test_window.c (`test_settings`).
+For code (pc-menu: the settings model): `ps2_settings` (settings.h) holds the values;
+`settings_motion_blur/_flicker_filter/_interlacing` resolve the filter preset. Every key is one row of the typed
+table `opts[]` in settings.c (`settings_opt`: section, key, type BOOL / ENUM / INT / TRI / ASPECT / STRING, range or
+value names and accepted aliases, default, flags LIVE / PRESET / GPU / STATE, the subsystem that applies it
+SET_APPLY_GFX / DISPLAY / WINDOW / AUDIO / RENDERER / PACING, the environment variable that overrides it). The
+parser, the template, the Options menu and the hotkeys all use it: `settings_change(i, value, persist)` validates,
+stores, writes the key (and `graphics.preset` when it changes; a preset writes all its options) and calls the
+applier registered with `settings_on_apply` (gfx.c: GFX; window.c: DISPLAY, WINDOW; menu_game.c: AUDIO, RENDERER,
+PACING, and DISPLAY when headless); `settings_serial` tells the menu to redraw. A new key: one row in `opts[]`, a line
+in `settings_format()`'s template, a test in tests/unit/menu/test_menu.c (`test_table` checks every row's default and
+text round trip). `[controls]` is input.c's (settings_read_section).
+
+Live or at the next start: everything the menu changes applies at once (graphics from the GPU renderer's next frame,
+aspect / HUD at the game's next frame, volumes at the game's next frame, display mode / size / monitor on the window
+thread), except: `renderer` when the game started on the software renderer (a game started on the GPU renderer
+switches both ways live). (pc-pacing) `pacing` and `vsync` are live (`pacing_apply_mode`); `window.fullscreen = exclusive`
+switches the display's refresh as described above; `display.fullscreen_refresh` applies when the window next goes fullscreen.

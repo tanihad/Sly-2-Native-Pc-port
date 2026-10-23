@@ -1,0 +1,4 @@
+# Reverse-engineering extras (not needed to build or play): splat (disassembly splitting) and capstone.
+# Installed by setup.ps1 -WithRE.
+splat64[mips]==0.50.0
+capstone==5.0.9

@@ -187,6 +187,8 @@ It probes for the directory with `sceMcGetDir(port, slot, "/BASCUS-97316YAOTWTD!
 (> 0 = exists), reads up to 18 entries per GetDir, checks room with sceMcGetEntSpace("/")
 plus the free clusters (needs about 100 KB), writes files with mode 0x202 and reads them with
 mode 1, checking the byte counts. At boot it calls sceMcInit then sceMcGetInfo(0, 0, ...).
+The PC port creates the save directory at boot without the game's "create a save file?" prompt and
+words the card messages for a save folder (notes/pc-text.md).
 
 ## Host mapping (runtime/mc.c)
 

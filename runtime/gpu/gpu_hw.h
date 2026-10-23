@@ -62,10 +62,8 @@ typedef struct {
     double stall_ms;             /* total time the game waited for the GPU since the start (0 when it never had to) */
 } gpu_hw_scale_info;
 void gpu_hw_scale_status(gpu_hw_scale_info* s);
-/* (pc-pacing) internal_scale = native: 1 the fixed scale follows the window's size (pace_native_scale, checked twice a
- * second), 2 auto's maximum does, 0 off. gpu_hw_native_scale: the native scale for the window now. */
-void gpu_hw_set_native(int which);
-int  gpu_hw_native_scale(void);
+/* (pc-pacing) graphics.pacing changed while the game runs (SETTINGS_PACING_*): the display clock for auto / display */
+void gpu_hw_pacing_changed(int pacing);
 /* (M11) why gpu_hw_start returned 0 (one line: no device, missing capabilities, swap chain, shaders) */
 const char* gpu_hw_start_error(void);
 /* (M7) inside the dump callback: the dumped picture's sample-grid shift in picture texels (x, y) - a picture at
