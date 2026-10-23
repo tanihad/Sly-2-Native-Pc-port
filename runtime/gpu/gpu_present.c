@@ -123,6 +123,66 @@ int gpu_present_pace_frames(void) { return (int)pace_extra; }
 
 static LARGE_INTEGER qpf;
 
+/* (pc-smooth) PS2_PRESENT_TRACE=<file>: one buffered line per present / resolved GPU time / shown present, render thread
+ * only (scripts/smooth_trace.py: frame-time distributions, spikes). Times are QPC ms.
+ *   p <vblank> <vblank ms> <queued ms> <exec start ms> <present_fit entry> <Present call> <Present returned> <scale> <flags>
+ *   g <vblank> <GPU ms> <present GPU ms>
+ *   s <present count> <vblank> <shown ms> */
+static FILE* ptrace = (FILE*)1;
+static FILE* ptrace_file(void) {
+    if (ptrace == (FILE*)1) {
+        const char* e = getenv("PS2_PRESENT_TRACE");
+        ptrace = e && *e ? fopen(e, "w") : NULL;
+        if (ptrace) setvbuf(ptrace, NULL, _IOFBF, 1 << 16);
+    }
+    return ptrace;
+}
+
+/* (pc-smooth) PS2_PRESENT_DUMP=<dir>, PS2_PRESENT_DUMP_AT=<s>:<n>[:x,y,w,h]: the n presented pictures (back buffer with the
+ * overlay, as shown) from s seconds after the first present as PNG (cropped to x,y,w,h), for frame-sequence checks (shake,
+ * flicker). Blocking read-backs: a debugging tool only. */
+extern void debug_write_png(const char* path, const uint32_t* bgrx, int w, int h, int stride) __attribute__((weak));
+static void present_dump(ID3D11RenderTargetView* rtv, int bw, int bh, double t_rel) {
+    static int init, n, cx, cy, cw, ch, done;
+    static double at;
+    static const char* dir;
+    if (!init) {
+        init = 1;
+        dir = getenv("PS2_PRESENT_DUMP");
+        const char* e = getenv("PS2_PRESENT_DUMP_AT");
+        if (!dir || !e || sscanf(e, "%lf:%d:%d,%d,%d,%d", &at, &n, &cx, &cy, &cw, &ch) < 2) dir = NULL;
+    }
+    if (!dir || !debug_write_png || done >= n || t_rel < at) return;
+    if (cw <= 0 || ch <= 0) { cx = cy = 0; cw = bw; ch = bh; }
+    if (cx + cw > bw) cw = bw - cx;
+    if (cy + ch > bh) ch = bh - cy;
+    if (cw <= 0 || ch <= 0) return;
+    ID3D11Resource* src = NULL;
+    ID3D11RenderTargetView_GetResource(rtv, &src);
+    if (!src) return;
+    ID3D11Texture2D* st = tex_create(cw, ch, 0, D3D11_USAGE_STAGING, D3D11_CPU_ACCESS_READ);
+    if (st) {
+        D3D11_BOX box = { (UINT)cx, (UINT)cy, 0, (UINT)(cx + cw), (UINT)(cy + ch), 1 };
+        ID3D11DeviceContext_CopySubresourceRegion(gpu_rt.ctx, (ID3D11Resource*)st, 0, 0, 0, 0, src, 0, &box);
+        D3D11_MAPPED_SUBRESOURCE m;
+        uint32_t* px = malloc((size_t)cw * ch * 4);
+        if (px && SUCCEEDED(ID3D11DeviceContext_Map(gpu_rt.ctx, (ID3D11Resource*)st, 0, D3D11_MAP_READ, 0, &m))) {
+            for (int y = 0; y < ch; y++) {
+                const uint32_t* s = (const uint32_t*)((const uint8_t*)m.pData + (size_t)y * m.RowPitch);
+                for (int x = 0; x < cw; x++) { uint32_t v = s[x]; px[(size_t)y * cw + x] = (v & 0xFF00FF00u) | (v & 0xFF) << 16 | (v >> 16 & 0xFF); }
+            }
+            ID3D11DeviceContext_Unmap(gpu_rt.ctx, (ID3D11Resource*)st, 0);
+            char path[600];
+            snprintf(path, sizeof path, "%s/present_%04d_v%u.png", dir, done, P.st.vblank);
+            debug_write_png(path, px, cw, ch, cw);
+            done++;
+        }
+        free(px);
+        GPU_RELEASE(st);
+    }
+    GPU_RELEASE(src);
+}
+
 /* picture done (gpu_set_picture_done): set before or after gpu_start, kept across restarts */
 static void (*volatile done_fn)(uint32_t vblank, void* user);
 static void* volatile done_user;
@@ -495,6 +555,7 @@ static int ts_complete(int block) {             /* oldest timestamp set; returns
     int ok = hr == S_OK && !dj.Disjoint && dj.Frequency;
     st.gpu_ms = ok ? (double)(t1 - t0) * 1000.0 / (double)dj.Frequency : -1.0;
     st.present_gpu_ms = ok && P.ts[i].pres && t2 >= t1b ? (double)(t2 - t1b) * 1000.0 / (double)dj.Frequency : -1.0;
+    if (ptrace_file()) fprintf(ptrace, "g %u %.3f %.3f\n", st.vblank, st.gpu_ms, st.present_gpu_ms);
     stats_push(&st);
     P.ts[i].busy = 0;
     P.ts_head = (P.ts_head + 1) % NTS;
@@ -808,6 +869,7 @@ static void pace_statistics(UINT pc) {
     if (q > 0 && shown >= q) P.st.photon_ms = shown - q;
     double iv = fs.PresentCount == P.last_pc + 1 && P.last_sync_ms > 0 ? shown - P.last_sync_ms : -1;
     if (iv > 0) pace_disp_interval(&P.disp, iv);
+    if (ptrace_file()) fprintf(ptrace, "s %u %u %.3f\n", (unsigned)fs.PresentCount, P.pres_vblank[fs.PresentCount % 64], shown);
     if (pace_log) {
         int k = (int)(fs.PresentCount % 64);
         double vb = P.pres_vb[k];
@@ -957,6 +1019,9 @@ static void present_fit(int aw, int ah, int scaler) {
     if (gpu_rt.cur_behind && !fr_high && vb > 0 && t0 > vb + P.pd.delay_ms + 0.5 * P.content_ms) {
         P.st.skipped = 1;
         P.st.present_ms += now_ms() - t0;
+        if (ptrace_file())
+            fprintf(ptrace, "p %u %.3f %.3f %.3f %.3f %.3f %.3f %d %d\n", P.st.vblank, vb, gpu_rt.cur_queued_ms,
+                    (double)P.t_start.QuadPart * 1000.0 / (double)qpf.QuadPart, t0, -1.0, now_ms(), P.st.scale, 1 | 4);
         return;
     }
     if (paced) {
@@ -1023,6 +1088,13 @@ static void present_fit(int aw, int ah, int scaler) {
     }
     P.last_present_ms = call;
     P.st.present_ms += now_ms() - t0;
+    if (ptrace_file()) {
+        static unsigned np;
+        fprintf(ptrace, "p %u %.3f %.3f %.3f %.3f %.3f %.3f %d %d\n", P.st.vblank, vb, gpu_rt.cur_queued_ms,
+                (double)P.t_start.QuadPart * 1000.0 / (double)qpf.QuadPart, t0, call, now_ms(), P.st.scale,
+                (paced ? 2 : 0) | (gpu_rt.cur_behind ? 4 : 0) | (P.st.dropped ? 8 : 0));
+        if (++np % 128 == 0) fflush(ptrace);
+    }
 }
 
 /* ---- M6: the picture composed on the GPU (shaders/display.hlsl) ------------------------------------- */
