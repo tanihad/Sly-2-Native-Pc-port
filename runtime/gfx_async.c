@@ -28,7 +28,7 @@ static _Atomic uint32_t done_seq;                /* worker: = job_seq when it is
 static event events[MAX_EVENTS];                 /* worker -> EE, in order */
 static uint32_t nevents;
 static int log_on;
-static uint64_t st_jobs, st_waits, st_wait_ticks, st_events;
+static uint64_t st_jobs, st_waits, st_wait_ticks;
 static int64_t job_t0, job_t1, st_job_ticks;     /* QPC: job handed out (EE) / done (worker); sum of job times */
 static uint64_t job_pairs, job_progs, st_pairs, st_progs;   /* VU1 pairs / programs of the last job, sums */
 static int job_quiet;                            /* (interp.c prototype) a re-run chain's job */
@@ -83,7 +83,6 @@ static void complete(void) {                     /* EE: the job is done; apply w
         else if (e->kind == GFX_EV_DMAC) dmac_raise((int)e->a);
         else gs_exec_write_reg(e->a, e->b);
     }
-    st_events += nevents;
     nevents = 0;
     gfx_owned = 0;
     st_job_ticks += job_t1 - job_t0;

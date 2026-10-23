@@ -19,7 +19,8 @@ $known = @{
 }
 $spec = if ($known.ContainsKey($Scene)) { $known[$Scene] } else { $Scene }
 $f = @($spec -split '\|')
-$name = "fps2_$($Scene -replace '[^\w]', '_')_$Rate$Tag"
+$sn = $Scene -replace '[^\w]', '_'; if ($sn.Length -gt 32) { $sn = $sn.Substring(0, 32) }
+$name = "fps2_$($sn)_$Rate$Tag"
 $dir = Join-Path $root "build\warp\$name"
 New-Item -ItemType Directory -Force $dir | Out-Null
 $env:PS2_FRAME_RATE = $Rate
