@@ -567,6 +567,7 @@ void fthread_stop(void) {
 }
 
 void fthread_affinity(uint64_t mask) { if (thread && mask) SetThreadAffinityMask(thread, (DWORD_PTR)mask); }
+void* gpu_fthread_os_handle(void) { return thread; }   /* (pc-fps2) PS2_PROFILE=front (perf.c) */
 
 uint64_t fthread_cycles(void) {
     ULONG64 c = 0;

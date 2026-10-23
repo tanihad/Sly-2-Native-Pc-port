@@ -381,6 +381,8 @@ static DWORD WINAPI rt_main(LPVOID arg) {
     return 0;
 }
 
+void* gpu_rt_os_handle(void) { return running ? rt_thread : NULL; }   /* (pc-fps2) PS2_PROFILE=render (perf.c) */
+
 int gpu_start(const gpu_config* cfg) {
     if (running) return 1;
     memset(&gpu_rt, 0, sizeof gpu_rt);

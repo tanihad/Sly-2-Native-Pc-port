@@ -152,6 +152,17 @@ int   iop_pass_overdue(void);
 static int prof_gs;                         /* PS2_PROFILE=gs: sample the GS thread instead */
 static int prof_workers;                    /* PS2_PROFILE=workers: the pixel workers, in turn */
 static int prof_iop;                        /* PS2_PROFILE=iop: the IOP thread, only in passes running long */
+/* (pc-fps2) PS2_PROFILE=front / render: the GPU renderer's frontend / render thread (linked into the game only) */
+extern void* gpu_fthread_os_handle(void) __attribute__((weak));
+extern void* gpu_rt_os_handle(void) __attribute__((weak));
+static int prof_front, prof_render;
+static void* other_thread_handle(void) {
+    if (prof_gs) return gs_thread_os_handle();
+    if (prof_iop) return iop_thread_os_handle();
+    if (prof_front) return gpu_fthread_os_handle ? gpu_fthread_os_handle() : NULL;
+    if (prof_render) return gpu_rt_os_handle ? gpu_rt_os_handle() : NULL;
+    return NULL;
+}
 
 static DWORD WINAPI prof_thread(LPVOID arg) {
     (void)arg;
@@ -181,7 +192,7 @@ static DWORD WINAPI prof_thread(LPVOID arg) {
             prof_target = workers[turn++ % nworkers];
         }
         if (!prof_target) {                    /* the GS and IOP threads start after perf_init */
-            HANDLE h = prof_gs ? gs_thread_os_handle() : prof_iop ? iop_thread_os_handle() : NULL;
+            HANDLE h = other_thread_handle();
             if (!h || !DuplicateHandle(GetCurrentProcess(), h, GetCurrentProcess(), &prof_target,
                                        THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, 0))
                 continue;
@@ -237,7 +248,8 @@ static void profile_report(void) {
 
     fprintf(stderr, "\n[profile] %u samples of the %s thread (self time): %.1f%% recompiled game code (f_*), "
                     "%.1f%% runtime, %.1f%% system DLLs\n",
-            n, prof_gs ? "GS" : prof_workers ? "pixel worker" : prof_iop ? "IOP (passes over 4 ms only)" : "EE", 100.0 * prof_game_self / n, 100.0 * (n - prof_game_self - outside_n) / n,
+            n, prof_gs ? "GS" : prof_workers ? "pixel worker" : prof_iop ? "IOP (passes over 4 ms only)" :
+               prof_front ? "GPU frontend" : prof_render ? "GPU render" : "EE", 100.0 * prof_game_self / n, 100.0 * (n - prof_game_self - outside_n) / n,
             100.0 * outside_n / n);
     int nh = 0;
     for (int s = 0; s < nsyms; s++) if (prof_self[s]) hits[nh++] = (hit){ syms[s].name, prof_self[s] };
@@ -277,8 +289,10 @@ void perf_init(void) {
         prof_gs = !strcmp(p, "gs");
         prof_workers = !strcmp(p, "workers");
         prof_iop = !strcmp(p, "iop");
+        prof_front = !strcmp(p, "front");
+        prof_render = !strcmp(p, "render");
         if (prof_self && prof_incl && outside_rip &&
-            (prof_gs || prof_workers || prof_iop || DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &prof_target,
+            (prof_gs || prof_workers || prof_iop || prof_front || prof_render ||DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &prof_target,
                                         THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, 0))) {
             prof_thread_handle = CreateThread(NULL, 0, prof_thread, NULL, 0, NULL);
             if (prof_thread_handle) SetThreadPriority(prof_thread_handle, THREAD_PRIORITY_TIME_CRITICAL);
