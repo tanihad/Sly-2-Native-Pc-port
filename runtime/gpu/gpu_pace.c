@@ -98,7 +98,7 @@ int pace_disp_classify(const pace_disp* p) {
     sortf(dev, p->n);
     double fm = f[p->n / 2], dm = dev[p->n / 2];
     if (fm < 0.08) return PACE_DISP_FIXED;
-    if (fm > 0.12 && dm < 1.5) return PACE_DISP_VRR;
+    if (fm > 0.12 && dm < 3.0) return PACE_DISP_VRR;   /* (3 ms: presents at their ready time vary that much)*/
     return PACE_DISP_UNKNOWN;
 }
 

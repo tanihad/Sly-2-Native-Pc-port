@@ -43,6 +43,9 @@ Options menu. Brief: notes/pc-experience.md.
   borderless 7x fixed; 50 s each from boot, PS2_PACE_LOG=1, game closes by itself (watchdog). No display mode change
   (fullscreen_refresh stays desktop: CDS_TEST only, 120 Hz accepted).
 
+- 2026-10-23 F5-F6 (after the merge): console build borderless 7x 50 s; packaged build (portable copy, own sly2.ini,
+  default settings + fullscreen) 45 s. PS2_PACE_LOG=1, game closes itself (watchdog).
+
 ## Merged main 4c3cf6c (pc-menu etc.) - commit d871088
 - Settings now table-driven (main): my options added as rows (graphics.pacing 5 values, graphics.vsync,
   display.fullscreen_refresh); main's auto_max / native (-1, height-based) / presets kept; my scale_max, gfx_set_* menu
@@ -50,13 +53,23 @@ Options menu. Brief: notes/pc-experience.md.
   pacing_apply_mode / pacing_exclusive_fullscreen (display_mode_exclusive). menu.c: Frame pacing choices + VSync row.
 - gs_replay --game sets PS2_GS_GOVERNOR=0 (replays are not real time).
 
-## In progress
-- Gates (scratchpad gates.ps1 -> build\gates.txt): run_tests, every unit suite, gpu_diff_all mixed S=1, gpu_game_all
-  S=1, debug + release builds, package.py.
+## Status: complete (2026-10-23)
+- Gates after the merge: run_tests 16/16; every tests\unit suite passes (window / warp -UnitOnly; pacing 71, menu 220,
+  window 524, gs-hw); gpu_diff_all mixed S=1 28/28; gpu_game_all S=1 4196 pictures 0 differ; debug + release builds;
+  package.py (dist\Sly2\sly2.exe 0.1.757). gs-hw, debug build and package re-run after the last present change.
+- F5 (console, borderless, 7x fixed): 7x -> 3x within ~1.5 s of the first 3D frames (43-55 VBlanks/s for 2 s, the
+  warm-up), then 59.9 throughout. F6 (packaged portable build, defaults, fullscreen): 59.9 VBlanks/s after boot; the
+  frame statistics stopped after 2 s (window probably covered by the owner's windows) -> auto now presents immediately
+  when no statistics arrive for 5 s.
 
-## Next
-1. Gates green -> commit. 2. One last short real-monitor run (borderless 7x, auto) on the final build.
-3. Mark complete, report.
+## Left / owner decisions
+- The owner's display runs a fixed 165 Hz for the game (VRR not active). Smooth needs either G-Sync Compatible / FreeSync
+  on (NVIDIA Control Panel "Set up G-SYNC" + the monitor's OSD), or Exclusive fullscreen / fullscreen_refresh = auto
+  (120 Hz; implemented, validated with CDS_TEST only - not switched on the owner's monitor while they used it).
+- Starting at an unsustainable fixed scale costs ~1.5 s of slowdown at the first 3D frames (the warm-up that protects
+  against NVIDIA idle clocks); the last good scale is not remembered across starts.
+- Flicker-filter variant with equal DBY and DY 50/51 (both circuits) is not stripped by flicker_filter = off (blend, no
+  shake) - a renderer item.
 ## Findings / traps
 - Frames cannot be dropped: each frame's GS draws build GS memory later frames read. Only presents are optional.
 - Sly 2 draws a new game frame every VBlank in the ep1 hub (60.9 flips/s), so the GPU budget is 16.7 ms.

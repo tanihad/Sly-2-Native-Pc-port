@@ -60,6 +60,10 @@ static void test_disp(void) {
     pace_disp_init(&p, r165, PACE_PERIOD_MS);
     for (int i = 0; i < 100; i++) pace_disp_interval(&p, (i % 4 == 3 ? 2 : 3) * r165 + 0.02);
     CHECK(pace_disp_classify(&p) == PACE_DISP_FIXED, "165 Hz fixed -> %d", pace_disp_classify(&p));
+    /* VRR with immediate presents: shown when ready, 16.68 +- 2.5 ms */
+    pace_disp_init(&p, r165, PACE_PERIOD_MS);
+    for (int i = 0; i < 100; i++) pace_disp_interval(&p, PACE_PERIOD_MS + ((i * 37) % 11 - 5) * 0.5);
+    CHECK(pace_disp_classify(&p) == PACE_DISP_VRR, "165 Hz VRR, unpaced -> %d", pace_disp_classify(&p));
     /* fixed 144 Hz: 2 or 3 refreshes */
     pace_disp_init(&p, r144, PACE_PERIOD_MS);
     for (int i = 0; i < 100; i++) pace_disp_interval(&p, (i % 5 < 2 ? 2 : 3) * r144);

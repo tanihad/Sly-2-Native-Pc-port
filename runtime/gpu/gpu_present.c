@@ -94,6 +94,7 @@ static struct {
     HANDLE timer;                        /* high-resolution waitable timer (the paced wait) */
     double last_present_ms;              /* QPC ms of the last Present call (headless paced runs: intervals) */
     double wait0, wait1;                 /* the last paced wait (QPC ms): a frame queued meanwhile started late because of it */
+    double first_present_ms;             /* the first windowed present (auto: no statistics after 5 s -> immediate) */
 } P;
 
 /* (pc-pacing) presentation mode, set from any thread (gpu_present_set_mode), read by the render thread per picture */
@@ -881,7 +882,12 @@ static void present_fit(int aw, int ah, int scaler) {
      * refresh the picture waits for the display's next refresh anyway (on 60 / 120 / 240 Hz the display's VBlanks drive the
      * game: every picture lasts the same number of refreshes; on 144 / 165 Hz the 2-or-3-refresh judder is the same paced
      * or not), so it is presented as soon as it is ready: no added latency */
-    int auto_immediate = mode == PACE_MODE_AUTO && P.sc && (P.disp_state == PACE_DISP_FIXED || P.disp_state == PACE_DISP_MULTIPLE);
+    if (P.sc && !P.first_present_ms) P.first_present_ms = t0;
+    /* (no frame statistics at all after 5 s - the window hidden, or a system that does not report them: nothing says pacing
+     * helps, so the latency wins) */
+    int no_stats = P.disp.n < 10 && P.first_present_ms > 0 && t0 - P.first_present_ms > 5000.0;
+    int auto_immediate = mode == PACE_MODE_AUTO && P.sc &&
+                         (P.disp_state == PACE_DISP_FIXED || P.disp_state == PACE_DISP_MULTIPLE || (P.disp_state == PACE_DISP_UNKNOWN && no_stats));
     int paced = (P.sc || pace_headless) && mode != PACE_MODE_IMMEDIATE && !auto_immediate && vb > 0;    double target = paced ? vb + P.pd.delay_ms : 0;
     if (paced) P.st.target_ms = P.pd.delay_ms;
     InterlockedExchange(&pace_extra, paced ? (LONG)ceil(P.pd.delay_ms / PACE_PERIOD_MS) : 0);
