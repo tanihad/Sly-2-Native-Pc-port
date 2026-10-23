@@ -2453,3 +2453,24 @@ starts of either renderer), so it is not the GPU renderer's; memory 555-618 MB, 
 
 **Open (owner)**: (a) the ep5 tank gas cloud's +-3-5 colour drift under deep translucent layering (appendix J) and
 (b) distant hub scenery sharp at 3x in Faithful (appendix J) are left as they are.
+
+## Appendix N. As built: pc-pacing (game speed independent of the GPU, frame pacing, VRR; branch next/pc-pacing)
+
+Owner report: higher internal scales made the game itself slower, and the picture "shook" on a 2560 x 1440 165 Hz display.
+Full write-up with measurements, the preset validation and the menu interfaces: notes/pc-experience.md "Interfaces: pacing
+and resolution". In short:
+- **Game speed**: the EE waited at its VBlank whenever the render queue was full (gpu_submit_sink), so a GPU slower than
+  real time slowed the game (6x: 42.8 VBlanks/s). Frames cannot be skipped (GS memory), so the internal scale is
+  governed (gpu_pace.c `pace_gov`, gpu_hw.c): every scale is a maximum, lowered while the GPU cannot draw it, from the
+  GPU time per picture (timestamps now end before the present: drawing + compose; the present measured apart), the
+  game's waits for the queue and skipped presents. Measured: 1x..4x at 1440p and an overloaded 7x keep 59.9 VBlanks/s.
+- **Presentation** (gpu_present.c): picture v at its VBlank's due time (host timer -> gs_set_vsync_time -> K_VSYNC
+  slot -> gpu_display_info.vblank_ms) + D (95th percentile ready latency, event query per picture) on VRR displays;
+  immediate on a fixed refresh (where pacing only adds latency); the display's VBlanks drive the game on 60 / 120 /
+  240 Hz (clock thread generalised to every k-th VBlank, live on / off). VRR is detected from DXGI frame statistics.
+  vsync on / off / adaptive. The queue is deeper by ceil(D / period) while paced; behind -> no wait / skip the present.
+- **Display mode** (display_mode.c): exclusive fullscreen / fullscreen_refresh = auto switches a 144 / 165 Hz display
+  without VRR to 120 Hz while fullscreen and in front (validated with CDS_TEST; not switched on the owner's monitor).
+- **No other shake source found**: the flicker-filter-off strip always keeps the same circuit (PS2_PACE_LOG=3 over 5600
+  VBlanks of the ep1 hub / intro); the governor's scale changes keep the picture's grid compensation.
+- Tests: tests/unit/pacing (70 checks: delay, flags, VRR classifier, governor, picture sizes), window / menu units.
