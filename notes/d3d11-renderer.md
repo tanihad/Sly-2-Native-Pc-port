@@ -2474,3 +2474,11 @@ and resolution". In short:
 - **No other shake source found**: the flicker-filter-off strip always keeps the same circuit (PS2_PACE_LOG=3 over 5600
   VBlanks of the ep1 hub / intro); the governor's scale changes keep the picture's grid compensation.
 - Tests: tests/unit/pacing (70 checks: delay, flags, VRR classifier, governor, picture sizes), window / menu units.
+## Appendix O. As built: pc-fps (frame rate above 60, VRR status; branch next/pc-fps)
+
+notes/frame-rate.md. Renderer parts: the pacing state follows `pace_content_ms()` (the frame rate's period) instead of
+PACE_PERIOD_MS; above 60 fps the display clock thread never drives the VBlank (k = 0: one picture per game frame from the frame
+limiter), presents are never skipped, gpu_submit_sink keeps at most 2 frames queued, the governor's skipped / stall evidence is
+ignored and its budget stays the 59.94 Hz frame (`pace_gov.period_ms`). gpu_vrr.c: read-only NVAPI (DRS G-SYNC mode, app override,
+NvAPI_Disp_GetVRRInfo) + DXGI composition mode for the log and the menu's Variable refresh status; gpu_present.c logs `VRR: ACTIVE /
+NOT ACTIVE ...` verdicts and why frame statistics stopped (the window not in front). scripts/vrr_probe.c: standalone VRR probe.

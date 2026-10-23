@@ -172,6 +172,13 @@ slot's fiber pointer, leaving the old fiber (1 MB of committed stack) behind - o
 15 minutes of play. `runtime/threads.c` now deletes fibers stopped mid-way and reuses parked ones
 (`tests/unit/threads`).
 
+## Frame rates above 60 (pc-fps, notes/frame-rate.md)
+
+With `[display] frame_rate` above 60 the EE side limits the rate: in the ep2 hub (release, alone) 62-139 fps, mostly
+~70-113; profile at 120: recompiled game code 5% of the EE thread, VU1 microcode 17%, GIF / VIF on the EE thread (gs_write_reg,
+gif_feed, feed, upk_write) 37% self. Passing whole PATH1 / PATH2 packets to the GS thread (below) is the main lever for higher
+rates. Never trace with PS2_PEEK every VBlank: the unbuffered log costs ~4 ms per VBlank (use PS2_FPS_TRACE).
+
 ## Next
 
 - VU microcode: recompiled (above). Remaining VU cost is mostly the FMAC arithmetic itself and

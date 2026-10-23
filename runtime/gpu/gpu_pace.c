@@ -148,6 +148,7 @@ void pace_gov_init(pace_gov* g, int max, int fixed, int start) {
     g->slow = 1.0;
     g->sec_t0 = -1;
     g->warm = GOV_WARM;
+    g->period_ms = PACE_PERIOD_MS;
 }
 
 static void gov_change(pace_gov* g, int to, int reason, double load) {
@@ -194,7 +195,7 @@ void pace_gov_evidence(pace_gov* g, int skipped, double stall_ms) {
 int pace_gov_frame(pace_gov* g, double gpu_ms, double now_ms) {
     if (!(gpu_ms >= 0)) return 0;
     gpu_ms *= g->slow;
-    double period = PACE_PERIOD_MS;
+    double period = g->period_ms > 0 ? g->period_ms : PACE_PERIOD_MS;   /* (pc-fps: the frame rate's period) */
     if (g->skip > 0) { g->skip--; g->sec_t0 = now_ms; g->sec_gpu = 0; g->sec_frames = 0; return 0; }
     g->fr[g->fpos] = (float)gpu_ms;
     g->fpos = (g->fpos + 1) % PACE_GOV_NFR;

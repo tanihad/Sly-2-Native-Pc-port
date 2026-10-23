@@ -36,6 +36,7 @@ aspect = 16:9          ; 16:9 (default) or 4:3; any W:H (21:9, 16:10) or a ratio
 hud = edges            ; edges (default): corner HUD widgets at the display's edges | centered
 monitor = 0            ; 0 (default: where the window is) | 1, 2, ...: fullscreen (and the window) on that monitor
 fullscreen_refresh = desktop ; desktop (default) | auto (a multiple of 59.94 Hz while fullscreen) | <Hz>
+frame_rate = 60         ; (pc-fps) 60 (default: the PS2's 59.94) | 120 | 144 | 165 | 200 | <30..1000> | display | unlimited
 
 [graphics]
 preset = balanced      ; original | performance | balanced (default) | quality | custom (see "Presets")
@@ -94,6 +95,7 @@ maximized = off
 | audio.music / audio.effects | 0..100 (default 100) | (pc-menu) the game's own volumes (its Options page's Music / Effects Volume): put into its sound manager 0x3DD040 with its own function 0x1FEA60 (music: category 1, effects: categories 0 and 3) at the game's next frame; again when a loaded save resets them; changes on the game's own Options page are taken over into sly2.ini (menu_game.c) |
 | audio.background | on / off (default on) | (pc-menu) off: the output is silent while the game's window is not the active one |
 | game.disc | path of a .iso | the disc image (runtime/launch.c; notes/install.md). Empty or unusable: asked for with a file dialog (GUI build) |
+| display.frame_rate | 60 / 120 / 144 / 165 / 200 / 30..1000 / display / unlimited (default 60) | (pc-fps, live; `PS2_FRAME_RATE`) how many game frames per second (notes/frame-rate.md): 60 = the PS2's 59.94 Hz VBlank timer, exactly as before; above, a frame limiter gives the game a VBlank as soon as it is ready for its next flip, at most that many per second, and the game clock's 1/60 s lower dt clamp is lowered (patch frame_dt_min) - the game runs at real-time speed at any rate. display = the display's measured refresh rate; unlimited = at most 500. Movies and RC chopper flights stay at 59.94. Menu: Display > Frame rate |
 | window.fullscreen | off / on (borderless) / exclusive | start fullscreen; remembered on close. exclusive (pc-pacing: `pacing_exclusive_fullscreen`, runtime/pacing_menu.c): the window stays a popup over the monitor (DXGI flip model: independent flip, the latency of exclusive fullscreen) and the game owns the display's mode while it is in front: display.fullscreen_refresh = auto unless a rate is set (120 Hz on a 144 / 165 Hz display without variable refresh) |
 | window.x/y/width/height/maximized | integers / on/off | the window's normal placement; remembered on close |
 | window.show_fps | on/off | title "Sly 2: Band of Thieves - 59.9 fps" instead of "Sly 2: Band of Thieves", and (pc-menu) a counter in the top left corner of the picture (menu_overlay.c; also fullscreen) |

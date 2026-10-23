@@ -144,6 +144,8 @@ enum {
     MENU_ROW_DEADZONE_R, MENU_ROW_LIGHTBAR,
     MENU_ROW_KEYS, MENU_ROW_PAD,
     MENU_ROW_RESET,                      /* "Reset to defaults" (every page) */
+    MENU_ROW_FRAME_RATE,                 /* (pc-fps) Display > Frame rate: [display] frame_rate */
+    MENU_ROW_VRR,                        /* (pc-fps) Display > Variable refresh: read-only status (MENU_ITEM_INFO) */
     MENU_ROW_BIND0 = 100,                /* binding rows: MENU_ROW_BIND0 + action */
     MENU_ROW_BIND_RESET = 99,
 };

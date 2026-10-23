@@ -2098,6 +2098,8 @@ int gpu_exec_read_target(uint32_t id, uint32_t* out, size_t cap_words, int* w, i
 
 /* ---- producer side (GS thread): the frontend's sink -------------------------------------------------- */
 
+extern int frame_rate_high(void) __attribute__((weak));   /* (pc-fps) runtime/frame_rate.c */
+
 void gpu_submit_sink(const gpu_front_frame_data* fd, void* user) {
     (void)user;
     if (!gpu_running()) {                /* (no render thread: the picture is still reported) */
@@ -2114,7 +2116,11 @@ void gpu_submit_sink(const gpu_front_frame_data* fd, void* user) {
      * next ones arrive): the queue is that much deeper, so the game never waits for the pacing */
     int extra = gpu_present_pace_frames();
     int limit = inflight_max + extra;
-    if (inflight_base > 0 && inflight_base < inflight_max) {
+    /* (pc-fps) above 60 fps the frame rate is what the GPU can draw: two frames queued at most (low latency; the game's speed
+     * does not depend on it), no absorbing - a GPU slower than the frame limiter is not a passing slowdown */
+    int high = frame_rate_high && frame_rate_high();
+    if (high) limit = 2 + extra;
+    else if (inflight_base > 0 && inflight_base < inflight_max) {
         int n = atomic_load(&inflight) - extra;
         double now = qpc_ms();
         int calm = q_short_since >= 0 && now - q_short_since >= ADAPT_MS;

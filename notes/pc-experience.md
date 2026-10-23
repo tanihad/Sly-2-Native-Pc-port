@@ -215,3 +215,17 @@ of the budget: fits weaker GPUs too, lowered to 1x where needed); Balanced auto 
 3x); Quality native (4x at 1440p: fits ep3 / ep8, drawn at 3x in the heaviest hubs and the ep7 boss on this GPU - the
 governor decides per scene, the game keeps its speed). Every preset adapts to the PC through the governor's measurement
 (any GPU vendor); the pacing adapts to the display (60 / 120 / 144 / 165 / 240 Hz, VRR or not) through DXGI.
+## Interfaces: frame rate and VRR status (pc-fps; runtime/frame_rate.c/.h, gpu/gpu_vrr.c, notes/frame-rate.md)
+
+- `[display] frame_rate` = 60 (default) | 120 | 144 | 165 | 200 | 30..1000 | display | unlimited (settings row, live: applier
+  SET_APPLY_FRAME_RATE -> `frame_rate_set`; PS2_FRAME_RATE). Menu: Display > Frame rate (MENU_ROW_FRAME_RATE). 60 = unchanged.
+  Above 60: frame limiter VBlanks (ps2_runtime.c), the game clock's 1/60 lower dt clamp lowered (patch frame_dt_min), movies and
+  RC chopper flights at 59.94, one picture per game frame, render queue 2, no skipped presents; the governor still budgets
+  the 59.94 Hz frame (resolution is never lowered for a higher frame rate). `frame_rate_content_ms()` = the pictures' cadence
+  for pacing (`pace_content_ms()` in gpu_pace.h, weak: PACE_PERIOD_MS without the runtime).
+- `gpu_vrr_status(buf, cap)` (any thread): GPU_VRR_ACTIVE / OFF_DRIVER / NOT_ACTIVE / NOT_NEEDED / UNKNOWN + text; the
+  Display page shows it read-only (MENU_ROW_VRR, MENU_ITEM_INFO). The log has the driver's exact NvAPI report at start.
+- Measured on the owner's PC: the display is NOT in variable refresh for any program (NvAPI_Disp_GetVRRInfo enabled 0 /
+  possible 0 although the profile says G-SYNC windowed + full screen): the monitor's FreeSync / Adaptive-Sync OSD switch and
+  the per-display tick in NVIDIA Set up G-SYNC must be on. High frame rates: 65-140 fps in hubs, ~120-160 in cutscenes (EE /
+  GS-thread / GPU bound), the game's speed correct at any rate. Recommended default: 60.

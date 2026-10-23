@@ -62,6 +62,9 @@ typedef struct {
     /* (pc-pacing) */
     int vsync;                   /* [graphics] vsync = on (0, default) | off (1: tearing allowed) | adaptive (2): SETTINGS_VSYNC_* */
     int fullscreen_refresh;      /* [display] fullscreen_refresh = desktop (0, default) | auto (-1) | <Hz>: display_mode.h */
+    /* (pc-fps) */
+    int frame_rate;              /* [display] frame_rate = 60 (default: the PS2's 59.94) | 120 | 144 | 165 | 200 | <Hz 30..1000> |
+                                    unlimited (-1) | display (-2): frame_rate.h */
 } ps2_settings_t;
 
 /* graphics.pacing (pc-pacing): auto = pictures presented at an even 59.94 Hz cadence (their VBlank's time + a measured delay:
@@ -131,7 +134,7 @@ enum {                                   /* settings_opt.flags */
 };
 enum {                                   /* settings_opt.apply: who applies a change (settings_on_apply) */
     SET_APPLY_NONE, SET_APPLY_GFX, SET_APPLY_DISPLAY, SET_APPLY_WINDOW, SET_APPLY_AUDIO, SET_APPLY_INPUT,
-    SET_APPLY_PACING, SET_APPLY_RENDERER, SET_APPLY_N
+    SET_APPLY_PACING, SET_APPLY_RENDERER, SET_APPLY_FRAME_RATE, SET_APPLY_N
 };
 typedef struct {
     const char* section;

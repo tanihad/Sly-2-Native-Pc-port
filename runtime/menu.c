@@ -11,6 +11,9 @@
 #include <string.h>
 #include <windows.h>
 
+extern double frame_rate_display_hz(void) __attribute__((weak));   /* (pc-fps) runtime/frame_rate.c: the display's refresh */
+extern int gpu_vrr_status(char* buf, int cap) __attribute__((weak));  /* (pc-fps) gpu/gpu_vrr.c: GPU_VRR_* + text */
+
 static SRWLOCK lock = SRWLOCK_INIT;
 static menu_host host;
 static struct {
@@ -218,6 +221,18 @@ static void build_choices(int id, choices* c) {
         add(c, SETTINGS_PACING_DISPLAY, "Display-synced (60 / 120 Hz)");
         if (ps2_settings.pacing == SETTINGS_PACING_VRR) add(c, SETTINGS_PACING_VRR, "Even, tearing allowed (old setting)");
         break;
+    case MENU_ROW_FRAME_RATE: {          /* (pc-fps: frame_rate.h) */
+        add(c, 60, "60 fps (original)");
+        static const int rates[] = { 120, 144, 165, 200 };
+        for (int k = 0; k < 4; k++) add(c, rates[k], "%d fps", rates[k]);
+        int cur = ps2_settings.frame_rate;
+        if (cur > 0 && cur != 60 && cur != 120 && cur != 144 && cur != 165 && cur != 200) add(c, cur, "%d fps", cur);
+        double hz = frame_rate_display_hz ? frame_rate_display_hz() : 0;
+        if (hz > 0) add(c, -2, "Display (%.0f fps)", hz);
+        else add(c, -2, "Display refresh rate");
+        add(c, -1, "Unlimited");
+        break;
+    }
     case MENU_ROW_VSYNC:
         add(c, SETTINGS_VSYNC_ON, "On");
         add(c, SETTINGS_VSYNC_OFF, "Off (tearing allowed)");
@@ -297,6 +312,7 @@ static int row_value(int id) {
     case MENU_ROW_HUD: return ps2_settings.hud_centered;
     case MENU_ROW_PACING: return ps2_settings.pacing;
     case MENU_ROW_VSYNC: return ps2_settings.vsync;
+    case MENU_ROW_FRAME_RATE: return ps2_settings.frame_rate;
     case MENU_ROW_FPS: return ps2_settings.show_fps;
     case MENU_ROW_BACKGROUND: return ps2_settings.audio_background;
     case MENU_ROW_MASTER: return ps2_settings.vol_master;
@@ -326,6 +342,7 @@ static void row_set(int id, int v) {
     case MENU_ROW_HUD: m_change("display", "hud", v); break;
     case MENU_ROW_PACING: m_change("graphics", "pacing", v); break;
     case MENU_ROW_VSYNC: m_change("graphics", "vsync", v); break;
+    case MENU_ROW_FRAME_RATE: m_change("display", "frame_rate", v); break;
     case MENU_ROW_FPS: m_change("window", "show_fps", v); break;
     case MENU_ROW_BACKGROUND: m_change("audio", "background", v); break;
     case MENU_ROW_MASTER: m_change("audio", "master", v); break;
@@ -494,6 +511,10 @@ static int build_rows(int page, menu_row* rows) {
                    "Widescreen: the health meter and counters at the screen's edges, or kept in the centre 4:3 area as on a PS2.");
         if (ps2_settings.aspect_w * 3 == ps2_settings.aspect_h * 4) disable(last(rows, n), "Widescreen only");
         env_note(last(rows, n), "display", "hud");
+        choice_row(rows, &n, MENU_ROW_FRAME_RATE, "Frame rate",
+                   "How many times per second the game runs and draws. 60: as on a PS2. Higher is smoother on a high-refresh display; "
+                   "the game's speed stays the same. Movies stay at 60. Not every PC reaches every rate in every scene.");
+        env_note(last(rows, n), "display", "frame_rate");
         choice_row(rows, &n, MENU_ROW_PACING, "Frame pacing",
                    "Automatic: even on G-Sync / FreeSync displays, lowest latency on others, the display's own rhythm on 60 / 120 Hz. "
                    "Even: every picture 16.7 ms after the last. Lowest latency: each picture as soon as it is drawn.");
@@ -506,6 +527,18 @@ static int build_rows(int page, menu_row* rows) {
         r = last(rows, n);
         if (!gpu) disable(r, gpu_only);
         env_note(r, "graphics", "vsync");
+        r = row_new(rows, &n, MENU_ROW_VRR, MENU_ITEM_INFO, "Variable refresh",
+                    "G-Sync / FreeSync, as the graphics driver and the display report it (read only). Active: every picture is shown "
+                    "when it is ready - smooth at any frame rate.");
+        if (r) {
+            char vb[96] = "Unknown";
+            int vs = gpu_vrr_status ? gpu_vrr_status(vb, sizeof vb) : -1;
+            snprintf(r->value, sizeof r->value, "%s", vb);
+            if (!gpu) disable(r, gpu_only);
+            else if (vs == 2 /* GPU_VRR_OFF_DRIVER */)
+                snprintf(r->note, sizeof r->note, "Turn on FreeSync in the monitor's menu and G-SYNC for this display (NVIDIA: Set up G-SYNC)");
+            else if (vs == 3 /* GPU_VRR_NOT_ACTIVE */) snprintf(r->note, sizeof r->note, "Turn on G-Sync / FreeSync for a smoother picture");
+        }
         choice_row(rows, &n, MENU_ROW_FPS, "Show frame rate", "The frame rate in the top left corner of the picture and in the title bar.");
         env_note(last(rows, n), "window", "show_fps");
         break;

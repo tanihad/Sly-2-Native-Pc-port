@@ -17,6 +17,7 @@ ps2_settings_t ps2_settings = {
     .motion_blur = -1, .flicker_filter = -1, .interlacing = -1,
     .preset = SETTINGS_PRESET_BALANCED, .auto_max = SETTINGS_SCALE_AUTO_MAX,
     .vol_master = 100, .vol_music = 100, .vol_effects = 100, .audio_background = 1,
+    .frame_rate = 60,
 };
 const char* const settings_scaler_names[SETTINGS_SCALER_N] = { "auto", "point", "box", "lanczos", "catmull-rom", "bilinear" };
 const char* const settings_preset_names[SETTINGS_PRESET_N] = { "original", "performance", "balanced", "quality", "custom" };
@@ -46,6 +47,9 @@ static const settings_opt opts[] = {
     INT_("display", "monitor", monitor, SET_LIVE, SET_APPLY_WINDOW, 0, 16, 0, NULL, NULL),
     /* (pc-pacing) display_mode.c: applied when the window next goes fullscreen (or is activated fullscreen) */
     INT_("display", "fullscreen_refresh", fullscreen_refresh, SET_LIVE, SET_APPLY_NONE, 0, 1000, 0, "desktop=0|auto=-1", NULL),
+    /* (pc-fps) frame_rate.c: the game loop's rate; live */
+    INT_("display", "frame_rate", frame_rate, SET_LIVE, SET_APPLY_FRAME_RATE, 30, 1000, 60, "unlimited=-1|display=-2|uncapped=-1",
+         "PS2_FRAME_RATE"),
     ENUM_("graphics", "preset", preset, SET_LIVE, SET_APPLY_GFX, settings_preset_names, SETTINGS_PRESET_N,
           SETTINGS_PRESET_BALANCED, NULL, NULL),
     ENUM_("graphics", "renderer", renderer_gpu, SET_LIVE, SET_APPLY_RENDERER, n_renderer, 2, 1, "sw=0|hw=1|d3d11=1",
@@ -525,6 +529,9 @@ int settings_format(const ps2_settings_t* s, char* out, size_t cap) {
         "; Fullscreen refresh rate: desktop (default: never changed), auto (a multiple of the game's 59.94 Hz, e.g. 120 Hz on a\n"
         "; 144/165 Hz display without G-Sync/FreeSync: no judder) or a rate in Hz; only while fullscreen and in front.\n"
         "fullscreen_refresh = %s\n"
+        "; Frame rate: 60 (default: the PS2's 59.94 frames per second), 120, 144, 165, 200 (or any rate from 30 to 1000),\n"
+        "; display (the display's refresh rate) or unlimited. The game runs at that rate; movies stay at the PS2's.\n"
+        "frame_rate = %s\n"
         "\n"
         "[graphics]\n"
         "; Preset: original (the PS2's look: 1x, 4:3, TV filters), performance (2x, lowered on a slow\n"
@@ -581,7 +588,7 @@ int settings_format(const ps2_settings_t* s, char* out, size_t cap) {
         "; Show the frame rate in the title bar and in the top left corner of the picture.\n"
         "show_fps = %s\n"
         "%s",
-        s->aspect_w, s->aspect_h, T(0, "display", "hud"), T(1, "display", "monitor"), T(16, "display", "fullscreen_refresh"),
+        s->aspect_w, s->aspect_h, T(0, "display", "hud"), T(1, "display", "monitor"), T(16, "display", "fullscreen_refresh"), T(18, "display", "frame_rate"),
         settings_preset_names[settings_detect_preset(s)], T(2, "graphics", "renderer"), T(3, "graphics", "pacing"), T(17, "graphics", "vsync"),
         T(4, "graphics", "internal_scale"), T(5, "graphics", "auto_max"), T(6, "graphics", "outlines"), T(7, "graphics", "filters"),
         T(8, "graphics", "motion_blur"), T(9, "graphics", "flicker_filter"), T(10, "graphics", "interlacing"),
@@ -900,6 +907,12 @@ void settings_load(void) {
         int vi = settings_find("graphics", "vsync"), v;
         if (settings_parse_value(vi, e, &v)) ps2_settings.vsync = v;
         else fprintf(stderr, "[settings] PS2_GS_VSYNC='%s' is not on, off or adaptive: ignored\n", e);
+    }
+    e = getenv("PS2_FRAME_RATE");                /* (pc-fps) */
+    if (e && *e) {
+        int fi = settings_find("display", "frame_rate"), v;
+        if (settings_parse_value(fi, e, &v)) ps2_settings.frame_rate = v;
+        else fprintf(stderr, "[settings] PS2_FRAME_RATE='%s' is not 30..1000, display or unlimited: ignored\n", e);
     }
     e = getenv("PS2_VBLANK");                    /* (the design's name for the display-driven VBlank) */
     if (e && !_stricmp(e, "display")) ps2_settings.pacing = SETTINGS_PACING_DISPLAY;

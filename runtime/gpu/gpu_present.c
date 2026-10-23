@@ -9,6 +9,7 @@
  * picture are resolved the same way. Producer-side calls are at the end of the file. */
 #include "gpu_internal.h"
 #include "gpu_pace.h"                    /* (pc-pacing) present delay, VRR detection */
+#include "gpu_vrr.h"                     /* (pc-fps) what the driver says about variable refresh */
 #include "gs_draw.h"                     /* gs_display_layout_of (the PCRTC layout, shared with gs.c) */
 
 #include <math.h>
@@ -95,7 +96,14 @@ static struct {
     double last_present_ms;              /* QPC ms of the last Present call (headless paced runs: intervals) */
     double wait0, wait1;                 /* the last paced wait (QPC ms): a frame queued meanwhile started late because of it */
     double first_present_ms;             /* the first windowed present (auto: no statistics after 5 s -> immediate) */
+    double content_ms;                   /* (pc-fps) the pictures' cadence the pacing state was made for (frame rate) */
+    int vrr_logged;                      /* (pc-fps) the last VRR verdict logged: PACE_DISP_* + 1, 0 none */
 } P;
+
+static void vrr_log_driver(const char* when);    /* (pc-fps) */
+extern void frame_rate_note_display(double hz) __attribute__((weak));   /* (pc-fps) runtime/frame_rate.c */
+extern double frame_rate_target_hz(void) __attribute__((weak));
+extern int frame_rate_high(void) __attribute__((weak));
 
 /* (pc-pacing) presentation mode, set from any thread (gpu_present_set_mode), read by the render thread per picture */
 static volatile LONG pace_mode = PACE_MODE_AUTO, pace_vsync = PACE_VSYNC_ON, pace_refresh_x1000;
@@ -385,9 +393,11 @@ int gpu_present_init(void) {
                 return 0;
     }
     /* (pc-pacing) */
-    pace_delay_init(&P.pd, PACE_PERIOD_MS);
-    pace_disp_init(&P.disp, pace_refresh_x1000 > 0 ? 1000000.0 / (double)pace_refresh_x1000 : 0, PACE_PERIOD_MS);
+    P.content_ms = pace_content_ms();    /* (pc-fps: the frame rate's period) */
+    pace_delay_init(&P.pd, P.content_ms);
+    pace_disp_init(&P.disp, pace_refresh_x1000 > 0 ? 1000000.0 / (double)pace_refresh_x1000 : 0, P.content_ms);
     P.disp_state = PACE_DISP_UNKNOWN;
+    if (gpu_rt.cfg.hwnd) vrr_log_driver("at start");
     P.timer = CreateWaitableTimerExW(NULL, NULL, 0x2 /* CREATE_WAITABLE_TIMER_HIGH_RESOLUTION */, TIMER_ALL_ACCESS);
     if (pace_log < 0) { const char* e = getenv("PS2_PACE_LOG"); pace_log = e ? atoi(e) : 0; }
     if (pace_headless < 0) { const char* e = getenv("PS2_PACE_HEADLESS"); pace_headless = e && atoi(e) > 0; }
@@ -754,7 +764,7 @@ double gpu_window_refresh_hz(void* hwnd_) {
 static void pace_wait(double target, int tsi) {
     long ph = gpu_rt_phase;
     gpu_rt_phase = GPU_PH_SWAP_WAIT;
-    double limit = now_ms() + 3.0 * PACE_PERIOD_MS;  /* (never more than 3 frames, whatever the clocks say) */
+    double limit = now_ms() + 3.0 * P.content_ms;  /* (never more than 3 frames, whatever the clocks say) */
     if (target > limit) target = limit;
     for (;;) {
         if (tsi >= 0) ready_poll(tsi);
@@ -779,9 +789,20 @@ static void pace_wait(double target, int tsi) {
 static void pace_statistics(UINT pc) {
     DXGI_FRAME_STATISTICS fs;
     memset(&fs, 0, sizeof fs);
-    if (FAILED(IDXGISwapChain1_GetFrameStatistics(P.sc, &fs)) || !fs.PresentCount || fs.PresentCount == P.last_pc ||
-        pc - fs.PresentCount >= 60)
+    HRESULT hr = IDXGISwapChain1_GetFrameStatistics(P.sc, &fs);
+    if (FAILED(hr) || !fs.PresentCount || fs.PresentCount == P.last_pc || pc - fs.PresentCount >= 60) {
+        /* (pc-fps) say why the display's record stopped (once per 10 s): no statistics = no VRR verdict */
+        static double said;
+        double t = now_ms();
+        if (P.last_sync_ms > 0 && t - P.last_sync_ms > 3000.0 && t - said > 10000.0) {
+            said = t;
+            HWND fg = GetForegroundWindow();
+            gpu_log("pace: no frame statistics for %.0f s (hr 0x%08lX, shown present %u, presented %u): the game window is %s",
+                    (t - P.last_sync_ms) / 1000.0, (unsigned long)hr, (unsigned)fs.PresentCount, (unsigned)pc,
+                    fg == (HWND)gpu_rt.cfg.hwnd ? "in front" : "not in front (another window has the focus)");
+        }
         return;
+    }
     double shown = (double)fs.SyncQPCTime.QuadPart * 1000.0 / (double)qpf.QuadPart;
     double q = P.pres_q[fs.PresentCount % 64];   /* (M9) photon latency: frame queued -> shown */
     if (q > 0 && shown >= q) P.st.photon_ms = shown - q;
@@ -800,8 +821,9 @@ static void pace_statistics(UINT pc) {
     if (now - P.disp_t < 2000.0) return;         /* every 2 s: what the display does with the presents */
     P.disp_t = now;
     double hz_now = gpu_window_refresh_hz(gpu_rt.cfg.hwnd);   /* (the display's mode may have changed: display_mode.c) */
+    if (hz_now > 0 && frame_rate_note_display) frame_rate_note_display(hz_now);   /* (pc-fps: frame_rate = display) */
     if (hz_now > 0 && fabs(1000.0 / hz_now - P.disp.refresh_ms) > 0.05) {
-        pace_disp_init(&P.disp, 1000.0 / hz_now, PACE_PERIOD_MS);
+        pace_disp_init(&P.disp, 1000.0 / hz_now, P.content_ms);
         P.disp_state = PACE_DISP_UNKNOWN;
         InterlockedExchange(&pace_disp_shared, PACE_DISP_UNKNOWN);
         InterlockedExchange(&pace_refresh_x1000, (LONG)(hz_now * 1000.0));
@@ -810,21 +832,54 @@ static void pace_statistics(UINT pc) {
     }
     int s = pace_disp_classify(&P.disp);
     InterlockedExchange(&pace_disp_shared, s);
+    gpu_vrr_set_status(NULL, s, P.disp.refresh_ms > 0 ? 1000.0 / P.disp.refresh_ms : 0);   /* (pc-fps) the menu's status */
     if (s == P.disp_state || s == PACE_DISP_UNKNOWN) return;
     P.disp_state = s;
     double hz = P.disp.refresh_ms > 0 ? 1000.0 / P.disp.refresh_ms : 0;
-    if (s == PACE_DISP_VRR)
-        gpu_log("pace: display %.2f Hz, variable refresh (G-Sync / FreeSync) is on: every picture is shown for 16.68 ms", hz);
-    else if (s == PACE_DISP_FIXED)
-        gpu_log("pace: display %.2f Hz, fixed refresh: a 59.94 Hz picture lasts %.2f refreshes, so pictures alternate between %d and %d "
-                "refreshes (judder). Smooth: turn on G-Sync / FreeSync (variable refresh) or use a 60 / 120 Hz display mode", hz,
-                PACE_PERIOD_MS / P.disp.refresh_ms, (int)(PACE_PERIOD_MS / P.disp.refresh_ms), (int)(PACE_PERIOD_MS / P.disp.refresh_ms) + 1);
-    else
-        gpu_log("pace: display %.2f Hz, %d refreshes per 59.94 Hz picture: even", hz, pace_refresh_multiple(P.disp.refresh_ms, PACE_PERIOD_MS));
+    double c = P.content_ms, fps = 1000.0 / c;
+    /* (pc-fps) one clear line: is variable refresh active, how the presents reach the display, what the driver says */
+    int comp = gpu_vrr_composition(P.sc);
+    HWND fg = GetForegroundWindow();
+    int front = fg == (HWND)gpu_rt.cfg.hwnd || (fg && GetAncestor(fg, GA_ROOTOWNER) == (HWND)gpu_rt.cfg.hwnd);
+    if (s == PACE_DISP_VRR) {
+        gpu_log("VRR: ACTIVE - the display (%.2f Hz maximum) follows the game's pictures: each shown for %.2f ms (%.2f frames/s); "
+                "presentation %s", hz, c, fps, gpu_vrr_composition_name(comp));
+    } else if (s == PACE_DISP_FIXED) {
+        gpu_log("VRR: NOT ACTIVE - the display refreshes at a fixed %.2f Hz: a %.2f frames/s picture lasts %.2f refreshes, so pictures "
+                "alternate between %d and %d refreshes (judder). Presentation %s, game window %s", hz, fps, c / P.disp.refresh_ms,
+                (int)(c / P.disp.refresh_ms), (int)(c / P.disp.refresh_ms) + 1, gpu_vrr_composition_name(comp),
+                front ? "in front" : "NOT in front (another window has the focus: variable refresh follows the window in front)");
+        vrr_log_driver("display fixed");
+    } else {
+        gpu_log("VRR: not needed - the display's %.2f Hz is %d refresh%s per %.2f frames/s picture: even", hz,
+                pace_refresh_multiple(P.disp.refresh_ms, c), pace_refresh_multiple(P.disp.refresh_ms, c) > 1 ? "es" : "", fps);
+    }
+}
+
+/* (pc-fps) the driver's view of variable refresh (NVIDIA: the G-SYNC mode and the display's VRR state) and what the player
+ * can change; at start and when the display is found to refresh at a fixed rate */
+static void vrr_log_driver(const char* when) {
+    gpu_vrr_info v;
+    char line[768];
+    gpu_vrr_query(gpu_rt.cfg.hwnd, &v);
+    gpu_vrr_set_status(&v, P.disp_state, P.disp.refresh_ms > 0 ? 1000.0 / P.disp.refresh_ms : 0);
+    gpu_log("VRR (%s): %s", when, gpu_vrr_describe(&v, line, sizeof line));
+    const char* advice = gpu_vrr_advice(&v);
+    if (advice) gpu_log("VRR: to turn it on: %s", advice);
 }
 
 static void present_fit(int aw, int ah, int scaler) {
     double t0 = now_ms();
+    /* (pc-fps) the frame rate changed: the pacing state is for the new cadence */
+    double content = pace_content_ms();
+    if (fabs(content - P.content_ms) > 0.01) {
+        P.content_ms = content;
+        pace_delay_init(&P.pd, content);
+        pace_disp_init(&P.disp, P.disp.refresh_ms, content);
+        P.disp_state = PACE_DISP_UNKNOWN;
+        InterlockedExchange(&pace_disp_shared, PACE_DISP_UNKNOWN);
+        gpu_log("pace: pictures every %.2f ms (%.2f frames/s)", content, 1000.0 / content);
+    }
     int tsi = P.ts_cur;
     double vb = gpu_rt.cur_vblank_ms;
     /* (pc-pacing) the frame's drawing and compose end here: its GPU time without the present (and without the paced wait
@@ -866,8 +921,9 @@ static void present_fit(int aw, int ah, int scaler) {
             P.bb_h = ch;
             /* (pc-pacing) the window may be on another monitor now (fullscreen switch, moved): its refresh rate */
             double hz = gpu_window_refresh_hz(gpu_rt.cfg.hwnd);
+            if (hz > 0 && frame_rate_note_display) frame_rate_note_display(hz);   /* (pc-fps) */
             if (hz > 0 && fabs(1000.0 / hz - P.disp.refresh_ms) > 0.01) {
-                pace_disp_init(&P.disp, 1000.0 / hz, PACE_PERIOD_MS);
+                pace_disp_init(&P.disp, 1000.0 / hz, P.content_ms);
                 P.disp_state = PACE_DISP_UNKNOWN;
                 InterlockedExchange(&pace_refresh_x1000, (LONG)(hz * 1000.0));
                 gpu_log("pace: the window's display runs at %.3f Hz (%dx%d)", hz, cw, ch);
@@ -888,11 +944,17 @@ static void present_fit(int aw, int ah, int scaler) {
     int no_stats = P.disp.n < 10 && P.first_present_ms > 0 && t0 - P.first_present_ms > 5000.0;
     int auto_immediate = mode == PACE_MODE_AUTO && P.sc &&
                          (P.disp_state == PACE_DISP_FIXED || P.disp_state == PACE_DISP_MULTIPLE || (P.disp_state == PACE_DISP_UNKNOWN && no_stats));
-    int paced = (P.sc || pace_headless) && mode != PACE_MODE_IMMEDIATE && !auto_immediate && vb > 0;    double target = paced ? vb + P.pd.delay_ms : 0;
+    /* (pc-fps) frame_rate = unlimited: the pictures have no cadence to keep - each is presented when it is drawn */
+    int unlimited = frame_rate_target_hz && frame_rate_target_hz() == 0;
+    int paced = (P.sc || pace_headless) && mode != PACE_MODE_IMMEDIATE && !auto_immediate && !unlimited && vb > 0;
+    double target = paced ? vb + P.pd.delay_ms : 0;
     if (paced) P.st.target_ms = P.pd.delay_ms;
-    InterlockedExchange(&pace_extra, paced ? (LONG)ceil(P.pd.delay_ms / PACE_PERIOD_MS) : 0);
+    InterlockedExchange(&pace_extra, paced ? (LONG)ceil(P.pd.delay_ms / P.content_ms) : 0);
     if (paced && gpu_rt.cur_behind) paced = 0;   /* behind (a newer frame waits): no wait, present it now */
-    if (gpu_rt.cur_behind && vb > 0 && t0 > vb + P.pd.delay_ms + 0.5 * PACE_PERIOD_MS) {
+    /* (pc-fps) above 60 fps no picture is skipped: when the GPU is slower than the frame limiter every picture is "late" and
+     * a newer one always queued - skipping them would show none; the queue is short there instead (gpu_submit_sink) */
+    int fr_high = frame_rate_high && frame_rate_high();
+    if (gpu_rt.cur_behind && !fr_high && vb > 0 && t0 > vb + P.pd.delay_ms + 0.5 * P.content_ms) {
         P.st.skipped = 1;
         P.st.present_ms += now_ms() - t0;
         return;
