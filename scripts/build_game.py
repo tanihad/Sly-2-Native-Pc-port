@@ -124,6 +124,11 @@ Saves from an older build (a memcard\\slot0 folder next to an older sly2.exe) ar
 automatically: copy that memcard folder into %LOCALAPPDATA%\\Sly2 (or next to this exe in
 portable mode) while the game is not running.
 
+"Windows protected your PC" on the first start: this program was built on your own PC and is
+not signed; click More info, then Run anyway. This folder can be copied to your other PCs
+as it is (they need the disc image too). It contains code recompiled from your copy of the
+game: do not share it publicly.
+
 Build {ver} ({hash}).
 """
 
