@@ -114,18 +114,21 @@ graphics keys), Alt, Windows keys. Controller button names: `cross circle square
 r2 l3 r3 select start home touchpad mute up down left right`, aliases `a b x y lb rb lt rt ls rs
 back view create share options menu ps guide dpad_up ...`.
 
-## The Options menu ("PC Settings", notes/pc-menu.md)
+## The Options menu (notes/pc-menu.md)
 
 | Action                                 | Keyboard / mouse                         | DualSense / DualShock 4 | Xbox |
 |----------------------------------------|------------------------------------------|-------------------------|------|
-| Open (pauses the game first)           | Esc, or the pause menu's "PC Settings"    | PS button, or the pause menu's "PC Settings" | the pause menu's "PC Settings" (START, then the entry) |
+| Open (pauses the game first)           | Esc, or the pause menu's "Options"       | PS button, or the pause menu's "Options" | the pause menu's "Options" (START, then the entry) |
+| Apply staged changes (display mode, resolution, monitor, renderer) | the "Apply changes" row, or click "Apply changes" (top right) | the row | the row |
+| Answer a dialog (Reset / Quit / Keep / Apply) | Enter = the gold button, Esc = the other, or click a button | Cross / Circle | A / B |
 | Move / change a value                  | arrows or WASD, mouse wheel; click a row's arrows or a slider's bar | d-pad / left stick | d-pad / left stick |
 | Select (cycle a value, open a page)    | Enter / Space, left click                | Cross                   | A    |
 | Back (close on a main page)            | Esc / Backspace, right click              | Circle                  | B    |
 | Previous / next page                   | Q / E, Shift+Tab / Tab, Page Up / Down, click a tab | L1 / R1      | LB / RB |
 | Close from anywhere                    | Esc on a main page                       | Options or PS button    | Menu |
 
-Closing returns to the game's pause menu ("WE'LL BE RIGHT BACK!"). While the menu is open the game gets no
+Closing returns to the game's pause menu ("WE'LL BE RIGHT BACK!"); with changes not applied yet it first asks "Apply
+the changed settings?" (Apply / Discard). While the menu is open the game gets no
 input; a button still held when it closes is hidden from the game until released. Remapping: Controls >
 Keyboard controls / Controller buttons, Confirm on a row, then press the key / button (left / right picks the
 first or second binding; Esc or the PS button cancels).
@@ -137,7 +140,7 @@ first or second binding; Esc or the PS button cancels).
 | Borderless fullscreen on/off   | F11 or Alt+Enter (also Display > Display mode in the menu) |
 | Widescreen (16:9) <-> 4:3      | F7                          |
 | HUD at the edges <-> centred   | F8 (wide aspects)           |
-| Quit                           | close the window or Alt+F4  |
+| Quit to desktop                | the pause menu's "Quit to Desktop", "Quit to desktop" at the end of every Options page, the title screen's SELECT menu, or close the window / Alt+F4 - each asks "Quit to desktop?" first; closing the window again while it asks quits at once |
 
 (Esc no longer leaves fullscreen: it opens the Options menu.)
 
@@ -155,9 +158,9 @@ Options menu (settings_change: the graphics preset becomes Custom when they leav
 
 | Action                                                        | Key        |
 |---------------------------------------------------------------|------------|
-| Internal resolution up (1x .. 8x the PS2's, wraps; fixed)     | F2         |
-| Internal resolution down (fixed)                              | Shift+F2   |
-| Internal resolution automatic (3x, lowered on a slow GPU)     | Ctrl+F2    |
+| Render scale up (1x .. 8x the PS2's, wraps; exact: Nx)        | F2         |
+| Render scale down (exact)                                     | Shift+F2   |
+| Render scale Auto (up to 100%, lowered on a slow GPU)         | Ctrl+F2    |
 | Outlines: PS2 (one PS2 pixel wide) <-> thin                   | F3         |
 | Filters preset: Modern <-> Faithful (toggles back to preset)  | F4         |
 | Motion blur on / off                                          | F5         |

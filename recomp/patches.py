@@ -171,11 +171,18 @@ PATCHES: list[Patch] = [
           "(0x1AAF90 with the PMF at 0x2A6D88, what Yes does in 0x1AD168) and the prompt is skipped "
           "(L_001AB380 = this function's epilogue). Once per run; otherwise the game asks as before"),
     Patch("pc_options_hide", *OPTIONS_BUILD, 0x001B058C, "before",
-          "if (pc_options_hidden(ps2_r32(ctx, ctx->r[16].uw[0]))) ctx->r[4].ud[0] = 0;",
+          "{ uint32_t k_ = ps2_r32(ctx, ctx->r[16].uw[0]); if (pc_options_hidden(k_) || pcmenu_option_hidden(k_)) ctx->r[4].ud[0] = 0; }",
           "the Options menu (title SELECT menu and pause menu: both build it here) copies the items of "
           "the static table 0x2BFEC8 ($s0 = the item; word 0 = its kind = text id) that pass a test "
           "($a0 != 0, tested by the beq here). PS2 hardware options are left out on PC: 'USB Headset' "
-          "(0x50, the PS2 USB headset) and 'Center Screen...' (0x3F, moves the picture on a CRT TV)"),
+          "(0x50, the PS2 USB headset) and 'Center Screen...' (0x3F, moves the picture on a CRT TV); (pc-polish) and the "
+          "items the PC Options menu has (menu_game.c pcmenu_option_hidden: Speakers, Music / Effects Volume, Invert "
+          "Binocucom / Turret, Vibrations - set there through the game's own getter / setter)"),
+    Patch("pcmenu_options_list", *OPTIONS_BUILD, 0x001B05E4, "before",
+          "pcmenu_options_list(ctx);",
+          "(pc-polish) after the item loop ($s1 = the end of the copied list at 0x2F6470, room for 11): 'Options' (the PC "
+          "Options menu) and 'Quit to Desktop' are appended to the page (the title screen's SELECT menu), before it is "
+          "pushed with the count $s1 - 0x2F6470"),
     # The PC Options menu (runtime/menu_game.c, notes/pc-menu.md). Always on: the pause menu gets a "PC Settings"
     # entry; the other patches do nothing unless the menu asks for something.
     Patch("pcmenu_list", *PAUSE_LIST, 0x001B0490, "before",

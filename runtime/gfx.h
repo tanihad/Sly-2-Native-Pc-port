@@ -29,6 +29,8 @@ void gfx_reread(void);
 void gfx_describe(char* out, int cap);
 /* (pc-menu) internal_scale = native: the smallest scale whose 448 * N rows cover out_h output rows (1..8) */
 int  gfx_native_scale(int out_h);
+/* (pc-polish) the output's rows (gfx_output_size; 0 = unknown, render scales then assume 1080) */
+int  gfx_output_rows(void);
 /* the output's size for internal_scale = native (window.c sets it to window_client_size; NULL: 3x) */
 extern void (*gfx_output_size)(int* w, int* h);
 /* the window's client size changed (window.c, when a resize ends): internal_scale = native follows it */

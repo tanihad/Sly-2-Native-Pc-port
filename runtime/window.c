@@ -162,9 +162,11 @@ static const struct { const char* name; unsigned vk; int shift; } script_gfx[] =
 #define SCRIPT_NGFX ((int)(sizeof script_gfx / sizeof script_gfx[0]))
 /* (pc-menu) the Options menu (menu_game.c menu_script): "menu" opens it as Esc does (or closes it), "mup" "mdown" "mleft"
  * "mright" "mok" "mback" "mtabn" "mtabp" navigate as a controller does, "menushot" writes the next presented picture with
- * the menu to PS2_MENU_SHOTS (folder; default the frame dump folder or .) as menu_<n>.png */
+ * the menu to PS2_MENU_SHOTS (folder; default the frame dump folder or .) as menu_<n>.png, (pc-polish) "mquit" = the
+ * window's close button (Quit to desktop?; a second one quits) */
 #define SCRIPT_MENU0 (-40)
-static const char* const script_menu[] = { "menu", "mup", "mdown", "mleft", "mright", "mok", "mback", "mtabn", "mtabp", "menushot" };
+static const char* const script_menu[] = { "menu", "mup", "mdown", "mleft", "mright", "mok", "mback", "mtabn", "mtabp", "menushot",
+                                           "mquit" };
 #define SCRIPT_NMENU ((int)(sizeof script_menu / sizeof script_menu[0]))
 extern void menu_script(int k) __attribute__((weak));
 static void switch_aspect(void);
@@ -1070,8 +1072,8 @@ static void save_window_state(HWND hwnd) {
     snprintf(y, sizeof y, "%ld", r->top);
     snprintf(w, sizeof w, "%ld", r->right - r->left);
     snprintf(h, sizeof h, "%ld", r->bottom - r->top);
-    const char* fs = !win_fullscreen ? "off" : ps2_settings.win_fullscreen == SETTINGS_FULLSCREEN_EXCLUSIVE ? "exclusive" : "on";
-    const char* const kv[][3] = { { "window", "fullscreen", fs }, { "window", "x", x },
+    const char* fs = !win_fullscreen ? "windowed" : ps2_settings.win_fullscreen == SETTINGS_FULLSCREEN_EXCLUSIVE ? "fullscreen" : "borderless";
+    const char* const kv[][3] = { { "display", "mode", fs }, { "window", "x", x },   /* (pc-polish: was [window] fullscreen) */
                                   { "window", "y", y }, { "window", "width", w }, { "window", "height", h },
                                   { "window", "maximized", maximized ? "on" : "off" } };
     if (!settings_set(kv, 6)) wlog("cannot write the window state to sly2.ini");
@@ -1134,13 +1136,31 @@ void window_set_client_size(int w, int h) {
     if (hw) PostMessageW(hw, WM_APP_CLIENT_SIZE, (WPARAM)w, (LPARAM)h);
 }
 
-/* window thread: make the window what ps2_settings says (fullscreen mode, monitor) */
+/* (pc-polish) the monitor rectangle again after a display mode change (Fullscreen's resolution) */
+static void fit_fullscreen(HWND hwnd) {
+    MONITORINFO mi;
+    mi.cbSize = sizeof mi;
+    RECT wr;
+    if (win_fullscreen && GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &mi) && GetWindowRect(hwnd, &wr) &&
+        !EqualRect(&wr, &mi.rcMonitor))
+        SetWindowPos(hwnd, HWND_TOP, mi.rcMonitor.left, mi.rcMonitor.top, mi.rcMonitor.right - mi.rcMonitor.left,
+                     mi.rcMonitor.bottom - mi.rcMonitor.top, SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+}
+
+/* window thread: make the window what ps2_settings says (fullscreen mode, monitor, Fullscreen's resolution) */
 static void apply_window_settings(HWND hwnd) {
     int want = ps2_settings.win_fullscreen;
+    static int res_used = -1;            /* the resolution the display was set to for Fullscreen */
     if (win_exclusive && want != SETTINGS_FULLSCREEN_EXCLUSIVE) {
         if (pacing_exclusive_fullscreen) pacing_exclusive_fullscreen(0);
         win_exclusive = 0;
     }
+    if (win_exclusive && res_used >= 0 && res_used != ps2_settings.fullscreen_res) {   /* a new resolution: the mode again */
+        display_mode_fullscreen(hwnd, 0);
+        display_mode_fullscreen(hwnd, 1);
+        fit_fullscreen(hwnd);
+    }
+    res_used = ps2_settings.fullscreen_res;
     if ((want != SETTINGS_FULLSCREEN_OFF) != (win_fullscreen != 0)) toggle_fullscreen(hwnd);
     else if (win_fullscreen) {           /* fullscreen already: on the chosen monitor */
         MONITORINFO mi;
@@ -1163,13 +1183,15 @@ static void apply_window_settings(HWND hwnd) {
     if (want == SETTINGS_FULLSCREEN_EXCLUSIVE && win_fullscreen && !win_exclusive) {
         win_exclusive = pacing_exclusive_fullscreen && pacing_exclusive_fullscreen(1);
         if (!win_exclusive) wlog("exclusive fullscreen is not available: borderless fullscreen");
+        fit_fullscreen(hwnd);
     }
     settings_touch();
 }
 
-/* window thread: the client area w x h (windowed, not maximized), centred where the window was */
+/* window thread: the client area w x h (windowed; a maximized window is restored first), centred where the window was */
 static void apply_client_size(HWND hwnd, int w, int h) {
-    if (win_fullscreen || IsZoomed(hwnd) || w < 240 || h < 200) return;
+    if (win_fullscreen || w < 240 || h < 200) return;
+    if (IsZoomed(hwnd)) ShowWindow(hwnd, SW_RESTORE);   /* (pc-polish: Resolution chosen in the menu) */
     RECT wr, cr;
     if (!GetWindowRect(hwnd, &wr) || !GetClientRect(hwnd, &cr)) return;
     int ncw = (wr.right - wr.left) - cr.right, nch = (wr.bottom - wr.top) - cr.bottom;
@@ -1220,9 +1242,49 @@ static int restore_window_state(HWND hwnd) {
 
 static void close_window(HWND hwnd) {
     save_window_state(hwnd);
-    input_shutdown();                    /* motors off */
+    input_shutdown();                    /* motors off, light bar dark */
+    if (win_fullscreen) display_mode_fullscreen(hwnd, 0);   /* (the desktop's display mode back at once) */
     if (window_exit_hook) window_exit_hook(0);
     ExitProcess(0);
+}
+
+/* ---- (pc-polish) Quit to desktop ---------------------------------------------------------------------------------
+ * The close button / Alt+F4 ask first (menu.c's quit question, over the paused game); a second close while it shows quits
+ * at once (a game that no longer answers can always be closed). menu_game.c's quit thread asks the window to close. */
+#define WM_APP_QUIT (WM_APP + 0x33)
+extern void pcmenu_quit_request(void) __attribute__((weak));
+extern int menu_quit_showing(void) __attribute__((weak));
+
+int window_request_quit(void) {
+    HWND h = g_hwnd;
+    return h && PostMessageW(h, WM_APP_QUIT, 0, 0);
+}
+
+/* the game monitor's resolutions, largest first (w << 16 | h, unique, at least 800 x 600, the desktop's bit depth) */
+int window_display_modes(int* wh, int max) {
+    HWND hwnd = g_hwnd;
+    HMONITOR m = hwnd ? game_monitor(hwnd) : MonitorFromPoint((POINT){ 0, 0 }, MONITOR_DEFAULTTOPRIMARY);
+    MONITORINFOEXW mi;
+    mi.cbSize = sizeof mi;
+    if (!GetMonitorInfoW(m, (MONITORINFO*)&mi)) return 0;
+    DEVMODEW cur, dm;
+    memset(&cur, 0, sizeof cur);
+    cur.dmSize = sizeof cur;
+    if (!EnumDisplaySettingsW(mi.szDevice, ENUM_CURRENT_SETTINGS, &cur)) return 0;
+    int n = 0;
+    for (DWORD i = 0; n < max; i++) {
+        memset(&dm, 0, sizeof dm);
+        dm.dmSize = sizeof dm;
+        if (!EnumDisplaySettingsW(mi.szDevice, i, &dm)) break;
+        if (dm.dmBitsPerPel != cur.dmBitsPerPel || dm.dmPelsWidth < 800 || dm.dmPelsHeight < 600 || dm.dmPelsWidth > 16384) continue;
+        int v = (int)(dm.dmPelsWidth << 16 | dm.dmPelsHeight), dup = 0;
+        for (int k = 0; k < n; k++) dup |= wh[k] == v;
+        if (!dup) wh[n++] = v;
+    }
+    for (int a = 0; a < n; a++)          /* largest first */
+        for (int b = a + 1; b < n; b++)
+            if ((int64_t)(wh[b] >> 16) * (wh[b] & 0xFFFF) > (int64_t)(wh[a] >> 16) * (wh[a] & 0xFFFF)) { int t = wh[a]; wh[a] = wh[b]; wh[b] = t; }
+    return n;
 }
 
 static int in_size_move;                 /* the user is dragging the window's frame */
@@ -1230,9 +1292,17 @@ static int in_size_move;                 /* the user is dragging the window's fr
 static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     if (input_window_message(hwnd, msg, wp, lp)) return 0;   /* the Options menu / binding capture took it */
     switch (msg) {
-    case WM_CLOSE:
+    case WM_CLOSE:                       /* (pc-polish) Quit to desktop? first; again while it shows: at once */
+        if (!pcmenu_quit_request || !menu_quit_showing || menu_quit_showing()) { close_window(hwnd); return 0; }
+        if (IsIconic(hwnd)) ShowWindow(hwnd, SW_RESTORE);
+        pcmenu_quit_request();
+        return 0;
+    case WM_APP_QUIT:                    /* (pc-polish) the quit was confirmed (menu_game.c, after a save in progress) */
         close_window(hwnd);
         return 0;
+    case WM_DISPLAYCHANGE:               /* (pc-polish) a display mode change: fullscreen covers the monitor again */
+        fit_fullscreen(hwnd);
+        break;
     case WM_QUERYENDSESSION:             /* Windows is logging off / shutting down */
         return TRUE;
     case WM_ENDSESSION:
