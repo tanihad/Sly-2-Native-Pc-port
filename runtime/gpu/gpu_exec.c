@@ -1479,14 +1479,21 @@ static void exec_a16_copy(const gpu_fop_draw* d) {
  * (gpu_fop_draw.feat): 2 untextured (SPEC_NOTEX), 1 no target view and no general LOD (SPEC_NOVIEW, SPEC_NOLOD), 0 the
  * ubershader. PS2_GPU_SPEC=0: the ubershaders always */
 static int spec_level(const gpu_fop_draw* d) {
-    static int on = -1;
-    if (on < 0) { const char* e = getenv("PS2_GPU_SPEC"); on = !(e && *e == '0'); }
+    static int on = -1;                  /* (PS2_GPU_SPEC=<mask>: bit n allows level n; 0 none) */
+    if (on < 0) { const char* e = getenv("PS2_GPU_SPEC"); on = e ? (int)strtol(e, NULL, 0) : 14; }
     if (!on || X.probe) return 0;        /* (PS2_GPU_PROBE: the ubershaders record the probe pixel) */
-    if (!(d->feat & GPU_DF_TEX)) return 2;
-    if (d->feat & GPU_DF_LOD) return 0;
-    if (!(d->feat & GPU_DF_VIEW)) return 1;
+    int l;
+    if (!(d->feat & GPU_DF_TEX)) l = 2;
+    else if (d->feat & GPU_DF_LOD) l = 0;
+    else if (!(d->feat & GPU_DF_VIEW)) l = 1;
     /* 3: every texture a target view read 1:1 (SPEC_VIEWONLY, SPEC_NOHIRES): sprites only */
-    return d->cls == GPU_PC_SPRITE && !(d->feat & (GPU_DF_VRAM | GPU_DF_HIRES)) ? 3 : 0;
+    else l = d->cls == GPU_PC_SPRITE && !(d->feat & (GPU_DF_VRAM | GPU_DF_HIRES)) ? 3 : 0;
+    /* (WARP executes the level-1 permutations wrongly in one case: a 16-bit texel's alpha bit of a sprite differs in
+     * tests/unit/gs-draw t_random_states (iteration 49), with the same inputs (probe records) and the same shader logic,
+     * while the RTX 4060 Ti matches the software renderer everywhere - a WARP anomaly like the STQ-record one of appendix
+     * E; on WARP those draws keep the ubershaders) */
+    if (l == 1 && gpu_rt.caps.warp) return 0;
+    return (on >> l) & 1 ? l : 0;
 }
 
 static void exec_draw_ref(const gpu_fop_draw* d, uint32_t slot) {
