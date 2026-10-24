@@ -282,6 +282,7 @@ static void gov_frame(double gpu_ms, int scale) {
      * least 60 frames per second, never for a higher frame rate (above 60 the frame rate is what the GPU and the EE give,
      * the game's speed does not depend on it: notes/frame-rate.md) */
     G.period_ms = PACE_PERIOD_MS;
+    G.no_overload = fr_high();           /* (pc-smooth) above 60 the game's speed does not depend on the GPU: per-second rules */
     int to = pace_gov_frame(&G, gpu_ms, now_qpc_ms());
     InterlockedExchange(&gov_load_x1000, (LONG)(G.load * 1000.0));
     static int log_secs = -1;            /* PS2_GS_AUTO_LOG=1: every second's measurement and state */
