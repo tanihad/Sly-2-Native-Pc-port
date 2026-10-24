@@ -7,6 +7,12 @@ cs_conformance      conformance.hlsl    cs_conformance    cs_5_0
 ps_depth_write      conformance.hlsl    ps_depth_write    ps_5_0
 ps_depth_test       conformance.hlsl    ps_depth_test     ps_5_0
 cs_depth_read       conformance.hlsl    cs_depth_read     cs_5_0
+# (P1) early-depth conformance: per-pixel points with conservative depth output, FF-style partial depth writes, the
+# triangle bound on real Z planes
+vs_conf_px          conformance.hlsl    vs_conf_px        vs_5_0
+ps_depth_ff         conformance.hlsl    ps_depth_ff       ps_5_0
+vs_conf_tri         conformance.hlsl    vs_conf_tri       vs_5_0
+ps_conf_tri         conformance.hlsl    ps_conf_tri       ps_5_0
 
 # submission benchmark (M2, gpu_exec.c): trivial shaders with the real bindings
 vs_tri              submit.hlsl         vs_tri            vs_5_0

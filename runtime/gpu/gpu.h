@@ -199,8 +199,13 @@ int gpu_exec_read_target(uint32_t id, uint32_t* out, size_t cap_words, int* w, i
 uint64_t gpu_render_thread_cycles(void);  /* QueryThreadCycleTime of the render thread (TSC ticks) */
 void gpu_render_thread_affinity(uint64_t mask);   /* benchmarks: pin the render thread */
 
+/* (P1) exact depth with early rejection: the depth encoding and bound constants are in gpu_front.h (GPU_ZE_ONE ...).
+ * PS2_GPU_EARLYZ=0: every rasterized bound 1.0 (no early depth rejection; the same pictures), for A/B measurements */
+int gpu_earlyz(void);
+
 /* ---- conformance (gpu_conf.c) ----------------------------------------------------------------------
  * cs_conformance (int64 helpers, exact integer Z formula, depth encoding) against the C reference,
- * plus an SV_Depth round trip and GREATER/GEQUAL tie test through a D32S8 depth buffer. Runs on the
- * render thread. Returns the number of mismatching values (0 = bit identical), < 0 on error. */
+ * plus the depth round trips through a D32 depth buffer (P1: the encoding of every Z format, GREATER / GEQUAL ties
+ * with conservative depth output, the DSV <-> zpatch sync of shaders/zsync.hlsl, the triangle bound on random and steep
+ * planes). Runs on the render thread. Returns the number of mismatching values (0 = bit identical), < 0 on error. */
 int gpu_conformance(int vectors, uint32_t seed, int verbose);

@@ -129,8 +129,19 @@ uint gs_z_clamp(i64 z16, uint zmax) {
     return zi.x;
 }
 
-// order-preserving depth encoding, exact for z <= 0x3F000000 (encodes to <= 1.0, never a denormal)
-float gs_z_encode(uint z) { return asfloat(z + 0x00800000u); }
-uint  gs_z_decode(float d) { return asuint(d) - 0x00800000u; }
+// ---- (P1) depth encoding in the D32 depth buffer (notes/d3d11-renderer.md 3.6, appendix P) --------------------------
+// enc(z) = min(z, ZE_ONE) / 2^20: exact, linear and order-preserving for z <= ZE_ONE = 2^20 (enc = 1.0), spread over [0, 1]
+// so the GPU's coarse depth culling separates Sly's depths (< 2^19). Values >= ZE_ONE are held saturated (1.0) in the DSV:
+// FF fragments are always < ZE_ONE (the frontend routes higher Z24 / Z32 primitives to the ROV tier, gpu_front.c), so
+// GREATER / GEQUAL against a saturated value fail exactly as against the true one; zpatch keeps the true word and cs_zsync
+// leaves it where the DSV holds 1.0 (FF draws never write it).
+#define ZE_ONE 0x00100000u
+#define ZE_MARGIN 128u                   // triangle bound: vertex Z + ZE_MARGIN (gpu_front.c GPU_ZB_MARGIN, appendix P)
+float gs_z_encode(uint z) { return (float)min(z, ZE_ONE) * (1.0 / 1048576.0); }
+uint  gs_z_decode(float d) { return (uint)(d * 1048576.0); }
+// rasterized upper bounds for conservative depth output (SV_DepthLessEqual): a triangle vertex's Z + ZE_MARGIN
+// (0xFFFFFFFF, the frontend's "no bound": 1.0), a constant Z + 1 (sprites, line / point pixels)
+float gs_z_bound_vtx(uint zv) { return (float)(min(zv, ZE_ONE - ZE_MARGIN) + ZE_MARGIN) * (1.0 / 1048576.0); }
+float gs_z_bound_const(uint z) { return (float)(min(z, ZE_ONE - 1u) + 1u) * (1.0 / 1048576.0); }
 
 #endif

@@ -801,12 +801,17 @@ static uint32_t f2u(float f) { uint32_t u; memcpy(&u, &f, 4); return u; }
 
 static gs_vtx vcache[3];
 static uint32_t vcache_idx[3], vcache_state[3];
+static uint8_t vcache_nb[3];
 static int vcache_n, vcache_pos;
 
-static uint32_t emit_vertex(const gs_vtx* v, const gs_env_view* ev, uint32_t state) {
+/* nb: (P1) the vertex carries no early-depth bound (pad 0xFFFFFFFF: the vertex shader's bound is 1.0, gpu_front.h) -
+ * a triangle that needs that must not reuse a bounded copy; a bounded triangle may reuse either (a higher bound is
+ * still a bound) */
+static uint32_t emit_vertex(const gs_vtx* v, const gs_env_view* ev, uint32_t state, int nb) {
 #ifndef GPU_NO_VCACHE
     for (int i = 0; i < vcache_n; i++)
-        if (vcache_state[i] == state && !memcmp(&vcache[i], v, offsetof(gs_vtx, serial))) return vcache_idx[i];   /* (values, not the serial) */
+        if (vcache_state[i] == state && (vcache_nb[i] || !nb) && !memcmp(&vcache[i], v, offsetof(gs_vtx, serial)))
+            return vcache_idx[i];   /* (values, not the serial) */
 #endif
     gvtx* o = ar_reserve(&A_vtx, sizeof *o);
     o->x = (float)(v->x - ev->ofx) * (1.0f / 16.0f);
@@ -815,9 +820,9 @@ static uint32_t emit_vertex(const gs_vtx* v, const gs_env_view* ev, uint32_t sta
     o->fog_state = (uint32_t)(v->f & 0xFF) | state << 8;
     if (ev->P->fst) { o->s = (float)v->u; o->t = (float)v->v; o->q = 1.0f; }
     else { o->s = v->s; o->t = v->t; o->q = v->q; }
-    o->pad = v->z;                       /* (vertex Z, for an interpolated-depth variant) */
+    o->pad = nb ? 0xFFFFFFFFu : v->z;    /* (P1) the vertex Z: the early-depth bound of FF triangles (vs_ff_tri) */
     uint32_t idx = (uint32_t)(A_vtx.n / sizeof *o) - 1;
-    vcache[vcache_pos] = *v; vcache_idx[vcache_pos] = idx; vcache_state[vcache_pos] = state;
+    vcache[vcache_pos] = *v; vcache_idx[vcache_pos] = idx; vcache_state[vcache_pos] = state; vcache_nb[vcache_pos] = (uint8_t)nb;
     vcache_pos = (vcache_pos + 1) % 3;
     if (vcache_n < 3) vcache_n++;
     gf.vertices++;
@@ -1181,6 +1186,39 @@ static int pc_of(int type) {
 }
 
 static int row_masked(const gs_prim* P, int py) { return (P->scanmsk == 2 && !(py & 1)) || (P->scanmsk == 3 && (py & 1)); }
+
+/* (P1, notes/d3d11-renderer.md appendix P) the early-depth decision for a depth triangle drawn on the FF tier (its Z24 /
+ * Z32 vertices are <= GPU_Z_FF_MAX: higher ones took the ROV tier before): 0 the vertex bound (Z + GPU_ZB_MARGIN) holds -
+ * every vertex Z within the format and GPU_Z_FF_MAX and the plane no steeper than GPU_ZB_SLOPE per pixel; 1 no bound
+ * (1.0), the exact Z still < 2^20 - Z16 (clamped to 0xFFFF), or a steep Z24 / Z32 plane whose integer Z (the Z record's
+ * row + dy * rows + dx * px + the sub-sample step, int64 without overflow) stays below 2^20 at every sample inside the
+ * triangle, at any scale (its affine extension at the three vertices, below); 2 that is not proven: the ROV tier (zpatch
+ * holds any 32-bit Z). zp: the Z plane (gs_tri_plane of the vertices' Z). */
+int gpu_front_zbound(const gs_tri* T, const gs_vtx* a, const gs_vtx* b, const gs_vtx* c, int zfi, gs_plane* zp) {
+    int z16 = zfi == GPU_ZF_16 || zfi == GPU_ZF_16S;
+    uint32_t lim = z16 ? 0xFFFFu : GPU_Z_FF_MAX;
+    gs_tri_plane(T, zp, a->z, b->z, c->z);
+    if (a->z <= lim && b->z <= lim && c->z <= lim && fabs(zp->cx) + fabs(zp->cy) <= GPU_ZB_SLOPE) return 0;
+    if (z16) return 1;
+    if (a->z > lim || b->z > lim || c->z > lim) return 2;      /* (the caller's z_high rule: never here) */
+    int64_t row, dy, dx;
+    gs_rowstep_attr(zp, T->by0, 65536.0, 1, &row, &dy, &dx);
+    const int64_t SL = (int64_t)1 << 40, RL = (int64_t)1 << 52;   /* (products of < 2^12 rows / columns: no overflow) */
+    if (dx > SL || dx < -SL || dy > SL || dy < -SL || row > RL || row < -RL) return 2;
+    /* The pixel shader's Z16 at sample (i, j) of native pixel (px, py) is A(px, py) + F, A(x, y) = row + dy * (y - by0) +
+     * dx * x exactly (no overflow here), F = floor(float(dy * j / ky + dx * i / kx)) = A(sample position) - A(px, py) up to
+     * (|dx| + |dy|) * 2^-22 + 1. A is affine and every covered sample lies in the triangle, so Z16 <= max of A over the
+     * three vertices (exact, in 1/16 pixel: |dx| * 2^16 < 2^57) + that rounding. */
+    const int64_t X[3] = { T->x0, T->x1, T->x2 }, Y[3] = { T->y0, T->y1, T->y2 };
+    int64_t amax = INT64_MIN;
+    for (int k = 0; k < 3; k++) {
+        int64_t a16 = row * 16 + dy * (Y[k] - 16 * (int64_t)T->by0) + dx * X[k];
+        if (a16 > amax) amax = a16;
+    }
+    int64_t ad = (dx < 0 ? -dx : dx) + (dy < 0 ? -dy : dy);
+    int64_t zmax16 = (amax >> 4) + 1 + (ad >> 20) + 2;
+    return zmax16 < ((int64_t)GPU_ZE_ONE << 16) ? 1 : 2;
+}
 
 static uint32_t zclamp(const gs_prim* P, int64_t z) {
     int64_t zi = z >> 16;
@@ -1677,7 +1715,8 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
         if (!gf.zprims[f] || zl < gf.zmin[f]) gf.zmin[f] = zl;
         if (!gf.zprims[f] || zh > gf.zmax[f]) gf.zmax[f] = zh;
         gf.zprims[f]++;
-        if (f == GPU_ZF_32 && zh > 0x3F000000u) { z32_high = 1; gf.z32_over++; if (S.zt) S.zt->z_high = 1; }
+        /* (P1) beyond the DSV's exact range (gpu_front.h): the ROV tier, zpatch as the target's depth until a full clear */
+        if ((f == GPU_ZF_32 || f == GPU_ZF_24) && zh > GPU_Z_FF_MAX) { z32_high = 1; gf.z32_over++; if (S.zt) S.zt->z_high = 1; }
     }
 
     PROF_MARK(2);
@@ -1717,7 +1756,8 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
 
     PROF_MARK(3);
     /* ---- tier ---- */
-    int tier = GPU_TIER_FF, why = -1, punt = S.punt;
+    int tier = GPU_TIER_FF, why = -1, punt = S.punt, zb = -1;
+    gs_plane zbp;                        /* (P1) the Z plane gpu_front_zbound computed (zb >= 0), reused by the record */
     if (!punt && ts.punt) punt = ts.punt;
     if (!punt && gf_force_punt(ev, cls)) punt = GPU_PUNT_FORCED + 1;
     int outcome = 0;
@@ -1741,6 +1781,10 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
         else if (dual_exact && S.cd_dep &&       /* (M8 measurement: PS2_GPU_DUAL_EXACT=1 partial-alpha dual-source blends exact) */
                  (S.c_as ? !(as_lo == as_hi && (as_lo == 0 || as_lo == 128)) : (P->fix != 0 && P->fix != 128))) why = GPU_ROV_CLASS;
         else if (z32_high || (S.zt && S.zt->z_high)) why = GPU_ROV_Z32_HIGH;
+        else if (cls == GPU_PC_TRI && S.zfi >= 0 && (zb = gpu_front_zbound(&T, a, b, c, S.zfi, &zbp)) == 2) {
+            why = GPU_ROV_Z32_HIGH;      /* (P1: a steep Z24 / Z32 plane whose exact Z may reach 2^20) */
+            gf.zb_rov++;
+        }
         else if (outcome && gf_cfg.straddle_rov && (outcome == 4 || S.straddle_frame == gf_frame + 1)) {
             /* (the escalation flag of 4.3, off by default since M5's measurement: the exact split, sb_prim,
              * does the same on the FF tier. Sticky for the rest of the frame: further primitives of a state
@@ -1951,8 +1995,17 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
     /* ---- emission ---- */
     switch (cls) {
     case GPU_PC_TRI: {
+        /* (P1, appendix P) the early-depth bound vertex Z + GPU_ZB_MARGIN holds for an FF triangle whose vertex Z are all
+         * within the format and the DSV's exact range and whose Z plane is not steeper than GPU_ZB_SLOPE per pixel; any
+         * other FF depth triangle is drawn with the bound 1.0 (exact, no early rejection) */
+        int nb = 0;
+        if (zmode == 1 && tier == GPU_TIER_FF) {
+            if (zb < 0) zb = gpu_front_zbound(&T, a, b, c, S.zfi, &zbp);   /* (decided with the tier: never here) */
+            nb = zb != 0 || !P->zuse;    /* (!zuse: a constant plane - never here: no Z then) */
+            if (nb) gf.zb_sat++;
+        }
         uint32_t* ix = ar_reserve(&A_idx, 12);
-        for (int i = 0; i < 3; i++) ix[i] = emit_vertex(vs[i], ev, state);
+        for (int i = 0; i < 3; i++) ix[i] = emit_vertex(vs[i], ev, state, nb);
         gf.indices += 3;
         gf.idx_bytes += 12;
         OD.d.count += 3;
@@ -1977,7 +2030,10 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
                 ROW; DY; DX;                                                                            \
             } while (0)
             int iip = ev->iip, uvp = P->tme && P->fst;
-            FF_ROW(P->zuse, z, 65536.0, 1, r->zrow = row, r->zdy = dyy, r->zdx = dxx);
+            if (zb >= 0 && P->zuse) {            /* (P1: the plane of the tier decision - the same values) */
+                gs_rowstep_attr(&zbp, T.by0, 65536.0, 1, &row, &dyy, &dxx);
+                r->zrow = row; r->zdy = dyy; r->zdx = dxx;
+            } else FF_ROW(P->zuse, z, 65536.0, 1, r->zrow = row, r->zdy = dyy, r->zdx = dxx);
             FF_ROW(iip, r, 65536.0, 0, r->row[0] = (int32_t)(uint32_t)(uint64_t)row, r->dy[0] = (int32_t)(uint32_t)(uint64_t)dyy, r->dx[0] = (int32_t)(uint32_t)(uint64_t)dxx);
             FF_ROW(iip, g, 65536.0, 0, r->row[1] = (int32_t)(uint32_t)(uint64_t)row, r->dy[1] = (int32_t)(uint32_t)(uint64_t)dyy, r->dx[1] = (int32_t)(uint32_t)(uint64_t)dxx);
             FF_ROW(iip, b, 65536.0, 0, r->row[2] = (int32_t)(uint32_t)(uint64_t)row, r->dy[2] = (int32_t)(uint32_t)(uint64_t)dyy, r->dx[2] = (int32_t)(uint32_t)(uint64_t)dxx);

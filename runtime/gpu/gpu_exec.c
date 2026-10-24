@@ -787,7 +787,7 @@ static uint32_t build_constants(const gpu_front_frame_data* fd, int ref) {
             k->kx = (uint32_t)kx;
             k->ky = (uint32_t)ky;
             if (ref || d->tier == GPU_TIER_ALIAS16) {   /* gs.hlsl: d3d pixel -> NDC through the power-of-two viewport */
-                k->flags = (d->ct ? 1u : 0u) | (d->zt ? 2u : 0u);
+                k->flags = (d->ct ? 1u : 0u) | (d->zt ? 2u : 0u) | (gpu_earlyz() ? 0u : 4u);
                 k->ndc_scale[0] = k->ndc_scale[1] = 2.0f / (float)REF_VP;
                 k->ndc_bias[0] = k->ndc_bias[1] = 0.0f;   /* (viewport centred on the origin) */
                 int vt = d->tex <= MAX_TARGETS ? d->tex : 0;
@@ -1054,11 +1054,8 @@ static void exec_clear(const gpu_fop_clear* o) {
     }
     if (o->zclear && X.mixed && t->zts) {
         uint32_t zv = (uint32_t)o->value & (zbits_of(t) == 1 ? 0xFFFFu : zbits_of(t) == 2 ? 0xFFFFFFu : 0xFFFFFFFFu);
-        if (full) {
-            float zf;
-            uint32_t enc = zv + 0x00800000u;
-            memcpy(&zf, &enc, 4);
-            ID3D11DeviceContext_ClearDepthStencilView(gpu_rt.ctx, t->dsv, D3D11_CLEAR_DEPTH, zf, 0);
+        if (full) {                      /* (P1: enc(z), saturated at 1.0 - zpatch holds the value) */
+            ID3D11DeviceContext_ClearDepthStencilView(gpu_rt.ctx, t->dsv, D3D11_CLEAR_DEPTH, gpu_z_encode(zv), 0);
         } else {
             int b[4] = { 0, 0, x1 - 1, y1 - 1 };
             zquad(t, b, 1, zv);
@@ -1068,6 +1065,12 @@ static void exec_clear(const gpu_fop_clear* o) {
         ID3D11DeviceContext_ClearDepthStencilView(gpu_rt.ctx, t->dsv, D3D11_CLEAR_DEPTH, z, 0);
     }
     XC.clears++;
+}
+
+int gpu_earlyz(void) {
+    static int on = -1;
+    if (on < 0) { const char* e = getenv("PS2_GPU_EARLYZ"); on = !(e && *e == '0'); }
+    return on;
 }
 
 /* a quad over the whole bound target (M2: Z resolves) */
@@ -1662,13 +1665,14 @@ static int exec_init(void) {
         { "COLOR", 0, DXGI_FORMAT_R32_UINT, 0, 8, D3D11_INPUT_PER_VERTEX_DATA, 0 },
         { "COLOR", 1, DXGI_FORMAT_R32_UINT, 0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0 },
         { "TEXCOORD", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 16, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 1, DXGI_FORMAT_R32_UINT, 0, 28, D3D11_INPUT_PER_VERTEX_DATA, 0 },   /* (pc-research: vertex Z, early depth bound) */
         /* (M9) the draw's slot: element StartInstanceLocation + instance of the iota buffer (the vertex shaders of the
          * instanced classes - sprites, line pixels - subtract SV_InstanceID; a larger step rate was not divided the
          * documented way on the RTX 4060 Ti) */
         { "DRAWID", 0, DXGI_FORMAT_R32_UINT, 1, 0, D3D11_INPUT_PER_INSTANCE_DATA, 1 },
     };
     const gpu_shader_blob* vb = &gpu_shaders[GPU_SH_vs_ff_tri];   /* (the input signature with DRAWID) */
-    if (FAILED(ID3D11Device_CreateInputLayout(gpu_rt.dev, el, 5, vb->code, vb->size, &X.layout))) { gpu_log("input layout failed"); return 0; }
+    if (FAILED(ID3D11Device_CreateInputLayout(gpu_rt.dev, el, 6, vb->code, vb->size, &X.layout))) { gpu_log("input layout failed"); return 0; }
     if (!iota_ensure(65536)) return 0;
     {
         D3D11_FEATURE_DATA_D3D11_OPTIONS fo;
