@@ -709,12 +709,17 @@ bool gs_frag(float4 pos, uint irec, float3 istq, uint prim, out Frag f, out St s
     int by0 = (int)(recs.Load(rb + 108u) << 16) >> 16, bx0 = (int)recs.Load(rb + 108u) >> 16;
     int rows = py - by0;
     int a[7];
+    // (perf-p2) fog and U / V rows only where the state uses them (FGE; FST texturing): the others are never read
+    uint nk = tme && fst ? 7u : (st.flags & SF_FGE) != 0u ? 5u : 4u;
     [unroll] for (uint k = 0u; k < 7u; k++) {
-        uint dyk = recs.Load(rb + 52u + 4u * k), dxk = recs.Load(rb + 80u + 4u * k);
-        uint v = recs.Load(rb + 24u + 4u * k) + dyk * (uint)rows + dxk * (uint)px;
-        if (sj != 0u) v += (uint)(int)floor((float)asint(dyk) * fj);
-        if (si != 0u) v += (uint)(int)floor((float)asint(dxk) * fi);
-        a[k] = asint(v);
+        a[k] = 0;
+        if (k < nk) {
+            uint dyk = recs.Load(rb + 52u + 4u * k), dxk = recs.Load(rb + 80u + 4u * k);
+            uint v = recs.Load(rb + 24u + 4u * k) + dyk * (uint)rows + dxk * (uint)px;
+            if (sj != 0u) v += (uint)(int)floor((float)asint(dyk) * fj);
+            if (si != 0u) v += (uint)(int)floor((float)asint(dxk) * fi);
+            a[k] = asint(v);
+        }
     }
     f.col = clamp255i(a[0] >> 16) | (clamp255i(a[1] >> 16) << 8) | (clamp255i(a[2] >> 16) << 16) | (clamp255i(a[3] >> 16) << 24);
     f.fog = clamp255i(a[4] >> 16);
