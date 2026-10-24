@@ -37,8 +37,29 @@ Branch next/pc-research (worktree C:\Users\tanih\Projects\sly2-worktrees\pc-rese
   costs per VBlank: alias16 + alias16-draw ~1.3-1.6 ms (CT16 shuffles), ff-sprite 0.4-0.8, ff-line 0.25-0.5, ref-tri
   (ROV) 0.2-2.4, clear 0.2-0.3, present 0.15-0.3.
 
+- Offline thread-bench (gs_replay hwsubmit --mixed --front-thread --pin, 16:9, per game frame, GS decode / frontend ms):
+  ep1 4.2/5.9 (S1) 3.7/5.8 (S3); ep3 5.2/6.9, 5.5/8.2; ep5 5.2/8.3, 4.8/8.4; ep8 boss 5.5/7.3, 5.4/7.6; ep7 boss
+  2.8/4.5. ~32-41k primitives per game frame (ep1 2.81M prims / 87 frames) -> ~180 ns per primitive in the frontend.
+- Frontend section profile (gs_replay -Define GPU_FRONT_PROF, build\gsr_fprof; rdtsc inflates totals ~1.7x), ep1 Mcycles:
+  state lookup 228, geometry 91, inputs 85, texture 181, tier (+line pixels) 155, ownership 227, key/merge 205, record
+  emission 267, triangle vertices 256, early exits 39. Pure per-primitive (geometry, inputs, records, vertices, most of
+  texture/tier) ~55%; sequential (state dedup, ownership, merge) ~45% -> Amdahl with 4 workers ~1.7x.
+  ep5 / ep8 boss similar (key/merge larger in ep8: 447).
+- VU1 input per frame (PS2_CHAIN_STATS, chain_stats.py): ep3 hub walking (camera moving, VBlank 5100): 1.2 MB unpack, 272 KB
+  PATH2, 1782 MSCALs, 2644 tags; next frame: 91.4% of unpack bytes unchanged at the same address, 1.9% same content
+  elsewhere, 6.7% new. Safehouse menu views (ep1 / ep3, static camera, 2.5-2.9 MB unpack, ~4000 MSCALs): 97% unchanged.
+  The camera is a few qwords (pc-fps2); world matrices of static objects and all mesh data repeat.
+  TRAP: fps2_scene's time-based pad tokens are relative to START (X at START+25 s ~ 57 s wall): earlier windows show the
+  safehouse "Press X" view, not the hub.
+- VU replay (ep1 safehouse recording, 9000 programs, compiled, pinned CPU 4): 1.55 ns/pair, 0 differ. Live-in test
+  (VU_REPLAY_LIVEIN=1, registers scrambled): 95 programs (1.1%) depend on inherited registers - but they are 97% of the
+  pairs (the long renderer runs use matrices/state left in VF/VI by earlier programs): VU1 parallelism needs register
+  snapshots + dependency order, not just memory.
+- build\rel_base\sly2.exe = baseline game (f3bb29f GPU files), build\rel\sly2.exe = with conservative depth; in-game A/B
+  batch running (fps2_batch ab_s3 / ab_s1 -> build\warp\fps2_ab_s*.txt); machine load ~87% CPU from another agent.
+
 ## In progress
-- CPU-side offline measurements (step 3 below).
+- In-game A/B batch (background); meanwhile drafting notes/perf-plan.md.
 
 ## Next
 2. VU1 input data static vs per-frame: add a compact PS2_CHAIN_STATS mode to runtime/chain_dump.c (per DMA tag: id,
