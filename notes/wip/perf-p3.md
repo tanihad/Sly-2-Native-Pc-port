@@ -20,15 +20,23 @@ Branch next/perf-p3, worktree C:\Users\tanih\Projects\sly2-worktrees\perf-p3 (fr
   other cores ~8-13% (prep data as big as its inputs), and helpers slow the GS thread (clocks / L3); SMT-sibling helper
   worse. The split alone costs 5-7%.
 
+- Chaos recordings (build\gsrec\chaos_*.gsrec, 8 x 240 VBlanks, 200-834 MB; frames in build\chaos\record): heavier
+  than the corpus for the frontend (chaos_ep1_hub ~9-10 ms, chaos_m3_boss ~8-9 ms per game frame offline).
+- Pool v2 (commit b62522a: producer-side segments, prefetched preparations): identical, no consistent gain, GS thread
+  +15-30% -> NO-GO; reverted.
+- Exact sequential work (commits 679a5c4, ab074d9; stream identical on the recordings checked so far): sb_prim integer
+  row stepping (PS2_GPU_SB_CHECK=1: 5.5M rows, 0 differ) + empty-rectangle test, texel_rect without libm, inline vertex
+  compare, own_draw shifts + per-target clean generations (gpu_own.c touch/page_tg; scan_clean now also requires
+  !blk_shared - needed for ep2_photo / m6_rc_feedback identity), incremental CLUT hash (clut_note_pieces; CLUT slot
+  cost 167 -> 90 Mcycles on chaos_ep1_hub), flat FF planes as constants, ring prefetch (PS2_GPU_RING_PREFETCH).
+- In-game A/B run 1 (build\chaos\ab1.txt, P2 agent busy on the GPU/CPU): chaos scenes mostly GPU-bound at 3x.
+
 ## In progress
-- GS recordings of the chaos scenes (chaos_bench -Record, background).
-- Next: revert the split/pool (keep tools), optimise the sequential frontend hot spots exactly.
+- In-game bench ab1 (background).
 
 ## Next
-1. Revert gpu_front.c / gpu_front_int.h / pool parts of gpu_fthread.c to main; keep ring size / hold / prefetch.
-2. Hot spots (hold-mode profile ep8 boss, no-inline): fr_prim body 24%, sb_prim+sb_span 12.7%, own_draw 8%,
-   emit_vertex 6%, texel_rect 6% (libm floor/ceil calls), gs_tri_setup 5.4%, ring/unpack ~7%.
-3. Baseline in-game chaos bench (base exe), then after; gates; notes/perf-plan.md P3 results.
+1. Offline hold-mode A/B of all changes (base vs new) on chaos + corpus, several repeats, quiet moments.
+2. Full gates; in-game chaos A/B with repeats; notes/perf-plan.md P3 results + d3d11-renderer.md appendix.
 
 ## Findings / traps
 - NEVER use .NET file APIs ([IO.File]::...) with relative paths: their current directory is the MAIN checkout (an empty

@@ -193,17 +193,4 @@ for ($rep = 0; $rep -lt $Repeat; $rep++) {
     }
 }
 # medians over the repeats, per scene and build
-& $py -c @"
-import json, statistics, sys, collections
-rows = [json.loads(l) for l in open(r'$outJs')]
-g = collections.defaultdict(list)
-for r in rows:
-    if 'fps_med' not in r: continue
-    sc, rest = r['name'].split('@', 1); b = rest.split('#')[0]
-    g[(sc, b)].append(r)
-keys = ['fps_med', 'low1', 'low01', 'worker', 'gs', 'fr', 'rc', 'gpu']
-print('scene | build | n | fps med | 1% low | 0.1% low | worker | GS | front | render | GPU')
-for (sc, b), rs in sorted(g.items()):
-    m = {k: statistics.median([r.get(k, 0) for r in rs]) for k in keys}
-    print(f"{sc} | {b} | {len(rs)} | {m['fps_med']:.1f} | {m['low1']:.1f} | {m['low01']:.1f} | {m['worker']:.2f} | {m['gs']:.2f} | {m['fr']:.2f} | {m['rc']:.2f} | {m['gpu']:.2f}")
-"@
+& $py (Join-Path $PSScriptRoot 'chaos_sum.py') --table $outJs

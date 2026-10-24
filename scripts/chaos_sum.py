@@ -37,8 +37,28 @@ def med(a):
     return statistics.median(a) if a else 0.0
 
 
+def table(path):
+    """medians over the repeats per scene and build of a chaos_bench .jsonl"""
+    rows = [json.loads(l) for l in open(path) if l.strip()]
+    g = {}
+    for r in rows:
+        if "fps_med" not in r:
+            continue
+        sc, rest = r["name"].split("@", 1)
+        g.setdefault((sc, rest.split("#")[0]), []).append(r)
+    keys = ["fps_med", "low1", "low01", "worker", "gs", "fr", "fr_p90", "rc", "gpu", "prims"]
+    print("scene | build | runs | fps med | 1% low | 0.1% low | worker | GS | front (p90) | render | GPU | prims")
+    for (sc, b), rs in sorted(g.items()):
+        m = {k: med([x.get(k, 0) for x in rs]) for k in keys}
+        print(f"{sc} | {b} | {len(rs)} | {m['fps_med']:.1f} | {m['low1']:.1f} | {m['low01']:.1f} | {m['worker']:.2f} | {m['gs']:.2f} | "
+              f"{m['fr']:.2f} ({m['fr_p90']:.2f}) | {m['rc']:.2f} | {m['gpu']:.2f} | {m['prims']:.0f}")
+
+
 def main():
     a = sys.argv[1:]
+    if a and a[0] == "--table":
+        table(a[1])
+        return
     d = Path(a[0])
     t_from, t_to, name, js = 0.0, 1e9, d.name, None
     i = 1
