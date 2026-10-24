@@ -57,7 +57,89 @@ static void vif_words(const uint32_t* w, uint32_t n, uint32_t* skip, uint32_t* c
     }
 }
 
+/* (pc-research) PS2_CHAIN_STATS=<vblank>:<count>:<file>: one line per DMA tag of the kicked VIF1 chains - tag id, data
+ * address, qwc, a hash of the data and its VIF payload split (unpack / direct / mpg / other words, MSCALs) - to measure
+ * how much of a frame's VU1 input is the same from frame to frame (scripts/chain_stats.py). */
+static void vif_count(const uint32_t* w, uint32_t n, uint32_t* skip, uint32_t* cycle, uint32_t* skind, uint32_t cnt[5]) {
+    uint32_t i = 0;
+    if (*skip) { uint32_t s = *skip < n ? *skip : n; i = s; *skip -= s; cnt[*skind] += s; }
+    while (i < n) {
+        uint32_t code = w[i++], cmd = (code >> 24) & 0x7F, num = (code >> 16) & 0xFF, imm = code & 0xFFFF, data = 0, kind = 3;
+        if (cmd >= 0x60) {
+            uint32_t vn = (cmd >> 2) & 3, vl = cmd & 3, nn = num ? num : 256;
+            uint32_t cl = *cycle & 0xFF, wl = (*cycle >> 8) & 0xFF;
+            uint32_t nin = (!wl || wl <= cl) ? nn : (nn / wl) * cl + (nn % wl < cl ? nn % wl : cl);
+            uint32_t vb = (vl == 3) ? 2 : (4u >> vl) * (vn + 1);
+            data = (nin * vb + 3) / 4;
+            kind = 0;
+        } else {
+            switch (cmd) {
+            case 0x20: data = 1; break;
+            case 0x30: case 0x31: data = 4; break;
+            case 0x4A: data = (num ? num : 256) * 2; kind = 2; break;
+            case 0x50: case 0x51: data = (imm ? imm : 65536) * 4; kind = 1; break;
+            case 0x01: *cycle = imm; break;
+            case 0x14: case 0x15: case 0x17: cnt[4]++; break;
+            default: break;
+            }
+        }
+        uint32_t take = data < n - i ? data : n - i;
+        cnt[kind] += take;
+        i += take;
+        *skip = data - take;
+        *skind = kind;
+    }
+}
+
+static void chain_stats(uint32_t tadr) {
+    static int init;
+    static FILE* so;
+    static uint32_t sfrom = ~0u, sleft;
+    if (!init) {
+        init = 1;
+        const char* e = getenv("PS2_CHAIN_STATS");
+        char path[400];
+        unsigned f = 0, c = 2;
+        if (e && sscanf(e, "%u:%u:%399s", &f, &c, path) == 3) { so = fopen(path, "w"); sfrom = f; sleft = c; }
+    }
+    if (!so || !sleft || ps2_vblank_count() < sfrom) return;
+    sleft--;
+    fprintf(so, "C %08X %u\n", tadr, ps2_vblank_count());
+    uint32_t stack[2], sp = 0, skip = 0, skind = 0, cycle = 0x0101;
+    for (int n = 0; n < 400000; n++) {
+        const uint8_t* p = hw_dma_ptr(tadr, 16);
+        if (!p) break;
+        uint64_t t;
+        memcpy(&t, p, 8);
+        uint32_t qwc = (uint32_t)t & 0xFFFF, id = (uint32_t)(t >> 28) & 7, addr = (uint32_t)(t >> 32) & 0xFFFFFFF0u;
+        uint32_t data = (id == 0 || id == 3 || id == 4) ? addr : tadr + 16, next = tadr + 16 + qwc * 16;
+        const uint8_t* d = qwc ? hw_dma_ptr(data, qwc * 16) : NULL;
+        uint64_t h = 1469598103934665603ull;
+        uint32_t cnt[5] = { 0, 0, 0, 0, 0 };
+        if (d) {
+            for (uint32_t k = 0; k < qwc * 16; k++) h = (h ^ d[k]) * 1099511628211ull;
+            vif_count((const uint32_t*)d, qwc * 4, &skip, &cycle, &skind, cnt);
+        }
+        fprintf(so, "T %u %08X %u %016llX %u %u %u %u %u\n", id, data, qwc, (unsigned long long)h, cnt[0], cnt[1], cnt[2],
+                cnt[3], cnt[4]);
+        int stop = 0;
+        switch (id) {
+        case 0: stop = 1; break;
+        case 1: tadr = next; break;
+        case 2: tadr = addr; break;
+        case 3: case 4: tadr += 16; break;
+        case 5: if (sp < 2) stack[sp++] = next; tadr = addr; break;
+        case 6: if (sp) tadr = stack[--sp]; else stop = 1; break;
+        default: stop = 1; break;
+        }
+        if (stop) break;
+    }
+    fflush(so);
+    if (!sleft) { fclose(so); so = NULL; }
+}
+
 void chain_dump(uint32_t tadr) {
+    chain_stats(tadr);
     static int init;
     if (!init) {
         init = 1;

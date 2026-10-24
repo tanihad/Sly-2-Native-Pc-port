@@ -328,6 +328,12 @@ SV_Depth = asfloat(z + 0x00800000)                                        // ord
   invocations per frame, well within budget; conservative-depth variants are an M9 option.
 - Sprites and line pixels carry a constant Z per native pixel (as sw).
 
+*(P1, as built (appendix P): the encoding is `min(z, 2^20) / 2^20` (exact, linear, spread over [0, 1] for the GPU's
+coarse depth culling; stored values above 2^20 saturate, exact against FF fragments, which the frontend keeps below
+2^20: Z24 / Z32 primitives with a vertex Z above 2^20 - 512 go to the ROV tier with zpatch as depth until a full clear),
+and the FF pixel shaders write it as `SV_DepthLessEqual` under a proven rasterized upper bound, so hidden fragments are
+rejected before shading while the exact value still decides every tie.)*
+
 ---
 
 ## 4. Draw classification
@@ -2482,3 +2488,118 @@ limiter), presents are never skipped, gpu_submit_sink keeps at most 2 frames que
 ignored and its budget stays the 59.94 Hz frame (`pace_gov.period_ms`). gpu_vrr.c: read-only NVAPI (DRS G-SYNC mode, app override,
 NvAPI_Disp_GetVRRInfo) + DXGI composition mode for the log and the menu's Variable refresh status; gpu_present.c logs `VRR: ACTIVE /
 NOT ACTIVE ...` verdicts and why frame statistics stopped (the window not in front). scripts/vrr_probe.c: standalone VRR probe.
+
+## Appendix P. As built: P1 exact depth with early rejection (branch next/perf-p1)
+
+Plan: notes/perf-plan.md P1 (prototype: section 3.1 there). Checkpoint history: notes/wip/perf-p1.md.
+
+**Why.** Exact integer Z was written through `SV_Depth`, which turns early depth rejection off: at 3x the ep1 hub shaded 30M
+depth-tested FF-triangle fragments per game frame of which 11.8M passed. D3D11's conservative depth output
+(`SV_DepthLessEqual`) keeps early rejection when the rasterized depth is an upper bound of the value the shader writes; the
+hardware tests the bound first (with GREATER / GEQUAL a failing bound means a failing fragment) and the exact value still
+decides the rest, ties included. NVIDIA's coarse culling needs the depths spread over [0, 1] (scripts/earlyz_probe.c:
+values packed into 0.25..0.254 lose it), hence the new encoding.
+
+**What changed**
+- Encoding (shaders/int64.hlsli, gpu_front.h `GPU_ZE_ONE`, `gpu_z_encode`): `enc(z) = min(z, 2^20) / 2^20`, `dec(d) = d * 2^20`.
+  ps_zresolve (zpatch -> DSV), partial clears (zquad mode 1) and full clears (ClearDepthStencilView) store it; values >= 2^20
+  are held saturated (1.0); cs_zsync (DSV -> zpatch) leaves zpatch's word where the DSV holds 1.0.
+- FF range (gpu_front.c fr_prim): a Z24 or Z32 primitive with a vertex Z above `GPU_Z_FF_MAX` = 2^20 - 512 takes the ROV
+  tier and makes its target's depth live in zpatch until a full clear (the old Z32 > 0x3F000000 rule, now for Z24 too and
+  at the new limit; counted `z32_over`, `rov_why[Z32_HIGH]`).
+- Rasterized bounds (shaders/gs.hlsl): FF triangles (vs_ff_tri) `enc(min(z_v, 2^20 - 128) + 128)` per vertex from the vertex
+  record's spare word, or 1.0 where the word is 0xFFFFFFFF; sprites (vs_ref_sprite) and line / point pixels (vs_ref_linepix)
+  `enc(z + 1)`; thin outlines (vs_ref_thin) the larger of the pixel shader's float plane `z0 + zx * t` at the two ends of the
+  line's t range plus `(|z0| + |zx| |t|) * 2^-20 + 2`. Every FF pixel shader with a Z output writes `SV_DepthLessEqual`
+  (thin lines included; SV_Position `noperspective centroid`). Draw flag 4 (`PS2_GPU_EARLYZ=0`, gpu_exec.c `gpu_earlyz`):
+  every bound 1.0, for A/B runs.
+- The bound decision (gpu_front.c `gpu_front_zbound`, per FF depth triangle, with the tier): 0 vertex bound (every vertex Z
+  <= the format maximum and `GPU_Z_FF_MAX`, Z slope `|dz/dx| + |dz/dy| <= GPU_ZB_SLOPE` = 8192 per native pixel); 1 no bound
+  (vertex word 0xFFFFFFFF; Z16 with a vertex above 0xFFFF, or a steeper plane whose exact Z is still proven < 2^20); 2 the
+  ROV tier (a steep Z24 / Z32 plane not proven < 2^20). The 3-entry vertex cache keys on "no bound" (a bounded triangle may
+  reuse an unbounded copy - a higher bound is still a bound - not the reverse). The Z plane computed for the decision is
+  reused by the FF record. Counters `zb_sat` (case 1), `zb_rov` (case 2); gs_replay hwdry prints both.
+
+**Exactness, per Z format.** Notation: L = 2^20, T = L - 512, M = 128. A sample's exact Z is the FF pixel shader's
+`gs_z_clamp(gs_z16_sample(row, dy, dx, ...), zmax)` - the software renderer's value at sample 0, bit for bit.
+1. *The encoding.* For z <= L, z is an integer below 2^24, so `(float)z` is exact and the product with 2^-20 is exact (no
+   denormals: the smallest non-zero value is 2^-20); enc is strictly increasing and `dec(enc(z)) = z`. Equal integers give
+   equal floats, so the D3D comparisons GREATER / GREATER_EQUAL / ALWAYS / NEVER decide exactly as the GS's integer test.
+2. *FF fragments are < L.* Z16 / Z16S: the exact Z is clamped to 0xFFFF. Z24 / Z32: every vertex is <= T (else ROV); a
+   sprite takes v1's Z (<= T); line pixels take the line's plane at t in [0, 1] (the DDA's major-axis range lies between
+   the end points), so between the end points' Z; thin lines likewise (float rounding << 512); triangles with a vertex
+   bound: below (3), Z <= max vertex Z + 1 < L; triangles without one: `gpu_front_zbound` proves it - with |dx|, |dy| <=
+   2^40 and |row| <= 2^52 (else case 2) the record's integer Z at a sample is A(px, py) + F, A affine and evaluated exactly
+   in int64, F the float sub-sample step = A(sample) - A(px, py) within (|dx| + |dy|) 2^-22 + 1; every covered sample lies in
+   the triangle (D3D positions `gs * k + 0.5` are exact on the 1/256 grid, sample (i, j) of pixel (px, py) is GS position
+   (px + i / kx, py + j / ky)), so Z16 <= max of A over the three vertices + that rounding, which must be < L << 16 (else
+   case 2: the ROV tier, where zpatch holds any 32-bit Z).
+3. *The triangle bound holds* (case 0). The record's Z differs from the real plane P through the three vertices by the
+   rounding of row (0.5), dy and dx (0.5 each times at most 2048 rows / columns: 1/64 unit each), the float sub-sample step
+   (|dx| + |dy| <= 2^29 under the slope limit: < 1/256 unit) and the double-precision plane (|cx|, |cy| <= 8192: < 2^-18 unit):
+   Z <= P(sample) + 0.05. P(sample) is the barycentric combination of the vertex Z (the sample is inside the triangle),
+   and the rasterizer interpolates the vertex bounds `(z_v + M) / 2^20` with the same barycentrics, up to its own float
+   error eta: bound >= (P + M) / 2^20 - eta. D3D11 does not specify eta tightly, so it is measured: the conformance kernel
+   (4. below) draws 28672 random, sliver, tiny, large, degenerate and steep-within-the-limit triangles at 7 sample factors
+   (1x1 .. 6x9) through the 16384-pixel REF viewport and finds the minimum of (bound - exact Z) = 127 of 128 on the RTX 4060
+   Ti and on WARP over 1.1G bounded samples: |eta| < 1 unit (6e-5 of the range would be 64). Without the slope limit the
+   bound fails only above 4.1M per pixel - the limit has a factor of 500 to spare.
+4. *Stored values >= L* (clears, uploads, ROV writes, Z24 words with any top byte) are held as 1.0 in the DSV. Against an
+   FF fragment f < L: GREATER and GEQUAL are false for every stored value >= L, as for 1.0 (f encodes below 1.0) - exact.
+   The DSV <-> zpatch sync keeps the invariant "DSV = enc(min(zpatch word & mask, L)) or a value an FF draw wrote (< L)":
+   ps_zresolve writes the first, FF draws the second, and cs_zsync copies only decoded values < L (a 1.0 is never an FF
+   write, so zpatch's word - the true value - stays). Per format: Z32 any 32-bit value; Z24 the low 24 bits (the top byte
+   always zpatch's); Z16 / Z16S never reach L.
+5. *Sprites and line / point pixels*: the bound z + 1 is >= the written z exactly (the interpolation of a constant is
+   within an ulp, 1/16 unit at most). *Thin lines*: the written value is the floor of a monotonic float function of the
+   sample's major coordinate in [lo, hi); the bound is its larger end value plus four ulps of each shader's evaluation
+   plus 2.
+6. *Scaling S > 1*: (2)-(3) hold for every sample; downloads, read-backs, rescales (cs_rescale) and memory ops read zpatch
+   after cs_zsync (ensure_zp_all), so the encoding never reaches GS memory. *ROV tier / REF mode / ALIAS16*: depth is
+   zpatch's integer words, no encoding involved. *No-ROV, FL 11_0, WARP*: the same FF shaders and DSV; SV_DepthLessEqual is
+   shader model 5.0 (FL 11_0); the gs-hw scenes run on WARP and without ROVs.
+
+**Tests** (all 0 mismatches on the RTX 4060 Ti and on WARP)
+- gpu_conf.c (gs-hw): cs_conformance - enc, dec and both bounds bit for bit vs C on 131072 vectors (an eighth of them at
+  the limits: 0x7F5C3, 0xFFFF, T, T + 1, L - 128, L - 1, L, L + 1, 0xFFFFFF, 0xFFFFFFFF ...); D32 round trip (the targets'
+  R32_TYPELESS / D32_FLOAT, one point per pixel, `SV_DepthLessEqual`): raw bits, SRV decode, GREATER / GEQUAL / GEQUAL +
+  write of FF fragments (< L, bound z + 1) against stored values of every range compared with the TRUE stored integers, the
+  depth left after the write; zsync.hlsl for Z16 / Z24 / Z32 (zpatch words with garbage top bytes and values >= L resolved,
+  FF writes over half the pixels, cs_zsync back: written words exact (Z24 under the old top byte), the others bit for bit;
+  constant resolves of 0 .. 0xFFFFFFFF); the triangle bound above (also: no Z24 / Z32 sample of a case-0 / case-1 triangle
+  at or above L; ~1050 degenerate triangles took case 2).
+- tests/unit/gs-draw `t_zlimits(Z32 / Z24 / Z16 / Z16S)`: clears to the format maximum, uploads of words around L (Z24 with
+  top bytes), FF ties against them, Z16 vertices above 0xFFFF, steep planes (case 1), a 6e-4-pixel sliver (case 2), Z above
+  the FF range then ties and FF-range draws (the sticky fallback), a full clear and FF ties again; software checks, and in
+  gs-hw (REF, mixed exact, mixed default, without ROVs; hardware and WARP) the GPU's memory compared at every read; the mixed
+  runs check that all three fallbacks were taken.
+- m9_exact against main 4e2158e (every sample of every target every 7 VBlanks, 28 recordings): S = 1 and 3 identical;
+  `--thin` at S = 3 and 4 identical; `PS2_GPU_EARLYZ=0` identical.
+- In the corpus: no Z24 targets, Z32 < 0x7F5C3, Z16S < 0x2D3C; case 1 for 0.2-1% of FF depth triangles (ep1 hub 8096 of
+  1.9M), case 2 and the Z-range rule never. (A first version bounded case 1 over the bounding box: 28-243 false case-2
+  triangles per recording; the bound at the vertices has none.)
+- Gates: gpu_diff_all mixed and ref at S = 1 and 3 (28/28 each); gpu_game_all S = 1 (4196 pictures exact) and S = 3 box
+  gate (28/28; one run had ep2_photo fail with an impossible pixel count while other GPU tests ran beside it - not
+  reproduced in two full reruns and with base / prototype / P1 alone); gpu_lockstep_all REF and mixed (28343 comparisons, 0
+  failed); gpu_sample_all S = 3; gpu_fthread_check and -Mixed (28 identical); tests\run_tests.py 16/16; every unit suite
+  (gs-hw full on hardware and WARP, window / warp / menu -UnitOnly); tests\pc_text_boot.ps1; debug and release builds;
+  scripts\package.py.
+
+**Measured** (m9_bench, GPU ms per game frame, 16:9, interleaved rounds, medians of 3; the GPU idle but for another agent's
+paused game; PS invocations per game frame from PS2_GPU_PROF=2, which do not depend on load)
+
+| recording | 3x before | 3x after | 4x before | 4x after | PS 3x before -> after (FF depth tris; passing) | PS 4x before -> after |
+|---|---|---|---|---|---|---|
+| ep1 hub | 9.48 | **6.41 (-32%)** | 15.03 | **9.87 (-34%)** | 47.2 -> 30.1 M (30.0 -> 13.1; 11.8) | 78.6 -> 50.1 M (50.1 -> 21.6; 19.6) |
+| ep3 hub | 8.84 | **6.90 (-22%)** | 13.94 | **10.80 (-23%)** | 42.3 -> 30.3 (24.9 -> 13.0; 11.0) | 70.5 -> 50.4 (41.5 -> 21.5; 18.4) |
+| ep5 street | 8.98 | **6.57 (-27%)** | 14.27 | **10.30 (-28%)** | 46.2 -> 32.9 (25.1 -> 11.9; 10.6) | 77.0 -> 54.6 (41.8 -> 19.6; 17.6) |
+| ep8 boss | 7.00 | **6.93 (-1%)** | 10.72 | **10.58 (-1%)** | 31.3 -> 30.6 (13.5 -> 12.9; 12.5) | 52.1 -> 50.9 (22.6 -> 21.5; 20.8) |
+| ep7 boss | 11.02 | **9.04 (-18%)** | 17.99 | **14.54 (-19%)** | 73.4 -> 61.5 (31.1 -> 19.3; 16.5) | 122.4 -> 102.1 (51.9 -> 31.9; 27.4) |
+
+The prototype (pc-research) measured the same within 0.15 ms. Depth-tested FF triangles now shade 1.03-1.18x the
+fragments that pass (from 1.08-2.6x); what is left is the shading cost itself (P2).
+
+**Deviations / left for P2**: thin outlines and sprites lose early rejection on exact ties only (bound + 1); Z16 / Z16S
+targets use the same 2^-20 scale, so their (small) Z range is poorly spread for coarse culling (a per-format scale is a P2
+option; they are 1-2% of depth primitives); the ROV tier's own depth reads (zpatch in the shader) get no early rejection
+(P2 (c)).

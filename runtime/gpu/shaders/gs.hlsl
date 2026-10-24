@@ -98,8 +98,21 @@ void probe_rec(uint kind, uint rb, uint state, int U, int V, uint t, uint col, u
 #endif
 
 // ---- vertex shaders --------------------------------------------------------------------------------
+// (P1, notes/d3d11-renderer.md appendix P) FF pixel shaders write the exact Z as a conservative SV_DepthLessEqual: the
+// vertex shaders give the rasterizer an upper bound of every fragment's Z as its depth (int64.hlsli gs_z_bound_*), so
+// the hardware rejects fragments whose bound already fails the test before the shader runs; the exact value still
+// decides every tie. (SV_DepthLessEqual needs SV_Position noperspective centroid.) Draw flag 4 (PS2_GPU_EARLYZ=0): every
+// bound 1.0 - no early rejection, the same results.
+#if defined(FF) && defined(ZOUT)
+#if FF && ZOUT
+#define ZPOS_MOD noperspective centroid
+#endif
+#endif
+#ifndef ZPOS_MOD
+#define ZPOS_MOD
+#endif
 struct VR {
-    float4 pos : SV_Position;
+    ZPOS_MOD float4 pos : SV_Position;
     nointerpolation uint rec : REC;      // record byte offset (sprites, line pixels)
     nointerpolation uint did : DID;      // (M9) the draw's slot (load_draw)
 };
@@ -109,11 +122,14 @@ float4 clip_of(float2 d3d) {             // d3d pixel coordinates -> clip space
     return float4(p.x, -p.y, 0.5, 1.0);
 }
 
+float z_bound(float b) { return (draw_flags & 4u) != 0u ? 1.0 : b; }   // (P1) PS2_GPU_EARLYZ=0: no early rejection
+
 struct VIn {
     float2 xy : POSITION;                // GS coordinates (12.4 minus XYOFFSET, exact)
     uint rgba : COLOR0;
     uint fog_state : COLOR1;
     float3 stq : TEXCOORD0;
+    uint zv : TEXCOORD1;                 // (pc-research) the vertex's Z
     uint did : DRAWID;                   // (M9) the draw's slot: per-instance element, StartInstanceLocation
 };
 
@@ -145,6 +161,7 @@ VR vs_ref_sprite(VIn vin, uint vid : SV_VertexID, uint inst : SV_InstanceID) {
     float x1 = (float)((int)(r.y << 16) >> 16), y1 = (float)((int)r.y >> 16);
     VR o;
     o.pos = clip_of(single_rate_pos((vid & 1u) ? x1 : x0, (vid & 2u) ? y1 : y0));
+    o.pos.z = z_bound(gs_z_bound_const(recs.Load(base + 12u)));   // (P1) the sprite's constant Z (+ 1)
     o.rec = base;
     o.did = did;
     return o;
@@ -160,6 +177,7 @@ VR vs_ref_linepix(VIn vin, uint vid : SV_VertexID, uint inst : SV_InstanceID) {
     float px = (float)((int)(r << 16) >> 16), py = (float)((int)r >> 16);
     VR o;
     o.pos = clip_of(single_rate_pos(px + ((vid & 1u) ? 1.0 : 0.0), py + ((vid & 2u) ? 1.0 : 0.0)));
+    o.pos.z = z_bound(gs_z_bound_const(recs.Load(base + 4u)));    // (P1) the pixel's Z (+ 1)
     o.rec = base;
     o.did = did;
     return o;
@@ -185,6 +203,14 @@ VR vs_ref_thin(VIn vin, uint vid : SV_VertexID, uint inst : SV_InstanceID) {
     float2 p = xm ? float2(m, n) : float2(n, m);
     VR r;
     r.pos = clip_of(float2(p.x * (float)kx + 0.5, p.y * (float)ky + 0.5));
+    // (P1) the pixel shader's Z is floor(z0 + zx * t) for t of a sample with major coordinate in [lo, hi): monotonic in
+    // t, so at most its value at one end of that range, plus the float rounding of either shader (|value| * 2^-20 covers
+    // a few ulps of each operation) and 1
+    float2 zz = asfloat(recs.Load2(base + 32u));
+    float ta = (g.x - g.z) / g.w, tb = (g.y - g.z) / g.w;
+    float za = zz.x + zz.y * ta, zb = zz.x + zz.y * tb;
+    float zbnd = max(za, zb) + (abs(zz.x) + abs(zz.y) * max(abs(ta), abs(tb))) * (1.0 / 1048576.0) + 2.0;
+    r.pos.z = z_bound(clamp(zbnd, 0.0, 1048576.0) * (1.0 / 1048576.0));
     r.rec = base;
     r.did = did;
     return r;
@@ -193,7 +219,7 @@ VR vs_ref_thin(VIn vin, uint vid : SV_VertexID, uint inst : SV_InstanceID) {
 // FF triangles (M5): the same position as vs_ref_tri (identical coverage), plus S/T/Q for the fast
 // perspective path (interpolated linearly in screen space, as the GS steps them)
 struct VF {
-    float4 pos : SV_Position;
+    ZPOS_MOD float4 pos : SV_Position;
     nointerpolation uint rec : REC;
     noperspective float3 stq : TEXCOORD0;
     nointerpolation uint did : DID;      // (M9) the draw's slot
@@ -204,6 +230,7 @@ VF vs_ff_tri(VIn i) {
     VF o;
     o.did = i.did;
     o.pos = clip_of(float2(i.xy.x * (float)kx + 0.5, i.xy.y * (float)ky + 0.5));
+    o.pos.z = z_bound(gs_z_bound_vtx(i.zv));   // (P1) the vertex's Z + ZE_MARGIN, or 1.0 (0xFFFFFFFF: no bound, gpu_front.c)
     o.rec = 0u;
     o.stq = i.stq;
     return o;
@@ -992,7 +1019,7 @@ void ps_gs(VR i
 
 // ---- the FF pixel shaders (M5, notes/d3d11-renderer.md 4.2) -------------------------------------------
 // The fragment is evaluated exactly as above; the output merger does what is left: the Z test and write
-// (exact integer Z through SV_Depth, 3.6), the blend (table 4.2), the byte write mask. Colours are raw GS
+// (exact integer Z through SV_DepthLessEqual, 3.6 and appendix P), the blend (table 4.2), the byte write mask. Colours are raw GS
 // bytes in a UNORM target: a byte b is output as b / 255 (exact through the UNORM conversion).
 #ifndef DUAL
 #define DUAL 0
@@ -1012,7 +1039,7 @@ struct FOut {
     float4 c1 : SV_Target1;
 #endif
 #if ZOUT
-    float z : SV_Depth;
+    float z : SV_DepthLessEqual;         // (P1) <= the rasterized bound: early depth rejection stays on
 #endif
 };
 
