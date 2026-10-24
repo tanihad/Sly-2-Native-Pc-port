@@ -223,6 +223,31 @@ running** (the CPU stages grow 1.3-2x under another agent's load) and m9_bench o
 | P6 | **In-game overhead**: why the stages cost 1.5-2x offline (ring sizes and batching, cache-line sharing, pools on P-cores via CPU sets by EfficiencyClass, SMT siblings last, audio / IOP / logging free to use E-cores) | in-game / offline <= 1.25 for GS and frontend; ep1 hub 2x >= 200 fps, 3x >= 190 |
 | P7 | **Latency and pacing**: optional NVIDIA Reflex through nvapi_QueryInterface (SetSleepMode low latency + Sleep + markers; ids from the public NVAPI interface list, as gpu_vrr.c does), default limit = refresh - 3 with VRR, frame-time validation from DXGI statistics / PresentMon | frame-time p99 / median <= 1.3 in the 35 s scenes; with Reflex, lower present latency (markers) when GPU-bound |
 
+### P1 results (branch next/perf-p1, 2026-10-23; design, exactness proof per Z format and tests: d3d11-renderer.md appendix P)
+
+Done: the z / 2^20 encoding everywhere (DSV, clears, ps_zresolve, cs_zsync with a saturation sentinel for stored values
+>= 2^20, downloads / read-backs through zpatch), conservative SV_DepthLessEqual on every FF class (triangles, sprites,
+lines, points, thin outlines, HUD), a proven per-triangle bound decision (vertex bound / no bound / ROV) in the frontend,
+Z24 and Z32 above the FF range on the old zpatch path, `PS2_GPU_EARLYZ=0`, the conformance kernels rewritten (round trip,
+ties against true stored values, zsync for Z16/Z24/Z32, the triangle bound on 28672 triangles: min slack 127 of 128 on the
+RTX 4060 Ti and WARP).
+
+GPU ms per game frame (m9_bench, 16:9, interleaved medians, GPU idle but for another agent's paused game) and PS invocations
+per game frame:
+
+| recording | 3x before -> after | 4x before -> after | PS 3x | PS 4x |
+|---|---|---|---|---|
+| ep1 hub | 9.48 -> **6.41** | 15.03 -> **9.87** | 47.2 -> 30.1 M | 78.6 -> 50.1 M |
+| ep3 hub | 8.84 -> **6.90** | 13.94 -> **10.80** | 42.3 -> 30.3 M | 70.5 -> 50.4 M |
+| ep5 street | 8.98 -> **6.57** | 14.27 -> **10.30** | 46.2 -> 32.9 M | 77.0 -> 54.6 M |
+| ep8 boss | 7.00 -> **6.93** | 10.72 -> **10.58** | 31.3 -> 30.6 M | 52.1 -> 50.9 M |
+| ep7 boss | 11.02 -> **9.04** | 17.99 -> **14.54** | 73.4 -> 61.5 M | 122.4 -> 102.1 M |
+
+P1 targets met: 3x ep1 6.41 <= 6.6, ep3 6.90 <= 7.0, ep5 6.57 <= 6.8; m9_exact 28/28 identical at S = 1 and 3 (and --thin
+at 3 and 4); gs-hw passes on hardware and WARP. (The in-game "ep1 3x >= 105 fps" check needs the CPU stages too: not
+re-run here - pc-fps2's batch with no other game running.) Left for P2: early-depth bounds give nothing on ep8 boss
+(already ~1.05 shaded per passing fragment); what remains there and everywhere is the per-fragment cost.
+
 Order: P1 first (days; the biggest single gain; independent). P2 and P3 in parallel (shaders / executor vs gpu_front.c). Then
 P4, P5, P6. P7 any time (render thread). Re-measure after each; only if 200 at 100% render scale in the heaviest hub is
 still required after P1-P6, start option I (HLE renderer) as research.
