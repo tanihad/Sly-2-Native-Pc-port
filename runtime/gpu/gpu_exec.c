@@ -1481,7 +1481,7 @@ static void exec_a16_copy(const gpu_fop_draw* d) {
 static int spec_level(const gpu_fop_draw* d) {
     static int on = -1;
     if (on < 0) { const char* e = getenv("PS2_GPU_SPEC"); on = !(e && *e == '0'); }
-    if (!on) return 0;
+    if (!on || X.probe) return 0;        /* (PS2_GPU_PROBE: the ubershaders record the probe pixel) */
     if (!(d->feat & GPU_DF_TEX)) return 2;
     if (d->feat & GPU_DF_LOD) return 0;
     if (!(d->feat & GPU_DF_VIEW)) return 1;

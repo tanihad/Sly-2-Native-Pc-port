@@ -975,7 +975,14 @@ void ps_gs(VR i
 #if PRIM != 0
     uint prim = 0u;
 #endif
+#if PRIM == 0 && STQ_FAST && DC_VTX
+    // (perf-p2) the draw's constants and the state index from vs_ff_tri (no probe: the executor uses the ubershader then)
+    rec_first = i.dc.x; kx = i.dc.y & 0xFFFFu; ky = i.dc.y >> 16; draw_flags = i.dc.z >> 16;
+    g_vstate = i.sidx;
+    vkx = 1u; vky = 1u; vbase = 0u; vfbw = 1u; vflags = 0u; one = 1.0; probe_x = probe_y = 0xFFFFFFFFu;
+#else
     load_draw(i.did);
+#endif
     Frag f;
     St st;
     if (!gs_frag(i.pos, i.rec, istq, prim, f, st)) return;

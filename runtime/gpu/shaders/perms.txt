@@ -146,10 +146,10 @@ ps_gs_linepix_nr    gs.hlsl             ps_gs             ps_5_0    PRIM=2 NOROV
 ps_gs_tri_fast_nr   gs.hlsl             ps_gs             ps_5_0    PRIM=0 STQ_FAST=1 TRI_REC=128u NOROV=1
 ps_gs_thin_nr       gs.hlsl             ps_gs             ps_5_0    PRIM=3 NOROV=1
 # perf-p2: ROV-tier permutations for draws without views / LOD (_s) and untextured draws (_n), with and without ROVs
-ps_gs_tri_fast_s    gs.hlsl             ps_gs             ps_5_0    PRIM=0 STQ_FAST=1 TRI_REC=128u SPEC_NOVIEW=1 SPEC_NOLOD=1
-ps_gs_tri_fast_n    gs.hlsl             ps_gs             ps_5_0    PRIM=0 STQ_FAST=1 TRI_REC=128u SPEC_NOTEX=1 SPEC_NOVIEW=1 SPEC_NOLOD=1
-ps_gs_tri_fast_s_nr gs.hlsl             ps_gs             ps_5_0    PRIM=0 STQ_FAST=1 TRI_REC=128u NOROV=1 SPEC_NOVIEW=1 SPEC_NOLOD=1
-ps_gs_tri_fast_n_nr gs.hlsl             ps_gs             ps_5_0    PRIM=0 STQ_FAST=1 TRI_REC=128u NOROV=1 SPEC_NOTEX=1 SPEC_NOVIEW=1 SPEC_NOLOD=1
+ps_gs_tri_fast_s    gs.hlsl             ps_gs             ps_5_0    PRIM=0 STQ_FAST=1 TRI_REC=128u SPEC_NOVIEW=1 SPEC_NOLOD=1 DC_VTX=1
+ps_gs_tri_fast_n    gs.hlsl             ps_gs             ps_5_0    PRIM=0 STQ_FAST=1 TRI_REC=128u SPEC_NOTEX=1 SPEC_NOVIEW=1 SPEC_NOLOD=1 DC_VTX=1
+ps_gs_tri_fast_s_nr gs.hlsl             ps_gs             ps_5_0    PRIM=0 STQ_FAST=1 TRI_REC=128u NOROV=1 SPEC_NOVIEW=1 SPEC_NOLOD=1 DC_VTX=1
+ps_gs_tri_fast_n_nr gs.hlsl             ps_gs             ps_5_0    PRIM=0 STQ_FAST=1 TRI_REC=128u NOROV=1 SPEC_NOTEX=1 SPEC_NOVIEW=1 SPEC_NOLOD=1 DC_VTX=1
 ps_gs_sprite_s      gs.hlsl             ps_gs             ps_5_0    PRIM=1 SPEC_NOVIEW=1 SPEC_NOLOD=1
 ps_gs_sprite_n      gs.hlsl             ps_gs             ps_5_0    PRIM=1 SPEC_NOTEX=1 SPEC_NOVIEW=1 SPEC_NOLOD=1
 ps_gs_sprite_s_nr   gs.hlsl             ps_gs             ps_5_0    PRIM=1 NOROV=1 SPEC_NOVIEW=1 SPEC_NOLOD=1
