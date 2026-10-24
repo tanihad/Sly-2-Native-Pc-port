@@ -29,20 +29,21 @@
   PS2_PACE_LOG=4 (only changes), scripts/frame_diff.py (changed %, best whole-pixel shift), gs_draw.c brief trace now
   prints scissor y, OFY, v0.
 
-## In progress
-- Flicker: check that the field-offset fix also removes the edge / shadow flicker (it alternated at 30 Hz).
+- Display-locked cadence (frame_rate.c lock, gpu_hw.c clock_lock_k, gpu_present.c quantized phase): 165 Hz fixed at 60
+  -> 55 frames/s, every picture 3 refreshes (real-monitor runs below). Limited to <= 60.
+- Governor: warm-up >= 1 s, no immediate overload rule above 60 fps (gov_120 / gov_165: auto stays 3x, 98-99 fps).
+- Flicker: idle ep2 hub on the merged code (pc-polish + perf P1): 60 fps 1.1-1.6% changing (animation), 120 fps (worker)
+  0.6-0.8%, old 27% with +-3 px; notes/pc-smooth/field_bob_before_after.png.
+- Notes: d3d11-renderer.md appendix Q, frame-rate.md "Display-locked cadence". Unit tests: pacing 73 + frame rate 24.
+- Gates (final state, after merging main ce31cba): run_tests 16/16, every tests\unit suite, gpu_diff_all mixed S=1 28/28,
+  gpu_game_all S=1 4196 pictures, pc_text_boot, debug + release builds, package.py - all green (build\gates.txt).
 
-## Next
-1. (done: menu shake)
-2. Find which of PS2_PERF / PS2_GS_HW_STATS costs ~12 ms once per second (measurement artifact) and fix.
-3. Governor at 120/165: drops 3x -> 1x seconds after boot (overload rule over 24 pictures = 0.15 s at 165 fps, GOV_WARM
-   in pictures) and never comes back; PS2_GS_SCALE does not keep the scale (gov_frame ignores gov_strict). Fix: time-based
-   windows; strict scale honoured.
-4. Fixed-refresh judder: lock the cadence to refresh/k (display VBlank clock thread k, quantized present phase): 60 -> 55
-   (k=3), 120 -> 82.5 (k=2) on 165 Hz. Validate on the real monitor (short runs).
-5. Shadow flicker: sequences at 60 vs 120 (worker), PS2_GFX_ASYNC=0 / =1, 1x vs 3x.
-6. Gates, notes, final.
+**Status: complete**
 
+## Left (not done)
+- PS2_PERF + PS2_GS_HW_STATS cost a ~12 ms hitch once per second (diagnostics only; measure with smooth_run -NoStats).
+- Above 60 fps on a fixed-refresh display the frame rate still varies (no lock there; VRR needed).
+- The graphics worker's known effect-object race (frame-rate.md "Correctness") was not seen as flicker in the idle hub.
 ## Real-monitor runs (log each; borderless on the Dell 165 Hz, VRR off, safehouse / ep2 hub, ~20 s windows)
 1. rm_auto60 (pacing auto, 60): display classified FIXED -> locked 55: shown 18.2 ms x832, 12 ms x3.
 2. rm_lock60 (pacing display): D stuck at ~50 ms after loading (pace_delay decays 0.05 ms/picture) -> lock phase now from
