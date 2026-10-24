@@ -61,7 +61,8 @@ if (-not $all.Count) { "no scenes"; exit 1 }
 $builds = @()
 foreach ($e in ($Exes -split ',' | Where-Object { $_ })) {
     $n, $p = $e -split '=', 2
-    $builds += [pscustomobject]@{ name = $n; exe = (Resolve-Path (Join-Path $root $p)).Path }
+    $p, $benv = $p -split '\|', 2                  # "name=exe|K=V;K=V": environment of that build only
+    $builds += [pscustomobject]@{ name = $n; exe = (Resolve-Path (Join-Path $root $p)).Path; env = "$benv" }
 }
 if (-not $builds.Count) { $builds = @([pscustomobject]@{ name = $Tag; exe = (Join-Path $root 'build\rel\sly2.exe') }) }
 
@@ -121,6 +122,7 @@ function Start-Run($s, $b, [string]$mode, [int]$rep) {
     }
     foreach ($k in $envs.Keys) { $set[$k] = $envs[$k] }
     foreach ($kv in ($Extra -split ';' | Where-Object { $_ })) { $k, $v = $kv -split '=', 2; $set[$k] = $v }
+    foreach ($kv in ("$($b.env)" -split ';' | Where-Object { $_ })) { $k, $v = $kv -split '=', 2; $set[$k] = $v }
     foreach ($k in $set.Keys) { $keep[$k] = [Environment]::GetEnvironmentVariable($k); [Environment]::SetEnvironmentVariable($k, $set[$k]) }
     $p = Start-Process -FilePath $exe -ArgumentList (Join-Path $main 'orig\SCUS_973.16') -WorkingDirectory $dir `
         -RedirectStandardError (Join-Path $dir 'run.log') -RedirectStandardOutput (Join-Path $dir 'run.out') -PassThru -NoNewWindow
