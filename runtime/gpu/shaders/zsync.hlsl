@@ -1,6 +1,6 @@
 // Depth of mixed frames (M5, notes/d3d11-renderer.md 3.6, 4.3; runtime/gpu/gpu_exec.c): a depth target
-// lives in two places, the DSV (FF draws: D32 holding asfloat(z + 0x00800000), the order-preserving
-// encoding) and zpatch (R32_UINT, the stored Z word: ROV runs, ALIAS16 draws, loads, downloads). The
+// lives in two places, the DSV (FF draws: D32 holding min(z, 2^20) / 2^20, the order-preserving encoding of
+// int64.hlsli, saturated at 1.0) and zpatch (R32_UINT, the stored Z word: ROV runs, ALIAS16 draws, loads, downloads). The
 // render thread tracks per tile of 16x16 native pixels which one is newer (ztile: one byte per tile,
 // 0 in sync, 1 the DSV is newer, 2 zpatch is newer) and converts only those tiles:
 //   ps_zresolve  zpatch -> DSV (the design's ps_zresolve): SV_Depth of the zpatch word, or a constant
@@ -49,5 +49,6 @@ void cs_zsync(uint3 id : SV_DispatchThreadID) {
     if (s.x >= x1 || s.y >= y1) return;
     if (tile_state(s) != 1u) return;
     uint z = gs_z_decode(depth_src.Load(int3(s, 0)));
+    if (z >= ZE_ONE) return;             // (P1) saturated: a value >= 2^20 no FF draw wrote (they write < 2^20) - zpatch holds it
     zp_dst[s] = zbits == 2u ? (zp_dst[s] & 0xFF000000u) | (z & 0xFFFFFFu) : z;
 }

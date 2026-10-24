@@ -53,6 +53,19 @@ enum { GPU_PC_TRI, GPU_PC_SPRITE, GPU_PC_LINEPIX, GPU_PC_POINT,
        GPU_PC_THIN,                      /* (M7) outlines = thin: one analytic line per instance (gpu_rec_thin) */
        GPU_PC_N };
 enum { GPU_ZF_32, GPU_ZF_24, GPU_ZF_16, GPU_ZF_16S, GPU_ZF_N };
+
+/* ---- (P1) exact depth with early rejection (notes/d3d11-renderer.md 3.6, appendix P; shaders/int64.hlsli) ----------
+ * The DSV holds enc(z) = min(z, GPU_ZE_ONE) / 2^20 (exact and order-preserving up to 2^20 = 1.0; larger stored values
+ * saturate, exact against FF fragments, which are always < GPU_ZE_ONE: the frontend sends a Z24 / Z32 primitive with a
+ * vertex Z above GPU_Z_FF_MAX to the ROV tier). FF pixel shaders write it as SV_DepthLessEqual under a rasterized upper
+ * bound: triangle vertices Z + GPU_ZB_MARGIN where the frontend proved that bound (all vertex Z <= GPU_Z_FF_MAX and the
+ * format's maximum, Z slope |dz/dx| + |dz/dy| <= GPU_ZB_SLOPE per native pixel), else 1.0 (vertex word 0xFFFFFFFF);
+ * sprites and line / point pixels their constant Z + 1, thin lines a bound of their plane (shaders/gs.hlsl). */
+#define GPU_ZE_ONE 0x00100000u
+#define GPU_ZB_MARGIN 128u
+#define GPU_Z_FF_MAX (GPU_ZE_ONE - 4u * GPU_ZB_MARGIN)
+#define GPU_ZB_SLOPE 8192.0
+static inline float gpu_z_encode(uint32_t z) { return (float)(z < GPU_ZE_ONE ? z : GPU_ZE_ONE) * (1.0f / 1048576.0f); }
 /* FF classes (gpu_front_config.ff_rov_mask): blend class, ATST split, texture views (incl. feedback through
  * a shadow copy), primitive classes */
 enum { GPU_FFC_OFF = 1 << 0, GPU_FFC_NOCOLOR = 1 << 1, GPU_FFC_ADD = 1 << 2, GPU_FFC_REVSUB = 1 << 3,
@@ -107,7 +120,8 @@ typedef struct {
     /* pass A: real alpha test with AFAIL != KEEP */
     uint32_t atst_kicks, atst_pass, atst_fail, atst_straddle;
     uint32_t cd_as_kicks, as_over128;    /* Cd-dependent blends with C = As; of them max As > 128 */
-    /* Z per format (primitives using the Z buffer): vertex Z range, Z32 vertices above 0x3F000000 */
+    /* Z per format (primitives using the Z buffer): vertex Z range; (P1) Z24 / Z32 primitives with a vertex Z above
+     * GPU_Z_FF_MAX (gpu.h: beyond the DSV's exact range - ROV tier, the target's depth in zpatch until a full clear) */
     uint32_t zprims[GPU_ZF_N], zmin[GPU_ZF_N], zmax[GPU_ZF_N];
     uint32_t z32_over;
     /* texture sources */
@@ -123,6 +137,8 @@ typedef struct {
                                             ALIAS16, target view, feedback) */
     uint32_t tex_alpha_refined;          /* (M9) primitives whose source-alpha bound came from the texels' palette entries */
     uint32_t tex_used_scans;             /* (M9) textures scanned for the palette entries they use */
+    uint32_t zb_sat;                     /* (P1) FF depth triangles drawn without the early-depth bound (gpu.h: a vertex Z
+                                            beyond the format's maximum, or a Z slope above GPU_ZB_SLOPE) */
 } gpu_front_frame;
 
 void gpu_front_start(const gpu_front_config* cfg);   /* installs the gs_draw.c hooks */

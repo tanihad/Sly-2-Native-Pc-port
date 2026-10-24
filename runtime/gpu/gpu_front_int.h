@@ -55,7 +55,7 @@ typedef struct gpu_target {
     int copy_rect[4];                    /* own_shadow_need full == 2: the rect to copy */
     int clean, slow_calls;               /* every block current and only T's (as of clean_gen) */
     uint32_t clean_gen;
-    int z_high;                          /* Z32 above 0x3F000000 seen: zpatch as depth until a full clear */
+    int z_high;                          /* (P1) a Z24 / Z32 vertex above GPU_Z_FF_MAX seen: zpatch as depth until a full clear */
 } gpu_target;
 
 extern gpu_target gt[GPU_MAX_TARGETS + 1];          /* [id] */

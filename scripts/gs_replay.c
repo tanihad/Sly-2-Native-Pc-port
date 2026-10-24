@@ -270,7 +270,7 @@ static const struct { const char* name; size_t off; int kind; } front_fields[] =
     U32F(cd_as_kicks), U32F(as_over128), ARRF(zprims, GPU_ZF_N), ARRF(zmin, GPU_ZF_N), ARRF(zmax, GPU_ZF_N),
     U32F(z32_over), U32F(tex_vram), U32F(tex_view_c32), U32F(tex_view_alpha), U32F(tex_alias16), U32F(region_clamp),
     U32F(tbw_npot), U32F(selfcheck_bad), U32F(lost_writer), U32F(post_prims), U32F(stq_cuts), U32F(checkpoints), ARRF(phase_prims, GPU_PH_N),
-    U32F(tex_alpha_refined), U32F(tex_used_scans), U32F(norov_splits),
+    U32F(tex_alpha_refined), U32F(tex_used_scans), U32F(norov_splits), U32F(zb_sat),
 };
 
 static void json_front(FILE* f, const gpu_front_frame* g) {
@@ -346,9 +346,10 @@ static void front_report(const char* metrics, const char* rec, double replay_ms,
     static const char* zn[GPU_ZF_N] = { "Z32", "Z24", "Z16", "Z16S" };
     for (int z = 0; z < GPU_ZF_N; z++)
         if (sum.zprims[z]) fprintf(stderr, "hwdry: %s: %u prims, vertex Z %08X..%08X\n", zn[z], sum.zprims[z], zlo[z], zhi[z]);
-    fprintf(stderr, "hwdry: Z32 vertices above 0x3F000000: %u; clears colour %u Z %u; loads %u (%u blocks), shadow copies %u, "
+    fprintf(stderr, "hwdry: Z24/Z32 primitives above the DSV range (P1: ROV, zpatch depth): %u; FF depth triangles without the "
+                    "early-depth bound: %u; clears colour %u Z %u; loads %u (%u blocks), shadow copies %u, "
                     "downloads %u (%u blocks), alias16 self-copies %u\n",
-            sum.z32_over, sum.clears_c, sum.clears_z, sum.loads, sum.load_blocks, sum.shadow_copies, sum.downloads,
+            sum.z32_over, sum.zb_sat, sum.clears_c, sum.clears_z, sum.loads, sum.load_blocks, sum.shadow_copies, sum.downloads,
             sum.download_blocks, sum.alias16_selfcopy);
     fprintf(stderr, "hwdry: uploads %u (%u bytes) -> %u patches (%u bytes), max %u patches/VBlank; TRXDIR=1 %u, TRXDIR=2 %u; "
                     "CLUT new slots %u, max distinct/VBlank %u, loads over GPU words %u; targets created %u evicted %u max live %u, same-kind overlaps %u\n",
