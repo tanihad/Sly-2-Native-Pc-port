@@ -36,15 +36,23 @@ desktop's native resolution and refresh, frame rate 60, NO display lock by defau
   * AFTER with menu presents at a simulated 165 Hz (PS2_MENU_SIM_HZ=165, headless stand-in for the swap chain):
     224 pictures/s (165 menu + 60 game), input -> picture avg 2.3-3.3 ms, max 6.4 ms; CPU 0.09 ms per picture.
 
-## In progress
-- Commit 14310a5. Next: launch defaults + migration.
+- Title flow verified (Esc -> its menu, Options -> ours, Back -> its menu, Esc on its menu -> Triangle -> title);
+  pause sub-pages: Esc on the Data Access question -> back; Job Help takes Esc as START (the game's pause over it).
+- Contact sheet notes/pc-menu2/contact_sheet.png; notes: pc-menu.md (pc-menu2 section), settings.md, frame-rate.md,
+  d3d11-renderer.md appendix R.
+- Tests: test_menu 327 (defaults migration, [chosen], synthetic font), input 964 (wheel / release), window 525.
+- Gates (final state): tests\run_tests.py 16/16 + guards; every tests\unit suite passes (window / warp / menu -UnitOnly,
+  gs-hw -NoWindow); gpu_diff_all mixed S=1 28/28; tests\pc_text_boot.ps1 (build\rel) passed; debug + release builds;
+  scripts\package.py (defaults) packaged 0.1.841.
 
-## Next
-1. Defaults + migration (display.mode borderless, frame_rate 60, lock opt-in "Match display"; chosen flags).
-2. Title-screen run (Esc -> its menu -> Options -> back), sub-page Esc (Job Help -> Triangle back) check.
-3. Latency / redraw-rate measurements before/after (old exe: build\rel of main? use main's dist or git stash build).
-4. Tests: test_menu (flow-free parts), unit test for sly_font with a synthetic glyph; settings migration test.
-5. Gates, contact sheet notes/pc-menu2/, notes (pc-menu.md, settings.md, frame-rate.md), package.
+## Status: complete
+
+## Left
+- The game's menu sounds (scene timelines; no callable sound function found).
+- package.py with a RELATIVE --out (build/rel) fails in windres ("llvm-rc: No such file") - pre-existing: the -I path is
+  relative to the changed cwd; the defaults (absolute) work.
+- The machine was shared with the owner's own sly2.exe during the runs: scripted navigation timing slipped (one run
+  saved into slot 2 of a test card); the GPU governor fell back to software in one run (use PS2_GS_SW_FALLBACK=0).
 
 ## Findings / traps
 - The game's font (one object, found in the ep2 hub at EE 0x94CC50, a heap object of the level data): +0x10/+0x18/+0x20

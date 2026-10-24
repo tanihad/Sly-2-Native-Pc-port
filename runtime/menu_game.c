@@ -57,8 +57,6 @@ static int pause_list_up(void) {
     return depth >= 1 && depth <= 3 && rd32(PM_ENTRIES) == PCMENU_LIST;
 }
 
-static int pause_idle(void) { return pause_list_up() && rd32(PM_STATE) == 7; }
-
 /* ---- (pc-polish) one menu: the game's pause menu and its Options page as a PC release has them -------------------
  * Pause menu: Keep Playing / Save and Quit / [Exit to Episode Menu] / [Abandon Job] / Save Game... / Load Game... /
  * Options (ours) / Controls... / Job Help / Quit to Desktop (ours). The game's own Options entry (0x2C) is replaced by
