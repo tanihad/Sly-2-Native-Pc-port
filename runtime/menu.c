@@ -41,6 +41,16 @@ enum { PEND_MODE, PEND_RES, PEND_WINSIZE, PEND_MONITOR, PEND_RENDERER, PEND_N };
 
 static unsigned long long now_ms(void);
 
+/* (pc-menu2) when the last input reached the menu (QPC seconds; the overlay's latency statistics, PS2_MENU_STATS) */
+static volatile double input_t;
+static void note_input(void) {
+    LARGE_INTEGER f, t;
+    QueryPerformanceFrequency(&f);
+    QueryPerformanceCounter(&t);
+    input_t = (double)t.QuadPart / (double)f.QuadPart;
+}
+double menu_last_input_time(void) { return input_t; }
+
 #define LOCK() AcquireSRWLockExclusive(&lock)
 #define UNLOCK() ReleaseSRWLockExclusive(&lock)
 
@@ -621,7 +631,7 @@ static int build_rows(int page, menu_row* rows) {
         int mode = eff_mode();
         const char* staged = "Choose Apply to use it";
         choice_row(rows, &n, MENU_ROW_MODE, "Display mode",
-                   "Windowed. Borderless: fills the monitor at the desktop's resolution (fast Alt+Tab). Fullscreen: the game sets the "
+                   "Borderless (default): fills the monitor at its own resolution and refresh rate (fast Alt+Tab). Windowed. Fullscreen: the game sets the "
                    "monitor to the resolution below. Alt+Enter or F11 switch between windowed and borderless.");
         r = last(rows, n);
         if (st.pend_has[PEND_MODE]) snprintf(r->note, sizeof r->note, "%s", staged);
@@ -1024,6 +1034,7 @@ int menu_capturing(void) { return st.open && *(volatile int*)&st.capture; }
 int menu_device(void) { return st.device; }
 
 int menu_nav_event(menu_nav ev, int dev) {
+    note_input();
     LOCK();
     if (dev != st.device) { st.device = dev; st.serial++; }
     st.hover_row = st.hover_tab = st.hover_btn = -1;      /* (keys / buttons: the mouse highlight goes) */
@@ -1239,6 +1250,7 @@ static void scrollbar_drag_to(const menu_layout* L, int n, int y) {
 }
 
 void menu_mouse_move(int x, int y) {
+    note_input();
     LOCK();
     if (st.open) {
         int n = rows_now();
@@ -1275,6 +1287,7 @@ void menu_mouse_move(int x, int y) {
 }
 
 void menu_mouse_button(int x, int y, int button) {
+    note_input();
     LOCK();
     if (st.open) {
         st.device = MENU_DEV_KEYBOARD;

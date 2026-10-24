@@ -340,9 +340,44 @@ static void shot(ID3D11Device* dev, ID3D11DeviceContext* ctx, ID3D11RenderTarget
     REL(src);
 }
 
+/* (pc-menu2) PS2_MENU_STATS=1: every 2 s while the menu is open, how often it was drawn, how long after an input its
+ * change was drawn (input -> the picture that shows it is handed to Present) and the CPU time of a picture */
+static struct { int on, draws, changes; double t0, lat_sum, lat_max, cpu_sum, cpu_max; uint32_t ver; } ms;
+
+static void stats_note(double t_start, double t_end, int open) {
+    if (!ms.on) { const char* e = getenv("PS2_MENU_STATS"); ms.on = e && *e && *e != '0' ? 1 : -1; }
+    if (ms.on < 0 || !open) { ms.t0 = 0; return; }
+    if (!ms.t0) { ms.t0 = t_end; ms.draws = ms.changes = 0; ms.lat_sum = ms.lat_max = ms.cpu_sum = ms.cpu_max = 0; }
+    ms.draws++;
+    double cpu = (t_end - t_start) * 1000.0;
+    ms.cpu_sum += cpu;
+    if (cpu > ms.cpu_max) ms.cpu_max = cpu;
+    uint32_t v = menu_version();
+    double in = menu_last_input_time();
+    if (v != ms.ver) {
+        ms.ver = v;
+        double lat = (t_end - in) * 1000.0;
+        if (in > 0 && lat >= 0 && lat < 500.0) {
+            ms.changes++;
+            ms.lat_sum += lat;
+            if (lat > ms.lat_max) ms.lat_max = lat;
+        }
+    }
+    if (t_end - ms.t0 >= 2.0) {
+        double s = t_end - ms.t0;
+        fprintf(stderr, "[menu] stats: %.1f pictures/s, %d changes: input -> picture avg %.2f ms, max %.2f ms; CPU per picture avg %.3f ms, "
+                "max %.3f ms\n", ms.draws / s, ms.changes, ms.changes ? ms.lat_sum / ms.changes : 0.0, ms.lat_max, ms.cpu_sum / ms.draws,
+                ms.cpu_max);
+        ms.t0 = t_end;
+        ms.draws = ms.changes = 0;
+        ms.lat_sum = ms.lat_max = ms.cpu_sum = ms.cpu_max = 0;
+    }
+}
+
 void overlay_d3d11_draw(ID3D11Device* dev, ID3D11DeviceContext* ctx, ID3D11RenderTargetView* rtv, int w, int h) {
     if (!dev || !ctx || !rtv || w <= 0 || h <= 0) return;
     AcquireSRWLockExclusive(&lock);
+    double t_start = now_s();
     if (!glist.p) glist.p = malloc(sizeof *glist.p * UI_MAX_PRIMS);
     int open = menu_is_open();
     double fps = fps_shown();
@@ -431,6 +466,7 @@ void overlay_d3d11_draw(ID3D11Device* dev, ID3D11DeviceContext* ctx, ID3D11Rende
             REL(rtv0); REL(dsv0); REL(bs0); REL(ds0); REL(rs0); REL(il0); REL(vs0); REL(ps0); REL(srv0); REL(smp0); REL(vb0);
         }
     }
+    stats_note(t_start, now_s(), open);
     if (InterlockedExchange(&shot_pending, 0)) shot(dev, ctx, rtv, w, h);
     ReleaseSRWLockExclusive(&lock);
 }

@@ -109,6 +109,8 @@ void menu_mouse_wheel(int x, int y, int delta);
 /* (pc-menu2) the animations (list scroll, the selection band) up to now_s seconds; the renderer calls it before each
  * picture; 1 while something still moves */
 int  menu_animate(double now_s);
+/* (pc-menu2) when the last input event reached the menu (QPC seconds; latency statistics) */
+double menu_last_input_time(void);
 /* the device of the last input (hints) */
 int  menu_device(void);
 /* Changes since the last call (anything that changes the picture: state, settings_serial, the size): the

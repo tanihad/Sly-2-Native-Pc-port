@@ -24,6 +24,18 @@ desktop's native resolution and refresh, frame rate 60, NO display lock by defau
   (resume); on a sub page -> Triangle; on the title -> f_001B04E0(0) (its SELECT menu); fallback after 0.6 s ->
   Options directly. Verified in game (build\warp\flow): Esc -> pause, Options -> ours, mback -> pause menu, Esc -> play.
 
+- Defaults (4fdd448): display.mode borderless, frame_rate 60, lock only with pacing = display ("Match display"),
+  [settings] version 2 + settings_migrate_defaults (windowed -> borderless unless [chosen] display.mode), [chosen]
+  written by menu changes, Apply of a mode, Alt+Enter / F11. test_menu 318 checks.
+- Measurements (release, headless, 2560x1440, ep2 pause -> Options -> 48 nav steps):
+  * BEFORE (32389dc menu_draw.c on the CPU, scratch bench_old.c -O2): one redraw 78 ms at 1080p, 137 ms at 1440p,
+    417 ms at 2160p - on the render thread, in the present, for every hover / selection change (+ a 14.7 MB upload);
+    drawn only with game pictures (55-60/s).
+  * AFTER, game cadence only (PS2_MENU_SIM_HZ unset: what a fixed 60 Hz display shows): 60 pictures/s, input ->
+    picture avg 13-19 ms, max 22 ms; CPU per picture 0.085-0.09 ms (first one 31 ms: atlas upload).
+  * AFTER with menu presents at a simulated 165 Hz (PS2_MENU_SIM_HZ=165, headless stand-in for the swap chain):
+    224 pictures/s (165 menu + 60 game), input -> picture avg 2.3-3.3 ms, max 6.4 ms; CPU 0.09 ms per picture.
+
 ## In progress
 - Commit 14310a5. Next: launch defaults + migration.
 

@@ -956,6 +956,24 @@ static void vrr_log_driver(const char* when) {
  * paused behind the menu). Nothing of the game's pacing is touched: no statistics, no timestamps; the frame statistics
  * ignore the second after a menu present (pace_statistics). Returns 1 if it presented. */
 int gpu_present_menu(void) {
+    /* (headless measurements: PS2_MENU_SIM_HZ=<Hz> draws the menu pictures into the offscreen target at that rate, as a
+     * display of that refresh would take them) */
+    static double sim_hz = -1, sim_next;
+    if (sim_hz < 0) { const char* e = getenv("PS2_MENU_SIM_HZ"); sim_hz = e ? atof(e) : 0; }
+    if (!P.sc && P.off && sim_hz > 0 && P.have && P.rtv && P.bb_w > 0 && !gpu_rt.lost) {
+        double t = now_ms(), period = 1000.0 / sim_hz;
+        if (t < sim_next) return 0;
+        sim_next = sim_next + period > t ? sim_next + period : t + period;
+        static const float black[4] = { 0, 0, 0, 1 };
+        ID3D11DeviceContext_ClearRenderTargetView(gpu_rt.ctx, P.rtv, black);
+        int x, y, lw, lh;
+        fit_aspect(P.bb_w, P.bb_h, P.last_aw ? P.last_aw : 4, P.last_ah ? P.last_ah : 3, &x, &y, &lw, &lh);
+        present_resample(P.rtv, x, y, lw, lh, P.last_scaler);
+        if (overlay_d3d11_draw) overlay_d3d11_draw(gpu_rt.dev, gpu_rt.ctx, P.rtv, P.bb_w, P.bb_h);
+        ID3D11DeviceContext_Flush(gpu_rt.ctx);
+        P.menu_presents++;
+        return 1;
+    }
     if (!P.sc || !P.have || !P.rtv || P.bb_w <= 0 || gpu_rt.lost) return 0;
     int cw = 0, ch = 0;
     if (gpu_rt.cfg.client_size) gpu_rt.cfg.client_size(&cw, &ch);
