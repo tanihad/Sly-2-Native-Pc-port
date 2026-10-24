@@ -145,8 +145,9 @@ powershell -ExecutionPolicy Bypass -File build.ps1        # -> dist\Sly2\sly2.ex
 - Tested (2026-10-22) in a fresh `git clone --no-local` in %TEMP% with a clean PATH (no git, no
   project Python): `setup.ps1 -From <main checkout>` 11 s, `build.ps1 -Iso <image>` 50 s on 28
   threads, 27 MB exe that boots on the GPU renderer, the software renderer and WARP.
-- Disk: tools ~250 MB + downloads ~260 MB (kept in `tools\_downloads`), build ~150 MB, the game
-  folder 27 MB.
+- Disk (re-measured 2026-10-24): tools ~840 MB (llvm-mingw unpacked in full is 715 MB; the installer
+  leaves out the parts the build never uses: 340 MB), downloads ~200 MB (kept in `tools\_downloads`;
+  +38 MB MinGit when fetched), build ~250 MB, the game folder 27 MB.
 
 ## Build it (development checkout or worktree)
 
