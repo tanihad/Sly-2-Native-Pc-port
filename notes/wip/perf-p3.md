@@ -31,12 +31,17 @@ Branch next/perf-p3, worktree C:\Users\tanih\Projects\sly2-worktrees\perf-p3 (fr
   cost 167 -> 90 Mcycles on chaos_ep1_hub), flat FF planes as constants, ring prefetch (PS2_GPU_RING_PREFETCH).
 - In-game A/B run 1 (build\chaos\ab1.txt, P2 agent busy on the GPU/CPU): chaos scenes mostly GPU-bound at 3x.
 
-## In progress
-- In-game bench ab1 (background).
+- Pool v2 in game (build\chaos\pool.txt, 2 repeats): frontend stage not lower, GS higher -> no-go confirmed.
+- Offline hold A/B (build\p3\bench_opt2.txt): -3..-8% frontend on every recording.
+- Gates on the final source (build\p3\gates.log): gpu_stream_ab vs main 36/36 (corpus + chaos) identical in mixed S=3
+  same+thread, mixed S=1 thread, plain S=1 same+thread; gpu_fthread_check and -Mixed 28/28; m9_exact -Every 7 S=1/S=3
+  all identical (-Every 20 "fails" rv_intro only because its 16 VBlanks give no sample point on either side);
+  gpu_diff_all mixed/ref S=1/S=3 28/28; gpu_game_all S=1 4196 pictures 0 differ; gpu_lockstep_all 28343 comparisons 0
+  differ; run_tests 16/16; every unit suite (fps2_units.ps1) passes; pc_text_boot; debug + release builds; package.py.
+- Notes: perf-plan.md "P3 results", d3d11-renderer.md appendix S.
 
-## Next
-1. Offline hold-mode A/B of all changes (base vs new) on chaos + corpus, several repeats, quiet moments.
-2. Full gates; in-game chaos A/B with repeats; notes/perf-plan.md P3 results + d3d11-renderer.md appendix.
+## In progress
+- Final in-game chaos A/B base vs p3 (2 repeats, build\chaos\final.txt) -> add the table to perf-plan.md, finish.
 
 ## Findings / traps
 - NEVER use .NET file APIs ([IO.File]::...) with relative paths: their current directory is the MAIN checkout (an empty
