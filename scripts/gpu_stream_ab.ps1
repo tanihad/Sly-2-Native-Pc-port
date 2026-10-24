@@ -6,7 +6,7 @@
 #                               [-Modes "same,thread,pool3"] [-Mixed] [-Chaos] [-Only ep8_boss,chaos_m5_boss]
 # Modes: same (the new frontend on the decoding thread), thread (--front-thread), poolN (--front-thread --front-pool N).
 param([Parameter(Mandatory = $true)][string]$Base, [Parameter(Mandatory = $true)][string]$New, [string]$Modes = "same,thread,pool3",
-      [switch]$Mixed, [switch]$Chaos, [string[]]$Only = @(), [string]$CorpusRoot = "", [switch]$NoCorpus)
+      [switch]$Mixed, [switch]$Chaos, [string[]]$Only = @(), [string]$CorpusRoot = "", [switch]$NoCorpus, [int]$Scale = 1)
 $Only = @($Only | ForEach-Object { $_ -split ',' } | Where-Object { $_ })
 $root = Split-Path $PSScriptRoot -Parent
 $main = $root
@@ -38,6 +38,7 @@ $nexe = Join-Path $out ("gsr_new_{0}.exe" -f $PID); Copy-Item (Resolve-Path $New
 function Run-Hash([string]$exe, [string]$rec, [string]$extra, [string]$log) {
     $a = "`"$rec`" - 0 --backend hwdry --adapter hw --front-only --stream-hash $extra"
     if ($Mixed) { $a += ' --mixed' }
+    if ($Scale -gt 1) { $a += " --scale $Scale" }
     & cmd /c "`"`"$exe`" $a 2>`"$log`"`""
     $rc = $LASTEXITCODE
     $h = ((Get-Content $log | Where-Object { $_ -like 'stream-hash*' }) -join '') -replace 'stream-hash ', ''

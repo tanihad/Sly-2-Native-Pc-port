@@ -339,34 +339,33 @@ static void state_lookup(const gs_env_view* ev) {
     SC_age[victim] = ++sc_clock;
 }
 
-/* (P3) the part of the per-state analysis that is a function of the decoded state alone (tests, colour writes, blend
- * form, Z), shared by state_update and gf_prepare (which runs on other threads: it must give the same values) */
-typedef struct {
-    int skip, fatst, atst, aref, wm, bytes_ok, blend, cd_dep, c_as, uses_cd, rov_blend, rov_cc;
-    int zread, zwrite, zuse, zfi, depth_class;
-} st_core_t;
+static void state_update(const gs_env_view* ev) {
+    const gs_prim* P = ev->P;
+    const uint64_t* reg = ev->reg;
+    int ctx = ev->ctx;
+    memset(&S, 0, sizeof S);
+    S.version = ev->version;
+    S.ctx = ctx;
+    S.zfi = -1;
 
-static void st_core(const gs_prim* P, st_core_t* o) {
-    memset(o, 0, sizeof *o);
-    o->zfi = -1;
     /* ---- tests ---- */
     int ate = P->ate, atst = P->atst, afail = P->afail;
     int a_never = ate && atst == 0;
     int zwrite_ok = 1, c_ok = 1, a_ok = 1;
     if (a_never) {
         switch (afail) {
-        case 0: o->skip = 1; break;                                  /* KEEP: nothing */
+        case 0: S.skip = 1; break;                                   /* KEEP: nothing */
         case 1: zwrite_ok = 0; break;                                /* FB_ONLY */
         case 2: c_ok = 0; break;                                     /* ZB_ONLY */
         default: zwrite_ok = 0; a_ok = 0; break;                     /* RGB_ONLY */
         }
-        o->fatst = FATST_NONE;
+        S.fatst = FATST_NONE;
     } else if (ate) {
-        o->fatst = afail == 0 ? FATST_DISCARD : FATST_SPLIT;
-        o->atst = atst;
-        o->aref = P->aref;
+        S.fatst = afail == 0 ? FATST_DISCARD : FATST_SPLIT;
+        S.atst = atst;
+        S.aref = P->aref;
     }
-    if (P->zfmt && P->ztst == 0) o->skip = 1;                        /* ZTST NEVER */
+    if (P->zfmt && P->ztst == 0) S.skip = 1;                         /* ZTST NEVER */
 
     /* ---- colour writes ---- */
     uint32_t fmask = P->ffmt->bits == 24 ? (P->fbmsk | 0xFF000000u) : P->fbmsk;
@@ -387,103 +386,65 @@ static void st_core(const gs_prim* P, st_core_t* o) {
     /* ---- blend (4.1, 4.2) ---- */
     int A = P->asel, B = P->bsel, C = P->csel, D = P->dsel;
     int uses_cd = 0, rov_blend = 0, rov_cc = 0;
-    o->blend = BL_OFF;
+    S.blend = BL_OFF;
     if (P->abe) {
         uses_cd = A == 1 || B == 1 || C == 1 || D == 1;
         if (A == B) {
             /* colour unchanged - unless PABE skips blending for source alpha < 0x80, which then
              * writes Cs (M3 fuzz finding) */
-            if (D == 1 && !P->pabe) { o->blend = BL_NOCOLOR; wm &= 8; uses_cd = 0; }
+            if (D == 1 && !P->pabe) { S.blend = BL_NOCOLOR; wm &= 8; uses_cd = 0; }
         } else if (!uses_cd) {
-            o->blend = BL_OFF;                                            /* the PS computes it exactly */
+            S.blend = BL_OFF;                                             /* the PS computes it exactly */
         } else if (C != 1 && A == 0 && B == 2 && D == 1) {
-            o->blend = BL_ADD;
+            S.blend = BL_ADD;
             if (!P->colclamp) rov_cc = 1;
         } else if (C != 1 && A == 2 && B == 0 && D == 1) {
-            o->blend = BL_REVSUB;
+            S.blend = BL_REVSUB;
             if (!P->colclamp) rov_cc = 1;
         } else if (C != 1 && A == 0 && B == 1 && D == 1) {
-            o->blend = BL_DUAL;
-            o->cd_dep = 1;
-            o->c_as = C == 0;
+            S.blend = BL_DUAL;
+            S.cd_dep = 1;
+            S.c_as = C == 0;
         } else {
             rov_blend = 1;
         }
     }
-    o->wm = wm;
-    o->bytes_ok = bytes_ok;
-    o->uses_cd = uses_cd;
-    o->rov_blend = rov_blend;
-    o->rov_cc = rov_cc;
+    S.wmask = wm;
+    S.cwrite = wm != 0;
+    S.c_lanes = ((wm & 7) ? 1 : 0) | ((wm & 8) ? 2 : 0);
 
     /* ---- Z ---- */
     int zuse = P->zuse && P->zfmt;
     if (zuse) {
-        o->zread = P->ztst == 2 || P->ztst == 3;
-        o->zwrite = !P->zmsk && zwrite_ok;
-        if (!o->zread && !o->zwrite) zuse = 0;
+        S.zread = P->ztst == 2 || P->ztst == 3;
+        S.zwrite = !P->zmsk && zwrite_ok;
+        if (!S.zread && !S.zwrite) zuse = 0;
     }
     if (zuse) {
         switch (P->zpsm) {
-        case PSMZ32: o->zfi = GPU_ZF_32; break;
-        case PSMZ24: o->zfi = GPU_ZF_24; break;
-        case PSMZ16: o->zfi = GPU_ZF_16; break;
-        default: o->zfi = GPU_ZF_16S; break;
+        case PSMZ32: S.zfi = GPU_ZF_32; break;
+        case PSMZ24: S.zfi = GPU_ZF_24; break;
+        case PSMZ16: S.zfi = GPU_ZF_16; break;
+        default: S.zfi = GPU_ZF_16S; break;
         }
     }
-    o->zuse = zuse;
-    if (wm == 0 && !o->zwrite && !P->date) o->skip = 1;
-    o->depth_class = zuse ? (P->ztst * 2 + o->zwrite) : 0;
-}
-
-/* (P3) the texture's size and addressing from the registers (state_update's S fields; texel_rect reads them) */
-typedef gf_tex_geom tex_geom;
-static void tex_geom_of(const gs_prim* P, const uint64_t* reg, int ctx, tex_geom* g) {
-    uint64_t t0 = reg[R_TEX0_1 + ctx], cl = reg[R_CLAMP_1 + ctx];
-    int tw = (int)((t0 >> 26) & 0xF), th = (int)((t0 >> 30) & 0xF);
-    g->tw = 1 << (tw > 10 ? 10 : tw);
-    g->th = 1 << (th > 10 ? 10 : th);
-    g->wms = (int)(cl & 3); g->wmt = (int)((cl >> 2) & 3);
-    g->minu = (int)((cl >> 4) & 0x3FF); g->maxu = (int)((cl >> 14) & 0x3FF);
-    g->minv = (int)((cl >> 24) & 0x3FF); g->maxv = (int)((cl >> 34) & 0x3FF);
-    g->bil = P->texm != 1;
-}
-
-static void state_update(const gs_env_view* ev) {
-    const gs_prim* P = ev->P;
-    const uint64_t* reg = ev->reg;
-    int ctx = ev->ctx;
-    memset(&S, 0, sizeof S);
-    S.version = ev->version;
-    S.ctx = ctx;
-    st_core_t sc;
-    st_core(P, &sc);
-    S.skip = sc.skip;
-    S.fatst = sc.fatst; S.atst = sc.atst; S.aref = sc.aref;
-    int bytes_ok = sc.bytes_ok, wm = sc.wm, uses_cd = sc.uses_cd, rov_blend = sc.rov_blend, rov_cc = sc.rov_cc;
-    int C = P->csel;
-    S.blend = sc.blend; S.cd_dep = sc.cd_dep; S.c_as = sc.c_as;
-    S.wmask = wm;
-    S.cwrite = wm != 0;
-    S.c_lanes = ((wm & 7) ? 1 : 0) | ((wm & 8) ? 2 : 0);
-    S.zread = sc.zread; S.zwrite = sc.zwrite; S.zfi = sc.zfi;
-    int zuse = sc.zuse;
-    S.depth_class = sc.depth_class;
+    if (!S.cwrite && !S.zwrite && !P->date) S.skip = 1;
+    S.depth_class = zuse ? (P->ztst * 2 + S.zwrite) : 0;
 
     /* ---- texture ---- */
     S.tme = P->tme;
     if (P->tme) {
-        uint64_t t0 = reg[R_TEX0_1 + ctx], texa = reg[R_TEXA];
+        uint64_t t0 = reg[R_TEX0_1 + ctx], cl = reg[R_CLAMP_1 + ctx], texa = reg[R_TEXA];
         S.tbp = (uint32_t)(t0 & 0x3FFF);
         S.tbw = (uint32_t)((t0 >> 14) & 0x3F);
         S.tpsm = (int)((t0 >> 20) & 0x3F);
-        tex_geom tg;
-        tex_geom_of(P, reg, ctx, &tg);
-        S.tw = tg.tw; S.th = tg.th;
-        S.wms = tg.wms; S.wmt = tg.wmt;
-        S.minu = tg.minu; S.maxu = tg.maxu;
-        S.minv = tg.minv; S.maxv = tg.maxv;
-        S.bil = tg.bil;
+        int tw = (int)((t0 >> 26) & 0xF), th = (int)((t0 >> 30) & 0xF);
+        S.tw = 1 << (tw > 10 ? 10 : tw);
+        S.th = 1 << (th > 10 ? 10 : th);
+        S.wms = (int)(cl & 3); S.wmt = (int)((cl >> 2) & 3);
+        S.minu = (int)((cl >> 4) & 0x3FF); S.maxu = (int)((cl >> 14) & 0x3FF);
+        S.minv = (int)((cl >> 24) & 0x3FF); S.maxv = (int)((cl >> 34) & 0x3FF);
+        S.bil = P->texm != 1;
         S.stq = !P->fst;
         uint32_t ta0 = (uint32_t)(texa & 0xFF), aem = (uint32_t)((texa >> 15) & 1), ta1 = (uint32_t)((texa >> 32) & 0xFF);
         switch (S.tpsm) {
@@ -848,9 +809,16 @@ static int vcache_n, vcache_pos;
  * still a bound) */
 static uint32_t emit_vertex(const gs_vtx* v, const gs_env_view* ev, uint32_t state, int nb) {
 #ifndef GPU_NO_VCACHE
+    _Static_assert(offsetof(gs_vtx, serial) == 52, "gs_vtx values: 52 bytes before the serial");
     for (int i = 0; i < vcache_n; i++)
-        if (vcache_state[i] == state && (vcache_nb[i] || !nb) && !memcmp(&vcache[i], v, offsetof(gs_vtx, serial)))
-            return vcache_idx[i];   /* (values, not the serial) */
+        if (vcache_state[i] == state && (vcache_nb[i] || !nb)) {
+            /* (values, not the serial: 52 bytes, compared inline - P3: memcmp was a library call) */
+            const uint8_t *p = (const uint8_t*)&vcache[i], *q = (const uint8_t*)v;
+            uint32_t t0, t1;
+            memcpy(&t0, p + 48, 4);
+            memcpy(&t1, q + 48, 4);
+            if (gf_eq64(p, q, 6) && t0 == t1) return vcache_idx[i];
+        }
 #endif
     gvtx* o = ar_reserve(&A_vtx, sizeof *o);
     o->x = (float)(v->x - ev->ofx) * (1.0f / 16.0f);
@@ -896,20 +864,29 @@ static int wrap_range(int lo, int hi, int size, int mode, int rmin, int rmax, in
     return 1;
 }
 
-/* the texel rectangle (level 0, inclusive) a primitive can sample: tex_prepare's rule */
-static void texel_rect(const gs_prim* P, const tex_geom* tg, const gs_vtx* const* vs, int n, const double* su, const double* sv,
+/* (P3) floor / ceil of a double known to be finite and well inside the int64 range (|v| < 1e7 + 2 here), exactly as
+ * the C library's, inline (the x86-64 baseline has no rounding instruction: floor() and ceil() were calls) */
+static inline int64_t floor_i(double v) { int64_t i = (int64_t)v; return (double)i > v ? i - 1 : i; }
+static inline int64_t ceil_i(double v) { int64_t i = (int64_t)v; return (double)i < v ? i + 1 : i; }
+static inline double dmin(double a, double b) { return b < a ? b : a; }
+static inline double dmax(double a, double b) { return b > a ? b : a; }
+
+/* the texel rectangle (level 0, inclusive) a primitive can sample: tex_prepare's rule. (P3) The bounds use plain
+ * comparisons instead of fmin / fmax: they only matter when every value is finite (a NaN or infinity sets `all`). */
+static void texel_rect(const gs_env_view* ev, const gs_vtx* const* vs, int n, const double* su, const double* sv,
                        int* u0, int* v0, int* u1, int* v1) {
+    const gs_prim* P = ev->P;
     double umin = 1e30, umax = -1e30, vmin = 1e30, vmax = -1e30;
     int all = P->texm == 3;
     if (su) {
         for (int i = 0; i < 2; i++) {
-            umin = fmin(umin, su[i] / 16.0); umax = fmax(umax, su[i] / 16.0);
-            vmin = fmin(vmin, sv[i] / 16.0); vmax = fmax(vmax, sv[i] / 16.0);
+            umin = dmin(umin, su[i] / 16.0); umax = dmax(umax, su[i] / 16.0);
+            vmin = dmin(vmin, sv[i] / 16.0); vmax = dmax(vmax, sv[i] / 16.0);
         }
     } else if (P->fst) {
         for (int i = 0; i < n; i++) {
-            umin = fmin(umin, vs[i]->u / 16.0); umax = fmax(umax, vs[i]->u / 16.0);
-            vmin = fmin(vmin, vs[i]->v / 16.0); vmax = fmax(vmax, vs[i]->v / 16.0);
+            umin = dmin(umin, vs[i]->u / 16.0); umax = dmax(umax, vs[i]->u / 16.0);
+            vmin = dmin(vmin, vs[i]->v / 16.0); vmax = dmax(vmax, vs[i]->v / 16.0);
         }
     } else {
         int pos = 0, neg = 0;
@@ -918,24 +895,24 @@ static void texel_rect(const gs_prim* P, const tex_geom* tg, const gs_vtx* const
             if (q > 0) pos++; else if (q < 0) neg++;
             double iq = 1.0 / q, uu = vs[i]->s * iq * P->tw16 / 16.0, vv = vs[i]->t * iq * P->th16 / 16.0;
             if (!(fabs(uu) < 1e7) || !(fabs(vv) < 1e7)) all = 1;
-            umin = fmin(umin, uu); umax = fmax(umax, uu);
-            vmin = fmin(vmin, vv); vmax = fmax(vmax, vv);
+            umin = dmin(umin, uu); umax = dmax(umax, uu);
+            vmin = dmin(vmin, vv); vmax = dmax(vmax, vv);
         }
         if (pos != n && neg != n) all = 1;
     }
-    int a0 = 0, a1 = tg->tw - 1, b0 = 0, b1 = tg->th - 1;
+    int a0 = 0, a1 = S.tw - 1, b0 = 0, b1 = S.th - 1;
     if (!all) {
         const double EPS = su ? 0 : 1.0 / 16;
-        if (tg->bil) {
-            a0 = (int)floor(umin - 0.5 - EPS); a1 = (int)ceil(umax - 0.5 + EPS);
-            b0 = (int)floor(vmin - 0.5 - EPS); b1 = (int)ceil(vmax - 0.5 + EPS);
+        if (S.bil) {
+            a0 = (int)floor_i(umin - 0.5 - EPS); a1 = (int)ceil_i(umax - 0.5 + EPS);
+            b0 = (int)floor_i(vmin - 0.5 - EPS); b1 = (int)ceil_i(vmax - 0.5 + EPS);
         } else {
-            a0 = (int)floor(umin - EPS); a1 = (int)floor(umax + EPS);
-            b0 = (int)floor(vmin - EPS); b1 = (int)floor(vmax + EPS);
+            a0 = (int)floor_i(umin - EPS); a1 = (int)floor_i(umax + EPS);
+            b0 = (int)floor_i(vmin - EPS); b1 = (int)floor_i(vmax + EPS);
         }
     }
-    wrap_range(a0, a1, tg->tw, tg->wms, tg->minu, tg->maxu, u0, u1);
-    wrap_range(b0, b1, tg->th, tg->wmt, tg->minv, tg->maxv, v0, v1);
+    wrap_range(a0, a1, S.tw, S.wms, S.minu, S.maxu, u0, u1);
+    wrap_range(b0, b1, S.th, S.wmt, S.minv, S.maxv, v0, v1);
 }
 
 static void tex_source(const gs_env_view* ev, int u0, int v0, int u1, int v1, texsrc_t* ts) {
@@ -1439,6 +1416,64 @@ static int sb_span(int y, int xa, int xb, int set) {
     return 0;
 }
 
+/* (P3) The rows of a triangle as gs_tri_row computes them (the pixels [xl, xr] inside all three edges, within bx0..bx1),
+ * stepped exactly in integers: per edge the bound is ceil((bias - c) / a) (left edges, a > 0) or floor((c - bias) / -a)
+ * (right edges), kept as quotient and remainder and advanced by the per-row step's quotient and remainder (c grows by dc
+ * per row) - no double estimate, rounding or correction loop per row. gs_edge_min_x / max_x clamp their estimates to
+ * +-4096, outside 0..2047 where bx0 / bx1 decide anyway (the scissor keeps them inside), so every non-empty row and
+ * every empty one comes out the same. */
+typedef struct { int kind; int64_t q, r, A, dq, dr; int64_t c, dc, bias; } sb_edge;   /* kind 1 left, -1 right, 0 flat */
+typedef struct { sb_edge e[3]; } sb_rows;
+
+static void sb_rows_init(sb_rows* it, const gs_tri* T) {
+    gs_edge e[3];
+    gs_tri_edges(T, e);
+    for (int k = 0; k < 3; k++) {
+        sb_edge* s = &it->e[k];
+        s->c = e[k].c; s->dc = e[k].dc; s->bias = e[k].bias;
+        if (e[k].a == 0) { s->kind = 0; continue; }
+        /* left: n = bias - c (n' = n - dc), x = ceil(n / A); right: m = c - bias (m' = m + dc), x = floor(m / A); both as
+         * x = ceil(v / A) / floor(v / A) of a value v stepping by sv per row */
+        int64_t A = e[k].a > 0 ? e[k].a : -e[k].a;
+        int64_t v = e[k].a > 0 ? e[k].bias - e[k].c : e[k].c - e[k].bias;
+        int64_t sv = e[k].a > 0 ? -e[k].dc : e[k].dc;
+        s->kind = e[k].a > 0 ? 1 : -1;
+        s->A = A;
+        /* floor division v = q * A + r, 0 <= r < A (exact: integer quotient, then the sign fix) */
+        int64_t q = v / A, r = v - q * A;
+        if (r < 0) { q--; r += A; }
+        int64_t dq = sv / A, dr = sv - dq * A;
+        if (dr < 0) { dq--; dr += A; }
+        s->q = q; s->r = r; s->dq = dq; s->dr = dr;
+    }
+}
+
+/* the current row (gs_tri_row's xl, xr; xl > xr: empty), then the next row */
+static inline void sb_rows_get(sb_rows* it, int bx0, int bx1, int64_t* pxl, int64_t* pxr) {
+    int64_t xl = bx0, xr = bx1;
+    for (int k = 0; k < 3; k++) {
+        sb_edge* s = &it->e[k];
+        if (s->kind > 0) { int64_t m = s->q + (s->r != 0); if (m > xl) xl = m; }   /* ceil(v / A) */
+        else if (s->kind < 0) { if (s->q < xr) xr = s->q; }                      /* floor(v / A) */
+        else if (s->c < s->bias) { xl = 1; xr = 0; }
+    }
+    *pxl = xl;
+    *pxr = xr;
+}
+static inline void sb_rows_next(sb_rows* it) {
+    for (int k = 0; k < 3; k++) {
+        sb_edge* s = &it->e[k];
+        s->c += s->dc;
+        if (!s->kind) continue;
+        s->q += s->dq;
+        s->r += s->dr;
+        if (s->r >= s->A) { s->r -= s->A; s->q++; }
+    }
+}
+
+static int sb_check = -1;                /* (P3) PS2_GPU_SB_CHECK=1: every row also by gs_tri_row, mismatches counted */
+static uint64_t sb_check_bad, sb_check_rows;
+
 /* the primitive's pixels (triangle spans, sprite rectangle, line / point pixel records): set or test */
 static int sb_prim(int cls, const gs_tri* T, const gs_sprite* sp, size_t lp_start, uint32_t lp_n, int px, int py, int set) {
     int d = gf_cfg.scale > 1;                     /* (widened at scale > 1) */
@@ -1448,8 +1483,8 @@ static int sb_prim(int cls, const gs_tri* T, const gs_sprite* sp, size_t lp_star
     int qy0 = (cls == GPU_PC_TRI ? T->by0 : cls == GPU_PC_SPRITE ? sp->py0 : py) - d - 1;
     int qy1 = (cls == GPU_PC_TRI ? T->by1 : cls == GPU_PC_SPRITE ? sp->py1 : py) + d + 1;
     if (!set && cls != GPU_PC_LINEPIX && (qy1 < sb_y0 || qy0 > sb_y1 || (qx1 >> 6) < sb_w0 || (qx0 >> 6) > sb_w1)) return 0;
-    /* (P3) a test whose rectangle holds no set bit cannot hit (the spans and pixels tested lie inside it): one OR per
-     * word instead of the edge walk */
+    /* (P3) a test whose rectangle holds no set bit cannot hit either (every span and pixel it tests lies inside it): an OR
+     * per bitmap word instead of the edge walk */
     if (!set && cls != GPU_PC_LINEPIX) {
         int ya = qy0 < sb_y0 ? sb_y0 : qy0, yb = qy1 > sb_y1 ? sb_y1 : qy1;
         int wa = (qx0 < 0 ? 0 : qx0) >> 6, wb = (qx1 > 2047 ? 2047 : qx1) >> 6;
@@ -1461,13 +1496,28 @@ static int sb_prim(int cls, const gs_tri* T, const gs_sprite* sp, size_t lp_star
         if (!any) return 0;
     }
     if (cls == GPU_PC_TRI) {
+        if (sb_check < 0) sb_check = getenv("PS2_GPU_SB_CHECK") && atoi(getenv("PS2_GPU_SB_CHECK"));
         gs_edge e[3];
-        gs_tri_edges(T, e);
+        if (sb_check) gs_tri_edges(T, e);
+        sb_rows it;
+        sb_rows_init(&it, T);
+#define SB_ROW(XL, XR)                                                                                  \
+        do {                                                                                            \
+            sb_rows_get(&it, T->bx0, T->bx1, &XL, &XR);                                                  \
+            sb_rows_next(&it);                                                                          \
+            if (sb_check) {                                                                             \
+                int64_t cl_, cr_;                                                                       \
+                gs_tri_row(e, T->bx0, T->bx1, &cl_, &cr_);                                              \
+                gs_tri_edges_next(e);                                                                   \
+                sb_check_rows++;                                                                        \
+                if ((cl_ > cr_) != (XL > XR) || (cl_ <= cr_ && (cl_ != XL || cr_ != XR))) sb_check_bad++;  \
+            }                                                                                           \
+        } while (0)
         int hit = 0;
         if (!d) {
-            for (int y = T->by0; y <= T->by1; y++, gs_tri_edges_next(e)) {
+            for (int y = T->by0; y <= T->by1; y++) {
                 int64_t xl, xr;
-                gs_tri_row(e, T->bx0, T->bx1, &xl, &xr);
+                SB_ROW(xl, xr);
                 if (xl > xr) continue;
                 hit |= sb_span(y, (int)xl, (int)xr, set);
                 if (hit && !set) return 1;
@@ -1482,8 +1532,7 @@ static int sb_prim(int cls, const gs_tri* T, const gs_sprite* sp, size_t lp_star
             int clo = 1 << 30, chi = -1;          /* of row q + 1 (rows by0 .. by1 in order, edges stepped with them) */
             if (q + 1 <= T->by1) {
                 int64_t xl, xr;
-                gs_tri_row(e, T->bx0, T->bx1, &xl, &xr);
-                gs_tri_edges_next(e);
+                SB_ROW(xl, xr);
                 if (xl <= xr) { clo = (int)xl; chi = (int)xr; }
             }
             int lo = alo < blo ? alo : blo, hi = ahi > bhi ? ahi : bhi;
@@ -1496,6 +1545,7 @@ static int sb_prim(int cls, const gs_tri* T, const gs_sprite* sp, size_t lp_star
             alo = blo; ahi = bhi;
             blo = clo; bhi = chi;
         }
+#undef SB_ROW
         return hit;
     }
     if (cls == GPU_PC_SPRITE) {
@@ -1643,190 +1693,13 @@ static void hud_stats_reset(void) {
 }
 void gpu_front_hud_stats(gpu_hud_stats* out) { *out = hud_st; }
 
-/* ---- (P3) prepare: the pure part of a primitive (gpu_front_int.h) --------------------------------------------- */
-
-/* The 128-byte FF triangle record (M5: Z, colour, fog, U/V rows; S/T/Q interpolated by the hardware), state 0.
- * (M9) only the planes this record holds and only where they vary: gs_tri_planes + gs_rowstep_init computed every
- * plane (S/T/Q too, which this record does not carry); a constant plane gives row = round(value * scale) and zero
- * steps, exactly what gs_rowstep_attr gives for it. zbp: the Z plane of the early-depth decision (the same values as
- * gs_tri_plane of the vertices' Z), or NULL. */
-static void ff_rec_make(const gs_env_view* ev, const gs_tri* T, const gs_vtx* const* vs, const gs_plane* zbp, fullrec* r) {
-    const gs_prim* P = ev->P;
-    gs_plane pp;
-    int64_t row, dyy, dxx;
-#define FF_ROW(cond, fld, scale, is_z, ROW, DY, DX)                                                      \
-    do {                                                                                        \
-        if (cond) {                                                                             \
-            gs_tri_plane(T, &pp, vs[0]->fld, vs[1]->fld, vs[2]->fld);                           \
-            gs_rowstep_attr(&pp, T->by0, scale, is_z, &row, &dyy, &dxx);                        \
-        } else {                                                                                \
-            row = gs_fx_round((double)vs[2]->fld * (scale)); dyy = 0; dxx = 0;                  \
-        }                                                                                       \
-        ROW; DY; DX;                                                                            \
-    } while (0)
-    int iip = ev->iip, uvp = P->tme && P->fst;
-    if (zbp && P->zuse) {                /* (P1: the plane of the tier decision - the same values) */
-        gs_rowstep_attr(zbp, T->by0, 65536.0, 1, &row, &dyy, &dxx);
-        r->zrow = row; r->zdy = dyy; r->zdx = dxx;
-    } else FF_ROW(P->zuse, z, 65536.0, 1, r->zrow = row, r->zdy = dyy, r->zdx = dxx);
-    FF_ROW(iip, r, 65536.0, 0, r->row[0] = (int32_t)(uint32_t)(uint64_t)row, r->dy[0] = (int32_t)(uint32_t)(uint64_t)dyy, r->dx[0] = (int32_t)(uint32_t)(uint64_t)dxx);
-    FF_ROW(iip, g, 65536.0, 0, r->row[1] = (int32_t)(uint32_t)(uint64_t)row, r->dy[1] = (int32_t)(uint32_t)(uint64_t)dyy, r->dx[1] = (int32_t)(uint32_t)(uint64_t)dxx);
-    FF_ROW(iip, b, 65536.0, 0, r->row[2] = (int32_t)(uint32_t)(uint64_t)row, r->dy[2] = (int32_t)(uint32_t)(uint64_t)dyy, r->dx[2] = (int32_t)(uint32_t)(uint64_t)dxx);
-    FF_ROW(iip, a, 65536.0, 0, r->row[3] = (int32_t)(uint32_t)(uint64_t)row, r->dy[3] = (int32_t)(uint32_t)(uint64_t)dyy, r->dx[3] = (int32_t)(uint32_t)(uint64_t)dxx);
-    FF_ROW(P->fge, f, 65536.0, 0, r->row[4] = (int32_t)(uint32_t)(uint64_t)row, r->dy[4] = (int32_t)(uint32_t)(uint64_t)dyy, r->dx[4] = (int32_t)(uint32_t)(uint64_t)dxx);
-    if (uvp) {
-        FF_ROW(1, u, (double)(1 << GS_UVSH), 0, r->row[5] = (int32_t)(uint32_t)(uint64_t)row, r->dy[5] = (int32_t)(uint32_t)(uint64_t)dyy, r->dx[5] = (int32_t)(uint32_t)(uint64_t)dxx);
-        FF_ROW(1, v, (double)(1 << GS_UVSH), 0, r->row[6] = (int32_t)(uint32_t)(uint64_t)row, r->dy[6] = (int32_t)(uint32_t)(uint64_t)dyy, r->dx[6] = (int32_t)(uint32_t)(uint64_t)dxx);
-    } else {                             /* (U / V planes are 0 without FST texturing) */
-        r->row[5] = r->dy[5] = r->dx[5] = 0;
-        r->row[6] = r->dy[6] = r->dx[6] = 0;
-    }
-#undef FF_ROW
-    r->by0 = (int16_t)T->by0;
-    r->bx0 = (int16_t)T->bx0;
-    r->state = 0;
-    r->lod_q = vs[2]->q;
-    memset((uint8_t*)r + 120, 0, 8);
-}
-
-/* Everything of a drawing primitive that depends on nothing but the primitive and the decoded state (ev): zfi / tg
- * are st_core's / tex_geom_of's for that state. The vertices are the game's (the HUD transform is applied here, as
- * fr_prim does). */
-static void prepare_core(const gs_env_view* ev, int type, const gs_vtx* a, const gs_vtx* b, const gs_vtx* c, int zfi,
-                         const tex_geom* tg, gf_prep* pp) {
-    const gs_prim* P = ev->P;
-    gs_vtx hv[3];
-    if (ev->hud & GS_ENV_HUD_ON) {
-        int n = type == PRIM_POINT ? 1 : type == PRIM_TRI || type == PRIM_TRISTRIP || type == PRIM_TRIFAN ? 3 : 2;
-        const gs_vtx* in[3] = { a, b, c };
-        if (gs_hud_prim(in, n, ev->reg[R_XYOFFSET_1 + ev->ctx], ev->reg[R_FRAME_1 + ev->ctx], ev->hud, ev->hud_scale, hv)) {
-            a = &hv[0];
-            b = n > 1 ? &hv[1] : NULL;
-            c = n > 2 ? &hv[2] : NULL;
-        }
-    }
-    pp->ok = 1; pp->cull = 0; pp->rec = 0; pp->zb = -1;
-    int cls = pc_of(type);
-    /* ---- geometry: pixel rectangle, culling (the sw rules) ---- */
-    gs_sprite sp;
-    int x0 = 0, y0 = 0, x1 = -1, y1 = -1;
-    const gs_vtx* vs[3] = { a, b, c };
-    int nv = 1;
-    switch (cls) {
-    case GPU_PC_TRI: {
-        gs_tri* T = &pp->g.T;
-        nv = 3;
-        if (!gs_tri_setup(T, a, b, c, ev->ofx, ev->ofy, P->scx0, P->scx1, P->scy0, P->scy1)) { pp->cull = 1; return; }
-        x0 = T->bx0; y0 = T->by0; x1 = T->bx1; y1 = T->by1;
-        break;
-    }
-    case GPU_PC_SPRITE:
-        nv = 2;
-        if (!gs_sprite_setup(&sp, a, b, ev->ofx, ev->ofy, P->tme, P->fst, P->tw16, P->th16, P->scx0, P->scx1, P->scy0, P->scy1)) {
-            pp->cull = 1; return;
-        }
-        x0 = sp.px0; y0 = sp.py0; x1 = sp.px1; y1 = sp.py1;
-        break;
-    case GPU_PC_LINEPIX: {
-        gs_line* L = &pp->g.L;
-        nv = 2;
-        if (!gs_line_setup(L, a, b, ev->ofx, ev->ofy)) { pp->cull = 1; return; }
-        x0 = (int)((L->X0 < L->X1 ? L->X0 : L->X1) >> 4) - 1; x1 = (int)((L->X0 < L->X1 ? L->X1 : L->X0) >> 4) + 1;
-        y0 = (int)((L->Y0 < L->Y1 ? L->Y0 : L->Y1) >> 4) - 1; y1 = (int)((L->Y0 < L->Y1 ? L->Y1 : L->Y0) >> 4) + 1;
-        if (x0 < P->scx0) x0 = P->scx0;
-        if (y0 < P->scy0) y0 = P->scy0;
-        if (x1 > P->scx1) x1 = P->scx1;
-        if (y1 > P->scy1) y1 = P->scy1;
-        if (x0 > x1 || y0 > y1) { pp->cull = 1; return; }
-        break;
-    }
-    default: {
-        int px, py;
-        gs_point_pixel(a, ev->ofx, ev->ofy, &px, &py);
-        if (px < P->scx0 || px > P->scx1 || py < P->scy0 || py > P->scy1 || row_masked(P, py)) { pp->cull = 1; return; }
-        x0 = x1 = px; y0 = y1 = py;
-        break;
-    }
-    }
-    pp->x0 = x0; pp->y0 = y0; pp->x1 = x1; pp->y1 = y1;
-    /* ---- per-primitive inputs: vertex alpha range, Z range ---- */
-    int aa = cls == GPU_PC_LINEPIX && ev->aa1 && P->abe;
-    int va_lo = 255, va_hi = 0;
-    if (aa) { va_lo = 0; va_hi = 128; }
-    else if (ev->iip && nv > 1) {
-        for (int i = 0; i < nv; i++) { if (vs[i]->a < va_lo) va_lo = vs[i]->a; if (vs[i]->a > va_hi) va_hi = vs[i]->a; }
-    } else {
-        int av = vs[nv - 1]->a;
-        va_lo = va_hi = av;
-    }
-    pp->va_lo = (uint8_t)clamp_byte(va_lo); pp->va_hi = (uint8_t)clamp_byte(va_hi);
-    {
-        uint32_t zl = 0xFFFFFFFFu, zh = 0;
-        int nz = cls == GPU_PC_SPRITE ? 1 : nv;
-        const gs_vtx* const* zv = cls == GPU_PC_SPRITE ? &vs[1] : vs;
-        for (int i = 0; i < nz; i++) { if (zv[i]->z < zl) zl = zv[i]->z; if (zv[i]->z > zh) zh = zv[i]->z; }
-        pp->zl = zl; pp->zh = zh;
-    }
-    /* ---- the texel rectangle ---- */
-    if (P->tme) {
-        int u0, v0, u1, v1;
-        if (cls == GPU_PC_SPRITE) {
-            double su[2] = { (double)(sp.ua >> GS_UVSH), (double)(sp.ub >> GS_UVSH) }, sv[2] = { (double)(sp.va >> GS_UVSH), (double)(sp.vb >> GS_UVSH) };
-            texel_rect(P, tg, NULL, 2, su, sv, &u0, &v0, &u1, &v1);
-        } else {
-            texel_rect(P, tg, vs, nv, NULL, NULL, &u0, &v0, &u1, &v1);
-        }
-        pp->tu0 = (int16_t)u0; pp->tv0 = (int16_t)v0; pp->tu1 = (int16_t)u1; pp->tv1 = (int16_t)v1;
-    }
-    /* ---- records ---- */
-    if (cls == GPU_PC_TRI) {
-        gs_plane zbp;
-        if (zfi >= 0) pp->zb = (int8_t)gpu_front_zbound(&pp->g.T, a, b, c, zfi, &zbp);
-        if (gf_cfg.mixed && !gf_cfg.ref && !gf_cfg.ff_stq_exact) {   /* (fr_prim's ff_fast, alias primitives aside) */
-            ff_rec_make(ev, &pp->g.T, vs, zfi >= 0 ? &zbp : NULL, (fullrec*)pp->r.tri);
-            pp->rec = 1;
-        }
-    } else if (cls == GPU_PC_SPRITE) {
-        spriterec* r = &pp->r.spr;
-        memset(r, 0, sizeof *r);
-        r->x0 = (int16_t)sp.px0; r->y0 = (int16_t)sp.py0; r->x1 = (int16_t)(sp.px1 + 1); r->y1 = (int16_t)(sp.py1 + 1);
-        r->rgba = (uint32_t)b->r | (uint32_t)b->g << 8 | (uint32_t)b->b << 16 | (uint32_t)b->a << 24;
-        r->z = zclamp(P, (int64_t)b->z << 16);
-        r->fog = (uint32_t)b->f;
-        r->ua = sp.ua; r->va = sp.va; r->du = sp.du; r->dv = gs_d2i32(sp.pl.v.cy * (double)(1 << GS_UVSH));
-        r->flags = sp.du == 16 << GS_UVSH && r->dv == 16 << GS_UVSH;   /* one texel per pixel and row: 1:1 (5.1) */
-        /* V of each row as draw_sprite evaluates it (gs_span_start_at at (px0, py)) */
-        r->vc0 = sp.pl.v.c0 + sp.pl.v.cx * (double)sp.px0;
-        r->vcy = sp.pl.v.cy;
-        r->lod_q = b->q;                     /* (draw_sprite: P.lod_q = v1->q) */
-        r->state = 0;
-        pp->rec = 2;
-    }
-}
-
-void gf_prepare(const gs_env_view* ev, int type, const gs_vtx* a, const gs_vtx* b, const gs_vtx* c, gf_prep* pp, gf_prep_cache* pc) {
-    pp->ok = 0;
-    if (!ev->draws) return;
-    const gs_prim* P = ev->P;
-    if (!pc->valid || pc->version != ev->version || pc->ctx != ev->ctx) {
-        st_core_t sc;
-        st_core(P, &sc);
-        pc->valid = 1; pc->version = ev->version; pc->ctx = ev->ctx;
-        pc->skip = sc.skip; pc->zfi = sc.zfi;
-        if (P->tme) tex_geom_of(P, ev->reg, ev->ctx, &pc->tg);
-    }
-    if (pc->skip) return;
-    prepare_core(ev, type, a, b, c, pc->zfi, &pc->tg, pp);
-}
-
-void gf_prim_commit(const gs_env_view* ev, int type, const gs_vtx* a, const gs_vtx* b, const gs_vtx* c, const gf_prep* pp) {
+static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_vtx* b, const gs_vtx* c) {
     /* time every 16th primitive (rdtsc costs about as much as a cheap primitive) */
     int timed = (gf.kicks & 15) == 0;
     uint64_t t0 = timed ? __rdtsc() : 0;
     PROF_START();
     PCOUNT(n_prims);
     const gs_prim* P = ev->P;
-    const gs_vtx *oa = a, *ob = b, *oc = c;      /* (the game's vertices: a fallback prepare below transforms them itself) */
     /* (M10, 8.3) the HUD transform: between HUD_BEGIN and HUD_END (the StateRec's hint state, ev->hud) the game's
      * vertices are scaled about the anchor (left edge, centre, right edge of the FRAME width), full-width
      * primitives exempt - gs_hud_prim, the software renderer's rule. Positions and every record (Z rows, sprite
@@ -1870,28 +1743,59 @@ void gf_prim_commit(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
     int cls = pc_of(type);
 
     PROF_MARK(0);
-    /* ---- the prepared part (gf_prepare): geometry, culling, input ranges, texel rectangle, records ---- */
-    gf_prep lp;
-    if (!pp || !pp->ok) {                /* (not prepared ahead: here, for the state as the commit sees it) */
-        tex_geom tg;
-        memset(&tg, 0, sizeof tg);
-        if (P->tme) tex_geom_of(P, ev->reg, ev->ctx, &tg);
-        prepare_core(ev, type, oa, ob, oc, S.zfi, &tg, &lp);
-        pp = &lp;
-    }
-    if (pp->cull) { gf.culled++; goto out; }
-    const gs_tri* T = &pp->g.T;          /* (triangles) */
-    const gs_line* L = &pp->g.L;         /* (lines) */
-    int x0 = pp->x0, y0 = pp->y0, x1 = pp->x1, y1 = pp->y1;
-    gs_sprite sp;                        /* (sprites: the pixel rectangle is all the commit reads of it) */
-    sp.px0 = x0; sp.py0 = y0; sp.px1 = x1; sp.py1 = y1;
+    /* ---- geometry: pixel rectangle, culling (the sw rules) ---- */
+    gs_tri T;
+    gs_sprite sp;
+    gs_line L;
+    int x0 = 0, y0 = 0, x1 = -1, y1 = -1;
     const gs_vtx* vs[3] = { a, b, c };
+    int nv = 1;
+    switch (cls) {
+    case GPU_PC_TRI:
+        nv = 3;
+        if (!gs_tri_setup(&T, a, b, c, ev->ofx, ev->ofy, P->scx0, P->scx1, P->scy0, P->scy1)) { gf.culled++; goto out; }
+        x0 = T.bx0; y0 = T.by0; x1 = T.bx1; y1 = T.by1;
+        break;
+    case GPU_PC_SPRITE:
+        nv = 2;
+        if (!gs_sprite_setup(&sp, a, b, ev->ofx, ev->ofy, P->tme, P->fst, P->tw16, P->th16, P->scx0, P->scx1, P->scy0, P->scy1)) {
+            gf.culled++; goto out;
+        }
+        x0 = sp.px0; y0 = sp.py0; x1 = sp.px1; y1 = sp.py1;
+        break;
+    case GPU_PC_LINEPIX:
+        nv = 2;
+        if (!gs_line_setup(&L, a, b, ev->ofx, ev->ofy)) { gf.culled++; goto out; }
+        x0 = (int)((L.X0 < L.X1 ? L.X0 : L.X1) >> 4) - 1; x1 = (int)((L.X0 < L.X1 ? L.X1 : L.X0) >> 4) + 1;
+        y0 = (int)((L.Y0 < L.Y1 ? L.Y0 : L.Y1) >> 4) - 1; y1 = (int)((L.Y0 < L.Y1 ? L.Y1 : L.Y0) >> 4) + 1;
+        if (x0 < P->scx0) x0 = P->scx0;
+        if (y0 < P->scy0) y0 = P->scy0;
+        if (x1 > P->scx1) x1 = P->scx1;
+        if (y1 > P->scy1) y1 = P->scy1;
+        if (x0 > x1 || y0 > y1) { gf.culled++; goto out; }
+        break;
+    default: {
+        int px, py;
+        gs_point_pixel(a, ev->ofx, ev->ofy, &px, &py);
+        if (px < P->scx0 || px > P->scx1 || py < P->scy0 || py > P->scy1 || row_masked(P, py)) { gf.culled++; goto out; }
+        x0 = x1 = px; y0 = y1 = py;
+        break;
+    }
+    }
     gf.cls[cls]++;
 
     PROF_MARK(1);
     /* ---- per-primitive inputs: alpha range, Z range ---- */
     int aa = cls == GPU_PC_LINEPIX && ev->aa1 && P->abe;
-    int va_lo = pp->va_lo, va_hi = pp->va_hi;
+    int va_lo = 255, va_hi = 0;
+    if (aa) { va_lo = 0; va_hi = 128; }
+    else if (ev->iip && nv > 1) {
+        for (int i = 0; i < nv; i++) { if (vs[i]->a < va_lo) va_lo = vs[i]->a; if (vs[i]->a > va_hi) va_hi = vs[i]->a; }
+    } else {
+        int av = vs[nv - 1]->a;
+        va_lo = va_hi = av;
+    }
+    va_lo = clamp_byte(va_lo); va_hi = clamp_byte(va_hi);
     int as_lo = va_lo, as_hi = va_hi;
     if (P->tme && P->tcc) {
         switch (P->tfx) {
@@ -1903,7 +1807,10 @@ void gf_prim_commit(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
     }
     int z32_high = 0;
     if (S.zfi >= 0) {
-        uint32_t zl = pp->zl, zh = pp->zh;
+        uint32_t zl = 0xFFFFFFFFu, zh = 0;
+        int nz = cls == GPU_PC_SPRITE ? 1 : nv;
+        const gs_vtx* const* zv = cls == GPU_PC_SPRITE ? &vs[1] : vs;
+        for (int i = 0; i < nz; i++) { if (zv[i]->z < zl) zl = zv[i]->z; if (zv[i]->z > zh) zh = zv[i]->z; }
         int f = S.zfi;
         if (!gf.zprims[f] || zl < gf.zmin[f]) gf.zmin[f] = zl;
         if (!gf.zprims[f] || zh > gf.zmax[f]) gf.zmax[f] = zh;
@@ -1917,7 +1824,14 @@ void gf_prim_commit(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
     texsrc_t ts;
     memset(&ts, 0, sizeof ts);
     if (P->tme) {
-        tex_source(ev, pp->tu0, pp->tv0, pp->tu1, pp->tv1, &ts);
+        int u0, v0, u1, v1;
+        if (cls == GPU_PC_SPRITE) {
+            double su[2] = { (double)(sp.ua >> GS_UVSH), (double)(sp.ub >> GS_UVSH) }, sv[2] = { (double)(sp.va >> GS_UVSH), (double)(sp.vb >> GS_UVSH) };
+            texel_rect(ev, NULL, 2, su, sv, &u0, &v0, &u1, &v1);
+        } else {
+            texel_rect(ev, vs, nv, NULL, NULL, &u0, &v0, &u1, &v1);
+        }
+        tex_source(ev, u0, v0, u1, v1, &ts);
         if (S.wms >= 2 || S.wmt >= 2) gf.region_clamp++;
         if (S.tbw & (S.tbw - 1)) gf.tbw_npot++;
     }
@@ -1967,7 +1881,7 @@ void gf_prim_commit(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
         else if (dual_exact && S.cd_dep &&       /* (M8 measurement: PS2_GPU_DUAL_EXACT=1 partial-alpha dual-source blends exact) */
                  (S.c_as ? !(as_lo == as_hi && (as_lo == 0 || as_lo == 128)) : (P->fix != 0 && P->fix != 128))) why = GPU_ROV_CLASS;
         else if (z32_high || (S.zt && S.zt->z_high)) why = GPU_ROV_Z32_HIGH;
-        else if (cls == GPU_PC_TRI && S.zfi >= 0 && (zb = pp->zb >= 0 ? pp->zb : gpu_front_zbound(T, a, b, c, S.zfi, &zbp)) == 2) {
+        else if (cls == GPU_PC_TRI && S.zfi >= 0 && (zb = gpu_front_zbound(&T, a, b, c, S.zfi, &zbp)) == 2) {
             why = GPU_ROV_Z32_HIGH;      /* (P1: a steep Z24 / Z32 plane whose exact Z may reach 2^20) */
             gf.zb_rov++;
         }
@@ -2000,7 +1914,7 @@ void gf_prim_commit(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
      * target (the larger family wins; a change rescales the target before this primitive's draw) */
     if (S.ct && S.zt && (S.ct->kx != S.zt->kx || S.ct->ky != S.zt->ky)) own_pair_family(S.ct, S.zt);
     if (ts.T && S.ct && ts.T != S.ct && cls == GPU_PC_SPRITE && (ts.T->kx != S.ct->kx || ts.T->ky != S.ct->ky) &&
-        pp->r.spr.du == 16 << GS_UVSH && pp->r.spr.dv == 16 << GS_UVSH)
+        sp.du == 16 << GS_UVSH && gs_d2i32(sp.pl.v.cy * (double)(1 << GS_UVSH)) == 16 << GS_UVSH)
         own_pair_family(ts.T, S.ct);
     if (P->tme) {
         switch (ts.kind) {
@@ -2031,10 +1945,10 @@ void gf_prim_commit(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
     int thin = cls == GPU_PC_LINEPIX && gf_cfg.thin && gf_cfg.scale > 1;
     int dcls = thin ? GPU_PC_THIN : cls;
     if (thin) {
-        emit_thin(ev, L, a, b, aa, state, S.ct ? S.ct : S.zt);
+        emit_thin(ev, &L, a, b, aa, state, S.ct ? S.ct : S.zt);
         lp_n = 1;
     } else if (cls == GPU_PC_LINEPIX) {
-        lp_n = emit_linepix(ev, L, a, b, aa, state);
+        lp_n = emit_linepix(ev, &L, a, b, aa, state);
         if (!lp_n) { gf.culled++; gf.cls[cls]--; goto out; }
     }
 
@@ -2120,7 +2034,7 @@ void gf_prim_commit(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
     if (thin) { memset(&tbox, 0, sizeof tbox); tbox.px0 = x0; tbox.py0 = y0; tbox.px1 = x1; tbox.py1 = y1; scls = GPU_PC_SPRITE; }
     const gs_sprite* spp = thin ? &tbox : &sp;
     if (xsplit && OD.open && OD.key == key && sb_owner == od_serial && (outcome & 5) &&
-        sb_prim(scls, T, spp, lp_start, lp_n, x0, y0, 0)) {
+        sb_prim(scls, &T, spp, lp_start, lp_n, x0, y0, 0)) {
         close_draw();
         gf.split_conflicts++;
     }
@@ -2159,7 +2073,7 @@ void gf_prim_commit(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
     }
     if (xsplit) {
         if (sb_owner != od_serial) { sb_reset(); sb_owner = od_serial; }
-        if (outcome & 6) sb_prim(scls, T, spp, lp_start, lp_n, x0, y0, 1);
+        if (outcome & 6) sb_prim(scls, &T, spp, lp_start, lp_n, x0, y0, 1);
     }
     /* (M7) at scale a triangle's samples reach into the native row above and the column left of its native
      * pixels (sample (i, j) of pixel (x, y) sits at x + i / kx, y + j / ky): the draw's bbox (depth tile sync,
@@ -2186,7 +2100,7 @@ void gf_prim_commit(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
          * other FF depth triangle is drawn with the bound 1.0 (exact, no early rejection) */
         int nb = 0;
         if (zmode == 1 && tier == GPU_TIER_FF) {
-            if (zb < 0) zb = pp->zb >= 0 ? pp->zb : gpu_front_zbound(T, a, b, c, S.zfi, &zbp);   /* (decided with the tier) */
+            if (zb < 0) zb = gpu_front_zbound(&T, a, b, c, S.zfi, &zbp);   /* (decided with the tier: never here) */
             nb = zb != 0 || !P->zuse;    /* (!zuse: a constant plane - never here: no Z then) */
             if (nb) gf.zb_sat++;
         }
@@ -2203,16 +2117,48 @@ void gf_prim_commit(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
              * computed every plane (S/T/Q too, which this record does not carry); a constant plane gives
              * row = round(value * scale) and zero steps, exactly what gs_rowstep_attr gives for it */
             fullrec* r = ar_reserve(&A_rec, 128);
-            if (pp->rec == 1) memcpy(r, pp->r.tri, 128);              /* (prepared: gf_prepare) */
-            else ff_rec_make(ev, T, vs, NULL, r);                       /* (the same Z plane values) */
+            gs_plane pp;
+            int64_t row, dyy, dxx;
+#define FF_ROW(cond, fld, scale, is_z, ROW, DY, DX)                                                      \
+            do {                                                                                        \
+                if (cond) {                                                                             \
+                    gs_tri_plane(&T, &pp, vs[0]->fld, vs[1]->fld, vs[2]->fld);                          \
+                    gs_rowstep_attr(&pp, T.by0, scale, is_z, &row, &dyy, &dxx);                         \
+                } else {                                                                                \
+                    row = gs_fx_round((double)vs[2]->fld * (scale)); dyy = 0; dxx = 0;                  \
+                }                                                                                       \
+                ROW; DY; DX;                                                                            \
+            } while (0)
+            int iip = ev->iip, uvp = P->tme && P->fst;
+            if (zb >= 0 && P->zuse) {            /* (P1: the plane of the tier decision - the same values) */
+                gs_rowstep_attr(&zbp, T.by0, 65536.0, 1, &row, &dyy, &dxx);
+                r->zrow = row; r->zdy = dyy; r->zdx = dxx;
+            } else FF_ROW(P->zuse, z, 65536.0, 1, r->zrow = row, r->zdy = dyy, r->zdx = dxx);
+            FF_ROW(iip, r, 65536.0, 0, r->row[0] = (int32_t)(uint32_t)(uint64_t)row, r->dy[0] = (int32_t)(uint32_t)(uint64_t)dyy, r->dx[0] = (int32_t)(uint32_t)(uint64_t)dxx);
+            FF_ROW(iip, g, 65536.0, 0, r->row[1] = (int32_t)(uint32_t)(uint64_t)row, r->dy[1] = (int32_t)(uint32_t)(uint64_t)dyy, r->dx[1] = (int32_t)(uint32_t)(uint64_t)dxx);
+            FF_ROW(iip, b, 65536.0, 0, r->row[2] = (int32_t)(uint32_t)(uint64_t)row, r->dy[2] = (int32_t)(uint32_t)(uint64_t)dyy, r->dx[2] = (int32_t)(uint32_t)(uint64_t)dxx);
+            FF_ROW(iip, a, 65536.0, 0, r->row[3] = (int32_t)(uint32_t)(uint64_t)row, r->dy[3] = (int32_t)(uint32_t)(uint64_t)dyy, r->dx[3] = (int32_t)(uint32_t)(uint64_t)dxx);
+            FF_ROW(P->fge, f, 65536.0, 0, r->row[4] = (int32_t)(uint32_t)(uint64_t)row, r->dy[4] = (int32_t)(uint32_t)(uint64_t)dyy, r->dx[4] = (int32_t)(uint32_t)(uint64_t)dxx);
+            if (uvp) {
+                FF_ROW(1, u, (double)(1 << GS_UVSH), 0, r->row[5] = (int32_t)(uint32_t)(uint64_t)row, r->dy[5] = (int32_t)(uint32_t)(uint64_t)dyy, r->dx[5] = (int32_t)(uint32_t)(uint64_t)dxx);
+                FF_ROW(1, v, (double)(1 << GS_UVSH), 0, r->row[6] = (int32_t)(uint32_t)(uint64_t)row, r->dy[6] = (int32_t)(uint32_t)(uint64_t)dyy, r->dx[6] = (int32_t)(uint32_t)(uint64_t)dxx);
+            } else {                             /* (U / V planes are 0 without FST texturing) */
+                r->row[5] = r->dy[5] = r->dx[5] = 0;
+                r->row[6] = r->dy[6] = r->dx[6] = 0;
+            }
+#undef FF_ROW
+            r->by0 = (int16_t)T.by0;
+            r->bx0 = (int16_t)T.bx0;
             r->state = state;
+            r->lod_q = c->q;
+            memset((uint8_t*)r + 120, 0, 8);
             gf.records_full++;
             gf.rec_bytes += 128;
         } else if (rov || gf_cfg.mixed) {
             gs_planes pl;
-            gs_tri_planes(T, vs, ev->iip, P->fge, P->zuse, P->tme, P->fst, &pl);
+            gs_tri_planes(&T, vs, ev->iip, P->fge, P->zuse, P->tme, P->fst, &pl);
             gs_rowstep rs;
-            gs_rowstep_init(&rs, &pl, T->by0);
+            gs_rowstep_init(&rs, &pl, T.by0);
             fullrec* r = ar_alloc(&A_rec, sizeof *r);
             r->zrow = rs.row[GS_A_Z]; r->zdy = rs.dy[GS_A_Z]; r->zdx = rs.dx[GS_A_Z];
             static const int map[7] = { GS_A_R, GS_A_G, GS_A_B, GS_A_A, GS_A_F, GS_A_U, GS_A_V };
@@ -2223,20 +2169,20 @@ void gf_prim_commit(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
                 r->dy[k] = (int32_t)(uint32_t)(uint64_t)rs.dy[map[k]];
                 r->dx[k] = (int32_t)(uint32_t)(uint64_t)rs.dx[map[k]];
             }
-            r->by0 = (int16_t)T->by0;
-            r->bx0 = (int16_t)T->bx0;
+            r->by0 = (int16_t)T.by0;
+            r->bx0 = (int16_t)T.bx0;
             r->state = state;
             r->lod_q = c->q;                     /* (draw_triangle: P.lod_q = v2->q for FST) */
             r->s0 = rs.s; r->t0 = rs.t; r->q0 = rs.q;
             r->sdy = rs.sdy; r->tdy = rs.tdy; r->qdy = rs.qdy;
             r->sdx = rs.sdx; r->tdx = rs.tdx; r->qdx = rs.qdx;
             gs_edge e[3];
-            gs_tri_edges(T, e);
+            gs_tri_edges(&T, e);
             uint32_t ne = 0;
             for (int k = 0; k < 3; k++)
                 if (e[k].a > 0 && ne < 2) { r->ea[ne] = (int32_t)e[k].a; r->edc[ne] = (int32_t)e[k].dc; r->ec[ne] = e[k].c; ne++; }
             r->nedge = ne;
-            if (P->tme && !P->fst && (int64_t)(T->bx1 - T->bx0 + 1) * (T->by1 - T->by0 + 1) > GS_MAX_SPAN) stq_cuts(T, P, r);
+            if (P->tme && !P->fst && (int64_t)(T.bx1 - T.bx0 + 1) * (T.by1 - T.by0 + 1) > GS_MAX_SPAN) stq_cuts(&T, P, r);
             if (trace_on)
                 fprintf(stderr, "[front] tri record %u: by0 %d bx0 %d s0 %.17g sdy %.17g sdx %.17g q0 %.17g edges %u\n",
                         rec_count(sizeof *r) - 1, r->by0, r->bx0, r->s0, r->sdy, r->sdx, r->q0, r->nedge);
@@ -2244,27 +2190,36 @@ void gf_prim_commit(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
             gf.rec_bytes += sizeof *r;
         } else if (zmode) {
             gs_plane zp;
-            gs_tri_plane(T, &zp, a->z, b->z, c->z);
+            gs_tri_plane(&T, &zp, a->z, b->z, c->z);
             zrec* r = ar_reserve(&A_rec, sizeof *r);
-            gs_rowstep_attr(&zp, T->by0, 65536.0, 1, &r->row, &r->dy, &r->dx);
+            gs_rowstep_attr(&zp, T.by0, 65536.0, 1, &r->row, &r->dy, &r->dx);
             r->pad = 0;
-            r->by0 = (int16_t)T->by0;
+            r->by0 = (int16_t)T.by0;
             r->zfmt = (uint16_t)P->zpsm;
             gf.records_z++;
             gf.rec_bytes += sizeof *r;
             if (gf_cfg.selfcheck) {      /* the sw rasterizer's own row stepping for this triangle */
                 gs_planes pl;
-                gs_tri_planes(T, vs, ev->iip, P->fge, P->zuse, P->tme, P->fst, &pl);
+                gs_tri_planes(&T, vs, ev->iip, P->fge, P->zuse, P->tme, P->fst, &pl);
                 gs_rowstep rs;
-                gs_rowstep_init(&rs, &pl, T->by0);
+                gs_rowstep_init(&rs, &pl, T.by0);
                 if (rs.row[GS_A_Z] != r->row || rs.dy[GS_A_Z] != r->dy || rs.dx[GS_A_Z] != r->dx) gf.selfcheck_bad++;
             }
         }
         break;
     }
     case GPU_PC_SPRITE: {
-        spriterec* r = ar_reserve(&A_rec, sizeof *r);
-        memcpy(r, &pp->r.spr, sizeof *r);   /* (prepared: gf_prepare) */
+        spriterec* r = ar_alloc(&A_rec, sizeof *r);
+        r->x0 = (int16_t)sp.px0; r->y0 = (int16_t)sp.py0; r->x1 = (int16_t)(sp.px1 + 1); r->y1 = (int16_t)(sp.py1 + 1);
+        r->rgba = (uint32_t)b->r | (uint32_t)b->g << 8 | (uint32_t)b->b << 16 | (uint32_t)b->a << 24;
+        r->z = zclamp(P, (int64_t)b->z << 16);
+        r->fog = (uint32_t)b->f;
+        r->ua = sp.ua; r->va = sp.va; r->du = sp.du; r->dv = gs_d2i32(sp.pl.v.cy * (double)(1 << GS_UVSH));
+        r->flags = sp.du == 16 << GS_UVSH && r->dv == 16 << GS_UVSH;   /* one texel per pixel and row: 1:1 (5.1) */
+        /* V of each row as draw_sprite evaluates it (gs_span_start_at at (px0, py)) */
+        r->vc0 = sp.pl.v.c0 + sp.pl.v.cx * (double)sp.px0;
+        r->vcy = sp.pl.v.cy;
+        r->lod_q = b->q;                     /* (draw_sprite: P.lod_q = v1->q) */
         r->state = state;
         gf.records_sprite++;
         gf.rec_bytes += sizeof *r;
@@ -2310,20 +2265,6 @@ out:
     if (prof_emit) PROF_MARK(7); else PROF_MARK(11);
     prof_emit = 0;
 #endif
-}
-
-/* the primitive hook of the frontend on its caller's thread: prepare, then commit */
-static gf_prep_cache fr_pc;
-static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_vtx* b, const gs_vtx* c) {
-    gf_prep pp;
-#ifdef GPU_FRONT_PROF
-    uint64_t t_ = __rdtsc();
-#endif
-    gf_prepare(ev, type, a, b, c, &pp, &fr_pc);
-#ifdef GPU_FRONT_PROF
-    prof[9] += __rdtsc() - t_;
-#endif
-    gf_prim_commit(ev, type, a, b, c, &pp);
 }
 
 /* ---- transfers, CLUT, reset ------------------------------------------------------------------------ */
@@ -2466,7 +2407,6 @@ void gpu_front_start(const gpu_front_config* cfg) {
     memset(SC, 0, sizeof SC);
     memset(SC_used, 0, sizeof SC_used);
     Sp = &SC[0];
-    fr_pc.valid = 0;                     /* (P3: versions start over) */
     memset(&OD, 0, sizeof OD);
     memset(&RR, 0, sizeof RR);
     memset(&AB, 0, sizeof AB);
@@ -2493,18 +2433,15 @@ void gpu_front_start(const gpu_front_config* cfg) {
 void gpu_front_drain(void) { if (gf_cfg.thread) fthread_drain(); }
 uint64_t gpu_front_thread_cycles(void) { return gf_cfg.thread ? fthread_cycles() : 0; }
 void gpu_front_thread_affinity(uint64_t mask) { if (gf_cfg.thread) fthread_affinity(mask); }
-int gpu_front_pool_size(void) { return gf_cfg.thread ? fthread_pool_size() : 0; }
-void gpu_front_pool_stats(uint64_t* segs, uint64_t* self, uint64_t* wait_tsc) { fthread_pool_stats(segs, self, wait_tsc); }
-uint64_t gpu_front_pool_cycles(void) { return gf_cfg.thread ? fthread_pool_cycles() : 0; }
-void gpu_front_pool_affinity(int i, uint64_t mask) { if (gf_cfg.thread) fthread_pool_affinity(i, mask); }
 
 void gpu_front_stop(void) {
     if (gf_cfg.thread) fthread_stop();
+    if (sb_check > 0) fprintf(stderr, "[gpu_front] sb rows check: %llu rows, %llu differ\n", (unsigned long long)sb_check_rows, (unsigned long long)sb_check_bad);
 #ifdef GPU_FRONT_PROF
     fprintf(stderr, "[gpu_front] profile (Mcycles): state %.1f geometry %.1f inputs %.1f texture %.1f tier %.1f ownership %.1f key %.1f emission %.1f\n",
             prof[0] / 1e6, prof[1] / 1e6, prof[2] / 1e6, prof[3] / 1e6, prof[4] / 1e6, prof[5] / 1e6, prof[6] / 1e6, prof[7] / 1e6);
     fprintf(stderr, "[gpu_front] prims %llu, state lookups %llu, misses %llu\n", (unsigned long long)n_prims, (unsigned long long)n_lookups, (unsigned long long)n_misses);
-    fprintf(stderr, "[gpu_front] emission: tri vertices %.1f, line pixels %.1f, rest (records) %.1f; early exits %.1f; prepare (same thread) %.1f\n", prof[8] / 1e6, prof[10] / 1e6, prof[7] / 1e6, prof[11] / 1e6, prof[9] / 1e6);
+    fprintf(stderr, "[gpu_front] emission: tri vertices %.1f, line pixels %.1f, rest (records) %.1f; early exits %.1f\n", prof[8] / 1e6, prof[10] / 1e6, prof[7] / 1e6, prof[11] / 1e6);
 #endif
     gs_front = NULL;
     gs_sw_draw = 1;
@@ -2532,7 +2469,6 @@ uint32_t gpu_front_thread_punts(void) { return (uint32_t)thread_punts; }
 void gpu_front_set_thread(int on) {
     on = on != 0;
     if (on == gf_cfg.thread) return;
-    fr_pc.valid = 0;                     /* (P3: the two paths number state versions differently) */
     if (on) {
         S.version = 0;                   /* (the frontend thread numbers state versions on its own) */
         gf_cfg.thread = 1;

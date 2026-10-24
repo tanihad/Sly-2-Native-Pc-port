@@ -435,7 +435,11 @@ void own_draw(gpu_target* T, int x0, int y0, int x1, int y1, int writes, int opa
     if (y1 >= T->rows) own_grow(T, y1 + 1);
     if (x0 < 0) x0 = 0;
     if (y0 < 0) y0 = 0;
-    int bx0 = x0 / T->bw, by0 = y0 / T->bh, bx1 = x1 / T->bw, by1 = y1 / T->bh;
+    /* (P3) block sizes are 8 or 16 pixels: shifts for the divisions of the non-negative coordinates (C division
+     * truncates toward zero; a negative x1 / y1 keeps it) */
+    int sx = T->bw == 16 ? 4 : 3, sy = T->bh == 16 ? 4 : 3;
+    int bx0 = (T->bw == 8 || T->bw == 16) ? x0 >> sx : x0 / T->bw, by0 = (T->bh == 8 || T->bh == 16) ? y0 >> sy : y0 / T->bh;
+    int bx1 = x1 >= 0 && (T->bw == 8 || T->bw == 16) ? x1 >> sx : x1 / T->bw, by1 = y1 >= 0 && (T->bh == 8 || T->bh == 16) ? y1 >> sy : y1 / T->bh;
     if (bx1 >= T->bcols) bx1 = T->bcols - 1;
     if (by1 >= T->brows) by1 = T->brows - 1;
     T->last_used = gf_frame;
