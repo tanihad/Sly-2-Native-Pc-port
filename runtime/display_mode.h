@@ -16,6 +16,9 @@ int display_mode_fullscreen(void* hwnd, int on);
 /* the rate to switch to: 0 = none (keep the desktop's). rates: the display's rates at the desktop's resolution; want:
  * 0 desktop, -1 auto, > 0 a rate. Pure (unit tests). */
 int display_mode_pick(const int* rates, int n, int desktop_hz, int want);
+/* (pc-polish) the rate for another resolution (Fullscreen's [display] resolution): display_mode_pick's choice, else the
+ * desktop's rate if that mode has it, else the fastest not above it, else the fastest (never 0 when n > 0). Pure. */
+int display_mode_rate_at(const int* rates, int n, int desktop_hz, int want);
 /* exclusive fullscreen (the Options menu's Display mode, menu_ext.h pacing_exclusive_fullscreen): while on, fullscreen uses
  * fullscreen_refresh = auto unless a rate is set (the desktop's rate when it is a multiple of 59.94 Hz already). The window
  * stays a borderless popup over the monitor (DXGI flip model: independent flip, the same as exclusive for latency). */

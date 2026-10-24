@@ -1,4 +1,4 @@
-/* Fullscreen refresh rate (pc-pacing; display_mode.h). */
+/* Fullscreen refresh rate (pc-pacing) and Fullscreen's resolution (pc-polish); display_mode.h. */
 #include "display_mode.h"
 #include "settings.h"
 
@@ -29,6 +29,19 @@ int display_mode_pick(const int* rates, int n, int desktop_hz, int want) {
     return best;
 }
 
+int display_mode_rate_at(const int* rates, int n, int desktop_hz, int want) {
+    if (n <= 0) return 0;
+    int hz = display_mode_pick(rates, n, desktop_hz, want);
+    if (hz) return hz;
+    for (int i = 0; i < n; i++) if (rates[i] == desktop_hz) return desktop_hz;   /* the desktop's rate if this mode has it */
+    int best = 0, top = 0;
+    for (int i = 0; i < n; i++) {
+        if (rates[i] <= desktop_hz && rates[i] > best) best = rates[i];             /* else the fastest not above it */
+        if (rates[i] > top) top = rates[i];
+    }
+    return best ? best : top;
+}
+
 static int changed;                      /* the mode was changed (and must be restored) */
 static volatile int exclusive;           /* exclusive fullscreen (the Options menu): the refresh is auto unless set */
 
@@ -52,57 +65,76 @@ static int monitor_device(HWND hwnd, WCHAR* dev) {
     return 1;
 }
 
+/* the display's refresh rates at w x h (the desktop's bit depth) */
+static int rates_at(const WCHAR* dev, const DEVMODEW* cur, DWORD w, DWORD h, int* rates, int cap) {
+    int n = 0;
+    DEVMODEW m;
+    for (DWORD i = 0; n < cap; i++) {
+        memset(&m, 0, sizeof m);
+        m.dmSize = sizeof m;
+        if (!EnumDisplaySettingsW(dev, i, &m)) break;
+        if (m.dmPelsWidth != w || m.dmPelsHeight != h || m.dmBitsPerPel != cur->dmBitsPerPel) continue;
+        int dup = 0;
+        for (int k = 0; k < n; k++) dup |= rates[k] == (int)m.dmDisplayFrequency;
+        if (!dup) rates[n++] = (int)m.dmDisplayFrequency;
+    }
+    return n;
+}
+
 int display_mode_fullscreen(void* hwnd_, int on) {
     HWND hwnd = (HWND)hwnd_;
     if (!on) {
         if (!changed) return 0;
         ChangeDisplaySettingsExW(changed_dev, NULL, NULL, 0, NULL);   /* back to the desktop's mode (the registry's) */
         changed = 0;
-        fprintf(stderr, "[display] desktop refresh rate restored\n");
+        fprintf(stderr, "[display] desktop display mode restored\n");
         return 1;
     }
     int want = ps2_settings.fullscreen_refresh;
+    int res = exclusive ? ps2_settings.fullscreen_res : 0;   /* (pc-polish) Fullscreen's resolution: 0 = the desktop's */
     if (exclusive && !want) want = -1;       /* exclusive: the game owns the display - a multiple of 59.94 Hz when it has one */
-    if (!want || changed) return 0;
+    if ((!want && !res) || changed) return 0;
     WCHAR dev[32];
     if (!monitor_device(hwnd, dev)) return 0;
     DEVMODEW cur;
     memset(&cur, 0, sizeof cur);
     cur.dmSize = sizeof cur;
     if (!EnumDisplaySettingsW(dev, ENUM_CURRENT_SETTINGS, &cur)) return 0;
-    int rates[64], n = 0;
-    DEVMODEW m;
-    for (DWORD i = 0; n < 64; i++) {
-        memset(&m, 0, sizeof m);
-        m.dmSize = sizeof m;
-        if (!EnumDisplaySettingsW(dev, i, &m)) break;
-        if (m.dmPelsWidth != cur.dmPelsWidth || m.dmPelsHeight != cur.dmPelsHeight || m.dmBitsPerPel != cur.dmBitsPerPel) continue;
-        int dup = 0;
-        for (int k = 0; k < n; k++) dup |= rates[k] == (int)m.dmDisplayFrequency;
-        if (!dup) rates[n++] = (int)m.dmDisplayFrequency;
+    DWORD w = cur.dmPelsWidth, h = cur.dmPelsHeight;
+    int rates[64], n = 0, hz = 0;
+    if (res && ((DWORD)((res >> 16) & 0x7FFF) != w || (DWORD)(res & 0xFFFF) != h)) {
+        DWORD rw = (DWORD)((res >> 16) & 0x7FFF), rh = (DWORD)(res & 0xFFFF);
+        n = rates_at(dev, &cur, rw, rh, rates, 64);
+        if (n) { w = rw; h = rh; hz = display_mode_rate_at(rates, n, (int)cur.dmDisplayFrequency, want); }
+        else fprintf(stderr, "[display] the display has no %lux%lu mode: the desktop's resolution\n", (unsigned long)rw, (unsigned long)rh);
     }
-    int hz = display_mode_pick(rates, n, (int)cur.dmDisplayFrequency, want);
-    if (!hz) {
-        if (want > 0) fprintf(stderr, "[display] fullscreen refresh %d Hz: the display has no such mode at %lux%lu (or it is the desktop's)\n",
-                              want, (unsigned long)cur.dmPelsWidth, (unsigned long)cur.dmPelsHeight);
-        return 0;
+    if (w == cur.dmPelsWidth && h == cur.dmPelsHeight) {     /* the desktop's resolution: only a refresh rate change */
+        n = rates_at(dev, &cur, w, h, rates, 64);
+        hz = display_mode_pick(rates, n, (int)cur.dmDisplayFrequency, want);
+        if (!hz) {
+            if (want > 0) fprintf(stderr, "[display] fullscreen refresh %d Hz: the display has no such mode at %lux%lu (or it is the desktop's)\n",
+                                  want, (unsigned long)cur.dmPelsWidth, (unsigned long)cur.dmPelsHeight);
+            return 0;
+        }
     }
     DEVMODEW dm = cur;
+    dm.dmPelsWidth = w;
+    dm.dmPelsHeight = h;
     dm.dmDisplayFrequency = (DWORD)hz;
     dm.dmFields = DM_PELSWIDTH | DM_PELSHEIGHT | DM_BITSPERPEL | DM_DISPLAYFREQUENCY;
     if (ChangeDisplaySettingsExW(dev, &dm, NULL, CDS_TEST, NULL) != DISP_CHANGE_SUCCESSFUL) {
-        fprintf(stderr, "[display] the display refuses %d Hz at %lux%lu\n", hz, (unsigned long)cur.dmPelsWidth, (unsigned long)cur.dmPelsHeight);
+        fprintf(stderr, "[display] the display refuses %lux%lu at %d Hz\n", (unsigned long)w, (unsigned long)h, hz);
         return 0;
     }
     /* CDS_FULLSCREEN: a temporary mode (not written to the registry); Windows restores the desktop's when the game ends */
     LONG r = ChangeDisplaySettingsExW(dev, &dm, NULL, CDS_FULLSCREEN, NULL);
     if (r != DISP_CHANGE_SUCCESSFUL) {
-        fprintf(stderr, "[display] switching to %d Hz failed (%ld)\n", hz, (long)r);
+        fprintf(stderr, "[display] switching to %lux%lu at %d Hz failed (%ld)\n", (unsigned long)w, (unsigned long)h, hz, (long)r);
         return 0;
     }
     changed = 1;
     memcpy(changed_dev, dev, sizeof dev);
-    fprintf(stderr, "[display] fullscreen at %d Hz (desktop %lu Hz): %s\n", hz, (unsigned long)cur.dmDisplayFrequency,
-            "every 59.94 Hz picture lasts the same number of refreshes");
+    fprintf(stderr, "[display] fullscreen at %lux%lu, %d Hz (desktop %lux%lu, %lu Hz)\n", (unsigned long)w, (unsigned long)h, hz,
+            (unsigned long)cur.dmPelsWidth, (unsigned long)cur.dmPelsHeight, (unsigned long)cur.dmDisplayFrequency);
     return 1;
 }

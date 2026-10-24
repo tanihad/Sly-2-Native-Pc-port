@@ -494,12 +494,16 @@ static DWORD WINAPI input_thread(LPVOID arg) {
         input_service();
         for (int i = 0; i < HID_MAX; i++) if (hdev[i].used) ps_update_output(&hdev[i], 0);
     }
-    /* stopping: motors off */
+    /* stopping (quit, window closed): motors off, the light bar and the player LEDs dark again (pc-polish: the game's
+     * Sly-blue light does not stay on after it ends) */
     for (int i = 0; i < HID_MAX; i++) {
         hid_dev* d = &hdev[i];
         if (!d->used || !d->can_write || !d->have_last) continue;
         ps_output o = d->last;
         o.motor_small = o.motor_large = 0;
+        o.lightbar_on = 0;
+        memset(o.rgb, 0, sizeof o.rgb);
+        o.player_leds = 0;
         o.seq = d->seq++;
         uint8_t rep[PS_OUTPUT_MAX];
         size_t len = d->kind == INPUT_DEV_DS4 ? ps_build_ds4(&o, d->bt, rep) : ps_build_dualsense(&o, d->bt, rep);
