@@ -1,5 +1,10 @@
 # pc-research: next big performance step (200+ fps) - checkpoint
 
+**Status: complete** (2026-10-23). Deliverable: notes/perf-plan.md. The branch also carries the conservative-depth prototype in
+runtime/gpu (m9_exact identical 28/28 S=1/3; gs-hw: 4 conformance checks (hardware + WARP) still test the old depth
+encoding and fail - rewriting them is part of milestone P1). Quiet-GPU m9_bench 3x GPU per game frame: ep1 9.50 -> 6.40, ep3
+8.82 -> 6.89, ep5 9.16 -> 6.59, ep8 boss 7.03 -> 6.92, ep7 boss 11.30 -> 9.19. Big files deleted (VU recording, frames).
+
 **Goal**: decision document notes/perf-plan.md (options compared with measured evidence, recommended plan with
 verifiable milestones, NVIDIA features adopt/skip) for reaching 200+ fps at native 1440p.
 
