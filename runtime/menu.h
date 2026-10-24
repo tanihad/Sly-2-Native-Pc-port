@@ -1,6 +1,6 @@
-/* The in-game Options menu ("PC Settings"; notes/pc-menu.md, notes/settings.md).
+/* The in-game Options menu (notes/pc-menu.md, notes/settings.md).
  *
- * Reached from the game's own pause menu (an entry "PC Settings" added by instruction patches, menu_game.c), with
+ * Reached from the game's own pause menu (an entry "Options" added by instruction patches, menu_game.c), with
  * Esc on the keyboard or Select+Start on a controller. It is an overlay: the game stays in its pause menu
  * (paused, still presenting pictures), the menu is drawn over each presented picture by the renderer in use
  * (menu_overlay.c: the GPU renderer's present pass, the software renderer's window presenter, GDI), and the game

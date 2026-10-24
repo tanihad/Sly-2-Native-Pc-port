@@ -97,28 +97,36 @@ Your settings (sly2.ini), saves (the memcard folder) and the log (sly2.log) are 
 %LOCALAPPDATA%\\Sly2. Put a file named portable.txt next to sly2.exe to keep them in this
 folder instead.
 
-Settings: pause the game (START / Options) and choose "PC Settings", or press Esc (keyboard)
+Settings: pause the game (START / Options) and choose "Options", or press Esc (keyboard)
 or the PS button (DualSense / DualShock 4) at any time. Graphics (presets Original /
-Performance / Balanced / Quality, resolution, outlines, filters), display (window or
-fullscreen, window size, monitor, aspect ratio, HUD layout), audio volumes and controls
-(vibration, dead zones, camera inversion, key and button bindings) change while you play and
-are saved at once.
+Performance / Balanced / Quality, render scale, outlines, filters), display (Windowed /
+Borderless / Fullscreen, resolution, monitor, aspect ratio, HUD layout, frame rate), audio
+(volumes, speakers) and controls (vibration, dead zones, camera and aiming inversion, key and
+button bindings) change while you play and are saved at once. Display mode, resolution,
+monitor and renderer are applied with "Apply changes"; a new display mode or resolution is
+kept only when you confirm it within 15 seconds.
 
-Alt+Enter or F11: fullscreen. Closing the window ends the game; the window's size, position
-and fullscreen state are remembered.
+Render scale is how sharp the game is drawn compared with your screen: 100% = at least your
+screen's (or window's) resolution, 50% = half of it, Auto = as high as your graphics card
+keeps up with, up to 100%, Original PS2 = the PS2's 512 x 448. The Graphics page shows what
+is drawn and what is shown ("Rendering at 2048 x 1344 -> shown at 2560 x 1440").
+
+Quit: "Quit to Desktop" in the pause menu (or in Options, or the title screen's SELECT menu),
+or close the window / Alt+F4. The game asks first; progress since the last save is lost, so
+save from the pause menu ("Save Game...") before. Alt+Enter or F11: borderless fullscreen.
+The window's size, position and display mode are remembered.
 
 Controls: a PlayStation 5 (DualSense) or PlayStation 4 (DualShock 4) controller over USB or
 Bluetooth, an Xbox controller, most other USB gamepads, or the keyboard (WASD to move, IJKL
 camera, Space jump, Left Ctrl / F / R the other face buttons, Enter start). Controllers can be
 connected or disconnected at any time; they rumble and the PlayStation light bar turns blue.
 "Controller test.cmd" (or sly2.exe --pad-test) shows what the game sees from your controller
-and tests its rumble. Keys and buttons can be changed in PC Settings > Controls.
+and tests its rumble. Keys and buttons can be changed in Options > Controls.
 
-Graphics: the game draws on your graphics card (Direct3D 11) at 3x the PS2's resolution in
-16:9, sharply scaled to the window, at 60 frames per second. On a graphics card that cannot
-keep up, the resolution is lowered automatically (internal_scale = auto). Shortcut keys while
-playing (the same settings as PC Settings):
-  F2 / Shift+F2   resolution up / down (1x-8x; fixed from then on), Ctrl+F2 back to automatic
+Graphics: the game draws on your graphics card (Direct3D 11) in 16:9, sharply scaled to the
+window, at 60 frames per second; render scale Auto picks the resolution and lowers it on a
+graphics card that cannot keep up. Shortcut keys while playing (the same settings as Options):
+  F2 / Shift+F2   render scale up / down (1x-8x the PS2's; exact from then on), Ctrl+F2 Auto
   F3              outlines: PS2 (one PS2 pixel wide) / thin
   F4              filters: Modern (motion blur, sharp progressive picture) / Faithful (as a PS2
                   on a TV: flicker filter, interlacing)
