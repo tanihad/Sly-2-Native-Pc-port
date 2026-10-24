@@ -316,6 +316,106 @@ static void test_defaults_migration(void) {
     settings_load();
 }
 
+/* (pc-menu2) the game's font format (sly_font.c), built here in a fake EE RAM: 'A' = a square fan (outline) with a counter
+ * (a flag-1 fan wound the other way), 'B' = a strip with an ADC vertex, '0' a fan; everything else empty */
+static void w32(uint8_t* ram, uint32_t a, uint32_t v) { memcpy(ram + a, &v, 4); }
+static uint32_t put_glyph_packet(uint8_t* ram, uint32_t at, int nseg, const int* kinds, const int* counts, const int* flags,
+                                 const int16_t (*pts)[2], const uint8_t* adc) {
+    uint32_t p = at + 8;                         /* (the DMA tag's first qword holds two VIF NOPs) */
+    uint8_t* b = ram;
+    #define VIF(code) do { w32(b, p, (code)); p += 4; } while (0)
+    VIF(0x30000000u); for (int k = 0; k < 4; k++) VIF(0);                       /* STROW 0 */
+    VIF(0x6401C007u); VIF((uint32_t)nseg); VIF(0);                              /* V2-32 @7: count */
+    VIF(0x01000102u);                                                           /* STCYCL 2,1 */
+    VIF(0x6A00C008u | (uint32_t)nseg << 16);                                    /* V3-8 @8 */
+    uint8_t info[96] = { 0 };
+    for (int s = 0; s < nseg; s++) { info[3 * s] = (uint8_t)kinds[s]; info[3 * s + 1] = (uint8_t)counts[s]; info[3 * s + 2] = (uint8_t)flags[s]; }
+    for (int k = 0; k < (3 * nseg + 3) / 4; k++) { uint32_t v; memcpy(&v, info + 4 * k, 4); VIF(v); }
+    VIF(0x6E00C009u | (uint32_t)nseg << 16); for (int s = 0; s < nseg; s++) VIF(flags[s] ? 0 : 0x80000000u);   /* V4-8 colours */
+    VIF(0x01000101u);                                                           /* STCYCL 1,1 */
+    VIF(0x20000000u); VIF(0x50505050u);                                         /* STMASK */
+    int v = 0;
+    uint32_t addr = 0x20;
+    for (int s = 0; s < nseg; s++) {
+        VIF(0x75008000u | (uint32_t)counts[s] << 16 | addr);                    /* V2-16 masked */
+        for (int k = 0; k < counts[s]; k++) VIF((uint32_t)(uint16_t)pts[v + k][0] | (uint32_t)(uint16_t)pts[v + k][1] << 16);
+        if (adc) {
+            VIF(0x20000000u); VIF(0x3F3F3F3Fu);
+            VIF(0x72008000u | (uint32_t)counts[s] << 16 | addr);                /* V1-8 masked: w = ADC */
+            uint8_t f[32] = { 0 };
+            for (int k = 0; k < counts[s]; k++) f[k] = adc[v + k];
+            for (int k = 0; k < (counts[s] + 3) / 4; k++) { uint32_t x; memcpy(&x, f + 4 * k, 4); VIF(x); }
+            VIF(0x20000000u); VIF(0x50505050u);
+        }
+        addr += (uint32_t)counts[s];
+        v += counts[s];
+    }
+    VIF(0x14000028u);                                                           /* MSCAL 40 */
+    while ((p - at) % 16) VIF(0);
+    #undef VIF
+    uint32_t qwc = (p - at) / 16 - 1;
+    w32(ram, at, 0x60000000u | qwc);                                            /* RET tag */
+    w32(ram, at + 4, 0);
+    return p;
+}
+
+static void test_font(void) {
+    const uint32_t size = 0x400000u, font = 0x200000u, chars = 0x200100u, adv = 0x200500u, glyphs = 0x201000u;
+    uint8_t* ram = calloc(size, 1);
+    w32(ram, font + 0x10, 3); w32(ram, font + 0x14, glyphs); w32(ram, font + 0x18, 3); w32(ram, font + 0x1C, adv);
+    w32(ram, font + 0x20, 24); w32(ram, font + 0x24, chars);
+    uint32_t cs[24];                             /* 0..9, A..H, a..f: the glyph of table entry i at glyphs + 0x40 * (i + 1) */
+    for (int i = 0; i < 24; i++) cs[i] = i < 10 ? (uint32_t)('0' + i) : i < 18 ? (uint32_t)('A' + i - 10) : (uint32_t)('a' + i - 18);
+    for (int i = 0; i < 24; i++) { w32(ram, chars + 4 * i, cs[i]); float a = 25.0f + i; memcpy(ram + adv + 4 * i, &a, 4); }
+    uint32_t pk = 0x210000u;
+    /* '0': a fan square 0..400 x -600..0 (units of 1/16) */
+    { static const int16_t p[][2] = { { 0, 0 }, { 400, 0 }, { 400, -600 }, { 0, -600 } }; int k[] = { 1 }, n[] = { 4 }, f[] = { 0 };
+      w32(ram, glyphs + 0x40 * 1 + 0x1C, pk); pk = (put_glyph_packet(ram, pk, 1, k, n, f, p, NULL) + 15) & ~15u; }
+    /* 'A': square 0..640 x -640..0 and a counter 160..480 wound the other way, flagged */
+    { static const int16_t p[][2] = { { 0, 0 }, { 640, 0 }, { 640, -640 }, { 0, -640 }, { 160, -160 }, { 160, -480 }, { 480, -480 }, { 480, -160 } };
+      int k[] = { 1, 1 }, n[] = { 4, 4 }, f[] = { 0, 1 };
+      w32(ram, glyphs + 0x40 * 11 + 0x1C, pk); pk = (put_glyph_packet(ram, pk, 2, k, n, f, p, NULL) + 15) & ~15u; }
+    /* 'B': a strip of two triangles, then an ADC vertex and one more triangle far away */
+    { static const int16_t p[][2] = { { 0, 0 }, { 320, 0 }, { 0, -320 }, { 320, -320 }, { 0, -640 }, { 320, -640 } };
+      static const uint8_t adc[] = { 0, 0, 0, 0, 255, 0 };
+      int k[] = { 2 }, n[] = { 6 }, f[] = { 0 };
+      w32(ram, glyphs + 0x40 * 12 + 0x1C, pk); pk = (put_glyph_packet(ram, pk, 1, k, n, f, p, adc) + 15) & ~15u; }
+    uint32_t at = 0;
+    CHECK(slyf_find(ram, size, &at) && at == font, "font found at 0x%08X", at);
+    slyf_mesh m = { 0 };
+    m.tri = malloc(sizeof *m.tri * SLYF_MAX_TRIS);
+    CHECK(slyf_extract(ram, size, font, &m) && m.has['A'] && m.has['a'] && fabsf(m.adv['B'] - 36.0f) < 1e-4f,
+          "extracted (%d triangles)", m.ntri);
+    int nA = 0, nB = 0, neg = 0;
+    for (int i = 0; i < m.ntri; i++) { nA += m.tri[i].ch == 'A'; nB += m.tri[i].ch == 'B'; neg += m.tri[i].w < 0; }
+    CHECK(nA == 4 && nB == 3 && neg == 2, "triangles: A %d (4), B %d (3: ADC skipped one), counter %d (2)", nA, nB, neg);
+    slyf_atlas a;
+    memset(&a, 0, sizeof a);
+    int rok = slyf_raster(&m, 2.0f, &a);
+    if (!rok || !a.px[0]) { CHECK(0, "no atlas"); free(m.tri); free(ram); return; }
+    CHECK(rok &&a.levels > 3 && a.g['A'].present && !a.g['a'].present && a.g['a'].adv > 0, "atlas");
+    /* 'A' at 2 px per unit: 80 x 80 px square, the counter 20..60 px: inside the counter 0, the ring 255 */
+    const slyf_glyph* g = &a.g['A'];
+    int cx = g->ax + (int)((20.0f - g->ox) * 2.0f), cy = g->ay + (int)((-20.0f - g->oy) * 2.0f);   /* (font units -> pixels) */
+    int rx = g->ax + (int)((5.0f - g->ox) * 2.0f);
+    uint8_t hole = a.px[0][(size_t)cy * a.w[0] + cx], ring = a.px[0][(size_t)cy * a.w[0] + rx];
+    CHECK(hole == 0 && ring == 255, "the counter is a hole (%d), the ring filled (%d)", hole, ring);
+    const slyf_glyph* gb = &a.g['B'];
+    int bx = gb->ax + (int)((10.0f - gb->ox) * 2.0f), by_lo = gb->ay + (int)((-10.0f - gb->oy) * 2.0f), by_hi = gb->ay + (int)((-35.0f - gb->oy) * 2.0f), bx2 = gb->ax + (int)((15.0f - gb->ox) * 2.0f);
+    CHECK(a.px[0][(size_t)by_lo * a.w[0] + bx] == 255 && a.px[0][(size_t)by_hi * a.w[0] + bx2] == 255, "strip filled");
+    CHECK(fabsf(slyf_text_width(&a, "AB", 60.0f) - (35.0f + 36.0f)) < 1e-3f, "text width (one em = 60 units = 60 px)");
+    char t[16];
+    slyf_cp1252("\xC3\xA9x\xE2\x86\x92", t, sizeof t);
+    CHECK((uint8_t)t[0] == 0xE9 && t[1] == 'x' && t[2] == '>', "UTF-8 -> cp1252");
+    /* a damaged glyph packet: not used */
+    w32(ram, glyphs + 0x40 * 11 + 0x1C, 0x00300000u);
+    w32(ram, 0x300000u, 0x30000000u | 2);        /* (an unknown DMA tag id) */
+    CHECK(!slyf_extract(ram, size, font, &m), "a damaged glyph is refused");
+    slyf_free(&a);
+    free(m.tri);
+    free(ram);
+}
+
 static void test_persist(void) {
     wchar_t ini[MAX_PATH + 80];
     settings_user_path(L"sly2.ini", ini, MAX_PATH + 80);
@@ -784,6 +884,7 @@ int main(int argc, char** argv) {
     test_render_scale();
     test_migration();
     test_defaults_migration();
+    test_font();
     test_persist();
     test_menu_nav();
     test_draw();
