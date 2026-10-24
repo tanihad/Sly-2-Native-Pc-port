@@ -2,6 +2,8 @@
 
 ## Resume here (read first in a new session)
 
+**2026-10-24 (late): ALL CURRENT WORK MERGED into main (cd7c914) and pushed; dist 0.1.830; nothing running.** Merged since the last note: perf P1 (early depth, GPU -20..35%, bit-identical), pc-smooth (field-offset patches fix the menu shake + edge/shadow flicker in progressive mode; display-locked cadence 55 fps = 3 refreshes on the owner's fixed 165 Hz display; governor fixes). Waiting for the owner: go-ahead for perf plan P2-P7 (notes/perf-plan.md), VRR on their monitor, DualSense hardware test, the two open questions (gas-cloud drift, Faithful distant scenery).
+
 **2026-10-24: pc-polish MERGED (4e2158e: Quit to Desktop, one Options menu, Resolution + Render scale, Apply/Revert). pc-research DONE (branch next/pc-research, notes/perf-plan.md):** VU1-on-GPU dropped; recommended plan H = P1 early depth (prototype: GPU -20..33%) -> P2 GPU pass costs + P3 frontend split -> P4 GS decode fast path -> P5 VU1 program pool -> P6 in-game overhead -> P7 Reflex; ~200 fps at 3x in the heaviest hub, 2-3 months; owner asked to approve the full plan. P1 running in worktree perf-p1 (branch next/perf-p1, from main + next/pc-research). pc-smooth still running.
 
 **PAUSED by the user (2026-10-23 15:05).** Nothing is running. pc-polish, pc-smooth, pc-research were stopped early (1-2 commits each; mid-edit work saved as 'PAUSED ... unverified' WIP commits, pushed). On 'continue': resume each from notes/wip/<name>.md.
