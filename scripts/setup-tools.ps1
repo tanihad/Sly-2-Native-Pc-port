@@ -182,7 +182,9 @@ if ($DryRun) {
             throw "-From: no Python $PythonVersion (cpython-$PythonVersion-windows-x86_64-*) in $From\python or $From\tools\python"
         } else {
             Write-Host "Python ${PythonVersion}:"
-            & $uv python install $PythonVersion
+            # --no-bin / --no-registry: uv 0.8+ would otherwise also put python3.13.exe into ~\.local\bin
+            # and register the interpreter under HKCU\Software\Python (outside the repo folder)
+            & $uv python install $PythonVersion --no-bin --no-registry
             if ($LASTEXITCODE) { throw "uv python install failed" }
             $py = Get-ChildItem $env:UV_PYTHON_INSTALL_DIR -Directory -Filter "cpython-$PythonVersion-windows-x86_64-*" |
                   ForEach-Object { Join-Path $_.FullName 'python.exe' } | Where-Object { Test-Path $_ } | Select-Object -First 1

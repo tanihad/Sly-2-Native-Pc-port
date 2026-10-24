@@ -11,6 +11,31 @@ Sly 2: Band of Thieves, **USA release (SCUS-97316)**, as an `.iso` image. The bu
 executable from that image and recompiles it on your PC; the game then reads its data from the
 image while you play.
 
+## Install (easy way)
+
+1. Get **`Sly2-Setup.exe`** (about 1 MB) and start it. No administrator rights are needed.
+   (Windows may say "Windows protected your PC": the setup program is not signed. Click
+   **More info**, then **Run anyway**.)
+2. Confirm that you have your own copy of the game, pick the install folder (the suggestion,
+   `%LOCALAPPDATA%\Programs\Sly2`, is fine) and choose your disc image (`.iso`). Setup checks the image
+   right away and tells you if it is the wrong game, region or version.
+3. Click **Install**. Setup downloads the free build tools it needs (about 220 MB: the llvm-mingw
+   compiler and Python with two packages, each file checked against its published SHA-256), builds the
+   game from your disc - about 5 to 20 minutes, depending on the PC - and adds a Start menu shortcut.
+   Nothing is installed outside the install folder; you can keep using the PC meanwhile.
+4. On the last page: desktop shortcut, **Play now**, and **free up disk space** (removes the build
+   files; tick "Keep the build tools" if you want later updates without the download). The installed
+   game takes about 30 MB.
+
+- **Offline PC**: `Sly2-Setup-Offline.exe` (about 220 MB) carries the build tools and downloads nothing.
+- **Update or repair**: run the newer setup program; your saves and settings are kept.
+- **Uninstall**: Windows Settings > Apps > "Sly 2: Band of Thieves (PC port)" (or `Uninstall.exe` in the
+  install folder). It asks before it deletes your saves and settings.
+- Setup needs about 1.1 GB of free disk space while it builds. If something fails, the window shows why
+  and **Retry** continues where it stopped; the details are in `setup.log` in the install folder.
+
+The setup program is made by `scripts\make_installer.py`; how it works: [notes/install.md](notes/install.md#installer-sly2-setupexe).
+
 ## Requirements
 
 | | |
@@ -18,14 +43,14 @@ image while you play.
 | OS | Windows 10 (version 1809 or later) or Windows 11, 64-bit |
 | CPU | any x86-64 CPU (the program uses only the baseline x86-64 instruction set, SSE2); 4 or more cores recommended |
 | Graphics | a Direct3D 11 GPU (feature level 11_0) with typed UAV loads and double-precision shaders - most NVIDIA GeForce and AMD Radeon cards of the last ten years - with current drivers. Without one (for example Intel Iris Xe / Arc, which have no double precision) the game uses its software renderer, which needs a fast CPU |
-| Disk | about 1 GB for the toolchain and the build, plus your disc image (about 2.9 GB) |
+| Disk | Setup: about 1.1 GB free while building, about 30 MB afterwards. Building from source: about 1.3 GB (toolchain, downloads, build). Plus your disc image (about 2.9 GB) |
 | Game | your own Sly 2: Band of Thieves (USA, SCUS-97316) disc image, `.iso` |
+
+## Build from source (developers)
 
 Building installs nothing system-wide: `setup.ps1` puts a portable compiler (llvm-mingw clang),
 Python 3.13 and two Python packages into this folder (`tools\`, `.venv\`) - about 260 MB of
 downloads, each checked against its published SHA-256. Git is fetched as well if you don't have it.
-
-## Build and play
 
 1. **Get the code**: `git clone https://github.com/tanihad/sly2-decomp` (or download the ZIP from
    GitHub and unpack it), into a short path such as `C:\Games\sly2-decomp`.
@@ -104,7 +129,8 @@ your own PCs and **do not share it publicly**.
 This is also a research workspace. Notes on the recompiler, the runtime and the renderer are in
 `notes/` (start with `notes/native-port-principles.md` and `notes/recompiler-design.md`); `recomp/`
 (Python) translates the executable to C and `runtime/` (C) stands in for the PS2 hardware. Tests:
-`.venv\Scripts\python.exe tests\run_tests.py` and `tests\unit\*\run.ps1`. Load the toolchain into a
+`.venv\Scripts\python.exe tests\run_tests.py` and `tests\unit\*\run.ps1` (the installer's full
+install/boot/uninstall run: `tests\installer\e2e.ps1`). Load the toolchain into a
 shell with `. .\scripts\env.ps1`. Reverse-engineering tools (Ghidra with the Emotion Engine plugin,
 objdiff, splat): `setup.ps1 -WithRE`. Tools that replay GPU corpus recordings take their folder from
 `-CorpusRoot` or `SLY2_GPU_CORPUS` and skip when there is none.

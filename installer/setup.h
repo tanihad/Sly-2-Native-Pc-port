@@ -76,6 +76,7 @@ typedef struct setup {
     int delete_saves;                /* uninstall: also remove the user data folder (-1 = ask) */
     int existing;                    /* an installation was found in dir */
     int log_fixed;                   /* /log=: keep logging there (not <dir>\setup.log) */
+    int quiet_child;                 /* run_hidden: do not copy the program's output into the log (tar -v) */
 
     /* run state */
     volatile LONG cancel;

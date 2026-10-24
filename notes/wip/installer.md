@@ -27,15 +27,20 @@ No game code/data in the repo or the setup exe.
 
 ## Done
 
-(nothing yet)
+- installer/{setup.h,main.c,engine.c,util.c,net.c,disc.c}; scripts/make_installer.py (-Wall -Wextra -Werror,
+  1.0 MB setup, 189 KB program); build_game.py `--progress` + version.txt fallback; setup-tools.ps1 uv flags.
+- tests/unit/installer/run.ps1 (+ range_server.py, make_isos.py): all green (23 checks).
+- tests/installer/e2e.ps1 written (online-via-127.0.0.1 install, boot, update, uninstall, offline exe).
+
+## In progress
+
+- first e2e run (output in the session scratchpad e2e1.txt).
 
 ## Next
 
-1. installer C sources + make_installer.py; build the stub.
-2. unit tests (tests/unit/installer/run.ps1): sha256, disc check (synthetic + real image), download against a
-   local range-capable server (resume, 404, bad hash), payload table.
-3. e2e: silent install into %TEMP% test dir with /from + /mirror, game boots headless, uninstall.
-4. docs (README Install (easy way), notes/install.md), gates, sizes.
+1. fix whatever e2e finds; record sizes/timings.
+2. docs (README Install (easy way), notes/install.md "Installer"), gates (run_tests.py, unit run.ps1s,
+   debug + release builds, package.py), disk cleanup (%TEMP%\sly2-installer-e2e, build\installer).
 
 ## Findings / traps
 

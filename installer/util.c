@@ -505,7 +505,7 @@ int run_hidden(setup_t* s, const wchar_t* cmdline, const wchar_t* cwd, const wch
             if (c == '\n' || c == '\r' || ln == sizeof line - 1) {
                 if (ln) {
                     line[ln] = 0;
-                    loga("  %s", line);
+                    if (!s->quiet_child || strncmp(line, "x ", 2)) loga("  %s", line);
                     if (fn) fn(s, user, line);
                 }
                 ln = 0;

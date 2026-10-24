@@ -756,6 +756,84 @@ static int ui_test(const wchar_t* bad_iso) {
     return fails ? EXIT_FAILED : EXIT_OK;
 }
 
+/* /uishot=<folder>: every page rendered into <folder>\page<N>.bmp, the window off-screen and never
+ * activated (layout checks without showing anything on the owner's screen). */
+static void save_bmp(const wchar_t* path) {
+    RECT r;
+    GetWindowRect(win, &r);
+    int w = r.right - r.left, h = r.bottom - r.top;
+    HDC sdc = GetDC(NULL), mdc = CreateCompatibleDC(sdc);
+    BITMAPINFO bi;
+    memset(&bi, 0, sizeof bi);
+    bi.bmiHeader.biSize = sizeof bi.bmiHeader;
+    bi.bmiHeader.biWidth = w;
+    bi.bmiHeader.biHeight = h;
+    bi.bmiHeader.biPlanes = 1;
+    bi.bmiHeader.biBitCount = 32;
+    void* bits = NULL;
+    HBITMAP bm = CreateDIBSection(sdc, &bi, DIB_RGB_COLORS, &bits, NULL, 0);
+    HGDIOBJ old = SelectObject(mdc, bm);
+    PrintWindow(win, mdc, 2 /* PW_RENDERFULLCONTENT */);
+    GdiFlush();
+    BITMAPFILEHEADER fh;
+    memset(&fh, 0, sizeof fh);
+    fh.bfType = 0x4D42;
+    fh.bfOffBits = sizeof fh + sizeof bi.bmiHeader;
+    fh.bfSize = fh.bfOffBits + (DWORD)(w * h * 4);
+    size_t n = fh.bfSize;
+    uint8_t* buf = malloc(n);
+    memcpy(buf, &fh, sizeof fh);
+    memcpy(buf + sizeof fh, &bi.bmiHeader, sizeof bi.bmiHeader);
+    memcpy(buf + fh.bfOffBits, bits, (size_t)w * h * 4);
+    write_file(path, buf, n);
+    free(buf);
+    SelectObject(mdc, old);
+    DeleteObject(bm);
+    DeleteDC(mdc);
+    ReleaseDC(NULL, sdc);
+}
+
+static int ui_shots(const wchar_t* folder) {
+    if (!create_window(0)) return EXIT_FAILED;
+    SetWindowLongPtrW(win, GWL_EXSTYLE, GetWindowLongPtrW(win, GWL_EXSTYLE) | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE);
+    SetWindowPos(win, NULL, -20000, -20000, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    ShowWindow(win, SW_SHOWNOACTIVATE);
+    mkdir_p(folder);
+    wchar_t p[MAXP];
+    for (int pg = 0; pg < P_COUNT; pg++) {
+        if (pg == P_DISC) { set_text(ID_ISO, S.iso); check_disc(); }
+        if (pg == P_LEGAL) check(ID_AGREE, 1);
+        show_page(pg);
+        if (pg == P_PROGRESS) {
+            running = 1;
+            SendMessageW(item(ID_PROGRESS), PBM_SETPOS, 520, 0);
+            set_text(ID_STATUS, L"Compiling the game (61 of 135 files)");
+            set_text(ID_DETAIL, L"61 of 135 files");
+            static const wchar_t* lines[] = { L"== Installing the recompiler and the PC runtime", L"== Getting llvm-mingw 20261006",
+                                              L"llvm-mingw-20261006-ucrt-x86_64.zip: SHA-256 OK", L"== Unpacking llvm-mingw 20261006",
+                                              L"llvm-mingw 20261006: installed", L"== Building the game", L"Translating the game's code (MIPS -> C)" };
+            for (size_t i = 0; i < sizeof lines / sizeof lines[0]; i++) SendMessageW(win, WM_APP_LOG, 0, (LPARAM)_wcsdup(lines[i]));
+        }
+        if (pg == P_FINISH) { running = 0; S.used_build = 302u << 20; S.used_tools = 640u << 20; on_done(EXIT_OK); }
+        RedrawWindow(win, NULL, NULL, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+        for (int k = 0; k < 4; k++) { Sleep(60); pump(); }   /* (DWM composes off-screen windows late) */
+        wfmt(p, MAXP, L"%ls\\page%d.bmp", folder, pg);
+        save_bmp(p);
+    }
+    running = 0;
+    show_page(P_PROGRESS);
+    wcopy(S.error, 2048, L"Downloading from github.com failed: could not connect: this PC seems to be offline (or a firewall "
+                         L"blocks Setup) (error 12007).");
+    on_done(EXIT_FAILED);
+    RedrawWindow(win, NULL, NULL, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+    for (int k = 0; k < 4; k++) { Sleep(60); pump(); }
+    wfmt(p, MAXP, L"%ls\\page-error.bmp", folder);
+    save_bmp(p);
+    DestroyWindow(win);
+    pump();
+    return EXIT_OK;
+}
+
 /* ---- tool commands ---------------------------------------------------------------------------- */
 
 static int tool_command(int argc, wchar_t** argv) {
@@ -816,7 +894,7 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE prev, PWSTR cmdline, int show) {
     setup_defaults(&S);
     int argc = 0;
     wchar_t** argv = CommandLineToArgvW(GetCommandLineW(), &argc);
-    wchar_t v[MAXP], logfile[MAXP] = L"", bad_iso[MAXP] = L"";
+    wchar_t v[MAXP], logfile[MAXP] = L"", bad_iso[MAXP] = L"", shots[MAXP] = L"";
     int silent = 0, uninstall = 0, uitest = 0, page_disc = 0;
     if (argc > 1) {
         int r = tool_command(argc, argv);
@@ -854,6 +932,7 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE prev, PWSTR cmdline, int show) {
         else if (opt(a, L"page", v)) page_disc = !_wcsicmp(v, L"disc");
         else if (opt(a, L"uitest", NULL)) uitest = 1;
         else if (opt(a, L"badiso", v)) wcopy(bad_iso, MAXP, v);
+        else if (opt(a, L"uishot", v)) { wcopy(shots, MAXP, v); full_path(shots); }
         else {
             wchar_t m[MAXP + 64];
             wfmt(m, MAXP + 64, L"Unknown option: %ls", a);
@@ -918,6 +997,7 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE prev, PWSTR cmdline, int show) {
         S.existing = file_exists(st);
     }
     if (uitest) return ui_test(bad_iso);
+    if (shots[0]) { S.uitest = 1; return ui_shots(shots); }
 
     if (silent) {
         if (!S.iso[0]) { loga("/silent needs /iso=<disc image>"); return EXIT_USAGE; }

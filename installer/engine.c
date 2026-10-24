@@ -73,7 +73,8 @@ static void step(setup_t* s, int base, int span, const wchar_t* fmt, ...) {
     va_end(ap);
     s->pm_base = base;
     s->pm_span = span;
-    say(s, L"== %ls", s->status);
+    logw(L"== %ls", s->status);
+    if (s->logline) s->logline(s->ui, s->status);
     report(s, base, L"");
 }
 
@@ -322,7 +323,10 @@ static int untar(setup_t* s, const wchar_t* archive, const wchar_t* dest, const 
     wfmt(cmd, MAXP * 3, L"\"%ls\" -xvf \"%ls\" -C \"%ls\" %ls", tar, archive, dest, extra ? extra : L"");
     tar_state t = { 0, entries, label };
     DWORD code;
+    s->quiet_child = 1;                              /* (one line per file: only the count is logged) */
     int r = run_hidden(s, cmd, dest, NULL, tar_line, &t, &code);
+    s->quiet_child = 0;
+    loga("  %d entries unpacked", t.n);
     if (r == -2) return EXIT_CANCELLED;
     if (r || code) return fail(s, L"Unpacking %ls failed (tar exit code %ld; is the disk full?).", label, (long)code);
     return EXIT_OK;
