@@ -1055,9 +1055,7 @@ static void exec_clear(const gpu_fop_clear* o) {
     if (o->zclear && X.mixed && t->zts) {
         uint32_t zv = (uint32_t)o->value & (zbits_of(t) == 1 ? 0xFFFFu : zbits_of(t) == 2 ? 0xFFFFFFu : 0xFFFFFFFFu);
         if (full) {
-            float zf;
-            uint32_t enc = (zv > 0x00FFFFFFu ? 0x00FFFFFFu : zv) + 0x3E800000u;   /* (pc-research: depth in [0.25, 1)) */
-            memcpy(&zf, &enc, 4);
+            float zf = (float)(zv > 0x000FFFFFu ? 0x000FFFFFu : zv) * (1.0f / 1048576.0f);   /* (pc-research: z / 2^20) */
             ID3D11DeviceContext_ClearDepthStencilView(gpu_rt.ctx, t->dsv, D3D11_CLEAR_DEPTH, zf, 0);
         } else {
             int b[4] = { 0, 0, x1 - 1, y1 - 1 };

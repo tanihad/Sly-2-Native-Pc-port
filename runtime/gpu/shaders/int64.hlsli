@@ -130,7 +130,7 @@ uint gs_z_clamp(i64 z16, uint zmax) {
 }
 
 // order-preserving depth encoding, exact for z <= 0x3F000000 (encodes to <= 1.0, never a denormal)
-float gs_z_encode(uint z) { return asfloat(min(z, 0x00FFFFFFu) + 0x3E800000u); }   // (pc-research: [0.25, 1), linear below 2^23: an interpolable bound)
-uint  gs_z_decode(float d) { return asuint(d) - 0x3E800000u; }
+float gs_z_encode(uint z) { return (float)min(z, 0x000FFFFFu) * (1.0 / 1048576.0); }   // (pc-research: z / 2^20, exact and linear below 2^20 - Sly: < 2^19 - spread over [0, 1) for the GPU's coarse depth culling)
+uint  gs_z_decode(float d) { return (uint)(d * 1048576.0); }
 
 #endif

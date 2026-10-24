@@ -217,7 +217,7 @@ VF vs_ff_tri(VIn i) {
     VF o;
     o.did = i.did;
     o.pos = clip_of(float2(i.xy.x * (float)kx + 0.5, i.xy.y * (float)ky + 0.5));
-    o.pos.z = gs_z_encode(min(i.zv, 0x00FFFFFFu - 64u) + 64u);   // (pc-research) upper bound of the plane's Z
+    o.pos.z = gs_z_encode(min(i.zv, 0x000FFFFFu - 64u) + 64u);   // (pc-research) upper bound of the plane's Z
     o.rec = 0u;
     o.stq = i.stq;
     return o;

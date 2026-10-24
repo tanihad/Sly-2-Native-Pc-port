@@ -51,6 +51,9 @@ static ID3DBlob* cc(const char* entry, const char* target, int zmode) {
 int main(int argc, char** argv) {
     int quads = argc > 1 ? atoi(argv[1]) : 16;
     unsigned iters = argc > 2 ? (unsigned)atoi(argv[2]) : 64;
+    int s8 = argc > 3 && !strcmp(argv[3], "d32s8");           /* the renderer's depth format (R32G8X24, DSV D32S8) */
+    float span = argc > 4 ? (float)atof(argv[4]) : 1.0f;     /* depth values 0.25 + nominal * span (renderer: ~0.004) */
+    float zb = argc > 5 ? (float)atof(argv[5]) : span < 1.0f ? 0.25f : 0.0f;
     char dll[MAX_PATH];
     GetSystemDirectoryA(dll, MAX_PATH);
     strcat(dll, "\\d3dcompiler_47.dll");
@@ -65,11 +68,13 @@ int main(int argc, char** argv) {
     D3D11_TEXTURE2D_DESC td = { W, H, 1, 1, DXGI_FORMAT_R8G8B8A8_UNORM, { 1, 0 }, D3D11_USAGE_DEFAULT, D3D11_BIND_RENDER_TARGET, 0, 0 };
     ID3D11Texture2D *ct, *dt;
     ID3D11Device_CreateTexture2D(dev, &td, NULL, &ct);
-    td.Format = DXGI_FORMAT_D32_FLOAT; td.BindFlags = D3D11_BIND_DEPTH_STENCIL;
+    td.Format = s8 ? DXGI_FORMAT_R32G8X24_TYPELESS : DXGI_FORMAT_D32_FLOAT;
+    td.BindFlags = D3D11_BIND_DEPTH_STENCIL | (s8 ? D3D11_BIND_SHADER_RESOURCE : 0);
     ID3D11Device_CreateTexture2D(dev, &td, NULL, &dt);
     ID3D11RenderTargetView* rtv; ID3D11DepthStencilView* dsv;
     ID3D11Device_CreateRenderTargetView(dev, (ID3D11Resource*)ct, NULL, &rtv);
-    ID3D11Device_CreateDepthStencilView(dev, (ID3D11Resource*)dt, NULL, &dsv);
+    D3D11_DEPTH_STENCIL_VIEW_DESC dvd = { DXGI_FORMAT_D32_FLOAT_S8X24_UINT, D3D11_DSV_DIMENSION_TEXTURE2D, 0 };
+    if (FAILED(ID3D11Device_CreateDepthStencilView(dev, (ID3D11Resource*)dt, s8 ? &dvd : NULL, &dsv))) { fprintf(stderr, "dsv\n"); return 1; }
     D3D11_BUFFER_DESC bd = { 16, D3D11_USAGE_DEFAULT, D3D11_BIND_CONSTANT_BUFFER, 0, 0, 0 };
     ID3D11Buffer* cb;
     ID3D11Device_CreateBuffer(dev, &bd, NULL, &cb);
@@ -110,13 +115,14 @@ int main(int argc, char** argv) {
         { "SV_Depth hidden quads, occluder plain, GREATER", 0, 1, dsG, 1 },
         { "SV_DepthLessEqual, GREATER (M9 attempt)", 2, 2, dsG, 1 },
         { "SV_DepthLessEqual hidden, occluder plain, GREATER", 0, 2, dsG, 1 },
+        { "SV_DepthLessEqual hidden, occluder SV_Depth, GREATER", 1, 2, dsG, 1 },
         { "SV_DepthLessEqual, GEQUAL", 2, 2, dsGE, 1 },
         { "SV_DepthGreaterEqual, LESS (reversed depth)", 3, 3, dsL, 0 },
         { "SV_DepthGreaterEqual hidden, occluder plain, LESS", 0, 3, dsL, 0 },
         { "SV_DepthGreaterEqual, GREATER (wrong direction)", 3, 3, dsG, 1 },
         { "SV_DepthLessEqual, LESS (wrong direction)", 2, 2, dsL, 0 },
     };
-    printf("target %ux%u, %d full-screen quads, %u loop iterations\n", W, H, quads, iters);
+    printf("target %ux%u, %d full-screen quads, %u loop iterations, depth %s, values %g + nominal x %g\n", W, H, quads, iters, s8 ? "D32S8" : "D32", zb, span);
     for (size_t c = 0; c < sizeof cases / sizeof cases[0]; c++) {
         double t[2] = { 0, 0 };
         for (int hidden = 0; hidden < 2; hidden++) {
@@ -124,11 +130,11 @@ int main(int argc, char** argv) {
             for (int rep = 0; rep < 7; rep++) {
                 float clear[4] = { 0, 0, 0, 0 };
                 ID3D11DeviceContext_ClearRenderTargetView(ctx, rtv, clear);
-                ID3D11DeviceContext_ClearDepthStencilView(ctx, dsv, D3D11_CLEAR_DEPTH, cases[c].greater ? 0.0f : 1.0f, 0);
+                ID3D11DeviceContext_ClearDepthStencilView(ctx, dsv, D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL, cases[c].greater ? zb : zb + (span < 1.0f ? span : 1.0f), 0);
                 ID3D11DeviceContext_OMSetDepthStencilState(ctx, cases[c].ds, 0);
                 ID3D11DeviceContext_Begin(ctx, (ID3D11Asynchronous*)qdis);
                 /* occluder: near (greater: 0.8, less: 0.2), cheap */
-                struct { float zv; unsigned it; float bias; unsigned pad; } k = { cases[c].greater ? 0.8f : 0.2f, 1, 0, 0 };
+                struct { float zv; unsigned it; float bias; unsigned pad; } k = { zb + span * (cases[c].greater ? 0.8f : 0.2f), 1, 0, 0 };
                 ID3D11DeviceContext_UpdateSubresource(ctx, (ID3D11Resource*)cb, 0, NULL, &k, 0, 0);
                 ID3D11DeviceContext_PSSetShader(ctx, psh[cases[c].occ], NULL, 0);
                 ID3D11DeviceContext_Draw(ctx, 4, 0);
@@ -138,8 +144,8 @@ int main(int argc, char** argv) {
                 for (int i = 0; i < quads; i++) {
                     float z = hidden ? (cases[c].greater ? 0.3f - 0.01f * i : 0.7f + 0.01f * i)
                                      : (cases[c].greater ? 0.81f + 0.01f * i : 0.19f - 0.01f * i);
-                    k.zv = z; k.it = iters;
-                    k.bias = (cases[c].zm == 2) ? -0.0001f : (cases[c].zm == 3) ? 0.0001f : 0.0f;
+                    k.zv = zb + span * z; k.it = iters;
+                    k.bias = (cases[c].zm == 2) ? -0.0001f * span : (cases[c].zm == 3) ? 0.0001f * span : 0.0f;
                     ID3D11DeviceContext_UpdateSubresource(ctx, (ID3D11Resource*)cb, 0, NULL, &k, 0, 0);
                     ID3D11DeviceContext_Draw(ctx, 4, 0);
                 }
