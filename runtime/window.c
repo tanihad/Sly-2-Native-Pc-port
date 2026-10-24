@@ -604,9 +604,12 @@ void window_present_aspect(const uint32_t* bgrx, int w, int h, int stride, int a
 
 static HWND volatile g_hwnd;             /* published once the window and renderer are ready */
 
+extern void pcmenu_pad(int port, void* pad) __attribute__((weak));   /* (pc-menu2) menu_game.c: Esc / PS on the game's menus */
+
 void window_get_input(int port, pad_input* out) {
     input_get_pad(port, out);
     script_apply(port, out);                                  /* PS2_INPUT test scripts */
+    if (pcmenu_pad) pcmenu_pad(port, out);
     if (input_menu_active()) input_pad_clear(out);            /* (scripted presses too: the Options menu is open) */
 }
 
@@ -1492,11 +1495,21 @@ static DWORD WINAPI window_thread(LPVOID arg) {
 
     ULONGLONG fps_t0 = GetTickCount64();
     InterlockedExchange(&fb_presented, 0);   /* frames handed over while starting up are not in this interval */
+    int menu_was_open = 0;
     for (;;) {
-        /* (pc-menu) the Options menu reads its input every turn: ~60 times a second while it is open; while it is
-         * closed often enough for the PS button (no window message) to open it without a noticeable delay */
+        /* (pc-menu) the Options menu reads its input every turn; while it is closed often enough for the PS button (no
+         * window message) to open it without a noticeable delay. (pc-menu2) Mouse and keyboard messages wake the loop at
+         * once; while the menu is open the controllers are read every 4 ms, and this presenter (software renderer)
+         * draws the menu at the display's refresh between the game's pictures (render below; Present waits for it) */
         int menu_open_now = menu_is_open && menu_is_open();
-        MsgWaitForMultipleObjectsEx(1, &fb_event, menu_open_now ? 15 : 40, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+        if (menu_open_now != menu_was_open) {    /* (pc-menu2) the pointer shows / hides at once, not at the next move */
+            menu_was_open = menu_open_now;
+            POINT pt;
+            RECT rc;
+            if (GetCursorPos(&pt) && ScreenToClient(hwnd, &pt) && GetClientRect(hwnd, &rc) && PtInRect(&rc, pt))
+                SendMessageW(hwnd, WM_SETCURSOR, (WPARAM)hwnd, MAKELPARAM(HTCLIENT, WM_MOUSEMOVE));
+        }
+        MsgWaitForMultipleObjectsEx(1, &fb_event, menu_open_now ? (ext_on ? 4 : 1) : 40, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
         MSG m;
         while (PeekMessageW(&m, NULL, 0, 0, PM_REMOVE)) {
             TranslateMessage(&m);
@@ -1514,7 +1527,9 @@ static DWORD WINAPI window_thread(LPVOID arg) {
             }
         }
         if (menu_tick) menu_tick();
+        unsigned seq0 = cur_seq;
         pump_frame(hwnd);
+        if (menu_open_now && !ext_on && cur_seq == seq0) render(hwnd);   /* (pc-menu2) the menu between the game's pictures */
         ULONGLONG now = GetTickCount64();
         if (now - fps_t0 >= 1000) {
             LONG n = InterlockedExchange(&fb_presented, 0);

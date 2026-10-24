@@ -339,9 +339,15 @@ static DWORD WINAPI rt_main(LPVOID arg) {
                 continue;
             }
             gpu_rt_phase = GPU_PH_IDLE;
-            /* (pc-pacing) while a picture's ready time is unknown, look every millisecond (the present delay's samples) */
-            c = gpu_cmd_next(gpu_present_events_pending() ? 1 : -1);
-            if (!c) continue;
+            /* (pc-pacing) while a picture's ready time is unknown, look every millisecond (the present delay's samples);
+             * (pc-menu2) while the Options menu is open, also present it at the display's refresh between the game's
+             * pictures (gpu_present_menu: whenever the swap chain has room) */
+            int menu = overlay_wants_frames && overlay_wants_frames();
+            c = gpu_cmd_next(gpu_present_events_pending() || menu ? 1 : -1);
+            if (!c) {
+                if (menu && !gpu_rt.lost) gpu_present_menu();
+                continue;
+            }
         }
         gpu_rt_phase = GPU_PH_EXEC | (long)c->op << 8;
         int stop = 0;

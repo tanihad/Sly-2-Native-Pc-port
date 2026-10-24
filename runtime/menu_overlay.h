@@ -21,3 +21,8 @@ void overlay_gdi_draw(void* hdc, int w, int h);
 void overlay_set_fps(double fps);
 /* Write the next presented picture with the overlay to path (PNG; tests and screenshots: PS2_INPUT "menushot"). */
 void overlay_request_shot(const char* path);
+/* (pc-menu2) the overlay changes between the game's pictures (the menu is open: the mouse, animations): the presenters
+ * present at the display's refresh meanwhile (gpu_present.c gpu_present_menu, window.c) */
+int  overlay_wants_frames(void);
+/* menu pictures drawn so far (measurements: PS2_MENU_STATS) */
+long overlay_draw_count(void);
