@@ -4,54 +4,36 @@
 player's disc image, validates it, builds sly2.exe on the player's PC and installs shortcuts + an uninstaller.
 No game code/data in the repo or the setup exe.
 
-**Status**: in progress (branch next/installer, worktree C:\Users\tanih\Projects\sly2-worktrees\installer).
-
-## Design (decided)
-
-- Sources: `installer/*.c` (main.c wizard+cmdline, engine.c install/uninstall steps, util.c files/process/
-  log/sha256/registry/shortcuts, net.c WinHTTP download with resume, disc.c ISO9660 check = extract_elf.py).
-- `scripts/make_installer.py`: payload = tracked recomp/**, runtime/**, the 6 build scripts, requirements.txt,
-  version.txt; pins parsed from scripts/setup-tools.ps1 (single source of truth) into a generated header;
-  stub exe + appended overlay (entries + table + trailer "SLY2PAY1"); `--offline` also bundles llvm-mingw
-  zip, uv zip, python folder (zip of the developer's verified tools\python\cpython-3.13.16-*), uv-cache.
-  Output build\installer\Sly2-Setup.exe / Sly2-Setup-Offline.exe.
-- Install layout: `<dir>\sly2.exe, README.txt, Controller test.cmd, Uninstall.exe, setup.log, setup-state.ini`,
-  `<dir>\builder\` = sources + tools\ (llvm-mingw trimmed: no aarch64/armv7/i686 sysroots, lldb, clangd,
-  python) + .venv + orig\SCUS_973.16 + build\.
-- Python: online = `uv python install 3.13.16 --no-bin --no-registry` (uv verifies its own hash; uv.exe pinned);
-  packages `uv pip install --require-hashes -r requirements.txt`. Offline/local = python folder + uv cache.
-- Disc preset: writes `[game] disc = <iso>` into <userdata>\sly2.ini (creates minimal file or edits).
-- Test overrides: /startmenu= /desktopdir= /regkey= /userdata= /mirror= /from=; /silent mode; /uninstall.
-- Updates: payload version differs from built version -> builder\build removed (zip mtimes are older than
-  objects: never trust incremental across versions).
+**Status: complete** (branch next/installer). Documentation: README.md "Install (easy way)",
+notes/install.md "Installer (Sly2-Setup.exe)".
 
 ## Done
 
-- installer/{setup.h,main.c,engine.c,util.c,net.c,disc.c}; scripts/make_installer.py (-Wall -Wextra -Werror,
-  1.0 MB setup, 189 KB program); build_game.py `--progress` + version.txt fallback; setup-tools.ps1 uv flags.
-- tests/unit/installer/run.ps1 (+ range_server.py, make_isos.py): all green (23 checks).
-- tests/installer/e2e.ps1 written (online-via-127.0.0.1 install, boot, update, uninstall, offline exe).
-
-- e2e run 1 green (all 6 parts; install 73 s, offline 66 s); sizes in notes/install.md "Installer".
-- docs: README "Install (easy way)", notes/install.md "Installer (Sly2-Setup.exe)".
-- /uishot page renders checked (layout OK); /uiinstall + /uicancel: the wizard's real install path with
-  cancel + retry, used by e2e step 4.
-
-## In progress
-
-- e2e run 2 (-SkipOffline) with the wizard-driven update.
-
-## Next
-
-1. gates: run_tests.py, every tests\unit\*\run.ps1 (window/warp/menu -UnitOnly, gs-hw -NoWindow), debug +
-   release builds, package.py; then a final full e2e; delete %TEMP%\sly2-installer-e2e, build\installer,
-   build\unit\installer; mark complete.
+- installer/{setup.h,main.c,engine.c,util.c,net.c,disc.c}: wizard (7 pages), /silent, Uninstall.exe, WinHTTP
+  resumable downloads, SHA-256 (bcrypt), tar.exe unpacking, job-object child processes, shortcuts, HKCU/HKLM
+  uninstall entry, sly2.ini [game] disc preset, elevation restart for Program Files (untested: needs UAC).
+- scripts/make_installer.py: Sly2-Setup.exe 1.0 MB, --offline Sly2-Setup-Offline.exe 220 MB, SHA256SUMS.txt;
+  pins parsed from setup-tools.ps1, ELF values from extract_elf.py.
+- scripts/build_game.py: `--progress` lines, version.txt when there is no .git. setup-tools.ps1: `uv python
+  install --no-bin --no-registry`.
+- tests/unit/installer/run.ps1 (tool commands, payload contents, disc check, downloads vs range_server.py on
+  127.0.0.1, /uitest, damaged payload + Uninstall) and tests/installer/e2e.ps1 (install over local HTTP, game
+  boots headless, wizard-driven update with cancel + retry, uninstall keeps saves, offline exe + /deletesaves):
+  all green. Gates: run_tests.py, all 25 tests\unit\*\run.ps1, debug + release builds, package.py green.
 
 ## Findings / traps
 
-- llvm-mingw extracted = 715 MB (not 250 as notes said): aarch64 85, armv7 52, i686 67, python 43, bin 193.
+- llvm-mingw extracted = 715 MB (not 250 as notes said): aarch64 85, armv7 52, i686 67, python 43, bin 193;
+  the installer's tar excludes leave 340 MB and the build works with it.
 - uv 0.13 `python install` would put python3.13.exe into ~\.local\bin and register in HKCU\Software\Python
   unless --no-bin --no-registry.
-- uv creates a junction cpython-3.13-windows-x86_64-none: tree deletion must not follow reparse points.
+- uv creates a junction cpython-3.13-windows-x86_64-none: tree deletion must not follow reparse points
+  (delete_tree removes the link only; tests use `cmd /c rmdir /s /q`).
 - No python-build-standalone archive or wheel files exist locally (uv cache has unpacked wheels only), so the
-  online python/package path cannot be tested here; it is the same uv path setup.ps1 uses.
+  online python/package path (uv python install / PyPI) cannot be tested without network; it is the path
+  setup.ps1 uses.
+- PowerShell 5.1: Start-Process -PassThru loses ExitCode unless `$p.Handle` is touched; -ArgumentList arrays
+  are not quoted (pass one quoted string).
+- PrintWindow of an off-screen window lags one paint behind: pump + sleep before capturing (/uishot).
+- build_game.py with a relative --out fails at windres (the .o path is relative to the package folder):
+  always absolute (package.py, the installer).
