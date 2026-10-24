@@ -292,7 +292,7 @@ cost of exact shading: ~13M fragments per game frame in ep1, texture fetch 20-30
 motion blur: full-screen view reads at every sample), the copy pass 0.1-0.25, ROV tier 0.1 (hubs) .. 0.9 (ep7 boss), lines
 0.1-0.15. At 4x everything per sample grows by 40/24; the 5 x 6 grid (d) would take 25% of it back if the owner accepts the
 picture change.
-### P3 results (branch next/perf-p3, 2026-10-24; as built: d3d11-renderer.md appendix S, history notes/wip/perf-p3.md)
+### P3 results (branch next/perf-p3, 2026-10-24; as built: d3d11-renderer.md appendix T, history notes/wip/perf-p3.md)
 
 **Chaos benchmark** (shared with P2): `scripts\chaos_bench.ps1` plays the scenes of `tests/gpu/chaos.txt` - m1_brawl
 (Murray's brawl), m2_boardroom (fight, fire), m3_boss (Rajan, rain), m5_boss (Contessa, rain), m8_boss (Clock-La debris
