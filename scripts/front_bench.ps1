@@ -5,7 +5,7 @@
 #                             -Recs "ep8_boss=<path>,..." [-Repeat 3] [-Scale 1] [-Tag x]
 # An exe entry "name=path|extra args" passes extra arguments to that build. -Chaos adds build\gsrec\chaos_*.gsrec.
 param([Parameter(Mandatory = $true)][string]$Exes, [string]$Recs = "", [switch]$Chaos, [string]$Only = "", [int]$Repeat = 3,
-      [int]$Scale = 1, [string]$Tag = "fb", [switch]$NoPin, [switch]$Hold)
+      [int]$Scale = 1, [string]$Tag = "fb", [switch]$NoPin, [switch]$Hold, [switch]$Free)
 $root = Split-Path $PSScriptRoot -Parent
 $out = Join-Path $root "build\p3\bench_$Tag"
 New-Item -ItemType Directory -Force $out | Out-Null
@@ -15,7 +15,7 @@ foreach ($e in ($Exes -split ',' | Where-Object { $_ })) {
     $p, $x, $ev = $rest -split '\|', 3
     $exe = Join-Path $out ("gsr_{0}_{1}.exe" -f $n, $PID)
     Copy-Item (Resolve-Path (Join-Path $root $p)).Path $exe -Force
-    $pre = if ($Hold) { 'set "PS2_GPU_FTHREAD_HOLD=1"&& set "PS2_GPU_FTHREAD_RING_MB=2048"&& ' } else { '' }
+    $pre = if ($Free) { 'set "PS2_GPU_FTHREAD_RING_MB=2048"&& ' } elseif ($Hold) { 'set "PS2_GPU_FTHREAD_HOLD=1"&& set "PS2_GPU_FTHREAD_RING_MB=2048"&& ' } else { '' }
     foreach ($kv in ("$ev" -split ';' | Where-Object { $_ })) { $pre += "set `"$kv`"&& " }
     $builds += [pscustomobject]@{ name = $n; exe = $exe; extra = "$x"; pre = $pre }
 }
@@ -29,7 +29,7 @@ for ($k = 0; $k -lt $Repeat; $k++) {
         $order = if ($k % 2) { @($builds[($builds.Count - 1)..0]) } else { $builds }
         foreach ($b in $order) {
             $log = Join-Path $out "$($r.name).$($b.name).$k.log"
-            $a = "`"$($r.path)`" - 0 $(if ($Hold) { '--backend hwdry --front-only' } else { '--backend hwsubmit' }) --adapter hw --mixed --front-thread --scale $Scale $(if (-not $NoPin) { '--pin' }) $($b.extra)"
+            $a = "`"$($r.path)`" - 0 $(if ($Hold -or $Free) { '--backend hwdry --front-only' } else { '--backend hwsubmit' }) --adapter hw --mixed --front-thread --scale $Scale $(if (-not $NoPin) { '--pin' }) $($b.extra)"
             & cmd /c "$($b.pre)`"$($b.exe)`" $a 2>`"$log`""
             $tb = Get-Content $log | Where-Object { $_ -like 'thread-bench*' } | Select-Object -Last 1
             $pl = Get-Content $log | Where-Object { $_ -like 'prepare pool*' } | Select-Object -Last 1

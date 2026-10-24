@@ -118,6 +118,34 @@ int  own_readback_apply(const uint8_t* mem, int write);   /* PUNT: gs_vram <- do
  * rectangles past 2048), at most max; any thread (pure geometry). */
 int own_rect_blocks(int psm, uint32_t bp, uint32_t bw, int x0, int y0, int x1, int y1, uint16_t* out, int max);
 
+/* ---- (P3) prepare / commit ------------------------------------------------------------------------
+ * fr_prim is split into a pure "prepare" (geometry setup and culling, vertex alpha / Z ranges, the texel rectangle,
+ * the early-depth decision, the FF triangle and sprite records: functions of the primitive and the decoded state
+ * alone) and the sequential "commit" (state lookup and dedup, tier, texture source, ownership, draw merging,
+ * emission). The frontend thread prepares primitives on a pool of helper threads ahead of the commit
+ * (gpu_fthread.c, PS2_GPU_FRONT_POOL); the commit's output is the same whoever prepared them. */
+typedef struct { int tw, th, wms, wmt, minu, maxu, minv, maxv, bil; } gf_tex_geom;
+typedef struct {                         /* per preparing thread: the analysis of the last state version seen */
+    uint32_t version;
+    int ctx, valid, skip, zfi;
+    gf_tex_geom tg;
+} gf_prep_cache;
+typedef struct {
+    uint8_t ok;                          /* prepared (0: nothing to prepare - !draws or a skipped state - or not done) */
+    uint8_t cull;                        /* nothing to draw: zero area / outside the scissor */
+    uint8_t rec;                         /* 1: r.tri holds the FF triangle record, 2: r.spr the sprite record (state 0) */
+    int8_t zb;                           /* gpu_front_zbound of a depth triangle; -1 not computed */
+    uint8_t va_lo, va_hi;                /* vertex alpha range (clamped) */
+    int16_t tu0, tv0, tu1, tv1;          /* texel rectangle (tme) */
+    int x0, y0, x1, y1;                  /* pixel rectangle */
+    uint32_t zl, zh;                     /* vertex Z range (sprites: v1) */
+    union { gs_tri T; gs_line L; } g;
+    union { uint8_t tri[128]; gpu_rec_sprite spr; } r;
+} gf_prep;
+void gf_prepare(const gs_env_view* ev, int type, const gs_vtx* a, const gs_vtx* b, const gs_vtx* c, gf_prep* pp, gf_prep_cache* pc);
+/* fr_prim with the primitive prepared (pp NULL or not ok: prepared here) */
+void gf_prim_commit(const gs_env_view* ev, int type, const gs_vtx* a, const gs_vtx* b, const gs_vtx* c, const gf_prep* pp);
+
 /* ---- frontend thread (gpu_fthread.c, M2) ---------------------------------------------------------
  * With gpu_front_config.thread the GS thread only decodes: proxy hooks copy each primitive (vertices,
  * changed state words, changed registers), transfers (with the written blocks' contents), CLUT
@@ -143,6 +171,10 @@ int  own_rect_current(gpu_target* T, int x0, int y0, int x1, int y1);
 int  own_rect_gpu(int psm, uint32_t bp, uint32_t bw, int x0, int y0, int x1, int y1, gpu_dl_entry* out, uint16_t* writers, int max);
 uint64_t fthread_cycles(void);           /* QueryThreadCycleTime of the frontend thread */
 void fthread_affinity(uint64_t mask);
+uint64_t fthread_pool_cycles(void);      /* (P3) QueryThreadCycleTime summed over the prepare pool */
+int fthread_pool_size(void);
+void fthread_pool_stats(uint64_t* segs, uint64_t* self, uint64_t* wait_tsc);
+void fthread_pool_affinity(int i, uint64_t mask);
 
 /* ---- CLUT ring (gpu_clut.c) --------------------------------------------------------------------- */
 #define GPU_CLUT_SLOTS 4096
