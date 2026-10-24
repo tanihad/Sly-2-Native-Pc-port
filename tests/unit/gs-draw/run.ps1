@@ -18,7 +18,7 @@ $out = Join-Path $root 'build\unit\gs-draw'
 New-Item -ItemType Directory -Force $out | Out-Null
 
 $rt = Join-Path $root 'runtime'
-$src = @('gs.c', 'gs_draw.c', 'gs_draw_pixel.c', 'gs_draw_tex.c', 'gs_draw_swz.c', 'gs_setup.c', 'gs_thread.c', 'gs_record.c', 'debug.c') | ForEach-Object { Join-Path $rt $_ }
+$src = @('gs.c', 'gs_draw.c', 'gs_draw_pixel.c', 'gs_draw_tex.c', 'gs_draw_swz.c', 'gs_setup.c', 'gs_thread.c', 'gs_record.c', 'movie_layer.c', 'debug.c') | ForEach-Object { Join-Path $rt $_ }
 $src += Join-Path $PSScriptRoot 'test_gs_draw.c'
 $flags = @('-O2', '-std=c11', '-Wall', '-Wno-comment', '-I', $rt)
 $libs = @('-lsynchronization')

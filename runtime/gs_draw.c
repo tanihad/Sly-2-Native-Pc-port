@@ -6,6 +6,7 @@
  * interpolated as planes evaluated at the first pixel of each span, then stepped per pixel. */
 #include "gs_setup.h"
 #include "gs_hint.h"
+#include "movie_layer.h"
 
 #include <math.h>
 #include <stdlib.h>
@@ -778,7 +779,9 @@ static void hint_write(uint64_t v) {
     case GS_HINT_ASPECT_4_3_END: hint_43 = 0; break;
     case GS_HINT_PHASE: hint_phase = value; hudlog_phase(value); break;
     case GS_HINT_SIDE_FILL: side_fill(value); break;
-    default: break;                      /* unknown kinds: ignored */
+    case GS_HINT_MOVIE_BEGIN: movie_gs_hint(1); break;
+    case GS_HINT_MOVIE_END: movie_gs_hint(0); break;
+    default: break;                     /* unknown kinds: ignored */
     }
     if (trace_on > 0 && trace_left > 0 && gs_stream_vsync >= trace_from)
         fprintf(trace_out, "[gstrace] v%u hint kind %u arg %u value 0x%08X\n", gs_stream_vsync, kind,
@@ -789,9 +792,46 @@ static void hint_write(uint64_t v) {
 
 /* a, b, c: the primitive as the game kicked it (the GPU frontend's: it applies the HUD transform itself, M10);
  * sa, sb, sc: as the software rasterizer draws it (HUD-transformed by draw()) */
+/* (pc-small) while a movie plays (movie_layer.h): is this the movie sprite - a textured opaque CT32 sprite covering the
+ * frame, DECAL or MODULATE - or something else? */
+static void movie_prim(int type, const vtx* a, const vtx* b) {
+    uint64_t attr = (reg[R_PRMODECONT] & 1) ? reg[R_PRIM] : reg[R_PRMODE];
+    int ctx = (int)((attr >> 9) & 1);
+    gs_tex0 t = decode_tex0(reg[R_TEX0_1 + ctx]);
+    uint64_t xyo = reg[R_XYOFFSET_1 + ctx], fr = reg[R_FRAME_1 + ctx], sc = reg[R_SCISSOR_1 + ctx];
+    if (type != PRIM_SPRITE || !((attr >> 4) & 1) || ((attr >> 6) & 1) || (fr >> 32) || (t.psm != PSMCT32 && t.psm != PSMCT24) ||
+        t.tfx > 1) { movie_gs_other(); return; }
+    int32_t ox = (int32_t)(xyo & 0xFFFF), oy = (int32_t)((xyo >> 32) & 0xFFFF);
+    int32_t x0 = (a->x < b->x ? a->x : b->x) - ox, x1 = (a->x < b->x ? b->x : a->x) - ox;
+    int32_t y0 = (a->y < b->y ? a->y : b->y) - oy, y1 = (a->y < b->y ? b->y : a->y) - oy;
+    int fw = (int)((fr >> 16) & 0x3F) * 64, sh = (int)((sc >> 48) & 0x7FF) - (int)((sc >> 32) & 0x7FF) + 1;
+    if (x0 > 16 || x1 < (fw - 1) * 16 || y0 > (int32_t)(((sc >> 32) & 0x7FF) * 16 + 16) || (y1 - y0) < (sh - 2) * 16) {
+        movie_gs_other();
+        return;
+    }
+    double ua, ub, va, vb;
+    if ((attr >> 8) & 1) { ua = a->u / 16.0; ub = b->u / 16.0; va = a->v / 16.0; vb = b->v / 16.0; }
+    else {
+        double tw = (double)(1u << (t.tw > 10 ? 10 : t.tw)), th = (double)(1u << (t.th > 10 ? 10 : t.th));
+        ua = a->s / a->q * tw; ub = b->s / b->q * tw; va = a->t / a->q * th; vb = b->t / b->q * th;
+    }
+    /* (the picture's rectangle in whole macroblocks: the sprites sample it at texel centres, the odd field's half a
+     * line lower) */
+    double umin = ua < ub ? ua : ub, vmin = va < vb ? va : vb;
+    int u0 = (int)floor(umin / 16.0 + 0.5) * 16, v0 = (int)floor(vmin / 16.0 + 0.5) * 16;
+    int u1 = u0 + (int)floor(fabs(ub - ua) / 16.0 + 0.5) * 16, v1 = v0 + (int)floor(fabs(vb - va) / 16.0 + 0.5) * 16;
+    static int said;
+    if (!said) { said = 1; fprintf(stderr, "[movie] sprite: TBP %u TBW %u, texels %.2f..%.2f x %.2f..%.2f -> %d..%d x %d..%d\n",
+                                   t.tbp0, t.tbw, ua, ub, va, vb, u0, u1, v0, v1); }
+    uint32_t mod = 0;
+    if (t.tfx == 0 && (b->r != 0x80 || b->g != 0x80 || b->b != 0x80)) mod = (uint32_t)b->r | (uint32_t)b->g << 8 | (uint32_t)b->b << 16;
+    movie_gs_sprite(t.tbp0, t.tbw, u0, v0, u1, v1, mod, gs_stats.xfers + gs_stats.image_bytes);
+}
+
 static void draw_prim(int type, const vtx* a, const vtx* b, const vtx* c, const vtx* sa, const vtx* sb, const vtx* sc) {
     if (env_dirty) env_update();
     gs_stats.prims++;
+    if (movie_gs_active()) movie_prim(type, a, b);
     int swnow = 0;
     if (trace_on) {
         if (trace_on < 0) trace_init();

@@ -67,6 +67,7 @@ static int pause_list_up(void) {
 #define TXT_SAVE_GAME 0x3Eu
 #define TXT_LOAD_GAME 0x3Du
 #define TXT_OPTIONS 0x2Cu
+#define TXT_CONTROLS 0x43u               /* "Controls..." (the game's controls screen; pc-small: our Controls page) */
 #define TXT_SAVE_AND_QUIT 0x47u         /* "Save and Quit" (back to the title screen, after saving) */
 #define FN_IN_TITLE 0x001D9880u          /* (0x3DA530): the Options builder shows Save Game... when it returns 0 */
 
@@ -132,6 +133,10 @@ void pcmenu_pause_list(ps2_ctx* ctx) {
             placed = 1;
             continue;
         }
+        if (ps2_r32(ctx, e) == TXT_CONTROLS) {               /* (pc-small) Controls... -> our Controls page (no callbacks) */
+            put_entry(ctx, dst + k++ * ENTRY_SIZE, TXT_CONTROLS);
+            continue;
+        }
         copy_entry(ctx, dst + k++ * ENTRY_SIZE, e);
     }
     if (!placed) put_entry(ctx, dst + k++ * ENTRY_SIZE, PCMENU_TEXT_ID);
@@ -173,6 +178,10 @@ void pcmenu_select(ps2_ctx* ctx) {
     uint32_t id = ps2_r32(ctx, ctx->r[16].uw[0]);
     if (id == PCMENU_TEXT_ID) menu_open();
     else if (id == PCMENU_TEXT_QUIT) pcmenu_quit_request();
+    else if (id == TXT_CONTROLS && pause_list_up()) {   /* (the pause list's copy: no callbacks, pcmenu_pause_list) */
+        fprintf(stderr, "[menu] Controls...: the Options menu's Controls page\n");
+        menu_open_page(MENU_PAGE_CONTROLS);
+    }
 }
 
 /* f_001D9648 after the game asked whether START was pressed ($v0): Esc / PS button pause the game as START does

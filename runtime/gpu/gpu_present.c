@@ -11,6 +11,7 @@
 #include "gpu_pace.h"                    /* (pc-pacing) present delay, VRR detection */
 #include "gpu_vrr.h"                     /* (pc-fps) what the driver says about variable refresh */
 #include "gs_draw.h"                     /* gs_display_layout_of (the PCRTC layout, shared with gs.c) */
+#include "movie_layer.h"                 /* (pc-small) movies from their decoded picture */
 
 #include <math.h>
 #include <stdatomic.h>
@@ -102,6 +103,11 @@ static struct {
     int last_aw, last_ah, last_scaler;   /* how the last picture was presented */
     double menu_ms;                      /* QPC ms of the last menu present (0 none) */
     long menu_presents;
+    /* (pc-small) a movie's decoded picture (movie_layer.h), B8G8R8A8 */
+    ID3D11Texture2D* mov;
+    ID3D11ShaderResourceView* mov_srv;
+    int mov_w, mov_h, mov_tw, mov_th;
+    uint32_t mov_serial;
 } P;
 
 static void vrr_log_driver(const char* when);    /* (pc-fps) */
@@ -495,6 +501,8 @@ void gpu_present_release(void) {
     GPU_RELEASE(P.mid_srv); GPU_RELEASE(P.mid_rtv); GPU_RELEASE(P.mid); GPU_RELEASE(P.rcb);
     GPU_RELEASE(P.up_srv); GPU_RELEASE(P.up); GPU_RELEASE(P.linear); GPU_RELEASE(P.cb);
     GPU_RELEASE(P.rtv); GPU_RELEASE(P.off);
+    GPU_RELEASE(P.mov_srv); GPU_RELEASE(P.mov);
+    P.mov_tw = P.mov_th = 0;
     if (P.waitable) CloseHandle(P.waitable);
     P.waitable = NULL;
     GPU_RELEASE(P.sc);
@@ -764,9 +772,58 @@ static void resample_pass(ID3D11RenderTargetView* rtv, int vx, int vy, int vw, i
  * columns first (into an RGBA16F intermediate of lw x cur_h), then the rows. The picture's sample grid is
  * shifted by cur_shift texels against a picture whose pixels are centred on the PS2 pixels (8.1: sample 0 is
  * the native pixel); the resample takes it out. */
+/* (pc-small) the movie picture of the current picture's VBlank, uploaded once per new picture: 1 = shown instead */
+static int movie_source(void) {
+    const uint32_t* px;
+    int w, h;
+    uint32_t serial;
+    if (!P.have || !movie_layer_get(P.cur_vblank, &px, &w, &h, &serial)) return 0;
+    if (!P.mov || P.mov_tw < w || P.mov_th < h) {
+        GPU_RELEASE(P.mov_srv); GPU_RELEASE(P.mov);
+        P.mov_tw = P.mov_th = 0;
+        P.mov = tex_create_fmt(w, h, DXGI_FORMAT_B8G8R8A8_UNORM, D3D11_BIND_SHADER_RESOURCE, D3D11_USAGE_DEFAULT, 0);
+        if (!P.mov || FAILED(ID3D11Device_CreateShaderResourceView(gpu_rt.dev, (ID3D11Resource*)P.mov, NULL, &P.mov_srv))) {
+            GPU_RELEASE(P.mov_srv); GPU_RELEASE(P.mov);
+            return 0;
+        }
+        P.mov_tw = w;
+        P.mov_th = h;
+        P.mov_serial = 0;
+    }
+    if (serial != P.mov_serial || w != P.mov_w || h != P.mov_h) {
+        D3D11_BOX box = { 0, 0, 0, (UINT)w, (UINT)h, 1 };
+        ID3D11DeviceContext_UpdateSubresource(gpu_rt.ctx, (ID3D11Resource*)P.mov, 0, &box, px, (UINT)w * 4u, 0);
+        gpu_rt.n_uploads++;
+        gpu_rt.upload_bytes += (uint32_t)(w * h * 4);
+        P.mov_serial = serial;
+        P.mov_w = w;
+        P.mov_h = h;
+    }
+    return 1;
+}
+
 static void present_resample(ID3D11RenderTargetView* rtv, int x, int y, int lw, int lh, int scaler) {
     if (lw <= 0 || lh <= 0 || !P.cur_w || !P.cur_h) return;
     scaler = scaler_override(scaler);
+    if (movie_source() && ensure_mid(lw, P.mov_h)) {   /* (pc-small) a movie: its own picture, 4:3, straight to the output */
+        int mx, my, mw, mh;
+        fit_aspect(lw, lh, 4, 3, &mx, &my, &mw, &mh);
+        x += mx; y += my;
+        resample_consts k;
+        memset(&k, 0, sizeof k);
+        k.src_n = (float)P.mov_w; k.dst_n = (float)mw; k.ratio = (float)P.mov_w / (float)mw;
+        k.mode = (uint32_t)axis_mode(scaler, P.mov_w, mw, 0.0f);
+        k.axis = 0;
+        k.other_n = (uint32_t)P.mov_h;
+        resample_pass(P.mid_rtv, 0, 0, mw, P.mov_h, P.mov_srv, &k);
+        k.src_n = (float)P.mov_h; k.dst_n = (float)mh; k.ratio = (float)P.mov_h / (float)mh;
+        k.mode = (uint32_t)axis_mode(scaler, P.mov_h, mh, 0.0f);
+        k.axis = 1;
+        k.other_n = (uint32_t)mw;
+        k.origin[0] = (float)x; k.origin[1] = (float)y;
+        resample_pass(rtv, x, y, mw, mh, P.mid_srv, &k);
+        return;
+    }
     if (!ensure_mid(lw, P.cur_h)) {      /* (no intermediate: the M6 bilinear present) */
         D3D11_MAPPED_SUBRESOURCE m;
         if (SUCCEEDED(ID3D11DeviceContext_Map(gpu_rt.ctx, (ID3D11Resource*)P.cb, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) {

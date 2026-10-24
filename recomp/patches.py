@@ -269,6 +269,14 @@ PATCHES: list[Patch] = [
     Patch("frame_movie_end", *MOVIE_PLAY, 0x001B3EB4, "before",
           "frame_rate_movie(0);",
           "the movie player's only return: the frame rate's VBlanks again"),
+    # (pc-small) movies from their decoded 640x480 picture (runtime/movie_layer.h, notes/movies.md)
+    Patch("movie_layer_begin", *MOVIE_PLAY, 0x001B3BD0, "before",
+          "movie_layer_ee(1);",
+          "entry of the movie player: MOVIE_BEGIN into the GS stream - the GS thread takes the movie sprite's source "
+          "picture for the presenters (shown at the output's resolution instead of through the 512x448 frame)"),
+    Patch("movie_layer_end", *MOVIE_PLAY, 0x001B3EB4, "before",
+          "movie_layer_ee(0);",
+          "the movie player's only return: MOVIE_END"),
 ]
 
 

@@ -11,6 +11,7 @@
 #include "gpu/gpu_hw.h"
 #include "gpu/gpu.h"
 #include "gfx_async.h"
+#include "movie_layer.h"
 /* The GPU renderer (runtime/gpu) is linked into the game (scripts/build_game.py) but not into every test
  * program built from the runtime's C files (tests/run_tests.py): weak references, NULL when it is absent. */
 #define GPU_WEAK __attribute__((weak))
@@ -575,6 +576,13 @@ static void present_frame(const uint32_t* frame, int ok, int w, int h, uint32_t 
     if (!ok) {                                   /* display off: show black, not a stale frame */
         static uint32_t black[640 * 448];
         if (!headless) window_present_aspect(black, 640, 448, 640, aw, ah);
+        return;
+    }
+    const uint32_t* mpx;
+    int mw, mh;
+    if (movie_layer_get(vb, &mpx, &mw, &mh, NULL)) {   /* (pc-small) a movie: its decoded picture, at 4:3 */
+        if (!headless) window_present_aspect(mpx, mw, mh, mw, 4, 3);
+        if (dump_wanted(vb)) dump_picture(mpx, mw, mh, mw, vb, 1);
         return;
     }
     if (!headless) window_present_aspect(frame, w, h, 1024, aw, ah);
