@@ -1482,7 +1482,10 @@ static int spec_level(const gpu_fop_draw* d) {
     if (on < 0) { const char* e = getenv("PS2_GPU_SPEC"); on = !(e && *e == '0'); }
     if (!on) return 0;
     if (!(d->feat & GPU_DF_TEX)) return 2;
-    return (d->feat & (GPU_DF_VIEW | GPU_DF_LOD)) ? 0 : 1;
+    if (d->feat & GPU_DF_LOD) return 0;
+    if (!(d->feat & GPU_DF_VIEW)) return 1;
+    /* 3: every texture a target view read 1:1 (SPEC_VIEWONLY, SPEC_NOHIRES): sprites only */
+    return d->cls == GPU_PC_SPRITE && !(d->feat & (GPU_DF_VRAM | GPU_DF_HIRES)) ? 3 : 0;
 }
 
 static void exec_draw_ref(const gpu_fop_draw* d, uint32_t slot) {
@@ -1532,8 +1535,8 @@ static void exec_draw_ref(const gpu_fop_draw* d, uint32_t slot) {
     } else {
         set_topo(1);
         int sprite = d->cls == GPU_PC_SPRITE, thin = d->cls == GPU_PC_THIN;
-        static const int ss[3][2] = { { GPU_SH_ps_gs_sprite, GPU_SH_ps_gs_sprite_nr }, { GPU_SH_ps_gs_sprite_s, GPU_SH_ps_gs_sprite_s_nr },
-                                      { GPU_SH_ps_gs_sprite_n, GPU_SH_ps_gs_sprite_n_nr } };
+        static const int ss[4][2] = { { GPU_SH_ps_gs_sprite, GPU_SH_ps_gs_sprite_nr }, { GPU_SH_ps_gs_sprite_s, GPU_SH_ps_gs_sprite_s_nr },
+                                      { GPU_SH_ps_gs_sprite_n, GPU_SH_ps_gs_sprite_n_nr }, { GPU_SH_ps_gs_sprite_w, GPU_SH_ps_gs_sprite_w_nr } };
         static const int sn[3][2] = { { GPU_SH_ps_gs_thin, GPU_SH_ps_gs_thin_nr }, { GPU_SH_ps_gs_thin_s, GPU_SH_ps_gs_thin_s_nr },
                                       { GPU_SH_ps_gs_thin_n, GPU_SH_ps_gs_thin_n_nr } };
         static const int sl[3][2] = { { GPU_SH_ps_gs_linepix, GPU_SH_ps_gs_linepix_nr }, { GPU_SH_ps_gs_linepix_s, GPU_SH_ps_gs_linepix_s_nr },
@@ -1583,9 +1586,10 @@ static void exec_draw_ff(const gpu_fop_draw* d, uint32_t slot) {
         set_topo(1);
         int sprite = d->cls == GPU_PC_SPRITE, thin = d->cls == GPU_PC_THIN;
         set_vs(gpu_vs(sprite ? GPU_SH_vs_ref_sprite : thin ? GPU_SH_vs_ref_thin : GPU_SH_vs_ref_linepix));
-        static const int s[3][2][2] = { { { GPU_SH_ps_ff_s00, GPU_SH_ps_ff_s01 }, { GPU_SH_ps_ff_s10, GPU_SH_ps_ff_s11 } },
+        static const int s[4][2][2] = { { { GPU_SH_ps_ff_s00, GPU_SH_ps_ff_s01 }, { GPU_SH_ps_ff_s10, GPU_SH_ps_ff_s11 } },
                                         { { GPU_SH_ps_ff_s00s, GPU_SH_ps_ff_s01s }, { GPU_SH_ps_ff_s10s, GPU_SH_ps_ff_s11s } },
-                                        { { GPU_SH_ps_ff_s00n, GPU_SH_ps_ff_s01n }, { GPU_SH_ps_ff_s10n, GPU_SH_ps_ff_s11n } } };
+                                        { { GPU_SH_ps_ff_s00n, GPU_SH_ps_ff_s01n }, { GPU_SH_ps_ff_s10n, GPU_SH_ps_ff_s11n } },
+                                        { { GPU_SH_ps_ff_s00w, GPU_SH_ps_ff_s01w }, { GPU_SH_ps_ff_s10w, GPU_SH_ps_ff_s11w } } };
         static const int l[3][2][2] = { { { GPU_SH_ps_ff_l00, GPU_SH_ps_ff_l01 }, { GPU_SH_ps_ff_l10, GPU_SH_ps_ff_l11 } },
                                         { { GPU_SH_ps_ff_l00s, GPU_SH_ps_ff_l01s }, { GPU_SH_ps_ff_l10s, GPU_SH_ps_ff_l11s } },
                                         { { GPU_SH_ps_ff_l00n, GPU_SH_ps_ff_l01n }, { GPU_SH_ps_ff_l10n, GPU_SH_ps_ff_l11n } } };

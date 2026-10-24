@@ -30,6 +30,12 @@
 #ifndef SPEC_NOLOD
 #define SPEC_NOLOD 0                     // no general LOD mode (TEX1: mipmapped minification by Q)
 #endif
+#ifndef SPEC_VIEWONLY
+#define SPEC_VIEWONLY 0                  // every texture a target view (no vram textures: the post passes)
+#endif
+#ifndef SPEC_NOHIRES
+#define SPEC_NOHIRES 0                   // no non-1:1 read of a scaled target view (view_hires: Binocucom, scaled reads)
+#endif
 #ifndef SPEC_NOTEX
 #define SPEC_NOTEX 0                     // no texture at all (shadow volumes, fills, outlines)
 #endif
@@ -417,6 +423,8 @@ uint texel(St st, Lvl L, uint x, uint y) {
     uint psm = (st.tex0clamp.x >> 20) & 0x3Fu;
 #if SPEC_NOVIEW
     bool isview = false;                 // (perf-p2: the draw reads no target view, gpu_front.c GPU_DF_VIEW)
+#elif SPEC_VIEWONLY
+    bool isview = true;                  // (perf-p2: every texture of the draw is a target view: no vram texture, GPU_DF_VRAM)
 #else
     bool isview = (st.texsrc & 0xFFu) >= 3u;
 #endif
@@ -912,7 +920,7 @@ bool gs_frag(float4 pos, uint irec, float3 istq, uint prim, out Frag f, out St s
         uint tk = st.texsrc & 0xFFu, vpsm = (st.tex0clamp.x >> 20) & 0x3Fu;
         bool s0 = soff.x == 0 && soff.y == 0;
         uint t;
-#if !SPEC_NOVIEW
+#if !SPEC_NOVIEW && !SPEC_NOHIRES
         if ((tk == 3u || tk == 4u) && !one_to_one && !g_vself && !s0 && (vkx > 1u || vky > 1u) && (st.tlev & 3u) != 3u &&
             vpsm != PSMCT16 && vpsm != PSMCT16S) {
             // (M7) a scaled view read through its own samples (sample 0 stays the native read)

@@ -162,3 +162,11 @@ ps_gs_thin_s        gs.hlsl             ps_gs             ps_5_0    PRIM=3 SPEC_
 ps_gs_thin_n        gs.hlsl             ps_gs             ps_5_0    PRIM=3 SPEC_NOTEX=1 SPEC_NOVIEW=1 SPEC_NOLOD=1
 ps_gs_thin_s_nr     gs.hlsl             ps_gs             ps_5_0    PRIM=3 NOROV=1 SPEC_NOVIEW=1 SPEC_NOLOD=1
 ps_gs_thin_n_nr     gs.hlsl             ps_gs             ps_5_0    PRIM=3 NOROV=1 SPEC_NOTEX=1 SPEC_NOVIEW=1 SPEC_NOLOD=1
+# perf-p2: sprites whose textures are all target views read 1:1 (the post passes: shadow darken, motion blur): no vram
+# texture paths, no view_hires, no LOD (SPEC_VIEWONLY SPEC_NOHIRES)
+ps_ff_s00w       gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=1 DUAL=0 ZOUT=0 SPEC_VIEWONLY=1 SPEC_NOHIRES=1 SPEC_NOLOD=1
+ps_ff_s01w       gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=1 DUAL=0 ZOUT=1 SPEC_VIEWONLY=1 SPEC_NOHIRES=1 SPEC_NOLOD=1
+ps_ff_s10w       gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=1 DUAL=1 ZOUT=0 SPEC_VIEWONLY=1 SPEC_NOHIRES=1 SPEC_NOLOD=1
+ps_ff_s11w       gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=1 DUAL=1 ZOUT=1 SPEC_VIEWONLY=1 SPEC_NOHIRES=1 SPEC_NOLOD=1
+ps_gs_sprite_w      gs.hlsl             ps_gs             ps_5_0    PRIM=1 SPEC_VIEWONLY=1 SPEC_NOHIRES=1 SPEC_NOLOD=1
+ps_gs_sprite_w_nr   gs.hlsl             ps_gs             ps_5_0    PRIM=1 NOROV=1 SPEC_VIEWONLY=1 SPEC_NOHIRES=1 SPEC_NOLOD=1

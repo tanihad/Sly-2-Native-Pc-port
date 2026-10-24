@@ -2046,8 +2046,11 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
     if (!OD.prims) { OD.alpha = ev->reg[R_ALPHA_1 + ev->ctx]; OD.test = ev->reg[R_TEST_1 + ev->ctx]; OD.frame = ev->reg[R_FRAME_1 + ev->ctx]; }
     OD.prims++;
     if (alias) alias_prim_drawn();
-    if (P->tme)                          /* (perf-p2) features of the draw's primitives: the specialised shaders lack them */
-        OD.d.feat |= (uint16_t)(GPU_DF_TEX | (tk >= TK_VIEW_C32 ? GPU_DF_VIEW : 0) | (P->texm == 3 ? GPU_DF_LOD : 0));
+    if (P->tme) {                        /* (perf-p2) features of the draw's primitives: the specialised shaders lack them */
+        int o2o = cls == GPU_PC_SPRITE && sp.du == 16 << GS_UVSH && gs_d2i32(sp.pl.v.cy * (double)(1 << GS_UVSH)) == 16 << GS_UVSH;
+        OD.d.feat |= (uint16_t)(GPU_DF_TEX | (tk >= TK_VIEW_C32 ? GPU_DF_VIEW : GPU_DF_VRAM) | (P->texm == 3 ? GPU_DF_LOD : 0) |
+                                ((tk == TK_VIEW_C32 || tk == TK_VIEW_ALPHA) && !o2o ? GPU_DF_HIRES : 0));
+    }
     /* (perf-p2) ROV-tier early depth rejection needs every primitive depth-tested GEQUAL / GREATER (no ALWAYS: stored Z only
      * grows within the draw, so the DSV stays a lower bound) and, for triangles, the proven vertex bound (P1's
      * gpu_front_zbound case 0, as FF triangles; the ROV fast path's vertex shader is vs_ff_tri) */
