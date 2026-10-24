@@ -41,6 +41,7 @@ volatile int pcmenu_pause_req;
 #define PM_DEPTH   0x003D9EF4u           /* page depth: 0 closed, 1 the list, 2 a sub-page, 3 memory card pages */
 #define PM_ENTRIES 0x003D9EFCu           /* page 1's entries (our PCMENU_LIST while it is the pause list) */
 #define PM_STATE   0x003DA0B8u           /* 7 = idle (takes input) */
+#define GAME_OPTIONS_LIST 0x002F6470u    /* the game's Options page's items (the title's menu: page 1) */
 #define MENU_OBJ   0x003D9ED0u           /* the menu object (the Options setter's first argument) */
 #define SND_MGR    0x003DD040u           /* the sound manager: +0x150 music volume, +0x14C effects volume (floats 0..1) */
 #define FN_SND_VOLUME 0x001FEA60u        /* (mgr, category, kind, f12 volume): the game's Options page uses it */
@@ -230,9 +231,14 @@ static void request_open(void) {
         esc_state = depth <= 1 ? PCMENU_ESC_RESUME : PCMENU_ESC_BACK;
         return;
     }
+    if (title_menu_up() && rd32(PM_ENTRIES) == GAME_OPTIONS_LIST) {   /* the title's menu (the game's Options page) is up: back */
+        press(PAD_TRIANGLE);
+        esc_state = PCMENU_ESC_BACK;
+        return;
+    }
     if (on_title()) {
-        if (title_menu_up()) { press(PAD_TRIANGLE); esc_state = PCMENU_ESC_BACK; }
-        else { title_req = 1; esc_state = PCMENU_ESC_TITLE; }
+        title_req = 1;
+        esc_state = PCMENU_ESC_TITLE;
         return;
     }
     open_deadline = GetTickCount64() + 600;
