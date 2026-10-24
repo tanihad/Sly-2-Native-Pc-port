@@ -477,7 +477,9 @@ static void state_update(const gs_env_view* ev) {
     S.opaque = !S.reads_dest && S.fatst == FATST_NONE && (!S.cwrite || (wm & full_wm) == full_wm) && P->scanmsk < 2;
     /* tiled-fill candidate: constant value per pixel, written whatever the destination holds (byte
      * masks allowed: the alpha reset is a fill of the alpha byte) */
-    S.fill = !P->tme && !P->fge && S.blend == BL_OFF && !P->date && S.fatst == FATST_NONE && !S.zread &&
+    /* (perf-p2) BL_NOCOLOR too: (A - A) * C + Cd leaves the colour and writes As into the alpha lane (wm & 8) - Sly's alpha
+     * reset after the shadow darken, a full-screen FF pass at every sample, becomes an alpha-lane clear */
+    S.fill = !P->tme && !P->fge && (S.blend == BL_OFF || S.blend == BL_NOCOLOR) && !P->date && S.fatst == FATST_NONE && !S.zread &&
              P->scanmsk < 2 && (S.cwrite || S.zwrite) && P->ffmt->bits != 16 && !S.reads_dest;
     /* (M4: a blend that reads Cd is no fill, e.g. the bit-plane steps (Cd-0)*2>>7 under FBMSK FFFFFEFF;
      * BL_OFF only says the FF table has no class for that blend) */
@@ -641,6 +643,7 @@ typedef struct {
     uint32_t phase;                      /* phase label of its first primitive (trace) */
 } open_draw;
 static open_draw OD;
+static uint32_t od_serial;               /* incremented whenever a draw opens (per-draw side tables know their draw) */
 
 /* Commutation estimate (M2's first no-go mitigation, design 11): a closed FF draw could merge into
  * an earlier draw with the same pipeline key if it commutes with every draw between them (disjoint
@@ -695,9 +698,12 @@ typedef struct {
     uint32_t begin_off;                  /* byte offset of the begin op in the command arena (bbox filled at close) */
     int bbox[4];
     uint32_t prims;
+    int copy;                            /* (perf-p2) still a copy run (gpu_fop_alias16.mode 1): every primitive so far
+                                            a16_copy_prim */
 } alias_batch;
 static alias_batch AB;
 static int nar;                          /* hazard rectangles of the open ALIAS16 run */
+static int a16_copy_on = 1;              /* (perf-p2) PS2_GPU_A16_COPY=0: every ALIAS16 run through staging + ROV draws */
 
 static const char* const phase_names[GPU_PH_N] = { "scene", "fill", "rov-rmw", "alias16", "view", "feedback" };
 
@@ -751,13 +757,14 @@ static void close_alias(void) {
     int x0 = AB.bbox[0] & ~15, y0 = AB.bbox[1] & ~7, x1 = (AB.bbox[2] | 15) + 1, y1 = (AB.bbox[3] | 7) + 1;
     gpu_fop_alias16* b = (gpu_fop_alias16*)(A_cmd.p + AB.begin_off);
     b->x0 = (int16_t)x0; b->y0 = (int16_t)y0; b->x1 = (int16_t)x1; b->y1 = (int16_t)y1;
+    b->mode = (uint16_t)(AB.copy != 0);
     gpu_fop_alias16* e = gf_cmd(GPU_FOP_ALIAS16_END, sizeof *e);
     b = (gpu_fop_alias16*)(A_cmd.p + AB.begin_off);   /* (the arena may have moved) */
     *e = *b;
     e->h.op = GPU_FOP_ALIAS16_END;
     gf.alias16_dispatches++;
     if (trace_on)
-        fprintf(stderr, "[front] alias16 run end target %u psm %02X prims %u (%d,%d)-(%d,%d)\n", AB.T->id, AB.psm, AB.prims, x0, y0, x1, y1);
+        fprintf(stderr, "[front] alias16 run end target %u psm %02X prims %u (%d,%d)-(%d,%d) copy %d\n", AB.T->id, AB.psm, AB.prims, x0, y0, x1, y1, AB.copy);
     nar = 0;
 }
 
@@ -1066,9 +1073,36 @@ static void view_read(const texsrc_t* ts) {
     }
 }
 
+/* (perf-p2) ALIAS16 copy runs (gpu_fop_alias16.mode 1). A sprite whose every fragment is a function of one texel of a
+ * CT16 view of a C32 target and of its own state - no bilinear filter or LOD, no fog, alpha test, DATE, Z, dither,
+ * scan mask, and a blend that leaves Cs - writes each halfword it covers as (texel packed & ~FBMSK) | (old & FBMSK);
+ * the render thread computes that for every sample of the draw's sprites in one compute dispatch (shaders/alias16.hlsl
+ * cs_a16_copy, the shader's own U / V / texel / view formulas) and writes the bits straight into the target with atomic
+ * AND / OR, so no staging copy, ROV draws or scatter are needed. Exact as the staging path when, inside one draw, no
+ * sprite writes a halfword another writes or reads (the ROV draws order writes per pixel; a dispatch does not); reads of
+ * what an earlier primitive of the run wrote already end the run (alias_prim). So a copy run's draws are cut where a
+ * sprite's destination overlaps an earlier destination or source of the draw, or its source an earlier destination
+ * (the hazard rectangles of the run, CB below), and at GPU_A16_COPY_MAX sprites; a sprite reading its own destination
+ * rectangle, or any other primitive, makes the run an ordinary one. The Sly channel shuffles: 3 dispatches per frame. */
+#define CB_N 128
+static arect CB[CB_N];                   /* hazard rectangles of the open copy-run draw (destinations w = 1, sources w = 0) */
+static int cb_n;
+static uint32_t cb_owner = ~0u;          /* od_serial of the draw CB belongs to */
+static arect cb_d, cb_s;                 /* the primitive being added (appended once its draw is known, fr_prim) */
+static int cb_have_s, cb_pending;
+
+static int a16_copy_prim(const gs_env_view* ev, int cls, const texsrc_t* ts) {
+    const gs_prim* P = ev->P;
+    return a16_copy_on && cls == GPU_PC_SPRITE && P->tme && ts->kind == TK_ALIAS16 && ts->T && !ts->punt &&
+           P->texm == 1 && P->cur_level == 0 && !P->fge && !P->date && !S.zt && !P->dthe &&
+           (!P->ate || P->atst == 1 || (P->atst == 0 && P->afail == 1)) &&   /* (colour written as passing: no Z here) */
+           P->scanmsk < 2 && (!P->abe || (P->asel == P->bsel && P->dsel == 0)) && (S.tpsm == PSMCT16 || S.tpsm == PSMCT16S) &&
+           (S.wms < 2 && S.wmt < 2);
+}
+
 /* an ALIAS16 primitive (pixel rect [x0,x1] x [y0,y1] of the 16-bit frame), after its ownership: the
  * run it belongs to (a new one at a read-after-write hazard) */
-static void alias_prim(const gs_env_view* ev, const texsrc_t* ts, int x0, int y0, int x1, int y1) {
+static void alias_prim(const gs_env_view* ev, const texsrc_t* ts, int x0, int y0, int x1, int y1, int copy_ok) {
     const gs_prim* P = ev->P;
     gpu_target* T = S.ct;
     arect d, s;
@@ -1079,7 +1113,8 @@ static void alias_prim(const gs_env_view* ev, const texsrc_t* ts, int x0, int y0
     for (int i = 0; i < nar && !hazard && have_s; i++)
         if (AR[i].w && arect_overlap(&AR[i], &s)) hazard = 1;
     if (hazard) close_alias();
-    if (have_s && arect_overlap(&d, &s)) gf.alias16_selfcopy++;     /* (in place: reads the state before the run) */
+    int self = have_s && arect_overlap(&d, &s);
+    if (self) gf.alias16_selfcopy++;     /* (in place: reads the state before the run) */
     if (!AB.open) {
         close_draw();
         close_run();
@@ -1089,6 +1124,8 @@ static void alias_prim(const gs_env_view* ev, const texsrc_t* ts, int x0, int y0
         AB.begin_off = (uint32_t)((uint8_t*)b - A_cmd.p);
         AB.open = 1; AB.T = T; AB.psm = P->fpsm; AB.prims = 0;
         AB.bbox[0] = x0; AB.bbox[1] = y0; AB.bbox[2] = x1; AB.bbox[3] = y1;
+        b->mode = 0; b->pad = 0;
+        AB.copy = a16_copy_on;
         nar = 0;
     } else {
         if (x0 < AB.bbox[0]) AB.bbox[0] = x0;
@@ -1100,6 +1137,27 @@ static void alias_prim(const gs_env_view* ev, const texsrc_t* ts, int x0, int y0
     if (have_s) AR[nar++] = s;
     AB.prims++;
     gf.alias16_sprites++;
+    /* (perf-p2) copy runs: this sprite's draw must hold no sprite it races with (above) */
+    if (!copy_ok || self) AB.copy = 0;
+    cb_pending = 0;
+    if (AB.copy) {
+        if (OD.open && OD.d.tier == GPU_TIER_ALIAS16 && cb_owner == od_serial) {
+            int cut = OD.prims >= GPU_A16_COPY_MAX || cb_n + 2 > CB_N;
+            for (int i = 0; i < cb_n && !cut; i++)
+                if (arect_overlap(&CB[i], &d) || (have_s && CB[i].w && arect_overlap(&CB[i], &s))) cut = 1;
+            if (cut) close_draw();
+        }
+        cb_d = d; cb_s = s; cb_have_s = have_s; cb_pending = 1;
+    }
+}
+
+/* (perf-p2) after the primitive joined its draw (od_serial): its rectangles join the draw's copy-run hazard list */
+static void alias_prim_drawn(void) {
+    if (!cb_pending) return;
+    cb_pending = 0;
+    if (cb_owner != od_serial) { cb_n = 0; cb_owner = od_serial; }
+    if (cb_n < CB_N) CB[cb_n++] = cb_d;
+    if (cb_have_s && cb_n < CB_N) CB[cb_n++] = cb_s;
 }
 
 /* ---- tiled fills -> clears ------------------------------------------------------------------------ */
@@ -1343,7 +1401,7 @@ static void emit_thin(const gs_env_view* ev, const gs_line* L, const gs_vtx* a, 
 #define SB_W 32                                   /* 64-bit words per row: 2048 pixels */
 static uint64_t sbits[2048][SB_W];
 static int sb_y0 = 2048, sb_y1 = -1, sb_w0 = SB_W, sb_w1 = -1;
-static uint32_t sb_owner, od_serial;              /* the open draw the bitmap belongs to */
+static uint32_t sb_owner;                         /* the open draw the bitmap belongs to (od_serial) */
 
 /* (M11) no rasterizer-ordered views (gf_cfg.no_rov): a ROV-tier or ALIAS16 draw is a plain UAV draw, whose pixel-shader
  * invocations run in no particular order, so it may only hold primitives that touch disjoint pixels; D3D11 orders the
@@ -1875,7 +1933,7 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
     /* (Z24 writes keep the top byte of every word: never a full overwrite) */
     if (S.zt) own_draw(S.zt, x0, y0, x1, y1, S.zwrite, opaque && !S.zread && S.zt->kind != TGT_Z24);
     if (S.ct) S.ct->last_used = gf_frame;
-    if (alias) alias_prim(ev, &ts, x0, y0, x1, y1);
+    if (alias) alias_prim(ev, &ts, x0, y0, x1, y1, a16_copy_prim(ev, cls, &ts));
 
     PROF_MARK(5);
     /* ---- pipeline key and draw merging ---- */
@@ -1987,6 +2045,22 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
     else { if (bx0 < OD.bbox[0]) OD.bbox[0] = bx0; if (by0 < OD.bbox[1]) OD.bbox[1] = by0; if (x1 > OD.bbox[2]) OD.bbox[2] = x1; if (y1 > OD.bbox[3]) OD.bbox[3] = y1; }
     if (!OD.prims) { OD.alpha = ev->reg[R_ALPHA_1 + ev->ctx]; OD.test = ev->reg[R_TEST_1 + ev->ctx]; OD.frame = ev->reg[R_FRAME_1 + ev->ctx]; }
     OD.prims++;
+    if (alias) alias_prim_drawn();
+    if (P->tme) {                        /* (perf-p2) features of the draw's primitives: the specialised shaders lack them */
+        int o2o = cls == GPU_PC_SPRITE && sp.du == 16 << GS_UVSH && gs_d2i32(sp.pl.v.cy * (double)(1 << GS_UVSH)) == 16 << GS_UVSH;
+        OD.d.feat |= (uint16_t)(GPU_DF_TEX | (tk >= TK_VIEW_C32 ? GPU_DF_VIEW : GPU_DF_VRAM) | (P->texm == 3 ? GPU_DF_LOD : 0) |
+                                ((tk == TK_VIEW_C32 || tk == TK_VIEW_ALPHA) && !o2o ? GPU_DF_HIRES : 0));
+    }
+    /* (perf-p2) ROV-tier early depth rejection needs every primitive depth-tested GEQUAL / GREATER (no ALWAYS: stored Z only
+     * grows within the draw, so the DSV stays a lower bound) and, for triangles, the proven vertex bound (P1's
+     * gpu_front_zbound case 0, as FF triangles; the ROV fast path's vertex shader is vs_ff_tri) */
+    int rov_zb = -1;
+    if (tier == GPU_TIER_ROV && cls == GPU_PC_TRI && S.zfi >= 0 && ff_fast) {
+        if (zb < 0) zb = gpu_front_zbound(&T, a, b, c, S.zfi, &zbp);
+        rov_zb = zb;
+    }
+    if (tier == GPU_TIER_ROV && !(S.zfi >= 0 && (P->ztst == 2 || P->ztst == 3) && (cls != GPU_PC_TRI || rov_zb == 0)))
+        OD.d.feat |= GPU_DF_ZNGE;
 
     PROF_MARK(6);
 #ifdef GPU_FRONT_PROF
@@ -2003,6 +2077,8 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
             if (zb < 0) zb = gpu_front_zbound(&T, a, b, c, S.zfi, &zbp);   /* (decided with the tier: never here) */
             nb = zb != 0 || !P->zuse;    /* (!zuse: a constant plane - never here: no Z then) */
             if (nb) gf.zb_sat++;
+        } else if (rov_zb >= 0) {
+            nb = rov_zb != 0 || !P->zuse;   /* (perf-p2: ROV triangles carry the bound only where it is proven) */
         }
         uint32_t* ix = ar_reserve(&A_idx, 12);
         for (int i = 0; i < 3; i++) ix[i] = emit_vertex(vs[i], ev, state, nb);
@@ -2320,6 +2396,7 @@ void gpu_front_start(const gpu_front_config* cfg) {
     QueryPerformanceCounter(&qpc_start);
     gs_sw_draw = gf_cfg.sw;
     dual_exact = getenv("PS2_GPU_DUAL_EXACT") && atoi(getenv("PS2_GPU_DUAL_EXACT")) != 0;
+    a16_copy_on = !(getenv("PS2_GPU_A16_COPY") && atoi(getenv("PS2_GPU_A16_COPY")) == 0);   /* (perf-p2) */
     const char* tr = getenv("PS2_GPU_FRONT_TRACE");
     trace_vblank = tr ? (uint32_t)strtoul(tr, NULL, 0) : 0xFFFFFFFFu;
     trace_on = 0;

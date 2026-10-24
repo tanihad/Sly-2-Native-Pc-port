@@ -248,6 +248,51 @@ at 3 and 4); gs-hw passes on hardware and WARP. (The in-game "ep1 3x >= 105 fps"
 re-run here - pc-fps2's batch with no other game running.) Left for P2: early-depth bounds give nothing on ep8 boss
 (already ~1.05 shaded per passing fragment); what remains there and everywhere is the per-fragment cost.
 
+### P2 results (branch next/perf-p2, 2026-10-24; design and exactness: d3d11-renderer.md appendix S)
+
+Done, all exact (m9_exact 28/28 identical to main at S = 1 and 3, six recordings at S = 4, four with `--thin`; every gate green):
+ALIAS16 copy runs (the CT16 channel shuffles as one compute pass writing the target's halfwords, no staging / ROV draws /
+scatter), specialised pixel shaders per draw (untextured / no view and no LOD / view-only 1:1 sprites; FF and ROV tiers),
+draw constants and state index from the vertex shader, one-load CLUT entries, attribute rows only where used, ROV-tier early
+depth rejection (P2 c), the alpha reset as an alpha-lane clear. Not done: (d) the 5 x 6 grid at 100% (changes the picture -
+owner's decision), an R8 index atlas for T4 / T8 (next exact lever: texture fetch is 20-30% of FF triangle time).
+
+**Measurement caveat**: perf-p3 kept the GPU busy (games, replays) for nearly the whole run; quiet minutes were rare. Two
+methods: (a) the minimum over interleaved runs (a run that saw a quiet GPU; base from a quiet round of the same session),
+(b) paired runs (base and P2 back to back, alternating order, 7 rounds) under load - the median of the per-pair ratios.
+
+GPU ms per game frame, 16:9, replay (m9_bench / p2_pair):
+
+| recording | 3x base (quiet) | 3x P2 (quiet runs) | 3x P2 / base (paired, load) | 4x base (P1, quiet) | 4x P2 / base (paired, load) | 4x P2 est. |
+|---|---|---|---|---|---|---|
+| ep1 hub | 6.42 | **4.25** | 0.66 | 9.87 | 0.64 | ~6.3 |
+| ep3 hub | 6.89 | **4.63** | 0.60-0.64 | 10.80 | 0.63 | ~6.8 |
+| ep5 street | 6.60 | **4.47** | 0.62 | 10.30 | 0.69 | ~7.1 |
+| ep8 boss (debris) | 6.92 | **4.94** | 0.62-0.66 | 10.58 | 0.65 | ~6.9 |
+| ep7 boss (flames) | 9.21 | **6.10** | 0.67 | 14.54 | 0.64 | ~9.2 |
+| m5 battlezone (gas cloud) | 6.14 | **4.03** | 0.56-0.60 | | 0.66 | |
+| m1 brawl (fight) | 6.25 | **4.04** | 0.61-0.66 | | 0.67 | |
+| ep6 RC battle | 5.91 | **3.70** | 0.56-0.58 | | 0.66 | |
+| ep2 hub | 8.24 | **5.70** | 0.68-0.71 | | 0.70 | |
+| load_m3 | 5.89 | **3.65** | 0.60 | | 0.55 | |
+| ws ep3 HUD | 8.26 | **5.95** | 0.72-0.75 | | 0.76 | |
+
+Worst frames move with the medians: paired p90 / worst per game frame fall by the same 30-40% (e.g. ep7 boss 3x worst 30.0 ->
+20.8 ms under load, 4x 40.9 -> 29.2). The 4x estimates are P1's quiet base times the paired ratio (P2 4x quiet runs seen: ep1
+7.37, ep3 7.94, ep5 7.89, ep7 10.89 for an earlier step). Targets: 3x <= 5.0 in ep1 / ep3 / ep5 met (4.25 / 4.63 / 4.47);
+4x <= 7.5 met by the estimates (ep5 marginal). Pixel shader invocations per game frame (load-independent): ep1 30.1 -> 21.6 M,
+ep7 61.5 -> 45.7 M (ROV tier 21 -> 5.7 M: early rejection).
+
+Per step (near-quiet min of interleaved runs, 3x, ep1 / ep7 / ep3): base 6.42 / 9.21 / 6.89; + ALIAS16 copy runs 5.21 / 8.08 /
+5.72; + specialised FF shaders 5.00 / 7.74 / 5.46; + CLUT / ROV early depth / alpha clear 4.85 / 7.15 / 5.35; + untextured and
+ROV permutations 4.74 / 6.66 / 5.16; + view-only sprites, copy-pass columns, DC_VTX: 4.25 / 6.10 / 4.63.
+
+**What limits the GPU now** (3x per VBlank, near-quiet profile): FF depth-tested triangles ~1.4 ms of ~2.3 (the per-fragment
+cost of exact shading: ~13M fragments per game frame in ep1, texture fetch 20-30% of it), FF sprites ~0.4 (shadow darken and
+motion blur: full-screen view reads at every sample), the copy pass 0.1-0.25, ROV tier 0.1 (hubs) .. 0.9 (ep7 boss), lines
+0.1-0.15. At 4x everything per sample grows by 40/24; the 5 x 6 grid (d) would take 25% of it back if the owner accepts the
+picture change.
+
 Order: P1 first (days; the biggest single gain; independent). P2 and P3 in parallel (shaders / executor vs gpu_front.c). Then
 P4, P5, P6. P7 any time (render thread). Re-measure after each; only if 200 at 100% render scale in the heaviest hub is
 still required after P1-P6, start option I (HLE renderer) as research.

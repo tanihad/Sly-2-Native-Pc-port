@@ -22,6 +22,27 @@
 #ifndef PRIM
 #define PRIM 0                           // 0 triangles, 1 sprites, 2 line / point pixels
 #endif
+// (perf-p2) specialised FF permutations: the executor picks them for draws whose primitives use none of the features
+// (gpu_fop_draw.feat, gpu_front.c GPU_DF_*): the code is the same, only paths no primitive takes are left out
+#ifndef SPEC_NOVIEW
+#define SPEC_NOVIEW 0                    // no texture view of a target (vram textures only)
+#endif
+#ifndef SPEC_NOLOD
+#define SPEC_NOLOD 0                     // no general LOD mode (TEX1: mipmapped minification by Q)
+#endif
+#ifndef SPEC_VIEWONLY
+#define SPEC_VIEWONLY 0                  // every texture a target view (no vram textures: the post passes)
+#endif
+#ifndef SPEC_NOHIRES
+#define SPEC_NOHIRES 0                   // no non-1:1 read of a scaled target view (view_hires: Binocucom, scaled reads)
+#endif
+#ifndef DC_VTX
+#define DC_VTX 0                         // FF triangles: draw constants and the state index from the vertex shader (VF.dc)
+#endif
+static uint g_vstate;
+#ifndef SPEC_NOTEX
+#define SPEC_NOTEX 0                     // no texture at all (shadow volumes, fills, outlines)
+#endif
 
 // Per-draw constants (gpu_exec.c draw_consts, 256 bytes per draw slot). (M9) Read from the buffer drawc by the draw's
 // slot, which every draw passes as its StartInstanceLocation (the vertex shader's per-instance input DRAWID, the
@@ -223,6 +244,11 @@ struct VF {
     nointerpolation uint rec : REC;
     noperspective float3 stq : TEXCOORD0;
     nointerpolation uint did : DID;      // (M9) the draw's slot
+    // (perf-p2) the draw's constants the FF pixel shader needs and the triangle's StateRec index (every vertex of a triangle
+    // carries its state, gpu_front.c emit_vertex), so the specialised FF shaders start loading the record and the state at
+    // once instead of after a chain of loads (DC_VTX)
+    nointerpolation uint4 dc : DC;       // rec_first, kx | ky << 16, ff_blend | atst_mode << 8 | draw_flags << 16, dual_bias
+    nointerpolation uint sidx : SIDX;
 };
 
 VF vs_ff_tri(VIn i) {
@@ -233,6 +259,8 @@ VF vs_ff_tri(VIn i) {
     o.pos.z = z_bound(gs_z_bound_vtx(i.zv));   // (P1) the vertex's Z + ZE_MARGIN, or 1.0 (0xFFFFFFFF: no bound, gpu_front.c)
     o.rec = 0u;
     o.stq = i.stq;
+    o.dc = uint4(rec_first, kx | (ky << 16), ff_blend | (atst_mode << 8) | (draw_flags << 16), asuint(dual_bias));
+    o.sidx = i.fog_state >> 8;
     return o;
 }
 
@@ -362,17 +390,17 @@ uint expand16(uint c, uint texa) {
     return rgb | (a << 24);
 }
 
-uint clut_half(uint slot, uint p) {
-    uint w = clut.Load(slot * 1024u + (p & ~1u) * 2u);
-    return (p & 1u) ? w >> 16 : w & 0xFFFFu;
-}
+// (perf-p2) the CLUT ring holds 2 KB per slot: word p = halfword p | halfword (p ^ 256) << 16 of the 1 KB CLUT snapshot
+// (gpu_exec.c exec_clut), so a CT32 entry (CSM1: low half at p, high half 256 halfwords on) is one load
+uint clut_word(uint slot, uint p) { return clut.Load(slot * 2048u + p * 4u); }
+uint clut_half(uint slot, uint p) { return clut_word(slot, p) & 0xFFFFu; }
 
 uint clut_lookup(St st, uint idx) {
     uint t1 = st.tex0clamp.y;
     uint cpsm = (t1 >> 19) & 15u, csa = (t1 >> 24) & 31u;
     uint p = (csa * 16u + idx) & 511u;
     if (cpsm == PSMCT16 || cpsm == PSMCT16S) return expand16(clut_half(st.clut_slot, p), st.texa);
-    return clut_half(st.clut_slot, p) | (clut_half(st.clut_slot, p ^ 256u) << 16);
+    return clut_word(st.clut_slot, p);
 }
 
 // target views (notes/d3d11-renderer.md 5.1): texel (x, y) is the view target's native pixel (x, y);
@@ -404,7 +432,13 @@ uint view_word_at(uint w) {
 // one texel (x, y wrapped, 0..2047) of level L as 0xAABBGGRR (gs_tex_fetch)
 uint texel(St st, Lvl L, uint x, uint y) {
     uint psm = (st.tex0clamp.x >> 20) & 0x3Fu;
+#if SPEC_NOVIEW
+    bool isview = false;                 // (perf-p2: the draw reads no target view, gpu_front.c GPU_DF_VIEW)
+#elif SPEC_VIEWONLY
+    bool isview = true;                  // (perf-p2: every texture of the draw is a target view: no vram texture, GPU_DF_VRAM)
+#else
     bool isview = (st.texsrc & 0xFFu) >= 3u;
+#endif
     if (isview && (g_voff.x != 0 || g_voff.y != 0)) {
         // (M7) a 1:1 read at a signed sample offset: the sample at that offset from the texel's sample 0, which
         // for a negative offset is a sample of the texel before it (in the view's own texel space: CT16 views too)
@@ -533,6 +567,9 @@ uint view_hires(St st, float uf, float vf, bool bil) {
 // (M9) the level(s) and filter first, then one tex_level() in a loop of one or two levels (see tex_level)
 uint tex_sample(St st, int U, int V, float lq) {
     uint texm = st.tlev & 3u, cur = (st.tlev >> 2) & 7u;
+#if SPEC_NOLOD
+    return tex_level(st, cur, U, V, texm == 2u);   // (perf-p2: no primitive of the draw has the general LOD mode, GPU_DF_LOD)
+#else
     uint l = cur, nl = 1u, lf = 0u;
     bool bl = texm == 2u;
     if (texm == 3u) {
@@ -558,6 +595,7 @@ uint tex_sample(St st, int U, int V, float lq) {
         if (k == 0u) r0 = t; else r1 = t;
     }
     return nl == 2u ? lerp_rgba(r0, r1, lf) : r0;
+#endif
 }
 // texture function (tfx_batch): colour x texel, GS alpha 0x80 = 1.0
 uint tfx(uint tf, bool tcc, uint c, uint t) {
@@ -659,7 +697,11 @@ bool gs_frag(float4 pos, uint irec, float3 istq, uint prim, out Frag f, out St s
     bool one_to_one = false;             // a sprite stepping one texel per pixel (1:1 rule)
 #if PRIM == 0
     uint rb = rec_first + prim * TRI_REC;
+#if DC_VTX
+    f.state = g_vstate;                  // (perf-p2: from the vertex, the record's state field holds the same)
+#else
     f.state = recs.Load(rb + 112u);
+#endif
 #elif PRIM == 1
     uint rb = irec;
     f.state = recs.Load(rb + 20u);
@@ -676,7 +718,11 @@ bool gs_frag(float4 pos, uint irec, float3 istq, uint prim, out Frag f, out St s
 #if PRIM != 2
     if ((scanmsk == 2u && (py & 1) == 0) || (scanmsk == 3u && (py & 1) != 0)) return false;
 #endif
+#if SPEC_NOTEX
+    bool tme = false, fst = false;       // (perf-p2: no primitive of the draw is textured, GPU_DF_TEX)
+#else
     bool tme = (st.flags & SF_TME) != 0u, fst = (st.flags & SF_FST) != 0u;
+#endif
     uint zbits = (st.zinfo >> 4) & 3u;
     uint zmax = zbits == 3u ? 0xFFFFFFFFu : zbits == 2u ? 0xFFFFFFu : 0xFFFFu;
     uint t0 = st.tex0clamp.x, t1 = st.tex0clamp.y;
@@ -693,12 +739,17 @@ bool gs_frag(float4 pos, uint irec, float3 istq, uint prim, out Frag f, out St s
     int by0 = (int)(recs.Load(rb + 108u) << 16) >> 16, bx0 = (int)recs.Load(rb + 108u) >> 16;
     int rows = py - by0;
     int a[7];
+    // (perf-p2) fog and U / V rows only where the state uses them (FGE; FST texturing): the others are never read
+    uint nk = tme && fst ? 7u : (st.flags & SF_FGE) != 0u ? 5u : 4u;
     [unroll] for (uint k = 0u; k < 7u; k++) {
-        uint dyk = recs.Load(rb + 52u + 4u * k), dxk = recs.Load(rb + 80u + 4u * k);
-        uint v = recs.Load(rb + 24u + 4u * k) + dyk * (uint)rows + dxk * (uint)px;
-        if (sj != 0u) v += (uint)(int)floor((float)asint(dyk) * fj);
-        if (si != 0u) v += (uint)(int)floor((float)asint(dxk) * fi);
-        a[k] = asint(v);
+        a[k] = 0;
+        if (k < nk) {
+            uint dyk = recs.Load(rb + 52u + 4u * k), dxk = recs.Load(rb + 80u + 4u * k);
+            uint v = recs.Load(rb + 24u + 4u * k) + dyk * (uint)rows + dxk * (uint)px;
+            if (sj != 0u) v += (uint)(int)floor((float)asint(dyk) * fj);
+            if (si != 0u) v += (uint)(int)floor((float)asint(dxk) * fi);
+            a[k] = asint(v);
+        }
     }
     f.col = clamp255i(a[0] >> 16) | (clamp255i(a[1] >> 16) << 8) | (clamp255i(a[2] >> 16) << 16) | (clamp255i(a[3] >> 16) << 24);
     f.fog = clamp255i(a[4] >> 16);
@@ -884,12 +935,15 @@ bool gs_frag(float4 pos, uint irec, float3 istq, uint prim, out Frag f, out St s
         uint tk = st.texsrc & 0xFFu, vpsm = (st.tex0clamp.x >> 20) & 0x3Fu;
         bool s0 = soff.x == 0 && soff.y == 0;
         uint t;
+#if !SPEC_NOVIEW && !SPEC_NOHIRES
         if ((tk == 3u || tk == 4u) && !one_to_one && !g_vself && !s0 && (vkx > 1u || vky > 1u) && (st.tlev & 3u) != 3u &&
             vpsm != PSMCT16 && vpsm != PSMCT16S) {
             // (M7) a scaled view read through its own samples (sample 0 stays the native read)
             if (!uvf) { f.uf = (float)f.U; f.vf = (float)f.V; }
             t = view_hires(st, f.uf, f.vf, (st.tlev & 3u) == 2u);
-        } else t = tex_sample(st, f.U, f.V, f.lq);
+        } else
+#endif
+        t = tex_sample(st, f.U, f.V, f.lq);
         col = tfx((st.flags >> 2) & 3u, (st.flags & SF_TCC) != 0u, col, t);
     }
     if (st.flags & SF_FGE) {
@@ -906,9 +960,11 @@ bool gs_frag(float4 pos, uint irec, float3 istq, uint prim, out Frag f, out St s
 // ---- the REF / ROV pixel shader ------------------------------------------------------------------------
 #if !FF
 #if PRIM == 0 && STQ_FAST
+[earlydepthstencil]                      // (perf-p2) a bound DSV (ROV early rejection, gpu_exec.c) tests before the shader
 void ps_gs(VF i, uint prim : SV_PrimitiveID) {   // (mixed frames, default mode: 128-byte records, hardware S/T/Q)
     float3 istq = i.stq;
 #else
+[earlydepthstencil]                      // (perf-p2) a bound DSV (ROV early rejection, gpu_exec.c) tests before the shader
 void ps_gs(VR i
 #if PRIM == 0
            , uint prim : SV_PrimitiveID
@@ -919,7 +975,14 @@ void ps_gs(VR i
 #if PRIM != 0
     uint prim = 0u;
 #endif
+#if PRIM == 0 && STQ_FAST && DC_VTX
+    // (perf-p2) the draw's constants and the state index from vs_ff_tri (no probe: the executor uses the ubershader then)
+    rec_first = i.dc.x; kx = i.dc.y & 0xFFFFu; ky = i.dc.y >> 16; draw_flags = i.dc.z >> 16;
+    g_vstate = i.sidx;
+    vkx = 1u; vky = 1u; vbase = 0u; vfbw = 1u; vflags = 0u; one = 1.0; probe_x = probe_y = 0xFFFFFFFFu;
+#else
     load_draw(i.did);
+#endif
     Frag f;
     St st;
     if (!gs_frag(i.pos, i.rec, istq, prim, f, st)) return;
@@ -1048,12 +1111,20 @@ float b2f(uint b) { return (float)b * (1.0 / 255.0); }
 #if PRIM == 0
 FOut ps_ff(VF i, uint prim : SV_PrimitiveID) {
     float3 istq = i.stq;
+#if DC_VTX
+    rec_first = i.dc.x; kx = i.dc.y & 0xFFFFu; ky = i.dc.y >> 16;
+    ff_blend = i.dc.z & 0xFFu; atst_mode = (i.dc.z >> 8) & 0xFFu; draw_flags = i.dc.z >> 16; dual_bias = asfloat(i.dc.w);
+    g_vstate = i.sidx;
+    vkx = 1u; vky = 1u; vbase = 0u; vfbw = 1u; vflags = 0u; one = 1.0; probe_x = probe_y = 0xFFFFFFFFu;   // (no views here)
+#endif
 #else
 FOut ps_ff(VR i) {
     uint prim = 0u;
     float3 istq = float3(0.0, 0.0, 1.0);
 #endif
+#if !(PRIM == 0 && DC_VTX)
     load_draw(i.did);
+#endif
     Frag f;
     St st;
     if (!gs_frag(i.pos, i.rec, istq, prim, f, st)) discard;

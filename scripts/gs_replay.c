@@ -2210,6 +2210,8 @@ int main(int argc, char** argv) {
                 ref_frames, (unsigned long long)xc.partial_frames, (unsigned long long)xc.ref_draws, (unsigned long long)xc.alias16_runs,
                 posts, stq_cuts, lost, (unsigned long long)xc.loads, (unsigned long long)xc.downloads, (unsigned long long)xc.patches,
                 (unsigned long long)xc.clears);
+        fprintf(stderr, "ref: ALIAS16 copy runs %llu, their dispatches %llu; ROV draws with early depth %llu (perf-p2)\n",
+                (unsigned long long)xc.a16_copy_runs, (unsigned long long)xc.a16_copy_dispatches, (unsigned long long)xc.rov_ez_draws);
         fprintf(stderr, "ref: GPU ms per VBlank median %.3f, mean %.3f, max %.3f (%zu frames with timestamps); "
                         "median over the %zu VBlanks with draws %.3f\n", gmed, ng ? gsum / (double)ng : 0.0, gmax, ng, nd, dmed);
         fprintf(stderr, "ref-bench frames=%zu gpu_med=%.4f gpu_mean=%.4f gpu_max=%.4f draw_frames=%zu gpu_med_draws=%.4f "
