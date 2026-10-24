@@ -89,10 +89,10 @@ ps_ff_l10        gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=2 DUA
 ps_ff_l11        gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=2 DUAL=1 ZOUT=1
 # perf-p2: specialised FF pixel shaders (gs.hlsl SPEC_*: no target views, no general LOD) for draws whose primitives use
 # neither (gpu_fop_draw.feat); the ubershaders above stay the fallback
-ps_ff_t001s      gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=0 DUAL=0 ZOUT=0 STQ_FAST=1 TRI_REC=128u SPEC_NOVIEW=1 SPEC_NOLOD=1
-ps_ff_t011s      gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=0 DUAL=0 ZOUT=1 STQ_FAST=1 TRI_REC=128u SPEC_NOVIEW=1 SPEC_NOLOD=1
-ps_ff_t101s      gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=0 DUAL=1 ZOUT=0 STQ_FAST=1 TRI_REC=128u SPEC_NOVIEW=1 SPEC_NOLOD=1
-ps_ff_t111s      gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=0 DUAL=1 ZOUT=1 STQ_FAST=1 TRI_REC=128u SPEC_NOVIEW=1 SPEC_NOLOD=1
+ps_ff_t001s      gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=0 DUAL=0 ZOUT=0 STQ_FAST=1 TRI_REC=128u SPEC_NOVIEW=1 SPEC_NOLOD=1 DC_VTX=1
+ps_ff_t011s      gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=0 DUAL=0 ZOUT=1 STQ_FAST=1 TRI_REC=128u SPEC_NOVIEW=1 SPEC_NOLOD=1 DC_VTX=1
+ps_ff_t101s      gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=0 DUAL=1 ZOUT=0 STQ_FAST=1 TRI_REC=128u SPEC_NOVIEW=1 SPEC_NOLOD=1 DC_VTX=1
+ps_ff_t111s      gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=0 DUAL=1 ZOUT=1 STQ_FAST=1 TRI_REC=128u SPEC_NOVIEW=1 SPEC_NOLOD=1 DC_VTX=1
 ps_ff_s00s       gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=1 DUAL=0 ZOUT=0 SPEC_NOVIEW=1 SPEC_NOLOD=1
 ps_ff_s01s       gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=1 DUAL=0 ZOUT=1 SPEC_NOVIEW=1 SPEC_NOLOD=1
 ps_ff_s10s       gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=1 DUAL=1 ZOUT=0 SPEC_NOVIEW=1 SPEC_NOLOD=1
@@ -106,10 +106,10 @@ ps_ff_n01s       gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=3 DUA
 ps_ff_n10s       gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=3 DUAL=1 ZOUT=0 SPEC_NOVIEW=1 SPEC_NOLOD=1
 ps_ff_n11s       gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=3 DUAL=1 ZOUT=1 SPEC_NOVIEW=1 SPEC_NOLOD=1
 # perf-p2: untextured FF draws (gs.hlsl SPEC_NOTEX: GPU_DF_TEX clear)
-ps_ff_t001n      gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=0 DUAL=0 ZOUT=0 STQ_FAST=1 TRI_REC=128u SPEC_NOTEX=1 SPEC_NOVIEW=1 SPEC_NOLOD=1
-ps_ff_t011n      gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=0 DUAL=0 ZOUT=1 STQ_FAST=1 TRI_REC=128u SPEC_NOTEX=1 SPEC_NOVIEW=1 SPEC_NOLOD=1
-ps_ff_t101n      gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=0 DUAL=1 ZOUT=0 STQ_FAST=1 TRI_REC=128u SPEC_NOTEX=1 SPEC_NOVIEW=1 SPEC_NOLOD=1
-ps_ff_t111n      gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=0 DUAL=1 ZOUT=1 STQ_FAST=1 TRI_REC=128u SPEC_NOTEX=1 SPEC_NOVIEW=1 SPEC_NOLOD=1
+ps_ff_t001n      gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=0 DUAL=0 ZOUT=0 STQ_FAST=1 TRI_REC=128u SPEC_NOTEX=1 SPEC_NOVIEW=1 SPEC_NOLOD=1 DC_VTX=1
+ps_ff_t011n      gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=0 DUAL=0 ZOUT=1 STQ_FAST=1 TRI_REC=128u SPEC_NOTEX=1 SPEC_NOVIEW=1 SPEC_NOLOD=1 DC_VTX=1
+ps_ff_t101n      gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=0 DUAL=1 ZOUT=0 STQ_FAST=1 TRI_REC=128u SPEC_NOTEX=1 SPEC_NOVIEW=1 SPEC_NOLOD=1 DC_VTX=1
+ps_ff_t111n      gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=0 DUAL=1 ZOUT=1 STQ_FAST=1 TRI_REC=128u SPEC_NOTEX=1 SPEC_NOVIEW=1 SPEC_NOLOD=1 DC_VTX=1
 ps_ff_s00n       gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=1 DUAL=0 ZOUT=0 SPEC_NOTEX=1 SPEC_NOVIEW=1 SPEC_NOLOD=1
 ps_ff_s01n       gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=1 DUAL=0 ZOUT=1 SPEC_NOTEX=1 SPEC_NOVIEW=1 SPEC_NOLOD=1
 ps_ff_s10n       gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=1 DUAL=1 ZOUT=0 SPEC_NOTEX=1 SPEC_NOVIEW=1 SPEC_NOLOD=1

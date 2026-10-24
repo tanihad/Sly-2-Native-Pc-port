@@ -36,6 +36,10 @@
 #ifndef SPEC_NOHIRES
 #define SPEC_NOHIRES 0                   // no non-1:1 read of a scaled target view (view_hires: Binocucom, scaled reads)
 #endif
+#ifndef DC_VTX
+#define DC_VTX 0                         // FF triangles: draw constants and the state index from the vertex shader (VF.dc)
+#endif
+static uint g_vstate;
 #ifndef SPEC_NOTEX
 #define SPEC_NOTEX 0                     // no texture at all (shadow volumes, fills, outlines)
 #endif
@@ -240,6 +244,11 @@ struct VF {
     nointerpolation uint rec : REC;
     noperspective float3 stq : TEXCOORD0;
     nointerpolation uint did : DID;      // (M9) the draw's slot
+    // (perf-p2) the draw's constants the FF pixel shader needs and the triangle's StateRec index (every vertex of a triangle
+    // carries its state, gpu_front.c emit_vertex), so the specialised FF shaders start loading the record and the state at
+    // once instead of after a chain of loads (DC_VTX)
+    nointerpolation uint4 dc : DC;       // rec_first, kx | ky << 16, ff_blend | atst_mode << 8 | draw_flags << 16, dual_bias
+    nointerpolation uint sidx : SIDX;
 };
 
 VF vs_ff_tri(VIn i) {
@@ -250,6 +259,8 @@ VF vs_ff_tri(VIn i) {
     o.pos.z = z_bound(gs_z_bound_vtx(i.zv));   // (P1) the vertex's Z + ZE_MARGIN, or 1.0 (0xFFFFFFFF: no bound, gpu_front.c)
     o.rec = 0u;
     o.stq = i.stq;
+    o.dc = uint4(rec_first, kx | (ky << 16), ff_blend | (atst_mode << 8) | (draw_flags << 16), asuint(dual_bias));
+    o.sidx = i.fog_state >> 8;
     return o;
 }
 
@@ -686,7 +697,11 @@ bool gs_frag(float4 pos, uint irec, float3 istq, uint prim, out Frag f, out St s
     bool one_to_one = false;             // a sprite stepping one texel per pixel (1:1 rule)
 #if PRIM == 0
     uint rb = rec_first + prim * TRI_REC;
+#if DC_VTX
+    f.state = g_vstate;                  // (perf-p2: from the vertex, the record's state field holds the same)
+#else
     f.state = recs.Load(rb + 112u);
+#endif
 #elif PRIM == 1
     uint rb = irec;
     f.state = recs.Load(rb + 20u);
@@ -1089,12 +1104,20 @@ float b2f(uint b) { return (float)b * (1.0 / 255.0); }
 #if PRIM == 0
 FOut ps_ff(VF i, uint prim : SV_PrimitiveID) {
     float3 istq = i.stq;
+#if DC_VTX
+    rec_first = i.dc.x; kx = i.dc.y & 0xFFFFu; ky = i.dc.y >> 16;
+    ff_blend = i.dc.z & 0xFFu; atst_mode = (i.dc.z >> 8) & 0xFFu; draw_flags = i.dc.z >> 16; dual_bias = asfloat(i.dc.w);
+    g_vstate = i.sidx;
+    vkx = 1u; vky = 1u; vbase = 0u; vfbw = 1u; vflags = 0u; one = 1.0; probe_x = probe_y = 0xFFFFFFFFu;   // (no views here)
+#endif
 #else
 FOut ps_ff(VR i) {
     uint prim = 0u;
     float3 istq = float3(0.0, 0.0, 1.0);
 #endif
+#if !(PRIM == 0 && DC_VTX)
     load_draw(i.did);
+#endif
     Frag f;
     St st;
     if (!gs_frag(i.pos, i.rec, istq, prim, f, st)) discard;
