@@ -477,7 +477,9 @@ static void state_update(const gs_env_view* ev) {
     S.opaque = !S.reads_dest && S.fatst == FATST_NONE && (!S.cwrite || (wm & full_wm) == full_wm) && P->scanmsk < 2;
     /* tiled-fill candidate: constant value per pixel, written whatever the destination holds (byte
      * masks allowed: the alpha reset is a fill of the alpha byte) */
-    S.fill = !P->tme && !P->fge && S.blend == BL_OFF && !P->date && S.fatst == FATST_NONE && !S.zread &&
+    /* (perf-p2) BL_NOCOLOR too: (A - A) * C + Cd leaves the colour and writes As into the alpha lane (wm & 8) - Sly's alpha
+     * reset after the shadow darken, a full-screen FF pass at every sample, becomes an alpha-lane clear */
+    S.fill = !P->tme && !P->fge && (S.blend == BL_OFF || S.blend == BL_NOCOLOR) && !P->date && S.fatst == FATST_NONE && !S.zread &&
              P->scanmsk < 2 && (S.cwrite || S.zwrite) && P->ffmt->bits != 16 && !S.reads_dest;
     /* (M4: a blend that reads Cd is no fill, e.g. the bit-plane steps (Cd-0)*2>>7 under FBMSK FFFFFEFF;
      * BL_OFF only says the FF table has no class for that blend) */
