@@ -52,9 +52,11 @@ Branch next/pc-research (worktree C:\Users\tanih\Projects\sly2-worktrees\pc-rese
   TRAP: fps2_scene's time-based pad tokens are relative to START (X at START+25 s ~ 57 s wall): earlier windows show the
   safehouse "Press X" view, not the hub.
 - VU replay (ep1 safehouse recording, 9000 programs, compiled, pinned CPU 4): 1.55 ns/pair, 0 differ. Live-in test
-  (VU_REPLAY_LIVEIN=1, registers scrambled): 95 programs (1.1%) depend on inherited registers - but they are 97% of the
-  pairs (the long renderer runs use matrices/state left in VF/VI by earlier programs): VU1 parallelism needs register
-  snapshots + dependency order, not just memory.
+  (VU_REPLAY_LIVEIN=1, registers scrambled): 95 programs (1.1%, 8.9% of pairs; mostly 188054331 at 0x07F0 after its
+  0x0738 set-up) depend on inherited registers; 98.9% of programs (91% of pairs) are functions of VU memory only.
+  (First version counted the scrambled run's pairs - runaway loops - and said 97%: fixed.) Programs per frame: 376110651
+  entries 0x2EE8 (2102 programs, 423 pairs avg), 0x2E20 (1274, 582), 0x2EB0 (504, 1267), 0x2FC8 (122, 3575), ...;
+  the [E] nop stub 2375 times.
 - build\rel_base\sly2.exe = baseline game (f3bb29f GPU files), build\rel\sly2.exe = with conservative depth; in-game A/B
   batch running (fps2_batch ab_s3 / ab_s1 -> build\warp\fps2_ab_s*.txt); machine load ~87% CPU from another agent.
 

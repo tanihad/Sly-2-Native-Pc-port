@@ -161,7 +161,7 @@ int main(int argc, char** argv) {
             vu_state* st = &vu_st[u];
             if (loaded[u] != r->micro) { memcpy(vu_micro_mem(u), r->micro, (st->pcmask + 1) * 8u); loaded[u] = r->micro; }
             uint64_t kh[2];
-            uint32_t np = 0;
+            uint32_t np = 0, np0 = 0;
             for (int pass = 0; pass < 2; pass++) {
                 load_state(st, r);
                 if (pass) {
@@ -179,14 +179,14 @@ int main(int argc, char** argv) {
                 np = compiled_l ? vu_execute(st, r->h->addr) : vu_run(st, r->h->addr);
                 _mm_setcsr(csr0);
                 kh[pass] = khash;
-                if (!pass) memcpy(mem_a, st->data, r->h->data_size);
+                if (!pass) { memcpy(mem_a, st->data, r->h->data_size); np0 = np; }
                 else {
                     int md = memcmp(mem_a, st->data, r->h->data_size) != 0, kd = kh[0] != kh[1];
-                    if (md || kd) { dep++; pairs_dep += np; }
+                    if (md || kd) { dep++; pairs_dep += np0; }
                     if (kd) dep_kick++;
                 }
             }
-            pairs_all += np;
+            pairs_all += np0;
         }
         printf("live-in test: %zu programs, %u (%.1f%%) depend on inherited registers (%u in their XGKICK addresses/cycles); "
                "%.1f%% of pairs\n", n, dep, 100.0 * dep / (double)n, dep_kick,
