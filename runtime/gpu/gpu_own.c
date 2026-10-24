@@ -57,6 +57,7 @@ static uint32_t change_gen;               /* bumped whenever any block's writer,
 uint32_t own_upload_gen;                  /* bumped by every upload (texture source caches) */
 uint32_t own_epoch;
 static uint32_t next_serial(void) { change_gen++; return ++serial_ctr; }
+static uint64_t page_tg[512];             /* (P3) live targets per page (touch, below) */
 
 /* block lists of the op being built */
 static uint16_t load_list[GPU_BLOCKS];
@@ -77,6 +78,7 @@ void own_reset(void) {
     memset(blk_vstale, 0, sizeof blk_vstale);
     memset(blk_origin, 0, sizeof blk_origin);
     memset(blk_shared, 0, sizeof blk_shared);
+    memset(page_tg, 0, sizeof page_tg);
     npend = 0;
     nload = ndl = nxc = 0;
     memset(page_full, 32, sizeof page_full);
@@ -107,10 +109,28 @@ int own_target_kind_of_zpsm(int zpsm) {
     }
 }
 
+/* (P3) per page, the live targets (bit id - 1) whose pages include it: a change of a block (writer, serial, CPU words,
+ * shared) takes only those targets off their clean fast path (own_draw), not every target - before, any upload or any
+ * other target's write anywhere sent every target through the block loop and a rescan */
+static void touch(uint32_t b) {
+    for (uint64_t m = page_tg[(b >> 5) & 511]; m; m &= m - 1) gt[__builtin_ctzll(m) + 1].tgen++;
+}
+static int use_tgen = -1;
+static uint32_t own_gen_of(const gpu_target* T) {
+    if (use_tgen < 0) use_tgen = !getenv("PS2_GPU_OWN_TGEN") || atoi(getenv("PS2_GPU_OWN_TGEN"));
+    return use_tgen ? T->tgen : change_gen;
+}
+static void pages_register(const gpu_target* T, int on) {
+    uint64_t bit = 1ull << ((T->id - 1) & 63);
+    for (int k = 0; k < 512; k++)
+        if (T->pages[k >> 6] >> (k & 63) & 1) { if (on) page_tg[k] |= bit; else page_tg[k] &= ~bit; }
+}
+
 static void set_cpu(uint32_t b, uint64_t m) {
     uint64_t old = blk_cpu[b];
     if (old == m) return;
     change_gen++;
+    touch(b);
     if (old == ALL) page_full[b >> 5]--;
     if (m == ALL) page_full[b >> 5]++;
     if (old & ~m) own_gen++;
@@ -144,7 +164,9 @@ static void target_layout(gpu_target* T, int rows) {
     T->shadow_valid = 0;
     T->clean = 0;
     T->bcols = bcols; T->brows = brows; T->rows = rows;
+    pages_register(T, 0);
     target_pages(T, rows, T->pages);
+    pages_register(T, 1);
 }
 
 static void emit_target(const gpu_target* T, uint16_t op) {
@@ -399,7 +421,7 @@ static void load_block(gpu_target* T, int i, uint32_t b) {
             xc_src[nxc++] = W->id;
             T->vs[i] = blk_serial[b];
             T->sdirty[i] = 1;
-            if (!blk_shared[b]) { blk_shared[b] = 1; change_gen++; }   /* (M11: W's next write of it bumps the serial;
+            if (!blk_shared[b]) { blk_shared[b] = 1; change_gen++; touch(b); }   /* (M11: W's next write of it bumps the serial;
                                                                           change_gen takes W off its clean fast path) */
             return;
         }
@@ -424,10 +446,10 @@ static void scan_clean(gpu_target* T) {
     int n = T->bcols * T->brows, clean = 1;
     for (int i = 0; i < n && clean; i++) {
         uint32_t b = T->babs[i];
-        clean = T->vs[i] == blk_serial[b] && blk_writer[b] == T->id && !blk_cpu[b];
+        clean = T->vs[i] == blk_serial[b] && blk_writer[b] == T->id && !blk_cpu[b] && !blk_shared[b];
     }
     T->clean = clean;
-    T->clean_gen = change_gen;
+    T->clean_gen = own_gen_of(T);
     T->slow_calls = 0;
 }
 
@@ -443,7 +465,7 @@ void own_draw(gpu_target* T, int x0, int y0, int x1, int y1, int writes, int opa
     if (bx1 >= T->bcols) bx1 = T->bcols - 1;
     if (by1 >= T->brows) by1 = T->brows - 1;
     T->last_used = gf_frame;
-    if (T->clean && T->clean_gen == change_gen) {     /* fast path: only the feedback bookkeeping */
+    if (T->clean && T->clean_gen == own_gen_of(T)) {        /* fast path: only the feedback bookkeeping */
         if (writes && T->shadow_valid)
             for (int by = by0; by <= by1; by++) memset(T->sdirty + by * T->bcols + bx0, 1, (size_t)(bx1 - bx0 + 1));
         return;
@@ -460,15 +482,15 @@ void own_draw(gpu_target* T, int x0, int y0, int x1, int y1, int writes, int opa
             if (writes) {
                 if (blk_writer[b] != T->id) {
                     blk_writer[b] = T->id;
-                    blk_serial[b] = next_serial();
+                    blk_serial[b] = next_serial(); touch(b);
                     set_cpu(b, 0);
                 } else if (blk_cpu[b]) {
                     /* the writer writes again after a download made the block readable: targets that
                      * loaded it since hold the serial too and must go stale (M3 fuzz finding) */
                     set_cpu(b, 0);
-                    blk_serial[b] = next_serial();
+                    blk_serial[b] = next_serial(); touch(b);
                 } else if (blk_shared[b]) {
-                    blk_serial[b] = next_serial();   /* (M11) ... and after another target xcopied it */
+                    blk_serial[b] = next_serial(); touch(b);   /* (M11) ... and after another target xcopied it */
                 }
                 blk_shared[b] = 0;
                 T->vs[i] = blk_serial[b];
@@ -477,7 +499,7 @@ void own_draw(gpu_target* T, int x0, int y0, int x1, int y1, int writes, int opa
         }
     }
     if (nload || ndl || nxc) flush_lists(T);
-    if (T->clean_gen != change_gen && ++T->slow_calls >= 16) scan_clean(T);
+    if (T->clean_gen != own_gen_of(T) && ++T->slow_calls >= 16) scan_clean(T);
 }
 
 void own_blocks(gpu_target* T, const uint16_t* blocks, int n, int writes) {
@@ -755,7 +777,7 @@ void own_upload(int psm, uint32_t bp, uint32_t bw, int x0, int y0, int x1, int y
         if (gf_trace) fprintf(stderr, "[front] upload block %04X: CPU words %016llX -> %016llX writer %u\n", b,
                               (unsigned long long)blk_cpu[b], (unsigned long long)cpu, blk_writer[b]);
         if (cpu == ALL) blk_writer[b] = 0;
-        blk_serial[b] = next_serial();   /* every target copy (the writer's too: some words changed) goes stale */
+        blk_serial[b] = next_serial(); touch(b);   /* every target copy (the writer's too: some words changed) goes stale */
         set_cpu(b, cpu);
         if (up_full[b] == 64) blk_vstale[b] = 0;
         pend_add(b);
@@ -790,7 +812,7 @@ void own_flush_patches(void) {
 void own_resync(void) {
     for (uint32_t b = 0; b < GPU_BLOCKS; b++) {
         blk_writer[b] = 0;
-        blk_serial[b] = next_serial();
+        blk_serial[b] = next_serial(); touch(b);
         set_cpu(b, ALL);
         blk_vstale[b] = 0;
         pend_add(b);
@@ -905,6 +927,7 @@ static void release(gpu_target* T) {
     emit_target(T, GPU_FOP_RELEASE);
     free(T->babs); free(T->vs); free(T->sdirty); free(T->inv);
     T->babs = NULL; T->vs = NULL; T->sdirty = NULL; T->inv = NULL;
+    pages_register(T, 0);
     T->used = 0;
     own_epoch++;
     gf.targets_evicted++;

@@ -63,60 +63,6 @@ static _Alignas(64) _Atomic uint32_t prod_wake;   /* bumped (and woken) when it 
 static _Alignas(64) uint64_t wr, unpublished, room_end;   /* producer */
 static HANDLE thread;
 
-/* ---- (P3) prepare pool --------------------------------------------------------------------------------
- * The producer cuts the stream into segments of up to SEG_PRIMS primitives as it writes them: a segment carries the
- * state as sent at its first record (the gs_prim words and registers the consumer's mirrors hold there, the
- * per-version fields, the consumer's four vertex slots), so a helper thread can walk its records with its own copy of
- * the state and prepare every primitive (gf_prepare: setup, culling, ranges, texel rectangle, records) while the
- * frontend thread (the commit) is still on earlier ones. The commit consumes the ring exactly as before and takes each
- * primitive's preparation from its segment (gf_prim_commit); a primitive outside a segment (all slots in flight) is
- * prepared by the commit itself. Segments are queued when they are published; the ring keeps their records until the
- * commit consumed them, so helpers read them in place. Same output whoever prepares (gpu_stream_ab.ps1). */
-#define SEG_N 256                        /* segments in flight */
-#define SEG_PRIMS 128
-typedef struct {
-    _Atomic int st;                      /* 0 free, 1 open (being filled), 2 closed, 3 queued, 4 being prepared, 5 prepared */
-    uint32_t n;                          /* primitives */
-    uint64_t start, end;                 /* ring positions of its records */
-    gs_prim P;                           /* the consumer's state at start */
-    uint64_t R[0x64];
-    int ctx, ofx, ofy, iip, aa1, draws;
-    uint32_t version, phase, hud, hud_scale;
-    fr_vtx slot[4];
-    gf_prep prep[SEG_PRIMS];
-} fseg;
-static fseg* segs;
-static int pool_n;                       /* helper threads (0: no pool) */
-static HANDLE pool_th[16];
-static _Alignas(64) _Atomic uint64_t seg_head;      /* segments opened (producer) */
-static _Alignas(64) _Atomic uint64_t seg_tail;      /* segments released by the commit */
-static _Alignas(64) _Atomic uint32_t work_gen;      /* bumped when segments are queued; idle helpers sleep on it */
-static _Atomic int pool_sleepers, pool_stop;
-static uint64_t seg_queued;              /* producer: segments [seg_queued, seg_head) not queued yet */
-static int seg_open;                     /* producer: segs[(seg_head - 1) % SEG_N] is being filled */
-static int pool_spin = 500;              /* PS2_GPU_POOL_SPIN: pause loops of an idle helper before it sleeps */
-static uint64_t commit_wait_tsc, commit_self_segs, commit_segs, commit_inline;   /* (statistics) */
-
-static void seg_close(void) {
-    if (!seg_open) return;
-    fseg* s = &segs[(atomic_load_explicit(&seg_head, memory_order_relaxed) - 1) % SEG_N];
-    s->end = wr;
-    atomic_store_explicit(&s->st, 2, memory_order_relaxed);
-    seg_open = 0;
-}
-
-/* (at every publish) the closed segments are queued for the helpers: their records are published now */
-static void seg_queue(void) {
-    if (!pool_n) return;
-    if (seg_open && segs[(atomic_load_explicit(&seg_head, memory_order_relaxed) - 1) % SEG_N].n) seg_close();
-    uint64_t hd = atomic_load_explicit(&seg_head, memory_order_relaxed), q = seg_queued;
-    if (q == hd || (seg_open && q == hd - 1)) return;
-    for (; q < hd - (uint64_t)seg_open; q++) atomic_store_explicit(&segs[q % SEG_N].st, 3, memory_order_release);
-    seg_queued = q;
-    atomic_fetch_add_explicit(&work_gen, 1, memory_order_seq_cst);
-    if (atomic_load_explicit(&pool_sleepers, memory_order_seq_cst)) WakeByAddressAll((PVOID)&work_gen);
-}
-
 /* ---- producer (GS thread) ------------------------------------------------------------------------ */
 
 static void publish(void) {
@@ -125,7 +71,6 @@ static void publish(void) {
     _mm_sfence();                        /* the records were written with non-temporal stores */
     atomic_store_explicit(&pub, wr, memory_order_seq_cst);
     if (atomic_load_explicit(&cons_sleeping, memory_order_seq_cst)) WakeByAddressSingle((PVOID)&pub);
-    seg_queue();
 }
 
 static int drop_mode;                    /* (diagnostics: PS2_GPU_FTHREAD_DROP=1 measures the proxy alone) */
@@ -323,29 +268,8 @@ static void unpack_vtx(gs_vtx* v, const fr_vtx* o) {
     v->u = o->u; v->v = o->v;
 }
 
-static fr_vtx pslot[4];                  /* (P3) the consumer's vertex slots as the producer filled them (packed) */
-
-/* (P3) a new segment from the next record on, with the state the consumer will hold there (what was sent) */
-static void seg_begin(void) {
-    uint64_t hd = atomic_load_explicit(&seg_head, memory_order_relaxed);
-    if (hd - atomic_load_explicit(&seg_tail, memory_order_acquire) >= SEG_N) return;   /* (all in flight: the commit prepares) */
-    fseg* s = &segs[hd % SEG_N];
-    memcpy(&s->P, sentP, sizeof sentP);  /* (the words past P_WORDS * 8, if any, stay 0 as in the consumer's) */
-    memcpy(s->R, sentR, sizeof s->R);
-    s->ctx = sent_env[0]; s->ofx = sent_env[1]; s->ofy = sent_env[2]; s->iip = sent_env[3]; s->aa1 = sent_env[4]; s->draws = sent_env[5];
-    s->phase = (uint32_t)sent_env[6]; s->hud = (uint32_t)sent_env[7]; s->hud_scale = (uint32_t)sent_env[8];
-    s->version = front_version;
-    memcpy(s->slot, pslot, sizeof pslot);
-    s->start = wr;
-    s->n = 0;
-    atomic_store_explicit(&s->st, 1, memory_order_relaxed);
-    atomic_store_explicit(&seg_head, hd + 1, memory_order_release);
-    seg_open = 1;
-}
-
 static void px_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_vtx* b, const gs_vtx* c) {
     send_blocks();
-    if (pool_n && !seg_open) seg_begin();
     /* (registers can change without a new state version, e.g. RGBAQ, but the frontend reads only
      * registers whose writes start a new version) */
     if (!have_sent || ev->version != sent_version || ev->ctx != sent_env[0] || ev->ofx != sent_env[1] || ev->ofy != sent_env[2] ||
@@ -378,16 +302,7 @@ static void px_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
     p->ref[0] = ref[0]; p->ref[1] = ref[1]; p->ref[2] = ref[2];
     p->pad[0] = p->pad[1] = p->pad[2] = 0;
     for (int i = 0; i < nnew; i++) pack_vtx(&p->v[i], add[i]);
-    fseg* s = NULL;
-    if (pool_n) {                        /* (P3) the slots as the consumer will unpack them; the segment counts it */
-        for (int i = 0, j = 0; i < nv; i++)
-            if (ref[i] & 0x80) pslot[ref[i] & 3] = p->v[j++];
-        /* (counted before commit, whose publish then closes the segment after this record; a publish inside reserve
-         * above closed it before the record: this primitive then lies between segments, the commit prepares it) */
-        if (seg_open) { s = &segs[(atomic_load_explicit(&seg_head, memory_order_relaxed) - 1) % SEG_N]; s->n++; }
-    }
     commit(p);
-    if (s && seg_open && s->n >= SEG_PRIMS) seg_close();
 }
 
 static void px_xfer_start(uint64_t bb, uint64_t pos, uint64_t rr, uint32_t dir) {
@@ -534,127 +449,21 @@ static const fr_hdr* next_rec(void) {
     }
 }
 
+/* (P3) The producer streams records past the caches (non-temporal stores), so every ring line the frontend reads
+ * comes from memory: each published line is fetched once, PS2_GPU_RING_PREFETCH bytes ahead (default 4096; 0 off). */
+static uint64_t pf_next;
+static uint32_t ring_pf = 4096;
 static void done_rec(const fr_hdr* h) {
     cons_rd += h->size;
+    if (ring_pf) {
+        uint64_t lim = cons_rd + ring_pf;
+        if (lim > pub_seen) lim = pub_seen;
+        if (pf_next < cons_rd) pf_next = (cons_rd + 63) & ~63ull;
+        for (; pf_next < lim; pf_next += 64) _mm_prefetch((const char*)ring + (pf_next & RING_MASK), _MM_HINT_T0);
+    }
     if (cons_rd - rd_stored >= PUBLISH_EVERY ||
         (atomic_load_explicit(&prod_waiting, memory_order_relaxed) && cons_rd >= atomic_load_explicit(&prod_need, memory_order_relaxed)))
         store_rd();
-}
-
-/* ---- (P3) prepare pool: helpers and the commit's side ---- */
-static void apply_state(const fr_state* s, gs_prim* P, uint64_t* R, gs_env_view* ev) {
-    ev->ctx = s->ctx; ev->ofx = s->ofx; ev->ofy = s->ofy; ev->iip = s->iip; ev->aa1 = s->aa1; ev->draws = s->draws; ev->phase = s->phase;
-    ev->hud = s->hud; ev->hud_scale = s->hud_scale;
-    ev->version = s->version;
-    for (uint32_t i = 0; i < s->n; i++) {
-        if (s->w[i].idx < 0x10000u) memcpy((uint8_t*)P + (size_t)s->w[i].idx * 8, &s->w[i].val, 8);
-        else R[s->w[i].idx - 0x10000u] = s->w[i].val;
-    }
-}
-
-/* prepare every primitive of segment s (a helper, or the commit) */
-static void seg_run(fseg* s) {
-    gs_env_view ev;
-    memset(&ev, 0, sizeof ev);
-    ev.P = &s->P; ev.reg = s->R;
-    ev.ctx = s->ctx; ev.ofx = s->ofx; ev.ofy = s->ofy; ev.iip = s->iip; ev.aa1 = s->aa1; ev.draws = s->draws;
-    ev.version = s->version; ev.phase = s->phase; ev.hud = s->hud; ev.hud_scale = s->hud_scale;
-    gs_vtx slot[4];
-    memset(slot, 0, sizeof slot);
-    for (int k = 0; k < 4; k++) unpack_vtx(&slot[k], &s->slot[k]);
-    gf_prep_cache pc;
-    memset(&pc, 0, sizeof pc);
-    uint32_t k = 0;
-    for (uint64_t pos = s->start; pos < s->end && k < s->n;) {
-        const fr_hdr* h = (const fr_hdr*)(ring + (pos & RING_MASK));
-        if (h->kind == FR_PRIM) {
-            const fr_prim* p = (const fr_prim*)h;
-            const fr_vtx* nv = p->v;
-            const gs_vtx* vs[3] = { NULL, NULL, NULL };
-            for (int i = 0; i < p->nv; i++) {
-                int j = p->ref[i] & 3;
-                if (p->ref[i] & 0x80) unpack_vtx(&slot[j], nv++);
-                vs[i] = &slot[j];
-            }
-            gf_prepare(&ev, p->type, vs[0], vs[1], vs[2], &s->prep[k++], &pc);
-        } else if (h->kind == FR_STATE) {
-            apply_state((const fr_state*)h, &s->P, s->R, &ev);
-        }
-        pos += h->size;
-    }
-}
-
-static DWORD WINAPI pool_main(LPVOID arg) {
-    (void)arg;
-    for (;;) {
-        uint32_t g = atomic_load_explicit(&work_gen, memory_order_seq_cst);
-        if (atomic_load_explicit(&pool_stop, memory_order_relaxed)) return 0;
-        uint64_t t = atomic_load_explicit(&seg_tail, memory_order_acquire), hd = atomic_load_explicit(&seg_head, memory_order_acquire);
-        int did = 0;
-        for (uint64_t i = t; i < hd && !did; i++) {
-            fseg* s = &segs[i % SEG_N];
-            int e = 3;
-            if (atomic_load_explicit(&s->st, memory_order_relaxed) == 3 &&
-                atomic_compare_exchange_strong_explicit(&s->st, &e, 4, memory_order_acq_rel, memory_order_relaxed)) {
-                seg_run(s);
-                atomic_store_explicit(&s->st, 5, memory_order_release);
-                did = 1;
-            }
-        }
-        if (did) continue;
-        int spins = 0;                   /* nothing queued: spin a little (segments come in bursts), then sleep */
-        while (atomic_load_explicit(&work_gen, memory_order_relaxed) == g && spins++ < pool_spin) _mm_pause();
-        if (atomic_load_explicit(&work_gen, memory_order_seq_cst) != g) continue;
-        atomic_fetch_add_explicit(&pool_sleepers, 1, memory_order_seq_cst);
-        if (atomic_load_explicit(&work_gen, memory_order_seq_cst) == g && !atomic_load_explicit(&pool_stop, memory_order_seq_cst))
-            WaitOnAddress((volatile VOID*)&work_gen, &g, sizeof g, 20);
-        atomic_fetch_sub_explicit(&pool_sleepers, 1, memory_order_seq_cst);
-    }
-}
-
-static fseg* ccur;                       /* the commit's segment */
-static uint64_t ctail;                   /* its index */
-static uint32_t ck;                      /* its next primitive */
-
-/* the preparation of the primitive record at ring position pos, or NULL (the commit prepares it) */
-static const gf_prep* seg_prep(uint64_t pos) {
-    for (;;) {
-        if (!ccur) {
-            if (ctail == atomic_load_explicit(&seg_head, memory_order_acquire)) { commit_inline++; return NULL; }
-            fseg* s = &segs[ctail % SEG_N];
-            if (pos < s->start) { commit_inline++; return NULL; }      /* (a primitive between segments) */
-            int st = atomic_load_explicit(&s->st, memory_order_acquire);
-            /* (a published primitive's segment is queued by the same publish, right after the position is) */
-            while (st < 3) { _mm_pause(); st = atomic_load_explicit(&s->st, memory_order_acquire); }
-            int e = 3;
-            commit_segs++;
-            if (st == 3 && atomic_compare_exchange_strong_explicit(&s->st, &e, 4, memory_order_acq_rel, memory_order_relaxed)) {
-                seg_run(s);              /* (nobody took it yet: prepared here) */
-                commit_self_segs++;
-            } else if (atomic_load_explicit(&s->st, memory_order_acquire) != 5) {
-                uint64_t t0 = __rdtsc();
-                while (atomic_load_explicit(&s->st, memory_order_acquire) != 5) _mm_pause();
-                commit_wait_tsc += __rdtsc() - t0;
-            }
-            ccur = s;
-            ck = 0;
-        }
-        if (pos >= ccur->end || ck >= ccur->n) {          /* past it: release */
-            atomic_store_explicit(&ccur->st, 0, memory_order_relaxed);
-            ccur = NULL;
-            ctail++;
-            atomic_store_explicit(&seg_tail, ctail, memory_order_release);
-            continue;
-        }
-        const gf_prep* pp = &ccur->prep[ck++];
-        if (ck + 3 < ccur->n) {                           /* the preparation 4 primitives ahead: on its way */
-            const char* a = (const char*)&ccur->prep[ck + 3];
-            _mm_prefetch(a, _MM_HINT_T0);
-            _mm_prefetch(a + 64, _MM_HINT_T0);
-            _mm_prefetch(a + 128, _MM_HINT_T0);
-        }
-        return pp;
-    }
 }
 
 static DWORD WINAPI fthread_main(LPVOID arg) {
@@ -674,9 +483,7 @@ static DWORD WINAPI fthread_main(LPVOID arg) {
                 if (p->ref[i] & 0x80) unpack_vtx(&fslot[k], nv++);
                 vs[i] = &fslot[k];
             }
-            const gf_prep* pp = pool_n ? seg_prep(cons_rd) : NULL;   /* (P3) */
-            if (pp) gf_prim_commit(&fev, p->type, vs[0], vs[1], vs[2], pp);
-            else H->prim(&fev, p->type, vs[0], vs[1], vs[2]);
+            H->prim(&fev, p->type, vs[0], vs[1], vs[2]);
             break;
         }
         case FR_STATE: {
@@ -702,6 +509,7 @@ static DWORD WINAPI fthread_main(LPVOID arg) {
             const fr_clut* r = (const fr_clut*)h;
             int k = 0;
             for (uint64_t m = r->mask; m; m &= m - 1) memcpy(fclut + 8 * __builtin_ctzll(m), r->c + 8 * k++, 16);
+            clut_note_pieces(r->mask);   /* (P3: the CLUT ring rehashes only these pieces) */
             break;
         }
         case FR_TEX0: {
@@ -738,6 +546,11 @@ void fthread_start(void) {
         ring = VirtualAlloc(NULL, RING, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
     }
     hold = getenv("PS2_GPU_FTHREAD_HOLD") != NULL;
+    {
+        const char* rp = getenv("PS2_GPU_RING_PREFETCH");
+        ring_pf = rp && *rp ? (uint32_t)atoi(rp) : 4096;
+        pf_next = 0;
+    }
     if (!fvram) fvram = VirtualAlloc(NULL, GS_VRAM_SIZE, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
     if (!ring || !fvram) { fprintf(stderr, "[gpu_front] out of memory for the frontend thread\n"); exit(1); }
     wr = unpublished = cons_rd = pub_seen = rd_stored = 0;
@@ -754,38 +567,12 @@ void fthread_start(void) {
     memset(fR, 0, sizeof fR);
     memcpy(fvram, gs_vram, GS_VRAM_SIZE);    /* the stream starts from this memory */
     memcpy(fclut, gs_clut_buffer(), sizeof fclut);
+    clut_note_pieces(~0ull);             /* (P3: the mirror starts from the GS thread's buffer) */
     memcpy(pclut, fclut, sizeof pclut);
     gf_vram = fvram;
     gf_clut_src = fclut;
     drop_mode = getenv("PS2_GPU_FTHREAD_DROP") != NULL;
     if (drop_mode) { gs_front = &proxy; return; }
-    /* (P3) the prepare pool: gpu_front_config.pool helpers, PS2_GPU_FRONT_POOL overrides */
-    pool_n = gf_cfg.pool;
-    const char* pe = getenv("PS2_GPU_FRONT_POOL");
-    if (pe && *pe) pool_n = atoi(pe);
-    if (pool_n < 0) pool_n = 0;
-    if (pool_n > 16) pool_n = 16;
-    if (pool_n) {
-        if (!segs) segs = VirtualAlloc(NULL, sizeof(fseg) * SEG_N, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
-        if (!segs) { fprintf(stderr, "[gpu_front] out of memory for the prepare pool\n"); exit(1); }
-        for (int i = 0; i < SEG_N; i++) atomic_store(&segs[i].st, 0);
-        atomic_store(&seg_head, 0);
-        atomic_store(&seg_tail, 0);
-        atomic_store(&pool_stop, 0);
-        seg_queued = 0;
-        seg_open = 0;
-        memset(pslot, 0, sizeof pslot);
-        ccur = NULL;
-        ctail = 0;
-        ck = 0;
-        commit_wait_tsc = commit_self_segs = commit_segs = commit_inline = 0;
-        const char* ps = getenv("PS2_GPU_POOL_SPIN");
-        if (ps && *ps) pool_spin = atoi(ps);
-        for (int i = 0; i < pool_n; i++) {
-            pool_th[i] = CreateThread(NULL, 0, pool_main, NULL, 0, NULL);
-            if (!pool_th[i]) { fprintf(stderr, "[gpu_front] cannot start the prepare pool\n"); exit(1); }
-        }
-    }
     thread = CreateThread(NULL, 0, fthread_main, NULL, 0, NULL);
     if (!thread) { fprintf(stderr, "[gpu_front] cannot start the frontend thread\n"); exit(1); }
     gs_front = &proxy;
@@ -803,37 +590,12 @@ void fthread_stop(void) {
                 (unsigned long long)st_empty_state, (unsigned long long)st_n[FR_PRIM], st_b[FR_PRIM] / 1e6, (unsigned long long)st_n[FR_STATE], st_b[FR_STATE] / 1e6,
                 (unsigned long long)st_n[FR_XFER], (unsigned long long)st_n[FR_BLOCKS], st_b[FR_BLOCKS] / 1e6,
                 (unsigned long long)st_n[FR_CLUT], (unsigned long long)st_n[FR_TEX0], (unsigned long long)st_n[FR_VBLANK]);
-    if (pool_n) {                        /* (P3) */
-        atomic_store(&pool_stop, 1);
-        atomic_fetch_add(&work_gen, 1);
-        WakeByAddressAll((PVOID)&work_gen);
-        for (int i = 0; i < pool_n; i++) { WaitForSingleObject(pool_th[i], INFINITE); CloseHandle(pool_th[i]); pool_th[i] = NULL; }
-        pool_n = 0;
-        seg_open = 0;
-    }
     thread = NULL;
     gf_vram = NULL;
     gf_clut_src = NULL;
 }
 
 void fthread_affinity(uint64_t mask) { if (thread && mask) SetThreadAffinityMask(thread, (DWORD_PTR)mask); }
-int fthread_pool_size(void) { return thread ? pool_n : 0; }
-void fthread_pool_affinity(int i, uint64_t mask) { if (i >= 0 && i < pool_n && pool_th[i] && mask) SetThreadAffinityMask(pool_th[i], (DWORD_PTR)mask); }
-uint64_t fthread_pool_cycles(void) {
-    uint64_t s = 0;
-    for (int i = 0; i < pool_n; i++) {
-        ULONG64 c = 0;
-        if (pool_th[i]) QueryThreadCycleTime(pool_th[i], &c);
-        s += c;
-    }
-    return s;
-}
-/* segments the commit consumed, of them prepared by itself, TSC ticks it waited for a helper (and primitives it
- * prepared outside any segment, with PS2_GPU_FTHREAD_STATS) */
-void fthread_pool_stats(uint64_t* segs_out, uint64_t* self_out, uint64_t* wait_tsc) {
-    *segs_out = commit_segs; *self_out = commit_self_segs; *wait_tsc = commit_wait_tsc;
-    if (getenv("PS2_GPU_FTHREAD_STATS")) fprintf(stderr, "[fthread] primitives prepared outside segments %llu\n", (unsigned long long)commit_inline);
-}
 void* gpu_fthread_os_handle(void) { return thread; }   /* (pc-fps2) PS2_PROFILE=front (perf.c) */
 
 uint64_t fthread_cycles(void) {
