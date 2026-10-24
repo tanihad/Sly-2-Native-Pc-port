@@ -12,7 +12,8 @@
 #     (no python-build-standalone archive or wheels exist offline); /keepbuild: everything is measured
 #  3. the installed game boots headless from the disc image Setup put into sly2.ini (watchdog exit 3);
 #     Start menu / desktop shortcuts, the registry entry
-#  4. update in place: the same setup again (tools reused), a save in the user data folder survives;
+#  4. update in place through the wizard (/uitest /uiinstall: the real pages and worker thread in a window
+#     that is never shown), cancelled during the build and retried; tools reused, a save survives;
 #     the build files and tools are removed at the end -> final size
 #  5. uninstall: everything goes except the saves
 #  6. (unless -SkipOffline) Sly2-Setup-Offline.exe /offline: the toolchain from the setup file only,
@@ -132,9 +133,12 @@ try {
     Set-Content (Join-Path $ud 'memcard\slot0\e2e-save.txt') 'keep me'
     $log = Join-Path $t 'update.log'
     $sw = [Diagnostics.Stopwatch]::StartNew()
-    $c = Run $setup "/silent `"/iso=$iso`" `"/dir=$dir`" `"/mirror=$mirror`" `"/from=$from`" $ov `"/log=$log`""
+    # through the wizard (never shown): Install, Cancel after 6 s (during the build), Retry, Finish
+    $c = Run $setup "/uitest /uiinstall /uicancel=6 `"/iso=$iso`" `"/dir=$dir`" `"/mirror=$mirror`" `"/from=$from`" $ov `"/log=$log`""
     $usecs = [math]::Round($sw.Elapsed.TotalSeconds)
-    Check ($c -eq 0 -and ((Get-Content $log) -match 'llvm-mingw.*already installed')) "update: exit $c in $usecs s, tools reused"
+    $ulog = Get-Content $log
+    Check ($c -eq 0 -and ($ulog -match 'llvm-mingw.*already installed') -and -not ($ulog -cmatch 'FAIL:')) "update through the wizard: exit $c in $usecs s, tools reused"
+    Check (($ulog -match '\[uitest\] cancel') -and ($ulog -match 'Cancelled\.') -and ($ulog -match 'ok: Retry starts again')) "cancelled during the build, then Retry finished it"
     Check (Test-Path (Join-Path $ud 'memcard\slot0\e2e-save.txt')) "the save survived the update"
     Check (-not (Test-Path (Join-Path $dir 'builder'))) "build files and tools removed after the build"
     Write-Output ("     installed game folder: {0} MB" -f (MB $dir))

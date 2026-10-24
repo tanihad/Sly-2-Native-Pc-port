@@ -32,15 +32,20 @@ No game code/data in the repo or the setup exe.
 - tests/unit/installer/run.ps1 (+ range_server.py, make_isos.py): all green (23 checks).
 - tests/installer/e2e.ps1 written (online-via-127.0.0.1 install, boot, update, uninstall, offline exe).
 
+- e2e run 1 green (all 6 parts; install 73 s, offline 66 s); sizes in notes/install.md "Installer".
+- docs: README "Install (easy way)", notes/install.md "Installer (Sly2-Setup.exe)".
+- /uishot page renders checked (layout OK); /uiinstall + /uicancel: the wizard's real install path with
+  cancel + retry, used by e2e step 4.
+
 ## In progress
 
-- first e2e run (output in the session scratchpad e2e1.txt).
+- e2e run 2 (-SkipOffline) with the wizard-driven update.
 
 ## Next
 
-1. fix whatever e2e finds; record sizes/timings.
-2. docs (README Install (easy way), notes/install.md "Installer"), gates (run_tests.py, unit run.ps1s,
-   debug + release builds, package.py), disk cleanup (%TEMP%\sly2-installer-e2e, build\installer).
+1. gates: run_tests.py, every tests\unit\*\run.ps1 (window/warp/menu -UnitOnly, gs-hw -NoWindow), debug +
+   release builds, package.py; then a final full e2e; delete %TEMP%\sly2-installer-e2e, build\installer,
+   build\unit\installer; mark complete.
 
 ## Findings / traps
 

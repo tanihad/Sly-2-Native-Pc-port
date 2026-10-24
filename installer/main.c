@@ -609,6 +609,16 @@ static LRESULT CALLBACK wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     }
     case WM_APP_DONE: on_done((int)wp); return 0;
     case WM_APP_FINISHED: exit_code = EXIT_OK; DestroyWindow(h); return 0;
+    case WM_TIMER:                                   /* /uicancel=<s>: Cancel (answered yes) while it runs */
+        KillTimer(h, wp);
+        if (wp == 77 && running) {
+            loga("[uitest] cancel");
+            InterlockedExchange(&S.cancel, 1);
+            EnterCriticalSection(&S.lock);
+            if (S.job) TerminateJobObject(S.job, 1);
+            LeaveCriticalSection(&S.lock);
+        }
+        return 0;
     case WM_CTLCOLORSTATIC: {
         HDC dc = (HDC)wp;
         HWND c = (HWND)lp;
@@ -706,6 +716,8 @@ static void pump(void) {
     while (PeekMessageW(&m, NULL, 0, 0, PM_REMOVE)) { TranslateMessage(&m); DispatchMessageW(&m); }
 }
 
+static int ui_install, ui_cancel_after;              /* /uiinstall, /uicancel=<seconds> */
+
 static int ui_test(const wchar_t* bad_iso) {
     int fails = 0;
 #define EXPECT(c, what) do { if (c) loga("[uitest] ok: %s", what); else { loga("[uitest] FAIL: %s", what); fails++; } } while (0)
@@ -743,6 +755,30 @@ static int ui_test(const wchar_t* bad_iso) {
     EXPECT(wcsstr(sum, iso) != NULL, "summary names the image");
     SendMessageW(win, WM_COMMAND, ID_BACK, 0);
     EXPECT(page == P_DISC, "back -> disc page");
+    if (ui_install) {                                /* the real installation through the wizard */
+        SendMessageW(win, WM_COMMAND, ID_NEXT, 0);
+        SendMessageW(win, WM_COMMAND, ID_NEXT, 0);
+        EXPECT(page == P_PROGRESS && running, "Install starts the installation");
+        if (ui_cancel_after > 0) SetTimer(win, 77, (UINT)ui_cancel_after * 1000, NULL);
+        MSG m;
+        while (result < 0 && GetMessageW(&m, NULL, 0, 0) > 0) { TranslateMessage(&m); DispatchMessageW(&m); }
+        if (ui_cancel_after > 0) {
+            EXPECT(result == EXIT_CANCELLED && page == P_PROGRESS && IsWindowEnabled(item(ID_NEXT)), "Cancel stops it; Retry offered");
+            SendMessageW(win, WM_COMMAND, ID_NEXT, 0);   /* Retry */
+            EXPECT(running, "Retry starts again");
+            while (result < 0 && GetMessageW(&m, NULL, 0, 0) > 0) { TranslateMessage(&m); DispatchMessageW(&m); }
+        }
+        EXPECT(result == EXIT_OK && page == P_FINISH, "installed through the wizard");
+        wchar_t done[2048];
+        GetWindowTextW(item(ID_DONE), done, 2048);
+        EXPECT(wcsstr(done, S.dir) != NULL, "the Done page names the folder");
+        check(ID_PLAY, 0);
+        SendMessageW(win, WM_COMMAND, ID_NEXT, 0);       /* Finish: clean-up, then the window closes */
+        while (GetMessageW(&m, NULL, 0, 0) > 0) { TranslateMessage(&m); DispatchMessageW(&m); }
+        EXPECT(exit_code == EXIT_OK, "Finish closes the wizard");
+        loga("[uitest] %d failure(s)", fails);
+        return fails ? EXIT_FAILED : EXIT_OK;
+    }
     S.used_build = 300u << 20;
     S.used_tools = 900u << 20;
     on_done(EXIT_FAILED);
@@ -932,6 +968,8 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE prev, PWSTR cmdline, int show) {
         else if (opt(a, L"page", v)) page_disc = !_wcsicmp(v, L"disc");
         else if (opt(a, L"uitest", NULL)) uitest = 1;
         else if (opt(a, L"badiso", v)) wcopy(bad_iso, MAXP, v);
+        else if (opt(a, L"uiinstall", NULL)) ui_install = 1;
+        else if (opt(a, L"uicancel", v)) ui_cancel_after = _wtoi(v);
         else if (opt(a, L"uishot", v)) { wcopy(shots, MAXP, v); full_path(shots); }
         else {
             wchar_t m[MAXP + 64];
