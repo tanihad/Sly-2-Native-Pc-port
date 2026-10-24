@@ -17,7 +17,7 @@ extern int gpu_vrr_status(char* buf, int cap) __attribute__((weak));  /* (pc-fps
 static SRWLOCK lock = SRWLOCK_INIT;
 static menu_host host;
 static struct {
-    int open, page, sel, scroll, capture, confirm_reset, device;
+    int open, page, sel, scroll, capture, device;
     int bind_slot;                       /* binding pages: the column (0 / 1) left / right picks */
     int hover_tab, hover_row, hover_btn;
     int visible;                         /* rows that fit (from the last layout) */
@@ -104,11 +104,6 @@ static void scale_pixels(int n, int* w, int* h) {
     *h = 448 * n;
 }
 
-static int native_scale(void) {
-    int w, h;
-    h_output(&w, &h);
-    return gfx_native_scale(h);
-}
 
 /* choices of each CHOICE row: values and texts */
 typedef struct { int n; int val[MENU_MAX_CHOICES]; char text[MENU_MAX_CHOICES][MENU_TEXT]; } choices;
@@ -542,11 +537,12 @@ static const char* preset_desc(int p) {
     case SETTINGS_PRESET_ORIGINAL:
         return "The PS2's look: the PS2's resolution (512 x 448), 4:3, the TV flicker filter and interlacing, PS2 outlines.";
     case SETTINGS_PRESET_PERFORMANCE:
-        return "2x resolution, lowered to 1x while the graphics card cannot keep up. Modern look. For slower graphics cards.";
+        return "Render scale 50%, Modern look. For slower graphics cards.";
     case SETTINGS_PRESET_BALANCED:
-        return "3x resolution, lowered while the graphics card cannot keep up. Modern look. The default.";
+        return "Render scale Auto: as sharp as your graphics card keeps up with, up to 100%. Modern look. The default.";
     case SETTINGS_PRESET_QUALITY:
-        return "At least your display's resolution, thin high-resolution outlines, Modern look. Needs a fast graphics card.";
+        return "Render scale 100% (at least your screen's resolution), thin high-resolution outlines, Modern look. Needs a fast "
+               "graphics card.";
     default:
         return "Your own combination of the options below. Choose a preset to set them all at once.";
     }
@@ -566,20 +562,29 @@ static int build_rows(int page, menu_row* rows) {
         choice_row(rows, &n, MENU_ROW_RENDERER, "Renderer",
                    "GPU: Direct3D 11, any resolution. Software: the PS2's renderer on the processor, at the PS2's resolution.");
         r = last(rows, n);
-        if (!h_gpu_started() && ps2_settings.renderer_gpu != gpu) snprintf(r->note, sizeof r->note, "Applies at the next start");
+        if (st.pend_has[PEND_RENDERER])
+            snprintf(r->note, sizeof r->note, "%s", !h_gpu_started() ? "Choose Apply - needs a restart of the game"
+                                                                     : "Choose Apply to switch the renderer");
+        else if (!h_gpu_started() && ps2_settings.renderer_gpu != gpu) snprintf(r->note, sizeof r->note, "Restart the game to use it");
         else if (!h_gpu_started() && ps2_settings.renderer_gpu) snprintf(r->note, sizeof r->note, "GPU renderer unavailable: see sly2.log");
         env_note(r, "graphics", "renderer");
-        choice_row(rows, &n, MENU_ROW_SCALE, "Internal resolution",
-                   "The resolution the game is drawn at before it is scaled to your screen: higher is sharper and needs a faster "
-                   "graphics card. Auto lowers it while the card cannot keep up; Native matches your window.");
+        choice_row(rows, &n, MENU_ROW_SCALE, "Render scale", "");
         r = last(rows, n);
-        if (!gpu) disable(r, gpu_only);
-        env_note(r, "graphics", "internal_scale");
-        if (ps2_settings.internal_scale == SETTINGS_SCALE_AUTO) {
-            choice_row(rows, &n, MENU_ROW_AUTO_MAX, "Auto: highest resolution",
-                       "The highest resolution Auto uses. Auto goes lower (down to 1x) while the graphics card cannot keep up.");
-            if (!gpu) disable(last(rows, n), gpu_only);
+        if (r) {                             /* what is drawn and what is shown, in pixels */
+            int ow, oh, w, h, nn = gfx_scale();
+            h_output(&ow, &oh);
+            gfx_scale_info si;
+            gfx_scale_status(&si);
+            if (ps2_settings.render_scale == SETTINGS_RS_AUTO && host.auto_scale_now && host.auto_scale_now() >= 1) nn = host.auto_scale_now();
+            scale_pixels(nn, &w, &h);
+            snprintf(r->desc, sizeof r->desc,
+                     "How sharp the game is drawn, relative to your screen: higher is sharper and needs a faster graphics card. "
+                     "Rendering at %d x %d -> shown at %d x %d.%s", w, h, ow, oh,
+                     ps2_settings.render_scale == SETTINGS_RS_AUTO ? " Auto goes as high as your graphics card keeps up with, up to 100%."
+                     : si.limited ? " Drawn lower for now: the graphics card cannot keep up." : "");
         }
+        if (!gpu) disable(r, gpu_only);
+        env_note(r, "graphics", "render_scale");
         choice_row(rows, &n, MENU_ROW_SCALER, "Scaling filter",
                    "How the picture is scaled to your window. Automatic: sharp when shrinking (Lanczos), smooth when enlarging.");
         if (!gpu) disable(last(rows, n), gpu_only);
@@ -598,25 +603,45 @@ static int build_rows(int page, menu_row* rows) {
         choice_row(rows, &n, MENU_ROW_INTERLACE, "Interlacing",
                    "On: fields as the PS2 sent them to a TV (half the lines per picture). Off: every line in every picture.");
         if (!gpu) disable(last(rows, n), gpu_only);
+        if (st.pend_has[PEND_RENDERER])
+            row_new(rows, &n, MENU_ROW_APPLY, MENU_ITEM_ACTION, "Apply changes", "Use the renderer chosen above.");
         break;
     case MENU_PAGE_DISPLAY: {
-        int mode = h_window_mode();
+        int mode = eff_mode();
+        const char* staged = "Choose Apply to use it";
         choice_row(rows, &n, MENU_ROW_MODE, "Display mode",
-                   "Windowed, borderless fullscreen (fast Alt+Tab) or exclusive fullscreen. Alt+Enter or F11 switch too.");
+                   "Windowed. Borderless: fills the monitor at the desktop's resolution (fast Alt+Tab). Fullscreen: the game sets the "
+                   "monitor to the resolution below. Alt+Enter or F11 switch between windowed and borderless.");
         r = last(rows, n);
-        if (mode == SETTINGS_FULLSCREEN_EXCLUSIVE && ps2_settings.win_fullscreen != SETTINGS_FULLSCREEN_EXCLUSIVE)
-            snprintf(r->note, sizeof r->note, "Exclusive fullscreen is not available: borderless is used");
-        choice_row(rows, &n, MENU_ROW_WINSIZE, "Window size", "The size of the game's picture area in windowed mode.");
+        if (st.pend_has[PEND_MODE]) snprintf(r->note, sizeof r->note, "%s", staged);
+        else if (h_window_mode() != ps2_settings.win_fullscreen && ps2_settings.win_fullscreen == SETTINGS_FULLSCREEN_EXCLUSIVE)
+            snprintf(r->note, sizeof r->note, "Fullscreen is not available here: borderless is used");
+        choice_row(rows, &n, MENU_ROW_RESOLUTION, "Resolution", "");
         r = last(rows, n);
-        if (r && r->cur < 0) {
-            int w, h;
-            h_output(&w, &h);
-            snprintf(r->value, sizeof r->value, "%d x %d", w, h);
-            r->can_left = r->can_right = r->nchoices > 0;
+        if (r) {
+            int dw, dh, hz;
+            h_display(&dw, &dh, &hz);
+            if (mode == SETTINGS_FULLSCREEN_BORDERLESS) {
+                snprintf(r->value, sizeof r->value, "%d x %d (desktop)", dw, dh);
+                snprintf(r->desc, sizeof r->desc, "The size of the picture on your screen. Borderless always uses the desktop's "
+                         "resolution: choose Fullscreen to pick another one, or Windowed for a window size.");
+                disable(r, "Borderless uses the desktop's resolution");
+            } else {
+                if (r->cur < 0) {
+                    int v = row_value(MENU_ROW_RESOLUTION);
+                    snprintf(r->value, sizeof r->value, "%d x %d", v >> 16, v & 0xFFFF);
+                    r->can_left = r->can_right = r->nchoices > 0;
+                }
+                snprintf(r->desc, sizeof r->desc, "%s", mode == SETTINGS_FULLSCREEN_OFF
+                         ? "The size of the game's window (its picture area). The render scale (Graphics) is relative to it."
+                         : "The resolution Fullscreen sets the monitor to. The render scale (Graphics) is relative to it.");
+                if (st.pend_has[PEND_RES] || st.pend_has[PEND_WINSIZE]) snprintf(r->note, sizeof r->note, "%s", staged);
+            }
         }
-        if (mode != SETTINGS_FULLSCREEN_OFF) disable(r, "Windowed mode only");
         choice_row(rows, &n, MENU_ROW_MONITOR, "Monitor", "The monitor for fullscreen (and the window). Automatic: where the window is.");
-        if (h_monitors() < 2) disable(last(rows, n), "Only one monitor is connected");
+        r = last(rows, n);
+        if (st.pend_has[PEND_MONITOR]) snprintf(r->note, sizeof r->note, "%s", staged);
+        if (h_monitors() < 2) disable(r, "Only one monitor is connected");
         choice_row(rows, &n, MENU_ROW_ASPECT, "Aspect ratio",
                    "Widescreen shows more of the world at the sides (the HUD and menus keep their shape). 4:3 is the PS2's picture.");
         env_note(last(rows, n), "display", "aspect");
@@ -654,16 +679,21 @@ static int build_rows(int page, menu_row* rows) {
         }
         choice_row(rows, &n, MENU_ROW_FPS, "Show frame rate", "The frame rate in the top left corner of the picture and in the title bar.");
         env_note(last(rows, n), "window", "show_fps");
+        r = row_new(rows, &n, MENU_ROW_APPLY, MENU_ITEM_ACTION, "Apply changes",
+                    "Use the display mode, resolution and monitor chosen above. You then have 15 seconds to keep them; otherwise the "
+                    "previous ones come back. (The other options change at once.)");
+        if (r && !pending_any()) disable(r, "Nothing to apply");
         break;
     }
     case MENU_PAGE_AUDIO:
         slider_row(rows, &n, MENU_ROW_MASTER, "Master volume", "The volume of everything the game plays.", 0, 100, 5, "%");
-        slider_row(rows, &n, MENU_ROW_MUSIC, "Music volume", "The game's music (the same setting as in the game's own Options).",
-                   0, 100, 5, "%");
+        slider_row(rows, &n, MENU_ROW_MUSIC, "Music volume", "The game's music.", 0, 100, 5, "%");
         if (host.in_game && !host.in_game()) snprintf(last(rows, n)->note, sizeof last(rows, n)->note, "Applies when a game is loaded");
-        slider_row(rows, &n, MENU_ROW_EFFECTS, "Effects volume",
-                   "Sound effects and voices (the same setting as in the game's own Options).", 0, 100, 5, "%");
+        slider_row(rows, &n, MENU_ROW_EFFECTS, "Effects volume", "Sound effects and voices.", 0, 100, 5, "%");
         if (host.in_game && !host.in_game()) snprintf(last(rows, n)->note, sizeof last(rows, n)->note, "Applies when a game is loaded");
+        choice_row(rows, &n, MENU_ROW_SPEAKERS, "Speakers",
+                   "The game's sound mix. Stereo for speakers and headphones; Surround: the game's matrix surround, for a receiver "
+                   "with Dolby Pro Logic II.");
         choice_row(rows, &n, MENU_ROW_BACKGROUND, "Sound in the background",
                    "Keep playing sound while another window is active. Off: silent until you come back.");
         break;
@@ -674,6 +704,8 @@ static int build_rows(int page, menu_row* rows) {
         if (!ctl_get(MENU_ROW_VIBRATION)) disable(last(rows, n), "Vibration is off");
         choice_row(rows, &n, MENU_ROW_INVERT_X, "Invert camera horizontally", "The right stick turns the camera the other way.");
         choice_row(rows, &n, MENU_ROW_INVERT_Y, "Invert camera vertically", "The right stick tilts the camera the other way.");
+        choice_row(rows, &n, MENU_ROW_INV_BINO, "Invert Binocucom aiming", "The game's own option: aiming the Binocucom up / down the other way.");
+        choice_row(rows, &n, MENU_ROW_INV_TURRET, "Invert turret aiming", "The game's own option: aiming turrets up / down the other way.");
         slider_row(rows, &n, MENU_ROW_DEADZONE, "Left stick dead zone",
                    "How far the left stick must move before Sly does. Raise it if he creeps with the stick let go.", 0, 50, 2, "%");
         slider_row(rows, &n, MENU_ROW_DEADZONE_R, "Right stick dead zone",
@@ -709,6 +741,8 @@ static int build_rows(int page, menu_row* rows) {
     default: break;
     }
     row_new(rows, &n, MENU_ROW_RESET, MENU_ITEM_ACTION, "Reset to defaults", "Every option on this page back to its default.");
+    row_new(rows, &n, MENU_ROW_QUIT, MENU_ITEM_ACTION, "Quit to desktop",
+            "Close the game (asks first). Progress since the last save is lost: save from the pause menu first.");
     return n;
 }
 
@@ -733,7 +767,8 @@ static void set_page(int page) {
     st.page = page;
     st.sel = page < MENU_PAGE_N ? st.sel_of[page] : 0;
     st.scroll = 0;
-    st.capture = st.confirm_reset = 0;
+    st.capture = 0;
+    if (st.dialog == MENU_DLG_RESET) st.dialog = MENU_DLG_NONE;
     keep_visible(rows_now());
 }
 
@@ -807,9 +842,11 @@ static void step_slider(menu_row* r, int dir) {
 
 static void activate(menu_row* r) {
     switch (r->id) {
-    case MENU_ROW_RESET: case MENU_ROW_BIND_RESET: st.confirm_reset = 1; break;
+    case MENU_ROW_RESET: case MENU_ROW_BIND_RESET: st.dialog = MENU_DLG_RESET; break;
     case MENU_ROW_KEYS: set_page(MENU_PAGE_KEYS); break;
     case MENU_ROW_PAD: set_page(MENU_PAGE_PAD); break;
+    case MENU_ROW_APPLY: if (pending_any()) apply_pending(); break;
+    case MENU_ROW_QUIT: st.dialog = MENU_DLG_QUIT; break;
     default: break;
     }
 }
@@ -818,9 +855,42 @@ static void do_close(void) {
     if (!st.open) return;
     st.open = 0;
     if (st.capture) input_capture_cancel();
-    st.capture = st.confirm_reset = 0;
+    st.capture = 0;
+    st.dialog = MENU_DLG_NONE;
+    st.dialog_only = 0;
+    discard_pending();                   /* (what was not applied is forgotten) */
     input_set_menu_active(0);
     if (host.closed) host.closed();
+}
+
+/* Back / Close on a main page: changes not applied yet ask first */
+static void request_close(void) {
+    if (pending_any()) st.dialog = MENU_DLG_PENDING;
+    else do_close();
+}
+
+/* a dialog's answer, lock held: yes = Confirm (the gold button), no = Back */
+static void dialog_answer(int yes) {
+    switch (st.dialog) {
+    case MENU_DLG_RESET:
+        st.dialog = MENU_DLG_NONE;
+        if (yes) reset_page();
+        break;
+    case MENU_DLG_QUIT:
+        if (yes) { do_quit(); break; }
+        st.dialog = MENU_DLG_NONE;
+        if (st.dialog_only) do_close();  /* (opened just to ask: back to the game) */
+        break;
+    case MENU_DLG_KEEP:
+        if (yes) st.dialog = MENU_DLG_NONE;
+        else revert_display();
+        break;
+    case MENU_DLG_PENDING:
+        if (yes) apply_pending();        /* (a display change then asks Keep / Revert) */
+        else do_close();
+        break;
+    default: st.dialog = MENU_DLG_NONE; break;
+    }
 }
 
 /* one event, lock held */
@@ -832,9 +902,10 @@ static int nav(menu_nav ev) {
         if (ev == MENU_NAV_BACK || ev == MENU_NAV_CLOSE) { st.capture = 0; input_capture_cancel(); }
         return 1;
     }
-    if (st.confirm_reset) {
-        if (ev == MENU_NAV_CONFIRM) { st.confirm_reset = 0; reset_page(); }
-        else if (ev == MENU_NAV_BACK || ev == MENU_NAV_CLOSE || ev == MENU_NAV_DEFAULTS) st.confirm_reset = 0;
+    if (st.dialog) {
+        if (ev == MENU_NAV_CONFIRM) dialog_answer(1);
+        else if (ev == MENU_NAV_BACK || ev == MENU_NAV_CLOSE || (ev == MENU_NAV_DEFAULTS && st.dialog == MENU_DLG_RESET)) dialog_answer(0);
+        if (st.open) keep_visible(rows_now());
         return 1;
     }
     switch (ev) {
@@ -867,7 +938,7 @@ static int nav(menu_nav ev) {
             int m = rows_now();
             for (int k = 0; k < m; k++) if (rows_buf[k].id == back_row) st.sel = k;
         } else {
-            do_close();
+            request_close();
         }
         break;
     case MENU_NAV_TAB_NEXT:
@@ -877,8 +948,8 @@ static int nav(menu_nav ev) {
         set_page(p);
         break;
     }
-    case MENU_NAV_DEFAULTS: st.confirm_reset = 1; break;
-    case MENU_NAV_CLOSE: do_close(); break;
+    case MENU_NAV_DEFAULTS: st.dialog = MENU_DLG_RESET; break;
+    case MENU_NAV_CLOSE: request_close(); break;
     default: return 0;
     }
     if (st.open) keep_visible(rows_now());
@@ -889,15 +960,42 @@ void menu_open(void) {
     LOCK();
     if (!st.open) {
         st.open = 1;
-        st.capture = st.confirm_reset = 0;
+        st.capture = 0;
+        st.dialog = MENU_DLG_NONE;
+        st.dialog_only = 0;
         if (st.page >= MENU_PAGE_N) st.page = MENU_PAGE_CONTROLS;
         keep_visible(rows_now());
         st.serial++;
         input_set_menu_active(1);               /* the game gets a released pad and no keys */
         input_nav_flush();
+    } else if (st.dialog_only && st.dialog == MENU_DLG_QUIT) {   /* (the quit question, then Options: the whole menu) */
+        st.dialog = MENU_DLG_NONE;
+        st.dialog_only = 0;
+        st.serial++;
     }
     UNLOCK();
 }
+
+int menu_quit_request(void) {
+    LOCK();
+    if (!st.open) {
+        st.open = 1;
+        st.capture = 0;
+        st.dialog_only = 1;
+        input_set_menu_active(1);
+        input_nav_flush();
+    } else if (st.capture) {
+        st.capture = 0;
+        input_capture_cancel();
+    }
+    st.dialog = MENU_DLG_QUIT;
+    st.serial++;
+    UNLOCK();
+    return 1;
+}
+
+int menu_quit_showing(void) { return st.open && *(volatile int*)&st.dialog == MENU_DLG_QUIT; }
+int menu_pending(void) { return pending_any(); }
 
 void menu_close(void) {
     LOCK();
@@ -993,6 +1091,23 @@ void menu_tick(void) {
         if (r == INPUT_CAPTURE_KEY || r == INPUT_CAPTURE_BUTTON || r == INPUT_CAPTURE_CANCELLED || r == INPUT_CAPTURE_IDLE)
             menu_capture_result(r, code);
     }
+    menu_keep_tick();
+}
+
+/* "Keep these display settings?": the countdown; at 0 the previous ones come back */
+void menu_keep_tick(void) {
+    LOCK();
+    if (st.open && st.dialog == MENU_DLG_KEEP) {
+        unsigned long long t = now_ms();
+        if (t >= st.keep_deadline) {
+            revert_display();
+            st.serial++;
+        } else {
+            int secs = (int)((st.keep_deadline - t + 999) / 1000);
+            if (secs != st.keep_secs) { st.keep_secs = secs; st.serial++; }
+        }
+    }
+    UNLOCK();
 }
 
 uint32_t menu_version(void) {
@@ -1044,7 +1159,7 @@ void menu_compute_layout(int cw, int ch, int nrows, int scroll, menu_layout* L) 
     int bw = I(230 * u), gap = I(14 * u);
     for (int k = 0; k < 3; k++) L->btn[k] = (menu_rect){ x0 + iw - (k + 1) * bw - k * gap, L->footer.y, bw, L->footer.h };
     /* the reset dialog, centred on the panel */
-    int dw = I(620 * u), dh = I(220 * u);
+    int dw = I(760 * u), dh = I(270 * u);
     L->dlg = (menu_rect){ L->panel.x + (pw - dw) / 2, L->panel.y + (ph - dh) / 2, dw, dh };
     int bbw = I(240 * u), bbh = I(56 * u), by = L->dlg.y + dh - bbh - I(26 * u);
     L->dlg_yes = (menu_rect){ L->dlg.x + dw / 2 - bbw - I(12 * u), by, bbw, bbh };
@@ -1067,11 +1182,12 @@ void menu_mouse_move(int x, int y) {
         for (int k = 0; k < MENU_PAGE_N; k++) if (inside(L.tabs[k], x, y)) ht = k;
         for (int k = 0; k < L.visible && st.scroll + k < n; k++) if (inside(L.rows[k], x, y)) hr = st.scroll + k;
         if (inside(L.btn[0], x, y)) hb = 0;
-        if (st.confirm_reset) hb = inside(L.dlg_yes, x, y) ? 3 : inside(L.dlg_no, x, y) ? 4 : -1;
+        if (pending_any() && inside(L.btn[2], x, y)) hb = 2;
+        if (st.dialog) hb = inside(L.dlg_yes, x, y) ? 3 : inside(L.dlg_no, x, y) ? 4 : -1;
         for (int k = 0; k < 2; k++) if (inside(L.tab_hint[k], x, y)) hb = 5 + k;
-        if (ht != st.hover_tab || hr != st.hover_row || hb != st.hover_btn || (hr >= 0 && hr != st.sel && !st.capture && !st.confirm_reset)) {
+        if (ht != st.hover_tab || hr != st.hover_row || hb != st.hover_btn || (hr >= 0 && hr != st.sel && !st.capture && !st.dialog)) {
             st.hover_tab = ht; st.hover_row = hr; st.hover_btn = hb;
-            if (hr >= 0 && !st.capture && !st.confirm_reset) st.sel = hr;
+            if (hr >= 0 && !st.capture && !st.dialog) st.sel = hr;
             if (st.device != MENU_DEV_KEYBOARD) st.device = MENU_DEV_KEYBOARD;
             st.serial++;
         }
@@ -1087,8 +1203,9 @@ void menu_mouse_button(int x, int y, int button) {
         menu_layout L;
         layout_now(&L, n);
         if (button == 2) nav(MENU_NAV_BACK);
-        else if (st.confirm_reset) {             /* the dialog: Reset, or anywhere else cancels */
-            nav(inside(L.dlg_yes, x, y) ? MENU_NAV_CONFIRM : MENU_NAV_BACK);
+        else if (st.dialog) {                    /* a dialog: its buttons (a click elsewhere does nothing) */
+            if (inside(L.dlg_yes, x, y)) nav(MENU_NAV_CONFIRM);
+            else if (inside(L.dlg_no, x, y)) nav(MENU_NAV_BACK);
         } else if (st.capture) {
             nav(MENU_NAV_BACK);
         } else {
@@ -1116,6 +1233,7 @@ void menu_mouse_button(int x, int y, int button) {
                 done = 1;
             }
             if (!done && inside(L.btn[0], x, y)) nav(MENU_NAV_BACK);
+            else if (!done && pending_any() && inside(L.btn[2], x, y)) apply_pending();
         }
         if (st.open) keep_visible(rows_now());
         st.serial++;
@@ -1126,7 +1244,7 @@ void menu_mouse_button(int x, int y, int button) {
 void menu_mouse_wheel(int x, int y, int delta) {
     (void)x; (void)y;
     LOCK();
-    if (st.open && !st.capture && !st.confirm_reset) {
+    if (st.open && !st.capture && !st.dialog) {
         nav(delta > 0 ? MENU_NAV_UP : MENU_NAV_DOWN);
         st.serial++;
     }
@@ -1150,12 +1268,44 @@ void menu_get_view(menu_view* v, int cw, int ch) {
     v->scroll = st.scroll;
     v->capture = st.capture;
     v->bind_slot = st.bind_slot;
-    v->confirm_reset = st.confirm_reset;
+    v->confirm_reset = st.dialog == MENU_DLG_RESET;
+    v->dialog = st.dialog;
+    v->dialog_only = st.dialog_only;
+    v->pending = pending_any();
+    switch (st.dialog) {
+    case MENU_DLG_RESET: {
+        const char* pn = st.page == MENU_PAGE_KEYS ? "the keyboard controls" : st.page == MENU_PAGE_PAD ? "the controller buttons"
+                                                                                                         : menu_page_name(st.page);
+        snprintf(v->dlg_title, sizeof v->dlg_title, "Reset %s to the defaults?", pn);
+        snprintf(v->dlg_yes, sizeof v->dlg_yes, "Reset");
+        snprintf(v->dlg_no, sizeof v->dlg_no, "Cancel");
+        break;
+    }
+    case MENU_DLG_QUIT:
+        snprintf(v->dlg_title, sizeof v->dlg_title, "Quit to desktop?");
+        snprintf(v->dlg_text, sizeof v->dlg_text, "Unsaved progress since the last save will be lost.");
+        snprintf(v->dlg_yes, sizeof v->dlg_yes, "Quit");
+        snprintf(v->dlg_no, sizeof v->dlg_no, "Cancel");
+        break;
+    case MENU_DLG_KEEP:
+        snprintf(v->dlg_title, sizeof v->dlg_title, "Keep these display settings?");
+        snprintf(v->dlg_text, sizeof v->dlg_text, "Reverting to the previous settings in %d s.", st.keep_secs);
+        snprintf(v->dlg_yes, sizeof v->dlg_yes, "Keep");
+        snprintf(v->dlg_no, sizeof v->dlg_no, "Revert");
+        break;
+    case MENU_DLG_PENDING:
+        snprintf(v->dlg_title, sizeof v->dlg_title, "Apply the changed settings?");
+        snprintf(v->dlg_text, sizeof v->dlg_text, "Display mode, resolution, monitor or renderer were changed but not applied.");
+        snprintf(v->dlg_yes, sizeof v->dlg_yes, "Apply");
+        snprintf(v->dlg_no, sizeof v->dlg_no, "Discard");
+        break;
+    default: break;
+    }
     v->device = st.device;
     v->hover_tab = st.hover_tab;
     v->hover_row = st.hover_row;
     v->hover_btn = st.hover_btn;
-    snprintf(v->title, sizeof v->title, "PC Settings");
+    snprintf(v->title, sizeof v->title, "Options");
     if (st.page >= MENU_PAGE_N) snprintf(v->page_title, sizeof v->page_title, "%s", st.page == MENU_PAGE_KEYS ? "Keyboard controls" : "Controller buttons");
     UNLOCK();
 }

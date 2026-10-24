@@ -85,6 +85,8 @@ int  menu_quit_request(void);
 int  menu_quit_showing(void);
 /* settings changed but not applied yet (Display mode, Resolution, Monitor, Renderer) */
 int  menu_pending(void);
+/* the Keep / Revert countdown (menu_tick calls it; tests with a fake clock) */
+void menu_keep_tick(void);
 
 /* ---- state ---- */
 void menu_open(void);

@@ -394,11 +394,38 @@ static void draw_row(canvas* c, const menu_view* v, const menu_layout* L, int k,
     }
 }
 
+/* (pc-polish) a dialog (reset, quit, keep display settings, apply changes) centred on the panel */
+static void draw_dialog(canvas* c, const menu_view* v, const menu_layout* L, float u) {
+    int dev = v->device;
+    menu_rect B = L->dlg;
+    rrect(c, B.x - 2 * u, B.y + 8 * u, B.w + 4 * u, (float)B.h, 20 * u, 0, RGBA(0, 0, 0, 90), RGBA(0, 0, 0, 90));
+    rrect(c, (float)B.x, (float)B.y, (float)B.w, (float)B.h, 18 * u, 0, C_PANEL_TOP, C_PANEL_BOT);
+    rrect(c, (float)B.x, (float)B.y, (float)B.w, (float)B.h, 18 * u, 3 * u, C_GOLD, C_GOLD_DIM);
+    int ty = B.y + (int)(26 * u);
+    text(c, B.x + (int)(24 * u), ty, B.w - (int)(48 * u), (int)(52 * u), v->dlg_title, (int)(32 * u), FW_BOLD, 0, FACE_UI, C_TEXT,
+         AL_CENTER);
+    if (v->dlg_text[0])
+        text(c, B.x + (int)(30 * u), ty + (int)(56 * u), B.w - (int)(60 * u), (int)(76 * u), v->dlg_text, (int)(24 * u), FW_NORMAL, 0,
+             FACE_UI, RGBA(200, 212, 238, 255), AL_CENTER | AL_WRAP);
+    for (int k = 0; k < 2; k++) {
+        menu_rect b = k ? L->dlg_no : L->dlg_yes;
+        int hov = v->hover_btn == 3 + k;
+        rrect(c, (float)b.x, (float)b.y, (float)b.w, (float)b.h, 12 * u, 0, hov ? C_SEL : C_KEY, hov ? C_SEL : C_KEY);
+        rrect(c, (float)b.x, (float)b.y, (float)b.w, (float)b.h, 12 * u, 2 * u, k ? C_MUTED : C_GOLD, k ? C_MUTED : C_GOLD);
+        int gh = (int)(b.h * 0.6f), gx = b.x + (int)(18 * u), gy = b.y + (b.h - gh) / 2;
+        if (dev == MENU_DEV_KEYBOARD) key_cap(c, gx, gy, gh, k ? "Esc" : "Enter", u, 1);
+        else pad_glyph(c, (float)gx, (float)gy, (float)gh, k ? G_CIRCLE : G_CROSS, dev == MENU_DEV_XBOX);
+        text(c, b.x + (int)(60 * u), b.y, b.w - (int)(70 * u), b.h, k ? v->dlg_no : v->dlg_yes, (int)(26 * u), FW_BOLD, 0, FACE_UI, C_TEXT,
+             AL_CENTER);
+    }
+}
+
 static void draw_menu(canvas* c, const menu_view* v) {
     menu_layout L;
     menu_compute_layout(c->w, c->h, v->nrows, v->scroll, &L);
     float u = L.u;
     fill(c, 0, 0, (float)c->w, (float)c->h, C_DIM);
+    if (v->dialog_only) { draw_dialog(c, v, &L, u); return; }   /* (Quit from the game's menus / the close button) */
     menu_rect P = L.panel;
     /* shadow, panel, gold frame */
     rrect(c, P.x - 2 * u, P.y + 10 * u, P.w + 4 * u, (float)P.h, 26 * u, 0, RGBA(0, 0, 0, 90), RGBA(0, 0, 0, 90));
@@ -408,7 +435,7 @@ static void draw_menu(canvas* c, const menu_view* v) {
     /* title */
     menu_rect H = L.header;
     char title[2 * MENU_TEXT];
-    snprintf(title, sizeof title, "%s", "PC SETTINGS");
+    snprintf(title, sizeof title, "%s", "OPTIONS");
     int tw = text(c, H.x, H.y, H.w, H.h, title, (int)(50 * u), FW_BLACK, 1, FACE_TITLE, C_GOLD, AL_LEFT);
     if (v->page_title[0])
         text(c, H.x + tw + (int)(22 * u), H.y + (int)(4 * u), H.w - tw, H.h, v->page_title, (int)(30 * u), FW_SEMIBOLD, 0, FACE_UI, C_TEXT, AL_LEFT);
@@ -479,29 +506,16 @@ static void draw_menu(canvas* c, const menu_view* v) {
     if (dev != MENU_DEV_KEYBOARD && sub) hint(c, L.btn[1], dev, "", G_START, "Close", u, 0);
     else if (dev != MENU_DEV_KEYBOARD) hint(c, L.btn[1], dev, "", G_CROSS, "Select", u, 0);
     else hint(c, L.btn[1], dev, "Enter", G_CROSS, "Select", u, 0);
-    /* the reset dialog */
-    if (v->confirm_reset) {
+    if (v->pending) {                             /* (pc-polish) staged changes: an Apply button (mouse; the row for keys / pads) */
+        menu_rect b = L.btn[2];
+        int hov = v->hover_btn == 2;
+        rrect(c, (float)b.x, (float)b.y, (float)b.w, (float)b.h, b.h * 0.3f, 0, hov ? C_SEL : C_KEY, hov ? C_SEL : C_KEY);
+        rrect(c, (float)b.x, (float)b.y, (float)b.w, (float)b.h, b.h * 0.3f, 2 * u, C_GOLD, C_GOLD);
+        text(c, b.x, b.y, b.w, b.h, "Apply changes", (int)(23 * u), FW_BOLD, 0, FACE_UI, C_NOTE, AL_CENTER);
+    }
+    if (v->dialog) {
         rrect(c, (float)P.x, (float)P.y, (float)P.w, (float)P.h, 22 * u, 0, RGBA(0, 0, 0, 120), RGBA(0, 0, 0, 120));
-        menu_rect B = L.dlg;
-        rrect(c, (float)B.x, (float)B.y, (float)B.w, (float)B.h, 18 * u, 0, C_PANEL_TOP, C_PANEL_BOT);
-        rrect(c, (float)B.x, (float)B.y, (float)B.w, (float)B.h, 18 * u, 3 * u, C_GOLD, C_GOLD_DIM);
-        char q[2 * MENU_TEXT];
-        const char* pn = v->page == MENU_PAGE_KEYS ? "the keyboard controls" : v->page == MENU_PAGE_PAD ? "the controller buttons"
-                                                                                                       : menu_page_name(v->page);
-        snprintf(q, sizeof q, "Reset %s to the defaults?", pn);
-        text(c, B.x + (int)(20 * u), B.y + (int)(28 * u), B.w - (int)(40 * u), (int)(70 * u), q, (int)(30 * u), FW_SEMIBOLD, 0, FACE_UI,
-             C_TEXT, AL_CENTER);
-        for (int k = 0; k < 2; k++) {
-            menu_rect b = k ? L.dlg_no : L.dlg_yes;
-            int hov = v->hover_btn == 3 + k;
-            rrect(c, (float)b.x, (float)b.y, (float)b.w, (float)b.h, 12 * u, 0, hov ? C_SEL : C_KEY, hov ? C_SEL : C_KEY);
-            rrect(c, (float)b.x, (float)b.y, (float)b.w, (float)b.h, 12 * u, 2 * u, k ? C_MUTED : C_GOLD, k ? C_MUTED : C_GOLD);
-            int gh = (int)(b.h * 0.6f), gx = b.x + (int)(18 * u), gy = b.y + (b.h - gh) / 2;
-            if (dev == MENU_DEV_KEYBOARD) key_cap(c, gx, gy, gh, k ? "Esc" : "Enter", u, 1);
-            else pad_glyph(c, (float)gx, (float)gy, (float)gh, k ? G_CIRCLE : G_CROSS, dev == MENU_DEV_XBOX);
-            text(c, b.x + (int)(60 * u), b.y, b.w - (int)(70 * u), b.h, k ? "Cancel" : "Reset", (int)(26 * u), FW_BOLD, 0, FACE_UI, C_TEXT,
-                 AL_CENTER);
-        }
+        draw_dialog(c, v, &L, u);
     }
 }
 
