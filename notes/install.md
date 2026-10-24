@@ -3,6 +3,116 @@
 A folder the owner starts like any PC game: double-click `sly2.exe`, no console window, no files
 from the disc next to it.
 
+## Installer (Sly2-Setup.exe)
+
+A "builder installer" for players: no commands, no console windows. It contains no game code or data
+(only our recompiler/runtime sources and, in the offline variant, the free toolchain); the game's
+translated code exists only after it is built on the player's PC from the player's disc.
+
+**Make it**: `<main checkout>\.venv\Scripts\python.exe scripts\make_installer.py [--offline]` ->
+`build\installer\Sly2-Setup.exe` (1.0 MB: 190 KB program + 0.8 MB sources), with `--offline` also
+`Sly2-Setup-Offline.exe` (220 MB), and `SHA256SUMS.txt`. Needs a set-up checkout (`setup.ps1`): the
+archives are taken from `tools\_downloads` and checked against the pins first.
+
+- **Program**: `installer/*.c`, plain Win32 + common controls, built with llvm-mingw (`-Wall -Wextra
+  -Werror`); no installer framework. `main.c` command line + wizard, `engine.c` the steps, `util.c`
+  files/processes/SHA-256 (bcrypt)/registry/shortcuts/payload, `net.c` WinHTTP downloads, `disc.c` the
+  disc check (= `scripts/extract_elf.py` / `runtime/disc.c`).
+- **Payload**: appended to the program: entries + a table (name, offset, size, SHA-256) + a trailer
+  `SLY2PAY1`; every entry is verified when unpacked ("the setup file is damaged: download it again").
+  If the exe is Authenticode-signed after the payload is appended, the payload end is found from the PE
+  certificate table, so signing works. `source.zip` = `git ls-files recomp runtime` + `scripts/
+  {build_game,package,paths,extract_elf,make_icon}.py`, `scripts/hlslc.c`, `requirements.txt`,
+  `version.txt` (`<commit count> <hash>`; `build_game.py` uses it when there is no `.git`).
+  make_installer refuses any path under orig/, build/, dist/, tools/ or any .iso/.elf/.bin/SCUS_ name.
+- **Single source of truth**: the toolchain pins (file, URL, SHA-256) are parsed from
+  `scripts/setup-tools.ps1`, the expected executable (size, SHA-256) from `scripts/extract_elf.py`.
+
+**Wizard pages**: Welcome (says "update" if an installation is found through the registry) -> "Your copy
+of the game" (legal note; Next only after ticking "I have my own copy...") -> Install folder (default
+`%LOCALAPPDATA%\Programs\Sly2`, no admin; space needed vs free; a folder that needs admin rights, e.g.
+Program Files, offers to restart Setup elevated: then all-users Start menu + HKLM entry) -> Disc image
+(checked when chosen: ISO 9660 -> SYSTEM.CNF -> BOOT2 -> SCUS_973.16 size + SHA-256; separate messages
+for not-an-ISO (.bin/.cue/.chd/.cso), not a PS2 disc, another game/region (PAL/Japanese hints),
+another version/patched, truncated) -> Ready (summary) -> Installing (status, progress bar, current
+item with MB/s, a list of steps, taskbar progress; Cancel; on error the reason in red + Retry + Show log)
+-> Done (desktop shortcut [on], free up disk space: remove the build files [on], keep the build tools
+for faster updates [off], Play now [on]).
+
+**What Install does** (`engine.c setup_install`; log: `<dir>\setup.log`):
+
+1. Checks the image again, the free space, that the game is not running; writes `Uninstall.exe` (the
+   program without its payload), `setup-state.ini` and the uninstall registry entry first, so a cancelled
+   or failed install can always be removed from Apps & features.
+2. Unpacks `source.zip` into `<dir>\builder` (old sources replaced; if `builder\built-version.txt` names
+   another version, `builder\build` is deleted: the payload's file times are older than the player's
+   objects, so build_game's time check could keep stale objects).
+3. Toolchain into `builder\tools`, each archive from the first source that has it: this setup file
+   (offline variant) -> `/from=<folder>` -> a complete earlier download -> download. Downloads: WinHTTP,
+   automatic proxy, TLS 1.2/1.3, resumable (`.part` + `Range`; a server without Range: start over),
+   5 attempts with back-off, then an error with Retry; SHA-256 checked before use (mismatch: the file is
+   deleted, "damaged or not the expected file"). Unpacked with Windows' own `tar.exe` (Windows 10 1803+)
+   with no window; the archive is deleted afterwards.
+   | archive | from | SHA-256 | size |
+   |---|---|---|---|
+   | llvm-mingw-20261006-ucrt-x86_64.zip | github.com/mstorsjo/llvm-mingw releases | 317492c4...f52d17a | 182 MB |
+   | uv-x86_64-pc-windows-msvc.zip (uv 0.13.0) | github.com/astral-sh/uv releases | 088962f9...dba656c | 15 MB |
+   | Python 3.13.16 (python-build-standalone 20261009, install_only_stripped) | `uv python install` (uv checks the SHA-256 built into the pinned uv) | | ~20 MB |
+   | rabbitizer 1.16.2, pyelftools 0.33 | PyPI via `uv pip install --require-hashes -r requirements.txt` | requirements.txt | <1 MB |
+   llvm-mingw is unpacked without the parts the build never uses (aarch64/armv7/i686 sysroots, lldb,
+   clangd, clang-tidy, lldb's Python, Linux sanitizer runtimes): 340 MB instead of 715 MB.
+   `uv python install --no-bin --no-registry`: nothing in `~\.local\bin` or `HKCU\Software\Python`.
+   Offline variant / `/from`: Python is copied (a `cpython-3.13.16-windows-x86_64-*` folder) and the
+   packages come from a uv cache with `--offline` (same layout as `setup.ps1 -From`).
+4. `extract_elf.py --iso <image>` (into `builder\orig`), then `build_game.py --release --out builder\build\rel
+   --package builder\dist --progress` (`[progress] <stage> [i/n]` lines drive the bar), with no window and
+   below-normal priority, the whole process tree in a job object (Cancel kills it).
+5. Copies `sly2.exe`, `README.txt`, `Controller test.cmd` into `<dir>` ("close Sly 2 and click Retry" if
+   it is running); sets `[game] disc = <image>` in `%LOCALAPPDATA%\Sly2\sly2.ini` (or the portable folder:
+   other keys untouched; a new file gets only that key), so the first start needs no file dialog; Start
+   menu shortcut `Sly 2 - Band of Thieves.lnk`; EstimatedSize.
+6. Finish: desktop shortcut, clean-up (`builder\build`, `orig`, `dist`, `tools\_downloads`; without "keep
+   tools" the whole `builder`), Play now (started through Explorer when Setup runs elevated, never as admin).
+
+**Updates / repair**: run Setup again (any version): it finds the installation (registry
+`InstallLocation` + `setup-state.ini`), keeps saves/settings (they are not in the install folder),
+reuses kept tools whose `.sly2-pin` matches the pinned SHA-256, rebuilds and replaces the game.
+
+**Uninstall** (`Uninstall.exe`, Apps & features; `/silent` keeps saves, `/deletesaves` removes them):
+asks for confirmation, waits for the game to close, removes the shortcuts recorded in
+`setup-state.ini`, `builder`, the game files, `setup.log`, the registry entry, then asks (default No)
+whether to delete `%LOCALAPPDATA%\Sly2` (saves, settings, logs). Only files Setup made are removed: the
+folder itself goes only if empty (a hidden `cmd` removes `Uninstall.exe` and the folder 2 s after it
+exits). An all-users install asks for elevation. Its log: `%TEMP%\sly2-uninstall.log`.
+
+**Disk space** (measured 2026-10-24, e2e run): during the build `builder` holds llvm-mingw 340 MB, uv
+32 MB, Python 60 MB, uv cache 17 MB, venv 2 MB, sources 2 MB, build intermediates 175 MB, plus the
+archive being unpacked (182 MB) -> peak about 0.85 GB; Setup asks for 1.1 GB (estimate + 10%). After
+"free up disk space": the game folder is **26 MB**; with "keep the build tools" about 480 MB.
+Downloads (online): about 220 MB. Time: 73 s for the whole install on an i7-14700F (28 threads,
+archives from a local server); the build is ~80 s of it there, mostly compiling 135 files in parallel
+(a 4-core PC: several minutes).
+
+**Command line** (also for CI): `Sly2-Setup.exe /silent /iso=<image> [/dir=<folder>] [/keeptools]
+[/keepbuild] [/nodesktop] [/play] [/offline] [/from=<folder>] [/mirror=<URL or folder>] [/log=<file>]`;
+exit codes 0 ok, 1 failed, 2 bad arguments, 3 cancelled, 4 wrong disc, 5 not enough space, 6 needs admin.
+`Uninstall.exe [/silent] [/deletesaves]`. Test overrides (never touch the player's things):
+`/startmenu= /desktopdir= /userdata= /regkey=<HKCU subkey>`. `/mirror=` replaces the download URLs'
+folder (e.g. a local server); `/from=` = the `setup.ps1 -From` layout. Tools: `/version`, `/payload`,
+`/sha256 <file>`, `/checkdisc <image>`, `/download <url> <file> [sha256 [size]]`, `/uitest` (pages driven
+in a hidden window), `/uishot=<folder>` (pages rendered off-screen to .bmp).
+
+**Tests**: `tests\unit\installer\run.ps1` (quick: tool commands, payload contents, the disc check on
+synthetic images + the real one, downloads from `range_server.py` on 127.0.0.1 - complete, dropped and
+resumed, resume of a partial file, no-Range server, 404, wrong SHA-256, nothing listening - `/uitest`,
+a damaged payload removed again by Uninstall.exe). `tests\installer\e2e.ps1` (~5 min, ~2 GB in %TEMP%,
+removed): bad archive / 404 first, then install with the archives over HTTP from 127.0.0.1 and Python/
+packages from a `/from` folder, the installed game boots headless from the image Setup wrote into
+sly2.ini (PS2_HEADLESS, PS2_WATCHDOG -> exit 3), shortcuts + registry in test locations, update in place
+keeps a save, uninstall keeps saves, then the offline exe with `/offline` and `Uninstall /deletesaves`.
+Not testable here: the real downloads from github.com / PyPI and `uv python install` (no network for
+agents), the UAC prompt of an all-users install.
+
 ## From a fresh clone (any Windows 10/11 x64 PC)
 
 ```powershell
@@ -35,8 +145,9 @@ powershell -ExecutionPolicy Bypass -File build.ps1        # -> dist\Sly2\sly2.ex
 - Tested (2026-10-22) in a fresh `git clone --no-local` in %TEMP% with a clean PATH (no git, no
   project Python): `setup.ps1 -From <main checkout>` 11 s, `build.ps1 -Iso <image>` 50 s on 28
   threads, 27 MB exe that boots on the GPU renderer, the software renderer and WARP.
-- Disk: tools ~250 MB + downloads ~260 MB (kept in `tools\_downloads`), build ~150 MB, the game
-  folder 27 MB.
+- Disk (re-measured 2026-10-24): tools ~840 MB (llvm-mingw unpacked in full is 715 MB; the installer
+  leaves out the parts the build never uses: 340 MB), downloads ~200 MB (kept in `tools\_downloads`;
+  +38 MB MinGit when fetched), build ~250 MB, the game folder 27 MB.
 
 ## Build it (development checkout or worktree)
 

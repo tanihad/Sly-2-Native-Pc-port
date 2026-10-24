@@ -19,7 +19,7 @@ import shutil
 import subprocess
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from paths import CLANG, ELF, ROOT, TOOLS, runtime_sources
@@ -156,6 +156,14 @@ Build {ver} ({hash}).
 """
 
 
+PROGRESS = False
+
+
+def progress(stage: str, done: int | None = None, total: int | None = None) -> None:
+    if PROGRESS:
+        print(f"[progress] {stage}" + (f" {done}/{total}" if total else ""), flush=True)
+
+
 GPU_DIR = ROOT / "runtime" / "gpu"
 GEN_DIR = ROOT / "build" / "gen"                   # generated headers (build/gen/gpu_shaders.h)
 
@@ -204,7 +212,15 @@ def build_shaders() -> str:
 
 
 def _version() -> tuple[int, str]:
-    """(commit count, short hash) of the source tree, for the version resource."""
+    """(commit count, short hash) of the source tree, for the version resource. A tree unpacked by the
+    installer (scripts/make_installer.py) has no git: its version.txt says "<count> <hash>"."""
+    vfile = ROOT / "version.txt"
+    if vfile.exists() and not (ROOT / ".git").exists():
+        try:
+            n, h = vfile.read_text(encoding="utf-8").split()[:2]
+            return int(n), h
+        except (OSError, ValueError):
+            pass
     git = str(GIT) if GIT.exists() else "git"
     try:
         n = subprocess.run([git, "rev-list", "--count", "HEAD"], cwd=ROOT, capture_output=True, text=True).stdout
@@ -251,7 +267,11 @@ def main() -> int:
     ap.add_argument("--release", action="store_true")
     ap.add_argument("--out", default=str(ROOT / "build" / "sly2"))
     ap.add_argument("--package", default=None, metavar="DIR", help="also link the player's build into DIR")
+    ap.add_argument("--progress", action="store_true",
+                    help="print '[progress] <stage> [i/n]' lines (the installer's progress bar, installer/engine.c)")
     args = ap.parse_args()
+    global PROGRESS
+    PROGRESS = args.progress
     out = Path(args.out)
     # -fno-auto-import: globals are in this executable, so access them directly instead of through
     # a .refptr pointer (MinGW's provision for data imported from DLLs): one load less per access.
@@ -265,18 +285,21 @@ def main() -> int:
         import extract_elf
         if extract_elf.main([]) != 0:
             return 1
+    progress("generate")
     gen = subprocess.run([sys.executable, "-m", "recomp", "generate", args.elf, "-o", str(out / "recomp")],
                          cwd=ROOT, capture_output=True, text=True)
     print(gen.stdout.strip() or gen.stderr)
     if gen.returncode:
         return 1
     # The IOP sound modules (989snd, spiop) embedded in the executable: recomp/iop.py
+    progress("iop")
     iop = subprocess.run([sys.executable, "-m", "recomp", "iop", args.elf, "-o", str(out / "iop")],
                          cwd=ROOT, capture_output=True, text=True)
     print(iop.stdout.strip() or iop.stderr)
     if iop.returncode:
         return 1
     # The VU microprograms (.vutext overlays): recomp/vu_recomp.py
+    progress("vu")
     vu = subprocess.run([sys.executable, "-m", "recomp", "vu", args.elf, "-o", str(out / "vu")],
                         cwd=ROOT, capture_output=True, text=True)
     print(vu.stdout.strip() or vu.stderr)
@@ -291,6 +314,7 @@ def main() -> int:
 
     # The Direct3D 11 GS backend (runtime/gpu, notes/d3d11-renderer.md): shaders first, compile
     # errors fail the build. Selected at run time by PS2_GS_BACKEND (default sw).
+    progress("shaders")
     err = build_shaders()
     if err:
         print(err[:6000])
@@ -299,8 +323,14 @@ def main() -> int:
     sources = (sorted((out / "recomp").glob("*.c")) + sorted((out / "iop").glob("*.c")) +
                sorted((out / "vu").glob("*.c")) + runtime_sources() + sorted(GPU_DIR.glob("*.c")))
     objs, errors = [], []
+    progress("compile", 0, len(sources))
     with ThreadPoolExecutor(max_workers=os.cpu_count()) as pool:
-        for obj, err in pool.map(lambda s: compile_one(s, obj_dir, flags), sources):
+        futures = [pool.submit(compile_one, s, obj_dir, flags) for s in sources]
+        if PROGRESS:                                   # (completion order, for the installer's bar)
+            for i, _ in enumerate(as_completed(futures), 1):
+                progress("compile", i, len(sources))
+        for f in futures:                              # (source order: the link order stays the same)
+            obj, err = f.result()
             objs.append(obj)
             if err:
                 errors.append(err)
@@ -310,6 +340,7 @@ def main() -> int:
     print(f"compiled {len(sources)} files ({' '.join(flags)}) in {time.time() - t0:.0f}s")
 
     exe = out / "sly2.exe"
+    progress("link")
     link = subprocess.run([str(CLANG), *map(str, objs), *LIBS, "-o", str(exe)], capture_output=True, text=True)
     if link.returncode:
         print(link.stderr[:6000])
@@ -318,6 +349,7 @@ def main() -> int:
     if args.package:
         if not args.release:
             print("note: --package without --release packages a debug build (-O1, function tracing)")
+        progress("package")
         return package(objs, out, Path(args.package))
     return 0
 
