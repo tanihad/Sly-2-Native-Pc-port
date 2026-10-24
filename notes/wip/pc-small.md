@@ -9,8 +9,14 @@
 - Controls: menu_game.c + menu_open_page; verified (notes/pc-menu2/controls_before_after.jpg).
 - Docs: notes/movies.md, pc-menu.md.
 
-## Next
-- gates (build\small\gates.ps1), commit, report.
+**Status: complete**
+
+- Gates green (build\small\gates.log): run_tests, all tests\unit (window/warp/menu -UnitOnly, gs-hw -NoWindow, installer),
+  gpu_diff_all mixed S=1 28/28, debug + release builds, pc_text_boot rel + dbg, package.py.
+
+## Left
+- Chalk talks / episode intros not run headless (same player + sprite path); software-renderer window presenter not seen
+  (headless has no window; the path is the same present_frame call).
 
 ## Findings
 - Movie sprite UVs 0.5..640.5 x 0.5..480.5 (texel centres); rect snapped to macroblocks.
