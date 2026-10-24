@@ -2,6 +2,8 @@
 
 ## Resume here (read first in a new session)
 
+**2026-10-24: pc-polish MERGED (4e2158e: Quit to Desktop, one Options menu, Resolution + Render scale, Apply/Revert). pc-research DONE (branch next/pc-research, notes/perf-plan.md):** VU1-on-GPU dropped; recommended plan H = P1 early depth (prototype: GPU -20..33%) -> P2 GPU pass costs + P3 frontend split -> P4 GS decode fast path -> P5 VU1 program pool -> P6 in-game overhead -> P7 Reflex; ~200 fps at 3x in the heaviest hub, 2-3 months; owner asked to approve the full plan. P1 running in worktree perf-p1 (branch next/perf-p1, from main + next/pc-research). pc-smooth still running.
+
 **PAUSED by the user (2026-10-23 15:05).** Nothing is running. pc-polish, pc-smooth, pc-research were stopped early (1-2 commits each; mid-edit work saved as 'PAUSED ... unverified' WIP commits, pushed). On 'continue': resume each from notes/wip/<name>.md.
 
 **2026-10-23 (night): owner feedback round 3** - stutter, menu shaking, minor shadow flicker, no quit, duplicate pause menu/Options, confusing internal vs actual resolution, settings not applying instantly (wants Apply), wants easy 200 fps with modern optimisation (research first: 'make sure it is the best plan'). Running: pc-polish (Quit to Desktop, one Options menu, Resolution + Render scale, Apply/Revert), pc-smooth (root causes of stutter, menu shake, shadow flicker; short batched real-monitor runs), pc-research (decision doc notes/perf-plan.md: research RT64/Unleashed/PCSX2/Dolphin/RPCS3/NVIDIA Reflex/DLSS, cost breakdown at 200 fps, prototype VU1-on-GPU compute and frontend parallelisation). Worktrees pc-polish/pc-smooth/pc-research, checkpoints notes/wip/<name>.md. Big performance work waits for the research verdict + owner OK.
