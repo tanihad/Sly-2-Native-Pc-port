@@ -2603,3 +2603,41 @@ fragments that pass (from 1.08-2.6x); what is left is the shading cost itself (P
 targets use the same 2^-20 scale, so their (small) Z range is poorly spread for coarse culling (a per-format scale is a P2
 option; they are 1-2% of depth primitives); the ROV tier's own depth reads (zpatch in the shader) get no early rejection
 (P2 (c)).
+
+## Appendix Q. As built: pc-smooth (field half offset in progressive output, display-locked cadence; branch next/pc-smooth)
+
+Owner report: "a bit stuttery", "the menu is shaking", "minor flickering on shadows and stuff" (2560 x 1440 165 Hz, VRR off,
+Balanced). Checkpoint history and every measurement: notes/wip/pc-smooth.md.
+- **Shake / flicker: Sly 2 field-renders.** After its VBlank wait the render thread (0x16F590 / 0x16F6B8, init 0x16F788) stores
+  half = !CSR.FIELD at 0x2DEDB4 and calls sceGsSetHalfOffset (0x240AE0): XYOFFSET.Y + 0.5 on odd fields, so a TV shows every
+  frame on its own scanlines. In a progressive picture every other frame sat half a native line (one output line, 3 px at
+  1440p) higher: a 60 Hz one-line bob of everything still - menus, the safehouse, the pause screen, the HUD - and a 30 Hz
+  flicker of every horizontal edge and shadow border. At 30 fps all frames got the same field and nothing moved. (Not found
+  earlier: XYOFFSET looked constant in the traced frames because tracing slows the game to 20-30 fps; the census's "half-line
+  OFY on one VBlank / ignored in progressive mode" (section 6, #12) was never implemented.) Fix: recomp/patches.py
+  field_offset_flip / _flip2 / _init make half 0 while `ps2_progressive` (runtime/gfx.c: interlacing off) - every frame drawn
+  as the even field - and motion_blur_progressive gives the motion blur's previous-picture sprites V 0.5 instead of the field
+  parity's 1.0 / 0.0 (a half-line shift that only a TV's field offset undoes). Interlaced output (Faithful) keeps the game's
+  field rendering. PS2_PROGRESSIVE_FIX=0 restores the old behaviour for A/B runs. Measured (present dumps of still regions,
+  Balanced 2560 x 1440): safehouse 9.6-9.9% (blur off) / 22-31% (blur on) of the pixels changing every VBlank with a +-3 px
+  shift -> 0.00-0.01%; idle ep2 hub 27% -> 1.1-1.6% (animation), shift 0; notes/pc-smooth/field_bob_before_after.png.
+- gpu_present.c flicker_strip also strips the DY + 1 form of the game's wrong-field compensation circuit (0x16F2D0 adds
+  circuit 1 one line lower, by DBY or by DY, when a picture is shown on the other field): composed as programmed it was a
+  one-VBlank vertical blur.
+- **Display-locked cadence** (runtime/frame_rate.c frame_rate_set_lock, gpu_hw.c clock thread clock_lock_k, gpu_present.c):
+  on a display seen refreshing at a fixed rate (pacing auto; always with pacing = display) that is not a multiple of the
+  frame rate, the display's own VBlanks drive the game at refresh / k, at most 60: 165 Hz -> 55 frames/s, every picture 3
+  refreshes; each picture is presented in the middle of the refresh interval m refreshes after its VBlank (m from the 95th
+  percentile of the ready times, up at once, down after 2 s), so ready-time jitter cannot move it to a neighbouring refresh.
+  Movies and the RC chopper keep 59.94 (the timer). Measured on the owner's monitor (strict 3x, camera turning, 20 s):
+  before 237 of 1110 shown pictures held 2 refreshes instead of 3, one 66 ms, 155 presents never shown; after 1160 of 1160
+  pictures exactly 18.17 ms (notes/pc-smooth/shown_intervals_165hz.png). Not for rates above 60: display VBlanks there
+  present repeated pictures (120 locked to 82.5 queued 90 ms of pictures); 120 / 144 / 165 on a fixed 165 Hz display still
+  vary - VRR is the answer there. PS2_DISPLAY_LOCK=0 disables the lock.
+- Governor (gpu_pace.c): the warm-up lasts >= 1 s (at 120 / 165 fps 60 pictures were 0.4 s: strict 3x dropped to 1x seconds
+  after the start); above 60 fps no immediate overload rule (game speed does not depend on the GPU there). PS2_GS_SCALE now
+  really keeps the scale (gov_frame honours gov_strict). ep2 hub at 120 / 165, auto 3x: stays 3x, 98-99 frames/s, Present
+  intervals p99 11.8 ms (before: dropped to 1x).
+- Tools: PS2_PRESENT_TRACE (per present / GPU time / shown present; scripts/smooth_run.ps1, smooth_trace.py with PNG panels),
+  PS2_PRESENT_DUMP(_AT) (presented pictures with the overlay, cropped, strided), PS2_FB_DUMP(_DIR) (native buffers in the
+  software renderer / the displayed targets at scale), PS2_DISPLAY_LOG, PS2_PACE_LOG=4, scripts/frame_diff.py.
