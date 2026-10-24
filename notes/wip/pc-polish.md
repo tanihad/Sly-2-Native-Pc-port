@@ -41,12 +41,18 @@ resolution confusing, things don't apply instantly (Apply button)". Worktree
 - Contact sheets notes/pc-menu/contact_sheet.png (unit) + ingame_sheet.png; docs: pc-menu.md (rewritten),
   settings.md, controls.md, packaged README (build_game.py), pc-text.md, pc-experience.md.
 
-## In progress
-- Gates (build\polish_run\gates.ps1 -> gates.log): run_tests, every unit, gpu_diff_all mixed S=1, debug + release,
-  pc_text_boot rel + dbg, package. (Trap: dot-sourcing env.ps1 overwrites $root - set it again after.)
+- Gates green (build\polish_run\gates.log, 2026-10-23): run_tests PASS; all 25 tests\unit\*\run.ps1 (window / warp /
+  menu -UnitOnly, gs-hw -NoWindow; menu 305, window 525); gpu_diff_all mixed S=1 28/28; debug + release builds;
+  pc_text_boot release + debug; package.py. After the last change (menu_keep_tick on the EE too) menu unit,
+  run_tests, debug + release, package re-run: green. Release build headless: Apply -> no answer -> reverted after 15 s,
+  quit over the panel, exit code 0.
 
-## Next
-1. Fix whatever the gates show; mark Status: complete; final commit.
+**Status: complete**
+
+## Left / not testable here
+- Real display mode changes (Fullscreen at another resolution, WM_DISPLAYCHANGE refit) and a visible window's close
+  button: headless only on this PC; pure parts unit-tested (display_mode_rate_at), code paths reviewed.
+- Trap: dot-sourcing env.ps1 overwrites $root (set it again after).
 
 ## Findings / traps
 - Text ids: 0x39 Keep Playing, 0x46 Quit Game (shown "Save and Quit"), 0x42 Exit to Episode Menu, 0x6B Abandon

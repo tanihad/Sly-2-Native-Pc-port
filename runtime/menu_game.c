@@ -367,6 +367,7 @@ static void sync_game_options(ps2_ctx* ctx) {
  * effects = categories 0 and 3; the game's own options (twice a second, and at once after a change) */
 void pcmenu_ee_frame(ps2_ctx* ctx) {
     tick();
+    menu_keep_tick();                    /* (the Keep / Revert countdown also without a window thread: headless runs) */
     static unsigned frames;
     if (ee_applied && (game_opts_now || ++frames % 30 == 0)) {
         game_opts_now = 0;
