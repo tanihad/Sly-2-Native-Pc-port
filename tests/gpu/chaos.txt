@@ -1,0 +1,27 @@
+# Chaos benchmark scenes (perf-p3; scripts\chaos_bench.ps1, notes/perf-plan.md "Chaos benchmark"): the most chaotic
+# moments reachable by warp cards (notes/warp.md) and time-based scripted input - boss fights, brawls, explosions,
+# particle effects, the heaviest hub views. Columns (|-separated):
+#   name | episode | job | flags (direct, play, make=..., env=K=V) | seconds | pad | window | rec frames
+# pad: time-based tokens after START (runtime/window.c r<s>); GPT / HPT / TPT macros (fight / hub walk / turret, *n
+# repeats) are expanded by chaos_bench.ps1; REC marks where -Record starts the GS recording (a no-op in benchmarks).
+# window: from-to in seconds of the run's wall clock (PS2_FPS_TRACE) over which fps and stages are summarised.
+# rec frames: VBlanks recorded by -Record (default 240). Recordings: build\gsrec\chaos_<name>.gsrec (never committed).
+m1_boss | 1 | m1_boss | direct | 150 | r30:none,GPT*10 | 40-140
+m3_boss | 3 | m3_boss | direct | 150 | r30:none,GPT*10 | 40-140
+m5_boss | 5 | t5_heist_boss_1_intro | direct | 150 | r30:none,GPT*10 | 40-140
+m7_boss | 7 | m7_boss | direct | 150 | r30:none,GPT*10 | 40-140
+m8_boss | 8 | m8_boss | direct | 150 | r30:none,GPT*10 | 40-140
+m1_brawl | 1 | m1_brawl | direct | 150 | r30:none,GPT*10 | 40-140
+m4_brawl | 4 | m4_brawl | direct | 150 | r30:none,GPT*10 | 40-140
+m2_boardroom | 2 | m2_boardroom_brawl | direct | 150 | r30:none,GPT*10 | 40-140
+m3_turret | 3 | m3_turret | direct | 150 | r30:none,TPT*10 | 40-140
+m3_tntbarrel | 3 | m3_tntbarrel | direct | 150 | r30:none,GPT*10 | 40-140
+m8_tntbarrel | 8 | m8_tntbarrel | direct | 150 | r30:none,GPT*10 | 40-140
+m8_engine | 8 | m8_engine_room_murray | direct | 150 | r30:none,GPT*10 | 40-140
+m6_heist | 6 | m6_heist | direct | 150 | r30:none,GPT*10 | 40-140
+m5_battlezone | 5 | m5_battlezone | direct | 150 | r30:none,TPT*10 | 40-140
+m6_rc_battle | 6 | t6_rc_chopper_battle_intro | direct | 150 | r30:none,TPT*10 | 40-140
+ep1_hub | 1 | m1_brawl | play | 150 | r5:none,HPT*5 | 40-140
+ep2_hub | 2 | | play | 150 | r5:none,HPT*5 | 40-140
+ep3_hub | 3 | | play | 150 | r5:none,HPT*5 | 40-140
+ep5_hub | 5 | | play | 150 | r5:none,HPT*5 | 40-140
