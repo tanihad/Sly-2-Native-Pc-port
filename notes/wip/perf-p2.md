@@ -1,5 +1,7 @@
 # perf-p2: GPU pass costs (specialised shaders, shuffles, ROV, sample grid) - checkpoint
 
+**Status: complete** (2026-10-24). Write-up: notes/d3d11-renderer.md appendix S; notes/perf-plan.md "P2 results".
+
 **Goal**: cut GPU per-pass and per-fragment cost (notes/perf-plan.md P2), worst chaotic frames first, at 3x and 4x 16:9,
 exact (REF bit-exact, FF within recorded tolerances), all gates green.
 
@@ -21,13 +23,14 @@ build\gsr_p2a..g = the steps below, build\gsr_p2 = current.
 - Measured (min of 5 interleaved rounds, 3x): ep1 6.42 -> 4.74 (D), ep7 9.21 -> 6.66, ep3 6.89 -> 5.16, ep5 6.60 -> 4.83;
   4x (E): ep1 10.18 -> 7.37, ep7 15.39 -> 10.89.
 
-## In progress
-- Final quiet-GPU measurements (perf-p3 runs games on the GPU most of the time: use the [min] column of p2_ab).
-
-## Next
-1. Quiet measurement base vs final at 3x and 4x (p2_ab -Rounds 5), PS2_GPU_PROF split of the final.
-2. Full m9_exact S=1/S=3 (+ S=4 a few) on the final; gates once; notes (perf-plan P2 results, renderer appendix S).
-3. Not done (documented): (d) 5x6 grid at 4x (changes the picture: owner decision), R8 index atlas for T4/T8.
+## Final (2026-10-24)
+- Also: thin lines keep the ubershaders (non-precise float planes fused differently: --thin replays moved); WARP keeps
+  level 0 for level-1 draws (WARP anomaly, gs-hw t_random_states).
+- m9_exact final: 28/28 S=1 and S=3, 6 at S=4, 4 with --thin S=3/S=4: identical. Gates: gpu_diff_all mixed/ref S=1/S=3 28/28,
+  gpu_game_all S=1 4196 pictures 0 differ + S=3 box gate 0 failed, lockstep REF and mixed 28343 comparisons 0 differ,
+  gpu_sample_all S=3 0 failed, gpu_fthread_check and -Mixed 28 identical, run_tests, every unit suite (gs-hw full hw +
+  WARP, window/warp/menu -UnitOnly), pc_text_boot, debug + release builds, package.py.
+- Results: perf-plan P2 results (3x quiet-run minima, paired ratios 3x/4x under perf-p3's GPU load).
 
 ## Findings / traps
 - PowerShell piping `git archive` into tar corrupts it: use `git archive -o file.tar`.

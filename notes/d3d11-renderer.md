@@ -2652,3 +2652,67 @@ game's own. No timestamps, statistics or pacing state are touched; `pace_statist
 a menu present (they would read as a display running at its own refresh). A resize waits for the next game picture.
 Headless: `PS2_MENU_SIM_HZ=<Hz>` draws menu pictures into the offscreen target at that rate (measurements). The display lock
 (appendix Q) is opt-in now: `clock_lock_k` only for `pacing = display`.
+
+## Appendix S. As built: P2 GPU pass costs (branch next/perf-p2)
+
+Plan: notes/perf-plan.md P2 (results there). Checkpoint history: notes/wip/perf-p2.md. Every step below is exact: m9_exact
+(every sample of every target every 7 VBlanks) identical to main 95e3147 on all 28 recordings at S = 1 and 3, six at S = 4,
+four with `--thin` at S = 3 and 4; REF lockstep 0 differ; FF tolerances unchanged (gpu_diff_all / lockstep mixed /
+gpu_sample_all within 10.2).
+
+**Profile of chaotic frames before P2** (PS2_GPU_PROF, 3x 16:9, ms per VBlank; per game frame x2.2-2.5): FF depth-tested
+triangles 1.4-1.7 (40%), ALIAS16 (the three CT16 channel shuffles: gather 0.21 + ROV draws 0.72) 0.9 in every scene, FF
+sprites (shadow darken, motion blur, alpha reset) 0.45-0.5, ROV tier 0.2 (hubs) .. 1.4 (ep7 boss: 9M ROV fragments per
+VBlank, shadow volumes and wrapping G-counter passes), lines 0.1-0.2, clears / depth sync / present < 0.3. Texture fetch is
+~20-30% of the FF triangle time (measured by doubling it with an identical result).
+
+**What was built**
+1. *ALIAS16 copy runs* (gpu_front.c `a16_copy_prim`, `alias_prim`; gpu_exec.c `exec_a16_copy`; alias16.hlsl `cs_a16_copy`;
+   `gpu_fop_alias16.mode`). A run whose primitives are all sprites computing each halfword from one nearest texel of a CT16 view
+   (no bilinear/LOD, fog, real alpha test, DATE, Z, dither, scan mask; a blend that leaves Cs) is executed as one compute
+   dispatch per draw: every sample evaluates the shader's own U / V / wrap / view-word / 1:1-sample / TFX / FBA / 5551 formulas
+   and writes the FBMSK-enabled bits straight into the target with atomic AND / OR. No staging texture, gather, ROV draws or
+   scatter. Exactness: inside one draw no sprite writes a halfword another writes or reads (the frontend cuts draws on the
+   run's hazard rectangles, at most 40 sprites per draw); reads of something an earlier primitive of the run wrote already end
+   the run. A thread does one sample column of a pixel row (addresses once, the ky samples in a loop); V rows are integer
+   arithmetic where vc0 / vcy are integers times 2^-12 (every double operation exact then). Sly: 3 dispatches per frame.
+   `PS2_GPU_A16_COPY=0`: the staging path.
+2. *Specialised pixel shaders* (gs.hlsl `SPEC_NOVIEW`, `SPEC_NOLOD`, `SPEC_NOTEX`, `SPEC_VIEWONLY`, `SPEC_NOHIRES`; the code is the
+   ubershader's with the paths no primitive of the draw takes left out). The frontend ORs per-primitive features into
+   `gpu_fop_draw.feat` (GPU_DF_TEX / VIEW / LOD / VRAM / HIRES); gpu_exec.c `spec_level` picks 2 untextured, 1 no view and no
+   LOD, 3 sprites reading only 1:1 target views (the post passes), else 0 (ubershader), on the FF tier (triangles fast path,
+   sprites, line pixels) and the ROV tier (fast triangles, sprites, line pixels, with and without ROVs). DXBC temps: ps_ff_t011
+   32 -> 16 (level 1) / 8 (level 2); ps_gs_tri_fast 37 -> 19 / 12; ps_ff_s10 35 -> 18 (level 3). Thin analytic lines keep the
+   ubershaders (their float planes are not `precise`: another permutation fused them differently and moved words of `--thin`
+   replays). WARP keeps level 0 for level-1 draws: it computed a 16-bit texel's alpha bit of one sprite differently in
+   gs-draw t_random_states with identical inputs (probe records), while the RTX 4060 Ti matched the software renderer - a WARP
+   anomaly like the STQ-record one of appendix E. `PS2_GPU_SPEC=<mask>` (bit n allows level n; 0 none). Shader objects 94 -> 137 (+ cs_a16_copy).
+3. *DC_VTX*: the level 1/2 FF and ROV triangle shaders take the draw's constants and the triangle's StateRec index from
+   vs_ff_tri (nointerpolation; every vertex carries its state) instead of a chain of buffer loads (draw constants -> record ->
+   state) before the record / state / texture loads can start. The probe (`PS2_GPU_PROBE`) uses the ubershaders.
+4. *CLUT ring 2 KB per slot* (exec_clut): word p = halfword p | halfword (p ^ 256) << 16, so a CT32 palette entry (CSM1) is one
+   load instead of two (four per bilinear texel).
+5. *Attribute rows only where used*: FF / ROV triangles step fog only with FGE and U / V only with FST texturing.
+6. *ROV-tier early depth rejection* (P2 c; gpu_exec.c `exec_draw_ref`, GPU_DF_ZNGE): a ROV draw whose primitives are all
+   depth-tested GEQUAL / GREATER and rasterize an upper bound of their exact Z (triangles: P1's proven vertex bound, now
+   decided for ROV triangles too; sprites / line pixels their constant Z + 1) binds the depth target's DSV read-only with the
+   test GEQUAL, after the draw's tiles are made current both ways; `[earlydepthstencil]` on ps_gs. The DSV is a lower bound of
+   zpatch inside the draw (Z only grows under GEQUAL / GREATER writes), so a rejected fragment's exact test against zpatch
+   would fail too. ep7 boss: ROV pixel shaders 9.0M -> 2.4M per VBlank; ~45% of its ROV draws qualify (the rest have no Z
+   test). `PS2_GPU_ROV_EARLYZ=0`: off.
+7. *Alpha-lane fills*: BL_NOCOLOR ((A - A) * C + Cd, colour kept, As written) is a fill of the alpha lane; Sly's full-screen
+   alpha reset after the shadow darken becomes a masked clear (cs_clear) instead of an FF pass at every sample.
+
+**Measured and not done**
+- *Native 5 x 6 grid at render scale 100% (P2 d)*: changes the picture (vertical supersampling 1792 -> 1344 rows for 1440):
+  not exact, so it needs the owner's choice; ~25% fewer samples at 4x. The display family's ky would have to be decoupled from
+  2N (gpu_own.c, gf_configure, the compose picture height per circuit, the governor's prediction, menu text).
+- *R8 index atlas for T4 / T8* (hardware gathers of unswizzled indices): texture fetch is 20-30% of FF triangle time; needs a
+  texture residency cache invalidated by uploads - the largest remaining exact lever for FF triangles.
+- *No atomics in cs_a16_copy*: same time (memory bound). *Wrong-output timing experiments* (constant texels) mislead: alpha
+  test outcomes and Z writes change the overdraw.
+- ROV early rejection for draws mixing untested primitives, and a "DSV lower bound" tile state to avoid re-resolving after
+  Z-writing ROV draws: not needed by the corpus' heavy cases.
+
+**Tools**: scripts/p2_ab.ps1 (interleaved rounds, median and min), p2_pair.ps1 (paired runs and B/A ratios on a shared GPU),
+p2_quiet.ps1 (wait for a quiet GPU), m9_bench.ps1 chaos recordings and worst-frame column, gpu_prof_ab.ps1 chaos recordings.
