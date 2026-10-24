@@ -251,8 +251,13 @@ typedef struct {
 } gpu_fop_draw;
 enum { GPU_PSK_FF_FAST = 1 << 12 };      /* gpu_fop_draw.ps_key: FF triangles with 128-byte records (hardware S/T/Q) */
 typedef struct { gpu_fop h; uint16_t ct, zt; uint32_t zresolve; int16_t bbox[4]; } gpu_fop_rov_end;
-/* rect [x0, x1) x [y0, y1) in pixels of the 16-bit frame (whole 16x8 blocks) */
-typedef struct { gpu_fop h; uint16_t target, psm; int16_t x0, y0, x1, y1; } gpu_fop_alias16;
+/* rect [x0, x1) x [y0, y1) in pixels of the 16-bit frame (whole 16x8 blocks). (perf-p2) mode 1: a copy run - every
+ * primitive is a sprite whose fragments are a function of one texel of a CT16 view (gpu_front.c a16_copy_prim), and each
+ * of the run's draws holds sprites that neither overlap each other nor write what another reads: the render thread writes
+ * the target's halfwords directly (shaders/alias16.hlsl cs_a16_copy, one dispatch per draw), no staging texture, gather,
+ * ROV draws or scatter */
+typedef struct { gpu_fop h; uint16_t target, psm; int16_t x0, y0, x1, y1; uint16_t mode, pad; } gpu_fop_alias16;
+#define GPU_A16_COPY_MAX 40              /* (perf-p2) sprites per copy-run draw (the dispatch's tile table, gpu_exec.c) */
 typedef struct { gpu_fop h; uint16_t target, src; uint32_t n, data_off; } gpu_fop_xcopy;
 /* VBlank. With a display info (M6, di_off != ~0: a gpu_display_info in the data arena) the picture is
  * composed on the GPU: circuit i reads colour target src[i] (sample 0 of every native pixel; the

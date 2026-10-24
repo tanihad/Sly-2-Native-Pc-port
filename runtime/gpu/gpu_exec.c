@@ -151,6 +151,10 @@ static struct {
     ID3D11Texture2D* a16;
     ID3D11UnorderedAccessView* a16_uav;
     int a16_w, a16_h;
+    /* (perf-p2) the open ALIAS16 run is a copy run (cs_a16_copy per draw): its target, 16-bit PSM */
+    int a16c_on, a16c_target, a16c_psm;
+    ID3D11Buffer* a16cb;                 /* cs_a16_copy constants (a16c_consts) */
+    const gpu_front_frame_data* fd;      /* the frame being executed (its records, for the copy runs' tile tables) */
 } X;
 
 static gpu_exec_counters XC;
@@ -1380,6 +1384,80 @@ static void draw_scissor(const gpu_fop_draw* d, int kx, int ky) {
     set_scissor(d->sc[0] * kx, d->sc[1] * ky, (d->sc[2] + 1) * kx, (d->sc[3] + 1) * ky);
 }
 
+/* (perf-p2) a draw of an ALIAS16 copy run (gpu_front.h gpu_fop_alias16 mode 1): one cs_a16_copy dispatch over the
+ * samples of its sprites, 8x8-sample tiles, written straight into the target (shaders/alias16.hlsl) */
+typedef struct {
+    uint32_t rec_first, count, kx, ky, tbase, tfbw, psm16, same, vkx, vky, vbase, vfbw, gx, ngroups;
+    float one;
+    uint32_t pad;
+    uint32_t prefix[44];
+} a16c_consts;
+_Static_assert(sizeof(a16c_consts) == 240, "a16c_cb");
+
+static void exec_a16_copy(const gpu_fop_draw* d) {
+    xtarget* t = tgt(d->ct);
+    xtarget* v = tgt(d->tex);
+    const gpu_front_frame_data* fd = X.fd;
+    if (!t || t->depth || !v || v->depth || !fd || d->cls != GPU_PC_SPRITE || !d->count || d->count > GPU_A16_COPY_MAX) {
+        dbg_nocount++;
+        return;
+    }
+    if ((size_t)d->rec_first + (size_t)d->count * sizeof(gpu_rec_sprite) > fd->rec_bytes) return;
+    if (!X.a16cb) {
+        D3D11_BUFFER_DESC bd;
+        memset(&bd, 0, sizeof bd);
+        bd.ByteWidth = sizeof(a16c_consts);
+        bd.Usage = D3D11_USAGE_DYNAMIC;
+        bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+        bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+        if (FAILED(ID3D11Device_CreateBuffer(gpu_rt.dev, &bd, NULL, &X.a16cb))) { gpu_log("cannot create the ALIAS16 copy constants"); return; }
+    }
+    a16c_consts k;
+    memset(&k, 0, sizeof k);
+    k.rec_first = d->rec_first; k.count = d->count; k.kx = (uint32_t)t->kx; k.ky = (uint32_t)t->ky;
+    k.tbase = (uint32_t)t->base; k.tfbw = (uint32_t)t->fbw; k.psm16 = (uint32_t)X.a16c_psm; k.same = d->tex == d->ct;
+    k.vkx = (uint32_t)v->kx; k.vky = (uint32_t)v->ky; k.vbase = (uint32_t)v->base; k.vfbw = (uint32_t)v->fbw;
+    k.one = 1.0f;
+    uint32_t n = 0;
+    for (uint32_t s = 0; s < d->count; s++) {
+        const gpu_rec_sprite* r = (const gpu_rec_sprite*)(fd->rec + d->rec_first + (size_t)s * sizeof(gpu_rec_sprite));
+        k.prefix[s] = n;
+        uint32_t w = r->x1 > r->x0 ? (uint32_t)(r->x1 - r->x0) * k.kx : 0, h = r->y1 > r->y0 ? (uint32_t)(r->y1 - r->y0) * k.ky : 0;
+        n += ((w + 7) / 8) * ((h + 7) / 8);
+    }
+    k.prefix[d->count] = n;
+    if (!n) return;
+    k.gx = n < 1024 ? n : 1024;
+    k.ngroups = n;
+    if (X.mode) unbind_all();
+    ID3D11DeviceContext* c = gpu_rt.ctx;
+    ID3D11ShaderResourceView* none2[2] = { NULL, NULL };
+    ID3D11DeviceContext_PSSetShaderResources(c, 1, 2, none2);   /* (the targets may be views t1 / t2) */
+    X.b_t1 = X.b_t2 = NULL;
+    D3D11_MAPPED_SUBRESOURCE m;
+    if (FAILED(ID3D11DeviceContext_Map(c, (ID3D11Resource*)X.a16cb, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) return;
+    memcpy(m.pData, &k, sizeof k);
+    ID3D11DeviceContext_Unmap(c, (ID3D11Resource*)X.a16cb, 0);
+    ID3D11DeviceContext_CSSetShader(c, gpu_cs(GPU_SH_cs_a16_copy), NULL, 0);
+    ID3D11ShaderResourceView* s34[2] = { X.rec.srv, X.st.srv };
+    ID3D11DeviceContext_CSSetShaderResources(c, 3, 2, s34);
+    ID3D11DeviceContext_CSSetShaderResources(c, 6, 1, &X.swz_srv);
+    ID3D11UnorderedAccessView* u[3] = { NULL, t->uav32, k.same ? NULL : v->uav32 };
+    ID3D11DeviceContext_CSSetUnorderedAccessViews(c, 0, 3, u, NULL);
+    ID3D11DeviceContext_CSSetConstantBuffers(c, 1, 1, &X.a16cb);
+    int pc = PR.cur;
+    prof_mark(PR_A16_DRAW);
+    ID3D11DeviceContext_Dispatch(c, k.gx, (n + k.gx - 1) / k.gx, 1);
+    prof_mark(pc);
+    ID3D11UnorderedAccessView* nu[3] = { NULL, NULL, NULL };
+    ID3D11DeviceContext_CSSetUnorderedAccessViews(c, 0, 3, nu, NULL);
+    ID3D11ShaderResourceView* ns[2] = { NULL, NULL };
+    ID3D11DeviceContext_CSSetShaderResources(c, 3, 2, ns);
+    gpu_rt.n_dispatches++;
+    X.state_calls += 12;
+    XC.a16_copy_dispatches++;
+}
+
 static void exec_draw_ref(const gpu_fop_draw* d, uint32_t slot) {
     ID3D11DeviceContext* c = gpu_rt.ctx;
     xtarget* sizing = tgt(d->ct) ? tgt(d->ct) : tgt(d->zt);
@@ -1494,6 +1572,7 @@ static void exec_draw(const gpu_fop_draw* d, uint32_t slot) {
                   : d->cls == GPU_PC_TRI ? (!ff ? PR_REF_TRI : (d->ps_key & GPU_PSK_FF_FAST) ? (zo ? PR_FF_FAST_Z : PR_FF_FAST) : PR_FF_TRI)
                   : !ff ? PR_REF_OTHER : d->cls == GPU_PC_SPRITE ? PR_FF_SPRITE : PR_FF_LINE);
     }
+    if (d->tier == GPU_TIER_ALIAS16 && X.a16c_on) { exec_a16_copy(d); return; }   /* (perf-p2) a copy run */
     if (X.ref || d->tier == GPU_TIER_ALIAS16) { exec_draw_ref(d, slot); return; }
     if (X.mixed) {
         if (d->tier == GPU_TIER_FF) exec_draw_ff(d, slot);
@@ -1557,6 +1636,11 @@ static void exec_shadow(const gpu_fop_shadow* o) {
 
 /* ALIAS16 run begin (gather: target halfwords -> staging) / end (scatter: back), shaders/alias16.hlsl */
 static void exec_alias16(const gpu_fop_alias16* o, int end) {
+    /* (perf-p2) a copy run: its draws write the target directly (exec_a16_copy), nothing to gather or scatter */
+    int copy = o->h.size >= sizeof *o && o->mode == 1;
+    if (!end) { X.a16c_on = copy; X.a16c_target = o->target; X.a16c_psm = o->psm; }
+    else X.a16c_on = 0;
+    if (copy) { if (end) { XC.alias16_runs++; XC.a16_copy_runs++; } return; }
     xtarget* t = tgt(o->target);
     if (!t || t->depth || o->x1 <= o->x0 || o->y1 <= o->y0) return;
     int w = t->w, h = 2 * t->h;          /* (16-bit rows: two per C32 row) */
@@ -1786,6 +1870,7 @@ void gpu_exec_release(void) {
     GPU_RELEASE(X.scratch);
     GPU_RELEASE(X.stage); GPU_RELEASE(X.swz_srv); GPU_RELEASE(X.swz); GPU_RELEASE(X.clut_srv); GPU_RELEASE(X.clut);
     GPU_RELEASE(X.dbg_uav); GPU_RELEASE(X.dbg); GPU_RELEASE(X.dbg_stage); GPU_RELEASE(X.a16_uav); GPU_RELEASE(X.a16);
+    GPU_RELEASE(X.a16cb);
     GPU_RELEASE(X.mcb); GPU_RELEASE(X.layout); GPU_RELEASE(X.rs); GPU_RELEASE(X.ds_off); GPU_RELEASE(X.ds_write);
     for (int i = 0; i < 8; i++) GPU_RELEASE(X.ds[i]);
     for (int a = 0; a < BL_N; a++) for (int b = 0; b < 16; b++) GPU_RELEASE(X.bs[a][b]);
@@ -1907,6 +1992,8 @@ void gpu_exec_frame(const void* payload) {
     if (!ok) gpu_log("frame %u: upload failed", fd->vblank);
     bind_frame_buffers();
     prof_begin();
+    X.fd = fd;
+    X.a16c_on = 0;
     uint32_t slot = 1;
     for (size_t pos = 0; ok && pos + sizeof(gpu_fop) <= fd->cmd_bytes;) {
         const gpu_fop* h = (const gpu_fop*)(fd->cmd + pos);
