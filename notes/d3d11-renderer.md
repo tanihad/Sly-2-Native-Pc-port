@@ -2576,7 +2576,14 @@ values packed into 0.25..0.254 lose it), hence the new encoding.
 - m9_exact against main 4e2158e (every sample of every target every 7 VBlanks, 28 recordings): S = 1 and 3 identical;
   `--thin` at S = 3 and 4 identical; `PS2_GPU_EARLYZ=0` identical.
 - In the corpus: no Z24 targets, Z32 < 0x7F5C3, Z16S < 0x2D3C; case 1 for 0.2-1% of FF depth triangles (ep1 hub 8096 of
-  1.9M), case 2 and the Z-range rule never.
+  1.9M), case 2 and the Z-range rule never. (A first version bounded case 1 over the bounding box: 28-243 false case-2
+  triangles per recording; the bound at the vertices has none.)
+- Gates: gpu_diff_all mixed and ref at S = 1 and 3 (28/28 each); gpu_game_all S = 1 (4196 pictures exact) and S = 3 box
+  gate (28/28; one run had ep2_photo fail with an impossible pixel count while other GPU tests ran beside it - not
+  reproduced in two full reruns and with base / prototype / P1 alone); gpu_lockstep_all REF and mixed (28343 comparisons, 0
+  failed); gpu_sample_all S = 3; gpu_fthread_check and -Mixed (28 identical); tests\run_tests.py 16/16; every unit suite
+  (gs-hw full on hardware and WARP, window / warp / menu -UnitOnly); tests\pc_text_boot.ps1; debug and release builds;
+  scripts\package.py.
 
 **Measured** (m9_bench, GPU ms per game frame, 16:9, interleaved rounds, medians of 3; the GPU idle but for another agent's
 paused game; PS invocations per game frame from PS2_GPU_PROF=2, which do not depend on load)
