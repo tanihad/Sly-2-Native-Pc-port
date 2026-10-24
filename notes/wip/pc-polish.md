@@ -29,17 +29,24 @@ resolution confusing, things don't apply instantly (Apply button)". Worktree
   footer button; display changes then ask "Keep these display settings? Reverting in 15 s".
 
 ## Done
-- (nothing committed yet)
+- settings model + migration (settings.c/.h), gfx.c render_scale, menu.c staging / Apply / Keep-Revert / dialogs,
+  menu_draw.c dialogs + header Apply button; unit menu 305/305, window 524/524.
+- menu_game.c: pause list (Save Game / Load Game / Options / Quit to Desktop), Options page (title SELECT), game options
+  two-way, quit thread, "Save and Quit to Title"; patches pcmenu_options_list + pc_options_hide extended (34 patches);
+  window.c close button asks (twice = quit), WM_APP_QUIT, display modes, WM_DISPLAYCHANGE; display_mode.c Fullscreen
+  resolution; input_hid.c light bar dark at exit.
+- VERIFIED headless (debug build): pause list, Save Game (save1 rewritten), Load Game, Job Help, Exit to Episode Menu,
+  Save and Quit to Title, title SELECT menu -> Options / New Game, Options pages, Apply -> Keep dialog, game options
+  (log text 0x51 -> 0x52 etc.), quit via the entry and via mquit x2: exit code 0; save right before the quit on disk.
+- Contact sheets notes/pc-menu/contact_sheet.png (unit) + ingame_sheet.png; docs: pc-menu.md (rewritten),
+  settings.md, controls.md, packaged README (build_game.py), pc-text.md, pc-experience.md.
+
+## In progress
+- Gates (build\polish_run\gates.ps1 -> gates.log): run_tests, every unit, gpu_diff_all mixed S=1, debug + release,
+  pc_text_boot rel + dbg, package. (Trap: dot-sourcing env.ps1 overwrites $root - set it again after.)
 
 ## Next
-0. (done above: 1-4)
-1. settings.c/.h: render_scale, display.mode, display.resolution, [game] options, legacy keys + file migration;
-   presets; tests/unit/menu + window tests updated.
-2. gfx.c: render_scale -> scale.
-3. menu.c/menu_draw.c: rows, staging, Apply, keep/revert dialog, quit dialog, title "Options".
-4. menu_game.c + patches.py: pause list, options page, quit entry, game option sync; window.c quit + close
-   button + display modes + WM_DISPLAYCHANGE; display_mode.c resolution.
-5. In-game headless runs + screenshots (notes/pc-menu/), docs, gates.
+1. Fix whatever the gates show; mark Status: complete; final commit.
 
 ## Findings / traps
 - Text ids: 0x39 Keep Playing, 0x46 Quit Game (shown "Save and Quit"), 0x42 Exit to Episode Menu, 0x6B Abandon
