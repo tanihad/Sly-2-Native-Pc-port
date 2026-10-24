@@ -142,12 +142,13 @@ void cs_a16_copy(uint3 gid : SV_GroupID, uint3 tid : SV_GroupThreadID) {
     uint rb = c_rec_first + lo * 64u;
     uint2 r = a_recs.Load2(rb);
     int x0 = (int)(r.x << 16) >> 16, y0 = (int)r.x >> 16, x1 = (int)(r.y << 16) >> 16, y1 = (int)r.y >> 16;
-    uint wsm = (uint)(x1 - x0) * c_kx, hsm = (uint)(y1 - y0) * c_ky;
+    // (a thread per sample column of a pixel row: the addresses once, the ky samples of the column in a loop)
+    uint wsm = (uint)(x1 - x0) * c_kx, hpx = (uint)(y1 - y0);
     uint tpr = (wsm + 7u) >> 3;
-    uint sx = (t % tpr) * 8u + tid.x, sy = (t / tpr) * 8u + tid.y;
-    if (sx >= wsm || sy >= hsm) return;
-    uint i = sx % c_kx, j = sy % c_ky;
-    int px = x0 + (int)(sx / c_kx), py = y0 + (int)(sy / c_ky);
+    uint sx = (t % tpr) * 8u + tid.x, ry = (t / tpr) * 8u + tid.y;
+    if (sx >= wsm || ry >= hpx) return;
+    uint i = sx % c_kx;
+    int px = x0 + (int)(sx / c_kx), py = y0 + (int)ry;
     // the record (gpu_rec_sprite) and the state (gpu_staterec)
     uint4 rr = a_recs.Load4(rb + 8u);        // rgba, z, fog, state
     int ua = asint(a_recs.Load(rb + 24u)), du = asint(a_recs.Load(rb + 28u));
@@ -182,23 +183,25 @@ void cs_a16_copy(uint3 gid : SV_GroupID, uint3 tid : SV_GroupThreadID) {
     a_axis(c0 & 3u, (int)((c0 >> 4) & 0x3FFu), (int)((c0 >> 14) & 0x3FFu), 1 << tw, ulo, uhi, umsk, ufix);
     a_axis((c0 >> 2) & 3u, (int)((c0 >> 24) | ((c1 & 3u) << 8)), (int)((c1 >> 2) & 0x3FFu), 1 << th, vlo, vhi, vmsk, vfix);
     uint xa = (uint)a_wrap(U >> 4, ulo, uhi, umsk, ufix) & 2047u, ya = (uint)a_wrap(V >> 4, vlo, vhi, vmsk, vfix) & 2047u;
-    // the view's sample: 1:1 reads take the fragment's own (signed offset in [0, k): the texel itself), others sample 0
-    uint2 vsm = one_to_one ? uint2(i * c_vkx / c_kx, j * c_vky / c_ky) : uint2(0u, 0u);
     uint h = gs_addr16(swz_tab_of(psm), bp, bw, xa, ya);
     uint2 vpx = a_word_pixel(h >> 1, c_vbase, c_vfbw);
-    uint2 vsx = uint2(vpx.x * c_vkx + vsm.x, vpx.y * c_vky + vsm.y);
-    uint word = c_same != 0u ? tgt[vsx] : a_src[vsx];
-    uint tex = a_expand16((word >> ((h & 1u) * 16u)) & 0xFFFFu, texa);
-    uint col = a_tfx((flags >> 2) & 3u, (flags & 16u) != 0u, rr.x, tex);
-    if (flags & 1u) col |= 0x80000000u;      // FBA
-    uint c16 = ((col >> 3) & 0x1Fu) | ((col >> 6) & 0x3E0u) | ((col >> 9) & 0x7C00u) | ((col >> 16) & 0x8000u);
     uint wb = ~fmask & 0xFFFFu;              // the bits FBMSK writes
     // the destination halfword (gather's target_pixel)
     uint hd = gs_addr16(swz_tab_of(c_psm16), c_tbase * 32u, c_tfbw, (uint)px, (uint)py);
     uint2 dpx = a_word_pixel(hd >> 1, c_tbase, c_tfbw);
-    uint2 ds = uint2(dpx.x * c_kx + i, dpx.y * c_ky + j);
     uint sh = (hd & 1u) * 16u;
-    uint ignored;
-    InterlockedAnd(tgt[ds], ~(wb << sh), ignored);
-    InterlockedOr(tgt[ds], (c16 & wb) << sh, ignored);
+    [loop] for (uint j = 0u; j < c_ky; j++) {
+        // the view's sample: 1:1 reads take the fragment's own (signed offset in [0, k): the texel itself), others sample 0
+        uint2 vsm = one_to_one ? uint2(i * c_vkx / c_kx, j * c_vky / c_ky) : uint2(0u, 0u);
+        uint2 vsx = uint2(vpx.x * c_vkx + vsm.x, vpx.y * c_vky + vsm.y);
+        uint word = c_same != 0u ? tgt[vsx] : a_src[vsx];
+        uint tex = a_expand16((word >> ((h & 1u) * 16u)) & 0xFFFFu, texa);
+        uint col = a_tfx((flags >> 2) & 3u, (flags & 16u) != 0u, rr.x, tex);
+        if (flags & 1u) col |= 0x80000000u;  // FBA
+        uint c16 = ((col >> 3) & 0x1Fu) | ((col >> 6) & 0x3E0u) | ((col >> 9) & 0x7C00u) | ((col >> 16) & 0x8000u);
+        uint2 ds = uint2(dpx.x * c_kx + i, dpx.y * c_ky + j);
+        uint ignored;
+        InterlockedAnd(tgt[ds], ~(wb << sh), ignored);
+        InterlockedOr(tgt[ds], (c16 & wb) << sh, ignored);
+    }
 }

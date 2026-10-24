@@ -1438,7 +1438,8 @@ static void exec_a16_copy(const gpu_fop_draw* d) {
             k.vab[2 * s] = (int32_t)a;
             k.vab[2 * s + 1] = (int32_t)b;
         }
-        uint32_t w = r->x1 > r->x0 ? (uint32_t)(r->x1 - r->x0) * k.kx : 0, h = r->y1 > r->y0 ? (uint32_t)(r->y1 - r->y0) * k.ky : 0;
+        /* (8 sample columns x 8 pixel rows per group: each thread does the ky samples of its column) */
+        uint32_t w = r->x1 > r->x0 ? (uint32_t)(r->x1 - r->x0) * k.kx : 0, h = r->y1 > r->y0 ? (uint32_t)(r->y1 - r->y0) : 0;
         n += ((w + 7) / 8) * ((h + 7) / 8);
     }
     k.prefix[d->count] = n;
