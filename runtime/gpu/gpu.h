@@ -190,6 +190,7 @@ typedef struct {
     uint64_t rescales;                   /* (M7) live targets whose contents moved to new sample factors */
     uint64_t dyn_shrinks;                /* (M9) per-frame upload buffers recreated smaller after a peak */
     uint64_t a16_copy_runs, a16_copy_dispatches;   /* (perf-p2) ALIAS16 copy runs (cs_a16_copy), their dispatches */
+    uint64_t rov_ez_draws;               /* (perf-p2) ROV-tier draws with early depth rejection (read-only DSV) */
 } gpu_exec_counters;
 void gpu_exec_get_counters(gpu_exec_counters* out);
 /* (M9) the process's video memory use (bytes): local (on the GPU), non-local (system memory); 0: unknown */

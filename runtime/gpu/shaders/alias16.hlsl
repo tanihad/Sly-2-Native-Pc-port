@@ -83,6 +83,8 @@ cbuffer a16c_cb : register(b1) {
     float c_one;                             // 1.0 (products not fused with a later add, as gs.hlsl dmul_r)
     uint c_pad;
     uint4 c_prefix[11];                      // first group of sprite i (i <= c_count)
+    uint4 c_vint;                            // .xy bit s: sprite s's V rows are the integers a + b * py (no doubles)
+    int4 c_vab[20];                          // per sprite (a, b), exact (gpu_exec.c exec_a16_copy)
 };
 ByteAddressBuffer a_recs : register(t3);
 ByteAddressBuffer a_states : register(t4);
@@ -157,11 +159,17 @@ void cs_a16_copy(uint3 gid : SV_GroupID, uint3 tid : SV_GroupThreadID) {
     uint fmask = a_states.Load(sb + 44u), flags = a_states.Load(sb + 48u);
     // U per pixel, V per row (gs.hlsl gs_frag, PRIM 1)
     int U = asint((uint)ua + (uint)du * (uint)(px - x0)) >> 12;
-    double vc0 = asdouble(v4.x, v4.y), vcy = asdouble(v4.z, v4.w);
-    precise double vp = a_dmul(vcy, (double)py);
-    precise double vs = vc0 + vp;
-    precise double vv = vs * 4096.0L;
-    int vi = vv > 2147483000.0L ? 2147483000 : vv < -2147483000.0L ? -2147483000 : (int)vv;
+    int vi;
+    if (((lo < 32u ? c_vint.x >> lo : c_vint.y >> (lo - 32u)) & 1u) != 0u) {
+        int4 ab = c_vab[lo >> 1];
+        vi = (lo & 1u) ? ab.z + ab.w * py : ab.x + ab.y * py;   // (the same value: every double operation is exact then)
+    } else {
+        double vc0 = asdouble(v4.x, v4.y), vcy = asdouble(v4.z, v4.w);
+        precise double vp = a_dmul(vcy, (double)py);
+        precise double vs = vc0 + vp;
+        precise double vv = vs * 4096.0L;
+        vi = vv > 2147483000.0L ? 2147483000 : vv < -2147483000.0L ? -2147483000 : (int)vv;
+    }
     int V = vi >> 12;
     // nearest texel of level 0 (tex_level, level_of)
     uint t0 = tc.x, t1 = tc.y;

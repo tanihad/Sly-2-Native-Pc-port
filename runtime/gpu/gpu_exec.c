@@ -691,15 +691,17 @@ static void bind_rov(int ct, int zt) {
 }
 
 /* REF binding: colour UAV (u0) and zpatch UAV (u1), both rasterizer ordered in gs.hlsl, no RTV/DSV */
-static void bind_ref(int ct, int zt, int a16) {
+static void bind_ref(int ct, int zt, int a16, int ez) {
     xtarget *c = tgt((uint32_t)ct), *z = tgt((uint32_t)zt);
-    int mode = a16 ? 5 : 4;
+    int mode = a16 ? 5 : ez && z ? 6 : 4;   /* (perf-p2) 6: + zt's read-only DSV for early depth rejection */
     if (X.mode == mode && X.b_ct == ct && X.b_zt == zt) return;
     if (X.b_t2) set_t2(NULL);
     /* (ALIAS16: the colour target is not bound, its views stay; the staging texture is u0) */
     if (!a16 && X.b_t1 && c && (X.b_t1 == c->srv || X.b_t1 == c->srv_u)) set_t1(NULL);
+    if (mode == 6 && X.b_t1 && X.b_t1 == z->srv) set_t1(NULL);
     ID3D11UnorderedAccessView* uav[3] = { a16 ? X.a16_uav : c ? c->uav32 : NULL, z ? z->zp_uav : NULL, X.dbg_uav };
-    ID3D11DeviceContext_OMSetRenderTargetsAndUnorderedAccessViews(gpu_rt.ctx, 0, NULL, NULL, 0, X.dbg_uav ? 3 : 2, uav, NULL);
+    ID3D11DeviceContext_OMSetRenderTargetsAndUnorderedAccessViews(gpu_rt.ctx, 0, NULL, mode == 6 ? z->dsv_ro : NULL, 0,
+                                                                  X.dbg_uav ? 3 : 2, uav, NULL);
     count_state();
     X.mode = mode;
     X.b_ct = ct;
@@ -1391,8 +1393,11 @@ typedef struct {
     float one;
     uint32_t pad;
     uint32_t prefix[44];
+    uint32_t vint[2];                    /* bit s: sprite s's V rows are integers (vab), no doubles in the shader */
+    uint32_t pad2[2];
+    int32_t vab[80];                     /* per sprite: trunc((vc0 + vcy * py) * 4096) = a + b * py (exact, checked) */
 } a16c_consts;
-_Static_assert(sizeof(a16c_consts) == 240, "a16c_cb");
+_Static_assert(sizeof(a16c_consts) == 576, "a16c_cb");
 
 static void exec_a16_copy(const gpu_fop_draw* d) {
     xtarget* t = tgt(d->ct);
@@ -1422,6 +1427,17 @@ static void exec_a16_copy(const gpu_fop_draw* d) {
     for (uint32_t s = 0; s < d->count; s++) {
         const gpu_rec_sprite* r = (const gpu_rec_sprite*)(fd->rec + d->rec_first + (size_t)s * sizeof(gpu_rec_sprite));
         k.prefix[s] = n;
+        /* V of row py is trunc((vc0 + vcy * py) * 4096) in doubles (gs.hlsl); when vc0 * 4096 and vcy * 4096 are integers
+         * and every row's value stays inside int32 (no clamp), each double operation is exact and the value is
+         * a + b * py: the shader then needs no double arithmetic (1/64 rate on GeForce) */
+        double a = r->vc0 * 4096.0, b = r->vcy * 4096.0;
+        double e0 = a + b * (double)r->y0, e1 = a + b * (double)(r->y1 - 1);
+        if (a == (double)(int64_t)a && b == (double)(int64_t)b && fabs(a) < 1e9 && fabs(b) < 1e6 && fabs(e0) < 2147483000.0 &&
+            fabs(e1) < 2147483000.0 && r->y1 > r->y0 && fabs(r->vc0) < 1e9 && fabs(r->vcy) < 1e6) {
+            k.vint[s >> 5] |= 1u << (s & 31);
+            k.vab[2 * s] = (int32_t)a;
+            k.vab[2 * s + 1] = (int32_t)b;
+        }
         uint32_t w = r->x1 > r->x0 ? (uint32_t)(r->x1 - r->x0) * k.kx : 0, h = r->y1 > r->y0 ? (uint32_t)(r->y1 - r->y0) * k.ky : 0;
         n += ((w + 7) / 8) * ((h + 7) / 8);
     }
@@ -1468,14 +1484,26 @@ static void exec_draw_ref(const gpu_fop_draw* d, uint32_t slot) {
                                             1 no ROV draw call, 2 no ROV draw at all, 3 ROV draws with a trivial shader */
     if (dbg_skip < 0) { const char* e = getenv("PS2_GPU_DBG_ROVSKIP"); dbg_skip = e ? atoi(e) : 0; }
     if (X.mixed && dbg_skip == 2 && d->tier == GPU_TIER_ROV) return;
+    /* (perf-p2, P2 c) early depth rejection on the ROV tier: every primitive of the draw is depth-tested GEQUAL / GREATER
+     * and rasterizes an upper bound of its exact Z (gpu_fop_draw.feat has no GPU_DF_ZNGE; triangles through vs_ff_tri):
+     * zt's DSV, made current over the draw's tiles (the exact value or, where saturated, 1.0 - never above the stored Z),
+     * is bound read-only with the test GEQUAL, so a fragment whose bound is below it - whose exact Z then fails the shader's
+     * own test against zpatch - is rejected before the shader ([earlydepthstencil]). Z the draw writes only grows (GEQUAL /
+     * GREATER), so the DSV stays a lower bound of zpatch inside the draw. PS2_GPU_ROV_EARLYZ=0: off. */
+    static int rov_ez = -1;
+    if (rov_ez < 0) { const char* e = getenv("PS2_GPU_ROV_EARLYZ"); rov_ez = !(e && *e == '0'); }
+    int ez = rov_ez && X.mixed && zt && d->tier == GPU_TIER_ROV && !(d->feat & GPU_DF_ZNGE) &&
+             (d->cls != GPU_PC_TRI || (d->ps_key & GPU_PSK_FF_FAST));
     if (zt) ensure_zp(zt, d->bbox[0], d->bbox[1], d->bbox[2], d->bbox[3]);
-    bind_ref(d->ct, d->zt, d->tier == GPU_TIER_ALIAS16);
+    if (ez) ensure_dsv(zt, d->bbox[0], d->bbox[1], d->bbox[2], d->bbox[3]);
+    bind_ref(d->ct, d->zt, d->tier == GPU_TIER_ALIAS16, ez);
     if (X.mixed && dbg_skip == 1 && d->tier == GPU_TIER_ROV) return;
     int tk = tex_kind(d->ps_key);
     set_t1(d->tex && (tk == TK_VIEW_C32 || tk == TK_VIEW_ALPHA || tk == TK_ALIAS16) ? view_srv(d, 1) : NULL);
     int kx = sizing->kx, ky = sizing->ky;
     draw_scissor(d, kx, ky);
-    set_depth(X.ds_off);
+    set_depth(ez ? depth_state(4) : X.ds_off);   /* (perf-p2: GEQUAL, no write - the bound against the DSV) */
+    if (ez) XC.rov_ez_draws++;
     /* (M9) the draw's constants by its slot: StartInstanceLocation -> DRAWID (gs.hlsl load_draw), no constant buffer */
     /* (M11) without rasterizer-ordered views: the same shaders with plain UAVs (the frontend made the draw's primitives
      * disjoint, gf_cfg.no_rov) */
@@ -1689,10 +1717,15 @@ static void exec_alias16(const gpu_fop_alias16* o, int end) {
 
 static void exec_clut(const gpu_front_frame_data* fd, const gpu_fop_clut* o) {
     uint32_t slot = o->slot & 4095;
-    D3D11_BOX box = { slot * 1024u, 0, 0, slot * 1024u + 1024u, 1, 1 };
-    ID3D11DeviceContext_UpdateSubresource(gpu_rt.ctx, (ID3D11Resource*)X.clut, 0, &box, fd->data + o->data_off, 0, 0);
+    /* (perf-p2) 2 KB per slot: word p = halfword p | halfword (p ^ 256) << 16 (gs.hlsl clut_word: a CT32 entry in one load) */
+    uint16_t h[512];
+    uint32_t wd[512];
+    memcpy(h, fd->data + o->data_off, sizeof h);
+    for (int p = 0; p < 512; p++) wd[p] = (uint32_t)h[p] | (uint32_t)h[p ^ 256] << 16;
+    D3D11_BOX box = { slot * 2048u, 0, 0, slot * 2048u + 2048u, 1, 1 };
+    ID3D11DeviceContext_UpdateSubresource(gpu_rt.ctx, (ID3D11Resource*)X.clut, 0, &box, wd, 0, 0);
     gpu_rt.n_uploads++;
-    gpu_rt.upload_bytes += 1024;
+    gpu_rt.upload_bytes += 2048;
 }
 
 static void exec_rov_end(const gpu_fop_rov_end* o) {
@@ -1737,7 +1770,7 @@ static int exec_init(void) {
     memset(&X, 0, sizeof X);
     X.vram = raw_default(4u << 20, NULL, &X.vram_srv, &X.vram_uav);
     X.scratch = raw_default(4u << 20, NULL, &X.scratch_srv, &X.scratch_uav);
-    X.clut = raw_default(4096u * 1024u, NULL, &X.clut_srv, NULL);
+    X.clut = raw_default(4096u * 2048u, NULL, &X.clut_srv, NULL);   /* (perf-p2: 2 KB per slot, exec_clut) */
     uint32_t* swz = swz_build();
     X.swz = swz ? raw_default(SWZ_ENTRIES * 4u, swz, &X.swz_srv, NULL) : NULL;
     free(swz);

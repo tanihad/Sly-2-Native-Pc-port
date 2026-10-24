@@ -370,17 +370,17 @@ uint expand16(uint c, uint texa) {
     return rgb | (a << 24);
 }
 
-uint clut_half(uint slot, uint p) {
-    uint w = clut.Load(slot * 1024u + (p & ~1u) * 2u);
-    return (p & 1u) ? w >> 16 : w & 0xFFFFu;
-}
+// (perf-p2) the CLUT ring holds 2 KB per slot: word p = halfword p | halfword (p ^ 256) << 16 of the 1 KB CLUT snapshot
+// (gpu_exec.c exec_clut), so a CT32 entry (CSM1: low half at p, high half 256 halfwords on) is one load
+uint clut_word(uint slot, uint p) { return clut.Load(slot * 2048u + p * 4u); }
+uint clut_half(uint slot, uint p) { return clut_word(slot, p) & 0xFFFFu; }
 
 uint clut_lookup(St st, uint idx) {
     uint t1 = st.tex0clamp.y;
     uint cpsm = (t1 >> 19) & 15u, csa = (t1 >> 24) & 31u;
     uint p = (csa * 16u + idx) & 511u;
     if (cpsm == PSMCT16 || cpsm == PSMCT16S) return expand16(clut_half(st.clut_slot, p), st.texa);
-    return clut_half(st.clut_slot, p) | (clut_half(st.clut_slot, p ^ 256u) << 16);
+    return clut_word(st.clut_slot, p);
 }
 
 // target views (notes/d3d11-renderer.md 5.1): texel (x, y) is the view target's native pixel (x, y);
@@ -925,9 +925,11 @@ bool gs_frag(float4 pos, uint irec, float3 istq, uint prim, out Frag f, out St s
 // ---- the REF / ROV pixel shader ------------------------------------------------------------------------
 #if !FF
 #if PRIM == 0 && STQ_FAST
+[earlydepthstencil]                      // (perf-p2) a bound DSV (ROV early rejection, gpu_exec.c) tests before the shader
 void ps_gs(VF i, uint prim : SV_PrimitiveID) {   // (mixed frames, default mode: 128-byte records, hardware S/T/Q)
     float3 istq = i.stq;
 #else
+[earlydepthstencil]                      // (perf-p2) a bound DSV (ROV early rejection, gpu_exec.c) tests before the shader
 void ps_gs(VR i
 #if PRIM == 0
            , uint prim : SV_PrimitiveID

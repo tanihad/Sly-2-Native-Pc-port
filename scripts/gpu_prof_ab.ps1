@@ -9,7 +9,8 @@ $root = Split-Path $PSScriptRoot -Parent
 $corpus = 'C:\Users\tanih\Projects\sly2-worktrees'
 $map = @{ 'ep8_boss' = 'ep8\build\gsrec\boss.gsrec'; 'ep3_hub' = 'ep3\build\gsrec\hub.gsrec'; 'ep5_street' = 'ep5\build\gsrec\hub_street.gsrec';
           'ep1_hub' = 'gpu-C\build\gsrec\ep1_hub.gsrec'; 'ep7_boss' = 'ep7\build\boss.gsrec'; 'ep2_hub' = 'gpu-C\build\gsrec\ep2_hub.gsrec';
-          'ws_ep3_hud' = 'gpu-M10\build\gsrec\ws_ep3_hud.gsrec'; 'load_m3' = 'gpu-C\build\gsrec\load_m3.gsrec' }
+          'ws_ep3_hud' = 'gpu-M10\build\gsrec\ws_ep3_hud.gsrec'; 'load_m3' = 'gpu-C\build\gsrec\load_m3.gsrec';
+          'm5_battle' = 'gpu-M8\build\gsrec\m5_battlezone.gsrec'; 'm1_brawl' = 'gpu-C\build\gsrec\m1_brawl.gsrec'; 'ep6_rc' = 'ep6\build\gsrec\rc_battle.gsrec' }
 $builds = @()
 foreach ($e in ($Exes -split ',')) { $n, $p = $e -split '=', 2; $src = (Resolve-Path (Join-Path $root $p)).Path
     $run = Join-Path (Split-Path $src -Parent) ("prof_ab_{0}_{1}.exe" -f $n, $PID); Copy-Item $src $run -Force

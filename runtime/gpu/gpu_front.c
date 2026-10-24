@@ -2046,6 +2046,16 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
     if (alias) alias_prim_drawn();
     if (P->tme)                          /* (perf-p2) features of the draw's primitives: the specialised shaders lack them */
         OD.d.feat |= (uint16_t)((tk >= TK_VIEW_C32 ? GPU_DF_VIEW : 0) | (P->texm == 3 ? GPU_DF_LOD : 0));
+    /* (perf-p2) ROV-tier early depth rejection needs every primitive depth-tested GEQUAL / GREATER (no ALWAYS: stored Z only
+     * grows within the draw, so the DSV stays a lower bound) and, for triangles, the proven vertex bound (P1's
+     * gpu_front_zbound case 0, as FF triangles; the ROV fast path's vertex shader is vs_ff_tri) */
+    int rov_zb = -1;
+    if (tier == GPU_TIER_ROV && cls == GPU_PC_TRI && S.zfi >= 0 && ff_fast) {
+        if (zb < 0) zb = gpu_front_zbound(&T, a, b, c, S.zfi, &zbp);
+        rov_zb = zb;
+    }
+    if (tier == GPU_TIER_ROV && !(S.zfi >= 0 && (P->ztst == 2 || P->ztst == 3) && (cls != GPU_PC_TRI || rov_zb == 0)))
+        OD.d.feat |= GPU_DF_ZNGE;
 
     PROF_MARK(6);
 #ifdef GPU_FRONT_PROF
@@ -2062,6 +2072,8 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
             if (zb < 0) zb = gpu_front_zbound(&T, a, b, c, S.zfi, &zbp);   /* (decided with the tier: never here) */
             nb = zb != 0 || !P->zuse;    /* (!zuse: a constant plane - never here: no Z then) */
             if (nb) gf.zb_sat++;
+        } else if (rov_zb >= 0) {
+            nb = rov_zb != 0 || !P->zuse;   /* (perf-p2: ROV triangles carry the bound only where it is proven) */
         }
         uint32_t* ix = ar_reserve(&A_idx, 12);
         for (int i = 0; i < 3; i++) ix[i] = emit_vertex(vs[i], ev, state, nb);
