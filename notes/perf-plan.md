@@ -292,6 +292,76 @@ cost of exact shading: ~13M fragments per game frame in ep1, texture fetch 20-30
 motion blur: full-screen view reads at every sample), the copy pass 0.1-0.25, ROV tier 0.1 (hubs) .. 0.9 (ep7 boss), lines
 0.1-0.15. At 4x everything per sample grows by 40/24; the 5 x 6 grid (d) would take 25% of it back if the owner accepts the
 picture change.
+### P3 results (branch next/perf-p3, 2026-10-24; as built: d3d11-renderer.md appendix S, history notes/wip/perf-p3.md)
+
+**Chaos benchmark** (shared with P2): `scripts\chaos_bench.ps1` plays the scenes of `tests/gpu/chaos.txt` - m1_brawl
+(Murray's brawl), m2_boardroom (fight, fire), m3_boss (Rajan, rain), m5_boss (Contessa, rain), m8_boss (Clock-La debris
+fall), ep1 / ep3 / ep5 hubs - from warp cards with time-based scripted input, release build, headless, frame_rate
+unlimited, 3x 16:9, and `scripts\chaos_sum.py` reports over each scene's window the median fps, the **1% / 0.1% lows
+(99th / 99.9th percentile frame time)** and per-stage ms (worker, GS thread, frontend, render, GPU; medians and p90 of
+the 60-VBlank stats windows). `-Scout` dumps a picture every 4 s (contact sheets: chaos_sheet.ps1), `-Record` makes GS
+recordings of the scenes (build\gsrec\chaos_*.gsrec, 240 VBlanks each) for gs_replay; builds are interleaved per scene
+(`-Exes "a=exe,b=exe|ENV=V"`) and `--table` gives medians over repeats. Offline: `scripts\front_bench.ps1 -Hold`
+(PS2_GPU_FTHREAD_HOLD + a 2 GB ring: the frontend thread starts after the whole stream is decoded, so its CPU is its own -
++-3% between runs instead of +-10%), `scripts\gpu_stream_ab.ps1` (command-stream hash of a build against a baseline exe:
+same thread / frontend thread, S=1 / S=3, mixed / plain, corpus + chaos).
+
+**The parallel prepare is a no-go** (measured, two designs, offline and in game; both bit-identical):
+- v1 (commit 25e6f78): fr_prim split into a pure gf_prepare (setup, culling, ranges, texel rectangle, early-depth
+  decision, FF / sprite records) and the commit; the frontend thread cuts the ring into 128-primitive segments with a
+  state snapshot, helpers prepare them. Hold-mode ms per game frame (base / split / 3 helpers): ep8 boss 6.87 / 7.37 /
+  7.44, ep1 hub 6.06 / 6.38 / 6.37, m1 brawl 3.51 / 3.85 / 4.04. The prepared part is only 23-27% of fr_prim (the
+  section profile's "55% pure" counted work that needs the sequential state), cutting segments cost ~15% (a second walk
+  of the ring), reading 300-byte preparations written on other cores ~10%, and the split itself 5-7%.
+- v2 (commit b62522a): segments cut by the GS thread as it writes them (no second walk), preparations prefetched ahead.
+  Offline: the frontend thread -0..-13%, but the GS thread +15-30% (helpers reading freshly streamed ring lines, clocks);
+  in game (ep1 hub / m5 boss / m1 brawl, 2 repeats each): the frontend stage itself not lower (6.12 -> 6.50, 4.77 -> 5.26,
+  4.21 -> 5.03 ms), the GS thread higher (7.9 -> 9.6 ms in ep1). Per-primitive work is ~180 ns spread over many small
+  steps whose results are as large as their inputs: moving any of it to another core costs about what it saves.
+
+**What was kept: exact sequential work on the frontend** (stream hashes identical to main on the corpus and the chaos
+recordings, all modes; m9_exact identical):
+- the exact-ATST-split bitmap (sb_prim, 12% of the frontend in alpha-tested scenes): triangle rows by exact integer
+  quotient/remainder stepping instead of a double estimate + correction loops per edge per row (PS2_GPU_SB_CHECK=1
+  compares with gs_tri_row: 5.5M rows, 0 differ), and a test whose rectangle holds no set bit returns at once;
+- own_draw's clean fast path per target (a change of a block takes only the targets whose pages hold it off it, not every
+  target; gpu_own.c touch / page_tg, PS2_GPU_OWN_TGEN=0 = the old global generation); scan_clean also requires the
+  block not shared (xcopied) - without that ep2_photo and m6_rc_feedback differed;
+- the CLUT ring's content hash kept per 16-byte piece, updated from the pieces a load changed (gpu_clut.c; the CLUT part
+  of the state lookups 167 -> 90 Mcycles on chaos_ep1_hub);
+- FF record planes of three equal vertex values taken as the constant row (bit-identical: proven in the code comment);
+- texel rectangles without libm floor / ceil / fmin calls, the vertex cache compare inline, block divisions as shifts,
+  the ring prefetched 4 KB ahead on the frontend thread (PS2_GPU_RING_PREFETCH; the producer streams past the caches).
+
+Offline frontend thread, hold mode, S=3, ms per game frame (median of 3 interleaved runs; base -> new): ep8 boss 6.58 ->
+6.30, ep1 hub 5.98 -> 5.47, ep5 street 8.01 -> 7.55, ep3 hub 7.31 -> 6.99, chaos_ep1_hub 9.03 -> 8.44, chaos_ep5_hub 7.41
+-> 6.98, chaos_m1_brawl 5.30 -> 4.98, chaos_m3_boss 8.13 -> 7.89, chaos_m5_boss 5.77 -> 5.53, chaos_m8_boss 5.75 -> 5.63
+(-3..-8%; p95 alike). The P3 target (offline <= 3.5 ms in the ep1 hub) is **not met**.
+
+In game (chaos_bench, 3x 16:9, unlimited, base = main 95e3147 vs p3, interleaved, medians of 2 repeats; the P2 agent used the
+GPU and some CPU meanwhile, and the scripted play does not show the same content twice - prims per frame differ by up to
+60% between runs of one scene - so fps differences below ~10% are noise):
+
+| scene | fps med base / p3 | 1% low | 0.1% low | frontend med (p90) ms | GPU med ms | slowest stage |
+|---|---|---|---|---|---|---|
+| ep1 hub | 104.6 / 102.3 | 63.8 / 67.1 | 40.0 / 40.5 | 8.09 (9.79) / 8.15 (9.08) | 7.91 / 7.78 | frontend ~ GPU ~ GS |
+| ep3 hub (rain) | 120.0 / 119.8 | 58.8 / 60.1 | 42.1 / 43.0 | 4.27 (9.26) / 4.07 (8.77) | 7.94 / 7.76 | GPU |
+| ep5 hub (rain) | 119.3 / 125.8 | 88.4 / 89.1 | 45.6 / 43.8 | 5.54 (7.54) / 5.84 (7.01) | 8.20 / 7.80 | GPU |
+| m1 brawl | 123.0 / 106.2 | 70.2 / 53.8 | 41.3 / 27.2 | 5.79 (8.96) / 6.47 (8.90) | 7.92 / 8.68 | GPU |
+| m2 boardroom (fire) | 90.1 / 91.8 | 50.6 / 58.0 | 42.0 / 47.4 | 1.97 / 1.95 | 10.98 / 10.79 | GPU |
+| m3 boss | 114.8 / 124.1 | 65.1 / 64.5 | 39.0 / 44.9 | 5.12 (7.69) / 5.40 (6.57) | 7.95 / 7.67 | GPU |
+| m5 boss | 115.3 / 108.6 | 53.3 / 50.9 | 36.4 / 34.7 | 6.81 (9.34) / 6.85 (8.72) | 8.47 / 8.98 | GPU |
+| m8 boss | 134.4 / 152.0 | 70.7 / 76.4 | 27.7 / 35.3 | 1.36 / 1.25 | 8.55 / 6.87 | GPU |
+
+**What limits the worst frames** (p99 frame times 11-23 ms = the 1% lows of 45-90 fps): in the boss, brawl and fire
+scenes the GPU - its worst 60-frame windows reach 13-21 ms at 3x (m2 boardroom 15-18, m5 boss 17-21), well above every
+CPU stage's (frontend <= 13, worker / GS <= 8-10) - so the lows there belong to P2 (per-fragment cost of the exact
+shaders under heavy translucency and fire). In the ep1 hub the frontend's worst windows (12.6-12.8 ms) are the highest
+with the GS thread (9.6-9.9) and the GPU (8.9-10) close behind: every stage there has to shrink together (P4 GS decode,
+P5 worker, P6 in-game overhead - in game the frontend costs 1.3-1.5x its offline time). The frontend's per-primitive
+cost (~180 ns, spread over state lookup, tier, ownership, merge, records and vertices with no dominant part) is not
+parallelisable at a profit on this CPU; further gains need fewer per-primitive decisions (e.g. batching a strip's
+primitives that share state, key and ownership outcome) - a larger, riskier change to the exact frontend.
 
 Order: P1 first (days; the biggest single gain; independent). P2 and P3 in parallel (shaders / executor vs gpu_front.c). Then
 P4, P5, P6. P7 any time (render thread). Re-measure after each; only if 200 at 100% render scale in the heaviest hub is

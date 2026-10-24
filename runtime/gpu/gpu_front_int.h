@@ -55,6 +55,7 @@ typedef struct gpu_target {
     int copy_rect[4];                    /* own_shadow_need full == 2: the rect to copy */
     int clean, slow_calls;               /* every block current and only T's (as of clean_gen) */
     uint32_t clean_gen;
+    uint32_t tgen;                       /* (P3) bumped when a block of T's pages changes (gpu_own.c touch) */
     int z_high;                          /* (P1) a Z24 / Z32 vertex above GPU_Z_FF_MAX seen: zpatch as depth until a full clear */
 } gpu_target;
 
@@ -149,6 +150,7 @@ void fthread_affinity(uint64_t mask);
 void clut_reset(void);
 void clut_mark_dirty(void);              /* a TEX0 write may have loaded the CLUT */
 void clut_mark_changed(void);            /* a TEX0 write loaded different CLUT content (known) */
+void clut_note_pieces(uint64_t mask);    /* (P3) these 16-byte pieces of the CLUT mirror changed (frontend thread) */
 /* The ring slot holding the current CLUT buffer (snapshot uploaded on a miss: counted). */
 uint32_t clut_current_slot(void);
 uint32_t clut_content_id(void);         /* changes whenever the CLUT buffer's content does */

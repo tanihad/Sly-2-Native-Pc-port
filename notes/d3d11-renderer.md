@@ -2716,3 +2716,27 @@ VBlank, shadow volumes and wrapping G-counter passes), lines 0.1-0.2, clears / d
 
 **Tools**: scripts/p2_ab.ps1 (interleaved rounds, median and min), p2_pair.ps1 (paired runs and B/A ratios on a shared GPU),
 p2_quiet.ps1 (wait for a quiet GPU), m9_bench.ps1 chaos recordings and worst-frame column, gpu_prof_ab.ps1 chaos recordings.
+## Appendix T. As built: P3 frontend (branch next/perf-p3; measurements and the no-go in notes/perf-plan.md "P3 results")
+
+The per-primitive "prepare on helper threads, commit in order" split was built twice (commits 25e6f78, b62522a: gf_prepare /
+gf_prim_commit, segments with state snapshots cut by the frontend thread or by the GS thread, PS2_GPU_FRONT_POOL) and
+measured bit-identical but not faster (offline and in game), so the main line keeps the sequential frontend. Kept, all exact
+(command streams identical to main: scripts\gpu_stream_ab.ps1 on the corpus + chaos recordings, S=1 / S=3, mixed / plain,
+same thread / frontend thread; m9_exact):
+- `sb_prim` (exact ATST split bitmap, 4.2): triangle rows from `sb_rows_*` - per edge ceil / floor of (bias - c) / a kept as
+  integer quotient and remainder and stepped per row (gs_edge_min_x / max_x clamp to +-4096 only outside the scissor, so
+  every row is the same; PS2_GPU_SB_CHECK=1 compares each row with gs_tri_row); a test of a rectangle with no set bit
+  returns 0 before the edge walk.
+- `own_draw` clean fast path per target: `gpu_target.tgen` is bumped (gpu_own.c `touch`) for the targets whose pages hold a
+  block whose writer, serial, CPU words or shared mark change (`page_tg`: live targets per page); before, the global
+  change generation sent every target through the block loop and a rescan after any upload anywhere. `scan_clean` also
+  requires `!blk_shared`. PS2_GPU_OWN_TGEN=0: the global generation again (A/B).
+- CLUT ring (gpu_clut.c): the content hash is a sum of per-16-byte-piece hashes, updated from `clut_note_pieces` (the
+  frontend thread's FR_CLUT masks; the same-thread path rehashes every piece); a hit is still compared in full.
+- FF triangle records: a plane whose three vertex values are equal is the constant row (exact: cx = cy = +-0, c0 = the
+  value); texel rectangles with inline floor / ceil (exact for |v| < 2^63) and comparisons instead of fmin / fmax (only
+  finite values are used); the vertex cache compares 52 bytes inline; block coordinates by shifts.
+- Frontend thread: ring lines prefetched up to 4 KB ahead of the record being processed, never past the published end
+  (PS2_GPU_RING_PREFETCH=<bytes>, 0 off). Benchmarks: PS2_GPU_FTHREAD_HOLD=1 + PS2_GPU_FTHREAD_RING_MB=<power of 2> (the
+  frontend thread starts when the producer drains, over a stream all in memory), gs_replay GS_REPLAY_CFLAGS (e.g.
+  -fno-inline for function-level profiles), GPU_FRONT_PROF now also times state_update and the CLUT slot lookups.

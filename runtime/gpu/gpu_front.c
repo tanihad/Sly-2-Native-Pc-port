@@ -288,7 +288,7 @@ static int atst_count(int atst, int ref, int lo, int hi) {
 static void state_update(const gs_env_view* ev);
 
 #ifdef GPU_FRONT_PROF
-static uint64_t n_lookups, n_misses, n_prims;
+static uint64_t n_lookups, n_misses, n_prims, su_cycles, clut_cycles;
 #define PCOUNT(x) ((x)++)
 #else
 #define PCOUNT(x) ((void)0)
@@ -305,7 +305,13 @@ static void state_lookup(const gs_env_view* ev) {
         r[0x22], r[0x34 + ctx], r[0x36 + ctx], 0, 0, 0, 0 };
     uint32_t psm = (uint32_t)((r[R_TEX0_1 + ctx] >> 20) & 0x3F);
     if ((attr & 0x10) && (psm == PSMT8 || psm == PSMT4 || psm == PSMT8H || psm == PSMT4HL || psm == PSMT4HH)) {
+#ifdef GPU_FRONT_PROF
+        uint64_t cl_t0 = __rdtsc();
+#endif
         uint32_t cs = clut_current_slot();             /* the palette's ring slot: repeats hit; (M9) its generation */
+#ifdef GPU_FRONT_PROF
+        clut_cycles += __rdtsc() - cl_t0;
+#endif
         sig[20] = ((uint64_t)cs + 1) | (uint64_t)clut_slot_gen(cs) << 32;
     }
     if (sc_epoch != own_epoch) { memset(SC_used, 0, sizeof SC_used); sc_epoch = own_epoch; }
@@ -332,7 +338,13 @@ static void state_lookup(const gs_env_view* ev) {
     }
     Sp = &SC[victim];
     PCOUNT(n_misses);
+#ifdef GPU_FRONT_PROF
+    uint64_t su_t0 = __rdtsc();
     state_update(ev);
+    su_cycles += __rdtsc() - su_t0;
+#else
+    state_update(ev);
+#endif
     memcpy(SC_sig[victim], sig, sizeof sig);
     SC_hash[victim] = h;
     SC_used[victim] = 1;
@@ -816,9 +828,16 @@ static int vcache_n, vcache_pos;
  * still a bound) */
 static uint32_t emit_vertex(const gs_vtx* v, const gs_env_view* ev, uint32_t state, int nb) {
 #ifndef GPU_NO_VCACHE
+    _Static_assert(offsetof(gs_vtx, serial) == 52, "gs_vtx values: 52 bytes before the serial");
     for (int i = 0; i < vcache_n; i++)
-        if (vcache_state[i] == state && (vcache_nb[i] || !nb) && !memcmp(&vcache[i], v, offsetof(gs_vtx, serial)))
-            return vcache_idx[i];   /* (values, not the serial) */
+        if (vcache_state[i] == state && (vcache_nb[i] || !nb)) {
+            /* (values, not the serial: 52 bytes, compared inline - P3: memcmp was a library call) */
+            const uint8_t *p = (const uint8_t*)&vcache[i], *q = (const uint8_t*)v;
+            uint32_t t0, t1;
+            memcpy(&t0, p + 48, 4);
+            memcpy(&t1, q + 48, 4);
+            if (gf_eq64(p, q, 6) && t0 == t1) return vcache_idx[i];
+        }
 #endif
     gvtx* o = ar_reserve(&A_vtx, sizeof *o);
     o->x = (float)(v->x - ev->ofx) * (1.0f / 16.0f);
@@ -864,7 +883,15 @@ static int wrap_range(int lo, int hi, int size, int mode, int rmin, int rmax, in
     return 1;
 }
 
-/* the texel rectangle (level 0, inclusive) a primitive can sample: tex_prepare's rule */
+/* (P3) floor / ceil of a double known to be finite and well inside the int64 range (|v| < 1e7 + 2 here), exactly as
+ * the C library's, inline (the x86-64 baseline has no rounding instruction: floor() and ceil() were calls) */
+static inline int64_t floor_i(double v) { int64_t i = (int64_t)v; return (double)i > v ? i - 1 : i; }
+static inline int64_t ceil_i(double v) { int64_t i = (int64_t)v; return (double)i < v ? i + 1 : i; }
+static inline double dmin(double a, double b) { return b < a ? b : a; }
+static inline double dmax(double a, double b) { return b > a ? b : a; }
+
+/* the texel rectangle (level 0, inclusive) a primitive can sample: tex_prepare's rule. (P3) The bounds use plain
+ * comparisons instead of fmin / fmax: they only matter when every value is finite (a NaN or infinity sets `all`). */
 static void texel_rect(const gs_env_view* ev, const gs_vtx* const* vs, int n, const double* su, const double* sv,
                        int* u0, int* v0, int* u1, int* v1) {
     const gs_prim* P = ev->P;
@@ -872,13 +899,13 @@ static void texel_rect(const gs_env_view* ev, const gs_vtx* const* vs, int n, co
     int all = P->texm == 3;
     if (su) {
         for (int i = 0; i < 2; i++) {
-            umin = fmin(umin, su[i] / 16.0); umax = fmax(umax, su[i] / 16.0);
-            vmin = fmin(vmin, sv[i] / 16.0); vmax = fmax(vmax, sv[i] / 16.0);
+            umin = dmin(umin, su[i] / 16.0); umax = dmax(umax, su[i] / 16.0);
+            vmin = dmin(vmin, sv[i] / 16.0); vmax = dmax(vmax, sv[i] / 16.0);
         }
     } else if (P->fst) {
         for (int i = 0; i < n; i++) {
-            umin = fmin(umin, vs[i]->u / 16.0); umax = fmax(umax, vs[i]->u / 16.0);
-            vmin = fmin(vmin, vs[i]->v / 16.0); vmax = fmax(vmax, vs[i]->v / 16.0);
+            umin = dmin(umin, vs[i]->u / 16.0); umax = dmax(umax, vs[i]->u / 16.0);
+            vmin = dmin(vmin, vs[i]->v / 16.0); vmax = dmax(vmax, vs[i]->v / 16.0);
         }
     } else {
         int pos = 0, neg = 0;
@@ -887,8 +914,8 @@ static void texel_rect(const gs_env_view* ev, const gs_vtx* const* vs, int n, co
             if (q > 0) pos++; else if (q < 0) neg++;
             double iq = 1.0 / q, uu = vs[i]->s * iq * P->tw16 / 16.0, vv = vs[i]->t * iq * P->th16 / 16.0;
             if (!(fabs(uu) < 1e7) || !(fabs(vv) < 1e7)) all = 1;
-            umin = fmin(umin, uu); umax = fmax(umax, uu);
-            vmin = fmin(vmin, vv); vmax = fmax(vmax, vv);
+            umin = dmin(umin, uu); umax = dmax(umax, uu);
+            vmin = dmin(vmin, vv); vmax = dmax(vmax, vv);
         }
         if (pos != n && neg != n) all = 1;
     }
@@ -896,11 +923,11 @@ static void texel_rect(const gs_env_view* ev, const gs_vtx* const* vs, int n, co
     if (!all) {
         const double EPS = su ? 0 : 1.0 / 16;
         if (S.bil) {
-            a0 = (int)floor(umin - 0.5 - EPS); a1 = (int)ceil(umax - 0.5 + EPS);
-            b0 = (int)floor(vmin - 0.5 - EPS); b1 = (int)ceil(vmax - 0.5 + EPS);
+            a0 = (int)floor_i(umin - 0.5 - EPS); a1 = (int)ceil_i(umax - 0.5 + EPS);
+            b0 = (int)floor_i(vmin - 0.5 - EPS); b1 = (int)ceil_i(vmax - 0.5 + EPS);
         } else {
-            a0 = (int)floor(umin - EPS); a1 = (int)floor(umax + EPS);
-            b0 = (int)floor(vmin - EPS); b1 = (int)floor(vmax + EPS);
+            a0 = (int)floor_i(umin - EPS); a1 = (int)floor_i(umax + EPS);
+            b0 = (int)floor_i(vmin - EPS); b1 = (int)floor_i(vmax + EPS);
         }
     }
     wrap_range(a0, a1, S.tw, S.wms, S.minu, S.maxu, u0, u1);
@@ -1459,6 +1486,64 @@ static int sb_span(int y, int xa, int xb, int set) {
     return 0;
 }
 
+/* (P3) The rows of a triangle as gs_tri_row computes them (the pixels [xl, xr] inside all three edges, within bx0..bx1),
+ * stepped exactly in integers: per edge the bound is ceil((bias - c) / a) (left edges, a > 0) or floor((c - bias) / -a)
+ * (right edges), kept as quotient and remainder and advanced by the per-row step's quotient and remainder (c grows by dc
+ * per row) - no double estimate, rounding or correction loop per row. gs_edge_min_x / max_x clamp their estimates to
+ * +-4096, outside 0..2047 where bx0 / bx1 decide anyway (the scissor keeps them inside), so every non-empty row and
+ * every empty one comes out the same. */
+typedef struct { int kind; int64_t q, r, A, dq, dr; int64_t c, dc, bias; } sb_edge;   /* kind 1 left, -1 right, 0 flat */
+typedef struct { sb_edge e[3]; } sb_rows;
+
+static void sb_rows_init(sb_rows* it, const gs_tri* T) {
+    gs_edge e[3];
+    gs_tri_edges(T, e);
+    for (int k = 0; k < 3; k++) {
+        sb_edge* s = &it->e[k];
+        s->c = e[k].c; s->dc = e[k].dc; s->bias = e[k].bias;
+        if (e[k].a == 0) { s->kind = 0; continue; }
+        /* left: n = bias - c (n' = n - dc), x = ceil(n / A); right: m = c - bias (m' = m + dc), x = floor(m / A); both as
+         * x = ceil(v / A) / floor(v / A) of a value v stepping by sv per row */
+        int64_t A = e[k].a > 0 ? e[k].a : -e[k].a;
+        int64_t v = e[k].a > 0 ? e[k].bias - e[k].c : e[k].c - e[k].bias;
+        int64_t sv = e[k].a > 0 ? -e[k].dc : e[k].dc;
+        s->kind = e[k].a > 0 ? 1 : -1;
+        s->A = A;
+        /* floor division v = q * A + r, 0 <= r < A (exact: integer quotient, then the sign fix) */
+        int64_t q = v / A, r = v - q * A;
+        if (r < 0) { q--; r += A; }
+        int64_t dq = sv / A, dr = sv - dq * A;
+        if (dr < 0) { dq--; dr += A; }
+        s->q = q; s->r = r; s->dq = dq; s->dr = dr;
+    }
+}
+
+/* the current row (gs_tri_row's xl, xr; xl > xr: empty), then the next row */
+static inline void sb_rows_get(sb_rows* it, int bx0, int bx1, int64_t* pxl, int64_t* pxr) {
+    int64_t xl = bx0, xr = bx1;
+    for (int k = 0; k < 3; k++) {
+        sb_edge* s = &it->e[k];
+        if (s->kind > 0) { int64_t m = s->q + (s->r != 0); if (m > xl) xl = m; }   /* ceil(v / A) */
+        else if (s->kind < 0) { if (s->q < xr) xr = s->q; }                      /* floor(v / A) */
+        else if (s->c < s->bias) { xl = 1; xr = 0; }
+    }
+    *pxl = xl;
+    *pxr = xr;
+}
+static inline void sb_rows_next(sb_rows* it) {
+    for (int k = 0; k < 3; k++) {
+        sb_edge* s = &it->e[k];
+        s->c += s->dc;
+        if (!s->kind) continue;
+        s->q += s->dq;
+        s->r += s->dr;
+        if (s->r >= s->A) { s->r -= s->A; s->q++; }
+    }
+}
+
+static int sb_check = -1;                /* (P3) PS2_GPU_SB_CHECK=1: every row also by gs_tri_row, mismatches counted */
+static uint64_t sb_check_bad, sb_check_rows;
+
 /* the primitive's pixels (triangle spans, sprite rectangle, line / point pixel records): set or test */
 static int sb_prim(int cls, const gs_tri* T, const gs_sprite* sp, size_t lp_start, uint32_t lp_n, int px, int py, int set) {
     int d = gf_cfg.scale > 1;                     /* (widened at scale > 1) */
@@ -1468,14 +1553,41 @@ static int sb_prim(int cls, const gs_tri* T, const gs_sprite* sp, size_t lp_star
     int qy0 = (cls == GPU_PC_TRI ? T->by0 : cls == GPU_PC_SPRITE ? sp->py0 : py) - d - 1;
     int qy1 = (cls == GPU_PC_TRI ? T->by1 : cls == GPU_PC_SPRITE ? sp->py1 : py) + d + 1;
     if (!set && cls != GPU_PC_LINEPIX && (qy1 < sb_y0 || qy0 > sb_y1 || (qx1 >> 6) < sb_w0 || (qx0 >> 6) > sb_w1)) return 0;
+    /* (P3) a test whose rectangle holds no set bit cannot hit either (every span and pixel it tests lies inside it): an OR
+     * per bitmap word instead of the edge walk */
+    if (!set && cls != GPU_PC_LINEPIX) {
+        int ya = qy0 < sb_y0 ? sb_y0 : qy0, yb = qy1 > sb_y1 ? sb_y1 : qy1;
+        int wa = (qx0 < 0 ? 0 : qx0) >> 6, wb = (qx1 > 2047 ? 2047 : qx1) >> 6;
+        if (wa < sb_w0) wa = sb_w0;
+        if (wb > sb_w1) wb = sb_w1;
+        uint64_t any = 0;
+        for (int y = ya; y <= yb; y++)
+            for (int w = wa; w <= wb; w++) any |= sbits[y][w];
+        if (!any) return 0;
+    }
     if (cls == GPU_PC_TRI) {
+        if (sb_check < 0) sb_check = getenv("PS2_GPU_SB_CHECK") && atoi(getenv("PS2_GPU_SB_CHECK"));
         gs_edge e[3];
-        gs_tri_edges(T, e);
+        if (sb_check) gs_tri_edges(T, e);
+        sb_rows it;
+        sb_rows_init(&it, T);
+#define SB_ROW(XL, XR)                                                                                  \
+        do {                                                                                            \
+            sb_rows_get(&it, T->bx0, T->bx1, &XL, &XR);                                                  \
+            sb_rows_next(&it);                                                                          \
+            if (sb_check) {                                                                             \
+                int64_t cl_, cr_;                                                                       \
+                gs_tri_row(e, T->bx0, T->bx1, &cl_, &cr_);                                              \
+                gs_tri_edges_next(e);                                                                   \
+                sb_check_rows++;                                                                        \
+                if ((cl_ > cr_) != (XL > XR) || (cl_ <= cr_ && (cl_ != XL || cr_ != XR))) sb_check_bad++;  \
+            }                                                                                           \
+        } while (0)
         int hit = 0;
         if (!d) {
-            for (int y = T->by0; y <= T->by1; y++, gs_tri_edges_next(e)) {
+            for (int y = T->by0; y <= T->by1; y++) {
                 int64_t xl, xr;
-                gs_tri_row(e, T->bx0, T->bx1, &xl, &xr);
+                SB_ROW(xl, xr);
                 if (xl > xr) continue;
                 hit |= sb_span(y, (int)xl, (int)xr, set);
                 if (hit && !set) return 1;
@@ -1490,8 +1602,7 @@ static int sb_prim(int cls, const gs_tri* T, const gs_sprite* sp, size_t lp_star
             int clo = 1 << 30, chi = -1;          /* of row q + 1 (rows by0 .. by1 in order, edges stepped with them) */
             if (q + 1 <= T->by1) {
                 int64_t xl, xr;
-                gs_tri_row(e, T->bx0, T->bx1, &xl, &xr);
-                gs_tri_edges_next(e);
+                SB_ROW(xl, xr);
                 if (xl <= xr) { clo = (int)xl; chi = (int)xr; }
             }
             int lo = alo < blo ? alo : blo, hi = ahi > bhi ? ahi : bhi;
@@ -1504,6 +1615,7 @@ static int sb_prim(int cls, const gs_tri* T, const gs_sprite* sp, size_t lp_star
             alo = blo; ahi = bhi;
             blo = clo; bhi = chi;
         }
+#undef SB_ROW
         return hit;
     }
     if (cls == GPU_PC_SPRITE) {
@@ -2095,9 +2207,11 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
             fullrec* r = ar_reserve(&A_rec, 128);
             gs_plane pp;
             int64_t row, dyy, dxx;
+            /* (P3) three equal vertex values make a plane with zero steps (cx = cy = +-0, c0 = the value: the area is
+             * nonzero, so the plane's arithmetic is exact there) - the constant row below, bit for bit */
 #define FF_ROW(cond, fld, scale, is_z, ROW, DY, DX)                                                      \
             do {                                                                                        \
-                if (cond) {                                                                             \
+                if ((cond) && !(vs[0]->fld == vs[1]->fld && vs[0]->fld == vs[2]->fld)) {                \
                     gs_tri_plane(&T, &pp, vs[0]->fld, vs[1]->fld, vs[2]->fld);                          \
                     gs_rowstep_attr(&pp, T.by0, scale, is_z, &row, &dyy, &dxx);                         \
                 } else {                                                                                \
@@ -2413,10 +2527,11 @@ void gpu_front_thread_affinity(uint64_t mask) { if (gf_cfg.thread) fthread_affin
 
 void gpu_front_stop(void) {
     if (gf_cfg.thread) fthread_stop();
+    if (sb_check > 0) fprintf(stderr, "[gpu_front] sb rows check: %llu rows, %llu differ\n", (unsigned long long)sb_check_rows, (unsigned long long)sb_check_bad);
 #ifdef GPU_FRONT_PROF
     fprintf(stderr, "[gpu_front] profile (Mcycles): state %.1f geometry %.1f inputs %.1f texture %.1f tier %.1f ownership %.1f key %.1f emission %.1f\n",
             prof[0] / 1e6, prof[1] / 1e6, prof[2] / 1e6, prof[3] / 1e6, prof[4] / 1e6, prof[5] / 1e6, prof[6] / 1e6, prof[7] / 1e6);
-    fprintf(stderr, "[gpu_front] prims %llu, state lookups %llu, misses %llu\n", (unsigned long long)n_prims, (unsigned long long)n_lookups, (unsigned long long)n_misses);
+    fprintf(stderr, "[gpu_front] prims %llu, state lookups %llu, misses %llu (state_update %.1f Mcycles, CLUT slot %.1f)\n", (unsigned long long)n_prims, (unsigned long long)n_lookups, (unsigned long long)n_misses, su_cycles / 1e6, clut_cycles / 1e6);
     fprintf(stderr, "[gpu_front] emission: tri vertices %.1f, line pixels %.1f, rest (records) %.1f; early exits %.1f\n", prof[8] / 1e6, prof[10] / 1e6, prof[7] / 1e6, prof[11] / 1e6);
 #endif
     gs_front = NULL;

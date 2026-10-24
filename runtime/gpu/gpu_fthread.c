@@ -23,7 +23,9 @@
 #include <windows.h>
 #include <x86intrin.h>
 
-#define RING (8u << 20)                  /* small enough to stay in the L3 cache */
+static uint64_t ring_size = 8u << 20;
+#define RING ring_size
+#define RING_MASK (ring_size - 1)
 #define PUBLISH_EVERY (64u << 10)
 #define SPINS 400                        /* pause loops before sleeping (a pause is 40-140 cycles) */
 
@@ -47,6 +49,8 @@ typedef struct { fr_hdr h; uint32_t has_di, pad; gpu_display_info di; } fr_vblan
 typedef struct { fr_hdr h; volatile long* done; void (*fn)(void*); void* arg; } fr_fence;
 
 static uint8_t* ring;
+static volatile LONG hold;
+static void release_hold(void) { if (hold) { InterlockedExchange(&hold, 0); WakeByAddressAll((PVOID)&hold); } }
 /* The shared positions sit on their own cache lines and are touched rarely (the producer re-reads
  * rd only when its remembered room runs out, the consumer stores rd every 64 KB or when the producer
  * waits): a shared line per record costs a cross-core transfer per record. */
@@ -79,12 +83,13 @@ static uint64_t stage_pos;              /* ring position of the staged record */
 static void* reserve(uint32_t kind, uint32_t bytes) {
     bytes = (bytes + 15) & ~15u;
     if (drop_mode) { fr_hdr* h = (fr_hdr*)stage; h->kind = kind; h->size = bytes; return h; }
-    uint64_t pos = wr % RING;
+    uint64_t pos = wr & RING_MASK;
     uint64_t pad = pos + bytes > RING ? RING - pos : 0;
     for (int spins = 0; wr + pad + bytes > room_end; spins++) {
         uint64_t r = atomic_load_explicit(&rd, memory_order_acquire);
         room_end = r + RING;
         if (wr + pad + bytes <= room_end) break;
+        release_hold();
         publish();
         if (spins < 64) { _mm_pause(); continue; }
         /* full: the frontend is behind; sleep until a quarter of the ring is free (waking for every
@@ -108,7 +113,7 @@ static void* reserve(uint32_t kind, uint32_t bytes) {
         p->size = (uint32_t)pad;
         wr += pad;
     }
-    stage_pos = wr % RING;
+    stage_pos = wr & RING_MASK;
     fr_hdr* h = (fr_hdr*)stage;
     h->kind = kind;
     h->size = bytes;
@@ -382,6 +387,7 @@ void fthread_vblank(const uint64_t priv[16], uint32_t vblank, const gpu_display_
 
 static void post_wait(uint32_t kind, void (*fn)(void*), void* arg) {
     volatile long done = 0;
+    release_hold();
     fr_fence* f = reserve(kind, sizeof *f);
     f->done = &done;
     f->fn = fn;
@@ -437,14 +443,24 @@ static const fr_hdr* next_rec(void) {
             }
             pub_seen = p;
         }
-        const fr_hdr* h = (const fr_hdr*)(ring + cons_rd % RING);
+        const fr_hdr* h = (const fr_hdr*)(ring + (cons_rd & RING_MASK));
         if (h->kind == FR_PAD) { cons_rd += h->size; continue; }
         return h;
     }
 }
 
+/* (P3) The producer streams records past the caches (non-temporal stores), so every ring line the frontend reads
+ * comes from memory: each published line is fetched once, PS2_GPU_RING_PREFETCH bytes ahead (default 4096; 0 off). */
+static uint64_t pf_next;
+static uint32_t ring_pf = 4096;
 static void done_rec(const fr_hdr* h) {
     cons_rd += h->size;
+    if (ring_pf) {
+        uint64_t lim = cons_rd + ring_pf;
+        if (lim > pub_seen) lim = pub_seen;
+        if (pf_next < cons_rd) pf_next = (cons_rd + 63) & ~63ull;
+        for (; pf_next < lim; pf_next += 64) _mm_prefetch((const char*)ring + (pf_next & RING_MASK), _MM_HINT_T0);
+    }
     if (cons_rd - rd_stored >= PUBLISH_EVERY ||
         (atomic_load_explicit(&prod_waiting, memory_order_relaxed) && cons_rd >= atomic_load_explicit(&prod_need, memory_order_relaxed)))
         store_rd();
@@ -453,6 +469,7 @@ static void done_rec(const fr_hdr* h) {
 static DWORD WINAPI fthread_main(LPVOID arg) {
     (void)arg;
     const gs_front_hooks* H = gf_hooks();
+    for (LONG one = 1; hold;) WaitOnAddress((volatile VOID*)&hold, &one, sizeof one, 50);
     for (;;) {
         const fr_hdr* h = next_rec();
         int stop = 0;
@@ -492,6 +509,7 @@ static DWORD WINAPI fthread_main(LPVOID arg) {
             const fr_clut* r = (const fr_clut*)h;
             int k = 0;
             for (uint64_t m = r->mask; m; m &= m - 1) memcpy(fclut + 8 * __builtin_ctzll(m), r->c + 8 * k++, 16);
+            clut_note_pieces(r->mask);   /* (P3: the CLUT ring rehashes only these pieces) */
             break;
         }
         case FR_TEX0: {
@@ -522,7 +540,17 @@ static DWORD WINAPI fthread_main(LPVOID arg) {
 
 void fthread_start(void) {
     if (thread) return;
-    if (!ring) ring = VirtualAlloc(NULL, RING, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    if (!ring) {
+        const char* rm = getenv("PS2_GPU_FTHREAD_RING_MB");
+        if (rm && atoi(rm) >= 8 && atoi(rm) <= 4096 && !(atoi(rm) & (atoi(rm) - 1))) ring_size = (uint64_t)atoi(rm) << 20;
+        ring = VirtualAlloc(NULL, RING, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    }
+    hold = getenv("PS2_GPU_FTHREAD_HOLD") != NULL;
+    {
+        const char* rp = getenv("PS2_GPU_RING_PREFETCH");
+        ring_pf = rp && *rp ? (uint32_t)atoi(rp) : 4096;
+        pf_next = 0;
+    }
     if (!fvram) fvram = VirtualAlloc(NULL, GS_VRAM_SIZE, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
     if (!ring || !fvram) { fprintf(stderr, "[gpu_front] out of memory for the frontend thread\n"); exit(1); }
     wr = unpublished = cons_rd = pub_seen = rd_stored = 0;
@@ -539,6 +567,7 @@ void fthread_start(void) {
     memset(fR, 0, sizeof fR);
     memcpy(fvram, gs_vram, GS_VRAM_SIZE);    /* the stream starts from this memory */
     memcpy(fclut, gs_clut_buffer(), sizeof fclut);
+    clut_note_pieces(~0ull);             /* (P3: the mirror starts from the GS thread's buffer) */
     memcpy(pclut, fclut, sizeof pclut);
     gf_vram = fvram;
     gf_clut_src = fclut;

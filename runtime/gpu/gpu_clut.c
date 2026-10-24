@@ -27,21 +27,39 @@ static uint64_t used[GPU_CLUT_SLOTS / 64];  /* slots used this frame */
 typedef struct { uint64_t key; uint64_t hash; int16_t amin, amax; } alpha_entry;
 static alpha_entry acache[AC_N];
 
-static uint64_t hash1k(const uint16_t* c) {          /* four independent lanes (latency-bound otherwise) */
+
+/* (P3) The content hash as a sum over the 64 16-byte pieces of the buffer, each mixed with its index, kept up to date
+ * piece by piece: the frontend thread knows which pieces a CLUT load changed (gpu_fthread.c FR_CLUT ->
+ * clut_note_pieces), so a reload that changes 16 entries rehashes 2 pieces instead of the whole kilobyte. The hash
+ * only finds candidate slots (a hit is compared in full), so its function does not change any output. */
+static uint64_t piece_h[64], piece_sum, piece_dirty = ~0ull;
+static inline uint64_t piece_mix(uint64_t a, uint64_t b, uint64_t i) {
+    uint64_t h = (a ^ (i * 0x9E3779B97F4A7C15ull)) * 0xFF51AFD7ED558CCDull;
+    h ^= h >> 32;
+    h = (h ^ b) * 0xC4CEB9FE1A85EC53ull;
+    return h ^ (h >> 29);
+}
+void clut_note_pieces(uint64_t mask) { piece_dirty |= mask; }
+static uint64_t clut_hash(const uint16_t* c) {
+    if (!gf_clut_src) piece_dirty = ~0ull;   /* (same thread: which pieces changed is not known) */
     const uint64_t* w = (const uint64_t*)c;
-    uint64_t h0 = 0x9E3779B97F4A7C15ull, h1 = 0xC2B2AE3D27D4EB4Full, h2 = 0x165667B19E3779F9ull, h3 = 0x27D4EB2F165667C5ull;
-    for (int i = 0; i < 128; i += 4) {
-        h0 = (h0 ^ w[i]) * 0xFF51AFD7ED558CCDull; h1 = (h1 ^ w[i + 1]) * 0xFF51AFD7ED558CCDull;
-        h2 = (h2 ^ w[i + 2]) * 0xFF51AFD7ED558CCDull; h3 = (h3 ^ w[i + 3]) * 0xFF51AFD7ED558CCDull;
-        h0 ^= h0 >> 32; h1 ^= h1 >> 32; h2 ^= h2 >> 32; h3 ^= h3 >> 32;
+    for (uint64_t m = piece_dirty; m; m &= m - 1) {
+        int i = __builtin_ctzll(m);
+        uint64_t ph = piece_mix(w[2 * i], w[2 * i + 1], (uint64_t)i);
+        piece_sum += ph - piece_h[i];
+        piece_h[i] = ph;
     }
-    uint64_t h = ((h0 * 31 + h1) * 31 + h2) * 31 + h3;
-    h ^= h >> 29;
+    piece_dirty = 0;
+    uint64_t h = piece_sum * 0x9E3779B97F4A7C15ull;
+    h ^= h >> 31;
     return h ? h : 1;
 }
 
 void clut_reset(void) {
     if (!ring) ring = calloc(GPU_CLUT_SLOTS, sizeof *ring);
+    memset(piece_h, 0, sizeof piece_h);
+    piece_sum = 0;
+    piece_dirty = ~0ull;
     next_slot = filled = 0;
     memset(map_slot, 0, sizeof map_slot);
     memset(acache, 0, sizeof acache);
@@ -90,7 +108,7 @@ static void refresh(void) {
             have_last = 1;
         }
         content_id++;
-        uint64_t h = hash1k(c);
+        uint64_t h = clut_hash(c);
         uint32_t i = (uint32_t)h & (MAP_N - 1), found = 0xFFFFFFFFu;
         for (int n = 0; n < MAP_N && map_slot[i]; n++, i = (i + 1) & (MAP_N - 1))
             if (map_hash[i] == h && gf_eq64(ring[map_slot[i] - 1].data, c, 128)) { found = map_slot[i] - 1; break; }
