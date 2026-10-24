@@ -43,8 +43,15 @@
 5. Shadow flicker: sequences at 60 vs 120 (worker), PS2_GFX_ASYNC=0 / =1, 1x vs 3x.
 6. Gates, notes, final.
 
-## Real-monitor runs (log each)
-(none yet)
+## Real-monitor runs (log each; borderless on the Dell 165 Hz, VRR off, safehouse / ep2 hub, ~20 s windows)
+1. rm_auto60 (pacing auto, 60): display classified FIXED -> locked 55: shown 18.2 ms x832, 12 ms x3.
+2. rm_lock60 (pacing display): D stuck at ~50 ms after loading (pace_delay decays 0.05 ms/picture) -> lock phase now from
+   the 95th percentile directly (up at once, down after 2 s).
+3. rm_lock120 (120 locked to 82.5 / 165): broken - display VBlanks above 60 present repeated pictures, 90 ms queue -> the
+   lock is limited to rates <= 60 (165 Hz at 60 -> 55).
+4. rm_nolock60 / rm_lock60b / rm_lock120b: governor at 2x vs 3x (other agents' GPU load) - not comparable.
+5. rm_nolock60s3 vs rm_lock60s3 (strict 3x, camera turning): before shown 12 ms x237 / 18 ms x872 / 66 ms x1, 155 of 1265
+   presents never shown; after 18.17 ms x1160 of 1160, game dt p95 18.4 ms. notes/pc-smooth/shown_intervals_165hz.png.
 
 ## Findings / traps
 - Other agents (pc-research) run game instances at the same time on the same GPU/CPU: absolute numbers are noisy; check

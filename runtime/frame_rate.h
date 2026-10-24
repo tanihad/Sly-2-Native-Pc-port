@@ -34,7 +34,7 @@ double frame_rate_target_hz(void);
 double frame_rate_base_hz(void);
 /* (pc-smooth) display-locked cadence on a fixed-refresh display whose refresh is not a multiple of the rate (165 Hz
  * without VRR): the display's own VBlanks drive the game at refresh / k (gpu_hw.c clock thread, k = the smallest whole
- * number of refreshes per frame at or below the setting: 60 -> 55, 120 -> 82.5 on 165 Hz), so every picture stays
+ * number of refreshes per frame at or below the setting, at most 60: 60 -> 55 frames/s on 165 Hz), so every picture stays
  * on screen the same number of refreshes instead of alternating 2 and 3 (judder). 0 = off. Movies and the RC chopper
  * keep the PS2's 59.94 Hz (frame_rate_lock_hz then reads 0). */
 void   frame_rate_set_lock(double hz);

@@ -636,18 +636,24 @@ static int clock_wanted(void) { return clock_pacing == SETTINGS_PACING_AUTO || c
 
 /* (pc-smooth) the display lock: refreshes per game frame k (0 = no lock) for a display of hz Hz - pacing = display, or auto on a
  * display seen refreshing at a fixed rate (no VRR); only when the refresh is not already a multiple of the frame rate (60 / 120
- * Hz: the existing display VBlanks) and the rate is not unlimited. k makes hz / k the highest rate at or below the setting, or the
- * next one above when that would fall under 85% of it (144 Hz at 60: 72 rather than 48) */
+ * Hz: the existing display VBlanks) and the rate is not unlimited. k makes hz / k the highest rate at or below the setting: 165 Hz
+ * at 60 -> 55 frames/s, every picture 3 refreshes */
+#define FRAME_RATE_LOCK_MAX_HZ (60000.0 / 1001.0 * 1.01)
 static int clock_lock_k(double hz) {
-    if (!(hz > 0) || !frame_rate_base_hz || !frame_rate_set_lock) return 0;
+    static int env = -1;                 /* PS2_DISPLAY_LOCK=0: never (A/B measurements) */
+    if (env < 0) { const char* e = getenv("PS2_DISPLAY_LOCK"); env = !(e && *e && atoi(e) == 0); }
+    if (!env || !(hz > 0) || !frame_rate_base_hz || !frame_rate_set_lock) return 0;
     if (!(clock_pacing == SETTINGS_PACING_DISPLAY || (clock_pacing == SETTINGS_PACING_AUTO && gpu_present_display_fixed()))) return 0;
     double base = frame_rate_base_hz();
     if (!(base > 0)) return 0;
     if (pace_refresh_multiple(1000.0 / hz, 1000.0 / base)) return 0;
     int k = (int)ceil(hz / base - 0.01);
     if (k < 1) k = 1;
-    if (k > 1 && hz / k < 0.85 * base) k--;
     if (fabs(hz / k - base) / base < 0.005) return 0;
+    /* only rates the display's VBlanks can drive (at most the PS2's 60: above, the frame limiter makes one picture per game
+     * frame and display VBlanks would present repeated pictures - measured: 120 on 165 Hz locked to 82.5 queued 90 ms of
+     * pictures), and not far below the setting (144 Hz: 48 for 60 - not locked) */
+    if (hz / k > FRAME_RATE_LOCK_MAX_HZ || hz / k < 0.85 * base) return 0;
     return k;
 }
 

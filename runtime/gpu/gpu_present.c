@@ -1029,10 +1029,16 @@ static void present_fit(int aw, int ah, int scaler) {
      * holds) */
     double lock_hz = frame_rate_lock_hz ? frame_rate_lock_hz() : 0, R = P.disp.refresh_ms;
     if (lock_hz > 0 && R > 1.0 && vb > 0 && (P.sc || pace_headless) && mode != PACE_MODE_IMMEDIATE) {
-        int m = (int)ceil(P.pd.delay_ms / R - 0.05);
+        /* m from the ready times' 95th percentile directly (D itself comes down only 0.05 ms per picture after a slow
+         * moment, e.g. loading: 50 ms of latency for many seconds): up at once, down after 2 s of pictures that fit */
+        static int lock_m, lower_n;
+        double q = P.pd.nlat ? pace_delay_quantile(&P.pd, 0.95) + P.pd.margin_ms : P.pd.delay_ms;
+        int m = (int)ceil(q / R - 0.05);
         if (m < 1) m = 1;
+        if (m >= lock_m) { lock_m = m; lower_n = 0; }
+        else if (++lower_n >= (int)(2000.0 / P.content_ms)) { lock_m--; lower_n = 0; }
         paced = 1;
-        target = vb + ((double)m - 0.5) * R;
+        target = vb + ((double)lock_m - 0.5) * R;
         P.st.target_ms = target - vb;
     }
     if (paced) P.st.target_ms = P.pd.delay_ms;
@@ -1041,7 +1047,7 @@ static void present_fit(int aw, int ah, int scaler) {
     /* (pc-fps) above 60 fps no picture is skipped: when the GPU is slower than the frame limiter every picture is "late" and
      * a newer one always queued - skipping them would show none; the queue is short there instead (gpu_submit_sink) */
     int fr_high = frame_rate_high && frame_rate_high();
-    if (gpu_rt.cur_behind && !fr_high && vb > 0 && t0 > vb + P.pd.delay_ms + 0.5 * P.content_ms) {
+    if (gpu_rt.cur_behind && !fr_high && vb > 0 && t0 > (lock_hz > 0 && target > 0 ? target : vb + P.pd.delay_ms) + 0.5 * P.content_ms) {
         P.st.skipped = 1;
         P.st.present_ms += now_ms() - t0;
         if (ptrace_file())
