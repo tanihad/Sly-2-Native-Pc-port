@@ -439,7 +439,7 @@ static void draw_menu(canvas* c, const menu_view* v) {
     int tw = text(c, H.x, H.y, H.w, H.h, title, (int)(50 * u), FW_BLACK, 1, FACE_TITLE, C_GOLD, AL_LEFT);
     if (v->page_title[0])
         text(c, H.x + tw + (int)(22 * u), H.y + (int)(4 * u), H.w - tw, H.h, v->page_title, (int)(30 * u), FW_SEMIBOLD, 0, FACE_UI, C_TEXT, AL_LEFT);
-    text(c, H.x, H.y, H.w, H.h, "Sly 2: Band of Thieves", (int)(22 * u), FW_NORMAL, 1, FACE_UI, C_MUTED, AL_RIGHT);
+    if (!v->pending) text(c, H.x, H.y, H.w, H.h, "Sly 2: Band of Thieves", (int)(22 * u), FW_NORMAL, 1, FACE_UI, C_MUTED, AL_RIGHT);
     /* tabs */
     int main_page = v->page >= MENU_PAGE_N ? MENU_PAGE_CONTROLS : v->page;
     for (int k = 0; k < MENU_PAGE_N; k++) {

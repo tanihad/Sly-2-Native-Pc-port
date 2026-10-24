@@ -1,4 +1,4 @@
-# pc-polish: Quit to Desktop, one coherent menu, understandable resolution, Apply / Revert (checkpoint)
+﻿# pc-polish: Quit to Desktop, one coherent menu, understandable resolution, Apply / Revert (checkpoint)
 
 **Goal**: owner feedback "no way to quit the game, what's the use of the old pause menu", "internal vs actual
 resolution confusing, things don't apply instantly (Apply button)". Worktree
@@ -32,6 +32,7 @@ resolution confusing, things don't apply instantly (Apply button)". Worktree
 - (nothing committed yet)
 
 ## Next
+0. (done above: 1-4)
 1. settings.c/.h: render_scale, display.mode, display.resolution, [game] options, legacy keys + file migration;
    presets; tests/unit/menu + window tests updated.
 2. gfx.c: render_scale -> scale.
@@ -47,3 +48,4 @@ resolution confusing, things don't apply instantly (Apply button)". Worktree
 - Run script: build\polish_run\run.ps1 (not committed; card1 = a save). PS2_DUMP_FRAMES without PS2_DUMP_EVERY
   dumps every 60 frames at 9.6 MB each: the script sets DUMP_EVERY huge unless asked.
 - Scratch helpers: scratchpad textbank.py (RAM dump -> texts), tables.py, jt.py.
+

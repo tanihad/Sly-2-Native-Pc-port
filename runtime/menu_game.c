@@ -66,6 +66,7 @@ static int pause_idle(void) { return pause_list_up() && rd32(PM_STATE) == 7; }
 #define TXT_SAVE_GAME 0x3Eu
 #define TXT_LOAD_GAME 0x3Du
 #define TXT_OPTIONS 0x2Cu
+#define TXT_SAVE_AND_QUIT 0x47u         /* "Save and Quit" (back to the title screen, after saving) */
 #define FN_IN_TITLE 0x001D9880u          /* (0x3DA530): the Options builder shows Save Game... when it returns 0 */
 
 static void put_text(ps2_ctx* ctx, uint32_t at, const char* text) {
@@ -90,6 +91,7 @@ static void copy_entry(ps2_ctx* ctx, uint32_t dst, uint32_t src) {
 static void texts(ps2_ctx* ctx) {
     put_text(ctx, PCMENU_STRING, "Options");
     put_text(ctx, PCMENU_STRING_QUIT, "Quit to Desktop");
+    put_text(ctx, PCMENU_STRING_SAVEQUIT, "Save and Quit to Title");   /* (the game's 0x47 "Save and Quit": next to Quit to Desktop) */
 }
 
 /* a call of a game function with the registers kept (aspect.c aspect_apply does the same) */
@@ -160,6 +162,7 @@ int pcmenu_text(ps2_ctx* ctx) {
     uint32_t id = ctx->r[5].uw[0];
     if (id == PCMENU_TEXT_ID) ctx->r[2].ud[0] = PCMENU_STRING;
     else if (id == PCMENU_TEXT_QUIT) ctx->r[2].ud[0] = PCMENU_STRING_QUIT;
+    else if (id == TXT_SAVE_AND_QUIT && pc_text_enabled() && ps2_r32(ctx, PCMENU_STRING_SAVEQUIT)) ctx->r[2].ud[0] = PCMENU_STRING_SAVEQUIT;
     else return 0;
     return 1;
 }

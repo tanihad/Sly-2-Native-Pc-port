@@ -13,6 +13,7 @@ struct ps2_ctx;
 #define PCMENU_LIST 0x000FF000u          /* EE RAM the game never uses (zeros): the pause list with the entries */
 #define PCMENU_STRING 0x000FF200u        /* their texts */
 #define PCMENU_STRING_QUIT 0x000FF240u
+#define PCMENU_STRING_SAVEQUIT 0x000FF280u   /* "Save and Quit to Title" (the game's text 0x47, longer than the bank allows in place) */
 #define PCMENU_ITEM 0x000FF400u          /* (pc-polish) a scratch Options item for the game's getter / setter */
 
 extern volatile int pcmenu_ee_pending;   /* menu_ee_frame has work (volumes, a pause to open) */

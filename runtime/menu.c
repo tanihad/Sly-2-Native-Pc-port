@@ -1157,7 +1157,9 @@ void menu_compute_layout(int cw, int ch, int nrows, int scroll, menu_layout* L) 
     }
     /* footer buttons, right to left: back / close, reset to defaults, close (mouse targets with their hints) */
     int bw = I(230 * u), gap = I(14 * u);
-    for (int k = 0; k < 3; k++) L->btn[k] = (menu_rect){ x0 + iw - (k + 1) * bw - k * gap, L->footer.y, bw, L->footer.h };
+    for (int k = 0; k < 2; k++) L->btn[k] = (menu_rect){ x0 + iw - (k + 1) * bw - k * gap, L->footer.y, bw, L->footer.h };
+    /* (pc-polish) btn[2]: "Apply changes" while something is staged - in the header's right corner (always room there) */
+    L->btn[2] = (menu_rect){ x0 + iw - bw, L->header.y + (L->header.h - L->footer.h) / 2, bw, L->footer.h };
     /* the reset dialog, centred on the panel */
     int dw = I(760 * u), dh = I(270 * u);
     L->dlg = (menu_rect){ L->panel.x + (pw - dw) / 2, L->panel.y + (ph - dh) / 2, dw, dh };
