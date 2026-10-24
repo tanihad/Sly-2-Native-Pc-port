@@ -7,6 +7,7 @@
 #include "settings.c"
 #include "gfx.c"
 #include "menu.c"
+#include "sly_font.c"
 #include "menu_draw.c"
 #include "menu_stubs.c"
 
@@ -521,8 +522,17 @@ static void test_menu_nav(void) {
         view();
         menu_compute_layout(host_cw, host_ch, V.nrows, V.scroll, &L);
         int x0 = L.left[0].x + L.left[0].w, x1 = L.right[0].x;
-        menu_mouse_button(x0 + (x1 - x0) / 4, L.rows[0].y + L.rows[0].h / 2, 1);
+        int tx0 = x0 + (int)(10 * L.u), tx1 = x1 - (int)(96 * L.u) - (int)(10 * L.u);   /* (the track: menu.c slider_drag_to) */
+        menu_mouse_button(tx0 + (tx1 - tx0) / 4, L.rows[0].y + L.rows[0].h / 2, 1);
         CHECK(ps2_settings.vol_master == 25, "click on the bar: 25 (%d)", ps2_settings.vol_master);
+        /* (pc-menu2) the button held: dragging moves the value, the button up ends the drag */
+        menu_mouse_move(tx0 + (tx1 - tx0) * 3 / 4, L.rows[5].y);         /* (anywhere vertically while dragging) */
+        CHECK(ps2_settings.vol_master == 75, "drag to 75 (%d)", ps2_settings.vol_master);
+        menu_mouse_up(tx0, L.rows[0].y);
+        menu_mouse_move(tx0, L.rows[0].y + L.rows[0].h / 2);
+        CHECK(ps2_settings.vol_master == 75, "released: no more dragging (%d)", ps2_settings.vol_master);
+        menu_mouse_button(tx0 + (tx1 - tx0) / 4, L.rows[0].y + L.rows[0].h / 2, 1);
+        menu_mouse_up(0, 0);
         menu_mouse_button(L.tabs[MENU_PAGE_CONTROLS].x + 5, L.tabs[MENU_PAGE_CONTROLS].y + 5, 1);
         view();
         CHECK(V.page == MENU_PAGE_CONTROLS, "click on the Controls tab");
@@ -700,6 +710,27 @@ static void test_draw(void) {
 int main(int argc, char** argv) {
     for (int i = 1; i < argc; i++)
         if (!strcmp(argv[i], "--shots") && i + 1 < argc) shots_dir = argv[++i];
+    /* (pc-menu2) PS2_MENU_FONT_RAM=<EE RAM dump of a running game>: the pictures in the game's own font (a dump is the
+     * player's data: never committed; without it the Windows stand-in draws the text) */
+    const char* ram_path = getenv("PS2_MENU_FONT_RAM");
+    if (ram_path && *ram_path) {
+        FILE* f = fopen(ram_path, "rb");
+        uint8_t* ram = malloc(32u << 20);
+        size_t n = f && ram ? fread(ram, 1, 32u << 20, f) : 0;
+        if (f) fclose(f);
+        uint32_t at = 0;
+        slyf_mesh m = { 0 };
+        m.tri = malloc(sizeof *m.tri * SLYF_MAX_TRIS);
+        slyf_atlas* a = calloc(1, sizeof *a);
+        if (n && m.tri && a && slyf_find(ram, (uint32_t)n, &at) && slyf_extract(ram, (uint32_t)n, at, &m) && slyf_raster(&m, 2.5f, a)) {
+            slyf_publish(a);
+            printf("the game's font from %s (0x%08X, %d triangles)\n", ram_path, at, m.ntri);
+        } else {
+            printf("no font in %s\n", ram_path);
+        }
+        free(m.tri);
+        free(ram);
+    }
     test_table();
     test_presets();
     test_render_scale();

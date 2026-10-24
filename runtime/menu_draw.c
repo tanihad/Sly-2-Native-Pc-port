@@ -1,391 +1,295 @@
-/* The Options menu's picture (menu_draw.h): drawn on the CPU into a premultiplied BGRA bitmap at the output's
- * size - anti-aliased shapes from signed distances, text with a Windows font through GDI (grayscale anti-aliased,
- * drawn white on black into a scratch bitmap and used as coverage) - so every renderer shows exactly the same
- * crisp menu at any resolution, DPI and GPU (menu_overlay.c puts it on the screen). Redrawn only when the menu
- * changes. */
+/* The Options menu's picture (menu_draw.h).
+ *
+ * (pc-menu2) A list of primitives in output pixels, drawn by the GPU at every present (menu_overlay.c) and rasterised
+ * here on the CPU for GDI and the tests. The look follows Sly 2's own menus: every word in the game's font (sly_font.c,
+ * from the disc at run time), the pause menu's colours (the highlighted entry in its warm orange, the others in its
+ * slate blue), a comic red title with a black outline, a night-blue panel with a thin border, sliders and arrows in the
+ * highlight colour, button prompts with the controller's symbols. */
 #include "menu_draw.h"
 #include "menu.h"
+#include "sly_font.h"
 
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
-#include <windows.h>
 
-typedef struct { uint32_t* px; int w, h, stride; } canvas;
+/* ---- colours (0xAARRGGBB, straight alpha) ---------------------------------------------------------------------- */
+#define ARGB(a, r, g, b) ((uint32_t)(a) << 24 | (uint32_t)(r) << 16 | (uint32_t)(g) << 8 | (uint32_t)(b))
+static const uint32_t C_DIM = ARGB(150, 0, 2, 8);
+static const uint32_t C_PANEL_TOP = ARGB(242, 14, 28, 56), C_PANEL_BOT = ARGB(248, 6, 12, 28);
+static const uint32_t C_BORDER = ARGB(255, 58, 92, 140), C_BORDER_IN = ARGB(90, 120, 160, 214);
+static const uint32_t C_ORANGE = ARGB(255, 242, 166, 74), C_ORANGE_DK = ARGB(255, 208, 120, 44), C_ORANGE_DIM = ARGB(255, 150, 104, 52);
+static const uint32_t C_SLATE = ARGB(255, 140, 164, 196), C_TEXT = ARGB(255, 214, 226, 242), C_WHITE = ARGB(255, 255, 255, 255);
+static const uint32_t C_DISABLED = ARGB(255, 84, 100, 130), C_NOTE = ARGB(255, 246, 200, 104);
+static const uint32_t C_TITLE = ARGB(255, 200, 24, 18), C_INK = ARGB(255, 6, 8, 14);
+static const uint32_t C_TRACK = ARGB(255, 24, 38, 66), C_DESC = ARGB(190, 2, 6, 16), C_KEY = ARGB(255, 226, 234, 246);
+static const uint32_t C_SEL_A = ARGB(70, 242, 166, 74), C_SEL_B = ARGB(26, 242, 166, 74), C_HOVER = ARGB(22, 200, 220, 255);
 
-/* ---- colours (premultiplied on use): Sly 2's night-blue and gold ---------------------------------------------- */
-#define RGBA(r, g, b, a) ((uint32_t)(a) << 24 | (uint32_t)(r) << 16 | (uint32_t)(g) << 8 | (uint32_t)(b))
-static const uint32_t C_DIM = RGBA(2, 4, 14, 150);
-static const uint32_t C_PANEL_TOP = RGBA(16, 30, 66, 244), C_PANEL_BOT = RGBA(7, 13, 34, 248);
-static const uint32_t C_GOLD = RGBA(246, 196, 66, 255), C_GOLD_DIM = RGBA(176, 136, 46, 255);
-static const uint32_t C_TEXT = RGBA(232, 238, 250, 255), C_MUTED = RGBA(140, 160, 200, 255), C_DISABLED = RGBA(92, 106, 140, 255);
-static const uint32_t C_SEL = RGBA(36, 72, 148, 235), C_HOVER = RGBA(28, 50, 102, 200), C_ROWLINE = RGBA(40, 58, 100, 120);
-static const uint32_t C_DESC = RGBA(4, 10, 28, 200), C_TRACK = RGBA(40, 56, 98, 255), C_KEY = RGBA(24, 40, 82, 255);
-static const uint32_t C_NOTE = RGBA(250, 206, 96, 255);
-
-static inline uint32_t premul(uint32_t c, float cov) {
-    float a = (float)(c >> 24) / 255.0f * cov;
-    if (a <= 0.0f) return 0;
-    if (a > 1.0f) a = 1.0f;
-    uint32_t r = (uint32_t)(((c >> 16) & 255) * a + 0.5f), g = (uint32_t)(((c >> 8) & 255) * a + 0.5f),
-             b = (uint32_t)((c & 255) * a + 0.5f), A = (uint32_t)(a * 255.0f + 0.5f);
-    return A << 24 | r << 16 | g << 8 | b;
+static uint32_t with_alpha(uint32_t c, float a) {
+    float v = (float)(c >> 24) * a;
+    return (uint32_t)(v < 0 ? 0 : v > 255 ? 255 : (int)(v + 0.5f)) << 24 | (c & 0xFFFFFFu);
 }
 
-static inline void blend(uint32_t* d, uint32_t s) {          /* premultiplied src over dst */
-    uint32_t sa = s >> 24;
-    if (!sa) return;
-    if (sa == 255) { *d = s; return; }
-    uint32_t inv = 255 - sa, x = *d;
-    uint32_t a = sa + (((x >> 24) * inv + 127) / 255), r = ((s >> 16) & 255) + ((((x >> 16) & 255) * inv + 127) / 255),
-             g = ((s >> 8) & 255) + ((((x >> 8) & 255) * inv + 127) / 255), b = (s & 255) + (((x & 255) * inv + 127) / 255);
-    *d = (a > 255 ? 255 : a) << 24 | (r > 255 ? 255 : r) << 16 | (g > 255 ? 255 : g) << 8 | (b > 255 ? 255 : b);
+/* ---- the list ----------------------------------------------------------------------------------------------------- */
+
+static ui_prim* ui_add(ui_list* L, int kind) {
+    if (L->n >= UI_MAX_PRIMS) return NULL;
+    ui_prim* q = &L->p[L->n++];
+    memset(q, 0, sizeof *q);
+    q->kind = (uint8_t)kind;
+    return q;
 }
+static int cur_clip;
 
-static uint32_t lerp_c(uint32_t a, uint32_t b, float t) {
-    uint32_t o = 0;
-    for (int s = 0; s < 32; s += 8) {
-        float x = (float)((a >> s) & 255) + ((float)((b >> s) & 255) - (float)((a >> s) & 255)) * t;
-        o |= (uint32_t)(x + 0.5f) << s;
-    }
-    return o;
-}
-
-static float clampf(float v, float lo, float hi) { return v < lo ? lo : v > hi ? hi : v; }
-
-/* rounded rectangle, filled (border = 0) or a ring of width border; colour top -> bottom gradient */
-static void rrect(canvas* c, float x, float y, float w, float h, float r, float border, uint32_t top, uint32_t bot) {
+static void box(ui_list* L, float x, float y, float w, float h, float r, uint32_t top, uint32_t bot, float border, uint32_t bc) {
     if (w <= 0 || h <= 0) return;
-    if (r > w / 2) r = w / 2;
-    if (r > h / 2) r = h / 2;
-    int x0 = (int)floorf(x), y0 = (int)floorf(y), x1 = (int)ceilf(x + w), y1 = (int)ceilf(y + h);
-    if (x0 < 0) x0 = 0;
-    if (y0 < 0) y0 = 0;
-    if (x1 > c->w) x1 = c->w;
-    if (y1 > c->h) y1 = c->h;
-    float cx = x + w / 2, cy = y + h / 2, hx = w / 2 - r, hy = h / 2 - r;
-    for (int py = y0; py < y1; py++) {
-        uint32_t col = top == bot ? top : lerp_c(top, bot, clampf(((float)py + 0.5f - y) / h, 0, 1));
-        uint32_t* row = c->px + (size_t)py * c->stride;
-        float qy = fabsf((float)py + 0.5f - cy) - hy;
-        for (int px = x0; px < x1; px++) {
-            float qx = fabsf((float)px + 0.5f - cx) - hx;
-            float ox = qx > 0 ? qx : 0, oy = qy > 0 ? qy : 0;
-            float d = sqrtf(ox * ox + oy * oy) + (qx > qy ? (qx < 0 ? qx : 0) : (qy < 0 ? qy : 0)) - r;
-            float cov = clampf(0.5f - d, 0, 1);
-            if (border > 0) cov *= clampf(d + border + 0.5f, 0, 1);
-            if (cov > 0) blend(&row[px], premul(col, cov));
+    ui_prim* q = ui_add(L, UI_BOX);
+    if (!q) return;
+    q->clip = (uint8_t)cur_clip;
+    q->x = x; q->y = y; q->w = w; q->h = h;
+    q->c0 = top; q->c1 = bot; q->c2 = bc;
+    q->p[0] = fminf(r, fminf(w, h) / 2);
+    q->p[1] = border;
+}
+static void fillr(ui_list* L, float x, float y, float w, float h, float r, uint32_t c) { box(L, x, y, w, h, r, c, c, 0, 0); }
+static void ring(ui_list* L, float x, float y, float w, float h, float r, float bw, uint32_t c) { box(L, x, y, w, h, r, 0, 0, bw, c); }
+
+static void capsule(ui_list* L, float ax, float ay, float bx, float by, float wd, uint32_t c) {
+    ui_prim* q = ui_add(L, UI_CAPSULE);
+    if (!q) return;
+    q->clip = (uint8_t)cur_clip;
+    q->x = fminf(ax, bx) - wd; q->y = fminf(ay, by) - wd;
+    q->w = fabsf(bx - ax) + 2 * wd; q->h = fabsf(by - ay) + 2 * wd;
+    q->p[0] = ax; q->p[1] = ay; q->p[2] = bx; q->p[3] = by;
+    q->u0 = wd;
+    q->c0 = c;
+}
+
+static void arrow(ui_list* L, float cx, float cy, float s, int dir, uint32_t c) {
+    ui_prim* q = ui_add(L, UI_ARROW);
+    if (!q) return;
+    q->clip = (uint8_t)cur_clip;
+    if (dir == 2 || dir == -2) { q->x = cx - s; q->y = cy - s * 0.6f; q->w = 2 * s; q->h = s * 1.2f; }   /* (down / up) */
+    else { q->x = cx - s * 0.6f; q->y = cy - s; q->w = s * 1.2f; q->h = 2 * s; }
+    q->p[0] = (float)dir;
+    q->c0 = c;
+}
+
+static int push_clip(ui_list* L, int x, int y, int w, int h) {
+    if (L->nclip < 1) L->nclip = 1;
+    if (L->nclip >= UI_MAX_CLIPS) return 0;
+    L->clip[L->nclip][0] = x; L->clip[L->nclip][1] = y; L->clip[L->nclip][2] = w; L->clip[L->nclip][3] = h;
+    return L->nclip++;
+}
+
+/* ---- text ---------------------------------------------------------------------------------------------------------- */
+
+static const slyf_atlas* F;                      /* the font of this build */
+
+enum { AL_LEFT = 0, AL_CENTER = 1, AL_RIGHT = 2 };
+
+static float tw(const char* s, float px) { return slyf_text_width(F, s, px); }
+
+/* one line at baseline yb; returns its width. maxw > 0: shortened with "..." to fit */
+static float text_base(ui_list* L, float x, float yb, float px, const char* s, uint32_t col, int align, float maxw, float outline,
+                       uint32_t ocol) {
+    if (!F || !s || !*s) return 0;
+    char t[512];
+    int n = slyf_cp1252(s, t, sizeof t);
+    float sc = px / SLYF_EM, w = 0;
+    for (int i = 0; i < n; i++) w += F->g[(uint8_t)t[i]].adv * sc;
+    if (maxw > 0 && w > maxw) {                  /* shorten */
+        float dots = F->g['.'].adv * sc * 3;
+        while (n > 0 && w + dots > maxw) w -= F->g[(uint8_t)t[--n]].adv * sc;
+        while (n > 0 && t[n - 1] == ' ') w -= F->g[(uint8_t)t[--n]].adv * sc;
+        for (int k = 0; k < 3 && n < (int)sizeof t - 1; k++) { t[n++] = '.'; w += F->g['.'].adv * sc; }
+    }
+    float pen = align == AL_CENTER ? x - w / 2 : align == AL_RIGHT ? x - w : x;
+    pen = floorf(pen + 0.5f);
+    float W0 = (float)F->w[0], H0 = (float)F->h[0], k = sc / F->units_px;
+    for (int i = 0; i < n; i++) {
+        const slyf_glyph* g = &F->g[(uint8_t)t[i]];
+        if (g->present) {
+            ui_prim* q = ui_add(L, UI_GLYPH);
+            if (!q) break;
+            q->clip = (uint8_t)cur_clip;
+            q->x = pen + g->ox * sc;
+            q->y = yb + g->oy * sc;
+            q->w = (float)g->aw * k;
+            q->h = (float)g->ah * k;
+            q->u0 = (float)g->ax / W0; q->v0 = (float)g->ay / H0;
+            q->u1 = (float)(g->ax + g->aw) / W0; q->v1 = (float)(g->ay + g->ah) / H0;
+            q->c0 = col;
+            q->c2 = ocol;
+            q->p[0] = outline;
         }
+        pen += g->adv * sc;
     }
-}
-
-static void fill(canvas* c, float x, float y, float w, float h, uint32_t col) { rrect(c, x, y, w, h, 0, 0, col, col); }
-
-/* a line segment of width wd (round caps) */
-static void seg(canvas* c, float ax, float ay, float bx, float by, float wd, uint32_t col) {
-    int x0 = (int)floorf(fminf(ax, bx) - wd), x1 = (int)ceilf(fmaxf(ax, bx) + wd);
-    int y0 = (int)floorf(fminf(ay, by) - wd), y1 = (int)ceilf(fmaxf(ay, by) + wd);
-    if (x0 < 0) x0 = 0;
-    if (y0 < 0) y0 = 0;
-    if (x1 > c->w) x1 = c->w;
-    if (y1 > c->h) y1 = c->h;
-    float dx = bx - ax, dy = by - ay, len2 = dx * dx + dy * dy;
-    for (int py = y0; py < y1; py++)
-        for (int px = x0; px < x1; px++) {
-            float qx = (float)px + 0.5f - ax, qy = (float)py + 0.5f - ay;
-            float t = len2 > 0 ? clampf((qx * dx + qy * dy) / len2, 0, 1) : 0;
-            float ex = qx - t * dx, ey = qy - t * dy;
-            float cov = clampf(wd / 2 - sqrtf(ex * ex + ey * ey) + 0.5f, 0, 1);
-            if (cov > 0) blend(&c->px[(size_t)py * c->stride + px], premul(col, cov));
-        }
-}
-
-/* filled triangle (anti-aliased edges) */
-static void tri(canvas* c, float ax, float ay, float bx, float by, float cx, float cy, uint32_t col) {
-    int x0 = (int)floorf(fminf(ax, fminf(bx, cx))) - 1, x1 = (int)ceilf(fmaxf(ax, fmaxf(bx, cx))) + 1;
-    int y0 = (int)floorf(fminf(ay, fminf(by, cy))) - 1, y1 = (int)ceilf(fmaxf(ay, fmaxf(by, cy))) + 1;
-    if (x0 < 0) x0 = 0;
-    if (y0 < 0) y0 = 0;
-    if (x1 > c->w) x1 = c->w;
-    if (y1 > c->h) y1 = c->h;
-    float area = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
-    float sgn = area < 0 ? -1.0f : 1.0f;
-    float P[3][2] = { { ax, ay }, { bx, by }, { cx, cy } };
-    for (int py = y0; py < y1; py++)
-        for (int px = x0; px < x1; px++) {
-            float x = (float)px + 0.5f, y = (float)py + 0.5f, m = 1e9f;
-            for (int e = 0; e < 3; e++) {
-                float ex = P[(e + 1) % 3][0] - P[e][0], ey = P[(e + 1) % 3][1] - P[e][1];
-                float len = sqrtf(ex * ex + ey * ey);
-                if (len <= 0) continue;
-                float d = sgn * (ex * (y - P[e][1]) - ey * (x - P[e][0])) / len;
-                if (d < m) m = d;
-            }
-            float cov = clampf(m + 0.5f, 0, 1);
-            if (cov > 0) blend(&c->px[(size_t)py * c->stride + px], premul(col, cov));
-        }
-}
-
-/* ring (circle outline) or disc (wd <= 0) */
-static void circle(canvas* c, float cx, float cy, float rad, float wd, uint32_t col) {
-    int x0 = (int)floorf(cx - rad - 1), x1 = (int)ceilf(cx + rad + 1), y0 = (int)floorf(cy - rad - 1), y1 = (int)ceilf(cy + rad + 1);
-    if (x0 < 0) x0 = 0;
-    if (y0 < 0) y0 = 0;
-    if (x1 > c->w) x1 = c->w;
-    if (y1 > c->h) y1 = c->h;
-    for (int py = y0; py < y1; py++)
-        for (int px = x0; px < x1; px++) {
-            float dx = (float)px + 0.5f - cx, dy = (float)py + 0.5f - cy, d = sqrtf(dx * dx + dy * dy) - rad;
-            float cov = clampf(0.5f - d, 0, 1);
-            if (wd > 0) cov *= clampf(d + wd + 0.5f, 0, 1);
-            if (cov > 0) blend(&c->px[(size_t)py * c->stride + px], premul(col, cov));
-        }
-}
-
-/* ---- text (GDI) ------------------------------------------------------------------------------------------------ */
-
-static HDC tdc;
-static HBITMAP tbmp;
-static uint32_t* tbits;
-static int tbw, tbh;
-static struct { int px, weight, italic, face; HFONT f; } fonts[24];
-static int nfonts;
-
-enum { FACE_UI, FACE_TITLE };
-
-static HFONT font(int px, int weight, int italic, int face) {
-    for (int k = 0; k < nfonts; k++)
-        if (fonts[k].px == px && fonts[k].weight == weight && fonts[k].italic == italic && fonts[k].face == face) return fonts[k].f;
-    HFONT f = CreateFontW(-px, 0, 0, 0, weight, (DWORD)italic, 0, 0, DEFAULT_CHARSET, OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS,
-                          CLEARTYPE_NATURAL_QUALITY, DEFAULT_PITCH | FF_SWISS, face == FACE_TITLE ? L"Segoe UI Black" : L"Segoe UI");
-    if (nfonts == (int)(sizeof fonts / sizeof fonts[0])) {   /* full: drop them all (sizes changed with the window) */
-        for (int k = 0; k < nfonts; k++) DeleteObject(fonts[k].f);
-        nfonts = 0;
-    }
-    fonts[nfonts].px = px; fonts[nfonts].weight = weight; fonts[nfonts].italic = italic; fonts[nfonts].face = face;
-    fonts[nfonts++].f = f;
-    return f;
-}
-
-static int text_setup(int w, int h) {
-    if (!tdc) tdc = CreateCompatibleDC(NULL);
-    if (!tdc) return 0;
-    if (tbmp && tbw >= w && tbh >= h) return 1;
-    if (tbmp) DeleteObject(tbmp);
-    BITMAPINFO bi;
-    memset(&bi, 0, sizeof bi);
-    bi.bmiHeader.biSize = sizeof bi.bmiHeader;
-    bi.bmiHeader.biWidth = w;
-    bi.bmiHeader.biHeight = -h;
-    bi.bmiHeader.biPlanes = 1;
-    bi.bmiHeader.biBitCount = 32;
-    bi.bmiHeader.biCompression = BI_RGB;
-    void* bits = NULL;
-    tbmp = CreateDIBSection(tdc, &bi, DIB_RGB_COLORS, &bits, NULL, 0);
-    if (!tbmp) { tbw = tbh = 0; return 0; }
-    tbits = bits;
-    tbw = w;
-    tbh = h;
-    SelectObject(tdc, tbmp);
-    SetBkMode(tdc, TRANSPARENT);
-    SetTextColor(tdc, RGB(255, 255, 255));
-    return 1;
-}
-
-static int utf16(const char* s, wchar_t* w, int cap) {
-    int n = MultiByteToWideChar(CP_UTF8, 0, s, -1, w, cap);
-    if (n <= 0) { w[0] = 0; return 0; }
-    return n - 1;
-}
-
-enum { AL_LEFT = 0, AL_CENTER = 1, AL_RIGHT = 2, AL_WRAP = 4, AL_TOP = 8 };
-
-static int text_w(const char* s, int px, int weight, int face) {
-    if (!text_setup(16, 16)) return 0;
-    wchar_t w[512];
-    int n = utf16(s, w, 512);
-    SelectObject(tdc, font(px, weight, 0, face));
-    SIZE sz = { 0, 0 };
-    GetTextExtentPoint32W(tdc, w, n, &sz);
-    return sz.cx;
-}
-
-/* text in a box; returns the width drawn (single line) */
-static int text(canvas* c, int x, int y, int w, int h, const char* s, int px, int weight, int italic, int face, uint32_t col, int align) {
-    if (w <= 0 || h <= 0 || !s || !*s) return 0;
-    if (!text_setup(c->w, c->h)) return 0;
-    RECT r = { x, y, x + w, y + h };
-    if (r.left < 0) r.left = 0;
-    if (r.top < 0) r.top = 0;
-    if (r.right > c->w) r.right = c->w;
-    if (r.bottom > c->h) r.bottom = c->h;
-    if (r.right <= r.left || r.bottom <= r.top) return 0;
-    for (int py = r.top; py < r.bottom; py++) memset(tbits + (size_t)py * tbw + r.left, 0, (size_t)(r.right - r.left) * 4);
-    GdiFlush();
-    wchar_t ws[1024];
-    int n = utf16(s, ws, 1024);
-    SelectObject(tdc, font(px, weight, italic, face));
-    UINT fmt = DT_NOPREFIX | ((align & 3) == AL_CENTER ? DT_CENTER : (align & 3) == AL_RIGHT ? DT_RIGHT : DT_LEFT);
-    if (align & AL_WRAP) fmt |= DT_WORDBREAK;
-    else fmt |= DT_SINGLELINE | DT_END_ELLIPSIS | ((align & AL_TOP) ? DT_TOP : DT_VCENTER);
-    RECT dr = { x, y, x + w, y + h };
-    DrawTextW(tdc, ws, n, &dr, fmt);
-    GdiFlush();
-    for (int py = r.top; py < r.bottom; py++) {
-        const uint32_t* src = tbits + (size_t)py * tbw;
-        uint32_t* dst = c->px + (size_t)py * c->stride;
-        for (int px2 = r.left; px2 < r.right; px2++) {
-            uint32_t v = src[px2];
-            if (!v) continue;
-            uint32_t g = ((v >> 16 & 255) + (v >> 8 & 255) + (v & 255)) / 3;   /* (grayscale: all three equal) */
-            if (g) blend(&dst[px2], premul(col, (float)g / 255.0f));
-        }
-    }
-    SIZE sz = { 0, 0 };
-    GetTextExtentPoint32W(tdc, ws, n, &sz);
-    return sz.cx < w ? sz.cx : w;
-}
-
-/* ---- button glyphs ----------------------------------------------------------------------------------------- */
-
-enum { G_CROSS, G_CIRCLE, G_SQUARE, G_TRIANGLE, G_L1, G_R1, G_START, G_DPAD };
-
-/* a controller button glyph in a d x d box at (x, y) */
-static void pad_glyph(canvas* c, float x, float y, float d, int g, int xbox) {
-    float cx = x + d / 2, cy = y + d / 2, r = d / 2;
-    if (g == G_L1 || g == G_R1 || g == G_START) {
-        float w = g == G_START ? d * 1.5f : d * 1.25f;
-        rrect(c, x, y + d * 0.12f, w, d * 0.76f, d * 0.22f, 0, RGBA(230, 236, 248, 255), RGBA(200, 210, 230, 255));
-        const char* t = g == G_L1 ? (xbox ? "LB" : "L1") : g == G_R1 ? (xbox ? "RB" : "R1") : (xbox ? "MENU" : "OPTIONS");
-        text(c, (int)x, (int)(y + d * 0.12f), (int)w, (int)(d * 0.76f), t, (int)(d * (g == G_START ? 0.30f : 0.46f)), FW_BOLD, 0,
-             FACE_UI, RGBA(12, 20, 40, 255), AL_CENTER);
-        return;
-    }
-    if (g == G_DPAD) {
-        float a = d * 0.30f;
-        rrect(c, cx - a / 2, y + d * 0.08f, a, d * 0.84f, a * 0.25f, 0, C_TEXT, C_TEXT);
-        rrect(c, x + d * 0.08f, cy - a / 2, d * 0.84f, a, a * 0.25f, 0, C_TEXT, C_TEXT);
-        return;
-    }
-    circle(c, cx, cy, r, 0, RGBA(230, 236, 248, 255));
-    uint32_t ink = RGBA(18, 26, 48, 255);
-    if (xbox) {
-        static const char* letters[] = { "A", "B", "X", "Y" };
-        static const uint32_t cols[] = { RGBA(40, 150, 60, 255), RGBA(200, 40, 40, 255), RGBA(40, 90, 200, 255), RGBA(200, 150, 20, 255) };
-        circle(c, cx, cy, r * 0.86f, 0, cols[g]);
-        text(c, (int)x, (int)y, (int)d, (int)d, letters[g], (int)(d * 0.62f), FW_BOLD, 0, FACE_UI, RGBA(255, 255, 255, 255), AL_CENTER);
-        return;
-    }
-    float s = d * 0.26f, wd = d * 0.10f;
-    switch (g) {
-    case G_CROSS: seg(c, cx - s, cy - s, cx + s, cy + s, wd, ink); seg(c, cx - s, cy + s, cx + s, cy - s, wd, ink); break;
-    case G_CIRCLE: circle(c, cx, cy, s * 1.08f, wd, ink); break;
-    case G_SQUARE: rrect(c, cx - s, cy - s, 2 * s, 2 * s, wd * 0.3f, wd, ink, ink); break;
-    case G_TRIANGLE: {
-        float t = s * 1.15f, ty = cy + t * 0.12f;
-        seg(c, cx, ty - t, cx - t, ty + t * 0.72f, wd, ink);
-        seg(c, cx - t, ty + t * 0.72f, cx + t, ty + t * 0.72f, wd, ink);
-        seg(c, cx + t, ty + t * 0.72f, cx, ty - t, wd, ink);
-        break;
-    }
-    default: break;
-    }
-}
-
-/* a keyboard key cap with its name; returns its width */
-static int key_cap(canvas* c, int x, int y, int h, const char* name, float u, int draw) {
-    int px = (int)(h * 0.50f), tw = text_w(name, px, FW_SEMIBOLD, FACE_UI), w = tw + (int)(h * 0.6f);
-    if (w < h) w = h;
-    if (draw) {
-        rrect(c, (float)x, (float)y, (float)w, (float)h, h * 0.2f, 0, RGBA(230, 236, 248, 255), RGBA(196, 206, 228, 255));
-        text(c, x, y, w, h, name, px, FW_SEMIBOLD, 0, FACE_UI, RGBA(12, 20, 40, 255), AL_CENTER);
-    }
-    (void)u;
     return w;
 }
 
-/* hint: glyph(s) + label, right-aligned in r (dev: MENU_DEV_*); kb = key name, g = pad glyph */
-static void hint(canvas* c, menu_rect r, int dev, const char* kb, int g, const char* label, float u, int hover) {
-    int gh = (int)(r.h * 0.74f), px = (int)(24 * u);
-    int lw = text_w(label, px, FW_SEMIBOLD, FACE_UI);
-    int gw = dev == MENU_DEV_KEYBOARD ? key_cap(c, 0, 0, gh, kb, u, 0) : (g == G_START ? (int)(gh * 1.5f) : g == G_L1 || g == G_R1 ? (int)(gh * 1.25f) : gh);
-    int total = gw + (int)(10 * u) + lw, x = r.x + r.w - total, y = r.y + (r.h - gh) / 2;
-    if (hover) rrect(c, (float)(x - 10 * u), (float)r.y, (float)(total + 20 * u), (float)r.h, r.h * 0.3f, 0, C_HOVER, C_HOVER);
-    if (dev == MENU_DEV_KEYBOARD) key_cap(c, x, y, gh, kb, u, 1);
-    else pad_glyph(c, (float)x, (float)y, (float)gh, g, dev == MENU_DEV_XBOX);
-    text(c, x + gw + (int)(10 * u), r.y, lw + 4, r.h, label, px, FW_SEMIBOLD, 0, FACE_UI, C_TEXT, AL_LEFT);
+/* in a box (y, h): the capitals centred vertically */
+static float text_box(ui_list* L, float x, float y, float h, float px, const char* s, uint32_t col, int align, float maxw) {
+    float cap = F ? F->ascent * px / SLYF_EM : px * 0.7f;
+    return text_base(L, x, floorf(y + h / 2 + cap / 2 + 0.5f), px, s, col, align, maxw, 0, 0);
 }
 
-/* ---- the menu ------------------------------------------------------------------------------------------------- */
-
-static void draw_row(canvas* c, const menu_view* v, const menu_layout* L, int k, float u) {
-    int i = v->scroll + k;
-    const menu_row* row = &v->rows[i];
-    menu_rect r = L->rows[k];
-    int sel = i == v->sel;
-    if (sel) {
-        rrect(c, (float)r.x, (float)r.y, (float)r.w, (float)r.h, 10 * u, 0, C_SEL, lerp_c(C_SEL, C_PANEL_BOT, 0.35f));
-        rrect(c, (float)r.x, (float)r.y + 6 * u, 6 * u, (float)r.h - 12 * u, 3 * u, 0, C_GOLD, C_GOLD);
-    } else {
-        fill(c, (float)r.x + 12 * u, (float)(r.y + r.h), (float)r.w - 24 * u, fmaxf(1.0f, u), C_ROWLINE);
+/* word-wrapped lines from the top of a box; returns the lines drawn */
+static int text_wrap(ui_list* L, float x, float y, float w, float h, float px, const char* s, uint32_t col) {
+    if (!F || !s) return 0;
+    float lh = px * 0.92f, cap = F->ascent * px / SLYF_EM;
+    int lines = 0;
+    char line[512];
+    const char* p = s;
+    while (*p && (lines + 1) * lh <= h + 1) {
+        int n = 0, last_space = -1;
+        const char* q = p;
+        while (*q && *q != '\n' && n < (int)sizeof line - 1) {
+            line[n] = *q;
+            line[n + 1] = 0;
+            if (*q == ' ') last_space = n;
+            if (tw(line, px) > w && n > 0) {
+                if (last_space > 0) { n = last_space; q = p + last_space + 1; }
+                break;
+            }
+            n++;
+            q++;
+        }
+        line[n] = 0;
+        int last_line = (lines + 2) * lh > h + 1 && *q && *q != '\n';
+        text_base(L, x, floorf(y + lines * lh + cap + 0.5f), px, line, col, AL_LEFT, last_line ? w : 0, 0, 0);
+        lines++;
+        p = *q == '\n' ? q + 1 : q;
+        while (*p == ' ') p++;
     }
-    uint32_t lc = row->enabled ? (sel ? RGBA(255, 255, 255, 255) : C_TEXT) : C_DISABLED;
-    int px = (int)(27 * u);
-    text(c, r.x + (int)(26 * u), r.y, L->value_x - r.x - (int)(30 * u), r.h, row->label, px, sel ? FW_SEMIBOLD : FW_NORMAL, 0,
-         FACE_UI, lc, AL_LEFT);
-    menu_rect lft = L->left[k], rgt = L->right[k];
-    int vx0 = lft.x + lft.w, vx1 = rgt.x;
-    uint32_t vc = row->enabled ? RGBA(255, 255, 255, 255) : C_DISABLED;
-    float ay = (float)r.y + r.h / 2.0f, as = 9 * u;
+    return lines;
+}
+
+/* ---- button glyphs ------------------------------------------------------------------------------------------------- */
+
+enum { G_CROSS, G_CIRCLE, G_SQUARE, G_TRIANGLE, G_L1, G_R1, G_START, G_DPAD };
+
+static float glyph_w(int g, float d) { return g == G_START ? d * 1.6f : g == G_L1 || g == G_R1 ? d * 1.3f : d; }
+
+static void pad_glyph(ui_list* L, float x, float y, float d, int g, int xbox) {
+    float cx = x + d / 2, cy = y + d / 2;
+    if (g == G_L1 || g == G_R1 || g == G_START) {
+        float w = glyph_w(g, d);
+        box(L, x, y + d * 0.1f, w, d * 0.8f, d * 0.3f, C_KEY, ARGB(255, 196, 208, 228), 0, 0);
+        const char* t = g == G_L1 ? (xbox ? "LB" : "L1") : g == G_R1 ? (xbox ? "RB" : "R1") : (xbox ? "Menu" : "Options");
+        text_box(L, x + w / 2, y + d * 0.1f, d * 0.8f, d * (g == G_START ? 0.42f : 0.62f), t, C_INK, AL_CENTER, w * 0.92f);
+        return;
+    }
+    if (g == G_DPAD) {
+        float a = d * 0.32f;
+        fillr(L, cx - a / 2, y + d * 0.06f, a, d * 0.88f, a * 0.25f, C_TEXT);
+        fillr(L, x + d * 0.06f, cy - a / 2, d * 0.88f, a, a * 0.25f, C_TEXT);
+        return;
+    }
+    if (xbox) {
+        static const char* letters[] = { "A", "B", "X", "Y" };
+        static const uint32_t cols[] = { ARGB(255, 60, 160, 70), ARGB(255, 210, 50, 46), ARGB(255, 48, 100, 210), ARGB(255, 214, 160, 30) };
+        fillr(L, x, y, d, d, d / 2, cols[g]);
+        text_box(L, cx, y, d, d * 0.8f, letters[g], C_WHITE, AL_CENTER, 0);
+        return;
+    }
+    fillr(L, x, y, d, d, d / 2, C_KEY);
+    static const uint32_t ink[] = { ARGB(255, 70, 110, 200), ARGB(255, 210, 60, 70), ARGB(255, 200, 90, 170), ARGB(255, 40, 160, 130) };
+    float s = d * 0.24f, wd = d * 0.11f;
+    switch (g) {
+    case G_CROSS: capsule(L, cx - s, cy - s, cx + s, cy + s, wd, ink[0]); capsule(L, cx - s, cy + s, cx + s, cy - s, wd, ink[0]); break;
+    case G_CIRCLE: ring(L, cx - s * 1.1f, cy - s * 1.1f, s * 2.2f, s * 2.2f, s * 1.1f, wd, ink[1]); break;
+    case G_SQUARE: ring(L, cx - s, cy - s, 2 * s, 2 * s, wd * 0.3f, wd, ink[2]); break;
+    case G_TRIANGLE: {
+        float t = s * 1.15f, ty = cy + t * 0.15f;
+        capsule(L, cx, ty - t, cx - t, ty + t * 0.7f, wd * 0.5f, ink[3]);
+        capsule(L, cx - t, ty + t * 0.7f, cx + t, ty + t * 0.7f, wd * 0.5f, ink[3]);
+        capsule(L, cx + t, ty + t * 0.7f, cx, ty - t, wd * 0.5f, ink[3]);
+        break;
+    }
+    default: break;
+    }
+}
+
+/* a keyboard key cap with its name; returns its width (draw = 0: measure only) */
+static float key_cap(ui_list* L, float x, float y, float h, const char* name, int draw) {
+    float px = h * 0.72f, w = tw(name, px) + h * 0.55f;
+    if (w < h) w = h;
+    if (draw) {
+        box(L, x, y, w, h, h * 0.22f, C_KEY, ARGB(255, 190, 202, 224), 0, 0);
+        text_box(L, x + w / 2, y, h, px, name, C_INK, AL_CENTER, 0);
+    }
+    return w;
+}
+
+/* a prompt: the glyph / key and its label, right-aligned in r */
+static void hint(ui_list* L, menu_rect r, int dev, const char* kb, int g, const char* label, float u, int hover) {
+    float gh = r.h * 0.8f, px = 34 * u;
+    float lw = tw(label, px);
+    float gw = dev == MENU_DEV_KEYBOARD ? key_cap(L, 0, 0, gh, kb, 0) : glyph_w(g, gh);
+    float total = gw + 10 * u + lw, x = r.x + r.w - total, y = r.y + (r.h - gh) / 2;
+    if (hover) fillr(L, x - 12 * u, (float)r.y, total + 24 * u, (float)r.h, r.h * 0.3f, with_alpha(C_ORANGE, 0.22f));
+    if (dev == MENU_DEV_KEYBOARD) key_cap(L, x, y, gh, kb, 1);
+    else pad_glyph(L, x, y, gh, g, dev == MENU_DEV_XBOX);
+    text_box(L, x + gw + 10 * u, (float)r.y, (float)r.h, px, label, hover ? C_ORANGE : C_TEXT, AL_LEFT, 0);
+}
+
+/* ---- the menu ------------------------------------------------------------------------------------------------------- */
+
+static void draw_row(ui_list* L, const menu_view* v, const menu_layout* Y, int k, float u) {
+    int i = Y->first + k;
+    const menu_row* row = &v->rows[i];
+    menu_rect r = Y->rows[k];
+    int sel = i == v->sel;
+    uint32_t lc = !row->enabled ? C_DISABLED : sel ? C_ORANGE : C_TEXT;
+    float px = 38 * u, vpx = 36 * u;
+    text_box(L, r.x + 28 * u, (float)r.y, (float)r.h, px, row->label, lc, AL_LEFT, (float)(Y->value_x - r.x) - 40 * u);
+    menu_rect lft = Y->left[k], rgt = Y->right[k];
+    float vx0 = (float)(lft.x + lft.w), vx1 = (float)rgt.x, ay = r.y + r.h / 2.0f, as = 11 * u;
+    uint32_t vc = row->enabled ? (sel ? C_WHITE : C_TEXT) : C_DISABLED;
+    uint32_t ac = sel ? C_ORANGE : C_ORANGE_DIM;
     switch (row->kind) {
     case MENU_ITEM_CHOICE:
-        if (row->can_left) tri(c, lft.x + lft.w / 2.0f - as * 0.6f, ay, lft.x + lft.w / 2.0f + as * 0.6f, ay - as, lft.x + lft.w / 2.0f + as * 0.6f, ay + as,
-                               sel ? C_GOLD : C_GOLD_DIM);
-        if (row->can_right) tri(c, rgt.x + rgt.w / 2.0f + as * 0.6f, ay, rgt.x + rgt.w / 2.0f - as * 0.6f, ay + as, rgt.x + rgt.w / 2.0f - as * 0.6f, ay - as,
-                                sel ? C_GOLD : C_GOLD_DIM);
-        text(c, vx0, r.y, vx1 - vx0, r.h, row->value, px, sel ? FW_SEMIBOLD : FW_NORMAL, 0, FACE_UI, vc, AL_CENTER);
+        if (row->can_left) arrow(L, lft.x + lft.w / 2.0f, ay, as, -1, ac);
+        if (row->can_right) arrow(L, rgt.x + rgt.w / 2.0f, ay, as, 1, ac);
+        text_box(L, (vx0 + vx1) / 2, (float)r.y, (float)r.h, vpx, row->value, vc, AL_CENTER, vx1 - vx0 - 8 * u);
         break;
     case MENU_ITEM_SLIDER: {
-        if (row->can_left) tri(c, lft.x + lft.w / 2.0f - as * 0.6f, ay, lft.x + lft.w / 2.0f + as * 0.6f, ay - as, lft.x + lft.w / 2.0f + as * 0.6f, ay + as,
-                               sel ? C_GOLD : C_GOLD_DIM);
-        if (row->can_right) tri(c, rgt.x + rgt.w / 2.0f + as * 0.6f, ay, rgt.x + rgt.w / 2.0f - as * 0.6f, ay + as, rgt.x + rgt.w / 2.0f - as * 0.6f, ay - as,
-                                sel ? C_GOLD : C_GOLD_DIM);
-        int nw = (int)(84 * u), tx0 = vx0 + (int)(8 * u), tx1 = vx1 - nw - (int)(8 * u);
-        float th = 8 * u, frac = row->hi > row->lo ? (float)(row->val - row->lo) / (float)(row->hi - row->lo) : 0;
-        rrect(c, (float)tx0, ay - th / 2, (float)(tx1 - tx0), th, th / 2, 0, C_TRACK, C_TRACK);
-        if (frac > 0) rrect(c, (float)tx0, ay - th / 2, (tx1 - tx0) * frac, th, th / 2, 0, row->enabled ? C_GOLD : C_DISABLED,
-                            row->enabled ? C_GOLD_DIM : C_DISABLED);
-        circle(c, tx0 + (tx1 - tx0) * frac, ay, 11 * u, 0, row->enabled ? RGBA(255, 255, 255, 255) : C_DISABLED);
-        text(c, tx1, r.y, nw + (int)(8 * u), r.h, row->value, px, FW_SEMIBOLD, 0, FACE_UI, vc, AL_RIGHT);
+        if (row->can_left) arrow(L, lft.x + lft.w / 2.0f, ay, as, -1, ac);
+        if (row->can_right) arrow(L, rgt.x + rgt.w / 2.0f, ay, as, 1, ac);
+        float nw = 96 * u, tx0 = vx0 + 10 * u, tx1 = vx1 - nw - 10 * u;   /* (menu.c slider_drag_to: the same track) */
+        float th = 10 * u, frac = row->hi > row->lo ? (float)(row->val - row->lo) / (float)(row->hi - row->lo) : 0;
+        fillr(L, tx0, ay - th / 2, tx1 - tx0, th, th / 2, C_TRACK);
+        if (frac > 0) box(L, tx0, ay - th / 2, (tx1 - tx0) * frac, th, th / 2, row->enabled ? C_ORANGE : C_DISABLED,
+                          row->enabled ? C_ORANGE_DK : C_DISABLED, 0, 0);
+        float kr = (sel && v->drag == 1 ? 15 : 13) * u, kx = tx0 + (tx1 - tx0) * frac;
+        box(L, kx - kr, ay - kr, 2 * kr, 2 * kr, kr, row->enabled ? ARGB(255, 255, 246, 232) : C_DISABLED,
+            row->enabled ? ARGB(255, 236, 214, 186) : C_DISABLED, 2.5f * u, row->enabled ? ARGB(255, 120, 72, 24) : C_TRACK);
+        text_box(L, vx1 - 4 * u, (float)r.y, (float)r.h, vpx, row->value, vc, AL_RIGHT, nw);
         break;
     }
-    case MENU_ITEM_INFO:                 /* (pc-fps) read-only status: the value, no arrows */
-        text(c, vx0, r.y, vx1 - vx0, r.h, row->value, px, FW_NORMAL, 0, FACE_UI, row->enabled ? C_NOTE : C_DISABLED, AL_CENTER);
+    case MENU_ITEM_INFO:
+        text_box(L, (vx0 + vx1) / 2, (float)r.y, (float)r.h, vpx * 0.92f, row->value, row->enabled ? C_NOTE : C_DISABLED, AL_CENTER,
+                 vx1 - vx0 + lft.w);
         break;
-    case MENU_ITEM_ACTION: {
-        float cx = (float)(rgt.x + rgt.w / 2), s = 8 * u;
-        seg(c, cx - s * 0.5f, ay - s, cx + s * 0.5f, ay, 3 * u, sel ? C_GOLD : C_GOLD_DIM);
-        seg(c, cx + s * 0.5f, ay, cx - s * 0.5f, ay + s, 3 * u, sel ? C_GOLD : C_GOLD_DIM);
+    case MENU_ITEM_ACTION:
+        arrow(L, rgt.x + rgt.w / 2.0f, ay, as, 1, ac);
         break;
-    }
     case MENU_ITEM_BIND: {
         if (v->capture && sel) {
-            text(c, vx0, r.y, vx1 - vx0 + lft.w, r.h, v->page == MENU_PAGE_KEYS ? "Press a key...  (Esc: cancel)" :
-                 "Press a button...  (PS button: cancel)", px, FW_SEMIBOLD, 1, FACE_UI, C_NOTE, AL_CENTER);
-        } else {                                  /* two columns: the first and the second key / button */
-            int kh = (int)(r.h * 0.70f), colw = (vx1 - vx0) / 2;
+            text_box(L, (vx0 + vx1) / 2, (float)r.y, (float)r.h, vpx, v->page == MENU_PAGE_KEYS ? "Press a key...  (Esc: cancel)" :
+                     "Press a button...  (PS button: cancel)", C_NOTE, AL_CENTER, vx1 - vx0 + lft.w);
+        } else {
+            float kh = r.h * 0.70f, colw = (vx1 - vx0) / 2;
             for (int s = 0; s < 2; s++) {
                 const char* t = s ? row->value2 : row->value;
-                int cx0 = vx0 + s * colw;
-                if (sel && s == v->bind_slot)
-                    rrect(c, cx0 + 6 * u, r.y + 3 * u, colw - 12 * u, r.h - 6 * u, 8 * u, 2 * u, C_GOLD, C_GOLD);
-                if (!strcmp(t, "-")) {
-                    text(c, cx0, r.y, colw, r.h, "-", px, FW_NORMAL, 0, FACE_UI, C_DISABLED, AL_CENTER);
-                    continue;
-                }
-                int kw = key_cap(c, 0, 0, kh, t, u, 0);
-                if (kw > colw - (int)(20 * u)) kw = colw - (int)(20 * u);
-                key_cap(c, cx0 + colw / 2 - kw / 2, r.y + (r.h - kh) / 2, kh, t, u, 1);
+                float cx0 = vx0 + s * colw;
+                if (sel && s == v->bind_slot) ring(L, cx0 + 6 * u, r.y + 3 * u, colw - 12 * u, r.h - 6 * u, 10 * u, 2.5f * u, C_ORANGE);
+                if (!strcmp(t, "-")) { text_box(L, cx0 + colw / 2, (float)r.y, (float)r.h, vpx, "-", C_DISABLED, AL_CENTER, 0); continue; }
+                float kw = key_cap(L, 0, 0, kh, t, 0);
+                if (kw > colw - 20 * u) kw = colw - 20 * u;
+                key_cap(L, cx0 + colw / 2 - kw / 2, r.y + (r.h - kh) / 2, kh, t, 1);
             }
         }
         break;
@@ -394,146 +298,343 @@ static void draw_row(canvas* c, const menu_view* v, const menu_layout* L, int k,
     }
 }
 
-/* (pc-polish) a dialog (reset, quit, keep display settings, apply changes) centred on the panel */
-static void draw_dialog(canvas* c, const menu_view* v, const menu_layout* L, float u) {
+/* the title: the game's lettering in red with a heavy black outline and a drop shadow (as its comic headers) */
+static float title(ui_list* L, float x, float yb, float px, const char* s) {
+    text_base(L, x + px * 0.05f, yb + px * 0.06f, px, s, ARGB(140, 0, 0, 0), AL_LEFT, 0, px * 0.09f, ARGB(140, 0, 0, 0));
+    return text_base(L, x, yb, px, s, C_TITLE, AL_LEFT, 0, px * 0.075f, C_INK);
+}
+
+static void panel(ui_list* L, float x, float y, float w, float h, float u) {
+    fillr(L, x - 4 * u, y + 12 * u, w + 8 * u, h, 28 * u, ARGB(110, 0, 0, 0));             /* shadow */
+    box(L, x, y, w, h, 24 * u, C_PANEL_TOP, C_PANEL_BOT, 4 * u, C_BORDER);
+    ring(L, x + 8 * u, y + 8 * u, w - 16 * u, h - 16 * u, 17 * u, fmaxf(1.0f, 1.5f * u), C_BORDER_IN);
+}
+
+static void draw_dialog(ui_list* L, const menu_view* v, const menu_layout* Y, float u) {
     int dev = v->device;
-    menu_rect B = L->dlg;
-    rrect(c, B.x - 2 * u, B.y + 8 * u, B.w + 4 * u, (float)B.h, 20 * u, 0, RGBA(0, 0, 0, 90), RGBA(0, 0, 0, 90));
-    rrect(c, (float)B.x, (float)B.y, (float)B.w, (float)B.h, 18 * u, 0, C_PANEL_TOP, C_PANEL_BOT);
-    rrect(c, (float)B.x, (float)B.y, (float)B.w, (float)B.h, 18 * u, 3 * u, C_GOLD, C_GOLD_DIM);
-    int ty = B.y + (int)(26 * u);
-    text(c, B.x + (int)(24 * u), ty, B.w - (int)(48 * u), (int)(52 * u), v->dlg_title, (int)(32 * u), FW_BOLD, 0, FACE_UI, C_TEXT,
-         AL_CENTER);
-    if (v->dlg_text[0])
-        text(c, B.x + (int)(30 * u), ty + (int)(56 * u), B.w - (int)(60 * u), (int)(76 * u), v->dlg_text, (int)(24 * u), FW_NORMAL, 0,
-             FACE_UI, RGBA(200, 212, 238, 255), AL_CENTER | AL_WRAP);
+    menu_rect B = Y->dlg;
+    panel(L, (float)B.x, (float)B.y, (float)B.w, (float)B.h, u);
+    float ty = B.y + 30 * u;
+    text_box(L, B.x + B.w / 2.0f, ty, 60 * u, 50 * u, v->dlg_title, C_ORANGE, AL_CENTER, B.w - 60 * u);
+    if (v->dlg_text[0]) text_wrap(L, B.x + 44 * u, ty + 76 * u, B.w - 88 * u, 96 * u, 34 * u, v->dlg_text, C_TEXT);
     for (int k = 0; k < 2; k++) {
-        menu_rect b = k ? L->dlg_no : L->dlg_yes;
+        menu_rect b = k ? Y->dlg_no : Y->dlg_yes;
         int hov = v->hover_btn == 3 + k;
-        rrect(c, (float)b.x, (float)b.y, (float)b.w, (float)b.h, 12 * u, 0, hov ? C_SEL : C_KEY, hov ? C_SEL : C_KEY);
-        rrect(c, (float)b.x, (float)b.y, (float)b.w, (float)b.h, 12 * u, 2 * u, k ? C_MUTED : C_GOLD, k ? C_MUTED : C_GOLD);
-        int gh = (int)(b.h * 0.6f), gx = b.x + (int)(18 * u), gy = b.y + (b.h - gh) / 2;
-        if (dev == MENU_DEV_KEYBOARD) key_cap(c, gx, gy, gh, k ? "Esc" : "Enter", u, 1);
-        else pad_glyph(c, (float)gx, (float)gy, (float)gh, k ? G_CIRCLE : G_CROSS, dev == MENU_DEV_XBOX);
-        text(c, b.x + (int)(60 * u), b.y, b.w - (int)(70 * u), b.h, k ? v->dlg_no : v->dlg_yes, (int)(26 * u), FW_BOLD, 0, FACE_UI, C_TEXT,
-             AL_CENTER);
+        box(L, (float)b.x, (float)b.y, (float)b.w, (float)b.h, 14 * u, hov ? with_alpha(C_ORANGE, 0.30f) : ARGB(255, 20, 34, 62),
+            hov ? with_alpha(C_ORANGE, 0.16f) : ARGB(255, 12, 22, 42), 2.5f * u, k ? C_SLATE : C_ORANGE);
+        float gh = b.h * 0.62f, gx = b.x + 18 * u, gy = b.y + (b.h - gh) / 2;
+        float gw = dev == MENU_DEV_KEYBOARD ? key_cap(L, gx, gy, gh, k ? "Esc" : "Enter", 1) : (pad_glyph(L, gx, gy, gh, k ? G_CIRCLE : G_CROSS, dev == MENU_DEV_XBOX), gh);
+        float lx0 = gx + gw + 8 * u, lx1 = b.x + b.w - 14 * u;
+        text_box(L, (lx0 + lx1) / 2, (float)b.y, (float)b.h, 38 * u, k ? v->dlg_no : v->dlg_yes, hov || !k ? C_ORANGE : C_TEXT, AL_CENTER, lx1 - lx0);
     }
 }
 
-static void draw_menu(canvas* c, const menu_view* v) {
-    menu_layout L;
-    menu_compute_layout(c->w, c->h, v->nrows, v->scroll, &L);
-    float u = L.u;
-    fill(c, 0, 0, (float)c->w, (float)c->h, C_DIM);
-    if (v->dialog_only) { draw_dialog(c, v, &L, u); return; }   /* (Quit from the game's menus / the close button) */
-    menu_rect P = L.panel;
-    /* shadow, panel, gold frame */
-    rrect(c, P.x - 2 * u, P.y + 10 * u, P.w + 4 * u, (float)P.h, 26 * u, 0, RGBA(0, 0, 0, 90), RGBA(0, 0, 0, 90));
-    rrect(c, (float)P.x, (float)P.y, (float)P.w, (float)P.h, 22 * u, 0, C_PANEL_TOP, C_PANEL_BOT);
-    rrect(c, (float)P.x, (float)P.y, (float)P.w, (float)P.h, 22 * u, 3 * u, C_GOLD, C_GOLD_DIM);
-    rrect(c, P.x + 7 * u, P.y + 7 * u, P.w - 14 * u, P.h - 14 * u, 16 * u, fmaxf(1.0f, 1.2f * u), RGBA(246, 196, 66, 60), RGBA(246, 196, 66, 30));
-    /* title */
-    menu_rect H = L.header;
-    char title[2 * MENU_TEXT];
-    snprintf(title, sizeof title, "%s", "OPTIONS");
-    int tw = text(c, H.x, H.y, H.w, H.h, title, (int)(50 * u), FW_BLACK, 1, FACE_TITLE, C_GOLD, AL_LEFT);
-    if (v->page_title[0])
-        text(c, H.x + tw + (int)(22 * u), H.y + (int)(4 * u), H.w - tw, H.h, v->page_title, (int)(30 * u), FW_SEMIBOLD, 0, FACE_UI, C_TEXT, AL_LEFT);
-    if (!v->pending) text(c, H.x, H.y, H.w, H.h, "Sly 2: Band of Thieves", (int)(22 * u), FW_NORMAL, 1, FACE_UI, C_MUTED, AL_RIGHT);
+static menu_view V;                              /* (big: not on a render thread's stack) */
+
+static void build_menu(ui_list* L, const menu_view* v, int w, int h) {
+    menu_layout Y;
+    menu_compute_layout_f(w, h, v->nrows, v->scroll_f, &Y);
+    float u = Y.u;
+    cur_clip = 0;
+    fillr(L, 0, 0, (float)w, (float)h, 0, C_DIM);
+    if (v->dialog_only) { draw_dialog(L, v, &Y, u); return; }
+    menu_rect P = Y.panel;
+    panel(L, (float)P.x, (float)P.y, (float)P.w, (float)P.h, u);
+    /* title, sub-page title, the pending changes' Apply button */
+    menu_rect H = Y.header;
+    float tpx = 104 * u, tyb = H.y + H.h * 0.5f + F->ascent * tpx / SLYF_EM * 0.5f;
+    float tw0 = title(L, (float)H.x + 4 * u, tyb, tpx, "OPTIONS");
+    if (v->page_title[0]) text_base(L, H.x + tw0 + 30 * u, tyb, 46 * u, v->page_title, C_TEXT, AL_LEFT, 0, 0, 0);
+    if (v->pending) {
+        menu_rect b = Y.btn[2];
+        int hov = v->hover_btn == 2;
+        box(L, (float)b.x, (float)b.y, (float)b.w, (float)b.h, b.h * 0.3f, hov ? with_alpha(C_ORANGE, 0.34f) : ARGB(255, 22, 36, 66),
+            hov ? with_alpha(C_ORANGE, 0.18f) : ARGB(255, 14, 24, 46), 2.5f * u, C_ORANGE);
+        text_box(L, b.x + b.w / 2.0f, (float)b.y, (float)b.h, 34 * u, "Apply changes", C_ORANGE, AL_CENTER, b.w - 16 * u);
+    }
     /* tabs */
     int main_page = v->page >= MENU_PAGE_N ? MENU_PAGE_CONTROLS : v->page;
     for (int k = 0; k < MENU_PAGE_N; k++) {
-        menu_rect t = L.tabs[k];
-        int on = k == main_page;
-        if (on) rrect(c, t.x + 4 * u, (float)t.y, t.w - 8 * u, (float)t.h, 10 * u, 0, RGBA(30, 56, 116, 200), RGBA(30, 56, 116, 60));
-        else if (k == v->hover_tab) rrect(c, t.x + 4 * u, (float)t.y, t.w - 8 * u, (float)t.h, 10 * u, 0, C_HOVER, RGBA(28, 50, 102, 40));
-        text(c, t.x, t.y, t.w, t.h, menu_page_name(k), (int)(28 * u), on ? FW_BOLD : FW_SEMIBOLD, 0, FACE_UI, on ? RGBA(255, 255, 255, 255) : C_MUTED, AL_CENTER);
-        if (on) rrect(c, t.x + 18 * u, t.y + t.h - 5 * u, t.w - 36 * u, 5 * u, 2.5f * u, 0, C_GOLD, C_GOLD);
+        menu_rect t = Y.tabs[k];
+        int on = k == main_page, hov = k == v->hover_tab;
+        if (hov && !on) fillr(L, t.x + 6 * u, (float)t.y, t.w - 12 * u, (float)t.h, 12 * u, C_HOVER);
+        text_box(L, t.x + t.w / 2.0f, (float)t.y - 2 * u, (float)t.h, (on ? 46 : 42) * u, menu_page_name(k), on ? C_ORANGE : hov ? C_TEXT : C_SLATE,
+                 AL_CENTER, t.w - 8 * u);
+        if (on) capsule(L, t.x + t.w * 0.22f, t.y + t.h - 4 * u, t.x + t.w * 0.78f, t.y + t.h - 6 * u, 3 * u, C_ORANGE);
     }
-    fill(c, (float)L.list.x, (float)(L.tabs[0].y + L.tabs[0].h + 2 * u), (float)L.list.w, fmaxf(1.0f, u), RGBA(246, 196, 66, 80));
+    fillr(L, (float)Y.list.x, Y.tabs[0].y + Y.tabs[0].h + 6 * u, (float)Y.list.w, fmaxf(1.0f, 1.5f * u), 0, with_alpha(C_BORDER, 0.8f));
     for (int k = 0; k < 2; k++) {                 /* page switch hints */
-        menu_rect t = L.tab_hint[k];
-        int gh = (int)(t.h * 0.62f);
-        if (v->hover_btn == 5 + k) rrect(c, (float)t.x, (float)t.y, (float)t.w, (float)t.h, 10 * u, 0, C_HOVER, C_HOVER);
+        menu_rect t = Y.tab_hint[k];
+        float gh = t.h * 0.66f;
+        if (v->hover_btn == 5 + k) fillr(L, (float)t.x, (float)t.y, (float)t.w, (float)t.h, 12 * u, C_HOVER);
         if (v->device == MENU_DEV_KEYBOARD) {
-            int kw = key_cap(c, 0, 0, gh, k ? "E" : "Q", u, 0);
-            key_cap(c, t.x + (t.w - kw) / 2, t.y + (t.h - gh) / 2, gh, k ? "E" : "Q", u, 1);
+            float kw = key_cap(L, 0, 0, gh, k ? "E" : "Q", 0);
+            key_cap(L, t.x + (t.w - kw) / 2, t.y + (t.h - gh) / 2, gh, k ? "E" : "Q", 1);
         } else {
-            float gw = gh * 1.25f;
-            pad_glyph(c, t.x + (t.w - gw) / 2, (float)(t.y + (t.h - gh) / 2), (float)gh, k ? G_R1 : G_L1, v->device == MENU_DEV_XBOX);
+            float gw = glyph_w(G_L1, gh);
+            pad_glyph(L, t.x + (t.w - gw) / 2, t.y + (t.h - gh) / 2, gh, k ? G_R1 : G_L1, v->device == MENU_DEV_XBOX);
         }
     }
-    /* rows */
-    for (int k = 0; k < L.visible && v->scroll + k < v->nrows; k++)
-        if (v->scroll + k != v->sel && v->scroll + k == v->hover_row)
-            rrect(c, (float)L.rows[k].x, (float)L.rows[k].y, (float)L.rows[k].w, (float)L.rows[k].h, 10 * u, 0, C_HOVER, C_HOVER);
-    for (int k = 0; k < L.visible && v->scroll + k < v->nrows; k++) draw_row(c, v, &L, k, u);
-    if (L.scrollbar.w) {
-        menu_rect s = L.scrollbar;
-        rrect(c, (float)s.x, (float)s.y, (float)s.w, (float)s.h, s.w / 2.0f, 0, RGBA(30, 44, 80, 200), RGBA(30, 44, 80, 200));
-        float frac = (float)L.visible / v->nrows, pos = (float)v->scroll / v->nrows;
-        rrect(c, (float)s.x, s.y + s.h * pos, (float)s.w, s.h * frac, s.w / 2.0f, 0, C_GOLD_DIM, C_GOLD_DIM);
+    /* rows (clipped to the list: it scrolls by pixels) */
+    cur_clip = push_clip(L, Y.list.x, Y.list.y, Y.list.w, Y.list.h);
+    for (int k = 0; k <= Y.visible && Y.first + k < v->nrows && k < MENU_MAX_ROWS; k++)
+        if (Y.first + k != v->sel && Y.first + k == v->hover_row)
+            fillr(L, (float)Y.rows[k].x, (float)Y.rows[k].y, (float)Y.rows[k].w, (float)Y.rows[k].h, 12 * u, C_HOVER);
+    if (v->nrows > 0) {                           /* the selection band glides between rows */
+        float by = Y.list.y + (v->sel_f - v->scroll_f) * Y.row_h;
+        float bw = (float)(Y.rows[0].w), bh = (float)(Y.row_h - (int)(4 * u + 0.5f));
+        box(L, (float)Y.list.x, by, bw, bh, 12 * u, C_SEL_A, C_SEL_B, 0, 0);
+        capsule(L, Y.list.x + 8 * u, by + 10 * u, Y.list.x + 8 * u, by + bh - 10 * u, 3.5f * u, C_ORANGE);
+    }
+    for (int k = 0; k <= Y.visible && Y.first + k < v->nrows && k < MENU_MAX_ROWS; k++) draw_row(L, v, &Y, k, u);
+    cur_clip = 0;
+    if (Y.scrollbar.w) {
+        menu_rect s = Y.scrollbar;
+        fillr(L, (float)s.x, (float)s.y, (float)s.w, (float)s.h, s.w / 2.0f, ARGB(200, 24, 38, 66));
+        float frac = (float)Y.visible / v->nrows, pos = v->scroll_f / v->nrows;
+        fillr(L, (float)s.x, s.y + s.h * pos, (float)s.w, s.h * frac, s.w / 2.0f, v->drag == 2 ? C_ORANGE : C_ORANGE_DIM);
     }
     /* description */
-    menu_rect D = L.desc;
-    rrect(c, (float)D.x, (float)D.y, (float)D.w, (float)D.h, 12 * u, 0, C_DESC, C_DESC);
+    menu_rect D = Y.desc;
+    fillr(L, (float)D.x, (float)D.y, (float)D.w, (float)D.h, 14 * u, C_DESC);
     if (v->sel >= 0 && v->sel < v->nrows) {
         const menu_row* row = &v->rows[v->sel];
-        int pad = (int)(18 * u), nh = row->note[0] ? (int)(30 * u) : 0;
-        text(c, D.x + pad, D.y + (int)(12 * u), D.w - 2 * pad, D.h - (int)(16 * u) - nh, row->desc, (int)(23 * u), FW_NORMAL, 0, FACE_UI,
-             RGBA(200, 212, 238, 255), AL_LEFT | AL_WRAP);
-        if (nh) text(c, D.x + pad, D.y + D.h - nh - (int)(8 * u), D.w - 2 * pad, nh, row->note, (int)(22 * u), FW_SEMIBOLD, 1, FACE_UI,
-                     C_NOTE, AL_LEFT);
+        float pad = 20 * u, nh = row->note[0] ? 36 * u : 0;
+        text_wrap(L, D.x + pad, D.y + 12 * u, D.w - 2 * pad, D.h - 16 * u - nh, 31 * u, row->desc, ARGB(255, 186, 202, 226));
+        if (nh) text_box(L, D.x + pad, D.y + D.h - nh - 8 * u, nh, 31 * u, row->note, C_NOTE, AL_LEFT, D.w - 2 * pad);
     }
     /* footer: navigation on the left, buttons on the right */
-    menu_rect F = L.footer;
+    menu_rect Fr = Y.footer;
     int dev = v->device;
     {
-        int gh = (int)(F.h * 0.74f), x = F.x, y = F.y + (F.h - gh) / 2, px = (int)(23 * u);
+        float gh = Fr.h * 0.8f, x = (float)Fr.x, y = Fr.y + (Fr.h - gh) / 2, px = 33 * u;
         if (dev == MENU_DEV_KEYBOARD) {
-            x += key_cap(c, x, y, gh, "\xE2\x86\x91\xE2\x86\x93", u, 1) + (int)(8 * u);   /* the arrows */
-            x += text(c, x, F.y, (int)(160 * u), F.h, "Move", px, FW_SEMIBOLD, 0, FACE_UI, C_TEXT, AL_LEFT) + (int)(22 * u);
-            x += key_cap(c, x, y, gh, "\xE2\x86\x90\xE2\x86\x92", u, 1) + (int)(8 * u);
-            text(c, x, F.y, (int)(160 * u), F.h, "Change", px, FW_SEMIBOLD, 0, FACE_UI, C_TEXT, AL_LEFT);
+            float kw = gh * 1.5f;                     /* (the arrow keys: drawn as keys with arrows) */
+            box(L, x, y, kw, gh, gh * 0.22f, C_KEY, ARGB(255, 190, 202, 224), 0, 0);
+            arrow(L, x + kw * 0.32f, y + gh / 2, gh * 0.2f, -2, C_INK);
+            arrow(L, x + kw * 0.68f, y + gh / 2, gh * 0.2f, 2, C_INK);
+            x += kw + 10 * u;
+            x += text_box(L, x, (float)Fr.y, (float)Fr.h, px, "Move", C_TEXT, AL_LEFT, 0) + 26 * u;
+            box(L, x, y, kw, gh, gh * 0.22f, C_KEY, ARGB(255, 190, 202, 224), 0, 0);
+            arrow(L, x + kw * 0.32f, y + gh / 2, gh * 0.2f, -1, C_INK);
+            arrow(L, x + kw * 0.68f, y + gh / 2, gh * 0.2f, 1, C_INK);
+            x += kw + 10 * u;
+            x += text_box(L, x, (float)Fr.y, (float)Fr.h, px, "Change", C_TEXT, AL_LEFT, 0) + 26 * u;
         } else {
-            pad_glyph(c, (float)x, (float)y, (float)gh, G_DPAD, 0);
-            x += gh + (int)(8 * u);
-            x += text(c, x, F.y, (int)(260 * u), F.h, "Move / Change", px, FW_SEMIBOLD, 0, FACE_UI, C_TEXT, AL_LEFT) + (int)(22 * u);
+            pad_glyph(L, x, y, gh, G_DPAD, 0);
+            x += gh + 10 * u;
+            text_box(L, x, (float)Fr.y, (float)Fr.h, px, "Move / Change", C_TEXT, AL_LEFT, 0);
         }
     }
     int sub = v->page >= MENU_PAGE_N;
-    hint(c, L.btn[0], dev, "Esc", G_CIRCLE, sub ? "Back" : "Close", u, v->hover_btn == 0);
-    if (dev != MENU_DEV_KEYBOARD && sub) hint(c, L.btn[1], dev, "", G_START, "Close", u, 0);
-    else if (dev != MENU_DEV_KEYBOARD) hint(c, L.btn[1], dev, "", G_CROSS, "Select", u, 0);
-    else hint(c, L.btn[1], dev, "Enter", G_CROSS, "Select", u, 0);
-    if (v->pending) {                             /* (pc-polish) staged changes: an Apply button (mouse; the row for keys / pads) */
-        menu_rect b = L.btn[2];
-        int hov = v->hover_btn == 2;
-        rrect(c, (float)b.x, (float)b.y, (float)b.w, (float)b.h, b.h * 0.3f, 0, hov ? C_SEL : C_KEY, hov ? C_SEL : C_KEY);
-        rrect(c, (float)b.x, (float)b.y, (float)b.w, (float)b.h, b.h * 0.3f, 2 * u, C_GOLD, C_GOLD);
-        text(c, b.x, b.y, b.w, b.h, "Apply changes", (int)(23 * u), FW_BOLD, 0, FACE_UI, C_NOTE, AL_CENTER);
-    }
+    hint(L, Y.btn[0], dev, "Esc", G_CIRCLE, sub ? "Back" : "Close", u, v->hover_btn == 0);
+    if (dev != MENU_DEV_KEYBOARD && sub) hint(L, Y.btn[1], dev, "", G_START, "Close", u, 0);
+    else if (dev != MENU_DEV_KEYBOARD) hint(L, Y.btn[1], dev, "", G_CROSS, "Select", u, 0);
+    else hint(L, Y.btn[1], dev, "Enter", G_CROSS, "Select", u, 0);
     if (v->dialog) {
-        rrect(c, (float)P.x, (float)P.y, (float)P.w, (float)P.h, 22 * u, 0, RGBA(0, 0, 0, 120), RGBA(0, 0, 0, 120));
-        draw_dialog(c, v, &L, u);
+        fillr(L, (float)P.x, (float)P.y, (float)P.w, (float)P.h, 24 * u, ARGB(130, 0, 0, 0));
+        draw_dialog(L, v, &Y, u);
     }
+}
+
+static void build_fps(ui_list* L, int w, int h, double fps) {
+    (void)w;
+    float u = (float)h / 1080.0f;
+    if (u < 0.4f) u = 0.4f;
+    char t[32];
+    snprintf(t, sizeof t, "%.0f FPS", fps);
+    float px = 34 * u, bw = tw(t, px) + 28 * u, bh = 46 * u;
+    cur_clip = 0;
+    fillr(L, 14 * u, 14 * u, bw, bh, 10 * u, ARGB(150, 0, 0, 0));
+    text_box(L, 14 * u + bw / 2, 14 * u, bh, px, t, fps >= 58.0 ? ARGB(255, 150, 240, 150) : C_NOTE, AL_CENTER, 0);
+}
+
+int menu_build(ui_list* L, int w, int h, double now_s, double fps) {
+    L->n = 0;
+    L->nclip = 1;
+    L->w = w;
+    L->h = h;
+    F = slyf_current();
+    L->font_serial = slyf_serial();
+    if (!F || w <= 0 || h <= 0) return 0;
+    if (now_s > 0) menu_animate(now_s);
+    menu_get_view(&V, w, h);
+    if (V.open) build_menu(L, &V, w, h);
+    else if (fps >= 0) build_fps(L, w, h, fps);
+    return L->n;
+}
+
+/* ---- the CPU rasteriser (GDI presenter, tests) ----------------------------------------------------------------------
+ * The same coverage functions as the GPU's pixel shader (menu_overlay.c): signed distances with a one-pixel ramp, the
+ * glyph atlas sampled bilinearly from the mip level that matches the scale (and the next, blended). */
+
+static float clampf(float v, float lo, float hi) { return v < lo ? lo : v > hi ? hi : v; }
+
+static void blend_px(uint32_t* d, float r, float g, float b, float a) {   /* premultiplied src over dst */
+    if (a <= 0.0f) return;
+    uint32_t x = *d;
+    float inv = 1.0f - a;
+    float dr = (float)(x >> 16 & 255), dg = (float)(x >> 8 & 255), db = (float)(x & 255), da = (float)(x >> 24);
+    int R = (int)(r * 255 + dr * inv + 0.5f), G = (int)(g * 255 + dg * inv + 0.5f), B = (int)(b * 255 + db * inv + 0.5f),
+        A = (int)(a * 255 + da * inv + 0.5f);
+    *d = (uint32_t)(A > 255 ? 255 : A) << 24 | (uint32_t)(R > 255 ? 255 : R) << 16 | (uint32_t)(G > 255 ? 255 : G) << 8 |
+         (uint32_t)(B > 255 ? 255 : B);
+}
+
+static void col_f(uint32_t c, float* r, float* g, float* b, float* a) {
+    *a = (float)(c >> 24) / 255.0f;
+    *r = (float)(c >> 16 & 255) / 255.0f * *a;
+    *g = (float)(c >> 8 & 255) / 255.0f * *a;
+    *b = (float)(c & 255) / 255.0f * *a;
+}
+
+static float atlas_at(int lv, float u, float v) {
+    int w = F->w[lv], h = F->h[lv];
+    float x = u * w - 0.5f, y = v * h - 0.5f;
+    int x0 = (int)floorf(x), y0 = (int)floorf(y);
+    float fx = x - x0, fy = y - y0;
+    float s = 0;
+    for (int j = 0; j < 2; j++)
+        for (int i = 0; i < 2; i++) {
+            int xx = x0 + i, yy = y0 + j;
+            if (xx < 0) xx = 0;
+            if (yy < 0) yy = 0;
+            if (xx >= w) xx = w - 1;
+            if (yy >= h) yy = h - 1;
+            s += (float)F->px[lv][(size_t)yy * w + xx] * (i ? fx : 1 - fx) * (j ? fy : 1 - fy);
+        }
+    return s / 255.0f;
+}
+
+static float atlas_tri(float lod, float u, float v) {
+    if (lod < 0) lod = 0;
+    if (lod > (float)(F->levels - 1)) lod = (float)(F->levels - 1);
+    int l0 = (int)lod;
+    float f = lod - l0;
+    float a = atlas_at(l0, u, v);
+    return f > 0 && l0 + 1 < F->levels ? a + (atlas_at(l0 + 1, u, v) - a) * f : a;
+}
+
+void ui_raster(const ui_list* L, uint32_t* px, int w, int h, int stride) {
+    F = slyf_current();
+    for (int i = 0; i < L->n; i++) {
+        const ui_prim* q = &L->p[i];
+        int x0 = (int)floorf(q->x), y0 = (int)floorf(q->y), x1 = (int)ceilf(q->x + q->w), y1 = (int)ceilf(q->y + q->h);
+        if (q->clip && q->clip < L->nclip) {
+            const int* c = L->clip[q->clip];
+            if (x0 < c[0]) x0 = c[0];
+            if (y0 < c[1]) y0 = c[1];
+            if (x1 > c[0] + c[2]) x1 = c[0] + c[2];
+            if (y1 > c[1] + c[3]) y1 = c[1] + c[3];
+        }
+        if (x0 < 0) x0 = 0;
+        if (y0 < 0) y0 = 0;
+        if (x1 > w) x1 = w;
+        if (y1 > h) y1 = h;
+        float r0, g0, b0, a0, r1, g1, b1, a1, r2, g2, b2, a2;
+        col_f(q->c0, &r0, &g0, &b0, &a0);
+        col_f(q->c1, &r1, &g1, &b1, &a1);
+        col_f(q->c2, &r2, &g2, &b2, &a2);
+        float cx = q->x + q->w / 2, cy = q->y + q->h / 2;
+        float lod = 0;
+        if (q->kind == UI_GLYPH && F) lod = log2f(fmaxf(1e-6f, (q->u1 - q->u0) * F->w[0] / q->w));
+        for (int y = y0; y < y1; y++) {
+            uint32_t* row = px + (size_t)y * stride;
+            for (int x = x0; x < x1; x++) {
+                float sx = x + 0.5f, sy = y + 0.5f;
+                switch (q->kind) {
+                case UI_BOX: {
+                    float hx = q->w / 2, hy = q->h / 2, rad = q->p[0];
+                    float qx = fabsf(sx - cx) - hx + rad, qy = fabsf(sy - cy) - hy + rad;
+                    float ox = qx > 0 ? qx : 0, oy = qy > 0 ? qy : 0;
+                    float d = sqrtf(ox * ox + oy * oy) + fminf(fmaxf(qx, qy), 0) - rad;
+                    float cov = clampf(0.5f - d, 0, 1);
+                    if (cov <= 0) break;
+                    float t = clampf((sy - q->y) / q->h, 0, 1);
+                    float fr = r0 + (r1 - r0) * t, fg = g0 + (g1 - g0) * t, fb = b0 + (b1 - b0) * t, fa = a0 + (a1 - a0) * t;
+                    if (q->p[1] > 0) {
+                        float in = clampf(0.5f - (d + q->p[1]), 0, 1), ri = cov - in;
+                        blend_px(&row[x], fr * in + r2 * ri, fg * in + g2 * ri, fb * in + b2 * ri, fa * in + a2 * ri);
+                    } else {
+                        blend_px(&row[x], fr * cov, fg * cov, fb * cov, fa * cov);
+                    }
+                    break;
+                }
+                case UI_CAPSULE: {
+                    float ax = q->p[0], ay = q->p[1], bx = q->p[2], by = q->p[3];
+                    float dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy;
+                    float t = l2 > 0 ? clampf(((sx - ax) * dx + (sy - ay) * dy) / l2, 0, 1) : 0;
+                    float ex = sx - ax - t * dx, ey = sy - ay - t * dy;
+                    float cov = clampf(q->u0 / 2 - sqrtf(ex * ex + ey * ey) + 0.5f, 0, 1);
+                    blend_px(&row[x], r0 * cov, g0 * cov, b0 * cov, a0 * cov);
+                    break;
+                }
+                case UI_ARROW: {
+                    int vert = q->p[0] > 1.5f || q->p[0] < -1.5f;
+                    float hx = vert ? q->h / 2 : q->w / 2, hy = vert ? q->w / 2 : q->h / 2;
+                    float lx = (vert ? sy - cy : sx - cx) * (q->p[0] < 0 ? -1.0f : 1.0f), ly = vert ? sx - cx : sy - cy;
+                    float n1x = hy, n1y = -2 * hx, n2x = hy, n2y = 2 * hx, l = sqrtf(n1x * n1x + n1y * n1y);
+                    float d1 = ((lx - hx) * n1x + ly * n1y) / l, d2 = ((lx - hx) * n2x + ly * n2y) / l, d3 = -hx - lx;
+                    float d = fmaxf(d1, fmaxf(d2, d3));
+                    float cov = clampf(0.5f - d, 0, 1);
+                    blend_px(&row[x], r0 * cov, g0 * cov, b0 * cov, a0 * cov);
+                    break;
+                }
+                case UI_GLYPH: {
+                    if (!F) break;
+                    float u = q->u0 + (q->u1 - q->u0) * (sx - q->x) / q->w, v = q->v0 + (q->v1 - q->v0) * (sy - q->y) / q->h;
+                    float a = atlas_tri(lod, u, v);
+                    if (q->p[0] > 0) {           /* outline: the coverage grown by p[0] pixels */
+                        float du = (q->u1 - q->u0) / q->w * q->p[0], dv = (q->v1 - q->v0) / q->h * q->p[0], o = a;
+                        for (int k = 0; k < 12; k++) {
+                            float an = (float)k * 0.5235988f;
+                            o = fmaxf(o, atlas_tri(lod, u + du * cosf(an), v + dv * sinf(an)));
+                            o = fmaxf(o, atlas_tri(lod, u + du * 0.5f * cosf(an), v + dv * 0.5f * sinf(an)));
+                        }
+                        float ri = o - a > 0 ? o - a : 0;
+                        blend_px(&row[x], r0 * a + r2 * ri, g0 * a + g2 * ri, b0 * a + b2 * ri, a0 * a + a2 * ri);
+                    } else {
+                        blend_px(&row[x], r0 * a, g0 * a, b0 * a, a0 * a);
+                    }
+                    break;
+                }
+                default: break;
+                }
+            }
+        }
+    }
+}
+
+/* ---- the old interface (GDI, tests) --------------------------------------------------------------------------------- */
+
+static ui_list cpu_list;
+
+static int list_ready(void) {
+    if (!cpu_list.p) cpu_list.p = malloc(sizeof *cpu_list.p * UI_MAX_PRIMS);
+    return cpu_list.p != NULL;
 }
 
 int menu_draw(uint32_t* px, int w, int h, int stride) {
     for (int y = 0; y < h; y++) memset(px + (size_t)y * stride, 0, (size_t)w * 4);
-    static menu_view v;                           /* (big: not on the stack of a render thread) */
-    menu_get_view(&v, w, h);
-    if (!v.open) return 0;
-    canvas c = { px, w, h, stride };
-    draw_menu(&c, &v);
+    if (!list_ready() || !menu_is_open()) return 0;
+    if (!menu_build(&cpu_list, w, h, 0, -1)) return 0;
+    ui_raster(&cpu_list, px, w, h, stride);
     return 1;
 }
 
 void menu_draw_fps(uint32_t* px, int w, int h, int stride, double fps, float u) {
+    (void)u;
     for (int y = 0; y < h; y++) memset(px + (size_t)y * stride, 0, (size_t)w * 4);
-    canvas c = { px, w, h, stride };
+    if (!list_ready()) return;
+    cpu_list.n = 0;
+    cpu_list.nclip = 1;
+    F = slyf_current();
+    if (!F) return;
     char t[32];
     snprintf(t, sizeof t, "%.0f FPS", fps);
-    rrect(&c, 0, 0, (float)w, (float)h, 8 * u, 0, RGBA(0, 0, 0, 150), RGBA(0, 0, 0, 150));
-    text(&c, 0, 0, w, h, t, (int)(h * 0.62f), FW_BOLD, 0, FACE_UI, fps >= 58.0 ? RGBA(140, 240, 140, 255) : RGBA(250, 210, 90, 255), AL_CENTER);
+    float px_ = h * 0.7f;
+    cur_clip = 0;
+    fillr(&cpu_list, 0, 0, (float)w, (float)h, h * 0.2f, ARGB(150, 0, 0, 0));
+    text_box(&cpu_list, w / 2.0f, 0, (float)h, px_, t, fps >= 58.0 ? ARGB(255, 150, 240, 150) : C_NOTE, AL_CENTER, (float)w);
+    ui_raster(&cpu_list, px, w, h, stride);
 }

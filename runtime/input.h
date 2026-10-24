@@ -83,20 +83,21 @@ int input_poll_notice(input_notice* out);       /* 1 and the oldest unread notic
 /* ---- the Options menu --------------------------------------------------------------------------------- */
 enum { INPUT_NAV_NONE, INPUT_NAV_UP, INPUT_NAV_DOWN, INPUT_NAV_LEFT, INPUT_NAV_RIGHT, INPUT_NAV_CONFIRM,
        INPUT_NAV_BACK, INPUT_NAV_TAB_NEXT, INPUT_NAV_TAB_PREV, INPUT_NAV_MENU, INPUT_NAV_CLICK,
-       INPUT_NAV_POINTER };
+       INPUT_NAV_POINTER, INPUT_NAV_RELEASE, INPUT_NAV_WHEEL };
 enum { INPUT_SRC_KEYBOARD, INPUT_SRC_MOUSE, INPUT_SRC_CONTROLLER };
 typedef struct {
     int nav;                                     /* INPUT_NAV_* */
     int source;                                  /* INPUT_SRC_* */
     int device_id;                               /* controller id (INPUT_SRC_CONTROLLER) */
     int repeat;                                  /* 1: auto-repeat of a held direction / key */
-    int x, y;                                    /* INPUT_NAV_CLICK / POINTER: client pixels */
+    int x, y;                                    /* INPUT_NAV_CLICK / POINTER / RELEASE / WHEEL: client pixels */
+    int delta;                                   /* (pc-menu2) INPUT_NAV_WHEEL: notches, + up (fractions of a notch add up) */
 } input_nav_event;
 /* Navigation events from every device, oldest first; 1 if one was returned. Directions repeat while
  * held (400 ms, then every 110 ms). Controllers: d-pad / left stick, Cross confirm, Circle back,
  * L1 / R1 tabs, Options/Start and PS -> MENU. Keyboard: arrows / WASD, Enter / Space confirm,
- * Esc / Backspace back, Tab / Shift+Tab and Q / E / PageUp / PageDown tabs. Mouse: wheel up/down,
- * left click CLICK (x, y), right click BACK, moves POINTER. Esc and the PS button also report MENU
+ * Esc / Backspace back, Tab / Shift+Tab and Q / E / PageUp / PageDown tabs. Mouse: WHEEL (x, y, delta),
+ * left click CLICK (x, y) and RELEASE, right click BACK, moves POINTER. Esc and the PS button also report MENU
  * while the menu is closed (so the menu can open on them). Events also accumulate while the menu
  * is closed: call input_nav_flush when opening. */
 int input_nav_poll(input_nav_event* out);
