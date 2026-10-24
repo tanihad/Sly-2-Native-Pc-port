@@ -2044,6 +2044,8 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
     if (!OD.prims) { OD.alpha = ev->reg[R_ALPHA_1 + ev->ctx]; OD.test = ev->reg[R_TEST_1 + ev->ctx]; OD.frame = ev->reg[R_FRAME_1 + ev->ctx]; }
     OD.prims++;
     if (alias) alias_prim_drawn();
+    if (P->tme)                          /* (perf-p2) features of the draw's primitives: the specialised shaders lack them */
+        OD.d.feat |= (uint16_t)((tk >= TK_VIEW_C32 ? GPU_DF_VIEW : 0) | (P->texm == 3 ? GPU_DF_LOD : 0));
 
     PROF_MARK(6);
 #ifdef GPU_FRONT_PROF

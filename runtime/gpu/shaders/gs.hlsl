@@ -22,6 +22,14 @@
 #ifndef PRIM
 #define PRIM 0                           // 0 triangles, 1 sprites, 2 line / point pixels
 #endif
+// (perf-p2) specialised FF permutations: the executor picks them for draws whose primitives use none of the features
+// (gpu_fop_draw.feat, gpu_front.c GPU_DF_*): the code is the same, only paths no primitive takes are left out
+#ifndef SPEC_NOVIEW
+#define SPEC_NOVIEW 0                    // no texture view of a target (vram textures only)
+#endif
+#ifndef SPEC_NOLOD
+#define SPEC_NOLOD 0                     // no general LOD mode (TEX1: mipmapped minification by Q)
+#endif
 
 // Per-draw constants (gpu_exec.c draw_consts, 256 bytes per draw slot). (M9) Read from the buffer drawc by the draw's
 // slot, which every draw passes as its StartInstanceLocation (the vertex shader's per-instance input DRAWID, the
@@ -404,7 +412,11 @@ uint view_word_at(uint w) {
 // one texel (x, y wrapped, 0..2047) of level L as 0xAABBGGRR (gs_tex_fetch)
 uint texel(St st, Lvl L, uint x, uint y) {
     uint psm = (st.tex0clamp.x >> 20) & 0x3Fu;
+#if SPEC_NOVIEW
+    bool isview = false;                 // (perf-p2: the draw reads no target view, gpu_front.c GPU_DF_VIEW)
+#else
     bool isview = (st.texsrc & 0xFFu) >= 3u;
+#endif
     if (isview && (g_voff.x != 0 || g_voff.y != 0)) {
         // (M7) a 1:1 read at a signed sample offset: the sample at that offset from the texel's sample 0, which
         // for a negative offset is a sample of the texel before it (in the view's own texel space: CT16 views too)
@@ -533,6 +545,9 @@ uint view_hires(St st, float uf, float vf, bool bil) {
 // (M9) the level(s) and filter first, then one tex_level() in a loop of one or two levels (see tex_level)
 uint tex_sample(St st, int U, int V, float lq) {
     uint texm = st.tlev & 3u, cur = (st.tlev >> 2) & 7u;
+#if SPEC_NOLOD
+    return tex_level(st, cur, U, V, texm == 2u);   // (perf-p2: no primitive of the draw has the general LOD mode, GPU_DF_LOD)
+#else
     uint l = cur, nl = 1u, lf = 0u;
     bool bl = texm == 2u;
     if (texm == 3u) {
@@ -558,6 +573,7 @@ uint tex_sample(St st, int U, int V, float lq) {
         if (k == 0u) r0 = t; else r1 = t;
     }
     return nl == 2u ? lerp_rgba(r0, r1, lf) : r0;
+#endif
 }
 // texture function (tfx_batch): colour x texel, GS alpha 0x80 = 1.0
 uint tfx(uint tf, bool tcc, uint c, uint t) {
@@ -884,12 +900,15 @@ bool gs_frag(float4 pos, uint irec, float3 istq, uint prim, out Frag f, out St s
         uint tk = st.texsrc & 0xFFu, vpsm = (st.tex0clamp.x >> 20) & 0x3Fu;
         bool s0 = soff.x == 0 && soff.y == 0;
         uint t;
+#if !SPEC_NOVIEW
         if ((tk == 3u || tk == 4u) && !one_to_one && !g_vself && !s0 && (vkx > 1u || vky > 1u) && (st.tlev & 3u) != 3u &&
             vpsm != PSMCT16 && vpsm != PSMCT16S) {
             // (M7) a scaled view read through its own samples (sample 0 stays the native read)
             if (!uvf) { f.uf = (float)f.U; f.vf = (float)f.V; }
             t = view_hires(st, f.uf, f.vf, (st.tlev & 3u) == 2u);
-        } else t = tex_sample(st, f.U, f.V, f.lq);
+        } else
+#endif
+        t = tex_sample(st, f.U, f.V, f.lq);
         col = tfx((st.flags >> 2) & 3u, (st.flags & SF_TCC) != 0u, col, t);
     }
     if (st.flags & SF_FGE) {

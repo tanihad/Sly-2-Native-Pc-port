@@ -247,9 +247,12 @@ typedef struct {
     uint32_t vtx_first, rec_first;       /* vertex base, first record */
     int16_t bbox[4];                     /* native pixels the primitives touch: x0, y0, x1, y1 (inclusive) */
     uint8_t zw, afail;                   /* some primitive may write Z; AFAIL of an ATST split */
-    uint16_t pad;
+    uint16_t feat;                       /* (perf-p2) GPU_DF_*: features some primitive of the draw uses (the executor picks
+                                            a specialised pixel shader for draws without them; shaders/gs.hlsl SPEC_*) */
 } gpu_fop_draw;
 enum { GPU_PSK_FF_FAST = 1 << 12 };      /* gpu_fop_draw.ps_key: FF triangles with 128-byte records (hardware S/T/Q) */
+enum { GPU_DF_VIEW = 1,                  /* a texture view of a target (CT32 / CT24, alpha index, CT16) */
+       GPU_DF_LOD = 2 };                 /* the general LOD mode (TEX1: mipmapped minification by Q) */
 typedef struct { gpu_fop h; uint16_t ct, zt; uint32_t zresolve; int16_t bbox[4]; } gpu_fop_rov_end;
 /* rect [x0, x1) x [y0, y1) in pixels of the 16-bit frame (whole 16x8 blocks). (perf-p2) mode 1: a copy run - every
  * primitive is a sprite whose fragments are a function of one texel of a CT16 view (gpu_front.c a16_copy_prim), and each
