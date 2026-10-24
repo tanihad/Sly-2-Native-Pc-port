@@ -75,7 +75,7 @@ def main() -> int:
     png_dir.mkdir(parents=True, exist_ok=True)
     sheet_dir.mkdir(parents=True, exist_ok=True)
     tiles = []
-    order = ["graphics", "display", "audio", "controls", "keyboard", "controller", "reset"]
+    order = ["graphics", "display", "audio", "controls", "keyboard", "controller", "reset", "staged", "pending", "keep", "quit"]
     for f in sorted(raw_dir.glob("*.bgra")):
         data = f.read_bytes()
         w, h = struct.unpack("<II", data[:8])

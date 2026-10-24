@@ -133,16 +133,16 @@ static void test_gfx(void) {
     CHECK(ps2_settings.outlines_thin && (gfx_bits() & GPU_GFX_THIN), "F3: thin outlines");
     gfx_key(VK_F2, 0, 0);
     CHECK(gfx_scale() == 4, "F2: scale up (%d)", gfx_scale());
-    ps2_settings.internal_scale = 8;
+    ps2_settings.render_scale = 8;
     gfx_key(VK_F2, 0, 0);
     CHECK(gfx_scale() == 1, "F2 at 8: back to 1 (%d)", gfx_scale());
     gfx_key(VK_F2, 1, 0);
     CHECK(gfx_scale() == 8, "Shift+F2 at 1: 8 (%d)", gfx_scale());
-    gfx_key(VK_F2, 2, 0);                /* (M11) Ctrl+F2: internal_scale = auto (3x until the GPU renderer lowers it) */
+    gfx_key(VK_F2, 2, 0);                /* (M11) Ctrl+F2: render_scale = auto (3x at 1080p until the GPU renderer lowers it) */
     CHECK(ps2_settings.internal_scale == SETTINGS_SCALE_AUTO && gfx_scale() == SETTINGS_SCALE_AUTO_MAX, "Ctrl+F2: auto (%d, %d)",
           ps2_settings.internal_scale, gfx_scale());
     gfx_key(VK_F2, 1, 0);
-    CHECK(ps2_settings.internal_scale == 2 && gfx_scale() == 2, "Shift+F2 from auto at 3x: fixed 2x (%d)", gfx_scale());
+    CHECK(ps2_settings.render_scale == 2 && gfx_scale() == 2, "Shift+F2 from auto at 3x: fixed 2x (%d)", gfx_scale());
     /* (pc-pacing) pacing / vsync through the settings table (live: pacing_apply_mode), the scale status */
     CHECK(settings_change_key("graphics", "pacing", SETTINGS_PACING_IMMEDIATE, 0) && ps2_settings.pacing == SETTINGS_PACING_IMMEDIATE,
           "pacing = immediate through the table");
@@ -153,7 +153,7 @@ static void test_gfx(void) {
     CHECK(gfx_apply_pacing() == 0, "no presenter in this test: nothing to apply");
     settings_change_key("graphics", "pacing", SETTINGS_PACING_AUTO, 0);
     settings_change_key("graphics", "vsync", SETTINGS_VSYNC_ON, 0);
-    settings_change_key("graphics", "internal_scale", SETTINGS_SCALE_AUTO, 0);
+    settings_change_key("graphics", "render_scale", SETTINGS_RS_AUTO, 0);
     {
         gfx_scale_info si;
         gfx_scale_status(&si);
@@ -227,12 +227,12 @@ static void test_settings(void) {
         static char tpl[8192];
         ps2_settings_t a, b;
         settings_defaults(&a);
-        a.internal_scale = 5; a.outlines_thin = 1; a.filters_faithful = 1; a.flicker_filter = 0; a.scaler = SETTINGS_SCALER_BOX;
+        a.render_scale = 5; a.outlines_thin = 1; a.filters_faithful = 1; a.flicker_filter = 0; a.scaler = SETTINGS_SCALER_BOX;
         int len = settings_format(&a, tpl, sizeof tpl);
         settings_defaults(&b);
         warn_count = 0;
         n = settings_parse(tpl, &b, count_warn, NULL);
-        CHECK(len > 0 && n == 0 && b.internal_scale == 5 && b.outlines_thin == 1 && b.filters_faithful == 1 && b.flicker_filter == 0 &&
+        CHECK(len > 0 && n == 0 && b.render_scale == 5 && b.outlines_thin == 1 && b.filters_faithful == 1 && b.flicker_filter == 0 &&
               b.motion_blur == -1 && b.scaler == SETTINGS_SCALER_BOX, "graphics keys round trip through the template (%d problems)", n);
     }
 
@@ -257,8 +257,8 @@ static void test_settings(void) {
     /* [graphics] renderer = gpu (default since M11) | software, pacing = vsync (default) | vrr | display (M6) */
     settings_defaults(&s);
     CHECK(s.renderer_gpu == 1 && s.pacing == SETTINGS_PACING_VSYNC, "renderer / pacing defaults");
-    CHECK(strstr(tmpl, "\nrenderer = gpu\n") && strstr(tmpl, "\npacing = auto\n") && strstr(tmpl, "\nvsync = on\n") && strstr(tmpl, "\ninternal_scale = auto\n"),
-          "template writes renderer / pacing / internal_scale");
+    CHECK(strstr(tmpl, "\nrenderer = gpu\n") && strstr(tmpl, "\npacing = auto\n") && strstr(tmpl, "\nvsync = on\n") && strstr(tmpl, "\nrender_scale = auto\n") &&
+          !strstr(tmpl, "internal_scale =") && strstr(tmpl, "\nmode = windowed\n"), "template writes renderer / pacing / render_scale / mode");
     warn_count = 0;
     n = settings_parse("[graphics]\nrenderer = GPU\npacing = vrr\n", &s, count_warn, NULL);
     CHECK(n == 0 && s.renderer_gpu == 1 && s.pacing == SETTINGS_PACING_VRR, "renderer = gpu, pacing = vrr (%d)", n);
@@ -291,6 +291,11 @@ static void test_settings(void) {
         CHECK(display_mode_pick(odd, 3, 165, -1) == 0, "auto without a multiple: no change");
         CHECK(display_mode_pick(dell, 4, 165, 59) == 59 && display_mode_pick(dell, 4, 165, 75) == 0, "a chosen rate if offered");
         CHECK(display_mode_pick(dell, 4, 144, -1) == 119, "auto at 144 Hz: 119");
+        /* (pc-polish) another resolution (Fullscreen's): never "no change" */
+        static const int at1080[] = { 60, 100, 120, 144 }, at720[] = { 60, 50 };
+        CHECK(display_mode_rate_at(at1080, 4, 165, -1) == 120 && display_mode_rate_at(at1080, 4, 165, 0) == 144 &&
+              display_mode_rate_at(at1080, 4, 120, 0) == 120 && display_mode_rate_at(at720, 2, 165, 75) == 60 &&
+              display_mode_rate_at(at1080, 4, 50, 0) == 144 && display_mode_rate_at(at1080, 0, 60, 0) == 0, "display_mode_rate_at");
     }
     /* (pc-pacing) pacing = auto | paced | immediate | display | vrr (vsync = the old default's name = auto), vsync = on | off |
      * adaptive */

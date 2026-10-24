@@ -140,7 +140,8 @@ strong definitions replace at link time - nothing in the menu changes at the mer
 `settings_change_key(section, key, v, persist)`) validates, stores into `ps2_settings`, writes sly2.ini keeping
 comments, re-derives the graphics preset and calls the applier registered with `settings_on_apply(SET_APPLY_x, fn)`
 (SET_APPLY_PACING is pacing's to take over from menu_game.c if it wants: register after `menu_game_init`).
-`settings_serial` / `settings_touch()`: the menu redraws. Internal resolution: `internal_scale` 1..8, 0 = auto
+`settings_serial` / `settings_touch()`: the menu redraws. (pc-polish: the player's setting is now `[graphics] render_scale`
+- % of the output, auto, original, Nx - mapped to internal_scale N by gfx.c / `settings_scale_for`; notes/pc-menu.md.) Internal resolution: `internal_scale` 1..8, 0 = auto
 (up to `auto_max`), -1 = native (`gfx_native_scale(client height)`); the GPU renderer gets them through gfx.c as
 before (`gpu_hw_set_graphics`, `gpu_hw_set_auto_scale(auto_max)`).
 

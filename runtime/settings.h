@@ -65,7 +65,31 @@ typedef struct {
     /* (pc-fps) */
     int frame_rate;              /* [display] frame_rate = 60 (default: the PS2's 59.94) | 120 | 144 | 165 | 200 | <Hz 30..1000> |
                                     unlimited (-1) | display (-2): frame_rate.h */
+    /* (pc-polish) */
+    int render_scale;            /* [graphics] render_scale: SETTINGS_RS_AUTO (0, default) | SETTINGS_RS_ORIGINAL (1: the PS2's
+                                    512 x 448) | 2..8 (exactly N x the PS2's) | 25..400 (% of the output's height): see
+                                    settings_scale_for. Replaces internal_scale + auto_max (read from old files, migrated). */
+    int fullscreen_res;          /* [display] resolution: the display mode of Fullscreen: 0 = desktop (default) | w << 16 | h */
+    int game_invert_binocucom;   /* [game] invert_binocucom: the game's own "Invert Binocucom Controls" (off default) */
+    int game_invert_turret;      /* [game] invert_turret: the game's own "Invert Turret Controls" (off default) */
+    int game_speakers;           /* [audio] speakers: the game's own Speakers: stereo (0, default) | mono (1) | surround (2) */
 } ps2_settings_t;
+
+/* graphics.render_scale (pc-polish): how sharp the game is drawn, relative to the picture on the screen (the output: the
+ * window's client area or the fullscreen display mode). The GPU renderer draws at integer multiples N of the PS2's 512 x 448
+ * (display targets N x 2N samples); a percentage P picks the smallest N whose 448 N rows reach P % of the output's rows
+ * (10 % slack: 125 % of 1440 = 1800 rows -> 4x = 1792): settings_scale_for. Auto = the governor's choice up to 100 %. */
+#define SETTINGS_RS_AUTO 0
+#define SETTINGS_RS_ORIGINAL 1
+#define SETTINGS_RS_PCT_MIN 25
+#define SETTINGS_RS_PCT_MAX 400
+/* the internal scale N (1..8) for render_scale rs at an output out_h rows high (out_h <= 0: 1080); auto: its highest scale */
+int settings_scale_for(int rs, int out_h);
+/* 1: rs is a percentage */
+static inline int settings_rs_is_pct(int rs) { return rs >= SETTINGS_RS_PCT_MIN && rs <= SETTINGS_RS_PCT_MAX; }
+/* the old internal_scale (1..8, 0 auto, -1 native) as a render_scale */
+int settings_rs_from_internal(int internal_scale);
+enum { SETTINGS_SPEAKERS_STEREO, SETTINGS_SPEAKERS_MONO, SETTINGS_SPEAKERS_SURROUND };
 
 /* graphics.pacing (pc-pacing): auto = pictures presented at an even 59.94 Hz cadence (their VBlank's time + a measured delay:
  * smooth on VRR displays) until the display is known; on a fixed refresh as soon as they are drawn, and on 60 / 120 / 240 Hz
@@ -87,18 +111,19 @@ extern const char* const settings_scaler_names[SETTINGS_SCALER_N];   /* "auto", 
 enum { SETTINGS_FULLSCREEN_OFF, SETTINGS_FULLSCREEN_BORDERLESS, SETTINGS_FULLSCREEN_EXCLUSIVE };
 
 /* Graphics presets (notes/settings.md "Presets"; the menu's Graphics > Preset):
- *   Original    - the PS2's look: internal_scale 1, filters faithful (flicker filter, interlacing, motion blur),
- *                 outlines ps2, aspect 4:3.
- *   Performance - internal_scale auto with auto_max 2 (2x, lowered to 1x on a slow GPU), Modern, outlines ps2, wide.
- *   Balanced    - (default) internal_scale auto with auto_max 3 (3x, lowered while the GPU cannot keep up), Modern,
- *                 outlines ps2, wide.
- *   Quality     - internal_scale native (at least the window's height: 4x on 1440p, 5x on 2160p), Modern, thin
- *                 outlines, wide.
+ *   Original    - the PS2's look: render_scale original (512 x 448), filters faithful (flicker filter, interlacing,
+ *                 motion blur), outlines ps2, aspect 4:3.
+ *   Performance - render_scale 50 % (2x at 1080p and 1440p), Modern, outlines ps2, wide.
+ *   Balanced    - (default) render_scale auto (up to 100 %, lowered while the GPU cannot keep up), Modern, outlines ps2,
+ *                 wide.
+ *   Quality     - render_scale 100 % (at least the output's rows: 4x on 1440p, 5x on 2160p), Modern, thin outlines, wide.
+ * (Every scale is a maximum: the renderer's governor draws lower while the GPU cannot keep up.)
  *   Custom      - anything else.
  * Every preset also sets the three filter toggles to `preset` and scaler = auto; "wide" keeps the current wide
  * aspect (16:9 when it was 4:3). The renderer is not part of a preset. */
 enum { SETTINGS_PRESET_ORIGINAL, SETTINGS_PRESET_PERFORMANCE, SETTINGS_PRESET_BALANCED, SETTINGS_PRESET_QUALITY,
        SETTINGS_PRESET_CUSTOM, SETTINGS_PRESET_N };
+#define SETTINGS_PRESET_PERFORMANCE_PCT 50   /* Performance's render scale (%) */
 extern const char* const settings_preset_names[SETTINGS_PRESET_N];   /* "original", ..., "custom" */
 int  settings_detect_preset(const ps2_settings_t* s);
 /* Set s's preset options to the preset's values (CUSTOM: nothing); s->preset = p. */
@@ -125,16 +150,22 @@ enum {                                   /* settings_opt.type */
     SET_TRI,                             /* preset (-1) / off (0) / on (1) */
     SET_ASPECT,                          /* W:H, stored in aspect_w / aspect_h; value = w << 16 | h */
     SET_STRING,                          /* disc path (not a menu value) */
+    SET_SCALE,                           /* render_scale: auto (0) | original (1) | 2x..8x | 25..400 (written "75%") */
+    SET_RES,                             /* a resolution: desktop (0) | w << 16 | h (written "2560x1440") */
 };
 enum {                                   /* settings_opt.flags */
     SET_LIVE = 1,                        /* applies while the game runs (else at the next start) */
     SET_PRESET = 2,                      /* part of the graphics presets: a change re-derives graphics.preset */
     SET_GPU = 4,                         /* the GPU renderer only (the software renderer ignores it) */
     SET_STATE = 8,                       /* remembered state, not a setting (window placement, disc): no reset */
+    SET_LEGACY = 16,                     /* an old key: still read (and settings_change'd: redirected to its successor), never
+                                            written; settings_load rewrites a file that has one (settings_migrate_text) */
+    SET_STAGED = 32,                     /* the Options menu stages a change until Apply (display mode, resolution, monitor,
+                                            renderer: a mode change, a restart or a switch of renderer) */
 };
 enum {                                   /* settings_opt.apply: who applies a change (settings_on_apply) */
     SET_APPLY_NONE, SET_APPLY_GFX, SET_APPLY_DISPLAY, SET_APPLY_WINDOW, SET_APPLY_AUDIO, SET_APPLY_INPUT,
-    SET_APPLY_PACING, SET_APPLY_RENDERER, SET_APPLY_FRAME_RATE, SET_APPLY_N
+    SET_APPLY_PACING, SET_APPLY_RENDERER, SET_APPLY_FRAME_RATE, SET_APPLY_GAME, SET_APPLY_N
 };
 typedef struct {
     const char* section;
@@ -197,6 +228,13 @@ int settings_format(const ps2_settings_t* s, char* out, size_t cap);
  * the new length, or -1 if it does not fit in cap. */
 int settings_update_text(const char* text, const char* section, const char* key, const char* value,
                          char* out, size_t cap);
+/* (pc-polish) The line of `key` in `[section]` removed (the first one; nothing else changes). Returns the new length, or -1. */
+int settings_remove_text(const char* text, const char* section, const char* key, char* out, size_t cap);
+/* (pc-polish) Old keys -> their successors in INI text: [window] fullscreen -> [display] mode, [graphics] internal_scale
+ * (+ auto_max) -> render_scale. The successor is written with the value the file means (unless it is there already) and the
+ * old line removed; everything else stays. Returns the new length when something changed, 0 when nothing did, -1 when it
+ * does not fit. Pure (unit tests); settings_load writes the result. */
+int settings_migrate_text(const char* text, char* out, size_t cap);
 
 /* The user data folder (created if missing; no trailing backslash), and a file in it. */
 const wchar_t* settings_user_dir(void);

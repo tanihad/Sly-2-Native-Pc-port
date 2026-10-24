@@ -79,7 +79,9 @@ The Options menu (title SELECT menu and pause menu; both are built by `0x1B04E0`
 item table `0x2BFEC8`) lists "USB Headset" (Logitech USB headset for PlayStation 2) and "Center
 Screen..." (moves the picture on a CRT TV through the GS display offsets). Neither means anything
 on PC; at `0x1B058C` (the item filter's test) those two items (kinds 0x50 and 0x3F) are left out.
-The rest of the menu is unchanged and still works (checked: Vibrations toggles; wraps around).
+The rest of the menu is unchanged and still works (checked: Vibrations toggles; wraps around). (pc-polish: the page now
+shows only the save items plus Options / Quit to Desktop; its other options moved into the PC Options menu and the pause
+menu has Save Game... / Load Game... directly: notes/pc-menu.md "One menu".)
 
 ## Verification (release build, headless, 2026-10-22/23)
 

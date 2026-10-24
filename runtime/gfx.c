@@ -33,12 +33,17 @@ static int env_scale(void) {
     return n >= 1 && n <= 8 ? n : 0;
 }
 
-static int scale_auto(void) { return !env_scale() && ps2_settings.internal_scale == SETTINGS_SCALE_AUTO; }
+static int scale_auto(void) { return !env_scale() && ps2_settings.render_scale == SETTINGS_RS_AUTO; }
 
-static int auto_max(void) {
-    int m = ps2_settings.auto_max;
-    return m >= 1 && m <= 8 ? m : SETTINGS_SCALE_AUTO_MAX;
+/* the output's rows (the window's client area / the fullscreen mode; 0 unknown: 1080 is assumed) */
+int gfx_output_rows(void) {
+    int w = 0, h = 0;
+    if (gfx_output_size) gfx_output_size(&w, &h);
+    return h > 0 ? h : 0;
 }
+
+/* (pc-polish) auto's highest scale: 100 % of the output (3x at 1080p, 4x at 1440p) */
+static int auto_max(void) { return settings_scale_for(SETTINGS_RS_AUTO, gfx_output_rows()); }
 
 int gfx_native_scale(int out_h) {
     if (out_h <= 0) return SETTINGS_SCALE_AUTO_MAX;
@@ -48,16 +53,13 @@ int gfx_native_scale(int out_h) {
 
 int gfx_scale(void) {
     int e = env_scale();
-    int n = e ? e : ps2_settings.internal_scale;
+    if (e) return e;
     if (scale_auto()) {                  /* (M11) the scale auto runs at (the renderer lowers it while the GPU is too slow) */
-        n = auto_was_on && gpu_hw_auto_scale ? gpu_hw_auto_scale() : 0;
+        int n = auto_was_on && gpu_hw_auto_scale ? gpu_hw_auto_scale() : 0;
         if (n < 1 || n > auto_max()) n = auto_max();
-    } else if (!e && n == SETTINGS_SCALE_NATIVE) {   /* (pc-menu) native: from the window's height */
-        int w = 0, h = 0;
-        if (gfx_output_size) gfx_output_size(&w, &h);
-        n = gfx_native_scale(h);
+        return n;
     }
-    return n < 1 ? 1 : n > 8 ? 8 : n;
+    return settings_scale_for(ps2_settings.render_scale, gfx_output_rows());   /* (pc-polish) % of the output, original, Nx */
 }
 
 uint32_t gfx_bits(void) {
@@ -74,8 +76,10 @@ uint32_t gfx_bits(void) {
 
 void gfx_describe(char* out, int cap) {
     const ps2_settings_t* s = &ps2_settings;
-    snprintf(out, (size_t)cap, "internal scale %s%dx%s, outlines %s, filters %s (motion blur %s, flicker filter %s, %s), scaler %s, preset %s",
-             scale_auto() ? "auto, now " : s->internal_scale == SETTINGS_SCALE_NATIVE && !env_scale() ? "native, " : "", gfx_scale(),
+    char rs[32];
+    settings_value_text(settings_find("graphics", "render_scale"), s->render_scale, rs, sizeof rs);
+    snprintf(out, (size_t)cap, "render scale %s: internal scale %s%dx%s, outlines %s, filters %s (motion blur %s, flicker filter %s, %s), scaler %s, preset %s",
+             rs, scale_auto() ? "now " : "", gfx_scale(),
              env_scale() ? " (PS2_GS_SCALE)" : "", s->outlines_thin ? "thin" : "ps2",
              s->filters_faithful ? "faithful" : "modern",
              settings_motion_blur(s) ? "on" : "off", settings_flicker_filter(s) ? "on" : "off",
@@ -135,7 +139,8 @@ void gfx_apply(void) {
 }
 
 void gfx_output_resized(void) {
-    if (ps2_settings.internal_scale == SETTINGS_SCALE_NATIVE && !env_scale()) gfx_apply();
+    int rs = ps2_settings.render_scale;          /* (a percentage and auto's maximum follow the output) */
+    if ((rs == SETTINGS_RS_AUTO || settings_rs_is_pct(rs)) && !env_scale()) gfx_apply();
 }
 
 static void change(const char* key, int v, int persist_it) {
@@ -146,16 +151,16 @@ int gfx_key(unsigned vk, int shift, int persist_it) {
     ps2_settings_t* s = &ps2_settings;
     switch (vk) {
     case 0x71: {                         /* F2: internal scale up (Shift: down), 1..8 round, from the scale in use; Ctrl: auto */
-        int v;
+        int v;                           /* (pc-polish) render_scale: Nx (1x = original), Ctrl: auto */
         if (shift & 2) {
-            v = SETTINGS_SCALE_AUTO;
+            v = SETTINGS_RS_AUTO;
         } else {
-            int n = gfx_scale() + ((shift & 1) ? -1 : 1);
-            if (env_scale()) n = (s->internal_scale <= SETTINGS_SCALE_AUTO ? auto_max() : s->internal_scale) + ((shift & 1) ? -1 : 1);
+            int cur = env_scale() ? settings_scale_for(s->render_scale, gfx_output_rows()) : gfx_scale();
+            int n = cur + ((shift & 1) ? -1 : 1);
             v = n < 1 ? 8 : n > 8 ? 1 : n;
         }
-        change("internal_scale", v, persist_it);
-        if (env_scale()) fprintf(stderr, "[gfx] PS2_GS_SCALE=%d is set: internal_scale %d is used once it is not\n", env_scale(), v);
+        change("render_scale", v, persist_it);
+        if (env_scale()) fprintf(stderr, "[gfx] PS2_GS_SCALE=%d is set: render_scale %d is used once it is not\n", env_scale(), v);
         break;
     }
     case 0x72:                           /* F3: outlines */

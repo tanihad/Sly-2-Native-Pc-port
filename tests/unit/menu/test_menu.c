@@ -77,13 +77,23 @@ const char* input_button_label(int btn, int xbox) { static const char* n[] = { "
 static int host_mode, host_closed, host_cw = 2560, host_ch = 1440, host_size_w, host_size_h, host_open_requests;
 static void h_out(int* w, int* h) { *w = host_cw; *h = host_ch; }
 static void h_disp(int* w, int* h, int* hz) { *w = 2560; *h = 1440; *hz = 165; }
-static int h_mode(void) { return host_mode; }
 static void h_set_mode(int m) { host_mode = m; }
 static void h_set_size(int w, int h) { host_size_w = w; host_size_h = h; }
 static void h_closed(void) { host_closed++; }
 static void h_req(void) { host_open_requests++; menu_open(); }
 static int h_true(void) { return 1; }
 static int h_auto(void) { return 3; }
+static unsigned long long fake_now = 1000000;
+static unsigned long long h_now(void) { return fake_now; }
+static int host_quits;
+static void h_quit(void) { host_quits++; }
+static int h_modes(int* wh, int max) {
+    static const int m[] = { 2560 << 16 | 1440, 1920 << 16 | 1080, 1280 << 16 | 720 };
+    int n = 0;
+    for (; n < 3 && n < max; n++) wh[n] = m[n];
+    return n;
+}
+static int h_mode_now(void) { return ps2_settings.win_fullscreen; }   /* (the window does what the setting says) */
 
 static void use_host(void) {
     menu_host h;
@@ -93,13 +103,17 @@ static void use_host(void) {
     h.auto_scale_now = h_auto;
     h.output_size = h_out;
     h.display_size = h_disp;
-    h.window_mode = h_mode;
+    h.window_mode = h_mode_now;
     h.set_window_mode = h_set_mode;
     h.set_client_size = h_set_size;
     h.request_open = h_req;
     h.closed = h_closed;
     h.in_game = h_true;
+    h.now_ms = h_now;
+    h.quit = h_quit;
+    h.display_modes = h_modes;
     menu_set_host(&h);
+    gfx_output_size = h_out;                     /* (the render scale follows the output, as window.c sets it) */
 }
 
 /* ---- settings model ------------------------------------------------------------------------------------- */
@@ -156,26 +170,102 @@ static void test_presets(void) {
     }
     settings_defaults(&s);
     settings_apply_preset(&s, SETTINGS_PRESET_ORIGINAL);
-    CHECK(s.internal_scale == 1 && s.filters_faithful && !s.outlines_thin && s.aspect_w == 4 && s.aspect_h == 3, "Original: 1x faithful 4:3");
+    CHECK(s.render_scale == SETTINGS_RS_ORIGINAL && s.filters_faithful && !s.outlines_thin && s.aspect_w == 4 && s.aspect_h == 3,
+          "Original: PS2 resolution, faithful, 4:3");
     settings_apply_preset(&s, SETTINGS_PRESET_QUALITY);
-    CHECK(s.internal_scale == SETTINGS_SCALE_NATIVE && s.outlines_thin && !s.filters_faithful, "Quality: native, thin");
+    CHECK(s.render_scale == 100 && s.outlines_thin && !s.filters_faithful, "Quality: 100%%, thin");
     CHECK(s.aspect_w == 4, "Quality keeps the aspect (the menu restores widescreen when leaving Original)");
     settings_apply_preset(&s, SETTINGS_PRESET_PERFORMANCE);
-    CHECK(s.internal_scale == SETTINGS_SCALE_AUTO && s.auto_max == 2 && !s.outlines_thin, "Performance: auto up to 2x");
+    CHECK(s.render_scale == 50 && !s.outlines_thin, "Performance: 50%%");
     s.outlines_thin = 1;
     CHECK(settings_detect_preset(&s) == SETTINGS_PRESET_CUSTOM, "changing an option -> custom");
     /* a preset in the file wins over its options; custom leaves them */
     settings_defaults(&s);
-    settings_parse("[graphics]\ninternal_scale = 5\npreset = quality\n", &s, NULL, NULL);
-    CHECK(s.internal_scale == SETTINGS_SCALE_NATIVE && s.preset == SETTINGS_PRESET_QUALITY, "preset = quality wins");
+    settings_parse("[graphics]\nrender_scale = 5x\npreset = quality\n", &s, NULL, NULL);
+    CHECK(s.render_scale == 100 && s.preset == SETTINGS_PRESET_QUALITY, "preset = quality wins");
     settings_defaults(&s);
-    settings_parse("[graphics]\npreset = custom\ninternal_scale = 5\n", &s, NULL, NULL);
-    CHECK(s.internal_scale == 5 && s.preset == SETTINGS_PRESET_CUSTOM, "preset = custom keeps the options");
+    settings_parse("[graphics]\npreset = custom\nrender_scale = 5x\n", &s, NULL, NULL);
+    CHECK(s.render_scale == 5 && s.preset == SETTINGS_PRESET_CUSTOM, "preset = custom keeps the options");
     settings_defaults(&s);
     settings_parse("[graphics]\ninternal_scale = 1\nfilters = faithful\n[display]\naspect = 4:3\n", &s, NULL, NULL);
-    CHECK(s.preset == SETTINGS_PRESET_ORIGINAL, "an old file without preset: derived (Original)");
+    CHECK(s.preset == SETTINGS_PRESET_ORIGINAL && s.render_scale == SETTINGS_RS_ORIGINAL,
+          "an old file without preset (internal_scale = 1): derived (Original)");
     CHECK(gfx_native_scale(1440) == 4 && gfx_native_scale(1080) == 3 && gfx_native_scale(2160) == 5 && gfx_native_scale(448) == 1 &&
           gfx_native_scale(0) == 3, "native scale");
+}
+
+/* (pc-polish) render_scale: values, the mapping onto the renderer's integer scales */
+static void test_render_scale(void) {
+    int i = settings_find("graphics", "render_scale"), v;
+    char t[32];
+    CHECK(i >= 0 && settings_parse_value(i, "75%", &v) && v == 75 && settings_parse_value(i, "75", &v) && v == 75 &&
+          settings_parse_value(i, "3x", &v) && v == 3 && settings_parse_value(i, "original", &v) && v == SETTINGS_RS_ORIGINAL &&
+          settings_parse_value(i, "1x", &v) && v == SETTINGS_RS_ORIGINAL && settings_parse_value(i, "native", &v) && v == 100 &&
+          settings_parse_value(i, "Auto", &v) && v == SETTINGS_RS_AUTO, "render_scale values");
+    CHECK(!settings_parse_value(i, "20%", &v) && !settings_parse_value(i, "9x", &v) && !settings_parse_value(i, "401", &v) &&
+          !settings_parse_value(i, "big", &v) && !settings_valid(i, 9) && !settings_valid(i, 24), "render_scale rejects");
+    CHECK(!strcmp(settings_value_text(i, 75, t, sizeof t), "75%") && !strcmp(settings_value_text(i, 4, t, sizeof t), "4x") &&
+          !strcmp(settings_value_text(i, 1, t, sizeof t), "original"), "render_scale texts");
+    /* N(P, rows) = the smallest N whose 448 N rows reach P %% of the output (10 %% slack) */
+    static const struct { int rs, h, n; } m[] = {
+        { 100, 1440, 4 }, { 100, 1080, 3 }, { 100, 2160, 5 }, { 100, 720, 2 }, { 50, 1440, 2 }, { 50, 1080, 2 }, { 67, 1440, 3 },
+        { 75, 1440, 3 }, { 75, 1080, 2 }, { 125, 1440, 4 }, { 150, 1440, 5 }, { 200, 1440, 7 }, { 200, 2160, 8 }, { 50, 448, 1 },
+        { SETTINGS_RS_AUTO, 1440, 4 }, { SETTINGS_RS_AUTO, 1080, 3 }, { SETTINGS_RS_AUTO, 0, 3 }, { SETTINGS_RS_ORIGINAL, 2160, 1 },
+        { 6, 720, 6 }, { 400, 2160, 8 }, { 25, 1080, 1 },
+    };
+    for (size_t k = 0; k < sizeof m / sizeof m[0]; k++)
+        CHECK(settings_scale_for(m[k].rs, m[k].h) == m[k].n, "scale for %d at %d rows: %d (got %d)", m[k].rs, m[k].h, m[k].n,
+              settings_scale_for(m[k].rs, m[k].h));
+    CHECK(settings_rs_from_internal(SETTINGS_SCALE_AUTO) == SETTINGS_RS_AUTO && settings_rs_from_internal(SETTINGS_SCALE_NATIVE) == 100 &&
+          settings_rs_from_internal(1) == SETTINGS_RS_ORIGINAL && settings_rs_from_internal(5) == 5, "old internal_scale -> render_scale");
+    i = settings_find("display", "resolution");
+    CHECK(settings_parse_value(i, "1920x1080", &v) && v == (1920 << 16 | 1080) && settings_parse_value(i, "1280 x 720", &v) &&
+          v == (1280 << 16 | 720) && settings_parse_value(i, "desktop", &v) && v == 0 && !settings_parse_value(i, "10x10", &v) &&
+          !strcmp(settings_value_text(i, 2560 << 16 | 1440, t, sizeof t), "2560x1440"), "display.resolution values");
+    i = settings_find("display", "mode");
+    CHECK(settings_parse_value(i, "fullscreen", &v) && v == SETTINGS_FULLSCREEN_EXCLUSIVE && settings_parse_value(i, "borderless", &v) &&
+          v == 1 && settings_parse_value(i, "exclusive", &v) && v == 2 && settings_parse_value(i, "on", &v) && v == 1 &&
+          !strcmp(settings_value_text(i, 0, t, sizeof t), "windowed"), "display.mode values");
+}
+
+/* (pc-polish) old keys: read, the new key wins, files rewritten */
+static void test_migration(void) {
+    ps2_settings_t s;
+    settings_defaults(&s);
+    settings_parse("[graphics]\npreset = custom\ninternal_scale = native\n[window]\nfullscreen = exclusive\n", &s, NULL, NULL);
+    CHECK(s.render_scale == 100 && s.win_fullscreen == SETTINGS_FULLSCREEN_EXCLUSIVE, "old keys read (%d, %d)", s.render_scale, s.win_fullscreen);
+    settings_defaults(&s);
+    settings_parse("[display]\nmode = windowed\n[graphics]\npreset = custom\nrender_scale = 75%\ninternal_scale = 6\n[window]\nfullscreen = on\n",
+                   &s, NULL, NULL);
+    CHECK(s.render_scale == 75 && s.win_fullscreen == 0, "the new keys win over old ones (%d, %d)", s.render_scale, s.win_fullscreen);
+    static char out[8192];
+    const char* old = "; mine\r\n[display]\r\naspect = 16:9\r\n[graphics]\r\npreset = custom\r\ninternal_scale = 5 ; sharp\r\nauto_max = 2\r\n"
+                      "outlines = thin\r\n[window]\r\nfullscreen = on\r\nshow_fps = on\r\nwidth = 1280\r\n";
+    int n = settings_migrate_text(old, out, sizeof out);
+    CHECK(n > 0 && strstr(out, "; mine\r\n") && strstr(out, "render_scale = 5x\r\n") && !strstr(out, "internal_scale") && !strstr(out, "auto_max") &&
+          strstr(out, "[display]\r\naspect = 16:9\r\nmode = borderless\r\n") && !strstr(out, "fullscreen") && strstr(out, "show_fps = on\r\n") &&
+          strstr(out, "width = 1280\r\n") && strstr(out, "outlines = thin\r\n"), "migrated text (%d):\n%s", n, out);
+    CHECK(settings_migrate_text(out, out + 4096, 4096) == 0, "a migrated file needs nothing more");
+    CHECK(settings_migrate_text("[graphics]\npreset = quality\ninternal_scale = 2\n", out, sizeof out) > 0 && strstr(out, "render_scale = 100%"),
+          "a preset decides the migrated render scale: %s", out);
+    /* on load: the file is rewritten */
+    wchar_t ini[MAX_PATH + 80];
+    settings_user_path(L"sly2.ini", ini, MAX_PATH + 80);
+    FILE* f = _wfopen(ini, L"wb");
+    fputs("[graphics]\r\npreset = custom\r\ninternal_scale = auto\r\nauto_max = 3\r\n[window]\r\nfullscreen = exclusive\r\n", f);
+    fclose(f);
+    settings_load();
+    char* t = read_file(ini);
+    CHECK(ps2_settings.render_scale == SETTINGS_RS_AUTO && ps2_settings.win_fullscreen == SETTINGS_FULLSCREEN_EXCLUSIVE && t &&
+          strstr(t, "render_scale = auto") && strstr(t, "mode = fullscreen") && !strstr(t, "internal_scale") && !strstr(t, "fullscreen = "),
+          "settings_load migrates the file:\n%s", t ? t : "(none)");
+    /* old callers of the old keys: redirected to the new ones */
+    CHECK(settings_change_key("window", "fullscreen", 0, 1) && ps2_settings.win_fullscreen == 0 && settings_change_key("graphics", "internal_scale", 4, 1) &&
+          ps2_settings.render_scale == 4, "settings_change of an old key");
+    t = read_file(ini);
+    CHECK(t && strstr(t, "mode = windowed") && strstr(t, "render_scale = 4x") && !strstr(t, "internal_scale"), "written as the new keys:\n%s", t ? t : "");
+    DeleteFileW(ini);
+    settings_load();
 }
 
 static void test_persist(void) {
@@ -195,19 +285,19 @@ static void test_persist(void) {
     CHECK(ps2_settings.preset == SETTINGS_PRESET_CUSTOM, "now custom");
     CHECK(settings_change_key("graphics", "preset", SETTINGS_PRESET_ORIGINAL, 1), "Original");
     t = read_file(ini);
-    CHECK(t && strstr(t, "preset = original") && strstr(t, "internal_scale = 1") && strstr(t, "filters = faithful") &&
+    CHECK(t && strstr(t, "preset = original") && strstr(t, "render_scale = original") && strstr(t, "filters = faithful") &&
           strstr(t, "aspect = 4:3   ; wide") && strstr(t, "outlines = ps2"), "Original's options written:\n%s", t ? t : "");
     CHECK(settings_change_key("graphics", "preset", SETTINGS_PRESET_BALANCED, 1) && ps2_settings.aspect_w == 16, "leaving Original: 16:9");
     settings_load();
-    CHECK(ps2_settings.preset == SETTINGS_PRESET_BALANCED && ps2_settings.aspect_w == 16 && ps2_settings.internal_scale == SETTINGS_SCALE_AUTO,
+    CHECK(ps2_settings.preset == SETTINGS_PRESET_BALANCED && ps2_settings.aspect_w == 16 && ps2_settings.render_scale == SETTINGS_RS_AUTO,
           "persisted across a restart");
     CHECK(!settings_change_key("audio", "master", 150, 1), "invalid value refused");
     _putenv("PS2_GS_SCALE=2");
-    CHECK(settings_change_key("graphics", "internal_scale", 6, 1), "env-locked change in memory");
+    CHECK(settings_change_key("graphics", "render_scale", 6, 1), "env-locked change in memory");
     t = read_file(ini);
-    CHECK(t && !strstr(t, "internal_scale = 6"), "env-locked option not written");
+    CHECK(t && !strstr(t, "render_scale = 6x"), "env-locked option not written");
     _putenv("PS2_GS_SCALE=");
-    settings_change_key("graphics", "internal_scale", SETTINGS_SCALE_AUTO, 1);
+    settings_change_key("graphics", "render_scale", SETTINGS_RS_AUTO, 1);
     /* F-keys go through the table too */
     gfx_key(0x72, 0, 1);                         /* F3 */
     t = read_file(ini);
@@ -242,33 +332,54 @@ static void test_menu_nav(void) {
     CHECK(V.page == MENU_PAGE_GRAPHICS && V.sel == 0 && V.rows[0].id == MENU_ROW_PRESET && !strcmp(V.rows[0].value, "Balanced"),
           "Graphics, Preset = Balanced ('%s')", V.rows[0].value);
     menu_nav_event(MENU_NAV_RIGHT, MENU_DEV_KEYBOARD);
-    CHECK(ps2_settings.preset == SETTINGS_PRESET_QUALITY && ps2_settings.internal_scale == SETTINGS_SCALE_NATIVE && ps2_settings.outlines_thin,
-          "right: Quality");
+    CHECK(ps2_settings.preset == SETTINGS_PRESET_QUALITY && ps2_settings.render_scale == 100 && ps2_settings.outlines_thin, "right: Quality");
     go(MENU_ROW_SCALE);
     view();
-    CHECK(strstr(V.rows[V.sel].value, "Native - 4x (2560 x 1792)") != NULL, "native at 1440p 16:9: '%s'", V.rows[V.sel].value);
+    CHECK(!strcmp(V.rows[V.sel].label, "Render scale") && !strcmp(V.rows[V.sel].value, "100% (2560 x 1440)") &&
+          strstr(V.rows[V.sel].desc, "Rendering at 2560 x 1792 -> shown at 2560 x 1440") != NULL,
+          "render scale at 1440p 16:9: '%s' / '%s'", V.rows[V.sel].value, V.rows[V.sel].desc);
+    CHECK(find_row(&V, MENU_ROW_AUTO_MAX) < 0, "no separate auto maximum row");
     menu_nav_event(MENU_NAV_LEFT, MENU_DEV_KEYBOARD);
-    CHECK(ps2_settings.internal_scale == 8 && ps2_settings.preset == SETTINGS_PRESET_CUSTOM, "left: 8x, Custom");
+    CHECK(ps2_settings.render_scale == 75 && ps2_settings.preset == SETTINGS_PRESET_CUSTOM, "left: 75%%, Custom");
     view();
     CHECK(!strcmp(V.rows[0].value, "Custom"), "preset row shows Custom");
-    CHECK(strstr(V.rows[V.sel].value, "8x (5632 x 3584)") != NULL, "8x 16:9 size (11 columns per pixel) '%s'", V.rows[V.sel].value);
+    CHECK(!strcmp(V.rows[V.sel].value, "75% (1920 x 1080)") && strstr(V.rows[V.sel].desc, "Rendering at 2048 x 1344 -> shown at 2560 x 1440"),
+          "75%% at 1440p: 3x '%s' / '%s'", V.rows[V.sel].value, V.rows[V.sel].desc);
+    for (int k = 0; k < 8; k++) menu_nav_event(MENU_NAV_LEFT, MENU_DEV_KEYBOARD);
+    view();
+    CHECK(ps2_settings.render_scale == SETTINGS_RS_AUTO && !strcmp(V.rows[V.sel].value, "Auto (up to 100%)"), "leftmost: Auto ('%s')",
+          V.rows[V.sel].value);
+    menu_nav_event(MENU_NAV_RIGHT, MENU_DEV_KEYBOARD);
+    CHECK(ps2_settings.render_scale == SETTINGS_RS_ORIGINAL, "then Original PS2");
+    settings_change_key("graphics", "render_scale", 8, 1);       /* (an exact multiple: F2) */
+    view();
+    CHECK(!strcmp(V.rows[V.sel].value, "8x (5632 x 3584)"), "8x 16:9 size (11 columns per pixel) '%s'", V.rows[V.sel].value);
     /* reset the page: the confirm dialog */
     go(MENU_ROW_RESET);
     menu_nav_event(MENU_NAV_CONFIRM, MENU_DEV_KEYBOARD);
     view();
-    CHECK(V.confirm_reset, "reset asks");
+    CHECK(V.confirm_reset && V.dialog == MENU_DLG_RESET && !strcmp(V.dlg_yes, "Reset"), "reset asks");
     menu_nav_event(MENU_NAV_BACK, MENU_DEV_KEYBOARD);
     view();
-    CHECK(!V.confirm_reset && menu_is_open() && ps2_settings.internal_scale == 8, "back cancels");
+    CHECK(!V.confirm_reset && menu_is_open() && ps2_settings.render_scale == 8, "back cancels");
     menu_nav_event(MENU_NAV_CONFIRM, MENU_DEV_KEYBOARD);
     menu_nav_event(MENU_NAV_CONFIRM, MENU_DEV_KEYBOARD);
-    CHECK(ps2_settings.preset == SETTINGS_PRESET_BALANCED && ps2_settings.internal_scale == SETTINGS_SCALE_AUTO && !ps2_settings.outlines_thin,
+    CHECK(ps2_settings.preset == SETTINGS_PRESET_BALANCED && ps2_settings.render_scale == SETTINGS_RS_AUTO && !ps2_settings.outlines_thin,
           "reset Graphics: Balanced");
+    /* the renderer is staged: Apply */
+    go(MENU_ROW_RENDERER);
+    menu_nav_event(MENU_NAV_RIGHT, MENU_DEV_KEYBOARD);
+    view();
+    CHECK(ps2_settings.renderer_gpu == 1 && V.pending && menu_pending() && !strcmp(V.rows[V.sel].value, "Software (CPU)") && V.rows[V.sel].note[0] &&
+          find_row(&V, MENU_ROW_APPLY) >= 0, "renderer staged ('%s', note '%s')", V.rows[V.sel].value, V.rows[V.sel].note);
+    menu_nav_event(MENU_NAV_LEFT, MENU_DEV_KEYBOARD);
+    view();
+    CHECK(!V.pending && find_row(&V, MENU_ROW_APPLY) < 0, "back to the value in effect: nothing to apply");
     /* wrap-around and tabs */
     go(MENU_ROW_PRESET);
     menu_nav_event(MENU_NAV_UP, MENU_DEV_KEYBOARD);
     view();
-    CHECK(V.sel == V.nrows - 1, "up from the first row: the last (%d)", V.sel);
+    CHECK(V.sel == V.nrows - 1 && V.rows[V.sel].id == MENU_ROW_QUIT, "up from the first row: the last, Quit (%d)", V.sel);
     menu_nav_event(MENU_NAV_DOWN, MENU_DEV_KEYBOARD);
     view();
     CHECK(V.sel == 0, "down from the last row wraps to the first (%d)", V.sel);
@@ -282,20 +393,89 @@ static void test_menu_nav(void) {
     menu_nav_event(MENU_NAV_LEFT, MENU_DEV_KEYBOARD);
     menu_nav_event(MENU_NAV_LEFT, MENU_DEV_KEYBOARD);
     view();
-    CHECK(ps2_settings.aspect_w == 4 && ps2_settings.aspect_h == 3, "aspect 4:3");
+    CHECK(ps2_settings.aspect_w == 4 && ps2_settings.aspect_h == 3, "aspect 4:3 (at once)");
     CHECK(!V.rows[find_row(&V, MENU_ROW_HUD)].enabled, "HUD layout disabled at 4:3");
     menu_nav_event(MENU_NAV_RIGHT, MENU_DEV_KEYBOARD);
     menu_nav_event(MENU_NAV_RIGHT, MENU_DEV_KEYBOARD);
     CHECK(ps2_settings.aspect_w == 16 && ps2_settings.aspect_h == 9, "back to 16:9");
-    go(MENU_ROW_WINSIZE);
+    /* resolution (windowed: the window size), staged */
+    go(MENU_ROW_RESOLUTION);
     view();
-    CHECK(V.rows[V.sel].enabled && V.rows[V.sel].cur < 0 && !strcmp(V.rows[V.sel].value, "2560 x 1440"),
-          "window size: the current one ('%s')", V.rows[V.sel].value);
+    CHECK(V.rows[V.sel].enabled && V.rows[V.sel].cur < 0 && !strcmp(V.rows[V.sel].value, "2560 x 1440") && !strcmp(V.rows[V.sel].label, "Resolution"),
+          "resolution: the window's ('%s')", V.rows[V.sel].value);
+    CHECK(!V.rows[find_row(&V, MENU_ROW_APPLY)].enabled, "Apply disabled: nothing staged");
     menu_nav_event(MENU_NAV_RIGHT, MENU_DEV_KEYBOARD);
-    CHECK(host_size_w == 960 && host_size_h == 540, "first window size 960 x 540 (%d x %d)", host_size_w, host_size_h);
+    view();
+    CHECK(host_size_w == 0 && !strcmp(V.rows[V.sel].value, "960 x 540") && V.pending, "window size staged, not applied ('%s')", V.rows[V.sel].value);
+    /* display mode: staged; Fullscreen offers the monitor's modes */
     go(MENU_ROW_MODE);
     menu_nav_event(MENU_NAV_RIGHT, MENU_DEV_KEYBOARD);
-    CHECK(ps2_settings.win_fullscreen == 1, "display mode: borderless (%d)", ps2_settings.win_fullscreen);
+    menu_nav_event(MENU_NAV_RIGHT, MENU_DEV_KEYBOARD);
+    view();
+    CHECK(ps2_settings.win_fullscreen == 0 && !strcmp(V.rows[V.sel].value, "Fullscreen") && V.rows[V.sel].note[0], "Fullscreen staged ('%s')",
+          V.rows[V.sel].value);
+    go(MENU_ROW_RESOLUTION);
+    view();
+    CHECK(!strcmp(V.rows[V.sel].value, "Desktop (2560 x 1440)") && V.rows[V.sel].nchoices == 3, "fullscreen resolutions ('%s', %d)",
+          V.rows[V.sel].value, V.rows[V.sel].nchoices);
+    menu_nav_event(MENU_NAV_RIGHT, MENU_DEV_KEYBOARD);
+    view();
+    CHECK(!strcmp(V.rows[V.sel].value, "1920 x 1080") && ps2_settings.fullscreen_res == 0, "1920 x 1080 staged ('%s')", V.rows[V.sel].value);
+    go(MENU_ROW_MODE);
+    menu_nav_event(MENU_NAV_LEFT, MENU_DEV_KEYBOARD);
+    view();
+    CHECK(!strcmp(V.rows[find_row(&V, MENU_ROW_RESOLUTION)].value, "2560 x 1440 (desktop)") && !V.rows[find_row(&V, MENU_ROW_RESOLUTION)].enabled,
+          "borderless: the desktop's resolution ('%s')", V.rows[find_row(&V, MENU_ROW_RESOLUTION)].value);
+    menu_nav_event(MENU_NAV_RIGHT, MENU_DEV_KEYBOARD);         /* Fullscreen again, 1920 x 1080 */
+    /* Apply -> Keep these display settings? (fake clock) */
+    go(MENU_ROW_APPLY);
+    menu_nav_event(MENU_NAV_CONFIRM, MENU_DEV_KEYBOARD);
+    view();
+    CHECK(ps2_settings.win_fullscreen == SETTINGS_FULLSCREEN_EXCLUSIVE && ps2_settings.fullscreen_res == (1920 << 16 | 1080) && !V.pending &&
+          V.dialog == MENU_DLG_KEEP && strstr(V.dlg_text, "15 s"), "applied, Keep? ('%s')", V.dlg_text);
+    fake_now += 5200;
+    menu_keep_tick();
+    view();
+    CHECK(V.dialog == MENU_DLG_KEEP && strstr(V.dlg_text, "10 s"), "counting down ('%s')", V.dlg_text);
+    fake_now += 10000;
+    menu_keep_tick();
+    view();
+    CHECK(V.dialog == MENU_DLG_NONE && ps2_settings.win_fullscreen == 0 && ps2_settings.fullscreen_res == 0, "no answer in 15 s: reverted");
+    go(MENU_ROW_MODE);
+    menu_nav_event(MENU_NAV_RIGHT, MENU_DEV_KEYBOARD);         /* borderless, Apply, Keep */
+    go(MENU_ROW_APPLY);
+    menu_nav_event(MENU_NAV_CONFIRM, MENU_DEV_KEYBOARD);
+    menu_nav_event(MENU_NAV_CONFIRM, MENU_DEV_KEYBOARD);
+    fake_now += 20000;
+    menu_keep_tick();
+    view();
+    CHECK(V.dialog == MENU_DLG_NONE && ps2_settings.win_fullscreen == SETTINGS_FULLSCREEN_BORDERLESS, "Keep: borderless stays");
+    go(MENU_ROW_MODE);
+    menu_nav_event(MENU_NAV_LEFT, MENU_DEV_KEYBOARD);          /* windowed, Apply, Revert */
+    go(MENU_ROW_APPLY);
+    menu_nav_event(MENU_NAV_CONFIRM, MENU_DEV_KEYBOARD);
+    CHECK(ps2_settings.win_fullscreen == 0, "windowed applied");
+    menu_nav_event(MENU_NAV_BACK, MENU_DEV_KEYBOARD);
+    CHECK(ps2_settings.win_fullscreen == SETTINGS_FULLSCREEN_BORDERLESS && menu_is_open(), "Revert: borderless again");
+    /* closing with a staged change asks */
+    go(MENU_ROW_MODE);
+    menu_nav_event(MENU_NAV_LEFT, MENU_DEV_KEYBOARD);
+    menu_nav_event(MENU_NAV_BACK, MENU_DEV_KEYBOARD);
+    view();
+    CHECK(menu_is_open() && V.dialog == MENU_DLG_PENDING && !strcmp(V.dlg_yes, "Apply") && !strcmp(V.dlg_no, "Discard"), "close: Apply the changes?");
+    menu_nav_event(MENU_NAV_BACK, MENU_DEV_KEYBOARD);
+    CHECK(!menu_is_open() && !menu_pending() && ps2_settings.win_fullscreen == SETTINGS_FULLSCREEN_BORDERLESS, "Discard: closed, unchanged");
+    menu_open();
+    menu_nav_event(MENU_NAV_TAB_NEXT, MENU_DEV_KEYBOARD);
+    menu_nav_event(MENU_NAV_TAB_PREV, MENU_DEV_KEYBOARD);
+    m_change("display", "mode", 0);
+    host_size_w = host_size_h = 0;
+    go(MENU_ROW_RESOLUTION);
+    menu_nav_event(MENU_NAV_RIGHT, MENU_DEV_KEYBOARD);
+    go(MENU_ROW_APPLY);
+    menu_nav_event(MENU_NAV_CONFIRM, MENU_DEV_KEYBOARD);
+    menu_nav_event(MENU_NAV_CONFIRM, MENU_DEV_KEYBOARD);       /* Keep */
+    CHECK(host_size_w == 960 && host_size_h == 540, "window size applied: 960 x 540 (%d x %d)", host_size_w, host_size_h);
     go(MENU_ROW_PACING);
     view();
     CHECK(!strcmp(V.rows[V.sel].note, "Applies at the next start"), "pacing note (stand-in): '%s'", V.rows[V.sel].note);
@@ -382,13 +562,44 @@ static void test_menu_nav(void) {
     view();
     CHECK(V.page == MENU_PAGE_CONTROLS && V.rows[V.sel].id == MENU_ROW_KEYS && menu_is_open(), "back: Controls, on the Keyboard row");
     menu_nav_event(MENU_NAV_BACK, MENU_DEV_KEYBOARD);
-    CHECK(!menu_is_open() && host_closed == 1 && !fake_menu_active, "back on a main page closes (host told, input released)");
+    CHECK(!menu_is_open() && host_closed == 2 && !fake_menu_active, "back on a main page closes (host told, input released)");
     menu_open();
     push(INPUT_NAV_MENU, INPUT_SRC_CONTROLLER);       /* Options / PS while open: close */
     menu_tick();
-    CHECK(!menu_is_open() && host_closed == 2, "MENU closes");
+    CHECK(!menu_is_open() && host_closed == 3, "MENU closes");
+    /* (pc-polish) Quit to desktop: alone over the game (the pause menu's entry, the close button) */
+    CHECK(menu_quit_request() && menu_is_open() && menu_quit_showing() && fake_menu_active, "quit asks");
+    view();
+    CHECK(V.dialog_only && V.dialog == MENU_DLG_QUIT && !strcmp(V.dlg_title, "Quit to desktop?") &&
+          !strcmp(V.dlg_text, "Unsaved progress since the last save will be lost.") && !strcmp(V.dlg_yes, "Quit"), "the quit question");
+    menu_nav_event(MENU_NAV_BACK, MENU_DEV_KEYBOARD);
+    CHECK(!menu_is_open() && host_quits == 0 && host_closed == 4, "Cancel: back to the game");
+    menu_quit_request();
+    menu_nav_event(MENU_NAV_CONFIRM, MENU_DEV_PLAYSTATION);
+    CHECK(host_quits == 1 && !menu_is_open(), "Quit: host.quit");
+    /* from the Options menu: the Quit row; Cancel returns to the page */
+    menu_open();
+    go(MENU_ROW_QUIT);
+    menu_nav_event(MENU_NAV_CONFIRM, MENU_DEV_KEYBOARD);
+    view();
+    CHECK(V.dialog == MENU_DLG_QUIT && !V.dialog_only, "Quit row asks");
+    menu_nav_event(MENU_NAV_BACK, MENU_DEV_KEYBOARD);
+    view();
+    CHECK(menu_is_open() && V.dialog == MENU_DLG_NONE && host_quits == 1, "Cancel: still in Options");
+    {                                                 /* the mouse: the dialog's buttons */
+        menu_layout L;
+        menu_nav_event(MENU_NAV_CONFIRM, MENU_DEV_KEYBOARD);
+        view();
+        menu_compute_layout(host_cw, host_ch, V.nrows, V.scroll, &L);
+        menu_mouse_button(L.dlg.x + 3, L.dlg.y + 3, 1);
+        CHECK(menu_quit_showing(), "a click beside the buttons does nothing");
+        menu_mouse_button(L.dlg_yes.x + 5, L.dlg_yes.y + 5, 1);
+        CHECK(host_quits == 2 && !menu_is_open(), "click on Quit");
+    }
     settings_reset_section("audio");
     settings_reset_section("display");
+    m_change("display", "mode", 0);
+    CHECK(host_mode == 0, "the display mode goes through the settings (host.set_window_mode unused)");
 }
 
 /* ---- drawing ------------------------------------------------------------------------------------------------ */
@@ -444,11 +655,37 @@ static void test_draw(void) {
         }
         if (s == 0) {                            /* the reset dialog and a binding capture */
             LOCK(); set_page(MENU_PAGE_GRAPHICS); UNLOCK();
-            menu_nav_event(MENU_NAV_UP, MENU_DEV_PLAYSTATION);
+            go(MENU_ROW_RESET);
             menu_nav_event(MENU_NAV_CONFIRM, MENU_DEV_PLAYSTATION);
             menu_draw(px, w, h, w);
             save_raw("pc_menu_reset_1440p", px, w, h);
             menu_nav_event(MENU_NAV_BACK, MENU_DEV_PLAYSTATION);
+            /* (pc-polish) a staged display mode (the Apply button), Apply on close?, Keep these display settings?, Quit */
+            LOCK(); set_page(MENU_PAGE_DISPLAY); UNLOCK();
+            go(MENU_ROW_MODE);
+            menu_nav_event(MENU_NAV_RIGHT, MENU_DEV_KEYBOARD);
+            menu_nav_event(MENU_NAV_RIGHT, MENU_DEV_KEYBOARD);
+            go(MENU_ROW_RESOLUTION);
+            menu_nav_event(MENU_NAV_RIGHT, MENU_DEV_KEYBOARD);
+            menu_draw(px, w, h, w);
+            save_raw("pc_menu_staged_1440p", px, w, h);
+            menu_nav_event(MENU_NAV_BACK, MENU_DEV_KEYBOARD);
+            menu_draw(px, w, h, w);
+            save_raw("pc_menu_pending_1440p", px, w, h);
+            menu_nav_event(MENU_NAV_CONFIRM, MENU_DEV_KEYBOARD);         /* Apply -> Keep? */
+            fake_now += 3000;
+            menu_keep_tick();
+            menu_draw(px, w, h, w);
+            save_raw("pc_menu_keep_1440p", px, w, h);
+            menu_nav_event(MENU_NAV_BACK, MENU_DEV_KEYBOARD);            /* Revert */
+            CHECK(ps2_settings.win_fullscreen == 0 && ps2_settings.fullscreen_res == 0 && menu_is_open(), "reverted after the pictures");
+            menu_close();
+            menu_quit_request();
+            menu_nav_event(MENU_NAV_NONE, MENU_DEV_PLAYSTATION);
+            menu_draw(px, w, h, w);
+            save_raw("pc_menu_quit_1440p", px, w, h);
+            menu_nav_event(MENU_NAV_BACK, MENU_DEV_PLAYSTATION);
+            menu_open();
         }
         menu_close();
         uint32_t* fps = malloc(200 * 60 * 4);
@@ -465,6 +702,8 @@ int main(int argc, char** argv) {
         if (!strcmp(argv[i], "--shots") && i + 1 < argc) shots_dir = argv[++i];
     test_table();
     test_presets();
+    test_render_scale();
+    test_migration();
     test_persist();
     test_menu_nav();
     test_draw();
