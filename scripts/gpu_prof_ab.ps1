@@ -32,7 +32,11 @@ foreach ($round in 1..$Rounds) {
             $z = if ($stats -match 'ff-tri-fast-z ([\d.]+)/([\d.]+)') { "tri-z PS $($Matches[1]) M (pass $($Matches[2]))" } else { '' }
             $ph = [regex]::Matches($t, 'prof: \d+ frames, GPU ms per frame [\d.]+: (.*?)\[gpu\] prof-stats')
             $phs = if ($ph.Count) { ($ph[$ph.Count - 1].Groups[1].Value -replace '\s+', ' ').Trim() } else { '' }
+            # (perf-p1) per game frame (VBlanks with >= 1000 primitives, as m9_bench): the VBlank averages times VBlanks / game frames
+            $gf = 1.0; if ($t -match 'ref-bench frames=(\d+) .*?game_frames=(\d+)') { if ([double]$Matches[2] -gt 0) { $gf = [double]$Matches[1] / [double]$Matches[2] } }
+            $zg = if ($stats -match 'ff-tri-fast-z ([\d.]+)/([\d.]+)') { "tri-z PS {0:N2} M (pass {1:N2})" -f ([double]$Matches[1] * $gf), ([double]$Matches[2] * $gf) } else { '' }
             "{0,-11} S{1} {2,-5} GPU {3} ms/VBlank | PS total {4:N2} M | {5}" -f $r, $Scale, $b.name, $ms, $tot, $z
+            "{0,-11} S{1} {2,-5} per game frame (x{3:N2}): GPU {4:N2} ms | PS total {5:N2} M | {6}" -f $r, $Scale, $b.name, $gf, ($(if ($ms -ne '?') { [double]$ms } else { 0 }) * $gf), ($tot * $gf), $zg
             "      phases: $phs"
             Remove-Item $log -ErrorAction SilentlyContinue
         }

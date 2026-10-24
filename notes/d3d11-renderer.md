@@ -328,6 +328,12 @@ SV_Depth = asfloat(z + 0x00800000)                                        // ord
   invocations per frame, well within budget; conservative-depth variants are an M9 option.
 - Sprites and line pixels carry a constant Z per native pixel (as sw).
 
+*(P1, as built (appendix P): the encoding is `min(z, 2^20) / 2^20` (exact, linear, spread over [0, 1] for the GPU's
+coarse depth culling; stored values above 2^20 saturate, exact against FF fragments, which the frontend keeps below
+2^20: Z24 / Z32 primitives with a vertex Z above 2^20 - 512 go to the ROV tier with zpatch as depth until a full clear),
+and the FF pixel shaders write it as `SV_DepthLessEqual` under a proven rasterized upper bound, so hidden fragments are
+rejected before shading while the exact value still decides every tie.)*
+
 ---
 
 ## 4. Draw classification
