@@ -655,11 +655,37 @@ static void test_draw(void) {
         }
         if (s == 0) {                            /* the reset dialog and a binding capture */
             LOCK(); set_page(MENU_PAGE_GRAPHICS); UNLOCK();
-            menu_nav_event(MENU_NAV_UP, MENU_DEV_PLAYSTATION);
+            go(MENU_ROW_RESET);
             menu_nav_event(MENU_NAV_CONFIRM, MENU_DEV_PLAYSTATION);
             menu_draw(px, w, h, w);
             save_raw("pc_menu_reset_1440p", px, w, h);
             menu_nav_event(MENU_NAV_BACK, MENU_DEV_PLAYSTATION);
+            /* (pc-polish) a staged display mode (the Apply button), Apply on close?, Keep these display settings?, Quit */
+            LOCK(); set_page(MENU_PAGE_DISPLAY); UNLOCK();
+            go(MENU_ROW_MODE);
+            menu_nav_event(MENU_NAV_RIGHT, MENU_DEV_KEYBOARD);
+            menu_nav_event(MENU_NAV_RIGHT, MENU_DEV_KEYBOARD);
+            go(MENU_ROW_RESOLUTION);
+            menu_nav_event(MENU_NAV_RIGHT, MENU_DEV_KEYBOARD);
+            menu_draw(px, w, h, w);
+            save_raw("pc_menu_staged_1440p", px, w, h);
+            menu_nav_event(MENU_NAV_BACK, MENU_DEV_KEYBOARD);
+            menu_draw(px, w, h, w);
+            save_raw("pc_menu_pending_1440p", px, w, h);
+            menu_nav_event(MENU_NAV_CONFIRM, MENU_DEV_KEYBOARD);         /* Apply -> Keep? */
+            fake_now += 3000;
+            menu_keep_tick();
+            menu_draw(px, w, h, w);
+            save_raw("pc_menu_keep_1440p", px, w, h);
+            menu_nav_event(MENU_NAV_BACK, MENU_DEV_KEYBOARD);            /* Revert */
+            CHECK(ps2_settings.win_fullscreen == 0 && ps2_settings.fullscreen_res == 0 && menu_is_open(), "reverted after the pictures");
+            menu_close();
+            menu_quit_request();
+            menu_nav_event(MENU_NAV_NONE, MENU_DEV_PLAYSTATION);
+            menu_draw(px, w, h, w);
+            save_raw("pc_menu_quit_1440p", px, w, h);
+            menu_nav_event(MENU_NAV_BACK, MENU_DEV_PLAYSTATION);
+            menu_open();
         }
         menu_close();
         uint32_t* fps = malloc(200 * 60 * 4);
