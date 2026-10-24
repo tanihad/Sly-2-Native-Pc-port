@@ -28,8 +28,17 @@ int    frame_rate_setting(void);
 /* the display's refresh rate (Hz) as the presenter / display clock measured it (FRAME_RATE_DISPLAY follows it) */
 void   frame_rate_note_display(double hz);
 double frame_rate_display_hz(void);
-/* the target now: FRAME_RATE_NTSC_HZ for 60, the chosen rate, the display's, 0 = unlimited */
+/* the target now: FRAME_RATE_NTSC_HZ for 60, the chosen rate, the display's, 0 = unlimited; the display lock's rate */
 double frame_rate_target_hz(void);
+/* (pc-smooth) the setting's rate without the display lock (FRAME_RATE_NTSC_HZ for 60, 0 = unlimited) */
+double frame_rate_base_hz(void);
+/* (pc-smooth) display-locked cadence on a fixed-refresh display whose refresh is not a multiple of the rate (165 Hz
+ * without VRR): the display's own VBlanks drive the game at refresh / k (gpu_hw.c clock thread, k = the smallest whole
+ * number of refreshes per frame at or below the setting: 60 -> 55, 120 -> 82.5 on 165 Hz), so every picture stays
+ * on screen the same number of refreshes instead of alternating 2 and 3 (judder). 0 = off. Movies and the RC chopper
+ * keep the PS2's 59.94 Hz (frame_rate_lock_hz then reads 0). */
+void   frame_rate_set_lock(double hz);
+double frame_rate_lock_hz(void);
 /* 1: above the PS2's rate (the limiter runs the VBlanks); 0: the 59.94 Hz timer */
 int    frame_rate_high(void);
 /* the pictures' cadence for pacing and the GPU governor (ms): 1000 / target; unlimited: the display's period (at most

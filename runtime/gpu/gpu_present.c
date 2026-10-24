@@ -104,10 +104,13 @@ static void vrr_log_driver(const char* when);    /* (pc-fps) */
 extern void frame_rate_note_display(double hz) __attribute__((weak));   /* (pc-fps) runtime/frame_rate.c */
 extern double frame_rate_target_hz(void) __attribute__((weak));
 extern int frame_rate_high(void) __attribute__((weak));
+extern double frame_rate_lock_hz(void) __attribute__((weak));   /* (pc-smooth) display-locked cadence */
 
 /* (pc-pacing) presentation mode, set from any thread (gpu_present_set_mode), read by the render thread per picture */
 static volatile LONG pace_mode = PACE_MODE_AUTO, pace_vsync = PACE_VSYNC_ON, pace_refresh_x1000;
 static volatile LONG pace_disp_shared = PACE_DISP_UNKNOWN;
+static volatile LONG disp_fixed_seen;     /* (pc-smooth) the display was seen refreshing at a fixed rate (no VRR) */
+int gpu_present_display_fixed(void) { return (int)disp_fixed_seen; }
 static int pace_log = -1;                /* PS2_PACE_LOG=1: one line per present */
 static int pace_headless = -1;           /* PS2_PACE_HEADLESS=1: pace the offscreen presents too (measurements) */
 void gpu_present_set_mode(int mode, int vsync) {
@@ -892,11 +895,16 @@ static void pace_statistics(UINT pc) {
         P.disp_state = PACE_DISP_UNKNOWN;
         InterlockedExchange(&pace_disp_shared, PACE_DISP_UNKNOWN);
         InterlockedExchange(&pace_refresh_x1000, (LONG)(hz_now * 1000.0));
+        InterlockedExchange(&disp_fixed_seen, 0);
         gpu_log("pace: the display runs at %.3f Hz now", hz_now);
         return;
     }
     int s = pace_disp_classify(&P.disp);
     InterlockedExchange(&pace_disp_shared, s);
+    /* (pc-smooth) sticky: once a fixed refresh was seen it stays known while the display locks the cadence (the locked
+     * presents then sit on a multiple of the refresh and classify as MULTIPLE); VRR clears it */
+    if (s == PACE_DISP_FIXED) InterlockedExchange(&disp_fixed_seen, 1);
+    else if (s == PACE_DISP_VRR) InterlockedExchange(&disp_fixed_seen, 0);
     gpu_vrr_set_status(NULL, s, P.disp.refresh_ms > 0 ? 1000.0 / P.disp.refresh_ms : 0);   /* (pc-fps) the menu's status */
     if (s == P.disp_state || s == PACE_DISP_UNKNOWN) return;
     P.disp_state = s;
@@ -1013,6 +1021,20 @@ static void present_fit(int aw, int ah, int scaler) {
     int unlimited = frame_rate_target_hz && frame_rate_target_hz() == 0;
     int paced = (P.sc || pace_headless) && mode != PACE_MODE_IMMEDIATE && !auto_immediate && !unlimited && vb > 0;
     double target = paced ? vb + P.pd.delay_ms : 0;
+    /* (pc-smooth) display-locked cadence (frame_rate_set_lock: the display's own VBlanks every k refreshes drive the game, vb =
+     * when that display VBlank happened): every picture is presented in the middle of the same refresh interval after its
+     * VBlank - the one ending m refreshes later, m = the present delay D (95th percentile of the ready times + margin)
+     * rounded up to whole refreshes - so each is shown exactly m refreshes after its VBlank and stays k refreshes; ready
+     * times varying by a few ms no longer move a picture to the neighbouring refresh (immediate presents did: 2/3/4-refresh
+     * holds) */
+    double lock_hz = frame_rate_lock_hz ? frame_rate_lock_hz() : 0, R = P.disp.refresh_ms;
+    if (lock_hz > 0 && R > 1.0 && vb > 0 && (P.sc || pace_headless) && mode != PACE_MODE_IMMEDIATE) {
+        int m = (int)ceil(P.pd.delay_ms / R - 0.05);
+        if (m < 1) m = 1;
+        paced = 1;
+        target = vb + ((double)m - 0.5) * R;
+        P.st.target_ms = target - vb;
+    }
     if (paced) P.st.target_ms = P.pd.delay_ms;
     InterlockedExchange(&pace_extra, paced ? (LONG)ceil(P.pd.delay_ms / P.content_ms) : 0);
     if (paced && gpu_rt.cur_behind) paced = 0;   /* behind (a newer frame waits): no wait, present it now */

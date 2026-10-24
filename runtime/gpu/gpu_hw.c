@@ -13,6 +13,10 @@
 extern void frame_rate_note_display(double hz) __attribute__((weak));   /* (pc-fps) runtime/frame_rate.c */
 extern int frame_rate_high(void) __attribute__((weak));
 static int fr_high(void) { return frame_rate_high && frame_rate_high(); }
+extern void frame_rate_set_lock(double hz) __attribute__((weak));      /* (pc-smooth) display-locked cadence */
+extern double frame_rate_lock_hz(void) __attribute__((weak));
+extern double frame_rate_base_hz(void) __attribute__((weak));
+int gpu_present_display_fixed(void);
 
 #include <dxgi1_2.h>
 #include <math.h>
@@ -630,21 +634,44 @@ static double measure_refresh(IDXGIOutput* o) {
 static volatile LONG clock_pacing;       /* the pacing setting now (gpu_hw_pacing_changed): the clock runs for auto / display */
 static int clock_wanted(void) { return clock_pacing == SETTINGS_PACING_AUTO || clock_pacing == SETTINGS_PACING_DISPLAY; }
 
+/* (pc-smooth) the display lock: refreshes per game frame k (0 = no lock) for a display of hz Hz - pacing = display, or auto on a
+ * display seen refreshing at a fixed rate (no VRR); only when the refresh is not already a multiple of the frame rate (60 / 120
+ * Hz: the existing display VBlanks) and the rate is not unlimited. k makes hz / k the highest rate at or below the setting, or the
+ * next one above when that would fall under 85% of it (144 Hz at 60: 72 rather than 48) */
+static int clock_lock_k(double hz) {
+    if (!(hz > 0) || !frame_rate_base_hz || !frame_rate_set_lock) return 0;
+    if (!(clock_pacing == SETTINGS_PACING_DISPLAY || (clock_pacing == SETTINGS_PACING_AUTO && gpu_present_display_fixed()))) return 0;
+    double base = frame_rate_base_hz();
+    if (!(base > 0)) return 0;
+    if (pace_refresh_multiple(1000.0 / hz, 1000.0 / base)) return 0;
+    int k = (int)ceil(hz / base - 0.01);
+    if (k < 1) k = 1;
+    if (k > 1 && hz / k < 0.85 * base) k--;
+    if (fabs(hz / k - base) / base < 0.005) return 0;
+    return k;
+}
+
 static DWORD WINAPI clock_main(LPVOID arg) {
     int forced = arg != NULL;                /* pacing = display (logged when it cannot); auto (quiet) */
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
     IDXGIOutput* o = find_output();
     if (!o) { if (forced) hlog("display pacing: no DXGI output for the window: the 59.94 Hz timer stays"); return 0; }
     for (;;) {
-        while (!clock_wanted()) Sleep(500);  /* (pacing changed to paced / immediate while the game runs) */
+        while (!clock_wanted()) { if (frame_rate_set_lock) frame_rate_set_lock(0); Sleep(500); }   /* (pacing changed to paced / immediate) */
         double hz = measure_refresh(o);
         if (hz > 0) gpu_present_set_refresh(hz);
         if (hz > 0 && frame_rate_note_display) frame_rate_note_display(hz);   /* (pc-fps: frame_rate = display follows it) */
+        /* (pc-smooth) a fixed-refresh display that is not a multiple of the frame rate (165 Hz without VRR): the game's cadence is
+         * locked to every k-th refresh (frame_rate.h frame_rate_set_lock) */
+        int lock_k = clock_lock_k(hz);
+        if (frame_rate_set_lock) frame_rate_set_lock(lock_k ? hz / lock_k : 0);
+        int locked = lock_k && frame_rate_lock_hz && frame_rate_lock_hz() > 0;   /* (not during movies / the RC chopper) */
+        int fixed_was = gpu_present_display_fixed();
         double content = pace_content_ms();  /* (pc-fps) the frame rate's period: 59.94 Hz, or e.g. 165 Hz = the display's own */
         /* (pc-fps) above 60 fps the frame limiter makes one picture per game frame (ps2_runtime.c): display VBlanks would compose and
          * present a picture at every refresh, also when the game has not drawn a new frame (GPU time for nothing) */
         int high = fr_high();
-        int k = hz > 0 && !high ? pace_refresh_multiple(1000.0 / hz, content) : 0;
+        int k = locked ? lock_k : hz > 0 && !high ? pace_refresh_multiple(1000.0 / hz, content) : 0;
         HMONITOR mon = MonitorFromWindow((HWND)C.hwnd, MONITOR_DEFAULTTOPRIMARY);
         if (!k) {
             if (high) hlog("display pacing: frame rate above 60: one picture per game frame (frame limiter), the display at %.2f Hz", hz);
@@ -654,14 +681,16 @@ static DWORD WINAPI clock_main(LPVOID arg) {
                 Sleep(2000);
                 double now_hz = gpu_window_refresh_hz(C.hwnd);
                 if (MonitorFromWindow((HWND)C.hwnd, MONITOR_DEFAULTTOPRIMARY) == mon && !(now_hz > 0 && fabs(now_hz - hz) > 1.0) &&
-                    fabs(pace_content_ms() - content) <= 0.01) continue;
+                    fabs(pace_content_ms() - content) <= 0.01 && gpu_present_display_fixed() == fixed_was &&
+                    clock_lock_k(hz) == lock_k) continue;
                 IDXGIOutput_Release(o);
                 if (!(o = find_output())) return 0;
                 break;
             }
             continue;
         }
-        hlog("display pacing: VBlanks from the display (%.3f Hz, %d refresh%s per VBlank, %.2f frames/s)", hz, k, k > 1 ? "es" : "", hz / k);
+        hlog("display pacing: VBlanks from the display (%.3f Hz, %d refresh%s per VBlank, %.2f frames/s%s)", hz, k, k > 1 ? "es" : "", hz / k,
+             locked ? ", locked: the display refreshes at a fixed rate that is not a multiple of the frame rate" : "");
         C.vblank_external(1);
         int moved = 0;
         for (uint32_t n = 0; !moved; n++) {
@@ -669,7 +698,9 @@ static DWORD WINAPI clock_main(LPVOID arg) {
             else if (n % (uint32_t)k == 0) C.display_vblank();
             if ((n & 127) == 127 && (MonitorFromWindow((HWND)C.hwnd, MONITOR_DEFAULTTOPRIMARY) != mon ||   /* the window moved, */
                                      fabs(gpu_window_refresh_hz(C.hwnd) - hz) > 1.0 || !clock_wanted() ||
-                                     fabs(pace_content_ms() - content) > 0.01)) moved = 1;   /* the mode, pacing or frame rate changed */
+                                     fabs(pace_content_ms() - content) > 0.01 ||   /* the mode, pacing or frame rate changed */
+                                     clock_lock_k(hz) != lock_k)) moved = 1;       /* (pc-smooth) VRR seen, setting changed */
+            /* (pc-smooth) a movie / the RC chopper while locked: their 59.94 Hz comes from the timer (content changed above) */
         }
         C.vblank_external(0);
         IDXGIOutput_Release(o);

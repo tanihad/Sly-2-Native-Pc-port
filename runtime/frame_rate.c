@@ -12,6 +12,7 @@ static volatile LONG64 request_qpc;
 static HANDLE request_event;
 static volatile LONG movie;              /* a movie plays (patches frame_movie_*) */
 static volatile LONG excluded;           /* the camera follows an object that keeps 60 fps (frame_vblank_request) */
+static volatile LONG lock_mhz;           /* (pc-smooth) display-locked cadence: refresh / k, mHz (0 = none) */
 
 static void update_dt_min(void) {
     /* the game's own 1/60 at 60; above, low enough for any rate the limiter allows (the clamp only guards against a
@@ -48,9 +49,31 @@ void frame_rate_note_display(double hz) {
 
 double frame_rate_display_hz(void) { return display_mhz > 0 ? (double)display_mhz / 1000.0 : 0; }
 
+double frame_rate_base_hz(void) {
+    int s = (int)setting;
+    if (s == FRAME_RATE_UNLIMITED) return 0;
+    if (s == FRAME_RATE_DISPLAY) {
+        double d = frame_rate_display_hz();
+        return d > FRAME_RATE_NTSC_HZ * 1.01 ? (d > FRAME_RATE_MAX_HZ ? FRAME_RATE_MAX_HZ : d) : FRAME_RATE_NTSC_HZ;
+    }
+    return s <= 60 ? FRAME_RATE_NTSC_HZ : (double)s;
+}
+
+void frame_rate_set_lock(double hz) {
+    LONG v = hz > 0 ? (LONG)(hz * 1000.0 + 0.5) : 0;
+    if (InterlockedExchange(&lock_mhz, v) != v) {
+        update_dt_min();
+        if (v) fprintf(stderr, "[fps] frame rate locked to the display: %.2f frames/s (every picture the same number of refreshes)\n", hz);
+        else fprintf(stderr, "[fps] frame rate no longer locked to the display\n");
+    }
+}
+
+double frame_rate_lock_hz(void) { return lock_mhz > 0 && !movie && !excluded ? (double)lock_mhz / 1000.0 : 0; }
+
 double frame_rate_target_hz(void) {
     int s = (int)setting;
     if (movie || excluded) return FRAME_RATE_NTSC_HZ;   /* movies: the PS2's rate (their decode loop counts VBlanks); RC */
+    if (lock_mhz > 0) return (double)lock_mhz / 1000.0; /* (pc-smooth) refresh / k of a fixed-refresh display */
     if (s == FRAME_RATE_UNLIMITED) return 0;
     if (s == FRAME_RATE_DISPLAY) {
         double d = frame_rate_display_hz();
