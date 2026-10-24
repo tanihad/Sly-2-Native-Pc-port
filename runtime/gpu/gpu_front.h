@@ -139,6 +139,8 @@ typedef struct {
     uint32_t tex_used_scans;             /* (M9) textures scanned for the palette entries they use */
     uint32_t zb_sat;                     /* (P1) FF depth triangles drawn without the early-depth bound (gpu.h: a vertex Z
                                             beyond the format's maximum, or a Z slope above GPU_ZB_SLOPE) */
+    uint32_t zb_rov;                     /* (P1) steep Z24 / Z32 triangles sent to the ROV tier: their exact Z was not
+                                            proven below 2^20 (gpu_front_zbound) */
 } gpu_front_frame;
 
 void gpu_front_start(const gpu_front_config* cfg);   /* installs the gs_draw.c hooks */

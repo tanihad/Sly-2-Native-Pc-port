@@ -58,6 +58,9 @@ typedef struct gpu_target {
     int z_high;                          /* (P1) a Z24 / Z32 vertex above GPU_Z_FF_MAX seen: zpatch as depth until a full clear */
 } gpu_target;
 
+/* (P1, gpu_front.c) the early-depth decision of an FF depth triangle: 0 vertex bound, 1 no bound, 2 ROV tier */
+int gpu_front_zbound(const gs_tri* T, const gs_vtx* a, const gs_vtx* b, const gs_vtx* c, int zfi, gs_plane* zp);
+
 extern gpu_target gt[GPU_MAX_TARGETS + 1];          /* [id] */
 extern uint32_t own_gen;                 /* bumped when a block stops being CPU-valid (texture source checks) */
 extern uint32_t own_upload_gen;          /* bumped by every upload */

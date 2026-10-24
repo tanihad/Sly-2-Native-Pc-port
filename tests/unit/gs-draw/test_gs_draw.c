@@ -686,6 +686,11 @@ static void t_zlimits(int zpsm) {
     rgba(0, 0, 255, 0x80);
     xyz(400, 10, 0); xyz(402, 10, z16 ? 0xFFFF : FFMAX); xyz(401, 190, z16 ? 0xFFFF : FFMAX);
     xyz(410, 10, z16 ? 0xFFFF : FFMAX); xyz(411, 190, 0); xyz(412, 10, 0);
+    /* slivers with the whole Z range across them: 1/16 pixel wide (no bound, FF), and the narrowest one the 12.4 grid
+     * allows (6e-4 pixel: a Z slope ~2^30 per pixel, the Z record's steps beyond what gpu_front_zbound proves - Z24 /
+     * Z32: the ROV tier) */
+    xyz(420, 10, 0); xyz(520, 110, z16 ? 0xFFFF : FFMAX); xyz(470.0625, 60, z16 ? 0xFFFF : FFMAX);
+    xyz(420, 120, 0); xyz(520, 121, 0); xyz(469.9375, 120.5, z16 ? 0xFFFF : FFMAX);
     if (!z16) {
         /* Z24 / Z32: a primitive above the FF range (ROV tier; the target's depth in zpatch until a full clear), then
          * ties with it and FF-range primitives after it */
@@ -2233,10 +2238,18 @@ int main(int argc, char** argv) {
 #ifdef TEST_HW_REF
     {
         gpu_front_frame fr[64];
-        uint32_t punts = 0, rbdiff = 0;
+        uint32_t punts = 0, rbdiff = 0, zhigh = 0, zbsat = 0, zbrov = 0;
         gpu_front_vblank(NULL, 0);       /* (closes the frame: its counters) */
         for (int n; (n = gpu_front_take_frames(fr, 64)) > 0;)
-            for (int i = 0; i < n; i++) { punts += fr[i].tier[GPU_TIER_PUNT]; rbdiff += fr[i].punt_why[GPU_PUNT_READBACK_DIFF]; }
+            for (int i = 0; i < n; i++) {
+                punts += fr[i].tier[GPU_TIER_PUNT]; rbdiff += fr[i].punt_why[GPU_PUNT_READBACK_DIFF];
+                zhigh += fr[i].z32_over; zbsat += fr[i].zb_sat; zbrov += fr[i].zb_rov;
+            }
+#ifdef TEST_HW_MIXED                     /* (P1: t_zlimits reaches every early-depth fallback) */
+        fprintf(stderr, "[hw-ref] early depth: %u Z24/Z32 primitives above the FF range, %u FF triangles without a bound, "
+                        "%u steep ones on the ROV tier\n", zhigh, zbsat, zbrov);
+        CHECK(zhigh > 0 && zbsat > 0 && zbrov > 0, "early-depth fallbacks exercised: %u %u %u", zhigh, zbsat, zbrov);
+#endif
         fprintf(stderr, "[hw-ref] %u comparisons; %d scenes differ (%d use post passes: ALIAS16, target views, PUNT); "
                         "%u PUNTs, %u PUNT read-backs differing from gs_vram\n", hw_compares, hw_bad_scenes, hw_m4_scenes, punts, rbdiff);
 #ifdef TEST_HW_MIXED_DEFAULT

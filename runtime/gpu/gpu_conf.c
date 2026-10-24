@@ -28,7 +28,7 @@
 #include <string.h>
 
 #include "gpu_shaders.h"
-#include "gs_setup.h"
+#include "gpu_front_int.h"                /* (gpu_front_zbound: the frontend's early-depth decision) */
 
 typedef struct {
     uint64_t a, b, d;
@@ -647,9 +647,28 @@ static int32_t tb_coord(double lo, double hi) { return (int32_t)floor((lo + (hi 
 
 /* one triangle as the frontend sets it up; 0: not drawn (zero area, outside the scissor) or not an FF depth triangle
  * (a Z24 / Z32 vertex above GPU_Z_FF_MAX goes to the ROV tier). *nb: the frontend's decision (gpu_front.c) */
-static int tb_make(gs_vtx v[3], tri_rec* r, int* nb, int* steep, double* slope, int small) {
+static int tb_make(gs_vtx v[3], tri_rec* r, int* nb, int* steep, double* slope, int small, uint64_t* n_rov) {
     memset(v, 0, sizeof(gs_vtx) * 3);
     int shape = (int)(rnd64() % 10);
+    if (rnd64() % 16 == 0) {             /* degenerate: a near-zero area and Z from 0 to the limit across it */
+        int32_t x = tb_coord(0, 640), y = tb_coord(0, 448), dx = (int32_t)(rnd64() % 4096) - 2048, dy = (int32_t)(rnd64() % 4096) - 2048;
+        v[0].x = x; v[0].y = y; v[1].x = x + dx; v[1].y = y + dy;
+        v[2].x = x + dx / 2 + (int32_t)(rnd64() % 3) - 1; v[2].y = y + dy / 2 + (int32_t)(rnd64() % 3) - 1;
+        int fmt = (int)(rnd64() % 2);    /* (Z32 / Z24) */
+        v[0].z = 0; v[1].z = (uint32_t)(rnd64() % 2 ? 0 : GPU_Z_FF_MAX); v[2].z = GPU_Z_FF_MAX;
+        gs_tri T;
+        if (!gs_tri_setup(&T, &v[0], &v[1], &v[2], 0, 0, 0, 639, 0, 447)) return 0;
+        gs_plane zp;
+        int zb = gpu_front_zbound(&T, &v[0], &v[1], &v[2], fmt ? GPU_ZF_24 : GPU_ZF_32, &zp);
+        if (zb == 2) { (*n_rov)++; return 0; }
+        gs_rowstep_attr(&zp, T.by0, 65536.0, 1, &r->row, &r->dy, &r->dx);
+        r->by0 = T.by0;
+        r->zmax = fmt ? 0xFFFFFFu : 0xFFFFFFFFu;
+        *slope = fabs(zp.cx) + fabs(zp.cy);
+        *steep = !(*slope <= GPU_ZB_SLOPE);
+        *nb = zb != 0;
+        return 1;
+    }
     double cx = -32.0 + 704.0 * rndu(), cy = -32.0 + 512.0 * rndu();
     double size = shape < 6 ? 1.0 + 31.0 * rndu() : shape < 9 ? 32.0 + 96.0 * rndu() : 128.0 + 768.0 * rndu();
     if (shape == 9 && rnd64() % 4 == 0) size = 2048.0;            /* a few very large ones (vertices far outside) */
@@ -682,13 +701,16 @@ static int tb_make(gs_vtx v[3], tri_rec* r, int* nb, int* steep, double* slope, 
     gs_tri T;
     if (!gs_tri_setup(&T, &v[0], &v[1], &v[2], 0, 0, 0, 639, 0, 447)) return 0;
     gs_plane zp;
-    gs_tri_plane(&T, &zp, v[0].z, v[1].z, v[2].z);
+    /* the frontend's decision (gpu_front.c): 2 = the ROV tier, not drawn here */
+    int zb = gpu_front_zbound(&T, &v[0], &v[1], &v[2], fmt == 0 ? GPU_ZF_32 : fmt == 1 ? GPU_ZF_24 : GPU_ZF_16, &zp);
+    if (zb == 2) { (*n_rov)++; return 0; }
     gs_rowstep_attr(&zp, T.by0, 65536.0, 1, &r->row, &r->dy, &r->dx);
     r->by0 = T.by0;
     r->zmax = zmaxs[fmt];
     *slope = fabs(zp.cx) + fabs(zp.cy);
     *steep = !(*slope <= GPU_ZB_SLOPE);
-    *nb = v[0].z > lim || v[1].z > lim || v[2].z > lim || *steep;
+    *nb = zb != 0;
+    (void)lim;
     return 1;
 }
 
@@ -703,9 +725,9 @@ static int run_tribound(const conf_args* a) {
     uint8_t* steepf = malloc((size_t)ntri);
     uint32_t* vz = malloc(sizeof(uint32_t) * 3 * (size_t)ntri);
     double* slopes = malloc(sizeof(double) * (size_t)ntri);
-    uint32_t* rr = calloc(8 + (size_t)ntri, 4);                   /* bres: header + per-triangle flags */
+    uint32_t* rr = calloc(16 + (size_t)ntri, 4);                  /* bres: header + per-triangle flags */
     if (!recs || !vtx || !steepf || !vz || !slopes || !rr) { free(recs); free(vtx); free(steepf); free(vz); free(slopes); free(rr); return -1; }
-    const UINT rbytes = (UINT)(32 + 4 * ntri);
+    const UINT rbytes = (UINT)(64 + 4 * ntri);
     int bad = -1;
     dtarget dt;
     ID3D11Buffer *vb = NULL, *rb = NULL, *res = NULL, *rst = NULL, *cb = NULL;
@@ -754,7 +776,7 @@ static int run_tribound(const conf_args* a) {
     if (!gpu_vs(GPU_SH_vs_conf_tri) || !gpu_ps(GPU_SH_ps_conf_tri)) goto out;
     rng = 0x8EBC6AF09C88C6E3ULL ^ a->seed;
     uint64_t viol = 0, samples = 0, bsamples = 0, unsafe_viol = 0, unsafe_samples = 0, n_nb = 0, n_steep = 0, n_tri = 0;
-    uint64_t unsafe_tris = 0, unsafe_n = 0;
+    uint64_t unsafe_tris = 0, unsafe_n = 0, n_rov = 0, over = 0;
     double unsafe_slope = 1e300;                                    /* the least steep triangle that broke its bound */
     int min_slack = 1 << 30;
     bad = 0;
@@ -765,7 +787,7 @@ static int run_tribound(const conf_args* a) {
         while (nt < ntri) {
             gs_vtx v[3];
             int nb, steep;
-            if (!tb_make(v, &recs[nt], &nb, &steep, &slopes[nt], gpu_rt.caps.warp)) continue;
+            if (!tb_make(v, &recs[nt], &nb, &steep, &slopes[nt], gpu_rt.caps.warp, &n_rov)) continue;
             uint32_t lim = recs[nt].zmax == 0xFFFFu ? 0xFFFFu : GPU_Z_FF_MAX;
             /* 1: steep, every vertex within the limits (the slope limit is its one reason for no bound) */
             steepf[nt] = (uint8_t)(steep && v[0].z <= lim && v[1].z <= lim && v[2].z <= lim);
@@ -826,13 +848,15 @@ static int run_tribound(const conf_args* a) {
                 unsafe_viol += rr[0];
                 unsafe_samples += rr[3];
                 for (int t = 0; t < nt; t++)
-                    if (rr[8 + t]) { unsafe_tris++; if (slopes[t] < unsafe_slope) unsafe_slope = slopes[t]; }
+                    if (rr[16 + t]) { unsafe_tris++; if (slopes[t] < unsafe_slope) unsafe_slope = slopes[t]; }
                 for (int t = 0; t < nt; t++) unsafe_n += steepf[t];
                 continue;
             }
             viol += rr[0];
             samples += rr[1];
             bsamples += rr[3];
+            over += rr[8];
+            bad += (int)rr[8];
             if ((int)rr[2] < min_slack) min_slack = (int)rr[2];
             if (rr[0]) {
                 bad += (int)rr[0];
@@ -843,10 +867,12 @@ static int run_tribound(const conf_args* a) {
         }
     }
     if (a->verbose) {
-        gpu_log("triangle bound (%llu triangles at %d sample factors, %llu without a bound, %llu of them steeper than %.0f/pixel): "
-                "%llu samples, %llu bounded, %llu above the rasterized depth, min slack %d (margin %u)",
+        gpu_log("triangle bound (%llu triangles at %d sample factors, %llu without a bound, %llu of them steeper than %.0f/pixel; "
+                "%llu steep ones sent to the ROV tier): %llu samples, %llu bounded, %llu above the rasterized depth, min slack %d "
+                "(margin %u); Z24 / Z32 samples at or above 2^20: %llu",
                 (unsigned long long)n_tri, nk, (unsigned long long)n_nb, (unsigned long long)n_steep, GPU_ZB_SLOPE,
-                (unsigned long long)samples, (unsigned long long)bsamples, (unsigned long long)viol, min_slack, GPU_ZB_MARGIN);
+                (unsigned long long)n_rov, (unsigned long long)samples, (unsigned long long)bsamples, (unsigned long long)viol,
+                min_slack, GPU_ZB_MARGIN, (unsigned long long)over);
         gpu_log("triangle bound without the slope limit (%llu steep triangles drawn with the vertex bound): %llu of %llu samples "
                 "above in %llu triangles, the least steep %.0f/pixel", (unsigned long long)unsafe_n, (unsigned long long)unsafe_viol,
                 (unsigned long long)unsafe_samples, (unsigned long long)unsafe_tris, unsafe_tris ? unsafe_slope : 0.0);
