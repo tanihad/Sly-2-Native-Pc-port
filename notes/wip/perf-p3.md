@@ -19,3 +19,7 @@ Branch next/perf-p3, worktree C:\Users\tanih\Projects\sly2-worktrees\perf-p3 (fr
 4. Gates, notes (perf-plan.md P3 results), final commit.
 
 ## Findings / traps
+- NEVER use .NET file APIs ([IO.File]::...) with relative paths: their current directory is the MAIN checkout (an empty
+  scripts\chaos_bench.ps1 landed there once; the coordinator deleted it). Absolute worktree paths only.
+- Direct job starts: title intro ~60 s, then the job's intro cutscene (m1_boss ~3 min, START does not skip; m3_boss
+  ~30 s, m5_boss ~50 s, m7_boss ~75 s). Scouting with 4 games in parallel + dumps: fps numbers meaningless.
