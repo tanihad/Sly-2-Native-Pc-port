@@ -1474,6 +1474,17 @@ static void exec_a16_copy(const gpu_fop_draw* d) {
     XC.a16_copy_dispatches++;
 }
 
+/* (perf-p2) the specialised permutation (shaders/gs.hlsl SPEC_*) a draw can use from the features its primitives use
+ * (gpu_fop_draw.feat): 2 untextured (SPEC_NOTEX), 1 no target view and no general LOD (SPEC_NOVIEW, SPEC_NOLOD), 0 the
+ * ubershader. PS2_GPU_SPEC=0: the ubershaders always */
+static int spec_level(const gpu_fop_draw* d) {
+    static int on = -1;
+    if (on < 0) { const char* e = getenv("PS2_GPU_SPEC"); on = !(e && *e == '0'); }
+    if (!on) return 0;
+    if (!(d->feat & GPU_DF_TEX)) return 2;
+    return (d->feat & (GPU_DF_VIEW | GPU_DF_LOD)) ? 0 : 1;
+}
+
 static void exec_draw_ref(const gpu_fop_draw* d, uint32_t slot) {
     ID3D11DeviceContext* c = gpu_rt.ctx;
     xtarget* sizing = tgt(d->ct) ? tgt(d->ct) : tgt(d->zt);
@@ -1508,19 +1519,27 @@ static void exec_draw_ref(const gpu_fop_draw* d, uint32_t slot) {
     /* (M11) without rasterizer-ordered views: the same shaders with plain UAVs (the frontend made the draw's primitives
      * disjoint, gf_cfg.no_rov) */
     int nr = gpu_no_rov();
+    int sp = spec_level(d);              /* (perf-p2) [level][no ROV] */
     if (d->cls == GPU_PC_TRI) {
         int fast = (d->ps_key & GPU_PSK_FF_FAST) != 0;   /* (mixed default mode: 128-byte records, hardware S/T/Q) */
+        static const int tf[3][2] = { { GPU_SH_ps_gs_tri_fast, GPU_SH_ps_gs_tri_fast_nr }, { GPU_SH_ps_gs_tri_fast_s, GPU_SH_ps_gs_tri_fast_s_nr },
+                                      { GPU_SH_ps_gs_tri_fast_n, GPU_SH_ps_gs_tri_fast_n_nr } };
         set_topo(0);
         set_vs(gpu_vs(fast ? GPU_SH_vs_ff_tri : GPU_SH_vs_ref_tri));
         set_ps(gpu_ps(X.mixed && dbg_skip == 3 && fast ? GPU_SH_ps_ff_t001
-                      : fast ? (nr ? GPU_SH_ps_gs_tri_fast_nr : GPU_SH_ps_gs_tri_fast) : nr ? GPU_SH_ps_gs_tri_nr : GPU_SH_ps_gs_tri));
+                      : fast ? tf[sp][nr] : nr ? GPU_SH_ps_gs_tri_nr : GPU_SH_ps_gs_tri));
         ID3D11DeviceContext_DrawIndexedInstanced(c, d->count, 1, d->first, 0, slot);
     } else {
         set_topo(1);
         int sprite = d->cls == GPU_PC_SPRITE, thin = d->cls == GPU_PC_THIN;
+        static const int ss[3][2] = { { GPU_SH_ps_gs_sprite, GPU_SH_ps_gs_sprite_nr }, { GPU_SH_ps_gs_sprite_s, GPU_SH_ps_gs_sprite_s_nr },
+                                      { GPU_SH_ps_gs_sprite_n, GPU_SH_ps_gs_sprite_n_nr } };
+        static const int sn[3][2] = { { GPU_SH_ps_gs_thin, GPU_SH_ps_gs_thin_nr }, { GPU_SH_ps_gs_thin_s, GPU_SH_ps_gs_thin_s_nr },
+                                      { GPU_SH_ps_gs_thin_n, GPU_SH_ps_gs_thin_n_nr } };
+        static const int sl[3][2] = { { GPU_SH_ps_gs_linepix, GPU_SH_ps_gs_linepix_nr }, { GPU_SH_ps_gs_linepix_s, GPU_SH_ps_gs_linepix_s_nr },
+                                      { GPU_SH_ps_gs_linepix_n, GPU_SH_ps_gs_linepix_n_nr } };
         set_vs(gpu_vs(sprite ? GPU_SH_vs_ref_sprite : thin ? GPU_SH_vs_ref_thin : GPU_SH_vs_ref_linepix));
-        set_ps(gpu_ps(sprite ? (nr ? GPU_SH_ps_gs_sprite_nr : GPU_SH_ps_gs_sprite) : thin ? (nr ? GPU_SH_ps_gs_thin_nr : GPU_SH_ps_gs_thin)
-                      : nr ? GPU_SH_ps_gs_linepix_nr : GPU_SH_ps_gs_linepix));
+        set_ps(gpu_ps(sprite ? ss[sp][nr] : thin ? sn[sp][nr] : sl[sp][nr]));
         ID3D11DeviceContext_DrawInstanced(c, 4, d->count, 0, slot);
     }
     gpu_rt.n_draws++;
@@ -1549,29 +1568,30 @@ static void exec_draw_ff(const gpu_fop_draw* d, uint32_t slot) {
     draw_scissor(d, kx, ky);
     int dual = d->blend == BL_DUAL, zout = zuse;
     int ps;
-    /* (perf-p2) the specialised permutation (shaders/gs.hlsl SPEC_*) when no primitive of the draw uses a target view or
-     * the general LOD mode; PS2_GPU_SPEC=0: the ubershaders always */
-    static int spec_on = -1;
-    if (spec_on < 0) { const char* e = getenv("PS2_GPU_SPEC"); spec_on = !(e && *e == '0'); }
-    int sp = spec_on && !(d->feat & (GPU_DF_VIEW | GPU_DF_LOD));
+    int sp = spec_level(d);
     if (d->cls == GPU_PC_TRI) {
         set_topo(0);
         set_vs(gpu_vs(GPU_SH_vs_ff_tri));
         static const int t[2][2][2] = { { { GPU_SH_ps_ff_t000, GPU_SH_ps_ff_t001 }, { GPU_SH_ps_ff_t010, GPU_SH_ps_ff_t011 } },
                                         { { GPU_SH_ps_ff_t100, GPU_SH_ps_ff_t101 }, { GPU_SH_ps_ff_t110, GPU_SH_ps_ff_t111 } } };
-        static const int ts[2][2] = { { GPU_SH_ps_ff_t001s, GPU_SH_ps_ff_t011s }, { GPU_SH_ps_ff_t101s, GPU_SH_ps_ff_t111s } };
+        static const int ts[3][2][2] = { { { 0 } },
+                                         { { GPU_SH_ps_ff_t001s, GPU_SH_ps_ff_t011s }, { GPU_SH_ps_ff_t101s, GPU_SH_ps_ff_t111s } },
+                                         { { GPU_SH_ps_ff_t001n, GPU_SH_ps_ff_t011n }, { GPU_SH_ps_ff_t101n, GPU_SH_ps_ff_t111n } } };
         int fast = (d->ps_key & GPU_PSK_FF_FAST) != 0;
-        ps = sp && fast ? ts[dual][zout] : t[dual][zout][fast];
+        ps = sp && fast ? ts[sp][dual][zout] : t[dual][zout][fast];
     } else {
         set_topo(1);
         int sprite = d->cls == GPU_PC_SPRITE, thin = d->cls == GPU_PC_THIN;
         set_vs(gpu_vs(sprite ? GPU_SH_vs_ref_sprite : thin ? GPU_SH_vs_ref_thin : GPU_SH_vs_ref_linepix));
-        static const int s[2][2][2] = { { { GPU_SH_ps_ff_s00, GPU_SH_ps_ff_s01 }, { GPU_SH_ps_ff_s10, GPU_SH_ps_ff_s11 } },
-                                        { { GPU_SH_ps_ff_s00s, GPU_SH_ps_ff_s01s }, { GPU_SH_ps_ff_s10s, GPU_SH_ps_ff_s11s } } };
-        static const int l[2][2][2] = { { { GPU_SH_ps_ff_l00, GPU_SH_ps_ff_l01 }, { GPU_SH_ps_ff_l10, GPU_SH_ps_ff_l11 } },
-                                        { { GPU_SH_ps_ff_l00s, GPU_SH_ps_ff_l01s }, { GPU_SH_ps_ff_l10s, GPU_SH_ps_ff_l11s } } };
-        static const int n[2][2][2] = { { { GPU_SH_ps_ff_n00, GPU_SH_ps_ff_n01 }, { GPU_SH_ps_ff_n10, GPU_SH_ps_ff_n11 } },
-                                        { { GPU_SH_ps_ff_n00s, GPU_SH_ps_ff_n01s }, { GPU_SH_ps_ff_n10s, GPU_SH_ps_ff_n11s } } };
+        static const int s[3][2][2] = { { { GPU_SH_ps_ff_s00, GPU_SH_ps_ff_s01 }, { GPU_SH_ps_ff_s10, GPU_SH_ps_ff_s11 } },
+                                        { { GPU_SH_ps_ff_s00s, GPU_SH_ps_ff_s01s }, { GPU_SH_ps_ff_s10s, GPU_SH_ps_ff_s11s } },
+                                        { { GPU_SH_ps_ff_s00n, GPU_SH_ps_ff_s01n }, { GPU_SH_ps_ff_s10n, GPU_SH_ps_ff_s11n } } };
+        static const int l[3][2][2] = { { { GPU_SH_ps_ff_l00, GPU_SH_ps_ff_l01 }, { GPU_SH_ps_ff_l10, GPU_SH_ps_ff_l11 } },
+                                        { { GPU_SH_ps_ff_l00s, GPU_SH_ps_ff_l01s }, { GPU_SH_ps_ff_l10s, GPU_SH_ps_ff_l11s } },
+                                        { { GPU_SH_ps_ff_l00n, GPU_SH_ps_ff_l01n }, { GPU_SH_ps_ff_l10n, GPU_SH_ps_ff_l11n } } };
+        static const int n[3][2][2] = { { { GPU_SH_ps_ff_n00, GPU_SH_ps_ff_n01 }, { GPU_SH_ps_ff_n10, GPU_SH_ps_ff_n11 } },
+                                        { { GPU_SH_ps_ff_n00s, GPU_SH_ps_ff_n01s }, { GPU_SH_ps_ff_n10s, GPU_SH_ps_ff_n11s } },
+                                        { { GPU_SH_ps_ff_n00n, GPU_SH_ps_ff_n01n }, { GPU_SH_ps_ff_n10n, GPU_SH_ps_ff_n11n } } };
         ps = sprite ? s[sp][dual][zout] : thin ? n[sp][dual][zout] : l[sp][dual][zout];
     }
     set_ps(gpu_ps(ps));

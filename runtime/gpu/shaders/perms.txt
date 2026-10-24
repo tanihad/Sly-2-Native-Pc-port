@@ -105,6 +105,23 @@ ps_ff_n00s       gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=3 DUA
 ps_ff_n01s       gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=3 DUAL=0 ZOUT=1 SPEC_NOVIEW=1 SPEC_NOLOD=1
 ps_ff_n10s       gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=3 DUAL=1 ZOUT=0 SPEC_NOVIEW=1 SPEC_NOLOD=1
 ps_ff_n11s       gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=3 DUAL=1 ZOUT=1 SPEC_NOVIEW=1 SPEC_NOLOD=1
+# perf-p2: untextured FF draws (gs.hlsl SPEC_NOTEX: GPU_DF_TEX clear)
+ps_ff_t001n      gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=0 DUAL=0 ZOUT=0 STQ_FAST=1 TRI_REC=128u SPEC_NOTEX=1 SPEC_NOVIEW=1 SPEC_NOLOD=1
+ps_ff_t011n      gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=0 DUAL=0 ZOUT=1 STQ_FAST=1 TRI_REC=128u SPEC_NOTEX=1 SPEC_NOVIEW=1 SPEC_NOLOD=1
+ps_ff_t101n      gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=0 DUAL=1 ZOUT=0 STQ_FAST=1 TRI_REC=128u SPEC_NOTEX=1 SPEC_NOVIEW=1 SPEC_NOLOD=1
+ps_ff_t111n      gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=0 DUAL=1 ZOUT=1 STQ_FAST=1 TRI_REC=128u SPEC_NOTEX=1 SPEC_NOVIEW=1 SPEC_NOLOD=1
+ps_ff_s00n       gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=1 DUAL=0 ZOUT=0 SPEC_NOTEX=1 SPEC_NOVIEW=1 SPEC_NOLOD=1
+ps_ff_s01n       gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=1 DUAL=0 ZOUT=1 SPEC_NOTEX=1 SPEC_NOVIEW=1 SPEC_NOLOD=1
+ps_ff_s10n       gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=1 DUAL=1 ZOUT=0 SPEC_NOTEX=1 SPEC_NOVIEW=1 SPEC_NOLOD=1
+ps_ff_s11n       gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=1 DUAL=1 ZOUT=1 SPEC_NOTEX=1 SPEC_NOVIEW=1 SPEC_NOLOD=1
+ps_ff_l00n       gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=2 DUAL=0 ZOUT=0 SPEC_NOTEX=1 SPEC_NOVIEW=1 SPEC_NOLOD=1
+ps_ff_l01n       gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=2 DUAL=0 ZOUT=1 SPEC_NOTEX=1 SPEC_NOVIEW=1 SPEC_NOLOD=1
+ps_ff_l10n       gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=2 DUAL=1 ZOUT=0 SPEC_NOTEX=1 SPEC_NOVIEW=1 SPEC_NOLOD=1
+ps_ff_l11n       gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=2 DUAL=1 ZOUT=1 SPEC_NOTEX=1 SPEC_NOVIEW=1 SPEC_NOLOD=1
+ps_ff_n00n       gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=3 DUAL=0 ZOUT=0 SPEC_NOTEX=1 SPEC_NOVIEW=1 SPEC_NOLOD=1
+ps_ff_n01n       gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=3 DUAL=0 ZOUT=1 SPEC_NOTEX=1 SPEC_NOVIEW=1 SPEC_NOLOD=1
+ps_ff_n10n       gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=3 DUAL=1 ZOUT=0 SPEC_NOTEX=1 SPEC_NOVIEW=1 SPEC_NOLOD=1
+ps_ff_n11n       gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=3 DUAL=1 ZOUT=1 SPEC_NOTEX=1 SPEC_NOVIEW=1 SPEC_NOLOD=1
 vs_zquad            zsync.hlsl          vs_zquad          vs_5_0
 ps_zresolve         zsync.hlsl          ps_zresolve       ps_5_0
 cs_zsync            zsync.hlsl          cs_zsync          cs_5_0
@@ -128,3 +145,20 @@ ps_gs_sprite_nr     gs.hlsl             ps_gs             ps_5_0    PRIM=1 NOROV
 ps_gs_linepix_nr    gs.hlsl             ps_gs             ps_5_0    PRIM=2 NOROV=1
 ps_gs_tri_fast_nr   gs.hlsl             ps_gs             ps_5_0    PRIM=0 STQ_FAST=1 TRI_REC=128u NOROV=1
 ps_gs_thin_nr       gs.hlsl             ps_gs             ps_5_0    PRIM=3 NOROV=1
+# perf-p2: ROV-tier permutations for draws without views / LOD (_s) and untextured draws (_n), with and without ROVs
+ps_gs_tri_fast_s    gs.hlsl             ps_gs             ps_5_0    PRIM=0 STQ_FAST=1 TRI_REC=128u SPEC_NOVIEW=1 SPEC_NOLOD=1
+ps_gs_tri_fast_n    gs.hlsl             ps_gs             ps_5_0    PRIM=0 STQ_FAST=1 TRI_REC=128u SPEC_NOTEX=1 SPEC_NOVIEW=1 SPEC_NOLOD=1
+ps_gs_tri_fast_s_nr gs.hlsl             ps_gs             ps_5_0    PRIM=0 STQ_FAST=1 TRI_REC=128u NOROV=1 SPEC_NOVIEW=1 SPEC_NOLOD=1
+ps_gs_tri_fast_n_nr gs.hlsl             ps_gs             ps_5_0    PRIM=0 STQ_FAST=1 TRI_REC=128u NOROV=1 SPEC_NOTEX=1 SPEC_NOVIEW=1 SPEC_NOLOD=1
+ps_gs_sprite_s      gs.hlsl             ps_gs             ps_5_0    PRIM=1 SPEC_NOVIEW=1 SPEC_NOLOD=1
+ps_gs_sprite_n      gs.hlsl             ps_gs             ps_5_0    PRIM=1 SPEC_NOTEX=1 SPEC_NOVIEW=1 SPEC_NOLOD=1
+ps_gs_sprite_s_nr   gs.hlsl             ps_gs             ps_5_0    PRIM=1 NOROV=1 SPEC_NOVIEW=1 SPEC_NOLOD=1
+ps_gs_sprite_n_nr   gs.hlsl             ps_gs             ps_5_0    PRIM=1 NOROV=1 SPEC_NOTEX=1 SPEC_NOVIEW=1 SPEC_NOLOD=1
+ps_gs_linepix_s     gs.hlsl             ps_gs             ps_5_0    PRIM=2 SPEC_NOVIEW=1 SPEC_NOLOD=1
+ps_gs_linepix_n     gs.hlsl             ps_gs             ps_5_0    PRIM=2 SPEC_NOTEX=1 SPEC_NOVIEW=1 SPEC_NOLOD=1
+ps_gs_linepix_s_nr  gs.hlsl             ps_gs             ps_5_0    PRIM=2 NOROV=1 SPEC_NOVIEW=1 SPEC_NOLOD=1
+ps_gs_linepix_n_nr  gs.hlsl             ps_gs             ps_5_0    PRIM=2 NOROV=1 SPEC_NOTEX=1 SPEC_NOVIEW=1 SPEC_NOLOD=1
+ps_gs_thin_s        gs.hlsl             ps_gs             ps_5_0    PRIM=3 SPEC_NOVIEW=1 SPEC_NOLOD=1
+ps_gs_thin_n        gs.hlsl             ps_gs             ps_5_0    PRIM=3 SPEC_NOTEX=1 SPEC_NOVIEW=1 SPEC_NOLOD=1
+ps_gs_thin_s_nr     gs.hlsl             ps_gs             ps_5_0    PRIM=3 NOROV=1 SPEC_NOVIEW=1 SPEC_NOLOD=1
+ps_gs_thin_n_nr     gs.hlsl             ps_gs             ps_5_0    PRIM=3 NOROV=1 SPEC_NOTEX=1 SPEC_NOVIEW=1 SPEC_NOLOD=1

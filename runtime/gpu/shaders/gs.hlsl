@@ -30,6 +30,9 @@
 #ifndef SPEC_NOLOD
 #define SPEC_NOLOD 0                     // no general LOD mode (TEX1: mipmapped minification by Q)
 #endif
+#ifndef SPEC_NOTEX
+#define SPEC_NOTEX 0                     // no texture at all (shadow volumes, fills, outlines)
+#endif
 
 // Per-draw constants (gpu_exec.c draw_consts, 256 bytes per draw slot). (M9) Read from the buffer drawc by the draw's
 // slot, which every draw passes as its StartInstanceLocation (the vertex shader's per-instance input DRAWID, the
@@ -692,7 +695,11 @@ bool gs_frag(float4 pos, uint irec, float3 istq, uint prim, out Frag f, out St s
 #if PRIM != 2
     if ((scanmsk == 2u && (py & 1) == 0) || (scanmsk == 3u && (py & 1) != 0)) return false;
 #endif
+#if SPEC_NOTEX
+    bool tme = false, fst = false;       // (perf-p2: no primitive of the draw is textured, GPU_DF_TEX)
+#else
     bool tme = (st.flags & SF_TME) != 0u, fst = (st.flags & SF_FST) != 0u;
+#endif
     uint zbits = (st.zinfo >> 4) & 3u;
     uint zmax = zbits == 3u ? 0xFFFFFFFFu : zbits == 2u ? 0xFFFFFFu : 0xFFFFu;
     uint t0 = st.tex0clamp.x, t1 = st.tex0clamp.y;
