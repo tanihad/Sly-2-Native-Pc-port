@@ -1,4 +1,4 @@
-/* The in-game Options menu (notes/pc-menu.md, notes/settings.md).
+﻿/* The in-game Options menu (notes/pc-menu.md, notes/settings.md).
  *
  * Reached from the game's own pause menu (an entry "Options" added by instruction patches, menu_game.c), with
  * Esc on the keyboard or Select+Start on a controller. It is an overlay: the game stays in its pause menu
@@ -100,10 +100,17 @@ int  menu_nav_event(menu_nav nav, int dev);
 void menu_tick(void);
 /* a binding capture finished (INPUT_CAPTURE_KEY / BUTTON / CANCELLED, the key or button) - menu_tick, tests */
 void menu_capture_result(int r, int code);
-/* mouse, client pixels: move (hover), button down (1 left, 2 right), wheel (+1 up / -1 down) */
+/* mouse, client pixels: move (hover; drags a slider / the scroll bar while the left button is held on it), button down
+ * (1 left, 2 right), left button up (the end of a drag), wheel (+1 up / -1 down per notch: scrolls the list) */
 void menu_mouse_move(int x, int y);
 void menu_mouse_button(int x, int y, int button);
+void menu_mouse_up(int x, int y);
 void menu_mouse_wheel(int x, int y, int delta);
+/* (pc-menu2) the animations (list scroll, the selection band) up to now_s seconds; the renderer calls it before each
+ * picture; 1 while something still moves */
+int  menu_animate(double now_s);
+/* (pc-menu2) when the last input event reached the menu (QPC seconds; latency statistics) */
+double menu_last_input_time(void);
 /* the device of the last input (hints) */
 int  menu_device(void);
 /* Changes since the last call (anything that changes the picture: state, settings_serial, the size): the
@@ -132,6 +139,10 @@ typedef struct {
     int dialog_only;                     /* only the dialog (Quit opened from the game's menus / the close button): no panel */
     char dlg_title[MENU_TEXT], dlg_text[3 * MENU_TEXT], dlg_yes[32], dlg_no[32];
     int pending;                         /* changes waiting for Apply (the footer's Apply button) */
+    /* (pc-menu2) */
+    float scroll_f;                      /* the list's scroll as shown (rows, animated towards scroll) */
+    float sel_f;                         /* the selection band's position as shown (rows, animated towards sel) */
+    int drag;                            /* a slider (1) or the scroll bar (2) is being dragged with the mouse */
 } menu_view;
 void menu_get_view(menu_view* v, int client_w, int client_h);
 const char* menu_page_name(int page);
@@ -142,7 +153,10 @@ typedef struct {
     float u;                             /* the unit: 1 at a 1080-pixel-high output */
     menu_rect panel, header, tabs[MENU_PAGE_N], list, desc, footer;
     int row_h, visible;                  /* row height, rows that fit */
-    menu_rect rows[MENU_MAX_ROWS];       /* visible rows (index = row - scroll) */
+    int first;                           /* (pc-menu2) the row shown in rows[0] (the list scrolls by pixels) */
+    float scroll_f;                      /* the scroll the rects are for (rows) */
+    menu_rect rows[MENU_MAX_ROWS];       /* visible rows (index = row - first; visible + 1 of them, the last ones may be
+                                            partly outside the list: hit tests check list too) */
     menu_rect left[MENU_MAX_ROWS], right[MENU_MAX_ROWS];   /* the value's arrows */
     menu_rect btn[3];                    /* footer buttons, right to left: 0 back (close on a main page), 1 close
                                             (controller hint; 2 unused) */
@@ -152,6 +166,8 @@ typedef struct {
     int value_x;                         /* where the values column starts */
 } menu_layout;
 void menu_compute_layout(int client_w, int client_h, int nrows, int scroll, menu_layout* L);
+/* (pc-menu2) the same with a fractional scroll (the list as it is shown while it scrolls) */
+void menu_compute_layout_f(int client_w, int client_h, int nrows, float scroll, menu_layout* L);
 
 /* ---- choices of a row (tests, the drawing of a value list) ---- */
 int  menu_row_choice_text(int row_id, int k, char* buf, size_t cap);

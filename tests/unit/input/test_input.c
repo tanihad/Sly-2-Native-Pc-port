@@ -649,7 +649,13 @@ static void test_devices(void) {
     CHECK(input_window_message(NULL, WM_KEYDOWN, VK_ESCAPE, 0) == 1 && input_nav_poll(&ev) && ev.nav == INPUT_NAV_BACK, "esc back");
     CHECK(input_window_message(NULL, WM_KEYDOWN, VK_F11, 0) == 0, "F11 must reach the window");
     input_window_message(NULL, WM_MOUSEWHEEL, (uintptr_t)(WHEEL_DELTA << 16), 0);
-    CHECK(input_nav_poll(&ev) && ev.nav == INPUT_NAV_UP && ev.source == INPUT_SRC_MOUSE, "wheel up");
+    CHECK(input_nav_poll(&ev) && ev.nav == INPUT_NAV_WHEEL && ev.delta == 1 && ev.source == INPUT_SRC_MOUSE, "wheel up (pc-menu2: scrolls)");
+    input_window_message(NULL, WM_MOUSEWHEEL, (uintptr_t)(uint16_t)(-WHEEL_DELTA / 2) << 16, 0);   /* (half notches add up) */
+    CHECK(!input_nav_poll(&ev), "half a notch: nothing yet");
+    input_window_message(NULL, WM_MOUSEWHEEL, (uintptr_t)(uint16_t)(-WHEEL_DELTA / 2) << 16, 0);
+    CHECK(input_nav_poll(&ev) && ev.nav == INPUT_NAV_WHEEL && ev.delta == -1, "two halves: one notch down");
+    input_window_message(NULL, WM_LBUTTONUP, 0, MAKELPARAM(7, 8));
+    CHECK(input_nav_poll(&ev) && ev.nav == INPUT_NAV_RELEASE && ev.x == 7 && ev.y == 8, "button up (the end of a drag)");
     input_window_message(NULL, WM_LBUTTONDOWN, 0, MAKELPARAM(120, 45));
     CHECK(input_nav_poll(&ev) && ev.nav == INPUT_NAV_CLICK && ev.x == 120 && ev.y == 45, "click");
     input_window_message(NULL, WM_MOUSEMOVE, 0, MAKELPARAM(10, 10));

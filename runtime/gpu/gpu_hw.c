@@ -644,7 +644,9 @@ static int clock_lock_k(double hz) {
     static int env = -1;                 /* PS2_DISPLAY_LOCK=0: never (A/B measurements) */
     if (env < 0) { const char* e = getenv("PS2_DISPLAY_LOCK"); env = !(e && *e && atoi(e) == 0); }
     if (!env || !(hz > 0) || !frame_rate_base_hz || !frame_rate_set_lock) return 0;
-    if (!(clock_pacing == SETTINGS_PACING_DISPLAY || (clock_pacing == SETTINGS_PACING_AUTO && gpu_present_display_fixed()))) return 0;
+    /* (pc-menu2) only when the player chose it (Frame pacing: Match display): the default (auto) is a plain 60 on every
+     * display - 55 frames/s on a 165 Hz monitor is the player's choice, never the default */
+    if (clock_pacing != SETTINGS_PACING_DISPLAY) return 0;
     double base = frame_rate_base_hz();
     if (!(base > 0)) return 0;
     if (pace_refresh_multiple(1000.0 / hz, 1000.0 / base)) return 0;

@@ -73,6 +73,9 @@ void gpu_exec_readback(const void* payload);
 int  gpu_present_poll(int block);        /* finish read-backs / timestamps; returns 1 while some pending */
 int  gpu_present_pace_frames(void);      /* (pc-pacing) frames the paced present holds back on purpose (queue depth) */
 int  gpu_present_events_pending(void);   /* (pc-pacing) pictures whose ready time is not known yet (polls them) */
+int  gpu_present_menu(void);             /* (pc-menu2) the last picture + the menu again (render thread, menu open) */
+long gpu_present_menu_count(void);
+extern int overlay_wants_frames(void) __attribute__((weak));   /* (pc-menu2) menu_overlay.c (not in every test program) */
 void gpu_present_drain(void);            /* block until every read-back and timestamp has completed */
 /* per-picture statistics and timestamps around a frame (gpu_present.c) */
 void gpu_stats_begin(uint32_t vblank, double front_ms);

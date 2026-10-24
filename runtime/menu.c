@@ -5,6 +5,7 @@
 #include "settings.h"
 #include "gfx.h"
 
+#include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -30,10 +31,25 @@ static struct {
     unsigned long long keep_deadline;    /* MENU_DLG_KEEP: revert at this time */
     int keep_secs;                       /* the seconds shown last (redraw when it changes) */
     int prev_mode, prev_res, prev_monitor, prev_win;   /* what Revert restores */
+    /* (pc-menu2) animations and mouse drags */
+    float scroll_f, sel_f;               /* the list's scroll / the selection band as shown (rows) */
+    double anim_t;                       /* menu_animate's last time (s; 0: snap) */
+    int drag, drag_id;                   /* 1 a slider (its row id), 2 the scroll bar */
+    float drag_off;                      /* scroll bar: where it was grabbed (rows) */
 } st = { .visible = 10, .hover_tab = -1, .hover_row = -1, .hover_btn = -1 };
 enum { PEND_MODE, PEND_RES, PEND_WINSIZE, PEND_MONITOR, PEND_RENDERER, PEND_N };
 
 static unsigned long long now_ms(void);
+
+/* (pc-menu2) when the last input reached the menu (QPC seconds; the overlay's latency statistics, PS2_MENU_STATS) */
+static volatile double input_t;
+static void note_input(void) {
+    LARGE_INTEGER f, t;
+    QueryPerformanceFrequency(&f);
+    QueryPerformanceCounter(&t);
+    input_t = (double)t.QuadPart / (double)f.QuadPart;
+}
+double menu_last_input_time(void) { return input_t; }
 
 #define LOCK() AcquireSRWLockExclusive(&lock)
 #define UNLOCK() ReleaseSRWLockExclusive(&lock)
@@ -92,7 +108,12 @@ static void discard_pending(void) { memset(st.pend_has, 0, sizeof st.pend_has); 
 
 static int m_opt(const char* section, const char* key) { return settings_find(section, key); }
 static int m_get(const char* section, const char* key) { return settings_get(&ps2_settings, m_opt(section, key)); }
-static int m_change(const char* section, const char* key, int v) { return settings_change(m_opt(section, key), v, 1); }
+/* (pc-menu2) every change made in the menu is the player's choice: recorded in [chosen] (new defaults never override it) */
+static int m_change(const char* section, const char* key, int v) {
+    int i = m_opt(section, key), ok = settings_change(i, v, 1);
+    if (ok) settings_mark_chosen(i);
+    return ok;
+}
 
 /* the internal resolution's real size at scale n: rows 448 n; columns 512 n at 4:3, at a wider aspect
  * 512 round(n W) (W = aspect / (4/3): the anamorphic display buffers, notes/widescreen.md) from 2x on */
@@ -272,7 +293,7 @@ static void build_choices(int id, choices* c) {
         add(c, SETTINGS_PACING_AUTO, "Automatic");
         add(c, SETTINGS_PACING_PACED, "Even (G-Sync / FreeSync)");
         add(c, SETTINGS_PACING_IMMEDIATE, "Lowest latency");
-        add(c, SETTINGS_PACING_DISPLAY, "Display-synced (60 / 120 Hz)");
+        add(c, SETTINGS_PACING_DISPLAY, "Match display");
         if (ps2_settings.pacing == SETTINGS_PACING_VRR) add(c, SETTINGS_PACING_VRR, "Even, tearing allowed (old setting)");
         break;
     case MENU_ROW_FRAME_RATE: {          /* (pc-fps: frame_rate.h) */
@@ -610,7 +631,7 @@ static int build_rows(int page, menu_row* rows) {
         int mode = eff_mode();
         const char* staged = "Choose Apply to use it";
         choice_row(rows, &n, MENU_ROW_MODE, "Display mode",
-                   "Windowed. Borderless: fills the monitor at the desktop's resolution (fast Alt+Tab). Fullscreen: the game sets the "
+                   "Borderless (default): fills the monitor at its own resolution and refresh rate (fast Alt+Tab). Windowed. Fullscreen: the game sets the "
                    "monitor to the resolution below. Alt+Enter or F11 switch between windowed and borderless.");
         r = last(rows, n);
         if (st.pend_has[PEND_MODE]) snprintf(r->note, sizeof r->note, "%s", staged);
@@ -654,8 +675,8 @@ static int build_rows(int page, menu_row* rows) {
                    "the game's speed stays the same. Movies stay at 60. Not every PC reaches every rate in every scene.");
         env_note(last(rows, n), "display", "frame_rate");
         choice_row(rows, &n, MENU_ROW_PACING, "Frame pacing",
-                   "Automatic: even on G-Sync / FreeSync displays, lowest latency on others, the display's own rhythm on 60 / 120 Hz. "
-                   "Even: every picture 16.7 ms after the last. Lowest latency: each picture as soon as it is drawn.");
+                   "Automatic: 60 fps, even on G-Sync / FreeSync displays. Match display: the smoothest without G-Sync / FreeSync - "
+                   "every picture the same number of refreshes (e.g. 55 fps on 165 Hz). Lowest latency: each picture as soon as drawn.");
         r = last(rows, n);
         if (!gpu) disable(r, gpu_only);
         else if (!pacing_apply_mode(-1)) snprintf(r->note, sizeof r->note, "Applies at the next start");
@@ -768,6 +789,8 @@ static void set_page(int page) {
     st.sel = page < MENU_PAGE_N ? st.sel_of[page] : 0;
     st.scroll = 0;
     st.capture = 0;
+    st.drag = 0;
+    st.anim_t = 0;                               /* (pc-menu2) a new page appears in place: no scroll animation */
     if (st.dialog == MENU_DLG_RESET) st.dialog = MENU_DLG_NONE;
     keep_visible(rows_now());
 }
@@ -965,6 +988,8 @@ void menu_open(void) {
         st.dialog_only = 0;
         if (st.page >= MENU_PAGE_N) st.page = MENU_PAGE_CONTROLS;
         keep_visible(rows_now());
+        st.anim_t = 0;
+        st.drag = 0;
         st.serial++;
         input_set_menu_active(1);               /* the game gets a released pad and no keys */
         input_nav_flush();
@@ -1009,6 +1034,7 @@ int menu_capturing(void) { return st.open && *(volatile int*)&st.capture; }
 int menu_device(void) { return st.device; }
 
 int menu_nav_event(menu_nav ev, int dev) {
+    note_input();
     LOCK();
     if (dev != st.device) { st.device = dev; st.serial++; }
     st.hover_row = st.hover_tab = st.hover_btn = -1;      /* (keys / buttons: the mouse highlight goes) */
@@ -1083,6 +1109,8 @@ void menu_tick(void) {
         case INPUT_NAV_MENU: menu_nav_event(MENU_NAV_CLOSE, dev); break;
         case INPUT_NAV_CLICK: menu_mouse_button(ev.x, ev.y, 1); break;
         case INPUT_NAV_POINTER: menu_mouse_move(ev.x, ev.y); break;
+        case INPUT_NAV_RELEASE: menu_mouse_up(ev.x, ev.y); break;
+        case INPUT_NAV_WHEEL: menu_mouse_wheel(ev.x, ev.y, ev.delta); break;
         default: break;
         }
     }
@@ -1116,80 +1144,141 @@ uint32_t menu_version(void) {
 
 /* ---- layout ------------------------------------------------------------------------------------------------- */
 
-static int I(float v) { return (int)(v + 0.5f); }
+static int I(float v) { return (int)floorf(v + 0.5f); }
 
-void menu_compute_layout(int cw, int ch, int nrows, int scroll, menu_layout* L) {
+/* (pc-menu2) the Sly-styled panel: the title in the game's comic lettering at the top left, the page tabs under it, the
+ * rows, the description, the button prompts; one unit u = 1 pixel at 1080 rows (narrower outputs shrink it) */
+void menu_compute_layout_f(int cw, int ch, int nrows, float scroll, menu_layout* L) {
     memset(L, 0, sizeof *L);
     if (cw < 1) cw = 1;
     if (ch < 1) ch = 1;
     float u = (float)ch / 1080.0f;               /* sizes follow the height ... */
-    if (u * 1000.0f > (float)cw * 0.94f) u = (float)cw * 0.94f / 1000.0f;   /* ... unless the window is narrow */
+    if (u * 1180.0f > (float)cw * 0.96f) u = (float)cw * 0.96f / 1180.0f;   /* ... unless the output is narrow (4:3) */
     if (u < 0.30f) u = 0.30f;
     L->u = u;
-    int pw = I(1000 * u), ph = I(930 * u);
+    int pw = I(1180 * u), ph = I(960 * u);
     if (pw > cw) pw = cw;
     if (ph > ch) ph = ch;
     L->panel = (menu_rect){ (cw - pw) / 2, (ch - ph) / 2, pw, ph };
-    int pad = I(36 * u);
+    int pad = I(40 * u);
     int x0 = L->panel.x + pad, iw = pw - 2 * pad;
-    L->header = (menu_rect){ x0, L->panel.y + I(26 * u), iw, I(64 * u) };
-    int ty = L->header.y + L->header.h + I(8 * u), th = I(50 * u), hint = I(64 * u);
+    L->header = (menu_rect){ x0, L->panel.y + I(14 * u), iw, I(96 * u) };
+    int ty = L->header.y + L->header.h + I(4 * u), th = I(58 * u), hint = I(70 * u);
     int tw = (iw - 2 * hint) / MENU_PAGE_N;
     for (int k = 0; k < MENU_PAGE_N; k++) L->tabs[k] = (menu_rect){ x0 + hint + k * tw, ty, tw, th };
     L->tab_hint[0] = (menu_rect){ x0, ty, hint, th };
     L->tab_hint[1] = (menu_rect){ x0 + iw - hint, ty, hint, th };
-    L->footer = (menu_rect){ x0, L->panel.y + ph - I(64 * u), iw, I(44 * u) };
-    L->desc = (menu_rect){ x0, L->footer.y - I(144 * u), iw, I(132 * u) };
-    int ly = ty + th + I(18 * u);
-    L->list = (menu_rect){ x0, ly, iw, L->desc.y - I(10 * u) - ly };
-    L->row_h = I(52 * u);
+    L->footer = (menu_rect){ x0, L->panel.y + ph - I(66 * u), iw, I(48 * u) };
+    L->desc = (menu_rect){ x0, L->footer.y - I(146 * u), iw, I(132 * u) };
+    int ly = ty + th + I(16 * u);
+    L->list = (menu_rect){ x0, ly, iw, L->desc.y - I(12 * u) - ly };
+    L->row_h = I(54 * u);
     if (L->row_h < 8) L->row_h = 8;
     L->visible = L->list.h / L->row_h;
     if (L->visible < 1) L->visible = 1;
-    L->value_x = x0 + iw * 44 / 100;
-    int arrow = I(40 * u), sbw = nrows > L->visible ? I(14 * u) : 0;
+    L->value_x = x0 + iw * 45 / 100;
+    if (scroll < 0) scroll = 0;
+    L->scroll_f = scroll;
+    L->first = (int)floorf(scroll);
+    float frac = scroll - (float)L->first;
+    int arrow = I(44 * u), sbw = nrows > L->visible ? I(12 * u) : 0;
     if (sbw) L->scrollbar = (menu_rect){ x0 + iw - sbw, ly, sbw, L->visible * L->row_h - I(4 * u) };
-    for (int k = 0; k < L->visible && scroll + k < nrows && k < MENU_MAX_ROWS; k++) {
-        menu_rect r = { x0, ly + k * L->row_h, iw - (sbw ? sbw + I(10 * u) : 0), L->row_h - I(4 * u) };
+    for (int k = 0; k <= L->visible && L->first + k < nrows && k < MENU_MAX_ROWS; k++) {
+        menu_rect r = { x0, ly + I(((float)k - frac) * (float)L->row_h), iw - (sbw ? sbw + I(12 * u) : 0), L->row_h - I(4 * u) };
         L->rows[k] = r;
         L->left[k] = (menu_rect){ L->value_x, r.y, arrow, r.h };
-        L->right[k] = (menu_rect){ r.x + r.w - arrow - I(8 * u), r.y, arrow, r.h };
+        L->right[k] = (menu_rect){ r.x + r.w - arrow - I(6 * u), r.y, arrow, r.h };
     }
-    /* footer buttons, right to left: back / close, reset to defaults, close (mouse targets with their hints) */
-    int bw = I(230 * u), gap = I(14 * u);
+    /* footer buttons, right to left: back / close, a second hint; btn[2] "Apply changes" in the header's right corner */
+    int bw = I(250 * u), gap = I(14 * u);
     for (int k = 0; k < 2; k++) L->btn[k] = (menu_rect){ x0 + iw - (k + 1) * bw - k * gap, L->footer.y, bw, L->footer.h };
-    /* (pc-polish) btn[2]: "Apply changes" while something is staged - in the header's right corner (always room there) */
-    L->btn[2] = (menu_rect){ x0 + iw - bw, L->header.y + (L->header.h - L->footer.h) / 2, bw, L->footer.h };
-    /* the reset dialog, centred on the panel */
-    int dw = I(760 * u), dh = I(270 * u);
+    L->btn[2] = (menu_rect){ x0 + iw - bw - I(20 * u), L->header.y + (L->header.h - L->footer.h) / 2, bw + I(20 * u), L->footer.h };
+    /* dialogs, centred on the panel */
+    int dw = I(820 * u), dh = I(300 * u);
+    if (dw > cw) dw = cw;
     L->dlg = (menu_rect){ L->panel.x + (pw - dw) / 2, L->panel.y + (ph - dh) / 2, dw, dh };
-    int bbw = I(240 * u), bbh = I(56 * u), by = L->dlg.y + dh - bbh - I(26 * u);
-    L->dlg_yes = (menu_rect){ L->dlg.x + dw / 2 - bbw - I(12 * u), by, bbw, bbh };
-    L->dlg_no = (menu_rect){ L->dlg.x + dw / 2 + I(12 * u), by, bbw, bbh };
+    int bbw = I(260 * u), bbh = I(60 * u), by = L->dlg.y + dh - bbh - I(28 * u);
+    L->dlg_yes = (menu_rect){ L->dlg.x + dw / 2 - bbw - I(14 * u), by, bbw, bbh };
+    L->dlg_no = (menu_rect){ L->dlg.x + dw / 2 + I(14 * u), by, bbw, bbh };
+}
+
+void menu_compute_layout(int cw, int ch, int nrows, int scroll, menu_layout* L) {
+    menu_compute_layout_f(cw, ch, nrows, (float)scroll, L);
 }
 
 static int inside(menu_rect r, int x, int y) { return x >= r.x && y >= r.y && x < r.x + r.w && y < r.y + r.h; }
 
+/* the layout as shown now (the animated scroll): what the mouse points at is what is on the screen */
 static void layout_now(menu_layout* L, int n) {
-    menu_compute_layout(st.cw > 0 ? st.cw : 1920, st.ch > 0 ? st.ch : 1080, n, st.scroll, L);
+    menu_compute_layout_f(st.cw > 0 ? st.cw : 1920, st.ch > 0 ? st.ch : 1080, n, st.anim_t > 0 ? st.scroll_f : (float)st.scroll, L);
+}
+
+/* the row (index) under (x, y), -1 none */
+static int row_at(const menu_layout* L, int n, int x, int y) {
+    if (!inside(L->list, x, y)) return -1;
+    for (int k = 0; k <= L->visible && L->first + k < n && k < MENU_MAX_ROWS; k++)
+        if (inside(L->rows[k], x, y)) return L->first + k;
+    return -1;
+}
+
+/* a slider's value at x (lock held) */
+static void slider_drag_to(const menu_layout* L, menu_row* r, int k, int x) {
+    int x0 = L->left[k].x + L->left[k].w, x1 = L->right[k].x;
+    int nw = (int)(96 * L->u), tx0 = x0 + (int)(10 * L->u), tx1 = x1 - nw - (int)(10 * L->u);   /* (menu_draw.c's track) */
+    if (tx1 <= tx0 || !r->enabled) return;
+    double f = (double)(x - tx0) / (tx1 - tx0);
+    if (f < 0) f = 0;
+    if (f > 1) f = 1;
+    int v = r->lo + (int)(f * (r->hi - r->lo) + 0.5);
+    v = (v - r->lo + r->step / 2) / r->step * r->step + r->lo;
+    if (v < r->lo) v = r->lo;
+    if (v > r->hi) v = r->hi;
+    if (v != r->val) row_set(r->id, v);
+}
+
+/* the scroll bar: the list's first row for a thumb dragged to y */
+static void scrollbar_drag_to(const menu_layout* L, int n, int y) {
+    menu_rect s = L->scrollbar;
+    if (!s.h || n <= L->visible) return;
+    float rows_px = (float)s.h / (float)n;
+    int top = (int)floorf(((float)(y - s.y)) / rows_px - st.drag_off + 0.5f);
+    if (top < 0) top = 0;
+    if (top > n - L->visible) top = n - L->visible;
+    st.scroll = top;
+    if (st.sel < top) st.sel = top;
+    if (st.sel >= top + L->visible) st.sel = top + L->visible - 1;
 }
 
 void menu_mouse_move(int x, int y) {
+    note_input();
     LOCK();
     if (st.open) {
         int n = rows_now();
         menu_layout L;
         layout_now(&L, n);
+        if (st.drag == 1) {                      /* (pc-menu2) dragging a slider */
+            for (int k = 0; k <= L.visible && L.first + k < n && k < MENU_MAX_ROWS; k++)
+                if (rows_buf[L.first + k].id == st.drag_id) slider_drag_to(&L, &rows_buf[L.first + k], k, x);
+            st.serial++;
+            UNLOCK();
+            return;
+        }
+        if (st.drag == 2) {                      /* the scroll bar */
+            scrollbar_drag_to(&L, n, y);
+            st.serial++;
+            UNLOCK();
+            return;
+        }
         int ht = -1, hr = -1, hb = -1;
         for (int k = 0; k < MENU_PAGE_N; k++) if (inside(L.tabs[k], x, y)) ht = k;
-        for (int k = 0; k < L.visible && st.scroll + k < n; k++) if (inside(L.rows[k], x, y)) hr = st.scroll + k;
+        hr = row_at(&L, n, x, y);
         if (inside(L.btn[0], x, y)) hb = 0;
         if (pending_any() && inside(L.btn[2], x, y)) hb = 2;
-        if (st.dialog) hb = inside(L.dlg_yes, x, y) ? 3 : inside(L.dlg_no, x, y) ? 4 : -1;
-        for (int k = 0; k < 2; k++) if (inside(L.tab_hint[k], x, y)) hb = 5 + k;
+        if (st.dialog) { hb = inside(L.dlg_yes, x, y) ? 3 : inside(L.dlg_no, x, y) ? 4 : -1; hr = -1; ht = -1; }
+        for (int k = 0; k < 2; k++) if (!st.dialog && inside(L.tab_hint[k], x, y)) hb = 5 + k;
         if (ht != st.hover_tab || hr != st.hover_row || hb != st.hover_btn || (hr >= 0 && hr != st.sel && !st.capture && !st.dialog)) {
             st.hover_tab = ht; st.hover_row = hr; st.hover_btn = hb;
-            if (hr >= 0 && !st.capture && !st.dialog) st.sel = hr;
+            if (hr >= 0 && !st.capture && !st.dialog) st.sel = hr;   /* (no keep_visible: the list does not jump under the mouse) */
             if (st.device != MENU_DEV_KEYBOARD) st.device = MENU_DEV_KEYBOARD;
             st.serial++;
         }
@@ -1198,12 +1287,14 @@ void menu_mouse_move(int x, int y) {
 }
 
 void menu_mouse_button(int x, int y, int button) {
+    note_input();
     LOCK();
     if (st.open) {
         st.device = MENU_DEV_KEYBOARD;
         int n = rows_now();
         menu_layout L;
         layout_now(&L, n);
+        int keep = 1;
         if (button == 2) nav(MENU_NAV_BACK);
         else if (st.dialog) {                    /* a dialog: its buttons (a click elsewhere does nothing) */
             if (inside(L.dlg_yes, x, y)) nav(MENU_NAV_CONFIRM);
@@ -1216,41 +1307,89 @@ void menu_mouse_button(int x, int y, int button) {
                 if (inside(L.tabs[k], x, y)) { if (k != st.page) set_page(k); done = 1; }
             for (int k = 0; k < 2 && !done; k++)
                 if (inside(L.tab_hint[k], x, y)) { nav(k ? MENU_NAV_TAB_NEXT : MENU_NAV_TAB_PREV); done = 1; }
-            for (int k = 0; k < L.visible && st.scroll + k < n && !done; k++) {
-                if (!inside(L.rows[k], x, y)) continue;
-                st.sel = st.scroll + k;
+            if (!done && L.scrollbar.w && inside((menu_rect){ L.scrollbar.x - L.scrollbar.w, L.scrollbar.y, 3 * L.scrollbar.w, L.scrollbar.h }, x, y)) {
+                float rows_px = (float)L.scrollbar.h / (float)n, thumb = (float)L.scrollbar.y + (float)st.scroll * rows_px;
+                float at = ((float)y - thumb) / rows_px;     /* grabbed on the thumb: keep the grab point; else centre it */
+                st.drag_off = at >= 0 && at < (float)L.visible ? at : (float)L.visible / 2.0f;
+                st.drag = 2;
+                scrollbar_drag_to(&L, n, y);
+                keep = 0;
+                done = 1;
+            }
+            int r_i = done ? -1 : row_at(&L, n, x, y);
+            if (r_i >= 0) {
+                int k = r_i - L.first;
+                st.sel = r_i;
                 menu_row* r = &rows_buf[st.sel];
                 if (inside(L.left[k], x, y) && (r->kind == MENU_ITEM_CHOICE || r->kind == MENU_ITEM_SLIDER)) nav(MENU_NAV_LEFT);
                 else if (inside(L.right[k], x, y) && (r->kind == MENU_ITEM_CHOICE || r->kind == MENU_ITEM_SLIDER)) nav(MENU_NAV_RIGHT);
-                else if (r->kind == MENU_ITEM_SLIDER && x >= L.value_x) {   /* a click on the bar sets the value */
-                    int x0 = L.left[k].x + L.left[k].w, x1 = L.right[k].x;
-                    if (x1 > x0 && r->enabled) {
-                        int v = r->lo + (int)((double)(x - x0) * (r->hi - r->lo) / (x1 - x0) + 0.5);
-                        v = (v + r->step / 2) / r->step * r->step;
-                        if (v < r->lo) v = r->lo;
-                        if (v > r->hi) v = r->hi;
-                        row_set(r->id, v);
-                    }
+                else if (r->kind == MENU_ITEM_SLIDER && x >= L.value_x) {   /* the bar: the value there, then drag */
+                    slider_drag_to(&L, r, k, x);
+                    st.drag = 1;
+                    st.drag_id = r->id;
                 } else nav(MENU_NAV_CONFIRM);
+                keep = 0;                        /* (a click on a row never scrolls the list under the mouse) */
                 done = 1;
             }
             if (!done && inside(L.btn[0], x, y)) nav(MENU_NAV_BACK);
             else if (!done && pending_any() && inside(L.btn[2], x, y)) apply_pending();
         }
-        if (st.open) keep_visible(rows_now());
+        if (st.open && keep) keep_visible(rows_now());
         st.serial++;
     }
     UNLOCK();
 }
 
-void menu_mouse_wheel(int x, int y, int delta) {
+void menu_mouse_up(int x, int y) {
     (void)x; (void)y;
     LOCK();
-    if (st.open && !st.capture && !st.dialog) {
-        nav(delta > 0 ? MENU_NAV_UP : MENU_NAV_DOWN);
-        st.serial++;
+    if (st.drag) { st.drag = 0; st.serial++; }
+    UNLOCK();
+}
+
+/* (pc-menu2) the wheel scrolls the list three rows a notch; the selection stays where it is unless it would leave the
+ * list (then it is the row under the mouse, or the nearest visible one) */
+void menu_mouse_wheel(int x, int y, int delta) {
+    LOCK();
+    if (st.open && !st.capture && !st.dialog && delta) {
+        int n = rows_now(), vis = st.visible > 0 ? st.visible : 1;
+        int top = st.scroll - 3 * delta;
+        if (top > n - vis) top = n - vis;
+        if (top < 0) top = 0;
+        if (top != st.scroll) {
+            st.scroll = top;
+            if (st.sel < top) st.sel = top;
+            if (st.sel >= top + vis) st.sel = top + vis - 1;
+            menu_layout L;
+            menu_compute_layout(st.cw > 0 ? st.cw : 1920, st.ch > 0 ? st.ch : 1080, n, top, &L);
+            int r = row_at(&L, n, x, y);
+            if (r >= 0) { st.sel = r; st.hover_row = r; }
+            st.serial++;
+        }
     }
     UNLOCK();
+}
+
+/* (pc-menu2) the list's scroll and the selection band glide to where they belong (a 60 ms time constant: quick, never
+ * a jump); snapped when the menu opens or the page changes */
+int menu_animate(double now_s) {
+    LOCK();
+    int moving = 0;
+    if (st.open) {
+        double dt = st.anim_t > 0 ? now_s - st.anim_t : 1.0;
+        if (dt < 0) dt = 0;
+        if (dt > 0.25) dt = 0.25;
+        float k = st.anim_t > 0 ? 1.0f - expf((float)(-dt / 0.06)) : 1.0f;
+        float ts = (float)st.scroll, tsel = (float)st.sel;
+        st.scroll_f += (ts - st.scroll_f) * k;
+        st.sel_f += (tsel - st.sel_f) * k;
+        if (fabsf(ts - st.scroll_f) < 0.002f) st.scroll_f = ts;
+        if (fabsf(tsel - st.sel_f) < 0.002f) st.sel_f = tsel;
+        moving = st.scroll_f != ts || st.sel_f != tsel;
+        st.anim_t = now_s > 0 ? now_s : 1e-9;
+    }
+    UNLOCK();
+    return moving;
 }
 
 /* ---- view ---------------------------------------------------------------------------------------------------- */
@@ -1303,6 +1442,9 @@ void menu_get_view(menu_view* v, int cw, int ch) {
         break;
     default: break;
     }
+    v->scroll_f = st.anim_t > 0 ? st.scroll_f : (float)st.scroll;
+    v->sel_f = st.anim_t > 0 ? st.sel_f : (float)st.sel;
+    v->drag = st.drag;
     v->device = st.device;
     v->hover_tab = st.hover_tab;
     v->hover_row = st.hover_row;

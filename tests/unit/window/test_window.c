@@ -258,7 +258,7 @@ static void test_settings(void) {
     settings_defaults(&s);
     CHECK(s.renderer_gpu == 1 && s.pacing == SETTINGS_PACING_VSYNC, "renderer / pacing defaults");
     CHECK(strstr(tmpl, "\nrenderer = gpu\n") && strstr(tmpl, "\npacing = auto\n") && strstr(tmpl, "\nvsync = on\n") && strstr(tmpl, "\nrender_scale = auto\n") &&
-          !strstr(tmpl, "internal_scale =") && strstr(tmpl, "\nmode = windowed\n"), "template writes renderer / pacing / render_scale / mode");
+          !strstr(tmpl, "internal_scale =") && strstr(tmpl, "\nmode = borderless\n"), "template writes renderer / pacing / render_scale / mode");
     warn_count = 0;
     n = settings_parse("[graphics]\nrenderer = GPU\npacing = vrr\n", &s, count_warn, NULL);
     CHECK(n == 0 && s.renderer_gpu == 1 && s.pacing == SETTINGS_PACING_VRR, "renderer = gpu, pacing = vrr (%d)", n);

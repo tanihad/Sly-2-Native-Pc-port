@@ -8,6 +8,8 @@
 #include "audio_out.h"
 #include "input.h"
 #include "window_gpu.h"
+#include "sly_font.h"
+#include "hw.h"
 
 /* the GPU renderer (not linked into every test program: weak, as in ps2_runtime.c) */
 extern int  gpu_hw_active(void) __attribute__((weak));
@@ -39,6 +41,7 @@ volatile int pcmenu_pause_req;
 #define PM_DEPTH   0x003D9EF4u           /* page depth: 0 closed, 1 the list, 2 a sub-page, 3 memory card pages */
 #define PM_ENTRIES 0x003D9EFCu           /* page 1's entries (our PCMENU_LIST while it is the pause list) */
 #define PM_STATE   0x003DA0B8u           /* 7 = idle (takes input) */
+#define GAME_OPTIONS_LIST 0x002F6470u    /* the game's Options page's items (the title's menu: page 1) */
 #define MENU_OBJ   0x003D9ED0u           /* the menu object (the Options setter's first argument) */
 #define SND_MGR    0x003DD040u           /* the sound manager: +0x150 music volume, +0x14C effects volume (floats 0..1) */
 #define FN_SND_VOLUME 0x001FEA60u        /* (mgr, category, kind, f12 volume): the game's Options page uses it */
@@ -53,8 +56,6 @@ static int pause_list_up(void) {
     int32_t depth = (int32_t)rd32(PM_DEPTH);
     return depth >= 1 && depth <= 3 && rd32(PM_ENTRIES) == PCMENU_LIST;
 }
-
-static int pause_idle(void) { return pause_list_up() && rd32(PM_STATE) == 7; }
 
 /* ---- (pc-polish) one menu: the game's pause menu and its Options page as a PC release has them -------------------
  * Pause menu: Keep Playing / Save and Quit / [Exit to Episode Menu] / [Abandon Job] / Save Game... / Load Game... /
@@ -187,14 +188,74 @@ void pcmenu_start(ps2_ctx* ctx) {
 volatile LONG pcmenu_open_pending;
 static volatile ULONGLONG open_deadline, pause_deadline;
 
-/* Esc / PS button / "menu" token: the game's pause menu first (the game is paused while the menu is open), then the
- * menu; where the game cannot pause (title, movies, loading) the menu opens over it after 0.5 s */
+/* (pc-menu2) the title screen: its update (f_001DD920) runs only there; the time it last ran */
+static volatile ULONGLONG title_seen;
+static volatile int title_req;                   /* Esc on the title: open its menu (the game's Options page) as SELECT does */
+#define FN_OPTIONS_PAGE 0x001B04E0u              /* (0): the title's SELECT menu (New Game... / Load Game... / Options / Quit) */
+static int on_title(void) { return title_seen && GetTickCount64() - title_seen < 250; }
+
+/* (pc-menu2) a button the game sees pressed for a few of its pad reads (Esc / the PS button on the game's own menus) */
+static volatile LONG inject_buttons, inject_reads;
+static volatile int esc_state;
+int pcmenu_esc_state(void) { return esc_state; }
+static void press(uint16_t buttons) {
+    InterlockedExchange(&inject_buttons, buttons);
+    InterlockedExchange(&inject_reads, 4);
+}
+
+void pcmenu_pad(int port, void* pad) {
+    if (port != 0 || !inject_reads || menu_is_open()) return;
+    pad_input* p = pad;
+    if (InterlockedDecrement(&inject_reads) >= 2) p->buttons |= (uint16_t)inject_buttons;   /* (2 reads pressed, 2 released) */
+}
+
+/* the game's page is open over the title screen (its SELECT menu: depth >= 1) */
+static int title_menu_up(void) {
+    if (!ps2_ram) return 0;
+    int32_t depth = (int32_t)rd32(PM_DEPTH);
+    return depth >= 1 && depth <= 3;
+}
+
+/* Esc / PS button / "menu" token with the Options menu closed (pc-menu2: the game's own menus, as the owner asked):
+ * - the game's pause menu is up: on its list START (Keep Playing, as START does), on a page below it Triangle (back);
+ * - the title screen: its menu (the game's Options page, as SELECT opens it); on that menu Triangle (back);
+ * - anywhere else the game's pause menu (the START patch, only where START would open it); where the game has no menu
+ *   to show (movies, loading) the Options menu opens directly after 0.6 s, so the settings and Quit are always reachable */
 static void request_open(void) {
     if (menu_is_open()) return;
-    if (pause_list_up()) { menu_open(); return; }
-    open_deadline = GetTickCount64() + 500;
+    if (pause_list_up()) {
+        int32_t depth = (int32_t)rd32(PM_DEPTH);
+        press(depth <= 1 ? PAD_START : PAD_TRIANGLE);
+        esc_state = depth <= 1 ? PCMENU_ESC_RESUME : PCMENU_ESC_BACK;
+        return;
+    }
+    if (title_menu_up() && rd32(PM_ENTRIES) == GAME_OPTIONS_LIST) {   /* the title's menu (the game's Options page) is up: back */
+        press(PAD_TRIANGLE);
+        esc_state = PCMENU_ESC_BACK;
+        return;
+    }
+    if (on_title()) {
+        title_req = 1;
+        esc_state = PCMENU_ESC_TITLE;
+        return;
+    }
+    open_deadline = GetTickCount64() + 600;
     InterlockedExchange(&pcmenu_open_pending, 1);
     pcmenu_pause_req = 1;
+    esc_state = PCMENU_ESC_PAUSE;
+}
+
+/* f_001DD920 before its START check (0x1DD964): the title screen is up; Esc asked for its menu */
+void pcmenu_title_frame(ps2_ctx* ctx) {
+    title_seen = GetTickCount64();
+    if (!title_req) return;
+    title_req = 0;
+    if (title_menu_up()) return;
+    call_begin(ctx);
+    ctx->r[4].ud[0] = 0;
+    ps2_call(ctx, FN_OPTIONS_PAGE);
+    call_end(ctx);
+    fprintf(stderr, "[menu] Esc on the title screen: its menu\n");
 }
 
 /* (pc-polish) Quit to desktop? - the game pauses behind the question where it can (as Esc does); the question shows at once */
@@ -213,9 +274,15 @@ static void tick(void) {
         if (!pcmenu_open_pending) pcmenu_pause_req = 0;
     }
     if (!pcmenu_open_pending) return;
-    if (pause_idle() || GetTickCount64() > open_deadline) {
+    if (pause_list_up() || on_title()) {         /* (pc-menu2) the game's pause menu came up: it is what Esc opens */
         if (!InterlockedExchange(&pcmenu_open_pending, 0)) return;
         pcmenu_pause_req = 0;
+        fprintf(stderr, "[menu] Esc: the game's pause menu\n");
+    } else if (GetTickCount64() > open_deadline) {   /* no game menu here (a movie, loading): Options directly */
+        if (!InterlockedExchange(&pcmenu_open_pending, 0)) return;
+        pcmenu_pause_req = 0;
+        esc_state = PCMENU_ESC_FALLBACK;
+        fprintf(stderr, "[menu] Esc: no game menu here, the Options menu\n");
         menu_open();
     }
 }
@@ -367,6 +434,7 @@ static void sync_game_options(ps2_ctx* ctx) {
  * effects = categories 0 and 3; the game's own options (twice a second, and at once after a change) */
 void pcmenu_ee_frame(ps2_ctx* ctx) {
     tick();
+    if (ps2_ram) slyf_ee_poll(ps2_ram, PS2_RAM_SIZE);   /* (pc-menu2) the game's font for the menu, once it is loaded */
     menu_keep_tick();                    /* (the Keep / Revert countdown also without a window thread: headless runs) */
     static unsigned frames;
     if (ee_applied && (game_opts_now || ++frames % 30 == 0)) {
@@ -420,7 +488,7 @@ static void display_applier(int option) {
 static int h_gpu_active(void) { return ps2_gpu_started() && gpu_hw_active && gpu_hw_active(); }
 static int h_auto_now(void) { return gpu_hw_auto_scale ? gpu_hw_auto_scale() : 0; }
 static int h_in_game(void) { return ee_applied; }
-static void h_set_mode(int m) { settings_change_key("display", "mode", m, 1); }
+static void h_set_mode(int m) { settings_change_key("display", "mode", m, 1); settings_mark_chosen(settings_find("display", "mode")); }
 
 void menu_game_init(int headless) {
     menu_host h;

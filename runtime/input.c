@@ -535,7 +535,7 @@ static void nav_push(int nav, int source, int device_id, int repeat, int x, int 
     } else {
         if (navq_count == NAVQ) { navq_head = (navq_head + 1) % NAVQ; navq_count--; }
         input_nav_event* e = &navq[(navq_head + navq_count++) % NAVQ];
-        e->nav = nav; e->source = source; e->device_id = device_id; e->repeat = repeat; e->x = x; e->y = y;
+        e->nav = nav; e->source = source; e->device_id = device_id; e->repeat = repeat; e->x = x; e->y = y; e->delta = 0;
     }
     ReleaseSRWLockExclusive(&nav_lock);
 }
@@ -693,17 +693,36 @@ int input_window_message(void* hwnd, unsigned msg, uintptr_t wp, intptr_t lp) {
             return 1;
         }
         if (!menu_on || capture_what) return 0;
-        if (msg == WM_LBUTTONDOWN) nav_push(INPUT_NAV_CLICK, INPUT_SRC_MOUSE, 0, 0, x, y);
-        else if (msg == WM_RBUTTONDOWN) nav_push(INPUT_NAV_BACK, INPUT_SRC_MOUSE, 0, 0, x, y);
+        if (msg == WM_LBUTTONDOWN) {
+            nav_push(INPUT_NAV_CLICK, INPUT_SRC_MOUSE, 0, 0, x, y);
+            if (hwnd) SetCapture((HWND)hwnd);                 /* (pc-menu2) a drag keeps the mouse outside the window */
+        } else if (msg == WM_RBUTTONDOWN) nav_push(INPUT_NAV_BACK, INPUT_SRC_MOUSE, 0, 0, x, y);
         return 1;
     }
+    case WM_LBUTTONUP:
+        if (GetCapture() == (HWND)hwnd) ReleaseCapture();
+        if (menu_on && !capture_what) nav_push(INPUT_NAV_RELEASE, INPUT_SRC_MOUSE, 0, 0, (int)(short)LOWORD(lp), (int)(short)HIWORD(lp));
+        return 0;
     case WM_MOUSEMOVE:
         if (menu_on && !capture_what) nav_push(INPUT_NAV_POINTER, INPUT_SRC_MOUSE, 0, 0, (int)(short)LOWORD(lp), (int)(short)HIWORD(lp));
         return 0;
-    case WM_MOUSEWHEEL:
+    case WM_MOUSEWHEEL: {
         if (!menu_on || capture_what) return 0;
-        nav_push((short)HIWORD(wp) > 0 ? INPUT_NAV_UP : INPUT_NAV_DOWN, INPUT_SRC_MOUSE, 0, 0, 0, 0);
+        /* (pc-menu2) the wheel scrolls the list (not the selection); precision wheels send fractions of a notch */
+        static int wheel_acc;
+        wheel_acc += (short)HIWORD(wp);
+        int notches = wheel_acc / WHEEL_DELTA;
+        wheel_acc -= notches * WHEEL_DELTA;
+        if (notches) {
+            POINT pt = { (short)LOWORD(lp), (short)HIWORD(lp) };      /* (screen coordinates) */
+            if (hwnd) ScreenToClient((HWND)hwnd, &pt);
+            nav_push(INPUT_NAV_WHEEL, INPUT_SRC_MOUSE, 0, 0, pt.x, pt.y);
+            AcquireSRWLockExclusive(&nav_lock);
+            if (navq_count) navq[(navq_head + navq_count - 1) % NAVQ].delta = notches;
+            ReleaseSRWLockExclusive(&nav_lock);
+        }
         return 1;
+    }
     case WM_ACTIVATEAPP:
         if (!wp) InterlockedExchange(&swallow_vk, 0);
         return 0;

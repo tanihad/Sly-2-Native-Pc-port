@@ -98,6 +98,10 @@ static struct {
     double first_present_ms;             /* the first windowed present (auto: no statistics after 5 s -> immediate) */
     double content_ms;                   /* (pc-fps) the pictures' cadence the pacing state was made for (frame rate) */
     int vrr_logged;                      /* (pc-fps) the last VRR verdict logged: PACE_DISP_* + 1, 0 none */
+    /* (pc-menu2) the menu between the game's pictures */
+    int last_aw, last_ah, last_scaler;   /* how the last picture was presented */
+    double menu_ms;                      /* QPC ms of the last menu present (0 none) */
+    long menu_presents;
 } P;
 
 static void vrr_log_driver(const char* when);    /* (pc-fps) */
@@ -871,6 +875,11 @@ static void pace_statistics(UINT pc) {
         return;
     }
     double shown = (double)fs.SyncQPCTime.QuadPart * 1000.0 / (double)qpf.QuadPart;
+    if (P.menu_ms > 0 && now_ms() - P.menu_ms < 1000.0) {   /* (pc-menu2) menu presents in between: not the game's cadence */
+        P.last_pc = fs.PresentCount;
+        P.last_sync_ms = 0;
+        return;
+    }
     double q = P.pres_q[fs.PresentCount % 64];   /* (M9) photon latency: frame queued -> shown */
     if (q > 0 && shown >= q) P.st.photon_ms = shown - q;
     double iv = fs.PresentCount == P.last_pc + 1 && P.last_sync_ms > 0 ? shown - P.last_sync_ms : -1;
@@ -941,8 +950,54 @@ static void vrr_log_driver(const char* when) {
     if (advice) gpu_log("VRR: to turn it on: %s", advice);
 }
 
+/* (pc-menu2) While the Options menu is open (overlay_wants_frames) the render thread presents the last picture again with
+ * the menu over it whenever the swap chain has room (frame latency 1: once per display refresh), between the game's own
+ * pictures: the menu and the mouse follow at the display's refresh (165 Hz) instead of the game's cadence (55-60 fps,
+ * paused behind the menu). Nothing of the game's pacing is touched: no statistics, no timestamps; the frame statistics
+ * ignore the second after a menu present (pace_statistics). Returns 1 if it presented. */
+int gpu_present_menu(void) {
+    /* (headless measurements: PS2_MENU_SIM_HZ=<Hz> draws the menu pictures into the offscreen target at that rate, as a
+     * display of that refresh would take them) */
+    static double sim_hz = -1, sim_next;
+    if (sim_hz < 0) { const char* e = getenv("PS2_MENU_SIM_HZ"); sim_hz = e ? atof(e) : 0; }
+    if (!P.sc && P.off && sim_hz > 0 && P.have && P.rtv && P.bb_w > 0 && !gpu_rt.lost) {
+        double t = now_ms(), period = 1000.0 / sim_hz;
+        if (t < sim_next) return 0;
+        sim_next = sim_next + period > t ? sim_next + period : t + period;
+        static const float black[4] = { 0, 0, 0, 1 };
+        ID3D11DeviceContext_ClearRenderTargetView(gpu_rt.ctx, P.rtv, black);
+        int x, y, lw, lh;
+        fit_aspect(P.bb_w, P.bb_h, P.last_aw ? P.last_aw : 4, P.last_ah ? P.last_ah : 3, &x, &y, &lw, &lh);
+        present_resample(P.rtv, x, y, lw, lh, P.last_scaler);
+        if (overlay_d3d11_draw) overlay_d3d11_draw(gpu_rt.dev, gpu_rt.ctx, P.rtv, P.bb_w, P.bb_h);
+        ID3D11DeviceContext_Flush(gpu_rt.ctx);
+        P.menu_presents++;
+        return 1;
+    }
+    if (!P.sc || !P.have || !P.rtv || P.bb_w <= 0 || gpu_rt.lost) return 0;
+    int cw = 0, ch = 0;
+    if (gpu_rt.cfg.client_size) gpu_rt.cfg.client_size(&cw, &ch);
+    if (cw != P.bb_w || ch != P.bb_h) return 0;  /* (a resize: the next game picture resizes the swap chain) */
+    if (P.waitable && WaitForSingleObjectEx(P.waitable, 0, TRUE) != WAIT_OBJECT_0) return 0;   /* (no room yet) */
+    static const float black[4] = { 0, 0, 0, 1 };
+    ID3D11DeviceContext_ClearRenderTargetView(gpu_rt.ctx, P.rtv, black);
+    int x, y, lw, lh;
+    fit_aspect(P.bb_w, P.bb_h, P.last_aw ? P.last_aw : 4, P.last_ah ? P.last_ah : 3, &x, &y, &lw, &lh);
+    present_resample(P.rtv, x, y, lw, lh, P.last_scaler);
+    if (overlay_d3d11_draw) overlay_d3d11_draw(gpu_rt.dev, gpu_rt.ctx, P.rtv, P.bb_w, P.bb_h);
+    HRESULT hr = IDXGISwapChain1_Present(P.sc, 1, 0);
+    if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET) gpu_rt.lost = 1;
+    P.menu_ms = now_ms();
+    P.menu_presents++;
+    return 1;
+}
+long gpu_present_menu_count(void) { return P.menu_presents; }
+
 static void present_fit(int aw, int ah, int scaler) {
     double t0 = now_ms();
+    P.last_aw = aw;
+    P.last_ah = ah;
+    P.last_scaler = scaler;
     /* (pc-fps) the frame rate changed: the pacing state is for the new cadence */
     double content = pace_content_ms();
     if (fabs(content - P.content_ms) > 0.01) {

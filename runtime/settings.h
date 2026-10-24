@@ -73,6 +73,7 @@ typedef struct {
     int game_invert_binocucom;   /* [game] invert_binocucom: the game's own "Invert Binocucom Controls" (off default) */
     int game_invert_turret;      /* [game] invert_turret: the game's own "Invert Turret Controls" (off default) */
     int game_speakers;           /* [audio] speakers: the game's own Speakers: stereo (0, default) | mono (1) | surround (2) */
+    int ini_version;             /* (pc-menu2) [settings] version: the defaults the file was written with (0: older files) */
 } ps2_settings_t;
 
 /* graphics.render_scale (pc-polish): how sharp the game is drawn, relative to the picture on the screen (the output: the
@@ -235,6 +236,16 @@ int settings_remove_text(const char* text, const char* section, const char* key,
  * old line removed; everything else stays. Returns the new length when something changed, 0 when nothing did, -1 when it
  * does not fit. Pure (unit tests); settings_load writes the result. */
 int settings_migrate_text(const char* text, char* out, size_t cap);
+/* (pc-menu2) The launch defaults changed with [settings] version 2 (display.mode windowed -> borderless; the 55 fps display
+ * lock is no longer automatic: graphics.pacing = display). A file of an older version gets the new defaults where it still
+ * has the old ones - never a value listed in [chosen] (what the player set in Options or with Alt+Enter / F11) - and
+ * version 2. Returns the new length when something changed, 0 when nothing did, -1 when it does not fit. Pure (tests). */
+#define SETTINGS_VERSION 2
+int settings_migrate_defaults(const char* text, char* out, size_t cap);
+/* (pc-menu2) 1 if [chosen] in text lists section.key */
+int settings_chosen_in(const char* text, const char* section, const char* key);
+/* (pc-menu2) the player chose option i (Options, Alt+Enter, F11): recorded in [chosen] (sly2.ini) */
+void settings_mark_chosen(int i);
 
 /* The user data folder (created if missing; no trailing backslash), and a file in it. */
 const wchar_t* settings_user_dir(void);

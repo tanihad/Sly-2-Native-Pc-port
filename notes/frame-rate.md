@@ -312,3 +312,13 @@ The governor keeps 3x at 120 / 165 now (warm-up >= 1 s, no immediate overload ru
 ## Recommended defaults (pc-smooth)
 
 60 (default): smooth on every display - 59.94 on 60 / 120 / 240 Hz, 55 locked on 165 Hz without VRR, even with VRR.
+
+## Defaults (pc-menu2, 2026-10-24)
+
+The owner: "don't switch the monitor's refresh rate, just start at 60 fps; everyone's monitor has 60 Hz; this is meant for
+other people too". The display-locked cadence is no longer automatic: `pacing = auto` (default) is a plain 60 (59.94) on every
+display - on 60 / 120 / 240 Hz the display's VBlanks still drive the game (every picture the same number of refreshes, as
+before), on 144 / 165 Hz without VRR pictures alternate 2 and 3 refreshes. The lock (55 fps on 165 Hz, every picture 3
+refreshes) is the opt-in `pacing = display`, shown in Options > Display > Frame pacing as **Match display** ("the smoothest
+without G-Sync / FreeSync"; gpu_hw.c `clock_lock_k`). The game starts borderless at the desktop's resolution and refresh
+(notes/settings.md "Launch defaults"); no display mode is changed unless the player picks Fullscreen.

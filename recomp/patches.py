@@ -56,6 +56,7 @@ PAUSE_LIST = (0x001B0290, "ceb3e45c987b7505b4ec7388628233baf720d7cf")    # build
 TEXT_LOOKUP = (0x0013E368, "70da33a2bc009fbe743fb29e1ef891e60916a5fe")   # text id -> string (the level's text table)
 MENU_UPDATE = (0x001AEEE0, "6f518491757212ff8aaf84c5197d1753ac1bbcaf")   # the menu object's per-frame update (input)
 HUD_UPDATE = (0x001D9648, "d8e9a7bdb104955a41913d2a79b514ebb10cfce0")    # the HUD manager's update (START -> pause)
+TITLE_UPDATE = (0x001DD920, "3de9752327f0ff069620a43a327f6aec75eb5ffb")  # (pc-menu2) the title screen's update (START / SELECT)
 # (pc-fps) the frame rate (runtime/frame_rate.h, notes/frame-rate.md)
 CLOCK_TICK = (0x0014D0B8, "d711437a42a7cf2bf2ab9622a903c33ff5744981")    # the game clock: dt from the COP0 Count
 VBLANK_WAIT = (0x0016F560, "b591b01bb4c0034d517f71d94b8a12f816560883")   # render thread: wait for the next VBlank
@@ -234,6 +235,10 @@ PATCHES: list[Patch] = [
           "if (pcmenu_pause_req) pcmenu_start(ctx);",
           "after f_00187D80(pad, START) returned whether START was pressed ($v0), where the HUD manager opens the "
           "pause menu (jal 0x1B0290): Esc / the PS button pause the game exactly as START does, only where START would"),
+    Patch("pcmenu_title", *TITLE_UPDATE, 0x001DD964, "before",
+          "pcmenu_title_frame(ctx);",
+          "(pc-menu2) the title screen's update, before it asks f_00187D80(pad, START): the title is up (Esc there opens its "
+          "menu: the game's Options page f_001B04E0(0), exactly what its SELECT check below does)"),
     Patch("pcmenu_frame", *MAIN_LOOP, 0x001A75A8, "before",
           "pcmenu_ee_frame(ctx);",
           "main loop (as aspect_switch): the music / effects volumes chosen in the menu go into the game's sound "

@@ -35,3 +35,9 @@ void menu_game_quit(void);                       /* quit confirmed: clean shutdo
 void menu_game_init(int headless);               /* ps2_runtime.c main, after the window */
 void menu_script(int k);                         /* window.c PS2_INPUT menu tokens */
 void menu_focus(int active);                     /* window.c: the window became (in)active (sound in the background) */
+/* (pc-menu2) Esc / the PS button go to the game's own menus: the pause menu (as START), Back on its pages, the title
+ * screen's menu (as SELECT); only where the game has no menu to show (movies, loading) do they open Options directly */
+void pcmenu_title_frame(struct ps2_ctx* ctx);    /* f_001DD920 (the title screen's update) before its START check */
+void pcmenu_pad(int port, void* pad);            /* window.c window_get_input: the buttons Esc / PS press for the game */
+int  pcmenu_esc_state(void);                     /* where Esc went last (PCMENU_ESC_*; tests, log) */
+enum { PCMENU_ESC_NONE, PCMENU_ESC_PAUSE, PCMENU_ESC_RESUME, PCMENU_ESC_BACK, PCMENU_ESC_TITLE, PCMENU_ESC_FALLBACK };

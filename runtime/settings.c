@@ -46,7 +46,8 @@ static const char* const n_speakers[] = { "stereo", "mono", "surround" };
 
 static const settings_opt opts[] = {
     /* (pc-polish) the display mode (was [window] fullscreen) and Fullscreen's resolution: staged by the menu (Apply) */
-    ENUM_("display", "mode", win_fullscreen, SET_LIVE | SET_STAGED, SET_APPLY_WINDOW, n_mode, 3, 0,
+    /* (pc-menu2) borderless by default: the monitor's own resolution and refresh (no mode change) */
+    ENUM_("display", "mode", win_fullscreen, SET_LIVE | SET_STAGED, SET_APPLY_WINDOW, n_mode, 3, 1,
           "off=0|window=0|on=1|exclusive=2|0=0|1=1|2=2|true=1|false=0|yes=1|no=0", NULL),
     { "display", "resolution", SET_RES, SET_LIVE | SET_STAGED, SET_APPLY_WINDOW, OFF(fullscreen_res), 0, 0, 0, NULL, NULL, NULL },
     { "display", "aspect", SET_ASPECT, SET_LIVE, SET_APPLY_DISPLAY, OFF(aspect_w), 0, 0, 16 << 16 | 9, NULL, NULL, "PS2_ASPECT" },
@@ -88,7 +89,7 @@ static const settings_opt opts[] = {
     { "game", "disc", SET_STRING, SET_STATE, SET_APPLY_NONE, OFF(disc), 0, 0, 0, NULL, NULL, NULL },
     BOOL_("game", "invert_binocucom", game_invert_binocucom, SET_LIVE, SET_APPLY_GAME, 0),
     BOOL_("game", "invert_turret", game_invert_turret, SET_LIVE, SET_APPLY_GAME, 0),
-    ENUM_("window", "fullscreen", win_fullscreen, SET_LEGACY | SET_LIVE, SET_APPLY_WINDOW, n_fullscreen, 3, 0,
+    ENUM_("window", "fullscreen", win_fullscreen, SET_LEGACY | SET_LIVE, SET_APPLY_WINDOW, n_fullscreen, 3, 1,
           "borderless=1|1=1|true=1|yes=1|0=0|false=0|no=0", NULL),
     BOOL_("window", "show_fps", show_fps, SET_LIVE, SET_APPLY_WINDOW, 0),
     INT_("window", "x", win_x, SET_STATE, SET_APPLY_NONE, -100000, 100000, 0, NULL, NULL),
@@ -96,6 +97,8 @@ static const settings_opt opts[] = {
     INT_("window", "width", win_w, SET_STATE, SET_APPLY_NONE, 100, 100000, 0, NULL, NULL),
     INT_("window", "height", win_h, SET_STATE, SET_APPLY_NONE, 100, 100000, 0, NULL, NULL),
     BOOL_("window", "maximized", win_maximized, SET_STATE, SET_APPLY_NONE, 0),
+    /* (pc-menu2) the defaults the file was written with (settings_migrate_defaults); templates write SETTINGS_VERSION */
+    INT_("settings", "version", ini_version, SET_STATE, SET_APPLY_NONE, 0, 1000, 0, NULL, NULL),
 };
 #define NOPTS ((int)(sizeof opts / sizeof opts[0]))
 /* the env name of show_fps is special (any nonzero number), so it is handled in settings_load */
@@ -456,6 +459,7 @@ static int apply(ps2_settings_t* s, const char* section, const char* key, const 
     if (i >= 0) seen[i] = 1;
     if (i >= 0 && (opts[i].flags & SET_LEGACY)) s = leg;     /* (old keys: used after the file, when the new key is not in it) */
     if (i < 0 && !_stricmp(section, "controls")) return 0;   /* [controls]: runtime/input.c reads it (settings_read_section) */
+    if (i < 0 && !_stricmp(section, "chosen")) return 0;     /* (pc-menu2) [chosen]: settings_chosen_in */
     if (i < 0) { warnf(warn, user, line, "unknown setting '%s.%s' (ignored)", section, key); return 1; }
     if (opts[i].type == SET_STRING) {
         if (strlen(v) >= sizeof s->disc) { warnf(warn, user, line, "disc path too long (ignored)"); return 1; }
@@ -622,8 +626,8 @@ int settings_format(const ps2_settings_t* s, char* out, size_t cap) {
         "; Most of these can also be changed in the game: pause (START / Esc) -> Options.\n"
         "\n"
         "[display]\n"
-        "; Display mode: windowed (default), borderless (fills the monitor at the desktop's resolution) or fullscreen\n"
-        "; (the game sets the monitor to `resolution`). Alt+Enter / F11 switch between windowed and borderless.\n"
+        "; Display mode: borderless (default: fills the monitor at its own resolution and refresh rate), windowed or\n"
+        "; fullscreen (the game sets the monitor to `resolution`). Alt+Enter / F11 switch between windowed and borderless.\n"
         "mode = %s\n"
         "; Fullscreen resolution: desktop (default) or WxH, e.g. 1920x1080 (one of the monitor's modes).\n"
         "resolution = %s\n"
@@ -700,7 +704,12 @@ int settings_format(const ps2_settings_t* s, char* out, size_t cap) {
         "; Show the frame rate in the title bar and in the top left corner of the picture.\n"
         "show_fps = %s\n"
         "; Remembered when the game closes: the window's place.\n"
-        "%s",
+        "%s"
+        "\n"
+        "[settings]\n"
+        "; The defaults this file was written with: the game moves older files to new defaults, except the settings you\n"
+        "; chose yourself (Options, Alt+Enter / F11), which it lists in [chosen].\n"
+        "version = %d\n",
         T(19, "display", "mode"), T(20, "display", "resolution"),
         s->aspect_w, s->aspect_h, T(0, "display", "hud"), T(1, "display", "monitor"), T(16, "display", "fullscreen_refresh"), T(18, "display", "frame_rate"),
         settings_preset_names[settings_detect_preset(s)], T(2, "graphics", "renderer"), T(3, "graphics", "pacing"), T(17, "graphics", "vsync"),
@@ -708,7 +717,7 @@ int settings_format(const ps2_settings_t* s, char* out, size_t cap) {
         T(8, "graphics", "motion_blur"), T(9, "graphics", "flicker_filter"), T(10, "graphics", "interlacing"),
         T(11, "graphics", "scaler"),
         T(12, "audio", "master"), T(13, "audio", "music"), T(14, "audio", "effects"), T(15, "audio", "background"), T(5, "audio", "speakers"),
-        ini_value(s->disc, disc, sizeof disc), T(21, "game", "invert_binocucom"), T(23, "game", "invert_turret"), T(22, "window", "show_fps"), win);
+        ini_value(s->disc, disc, sizeof disc), T(21, "game", "invert_binocucom"), T(23, "game", "invert_turret"), T(22, "window", "show_fps"), win, SETTINGS_VERSION);
 #undef T
 }
 
@@ -879,6 +888,50 @@ int settings_migrate_text(const char* text, char* out, size_t cap) {
     size_t n = strlen(a);
     if (n + 1 > cap) return -1;
     memcpy(out, a, n + 1);
+    return (int)n;
+}
+
+/* ---- (pc-menu2) new launch defaults for older files ----------------------------------------------------------- */
+
+typedef struct { const char* want; int found; } chosen_q;
+
+static void chosen_seen(void* user, const char* key, const char* value, int line) {
+    (void)line;
+    chosen_q* q = user;
+    if (_stricmp(key, q->want)) return;
+    q->found = !_stricmp(value, "on") || !_stricmp(value, "yes") || !_stricmp(value, "1") || !_stricmp(value, "true");
+}
+
+int settings_chosen_in(const char* text, const char* section, const char* key) {
+    char k[96];
+    snprintf(k, sizeof k, "%s.%s", section, key);
+    chosen_q q = { k, 0 };
+    settings_parse_section(text, "chosen", chosen_seen, &q);
+    return q.found;
+}
+
+int settings_migrate_defaults(const char* text, char* out, size_t cap) {
+    static ps2_settings_t s;
+    static char a[65536], b[65536];
+    settings_defaults(&s);
+    settings_parse(text, &s, NULL, NULL);
+    if (s.ini_version >= SETTINGS_VERSION) return 0;
+    size_t tl = strlen(text);
+    if (tl >= sizeof a) return -1;
+    memcpy(a, text, tl + 1);
+    /* display.mode: windowed was the default before version 2; a file that says windowed (or nothing) gets borderless,
+     * unless the player chose windowed ([chosen]) */
+    if (s.win_fullscreen == 0 && !settings_chosen_in(text, "display", "mode")) {
+        if (settings_update_text(a, "display", "mode", "borderless", b, sizeof b) < 0) return -1;
+        memcpy(a, b, strlen(b) + 1);
+    }
+    /* graphics.pacing: auto stays auto - which no longer means the 55 fps display lock (only pacing = display does) */
+    char v[16];
+    snprintf(v, sizeof v, "%d", SETTINGS_VERSION);
+    if (settings_update_text(a, "settings", "version", v, b, sizeof b) < 0) return -1;
+    size_t n = strlen(b);
+    if (n + 1 > cap) return -1;
+    memcpy(out, b, n + 1);
     return (int)n;
 }
 
@@ -1094,6 +1147,18 @@ void settings_load(void) {
             if (n > 0) {
                 if (write_text(path, migrated, (size_t)n)) fprintf(stderr, "[settings] %s: old keys replaced by [display] mode / [graphics] render_scale\n", upath);
                 else fprintf(stderr, "[settings] %s: cannot write the migrated keys\n", upath);
+                memcpy(text, migrated, (size_t)n + 1);
+            }
+            /* (pc-menu2) the new launch defaults where an older file still has the old ones (not what the player chose) */
+            n = settings_migrate_defaults(text, migrated, sizeof migrated);
+            if (n > 0) {
+                int was = ps2_settings.win_fullscreen;
+                settings_defaults(&ps2_settings);
+                settings_parse(migrated, &ps2_settings, NULL, NULL);
+                if (write_text(path, migrated, (size_t)n))
+                    fprintf(stderr, "[settings] %s: updated to the defaults of version %d%s\n", upath, SETTINGS_VERSION,
+                            was != ps2_settings.win_fullscreen ? " (display mode: borderless)" : "");
+                else fprintf(stderr, "[settings] %s: cannot write the new defaults\n", upath);
             }
         }
     }
@@ -1231,5 +1296,13 @@ int settings_set(const char* const kv[][3], int n) {
     if (ok) ok = write_text(path, a, strlen(a));
     ReleaseSRWLockExclusive(&lock);
     return ok;
+}
+
+void settings_mark_chosen(int i) {
+    if (i < 0 || i >= NOPTS || (opts[i].flags & (SET_STATE | SET_LEGACY)) || settings_env_locked(i)) return;
+    char k[96];
+    snprintf(k, sizeof k, "%s.%s", opts[i].section, opts[i].key);
+    const char* const kv[1][3] = { { "chosen", k, "on" } };
+    settings_set(kv, 1);
 }
 #endif
