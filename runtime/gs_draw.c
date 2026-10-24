@@ -568,13 +568,15 @@ static void trace_prim(int type, const vtx* const* vs, int nv) {
     if (trace_brief) {
         uint64_t fr = reg[R_FRAME_1 + ctx], al = reg[R_ALPHA_1 + ctx], t0 = reg[R_TEX0_1 + ctx];
         fprintf(trace_out, "[gstrace] v%u %-9s %4d,%4d..%4d,%4d rgba %02X%02X%02X%02X z %u FBP %u/%02X msk %08X%s%s ABE %d "
-                        "ALPHA %u%u%u%u/%02X TME %d TBP %u/%02X TFX %u TCC %u\n",
+                        "ALPHA %u%u%u%u/%02X TME %d TBP %u/%02X TFX %u TCC %u | sc y %d..%d ofy %d v0 %.2f\n",
                 gs_stream_vsync, names[type & 7], x0, y0, x1, y1, vs[nv - 1]->r, vs[nv - 1]->g, vs[nv - 1]->b,
                 vs[nv - 1]->a, vs[nv - 1]->z, (unsigned)(fr & 0x1FF), (unsigned)((fr >> 24) & 0x3F),
                 (unsigned)(fr >> 32), (attr >> 3) & 1 ? " gouraud" : "", (attr >> 7) & 1 ? " AA1" : "", (int)(attr >> 6) & 1,
                 (unsigned)(al & 3), (unsigned)((al >> 2) & 3), (unsigned)((al >> 4) & 3), (unsigned)((al >> 6) & 3),
                 (unsigned)((al >> 32) & 0xFF), (int)(attr >> 4) & 1, (unsigned)(t0 & 0x3FFF),
-                (unsigned)((t0 >> 20) & 0x3F), (unsigned)((t0 >> 35) & 3), (unsigned)((t0 >> 34) & 1));
+                (unsigned)((t0 >> 20) & 0x3F), (unsigned)((t0 >> 35) & 3), (unsigned)((t0 >> 34) & 1),
+                (int)((reg[R_SCISSOR_1 + ctx] >> 32) & 0x7FF), (int)((reg[R_SCISSOR_1 + ctx] >> 48) & 0x7FF), ofy >> 4,
+                vs[0]->v / 16.0);
         return;
     }
     fprintf(trace_out, "[gstrace] v%u %s IIP %d TME %d FGE %d ABE %d AA1 %d FST %d CTXT %d FIX %d\n", gs_stream_vsync,

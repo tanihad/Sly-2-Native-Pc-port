@@ -137,6 +137,21 @@ static void test_gov(void) {
     int k = 0;
     for (; k < 30 && g.cur == 8; k++) { t += 70; pace_gov_frame(&g, 70, t); }
     CHECK(g.cur == 3 && k <= 12 && g.reason == PACE_GOV_OVERLOAD, "fixed 8x at 70 ms -> %dx after %d pictures (3x, <= 12: < 1 s)", g.cur, k);
+    {   /* (pc-smooth) above 60 fps: no immediate overload rule (the game's speed does not depend on the GPU there) */
+        pace_gov g2;
+        pace_gov_init(&g2, 8, 1, 8);
+        g2.warm = 0;
+        g2.no_overload = 1;
+        double t2 = 0;
+        for (int i = 0; i < 30; i++) { t2 += 70; pace_gov_frame(&g2, 70, t2); }
+        CHECK(g2.cur == 8, "no_overload: 30 slow pictures leave 8x to the per-second rules (%d)", g2.cur);
+        /* the warm-up lasts 1 s at 165 fps too (60 pictures are 0.36 s there) */
+        pace_gov_init(&g2, 3, 1, 3);
+        t2 = 0;
+        int n = 0;
+        for (; n < 200 && g2.cur == 3; n++) { t2 += 6.06; pace_gov_frame(&g2, 60, t2); }
+        CHECK(g2.cur < 3 && t2 >= 1000.0, "warm-up at 165 fps: overload judged after >= 1 s (%.0f ms, %d pictures)", t2, n);
+    }
     /* at 3x 40%: a fixed scale climbs back towards the player's while the prediction fits 80% */
     feed(&g, 60 * 20, 0.4 * P, &t);    /* (one step: 3 s settle + 15 s judged)*/
     CHECK(g.cur == 4, "fixed: back up to 4x where 3x at 40%% predicts 72%% (%d)", g.cur);

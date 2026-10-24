@@ -57,6 +57,20 @@ int main(void) {
     CHECK(frame_rate_setting() == 120 && frame_rate_high(), "settings_change 120 applies live");
     settings_change(fi, 60, 0);
 
+    /* (pc-smooth) the display lock: 165 Hz without VRR, 60 -> every 3rd refresh */
+    frame_rate_set(60);
+    frame_rate_set_lock(165.0 / 3);
+    CHECK(fabs(frame_rate_target_hz() - 55.0) < 1e-9 && fabs(frame_rate_lock_hz() - 55.0) < 1e-9 && !frame_rate_high() &&
+          ps2_frame_dt_min == 0.0f, "lock 55: target 55, not high, the game's own clamp");
+    CHECK(fabs(pace_content_ms() - 1000.0 / 55.0) < 1e-9 && fabs(frame_rate_base_hz() - FRAME_RATE_NTSC_HZ) < 1e-9,
+          "lock 55: cadence 18.18 ms, base still 59.94");
+    frame_rate_movie(1);
+    CHECK(frame_rate_lock_hz() == 0 && fabs(frame_rate_target_hz() - FRAME_RATE_NTSC_HZ) < 1e-9, "lock + movie: 59.94");
+    frame_rate_movie(0);
+    CHECK(fabs(frame_rate_target_hz() - 55.0) < 1e-9, "lock after the movie: 55 again");
+    frame_rate_set_lock(0);
+    CHECK(fabs(frame_rate_target_hz() - FRAME_RATE_NTSC_HZ) < 1e-9 && frame_rate_lock_hz() == 0, "lock off: 59.94");
+
     /* the governor's budget stays the 59.94 Hz frame (gpu_hw.c) */
     pace_gov g;
     pace_gov_init(&g, 3, 1, 3);

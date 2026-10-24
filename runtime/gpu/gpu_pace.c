@@ -204,8 +204,12 @@ int pace_gov_frame(pace_gov* g, double gpu_ms, double now_ms) {
      * over (the last 12 pictures over 2.5 periods on average, the last 24 over 1.4) it is lowered at once, so the game
      * slows for about a second at most; a short burst of slow pictures (loading, a GPU clock change, another program
      * using the GPU) is absorbed by the render queue and judged by the per-second rules below. */
-    if (g->warm > 0) g->warm--;
-    else if (g->cur > 1) {
+    /* (pc-smooth) the warm-up lasts at least 1 s too (at 120 / 165 fps 60 pictures were 0.4-0.5 s: the GPU's clocks were still
+     * low and a strict 3x was lowered to 1x seconds after the start); above 60 fps there is no immediate rule at all - the game's
+     * speed does not depend on the GPU there (frame_rate.h), so a short burst is no reason to drop the resolution */
+    if (g->warm == GOV_WARM) g->warm_t0 = now_ms;
+    if (g->warm > 0 || (g->warm_t0 > 0 && now_ms - g->warm_t0 < 1000.0)) { if (g->warm > 0) g->warm--; }
+    else if (g->cur > 1 && !g->no_overload) {
         double s12 = 0, s24 = 0;
         for (int i = 1; i <= PACE_GOV_NFR && i <= g->nfr; i++) {
             double v = g->fr[(g->fpos - i + PACE_GOV_NFR) % PACE_GOV_NFR];

@@ -93,6 +93,8 @@ typedef struct {
     double last_behind, last_stall_ms;   /* the last second's (statistics) */
     double period_ms;                    /* (pc-fps) the frame budget: one picture per period (PACE_PERIOD_MS at 60 fps; the
                                             frame rate's period above, frame_rate.h) */
+    double warm_t0;                      /* (pc-smooth) when the warm-up began: it lasts GOV_WARM pictures and at least 1 s */
+    int no_overload;                     /* (pc-smooth) above 60 fps: no immediate overload rule (the per-second rules judge) */
 } pace_gov;
 void pace_gov_init(pace_gov* g, int max, int fixed, int start);
 /* a new maximum / mode (player's choice): cur becomes the highest scale <= max not left for being too slow within

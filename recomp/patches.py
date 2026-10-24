@@ -60,6 +60,10 @@ HUD_UPDATE = (0x001D9648, "d8e9a7bdb104955a41913d2a79b514ebb10cfce0")    # the H
 CLOCK_TICK = (0x0014D0B8, "d711437a42a7cf2bf2ab9622a903c33ff5744981")    # the game clock: dt from the COP0 Count
 VBLANK_WAIT = (0x0016F560, "b591b01bb4c0034d517f71d94b8a12f816560883")   # render thread: wait for the next VBlank
 RENDER_THREAD = (0x00160B70, "ae5d4b497429d76b28da3ae24690c6b58c68d8e4")  # (pc-fps2) render thread main loop
+# (pc-smooth) the display module: per-frame flip after the VBlank, the 2D flip, display init
+DISP_FLIP = (0x0016F590, "2377f5a7364cb5e93071322afcfc7a2ce183597a")     # render thread: VBlank wait, half offset, draw env
+DISP_FLIP2 = (0x0016F6B8, "6bcb49757d6349e31a1774b8202cdae38bb7c228")    # the same for a second draw environment
+DISP_INIT = (0x0016F788, "100efdaa85761c7612174dd9172f7cdf4d1f4417")     # display init (field parity word 0x2DEDB8)
 
 PATCHES: list[Patch] = [
     Patch("ws_projection", *CM_RECALC, 0x0014DBA4, "after",
@@ -142,6 +146,33 @@ PATCHES: list[Patch] = [
           "game's code writes that word by address (a debug switch); the community 'No Motion Blur' "
           "patch nops this load instead, which leaves $v1 at whatever the caller had. motion_blur = off "
           "makes the load read 1: the game's own off path, nothing else changes"),
+    # (pc-smooth, notes/wip/pc-smooth.md) field rendering in progressive output: the "shaking" of every still picture
+    # (menus, the safehouse, the pause screen) and the 30 Hz flicker of horizontal edges and shadows. Sly 2 draws each
+    # frame for the field it will be shown in: after the VBlank wait the render thread stores half = !CSR.FIELD in
+    # 0x2DEDB4 and passes it to sceGsSetHalfOffset (0x240AE0: draw environment, 0x800, 0x800, half), which puts the
+    # frame half a native line higher (XYOFFSET.Y + 8/16) on odd fields - right on a TV, whose odd field is half a line
+    # lower. A progressive picture has no fields: at 60 fps every other frame was half a native line (one output line)
+    # higher - a one-line bob at 60 Hz (measured: 20-31% of the pixels of a still scene changing every VBlank, the
+    # buffers' contents one sample row apart at 1x..3x). At 30 fps all frames got the same field and nothing moved,
+    # which is why it showed in menus and still scenes more than in play.
+    Patch("field_offset_flip", *DISP_FLIP, 0x0016F63C, "after",
+          "if (ps2_progressive) ctx->r[7].ud[0] = 0;",
+          "lh $a3, -0x124C($s1): half (0x2DEDB4) for sceGsSetHalfOffset of the next frame's draw environment: 0 in "
+          "progressive output (every frame drawn as the even field)"),
+    Patch("field_offset_flip2", *DISP_FLIP2, 0x0016F734, "after",
+          "if (ps2_progressive) ctx->r[7].ud[0] = 0;",
+          "lh $a3, -0x124C($a2): the same for the second draw environment (0x2DEBE0)"),
+    Patch("field_offset_init", *DISP_INIT, 0x0016F824, "after",
+          "if (ps2_progressive) ctx->r[7].ud[0] = 0;",
+          "lh $a3, -0x124C($t1): the same at display init"),
+    Patch("motion_blur_progressive", *MOTION_BLUR, 0x00161134, "after",
+          "if (ps2_progressive) ctx->r[18].ud[0] = 8;",
+          "movn $s2, $zero, $v0: $s2 is the V of the blur sprites' top edge (0x10 = 1.0 texel; 0 when the field "
+          "parity word 0x2DEDB8 is odd), U is +0.5 (texel centre). The GS samples at the pixel's top-left corner, so "
+          "V 1.0 / 0.0 is half way between two rows: the previous picture (drawn for the other field) is blended in "
+          "half a native line up or down - in place on a TV, where the two fields are half a line apart. With every "
+          "frame drawn for the same field (field_offset_*) the previous picture belongs in place: V 0.5, the texel "
+          "centre, for both buffers. Interlaced output keeps the game's offsets"),
     # Not a ws_ patch: it must also run at 4:3 (to switch to a wide aspect); it does nothing unless
     # the player asked for a switch (F7/F8), and a switch to 4:3 leaves the game's own numbers.
     Patch("aspect_switch", *MAIN_LOOP, 0x001A75A8, "before",

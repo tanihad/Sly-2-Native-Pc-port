@@ -295,3 +295,20 @@ game's "exclusive" mode stays the borderless popup + display mode switch (displa
 - With VRR enabled on the display: 120 or "display" is smooth (the limiter's even cadence, VRR shows each frame as it
   comes), with the resolution the GPU can hold (Balanced 3x: ~100 fps at 1440p; Performance 2x for 144+).
 - Without VRR on a 165 Hz display: 60 (or "display" for the lowest latency, accepting the variation).
+
+## Display-locked cadence on fixed-refresh displays (pc-smooth)
+
+On the owner's 165 Hz display without VRR, 59.94 frames/s cannot be shown evenly: pictures alternate 3 and 2 refreshes
+(18.2 / 12.1 ms) and some presents are replaced before they are shown. Now (pacing auto, once the frame statistics say the
+refresh is fixed; or pacing = display) the display's own VBlanks drive the game every k-th refresh at most 60 times a
+second - 165 Hz: 55 frames/s, each picture exactly 3 refreshes (frame_rate_set_lock; d3d11-renderer.md appendix Q). The
+game's speed is real time at any rate (its dt is 1/55 s, inside its own [1/60, 1/30] clamp), movies and RC chopper flights
+keep 59.94. Measured on the owner's monitor: 1160 of 1160 pictures shown for 18.17 ms (before: 21% for 12.1 ms, 12% of the
+presents never shown). The log says "[fps] frame rate locked to the display: 55.03 frames/s".
+Settings above 60 are not locked (display VBlanks would present repeated pictures there): on a fixed 165 Hz display 120 /
+165 still vary with the scene - turn VRR on (section "VRR" above), or use 60.
+The governor keeps 3x at 120 / 165 now (warm-up >= 1 s, no immediate overload rule above 60): ep2 hub 98-99 frames/s.
+
+## Recommended defaults (pc-smooth)
+
+60 (default): smooth on every display - 59.94 on 60 / 120 / 240 Hz, 55 locked on 165 Hz without VRR, even with VRR.

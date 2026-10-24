@@ -104,10 +104,13 @@ static void vrr_log_driver(const char* when);    /* (pc-fps) */
 extern void frame_rate_note_display(double hz) __attribute__((weak));   /* (pc-fps) runtime/frame_rate.c */
 extern double frame_rate_target_hz(void) __attribute__((weak));
 extern int frame_rate_high(void) __attribute__((weak));
+extern double frame_rate_lock_hz(void) __attribute__((weak));   /* (pc-smooth) display-locked cadence */
 
 /* (pc-pacing) presentation mode, set from any thread (gpu_present_set_mode), read by the render thread per picture */
 static volatile LONG pace_mode = PACE_MODE_AUTO, pace_vsync = PACE_VSYNC_ON, pace_refresh_x1000;
 static volatile LONG pace_disp_shared = PACE_DISP_UNKNOWN;
+static volatile LONG disp_fixed_seen;     /* (pc-smooth) the display was seen refreshing at a fixed rate (no VRR) */
+int gpu_present_display_fixed(void) { return (int)disp_fixed_seen; }
 static int pace_log = -1;                /* PS2_PACE_LOG=1: one line per present */
 static int pace_headless = -1;           /* PS2_PACE_HEADLESS=1: pace the offscreen presents too (measurements) */
 void gpu_present_set_mode(int mode, int vsync) {
@@ -122,6 +125,69 @@ static volatile LONG pace_extra;          /* frames the paced present holds back
 int gpu_present_pace_frames(void) { return (int)pace_extra; }
 
 static LARGE_INTEGER qpf;
+
+/* (pc-smooth) PS2_PRESENT_TRACE=<file>: one buffered line per present / resolved GPU time / shown present, render thread
+ * only (scripts/smooth_trace.py: frame-time distributions, spikes). Times are QPC ms.
+ *   p <vblank> <vblank ms> <queued ms> <exec start ms> <present_fit entry> <Present call> <Present returned> <scale> <flags>
+ *   g <vblank> <GPU ms> <present GPU ms>
+ *   s <present count> <vblank> <shown ms> */
+static FILE* ptrace = (FILE*)1;
+static FILE* ptrace_file(void) {
+    if (ptrace == (FILE*)1) {
+        const char* e = getenv("PS2_PRESENT_TRACE");
+        ptrace = e && *e ? fopen(e, "w") : NULL;
+        if (ptrace) setvbuf(ptrace, NULL, _IOFBF, 1 << 16);
+    }
+    return ptrace;
+}
+
+/* (pc-smooth) PS2_PRESENT_DUMP=<dir>, PS2_PRESENT_DUMP_AT=<s>:<n>[:x,y,w,h]: the n presented pictures (back buffer with the
+ * overlay, as shown) from s seconds after the first present as PNG (cropped to x,y,w,h), for frame-sequence checks (shake,
+ * flicker). Blocking read-backs: a debugging tool only. */
+extern void debug_write_png(const char* path, const uint32_t* bgrx, int w, int h, int stride) __attribute__((weak));
+static ID3D11Texture2D* tex_create(int w, int h, UINT bind, D3D11_USAGE usage, UINT cpu);
+static void present_dump(ID3D11RenderTargetView* rtv, int bw, int bh, double t_rel) {
+    static int init, n, cx, cy, cw, ch, done, stride = 1, seen;
+    static double at;
+    static const char* dir;
+    if (!init) {
+        init = 1;
+        dir = getenv("PS2_PRESENT_DUMP");
+        const char* e = getenv("PS2_PRESENT_DUMP_AT");   /* <s>:<n>[:x,y,w,h[:stride]] */
+        if (!dir || !e || sscanf(e, "%lf:%d:%d,%d,%d,%d:%d", &at, &n, &cx, &cy, &cw, &ch, &stride) < 2) dir = NULL;
+        if (stride < 1) stride = 1;
+    }
+    if (!dir || !debug_write_png || done >= n || t_rel < at) return;
+    if (seen++ % stride) return;
+    if (cw <= 0 || ch <= 0) { cx = cy = 0; cw = bw; ch = bh; }
+    if (cx + cw > bw) cw = bw - cx;
+    if (cy + ch > bh) ch = bh - cy;
+    if (cw <= 0 || ch <= 0) return;
+    ID3D11Resource* src = NULL;
+    ID3D11RenderTargetView_GetResource(rtv, &src);
+    if (!src) return;
+    ID3D11Texture2D* st = tex_create(cw, ch, 0, D3D11_USAGE_STAGING, D3D11_CPU_ACCESS_READ);
+    if (st) {
+        D3D11_BOX box = { (UINT)cx, (UINT)cy, 0, (UINT)(cx + cw), (UINT)(cy + ch), 1 };
+        ID3D11DeviceContext_CopySubresourceRegion(gpu_rt.ctx, (ID3D11Resource*)st, 0, 0, 0, 0, src, 0, &box);
+        D3D11_MAPPED_SUBRESOURCE m;
+        uint32_t* px = malloc((size_t)cw * ch * 4);
+        if (px && SUCCEEDED(ID3D11DeviceContext_Map(gpu_rt.ctx, (ID3D11Resource*)st, 0, D3D11_MAP_READ, 0, &m))) {
+            for (int y = 0; y < ch; y++) {
+                const uint32_t* s = (const uint32_t*)((const uint8_t*)m.pData + (size_t)y * m.RowPitch);
+                for (int x = 0; x < cw; x++) { uint32_t v = s[x]; px[(size_t)y * cw + x] = (v & 0xFF00FF00u) | (v & 0xFF) << 16 | (v >> 16 & 0xFF); }
+            }
+            ID3D11DeviceContext_Unmap(gpu_rt.ctx, (ID3D11Resource*)st, 0);
+            char path[600];
+            snprintf(path, sizeof path, "%s/present_%04d_v%u.png", dir, done, P.st.vblank);
+            debug_write_png(path, px, cw, ch, cw);
+            done++;
+        }
+        free(px);
+        GPU_RELEASE(st);
+    }
+    GPU_RELEASE(src);
+}
 
 /* picture done (gpu_set_picture_done): set before or after gpu_start, kept across restarts */
 static void (*volatile done_fn)(uint32_t vblank, void* user);
@@ -495,6 +561,7 @@ static int ts_complete(int block) {             /* oldest timestamp set; returns
     int ok = hr == S_OK && !dj.Disjoint && dj.Frequency;
     st.gpu_ms = ok ? (double)(t1 - t0) * 1000.0 / (double)dj.Frequency : -1.0;
     st.present_gpu_ms = ok && P.ts[i].pres && t2 >= t1b ? (double)(t2 - t1b) * 1000.0 / (double)dj.Frequency : -1.0;
+    if (ptrace_file()) fprintf(ptrace, "g %u %.3f %.3f\n", st.vblank, st.gpu_ms, st.present_gpu_ms);
     stats_push(&st);
     P.ts[i].busy = 0;
     P.ts_head = (P.ts_head + 1) % NTS;
@@ -808,6 +875,7 @@ static void pace_statistics(UINT pc) {
     if (q > 0 && shown >= q) P.st.photon_ms = shown - q;
     double iv = fs.PresentCount == P.last_pc + 1 && P.last_sync_ms > 0 ? shown - P.last_sync_ms : -1;
     if (iv > 0) pace_disp_interval(&P.disp, iv);
+    if (ptrace_file()) fprintf(ptrace, "s %u %u %.3f\n", (unsigned)fs.PresentCount, P.pres_vblank[fs.PresentCount % 64], shown);
     if (pace_log) {
         int k = (int)(fs.PresentCount % 64);
         double vb = P.pres_vb[k];
@@ -827,11 +895,16 @@ static void pace_statistics(UINT pc) {
         P.disp_state = PACE_DISP_UNKNOWN;
         InterlockedExchange(&pace_disp_shared, PACE_DISP_UNKNOWN);
         InterlockedExchange(&pace_refresh_x1000, (LONG)(hz_now * 1000.0));
+        InterlockedExchange(&disp_fixed_seen, 0);
         gpu_log("pace: the display runs at %.3f Hz now", hz_now);
         return;
     }
     int s = pace_disp_classify(&P.disp);
     InterlockedExchange(&pace_disp_shared, s);
+    /* (pc-smooth) sticky: once a fixed refresh was seen it stays known while the display locks the cadence (the locked
+     * presents then sit on a multiple of the refresh and classify as MULTIPLE); VRR clears it */
+    if (s == PACE_DISP_FIXED) InterlockedExchange(&disp_fixed_seen, 1);
+    else if (s == PACE_DISP_VRR) InterlockedExchange(&disp_fixed_seen, 0);
     gpu_vrr_set_status(NULL, s, P.disp.refresh_ms > 0 ? 1000.0 / P.disp.refresh_ms : 0);   /* (pc-fps) the menu's status */
     if (s == P.disp_state || s == PACE_DISP_UNKNOWN) return;
     P.disp_state = s;
@@ -948,15 +1021,38 @@ static void present_fit(int aw, int ah, int scaler) {
     int unlimited = frame_rate_target_hz && frame_rate_target_hz() == 0;
     int paced = (P.sc || pace_headless) && mode != PACE_MODE_IMMEDIATE && !auto_immediate && !unlimited && vb > 0;
     double target = paced ? vb + P.pd.delay_ms : 0;
+    /* (pc-smooth) display-locked cadence (frame_rate_set_lock: the display's own VBlanks every k refreshes drive the game, vb =
+     * when that display VBlank happened): every picture is presented in the middle of the same refresh interval after its
+     * VBlank - the one ending m refreshes later, m = the present delay D (95th percentile of the ready times + margin)
+     * rounded up to whole refreshes - so each is shown exactly m refreshes after its VBlank and stays k refreshes; ready
+     * times varying by a few ms no longer move a picture to the neighbouring refresh (immediate presents did: 2/3/4-refresh
+     * holds) */
+    double lock_hz = frame_rate_lock_hz ? frame_rate_lock_hz() : 0, R = P.disp.refresh_ms;
+    if (lock_hz > 0 && R > 1.0 && vb > 0 && (P.sc || pace_headless) && mode != PACE_MODE_IMMEDIATE) {
+        /* m from the ready times' 95th percentile directly (D itself comes down only 0.05 ms per picture after a slow
+         * moment, e.g. loading: 50 ms of latency for many seconds): up at once, down after 2 s of pictures that fit */
+        static int lock_m, lower_n;
+        double q = P.pd.nlat ? pace_delay_quantile(&P.pd, 0.95) + P.pd.margin_ms : P.pd.delay_ms;
+        int m = (int)ceil(q / R - 0.05);
+        if (m < 1) m = 1;
+        if (m >= lock_m) { lock_m = m; lower_n = 0; }
+        else if (++lower_n >= (int)(2000.0 / P.content_ms)) { lock_m--; lower_n = 0; }
+        paced = 1;
+        target = vb + ((double)lock_m - 0.5) * R;
+        P.st.target_ms = target - vb;
+    }
     if (paced) P.st.target_ms = P.pd.delay_ms;
     InterlockedExchange(&pace_extra, paced ? (LONG)ceil(P.pd.delay_ms / P.content_ms) : 0);
     if (paced && gpu_rt.cur_behind) paced = 0;   /* behind (a newer frame waits): no wait, present it now */
     /* (pc-fps) above 60 fps no picture is skipped: when the GPU is slower than the frame limiter every picture is "late" and
      * a newer one always queued - skipping them would show none; the queue is short there instead (gpu_submit_sink) */
     int fr_high = frame_rate_high && frame_rate_high();
-    if (gpu_rt.cur_behind && !fr_high && vb > 0 && t0 > vb + P.pd.delay_ms + 0.5 * P.content_ms) {
+    if (gpu_rt.cur_behind && !fr_high && vb > 0 && t0 > (lock_hz > 0 && target > 0 ? target : vb + P.pd.delay_ms) + 0.5 * P.content_ms) {
         P.st.skipped = 1;
         P.st.present_ms += now_ms() - t0;
+        if (ptrace_file())
+            fprintf(ptrace, "p %u %.3f %.3f %.3f %.3f %.3f %.3f %d %d\n", P.st.vblank, vb, gpu_rt.cur_queued_ms,
+                    (double)P.t_start.QuadPart * 1000.0 / (double)qpf.QuadPart, t0, -1.0, now_ms(), P.st.scale, 1 | 4);
         return;
     }
     if (paced) {
@@ -989,6 +1085,11 @@ static void present_fit(int aw, int ah, int scaler) {
         present_resample(P.rtv, x, y, lw, lh, scaler);
     }
     if (overlay_d3d11_draw) overlay_d3d11_draw(gpu_rt.dev, gpu_rt.ctx, P.rtv, P.bb_w, P.bb_h);
+    {                                            /* (pc-smooth) PS2_PRESENT_DUMP: frame sequences as shown */
+        static double first;
+        if (!first) first = t0;
+        present_dump(P.rtv, P.bb_w, P.bb_h, (t0 - first) / 1000.0);
+    }
     if (tsi >= 0) ID3D11DeviceContext_End(gpu_rt.ctx, (ID3D11Asynchronous*)P.ts[tsi].t2);
     double call = now_ms();
     if (paced) P.st.present_late_ms = call - target;
@@ -1023,6 +1124,13 @@ static void present_fit(int aw, int ah, int scaler) {
     }
     P.last_present_ms = call;
     P.st.present_ms += now_ms() - t0;
+    if (ptrace_file()) {
+        static unsigned np;
+        fprintf(ptrace, "p %u %.3f %.3f %.3f %.3f %.3f %.3f %d %d\n", P.st.vblank, vb, gpu_rt.cur_queued_ms,
+                (double)P.t_start.QuadPart * 1000.0 / (double)qpf.QuadPart, t0, call, now_ms(), P.st.scale,
+                (paced ? 2 : 0) | (gpu_rt.cur_behind ? 4 : 0) | (P.st.dropped ? 8 : 0));
+        if (++np % 128 == 0) fflush(ptrace);
+    }
 }
 
 /* ---- M6: the picture composed on the GPU (shaders/display.hlsl) ------------------------------------- */
@@ -1037,12 +1145,75 @@ static int flicker_strip(uint64_t priv[16]) {
     const uint64_t fbmask = 0x1FFull | 0x3Full << 9 | 0x1Full << 15 | 0x7FFull << 32;   /* FBP, FBW, PSM, DBX */
     if ((f1 & fbmask) != (f2 & fbmask) || (d1 & 0xFFF) != (d2 & 0xFFF)) return 0;
     int dby1 = (int)((f1 >> 43) & 0x7FF), dby2 = (int)((f2 >> 43) & 0x7FF);
-    if (dby1 - dby2 != 1 && dby2 - dby1 != 1) return 0;
-    priv[0] &= ~(uint64_t)(dby1 > dby2 ? 1 : 2);
-    return 1;
+    if (dby1 - dby2 == 1 || dby2 - dby1 == 1) {
+        priv[0] &= ~(uint64_t)(dby1 > dby2 ? 1 : 2);
+        return 1;
+    }
+    /* (pc-smooth) the same pair with the line offset in DISPLAY.DY instead of DISPFB.DBY: Sly 2's VBlank code (0x16F2D0)
+     * adds circuit 1 one line lower (DY + 1 or DBY + 1, DH - 1) whenever a picture is shown on the other field than the
+     * one it was drawn for (a frame that took two VBlanks); a TV needs that, a progressive picture does not - composed as
+     * programmed, those VBlanks showed the picture mixed with itself one line lower (a vertical blur flash) */
+    int dy1 = (int)((d1 >> 12) & 0x7FF), dy2 = (int)((d2 >> 12) & 0x7FF);
+    if (dby1 == dby2 && (dy1 - dy2 == 1 || dy2 - dy1 == 1)) {
+        priv[0] &= ~(uint64_t)(dy1 > dy2 ? 1 : 2);
+        return 1;
+    }
+    return 0;
+}
+
+/* (pc-smooth debugging) PS2_FB_DUMP=<vsync>:<n>[:...] + PS2_FB_DUMP_DIR: the displayed circuits' source targets at scale
+ * (every sample) as PNG, tgt_<vblank>_<circuit>_fbp<fbp>.png */
+static void target_dump(const gpu_compose_in* in) {
+    static int init;
+    static unsigned from, n;
+    static char dir[400];
+    if (!init) {
+        init = 1;
+        const char* e = getenv("PS2_FB_DUMP");
+        const char* dd = getenv("PS2_FB_DUMP_DIR");
+        snprintf(dir, sizeof dir, "%s", dd ? dd : ".");
+        if (!e || sscanf(e, "%u:%u", &from, &n) != 2) n = 0;
+    }
+    unsigned v = in->priv ? (unsigned)in->priv[15] : 0;
+    if (!n || !debug_write_png || v < from || v >= from + n) return;
+    for (int i = 0; i < 2; i++) {
+        if (!in->tex[i]) continue;
+        ID3D11Resource* r = NULL;
+        ID3D11ShaderResourceView_GetResource(in->tex[i], &r);
+        if (!r) continue;
+        D3D11_TEXTURE2D_DESC td;
+        ID3D11Texture2D_GetDesc((ID3D11Texture2D*)r, &td);
+        int w = (int)td.Width, h = (int)td.Height;
+        if (w > 4096) w = 4096;
+        if (h > 4096) h = 4096;
+        td.Width = (UINT)w; td.Height = (UINT)h; td.MipLevels = 1; td.ArraySize = 1;
+        td.Usage = D3D11_USAGE_STAGING; td.BindFlags = 0; td.CPUAccessFlags = D3D11_CPU_ACCESS_READ; td.MiscFlags = 0;
+        ID3D11Texture2D* st = NULL;
+        if (SUCCEEDED(ID3D11Device_CreateTexture2D(gpu_rt.dev, &td, NULL, &st))) {
+            D3D11_BOX box = { 0, 0, 0, (UINT)w, (UINT)h, 1 };
+            ID3D11DeviceContext_CopySubresourceRegion(gpu_rt.ctx, (ID3D11Resource*)st, 0, 0, 0, 0, r, 0, &box);
+            D3D11_MAPPED_SUBRESOURCE m;
+            uint32_t* px = malloc((size_t)w * h * 4);
+            if (px && SUCCEEDED(ID3D11DeviceContext_Map(gpu_rt.ctx, (ID3D11Resource*)st, 0, D3D11_MAP_READ, 0, &m))) {
+                for (int y = 0; y < h; y++) {
+                    const uint32_t* s = (const uint32_t*)((const uint8_t*)m.pData + (size_t)y * m.RowPitch);
+                    for (int x = 0; x < w; x++) { uint32_t q = s[x]; px[(size_t)y * w + x] = (q & 0xFF00u) | (q & 0xFF) << 16 | (q >> 16 & 0xFF); }
+                }
+                ID3D11DeviceContext_Unmap(gpu_rt.ctx, (ID3D11Resource*)st, 0);
+                char path[600];
+                snprintf(path, sizeof path, "%s/tgt_%06u_%d_fbp%u_%dx%d.png", dir, v, i, (unsigned)(in->priv[7 + 2 * i] & 0x1FF),
+                         in->kx[i], in->ky[i]);
+                debug_write_png(path, px, w, h, w);
+            }
+            free(px);
+            GPU_RELEASE(st);
+        }
+        GPU_RELEASE(r);
+    }
 }
 
 void gpu_present_compose(const gpu_compose_in* in) {
+    target_dump(in);
     ID3D11DeviceContext* c = gpu_rt.ctx;
     gs_display_layout L;
     uint64_t priv[16];
@@ -1050,12 +1221,29 @@ void gpu_present_compose(const gpu_compose_in* in) {
         memcpy(priv, in->priv, sizeof priv);
         int stripped = in->flicker_off && flicker_strip(priv);
         /* PS2_PACE_LOG=3 (pc-pacing, "shake" checks): the circuits shown at each VBlank - enable bits, DBY / DY of each */
-        if (pace_log >= 3) {
+        /* (pc-smooth) PS2_PACE_LOG=4: only when something but the buffers' FBP changed (cheap enough for 60 fps runs) */
+        static uint64_t last_key = ~0ull;
+        uint64_t key = (in->priv[0] & 0xFFFF) ^ (in->priv[7] & ~0x1FFull) * 3 ^ in->priv[8] * 5 ^ (in->priv[9] & ~0x1FFull) * 7 ^
+                       in->priv[10] * 11 ^ (uint64_t)stripped * 13;
+        int log_now = pace_log == 3 || (pace_log >= 4 && key != last_key);
+        last_key = key;
+        {                                        /* PS2_DISPLAY_LOG=<vblank>:<n>: every VBlank of that window */
+            static int init;
+            static unsigned from, n;
+            if (!init) { init = 1; const char* e = getenv("PS2_DISPLAY_LOG"); if (e) sscanf(e, "%u:%u", &from, &n); }
+            unsigned v = (unsigned)in->priv[15];
+            if (n && v >= from && v < from + n) log_now = 1;
+        }
+        if (log_now) {
             uint64_t pm = in->priv[0];
-            gpu_log("display v%u: PMODE en %d%d mmod %d -> shown en %d%d%s | DISPFB1 dby %d DISPLAY1 dy %d | DISPFB2 dby %d DISPLAY2 dy %d | field %d",
+            gpu_log("display v%u: PMODE en %d%d mmod %d -> shown en %d%d%s | DISPFB1 fbp %d dby %d DISPLAY1 dy %d magv %d dh %d | "
+                    "DISPFB2 fbp %d dby %d DISPLAY2 dy %d | field %d | SMODE2 %llx | src %s %dx%d / %s %dx%d",
                     (unsigned)in->priv[15], (int)(pm & 1), (int)(pm >> 1 & 1), (int)(pm >> 5 & 1), (int)(priv[0] & 1), (int)(priv[0] >> 1 & 1),
-                    stripped ? " (flicker filter off)" : "", (int)(in->priv[7] >> 43 & 0x7FF), (int)(in->priv[8] >> 12 & 0x7FF),
-                    (int)(in->priv[9] >> 43 & 0x7FF), (int)(in->priv[10] >> 12 & 0x7FF), in->field_code);
+                    stripped ? " (flicker filter off)" : "", (int)(in->priv[7] & 0x1FF), (int)(in->priv[7] >> 43 & 0x7FF),
+                    (int)(in->priv[8] >> 12 & 0x7FF), (int)(in->priv[8] >> 27 & 3), (int)(in->priv[8] >> 44 & 0x7FF),
+                    (int)(in->priv[9] & 0x1FF), (int)(in->priv[9] >> 43 & 0x7FF), (int)(in->priv[10] >> 12 & 0x7FF), in->field_code,
+                    (unsigned long long)in->priv[2], in->tex[0] ? "target" : "memory", in->kx[0], in->ky[0],
+                    in->tex[1] ? "target" : "memory", in->kx[1], in->ky[1]);
         }
     }
     int ok = in->priv && gs_display_layout_of(priv, &L);
