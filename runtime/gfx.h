@@ -13,6 +13,10 @@
 
 /* motion blur off (read by the recompiled game code at 0x160FA0; 0 = the game decides, as on a PS2) */
 extern volatile int ps2_motion_blur_off;
+/* (pc-smooth) progressive output (interlacing off): the game draws every frame for the same field - no half-line
+ * XYOFFSET on odd fields (patches "field_offset_*") and the motion blur blends the previous picture in place (patch
+ * "motion_blur_progressive"); 0 = the game's field rendering, as on a PS2 on a TV (PS2_PROGRESSIVE_FIX=0 forces it) */
+extern volatile int ps2_progressive;
 
 int  gfx_scale(void);                    /* the internal scale in use: PS2_GS_SCALE, else internal_scale (auto: the scale
                                             the GPU renderer's auto choice runs at, 3 before it starts) */

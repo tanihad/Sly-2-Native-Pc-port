@@ -303,6 +303,37 @@ void gs_display_pages(const uint64_t priv[GS_PRIV_SNAPSHOT], uint64_t set[8]) {
     }
 }
 
+void debug_write_png(const char* path, const uint32_t* bgrx, int w, int h, int stride) __attribute__((weak));   /* debug.c */
+
+static void fb_dump(const uint64_t* priv) {
+    {   /* (pc-smooth debugging) PS2_FB_DUMP=<dir>:<vsync>:<n>:<fbp>[,<fbp>]: those 512 x 224 CT32 buffers as they are in GS
+         * memory at the display of each of n VBlanks (software renderer) */
+        static int init;
+        static char dir[400];
+        static unsigned from, n, fbps[4], nf;
+        if (!init) {
+            init = 1;
+            const char* e = getenv("PS2_FB_DUMP");          /* <vsync>:<n>:<fbp>[,<fbp>], into PS2_FB_DUMP_DIR */
+            const char* dd = getenv("PS2_FB_DUMP_DIR");
+            char list[64] = "";
+            snprintf(dir, sizeof dir, "%s", dd ? dd : ".");
+            if (e && sscanf(e, "%u:%u:%63s", &from, &n, list) == 3)
+                for (char* t = strtok(list, ","); t && nf < 4; t = strtok(NULL, ",")) fbps[nf++] = (unsigned)atoi(t);
+        }
+        unsigned v = (unsigned)priv[S_VSYNC];
+        if (nf && debug_write_png && v >= from && v < from + n) {
+            static uint32_t img[512 * 224];
+            for (unsigned k = 0; k < nf; k++) {
+                for (int y = 0; y < 224; y++)
+                    for (int x = 0; x < 512; x++) img[y * 512 + x] = gs_mem_read(PSMCT32, fbps[k] * 32, 8, x, y) & 0xFFFFFF;
+                char path[512];
+                snprintf(path, sizeof path, "%s/fb_%06u_%u.png", dir, v, fbps[k]);
+                debug_write_png(path, img, 512, 224, 512);
+            }
+        }
+    }
+}
+
 int gs_display_regs(const uint64_t priv[GS_PRIV_SNAPSHOT], uint32_t* dst, int stride, int* w, int* h) {
     GS_INIT();
     gs_stream_vsync = (uint32_t)priv[S_VSYNC];
@@ -313,6 +344,7 @@ int gs_display_regs(const uint64_t priv[GS_PRIV_SNAPSHOT], uint32_t* dst, int st
 }
 
 int gs_compose(const gs_display_snap* snap, uint32_t* dst, int stride, int* w, int* h) {
+    fb_dump(snap->priv);
     return gs_compose_from(snap, gs_vram, NULL, dst, stride, w, h);
 }
 

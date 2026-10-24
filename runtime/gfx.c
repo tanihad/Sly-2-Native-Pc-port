@@ -19,6 +19,7 @@ extern void gpu_hw_pacing_changed(int pacing) __attribute__((weak));
 void (*gfx_output_size)(int* w, int* h);  /* set by window.c (window_client_size) */
 
 volatile int ps2_motion_blur_off;
+volatile int ps2_progressive;
 static int auto_was_on;                  /* (M11) internal_scale was auto at the last gfx_apply */
 
 _Static_assert((int)SETTINGS_SCALER_N == (int)GPU_SCALER_N && (int)SETTINGS_SCALER_LANCZOS == (int)GPU_SCALER_LANCZOS &&
@@ -111,6 +112,11 @@ void gfx_apply(void) {
     uint32_t bits = gfx_bits();
     int off = !settings_motion_blur(&ps2_settings);
     ps2_motion_blur_off = off;
+    {                                    /* (PS2_PROGRESSIVE_FIX=0: the game's field offsets in any mode - A/B tests) */
+        static int env = -2;
+        if (env == -2) { const char* e = getenv("PS2_PROGRESSIVE_FIX"); env = e && *e ? atoi(e) != 0 : -1; }
+        ps2_progressive = env >= 0 ? env : !settings_interlacing(&ps2_settings);
+    }
     if (gpu_hw_set_auto_scale) gpu_hw_set_auto_scale(is_auto ? auto_max() : 0);
     auto_was_on = is_auto;
     if (gpu_hw_set_graphics) gpu_hw_set_graphics(scale, bits);

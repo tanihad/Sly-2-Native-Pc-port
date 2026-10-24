@@ -270,6 +270,9 @@ static void gov_frame(double gpu_ms, int scale) {
     if (!active) return;
     if (gov_slow_secs && now_qpc_ms() - gov_t0 > gov_slow_secs * 1000.0) G.slow = 1.0;
     if (scale != G.cur || scale != (int)want_scale || scale != run_scale) return;   /* (still pictures of the old scale) */
+    /* (pc-smooth) PS2_GS_SCALE / PS2_GS_GOVERNOR=0 keep the scale exactly (tests, measurements): the overload rule lowered
+     * a strict 3x to 1x seconds after the start of every 120 / 165 fps run */
+    if (gov_strict && G.fixed && auto_max == 0) return;
     int was = G.cur;
     /* (pc-fps) the budget stays the PS2's 59.94 Hz frame at any frame rate: the resolution is lowered so the game keeps at
      * least 60 frames per second, never for a higher frame rate (above 60 the frame rate is what the GPU and the EE give,

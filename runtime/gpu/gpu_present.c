@@ -144,16 +144,18 @@ static FILE* ptrace_file(void) {
 extern void debug_write_png(const char* path, const uint32_t* bgrx, int w, int h, int stride) __attribute__((weak));
 static ID3D11Texture2D* tex_create(int w, int h, UINT bind, D3D11_USAGE usage, UINT cpu);
 static void present_dump(ID3D11RenderTargetView* rtv, int bw, int bh, double t_rel) {
-    static int init, n, cx, cy, cw, ch, done;
+    static int init, n, cx, cy, cw, ch, done, stride = 1, seen;
     static double at;
     static const char* dir;
     if (!init) {
         init = 1;
         dir = getenv("PS2_PRESENT_DUMP");
-        const char* e = getenv("PS2_PRESENT_DUMP_AT");
-        if (!dir || !e || sscanf(e, "%lf:%d:%d,%d,%d,%d", &at, &n, &cx, &cy, &cw, &ch) < 2) dir = NULL;
+        const char* e = getenv("PS2_PRESENT_DUMP_AT");   /* <s>:<n>[:x,y,w,h[:stride]] */
+        if (!dir || !e || sscanf(e, "%lf:%d:%d,%d,%d,%d:%d", &at, &n, &cx, &cy, &cw, &ch, &stride) < 2) dir = NULL;
+        if (stride < 1) stride = 1;
     }
     if (!dir || !debug_write_png || done >= n || t_rel < at) return;
+    if (seen++ % stride) return;
     if (cw <= 0 || ch <= 0) { cx = cy = 0; cw = bw; ch = bh; }
     if (cx + cw > bw) cw = bw - cx;
     if (cy + ch > bh) ch = bh - cy;
@@ -1115,12 +1117,75 @@ static int flicker_strip(uint64_t priv[16]) {
     const uint64_t fbmask = 0x1FFull | 0x3Full << 9 | 0x1Full << 15 | 0x7FFull << 32;   /* FBP, FBW, PSM, DBX */
     if ((f1 & fbmask) != (f2 & fbmask) || (d1 & 0xFFF) != (d2 & 0xFFF)) return 0;
     int dby1 = (int)((f1 >> 43) & 0x7FF), dby2 = (int)((f2 >> 43) & 0x7FF);
-    if (dby1 - dby2 != 1 && dby2 - dby1 != 1) return 0;
-    priv[0] &= ~(uint64_t)(dby1 > dby2 ? 1 : 2);
-    return 1;
+    if (dby1 - dby2 == 1 || dby2 - dby1 == 1) {
+        priv[0] &= ~(uint64_t)(dby1 > dby2 ? 1 : 2);
+        return 1;
+    }
+    /* (pc-smooth) the same pair with the line offset in DISPLAY.DY instead of DISPFB.DBY: Sly 2's VBlank code (0x16F2D0)
+     * adds circuit 1 one line lower (DY + 1 or DBY + 1, DH - 1) whenever a picture is shown on the other field than the
+     * one it was drawn for (a frame that took two VBlanks); a TV needs that, a progressive picture does not - composed as
+     * programmed, those VBlanks showed the picture mixed with itself one line lower (a vertical blur flash) */
+    int dy1 = (int)((d1 >> 12) & 0x7FF), dy2 = (int)((d2 >> 12) & 0x7FF);
+    if (dby1 == dby2 && (dy1 - dy2 == 1 || dy2 - dy1 == 1)) {
+        priv[0] &= ~(uint64_t)(dy1 > dy2 ? 1 : 2);
+        return 1;
+    }
+    return 0;
+}
+
+/* (pc-smooth debugging) PS2_FB_DUMP=<vsync>:<n>[:...] + PS2_FB_DUMP_DIR: the displayed circuits' source targets at scale
+ * (every sample) as PNG, tgt_<vblank>_<circuit>_fbp<fbp>.png */
+static void target_dump(const gpu_compose_in* in) {
+    static int init;
+    static unsigned from, n;
+    static char dir[400];
+    if (!init) {
+        init = 1;
+        const char* e = getenv("PS2_FB_DUMP");
+        const char* dd = getenv("PS2_FB_DUMP_DIR");
+        snprintf(dir, sizeof dir, "%s", dd ? dd : ".");
+        if (!e || sscanf(e, "%u:%u", &from, &n) != 2) n = 0;
+    }
+    unsigned v = in->priv ? (unsigned)in->priv[15] : 0;
+    if (!n || !debug_write_png || v < from || v >= from + n) return;
+    for (int i = 0; i < 2; i++) {
+        if (!in->tex[i]) continue;
+        ID3D11Resource* r = NULL;
+        ID3D11ShaderResourceView_GetResource(in->tex[i], &r);
+        if (!r) continue;
+        D3D11_TEXTURE2D_DESC td;
+        ID3D11Texture2D_GetDesc((ID3D11Texture2D*)r, &td);
+        int w = (int)td.Width, h = (int)td.Height;
+        if (w > 4096) w = 4096;
+        if (h > 4096) h = 4096;
+        td.Width = (UINT)w; td.Height = (UINT)h; td.MipLevels = 1; td.ArraySize = 1;
+        td.Usage = D3D11_USAGE_STAGING; td.BindFlags = 0; td.CPUAccessFlags = D3D11_CPU_ACCESS_READ; td.MiscFlags = 0;
+        ID3D11Texture2D* st = NULL;
+        if (SUCCEEDED(ID3D11Device_CreateTexture2D(gpu_rt.dev, &td, NULL, &st))) {
+            D3D11_BOX box = { 0, 0, 0, (UINT)w, (UINT)h, 1 };
+            ID3D11DeviceContext_CopySubresourceRegion(gpu_rt.ctx, (ID3D11Resource*)st, 0, 0, 0, 0, r, 0, &box);
+            D3D11_MAPPED_SUBRESOURCE m;
+            uint32_t* px = malloc((size_t)w * h * 4);
+            if (px && SUCCEEDED(ID3D11DeviceContext_Map(gpu_rt.ctx, (ID3D11Resource*)st, 0, D3D11_MAP_READ, 0, &m))) {
+                for (int y = 0; y < h; y++) {
+                    const uint32_t* s = (const uint32_t*)((const uint8_t*)m.pData + (size_t)y * m.RowPitch);
+                    for (int x = 0; x < w; x++) { uint32_t q = s[x]; px[(size_t)y * w + x] = (q & 0xFF00u) | (q & 0xFF) << 16 | (q >> 16 & 0xFF); }
+                }
+                ID3D11DeviceContext_Unmap(gpu_rt.ctx, (ID3D11Resource*)st, 0);
+                char path[600];
+                snprintf(path, sizeof path, "%s/tgt_%06u_%d_fbp%u_%dx%d.png", dir, v, i, (unsigned)(in->priv[7 + 2 * i] & 0x1FF),
+                         in->kx[i], in->ky[i]);
+                debug_write_png(path, px, w, h, w);
+            }
+            free(px);
+            GPU_RELEASE(st);
+        }
+        GPU_RELEASE(r);
+    }
 }
 
 void gpu_present_compose(const gpu_compose_in* in) {
+    target_dump(in);
     ID3D11DeviceContext* c = gpu_rt.ctx;
     gs_display_layout L;
     uint64_t priv[16];
@@ -1128,12 +1193,29 @@ void gpu_present_compose(const gpu_compose_in* in) {
         memcpy(priv, in->priv, sizeof priv);
         int stripped = in->flicker_off && flicker_strip(priv);
         /* PS2_PACE_LOG=3 (pc-pacing, "shake" checks): the circuits shown at each VBlank - enable bits, DBY / DY of each */
-        if (pace_log >= 3) {
+        /* (pc-smooth) PS2_PACE_LOG=4: only when something but the buffers' FBP changed (cheap enough for 60 fps runs) */
+        static uint64_t last_key = ~0ull;
+        uint64_t key = (in->priv[0] & 0xFFFF) ^ (in->priv[7] & ~0x1FFull) * 3 ^ in->priv[8] * 5 ^ (in->priv[9] & ~0x1FFull) * 7 ^
+                       in->priv[10] * 11 ^ (uint64_t)stripped * 13;
+        int log_now = pace_log == 3 || (pace_log >= 4 && key != last_key);
+        last_key = key;
+        {                                        /* PS2_DISPLAY_LOG=<vblank>:<n>: every VBlank of that window */
+            static int init;
+            static unsigned from, n;
+            if (!init) { init = 1; const char* e = getenv("PS2_DISPLAY_LOG"); if (e) sscanf(e, "%u:%u", &from, &n); }
+            unsigned v = (unsigned)in->priv[15];
+            if (n && v >= from && v < from + n) log_now = 1;
+        }
+        if (log_now) {
             uint64_t pm = in->priv[0];
-            gpu_log("display v%u: PMODE en %d%d mmod %d -> shown en %d%d%s | DISPFB1 dby %d DISPLAY1 dy %d | DISPFB2 dby %d DISPLAY2 dy %d | field %d",
+            gpu_log("display v%u: PMODE en %d%d mmod %d -> shown en %d%d%s | DISPFB1 fbp %d dby %d DISPLAY1 dy %d magv %d dh %d | "
+                    "DISPFB2 fbp %d dby %d DISPLAY2 dy %d | field %d | SMODE2 %llx | src %s %dx%d / %s %dx%d",
                     (unsigned)in->priv[15], (int)(pm & 1), (int)(pm >> 1 & 1), (int)(pm >> 5 & 1), (int)(priv[0] & 1), (int)(priv[0] >> 1 & 1),
-                    stripped ? " (flicker filter off)" : "", (int)(in->priv[7] >> 43 & 0x7FF), (int)(in->priv[8] >> 12 & 0x7FF),
-                    (int)(in->priv[9] >> 43 & 0x7FF), (int)(in->priv[10] >> 12 & 0x7FF), in->field_code);
+                    stripped ? " (flicker filter off)" : "", (int)(in->priv[7] & 0x1FF), (int)(in->priv[7] >> 43 & 0x7FF),
+                    (int)(in->priv[8] >> 12 & 0x7FF), (int)(in->priv[8] >> 27 & 3), (int)(in->priv[8] >> 44 & 0x7FF),
+                    (int)(in->priv[9] & 0x1FF), (int)(in->priv[9] >> 43 & 0x7FF), (int)(in->priv[10] >> 12 & 0x7FF), in->field_code,
+                    (unsigned long long)in->priv[2], in->tex[0] ? "target" : "memory", in->kx[0], in->ky[0],
+                    in->tex[1] ? "target" : "memory", in->kx[1], in->ky[1]);
         }
     }
     int ok = in->priv && gs_display_layout_of(priv, &L);
