@@ -292,7 +292,32 @@ recordings, all modes; m9_exact identical):
 Offline frontend thread, hold mode, S=3, ms per game frame (median of 3 interleaved runs; base -> new): ep8 boss 6.58 ->
 6.30, ep1 hub 5.98 -> 5.47, ep5 street 8.01 -> 7.55, ep3 hub 7.31 -> 6.99, chaos_ep1_hub 9.03 -> 8.44, chaos_ep5_hub 7.41
 -> 6.98, chaos_m1_brawl 5.30 -> 4.98, chaos_m3_boss 8.13 -> 7.89, chaos_m5_boss 5.77 -> 5.53, chaos_m8_boss 5.75 -> 5.63
-(-3..-8%; p95 alike). The P3 target (offline <= 3.5 ms in the ep1 hub) is **not met**; see "what limits" below.
+(-3..-8%; p95 alike). The P3 target (offline <= 3.5 ms in the ep1 hub) is **not met**.
+
+In game (chaos_bench, 3x 16:9, unlimited, base = main 95e3147 vs p3, interleaved, medians of 2 repeats; the P2 agent used the
+GPU and some CPU meanwhile, and the scripted play does not show the same content twice - prims per frame differ by up to
+60% between runs of one scene - so fps differences below ~10% are noise):
+
+| scene | fps med base / p3 | 1% low | 0.1% low | frontend med (p90) ms | GPU med ms | slowest stage |
+|---|---|---|---|---|---|---|
+| ep1 hub | 104.6 / 102.3 | 63.8 / 67.1 | 40.0 / 40.5 | 8.09 (9.79) / 8.15 (9.08) | 7.91 / 7.78 | frontend ~ GPU ~ GS |
+| ep3 hub (rain) | 120.0 / 119.8 | 58.8 / 60.1 | 42.1 / 43.0 | 4.27 (9.26) / 4.07 (8.77) | 7.94 / 7.76 | GPU |
+| ep5 hub (rain) | 119.3 / 125.8 | 88.4 / 89.1 | 45.6 / 43.8 | 5.54 (7.54) / 5.84 (7.01) | 8.20 / 7.80 | GPU |
+| m1 brawl | 123.0 / 106.2 | 70.2 / 53.8 | 41.3 / 27.2 | 5.79 (8.96) / 6.47 (8.90) | 7.92 / 8.68 | GPU |
+| m2 boardroom (fire) | 90.1 / 91.8 | 50.6 / 58.0 | 42.0 / 47.4 | 1.97 / 1.95 | 10.98 / 10.79 | GPU |
+| m3 boss | 114.8 / 124.1 | 65.1 / 64.5 | 39.0 / 44.9 | 5.12 (7.69) / 5.40 (6.57) | 7.95 / 7.67 | GPU |
+| m5 boss | 115.3 / 108.6 | 53.3 / 50.9 | 36.4 / 34.7 | 6.81 (9.34) / 6.85 (8.72) | 8.47 / 8.98 | GPU |
+| m8 boss | 134.4 / 152.0 | 70.7 / 76.4 | 27.7 / 35.3 | 1.36 / 1.25 | 8.55 / 6.87 | GPU |
+
+**What limits the worst frames** (p99 frame times 11-23 ms = the 1% lows of 45-90 fps): in the boss, brawl and fire
+scenes the GPU - its worst 60-frame windows reach 13-21 ms at 3x (m2 boardroom 15-18, m5 boss 17-21), well above every
+CPU stage's (frontend <= 13, worker / GS <= 8-10) - so the lows there belong to P2 (per-fragment cost of the exact
+shaders under heavy translucency and fire). In the ep1 hub the frontend's worst windows (12.6-12.8 ms) are the highest
+with the GS thread (9.6-9.9) and the GPU (8.9-10) close behind: every stage there has to shrink together (P4 GS decode,
+P5 worker, P6 in-game overhead - in game the frontend costs 1.3-1.5x its offline time). The frontend's per-primitive
+cost (~180 ns, spread over state lookup, tier, ownership, merge, records and vertices with no dominant part) is not
+parallelisable at a profit on this CPU; further gains need fewer per-primitive decisions (e.g. batching a strip's
+primitives that share state, key and ownership outcome) - a larger, riskier change to the exact frontend.
 
 Order: P1 first (days; the biggest single gain; independent). P2 and P3 in parallel (shaders / executor vs gpu_front.c). Then
 P4, P5, P6. P7 any time (render thread). Re-measure after each; only if 200 at 100% render scale in the heaviest hub is

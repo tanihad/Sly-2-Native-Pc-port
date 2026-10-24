@@ -1,5 +1,7 @@
 # perf-p3: frontend split across cores (P3 of notes/perf-plan.md) - checkpoint
 
+**Status: complete** (2026-10-24). Results: notes/perf-plan.md "P3 results", renderer appendix S.
+
 **Goal**: chaos benchmark (scripts/chaos_bench.ps1, tests/gpu/chaos.txt) + parallel prepare / sequential commit in the
 GPU frontend (runtime/gpu/gpu_front*.c, gpu_fthread.c), output bit-identical; better 1% / 0.1% lows in chaotic scenes.
 
@@ -40,8 +42,7 @@ Branch next/perf-p3, worktree C:\Users\tanih\Projects\sly2-worktrees\perf-p3 (fr
   differ; run_tests 16/16; every unit suite (fps2_units.ps1) passes; pc_text_boot; debug + release builds; package.py.
 - Notes: perf-plan.md "P3 results", d3d11-renderer.md appendix S.
 
-## In progress
-- Final in-game chaos A/B base vs p3 (2 repeats, build\chaos\final.txt) -> add the table to perf-plan.md, finish.
+- Final in-game chaos A/B (build\chaos\final.txt, 2 repeats): within noise; GPU-bound at 3x in 7 of 8 scenes; table in perf-plan.md.
 
 ## Findings / traps
 - NEVER use .NET file APIs ([IO.File]::...) with relative paths: their current directory is the MAIN checkout (an empty
