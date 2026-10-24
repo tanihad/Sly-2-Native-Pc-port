@@ -171,6 +171,10 @@ int  own_rect_current(gpu_target* T, int x0, int y0, int x1, int y1);
 int  own_rect_gpu(int psm, uint32_t bp, uint32_t bw, int x0, int y0, int x1, int y1, gpu_dl_entry* out, uint16_t* writers, int max);
 uint64_t fthread_cycles(void);           /* QueryThreadCycleTime of the frontend thread */
 void fthread_affinity(uint64_t mask);
+uint64_t fthread_pool_cycles(void);      /* (P3) QueryThreadCycleTime summed over the prepare pool */
+int fthread_pool_size(void);
+void fthread_pool_stats(uint64_t* segs, uint64_t* self, uint64_t* wait_tsc);
+void fthread_pool_affinity(int i, uint64_t mask);
 
 /* ---- CLUT ring (gpu_clut.c) --------------------------------------------------------------------- */
 #define GPU_CLUT_SLOTS 4096

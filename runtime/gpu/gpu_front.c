@@ -1448,6 +1448,18 @@ static int sb_prim(int cls, const gs_tri* T, const gs_sprite* sp, size_t lp_star
     int qy0 = (cls == GPU_PC_TRI ? T->by0 : cls == GPU_PC_SPRITE ? sp->py0 : py) - d - 1;
     int qy1 = (cls == GPU_PC_TRI ? T->by1 : cls == GPU_PC_SPRITE ? sp->py1 : py) + d + 1;
     if (!set && cls != GPU_PC_LINEPIX && (qy1 < sb_y0 || qy0 > sb_y1 || (qx1 >> 6) < sb_w0 || (qx0 >> 6) > sb_w1)) return 0;
+    /* (P3) a test whose rectangle holds no set bit cannot hit (the spans and pixels tested lie inside it): one OR per
+     * word instead of the edge walk */
+    if (!set && cls != GPU_PC_LINEPIX) {
+        int ya = qy0 < sb_y0 ? sb_y0 : qy0, yb = qy1 > sb_y1 ? sb_y1 : qy1;
+        int wa = (qx0 < 0 ? 0 : qx0) >> 6, wb = (qx1 > 2047 ? 2047 : qx1) >> 6;
+        if (wa < sb_w0) wa = sb_w0;
+        if (wb > sb_w1) wb = sb_w1;
+        uint64_t any = 0;
+        for (int y = ya; y <= yb; y++)
+            for (int w = wa; w <= wb; w++) any |= sbits[y][w];
+        if (!any) return 0;
+    }
     if (cls == GPU_PC_TRI) {
         gs_edge e[3];
         gs_tri_edges(T, e);
@@ -2481,6 +2493,10 @@ void gpu_front_start(const gpu_front_config* cfg) {
 void gpu_front_drain(void) { if (gf_cfg.thread) fthread_drain(); }
 uint64_t gpu_front_thread_cycles(void) { return gf_cfg.thread ? fthread_cycles() : 0; }
 void gpu_front_thread_affinity(uint64_t mask) { if (gf_cfg.thread) fthread_affinity(mask); }
+int gpu_front_pool_size(void) { return gf_cfg.thread ? fthread_pool_size() : 0; }
+void gpu_front_pool_stats(uint64_t* segs, uint64_t* self, uint64_t* wait_tsc) { fthread_pool_stats(segs, self, wait_tsc); }
+uint64_t gpu_front_pool_cycles(void) { return gf_cfg.thread ? fthread_pool_cycles() : 0; }
+void gpu_front_pool_affinity(int i, uint64_t mask) { if (gf_cfg.thread) fthread_pool_affinity(i, mask); }
 
 void gpu_front_stop(void) {
     if (gf_cfg.thread) fthread_stop();

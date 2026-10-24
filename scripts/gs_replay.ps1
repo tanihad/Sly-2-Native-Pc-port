@@ -71,6 +71,7 @@ $src = @($names | ForEach-Object { Join-Path $Runtime $_ } | Where-Object { Test
 $src += @(Get-ChildItem $Runtime -Filter 'gs_mem*.c' | ForEach-Object { $_.FullName })
 $src += Join-Path $PSScriptRoot 'gs_replay.c'
 $flags = @('-O2', '-std=c11', '-w', '-I', $Runtime) + @($Define | ForEach-Object { '-D' + $_ })
+if ($env:GS_REPLAY_CFLAGS) { $flags += @($env:GS_REPLAY_CFLAGS -split ' ' | Where-Object { $_ }) }   # (perf-p3: e.g. -fno-inline for profiles)
 $libs = @('-lsynchronization')
 $gpuDir = Join-Path $Runtime 'gpu'
 if (Test-Path (Join-Path $gpuDir 'gpu.h')) {                           # runtimes with the GPU backend

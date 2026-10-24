@@ -1702,7 +1702,7 @@ int main(int argc, char** argv) {
         return 2;
     }
     outdir = argv[2];
-    int workers = 0, decode_only = 0, front_only = 0, front_ref = 0, front_straddle = 0, front_selfcheck = 0, with_sw = 0, scale = 1, pace = 0, profile = 0, shash = 0, front_thread = 0, pin = 0;
+    int workers = 0, decode_only = 0, front_only = 0, front_ref = 0, front_straddle = 0, front_selfcheck = 0, with_sw = 0, scale = 1, pace = 0, profile = 0, shash = 0, front_thread = 0, front_pool = 0, pin = 0;
     int front_mixed = 0, ff_stq_exact = 0, split_ff = 0, ky2_opt = -1, fields_opt = -1;
     uint32_t gfx_set = 0;
     uint32_t ff_rov_mask = 0;
@@ -1729,6 +1729,7 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--profile")) profile = 1;
         else if (!strcmp(argv[i], "--stream-hash")) shash = 1;
         else if (!strcmp(argv[i], "--front-thread")) front_thread = 1;
+        else if (!strcmp(argv[i], "--front-pool") && i + 1 < argc) front_pool = atoi(argv[++i]);   /* (P3) */
         else if (!strcmp(argv[i], "--pin")) pin = 1;
 #ifdef GS_REPLAY_GPU
         else if (!strcmp(argv[i], "--lockstep")) lockstep = 1;
@@ -1893,6 +1894,9 @@ int main(int argc, char** argv) {
         fc.straddle_rov = front_straddle;
         fc.selfcheck = front_selfcheck;
         fc.thread = front_thread && !fc.sw;    /* (the frontend thread needs the software rasterizer off) */
+#ifdef GPU_FRONT_POOL
+        fc.pool = front_pool;                  /* (P3: helper threads preparing primitives) */
+#endif
         if (front_thread && fc.sw) fprintf(stderr, "--front-thread ignored: the software rasterizer is on\n");
         fc.scale = scale > 0 ? scale : 1;
         fc.display_kx = gpu_display_kx(fc.scale, game_aw, game_ah);   /* (M10: --aspect) */
@@ -1907,6 +1911,12 @@ int main(int argc, char** argv) {
                 SetThreadAffinityMask(GetCurrentThread(), (DWORD_PTR)pcore_mask[1]);
                 gpu_front_thread_affinity(pcore_mask[2]);
                 if (backend == B_HWSUB) gpu_render_thread_affinity(pcore_mask[3]);
+                /* (P3) helpers on cores of their own; GS_REPLAY_POOL_SIBLING=1: helper 0 on the frontend core's SMT sibling */
+#ifdef GPU_FRONT_POOL
+                int sib = getenv("GS_REPLAY_POOL_SIBLING") != NULL;
+                for (int k = 0; k < gpu_front_pool_size() && 4 + k < npcores; k++)
+                    gpu_front_pool_affinity(k, sib && k == 0 ? pcore_mask[2] << 1 : pcore_mask[4 + k - sib]);
+#endif
                 fprintf(stderr, "pinned: replay %llx, frontend %llx, render %llx (%d performance cores)\n", (unsigned long long)pcore_mask[1],
                         (unsigned long long)pcore_mask[2], (unsigned long long)pcore_mask[3], npcores);
             } else fprintf(stderr, "--pin: fewer than 4 performance cores found, not pinned\n");
@@ -2074,6 +2084,17 @@ int main(int argc, char** argv) {
         if (FRONT_MODE(backend) && front_thread) {
             double ft_ms = (double)gpu_front_thread_cycles() / tsc_hz * 1000.0;
             fprintf(stderr, "frontend thread CPU %.1f ms (%.3f ms per VBlank)\n", ft_ms, frames ? ft_ms / frames : 0.0);
+#ifdef GPU_FRONT_POOL
+            if (gpu_front_pool_size()) {     /* (P3) the prepare pool */
+                double pl_ms = (double)gpu_front_pool_cycles() / tsc_hz * 1000.0;
+                uint64_t ns = 0, nself = 0, wt = 0;
+                gpu_front_pool_stats(&ns, &nself, &wt);
+                double w_ms = (double)wt / tsc_hz * 1000.0;
+                fprintf(stderr, "prepare pool (%d threads) CPU %.1f ms (%.3f ms per VBlank); segments %llu, %llu prepared by the frontend thread, "
+                        "it waited %.1f ms (%.3f per VBlank)\n", gpu_front_pool_size(), pl_ms, frames ? pl_ms / frames : 0.0,
+                        (unsigned long long)ns, (unsigned long long)nself, w_ms, frames ? w_ms / frames : 0.0);
+            }
+#endif
         }
         if (backend == B_HWSUB) {    /* the render thread, and every other thread (D3D driver workers, ...) */
             double rt_ms = (double)(rt1 - rt0) / tsc_hz * 1000.0;

@@ -37,6 +37,8 @@ typedef struct {
     int no_rov;                  /* (M11) no rasterizer-ordered views: ROV-tier and ALIAS16 draws hold only primitives with
                                     disjoint rectangles (plain UAV draws, ordered draw to draw); also set by gpu_front_start
                                     when gpu_no_rov() (the device has none, or PS2_GPU_NO_ROV=1) */
+    int pool;                    /* (P3) with thread: helper threads that prepare primitives ahead of the frontend thread
+                                    (gf_prepare, gpu_fthread.c); 0 none; PS2_GPU_FRONT_POOL overrides */
 } gpu_front_config;
 /* (M10) the display family's kx for internal scale n at display aspect aw:ah: round(n * W), W = (aw/ah) / (4/3), never
  * below n (a narrower aspect keeps n), at most 16. At n = 1 the PS2's own pixels (1 x 1: the picture identical to the
@@ -148,6 +150,12 @@ void gpu_front_stop(void);                          /* (drains the frontend thre
 void gpu_front_drain(void);                         /* frontend thread: wait until it processed everything posted */
 uint64_t gpu_front_thread_cycles(void);             /* frontend thread CPU (QueryThreadCycleTime), 0 without */
 void gpu_front_thread_affinity(uint64_t mask);       /* benchmarks: pin the frontend thread */
+#define GPU_FRONT_POOL 1                             /* (P3: gs_replay builds older runtimes too) */
+int gpu_front_pool_size(void);                       /* (P3) helper threads preparing primitives (0: none) */
+uint64_t gpu_front_pool_cycles(void);                /* (P3) their CPU (QueryThreadCycleTime, summed) */
+void gpu_front_pool_affinity(int i, uint64_t mask);  /* (P3) benchmarks: pin helper i */
+/* (P3) segments the frontend thread consumed, of them prepared by itself, TSC ticks it waited for a helper */
+void gpu_front_pool_stats(uint64_t* segs, uint64_t* self, uint64_t* wait_tsc);
 void* gpu_front_thread_handle(void);                 /* (M9) the frontend thread's HANDLE (profiling), NULL without */
 size_t gpu_front_arena_bytes(void);                  /* (M9) capacity of all frame arenas (memory statistics) */
 #define GPU_FRONT_THREAD_HANDLE 1

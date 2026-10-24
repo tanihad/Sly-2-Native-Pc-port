@@ -23,7 +23,9 @@
 #include <windows.h>
 #include <x86intrin.h>
 
-#define RING (8u << 20)                  /* small enough to stay in the L3 cache */
+static uint64_t ring_size = 8u << 20;   /* small enough to stay in the L3 cache; (P3) PS2_GPU_FTHREAD_RING_MB (a power of 2) */
+#define RING ring_size
+#define RING_MASK (ring_size - 1)
 #define PUBLISH_EVERY (64u << 10)
 #define SPINS 400                        /* pause loops before sleeping (a pause is 40-140 cycles) */
 
@@ -47,6 +49,11 @@ typedef struct { fr_hdr h; uint32_t has_di, pad; gpu_display_info di; } fr_vblan
 typedef struct { fr_hdr h; volatile long* done; void (*fn)(void*); void* arg; } fr_fence;
 
 static uint8_t* ring;
+/* (P3, benchmarks) PS2_GPU_FTHREAD_HOLD=1 with a ring large enough for a whole recording (PS2_GPU_FTHREAD_RING_MB): the
+ * frontend thread starts consuming only when the producer drains / stops (or the ring fills), so its CPU time is the
+ * frontend's alone, over a stream that is all in memory, without the decoder beside it */
+static volatile LONG hold;
+static void release_hold(void) { if (hold) { InterlockedExchange(&hold, 0); WakeByAddressAll((PVOID)&hold); } }
 /* The shared positions sit on their own cache lines and are touched rarely (the producer re-reads
  * rd only when its remembered room runs out, the consumer stores rd every 64 KB or when the producer
  * waits): a shared line per record costs a cross-core transfer per record. */
@@ -79,12 +86,13 @@ static uint64_t stage_pos;              /* ring position of the staged record */
 static void* reserve(uint32_t kind, uint32_t bytes) {
     bytes = (bytes + 15) & ~15u;
     if (drop_mode) { fr_hdr* h = (fr_hdr*)stage; h->kind = kind; h->size = bytes; return h; }
-    uint64_t pos = wr % RING;
+    uint64_t pos = wr & RING_MASK;
     uint64_t pad = pos + bytes > RING ? RING - pos : 0;
     for (int spins = 0; wr + pad + bytes > room_end; spins++) {
         uint64_t r = atomic_load_explicit(&rd, memory_order_acquire);
         room_end = r + RING;
         if (wr + pad + bytes <= room_end) break;
+        release_hold();
         publish();
         if (spins < 64) { _mm_pause(); continue; }
         /* full: the frontend is behind; sleep until a quarter of the ring is free (waking for every
@@ -108,7 +116,7 @@ static void* reserve(uint32_t kind, uint32_t bytes) {
         p->size = (uint32_t)pad;
         wr += pad;
     }
-    stage_pos = wr % RING;
+    stage_pos = wr & RING_MASK;
     fr_hdr* h = (fr_hdr*)stage;
     h->kind = kind;
     h->size = bytes;
@@ -382,6 +390,7 @@ void fthread_vblank(const uint64_t priv[16], uint32_t vblank, const gpu_display_
 
 static void post_wait(uint32_t kind, void (*fn)(void*), void* arg) {
     volatile long done = 0;
+    release_hold();
     fr_fence* f = reserve(kind, sizeof *f);
     f->done = &done;
     f->fn = fn;
@@ -437,24 +446,225 @@ static const fr_hdr* next_rec(void) {
             }
             pub_seen = p;
         }
-        const fr_hdr* h = (const fr_hdr*)(ring + cons_rd % RING);
+        const fr_hdr* h = (const fr_hdr*)(ring + (cons_rd & RING_MASK));
         if (h->kind == FR_PAD) { cons_rd += h->size; continue; }
         return h;
     }
 }
 
+static int ring_prefetch = 2048;         /* (P3) PS2_GPU_RING_PREFETCH: bytes ahead (0: off) */
 static void done_rec(const fr_hdr* h) {
     cons_rd += h->size;
+    /* (P3) the producer streams the records past the caches (non-temporal stores): fetch the line ahead now, so the
+     * records come from the cache when their turn comes (a record is ~70 bytes: one line per record keeps ahead) */
+    if (ring_prefetch) _mm_prefetch((const char*)ring + ((cons_rd + (uint64_t)ring_prefetch) & RING_MASK), _MM_HINT_T0);
     if (cons_rd - rd_stored >= PUBLISH_EVERY ||
         (atomic_load_explicit(&prod_waiting, memory_order_relaxed) && cons_rd >= atomic_load_explicit(&prod_need, memory_order_relaxed)))
         store_rd();
 }
 
+/* ---- (P3) prepare pool -----------------------------------------------------------------------------
+ * The frontend thread (the "commit") cuts the published stream into segments of up to SEG_PRIMS primitives, ahead of
+ * where it is: each segment carries a copy of the decoded state and the vertex slots at its first record. Helper
+ * threads (and the commit itself, when it reaches a segment nobody took yet) walk a segment's records with their own
+ * copy of the state and prepare its primitives (gf_prepare: setup, culling, ranges, texel rectangles, records); the
+ * commit then consumes the records in stream order exactly as before, with each primitive's preparation. The ring
+ * holds the records until the commit consumes them (the producer waits for rd), so helpers read them in place. */
+#define SEG_N 64                         /* segments in flight */
+#define SEG_PRIMS 128
+typedef struct {
+    _Atomic int st;                      /* 0 free, 1 queued, 2 being prepared, 3 prepared */
+    uint32_t n;                          /* primitives */
+    uint64_t start, end;                 /* ring positions of its records */
+    gs_prim P;                           /* the state at start (gs_prim words, registers, per-version fields) */
+    uint64_t R[0x64];
+    int ctx, ofx, ofy, iip, aa1, draws;
+    uint32_t version, phase, hud, hud_scale;
+    fr_vtx slot[4];                      /* the consumer's vertex slots at start */
+    gf_prep prep[SEG_PRIMS];
+} fseg;
+static fseg* segs;
+static _Alignas(64) _Atomic uint64_t seg_head;      /* segments cut (written by the commit) */
+static _Alignas(64) _Atomic uint64_t seg_tail;      /* the segment the commit is in */
+static _Alignas(64) _Atomic uint32_t work_gen;      /* bumped when segments are queued; helpers sleep on it */
+static _Atomic int pool_sleepers, pool_stop;
+static int pool_n;
+static HANDLE pool_th[16];
+/* the cutter's position and its copy of the state there */
+static uint64_t scan_pos;
+static gs_prim sP;
+static uint64_t sR[0x64];
+static gs_env_view sev;
+static fr_vtx sslot[4];
+static fseg* cur;                        /* the commit's segment */
+static uint32_t cur_k;
+static uint64_t commit_wait_tsc, commit_self_segs, commit_segs;   /* (statistics: fthread_pool_stats) */
+static int pool_spin = 2000;             /* (PS2_GPU_POOL_SPIN: pause loops of an idle helper before it sleeps) */
+
+static void apply_state(const fr_state* s, gs_prim* P, uint64_t* R, gs_env_view* ev) {
+    ev->ctx = s->ctx; ev->ofx = s->ofx; ev->ofy = s->ofy; ev->iip = s->iip; ev->aa1 = s->aa1; ev->draws = s->draws; ev->phase = s->phase;
+    ev->hud = s->hud; ev->hud_scale = s->hud_scale;
+    ev->version = s->version;
+    for (uint32_t i = 0; i < s->n; i++) {
+        if (s->w[i].idx < 0x10000u) memcpy((uint8_t*)P + (size_t)s->w[i].idx * 8, &s->w[i].val, 8);
+        else R[s->w[i].idx - 0x10000u] = s->w[i].val;
+    }
+}
+
+/* prepare every primitive of segment s (helper or commit) */
+static void seg_run(fseg* s) {
+    gs_env_view ev;
+    memset(&ev, 0, sizeof ev);
+    ev.P = &s->P; ev.reg = s->R;
+    ev.ctx = s->ctx; ev.ofx = s->ofx; ev.ofy = s->ofy; ev.iip = s->iip; ev.aa1 = s->aa1; ev.draws = s->draws;
+    ev.version = s->version; ev.phase = s->phase; ev.hud = s->hud; ev.hud_scale = s->hud_scale;
+    gs_vtx slot[4];
+    for (int k = 0; k < 4; k++) unpack_vtx(&slot[k], &s->slot[k]);
+    gf_prep_cache pc;
+    memset(&pc, 0, sizeof pc);
+    uint32_t k = 0;
+    for (uint64_t pos = s->start; pos < s->end;) {
+        const fr_hdr* h = (const fr_hdr*)(ring + (pos & RING_MASK));
+        if (h->kind == FR_PRIM) {
+            const fr_prim* p = (const fr_prim*)h;
+            const fr_vtx* nv = p->v;
+            const gs_vtx* vs[3] = { NULL, NULL, NULL };
+            for (int i = 0; i < p->nv; i++) {
+                int j = p->ref[i] & 3;
+                if (p->ref[i] & 0x80) unpack_vtx(&slot[j], nv++);
+                vs[i] = &slot[j];
+            }
+            gf_prepare(&ev, p->type, vs[0], vs[1], vs[2], &s->prep[k++], &pc);
+        } else if (h->kind == FR_STATE) {
+            apply_state((const fr_state*)h, &s->P, s->R, &ev);
+        }
+        pos += h->size;
+    }
+}
+
+/* cut segments from the scan position up to `limit` (published), at most SEG_N in flight */
+static uint64_t dispatch_tsc;
+static void dispatch(uint64_t limit) {
+    uint64_t t0 = __rdtsc();
+    int queued = 0;
+    while (scan_pos < limit && atomic_load_explicit(&seg_head, memory_order_relaxed) - atomic_load_explicit(&seg_tail, memory_order_relaxed) < SEG_N) {
+        uint64_t hd = atomic_load_explicit(&seg_head, memory_order_relaxed);
+        fseg* s = &segs[hd % SEG_N];
+        s->P = sP;
+        memcpy(s->R, sR, sizeof sR);
+        s->ctx = sev.ctx; s->ofx = sev.ofx; s->ofy = sev.ofy; s->iip = sev.iip; s->aa1 = sev.aa1; s->draws = sev.draws;
+        s->version = sev.version; s->phase = sev.phase; s->hud = sev.hud; s->hud_scale = sev.hud_scale;
+        memcpy(s->slot, sslot, sizeof sslot);
+        s->start = scan_pos;
+        uint32_t n = 0;
+        while (scan_pos < limit && n < SEG_PRIMS) {
+            const fr_hdr* h = (const fr_hdr*)(ring + (scan_pos & RING_MASK));
+            if (h->kind == FR_PRIM) {
+                const fr_prim* p = (const fr_prim*)h;
+                const fr_vtx* nv = p->v;
+                for (int i = 0; i < p->nv; i++)
+                    if (p->ref[i] & 0x80) memcpy(&sslot[p->ref[i] & 3], nv++, sizeof(fr_vtx));
+                n++;
+            } else if (h->kind == FR_STATE) {
+                apply_state((const fr_state*)h, &sP, sR, &sev);
+            }
+            scan_pos += h->size;
+        }
+        s->end = scan_pos;
+        s->n = n;
+        atomic_store_explicit(&s->st, n ? 1 : 3, memory_order_release);
+        atomic_store_explicit(&seg_head, hd + 1, memory_order_release);
+        queued += n != 0;
+    }
+    if (queued) {
+        atomic_fetch_add_explicit(&work_gen, 1, memory_order_seq_cst);
+        if (atomic_load_explicit(&pool_sleepers, memory_order_seq_cst)) WakeByAddressAll((PVOID)&work_gen);
+    }
+    dispatch_tsc += __rdtsc() - t0;
+}
+
+static DWORD WINAPI pool_main(LPVOID arg) {
+    (void)arg;
+    for (;;) {
+        uint32_t g = atomic_load_explicit(&work_gen, memory_order_seq_cst);
+        if (atomic_load_explicit(&pool_stop, memory_order_relaxed)) return 0;
+        uint64_t t = atomic_load_explicit(&seg_tail, memory_order_acquire), hd = atomic_load_explicit(&seg_head, memory_order_acquire);
+        int did = 0;
+        for (uint64_t i = t; i < hd && !did; i++) {
+            fseg* s = &segs[i % SEG_N];
+            int e = 1;
+            if (atomic_load_explicit(&s->st, memory_order_relaxed) == 1 &&
+                atomic_compare_exchange_strong_explicit(&s->st, &e, 2, memory_order_acq_rel, memory_order_relaxed)) {
+                seg_run(s);
+                atomic_store_explicit(&s->st, 3, memory_order_release);
+                did = 1;
+            }
+        }
+        if (did) continue;
+        /* nothing queued: spin a little (segments come in bursts), then sleep until the commit queues more */
+        int spins = 0;
+        while (atomic_load_explicit(&work_gen, memory_order_relaxed) == g && spins++ < pool_spin) _mm_pause();
+        if (atomic_load_explicit(&work_gen, memory_order_seq_cst) != g) continue;
+        atomic_fetch_add_explicit(&pool_sleepers, 1, memory_order_seq_cst);
+        if (atomic_load_explicit(&work_gen, memory_order_seq_cst) == g && !atomic_load_explicit(&pool_stop, memory_order_seq_cst))
+            WaitOnAddress((volatile VOID*)&work_gen, &g, sizeof g, 20);
+        atomic_fetch_sub_explicit(&pool_sleepers, 1, memory_order_seq_cst);
+    }
+}
+
+/* next record for the commit with the pool: its segment prepared */
+static const fr_hdr* next_rec_pool(void) {
+    for (;;) {
+        if (cur && cons_rd < cur->end) {
+            const fr_hdr* h = (const fr_hdr*)(ring + (cons_rd & RING_MASK));
+            if (h->kind == FR_PAD) { cons_rd += h->size; continue; }
+            return h;
+        }
+        if (cur) {
+            atomic_store_explicit(&cur->st, 0, memory_order_relaxed);
+            atomic_store_explicit(&seg_tail, atomic_load_explicit(&seg_tail, memory_order_relaxed) + 1, memory_order_release);
+            cur = NULL;
+        }
+        uint64_t p = atomic_load_explicit(&pub, memory_order_acquire);
+        if (atomic_load_explicit(&seg_head, memory_order_relaxed) == atomic_load_explicit(&seg_tail, memory_order_relaxed) && p == scan_pos) {
+            /* everything published is consumed: wait (as next_rec) */
+            store_rd();
+            for (int i = 0; p == scan_pos && i < SPINS; i++) { _mm_pause(); p = atomic_load_explicit(&pub, memory_order_acquire); }
+            if (p == scan_pos) {
+                atomic_store_explicit(&cons_sleeping, 1, memory_order_seq_cst);
+                if ((p = atomic_load_explicit(&pub, memory_order_seq_cst)) == scan_pos) {
+                    uint64_t seen = scan_pos;
+                    WaitOnAddress((volatile VOID*)&pub, &seen, sizeof seen, 10);
+                }
+                atomic_store_explicit(&cons_sleeping, 0, memory_order_relaxed);
+                continue;
+            }
+        }
+        dispatch(p);
+        fseg* s = &segs[atomic_load_explicit(&seg_tail, memory_order_relaxed) % SEG_N];
+        int e = 1;
+        commit_segs++;
+        if (atomic_load_explicit(&s->st, memory_order_relaxed) == 1 &&
+            atomic_compare_exchange_strong_explicit(&s->st, &e, 2, memory_order_acq_rel, memory_order_relaxed)) {
+            seg_run(s);                  /* (nobody took it yet: prepare it here) */
+            commit_self_segs++;
+        } else if (atomic_load_explicit(&s->st, memory_order_acquire) != 3) {
+            uint64_t t0 = __rdtsc();
+            while (atomic_load_explicit(&s->st, memory_order_acquire) != 3) _mm_pause();
+            commit_wait_tsc += __rdtsc() - t0;
+        }
+        cur = s;
+        cur_k = 0;
+        cons_rd = s->start;              /* (== cons_rd) */
+    }
+}
+
 static DWORD WINAPI fthread_main(LPVOID arg) {
     (void)arg;
     const gs_front_hooks* H = gf_hooks();
+    for (LONG one = 1; hold;) WaitOnAddress((volatile VOID*)&hold, &one, sizeof one, 50);
     for (;;) {
-        const fr_hdr* h = next_rec();
+        const fr_hdr* h = pool_n ? next_rec_pool() : next_rec();
         int stop = 0;
         switch (h->kind) {
         case FR_PRIM: {
@@ -466,20 +676,13 @@ static DWORD WINAPI fthread_main(LPVOID arg) {
                 if (p->ref[i] & 0x80) unpack_vtx(&fslot[k], nv++);
                 vs[i] = &fslot[k];
             }
-            H->prim(&fev, p->type, vs[0], vs[1], vs[2]);
+            if (pool_n) gf_prim_commit(&fev, p->type, vs[0], vs[1], vs[2], &cur->prep[cur_k++]);
+            else H->prim(&fev, p->type, vs[0], vs[1], vs[2]);
             break;
         }
-        case FR_STATE: {
-            const fr_state* s = (const fr_state*)h;
-            fev.ctx = s->ctx; fev.ofx = s->ofx; fev.ofy = s->ofy; fev.iip = s->iip; fev.aa1 = s->aa1; fev.draws = s->draws; fev.phase = s->phase;
-            fev.hud = s->hud; fev.hud_scale = s->hud_scale;
-            fev.version = s->version;
-            for (uint32_t i = 0; i < s->n; i++) {
-                if (s->w[i].idx < 0x10000u) memcpy((uint8_t*)&fP + (size_t)s->w[i].idx * 8, &s->w[i].val, 8);
-                else fR[s->w[i].idx - 0x10000u] = s->w[i].val;
-            }
+        case FR_STATE:
+            apply_state((const fr_state*)h, &fP, fR, &fev);
             break;
-        }
         case FR_XFER: { const fr_xfer* x = (const fr_xfer*)h; H->xfer_start(x->bb, x->pos, x->rr, x->dir); break; }
         case FR_XDATA: H->xfer_data(((const fr_xdata*)h)->bytes); break;
         case FR_BLOCKS: {
@@ -522,7 +725,12 @@ static DWORD WINAPI fthread_main(LPVOID arg) {
 
 void fthread_start(void) {
     if (thread) return;
-    if (!ring) ring = VirtualAlloc(NULL, RING, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    if (!ring) {
+        const char* rm = getenv("PS2_GPU_FTHREAD_RING_MB");
+        if (rm && atoi(rm) >= 8 && atoi(rm) <= 4096 && !(atoi(rm) & (atoi(rm) - 1))) ring_size = (uint64_t)atoi(rm) << 20;
+        ring = VirtualAlloc(NULL, RING, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    }
+    hold = getenv("PS2_GPU_FTHREAD_HOLD") != NULL;
     if (!fvram) fvram = VirtualAlloc(NULL, GS_VRAM_SIZE, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
     if (!ring || !fvram) { fprintf(stderr, "[gpu_front] out of memory for the frontend thread\n"); exit(1); }
     wr = unpublished = cons_rd = pub_seen = rd_stored = 0;
@@ -544,6 +752,38 @@ void fthread_start(void) {
     gf_clut_src = fclut;
     drop_mode = getenv("PS2_GPU_FTHREAD_DROP") != NULL;
     if (drop_mode) { gs_front = &proxy; return; }
+    {
+        const char* rp = getenv("PS2_GPU_RING_PREFETCH");
+        ring_prefetch = rp && *rp ? atoi(rp) & ~63 : 2048;
+    }
+    /* (P3) the prepare pool */
+    pool_n = gf_cfg.pool;
+    const char* pe = getenv("PS2_GPU_FRONT_POOL");
+    if (pe && *pe) pool_n = atoi(pe);
+    if (pool_n < 0) pool_n = 0;
+    if (pool_n > 16) pool_n = 16;
+    if (pool_n) {
+        if (!segs) segs = VirtualAlloc(NULL, sizeof(fseg) * SEG_N, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+        if (!segs) { fprintf(stderr, "[gpu_front] out of memory for the prepare pool\n"); exit(1); }
+        for (int i = 0; i < SEG_N; i++) atomic_store(&segs[i].st, 0);
+        atomic_store(&seg_head, 0);
+        atomic_store(&seg_tail, 0);
+        atomic_store(&pool_stop, 0);
+        scan_pos = 0;
+        memset(&sP, 0, sizeof sP);
+        memset(sR, 0, sizeof sR);
+        memset(&sev, 0, sizeof sev);
+        memset(sslot, 0, sizeof sslot);
+        cur = NULL;
+        cur_k = 0;
+        commit_wait_tsc = commit_self_segs = commit_segs = dispatch_tsc = 0;
+        const char* ps = getenv("PS2_GPU_POOL_SPIN");
+        if (ps && *ps) pool_spin = atoi(ps);
+        for (int i = 0; i < pool_n; i++) {
+            pool_th[i] = CreateThread(NULL, 0, pool_main, NULL, 0, NULL);
+            if (!pool_th[i]) { fprintf(stderr, "[gpu_front] cannot start the prepare pool\n"); exit(1); }
+        }
+    }
     thread = CreateThread(NULL, 0, fthread_main, NULL, 0, NULL);
     if (!thread) { fprintf(stderr, "[gpu_front] cannot start the frontend thread\n"); exit(1); }
     gs_front = &proxy;
@@ -556,6 +796,13 @@ void fthread_stop(void) {
     post_wait(FR_STOP, NULL, NULL);
     WaitForSingleObject(thread, INFINITE);
     CloseHandle(thread);
+    if (pool_n) {                        /* (P3) */
+        atomic_store(&pool_stop, 1);
+        atomic_fetch_add(&work_gen, 1);
+        WakeByAddressAll((PVOID)&work_gen);
+        for (int i = 0; i < pool_n; i++) { WaitForSingleObject(pool_th[i], INFINITE); CloseHandle(pool_th[i]); pool_th[i] = NULL; }
+        pool_n = 0;
+    }
     if (getenv("PS2_GPU_FTHREAD_STATS"))
         fprintf(stderr, "[fthread] empty state records %llu; records/MB: prim %llu/%.1f state %llu/%.1f xfer %llu blocks %llu/%.1f clut %llu tex0 %llu vblank %llu\n",
                 (unsigned long long)st_empty_state, (unsigned long long)st_n[FR_PRIM], st_b[FR_PRIM] / 1e6, (unsigned long long)st_n[FR_STATE], st_b[FR_STATE] / 1e6,
@@ -567,6 +814,22 @@ void fthread_stop(void) {
 }
 
 void fthread_affinity(uint64_t mask) { if (thread && mask) SetThreadAffinityMask(thread, (DWORD_PTR)mask); }
+int fthread_pool_size(void) { return thread ? pool_n : 0; }
+/* (P3) segments the commit consumed, of them prepared by the commit itself, TSC ticks it waited for a helper */
+void fthread_pool_stats(uint64_t* segs_out, uint64_t* self_out, uint64_t* wait_tsc) {
+    *segs_out = commit_segs; *self_out = commit_self_segs; *wait_tsc = commit_wait_tsc;
+    if (getenv("PS2_GPU_FTHREAD_STATS")) fprintf(stderr, "[fthread] dispatch %.1f Mcycles\n", dispatch_tsc / 1e6);
+}
+void fthread_pool_affinity(int i, uint64_t mask) { if (i >= 0 && i < pool_n && pool_th[i] && mask) SetThreadAffinityMask(pool_th[i], (DWORD_PTR)mask); }
+uint64_t fthread_pool_cycles(void) {
+    uint64_t s = 0;
+    for (int i = 0; i < pool_n; i++) {
+        ULONG64 c = 0;
+        if (pool_th[i]) QueryThreadCycleTime(pool_th[i], &c);
+        s += c;
+    }
+    return s;
+}
 void* gpu_fthread_os_handle(void) { return thread; }   /* (pc-fps2) PS2_PROFILE=front (perf.c) */
 
 uint64_t fthread_cycles(void) {
