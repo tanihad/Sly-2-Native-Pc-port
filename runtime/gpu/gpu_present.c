@@ -142,6 +142,7 @@ static FILE* ptrace_file(void) {
  * overlay, as shown) from s seconds after the first present as PNG (cropped to x,y,w,h), for frame-sequence checks (shake,
  * flicker). Blocking read-backs: a debugging tool only. */
 extern void debug_write_png(const char* path, const uint32_t* bgrx, int w, int h, int stride) __attribute__((weak));
+static ID3D11Texture2D* tex_create(int w, int h, UINT bind, D3D11_USAGE usage, UINT cpu);
 static void present_dump(ID3D11RenderTargetView* rtv, int bw, int bh, double t_rel) {
     static int init, n, cx, cy, cw, ch, done;
     static double at;
@@ -1054,6 +1055,11 @@ static void present_fit(int aw, int ah, int scaler) {
         present_resample(P.rtv, x, y, lw, lh, scaler);
     }
     if (overlay_d3d11_draw) overlay_d3d11_draw(gpu_rt.dev, gpu_rt.ctx, P.rtv, P.bb_w, P.bb_h);
+    {                                            /* (pc-smooth) PS2_PRESENT_DUMP: frame sequences as shown */
+        static double first;
+        if (!first) first = t0;
+        present_dump(P.rtv, P.bb_w, P.bb_h, (t0 - first) / 1000.0);
+    }
     if (tsi >= 0) ID3D11DeviceContext_End(gpu_rt.ctx, (ID3D11Asynchronous*)P.ts[tsi].t2);
     double call = now_ms();
     if (paced) P.st.present_late_ms = call - target;
