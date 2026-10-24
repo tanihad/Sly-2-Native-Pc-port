@@ -647,12 +647,14 @@ static int32_t tb_coord(double lo, double hi) { return (int32_t)floor((lo + (hi 
 
 /* one triangle as the frontend sets it up; 0: not drawn (zero area, outside the scissor) or not an FF depth triangle
  * (a Z24 / Z32 vertex above GPU_Z_FF_MAX goes to the ROV tier). *nb: the frontend's decision (gpu_front.c) */
-static int tb_make(gs_vtx v[3], tri_rec* r, int* nb, int* steep) {
+static int tb_make(gs_vtx v[3], tri_rec* r, int* nb, int* steep, double* slope, int small) {
     memset(v, 0, sizeof(gs_vtx) * 3);
     int shape = (int)(rnd64() % 10);
     double cx = -32.0 + 704.0 * rndu(), cy = -32.0 + 512.0 * rndu();
-    double size = shape < 5 ? 1.0 + 31.0 * rndu() : shape < 8 ? 32.0 + 224.0 * rndu() : 256.0 + 640.0 * rndu();
+    double size = shape < 6 ? 1.0 + 31.0 * rndu() : shape < 9 ? 32.0 + 96.0 * rndu() : 128.0 + 768.0 * rndu();
     if (shape == 9 && rnd64() % 4 == 0) size = 2048.0;            /* a few very large ones (vertices far outside) */
+    if (shape >= 6 && small && rnd64() % 8) size = 4.0 + 28.0 * rndu();   /* (WARP: mostly small ones) */
+    if (size > 128.0 && rnd64() % 4) shape = 3;                    /* (large ones: mostly slivers, fewer samples) */
     for (int i = 0; i < 3; i++) { v[i].x = tb_coord(cx - size, cx + size); v[i].y = tb_coord(cy - size, cy + size); }
     if (shape >= 3 && shape <= 5) {                                  /* slivers: the third vertex near the line of the others */
         double t = rndu();
@@ -663,9 +665,10 @@ static int tb_make(gs_vtx v[3], tri_rec* r, int* nb, int* steep) {
     int fmt = (int)(rnd64() % 3);
     uint32_t lim = fmt == 2 ? 0xFFFFu : GPU_Z_FF_MAX, top = fmt == 2 ? 0x10000u : GPU_Z_FF_MAX + 1;
     uint32_t z0 = (uint32_t)(rnd64() % top);
+    int zspread = (int)(rnd64() % 8);
     for (int i = 0; i < 3; i++) {
         int64_t z;
-        switch (rnd64() % 4) {
+        switch (zspread < 3 ? 0 : zspread < 6 ? 1 : zspread == 6 ? 2 : (int)(rnd64() % 4)) {
         case 0: z = (int64_t)z0 + (int64_t)(rnd64() % 2001) - 1000; break;
         case 1: z = (int64_t)z0 + (int64_t)(rnd64() % 100001) - 50000; break;
         case 2: z = (int64_t)(rnd64() % top); break;
@@ -683,7 +686,8 @@ static int tb_make(gs_vtx v[3], tri_rec* r, int* nb, int* steep) {
     gs_rowstep_attr(&zp, T.by0, 65536.0, 1, &r->row, &r->dy, &r->dx);
     r->by0 = T.by0;
     r->zmax = zmaxs[fmt];
-    *steep = !(fabs(zp.cx) + fabs(zp.cy) <= GPU_ZB_SLOPE);
+    *slope = fabs(zp.cx) + fabs(zp.cy);
+    *steep = !(*slope <= GPU_ZB_SLOPE);
     *nb = v[0].z > lim || v[1].z > lim || v[2].z > lim || *steep;
     return 1;
 }
@@ -698,7 +702,10 @@ static int run_tribound(const conf_args* a) {
     tri_vtx* vtx = malloc(sizeof(tri_vtx) * 3 * (size_t)ntri);
     uint8_t* steepf = malloc((size_t)ntri);
     uint32_t* vz = malloc(sizeof(uint32_t) * 3 * (size_t)ntri);
-    if (!recs || !vtx || !steepf || !vz) { free(recs); free(vtx); free(steepf); free(vz); return -1; }
+    double* slopes = malloc(sizeof(double) * (size_t)ntri);
+    uint32_t* rr = calloc(8 + (size_t)ntri, 4);                   /* bres: header + per-triangle flags */
+    if (!recs || !vtx || !steepf || !vz || !slopes || !rr) { free(recs); free(vtx); free(steepf); free(vz); free(slopes); free(rr); return -1; }
+    const UINT rbytes = (UINT)(32 + 4 * ntri);
     int bad = -1;
     dtarget dt;
     ID3D11Buffer *vb = NULL, *rb = NULL, *res = NULL, *rst = NULL, *cb = NULL;
@@ -714,8 +721,8 @@ static int run_tribound(const conf_args* a) {
     rb = buf_create(sizeof(tri_rec) * (UINT)ntri, D3D11_BIND_SHADER_RESOURCE, D3D11_RESOURCE_MISC_BUFFER_STRUCTURED, sizeof(tri_rec),
                     D3D11_USAGE_DEFAULT, 0, NULL);
     vb = buf_create(sizeof(tri_vtx) * 3 * (UINT)ntri, D3D11_BIND_VERTEX_BUFFER, 0, 0, D3D11_USAGE_DEFAULT, 0, NULL);
-    res = buf_create(32, D3D11_BIND_UNORDERED_ACCESS, D3D11_RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS, 0, D3D11_USAGE_DEFAULT, 0, NULL);
-    rst = buf_create(32, 0, 0, 0, D3D11_USAGE_STAGING, D3D11_CPU_ACCESS_READ, NULL);
+    res = buf_create(rbytes, D3D11_BIND_UNORDERED_ACCESS, D3D11_RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS, 0, D3D11_USAGE_DEFAULT, 0, NULL);
+    rst = buf_create(rbytes, 0, 0, 0, D3D11_USAGE_STAGING, D3D11_CPU_ACCESS_READ, NULL);
     cb = buf_create(16, D3D11_BIND_CONSTANT_BUFFER, 0, 0, D3D11_USAGE_DEFAULT, 0, NULL);
     if (!rb || !vb || !res || !rst || !cb || FAILED(ID3D11Device_CreateShaderResourceView(d, (ID3D11Resource*)rb, NULL, &rsrv)))
         goto out;
@@ -724,7 +731,7 @@ static int run_tribound(const conf_args* a) {
         memset(&ud, 0, sizeof ud);
         ud.Format = DXGI_FORMAT_R32_TYPELESS;
         ud.ViewDimension = D3D11_UAV_DIMENSION_BUFFER;
-        ud.Buffer.NumElements = 8;
+        ud.Buffer.NumElements = rbytes / 4;
         ud.Buffer.Flags = D3D11_BUFFER_UAV_FLAG_RAW;
         if (FAILED(ID3D11Device_CreateUnorderedAccessView(d, (ID3D11Resource*)res, &ud, &ruav))) goto out;
         D3D11_INPUT_ELEMENT_DESC el[2] = {
@@ -747,6 +754,8 @@ static int run_tribound(const conf_args* a) {
     if (!gpu_vs(GPU_SH_vs_conf_tri) || !gpu_ps(GPU_SH_ps_conf_tri)) goto out;
     rng = 0x8EBC6AF09C88C6E3ULL ^ a->seed;
     uint64_t viol = 0, samples = 0, bsamples = 0, unsafe_viol = 0, unsafe_samples = 0, n_nb = 0, n_steep = 0, n_tri = 0;
+    uint64_t unsafe_tris = 0, unsafe_n = 0;
+    double unsafe_slope = 1e300;                                    /* the least steep triangle that broke its bound */
     int min_slack = 1 << 30;
     bad = 0;
     for (int ki = 0; ki < nk; ki++) {
@@ -756,7 +765,7 @@ static int run_tribound(const conf_args* a) {
         while (nt < ntri) {
             gs_vtx v[3];
             int nb, steep;
-            if (!tb_make(v, &recs[nt], &nb, &steep)) continue;
+            if (!tb_make(v, &recs[nt], &nb, &steep, &slopes[nt], gpu_rt.caps.warp)) continue;
             uint32_t lim = recs[nt].zmax == 0xFFFFu ? 0xFFFFu : GPU_Z_FF_MAX;
             /* 1: steep, every vertex within the limits (the slope limit is its one reason for no bound) */
             steepf[nt] = (uint8_t)(steep && v[0].z <= lim && v[1].z <= lim && v[2].z <= lim);
@@ -785,8 +794,9 @@ static int run_tribound(const conf_args* a) {
             }
             ID3D11DeviceContext_UpdateSubresource(c, (ID3D11Resource*)rb, 0, NULL, recs, 0, 0);
             ID3D11DeviceContext_UpdateSubresource(c, (ID3D11Resource*)vb, 0, NULL, vtx, 0, 0);
-            static const UINT init[8] = { 0, 0, 0x7FFFFFFF, 0, 0, 0, 0, 0 };
-            ID3D11DeviceContext_UpdateSubresource(c, (ID3D11Resource*)res, 0, NULL, init, 0, 0);
+            memset(rr, 0, rbytes);
+            rr[2] = 0x7FFFFFFF;
+            ID3D11DeviceContext_UpdateSubresource(c, (ID3D11Resource*)res, 0, NULL, rr, 0, 0);
             uint32_t cbv[4] = { 0, 0, 0, (uint32_t)kx | (uint32_t)ky << 16 };
             ID3D11DeviceContext_UpdateSubresource(c, (ID3D11Resource*)cb, 0, NULL, cbv, 0, 0);
             D3D11_VIEWPORT vp = { -8192.0f, -8192.0f, 16384.0f, 16384.0f, 0.0f, 1.0f };   /* (gpu_exec.c REF viewport) */
@@ -810,10 +820,16 @@ static int run_tribound(const conf_args* a) {
             ID3D11DeviceContext_CopyResource(c, (ID3D11Resource*)rst, (ID3D11Resource*)res);
             D3D11_MAPPED_SUBRESOURCE m;
             if (!map_read((ID3D11Resource*)rst, &m)) { bad = -1; goto out; }
-            uint32_t rr[8];
-            memcpy(rr, m.pData, sizeof rr);
+            memcpy(rr, m.pData, rbytes);
             ID3D11DeviceContext_Unmap(c, (ID3D11Resource*)rst, 0);
-            if (unsafe) { unsafe_viol += rr[0]; unsafe_samples += rr[3]; continue; }
+            if (unsafe) {
+                unsafe_viol += rr[0];
+                unsafe_samples += rr[3];
+                for (int t = 0; t < nt; t++)
+                    if (rr[8 + t]) { unsafe_tris++; if (slopes[t] < unsafe_slope) unsafe_slope = slopes[t]; }
+                for (int t = 0; t < nt; t++) unsafe_n += steepf[t];
+                continue;
+            }
             viol += rr[0];
             samples += rr[1];
             bsamples += rr[3];
@@ -826,13 +842,15 @@ static int run_tribound(const conf_args* a) {
             }
         }
     }
-    if (a->verbose)
+    if (a->verbose) {
         gpu_log("triangle bound (%llu triangles at %d sample factors, %llu without a bound, %llu of them steeper than %.0f/pixel): "
-                "%llu samples, %llu bounded, %llu above the rasterized depth, min slack %d (margin %u); unbounded steep ones drawn "
-                "with the vertex bound: %llu of %llu samples above",
+                "%llu samples, %llu bounded, %llu above the rasterized depth, min slack %d (margin %u)",
                 (unsigned long long)n_tri, nk, (unsigned long long)n_nb, (unsigned long long)n_steep, GPU_ZB_SLOPE,
-                (unsigned long long)samples, (unsigned long long)bsamples, (unsigned long long)viol, min_slack, GPU_ZB_MARGIN,
-                (unsigned long long)unsafe_viol, (unsigned long long)unsafe_samples);
+                (unsigned long long)samples, (unsigned long long)bsamples, (unsigned long long)viol, min_slack, GPU_ZB_MARGIN);
+        gpu_log("triangle bound without the slope limit (%llu steep triangles drawn with the vertex bound): %llu of %llu samples "
+                "above in %llu triangles, the least steep %.0f/pixel", (unsigned long long)unsafe_n, (unsigned long long)unsafe_viol,
+                (unsigned long long)unsafe_samples, (unsigned long long)unsafe_tris, unsafe_tris ? unsafe_slope : 0.0);
+    }
     /* the bound must hold with room to spare: at least half the margin left on every bounded sample */
     if (bad == 0 && bsamples && min_slack < (int)(GPU_ZB_MARGIN / 2)) {
         if (a->verbose) gpu_log("  triangle bound: min slack %d below half the margin (%u)", min_slack, GPU_ZB_MARGIN / 2);
@@ -847,6 +865,8 @@ out:
     free(vtx);
     free(steepf);
     free(vz);
+    free(slopes);
+    free(rr);
     return bad;
 }
 

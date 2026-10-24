@@ -124,7 +124,7 @@ void cs_depth_read(uint3 id : SV_DispatchThreadID) {
 // FF pixel shader's exact Z (gs_z16_sample, gs_z_clamp) and checks it against the rasterized depth: a value above it
 // would be clamped by SV_DepthLessEqual (wrong depth). bres: [0] violations, [1] samples, [2] min slack (bounded
 // triangles, z units, as int), [3] samples of bounded triangles, [4..7] the first violation (prim, x | y << 16, z,
-// asuint(pos.z)).
+// asuint(pos.z)), [8 + prim] 1: the triangle had a violation.
 struct tri_rec { uint2 row, dy, dx; int by0; uint zmax; };
 StructuredBuffer<tri_rec> trec : register(t1);
 RWByteAddressBuffer bres : register(u1);
@@ -157,6 +157,7 @@ void ps_conf_tri(VT i, uint prim : SV_PrimitiveID) {
     if (gs_z_encode(zc) > i.pos.z) {
         bres.InterlockedAdd(0, 1u, old);
         if (old == 0u) bres.Store4(16, uint4(prim, (uint)P.x | ((uint)P.y << 16), zc, asuint(i.pos.z)));
+        bres.Store(32u + prim * 4u, 1u);          // (the triangles with a violation)
     }
     if (i.nb == 0u) {
         float slack = i.pos.z * 1048576.0 - (float)zc;
