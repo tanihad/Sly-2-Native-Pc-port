@@ -203,6 +203,13 @@ uint64_t setup_space_needed(setup_t* s) {
 
 /* ---- archives -------------------------------------------------------------------------------- */
 
+static int from_payload(setup_t* s, const payload_entry* e, const wchar_t* dest) {
+    int r = payload_extract(s, e, dest);
+    if (r > 0) return EXIT_OK;
+    if (s->cancel) return EXIT_CANCELLED;
+    if (r < 0) return fail(s, L"This setup file is damaged (%hs does not match its SHA-256). Download Setup again.", e->name);
+    return fail(s, L"Cannot unpack %hs from the setup file (error %lu; is the disk full?).", e->name, GetLastError());
+}
 static int verify(setup_t* s, const wchar_t* path, const char* sha, const wchar_t* label) {
     uint8_t d[32];
     report(s, s->pm_base + s->pm_span, L"");
@@ -230,9 +237,10 @@ static int get_archive(setup_t* s, const setup_pin* p, wchar_t* path, int* ours)
 
     const payload_entry* e = payload_find(name8);    /* the offline setup carries it */
     if (e) {
+        int r0;
         if (!sha256_equal_hex(e->sha256, p->sha256)) return fail(s, L"The setup file carries a different %ls than this setup expects.", p->name);
         say(s, L"%ls: from this setup program", p->name);
-        if (!payload_extract(s, e, dl)) return s->cancel ? EXIT_CANCELLED : fail(s, L"Cannot unpack %ls from the setup file (is the disk full?).", p->file);
+        if ((r0 = from_payload(s, e, dl)) != 0) return r0;
         wcopy(path, MAXP, dl);
         return EXIT_OK;
     }
@@ -433,7 +441,8 @@ static int install_python(setup_t* s, int base, int span) {
         wchar_t dd[MAXP];
         bpath(s, dd, L"tools\\_downloads");
         mkdir_p(dd);
-        if (!payload_extract(s, e, z)) return s->cancel ? EXIT_CANCELLED : fail(s, L"Cannot unpack Python from the setup file.");
+        int r0 = from_payload(s, e, z);
+        if (r0) return r0;
         int r = untar(s, z, pyroot, NULL, 0, L"Python");
         DeleteFileW(z);
         if (r) return r;
@@ -493,7 +502,8 @@ static int install_packages(setup_t* s, int base, int span) {
     if (e) {
         wchar_t z[MAXP];
         bpath(s, z, L"tools\\_downloads\\uv-cache.zip");
-        if (!payload_extract(s, e, z)) return s->cancel ? EXIT_CANCELLED : fail(s, L"Cannot unpack the package cache from the setup file.");
+        int r0 = from_payload(s, e, z);
+        if (r0) return r0;
         int r = untar(s, z, cache, NULL, 0, L"package cache");
         DeleteFileW(z);
         if (r) return r;
@@ -533,12 +543,12 @@ static void build_line(setup_t* s, void* user, const char* line) {
     /* scripts/build_game.py --progress: stage names in order, and "compile i/n" */
     static const struct { const char* name; int pm; const wchar_t* text; } stages[] = {
         { "generate", 0, L"Translating the game's code (MIPS -> C)" },
-        { "iop", 170, L"Translating the sound modules" },
-        { "vu", 190, L"Translating the vector unit programs" },
-        { "shaders", 260, L"Compiling the graphics shaders" },
-        { "compile", 290, L"Compiling" },
-        { "link", 930, L"Linking sly2.exe" },
-        { "package", 960, L"Packaging the game" },
+        { "iop", 110, L"Translating the sound modules" },
+        { "vu", 150, L"Translating the vector unit programs" },
+        { "shaders", 165, L"Compiling the graphics shaders" },
+        { "compile", 230, L"Compiling" },
+        { "link", 935, L"Linking sly2.exe" },
+        { "package", 950, L"Packaging the game" },
     };
     for (size_t i = 0; i < sizeof stages / sizeof stages[0]; i++) {
         size_t n = strlen(stages[i].name);
@@ -698,7 +708,8 @@ static int install_sources(setup_t* s) {
     bpath(s, b, NULL);
     mkdir_p(b);
     bpath(s, z, L"source.zip");
-    if (!payload_extract(s, e, z)) return s->cancel ? EXIT_CANCELLED : fail(s, L"Cannot unpack the sources (is the disk full?).");
+    int r0 = from_payload(s, e, z);
+    if (r0) return r0;
     static const wchar_t* old[] = { L"recomp", L"runtime", L"scripts", L"requirements.txt", L"version.txt" };
     for (size_t i = 0; i < sizeof old / sizeof old[0]; i++) { bpath(s, v, old[i]); delete_tree(v); }
     int r = untar(s, z, b, NULL, 0, L"sources");
@@ -767,7 +778,7 @@ int setup_install(setup_t* s) {
     }
     wchar_t lp[MAXP];
     dpath(s, lp, L"setup.log");
-    log_open(lp);
+    if (!s->log_fixed) log_open(lp);
     loga("---- Sly 2 Setup %ls (%ls), %s", SETUP_VERSION, SETUP_COMMIT, s->existing ? "update" : "new installation");
     logw(L"folder %ls, disc %ls, from '%ls', mirror '%ls', offline %d, all users %d", s->dir, s->iso, s->from, s->mirror,
          s->offline_only, s->allusers);

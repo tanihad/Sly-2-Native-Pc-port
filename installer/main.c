@@ -789,7 +789,8 @@ static int tool_command(int argc, wchar_t** argv) {
         wchar_t part[MAXP];
         wfmt(part, MAXP, L"%ls.part", argv[3]);
         uint64_t size = argc > 5 ? _wcstoui64(argv[5], NULL, 10) : 0;
-        int r = net_download(&S, argv[2], part, size, L"download", 5);
+        const wchar_t* leafname = wcsrchr(argv[3], L'\\');
+        int r = net_download(&S, argv[2], part, size, leafname ? leafname + 1 : argv[3], 5);
         if (r) { out(L"FAILED: %ls", S.error); return r == -2 ? EXIT_CANCELLED : EXIT_FAILED; }
         if (argc > 4) {
             uint8_t d[32];
@@ -860,7 +861,7 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE prev, PWSTR cmdline, int show) {
             return EXIT_USAGE;
         }
     }
-    if (logfile[0]) log_open(logfile);
+    if (logfile[0]) { log_open(logfile); S.log_fixed = 1; }
     S.silent = silent;
     S.uitest = uitest;
     full_path(S.dir);

@@ -689,7 +689,8 @@ int payload_extract(setup_t* s, const payload_entry* e, const wchar_t* dest) {
     ok &= CloseHandle(out) != 0;
     if (ok && memcmp(d, e->sha256, 32)) {
         loga("payload %s: SHA-256 mismatch (the setup file is damaged: download it again)", e->name);
-        ok = 0;
+        DeleteFileW(tmp);
+        return -1;
     }
     if (ok) ok = MoveFileExW(tmp, dest, MOVEFILE_REPLACE_EXISTING) != 0;
     if (!ok) DeleteFileW(tmp);

@@ -75,6 +75,7 @@ typedef struct setup {
     int uitest;                      /* /uitest: message boxes go to the log */
     int delete_saves;                /* uninstall: also remove the user data folder (-1 = ask) */
     int existing;                    /* an installation was found in dir */
+    int log_fixed;                   /* /log=: keep logging there (not <dir>\setup.log) */
 
     /* run state */
     volatile LONG cancel;
@@ -142,7 +143,7 @@ typedef struct { char name[96]; uint64_t offset, size; uint8_t sha256[32]; } pay
 int payload_open(void);                              /* number of entries (0: none) */
 const payload_entry* payload_find(const char* name);
 uint64_t payload_stub_size(void);                    /* bytes before the overlay: the plain program */
-int payload_extract(setup_t* s, const payload_entry* e, const wchar_t* dest);   /* verified copy */
+int payload_extract(setup_t* s, const payload_entry* e, const wchar_t* dest);   /* verified copy: 1, 0 error, -1 damaged */
 int payload_count(void);
 const payload_entry* payload_at(int i);
 
