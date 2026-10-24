@@ -2641,3 +2641,14 @@ Balanced). Checkpoint history and every measurement: notes/wip/pc-smooth.md.
 - Tools: PS2_PRESENT_TRACE (per present / GPU time / shown present; scripts/smooth_run.ps1, smooth_trace.py with PNG panels),
   PS2_PRESENT_DUMP(_AT) (presented pictures with the overlay, cropped, strided), PS2_FB_DUMP(_DIR) (native buffers in the
   software renderer / the displayed targets at scale), PS2_DISPLAY_LOG, PS2_PACE_LOG=4, scripts/frame_diff.py.
+
+## Appendix R. As built: pc-menu2 (the Options menu between the game's pictures; branch next/pc-menu2)
+
+notes/pc-menu.md "pc-menu2". Renderer parts: while `overlay_wants_frames()` (the menu is open) the render thread's idle wait
+(gpu_d3d11.c `rt_main`) polls every 1 ms and calls `gpu_present_menu` (gpu_present.c): when the swap chain has room (the
+frame-latency waitable object, polled without waiting) it clears the back buffer, resamples the last composed picture with the
+last present's aspect and scaler, draws the overlay and presents with Present(1) - one picture per display refresh between the
+game's own. No timestamps, statistics or pacing state are touched; `pace_statistics` ignores the frame statistics for 1 s after
+a menu present (they would read as a display running at its own refresh). A resize waits for the next game picture.
+Headless: `PS2_MENU_SIM_HZ=<Hz>` draws menu pictures into the offscreen target at that rate (measurements). The display lock
+(appendix Q) is opt-in now: `clock_lock_k` only for `pacing = display`.

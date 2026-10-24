@@ -7,10 +7,94 @@ renderer are staged and applied with **Apply changes**, then confirmed ("Keep th
 **Quit to Desktop** is in the pause menu, in Options and on the title screen, and the window's close button asks the
 same question.
 
-Contact sheets: `notes/pc-menu/contact_sheet.png` (every page and dialog at 2560 x 1440 and the Graphics page at other
-sizes, from the unit test), `notes/pc-menu/ingame_sheet.png` (headless game runs: the pause menu's entries, the quit
-question, the title screen's menu, Options pages, Keep / Revert, the game options, Save / Load / Save and Quit / Exit to
-Episode Menu still working).
+Contact sheets: `notes/pc-menu2/contact_sheet.png` (pc-menu2: 1 the old menu (before), 2-4 the game's own pause menu,
+Data Access and title menu, 5 our Options in game at 1920 x 1080, 6 at 1024 x 768 (4:3), 7 the quit question over the
+pause menu, 8 a detail of a 3840 x 2160 picture), `notes/pc-menu/contact_sheet.png` (pc-polish: the old look, every page
+and dialog from the unit test), `notes/pc-menu/ingame_sheet.png` (pc-polish headless game runs).
+
+## pc-menu2 (2026-10-24): the game's menus first, a Sly-looking Options menu, drawn at the display's refresh
+
+The owner: "the menu is a little bit choppy, mouse movement is weird ... integrate this new menu to match the theme of the
+game ... you pause the game and you have the game's pause menu ... and you press on settings where you have an actual
+Sly-looking menu". Checkpoint history and every measurement: notes/wip/pc-menu2.md.
+
+**Flow** (runtime/menu_game.c `request_open`): Esc and the PS button go to the game's own menus, never straight to ours:
+- playing: the game's pause menu, exactly as START (the `pcmenu_start` patch answers START where the game asks for it);
+- on the pause list: START (Keep Playing, as START does there); on a page below it (Data Access, a yes / no question):
+  Triangle (back, as the game's own prompts say). The keys are pressed for the game as pad buttons for 2 of its pad reads
+  (`pcmenu_pad`, called by window.c `window_get_input`);
+- the title screen: its menu (New Game... / Load Game... / Options / Quit to Desktop), opened exactly as SELECT opens it -
+  the patch `pcmenu_title` (f_001DD920 before its START check at 0x1DD964) records that the title is up and calls the
+  game's f_001B04E0(0) when Esc asked for it; on that menu Esc is Triangle (back);
+- where the game has no menu to show (movies, loading) the Options menu opens directly after 0.6 s, so the settings and
+  Quit to Desktop are always reachable;
+- the pause / title menu's **Options** opens ours; Back / Esc / Circle on a main page closes it - back to the game's menu;
+  Esc there again resumes the game. Other game screens (Job Help) take Esc as START, as the game takes START there.
+Verified in headless runs (build\warp\flow, title, jobhelp, after): Esc -> pause, down x5 + Cross -> Options, Back -> the
+pause menu with Options highlighted, Esc -> playing; title Esc -> its menu, Options -> ours, Back -> its menu, Esc ->
+the title; on the Data Access question Esc -> back to the slots.
+
+**How it is drawn** (runtime/sly_font.c, menu_draw.c, menu_overlay.c). Options considered: (a) draw inside the game's 2D
+system (its scenes, text objects, render priority 21) through hooks; (b) a runtime overlay with the game's own font. (b) is
+the one built, because the game's 2D is drawn only with the game's own frames (55-60 per second, through the frame
+queue and the internal scale) - the menu could never follow the mouse at the display's refresh nor be sharper than the
+internal scale - and every new widget would need scene data the game does not have; (b) keeps the menu independent of
+the game's state (title, loading, movies) and of the renderer.
+- **The game's font from the disc, at run time.** Sly 2's font is a vector font: one object in the level data (EE RAM, e.g.
+  0x0076CAC0 in the ep2 hub): +0x20 count (224: Windows-1252 0x20..0xFF), +0x24 the sorted character table, +0x14 the
+  glyphs (0x40 bytes; table entry i's glyph at +0x40 * (i + 1); f_00216B40), +0x1C the advances (f_00216B80). A glyph's
+  +0x1C is a DMA chain (CNT .. RET) of VIF codes for the 2D VU1 program (vuc_188055835, MSCAL 40), which f_00217058 CALLs:
+  STROW 0; V2-32 @7 the segment count; STCYCL 2,1; V3-8 @8 per segment (kind, vertices, flag); V4-8 @9 colours (0,0,0,0x80;
+  alpha 0 for flagged ones); STCYCL 1,1; STMASK 0x50505050; V2-16 x, y per vertex (1/16 font unit, y up negative, the
+  baseline at 0); optionally STMASK 0x3F3F3F3F + V1-8 at the same address (w != 0: ADC, no triangle). The VU program draws
+  kind 1 as a triangle fan, kind 2 as a strip (GIF tags at VU 14..19, EE 0x4421A0), and the GS fills them stencil-then-cover:
+  each triangle adds +-2 to the green channel (FBMSK FFFF00FF, ALPHA (0 - Cs) * FIX + Cd), then sprites read the buffer
+  through a CLUT (nonzero winding). sly_font.c does the same on the CPU: fan triangles count with their orientation
+  (normalised so a segment adds, a flagged one - a counter - takes away), strip triangles +1 / -1; 4 x 4 samples per pixel
+  -> a 2048 x 1574 R8 coverage atlas at 2.5 pixels per font unit with 8 mip levels (~100-160 ms on a worker thread). Found
+  by scanning EE RAM for the object's shape once a second until it is there (1.5 ms per scan; the title has it); a damaged
+  or unknown packet is refused (the menu keeps a Windows stand-in, Segoe UI, until then). Nothing of the disc is stored in
+  the repository, the executable or on disk. Every glyph is correct, holes included (scratch renders of the whole font).
+- **The look**: the game's pause menu draws flat-coloured words of this font - the highlighted entry warm orange, the
+  others slate blue - over the darkened game; its Data Access pages use night-blue bands with an orange header. Ours: the
+  game picture darkened, a night-blue panel with a thin blue border, the title "OPTIONS" in the game's lettering in red
+  with a heavy black outline and drop shadow (as its comic headers), tabs and rows in the font (selected orange, others
+  slate / pale blue, disabled dim), a selection band in translucent orange with an orange marker that glides between rows,
+  arrows and sliders in the highlight orange (white knob), descriptions in a darker box, prompts with PlayStation / Xbox
+  symbols (drawn shapes: the font has no button glyphs) or key caps. Everything is sized in units of the output's height
+  (1 unit = 1 px at 1080 rows; narrower outputs shrink it): crisp from 720p to 4K at 16:9 and 4:3 (contact sheet 6, 8).
+- **Drawing**: menu_draw.c builds a list of primitives (rounded boxes with gradient and border, capsules, arrows, glyph
+  quads; a scissor rectangle for the scrolling list) for the output size; the Direct3D 11 presenters draw it in one batch
+  with a small shader (signed distances with a one-pixel ramp, the atlas sampled trilinearly, the title's outline by
+  dilation) at every present: no CPU picture, no upload but ~600 vertices. GDI and the unit tests rasterise the same list
+  on the CPU (menu_draw / ui_raster).
+
+**Responsiveness: why it was choppy, what changed** (measured on the owner's PC, release, headless, 2560 x 1440)
+- Root cause: every change of the picture (a hover, a selection, a value) redrew the whole menu on the CPU - signed
+  distance shapes over the full output and GDI text - inside the render thread's present: **78 ms at 1080p, 137 ms at 1440p,
+  417 ms at 4K per redraw** (old menu_draw.c, -O2), plus a 14.7 MB texture upload. Moving the mouse over the rows meant a
+  redraw for every row crossed: the menu updated ~7 times a second at 1440p and the paused game's pictures stalled behind
+  it. On top, the menu was only drawn with the game's pictures (55 per second on the 165 Hz monitor), the window thread
+  read the controllers / scripted events every 15 ms, the wheel moved the selection (the list jumped under the pointer),
+  and the pointer appeared only after the mouse moved (fullscreen).
+- Now: a picture costs 0.085-0.09 ms of CPU (PS2_MENU_STATS); while the menu is open the GPU renderer's render thread
+  presents the last game picture + the menu whenever the swap chain has room (gpu_present.c `gpu_present_menu`, polled
+  every 1 ms when idle: once per display refresh with frame latency 1), between the game's own pictures; the frame
+  statistics ignore that time (no VRR / pacing verdicts from menu presents). The software renderer's window presenter does
+  the same (window.c). Mouse and keys still wake the window thread at once; the hover uses the layout as shown (the
+  animated scroll); the wheel scrolls the list (3 rows a notch, fractions of a notch add up); sliders and the scroll bar
+  follow the mouse while the left button is held (SetCapture); the list scrolls and the selection band glides with a
+  60 ms time constant; the pointer shows / hides at once when the menu opens / closes.
+- Measured: input -> the picture that shows it: **before** 13-22 ms + 78-417 ms of redraw (one picture per game frame);
+  **after**, game cadence only (a 60 Hz display): 60 pictures/s, avg 13-19 ms, max 22 ms (the game's frame queue); with
+  menu presents at a (headless-simulated, PS2_MENU_SIM_HZ=165) 165 Hz display: 224 pictures/s (165 menu + 60 game), avg
+  2.3-3.3 ms, max 6.4 ms - one refresh.
+- Tools: `PS2_MENU_STATS=1` (every 2 s: pictures/s, input -> picture avg / max, CPU per picture), `PS2_MENU_SIM_HZ=<Hz>`
+  (headless: menu pictures into the offscreen target at that rate), `PS2_MENU_FONT=system` (the stand-in font).
+
+**Not done**: the game's menu sounds (move / select / back) are played by its scenes' timelines (f_002121E8 checks scene
+labels such as 0x314, 0x331, 0x332), not by a call that could be made from outside without its scene objects; the menu is
+silent. Button prompts are drawn shapes (the font has no PlayStation symbols; the game's prompt icons are scene art).
 
 ## One menu (pc-polish, 2026-10-23): how the game's menus and ours fit together
 
@@ -74,8 +158,8 @@ Our camera inversion rows (right stick) stay: the game's two inversions are diff
     (0xFF240), 0x47 "Save and Quit to Title" (0xFF280, with the PC wording on).
   - `pcmenu_select` (f_001AEEE0 before 0x1AF154, Cross, `$s0` = the entry): 0x10000 opens the menu, 0x10001 the quit
     question; the game's pause menu stays open, idle, underneath.
-- **Esc** (keyboard) and the **PS button** open it from anywhere: as before (`pcmenu_start`: the game pauses as with
-  START, the menu opens when the pause menu is idle; where the game cannot pause it opens after 0.5 s).
+- **Esc** (keyboard) and the **PS button**: (pc-menu2) the game's own pause / title menu (section "pc-menu2" above); our
+  menu opens directly only where the game has no menu to show (after 0.6 s).
 - **Closing** (Esc / Circle / B on a main page, Options / PS button anywhere) returns to the game's pause menu; with
   staged changes it asks first ("Apply the changed settings?" Apply / Discard).
 - Pause signal: page depth `*(s32*)0x3D9EF4 >= 1` and page 1's entry list `*(u32*)0x3D9EFC == 0xFF000`, state
@@ -156,8 +240,8 @@ Presets: **Original** = Original PS2, Faithful, PS2 outlines, 4:3; **Performance
 
 ## How it is drawn
 
-As before (runtime/menu_draw.c on the CPU at the output's size, Segoe UI through GDI; runtime/menu_overlay.c puts it on
-the screen for every presenter). The title is "OPTIONS". Dialogs (`draw_dialog`): a title, an optional line, two buttons
+(pc-menu2: see "How it is drawn" in the pc-menu2 section; the old CPU / GDI drawing is gone.) The title is "OPTIONS".
+Dialogs (`draw_dialog`): a title, an optional line, two buttons
 with the device's hints (Enter / Esc, Cross / Circle, A / B); with `dialog_only` (Quit from the game's menus or the close
 button) only the dimmed game and the dialog are drawn.
 
