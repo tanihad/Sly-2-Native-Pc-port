@@ -98,8 +98,18 @@ void probe_rec(uint kind, uint rb, uint state, int U, int V, uint t, uint col, u
 #endif
 
 // ---- vertex shaders --------------------------------------------------------------------------------
+// (pc-research) FF pixel shaders writing exact Z as a conservative SV_DepthLessEqual: the vertex shaders give an upper
+// bound of the fragment's Z as the rasterized depth, so hidden fragments are rejected before the shader runs
+#if defined(FF) && defined(ZOUT) && PRIM != 3
+#if FF && ZOUT
+#define ZPOS_MOD noperspective centroid
+#endif
+#endif
+#ifndef ZPOS_MOD
+#define ZPOS_MOD
+#endif
 struct VR {
-    float4 pos : SV_Position;
+    ZPOS_MOD float4 pos : SV_Position;
     nointerpolation uint rec : REC;      // record byte offset (sprites, line pixels)
     nointerpolation uint did : DID;      // (M9) the draw's slot (load_draw)
 };
@@ -114,6 +124,7 @@ struct VIn {
     uint rgba : COLOR0;
     uint fog_state : COLOR1;
     float3 stq : TEXCOORD0;
+    uint zv : TEXCOORD1;                 // (pc-research) the vertex's Z
     uint did : DRAWID;                   // (M9) the draw's slot: per-instance element, StartInstanceLocation
 };
 
@@ -145,6 +156,7 @@ VR vs_ref_sprite(VIn vin, uint vid : SV_VertexID, uint inst : SV_InstanceID) {
     float x1 = (float)((int)(r.y << 16) >> 16), y1 = (float)((int)r.y >> 16);
     VR o;
     o.pos = clip_of(single_rate_pos((vid & 1u) ? x1 : x0, (vid & 2u) ? y1 : y0));
+    o.pos.z = gs_z_encode(recs.Load(base + 12u));   // (pc-research) the sprite's constant Z
     o.rec = base;
     o.did = did;
     return o;
@@ -160,6 +172,7 @@ VR vs_ref_linepix(VIn vin, uint vid : SV_VertexID, uint inst : SV_InstanceID) {
     float px = (float)((int)(r << 16) >> 16), py = (float)((int)r >> 16);
     VR o;
     o.pos = clip_of(single_rate_pos(px + ((vid & 1u) ? 1.0 : 0.0), py + ((vid & 2u) ? 1.0 : 0.0)));
+    o.pos.z = gs_z_encode(recs.Load(base + 4u));    // (pc-research) the pixel's Z
     o.rec = base;
     o.did = did;
     return o;
@@ -193,7 +206,7 @@ VR vs_ref_thin(VIn vin, uint vid : SV_VertexID, uint inst : SV_InstanceID) {
 // FF triangles (M5): the same position as vs_ref_tri (identical coverage), plus S/T/Q for the fast
 // perspective path (interpolated linearly in screen space, as the GS steps them)
 struct VF {
-    float4 pos : SV_Position;
+    ZPOS_MOD float4 pos : SV_Position;
     nointerpolation uint rec : REC;
     noperspective float3 stq : TEXCOORD0;
     nointerpolation uint did : DID;      // (M9) the draw's slot
@@ -204,6 +217,7 @@ VF vs_ff_tri(VIn i) {
     VF o;
     o.did = i.did;
     o.pos = clip_of(float2(i.xy.x * (float)kx + 0.5, i.xy.y * (float)ky + 0.5));
+    o.pos.z = gs_z_encode(min(i.zv, 0x000FFFFFu - 64u) + 64u);   // (pc-research) upper bound of the plane's Z
     o.rec = 0u;
     o.stq = i.stq;
     return o;
@@ -1011,7 +1025,9 @@ struct FOut {
 #if DUAL
     float4 c1 : SV_Target1;
 #endif
-#if ZOUT
+#if ZOUT && PRIM != 3
+    float z : SV_DepthLessEqual;         // (pc-research) <= the rasterized bound: early depth rejection stays on
+#elif ZOUT
     float z : SV_Depth;
 #endif
 };

@@ -1055,9 +1055,7 @@ static void exec_clear(const gpu_fop_clear* o) {
     if (o->zclear && X.mixed && t->zts) {
         uint32_t zv = (uint32_t)o->value & (zbits_of(t) == 1 ? 0xFFFFu : zbits_of(t) == 2 ? 0xFFFFFFu : 0xFFFFFFFFu);
         if (full) {
-            float zf;
-            uint32_t enc = zv + 0x00800000u;
-            memcpy(&zf, &enc, 4);
+            float zf = (float)(zv > 0x000FFFFFu ? 0x000FFFFFu : zv) * (1.0f / 1048576.0f);   /* (pc-research: z / 2^20) */
             ID3D11DeviceContext_ClearDepthStencilView(gpu_rt.ctx, t->dsv, D3D11_CLEAR_DEPTH, zf, 0);
         } else {
             int b[4] = { 0, 0, x1 - 1, y1 - 1 };
@@ -1662,13 +1660,14 @@ static int exec_init(void) {
         { "COLOR", 0, DXGI_FORMAT_R32_UINT, 0, 8, D3D11_INPUT_PER_VERTEX_DATA, 0 },
         { "COLOR", 1, DXGI_FORMAT_R32_UINT, 0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0 },
         { "TEXCOORD", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 16, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 1, DXGI_FORMAT_R32_UINT, 0, 28, D3D11_INPUT_PER_VERTEX_DATA, 0 },   /* (pc-research: vertex Z, early depth bound) */
         /* (M9) the draw's slot: element StartInstanceLocation + instance of the iota buffer (the vertex shaders of the
          * instanced classes - sprites, line pixels - subtract SV_InstanceID; a larger step rate was not divided the
          * documented way on the RTX 4060 Ti) */
         { "DRAWID", 0, DXGI_FORMAT_R32_UINT, 1, 0, D3D11_INPUT_PER_INSTANCE_DATA, 1 },
     };
     const gpu_shader_blob* vb = &gpu_shaders[GPU_SH_vs_ff_tri];   /* (the input signature with DRAWID) */
-    if (FAILED(ID3D11Device_CreateInputLayout(gpu_rt.dev, el, 5, vb->code, vb->size, &X.layout))) { gpu_log("input layout failed"); return 0; }
+    if (FAILED(ID3D11Device_CreateInputLayout(gpu_rt.dev, el, 6, vb->code, vb->size, &X.layout))) { gpu_log("input layout failed"); return 0; }
     if (!iota_ensure(65536)) return 0;
     {
         D3D11_FEATURE_DATA_D3D11_OPTIONS fo;

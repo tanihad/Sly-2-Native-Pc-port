@@ -143,6 +143,56 @@ int main(int argc, char** argv) {
 
     vu_set_vif_tops(0, 0, 0);                                 /* initialises both units */
     vu_set_vif_tops(1, 0, 0);
+
+    /* (pc-research) VU_REPLAY_LIVEIN=1: does a program's output depend on the registers it inherits from earlier programs
+     * (VF1-31, ACC, VI1-15, I/Q/P), or only on VU memory? Each program runs twice - as recorded and with those registers
+     * scrambled - and the data memory (where its GIF packets are built) and the XGKICK addresses are compared. Programs
+     * whose output does not depend on inherited registers can run on any thread given their memory. */
+    if (getenv("VU_REPLAY_LIVEIN")) {
+        const unsigned csr0 = _mm_getcsr();
+        uint32_t dep = 0, dep_kick = 0;
+        uint64_t pairs_dep = 0, pairs_all = 0;
+        static uint8_t mem_a[16384];
+        const uint8_t* loaded[2] = { NULL, NULL };
+        const int compiled_l = argc > 3 && !strcmp(argv[3], "compiled");
+        for (size_t i = 0; i < n; i++) {
+            const rec* r = &recs[i];
+            const int u = (int)r->h->idx;
+            vu_state* st = &vu_st[u];
+            if (loaded[u] != r->micro) { memcpy(vu_micro_mem(u), r->micro, (st->pcmask + 1) * 8u); loaded[u] = r->micro; }
+            uint64_t kh[2];
+            uint32_t np = 0, np0 = 0;
+            for (int pass = 0; pass < 2; pass++) {
+                load_state(st, r);
+                if (pass) {
+                    uint32_t s = 0x9E3779B9u ^ (uint32_t)i;
+                    for (int k = 1; k < 32; k++)
+                        for (int c = 0; c < 4; c++) { s = s * 1664525u + 1013904223u; st->vf[k].u[c] = (s >> 1) & 0x3FFFFFFFu; }
+                    for (int k = 1; k < 16; k++) { s = s * 1664525u + 1013904223u; st->vi[k] = (uint16_t)(s >> 8); }
+                    memcpy(&st->acc, &st->vf[7], sizeof st->acc);
+                    s = s * 1664525u + 1013904223u;
+                    st->I = s >> 2; st->Q = s >> 3; st->P = s >> 4;
+                }
+                khash = VU_HASH_SEED;
+                kicks = 0;
+                _mm_setcsr(VU_MXCSR);
+                np = compiled_l ? vu_execute(st, r->h->addr) : vu_run(st, r->h->addr);
+                _mm_setcsr(csr0);
+                kh[pass] = khash;
+                if (!pass) { memcpy(mem_a, st->data, r->h->data_size); np0 = np; }
+                else {
+                    int md = memcmp(mem_a, st->data, r->h->data_size) != 0, kd = kh[0] != kh[1];
+                    if (md || kd) { dep++; pairs_dep += np0; }
+                    if (kd) dep_kick++;
+                }
+            }
+            pairs_all += np0;
+        }
+        printf("live-in test: %zu programs, %u (%.1f%%) depend on inherited registers (%u in their XGKICK addresses/cycles); "
+               "%.1f%% of pairs\n", n, dep, 100.0 * dep / (double)n, dep_kick,
+               100.0 * (double)pairs_dep / (double)(pairs_all ? pairs_all : 1));
+        return 0;
+    }
     /* VU_REPLAY_CPU=<n>: run on that logical processor at high priority (benchmarks on a hybrid CPU:
      * pick a P-core; 0-15 on the i7-14700F) */
     const char* cpu = getenv("VU_REPLAY_CPU");

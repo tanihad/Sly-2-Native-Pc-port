@@ -1677,7 +1677,7 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
         if (!gf.zprims[f] || zl < gf.zmin[f]) gf.zmin[f] = zl;
         if (!gf.zprims[f] || zh > gf.zmax[f]) gf.zmax[f] = zh;
         gf.zprims[f]++;
-        if (f == GPU_ZF_32 && zh > 0x3F000000u) { z32_high = 1; gf.z32_over++; if (S.zt) S.zt->z_high = 1; }
+        if (f == GPU_ZF_32 && zh > 0x000FFFFFu) { z32_high = 1; gf.z32_over++; if (S.zt) S.zt->z_high = 1; }
     }
 
     PROF_MARK(2);
