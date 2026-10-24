@@ -269,6 +269,53 @@ static void test_migration(void) {
     settings_load();
 }
 
+/* (pc-menu2) the new launch defaults: borderless; older files move to it unless the player chose otherwise */
+static void test_defaults_migration(void) {
+    ps2_settings_t s;
+    settings_defaults(&s);
+    CHECK(s.win_fullscreen == SETTINGS_FULLSCREEN_BORDERLESS && s.frame_rate == 60 && s.pacing == SETTINGS_PACING_AUTO,
+          "defaults: borderless, 60 fps, pacing auto (%d %d %d)", s.win_fullscreen, s.frame_rate, s.pacing);
+    static char tmpl[8192], out[16384];
+    settings_format(&s, tmpl, sizeof tmpl);
+    CHECK(strstr(tmpl, "mode = borderless\n") && strstr(tmpl, "[settings]") && strstr(tmpl, "version = 2\n"), "the template:\n%s", tmpl);
+    CHECK(settings_migrate_defaults(tmpl, out, sizeof out) == 0, "a new file needs nothing");
+    /* an old file with the old defaults: windowed -> borderless, version 2, everything else kept */
+    const char* old = "; mine\r\n[display]\r\nmode = windowed ; old default\r\nframe_rate = 60\r\n[graphics]\r\npacing = auto\r\n";
+    int n = settings_migrate_defaults(old, out, sizeof out);
+    CHECK(n > 0 && strstr(out, "; mine\r\n") && strstr(out, "mode = borderless") && strstr(out, "; old default\r\n") && strstr(out, "frame_rate = 60\r\n") &&
+          strstr(out, "pacing = auto\r\n") && strstr(out, "[settings]\r\nversion = 2\r\n"), "old defaults migrated (%d):\n%s", n, out);
+    CHECK(settings_migrate_defaults(out, out + 8192, 8192) == 0, "once");
+    /* the player chose windowed: kept */
+    const char* chosen = "[display]\r\nmode = windowed\r\n[chosen]\r\ndisplay.mode = on\r\n";
+    n = settings_migrate_defaults(chosen, out, sizeof out);
+    CHECK(n > 0 && strstr(out, "mode = windowed\r\n") && strstr(out, "version = 2"), "a chosen value stays:\n%s", out);
+    CHECK(settings_chosen_in(chosen, "display", "mode") && !settings_chosen_in(chosen, "display", "frame_rate"), "[chosen] read");
+    /* fullscreen / 120 fps in an old file: not defaults, kept */
+    n = settings_migrate_defaults("[display]\nmode = fullscreen\nframe_rate = 120\n", out, sizeof out);
+    CHECK(n > 0 && strstr(out, "mode = fullscreen\n") && strstr(out, "frame_rate = 120\n"), "non-default values stay:\n%s", out);
+    /* a file without a mode line (the oldest): borderless */
+    n = settings_migrate_defaults("[display]\naspect = 4:3\n", out, sizeof out);
+    settings_defaults(&s);
+    settings_parse(out, &s, NULL, NULL);
+    CHECK(n > 0 && s.win_fullscreen == SETTINGS_FULLSCREEN_BORDERLESS && s.aspect_w == 4 && s.ini_version == 2, "no mode line: borderless\n%s", out);
+    /* on load, and the menu records the player's choice */
+    wchar_t ini[MAX_PATH + 80];
+    settings_user_path(L"sly2.ini", ini, MAX_PATH + 80);
+    FILE* f = _wfopen(ini, L"wb");
+    fputs("[display]\r\nmode = windowed\r\n", f);
+    fclose(f);
+    settings_load();
+    char* t = read_file(ini);
+    CHECK(ps2_settings.win_fullscreen == SETTINGS_FULLSCREEN_BORDERLESS && t && strstr(t, "mode = borderless") && strstr(t, "version = 2"),
+          "settings_load moves an old file to the new defaults:\n%s", t ? t : "");
+    m_change("display", "frame_rate", 120);
+    t = read_file(ini);
+    CHECK(t && strstr(t, "[chosen]") && strstr(t, "display.frame_rate = on"), "a menu change is recorded as chosen:\n%s", t ? t : "");
+    m_change("display", "frame_rate", 60);
+    DeleteFileW(ini);
+    settings_load();
+}
+
 static void test_persist(void) {
     wchar_t ini[MAX_PATH + 80];
     settings_user_path(L"sly2.ini", ini, MAX_PATH + 80);
@@ -399,7 +446,8 @@ static void test_menu_nav(void) {
     menu_nav_event(MENU_NAV_RIGHT, MENU_DEV_KEYBOARD);
     menu_nav_event(MENU_NAV_RIGHT, MENU_DEV_KEYBOARD);
     CHECK(ps2_settings.aspect_w == 16 && ps2_settings.aspect_h == 9, "back to 16:9");
-    /* resolution (windowed: the window size), staged */
+    /* resolution (windowed: the window size), staged - (pc-menu2: borderless is the default now; these steps start windowed) */
+    ps2_settings.win_fullscreen = SETTINGS_FULLSCREEN_OFF;
     go(MENU_ROW_RESOLUTION);
     view();
     CHECK(V.rows[V.sel].enabled && V.rows[V.sel].cur < 0 && !strcmp(V.rows[V.sel].value, "2560 x 1440") && !strcmp(V.rows[V.sel].label, "Resolution"),
@@ -735,6 +783,7 @@ int main(int argc, char** argv) {
     test_presets();
     test_render_scale();
     test_migration();
+    test_defaults_migration();
     test_persist();
     test_menu_nav();
     test_draw();

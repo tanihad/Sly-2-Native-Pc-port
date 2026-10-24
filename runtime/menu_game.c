@@ -484,7 +484,7 @@ static void display_applier(int option) {
 static int h_gpu_active(void) { return ps2_gpu_started() && gpu_hw_active && gpu_hw_active(); }
 static int h_auto_now(void) { return gpu_hw_auto_scale ? gpu_hw_auto_scale() : 0; }
 static int h_in_game(void) { return ee_applied; }
-static void h_set_mode(int m) { settings_change_key("display", "mode", m, 1); }
+static void h_set_mode(int m) { settings_change_key("display", "mode", m, 1); settings_mark_chosen(settings_find("display", "mode")); }
 
 void menu_game_init(int headless) {
     menu_host h;

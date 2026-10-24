@@ -1369,7 +1369,7 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         break;
     case WM_SYSKEYDOWN:
         if (wp == VK_RETURN && (lp & (1 << 29))) {                /* Alt+Enter */
-            if (!(lp & (1 << 30))) toggle_fullscreen(hwnd);       /* not on auto-repeat */
+            if (!(lp & (1 << 30))) { toggle_fullscreen(hwnd); settings_mark_chosen(settings_find("display", "mode")); }   /* not on auto-repeat; (pc-menu2) the player's choice */
             return 0;
         }
         break;                           /* Alt+F4 etc.: default handling */
@@ -1380,7 +1380,7 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         /* (Esc no longer leaves fullscreen: it opens the Options menu - runtime/input.c INPUT_NAV_MENU) */
-        if (wp == VK_F11 && !(lp & (1 << 30))) toggle_fullscreen(hwnd);
+        if (wp == VK_F11 && !(lp & (1 << 30))) { toggle_fullscreen(hwnd); settings_mark_chosen(settings_find("display", "mode")); }
         else if (wp == VK_F7 && !(lp & (1 << 30))) switch_aspect();
         else if (wp == VK_F8 && !(lp & (1 << 30))) switch_hud();
         else if (wp >= VK_F2 && wp <= VK_F6 && !(lp & (1 << 30)))   /* graphics settings (gfx.h), remembered in sly2.ini */

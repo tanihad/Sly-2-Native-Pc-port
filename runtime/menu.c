@@ -98,7 +98,12 @@ static void discard_pending(void) { memset(st.pend_has, 0, sizeof st.pend_has); 
 
 static int m_opt(const char* section, const char* key) { return settings_find(section, key); }
 static int m_get(const char* section, const char* key) { return settings_get(&ps2_settings, m_opt(section, key)); }
-static int m_change(const char* section, const char* key, int v) { return settings_change(m_opt(section, key), v, 1); }
+/* (pc-menu2) every change made in the menu is the player's choice: recorded in [chosen] (new defaults never override it) */
+static int m_change(const char* section, const char* key, int v) {
+    int i = m_opt(section, key), ok = settings_change(i, v, 1);
+    if (ok) settings_mark_chosen(i);
+    return ok;
+}
 
 /* the internal resolution's real size at scale n: rows 448 n; columns 512 n at 4:3, at a wider aspect
  * 512 round(n W) (W = aspect / (4/3): the anamorphic display buffers, notes/widescreen.md) from 2x on */
@@ -278,7 +283,7 @@ static void build_choices(int id, choices* c) {
         add(c, SETTINGS_PACING_AUTO, "Automatic");
         add(c, SETTINGS_PACING_PACED, "Even (G-Sync / FreeSync)");
         add(c, SETTINGS_PACING_IMMEDIATE, "Lowest latency");
-        add(c, SETTINGS_PACING_DISPLAY, "Display-synced (60 / 120 Hz)");
+        add(c, SETTINGS_PACING_DISPLAY, "Match display");
         if (ps2_settings.pacing == SETTINGS_PACING_VRR) add(c, SETTINGS_PACING_VRR, "Even, tearing allowed (old setting)");
         break;
     case MENU_ROW_FRAME_RATE: {          /* (pc-fps: frame_rate.h) */
@@ -660,8 +665,8 @@ static int build_rows(int page, menu_row* rows) {
                    "the game's speed stays the same. Movies stay at 60. Not every PC reaches every rate in every scene.");
         env_note(last(rows, n), "display", "frame_rate");
         choice_row(rows, &n, MENU_ROW_PACING, "Frame pacing",
-                   "Automatic: even on G-Sync / FreeSync displays, lowest latency on others, the display's own rhythm on 60 / 120 Hz. "
-                   "Even: every picture 16.7 ms after the last. Lowest latency: each picture as soon as it is drawn.");
+                   "Automatic: 60 fps, even on G-Sync / FreeSync displays. Match display: the smoothest without G-Sync / FreeSync - "
+                   "every picture the same number of refreshes (e.g. 55 fps on 165 Hz). Lowest latency: each picture as soon as drawn.");
         r = last(rows, n);
         if (!gpu) disable(r, gpu_only);
         else if (!pacing_apply_mode(-1)) snprintf(r->note, sizeof r->note, "Applies at the next start");
