@@ -90,6 +90,7 @@ void menu_keep_tick(void);
 
 /* ---- state ---- */
 void menu_open(void);
+void menu_open_page(int page);           /* (pc-small) open on a main page (MENU_PAGE_*) */
 void menu_close(void);
 int  menu_is_open(void);
 /* a navigation event from a device (dev: MENU_DEV_*, the button hints follow it); 1 if the menu used it */

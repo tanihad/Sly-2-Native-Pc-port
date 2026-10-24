@@ -25,7 +25,7 @@ $gen = Join-Path $root 'build\gen'
 if ($LASTEXITCODE -ne 0) { Write-Host 'shader build failed'; exit 1 }
 
 $rt = Join-Path $root 'runtime'
-$common = @('gs.c', 'gs_draw.c', 'gs_draw_pixel.c', 'gs_draw_tex.c', 'gs_draw_swz.c', 'gs_setup.c', 'gs_thread.c', 'gs_record.c', 'debug.c') | ForEach-Object { Join-Path $rt $_ }
+$common = @('gs.c', 'gs_draw.c', 'gs_draw_pixel.c', 'gs_draw_tex.c', 'gs_draw_swz.c', 'gs_setup.c', 'gs_thread.c', 'gs_record.c', 'movie_layer.c', 'debug.c') | ForEach-Object { Join-Path $rt $_ }
 $common += @(Get-ChildItem $rt -Filter 'gs_mem*.c' | ForEach-Object { $_.FullName })
 $common += @(Get-ChildItem (Join-Path $rt 'gpu') -Filter '*.c' | ForEach-Object { $_.FullName })
 if (-not $RefOnly) {

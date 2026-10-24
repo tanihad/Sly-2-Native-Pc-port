@@ -22,6 +22,7 @@
 #include "perf.h"
 #include "gfx_async.h"
 #include "gif_parse.h"
+#include "movie_layer.h"
 
 #include <stdatomic.h>
 #include <stdlib.h>
@@ -278,6 +279,7 @@ static void picture_run(void* arg) {
 
 static void vblank_picture(const slot* s) {
     if (perf_burn_hook) perf_burn_hook(1);         /* PS2_PERF_BURN_GS headroom test */
+    movie_gs_vblank(s->len);                       /* (pc-small) the decoded movie picture for this VBlank, if any */
     gs_vblank_hook_fn hook = vblank_hook;
     if (hook) {                                    /* GPU backend: it composes and presents (picture_done later) */
         static gs_display_snap snap;

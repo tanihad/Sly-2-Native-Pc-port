@@ -309,6 +309,7 @@ void ps2_hook(ps2_ctx* ctx, uint32_t addr);
 #include "gfx.h"
 #include "pc_text.h"   /* PC wording, boot without the save prompt (runtime/pc_text.c) */
 #include "frame_rate.h"                  /* (pc-fps) the frame rate: the game clock's dt clamp, the frame limiter */
+#include "movie_layer.h"                 /* (pc-small) movies from their decoded picture */
 #include "menu_game.h"                   /* (pc-menu) the pause menu's "PC Settings" entry, the game's volumes */
 
 /* ---- interrupts: set asynchronously by host timers, serviced at loop heads -------------------- */

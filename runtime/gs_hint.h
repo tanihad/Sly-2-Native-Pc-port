@@ -27,7 +27,12 @@
  *               is drawn between the primitives around it). Used after a full-screen 4:3 overlay
  *               (the Binocucom frame) so it covers the wide picture like a pillarbox in its colour.
  *
- * See notes/widescreen.md; the GPU renderer's contract is notes/d3d11-renderer.md section 8.3. */
+ *   MOVIE_BEGIN / MOVIE_END
+ *               (pc-small) the movie player runs: the GS thread copies the movie sprite's source picture
+ *               for the presenters (movie_layer.h); drawing is unchanged. Sent at every aspect
+ *               (PS2_MOVIE_LAYER=0: never).
+ *
+ * See notes/widescreen.md, notes/movies.md; the GPU renderer's contract is notes/d3d11-renderer.md section 8.3. */
 #pragma once
 #include <stdint.h>
 
@@ -40,6 +45,8 @@ enum {
     GS_HINT_ASPECT_4_3_END = 4,
     GS_HINT_PHASE = 5,
     GS_HINT_SIDE_FILL = 6,
+    GS_HINT_MOVIE_BEGIN = 7,
+    GS_HINT_MOVIE_END = 8,
 };
 
 enum { GS_HINT_ANCHOR_L = 0, GS_HINT_ANCHOR_C = 1, GS_HINT_ANCHOR_R = 2 };

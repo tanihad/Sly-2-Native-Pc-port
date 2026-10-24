@@ -1001,6 +1001,16 @@ void menu_open(void) {
     UNLOCK();
 }
 
+/* (pc-small) open on a main page (the pause menu's "Controls..." -> Controls) */
+void menu_open_page(int page) {
+    if (page >= 0 && page < MENU_PAGE_N) {
+        LOCK();
+        if (!st.open) set_page(page);
+        UNLOCK();
+    }
+    menu_open();
+}
+
 int menu_quit_request(void) {
     LOCK();
     if (!st.open) {
