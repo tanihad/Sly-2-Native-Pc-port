@@ -102,6 +102,11 @@ The owner: "there is no way to quit the game, also what's the use of the old pau
 menu keeps what only the game can do (its save system, job help, episode menu); everything that is a *setting* lives in
 one place, our Options; nothing is duplicated and no PS2-only item is left.
 
+**Controls...** (pc-small): the pause menu's entry (text 0x43, callback 0x1B0740 = the game's controller diagram
+pages "Controller: Sly" ...) is copied without callbacks by `pcmenu_pause_list`; `pcmenu_select` opens our Options on
+the Controls page (`menu_open_page`), Back returns to the pause menu (notes/pc-menu2/controls_before_after.jpg). The
+title menu has no Controls entry. The game's diagram (which button does what per character) is no longer reachable.
+
 **Pause menu** ("WE'LL BE RIGHT BACK!", the game's own wheel, its own font):
 Keep Playing / Save and Quit to Title / [Exit to Episode Menu] / [Abandon Job] / **Save Game...** / **Load Game...** /
 **Options** / [Controls...] / [Job Help] / **Quit to Desktop** ([..]: shown where the game shows them).

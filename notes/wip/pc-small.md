@@ -1,18 +1,17 @@
 # pc-small (checkpoint)
 
-**Goal**: (1) movies shown from the decoded 640x480 picture (high-quality upscale, 4:3) instead of the 512x224-per-field
-GS path; (2) the pause menu's "Controls..." opens our Options on the Controls page.
-
-## Design (decided)
-- Movie layer, renderer-agnostic, on the GS thread: patches at the movie player's entry/return emit hints
-  MOVIE_BEGIN/END (gs_hint.h); gs_draw.c draw_prim tells runtime/movie_layer.c about each primitive while a movie plays;
-  the movie sprite (textured CT32 sprite) snapshots its texture from gs_vram (640x480) into a ring slot; anything else
-  drawn into the picture -> no layer for that VBlank (fallback = the GS picture). VBlank -> slot table; presenters
-  (gpu_present.c present_fit, sw presenter) look the picture's vblank up and draw the slot with the resampler.
-- Controls: pcmenu_pause_list replaces entry 0x43 with a callback-free copy; pcmenu_select opens menu on Controls page.
+**Goal**: (1) movies shown from the decoded 640x480 picture; (2) pause "Controls..." opens our Controls page.
 
 ## Done
-- debug build works in worktree (build\sly2, 47 s).
+- runtime/movie_layer.c/.h, hints 7/8, gs_draw.c movie_prim, gs_thread.c vblank, gpu_present.c present_resample,
+  ps2_runtime.c present_frame, patches movie_layer_begin/_end; test lists (gs-draw/front/hw, gs_replay, gs_post_probe).
+- Verified headless: legal intro + Prelude 0 fallbacks; crops notes/movies/prelude_before_after.jpg.
+- Controls: menu_game.c + menu_open_page; verified (notes/pc-menu2/controls_before_after.jpg).
+- Docs: notes/movies.md, pc-menu.md.
 
 ## Next
-- implement movie_layer.c + hooks; controls entry; headless verify; gates.
+- gates (build\small\gates.ps1), commit, report.
+
+## Findings
+- Movie sprite UVs 0.5..640.5 x 0.5..480.5 (texel centres); rect snapped to macroblocks.
+- Start-Job inherits the parent's env: M9_GAME_EXE leaked into the "after" run once (ran main's exe).
