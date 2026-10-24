@@ -617,6 +617,106 @@ static void t_ztest(int zpsm) {
     test_reg(0, 1, 0, 0, 0, 0, 1, 1);
 }
 
+/* (P1, notes/d3d11-renderer.md appendix P) Z values at the limits of the GPU renderer's depth encoding (exact up to 2^20 in
+ * the DSV, saturated above; FF fragments always below it): stored values above 2^20 from a clear and from an upload, FF
+ * ties against values next to 2^20, Z24 / Z32 primitives above the FF range (ROV tier, zpatch as depth until a full
+ * clear), Z16 vertices above 0xFFFF and steep planes (no early-depth bound). The checks are the software renderer's;
+ * under TEST_HW_REF every read also compares the GPU's memory (Z words exact). */
+static void ztri(uint32_t z0, uint32_t z1, uint32_t z2, int r, int g, int b) {
+    prim(P_TRI, 0);
+    rgba(r, g, b, 0x80);
+    xyz(20, 20, z0); xyz(300, 20, z1); xyz(20, 300, z2);
+}
+static void t_zlimits(int zpsm) {
+    reset_env();
+    clear(0, 0, 0, 0);
+    uint32_t zbp = 160, zmax = zpsm == PSMZ32 ? 0xFFFFFFFFu : zpsm == PSMZ24 ? 0xFFFFFFu : 0xFFFFu;
+    int z16 = zpsm != PSMZ32 && zpsm != PSMZ24;
+    const uint32_t ONE = 0x100000u, FFMAX = ONE - 512u;       /* gpu_front.h GPU_ZE_ONE, GPU_Z_FF_MAX */
+    zbuf(zbp, zpsm, 0);
+    /* a full clear to the format's maximum (above 2^20 for Z24 / Z32: saturated in the DSV) */
+    test_reg(0, 1, 0, 0, 0, 0, 1, 1);
+    prim(P_SPRITE, 0); rgba(0, 0, 0, 0); xyz(0, 0, zmax); xyz(640, 448, zmax);
+    test_reg(0, 1, 0, 0, 0, 0, 1, 2);    /* GEQUAL */
+    uint32_t zn = z16 ? 0xFFFEu : FFMAX;
+    ztri(zn, zn, zn, 255, 0, 0);         /* below the stored maximum: fails */
+    CHECK(rgb(px(60, 60)) == 0, "Z %X: GEQUAL below the cleared maximum fails: %08X", zpsm, px(60, 60));
+    if (z16) {                           /* Z16: the stored 0xFFFF ties with a vertex Z above the format (clamped) */
+        ztri(0x30000, 0x30000, 0x30000, 0, 255, 0);
+        CHECK(rgb(px(60, 60)) == 0x00FF00, "Z %X: clamped 0x30000 ties with 0xFFFF: %08X", zpsm, px(60, 60));
+    }
+    /* back to 0, then an upload of Z words around 2^20 (Z24: garbage in the top byte), FF ties against them */
+    test_reg(0, 1, 0, 0, 0, 0, 1, 1);
+    prim(P_SPRITE, 0); rgba(0, 0, 0, 0); xyz(0, 0, 0); xyz(640, 448, 0);
+    clear(0, 0, 0, 0);
+    zbuf(zbp, zpsm, 0);
+    static const uint32_t vals[8] = { 0x000FFDFF, 0x000FFE00, 0x000FFFFF, 0x00100000, 0x00100001, 0x00FFFFFF, 0x7F5C3, 0xFFFFFFFF };
+    uint32_t img32[64 * 16];
+    uint16_t img16[64 * 16];
+    for (int y = 0; y < 16; y++)
+        for (int x = 0; x < 64; x++) {
+            int k = (x >> 3) & 7;
+            uint32_t v = vals[k];
+            if (zpsm == PSMZ24) v = (v & 0xFFFFFFu) | (uint32_t)(0x5A + x) << 24;
+            img32[y * 64 + x] = v;
+            img16[y * 64 + x] = (uint16_t)(vals[k] > 0xFFFF ? 0xFFFF - (uint32_t)k : vals[k]);
+        }
+    if (z16) upload(zbp * 32, 10, zpsm, 64, 320, 64, 16, img16, sizeof img16);
+    else upload(zbp * 32, 10, PSMZ32, 64, 320, 64, 16, img32, sizeof img32);   /* (Z24: whole words, the Z32 layout; a
+                                                                                 PSMZ24 transfer packs 3 bytes) */
+    CHECK((gs_mem_read(zpsm, zbp * 32, 10, 64 + 3 * 8, 324) & zmax) == (z16 ? 0xFFFFu - 3 : 0x00100000u), "Z %X: uploaded: %X", zpsm,
+          gs_mem_read(zpsm, zbp * 32, 10, 64 + 3 * 8, 324));
+    /* GEQUAL sprites over the uploaded block at Z values next to the stored ones (ties exact, saturated values fail) */
+    test_reg(0, 1, 0, 0, 0, 0, 1, 2);
+    for (int k = 0; k < 8; k++) {
+        uint32_t sv = z16 ? (vals[k] > 0xFFFF ? 0xFFFF - (uint32_t)k : vals[k]) : vals[k] & zmax;
+        uint32_t fz = z16 ? sv : sv < FFMAX ? sv : FFMAX;        /* an FF fragment: <= GPU_Z_FF_MAX */
+        prim(P_TRI, 0);
+        rgba(10 + k, 20, 30, 0x80);
+        xyz(64 + 8 * k, 320, fz); xyz(64 + 8 * k + 8, 320, fz); xyz(64 + 8 * k, 336, fz);
+        xyz(64 + 8 * k + 8, 320, fz); xyz(64 + 8 * k + 8, 336, fz); xyz(64 + 8 * k, 336, fz);
+        int pass = fz >= sv;
+        CHECK((rgb(px(64 + 8 * k + 2, 324)) != 0) == pass, "Z %X: GEQUAL %X vs stored %X: %08X", zpsm, fz, sv, px(64 + 8 * k + 2, 324));
+    }
+    /* a steep plane (no early-depth bound) crossing a flat one, GEQUAL with Z writes */
+    test_reg(0, 1, 0, 0, 0, 0, 1, 1);
+    prim(P_SPRITE, 0); rgba(0, 0, 0, 0); xyz(400, 0, z16 ? 0x8000 : 0x40000); xyz(640, 200, z16 ? 0x8000 : 0x40000);
+    test_reg(0, 1, 0, 0, 0, 0, 1, 2);
+    prim(P_TRI, 0);
+    rgba(0, 0, 255, 0x80);
+    xyz(400, 10, 0); xyz(402, 10, z16 ? 0xFFFF : FFMAX); xyz(401, 190, z16 ? 0xFFFF : FFMAX);
+    xyz(410, 10, z16 ? 0xFFFF : FFMAX); xyz(411, 190, 0); xyz(412, 10, 0);
+    if (!z16) {
+        /* Z24 / Z32: a primitive above the FF range (ROV tier; the target's depth in zpatch until a full clear), then
+         * ties with it and FF-range primitives after it */
+        test_reg(0, 1, 0, 0, 0, 0, 1, 1);
+        ztri(0x00200000, 0x00200000, 0x00200000, 0, 0, 0);
+        test_reg(0, 1, 0, 0, 0, 0, 1, 2);
+        ztri(0x00200000, 0x00200000, 0x00200000, 0, 255, 0);
+        CHECK(rgb(px(60, 60)) == 0x00FF00, "Z %X: GEQUAL tie at 0x200000: %08X", zpsm, px(60, 60));
+        test_reg(0, 1, 0, 0, 0, 0, 1, 3);
+        ztri(0x00200000, 0x00200000, 0x00200000, 255, 0, 0);
+        CHECK(rgb(px(60, 60)) == 0x00FF00, "Z %X: GREATER tie at 0x200000 fails: %08X", zpsm, px(60, 60));
+        ztri(0x001FFFFF, 0x00200001, 0x00200001, 255, 255, 0);   /* (an interpolated plane through the stored value) */
+        test_reg(0, 1, 0, 0, 0, 0, 1, 2);
+        ztri(0x7F000, 0x7F000, 0x7F000, 0, 0, 255);
+        CHECK(rgb(px(60, 60)) != 0x0000FF, "Z %X: FF-range Z below 0x200000 fails: %08X", zpsm, px(60, 60));
+        uint32_t zw = gs_mem_read(zpsm, zbp * 32, 10, 60, 60);
+        CHECK(zw >= 0x001FFFFF, "Z %X: Z kept: %X", zpsm, zw);
+        /* a full clear (z_high reset), FF draws again */
+        test_reg(0, 1, 0, 0, 0, 0, 1, 1);
+        prim(P_SPRITE, 0); rgba(0, 0, 0, 0); xyz(0, 0, 0x1000); xyz(640, 448, 0x1000);
+        test_reg(0, 1, 0, 0, 0, 0, 1, 2);
+        ztri(0x1000, 0x1000, 0x1000, 0, 255, 255);
+        CHECK(rgb(px(60, 60)) == 0xFFFF00, "Z %X: tie after the clear: %08X", zpsm, px(60, 60));
+    }
+    char name[32];
+    snprintf(name, sizeof name, "zlimits_%02X", zpsm);
+    save(name, 0, 10, PSMCT32, 640, 448);
+    zbuf(160, PSMZ32, 1);
+    test_reg(0, 1, 0, 0, 0, 0, 1, 1);
+}
+
 static void t_scissor_offset(void) {
     reset_env();
     clear(0, 0, 0, 0);
@@ -2103,6 +2203,10 @@ int main(int argc, char** argv) {
     SCENE(t_ztest(PSMZ24));
     SCENE(t_ztest(PSMZ16));
     SCENE(t_ztest(PSMZ16S));
+    SCENE(t_zlimits(PSMZ32));
+    SCENE(t_zlimits(PSMZ24));
+    SCENE(t_zlimits(PSMZ16));
+    SCENE(t_zlimits(PSMZ16S));
     SCENE(t_region_clamp());
     SCENE(t_formats_contexts());
     SCENE(t_scissor_offset());
