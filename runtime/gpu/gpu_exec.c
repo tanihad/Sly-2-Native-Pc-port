@@ -1482,6 +1482,10 @@ static int spec_level(const gpu_fop_draw* d) {
     static int on = -1;                  /* (PS2_GPU_SPEC=<mask>: bit n allows level n; 0 none) */
     if (on < 0) { const char* e = getenv("PS2_GPU_SPEC"); on = e ? (int)strtol(e, NULL, 0) : 14; }
     if (!on || X.probe) return 0;        /* (PS2_GPU_PROBE: the ubershaders record the probe pixel) */
+    /* thin analytic lines evaluate their planes in non-precise floats (gs.hlsl PRIM 3): another permutation may fuse
+     * them into FMAs differently (measured: the untextured one moved Z / colour words of --thin replays) - they keep the
+     * ubershaders, so outlines = thin draws exactly what it did */
+    if (d->cls == GPU_PC_THIN) return 0;
     int l;
     if (!(d->feat & GPU_DF_TEX)) l = 2;
     else if (d->feat & GPU_DF_LOD) l = 0;
@@ -1545,12 +1549,10 @@ static void exec_draw_ref(const gpu_fop_draw* d, uint32_t slot) {
         int sprite = d->cls == GPU_PC_SPRITE, thin = d->cls == GPU_PC_THIN;
         static const int ss[4][2] = { { GPU_SH_ps_gs_sprite, GPU_SH_ps_gs_sprite_nr }, { GPU_SH_ps_gs_sprite_s, GPU_SH_ps_gs_sprite_s_nr },
                                       { GPU_SH_ps_gs_sprite_n, GPU_SH_ps_gs_sprite_n_nr }, { GPU_SH_ps_gs_sprite_w, GPU_SH_ps_gs_sprite_w_nr } };
-        static const int sn[3][2] = { { GPU_SH_ps_gs_thin, GPU_SH_ps_gs_thin_nr }, { GPU_SH_ps_gs_thin_s, GPU_SH_ps_gs_thin_s_nr },
-                                      { GPU_SH_ps_gs_thin_n, GPU_SH_ps_gs_thin_n_nr } };
         static const int sl[3][2] = { { GPU_SH_ps_gs_linepix, GPU_SH_ps_gs_linepix_nr }, { GPU_SH_ps_gs_linepix_s, GPU_SH_ps_gs_linepix_s_nr },
                                       { GPU_SH_ps_gs_linepix_n, GPU_SH_ps_gs_linepix_n_nr } };
         set_vs(gpu_vs(sprite ? GPU_SH_vs_ref_sprite : thin ? GPU_SH_vs_ref_thin : GPU_SH_vs_ref_linepix));
-        set_ps(gpu_ps(sprite ? ss[sp][nr] : thin ? sn[sp][nr] : sl[sp][nr]));
+        set_ps(gpu_ps(sprite ? ss[sp][nr] : thin ? (nr ? GPU_SH_ps_gs_thin_nr : GPU_SH_ps_gs_thin) : sl[sp][nr]));
         ID3D11DeviceContext_DrawInstanced(c, 4, d->count, 0, slot);
     }
     gpu_rt.n_draws++;
@@ -1601,10 +1603,8 @@ static void exec_draw_ff(const gpu_fop_draw* d, uint32_t slot) {
         static const int l[3][2][2] = { { { GPU_SH_ps_ff_l00, GPU_SH_ps_ff_l01 }, { GPU_SH_ps_ff_l10, GPU_SH_ps_ff_l11 } },
                                         { { GPU_SH_ps_ff_l00s, GPU_SH_ps_ff_l01s }, { GPU_SH_ps_ff_l10s, GPU_SH_ps_ff_l11s } },
                                         { { GPU_SH_ps_ff_l00n, GPU_SH_ps_ff_l01n }, { GPU_SH_ps_ff_l10n, GPU_SH_ps_ff_l11n } } };
-        static const int n[3][2][2] = { { { GPU_SH_ps_ff_n00, GPU_SH_ps_ff_n01 }, { GPU_SH_ps_ff_n10, GPU_SH_ps_ff_n11 } },
-                                        { { GPU_SH_ps_ff_n00s, GPU_SH_ps_ff_n01s }, { GPU_SH_ps_ff_n10s, GPU_SH_ps_ff_n11s } },
-                                        { { GPU_SH_ps_ff_n00n, GPU_SH_ps_ff_n01n }, { GPU_SH_ps_ff_n10n, GPU_SH_ps_ff_n11n } } };
-        ps = sprite ? s[sp][dual][zout] : thin ? n[sp][dual][zout] : l[sp][dual][zout];
+        static const int n[2][2] = { { GPU_SH_ps_ff_n00, GPU_SH_ps_ff_n01 }, { GPU_SH_ps_ff_n10, GPU_SH_ps_ff_n11 } };   /* (thin: no spec, spec_level) */
+        ps = sprite ? s[sp][dual][zout] : thin ? n[dual][zout] : l[sp][dual][zout];
     }
     set_ps(gpu_ps(ps));
     int zwrote = 0;
