@@ -29,7 +29,8 @@ static uint64_t ring_size = 8u << 20;
 #define PUBLISH_EVERY (64u << 10)
 #define SPINS 400                        /* pause loops before sleeping (a pause is 40-140 cycles) */
 
-enum { FR_PAD, FR_PRIM, FR_STATE, FR_XFER, FR_XDATA, FR_BLOCKS, FR_CLUT, FR_TEX0, FR_RESET, FR_VBLANK, FR_FENCE, FR_STOP, FR_CALL };
+enum { FR_PAD, FR_PRIM, FR_STATE, FR_XFER, FR_XDATA, FR_BLOCKS, FR_CLUT, FR_TEX0, FR_RESET, FR_VBLANK, FR_FENCE, FR_STOP, FR_CALL,
+       FR_R2 };
 typedef struct { uint32_t kind, size; } fr_hdr;            /* size: whole record, multiple of 8 */
 /* Primitives are the bulk of the stream (50k per frame): 8 bytes plus the vertices not already in
  * the consumer's 4-entry vertex cache (strips and fans repeat two of three), 32 bytes each (every
@@ -47,6 +48,7 @@ typedef struct { fr_hdr h; uint64_t mask; uint16_t c[]; } fr_clut;   /* 16-byte 
 typedef struct { fr_hdr h; uint32_t ctx, flags; uint64_t tex0; } fr_tex0;   /* flags: 1 loaded, 2 changed */
 typedef struct { fr_hdr h; uint32_t has_di, pad; gpu_display_info di; } fr_vblank;   /* (di.priv, di.vblank always set) */
 typedef struct { fr_hdr h; volatile long* done; void (*fn)(void*); void* arg; } fr_fence;
+typedef struct { fr_hdr h; uint64_t hint; } fr_r2;   /* (r2-m1) a modern-renderer hint */
 
 static uint8_t* ring;
 static volatile LONG hold;
@@ -368,7 +370,19 @@ static void px_reset(void) {
     commit(h);
 }
 
-static const gs_front_hooks proxy = { px_prim, px_xfer_start, px_xfer_data, px_tex0, px_reset };
+/* (r2-m1) an R2 hint: the state words the frontend reads (its targets) first, as for a primitive */
+static void px_r2(const gs_env_view* ev, uint64_t hint) {
+    send_blocks();
+    if (!have_sent || ev->version != sent_version || ev->ctx != sent_env[0] || ev->ofx != sent_env[1] || ev->ofy != sent_env[2] ||
+        ev->iip != sent_env[3] || ev->aa1 != sent_env[4] || ev->draws != sent_env[5] || (int)ev->phase != sent_env[6] ||
+        (int)ev->hud != sent_env[7] || (int)ev->hud_scale != sent_env[8])
+        send_state(ev);
+    fr_r2* r = reserve(FR_R2, sizeof *r);
+    r->hint = hint;
+    commit(r);
+}
+
+static const gs_front_hooks proxy = { px_prim, px_xfer_start, px_xfer_data, px_tex0, px_reset, NULL, px_r2 };
 
 void fthread_vblank(const uint64_t priv[16], uint32_t vblank, const gpu_display_info* di) {
     send_blocks();
@@ -520,6 +534,7 @@ static DWORD WINAPI fthread_main(LPVOID arg) {
             break;
         }
         case FR_RESET: H->reset(); break;
+        case FR_R2: if (H->r2) H->r2(&fev, ((const fr_r2*)h)->hint); break;
         case FR_VBLANK: { const fr_vblank* v = (const fr_vblank*)h; gf_vblank_impl(v->di.priv, v->di.vblank, v->has_di ? &v->di : NULL); break; }
         case FR_FENCE: case FR_STOP: case FR_CALL: {
             const fr_fence* fe = (const fr_fence*)h;

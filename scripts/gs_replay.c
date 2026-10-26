@@ -35,6 +35,7 @@
 #include "gpu/gpu_hw.h"
 #include "gpu/gpu_verify.h"
 #include "gpu/gpu_front_int.h"              /* (M9 --sample-hash: a target's drawn rows, gt[id].rows) */
+#include "r2/r2.h"                         /* (r2-m1 --r2-ram) */
 #include "gs_mem_swizzle.h"                /* (lockstep crops) */
 #include <wchar.h>
 #include <psapi.h>                         /* (M9 mem-bench) */
@@ -1126,6 +1127,18 @@ static void picture(const uint32_t* frame, int ok, int w, int h, uint32_t vblank
  * of a read-back: must be identical), and with --game-verify with the software renderer's picture
  * (the picture gate of 10.2). --bench: no read-backs (render-bench line of the game path). */
 static int game_mode, game_verify, game_save;
+/* (r2-m1) the modern renderer in replays of PS2_R2=bracket recordings: --r2-ram <EE RAM dump of the same run> resolves the
+ * recorded mesh handles (r2_mesh_decode at the hints' DMA addresses), --r2-ab 1 draws the bracketed entries natively
+ * instead of their exact primitives (the hybrid picture of the same stream), --vram-out: GS memory as the GPU has it
+ * after every VBlank as <out>/vram_<vblank>.bin (sample 0: colour, Z) */
+static uint8_t* r2_ram;
+static int vram_out;
+static const r2_mesh* r2_resolve(uint32_t handle, uint32_t addr, int form) {
+    r2_mesh* m = NULL;
+    if (!r2_ram || r2_mesh_decode(r2_ram, addr, form, &m)) return NULL;
+    if (!r2_store_put(handle, m)) { r2_mesh_free(m); return NULL; }
+    return m;
+}
 static uint32_t game_sw_pics;
 static uint32_t* game_px;
 static int game_w, game_h;
@@ -1255,6 +1268,12 @@ static void game_vblank(uint32_t vblank) {
     static uint32_t ref[1024 * 1024], swf[1024 * 1024];
     int w = 0, h = 0;
     if (!gpu_hw_read_memory(hwmem)) { fprintf(stderr, "GPU memory read-back failed\n"); exit(1); }
+    if (vram_out) {
+        char vp[600];
+        snprintf(vp, sizeof vp, "%s\\vram_%u.bin", outdir, vblank);
+        FILE* vf = fopen(vp, "wb");
+        if (vf) { fwrite(hwmem, 1, GS_VRAM_SIZE, vf); fclose(vf); }
+    }
     static gs_display_snap rs;           /* (M7: the reference with the GPU's picture options) */
     rs = s;
     if (game_gfx & GPU_GFX_FLICKER_OFF) snap_flicker_strip(rs.priv);
@@ -1774,6 +1793,15 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--game")) game_mode = 1;
         else if (!strcmp(argv[i], "--game-save")) game_save = 1;   /* (--game: every picture as frame_N.png) */
         else if (!strcmp(argv[i], "--game-verify") && i + 1 < argc) { game_mode = 1; game_verify = atoi(argv[++i]); }
+        else if (!strcmp(argv[i], "--r2-ram") && i + 1 < argc) {
+            FILE* rf = fopen(argv[++i], "rb");
+            r2_ram = malloc(0x2000000);
+            if (!rf || !r2_ram || fread(r2_ram, 1, 0x2000000, rf) != 0x2000000) { fprintf(stderr, "cannot read %s\n", argv[i]); return 1; }
+            fclose(rf);
+            r2_mesh_resolve = r2_resolve;
+        }
+        else if (!strcmp(argv[i], "--r2-ab") && i + 1 < argc) gpu_front_r2_ab(atoi(argv[++i]));
+        else if (!strcmp(argv[i], "--vram-out")) vram_out = 1;
 #endif
         else if (!strcmp(argv[i], "--vram-hash") && i + 1 < argc) {
             vram_hash_file = fopen(argv[++i], "w");

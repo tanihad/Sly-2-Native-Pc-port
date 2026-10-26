@@ -36,6 +36,7 @@ static const char* const n_filters[] = { "modern", "faithful" };
 static const char* const n_fullscreen[] = { "off", "on", "exclusive" };
 static const char* const n_mode[] = { "windowed", "borderless", "fullscreen" };   /* (pc-polish) [display] mode */
 static const char* const n_speakers[] = { "stereo", "mono", "surround" };
+static const char* const n_rmode[] = { "reference", "modern" };   /* (r2-m1) */
 
 #define OFF(f) ((int)offsetof(ps2_settings_t, f))
 #define BOOL_(sec, key, f, flags, apply, def) { sec, key, SET_BOOL, flags, apply, OFF(f), 0, 1, def, NULL, NULL, NULL }
@@ -80,6 +81,10 @@ static const settings_opt opts[] = {
     TRI_("graphics", "interlacing", interlacing),
     ENUM_("graphics", "scaler", scaler, SET_LIVE | SET_PRESET | SET_GPU, SET_APPLY_GFX, settings_scaler_names, SETTINGS_SCALER_N,
           SETTINGS_SCALER_AUTO, "catmull=4", "PS2_GS_SCALER"),
+    /* (r2-m1) the modern renderer (runtime/r2, notes/modern-renderer.md): read every frame by r2_capture.c (live); not in the
+     * template while it is an opt-in milestone. Environment: PS2_R2=off|hybrid|bracket (r2_capture.c) */
+    ENUM_("graphics", "renderer_mode", renderer_modern, SET_LIVE | SET_GPU, SET_APPLY_NONE, n_rmode, 2, 0,
+          "exact=0|original=0|off=0|r2=1|on=1", NULL),
     INT_("audio", "master", vol_master, SET_LIVE, SET_APPLY_AUDIO, 0, 100, 100, NULL, NULL),
     INT_("audio", "music", vol_music, SET_LIVE, SET_APPLY_AUDIO, 0, 100, 100, NULL, NULL),
     INT_("audio", "effects", vol_effects, SET_LIVE, SET_APPLY_AUDIO, 0, 100, 100, NULL, NULL),

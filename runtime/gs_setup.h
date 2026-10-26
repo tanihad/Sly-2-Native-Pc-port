@@ -273,6 +273,9 @@ typedef struct {
     /* the software rasterizer drew the primitive the frontend asked for (gs_front_swdraw), and it is
      * in gs_vram (NULL: never asked) */
     void (*sw_done)(void);
+    /* (r2-m1) a modern-renderer hint (register 0x7F, kinds 0x20..0x2F: runtime/r2/r2.h) in stream order, with the
+     * drawing environment at that point (its registers: the targets R2 draws into); NULL: ignored */
+    void (*r2)(const gs_env_view* env, uint64_t hint);
 } gs_front_hooks;
 
 /* NULL: software only. sw: 0 when the software rasterizer is off (the frontend alone). */

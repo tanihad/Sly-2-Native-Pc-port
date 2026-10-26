@@ -763,8 +763,22 @@ static void side_fill(uint32_t rgb) {
     env_dirty = 1;
 }
 
+/* (r2-m1) the modern renderer's hints (kinds 0x20..0x2F, runtime/r2/r2.h) go to the GPU frontend in stream order with the
+ * drawing environment (the targets its segments draw into); the software renderer never sees native draws (R2 is off
+ * unless the GPU renderer runs) */
+static void r2_hint(uint64_t v) {
+    if (!gs_front || !gs_front->r2) return;
+    if (env_dirty) env_update();
+    if (!env_ok) return;
+    uint64_t attr = (reg[R_PRMODECONT] & 1) ? reg[R_PRIM] : reg[R_PRMODE];
+    gs_env_view ev = { &P, reg, (int)((attr >> 9) & 1), ofx, ofy, prim_iip, prim_aa1, prim_draws, gs_prim_version, hint_phase,
+                       0u, 0u };
+    gs_front->r2(&ev, v);
+}
+
 static void hint_write(uint64_t v) {
     uint32_t kind = gs_hint_kind(v), value = gs_hint_value(v);
+    if (kind >= 0x20 && kind <= 0x2F) { r2_hint(v); return; }
     switch (kind) {
     case GS_HINT_HUD_BEGIN: {
         float s;

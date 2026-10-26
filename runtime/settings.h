@@ -74,6 +74,9 @@ typedef struct {
     int game_invert_turret;      /* [game] invert_turret: the game's own "Invert Turret Controls" (off default) */
     int game_speakers;           /* [audio] speakers: the game's own Speakers: stereo (0, default) | mono (1) | surround (2) */
     int ini_version;             /* (pc-menu2) [settings] version: the defaults the file was written with (0: older files) */
+    int renderer_modern;         /* (r2-m1) [graphics] renderer_mode = reference (0, default: the exact GS renderer draws
+                                    everything) | modern (1: the modern renderer R2 draws what it covers - milestone R1: the
+                                    ep3 hub's static world; notes/modern-renderer.md). Environment: PS2_R2=off|hybrid|bracket */
 } ps2_settings_t;
 
 /* graphics.render_scale (pc-polish): how sharp the game is drawn, relative to the picture on the screen (the output: the

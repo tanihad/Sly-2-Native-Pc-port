@@ -165,25 +165,26 @@ def progress(stage: str, done: int | None = None, total: int | None = None) -> N
 
 
 GPU_DIR = ROOT / "runtime" / "gpu"
+R2_DIR = ROOT / "runtime" / "r2"                   # (r2-m1) the modern renderer: built with the GPU backend's headers
 GEN_DIR = ROOT / "build" / "gen"                   # generated headers (build/gen/gpu_shaders.h)
 
 
 def compile_one(src: Path, obj_dir: Path, flags: list[str]) -> tuple[Path, str]:
-    gpu = src.parent == GPU_DIR
-    obj = obj_dir / (("gpu_" if gpu and not src.name.startswith("gpu_") else "") + src.with_suffix(".o").name)
+    gpu = src.parent in (GPU_DIR, R2_DIR)
+    obj = obj_dir / (("gpu_" if src.parent == GPU_DIR and not src.name.startswith("gpu_") else "") + src.with_suffix(".o").name)
     if src.parent.name == "vu":
         # recompiled VU microcode: already SIMD; clang's SLP vectorizer only costs minutes on these
         # huge functions (recomp/vu_recomp.py)
         flags = flags + ["-fno-slp-vectorize"]
     deps = list((ROOT / "runtime").glob("*.h"))
     if gpu:                                        # only the GPU backend depends on its headers/shaders
-        deps += list(GPU_DIR.glob("*.h")) + [GEN_DIR / "gpu_shaders.h"]
+        deps += list(GPU_DIR.glob("*.h")) + list(R2_DIR.glob("*.h")) + [GEN_DIR / "gpu_shaders.h"]
     headers = max(h.stat().st_mtime for h in deps)
     stamp = obj_dir / "flags.txt"
     if obj.exists() and obj.stat().st_mtime > max(src.stat().st_mtime, headers, stamp.stat().st_mtime):
         return obj, ""
     res = subprocess.run([str(CLANG), *flags, "-std=c11", "-c", "-Wno-unused-label", "-Wno-unused-variable",
-                          "-I", str(ROOT / "runtime"), "-I", str(src.parent), "-I", str(GEN_DIR), str(src),
+                          "-I", str(ROOT / "runtime"), "-I", str(src.parent), "-I", str(GPU_DIR), "-I", str(GEN_DIR), str(src),
                           "-o", str(obj)],
                          capture_output=True, text=True)
     return obj, (res.stderr if res.returncode else "")
@@ -321,7 +322,8 @@ def main() -> int:
         return 1
 
     sources = (sorted((out / "recomp").glob("*.c")) + sorted((out / "iop").glob("*.c")) +
-               sorted((out / "vu").glob("*.c")) + runtime_sources() + sorted(GPU_DIR.glob("*.c")))
+               sorted((out / "vu").glob("*.c")) + runtime_sources() + sorted(GPU_DIR.glob("*.c")) +
+               sorted(R2_DIR.glob("*.c")))
     objs, errors = [], []
     progress("compile", 0, len(sources))
     with ThreadPoolExecutor(max_workers=os.cpu_count()) as pool:
