@@ -798,6 +798,13 @@ static void flush_open(void) {
     in_flush = 0;
 }
 
+/* (r2-m1) gpu_r2front.c: an R2 segment closes the open draws; the frontend's other events close an open segment first */
+void gf_flush_open(void) { flush_open(); }
+extern int gf_r2_pending, gf_r2_skip;
+void gf_r2_flush(void);
+void (*gf_r2_hook(void))(const gs_env_view*, uint64_t);
+#define R2_FLUSH() do { if (gf_r2_pending) gf_r2_flush(); } while (0)
+
 /* ---- emission ----------------------------------------------------------------------------------- */
 typedef struct {                         /* 32 bytes */
     float x, y;
@@ -1769,6 +1776,8 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
     uint64_t t0 = timed ? __rdtsc() : 0;
     PROF_START();
     PCOUNT(n_prims);
+    R2_FLUSH();
+    if (gf_r2_skip) { gf.kicks++; goto out; }   /* (r2-m1 bracket A/B: R2 draws this entry) */
     const gs_prim* P = ev->P;
     /* (M10, 8.3) the HUD transform: between HUD_BEGIN and HUD_END (the StateRec's hint state, ev->hud) the game's
      * vertices are scaled about the anchor (left edge, centre, right edge of the FRAME width), full-width
@@ -2360,6 +2369,7 @@ out:
 /* ---- transfers, CLUT, reset ------------------------------------------------------------------------ */
 static void fr_xfer_start(uint64_t bb, uint64_t pos, uint64_t rr, uint32_t dir) {
     uint64_t t0 = __rdtsc();
+    R2_FLUSH();
     if (dir == 0) {
         flush_open();                    /* drawing before the upload stays before its patch */
         int x0 = (int)((pos >> 32) & 0x7FF), y0 = (int)((pos >> 48) & 0x7FF);
@@ -2389,6 +2399,7 @@ static void fr_xfer_data(uint32_t bytes) { gf.xfer_bytes += bytes; }
 
 static void fr_tex0(int ctx, uint64_t tex0, int clut_loaded) {
     (void)ctx;
+    R2_FLUSH();
     if (!clut_loaded) return;
     uint64_t t0 = __rdtsc();
     /* a CLUT load reads memory: it must hold the data (pending patches, GPU data downloaded) */
@@ -2412,9 +2423,11 @@ static void fr_tex0(int ctx, uint64_t tex0, int clut_loaded) {
     tsc_acc += __rdtsc() - t0;
 }
 
-static void fr_reset(void) { flush_open(); }
+static void fr_reset(void) { R2_FLUSH(); flush_open(); }
 
-static const gs_front_hooks hooks = { fr_prim, fr_xfer_start, fr_xfer_data, fr_tex0, fr_reset, fr_sw_done };
+static void fr_r2(const gs_env_view* ev, uint64_t hint) { gf_r2_hook()(ev, hint); }
+
+static const gs_front_hooks hooks = { fr_prim, fr_xfer_start, fr_xfer_data, fr_tex0, fr_reset, fr_sw_done, fr_r2 };
 const gs_front_hooks* gf_hooks(void) { return &hooks; }
 
 /* ---- start / stop / VBlank ------------------------------------------------------------------------- */
@@ -2452,6 +2465,7 @@ void gpu_front_set_checkpoint_hook(void (*hook)(uint32_t index, int frame_change
 }
 
 void gpu_front_checkpoint(void) {
+    R2_FLUSH();
     flush_open();
     own_flush_patches();
     sink_frame(cp_vblank, GPU_FD_PARTIAL);
@@ -2621,7 +2635,9 @@ static uint32_t display_sources(const gpu_display_info* di, uint16_t src[2], uin
 
 void gf_vblank_impl(const uint64_t priv[16], uint32_t vblank, const gpu_display_info* di) {
     uint64_t t0 = __rdtsc();
+    R2_FLUSH();
     flush_open();
+    { void gf_r2_vblank(void); gf_r2_vblank(); }
     uint16_t src[2] = { 0, 0 };
     uint32_t mem_off = 0, mem_n = di ? display_sources(di, src, &mem_off) : 0;   /* (before the eviction: a shown
                                                                                      target stays in use) */

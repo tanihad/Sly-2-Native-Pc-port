@@ -79,6 +79,8 @@ if (Test-Path (Join-Path $gpuDir 'gpu.h')) {                           # runtime
     & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'gpu_shaders.ps1') -Root $root -Gen $gen -Shaders (Join-Path $gpuDir 'shaders') | Out-Null
     if ($LASTEXITCODE -ne 0) { Write-Host 'shader build failed'; exit 1 }
     $src += @(Get-ChildItem $gpuDir -Filter '*.c' | ForEach-Object { $_.FullName })
+    $r2Dir = Join-Path $Runtime 'r2'                                     # (r2-m1) the modern renderer's segments
+    if (Test-Path $r2Dir) { $src += @('r2_mesh.c', 'r2_vertex.c', 'r2_render.c', 'r2gpu_d3d11.c') | ForEach-Object { Join-Path $r2Dir $_ } }
     $flags += @('-DGS_REPLAY_GPU', '-I', $gpuDir, '-I', $gen)
     $libs += @('-luser32', '-lgdi32')
 } elseif ($Backend -ne 'sw') { Write-Host "$Runtime has no GPU backend: only -Backend sw"; exit 2 }

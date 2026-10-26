@@ -33,6 +33,8 @@ enum {
     R2H_END = 0x24,        /* bracket mode: they end */
     R2H_EPILOGUE = 0x25,   /* (diagnostic) the state epilogue of a run follows */
 };
+/* R2H_DRAW / R2H_BEGIN words, in order: [fade (R2D_FADE)] [world matrix, 16 words (unless R2D_IDENTITY)] [the mesh DMA
+ * address | form << 31 (offline replays resolve the handle from a RAM dump with it)] */
 enum { R2D_IDENTITY = 1,   /* the entry's world matrix is the identity (no matrix words) */
        R2D_FADE = 2 };     /* a fade word follows (VU 8.x != 1.0) */
 
@@ -71,6 +73,7 @@ typedef struct {                 /* a sub-batch: one triangle strip, drawn with 
                                     with the winding of the strip's first) */
     float fog_scale, fog_wmax;   /* VU 9.y, 9.z of its header */
     uint8_t npass, cull;         /* cull: the VU's backface test is on ([11].x & 0x80 == 0) */
+    uint8_t amin[2], amax[2];    /* vertex alpha range of colour A, colour B (the alpha test's outcome per draw) */
     uint8_t pad[2];
     r2_pass pass[3];
 } r2_batch;
@@ -103,9 +106,14 @@ extern const char* const r2m_reason[R2M_N];
 int r2_mesh_decode(const uint8_t* ram, uint32_t addr, int form, r2_mesh** out);
 void r2_mesh_free(r2_mesh* m);
 
-/* ---- the mesh store (r2_capture.c): handle -> mesh, per level generation ----------------------------------------- */
+/* ---- the mesh store (r2_mesh.c): handle -> mesh, per level generation (ring of 4) ------------------------------- */
 const r2_mesh* r2_mesh_get(uint32_t handle);   /* any thread; NULL when gone */
 uint32_t r2_store_gen(void);
+uint32_t r2_store_new_gen(void);               /* the writer: a new level; the generation 4 back is freed */
+uint32_t r2_store_add(r2_mesh* m);             /* the writer: published, its handle (0: full) */
+int r2_store_put(uint32_t handle, r2_mesh* m); /* (offline replays) at a recorded handle */
+/* (offline replays) a handle the store does not know: decode the mesh at addr / form from the replay's RAM (NULL) */
+extern const r2_mesh* (*r2_mesh_resolve)(uint32_t handle, uint32_t addr, int form);
 
 /* ---- vertex function (r2_vertex.c): the C twin of shaders/r2.hlsl's vertex shader (the in-game check, offline tools) */
 typedef struct {
@@ -120,6 +128,14 @@ typedef struct {
 void r2_vertex_eval(const r2_vtx* v, const float m[16], const r2_frame_block* fb, const r2_batch* b, int csel,
                     float fade, r2_gsv* o);
 void r2_matmul(const float w[16], const float c[16], float out[16]);   /* out = W x C (row vectors) */
+/* The VU's float-bits screen transform as a linear one (GPU vertex shader): GS X (12.4) = bx + ax * x/w, Y likewise,
+ * GS Z = bz + az * z/w, inside the ranges the VU produces for visible vertices. 0: the constants do not have that form
+ * (R2 then stays off for the frame). */
+typedef struct { float ax, bx, ay, by, az, bz; } r2_screen_model;
+int r2_screen_model_of(const r2_frame_block* fb, r2_screen_model* m);
+/* the header of a mesh DMA entry (form 1, the entry's CALL #1): walks it like r2_mesh_decode and returns the matrix
+ * (VU 0..3) and VU 8 it uploads (1), or 0 when it does something else */
+int r2_header_parse(const uint8_t* ram, uint32_t addr, float w[16], float vu8[4]);
 
 /* ---- EE side (r2_capture.c, called from recomp/patches.py patches) --------------------------------------------- */
 struct ps2_ctx;

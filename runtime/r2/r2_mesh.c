@@ -224,6 +224,15 @@ static int sub_batch(dec* d, uint32_t X, int second) {
         }
     }
     B->icount = d->nidx - B->ifirst;
+    B->amin[0] = B->amin[1] = 255;
+    for (uint32_t k = 0; k < n; k++) {
+        const r2_vtx* v = &d->vtx[B->vfirst + k];
+        for (int c = 0; c < 2; c++) {
+            uint8_t a = (uint8_t)(v->col[c] >> 24);
+            if (a < B->amin[c]) B->amin[c] = a;
+            if (a > B->amax[c]) B->amax[c] = a;
+        }
+    }
     d->nb++;
     return R2M_OK;
 }
@@ -407,10 +416,98 @@ int r2_mesh_decode(const uint8_t* ram, uint32_t addr, int form, r2_mesh** out) {
     return R2M_OK;
 }
 
+int r2_header_parse(const uint8_t* ram, uint32_t addr, float w[16], float vu8[4]) {
+    static dec* d;                       /* (EE thread only: one decoder state reused, no allocation per entry) */
+    if (!d && !(d = calloc(1, sizeof *d))) return 0;
+    uint32_t* keep_w = d->w;
+    uint32_t keep_cap = d->capw;
+    memset(d, 0, sizeof *d);
+    d->w = keep_w;
+    d->capw = keep_cap;
+    d->ram = ram;
+    d->base = 0x32;
+    d->ofst = 0x1E7;
+    d->tops = d->base;
+    d->cycle = 0x0101;
+    if (walk(d, addr) || d->nw > 4096) return 0;
+    if (interpret(d) || d->batches_started || d->dbf) return 0;     /* (an MSCAL would have flipped the buffers) */
+    uint32_t X = d->tops;
+    for (uint32_t i = 0; i < 4; i++) if (!d->wr[X + i]) return 0;
+    if (!d->wr[X + 8]) return 0;
+    for (int i = 0; i < 16; i++) memcpy(&w[i], &vq(d, X + (uint32_t)(i >> 2))[i & 3], 4);
+    memcpy(vu8, vq(d, X + 8), 16);
+    return 1;
+}
+
 void r2_mesh_free(r2_mesh* m) {
     if (!m) return;
     free(m->vtx);
     free(m->idx);
     free(m->b);
     free(m);
+}
+
+/* ---- the mesh store: handle = generation << 20 | index; a ring of 4 generations (frames in flight never span 4 level
+ * loads). One writer (the EE thread, or a replay tool), readers on any thread (published with release order). ---------- */
+#define GEN_N 4
+#define MESH_MAX 16384u
+#include <stdatomic.h>
+typedef struct {
+    uint32_t gen;
+    r2_mesh* m[MESH_MAX];
+    _Atomic uint32_t n;
+} gen_store;
+static gen_store* G[GEN_N];
+static uint32_t cur_gen;
+
+uint32_t r2_store_gen(void) { return cur_gen; }
+
+const r2_mesh* (*r2_mesh_resolve)(uint32_t handle, uint32_t addr, int form);
+
+uint32_t r2_store_new_gen(void) {
+    gen_store* s = G[(cur_gen + 1) % GEN_N];
+    if (!s) {
+        s = calloc(1, sizeof *s);
+        if (!s) return cur_gen;
+        G[(cur_gen + 1) % GEN_N] = s;
+    } else {
+        uint32_t n = atomic_load(&s->n);
+        atomic_store(&s->n, 0);
+        for (uint32_t i = 0; i < n; i++) { r2_mesh_free(s->m[i]); s->m[i] = NULL; }   /* (generation - 4: executed long ago) */
+    }
+    cur_gen++;
+    s->gen = cur_gen;
+    return cur_gen;
+}
+
+uint32_t r2_store_add(r2_mesh* m) {
+    gen_store* s = G[cur_gen % GEN_N];
+    if (!s || s->gen != cur_gen) return 0;
+    uint32_t n = atomic_load(&s->n);
+    if (n >= MESH_MAX) return 0;
+    m->handle = cur_gen << 20 | n;
+    s->m[n] = m;
+    atomic_store_explicit(&s->n, n + 1, memory_order_release);
+    return m->handle;
+}
+
+/* (offline replays) a mesh at a recorded handle: its generation's slot, index (holes stay NULL) */
+int r2_store_put(uint32_t handle, r2_mesh* m) {
+    uint32_t g = handle >> 20, i = handle & 0xFFFFF;
+    if (i >= MESH_MAX) return 0;
+    gen_store* s = G[g % GEN_N];
+    if (!s) { if (!(s = calloc(1, sizeof *s))) return 0; G[g % GEN_N] = s; }
+    if (s->gen != g) { atomic_store(&s->n, 0); memset(s->m, 0, sizeof s->m); s->gen = g; }
+    m->handle = handle;
+    s->m[i] = m;
+    if (atomic_load(&s->n) <= i) atomic_store_explicit(&s->n, i + 1, memory_order_release);
+    if (g > cur_gen) cur_gen = g;
+    return 1;
+}
+
+const r2_mesh* r2_mesh_get(uint32_t handle) {
+    uint32_t g = handle >> 20, i = handle & 0xFFFFF;
+    gen_store* s = G[g % GEN_N];
+    if (!s || s->gen != g || i >= atomic_load_explicit(&s->n, memory_order_acquire)) return NULL;
+    return s->m[i];
 }

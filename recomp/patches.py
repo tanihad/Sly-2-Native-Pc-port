@@ -277,6 +277,21 @@ PATCHES: list[Patch] = [
     Patch("movie_layer_end", *MOVIE_PLAY, 0x001B3EB4, "before",
           "movie_layer_ee(0);",
           "the movie player's only return: MOVIE_END"),
+    # (r2-m1) the modern renderer R2 (runtime/r2/r2_capture.c, notes/modern-renderer.md 2.2): render-list hooks. With R2 off
+    # (the default: [graphics] renderer_mode = reference) they only read memory and write nothing.
+    Patch("r2m_alloc", *RENDER_ALLOC, 0x001CD9D4, "before",
+          "{ void r2_cap_alloc(ps2_ctx*); r2_cap_alloc(ctx); }",
+          "jr $ra of the render-list allocator ($v0 = the new entry): entries from object submitters; the static world tree "
+          "(0x1D5808) writes its leaves' entries itself, never through here - R1's native candidates"),
+    Patch("r2m_entry", *FRAME_DRAW, 0x00158378, "before",
+          "{ void r2_cap_entry(ps2_ctx*); r2_cap_entry(ctx); }",
+          "the loop over the sorted list ($s2 = entry, $s0 = priority, $s1 = render class), after the class switch and "
+          "before the entry's CALLs are written: a native entry's hints go into the chain here and its mesh CALL is zeroed "
+          "(the game's own beq v0, zero then skips it)"),
+    Patch("r2m_done", *FRAME_DRAW, 0x001583FC, "before",
+          "{ void r2_cap_done(ps2_ctx*); r2_cap_done(ctx); }",
+          "after the last render class's end function: the frame's chain is complete (a pending state epilogue / bracket "
+          "end is written)"),
     # (r2-re) debug-only render-list tracer (runtime/r2_trace.c, PS2_R2_TRACE; off by default, reads memory only)
     Patch("r2_alloc", *RENDER_ALLOC, 0x001CD9D4, "before",
           "{ void r2_trace_alloc(ps2_ctx*); r2_trace_alloc(ctx); }",

@@ -223,6 +223,7 @@ enum {
     GPU_FOP_ALIAS16_END,         /* gpu_fop_alias16: the run ends: scatter the rect back into the target */
     GPU_FOP_XCOPY,               /* gpu_fop_xcopy: target blocks <- blocks of another target of the same kind and scale,
                                     every sample (data: n x (u16 source local block, u16 destination local block)) */
+    GPU_FOP_R2,                  /* (r2-m1) gpu_fop_r2: a segment of modern-renderer draws (runtime/r2/r2_render.c) */
 };
 typedef struct { uint16_t op, size; } gpu_fop;       /* size in bytes, header included, 4-byte multiple */
 typedef struct { gpu_fop h; uint16_t id, kind, base, fbw, rows, kx, ky, family; } gpu_fop_target;
@@ -267,6 +268,56 @@ typedef struct { gpu_fop h; uint16_t ct, zt; uint32_t zresolve; int16_t bbox[4];
 typedef struct { gpu_fop h; uint16_t target, psm; int16_t x0, y0, x1, y1; uint16_t mode, pad; } gpu_fop_alias16;
 #define GPU_A16_COPY_MAX 40              /* (perf-p2) sprites per copy-run draw (the dispatch's tile table, gpu_exec.c) */
 typedef struct { gpu_fop h; uint16_t target, src; uint32_t n, data_off; } gpu_fop_xcopy;
+/* (r2-m1) A run of native draws (notes/modern-renderer.md 2.5): the colour / depth targets of FRAME_1 / ZBUF_1 at the
+ * hint (made current over bbox before it, written by it), their scissor, and in the frame's data arena: the frame
+ * block + screen model (frame_off: gpu_r2_frame), nent entry records (ent_off: gpu_r2_entry), ndraw draw records in the
+ * game's order (draw_off: gpu_r2_draw). Executed on the render thread by r2_render.c on the exact path's own RTV / DSV. */
+typedef struct {
+    gpu_fop h;
+    uint16_t ct, zt;
+    int16_t sc[4];                       /* scissor, native pixels, inclusive */
+    int16_t bbox[4];
+    uint32_t xyoffset;                   /* XYOFFSET_1: x | y << 16 (12.4) */
+    uint32_t flags;                      /* GPU_R2F_* */
+    uint32_t frame_off, ent_off, draw_off;
+    uint32_t nent, ndraw;
+    uint32_t gen;                        /* mesh generation (r2_store_gen) */
+} gpu_fop_r2;
+enum { GPU_R2F_FBA = 1, GPU_R2F_COLCLAMP = 2, GPU_R2F_ZMSK = 4, GPU_R2F_WMASK_SHIFT = 8 /* 4 bits */, GPU_R2F_ZW = 16 };
+typedef struct {                         /* 64 bytes (shaders/r2.hlsl reads it) */
+    float c0[4], c1[4];                  /* the frame block's VU 0 / VU 1 (fog / unused w) */
+    float ax, bx, ay, by, az, bz;        /* screen model (r2_screen_model) */
+    uint32_t serial, pad;
+} gpu_r2_frame;
+typedef struct {                         /* 80 bytes */
+    float m[16];                         /* world x clip (row vectors) */
+    float fade;                          /* VU 8.x */
+    uint32_t pad[3];
+} gpu_r2_entry;
+typedef struct {                         /* 64 bytes */
+    uint32_t mesh;                       /* mesh handle (r2_mesh_get) */
+    uint32_t first, count;               /* indices of the mesh's index array */
+    uint32_t entry;                      /* entry record index in the segment */
+    uint32_t tex0[2], clamp[2];
+    uint32_t tex1, test, alpha, fogcol;  /* TEX1 lo, TEST, ALPHA (asel..dsel | fix << 8), FOGCOL */
+    float fog_scale, fog_wmax;
+    uint32_t flags;                      /* GPU_R2D_* */
+    uint32_t state;                      /* blend class | depth state << 4 | wmask << 8 | cull << 12 */
+} gpu_r2_draw;
+/* (r2-m1) frontend counters of the modern renderer since the last reset (gpu_r2front.c) */
+typedef struct {
+    uint64_t hints, bad_hints, segments, entries, draws, splits, textures, tex_gpu, dropped, unsupported, over128, brackets,
+        skipped_prims, zwrite_draws, all_fail;
+} gpu_r2_front_stats;
+void gpu_front_r2_stats(gpu_r2_front_stats* out, int reset);
+/* bracket mode (PS2_R2=bracket): 0 the bracketed exact primitives are drawn (R2 ignores the hints), 1 R2 draws the
+ * bracketed entries instead (the hybrid picture from the same stream: A/B checks, offline replays) */
+void gpu_front_r2_ab(int native);
+enum { GPU_R2D_CSEL = 1,                 /* colour B */
+       GPU_R2D_HALF_PASS = 2,            /* ATST split: discard failing fragments */
+       GPU_R2D_HALF_FAIL = 4,            /*             discard passing fragments */
+       GPU_R2D_ABE = 8, GPU_R2D_FGE = 16, GPU_R2D_TCC = 32, GPU_R2D_ATST_KEEP = 64 /* discard failing (AFAIL KEEP) */,
+       GPU_R2D_TEXM_SHIFT = 8 /* 2 bits: 1 nearest, 2 bilinear */ };
 /* VBlank. With a display info (M6, di_off != ~0: a gpu_display_info in the data arena) the picture is
  * composed on the GPU: circuit i reads colour target src[i] (sample 0 of every native pixel; the
  * displayed rect is current there), or, src[i] == 0, GS memory: a scratch copy of vram_buf with the GPU

@@ -37,6 +37,7 @@
 #include <string.h>
 
 #include "gpu_shaders.h"
+#include "r2/r2_render.h"
 #include <psapi.h>
 
 /* (M9) PS2_GS_MEM_MAP: the process's committed memory at steps of the render thread's set-up */
@@ -1168,10 +1169,10 @@ static void zcb_set(const zs_consts* k) {
  * waits for its timestamps (profiling only: it serialises CPU and GPU). Averages per frame in the log every
  * 60 frames. Attribution is approximate (the GPU overlaps neighbouring work). */
 enum { PR_OTHER, PR_TARGET, PR_MEM, PR_CLEAR, PR_SHADOW, PR_FF_FAST, PR_FF_TRI, PR_FF_SPRITE, PR_FF_LINE,
-       PR_REF_TRI, PR_REF_OTHER, PR_A16, PR_ZRESOLVE, PR_ZSYNC, PR_PRESENT, PR_A16_DRAW, PR_FF_FAST_Z, PR_N };
+       PR_REF_TRI, PR_REF_OTHER, PR_A16, PR_ZRESOLVE, PR_ZSYNC, PR_PRESENT, PR_A16_DRAW, PR_FF_FAST_Z, PR_R2, PR_N };
 static const char* const pr_names[PR_N] = { "other", "target", "mem", "clear", "shadow", "ff-tri-fast", "ff-tri",
                                             "ff-sprite", "ff-line", "ref-tri", "ref-other", "alias16", "zresolve",
-                                            "zsync", "present", "alias16-draw", "ff-tri-fast-z" };
+                                            "zsync", "present", "alias16-draw", "ff-tri-fast-z", "r2" };
 #define PR_MAXQ 8192
 static struct {
     int on, n, cur;
@@ -1259,7 +1260,7 @@ static void prof_end(void) {
     {                                    /* (M9) the frame's phases for the stats line (gpu_hw.c, PS2_GS_HW_STATS) */
         gpu_frame_stats* s = gpu_stats_cur();
         s->phases = 1;
-        s->phase_ms[0] = (float)(f[PR_FF_FAST] + f[PR_FF_TRI] + f[PR_FF_FAST_Z]);
+        s->phase_ms[0] = (float)(f[PR_FF_FAST] + f[PR_FF_TRI] + f[PR_FF_FAST_Z] + f[PR_R2]);
         s->phase_ms[1] = (float)(f[PR_FF_SPRITE] + f[PR_FF_LINE]);
         s->phase_ms[2] = (float)(f[PR_REF_TRI] + f[PR_REF_OTHER]);
         s->phase_ms[3] = (float)(f[PR_A16] + f[PR_A16_DRAW]);
@@ -1686,6 +1687,31 @@ static void exec_draw(const gpu_fop_draw* d, uint32_t slot) {
     }
 }
 
+/* (r2-m1) a modern-renderer segment (gpu_front.h gpu_fop_r2, runtime/r2/r2_render.c) on the targets' RTV + DSV, as an
+ * FF draw would use them: zpatch-newer depth tiles resolved into the DSV first, the written tiles DSV-newer after */
+static uint64_t r2_segs, r2_draws_total, r2_skipped;
+static void exec_r2(const gpu_front_frame_data* fd, const gpu_fop_r2* o) {
+    xtarget* ct = tgt(o->ct);
+    xtarget* zt = tgt(o->zt);
+    if (!X.mixed || !ct || !zt) { r2_skipped++; return; }   /* (REF / benchmark frames draw no R2 segment) */
+    prof_mark(PR_R2);
+    ensure_dsv(zt, o->bbox[0], o->bbox[1], o->bbox[2], o->bbox[3]);
+    bind_ff(o->ct, o->zt);
+    if (X.b_t1) set_t1(NULL);
+    if (X.b_t2) set_t2(NULL);
+    if (!iota_ensure(o->ndraw + 1)) return;
+    r2_exec_in in = { gpu_rt.dev, gpu_rt.ctx, ct->rtv, zt->dsv, ct->kx, ct->ky, X.vram_srv, X.swz_srv, X.dat.srv, X.iota,
+                      gpu_rt.caps.warp ? 0.49609375f : 0.42f };
+    int n = r2_render_segment(o, fd->data, fd->data_bytes, &in);
+    gpu_rt.n_draws += (uint32_t)n;
+    r2_segs++;
+    r2_draws_total += (uint64_t)n;
+    if (!(o->flags & GPU_R2F_ZMSK)) zt_mark(zt, o->bbox[0], o->bbox[1], o->bbox[2], o->bbox[3], ZT_DSV);
+    bind_frame_buffers();                /* the exact path's own IA, views, rasterizer state; cached bindings forgotten */
+    X.mode = 0;
+    X.b_ct = X.b_zt = -1;
+}
+
 static void exec_shadow(const gpu_fop_shadow* o) {
     xtarget* t = tgt(o->target);
     if (!t || t->depth) return;
@@ -1932,6 +1958,7 @@ static void probe_report(const gpu_front_frame_data* fd) {
 
 void gpu_exec_release(void) {
     if (!X.init) return;
+    r2_render_release();                 /* (r2-m1: meshes upload again on the recreated device) */
     if (dbg_nosize || dbg_nocount) gpu_log("exec: %llu draws without a target, %llu empty draws (cls %llu %llu %llu %llu, tier %llu %llu)", (unsigned long long)dbg_nosize, (unsigned long long)dbg_nocount, (unsigned long long)dbg_cls[0], (unsigned long long)dbg_cls[1], (unsigned long long)dbg_cls[2], (unsigned long long)dbg_cls[3], (unsigned long long)dbg_tier[0], (unsigned long long)dbg_tier[1]);
     for (int i = 0; i <= MAX_TARGETS; i++) { target_free(&X.T[i]); free(X.T[i].zts); X.T[i].zts = NULL; }
     GPU_RELEASE(X.ztile_srv); GPU_RELEASE(X.ztile); GPU_RELEASE(X.zcb);
@@ -2097,6 +2124,7 @@ void gpu_exec_frame(const void* payload) {
         case GPU_FOP_ALIAS16: exec_alias16((const gpu_fop_alias16*)h, 0); break;
         case GPU_FOP_ALIAS16_END: exec_alias16((const gpu_fop_alias16*)h, 1); break;
         case GPU_FOP_PRESENT: exec_present(fd, (const gpu_fop_present*)h); break;
+        case GPU_FOP_R2: exec_r2(fd, (const gpu_fop_r2*)h); break;
         default: break;
         }
         pos += h->size;

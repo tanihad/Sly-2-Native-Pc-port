@@ -89,7 +89,8 @@ static bref* get(uint64_t k) {
 static uint64_t n_vtx, xy_hist[6], z_hist[6], f_bad, rgba_bad, stq_bad, adc_extra, adc_missing, culled_back, culled_front,
     culled_off, culled_clip, packets, packet_bad, kicks_vertex, kicks_clip, kicks_unknown, programs_seen, batches_seen,
     tri_drawn, n_used, nocull_drawn, area_pos_culled, area_neg_culled, area_pos_drawn, area_neg_drawn, z_max, xy_max;
-static double stq_max;
+static double stq_max, model_ex, model_ez;
+static uint64_t model_bad;
 static long cur_prog;
 static int verbose;
 
@@ -128,7 +129,18 @@ static void check_vertices(const bufbatch* bb, int pass, const uint8_t* pkt, uin
         int64_t dx = (int64_t)(xyz[0] & 0xFFFF) - o.x, dy = (int64_t)(xyz[1] & 0xFFFF) - o.y;
         int64_t dz = (int64_t)((xyz[2] >> 4) & 0xFFFFFF) - (int64_t)o.z;
         int64_t ax = dx < 0 ? -dx : dx, ay = dy < 0 ? -dy : dy, az = dz < 0 ? -dz : dz;
-        if (use) {
+        if (use) {                       /* the linear screen model of the GPU vertex shader against the VU's bits */
+            r2_screen_model sm;
+            if (r2_screen_model_of(fb, &sm)) {
+                const r2_vtx* v = &bb->m->vtx[B->vfirst + k];
+                const float* mm = bb->mat;
+                double cx = v->x * mm[0] + v->y * mm[4] + v->z * mm[8] + mm[12], cz = v->x * mm[2] + v->y * mm[6] + v->z * mm[10] + mm[14];
+                double cw = v->x * mm[3] + v->y * mm[7] + v->z * mm[11] + mm[15];
+                double mx = sm.bx + sm.ax * cx / cw, mz = sm.bz + sm.az * cz / cw;
+                double ex = fabs(mx - (double)(xyz[0] & 0xFFFF)), ez = fabs(mz - (double)((xyz[2] >> 4) & 0xFFFFFF));
+                if (ex > model_ex) model_ex = ex;
+                if (ez > model_ez) model_ez = ez;
+            } else model_bad++;
             xy_hist[bucket(ax > ay ? ax : ay)]++;
             z_hist[bucket(az)]++;
             if ((uint64_t)(ax > ay ? ax : ay) > xy_max) xy_max = (uint64_t)(ax > ay ? ax : ay);
@@ -397,6 +409,7 @@ int main(int argc, char** argv) {
            (unsigned long long)z_hist[5], (unsigned long long)z_max);
     printf("  fog off by > 1: %llu; STQ rel > 2^-16: %llu (max %.3g); RGBA mismatches: %llu\n", (unsigned long long)f_bad,
            (unsigned long long)stq_bad, stq_max, (unsigned long long)rgba_bad);
+    printf("  linear screen model (GPU vertex shader) vs the VU: max |dX| %.3f, max |dZ| %.3f (frames without a model %llu)\n", model_ex, model_ez, (unsigned long long)model_bad);
     printf("  material packets %llu, mismatching %llu\n", (unsigned long long)packets, (unsigned long long)packet_bad);
     printf("triangles: VU draws %llu; drawn by the VU but ADC in R2's input %llu; culled by the VU: backface %llu (R2 winding area > 0: %llu, < 0: %llu), "
            "off screen %llu, clipped %llu; drawn (backface test on) with R2 winding area > 0: %llu, < 0: %llu; drawn (test off) %llu\n",

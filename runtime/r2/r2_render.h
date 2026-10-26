@@ -1,0 +1,25 @@
+/* The modern renderer's segment executor (r2_render.c), called by the exact path's frame executor (gpu/gpu_exec.c) for
+ * GPU_FOP_R2 on the render thread, with the exact path's own device, targets and views as native handles. */
+#pragma once
+#include <stddef.h>
+#include <stdint.h>
+
+#include "gpu_front.h"
+
+typedef struct {
+    void* dev;                           /* ID3D11Device* */
+    void* ctx;                           /* ID3D11DeviceContext* (immediate) */
+    void* rtv;                           /* the segment's colour target (RGBA8 UNORM view of the raw GS bytes) */
+    void* dsv;                           /* its depth target (z / 2^20) */
+    int kx, ky;                          /* their sample factors */
+    void* vram_srv;                      /* t0: vram_buf (raw) */
+    void* swz_srv;                       /* t6: swizzle tables */
+    void* fdata_srv;                     /* t7: the frame's data arena (raw) */
+    void* iota_vb;                       /* draw ids: element i holds i */
+    float dual_bias;                     /* dual-source blend source bias (gpu_exec.c, per GPU) */
+} r2_exec_in;
+
+/* the segment's draws; returns how many were issued. The host re-establishes its own bindings afterwards. */
+int r2_render_segment(const gpu_fop_r2* o, const uint8_t* fdata, size_t fdata_bytes, const r2_exec_in* in);
+void r2_render_release(void);            /* device loss, stop: every GPU resource (meshes upload again) */
+void r2_render_stats(uint64_t* draws, uint64_t* segments, uint64_t* uploads, uint64_t* upload_bytes, uint64_t* missing);

@@ -14,6 +14,24 @@ void r2_matmul(const float w[16], const float c[16], float out[16]) {
                              w[i * 4 + 3] * c[3 * 4 + j];
 }
 
+int r2_screen_model_of(const r2_frame_block* fb, r2_screen_model* m) {
+    float* a[3] = { &m->ax, &m->ay, &m->az };
+    float* b[3] = { &m->bx, &m->by, &m->bz };
+    for (int i = 0; i < 3; i++) {
+        uint32_t u;
+        memcpy(&u, &fb->c1[i], 4);
+        int e = (int)((u >> 23) & 0xFF) - 127;
+        if ((u >> 31) || e < 24 || e > 100) return 0;
+        double base = ldexp(1.0, e), unit = ldexp(1.0, e - 23) * (i == 2 ? 16.0 : 1.0);
+        double sa = (double)fb->c0[i] / unit, sb = ((double)fb->c1[i] - base) / unit;
+        double lim = i == 2 ? 524288.0 : 65536.0;            /* Z: mantissa >> 4 (19 bits); X, Y: the low 16 bits */
+        if (!(sa > 0.0) || sb - sa < 0.0 || sb + sa >= lim) return 0;
+        *a[i] = (float)sa;
+        *b[i] = (float)sb;
+    }
+    return 1;
+}
+
 /* a + b as the VU's FMAC leaves it: rounded toward zero to float; the result's bit pattern */
 static uint32_t add_rz_bits(double a, double b) {
     double s = a + b;

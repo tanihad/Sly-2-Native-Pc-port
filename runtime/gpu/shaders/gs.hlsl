@@ -395,12 +395,29 @@ uint expand16(uint c, uint texa) {
 uint clut_word(uint slot, uint p) { return clut.Load(slot * 2048u + p * 4u); }
 uint clut_half(uint slot, uint p) { return clut_word(slot, p) & 0xFFFFu; }
 
+#if R2_CLUT
+// (r2-m1) the modern renderer (shaders/r2.hlsl) loads no CLUT ring slot: its materials load their CLUT with every TEX0
+// (CLD 1, CSM1, CT32), so entry idx is GS memory at CBP in the 16x16 / 8x2 CSM1 layout (gs_mem_tex.c clut_load)
+uint r2_clut_lookup(St st, uint idx) {
+    uint t0 = st.tex0clamp.x, t1 = st.tex0clamp.y;
+    uint psm = (t0 >> 20) & 0x3Fu, cbp = (t1 >> 5) & 0x3FFFu;
+    bool t8 = psm == PSMT8 || psm == PSMT8H;
+    uint x = t8 ? ((idx & 7u) | ((idx >> 1) & 8u)) : (idx & 7u);
+    uint y = t8 ? (((idx >> 4) & 14u) | ((idx >> 3) & 1u)) : ((idx >> 3) & 1u);
+    return vram.Load(((cbp * 64u + swz_at(SWZ_CT32, (y << 6) | x)) & 0xFFFFFu) * 4u);
+}
+#endif
+
 uint clut_lookup(St st, uint idx) {
+#if R2_CLUT
+    return r2_clut_lookup(st, idx);
+#else
     uint t1 = st.tex0clamp.y;
     uint cpsm = (t1 >> 19) & 15u, csa = (t1 >> 24) & 31u;
     uint p = (csa * 16u + idx) & 511u;
     if (cpsm == PSMCT16 || cpsm == PSMCT16S) return expand16(clut_half(st.clut_slot, p), st.texa);
     return clut_word(st.clut_slot, p);
+#endif
 }
 
 // target views (notes/d3d11-renderer.md 5.1): texel (x, y) is the view target's native pixel (x, y);
