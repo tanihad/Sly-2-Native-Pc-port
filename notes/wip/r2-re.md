@@ -4,7 +4,7 @@
 VU1 programs, effects) with evidence, measure scenes, and propose where a modern renderer takes
 over (summary in notes/modern-renderer-re.md).
 
-**Status**: in progress (started 2026-10-26)
+**Status**: complete (2026-10-26). Summary: notes/modern-renderer-re.md.
 
 ## Done
 - Read widescreen.md, vu-microcode.md, frame-rate.md (interp prototype!), hle-architecture.md, d3d11 census.
@@ -17,7 +17,7 @@ over (summary in notes/modern-renderer-re.md).
 - ep3 hub traces: build/r2trace/ep3 (2 frames), ep3b (1 frame + 5000-program VU recording). NOT committed.
 
 ## In progress
-- writing up 3D path; next: textures, camera/fog, shadows code, outlines input, particles, scenes.
+- (none)
 
 ## Next
 1. textures: where TEX/CLUT live, upload path (per-frame 1024x256 T8 upload at TBP 1080 etc.)
@@ -54,13 +54,13 @@ over (summary in notes/modern-renderer-re.md).
   records (+4 sort key, +8 static DMA for attachments); +0x40 0x28-byte subglob records {+4 transform
   source object, +8 local matrix ptr, +0xC flags (bits0-2 kind: 2 = ?, 3 = clip-needed flag upload; bits 3-7
   priority class; 0x100 REFS light prefix; 0x200 extra param; 0x400 fixed sort key; 0x800 hidden; 0x1000
-  matrix from +0x10), +0x10 static mesh DMA, +0x18 special (billboard-ish, 0x1684D0), +0x1C skin record};
+  matrix from +0x10), +0x10 static mesh DMA, +0x18 skeleton (bone palette, 0x1684D0), +0x1C warp record};
   +0x44 0x18-byte bounds {centre xyz, radius, +0x10 LOD/fade distance}; +0x4C frame stamp; +0x50 flags.
 - Culling: VU0 micro routine 0x1C0 (vcallms 0x1C0): vf10-12 frustum planes (camera +0xA0..), vf13 camera
   pos (+0x90), vf14 cam+0x1C, vf15 sphere centre, vf16 radius, vf17 LOD distance -> vf19.x fade (0 = cull).
 - Per-frame header packet (built in DMAS 0x2DEA28 buffer): [REFS light set (VU 0x15..0x20)] CNT {UNPACK
   V4-32 x4 world matrix -> VU 0+TOPS; V4-32 x1 -> VU 8 (fade a, fade b, globset+0x50, param); [S-32 x1 ->
-  0x12 clip flag]; [bone matrices V4-32 x4 each from VU (skin+0x20)]} RET.
+  0x12 clip flag]; [warp matrices V4-32 x4 each from VU (warp+0x20)]; [bone palette, 0x1684D0]} RET.
 - Static world 0x1D5808 (object vtable 0x2D42FC, called by 0x1B4478): 4-ary tree of 32-byte nodes {centre,
   radius, +0x10 bits: kind 0-3, mask, prio (bits 14-19), subglob index (>>19); +0x18 DMA or child}; leaves
   = prebuilt world-space DMA (entry c1 = node DMA, c2 = 0) when fully visible, else REFS + fade CNT.
@@ -77,7 +77,7 @@ over (summary in notes/modern-renderer-re.md).
 - Lit/skinned vertex (characters; routines 0x2EF8/0x2F80/0x2FC8/0x3358): V3-16 (UV+?), V4-8 signed normal,
   V4-8 colour (7F7F7F80), V4-32 position (some -1,-1,-1), + separate STCYCL 1/1 V4-8 weights (000000FF,
   00807F00 ...). Lights from REFS (VU 0x15-0x20, 4 lights: direction + colour), bones at VU 0x21+ (24 x 4 qw
-  in Sly's case, EE-computed: skin+0xC +0x6F0 + i*0x40 times inverse world).
+  in Sly's case, EE-computed by 0x1684D0, see "Skinning" below).
 ### VU1 programs by function (ep3 hub, 1 frame, r2_vu_kicks)
 - 376110651 main: prelit + lit/skinned meshes, two passes; tristrips TME FGE ABE; 160k vertices/frame total.
   0x3628/0x37A8 (prio 13): untextured ABE strips ALPHA 0x6A (Cd: colour masked), TEST Z GREATER(+DATE):
@@ -92,6 +92,48 @@ over (summary in notes/modern-renderer-re.md).
 - 752221467 (class 4, prio 0, 0x1681F8 attachments): not seen in ep3 frame.
 - Per frame (ep3 hub): 606 entries; static mesh DMA 2.9 MB referenced, per-frame packets 67 KB;
   MSCAL 3782; main program 2EE8 x964, 2E20 x464, 2EB0 x313, 3358 x225 ...; ~6000 GIF primitives.
+
+### Skinning, warps (corrected)
+- Skinned subglobs (subglob +0x18 != 0): 0x1684D0 builds the bone palette on the EE: per bone (0x50-byte
+  records) local 4x4 (+0x10..+0x40) x the node's world matrix (node +0x40..+0x70) with VU0 macro 0x60, all
+  bones in one UNPACK V4-32 (count x 4 qw) to the VU address in the record (Sly: 24 bones at VU 0x21); the
+  entry's world matrix is then identity (0x2A2D30). VU1 blends with the per-vertex V4-8 weights.
+- Subglob +0x1C record = procedural **warp** (not bones): matrices at owner +0x6F0 + i*0x40 (and +0x7F0)
+  written by 0x22C028 (vtable 0x2DCF84; sin(t*f*2pi+phase) per element = Sly 1 WR circle/bend), uploaded
+  inverse-world-relative, V4-32 x4 each.
+### Frame globals (0x157FA0 before the list)
+- VU1 0..1: depth/screen constants from camera +0x4C/+0x50 (near/far) with templates 0x2C1F00/0x2C1F10;
+  VU 0xD flag 0x2DE5A4; VU 2..5 camera +0x140 (world -> clip, row vectors); VU 6..9 camera +0x60 (camera ->
+  world: translation = camera position); VU 0xA = SW +0x3E28 (fog/brightness params). Camera CM 0x2DDF40:
+  +0x20 fov, +0x3C aspect, +0x40/+0x44 x/y range, +0x48 near-clip radius, +0x4C near, +0x50 far, +0x90
+  position, +0xA0.. frustum planes (VU0 cull), +0x14 render mask.
+- Chain order (ep3): CALL 0x2DF800 (GS setup) / MPG main / CALL 0x168F820 = per-frame texture uploads from
+  level RAM 0x164C020.. (CLUT 1 KB + 2 small, 256 KB T8, 4 KB + 8 KB T4 -> TBP 0x1000.. = inside the Z buffer
+  pages) / prio 1 sky (class 3) / class 3 end GS packet 0x2DF010 / prio 3.. / ... / 2D / END.
+- Shadow pipeline post passes are XGKICKed by the shadow program 188054619 itself: routines 0x1AA0 (class 6
+  begin: CTX2 FRAME FBMSK 3FFF CT16 shuffle sprites, G stencil init FBMSK FFFF00FF) and 0x1C48 (end: shuffles
+  back, alpha bits); REGLIST sprites. Motion blur: render thread 0x160B70 -> 0x160F98 when frame +0x30 bit 0.
+- GIF chain (frame +0x4) = 12-qw context setup only; everything else is the VIF1 chain.
+### Cel outlines (188054331)
+- Static per subglob: V3-32 vertex positions + V4-8 edge records (v0, v1, va, vb) = edge + the opposite
+  vertices of its two triangles (winged edge): silhouette test on VU1, lines drawn twice (Z-only, then AA1).
+### Particles (376109499, submitter 0x13A1E8, prio 12)
+- Per-frame CNT with emitter params (positions, velocity, gravity, dt 0.01667) + REFS of per-particle
+  records (6 qw, STCYCL 10/1) from level RAM 0x1D4xxxx: the VU computes particle positions (Sly 1 "blips").
+### Measurements (release build, one game frame each; scripts/r2_scene.ps1 + r2_frame.py + r2_texstats.py)
+| scene | entries | prelit ent / verts | lit+skinned ent / verts | outline | shadow vol | particles | 2D | GS prims | textures (KB) / CLUTs | static/unchanged (prelit) |
+|---|---|---|---|---|---|---|---|---|---|---|
+| ep1 hub (Paris roofs) | 894 | 755 / 63.9k | 63 / 8.4k | 13 | 41 | 8 | 12 | 54.3k | 210 (1164) / 406 | - |
+| ep3 hub (run 1, open view) | 606 | 464 / 65.8k | 95 / 12.3k | 11 | 10 | 8 | 12 | (VU out 160k verts) | - | 447 of 464 |
+| ep3 hub (run 2, at a wall) | 193 | 91 / 16.2k | 55 / 9.4k | 18 | 9 | 4 | 12 | 20.7k | 91 (802) / 176 | 77 of 91 |
+| ep5 hub | 561 | 460 / 51.3k | 46 / 4.6k | 11 | 22 | 4 | 12 | 41.5k | 150 (932) / 292 | - |
+| m8 boss (airship) | 195 | 110 / 18.2k | 24 / 3.4k | 11 | 6 | 10 | 34 | 24.0k | 124 (534) / 226 | 13 of 110 (moving ship) |
+| museum (prologue) | 393 | 297 / 30.9k | 30 / 3.9k | 11 | 33 | 2 | 12 | 28.0k | 91 (797) / 174 | 279 of 297 |
+- "verts" = source vertices (V4-32 positions); the GS sees ~2x (pass A + B). Static mesh DMA referenced per
+  frame 0.9-2.9 MB; per-frame packets 32-67 KB (+ texture uploads 42-269 KB).
+- VRAM: FB 0x00-0x37, 0x38-0x6F, Z32 0x70-0xA7 (pages); textures resident 0xA8-0x1FF (+ per-frame set at
+  0x80..); per frame 91-210 distinct textures (T4 65-80%, T8), 0.5-1.2 MB; 170-410 CLUTs (each texture with
+  ~2: pass A / pass B palettes). No uploads of resident textures during gameplay.
 
 ## Sly 1 decomp (TheOnlyZac/sly1) facts likely carrying over
 - RP enum (Sly 1, 18): DynamicTexture, Background, BlotContext, Opaque, Cutout, CelBorder, ProjVolume,
