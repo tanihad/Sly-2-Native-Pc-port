@@ -23,7 +23,8 @@
 #define R2_DUAL 0
 #endif
 #ifndef R2_ZREC
-#define R2_ZREC 1                        // 1: exact per-triangle Z records (geometry stage); 0: the interpolated plane
+#define R2_ZREC 1                        // 1: exact per-triangle Z records (geometry stage, PS2_R2_ZREC=1); 0: the
+                                         // interpolated plane (the default pipelines, perms ps_r2_iz*)
 #endif
 
 cbuffer r2_seg : register(b1) {

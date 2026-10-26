@@ -1270,7 +1270,9 @@ static void prof_end(void) {
     if (ft > 50.0) return;               /* (loading frames: left out) */
     for (int c = 0; c < PR_N; c++) { PR.ms[c] += f[c]; PR.ps_inv[c] += fi[c]; PR.occl[c] += fo[c]; PR.prims[c] += fp[c]; }
     PR.total += ft;
-    if (++PR.frames % 60) return;
+    static int every = 0;                /* (r2-m1) PS2_GPU_PROF_EVERY=n: the line every n frames (short replays) */
+    if (!every) { const char* e = getenv("PS2_GPU_PROF_EVERY"); every = e && atoi(e) > 0 ? atoi(e) : 60; }
+    if (++PR.frames % (uint32_t)every) return;
     char line[2048];
     int o = snprintf(line, sizeof line, "prof: %u frames, GPU ms per frame %.3f:", PR.frames, PR.total / PR.frames);
     for (int c = 0; c < PR_N && o < (int)sizeof line - 48; c++)

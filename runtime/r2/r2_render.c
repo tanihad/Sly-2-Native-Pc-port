@@ -53,9 +53,11 @@ static int init(const r2_exec_in* in) {
         { "POSITION", R2G_F32x3, 0, 0 }, { "WBITS", R2G_U32, 12, 0 }, { "UV", R2G_S16x2, 16, 0 },
         { "COLA", R2G_U32, 20, 0 }, { "COLB", R2G_U32, 24, 0 }, { "DRAWID", R2G_U32, 0, 1 },
     };
-    /* Z: exact per-triangle records from the geometry stage (default), or PS2_R2_ZREC=0 the rasterizer's plane */
+    /* Z: the rasterizer's plane through the VU-exact vertices (default: the exact path's Z on 99.95% of pixels, the rest
+     * +-1), or PS2_R2_ZREC=1 exact per-triangle records from the geometry stage (100%, about 2x the GPU time of R2's
+     * draws: ep3 hub replay at 3x, notes/modern-renderer.md "R0 + R1 as built") */
     const char* zr = getenv("PS2_R2_ZREC");
-    int zrec = !(zr && *zr == '0');
+    int zrec = zr && *zr == '1';
     r2g_pipe_desc pd = { gpu_sh_vs_r2, sizeof gpu_sh_vs_r2, gpu_sh_ps_r2, sizeof gpu_sh_ps_r2, attrs, 6,
                          gpu_sh_gs_r2, sizeof gpu_sh_gs_r2 };
     if (!zrec) { pd.ps = gpu_sh_ps_r2_iz; pd.ps_size = sizeof gpu_sh_ps_r2_iz; pd.gs = NULL; pd.gs_size = 0; }
