@@ -393,6 +393,8 @@ threads); SDL3 covers most of them.
 
 ### 5.3 Order of work (for the synthesis; capture points come from r2-re)
 
+*Superseded by the final design's milestone plan R0-R11: notes/modern-renderer.md section 7.*
+
 | step | content | done when |
 |---|---|---|
 | R0 | r2gpu.h + D3D11 backend + conformance scene; pipeline warm-up at boot | the scene renders identically on hardware and WARP |
