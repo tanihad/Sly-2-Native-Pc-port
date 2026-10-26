@@ -3,14 +3,15 @@
 // texture / TFX / fog / alpha-test arithmetic in the pixel shader (shaders/gs.hlsl's functions, one definition of the GS
 // formulas: tex_sample with the 4-bit bilinear, tfx, atst_pass; CLUTs straight from GS memory, R2_CLUT).
 //
-// Positions: clip = x * row0 + y * row1 + z * row2 + row3 (world x clip of the entry); the VU's float-bits screen
-// transform as the linear model of the frame (GS X = bx + ax * x/w, Z = bz + az * z/w: runtime/r2/r2_vertex.c
-// r2_screen_model_of), emitted as clip-space positions (linear in x, y, z, w: D3D clips and divides) on the exact path's
-// sample grid (d3d = (GS - XYOFFSET) / 16 * k + 0.5) through the REF viewport of mixed frames (16384 pixels centred on the
-// origin). The VU's clipping planes |z| <= w are the clip distances. Depth: the GS Z / 2^20 (the exact path's P1
-// encoding), floored to the integer the GS would store, as SV_DepthLessEqual (early rejection stays on); the two passes
-// of a mesh compute it identically, so pass B's GEQUAL meets pass A's Z. Colour and fog are interpolated linearly in
-// screen space (Gouraud, as the GS), texture coordinates perspective-correctly (= the GS's S/T/Q).
+// Vertices: the VU's own arithmetic bit for bit (the design's "exactness lever", notes/modern-renderer.md 4: round toward
+// zero emulated with error-free transforms, vu_mul / vu_add / vu_rcp), so X, Y (12.4), Z, F, S, T, Q equal what the VU
+// XGKICKs (level-1 oracle: scripts/r2_mesh_check.c against runtime/r2/r2_vertex.c, the C twin). They are final screen
+// positions (w = 1: entries reach R2 only inside the VU's guard band, r2_capture.c inside_guard, so nothing needs
+// clipping) on the exact path's sample grid (d3d = (GS - XYOFFSET) / 16 * k + 0.5) through the REF viewport of mixed
+// frames (16384 pixels centred on the origin); the rasterizer sees the GS's integer vertices, so coverage and the Z plane
+// are the GS's. Depth: the GS Z / 2^20 (the exact path's P1 encoding), floored to the integer the GS would store, as
+// SV_DepthLessEqual (early rejection stays on); pass A and pass B compute it identically. Colour, fog and S/T/Q are
+// interpolated linearly on screen (as the GS), U = S/Q, V = T/Q per pixel.
 #define FF 1
 #define SPEC_NOVIEW 1
 #define SPEC_NOLOD 1
@@ -40,9 +41,8 @@ struct R2O {
     noperspective centroid float4 pos : SV_Position;
     noperspective float4 col : COLOR0;   // 0..255
     noperspective float fog : FOG;
-    float2 uv : TEXCOORD0;               // u, v in texture units (4.12 / 4096)
+    noperspective float3 stq : TEXCOORD0;   // the VU's S, T, Q
     nointerpolation uint did : DID;
-    float2 clipd : SV_ClipDistance0;     // the VU's near / far planes: z >= -w, z <= w
 };
 
 // draw record (gpu_front.h gpu_r2_draw, 64 bytes): +0 mesh, first, count, entry; +16 TEX0 lo, hi, CLAMP lo, hi;
@@ -55,26 +55,77 @@ struct R2O {
 #define R2D_TCC 32u
 #define R2D_KEEP 64u
 
+// ---- the VU's FMAC arithmetic, bit for bit: every MUL / ADD rounds toward zero and flushes to zero (runtime/vu_exec.c
+// runs the microcode under that MXCSR). D3D11 rounds float add / mul to nearest; the error-free transforms (Dekker's
+// product with Veltkamp's split, Knuth's two-sum) give the exact result as r + e, and r steps one ulp toward zero when e
+// points the other way. Twin of runtime/r2/r2_vertex.c (rz / mul_rz / add_rz there, through doubles).
+float vu_fix(float r, float e) {
+    if (e != 0.0 && r != 0.0 && ((e < 0.0) != (r < 0.0))) r = asfloat(asuint(r) - 1u);
+    if (abs(r) < 1.17549435e-38) r = asfloat(asuint(r) & 0x80000000u);
+    return r;
+}
+float2 vu_two_prod(float a, float b) {
+    precise float p = a * b;
+    precise float ca = 4097.0 * a;
+    precise float ah = ca - (ca - a);
+    precise float al = a - ah;
+    precise float cb = 4097.0 * b;
+    precise float bh = cb - (cb - b);
+    precise float bl = b - bh;
+    precise float e = ((ah * bh - p) + ah * bl + al * bh) + al * bl;
+    return float2(p, e);
+}
+float vu_mul(float a, float b) { float2 pe = vu_two_prod(a, b); return vu_fix(pe.x, pe.y); }
+float vu_add(float a, float b) {
+    precise float s = a + b;
+    precise float bb = s - a;
+    precise float e = (a - (s - bb)) + (b - bb);
+    return vu_fix(s, e);
+}
+bool vu_rcp_over(float c, float w) {   // c * w > 1, exactly
+    float2 pe = vu_two_prod(c, w);
+    precise float d = 1.0 - pe.x;      // exact (Sterbenz: pe.x is near 1)
+    return d < pe.y;
+}
+float vu_rcp(float w) {                // DIV Q, vf00w, w for w > 0: the largest float c with c * w <= 1
+    precise float q = 1.0 / w;         // (D3D11: within 2.5 ulp)
+    [unroll] for (uint k = 0u; k < 3u; k++) if (vu_rcp_over(q, w)) q = asfloat(asuint(q) - 1u);
+    [unroll] for (uint k2 = 0u; k2 < 3u; k2++) {
+        float n = asfloat(asuint(q) + 1u);
+        if (!vu_rcp_over(n, w)) q = n;
+    }
+    return q;
+}
+
 R2O r2_vs(R2V i) {
     R2O o;
     uint db = r2_off.z + i.did * 64u;
     uint4 d0 = fdata.Load4(db);
     uint4 d3 = fdata.Load4(db + 48u);
     uint eb = r2_off.y + d0.w * 80u;
-    float4 m0 = asfloat(fdata.Load4(eb)), m1 = asfloat(fdata.Load4(eb + 16u)), m2 = asfloat(fdata.Load4(eb + 32u)),
-           m3 = asfloat(fdata.Load4(eb + 48u));
+    float4 m[4] = { asfloat(fdata.Load4(eb)), asfloat(fdata.Load4(eb + 16u)), asfloat(fdata.Load4(eb + 32u)),
+                    asfloat(fdata.Load4(eb + 48u)) };
     float fade = asfloat(fdata.Load(eb + 64u));
-    float4 sxy = asfloat(fdata.Load4(r2_off.x + 32u));   // ax, bx, ay, by
-    float2 sz = asfloat(fdata.Load2(r2_off.x + 48u));    // az, bz
-    precise float4 c = i.pos.x * m0 + i.pos.y * m1 + i.pos.z * m2 + m3;
-    float w = c.w;
-    precise float gx = sxy.y * w + sxy.x * c.x;          // GS X * w
-    precise float gy = sxy.w * w + sxy.z * c.y;
-    precise float gz = sz.y * w + sz.x * c.z;            // GS Z * w
-    precise float dx = (gx - r2_map.z * w) * (r2_map.x * (1.0 / 16.0)) + 0.5 * w;
-    precise float dy = (gy - r2_map.w * w) * (r2_map.y * (1.0 / 16.0)) + 0.5 * w;
-    o.pos = float4(dx * (1.0 / 8192.0), -dy * (1.0 / 8192.0), gz * (1.0 / 1048576.0), w);
-    o.clipd = float2(c.w + c.z, c.w - c.z);
+    float4 c0 = asfloat(fdata.Load4(r2_off.x)), c1 = asfloat(fdata.Load4(r2_off.x + 16u));   // VU 0, VU 1
+    // 0x07F8: MULAx / MADDAy / MADDAz / MADDw (row 3 x 1.0 exact), M = world x clip (gpu_r2front.c, VU-exact too)
+    float c[4];
+    [unroll] for (uint j = 0u; j < 4u; j++) {
+        float acc = vu_mul(m[0][j], i.pos.x);
+        acc = vu_add(acc, vu_mul(m[1][j], i.pos.y));
+        acc = vu_add(acc, vu_mul(m[2][j], i.pos.z));
+        c[j] = vu_add(acc, m[3][j]);
+    }
+    float w = c[3];
+    float q = vu_rcp(w);                                    // (entries reach R2 only with w > 0 at every corner)
+    // XYZF2 from the float bits of VU 1 + VU 0 x (clip x Q): X, Y the low 16 bits, Z bits 4..27
+    uint bx = asuint(vu_add(c1.x, vu_mul(c0.x, vu_mul(c[0], q))));
+    uint by = asuint(vu_add(c1.y, vu_mul(c0.y, vu_mul(c[1], q))));
+    uint bz = asuint(vu_add(c1.z, vu_mul(c0.z, vu_mul(c[2], q))));
+    float gx = (float)(bx & 0xFFFFu), gy = (float)(by & 0xFFFFu), gz = (float)((bz >> 4) & 0xFFFFFFu);
+    // the exact path's sample grid; positions are final (w = 1): the GS interpolates everything linearly on screen
+    precise float dx = (gx - r2_map.z) * (r2_map.x * (1.0 / 16.0)) + 0.5;
+    precise float dy = (gy - r2_map.w) * (r2_map.y * (1.0 / 16.0)) + 0.5;
+    o.pos = float4(dx * (1.0 / 8192.0), -dy * (1.0 / 8192.0), gz * (1.0 / 1048576.0), 1.0);
     // colour: A (pass A) or B, VU 8.x fade on colour A's alpha / colour B's RGB (0x0BE0, truncated)
     bool csel = (d3.z & R2D_CSEL) != 0u;
     uint col = csel ? i.colb : i.cola;
@@ -84,11 +135,11 @@ R2O r2_vs(R2V i) {
         else cc.w = (uint)((float)cc.w * fade);
     }
     o.col = (float4)cc;
-    // fog: the w word (2^23 + m) + VU 9.y * min(w, VU 9.z) / w, F = mantissa bits 4..11
-    float r = w > 0.0 ? min(w, asfloat(d3.y)) / w : 1.0;
-    uint add = (uint)max(asfloat(d3.x) * r, 0.0);
-    o.fog = (float)((((i.wbits & 0x7FFFFFu) + add) >> 4) & 255u);
-    o.uv = (float2)i.uv * (1.0 / 4096.0);
+    // fog: the w word (2^23 + m) + VU 9.y x (MINI(w, VU 9.z) x Q), F = bits 4..11
+    float fw = vu_add(asfloat(i.wbits), vu_mul(asfloat(d3.x), vu_mul(min(w, asfloat(d3.y)), q)));
+    o.fog = (float)((asuint(fw) >> 4) & 255u);
+    // STQ = (ITOF12 u, v, 1) x Q, interpolated linearly on screen and divided per pixel (the GS's S/Q, T/Q)
+    o.stq = float3(vu_mul((float)i.uv.x * (1.0 / 4096.0), q), vu_mul((float)i.uv.y * (1.0 / 4096.0), q), q);
     o.did = i.did;
     return o;
 }
@@ -119,8 +170,11 @@ R2F r2_ps(R2O i) {
     uint t0 = d1.x, t1 = d1.y;
     uint tw = (t0 >> 26) & 15u, th = ((t0 >> 30) | (t1 << 2)) & 15u;
     float tw16 = (float)(16u << (tw > 10u ? 10u : tw)), th16 = (float)(16u << (th > 10u ? 10u : th));
-    precise float su16 = i.uv.x * tw16;
-    precise float tv16 = i.uv.y * th16;
+    float iq = 1.0 / i.stq.z;              // (as the exact path's FF fast path, gs.hlsl STQ_FAST)
+    precise float su = i.stq.x * iq;
+    precise float tv = i.stq.y * iq;
+    precise float su16 = su * tw16;
+    precise float tv16 = tv * th16;
     uint t = tex_sample(st, f2i(su16), f2i(tv16), 1.0);
     uint4 vc = (uint4)max(i.col, 0.0);                     // the GS's Gouraud stepping truncates
     vc = min(vc, uint4(255u, 255u, 255u, 255u));
