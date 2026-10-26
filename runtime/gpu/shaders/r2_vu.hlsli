@@ -48,7 +48,13 @@ float vu_rcp(float w) {                // DIV Q, vf00w, w for w > 0: the largest
 }
 
 // ---- exact rational arithmetic on int64.hlsli values ----
-float i64_to_float(i64 a) { return (float)asint(a.y) * 4294967296.0 + (float)a.x; }
+// (the magnitude, then the sign: hi * 2^32 + lo with a negative hi cancels catastrophically for small negative values)
+float i64_to_float(i64 a) {
+    bool neg = i64_is_neg(a);
+    i64 m = neg ? i64_neg(a) : a;
+    float f = (float)m.y * 4294967296.0 + (float)m.x;
+    return neg ? -f : f;
+}
 
 // floor(v) as int64 for any |v| < 2^62 (int64.hlsli's i64_from_float_floor loses small negative values: its low word
 // 2^32 - k is not a float)

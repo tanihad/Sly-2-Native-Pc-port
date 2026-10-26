@@ -167,18 +167,20 @@ static int test_div(env* e, const char* name) {
         in[i * 8 + 4] = (uint32_t)s; in[i * 8 + 5] = (uint32_t)pp[i]; in[i * 8 + 6] = in[i * 8 + 7] = 0;
     }
     if (!run_kernel(e, gpu_sh_ps_r2c_div, sizeof gpu_sh_ps_r2c_div, in, sizeof in, out)) return 0;
-    int bad = 0;
+    int bad = 0, badt = 0, badq = 0;
     for (int i = 0; i < N; i++) {
         int64_t t = (int64_t)((uint64_t)out[i * 4] | (uint64_t)out[i * 4 + 1] << 32);
         int64_t q = (int64_t)((uint64_t)out[i * 4 + 2] | (uint64_t)out[i * 4 + 3] << 32);
         int64_t rt = round_ref(nn[i], dd[i], ss[i], pp[i]), rq = floordiv128(nn[i], dd[i]);
+        badt += t != rt;
+        badq += q != rq;
         if (t != rt || q != rq) {
             if (bad++ < 4)
                 fprintf(stderr, "  %s div case %d: n %lld d %lld s %d: gpu %lld / %lld ref %lld / %lld\n", name, i, (long long)nn[i],
                         (long long)dd[i], ss[i], (long long)t, (long long)q, (long long)rt, (long long)rq);
         }
     }
-    printf("r2 %s: div %d mismatches of %d\n", name, bad, N);
+    printf("r2 %s: div %d mismatches of %d (rounded %d, floor %d)\n", name, bad, N, badt, badq);
     return !bad;
 }
 

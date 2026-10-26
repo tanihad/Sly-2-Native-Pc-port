@@ -53,11 +53,15 @@ static int init(const r2_exec_in* in) {
         { "POSITION", R2G_F32x3, 0, 0 }, { "WBITS", R2G_U32, 12, 0 }, { "UV", R2G_S16x2, 16, 0 },
         { "COLA", R2G_U32, 20, 0 }, { "COLB", R2G_U32, 24, 0 }, { "DRAWID", R2G_U32, 0, 1 },
     };
+    /* Z: exact per-triangle records from the geometry stage (default), or PS2_R2_ZREC=0 the rasterizer's plane */
+    const char* zr = getenv("PS2_R2_ZREC");
+    int zrec = !(zr && *zr == '0');
     r2g_pipe_desc pd = { gpu_sh_vs_r2, sizeof gpu_sh_vs_r2, gpu_sh_ps_r2, sizeof gpu_sh_ps_r2, attrs, 6,
                          gpu_sh_gs_r2, sizeof gpu_sh_gs_r2 };
+    if (!zrec) { pd.ps = gpu_sh_ps_r2_iz; pd.ps_size = sizeof gpu_sh_ps_r2_iz; pd.gs = NULL; pd.gs_size = 0; }
     R.pipe[0] = R.d ? r2g_pipe_create(R.d, &pd) : NULL;
-    pd.ps = gpu_sh_ps_r2_dual;
-    pd.ps_size = sizeof gpu_sh_ps_r2_dual;
+    pd.ps = zrec ? gpu_sh_ps_r2_dual : gpu_sh_ps_r2_iz_dual;
+    pd.ps_size = zrec ? sizeof gpu_sh_ps_r2_dual : sizeof gpu_sh_ps_r2_iz_dual;
     R.pipe[1] = R.d ? r2g_pipe_create(R.d, &pd) : NULL;
     R.cb = R.d ? r2g_buf_create(R.d, R2G_BUF_CONSTANT, R2G_USAGE_DYNAMIC, 48, NULL) : NULL;
     if (!R.d || !R.pipe[0] || !R.pipe[1] || !R.cb) {

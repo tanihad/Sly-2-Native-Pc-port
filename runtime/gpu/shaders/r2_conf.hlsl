@@ -23,8 +23,8 @@ uint4 r2c_vu_ps(float4 pos : SV_Position) : SV_Target0 {
 uint4 r2c_div_ps(float4 pos : SV_Position) : SV_Target0 {
     uint b = case_of(pos) * 32u;
     uint4 v = cin.Load4(b), u = cin.Load4(b + 16u);
+    i64 t = i64_round_scaled(v.xy, v.zw, u.x, u.y != 0u);
     i64 r;
     i64 q = i64_divmod_floor(v.xy, v.zw, r);
-    i64 t = i64_round_scaled(v.xy, v.zw, u.x, u.y != 0u);
     return uint4(t, q);
 }

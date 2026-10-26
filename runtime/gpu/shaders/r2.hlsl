@@ -22,6 +22,9 @@
 #ifndef R2_DUAL
 #define R2_DUAL 0
 #endif
+#ifndef R2_ZREC
+#define R2_ZREC 1                        // 1: exact per-triangle Z records (geometry stage); 0: the interpolated plane
+#endif
 
 cbuffer r2_seg : register(b1) {
     float4 r2_map;                       // kx, ky, XYOFFSET x, y (12.4)
@@ -39,7 +42,7 @@ struct R2V {
 };
 
 struct R2O {
-    noperspective float4 pos : SV_Position;
+    noperspective centroid float4 pos : SV_Position;   // (centroid: required with conservative depth output)
     noperspective float4 col : COLOR0;   // 0..255
     noperspective float fog : FOG;
     noperspective float3 stq : TEXCOORD0;   // the VU's S, T, Q
@@ -158,7 +161,11 @@ struct R2F {
     float z : SV_DepthLessEqual;
 };
 
+#if R2_ZREC
 R2F r2_ps(R2P i) {
+#else
+R2F r2_ps(R2O i) {
+#endif
     vkx = 1u; vky = 1u; vbase = 0u; vfbw = 1u; vflags = 0u; one = 1.0; kx = 1u; ky = 1u;   // (gs.hlsl statics: no view)
     uint db = r2_off.z + i.did * 64u;
     uint4 d1 = fdata.Load4(db + 16u);
@@ -234,6 +241,7 @@ R2F r2_ps(R2P i) {
 #if R2_DUAL
     o.c1 = float4(0.0, 0.0, 0.0, a1);
 #endif
+#if R2_ZREC
     // the exact path's Z at this sample (gs.hlsl gs_frag): native pixel (px, py), sample (si, sj) of kx x ky
     uint kxu = (uint)r2_map.x, kyu = (uint)r2_map.y;
     uint2 tp = (uint2)i.pos.xy;
@@ -241,6 +249,11 @@ R2F r2_ps(R2P i) {
     i64 z16 = gs_z16_sample(i.zr0.xy, i.zr0.zw, i.zr1.xy, asint(i.zr1.z), (int)pxu, (int)pyu, tp.x - pxu * kxu,
                             tp.y - pyu * kyu, kxu, kyu);
     float zv = (float)gs_z_clamp(z16, 0xFFFFFFFFu);
+#else
+    // the rasterizer's plane through the exact vertices (half a unit up, r2_vs): the GS's Z but where the plane
+    // comes within ~0.01 of an integer
+    float zv = floor(i.pos.z * 1048576.0 - 0.5);
+#endif
     o.z = max(zv + r2_misc.y, 0.0) * (1.0 / 1048576.0);   // (r2_misc.y: PS2_R2_ZBIAS, debugging)
     return o;
 }
