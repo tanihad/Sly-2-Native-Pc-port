@@ -531,14 +531,37 @@ covers; the owner confirms after testing the dist build. Effort is in agent-days
 - **Options**: Graphics > **Rendering**: Modern / Reference (exact) (live); **F10** switches while playing. Default stays
   Reference until the owner's check.
 - **Verification**: `tests/r2/gates.json` (calibrated, frozen; `scripts/r2_ab_compare.py --gates`, `r2_ab.ps1` exits
-  with it). `scripts/r2_sweep.ps1`: the A/B on every hub + 3 jobs. `scripts/r2_prof_ab.ps1`: GPU cost exact vs hybrid on
-  a fixed stream. ep1 hub (Sly in a searchlight, props + clipped + consolidated): S = 1 PSNR 58.9 dB, > 16: 0.019%,
-  Z 99.85% exact (100% within 2).
-- **Performance** (chaos ep1_hub, 2 interleaved repeats, release, 3x 16:9 unlimited, owner's PC, tag r2m2_c9):
-  reference 111.4 fps (1% 75.3, 0.1% 42.3; worker 7.08, GS 6.86, frontend 7.90 ms, GPU 5.15) -> modern **205.1 fps**
-  (1% 115.5, 0.1% 55.6; worker 2.24, GS 1.70, frontend 2.06, render 0.37, GPU 4.78 ms). The GPU now bounds the frame;
-  R2 does not lower it (same per-pixel cost), so the design's GPU <= 4.0 ms needs the remaining exact GPU work
-  (shadows, motion-blur sprites, ROV tier) moved or optimised (R6/R7).
+  with it). `scripts/r2_sweep.ps1`: the A/B on every hub + 3 jobs - **11 / 11 pass** (ep1-ep8 hubs, m2 boardroom, m3
+  boss, m8 boss; S = 1 frame buffers PSNR 59-999 dB, > 16: <= 0.001%, Z within 4 >= 99.998%). Harness fixes on the way
+  (the hybrid path was right): exact primitives are skipped only for entries R2 took (a recording starting after its
+  frame's R2H_FRAME), and the last native entry before a render-class switch is not bracketed (the switch's packets,
+  e.g. the shadow pipeline's stencil init, fell inside the bracket). `scripts/r2_prof_ab.ps1`: GPU cost exact vs
+  hybrid on a fixed stream.
+- **No-discard PS**: draws whose alpha test cannot split the fragments (no test, all pass, all fail: most of them) use
+  a variant without `discard` (`ps_r2_nd`, state bit 14 marks the others); the PS reads no segment record (FBA travels
+  with the material index).
+- **Performance** (chaos benchmark, all 8 scenes, reference vs modern from one exe, interleaved, release, 3x 16:9
+  unlimited, owner's PC; tags r2m2_final (1 repeat) and r2m2_final2 (m3 / m8 boss, 2 repeats, with the no-discard PS);
+  fps median / 1% low / 0.1% low; CPU stage ms worker / GS / frontend; GPU ms):
+
+  | scene | reference | modern | modern CPU stages | GPU ref -> mod |
+  |---|---|---|---|---|
+  | ep1_hub | 113.8 / 77.1 / 42.4 | **203.3** / 114.3 / 53.1 | 2.2 / 1.7 / 2.1 (r2m2_c9: 205.1, 2 repeats) | 5.2 -> 4.8 |
+  | ep3_hub | 191.9 / 88.8 / 47.6 | 192.7 / 93.8 / 54.6 | 2.7 / 2.3 / 2.3 | 5.0 -> 5.1 (GPU-bound) |
+  | ep5_hub | 154.3 / 116.0 / 48.3 | **216.0** / 142.2 / 59.4 | 1.7 / 1.5 / 2.1 | 4.8 -> 4.5 |
+  | m1_brawl | 159.2 / 80.1 / 43.3 | 204.1 / 118.0 / 57.7 | 2.2 / 1.7 / 2.1 | 5.3 -> 4.9 |
+  | m2_boardroom (fire) | 132.6 / 81.7 / 57.9 | 132.6 / 79.3 / 59.0 | 1.7 / 1.1 / 1.5 | 7.4 -> 7.4 (GPU-bound) |
+  | m3_boss | 227.6 / 139.9 / 53.4 | 218.1 / 124.5 / 55.7 | 2.2 / 1.8 / 1.8 | 4.3 -> 4.5 (GPU-bound) |
+  | m5_boss | 159.7 / 91.6 / 48.2 | 193.1 / 109.3 / 59.1 | 2.0 / 1.7 / 2.4 | 5.0 -> 5.1 |
+  | m8_boss | 269.6 / 119.9 / 56.4 | 269.5 / 163.5 / 60.2 | 1.0 / 1.0 / 1.0 | 3.7 -> 3.6 |
+
+  The CPU stages fall to ~2 ms (design: <= 2.5; ep3's worker 2.7), so most scenes become **GPU-bound at ~4.5-5 ms**:
+  R2 costs the GPU what the exact path did for the same pixels, so it cannot lower it, and the design's GPU <= 4.0 ms /
+  ep3 >= 220 fps need the remaining exact GPU work (shadows, motion-blur sprites, the ROV tier: ~1.5-2 ms in ep1) moved
+  or optimised (R6 / R7). Where GPU-bound, modern equals reference (m2, m8, ep3) except m3_boss (-4% median, 1% low
+  140 -> 125: GPU +0.2 ms in that fight; a fixed-stream replay of the boss intro shows parity). 22-minute m11_long with
+  modern on (every episode): private bytes 696 -> 1009-1107 MB, flat (reference: 1138-1144), no dropped / stale /
+  unsupported R2 work, the only slow captures the first frame of a level (decode budget).
 - **Not done**: pre-warm at level load (first-sight decoding costs ~15 us a mesh under the 3 ms budget; entries stay
   exact for a frame or two), texture arrays (the GS memory sampling is not R2's GPU cost), instancing of repeated meshes.
 
