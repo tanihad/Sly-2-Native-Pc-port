@@ -1,0 +1,24 @@
+{
+  "about": "Modern renderer (R2) verification gates, notes/modern-renderer.md section 5. Calibrated on the A/B data of r2-m1 (ep3 hub) and r2-m2 (hubs + jobs, notes/modern-renderer.md 'R2 as built'); frozen: loosen only with the owner's agreement. Checked by scripts/r2_ab_compare.py --gates on bracket-recording replays (scripts/r2_ab.ps1): exact (--r2-ab 0) vs hybrid (--r2-ab 1) of the same stream, GS memory at sample 0 (S = 1).",
+  "level1_vertex": {
+    "about": "scripts/r2_mesh_check.c against a PS2_VU_RECORD recording: R2's vertex function vs the VU's XGKICKed vertices",
+    "xy_units_max": 1, "xy_share_exact_min": 0.999, "z_units_max": 2, "z_share_min": 0.999,
+    "stq_rel_max": 1.52587890625e-05, "rgba_prelit_exact": true, "fog_max": 1,
+    "calibration": "ep3 hub (r2-m1): X, Y, Z, F, S, T, Q, RGBA bit-exact on every decoded vertex (VU-exact vertex shader)"
+  },
+  "level3_frame_s1": {
+    "about": "whole frame buffers, S = 1 (every frame buffer page of the VBlank)",
+    "psnr_min_db": 38.0,
+    "share_over16_max": 0.005,
+    "share_over8_max": 0.001,
+    "share_over2_max": 0.01,
+    "mean_signed_abs_max": 0.5,
+    "alpha_bit7_diff_max": 0.001,
+    "z_within4_min": 0.999,
+    "calibration": "ep3 hub r2-m1 61 dB / 0.002% > 16 / Z 100%; ep1 hub r2-m2 (props, clipped, consolidated) 58.9 dB / 0.019% > 16 / Z 99.85% exact, 100% within 2"
+  },
+  "level4_perf": {
+    "about": "chaos benchmark (scripts/chaos_bench.ps1), modern vs reference in one session, interleaved, release, 3x 16:9 unlimited",
+    "ep1_hub_fps_min": 190, "low1_no_regression": true, "low01_no_regression": true, "cpu_stage_ms_max": 2.5
+  }
+}

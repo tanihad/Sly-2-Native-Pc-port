@@ -162,10 +162,13 @@ ps_gs_sprite_w_nr   gs.hlsl             ps_gs             ps_5_0    PRIM=1 NOROV
 # (r2-m1) the modern renderer's Original materials (runtime/r2/r2_render.c, shaders/r2.hlsl)
 vs_r2               r2.hlsl             r2_vs             vs_5_0
 gs_r2               r2.hlsl             r2_gs             gs_5_0
-ps_r2               r2.hlsl             r2_ps             ps_5_0    R2_DUAL=0
 ps_r2_dual          r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1
-ps_r2_iz            r2.hlsl             r2_ps             ps_5_0    R2_DUAL=0 R2_ZREC=0
 ps_r2_iz_dual       r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0
+ps_r2_nd            r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_NODISCARD=1
+# (r2-m2) meshes crossing the VU's guard band: per triangle VU-exact or GPU-clipped (r2_gs_clip)
+vs_r2_clip          r2.hlsl             r2_vs_clip        vs_5_0    R2_CLIP=1
+gs_r2_clip          r2.hlsl             r2_gs_clip        gs_5_0    R2_CLIP=1
+ps_r2_clip          r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_CLIP=1
 # (r2-m1) its conformance kernels (tests/unit/r2)
 vs_r2c              r2_conf.hlsl        r2c_vs            vs_5_0
 ps_r2c_vu           r2_conf.hlsl        r2c_vu_ps         ps_5_0

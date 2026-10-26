@@ -153,9 +153,43 @@ static int add_batch_packets(dec* d, r2_batch* B, uint32_t X, const uint32_t* pk
         if ((P->tex1 & 1) == 0 || ((P->tex1 >> 2) & 7) != 0) return R2M_PACKET;                 /* LCM 1, MXL 0 */
         P->prim = prim;
         P->csel = regs == 0x41F2;
+        r2_pass_classify(P);
         B->npass++;
     }
     return B->npass ? R2M_OK : R2M_PACKET;
+}
+
+/* (r2-m2) the pass's static drawing classes (as gpu_r2front.c emit_pass derived them per frame in r2-m1): blend class
+ * (the exact path's FF table, gpu_front.c state_update), texture filter, the material's static shader flags */
+void r2_pass_classify(r2_pass* P) {
+    uint32_t prim = P->prim;
+    int abe = (prim >> 6) & 1, fge = (prim >> 5) & 1;
+    uint64_t alpha = P->alpha, tex1 = P->tex1;
+    int A = (int)(alpha & 3), Bs = (int)((alpha >> 2) & 3), C = (int)((alpha >> 4) & 3), D = (int)((alpha >> 6) & 3);
+    int fix = (int)((alpha >> 32) & 0xFF);
+    int bl = 0;                                                  /* R2G_BLEND_OFF NOCOLOR ADD REVSUB DUAL = 0..4 */
+    P->nocolor = 0;
+    if (abe) {
+        int uses_cd = A == 1 || Bs == 1 || C == 1 || D == 1;
+        if (A == Bs) { if (D == 1) { bl = 1; P->nocolor = 1; } }
+        else if (!uses_cd) bl = 0;
+        else if (C != 1 && A == 0 && Bs == 2 && D == 1) bl = 2;
+        else if (C != 1 && A == 2 && Bs == 0 && D == 1) bl = 3;
+        else if (C != 1 && A == 0 && Bs == 1 && D == 1) bl = 4;
+        else bl = 0xFF;
+        if (bl == 4 && C == 2 && fix > 128) bl = 0xFF;
+    }
+    /* texture filter: LCM 1 (fixed LOD K), no mipmaps (checked at decode): K <= 0 magnifies (MMAG), else MMIN */
+    int k = (int)((int64_t)(tex1 << 20) >> 52);
+    int filt = k <= 0 ? (int)((tex1 >> 5) & 1) : (int)((tex1 >> 6) & 7);
+    if (filt > 1) bl = 0xFF;
+    P->texm = (uint8_t)(filt ? 2 : 1);
+    P->bl = (uint8_t)bl;
+    int tcc = (int)((P->tex0 >> 34) & 1);
+    /* GPU_R2D_CSEL 1, ABE 8, FGE 16, TCC 32, TEXM << 8 (gpu_front.h); the blend class at bits 12..15 */
+    P->mflags = (P->csel ? 1u : 0u) | (abe ? 8u : 0u) | (fge ? 16u : 0u) | (tcc ? 32u : 0u) | (uint32_t)P->texm << 8 |
+                (uint32_t)(bl & 15) << 12;
+    P->alpha_enc = (uint32_t)(A | Bs << 2 | C << 4 | D << 6) | (uint32_t)fix << 8;
 }
 
 static int sub_batch(dec* d, uint32_t X, int second) {
@@ -207,6 +241,7 @@ static int sub_batch(dec* d, uint32_t X, int second) {
         memcpy(&v->z, &p[2], 4);
         if (!isfinite(v->x) || !isfinite(v->y) || !isfinite(v->z)) return R2M_VERTEX;
         v->wbits = p[3];
+        v->batch = d->nb;
         v->u = (int16_t)uv[0];
         v->v = (int16_t)uv[1];
         for (int c = 0; c < 4; c++) {
@@ -504,6 +539,15 @@ int r2_store_put(uint32_t handle, r2_mesh* m) {
     if (g > cur_gen) cur_gen = g;
     return 1;
 }
+
+/* (r2-m2) the scene slot ring (r2.h): here with the store, so that tools linking the frontend without the EE capture
+ * (gs_replay) resolve it */
+static r2_slot* slot_ring;
+r2_slot* r2_slot_ring(void) {
+    if (!slot_ring) slot_ring = calloc(R2_SLOTS, sizeof *slot_ring);
+    return slot_ring;
+}
+const r2_slot* r2_slot_at(uint32_t index) { return slot_ring ? &slot_ring[index % R2_SLOTS] : NULL; }
 
 const r2_mesh* r2_mesh_get(uint32_t handle) {
     uint32_t g = handle >> 20, i = handle & 0xFFFFF;

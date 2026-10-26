@@ -8,16 +8,19 @@
  *                 VU 0 / VU 1 (screen and depth constants) at +0x8160 / +0x8170, VU 2..5 (world -> clip) at +0x00.
  *   r2_cap_done   before 0x1583FC (after the last class's end function): the frame's chain is complete.
  *
- * A candidate entry (static world, render class 0 = the main VU1 program, a level on the allowlist) whose mesh DMA
- * decodes (r2_mesh.c; once per address and level, under a time budget per frame) becomes native:
- *   hybrid   one DIRECT packet into the frame builder (DMAS 0x2DEA28, as aspect.c's hints) carrying R2H_DRAW + its
- *            words (and R2H_FRAME once per frame; at the start of a run of native entries VIF MSCAL 0x3AB0 + MSCAL 0 ahead
- *            of it: the previous exact mesh's pending tail kicks are drawn before the native run, as in an all-exact
- *            frame, with VIF1's double-buffer parity kept), then the entry's mesh CALL is zeroed (form 0, the whole
- *            static packet at +8; form 1, the mesh DMA at +0xC, the per-frame header at +8 stays: it only uploads VU
- *            constants). When the next entry will not be native, the packet also carries the state epilogue: the A+D
- *            registers of the entry's last material pass (TEX0 with its CLUT load, TEX1, CLAMP, TEST, ALPHA, FOGCOL),
- *            so exact draws after a native run start from the GS state an all-exact frame leaves.
+ * A candidate entry (static world, or (r2-m2) a glob prop: an allocator entry with a header and a mesh DMA whose world
+ * matrix no outline entry of the frame uses; render class 0 = the main VU1 program; a level not blocked) whose mesh DMA
+ * decodes (r2_mesh.c; once per address and level, under a time budget per frame) becomes native (meshes crossing the
+ * VU's guard band too: R2E_CLIP, drawn by the clip pipeline):
+ *   hybrid   (r2-m2) its W x C (r2_matmul_fast), fade and mesh go into this frame's scene slot (r2.h r2_slot); at the start
+ *            of a run of native entries one DIRECT packet into the frame builder (DMAS 0x2DEA28, as aspect.c's hints)
+ *            carries R2H_RUN (slot, run), behind VIF MSCAL 0x3AB0 + MSCAL 0 (the previous exact mesh's pending tail
+ *            kicks are drawn before the native run, as in an all-exact frame, with VIF1's double-buffer parity kept);
+ *            the entry's mesh CALL is zeroed (form 0, the whole static packet at +8; form 1, the mesh DMA at +0xC, the
+ *            per-frame header at +8 stays: it only uploads VU constants). When the next entry will not be native, the
+ *            state epilogue follows: the A+D registers of the entry's last material pass (TEX0 with its CLUT load,
+ *            TEX1, CLAMP, TEST, ALPHA, FOGCOL), so exact draws after a native run start from the GS state an all-exact
+ *            frame leaves. The slot is published at the frame's end (the chain is kicked after it).
  *   bracket  the CALLs stay; R2H_BEGIN + words before them, MSCAL 0x3AB0 + MSCAL 0 (the entry's own tail kicks) and
  *            R2H_END after them: the frontend sees both versions (PS2_R2_CHECK compares them).
  * Everything else is exact. Off (the default), nothing here writes anything: the GS stream is the game's own. */
@@ -66,13 +69,21 @@ static void new_generation(uint32_t wid) {
 
 /* ---- settings, statistics ------------------------------------------------------------------------------------------ */
 static int cfg_done, env_mode = -1, check_on, levels_all, nlevels;
+static int kinds_world = 1, kinds_props = 1;   /* (r2-m2) PS2_R2_KINDS=world,props */
+static uint32_t block[32];                     /* (r2-m2) blocked levels (world ids): none known (the R2 sweep) */
+static int nblock;
+/* (r2-m2) PS2_R2_CLIP=1: meshes crossing the VU's guard band native through the clip pipeline. Off by default: the GPU's
+ * clipping does not reproduce the VU clipper's arithmetic (its clipped fans' Z is off the triangle's plane by up to ~0.1%:
+ * A/B Z gate fails on near-camera ground, ep5 hub 21% of the pixels), so these meshes stay exact */
+static int clip_on = 0;
 static uint32_t levels[32];
 static double budget_ms = 3.0;
 static LARGE_INTEGER qpf;
 
 typedef struct {
     uint32_t frames, cand, native, exact_level, exact_class, exact_decode, exact_budget, exact_dmas, exact_header, exact_fade, exact_guard,
-        decoded, decode_fail, bytes_hint, runs, epilogues;
+        decoded, decode_fail, bytes_hint, runs, epilogues, cand_props, native_props, exact_outline, outlines, outlines_parsed, clipped,
+        exact_bracket;
     double decode_ms, cap_ms;
     uint32_t reason[R2M_N];
 } r2_stats;
@@ -89,17 +100,33 @@ static void configure(void) {
         else if (!_stricmp(e, "bracket")) env_mode = R2_BRACKET;
         else fprintf(stderr, "[r2] PS2_R2='%s' is not off, hybrid or bracket: ignored\n", e);
     }
-    e = getenv("PS2_R2_LEVELS");                 /* "all" or world ids (default: the ep3 hub, world 12) */
-    if (e && *e) {
-        if (!_stricmp(e, "all")) levels_all = 1;
-        else for (const char* p = e; *p && nlevels < 32;) {
+    /* (r2-m2) every level by default (the allowlist became a blocklist: block_levels, empty after the R2 sweep);
+     * PS2_R2_LEVELS = an allowlist of world ids ("all": every level), PS2_R2_BLOCK = more blocked world ids */
+    levels_all = 1;
+    e = getenv("PS2_R2_LEVELS");
+    if (e && *e && _stricmp(e, "all")) {
+        levels_all = 0;
+        for (const char* p = e; *p && nlevels < 32;) {
             char* end;
             unsigned long v = strtoul(p, &end, 0);
             if (end == p) break;
             levels[nlevels++] = (uint32_t)v;
             p = *end ? end + 1 : end;
         }
-    } else levels[nlevels++] = 12;
+    }
+    e = getenv("PS2_R2_BLOCK");
+    if (e && *e)
+        for (const char* p = e; *p && nblock < 32;) {
+            char* end;
+            unsigned long v = strtoul(p, &end, 0);
+            if (end == p) break;
+            block[nblock++] = (uint32_t)v;
+            p = *end ? end + 1 : end;
+        }
+    e = getenv("PS2_R2_KINDS");                  /* (r2-m2) "world", "props" or both (default) */
+    if (e && *e) { kinds_world = strstr(e, "world") != NULL; kinds_props = strstr(e, "prop") != NULL; }
+    e = getenv("PS2_R2_CLIP");
+    if (e && *e) clip_on = *e == '1';
     e = getenv("PS2_R2_BUDGET_MS");
     if (e && *e) budget_ms = atof(e);
     e = getenv("PS2_R2_STATS");
@@ -136,6 +163,8 @@ static uint32_t fr_serial;
 static r2_frame_block fr_block;
 static double fr_decode_ms;
 static uint8_t alloc_mark[RENDER_LIST_MAX];   /* entries made by the allocator this frame */
+static r2_slot* SL;                       /* (r2-m2) the scene slot ring (hybrid; r2_mesh.c r2_slot_ring) */
+static r2_slot* fr_slot;                  /* this frame's slot (hybrid; NULL: none) */
 static int prev_native;                   /* the previous entry was native (a run is open) */
 static int prev_class = -1;
 static int bracket_open;                  /* bracket mode: the previous entry's END is due */
@@ -205,6 +234,38 @@ static void ad_epilogue(adlist* l, const r2_pass* P) {
     ad_reg(l, 0x3D, P->fogcol);
 }
 
+/* (r2-m2) Objects with cel outlines stay exact until R4 (their outline lines tie in Z with their mesh,
+ * notes/modern-renderer.md 7 R2): the world matrices the frame's outline entries (render class 1) upload. A prop whose
+ * matrix is among them belongs to an outlined object. */
+#define OUTL_MAX 128
+static float outl_w[OUTL_MAX][16];
+static int n_outl, outl_unparsed;
+
+static void collect_outlines(ps2_ctx* ctx) {
+    n_outl = 0;
+    outl_unparsed = 0;
+    uint32_t left = ctx->r[20].uw[0], p = ctx->r[21].uw[0];   /* $s4 entries left (this one included), $s5 -> its pointer */
+    if (left > RENDER_LIST_MAX) left = RENDER_LIST_MAX;
+    for (uint32_t i = 0; i < left; i++) {
+        uint32_t e = ps2_r32(ctx, p + 4 * i);
+        if (e < RENDER_LIST || e >= RENDER_LIST + RENDER_LIST_MAX * 16) continue;
+        uint32_t prio = ps2_r32(ctx, e);
+        if (prio > 25 || ps2_r32(ctx, CLASS_TABLE + prio * 4) != 1) continue;
+        uint32_t c1 = ps2_r32(ctx, e + 8);
+        float w[16], vu8[4];
+        st.outlines++;
+        if (!c1 || !r2_header_parse(ps2_ram, c1, w, vu8)) { outl_unparsed++; continue; }
+        st.outlines_parsed++;
+        if (n_outl < OUTL_MAX) memcpy(outl_w[n_outl++], w, sizeof w);
+    }
+}
+
+static int outlined(const float w[16]) {
+    for (int i = 0; i < n_outl; i++)
+        if (!memcmp(outl_w[i], w, 16 * sizeof(float))) return 1;
+    return 0;
+}
+
 static void frame_begin(ps2_ctx* ctx) {
     fr_open = 1;
     fr_mode = mode_now();
@@ -220,6 +281,7 @@ static void frame_begin(ps2_ctx* ctx) {
     if (wid != cur_wid || !have_gen) new_generation(wid);
     fr_level_ok = levels_all;
     for (int i = 0; i < nlevels && !fr_level_ok; i++) fr_level_ok = levels[i] == wid;
+    for (int i = 0; i < nblock && fr_level_ok; i++) fr_level_ok = block[i] != wid;
     uint32_t sp = ctx->r[29].uw[0];
     for (int i = 0; i < 4; i++) {
         uint32_t a = ps2_r32(ctx, sp + 0x8160 + 4 * (uint32_t)i), b = ps2_r32(ctx, sp + 0x8170 + 4 * (uint32_t)i);
@@ -232,7 +294,20 @@ static void frame_begin(ps2_ctx* ctx) {
     }
     r2_screen_model sm;
     fr_model_ok = r2_screen_model_of(&fr_block, &sm);
+    if (kinds_props) collect_outlines(ctx);
     fr_serial++;
+    if (!fr_serial) fr_serial = 1;                /* (0 marks a slot being written) */
+    fr_slot = NULL;
+    if (fr_mode == R2_HYBRID) {
+        if (!SL) SL = r2_slot_ring();
+        if (SL) {
+            fr_slot = &SL[fr_serial % R2_SLOTS];
+            __atomic_store_n(&fr_slot->serial, 0u, __ATOMIC_RELEASE);
+            __atomic_thread_fence(__ATOMIC_RELEASE);
+            fr_slot->nent = fr_slot->nrun = 0;
+            fr_slot->fb = fr_block;
+        }
+    }
 }
 
 static void frame_reset(void) {
@@ -284,11 +359,11 @@ static uint32_t mesh_for(uint32_t addr, int form, int* reason) {
  * state epilogue: the next one is exact) */
 static int likely_native(ps2_ctx* ctx, uint32_t e) {
     if (e < RENDER_LIST || e >= RENDER_LIST + RENDER_LIST_MAX * 16) return 0;
-    if (alloc_mark[(e - RENDER_LIST) / 16u]) return 0;
+    int prop = alloc_mark[(e - RENDER_LIST) / 16u];
     uint32_t prio = ps2_r32(ctx, e);
     if (prio > 25 || ps2_r32(ctx, CLASS_TABLE + prio * 4) != 0) return 0;
     uint32_t c1 = ps2_r32(ctx, e + 8), c2 = ps2_r32(ctx, e + 12);
-    if (!c1 || !MM) return 0;
+    if (!c1 || !MM || (prop ? !kinds_props || !c2 : !kinds_world)) return 0;
     uint32_t addr = c2 ? c2 : c1;
     uint32_t h = (addr * 2654435761u) >> 17;
     for (uint32_t n = 0; n < HASH_N && MM->hk[h]; n++, h = (h + 1) & (HASH_N - 1))
@@ -300,9 +375,7 @@ static int likely_native(ps2_ctx* ctx, uint32_t e) {
  * the VU program's own clipper (0x2540: the clipped fans' new vertices in its arithmetic), whose Z a GPU's clipping does
  * not reproduce to the unit - the depth ties of later exact draws (shadow volumes on the ground) need it. Such meshes
  * (near the camera) stay exact: the 8 corners of the mesh's bounds in clip space. */
-static int inside_guard(const r2_mesh* m, const float w[16]) {
-    float mc[16];
-    r2_matmul(w, fr_block.clip, mc);
+static int inside_guard(const r2_mesh* m, const float mc[16]) {
     for (int k = 0; k < 8; k++) {
         float x = k & 1 ? m->bmax[0] : m->bmin[0], y = k & 2 ? m->bmax[1] : m->bmin[1], z = k & 4 ? m->bmax[2] : m->bmin[2];
         float c[4];
@@ -325,14 +398,22 @@ static void close_bracket(ps2_ctx* ctx, int cls) {
 
 static void owe_epilogue(ps2_ctx* ctx) {
     if (!epi_due) return;
-    epi_due = 0;
     adlist l = { .n = 0 };
     ad_epilogue(&l, &epi_pass);
-    if (dmas_put(ctx, 0, 0, l.p, l.n)) st.epilogues++;
+    if (dmas_put(ctx, 0, 0, l.p, l.n)) { st.epilogues++; epi_due = 0; }   /* (else: retried before the next exact entry) */
 }
 
+static double fr_cap_ms, fr_begin_ms;         /* (stats) this frame's capture time, its frame_begin part */
+
 void r2_cap_entry(ps2_ctx* ctx) {
-    if (!fr_open) frame_begin(ctx);
+    if (!cfg_done) configure();
+    if (!fr_open) {
+        double tb = stats_on ? now_ms() : 0;
+        frame_begin(ctx);
+        fr_cap_ms = 0;
+        fr_begin_ms = stats_on ? now_ms() - tb : 0;
+        fr_cap_ms = fr_begin_ms;
+    }
     int mode = fr_mode;
     if (mode == R2_OFF) return;
     double t0 = stats_on ? now_ms() : 0;
@@ -342,10 +423,14 @@ void r2_cap_entry(ps2_ctx* ctx) {
     if (mode == R2_BRACKET) close_bracket(ctx, cls);
     int native = 0, why = 0;
     uint32_t handle = 0, c1 = ps2_r32(ctx, e + 8), c2 = ps2_r32(ctx, e + 12);
-    float w[16], vu8[4] = { 1, 1, 0, 0 };
-    int form = c2 ? 1 : 0;
-    if (idx < RENDER_LIST_MAX && !alloc_mark[idx] && c1) {
+    float w[16], vu8[4] = { 1, 1, 0, 0 }, M[16];
+    static const float I4[16] = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
+    int form = c2 ? 1 : 0, ident = 0;
+    uint32_t eflags = 0;
+    int prop = idx < RENDER_LIST_MAX && alloc_mark[idx];       /* (r2-m2) an object's entry (glob prelit props) */
+    if (idx < RENDER_LIST_MAX && c1 && (prop ? kinds_props && c2 && cls == 0 : kinds_world)) {
         st.cand++;
+        if (prop) st.cand_props++;
         if (!fr_level_ok || !fr_model_ok) { why = 1; st.exact_level++; }
         else if (cls != 0) { why = 2; st.exact_class++; }
         else {
@@ -361,72 +446,126 @@ void r2_cap_entry(ps2_ctx* ctx) {
                     vu8[0] = m->fade;
                 }
                 if (!why && (f2u(vu8[3]) & 0xFFFF)) { why = 5; st.exact_fade++; }   /* 1D10's alternate A+D qword */
-                if (!why && !inside_guard(m, w)) { why = 6; st.exact_guard++; }
+                if (!why && prop && outlined(w)) { why = 7; st.exact_outline++; }
+                if (!why) {
+                    ident = !memcmp(w, I4, sizeof w);
+                    if (ident) memcpy(M, fr_block.clip, sizeof M);   /* (I x C is C exactly: products by 1, sums with 0) */
+                    else r2_matmul_fast(w, fr_block.clip, M);
+                    if (!inside_guard(m, M)) {
+                        if (clip_on) eflags |= R2E_CLIP;    /* (r2-m2) GPU-clipped triangles (shaders/r2.hlsl r2_gs_clip) */
+                        else { why = 6; st.exact_guard++; }
+                    }
+                }
                 if (!why) native = 1;
             }
         }
     }
+    if (native && mode == R2_BRACKET) {
+        /* (r2-m2) a bracket ends at the next entry's hook, after a render class switch's packets (class end / begin
+         * functions: the shadow pipeline's channel shuffles, stencil init) or the frame's last class end: they must not
+         * fall inside it (the A/B replay would skip them). The last entry before a class switch stays unbracketed. */
+        uint32_t next = ctx->r[20].uw[0] > 1 ? ps2_r32(ctx, ctx->r[21].uw[0] + 4) : 0;
+        uint32_t np = next ? ps2_r32(ctx, next) : 0xFFFFFFFFu;
+        if (!next || np > 25 || (int)ps2_r32(ctx, CLASS_TABLE + np * 4) != cls) { native = 0; st.exact_bracket++; }
+    }
+    if (native && prop) st.native_props++;
     if (!native) {
         if (mode == R2_HYBRID && prev_native) owe_epilogue(ctx);
         prev_native = 0;
         prev_class = cls;
-        if (stats_on) st.cap_ms += now_ms() - t0;
+        if (stats_on) { double dt_ = now_ms() - t0; st.cap_ms += dt_; fr_cap_ms += dt_; }
         return;
     }
     const r2_mesh* m = r2_mesh_get(handle);
     adlist l = { .n = 0 };
+    if (mode == R2_HYBRID) {
+        /* (r2-m2) the entry's data into the scene slot; the stream gets one R2H_RUN hint per run */
+        r2_slot* S = fr_slot;
+        int start = !prev_native;
+        if (!S || S->nent >= R2_SLOT_ENTS || (start && S->nrun >= R2_SLOT_RUNS)) {
+            st.exact_dmas++;
+            if (prev_native) owe_epilogue(ctx);
+            prev_native = 0;
+            prev_class = cls;
+            if (stats_on) { double dt_ = now_ms() - t0; st.cap_ms += dt_; fr_cap_ms += dt_; }
+            return;
+        }
+        if (start) {
+            int flush = prev_class == 0;     /* the previous exact mesh's pending tail first, as in an all-exact frame */
+            ad_hint(&l, R2H_RUN, (fr_serial % R2_SLOTS) | S->nrun << 4, fr_serial);
+            if (!dmas_put(ctx, flush ? MSCAL(0x3AB0) : 0, flush ? MSCAL(0x0000) : 0, l.p, l.n)) {
+                st.exact_dmas++;
+                prev_class = cls;
+                if (stats_on) { double dt_ = now_ms() - t0; st.cap_ms += dt_; fr_cap_ms += dt_; }
+                return;
+            }
+            S->run_first[S->nrun] = S->nent;
+            S->run_count[S->nrun] = 0;
+            S->nrun++;
+            st.runs++;
+        }
+        r2_slot_ent* se = &S->ent[S->nent++];
+        memcpy(se->m, M, sizeof M);
+        se->fade = vu8[0];
+        se->handle = handle;
+        se->addr = (form ? c2 : c1) | (uint32_t)form << 31;
+        se->flags = eflags;
+        S->run_count[S->nrun - 1]++;
+        st.native++;
+        if (eflags & R2E_CLIP) st.clipped++;
+        if (form) ps2_w32(ctx, e + 12, 0);           /* the mesh DMA; the header packet at +8 stays */
+        else ps2_w32(ctx, e + 8, 0);                 /* the whole static packet */
+        prev_native = 1;
+        prev_class = cls;
+        epi_pass = m->b[m->nb - 1].pass[m->last_pass];
+        epi_due = 1;
+        /* the state epilogue now when the next entry will be exact (ahead of a class switch's own packets) */
+        uint32_t next = ctx->r[20].uw[0] > 1 ? ps2_r32(ctx, ctx->r[21].uw[0] + 4) : 0;
+        if (!next || !likely_native(ctx, next)) owe_epilogue(ctx);
+        if (stats_on) { double dt_ = now_ms() - t0; st.cap_ms += dt_; fr_cap_ms += dt_; }
+        return;
+    }
     if (!fr_block_sent) {
         const uint32_t* fw = (const uint32_t*)&fr_block;
         ad_hint(&l, R2H_FRAME, R2_FRAME_WORDS, fr_serial);
         for (uint32_t i = 0; i < R2_FRAME_WORDS; i++) ad_hint(&l, R2H_DATA, i, fw[i]);
     }
-    int ident = 1;
-    static const float I4[16] = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
-    ident = !memcmp(w, I4, sizeof w);
+    /* bracket mode: the entry's data inline (offline replays of recordings need them in the stream) */
+    (void)m;
     int fade = vu8[0] != 1.0f;
-    uint32_t flags = (ident ? R2D_IDENTITY : 0) | (fade ? R2D_FADE : 0);
-    ad_hint(&l, mode == R2_BRACKET ? R2H_BEGIN : R2H_DRAW, flags, handle);
+    uint32_t flags = (ident ? R2D_IDENTITY : 0) | (fade ? R2D_FADE : 0) | (eflags & R2E_CLIP ? R2D_CLIP : 0);
+    ad_hint(&l, R2H_BEGIN, flags, handle);
     uint32_t k = 0;
     if (fade) ad_hint(&l, R2H_DATA, k++, f2u(vu8[0]));
     if (!ident) for (int i = 0; i < 16; i++) ad_hint(&l, R2H_DATA, k++, f2u(w[i]));
     ad_hint(&l, R2H_DATA, k++, (form ? c2 : c1) | (uint32_t)form << 31);
-    int epi = 0;
-    if (mode == R2_HYBRID) {
-        uint32_t next = ctx->r[20].uw[0] > 1 ? ps2_r32(ctx, ctx->r[21].uw[0] + 4) : 0;
-        if (!next || !likely_native(ctx, next)) { ad_epilogue(&l, &m->b[m->nb - 1].pass[m->last_pass]); epi = 1; }
-    }
-    /* the previous exact mesh's pending tail first (hybrid: drawn before the native run, as in an all-exact frame;
-     * bracket: it must not fall inside this entry's bracket) */
+    /* the previous exact mesh's pending tail first: it must not fall inside this entry's bracket */
     int run_start = !prev_native && prev_class == 0;
     if (!dmas_put(ctx, run_start ? MSCAL(0x3AB0) : 0, run_start ? MSCAL(0x0000) : 0, l.p, l.n)) {
         st.exact_dmas++;
-        if (mode == R2_HYBRID && prev_native) owe_epilogue(ctx);
         prev_native = 0;
         prev_class = cls;
-        if (stats_on) st.cap_ms += now_ms() - t0;
+        if (stats_on) { double dt_ = now_ms() - t0; st.cap_ms += dt_; fr_cap_ms += dt_; }
         return;
     }
     fr_block_sent = 1;
     st.native++;
-    if (mode == R2_HYBRID) {
-        if (!prev_native) st.runs++;
-        if (form) ps2_w32(ctx, e + 12, 0);           /* the mesh DMA; the header packet at +8 stays */
-        else ps2_w32(ctx, e + 8, 0);                 /* the whole static packet */
-        prev_native = 1;
-        epi_due = !epi;
-        if (!epi) epi_pass = m->b[m->nb - 1].pass[m->last_pass];
-        if (epi) st.epilogues++;
-    } else {
-        bracket_open = 1;
-        prev_native = 1;
-    }
+    bracket_open = 1;
+    prev_native = 1;
     prev_class = cls;
-    if (stats_on) st.cap_ms += now_ms() - t0;
+    if (stats_on) { double dt_ = now_ms() - t0; st.cap_ms += dt_; fr_cap_ms += dt_; }
 }
 
 void r2_cap_done(ps2_ctx* ctx) {
     if (fr_open && fr_mode == R2_BRACKET) close_bracket(ctx, -1);
-    if (fr_open && fr_mode == R2_HYBRID && prev_native) owe_epilogue(ctx);
+    if (fr_open && fr_mode == R2_HYBRID) owe_epilogue(ctx);
+    if (fr_open && fr_slot) {                     /* publish the frame's scene slot (the chain is kicked after this) */
+        __atomic_store_n(&fr_slot->serial, fr_serial, __ATOMIC_RELEASE);
+        fr_slot = NULL;
+    }
+    if (stats_on && fr_open && fr_cap_ms > 3.0)       /* (a slow capture: its parts) */
+        fprintf(stderr, "[r2] slow capture v%u: %.2f ms (frame begin %.2f, decode %.2f)\n", ps2_vblank_count(), fr_cap_ms,
+                fr_begin_ms, fr_decode_ms);
     frame_reset();
     if (stats_on) {
         static uint32_t last_vb;
@@ -444,12 +583,13 @@ void r2_cap_done(ps2_ctx* ctx) {
 void r2_stats_line(char* buf, size_t n) {
     const r2_stats* s = &st;
     double f = s->frames ? (double)s->frames : 1.0;
-    int o = snprintf(buf, n, "mode %d gen %u: per frame %.0f candidates, %.0f native (%.1f runs, %.1f epilogues), exact: level %.0f class %.0f "
-                             "decode %.0f budget %.0f header %.0f fade %.0f guard %.0f dmas %.0f; decoded %u (failed %u, %.1f ms); capture %.3f ms/frame, "
-                             "hints %.1f KB/frame",
-                     r2_mode, r2_store_gen(), s->cand / f, s->native / f, s->runs / f, s->epilogues / f, s->exact_level / f, s->exact_class / f,
-                     s->exact_decode / f, s->exact_budget / f, s->exact_header / f, s->exact_fade / f, s->exact_guard / f, s->exact_dmas / f, s->decoded,
-                     s->decode_fail, s->decode_ms, s->cap_ms / f, s->bytes_hint / f / 1024.0);
+    int o = snprintf(buf, n, "mode %d gen %u: per frame %.0f candidates (%.0f props), %.0f native (%.0f props, %.1f clipped; %.1f runs, %.1f "
+                             "epilogues), exact: level %.0f class %.0f decode %.0f budget %.0f header %.0f fade %.0f guard %.0f outline %.1f dmas %.0f; "
+                             "outlines %.1f (%.1f parsed); decoded %u (failed %u, %.1f ms); capture %.3f ms/frame, hints %.1f KB/frame",
+                     r2_mode, r2_store_gen(), s->cand / f, s->cand_props / f, s->native / f, s->native_props / f, s->clipped / f, s->runs / f,
+                     s->epilogues / f, s->exact_level / f, s->exact_class / f, s->exact_decode / f, s->exact_budget / f, s->exact_header / f,
+                     s->exact_fade / f, s->exact_guard / f, s->exact_outline / f, s->exact_dmas / f, s->outlines / f, s->outlines_parsed / f,
+                     s->decoded, s->decode_fail, s->decode_ms, s->cap_ms / f, s->bytes_hint / f / 1024.0);
     for (int r = 1; r < R2M_N && o > 0 && (size_t)o < n; r++)
         if (s->reason[r]) o += snprintf(buf + o, n - (size_t)o, " [%s %u]", r2m_reason[r], s->reason[r]);
 }

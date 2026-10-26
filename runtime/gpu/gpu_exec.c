@@ -1701,7 +1701,7 @@ static void exec_r2(const gpu_front_frame_data* fd, const gpu_fop_r2* o) {
     bind_ff(o->ct, o->zt);
     if (X.b_t1) set_t1(NULL);
     if (X.b_t2) set_t2(NULL);
-    if (!iota_ensure(o->ndraw + 1)) return;
+    if (!iota_ensure(o->draw_off / 32u + o->ndraw + 1)) return;   /* (r2-m2: draw ids = the records' fdata offsets / 32) */
     r2_exec_in in = { gpu_rt.dev, gpu_rt.ctx, ct->rtv, zt->dsv, ct->kx, ct->ky, X.vram_srv, X.swz_srv, X.dat.srv, X.iota,
                       gpu_rt.caps.warp ? 0.49609375f : 0.42f };
     int n = r2_render_segment(o, fd->data, fd->data_bytes, &in);
@@ -1958,9 +1958,11 @@ static void probe_report(const gpu_front_frame_data* fd) {
     ID3D11DeviceContext_UpdateSubresource(c, (ID3D11Resource*)X.dbg, 0, &box, zero, 0, 0);
 }
 
+static void fence_release(void);
 void gpu_exec_release(void) {
     if (!X.init) return;
     r2_render_release();                 /* (r2-m1: meshes upload again on the recreated device) */
+    fence_release();                     /* (r2-m2: the GPU frame fence's queries) */
     if (dbg_nosize || dbg_nocount) gpu_log("exec: %llu draws without a target, %llu empty draws (cls %llu %llu %llu %llu, tier %llu %llu)", (unsigned long long)dbg_nosize, (unsigned long long)dbg_nocount, (unsigned long long)dbg_cls[0], (unsigned long long)dbg_cls[1], (unsigned long long)dbg_cls[2], (unsigned long long)dbg_cls[3], (unsigned long long)dbg_tier[0], (unsigned long long)dbg_tier[1]);
     for (int i = 0; i <= MAX_TARGETS; i++) { target_free(&X.T[i]); free(X.T[i].zts); X.T[i].zts = NULL; }
     GPU_RELEASE(X.ztile_srv); GPU_RELEASE(X.ztile); GPU_RELEASE(X.zcb);
@@ -2068,10 +2070,60 @@ void gpu_exec_reset(void) {
     gpu_run_sync((void (*)(void*))gpu_exec_release, NULL);   /* (exec_init recreates everything on the next frame) */
 }
 
+/* (r2-m2) GPU frame fence: before a frame's work is recorded, the GPU has finished the frame `fence_depth` frames back (an
+ * event query per frame). Without it, a GPU-bound game (the modern renderer makes the CPU stages fast enough for that at 3x)
+ * let the driver queue several frames, then block the render thread for 10-50 ms inside whichever call hit its limit
+ * (the data arena's Map, a constant buffer update): 30-50 ms hitches every ~0.2 s, latency up to 65 ms. With the fence
+ * the wait happens here, one GPU frame at a time. PS2_GPU_FENCE=n (frames, default 2; 0 off). */
+#define FENCE_N 4
+static ID3D11Query* fence_q[FENCE_N];
+static uint32_t fence_i;
+static int fence_depth = -1;
+static uint64_t fence_waits;
+static double fence_wait_ms;
+
+static void fence_wait(void) {
+    if (fence_depth < 0) {
+        const char* e = getenv("PS2_GPU_FENCE");
+        fence_depth = e && *e ? atoi(e) : 2;
+        if (fence_depth < 0) fence_depth = 0;
+        if (fence_depth > FENCE_N - 1) fence_depth = FENCE_N - 1;
+    }
+    if (!fence_depth || fence_i < (uint32_t)fence_depth) return;
+    ID3D11Query* q = fence_q[(fence_i - (uint32_t)fence_depth) % FENCE_N];
+    if (!q) return;
+    BOOL done = FALSE;
+    if (ID3D11DeviceContext_GetData(gpu_rt.ctx, (ID3D11Asynchronous*)q, &done, sizeof done, 0) != S_FALSE) return;
+    double w0 = qpc_ms();
+    while (ID3D11DeviceContext_GetData(gpu_rt.ctx, (ID3D11Asynchronous*)q, &done, sizeof done, 0) == S_FALSE) {
+        if (qpc_ms() - w0 > 100.0) break;        /* (a device problem: never hold the renderer longer) */
+        SwitchToThread();
+    }
+    fence_waits++;
+    fence_wait_ms += qpc_ms() - w0;
+}
+
+static void fence_signal(void) {
+    if (!fence_depth) return;
+    ID3D11Query** q = &fence_q[fence_i % FENCE_N];
+    if (!*q) {
+        D3D11_QUERY_DESC d = { D3D11_QUERY_EVENT, 0 };
+        if (FAILED(ID3D11Device_CreateQuery(gpu_rt.dev, &d, q))) { *q = NULL; return; }
+    }
+    ID3D11DeviceContext_End(gpu_rt.ctx, (ID3D11Asynchronous*)*q);
+    fence_i++;
+}
+
+static void fence_release(void) {
+    for (int i = 0; i < FENCE_N; i++) GPU_RELEASE(fence_q[i]);
+    fence_i = 0;
+}
+
 void gpu_exec_frame(const void* payload) {
     const gpu_op_frame* p = payload;
     const gpu_front_frame_data* fd = &p->fd;
     if (!exec_init()) { gpu_rt.lost = 1; return; }
+    fence_wait();
     thread_ms();
     gpu_stats_begin(fd->vblank, 0);
     gpu_rt.cur_queued_ms = p->t_queued;  /* (M9: photon latency, gpu_present.c) */
@@ -2134,6 +2186,7 @@ void gpu_exec_frame(const void* payload) {
     unbind_all();                        /* (targets may be released or recreated before the next frame) */
     prof_end();
     probe_report(fd);
+    fence_signal();
     ID3D11DeviceContext_Flush(gpu_rt.ctx);
     double t2 = qpc_ms(), c1 = thread_ms();
     gpu_frame_stats* st = gpu_stats_cur();

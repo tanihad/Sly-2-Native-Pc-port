@@ -43,6 +43,25 @@ void r2_matmul(const float w[16], const float c[16], float out[16]) {
         }
 }
 
+/* (r2-m2) the same in plain SSE float operations under the VU's rounding (MXCSR: round toward zero, flush to zero,
+ * denormals are zero), ~10x faster than the reference above: the EE capture computes every native entry's W x C with
+ * it (tests/unit/r2 checks it against r2_matmul). Separate statements, no FMA contraction (the build targets plain
+ * x86-64: no FMA instructions exist to contract into). */
+#include <xmmintrin.h>
+#pragma clang fp contract(off)
+void r2_matmul_fast(const float w[16], const float c[16], float out[16]) {
+    unsigned int old = _mm_getcsr();
+    _mm_setcsr((old & ~0x6000u) | 0x6000u | 0x8040u);
+    for (int i = 0; i < 4; i++) {
+        __m128 acc = _mm_mul_ps(_mm_loadu_ps(c + 0), _mm_set1_ps(w[i * 4 + 0]));
+        acc = _mm_add_ps(acc, _mm_mul_ps(_mm_loadu_ps(c + 4), _mm_set1_ps(w[i * 4 + 1])));
+        acc = _mm_add_ps(acc, _mm_mul_ps(_mm_loadu_ps(c + 8), _mm_set1_ps(w[i * 4 + 2])));
+        acc = _mm_add_ps(acc, _mm_mul_ps(_mm_loadu_ps(c + 12), _mm_set1_ps(w[i * 4 + 3])));
+        _mm_storeu_ps(out + i * 4, acc);
+    }
+    _mm_setcsr(old);
+}
+
 int r2_screen_model_of(const r2_frame_block* fb, r2_screen_model* m) {
     float* a[3] = { &m->ax, &m->ay, &m->az };
     float* b[3] = { &m->bx, &m->by, &m->bz };

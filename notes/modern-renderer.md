@@ -492,6 +492,79 @@ covers; the owner confirms after testing the dist build. Effort is in agent-days
 - **Default**: on after the sweep and the owner's check.
 - **Decision**: D3 (stop perf P4/P5) should be settled before this milestone.
 
+### R2 as built (next/r2-m2, 2026-10-26)
+- **Coverage**: every level (the allowlist became a blocklist: `PS2_R2_BLOCK`, empty). Native: static world leaves (R1)
+  and **glob props** (allocator entries of render class 0 with a header packet + mesh DMA; the header's matrix and VU 8
+  as for form-1 world entries, light-prefix headers parse unchanged). **Outlined objects stay exact**: at the frame's
+  first entry r2_capture.c parses every outline entry's (render class 1) header and a prop whose world matrix one of them
+  uploads is exact (ep1 hub: ~1 prop / frame). **Guard-band meshes**: built, opt-in (`PS2_R2_CLIP=1`, `R2E_CLIP`): the
+  clip pipeline (`vs/gs/ps_r2_clip`) decides per triangle like the VU (0x0C60's CLIPW flags): all inside, the VU-exact
+  screen vertices; all outside one plane, nothing; else the GPU clips the clip-space triangle against the VU's six planes
+  (SV_ClipDistance) with perspective-correct attributes. **Off by default**: the VU clipper's own fans are not on the
+  triangle's plane (their Z differs from the plane by up to ~0.1%, e.g. -73 units at Z 92k on the ground in front of the
+  camera), so the A/B Z gate fails where the near ground is clipped (ep5 hub: 21% of the pixels; the GPU-clipped picture
+  itself looks the same). Reproducing 0x2150 / 0x1DC8 (the clipper and its projection) in the geometry stage is the way to
+  make them native (R5). ep1 hub per frame: ~590 world + ~90 props native; exact: ~20-30 guard-band meshes, lit/skinned
+  props and characters (decode "mscal"), ~1 outlined prop.
+- **Hints -> scene slots**: hybrid mode writes each native entry's W x C (computed once on the EE with `r2_matmul_fast`,
+  plain SSE under the VU's MXCSR rounding, unit-tested bit-exact against `r2_matmul`), fade and mesh into the frame's
+  slot (`r2_slot`, a ring of 16, published at the frame's end); the chain carries one `R2H_RUN` per run. Hints 155 ->
+  6-11 KB/frame, EE capture 0.52 -> 0.16-0.28 ms (with props). Bracket mode keeps the inline words (recordings).
+- **Draw records / consolidation**: static material records per (mesh, sub-batch, pass) uploaded with the mesh (t10,
+  base per mesh in a mesh table t11), the vertex carries its sub-batch, a draw record is 32 bytes (was 64 with the
+  material). One pipeline (the PS always writes the dual-source factor: no shader switch between pass A and B).
+  Consolidation built and measured, **opt-in** (`PS2_R2_CONSOLIDATE=1`): per entry one draw per (pass, state, discard
+  rule) over all its sub-batches (a batch mask where some belong to another draw), ep1 4271 -> ~1500 draws/frame.
+  **The draw count was not R2's GPU cost** (fixed-stream replay, ep1 hub in a searchlight, 3x: unconsolidated 0.46 ms,
+  consolidated 0.44, the exact path's FF for the same entries 0.44): R2 costs the same per pixel as the exact path; knobs
+  (`PS2_R2_DBG`): no texture 0.44, rasterized Z 0.43, float VS 0.45, constant PS 0.25 - fill / raster bound. And drawing
+  an entry's pass A before its pass B is not invisible (the design's condition): foliage edges where a later batch's
+  translucent pass-A pixels cover an earlier batch's pass B change (ep2 hub: 0.19% of the pixels > 8, 0.06% > 16; in the
+  VU's order 0.085% / 0%). So the default keeps the VU's order; the render thread's cost of ~4k draws is ~0.4 ms.
+- **Hitches when GPU-bound** (the cause of r2-m1's 1% low): with the CPU stages at ~2 ms the game becomes GPU-bound at
+  3x, and the driver then blocked the render thread for 10-50 ms in whichever call hit its queue limit (R2's per-segment
+  constant buffer update 2-13 ms, the exact path's data-arena Map 12 ms): 30-50 ms frames every ~0.2 s. Fixes: segment
+  constants are a record in fdata (`gpu_r2_seg`; draw ids = the draw record's fdata offset / 32 through
+  StartInstanceLocation; the static cbuffer is written once) and a **GPU frame fence** in gpu_exec.c (an event query
+  per frame; frame N is recorded once the GPU finished frame N-2; `PS2_GPU_FENCE=n`, 0 off): ep1 hub modern 1% low
+  27.5 -> 115.5 fps (median 233 -> 205: the shallower queue).
+- **Options**: Graphics > **Rendering**: Modern / Reference (exact) (live); **F10** switches while playing. Default stays
+  Reference until the owner's check.
+- **Verification**: `tests/r2/gates.json` (calibrated, frozen; `scripts/r2_ab_compare.py --gates`, `r2_ab.ps1` exits
+  with it). `scripts/r2_sweep.ps1`: the A/B on every hub + 3 jobs - **11 / 11 pass** (ep1-ep8 hubs, m2 boardroom, m3
+  boss, m8 boss; S = 1 frame buffers PSNR 59-999 dB, > 16: <= 0.001%, Z within 4 >= 99.998%). Harness fixes on the way
+  (the hybrid path was right): exact primitives are skipped only for entries R2 took (a recording starting after its
+  frame's R2H_FRAME), and the last native entry before a render-class switch is not bracketed (the switch's packets,
+  e.g. the shadow pipeline's stencil init, fell inside the bracket). `scripts/r2_prof_ab.ps1`: GPU cost exact vs
+  hybrid on a fixed stream.
+- **No-discard PS**: draws whose alpha test cannot split the fragments (no test, all pass, all fail: most of them) use
+  a variant without `discard` (`ps_r2_nd`, state bit 14 marks the others); the PS reads no segment record (FBA travels
+  with the material index).
+- **Performance** (chaos benchmark, all 8 scenes, reference vs modern from one exe, interleaved, release, 3x 16:9
+  unlimited, owner's PC; tags r2m2_final (1 repeat) and r2m2_final2 (m3 / m8 boss, 2 repeats, with the no-discard PS);
+  fps median / 1% low / 0.1% low; CPU stage ms worker / GS / frontend; GPU ms):
+
+  | scene | reference | modern | modern CPU stages | GPU ref -> mod |
+  |---|---|---|---|---|
+  | ep1_hub | 113.8 / 77.1 / 42.4 | **203.3** / 114.3 / 53.1 | 2.2 / 1.7 / 2.1 (r2m2_c9: 205.1, 2 repeats) | 5.2 -> 4.8 |
+  | ep3_hub | 191.9 / 88.8 / 47.6 | 192.7 / 93.8 / 54.6 | 2.7 / 2.3 / 2.3 | 5.0 -> 5.1 (GPU-bound) |
+  | ep5_hub | 154.3 / 116.0 / 48.3 | **216.0** / 142.2 / 59.4 | 1.7 / 1.5 / 2.1 | 4.8 -> 4.5 |
+  | m1_brawl | 159.2 / 80.1 / 43.3 | 204.1 / 118.0 / 57.7 | 2.2 / 1.7 / 2.1 | 5.3 -> 4.9 |
+  | m2_boardroom (fire) | 132.6 / 81.7 / 57.9 | 132.6 / 79.3 / 59.0 | 1.7 / 1.1 / 1.5 | 7.4 -> 7.4 (GPU-bound) |
+  | m3_boss | 227.6 / 139.9 / 53.4 | 218.1 / 124.5 / 55.7 | 2.2 / 1.8 / 1.8 | 4.3 -> 4.5 (GPU-bound) |
+  | m5_boss | 159.7 / 91.6 / 48.2 | 193.1 / 109.3 / 59.1 | 2.0 / 1.7 / 2.4 | 5.0 -> 5.1 |
+  | m8_boss | 269.6 / 119.9 / 56.4 | 269.5 / 163.5 / 60.2 | 1.0 / 1.0 / 1.0 | 3.7 -> 3.6 |
+
+  The CPU stages fall to ~2 ms (design: <= 2.5; ep3's worker 2.7), so most scenes become **GPU-bound at ~4.5-5 ms**:
+  R2 costs the GPU what the exact path did for the same pixels, so it cannot lower it, and the design's GPU <= 4.0 ms /
+  ep3 >= 220 fps need the remaining exact GPU work (shadows, motion-blur sprites, the ROV tier: ~1.5-2 ms in ep1) moved
+  or optimised (R6 / R7). Where GPU-bound, modern equals reference (m2, m8, ep3) except m3_boss (-4% median, 1% low
+  140 -> 125: GPU +0.2 ms in that fight; a fixed-stream replay of the boss intro shows parity). 22-minute m11_long with
+  modern on (every episode): private bytes 696 -> 1009-1107 MB, flat (reference: 1138-1144), no dropped / stale /
+  unsupported R2 work, the only slow captures the first frame of a level (decode budget).
+- **Not done**: pre-warm at level load (first-sight decoding costs ~15 us a mesh under the 3 ms budget; entries stay
+  exact for a frame or two), texture arrays (the GS memory sampling is not R2's GPU cost), instancing of repeated meshes.
+
 ### R3. Lit and skinned meshes - 7 agent-days
 - **Deliverable**:
   - The lit / skinned routines (0x2EF8 / 0x2F80 / 0x2FC8 / 0x3358) read and documented: light set layout, colour

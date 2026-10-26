@@ -179,6 +179,11 @@ int gfx_key(unsigned vk, int shift, int persist_it) {
         if (shift & 1) change("interlacing", !settings_interlacing(s), persist_it);
         else change("flicker_filter", !settings_flicker_filter(s), persist_it);
         break;
+    case 0x79:                           /* (r2-m2) F10: Rendering Modern / Reference (live: the next frame) */
+        change("renderer_mode", !s->renderer_modern, persist_it);
+        fprintf(stderr, "[gfx] rendering: %s%s\n", s->renderer_modern ? "modern" : "reference",
+                getenv("PS2_R2") && *getenv("PS2_R2") ? " (PS2_R2 is set: it decides)" : "");
+        return 1;
     default:
         return 0;
     }

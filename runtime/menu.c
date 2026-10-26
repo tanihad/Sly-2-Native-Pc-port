@@ -193,6 +193,10 @@ static void build_choices(int id, choices* c) {
         add(c, 1, "GPU (Direct3D 11)");
         add(c, 0, "Software (CPU)");
         break;
+    case MENU_ROW_RMODE:
+        add(c, 1, "Modern");
+        add(c, 0, "Reference (exact)");
+        break;
     case MENU_ROW_SCALE: {               /* (pc-polish) the render scale, relative to the output */
         static const int pcts[] = { 50, 67, 75, 100, 125, 150, 200 };
         int ow, oh;
@@ -372,6 +376,7 @@ static int row_value(int id) {
         return ctl_get(id);
     case MENU_ROW_PRESET: return ps2_settings.preset;
     case MENU_ROW_RENDERER: return eff_renderer();
+    case MENU_ROW_RMODE: return ps2_settings.renderer_modern;
     case MENU_ROW_SCALE: return ps2_settings.render_scale;
     case MENU_ROW_RESOLUTION: return eff_mode() == SETTINGS_FULLSCREEN_EXCLUSIVE ? eff_res() : eff_winsize();
     case MENU_ROW_SPEAKERS: return ps2_settings.game_speakers;
@@ -406,6 +411,7 @@ static void row_set(int id, int v) {
     switch (id) {
     case MENU_ROW_PRESET: m_change("graphics", "preset", v); break;
     case MENU_ROW_RENDERER: stage(PEND_RENDERER, v); break;             /* (staged: Apply) */
+    case MENU_ROW_RMODE: m_change("graphics", "renderer_mode", v); break;   /* (live: the next frame) */
     case MENU_ROW_SCALE: m_change("graphics", "render_scale", v); break;
     case MENU_ROW_RESOLUTION: stage(eff_mode() == SETTINGS_FULLSCREEN_EXCLUSIVE ? PEND_RES : PEND_WINSIZE, v); break;
     case MENU_ROW_SPEAKERS: m_change("audio", "speakers", v); break;
@@ -589,6 +595,11 @@ static int build_rows(int page, menu_row* rows) {
         else if (!h_gpu_started() && ps2_settings.renderer_gpu != gpu) snprintf(r->note, sizeof r->note, "Restart the game to use it");
         else if (!h_gpu_started() && ps2_settings.renderer_gpu) snprintf(r->note, sizeof r->note, "GPU renderer unavailable: see sly2.log");
         env_note(r, "graphics", "renderer");
+        choice_row(rows, &n, MENU_ROW_RMODE, "Rendering",
+                   "Modern: the game's scenery drawn by a modern graphics pipeline - faster, the same look. Reference: every "
+                   "pixel computed exactly as the original hardware did, slower. F10 switches while playing.");
+        if (!gpu) disable(last(rows, n), gpu_only);
+        else if (getenv("PS2_R2") && *getenv("PS2_R2")) disable(last(rows, n), "Set by PS2_R2 (environment)");
         choice_row(rows, &n, MENU_ROW_SCALE, "Render scale", "");
         r = last(rows, n);
         if (r) {                             /* what is drawn and what is shown, in pixels */

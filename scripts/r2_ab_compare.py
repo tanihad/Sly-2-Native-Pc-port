@@ -23,6 +23,10 @@ def words(path):
     return struct.unpack(f"<{len(b) // 4}I", b)
 
 
+STATS = []   # (r2-m2) per frame buffer: the numbers the gates check (--gates)
+ZSTATS = []
+
+
 def colour_stats(wa, wb, first, n):
     tot = d2 = d8 = d16 = ad = a7 = 0
     se = 0.0
@@ -46,6 +50,8 @@ def colour_stats(wa, wb, first, n):
         a7 += ((q >> 31) & 1) != ((p >> 31) & 1)
     mse = se / (3 * tot)
     psnr = 10 * math.log10(255 * 255 / mse) if mse else 999.0
+    STATS.append({"psnr": psnr, "over2": d2 / tot, "over8": d8 / tot, "over16": d16 / tot,
+                  "mean": max(abs(x) / tot for x in ssum), "bit7": a7 / tot})
     return (f"{tot} px: PSNR {psnr:.2f} dB; channel > 2: {100 * d2 / tot:.3f}%, > 8: {100 * d8 / tot:.3f}%, > 16: {100 * d16 / tot:.3f}%; "
             f"mean signed {ssum[0] / tot:+.4f} {ssum[1] / tot:+.4f} {ssum[2] / tot:+.4f}; alpha bit 7 {100 * a7 / tot:.4f}%, "
             f"alpha byte > 2: {100 * ad / tot:.3f}%")
@@ -59,6 +65,7 @@ def main():
     ap.add_argument("--zbuf", type=lambda s: int(s, 0), default=0x70)
     ap.add_argument("--pages", type=int, default=56)
     ap.add_argument("--vblank", type=int, default=0)
+    ap.add_argument("--gates", default="", help="tests/r2/gates.json: check level 3 (S = 1); exit 1 on a violation")
     args = ap.parse_args()
     A, B = Path(args.a), Path(args.b)
     vbs = sorted(int(p.stem.split("_")[1]) for p in A.glob("vram_*.bin"))
@@ -82,6 +89,7 @@ def main():
             z16 += d <= 16
             zmax = max(zmax, d)
         if zn:
+            ZSTATS.append(z4 / zn)
             print(f"v{vb} Z {args.zbuf:#04x}: {zn} px: |dZ| = 0 {100 * z0 / zn:.2f}%, <= 2 {100 * z2 / zn:.2f}%, <= 4 {100 * z4 / zn:.3f}%, "
                   f"<= 16 {100 * z16 / zn:.3f}% (max {zmax})")
         pa, pb = A / f"frame_{vb:06d}.png", B / f"frame_{vb:06d}.png"
@@ -105,6 +113,24 @@ def main():
                 psnr = 10 * math.log10(255 * 255 / mse) if mse else 999.0
                 print(f"v{vb} picture {w}x{h}: PSNR {psnr:.2f} dB, > 16: {100 * big / npx:.3f}%, mean signed {s[0] / npx:+.3f} "
                       f"{s[1] / npx:+.3f} {s[2] / npx:+.3f}")
+    if args.gates:
+        import json
+        g = json.loads(Path(args.gates).read_text())["level3_frame_s1"]
+        bad = []
+        for i, st in enumerate(STATS):
+            if st["psnr"] < g["psnr_min_db"]:
+                bad.append(f"buffer {i}: PSNR {st['psnr']:.2f} < {g['psnr_min_db']}")
+            for k, gk in (("over16", "share_over16_max"), ("over8", "share_over8_max"), ("over2", "share_over2_max"),
+                          ("bit7", "alpha_bit7_diff_max")):
+                if st[k] > g[gk]:
+                    bad.append(f"buffer {i}: {k} {st[k]:.5f} > {g[gk]}")
+            if st["mean"] > g["mean_signed_abs_max"]:
+                bad.append(f"buffer {i}: mean signed {st['mean']:.3f}")
+        for i, z in enumerate(ZSTATS):
+            if z < g["z_within4_min"]:
+                bad.append(f"Z {i}: within 4 {z:.5f} < {g['z_within4_min']}")
+        print("gates: " + ("PASS" if not bad else "FAIL: " + "; ".join(bad)))
+        sys.exit(1 if bad else 0)
 
 
 if __name__ == "__main__":

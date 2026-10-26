@@ -1,13 +1,15 @@
 /* R2, the modern renderer (notes/modern-renderer.md): the game's own prelit meshes drawn natively through a modern GPU
  * pipeline, the exact GS path drawing everything else into the same targets (a "hybrid frame").
  *
- * Milestone R1 covers the static world tree's leaves (render-list entries written by 0x1D5808) of the levels on an
- * allowlist (the ep3 hub). Data flow:
+ * Milestone R1 covered the static world tree's leaves (render-list entries written by 0x1D5808) of the ep3 hub; R2
+ * (r2-m2) every prelit mesh - static world and glob props (objects with cel outlines stay exact) - in every level,
+ * meshes crossing the VU's guard band GPU-clipped, draws consolidated. Data flow:
  *
  *   EE thread    r2_capture.c: hooks in the game's render-list emission (f_00157FA0, recomp/patches.py "r2m_*")
  *                classify each entry; a native entry's prebuilt mesh DMA is decoded once (r2_mesh.c) into a mesh
- *                record, the entry's CALL is dropped and NATIVE_DRAW hints (GS register 0x7F, gs_hint.h) carry the
- *                mesh handle and the entry's per-frame inputs through the game's own DMA chain
+ *                record, the entry's CALL is dropped, its per-frame inputs (W x C, fade) go into the frame's scene slot
+ *                (r2_slot) and one R2H_RUN hint per run of native entries (GS register 0x7F, gs_hint.h) marks the
+ *                place in the game's own DMA chain (bracket mode: the inputs inline, recordings replay offline)
  *   GS thread    gs_draw.c hint_write: R2 hints go to the frontend hook gs_front->r2 (the proxy ships them in stream
  *                order to the frontend thread, gpu_fthread.c)
  *   frontend     gpu_front.c gf_r2_*: a run of consecutive native draws becomes one GPU_FOP_R2 segment: targets of the
@@ -32,11 +34,14 @@ enum {
     R2H_BEGIN = 0x23,      /* bracket mode: the exact primitives of a native-capable entry follow; value = mesh handle */
     R2H_END = 0x24,        /* bracket mode: they end */
     R2H_EPILOGUE = 0x25,   /* (diagnostic) the state epilogue of a run follows */
+    R2H_RUN = 0x26,        /* (r2-m2, hybrid) a run of native entries: arg = slot (4 bits) | run index << 4, value = the
+                              slot's frame serial; the entries' data are in the scene slot (r2_slot), not in the stream */
 };
 /* R2H_DRAW / R2H_BEGIN words, in order: [fade (R2D_FADE)] [world matrix, 16 words (unless R2D_IDENTITY)] [the mesh DMA
  * address | form << 31 (offline replays resolve the handle from a RAM dump with it)] */
 enum { R2D_IDENTITY = 1,   /* the entry's world matrix is the identity (no matrix words) */
-       R2D_FADE = 2 };     /* a fade word follows (VU 8.x != 1.0) */
+       R2D_FADE = 2,       /* a fade word follows (VU 8.x != 1.0) */
+       R2D_CLIP = 4 };     /* (r2-m2) the mesh crosses the VU's guard band (R2E_CLIP) */
 
 static inline uint64_t r2h_make(uint32_t kind, uint32_t arg, uint32_t value) {
     return (uint64_t)(kind & 0xFF) | ((uint64_t)(arg & 0xFFFFFF) << 8) | ((uint64_t)value << 32);
@@ -51,21 +56,54 @@ typedef struct {
 } r2_frame_block;
 #define R2_FRAME_WORDS ((uint32_t)(sizeof(r2_frame_block) / 4))
 
+/* ---- scene slots (r2-m2): a ring of per-frame records shared by the EE thread (writer) and the GPU frontend (reader).
+ * Hybrid mode puts each native entry's per-frame data here instead of into the DMA chain: the stream carries one R2H_RUN
+ * hint per run of native entries. The EE opens slot serial % R2_SLOTS at the frame's first entry (serial 0 while it
+ * writes) and publishes it at the frame's end (serial, release order); the chain is kicked only after that, so the
+ * frontend always finds the frame complete (it checks the serial before and after copying: a slot reused while it reads
+ * counts as stale and the run is dropped). Bracket mode keeps the inline words (recordings replay offline). */
+#define R2_SLOTS 16u
+#define R2_SLOT_ENTS 4096u
+#define R2_SLOT_RUNS 1024u
+typedef struct {                 /* 80 bytes */
+    float m[16];                 /* world x clip (W x C, the VU's 0x0070 arithmetic) */
+    float fade;                  /* VU 8.x */
+    uint32_t handle;             /* mesh */
+    uint32_t addr;               /* the mesh DMA | form << 31 (diagnostics) */
+    uint32_t flags;              /* R2E_* */
+} r2_slot_ent;
+enum { R2E_CLIP = 1 };           /* the mesh's bounds cross the VU's guard band: clipped triangles on the GPU */
+typedef struct {
+    volatile uint32_t serial;    /* (atomic: 0 while the EE writes it) */
+    uint32_t nent, nrun;
+    r2_frame_block fb;
+    uint32_t run_first[R2_SLOT_RUNS], run_count[R2_SLOT_RUNS];
+    r2_slot_ent ent[R2_SLOT_ENTS];
+} r2_slot;
+const r2_slot* r2_slot_at(uint32_t index);       /* NULL: not allocated (r2_mesh.c) */
+r2_slot* r2_slot_ring(void);                     /* the writer (EE): the ring, allocated on first use */
+
 /* ---- decoded meshes (r2_mesh.c) ------------------------------------------------------------------------------------- */
 typedef struct {                 /* 32 bytes, also the GPU vertex layout (shaders/r2.hlsl R2V) */
     float x, y, z;
     uint32_t wbits;              /* the input position's w word: ~2^23 float, mantissa bits 4..11 fog base, bit 15 ADC */
     int16_t u, v;                /* 4.12 */
     uint32_t col[2];             /* colour A, colour B: R | G << 8 | B << 16 | A << 24 (V4-5 << 3, alpha from S-8) */
-    uint32_t pad;
+    uint32_t batch;              /* (r2-m2) the sub-batch of the mesh it belongs to (its materials: shaders/r2.hlsl) */
 } r2_vtx;
 
 typedef struct {                 /* one pass (material packet) of a sub-batch */
     uint64_t tex0, tex1, clamp, test, alpha, fogcol;
     uint32_t prim;               /* PRIM bits of the packet's vertex GIF tag */
     uint8_t csel;                /* 0: RGBAQ from colour A (REGS 4F12), 1: colour B (41F2) */
-    uint8_t pad[3];
+    /* (r2-m2) classified once at decode (r2_pass_classify): */
+    uint8_t bl;                  /* blend class R2G_BLEND_* (r2gpu.h; the exact path's FF classes), 0xFF: unsupported */
+    uint8_t texm;                /* 1 nearest, 2 bilinear (TEX1 with LCM 1, K: MMAG or MMIN) */
+    uint8_t nocolor;             /* the blend writes no colour (A == B, D == Cd): only the alpha byte */
+    uint32_t mflags;             /* the material's static GPU_R2D_* bits (gpu_front.h): CSEL ABE FGE TCC TEXM */
+    uint32_t alpha_enc;          /* ALPHA as the shader reads it: A | B << 2 | C << 4 | D << 6 | FIX << 8 */
 } r2_pass;
+void r2_pass_classify(r2_pass* P);
 
 typedef struct {                 /* a sub-batch: one triangle strip, drawn with each pass in turn */
     uint32_t vfirst, vcount;     /* vertices in the mesh's array */
@@ -96,6 +134,7 @@ typedef struct r2_mesh {
     /* render thread (r2_render.c): residency in the generation's arena */
     volatile int gpu_state;      /* 0 not uploaded, 1 resident, -1 failed */
     uint32_t gpu_vbase, gpu_ibase;
+    uint32_t gpu_mbase;          /* (r2-m2) its material records (3 per sub-batch: pass 0..2) in the generation's arena */
 } r2_mesh;
 
 /* decode result codes (fallback reasons, counted) */
@@ -128,6 +167,7 @@ typedef struct {
 void r2_vertex_eval(const r2_vtx* v, const float m[16], const r2_frame_block* fb, const r2_batch* b, int csel,
                     float fade, r2_gsv* o);
 void r2_matmul(const float w[16], const float c[16], float out[16]);   /* out = W x C (row vectors), VU-exact (0x0070) */
+void r2_matmul_fast(const float w[16], const float c[16], float out[16]);   /* the same through the MXCSR (r2-m2) */
 /* the VU's FMAC operations (round toward zero, flush to zero), the references of shaders/r2_vu.hlsli */
 float r2_vu_mul(float a, float b);
 float r2_vu_add(float a, float b);
