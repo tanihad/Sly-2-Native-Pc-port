@@ -16,11 +16,14 @@ notes/wip/r2-re.md, another agent.)
   fallback: direct Vulkan backend (Vulkan-Headers + volk). Dev-side shader tools: DXC + SPIRV-Cross (SDL_shadercross)
   or Slang; blobs committed so player builds need nothing new.
 
-## In progress
-- Writing notes/modern-renderer-api.md.
+- notes/modern-renderer-api.md written (prior art, API table, recommendation, tools for approval, architecture,
+  hybrid contract, R0-R8 order).
+
+**Status: complete** (2026-10-26).
 
 ## Next
-1. Finish + commit notes/modern-renderer-api.md; mark complete; hand back summary.
+- (for the synthesis) reconcile with notes/modern-renderer-re.md capture points; owner approval of the dev-side tools
+  (DXC + SPIRV-Cross / SDL_shadercross or Slang; SDL3) before R7.
 
 ## Findings / traps
 - git is not on PATH in the worktree: `. C:\Users\tanih\Projects\sly2-decomp\scripts\env.ps1` (worktree has no tools/).
