@@ -22,6 +22,7 @@ struct r2g_buf {
 struct r2g_pipe {
     ID3D11VertexShader* vs;
     ID3D11PixelShader* ps;
+    ID3D11GeometryShader* gs;
     ID3D11InputLayout* il;
 };
 
@@ -142,7 +143,8 @@ r2g_pipe* r2g_pipe_create(r2g_dev* d, const r2g_pipe_desc* desc) {
     }
     if (FAILED(ID3D11Device_CreateVertexShader(d->dev, desc->vs, desc->vs_size, NULL, &p->vs)) ||
         FAILED(ID3D11Device_CreatePixelShader(d->dev, desc->ps, desc->ps_size, NULL, &p->ps)) ||
-        FAILED(ID3D11Device_CreateInputLayout(d->dev, el, (UINT)n, desc->vs, desc->vs_size, &p->il))) {
+        FAILED(ID3D11Device_CreateInputLayout(d->dev, el, (UINT)n, desc->vs, desc->vs_size, &p->il)) ||
+        (desc->gs && FAILED(ID3D11Device_CreateGeometryShader(d->dev, desc->gs, desc->gs_size, NULL, &p->gs)))) {
         r2g_pipe_free(p);
         return NULL;
     }
@@ -153,6 +155,7 @@ void r2g_pipe_free(r2g_pipe* p) {
     if (!p) return;
     REL(p->vs);
     REL(p->ps);
+    REL(p->gs);
     REL(p->il);
     free(p);
 }
@@ -227,6 +230,7 @@ void r2g_bind_pipe(r2g_dev* d, r2g_pipe* p) {
     if (d->pipe == p) return;
     ID3D11DeviceContext_VSSetShader(d->ctx, p->vs, NULL, 0);
     ID3D11DeviceContext_PSSetShader(d->ctx, p->ps, NULL, 0);
+    ID3D11DeviceContext_GSSetShader(d->ctx, p->gs, NULL, 0);
     ID3D11DeviceContext_IASetInputLayout(d->ctx, p->il);
     ID3D11DeviceContext_IASetPrimitiveTopology(d->ctx, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     d->pipe = p;
@@ -248,6 +252,14 @@ void r2g_bind_index(r2g_dev* d, r2g_buf* b) { ID3D11DeviceContext_IASetIndexBuff
 void r2g_bind_constants(r2g_dev* d, int slot, r2g_buf* b) {
     ID3D11DeviceContext_VSSetConstantBuffers(d->ctx, (UINT)slot, 1, &b->b);
     ID3D11DeviceContext_PSSetConstantBuffers(d->ctx, (UINT)slot, 1, &b->b);
+    ID3D11DeviceContext_GSSetConstantBuffers(d->ctx, (UINT)slot, 1, &b->b);
+}
+
+void r2g_end(r2g_dev* d) {
+    ID3D11DeviceContext_GSSetShader(d->ctx, NULL, NULL, 0);
+    ID3D11Buffer* nb = NULL;
+    ID3D11DeviceContext_GSSetConstantBuffers(d->ctx, 1, 1, &nb);
+    d->pipe = NULL;
 }
 
 void r2g_bind_srv_native(r2g_dev* d, int slot, void* srv) {

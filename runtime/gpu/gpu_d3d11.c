@@ -67,6 +67,7 @@ static void* shader_get(int id, char kind) {
     if (kind == 'v') hr = ID3D11Device_CreateVertexShader(gpu_rt.dev, b->code, b->size, NULL, (ID3D11VertexShader**)&shader_obj[id]);
     else if (kind == 'p') hr = ID3D11Device_CreatePixelShader(gpu_rt.dev, b->code, b->size, NULL, (ID3D11PixelShader**)&shader_obj[id]);
     else if (kind == 'c') hr = ID3D11Device_CreateComputeShader(gpu_rt.dev, b->code, b->size, NULL, (ID3D11ComputeShader**)&shader_obj[id]);
+    else if (kind == 'g') hr = ID3D11Device_CreateGeometryShader(gpu_rt.dev, b->code, b->size, NULL, (ID3D11GeometryShader**)&shader_obj[id]);
     if (FAILED(hr)) { gpu_log("cannot create shader %s (hr=0x%08lX)", b->name, (unsigned long)hr); shader_obj[id] = NULL; }
     return shader_obj[id];
 }

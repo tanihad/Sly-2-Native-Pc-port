@@ -53,7 +53,8 @@ static int init(const r2_exec_in* in) {
         { "POSITION", R2G_F32x3, 0, 0 }, { "WBITS", R2G_U32, 12, 0 }, { "UV", R2G_S16x2, 16, 0 },
         { "COLA", R2G_U32, 20, 0 }, { "COLB", R2G_U32, 24, 0 }, { "DRAWID", R2G_U32, 0, 1 },
     };
-    r2g_pipe_desc pd = { gpu_sh_vs_r2, sizeof gpu_sh_vs_r2, gpu_sh_ps_r2, sizeof gpu_sh_ps_r2, attrs, 6 };
+    r2g_pipe_desc pd = { gpu_sh_vs_r2, sizeof gpu_sh_vs_r2, gpu_sh_ps_r2, sizeof gpu_sh_ps_r2, attrs, 6,
+                         gpu_sh_gs_r2, sizeof gpu_sh_gs_r2 };
     R.pipe[0] = R.d ? r2g_pipe_create(R.d, &pd) : NULL;
     pd.ps = gpu_sh_ps_r2_dual;
     pd.ps_size = sizeof gpu_sh_ps_r2_dual;
@@ -131,7 +132,7 @@ int r2_render_segment(const gpu_fop_r2* o, const uint8_t* fdata, size_t fdata_by
     cu[4] = o->frame_off; cu[5] = o->ent_off; cu[6] = o->draw_off; cu[7] = (o->flags & GPU_R2F_FBA) ? 1u : 0u;
     static float zbias = -1e9f;
     if (zbias == -1e9f) { const char* e = getenv("PS2_R2_ZBIAS"); zbias = e ? (float)atof(e) : 0.0f; }
-    cb[8] = in->dual_bias; cb[9] = zbias; cb[10] = 0; cb[11] = 0;
+    cb[8] = in->dual_bias; cb[9] = zbias; cu[10] = (uint32_t)o->sc[1]; cu[11] = 0;   /* (scissor y0: gs_tri_setup's by0) */
     r2g_buf_unmap(R.d, R.cb);
     r2g_bind_targets_native(R.d, in->rtv, in->dsv);
     r2g_viewport(R.d, -8192.0f, -8192.0f, 16384.0f, 16384.0f);   /* (the REF viewport of mixed frames: d3d pixels = NDC * 8192) */
@@ -157,6 +158,7 @@ int r2_render_segment(const gpu_fop_r2* o, const uint8_t* fdata, size_t fdata_by
         r2g_draw_indexed(R.d, d->count, m->gpu_ibase + d->first, (int32_t)m->gpu_vbase, i);
         n++;
     }
+    r2g_end(R.d);
     R.draws += (uint64_t)n;
     R.segments++;
     return n;

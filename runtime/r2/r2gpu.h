@@ -24,6 +24,7 @@ typedef struct {
     const void* vs; size_t vs_size;      /* compiled shaders (DXBC for D3D11, from build/gen/gpu_shaders.h) */
     const void* ps; size_t ps_size;
     const r2g_attr* attrs; int nattrs;
+    const void* gs; size_t gs_size;      /* optional geometry stage (NULL: none) */
 } r2g_pipe_desc;
 
 /* fixed-function state: the GS blend classes (gpu_front.c BL_*), write mask, depth test / write, culling */
@@ -62,3 +63,5 @@ void r2g_draw(r2g_dev* d, uint32_t count, uint32_t first_vertex);
 uint32_t r2g_draws(const r2g_dev* d);   /* draw calls issued (statistics) */
 /* the host's own bindings may have changed under it (the exact path drew): forget the filtered state */
 void r2g_invalidate(r2g_dev* d);
+/* hand the context back to the host: stages the host does not use (geometry) unbound */
+void r2g_end(r2g_dev* d);

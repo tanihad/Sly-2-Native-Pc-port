@@ -25,7 +25,7 @@
 cbuffer r2_seg : register(b1) {
     float4 r2_map;                       // kx, ky, XYOFFSET x, y (12.4)
     uint4 r2_off;                        // byte offsets in fdata: frame block, entries, draws; segment flags (1 FBA)
-    float4 r2_misc;                      // dual-source bias (gs.hlsl ps_ff), -, -, -
+    float4 r2_misc;                      // dual-source bias (gs.hlsl ps_ff), Z bias (debugging), asuint: scissor y0, -
 };
 
 struct R2V {
@@ -38,11 +38,22 @@ struct R2V {
 };
 
 struct R2O {
-    noperspective centroid float4 pos : SV_Position;
+    noperspective float4 pos : SV_Position;
     noperspective float4 col : COLOR0;   // 0..255
     noperspective float fog : FOG;
     noperspective float3 stq : TEXCOORD0;   // the VU's S, T, Q
     nointerpolation uint did : DID;
+    nointerpolation int3 gv : GV;        // the GS vertex: X, Y (12.4, XYOFFSET subtracted), Z
+};
+
+struct R2P {                             // the geometry stage's output: R2O + the triangle's exact Z record
+    noperspective centroid float4 pos : SV_Position;   // (centroid: required with conservative depth output)
+    noperspective float4 col : COLOR0;
+    noperspective float fog : FOG;
+    noperspective float3 stq : TEXCOORD0;
+    nointerpolation uint did : DID;
+    nointerpolation uint4 zr0 : ZREC0;   // row (lo, hi), dy (lo, hi): 16.16 at x = 0 of row by0, per row
+    nointerpolation uint3 zr1 : ZREC1;   // dx (lo, hi), by0
 };
 
 // draw record (gpu_front.h gpu_r2_draw, 64 bytes): +0 mesh, first, count, entry; +16 TEX0 lo, hi, CLAMP lo, hi;
@@ -125,7 +136,10 @@ R2O r2_vs(R2V i) {
     // the exact path's sample grid; positions are final (w = 1): the GS interpolates everything linearly on screen
     precise float dx = (gx - r2_map.z) * (r2_map.x * (1.0 / 16.0)) + 0.5;
     precise float dy = (gy - r2_map.w) * (r2_map.y * (1.0 / 16.0)) + 0.5;
-    o.pos = float4(dx * (1.0 / 8192.0), -dy * (1.0 / 8192.0), gz * (1.0 / 1048576.0), 1.0);
+    // depth: the rasterized value only bounds the exact Z the pixel shader writes (SV_DepthLessEqual): half a unit above
+    // the plane through the integer Z values, so it stays >= the GS's value at every sample
+    o.pos = float4(dx * (1.0 / 8192.0), -dy * (1.0 / 8192.0), (gz + 0.5) * (1.0 / 1048576.0), 1.0);
+    o.gv = int3((int)(bx & 0xFFFFu) - (int)r2_map.z, (int)(by & 0xFFFFu) - (int)r2_map.w, (int)((bz >> 4) & 0xFFFFFFu));
     // colour: A (pass A) or B, VU 8.x fade on colour A's alpha / colour B's RGB (0x0BE0, truncated)
     bool csel = (d3.z & R2D_CSEL) != 0u;
     uint col = csel ? i.colb : i.cola;
@@ -144,6 +158,77 @@ R2O r2_vs(R2V i) {
     return o;
 }
 
+// ---- the triangle's Z record exactly as the exact path's frontend builds it (runtime/gs_setup.c gs_tri_setup /
+// gs_tri_plane, gs_setup.h gs_rowstep_attr: row = llround((c0 + cy * by0) * 65536), dy, dx = llround(cy / cx * 65536),
+// computed there in doubles). Here in exact rational arithmetic on 64-bit integers (int64.hlsli): with the vertices'
+// integer X, Y (12.4) and Z, cx * 65536 = 2^20 Nx / A, cy * 65536 = 2^20 Ny / A and (c0 + cy * by0) * 65536 =
+// 65536 z0 + 2^16 M / A (A = twice the area in 12.4 units). The doubles round only far below the 2^-16 the records keep,
+// so the two agree but for values within ~1e-12 of a rounding boundary. The pixel shader then evaluates the record with
+// the exact path's own gs_z16_sample, so every sample of every pixel holds the Z the exact path would write there and
+// Z ties with exact draws (decals, the shadow pipeline) hold at any scale.
+float i64_to_float(i64 a) { return (float)asint(a.y) * 4294967296.0 + (float)a.x; }
+
+// floor(v) as int64 for any |v| < 2^62 (int64.hlsli's i64_from_float_floor loses small negative values: its low word
+// 2^32 - k is not a float)
+i64 r2_floor_i64(float v) {
+    float fv = floor(v), a = abs(fv);
+    float hi = floor(a * (1.0 / 4294967296.0));
+    i64 r = uint2((uint)(a - hi * 4294967296.0), (uint)hi);
+    return fv < 0.0 ? i64_neg(r) : r;
+}
+
+// floor(n / d) and n - q d for d > 0 (|n| < 2^62, d < 2^40): float estimates refined on the exact remainder (checked
+// against exact rationals with float32 emulation: 200k random cases)
+i64 i64_divmod_floor(i64 n, i64 d, out i64 r) {
+    float fd = i64_to_float(d);
+    i64 q = r2_floor_i64(i64_to_float(n) / fd);
+    r = i64_sub(n, i64_mul(q, d));
+    [unroll] for (uint k = 0u; k < 2u; k++) {
+        i64 dq = r2_floor_i64(i64_to_float(r) / fd);
+        q = i64_add(q, dq);
+        r = i64_sub(r, i64_mul(dq, d));
+    }
+    [unroll] for (uint k2 = 0u; k2 < 2u; k2++) if (i64_is_neg(r)) { q = i64_sub(q, uint2(1u, 0u)); r = i64_add(r, d); }
+    [unroll] for (uint k3 = 0u; k3 < 2u; k3++) if (!i64_lt(r, d)) { q = i64_add(q, uint2(1u, 0u)); r = i64_sub(r, d); }
+    return q;
+}
+
+// llround(2^s n / d) for d > 0, half away from zero (`pos`: the total it is added to is >= 0: halves round up)
+i64 i64_round_scaled(i64 n, i64 d, uint s, bool pos) {
+    i64 r, r2;
+    i64 q = i64_divmod_floor(n, d, r);                     // n = q d + r, 0 <= r < d
+    i64 q2 = i64_divmod_floor(i64_shl(r, s), d, r2);       // 2^s r = q2 d + r2
+    i64 t = i64_add(i64_shl(q, s), q2);                    // floor(2^s n / d); fraction r2 / d
+    i64 twice = i64_shl(r2, 1u);
+    bool neg = !pos && i64_is_neg(t);
+    if (neg ? i64_lt(d, twice) : !i64_lt(twice, d)) t = i64_add(t, uint2(1u, 0u));   // (> 1/2 below zero, >= 1/2 above)
+    return t;
+}
+
+[maxvertexcount(3)]
+void r2_gs(triangle R2O v[3], inout TriangleStream<R2P> ts) {
+    int x0 = v[0].gv.x, y0 = v[0].gv.y, x1 = v[1].gv.x, y1 = v[1].gv.y, x2 = v[2].gv.x, y2 = v[2].gv.y;
+    i64 A = i64_sub(i64_mul_i32(i64_make(x1 - x0), y2 - y0), i64_mul_i32(i64_make(y1 - y0), x2 - x0));
+    if (all(A == uint2(0u, 0u))) return;                    // (the GS draws nothing)
+    int miny = min(y0, min(y1, y2));
+    int by0 = max((miny + 15) >> 4, asint(asuint(r2_misc.z)));
+    int d1 = v[1].gv.z - v[0].gv.z, d2 = v[2].gv.z - v[0].gv.z;
+    i64 nx = i64_sub(i64_mul_i32(i64_make(d1), y2 - y0), i64_mul_i32(i64_make(d2), y1 - y0));
+    i64 ny = i64_sub(i64_mul_i32(i64_make(d2), x1 - x0), i64_mul_i32(i64_make(d1), x2 - x0));
+    if (i64_is_neg(A)) { A = i64_neg(A); nx = i64_neg(nx); ny = i64_neg(ny); }
+    i64 m = i64_add(i64_mul_i32(nx, -x0), i64_mul_i32(ny, 16 * by0 - y0));
+    i64 dx = i64_round_scaled(nx, A, 20u, false);
+    i64 dy = i64_round_scaled(ny, A, 20u, false);
+    i64 row = i64_add(i64_shl(i64_make(v[0].gv.z), 16u), i64_round_scaled(m, A, 16u, true));   // (Z >= 0)
+    [unroll] for (uint k = 0u; k < 3u; k++) {
+        R2P o;
+        o.pos = v[k].pos; o.col = v[k].col; o.fog = v[k].fog; o.stq = v[k].stq; o.did = v[k].did;
+        o.zr0 = uint4(row, dy);
+        o.zr1 = uint3(dx, asuint(by0));
+        ts.Append(o);
+    }
+}
+
 struct R2F {
     float4 c0 : SV_Target0;
 #if R2_DUAL
@@ -152,7 +237,7 @@ struct R2F {
     float z : SV_DepthLessEqual;
 };
 
-R2F r2_ps(R2O i) {
+R2F r2_ps(R2P i) {
     vkx = 1u; vky = 1u; vbase = 0u; vfbw = 1u; vflags = 0u; one = 1.0; kx = 1u; ky = 1u;   // (gs.hlsl statics: no view)
     uint db = r2_off.z + i.did * 64u;
     uint4 d1 = fdata.Load4(db + 16u);
@@ -228,6 +313,13 @@ R2F r2_ps(R2O i) {
 #if R2_DUAL
     o.c1 = float4(0.0, 0.0, 0.0, a1);
 #endif
-    o.z = max(floor(i.pos.z * 1048576.0) + r2_misc.y, 0.0) * (1.0 / 1048576.0);   // (r2_misc.y: PS2_R2_ZBIAS, debugging)
+    // the exact path's Z at this sample (gs.hlsl gs_frag): native pixel (px, py), sample (si, sj) of kx x ky
+    uint kxu = (uint)r2_map.x, kyu = (uint)r2_map.y;
+    uint2 tp = (uint2)i.pos.xy;
+    uint pxu = tp.x / kxu, pyu = tp.y / kyu;
+    i64 z16 = gs_z16_sample(i.zr0.xy, i.zr0.zw, i.zr1.xy, asint(i.zr1.z), (int)pxu, (int)pyu, tp.x - pxu * kxu,
+                            tp.y - pyu * kyu, kxu, kyu);
+    float zv = (float)gs_z_clamp(z16, 0xFFFFFFFFu);
+    o.z = max(zv + r2_misc.y, 0.0) * (1.0 / 1048576.0);   // (r2_misc.y: PS2_R2_ZBIAS, debugging)
     return o;
 }
