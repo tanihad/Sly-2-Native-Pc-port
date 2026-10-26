@@ -55,6 +55,7 @@ void r2g_bind_vertex_native(r2g_dev* d, int slot, void* buffer, uint32_t stride)
 void r2g_bind_index(r2g_dev* d, r2g_buf* b);
 void r2g_bind_constants(r2g_dev* d, int slot, r2g_buf* b);   /* vertex and pixel stages */
 void r2g_bind_srv_native(r2g_dev* d, int slot, void* srv);   /* vertex and pixel stages: ID3D11ShaderResourceView* */
+void r2g_bind_srv(r2g_dev* d, int slot, r2g_buf* b);         /* a raw buffer's view (R2G_BUF_RAW) */
 void r2g_bind_targets_native(r2g_dev* d, void* rtv, void* dsv);
 void r2g_viewport(r2g_dev* d, float x, float y, float w, float h);
 void r2g_scissor(r2g_dev* d, int x0, int y0, int x1, int y1);

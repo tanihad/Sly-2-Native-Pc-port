@@ -203,7 +203,7 @@ int gpu_no_rov(void) {
  * only) and the variants for the other ROV case. */
 static int shader_warmup(void) {
     static const char* const skip[] = { "vs_tri", "vs_sprite", "vs_linepix", "vs_quad", "ps_depth", "ps_flat", "cs_touch",
-                                        "ps_rov_t", "ps_ff_d", "cs_conformance", "cs_depth_read", NULL };
+                                        "ps_rov_t", "ps_ff_d", "cs_conformance", "cs_depth_read", "vs_r2c", "ps_r2c", NULL };
     LARGE_INTEGER f, a, b;
     QueryPerformanceFrequency(&f);
     QueryPerformanceCounter(&a);

@@ -424,6 +424,40 @@ covers; the owner confirms after testing the dist build. Effort is in agent-days
 - **Gain**: ep3 hub about 120 -> >= 165 fps at 3x.
 - **Default**: off; the owner can try it with the setting.
 
+### R0 + R1 as built (next/r2-m1, 2026-10-26)
+- **Code**: `runtime/r2/` (r2.h overview; r2_capture.c EE hooks + classification; r2_mesh.c decoder + mesh store;
+  r2_vertex.c the VU-exact vertex function; r2gpu.h / r2gpu_d3d11.c; r2_render.c), `runtime/gpu/gpu_r2front.c`
+  (GPU_FOP_R2 segments), shaders `r2.hlsl`, `r2_vu.hlsli`, `r2_conf.hlsl`; patches `r2m_alloc / r2m_entry / r2m_done`
+  (recomp/patches.py); setting `[graphics] renderer_mode = reference | modern` (`PS2_R2=off|hybrid|bracket`).
+- **Classification** (r2_cap_entry, per render-list entry before 0x158378): native when the entry is not from the
+  allocator 0x1CD998 (static world, 0x1D5808), its level is allowlisted, the frame's screen constants have the
+  float-bits form, class 0 (main program), the mesh decodes (cached per DMA address with a 32-byte fingerprint, decode
+  budget 3 ms per frame), form 1's header parses, VU 8.w == 0, and the mesh's bounding box lies inside the VU's guard
+  band in clip space (`|x|, |y|, |z| <= 0.999 w`, w > 0; else the VU's clipper would draw fans: the entry stays exact,
+  reason "guard"). Hybrid drops the entry's mesh CALL; runs of native entries are preceded by `MSCAL 0x3AB0` +
+  `MSCAL 0` (the previous exact entry's pending kicks, DBF parity kept) and followed by a state epilogue (the last
+  pass's A+D registers).
+- **Exactness (beyond the design)**: the reserve lever of section 4 is in, in a stronger form, because the gates needed
+  it (Z ties at steep surfaces: Z exact only 71% with the float transform):
+  - the vertex shader evaluates the VU's own operation sequence (0x07F8 MULA/MADDA chain, DIV, MULQ, ADDA + MADD,
+    0x0070's W x C on the frontend) with round-toward-zero emulated through error-free transforms (Dekker / Knuth),
+    so X, Y (12.4), Z, F, S, T, Q are bit-exact (level 1: 100% on the ep3 hub). Positions are final screen positions
+    (w = 1, nothing to clip inside the guard band), S/T/Q interpolated linearly and divided per pixel like the GS.
+  - a geometry stage computes each triangle's Z record (row, dy, dx at by0) exactly as the frontend's gs_tri_setup /
+    gs_rowstep_attr would, in exact 64-bit rational arithmetic (r2_vu.hlsli), and the pixel shader evaluates it with the
+    exact path's own gs_z16_sample: every sample of every pixel gets the exact path's Z, at any scale.
+  - cost: see the measurements below; `tests/unit/r2` checks the arithmetic bit for bit on hardware and WARP.
+- **Verification**: level 1 (scripts/r2_mesh_check.c, ep3 hub VU recording): 374 / 378 world entries decoded (2 mscal,
+  2 vertex fallbacks), X / Y / Z / fog / S / T / Q / RGBA all exact, materials identical, no VU-drawn triangle missing.
+  Levels 2-3 (scripts/r2_ab.ps1: a bracket recording replayed with `--r2-ab 0 / 1`, GS memory compared): S = 1 Z 100%
+  exact; colour PSNR 61 dB, 0.11% of pixels > 2, 0.002% > 16; alpha bit 7 identical; at 3x 16:9 the pictures agree
+  (4798 of 2.75 M samples differ by > 8, texel picks at edges). Note: the ep3 hub's brazier light flickers, so
+  Sly's shadow darkness varies frame to frame - compare shadows only on the same frame (A/B), never across runs.
+- **Exact-path finding (not changed here)**: `int64.hlsli i64_from_float_floor` is off by up to 128 for negative v
+  above -2^32 (its low word 2^32 - k rounds to a multiple of 256 as a float; floor(-2.5) gives -1). In gs_z16_sample's
+  sub-sample step (16.16 units) that is <= 2^-9 Z units, harmless; R2 calls the same function, so ties hold. A general
+  use needs r2_vu.hlsli's r2_floor_i64.
+
 ### R2. All prelit meshes, all levels, draw consolidation - 8 agent-days
 - **Deliverable**:
   - Glob prelit props and objects (world matrix + fade from the header packet; the light-prefix and fixed-sort-key

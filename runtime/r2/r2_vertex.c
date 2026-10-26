@@ -1,7 +1,9 @@
 /* The prelit vertex function of the VU1 main program (routines 0x06D0 / 0x0960 / 0x0BE0, notes/wip/r2-m1.md) in C: the
  * twin of shaders/r2.hlsl's vertex shader, used by the in-game check (bracket mode, PS2_R2_CHECK) and offline tools
- * (scripts/r2_mesh_check.c) to compare R2's vertices with what the VU XGKICKs. Floats round to nearest here (as on the
- * GPU); only the two steps where the VU's truncation decides an integer (the float-bits XYZ and fog words) truncate. */
+ * (scripts/r2_mesh_check.c) to compare R2's vertices with what the VU XGKICKs. Every operation is the VU's own: the exact
+ * result (in double) rounded toward zero and flushed to zero, in the microcode's order, so the outputs are bit-exact
+ * (level-1 oracle on the ep3 hub: X, Y, Z, F, S, T, Q all identical); the shader does the same with error-free
+ * transforms (shaders/r2_vu.hlsli, checked against these functions by tests/unit/r2). */
 #include "r2.h"
 
 #include <math.h>
@@ -15,8 +17,20 @@ static float rz(double s) {
     if (fabsf(f) < 1.17549435e-38f) f = copysignf(0.0f, f);
     return f;
 }
-static float mul_rz(float a, float b) { return rz((double)a * (double)b); }
-static float add_rz(float a, float b) { return rz((double)a + (double)b); }
+static float mul_rz(float a, float b) { return rz((double)a * (double)b); }   /* (the product is exact in a double) */
+/* a sum is exact in a double only when the exponents are close: Knuth's two-sum in floats gives the exact sum as s + e
+ * (round to nearest), s steps toward zero when e points the other way (as shaders/r2_vu.hlsli) */
+static float add_rz(float a, float b) {
+    float s = a + b;
+    float bb = s - a;
+    float e = (a - (s - bb)) + (b - bb);
+    if (e != 0.0f && s != 0.0f && ((e < 0.0f) != (s < 0.0f))) s = nextafterf(s, 0.0f);
+    if (fabsf(s) < 1.17549435e-38f) s = copysignf(0.0f, s);
+    return s;
+}
+float r2_vu_mul(float a, float b) { return mul_rz(a, b); }
+float r2_vu_add(float a, float b) { return add_rz(a, b); }
+float r2_vu_rcp(float w) { return rz(1.0 / (double)w); }
 
 void r2_matmul(const float w[16], const float c[16], float out[16]) {
     /* routine 0x0070 (0x0208): row i of M = ((C0 * Wi0 + C1 * Wi1) + C2 * Wi2) + C3 * Wi3, MULA / MADDA / MADD */

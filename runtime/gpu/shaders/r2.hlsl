@@ -17,6 +17,7 @@
 #define SPEC_NOLOD 1
 #define R2_CLUT 1
 #include "gs.hlsl"
+#include "r2_vu.hlsli"
 
 #ifndef R2_DUAL
 #define R2_DUAL 0
@@ -66,48 +67,7 @@ struct R2P {                             // the geometry stage's output: R2O + t
 #define R2D_TCC 32u
 #define R2D_KEEP 64u
 
-// ---- the VU's FMAC arithmetic, bit for bit: every MUL / ADD rounds toward zero and flushes to zero (runtime/vu_exec.c
-// runs the microcode under that MXCSR). D3D11 rounds float add / mul to nearest; the error-free transforms (Dekker's
-// product with Veltkamp's split, Knuth's two-sum) give the exact result as r + e, and r steps one ulp toward zero when e
-// points the other way. Twin of runtime/r2/r2_vertex.c (rz / mul_rz / add_rz there, through doubles).
-float vu_fix(float r, float e) {
-    if (e != 0.0 && r != 0.0 && ((e < 0.0) != (r < 0.0))) r = asfloat(asuint(r) - 1u);
-    if (abs(r) < 1.17549435e-38) r = asfloat(asuint(r) & 0x80000000u);
-    return r;
-}
-float2 vu_two_prod(float a, float b) {
-    precise float p = a * b;
-    precise float ca = 4097.0 * a;
-    precise float ah = ca - (ca - a);
-    precise float al = a - ah;
-    precise float cb = 4097.0 * b;
-    precise float bh = cb - (cb - b);
-    precise float bl = b - bh;
-    precise float e = ((ah * bh - p) + ah * bl + al * bh) + al * bl;
-    return float2(p, e);
-}
-float vu_mul(float a, float b) { float2 pe = vu_two_prod(a, b); return vu_fix(pe.x, pe.y); }
-float vu_add(float a, float b) {
-    precise float s = a + b;
-    precise float bb = s - a;
-    precise float e = (a - (s - bb)) + (b - bb);
-    return vu_fix(s, e);
-}
-bool vu_rcp_over(float c, float w) {   // c * w > 1, exactly
-    float2 pe = vu_two_prod(c, w);
-    precise float d = 1.0 - pe.x;      // exact (Sterbenz: pe.x is near 1)
-    return d < pe.y;
-}
-float vu_rcp(float w) {                // DIV Q, vf00w, w for w > 0: the largest float c with c * w <= 1
-    precise float q = 1.0 / w;         // (D3D11: within 2.5 ulp)
-    [unroll] for (uint k = 0u; k < 3u; k++) if (vu_rcp_over(q, w)) q = asfloat(asuint(q) - 1u);
-    [unroll] for (uint k2 = 0u; k2 < 3u; k2++) {
-        float n = asfloat(asuint(q) + 1u);
-        if (!vu_rcp_over(n, w)) q = n;
-    }
-    return q;
-}
-
+// (the VU's arithmetic: vu_mul / vu_add / vu_rcp, r2_vu.hlsli)
 R2O r2_vs(R2V i) {
     R2O o;
     uint db = r2_off.z + i.did * 64u;
@@ -165,46 +125,7 @@ R2O r2_vs(R2V i) {
 // 65536 z0 + 2^16 M / A (A = twice the area in 12.4 units). The doubles round only far below the 2^-16 the records keep,
 // so the two agree but for values within ~1e-12 of a rounding boundary. The pixel shader then evaluates the record with
 // the exact path's own gs_z16_sample, so every sample of every pixel holds the Z the exact path would write there and
-// Z ties with exact draws (decals, the shadow pipeline) hold at any scale.
-float i64_to_float(i64 a) { return (float)asint(a.y) * 4294967296.0 + (float)a.x; }
-
-// floor(v) as int64 for any |v| < 2^62 (int64.hlsli's i64_from_float_floor loses small negative values: its low word
-// 2^32 - k is not a float)
-i64 r2_floor_i64(float v) {
-    float fv = floor(v), a = abs(fv);
-    float hi = floor(a * (1.0 / 4294967296.0));
-    i64 r = uint2((uint)(a - hi * 4294967296.0), (uint)hi);
-    return fv < 0.0 ? i64_neg(r) : r;
-}
-
-// floor(n / d) and n - q d for d > 0 (|n| < 2^62, d < 2^40): float estimates refined on the exact remainder (checked
-// against exact rationals with float32 emulation: 200k random cases)
-i64 i64_divmod_floor(i64 n, i64 d, out i64 r) {
-    float fd = i64_to_float(d);
-    i64 q = r2_floor_i64(i64_to_float(n) / fd);
-    r = i64_sub(n, i64_mul(q, d));
-    [unroll] for (uint k = 0u; k < 2u; k++) {
-        i64 dq = r2_floor_i64(i64_to_float(r) / fd);
-        q = i64_add(q, dq);
-        r = i64_sub(r, i64_mul(dq, d));
-    }
-    [unroll] for (uint k2 = 0u; k2 < 2u; k2++) if (i64_is_neg(r)) { q = i64_sub(q, uint2(1u, 0u)); r = i64_add(r, d); }
-    [unroll] for (uint k3 = 0u; k3 < 2u; k3++) if (!i64_lt(r, d)) { q = i64_add(q, uint2(1u, 0u)); r = i64_sub(r, d); }
-    return q;
-}
-
-// llround(2^s n / d) for d > 0, half away from zero (`pos`: the total it is added to is >= 0: halves round up)
-i64 i64_round_scaled(i64 n, i64 d, uint s, bool pos) {
-    i64 r, r2;
-    i64 q = i64_divmod_floor(n, d, r);                     // n = q d + r, 0 <= r < d
-    i64 q2 = i64_divmod_floor(i64_shl(r, s), d, r2);       // 2^s r = q2 d + r2
-    i64 t = i64_add(i64_shl(q, s), q2);                    // floor(2^s n / d); fraction r2 / d
-    i64 twice = i64_shl(r2, 1u);
-    bool neg = !pos && i64_is_neg(t);
-    if (neg ? i64_lt(d, twice) : !i64_lt(twice, d)) t = i64_add(t, uint2(1u, 0u));   // (> 1/2 below zero, >= 1/2 above)
-    return t;
-}
-
+// Z ties with exact draws (decals, the shadow pipeline) hold at any scale. (i64_round_scaled: r2_vu.hlsli)
 [maxvertexcount(3)]
 void r2_gs(triangle R2O v[3], inout TriangleStream<R2P> ts) {
     int x0 = v[0].gv.x, y0 = v[0].gv.y, x1 = v[1].gv.x, y1 = v[1].gv.y, x2 = v[2].gv.x, y2 = v[2].gv.y;

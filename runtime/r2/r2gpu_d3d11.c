@@ -143,7 +143,7 @@ r2g_pipe* r2g_pipe_create(r2g_dev* d, const r2g_pipe_desc* desc) {
     }
     if (FAILED(ID3D11Device_CreateVertexShader(d->dev, desc->vs, desc->vs_size, NULL, &p->vs)) ||
         FAILED(ID3D11Device_CreatePixelShader(d->dev, desc->ps, desc->ps_size, NULL, &p->ps)) ||
-        FAILED(ID3D11Device_CreateInputLayout(d->dev, el, (UINT)n, desc->vs, desc->vs_size, &p->il)) ||
+        (n > 0 && FAILED(ID3D11Device_CreateInputLayout(d->dev, el, (UINT)n, desc->vs, desc->vs_size, &p->il))) ||
         (desc->gs && FAILED(ID3D11Device_CreateGeometryShader(d->dev, desc->gs, desc->gs_size, NULL, &p->gs)))) {
         r2g_pipe_free(p);
         return NULL;
@@ -267,6 +267,8 @@ void r2g_bind_srv_native(r2g_dev* d, int slot, void* srv) {
     ID3D11DeviceContext_VSSetShaderResources(d->ctx, (UINT)slot, 1, &v);
     ID3D11DeviceContext_PSSetShaderResources(d->ctx, (UINT)slot, 1, &v);
 }
+
+void r2g_bind_srv(r2g_dev* d, int slot, r2g_buf* b) { r2g_bind_srv_native(d, slot, b ? b->srv : NULL); }
 
 void r2g_bind_targets_native(r2g_dev* d, void* rtv, void* dsv) {
     ID3D11RenderTargetView* r = rtv;

@@ -127,7 +127,11 @@ typedef struct {
 /* the VU's output for vertex v of a batch: m = the 4x4 (rows) W x C, fb = frame constants, fade = VU 8.x */
 void r2_vertex_eval(const r2_vtx* v, const float m[16], const r2_frame_block* fb, const r2_batch* b, int csel,
                     float fade, r2_gsv* o);
-void r2_matmul(const float w[16], const float c[16], float out[16]);   /* out = W x C (row vectors) */
+void r2_matmul(const float w[16], const float c[16], float out[16]);   /* out = W x C (row vectors), VU-exact (0x0070) */
+/* the VU's FMAC operations (round toward zero, flush to zero), the references of shaders/r2_vu.hlsli */
+float r2_vu_mul(float a, float b);
+float r2_vu_add(float a, float b);
+float r2_vu_rcp(float w);                 /* DIV Q, 1.0, w */
 /* The VU's float-bits screen transform as a linear one (GPU vertex shader): GS X (12.4) = bx + ax * x/w, Y likewise,
  * GS Z = bz + az * z/w, inside the ranges the VU produces for visible vertices. 0: the constants do not have that form
  * (R2 then stays off for the frame). */
