@@ -327,7 +327,15 @@ static void gf_r2_flush_impl(void) {
         for (uint32_t i = 0; i < nd; i++)
             if (R2S_draws[i].mask_off != ~0u) R2S_draws[i].mask_off += mo;
     }
-    o->draw_off = gf_data(R2S_draws, nd * (uint32_t)sizeof(gpu_r2_draw));
+    /* (r2-m2) the segment's constants as a record in fdata, found by every draw record (no per-segment cbuffer) */
+    gpu_r2_seg sg = { (float)ct->kx, (float)ct->ky, (float)(seg_xyo & 0xFFFF), (float)((seg_xyo >> 32) & 0xFFFF),
+                      o->frame_off, o->ent_off, (seg_fba & 1) ? 1u : 0u, (uint32_t)y0 };
+    uint32_t so = gf_data(&sg, sizeof sg);
+    for (uint32_t i = 0; i < nd; i++) R2S_draws[i].seg_off = so;
+    /* the draw records 32-byte aligned: the vertex shader finds record i at (StartInstanceLocation = draw_off / 32 + i) x 32 */
+    uint32_t base = gf_data(NULL, nd * (uint32_t)sizeof(gpu_r2_draw) + 16);
+    o->draw_off = (base + 31) & ~31u;
+    memcpy(gf_data_ptr(o->draw_off), R2S_draws, nd * sizeof(gpu_r2_draw));
     o->nent = nents;
     o->ndraw = nd;
     o->gen = items[0].handle >> 20;

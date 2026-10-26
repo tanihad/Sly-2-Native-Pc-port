@@ -302,9 +302,15 @@ typedef struct {                         /* (r2-m2) 32 bytes: one consolidated d
     uint32_t mask_off;                   /* fdata word index of the batch mask (bit b - first: drawn), ~0: every batch */
     uint32_t mesh;                       /* mesh handle (r2_mesh_get; the shaders: its material base by index) */
     uint32_t first, count;               /* indices of the mesh's index array (the batches' range) */
-    uint32_t state;                      /* blend class | depth state << 4 | wmask << 8 | cull << 12 */
-    uint32_t pad;
+    uint32_t state;                      /* blend class | depth state << 4 | wmask << 8 | cull << 12 | clip << 13 */
+    uint32_t seg_off;                    /* the segment record (gpu_r2_seg) in fdata (the shaders read it from here) */
 } gpu_r2_draw;
+typedef struct {                         /* (r2-m2) 32 bytes: a segment's constants, in fdata (no per-segment cbuffer) */
+    float kx, ky, xyo_x, xyo_y;          /* sample factors of the targets, XYOFFSET_1 (12.4) */
+    uint32_t frame_off, ent_off;         /* the frame block, the entry records */
+    uint32_t flags;                      /* 1: FBA */
+    uint32_t sc_y0;                      /* scissor y0 (the Z records' first row) */
+} gpu_r2_seg;
 /* (r2-m1) frontend counters of the modern renderer since the last reset (gpu_r2front.c) */
 typedef struct {
     uint64_t hints, bad_hints, segments, entries, draws, splits, textures, tex_gpu, dropped, unsupported, over128, brackets,

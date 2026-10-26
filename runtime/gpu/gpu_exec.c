@@ -1701,7 +1701,7 @@ static void exec_r2(const gpu_front_frame_data* fd, const gpu_fop_r2* o) {
     bind_ff(o->ct, o->zt);
     if (X.b_t1) set_t1(NULL);
     if (X.b_t2) set_t2(NULL);
-    if (!iota_ensure(o->ndraw + 1)) return;
+    if (!iota_ensure(o->draw_off / 32u + o->ndraw + 1)) return;   /* (r2-m2: draw ids = the records' fdata offsets / 32) */
     r2_exec_in in = { gpu_rt.dev, gpu_rt.ctx, ct->rtv, zt->dsv, ct->kx, ct->ky, X.vram_srv, X.swz_srv, X.dat.srv, X.iota,
                       gpu_rt.caps.warp ? 0.49609375f : 0.42f };
     int n = r2_render_segment(o, fd->data, fd->data_bytes, &in);

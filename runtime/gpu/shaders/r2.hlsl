@@ -27,11 +27,22 @@
                                          // interpolated plane (the default pipelines, perms ps_r2_iz*)
 #endif
 
-cbuffer r2_seg : register(b1) {
-    float4 r2_map;                       // kx, ky, XYOFFSET x, y (12.4)
-    uint4 r2_off;                        // byte offsets in fdata: frame block, entries, draws; segment flags (1 FBA)
-    float4 r2_misc;                      // dual-source bias (gs.hlsl ps_ff), Z bias (debugging), asuint: scissor y0, -
+// (r2-m2) constants of the device, written once (a per-segment constant buffer update made the driver stall the render
+// thread for up to 13 ms when the GPU was the bottleneck): the segment's own values are a record in fdata (r2_seg)
+cbuffer r2_static : register(b1) {
+    float4 r2_misc;                      // dual-source bias (gs.hlsl ps_ff), Z bias (debugging), -, asuint: PS2_R2_DBG
 };
+// the segment record (gpu_front.h gpu_r2_seg, 32 bytes in fdata at the draw record's +28)
+struct R2Seg {
+    float4 map;                          // kx, ky, XYOFFSET x, y (12.4)
+    uint4 off;                           // byte offsets in fdata: frame block, entries; flags (1 FBA); scissor y0
+};
+R2Seg r2_seg(uint o) {
+    R2Seg s;
+    s.map = asfloat(fdata.Load4(o));
+    s.off = fdata.Load4(o + 16u);
+    return s;
+}
 
 struct R2V {
     float3 pos : POSITION;
@@ -57,7 +68,7 @@ struct R2O {
     R2I float4 col : COLOR0;             // 0..255
     R2I float fog : FOG;
     R2I float3 stq : TEXCOORD0;          // the VU's S, T, Q
-    nointerpolation uint2 mr : MATRULE;  // the material record, the discard rule
+    nointerpolation uint3 mr : MATRULE;  // the material record, the discard rule, the segment record
     nointerpolation int3 gv : GV;        // the GS vertex: X, Y (12.4, XYOFFSET subtracted), Z
 };
 
@@ -66,7 +77,7 @@ struct R2C {                             // (r2-m2) the clip pipeline's vertex: 
     R2I float4 col : COLOR0;
     R2I float fog : FOG;
     R2I float3 stq : TEXCOORD0;
-    nointerpolation uint2 mr : MATRULE;
+    nointerpolation uint3 mr : MATRULE;
     nointerpolation int3 gv : GV;
     float4 clip : CLIPPOS;               // M x position (the VU's clip space: |x|, |y|, |z| <= w inside its guard band)
     float4 alt : ALT;                    // u, v, 1, F (clipped triangles: perspective-correct U, V; fog without Q)
@@ -77,7 +88,7 @@ struct R2K {                             // the clip pipeline's rasterized verte
     R2I float4 col : COLOR0;
     R2I float fog : FOG;
     R2I float3 stq : TEXCOORD0;
-    nointerpolation uint2 mr : MATRULE;
+    nointerpolation uint3 mr : MATRULE;
     nointerpolation int3 gv : GV;
     float4 cd0 : SV_ClipDistance0;       // the VU's six clip planes: w - x, w + x, w - y, w + y
     float2 cd1 : SV_ClipDistance1;       //                            w - z, w + z
@@ -88,7 +99,7 @@ struct R2P {                             // the geometry stage's output: R2O + t
     noperspective float4 col : COLOR0;
     noperspective float fog : FOG;
     noperspective float3 stq : TEXCOORD0;
-    nointerpolation uint2 mr : MATRULE;
+    nointerpolation uint3 mr : MATRULE;
     nointerpolation uint4 zr0 : ZREC0;   // row (lo, hi), dy (lo, hi): 16.16 at x = 0 of row by0, per row
     nointerpolation uint3 zr1 : ZREC1;   // dx (lo, hi), by0
 };
@@ -106,8 +117,10 @@ ByteAddressBuffer r2_mtab : register(t11);
 
 // (the VU's arithmetic: vu_mul / vu_add / vu_rcp, r2_vu.hlsli)
 void r2_vertex(R2V i, out R2O o, out float4 clip, out float4 alt) {
-    uint db = r2_off.z + i.did * 32u;
+    uint db = i.did * 32u;               // (StartInstanceLocation: the draw record's fdata offset / 32)
     uint4 dr = fdata.Load4(db);
+    uint so = fdata.Load(db + 28u);
+    R2Seg sg = r2_seg(so);
     uint rp = dr.y & 3u, b0 = dr.y >> 8;   // (pass: an HLSL keyword)
     bool skip = false;
     if (dr.z != 0xFFFFFFFFu) {           // a batch mask: the batches of the range this draw leaves to another
@@ -116,11 +129,11 @@ void r2_vertex(R2V i, out R2O o, out float4 clip, out float4 alt) {
     }
     uint mat = r2_mtab.Load((dr.w & 0xFFFFFu) * 4u) + i.batch * 3u + rp;
     uint4 d3 = r2_mats.Load4(mat * 48u + 32u);   // fog scale, fog w max, flags
-    uint eb = r2_off.y + dr.x * 80u;
+    uint eb = sg.off.y + dr.x * 80u;
     float4 m[4] = { asfloat(fdata.Load4(eb)), asfloat(fdata.Load4(eb + 16u)), asfloat(fdata.Load4(eb + 32u)),
                     asfloat(fdata.Load4(eb + 48u)) };
     float fade = asfloat(fdata.Load(eb + 64u));
-    float4 c0 = asfloat(fdata.Load4(r2_off.x)), c1 = asfloat(fdata.Load4(r2_off.x + 16u));   // VU 0, VU 1
+    float4 c0 = asfloat(fdata.Load4(sg.off.x)), c1 = asfloat(fdata.Load4(sg.off.x + 16u));   // VU 0, VU 1
     // 0x07F8: MULAx / MADDAy / MADDAz / MADDw (row 3 x 1.0 exact), M = world x clip (gpu_r2front.c, VU-exact too)
     float c[4];
     float q;
@@ -147,12 +160,12 @@ void r2_vertex(R2V i, out R2O o, out float4 clip, out float4 alt) {
     float w = c[3];
     float gx = (float)(bx & 0xFFFFu), gy = (float)(by & 0xFFFFu), gz = (float)((bz >> 4) & 0xFFFFFFu);
     // the exact path's sample grid; positions are final (w = 1): the GS interpolates everything linearly on screen
-    precise float dx = (gx - r2_map.z) * (r2_map.x * (1.0 / 16.0)) + 0.5;
-    precise float dy = (gy - r2_map.w) * (r2_map.y * (1.0 / 16.0)) + 0.5;
+    precise float dx = (gx - sg.map.z) * (sg.map.x * (1.0 / 16.0)) + 0.5;
+    precise float dy = (gy - sg.map.w) * (sg.map.y * (1.0 / 16.0)) + 0.5;
     // depth: the rasterized value only bounds the exact Z the pixel shader writes (SV_DepthLessEqual): half a unit above
     // the plane through the integer Z values, so it stays >= the GS's value at every sample
     o.pos = float4(dx * (1.0 / 8192.0), -dy * (1.0 / 8192.0), (gz + 0.5) * (1.0 / 1048576.0), 1.0);
-    o.gv = int3((int)(bx & 0xFFFFu) - (int)r2_map.z, (int)(by & 0xFFFFu) - (int)r2_map.w, (int)((bz >> 4) & 0xFFFFFFu));
+    o.gv = int3((int)(bx & 0xFFFFu) - (int)sg.map.z, (int)(by & 0xFFFFu) - (int)sg.map.w, (int)((bz >> 4) & 0xFFFFFFu));
     // colour: A (pass A) or B, VU 8.x fade on colour A's alpha / colour B's RGB (0x0BE0, truncated)
     bool csel = (d3.z & R2D_CSEL) != 0u;   // (material flags)
     uint col = csel ? i.colb : i.cola;
@@ -167,7 +180,7 @@ void r2_vertex(R2V i, out R2O o, out float4 clip, out float4 alt) {
     o.fog = (float)((asuint(fw) >> 4) & 255u);
     // STQ = (ITOF12 u, v, 1) x Q, interpolated linearly on screen and divided per pixel (the GS's S/Q, T/Q)
     o.stq = float3(vu_mul((float)i.uv.x * (1.0 / 4096.0), q), vu_mul((float)i.uv.y * (1.0 / 4096.0), q), q);
-    o.mr = uint2(mat, (dr.y >> 2) & 1u);
+    o.mr = uint3(mat, (dr.y >> 2) & 1u, so);
     if (skip) o.pos = float4(2.0, 2.0, 0.5, 1.0);   // (outside the clip volume: the batch's triangles are rejected)
     clip = float4(c[0], c[1], c[2], w);
     if (skip) clip = float4(2.0, 0.0, 0.0, 1.0);    // (outside x <= w: rejected by the clip pipeline too)
@@ -212,9 +225,10 @@ void r2_gs_clip(triangle R2C v[3], inout TriangleStream<R2K> ts) {
     uint o0 = r2_outcode(v[0].clip), o1 = r2_outcode(v[1].clip), o2 = r2_outcode(v[2].clip);
     if ((o0 & o1 & o2 & 63u) != 0u) return;
     bool inside = (o0 | o1 | o2) == 0u;
-    float4 fr = asfloat(fdata.Load4(r2_off.x + 32u));       // screen model: ax, bx, ay, by (gpu_r2_frame)
-    float2 fz = asfloat(fdata.Load2(r2_off.x + 48u));       //               az, bz
-    float kx = r2_map.x * (1.0 / 16.0), ky = r2_map.y * (1.0 / 16.0);
+    R2Seg sg = r2_seg(v[0].mr.z);
+    float4 fr = asfloat(fdata.Load4(sg.off.x + 32u));       // screen model: ax, bx, ay, by (gpu_r2_frame)
+    float2 fz = asfloat(fdata.Load2(sg.off.x + 48u));       //               az, bz
+    float kx = sg.map.x * (1.0 / 16.0), ky = sg.map.y * (1.0 / 16.0);
     [unroll] for (uint k = 0u; k < 3u; k++) {
         R2K o;
         o.col = v[k].col; o.mr = v[k].mr; o.gv = v[k].gv;
@@ -224,8 +238,8 @@ void r2_gs_clip(triangle R2C v[3], inout TriangleStream<R2K> ts) {
         } else {
             float4 c = v[k].clip;
             // d3d = (GS - XYOFFSET) k / 16 + 0.5 with GS = b + a c / w, through the REF viewport (NDC x 8192), times w
-            o.pos = float4((((fr.y - r2_map.z) * kx + 0.5) * c.w + fr.x * kx * c.x) * (1.0 / 8192.0),
-                           -(((fr.w - r2_map.w) * ky + 0.5) * c.w + fr.z * ky * c.y) * (1.0 / 8192.0),
+            o.pos = float4((((fr.y - sg.map.z) * kx + 0.5) * c.w + fr.x * kx * c.x) * (1.0 / 8192.0),
+                           -(((fr.w - sg.map.w) * ky + 0.5) * c.w + fr.z * ky * c.y) * (1.0 / 8192.0),
                            ((fz.y + 0.5) * c.w + fz.x * c.z) * (1.0 / 1048576.0), c.w);
             o.fog = v[k].alt.w;
             o.stq = v[k].alt.xyz;
@@ -250,7 +264,7 @@ void r2_gs(triangle R2O v[3], inout TriangleStream<R2P> ts) {
     i64 A = i64_sub(i64_mul_i32(i64_make(x1 - x0), y2 - y0), i64_mul_i32(i64_make(y1 - y0), x2 - x0));
     if (all(A == uint2(0u, 0u))) return;                    // (the GS draws nothing)
     int miny = min(y0, min(y1, y2));
-    int by0 = max((miny + 15) >> 4, asint(asuint(r2_misc.z)));
+    int by0 = max((miny + 15) >> 4, (int)r2_seg(v[0].mr.z).off.w);
     int d1 = v[1].gv.z - v[0].gv.z, d2 = v[2].gv.z - v[0].gv.z;
     i64 nx = i64_sub(i64_mul_i32(i64_make(d1), y2 - y0), i64_mul_i32(i64_make(d2), y1 - y0));
     i64 ny = i64_sub(i64_mul_i32(i64_make(d2), x1 - x0), i64_mul_i32(i64_make(d1), x2 - x0));
@@ -358,7 +372,8 @@ R2F r2_ps(R2O i) {
             }
         }
     }
-    uint ao = As | ((r2_off.w & 1u) != 0u ? 0x80u : 0u);
+    R2Seg sg = r2_seg(i.mr.z);
+    uint ao = As | ((sg.off.z & 1u) != 0u ? 0x80u : 0u);
     R2F o;
     o.c0 = float4(rgb, b2f(min(ao, 255u)));
 #if R2_DUAL
@@ -366,7 +381,7 @@ R2F r2_ps(R2O i) {
 #endif
 #if R2_ZREC
     // the exact path's Z at this sample (gs.hlsl gs_frag): native pixel (px, py), sample (si, sj) of kx x ky
-    uint kxu = (uint)r2_map.x, kyu = (uint)r2_map.y;
+    uint kxu = (uint)sg.map.x, kyu = (uint)sg.map.y;
     uint2 tp = (uint2)i.pos.xy;
     uint pxu = tp.x / kxu, pyu = tp.y / kyu;
     i64 z16 = gs_z16_sample(i.zr0.xy, i.zr0.zw, i.zr1.xy, asint(i.zr1.z), (int)pxu, (int)pyu, tp.x - pxu * kxu,

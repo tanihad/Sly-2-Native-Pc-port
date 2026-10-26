@@ -67,6 +67,8 @@ static void new_generation(uint32_t wid) {
 /* ---- settings, statistics ------------------------------------------------------------------------------------------ */
 static int cfg_done, env_mode = -1, check_on, levels_all, nlevels;
 static int kinds_world = 1, kinds_props = 1;   /* (r2-m2) PS2_R2_KINDS=world,props */
+static uint32_t block[32];                     /* (r2-m2) blocked levels (world ids): none known (the R2 sweep) */
+static int nblock;
 static int clip_on = 1;                        /* (r2-m2) PS2_R2_CLIP=0: guard-band-crossing meshes stay exact */
 static uint32_t levels[32];
 static double budget_ms = 3.0;
@@ -91,17 +93,29 @@ static void configure(void) {
         else if (!_stricmp(e, "bracket")) env_mode = R2_BRACKET;
         else fprintf(stderr, "[r2] PS2_R2='%s' is not off, hybrid or bracket: ignored\n", e);
     }
-    e = getenv("PS2_R2_LEVELS");                 /* "all" or world ids (default: the ep3 hub, world 12) */
-    if (e && *e) {
-        if (!_stricmp(e, "all")) levels_all = 1;
-        else for (const char* p = e; *p && nlevels < 32;) {
+    /* (r2-m2) every level by default (the allowlist became a blocklist: block_levels, empty after the R2 sweep);
+     * PS2_R2_LEVELS = an allowlist of world ids ("all": every level), PS2_R2_BLOCK = more blocked world ids */
+    levels_all = 1;
+    e = getenv("PS2_R2_LEVELS");
+    if (e && *e && _stricmp(e, "all")) {
+        levels_all = 0;
+        for (const char* p = e; *p && nlevels < 32;) {
             char* end;
             unsigned long v = strtoul(p, &end, 0);
             if (end == p) break;
             levels[nlevels++] = (uint32_t)v;
             p = *end ? end + 1 : end;
         }
-    } else levels[nlevels++] = 12;
+    }
+    e = getenv("PS2_R2_BLOCK");
+    if (e && *e)
+        for (const char* p = e; *p && nblock < 32;) {
+            char* end;
+            unsigned long v = strtoul(p, &end, 0);
+            if (end == p) break;
+            block[nblock++] = (uint32_t)v;
+            p = *end ? end + 1 : end;
+        }
     e = getenv("PS2_R2_KINDS");                  /* (r2-m2) "world", "props" or both (default) */
     if (e && *e) { kinds_world = strstr(e, "world") != NULL; kinds_props = strstr(e, "prop") != NULL; }
     e = getenv("PS2_R2_CLIP");
@@ -260,6 +274,7 @@ static void frame_begin(ps2_ctx* ctx) {
     if (wid != cur_wid || !have_gen) new_generation(wid);
     fr_level_ok = levels_all;
     for (int i = 0; i < nlevels && !fr_level_ok; i++) fr_level_ok = levels[i] == wid;
+    for (int i = 0; i < nblock && fr_level_ok; i++) fr_level_ok = block[i] != wid;
     uint32_t sp = ctx->r[29].uw[0];
     for (int i = 0; i < 4; i++) {
         uint32_t a = ps2_r32(ctx, sp + 0x8160 + 4 * (uint32_t)i), b = ps2_r32(ctx, sp + 0x8170 + 4 * (uint32_t)i);
@@ -384,6 +399,7 @@ static void owe_epilogue(ps2_ctx* ctx) {
 static double fr_cap_ms, fr_begin_ms;         /* (stats) this frame's capture time, its frame_begin part */
 
 void r2_cap_entry(ps2_ctx* ctx) {
+    if (!cfg_done) configure();
     if (!fr_open) {
         double tb = stats_on ? now_ms() : 0;
         frame_begin(ctx);

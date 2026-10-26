@@ -47,4 +47,5 @@ foreach ($ab in 0, 1) {
     Remove-Item $run -ErrorAction SilentlyContinue
     $dirs += $o
 }
-& $py (Join-Path $PSScriptRoot 'r2_ab_compare.py') $dirs[0] $dirs[1]
+& $py (Join-Path $PSScriptRoot 'r2_ab_compare.py') $dirs[0] $dirs[1] --gates (Join-Path $root 'tests\r2\gates.json')
+exit $LASTEXITCODE
