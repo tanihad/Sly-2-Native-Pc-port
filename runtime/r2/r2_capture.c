@@ -8,16 +8,19 @@
  *                 VU 0 / VU 1 (screen and depth constants) at +0x8160 / +0x8170, VU 2..5 (world -> clip) at +0x00.
  *   r2_cap_done   before 0x1583FC (after the last class's end function): the frame's chain is complete.
  *
- * A candidate entry (static world, render class 0 = the main VU1 program, a level on the allowlist) whose mesh DMA
- * decodes (r2_mesh.c; once per address and level, under a time budget per frame) becomes native:
- *   hybrid   one DIRECT packet into the frame builder (DMAS 0x2DEA28, as aspect.c's hints) carrying R2H_DRAW + its
- *            words (and R2H_FRAME once per frame; at the start of a run of native entries VIF MSCAL 0x3AB0 + MSCAL 0 ahead
- *            of it: the previous exact mesh's pending tail kicks are drawn before the native run, as in an all-exact
- *            frame, with VIF1's double-buffer parity kept), then the entry's mesh CALL is zeroed (form 0, the whole
- *            static packet at +8; form 1, the mesh DMA at +0xC, the per-frame header at +8 stays: it only uploads VU
- *            constants). When the next entry will not be native, the packet also carries the state epilogue: the A+D
- *            registers of the entry's last material pass (TEX0 with its CLUT load, TEX1, CLAMP, TEST, ALPHA, FOGCOL),
- *            so exact draws after a native run start from the GS state an all-exact frame leaves.
+ * A candidate entry (static world, or (r2-m2) a glob prop: an allocator entry with a header and a mesh DMA whose world
+ * matrix no outline entry of the frame uses; render class 0 = the main VU1 program; a level not blocked) whose mesh DMA
+ * decodes (r2_mesh.c; once per address and level, under a time budget per frame) becomes native (meshes crossing the
+ * VU's guard band too: R2E_CLIP, drawn by the clip pipeline):
+ *   hybrid   (r2-m2) its W x C (r2_matmul_fast), fade and mesh go into this frame's scene slot (r2.h r2_slot); at the start
+ *            of a run of native entries one DIRECT packet into the frame builder (DMAS 0x2DEA28, as aspect.c's hints)
+ *            carries R2H_RUN (slot, run), behind VIF MSCAL 0x3AB0 + MSCAL 0 (the previous exact mesh's pending tail
+ *            kicks are drawn before the native run, as in an all-exact frame, with VIF1's double-buffer parity kept);
+ *            the entry's mesh CALL is zeroed (form 0, the whole static packet at +8; form 1, the mesh DMA at +0xC, the
+ *            per-frame header at +8 stays: it only uploads VU constants). When the next entry will not be native, the
+ *            state epilogue follows: the A+D registers of the entry's last material pass (TEX0 with its CLUT load,
+ *            TEX1, CLAMP, TEST, ALPHA, FOGCOL), so exact draws after a native run start from the GS state an all-exact
+ *            frame leaves. The slot is published at the frame's end (the chain is kicked after it).
  *   bracket  the CALLs stay; R2H_BEGIN + words before them, MSCAL 0x3AB0 + MSCAL 0 (the entry's own tail kicks) and
  *            R2H_END after them: the frontend sees both versions (PS2_R2_CHECK compares them).
  * Everything else is exact. Off (the default), nothing here writes anything: the GS stream is the game's own. */

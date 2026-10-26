@@ -8,8 +8,12 @@
  *     grids paired; ownership as for an exact draw that reads and writes both over the scissor (stale blocks loaded first,
  *     the blocks GPU-written afterwards), so later downloads, CLUT loads and the verifier see R2's pixels;
  *   - every texture and CLUT the draws sample made current in vram_buf (pending patches flushed, GPU data downloaded);
- *   - the draw records in the game's order: per sub-batch, per pass, the alpha test split into a "pass" and a "fail" draw
- *     only when the pass's source alpha range (vertex alpha x the CLUT entries' alpha) straddles the reference.
+ *   - the draw records in the game's order of entries; (r2-m2) consolidated per entry: one draw per (pass, state,
+ *     discard rule) over the entry's sub-batches (a batch mask where some batches belong to another draw), the alpha
+ *     test split into a "pass" and a "fail" draw only when a pass's source alpha range (vertex alpha x the CLUT
+ *     entries' alpha) straddles the reference. Within an entry all of pass A is drawn before pass B (the design's
+ *     consolidation; A/B: within level 2 of r2-m1's order, PS2_R2_CONSOLIDATE=0); material records are static (r2_render.c).
+ * (r2-m2) Hybrid mode: R2H_RUN hints, the entries from the frame's scene slot (r2.h r2_slot, W x C computed on the EE).
  * Bracket mode (R2H_BEGIN / R2H_END around an entry's exact CALLs): ignored, or, with gpu_front_r2_ab(1) (PS2_R2_AB), the
  * exact primitives between them are skipped and R2 draws the entry instead: the hybrid picture from the same stream. */
 #include "gpu_front_int.h"

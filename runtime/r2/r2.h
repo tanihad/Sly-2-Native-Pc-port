@@ -1,13 +1,15 @@
 /* R2, the modern renderer (notes/modern-renderer.md): the game's own prelit meshes drawn natively through a modern GPU
  * pipeline, the exact GS path drawing everything else into the same targets (a "hybrid frame").
  *
- * Milestone R1 covers the static world tree's leaves (render-list entries written by 0x1D5808) of the levels on an
- * allowlist (the ep3 hub). Data flow:
+ * Milestone R1 covered the static world tree's leaves (render-list entries written by 0x1D5808) of the ep3 hub; R2
+ * (r2-m2) every prelit mesh - static world and glob props (objects with cel outlines stay exact) - in every level,
+ * meshes crossing the VU's guard band GPU-clipped, draws consolidated. Data flow:
  *
  *   EE thread    r2_capture.c: hooks in the game's render-list emission (f_00157FA0, recomp/patches.py "r2m_*")
  *                classify each entry; a native entry's prebuilt mesh DMA is decoded once (r2_mesh.c) into a mesh
- *                record, the entry's CALL is dropped and NATIVE_DRAW hints (GS register 0x7F, gs_hint.h) carry the
- *                mesh handle and the entry's per-frame inputs through the game's own DMA chain
+ *                record, the entry's CALL is dropped, its per-frame inputs (W x C, fade) go into the frame's scene slot
+ *                (r2_slot) and one R2H_RUN hint per run of native entries (GS register 0x7F, gs_hint.h) marks the
+ *                place in the game's own DMA chain (bracket mode: the inputs inline, recordings replay offline)
  *   GS thread    gs_draw.c hint_write: R2 hints go to the frontend hook gs_front->r2 (the proxy ships them in stream
  *                order to the frontend thread, gpu_fthread.c)
  *   frontend     gpu_front.c gf_r2_*: a run of consecutive native draws becomes one GPU_FOP_R2 segment: targets of the
