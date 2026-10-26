@@ -2,6 +2,8 @@
 
 ## Resume here (read first in a new session)
 
+**2026-10-27: modern renderer R2 MERGED (opt-in: Options > Graphics > Rendering: Modern, or F10; default Reference until the owner approves).** ep1 hub 114 -> 203 fps, ep5 154 -> 216; GPU-bound scenes unchanged; m3 boss 1% low slightly worse. Guard-band clipping and draw consolidation exist but are off (fail A/B gates). Next per plan: R3 lit/skinned characters, R4 outlines, R5 sky/warps/clipper, R6 particles, R7 shadows/motion blur/HUD (moves the remaining exact GPU work, needed for GPU-bound scenes). Waiting for the owner to test modern mode and say continue.
+
 **2026-10-26: modern renderer BUILD started** (owner: start; be economical; Windows first, Linux/macOS last). Decisions taken (recommended defaults, owner said start): D1 'Original' = visually faithful within tolerances (pixel-exact = the existing renderer as 'Reference'); D2 modern renderer becomes default per milestone once proven (from R2); D3 perf P4/P5 dropped (P6, P7 later). Running: R0+R1 in worktree r2-m1 (branch next/r2-m1, notes/wip/r2-m1.md). Plan: notes/modern-renderer.md.
 
 **2026-10-26: owner chose to start the MODERN RENDERER now** (before the remaining CPU perf steps). Phase 1 (research + design, worktree r2-design, branch next/r2-design): r2 RE survey (notes/wip/r2-re.md) + r2 prior art / API (notes/wip/r2-api.md) -> design doc notes/modern-renderer.md with milestones; owner reviews before building. Hybrid: new renderer for what it understands, the exact GS renderer for the rest.
