@@ -492,6 +492,49 @@ covers; the owner confirms after testing the dist build. Effort is in agent-days
 - **Default**: on after the sweep and the owner's check.
 - **Decision**: D3 (stop perf P4/P5) should be settled before this milestone.
 
+### R2 as built (next/r2-m2, 2026-10-26)
+- **Coverage**: every level (the allowlist became a blocklist: `PS2_R2_BLOCK`, empty). Native: static world leaves (R1)
+  and **glob props** (allocator entries of render class 0 with a header packet + mesh DMA; the header's matrix and VU 8
+  as for form-1 world entries, light-prefix headers parse unchanged). **Outlined objects stay exact**: at the frame's
+  first entry r2_capture.c parses every outline entry's (render class 1) header and a prop whose world matrix one of them
+  uploads is exact (ep1 hub: ~1 prop / frame). **Guard-band meshes** are native too (`R2E_CLIP`): the clip pipeline
+  (`vs/gs/ps_r2_clip`) decides per triangle like the VU (0x0C60's CLIPW flags): all inside, the VU-exact screen vertices;
+  all outside one plane, nothing; else the GPU clips the clip-space triangle against the VU's six planes
+  (SV_ClipDistance) with perspective-correct attributes (not the VU clipper's arithmetic: such triangles are near the
+  camera and few). ep1 hub per frame: ~590 world + ~90 props native, ~20 of them clipped; exact: lit/skinned props and
+  characters (decode "mscal"), ~1 outlined prop.
+- **Hints -> scene slots**: hybrid mode writes each native entry's W x C (computed once on the EE with `r2_matmul_fast`,
+  plain SSE under the VU's MXCSR rounding, unit-tested bit-exact against `r2_matmul`), fade and mesh into the frame's
+  slot (`r2_slot`, a ring of 16, published at the frame's end); the chain carries one `R2H_RUN` per run. Hints 155 ->
+  6-11 KB/frame, EE capture 0.52 -> 0.16-0.28 ms (with props). Bracket mode keeps the inline words (recordings).
+- **Consolidation**: static material records per (mesh, sub-batch, pass) uploaded with the mesh (t10, base per mesh in
+  a mesh table t11), the vertex carries its sub-batch; per entry one draw per (pass, state, discard rule) over all its
+  sub-batches (a batch mask where some belong to another draw). One pipeline (the PS always writes the dual-source
+  factor). ep1: 4271 -> ~1500 draws/frame. **Measured: draw count was not R2's GPU cost** (fixed-stream replay, ep1 hub
+  in a searchlight, 3x: unconsolidated 0.46 ms, consolidated 0.44, the exact path's FF for the same entries 0.44): R2
+  costs the same per pixel as the exact path; knobs (`PS2_R2_DBG`): no texture 0.44, rasterized Z 0.43, float VS 0.45,
+  constant PS 0.25 - fill / raster bound. Consolidated vs r2-m1's order (`PS2_R2_CONSOLIDATE=0`): 62.5 dB, Z identical.
+- **Hitches when GPU-bound** (the cause of r2-m1's 1% low): with the CPU stages at ~2 ms the game becomes GPU-bound at
+  3x, and the driver then blocked the render thread for 10-50 ms in whichever call hit its queue limit (R2's per-segment
+  constant buffer update 2-13 ms, the exact path's data-arena Map 12 ms): 30-50 ms frames every ~0.2 s. Fixes: segment
+  constants are a record in fdata (`gpu_r2_seg`; draw ids = the draw record's fdata offset / 32 through
+  StartInstanceLocation; the static cbuffer is written once) and a **GPU frame fence** in gpu_exec.c (an event query
+  per frame; frame N is recorded once the GPU finished frame N-2; `PS2_GPU_FENCE=n`, 0 off): ep1 hub modern 1% low
+  27.5 -> 115.5 fps (median 233 -> 205: the shallower queue).
+- **Options**: Graphics > **Rendering**: Modern / Reference (exact) (live); **F10** switches while playing. Default stays
+  Reference until the owner's check.
+- **Verification**: `tests/r2/gates.json` (calibrated, frozen; `scripts/r2_ab_compare.py --gates`, `r2_ab.ps1` exits
+  with it). `scripts/r2_sweep.ps1`: the A/B on every hub + 3 jobs. `scripts/r2_prof_ab.ps1`: GPU cost exact vs hybrid on
+  a fixed stream. ep1 hub (Sly in a searchlight, props + clipped + consolidated): S = 1 PSNR 58.9 dB, > 16: 0.019%,
+  Z 99.85% exact (100% within 2).
+- **Performance** (chaos ep1_hub, 2 interleaved repeats, release, 3x 16:9 unlimited, owner's PC, tag r2m2_c9):
+  reference 111.4 fps (1% 75.3, 0.1% 42.3; worker 7.08, GS 6.86, frontend 7.90 ms, GPU 5.15) -> modern **205.1 fps**
+  (1% 115.5, 0.1% 55.6; worker 2.24, GS 1.70, frontend 2.06, render 0.37, GPU 4.78 ms). The GPU now bounds the frame;
+  R2 does not lower it (same per-pixel cost), so the design's GPU <= 4.0 ms needs the remaining exact GPU work
+  (shadows, motion-blur sprites, ROV tier) moved or optimised (R6/R7).
+- **Not done**: pre-warm at level load (first-sight decoding costs ~15 us a mesh under the 3 ms budget; entries stay
+  exact for a frame or two), texture arrays (the GS memory sampling is not R2's GPU cost), instancing of repeated meshes.
+
 ### R3. Lit and skinned meshes - 7 agent-days
 - **Deliverable**:
   - The lit / skinned routines (0x2EF8 / 0x2F80 / 0x2FC8 / 0x3358) read and documented: light set layout, colour

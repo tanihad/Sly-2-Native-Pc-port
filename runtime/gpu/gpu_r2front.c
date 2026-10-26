@@ -363,10 +363,10 @@ static void seg_env(const gs_env_view* ev) {
 }
 
 /* one native entry into the open segment; m = world x clip */
-static void entry_add(const gs_env_view* ev, uint32_t handle, const float m[16], float fade, uint32_t eflags) {
-    if (!fb_ok || !r2_mesh_get(handle)) { R2S.dropped++; return; }
+static int entry_add(const gs_env_view* ev, uint32_t handle, const float m[16], float fade, uint32_t eflags) {
+    if (!fb_ok || !r2_mesh_get(handle)) { R2S.dropped++; return 0; }
     seg_env(ev);
-    if (!grow((void**)&items, &capitems, nitems + 1, sizeof *items) || !grow((void**)&ents, &capents, nents + 1, sizeof *ents)) return;
+    if (!grow((void**)&items, &capitems, nitems + 1, sizeof *items) || !grow((void**)&ents, &capents, nents + 1, sizeof *ents)) return 0;
     gpu_r2_entry* e = &ents[nents];
     memcpy(e->m, m, sizeof e->m);
     e->fade = fade;
@@ -376,10 +376,11 @@ static void entry_add(const gs_env_view* ev, uint32_t handle, const float m[16],
     items[nitems].ent = nents;
     nitems++;
     nents++;
+    return 1;
 }
 
 /* (bracket mode) an entry's inline words are complete */
-static void entry_done(const gs_env_view* ev) {
+static int entry_done(const gs_env_view* ev) {
     uint32_t nw = (RX.flags & R2D_FADE ? 1u : 0u) + (RX.flags & R2D_IDENTITY ? 0u : 16u);
     if (!r2_mesh_get(RX.handle) && r2_mesh_resolve)
         r2_mesh_resolve(RX.handle, RX.w[nw] & 0x7FFFFFFFu, (int)(RX.w[nw] >> 31));   /* (offline replays) */
@@ -392,7 +393,7 @@ static void entry_done(const gs_env_view* ev) {
         memcpy(w, &RX.w[k], sizeof w);
         r2_matmul(w, FB.clip, m);
     }
-    entry_add(ev, RX.handle, m, fade, RX.flags & R2D_CLIP ? R2E_CLIP : 0);
+    return entry_add(ev, RX.handle, m, fade, RX.flags & R2D_CLIP ? R2E_CLIP : 0);
 }
 
 /* (r2-m2, hybrid) a run of native entries from the frame's scene slot */
@@ -434,7 +435,10 @@ static void fr_r2_hint(const gs_env_view* ev, uint64_t v) {
             memcpy(&FB, RX.w, sizeof FB);
             fb_ok = r2_screen_model_of(&FB, &SM);
         } else if (!RX.bracket || ab_native) {
-            entry_done(ev);
+            int taken = entry_done(ev);
+            /* (r2-m2) bracket A/B: the exact primitives are skipped only when R2 took the entry (a recording that starts
+             * after its frame's R2H_FRAME block has no frame constants for the rest of that frame: drawn exactly) */
+            if (RX.bracket) gf_r2_skip = ab_native && taken;
         }
         RX.state = RX_IDLE;
         return;
@@ -453,7 +457,7 @@ static void fr_r2_hint(const gs_env_view* ev, uint64_t v) {
         RX.flags = arg;
         RX.need = (arg & R2D_FADE ? 1u : 0u) + (arg & R2D_IDENTITY ? 0u : 16u) + 1u;   /* (+ the address word) */
         RX.got = 0;
-        if (RX.bracket) { gf_r2_skip = ab_native; R2S.brackets++; }
+        if (RX.bracket) { gf_r2_skip = 0; R2S.brackets++; }   /* (set once the entry's words are in: entry taken) */
         RX.state = RX_ENTRY;
         break;
     case R2H_END:

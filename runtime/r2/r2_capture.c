@@ -79,7 +79,8 @@ static LARGE_INTEGER qpf;
 
 typedef struct {
     uint32_t frames, cand, native, exact_level, exact_class, exact_decode, exact_budget, exact_dmas, exact_header, exact_fade, exact_guard,
-        decoded, decode_fail, bytes_hint, runs, epilogues, cand_props, native_props, exact_outline, outlines, outlines_parsed, clipped;
+        decoded, decode_fail, bytes_hint, runs, epilogues, cand_props, native_props, exact_outline, outlines, outlines_parsed, clipped,
+        exact_bracket;
     double decode_ms, cap_ms;
     uint32_t reason[R2M_N];
 } r2_stats;
@@ -455,6 +456,14 @@ void r2_cap_entry(ps2_ctx* ctx) {
                 if (!why) native = 1;
             }
         }
+    }
+    if (native && mode == R2_BRACKET) {
+        /* (r2-m2) a bracket ends at the next entry's hook, after a render class switch's packets (class end / begin
+         * functions: the shadow pipeline's channel shuffles, stencil init) or the frame's last class end: they must not
+         * fall inside it (the A/B replay would skip them). The last entry before a class switch stays unbracketed. */
+        uint32_t next = ctx->r[20].uw[0] > 1 ? ps2_r32(ctx, ctx->r[21].uw[0] + 4) : 0;
+        uint32_t np = next ? ps2_r32(ctx, next) : 0xFFFFFFFFu;
+        if (!next || np > 25 || (int)ps2_r32(ctx, CLASS_TABLE + np * 4) != cls) { native = 0; st.exact_bracket++; }
     }
     if (native && prop) st.native_props++;
     if (!native) {
