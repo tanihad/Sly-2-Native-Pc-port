@@ -277,6 +277,15 @@ PATCHES: list[Patch] = [
     Patch("movie_layer_end", *MOVIE_PLAY, 0x001B3EB4, "before",
           "movie_layer_ee(0);",
           "the movie player's only return: MOVIE_END"),
+    # (r2-re) debug-only render-list tracer (runtime/r2_trace.c, PS2_R2_TRACE; off by default, reads memory only)
+    Patch("r2_alloc", *RENDER_ALLOC, 0x001CD9D4, "before",
+          "{ void r2_trace_alloc(ps2_ctx*); r2_trace_alloc(ctx); }",
+          "jr $ra of the render-list entry allocator: $v0 = the new entry, $ra and $s0-$s7 = the submitter and its "
+          "object pointers (notes/wip/r2-re.md)"),
+    Patch("r2_frame", *FRAME_DRAW, 0x00158400, "before",
+          "{ void r2_trace_frame(ps2_ctx*); r2_trace_frame(ctx); }",
+          "after the sorted render list was emitted into the frame's chain, before its end pointer 0x3D4A50 is "
+          "cleared: the list (and EE RAM) are written out for offline decoding"),
 ]
 
 

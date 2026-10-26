@@ -1,0 +1,566 @@
+# The modern renderer "R2": final design
+
+Status: **design for the owner's review (2026-10-26, branch next/r2-design)**. Sources: notes/modern-renderer-re.md (how Sly
+2 renders, evidence in notes/wip/r2-re.md) and notes/modern-renderer-api.md (prior art, graphics API). This page supersedes
+the order of work sketched in section 5.3 of the API page. Read notes/native-port-principles.md first.
+
+Terms. **R2** = the modern renderer: it draws the game's own meshes with their own materials through a modern GPU
+pipeline. **Exact path** = today's Direct3D 11 GS renderer (runtime/gpu, notes/gpu-renderer.md), which stays as the
+fallback, as the reference for "Original" and as the renderer of whatever R2 does not cover yet. **Hybrid frame** = one
+picture drawn partly by R2 and partly by the exact path, in the game's own order, into the same targets.
+
+---
+
+## 0. The design in one screen
+
+1. **Take over at the render list, one draw kind at a time.** Sly 2 sorts every visible piece of the world into one
+   render list (16-byte entries at 0x3B3980) and emits it in f_00157FA0. A hook just before 0x158378 (where the widescreen
+   hook already sits) sees each entry with its priority, its per-frame header packet (matrix, fade, lights, bones) and its
+   static mesh DMA. If R2 handles the entry's kind, the hook copies the entry's per-frame data into a **scene packet**,
+   writes a `NATIVE_DRAW` hint into the frame's chain (the same channel as the widescreen hints) and drops the entry's
+   mesh CALL. The game sees no difference. Everything else is drawn as today.
+2. **Meshes are decoded once, not every frame.** The meshes are prebuilt VIF DMA in level RAM that never change. R2
+   decodes each one when it first sees it, or while the level loads, into GPU vertex and index buffers. Per frame it
+   sends only matrices, fades, light sets and bone palettes. That removes the VIF unpack, VU1, GS decode and frontend
+   work for those draws. Those are the four CPU stages that cap the frame rate today, at 5-9 ms each.
+3. **One device, one command stream, one set of targets.** R2's first backend is Direct3D 11 on the exact path's own
+   device and render thread. The `NATIVE_DRAW` hint travels through the worker, the GS thread and the frontend like any GS
+   write. The render thread executes R2's draws at that point of the stream, into the exact path's colour and depth
+   targets. They use the exact path's depth encoding (`z / 2^20`) and alpha convention. Shadows, 2D and every effect
+   that reads the picture work unchanged.
+4. **"Original" is defined by measured tolerances against the exact path.** It is not bit-exact: GPU floats are not the
+   VU's truncating arithmetic. Four verification levels (section 5) gate every milestone. The exact path stays available
+   as a setting for anyone who wants the bit-exact picture.
+5. **Thin own API, D3D11 first.** `r2gpu.h` is a C layer of about 15 object types. The D3D11 backend comes first with no
+   new tools. An SDL3 GPU backend for Linux and macOS (Vulkan / Metal) comes once R2 covers whole frames, and a direct
+   Vulkan backend is the fallback.
+6. **Playable and faster early.** The first visible milestone (R1) draws the static world of one hub natively behind a
+   setting. All prelit meshes (R2, about 85% of the 3D vertices in the hubs) should roughly double the hub frame rate
+   (about 100 to 190-200 fps at 3x on the owner's PC). Every milestone falls back per entry to the exact path, can be
+   switched off while playing, and merges only after a full in-game sweep.
+
+---
+
+## 1. Goals and non-goals
+
+**Goals**
+- **Frame rate**: 200+ fps in the heaviest hub at the default 3x on the owner's PC (i7-14700F, RTX 4060 Ti, 1440p 165 Hz)
+  once prelit meshes are native, and 300+ for fully modern frames. 1% lows above the monitor's refresh. Section 6 has the
+  targets per milestone.
+- **Use the hardware properly**: static data resident on the GPU, transforms and skinning on the GPU, a few hundred
+  draws per frame, and data preparation on worker threads. No CPU stage should be busy in proportion to the triangle
+  count.
+- **A base for upgrades and mods**: a material record that carries both the game's own parameters and an Enhanced layer;
+  free resolution and MSAA; motion vectors; asset overrides keyed by stable ids.
+- **Portability**: one renderer core over a thin API layer: Windows (x64, ARM64), then Linux and macOS.
+- **Always playable**: every milestone ships as a setting with per-entry fallback, switchable at run time. The exact path
+  stays the reference and fallback, and stays bit-exact when R2 is off.
+
+**Non-goals**
+- Bit-exact equality with the PS2 in R2. The exact path already provides it.
+- Running VU microcode on the GPU (perf-plan section 3.2: no precedent, no exactness, wrong stage). R2 re-implements the
+  *known semantics* of each VU1 program, the way OpenGOAL and RT64 do.
+- Frame interpolation. The game's dt is real time, so a higher frame rate is a real higher tick (frame-rate.md).
+- A new graphics API for its own sake. D3D12 or Vulkan on Windows gains nothing at R2's draw counts.
+- Replacing the exact path for 2D, menus, FMV and Binocucom tricks before R2 covers 3D. Those stay exact until R7, and
+  on Windows possibly for good.
+
+---
+
+## 2. Architecture
+
+```
+ EE thread (game)                     r2 job threads              worker -> GS thread -> frontend -> render thread (D3D11)
+ ----------------                     --------------              --------------------------------------------------------
+ RenderSw builds + sorts render list
+ 0x157FA0: frame globals  --(hook)--> scene slot n: camera, VU 0..0xA constants
+ per entry (hook before 0x158378):
+   classify kind --exact--> CALLs emitted as today ---------------> VIF1 -> VU1 -> GIF -> GS decode -> FF/ROV records -> draws
+              \--native--> copy header data into slot n
+                           first sight of mesh DMA? --> decode job: mesh -> vertex/index arena (upload on the device)
+                           write NATIVE_DRAW(n, first, count) hint into the chain (VIF DIRECT, A+D reg 0x7F)
+                           drop the mesh CALL (zero entry +0xC; +8 too for whole static packets)
+                           at the end of a native run: state epilogue (A+D of the last skipped material registers)
+ frame end (0x1583FC): publish slot n --> pack job: instance table, bone palettes -> GPU-ready blob
+                                                                  ... hint reaches the frontend in stream order:
+                                                                  flush merges, ownership "R2 wrote target T in scissor",
+                                                                  resolve textures in stream order, OP_R2_SEGMENT -> render
+                                                                  render thread: R2 draws on the same RTV/DSV, then continue
+```
+
+### 2.1 Layers (from notes/modern-renderer-api.md section 5, now bound to Sly's data)
+
+| layer | name | Sly 2 content | code (new, `runtime/r2/`) |
+|---|---|---|---|
+| 0 | game | recompiled EE; render list, globs, static world tree 0x1D5808, header packets | patches in recomp/patches.py |
+| 1 | extraction "r2x" | (a) mesh decode (prebuilt VIF DMA to vertex/index streams + material runs), texture + CLUT decode, cache by key; (b) per-frame capture into scene slots; (c) classifier (native / exact per entry) | r2_capture.c (EE side), r2_mesh.c, r2_tex.c, r2_class.c |
+| 2 | scene "r2scene" | mesh arena, texture pool (Texture2DArray per size class), material table (Original + Enhanced), instance table, bone palettes, lights, fog, camera; scene slots (ring of 8) | r2_scene.c |
+| 3 | renderer "r2render" | segment executor (hybrid), later the whole-frame graph: opaque / alpha-tested / translucent in game order / effects / post / HUD | r2_render.c, shaders/r2_*.hlsl |
+| 4 | RHI `r2gpu.h` | buffers, textures, samplers, baked pipelines, passes, command lists, compute, indirect, queries | r2gpu.h |
+| 5 | backends | D3D11 (shares the exact path's device, targets and render thread); later SDL3 GPU; fallback Vulkan 1.3 | r2gpu_d3d11.c, r2gpu_sdl.c, r2gpu_vk.c |
+
+### 2.2 Interception: what the hook does per render-list entry
+
+Three EE patches, all "before" hooks at addresses already used by the widescreen code (no control-flow change):
+
+- **Frame begin** (in f_00157FA0 after the frame globals are uploaded): open scene slot n. Copy the camera (CM 0x2DDF40:
+  world->clip +0x140, camera->world +0x60, near/far +0x4C/+0x50) and the VU1 constants 0..0xA that every VU1 program
+  reads: depth and screen constants, matrices, fog. R2's vertex shaders evaluate the same formulas from the same numbers,
+  so widescreen, the field offset of pc-smooth and the game's own FOV changes come along without extra work.
+- **Per entry** (before 0x158378; `$s2` = entry, `$s0` = priority): the classifier decides from the priority, the VU
+  routine set of the mesh DMA (as `kind_of` in scripts/r2_frame.py) and the level / kind allowlist. Unknown -> exact.
+  - For a native entry, the hook copies its per-frame inputs into the slot. These are the world matrix, the fade
+    parameters (VU 8), the light set (REFS to VU 0x15-0x20), the bone palette (VU 0x21+), the warp matrices and the
+    near-clip flag. They are copied *now*, because effect pools are rewritten while a chain runs (frame-rate.md: 5-14% of
+    async jobs).
+  - Consecutive native entries form one **run**. At the start of a run the hook writes one hint `NATIVE_DRAW(slot, first
+    draw)` at the DMAS write position, using the `aspect_hint` mechanism (VIF NOP x3 + DIRECT, PACKED GIF tag, A+D to
+    register 0x7F). At the end of the run, it writes `NATIVE_END(count)`.
+  - **Suppression**: the hook zeroes entry +0xC, the static mesh CALL. The header packet at +8 is kept: it is a few
+    quadwords of VU constant uploads with no MSCAL, so VU1 memory stays exactly as in an all-exact frame. Static world
+    leaves whose +8 is a whole prebuilt packet (with MSCALs) get +8 zeroed too. The game's own `beq v0, zero` skips the
+    zeroed CALLs. The list is discarded after the frame, so nothing else reads them.
+  - **State epilogue**: after a run, the hook writes the GS registers that the last skipped material packet would have
+    left behind (TEX0, TEX1, CLAMP, TEST, ALPHA, FOGCOL; known from the extraction) as one A+D packet. Exact draws after
+    a run then decode with the same GS context as in an all-exact frame. This makes "the remaining exact draws are
+    unchanged" true by construction and checkable (section 5, level 3).
+- **Frame end** (0x1583FC, where `ws_render_done` sits): close any open run and publish the slot to the render side. A
+  pack job turns it into GPU-ready instance data.
+
+**Bracket mode** (verification, `PS2_R2=bracket`): the hook writes `NATIVE_BEGIN(i)` / `NATIVE_END(i)` around entry i
+*without* dropping its CALLs. The stream then holds both versions of every native entry. The frontend draws either one
+(exact, native or both into scratch targets), and `.gsrec` recordings made in this mode replay hybrid and exact frames
+offline from one stream. Bracket mode costs the exact path's full price; it exists only for A/B checks and recordings.
+
+### 2.3 Extraction (layer 1)
+
+- **Meshes.** The key is the DMA address plus a 64-bit hash of the DMA bytes, computed once per new address. The whole
+  cache is invalidated on a level change (hook in the level loader), because the level heap is reused.
+  - The decoder walks the batch structure: REFS/CNT tags, the GIF template at VU 0x009, the 11 strip descriptors, the two
+    9-qw material packets, and the vertex streams. Prelit vertices: UV V2-16 (4.12), colour A and colour B as
+    RGBA5551 + S-8 alpha, position V4-32 with ADC flags in w. Lit/skinned vertices add V3-16 UV, a V4-8 normal, a V4-8
+    colour and V4-8 weights.
+  - Output: a vertex stream per mesh (position, UV, colour A, colour B, normal, weights, as present) and **triangle
+    lists** with ADC strip restarts resolved. Triangles are grouped into **material runs** in the game's batch order,
+    each with the pass A and pass B states (texture, two CLUTs, TEST, ALPHA, FOGCOL, CLAMP, TEX1).
+  - The decode runs on r2 job threads. Until a mesh is resident, its entries stay exact for that frame, so there is
+    never a stall or a missing object.
+  - R0 adds a debug check that re-hashes decoded DMA every frame during sweeps. A mesh the game modifies at run time
+    (UV scrolling, water, if any) is marked exact or re-decoded per change.
+- **Pre-warm**: when a level finishes loading, a job walks the static world tree and the object list's glob sets and
+  decodes everything in advance, during the game's own loading screen.
+- **Textures** are resolved **in stream order on the frontend thread**, where `gs_vram` and the ownership table are
+  consistent with the GS stream. The EE runs ahead of the GS thread, so reading GS memory at capture time would race.
+  - Key: (TBP, PSM, TW/TH, CBP, CPSM, CSA, the content hash of the source pages + CLUT). The ownership table's `cpu_gen`
+    of the pages says when to re-hash.
+  - Decode: T4/T8 + CT32 CLUT to RGBA8 (raw GS alpha 0..0x80 kept), one image per (texture, CLUT) pair. Most textures
+    have two: the pass A base and the pass B highlight palette.
+  - Storage: a slice in a Texture2DArray per size class (GS textures are powers of two).
+  - Level textures are resident and never re-uploaded during gameplay, so this decode happens about once per texture per
+    level (0.5-1.2 MB indexed, about 10-20 MB decoded per frame's working set). The sky's per-frame upload into the Z
+    pages is the exception: it gets re-decoded when its pages change, or stays exact until R5.
+
+### 2.4 Scene representation (layer 2)
+
+- **Mesh arena** per level: one vertex buffer and one index buffer, plus mesh records {vertex offset, triangle ranges per
+  material run, bounds, kind, outline edge list if any}. Uploaded once.
+- **Material table**: per material run, the Original record is exactly the game's parameters: TEX0 / CLUT A / CLUT B,
+  TFX/TCC, TEST (alpha test value and mode), ALPHA selectors + FIX, fog colour, CLAMP, TEX1 filter, pass A / pass B. The
+  Enhanced record is optional: normal map, roughness, emissive, HD albedo, outline style, casts-shadow. Both are indices
+  into GPU tables.
+- **Instance table** per frame (scene slot): {mesh, world matrix, previous matrix (motion vectors, R8), fade a/b, light
+  set index, bone palette offset, warp matrices offset, draw order index}. Size: about 900 entries x 128 B = 115 KB per
+  frame in the ep1 hub.
+- **Draw order**: R2 keeps the game's sorted order inside every run. Within one entry, R1 draws each material run's pass
+  A then pass B, exactly as the VU emits them. From R2 on, draws are consolidated: one draw per (entry, pass, sampler
+  class), with the texture array slice per triangle. This is allowed only after the per-entry A/B shows the reorder is
+  invisible. Pass B is additive with Z GEQUAL and no Z write, and pass A nearly replaces (alpha test >= 126). So moving
+  all of an entry's pass B after its pass A can change pixels only where batches of one entry overlap and pass A blends
+  partially. R2's A/B measures this rather than assuming it. Instancing of identical meshes comes on top.
+
+### 2.5 The D3D11 backend and the hybrid frame (layers 4-5)
+
+- **Device and thread.** `r2gpu_d3d11.c` uses the exact path's `ID3D11Device` and immediate context, on the render thread.
+  Resource creation (mesh arenas, texture slices) uses the free-threaded device from job threads. Per-frame data goes
+  through `Map(NO_OVERWRITE)` rings like the exact path's.
+- **Stream order.** The frontend turns a `NATIVE_DRAW` hint into `OP_R2_SEGMENT{slot, first, count}`:
+  - First it flushes its pending draw merges.
+  - It treats the segment like an exact draw that reads and writes colour and depth over the scissor of the current
+    FRAME/ZBUF: stale blocks are loaded first (`OP_UPLOAD_TARGET`), and afterwards the blocks are GPU-owned and valid.
+  - Later downloads, CLUT-from-target loads, the shadow pass's reads and the motion-blur feedback therefore see R2's
+    pixels as if the GS had drawn them.
+- **Targets and sample grid.** R2 renders into the exact target found for the current FRAME/ZBUF, with its scale factors
+  (kx, ky), including the anamorphic widescreen kx. The VS maps GS coordinates exactly as the exact path does: `d3d = (gs
+  - XYOFFSET) * k + 0.5`. Sample 0 of every pixel is the native pixel position, so downloads, the verifier and later
+  exact draws see one consistent target.
+- **Depth.** R2 computes the GS's integer Z from the VU program's formula (VU 0/1 constants), in float, and outputs
+  `SV_Position.z = z / 2^20` (P1 encoding, appendix P of d3d11-renderer.md), written as true screen-linear depth: z is
+  multiplied by w before the divide. The comparisons are the GS's: Z GREATER / GEQUAL map to D3D GREATER / GREATER_EQUAL.
+  Pass A and pass B of one mesh run the same `precise` vertex code, so their equal-Z ties hold exactly.
+  - Ties against **exact** draws are not guaranteed. Hence the rule: a mesh and everything that ties against it move
+    together. That means its pass B, its outline, and decals drawn onto it.
+- **Colour and alpha.** Targets hold raw GS bytes (alpha 0x80 = 1.0). R2's Original pixel shader reproduces the GS
+  arithmetic: vertex colour x2 modulate (`(Cv * Ct) >> 7`), the alpha test, fog `(F*C + (255-F)*FOGCOL) >> 8`. It writes
+  the alpha byte the GS would write (As, with FBA if set), because the shadow pipeline's DATE tests bit 7 of
+  destination alpha and the T8H darken reads it.
+  - Blending uses the exact path's dual-source mapping: SV_Target1 carries As/128 as the blend factor. Pass A
+  `(Cs-Cd)*As+Cd` and pass B `(Cs-0)*As+Cd` are fixed-function blends. No ROV is needed for anything R2 draws.
+  - These helpers are shared with the exact path's HLSL includes, so there is one definition of the GS formulas.
+- **Pipelines.** A closed set, enumerated in `runtime/r2/shaders/perms.txt` and compiled at build time by
+  `scripts/hlslc.c` with d3dcompiler_47. All are created at boot on the exact path's warm-up. No shader compilation ever
+  happens while playing.
+- **Exact path with R2 off.** The hooks only run when `renderer = modern`. With R2 off, the GS stream is byte-identical
+  to main (checked by m9_exact and the stream hashes).
+
+### 2.6 Threads and frame rate
+
+| stage | today (ep1 hub, 3x) | with R2 covering a draw kind |
+|---|---|---|
+| EE (game + list building) | ~2 ms | + capture ~0.1-0.3 ms (copies, hints) |
+| worker (VIF unpack, VU1, GIF) | ~7 ms | only the exact remainder: header packets, outlines/shadows/particles/2D until ported |
+| GS thread (decode) | ~7.8 ms | the exact remainder |
+| frontend | ~8 ms | the exact remainder + one op per run + texture resolves (cached) |
+| r2 jobs (new) | - | decode at first sight (load screens), per-frame packing ~0.1-0.2 ms |
+| render thread | ~0.7 ms | exact draws + R2 draws (R1: ~2-4k draws, R2+: a few hundred) |
+| GPU | ~7.8 ms per game frame in game | simple shaders instead of the exact ubershader on most fragments |
+
+The pipeline's frame rate is 1000 / the slowest stage. R2 makes the three middle CPU stages shrink in proportion to the
+share of the frame it draws, so the gains follow the measured shares: prelit = 77-84% of entries and 83-87% of source
+vertices in the hubs (modern-renderer-re.md section 3).
+
+---
+
+## 3. Feature classes: now and later
+
+| feature (render prio / VU1 program) | share (hubs) | first native in | until then | native method | notes |
+|---|---|---|---|---|---|
+| static world tree leaves (0x1D5808, world-space prebuilt DMA) | ~60% of entries | **R1** (one hub), R2 (all) | exact | decode once, draw with identity matrix + fade | biggest single block |
+| prelit props / objects (glob, matrix + fade) | ~20% of entries | **R2** | exact | same decoder + world matrix | |
+| two-pass materials (pass A alpha-test, pass B additive, second CLUT) | all meshes | R1 | - | two pipelines per run; two decoded images | |
+| per-vertex fog, LOD fade (RGB_ONLY pass A variants) | all meshes | R1 / R2 | - | VU formula in VS; pipeline variant per fade state | fade TEST variants 0x53001 / 0x5000D / 0x317E1 to be read in R0 |
+| lit meshes (light set, up to 3 lights + ambient) | ~10% of vertices | **R3** | exact | lighting in VS, VU formula | colour scale hypothesis 0..248, 128 = 1.0 |
+| skinned characters (EE bone palette, V4-8 weights) | (in the above) | R3 | exact | bone palette from the header packet into a structured buffer; skinning in VS | OpenGOAL Merc2 precedent |
+| cel outlines (188054331, winged-edge silhouette lines) | 11-18 entries | **R4** (with their meshes) | the outlined object stays exact entirely | silhouette test in a compute pass over the edge lists, lines as quads; "PS2" width and "Thin" | Z ties: must move with the mesh |
+| procedural warps (0x22C028, up to 4 extra matrices) | few | **R5** | exact | matrices from the header packet; blend rule from the VU | |
+| sky (prio 1, class 3, textures in Z pages, before the Z clear) | 1-3 entries | R5 | exact | per-frame texture from the frame's upload; drawn before the clear | ordering-sensitive |
+| prio 0 attachments (752221467), prio 13 Z/stencil volumes | rare | R5 (identify) / R7 | exact | after identification | unmeasured semantics |
+| particles (376109499, VU-simulated "blips") | 2-10 entries, heavy fill in fire/rain | **R6** | exact | port the VU physics to a compute pass; instanced quads | fire / rain scenes are GPU-bound today |
+| shadow volumes + G-channel stencil + CT16 shuffles + T8H darken | 6-41 entries | **R7** | exact (reads R2's depth and alpha) | real stencil volumes + a darken pass; no channel shuffles | removes ALIAS16 work |
+| motion blur (16 sprites, FIX 48) | full screen | R7 | exact | one full-screen blend | |
+| 2D, HUD, text, menus (prio 21) | 12-34 entries | R7 (gameplay HUD), Windows: may stay exact | exact | widescreen anchors from the existing hints | cheap on the exact path |
+| Binocucom RTT, ep2 photo copy, portraits (class 8/9) | special scenes | R7 or never (Windows) | exact | render-to-texture passes | required before Linux/macOS |
+| FMV | - | already native | - | - | |
+
+---
+
+## 4. "Original" and "Enhanced"
+
+**Original** reproduces the PS2 look: the same vertex colours, textures with their CLUTs, alpha test, blend, fog, fade,
+lighting formula and outlines, through float GPU arithmetic. It is the default, and it is defined by the tolerances in
+section 5. R2 never approximates when the exact formula is cheap. For example it applies the GS's own `>> 7` modulate and
+alpha-scale conventions in integer-equivalent float math.
+
+- *Why not pixel-exact.* The VU truncates (round toward zero, flush to zero) and the GS rasterises with integer records
+  computed on the CPU. A GPU vertex shader rounds to nearest. So vertex positions differ by up to 1/16 pixel, coverage
+  differs on some edge pixels, and perspective texture coordinates can pick the neighbouring texel. Being bit-exact
+  would require the exact path's whole machinery, which is exactly the cost R2 removes.
+- *An exactness lever kept in reserve:* the vertex transform alone (a matrix multiply, the divide and FTOI4) can be
+  emulated VU-exactly in a compute pre-pass, with integer soft-float and round toward zero. That costs about 0.1-0.2 ms
+  of GPU time for 160k vertices per frame. Positions and Z would then match the VU bit for bit, so silhouettes and Z ties
+  against exact draws match. It is used only if section 8's tie risk shows up in practice.
+
+**Enhanced** is a layer on the same material record. Each part is a separate switch, grouped into presets that extend
+today's Modern / Faithful filter presets, and Original stays one click away. Planned switches:
+- per-pixel lighting from the game's own lights,
+- normal maps,
+- real shadow maps beside or instead of the projected shadows,
+- SSAO and bloom,
+- anisotropic filtering with generated mipmaps (the PS2 data has none),
+- HD texture and model replacement,
+- outline styles: PS2 width, thin, screen-space edges.
+
+Enhanced has no fidelity gate. It has two hard rules:
+1. With every Enhanced switch off, the R2 output is bit-identical to Original.
+2. Every switch has a measured cost.
+
+---
+
+## 5. Verification
+
+Four levels, all automated. The gates are written to `tests/r2/gates.json` in R0, after one calibration pass on the
+oracle data, and frozen afterwards. A gate is only loosened with the owner's agreement.
+
+### Level 1: vertex oracle (offline, per decoded mesh)
+
+`scripts/r2_mesh_check` takes a `PS2_VU_RECORD` recording and the frame's RAM dump (PS2_R2_TRACE). It decodes the meshes
+with R2's decoder and evaluates R2's vertex function: a C twin of the HLSL, checked against the GPU on WARP and the
+hardware by a conformance kernel. It compares the result per vertex with what the VU program XGKICKed (r2_vu_kicks).
+
+| quantity | gate |
+|---|---|
+| primitive set (which triangles are drawn: ADC, culling, guard band) | identical; <= 0.1% differ, only at clip boundaries |
+| X, Y (GS 12.4) | \|d\| <= 1 unit (1/16 px) for >= 99.9% of vertices, never > 4 |
+| Z (GS integer) | \|d\| <= 2 for >= 99.9%, never > 16 |
+| S, T, Q | relative error <= 2^-16 |
+| RGBA (prelit) | exact |
+| RGBA (lit) | within +-1 for >= 99%, never > +-2 |
+| fog F | within +-1 |
+
+### Level 2: per-entry A/B (bracket mode, offline and in game)
+
+A native entry is drawn both ways into scratch copies of the same target state, at S = 1 and at S = 3 (sample 0).
+
+| quantity | gate |
+|---|---|
+| coverage | pixel presence differs on <= 1% of the entry's pixels, and only on edge pixels |
+| colour where both cover | >= 99% within +-2 per channel; >= 99.9% within +-8; <= 0.1% above 16 (texel picks) |
+| alpha byte | bit 7 identical on >= 99.9% (DATE); the byte within +-2 on >= 99% |
+| depth | \|dZ\| <= 4 units on >= 99.9% of shared pixels |
+
+### Level 3: whole frame, hybrid vs exact (offline replay of bracket recordings, and in game)
+
+| check | gate |
+|---|---|
+| remainder invariance | the exact draws' GS primitive stream in the hybrid frame hashes identical to the same draws in the all-exact frame. This proves that suppression, epilogues and VU state carry-over change nothing else |
+| S = 1 reference compose | PSNR >= 38 dB; <= 0.5% of pixels differ by > 16; mean signed error < 0.5 per channel |
+| S = 3 box downsample | PSNR >= 34 dB; mean signed error < 0.5 |
+| temporal | over 60 frames, the hybrid picture adds <= 0.1% pixels that toggle between frames when the exact one does not (catches Z-fighting / tie flicker) |
+
+For comparison, the exact path's own S = 1 gate is 40 dB and <= 0.2%. R2's looser numbers account for edge coverage.
+
+### Level 4: in game
+
+- **Chaos benchmark** (`scripts\chaos_bench.ps1`, the scenes of tests/gpu/chaos.txt, release, unlimited frame rate, 3x
+  16:9, quiet machine, builds interleaved): median fps, 1% and 0.1% lows, per-stage ms. `-Exes` compares `renderer =
+  exact` and `modern` in one session.
+- **Sweep**: warp_run through the prologue, every hub and one job per episode (the M8 list), with R2 on and the
+  in-game A/B (`PS2_R2_AB=60`) every 60 VBlanks. Pictures are dumped sparsely and judged on contact sheets. A
+  `m11_long`-style 22-minute run checks memory and cache growth.
+- **Coverage census**: per scene, the share of entries, vertices and GS primitives still exact, and every fallback
+  reason (unknown kind, mesh not resident, modified DMA). This is the milestone's progress number.
+- **Owner check**: a dist build with the setting, before each milestone becomes the default.
+- Disk hygiene (memory: disk-hygiene): dumps sparse, evidence frames only in build\screenshots\, recordings and RAM dumps
+  deleted after use, stop below 50 GB free on C:.
+
+Every existing exact-path gate still runs and must stay identical with R2 off: m9_exact, gpu_diff_all, stream hashes,
+gs-hw. The in-game verifier (`PS2_GS_VERIFY`) runs in bracket mode or excludes R2-written pages, because the software
+renderer never sees native draws.
+
+---
+
+## 6. Performance targets
+
+Measured with the chaos benchmark on the **owner's PC** (i7-14700F, RTX 4060 Ti, 1440p): quiet machine, 3x 16:9 (render
+scale 75%) unless noted, frame rate unlimited, medians of interleaved repeats. Baseline: main after perf P1-P3 (chaos
+table in perf-plan.md, P3 results). CPU ms are per game frame and per stage; GPU ms are per game frame in game. The
+targets after R0 are estimates scaled from the measured shares. Each milestone measures its own numbers and records them
+here.
+
+| after | ep1 hub fps (1% low) | ep3 / ep5 hub fps | m2 boardroom (fire) fps | slowest CPU stage, ep1 (ms) | GPU ep1 (ms) |
+|---|---|---|---|---|---|
+| baseline (main) | ~102 (64) | ~120 / ~125 | ~90 | frontend 8.1, GS 7.8, worker 7.2 | 7.8 |
+| R0 | unchanged (+-3%) | unchanged | unchanged | + EE capture <= 0.1 | unchanged |
+| R1 (static world, ep3 hub) | unchanged (exact) | ep3 >= 165 (>= 95) | - | ep3: each of worker / GS / frontend -45% | ep3 -35% |
+| R2 (all prelit, all levels) | **>= 190 (>= 120)** | >= 220 / >= 210 | ~95 | <= 2.5 | <= 4.0 |
+| R3 (lit / skinned, non-outlined) | >= 195 | >= 225 | ~95 | <= 2.3 | <= 3.8 |
+| R4 (outlines + outlined objects) | >= 230 (>= 150) | >= 260 | ~100 | <= 1.8 | <= 3.5 |
+| R5 (sky, warps, the rest of 3D) | >= 240 | >= 270 | ~100 | <= 1.6 | <= 3.3 |
+| R6 (particles) | >= 240 | >= 270 | **>= 160 (>= 100)** | <= 1.6 | <= 3.0 (m2: 11 -> <= 5) |
+| R7 (shadows, blur, HUD: exact path idle in gameplay) | **>= 280 (>= 180)** | >= 300 | >= 220 | EE ~2.5 (GS / frontend <= 0.8) | <= 2.5 |
+| R8 (fully modern, 1440p native + MSAA 4x) | **>= 300 (>= 200)** | >= 320 | >= 250 | EE ~2.5 | <= 2.0 (4K: <= 4.0) |
+| R9 (Enhanced "High") | >= 165 at 1440p | >= 165 | >= 165 | - | <= 5.5 |
+| R10 (Linux, same PC) | >= 90% of Windows R8 | | | | |
+
+From R7 on, the game's own EE thread (~2-2.5 ms: game logic plus building its render list) is the limit, about 400 fps.
+Raising it further is perf-plan P6 work (PGO/LTO, in-game overhead), independent of R2.
+
+**Weaker reference PC.** A 4-core / 8-thread desktop CPU of ~2017 (i5-7600 / Ryzen 5 1600 class), a GTX 1060 6 GB /
+RX 580 class GPU, 1080p 60-144 Hz, internal scale 2x.
+
+| after | ep1 hub fps at 2x (est.) | limit |
+|---|---|---|
+| baseline | 45-60 | CPU: five busy threads on four cores, each stage 1.5-2x slower |
+| R2 | >= 100 | GPU / EE |
+| R7 | >= 144 | EE |
+| R8 (1080p native, MSAA 2x) | >= 144, GPU <= 4 ms | EE |
+
+Until a real machine is available these numbers are checked on a **proxy**: the process restricted to 4 E-cores of the
+i7-14700F through CPU sets, for the CPU stages, plus the 4060 Ti's GPU ms scaled by 2.5x. (Owner decision D5.)
+
+---
+
+## 7. Milestones
+
+Each milestone is one autonomous agent task in its own worktree, with a checkpoint file `notes/wip/r2-<n>.md`. It
+merges only when its gates pass. "Default" means the milestone may switch `renderer = modern` on by default for what it
+covers; the owner confirms after testing the dist build. Effort is in agent-days of focused work, including gates.
+
+### R0. Foundations (no visible change) - 5 agent-days
+- **Deliverable**:
+  - `runtime/r2/` skeleton; `r2gpu.h` + D3D11 backend on the shared device, with a conformance scene in
+    `tests/unit/r2` (hardware and WARP).
+  - The three EE hooks in observe mode: scene slots, classifier, `NATIVE_*` hints in bracket mode, with the frontend
+    and render thread passing them through as no-ops. `.gsrec` carries the slot payloads.
+  - The mesh decoder for prelit batches; `scripts/r2_mesh_check` (level 1 oracle); the DMA-modification check.
+  - Read routines 0x2E20 / 0x2E68 / 0x2EB0 / 0x2EE8 of 376110651 and write down the exact prelit transform, Z, fog,
+    fade and clip / ADC rules (notes/vu-microcode.md).
+  - `tests/r2/gates.json` calibrated.
+  - Settings: `[graphics] renderer = exact | modern` (Options: "Rendering: Modern / Reference"); env `PS2_R2=off |
+    bracket | hybrid`, `PS2_R2_KINDS`, `PS2_R2_AB`.
+- **Verification**: level 1 gates on the ep3 hub VU recording for every prelit routine. With R2 off, m9_exact and the
+  stream hashes are identical. With bracket mode, the exact pictures are unchanged (the hints are ignored).
+- **Gain**: none (EE capture <= 0.1 ms measured).
+
+### R1. Static world natively in one hub - 7 agent-days
+- **Deliverable**:
+  - Static world tree leaves (entries written by 0x1D5808, both CALL forms: whole packet, or REFS + fade) drawn
+    natively in the ep3 hub, chosen
+    because its traces and VU recording already exist.
+  - Hybrid execution: `OP_R2_SEGMENT`, ownership marking, epilogues, and the stream-order texture cache.
+  - Original shaders for pass A / pass B / fog / fade; the game's batch order (no consolidation yet).
+  - Allowlist of levels; per-entry fallback reasons counted.
+- **Verification**: levels 1-3 on new bracket recordings of the ep3 hub (open view, at a wall, rain). Chaos ep3 scene.
+  The ep3 part of the sweep plus 10 minutes of free play with `PS2_R2_AB=60`.
+- **Gain**: ep3 hub about 120 -> >= 165 fps at 3x.
+- **Default**: off; the owner can try it with the setting.
+
+### R2. All prelit meshes, all levels, draw consolidation - 8 agent-days
+- **Deliverable**:
+  - Glob prelit props and objects (world matrix + fade from the header packet; the light-prefix and fixed-sort-key
+    variants).
+  - Every level; the allowlist becomes a blocklist.
+  - Pre-warm at level load.
+  - Draw consolidation: texture arrays per size class, one draw per (entry, pass, sampler class), instancing of
+    repeated meshes.
+  - Objects that have outlines stay exact (rule: an entry whose glob set has an outline subglob is exact until R4).
+- **Verification**: all four levels on bracket recordings of every hub plus three jobs. The consolidated vs
+  unconsolidated A/B is within level 2. Full sweep; 22-minute run.
+- **Gain**: **the big one: hub frame rates roughly double (ep1 about 102 -> >= 190 at 3x)**. Render thread draws from
+  about 4k to a few hundred.
+- **Default**: on after the sweep and the owner's check.
+- **Decision**: D3 (stop perf P4/P5) should be settled before this milestone.
+
+### R3. Lit and skinned meshes - 7 agent-days
+- **Deliverable**:
+  - The lit / skinned routines (0x2EF8 / 0x2F80 / 0x2FC8 / 0x3358) read and documented: light set layout, colour
+    scale, blend rule of the V4-8 weights.
+  - Bone palettes from the header packet into a structured buffer; skinning and lighting in the VS.
+  - Non-outlined lit objects native.
+- **Verification**: level 1 with the lit RGBA gates (needs a VU recording with characters: museum, ep1 hub);
+  levels 2-4 as before.
+- **Gain**: small (most characters are outlined): +3-5%. Its value is that R4 builds on it.
+
+### R4. Cel outlines with their meshes - 7 agent-days
+- **Deliverable**:
+  - Outline edge lists (V3-32 positions + V4-8 winged edges) extracted with the mesh.
+  - Silhouette test in a compute pass (front / back facing of the two adjacent triangles), lines expanded to quads.
+  - The PS2 style (one native pixel wide, Z-only pass then AA1 pass, ties against its own mesh by construction) and the
+    Thin style (the existing setting).
+  - Outlined objects native as a whole: mesh, pass B and outline.
+- **Verification**: per-entry A/B with the outline pixels gated by coverage (level 2); temporal flicker gate on
+  characters walking. The owner's eye on Sly's outline at 3x in both styles.
+- **Gain**: hubs >= 230 fps; all characters off the exact path.
+
+### R5. Sky, warps and the rest of 3D - 6 agent-days
+- **Deliverable**:
+  - Sky (class 3: per-frame texture source, drawn before the Z clear in the game's order).
+  - Procedural warps.
+  - Fade-dependent TEST variants completed.
+  - Identification of prio 0 attachments and prio 13 volumes; native where they are plain meshes, otherwise documented
+    and kept exact.
+  - Coverage census over the whole sweep.
+- **Verification**: levels 2-4; census: >= 98% of 3D mesh vertices native in every swept scene.
+- **Gain**: +3-5%, plus coverage; it is the precondition for R7 / R8.
+
+### R6. Particles - 7 agent-days
+- **Deliverable**: the 376109499 "blip" program's simulation (emitter parameters, per-particle 6-qw records, gravity,
+  dt) ported to a compute pass; instanced textured quads; translucent draws in the game's order.
+- **Verification**: per-particle positions vs VU output on recordings (level 1 style: XY <= 2 px, colour +-2); fire
+  and rain scenes with levels 2-4.
+- **Gain**: fire / rain / fight scenes, which are GPU-bound today: m2 boardroom about 90 -> >= 160 fps, with much
+  better 1% lows.
+
+### R7. Shadows, effects and the gameplay HUD: the exact path goes idle in gameplay - 10 agent-days
+- **Deliverable**:
+  - Shadow volumes (188054619) as real stencil volumes plus a darken pass with the game's darkening amount. The
+    G-channel counter, CT16 shuffles and T8H darken are dropped.
+  - Prio 13 volumes, if identified as shadow-like.
+  - Motion blur as a full-screen blend.
+  - The gameplay HUD and text (prio 21) natively with the widescreen anchors.
+  - The exact path is still used for menus, loading screens, Binocucom RTTs, the ep2 photo and portraits.
+- **Verification**:
+  - Shadows: level 2 against the exact shadow pixels (darkened set identical on >= 99%, colour +-2).
+  - HUD: pixel A/B at S = 1.
+  - Sweep; the census shows gameplay frames with 0 exact draws.
+- **Gain**: hubs >= 280 fps; the worker, GS and frontend threads are nearly idle in gameplay (lower power, more headroom
+  on weak CPUs).
+
+### R8. Fully modern frames: free resolution, MSAA, motion vectors - 8 agent-days
+- **Deliverable**:
+  - Frames with no exact draws render at any resolution, defaulting to the output resolution. "Render scale" becomes a
+    percentage in modern mode.
+  - MSAA 2/4/8x with alpha-to-coverage for pass A cut-outs.
+  - HUD after resolve.
+  - Previous-frame matrices and motion vectors (the base for TAA, FSR or DLSS later).
+  - Hybrid frames (menus etc.) keep the exact grid. Switching between the two is seamless.
+- **Verification**: Original gates at "render scale = 3x grid" (equal to R7 within level 3); sweep of pictures at
+  1440p MSAA 4x; frame-time pacing checks (p99 / median <= 1.3).
+- **Gain**: >= 300 fps in hubs at native 1440p with MSAA; sharper and cheaper than 3x supersampling.
+
+### R9. Enhanced and mods - 12 agent-days (two tasks)
+- **R9a Enhanced, 7 days**: per-pixel lighting, shadow maps, SSAO, bloom, anisotropic + mipmaps, outline styles, and
+  presets ("Original", "Enhanced", "Performance") in the Options menu.
+- **R9b Mods, 5 days**: VFS layers (cache / built-in / `mods\<name>`), texture dump with hash names, DDS / PNG
+  replacement with asynchronous streaming, glTF model replacement on the original skeleton, and the Options mod list.
+- **Verification**: with Enhanced off, the output is bit-identical to Original; the cost of each switch is measured; a
+  sample pack loads with no hitch (frame-time p99 unchanged).
+- **Gain**: features, not speed. Enhanced High targets >= 165 fps at 1440p.
+
+### R10. SDL3 GPU backend; Linux - 10 agent-days. R11. macOS - 8 agent-days
+- **Precondition**: R7 coverage. There is no exact path off Windows: remaining exact content (menus, RTTs) must be
+  native, or the frame falls back to the software GS renderer. That is acceptable only for rare frames, so the census
+  must show them rare.
+- **Deliverable**:
+  - `r2gpu_sdl.c`; shaders compiled on the developer machine to SPIR-V / MSL and committed as generated headers, with
+    a staleness gate.
+  - The platform layer (window, input incl. DualSense, audio) on SDL3 for the non-Windows build.
+  - Conformance scene identical on D3D11, SDL3 (D3D12 / Vulkan on Windows) and the Linux build.
+- **Fallback**: a direct Vulkan 1.3 backend (Vulkan-Headers + volk) if SDL3 GPU lacks something essential.
+- **Decisions**: D4 (tools) and D5 (test hardware) before starting.
+
+**Total**: about 100 agent-days for R0-R11. **R0-R2 (20 agent-days) deliver most of the frame-rate goal.**
+
+---
+
+## 8. Risks and mitigations
+
+| risk | impact | mitigation |
+|---|---|---|
+| Unread VU formulas (lit colour scale, fog, fade TEST variants, clip / ADC rules) | wrong colours or missing triangles | read the routines first (R0 / R3 deliverables); the level 1 oracle decides, not a guess |
+| Z ties between native and exact draws (outlines, decals, shadow volumes vs scene) | flicker or missing outline pixels | move tie partners together (the outline rule in R2); shadow volumes (exact until R7) are checked against native depth by the level 2 / temporal gates from R1 on; reserve lever: the VU-exact transform pre-pass (section 4) |
+| Skipped entries leave different VU1 memory / registers / GS state for later exact entries | wrong exact draws after a native run | keep header packets (only meshes dropped); state epilogue; remainder-invariance hash (level 3); the 1.1% register-dependent programs (outline 0x07F0 after 0x0738) belong to outline entries, which move as a whole in R4 |
+| Mesh DMA with EE-visible effects (VIF IRQ, MARK, VU1 results read by the EE handler 0x167F78) | game logic changes | the decoder rejects any DMA with IRQ bits, MARK or unknown VIF codes -> exact |
+| Mesh data modified at run time / level heap reuse | stale geometry | content hash at first sight, cache flushed at level load, debug re-hash in sweeps |
+| Texture source race (EE ahead of the GS thread) | wrong texture for a frame | textures resolved on the frontend thread in stream order with `cpu_gen` |
+| Coverage outside the traced scenes (water, RC chopper, hacking / turret minigames, Binocucom views) | visual bugs in rare scenes | unknown kinds default to exact; the census lists every fallback; the sweep includes those jobs |
+| Alpha / destination-alpha conventions (DATE in the shadow pipeline, T8H darken) | broken shadows | R2 writes the GS alpha byte by the GS rule; level 2 bit-7 gate |
+| Two renderers to maintain | slower later work | shared HLSL includes for GS formulas; one frontend; the exact path's role shrinks to menus / special scenes after R7 |
+| Frame-rate regressions when a frame is mostly exact (menus) | none expected | per-run segments only; measured in the chaos bench |
+| Device loss | R2 resources lost | recreate from the CPU-side caches (decoded meshes / images kept), as the exact path reloads GS memory |
+| SDL3 GPU limits (no bindless, no native-handle interop) | Linux / macOS work stalls | the shared feature subset is about D3D11's; the Vulkan fallback backend is designed in |
+| "Original" not faithful enough for the owner | rework | gates set with the owner after R1's pictures; the reference (exact) setting stays |
+
+---
+
+## 9. Owner decisions
+
+| # | decision | recommendation | needed before |
+|---|---|---|---|
+| **D1** | Must "Original" be **pixel-exact**, or **visually faithful within the section 5 gates**? | visually faithful: pixel-exact is only possible through the exact path, which stays available as "Rendering: Reference" | R1 |
+| **D2** | When does Modern become the default? | per milestone after the sweep and your check, from R2 on (R1 opt-in) | R2 |
+| **D3** | Stop perf-plan **P4 (GS decode fast path) and P5 (VU1 pool)**: R2 removes most of their work in gameplay. P6 (in-game overhead, PGO / LTO) and P7 (Reflex) stay useful because they speed up the EE thread and presentation | yes: P4 / P5 cancelled, P6 / P7 kept | R2 |
+| **D4** | Approval to **download developer-only shader tools** for the cross-platform phase: DXC + SPIRV-Cross (or SDL_shadercross), or Slang; SDL3 source (pinned); Vulkan-Headers + volk for the fallback. Nothing new on the player's PC. R0-R9 need none of them | approve at R10 | R10 |
+| **D5** | **Test hardware**: a weaker PC (or the E-core proxy of section 6), a Linux install or Steam Deck, an Apple Silicon Mac with Xcode Command Line Tools | the proxy until R8; a real machine for R10 / R11 | R8 / R10 |
+| **D6** | Modern mode's resolution model from R8: a free render scale (%) with MSAA instead of the integer 3x supersampling grid | yes, with the integer grid kept for Reference | R8 |
+| **D7** | Enhanced direction and order: which upgrades first (lighting / shadows / AO / HD textures), and whether Enhanced may change the art style (e.g. outline width) | Original stays the default preset; start with lighting + shadows + anisotropic | R9 |
+| **D8** | Mods: in scope for a public release, and the policy that packs contain only their authors' own work (the texture dump stays a local tool) | yes, as in Ship of Harkinian / OpenGOAL | R9b |
