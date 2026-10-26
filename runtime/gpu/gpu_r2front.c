@@ -18,6 +18,16 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <windows.h>
+
+/* (r2-m2, PS2_R2_STATS) the frontend's R2 time per frame: slow frames are logged */
+static double fr_ms, qpf_ms;
+static double qms(void) {
+    LARGE_INTEGER t, f;
+    if (!qpf_ms) { QueryPerformanceFrequency(&f); qpf_ms = (double)f.QuadPart / 1000.0; }
+    QueryPerformanceCounter(&t);
+    return (double)t.QuadPart / qpf_ms;
+}
 
 void gf_flush_open(void);                /* gpu_front.c */
 
@@ -186,7 +196,7 @@ static gpu_r2_draw* new_draw(uint32_t* nd) {
     return d;
 }
 
-static void emit_entry(const r2_mesh* m, uint32_t ent, float fade, int zmsk, int wm, uint32_t* nd) {
+static void emit_entry(const r2_mesh* m, uint32_t ent, float fade, int zmsk, int wm, uint32_t clipbit, uint32_t* nd) {
     uint32_t st[2];
     uint8_t ru[2];
     if (!consolidate) {                  /* batch-major, as the VU emits them */
@@ -197,7 +207,7 @@ static void emit_entry(const r2_mesh* m, uint32_t ent, float fade, int zmsk, int
                     gpu_r2_draw* d = new_draw(nd);
                     if (!d) return;
                     d->entry = ent; d->mode = p | (uint32_t)ru[k] << 2 | b << 8; d->mask_off = ~0u; d->mesh = m->handle;
-                    d->first = m->b[b].ifirst; d->count = m->b[b].icount; d->state = st[k];
+                    d->first = m->b[b].ifirst; d->count = m->b[b].icount; d->state = st[k] | clipbit;
                 }
             }
         return;
@@ -244,15 +254,22 @@ static void emit_entry(const r2_mesh* m, uint32_t ent, float fade, int zmsk, int
             d->mesh = m->handle;
             d->first = m->b[b0].ifirst;
             d->count = m->b[b1].ifirst + m->b[b1].icount - m->b[b0].ifirst;
-            d->state = g[gi].state;
+            d->state = g[gi].state | clipbit;
             R2S.items += g[gi].nset;
         }
     }
 }
 
 /* the open segment becomes a GPU_FOP_R2 */
+static void gf_r2_flush_impl(void);
 void gf_r2_flush(void) {
     if (!gf_r2_pending) return;
+    double t0 = qms();
+    gf_r2_flush_impl();
+    fr_ms += qms() - t0;
+}
+
+static void gf_r2_flush_impl(void) {
     gf_r2_pending = 0;
     if (!nitems) return;
     gf_flush_open();
@@ -288,7 +305,7 @@ void gf_r2_flush(void) {
     for (uint32_t i = 0; i < nitems; i++) {
         const r2_mesh* m = r2_mesh_get(items[i].handle);
         if (!m) { R2S.dropped++; continue; }
-        emit_entry(m, items[i].ent, ents[items[i].ent].fade, zmsk, wm, &nd);
+        emit_entry(m, items[i].ent, ents[items[i].ent].fade, zmsk, wm, (ents[items[i].ent].flags & R2E_CLIP) ? 1u << 13 : 0u, &nd);
     }
     gpu_fop_r2* o = gf_cmd(GPU_FOP_R2, sizeof *o);
     o->ct = ct->id;
@@ -363,7 +380,7 @@ static void entry_done(const gs_env_view* ev) {
         memcpy(w, &RX.w[k], sizeof w);
         r2_matmul(w, FB.clip, m);
     }
-    entry_add(ev, RX.handle, m, fade, 0);
+    entry_add(ev, RX.handle, m, fade, RX.flags & R2D_CLIP ? R2E_CLIP : 0);
 }
 
 /* (r2-m2, hybrid) a run of native entries from the frame's scene slot */
@@ -430,9 +447,12 @@ static void fr_r2_hint(const gs_env_view* ev, uint64_t v) {
     case R2H_END:
         gf_r2_skip = 0;
         break;
-    case R2H_RUN:
+    case R2H_RUN: {
+        double t0 = qms();
         run_hint(ev, arg, value);
+        fr_ms += qms() - t0;
         break;
+    }
     default:
         break;
     }
@@ -447,6 +467,8 @@ void gf_r2_vblank(void) {
     static int on = -1;
     static uint32_t n;
     if (on < 0) { const char* e = getenv("PS2_R2_STATS"); on = e && *e && *e != '0'; }
+    if (on && fr_ms > 3.0) fprintf(stderr, "[r2] slow frontend frame %u: %.2f ms in R2 runs / segments\n", n, fr_ms);
+    fr_ms = 0;
     if (!on || ++n % 300) return;
     const gpu_r2_front_stats* s = &R2S;
     double f = 300.0;

@@ -540,6 +540,15 @@ int r2_store_put(uint32_t handle, r2_mesh* m) {
     return 1;
 }
 
+/* (r2-m2) the scene slot ring (r2.h): here with the store, so that tools linking the frontend without the EE capture
+ * (gs_replay) resolve it */
+static r2_slot* slot_ring;
+r2_slot* r2_slot_ring(void) {
+    if (!slot_ring) slot_ring = calloc(R2_SLOTS, sizeof *slot_ring);
+    return slot_ring;
+}
+const r2_slot* r2_slot_at(uint32_t index) { return slot_ring ? &slot_ring[index % R2_SLOTS] : NULL; }
+
 const r2_mesh* r2_mesh_get(uint32_t handle) {
     uint32_t g = handle >> 20, i = handle & 0xFFFFF;
     gen_store* s = G[g % GEN_N];

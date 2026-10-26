@@ -1372,6 +1372,10 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (!(lp & (1 << 30))) { toggle_fullscreen(hwnd); settings_mark_chosen(settings_find("display", "mode")); }   /* not on auto-repeat; (pc-menu2) the player's choice */
             return 0;
         }
+        if (wp == VK_F10) {                                      /* (r2-m2) F10 (a system key): Rendering Modern / Reference */
+            if (!(lp & (1 << 30))) gfx_key(VK_F10, 0, 1);
+            return 0;
+        }
         break;                           /* Alt+F4 etc.: default handling */
     case WM_KEYDOWN:
         if (wp == VK_F9 && !(lp & (1 << 30))) {                  /* GPU backend debug keys (window_gpu.h) */

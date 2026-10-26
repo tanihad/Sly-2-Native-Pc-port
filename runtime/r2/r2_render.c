@@ -28,6 +28,7 @@ static struct {
     int init, failed;
     r2g_dev* d;
     r2g_pipe* pipe;                      /* (r2-m2) one pipeline: the pixel shader always writes the dual-source factor */
+    r2g_pipe* pipe_clip;                 /* (r2-m2) entries crossing the guard band (state bit 13): r2_gs_clip */
     r2g_buf* cb;
     arena A[SLOTS];
     uint32_t epoch;                      /* bumped when GPU resources are recreated: meshes upload again */
@@ -40,7 +41,8 @@ static void release_all(void) {
         memset(&R.A[i], 0, sizeof R.A[i]);
     }
     r2g_pipe_free(R.pipe);
-    R.pipe = NULL;
+    r2g_pipe_free(R.pipe_clip);
+    R.pipe = R.pipe_clip = NULL;
     r2g_buf_free(R.cb);
     R.cb = NULL;
     r2g_destroy(R.d);
@@ -68,8 +70,11 @@ static int init(const r2_exec_in* in) {
                          gpu_sh_gs_r2, sizeof gpu_sh_gs_r2 };
     if (!zrec) { pd.ps = gpu_sh_ps_r2_iz_dual; pd.ps_size = sizeof gpu_sh_ps_r2_iz_dual; pd.gs = NULL; pd.gs_size = 0; }
     R.pipe = R.d ? r2g_pipe_create(R.d, &pd) : NULL;
+    r2g_pipe_desc pc = { gpu_sh_vs_r2_clip, sizeof gpu_sh_vs_r2_clip, gpu_sh_ps_r2_clip, sizeof gpu_sh_ps_r2_clip, attrs, 7,
+                         gpu_sh_gs_r2_clip, sizeof gpu_sh_gs_r2_clip };
+    R.pipe_clip = R.d ? r2g_pipe_create(R.d, &pc) : NULL;
     R.cb = R.d ? r2g_buf_create(R.d, R2G_BUF_CONSTANT, R2G_USAGE_DYNAMIC, 48, NULL) : NULL;
-    if (!R.d || !R.pipe || !R.cb) {
+    if (!R.d || !R.pipe || !R.pipe_clip || !R.cb) {
         fprintf(stderr, "[r2] render: cannot create the pipelines: the modern renderer draws nothing\n");
         release_all();
         R.failed = 1;
@@ -149,7 +154,34 @@ static int resident(r2_mesh* m) {
     return 1;
 }
 
+static int segment(const gpu_fop_r2* o, const uint8_t* fdata, size_t fdata_bytes, const r2_exec_in* in);
+
+/* (r2-m2, PS2_R2_STATS) a slow segment on the render thread is logged (uploads, driver stalls) */
+#include <windows.h>
 int r2_render_segment(const gpu_fop_r2* o, const uint8_t* fdata, size_t fdata_bytes, const r2_exec_in* in) {
+    static int stats = -1;
+    static double qf;
+    if (stats < 0) {
+        const char* e = getenv("PS2_R2_STATS");
+        stats = e && *e && *e != '0';
+        LARGE_INTEGER f;
+        QueryPerformanceFrequency(&f);
+        qf = (double)f.QuadPart / 1000.0;
+    }
+    if (!stats) return segment(o, fdata, fdata_bytes, in);
+    LARGE_INTEGER t0, t1;
+    uint64_t up0 = R.uploads;
+    QueryPerformanceCounter(&t0);
+    int n = segment(o, fdata, fdata_bytes, in);
+    QueryPerformanceCounter(&t1);
+    double ms = (double)(t1.QuadPart - t0.QuadPart) / qf;
+    if (ms > 2.0)
+        fprintf(stderr, "[r2] slow render segment: %.2f ms, %u draws, %llu uploads\n", ms, o->ndraw,
+                (unsigned long long)(R.uploads - up0));
+    return n;
+}
+
+static int segment(const gpu_fop_r2* o, const uint8_t* fdata, size_t fdata_bytes, const r2_exec_in* in) {
     if (!o->ndraw || !init(in)) return 0;
     if ((size_t)o->draw_off + (size_t)o->ndraw * sizeof(gpu_r2_draw) > fdata_bytes) return 0;
     const gpu_r2_draw* dr = (const gpu_r2_draw*)(fdata + o->draw_off);
@@ -169,7 +201,9 @@ int r2_render_segment(const gpu_fop_r2* o, const uint8_t* fdata, size_t fdata_by
     cu[4] = o->frame_off; cu[5] = o->ent_off; cu[6] = o->draw_off; cu[7] = (o->flags & GPU_R2F_FBA) ? 1u : 0u;
     static float zbias = -1e9f;
     if (zbias == -1e9f) { const char* e = getenv("PS2_R2_ZBIAS"); zbias = e ? (float)atof(e) : 0.0f; }
-    cb[8] = in->dual_bias; cb[9] = zbias; cu[10] = (uint32_t)o->sc[1]; cu[11] = 0;   /* (scissor y0: gs_tri_setup's by0) */
+    static int dbg = -1;                 /* (r2-m2) PS2_R2_DBG: cost experiments (shaders/r2.hlsl r2_dbg), never in play */
+    if (dbg < 0) { const char* e = getenv("PS2_R2_DBG"); dbg = e ? atoi(e) : 0; }
+    cb[8] = in->dual_bias; cb[9] = zbias; cu[10] = (uint32_t)o->sc[1]; cu[11] = (uint32_t)dbg;   /* (scissor y0: gs_tri_setup's by0) */
     r2g_buf_unmap(R.d, R.cb);
     r2g_bind_targets_native(R.d, in->rtv, in->dsv);
     r2g_viewport(R.d, -8192.0f, -8192.0f, 16384.0f, 16384.0f);   /* (the REF viewport of mixed frames: d3d pixels = NDC * 8192) */
@@ -183,7 +217,6 @@ int r2_render_segment(const gpu_fop_r2* o, const uint8_t* fdata, size_t fdata_by
     r2g_bind_vertex(R.d, 0, a->vb, sizeof(r2_vtx));
     r2g_bind_vertex_native(R.d, 1, in->iota_vb, 4);
     r2g_bind_index(R.d, a->ib);
-    r2g_bind_pipe(R.d, R.pipe);
     int n = 0;
     for (uint32_t i = 0; i < o->ndraw; i++) {
         const gpu_r2_draw* d = &dr[i];
@@ -193,6 +226,7 @@ int r2_render_segment(const gpu_fop_r2* o, const uint8_t* fdata, size_t fdata_by
         int bl = (int)(st & 15), depth = (int)((st >> 4) & 15);
         r2g_state s = { (uint8_t)bl, (uint8_t)((st >> 8) & 15), (uint8_t)(depth >> 1), (uint8_t)(depth & 1),
                         (uint8_t)(((st >> 12) & 1) ? R2G_CULL_FRONT : R2G_CULL_NONE) };
+        r2g_bind_pipe(R.d, (st >> 13) & 1 ? R.pipe_clip : R.pipe);   /* (filtered when unchanged) */
         r2g_bind_state(R.d, &s);
         r2g_draw_indexed(R.d, d->count, m->gpu_ibase + d->first, (int32_t)m->gpu_vbase, i);
         n++;

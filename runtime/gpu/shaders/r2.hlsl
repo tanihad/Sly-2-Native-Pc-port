@@ -43,13 +43,44 @@ struct R2V {
     uint did : DRAWID;                   // the draw record (StartInstanceLocation through the iota buffer)
 };
 
+#ifndef R2_CLIP
+#define R2_CLIP 0                        // (r2-m2) 1: the pipeline of meshes crossing the VU's guard band (r2_gs_clip)
+#endif
+#if R2_CLIP
+#define R2I                              // perspective-correct: the GPU-clipped triangles' attributes (w != 1)
+#else
+#define R2I noperspective
+#endif
+
 struct R2O {
     noperspective centroid float4 pos : SV_Position;   // (centroid: required with conservative depth output)
-    noperspective float4 col : COLOR0;   // 0..255
-    noperspective float fog : FOG;
-    noperspective float3 stq : TEXCOORD0;   // the VU's S, T, Q
+    R2I float4 col : COLOR0;             // 0..255
+    R2I float fog : FOG;
+    R2I float3 stq : TEXCOORD0;          // the VU's S, T, Q
     nointerpolation uint2 mr : MATRULE;  // the material record, the discard rule
     nointerpolation int3 gv : GV;        // the GS vertex: X, Y (12.4, XYOFFSET subtracted), Z
+};
+
+struct R2C {                             // (r2-m2) the clip pipeline's vertex: R2O + the clip-space position and the
+    noperspective centroid float4 pos : SV_Position;   // attributes of a GPU-clipped triangle
+    R2I float4 col : COLOR0;
+    R2I float fog : FOG;
+    R2I float3 stq : TEXCOORD0;
+    nointerpolation uint2 mr : MATRULE;
+    nointerpolation int3 gv : GV;
+    float4 clip : CLIPPOS;               // M x position (the VU's clip space: |x|, |y|, |z| <= w inside its guard band)
+    float4 alt : ALT;                    // u, v, 1, F (clipped triangles: perspective-correct U, V; fog without Q)
+};
+
+struct R2K {                             // the clip pipeline's rasterized vertex
+    noperspective centroid float4 pos : SV_Position;
+    R2I float4 col : COLOR0;
+    R2I float fog : FOG;
+    R2I float3 stq : TEXCOORD0;
+    nointerpolation uint2 mr : MATRULE;
+    nointerpolation int3 gv : GV;
+    float4 cd0 : SV_ClipDistance0;       // the VU's six clip planes: w - x, w + x, w - y, w + y
+    float2 cd1 : SV_ClipDistance1;       //                            w - z, w + z
 };
 
 struct R2P {                             // the geometry stage's output: R2O + the triangle's exact Z record
@@ -74,8 +105,7 @@ ByteAddressBuffer r2_mtab : register(t11);
 #define R2D_TCC 32u
 
 // (the VU's arithmetic: vu_mul / vu_add / vu_rcp, r2_vu.hlsli)
-R2O r2_vs(R2V i) {
-    R2O o;
+void r2_vertex(R2V i, out R2O o, out float4 clip, out float4 alt) {
     uint db = r2_off.z + i.did * 32u;
     uint4 dr = fdata.Load4(db);
     uint rp = dr.y & 3u, b0 = dr.y >> 8;   // (pass: an HLSL keyword)
@@ -93,18 +123,28 @@ R2O r2_vs(R2V i) {
     float4 c0 = asfloat(fdata.Load4(r2_off.x)), c1 = asfloat(fdata.Load4(r2_off.x + 16u));   // VU 0, VU 1
     // 0x07F8: MULAx / MADDAy / MADDAz / MADDw (row 3 x 1.0 exact), M = world x clip (gpu_r2front.c, VU-exact too)
     float c[4];
+    float q;
+    uint bx, by, bz;
+    if ((asuint(r2_misc.w) & 4u) != 0u) {                   // (PS2_R2_DBG 4: plain float arithmetic, cost experiments)
+        [unroll] for (uint j2 = 0u; j2 < 4u; j2++) c[j2] = m[0][j2] * i.pos.x + m[1][j2] * i.pos.y + m[2][j2] * i.pos.z + m[3][j2];
+        q = 1.0 / c[3];
+        bx = asuint(c1.x + c0.x * c[0] * q);
+        by = asuint(c1.y + c0.y * c[1] * q);
+        bz = asuint(c1.z + c0.z * c[2] * q);
+    } else {
     [unroll] for (uint j = 0u; j < 4u; j++) {
         float acc = vu_mul(m[0][j], i.pos.x);
         acc = vu_add(acc, vu_mul(m[1][j], i.pos.y));
         acc = vu_add(acc, vu_mul(m[2][j], i.pos.z));
         c[j] = vu_add(acc, m[3][j]);
     }
-    float w = c[3];
-    float q = vu_rcp(w);                                    // (entries reach R2 only with w > 0 at every corner)
+    q = vu_rcp(c[3]);                                       // (inside the guard band: w > 0)
     // XYZF2 from the float bits of VU 1 + VU 0 x (clip x Q): X, Y the low 16 bits, Z bits 4..27
-    uint bx = asuint(vu_add(c1.x, vu_mul(c0.x, vu_mul(c[0], q))));
-    uint by = asuint(vu_add(c1.y, vu_mul(c0.y, vu_mul(c[1], q))));
-    uint bz = asuint(vu_add(c1.z, vu_mul(c0.z, vu_mul(c[2], q))));
+    bx = asuint(vu_add(c1.x, vu_mul(c0.x, vu_mul(c[0], q))));
+    by = asuint(vu_add(c1.y, vu_mul(c0.y, vu_mul(c[1], q))));
+    bz = asuint(vu_add(c1.z, vu_mul(c0.z, vu_mul(c[2], q))));
+    }
+    float w = c[3];
     float gx = (float)(bx & 0xFFFFu), gy = (float)(by & 0xFFFFu), gz = (float)((bz >> 4) & 0xFFFFFFu);
     // the exact path's sample grid; positions are final (w = 1): the GS interpolates everything linearly on screen
     precise float dx = (gx - r2_map.z) * (r2_map.x * (1.0 / 16.0)) + 0.5;
@@ -129,7 +169,71 @@ R2O r2_vs(R2V i) {
     o.stq = float3(vu_mul((float)i.uv.x * (1.0 / 4096.0), q), vu_mul((float)i.uv.y * (1.0 / 4096.0), q), q);
     o.mr = uint2(mat, (dr.y >> 2) & 1u);
     if (skip) o.pos = float4(2.0, 2.0, 0.5, 1.0);   // (outside the clip volume: the batch's triangles are rejected)
+    clip = float4(c[0], c[1], c[2], w);
+    if (skip) clip = float4(2.0, 0.0, 0.0, 1.0);    // (outside x <= w: rejected by the clip pipeline too)
+    // a clipped triangle's U, V (perspective-correct) and fog (MINI(w, VU 9.z) x Q is 1 while w < VU 9.z, and behind
+    // the camera; the VU clipper's new vertices get theirs from the same formula)
+    float wq = w < asfloat(d3.y) ? 1.0 : asfloat(d3.y) / w;
+    alt = float4((float)i.uv.x * (1.0 / 4096.0), (float)i.uv.y * (1.0 / 4096.0), 1.0,
+                 (float)((asuint(vu_add(asfloat(i.wbits), vu_mul(asfloat(d3.x), wq))) >> 4) & 255u));
+}
+
+R2O r2_vs(R2V i) {
+    R2O o;
+    float4 clip, alt;
+    r2_vertex(i, o, clip, alt);
     return o;
+}
+
+R2C r2_vs_clip(R2V i) {
+    R2O o;
+    float4 clip, alt;
+    r2_vertex(i, o, clip, alt);
+    R2C r;
+    r.pos = o.pos; r.col = o.col; r.fog = o.fog; r.stq = o.stq; r.mr = o.mr; r.gv = o.gv;
+    r.clip = clip;
+    r.alt = alt;
+    return r;
+}
+
+// (r2-m2) Meshes crossing the VU's guard band (r2_capture.c inside_guard; notes/modern-renderer.md "R2 as built"): per
+// triangle as the VU decides it (0x0C60: each vertex's CLIPW flags against |x|, |y|, |z| <= w): all three inside, the
+// VU-exact screen vertices; all three outside one plane, nothing; else the VU's clipper (0x2540) would draw it as
+// clipped fans - here the GPU clips the clip-space triangle against the same six planes (SV_ClipDistance), with
+// perspective-correct attributes (not bit-exact: the clipper's own arithmetic is not reproduced; such triangles are
+// near the camera and few).
+uint r2_outcode(float4 c) {
+    return (c.x > c.w ? 1u : 0u) | (c.x < -c.w ? 2u : 0u) | (c.y > c.w ? 4u : 0u) | (c.y < -c.w ? 8u : 0u) |
+           (c.z > c.w ? 16u : 0u) | (c.z < -c.w ? 32u : 0u) | (c.w > 0.0 ? 0u : 64u);
+}
+
+[maxvertexcount(3)]
+void r2_gs_clip(triangle R2C v[3], inout TriangleStream<R2K> ts) {
+    uint o0 = r2_outcode(v[0].clip), o1 = r2_outcode(v[1].clip), o2 = r2_outcode(v[2].clip);
+    if ((o0 & o1 & o2 & 63u) != 0u) return;
+    bool inside = (o0 | o1 | o2) == 0u;
+    float4 fr = asfloat(fdata.Load4(r2_off.x + 32u));       // screen model: ax, bx, ay, by (gpu_r2_frame)
+    float2 fz = asfloat(fdata.Load2(r2_off.x + 48u));       //               az, bz
+    float kx = r2_map.x * (1.0 / 16.0), ky = r2_map.y * (1.0 / 16.0);
+    [unroll] for (uint k = 0u; k < 3u; k++) {
+        R2K o;
+        o.col = v[k].col; o.mr = v[k].mr; o.gv = v[k].gv;
+        if (inside) {
+            o.pos = v[k].pos; o.fog = v[k].fog; o.stq = v[k].stq;
+            o.cd0 = float4(1.0, 1.0, 1.0, 1.0); o.cd1 = float2(1.0, 1.0);
+        } else {
+            float4 c = v[k].clip;
+            // d3d = (GS - XYOFFSET) k / 16 + 0.5 with GS = b + a c / w, through the REF viewport (NDC x 8192), times w
+            o.pos = float4((((fr.y - r2_map.z) * kx + 0.5) * c.w + fr.x * kx * c.x) * (1.0 / 8192.0),
+                           -(((fr.w - r2_map.w) * ky + 0.5) * c.w + fr.z * ky * c.y) * (1.0 / 8192.0),
+                           ((fz.y + 0.5) * c.w + fz.x * c.z) * (1.0 / 1048576.0), c.w);
+            o.fog = v[k].alt.w;
+            o.stq = v[k].alt.xyz;
+            o.cd0 = float4(c.w - c.x, c.w + c.x, c.w - c.y, c.w + c.y);
+            o.cd1 = float2(c.w - c.z, c.w + c.z);
+        }
+        ts.Append(o);
+    }
 }
 
 // ---- the triangle's Z record exactly as the exact path's frontend builds it (runtime/gs_setup.c gs_tri_setup /
@@ -178,6 +282,15 @@ R2F r2_ps(R2P i) {
 R2F r2_ps(R2O i) {
 #endif
     vkx = 1u; vky = 1u; vbase = 0u; vfbw = 1u; vflags = 0u; one = 1.0; kx = 1u; ky = 1u;   // (gs.hlsl statics: no view)
+    if ((asuint(r2_misc.w) & 8u) != 0u) {                 // (PS2_R2_DBG 8: a constant colour, cost experiments)
+        R2F d;
+        d.c0 = float4(0.5, 0.5, 0.5, 0.5);
+#if R2_DUAL
+        d.c1 = float4(0.0, 0.0, 0.0, 0.0);
+#endif
+        d.z = i.pos.z;
+        return d;
+    }
     uint mb = i.mr.x * 48u;
     uint4 d1 = r2_mats.Load4(mb);
     uint4 d2 = r2_mats.Load4(mb + 16u);
@@ -199,7 +312,7 @@ R2F r2_ps(R2O i) {
     precise float tv = i.stq.y * iq;
     precise float su16 = su * tw16;
     precise float tv16 = tv * th16;
-    uint t = tex_sample(st, f2i(su16), f2i(tv16), 1.0);
+    uint t = (asuint(r2_misc.w) & 1u) != 0u ? 0x80808080u : tex_sample(st, f2i(su16), f2i(tv16), 1.0);   // (PS2_R2_DBG 1)
     uint4 vc = (uint4)max(i.col, 0.0);                     // the GS's Gouraud stepping truncates
     vc = min(vc, uint4(255u, 255u, 255u, 255u));
     uint col = tfx((t1 >> 3) & 3u, (flags & R2D_TCC) != 0u, vc.x | (vc.y << 8) | (vc.z << 16) | (vc.w << 24), t);
@@ -265,5 +378,6 @@ R2F r2_ps(R2O i) {
     float zv = floor(i.pos.z * 1048576.0 - 0.5);
 #endif
     o.z = max(zv + r2_misc.y, 0.0) * (1.0 / 1048576.0);   // (r2_misc.y: PS2_R2_ZBIAS, debugging)
+    if ((asuint(r2_misc.w) & 2u) != 0u) o.z = i.pos.z;     // (PS2_R2_DBG 2: the rasterized depth)
     return o;
 }

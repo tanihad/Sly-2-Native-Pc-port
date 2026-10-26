@@ -38,7 +38,8 @@ enum {
 /* R2H_DRAW / R2H_BEGIN words, in order: [fade (R2D_FADE)] [world matrix, 16 words (unless R2D_IDENTITY)] [the mesh DMA
  * address | form << 31 (offline replays resolve the handle from a RAM dump with it)] */
 enum { R2D_IDENTITY = 1,   /* the entry's world matrix is the identity (no matrix words) */
-       R2D_FADE = 2 };     /* a fade word follows (VU 8.x != 1.0) */
+       R2D_FADE = 2,       /* a fade word follows (VU 8.x != 1.0) */
+       R2D_CLIP = 4 };     /* (r2-m2) the mesh crosses the VU's guard band (R2E_CLIP) */
 
 static inline uint64_t r2h_make(uint32_t kind, uint32_t arg, uint32_t value) {
     return (uint64_t)(kind & 0xFF) | ((uint64_t)(arg & 0xFFFFFF) << 8) | ((uint64_t)value << 32);
@@ -77,7 +78,8 @@ typedef struct {
     uint32_t run_first[R2_SLOT_RUNS], run_count[R2_SLOT_RUNS];
     r2_slot_ent ent[R2_SLOT_ENTS];
 } r2_slot;
-const r2_slot* r2_slot_at(uint32_t index);       /* NULL: not allocated */
+const r2_slot* r2_slot_at(uint32_t index);       /* NULL: not allocated (r2_mesh.c) */
+r2_slot* r2_slot_ring(void);                     /* the writer (EE): the ring, allocated on first use */
 
 /* ---- decoded meshes (r2_mesh.c) ------------------------------------------------------------------------------------- */
 typedef struct {                 /* 32 bytes, also the GPU vertex layout (shaders/r2.hlsl R2V) */

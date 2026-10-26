@@ -265,6 +265,7 @@ void r2g_end(r2g_dev* d) {
 void r2g_bind_srv_native(r2g_dev* d, int slot, void* srv) {
     ID3D11ShaderResourceView* v = srv;
     ID3D11DeviceContext_VSSetShaderResources(d->ctx, (UINT)slot, 1, &v);
+    ID3D11DeviceContext_GSSetShaderResources(d->ctx, (UINT)slot, 1, &v);
     ID3D11DeviceContext_PSSetShaderResources(d->ctx, (UINT)slot, 1, &v);
 }
 
