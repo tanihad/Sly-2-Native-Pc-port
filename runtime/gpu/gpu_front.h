@@ -292,22 +292,23 @@ typedef struct {                         /* 64 bytes (shaders/r2.hlsl reads it) 
 typedef struct {                         /* 80 bytes */
     float m[16];                         /* world x clip (row vectors) */
     float fade;                          /* VU 8.x */
-    uint32_t pad[3];
+    uint32_t flags;                      /* (r2-m2) R2E_* (runtime/r2/r2.h) */
+    uint32_t pad[2];
 } gpu_r2_entry;
-typedef struct {                         /* 64 bytes */
-    uint32_t mesh;                       /* mesh handle (r2_mesh_get) */
-    uint32_t first, count;               /* indices of the mesh's index array */
+typedef struct {                         /* (r2-m2) 32 bytes: one consolidated draw (shaders/r2.hlsl reads the first 16) */
     uint32_t entry;                      /* entry record index in the segment */
-    uint32_t tex0[2], clamp[2];
-    uint32_t tex1, test, alpha, fogcol;  /* TEX1 lo, TEST, ALPHA (asel..dsel | fix << 8), FOGCOL */
-    float fog_scale, fog_wmax;
-    uint32_t flags;                      /* GPU_R2D_* */
+    uint32_t mode;                       /* pass (0..2) | rule << 2 (0: discard ATST-failing fragments, 1: discard
+                                            passing ones) | first batch of the mask << 8 */
+    uint32_t mask_off;                   /* fdata word index of the batch mask (bit b - first: drawn), ~0: every batch */
+    uint32_t mesh;                       /* mesh handle (r2_mesh_get; the shaders: its material base by index) */
+    uint32_t first, count;               /* indices of the mesh's index array (the batches' range) */
     uint32_t state;                      /* blend class | depth state << 4 | wmask << 8 | cull << 12 */
+    uint32_t pad;
 } gpu_r2_draw;
 /* (r2-m1) frontend counters of the modern renderer since the last reset (gpu_r2front.c) */
 typedef struct {
     uint64_t hints, bad_hints, segments, entries, draws, splits, textures, tex_gpu, dropped, unsupported, over128, brackets,
-        skipped_prims, zwrite_draws, all_fail;
+        skipped_prims, zwrite_draws, all_fail, runs, stale, items;
 } gpu_r2_front_stats;
 void gpu_front_r2_stats(gpu_r2_front_stats* out, int reset);
 /* bracket mode (PS2_R2=bracket): 0 the bracketed exact primitives are drawn (R2 ignores the hints), 1 R2 draws the

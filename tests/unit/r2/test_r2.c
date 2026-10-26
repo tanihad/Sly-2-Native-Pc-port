@@ -184,11 +184,33 @@ static int test_div(env* e, const char* name) {
     return !bad;
 }
 
+/* (r2-m2) r2_matmul_fast (the EE capture's W x C under the VU's MXCSR rounding) against the reference r2_matmul */
+static int test_matmul(void) {
+    int bad = 0, n = 20000;
+    for (int t = 0; t < n; t++) {
+        float w[16], c[16], a[16], b[16];
+        for (int i = 0; i < 16; i++) {
+            w[i] = (t % 4 == 0 && (i % 5)) ? 0.0f : rndf(-12, 12);
+            if (t % 4 == 0 && !(i % 5)) w[i] = 1.0f;
+            c[i] = rndf(-20, 20);
+        }
+        if (t % 3 == 1) { w[3] = w[7] = w[11] = 0.0f; w[15] = 1.0f; }
+        r2_matmul(w, c, a);
+        r2_matmul_fast(w, c, b);
+        if (memcmp(a, b, sizeof a) && bad++ < 4) {
+            for (int i = 0; i < 16; i++)
+                if (fbits(a[i]) != fbits(b[i])) { fprintf(stderr, "  matmul case %d [%d]: fast %08X ref %08X\n", t, i, fbits(b[i]), fbits(a[i])); break; }
+        }
+    }
+    printf("r2 cpu: matmul_fast %d mismatches of %d\n", bad, n);
+    return !bad;
+}
+
 int main(int argc, char** argv) {
     const char* adapter = "both";
     for (int i = 1; i < argc; i++)
         if (!strcmp(argv[i], "--adapter") && i + 1 < argc) adapter = argv[++i];
-    int ok = 1;
+    int ok = test_matmul();
     for (int warp = 0; warp < 2; warp++) {
         if (!strcmp(adapter, warp ? "hw" : "warp")) continue;
         const char* name = warp ? "warp" : "hw";

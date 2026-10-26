@@ -39,6 +39,7 @@ struct R2V {
     int2 uv : UV;
     uint cola : COLA;
     uint colb : COLB;
+    uint batch : BATCH;                  // (r2-m2) the vertex's sub-batch in its mesh
     uint did : DRAWID;                   // the draw record (StartInstanceLocation through the iota buffer)
 };
 
@@ -47,7 +48,7 @@ struct R2O {
     noperspective float4 col : COLOR0;   // 0..255
     noperspective float fog : FOG;
     noperspective float3 stq : TEXCOORD0;   // the VU's S, T, Q
-    nointerpolation uint did : DID;
+    nointerpolation uint2 mr : MATRULE;  // the material record, the discard rule
     nointerpolation int3 gv : GV;        // the GS vertex: X, Y (12.4, XYOFFSET subtracted), Z
 };
 
@@ -56,28 +57,36 @@ struct R2P {                             // the geometry stage's output: R2O + t
     noperspective float4 col : COLOR0;
     noperspective float fog : FOG;
     noperspective float3 stq : TEXCOORD0;
-    nointerpolation uint did : DID;
+    nointerpolation uint2 mr : MATRULE;
     nointerpolation uint4 zr0 : ZREC0;   // row (lo, hi), dy (lo, hi): 16.16 at x = 0 of row by0, per row
     nointerpolation uint3 zr1 : ZREC1;   // dx (lo, hi), by0
 };
 
-// draw record (gpu_front.h gpu_r2_draw, 64 bytes): +0 mesh, first, count, entry; +16 TEX0 lo, hi, CLAMP lo, hi;
-// +32 TEX1, TEST, ALPHA, FOGCOL; +48 fog scale, fog w max, flags (GPU_R2D_*), state
+// (r2-m2) draw record (gpu_front.h gpu_r2_draw, 32 bytes; the shaders read the first 16): entry, mode (pass | rule << 2 |
+// first batch << 8), mask word offset (~0: every batch), mesh handle. Material records (r2_render.c mat_records, 48
+// bytes, t10, 3 per sub-batch from the mesh's base in the mesh table t11): +0 TEX0 lo, hi, CLAMP lo, hi; +16 TEX1, TEST,
+// ALPHA (asel..dsel | fix << 8), FOGCOL; +32 fog scale, fog w max, flags (GPU_R2D_* | blend class << 12)
+ByteAddressBuffer r2_mats : register(t10);
+ByteAddressBuffer r2_mtab : register(t11);
 #define R2D_CSEL 1u
-#define R2D_HALF_PASS 2u
-#define R2D_HALF_FAIL 4u
 #define R2D_ABE 8u
 #define R2D_FGE 16u
 #define R2D_TCC 32u
-#define R2D_KEEP 64u
 
 // (the VU's arithmetic: vu_mul / vu_add / vu_rcp, r2_vu.hlsli)
 R2O r2_vs(R2V i) {
     R2O o;
-    uint db = r2_off.z + i.did * 64u;
-    uint4 d0 = fdata.Load4(db);
-    uint4 d3 = fdata.Load4(db + 48u);
-    uint eb = r2_off.y + d0.w * 80u;
+    uint db = r2_off.z + i.did * 32u;
+    uint4 dr = fdata.Load4(db);
+    uint rp = dr.y & 3u, b0 = dr.y >> 8;   // (pass: an HLSL keyword)
+    bool skip = false;
+    if (dr.z != 0xFFFFFFFFu) {           // a batch mask: the batches of the range this draw leaves to another
+        uint rel = i.batch - b0;
+        skip = ((fdata.Load((dr.z + (rel >> 5)) * 4u) >> (rel & 31u)) & 1u) == 0u;
+    }
+    uint mat = r2_mtab.Load((dr.w & 0xFFFFFu) * 4u) + i.batch * 3u + rp;
+    uint4 d3 = r2_mats.Load4(mat * 48u + 32u);   // fog scale, fog w max, flags
+    uint eb = r2_off.y + dr.x * 80u;
     float4 m[4] = { asfloat(fdata.Load4(eb)), asfloat(fdata.Load4(eb + 16u)), asfloat(fdata.Load4(eb + 32u)),
                     asfloat(fdata.Load4(eb + 48u)) };
     float fade = asfloat(fdata.Load(eb + 64u));
@@ -105,7 +114,7 @@ R2O r2_vs(R2V i) {
     o.pos = float4(dx * (1.0 / 8192.0), -dy * (1.0 / 8192.0), (gz + 0.5) * (1.0 / 1048576.0), 1.0);
     o.gv = int3((int)(bx & 0xFFFFu) - (int)r2_map.z, (int)(by & 0xFFFFu) - (int)r2_map.w, (int)((bz >> 4) & 0xFFFFFFu));
     // colour: A (pass A) or B, VU 8.x fade on colour A's alpha / colour B's RGB (0x0BE0, truncated)
-    bool csel = (d3.z & R2D_CSEL) != 0u;
+    bool csel = (d3.z & R2D_CSEL) != 0u;   // (material flags)
     uint col = csel ? i.colb : i.cola;
     uint4 cc = uint4(col & 255u, (col >> 8) & 255u, (col >> 16) & 255u, col >> 24);
     if (fade < 1.0) {
@@ -118,7 +127,8 @@ R2O r2_vs(R2V i) {
     o.fog = (float)((asuint(fw) >> 4) & 255u);
     // STQ = (ITOF12 u, v, 1) x Q, interpolated linearly on screen and divided per pixel (the GS's S/Q, T/Q)
     o.stq = float3(vu_mul((float)i.uv.x * (1.0 / 4096.0), q), vu_mul((float)i.uv.y * (1.0 / 4096.0), q), q);
-    o.did = i.did;
+    o.mr = uint2(mat, (dr.y >> 2) & 1u);
+    if (skip) o.pos = float4(2.0, 2.0, 0.5, 1.0);   // (outside the clip volume: the batch's triangles are rejected)
     return o;
 }
 
@@ -147,7 +157,7 @@ void r2_gs(triangle R2O v[3], inout TriangleStream<R2P> ts) {
     i64 row = i64_add(i64_shl(i64_make(v[0].gv.z), 16u), i64_round_scaled(m, A, 16u, true));   // (Z >= 0)
     [unroll] for (uint k = 0u; k < 3u; k++) {
         R2P o;
-        o.pos = v[k].pos; o.col = v[k].col; o.fog = v[k].fog; o.stq = v[k].stq; o.did = v[k].did;
+        o.pos = v[k].pos; o.col = v[k].col; o.fog = v[k].fog; o.stq = v[k].stq; o.mr = v[k].mr;
         o.zr0 = uint4(row, dy);
         o.zr1 = uint3(dx, asuint(by0));
         ts.Append(o);
@@ -168,10 +178,10 @@ R2F r2_ps(R2P i) {
 R2F r2_ps(R2O i) {
 #endif
     vkx = 1u; vky = 1u; vbase = 0u; vfbw = 1u; vflags = 0u; one = 1.0; kx = 1u; ky = 1u;   // (gs.hlsl statics: no view)
-    uint db = r2_off.z + i.did * 64u;
-    uint4 d1 = fdata.Load4(db + 16u);
-    uint4 d2 = fdata.Load4(db + 32u);
-    uint4 d3 = fdata.Load4(db + 48u);
+    uint mb = i.mr.x * 48u;
+    uint4 d1 = r2_mats.Load4(mb);
+    uint4 d2 = r2_mats.Load4(mb + 16u);
+    uint4 d3 = r2_mats.Load4(mb + 32u);
     uint flags = d3.z;
     St st;
     st.tex0clamp = d1;
@@ -203,10 +213,9 @@ R2F r2_ps(R2O i) {
     uint As = col >> 24;
     uint test = d2.y;
     bool apass = (test & 1u) == 0u || atst_pass((test >> 1) & 7u, (test >> 4) & 0xFFu, As);
-    if (!apass && (flags & (R2D_KEEP | R2D_HALF_PASS)) != 0u) discard;
-    if (apass && (flags & R2D_HALF_FAIL) != 0u) discard;
+    if (apass == (i.mr.y != 0u)) discard;  // rule 0: failing fragments discarded, rule 1: passing ones
     // blend: the exact path's FF table (gs.hlsl ps_ff); the output merger does Cd
-    uint bl = d3.w & 15u;
+    uint bl = (flags >> 12) & 15u;
     uint cs[3] = { col & 255u, (col >> 8) & 255u, (col >> 16) & 255u };
     float3 rgb = float3(b2f(cs[0]), b2f(cs[1]), b2f(cs[2]));
     float a1 = 0.0;
