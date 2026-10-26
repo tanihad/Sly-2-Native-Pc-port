@@ -61,6 +61,7 @@ class Stat:
         self.tags = 0
         self.stmod = 0
         self.mpg = collections.Counter()
+        self.verts = 0      # mesh vertices: V4-32 positions unpacked with a skipping cycle (CL > WL)
 
     def add(self, o):
         self.mscal.update(o.mscal)
@@ -71,6 +72,7 @@ class Stat:
         self.static_bytes += o.static_bytes
         self.frame_bytes += o.frame_bytes
         self.tags += o.tags
+        self.verts += o.verts
 
 
 class Walker:
@@ -108,6 +110,8 @@ class Walker:
                 fmt = UNPK.get(cmd & 0xF, hex(cmd))
                 st.unpack[(fmt, bool(cmd & 0x10))] += ln * 4
                 st.unpack_n[fmt] += nn
+                if fmt == "V4-32" and cl > wl:
+                    st.verts += nn
                 if self.log is not None:
                     vals = ""
                     if i + ln <= nw and ln <= 64:
@@ -202,6 +206,13 @@ class Walker:
                 st = st_for(-1) or st
             else:
                 return
+
+
+def matrix_of(ram, c1):
+    """The world matrix an entry's header packet uploads (UNPACK V4-32 x4 to VU 0, code 0x6C04C000) + the qw after."""
+    b = ram.b[(c1 & 0x1FFFFFF):(c1 & 0x1FFFFFF) + 0x400]
+    i = b.find(bytes.fromhex("00C0046C"))
+    return b[i + 4:i + 4 + 64 + 20] if i >= 0 else b[:0x60]
 
 
 def load_frame(d, n):
@@ -303,6 +314,65 @@ def main():
     print(f"TOTAL static {tot.static_bytes} B, per-frame {tot.frame_bytes} B, direct {tot.direct_qw} qw, "
           f"MSCAL {sum(tot.mscal.values())}, unpack vectors {dict(tot.unpack_n)}")
     print("MSCAL by routine:", ", ".join(f"{p}@{a:04X}:{c}" for (p, a), c in (tot.mscal + glob.mscal).most_common()))
+    # per kind (by the VU program / routines the entry's chain starts)
+    def kind_of(st):
+        progs = {p for (p, a) in st.mscal}
+        addrs = {a for (p, a) in st.mscal if p == "P376110651_main"}
+        if "P188054331" in progs:
+            return "outline (188054331)"
+        if "P188054619_clip" in progs:
+            return "shadow volume (188054619)"
+        if "P376109499" in progs:
+            return "particles (376109499)"
+        if "P188055835_2d" in progs or not st.mscal:
+            return "2d / no VU (188055835)"
+        if "P752221467" in progs:
+            return "attachment (752221467)"
+        if addrs & {0x2EF8, 0x2F80, 0x2FC8, 0x3358}:
+            return "mesh lit/skinned (main)"
+        if addrs & {0x3628, 0x37A8}:
+            return "untextured volume (main 3628/37A8)"
+        return "mesh prelit (main)"
+    kinds = collections.defaultdict(Stat)
+    kcnt = collections.Counter()
+    for r in rows:
+        k = kind_of(est[r["i"]])
+        r["kind"] = k
+        kinds[k].add(est[r["i"]])
+        kcnt[k] += 1
+    print("by kind:")
+    for k in sorted(kinds, key=lambda k: -kcnt[k]):
+        s = kinds[k]
+        print(f"  {k:34} entries {kcnt[k]:4}  vertices~ {s.verts:6}  static {s.static_bytes / 1024:8.1f} KB  "
+              f"per-frame {s.frame_bytes / 1024:6.1f} KB  MSCAL {sum(s.mscal.values()):5}")
+    print(f"  TOTAL vertices~ {tot.verts}")
+    if "--prev" in sys.argv:          # static vs dynamic: compare with another traced frame of the same run
+        n2 = int(sys.argv[sys.argv.index("--prev") + 1])
+        rows2, _ = load_frame(d, n2)
+        ram2 = Ram(Path(d) / f"ram_{n2}.bin")
+        occ = collections.Counter()
+        prev = {}
+        for r in rows2:
+            key = (r["c2"] or r["c1"], occ[r["c2"] or r["c1"]])
+            occ[r["c2"] or r["c1"]] += 1
+            prev[key] = r
+        occ = collections.Counter()
+        same = collections.Counter()
+        moved = collections.Counter()
+        new = collections.Counter()
+        for r in rows:
+            key = (r["c2"] or r["c1"], occ[r["c2"] or r["c1"]])
+            occ[r["c2"] or r["c1"]] += 1
+            o = prev.get(key)
+            if not o:
+                new[r["kind"]] += 1
+            elif not r["c2"] or matrix_of(ram, r["c1"]) == matrix_of(ram2, o["c1"]):
+                same[r["kind"]] += 1
+            else:
+                moved[r["kind"]] += 1
+        print(f"static vs dynamic against frame {n2} (same mesh + identical header packet = unchanged):")
+        for k in sorted(kcnt, key=lambda k: -kcnt[k]):
+            print(f"  {k:34} unchanged {same[k]:4}  changed {moved[k]:4}  not in other frame {new[k]:4}")
     if "--entries" in sys.argv:
         for r in rows:
             s = est[r["i"]]
