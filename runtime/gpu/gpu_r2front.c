@@ -154,11 +154,12 @@ static int pass_items(const r2_batch* B, const r2_pass* P, float fade, int zmsk,
     }
     if (bl == BL_DUAL && ((P->alpha >> 4) & 3) == 0 && as_hi > 128) R2S.over128++;  /* (the exact path: ROV tier) */
     /* the alpha test: halves */
-    int nh = 1, zw_ok[2] = { 1, 1 }, wm_h[2] = { wm, wm };
+    int nh = 1, zw_ok[2] = { 1, 1 }, wm_h[2] = { wm, wm }, disc = 0;
     uint8_t ru[2] = { 0, 1 };
     if (ate) {
         int n = atst_n(atst, aref, as_lo, as_hi), all = as_hi - as_lo + 1;
         int outcome = atst == 1 || n == all ? 1 : n == 0 ? 2 : 4;   /* all pass / all fail / straddle */
+        disc = outcome == 4;                                     /* (only then can a fragment be discarded) */
         if (outcome == 2 || outcome == 4) {
             /* AFAIL of the failing fragments: KEEP nothing, FB_ONLY no Z, ZB_ONLY no colour, RGB_ONLY no Z and no alpha */
             int fz = afail == 2, fwm = afail == 2 ? 0 : afail == 3 ? (wm & 7) : wm;
@@ -178,7 +179,8 @@ static int pass_items(const r2_batch* B, const r2_pass* P, float fade, int zmsk,
         int zw = !zmsk && zw_ok[hv];
         if (!wm_h[hv] && !zw) continue;
         int depth = ztst * 2 + zw;                               /* (gpu_exec.c depth classes: ztst * 2 + zwrite) */
-        st[k] = (uint32_t)bl | (uint32_t)depth << 4 | (uint32_t)wm_h[hv] << 8 | (uint32_t)(B->cull ? 1 : 0) << 12;
+        st[k] = (uint32_t)bl | (uint32_t)depth << 4 | (uint32_t)wm_h[hv] << 8 | (uint32_t)(B->cull ? 1 : 0) << 12 |
+                (uint32_t)disc << 14;            /* (bit 13: clip, set per entry) */
         rule[k] = ru[hv];
         if (zw) R2S.zwrite_draws++;
         k++;

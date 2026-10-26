@@ -29,6 +29,7 @@ static struct {
     r2g_dev* d;
     r2g_pipe* pipe;                      /* (r2-m2) one pipeline: the pixel shader always writes the dual-source factor */
     r2g_pipe* pipe_clip;                 /* (r2-m2) entries crossing the guard band (state bit 13): r2_gs_clip */
+    r2g_pipe* pipe_nd;                   /* (r2-m2) draws that cannot discard (state bit 14 clear): early depth stays on */
     r2g_buf* cb;
     int cb_set;                          /* (r2-m2) cb holds the device's constants (r2.hlsl r2_static), written once */
     float cb_bias;
@@ -44,7 +45,8 @@ static void release_all(void) {
     }
     r2g_pipe_free(R.pipe);
     r2g_pipe_free(R.pipe_clip);
-    R.pipe = R.pipe_clip = NULL;
+    if (R.pipe_nd != R.pipe) r2g_pipe_free(R.pipe_nd);
+    R.pipe = R.pipe_clip = R.pipe_nd = NULL;
     r2g_buf_free(R.cb);
     R.cb = NULL;
     R.cb_set = 0;
@@ -73,13 +75,17 @@ static int init(const r2_exec_in* in) {
                          gpu_sh_gs_r2, sizeof gpu_sh_gs_r2 };
     if (!zrec) { pd.ps = gpu_sh_ps_r2_iz_dual; pd.ps_size = sizeof gpu_sh_ps_r2_iz_dual; pd.gs = NULL; pd.gs_size = 0; }
     R.pipe = R.d ? r2g_pipe_create(R.d, &pd) : NULL;
+    const char* nde = getenv("PS2_R2_NODISCARD");   /* (=0: every draw through the discarding PS, cost comparisons) */
+    if (nde && *nde == '0') zrec |= 2;
+    if (!zrec) { pd.ps = gpu_sh_ps_r2_nd; pd.ps_size = sizeof gpu_sh_ps_r2_nd; R.pipe_nd = R.d ? r2g_pipe_create(R.d, &pd) : NULL; }
+    else R.pipe_nd = R.pipe;
     r2g_pipe_desc pc = { gpu_sh_vs_r2_clip, sizeof gpu_sh_vs_r2_clip, gpu_sh_ps_r2_clip, sizeof gpu_sh_ps_r2_clip, attrs, 7,
                          gpu_sh_gs_r2_clip, sizeof gpu_sh_gs_r2_clip };
     R.pipe_clip = R.d ? r2g_pipe_create(R.d, &pc) : NULL;
     /* (r2-m2) the segment constants by UpdateSubresource (a DEFAULT buffer): Map(DISCARD) per segment, ~45 a frame with
      * frames queued, made the driver block the render thread for up to 10 ms when the GPU was the bottleneck */
     R.cb = R.d ? r2g_buf_create(R.d, R2G_BUF_CONSTANT, R2G_USAGE_DEFAULT, 48, NULL) : NULL;
-    if (!R.d || !R.pipe || !R.pipe_clip || !R.cb) {
+    if (!R.d || !R.pipe || !R.pipe_clip || !R.pipe_nd || !R.cb) {
         fprintf(stderr, "[r2] render: cannot create the pipelines: the modern renderer draws nothing\n");
         release_all();
         R.failed = 1;
@@ -249,7 +255,7 @@ static int segment(const gpu_fop_r2* o, const uint8_t* fdata, size_t fdata_bytes
         int bl = (int)(st & 15), depth = (int)((st >> 4) & 15);
         r2g_state s = { (uint8_t)bl, (uint8_t)((st >> 8) & 15), (uint8_t)(depth >> 1), (uint8_t)(depth & 1),
                         (uint8_t)(((st >> 12) & 1) ? R2G_CULL_FRONT : R2G_CULL_NONE) };
-        r2g_bind_pipe(R.d, (st >> 13) & 1 ? R.pipe_clip : R.pipe);   /* (filtered when unchanged) */
+        r2g_bind_pipe(R.d, (st >> 13) & 1 ? R.pipe_clip : (st >> 14) & 1 ? R.pipe : R.pipe_nd);   /* (filtered when unchanged) */
         r2g_bind_state(R.d, &s);
         r2g_draw_indexed(R.d, d->count, m->gpu_ibase + d->first, (int32_t)m->gpu_vbase, o->draw_off / 32u + i);
         n++;

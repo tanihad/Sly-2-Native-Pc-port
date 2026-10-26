@@ -57,6 +57,9 @@ struct R2V {
 #ifndef R2_CLIP
 #define R2_CLIP 0                        // (r2-m2) 1: the pipeline of meshes crossing the VU's guard band (r2_gs_clip)
 #endif
+#ifndef R2_NODISCARD
+#define R2_NODISCARD 0                   // (r2-m2) 1: no alpha-test discard (draws whose fragments all pass or all fail)
+#endif
 #if R2_CLIP
 #define R2I                              // perspective-correct: the GPU-clipped triangles' attributes (w != 1)
 #else
@@ -180,7 +183,7 @@ void r2_vertex(R2V i, out R2O o, out float4 clip, out float4 alt) {
     o.fog = (float)((asuint(fw) >> 4) & 255u);
     // STQ = (ITOF12 u, v, 1) x Q, interpolated linearly on screen and divided per pixel (the GS's S/Q, T/Q)
     o.stq = float3(vu_mul((float)i.uv.x * (1.0 / 4096.0), q), vu_mul((float)i.uv.y * (1.0 / 4096.0), q), q);
-    o.mr = uint3(mat, (dr.y >> 2) & 1u, so);
+    o.mr = uint3(mat, ((dr.y >> 2) & 1u) | (sg.off.z & 1u) << 1, so);   // (rule | FBA << 1: the PS loads no segment record)
     if (skip) o.pos = float4(2.0, 2.0, 0.5, 1.0);   // (outside the clip volume: the batch's triangles are rejected)
     clip = float4(c[0], c[1], c[2], w);
     if (skip) clip = float4(2.0, 0.0, 0.0, 1.0);    // (outside x <= w: rejected by the clip pipeline too)
@@ -339,8 +342,12 @@ R2F r2_ps(R2O i) {
     }
     uint As = col >> 24;
     uint test = d2.y;
+#if !R2_NODISCARD
+    // (r2-m2) only draws whose alpha test splits the fragments use this pipeline; the others (no alpha test, every
+    // fragment passing or every one failing) the R2_NODISCARD variant, whose depth stays early (no discard)
     bool apass = (test & 1u) == 0u || atst_pass((test >> 1) & 7u, (test >> 4) & 0xFFu, As);
-    if (apass == (i.mr.y != 0u)) discard;  // rule 0: failing fragments discarded, rule 1: passing ones
+    if (apass == ((i.mr.y & 1u) != 0u)) discard;  // rule 0: failing fragments discarded, rule 1: passing ones
+#endif
     // blend: the exact path's FF table (gs.hlsl ps_ff); the output merger does Cd
     uint bl = (flags >> 12) & 15u;
     uint cs[3] = { col & 255u, (col >> 8) & 255u, (col >> 16) & 255u };
@@ -372,8 +379,7 @@ R2F r2_ps(R2O i) {
             }
         }
     }
-    R2Seg sg = r2_seg(i.mr.z);
-    uint ao = As | ((sg.off.z & 1u) != 0u ? 0x80u : 0u);
+    uint ao = As | ((i.mr.y & 2u) != 0u ? 0x80u : 0u);   // (FBA)
     R2F o;
     o.c0 = float4(rgb, b2f(min(ao, 255u)));
 #if R2_DUAL
@@ -381,6 +387,7 @@ R2F r2_ps(R2O i) {
 #endif
 #if R2_ZREC
     // the exact path's Z at this sample (gs.hlsl gs_frag): native pixel (px, py), sample (si, sj) of kx x ky
+    R2Seg sg = r2_seg(i.mr.z);
     uint kxu = (uint)sg.map.x, kyu = (uint)sg.map.y;
     uint2 tp = (uint2)i.pos.xy;
     uint pxu = tp.x / kxu, pyu = tp.y / kyu;
