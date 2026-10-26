@@ -72,7 +72,10 @@ static int cfg_done, env_mode = -1, check_on, levels_all, nlevels;
 static int kinds_world = 1, kinds_props = 1;   /* (r2-m2) PS2_R2_KINDS=world,props */
 static uint32_t block[32];                     /* (r2-m2) blocked levels (world ids): none known (the R2 sweep) */
 static int nblock;
-static int clip_on = 1;                        /* (r2-m2) PS2_R2_CLIP=0: guard-band-crossing meshes stay exact */
+/* (r2-m2) PS2_R2_CLIP=1: meshes crossing the VU's guard band native through the clip pipeline. Off by default: the GPU's
+ * clipping does not reproduce the VU clipper's arithmetic (its clipped fans' Z is off the triangle's plane by up to ~0.1%:
+ * A/B Z gate fails on near-camera ground, ep5 hub 21% of the pixels), so these meshes stay exact */
+static int clip_on = 0;
 static uint32_t levels[32];
 static double budget_ms = 3.0;
 static LARGE_INTEGER qpf;
@@ -123,7 +126,7 @@ static void configure(void) {
     e = getenv("PS2_R2_KINDS");                  /* (r2-m2) "world", "props" or both (default) */
     if (e && *e) { kinds_world = strstr(e, "world") != NULL; kinds_props = strstr(e, "prop") != NULL; }
     e = getenv("PS2_R2_CLIP");
-    if (e && *e == '0') clip_on = 0;
+    if (e && *e) clip_on = *e == '1';
     e = getenv("PS2_R2_BUDGET_MS");
     if (e && *e) budget_ms = atof(e);
     e = getenv("PS2_R2_STATS");

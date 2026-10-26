@@ -8,11 +8,11 @@
  *     grids paired; ownership as for an exact draw that reads and writes both over the scissor (stale blocks loaded first,
  *     the blocks GPU-written afterwards), so later downloads, CLUT loads and the verifier see R2's pixels;
  *   - every texture and CLUT the draws sample made current in vram_buf (pending patches flushed, GPU data downloaded);
- *   - the draw records in the game's order of entries; (r2-m2) consolidated per entry: one draw per (pass, state,
- *     discard rule) over the entry's sub-batches (a batch mask where some batches belong to another draw), the alpha
- *     test split into a "pass" and a "fail" draw only when a pass's source alpha range (vertex alpha x the CLUT
- *     entries' alpha) straddles the reference. Within an entry all of pass A is drawn before pass B (the design's
- *     consolidation; A/B: within level 2 of r2-m1's order, PS2_R2_CONSOLIDATE=0); material records are static (r2_render.c).
+ *   - the draw records in the game's order: per sub-batch, per pass, the alpha test split into a "pass" and a "fail"
+ *     draw only when a pass's source alpha range (vertex alpha x the CLUT entries' alpha) straddles the reference;
+ *     material records are static (r2_render.c). (r2-m2) PS2_R2_CONSOLIDATE=1: one draw per (entry, pass, state, discard
+ *     rule) over the entry's sub-batches (a batch mask where some belong to another draw), all of pass A before pass B
+ *     - not the default: it changes foliage edges (ep2 hub) and the draw count was not R2's GPU cost.
  * (r2-m2) Hybrid mode: R2H_RUN hints, the entries from the frame's scene slot (r2.h r2_slot, W x C computed on the EE).
  * Bracket mode (R2H_BEGIN / R2H_END around an entry's exact CALLs): ignored, or, with gpu_front_r2_ab(1) (PS2_R2_AB), the
  * exact primitives between them are skipped and R2 draws the entry instead: the hybrid picture from the same stream. */
@@ -187,7 +187,8 @@ static int pass_items(const r2_batch* B, const r2_pass* P, float fade, int zmsk,
 }
 
 /* ---- the segment's draws: consolidated per (entry, pass, state, rule) over the entry's sub-batches ----------------- */
-static int consolidate = -1;             /* PS2_R2_CONSOLIDATE=0: one draw per sub-batch, pass and half (r2-m1's order) */
+static int consolidate = -1;             /* PS2_R2_CONSOLIDATE=1: per entry; default one draw per sub-batch, pass and half
+                                            in the VU's order (r2-m1's) */
 static uint32_t* M_words;                /* the segment's batch masks */
 static uint32_t nmask, capmask;
 typedef struct { uint32_t state; uint8_t rule, pass; uint32_t bmin, bmax, nset, mw; } grp;
@@ -303,7 +304,10 @@ static void gf_r2_flush_impl(void) {
     ct->last_used = gf_frame;
     zt->last_used = gf_frame;
     /* the draws, in the game's order of entries */
-    if (consolidate < 0) { const char* e = getenv("PS2_R2_CONSOLIDATE"); consolidate = !(e && *e == '0'); }
+    /* (PS2_R2_CONSOLIDATE=1: opt-in. Drawing an entry's pass A before its pass B changes foliage edges where a later
+     * batch's translucent pass-A pixels cover an earlier batch's pass B: ep2 hub 0.06% of the pixels > 16, over the A/B
+     * gate; and the draw count was not R2's GPU cost. The default keeps the VU's order.) */
+    if (consolidate < 0) { const char* e = getenv("PS2_R2_CONSOLIDATE"); consolidate = e && *e == '1'; }
     uint32_t nd = 0;
     nmask = 0;
     for (uint32_t i = 0; i < nitems; i++) {
@@ -386,12 +390,33 @@ static int entry_done(const gs_env_view* ev) {
         r2_mesh_resolve(RX.handle, RX.w[nw] & 0x7FFFFFFFu, (int)(RX.w[nw] >> 31));   /* (offline replays) */
     uint32_t k = 0;
     float fade = 1.0f, m[16];
+    static int noclip = -1;              /* (r2-m2, A/B diagnostics) PS2_R2_AB_NOCLIP=1: clipped entries stay exact */
+    if (noclip < 0) { const char* e = getenv("PS2_R2_AB_NOCLIP"); noclip = e && *e == '1'; }
+    if (noclip && (RX.flags & R2D_CLIP)) return 0;
+    static int allclip = -1;             /* (diagnostics) PS2_R2_AB_ALLCLIP=1: every entry through the clip pipeline */
+    if (allclip < 0) { const char* e = getenv("PS2_R2_AB_ALLCLIP"); allclip = e && *e == '1'; }
+    if (allclip) RX.flags |= R2D_CLIP;
     if (RX.flags & R2D_FADE) memcpy(&fade, &RX.w[k++], 4);
     if (RX.flags & R2D_IDENTITY) memcpy(m, FB.clip, sizeof m);
     else {
         float w[16];
         memcpy(w, &RX.w[k], sizeof w);
         r2_matmul(w, FB.clip, m);
+    }
+    static int mc = -1;                  /* (diagnostics) PS2_R2_AB_MODELCHECK=n: the screen model vs the VU-exact vertex */
+    if (mc < 0) { const char* e = getenv("PS2_R2_AB_MODELCHECK"); mc = e ? atoi(e) : 0; }
+    const r2_mesh* me = r2_mesh_get(RX.handle);
+    if (mc > 0 && me && fb_ok) {
+        mc--;
+        for (uint32_t i = 0; i < me->nvtx && i < 4; i++) {
+            const r2_vtx* v = &me->vtx[i];
+            r2_gsv g;
+            r2_vertex_eval(v, m, &FB, &me->b[0], 0, fade, &g);
+            float c[4];
+            for (int j = 0; j < 4; j++) c[j] = v->x * m[j] + v->y * m[4 + j] + v->z * m[8 + j] + m[12 + j];
+            fprintf(stderr, "[r2] model check: exact X %d Y %d Z %u | model X %.2f Y %.2f Z %.2f (w %.3f)\n", g.x, g.y, g.z,
+                    SM.bx + SM.ax * c[0] / c[3], SM.by + SM.ay * c[1] / c[3], SM.bz + SM.az * c[2] / c[3], c[3]);
+        }
     }
     return entry_add(ev, RX.handle, m, fade, RX.flags & R2D_CLIP ? R2E_CLIP : 0);
 }

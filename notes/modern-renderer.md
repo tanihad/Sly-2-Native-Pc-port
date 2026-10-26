@@ -497,23 +497,30 @@ covers; the owner confirms after testing the dist build. Effort is in agent-days
   and **glob props** (allocator entries of render class 0 with a header packet + mesh DMA; the header's matrix and VU 8
   as for form-1 world entries, light-prefix headers parse unchanged). **Outlined objects stay exact**: at the frame's
   first entry r2_capture.c parses every outline entry's (render class 1) header and a prop whose world matrix one of them
-  uploads is exact (ep1 hub: ~1 prop / frame). **Guard-band meshes** are native too (`R2E_CLIP`): the clip pipeline
-  (`vs/gs/ps_r2_clip`) decides per triangle like the VU (0x0C60's CLIPW flags): all inside, the VU-exact screen vertices;
-  all outside one plane, nothing; else the GPU clips the clip-space triangle against the VU's six planes
-  (SV_ClipDistance) with perspective-correct attributes (not the VU clipper's arithmetic: such triangles are near the
-  camera and few). ep1 hub per frame: ~590 world + ~90 props native, ~20 of them clipped; exact: lit/skinned props and
-  characters (decode "mscal"), ~1 outlined prop.
+  uploads is exact (ep1 hub: ~1 prop / frame). **Guard-band meshes**: built, opt-in (`PS2_R2_CLIP=1`, `R2E_CLIP`): the
+  clip pipeline (`vs/gs/ps_r2_clip`) decides per triangle like the VU (0x0C60's CLIPW flags): all inside, the VU-exact
+  screen vertices; all outside one plane, nothing; else the GPU clips the clip-space triangle against the VU's six planes
+  (SV_ClipDistance) with perspective-correct attributes. **Off by default**: the VU clipper's own fans are not on the
+  triangle's plane (their Z differs from the plane by up to ~0.1%, e.g. -73 units at Z 92k on the ground in front of the
+  camera), so the A/B Z gate fails where the near ground is clipped (ep5 hub: 21% of the pixels; the GPU-clipped picture
+  itself looks the same). Reproducing 0x2150 / 0x1DC8 (the clipper and its projection) in the geometry stage is the way to
+  make them native (R5). ep1 hub per frame: ~590 world + ~90 props native; exact: ~20-30 guard-band meshes, lit/skinned
+  props and characters (decode "mscal"), ~1 outlined prop.
 - **Hints -> scene slots**: hybrid mode writes each native entry's W x C (computed once on the EE with `r2_matmul_fast`,
   plain SSE under the VU's MXCSR rounding, unit-tested bit-exact against `r2_matmul`), fade and mesh into the frame's
   slot (`r2_slot`, a ring of 16, published at the frame's end); the chain carries one `R2H_RUN` per run. Hints 155 ->
   6-11 KB/frame, EE capture 0.52 -> 0.16-0.28 ms (with props). Bracket mode keeps the inline words (recordings).
-- **Consolidation**: static material records per (mesh, sub-batch, pass) uploaded with the mesh (t10, base per mesh in
-  a mesh table t11), the vertex carries its sub-batch; per entry one draw per (pass, state, discard rule) over all its
-  sub-batches (a batch mask where some belong to another draw). One pipeline (the PS always writes the dual-source
-  factor). ep1: 4271 -> ~1500 draws/frame. **Measured: draw count was not R2's GPU cost** (fixed-stream replay, ep1 hub
-  in a searchlight, 3x: unconsolidated 0.46 ms, consolidated 0.44, the exact path's FF for the same entries 0.44): R2
-  costs the same per pixel as the exact path; knobs (`PS2_R2_DBG`): no texture 0.44, rasterized Z 0.43, float VS 0.45,
-  constant PS 0.25 - fill / raster bound. Consolidated vs r2-m1's order (`PS2_R2_CONSOLIDATE=0`): 62.5 dB, Z identical.
+- **Draw records / consolidation**: static material records per (mesh, sub-batch, pass) uploaded with the mesh (t10,
+  base per mesh in a mesh table t11), the vertex carries its sub-batch, a draw record is 32 bytes (was 64 with the
+  material). One pipeline (the PS always writes the dual-source factor: no shader switch between pass A and B).
+  Consolidation built and measured, **opt-in** (`PS2_R2_CONSOLIDATE=1`): per entry one draw per (pass, state, discard
+  rule) over all its sub-batches (a batch mask where some belong to another draw), ep1 4271 -> ~1500 draws/frame.
+  **The draw count was not R2's GPU cost** (fixed-stream replay, ep1 hub in a searchlight, 3x: unconsolidated 0.46 ms,
+  consolidated 0.44, the exact path's FF for the same entries 0.44): R2 costs the same per pixel as the exact path; knobs
+  (`PS2_R2_DBG`): no texture 0.44, rasterized Z 0.43, float VS 0.45, constant PS 0.25 - fill / raster bound. And drawing
+  an entry's pass A before its pass B is not invisible (the design's condition): foliage edges where a later batch's
+  translucent pass-A pixels cover an earlier batch's pass B change (ep2 hub: 0.19% of the pixels > 8, 0.06% > 16; in the
+  VU's order 0.085% / 0%). So the default keeps the VU's order; the render thread's cost of ~4k draws is ~0.4 ms.
 - **Hitches when GPU-bound** (the cause of r2-m1's 1% low): with the CPU stages at ~2 ms the game becomes GPU-bound at
   3x, and the driver then blocked the render thread for 10-50 ms in whichever call hit its queue limit (R2's per-segment
   constant buffer update 2-13 ms, the exact path's data-arena Map 12 ms): 30-50 ms frames every ~0.2 s. Fixes: segment

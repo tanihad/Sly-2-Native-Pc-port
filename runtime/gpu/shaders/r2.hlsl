@@ -224,7 +224,7 @@ uint r2_outcode(float4 c) {
 void r2_gs_clip(triangle R2C v[3], inout TriangleStream<R2K> ts) {
     uint o0 = r2_outcode(v[0].clip), o1 = r2_outcode(v[1].clip), o2 = r2_outcode(v[2].clip);
     if ((o0 & o1 & o2 & 63u) != 0u) return;
-    bool inside = (o0 | o1 | o2) == 0u;
+    bool inside = (o0 | o1 | o2) == 0u && (asuint(r2_misc.w) & 16u) == 0u;   // (PS2_R2_DBG 16: always the clip path)
     R2Seg sg = r2_seg(v[0].mr.z);
     float4 fr = asfloat(fdata.Load4(sg.off.x + 32u));       // screen model: ax, bx, ay, by (gpu_r2_frame)
     float2 fz = asfloat(fdata.Load2(sg.off.x + 48u));       //               az, bz
