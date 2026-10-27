@@ -370,6 +370,26 @@ int main(int argc, char** argv) {
         for (char* t = strtok(p, " \n"); t; t = strtok(NULL, " \n")) cols++;
         /* allocator entries carry the submitter: (r2-m3) props of render class 0 with a mesh DMA (form 1) */
         static const uint32_t class0 = 1u << 2 | 1u << 3 | 1u << 5 | 1u << 10 | 1u << 11 | 1u << 13 | 1u << 14 | 1u << 16 | 1u << 19 | 1u << 23 | 1u << 25;
+        if (cols != 7 && (prio == 9 || prio == 17 || prio == 20 || prio == 24) && c1 && c2) {   /* (r2-m3) outline entries */
+            float w[16], vu8[4];
+            r2_oscript* os = NULL;
+            int hp = r2_header_parse(ram, c1, w, vu8);
+            int r = hp ? r2_outline_decode(ram, c1, c2, &os) : -1;
+            static uint8_t b1[1 << 18], b2[1 << 18];
+            uint32_t n1 = 0, n2 = 0;
+            static r2_frame_block zfb;
+            int e1 = r ? 0 : r2_outline_exec(os, r2_header_qw, &zfb, 0u, b1, sizeof b1, &n1);
+            int e2 = r ? 0 : r2_outline_exec(os, r2_header_qw, &zfb, 0xA5A5A5A5u, b2, sizeof b2, &n2);
+            extern uint32_t r2_fail_ms[8], r2_fail_nms;
+            if (verbose) {
+                printf("outline entry %u prio %u c1 %08X c2 %08X: header %d decode %d exec %d %d bytes %u %u same %d ms", idx, prio, c1, c2, hp, r, e1, e2, n1, n2,
+                       n1 == n2 && !memcmp(b1, b2, n1));
+                for (uint32_t q = 0; q < r2_fail_nms && q < 8; q++) printf(" %04X", r2_fail_ms[q]);
+                printf("\n");
+            }
+            r2_outline_free(os);
+            continue;
+        }
         if (cols != 7 && (prio > 25 || !((class0 >> prio) & 1))) continue;
         entries++;
         r2_mesh* m;

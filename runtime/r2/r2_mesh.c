@@ -53,6 +53,14 @@ typedef struct {
     int lpos_set;
     uint16_t lpos_off, lpos_bone;
     uint32_t lsrc[QW];                   /* the buffer's output lists: list << 16 | input record, ~0 none */
+    /* (r2-m3, R4) outline scripts: the chain's VU writes (addr | written lanes << 16) and MSCALs, logged */
+    int omode;
+    uint32_t* lwa;
+    uint32_t (*lwv)[4];
+    uint32_t nlw, caplw;
+    uint32_t *sw, *sm;
+    uint32_t nst, capst;
+    int ofail;
 } dec;
 
 static int grow(void** p, uint32_t* cap, uint32_t need, size_t el) {
@@ -412,6 +420,12 @@ static void upk_write(dec* d, uint32_t* addr, uint32_t* cyc, uint32_t cl, uint32
         }
     }
     d->wr[a] = 1;
+    if (d->omode) {                                              /* (r2-m3) the outline script's write log */
+        uint32_t lanes = 0;
+        for (int j = 0; j < 4; j++) if (!(masked && ((m >> (j * 2)) & 3) == 3)) lanes |= 1u << j;
+        if (!grow((void**)&d->lwa, &d->caplw, d->nlw + 1, 4) || !(d->lwv = realloc(d->lwv, (size_t)d->caplw * 16))) { d->ofail = 1; }
+        else { d->lwa[d->nlw] = a | lanes << 16; memcpy(d->lwv[d->nlw], dst, 16); d->nlw++; }
+    }
     (*addr)++;
     if (++*cyc >= wl) { *cyc = 0; if (cl > wl) *addr += cl - wl; }
 }
@@ -469,6 +483,18 @@ static int unpack(dec* d, uint32_t code, uint32_t* pos) {
 uint32_t r2_fail_ms[8], r2_fail_nms;     /* (diagnostics) the MSCALs of the chain decoded last */
 static int mscal(dec* d, uint32_t vaddr) {
     r2_fail_ms[r2_fail_nms++ & 7] = vaddr * 8;
+    if (d->omode) {                                              /* (r2-m3) an outline step */
+        d->top = d->tops;
+        d->dbf ^= 1;
+        d->tops = (d->base + (d->dbf ? d->ofst : 0)) & 0x3FF;
+        if (vaddr * 8 == 0x0000) return R2M_OK;                  /* ([E] NOP: a buffer flip) */
+        if (vaddr * 8 != 0x0738 && vaddr * 8 != 0x07F0) return R2M_MSCAL;
+        if (!grow((void**)&d->sw, &d->capst, d->nst + 1, 4) || !(d->sm = realloc(d->sm, (size_t)d->capst * 4))) return R2M_SIZE;
+        d->sw[d->nst] = d->nlw;
+        d->sm[d->nst] = vaddr * 8 | d->top << 16;
+        d->nst++;
+        return R2M_OK;
+    }
     d->top = d->tops;
     d->dbf ^= 1;
     d->tops = (d->base + (d->dbf ? d->ofst : 0)) & 0x3FF;
@@ -679,6 +705,78 @@ int r2_lit_decode_vu(const uint32_t (*vu)[4], uint32_t top, uint32_t ra, r2_mesh
     free(d);
     *out = m;
     return R2M_OK;
+}
+
+/* ---- (r2-m3, R4) outline entries: the mesh chain as a script of VU writes and MSCALs (r2_outline_run per step) ---- */
+struct r2_oscript {
+    uint32_t hdr_x;                      /* the header's buffer (as r2_header_parse sees it) */
+    uint32_t nw, nst;
+    uint32_t* wa;                        /* write i: VU address | lanes << 16 */
+    uint32_t (*wv)[4];
+    uint32_t *sw, *sm;                   /* step i: writes [sw[i-1], sw[i]) first, then MSCAL sm[i] & 0xFFFF (TOP sm >> 16) */
+};
+
+int r2_outline_decode(const uint8_t* ram, uint32_t hdr, uint32_t mesh, r2_oscript** out) {
+    *out = NULL;
+    dec* d = calloc(1, sizeof *d);
+    if (!d) return R2M_SIZE;
+    d->ram = ram;
+    d->base = 0x32;
+    d->ofst = 0x1E7;
+    d->tops = d->base;
+    d->cycle = 0x0101;
+    int r = walk(d, hdr);
+    if (!r) r = interpret(d);                                   /* (no MSCAL in a header: mscal() would refuse) */
+    uint32_t hx = d->tops;
+    if (!r && d->dbf) r = R2M_HEADER;
+    if (!r) {
+        d->nw = 0;
+        d->omode = 1;
+        r2_fail_nms = 0;
+        r = walk(d, mesh);
+        if (!r) r = interpret(d);
+    }
+    if (!r && (d->ofail || !d->nst || (d->sm[0] & 0xFFFF) != 0x0738)) r = R2M_MSCAL;
+    if (!r && d->nlw > d->sw[d->nst - 1]) r = R2M_VERTEX;        /* (writes after the last step: none in outlines) */
+    r2_oscript* s = r ? NULL : calloc(1, sizeof *s);
+    if (!r && !s) r = R2M_SIZE;
+    if (r) { free(d->lwa); free(d->lwv); free(d->sw); free(d->sm); free(d->w); free(d->vtx); free(d->idx); free(d->b); free(d); return r; }
+    s->hdr_x = hx;
+    s->nw = d->nlw; s->wa = d->lwa; s->wv = d->lwv;
+    s->nst = d->nst; s->sw = d->sw; s->sm = d->sm;
+    free(d->w); free(d->vtx); free(d->idx); free(d->b); free(d);
+    *out = s;
+    return R2M_OK;
+}
+
+void r2_outline_free(r2_oscript* s) {
+    if (!s) return;
+    free(s->wa); free(s->wv); free(s->sw); free(s->sm); free(s);
+}
+
+int r2_outline_exec(const r2_oscript* s, const uint32_t* (*hq)(uint32_t), const r2_frame_block* fb, uint32_t fill, uint8_t* out,
+                    uint32_t cap, uint32_t* nout) {
+    static uint32_t img[QW][4];          /* (EE thread only) */
+    for (uint32_t i = 0; i < QW; i++) img[i][0] = img[i][1] = img[i][2] = img[i][3] = fill;
+    memcpy(img[0], fb->c0, 16);
+    memcpy(img[1], fb->c1, 16);
+    memcpy(img[2], fb->clip, 64);
+    for (uint32_t i = 0; i < QW; i++) {
+        const uint32_t* q = hq(i);
+        if (q) memcpy(img[(s->hdr_x + i) & (QW - 1)], q, 16);
+    }
+    uint32_t x = 0, w = 0;
+    *nout = 0;
+    for (uint32_t k = 0; k < s->nst; k++) {
+        for (; w < s->sw[k]; w++) {
+            uint32_t a = s->wa[w] & (QW - 1), lanes = s->wa[w] >> 16;
+            for (int j = 0; j < 4; j++) if (lanes & (1u << j)) img[a][j] = s->wv[w][j];
+        }
+        uint32_t ms = s->sm[k] & 0xFFFF, top = s->sm[k] >> 16;
+        if (ms == 0x0738) x = (0x24B - top) & 0x3FF;
+        if (!r2_outline_run(img, ms, &x, out, cap, nout)) return 0;
+    }
+    return 1;
 }
 
 void r2_mesh_free(r2_mesh* m) {

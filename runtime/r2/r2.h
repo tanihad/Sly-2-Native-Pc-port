@@ -38,6 +38,9 @@ enum {
                               slot's frame serial; the entries' data are in the scene slot (r2_slot), not in the stream */
     R2H_XQ = 0x27,         /* (r2-m3, bracket) an extra block: arg = its index in the frame (0 starts a frame's set),
                               value = qwords; 4 x value R2H_DATA words follow. R2D_EXTRA entries name it by index */
+    R2H_OUTLINE = 0x28,    /* (r2-m3, hybrid) a native outline entry: arg = slot (4 bits) | qword offset << 4 in the slot's pool
+                              (there: the packets' qword count, then the GIF packets, r2_outline.c), value = serial; the GS
+                              thread decodes the packets in place (gs_draw.c) */
 };
 /* R2H_DRAW / R2H_BEGIN words, in order: [fade (R2D_FADE)] [world matrix, 16 words (unless R2D_IDENTITY)] [the mesh DMA
  * address | form << 31 (offline replays resolve the handle from a RAM dump with it)] */
@@ -231,6 +234,14 @@ void r2_lit_eval(const r2_vtx* v, const r2_batch* b, const float lb[R2_LIGHT_QW]
  * on entry; 0x07F0 a batch: *x = the set-up's buffer) on the VU1 data memory image vu (modified as the VU would), the
  * GIF packets it XGKICKs appended to out (cap bytes, *nout used). 0: unknown routine or out full. */
 int r2_outline_run(uint32_t (*vu)[4], uint32_t addr, uint32_t* x, uint8_t* out, uint32_t cap, uint32_t* nout);
+/* an outline entry's mesh chain (after its header) as a script of VU writes and MSCALs (r2_mesh.c) */
+typedef struct r2_oscript r2_oscript;
+int r2_outline_decode(const uint8_t* ram, uint32_t hdr, uint32_t mesh, r2_oscript** out);
+void r2_outline_free(r2_oscript* s);
+/* the entry's packets this frame: VU 0..5 from fb, the header's qwords (hq, as r2_header_qw), the script; unwritten
+ * memory = fill (a decode check runs it with two fills: equal packets = the script reads only what it writes) */
+int r2_outline_exec(const r2_oscript* s, const uint32_t* (*hq)(uint32_t), const r2_frame_block* fb, uint32_t fill, uint8_t* out,
+                    uint32_t cap, uint32_t* nout);
 
 /* ---- EE side (r2_capture.c, called from recomp/patches.py patches) --------------------------------------------- */
 struct ps2_ctx;
