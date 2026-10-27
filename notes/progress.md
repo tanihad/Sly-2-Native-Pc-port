@@ -2,6 +2,8 @@
 
 ## Resume here (read first in a new session)
 
+**2026-10-27 (later): R3+R4 MERGED (1db240e):** characters (GPU skinning + the game's lighting, oracle bit-exact) and outlines (VU outline program in C, identical packets) native; CPU stages 1.3-2 ms, every scene GPU-bound at 4-5 ms (~200 fps at 3x). Known bug on main (modern mode only, opt-in): ep1 hub tree vanishes / sign-texture shards in hybrid mode. Running: r2-m5 (worktree r2-m5): fix that hybrid bug + add a hybrid-vs-reference check, then R5 (sky, warps, remaining variants, the PS2 clipper). Then R6 particles, R7 shadows/motion blur/HUD (GPU wins). Owner (2026-10-27): keep going after usage limits reset.
+
 **2026-10-27: modern renderer R2 MERGED (opt-in: Options > Graphics > Rendering: Modern, or F10; default Reference until the owner approves).** ep1 hub 114 -> 203 fps, ep5 154 -> 216; GPU-bound scenes unchanged; m3 boss 1% low slightly worse. Guard-band clipping and draw consolidation exist but are off (fail A/B gates). Next per plan: R3 lit/skinned characters, R4 outlines, R5 sky/warps/clipper, R6 particles, R7 shadows/motion blur/HUD (moves the remaining exact GPU work, needed for GPU-bound scenes). Waiting for the owner to test modern mode and say continue.
 
 **2026-10-26: modern renderer BUILD started** (owner: start; be economical; Windows first, Linux/macOS last). Decisions taken (recommended defaults, owner said start): D1 'Original' = visually faithful within tolerances (pixel-exact = the existing renderer as 'Reference'); D2 modern renderer becomes default per milestone once proven (from R2); D3 perf P4/P5 dropped (P6, P7 later). Running: R0+R1 in worktree r2-m1 (branch next/r2-m1, notes/wip/r2-m1.md). Plan: notes/modern-renderer.md.
