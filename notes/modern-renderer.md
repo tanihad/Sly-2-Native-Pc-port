@@ -673,6 +673,19 @@ covers; the owner confirms after testing the dist build. Effort is in agent-days
   82 / 86 / 90% native (+2.5k / +2.9k / +5.2k vertices). `PS2_R2_GCLEAN=0` turns it off.
 - **Colours no pass reads**: a prelit sub-batch whose passes all take colour A need not unpack colour B (and the
   other way round): +23 meshes in the ep1 hub (small ones).
+- **Verification**: sweep 22 / 22 (ab: 11 scenes within gates.json; hc: worst alternating 0.0003-0.026%, no blobs);
+  run_tests, every tests/unit, gpu_diff_all mixed S=1 28/28, pc_text_boot, debug + release builds, package.py.
+- **Performance** (chaos benchmark, reference vs modern from one exe, 1 repeat, release, 3x 16:9 unlimited, owner's
+  PC; tag r2m5_final; fps median / 1% low / 0.1% low, CPU stages worker / GS / frontend ms, GPU ms):
+
+  | scene | reference | modern | modern CPU stages | GPU ref -> mod | GS prims ref -> mod |
+  |---|---|---|---|---|---|
+  | ep1_hub | 108.4 / 75.3 / 42.1 | **200.0** / 112.9 / 54.9 | 1.71 / 1.45 / 1.85 | 5.03 -> 4.89 | 49.4k -> 10.1k |
+  | ep5_hub | 158.0 / 112.6 / 47.6 | **221.7** / 138.5 / 63.8 | 1.01 / 0.97 / 1.52 | 4.86 -> 4.40 | 35.2k -> 7.3k |
+  | m1_brawl | 155.3 / 79.9 / 43.5 | **217.9** / 110.3 / 59.5 | 1.24 / 1.15 / 1.43 | 5.12 -> 4.51 | 30.4k -> 7.9k |
+
+  As after R3 / R4 the frame is GPU-bound at 4.4-4.9 ms, so the CPU stages' further drop (R3 + R4: ep1 2.0 / 1.9 /
+  2.2, m1 1.5 / 1.4 / 1.7; now 1.7 / 1.5 / 1.9 and 1.2 / 1.2 / 1.4) does not show as fps (single runs, +-5%).
 - **Not done (R5 part 2)**, in the order of their vertex share:
   - *Crossing triangles* (guard band, 7-10% of the hub vertices): the VU's clipper 0x2540 (per strip triangle flagged
     for clipping: its 3 input records copied to a polygon at VU 0x0E, 0x2150 sets up the planes from VU 0/1 and
