@@ -19,6 +19,20 @@ ByteAddressBuffer clut : register(t5);
 RWTexture2D<uint> np_dst : register(u0);
 RWTexture2D<uint> np_src : register(u1);
 
+// (r2-m7) shadow volumes (gpu_exec.c svol_resolve): the counter texture (u1) holds each sample's sum of G steps of the
+// shadow-volume draws since the last resolve (ps_gs_tri_svol's atomic adds); G += sum modulo 256, the counter back to 0
+[numthreads(8, 8, 1)]
+void cs_svol_resolve(uint3 id : SV_DispatchThreadID) {
+    uint2 P = uint2(np_rect.x + id.x, np_rect.y + id.y);
+    if (P.x >= np_rect.z || P.y >= np_rect.w) return;
+    uint n = np_src[P];
+    if (n == 0u) return;
+    np_src[P] = 0u;
+    if ((n & 255u) == 0u) return;
+    uint c = np_dst[P];
+    np_dst[P] = (c & 0xFFFF00FFu) | ((((c >> 8) + n) & 255u) << 8);
+}
+
 uint np_clamp255(int v) { return v < 0 ? 0u : v > 255 ? 255u : (uint)v; }
 int np_sel(uint s, int src, int dst) { return s == 0u ? src : s == 1u ? dst : 0; }
 

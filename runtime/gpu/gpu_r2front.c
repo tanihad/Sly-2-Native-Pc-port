@@ -523,7 +523,9 @@ static void fr_r2_hint(const gs_env_view* ev, uint64_t v) {
         RX.state = RX_XQ; RX.need = 4u * value; RX.got = 0;
         if (!value) { xq_have = arg + 1; RX.state = RX_IDLE; }
         break;
-    case R2H_RUN: {
+    case R2H_RUN: {                              /* (hybrid mode: runs, no R2H_FRAME) */
+        if (fx_env < 0) { const char* e = getenv("PS2_R2_FX"); fx_env = !(e && *e == '0'); }
+        gf_r2_fx_ttl = fx_env ? 2 : 0;
         double t0 = qms();
         run_hint(ev, arg, value);
         fr_ms += qms() - t0;

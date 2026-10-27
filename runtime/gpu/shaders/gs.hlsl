@@ -106,6 +106,10 @@ RasterizerOrderedTexture2D<uint> rov_c : register(u0);
 RasterizerOrderedTexture2D<uint> rov_z : register(u1);
 #endif
 RWByteAddressBuffer dbg : register(u2);  // probe records (gpu_exec.c, PS2_GPU_PROBE)
+#if SVOL
+Texture2D<uint4> svol_col : register(t12);   // (r2-m7) the colour target, read only (u0 is the G-step counter)
+uint svol_dst(int2 P) { uint4 c = svol_col.Load(int3(P, 0)); return c.x | (c.y << 8) | (c.z << 16) | (c.w << 24); }
+#endif
 
 // a probe record: 16 words (kind, record, state, U, V, texel, colour, Z, S, T, Q, xl, Z old, Cd, written, pixel)
 void probe_rec(uint kind, uint rb, uint state, int U, int V, uint t, uint col, uint z, float s, float tt, float q, int xl,
@@ -1037,7 +1041,11 @@ void ps_gs(VR i
     uint dst = 0u;
     bool have = false;
     if ((test >> 14) & 1u) {                     // DATE: bit 31 (bit 15 of 16-bit frames)
+#if SVOL
+        dst = hasc ? svol_dst(P) : 0u;
+#else
         dst = hasc ? rov_c[P] : 0u;
+#endif
         have = true;
         if (((dst >> (fb16 ? 15u : 31u)) & 1u) != ((test >> 15) & 1u)) return;
     }
@@ -1057,22 +1065,17 @@ void ps_gs(VR i
 #if SVOL
     // (r2-m7) shadow volumes (gpu_front.c GPU_DF_SVOL): every primitive of the draw adds a constant to G modulo 256
     // (Cd + ((+-Cs) * C >> 7), COLCLAMP 0, write mask FFFF00FF, flat, untextured, no Z write) and its tests read only Z and
-    // alpha, which the draw never writes - the fragments commute, so instead of the rasterizer-ordered read-modify-write the
-    // add is one compare-exchange loop on a plain UAV (the same result in any order)
-    if (cov != 0u) {
+    // alpha, which the draw never writes - the fragments commute. The colour target is only read here (t12, DATE and Ad),
+    // u0 is the executor's counter texture: one atomic add of the fragment's G step per sample, no rasterizer order; the
+    // executor adds the counters into G (mod 256) before anything else touches the target (gpu_exec.c svol_resolve).
+    // (A compare-exchange loop on the colour word itself was measured slower than the ROV under heavy overlap.)
+    if (cov != 0u) {                     // (helper pixels' atomics do nothing anyway)
         uint al = st.alpha;
         uint asel = al & 3u, csel = (al >> 4) & 3u, fix = (al >> 8) & 255u;
-        uint old = have ? dst : rov_c[P];
-        int cc = csel == 0u ? (int)As : csel == 1u ? (int)(old >> 24) : (int)fix;
+        int cc = csel == 0u ? (int)As : csel == 1u ? (int)((have ? dst : svol_dst(P)) >> 24) : (int)fix;
         int cs = (int)((col >> 8) & 255u);
         uint d = (uint)(((asel == 0u ? cs : -cs) * cc) >> 7);
-        [allow_uav_condition] [loop] for (uint it = 0u; it < 4096u; it++) {
-            uint nw = (old & 0xFFFF00FFu) | ((((old >> 8) + d) & 255u) << 8);
-            uint prev;
-            InterlockedCompareExchange(rov_c[P], old, nw, prev);
-            if (prev == old) break;
-            old = prev;
-        }
+        if ((d & 255u) != 0u) InterlockedAdd(rov_c[P], d);
     }
     return;
 #endif
