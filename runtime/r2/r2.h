@@ -140,8 +140,18 @@ typedef struct {                 /* a sub-batch: one triangle strip, drawn with 
     r2_pass pass[3];
 } r2_batch;
 
+/* (r2-m5) the RAM a decoded chain read (its DMA tags and data, a copy): the game rewrites mesh DMA in place while a
+ * level streams in, so a cached decode is used only while r2_src_same holds (r2_capture.c, every use) */
+typedef struct r2_src r2_src;
+int r2_src_same(const r2_src* s, const uint8_t* ram);
+void r2_src_free(r2_src* s);
+uint64_t r2_mesh_hash(const uint8_t* ram, uint32_t addr);   /* (diagnostics) m->hash of the chain at addr now */
+extern uint32_t r2_hash_bytes;                               /* the bytes it walked */
+
 typedef struct r2_mesh {
     uint32_t handle;             /* gen << 20 | index */
+    r2_src* src;                 /* (r2-m5) its source bytes */
+    uint32_t flips;              /* (r2-m5) VIF1 double-buffer flips of the chain (its MSCALs) mod 2 */
     uint32_t addr, bytes;        /* the DMA chain decoded, the bytes it reads */
     uint64_t hash;               /* of those bytes */
     int form;                    /* 0: whole static packet (header inside), 1: mesh DMA (header from the entry) */
@@ -240,6 +250,8 @@ int r2_outline_run(uint32_t (*vu)[4], uint32_t addr, uint32_t* x, uint8_t* out, 
 typedef struct r2_oscript r2_oscript;
 int r2_outline_decode(const uint8_t* ram, uint32_t hdr, uint32_t mesh, r2_oscript** out);
 void r2_outline_free(r2_oscript* s);
+uint32_t r2_outline_flips(const r2_oscript* s);  /* (r2-m5) the chain's MSCALs mod 2 (VIF1 DBF flips a dropped chain owes) */
+int r2_outline_same(const r2_oscript* s, const uint8_t* ram);   /* (r2-m5) the mesh chain unchanged since the decode */
 /* the entry's packets this frame: VU 0..5 from fb, the header's qwords (hq, as r2_header_qw), the script; unwritten
  * memory = fill (a decode check runs it with two fills: equal packets = the script reads only what it writes) */
 int r2_outline_exec(const r2_oscript* s, const uint32_t* (*hq)(uint32_t), const r2_frame_block* fb, uint32_t fill, uint8_t* out,

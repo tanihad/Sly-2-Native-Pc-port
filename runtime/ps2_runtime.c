@@ -557,6 +557,9 @@ static int dump_wanted(uint32_t vb) {
         for (int i = 0; i < 64; i++) if (dump_marked[i] == vb && vb) return 1;
         return 0;
     }
+    static int to = -1;                           /* (r2-m5) PS2_DUMP_TO: no dumps after this VBlank */
+    if (to < 0) to = getenv("PS2_DUMP_TO") ? atoi(getenv("PS2_DUMP_TO")) : 0;
+    if (to > 0 && vb > (uint32_t)to) return 0;
     return dump_dir && vb % (uint32_t)dump_every == 0 && vb >= dump_from &&
            (!dump_from_rec || (gs_record_first && vb >= gs_record_first));
 }

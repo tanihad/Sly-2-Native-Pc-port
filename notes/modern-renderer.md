@@ -639,7 +639,69 @@ covers; the owner confirms after testing the dist build. Effort is in agent-days
   reference everywhere. The GPU time left is the exact remainder (shadows, motion-blur sprites, ROV tier) and R2's own
   fill: R6 / R7 territory.
 - **Found, not fixed (pre-existing on main)**: ep1 hub in hybrid mode, a large tree in front of the theatre sign is
-  missing and shard polygons with the sign's texture appear (main's R2 too; bracket A/B passes): spawned as its own task.
+  missing and shard polygons with the sign's texture appear (main's R2 too; bracket A/B passes): fixed in r2-m5 (below).
+
+### The hybrid tree bug and R5 part 1 as built (next/r2-m5, 2026-10-27)
+- **Hybrid check** (level 3 in game, new): `PS2_R2_ALT=<vblank>` makes hybrid frames alternate with all-exact ones;
+  `scripts/r2_hcheck.ps1` dumps 8 consecutive pictures of a still scene and `r2_hcheck.py` counts *alternating* pixels
+  (pictures i and i+2 agree within 12, i+1 differs from both by > 40). Animation, flicker and drift do not alternate;
+  whatever only one mode draws does. Gate: worst triple <= 0.2% and no 16x16 block more than half alternating.
+  `scripts/r2_sweep.ps1` runs it on every scene (check `hc`, beside the bracket A/B `ab`). The bracket A/B replays one
+  GS stream, so it can never see what the hybrid chain itself does differently (VU1 / VIF state after dropped DMA,
+  stale decodes, slot races); this check can. ep1 before the fix: 1.35% alternating, 154 blobs; after: 0.012%.
+- **Root cause of the tree bug: stale mesh decodes.** The game rewrites mesh DMA in place while a level streams in
+  (ep1 hub: ~45 chains per run, at the load after START and up to ~400 frames into the hub; two of them had the same
+  content when first decoded). The mesh cache recognised a chain by its address and its first 32 bytes, which were
+  already final, so the decode of the earlier content (another mesh's triangles and materials) drew the tree for the
+  rest of the level - intermittently, depending on load timing (about half the runs). The bracket A/B decodes from the
+  recording's RAM dump and never saw it. Fix: `r2_src` (r2_mesh.c) keeps a copy of every byte a chain read (its DMA
+  tags and data ranges, merged) and the cache compares it on every use (mesh_for, outline_for: memcmp, no measurable
+  capture cost); failed decodes are re-hashed every 2 s and decoded again when they changed. Stats: "stale n";
+  `PS2_R2_VERIFY=1` logs each stale mesh.
+- Also: a native outline entry now owes its dropped chain's VIF1 double-buffer flips (3 MSCALs per batch, so odd
+  counts are common): `MSCAL 0` (the outline program's [E] NOP) with the R2H_OUTLINE hint keeps an all-exact frame's
+  DBF parity for every later entry. (The main program's native runs still drop meshes with odd MSCAL counts after the
+  run's flush; the hybrid check passes everywhere, so it was left as is.)
+- **Census** (stats line, `PS2_R2_STATS=1`): native share of the main program's mesh vertices and the exact ones by
+  reason (undecoded chains estimated at 45 bytes a vertex). ep1 / ep3 / ep5 hubs before R5: 79 / 82 / 81% native;
+  exact: guard band 10.1k / 7.2k / 8.5k vertices (the largest share), undecoded 3.7k / 3.0k / 2.6k, outlined objects
+  whose outline stays exact 1.3k (ep1), headers ~0.3k.
+- **Guard band without crossing triangles** (`guard_clean`, r2_capture.c): a mesh whose bounds cross the VU's guard
+  band is native through the clip pipeline when no triangle actually crosses (every triangle all inside or all outside
+  one plane, decided in float with a margin of 2e-6 of the terms, far above the VU's rounding): the VU's clipper then
+  draws nothing for it, and r2_gs_clip's VU-exact outcodes reproduce what the VU culls and draws. ep1 / ep3 / ep5:
+  82 / 86 / 90% native (+2.5k / +2.9k / +5.2k vertices). `PS2_R2_GCLEAN=0` turns it off.
+- **Colours no pass reads**: a prelit sub-batch whose passes all take colour A need not unpack colour B (and the
+  other way round): +23 meshes in the ep1 hub (small ones).
+- **Verification**: sweep 22 / 22 (ab: 11 scenes within gates.json; hc: worst alternating 0.0003-0.026%, no blobs);
+  run_tests, every tests/unit, gpu_diff_all mixed S=1 28/28, pc_text_boot, debug + release builds, package.py.
+- **Performance** (chaos benchmark, reference vs modern from one exe, 1 repeat, release, 3x 16:9 unlimited, owner's
+  PC; tag r2m5_final; fps median / 1% low / 0.1% low, CPU stages worker / GS / frontend ms, GPU ms):
+
+  | scene | reference | modern | modern CPU stages | GPU ref -> mod | GS prims ref -> mod |
+  |---|---|---|---|---|---|
+  | ep1_hub | 108.4 / 75.3 / 42.1 | **200.0** / 112.9 / 54.9 | 1.71 / 1.45 / 1.85 | 5.03 -> 4.89 | 49.4k -> 10.1k |
+  | ep5_hub | 158.0 / 112.6 / 47.6 | **221.7** / 138.5 / 63.8 | 1.01 / 0.97 / 1.52 | 4.86 -> 4.40 | 35.2k -> 7.3k |
+  | m1_brawl | 155.3 / 79.9 / 43.5 | **217.9** / 110.3 / 59.5 | 1.24 / 1.15 / 1.43 | 5.12 -> 4.51 | 30.4k -> 7.9k |
+
+  As after R3 / R4 the frame is GPU-bound at 4.4-4.9 ms, so the CPU stages' further drop (R3 + R4: ep1 2.0 / 1.9 /
+  2.2, m1 1.5 / 1.4 / 1.7; now 1.7 / 1.5 / 1.9 and 1.2 / 1.2 / 1.4) does not show as fps (single runs, +-5%).
+- **Not done (R5 part 2)**, in the order of their vertex share:
+  - *Crossing triangles* (guard band, 7-10% of the hub vertices): the VU's clipper 0x2540 (per strip triangle flagged
+    for clipping: its 3 input records copied to a polygon at VU 0x0E, 0x2150 sets up the planes from VU 0/1 and
+    [9], 0x1E88 clips the polygon plane by plane - distance = dot(plane, position) through MUL + ADDAz/MADDAy/MADDx,
+    t = d0 / (d0 - d1) by DIV, the 4 qwords of the new vertex by MULx + MADDw - then 0x1DC8 (backface of the clipped
+    polygon, [11].x & 0x80) and, apparently, 0x2058 (compares |dx|, |dy| with 0.1: near-duplicate vertices; first
+    reading only, to be confirmed) and XGKICKs one fan per pass
+    with its material packet) has to be reproduced in its own arithmetic (round toward zero) for the A/B Z gate. Plan:
+    CPU side for the few crossing triangles of a frame (exact clip coordinates via the VU MXCSR as r2_matmul_fast; the
+    fans as GS packets in the scene slot, drawn by the GS thread like R4's outline packets, R2H_OUTLINE), the clip
+    pipeline discarding crossing triangles; ends the native run at such an entry to keep the game's order.
+  - *Undecoded* (4-5%): billboards ([11].x 0x100 / 0x200, 37 entries in ep1), the lit routines' second sub-batch with
+    unwritten records (7), 0x0E30 bone streams (3), 0x16B0 (4: enabling it with the 0x1940 twin gives 152 of 282
+    positions different in the oracle, so its arithmetic differs somewhere; the op order read so far is the same),
+    TEX0 swaps / view-dependent alpha 0x13F0 ([15].w).
+  - Sky (class 3), procedural warps, prio 0 / 13: under 0.2% of the vertices in the swept hubs.
 
 ### R5. Sky, warps and the rest of 3D - 6 agent-days
 - **Deliverable**:
