@@ -190,6 +190,9 @@ typedef struct {
     uint64_t rescales;                   /* (M7) live targets whose contents moved to new sample factors */
     uint64_t dyn_shrinks;                /* (M9) per-frame upload buffers recreated smaller after a peak */
     uint64_t a16_copy_runs, a16_copy_dispatches;   /* (perf-p2) ALIAS16 copy runs (cs_a16_copy), their dispatches */
+    uint64_t svol_draws, npost_draws, npost_rejected;   /* (r2-m7) native passes of modern frames: shadow-volume draws
+                                                           without rasterizer order, post-pass sprite draws run as compute
+                                                           passes (and candidates that stayed FF draws) */
     uint64_t rov_ez_draws;               /* (perf-p2) ROV-tier draws with early depth rejection (read-only DSV) */
 } gpu_exec_counters;
 void gpu_exec_get_counters(gpu_exec_counters* out);

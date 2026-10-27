@@ -40,6 +40,9 @@
 #define DC_VTX 0                         // FF triangles: draw constants and the state index from the vertex shader (VF.dc)
 #endif
 static uint g_vstate;
+#ifndef SVOL
+#define SVOL 0                           // (r2-m7) shadow-volume draws: commutative G adds without rasterizer order (ps_gs)
+#endif
 #ifndef SPEC_NOTEX
 #define SPEC_NOTEX 0                     // no texture at all (shadow volumes, fills, outlines)
 #endif
@@ -978,7 +981,11 @@ bool gs_frag(float4 pos, uint irec, float3 istq, uint prim, out Frag f, out St s
 #if !FF
 #if PRIM == 0 && STQ_FAST
 [earlydepthstencil]                      // (perf-p2) a bound DSV (ROV early rejection, gpu_exec.c) tests before the shader
-void ps_gs(VF i, uint prim : SV_PrimitiveID) {   // (mixed frames, default mode: 128-byte records, hardware S/T/Q)
+void ps_gs(VF i, uint prim : SV_PrimitiveID   // (mixed frames, default mode: 128-byte records, hardware S/T/Q)
+#if SVOL
+           , uint cov : SV_Coverage      // (r2-m7: 0 for helper pixels, whose atomics do nothing - the loop below must not run)
+#endif
+           ) {
     float3 istq = i.stq;
 #else
 [earlydepthstencil]                      // (perf-p2) a bound DSV (ROV early rejection, gpu_exec.c) tests before the shader
@@ -1046,6 +1053,29 @@ void ps_gs(VR i
         if (probing) probe_rec(3u, rb, f.state, f.U, f.V, col, (zw ? 1u : 0u) | (st.zinfo << 4) | (draw_flags << 16), zv, 0.0, 0.0, 0.0, mode, zold, rov_z[P], 0u, px, py);
     }
     if (mode == 0 || !hasc) return;
+
+#if SVOL
+    // (r2-m7) shadow volumes (gpu_front.c GPU_DF_SVOL): every primitive of the draw adds a constant to G modulo 256
+    // (Cd + ((+-Cs) * C >> 7), COLCLAMP 0, write mask FFFF00FF, flat, untextured, no Z write) and its tests read only Z and
+    // alpha, which the draw never writes - the fragments commute, so instead of the rasterizer-ordered read-modify-write the
+    // add is one compare-exchange loop on a plain UAV (the same result in any order)
+    if (cov != 0u) {
+        uint al = st.alpha;
+        uint asel = al & 3u, csel = (al >> 4) & 3u, fix = (al >> 8) & 255u;
+        uint old = have ? dst : rov_c[P];
+        int cc = csel == 0u ? (int)As : csel == 1u ? (int)(old >> 24) : (int)fix;
+        int cs = (int)((col >> 8) & 255u);
+        uint d = (uint)(((asel == 0u ? cs : -cs) * cc) >> 7);
+        [allow_uav_condition] [loop] for (uint it = 0u; it < 4096u; it++) {
+            uint nw = (old & 0xFFFF00FFu) | ((((old >> 8) + d) & 255u) << 8);
+            uint prev;
+            InterlockedCompareExchange(rov_c[P], old, nw, prev);
+            if (prev == old) break;
+            old = prev;
+        }
+    }
+    return;
+#endif
 
     // ---- blend, dither, FBA, write mask (gs_draw_pixel.c write_seg) ----
     uint m = st.fmask;                           // (16-bit frames: the 16-bit form)
