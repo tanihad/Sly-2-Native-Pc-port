@@ -367,13 +367,16 @@ int main(int argc, char** argv) {
         char* p = line;
         int cols = 0;
         for (char* t = strtok(p, " \n"); t; t = strtok(NULL, " \n")) cols++;
-        if (cols != 7) continue;                                  /* allocator entries carry the submitter */
+        /* allocator entries carry the submitter: (r2-m3) props of render class 0 with a mesh DMA (form 1) */
+        static const uint32_t class0 = 1u << 2 | 1u << 3 | 1u << 5 | 1u << 10 | 1u << 11 | 1u << 13 | 1u << 14 | 1u << 16 | 1u << 19 | 1u << 23 | 1u << 25;
+        if (cols != 7 && (prio > 25 || !((class0 >> prio) & 1))) continue;
         entries++;
         r2_mesh* m;
         int r = r2_mesh_decode(ram, c2 ? c2 : c1, c2 ? 1 : 0, &m);
         reasons[r]++;
-        if (r) { if (verbose) printf("entry %u prio %u c1 %08X c2 %08X: %s\n", idx, prio, c1, c2, r2m_reason[r]); continue; }
+        if (r) { extern int r2_fail_line, r2_fail_info[4]; extern uint32_t r2_fail_ms[8], r2_fail_nms; if (verbose) { printf("entry %u prio %u c1 %08X c2 %08X: %s (line %d) flags %X second %d litr %d ms", idx, prio, c1, c2, r2m_reason[r], r == R2M_VERTEX ? r2_fail_line : 0, r2_fail_info[0], r2_fail_info[1], r2_fail_info[3]); for (uint32_t q = 0; q < r2_fail_nms && q < 8; q++) printf(" %04X", r2_fail_ms[q]); printf("\n"); } continue; }
         decoded++;
+        if (verbose && m->lit) printf("lit entry %u prio %u c1 %08X c2 %08X: %u batches lit %d skin %d hq_hi %X\n", idx, prio, c1, c2, m->nb, m->any_lit, m->any_skin, m->hq_hi);
         verts += m->nvtx;
         tris += m->nidx / 3;
         batches += m->nb;

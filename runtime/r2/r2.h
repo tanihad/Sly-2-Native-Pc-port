@@ -36,12 +36,15 @@ enum {
     R2H_EPILOGUE = 0x25,   /* (diagnostic) the state epilogue of a run follows */
     R2H_RUN = 0x26,        /* (r2-m2, hybrid) a run of native entries: arg = slot (4 bits) | run index << 4, value = the
                               slot's frame serial; the entries' data are in the scene slot (r2_slot), not in the stream */
+    R2H_XQ = 0x27,         /* (r2-m3, bracket) an extra block: arg = its index in the frame (0 starts a frame's set),
+                              value = qwords; 4 x value R2H_DATA words follow. R2D_EXTRA entries name it by index */
 };
 /* R2H_DRAW / R2H_BEGIN words, in order: [fade (R2D_FADE)] [world matrix, 16 words (unless R2D_IDENTITY)] [the mesh DMA
  * address | form << 31 (offline replays resolve the handle from a RAM dump with it)] */
 enum { R2D_IDENTITY = 1,   /* the entry's world matrix is the identity (no matrix words) */
        R2D_FADE = 2,       /* a fade word follows (VU 8.x != 1.0) */
-       R2D_CLIP = 4 };     /* (r2-m2) the mesh crosses the VU's guard band (R2E_CLIP) */
+       R2D_CLIP = 4,       /* (r2-m2) the mesh crosses the VU's guard band (R2E_CLIP) */
+       R2D_EXTRA = 8 };    /* (r2-m3) after the address word: the index of the frame's R2H_XQ block (extra qwords) */
 
 static inline uint64_t r2h_make(uint32_t kind, uint32_t arg, uint32_t value) {
     return (uint64_t)(kind & 0xFF) | ((uint64_t)(arg & 0xFFFFFF) << 8) | ((uint64_t)value << 32);
@@ -65,13 +68,16 @@ typedef struct {
 #define R2_SLOTS 16u
 #define R2_SLOT_ENTS 4096u
 #define R2_SLOT_RUNS 1024u
-typedef struct {                 /* 80 bytes */
+typedef struct {                 /* 96 bytes */
     float m[16];                 /* world x clip (W x C, the VU's 0x0070 arithmetic) */
     float fade;                  /* VU 8.x */
     uint32_t handle;             /* mesh */
     uint32_t addr;               /* the mesh DMA | form << 31 (diagnostics) */
     uint32_t flags;              /* R2E_* */
+    uint32_t xoff, xn;           /* (r2-m3) lit / skinned: the entry's extra qwords in the slot's pool (r2_lit_block) */
+    uint32_t pad[2];
 } r2_slot_ent;
+#define R2_SLOT_XQ 32768u        /* (r2-m3) extra qwords per slot (light blocks, bone palettes) */
 enum { R2E_CLIP = 1 };           /* the mesh's bounds cross the VU's guard band: clipped triangles on the GPU */
 typedef struct {
     volatile uint32_t serial;    /* (atomic: 0 while the EE writes it) */
@@ -79,6 +85,8 @@ typedef struct {
     r2_frame_block fb;
     uint32_t run_first[R2_SLOT_RUNS], run_count[R2_SLOT_RUNS];
     r2_slot_ent ent[R2_SLOT_ENTS];
+    uint32_t nxq;                /* (r2-m3) */
+    float xq[R2_SLOT_XQ][4];
 } r2_slot;
 const r2_slot* r2_slot_at(uint32_t index);       /* NULL: not allocated (r2_mesh.c) */
 r2_slot* r2_slot_ring(void);                     /* the writer (EE): the ring, allocated on first use */

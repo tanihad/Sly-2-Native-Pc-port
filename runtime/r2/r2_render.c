@@ -17,7 +17,7 @@
 
 #define SLOTS 4
 #define MESH_IDX 16384u                  /* (r2_mesh.c MESH_MAX: mesh indices per generation) */
-#define MAT_BYTES 48u                    /* a material record (shaders/r2.hlsl), 3 per sub-batch (passes 0..2) */
+#define MAT_BYTES 64u                    /* a material record (shaders/r2.hlsl), 3 per sub-batch (passes 0..2) */
 typedef struct {
     uint32_t gen;
     r2g_buf *vb, *ib, *mb, *mt;          /* vertices, indices, (r2-m2) material records, mesh table (material base) */
@@ -65,13 +65,14 @@ static int init(const r2_exec_in* in) {
     static const r2g_attr attrs[] = {
         { "POSITION", R2G_F32x3, 0, 0 }, { "WBITS", R2G_U32, 12, 0 }, { "UV", R2G_S16x2, 16, 0 },
         { "COLA", R2G_U32, 20, 0 }, { "COLB", R2G_U32, 24, 0 }, { "BATCH", R2G_U32, 28, 0 }, { "DRAWID", R2G_U32, 0, 1 },
+        { "NRM", R2G_U32, 32, 0 }, { "LCOL", R2G_U32, 36, 0 }, { "WTS", R2G_U32, 40, 0 },   /* (r2-m3) */
     };
     /* Z: the rasterizer's plane through the VU-exact vertices (default: the exact path's Z on 99.95% of pixels, the rest
      * +-1), or PS2_R2_ZREC=1 exact per-triangle records from the geometry stage (100%, about 2x the GPU time of R2's
      * draws: ep3 hub replay at 3x, notes/modern-renderer.md "R0 + R1 as built") */
     const char* zr = getenv("PS2_R2_ZREC");
     int zrec = zr && *zr == '1';
-    r2g_pipe_desc pd = { gpu_sh_vs_r2, sizeof gpu_sh_vs_r2, gpu_sh_ps_r2_dual, sizeof gpu_sh_ps_r2_dual, attrs, 7,
+    r2g_pipe_desc pd = { gpu_sh_vs_r2, sizeof gpu_sh_vs_r2, gpu_sh_ps_r2_dual, sizeof gpu_sh_ps_r2_dual, attrs, 10,
                          gpu_sh_gs_r2, sizeof gpu_sh_gs_r2 };
     if (!zrec) { pd.ps = gpu_sh_ps_r2_iz_dual; pd.ps_size = sizeof gpu_sh_ps_r2_iz_dual; pd.gs = NULL; pd.gs_size = 0; }
     R.pipe = R.d ? r2g_pipe_create(R.d, &pd) : NULL;
@@ -79,7 +80,7 @@ static int init(const r2_exec_in* in) {
     if (nde && *nde == '0') zrec |= 2;
     if (!zrec) { pd.ps = gpu_sh_ps_r2_nd; pd.ps_size = sizeof gpu_sh_ps_r2_nd; R.pipe_nd = R.d ? r2g_pipe_create(R.d, &pd) : NULL; }
     else R.pipe_nd = R.pipe;
-    r2g_pipe_desc pc = { gpu_sh_vs_r2_clip, sizeof gpu_sh_vs_r2_clip, gpu_sh_ps_r2_clip, sizeof gpu_sh_ps_r2_clip, attrs, 7,
+    r2g_pipe_desc pc = { gpu_sh_vs_r2_clip, sizeof gpu_sh_vs_r2_clip, gpu_sh_ps_r2_clip, sizeof gpu_sh_ps_r2_clip, attrs, 10,
                          gpu_sh_gs_r2_clip, sizeof gpu_sh_gs_r2_clip };
     R.pipe_clip = R.d ? r2g_pipe_create(R.d, &pc) : NULL;
     /* (r2-m2) the segment constants by UpdateSubresource (a DEFAULT buffer): Map(DISCARD) per segment, ~45 a frame with
@@ -129,6 +130,12 @@ static void mat_records(const r2_mesh* m, uint32_t* out) {
             memcpy(&r[8], &m->b[b].fog_scale, 4);
             memcpy(&r[9], &m->b[b].fog_wmax, 4);
             r[10] = P->mflags;
+            /* (r2-m3) lit / skinned sub-batches: shaders/r2.hlsl r2_lit */
+            const r2_batch* B = &m->b[b];
+            r[11] = (uint32_t)B->lit | (uint32_t)B->skin << 1 | (uint32_t)B->tanim << 16;
+            r[12] = (uint32_t)B->bone[0] | (uint32_t)B->bone[1] << 16;
+            r[13] = (uint32_t)B->bone[2] | (uint32_t)B->bone[3] << 16;
+            memcpy(&r[14], &B->bright, 4);
         }
 }
 

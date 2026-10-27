@@ -23,6 +23,7 @@ const char* const r2m_reason[R2M_N] = { "ok", "dma tag", "vif code", "mscal", "h
 #define QW 1024u                         /* VU1 data memory, quadwords */
 #define MAXW (1u << 20)                  /* VIF words per chain (4 MB) */
 int r2_fail_line;                       /* (diagnostics) the decoder's line of the last vertex failure */
+int r2_fail_info[4];                     /* (diagnostics) flags, second, vertex, routine of the last failure */
 #define R2FAIL(r) do { r2_fail_line = __LINE__; return (r); } while (0)
 
 typedef struct {
@@ -234,6 +235,7 @@ static int lit_prepare(dec* d, uint32_t X) {
 
 static int sub_batch(dec* d, uint32_t X, int second, int litr) {
     uint32_t flags = vq(d, X + 11)[0] & 0xFFFF;
+    r2_fail_info[0] = (int)flags; r2_fail_info[1] = second; r2_fail_info[3] = litr;
     if (!litr && (flags & 0x702)) return R2M_DESC;               /* billboard modes, 0x2 (the lit routines') */
     if (litr && (flags & 0x750)) return R2M_DESC;                /* (r2-m3) billboards, bone streams (0x0E30), 0x16B0 */
     const uint32_t* q = vq(d, X + (second ? 17 : 13));
@@ -464,7 +466,9 @@ static int unpack(dec* d, uint32_t code, uint32_t* pos) {
     return R2M_OK;
 }
 
+uint32_t r2_fail_ms[8], r2_fail_nms;     /* (diagnostics) the MSCALs of the chain decoded last */
 static int mscal(dec* d, uint32_t vaddr) {
+    r2_fail_ms[r2_fail_nms++ & 7] = vaddr * 8;
     d->top = d->tops;
     d->dbf ^= 1;
     d->tops = (d->base + (d->dbf ? d->ofst : 0)) & 0x3FF;
@@ -570,6 +574,7 @@ int r2_mesh_decode(const uint8_t* ram, uint32_t addr, int form, r2_mesh** out) {
     d->ofst = 0x1E7;
     d->tops = d->base;
     d->cycle = 0x0101;
+    r2_fail_nms = 0;
     int r = walk(d, addr);
     if (!r) r = interpret(d);
     if (!r && !d->nb) r = R2M_DESC;
