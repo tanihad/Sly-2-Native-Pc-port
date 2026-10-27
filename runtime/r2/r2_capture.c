@@ -97,8 +97,10 @@ typedef struct {
 static r2_stats st, st_report;
 static int stats_on;
 
+extern const r2_slot* (*gs_r2_slot_fn)(uint32_t index);   /* gs_draw.c: R2H_OUTLINE packets */
 static void configure(void) {
     cfg_done = 1;
+    gs_r2_slot_fn = r2_slot_at;
     QueryPerformanceFrequency(&qpf);
     const char* e = getenv("PS2_R2");
     if (e && *e) {

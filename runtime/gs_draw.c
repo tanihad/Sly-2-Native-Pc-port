@@ -787,9 +787,10 @@ static void outline_reg(uint32_t r, uint64_t v) {
     gs_exec_write_reg(r, v);
 }
 static void outline_img(const void* p, uint32_t bytes) { (void)p; (void)bytes; }
+const r2_slot* (*gs_r2_slot_fn)(uint32_t index);   /* r2_slot_at, set by runtime/r2/r2_capture.c (tools link no R2) */
 static void outline_hint(uint64_t v) {
     uint32_t arg = (uint32_t)((v >> 8) & 0xFFFFFF), serial = gs_hint_value(v);
-    const r2_slot* S = r2_slot_at(arg & 15u);
+    const r2_slot* S = gs_r2_slot_fn ? gs_r2_slot_fn(arg & 15u) : NULL;
     uint32_t off = arg >> 4;
     if (!S || __atomic_load_n(&S->serial, __ATOMIC_ACQUIRE) != serial || off >= R2_SLOT_XQ) return;
     uint32_t n;

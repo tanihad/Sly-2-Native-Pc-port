@@ -3,7 +3,9 @@
  *
  * Milestone R1 covered the static world tree's leaves (render-list entries written by 0x1D5808) of the ep3 hub; R2
  * (r2-m2) every prelit mesh - static world and glob props (objects with cel outlines stay exact) - in every level,
- * meshes crossing the VU's guard band GPU-clipped, draws consolidated. Data flow:
+ * meshes crossing the VU's guard band GPU-clipped, draws consolidated; R3 / R4 (r2-m3) lit and skinned meshes (light
+ * block + bones as per-entry extra qwords, skinning and lighting in the vertex shader) and the outline entries (the
+ * outline program in C, r2_outline.c: its packets decoded by the GS thread at the entry's place). Data flow:
  *
  *   EE thread    r2_capture.c: hooks in the game's render-list emission (f_00157FA0, recomp/patches.py "r2m_*")
  *                classify each entry; a native entry's prebuilt mesh DMA is decoded once (r2_mesh.c) into a mesh

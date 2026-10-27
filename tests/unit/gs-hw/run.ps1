@@ -28,7 +28,7 @@ $rt = Join-Path $root 'runtime'
 $common = @('gs.c', 'gs_draw.c', 'gs_draw_pixel.c', 'gs_draw_tex.c', 'gs_draw_swz.c', 'gs_setup.c', 'gs_thread.c', 'gs_record.c', 'movie_layer.c', 'debug.c') | ForEach-Object { Join-Path $rt $_ }
 $common += @(Get-ChildItem $rt -Filter 'gs_mem*.c' | ForEach-Object { $_.FullName })
 $common += @(Get-ChildItem (Join-Path $rt 'gpu') -Filter '*.c' | ForEach-Object { $_.FullName })
-$common += @('r2_mesh.c', 'r2_vertex.c', 'r2_render.c', 'r2gpu_d3d11.c') | ForEach-Object { Join-Path (Join-Path $rt 'r2') $_ }   # (r2-m1)
+$common += @('r2_mesh.c', 'r2_vertex.c', 'r2_outline.c', 'r2_render.c', 'r2gpu_d3d11.c') | ForEach-Object { Join-Path (Join-Path $rt 'r2') $_ }   # (r2-m1)
 if (-not $RefOnly) {
     $src = $common + @(Join-Path $PSScriptRoot 'test_gs_hw.c')
     $exe = Join-Path $out 'test_gs_hw.exe'
