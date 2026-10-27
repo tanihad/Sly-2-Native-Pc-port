@@ -58,6 +58,8 @@ typedef struct {
     uint32_t hv[HASH_N];                 /* handle, or 0x80000000 | reason (decode failed) */
     uint8_t hform[HASH_N];
     uint8_t fp[HASH_N][32];              /* the first 32 bytes of the chain: content changed -> decode again */
+    uint64_t hfh[HASH_N];                /* (r2-m5) failed decodes: the chain's hash then (r2_mesh_hash) */
+    uint32_t hvb[HASH_N];                /* (r2-m5) and the VBlank it was last checked */
 } mesh_map;
 static mesh_map* MM;
 static uint32_t cur_wid = 0xFFFFFFFFu;
@@ -74,6 +76,7 @@ static void new_generation(uint32_t wid) {
 /* ---- settings, statistics ------------------------------------------------------------------------------------------ */
 static int cfg_done, env_mode = -1, check_on, levels_all, nlevels;
 static uint32_t alt_from, alt_n;               /* (r2-m5) PS2_R2_ALT */
+static int verify_on;                          /* (r2-m5) PS2_R2_VERIFY */
 uint32_t ps2_vblank_count(void);
 static int kinds_world = 1, kinds_props = 1;   /* (r2-m2) PS2_R2_KINDS=world,props */
 static int lits_on = 1;                        /* (r2-m3) PS2_R2_KINDS ...,lit: lit / skinned props */
@@ -92,7 +95,7 @@ static LARGE_INTEGER qpf;
 typedef struct {
     uint32_t frames, cand, native, exact_level, exact_class, exact_decode, exact_budget, exact_dmas, exact_header, exact_fade, exact_guard,
         decoded, decode_fail, bytes_hint, runs, epilogues, cand_props, native_props, exact_outline, outlines, outlines_parsed, clipped,
-        exact_bracket, cand_lit, native_lit, exact_lit, lit_reason[4], outline_bad, outline_decoded, outline_native, outline_exact, dmas_min_free;
+        exact_bracket, stale, cand_lit, native_lit, exact_lit, lit_reason[4], outline_bad, outline_decoded, outline_native, outline_exact, dmas_min_free;
     double decode_ms, cap_ms;
     uint32_t reason[R2M_N];
 } r2_stats;
@@ -148,6 +151,8 @@ static void configure(void) {
     stats_on = e && *e && *e != '0';
     e = getenv("PS2_R2_CHECK");
     check_on = e && *e && *e != '0';
+    e = getenv("PS2_R2_VERIFY");
+    verify_on = e && *e == '1';
     e = getenv("PS2_R2_ALT");
     if (e && *e) alt_from = (uint32_t)strtoul(e, NULL, 0);
     if (env_mode >= 0)
@@ -312,7 +317,7 @@ static r2_oscript* outline_for(uint32_t c1, uint32_t c2) {
     for (uint32_t n = 0; n < OM_N; n++, h = (h + 1) & (OM_N - 1)) {
         om_ent* e = &OM[h];
         if (e->addr == c2) {
-            if (!memcmp(e->fp, head, 32)) return e->bad ? NULL : e->s;
+            if (!memcmp(e->fp, head, 32) && (e->bad || r2_outline_same(e->s, ps2_ram))) return e->bad ? NULL : e->s;   /* (r2-m5) the whole chain */
             r2_outline_free(e->s); e->s = NULL; e->addr = 0;      /* (content changed: decoded again) */
         }
         if (!e->addr) {
@@ -340,18 +345,25 @@ static void collect_outlines(ps2_ctx* ctx) {
     memset(om_native, 0, sizeof om_native);
     uint32_t left = ctx->r[20].uw[0], p = ctx->r[21].uw[0];   /* $s4 entries left (this one included), $s5 -> its pointer */
     if (left > RENDER_LIST_MAX) left = RENDER_LIST_MAX;
+    static int keep_last = -1;
+    if (keep_last < 0) { const char* ev = getenv("PS2_R2_OUTLINE_LAST"); keep_last = ev ? atoi(ev) : 0; }
     for (uint32_t i = 0; i < left; i++) {
         uint32_t e = ps2_r32(ctx, p + 4 * i);
         if (e < RENDER_LIST || e >= RENDER_LIST + RENDER_LIST_MAX * 16) continue;
         uint32_t prio = ps2_r32(ctx, e);
         if (prio > 25 || ps2_r32(ctx, CLASS_TABLE + prio * 4) != 1) continue;
+        int last = 0;                                      /* (diagnostics) the last outline entry of a class-1 run */
+        if (keep_last && i + 1 < left) {
+            uint32_t n2 = ps2_r32(ctx, p + 4 * (i + 1)), p2 = n2 >= RENDER_LIST ? ps2_r32(ctx, n2) : 99;
+            last = p2 > 25 || ps2_r32(ctx, CLASS_TABLE + p2 * 4) != 1;
+        }
         uint32_t c1 = ps2_r32(ctx, e + 8);
         float w[16], vu8[4];
         st.outlines++;
         if (!c1 || !r2_header_parse(ps2_ram, c1, w, vu8)) { outl_unparsed++; continue; }
         st.outlines_parsed++;
         /* (r2-m3) an outline generated here does not keep its object exact */
-        if (outlines_on && fr_model_ok && outline_for(c1, ps2_r32(ctx, e + 12))) {
+        if (outlines_on && fr_model_ok && !last && outline_for(c1, ps2_r32(ctx, e + 12))) {
             om_native[(e - RENDER_LIST) / 16u] = 1;
             continue;
         }
@@ -432,8 +444,30 @@ static uint32_t mesh_for(uint32_t addr, int form, int* reason) {
         if (!s->hk[h]) break;
         if (s->hk[h] == addr && s->hform[h] == form) {
             if (memcmp(s->fp[h], head, 32)) { s->hk[h] = 0xFFFFFFFFu; break; }   /* (content changed: removed) */
-            if (s->hv[h] & 0x80000000u) { *reason = (int)(s->hv[h] & 0xFF); return 0; }
-            if (!r2_mesh_get(s->hv[h])) { s->hk[h] = 0xFFFFFFFFu; break; }
+            if (s->hv[h] & 0x80000000u) {
+                /* (r2-m5) a chain that failed to decode (perhaps before its final content): re-hashed every 2 s, decoded again
+                 * when it changed */
+                uint32_t vb = ps2_vblank_count();
+                if (vb - s->hvb[h] < 120u) { *reason = (int)(s->hv[h] & 0xFF); return 0; }
+                s->hvb[h] = vb;
+                if (r2_mesh_hash(ps2_ram, addr) == s->hfh[h]) { *reason = (int)(s->hv[h] & 0xFF); return 0; }
+                s->hk[h] = 0xFFFFFFFFu;
+                st.stale++;
+                break;
+            }
+            const r2_mesh* cm = r2_mesh_get(s->hv[h]);
+            if (!cm) { s->hk[h] = 0xFFFFFFFFu; break; }
+            /* (r2-m5) the whole chain as decoded? The game rewrites mesh DMA in place while a level streams in (ep1 hub:
+             * ~45 chains per run decoded before their final content with the first 32 bytes already final; the stale
+             * decode drew a tree as another mesh's shards). */
+            if (!r2_src_same(cm->src, ps2_ram)) {
+                st.stale++;
+                if (verify_on)
+                    fprintf(stderr, "[r2] stale mesh v%u: %08X form %d (decoded %016llX, now %016llX)\n", ps2_vblank_count(),
+                            addr, form, (unsigned long long)cm->hash, (unsigned long long)r2_mesh_hash(ps2_ram, addr));
+                s->hk[h] = 0xFFFFFFFFu;
+                break;
+            }
             return s->hv[h];
         }
     }
@@ -452,6 +486,8 @@ static uint32_t mesh_for(uint32_t addr, int form, int* reason) {
     memcpy(s->fp[h], head, 32);
     if (r) {
         s->hv[h] = 0x80000000u | (uint32_t)r;
+        s->hfh[h] = r2_mesh_hash(ps2_ram, addr);
+        s->hvb[h] = ps2_vblank_count();
         st.decode_fail++;
         st.reason[r]++;
         *reason = r;
@@ -607,7 +643,12 @@ void r2_cap_entry(ps2_ctx* ctx) {
             memcpy(S->xq[off + 1], om_buf, nb);
             adlist l = { .n = 0 };
             ad_hint(&l, R2H_OUTLINE, (fr_serial % R2_SLOTS) | off << 4, fr_serial);
-            if (dmas_put(ctx, 0, 0, l.p, l.n)) {
+            /* (r2-m5) the dropped chain's MSCALs flip VIF1's double buffer (3 per batch: an odd count is common): the
+             * flips it owes keep the parity of an all-exact frame for every later entry (MSCAL 0 = the outline program's
+             * [E] NOP). Without it the exact entries after native outlines unpacked into the other buffer (ep1 hub: a
+             * skinned tree after the outlines drawn as shards with the previous texture) */
+            uint32_t fl = r2_outline_flips(s);
+            if (dmas_put(ctx, fl ? MSCAL(0x0000) : 0, 0, l.p, l.n)) {
                 S->nxq += 1 + n;
                 ps2_w32(ctx, e + 12, 0);             /* the outline mesh chain; the header (VU uploads only) stays */
                 st.outline_native++;
@@ -838,13 +879,13 @@ void r2_stats_line(char* buf, size_t n) {
     double f = s->frames ? (double)s->frames : 1.0;
     int o = snprintf(buf, n, "mode %d gen %u: per frame %.0f candidates (%.0f props), %.0f native (%.0f props, %.1f clipped; %.1f runs, %.1f "
                              "epilogues), exact: level %.0f class %.0f decode %.0f budget %.0f header %.0f fade %.0f guard %.0f outline %.1f dmas %.0f; "
-                             "outlines %.1f (%.1f parsed, %.1f native, %.1f exact; scripts %u, bad %u); lit %.1f candidates %.1f native %.1f exact (light set %u, bone %u, TEX0 swap %u); decoded %u (failed %u, %.1f ms); capture %.3f ms/frame, hints %.1f KB/frame, builder free >= %u KB",
+                             "outlines %.1f (%.1f parsed, %.1f native, %.1f exact; scripts %u, bad %u); lit %.1f candidates %.1f native %.1f exact (light set %u, bone %u, TEX0 swap %u); decoded %u (failed %u, %.1f ms, stale %u); capture %.3f ms/frame, hints %.1f KB/frame, builder free >= %u KB",
                      r2_mode, r2_store_gen(), s->cand / f, s->cand_props / f, s->native / f, s->native_props / f, s->clipped / f, s->runs / f,
                      s->epilogues / f, s->exact_level / f, s->exact_class / f, s->exact_decode / f, s->exact_budget / f, s->exact_header / f,
                      s->exact_fade / f, s->exact_guard / f, s->exact_outline / f, s->exact_dmas / f, s->outlines / f, s->outlines_parsed / f,
                      s->outline_native / f, s->outline_exact / f, s->outline_decoded, s->outline_bad,
                      s->cand_lit / f, s->native_lit / f, s->exact_lit / f, s->lit_reason[1], s->lit_reason[2], s->lit_reason[3],
-                     s->decoded, s->decode_fail, s->decode_ms, s->cap_ms / f, s->bytes_hint / f / 1024.0, s->dmas_min_free / 1024);
+                     s->decoded, s->decode_fail, s->decode_ms, s->stale, s->cap_ms / f, s->bytes_hint / f / 1024.0, s->dmas_min_free / 1024);
     for (int r = 1; r < R2M_N && o > 0 && (size_t)o < n; r++)
         if (s->reason[r]) o += snprintf(buf + o, n - (size_t)o, " [%s %u]", r2m_reason[r], s->reason[r]);
 }

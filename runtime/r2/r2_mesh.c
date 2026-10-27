@@ -61,6 +61,9 @@ typedef struct {
     uint32_t *sw, *sm;
     uint32_t nst, capst;
     int ofail;
+    int ofs_seen;                        /* (r2-m5) an OFFSET code was interpreted */
+    uint32_t (*seg)[2];                  /* (r2-m5) the RAM ranges walked (add_seg) */
+    uint32_t nseg, capseg;
 } dec;
 
 static int grow(void** p, uint32_t* cap, uint32_t need, size_t el) {
@@ -92,6 +95,47 @@ static int push_words(dec* d, const uint8_t* src, uint32_t n) {
     return 1;
 }
 
+/* (r2-m5) the RAM ranges a chain reads (tags and data), merged where contiguous: the content check of cached meshes
+ * and outline scripts (r2_src_same). The game rewrites mesh DMA in place while levels stream in (the ep1 hub: ~45 chains
+ * decoded before their final content, the first 32 bytes unchanged): a stale decode drew another mesh's triangles. */
+static int add_seg(dec* d, uint32_t a, uint32_t n) {
+    if (d->nseg && d->seg[d->nseg - 1][0] + d->seg[d->nseg - 1][1] == a) { d->seg[d->nseg - 1][1] += n; return 1; }
+    if (!grow((void**)&d->seg, &d->capseg, d->nseg + 1, sizeof d->seg[0])) return 0;
+    d->seg[d->nseg][0] = a;
+    d->seg[d->nseg][1] = n;
+    d->nseg++;
+    return 1;
+}
+struct r2_src { uint32_t nseg, bytes; uint32_t (*seg)[2]; uint8_t* copy; };
+static r2_src* src_make(dec* d) {
+    r2_src* s = calloc(1, sizeof *s);
+    if (!s) return NULL;
+    uint32_t total = 0;
+    for (uint32_t i = 0; i < d->nseg; i++) total += d->seg[i][1];
+    s->copy = malloc(total ? total : 1);
+    s->seg = malloc((d->nseg ? d->nseg : 1) * sizeof s->seg[0]);
+    if (!s->copy || !s->seg) { free(s->copy); free(s->seg); free(s); return NULL; }
+    uint32_t o = 0;
+    for (uint32_t i = 0; i < d->nseg; i++) {
+        memcpy(s->copy + o, d->ram + d->seg[i][0], d->seg[i][1]);
+        o += d->seg[i][1];
+    }
+    memcpy(s->seg, d->seg, d->nseg * sizeof s->seg[0]);
+    s->nseg = d->nseg;
+    s->bytes = total;
+    return s;
+}
+void r2_src_free(r2_src* s) { if (s) { free(s->copy); free(s->seg); free(s); } }
+int r2_src_same(const r2_src* s, const uint8_t* ram) {
+    if (!s) return 1;
+    uint32_t o = 0;
+    for (uint32_t i = 0; i < s->nseg; i++) {
+        if (memcmp(ram + s->seg[i][0], s->copy + o, s->seg[i][1])) return 0;
+        o += s->seg[i][1];
+    }
+    return 1;
+}
+
 /* the DMAC's source chain from addr until the RET that leaves it (or END), CALL depth 2 */
 static int walk(dec* d, uint32_t addr) {
     uint32_t stack[2];
@@ -105,9 +149,11 @@ static int walk(dec* d, uint32_t addr) {
         if (tag & (1ull << 31)) return R2M_TAG;                   /* IRQ */
         d->hash = hmix(d->hash, tag);
         if (!push_words(d, t + 8, 2)) return R2M_SIZE;           /* the tag's upper half: two VIF codes */
+        if (!add_seg(d, addr, 16)) return R2M_SIZE;
         uint32_t data = id == 0 || id == 3 || id == 4 ? a : addr + 16, next = addr + 16 + qwc * 16;
         if (qwc) {
             if (!ram_ok(data, qwc * 16)) return R2M_TAG;
+            if (!add_seg(d, data, qwc * 16)) return R2M_SIZE;
             if (!push_words(d, d->ram + data, qwc * 4)) return R2M_SIZE;
         }
         switch (id) {
@@ -128,6 +174,19 @@ static int walk(dec* d, uint32_t addr) {
         }
     }
     return R2M_SIZE;
+}
+
+/* (r2-m5) the content hash r2_mesh_decode records (m->hash) of the chain at addr now; 0 when it does not walk */
+uint64_t r2_mesh_hash(const uint8_t* ram, uint32_t addr) {
+    static dec* d;                                               /* (EE thread only) */
+    if (!d && !(d = calloc(1, sizeof *d))) return 0;
+    d->nw = 0;
+    d->bytes = 0;
+    d->nseg = 0;
+    d->ram = ram;
+    d->hash = 0xCBF29CE484222325ull;
+    if (walk(d, addr)) return 0;
+    return d->hash;
 }
 
 /* ---- VU memory as the routines read it ----------------------------------------------------------------------- */
@@ -562,7 +621,7 @@ static int interpret(dec* d) {
         switch (cmd) {
         case 0x00: break;                                        /* NOP */
         case 0x01: d->cycle = imm; break;                        /* STCYCL */
-        case 0x02: d->ofst = imm & 0x3FF; d->dbf = 0; d->tops = d->base; break;   /* OFFSET */
+        case 0x02: d->ofst = imm & 0x3FF; d->dbf = 0; d->tops = d->base; d->ofs_seen = 1; break;   /* OFFSET */
         case 0x03: d->base = imm & 0x3FF; break;                 /* BASE */
         case 0x04: break;                                        /* ITOP */
         case 0x05: d->mode = imm & 3; break;                     /* STMOD */
@@ -608,15 +667,17 @@ int r2_mesh_decode(const uint8_t* ram, uint32_t addr, int form, r2_mesh** out) {
     if (!r && form == 0 && d->w_fixed != 1) r = R2M_HEADER;     /* a whole packet carries its own matrix */
     if (!r && form == 1 && d->w_fixed != 2) r = R2M_HEADER;     /* a mesh DMA takes the entry's */
     if (r) {
-        free(d->vtx); free(d->idx); free(d->b); free(d->w); free(d);
+        free(d->vtx); free(d->idx); free(d->b); free(d->w); free(d->seg); free(d);
         return r;
     }
     r2_mesh* m = calloc(1, sizeof *m);
-    if (!m) { free(d->vtx); free(d->idx); free(d->b); free(d->w); free(d); return R2M_SIZE; }
+    if (!m) { free(d->vtx); free(d->idx); free(d->b); free(d->w); free(d->seg); free(d); return R2M_SIZE; }
     m->addr = addr;
     m->bytes = d->bytes;
     m->hash = d->hash;
     m->form = form;
+    m->flips = d->dbf;
+    if (!(m->src = src_make(d))) { free(m); free(d->vtx); free(d->idx); free(d->b); free(d->w); free(d->seg); free(d); return R2M_SIZE; }
     m->has_w = d->w_fixed == 1;
     if (m->has_w) { memcpy(m->w, d->wm, sizeof m->w); m->fade = d->fade; }
     m->vtx = d->vtx; m->nvtx = d->nvtx;
@@ -638,7 +699,7 @@ int r2_mesh_decode(const uint8_t* ram, uint32_t addr, int form, r2_mesh** out) {
         }
     }
     free(d->w);
-    free(d);
+    free(d->seg); free(d);
     *out = m;
     return R2M_OK;
 }
@@ -656,9 +717,13 @@ int r2_header_parse(const uint8_t* ram, uint32_t addr, float w[16], float vu8[4]
     dec* d = hdr_d;
     uint32_t* keep_w = d->w;
     uint32_t keep_cap = d->capw;
+    uint32_t (*keep_seg)[2] = d->seg;
+    uint32_t keep_capseg = d->capseg;
     memset(d, 0, sizeof *d);
     d->w = keep_w;
     d->capw = keep_cap;
+    d->seg = keep_seg;
+    d->capseg = keep_capseg;
     d->ram = ram;
     d->base = 0x32;
     d->ofst = 0x1E7;
@@ -694,7 +759,7 @@ int r2_lit_decode_vu(const uint32_t (*vu)[4], uint32_t top, uint32_t ra, r2_mesh
     int r = lit_prepare(d, X);
     if (!r) r = sub_batch(d, X, 0, 1);
     if (!r && (vq(d, X + 17)[3] & 0x7FFF)) r = sub_batch(d, X, 1, 1);
-    if (r) { free(d->vtx); free(d->idx); free(d->b); free(d); return r; }
+    if (r) { free(d->vtx); free(d->idx); free(d->b); free(d->seg); free(d); return r; }
     r2_mesh* m = calloc(1, sizeof *m);
     m->vtx = d->vtx; m->nvtx = d->nvtx; m->idx = d->idx; m->nidx = d->nidx; m->b = d->b; m->nb = d->nb;
     m->nbones = d->nbones;
@@ -702,7 +767,7 @@ int r2_lit_decode_vu(const uint32_t (*vu)[4], uint32_t top, uint32_t ra, r2_mesh
     m->lpos_off = (uint16_t)(vq(d, X + 11)[3] & 0xFFFF);
     m->lpos_bone = (uint16_t)(vq(d, X + 12)[0] & 0xFFFF);
     free(d->w);
-    free(d);
+    free(d->seg); free(d);
     *out = m;
     return R2M_OK;
 }
@@ -714,7 +779,11 @@ struct r2_oscript {
     uint32_t* wa;                        /* write i: VU address | lanes << 16 */
     uint32_t (*wv)[4];
     uint32_t *sw, *sm;                   /* step i: writes [sw[i-1], sw[i]) first, then MSCAL sm[i] & 0xFFFF (TOP sm >> 16) */
+    uint32_t flips;                      /* (r2-m5) VIF1 double-buffer flips of the chain (its MSCALs) mod 2 */
+    r2_src* src;                         /* (r2-m5) the mesh chain's bytes (content check) */
 };
+uint32_t r2_outline_flips(const r2_oscript* s) { return s ? s->flips : 0; }
+int r2_outline_same(const r2_oscript* s, const uint8_t* ram) { return s ? r2_src_same(s->src, ram) : 1; }
 
 int r2_outline_decode(const uint8_t* ram, uint32_t hdr, uint32_t mesh, r2_oscript** out) {
     *out = NULL;
@@ -731,27 +800,32 @@ int r2_outline_decode(const uint8_t* ram, uint32_t hdr, uint32_t mesh, r2_oscrip
     if (!r && d->dbf) r = R2M_HEADER;
     if (!r) {
         d->nw = 0;
+        d->nseg = 0;                                            /* (r2-m5) the content check covers the mesh chain */
         d->omode = 1;
         r2_fail_nms = 0;
+        d->ofs_seen = 0;
         r = walk(d, mesh);
         if (!r) r = interpret(d);
+        if (!r && d->ofs_seen) r = R2M_VIF;                     /* (r2-m5) an OFFSET in the chain: DBF absolute */
     }
     if (!r && (d->ofail || !d->nst || (d->sm[0] & 0xFFFF) != 0x0738)) r = R2M_MSCAL;
     if (!r && d->nlw > d->sw[d->nst - 1]) r = R2M_VERTEX;        /* (writes after the last step: none in outlines) */
     r2_oscript* s = r ? NULL : calloc(1, sizeof *s);
     if (!r && !s) r = R2M_SIZE;
-    if (r) { free(d->lwa); free(d->lwv); free(d->sw); free(d->sm); free(d->w); free(d->vtx); free(d->idx); free(d->b); free(d); return r; }
+    if (r) { free(d->lwa); free(d->lwv); free(d->sw); free(d->sm); free(d->w); free(d->vtx); free(d->idx); free(d->b); free(d->seg); free(d); return r; }
     s->hdr_x = hx;
     s->nw = d->nlw; s->wa = d->lwa; s->wv = d->lwv;
     s->nst = d->nst; s->sw = d->sw; s->sm = d->sm;
-    free(d->w); free(d->vtx); free(d->idx); free(d->b); free(d);
+    s->flips = d->dbf;
+    s->src = src_make(d);
+    free(d->w); free(d->vtx); free(d->idx); free(d->b); free(d->seg); free(d);
     *out = s;
     return R2M_OK;
 }
 
 void r2_outline_free(r2_oscript* s) {
     if (!s) return;
-    free(s->wa); free(s->wv); free(s->sw); free(s->sm); free(s);
+    free(s->wa); free(s->wv); free(s->sw); free(s->sm); r2_src_free(s->src); free(s);
 }
 
 int r2_outline_exec(const r2_oscript* s, const uint32_t* (*hq)(uint32_t), const r2_frame_block* fb, uint32_t fill, uint8_t* out,
@@ -781,6 +855,7 @@ int r2_outline_exec(const r2_oscript* s, const uint32_t* (*hq)(uint32_t), const 
 
 void r2_mesh_free(r2_mesh* m) {
     if (!m) return;
+    r2_src_free(m->src);
     free(m->vtx);
     free(m->idx);
     free(m->b);
