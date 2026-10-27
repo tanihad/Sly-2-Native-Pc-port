@@ -227,6 +227,11 @@ int r2_lights_prep(const uint32_t* (*hdr)(uint32_t), const r2_mesh* m, const flo
 void r2_lit_eval(const r2_vtx* v, const r2_batch* b, const float lb[R2_LIGHT_QW][4], const float (*hq)[4], float pos[3],
                  uint32_t col[2]);
 
+/* ---- (r2-m3, R4) the outline program (188054331) in C (r2_outline.c): routine addr (0x0738 set-up: *x = 0x24B - TOP
+ * on entry; 0x07F0 a batch: *x = the set-up's buffer) on the VU1 data memory image vu (modified as the VU would), the
+ * GIF packets it XGKICKs appended to out (cap bytes, *nout used). 0: unknown routine or out full. */
+int r2_outline_run(uint32_t (*vu)[4], uint32_t addr, uint32_t* x, uint8_t* out, uint32_t cap, uint32_t* nout);
+
 /* ---- EE side (r2_capture.c, called from recomp/patches.py patches) --------------------------------------------- */
 struct ps2_ctx;
 void r2_cap_alloc(struct ps2_ctx* ctx);   /* render-list allocator returns: $v0 = entry */

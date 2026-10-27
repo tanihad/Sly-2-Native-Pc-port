@@ -227,6 +227,7 @@ static void check_material(const bufbatch* bb, int pass, const uint8_t* pkt, uin
  * memory (r2_lit_decode_vu), the light block (r2_lights_prep from the raw light set for 0x2EF8, else the block in
  * memory), the bone palette from memory; after the run, the VU's own results in the buffer (skinned positions, colour A
  * / colour B, 0x0298's light block) against r2_lit_eval / r2_lights_prep. ---------------------------------------------- */
+static uint64_t out_progs, out_kicks, out_bad;   /* (r2-m3) outline programs */
 static uint64_t lit_progs, lit_dec_fail[R2M_N], lit_vtx, lit_pos_bad, lit_cola_bad[3], lit_colb_bad[3], lit_lb_bad, lit_lb_n,
     lit_skin_vtx, lit_lit_vtx;
 static const uint32_t (*lit_mem)[4];
@@ -425,6 +426,34 @@ int main(int argc, char** argv) {
         st->status = h->status; st->mac = h->mac; st->clip = h->clip;
         st->top = h->top; st->itop = h->itop;
         int prelit = ra == 0x2E20 || ra == 0x2E68 || ra == 0x2EB0 || ra == 0x2EE8;
+        /* (r2-m3) the outline program (its 0x0738 starts with XTOP vi01) against r2_outline_run, packet for packet */
+        if ((ra == 0x0738 || ra == 0x07F0) && *(const uint32_t*)(last_micro + 0x0738) == 0x800106BCu) {
+            static uint32_t img[1024][4];
+            static uint8_t mine[1 << 18];
+            uint32_t nm = 0, x = ra == 0x0738 ? (0x24B - h->top) & 0x3FF : h->vi[4] & 0x3FF;
+            memcpy(img, data, sizeof img);
+            int ok = r2_outline_run(img, ra, &x, mine, sizeof mine, &nm);
+            nk = 0;
+            _mm_setcsr(VU_MXCSR);
+            vu_run(st, h->addr);
+            _mm_setcsr(csr);
+            uint32_t pos2 = 0;
+            int bad = !ok;
+            for (int k = 0; k < nk && !bad; k++) {
+                if (pos2 + K[k].qw * 16 > nm || memcmp(mine + pos2, K[k].pkt, K[k].qw * 16)) bad = 1;
+                pos2 += K[k].qw * 16;
+            }
+            if (pos2 != nm) bad = 1;
+            if (!bad && memcmp(img, vu_data_mem(1), sizeof img)) bad = 2;   /* (the memory it leaves, too) */
+            out_progs++;
+            out_kicks += (uint64_t)nk;
+            if (bad) {
+                out_bad++;
+                if (verbose && out_bad < 6) printf("  outline program %ld %04X: %s (VU %d kicks %u qw, mine %u bytes)\n", cur_prog, ra,
+                                                   bad == 2 ? "memory differs" : "packets differ", nk, pos2 / 16, nm);
+            }
+            continue;
+        }
         if (ra == 0x2EF8 || ra == 0x2F80 || ra == 0x2FC8) {
             lit_check(ra, h->top, (const uint32_t*)data, h);
             memcpy(vu_data_mem(1), data, h->data_size);    /* (the replay below runs it again from the same state) */
@@ -522,6 +551,7 @@ int main(int argc, char** argv) {
             }
         }
     }
+    printf("outline programs: %llu (%llu kicks), differing from r2_outline_run: %llu\n", (unsigned long long)out_progs, (unsigned long long)out_kicks, (unsigned long long)out_bad);
     printf("lit routines: %llu programs (decode failures:", (unsigned long long)lit_progs);
     for (int r = 1; r < R2M_N; r++) if (lit_dec_fail[r]) printf(" %s %llu", r2m_reason[r], (unsigned long long)lit_dec_fail[r]);
     printf("); light blocks: %llu qwords, %llu differ; vertices %llu (%llu skinned: positions differing %llu; %llu lit: colour A "
