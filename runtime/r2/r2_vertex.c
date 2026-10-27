@@ -62,6 +62,161 @@ void r2_matmul_fast(const float w[16], const float c[16], float out[16]) {
     _mm_setcsr(old);
 }
 
+/* ---- (r2-m3) lit / skinned vertices: the VU's own operations under its MXCSR (round toward zero, flush to zero,
+ * denormals are zero), as runtime/vu_ops.h computes them (SSE scalar operations: FENV_ACCESS keeps clang from folding
+ * them with its own rounding) ----------------------------------------------------------------------------------------- */
+static inline uint32_t f2bits(float f) { uint32_t u; memcpy(&u, &f, 4); return u; }
+static inline float bits2f(uint32_t u) { float f; memcpy(&f, &u, 4); return f; }
+#pragma STDC FENV_ACCESS ON
+#define VU_CSR(old) ((old & ~0x6000u) | 0x6000u | 0x8040u)
+static inline float f_mul(float a, float b) { return _mm_cvtss_f32(_mm_mul_ss(_mm_set_ss(a), _mm_set_ss(b))); }
+static inline float f_add(float a, float b) { return _mm_cvtss_f32(_mm_add_ss(_mm_set_ss(a), _mm_set_ss(b))); }
+static inline float f_sub(float a, float b) { return _mm_cvtss_f32(_mm_sub_ss(_mm_set_ss(a), _mm_set_ss(b))); }
+static inline float f_div(float a, float b) {        /* DIV (vu_div; x / 0: the largest magnitude, as MINI then sees it) */
+    if (b == 0.0f) { uint32_t s = (f2bits(a) ^ f2bits(b)) & 0x80000000u; return bits2f(s | 0x7F7FFFFFu); }
+    return _mm_cvtss_f32(_mm_div_ss(_mm_set_ss(a), _mm_set_ss(b)));
+}
+static inline float f_sqrt(float a) { return _mm_cvtss_f32(_mm_sqrt_ss(_mm_set_ss(a))); }
+static inline int32_t fkey(float f) { int32_t i = (int32_t)f2bits(f); return i ^ ((i >> 31) & 0x7FFFFFFF); }
+static inline float f_max(float a, float b) { return fkey(a) > fkey(b) ? a : b; }   /* MAX / MINI: raw sign-magnitude */
+static inline float f_min(float a, float b) { return fkey(b) > fkey(a) ? a : b; }
+static inline int32_t f_toi(float f) {               /* FTOI0: truncate, saturate */
+    if (f >= 2147483648.0f) return 0x7FFFFFFF;
+    if (f < -2147483648.0f) return (int32_t)0x80000000u;
+    return (int32_t)f;
+}
+static float qwf(const uint32_t* q, int c) { return bits2f(q[c]); }
+
+/* 0x0298 (with 0x3BA8, the inverse of the world 3x3) for the entry's light set */
+int r2_lights_prep(const uint32_t* (*hdr)(uint32_t), const r2_mesh* m, const float vu10[4], float out[R2_LIGHT_QW][4]) {
+    const uint32_t *q0 = hdr(0), *q1 = hdr(1), *q2 = hdr(2), *qp = m->lpos_bone ? hdr(m->lpos_off + 3u) : hdr(3);
+    if (!q0 || !q1 || !q2 || !qp) return 0;
+    unsigned int old = _mm_getcsr();
+    _mm_setcsr(VU_CSR(old));
+    float r[3][3], c[3][3], inv[3][3];
+    for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++) r[i][j] = qwf(i == 0 ? q0 : i == 1 ? q1 : q2, j);
+    /* OPMULA / OPMSUB: c0 = r1 x r2, c1 = r2 x r0, c2 = r0 x r1 */
+    static const int A_[3] = { 1, 2, 0 }, B_[3] = { 2, 0, 1 };
+    for (int k = 0; k < 3; k++) {
+        const float *a = r[A_[k]], *b = r[B_[k]];
+        c[k][0] = f_sub(f_mul(a[1], b[2]), f_mul(b[1], a[2]));
+        c[k][1] = f_sub(f_mul(a[2], b[0]), f_mul(b[2], a[0]));
+        c[k][2] = f_sub(f_mul(a[0], b[1]), f_mul(b[0], a[1]));
+    }
+    float det = f_add(f_add(f_mul(r[0][0], c[0][0]), f_mul(r[0][1], c[0][1])), f_mul(r[0][2], c[0][2]));
+    if (det == 0.0f) { _mm_setcsr(old); return 0; }
+    float Q = f_div(1.0f, det);
+    for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++) inv[i][j] = f_mul(c[j][i], Q);
+    float A[4][4], C[4][4], D[4][4];
+    for (int l = 0; l < 4; l++) {
+        const uint32_t *qa = hdr(0x15u + 3u * (uint32_t)l), *qc = hdr(0x16u + 3u * (uint32_t)l), *qd = hdr(0x17u + 3u * (uint32_t)l);
+        if (!qa || !qc || !qd) { _mm_setcsr(old); return 0; }
+        float v[4];
+        for (int j = 0; j < 4; j++) { A[l][j] = qwf(qa, j); C[l][j] = qwf(qc, j); v[j] = qwf(qd, j); }
+        if (qa[0] & 0xFFFF) {                            /* a point light: attenuation by the distance */
+            for (int j = 0; j < 3; j++) v[j] = f_sub(qwf(qp, j), v[j]);
+            float P = f_sqrt(f_add(f_add(f_mul(v[0], v[0]), f_mul(v[1], v[1])), f_mul(v[2], v[2])));
+            float f = f_add(f_add(A[l][3], 0.0f), f_mul(v[3], P));
+            f = f_max(f_min(f, 1.0f), 0.0f);
+            A[l][1] = f_mul(A[l][1], f);
+            A[l][2] = f_mul(A[l][2], f);
+        }
+        float o[3];
+        for (int j = 0; j < 3; j++) o[j] = f_add(f_add(f_mul(inv[0][j], v[0]), f_mul(inv[1][j], v[1])), f_mul(inv[2][j], v[2]));
+        float P = f_div(1.0f, f_sqrt(f_add(f_add(f_mul(o[0], o[0]), f_mul(o[1], o[1])), f_mul(o[2], o[2]))));
+        for (int j = 0; j < 3; j++) D[l][j] = f_mul(o[j], P);
+        D[l][3] = v[3];
+    }
+    const float k127 = bits2f(0x3C010204u);
+    for (int l = 0; l < 4; l++) for (int j = 0; j < 4; j++) out[j][l] = f_mul(D[l][j], k127);   /* transposed: [21..24] */
+    out[0][1] = f_add(0.0f, out[0][1]);              /* (the transpose's ADDs turn -0 into +0) */
+    out[0][2] = f_add(0.0f, out[0][2]);
+    out[1][2] = f_add(0.0f, out[1][2]);
+    out[2][0] = f_add(0.0f, out[2][0]);
+    for (int j = 0; j < 4; j++) {                                    /* (the game's [24] is not this: nobody reads it) */
+        float acc = f_mul(C[0][j], A[0][1]);
+        for (int l = 1; l < 4; l++) acc = f_add(acc, f_mul(C[l][j], A[l][1]));
+        out[8][j] = f_mul(acc, 2.0f);
+        for (int l = 0; l < 4; l++) out[4 + l][j] = f_mul(f_mul(C[l][j], A[l][2]), 2.0f);
+    }
+    for (int l = 0; l < 4; l++) out[9][l] = f_add(0.0f, f_div(f_sub(0.0f, A[l][1]), A[l][2]));
+    for (int j = 0; j < 4; j++) out[10][j] = vu10[j];
+    _mm_setcsr(old);
+    return 1;
+}
+
+static float sb(uint32_t w, int c) { return (float)(int8_t)(w >> (8 * c)); }
+static float ub(uint32_t w, int c) { return (float)((w >> (8 * c)) & 255u); }
+
+void r2_lit_eval(const r2_vtx* v, const r2_batch* b, const float lb[R2_LIGHT_QW][4], const float (*hq)[4], float pos[3],
+                 uint32_t col[2]) {
+    unsigned int old = _mm_getcsr();
+    _mm_setcsr(VU_CSR(old));
+    float p[3] = { v->x, v->y, v->z }, n[4];
+    for (int c = 0; c < 4; c++) n[c] = sb(v->nrm, c);
+    if (b->skin) {                                   /* 0x16B0 / 0x1940 */
+        float w[4], t[4][3], nb[4][3];
+        const float k255 = bits2f(0x3B808081u);
+        for (int c = 0; c < 4; c++) w[c] = f_mul(ub(v->wts, c), k255);
+        for (int k = 0; k < 4; k++) {
+            const float(*M)[4] = hq + (b->bone[k] - R2_HQ_LO);
+            for (int j = 0; j < 3; j++) {
+                t[k][j] = f_add(f_add(f_add(f_mul(M[0][j], p[0]), f_mul(M[1][j], p[1])), f_mul(M[2][j], p[2])), M[3][j]);
+                nb[k][j] = f_add(f_add(f_mul(M[0][j], n[0]), f_mul(M[1][j], n[1])), f_mul(M[2][j], n[2]));
+            }
+        }
+        float P[3], N[3];
+        for (int j = 0; j < 3; j++) {
+            P[j] = f_add(f_add(f_add(f_mul(t[0][j], w[0]), f_mul(t[1][j], w[1])), f_mul(t[2][j], w[2])), f_mul(t[3][j], w[3]));
+            N[j] = f_add(f_add(f_add(f_mul(nb[0][j], w[0]), f_mul(nb[1][j], w[1])), f_mul(nb[2][j], w[2])), f_mul(nb[3][j], w[3]));
+        }
+        for (int j = 0; j < 3; j++) p[j] = P[j];
+        if (b->skin == 2) {
+            float L = f_div(1.0f, f_sqrt(f_add(f_add(f_mul(N[0], N[0]), f_mul(N[1], N[1])), f_mul(N[2], N[2]))));
+            for (int j = 0; j < 3; j++) n[j] = (float)f_toi(f_mul(f_mul(N[j], L), 127.0f));
+        }
+    }
+    pos[0] = p[0]; pos[1] = p[1]; pos[2] = p[2];
+    col[0] = v->col[0];
+    col[1] = v->col[1];
+    if (b->lit) {                                    /* 0x1050 */
+        float f[4], C[4], A[4];
+        for (int l = 0; l < 4; l++) {
+            float d = f_add(f_add(f_mul(lb[0][l], n[0]), f_mul(lb[1][l], n[1])), f_mul(lb[2][l], n[2]));
+            float e = f_add(f_add(d, 0.0f), f_mul(d, f_mul(d, d)));
+            f[l] = f_min(e, lb[9][l]);
+        }
+        for (int c = 0; c < 4; c++) A[c] = lb[8][c];
+        A[3] = f_add(f_add(A[3], b->bright), lb[10][3]);
+        for (int c = 0; c < 4; c++) {
+            float acc = f_mul(lb[4][c], f[0]);
+            for (int l = 1; l < 4; l++) acc = f_add(acc, f_mul(lb[4 + l][c], f[l]));
+            C[c] = f_add(acc, A[c]);
+        }
+        float mx = f_max(f_max(C[0], C[1]), C[2]);
+        float lim = f_max(f_sub(2.0f, mx), 0.0f);
+        float cl[4] = { f_min(C[0], 2.0f), f_min(C[1], 2.0f), f_min(C[2], 2.0f), f_min(C[3], lim) };
+        float k = f_sub(lim, cl[3]);
+        const float c14 = bits2f(0x427DFF7Du);
+        float c13 = f_add(2.0f, bits2f(0x3C810247u));
+        float den = f_sub(f_mul(c13, c14), f_mul(k, c14));
+        float cf[4];
+        for (int c = 0; c < 4; c++) cf[c] = ub(v->lcol, c);
+        float Q = f_div(cf[3], den);
+        int32_t a[4], bq[4];
+        for (int c = 0; c < 3; c++) {
+            a[c] = f_toi(f_mul(f_add(cl[c], f_mul(lb[10][c], k)), n[3]));
+            bq[c] = f_toi(f_mul(f_mul(cf[c], cl[3]), Q));
+        }
+        a[3] = f_toi(cf[3]);
+        bq[3] = f_toi(den);
+        col[0] = col[1] = 0;
+        for (int c = 0; c < 4; c++) { col[0] |= ((uint32_t)a[c] & 255u) << (8 * c); col[1] |= ((uint32_t)bq[c] & 255u) << (8 * c); }
+    }
+    _mm_setcsr(old);
+}
+#pragma STDC FENV_ACCESS OFF
+
 int r2_screen_model_of(const r2_frame_block* fb, r2_screen_model* m) {
     float* a[3] = { &m->ax, &m->ay, &m->az };
     float* b[3] = { &m->bx, &m->by, &m->bz };
