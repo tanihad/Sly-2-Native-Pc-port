@@ -27,7 +27,7 @@ void hw_log_unhandled(const char* unit, uint32_t phys, const void* data, unsigne
 uint32_t ps2_vblank_count(void) { return 0; }
 
 /* ---- kicks of the current program ---------------------------------------------------------------------------- */
-#define MAXK 64
+#define MAXK 1024
 static struct { uint32_t addr; uint8_t pkt[16 * 300]; uint32_t qw; } K[MAXK];
 static int nk;
 void gif_path1_kick(const uint8_t* vu1_data, uint32_t qw_addr) {

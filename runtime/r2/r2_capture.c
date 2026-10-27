@@ -90,7 +90,7 @@ static LARGE_INTEGER qpf;
 typedef struct {
     uint32_t frames, cand, native, exact_level, exact_class, exact_decode, exact_budget, exact_dmas, exact_header, exact_fade, exact_guard,
         decoded, decode_fail, bytes_hint, runs, epilogues, cand_props, native_props, exact_outline, outlines, outlines_parsed, clipped,
-        exact_bracket, cand_lit, native_lit, exact_lit, lit_reason[4], outline_bad, outline_decoded, outline_native, outline_exact;
+        exact_bracket, cand_lit, native_lit, exact_lit, lit_reason[4], outline_bad, outline_decoded, outline_native, outline_exact, dmas_min_free;
     double decode_ms, cap_ms;
     uint32_t reason[R2M_N];
 } r2_stats;
@@ -776,7 +776,12 @@ void r2_cap_entry(ps2_ctx* ctx) {
     if (xn) ad_hint(&l, R2H_DATA, k++, xid);
     /* the previous exact mesh's pending tail first: it must not fall inside this entry's bracket */
     int run_start = !prev_native && MAINCLASS(prev_class);
-    if (!dmas_put(ctx, run_start ? MSCAL(0x3AB0) : 0, run_start ? MSCAL(0x0000) : 0, l.p, l.n)) {
+    /* (r2-m3) bracket mode's inline words fill the game's 360 KB frame builder (ep3 hub: 8 KB left at the frame's end;
+     * less hung the game): an entry is bracketed only while 32 KB stay free (its END is written regardless) */
+    put_reserve = 32768;
+    int put_ok = dmas_put(ctx, run_start ? MSCAL(0x3AB0) : 0, run_start ? MSCAL(0x0000) : 0, l.p, l.n);
+    put_reserve = 0;
+    if (!put_ok) {
         st.exact_dmas++;
         prev_native = 0;
         prev_class = cls;
@@ -792,6 +797,10 @@ void r2_cap_entry(ps2_ctx* ctx) {
 }
 
 void r2_cap_done(ps2_ctx* ctx) {
+    if (fr_open && fr_mode != R2_OFF) {                 /* (r2-m3, stats) the frame builder's free space at the frame's end */
+        uint32_t fe = ps2_r32(ctx, DMAS + 0x00) - ps2_r32(ctx, DMAS + 0x0C);
+        if (!st.dmas_min_free || fe < st.dmas_min_free) st.dmas_min_free = fe;
+    }
     if (fr_open && fr_mode == R2_BRACKET) close_bracket(ctx, -1);
     if (fr_open && fr_mode == R2_HYBRID) owe_epilogue(ctx);
     if (fr_open && fr_slot) {                     /* publish the frame's scene slot (the chain is kicked after this) */
@@ -820,13 +829,13 @@ void r2_stats_line(char* buf, size_t n) {
     double f = s->frames ? (double)s->frames : 1.0;
     int o = snprintf(buf, n, "mode %d gen %u: per frame %.0f candidates (%.0f props), %.0f native (%.0f props, %.1f clipped; %.1f runs, %.1f "
                              "epilogues), exact: level %.0f class %.0f decode %.0f budget %.0f header %.0f fade %.0f guard %.0f outline %.1f dmas %.0f; "
-                             "outlines %.1f (%.1f parsed, %.1f native, %.1f exact; scripts %u, bad %u); lit %.1f candidates %.1f native %.1f exact (light set %u, bone %u, TEX0 swap %u); decoded %u (failed %u, %.1f ms); capture %.3f ms/frame, hints %.1f KB/frame",
+                             "outlines %.1f (%.1f parsed, %.1f native, %.1f exact; scripts %u, bad %u); lit %.1f candidates %.1f native %.1f exact (light set %u, bone %u, TEX0 swap %u); decoded %u (failed %u, %.1f ms); capture %.3f ms/frame, hints %.1f KB/frame, builder free >= %u KB",
                      r2_mode, r2_store_gen(), s->cand / f, s->cand_props / f, s->native / f, s->native_props / f, s->clipped / f, s->runs / f,
                      s->epilogues / f, s->exact_level / f, s->exact_class / f, s->exact_decode / f, s->exact_budget / f, s->exact_header / f,
                      s->exact_fade / f, s->exact_guard / f, s->exact_outline / f, s->exact_dmas / f, s->outlines / f, s->outlines_parsed / f,
                      s->outline_native / f, s->outline_exact / f, s->outline_decoded, s->outline_bad,
                      s->cand_lit / f, s->native_lit / f, s->exact_lit / f, s->lit_reason[1], s->lit_reason[2], s->lit_reason[3],
-                     s->decoded, s->decode_fail, s->decode_ms, s->cap_ms / f, s->bytes_hint / f / 1024.0);
+                     s->decoded, s->decode_fail, s->decode_ms, s->cap_ms / f, s->bytes_hint / f / 1024.0, s->dmas_min_free / 1024);
     for (int r = 1; r < R2M_N && o > 0 && (size_t)o < n; r++)
         if (s->reason[r]) o += snprintf(buf + o, n - (size_t)o, " [%s %u]", r2m_reason[r], s->reason[r]);
 }
