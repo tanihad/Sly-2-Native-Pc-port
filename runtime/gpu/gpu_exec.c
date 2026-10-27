@@ -1184,10 +1184,14 @@ static struct {
     uint64_t marks[PR_N];
     uint64_t ps_inv[PR_N], occl[PR_N], prims[PR_N];
     uint32_t frames;
+    /* (r2-m7) PS2_GPU_PROF_OPS=<frame>: that frame (counted from 1 by prof_end) gets a timestamp before every op, and
+     * the GPU time per op signature is logged (which draws cost what) */
+    uint32_t ops_frame, ops_on, curpos, opos[PR_MAXQ];
 } PR = { -1 };
 
 static void prof_mark(int cat) {
-    if (PR.on <= 0 || PR.n >= PR_MAXQ - 1 || (PR.n && cat == PR.cur)) return;
+    if (PR.on <= 0 || PR.n >= PR_MAXQ - 1 || (PR.n && cat == PR.cur && !PR.ops_on)) return;
+    PR.opos[PR.n] = PR.curpos;
     if (!PR.q[PR.n]) {
         D3D11_QUERY_DESC qt = { D3D11_QUERY_TIMESTAMP, 0 };
         if (FAILED(ID3D11Device_CreateQuery(gpu_rt.dev, &qt, &PR.q[PR.n]))) { PR.on = 0; return; }
@@ -1220,7 +1224,53 @@ static void prof_begin(void) {
     }
     ID3D11DeviceContext_Begin(gpu_rt.ctx, (ID3D11Asynchronous*)PR.dis);
     PR.n = 0;
+    if (!PR.ops_frame) { const char* e = getenv("PS2_GPU_PROF_OPS"); PR.ops_frame = e ? (uint32_t)atoi(e) : 0xFFFFFFFFu; }
+    PR.ops_on = PR.frames + 1 == PR.ops_frame;
+    PR.curpos = 0xFFFFFFFFu;
     prof_mark(PR_OTHER);
+}
+
+/* (r2-m7) PS2_GPU_PROF_OPS: the op at byte pos of the frame's commands, as a short signature */
+static void prof_op_sig(const gpu_front_frame_data* fd, uint32_t pos, int cat, char* s, size_t n) {
+    if (!fd || pos == 0xFFFFFFFFu || pos + sizeof(gpu_fop) > fd->cmd_bytes) { snprintf(s, n, "(%s)", cat < PR_N ? pr_names[cat] : "end"); return; }
+    const gpu_fop* h = (const gpu_fop*)(fd->cmd + pos);
+    if (h->op == GPU_FOP_DRAW) {
+        const gpu_fop_draw* d = (const gpu_fop_draw*)h;
+        uint32_t st = 0xFFFFFFFFu;       /* the first record's state: its frame mask / alpha / test (what the draw is) */
+        const gpu_staterec* sr = NULL;
+        if (d->cls == GPU_PC_SPRITE && d->rec_first + 24u <= fd->rec_bytes) st = *(const uint32_t*)(fd->rec + d->rec_first + 20u);
+        if (d->cls == GPU_PC_TRI && (d->ps_key & GPU_PSK_FF_FAST) && d->rec_first + 116u <= fd->rec_bytes)
+            st = *(const uint32_t*)(fd->rec + d->rec_first + 112u);
+        if (st != 0xFFFFFFFFu && st < fd->state_count) sr = (const gpu_staterec*)(fd->states + (size_t)st * GPU_STATE_BYTES);
+        snprintf(s, n, "draw %s cls %u ct %u zt %u tex %u blend %u depth %u wm %X feat %X%s", pr_names[cat], d->cls, d->ct, d->zt,
+                 d->tex, d->blend, d->depth, d->wmask, d->feat, "");
+        if (sr) { size_t l = strlen(s); snprintf(s + l, n - l, " fmask %08X alpha %X tex0 %llX", sr->fmask, sr->alpha, (unsigned long long)sr->tex0); }
+    } else {
+        snprintf(s, n, "op %u target %u (%s)", h->op, ((const uint16_t*)h)[2], cat < PR_N ? pr_names[cat] : "?");
+    }
+}
+
+static void prof_ops_report(const UINT64* ts, double freq) {
+    typedef struct { char sig[200]; double ms; uint32_t n; } agg;
+    static agg A[512];
+    int na = 0;
+    double tot = 0;
+    for (int i = 0; i + 1 < PR.n; i++) {
+        double ms = (double)(ts[i + 1] - ts[i]) * 1000.0 / freq;
+        char s[200];
+        prof_op_sig(X.fd, PR.opos[i], PR.cat[i], s, sizeof s);
+        int k;
+        for (k = 0; k < na && strcmp(A[k].sig, s); k++) {}
+        if (k == na) { if (na == 512) continue; snprintf(A[na].sig, sizeof A[na].sig, "%s", s); A[na].ms = 0; A[na].n = 0; na++; }
+        A[k].ms += ms;
+        A[k].n++;
+        tot += ms;
+    }
+    for (int i = 0; i < na; i++)          /* (largest first) */
+        for (int j = i + 1; j < na; j++)
+            if (A[j].ms > A[i].ms) { agg t = A[i]; A[i] = A[j]; A[j] = t; }
+    gpu_log("prof-ops frame %u: %.3f ms in %d intervals, %d signatures", PR.frames + 1, tot, PR.n - 1, na);
+    for (int i = 0; i < na && i < 48; i++) gpu_log("prof-ops %7.3f ms %4u x %s", A[i].ms, A[i].n, A[i].sig);
 }
 
 static void prof_end(void) {
@@ -1238,9 +1288,11 @@ static void prof_end(void) {
     UINT64 prev = 0;
     double f[PR_N] = { 0 }, ft = 0;
     uint64_t fi[PR_N] = { 0 }, fo[PR_N] = { 0 }, fp[PR_N] = { 0 };
+    static UINT64 tsv[PR_MAXQ];
     for (int i = 0; i < PR.n; i++) {
         UINT64 t = 0;
         while (ID3D11DeviceContext_GetData(gpu_rt.ctx, (ID3D11Asynchronous*)PR.q[i], &t, sizeof t, 0) == S_FALSE) SwitchToThread();
+        tsv[i] = t;
         if (i) {
             double ms = (double)(t - prev) * 1000.0 / (double)dj.Frequency;
             f[PR.cat[i - 1]] += ms;
@@ -1267,6 +1319,7 @@ static void prof_end(void) {
         s->phase_ms[4] = (float)(f[PR_ZRESOLVE] + f[PR_ZSYNC]);
         s->phase_ms[5] = (float)(f[PR_OTHER] + f[PR_TARGET] + f[PR_MEM] + f[PR_CLEAR] + f[PR_SHADOW] + f[PR_PRESENT]);
     }
+    if (PR.ops_on) prof_ops_report(tsv, (double)dj.Frequency);
     if (ft > 50.0) return;               /* (loading frames: left out) */
     for (int c = 0; c < PR_N; c++) { PR.ms[c] += f[c]; PR.ps_inv[c] += fi[c]; PR.occl[c] += fo[c]; PR.prims[c] += fp[c]; }
     PR.total += ft;
@@ -2154,9 +2207,11 @@ void gpu_exec_frame(const void* payload) {
     for (size_t pos = 0; ok && pos + sizeof(gpu_fop) <= fd->cmd_bytes;) {
         const gpu_fop* h = (const gpu_fop*)(fd->cmd + pos);
         if (!h->size) break;
+        PR.curpos = (uint32_t)pos;
         if (X.probe && h->op != GPU_FOP_DRAW && h->op != GPU_FOP_CLUT && h->op != GPU_FOP_PATCH)   /* (debugging: the memory ops) */
             gpu_log("exec v%u%s op %u target %u", fd->vblank, fd->flags & GPU_FD_PARTIAL ? "p" : "", h->op, ((const uint16_t*)h)[2]);
-        if (PR.on > 0 && h->op != GPU_FOP_DRAW)
+        if (PR.on > 0 && h->op != GPU_FOP_DRAW &&
+            !(PR.ops_on && (h->op == GPU_FOP_CLUT || h->op == GPU_FOP_PATCH) && PR.cur == PR_MEM))
             prof_mark(h->op == GPU_FOP_TARGET || h->op == GPU_FOP_RELEASE ? PR_TARGET
                       : h->op == GPU_FOP_PATCH || h->op == GPU_FOP_LOAD || h->op == GPU_FOP_XCOPY || h->op == GPU_FOP_DOWNLOAD ||
                         h->op == GPU_FOP_CLUT ? PR_MEM
