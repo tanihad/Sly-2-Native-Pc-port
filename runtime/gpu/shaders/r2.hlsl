@@ -52,7 +52,61 @@ struct R2V {
     uint colb : COLB;
     uint batch : BATCH;                  // (r2-m2) the vertex's sub-batch in its mesh
     uint did : DRAWID;                   // the draw record (StartInstanceLocation through the iota buffer)
+    uint nrm : NRM;                      // (r2-m3) lit: the source record's normal (s8 x 4)
+    uint lcol : LCOL;                    //         its colour (u8 x 4)
+    uint wts : WTS;                      //         skinned: its 4 bone weights (u8 x 4)
 };
+
+// ---- (r2-m3) lit / skinned sub-batches: the main program's 0x1940 (4-bone skinning of position and normal, the normal
+// renormalised x 127 and truncated) and 0x1050 (the light block's 4 lights: f = min(d + d^3, threshold), colour = sum of
+// the lights' colours x f + ambient; colour A = the clamped light x the normal's w, colour B = the vertex colour x the
+// "highlight" share; runtime/r2/r2_vertex.c r2_lit_eval is the VU-exact twin). Positions use the VU's arithmetic (Z ties
+// with exact draws), the colours plain floats (the level-1 gate: within +-1). The entry's extra qwords (fdata): the light
+// block (R2_LIGHT_QW = 11: directions transposed [0..2], colours x z x 2 [4..7], ambient [8], thresholds [9], VU 10
+// [10]), then the header's qwords from 0x15 (bones: 4 rows each; UV offsets).
+float4 r2_xq(uint xb, uint q) { return asfloat(fdata.Load4(xb + q * 16u)); }
+float r2_sb(uint w, uint c) { return (float)((int)(w << (24u - 8u * c)) >> 24); }
+float r2_ub(uint w, uint c) { return (float)((w >> (8u * c)) & 255u); }
+void r2_lit(R2V i, uint4 lm, uint xb, inout float3 p, inout uint cola, inout uint colb, inout int2 uv) {
+    uint lit = lm.x & 1u, skin = (lm.x >> 1) & 3u, tanim = lm.x >> 16;
+    float4 n = float4(r2_sb(i.nrm, 0u), r2_sb(i.nrm, 1u), r2_sb(i.nrm, 2u), r2_sb(i.nrm, 3u));
+    if (skin != 0u) {
+        float w[4];
+        [unroll] for (uint c = 0u; c < 4u; c++) w[c] = vu_mul(r2_ub(i.wts, c), asfloat(0x3B808081u));
+        float3 P = float3(0.0, 0.0, 0.0), N = float3(0.0, 0.0, 0.0);
+        [unroll] for (uint k = 0u; k < 4u; k++) {
+            uint bo = ((k < 2u ? lm.y : lm.z) >> (16u * (k & 1u))) & 0xFFFFu;
+            uint q = 11u + bo - 0x15u;
+            float4 M0 = r2_xq(xb, q), M1 = r2_xq(xb, q + 1u), M2 = r2_xq(xb, q + 2u), M3 = r2_xq(xb, q + 3u);
+            [unroll] for (uint j = 0u; j < 3u; j++) {
+                float t = vu_add(vu_add(vu_add(vu_mul(M0[j], p.x), vu_mul(M1[j], p.y)), vu_mul(M2[j], p.z)), M3[j]);
+                P[j] = k == 0u ? vu_mul(t, w[0]) : vu_add(P[j], vu_mul(t, w[k]));
+                N[j] += (M0[j] * n.x + M1[j] * n.y + M2[j] * n.z) * w[k];
+            }
+        }
+        p = P;
+        if (skin == 2u) n.xyz = (float3)(int3)(N * (rsqrt(dot(N, N)) * 127.0));
+    }
+    if (lit != 0u) {
+        float4 T0 = r2_xq(xb, 0u), T1 = r2_xq(xb, 1u), T2 = r2_xq(xb, 2u), amb = r2_xq(xb, 8u), thr = r2_xq(xb, 9u),
+               v10 = r2_xq(xb, 10u);
+        float4 d = T0 * n.x + T1 * n.y + T2 * n.z;
+        float4 f = min(d + d * (d * d), thr);
+        amb.w = amb.w + asfloat(lm.w) + v10.w;
+        float4 C = r2_xq(xb, 4u) * f.x + r2_xq(xb, 5u) * f.y + r2_xq(xb, 6u) * f.z + r2_xq(xb, 7u) * f.w + amb;
+        float mx = max(max(C.x, C.y), C.z);
+        float lim = max(2.0 - mx, 0.0);
+        float4 cl = float4(min(C.xyz, 2.0), min(C.w, lim));
+        float k = lim - cl.w;
+        float den = (2.0 + asfloat(0x3C810247u)) * asfloat(0x427DFF7Du) - k * asfloat(0x427DFF7Du);
+        float4 cf = float4(r2_ub(i.lcol, 0u), r2_ub(i.lcol, 1u), r2_ub(i.lcol, 2u), r2_ub(i.lcol, 3u));
+        int3 a = (int3)((cl.xyz + v10.xyz * k) * n.w);
+        int3 b = (int3)(cf.xyz * cl.w * (cf.w / den));
+        cola = ((uint)a.x & 255u) | (((uint)a.y & 255u) << 8) | (((uint)a.z & 255u) << 16) | (((uint)(int)cf.w & 255u) << 24);
+        colb = ((uint)b.x & 255u) | (((uint)b.y & 255u) << 8) | (((uint)b.z & 255u) << 16) | (((uint)(int)den & 255u) << 24);
+    }
+    if (tanim != 0u) uv += asint(fdata.Load2(xb + (11u + tanim - 0x15u) * 16u));
+}
 
 #ifndef R2_CLIP
 #define R2_CLIP 0                        // (r2-m2) 1: the pipeline of meshes crossing the VU's guard band (r2_gs_clip)
@@ -131,27 +185,37 @@ void r2_vertex(R2V i, out R2O o, out float4 clip, out float4 alt) {
         skip = ((fdata.Load((dr.z + (rel >> 5)) * 4u) >> (rel & 31u)) & 1u) == 0u;
     }
     uint mat = r2_mtab.Load((dr.w & 0xFFFFFu) * 4u) + i.batch * 3u + rp;
-    uint4 d3 = r2_mats.Load4(mat * 48u + 32u);   // fog scale, fog w max, flags
+    uint4 d3 = r2_mats.Load4(mat * 64u + 32u);   // fog scale, fog w max, flags
     uint eb = sg.off.y + dr.x * 80u;
     float4 m[4] = { asfloat(fdata.Load4(eb)), asfloat(fdata.Load4(eb + 16u)), asfloat(fdata.Load4(eb + 32u)),
                     asfloat(fdata.Load4(eb + 48u)) };
     float fade = asfloat(fdata.Load(eb + 64u));
+    // (r2-m3) lit / skinned sub-batches (r2_lit): position, colours A / B, UV offset from the entry's extra qwords
+    uint4 lm = r2_mats.Load4(mat * 64u + 44u);
+    float3 ipos = i.pos;
+    uint icola = i.cola, icolb = i.colb;
+    int2 iuv = i.uv;
+    uint xq = fdata.Load(eb + 72u);
+    if (lm.x != 0u && xq != 0u) {
+        r2_lit(i, lm, (xq - 1u) * 16u, ipos, icola, icolb, iuv);
+        if ((asuint(r2_misc.w) & 32u) != 0u) { icola = 0x800000FFu; icolb = 0u; }   // (PS2_R2_DBG 32: lit entries red)
+    }
     float4 c0 = asfloat(fdata.Load4(sg.off.x)), c1 = asfloat(fdata.Load4(sg.off.x + 16u));   // VU 0, VU 1
     // 0x07F8: MULAx / MADDAy / MADDAz / MADDw (row 3 x 1.0 exact), M = world x clip (gpu_r2front.c, VU-exact too)
     float c[4];
     float q;
     uint bx, by, bz;
     if ((asuint(r2_misc.w) & 4u) != 0u) {                   // (PS2_R2_DBG 4: plain float arithmetic, cost experiments)
-        [unroll] for (uint j2 = 0u; j2 < 4u; j2++) c[j2] = m[0][j2] * i.pos.x + m[1][j2] * i.pos.y + m[2][j2] * i.pos.z + m[3][j2];
+        [unroll] for (uint j2 = 0u; j2 < 4u; j2++) c[j2] = m[0][j2] * ipos.x + m[1][j2] * ipos.y + m[2][j2] * ipos.z + m[3][j2];
         q = 1.0 / c[3];
         bx = asuint(c1.x + c0.x * c[0] * q);
         by = asuint(c1.y + c0.y * c[1] * q);
         bz = asuint(c1.z + c0.z * c[2] * q);
     } else {
     [unroll] for (uint j = 0u; j < 4u; j++) {
-        float acc = vu_mul(m[0][j], i.pos.x);
-        acc = vu_add(acc, vu_mul(m[1][j], i.pos.y));
-        acc = vu_add(acc, vu_mul(m[2][j], i.pos.z));
+        float acc = vu_mul(m[0][j], ipos.x);
+        acc = vu_add(acc, vu_mul(m[1][j], ipos.y));
+        acc = vu_add(acc, vu_mul(m[2][j], ipos.z));
         c[j] = vu_add(acc, m[3][j]);
     }
     q = vu_rcp(c[3]);                                       // (inside the guard band: w > 0)
@@ -171,7 +235,7 @@ void r2_vertex(R2V i, out R2O o, out float4 clip, out float4 alt) {
     o.gv = int3((int)(bx & 0xFFFFu) - (int)sg.map.z, (int)(by & 0xFFFFu) - (int)sg.map.w, (int)((bz >> 4) & 0xFFFFFFu));
     // colour: A (pass A) or B, VU 8.x fade on colour A's alpha / colour B's RGB (0x0BE0, truncated)
     bool csel = (d3.z & R2D_CSEL) != 0u;   // (material flags)
-    uint col = csel ? i.colb : i.cola;
+    uint col = csel ? icolb : icola;
     uint4 cc = uint4(col & 255u, (col >> 8) & 255u, (col >> 16) & 255u, col >> 24);
     if (fade < 1.0) {
         if (csel) cc.xyz = (uint3)((float3)cc.xyz * fade);
@@ -182,7 +246,7 @@ void r2_vertex(R2V i, out R2O o, out float4 clip, out float4 alt) {
     float fw = vu_add(asfloat(i.wbits), vu_mul(asfloat(d3.x), vu_mul(min(w, asfloat(d3.y)), q)));
     o.fog = (float)((asuint(fw) >> 4) & 255u);
     // STQ = (ITOF12 u, v, 1) x Q, interpolated linearly on screen and divided per pixel (the GS's S/Q, T/Q)
-    o.stq = float3(vu_mul((float)i.uv.x * (1.0 / 4096.0), q), vu_mul((float)i.uv.y * (1.0 / 4096.0), q), q);
+    o.stq = float3(vu_mul((float)iuv.x * (1.0 / 4096.0), q), vu_mul((float)iuv.y * (1.0 / 4096.0), q), q);
     o.mr = uint3(mat, ((dr.y >> 2) & 1u) | (sg.off.z & 1u) << 1, so);   // (rule | FBA << 1: the PS loads no segment record)
     if (skip) o.pos = float4(2.0, 2.0, 0.5, 1.0);   // (outside the clip volume: the batch's triangles are rejected)
     clip = float4(c[0], c[1], c[2], w);
@@ -190,7 +254,7 @@ void r2_vertex(R2V i, out R2O o, out float4 clip, out float4 alt) {
     // a clipped triangle's U, V (perspective-correct) and fog (MINI(w, VU 9.z) x Q is 1 while w < VU 9.z, and behind
     // the camera; the VU clipper's new vertices get theirs from the same formula)
     float wq = w < asfloat(d3.y) ? 1.0 : asfloat(d3.y) / w;
-    alt = float4((float)i.uv.x * (1.0 / 4096.0), (float)i.uv.y * (1.0 / 4096.0), 1.0,
+    alt = float4((float)iuv.x * (1.0 / 4096.0), (float)iuv.y * (1.0 / 4096.0), 1.0,
                  (float)((asuint(vu_add(asfloat(i.wbits), vu_mul(asfloat(d3.x), wq))) >> 4) & 255u));
 }
 
@@ -308,7 +372,7 @@ R2F r2_ps(R2O i) {
         d.z = i.pos.z;
         return d;
     }
-    uint mb = i.mr.x * 48u;
+    uint mb = i.mr.x * 64u;
     uint4 d1 = r2_mats.Load4(mb);
     uint4 d2 = r2_mats.Load4(mb + 16u);
     uint4 d3 = r2_mats.Load4(mb + 32u);

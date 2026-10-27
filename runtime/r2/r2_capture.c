@@ -44,6 +44,10 @@ uint32_t ps2_vblank_count(void);
 #define WID_CURRENT 0x003D4A68u          /* game state blob 0x3D4A60 + 8: widCurrent (notes/warp.md) */
 #define GS_HINT_REG 0x7Fu
 #define MSCAL(a) (0x14000000u | ((a) >> 3))
+/* (r2-m3) the main VU1 program's render classes: 0, and 11 (class 0 with FBA_1 = 1 around it: characters, the stream's
+ * FBA reaches R2's segments through the GS environment) */
+static int class11_on = 1;              /* PS2_R2_CLASS11=0: class 11 stays exact (diagnostics) */
+#define MAINCLASS(c) ((c) == 0 || ((c) == 11 && class11_on))
 
 volatile int r2_mode;
 
@@ -70,6 +74,9 @@ static void new_generation(uint32_t wid) {
 /* ---- settings, statistics ------------------------------------------------------------------------------------------ */
 static int cfg_done, env_mode = -1, check_on, levels_all, nlevels;
 static int kinds_world = 1, kinds_props = 1;   /* (r2-m2) PS2_R2_KINDS=world,props */
+static int lits_on = 1;                        /* (r2-m3) PS2_R2_KINDS ...,lit: lit / skinned props */
+static int outlines_on = 1;                    /* (r2-m3) PS2_R2_KINDS ...,outline: outline entries generated natively */
+static int outlined_native = 0;                /* (r2-m3) PS2_R2_OUTLINED=1: outlined objects native (their outlines are R4) */
 static uint32_t block[32];                     /* (r2-m2) blocked levels (world ids): none known (the R2 sweep) */
 static int nblock;
 /* (r2-m2) PS2_R2_CLIP=1: meshes crossing the VU's guard band native through the clip pipeline. Off by default: the GPU's
@@ -83,15 +90,17 @@ static LARGE_INTEGER qpf;
 typedef struct {
     uint32_t frames, cand, native, exact_level, exact_class, exact_decode, exact_budget, exact_dmas, exact_header, exact_fade, exact_guard,
         decoded, decode_fail, bytes_hint, runs, epilogues, cand_props, native_props, exact_outline, outlines, outlines_parsed, clipped,
-        exact_bracket;
+        exact_bracket, cand_lit, native_lit, exact_lit, lit_reason[4], outline_bad, outline_decoded, outline_native, outline_exact, dmas_min_free;
     double decode_ms, cap_ms;
     uint32_t reason[R2M_N];
 } r2_stats;
 static r2_stats st, st_report;
 static int stats_on;
 
+extern const r2_slot* (*gs_r2_slot_fn)(uint32_t index);   /* gs_draw.c: R2H_OUTLINE packets */
 static void configure(void) {
     cfg_done = 1;
+    gs_r2_slot_fn = r2_slot_at;
     QueryPerformanceFrequency(&qpf);
     const char* e = getenv("PS2_R2");
     if (e && *e) {
@@ -124,7 +133,11 @@ static void configure(void) {
             p = *end ? end + 1 : end;
         }
     e = getenv("PS2_R2_KINDS");                  /* (r2-m2) "world", "props" or both (default) */
-    if (e && *e) { kinds_world = strstr(e, "world") != NULL; kinds_props = strstr(e, "prop") != NULL; }
+    if (e && *e) { kinds_world = strstr(e, "world") != NULL; kinds_props = strstr(e, "prop") != NULL; lits_on = strstr(e, "lit") != NULL; outlines_on = strstr(e, "outline") != NULL; }
+    e = getenv("PS2_R2_CLASS11");
+    if (e && *e) class11_on = *e != '0';
+    e = getenv("PS2_R2_OUTLINED");
+    if (e && *e) outlined_native = *e == '1';
     e = getenv("PS2_R2_CLIP");
     if (e && *e) clip_on = *e == '1';
     e = getenv("PS2_R2_BUDGET_MS");
@@ -161,6 +174,7 @@ static int fr_mode;                       /* the mode for the whole frame (decid
 static int fr_level_ok, fr_model_ok, fr_block_sent;
 static uint32_t fr_serial;
 static r2_frame_block fr_block;
+static float fr_vu10[4];                  /* (r2-m3) the frame's VU 10 (fog / brightness) */
 static double fr_decode_ms;
 static uint8_t alloc_mark[RENDER_LIST_MAX];   /* entries made by the allocator this frame */
 static r2_slot* SL;                       /* (r2-m2) the scene slot ring (hybrid; r2_mesh.c r2_slot_ring) */
@@ -179,6 +193,10 @@ void r2_cap_alloc(ps2_ctx* ctx) {
 /* ---- the frame builder -------------------------------------------------------------------------------------------- */
 /* Appends one quadword of VIF codes (vif[0..2] then DIRECT n) and n quadwords of GIF data (a PACKED A+D tag and the
  * pairs) at the write position, inside a CNT of its own when none is open. 0: it cannot be written now. */
+static uint32_t put_reserve;             /* (r2-m3) bytes of the frame builder the write must leave free */
+#define BXQ_MAX 256u
+static uint64_t bxq_hash[BXQ_MAX];       /* (r2-m3, bracket mode) the extra blocks written this frame */
+static uint32_t bxq_n;
 static int dmas_put(ps2_ctx* ctx, uint32_t v0, uint32_t v1, const uint64_t* ad, uint32_t npairs) {
     uint32_t end = ps2_r32(ctx, DMAS + 0x00), cnt = ps2_r32(ctx, DMAS + 0x08), cur = ps2_r32(ctx, DMAS + 0x0C);
     uint32_t vif_words = ps2_r32(ctx, DMAS + 0x10), gif_open = ps2_r32(ctx, DMAS + 0x14);
@@ -186,7 +204,7 @@ static int dmas_put(ps2_ctx* ctx, uint32_t v0, uint32_t v1, const uint64_t* ad, 
     uint32_t nqw = 2 + npairs;                          /* VIF quadword, GIF tag, pairs */
     uint32_t pad = (16 - (cur & 15)) & 15;
     uint32_t need = pad + (nqw + (cnt ? 0u : 1u)) * 16u;
-    if (cur + need > end) return 0;
+    if (cur + need + put_reserve > end) return 0;
     for (; cur & 15; cur += 4) ps2_w32(ctx, cur, 0);
     if (!cnt) {
         ps2_w64(ctx, cur, 0x10000000ull | nqw);         /* DMA CNT, QWC nqw; VIF NOP NOP */
@@ -241,9 +259,78 @@ static void ad_epilogue(adlist* l, const r2_pass* P) {
 static float outl_w[OUTL_MAX][16];
 static int n_outl, outl_unparsed;
 
+/* (r2-m3) skinned objects upload an identity world matrix: their outline entries are recognised by the bones instead.
+ * Every translation row (w = 1.0) an outline header uploads goes into a set; a skinned mesh whose first bone's
+ * translation is in it belongs to an outlined object (the EE computes one palette per object and frame: both copies
+ * have the same bits). */
+#define OQ_N 8192u
+static uint64_t oq_key[OQ_N];
+static uint32_t oq_gen[OQ_N], oq_cur = 1;
+static uint64_t qhash(const uint32_t* q) {
+    uint64_t h = 0xCBF29CE484222325ull;
+    for (int i = 0; i < 4; i++) { h ^= q[i]; h *= 0x100000001B3ull; h ^= h >> 31; }
+    return h ? h : 1;
+}
+static void oq_add(const uint32_t* q) {
+    uint64_t k = qhash(q);
+    for (uint32_t i = (uint32_t)k & (OQ_N - 1), n = 0; n < OQ_N; n++, i = (i + 1) & (OQ_N - 1))
+        if (oq_gen[i] != oq_cur || oq_key[i] == k) { oq_gen[i] = oq_cur; oq_key[i] = k; return; }
+}
+static int oq_has(const uint32_t* q) {
+    uint64_t k = qhash(q);
+    for (uint32_t i = (uint32_t)k & (OQ_N - 1), n = 0; n < OQ_N && oq_gen[i] == oq_cur; n++, i = (i + 1) & (OQ_N - 1))
+        if (oq_key[i] == k) return 1;
+    return 0;
+}
+
+/* ---- (r2-m3, R4) outline entries: the outline program's work done here (r2_outline.c), its packets in the frame's
+ * slot, an R2H_OUTLINE hint in the chain (the GS thread decodes them in place), the entry's mesh CALL dropped. A script
+ * per mesh DMA (r2_outline_decode), checked once to read only what the header and the chain write. ------------------ */
+#define OM_N 2048u
+typedef struct { uint32_t addr; int bad; r2_oscript* s; uint8_t fp[32]; } om_ent;
+static om_ent* OM;
+static uint8_t om_native[RENDER_LIST_MAX];  /* this frame: the outline entry at this index is generated here */
+static uint8_t om_buf[1u << 18], om_buf2[1u << 18];
+
+static void om_reset(void) {
+    if (!OM) return;
+    for (uint32_t i = 0; i < OM_N; i++) { r2_outline_free(OM[i].s); OM[i].s = NULL; OM[i].addr = 0; }
+}
+/* the script of the outline entry (header c1 just parsed: r2_header_qw), NULL when it stays exact */
+static r2_oscript* outline_for(uint32_t c1, uint32_t c2) {
+    if (!OM && !(OM = calloc(OM_N, sizeof *OM))) return NULL;
+    if (!c2 || (c2 & 0x80000000u) || c2 + 64 > PS2_RAM_SIZE) return NULL;
+    const uint8_t* head = ps2_ram + (c2 & 0x1FFFFF0u);
+    uint32_t h = (c2 * 2654435761u) >> 21;
+    for (uint32_t n = 0; n < OM_N; n++, h = (h + 1) & (OM_N - 1)) {
+        om_ent* e = &OM[h];
+        if (e->addr == c2) {
+            if (!memcmp(e->fp, head, 32)) return e->bad ? NULL : e->s;
+            r2_outline_free(e->s); e->s = NULL; e->addr = 0;      /* (content changed: decoded again) */
+        }
+        if (!e->addr) {
+            e->addr = c2;
+            memcpy(e->fp, head, 32);
+            e->bad = r2_outline_decode(ps2_ram, c1, c2, &e->s) != R2M_OK;
+            if (!e->bad) {                                         /* the script reads only what is written */
+                uint32_t n1 = 0, n2 = 0;
+                e->bad = !r2_outline_exec(e->s, r2_header_qw, &fr_block, 0u, om_buf, sizeof om_buf, &n1) ||
+                         !r2_outline_exec(e->s, r2_header_qw, &fr_block, 0xA5A5A5A5u, om_buf2, sizeof om_buf2, &n2) ||
+                         n1 != n2 || memcmp(om_buf, om_buf2, n1);
+            }
+            if (e->bad) { r2_outline_free(e->s); e->s = NULL; st.outline_bad++; }
+            else st.outline_decoded++;
+            return e->bad ? NULL : e->s;
+        }
+    }
+    return NULL;
+}
+
 static void collect_outlines(ps2_ctx* ctx) {
     n_outl = 0;
     outl_unparsed = 0;
+    if (!++oq_cur) oq_cur = 1;
+    memset(om_native, 0, sizeof om_native);
     uint32_t left = ctx->r[20].uw[0], p = ctx->r[21].uw[0];   /* $s4 entries left (this one included), $s5 -> its pointer */
     if (left > RENDER_LIST_MAX) left = RENDER_LIST_MAX;
     for (uint32_t i = 0; i < left; i++) {
@@ -256,7 +343,16 @@ static void collect_outlines(ps2_ctx* ctx) {
         st.outlines++;
         if (!c1 || !r2_header_parse(ps2_ram, c1, w, vu8)) { outl_unparsed++; continue; }
         st.outlines_parsed++;
+        /* (r2-m3) an outline generated here does not keep its object exact */
+        if (outlines_on && fr_model_ok && outline_for(c1, ps2_r32(ctx, e + 12))) {
+            om_native[(e - RENDER_LIST) / 16u] = 1;
+            continue;
+        }
         if (n_outl < OUTL_MAX) memcpy(outl_w[n_outl++], w, sizeof w);
+        for (uint32_t q = 9; q < R2_HQ_MAX; q++) {           /* (r2-m3) the bones' translation rows */
+            const uint32_t* v = r2_header_qw(q);
+            if (v && v[3] == 0x3F800000u) oq_add(v);
+        }
     }
 }
 
@@ -278,7 +374,7 @@ static void frame_begin(ps2_ctx* ctx) {
     st.frames++;
     if (fr_mode == R2_OFF) return;
     uint32_t wid = ps2_r32(ctx, WID_CURRENT);
-    if (wid != cur_wid || !have_gen) new_generation(wid);
+    if (wid != cur_wid || !have_gen) { new_generation(wid); om_reset(); }
     fr_level_ok = levels_all;
     for (int i = 0; i < nlevels && !fr_level_ok; i++) fr_level_ok = levels[i] == wid;
     for (int i = 0; i < nblock && fr_level_ok; i++) fr_level_ok = block[i] != wid;
@@ -294,6 +390,10 @@ static void frame_begin(ps2_ctx* ctx) {
     }
     r2_screen_model sm;
     fr_model_ok = r2_screen_model_of(&fr_block, &sm);
+    {                                             /* (r2-m3) VU 10: *(sp + 0x8180) + 0x3E28 (f_00157FA0 at 0x1582A8) */
+        uint32_t a = ps2_r32(ctx, sp + 0x8180) + 0x3E28u;
+        for (int i = 0; i < 4; i++) { uint32_t u = ps2_r32(ctx, a + 4 * (uint32_t)i); memcpy(&fr_vu10[i], &u, 4); }
+    }
     if (kinds_props) collect_outlines(ctx);
     fr_serial++;
     if (!fr_serial) fr_serial = 1;                /* (0 marks a slot being written) */
@@ -304,7 +404,7 @@ static void frame_begin(ps2_ctx* ctx) {
             fr_slot = &SL[fr_serial % R2_SLOTS];
             __atomic_store_n(&fr_slot->serial, 0u, __ATOMIC_RELEASE);
             __atomic_thread_fence(__ATOMIC_RELEASE);
-            fr_slot->nent = fr_slot->nrun = 0;
+            fr_slot->nent = fr_slot->nrun = fr_slot->nxq = 0;
             fr_slot->fb = fr_block;
         }
     }
@@ -361,7 +461,7 @@ static int likely_native(ps2_ctx* ctx, uint32_t e) {
     if (e < RENDER_LIST || e >= RENDER_LIST + RENDER_LIST_MAX * 16) return 0;
     int prop = alloc_mark[(e - RENDER_LIST) / 16u];
     uint32_t prio = ps2_r32(ctx, e);
-    if (prio > 25 || ps2_r32(ctx, CLASS_TABLE + prio * 4) != 0) return 0;
+    if (prio > 25 || !MAINCLASS(ps2_r32(ctx, CLASS_TABLE + prio * 4))) return 0;
     uint32_t c1 = ps2_r32(ctx, e + 8), c2 = ps2_r32(ctx, e + 12);
     if (!c1 || !MM || (prop ? !kinds_props || !c2 : !kinds_world)) return 0;
     uint32_t addr = c2 ? c2 : c1;
@@ -386,13 +486,73 @@ static int inside_guard(const r2_mesh* m, const float mc[16]) {
     return 1;
 }
 
+/* ---- (r2-m3) lit / skinned entries: the extra qwords (light block + the header's qwords R2_HQ_LO .. hq_hi: bones, UV
+ * offsets), from the header just parsed (r2_header_qw) ---------------------------------------------------------- */
+static float xbuf[R2_LIGHT_QW + R2_HQ_MAX][4];
+static int lit_extra(const r2_mesh* m) {
+    if (m->any_lit) {
+        if (!r2_lights_prep(r2_header_qw, m, fr_vu10, (float(*)[4])xbuf)) return -1;
+    } else memset(xbuf, 0, R2_LIGHT_QW * 16);
+    uint32_t hi = m->hq_hi > R2_HQ_LO ? m->hq_hi : R2_HQ_LO;
+    for (uint32_t q = R2_HQ_LO; q < hi; q++) {
+        const uint32_t* v = r2_header_qw(q);
+        if (v) memcpy(xbuf[R2_LIGHT_QW + q - R2_HQ_LO], v, 16);
+        else memset(xbuf[R2_LIGHT_QW + q - R2_HQ_LO], 0, 16);
+    }
+    for (uint32_t b = 0; b < m->nb; b++) {
+        const r2_batch* B = &m->b[b];
+        if (B->skin)
+            for (int j = 0; j < 4; j++)
+                for (uint32_t r = 0; r < 4; r++) if (!r2_header_qw(B->bone[j] + r)) return -2;   /* (a bone not uploaded) */
+        if (B->tanim) {
+            const uint32_t* t = r2_header_qw(B->tanim);
+            if (!t || (t[2] & 0xFFFF)) return -3;            /* (a TEX0 swap this frame: exact) */
+        }
+    }
+    return (int)(R2_LIGHT_QW + (hi - R2_HQ_LO));
+}
+
+static int corner_inside(float x, float y, float z, const float* B, const float mc[16]) {
+    float p[3] = { x, y, z };
+    if (B) for (int j = 0; j < 3; j++) p[j] = x * B[j] + y * B[4 + j] + z * B[8 + j] + B[12 + j];
+    float c[4];
+    for (int j = 0; j < 4; j++) c[j] = p[0] * mc[j] + p[1] * mc[4 + j] + p[2] * mc[8 + j] + mc[12 + j];
+    float lim = c[3] * 0.999f;
+    return c[3] > 0.0f && c[0] <= lim && c[0] >= -lim && c[1] <= lim && c[1] >= -lim && c[2] <= lim && c[2] >= -lim;
+}
+/* a skinned mesh's vertices are convex combinations of its rest positions under its bones: inside the union of the
+ * rest bounds' images under every bone it uses */
+static int skin_inside_guard(const r2_mesh* m, const float mc[16]) {
+    static uint32_t seen[R2_HQ_MAX], seen_gen;
+    seen_gen++;
+    int rigid = 0;
+    for (uint32_t b = 0; b < m->nb; b++) {
+        const r2_batch* B = &m->b[b];
+        if (!B->skin) { rigid = 1; continue; }
+        for (int j = 0; j < 4; j++) {
+            uint32_t o = B->bone[j];
+            if (seen[o] == seen_gen) continue;
+            seen[o] = seen_gen;
+            const float* M = xbuf[R2_LIGHT_QW + o - R2_HQ_LO];
+            for (int k = 0; k < 8; k++)
+                if (!corner_inside(k & 1 ? m->bmax[0] : m->bmin[0], k & 2 ? m->bmax[1] : m->bmin[1], k & 4 ? m->bmax[2] : m->bmin[2], M, mc))
+                    return 0;
+        }
+    }
+    if (rigid)
+        for (int k = 0; k < 8; k++)
+            if (!corner_inside(k & 1 ? m->bmax[0] : m->bmin[0], k & 2 ? m->bmax[1] : m->bmin[1], k & 4 ? m->bmax[2] : m->bmin[2], NULL, mc))
+                return 0;
+    return 1;
+}
+
 static void close_bracket(ps2_ctx* ctx, int cls) {
     if (!bracket_open) return;
     bracket_open = 0;
     adlist l = { .n = 0 };
     ad_hint(&l, R2H_END, 0, 0);
     /* the entry's own tail kicks first (the main program's continuations), unless a class switch did it */
-    int same = cls == 0 && prev_class == 0;
+    int same = MAINCLASS(cls) && MAINCLASS(prev_class);
     dmas_put(ctx, same ? MSCAL(0x3AB0) : 0, same ? MSCAL(0x0000) : 0, l.p, l.n);
 }
 
@@ -421,18 +581,46 @@ void r2_cap_entry(ps2_ctx* ctx) {
     int cls = (int)ctx->r[17].uw[0];
     uint32_t idx = (e - RENDER_LIST) / 16u;
     if (mode == R2_BRACKET) close_bracket(ctx, cls);
+    /* (r2-m3, R4) an outline entry generated here (hybrid): its packets into the slot, R2H_OUTLINE, the mesh CALL dropped */
+    if (mode == R2_HYBRID && cls == 1 && idx < RENDER_LIST_MAX && om_native[idx] && fr_slot) {
+        if (prev_native) owe_epilogue(ctx);
+        prev_native = 0;
+        prev_class = cls;
+        uint32_t c1 = ps2_r32(ctx, e + 8), c2 = ps2_r32(ctx, e + 12);
+        float w[16], vu8[4];
+        r2_oscript* s = c1 && r2_header_parse(ps2_ram, c1, w, vu8) ? outline_for(c1, c2) : NULL;
+        uint32_t nb = 0;
+        r2_slot* S = fr_slot;
+        if (s && r2_outline_exec(s, r2_header_qw, &fr_block, 0u, om_buf, sizeof om_buf, &nb) && nb &&
+            S->nxq + 1 + nb / 16 <= R2_SLOT_XQ) {
+            uint32_t off = S->nxq;
+            uint32_t n = nb / 16;
+            memset(S->xq[off], 0, 16);
+            memcpy(S->xq[off], &n, 4);
+            memcpy(S->xq[off + 1], om_buf, nb);
+            adlist l = { .n = 0 };
+            ad_hint(&l, R2H_OUTLINE, (fr_serial % R2_SLOTS) | off << 4, fr_serial);
+            if (dmas_put(ctx, 0, 0, l.p, l.n)) {
+                S->nxq += 1 + n;
+                ps2_w32(ctx, e + 12, 0);             /* the outline mesh chain; the header (VU uploads only) stays */
+                st.outline_native++;
+            } else st.outline_exact++;
+        } else st.outline_exact++;
+        if (stats_on) { double dt_ = now_ms() - t0; st.cap_ms += dt_; fr_cap_ms += dt_; }
+        return;
+    }
     int native = 0, why = 0;
     uint32_t handle = 0, c1 = ps2_r32(ctx, e + 8), c2 = ps2_r32(ctx, e + 12);
     float w[16], vu8[4] = { 1, 1, 0, 0 }, M[16];
     static const float I4[16] = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
-    int form = c2 ? 1 : 0, ident = 0;
+    int form = c2 ? 1 : 0, ident = 0, xn = 0;
     uint32_t eflags = 0;
     int prop = idx < RENDER_LIST_MAX && alloc_mark[idx];       /* (r2-m2) an object's entry (glob prelit props) */
-    if (idx < RENDER_LIST_MAX && c1 && (prop ? kinds_props && c2 && cls == 0 : kinds_world)) {
+    if (idx < RENDER_LIST_MAX && c1 && (prop ? kinds_props && c2 && MAINCLASS(cls) : kinds_world)) {
         st.cand++;
         if (prop) st.cand_props++;
         if (!fr_level_ok || !fr_model_ok) { why = 1; st.exact_level++; }
-        else if (cls != 0) { why = 2; st.exact_class++; }
+        else if (!MAINCLASS(cls)) { why = 2; st.exact_class++; }
         else {
             int reason = 0;
             handle = mesh_for(form ? c2 : c1, form, &reason);
@@ -446,12 +634,24 @@ void r2_cap_entry(ps2_ctx* ctx) {
                     vu8[0] = m->fade;
                 }
                 if (!why && (f2u(vu8[3]) & 0xFFFF)) { why = 5; st.exact_fade++; }   /* 1D10's alternate A+D qword */
-                if (!why && prop && outlined(w)) { why = 7; st.exact_outline++; }
+                /* (r2-m3) lit / skinned: the light block and the header's bones / UV offsets */
+                if (!why && m->lit) {
+                    st.cand_lit++;
+                    if (!form || (m->any_wide && vu8[0] < 1.0f) || !lits_on) { why = 8; st.exact_lit++; }
+                    else if ((xn = lit_extra(m)) < 0) { why = 8; st.exact_lit++; st.lit_reason[-xn]++; xn = 0; }
+                }
+                if (!why && prop && !outlined_native) {
+                    /* outlined objects stay exact (R3): rigid ones by the world matrix, skinned ones by a bone */
+                    int skinned = m->any_skin;
+                    uint32_t b0 = 0;
+                    for (uint32_t b = 0; b < m->nb && !b0; b++) if (m->b[b].skin) b0 = m->b[b].bone[0];
+                    if (skinned ? b0 && oq_has(r2_header_qw(b0 + 3)) : outlined(w)) { why = 7; st.exact_outline++; }
+                }
                 if (!why) {
                     ident = !memcmp(w, I4, sizeof w);
                     if (ident) memcpy(M, fr_block.clip, sizeof M);   /* (I x C is C exactly: products by 1, sums with 0) */
                     else r2_matmul_fast(w, fr_block.clip, M);
-                    if (!inside_guard(m, M)) {
+                    if (m->any_skin ? !skin_inside_guard(m, M) : !inside_guard(m, M)) {
                         if (clip_on) eflags |= R2E_CLIP;    /* (r2-m2) GPU-clipped triangles (shaders/r2.hlsl r2_gs_clip) */
                         else { why = 6; st.exact_guard++; }
                     }
@@ -482,7 +682,7 @@ void r2_cap_entry(ps2_ctx* ctx) {
         /* (r2-m2) the entry's data into the scene slot; the stream gets one R2H_RUN hint per run */
         r2_slot* S = fr_slot;
         int start = !prev_native;
-        if (!S || S->nent >= R2_SLOT_ENTS || (start && S->nrun >= R2_SLOT_RUNS)) {
+        if (!S || S->nent >= R2_SLOT_ENTS || (start && S->nrun >= R2_SLOT_RUNS) || S->nxq + (uint32_t)xn > R2_SLOT_XQ) {
             st.exact_dmas++;
             if (prev_native) owe_epilogue(ctx);
             prev_native = 0;
@@ -491,7 +691,7 @@ void r2_cap_entry(ps2_ctx* ctx) {
             return;
         }
         if (start) {
-            int flush = prev_class == 0;     /* the previous exact mesh's pending tail first, as in an all-exact frame */
+            int flush = MAINCLASS(prev_class);   /* the previous exact mesh's pending tail first, as in an all-exact frame */
             ad_hint(&l, R2H_RUN, (fr_serial % R2_SLOTS) | S->nrun << 4, fr_serial);
             if (!dmas_put(ctx, flush ? MSCAL(0x3AB0) : 0, flush ? MSCAL(0x0000) : 0, l.p, l.n)) {
                 st.exact_dmas++;
@@ -510,6 +710,9 @@ void r2_cap_entry(ps2_ctx* ctx) {
         se->handle = handle;
         se->addr = (form ? c2 : c1) | (uint32_t)form << 31;
         se->flags = eflags;
+        se->xoff = S->nxq;
+        se->xn = (uint32_t)xn;
+        if (xn) { memcpy(S->xq[S->nxq], xbuf, (size_t)xn * 16); S->nxq += (uint32_t)xn; st.native_lit++; }
         S->run_count[S->nrun - 1]++;
         st.native++;
         if (eflags & R2E_CLIP) st.clipped++;
@@ -529,19 +732,58 @@ void r2_cap_entry(ps2_ctx* ctx) {
         const uint32_t* fw = (const uint32_t*)&fr_block;
         ad_hint(&l, R2H_FRAME, R2_FRAME_WORDS, fr_serial);
         for (uint32_t i = 0; i < R2_FRAME_WORDS; i++) ad_hint(&l, R2H_DATA, i, fw[i]);
+        bxq_n = 0;
+    }
+    /* (r2-m3) the entry's extra qwords: once per frame and content (an object's meshes share one palette), as an
+     * R2H_XQ block before the entry, which names it by its index. The game's frame builder (360 KB) must keep room for
+     * the rest of the frame: blocks are only written while 64 KB stay free (else the entry stays exact). */
+    uint32_t xid = 0;
+    if (xn) {
+        uint64_t h = 0xCBF29CE484222325ull ^ (uint64_t)xn;
+        const uint32_t* xw = (const uint32_t*)xbuf;
+        for (int i = 0; i < xn * 4; i++) { h ^= xw[i]; h *= 0x100000001B3ull; h ^= h >> 29; }
+        while (xid < bxq_n && bxq_hash[xid] != h) xid++;
+        if (xid == bxq_n) {
+            int ok = bxq_n < BXQ_MAX;
+            uint32_t k2 = 0;
+            static int rsv = -1;
+            if (rsv < 0) { const char* re = getenv("PS2_R2_XQ_RESERVE"); rsv = re ? atoi(re) : 65536; }
+            put_reserve = (uint32_t)rsv;
+            for (uint32_t i = 0; ok && i < (uint32_t)xn * 4 + 1;) {
+                adlist x = { .n = 0 };
+                if (!i) { ad_hint(&x, R2H_XQ, bxq_n, (uint32_t)xn); i = 1; }
+                for (; i < (uint32_t)xn * 4 + 1 && x.n < 64; i++) ad_hint(&x, R2H_DATA, k2++, xw[i - 1]);
+                ok = dmas_put(ctx, 0, 0, x.p, x.n);
+            }
+            put_reserve = 0;
+            if (!ok) {                       /* (a partial block: the frontend ignores it, the next block resets it) */
+                st.exact_dmas++;
+                prev_native = 0;
+                prev_class = cls;
+                if (stats_on) { double dt_ = now_ms() - t0; st.cap_ms += dt_; fr_cap_ms += dt_; }
+                return;
+            }
+            bxq_hash[bxq_n++] = h;
+        }
     }
     /* bracket mode: the entry's data inline (offline replays of recordings need them in the stream) */
     (void)m;
     int fade = vu8[0] != 1.0f;
-    uint32_t flags = (ident ? R2D_IDENTITY : 0) | (fade ? R2D_FADE : 0) | (eflags & R2E_CLIP ? R2D_CLIP : 0);
+    uint32_t flags = (ident ? R2D_IDENTITY : 0) | (fade ? R2D_FADE : 0) | (eflags & R2E_CLIP ? R2D_CLIP : 0) | (xn ? R2D_EXTRA : 0);
     ad_hint(&l, R2H_BEGIN, flags, handle);
     uint32_t k = 0;
     if (fade) ad_hint(&l, R2H_DATA, k++, f2u(vu8[0]));
     if (!ident) for (int i = 0; i < 16; i++) ad_hint(&l, R2H_DATA, k++, f2u(w[i]));
     ad_hint(&l, R2H_DATA, k++, (form ? c2 : c1) | (uint32_t)form << 31);
+    if (xn) ad_hint(&l, R2H_DATA, k++, xid);
     /* the previous exact mesh's pending tail first: it must not fall inside this entry's bracket */
-    int run_start = !prev_native && prev_class == 0;
-    if (!dmas_put(ctx, run_start ? MSCAL(0x3AB0) : 0, run_start ? MSCAL(0x0000) : 0, l.p, l.n)) {
+    int run_start = !prev_native && MAINCLASS(prev_class);
+    /* (r2-m3) bracket mode's inline words fill the game's 360 KB frame builder (ep3 hub: 8 KB left at the frame's end;
+     * less hung the game): an entry is bracketed only while 32 KB stay free (its END is written regardless) */
+    put_reserve = 32768;
+    int put_ok = dmas_put(ctx, run_start ? MSCAL(0x3AB0) : 0, run_start ? MSCAL(0x0000) : 0, l.p, l.n);
+    put_reserve = 0;
+    if (!put_ok) {
         st.exact_dmas++;
         prev_native = 0;
         prev_class = cls;
@@ -557,6 +799,10 @@ void r2_cap_entry(ps2_ctx* ctx) {
 }
 
 void r2_cap_done(ps2_ctx* ctx) {
+    if (fr_open && fr_mode != R2_OFF) {                 /* (r2-m3, stats) the frame builder's free space at the frame's end */
+        uint32_t fe = ps2_r32(ctx, DMAS + 0x00) - ps2_r32(ctx, DMAS + 0x0C);
+        if (!st.dmas_min_free || fe < st.dmas_min_free) st.dmas_min_free = fe;
+    }
     if (fr_open && fr_mode == R2_BRACKET) close_bracket(ctx, -1);
     if (fr_open && fr_mode == R2_HYBRID) owe_epilogue(ctx);
     if (fr_open && fr_slot) {                     /* publish the frame's scene slot (the chain is kicked after this) */
@@ -585,11 +831,13 @@ void r2_stats_line(char* buf, size_t n) {
     double f = s->frames ? (double)s->frames : 1.0;
     int o = snprintf(buf, n, "mode %d gen %u: per frame %.0f candidates (%.0f props), %.0f native (%.0f props, %.1f clipped; %.1f runs, %.1f "
                              "epilogues), exact: level %.0f class %.0f decode %.0f budget %.0f header %.0f fade %.0f guard %.0f outline %.1f dmas %.0f; "
-                             "outlines %.1f (%.1f parsed); decoded %u (failed %u, %.1f ms); capture %.3f ms/frame, hints %.1f KB/frame",
+                             "outlines %.1f (%.1f parsed, %.1f native, %.1f exact; scripts %u, bad %u); lit %.1f candidates %.1f native %.1f exact (light set %u, bone %u, TEX0 swap %u); decoded %u (failed %u, %.1f ms); capture %.3f ms/frame, hints %.1f KB/frame, builder free >= %u KB",
                      r2_mode, r2_store_gen(), s->cand / f, s->cand_props / f, s->native / f, s->native_props / f, s->clipped / f, s->runs / f,
                      s->epilogues / f, s->exact_level / f, s->exact_class / f, s->exact_decode / f, s->exact_budget / f, s->exact_header / f,
                      s->exact_fade / f, s->exact_guard / f, s->exact_outline / f, s->exact_dmas / f, s->outlines / f, s->outlines_parsed / f,
-                     s->decoded, s->decode_fail, s->decode_ms, s->cap_ms / f, s->bytes_hint / f / 1024.0);
+                     s->outline_native / f, s->outline_exact / f, s->outline_decoded, s->outline_bad,
+                     s->cand_lit / f, s->native_lit / f, s->exact_lit / f, s->lit_reason[1], s->lit_reason[2], s->lit_reason[3],
+                     s->decoded, s->decode_fail, s->decode_ms, s->cap_ms / f, s->bytes_hint / f / 1024.0, s->dmas_min_free / 1024);
     for (int r = 1; r < R2M_N && o > 0 && (size_t)o < n; r++)
         if (s->reason[r]) o += snprintf(buf + o, n - (size_t)o, " [%s %u]", r2m_reason[r], s->reason[r]);
 }

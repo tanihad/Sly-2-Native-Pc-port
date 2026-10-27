@@ -40,12 +40,15 @@ int gf_r2_skip;                          /* bracket A/B: the exact primitives of
 static int ab_native;                    /* gpu_front_r2_ab */
 
 /* ---- receiving hint words ----------------------------------------------------------------------------------------- */
-enum { RX_IDLE, RX_FRAME, RX_ENTRY };
+enum { RX_IDLE, RX_FRAME, RX_ENTRY, RX_XQ };
 static struct {
     int state, bracket;
     uint32_t need, got, handle, flags;
     uint32_t w[32];
 } RX;
+/* (r2-m3, bracket) the frame's extra blocks (R2H_XQ): index -> words in XQW */
+#define XQ_MAX 256u
+static uint32_t XQW[XQ_MAX * 4 * 64], xq_nw, xq_off[XQ_MAX], xq_n[XQ_MAX], xq_cur, xq_have;
 static r2_frame_block FB;
 static r2_screen_model SM;
 static int fb_ok;
@@ -369,7 +372,7 @@ static void seg_env(const gs_env_view* ev) {
 }
 
 /* one native entry into the open segment; m = world x clip */
-static int entry_add(const gs_env_view* ev, uint32_t handle, const float m[16], float fade, uint32_t eflags) {
+static int entry_add(const gs_env_view* ev, uint32_t handle, const float m[16], float fade, uint32_t eflags, const void* xq, uint32_t xn) {
     if (!fb_ok || !r2_mesh_get(handle)) { R2S.dropped++; return 0; }
     seg_env(ev);
     if (!grow((void**)&items, &capitems, nitems + 1, sizeof *items) || !grow((void**)&ents, &capents, nents + 1, sizeof *ents)) return 0;
@@ -378,6 +381,7 @@ static int entry_add(const gs_env_view* ev, uint32_t handle, const float m[16], 
     e->fade = fade;
     e->flags = eflags;
     e->pad[0] = e->pad[1] = 0;
+    if (xn) e->pad[0] = gf_data(xq, xn * 16) / 16 + 1;   /* (r2-m3) the extra qwords: fdata qword index + 1 */
     items[nitems].handle = handle;
     items[nitems].ent = nents;
     nitems++;
@@ -420,7 +424,13 @@ static int entry_done(const gs_env_view* ev) {
                     SM.bx + SM.ax * c[0] / c[3], SM.by + SM.ay * c[1] / c[3], SM.bz + SM.az * c[2] / c[3], c[3]);
         }
     }
-    return entry_add(ev, RX.handle, m, fade, RX.flags & R2D_CLIP ? R2E_CLIP : 0);
+    uint32_t xn = 0, xo = 0;
+    if (RX.flags & R2D_EXTRA) {                       /* (r2-m3) the frame's extra block it names */
+        uint32_t id = RX.w[nw + 1];
+        if (id >= xq_have) { R2S.bad_hints++; return 0; }
+        xn = xq_n[id]; xo = xq_off[id];
+    }
+    return entry_add(ev, RX.handle, m, fade, RX.flags & R2D_CLIP ? R2E_CLIP : 0, XQW + xo, xn);
 }
 
 /* (r2-m2, hybrid) a run of native entries from the frame's scene slot */
@@ -440,7 +450,7 @@ static void run_hint(const gs_env_view* ev, uint32_t arg, uint32_t serial) {
     uint32_t keep_items = nitems, keep_ents = nents;
     for (uint32_t i = 0; i < n; i++) {
         const r2_slot_ent* se = &S->ent[first + i];
-        entry_add(ev, se->handle, se->m, se->fade, se->flags);
+        entry_add(ev, se->handle, se->m, se->fade, se->flags, se->xn ? S->xq[se->xoff] : NULL, se->xn);
     }
     __atomic_thread_fence(__ATOMIC_ACQUIRE);
     if (__atomic_load_n(&S->serial, __ATOMIC_RELAXED) != serial) {   /* reused while read (the EE 16 frames ahead) */
@@ -455,7 +465,13 @@ static void fr_r2_hint(const gs_env_view* ev, uint64_t v) {
     uint32_t kind = (uint32_t)(v & 0xFF), arg = (uint32_t)((v >> 8) & 0xFFFFFF), value = (uint32_t)(v >> 32);
     R2S.hints++;
     if (kind == R2H_DATA) {
-        if (RX.state == RX_IDLE || RX.got >= RX.need || RX.got >= 32) { R2S.bad_hints++; return; }
+        if (RX.state == RX_XQ) {                     /* (r2-m3) an extra block's words */
+            if (xq_nw >= sizeof XQW / 4) { R2S.bad_hints++; RX.state = RX_IDLE; return; }
+            XQW[xq_nw++] = value;
+            if (++RX.got == RX.need) { xq_have = xq_cur + 1; RX.state = RX_IDLE; }
+            return;
+        }
+        if (RX.state == RX_IDLE || RX.got >= RX.need || RX.got >= sizeof RX.w / 4) { R2S.bad_hints++; return; }
         RX.w[RX.got++] = value;
         if (RX.got < RX.need) return;
         if (RX.state == RX_FRAME) {
@@ -482,13 +498,20 @@ static void fr_r2_hint(const gs_env_view* ev, uint64_t v) {
         RX.bracket = kind == R2H_BEGIN;
         RX.handle = value;
         RX.flags = arg;
-        RX.need = (arg & R2D_FADE ? 1u : 0u) + (arg & R2D_IDENTITY ? 0u : 16u) + 1u;   /* (+ the address word) */
+        RX.need = (arg & R2D_FADE ? 1u : 0u) + (arg & R2D_IDENTITY ? 0u : 16u) + 1u + (arg & R2D_EXTRA ? 1u : 0u);   /* (+ the address word [+ the extra count]) */
         RX.got = 0;
         if (RX.bracket) { gf_r2_skip = 0; R2S.brackets++; }   /* (set once the entry's words are in: entry taken) */
         RX.state = RX_ENTRY;
         break;
     case R2H_END:
         gf_r2_skip = 0;
+        break;
+    case R2H_XQ:                                     /* (r2-m3) */
+        if (arg == 0) { xq_nw = 0; xq_have = 0; }
+        if (arg >= XQ_MAX || arg != xq_have || value > R2_LIGHT_QW + R2_HQ_MAX || xq_nw + 4u * value > sizeof XQW / 4) { R2S.bad_hints++; break; }
+        xq_cur = arg; xq_off[arg] = xq_nw; xq_n[arg] = value;
+        RX.state = RX_XQ; RX.need = 4u * value; RX.got = 0;
+        if (!value) { xq_have = arg + 1; RX.state = RX_IDLE; }
         break;
     case R2H_RUN: {
         double t0 = qms();

@@ -3,7 +3,9 @@
  *
  * Milestone R1 covered the static world tree's leaves (render-list entries written by 0x1D5808) of the ep3 hub; R2
  * (r2-m2) every prelit mesh - static world and glob props (objects with cel outlines stay exact) - in every level,
- * meshes crossing the VU's guard band GPU-clipped, draws consolidated. Data flow:
+ * meshes crossing the VU's guard band GPU-clipped, draws consolidated; R3 / R4 (r2-m3) lit and skinned meshes (light
+ * block + bones as per-entry extra qwords, skinning and lighting in the vertex shader) and the outline entries (the
+ * outline program in C, r2_outline.c: its packets decoded by the GS thread at the entry's place). Data flow:
  *
  *   EE thread    r2_capture.c: hooks in the game's render-list emission (f_00157FA0, recomp/patches.py "r2m_*")
  *                classify each entry; a native entry's prebuilt mesh DMA is decoded once (r2_mesh.c) into a mesh
@@ -36,12 +38,18 @@ enum {
     R2H_EPILOGUE = 0x25,   /* (diagnostic) the state epilogue of a run follows */
     R2H_RUN = 0x26,        /* (r2-m2, hybrid) a run of native entries: arg = slot (4 bits) | run index << 4, value = the
                               slot's frame serial; the entries' data are in the scene slot (r2_slot), not in the stream */
+    R2H_XQ = 0x27,         /* (r2-m3, bracket) an extra block: arg = its index in the frame (0 starts a frame's set),
+                              value = qwords; 4 x value R2H_DATA words follow. R2D_EXTRA entries name it by index */
+    R2H_OUTLINE = 0x28,    /* (r2-m3, hybrid) a native outline entry: arg = slot (4 bits) | qword offset << 4 in the slot's pool
+                              (there: the packets' qword count, then the GIF packets, r2_outline.c), value = serial; the GS
+                              thread decodes the packets in place (gs_draw.c) */
 };
 /* R2H_DRAW / R2H_BEGIN words, in order: [fade (R2D_FADE)] [world matrix, 16 words (unless R2D_IDENTITY)] [the mesh DMA
  * address | form << 31 (offline replays resolve the handle from a RAM dump with it)] */
 enum { R2D_IDENTITY = 1,   /* the entry's world matrix is the identity (no matrix words) */
        R2D_FADE = 2,       /* a fade word follows (VU 8.x != 1.0) */
-       R2D_CLIP = 4 };     /* (r2-m2) the mesh crosses the VU's guard band (R2E_CLIP) */
+       R2D_CLIP = 4,       /* (r2-m2) the mesh crosses the VU's guard band (R2E_CLIP) */
+       R2D_EXTRA = 8 };    /* (r2-m3) after the address word: the index of the frame's R2H_XQ block (extra qwords) */
 
 static inline uint64_t r2h_make(uint32_t kind, uint32_t arg, uint32_t value) {
     return (uint64_t)(kind & 0xFF) | ((uint64_t)(arg & 0xFFFFFF) << 8) | ((uint64_t)value << 32);
@@ -65,13 +73,16 @@ typedef struct {
 #define R2_SLOTS 16u
 #define R2_SLOT_ENTS 4096u
 #define R2_SLOT_RUNS 1024u
-typedef struct {                 /* 80 bytes */
+typedef struct {                 /* 96 bytes */
     float m[16];                 /* world x clip (W x C, the VU's 0x0070 arithmetic) */
     float fade;                  /* VU 8.x */
     uint32_t handle;             /* mesh */
     uint32_t addr;               /* the mesh DMA | form << 31 (diagnostics) */
     uint32_t flags;              /* R2E_* */
+    uint32_t xoff, xn;           /* (r2-m3) lit / skinned: the entry's extra qwords in the slot's pool (r2_lit_block) */
+    uint32_t pad[2];
 } r2_slot_ent;
+#define R2_SLOT_XQ 32768u        /* (r2-m3) extra qwords per slot (light blocks, bone palettes) */
 enum { R2E_CLIP = 1 };           /* the mesh's bounds cross the VU's guard band: clipped triangles on the GPU */
 typedef struct {
     volatile uint32_t serial;    /* (atomic: 0 while the EE writes it) */
@@ -79,17 +90,24 @@ typedef struct {
     r2_frame_block fb;
     uint32_t run_first[R2_SLOT_RUNS], run_count[R2_SLOT_RUNS];
     r2_slot_ent ent[R2_SLOT_ENTS];
+    uint32_t nxq;                /* (r2-m3) */
+    float xq[R2_SLOT_XQ][4];
 } r2_slot;
 const r2_slot* r2_slot_at(uint32_t index);       /* NULL: not allocated (r2_mesh.c) */
 r2_slot* r2_slot_ring(void);                     /* the writer (EE): the ring, allocated on first use */
 
 /* ---- decoded meshes (r2_mesh.c) ------------------------------------------------------------------------------------- */
-typedef struct {                 /* 32 bytes, also the GPU vertex layout (shaders/r2.hlsl R2V) */
-    float x, y, z;
+typedef struct {                 /* 48 bytes, also the GPU vertex layout (shaders/r2.hlsl R2V) */
+    float x, y, z;               /* (r2-m3) skinned: the input's rest position */
     uint32_t wbits;              /* the input position's w word: ~2^23 float, mantissa bits 4..11 fog base, bit 15 ADC */
     int16_t u, v;                /* 4.12 */
     uint32_t col[2];             /* colour A, colour B: R | G << 8 | B << 16 | A << 24 (V4-5 << 3, alpha from S-8) */
     uint32_t batch;              /* (r2-m2) the sub-batch of the mesh it belongs to (its materials: shaders/r2.hlsl) */
+    /* (r2-m3) lit / skinned sub-batches (the VU's 0x1050 / 0x16B0 / 0x1940 inputs of the vertex's source record) */
+    uint32_t nrm;                /* normal, V4-8 signed: x | y << 8 | z << 16 | w << 24 (bytes) */
+    uint32_t lcol;               /* colour V4-8: R | G << 8 | B << 16 | A << 24 */
+    uint32_t wts;                /* bone weights V4-8 (unsigned bytes) */
+    uint32_t pad;
 } r2_vtx;
 
 typedef struct {                 /* one pass (material packet) of a sub-batch */
@@ -112,7 +130,13 @@ typedef struct {                 /* a sub-batch: one triangle strip, drawn with 
     float fog_scale, fog_wmax;   /* VU 9.y, 9.z of its header */
     uint8_t npass, cull;         /* cull: the VU's backface test is on ([11].x & 0x80 == 0) */
     uint8_t amin[2], amax[2];    /* vertex alpha range of colour A, colour B (the alpha test's outcome per draw) */
-    uint8_t pad[2];
+    uint8_t lit;                 /* (r2-m3) 1: colours from the light set (0x1050) */
+    uint8_t skin;                /* (r2-m3) 0 rigid, 1 positions skinned (0x16B0), 2 positions + normals (0x1940) */
+    uint16_t bone[4];            /* (r2-m3) skin: the 4 bones' header qword offsets ([12]: 4 rows each) */
+    uint16_t tanim;              /* (r2-m3) 0x0D28's per-frame qword ([15].z) in the header: UV offset (x, y ITOF12) */
+    uint8_t wide;                /* (r2-m3) colour words above 255 (only the low byte reaches the GS unless faded) */
+    uint8_t pad2;
+    float bright;                /* (r2-m3) lit: ITOF12 of [16].x (added to the light block's ambient w) */
     r2_pass pass[3];
 } r2_batch;
 
@@ -131,6 +155,13 @@ typedef struct r2_mesh {
     r2_batch* b;
     uint32_t nb;
     uint32_t last_pass;          /* index into b[nb-1].pass of the last pass drawn (state epilogue) */
+    /* (r2-m3) lit / skinned meshes: the entry carries a light block and a bone palette (r2_lit_block) */
+    int lit;                     /* some sub-batch is lit or skinned */
+    int any_lit, any_skin, any_wide;
+    uint32_t nbones;             /* (unused) */
+    uint32_t hq_hi;              /* the entry's extra data: the header's qwords R2_HQ_LO .. hq_hi - 1 (bones, UV offsets) */
+    uint16_t lpos_off;           /* 0x0298's object position: [11].w and [12].x of the first buffer (point lights) */
+    uint16_t lpos_bone;
     /* render thread (r2_render.c): residency in the generation's arena */
     volatile int gpu_state;      /* 0 not uploaded, 1 resident, -1 failed */
     uint32_t gpu_vbase, gpu_ibase;
@@ -144,6 +175,8 @@ extern const char* const r2m_reason[R2M_N];
 /* Decode the chain at addr (form 0 / 1) from EE memory ram (32 MB); *out is malloc'ed (r2_mesh_free). Returns R2M_*. */
 int r2_mesh_decode(const uint8_t* ram, uint32_t addr, int form, r2_mesh** out);
 void r2_mesh_free(r2_mesh* m);
+/* (r2-m3, oracle) the lit routine ra's sub-batches in a VU1 data memory image (1024 qw) with TOP = top */
+int r2_lit_decode_vu(const uint32_t (*vu)[4], uint32_t top, uint32_t ra, r2_mesh** out);
 
 /* ---- the mesh store (r2_mesh.c): handle -> mesh, per level generation (ring of 4) ------------------------------- */
 const r2_mesh* r2_mesh_get(uint32_t handle);   /* any thread; NULL when gone */
@@ -180,6 +213,37 @@ int r2_screen_model_of(const r2_frame_block* fb, r2_screen_model* m);
 /* the header of a mesh DMA entry (form 1, the entry's CALL #1): walks it like r2_mesh_decode and returns the matrix
  * (VU 0..3) and VU 8 it uploads (1), or 0 when it does something else */
 int r2_header_parse(const uint8_t* ram, uint32_t addr, float w[16], float vu8[4]);
+/* (r2-m3) after a successful r2_header_parse: the header buffer's qwords 0..n-1 as uploaded (NULL when not written) */
+const uint32_t* r2_header_qw(uint32_t i);
+
+/* ---- (r2-m3) lit / skinned meshes (the main program's 0x0298 / 0x1050 / 0x16B0 / 0x1940; notes/wip/r2-m3.md) ---------
+ * The light block of an entry: 0x0298's result ([21..30] of the header buffer: the 4 lights' directions in object space
+ * transposed and / 127, colours x z x 2, ambient sum x 2, thresholds -y / z) and VU 10 (the frame's fog / brightness
+ * qword): R2_LIGHT_QW quadwords. The bone palette follows it in the entry's extra data: the header's qwords 0x21 ..
+ * 0x21 + 4 nbones (4 rows per bone, object -> world). */
+#define R2_LIGHT_QW 11
+#define R2_BONES_MAX 64
+#define R2_HQ_LO 0x15u           /* an entry's extra data = light block (R2_LIGHT_QW qw), then header qwords 0x15 .. hq_hi */
+#define R2_HQ_MAX 0x140u
+/* hdr(i) = the header buffer's qword i (r2_header_qw); 0: the light set is not there (the entry stays exact) */
+int r2_lights_prep(const uint32_t* (*hdr)(uint32_t), const r2_mesh* m, const float vu10[4], float out[R2_LIGHT_QW][4]);
+/* the vertex's position (skinned when the sub-batch is) and colour A / B (lit: 0x1050), as the VU computes them (round
+ * toward zero, the microcode's order): the C twin of shaders/r2.hlsl's lit path. hq = the header's qwords from R2_HQ_LO. */
+void r2_lit_eval(const r2_vtx* v, const r2_batch* b, const float lb[R2_LIGHT_QW][4], const float (*hq)[4], float pos[3],
+                 uint32_t col[2]);
+
+/* ---- (r2-m3, R4) the outline program (188054331) in C (r2_outline.c): routine addr (0x0738 set-up: *x = 0x24B - TOP
+ * on entry; 0x07F0 a batch: *x = the set-up's buffer) on the VU1 data memory image vu (modified as the VU would), the
+ * GIF packets it XGKICKs appended to out (cap bytes, *nout used). 0: unknown routine or out full. */
+int r2_outline_run(uint32_t (*vu)[4], uint32_t addr, uint32_t* x, uint8_t* out, uint32_t cap, uint32_t* nout);
+/* an outline entry's mesh chain (after its header) as a script of VU writes and MSCALs (r2_mesh.c) */
+typedef struct r2_oscript r2_oscript;
+int r2_outline_decode(const uint8_t* ram, uint32_t hdr, uint32_t mesh, r2_oscript** out);
+void r2_outline_free(r2_oscript* s);
+/* the entry's packets this frame: VU 0..5 from fb, the header's qwords (hq, as r2_header_qw), the script; unwritten
+ * memory = fill (a decode check runs it with two fills: equal packets = the script reads only what it writes) */
+int r2_outline_exec(const r2_oscript* s, const uint32_t* (*hq)(uint32_t), const r2_frame_block* fb, uint32_t fill, uint8_t* out,
+                    uint32_t cap, uint32_t* nout);
 
 /* ---- EE side (r2_capture.c, called from recomp/patches.py patches) --------------------------------------------- */
 struct ps2_ctx;

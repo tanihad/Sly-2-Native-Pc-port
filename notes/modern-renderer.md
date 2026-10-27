@@ -586,6 +586,61 @@ covers; the owner confirms after testing the dist build. Effort is in agent-days
   characters walking. The owner's eye on Sly's outline at 3x in both styles.
 - **Gain**: hubs >= 230 fps; all characters off the exact path.
 
+### R3 + R4 as built (next/r2-m3, 2026-10-27)
+- **Lit / skinned meshes (R3)**: the main program's lit routines read (notes/wip/r2-m3.md "Findings"): 0x2EF8 /
+  0x2F80 / 0x2FC8 light and skin both sub-batches of a buffer, 0x3358 (the next MSCAL) transforms them with the prelit
+  transform. r2_mesh.c decodes them: the strips as prelit, plus each strip vertex's source record through the routines'
+  output lists (qw0.z links; both lists of a buffer may write either strip, the later wins), its V4-8 normal, colour,
+  rest position and weights; per sub-batch the lit flag, skin kind (0x20: 4 bones, positions + normals renormalised x 127;
+  0x10 and 0x40 bone streams stay exact), 4 bone offsets, brightness [16].x and texture-animation UV offsets (0x0D28;
+  TEX0 swaps stay exact). 0x0298 (light set into object space through 0x3BA8's inverse, attenuation of point lights,
+  transpose / 127, colour x z x 2, ambient x 2, thresholds -y / z) runs on the EE per entry (r2_lights_prep); 0x1050
+  (f = min(d + d^3, threshold) per light; colour A = clamped light x the normal's w, colour B = vertex colour x the
+  highlight share) and the skinning run in the vertex shader (r2.hlsl r2_lit: positions with the VU's rounding, colours
+  in floats). Level 1 (scripts/r2_mesh_check.c, every recorded lit program against the C twin r2_lit_eval): ep1 hub
+  6464 lit vertices + 4939 skinned positions bit-exact, light blocks bit-exact; m3 boss 9832 lit (7 colour B +-1), 7184
+  skinned positions exact. Render class 11 (class 0 inside FBA_1 = 1: characters) is native too.
+- **Per-entry data**: the light block (11 qw) + the header's qwords 0x15.. (bones, UV offsets) as "extra" qwords: hybrid
+  in the scene slot's pool (r2_slot.xq), bracket as R2H_XQ blocks deduplicated per frame (an object's meshes share one
+  palette). The game's frame builder (DMAS, 360 KB) is the limit of bracket mode: ep3's hub left 8 KB free at the
+  frame's end, and running it full hung the game; bracketed entries and blocks now keep 32 / 64 KB free (stat "builder
+  free").
+- **Outlines (R4), not as the design's compute pass**: the outline program 188054331 is reimplemented in C
+  (r2_outline.c: set-up 0x0738 with W x C and the colour, batches 0x07F0 = skinning 0x01E0, projection 0x03C0, edges
+  0x0500 with the clip / silhouette tests, the 0.00024 push-out and the screen transform), operating on a VU memory
+  image and emitting the packets the VU would XGKICK, bit for bit (level 1: ep1 44 programs / 501 kicks, m3 boss 192 /
+  2018, all identical packets and memory). An outline entry's mesh chain becomes a script (VU writes + MSCALs,
+  r2_outline_decode, checked once to read only written memory); per frame the EE runs it with the entry's header and
+  puts the packets in the slot, an R2H_OUTLINE hint replaces the mesh CALL and the GS thread decodes the packets in
+  place. So the lines are the exact path's own (ps2 and thin outline settings unchanged, AA1, drawn twice) and their Z
+  ties with their meshes are an all-exact frame's (R2's mesh Z equals the exact Z on >= 99.95% of pixels). An object is
+  native with its meshes when its outline script decodes (else its meshes stay exact, recognised by the world matrix
+  or, for skinned ones, a bone's translation row). The VU1 / VIF work of outlines leaves the worker; the EE pays
+  ~0.1 ms per frame for outlines and light blocks (capture 0.24 -> 0.34 ms in the ep1 hub).
+- **Performance** (chaos benchmark, all 8 scenes, reference vs modern from one exe, interleaved, 1 repeat, release, 3x
+  16:9 unlimited, owner's PC; tag r2m3_final; fps median / 1% low / 0.1% low, modern CPU stages worker / GS / frontend,
+  GPU ms ref -> mod):
+
+  | scene | reference | modern | modern CPU stages | GPU |
+  |---|---|---|---|---|
+  | ep1_hub | 112.5 / 77.1 / 42.1 | **198.0** / 114.9 / 56.8 | 2.0 / 1.9 / 2.2 | 5.0 -> 5.0 |
+  | ep3_hub | 211.4 / 82.0 / 46.8 | 207.5 / 98.4 / 59.1 | 1.7 / 1.5 / 1.4 | 4.6 -> 4.7 |
+  | ep5_hub | 153.1 / 117.1 / 48.9 | **214.6** / 134.8 / 63.3 | 1.3 / 1.2 / 1.7 | 4.9 -> 4.6 |
+  | m1_brawl | 137.4 / 77.6 / 43.6 | 198.4 / 113.1 / 56.6 | 1.5 / 1.4 / 1.7 | 5.4 -> 5.0 |
+  | m2_boardroom | 126.3 / 76.9 / 53.1 | 135.3 / 82.8 / 60.3 | 1.2 / 0.9 / 1.3 | 7.8 -> 7.2 |
+  | m3_boss | 225.2 / 136.5 / 51.1 | 228.3 / 144.9 / 63.4 | 1.3 / 1.4 / 1.3 | 4.4 -> 4.3 |
+  | m5_boss | 159.5 / 86.2 / 45.1 | 207.0 / 114.4 / 61.4 | 1.3 / 1.3 / 1.9 | 4.8 -> 4.7 |
+  | m8_boss | 281.7 / 113.6 / 52.6 | 262.5 / 159.7 / 56.9 | 0.6 / 0.7 / 0.9 | 3.5 -> 3.8 |
+
+  The CPU stages fall again (R2: ep1 2.2 / 1.7 / 2.1, m1 2.2 / 1.7 / 2.1, m5 2.0 / 1.7 / 2.4; GS primitives ep1 12k, m1
+  9.8k), but every scene is GPU-bound at 4-5 ms as after R2, so the median fps stays where R2 left it (ep1 203 -> 198,
+  m3 218 -> 228, m5 193 -> 207: single runs, +-5% noise) and the design's hubs >= 230 fps is not reached: R3 / R4 remove
+  CPU work, not GPU work (the meshes cost the same per pixel either way). The 1% / 0.1% lows are at or above
+  reference everywhere. The GPU time left is the exact remainder (shadows, motion-blur sprites, ROV tier) and R2's own
+  fill: R6 / R7 territory.
+- **Found, not fixed (pre-existing on main)**: ep1 hub in hybrid mode, a large tree in front of the theatre sign is
+  missing and shard polygons with the sign's texture appear (main's R2 too; bracket A/B passes): spawned as its own task.
+
 ### R5. Sky, warps and the rest of 3D - 6 agent-days
 - **Deliverable**:
   - Sky (class 3: per-frame texture source, drawn before the Z clear in the game's order).

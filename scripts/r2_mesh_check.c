@@ -27,7 +27,7 @@ void hw_log_unhandled(const char* unit, uint32_t phys, const void* data, unsigne
 uint32_t ps2_vblank_count(void) { return 0; }
 
 /* ---- kicks of the current program ---------------------------------------------------------------------------- */
-#define MAXK 64
+#define MAXK 1024
 static struct { uint32_t addr; uint8_t pkt[16 * 300]; uint32_t qw; } K[MAXK];
 static int nk;
 void gif_path1_kick(const uint8_t* vu1_data, uint32_t qw_addr) {
@@ -223,6 +223,125 @@ static void check_material(const bufbatch* bb, int pass, const uint8_t* pkt, uin
     }
 }
 
+/* ---- (r2-m3) the lit routines (0x2EF8 / 0x2F80 / 0x2FC8): every recorded program's sub-batches decoded from its input
+ * memory (r2_lit_decode_vu), the light block (r2_lights_prep from the raw light set for 0x2EF8, else the block in
+ * memory), the bone palette from memory; after the run, the VU's own results in the buffer (skinned positions, colour A
+ * / colour B, 0x0298's light block) against r2_lit_eval / r2_lights_prep. ---------------------------------------------- */
+static uint64_t out_progs, out_kicks, out_bad;   /* (r2-m3) outline programs */
+static uint64_t lit_progs, lit_dec_fail[R2M_N], lit_vtx, lit_pos_bad, lit_cola_bad[3], lit_colb_bad[3], lit_lb_bad, lit_lb_n,
+    lit_skin_vtx, lit_lit_vtx;
+static const uint32_t (*lit_mem)[4];
+static uint32_t lit_x;
+static const uint32_t* lit_hdr(uint32_t i) { return lit_mem[(lit_x + i) & 0x3FF]; }
+static int cdiff(uint32_t a, uint32_t b) {
+    int m = 0;
+    for (int c = 0; c < 4; c++) { int d = (int)((a >> (8 * c)) & 255) - (int)((b >> (8 * c)) & 255); d = d < 0 ? -d : d; if (d > m) m = d; }
+    return m;
+}
+static void lit_check(uint32_t ra, uint32_t top, const uint32_t* in, const vu_rec_head* h) {
+    static uint32_t img[1024][4];
+    memcpy(img, in, sizeof img);
+    r2_mesh* m;
+    int r = r2_lit_decode_vu((const uint32_t(*)[4])img, top, ra, &m);
+    lit_progs++;
+    if (r) {
+        lit_dec_fail[r]++;
+        extern int r2_fail_line;
+        static int shown;
+        uint32_t Xf = (0x24B - top) & 0x3FF;
+        const uint32_t *q12 = img[(Xf + 12) & 0x3FF], *q15 = img[(Xf + 15) & 0x3FF], *q19 = img[(Xf + 19) & 0x3FF], *q16 = img[(Xf + 16) & 0x3FF];
+        if (verbose && shown++ < 30) printf("  lit decode %s (line %d) prog %ld ra %04X flags %X [12] %X %X %X %X [15] %X %X %X %X [16] %X %X %X %X [19] %X %X %X %X\n",
+                                            r2m_reason[r], r == R2M_VERTEX ? r2_fail_line : 0, cur_prog, ra, img[(Xf + 11) & 0x3FF][0],
+                                            q12[0], q12[1], q12[2], q12[3], q15[0], q15[1], q15[2], q15[3], q16[0], q16[1], q16[2], q16[3], q19[0], q19[1], q19[2], q19[3]);
+        return;
+    }
+    uint32_t X = (0x24B - top) & 0x3FF;
+    /* the image as the routine sees it (0x2F80 copies the header first) */
+    if (ra == 0x2F80) {
+        for (uint32_t i = 0; i < 10; i++) memcpy(img[(X + i) & 0x3FF], img[(top + i) & 0x3FF], 16);
+        uint32_t e = img[(X + 11) & 0x3FF][1] & 0x3FF;
+        for (uint32_t i = 0x15; i < e && i < 0x200; i++) memcpy(img[(X + i) & 0x3FF], img[(top + i) & 0x3FF], 16);
+    }
+    float lb[R2_LIGHT_QW][4], vu10[4];
+    memcpy(vu10, img[10], 16);
+    lit_mem = (const uint32_t(*)[4])img;
+    lit_x = X;
+    int need_prep = ra == 0x2EF8 && (img[(X + 11) & 0x3FF][0] & 2);
+    if (need_prep) {
+        if (!r2_lights_prep(lit_hdr, m, vu10, lb)) { lit_dec_fail[R2M_HEADER]++; r2_mesh_free(m); return; }
+    } else {
+        for (int i = 0; i < 10; i++) memcpy(lb[i], img[(X + 21 + (uint32_t)i) & 0x3FF], 16);
+        memcpy(lb[10], vu10, 16);
+    }
+    float bones[R2_BONES_MAX * 4][4];
+    for (uint32_t i = 0; i < R2_BONES_MAX * 4; i++) memcpy(bones[i], img[(X + R2_HQ_LO + i) & 0x3FF], 16);
+    /* run */
+    vu_state* st = &vu_st[1];
+    memcpy(vu_data_mem(1), in, h->data_size);
+    memcpy(st->vf, h->vf, sizeof st->vf);
+    st->acc = h->acc;
+    memcpy(st->vi, h->vi, sizeof st->vi);
+    st->I = h->I; st->Q = h->Q; st->P = h->P; st->R = h->R;
+    st->status = h->status; st->mac = h->mac; st->clip = h->clip;
+    st->top = h->top; st->itop = h->itop;
+    nk = 0;
+    const unsigned csr = _mm_getcsr();
+    _mm_setcsr(VU_MXCSR);
+    vu_run(st, h->addr);
+    _mm_setcsr(csr);
+    const uint32_t(*out)[4] = (const uint32_t(*)[4])vu_data_mem(1);
+    if (need_prep) {
+        for (int i = 0; i < 10; i++) {
+            if (i == 3) continue;                      /* ([24]: the game's transpose leaves it unused) */
+            lit_lb_n++;
+            if (memcmp(lb[i], out[(X + 21 + (uint32_t)i) & 0x3FF], 16)) {
+                lit_lb_bad++;
+                if (verbose && lit_lb_bad < 6) {
+                    const float* o = (const float*)out[(X + 21 + (uint32_t)i) & 0x3FF];
+                    printf("  light block [%d]: %g %g %g %g want %g %g %g %g\n", 21 + i, lb[i][0], lb[i][1], lb[i][2], lb[i][3], o[0], o[1], o[2], o[3]);
+                }
+            }
+        }
+    }
+    for (uint32_t b = 0; b < m->nb; b++) {
+        const r2_batch* B = &m->b[b];
+        uint32_t start = img[(X + (b ? 17 : 13)) & 0x3FF][0] & 0x3FF;
+        for (uint32_t k = 0; k < B->vcount; k++) {
+            const r2_vtx* v = &m->vtx[B->vfirst + k];
+            float pos[3];
+            uint32_t col[2];
+            r2_lit_eval(v, B, (const float(*)[4])lb, (const float(*)[4])bones, pos, col);
+            uint32_t a = (X + start + 4 * k) & 0x3FF;
+            lit_vtx++;
+            if (B->skin) {
+                lit_skin_vtx++;
+                if (memcmp(pos, out[(a + 3) & 0x3FF], 12)) {
+                    lit_pos_bad++;
+                    if (verbose && lit_pos_bad < 6) {
+                        const float* o = (const float*)out[(a + 3) & 0x3FF];
+                        printf("  pos %.7g %.7g %.7g want %.7g %.7g %.7g (prog %ld batch %u v %u skin %d)\n", pos[0], pos[1], pos[2], o[0], o[1], o[2], cur_prog, b, k, B->skin);
+                    }
+                }
+            }
+            if (B->lit) {
+                lit_lit_vtx++;
+                const uint32_t *oa = out[(a + 1) & 0x3FF], *ob = out[(a + 2) & 0x3FF];
+                uint32_t wa = (oa[0] & 255) | (oa[1] & 255) << 8 | (oa[2] & 255) << 16 | (oa[3] & 255) << 24;
+                uint32_t wb = (ob[0] & 255) | (ob[1] & 255) << 8 | (ob[2] & 255) << 16 | (ob[3] & 255) << 24;
+                int da = cdiff(col[0], wa), db = cdiff(col[1], wb);
+                lit_cola_bad[da == 0 ? 0 : da == 1 ? 1 : 2]++;
+                lit_colb_bad[db == 0 ? 0 : db == 1 ? 1 : 2]++;
+                if (verbose && (da > 1 || db > 1)) {
+                    static int shown;
+                    if (shown++ < 8) printf("  colour A %08X want %08X, B %08X want %08X (prog %ld batch %u v %u nrm %08X col %08X)\n", col[0], wa,
+                                            col[1], wb, cur_prog, b, k, v->nrm, v->lcol);
+                }
+            }
+        }
+    }
+    r2_mesh_free(m);
+}
+
 int main(int argc, char** argv) {
     if (argc < 3) { fprintf(stderr, "usage: r2_mesh_check <vu recording> <trace dir> [frame] [--verbose]\n"); return 2; }
     int fn = 0;
@@ -249,13 +368,36 @@ int main(int argc, char** argv) {
         char* p = line;
         int cols = 0;
         for (char* t = strtok(p, " \n"); t; t = strtok(NULL, " \n")) cols++;
-        if (cols != 7) continue;                                  /* allocator entries carry the submitter */
+        /* allocator entries carry the submitter: (r2-m3) props of render class 0 with a mesh DMA (form 1) */
+        static const uint32_t class0 = 1u << 2 | 1u << 3 | 1u << 5 | 1u << 10 | 1u << 11 | 1u << 13 | 1u << 14 | 1u << 16 | 1u << 19 | 1u << 23 | 1u << 25;
+        if (cols != 7 && (prio == 9 || prio == 17 || prio == 20 || prio == 24) && c1 && c2) {   /* (r2-m3) outline entries */
+            float w[16], vu8[4];
+            r2_oscript* os = NULL;
+            int hp = r2_header_parse(ram, c1, w, vu8);
+            int r = hp ? r2_outline_decode(ram, c1, c2, &os) : -1;
+            static uint8_t b1[1 << 18], b2[1 << 18];
+            uint32_t n1 = 0, n2 = 0;
+            static r2_frame_block zfb;
+            int e1 = r ? 0 : r2_outline_exec(os, r2_header_qw, &zfb, 0u, b1, sizeof b1, &n1);
+            int e2 = r ? 0 : r2_outline_exec(os, r2_header_qw, &zfb, 0xA5A5A5A5u, b2, sizeof b2, &n2);
+            extern uint32_t r2_fail_ms[8], r2_fail_nms;
+            if (verbose) {
+                printf("outline entry %u prio %u c1 %08X c2 %08X: header %d decode %d exec %d %d bytes %u %u same %d ms", idx, prio, c1, c2, hp, r, e1, e2, n1, n2,
+                       n1 == n2 && !memcmp(b1, b2, n1));
+                for (uint32_t q = 0; q < r2_fail_nms && q < 8; q++) printf(" %04X", r2_fail_ms[q]);
+                printf("\n");
+            }
+            r2_outline_free(os);
+            continue;
+        }
+        if (cols != 7 && (prio > 25 || !((class0 >> prio) & 1))) continue;
         entries++;
         r2_mesh* m;
         int r = r2_mesh_decode(ram, c2 ? c2 : c1, c2 ? 1 : 0, &m);
         reasons[r]++;
-        if (r) { if (verbose) printf("entry %u prio %u c1 %08X c2 %08X: %s\n", idx, prio, c1, c2, r2m_reason[r]); continue; }
+        if (r) { extern int r2_fail_line, r2_fail_info[4]; extern uint32_t r2_fail_ms[8], r2_fail_nms; if (verbose) { printf("entry %u prio %u c1 %08X c2 %08X: %s (line %d) flags %X second %d litr %d ms", idx, prio, c1, c2, r2m_reason[r], r == R2M_VERTEX ? r2_fail_line : 0, r2_fail_info[0], r2_fail_info[1], r2_fail_info[3]); for (uint32_t q = 0; q < r2_fail_nms && q < 8; q++) printf(" %04X", r2_fail_ms[q]); printf("\n"); } continue; }
         decoded++;
+        if (verbose && m->lit) printf("lit entry %u prio %u c1 %08X c2 %08X: %u batches lit %d skin %d hq_hi %X\n", idx, prio, c1, c2, m->nb, m->any_lit, m->any_skin, m->hq_hi);
         verts += m->nvtx;
         tris += m->nidx / 3;
         batches += m->nb;
@@ -304,6 +446,38 @@ int main(int argc, char** argv) {
         st->status = h->status; st->mac = h->mac; st->clip = h->clip;
         st->top = h->top; st->itop = h->itop;
         int prelit = ra == 0x2E20 || ra == 0x2E68 || ra == 0x2EB0 || ra == 0x2EE8;
+        /* (r2-m3) the outline program (its 0x0738 starts with XTOP vi01) against r2_outline_run, packet for packet */
+        if ((ra == 0x0738 || ra == 0x07F0) && *(const uint32_t*)(last_micro + 0x0738) == 0x800106BCu) {
+            static uint32_t img[1024][4];
+            static uint8_t mine[1 << 18];
+            uint32_t nm = 0, x = ra == 0x0738 ? (0x24B - h->top) & 0x3FF : h->vi[4] & 0x3FF;
+            memcpy(img, data, sizeof img);
+            int ok = r2_outline_run(img, ra, &x, mine, sizeof mine, &nm);
+            nk = 0;
+            _mm_setcsr(VU_MXCSR);
+            vu_run(st, h->addr);
+            _mm_setcsr(csr);
+            uint32_t pos2 = 0;
+            int bad = !ok;
+            for (int k = 0; k < nk && !bad; k++) {
+                if (pos2 + K[k].qw * 16 > nm || memcmp(mine + pos2, K[k].pkt, K[k].qw * 16)) bad = 1;
+                pos2 += K[k].qw * 16;
+            }
+            if (pos2 != nm) bad = 1;
+            if (!bad && memcmp(img, vu_data_mem(1), sizeof img)) bad = 2;   /* (the memory it leaves, too) */
+            out_progs++;
+            out_kicks += (uint64_t)nk;
+            if (bad) {
+                out_bad++;
+                if (verbose && out_bad < 6) printf("  outline program %ld %04X: %s (VU %d kicks %u qw, mine %u bytes)\n", cur_prog, ra,
+                                                   bad == 2 ? "memory differs" : "packets differ", nk, pos2 / 16, nm);
+            }
+            continue;
+        }
+        if (ra == 0x2EF8 || ra == 0x2F80 || ra == 0x2FC8) {
+            lit_check(ra, h->top, (const uint32_t*)data, h);
+            memcpy(vu_data_mem(1), data, h->data_size);    /* (the replay below runs it again from the same state) */
+        }
         /* identify the batches this program sets up, from its input memory */
         const uint32_t* mem = (const uint32_t*)data;
         r2_frame_block fb;
@@ -397,6 +571,14 @@ int main(int argc, char** argv) {
             }
         }
     }
+    printf("outline programs: %llu (%llu kicks), differing from r2_outline_run: %llu\n", (unsigned long long)out_progs, (unsigned long long)out_kicks, (unsigned long long)out_bad);
+    printf("lit routines: %llu programs (decode failures:", (unsigned long long)lit_progs);
+    for (int r = 1; r < R2M_N; r++) if (lit_dec_fail[r]) printf(" %s %llu", r2m_reason[r], (unsigned long long)lit_dec_fail[r]);
+    printf("); light blocks: %llu qwords, %llu differ; vertices %llu (%llu skinned: positions differing %llu; %llu lit: colour A "
+           "exact / +-1 / more %llu %llu %llu, colour B %llu %llu %llu)\n", (unsigned long long)lit_lb_n, (unsigned long long)lit_lb_bad,
+           (unsigned long long)lit_vtx, (unsigned long long)lit_skin_vtx, (unsigned long long)lit_pos_bad, (unsigned long long)lit_lit_vtx,
+           (unsigned long long)lit_cola_bad[0], (unsigned long long)lit_cola_bad[1], (unsigned long long)lit_cola_bad[2],
+           (unsigned long long)lit_colb_bad[0], (unsigned long long)lit_colb_bad[1], (unsigned long long)lit_colb_bad[2]);
     printf("replay: %llu prelit programs, %llu with a decoded batch; kicks: %llu vertex packets checked, %llu clipper, %llu unattributed\n",
            (unsigned long long)programs_seen, (unsigned long long)batches_seen, (unsigned long long)kicks_vertex,
            (unsigned long long)kicks_clip, (unsigned long long)kicks_unknown);
