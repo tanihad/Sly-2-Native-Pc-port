@@ -73,6 +73,8 @@ static void new_generation(uint32_t wid) {
 
 /* ---- settings, statistics ------------------------------------------------------------------------------------------ */
 static int cfg_done, env_mode = -1, check_on, levels_all, nlevels;
+static uint32_t alt_from, alt_n;               /* (r2-m5) PS2_R2_ALT */
+uint32_t ps2_vblank_count(void);
 static int kinds_world = 1, kinds_props = 1;   /* (r2-m2) PS2_R2_KINDS=world,props */
 static int lits_on = 1;                        /* (r2-m3) PS2_R2_KINDS ...,lit: lit / skinned props */
 static int outlines_on = 1;                    /* (r2-m3) PS2_R2_KINDS ...,outline: outline entries generated natively */
@@ -146,6 +148,8 @@ static void configure(void) {
     stats_on = e && *e && *e != '0';
     e = getenv("PS2_R2_CHECK");
     check_on = e && *e && *e != '0';
+    e = getenv("PS2_R2_ALT");
+    if (e && *e) alt_from = (uint32_t)strtoul(e, NULL, 0);
     if (env_mode >= 0)
         fprintf(stderr, "[r2] modern renderer: %s (PS2_R2), levels %s\n",
                 env_mode == R2_HYBRID ? "hybrid" : env_mode == R2_BRACKET ? "bracket" : "off", levels_all ? "all" : "allowlist");
@@ -156,6 +160,9 @@ static int mode_now(void) {
     if (!cfg_done) configure();
     int m = env_mode >= 0 ? env_mode : ps2_settings.renderer_modern ? R2_HYBRID : R2_OFF;
     if (m != R2_OFF && !gpu_hw_active()) m = R2_OFF;     /* only the GPU renderer can draw R2's segments */
+    /* (r2-m5) PS2_R2_ALT=<vblank>: from that VBlank on, hybrid frames alternate with all-exact ones (the hybrid check,
+     * scripts/r2_hcheck.ps1: consecutive pictures of a still scene; whatever only hybrid frames show alternates) */
+    if (alt_from && m == R2_HYBRID && ps2_vblank_count() >= alt_from && (alt_n++ & 1)) m = R2_OFF;
     r2_mode = m;
     return m;
 }
