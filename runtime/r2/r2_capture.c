@@ -351,25 +351,18 @@ static void collect_outlines(ps2_ctx* ctx) {
     memset(om_native, 0, sizeof om_native);
     uint32_t left = ctx->r[20].uw[0], p = ctx->r[21].uw[0];   /* $s4 entries left (this one included), $s5 -> its pointer */
     if (left > RENDER_LIST_MAX) left = RENDER_LIST_MAX;
-    static int keep_last = -1;
-    if (keep_last < 0) { const char* ev = getenv("PS2_R2_OUTLINE_LAST"); keep_last = ev ? atoi(ev) : 0; }
     for (uint32_t i = 0; i < left; i++) {
         uint32_t e = ps2_r32(ctx, p + 4 * i);
         if (e < RENDER_LIST || e >= RENDER_LIST + RENDER_LIST_MAX * 16) continue;
         uint32_t prio = ps2_r32(ctx, e);
         if (prio > 25 || ps2_r32(ctx, CLASS_TABLE + prio * 4) != 1) continue;
-        int last = 0;                                      /* (diagnostics) the last outline entry of a class-1 run */
-        if (keep_last && i + 1 < left) {
-            uint32_t n2 = ps2_r32(ctx, p + 4 * (i + 1)), p2 = n2 >= RENDER_LIST ? ps2_r32(ctx, n2) : 99;
-            last = p2 > 25 || ps2_r32(ctx, CLASS_TABLE + p2 * 4) != 1;
-        }
         uint32_t c1 = ps2_r32(ctx, e + 8);
         float w[16], vu8[4];
         st.outlines++;
         if (!c1 || !r2_header_parse(ps2_ram, c1, w, vu8)) { outl_unparsed++; continue; }
         st.outlines_parsed++;
         /* (r2-m3) an outline generated here does not keep its object exact */
-        if (outlines_on && fr_model_ok && !last && outline_for(c1, ps2_r32(ctx, e + 12))) {
+        if (outlines_on && fr_model_ok && outline_for(c1, ps2_r32(ctx, e + 12))) {
             om_native[(e - RENDER_LIST) / 16u] = 1;
             continue;
         }
