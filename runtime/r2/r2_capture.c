@@ -28,6 +28,7 @@
 #include "ps2_runtime.h"
 #include "settings.h"
 
+#include <math.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -60,6 +61,7 @@ typedef struct {
     uint8_t fp[HASH_N][32];              /* the first 32 bytes of the chain: content changed -> decode again */
     uint64_t hfh[HASH_N];                /* (r2-m5) failed decodes: the chain's hash then (r2_mesh_hash) */
     uint32_t hvb[HASH_N];                /* (r2-m5) and the VBlank it was last checked */
+    uint32_t hby[HASH_N];                /* (r2-m5, census) and its bytes */
 } mesh_map;
 static mesh_map* MM;
 static uint32_t cur_wid = 0xFFFFFFFFu;
@@ -77,6 +79,7 @@ static void new_generation(uint32_t wid) {
 static int cfg_done, env_mode = -1, check_on, levels_all, nlevels;
 static uint32_t alt_from, alt_n;               /* (r2-m5) PS2_R2_ALT */
 static int verify_on;                          /* (r2-m5) PS2_R2_VERIFY */
+static int gclean_on = 1;                      /* (r2-m5) PS2_R2_GCLEAN (guard_clean) */
 uint32_t ps2_vblank_count(void);
 static int kinds_world = 1, kinds_props = 1;   /* (r2-m2) PS2_R2_KINDS=world,props */
 static int lits_on = 1;                        /* (r2-m3) PS2_R2_KINDS ...,lit: lit / skinned props */
@@ -95,8 +98,9 @@ static LARGE_INTEGER qpf;
 typedef struct {
     uint32_t frames, cand, native, exact_level, exact_class, exact_decode, exact_budget, exact_dmas, exact_header, exact_fade, exact_guard,
         decoded, decode_fail, bytes_hint, runs, epilogues, cand_props, native_props, exact_outline, outlines, outlines_parsed, clipped,
-        exact_bracket, stale, cand_lit, native_lit, exact_lit, lit_reason[4], outline_bad, outline_decoded, outline_native, outline_exact, dmas_min_free;
+        exact_bracket, stale, guard_clean, cand_lit, native_lit, exact_lit, lit_reason[4], outline_bad, outline_decoded, outline_native, outline_exact, dmas_min_free;
     double decode_ms, cap_ms;
+    double v_native, v_exact[10];          /* (r2-m5) census */
     uint32_t reason[R2M_N];
 } r2_stats;
 static r2_stats st, st_report;
@@ -151,6 +155,8 @@ static void configure(void) {
     stats_on = e && *e && *e != '0';
     e = getenv("PS2_R2_CHECK");
     check_on = e && *e && *e != '0';
+    e = getenv("PS2_R2_GCLEAN");
+    if (e && *e) gclean_on = *e != '0';
     e = getenv("PS2_R2_VERIFY");
     verify_on = e && *e == '1';
     e = getenv("PS2_R2_ALT");
@@ -434,6 +440,7 @@ static void frame_reset(void) {
     memset(alloc_mark, 0, sizeof alloc_mark);
 }
 
+static uint32_t fail_bytes;               /* (r2-m5, census) the bytes of the chain mesh_for failed on last */
 /* the mesh of a DMA chain: cached per generation, decoded under the frame's budget; handle or 0 (*reason set) */
 static uint32_t mesh_for(uint32_t addr, int form, int* reason) {
     mesh_map* s = MM;
@@ -448,6 +455,7 @@ static uint32_t mesh_for(uint32_t addr, int form, int* reason) {
                 /* (r2-m5) a chain that failed to decode (perhaps before its final content): re-hashed every 2 s, decoded again
                  * when it changed */
                 uint32_t vb = ps2_vblank_count();
+                fail_bytes = s->hby[h];
                 if (vb - s->hvb[h] < 120u) { *reason = (int)(s->hv[h] & 0xFF); return 0; }
                 s->hvb[h] = vb;
                 if (r2_mesh_hash(ps2_ram, addr) == s->hfh[h]) { *reason = (int)(s->hv[h] & 0xFF); return 0; }
@@ -487,6 +495,8 @@ static uint32_t mesh_for(uint32_t addr, int form, int* reason) {
     if (r) {
         s->hv[h] = 0x80000000u | (uint32_t)r;
         s->hfh[h] = r2_mesh_hash(ps2_ram, addr);
+        s->hby[h] = r2_hash_bytes;
+        fail_bytes = r2_hash_bytes;
         s->hvb[h] = ps2_vblank_count();
         st.decode_fail++;
         st.reason[r]++;
@@ -525,6 +535,42 @@ static int inside_guard(const r2_mesh* m, const float mc[16]) {
         for (int j = 0; j < 4; j++) c[j] = x * mc[j] + y * mc[4 + j] + z * mc[8 + j] + mc[12 + j];
         float lim = c[3] * 0.999f;
         if (!(c[3] > 0.0f) || c[0] > lim || c[0] < -lim || c[1] > lim || c[1] < -lim || c[2] > lim || c[2] < -lim) return 0;
+    }
+    return 1;
+}
+
+/* (r2-m5) A mesh whose bounds cross the guard band may still need no clipping: when every triangle lies inside the
+ * VU's clipping volume or wholly outside one of its planes, the VU's clipper draws nothing for it, and the clip pipeline
+ * (r2.hlsl r2_gs_clip: the same CLIPW outcodes on the VU-exact clip coordinates) reproduces it exactly. Decided here in
+ * float with a margin far above the VU's rounding (round toward zero: a few ulps of the terms); a triangle near a plane
+ * counts as crossing (the entry stays exact). Rigid meshes; a few ns a vertex. PS2_R2_GCLEAN=0: off. */
+static uint8_t gb_o[4096];
+static int guard_clean(const r2_mesh* m, const float M[16]) {
+    if (m->nvtx > 4096) return 0;
+    for (uint32_t i = 0; i < m->nvtx; i++) {
+        const r2_vtx* v = &m->vtx[i];
+        float e[4], c[4];
+        for (int j = 0; j < 4; j++) {
+            float a = v->x * M[j], b = v->y * M[4 + j], d = v->z * M[8 + j];
+            c[j] = a + b + d + M[12 + j];
+            e[j] = (fabsf(a) + fabsf(b) + fabsf(d) + fabsf(M[12 + j])) * 2e-6f + 1e-30f;
+        }
+        uint32_t o = 0;                  /* bits 0..5: surely outside a plane; bit 7: not surely inside */
+        float w = c[3];
+        for (int j = 0; j < 3; j++) {
+            float t = e[j] + e[3];
+            if (c[j] - t > w) o |= 1u << (2 * j);
+            if (-c[j] - t > w) o |= 2u << (2 * j);
+            if (!(c[j] + t <= w && -c[j] + t <= w)) o |= 0x80;
+        }
+        if (!(w - e[3] > 0.0f)) o |= 0x80;
+        gb_o[i] = (uint8_t)o;
+    }
+    for (uint32_t t = 0; t + 2 < m->nidx; t += 3) {
+        uint32_t a = gb_o[m->idx[t]], b = gb_o[m->idx[t + 1]], c = gb_o[m->idx[t + 2]];
+        if (!((a | b | c) & 0x80)) continue;                 /* all inside */
+        if (a & b & c & 0x3F) continue;                      /* all outside one plane */
+        return 0;
     }
     return 1;
 }
@@ -664,8 +710,11 @@ void r2_cap_entry(ps2_ctx* ctx) {
     int form = c2 ? 1 : 0, ident = 0, xn = 0;
     uint32_t eflags = 0;
     int prop = idx < RENDER_LIST_MAX && alloc_mark[idx];       /* (r2-m2) an object's entry (glob prelit props) */
+    int cand_now = 0;
+    fail_bytes = 0;
     if (idx < RENDER_LIST_MAX && c1 && (prop ? kinds_props && c2 && MAINCLASS(cls) : kinds_world)) {
         st.cand++;
+        cand_now = 1;
         if (prop) st.cand_props++;
         if (!fr_level_ok || !fr_model_ok) { why = 1; st.exact_level++; }
         else if (!MAINCLASS(cls)) { why = 2; st.exact_class++; }
@@ -701,6 +750,7 @@ void r2_cap_entry(ps2_ctx* ctx) {
                     else r2_matmul_fast(w, fr_block.clip, M);
                     if (m->any_skin ? !skin_inside_guard(m, M) : !inside_guard(m, M)) {
                         if (clip_on) eflags |= R2E_CLIP;    /* (r2-m2) GPU-clipped triangles (shaders/r2.hlsl r2_gs_clip) */
+                        else if (gclean_on && !m->any_skin && guard_clean(m, M)) { eflags |= R2E_CLIP; st.guard_clean++; }   /* (r2-m5) */
                         else { why = 6; st.exact_guard++; }
                     }
                 }
@@ -717,6 +767,13 @@ void r2_cap_entry(ps2_ctx* ctx) {
         if (!next || np > 25 || (int)ps2_r32(ctx, CLASS_TABLE + np * 4) != cls) { native = 0; st.exact_bracket++; }
     }
     if (native && prop) st.native_props++;
+    if (cand_now) {                              /* (r2-m5) census: vertices native / exact by reason (undecoded: ~bytes / 45) */
+        const r2_mesh* cm = handle ? r2_mesh_get(handle) : NULL;
+        if (!cm && why == 2 && stats_on && r2_mesh_hash(ps2_ram, form ? c2 : c1)) fail_bytes = r2_hash_bytes;   /* (another class) */
+        double nv = cm ? (double)cm->nvtx : (double)fail_bytes / 45.0;
+        if (native) st.v_native += nv;
+        else st.v_exact[why < 10 ? why : 9] += nv;
+    }
     if (!native) {
         if (mode == R2_HYBRID && prev_native) owe_epilogue(ctx);
         prev_native = 0;
@@ -866,7 +923,7 @@ void r2_cap_done(ps2_ctx* ctx) {
         uint32_t vb = ps2_vblank_count();
         if (vb - last_vb >= 60) {
             last_vb = vb;
-            char line[512];
+            char line[1200];
             r2_stats_line(line, sizeof line);
             fprintf(stderr, "[r2] v%u %s\n", vb, line);
             memset(&st, 0, sizeof st);
@@ -877,15 +934,19 @@ void r2_cap_done(ps2_ctx* ctx) {
 void r2_stats_line(char* buf, size_t n) {
     const r2_stats* s = &st;
     double f = s->frames ? (double)s->frames : 1.0;
-    int o = snprintf(buf, n, "mode %d gen %u: per frame %.0f candidates (%.0f props), %.0f native (%.0f props, %.1f clipped; %.1f runs, %.1f "
+    double vt = s->v_native;
+    for (int i = 0; i < 10; i++) vt += s->v_exact[i];
+    int o = snprintf(buf, n, "mode %d gen %u: per frame %.0f candidates (%.0f props), %.0f native (%.0f props, %.1f clipped, %.1f guard-clean; %.1f runs, %.1f "
                              "epilogues), exact: level %.0f class %.0f decode %.0f budget %.0f header %.0f fade %.0f guard %.0f outline %.1f dmas %.0f; "
-                             "outlines %.1f (%.1f parsed, %.1f native, %.1f exact; scripts %u, bad %u); lit %.1f candidates %.1f native %.1f exact (light set %u, bone %u, TEX0 swap %u); decoded %u (failed %u, %.1f ms, stale %u); capture %.3f ms/frame, hints %.1f KB/frame, builder free >= %u KB",
-                     r2_mode, r2_store_gen(), s->cand / f, s->cand_props / f, s->native / f, s->native_props / f, s->clipped / f, s->runs / f,
+                             "outlines %.1f (%.1f parsed, %.1f native, %.1f exact; scripts %u, bad %u); lit %.1f candidates %.1f native %.1f exact (light set %u, bone %u, TEX0 swap %u); decoded %u (failed %u, %.1f ms, stale %u); capture %.3f ms/frame, hints %.1f KB/frame, builder free >= %u KB; census: native %.1f%% of %.0f vertices, exact level %.0f class %.0f decode %.0f header %.0f fade %.0f guard %.0f outline %.0f lit %.0f",
+                     r2_mode, r2_store_gen(), s->cand / f, s->cand_props / f, s->native / f, s->native_props / f, s->clipped / f, s->guard_clean / f, s->runs / f,
                      s->epilogues / f, s->exact_level / f, s->exact_class / f, s->exact_decode / f, s->exact_budget / f, s->exact_header / f,
                      s->exact_fade / f, s->exact_guard / f, s->exact_outline / f, s->exact_dmas / f, s->outlines / f, s->outlines_parsed / f,
                      s->outline_native / f, s->outline_exact / f, s->outline_decoded, s->outline_bad,
                      s->cand_lit / f, s->native_lit / f, s->exact_lit / f, s->lit_reason[1], s->lit_reason[2], s->lit_reason[3],
-                     s->decoded, s->decode_fail, s->decode_ms, s->stale, s->cap_ms / f, s->bytes_hint / f / 1024.0, s->dmas_min_free / 1024);
+                     s->decoded, s->decode_fail, s->decode_ms, s->stale, s->cap_ms / f, s->bytes_hint / f / 1024.0, s->dmas_min_free / 1024,
+                     100.0 * s->v_native / (vt > 0 ? vt : 1), vt / f, s->v_exact[1] / f, s->v_exact[2] / f, s->v_exact[3] / f, s->v_exact[4] / f,
+                     s->v_exact[5] / f, s->v_exact[6] / f, s->v_exact[7] / f, s->v_exact[8] / f);
     for (int r = 1; r < R2M_N && o > 0 && (size_t)o < n; r++)
         if (s->reason[r]) o += snprintf(buf + o, n - (size_t)o, " [%s %u]", r2m_reason[r], s->reason[r]);
 }

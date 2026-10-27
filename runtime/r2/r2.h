@@ -146,6 +146,7 @@ typedef struct r2_src r2_src;
 int r2_src_same(const r2_src* s, const uint8_t* ram);
 void r2_src_free(r2_src* s);
 uint64_t r2_mesh_hash(const uint8_t* ram, uint32_t addr);   /* (diagnostics) m->hash of the chain at addr now */
+extern uint32_t r2_hash_bytes;                               /* the bytes it walked */
 
 typedef struct r2_mesh {
     uint32_t handle;             /* gen << 20 | index */

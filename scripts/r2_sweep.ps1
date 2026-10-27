@@ -1,10 +1,15 @@
-# (r2-m2) The modern renderer's A/B sweep (notes/modern-renderer.md 5, levels 2-3): scripts\r2_ab.ps1 on every episode hub
-# and a few jobs (bracket recording of one frame, replayed exact and hybrid, compared against tests\r2\gates.json), -Parallel
-# at a time. Prints one line per scene: entries bracketed, the gate verdict and the S = 1 numbers of the main frame buffer.
-#   .\scripts\r2_sweep.ps1 [-Scenes ep1,ep3] [-Parallel 3] [-Keep]
-# Output: build\r2ab\<scene>\ (deleted unless -Keep: ~70 MB per scene).
-param([string[]]$Scenes = @(), [int]$Parallel = 3, [switch]$Keep)
+# (r2-m2) The modern renderer's sweep (notes/modern-renderer.md 5, levels 2-3) on every episode hub and a few jobs,
+# -Parallel runs at a time, one line per scene and check:
+#   ab  scripts\r2_ab.ps1: a bracket recording of one frame replayed exact and hybrid, compared against tests\r2\gates.json
+#       (entries bracketed, the verdict, the S = 1 numbers of the main frame buffer)
+#   hc  (r2-m5) scripts\r2_hcheck.ps1: the game in hybrid mode with hybrid and all-exact frames alternating; what only one
+#       mode draws alternates between consecutive pictures. Catches what the A/B cannot (it replays one GS stream): the
+#       VU1 / VIF / GS state dropped mesh DMA leaves for later exact draws, stale mesh decodes, hint / slot races.
+#   .\scripts\r2_sweep.ps1 [-Scenes ep1,ep3] [-Checks ab,hc] [-Parallel 3] [-Keep]
+# Output: build\r2ab\<scene>\, build\r2hc\sw_<scene>\worst.png (deleted unless -Keep / on failure).
+param([string[]]$Scenes = @(), [string[]]$Checks = @('ab', 'hc'), [int]$Parallel = 3, [switch]$Keep)
 $Scenes = @($Scenes | ForEach-Object { $_ -split ',' } | Where-Object { $_ })
+$Checks = @($Checks | ForEach-Object { $_ -split ',' } | Where-Object { $_ })
 $root = Split-Path $PSScriptRoot -Parent
 $list = @(
     @{ n = 'ep1'; a = @('-Episode', '1', '-Job', 'm1_brawl', '-Play', '-At', '4800') },
@@ -24,22 +29,38 @@ $free = [math]::Round((Get-PSDrive C).Free / 1GB, 1)
 if ($free -lt 50) { "C: has $free GB free (< 50): not starting"; exit 1 }
 $logs = Join-Path $root 'build\r2ab\sweep'
 New-Item -ItemType Directory -Force $logs | Out-Null
-$queue = [System.Collections.ArrayList]@($list)
+$queue = [System.Collections.ArrayList]@()
+foreach ($s in $list) { foreach ($c in $Checks) { [void]$queue.Add(@{ s = $s; c = $c }) } }
+$total = $queue.Count
 $running = @()
 $fail = 0
 while ($queue.Count -or $running.Count) {
     while ($queue.Count -and $running.Count -lt $Parallel) {
-        $s = $queue[0]; $queue.RemoveAt(0)
-        $log = Join-Path $logs "$($s.n).txt"
-        $args1 = @('-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'r2_ab.ps1'), '-Name', "sw_$($s.n)", '-Levels', 'all') + $s.a
+        $t = $queue[0]; $queue.RemoveAt(0)
+        $s = $t.s
+        $log = Join-Path $logs "$($s.n)_$($t.c).txt"
+        if ($t.c -eq 'ab') {
+            $args1 = @('-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'r2_ab.ps1'), '-Name', "sw_$($s.n)", '-Levels', 'all') + $s.a
+        } else {
+            $args1 = @('-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'r2_hcheck.ps1'), '-Name', "sw_$($s.n)") + $s.a
+        }
         $p = Start-Process -FilePath 'powershell' -ArgumentList $args1 -RedirectStandardOutput $log -RedirectStandardError "$log.err" -PassThru -NoNewWindow
-        $running += [pscustomobject]@{ p = $p; s = $s; log = $log }
+        $running += [pscustomobject]@{ p = $p; s = $s; c = $t.c; log = $log }
     }
     Start-Sleep -Seconds 5
     $still = @()
     foreach ($r in $running) {
         if (-not $r.p.HasExited) { $still += $r; continue }
         $t = Get-Content $r.log -ErrorAction SilentlyContinue
+        if ($r.c -eq 'hc') {
+            $g = ($t | Select-String '^hcheck:' | Select-Object -Last 1)
+            $gl = if ($g) { $g.Line } else { 'hcheck: (no result)' }
+            if ($gl -notmatch 'PASS') { $fail++ }
+            elseif (-not $Keep) { Remove-Item -Recurse -Force (Join-Path $root "build\r2hc\sw_$($r.s.n)") -ErrorAction SilentlyContinue }
+            "{0,-13} hc | {1}" -f $r.s.n, $gl
+            Remove-Item -Recurse -Force (Join-Path $root "build\warp\r2hc_sw_$($r.s.n)\frames") -ErrorAction SilentlyContinue
+            continue
+        }
         $g = ($t | Select-String '^gates:' | Select-Object -Last 1)
         $f = ($t | Select-String 'frame 0x38: ' | Select-Object -Last 1)
         $z = ($t | Select-String ' Z 0x70: ' | Select-Object -Last 1)
@@ -47,7 +68,7 @@ while ($queue.Count -or $running.Count) {
         $ent = if ($tr) { (Get-Content $tr.FullName -TotalCount 1) -replace '^.*entries (\d+).*$', '$1' } else { '?' }
         $gl = if ($g) { $g.Line } else { 'gates: (no result)' }
         if ($gl -notmatch 'PASS') { $fail++ }
-        "{0,-13} entries {1,4} | {2} | {3} | {4}" -f $r.s.n, $ent, $gl, $(if ($f) { $f.Line -replace '^v\d+ frame 0x38: ', '' -replace ';.*alpha bit', '; alpha bit' } else { '' }),
+        "{0,-13} ab entries {1,4} | {2} | {3} | {4}" -f $r.s.n, $ent, $gl, $(if ($f) { $f.Line -replace '^v\d+ frame 0x38: ', '' -replace ';.*alpha bit', '; alpha bit' } else { '' }),
             $(if ($z) { $z.Line -replace '^v\d+ ', '' } else { '' })
         if (-not $Keep) {
             Remove-Item -Recurse -Force (Join-Path $root "build\r2ab\sw_$($r.s.n)"), (Join-Path $root "build\r2trace\ab_sw_$($r.s.n)") -ErrorAction SilentlyContinue
@@ -56,5 +77,5 @@ while ($queue.Count -or $running.Count) {
     }
     $running = $still
 }
-"sweep: $($list.Count - $fail) of $($list.Count) scenes pass"
+"sweep: $($total - $fail) of $total checks pass"
 exit $(if ($fail) { 1 } else { 0 })

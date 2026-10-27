@@ -176,6 +176,7 @@ static int walk(dec* d, uint32_t addr) {
     return R2M_SIZE;
 }
 
+uint32_t r2_hash_bytes;                  /* (r2-m5) the bytes r2_mesh_hash walked last */
 /* (r2-m5) the content hash r2_mesh_decode records (m->hash) of the chain at addr now; 0 when it does not walk */
 uint64_t r2_mesh_hash(const uint8_t* ram, uint32_t addr) {
     static dec* d;                                               /* (EE thread only) */
@@ -186,6 +187,7 @@ uint64_t r2_mesh_hash(const uint8_t* ram, uint32_t addr) {
     d->ram = ram;
     d->hash = 0xCBF29CE484222325ull;
     if (walk(d, addr)) return 0;
+    r2_hash_bytes = d->bytes;
     return d->hash;
 }
 
@@ -387,11 +389,16 @@ static int sub_batch(dec* d, uint32_t X, int second, int litr) {
     B->vfirst = d->nvtx;
     B->vcount = n;
     B->ifirst = d->nidx;
+    /* (r2-m5) the colours the passes read (RGBAQ from colour A: REGS 4F12, colour B: 41F2): a sub-batch whose passes all
+     * take colour A need not unpack colour B (ep1 hub: 23 meshes) */
+    int need_c[2] = { 0, 0 };
+    for (uint32_t i = 0; i < B->npass; i++) need_c[B->pass[i].csel] = 1;
     for (uint32_t k = 0; k < n; k++) {
         uint32_t a = X + start + 4 * k;
         const uint32_t *uv = vq(d, a), *ca = vq(d, a + 1), *cb = vq(d, a + 2), *p = vq(d, a + 3);
         if (!d->wr[a & (QW - 1)] || !d->wr[(a + 3) & (QW - 1)]) R2FAIL(R2M_VERTEX);
-        if (!lit && (!d->wr[(a + 1) & (QW - 1)] || !d->wr[(a + 2) & (QW - 1)])) R2FAIL(R2M_VERTEX);
+        int ok_a = d->wr[(a + 1) & (QW - 1)], ok_b = d->wr[(a + 2) & (QW - 1)];
+        if (!lit && ((need_c[0] && !ok_a) || (need_c[1] && !ok_b))) R2FAIL(R2M_VERTEX);
         if (((p[3] >> 23) & 0xFF) != 150) R2FAIL(R2M_VERTEX);      /* w ~ 2^23 + m (the flag / fog word) */
         r2_vtx* v = &d->vtx[d->nvtx++];
         memset(v, 0, sizeof *v);
@@ -433,6 +440,9 @@ static int sub_batch(dec* d, uint32_t X, int second, int litr) {
         if (!lit) {
             /* (the lit routines' unlit sub-batches may carry other words there, e.g. V4-8 normals: the GS takes the low
              * byte of each; a fade would scale the whole word, so those stay exact when faded - r2_capture.c) */
+            static const uint32_t zero4[4];
+            if (!ok_a) ca = zero4;                               /* (r2-m5) a colour no pass reads */
+            if (!ok_b) cb = zero4;
             for (int c = 0; c < 4; c++) {
                 if (ca[c] > 255 || cb[c] > 255) { if (!litr) R2FAIL(R2M_VERTEX); B->wide = 1; }
             }
