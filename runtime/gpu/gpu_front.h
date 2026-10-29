@@ -263,8 +263,10 @@ enum { GPU_DF_VIEW = 1,                  /* a texture view of a target (CT32 / C
                                             (gpu_exec.c exec_npost decides from the records) */
        GPU_DF_SVOL = 128,                /* (r2-m7) modern frames: a ROV draw of shadow-volume primitives only (gpu_front.c:
                                             commutative wrapping G adds, drawn without rasterizer order) */
-       GPU_DF_TEXDEC = 256 };            /* (r2-m7b) modern frames: the draw may read level 0 of its vram textures from the
-                                            decoded texture cache (gpu_exec.c td_prepass decides per StateRec) */                /* (ROV tier) a primitive without a GEQUAL / GREATER depth test, or without a proven
+       GPU_DF_TEXDEC = 256,              /* (r2-m7b) modern frames: the draw may read level 0 of its vram textures from the
+                                            decoded texture cache (gpu_exec.c td_prepass decides per StateRec) */
+       GPU_DF_PART = 512 };              /* (r2-m6) modern frames: an FF draw of particle triangles only (gpu_front.c "part"):
+                                            the executor may run it through the native particle pipeline (ps_ff_part) */                /* (ROV tier) a primitive without a GEQUAL / GREATER depth test, or without a proven
                                             rasterized Z bound: the draw gets no early depth rejection (gpu_exec.c) */
 typedef struct { gpu_fop h; uint16_t ct, zt; uint32_t zresolve; int16_t bbox[4]; } gpu_fop_rov_end;
 /* rect [x0, x1) x [y0, y1) in pixels of the 16-bit frame (whole 16x8 blocks). (perf-p2) mode 1: a copy run - every
@@ -322,7 +324,8 @@ typedef struct {                         /* (r2-m2) 32 bytes: a segment's consta
 /* (r2-m1) frontend counters of the modern renderer since the last reset (gpu_r2front.c) */
 typedef struct {
     uint64_t hints, bad_hints, segments, entries, draws, splits, textures, tex_gpu, dropped, unsupported, over128, brackets,
-        skipped_prims, zwrite_draws, all_fail, runs, stale, items;
+        skipped_prims, zwrite_draws, all_fail, runs, stale, items,
+        part_spans, part_prims, part_exact, part_rov, part_other;   /* (r2-m6) particle spans; their triangles drawn natively, by the exact FF / ROV tiers; other primitives */
 } gpu_r2_front_stats;
 void gpu_front_r2_stats(gpu_r2_front_stats* out, int reset);
 /* bracket mode (PS2_R2=bracket): 0 the bracketed exact primitives are drawn (R2 ignores the hints), 1 R2 draws the

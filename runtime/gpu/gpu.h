@@ -194,6 +194,7 @@ typedef struct {
                                                            without rasterizer order, post-pass sprite draws run as compute
                                                            passes (and candidates that stayed FF draws) */
     uint64_t rov_ez_draws;               /* (perf-p2) ROV-tier draws with early depth rejection (read-only DSV) */
+    uint64_t part_draws;                 /* (r2-m6) particle draws through the native particle pipeline (ps_ff_part) */
 } gpu_exec_counters;
 void gpu_exec_get_counters(gpu_exec_counters* out);
 /* (M9) the process's video memory use (bytes): local (on the GPU), non-local (system memory); 0: unknown */

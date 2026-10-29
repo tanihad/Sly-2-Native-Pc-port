@@ -1178,10 +1178,10 @@ static void zcb_set(const zs_consts* k) {
  * waits for its timestamps (profiling only: it serialises CPU and GPU). Averages per frame in the log every
  * 60 frames. Attribution is approximate (the GPU overlaps neighbouring work). */
 enum { PR_OTHER, PR_TARGET, PR_MEM, PR_CLEAR, PR_SHADOW, PR_FF_FAST, PR_FF_TRI, PR_FF_SPRITE, PR_FF_LINE,
-       PR_REF_TRI, PR_REF_OTHER, PR_A16, PR_ZRESOLVE, PR_ZSYNC, PR_PRESENT, PR_A16_DRAW, PR_FF_FAST_Z, PR_R2, PR_N };
+       PR_REF_TRI, PR_REF_OTHER, PR_A16, PR_ZRESOLVE, PR_ZSYNC, PR_PRESENT, PR_A16_DRAW, PR_FF_FAST_Z, PR_R2, PR_PART, PR_N };
 static const char* const pr_names[PR_N] = { "other", "target", "mem", "clear", "shadow", "ff-tri-fast", "ff-tri",
                                             "ff-sprite", "ff-line", "ref-tri", "ref-other", "alias16", "zresolve",
-                                            "zsync", "present", "alias16-draw", "ff-tri-fast-z", "r2" };
+                                            "zsync", "present", "alias16-draw", "ff-tri-fast-z", "r2", "part" };
 #define PR_MAXQ 8192
 static struct {
     int on, n, cur;
@@ -1329,7 +1329,7 @@ static void prof_end(void) {
     {                                    /* (M9) the frame's phases for the stats line (gpu_hw.c, PS2_GS_HW_STATS) */
         gpu_frame_stats* s = gpu_stats_cur();
         s->phases = 1;
-        s->phase_ms[0] = (float)(f[PR_FF_FAST] + f[PR_FF_TRI] + f[PR_FF_FAST_Z] + f[PR_R2]);
+        s->phase_ms[0] = (float)(f[PR_FF_FAST] + f[PR_FF_TRI] + f[PR_FF_FAST_Z] + f[PR_R2] + f[PR_PART]);
         s->phase_ms[1] = (float)(f[PR_FF_SPRITE] + f[PR_FF_LINE]);
         s->phase_ms[2] = (float)(f[PR_REF_TRI] + f[PR_REF_OTHER]);
         s->phase_ms[3] = (float)(f[PR_A16] + f[PR_A16_DRAW]);
@@ -2149,6 +2149,14 @@ static uint32_t td_r2(void* user, uint64_t t0) {
     return e->ver == 0xFFFFFFFFu ? 0 : base + 1;
 }
 
+/* (r2-m6, R6) particle draws (GPU_DF_PART) run the native particle pipeline: modern frames only (the frontend marks them
+ * only there), not in the A phases of PS2_GPU_AB; PS2_GPU_PART=0: off here (the exact FF shaders draw them) */
+static int part_exec(void) {
+    static int env = -1;
+    if (env < 0) { const char* e = getenv("PS2_GPU_PART"); env = !(e && *e == '0'); }
+    return env && X.mixed && !X.ref && !ab_off();
+}
+
 /* FF draw (M5, 4.2): RTV + DSV, the blend and depth tests of the output merger, shaders/gs.hlsl ps_ff.
  * An ATST split (split 3) is two draws: the passing fragments with the state's Z write and colour mask,
  * then the failing ones as AFAIL says (FB_ONLY: no Z write; ZB_ONLY: no colour; RGB_ONLY: neither Z nor
@@ -2181,6 +2189,16 @@ static void exec_draw_ff(const gpu_fop_draw* d, uint32_t slot) {
         int fast = (d->ps_key & GPU_PSK_FF_FAST) != 0;
         ps = sp && fast ? ts[sp][dual][zout] : t[dual][zout][fast];
         static const int td[2][2] = { { GPU_SH_ps_ff_t001d, GPU_SH_ps_ff_t011d }, { GPU_SH_ps_ff_t101d, GPU_SH_ps_ff_t111d } };
+        if (sp == 1 && fast && (d->feat & GPU_DF_PART) && part_exec()) {
+            /* (r2-m6, R6) particle triangles: the native particle pipeline (hardware-interpolated attributes and Z, no
+             * conservative depth output; shaders/gs.hlsl ps_ff_part) */
+            static const int pp[2][2] = { { GPU_SH_ps_ff_p0, GPU_SH_ps_ff_p0d }, { GPU_SH_ps_ff_p1, GPU_SH_ps_ff_p1d } };
+            int tdd = TD.ndpos && td_draw(X.curpos);
+            if (tdd) TD.draws++;
+            set_vs(gpu_vs(GPU_SH_vs_ff_part));
+            ps = pp[dual][tdd];
+            XC.part_draws++;
+        } else
         if (sp == 1 && fast && TD.ndpos && td_draw(X.curpos)) { ps = td[dual][zout]; TD.draws++; }   /* (r2-m7b) */
     } else {
         set_topo(1);
@@ -2232,14 +2250,24 @@ static void exec_draw_ff(const gpu_fop_draw* d, uint32_t slot) {
 /* (r2-m7b) the checks and constants of a post pass (exec_npost, shfuse): 0 not one; rects rc[nr] (native, disjoint),
  * their bounding box bb, whole: the union is the box */
 typedef struct { npost_consts k; int rc[64][4], nr, bb[4], whole; } npost_plan;
+/* (r2-m6) flat post passes (untextured sprites, npost_prep): PS2_R2_NPOST_FLAT=0 off; off in PS2_GPU_AB's A phases */
+static int flat_on(void) {
+    static int on = -1;
+    if (on < 0) { const char* e = getenv("PS2_R2_NPOST_FLAT"); on = !(e && *e == '0'); }
+    return on;
+}
 static int npost_prep(const gpu_fop_draw* d, npost_plan* P) {
     static int on = -1;                  /* PS2_R2_NPOST=0: the FF draws (A/B) */
     if (on < 0) { const char* e = getenv("PS2_R2_NPOST"); on = !(e && *e == '0'); }
     const gpu_front_frame_data* fd = X.fd;
-    if (!on || !fd || !X.mixed || d->tier != GPU_TIER_FF || d->cls != GPU_PC_SPRITE || !d->count || d->count > 64 ||
-        (d->depth & 1) || (d->depth >> 1) > 1 || d->split)
+    /* (r2-m6) flat: untextured sprites of one colour (a masked fill or a blend with the destination: m2's shadow passes
+     * write G bit planes under FBMSK FFFF80FF / FFFFFEFF, which only the ROV tier draws) - every sample's word is a
+     * function of its own destination word, as for the textured passes; FF or ROV tier */
+    int flat = d->tex == 0 && !(d->feat & GPU_DF_TEX) && flat_on() && !ab_off();
+    if (!on || !fd || !X.mixed || (d->tier != GPU_TIER_FF && !(flat && d->tier == GPU_TIER_ROV)) || d->cls != GPU_PC_SPRITE ||
+        !d->count || d->count > 64 || (d->depth & 1) || (d->depth >> 1) > 1 || d->split)
         return 0;
-    xtarget *t = tgt(d->ct), *v = tgt(d->tex);
+    xtarget *t = tgt(d->ct), *v = flat ? t : tgt(d->tex);
     if (!t || t->depth || !v || v->depth || t->kx != v->kx || t->ky != v->ky || !t->uav32 || !v->uav32) return 0;
     if ((size_t)d->rec_first + (size_t)d->count * sizeof(gpu_rec_sprite) > fd->rec_bytes) return 0;
     const gpu_rec_sprite* r0 = (const gpu_rec_sprite*)(fd->rec + d->rec_first);
@@ -2249,18 +2277,24 @@ static int npost_prep(const gpu_fop_draw* d, npost_plan* P) {
     uint32_t tk = s->texsrc & 0xFF, psm = (uint32_t)(s->tex0 >> 20) & 0x3F;
     uint32_t tbp = (uint32_t)s->tex0 & 0x3FFF, tbw = (uint32_t)(s->tex0 >> 14) & 0x3F;
     uint32_t f = s->flags, tfx = (f >> GPU_SF_TFX_SHIFT) & 3;
-    if (!(f & GPU_SF_TME) || !(f & GPU_SF_FST) || (f & (GPU_SF_FGE | GPU_SF_AA1 | GPU_SF_PABE | GPU_SF_DTHE | GPU_SF_FB24 | GPU_SF_FB16)) ||
-        ((f >> GPU_SF_SCANMSK_SHIFT) & 3) || tfx > 1 || (s->texsrc & GPU_TS_SELF) || ((s->texsrc >> 8) & 0xFF) != d->tex)
-        return 0;
-    if (!((tk == TK_VIEW_C32 && psm == 0x00) || (tk == TK_VIEW_ALPHA && psm == 0x1B))) return 0;
-    if (tbp != (uint32_t)v->base * 32u || tbw != (uint32_t)v->fbw) return 0;   /* (texel (x, y) = the view's pixel (x, y)) */
-    uint32_t texm = s->tlev & 3, mxl = (s->tlev >> 5) & 7;
-    if ((texm != 1 && texm != 2) || mxl) return 0;
     uint32_t clut = 0;
-    if (tk == TK_VIEW_ALPHA) {
-        uint32_t cpsm = (uint32_t)(s->tex0 >> 51) & 15, csa = (uint32_t)(s->tex0 >> 56) & 31;
-        if (cpsm != 0 || s->clut_slot == 0xFFFFFFFFu) return 0;
-        clut = (s->clut_slot & 4095) | (csa * 16u) << 16;
+    if (flat) {
+        if ((f & (GPU_SF_TME | GPU_SF_FGE | GPU_SF_AA1 | GPU_SF_PABE | GPU_SF_DTHE | GPU_SF_FB24 | GPU_SF_FB16)) ||
+            ((f >> GPU_SF_SCANMSK_SHIFT) & 3))
+            return 0;
+    } else {
+        if (!(f & GPU_SF_TME) || !(f & GPU_SF_FST) || (f & (GPU_SF_FGE | GPU_SF_AA1 | GPU_SF_PABE | GPU_SF_DTHE | GPU_SF_FB24 | GPU_SF_FB16)) ||
+            ((f >> GPU_SF_SCANMSK_SHIFT) & 3) || tfx > 1 || (s->texsrc & GPU_TS_SELF) || ((s->texsrc >> 8) & 0xFF) != d->tex)
+            return 0;
+        if (!((tk == TK_VIEW_C32 && psm == 0x00) || (tk == TK_VIEW_ALPHA && psm == 0x1B))) return 0;
+        if (tbp != (uint32_t)v->base * 32u || tbw != (uint32_t)v->fbw) return 0;   /* (texel (x, y) = the view's pixel (x, y)) */
+        uint32_t texm = s->tlev & 3, mxl = (s->tlev >> 5) & 7;
+        if ((texm != 1 && texm != 2) || mxl) return 0;
+        if (tk == TK_VIEW_ALPHA) {
+            uint32_t cpsm = (uint32_t)(s->tex0 >> 51) & 15, csa = (uint32_t)(s->tex0 >> 56) & 31;
+            if (cpsm != 0 || s->clut_slot == 0xFFFFFFFFu) return 0;
+            clut = (s->clut_slot & 4095) | (csa * 16u) << 16;
+        }
     }
     uint32_t ate = s->test & 1, atst = (s->test >> 1) & 7, afail = (s->test >> 12) & 3, date = (s->test >> 14) & 1;
     int rgb_only = 0;
@@ -2276,8 +2310,9 @@ static int npost_prep(const gpu_fop_draw* d, npost_plan* P) {
     int (*rc)[4] = P->rc, nr = 0;
     for (uint32_t i = 0; i < d->count; i++) {
         const gpu_rec_sprite* r = r0 + i;
-        if (r->state != si || r->rgba != r0->rgba || !(r->flags & 1) || r->du != (16 << 12) || r->vcy != 16.0 || r->vc0 != 8.0 ||
-            r->ua != ((16 * (int32_t)r->x0 + 8) << 12))
+        if (r->state != si || r->rgba != r0->rgba) return 0;
+        if (!flat && (!(r->flags & 1) || r->du != (16 << 12) || r->vcy != 16.0 || r->vc0 != 8.0 ||
+                      r->ua != ((16 * (int32_t)r->x0 + 8) << 12)))
             return 0;
         int x0 = r->x0 > sx0 ? r->x0 : sx0, y0 = r->y0 > sy0 ? r->y0 : sy0;
         int x1 = r->x1 < sx1 ? r->x1 : sx1, y1 = r->y1 < sy1 ? r->y1 : sy1;
@@ -2296,9 +2331,10 @@ static int npost_prep(const gpu_fop_draw* d, npost_plan* P) {
     P->bb[0] = bx0; P->bb[1] = by0; P->bb[2] = bx1; P->bb[3] = by1;
     npost_consts k;
     memset(&k, 0, sizeof k);
-    int same = d->tex == d->ct;
-    k.mode = (tk == TK_VIEW_ALPHA ? 1u : 0u) | (same ? 2u : 0u) | ((f & GPU_SF_ABE) ? 4u : 0u) | ((f & GPU_SF_COLCLAMP) ? 8u : 0u) |
-             ((f & GPU_SF_FBA) ? 16u : 0u) | ((f & GPU_SF_TCC) ? 32u : 0u) | (tfx == 1 ? 64u : 0u) | (rgb_only ? 128u : 0u);
+    int same = flat || d->tex == d->ct;
+    k.mode = (!flat && tk == TK_VIEW_ALPHA ? 1u : 0u) | (same ? 2u : 0u) | ((f & GPU_SF_ABE) ? 4u : 0u) | ((f & GPU_SF_COLCLAMP) ? 8u : 0u) |
+             ((f & GPU_SF_FBA) ? 16u : 0u) | ((f & GPU_SF_TCC) ? 32u : 0u) | (tfx == 1 ? 64u : 0u) | (rgb_only ? 128u : 0u) |
+             (flat ? 256u : 0u);
     k.alpha = s->alpha;
     k.fmask = s->fmask;
     k.vcol = r0->rgba;
@@ -2313,9 +2349,9 @@ static int exec_npost(const gpu_fop_draw* d) {
     if (!P.nr) return 1;                 /* (nothing inside the scissor) */
     if (!npcb_ensure()) return 0;
     npost_consts k = P.k;
-    int nr = P.nr, whole = P.whole, same = d->tex == d->ct;
+    int nr = P.nr, whole = P.whole, same = (k.mode & 2u) != 0;   /* (r2-m6: flat passes read only the destination) */
     int bx0 = P.bb[0], by0 = P.bb[1], bx1 = P.bb[2], by1 = P.bb[3];
-    xtarget *t = tgt(d->ct), *v = tgt(d->tex);
+    xtarget *t = tgt(d->ct), *v = same ? t : tgt(d->tex);
     if (X.mode) unbind_all();
     ID3D11DeviceContext* c = gpu_rt.ctx;
     ID3D11ShaderResourceView* none2[2] = { NULL, NULL };
@@ -2629,7 +2665,7 @@ static void exec_draw(const gpu_fop_draw* d, uint32_t slot) {
         int ff = X.mixed && d->tier == GPU_TIER_FF && !X.ref;
         int zo = d->zt && (d->depth >> 1) != 0;
         prof_mark(d->tier == GPU_TIER_ALIAS16 ? PR_A16_DRAW
-                  : d->cls == GPU_PC_TRI ? (!ff ? PR_REF_TRI : (d->ps_key & GPU_PSK_FF_FAST) ? (zo ? PR_FF_FAST_Z : PR_FF_FAST) : PR_FF_TRI)
+                  : d->cls == GPU_PC_TRI ? (!ff ? PR_REF_TRI : (d->feat & GPU_DF_PART) ? PR_PART : (d->ps_key & GPU_PSK_FF_FAST) ? (zo ? PR_FF_FAST_Z : PR_FF_FAST) : PR_FF_TRI)
                   : !ff ? PR_REF_OTHER : d->cls == GPU_PC_SPRITE ? PR_FF_SPRITE : PR_FF_LINE);
     }
     if (d->tier == GPU_TIER_ALIAS16 && X.a16c_on) { exec_a16_copy(d); return; }   /* (perf-p2) a copy run */

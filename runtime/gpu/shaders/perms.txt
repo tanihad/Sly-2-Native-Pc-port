@@ -113,6 +113,12 @@ ps_ff_t001n      gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=0 DUA
 ps_ff_t011n      gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=0 DUAL=0 ZOUT=1 STQ_FAST=1 TRI_REC=128u SPEC_NOTEX=1 SPEC_NOVIEW=1 SPEC_NOLOD=1 DC_VTX=1
 ps_ff_t101n      gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=0 DUAL=1 ZOUT=0 STQ_FAST=1 TRI_REC=128u SPEC_NOTEX=1 SPEC_NOVIEW=1 SPEC_NOLOD=1 DC_VTX=1
 ps_ff_t111n      gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=0 DUAL=1 ZOUT=1 STQ_FAST=1 TRI_REC=128u SPEC_NOTEX=1 SPEC_NOVIEW=1 SPEC_NOLOD=1 DC_VTX=1
+# (r2-m6, R6) the native particle pipeline (gpu_front.c GPU_DF_PART): hardware-interpolated colour / fog / Z, FF output stage
+vs_ff_part        gs.hlsl             vs_ff_part        vs_5_0    FF=1 PRIM=0 PART=1 STQ_FAST=1 TRI_REC=128u SPEC_NOVIEW=1 SPEC_NOLOD=1 DC_VTX=1
+ps_ff_p0          gs.hlsl             ps_ff_part        ps_5_0    FF=1 PRIM=0 PART=1 DUAL=0 ZOUT=0 STQ_FAST=1 TRI_REC=128u SPEC_NOVIEW=1 SPEC_NOLOD=1 DC_VTX=1
+ps_ff_p1          gs.hlsl             ps_ff_part        ps_5_0    FF=1 PRIM=0 PART=1 DUAL=1 ZOUT=0 STQ_FAST=1 TRI_REC=128u SPEC_NOVIEW=1 SPEC_NOLOD=1 DC_VTX=1
+ps_ff_p0d         gs.hlsl             ps_ff_part        ps_5_0    FF=1 PRIM=0 PART=1 DUAL=0 ZOUT=0 STQ_FAST=1 TRI_REC=128u SPEC_NOVIEW=1 SPEC_NOLOD=1 DC_VTX=1 TEXDEC=1
+ps_ff_p1d         gs.hlsl             ps_ff_part        ps_5_0    FF=1 PRIM=0 PART=1 DUAL=1 ZOUT=0 STQ_FAST=1 TRI_REC=128u SPEC_NOVIEW=1 SPEC_NOLOD=1 DC_VTX=1 TEXDEC=1
 ps_ff_s00n       gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=1 DUAL=0 ZOUT=0 SPEC_NOTEX=1 SPEC_NOVIEW=1 SPEC_NOLOD=1
 ps_ff_s01n       gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=1 DUAL=0 ZOUT=1 SPEC_NOTEX=1 SPEC_NOVIEW=1 SPEC_NOLOD=1
 ps_ff_s10n       gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=1 DUAL=1 ZOUT=0 SPEC_NOTEX=1 SPEC_NOVIEW=1 SPEC_NOLOD=1

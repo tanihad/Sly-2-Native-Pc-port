@@ -91,6 +91,7 @@ static int nblock;
  * clipping does not reproduce the VU clipper's arithmetic (its clipped fans' Z is off the triangle's plane by up to ~0.1%:
  * A/B Z gate fails on near-camera ground, ep5 hub 21% of the pixels), so these meshes stay exact */
 static int clip_on = 0;
+static int part_on = 1;                        /* (r2-m6) PS2_R2_PART=0: no particle span hints (particles drawn exactly) */
 static uint32_t levels[32];
 static double budget_ms = 3.0;
 static LARGE_INTEGER qpf;
@@ -98,7 +99,8 @@ static LARGE_INTEGER qpf;
 typedef struct {
     uint32_t frames, cand, native, exact_level, exact_class, exact_decode, exact_budget, exact_dmas, exact_header, exact_fade, exact_guard,
         decoded, decode_fail, bytes_hint, runs, epilogues, cand_props, native_props, exact_outline, outlines, outlines_parsed, clipped,
-        exact_bracket, stale, guard_clean, cand_lit, native_lit, exact_lit, lit_reason[4], outline_bad, outline_decoded, outline_native, outline_exact, dmas_min_free;
+        exact_bracket, stale, guard_clean, cand_lit, native_lit, exact_lit, lit_reason[4], outline_bad, outline_decoded, outline_native, outline_exact, dmas_min_free,
+        part_spans;
     double decode_ms, cap_ms;
     double v_native, v_exact[10];          /* (r2-m5) census */
     uint32_t reason[R2M_N];
@@ -161,6 +163,8 @@ static void configure(void) {
     verify_on = e && *e == '1';
     e = getenv("PS2_R2_ALT");
     if (e && *e) alt_from = (uint32_t)strtoul(e, NULL, 0);
+    e = getenv("PS2_R2_PART");                   /* (r2-m6) */
+    if (e && *e) part_on = *e != '0';
     if (env_mode >= 0)
         fprintf(stderr, "[r2] modern renderer: %s (PS2_R2), levels %s\n",
                 env_mode == R2_HYBRID ? "hybrid" : env_mode == R2_BRACKET ? "bracket" : "off", levels_all ? "all" : "allowlist");
@@ -200,6 +204,7 @@ static r2_slot* fr_slot;                  /* this frame's slot (hybrid; NULL: no
 static int prev_native;                   /* the previous entry was native (a run is open) */
 static int prev_class = -1;
 static int bracket_open;                  /* bracket mode: the previous entry's END is due */
+static int part_open;                    /* (r2-m6) an R2H_PART 1 was written this frame and its end is due */
 static int epi_due;                       /* hybrid: an epilogue is owed before the next exact entry */
 static r2_pass epi_pass;
 
@@ -389,6 +394,7 @@ static void frame_begin(ps2_ctx* ctx) {
     prev_class = -1;
     bracket_open = 0;
     epi_due = 0;
+    part_open = 0;
     st.frames++;
     if (fr_mode == R2_OFF) return;
     uint32_t wid = ps2_r32(ctx, WID_CURRENT);
@@ -647,6 +653,18 @@ static void owe_epilogue(ps2_ctx* ctx) {
 
 static double fr_cap_ms, fr_begin_ms;         /* (stats) this frame's capture time, its frame_begin part */
 
+/* (r2-m6, R6) the particle span hints (R2H_PART) */
+#define PART_CLASS 2                           /* render class 2: VU1 program 376109499 (submitter 0x13A1E8, prio 12) */
+static void part_hint(ps2_ctx* ctx, int open) {
+    adlist l = { .n = 0 };
+    ad_hint(&l, R2H_PART, (uint32_t)open, fr_serial);
+    uint32_t keep = put_reserve;
+    put_reserve = 0;
+    if (dmas_put(ctx, 0, 0, l.p, l.n)) { part_open = open; if (open) st.part_spans++; }
+    else if (!open) part_open = 0;               /* (the frontend ends the span at the VBlank anyway) */
+    put_reserve = keep;
+}
+
 void r2_cap_entry(ps2_ctx* ctx) {
     if (!cfg_done) configure();
     if (!fr_open) {
@@ -663,6 +681,15 @@ void r2_cap_entry(ps2_ctx* ctx) {
     int cls = (int)ctx->r[17].uw[0];
     uint32_t idx = (e - RENDER_LIST) / 16u;
     if (mode == R2_BRACKET) close_bracket(ctx, cls);
+    {   /* (r2-m6, diagnostics) PS2_R2_DROPCLS=<mask>: drop the entries of these render classes (what do they cost) */
+        static int dmask = -1;
+        if (dmask < 0) { const char* de = getenv("PS2_R2_DROPCLS"); dmask = de ? (int)strtol(de, NULL, 0) : 0; }
+        if (dmask && cls >= 0 && cls < 31 && (dmask >> cls & 1)) { ps2_w32(ctx, e + 8, 0); ps2_w32(ctx, e + 12, 0); return; }
+    }
+    /* (r2-m6, R6) the particle class's span in the stream: R2H_PART 1 at its first entry (after the class switch's
+     * packets: the particle program is loaded, everything before it is kicked), R2H_PART 0 at the next entry of another
+     * class or the frame's end. The frontend draws the particles' triangles inside it natively (gpu_front.c "part") */
+    if (part_on && (cls == PART_CLASS) != part_open) part_hint(ctx, cls == PART_CLASS);
     /* (r2-m3, R4) an outline entry generated here (hybrid): its packets into the slot, R2H_OUTLINE, the mesh CALL dropped */
     if (mode == R2_HYBRID && cls == 1 && idx < RENDER_LIST_MAX && om_native[idx] && fr_slot) {
         if (prev_native) owe_epilogue(ctx);
@@ -901,6 +928,7 @@ void r2_cap_done(ps2_ctx* ctx) {
         uint32_t fe = ps2_r32(ctx, DMAS + 0x00) - ps2_r32(ctx, DMAS + 0x0C);
         if (!st.dmas_min_free || fe < st.dmas_min_free) st.dmas_min_free = fe;
     }
+    if (fr_open && fr_mode != R2_OFF && part_open) part_hint(ctx, 0);   /* (r2-m6) */
     if (fr_open && fr_mode == R2_BRACKET) close_bracket(ctx, -1);
     if (fr_open && fr_mode == R2_HYBRID) owe_epilogue(ctx);
     if (fr_open && fr_slot) {                     /* publish the frame's scene slot (the chain is kicked after this) */
@@ -942,4 +970,5 @@ void r2_stats_line(char* buf, size_t n) {
                      s->v_exact[5] / f, s->v_exact[6] / f, s->v_exact[7] / f, s->v_exact[8] / f);
     for (int r = 1; r < R2M_N && o > 0 && (size_t)o < n; r++)
         if (s->reason[r]) o += snprintf(buf + o, n - (size_t)o, " [%s %u]", r2m_reason[r], s->reason[r]);
+    if (o > 0 && (size_t)o < n) snprintf(buf + o, n - (size_t)o, "; particle spans %.2f/frame", s->part_spans / f);   /* (r2-m6) */
 }

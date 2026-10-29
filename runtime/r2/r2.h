@@ -43,6 +43,9 @@ enum {
     R2H_OUTLINE = 0x28,    /* (r2-m3, hybrid) a native outline entry: arg = slot (4 bits) | qword offset << 4 in the slot's pool
                               (there: the packets' qword count, then the GIF packets, r2_outline.c), value = serial; the GS
                               thread decodes the packets in place (gs_draw.c) */
+    R2H_PART = 0x29,       /* (r2-m6, R6) the particle class (render class 2, VU1 program 376109499) begins (arg 1) or ends
+                              (arg 0); value = frame serial. Hybrid and bracket mode: the frontend draws the particles' exact
+                              triangles in that span through the native particle pipeline (gpu_front.c "part") */
 };
 /* R2H_DRAW / R2H_BEGIN words, in order: [fade (R2D_FADE)] [world matrix, 16 words (unless R2D_IDENTITY)] [the mesh DMA
  * address | form << 31 (offline replays resolve the handle from a RAM dump with it)] */

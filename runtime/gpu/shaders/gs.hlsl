@@ -46,6 +46,9 @@ static uint g_vstate;
 #ifndef SPEC_NOTEX
 #define SPEC_NOTEX 0                     // no texture at all (shadow volumes, fills, outlines)
 #endif
+#ifndef PART
+#define PART 0                           // (r2-m6) the native particle pipeline (vs_ff_part / ps_ff_part)
+#endif
 
 // Per-draw constants (gpu_exec.c draw_consts, 256 bytes per draw slot). (M9) Read from the buffer drawc by the draw's
 // slot, which every draw passes as its StartInstanceLocation (the vertex shader's per-instance input DRAWID, the
@@ -1215,6 +1218,93 @@ struct FOut {
 
 float b2f(uint b) { return (float)b * (1.0 / 255.0); }
 
+FOut ff_out(Frag f, St st);              // (r2-m6: the output stage, shared with ps_ff_part)
+
+#if PART
+// ---- (r2-m6, R6) the native particle pipeline (gpu_front.c "part", GPU_DF_PART; modern frames only) --------------------
+// The particle class's triangles (VU1 program 376109499: camera-facing textured quads, heavy overdraw in fire, steam and
+// rain) as the VU emitted them - its own screen vertices, colours, fog, S/T/Q and Z - but rasterized and interpolated by
+// the hardware instead of stepped from the frontend's fixed-point records: colour and fog interpolated in floats, Z
+// interpolated by the rasterizer (the D32 encoding z / 2^20, hardware depth test and write: no SV_DepthLessEqual, full early
+// depth rejection), S/T/Q as the FF fast path already does. Texture, TFX, fog, alpha test and blend are the FF pixel
+// shader's own (ff_out). Differences to the exact path: Gouraud colours / fog +-1 where they vary across a triangle, Z
+// within a unit (the R2 meshes' tolerance class), edge coverage identical (the same vertex positions as vs_ff_tri).
+struct VP {
+    float4 pos : SV_Position;
+    noperspective float4 col : COLOR0;   // 0..255
+    noperspective float fog : FOG;
+    noperspective float3 stq : TEXCOORD0;
+    nointerpolation uint4 dc : DC;       // as VF.dc
+    nointerpolation uint sidx : SIDX;
+};
+
+VP vs_ff_part(VIn i) {
+    load_draw(i.did);
+    VP o;
+    o.pos = clip_of(float2(i.xy.x * (float)kx + 0.5, i.xy.y * (float)ky + 0.5));
+    o.pos.z = gs_z_encode(i.zv);         // (the vertex's own Z: gpu_front.c emit_vertex, nb < 0)
+    o.col = float4((float)(i.rgba & 255u), (float)((i.rgba >> 8) & 255u), (float)((i.rgba >> 16) & 255u), (float)(i.rgba >> 24));
+    o.fog = (float)(i.fog_state & 255u);
+    o.stq = i.stq;
+    o.dc = uint4(rec_first, kx | (ky << 16), ff_blend | (atst_mode << 8) | (draw_flags << 16), asuint(dual_bias));
+    o.sidx = i.fog_state >> 8;
+    return o;
+}
+
+uint part_byte(float v) { return (uint)clamp(floor(v + (1.0 / 256.0)), 0.0, 255.0); }   // (equal vertex values: exact)
+
+FOut ps_ff_part(VP i) {
+    rec_first = i.dc.x; kx = i.dc.y & 0xFFFFu; ky = i.dc.y >> 16;
+    ff_blend = i.dc.z & 0xFFu; atst_mode = (i.dc.z >> 8) & 0xFFu; draw_flags = i.dc.z >> 16; dual_bias = asfloat(i.dc.w);
+    g_vstate = i.sidx;
+    vkx = 1u; vky = 1u; vbase = 0u; vfbw = 1u; vflags = 0u; one = 1.0; probe_x = probe_y = 0xFFFFFFFFu;
+    Frag f;
+    f.P = (int2)i.pos.xy;
+    f.px = (int)((uint)f.P.x / kx);
+    f.py = (int)((uint)f.P.y / ky);
+    f.state = i.sidx;
+    f.rb = 0u;
+    f.U = 0; f.V = 0; f.uf = 0.0; f.vf = 0.0; f.lq = 1.0; f.z = 0u;
+    St st = load_state(f.state);
+    uint scanmsk = (st.flags >> 14) & 3u;
+    if ((scanmsk == 2u && (f.py & 1) == 0) || (scanmsk == 3u && (f.py & 1) != 0)) discard;
+    f.col = part_byte(i.col.x) | (part_byte(i.col.y) << 8) | (part_byte(i.col.z) << 16) | (part_byte(i.col.w) << 24);
+    f.fog = part_byte(i.fog);
+    f.vcol = f.col;
+    uint col = f.col;
+    if ((st.flags & SF_TME) != 0u) {
+        uint t0 = st.tex0clamp.x, t1 = st.tex0clamp.y;
+        uint tw = (t0 >> 26) & 15u, th = ((t0 >> 30) | (t1 << 2)) & 15u;
+        float tw16 = (float)(16u << (tw > 10u ? 10u : tw)), th16 = (float)(16u << (th > 10u ? 10u : th));
+        if ((st.flags & SF_FST) != 0u) { f.U = (int)floor(i.stq.x); f.V = (int)floor(i.stq.y); }
+        else {
+            float iq = 1.0 / i.stq.z;
+            precise float su = i.stq.x * iq;
+            precise float tv = i.stq.y * iq;
+            precise float su16 = su * tw16;
+            precise float tv16 = tv * th16;
+            f.U = f2i(su16);
+            f.V = f2i(tv16);
+            f.lq = i.stq.z;
+        }
+        if ((st.tlev & 3u) != 0u) {
+            uint t = tex_sample(st, f.U, f.V, f.lq);
+            col = tfx((st.flags >> 2) & 3u, (st.flags & SF_TCC) != 0u, col, t);
+        }
+    }
+    if (st.flags & SF_FGE) {
+        uint fv = f.fog, fc = st.fogcol;
+        uint r = (fv * (col & 255u) + (255u - fv) * (fc & 255u)) >> 8;
+        uint g = (fv * ((col >> 8) & 255u) + (255u - fv) * ((fc >> 8) & 255u)) >> 8;
+        uint b = (fv * ((col >> 16) & 255u) + (255u - fv) * ((fc >> 16) & 255u)) >> 8;
+        col = r | (g << 8) | (b << 16) | (col & 0xFF000000u);
+    }
+    f.col = col;
+    return ff_out(f, st);
+}
+#endif
+
+#if !PART
 #if PRIM == 0
 FOut ps_ff(VF i, uint prim : SV_PrimitiveID) {
     float3 istq = i.stq;
@@ -1235,6 +1325,12 @@ FOut ps_ff(VR i) {
     Frag f;
     St st;
     if (!gs_frag(i.pos, i.rec, istq, prim, f, st)) discard;
+    return ff_out(f, st);
+}
+#endif
+
+// the FF output stage: alpha test (AFAIL KEEP and the ATST split's halves discard), the blend's source terms, Z
+FOut ff_out(Frag f, St st) {
     uint col = f.col;
     uint As = col >> 24;
     uint test = st.test;
