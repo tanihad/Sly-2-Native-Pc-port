@@ -2,6 +2,8 @@
 
 ## Resume here (read first in a new session)
 
+**OWNER HOLD POINT (2026-10-29):** once the renderer is done (R5 part 2, the native gameplay HUD, and R8 with free scale + MSAA + the PS2-mode preset), STOP: tell the owner it's ready to try on their PC and wait. Do NOT start the launcher, 1.0 items or anything else until they say so.
+
 **2026-10-29: R6 MERGED into main.** Running: R5 part 2 (worktree r2-m5b: VU clipper for guard-band crossing triangles, remaining mesh variants). Ask the owner about D6 before R8 (MSAA, the big lever).
 
 **2026-10-29: R6 particles done on next/r2-m6:** profiled first - particles cost GPU fill of their exact triangles (m2 steam 1.15 ms/frame, m8 0.69), not VU simulation (already recompiled on the CPU). Particle-class triangles now go through a native pipeline (hardware-interpolated attributes and Z, R2H_PART span hints): their cost halves, pictures identical in replays; plus m2's G bit-plane shadow sprites as compute passes. m2 boardroom 3x 188->205 fps (GPU 5.23->4.80 ms), 4x 120->128; m8 3x 397->431. Gates pass (sweep 22/22, m9_exact identical). Left: guard-band exact meshes, shadow volumes, R2 draw overhead; supersampling itself (R8 MSAA) is the big GPU lever.
