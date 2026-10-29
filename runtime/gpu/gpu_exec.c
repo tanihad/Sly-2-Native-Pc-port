@@ -1777,7 +1777,7 @@ static void exec_draw_ref(const gpu_fop_draw* d, uint32_t slot) {
  * draws that need them (the specialised FF triangle permutations, SPEC_NOVIEW / SPEC_NOLOD). Measured in game (ep1 hub,
  * PS2_GPU_AB): GPU 4.46 -> 4.07 ms per frame (exact triangles 1.27 -> 0.99, the sky 0.52 -> 0.38). PS2_R2_TEXDEC=0: off,
  * 3: only draws without a depth target (the sky). */
-static uint64_t shf_fused_n;             /* (r2-m7b) shadow tails fused (shfuse_try) */
+static uint64_t shf_fused_n, shf_heads_n;   /* (r2-m7b) shadow tails fused, heads deferred (shfuse_try) */
 #define TD_WORDS (16u << 20)             /* 64 MB of decoded texels */
 #define TD_HASH 8192                     /* entries (open addressing; reset when 3/4 full or out of words) */
 #define TD_JOBS 1024
@@ -1927,9 +1927,9 @@ static const uint8_t* td_prepass(const gpu_front_frame_data* fd) {
     static int stats = -1;
     if (stats < 0) { const char* e = getenv("PS2_R2_STATS"); stats = e && *e && *e != '0'; }
     if (stats && TD.frame % 60 == 0)
-        gpu_log("texdec: %llu decodes (%.1f M texels), %llu draws, %u entries, %.1f MB; shadow tails fused %llu",
+        gpu_log("texdec: %llu decodes (%.1f M texels), %llu draws, %u entries, %.1f MB; shadow tails fused %llu (heads %llu)",
                 (unsigned long long)TD.decodes, TD.decode_texels / 1e6, (unsigned long long)TD.draws, TD.nent, TD.used * 4.0 / 1048576.0,
-                (unsigned long long)shf_fused_n);
+                (unsigned long long)shf_fused_n, (unsigned long long)shf_heads_n);
     TD.frame_texels = 0;
     int cand = X.mixed && !X.ref && td_ensure() && !ab_off();
     if (TD.reset && cand) {
@@ -2074,6 +2074,79 @@ static void td_bind_ps(void) {
 static int td_draw(uint32_t pos) {
     while (TD.dnext < TD.ndpos && TD.dpos[TD.dnext] < pos) TD.dnext++;
     return TD.dnext < TD.ndpos && TD.dpos[TD.dnext] == pos;
+}
+
+/* (r2-m7b) R2 materials (r2_render.c, through r2_exec_in.texdec at the start of a segment): the decoded base (1 + first
+ * word) of a material's texture as R2's pixel shader reads it (no TEXA, the CLUT from GS memory at CBP: R2_CLUT), decoded
+ * right away when needed (GS memory is current at the segment); 0: none. The CLUT's pages count in the version. */
+static uint32_t td_r2(void* user, uint64_t t0) {
+    (void)user;
+    if (!X.mixed || X.ref || TD.on <= 0 || TD.on == 3 || ab_off() || !td_ensure()) return 0;
+    uint32_t tbp = (uint32_t)t0 & 0x3FFF, tbw = (uint32_t)(t0 >> 14) & 0x3F, psm = (uint32_t)(t0 >> 20) & 0x3F;
+    uint32_t tw = (uint32_t)(t0 >> 26) & 15, th = (uint32_t)(t0 >> 30) & 15;
+    if (tw > 10) tw = 10;
+    if (th > 10) th = 10;
+    uint32_t n = 1u << (tw + th);
+    int idx = psm == 0x13 || psm == 0x14 || psm == 0x1B || psm == 0x24 || psm == 0x2C;
+    uint32_t cbp = (uint32_t)(t0 >> 37) & 0x3FFF;
+    uint64_t k1 = t0 & 0x3FFFFFFFFull, k2 = 0x8000000000000000ull | (idx ? (uint64_t)cbp << 1 | 1 : 0);
+    uint32_t ver = td_ver(tbp, tbw, psm, tw, th);
+    if (idx) {                           /* (a 16x16 CT32 CLUT at CBP: its page and the next, for a CBP inside a page) */
+        uint32_t g0 = TD.pgen[(cbp >> 5) & 511], g1 = TD.pgen[((cbp >> 5) + 1) & 511];
+        if (g0 > ver) ver = g0;
+        if (g1 > ver) ver = g1;
+    }
+    uint32_t h = (uint32_t)((k1 * 0x9E3779B97F4A7C15ull ^ k2) >> 40) & (TD_HASH - 1);
+    td_ent* e = NULL;
+    for (uint32_t i = 0; i < TD_HASH; i++) {
+        td_ent* c = &TD.ent[(h + i) & (TD_HASH - 1)];
+        if (!c->live) break;
+        if (c->k1 == k1 && c->k2 == k2) { e = c; break; }
+    }
+    if (e && e->ver == ver) { e->frame = TD.frame; return e->base + 1; }
+    if (e && e->frame == TD.frame) return 0;
+    if (TD.frame_texels + n > TD_FRAME_TEXELS) return 0;
+    uint32_t base;
+    if (e) base = e->base;
+    else {
+        if (TD.nent >= TD_HASH * 3 / 4 || TD.used + n > TD_WORDS) { TD.reset = 1; return 0; }
+        base = TD.used;
+        TD.used += n;
+        for (uint32_t i = 0;; i++) {
+            td_ent* c = &TD.ent[(h + i) & (TD_HASH - 1)];
+            if (!c->live) { e = c; break; }
+        }
+        e->live = 1; e->k1 = k1; e->k2 = k2; e->base = base; e->n = n;
+        TD.nent++;
+    }
+    e->ver = ver;
+    e->frame = TD.frame;
+    TD.frame_texels += n;
+    ID3D11DeviceContext* c = gpu_rt.ctx;
+    ID3D11ShaderResourceView* n1 = NULL;
+    ID3D11DeviceContext_PSSetShaderResources(c, 13, 1, &n1);
+    ID3D11DeviceContext_CSSetShader(c, gpu_cs(GPU_SH_cs_texdec_r2), NULL, 0);
+    ID3D11ShaderResourceView* s0 = X.vram_srv;
+    ID3D11DeviceContext_CSSetShaderResources(c, 0, 1, &s0);
+    ID3D11DeviceContext_CSSetShaderResources(c, 6, 1, &X.swz_srv);
+    ID3D11DeviceContext_CSSetUnorderedAccessViews(c, 0, 1, &TD.uav, NULL);
+    ID3D11DeviceContext_CSSetConstantBuffers(c, 3, 1, &TD.cb);
+    td_consts k = { (uint32_t)t0, (uint32_t)(t0 >> 32), 0, 0, 0, 0, base, tw, n, 0, 0, 0 };
+    D3D11_MAPPED_SUBRESOURCE m;
+    if (SUCCEEDED(ID3D11DeviceContext_Map(c, (ID3D11Resource*)TD.cb, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) {
+        memcpy(m.pData, &k, sizeof k);
+        ID3D11DeviceContext_Unmap(c, (ID3D11Resource*)TD.cb, 0);
+        ID3D11DeviceContext_Dispatch(c, (n + 63) / 64, 1, 1);
+        gpu_rt.n_dispatches++;
+        TD.decodes++;
+        TD.decode_texels += n;
+    } else e->ver = 0xFFFFFFFFu;         /* (not decoded: the next use tries again) */
+    ID3D11UnorderedAccessView* nu = NULL;
+    ID3D11DeviceContext_CSSetUnorderedAccessViews(c, 0, 1, &nu, NULL);
+    ID3D11ShaderResourceView* ns = NULL;
+    ID3D11DeviceContext_CSSetShaderResources(c, 0, 1, &ns);
+    X.state_calls += 9;
+    return e->ver == 0xFFFFFFFFu ? 0 : base + 1;
 }
 
 /* FF draw (M5, 4.2): RTV + DSV, the blend and depth tests of the output merger, shaders/gs.hlsl ps_ff.
@@ -2281,9 +2354,17 @@ static int exec_npost(const gpu_fop_draw* d) {
  * covering whole pages; the CT16 swizzle puts columns x and x + 8 of a 16-wide block into the two halves of one word,
  * checked once from the tables) and the darken covers the same rectangle. The feedback copy is dropped: the darken
  * rewrites every pixel it covers, so the frontend copies again before any later feedback read. PS2_R2_SHFUSE=0: off. */
-typedef struct { uint32_t rect[4], svbb[4], c[2][4], np[4], np2[4]; } shf_consts;
-_Static_assert(sizeof(shf_consts) == 96, "shf_cb");
-static struct { ID3D11Buffer* cb; int lay, hlo, on; uint64_t fused; } SF = { NULL, 0, 0, -1, 0 };
+typedef struct { uint32_t rect[4], svbb[4], c[3][4], clr[4], np[4], np2[4]; } shf_consts;
+_Static_assert(sizeof(shf_consts) == 128, "shf_cb");
+static struct {
+    ID3D11Buffer* cb;
+    int lay, hlo, on;
+    uint64_t fused, heads;
+    /* a deferred head (shuffle 1 + the G clear) waiting for the tail at op pend_tail */
+    int pend, pend_b, pend_a, pend_w, pend_h;
+    size_t pend_tail;
+    uint32_t pc[4], pclr[4];
+} SF = { NULL, 0, 0, -1, 0, 0, 0, 0, 0, 0, 0, 0, { 0 }, { 0 } };
 
 /* the CT16 page layout: halfwords of columns x (x % 16 < 8) and x + 8 of a row share a word, x's half is SF.hlo */
 static int shf_layout(void) {
@@ -2299,12 +2380,13 @@ static int shf_layout(void) {
     return SF.lay > 0;
 }
 
-/* a copy draw of the run on target bt that is a function of the other half of the same 32-bit sample: its constants */
-static int shf_copy(const gpu_fop_draw* d, int bt, uint32_t psm16, uint32_t c[4], int* W, int* H) {
+/* a copy draw (of an ALIAS16 copy run, 16-bit frame psm16 over its colour target) that is a function of the other half
+ * of the same 32-bit sample, B the fused pass's frame: its constants (gs post.hlsl sf_c) and the covered native rect */
+static int shf_copy(const gpu_fop_draw* d, int B, uint32_t psm16, uint32_t c[4], int* W, int* H) {
     const gpu_front_frame_data* fd = X.fd;
-    xtarget *t = tgt((uint32_t)bt), *v = tgt(d->tex);
-    if (d->tier != GPU_TIER_ALIAS16 || d->cls != GPU_PC_SPRITE || d->ct != bt || !d->count || d->count > 64 || !t || !v ||
-        t->depth || v->depth || v->kx != t->kx || v->ky != t->ky || v->fbw != t->fbw || !v->uav32 || psm16 != 0x02)
+    xtarget *t = tgt(d->ct), *v = tgt(d->tex);
+    if (d->tier != GPU_TIER_ALIAS16 || d->cls != GPU_PC_SPRITE || !d->count || d->count > 64 || !t || !v || t->depth ||
+        v->depth || v->kx != t->kx || v->ky != t->ky || v->fbw != t->fbw || !v->uav32 || !t->uav32 || psm16 != 0x02)
         return 0;
     if ((size_t)d->rec_first + (size_t)d->count * sizeof(gpu_rec_sprite) > fd->rec_bytes) return 0;
     const gpu_rec_sprite* r0 = (const gpu_rec_sprite*)(fd->rec + d->rec_first);
@@ -2319,7 +2401,7 @@ static int shf_copy(const gpu_fop_draw* d, int bt, uint32_t psm16, uint32_t c[4]
     if (th > 10) th = 10;
     if (w16 <= 0 || w16 > 1024 || h16 <= 0 || (h16 & 63) || (1 << tw) < w16 || (1 << th) < h16 || h16 / 2 > t->nat_h) return 0;
     if (r0->ua & 0xFFF) return 0;
-    int u0 = r0->ua >> 12;                /* (texel centre of the first column, 1/16) */
+    int u0 = r0->ua >> 12;               /* (texel centre of the first column, 1/16) */
     if ((u0 - 8) & 15) return 0;
     int dx = (u0 - 8) / 16 - r0->x0;
     if (dx != 8 && dx != -8) return 0;
@@ -2338,23 +2420,21 @@ static int shf_copy(const gpu_fop_draw* d, int bt, uint32_t psm16, uint32_t c[4]
     c[0] = s->texa;
     c[1] = s->flags;
     c[2] = r0->rgba;
-    c[3] = (~s->fmask & 0xFFFFu) | hs << 16 | hd << 17 | (uint32_t)(d->tex != bt) << 18 | 1u << 19;
+    c[3] = (~s->fmask & 0xFFFFu) | hs << 16 | hd << 17 | (uint32_t)(d->tex != B) << 18 | 1u << 19 | (uint32_t)(d->ct != B) << 20;
     *W = w16;
     *H = h16 / 2;
     return 1;
 }
 
-/* at ALIAS16 op pos: the fused pass when the ops from there match; *next: the op after the darken, *slots: draw slots */
-static int shfuse_try(const gpu_front_frame_data* fd, size_t pos, size_t* next, uint32_t* slots) {
-    if (SF.on < 0) { const char* e = getenv("PS2_R2_SHFUSE"); SF.on = !(e && *e == '0'); }
-    if (!SF.on || !X.mixed || X.ref || ab_off() || !shf_layout()) return 0;
+/* the tail at ALIAS16 op pos (a copy run on B, its feedback copy, the darken): constants (no head, no counter) */
+typedef struct { shf_consts k; int B, A, W, H; size_t next; uint32_t slots; } shf_plan;
+static int shf_tail(const gpu_front_frame_data* fd, size_t pos, shf_plan* L) {
     const gpu_fop_alias16* a = (const gpu_fop_alias16*)(fd->cmd + pos);
-    if (a->h.size < sizeof *a || a->mode != 1) return 0;
+    if (pos + sizeof *a > fd->cmd_bytes || a->h.op != GPU_FOP_ALIAS16 || a->h.size < sizeof *a || a->mode != 1) return 0;
     int bt = a->target;
     xtarget* t = tgt((uint32_t)bt);
     if (!t || t->depth || !t->uav32) return 0;
-    shf_consts k;
-    memset(&k, 0, sizeof k);
+    memset(L, 0, sizeof *L);
     int ncopy = 0, W = 0, H = 0, at = 0;
     uint32_t sl = 0;
     size_t p = pos + a->h.size;
@@ -2362,10 +2442,10 @@ static int shfuse_try(const gpu_front_frame_data* fd, size_t pos, size_t* next, 
     for (int step = 0; step < 8 && p + sizeof(gpu_fop) <= fd->cmd_bytes; step++) {
         const gpu_fop* h = (const gpu_fop*)(fd->cmd + p);
         if (!h->size) return 0;
-        if (h->op == GPU_FOP_DRAW && !np && ncopy >= 0 && ((const gpu_fop_draw*)h)->tier == GPU_TIER_ALIAS16) {
+        if (h->op == GPU_FOP_DRAW && ncopy >= 0 && ((const gpu_fop_draw*)h)->tier == GPU_TIER_ALIAS16) {
             const gpu_fop_draw* d = (const gpu_fop_draw*)h;
             int w, hh;
-            if (ncopy == 2 || !shf_copy(d, bt, a->psm, k.c[ncopy], &w, &hh)) return 0;
+            if (ncopy == 2 || d->ct != bt || !shf_copy(d, bt, a->psm, L->k.c[1 + ncopy], &w, &hh)) return 0;
             if (ncopy && (w != W || hh != H)) return 0;
             if (d->tex != bt) { if (at && at != d->tex) return 0; at = d->tex; }
             W = w; H = hh;
@@ -2387,13 +2467,80 @@ static int shfuse_try(const gpu_front_frame_data* fd, size_t pos, size_t* next, 
     if (!np || !(np->feat & GPU_DF_NPOST) || np->ct != bt || np->tex != bt) return 0;
     static npost_plan P;
     if (!npost_prep(np, &P) || !P.whole || P.bb[0] != 0 || P.bb[1] != 0 || P.bb[2] != W || P.bb[3] != H) return 0;
-    xtarget* av = at ? tgt((uint32_t)at) : NULL;
-    if (at && !av) return 0;
-    /* the volumes' pending counters of B go into this pass; another target's are resolved first */
-    if (X.sv_on && X.sv_ct != bt) svol_resolve();
-    int kx = t->kx, ky = t->ky;
+    if (at && !tgt((uint32_t)at)) return 0;
+    L->k.np[0] = P.k.mode; L->k.np[1] = P.k.alpha; L->k.np[2] = P.k.fmask; L->k.np[3] = P.k.vcol;
+    L->k.np2[0] = P.k.clut; L->k.np2[1] = 1;
+    L->B = bt; L->A = at; L->W = W; L->H = H;
+    L->next = p;
+    L->slots = sl + draw_slots(np, 1);
+    return 1;
+}
+
+static int shf_enabled(void) {
+    if (SF.on < 0) { const char* e = getenv("PS2_R2_SHFUSE"); SF.on = !(e && *e == '0'); }
+    return SF.on && X.mixed && !X.ref && !ab_off() && shf_layout();
+}
+
+/* at ALIAS16 op pos: shuffle 1 (a copy run on A reading B) and the G clear of B, followed by shadow-volume draws on B
+ * only and then a tail that fuses: both are deferred into the tail's pass (*next: the op after the clear) */
+static int shf_head(const gpu_front_frame_data* fd, size_t pos, size_t* next, uint32_t* slots) {
+    if (SF.pend || !shf_enabled()) return 0;
+    const gpu_fop_alias16* a = (const gpu_fop_alias16*)(fd->cmd + pos);
+    if (a->h.size < sizeof *a || a->mode != 1) return 0;
+    size_t p = pos + a->h.size;
+    const gpu_fop_draw* d = (const gpu_fop_draw*)(fd->cmd + p);
+    if (p + sizeof *d > fd->cmd_bytes || d->h.op != GPU_FOP_DRAW || d->ct != a->target || d->tex == a->target) return 0;
+    int bt = d->tex, w, h;
+    uint32_t c[4];
+    if (!shf_copy(d, bt, a->psm, c, &w, &h)) return 0;
+    p += d->h.size;
+    const gpu_fop_alias16* e = (const gpu_fop_alias16*)(fd->cmd + p);
+    if (p + sizeof(gpu_fop) > fd->cmd_bytes || e->h.op != GPU_FOP_ALIAS16_END || e->target != a->target) return 0;
+    p += e->h.size;
+    const gpu_fop_clear* cl = (const gpu_fop_clear*)(fd->cmd + p);
+    if (p + sizeof *cl > fd->cmd_bytes || cl->h.op != GPU_FOP_CLEAR || cl->target != bt || cl->zclear || cl->mask != 2) return 0;
+    xtarget* tb = tgt((uint32_t)bt);
+    int cx1 = cl->x1 > 0 ? cl->x1 : tb ? tb->nat_w : 0, cy1 = cl->y1 > 0 ? cl->y1 : tb ? tb->nat_h : 0;
+    if (cx1 != w || cy1 != h) return 0;
+    size_t after_clear = p + cl->h.size;
+    int nvol = 0;
+    for (p = after_clear; p + sizeof(gpu_fop) <= fd->cmd_bytes;) {
+        const gpu_fop* o = (const gpu_fop*)(fd->cmd + p);
+        if (!o->size) return 0;
+        if (o->op == GPU_FOP_DRAW) {
+            const gpu_fop_draw* v = (const gpu_fop_draw*)o;
+            if (!(v->feat & GPU_DF_SVOL) || v->ct != bt) return 0;
+            nvol++;
+        } else if (o->op != GPU_FOP_ROV_END) break;
+        p += o->size;
+    }
+    if (!nvol) return 0;
+    shf_plan L;
+    if (!shf_tail(fd, p, &L) || L.B != bt || L.A != a->target || L.W != w || L.H != h) return 0;
+    SF.pend = 1; SF.pend_b = bt; SF.pend_a = a->target; SF.pend_tail = p; SF.pend_w = w; SF.pend_h = h;
+    memcpy(SF.pc, c, sizeof c);
+    SF.pclr[0] = 1; SF.pclr[1] = cl->value; SF.pclr[2] = 0x0000FF00u; SF.pclr[3] = 0;
+    SF.heads++;
+    shf_heads_n++;
+    *next = after_clear;
+    *slots = draw_slots(d, 1);
+    return 1;
+}
+
+/* the fused pass: the plan's tail (or none: tail == 0) with the pending head and B's pending volume counters */
+static int shf_exec(shf_plan* L, int tail) {
+    xtarget* t = tgt((uint32_t)L->B);
+    xtarget* av = L->A ? tgt((uint32_t)L->A) : NULL;
+    if (!t) return 0;
+    shf_consts* k = &L->k;
+    if (!tail) memset(k, 0, sizeof *k);
+    if (SF.pend) { memcpy(k->c[0], SF.pc, sizeof SF.pc); memcpy(k->clr, SF.pclr, sizeof SF.pclr); k->np2[2] = 1; }
+    if (X.sv_on && X.sv_ct != L->B) svol_resolve();
+    int kx = t->kx, ky = t->ky, rest = 0;
+    k->rect[0] = 0; k->rect[1] = 0;
+    k->rect[2] = (uint32_t)(L->W * kx < t->w ? L->W * kx : t->w);
+    k->rect[3] = (uint32_t)(L->H * ky < t->h ? L->H * ky : t->h);
     if (X.sv_on) {
-        X.sv_on = 0;
         ID3D11ShaderResourceView* n1 = NULL;
         ID3D11DeviceContext_PSSetShaderResources(gpu_rt.ctx, 12, 1, &n1);
         int x0 = (X.sv_bb[0] - 1) * kx, y0 = (X.sv_bb[1] - 1) * ky, x1 = (X.sv_bb[2] + 2) * kx, y1 = (X.sv_bb[3] + 2) * ky;
@@ -2401,13 +2548,13 @@ static int shfuse_try(const gpu_front_frame_data* fd, size_t pos, size_t* next, 
         if (y0 < 0) y0 = 0;
         if (x1 > X.svcnt_w) x1 = X.svcnt_w;
         if (y1 > X.svcnt_h) y1 = X.svcnt_h;
-        if (x0 < x1 && y0 < y1) { k.svbb[0] = (uint32_t)x0; k.svbb[1] = (uint32_t)y0; k.svbb[2] = (uint32_t)x1; k.svbb[3] = (uint32_t)y1; }
+        rest = x1 > (int)k->rect[2] || y1 > (int)k->rect[3];   /* (counters outside: resolved after, those inside are 0 then) */
+        if (x1 > (int)k->rect[2]) x1 = (int)k->rect[2];
+        if (y1 > (int)k->rect[3]) y1 = (int)k->rect[3];
+        if (x0 < x1 && y0 < y1) { k->svbb[0] = (uint32_t)x0; k->svbb[1] = (uint32_t)y0; k->svbb[2] = (uint32_t)x1; k->svbb[3] = (uint32_t)y1; }
+        X.sv_on = rest;
     }
-    k.rect[0] = 0; k.rect[1] = 0;
-    k.rect[2] = (uint32_t)(W * kx < t->w ? W * kx : t->w);
-    k.rect[3] = (uint32_t)(H * ky < t->h ? H * ky : t->h);
-    k.np[0] = P.k.mode; k.np[1] = P.k.alpha; k.np[2] = P.k.fmask; k.np[3] = P.k.vcol;
-    k.np2[0] = P.k.clut; k.np2[1] = 1;
+    if ((k->c[1][3] & (1u << 18)) || (k->c[2][3] & (1u << 18)) || k->np2[2]) { if (!av) return 0; }
     ID3D11DeviceContext* c = gpu_rt.ctx;
     if (!SF.cb) {
         D3D11_BUFFER_DESC bd;
@@ -2416,7 +2563,7 @@ static int shfuse_try(const gpu_front_frame_data* fd, size_t pos, size_t* next, 
         bd.Usage = D3D11_USAGE_DYNAMIC;
         bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
         bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-        if (FAILED(ID3D11Device_CreateBuffer(gpu_rt.dev, &bd, NULL, &SF.cb))) { SF.on = 0; return 0; }
+        if (FAILED(ID3D11Device_CreateBuffer(gpu_rt.dev, &bd, NULL, &SF.cb))) return 0;
     }
     if (X.mode) unbind_all();
     ID3D11ShaderResourceView* none2[2] = { NULL, NULL };
@@ -2424,29 +2571,59 @@ static int shfuse_try(const gpu_front_frame_data* fd, size_t pos, size_t* next, 
     X.b_t1 = X.b_t2 = NULL;
     D3D11_MAPPED_SUBRESOURCE m;
     if (FAILED(ID3D11DeviceContext_Map(c, (ID3D11Resource*)SF.cb, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) return 0;
-    memcpy(m.pData, &k, sizeof k);
+    memcpy(m.pData, k, sizeof *k);
     ID3D11DeviceContext_Unmap(c, (ID3D11Resource*)SF.cb, 0);
     int pc = PR.cur;
     prof_mark(PR_A16_DRAW);
     ID3D11DeviceContext_CSSetShader(c, gpu_cs(GPU_SH_cs_shfuse), NULL, 0);
     ID3D11DeviceContext_CSSetShaderResources(c, 5, 1, &X.clut_srv);
-    ID3D11UnorderedAccessView* u[3] = { t->uav32, av ? av->uav32 : NULL, k.svbb[2] ? X.svcnt_uav : NULL };
+    ID3D11UnorderedAccessView* u[3] = { t->uav32, av ? av->uav32 : NULL, k->svbb[2] ? X.svcnt_uav : NULL };
     ID3D11DeviceContext_CSSetUnorderedAccessViews(c, 0, 3, u, NULL);
     ID3D11DeviceContext_CSSetConstantBuffers(c, 4, 1, &SF.cb);
-    ID3D11DeviceContext_Dispatch(c, (k.rect[2] + 7) / 8, (k.rect[3] + 7) / 8, 1);
+    ID3D11DeviceContext_Dispatch(c, (k->rect[2] + 7) / 8, (k->rect[3] + 7) / 8, 1);
     ID3D11UnorderedAccessView* nu[3] = { NULL, NULL, NULL };
     ID3D11DeviceContext_CSSetUnorderedAccessViews(c, 0, 3, nu, NULL);
     prof_mark(pc);
     gpu_rt.n_dispatches++;
     X.state_calls += 10;
-    SF.fused++;
-    shf_fused_n++;
-    XC.npost_draws++;
-    *next = p;
-    *slots = sl + draw_slots(np, 1);
+    SF.pend = 0;
+    if (rest) svol_resolve();
     return 1;
 }
 
+/* at ALIAS16 op pos (the main loop): a deferred head, the head itself or a tail. 1: ops up to *next are done */
+static int shfuse_try(const gpu_front_frame_data* fd, size_t pos, size_t* next, uint32_t* slots) {
+    if (SF.pend && pos == SF.pend_tail) {
+        shf_plan L;
+        if (shf_tail(fd, pos, &L) && L.B == SF.pend_b && L.A == SF.pend_a && shf_exec(&L, 1)) {
+            SF.fused++;
+            shf_fused_n++;
+            XC.npost_draws++;
+            *next = L.next;
+            *slots = L.slots;
+            return 1;
+        }
+        /* (never expected: the head was checked with this tail) the head alone, before the counters are resolved */
+        memset(&L, 0, sizeof L);
+        L.B = SF.pend_b; L.A = SF.pend_a;
+        L.W = SF.pend_w; L.H = SF.pend_h;
+        int sv = X.sv_on;
+        X.sv_on = 0;                     /* (the counters stay pending: resolved by the normal path) */
+        shf_exec(&L, 0);
+        X.sv_on = sv;
+        SF.pend = 0;
+        return 0;
+    }
+    if (shf_head(fd, pos, next, slots)) return 1;
+    shf_plan L;
+    if (!shf_enabled() || !shf_tail(fd, pos, &L) || !shf_exec(&L, 1)) return 0;
+    SF.fused++;
+    shf_fused_n++;
+    XC.npost_draws++;
+    *next = L.next;
+    *slots = L.slots;
+    return 1;
+}
 static void exec_draw(const gpu_fop_draw* d, uint32_t slot) {
     if (PR.on > 0) {
         int ff = X.mixed && d->tier == GPU_TIER_FF && !X.ref;
@@ -2516,8 +2693,10 @@ static void exec_r2(const gpu_front_frame_data* fd, const gpu_fop_r2* o) {
     if (X.b_t1) set_t1(NULL);
     if (X.b_t2) set_t2(NULL);
     if (!iota_ensure(o->draw_off / 32u + o->ndraw + 1)) return;   /* (r2-m2: draw ids = the records' fdata offsets / 32) */
+    if (TD.on != 0) td_ensure();          /* (r2-m7b: its buffer exists before the segment's materials need it) */
     r2_exec_in in = { gpu_rt.dev, gpu_rt.ctx, ct->rtv, zt->dsv, ct->kx, ct->ky, X.vram_srv, X.swz_srv, X.dat.srv, X.iota,
-                      gpu_rt.caps.warp ? 0.49609375f : 0.42f };
+                      gpu_rt.caps.warp ? 0.49609375f : 0.42f, td_r2, NULL, NULL };
+    in.texdec_srv = TD.srv;
     int n = r2_render_segment(o, fd->data, fd->data_bytes, &in);
     gpu_rt.n_draws += (uint32_t)n;
     r2_segs++;
@@ -3021,6 +3200,7 @@ void gpu_exec_frame(const void* payload) {
         pos += h->size;
     }
     svol_resolve();                      /* (r2-m7) */
+    SF.pend = 0;                         /* (r2-m7b: a head waits only within its frame) */
     unbind_all();                        /* (targets may be released or recreated before the next frame) */
     prof_end();
     probe_report(fd);

@@ -82,21 +82,26 @@ void cs_npost(uint3 id : SV_DispatchThreadID) {
     np_dst[P] = npost_word(dst, s, np_mode, np_alpha, np_fmask, np_vcol, np_clut);
 }
 
-// (r2-m7b) the shadow pipeline's tail in one pass (gpu_exec.c shfuse): per sample of the frame B, in the game's order,
+// (r2-m7b) the shadow pipeline in one pass (gpu_exec.c shfuse): per sample of the frame B (A: the other frame), in the
+// game's order,
+//   0. the copy draw of shuffle 1 (A.alpha <- B.G), deferred past the shadow volumes (they only add to the counter and
+//      read Z and B's alpha), and the G clear before the volumes (byte mask, value),
 //   1. the shadow volumes' pending counter into G (cs_svol_resolve),
-//   2. the copy draws of the ALIAS16 copy run that follows (Sly: B.alpha bits 0 / 7 <- B.G, B.G <- A.alpha), each a
-//      function of one halfword of the same 32-bit sample of B or A (verified on the CPU: CT16 views of targets with B's
-//      width, sprites 8 columns wide stepping one texel per pixel 8 columns away, so the source is the other half of the
-//      same word) - alias16.hlsl cs_a16_copy's per-halfword arithmetic (5551 expand with TEXA, TFX, FBA, pack, FBMSK),
+//   2. the copy draws of the ALIAS16 copy run that follows (shuffles 2 and 3: B.alpha bits 0 / 7 <- B.G, B.G <- A.alpha),
 //   3. the post pass that reads B itself 1:1 (the darken: T8H through the CLUT, npost_word).
-// Each step reads only what earlier steps of the same sample wrote, so one thread per sample gives the passes' result.
+// Every copy draw is a function of the other half of the same 32-bit sample of B or A (verified on the CPU: CT16 views of
+// targets of B's width, sprites 8 columns wide stepping one texel per pixel 8 columns away; the CT16 swizzle puts columns
+// x and x + 8 of a 16-wide block into the two halves of one word) - alias16.hlsl cs_a16_copy's per-halfword arithmetic
+// (5551 expand with TEXA, TFX, FBA, pack, FBMSK). Each step reads only what earlier steps of the same sample wrote, so
+// one thread per sample gives the passes' result.
 cbuffer shf_cb : register(b4) {
     uint4 sf_rect;                       // samples [x0, x1) x [y0, y1)
     uint4 sf_svbb;                       // counter samples [x0, x1) x [y0, y1) (x1 = 0: no counter)
-    uint4 sf_c[2];                       // copy draw i: TEXA, state flags, vertex colour, written bits | hs << 16 |
-                                         // hd << 17 | source A << 18 | on << 19
+    uint4 sf_c[3];                       // copy draw i (0: deferred shuffle 1): TEXA, state flags, vertex colour,
+                                         // written bits | hs << 16 | hd << 17 | source A << 18 | on << 19 | dest A << 20
+    uint4 sf_clr;                        // G clear of B after copy 0: on, value, byte mask (32-bit form)
     uint4 sf_np;                         // post pass: mode, alpha, fmask, vertex colour
-    uint4 sf_np2;                        // CLUT word, on
+    uint4 sf_np2;                        // CLUT word, on, A written
 };
 RWTexture2D<uint> sf_b : register(u0);
 RWTexture2D<uint> sf_a : register(u1);
@@ -121,30 +126,42 @@ uint sf_tfx(uint tf, bool tcc, uint c, uint t) {   // (alias16.hlsl a_tfx)
     uint a = !tcc ? ca : tf == 2u ? min(ta + ca, 255u) : ta;
     return r | (g << 8) | (b << 16) | (a << 24);
 }
+// copy draw c: the destination word after it (src: the source word)
+uint sf_copy(uint4 c, uint src, uint dst) {
+    uint hs = (c.w >> 16) & 1u, hd = (c.w >> 17) & 1u, wb = c.w & 0xFFFFu;
+    uint tex = sf_expand16((src >> (hs * 16u)) & 0xFFFFu, c.x);
+    uint col = sf_tfx((c.y >> 2) & 3u, (c.y & 16u) != 0u, c.z, tex);
+    if (c.y & 1u) col |= 0x80000000u;    // FBA
+    uint c16 = ((col >> 3) & 0x1Fu) | ((col >> 6) & 0x3E0u) | ((col >> 9) & 0x7C00u) | ((col >> 16) & 0x8000u);
+    return (dst & ~(wb << (hd * 16u))) | ((c16 & wb) << (hd * 16u));
+}
 
 [numthreads(8, 8, 1)]
 void cs_shfuse(uint3 id : SV_DispatchThreadID) {
     uint2 P = uint2(sf_rect.x + id.x, sf_rect.y + id.y);
     if (P.x >= sf_rect.z || P.y >= sf_rect.w) return;
     uint w = sf_b[P];
-    if (P.x >= sf_svbb.x && P.x < sf_svbb.z && P.y >= sf_svbb.y && P.y < sf_svbb.w) {
-        uint n = sf_cnt[P];
-        if (n != 0u) {
-            sf_cnt[P] = 0u;
-            w = (w & 0xFFFF00FFu) | ((((w >> 8) + n) & 255u) << 8);
-        }
-    }
-    [unroll] for (uint k = 0u; k < 2u; k++) {
+    bool ua = sf_np2.z != 0u || (sf_c[1].w & (1u << 18)) != 0u || (sf_c[2].w & (1u << 18)) != 0u;
+    uint a = ua ? sf_a[P] : 0u;
+    [unroll] for (uint k = 0u; k < 3u; k++) {
         uint4 c = sf_c[k];
-        if ((c.w & (1u << 19)) == 0u) continue;
-        uint src = (c.w & (1u << 18)) != 0u ? sf_a[P] : w;
-        uint hs = (c.w >> 16) & 1u, hd = (c.w >> 17) & 1u, wb = c.w & 0xFFFFu;
-        uint tex = sf_expand16((src >> (hs * 16u)) & 0xFFFFu, c.x);
-        uint col = sf_tfx((c.y >> 2) & 3u, (c.y & 16u) != 0u, c.z, tex);
-        if (c.y & 1u) col |= 0x80000000u;  // FBA
-        uint c16 = ((col >> 3) & 0x1Fu) | ((col >> 6) & 0x3E0u) | ((col >> 9) & 0x7C00u) | ((col >> 16) & 0x8000u);
-        w = (w & ~(wb << (hd * 16u))) | ((c16 & wb) << (hd * 16u));
+        if ((c.w & (1u << 19)) != 0u) {
+            uint src = (c.w & (1u << 18)) != 0u ? a : w;
+            if ((c.w & (1u << 20)) != 0u) a = sf_copy(c, src, a);
+            else w = sf_copy(c, src, w);
+        }
+        if (k == 0u) {
+            if (sf_clr.x != 0u) w = (w & ~sf_clr.z) | (sf_clr.y & sf_clr.z);
+            if (P.x >= sf_svbb.x && P.x < sf_svbb.z && P.y >= sf_svbb.y && P.y < sf_svbb.w) {
+                uint n = sf_cnt[P];
+                if (n != 0u) {
+                    sf_cnt[P] = 0u;
+                    w = (w & 0xFFFF00FFu) | ((((w >> 8) + n) & 255u) << 8);
+                }
+            }
+        }
     }
     if (sf_np2.y != 0u) w = npost_word(w, w, sf_np.x, sf_np.y, sf_np.z, sf_np.w, sf_np2.x);
     sf_b[P] = w;
+    if (sf_np2.z != 0u) sf_a[P] = a;
 }

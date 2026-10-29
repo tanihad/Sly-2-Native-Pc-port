@@ -176,6 +176,8 @@ typedef struct r2_mesh {
     volatile int gpu_state;      /* 0 not uploaded, 1 resident, -1 failed */
     uint32_t gpu_vbase, gpu_ibase;
     uint32_t gpu_mbase;          /* (r2-m2) its material records (3 per sub-batch: pass 0..2) in the generation's arena */
+    uint32_t* gpu_tdec;          /* (r2-m7b) per material record: the decoded texture word it holds (r2_render.c), or NULL */
+    uint32_t gpu_tseg;           /* (r2-m7b) the segment that last checked them */
 } r2_mesh;
 
 /* decode result codes (fallback reasons, counted) */

@@ -162,6 +162,7 @@ static int resident(r2_mesh* m) {
     m->gpu_vbase = a->vused;
     m->gpu_ibase = a->iused;
     m->gpu_mbase = a->mused;
+    if (m->gpu_tdec) memset(m->gpu_tdec, 0, (size_t)m->nb * 3 * 4);   /* (r2-m7b: the records hold 0) */
     r2g_buf_write(R.d, a->mt, (m->handle & 0xFFFFF) * 4u, &m->gpu_mbase, 4);
     a->vused += m->nvtx;
     a->iused += m->nidx;
@@ -221,6 +222,26 @@ static int segment(const gpu_fop_r2* o, const uint8_t* fdata, size_t fdata_bytes
         if (m) resident(m);
     }
     if (!a->vb || !a->ib || !a->mb || !a->mt) return 0;
+    /* (r2-m7b) the materials' decoded textures (gpu_exec.c td_r2: decoded now when GS memory changed), each mesh once per
+     * segment: a material record's word 15 holds 1 + the first decoded word (shaders/r2.hlsl), rewritten when it changes */
+    if (in->texdec) {
+        uint32_t seg = (uint32_t)R.segments + 1;
+        for (uint32_t i = 0; i < o->ndraw; i++) {
+            r2_mesh* m = (r2_mesh*)r2_mesh_get(dr[i].mesh);
+            if (!m || m->gpu_state != (int)R.epoch || m->gpu_tseg == seg) continue;
+            m->gpu_tseg = seg;
+            arena* ma = &R.A[(m->handle >> 20) % SLOTS];
+            if (ma->gen != (m->handle >> 20) || !ma->mb) continue;
+            if (!m->gpu_tdec && !(m->gpu_tdec = calloc((size_t)m->nb * 3, 4))) continue;
+            for (uint32_t b = 0; b < m->nb; b++)
+                for (uint32_t p = 0; p < m->b[b].npass && p < 3; p++) {
+                    uint32_t v = in->texdec(in->texdec_user, m->b[b].pass[p].tex0), k = b * 3 + p;
+                    if (v == m->gpu_tdec[k]) continue;
+                    r2g_buf_write(R.d, ma->mb, (m->gpu_mbase + k) * MAT_BYTES + 60u, &v, 4);
+                    m->gpu_tdec[k] = v;
+                }
+        }
+    }
     double p1 = ph_now();
     r2g_invalidate(R.d);
     /* (r2-m2) the segment's constants are a record in fdata (gpu_r2_seg, written by the frontend; a per-segment constant
@@ -246,6 +267,7 @@ static int segment(const gpu_fop_r2* o, const uint8_t* fdata, size_t fdata_bytes
     r2g_bind_srv_native(R.d, 0, in->vram_srv);
     r2g_bind_srv_native(R.d, 6, in->swz_srv);
     r2g_bind_srv_native(R.d, 7, in->fdata_srv);
+    r2g_bind_srv_native(R.d, 13, in->texdec_srv);   /* (r2-m7b) */
     r2g_bind_srv(R.d, 10, a->mb);
     r2g_bind_srv(R.d, 11, a->mt);
     r2g_bind_constants(R.d, 1, R.cb);
