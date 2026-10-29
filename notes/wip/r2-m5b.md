@@ -31,7 +31,12 @@ Worktree C:\Users\tanih\Projects\sly2-worktrees\r2-m5b, branch next/r2-m5b (from
 - Sweep ep1 / ep5 / m2 ab + hc pass (first build); hc ep1 / m2 pass with run tables.
 
 ## In progress
-- Full sweep (ab + hc, 22 checks) on commit after "Z beyond the FF range" fallback.
+- Sweep (commit 7928e72 code): 21 / 22 pass; ep7 hc fails intermittently with the clipper on AND off (PS2_R2_FANS=0:
+  1 of 3 runs fails): the triple (4803, 4804, 4807) skips frames while a claw in the Binocucom view moves - harness.
+- Chaos (tags r2m5b_s3; base build\base\sly2_base.exe vs build\new\sly2_final.exe = commit 555d113): 3x valid so far
+  m1 285.7/125.5 GPU 3.43 -> 290.7/123.0 3.29; m2 190.1/109.4 5.16 -> 227.8/139.0 4.26; ep1 284.9/127.3 3.42 ->
+  324.7/243.3 2.97. Interrupted 18:40: the owner started VALORANT (GPU contention: ep3 new / ep5 base invalid). Rerun
+  ep3 / ep5 at 3x and everything at 4x when the machine is quiet (do not benchmark while VALORANT runs).
 
 ## Next
 - Gates: run_tests, tests/unit, gpu_diff_all mixed S=1, pc_text_boot, debug + release builds, package.py, m9_exact.
