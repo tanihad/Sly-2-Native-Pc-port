@@ -800,7 +800,7 @@ static void flush_open(void) {
 
 /* (r2-m1) gpu_r2front.c: an R2 segment closes the open draws; the frontend's other events close an open segment first */
 void gf_flush_open(void) { flush_open(); }
-extern int gf_r2_pending, gf_r2_skip, gf_r2_fx_ttl;
+extern int gf_r2_pending, gf_r2_skip, gf_r2_fx_ttl, gf_r2_td_ttl;
 /* (r2-m7) the modern renderer's native passes are on for this frame (gpu_r2front.c gf_r2_fx_ttl; mixed frames only) */
 static int fx_on(void) { return gf_r2_fx_ttl > 0 && gf_cfg.mixed && !gf_cfg.ref; }
 void gf_r2_flush(void);
@@ -2161,6 +2161,8 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
     if (svol) OD.d.feat |= GPU_DF_SVOL;
     /* (r2-m7) a sprite reading a target view: the executor may run the draw as a native post pass (exec_npost checks it) */
     if (tier == GPU_TIER_FF && cls == GPU_PC_SPRITE && P->tme && ts.T && fx_on()) OD.d.feat |= GPU_DF_NPOST;
+    /* (r2-m7b) a vram texture in a modern frame: the executor may read it from the decoded texture cache (exact) */
+    if (tier == GPU_TIER_FF && P->tme && !ts.T && gf_r2_td_ttl > 0 && gf_cfg.mixed && !gf_cfg.ref) OD.d.feat |= GPU_DF_TEXDEC;
     if (gf_cfg.no_rov && rov) {
         if (nr_owner != od_serial) { nr_n = 0; nr_owner = od_serial; }
         nr_add(nrr);

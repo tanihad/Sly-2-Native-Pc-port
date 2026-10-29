@@ -261,8 +261,10 @@ enum { GPU_DF_VIEW = 1,                  /* a texture view of a target (CT32 / C
        GPU_DF_HIRES = 32,                /* a CT32 / alpha-index view read that is not 1:1 (gs.hlsl view_hires) */
        GPU_DF_NPOST = 64,                /* (r2-m7) modern frames: sprites reading a target view, a native post-pass candidate
                                             (gpu_exec.c exec_npost decides from the records) */
-       GPU_DF_SVOL = 128 };              /* (r2-m7) modern frames: a ROV draw of shadow-volume primitives only (gpu_front.c:
-                                            commutative wrapping G adds, drawn without rasterizer order) */                /* (ROV tier) a primitive without a GEQUAL / GREATER depth test, or without a proven
+       GPU_DF_SVOL = 128,                /* (r2-m7) modern frames: a ROV draw of shadow-volume primitives only (gpu_front.c:
+                                            commutative wrapping G adds, drawn without rasterizer order) */
+       GPU_DF_TEXDEC = 256 };            /* (r2-m7b) modern frames: the draw may read level 0 of its vram textures from the
+                                            decoded texture cache (gpu_exec.c td_prepass decides per StateRec) */                /* (ROV tier) a primitive without a GEQUAL / GREATER depth test, or without a proven
                                             rasterized Z bound: the draw gets no early depth rejection (gpu_exec.c) */
 typedef struct { gpu_fop h; uint16_t ct, zt; uint32_t zresolve; int16_t bbox[4]; } gpu_fop_rov_end;
 /* rect [x0, x1) x [y0, y1) in pixels of the 16-bit frame (whole 16x8 blocks). (perf-p2) mode 1: a copy run - every

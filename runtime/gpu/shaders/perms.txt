@@ -93,6 +93,13 @@ ps_ff_t001s      gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=0 DUA
 ps_ff_t011s      gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=0 DUAL=0 ZOUT=1 STQ_FAST=1 TRI_REC=128u SPEC_NOVIEW=1 SPEC_NOLOD=1 DC_VTX=1
 ps_ff_t101s      gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=0 DUAL=1 ZOUT=0 STQ_FAST=1 TRI_REC=128u SPEC_NOVIEW=1 SPEC_NOLOD=1 DC_VTX=1
 ps_ff_t111s      gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=0 DUAL=1 ZOUT=1 STQ_FAST=1 TRI_REC=128u SPEC_NOVIEW=1 SPEC_NOLOD=1 DC_VTX=1
+# (r2-m7b) the same with level 0 from the decoded texture cache (gpu_exec.c texdec, StateRec pad2[0])
+ps_ff_t001d      gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=0 DUAL=0 ZOUT=0 STQ_FAST=1 TRI_REC=128u SPEC_NOVIEW=1 SPEC_NOLOD=1 DC_VTX=1 TEXDEC=1
+ps_ff_t011d      gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=0 DUAL=0 ZOUT=1 STQ_FAST=1 TRI_REC=128u SPEC_NOVIEW=1 SPEC_NOLOD=1 DC_VTX=1 TEXDEC=1
+ps_ff_t101d      gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=0 DUAL=1 ZOUT=0 STQ_FAST=1 TRI_REC=128u SPEC_NOVIEW=1 SPEC_NOLOD=1 DC_VTX=1 TEXDEC=1
+ps_ff_t111d      gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=0 DUAL=1 ZOUT=1 STQ_FAST=1 TRI_REC=128u SPEC_NOVIEW=1 SPEC_NOLOD=1 DC_VTX=1 TEXDEC=1
+cs_texdec        gs.hlsl             cs_texdec         cs_5_0    FF=1 SPEC_NOVIEW=1 SPEC_NOLOD=1 TEXDEC_CS=1
+cs_texdec_r2     gs.hlsl             cs_texdec         cs_5_0    FF=1 SPEC_NOVIEW=1 SPEC_NOLOD=1 TEXDEC_CS=1 R2_CLUT=1
 ps_ff_s00s       gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=1 DUAL=0 ZOUT=0 SPEC_NOVIEW=1 SPEC_NOLOD=1
 ps_ff_s01s       gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=1 DUAL=0 ZOUT=1 SPEC_NOVIEW=1 SPEC_NOLOD=1
 ps_ff_s10s       gs.hlsl             ps_ff             ps_5_0    FF=1 PRIM=1 DUAL=1 ZOUT=0 SPEC_NOVIEW=1 SPEC_NOLOD=1

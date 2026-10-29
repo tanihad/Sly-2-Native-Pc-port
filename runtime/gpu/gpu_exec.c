@@ -162,6 +162,7 @@ static struct {
     int sv_on, sv_ct, sv_bb[4];          /* counters pending for colour target sv_ct over native rect sv_bb (inclusive) */
     int sv_ez;                           /* the bound volume draw state has the read-only DSV */
     const gpu_front_frame_data* fd;      /* the frame being executed (its records, for the copy runs' tile tables) */
+    uint32_t curpos;                     /* (r2-m7b) byte position of the op being executed */
 } X;
 
 static gpu_exec_counters XC;
@@ -309,6 +310,7 @@ static void zt_set(xtarget* t, const int r[4], int from, int to);
 static void zquad(xtarget* t, const int b[4], int mode, uint32_t value);
 
 static void unbind_all(void);
+static void td_bind_ps(void);            /* (r2-m7b) */
 
 static ID3D11Texture2D* tex2d(int w, int h, DXGI_FORMAT f, UINT bind) {
     D3D11_TEXTURE2D_DESC td;
@@ -853,6 +855,7 @@ static void bind_frame_buffers(void) {
     ID3D11DeviceContext_VSSetShaderResources(c, 3, 1, &X.rec.srv);
     ID3D11DeviceContext_PSSetShaderResources(c, 9, 1, &X.dc.srv);   /* (M9) per-draw constants */
     ID3D11DeviceContext_VSSetShaderResources(c, 9, 1, &X.dc.srv);
+    td_bind_ps();                        /* (r2-m7b) decoded textures (t13) */
     ID3D11DeviceContext_RSSetState(c, X.rs);
     X.state_calls += 11;
     X.b_topo = 0;
@@ -1193,7 +1196,14 @@ static struct {
     /* (r2-m7) PS2_GPU_PROF_OPS=<frame>: that frame (counted from 1 by prof_end) gets a timestamp before every op, and
      * the GPU time per op signature is logged (which draws cost what) */
     uint32_t ops_frame, ops_on, curpos, opos[PR_MAXQ];
+    /* (r2-m7b) PS2_GPU_AB=<frames>: A/B in one run - the experimental features are off in the A phases and on in the B
+     * phases (alternating every <frames> frames), and the GPU time is accumulated per phase (prof-ab lines) */
+    int ab, ab_b;
+    double ab_ms[2][PR_N], ab_tot[2];
+    uint32_t ab_n[2];
 } PR = { -1 };
+/* (r2-m7b) an experimental feature is off in this frame (an A phase of PS2_GPU_AB) */
+static int ab_off(void) { return PR.ab > 0 && !PR.ab_b; }
 
 static void prof_mark(int cat) {
     if (PR.on <= 0 || PR.n >= PR_MAXQ - 1 || (PR.n && cat == PR.cur && !PR.ops_on)) return;
@@ -1265,6 +1275,7 @@ static void prof_ops_report(const UINT64* ts, double freq) {
         double ms = (double)(ts[i + 1] - ts[i]) * 1000.0 / freq;
         char s[200];
         prof_op_sig(X.fd, PR.opos[i], PR.cat[i], s, sizeof s);
+        if (getenv("PS2_GPU_PROF_SEQ")) gpu_log("prof-seq %4d %7.3f ms @%u %s", i, ms, PR.opos[i], s);   /* (r2-m7b: in order) */
         int k;
         for (k = 0; k < na && strcmp(A[k].sig, s); k++) {}
         if (k == na) { if (na == 512) continue; snprintf(A[na].sig, sizeof A[na].sig, "%s", s); A[na].ms = 0; A[na].n = 0; na++; }
@@ -1329,6 +1340,11 @@ static void prof_end(void) {
     if (ft > 50.0) return;               /* (loading frames: left out) */
     for (int c = 0; c < PR_N; c++) { PR.ms[c] += f[c]; PR.ps_inv[c] += fi[c]; PR.occl[c] += fo[c]; PR.prims[c] += fp[c]; }
     PR.total += ft;
+    if (PR.ab > 0) {                     /* (r2-m7b) per A / B phase */
+        for (int c = 0; c < PR_N; c++) PR.ab_ms[PR.ab_b][c] += f[c];
+        PR.ab_tot[PR.ab_b] += ft;
+        PR.ab_n[PR.ab_b]++;
+    }
     static int every = 0;                /* (r2-m1) PS2_GPU_PROF_EVERY=n: the line every n frames (short replays) */
     if (!every) { const char* e = getenv("PS2_GPU_PROF_EVERY"); every = e && atoi(e) > 0 ? atoi(e) : 60; }
     if (++PR.frames % (uint32_t)every) return;
@@ -1338,6 +1354,13 @@ static void prof_end(void) {
         if (PR.ms[c] > 0) o += snprintf(line + o, sizeof line - (size_t)o, " %s %.3f (%.0f)", pr_names[c], PR.ms[c] / PR.frames,
                                          (double)PR.marks[c] / PR.frames);
     gpu_log("%s", line);
+    for (int b = 0; PR.ab > 0 && b < 2; b++) {
+        if (!PR.ab_n[b]) continue;
+        o = snprintf(line, sizeof line, "prof-ab %c: %u frames, GPU ms per frame %.3f:", 'A' + b, PR.ab_n[b], PR.ab_tot[b] / PR.ab_n[b]);
+        for (int c = 0; c < PR_N && o < (int)sizeof line - 48; c++)
+            if (PR.ab_ms[b][c] > 0) o += snprintf(line + o, sizeof line - (size_t)o, " %s %.3f", pr_names[c], PR.ab_ms[b][c] / PR.ab_n[b]);
+        gpu_log("%s", line);
+    }
     if (PR.on >= 2) {                    /* per frame: PS invocations (M), samples passing depth (M), primitives (k) */
         o = snprintf(line, sizeof line, "prof-stats per frame (PS invocations M / samples passed M / primitives k):");
         for (int c = 0; c < PR_N && o < (int)sizeof line - 64; c++)
@@ -1742,6 +1765,299 @@ static void exec_draw_ref(const gpu_fop_draw* d, uint32_t slot) {
     if (zt && d->zw) zt_mark(zt, d->bbox[0], d->bbox[1], d->bbox[2], d->bbox[3], ZT_ZP);
 }
 
+/* ---- (r2-m7b) the decoded texture cache (modern frames) ------------------------------------------------------------
+ * A vram texture's level 0 decoded once into words exactly as gs.hlsl texel() returns them (cs_texdec runs texel() over
+ * every texel of level 0), read by the TEXDEC pixel shaders with four plain loads instead of four swizzled reads plus
+ * CLUT lookups. Exact by construction: an entry is keyed by the texture's TEX0 (TBP, TBW, PSM, TW, TH), its CLUT
+ * identity (a hash of the ring slot's 1 KB snapshot with CSA / CPSM; TEXA for 16 / 24-bit texels) and its content
+ * version, the newest write serial of the 8 KB pages it occupies (PATCH and DOWNLOAD ops bump the serial of the pages
+ * they write). td_prepass walks the frame's ops before the upload, keeps the page serials and CLUT hashes as the
+ * execution will see them, decides per StateRec (gpu_staterec.pad2[0] = 1 + first word, 0: none; a StateRec whose
+ * texture changes between two of its draws in one frame gets none) and schedules the decodes at the ops before the
+ * draws that need them. Used for FF triangle draws without a depth target (Sly: the sky, drawn before the Z clear from
+ * textures uploaded every frame): measured in game (ep1 hub, PS2_GPU_AB) the sky's draw 0.52 -> 0.38 ms; decoding the
+ * world's textures too made the frame slower (exact triangles +0.26 ms, R2 +0.13: decoded words are 2-8x the indexed
+ * texels, and the 4 MB of GS memory no longer stays in the GPU's L2). PS2_R2_TEXDEC=0: off, 4: every FF triangle draw. */
+#define TD_WORDS (16u << 20)             /* 64 MB of decoded texels */
+#define TD_HASH 8192                     /* entries (open addressing; reset when 3/4 full or out of words) */
+#define TD_JOBS 1024
+#define TD_FRAME_TEXELS (4u << 20)       /* decodes per frame at most (the rest stay undecoded until a later frame) */
+typedef struct { uint64_t k1, k2; uint32_t ver, base, n, frame; int live; } td_ent;
+typedef struct { uint32_t pos, tex0lo, tex0hi, texa, clut_slot, base, lw, n; } td_job;
+typedef struct { uint32_t tex0lo, tex0hi, clamp0, clamp1, texa, clut_slot, base, lw, n, pad0, pad1, pad2; } td_consts;   /* (gs.hlsl texdec_cb) */
+static struct {
+    int on;                              /* -1 unknown */
+    ID3D11Buffer *buf, *cb;
+    ID3D11ShaderResourceView* srv;
+    ID3D11UnorderedAccessView* uav;
+    uint32_t pgen[512], serial, frame;
+    uint64_t chash[4096];
+    td_ent ent[TD_HASH];
+    uint32_t nent, used, frame_texels;
+    int reset;
+    td_job job[TD_JOBS];
+    uint32_t njob, jnext;
+    uint32_t* dpos;                      /* op positions of the draws with decoded StateRecs (in order) */
+    uint32_t ndpos, dcap, dnext;
+    uint8_t* stcopy;                     /* the frame's StateRecs with pad2[0] set */
+    size_t stcap;
+    uint32_t* sdec;                      /* per StateRec: 1 + base, 0 none */
+    uint8_t* sflag;                      /* 0 untouched, 1 set, 2 none for this frame */
+    size_t scap;
+    uint64_t decodes, decode_texels, draws;
+} TD = { -1 };
+
+static int td_ensure(void) {
+    if (TD.on < 0) { const char* e = getenv("PS2_R2_TEXDEC"); TD.on = e ? atoi(e) : 1; }
+    if (!TD.on) return 0;
+    if (TD.buf) return 1;
+    TD.buf = raw_default(TD_WORDS * 4u, NULL, &TD.srv, &TD.uav);
+    D3D11_BUFFER_DESC bd;
+    memset(&bd, 0, sizeof bd);
+    bd.ByteWidth = sizeof(td_consts);
+    bd.Usage = D3D11_USAGE_DYNAMIC;
+    bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+    bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+    if (!TD.buf || FAILED(ID3D11Device_CreateBuffer(gpu_rt.dev, &bd, NULL, &TD.cb))) {
+        GPU_RELEASE(TD.srv); GPU_RELEASE(TD.uav); GPU_RELEASE(TD.buf);
+        TD.on = 0;
+        return 0;
+    }
+    TD.nent = TD.used = 0;
+    memset(TD.ent, 0, sizeof TD.ent);
+    return 1;
+}
+
+static void td_release(void) {
+    GPU_RELEASE(TD.srv); GPU_RELEASE(TD.uav); GPU_RELEASE(TD.buf); GPU_RELEASE(TD.cb);
+    TD.nent = TD.used = 0;
+    memset(TD.ent, 0, sizeof TD.ent);
+    memset(TD.chash, 0, sizeof TD.chash);
+}
+
+/* the newest write serial of the pages level 0 of a texture occupies (GS page layout of its PSM; a TBP inside a page
+ * spills into the next page of every row) */
+static uint32_t td_ver(uint32_t tbp, uint32_t tbw, uint32_t psm, uint32_t lw, uint32_t lh) {
+    uint32_t pw = 64, ph = 32, ppr = tbw;
+    if (psm == 0x13) { pw = 128; ph = 64; ppr = tbw > 1 ? tbw >> 1 : tbw; }
+    else if (psm == 0x14) { pw = 128; ph = 128; ppr = tbw > 1 ? tbw >> 1 : tbw; }
+    else if (psm == 0x02 || psm == 0x0A || psm == 0x32 || psm == 0x3A) ph = 64;
+    uint32_t w = 1u << lw, h = 1u << lh, cols = (w + pw - 1) / pw + ((tbp & 31) ? 1 : 0), rows = (h + ph - 1) / ph, v = 0;
+    for (uint32_t r = 0; r < rows; r++)
+        for (uint32_t c = 0; c < cols; c++) {
+            uint32_t g = TD.pgen[((tbp >> 5) + r * ppr + c) & 511];
+            if (g > v) v = g;
+        }
+    return v;
+}
+
+static uint64_t td_hash64(const uint8_t* p, size_t n) {
+    uint64_t h = 0xCBF29CE484222325ull;
+    for (size_t i = 0; i + 8 <= n; i += 8) {
+        uint64_t w;
+        memcpy(&w, p + i, 8);
+        h = (h ^ w) * 0x100000001B3ull;
+        h ^= h >> 29;
+    }
+    return h;
+}
+
+/* the decoded base (1 + first word) for StateRec s at op position pos, scheduling its decode; 0: none */
+static uint32_t td_state(const gpu_staterec* s, uint32_t pos, int64_t area) {
+    if (!(s->flags & GPU_SF_TME)) return 0;
+    uint32_t tk = s->texsrc & 0xFF;
+    if (tk != TK_VRAM_IDX && tk != TK_VRAM_DIRECT) return 0;
+    uint32_t texm = s->tlev & 3, cur = (s->tlev >> 2) & 7;
+    if ((texm != 1 && texm != 2) || cur) return 0;
+    uint64_t t0 = s->tex0;
+    uint32_t tbp = (uint32_t)t0 & 0x3FFF, tbw = (uint32_t)(t0 >> 14) & 0x3F, psm = (uint32_t)(t0 >> 20) & 0x3F;
+    uint32_t tw = (uint32_t)(t0 >> 26) & 15, th = (uint32_t)(t0 >> 30) & 15;
+    if (tw > 10) tw = 10;
+    if (th > 10) th = 10;
+    uint32_t n = 1u << (tw + th);
+    int idx = psm == 0x13 || psm == 0x14 || psm == 0x1B || psm == 0x24 || psm == 0x2C;
+    uint64_t k1 = t0 & 0x3FFFFFFFFull, k2 = 0;
+    if (idx) {
+        if (s->clut_slot == 0xFFFFFFFFu) return 0;
+        uint32_t cpsm = (uint32_t)(t0 >> 51) & 15, csa = (uint32_t)(t0 >> 56) & 31;
+        k2 = TD.chash[s->clut_slot & 4095] ^ ((uint64_t)(cpsm | csa << 4) << 52) ^ 1;
+        if (cpsm == 0x02 || cpsm == 0x0A) k2 ^= (uint64_t)s->texa * 0x9E3779B97F4A7C15ull;
+    } else if (psm != 0x00 && psm != 0x30) k2 = (uint64_t)s->texa * 0x9E3779B97F4A7C15ull + 2;
+    uint32_t ver = td_ver(tbp, tbw, psm, tw, th);
+    uint32_t h = (uint32_t)((k1 * 0x9E3779B97F4A7C15ull ^ k2) >> 40) & (TD_HASH - 1);
+    td_ent* e = NULL;
+    for (uint32_t i = 0; i < TD_HASH; i++) {
+        td_ent* c = &TD.ent[(h + i) & (TD_HASH - 1)];
+        if (!c->live) break;
+        if (c->k1 == k1 && c->k2 == k2) { e = c; break; }
+    }
+    if (e && e->ver == ver) { e->frame = TD.frame; return e->base + 1; }
+    if (e && e->frame == TD.frame) return 0;  /* (decoded at another version earlier in this frame) */
+    /* a decode: worth it when the draw covers a fair share of the texels (cached entries need none) */
+    if (area * 8 < (int64_t)n || TD.frame_texels + n > TD_FRAME_TEXELS || TD.njob >= TD_JOBS) return 0;
+    uint32_t base;
+    if (e) base = e->base;               /* (a newer version of the same texture: in place) */
+    else {
+        if (TD.nent >= TD_HASH * 3 / 4 || TD.used + n > TD_WORDS) { TD.reset = 1; return 0; }
+        base = TD.used;
+        TD.used += n;
+        for (uint32_t i = 0;; i++) {
+            td_ent* c = &TD.ent[(h + i) & (TD_HASH - 1)];
+            if (!c->live) { e = c; break; }
+        }
+        e->live = 1; e->k1 = k1; e->k2 = k2; e->base = base; e->n = n;
+        TD.nent++;
+    }
+    e->ver = ver;
+    e->frame = TD.frame;
+    td_job* j = &TD.job[TD.njob++];
+    j->pos = pos; j->tex0lo = (uint32_t)t0; j->tex0hi = (uint32_t)(t0 >> 32); j->texa = s->texa;
+    j->clut_slot = idx ? s->clut_slot & 4095 : 0; j->base = base; j->lw = tw; j->n = n;
+    TD.frame_texels += n;
+    return base + 1;
+}
+
+/* walk the frame's ops: page serials, CLUT hashes, per-StateRec decisions, decodes to run. Returns the StateRecs to
+ * upload (a patched copy, or fd->states when nothing is decoded). */
+static const uint8_t* td_prepass(const gpu_front_frame_data* fd) {
+    TD.njob = TD.jnext = TD.ndpos = TD.dnext = 0;
+    TD.frame++;
+    static int stats = -1;
+    if (stats < 0) { const char* e = getenv("PS2_R2_STATS"); stats = e && *e && *e != '0'; }
+    if (stats && TD.frame % 60 == 0)
+        gpu_log("texdec: %llu decodes (%.1f M texels), %llu draws, %u entries, %.1f MB", (unsigned long long)TD.decodes,
+                TD.decode_texels / 1e6, (unsigned long long)TD.draws, TD.nent, TD.used * 4.0 / 1048576.0);
+    TD.frame_texels = 0;
+    int cand = X.mixed && !X.ref && td_ensure() && !ab_off();
+    if (TD.reset && cand) {
+        TD.reset = 0;
+        TD.nent = TD.used = 0;
+        memset(TD.ent, 0, sizeof TD.ent);
+    }
+    if (cand && TD.scap < fd->state_count) {
+        size_t c = fd->state_count + 256;
+        uint32_t* a = realloc(TD.sdec, c * 4);
+        if (a) TD.sdec = a;
+        uint8_t* b = realloc(TD.sflag, c);
+        if (b) TD.sflag = b;
+        if (a && b) TD.scap = c; else cand = 0;
+    }
+    if (cand) memset(TD.sflag, 0, fd->state_count);
+    int any = 0;
+    for (size_t pos = 0; pos + sizeof(gpu_fop) <= fd->cmd_bytes;) {
+        const gpu_fop* h = (const gpu_fop*)(fd->cmd + pos);
+        if (!h->size) break;
+        if (h->op == GPU_FOP_PATCH || h->op == GPU_FOP_DOWNLOAD) {
+            const gpu_fop_blocks* o = (const gpu_fop_blocks*)h;
+            TD.serial++;
+            for (uint32_t i = 0; i < o->n; i++) {
+                uint32_t b;
+                if (h->op == GPU_FOP_PATCH) {
+                    if ((size_t)o->data_off + i * 2u + 2u > fd->data_bytes) break;
+                    b = *(const uint16_t*)(fd->data + o->data_off + i * 2u);
+                } else {
+                    if ((size_t)o->data_off + i * 16u + 16u > fd->data_bytes) break;
+                    b = ((const gpu_dl_entry*)(fd->data + o->data_off))[i].abs;
+                }
+                TD.pgen[(b >> 5) & 511] = TD.serial;
+            }
+        } else if (h->op == GPU_FOP_CLUT) {
+            const gpu_fop_clut* o = (const gpu_fop_clut*)h;
+            if ((size_t)o->data_off + 1024 <= fd->data_bytes) TD.chash[o->slot & 4095] = td_hash64(fd->data + o->data_off, 1024);
+        } else if (cand && h->op == GPU_FOP_DRAW) {
+            const gpu_fop_draw* d = (const gpu_fop_draw*)h;
+            if ((d->feat & GPU_DF_TEXDEC) && d->tier == GPU_TIER_FF && d->cls == GPU_PC_TRI && (d->ps_key & GPU_PSK_FF_FAST) &&
+                spec_level(d) == 1 && d->count >= 3 && (!d->zt || TD.on == 4)) {
+                int64_t area = (int64_t)(d->bbox[2] - d->bbox[0] + 1) * (d->bbox[3] - d->bbox[1] + 1);
+                uint32_t np = d->count / 3, last = 0xFFFFFFFFu;
+                int got = 0;
+                for (uint32_t i = 0; i < np; i++) {
+                    size_t rb = (size_t)d->rec_first + (size_t)i * 128u;
+                    if (rb + 116u > fd->rec_bytes) break;
+                    uint32_t si = *(const uint32_t*)(fd->rec + rb + 112u);
+                    if (si == last || si >= fd->state_count) continue;
+                    last = si;
+                    uint8_t f = TD.sflag[si];
+                    if (f == 2) continue;
+                    uint32_t v = td_state((const gpu_staterec*)(fd->states + (size_t)si * GPU_STATE_BYTES), (uint32_t)pos, area);
+                    if (f == 0) { TD.sflag[si] = v ? 1 : 2; TD.sdec[si] = v; }
+                    else if (TD.sdec[si] != v) { TD.sflag[si] = 2; TD.sdec[si] = 0; }
+                    got |= v != 0;
+                }
+                if (got) {
+                    if (TD.ndpos == TD.dcap) {
+                        uint32_t c = TD.dcap ? TD.dcap * 2 : 256;
+                        uint32_t* a = realloc(TD.dpos, c * 4);
+                        if (a) { TD.dpos = a; TD.dcap = c; }
+                    }
+                    if (TD.ndpos < TD.dcap) TD.dpos[TD.ndpos++] = (uint32_t)pos;
+                    any = 1;
+                }
+            }
+        }
+        pos += h->size;
+    }
+    if (!any) return fd->states;
+    size_t bytes = fd->state_count * GPU_STATE_BYTES;
+    if (TD.stcap < bytes) {
+        uint8_t* a = realloc(TD.stcopy, bytes + 65536);
+        if (!a) { TD.ndpos = 0; TD.njob = 0; return fd->states; }
+        TD.stcopy = a;
+        TD.stcap = bytes + 65536;
+    }
+    memcpy(TD.stcopy, fd->states, bytes);
+    for (size_t i = 0; i < fd->state_count; i++)
+        ((gpu_staterec*)(TD.stcopy + i * GPU_STATE_BYTES))->pad2[0] = TD.sflag[i] == 1 ? TD.sdec[i] : 0;   /* (pad2 is not zeroed upstream) */
+    return TD.stcopy;
+}
+
+/* the decodes scheduled before the op at pos */
+static void td_run(uint32_t pos) {
+    if (TD.jnext >= TD.njob || TD.job[TD.jnext].pos != pos) return;
+    if (X.mode) unbind_all();
+    ID3D11DeviceContext* c = gpu_rt.ctx;
+    ID3D11ShaderResourceView* n1 = NULL;
+    ID3D11DeviceContext_PSSetShaderResources(c, 13, 1, &n1);
+    ID3D11DeviceContext_CSSetShader(c, gpu_cs(GPU_SH_cs_texdec), NULL, 0);
+    ID3D11ShaderResourceView* s0 = X.vram_srv;
+    ID3D11DeviceContext_CSSetShaderResources(c, 0, 1, &s0);
+    ID3D11ShaderResourceView* s56[2] = { X.clut_srv, X.swz_srv };
+    ID3D11DeviceContext_CSSetShaderResources(c, 5, 2, s56);
+    ID3D11DeviceContext_CSSetUnorderedAccessViews(c, 0, 1, &TD.uav, NULL);
+    ID3D11DeviceContext_CSSetConstantBuffers(c, 3, 1, &TD.cb);
+    int pc = PR.cur;
+    prof_mark(PR_MEM);
+    for (; TD.jnext < TD.njob && TD.job[TD.jnext].pos == pos; TD.jnext++) {
+        const td_job* j = &TD.job[TD.jnext];
+        td_consts k = { j->tex0lo, j->tex0hi, 0, 0, j->texa, j->clut_slot, j->base, j->lw, j->n, 0, 0, 0 };
+        D3D11_MAPPED_SUBRESOURCE m;
+        if (FAILED(ID3D11DeviceContext_Map(c, (ID3D11Resource*)TD.cb, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) continue;
+        memcpy(m.pData, &k, sizeof k);
+        ID3D11DeviceContext_Unmap(c, (ID3D11Resource*)TD.cb, 0);
+        ID3D11DeviceContext_Dispatch(c, (j->n + 63) / 64, 1, 1);
+        gpu_rt.n_dispatches++;
+        TD.decodes++;
+        TD.decode_texels += j->n;
+    }
+    prof_mark(pc);
+    ID3D11UnorderedAccessView* nu = NULL;
+    ID3D11DeviceContext_CSSetUnorderedAccessViews(c, 0, 1, &nu, NULL);
+    ID3D11ShaderResourceView* ns = NULL;
+    ID3D11DeviceContext_CSSetShaderResources(c, 0, 1, &ns);
+    ID3D11DeviceContext_PSSetShaderResources(c, 13, 1, &TD.srv);
+    X.state_calls += 10;
+}
+
+static void td_bind_ps(void) {
+    if (TD.srv) ID3D11DeviceContext_PSSetShaderResources(gpu_rt.ctx, 13, 1, &TD.srv);
+}
+
+/* the draw at pos reads decoded StateRecs */
+static int td_draw(uint32_t pos) {
+    while (TD.dnext < TD.ndpos && TD.dpos[TD.dnext] < pos) TD.dnext++;
+    return TD.dnext < TD.ndpos && TD.dpos[TD.dnext] == pos;
+}
+
 /* FF draw (M5, 4.2): RTV + DSV, the blend and depth tests of the output merger, shaders/gs.hlsl ps_ff.
  * An ATST split (split 3) is two draws: the passing fragments with the state's Z write and colour mask,
  * then the failing ones as AFAIL says (FB_ONLY: no Z write; ZB_ONLY: no colour; RGB_ONLY: neither Z nor
@@ -1773,6 +2089,8 @@ static void exec_draw_ff(const gpu_fop_draw* d, uint32_t slot) {
                                          { { GPU_SH_ps_ff_t001n, GPU_SH_ps_ff_t011n }, { GPU_SH_ps_ff_t101n, GPU_SH_ps_ff_t111n } } };
         int fast = (d->ps_key & GPU_PSK_FF_FAST) != 0;
         ps = sp && fast ? ts[sp][dual][zout] : t[dual][zout][fast];
+        static const int td[2][2] = { { GPU_SH_ps_ff_t001d, GPU_SH_ps_ff_t011d }, { GPU_SH_ps_ff_t101d, GPU_SH_ps_ff_t111d } };
+        if (sp == 1 && fast && TD.ndpos && td_draw(X.curpos)) { ps = td[dual][zout]; TD.draws++; }   /* (r2-m7b) */
     } else {
         set_topo(1);
         int sprite = d->cls == GPU_PC_SPRITE, thin = d->cls == GPU_PC_THIN;
@@ -2265,6 +2583,7 @@ void gpu_exec_release(void) {
     GPU_RELEASE(X.dbg_uav); GPU_RELEASE(X.dbg); GPU_RELEASE(X.dbg_stage); GPU_RELEASE(X.a16_uav); GPU_RELEASE(X.a16);
     GPU_RELEASE(X.a16cb);
     GPU_RELEASE(X.npcb);
+    td_release();
     GPU_RELEASE(X.svcnt_uav); GPU_RELEASE(X.svcnt);
     X.svcnt_w = X.svcnt_h = 0;
     X.sv_on = 0;
@@ -2428,10 +2747,14 @@ void gpu_exec_frame(const void* payload) {
     if (fd->flags & GPU_FD_PARTIAL) XC.partial_frames++;
     /* upload: vertices, indices, records, StateRecs, the data arena, per-draw constants (one Map each) */
     uint32_t ncb = build_constants(fd, X.ref || X.mixed);
+    static int ab_init;
+    if (!ab_init) { ab_init = 1; const char* e = getenv("PS2_GPU_AB"); PR.ab = e && atoi(e) > 0 ? atoi(e) : 0; }   /* (r2-m7b) */
+    if (PR.ab > 0) PR.ab_b = (int)((XC.frames / (uint32_t)PR.ab) & 1);
+    const uint8_t* states = td_prepass(fd);   /* (r2-m7b) the decoded texture cache's StateRec fields */
     int ok = dyn_fill(&X.vb, fd->vtx, fd->vtx_bytes, D3D11_BIND_VERTEX_BUFFER, 0) &&
              dyn_fill(&X.ib, fd->idx, fd->idx_count * 4, D3D11_BIND_INDEX_BUFFER, 0) &&
              dyn_fill(&X.rec, fd->rec, fd->rec_bytes, D3D11_BIND_SHADER_RESOURCE, 1) &&
-             dyn_fill(&X.st, fd->states, fd->state_count * GPU_STATE_BYTES, D3D11_BIND_SHADER_RESOURCE, 1) &&
+             dyn_fill(&X.st, states, fd->state_count * GPU_STATE_BYTES, D3D11_BIND_SHADER_RESOURCE, 1) &&
              dyn_fill(&X.dat, fd->data, fd->data_bytes, D3D11_BIND_SHADER_RESOURCE, 1) &&
              (X.ref || X.mixed ? dyn_fill(&X.dc, cb_cpu, (size_t)ncb * DRAW_CB_BYTES, D3D11_BIND_SHADER_RESOURCE, 1) && iota_ensure(bc_maxid)
                                : dyn_fill(&X.cb, cb_cpu, (size_t)ncb * DRAW_CB_BYTES, D3D11_BIND_CONSTANT_BUFFER, 0));
@@ -2446,6 +2769,7 @@ void gpu_exec_frame(const void* payload) {
         const gpu_fop* h = (const gpu_fop*)(fd->cmd + pos);
         if (!h->size) break;
         PR.curpos = (uint32_t)pos;
+        X.curpos = (uint32_t)pos;
         /* (r2-m7) pending shadow-volume counters go into G before any other op (another volume draw on the same target,
          * the end of its ROV run, CLUT and memory patches do not touch the target) */
         if (X.sv_on && h->op != GPU_FOP_ROV_END && h->op != GPU_FOP_CLUT && h->op != GPU_FOP_PATCH &&
@@ -2461,6 +2785,7 @@ void gpu_exec_frame(const void* payload) {
                       : h->op == GPU_FOP_CLEAR ? PR_CLEAR : h->op == GPU_FOP_COPY_SHADOW ? PR_SHADOW
                       : h->op == GPU_FOP_ALIAS16 || h->op == GPU_FOP_ALIAS16_END ? PR_A16
                       : h->op == GPU_FOP_PRESENT ? PR_PRESENT : PR_OTHER);
+        if (TD.jnext < TD.njob) td_run((uint32_t)pos);   /* (r2-m7b) decodes before the draw that needs them */
         switch (h->op) {
         case GPU_FOP_TARGET: exec_target((const gpu_fop_target*)h); break;
         case GPU_FOP_RELEASE: exec_release((const gpu_fop_target*)h); break;

@@ -278,7 +278,19 @@ struct St {
     uint texa, clut_slot, texsrc, fogcol, test, fmask, flags, alpha, zinfo, tlev;
     uint mip[6];
     uint2 dimx;                          // DIMX register (dither matrix, 16-bit frames)
+    uint dec;                            // (r2-m7b, TEXDEC) 1 + the first word of level 0 decoded (texdec), 0: none
 };
+
+#ifndef TEXDEC
+#define TEXDEC 0                         // (r2-m7b) level 0 may come from the decoded texture cache (gpu_exec.c texdec)
+#endif
+#if TEXDEC
+// (r2-m7b) the decoded texture cache: a vram texture's level 0 as texel() returns it (0xAABBGGRR, CLUT applied), row
+// after row (2^TW words each) from word st.dec - 1. Written by cs_texdec with this file's own texel() from the same GS
+// memory and CLUT the draw reads (the executor decodes a texture again when its pages or its CLUT changed), so a
+// decoded read returns exactly the word texel() would.
+ByteAddressBuffer texdec : register(t13);
+#endif
 
 #define STATE_BYTES 128u
 
@@ -295,6 +307,11 @@ St load_state(uint idx) {
     uint4 e = states.Load4(b + 72u);
     s.mip[2] = e.x; s.mip[3] = e.y; s.mip[4] = e.z; s.mip[5] = e.w;
     s.dimx = states.Load2(b + 96u);
+#if TEXDEC
+    s.dec = states.Load(b + 120u);       // (gpu_staterec.pad2[0], set by the executor: gpu_exec.c td_prepass)
+#else
+    s.dec = 0u;
+#endif
     return s;
 }
 
@@ -527,9 +544,22 @@ uint tex_level(St st, uint l, int U, int V, bool bil) {
         n = 4u;
     }
     uint t0 = 0u, t1 = 0u, t2 = 0u, t3 = 0u;
-    [loop] for (uint k = 0u; k < n; k++) {
-        uint t = texel(st, L, (k & 1u) ? xb : xa, (k & 2u) ? yb : ya);
-        if (k == 0u) t0 = t; else if (k == 1u) t1 = t; else if (k == 2u) t2 = t; else t3 = t;
+#if TEXDEC
+    if (st.dec != 0u && l == 0u) {       // (r2-m7b) the decoded level 0: independent loads, the same bilinear
+        uint db = st.dec - 1u, lw = firstbitlow(L.w);
+        t0 = texdec.Load((db + (ya << lw) + xa) * 4u);
+        if (bil) {
+            t1 = texdec.Load((db + (ya << lw) + xb) * 4u);
+            t2 = texdec.Load((db + (yb << lw) + xa) * 4u);
+            t3 = texdec.Load((db + (yb << lw) + xb) * 4u);
+        }
+    } else
+#endif
+    {
+        [loop] for (uint k = 0u; k < n; k++) {
+            uint t = texel(st, L, (k & 1u) ? xb : xa, (k & 2u) ? yb : ya);
+            if (k == 0u) t0 = t; else if (k == 1u) t1 = t; else if (k == 2u) t2 = t; else t3 = t;
+        }
     }
     return bil ? bilerp(t0, t1, t2, t3, fu, fv) : t0;
 }
@@ -621,6 +651,33 @@ uint tex_sample(St st, int U, int V, float lq) {
     return nl == 2u ? lerp_rgba(r0, r1, lf) : r0;
 #endif
 }
+#ifdef TEXDEC_CS
+// (r2-m7b) cs_texdec: level 0 of a vram texture into the decoded texture cache, one thread per texel, through texel()
+// (the FF permutations' CLUT ring slot, or with R2_CLUT the CLUT in GS memory at CBP as R2's materials read it)
+cbuffer texdec_cb : register(b3) {
+    uint4 td_tex0clamp;                  // TEX0 lo, hi (CLAMP unused: texel() takes wrapped coordinates)
+    uint td_texa, td_clut_slot, td_base, td_lw;   // TEXA, CLUT ring slot, first word, log2 width
+    uint td_n, td_pad0, td_pad1, td_pad2;        // texels
+};
+RWByteAddressBuffer texdec_out : register(u0);
+[numthreads(64, 1, 1)]
+void cs_texdec(uint3 id : SV_DispatchThreadID) {
+    uint i = id.x;
+    if (i >= td_n) return;
+    St st;
+    st.tex0clamp = td_tex0clamp;
+    st.tex1 = uint2(0u, 0u);
+    st.texa = td_texa; st.clut_slot = td_clut_slot; st.texsrc = 1u; st.fogcol = 0u; st.test = 0u; st.fmask = 0u;
+    st.flags = 0u; st.alpha = 0u; st.zinfo = 0u; st.tlev = 0u;
+    st.mip[0] = 0u; st.mip[1] = 0u; st.mip[2] = 0u; st.mip[3] = 0u; st.mip[4] = 0u; st.mip[5] = 0u;
+    st.dimx = uint2(0u, 0u);
+    st.dec = 0u;
+    vkx = 1u; vky = 1u; vbase = 0u; vfbw = 1u; vflags = 0u; one = 1.0; kx = 1u; ky = 1u;
+    Lvl L = level_of(st, 0u);
+    texdec_out.Store((td_base + i) * 4u, texel(st, L, i & ((1u << td_lw) - 1u), i >> td_lw));
+}
+#endif
+
 // texture function (tfx_batch): colour x texel, GS alpha 0x80 = 1.0
 uint tfx(uint tf, bool tcc, uint c, uint t) {
     uint cr = c & 255u, cg = (c >> 8) & 255u, cb = (c >> 16) & 255u, ca = c >> 24;

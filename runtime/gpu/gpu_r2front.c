@@ -44,6 +44,9 @@ static int ab_native;                    /* gpu_front_r2_ab */
  * exact (--r2-ab 0) clears it at its first R2H_BEGIN. So reference mode, and all-exact replays, never see them.
  * PS2_R2_FX=0: off. */
 int gf_r2_fx_ttl;
+/* (r2-m7b) the decoded texture cache (exact, gpu_exec.c texdec) also covers the start of the next frames, where the game draws
+ * the sky before that frame's first hint (frames of 2 VBlanks at a capped frame rate): 4 VBlanks */
+int gf_r2_td_ttl;
 static int fx_env = -1;
 
 /* ---- receiving hint words ----------------------------------------------------------------------------------------- */
@@ -502,10 +505,11 @@ static void fr_r2_hint(const gs_env_view* ev, uint64_t v) {
         fb_serial = value;
         if (fx_env < 0) { const char* e = getenv("PS2_R2_FX"); fx_env = !(e && *e == '0'); }
         gf_r2_fx_ttl = fx_env ? 2 : 0;
+        gf_r2_td_ttl = fx_env ? 4 : 0;
         break;
     case R2H_DRAW: case R2H_BEGIN:
         RX.bracket = kind == R2H_BEGIN;
-        if (RX.bracket && !ab_native) gf_r2_fx_ttl = 0;
+        if (RX.bracket && !ab_native) gf_r2_fx_ttl = gf_r2_td_ttl = 0;
         RX.handle = value;
         RX.flags = arg;
         RX.need = (arg & R2D_FADE ? 1u : 0u) + (arg & R2D_IDENTITY ? 0u : 16u) + 1u + (arg & R2D_EXTRA ? 1u : 0u);   /* (+ the address word [+ the extra count]) */
@@ -526,6 +530,7 @@ static void fr_r2_hint(const gs_env_view* ev, uint64_t v) {
     case R2H_RUN: {                              /* (hybrid mode: runs, no R2H_FRAME) */
         if (fx_env < 0) { const char* e = getenv("PS2_R2_FX"); fx_env = !(e && *e == '0'); }
         gf_r2_fx_ttl = fx_env ? 2 : 0;
+        gf_r2_td_ttl = fx_env ? 4 : 0;
         double t0 = qms();
         run_hint(ev, arg, value);
         fr_ms += qms() - t0;
@@ -545,6 +550,7 @@ void gf_r2_vblank(void) {
     static int on = -1;
     static uint32_t n;
     if (gf_r2_fx_ttl > 0) gf_r2_fx_ttl--;
+    if (gf_r2_td_ttl > 0) gf_r2_td_ttl--;
     if (on < 0) { const char* e = getenv("PS2_R2_STATS"); on = e && *e && *e != '0'; }
     if (on && fr_ms > 3.0) fprintf(stderr, "[r2] slow frontend frame %u: %.2f ms in R2 runs / segments\n", n, fr_ms);
     fr_ms = 0;
