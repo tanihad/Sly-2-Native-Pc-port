@@ -3,6 +3,20 @@
 A folder the owner starts like any PC game: double-click `sly2.exe`, no console window, no files
 from the disc next to it.
 
+## Planned: launcher (owner request 2026-10-29, for 1.0)
+
+The owner wants a launcher aimed at players who know nothing technical:
+- **Drag and drop the .iso onto the window.** Check it is the right disc, with a clear message if it isn't, then
+  import once, so the ISO is no longer needed afterwards.
+- **Big Play button.**
+- **Update check against GitHub releases:** "version X available, update?". An update rebuilds from the new source,
+  keeping saves and settings, with no disc steps.
+- Possibly a settings shortcut and "open saves folder".
+- Builds on the installer's engine (installer/engine.c, disc.c, net.c).
+- Needs a public download location and code signing; decide these when going public.
+
+Order: after the modern renderer (R5 part 2, HUD, R8) and before 1.0.
+
 ## Installer (Sly2-Setup.exe)
 
 A "builder installer" for players: no commands, no console windows. It contains no game code or data
