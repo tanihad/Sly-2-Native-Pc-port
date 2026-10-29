@@ -152,6 +152,8 @@ ps_gs_tri_fast_n_nr gs.hlsl             ps_gs             ps_5_0    PRIM=0 STQ_F
 # (r2-m7) native post passes of modern frames (gpu_exec.c exec_npost: shadow darken, motion blur)
 cs_npost            post.hlsl           cs_npost          cs_5_0
 cs_svol_resolve     post.hlsl           cs_svol_resolve   cs_5_0
+# (r2-m7b) the shadow pipeline's tail fused: counter resolve, the copy run's shuffles, the darken (gpu_exec.c shfuse)
+cs_shfuse           post.hlsl           cs_shfuse         cs_5_0
 # (r2-m7) shadow volumes in modern frames (GPU_DF_SVOL): commutative G adds, a compare-exchange on a plain UAV
 ps_gs_tri_svol      gs.hlsl             ps_gs             ps_5_0    PRIM=0 STQ_FAST=1 TRI_REC=128u NOROV=1 SPEC_NOTEX=1 SPEC_NOVIEW=1 SPEC_NOLOD=1 DC_VTX=1 SVOL=1
 ps_gs_sprite_s      gs.hlsl             ps_gs             ps_5_0    PRIM=1 SPEC_NOVIEW=1 SPEC_NOLOD=1
