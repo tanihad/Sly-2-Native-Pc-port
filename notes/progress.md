@@ -2,6 +2,8 @@
 
 ## Resume here (read first in a new session)
 
+**2026-10-29: R7 part 1 MERGED (ba01fe2), dist 0.1.944:** modern mode shadows (order-independent G counter) + compute darken/motion blur: ep1 hub 3x 209->242 fps, 4x 128->146; ep5 3x 221->261. Running: R7 part 2 (worktree r2-m7b): sky, shuffles+darken merge, R2 world fill, costly exact-path triangles. Modern mode still opt-in (Options > Graphics > Rendering or F10) until the owner approves it as default.
+
 **2026-10-27 (night): r2-m5 MERGED (ef64cef):** hybrid tree bug fixed (stale mesh decodes during level streaming; byte-compare cache), hybrid-vs-reference check (r2_hcheck) in r2_sweep, R5 part 1 (82-90% native vertices). R5 part 2 (VU clipper for crossing triangles, remaining variants) deferred: CPU-side only, scenes are GPU-bound. Running: R7 (worktree r2-m7): profile GPU in modern mode, native shadows / motion blur / cheap fill wins to cut GPU time (~4.4-5 ms at 3x).
 
 **2026-10-27 (later): R3+R4 MERGED (1db240e):** characters (GPU skinning + the game's lighting, oracle bit-exact) and outlines (VU outline program in C, identical packets) native; CPU stages 1.3-2 ms, every scene GPU-bound at 4-5 ms (~200 fps at 3x). Known bug on main (modern mode only, opt-in): ep1 hub tree vanishes / sign-texture shards in hybrid mode. Running: r2-m5 (worktree r2-m5): fix that hybrid bug + add a hybrid-vs-reference check, then R5 (sky, warps, remaining variants, the PS2 clipper). Then R6 particles, R7 shadows/motion blur/HUD (GPU wins). Owner (2026-10-27): keep going after usage limits reset.
