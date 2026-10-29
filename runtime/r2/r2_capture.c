@@ -654,26 +654,6 @@ static int clip_fans(const r2_mesh* m, const float M[16], float fade) {
     fan_o = (r2_fanbuf){ fan_buf, 0, sizeof fan_buf, 0, 0, 0, 0 };
     int ok = r2_clip_entry(m, M, fade, &fr_block, &fan_o, &fan_last, fan_rt, 8192);
     if (!ok) st.fan_no[r2_clip_why < 6 ? r2_clip_why : 0]++;
-    if (ok && fan_o.n && stats_on) {                 /* (diagnostics) fans with Z beyond the exact path's FF range */
-        static int shown;
-        for (uint32_t p = 0; p + 16 <= fan_o.n && shown < 40;) {
-            const uint32_t* t = (const uint32_t*)(fan_buf + p);
-            uint32_t nloop = t[0] & 0x7FFF, nreg = t[1] >> 28;
-            if (nreg == 4) {
-                for (uint32_t v = 0; v < nloop; v++) {
-                    const uint32_t* q = (const uint32_t*)(fan_buf + p + (1 + 4 * v + 3) * 16);
-                    uint32_t z = (q[2] >> 4) & 0xFFFFFF;
-                    if (z > 0xFFE00u && shown < 40) {
-                        shown++;
-                        fprintf(stderr, "[r2] fan Z %06X (vertex %u of %u) mesh %08X fade %g w %08X: x %08X y %08X z %08X f %08X; VU0 %g %g %g VU1 %g %g %g\n",
-                                z, v, nloop, m->addr, fade, q[3], q[0], q[1], q[2], q[3], fr_block.c0[0], fr_block.c0[1], fr_block.c0[2],
-                                fr_block.c1[0], fr_block.c1[1], fr_block.c1[2]);
-                    }
-                }
-                p += (1 + 4 * nloop) * 16;
-            } else p += (1 + nloop) * 16;
-        }
-    }
     if (stats_on) st.fan_ms += now_ms() - t0;
     return ok;
 }

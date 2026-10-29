@@ -188,7 +188,9 @@ int r2_clip_batch(const r2_mesh* m, uint32_t b, float fade, const r2_frame_block
         uint32_t before = o->n;
         vu_private_run(st, 0x2540u / 8u, kick, o);
         _mm_setcsr(VU_MXCSR);
-        if (getenv("R2_CLIP_DBG")) {                   /* (diagnostics) fans with a Z beyond 0xFFE00: the triangle */
+        static int dbg = -1;                           /* (diagnostics) R2_CLIP_DBG=1: fans with a Z beyond 0xFFE00 */
+        if (dbg < 0) dbg = getenv("R2_CLIP_DBG") != NULL;
+        if (dbg) {
             static int shown;
             for (uint32_t p = before; p + 16 <= o->n && shown < 20;) {
                 const uint32_t* t = (const uint32_t*)(o->out + p);
