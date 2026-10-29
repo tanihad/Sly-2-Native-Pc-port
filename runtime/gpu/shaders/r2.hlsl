@@ -279,10 +279,11 @@ R2C r2_vs_clip(R2V i) {
 
 // (r2-m2) Meshes crossing the VU's guard band (r2_capture.c inside_guard; notes/modern-renderer.md "R2 as built"): per
 // triangle as the VU decides it (0x0C60: each vertex's CLIPW flags against |x|, |y|, |z| <= w): all three inside, the
-// VU-exact screen vertices; all three outside one plane, nothing; else the VU's clipper (0x2540) would draw it as
-// clipped fans - here the GPU clips the clip-space triangle against the same six planes (SV_ClipDistance), with
-// perspective-correct attributes (not bit-exact: the clipper's own arithmetic is not reproduced; such triangles are
-// near the camera and few).
+// VU-exact screen vertices; all three outside one plane, nothing; else the VU's clipper (0x2540) draws it as clipped
+// fans: (r2-m5b) those are the VU's own packets (runtime/r2/r2_clip.c, decoded after the entry), so the triangle is left
+// out here. Hybrid entries carry run tables instead (the strip triangles through the plain pipeline); this stage remains
+// for bracket A/B and the PS2_GPU_AB_EE A phases. PS2_R2_CLIP=1 (misc bit 64): the GPU clips the clip-space triangle
+// against the same six planes (SV_ClipDistance), perspective-correct, not the VU's arithmetic.
 uint r2_outcode(float4 c) {
     return (c.x > c.w ? 1u : 0u) | (c.x < -c.w ? 2u : 0u) | (c.y > c.w ? 4u : 0u) | (c.y < -c.w ? 8u : 0u) |
            (c.z > c.w ? 16u : 0u) | (c.z < -c.w ? 32u : 0u) | (c.w > 0.0 ? 0u : 64u);
