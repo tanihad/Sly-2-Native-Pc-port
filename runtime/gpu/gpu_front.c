@@ -803,6 +803,9 @@ void gf_flush_open(void) { flush_open(); }
 extern int gf_r2_pending, gf_r2_skip, gf_r2_fx_ttl, gf_r2_td_ttl;
 /* (r2-m7) the modern renderer's native passes are on for this frame (gpu_r2front.c gf_r2_fx_ttl; mixed frames only) */
 static int fx_on(void) { return gf_r2_fx_ttl > 0 && gf_cfg.mixed && !gf_cfg.ref; }
+/* (r2-m6, R6) the particle span (gpu_r2front.c, R2H_PART; PS2_R2_PART=0 on the EE side: no spans) */
+extern int gf_r2_part;
+void gf_r2_part_count(int native);
 void gf_r2_flush(void);
 void (*gf_r2_hook(void))(const gs_env_view*, uint64_t);
 #define R2_FLUSH() do { if (gf_r2_pending) gf_r2_flush(); } while (0)
@@ -834,12 +837,13 @@ static int vcache_n, vcache_pos;
 
 /* nb: (P1) the vertex carries no early-depth bound (pad 0xFFFFFFFF: the vertex shader's bound is 1.0, gpu_front.h) -
  * a triangle that needs that must not reuse a bounded copy; a bounded triangle may reuse either (a higher bound is
- * still a bound) */
+ * still a bound). (r2-m6) nb < 0: the vertex must carry its own Z (the particle pipeline interpolates it): only a copy
+ * with the Z is reused */
 static uint32_t emit_vertex(const gs_vtx* v, const gs_env_view* ev, uint32_t state, int nb) {
 #ifndef GPU_NO_VCACHE
     _Static_assert(offsetof(gs_vtx, serial) == 52, "gs_vtx values: 52 bytes before the serial");
     for (int i = 0; i < vcache_n; i++)
-        if (vcache_state[i] == state && (vcache_nb[i] || !nb)) {
+        if (vcache_state[i] == state && (nb < 0 ? !vcache_nb[i] : (vcache_nb[i] || !nb))) {
             /* (values, not the serial: 52 bytes, compared inline - P3: memcmp was a library call) */
             const uint8_t *p = (const uint8_t*)&vcache[i], *q = (const uint8_t*)v;
             uint32_t t0, t1;
@@ -855,9 +859,9 @@ static uint32_t emit_vertex(const gs_vtx* v, const gs_env_view* ev, uint32_t sta
     o->fog_state = (uint32_t)(v->f & 0xFF) | state << 8;
     if (ev->P->fst) { o->s = (float)v->u; o->t = (float)v->v; o->q = 1.0f; }
     else { o->s = v->s; o->t = v->t; o->q = v->q; }
-    o->pad = nb ? 0xFFFFFFFFu : v->z;    /* (P1) the vertex Z: the early-depth bound of FF triangles (vs_ff_tri) */
+    o->pad = nb > 0 ? 0xFFFFFFFFu : v->z;    /* (P1) the vertex Z: the early-depth bound of FF triangles (vs_ff_tri) */
     uint32_t idx = (uint32_t)(A_vtx.n / sizeof *o) - 1;
-    vcache[vcache_pos] = *v; vcache_idx[vcache_pos] = idx; vcache_state[vcache_pos] = state; vcache_nb[vcache_pos] = (uint8_t)nb;
+    vcache[vcache_pos] = *v; vcache_idx[vcache_pos] = idx; vcache_state[vcache_pos] = state; vcache_nb[vcache_pos] = (uint8_t)(nb > 0);
     vcache_pos = (vcache_pos + 1) % 3;
     if (vcache_n < 3) vcache_n++;
     gf.vertices++;
@@ -2077,6 +2081,17 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
                P->abe && !ev->aa1 && !P->pabe && !P->dthe && !P->colclamp && !P->iip && !P->scanmsk && P->fmask == 0xFFFF00FFu &&
                P->dsel == 1 && ((P->asel == 0 && P->bsel == 2) || (P->asel == 2 && P->bsel == 0)) && !S.zwrite;
     if (svol) gf.svol_prims++;
+    /* (r2-m6, R6) a particle triangle (inside the particle class's span, R2H_PART): an FF triangle of a modern frame
+     * textured from GS memory (no view, no general LOD) into a 32-bit frame without DATE / dither. Its draw runs the native
+     * particle pipeline (gpu_exec.c, shaders/gs.hlsl ps_ff_part): the VU's own vertices, colour / fog / S/T/Q / Z
+     * interpolated by the hardware, the hardware depth test - no per-fragment record stepping (notes/modern-renderer.md
+     * "R6 as built") */
+    int part = 0;
+    if (gf_r2_part && cls == GPU_PC_TRI && !alias) {
+        part = tier == GPU_TIER_FF && ff_fast && fx_on() && P->tme && !ts.T && P->texm != 3 &&
+               P->ffmt->bits == 32 && !P->date && !P->dthe;
+        gf_r2_part_count(part);
+    }
     if (tier == GPU_TIER_ROV) {
         /* a run binds one colour target and (when some draw of it uses Z) one depth target: draws
          * without Z join any run on their colour target */
@@ -2116,6 +2131,7 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
     key ^= sckey * 0x9E3779B97F4A7C15ull;    /* (the draw's scissor is its first primitive's) */
     if (thin) key ^= 1ull << 61;             /* (M7: thin lines are their own draws) */
     if (svol) key ^= 1ull << 60;             /* (r2-m7: shadow-volume draws hold only such primitives) */
+    if (part) key ^= 1ull << 59;             /* (r2-m6: particle draws hold only particle triangles) */
     /* the exact ATST split (above sb_prim): a pass-capable primitive over pixels of an earlier fail-capable
      * one of the open draw starts a new draw (thin lines: their bounding box) */
     int xsplit = tier == GPU_TIER_FF && S.fatst == FATST_SPLIT && outcome && !gf_cfg.split_ff;
@@ -2159,6 +2175,7 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
     OD.d.zw |= (uint8_t)(S.zwrite != 0);
     OD.outcomes |= outcome;
     if (svol) OD.d.feat |= GPU_DF_SVOL;
+    if (part) OD.d.feat |= GPU_DF_PART;
     /* (r2-m7) a sprite reading a target view: the executor may run the draw as a native post pass (exec_npost checks it) */
     if (tier == GPU_TIER_FF && cls == GPU_PC_SPRITE && P->tme && ts.T && fx_on()) OD.d.feat |= GPU_DF_NPOST;
     /* (r2-m7b) a vram texture in a modern frame: the executor may read it from the decoded texture cache (exact) */
@@ -2218,6 +2235,7 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
         } else if (rov_zb >= 0) {
             nb = rov_zb != 0 || !P->zuse;   /* (perf-p2: ROV triangles carry the bound only where it is proven) */
         }
+        if (part) nb = -1;                   /* (r2-m6: the particle pipeline interpolates the vertices' own Z) */
         uint32_t* ix = ar_reserve(&A_idx, 12);
         for (int i = 0; i < 3; i++) ix[i] = emit_vertex(vs[i], ev, state, nb);
         gf.indices += 3;

@@ -1178,10 +1178,10 @@ static void zcb_set(const zs_consts* k) {
  * waits for its timestamps (profiling only: it serialises CPU and GPU). Averages per frame in the log every
  * 60 frames. Attribution is approximate (the GPU overlaps neighbouring work). */
 enum { PR_OTHER, PR_TARGET, PR_MEM, PR_CLEAR, PR_SHADOW, PR_FF_FAST, PR_FF_TRI, PR_FF_SPRITE, PR_FF_LINE,
-       PR_REF_TRI, PR_REF_OTHER, PR_A16, PR_ZRESOLVE, PR_ZSYNC, PR_PRESENT, PR_A16_DRAW, PR_FF_FAST_Z, PR_R2, PR_N };
+       PR_REF_TRI, PR_REF_OTHER, PR_A16, PR_ZRESOLVE, PR_ZSYNC, PR_PRESENT, PR_A16_DRAW, PR_FF_FAST_Z, PR_R2, PR_PART, PR_N };
 static const char* const pr_names[PR_N] = { "other", "target", "mem", "clear", "shadow", "ff-tri-fast", "ff-tri",
                                             "ff-sprite", "ff-line", "ref-tri", "ref-other", "alias16", "zresolve",
-                                            "zsync", "present", "alias16-draw", "ff-tri-fast-z", "r2" };
+                                            "zsync", "present", "alias16-draw", "ff-tri-fast-z", "r2", "part" };
 #define PR_MAXQ 8192
 static struct {
     int on, n, cur;
@@ -1329,7 +1329,7 @@ static void prof_end(void) {
     {                                    /* (M9) the frame's phases for the stats line (gpu_hw.c, PS2_GS_HW_STATS) */
         gpu_frame_stats* s = gpu_stats_cur();
         s->phases = 1;
-        s->phase_ms[0] = (float)(f[PR_FF_FAST] + f[PR_FF_TRI] + f[PR_FF_FAST_Z] + f[PR_R2]);
+        s->phase_ms[0] = (float)(f[PR_FF_FAST] + f[PR_FF_TRI] + f[PR_FF_FAST_Z] + f[PR_R2] + f[PR_PART]);
         s->phase_ms[1] = (float)(f[PR_FF_SPRITE] + f[PR_FF_LINE]);
         s->phase_ms[2] = (float)(f[PR_REF_TRI] + f[PR_REF_OTHER]);
         s->phase_ms[3] = (float)(f[PR_A16] + f[PR_A16_DRAW]);
@@ -2149,6 +2149,14 @@ static uint32_t td_r2(void* user, uint64_t t0) {
     return e->ver == 0xFFFFFFFFu ? 0 : base + 1;
 }
 
+/* (r2-m6, R6) particle draws (GPU_DF_PART) run the native particle pipeline: modern frames only (the frontend marks them
+ * only there), not in the A phases of PS2_GPU_AB; PS2_GPU_PART=0: off here (the exact FF shaders draw them) */
+static int part_exec(void) {
+    static int env = -1;
+    if (env < 0) { const char* e = getenv("PS2_GPU_PART"); env = !(e && *e == '0'); }
+    return env && X.mixed && !X.ref && !ab_off();
+}
+
 /* FF draw (M5, 4.2): RTV + DSV, the blend and depth tests of the output merger, shaders/gs.hlsl ps_ff.
  * An ATST split (split 3) is two draws: the passing fragments with the state's Z write and colour mask,
  * then the failing ones as AFAIL says (FB_ONLY: no Z write; ZB_ONLY: no colour; RGB_ONLY: neither Z nor
@@ -2181,6 +2189,16 @@ static void exec_draw_ff(const gpu_fop_draw* d, uint32_t slot) {
         int fast = (d->ps_key & GPU_PSK_FF_FAST) != 0;
         ps = sp && fast ? ts[sp][dual][zout] : t[dual][zout][fast];
         static const int td[2][2] = { { GPU_SH_ps_ff_t001d, GPU_SH_ps_ff_t011d }, { GPU_SH_ps_ff_t101d, GPU_SH_ps_ff_t111d } };
+        if (sp == 1 && fast && (d->feat & GPU_DF_PART) && part_exec()) {
+            /* (r2-m6, R6) particle triangles: the native particle pipeline (hardware-interpolated attributes and Z, no
+             * conservative depth output; shaders/gs.hlsl ps_ff_part) */
+            static const int pp[2][2] = { { GPU_SH_ps_ff_p0, GPU_SH_ps_ff_p0d }, { GPU_SH_ps_ff_p1, GPU_SH_ps_ff_p1d } };
+            int tdd = TD.ndpos && td_draw(X.curpos);
+            if (tdd) TD.draws++;
+            set_vs(gpu_vs(GPU_SH_vs_ff_part));
+            ps = pp[dual][tdd];
+            XC.part_draws++;
+        } else
         if (sp == 1 && fast && TD.ndpos && td_draw(X.curpos)) { ps = td[dual][zout]; TD.draws++; }   /* (r2-m7b) */
     } else {
         set_topo(1);
@@ -2629,7 +2647,7 @@ static void exec_draw(const gpu_fop_draw* d, uint32_t slot) {
         int ff = X.mixed && d->tier == GPU_TIER_FF && !X.ref;
         int zo = d->zt && (d->depth >> 1) != 0;
         prof_mark(d->tier == GPU_TIER_ALIAS16 ? PR_A16_DRAW
-                  : d->cls == GPU_PC_TRI ? (!ff ? PR_REF_TRI : (d->ps_key & GPU_PSK_FF_FAST) ? (zo ? PR_FF_FAST_Z : PR_FF_FAST) : PR_FF_TRI)
+                  : d->cls == GPU_PC_TRI ? (!ff ? PR_REF_TRI : (d->feat & GPU_DF_PART) ? PR_PART : (d->ps_key & GPU_PSK_FF_FAST) ? (zo ? PR_FF_FAST_Z : PR_FF_FAST) : PR_FF_TRI)
                   : !ff ? PR_REF_OTHER : d->cls == GPU_PC_SPRITE ? PR_FF_SPRITE : PR_FF_LINE);
     }
     if (d->tier == GPU_TIER_ALIAS16 && X.a16c_on) { exec_a16_copy(d); return; }   /* (perf-p2) a copy run */
