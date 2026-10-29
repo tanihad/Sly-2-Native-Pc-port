@@ -845,6 +845,41 @@ covers; the owner confirms after testing the dist build. Effort is in agent-days
   record stepping (seven attributes and a 64-bit Z per fragment), the sky's 0.38 ms (several full-screen layers through
   the exact FF path), the volumes (0.37 ms).
 
+### R6 as built (next/r2-m6, 2026-10-29): particles through a native pipeline
+- **Profile first** (modern, 3x, in game: `PS2_GPU_PROF=1` + prof_window, `PS2_GPU_PROF_OPS`, and a new diagnostic
+  `PS2_R2_DROPCLS=<mask>` that drops the render-list entries of those render classes). m2 boardroom, GPU 5.3 ms: exact FF
+  triangles with Z 2.7 (of it **one additive draw of ~560 particle triangles over the whole screen, 1.29 ms: the steam
+  over the pool**), ROV triangles 0.85, R2 0.45. In-run A/B (`PS2_GPU_AB`) of the particles' own draws, before: m2 1.15 ms,
+  m8 boss 0.69, ep3 hub (rain) 0.14, m1 brawl 0.02 per frame. Every particle triangle is an FF-tier draw (ATST split
+  TEST 0x7180B: GEQUAL 0x80, AFAIL FB_ONLY, Z GREATER) - none on the ROV tier.
+- **Not as the design said** (the VU physics ported to a compute pass): the particles' simulation is VU1 microcode, which
+  already runs recompiled on the CPU worker (~1 ms stage, never the limit); their GPU cost is the *fill* of their exact
+  triangles - per sample the exact path's record stepping (seven attributes, a 64-bit Z, conservative depth output) for
+  big, heavily overlapping translucent quads at 3x / 4x supersampling. A compute port of the physics would move CPU work
+  and cut nothing on the GPU. So R6 draws the particles' triangles - the VU's own screen vertices, in the game's order -
+  through a native pipeline:
+  - **Span hints**: r2_capture.c writes `R2H_PART 1` at the first entry of render class 2 (VU1 program 376109499, after
+    the class switch has loaded the program) and `R2H_PART 0` at the next entry of another class or the frame's end
+    (hybrid and bracket mode; `PS2_R2_PART=0` off). The frontend (gpu_r2front.c `gf_r2_part`, reset every VBlank) marks
+    triangles inside the span that are FF-tier, fast-path, textured from GS memory (no target view, no general LOD), into
+    a 32-bit frame without DATE / dither, in a modern frame (fx_on): own draws, `GPU_DF_PART`, vertices with their own Z.
+    Anything else in the span (the next class's set-up sprites) stays exact. Stats (`PS2_R2_STATS=1`): spans, native / FF
+    / ROV triangles, other primitives per frame - in every chaos scene all particle triangles are native.
+  - **The pipeline** (gs.hlsl `vs_ff_part` / `ps_ff_part`, perms `ps_ff_p{0,1}{,d}`; gpu_exec.c `part_exec`): colour, fog,
+    S/T/Q and Z interpolated by the hardware (Z as the D32 encoding z / 2^20: hardware depth test and write, full early
+    depth rejection, no SV_DepthLessEqual), then the FF pixel shader's own texture (decoded texture cache included), TFX,
+    fog, alpha test and output stage (`ff_out`, now shared with `ps_ff`). The ATST split's two draws as before.
+    `PS2_GPU_PART=0` turns it off in the executor; `PS2_GPU_AB` toggles it with the other modern-frame features.
+- **Faithfulness**: the bracket A/B of m2 (steam on screen) is bit-identical at S = 1 (PSNR 999 dB, the same as the exact
+  replay), and a 3x replay with and without the pipeline gives identical pictures: the particles' colours are flat per
+  quad and their Z rarely ties with the scene. Reference mode never sees it (no hints with R2 off; fx_on); m9_exact.
+- **GPU** (in-run A/B, the particles' draws): m2 1.15 -> 0.58 ms, m8 boss 0.69 -> 0.35, ep3 hub 0.14 -> 0.07 (7.6 M
+  fragments per frame in m2: ~0.09 ns each).
+- **What is left in the chaos scenes' GPU time** (B phases, 3x): exact FF triangles with Z 0.9-1.7 ms (mostly guard-band
+  meshes: 7-8k exact vertices in m1 / ep3, the VU clipper's R5 part 2 - which would not make them cheaper on the GPU: R2
+  costs the same per sample), R2 0.6-0.7 (draw / state overhead, see R7 part 2), ROV triangles 0.5-0.9 (shadow volumes),
+  present 0.21. At 3x every sample is shaded (supersampling): R8's MSAA is the next big GPU lever.
+
 ### R8. Fully modern frames: free resolution, MSAA, motion vectors - 8 agent-days
 - **Deliverable**:
   - Frames with no exact draws render at any resolution, defaulting to the output resolution. "Render scale" becomes a
