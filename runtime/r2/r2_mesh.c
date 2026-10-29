@@ -869,6 +869,7 @@ void r2_mesh_free(r2_mesh* m) {
     free(m->vtx);
     free(m->idx);
     free(m->b);
+    free(m->gpu_tdec);
     free(m);
 }
 

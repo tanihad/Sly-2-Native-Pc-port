@@ -17,6 +17,10 @@ typedef struct {
     void* fdata_srv;                     /* t7: the frame's data arena (raw) */
     void* iota_vb;                       /* draw ids: element i holds i */
     float dual_bias;                     /* dual-source blend source bias (gpu_exec.c, per GPU) */
+    /* (r2-m7b) the decoded texture cache (gpu_exec.c td_r2): a material texture's decoded word + 1 (0: none), its buffer (t13) */
+    uint32_t (*texdec)(void* user, uint64_t tex0);
+    void* texdec_user;
+    void* texdec_srv;
 } r2_exec_in;
 
 /* the segment's draws; returns how many were issued. The host re-establishes its own bindings afterwards. */

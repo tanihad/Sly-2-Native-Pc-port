@@ -797,6 +797,54 @@ covers; the owner confirms after testing the dist build. Effort is in agent-days
   the counter resolve (one pass instead of four over the frame: ~0.2 ms), the gameplay HUD (cheap: < 0.05 ms, CPU
   only), R2's own fill (1.1 ms: 3-4 M fragments at ~0.3 ns, neither texture nor blend; overdraw / conservative depth).
 
+### R7 part 2 as built (next/r2-m7b, 2026-10-29): decoded texture cache, the shadow pipeline in one pass
+- **Profile** (ep1 hub, modern, 3x, PS2_GPU_PROF=1 + prof_window): GPU 4.13 ms = exact FF triangles 1.08, R2 1.03, sky
+  0.53, volumes 0.35, shuffles 0.26, present 0.21, clears 0.15, darken + blur 0.13, outlines 0.12. Experiments on a
+  fixed-stream replay: texel() returning a constant (compile time) cut R2 -15%, exact triangles -20%, the sky -30% -
+  the texture fetch *is* a cost (PS2_R2_DBG=1 hid it: the code, and its registers, stayed in the shader). R2 with every
+  triangle culled in the VS still costs ~40% of R2 (draws, state and pipeline switches between them).
+- **In-run A/B** (new tool): `PS2_GPU_AB=<frames>` turns the new features off in A phases and on in B phases and
+  accumulates the GPU time per phase (`prof-ab` lines): the scene load of chaos runs varies too much between runs (GS
+  primitives 9.5k vs 11.5k) for run-to-run comparisons of 0.1 ms. `PS2_GPU_OPDUMP=<frame>`: every op of a frame.
+- **Decoded texture cache** (gpu_exec.c "texdec", gs.hlsl TEXDEC / cs_texdec): a vram texture's level 0 decoded once
+  into 32-bit words by the shaders' own texel() (swizzle, CLUT, TEXA), then read with four plain loads instead of four
+  swizzled reads + CLUT lookups. Exact by construction (bit-identical replays). An entry's key: TEX0's TBP / TBW / PSM /
+  TW / TH, the CLUT's identity (a hash of the ring slot's 1 KB snapshot + CSA / CPSM, TEXA for 16 / 24-bit texels; R2:
+  CBP, its CLUT read from GS memory) and a content version: the newest write serial of the 8 KB pages it occupies (every
+  PATCH / DOWNLOAD op bumps its pages; R2 adds the CLUT's pages). A newer version of a texture is decoded in place
+  (Sly's sky is uploaded every frame). Users: FF triangle draws of the specialised permutations (`ps_ff_t*d`; a pre-pass
+  over the frame's ops sets each StateRec's pad2[0] and schedules the decodes before the draws that need them; a
+  StateRec whose texture changes between two of its draws in one frame gets none) and R2's materials (word 15 of the
+  material record, checked once per segment per mesh, decoded on the spot). 64 MB, reset when full; at most 4 M texels
+  decoded per frame. Only in modern frames (GPU_DF_TEXDEC from the frontend, 4 VBlanks after an R2 hint, so the sky at
+  the start of the next frame is covered).
+- **The shadow pipeline in one pass** (gpu_exec.c "shfuse", post.hlsl cs_shfuse): shuffle 1 (A.alpha <- B.G) and the
+  G clear are deferred past the shadow volumes (which only add into the counter texture and read Z and B's alpha), and
+  at the copy run after them one compute pass per sample does shuffle 1, the clear, the counter resolve, shuffles 2 + 3
+  and the darken; the feedback copy before the darken is dropped (the darken rewrites every pixel it covers). Each
+  copy draw is verified on the CPU to be a function of the other half of the same 32-bit sample (CT16 views of targets
+  of B's width, 8-column sprites stepping one texel per pixel 8 columns away; the CT16 swizzle's pairing of columns x
+  and x + 8 is checked once from the tables); anything else keeps the separate passes. Seven passes over the frame
+  (two copy runs, clear, resolve, shadow copy, darken) become one. Bit-identical on the ep1 / ep5 / m3 replays.
+- **Faithfulness**: both are exact - replays with and without (`--game-save --vram-out`, every frame's pictures and GS
+  memory) are byte-identical on the ep1, ep5 and m3 recordings. Reference mode never uses them.
+- **In game** (ep1 hub, PS2_GPU_AB, one run): GPU 4.33 -> 3.43 ms per frame: R2 1.22 -> 0.89, exact triangles 1.05 ->
+  0.82, the sky 0.52 -> 0.38, shuffles + darken + clear + resolve 0.54 -> 0.26.
+- **Performance** (chaos benchmark, modern mode, main ba01fe2 vs this branch, 1 repeat each, interleaved, release,
+  unlimited, owner's PC; tags r2m7b_s3 / r2m7b_s4; fps median / 1% low, GPU ms median):
+
+  | scene | 3x before | 3x after | 4x before | 4x after |
+  |---|---|---|---|---|
+  | ep1_hub | 221.7 / 106.8, 4.35 | **285.7** / 134.7, 3.45 | 160.5 / 97.8, 6.07 | **194.6** / 98.8, 4.98 |
+  | ep3_hub | 238.4 / 122.1, 4.15 | **320.5** / 167.2, 3.04 | 152.9 / 88.9, 6.42 | **203.7** / 93.3, 4.78 |
+  | ep5_hub | 261.1 / 152.4, 3.74 | **323.6** / 178.6, 3.00 | 164.7 / 109.6, 5.91 | **213.2** / 134.8, 4.54 |
+  | m1_brawl | 245.7 / 129.5, 3.97 | **284.1** / 134.1, 3.48 | 150.8 / 92.8, 6.53 | **191.2** / 92.6, 5.07 |
+
+  (+16-34% at 3x, +21-33% at 4x; the base numbers are higher than r2-m7's own runs of the same build: run-to-run load.)
+- **Next**: R2's draws and their state / pipeline switches (~40% of R2's time with nothing drawn), the exact triangles'
+  record stepping (seven attributes and a 64-bit Z per fragment), the sky's 0.38 ms (several full-screen layers through
+  the exact FF path), the volumes (0.37 ms).
+
 ### R8. Fully modern frames: free resolution, MSAA, motion vectors - 8 agent-days
 - **Deliverable**:
   - Frames with no exact draws render at any resolution, defaulting to the output resolution. "Render scale" becomes a
