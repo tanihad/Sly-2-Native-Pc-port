@@ -293,6 +293,9 @@ void r2_gs_clip(triangle R2C v[3], inout TriangleStream<R2K> ts) {
     uint o0 = r2_outcode(v[0].clip), o1 = r2_outcode(v[1].clip), o2 = r2_outcode(v[2].clip);
     if ((o0 & o1 & o2 & 63u) != 0u) return;
     bool inside = (o0 | o1 | o2) == 0u && (asuint(r2_misc.w) & 16u) == 0u;   // (PS2_R2_DBG 16: always the clip path)
+    // (r2-m5b) a triangle the VU clips: its fans are the VU clipper's own (runtime/r2/r2_clip.c, decoded by the GS thread
+    // after the entry), or the VU culls it; GPU clipping only with PS2_R2_CLIP=1 (misc bit 64)
+    if ((o0 | o1 | o2) != 0u && (asuint(r2_misc.w) & 64u) == 0u) return;
     R2Seg sg = r2_seg(v[0].mr.z);
     float4 fr = asfloat(fdata.Load4(sg.off.x + 32u));       // screen model: ax, bx, ay, by (gpu_r2_frame)
     float2 fz = asfloat(fdata.Load2(sg.off.x + 48u));       //               az, bz

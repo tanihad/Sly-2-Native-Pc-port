@@ -1783,7 +1783,8 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
     PROF_START();
     PCOUNT(n_prims);
     R2_FLUSH();
-    if (gf_r2_skip) { gf.kicks++; goto out; }   /* (r2-m1 bracket A/B: R2 draws this entry) */
+    /* (r2-m1 bracket A/B: R2 draws this entry; r2-m5b: but for the VU clipper's fans of an R2D_FANS entry, gf_r2_skip 2) */
+    if (gf_r2_skip && !(gf_r2_skip == 2 && type == PRIM_TRIFAN)) { gf.kicks++; goto out; }
     const gs_prim* P = ev->P;
     /* (M10, 8.3) the HUD transform: between HUD_BEGIN and HUD_END (the StateRec's hint state, ev->hud) the game's
      * vertices are scaled about the anchor (left edge, centre, right edge of the FRAME width), full-width

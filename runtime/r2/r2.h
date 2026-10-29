@@ -52,7 +52,8 @@ enum {
 enum { R2D_IDENTITY = 1,   /* the entry's world matrix is the identity (no matrix words) */
        R2D_FADE = 2,       /* a fade word follows (VU 8.x != 1.0) */
        R2D_CLIP = 4,       /* (r2-m2) the mesh crosses the VU's guard band (R2E_CLIP) */
-       R2D_EXTRA = 8 };    /* (r2-m3) after the address word: the index of the frame's R2H_XQ block (extra qwords) */
+       R2D_EXTRA = 8,      /* (r2-m3) after the address word: the index of the frame's R2H_XQ block (extra qwords) */
+       R2D_FANS = 16 };    /* (r2-m5b) bracket A/B: the entry's exact triangle fans (the VU clipper's) stay drawn */
 
 static inline uint64_t r2h_make(uint32_t kind, uint32_t arg, uint32_t value) {
     return (uint64_t)(kind & 0xFF) | ((uint64_t)(arg & 0xFFFFFF) << 8) | ((uint64_t)value << 32);
@@ -86,7 +87,8 @@ typedef struct {                 /* 96 bytes */
     uint32_t pad[2];
 } r2_slot_ent;
 #define R2_SLOT_XQ 32768u        /* (r2-m3) extra qwords per slot (light blocks, bone palettes) */
-enum { R2E_CLIP = 1 };           /* the mesh's bounds cross the VU's guard band: clipped triangles on the GPU */
+enum { R2E_CLIP = 1,             /* the mesh's bounds cross the VU's guard band: R2 draws its triangles inside it (r2_gs_clip) */
+       R2E_FANS = 2 };           /* (r2-m5b) and the VU's clipper draws the others (r2_clip.c packets after the entry) */
 typedef struct {
     volatile uint32_t serial;    /* (atomic: 0 while the EE writes it) */
     uint32_t nent, nrun;

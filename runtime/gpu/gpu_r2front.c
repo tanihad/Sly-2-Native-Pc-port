@@ -495,7 +495,7 @@ static void fr_r2_hint(const gs_env_view* ev, uint64_t v) {
             int taken = entry_done(ev);
             /* (r2-m2) bracket A/B: the exact primitives are skipped only when R2 took the entry (a recording that starts
              * after its frame's R2H_FRAME block has no frame constants for the rest of that frame: drawn exactly) */
-            if (RX.bracket) gf_r2_skip = ab_native && taken;
+            if (RX.bracket) gf_r2_skip = ab_native && taken ? (RX.flags & R2D_FANS ? 2 : 1) : 0;   /* (r2-m5b: 2 keeps fans) */
         }
         RX.state = RX_IDLE;
         return;
