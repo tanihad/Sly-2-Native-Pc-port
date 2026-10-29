@@ -19,11 +19,17 @@ Worktree C:\Users\tanih\Projects\sly2-worktrees\r2-m7b, branch next/r2-m7b (from
 - Shadow pipeline fused (gpu_exec.c shfuse, post.hlsl cs_shfuse): shuffle 1 + G clear deferred past the volumes,
   counter resolve, shuffles 2 + 3, darken in one pass; feedback copy dropped. Tail-only A/B: 4.40 -> 4.27 ms.
 
-## In progress
-- In-game A/B of everything (ep1), then chaos before/after (ep1, ep3, ep5, m1 at 3x and 4x).
+- Chaos (base = main ba01fe2, tags r2m7b_s3 / r2m7b_s4): 3x ep1 221.7 -> 285.7, ep3 238.4 -> 320.5, ep5 261.1 -> 323.6, m1
+  245.7 -> 284.1; 4x ep1 160.5 -> 194.6, ep3 152.9 -> 203.7, ep5 164.7 -> 213.2, m1 150.8 -> 191.2 fps.
 
-## Next
-- Gates (run_tests, unit suites, gpu_diff_all, pc_text_boot, builds, package, r2_sweep), notes/modern-renderer.md.
+**Status**: complete (2026-10-29).
+
+## Gates (final)
+- run_tests; all 26 tests/unit suites; gpu_diff_all mixed S=1 28/28; pc_text_boot; debug + release builds; package.py;
+  r2_sweep ab + hc 22/22.
+
+## Next (see notes/modern-renderer.md "R7 part 2 as built")
+- R2 draw / state-switch overhead, exact triangles' record stepping, the sky (0.38 ms), the volumes (0.37 ms).
 
 ## Findings / traps
 - PS2_R2_DBG=1 (no texture at run time) does not show the texture's cost: the code stays in the shader (registers).
