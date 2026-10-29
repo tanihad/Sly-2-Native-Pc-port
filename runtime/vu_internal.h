@@ -118,6 +118,14 @@ uint32_t vu_execute(vu_state* st, uint32_t pc);
 #define VU_MAX_PAIRS (1u << 24)          /* runaway guard: ~0.1 s of VU time */
 /* XGKICK from VU1 (implemented in vu.c: restores the host FP mode around the GIF call). */
 void     vu_xgkick(uint32_t qw_addr);
+/* (r2-m5b) a private VU1 (vu.c): its own data (16 KB), micro memory (16 KB) and op cache (2048); a program on it runs
+ * on the calling thread (recompiled when a unit matches its micro memory, else interpreted) and its XGKICKs go to kick
+ * (the VU1 data memory and the packet's qword address) instead of the GIF. vu_compiled_image: the micro memory of the
+ * recompiled VU1 unit `name` (0: none linked). */
+typedef void (*vu_private_kick_fn)(void* user, const uint8_t* data, uint32_t qw_addr);
+void     vu_private_init(vu_state* st, uint8_t* data, uint8_t* micro, vu_op* cache);
+int      vu_compiled_image(const char* name, uint8_t* micro, uint32_t size);
+uint32_t vu_private_run(vu_state* st, uint32_t pc, vu_private_kick_fn kick, void* user);
 /* VU1 registers as VU0 sees them at data addresses 0x4000-0x43FF (quadword index 0-63). */
 void     vu1_reg_read(uint32_t idx, uint32_t out[4]);
 void     vu1_reg_write(uint32_t idx, const uint32_t in[4], unsigned lanes);

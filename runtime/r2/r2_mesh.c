@@ -233,6 +233,7 @@ static int add_batch_packets(dec* d, r2_batch* B, uint32_t X, const uint32_t* pk
         P->prim = prim;
         P->csel = regs == 0x41F2;
         r2_pass_classify(P);
+        if (i < 2) for (uint32_t k = 0; k < 8; k++) memcpy(B->pk[i][k], vq(d, X + pa + 1 + k), 16);   /* (r2-m5b) r2_clip.c */
         B->npass++;
     }
     return B->npass ? R2M_OK : R2M_PACKET;
@@ -332,6 +333,7 @@ static int sub_batch(dec* d, uint32_t X, int second, int litr) {
     B->cull = !(flags & 0x80);
     B->fog_scale = vf(d, X + 9, 1);
     B->fog_wmax = vf(d, X + 9, 2);
+    memcpy(B->vu9, vq(d, X + 9), 16);                           /* (r2-m5b) */
     if (!(B->fog_wmax > 0.0f) || !(B->fog_scale >= 0.0f) || B->fog_scale > 4096.0f) return R2M_HEADER;
     if (!d->wr[(X + 9) & (QW - 1)]) return R2M_HEADER;
     /* the matrix and VU 8 of the buffer: written by the chain (a whole static packet) or by the entry's header */
