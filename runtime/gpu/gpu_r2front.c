@@ -75,8 +75,8 @@ static uint64_t seg_frame, seg_zbuf, seg_sc, seg_xyo, seg_fba, seg_cc;
 
 /* statistics (gpu_front_r2_stats) */
 static gpu_r2_front_stats R2S;
-/* (r2-m6) gpu_front.c counts the particle span's triangles (native / exact) */
-void gf_r2_part_count(int native) { if (native) R2S.part_prims++; else R2S.part_exact++; }
+/* (r2-m6) gpu_front.c counts the particle span's primitives: 0 native triangles, 1 exact FF triangles, 2 ROV triangles, 3 others */
+void gf_r2_part_count(int k) { if (k == 0) R2S.part_prims++; else if (k == 1) R2S.part_exact++; else if (k == 2) R2S.part_rov++; else R2S.part_other++; }
 static gpu_r2_draw* R2S_draws;           /* the closing segment's draw records */
 static uint32_t R2S_capdraws;
 
@@ -568,10 +568,10 @@ void gf_r2_vblank(void) {
     double f = 300.0;
     fprintf(stderr, "[r2] front: per frame %.1f segments, %.1f runs, %.1f entries, %.1f draws of %.1f items (%.1f Z-writing, %.1f ATST "
                     "splits, %.1f all-fail), %.1f textures (%.2f GPU data), dropped %.2f, unsupported %.2f, As>128 %.2f, bad hints %llu, "
-                    "stale %llu, brackets %.1f; particles: %.2f spans, %.1f native / %.1f exact triangles\n",
+                    "stale %llu, brackets %.1f; particles: %.2f spans, %.1f native / %.1f FF / %.1f ROV triangles, %.1f other primitives\n",
             s->segments / f, s->runs / f, s->entries / f, s->draws / f, s->items / f, s->zwrite_draws / f, s->splits / f, s->all_fail / f,
             s->textures / f, s->tex_gpu / f, s->dropped / f, s->unsupported / f, s->over128 / f, (unsigned long long)s->bad_hints,
-            (unsigned long long)s->stale, s->brackets / f, s->part_spans / f, s->part_prims / f, s->part_exact / f);
+            (unsigned long long)s->stale, s->brackets / f, s->part_spans / f, s->part_prims / f, s->part_exact / f, s->part_rov / f, s->part_other / f);
     memset(&R2S, 0, sizeof R2S);
 }
 

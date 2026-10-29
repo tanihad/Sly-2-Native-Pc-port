@@ -805,7 +805,7 @@ extern int gf_r2_pending, gf_r2_skip, gf_r2_fx_ttl, gf_r2_td_ttl;
 static int fx_on(void) { return gf_r2_fx_ttl > 0 && gf_cfg.mixed && !gf_cfg.ref; }
 /* (r2-m6, R6) the particle span (gpu_r2front.c, R2H_PART; PS2_R2_PART=0 on the EE side: no spans) */
 extern int gf_r2_part;
-void gf_r2_part_count(int native);
+void gf_r2_part_count(int kind);
 void gf_r2_flush(void);
 void (*gf_r2_hook(void))(const gs_env_view*, uint64_t);
 #define R2_FLUSH() do { if (gf_r2_pending) gf_r2_flush(); } while (0)
@@ -2087,10 +2087,10 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
      * interpolated by the hardware, the hardware depth test - no per-fragment record stepping (notes/modern-renderer.md
      * "R6 as built") */
     int part = 0;
-    if (gf_r2_part && cls == GPU_PC_TRI && !alias) {
-        part = tier == GPU_TIER_FF && ff_fast && fx_on() && P->tme && !ts.T && P->texm != 3 &&
+    if (gf_r2_part) {
+        part = cls == GPU_PC_TRI && !alias && tier == GPU_TIER_FF && ff_fast && fx_on() && P->tme && !ts.T && P->texm != 3 &&
                P->ffmt->bits == 32 && !P->date && !P->dthe;
-        gf_r2_part_count(part);
+        gf_r2_part_count(part ? 0 : cls != GPU_PC_TRI ? 3 : tier == GPU_TIER_ROV ? 2 : 1);
     }
     if (tier == GPU_TIER_ROV) {
         /* a run binds one colour target and (when some draw of it uses Z) one depth target: draws

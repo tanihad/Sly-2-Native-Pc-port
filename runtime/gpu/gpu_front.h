@@ -325,7 +325,7 @@ typedef struct {                         /* (r2-m2) 32 bytes: a segment's consta
 typedef struct {
     uint64_t hints, bad_hints, segments, entries, draws, splits, textures, tex_gpu, dropped, unsupported, over128, brackets,
         skipped_prims, zwrite_draws, all_fail, runs, stale, items,
-        part_spans, part_prims, part_exact;   /* (r2-m6) particle spans, their triangles drawn natively / exactly */
+        part_spans, part_prims, part_exact, part_rov, part_other;   /* (r2-m6) particle spans; their triangles drawn natively, by the exact FF / ROV tiers; other primitives */
 } gpu_r2_front_stats;
 void gpu_front_r2_stats(gpu_r2_front_stats* out, int reset);
 /* bracket mode (PS2_R2=bracket): 0 the bracketed exact primitives are drawn (R2 ignores the hints), 1 R2 draws the
