@@ -36,6 +36,7 @@
 #define CLIP_PKA 0x40u                 /* pass A's material packet (relative: +1 fan tag, +2 A+D) */
 #define CLIP_PKB 0x50u
 #define CLIP_RET (0x34C8u / 8u)        /* 0x2540's caller's return address: ISW [10].x, then the E bit */
+#define R2_CLIP_ZMAX 0xFFE00u          /* gpu_front.h GPU_Z_FF_MAX (GPU_ZE_ONE - 4 x GPU_ZB_MARGIN) */
 
 static vu_state cv;
 static _Alignas(16) uint8_t cv_data[16384], cv_micro[16384];
@@ -187,6 +188,28 @@ int r2_clip_batch(const r2_mesh* m, uint32_t b, float fade, const r2_frame_block
         uint32_t before = o->n;
         vu_private_run(st, 0x2540u / 8u, kick, o);
         _mm_setcsr(VU_MXCSR);
+        if (getenv("R2_CLIP_DBG")) {                   /* (diagnostics) fans with a Z beyond 0xFFE00: the triangle */
+            static int shown;
+            for (uint32_t p = before; p + 16 <= o->n && shown < 20;) {
+                const uint32_t* t = (const uint32_t*)(o->out + p);
+                uint32_t nloop = t[0] & 0x7FFF, nreg = t[1] >> 28;
+                if (nreg == 4) {
+                    for (uint32_t v = 0; v < nloop; v++)
+                        if (((((const uint32_t*)(o->out + p + (1 + 4 * v + 3) * 16))[2] >> 4) & 0xFFFFFF) > 0xFFE00u) {
+                            shown++;
+                            fprintf(stderr, "[r2clip] high Z: mesh %08X batch %u k %u cull %d\n", m->addr, b, k, B->cull);
+                            for (int j = 0; j < 3; j++) {
+                                const float* c = cc[i0 + (uint32_t)j];
+                                const uint32_t* r = rq + 16 * j;
+                                fprintf(stderr, "  v%d clip %g %g %g %g (oc %02X os %02X) rec %08X %08X %08X %08X | %08X %08X %08X\n", j, c[0], c[1],
+                                        c[2], c[3], oc[i0 + (uint32_t)j], os_[i0 + (uint32_t)j], r[0], r[1], r[2], r[3], r[12], r[13], r[14]);
+                            }
+                            break;
+                        }
+                    p += (1 + 4 * nloop) * 16;
+                } else p += (1 + nloop) * 16;
+            }
+        }
         o->tris++;
         if (o->overflow) { ok = 0; r2_clip_why = 3; }
         else if (o->n != before) { o->fans++; nfan++; }
@@ -234,6 +257,20 @@ int r2_clip_entry(const r2_mesh* m, const float M[16], float fade, const r2_fram
             if (r < 0) { o->n = n0; o->overflow = 0; return 0; }
             if (r) *last_fanned = b + 1;
         }
+    }
+    /* a fan vertex with a Z beyond the exact path's FF range (degenerate objects: clip coordinates ~1e27, vertices on
+     * both sides of w = 0) would put the rest of the frame's Z on the ROV tier (gpu_front.c z_high): such entries stay
+     * exact */
+    for (uint32_t p = n0; p + 16 <= o->n;) {
+        const uint32_t* t = (const uint32_t*)(o->out + p);
+        uint32_t nloop = t[0] & 0x7FFF, nreg = t[1] >> 28;
+        if (nreg == 4) {
+            for (uint32_t v = 0; v < nloop; v++)
+                if (((((const uint32_t*)(o->out + p + (1 + 4 * v + 3) * 16))[2] >> 4) & 0xFFFFFF) > R2_CLIP_ZMAX) {
+                    r2_clip_why = 5; o->n = n0; return 0;
+                }
+            p += (1 + 4 * nloop) * 16;
+        } else p += (1 + nloop) * 16;
     }
     rt[0] = w;
     rt[1] = m->nb;

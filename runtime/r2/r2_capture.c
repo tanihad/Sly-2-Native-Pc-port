@@ -107,7 +107,7 @@ typedef struct {
     uint32_t frames, cand, native, exact_level, exact_class, exact_decode, exact_budget, exact_dmas, exact_header, exact_fade, exact_guard,
         decoded, decode_fail, bytes_hint, runs, epilogues, cand_props, native_props, exact_outline, outlines, outlines_parsed, clipped,
         exact_bracket, stale, guard_clean, cand_lit, native_lit, exact_lit, lit_reason[4], outline_bad, outline_decoded, outline_native, outline_exact, dmas_min_free,
-        part_spans, fan_ents, fan_tris, fan_kicked, fan_qw, fan_no[5];
+        part_spans, fan_ents, fan_tris, fan_kicked, fan_qw, fan_no[6];
     double decode_ms, cap_ms, fan_ms;
     double v_native, v_exact[10];          /* (r2-m5) census */
     uint32_t reason[R2M_N];
@@ -653,7 +653,27 @@ static int clip_fans(const r2_mesh* m, const float M[16], float fade) {
     double t0 = stats_on ? now_ms() : 0;
     fan_o = (r2_fanbuf){ fan_buf, 0, sizeof fan_buf, 0, 0, 0, 0 };
     int ok = r2_clip_entry(m, M, fade, &fr_block, &fan_o, &fan_last, fan_rt, 8192);
-    if (!ok) st.fan_no[r2_clip_why < 5 ? r2_clip_why : 0]++;
+    if (!ok) st.fan_no[r2_clip_why < 6 ? r2_clip_why : 0]++;
+    if (ok && fan_o.n && stats_on) {                 /* (diagnostics) fans with Z beyond the exact path's FF range */
+        static int shown;
+        for (uint32_t p = 0; p + 16 <= fan_o.n && shown < 40;) {
+            const uint32_t* t = (const uint32_t*)(fan_buf + p);
+            uint32_t nloop = t[0] & 0x7FFF, nreg = t[1] >> 28;
+            if (nreg == 4) {
+                for (uint32_t v = 0; v < nloop; v++) {
+                    const uint32_t* q = (const uint32_t*)(fan_buf + p + (1 + 4 * v + 3) * 16);
+                    uint32_t z = (q[2] >> 4) & 0xFFFFFF;
+                    if (z > 0xFFE00u && shown < 40) {
+                        shown++;
+                        fprintf(stderr, "[r2] fan Z %06X (vertex %u of %u) mesh %08X fade %g w %08X: x %08X y %08X z %08X f %08X; VU0 %g %g %g VU1 %g %g %g\n",
+                                z, v, nloop, m->addr, fade, q[3], q[0], q[1], q[2], q[3], fr_block.c0[0], fr_block.c0[1], fr_block.c0[2],
+                                fr_block.c1[0], fr_block.c1[1], fr_block.c1[2]);
+                    }
+                }
+                p += (1 + 4 * nloop) * 16;
+            } else p += (1 + nloop) * 16;
+        }
+    }
     if (stats_on) st.fan_ms += now_ms() - t0;
     return ok;
 }
@@ -838,6 +858,9 @@ void r2_cap_entry(ps2_ctx* ctx) {
         r2_slot* S = fr_slot;
         int start = !prev_native;
         uint32_t fq = (eflags & R2E_FANS) ? fan_o.n / 16u : 0u;   /* (r2-m5b) the VU clipper's packets (qwords) */
+        static int fdrop = -1;                       /* (diagnostics) PS2_R2_FANS_DROP=1: the packets are not drawn */
+        if (fdrop < 0) { const char* e = getenv("PS2_R2_FANS_DROP"); fdrop = e ? atoi(e) : 0; }
+        if (fdrop == 1) fq = 0;                      /* (2: the run ends and the epilogue follows, but no packets) */
         uint32_t rq = (eflags & R2E_RUNS) ? (fan_rt[0] + 3) / 4 : 0u;   /* (r2-m5b) the run table (qwords) */
         if (!S || S->nent >= R2_SLOT_ENTS || (start && S->nrun >= R2_SLOT_RUNS) || S->nxq + (uint32_t)xn + (fq ? 1 + fq : 0) + rq > R2_SLOT_XQ) {
             st.exact_dmas++;
@@ -867,7 +890,7 @@ void r2_cap_entry(ps2_ctx* ctx) {
             uint32_t off = S->nxq;
             adlist lf = { .n = 0 };
             ad_hint(&lf, R2H_OUTLINE, (fr_serial % R2_SLOTS) | off << 4, fr_serial);
-            if (!dmas_put(ctx, 0, 0, lf.p, lf.n)) {          /* (an empty run if it started here: harmless) */
+            if (fdrop != 2 && !dmas_put(ctx, 0, 0, lf.p, lf.n)) {   /* (an empty run if it started here: harmless) */
                 st.exact_dmas++;
                 prev_native = 0;
                 prev_class = cls;
@@ -1042,6 +1065,6 @@ void r2_stats_line(char* buf, size_t n) {
         if (s->reason[r]) o += snprintf(buf + o, n - (size_t)o, " [%s %u]", r2m_reason[r], s->reason[r]);
     if (o > 0 && (size_t)o < n) o += snprintf(buf + o, n - (size_t)o, "; particle spans %.2f/frame", s->part_spans / f);   /* (r2-m6) */
     if (o > 0 && (size_t)o < n)                        /* (r2-m5b) */
-        snprintf(buf + o, n - (size_t)o, "; clipper: %.1f entries/frame (%.1f with fans), %.1f triangles, %.1f KB packets, %.3f ms; no: kind %u w %u full %u size %u",
-                 s->fan_ents / f, s->fan_kicked / f, s->fan_tris / f, s->fan_qw * 16.0 / 1024.0 / f, s->fan_ms / f, s->fan_no[1], s->fan_no[2], s->fan_no[3], s->fan_no[4]);
+        snprintf(buf + o, n - (size_t)o, "; clipper: %.1f entries/frame (%.1f with fans), %.1f triangles, %.1f KB packets, %.3f ms; no: kind %u w %u full %u size %u Z %u",
+                 s->fan_ents / f, s->fan_kicked / f, s->fan_tris / f, s->fan_qw * 16.0 / 1024.0 / f, s->fan_ms / f, s->fan_no[1], s->fan_no[2], s->fan_no[3], s->fan_no[4], s->fan_no[5]);
 }

@@ -593,6 +593,16 @@ void gf_r2_vblank(void) {
             s->segments / f, s->runs / f, s->entries / f, s->draws / f, s->items / f, s->zwrite_draws / f, s->splits / f, s->all_fail / f,
             s->textures / f, s->tex_gpu / f, s->dropped / f, s->unsupported / f, s->over128 / f, (unsigned long long)s->bad_hints,
             (unsigned long long)s->stale, s->brackets / f, s->part_spans / f, s->part_prims / f, s->part_exact / f, s->part_rov / f, s->part_other / f);
+    extern uint32_t gf_z32_ab[2];                /* (r2-m5b, diagnostics) gpu_front.c: Z above the FF range per A / B phase */
+    fprintf(stderr, "[r2] front: Z beyond the FF range: %u primitives in A phases, %u in B (300 frames)\n", gf_z32_ab[0], gf_z32_ab[1]);
+    gf_z32_ab[0] = gf_z32_ab[1] = 0;
+    extern uint32_t gf_rov_ab[2][16];
+    for (int b = 0; b < 2; b++) {
+        fprintf(stderr, "[r2] front: ROV primitives by reason, phase %c:", 'A' + b);
+        for (int k = 0; k < 16; k++) if (gf_rov_ab[b][k]) fprintf(stderr, " %d:%u", k, gf_rov_ab[b][k]);
+        fprintf(stderr, "\n");
+    }
+    memset(gf_rov_ab, 0, sizeof gf_rov_ab);
     memset(&R2S, 0, sizeof R2S);
 }
 
