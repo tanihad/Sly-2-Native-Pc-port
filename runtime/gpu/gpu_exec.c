@@ -1198,12 +1198,15 @@ static struct {
     uint32_t ops_frame, ops_on, curpos, opos[PR_MAXQ];
     /* (r2-m7b) PS2_GPU_AB=<frames>: A/B in one run - the experimental features are off in the A phases and on in the B
      * phases (alternating every <frames> frames), and the GPU time is accumulated per phase (prof-ab lines) */
-    int ab, ab_b;
+    int ab, ab_b, ab_skip, ab_ee;
     double ab_ms[2][PR_N], ab_tot[2];
     uint32_t ab_n[2];
 } PR = { -1 };
 /* (r2-m7b) an experimental feature is off in this frame (an A phase of PS2_GPU_AB) */
-static int ab_off(void) { return PR.ab > 0 && !PR.ab_b; }
+static int ab_off(void) { return PR.ab > 0 && !PR.ab_b && !PR.ab_ee; }
+/* (r2-m5b) the current phase for EE-side features (r2_capture.c: the VU clipper's entries with PS2_GPU_AB_EE=1, when only
+ * they follow the phases); -1: no A/B */
+volatile int gpu_ab_phase = -1;
 
 static void prof_mark(int cat) {
     if (PR.on <= 0 || PR.n >= PR_MAXQ - 1 || (PR.n && cat == PR.cur && !PR.ops_on)) return;
@@ -1340,7 +1343,8 @@ static void prof_end(void) {
     if (ft > 50.0) return;               /* (loading frames: left out) */
     for (int c = 0; c < PR_N; c++) { PR.ms[c] += f[c]; PR.ps_inv[c] += fi[c]; PR.occl[c] += fo[c]; PR.prims[c] += fp[c]; }
     PR.total += ft;
-    if (PR.ab > 0) {                     /* (r2-m7b) per A / B phase */
+    if (PR.ab > 0 && PR.ab_skip > 0) PR.ab_skip--;   /* (r2-m5b) the frames after a switch: in flight / the EE's lag */
+    else if (PR.ab > 0) {                /* (r2-m7b) per A / B phase */
         for (int c = 0; c < PR_N; c++) PR.ab_ms[PR.ab_b][c] += f[c];
         PR.ab_tot[PR.ab_b] += ft;
         PR.ab_n[PR.ab_b]++;
@@ -3172,8 +3176,16 @@ void gpu_exec_frame(const void* payload) {
     /* upload: vertices, indices, records, StateRecs, the data arena, per-draw constants (one Map each) */
     uint32_t ncb = build_constants(fd, X.ref || X.mixed);
     static int ab_init;
-    if (!ab_init) { ab_init = 1; const char* e = getenv("PS2_GPU_AB"); PR.ab = e && atoi(e) > 0 ? atoi(e) : 0; }   /* (r2-m7b) */
-    if (PR.ab > 0) PR.ab_b = (int)((XC.frames / (uint32_t)PR.ab) & 1);
+    if (!ab_init) {
+        ab_init = 1; const char* e = getenv("PS2_GPU_AB"); PR.ab = e && atoi(e) > 0 ? atoi(e) : 0;   /* (r2-m7b) */
+        e = getenv("PS2_GPU_AB_EE"); PR.ab_ee = e && *e == '1';   /* (r2-m5b) */
+    }
+    if (PR.ab > 0) {
+        int nb = (int)((XC.frames / (uint32_t)PR.ab) & 1);
+        if (nb != PR.ab_b) PR.ab_skip = 8;
+        PR.ab_b = nb;
+        gpu_ab_phase = nb;
+    }
     const uint8_t* states = td_prepass(fd);   /* (r2-m7b) the decoded texture cache's StateRec fields */
     int ok = dyn_fill(&X.vb, fd->vtx, fd->vtx_bytes, D3D11_BIND_VERTEX_BUFFER, 0) &&
              dyn_fill(&X.ib, fd->idx, fd->idx_count * 4, D3D11_BIND_INDEX_BUFFER, 0) &&

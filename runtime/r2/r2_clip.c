@@ -41,6 +41,7 @@ static vu_state cv;
 static _Alignas(16) uint8_t cv_data[16384], cv_micro[16384];
 static vu_op cv_cache[2048];
 static int cv_state;                   /* 0 not set up, 1 ready, -1 no image */
+int r2_clip_why;                       /* why the last r2_clip_entry said no: 1 batch kind, 2 w <= 0, 3 full, 4 size */
 
 int r2_clip_setup(const uint8_t* micro) {
     if (cv_state) return cv_state > 0;
@@ -139,25 +140,20 @@ int r2_clip_verdict(const r2_mesh* m, uint32_t b, uint32_t k) {
     return R2CV_CLIP;
 }
 
-/* sub-batch b's clipped triangles through the private VU's 0x2540; -1: not supported, else the number of triangles
- * that kicked fans */
+/* sub-batch b's clipped triangles through the private VU's 0x2540 (after r2_clip_prep); -1: not supported, else the
+ * number of triangles that kicked fans */
 int r2_clip_batch(const r2_mesh* m, uint32_t b, float fade, const r2_frame_block* f, r2_fanbuf* o) {
     const r2_batch* B = &m->b[b];
-    if (B->lit || B->skin || B->wide || B->tanim || !B->npass) return -1;
-    if (cv_state <= 0 && !r2_clip_setup(NULL)) return -1;
-    unsigned int old = _mm_getcsr();
-    _mm_setcsr(VU_MXCSR);
-    int nfan = 0, ntri = 0, ok = 1;
+    int ntri = 0, nfan = 0, ok = 1;
+    unsigned int old = 0;
     for (uint32_t k = 2; k < B->vcount && ok; k++) {
-        int v = r2_clip_verdict(m, b, k);
+        if (r2_clip_verdict(m, b, k) != R2CV_CLIP) continue;
         uint32_t i0 = B->vfirst + k - 2, i1 = i0 + 1, i2 = i0 + 2;
-        if (v == R2CV_STRIP) {
-            /* R2's clip pipeline draws it only with w > 0 (its own outcode) */
-            if (!(cc[i0][3] > 0.0f && cc[i1][3] > 0.0f && cc[i2][3] > 0.0f)) ok = 0;
-            continue;
-        }
-        if (v != R2CV_CLIP) continue;
         if (!ntri++) {                                     /* the sub-batch's header in the private VU */
+            if (B->lit || B->skin || B->wide || B->tanim || !B->npass) { r2_clip_why = 1; return -1; }
+            if (cv_state <= 0 && !r2_clip_setup(NULL)) { r2_clip_why = 1; return -1; }
+            old = _mm_getcsr();
+            _mm_setcsr(VU_MXCSR);
             memset(cv_data + (CLIP_X + 9) * 16u, 0, 16 * 7);
             memcpy(cv_data + 0 * 16u, f->c0, 16);
             memcpy(cv_data + 1 * 16u, f->c1, 16);
@@ -189,29 +185,57 @@ int r2_clip_batch(const r2_mesh* m, uint32_t b, float fade, const r2_frame_block
         st->vi[15] = (uint16_t)CLIP_RET;
         st->status = st->mac = st->clip = st->clip_pipe = 0;
         uint32_t before = o->n;
-        uint32_t npairs = vu_private_run(st, 0x2540u / 8u, kick, o);
+        vu_private_run(st, 0x2540u / 8u, kick, o);
         _mm_setcsr(VU_MXCSR);
-        if (getenv("R2_CLIP_DBG"))
-            fprintf(stderr, "[r2clip] batch %u k %u: %u pairs, %u bytes, vi5 %X vi6 %X vi9 %X tpc %X\n", b, k, npairs, o->n - before,
-                    st->vi[5], st->vi[6], st->vi[9], st->tpc * 8u);
         o->tris++;
-        if (o->overflow) ok = 0;
+        if (o->overflow) { ok = 0; r2_clip_why = 3; }
         else if (o->n != before) { o->fans++; nfan++; }
         else o->culled++;
     }
-    _mm_setcsr(old);
+    if (ntri) _mm_setcsr(old);
     return ok ? nfan : -1;
 }
 
-int r2_clip_entry(const r2_mesh* m, const float M[16], float fade, const r2_frame_block* f, r2_fanbuf* o, uint32_t* last_fanned) {
-    if (m->any_skin || m->lit || !r2_clip_prep(m, M)) return 0;
-    uint32_t n0 = o->n;
+/* The entry: every sub-batch's strip triangles R2 draws as runs of its index list (rt: words [total, nb, per sub-batch
+ * nruns, then start | count << 16 in triangles]); the clipped ones' packets into o. */
+int r2_clip_entry(const r2_mesh* m, const float M[16], float fade, const r2_frame_block* f, r2_fanbuf* o, uint32_t* last_fanned,
+                  uint32_t* rt, uint32_t rtcap) {
+    r2_clip_why = 0;
+    if (m->any_skin || !r2_clip_prep(m, M)) { r2_clip_why = 4; return 0; }
+    uint32_t n0 = o->n, w = 2;
     *last_fanned = 0;
     for (uint32_t b = 0; b < m->nb; b++) {
-        int r = r2_clip_batch(m, b, fade, f, o);
-        if (r < 0) { o->n = n0; o->overflow = 0; return 0; }
-        if (r) *last_fanned = b + 1;
+        const r2_batch* B = &m->b[b];
+        if (w + 1 > rtcap) { r2_clip_why = 3; o->n = n0; return 0; }
+        uint32_t nrw = w++, nr = 0, j = 0, rs = 0, inrun = 0, nclip = 0;
+        for (uint32_t k = 2; k < B->vcount; k++) {
+            int v = r2_clip_verdict(m, b, k);
+            if (v == R2CV_ADC) continue;                       /* (not in R2's index list) */
+            int in = v == R2CV_STRIP;
+            if (in) {
+                uint32_t i0 = B->vfirst + k - 2;
+                if (!(cc[i0][3] > 0.0f && cc[i0 + 1][3] > 0.0f && cc[i0 + 2][3] > 0.0f)) { r2_clip_why = 2; o->n = n0; return 0; }
+            }
+            nclip += v == R2CV_CLIP;
+            if (in && !inrun) { rs = j; inrun = 1; }
+            else if (!in && inrun) {
+                if (w + 1 > rtcap) { r2_clip_why = 3; o->n = n0; return 0; }
+                rt[w++] = rs | (j - rs) << 16; nr++; inrun = 0;
+            }
+            j++;
+        }
+        if (inrun) {
+            if (w + 1 > rtcap) { r2_clip_why = 3; o->n = n0; return 0; }
+            rt[w++] = rs | (j - rs) << 16; nr++;
+        }
+        rt[nrw] = nr;
+        if (nclip) {
+            int r = r2_clip_batch(m, b, fade, f, o);
+            if (r < 0) { o->n = n0; o->overflow = 0; return 0; }
+            if (r) *last_fanned = b + 1;
+        }
     }
+    rt[0] = w;
+    rt[1] = m->nb;
     return 1;
 }
-

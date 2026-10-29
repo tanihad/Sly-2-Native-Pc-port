@@ -71,6 +71,7 @@ typedef struct { uint32_t handle, ent; } seg_item;
 static seg_item* items;
 static gpu_r2_entry* ents;
 static uint32_t nitems, capitems, nents, capents;
+static uint32_t *RT, nrt, caprt, *ent_rt, capert;   /* (r2-m5b) the entries' run tables (R2E_RUNS), ent_rt[e] = offset + 1 */
 static uint64_t seg_frame, seg_zbuf, seg_sc, seg_xyo, seg_fba, seg_cc;
 
 /* statistics (gpu_front_r2_stats) */
@@ -220,20 +221,28 @@ static gpu_r2_draw* new_draw(uint32_t* nd) {
     return d;
 }
 
-static void emit_entry(const r2_mesh* m, uint32_t ent, float fade, int zmsk, int wm, uint32_t clipbit, uint32_t* nd) {
+static void emit_entry(const r2_mesh* m, uint32_t ent, float fade, int zmsk, int wm, uint32_t clipbit, const uint32_t* rt, uint32_t* nd) {
     uint32_t st[2];
     uint8_t ru[2];
-    if (!consolidate) {                  /* batch-major, as the VU emits them */
-        for (uint32_t b = 0; b < m->nb; b++)
+    if (!consolidate || rt) {            /* batch-major, as the VU emits them */
+        const uint32_t* r = rt ? rt + 2 : NULL;   /* (r2-m5b) per sub-batch: nruns, start | count << 16 (triangles) */
+        if (rt && (rt[1] != m->nb || rt[0] < 2 + m->nb)) { R2S.dropped++; return; }
+        for (uint32_t b = 0; b < m->nb; b++) {
+            uint32_t nr = r ? *r++ : 1;
             for (uint32_t p = 0; p < m->b[b].npass; p++) {
                 int n = pass_items(&m->b[b], &m->b[b].pass[p], fade, zmsk, wm, st, ru);
-                for (int k = 0; k < n; k++) {
-                    gpu_r2_draw* d = new_draw(nd);
-                    if (!d) return;
-                    d->entry = ent; d->mode = p | (uint32_t)ru[k] << 2 | b << 8; d->mask_off = ~0u; d->mesh = m->handle;
-                    d->first = m->b[b].ifirst; d->count = m->b[b].icount; d->state = st[k] | clipbit;
-                }
+                for (int k = 0; k < n; k++)
+                    for (uint32_t q = 0; q < nr; q++) {
+                        uint32_t s0 = r ? r[q] & 0xFFFF : 0, cnt = r ? 3 * (r[q] >> 16) : m->b[b].icount;
+                        if (3 * s0 + cnt > m->b[b].icount) { R2S.dropped++; continue; }
+                        gpu_r2_draw* d = new_draw(nd);
+                        if (!d) return;
+                        d->entry = ent; d->mode = p | (uint32_t)ru[k] << 2 | b << 8; d->mask_off = ~0u; d->mesh = m->handle;
+                        d->first = m->b[b].ifirst + 3 * s0; d->count = cnt; d->state = st[k] | clipbit;
+                    }
             }
+            if (r) r += nr;
+        }
         return;
     }
     grp g[16];
@@ -332,7 +341,9 @@ static void gf_r2_flush_impl(void) {
     for (uint32_t i = 0; i < nitems; i++) {
         const r2_mesh* m = r2_mesh_get(items[i].handle);
         if (!m) { R2S.dropped++; continue; }
-        emit_entry(m, items[i].ent, ents[items[i].ent].fade, zmsk, wm, (ents[items[i].ent].flags & R2E_CLIP) ? 1u << 13 : 0u, &nd);
+        uint32_t ro = ent_rt[items[i].ent];   /* (r2-m5b) a run table: the strip triangles through the plain pipeline */
+        emit_entry(m, items[i].ent, ents[items[i].ent].fade, zmsk, wm, !ro && (ents[items[i].ent].flags & R2E_CLIP) ? 1u << 13 : 0u,
+                   ro ? RT + ro - 1 : NULL, &nd);
     }
     gpu_fop_r2* o = gf_cmd(GPU_FOP_R2, sizeof *o);
     o->ct = ct->id;
@@ -386,10 +397,19 @@ static void seg_env(const gs_env_view* ev) {
 }
 
 /* one native entry into the open segment; m = world x clip */
-static int entry_add(const gs_env_view* ev, uint32_t handle, const float m[16], float fade, uint32_t eflags, const void* xq, uint32_t xn) {
+static int entry_add(const gs_env_view* ev, uint32_t handle, const float m[16], float fade, uint32_t eflags, const void* xq, uint32_t xn,
+                     const uint32_t* rt) {
     if (!fb_ok || !r2_mesh_get(handle)) { R2S.dropped++; return 0; }
     seg_env(ev);
-    if (!grow((void**)&items, &capitems, nitems + 1, sizeof *items) || !grow((void**)&ents, &capents, nents + 1, sizeof *ents)) return 0;
+    if (!grow((void**)&items, &capitems, nitems + 1, sizeof *items) || !grow((void**)&ents, &capents, nents + 1, sizeof *ents) ||
+        !grow((void**)&ent_rt, &capert, nents + 1, 4)) return 0;
+    if (!nents) nrt = 0;
+    ent_rt[nents] = 0;
+    if (rt && rt[0] >= 2 && rt[0] <= 8192 && grow((void**)&RT, &caprt, nrt + rt[0], 4)) {   /* (r2-m5b) */
+        memcpy(RT + nrt, rt, rt[0] * 4);
+        ent_rt[nents] = nrt + 1;
+        nrt += rt[0];
+    }
     gpu_r2_entry* e = &ents[nents];
     memcpy(e->m, m, sizeof e->m);
     e->fade = fade;
@@ -444,7 +464,7 @@ static int entry_done(const gs_env_view* ev) {
         if (id >= xq_have) { R2S.bad_hints++; return 0; }
         xn = xq_n[id]; xo = xq_off[id];
     }
-    return entry_add(ev, RX.handle, m, fade, RX.flags & R2D_CLIP ? R2E_CLIP : 0, XQW + xo, xn);
+    return entry_add(ev, RX.handle, m, fade, RX.flags & R2D_CLIP ? R2E_CLIP : 0, XQW + xo, xn, NULL);
 }
 
 /* (r2-m2, hybrid) a run of native entries from the frame's scene slot */
@@ -464,7 +484,8 @@ static void run_hint(const gs_env_view* ev, uint32_t arg, uint32_t serial) {
     uint32_t keep_items = nitems, keep_ents = nents;
     for (uint32_t i = 0; i < n; i++) {
         const r2_slot_ent* se = &S->ent[first + i];
-        entry_add(ev, se->handle, se->m, se->fade, se->flags, se->xn ? S->xq[se->xoff] : NULL, se->xn);
+        const uint32_t* rt = (se->flags & R2E_RUNS) && se->pad[0] && se->pad[0] <= R2_SLOT_XQ ? (const uint32_t*)S->xq[se->pad[0] - 1] : NULL;
+        entry_add(ev, se->handle, se->m, se->fade, se->flags, se->xn ? S->xq[se->xoff] : NULL, se->xn, rt);
     }
     __atomic_thread_fence(__ATOMIC_ACQUIRE);
     if (__atomic_load_n(&S->serial, __ATOMIC_RELAXED) != serial) {   /* reused while read (the EE 16 frames ahead) */

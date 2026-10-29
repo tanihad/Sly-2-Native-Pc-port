@@ -93,6 +93,12 @@ static int nblock;
 static int clip_on = 0;
 static int part_on = 1;                        /* (r2-m6) PS2_R2_PART=0: no particle span hints (particles drawn exactly) */
 static int fans_on = 1;                        /* (r2-m5b) PS2_R2_FANS=0: meshes with crossing triangles stay exact */
+extern volatile int gpu_ab_phase;              /* (r2-m5b) gpu_exec.c: with PS2_GPU_AB_EE=1 the clipper's entries are native only in B phases */
+static int fans_ab = -1;
+static int fans_now(void) {
+    if (fans_ab < 0) { const char* e = getenv("PS2_GPU_AB_EE"); fans_ab = e && *e == '1'; }
+    return fans_on && (!fans_ab || gpu_ab_phase != 0);
+}
 static uint32_t levels[32];
 static double budget_ms = 3.0;
 static LARGE_INTEGER qpf;
@@ -101,7 +107,7 @@ typedef struct {
     uint32_t frames, cand, native, exact_level, exact_class, exact_decode, exact_budget, exact_dmas, exact_header, exact_fade, exact_guard,
         decoded, decode_fail, bytes_hint, runs, epilogues, cand_props, native_props, exact_outline, outlines, outlines_parsed, clipped,
         exact_bracket, stale, guard_clean, cand_lit, native_lit, exact_lit, lit_reason[4], outline_bad, outline_decoded, outline_native, outline_exact, dmas_min_free,
-        part_spans, fan_ents, fan_tris, fan_kicked, fan_qw;
+        part_spans, fan_ents, fan_tris, fan_kicked, fan_qw, fan_no[5];
     double decode_ms, cap_ms, fan_ms;
     double v_native, v_exact[10];          /* (r2-m5) census */
     uint32_t reason[R2M_N];
@@ -637,14 +643,17 @@ static int skin_inside_guard(const r2_mesh* m, const float mc[16]) {
     return 1;
 }
 
-/* (r2-m5b) a mesh with triangles the VU clips (r2_clip.c): the clipper's packets for the entry into fan_buf */
+/* (r2-m5b) a mesh crossing the guard band (r2_clip.c): the run table of the triangles the VU draws as strips into
+ * fan_rt, the clipper's packets for the ones it clips into fan_buf */
 static uint8_t fan_buf[1u << 18];
 static r2_fanbuf fan_o;
 static uint32_t fan_last;
+static uint32_t fan_rt[8192];
 static int clip_fans(const r2_mesh* m, const float M[16], float fade) {
     double t0 = stats_on ? now_ms() : 0;
     fan_o = (r2_fanbuf){ fan_buf, 0, sizeof fan_buf, 0, 0, 0, 0 };
-    int ok = r2_clip_entry(m, M, fade, &fr_block, &fan_o, &fan_last);
+    int ok = r2_clip_entry(m, M, fade, &fr_block, &fan_o, &fan_last, fan_rt, 8192);
+    if (!ok) st.fan_no[r2_clip_why < 5 ? r2_clip_why : 0]++;
     if (stats_on) st.fan_ms += now_ms() - t0;
     return ok;
 }
@@ -785,8 +794,13 @@ void r2_cap_entry(ps2_ctx* ctx) {
                     else r2_matmul_fast(w, fr_block.clip, M);
                     if (m->any_skin ? !skin_inside_guard(m, M) : !inside_guard(m, M)) {
                         if (clip_on) eflags |= R2E_CLIP;    /* (r2-m2) GPU-clipped triangles (shaders/r2.hlsl r2_gs_clip) */
+                        /* (r2-m5b) the VU's verdict per triangle: R2 draws the strip ones (run tables: no geometry stage),
+                         * the VU clipper's own packets the clipped ones (r2_clip.c) */
+                        else if (fans_now() && !m->any_skin && clip_fans(m, M, vu8[0])) {
+                            eflags |= R2E_CLIP | R2E_RUNS | (fan_o.tris ? R2E_FANS : 0);
+                            if (!fan_o.tris) st.guard_clean++;
+                        }
                         else if (gclean_on && !m->any_skin && guard_clean(m, M)) { eflags |= R2E_CLIP; st.guard_clean++; }   /* (r2-m5) */
-                        else if (fans_on && !m->any_skin && !m->lit && clip_fans(m, M, vu8[0])) eflags |= R2E_CLIP | R2E_FANS;   /* (r2-m5b) */
                         else { why = 6; st.exact_guard++; }
                     }
                 }
@@ -824,7 +838,8 @@ void r2_cap_entry(ps2_ctx* ctx) {
         r2_slot* S = fr_slot;
         int start = !prev_native;
         uint32_t fq = (eflags & R2E_FANS) ? fan_o.n / 16u : 0u;   /* (r2-m5b) the VU clipper's packets (qwords) */
-        if (!S || S->nent >= R2_SLOT_ENTS || (start && S->nrun >= R2_SLOT_RUNS) || S->nxq + (uint32_t)xn + (fq ? 1 + fq : 0) > R2_SLOT_XQ) {
+        uint32_t rq = (eflags & R2E_RUNS) ? (fan_rt[0] + 3) / 4 : 0u;   /* (r2-m5b) the run table (qwords) */
+        if (!S || S->nent >= R2_SLOT_ENTS || (start && S->nrun >= R2_SLOT_RUNS) || S->nxq + (uint32_t)xn + (fq ? 1 + fq : 0) + rq > R2_SLOT_XQ) {
             st.exact_dmas++;
             if (prev_native) owe_epilogue(ctx);
             prev_native = 0;
@@ -876,6 +891,13 @@ void r2_cap_entry(ps2_ctx* ctx) {
         se->xoff = S->nxq;
         se->xn = (uint32_t)xn;
         if (xn) { memcpy(S->xq[S->nxq], xbuf, (size_t)xn * 16); S->nxq += (uint32_t)xn; st.native_lit++; }
+        se->pad[0] = 0;
+        if (rq) {                                    /* (r2-m5b) the run table: slot qword index + 1 */
+            se->pad[0] = S->nxq + 1;
+            memset(S->xq[S->nxq + rq - 1], 0, 16);
+            memcpy(S->xq[S->nxq], fan_rt, (size_t)fan_rt[0] * 4);
+            S->nxq += rq;
+        }
         S->run_count[S->nrun - 1]++;
         st.native++;
         if (eflags & R2E_CLIP) st.clipped++;
@@ -1020,6 +1042,6 @@ void r2_stats_line(char* buf, size_t n) {
         if (s->reason[r]) o += snprintf(buf + o, n - (size_t)o, " [%s %u]", r2m_reason[r], s->reason[r]);
     if (o > 0 && (size_t)o < n) o += snprintf(buf + o, n - (size_t)o, "; particle spans %.2f/frame", s->part_spans / f);   /* (r2-m6) */
     if (o > 0 && (size_t)o < n)                        /* (r2-m5b) */
-        snprintf(buf + o, n - (size_t)o, "; clipper: %.1f entries/frame (%.1f with fans), %.1f triangles, %.1f KB packets, %.3f ms",
-                 s->fan_ents / f, s->fan_kicked / f, s->fan_tris / f, s->fan_qw * 16.0 / 1024.0 / f, s->fan_ms / f);
+        snprintf(buf + o, n - (size_t)o, "; clipper: %.1f entries/frame (%.1f with fans), %.1f triangles, %.1f KB packets, %.3f ms; no: kind %u w %u full %u size %u",
+                 s->fan_ents / f, s->fan_kicked / f, s->fan_tris / f, s->fan_qw * 16.0 / 1024.0 / f, s->fan_ms / f, s->fan_no[1], s->fan_no[2], s->fan_no[3], s->fan_no[4]);
 }

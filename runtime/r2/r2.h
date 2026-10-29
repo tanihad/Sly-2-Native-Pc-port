@@ -88,7 +88,8 @@ typedef struct {                 /* 96 bytes */
 } r2_slot_ent;
 #define R2_SLOT_XQ 32768u        /* (r2-m3) extra qwords per slot (light blocks, bone palettes) */
 enum { R2E_CLIP = 1,             /* the mesh's bounds cross the VU's guard band: R2 draws its triangles inside it (r2_gs_clip) */
-       R2E_FANS = 2 };           /* (r2-m5b) and the VU's clipper draws the others (r2_clip.c packets after the entry) */
+       R2E_FANS = 2,             /* (r2-m5b) and the VU's clipper draws the others (r2_clip.c packets after the entry) */
+       R2E_RUNS = 4 };           /* (r2-m5b) a run table (slot qwords at ent.pad[0] - 1): R2 draws only the triangles the VU draws as strips */
 typedef struct {
     volatile uint32_t serial;    /* (atomic: 0 while the EE writes it) */
     uint32_t nent, nrun;
@@ -275,13 +276,15 @@ int r2_outline_exec(const r2_oscript* s, const uint32_t* (*hq)(uint32_t), const 
 #define R2_CLIP_VMAX 4096u
 typedef struct { uint8_t* out; uint32_t n, cap, overflow; uint32_t tris, fans, culled; } r2_fanbuf;
 int r2_clip_setup(const uint8_t* micro);
+extern int r2_clip_why;           /* the last r2_clip_entry's no: 1 sub-batch kind, 2 a strip triangle with w <= 0, 3 full, 4 size */
 /* (also for the oracle) the vertices' clip coordinates / flags; 0x0C60's verdict on the triangle ending at strip vertex k
  * of sub-batch b; one sub-batch's clipped triangles (-1: unsupported, else how many kicked fans) */
 enum { R2CV_ADC, R2CV_STRIP, R2CV_CULLED, R2CV_CLIP };
 int r2_clip_prep(const r2_mesh* m, const float M[16]);
 int r2_clip_verdict(const r2_mesh* m, uint32_t b, uint32_t k);
 int r2_clip_batch(const r2_mesh* m, uint32_t b, float fade, const r2_frame_block* f, r2_fanbuf* o);
-int r2_clip_entry(const r2_mesh* m, const float M[16], float fade, const r2_frame_block* f, r2_fanbuf* o, uint32_t* last_fanned);
+int r2_clip_entry(const r2_mesh* m, const float M[16], float fade, const r2_frame_block* f, r2_fanbuf* o, uint32_t* last_fanned,
+                  uint32_t* rt, uint32_t rtcap);
 
 /* ---- EE side (r2_capture.c, called from recomp/patches.py patches) --------------------------------------------- */
 struct ps2_ctx;

@@ -409,7 +409,7 @@ int main(int argc, char** argv) {
         r2_mesh* m;
         int r = r2_mesh_decode(ram, c2 ? c2 : c1, c2 ? 1 : 0, &m);
         reasons[r]++;
-        if (r) { extern int r2_fail_line, r2_fail_info[4]; extern uint32_t r2_fail_ms[8], r2_fail_nms; if (verbose) { printf("entry %u prio %u c1 %08X c2 %08X: %s (line %d) flags %X second %d litr %d ms", idx, prio, c1, c2, r2m_reason[r], r == R2M_VERTEX ? r2_fail_line : 0, r2_fail_info[0], r2_fail_info[1], r2_fail_info[3]); for (uint32_t q = 0; q < r2_fail_nms && q < 8; q++) printf(" %04X", r2_fail_ms[q]); printf("\n"); } continue; }
+        if (r) { extern int r2_fail_line, r2_fail_info[4]; extern uint32_t r2_fail_ms[8], r2_fail_nms; if (verbose) { int fl = r2_fail_info[0], se = r2_fail_info[1], li = r2_fail_info[3]; r2_mesh_hash(ram, c2 ? c2 : c1); printf("entry %u prio %u c1 %08X c2 %08X: %s (line %d) flags %X second %d litr %d ~%u v ms", idx, prio, c1, c2, r2m_reason[r], r == R2M_VERTEX ? r2_fail_line : 0, fl, se, li, r2_hash_bytes / 45); for (uint32_t q = 0; q < r2_fail_nms && q < 8; q++) printf(" %04X", r2_fail_ms[q]); printf("\n"); } continue; }
         decoded++;
         if (verbose && m->lit) printf("lit entry %u prio %u c1 %08X c2 %08X: %u batches lit %d skin %d hq_hi %X\n", idx, prio, c1, c2, m->nb, m->any_lit, m->any_skin, m->hq_hi);
         verts += m->nvtx;
