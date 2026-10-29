@@ -8,7 +8,8 @@ cbuffer npost_cb : register(b2) {
     uint4 np_rect;                       // samples [x0, x1) x [y0, y1)
     uint np_mode;                        // 1 alpha-index view (T8H: the CLUT entry of the source's alpha byte), 2 same target
                                          // (the source is the destination), 4 ABE, 8 COLCLAMP, 16 FBA, 32 TCC, 64 DECAL
-                                         // (else MODULATE), 128 write nothing of the alpha byte (RGB_ONLY)
+                                         // (else MODULATE), 128 write nothing of the alpha byte (RGB_ONLY), 256 (r2-m6) flat:
+                                         // untextured, the colour is np_vcol
     uint np_alpha;                       // asel | bsel << 2 | csel << 4 | dsel << 6 | fix << 8
     uint np_fmask;                       // frame write mask (1: kept)
     uint np_vcol;                        // the sprites' vertex colour (flat)
@@ -46,7 +47,8 @@ uint npost_word(uint dst, uint s, uint mode, uint alpha, uint fmask, uint vcol, 
     // TFX (gs.hlsl tfx: MODULATE / DECAL)
     uint c = vcol, col;
     bool tcc = (mode & 32u) != 0u;
-    if ((mode & 64u) != 0u) col = tcc ? t : (t & 0xFFFFFFu) | (c & 0xFF000000u);
+    if ((mode & 256u) != 0u) col = c;    // (r2-m6) flat: an untextured sprite (its colour; the source is not read)
+    else if ((mode & 64u) != 0u) col = tcc ? t : (t & 0xFFFFFFu) | (c & 0xFF000000u);
     else {
         uint r = min(((c & 255u) * (t & 255u)) >> 7, 255u);
         uint g = min((((c >> 8) & 255u) * ((t >> 8) & 255u)) >> 7, 255u);

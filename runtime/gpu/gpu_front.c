@@ -2178,6 +2178,8 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
     if (part) OD.d.feat |= GPU_DF_PART;
     /* (r2-m7) a sprite reading a target view: the executor may run the draw as a native post pass (exec_npost checks it) */
     if (tier == GPU_TIER_FF && cls == GPU_PC_SPRITE && P->tme && ts.T && fx_on()) OD.d.feat |= GPU_DF_NPOST;
+    /* (r2-m6) an untextured sprite on the ROV tier (bit-plane masks, blends the FF tier lacks): a flat post pass candidate */
+    if (tier == GPU_TIER_ROV && cls == GPU_PC_SPRITE && !P->tme && fx_on()) OD.d.feat |= GPU_DF_NPOST;
     /* (r2-m7b) a vram texture in a modern frame: the executor may read it from the decoded texture cache (exact) */
     if (tier == GPU_TIER_FF && P->tme && !ts.T && gf_r2_td_ttl > 0 && gf_cfg.mixed && !gf_cfg.ref) OD.d.feat |= GPU_DF_TEXDEC;
     if (gf_cfg.no_rov && rov) {
