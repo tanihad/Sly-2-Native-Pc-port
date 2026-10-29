@@ -40,6 +40,9 @@
 #define DC_VTX 0                         // FF triangles: draw constants and the state index from the vertex shader (VF.dc)
 #endif
 static uint g_vstate;
+#ifndef SVOL
+#define SVOL 0                           // (r2-m7) shadow-volume draws: commutative G adds without rasterizer order (ps_gs)
+#endif
 #ifndef SPEC_NOTEX
 #define SPEC_NOTEX 0                     // no texture at all (shadow volumes, fills, outlines)
 #endif
@@ -103,6 +106,10 @@ RasterizerOrderedTexture2D<uint> rov_c : register(u0);
 RasterizerOrderedTexture2D<uint> rov_z : register(u1);
 #endif
 RWByteAddressBuffer dbg : register(u2);  // probe records (gpu_exec.c, PS2_GPU_PROBE)
+#if SVOL
+Texture2D<uint4> svol_col : register(t12);   // (r2-m7) the colour target, read only (u0 is the G-step counter)
+uint svol_dst(int2 P) { uint4 c = svol_col.Load(int3(P, 0)); return c.x | (c.y << 8) | (c.z << 16) | (c.w << 24); }
+#endif
 
 // a probe record: 16 words (kind, record, state, U, V, texel, colour, Z, S, T, Q, xl, Z old, Cd, written, pixel)
 void probe_rec(uint kind, uint rb, uint state, int U, int V, uint t, uint col, uint z, float s, float tt, float q, int xl,
@@ -978,7 +985,11 @@ bool gs_frag(float4 pos, uint irec, float3 istq, uint prim, out Frag f, out St s
 #if !FF
 #if PRIM == 0 && STQ_FAST
 [earlydepthstencil]                      // (perf-p2) a bound DSV (ROV early rejection, gpu_exec.c) tests before the shader
-void ps_gs(VF i, uint prim : SV_PrimitiveID) {   // (mixed frames, default mode: 128-byte records, hardware S/T/Q)
+void ps_gs(VF i, uint prim : SV_PrimitiveID   // (mixed frames, default mode: 128-byte records, hardware S/T/Q)
+#if SVOL
+           , uint cov : SV_Coverage      // (r2-m7: 0 for helper pixels, whose atomics do nothing - the loop below must not run)
+#endif
+           ) {
     float3 istq = i.stq;
 #else
 [earlydepthstencil]                      // (perf-p2) a bound DSV (ROV early rejection, gpu_exec.c) tests before the shader
@@ -1030,7 +1041,11 @@ void ps_gs(VR i
     uint dst = 0u;
     bool have = false;
     if ((test >> 14) & 1u) {                     // DATE: bit 31 (bit 15 of 16-bit frames)
+#if SVOL
+        dst = hasc ? svol_dst(P) : 0u;
+#else
         dst = hasc ? rov_c[P] : 0u;
+#endif
         have = true;
         if (((dst >> (fb16 ? 15u : 31u)) & 1u) != ((test >> 15) & 1u)) return;
     }
@@ -1046,6 +1061,24 @@ void ps_gs(VR i
         if (probing) probe_rec(3u, rb, f.state, f.U, f.V, col, (zw ? 1u : 0u) | (st.zinfo << 4) | (draw_flags << 16), zv, 0.0, 0.0, 0.0, mode, zold, rov_z[P], 0u, px, py);
     }
     if (mode == 0 || !hasc) return;
+
+#if SVOL
+    // (r2-m7) shadow volumes (gpu_front.c GPU_DF_SVOL): every primitive of the draw adds a constant to G modulo 256
+    // (Cd + ((+-Cs) * C >> 7), COLCLAMP 0, write mask FFFF00FF, flat, untextured, no Z write) and its tests read only Z and
+    // alpha, which the draw never writes - the fragments commute. The colour target is only read here (t12, DATE and Ad),
+    // u0 is the executor's counter texture: one atomic add of the fragment's G step per sample, no rasterizer order; the
+    // executor adds the counters into G (mod 256) before anything else touches the target (gpu_exec.c svol_resolve).
+    // (A compare-exchange loop on the colour word itself was measured slower than the ROV under heavy overlap.)
+    if (cov != 0u) {                     // (helper pixels' atomics do nothing anyway)
+        uint al = st.alpha;
+        uint asel = al & 3u, csel = (al >> 4) & 3u, fix = (al >> 8) & 255u;
+        int cc = csel == 0u ? (int)As : csel == 1u ? (int)((have ? dst : svol_dst(P)) >> 24) : (int)fix;
+        int cs = (int)((col >> 8) & 255u);
+        uint d = (uint)(((asel == 0u ? cs : -cs) * cc) >> 7);
+        if ((d & 255u) != 0u) InterlockedAdd(rov_c[P], d);
+    }
+    return;
+#endif
 
     // ---- blend, dither, FBA, write mask (gs_draw_pixel.c write_seg) ----
     uint m = st.fmask;                           // (16-bit frames: the 16-bit form)

@@ -38,6 +38,13 @@ void gf_flush_open(void);                /* gpu_front.c */
 int gf_r2_pending;                       /* a segment is open (gpu_front.c calls gf_r2_flush before its other events) */
 int gf_r2_skip;                          /* bracket A/B: the exact primitives of a bracketed entry are not drawn */
 static int ab_native;                    /* gpu_front_r2_ab */
+/* (r2-m7) the modern renderer's native passes (gpu_front.c: shadow volumes as commutative G adds, the shadow darken and the
+ * motion blur as compute passes) run while this is > 0: R2H_FRAME sets it to 2 (the frame and the next VBlank, where the
+ * game draws the motion blur before the next frame's hints), every VBlank counts it down, a bracket recording replayed
+ * exact (--r2-ab 0) clears it at its first R2H_BEGIN. So reference mode, and all-exact replays, never see them.
+ * PS2_R2_FX=0: off. */
+int gf_r2_fx_ttl;
+static int fx_env = -1;
 
 /* ---- receiving hint words ----------------------------------------------------------------------------------------- */
 enum { RX_IDLE, RX_FRAME, RX_ENTRY, RX_XQ };
@@ -493,9 +500,12 @@ static void fr_r2_hint(const gs_env_view* ev, uint64_t v) {
         if (arg != R2_FRAME_WORDS) { R2S.bad_hints++; return; }
         RX.state = RX_FRAME; RX.need = arg; RX.got = 0;
         fb_serial = value;
+        if (fx_env < 0) { const char* e = getenv("PS2_R2_FX"); fx_env = !(e && *e == '0'); }
+        gf_r2_fx_ttl = fx_env ? 2 : 0;
         break;
     case R2H_DRAW: case R2H_BEGIN:
         RX.bracket = kind == R2H_BEGIN;
+        if (RX.bracket && !ab_native) gf_r2_fx_ttl = 0;
         RX.handle = value;
         RX.flags = arg;
         RX.need = (arg & R2D_FADE ? 1u : 0u) + (arg & R2D_IDENTITY ? 0u : 16u) + 1u + (arg & R2D_EXTRA ? 1u : 0u);   /* (+ the address word [+ the extra count]) */
@@ -513,7 +523,9 @@ static void fr_r2_hint(const gs_env_view* ev, uint64_t v) {
         RX.state = RX_XQ; RX.need = 4u * value; RX.got = 0;
         if (!value) { xq_have = arg + 1; RX.state = RX_IDLE; }
         break;
-    case R2H_RUN: {
+    case R2H_RUN: {                              /* (hybrid mode: runs, no R2H_FRAME) */
+        if (fx_env < 0) { const char* e = getenv("PS2_R2_FX"); fx_env = !(e && *e == '0'); }
+        gf_r2_fx_ttl = fx_env ? 2 : 0;
         double t0 = qms();
         run_hint(ev, arg, value);
         fr_ms += qms() - t0;
@@ -532,6 +544,7 @@ void gpu_front_r2_ab(int native) { ab_native = native; }
 void gf_r2_vblank(void) {
     static int on = -1;
     static uint32_t n;
+    if (gf_r2_fx_ttl > 0) gf_r2_fx_ttl--;
     if (on < 0) { const char* e = getenv("PS2_R2_STATS"); on = e && *e && *e != '0'; }
     if (on && fr_ms > 3.0) fprintf(stderr, "[r2] slow frontend frame %u: %.2f ms in R2 runs / segments\n", n, fr_ms);
     fr_ms = 0;

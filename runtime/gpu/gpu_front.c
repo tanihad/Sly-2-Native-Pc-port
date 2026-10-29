@@ -800,7 +800,9 @@ static void flush_open(void) {
 
 /* (r2-m1) gpu_r2front.c: an R2 segment closes the open draws; the frontend's other events close an open segment first */
 void gf_flush_open(void) { flush_open(); }
-extern int gf_r2_pending, gf_r2_skip;
+extern int gf_r2_pending, gf_r2_skip, gf_r2_fx_ttl;
+/* (r2-m7) the modern renderer's native passes are on for this frame (gpu_r2front.c gf_r2_fx_ttl; mixed frames only) */
+static int fx_on(void) { return gf_r2_fx_ttl > 0 && gf_cfg.mixed && !gf_cfg.ref; }
 void gf_r2_flush(void);
 void (*gf_r2_hook(void))(const gs_env_view*, uint64_t);
 #define R2_FLUSH() do { if (gf_r2_pending) gf_r2_flush(); } while (0)
@@ -2066,6 +2068,15 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
                       (uint32_t)zmode << 7 | (uint32_t)(P->tme && S.stq) << 9 | (uint32_t)(S.fatst == FATST_DISCARD) << 10 |
                       (uint32_t)(self != 0) << 11 | (ff_fast ? (uint32_t)GPU_PSK_FF_FAST : 0u);
     uint16_t ctid = S.ct ? S.ct->id : 0, ztid = S.zt ? S.zt->id : 0, texid = ts.T ? ts.T->id : 0;
+    /* (r2-m7) a shadow-volume primitive (notes/modern-renderer.md "R7 as built"): flat, untextured, writing only the G byte
+     * of a 32-bit frame with Cd + ((+-Cs) * C >> 7) wrapping (COLCLAMP 0), no Z write. Every fragment adds a constant (per
+     * pixel: Cs and FIX are the primitive's, As its flat alpha, Ad the pixel's alpha, which nothing in such a draw writes)
+     * to G modulo 256, and the tests read only Z and alpha, which such a draw never writes: the result does not depend on
+     * the order of the fragments, so its draws need no rasterizer order (GPU_DF_SVOL: an atomic add per fragment, no ROV) */
+    int svol = tier == GPU_TIER_ROV && ff_fast && fx_on() && !gf_cfg.no_rov && P->ffmt->bits == 32 && !P->tme && !P->fge &&
+               P->abe && !ev->aa1 && !P->pabe && !P->dthe && !P->colclamp && !P->iip && !P->scanmsk && P->fmask == 0xFFFF00FFu &&
+               P->dsel == 1 && ((P->asel == 0 && P->bsel == 2) || (P->asel == 2 && P->bsel == 0)) && !S.zwrite;
+    if (svol) gf.svol_prims++;
     if (tier == GPU_TIER_ROV) {
         /* a run binds one colour target and (when some draw of it uses Z) one depth target: draws
          * without Z join any run on their colour target */
@@ -2104,6 +2115,7 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
     uint64_t sckey = (uint64_t)P->scx0 | (uint64_t)P->scy0 << 11 | (uint64_t)P->scx1 << 22 | (uint64_t)P->scy1 << 33;
     key ^= sckey * 0x9E3779B97F4A7C15ull;    /* (the draw's scissor is its first primitive's) */
     if (thin) key ^= 1ull << 61;             /* (M7: thin lines are their own draws) */
+    if (svol) key ^= 1ull << 60;             /* (r2-m7: shadow-volume draws hold only such primitives) */
     /* the exact ATST split (above sb_prim): a pass-capable primitive over pixels of an earlier fail-capable
      * one of the open draw starts a new draw (thin lines: their bounding box) */
     int xsplit = tier == GPU_TIER_FF && S.fatst == FATST_SPLIT && outcome && !gf_cfg.split_ff;
@@ -2146,6 +2158,9 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
     }
     OD.d.zw |= (uint8_t)(S.zwrite != 0);
     OD.outcomes |= outcome;
+    if (svol) OD.d.feat |= GPU_DF_SVOL;
+    /* (r2-m7) a sprite reading a target view: the executor may run the draw as a native post pass (exec_npost checks it) */
+    if (tier == GPU_TIER_FF && cls == GPU_PC_SPRITE && P->tme && ts.T && fx_on()) OD.d.feat |= GPU_DF_NPOST;
     if (gf_cfg.no_rov && rov) {
         if (nr_owner != od_serial) { nr_n = 0; nr_owner = od_serial; }
         nr_add(nrr);

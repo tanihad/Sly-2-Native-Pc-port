@@ -737,6 +737,66 @@ covers; the owner confirms after testing the dist build. Effort is in agent-days
 - **Gain**: hubs >= 280 fps; the worker, GS and frontend threads are nearly idle in gameplay (lower power, more headroom
   on weak CPUs).
 
+### R7 part 1 as built (next/r2-m7, 2026-10-27): native GPU passes for the shadow pipeline and the motion blur
+- **Profile first** (in game, modern, 3x 16:9, `PS2_GPU_PROF=1` over the later part of a chaos run, scripts/prof_window.py;
+  per op: `PS2_GPU_PROF_OPS=<frame>`, gpu_exec.c prof_ops_report). ep1 hub, GPU 4.8 ms per frame: R2's world 1.07,
+  exact triangles with Z 1.0 (guard-band meshes, characters' parts, decals), **motion blur 0.37 + shadow darken 0.33**
+  (the "ff-sprite" class: two full-screen FF sprite passes through the generic pixel shader, ~0.13 ns per sample),
+  the sky 0.53 (one FF draw, T8 bilinear from GS memory), **shadow volumes 0.43** (ROV), the three CT16 shuffles 0.28
+  (A16 copy dispatches: at 3x 16:9 a full-screen pass moves ~22 MB, ~0.08 ms each: memory bound already), present 0.22,
+  clears 0.15, outlines 0.13.
+- **How the shadow pipeline works** (per frame, ep1; notes/wip/d3d11-census.md "Shadow pipeline"): shuffle 1 (A.alpha <-
+  B.G), G init (16 sprites, FBMSK FFFF00FF, ABE 0, G = 126), the volumes (flat untextured triangles, FBMSK FFFF00FF,
+  (0-Cs)*128+Cd with G = 2 or (Cs-0)*128+Cd, COLCLAMP 0 = wrapping +-2, ATST NEVER + AFAIL FB_ONLY, DATE, ZTST GREATER or
+  none), shuffles 2 + 3 (B.alpha bits 0/7 <- B.G, B.G <- A.alpha), the darken (16 sprites reading B as T8H 1:1: the
+  alpha byte through the CLUT at 0x1800, (Cs-Cd)*As+Cd), the alpha reset. Motion blur at the next VBlank (16 sprites,
+  CT32 of A 1:1 at texel centres, TCC 0, (Cs-Cd)*48>>7+Cd, RGB_ONLY).
+- **Not as the design said** (real stencil volumes + no shuffles): the depth targets are D32 without stencil (adding
+  stencil changes the exact path's format), and the counter is only one of four uses of the frame's G / alpha bytes.
+  Instead the GPU work of the same stream is made native, exact, in modern frames only:
+  - **Shadow volumes without rasterizer order** (gpu_front.c `svol`, GPU_DF_SVOL): a primitive that adds a constant to
+    the G byte modulo 256 (flat, untextured, FBMSK FFFF00FF, D = Cd, A/B = Cs/0, COLCLAMP 0, no Z write) commutes with
+    every other such primitive, and its tests read only Z and alpha, which such draws never write. Their draws (own
+    draw key) run `ps_gs_tri_svol`: the exact path's own triangle setup, Z test (zpatch) and DATE (the colour target as
+    an SRV, t12), then one `InterlockedAdd` of the G step into a counter texture (R32_UINT, u0); before the next op
+    touches anything else `cs_svol_resolve` adds the counters into G and zeroes them (gpu_exec.c svol_resolve). Early
+    depth rejection as on the ROV tier. A compare-exchange loop on the colour word itself was tried first: helper pixels
+    (whose atomics do nothing) spun it for 138 ms, and with SV_Coverage excluding them it was still slower than the ROV
+    under heavy overlap (retries).
+  - **Native post passes** (GPU_DF_NPOST, gpu_exec.c exec_npost, shaders/post.hlsl cs_npost): an FF sprite draw whose
+    sprites each read a target view one texel per pixel at the texel centres (U = 16 x + 8, V = 16 y + 8 in 1/16 texels,
+    the 1:1 flag), one state and vertex colour, CT32 or T8H (CT32 CLUT) view of a target on the same sample grid, TFX
+    modulate / decal, no fog / DATE / dither / Z, ATST NEVER with FB_ONLY / RGB_ONLY or none, is one compute dispatch:
+    every sample reads its own sample of the source and gets the GS's integer TFX / blend / mask (gs_draw_pixel.c
+    write_seg), written straight into the target. Everything else stays the FF draw. Sly: the darken and the blur.
+  - Gating: `gf_r2_fx_ttl` (gpu_r2front.c) is set by every R2H_RUN (hybrid) / R2H_FRAME (bracket) and counts down per
+    VBlank (the blur comes before the next frame's hints); a bracket replay at `--r2-ab 0` clears it. Reference mode and
+    every exact-path test never see the native passes. `PS2_R2_FX=0` off, `PS2_R2_NPOST=0` only the post passes off.
+- **Faithfulness**: the volumes are bit-exact (the same per-fragment arithmetic, order-independent by construction); the
+  post passes use the GS's integer formulas, the FF draws they replace blended in float (dual source): fixed-stream
+  replay of ep1 (40 VBlanks, S = 1, hybrid with vs without the native passes): PSNR 68-69 dB, every channel within 2,
+  alpha and Z identical (tests/r2/gates.json PASS). The shadows' shape, darkness and edges are the exact path's.
+- **Performance** (chaos benchmark, modern mode, main ef64cef vs this branch, 1 repeat each, interleaved, release,
+  unlimited, owner's PC; tags r2m7_s3 / r2m7_s4; fps median / 1% low, GPU ms per frame):
+
+  | scene | 3x before | 3x after | 4x before | 4x after |
+  |---|---|---|---|---|
+  | ep1_hub | 209.2 / 117.5, 4.68 | **242.1** / 128.7, 4.04 | 127.9 / 66.2, 7.66 | **146.4** / 73.2, 6.67 |
+  | ep3_hub | 218.8 / 108.4, 4.50 | **230.9** / 115.3, 4.22 | 139.1 / 69.7, 7.00 | **156.7** / 74.7, 6.23 |
+  | ep5_hub | 220.8 / 139.5, 4.44 | **261.1** / 155.4, 3.75 | 141.0 / 96.7, 6.91 | **166.9** / 112.2, 5.83 |
+  | m1_brawl | 204.9 / 115.1, 4.84 | **232.6** / 112.9, 4.18 | 129.0 / 79.1, 7.65 | **152.0** / 72.6, 6.37 |
+
+  Still GPU-bound (CPU stages 1-2 ms). In game per op after (ep1): R2 world ~1.1-1.4, exact triangles ~1.0, the sky
+  0.53, volumes ~0.2-0.3, shuffles 0.27, present 0.21, darken + blur 0.12.
+- **Tried and dropped**: decoded textures for big FF triangle draws (`cs_texdec` running texel() over level 0, a TEXDEC
+  pixel shader permutation): the sky's draw mixes several textures (StateRecs per primitive), and decoding for the
+  medium draws of the ground cost more than it saved (fixed-stream replay +0.2-0.4 ms). Without the texture fetch the
+  sky costs half (experiment), so a per-primitive decoded-texture table is the way if the sky is to be cheaper. R2's
+  dual-source blend is not its cost (blend off: no change).
+- **Next (R7 part 2)**: the sky (decoded textures per state, or R2's class 3), fusing shuffles 2 + 3 with the darken and
+  the counter resolve (one pass instead of four over the frame: ~0.2 ms), the gameplay HUD (cheap: < 0.05 ms, CPU
+  only), R2's own fill (1.1 ms: 3-4 M fragments at ~0.3 ns, neither texture nor blend; overdraw / conservative depth).
+
 ### R8. Fully modern frames: free resolution, MSAA, motion vectors - 8 agent-days
 - **Deliverable**:
   - Frames with no exact draws render at any resolution, defaulting to the output resolution. "Render scale" becomes a
