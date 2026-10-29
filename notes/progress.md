@@ -2,6 +2,8 @@
 
 ## Resume here (read first in a new session)
 
+**2026-10-29: R6 particles done on next/r2-m6 (not merged yet):** profiled first - particles cost GPU fill of their exact triangles (m2 steam 1.15 ms/frame, m8 0.69), not VU simulation (already recompiled on the CPU). Particle-class triangles now go through a native pipeline (hardware-interpolated attributes and Z, R2H_PART span hints): their cost halves, pictures identical in replays; plus m2's G bit-plane shadow sprites as compute passes. m2 boardroom 3x 188->205 fps (GPU 5.23->4.80 ms), 4x 120->128; m8 3x 397->431. Gates pass (sweep 22/22, m9_exact identical). Left: guard-band exact meshes, shadow volumes, R2 draw overhead; supersampling itself (R8 MSAA) is the big GPU lever.
+
 **2026-10-29: R7 part 2 MERGED (60f8998), dist 0.1.952:** decoded texture cache + one-pass shadow pipeline (both pixel-identical): ep1 hub 3x 222->286 fps, 4x 161->195; ep3 3x 238->321; ep5 3x 261->324; m1 3x 246->284. Next: R6 particles (worktree r2-m6; fire/rain/fight scenes, m2 boardroom ~90 fps), then R5 part 2 (VU clipper, remaining variants), then R8 (ask owner D6 first).
 
 **2026-10-29: R7 part 1 MERGED (ba01fe2), dist 0.1.944:** modern mode shadows (order-independent G counter) + compute darken/motion blur: ep1 hub 3x 209->242 fps, 4x 128->146; ep5 3x 221->261. Running: R7 part 2 (worktree r2-m7b): sky, shuffles+darken merge, R2 world fill, costly exact-path triangles. Modern mode still opt-in (Options > Graphics > Rendering or F10) until the owner approves it as default.

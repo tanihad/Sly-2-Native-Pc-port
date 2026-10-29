@@ -875,10 +875,38 @@ covers; the owner confirms after testing the dist build. Effort is in agent-days
   quad and their Z rarely ties with the scene. Reference mode never sees it (no hints with R2 off; fx_on); m9_exact.
 - **GPU** (in-run A/B, the particles' draws): m2 1.15 -> 0.58 ms, m8 boss 0.69 -> 0.35, ep3 hub 0.14 -> 0.07 (7.6 M
   fragments per frame in m2: ~0.09 ns each).
+- **Flat post passes** (also found by the m2 profile): m2's shadow passes write G bit planes with full-screen untextured
+  sprites under FBMSK FFFF80FF / FFFFFEFF (a masked fill, (Cd * 2) >> 7 into one bit), which only the ROV tier draws
+  (0.30 ms per frame at 3x, "ref-other"). In modern frames such a ROV sprite draw (one state and colour, disjoint sprites,
+  no texture / fog / Z / DATE / PABE / dither, ATST always or NEVER with FB_ONLY / RGB_ONLY) is a cs_npost dispatch
+  (mode 256 "flat": the word is the GS blend + mask of the sprite colour and the sample's own destination word, as ps_gs
+  computes it): gpu_front.c flags them GPU_DF_NPOST, gpu_exec.c npost_prep checks them. m2 A/B: ref-other 0.30 -> 0.12
+  ms; replays with and without (`PS2_R2_NPOST_FLAT=0`) bit-identical at 3x.
+- **Performance** (chaos benchmark, modern mode, main 60f8998 vs this branch, interleaved, release, unlimited, owner's
+  PC; tags r2m6_s3 / r2m6_s4 (particles only, 1 repeat) and r2m6_m2_s3 / r2m6_m2_s4 (final build, m2, 2 repeats); fps
+  median / 1% low, GPU ms median). The fights' content varies a lot between runs (GS primitives per frame differ by up to
+  50%: m1 10.9k vs 7.0k, m5 7.7k vs 8.8k), so single-run differences of +-10% are noise there; the in-run A/B numbers
+  above are the reliable GPU savings.
+
+  | scene | 3x before | 3x after | 4x before | 4x after |
+  |---|---|---|---|---|
+  | m2_boardroom (2 repeats) | 188.0 / 112.0, 5.23 | **205.1** / 113.2, 4.80 | 119.6 / 72.2, 8.27 | **128.4** / 73.6, 7.60 |
+  | m8_boss | 396.8 / 211.0, 2.42 | **431.0** / 210.5, 2.10 | 274.7 / 149.7, 3.56 | 270.3 / 151.2, 3.60 |
+  | ep3_hub (rain) | 301.2 / 130.7, 3.27 | 311.5 / 152.4, 3.17 | 192.3 / 70.7, 5.06 | 216.9 / 127.6, 4.46 |
+  | m1_brawl | 268.8 / 119.8, 3.65 | 337.8 / 138.1, 2.88 (load) | 207.0 / 115.0, 4.70 | 204.9 / 112.2, 4.73 |
+  | m3_boss | 335.6 / 196.9, 2.87 | 335.6 / 196.5, 2.88 | 218.3 / 136.9, 4.43 | 219.3 / 139.3, 4.41 |
+  | m5_boss | 324.7 / 156.0, 2.97 | 305.8 / 147.7, 3.19 (load) | 215.5 / 105.3, 4.52 | 203.3 / 101.8, 4.80 (load) |
+
+  (m5: an in-run A/B shows no loss - its particles 0.029 -> 0.015 ms; the run with the new build drew 7-14% more
+  primitives.) The design's m2 target (>= 160 fps, 1% low >= 100) is met at 3x; m2 stays the heaviest scene.
 - **What is left in the chaos scenes' GPU time** (B phases, 3x): exact FF triangles with Z 0.9-1.7 ms (mostly guard-band
   meshes: 7-8k exact vertices in m1 / ep3, the VU clipper's R5 part 2 - which would not make them cheaper on the GPU: R2
   costs the same per sample), R2 0.6-0.7 (draw / state overhead, see R7 part 2), ROV triangles 0.5-0.9 (shadow volumes),
-  present 0.21. At 3x every sample is shaded (supersampling): R8's MSAA is the next big GPU lever.
+  present 0.21. At 3x every sample is shaded (supersampling): R8's MSAA is the next big GPU lever. In m2 also ROV
+  additive untextured triangles with Z (~0.15 ms; reason not yet read: likely COLCLAMP 0) and the rest of "ref-other".
+- **Diagnostics added**: `PS2_R2_DROPCLS=<mask>` (drop render classes' entries: what a class costs), `PS2_R2_PART=0`,
+  `PS2_GPU_PART=0`, `PS2_R2_NPOST_FLAT=0`, prof category "part", stats line "particles: spans, native / FF / ROV
+  triangles, other primitives".
 
 ### R8. Fully modern frames: free resolution, MSAA, motion vectors - 8 agent-days
 - **Deliverable**:
