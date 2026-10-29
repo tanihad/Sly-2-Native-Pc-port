@@ -2,6 +2,8 @@
 
 ## Resume here (read first in a new session)
 
+**PAUSED by the owner (2026-10-29).** Nothing running. R6 particles is COMPLETE on branch next/r2-m6 (d9b7afc, pushed, all gates passed on the branch; m2 boardroom 3x 188->205 fps, 4x 120->128). On "continue": merge next/r2-m6 into main (only progress.md changed on main), package.py + make_installer.py, push, then R5 part 2 (VU clipper / guard-band meshes) and ask the owner about D6 before R8 (MSAA, the big lever).
+
 **2026-10-29: R7 part 2 MERGED (60f8998), dist 0.1.952:** decoded texture cache + one-pass shadow pipeline (both pixel-identical): ep1 hub 3x 222->286 fps, 4x 161->195; ep3 3x 238->321; ep5 3x 261->324; m1 3x 246->284. Next: R6 particles (worktree r2-m6; fire/rain/fight scenes, m2 boardroom ~90 fps), then R5 part 2 (VU clipper, remaining variants), then R8 (ask owner D6 first).
 
 **2026-10-29: R7 part 1 MERGED (ba01fe2), dist 0.1.944:** modern mode shadows (order-independent G counter) + compute darken/motion blur: ep1 hub 3x 209->242 fps, 4x 128->146; ep5 3x 221->261. Running: R7 part 2 (worktree r2-m7b): sky, shuffles+darken merge, R2 world fill, costly exact-path triangles. Modern mode still opt-in (Options > Graphics > Rendering or F10) until the owner approves it as default.
