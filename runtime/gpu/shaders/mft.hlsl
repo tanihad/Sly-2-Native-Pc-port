@@ -92,7 +92,7 @@ bool mft_tri_frag(float4 pos, float3 istq, uint prim, uint sidx, out Frag f, out
     st = load_state(f.state);
     uint scanmsk = (st.flags >> 14) & 3u;
     if ((scanmsk == 2u && (py & 1) == 0) || (scanmsk == 3u && (py & 1) != 0)) { f.col = 0u; f.vcol = 0u; f.fog = 0u; return false; }
-    bool tme = (st.flags & SF_TME) != 0u, fst = (st.flags & SF_FST) != 0u;
+    bool tme = !SPEC_NOTEX && (st.flags & SF_TME) != 0u, fst = (st.flags & SF_FST) != 0u;
     int by0 = (int)(recs.Load(rb + 108u) << 16) >> 16;
     int rows = py - by0;
     int a[7];
@@ -184,17 +184,25 @@ void ps_mft_svol(VM i, uint prim : SV_PrimitiveID, uint cov : SV_Coverage) {
     int cs = (int)((col >> 8) & 255u);
     uint ns = m_cfg.x;
     uint2 P = uint2(i.pos.xy);
+    // (two samples per word, 16-bit lanes: a lane overflows into the next only after 257 adds of up to 255 - far more
+    //  volumes than overlap anywhere; the fused pass takes the low byte. m_cfg.z: the epoch's first row. The adds of the
+    //  samples sharing a word are one atomic)
+    uint acc = 0u, word = 0xFFFFFFFFu;
     [loop] for (uint s = 0u; s < ns; s++) {
+        uint fl = P.x * ns + s;
+        if ((fl >> 1) != word) {
+            if (acc != 0u) InterlockedAdd(m_cnt[uint2(word, P.y + m_cfg.z)], acc);
+            acc = 0u;
+            word = fl >> 1;
+        }
         if (((cov >> s) & 1u) == 0u) continue;
         uint dst = (date || csel == 1u) ? mft_col(P, s) : 0u;
         if (date && (dst >> 31) != datm) continue;
         int cc = csel == 0u ? (int)As : csel == 1u ? (int)(dst >> 24) : (int)fix;
         uint d = (uint)(((asel == 0u ? cs : -cs) * cc) >> 7);
-        // (two samples per word, 16-bit lanes: a lane overflows into the next only after 257 adds of up to 255 - far more
-        //  volumes than overlap anywhere; the fused pass takes the low byte. m_cfg.z: the epoch's first row)
-        uint fl = P.x * ns + s;
-        if ((d & 255u) != 0u) InterlockedAdd(m_cnt[uint2(fl >> 1, P.y + m_cfg.z)], (d & 255u) << ((fl & 1u) * 16u));
+        acc += (d & 255u) << ((fl & 1u) * 16u);
     }
+    if (acc != 0u) InterlockedAdd(m_cnt[uint2(word, P.y + m_cfg.z)], acc);
 }
 #endif
 
@@ -423,18 +431,20 @@ Texture2D<uint> m_cntr : register(t14);
 #if MS
 Texture2DMS<uint4> m_col : register(t12);
 uint mft_col(uint2 P, uint s) { uint4 c = m_col.Load(int2(P), s); return c.x | (c.y << 8) | (c.z << 16) | (c.w << 24); }
-float4 ps_mft_shfuse(float4 pos : SV_Position, uint s : SV_SampleIndex) : SV_Target {
 #else
 Texture2D<uint4> m_col : register(t12);
 uint mft_col(uint2 P, uint s) { uint4 c = m_col.Load(int3(P, 0)); return c.x | (c.y << 8) | (c.z << 16) | (c.w << 24); }
-float4 ps_mft_shfuse(float4 pos : SV_Position) : SV_Target {
-    uint s = 0u;
 #endif
-    uint2 P = uint2(pos.xy);
-    uint w = mft_col(P, s);
-    uint a = 0u;                         // (the other frame's word: only bits copy 0 wrote are read, gpu_exec_mft.h checks)
+// sample s's counter of epoch e (0 outside the volumes' box)
+uint mft_cnt_at(uint2 P, uint s, uint e) {
     bool inb = P.x >= sf_svbb.x && P.x < sf_svbb.z && P.y >= sf_svbb.y && P.y < sf_svbb.w;
     uint fl = P.x * m_cfg.x + s;
+    uint n = 0u;
+    if (inb) n = (m_cntr.Load(int3(fl >> 1, P.y + e * sf_ep.y, 0)) >> ((fl & 1u) * 16u)) & 255u;
+    return n;
+}
+uint mft_shfuse_word(uint2 P, uint s, uint w) {
+    uint a = 0u;                         // (the other frame's word: only bits copy 0 wrote are read, gpu_exec_mft.h checks)
     [unroll] for (uint k = 0u; k < 3u; k++) {
         uint4 c = sf_c[k];
         if ((c.w & (1u << 19)) != 0u) {
@@ -445,18 +455,43 @@ float4 ps_mft_shfuse(float4 pos : SV_Position) : SV_Target {
         if (k == 0u) {
             if (sf_clr.x != 0u) w = (w & ~sf_clr.z) | (sf_clr.y & sf_clr.z);
             [loop] for (uint e = 0u; e < sf_ep.x; e++) {
-                if (inb) {
-                    uint n = (m_cntr.Load(int3(fl >> 1, P.y + e * sf_ep.y, 0)) >> ((fl & 1u) * 16u)) & 255u;
-                    w = (w & 0xFFFF00FFu) | ((((w >> 8) + n) & 255u) << 8);
-                }
+                uint n = mft_cnt_at(P, s, e);
+                w = (w & 0xFFFF00FFu) | ((((w >> 8) + n) & 255u) << 8);
                 if (e + 1u < sf_ep.x) { uint4 q = sf_flat[e]; w = npost_word(w, w, q.x, q.y, q.z, q.w, 0u); }
             }
         }
     }
     if (sf_np2.y != 0u) w = npost_word(w, w, sf_np.x, sf_np.y, sf_np.z, sf_np.w, sf_np2.x);
+    return w;
+}
+float4 mft_unorm(uint w) {
     return float4((float)(w & 255u), (float)((w >> 8) & 255u), (float)((w >> 16) & 255u), (float)(w >> 24)) * (1.0 / 255.0);
 }
-
+#if MS
+// per sample (the pixels whose samples differ: the stencil marks the others, done by ps_mft_shfuse_px)
+float4 ps_mft_shfuse(float4 pos : SV_Position, uint s : SV_SampleIndex) : SV_Target {
+    uint2 P = uint2(pos.xy);
+    return mft_unorm(mft_shfuse_word(P, s, mft_col(P, s)));
+}
+// per pixel: a pixel whose samples hold one word and one count in every epoch (most of them) is done once for all its
+// samples; the others are discarded (left to the per-sample pass)
+float4 ps_mft_shfuse_px(float4 pos : SV_Position) : SV_Target {
+    uint2 P = uint2(pos.xy);
+    uint w = mft_col(P, 0u);
+    bool same = true;
+    [loop] for (uint s = 1u; s < m_cfg.x; s++) {
+        same = same && mft_col(P, s) == w;
+        [loop] for (uint e = 0u; e < sf_ep.x; e++) same = same && mft_cnt_at(P, s, e) == mft_cnt_at(P, 0u, e);
+    }
+    if (!same) discard;
+    return mft_unorm(mft_shfuse_word(P, 0u, w));
+}
+#else
+float4 ps_mft_shfuse(float4 pos : SV_Position) : SV_Target {
+    uint2 P = uint2(pos.xy);
+    return mft_unorm(mft_shfuse_word(P, 0u, mft_col(P, 0u)));
+}
+#endif
 // DATE on the surfaces: the stencil's bit 0 = the colour's alpha bit 7 (per sample; the stencil was cleared, samples whose
 // bit is 0 are discarded); the DATE draws then test the stencil
 #if MS

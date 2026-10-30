@@ -423,18 +423,21 @@ static int mft_unresolve(int id) {
     return 1;
 }
 
-/* the twin's content back into the grid target (an exact frame or a read-back uses it next) */
-static int mft_materialize(int id) {
+/* the twin's content back into the grid target (an exact frame or a read-back uses it next); nr: only that native rect
+ * [x0, x1) x [y0, y1) (a download of some blocks), NULL: all */
+static int mft_materialize_r(int id, const int* nr) {
     mtarget* m = &MT[id];
     xtarget* t = tgt((uint32_t)id);
     if (!m->ms || m->truth == MT_GRID) return 1;
     if (!t) { m->truth = MT_GRID; return 0; }
     int pc = PR.cur;
+    int nx0 = nr ? nr[0] : 0, ny0 = nr ? nr[1] : 0, nx1 = nr ? nr[2] : t->w / t->kx, ny1 = nr ? nr[3] : t->h / t->ky;
+    float r[4] = { (float)(nx0 * t->kx), (float)(ny0 * t->ky), (float)(nx1 * t->kx), (float)(ny1 * t->ky) };
     if (m->depth) {
         /* depth: sample 0 of the MS surface (or the picture), nearest, into the DSV; zpatch is stale from now on */
         int from_pic = m->truth == MT_PIC;
         float s_x = from_pic ? m->psx : m->sx, s_y = from_pic ? m->psy : m->sy;
-        ensure_dsv(t, 0, 0, t->w / t->kx - 1, t->h / t->ky - 1);
+        ensure_dsv(t, nx0, ny0, nx1 - 1, ny1 - 1);
         unbind_all();
         prof_mark(PR_MFT_RES);
         mft_bind_raw(NULL, t->dsv);
@@ -445,11 +448,10 @@ static int mft_materialize(int id) {
                 0.5f * s_y * (1.0f - 1.0f / (float)t->ky), from_pic ? m->pw : m->w, from_pic ? m->ph : m->h);
         set_depth(X.ds_write);
         set_blend(blend_state(BL_OFF, 0));
-        float r[4] = { 0.0f, 0.0f, (float)t->w, (float)t->h };
         mft_quad(r, !from_pic && m->n > 1 ? GPU_SH_ps_mft_zto1 : GPU_SH_ps_mft_zto0);
         ID3D11ShaderResourceView* none = NULL;
         ID3D11DeviceContext_PSSetShaderResources(gpu_rt.ctx, 16, 1, &none);
-        zt_mark(t, 0, 0, t->w / t->kx - 1, t->h / t->ky - 1, ZT_DSV);
+        zt_mark(t, nx0, ny0, nx1 - 1, ny1 - 1, ZT_DSV);
     } else {
         if (m->truth == MT_MS && !mft_resolve(id)) { m->truth = MT_GRID; return 0; }
         unbind_all();
@@ -462,7 +464,6 @@ static int mft_materialize(int id) {
                 0.5f * m->psy * (1.0f - 1.0f / (float)t->ky), m->pw, m->ph);
         set_depth(X.ds_off);
         set_blend(blend_state(BL_OFF, 15));
-        float r[4] = { 0.0f, 0.0f, (float)t->w, (float)t->h };
         mft_quad(r, GPU_SH_ps_mft_copy);
         ID3D11ShaderResourceView* none = NULL;
         ID3D11DeviceContext_PSSetShaderResources(gpu_rt.ctx, 18, 1, &none);
@@ -473,6 +474,7 @@ static int mft_materialize(int id) {
     M.to_grid++;
     return 1;
 }
+static int mft_materialize(int id) { return mft_materialize_r(id, NULL); }
 
 static void mft_materialize_all(void) {
     for (int i = 1; i <= MAX_TARGETS; i++)
@@ -1002,6 +1004,9 @@ static int mft_plan(const gpu_front_frame_data* fd) {
         if (t->nat_h > gh) gh = t->nat_h;
     }
     if (gw <= 0 || gh <= 0 || gw > 2048 || gh > 2048) return mft_no(MW_SIZE);
+    /* (only the displayed rect is drawn: rows below it - Sly's targets have 256 or 257 for 224 shown - are clipped) */
+    if (gw > lw) gw = lw;
+    if (gh > lh) gh = lh;
     int pct = (int)mcf_pct, n = (int)mcf_msaa;
     if (n > 1) {
         UINT q1 = 0, q2 = 0;
@@ -1060,18 +1065,22 @@ static int mft_draw_setup(const gpu_fop_draw* d, int zuse, int force_dual) {
     if (d->cls == GPU_PC_TRI) {
         set_topo(0);
         set_vs(gpu_vs(GPU_SH_vs_mft_tri));
-        int fast = (d->ps_key & GPU_PSK_FF_FAST) != 0;
-        int tdd = fast && TD.ndpos && td_draw(X.curpos);
+        /* (perf-p2's specialisation: no texture at all / no general LOD / the decoded texture cache) */
+        int fast = (d->ps_key & GPU_PSK_FF_FAST) != 0, notex = !(d->feat & GPU_DF_TEX), lod = (d->feat & GPU_DF_LOD) != 0;
+        int tdd = fast && !notex && !lod && TD.ndpos && td_draw(X.curpos);
         if (tdd) TD.draws++;
-        static const int t[2][3] = { { GPU_SH_ps_mft_t0s, GPU_SH_ps_mft_t0f, GPU_SH_ps_mft_t0fd },
-                                     { GPU_SH_ps_mft_t1s, GPU_SH_ps_mft_t1f, GPU_SH_ps_mft_t1fd } };
-        ps = t[dual][fast ? 1 + tdd : 0];
+        static const int t[2][2][3] = { { { GPU_SH_ps_mft_t0s, GPU_SH_ps_mft_t0sl, GPU_SH_ps_mft_t0sn },
+                                          { GPU_SH_ps_mft_t0f, GPU_SH_ps_mft_t0fl, GPU_SH_ps_mft_t0fn } },
+                                        { { GPU_SH_ps_mft_t1s, GPU_SH_ps_mft_t1sl, GPU_SH_ps_mft_t1sn },
+                                          { GPU_SH_ps_mft_t1f, GPU_SH_ps_mft_t1fl, GPU_SH_ps_mft_t1fn } } };
+        ps = tdd ? (dual ? GPU_SH_ps_mft_t1fd : GPU_SH_ps_mft_t0fd) : t[dual][fast][notex ? 2 : lod ? 1 : 0];
     } else {
         set_topo(1);
-        int sprite = d->cls == GPU_PC_SPRITE, thin = d->cls == GPU_PC_THIN;
+        int sprite = d->cls == GPU_PC_SPRITE, thin = d->cls == GPU_PC_THIN, notex = !(d->feat & GPU_DF_TEX);
         set_vs(gpu_vs(sprite ? GPU_SH_vs_mft_sprite : thin ? GPU_SH_vs_mft_thin : GPU_SH_vs_mft_linepix));
-        ps = sprite ? (dual ? GPU_SH_ps_mft_s1 : GPU_SH_ps_mft_s0) : thin ? (dual ? GPU_SH_ps_mft_n1 : GPU_SH_ps_mft_n0)
-                    : (dual ? GPU_SH_ps_mft_l1 : GPU_SH_ps_mft_l0);
+        ps = sprite ? (notex ? (dual ? GPU_SH_ps_mft_s1n : GPU_SH_ps_mft_s0n) : (dual ? GPU_SH_ps_mft_s1 : GPU_SH_ps_mft_s0))
+           : thin ? (dual ? GPU_SH_ps_mft_n1 : GPU_SH_ps_mft_n0)
+                  : notex ? (dual ? GPU_SH_ps_mft_l1n : GPU_SH_ps_mft_l0n) : (dual ? GPU_SH_ps_mft_l1 : GPU_SH_ps_mft_l0);
     }
     set_ps(gpu_ps(ps));
     return 1;
@@ -1345,7 +1354,9 @@ static void mft_shfuse(const mft_shp* q, int epochs) {
     int W = mft_px(q->L.W, m->sx), H = mft_px(q->L.H, m->sy);
     if (W < m->w || H < m->h)            /* (the rest of the surface: a copy first) */
         ID3D11DeviceContext_CopyResource(gpu_rt.ctx, (ID3D11Resource*)M.spare, (ID3D11Resource*)m->ms);
-    mft_bind_raw(M.spare_rtv, NULL);
+    ID3D11DepthStencilView* sds = m->n > 1 ? mft_sds(0, m->w, m->h, m->n) : NULL;
+    if (sds) ID3D11DeviceContext_ClearDepthStencilView(gpu_rt.ctx, sds, D3D11_CLEAR_STENCIL, 1.0f, 0);
+    mft_bind_raw(M.spare_rtv, sds);
     mft_cb_scale(0);
     ID3D11DeviceContext_PSSetShaderResources(gpu_rt.ctx, 12, 1, &m->srv);
     ID3D11DeviceContext_PSSetShaderResources(gpu_rt.ctx, 14, 1, &M.cnt_srv);
@@ -1354,7 +1365,17 @@ static void mft_shfuse(const mft_shp* q, int epochs) {
     set_depth(X.ds_off);
     set_blend(blend_state(BL_OFF, 15));
     float r[4] = { 0.0f, 0.0f, (float)(W < m->w ? W : m->w), (float)(H < m->h ? H : m->h) };
-    mft_quad(r, m->n > 1 ? GPU_SH_ps_mft_shfuse1 : GPU_SH_ps_mft_shfuse0);
+    if (sds) {                           /* (MSAA: the pixels whose samples agree once per pixel - they mark the stencil -, the rest
+                                            per sample: the deferred renderers' edge / interior split) */
+        prof_mark(PR_MFT_FUSE);
+        set_depth(mft_ds_mark());
+        mft_quad(r, GPU_SH_ps_mft_shfuse_px);
+        set_depth(mft_ds_date(0, 0));
+        mft_quad(r, GPU_SH_ps_mft_shfuse1);
+    } else {
+        prof_mark(PR_MFT_FUSE);
+        mft_quad(r, GPU_SH_ps_mft_shfuse0);
+    }
     ID3D11ShaderResourceView* none[3] = { NULL, NULL, NULL };
     ID3D11DeviceContext_PSSetShaderResources(gpu_rt.ctx, 12, 3, none);
     unbind_all();
@@ -1467,7 +1488,22 @@ static int mft_op(const gpu_front_frame_data* fd, size_t pos, uint32_t slot, siz
     }
     case GPU_FOP_DOWNLOAD: {             /* (the exact path reads the grid target: it gets the twin's content first) */
         const gpu_fop_blocks* o = (const gpu_fop_blocks*)h;
-        if (mft_disp(o->target)) { mft_sync_grid(o->target); M.bound = 0; }
+        xtarget* t = tgt(o->target);
+        mtarget* m = &MT[o->target];
+        if (t && mft_disp(o->target) && m->ms && m->truth != MT_GRID && o->data_off + (size_t)o->n * sizeof(gpu_dl_entry) <= fd->data_bytes) {
+            /* only the downloaded blocks (8 x 8 native pixels, 16 x 8 in 16-bit formats) */
+            const gpu_dl_entry* e = (const gpu_dl_entry*)(fd->data + o->data_off);
+            int bw = t->bcols ? t->nat_w / t->bcols : 8, r[4] = { 1 << 20, 1 << 20, -1, -1 };
+            for (uint32_t i = 0; i < o->n; i++) {
+                int bx = (e[i].local % t->bcols) * bw, by = (e[i].local / t->bcols) * 8;
+                if (bx < r[0]) r[0] = bx;
+                if (by < r[1]) r[1] = by;
+                if (bx + bw > r[2]) r[2] = bx + bw;
+                if (by + 8 > r[3]) r[3] = by + 8;
+            }
+            if (r[2] > r[0]) { int tr = m->truth; mft_materialize_r(o->target, r); m->truth = tr; }
+            M.bound = 0;
+        }
         return 0;
     }
     case GPU_FOP_LOAD: {                 /* (the grid target is written: it is the truth from now on) */

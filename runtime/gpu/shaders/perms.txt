@@ -196,22 +196,34 @@ ps_r2m_nd           r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2
 ps_r2m_a2c          r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_A2C=1
 # (r2-m8, R8) modern frame targets (gpu_exec_mft.h): the exact draws of a modern frame at any resolution with MSAA
 vs_mft_tri          mft.hlsl            vs_mft_tri        vs_5_0    PRIM=0 TRI_REC=128u
-ps_mft_t0f          mft.hlsl            ps_mft_tri        ps_5_0    PRIM=0 DUAL=0 TRI_REC=128u
-ps_mft_t1f          mft.hlsl            ps_mft_tri        ps_5_0    PRIM=0 DUAL=1 TRI_REC=128u
-ps_mft_t0s          mft.hlsl            ps_mft_tri        ps_5_0    PRIM=0 DUAL=0 TRI_REC=256u
-ps_mft_t1s          mft.hlsl            ps_mft_tri        ps_5_0    PRIM=0 DUAL=1 TRI_REC=256u
-ps_mft_t0fd         mft.hlsl            ps_mft_tri        ps_5_0    PRIM=0 DUAL=0 TRI_REC=128u TEXDEC=1
-ps_mft_t1fd         mft.hlsl            ps_mft_tri        ps_5_0    PRIM=0 DUAL=1 TRI_REC=128u TEXDEC=1
-ps_mft_svol_f1      mft.hlsl            ps_mft_svol       ps_5_0    PRIM=0 TRI_REC=128u MS=1
-ps_mft_svol_f0      mft.hlsl            ps_mft_svol       ps_5_0    PRIM=0 TRI_REC=128u MS=0
-ps_mft_svol_s1      mft.hlsl            ps_mft_svol       ps_5_0    PRIM=0 TRI_REC=256u MS=1
-ps_mft_svol_s0      mft.hlsl            ps_mft_svol       ps_5_0    PRIM=0 TRI_REC=256u MS=0
-vs_mft_sprite       mft.hlsl            vs_mft_sprite     vs_5_0    PRIM=1
+ps_mft_t0f          mft.hlsl            ps_mft_tri        ps_5_0    PRIM=0 DUAL=0 TRI_REC=128u SPEC_NOLOD=1
+ps_mft_t0fl         mft.hlsl            ps_mft_tri        ps_5_0    PRIM=0 DUAL=0 TRI_REC=128u
+ps_mft_t0fn         mft.hlsl            ps_mft_tri        ps_5_0    PRIM=0 DUAL=0 TRI_REC=128u SPEC_NOTEX=1 SPEC_NOLOD=1
+ps_mft_t0s          mft.hlsl            ps_mft_tri        ps_5_0    PRIM=0 DUAL=0 TRI_REC=256u SPEC_NOLOD=1
+ps_mft_t0sl         mft.hlsl            ps_mft_tri        ps_5_0    PRIM=0 DUAL=0 TRI_REC=256u
+ps_mft_t0sn         mft.hlsl            ps_mft_tri        ps_5_0    PRIM=0 DUAL=0 TRI_REC=256u SPEC_NOTEX=1 SPEC_NOLOD=1
+ps_mft_t0fd         mft.hlsl            ps_mft_tri        ps_5_0    PRIM=0 DUAL=0 TRI_REC=128u SPEC_NOLOD=1 TEXDEC=1
 ps_mft_s0           mft.hlsl            ps_mft_q          ps_5_0    PRIM=1 DUAL=0
-ps_mft_s1           mft.hlsl            ps_mft_q          ps_5_0    PRIM=1 DUAL=1
-vs_mft_linepix      mft.hlsl            vs_mft_linepix    vs_5_0    PRIM=2
+ps_mft_s0n          mft.hlsl            ps_mft_q          ps_5_0    PRIM=1 DUAL=0 SPEC_NOTEX=1 SPEC_NOLOD=1
 ps_mft_l0           mft.hlsl            ps_mft_q          ps_5_0    PRIM=2 DUAL=0
+ps_mft_l0n          mft.hlsl            ps_mft_q          ps_5_0    PRIM=2 DUAL=0 SPEC_NOTEX=1 SPEC_NOLOD=1
+ps_mft_t1f          mft.hlsl            ps_mft_tri        ps_5_0    PRIM=0 DUAL=1 TRI_REC=128u SPEC_NOLOD=1
+ps_mft_t1fl         mft.hlsl            ps_mft_tri        ps_5_0    PRIM=0 DUAL=1 TRI_REC=128u
+ps_mft_t1fn         mft.hlsl            ps_mft_tri        ps_5_0    PRIM=0 DUAL=1 TRI_REC=128u SPEC_NOTEX=1 SPEC_NOLOD=1
+ps_mft_t1s          mft.hlsl            ps_mft_tri        ps_5_0    PRIM=0 DUAL=1 TRI_REC=256u SPEC_NOLOD=1
+ps_mft_t1sl         mft.hlsl            ps_mft_tri        ps_5_0    PRIM=0 DUAL=1 TRI_REC=256u
+ps_mft_t1sn         mft.hlsl            ps_mft_tri        ps_5_0    PRIM=0 DUAL=1 TRI_REC=256u SPEC_NOTEX=1 SPEC_NOLOD=1
+ps_mft_t1fd         mft.hlsl            ps_mft_tri        ps_5_0    PRIM=0 DUAL=1 TRI_REC=128u SPEC_NOLOD=1 TEXDEC=1
+ps_mft_s1           mft.hlsl            ps_mft_q          ps_5_0    PRIM=1 DUAL=1
+ps_mft_s1n          mft.hlsl            ps_mft_q          ps_5_0    PRIM=1 DUAL=1 SPEC_NOTEX=1 SPEC_NOLOD=1
 ps_mft_l1           mft.hlsl            ps_mft_q          ps_5_0    PRIM=2 DUAL=1
+ps_mft_l1n          mft.hlsl            ps_mft_q          ps_5_0    PRIM=2 DUAL=1 SPEC_NOTEX=1 SPEC_NOLOD=1
+ps_mft_svol_f1      mft.hlsl            ps_mft_svol       ps_5_0    PRIM=0 TRI_REC=128u MS=1 SPEC_NOTEX=1 SPEC_NOLOD=1
+ps_mft_svol_f0      mft.hlsl            ps_mft_svol       ps_5_0    PRIM=0 TRI_REC=128u MS=0 SPEC_NOTEX=1 SPEC_NOLOD=1
+ps_mft_svol_s1      mft.hlsl            ps_mft_svol       ps_5_0    PRIM=0 TRI_REC=256u MS=1 SPEC_NOTEX=1 SPEC_NOLOD=1
+ps_mft_svol_s0      mft.hlsl            ps_mft_svol       ps_5_0    PRIM=0 TRI_REC=256u MS=0 SPEC_NOTEX=1 SPEC_NOLOD=1
+vs_mft_sprite       mft.hlsl            vs_mft_sprite     vs_5_0    PRIM=1
+vs_mft_linepix      mft.hlsl            vs_mft_linepix    vs_5_0    PRIM=2
 vs_mft_thin         mft.hlsl            vs_mft_thin       vs_5_0    PRIM=3
 ps_mft_n0           mft.hlsl            ps_mft_thin       ps_5_0    PRIM=3 DUAL=0
 ps_mft_n1           mft.hlsl            ps_mft_thin       ps_5_0    PRIM=3 DUAL=1
@@ -225,6 +237,7 @@ ps_mft_zto1         mft.hlsl            ps_mft_zto        ps_5_0    PRIM=9 MS=1
 ps_mft_zto0         mft.hlsl            ps_mft_zto        ps_5_0    PRIM=9 MS=0
 ps_mft_shfuse1      mft.hlsl            ps_mft_shfuse     ps_5_0    PRIM=9 MS=1
 ps_mft_shfuse0      mft.hlsl            ps_mft_shfuse     ps_5_0    PRIM=9 MS=0
+ps_mft_shfuse_px    mft.hlsl            ps_mft_shfuse_px  ps_5_0    PRIM=9 MS=1
 ps_mft_date1        mft.hlsl            ps_mft_date       ps_5_0    PRIM=9 MS=1
 ps_mft_date0        mft.hlsl            ps_mft_date       ps_5_0    PRIM=9 MS=0
 # (r2-m1) its conformance kernels (tests/unit/r2)
