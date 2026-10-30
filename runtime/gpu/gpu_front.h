@@ -301,11 +301,12 @@ typedef struct {                         /* 64 bytes (shaders/r2.hlsl reads it) 
     float ax, bx, ay, by, az, bz;        /* screen model (r2_screen_model) */
     uint32_t serial, pad;
 } gpu_r2_frame;
-typedef struct {                         /* 80 bytes */
+typedef struct {                         /* 144 bytes (shaders/r2.hlsl R2_ENT_BYTES) */
     float m[16];                         /* world x clip (row vectors) */
     float fade;                          /* VU 8.x */
     uint32_t flags;                      /* (r2-m2) R2E_* (runtime/r2/r2.h) */
     uint32_t pad[2];
+    float prev[16];                      /* (r2-m8) the previous frame's world x clip of the same object (motion vectors) */
 } gpu_r2_entry;
 typedef struct {                         /* (r2-m2) 32 bytes: one consolidated draw (shaders/r2.hlsl reads the first 16) */
     uint32_t entry;                      /* entry record index in the segment */

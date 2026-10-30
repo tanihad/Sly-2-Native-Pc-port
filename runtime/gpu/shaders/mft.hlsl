@@ -393,6 +393,12 @@ float4 ps_mft_upscale(float4 pos : SV_Position) : SV_Target {
     float4 d = m_tex.SampleLevel(m_lin, c + float2(0.0, m_src2.w), 0.0), e = m_tex.SampleLevel(m_lin, c + m_src2.zw, 0.0);
     return clamp(r, min(min(a, b), min(d, e)), max(max(a, b), max(d, e)));
 }
+// (diagnostics, PS2_MFT_MV_VIEW=1) the motion vectors over the picture: 0.5 grey = none, red / green = x / y (16 px per 0.5)
+float4 ps_mft_mvview(float4 pos : SV_Position) : SV_Target {
+    float2 p = pos.xy * m_src.xy + m_src.zw;
+    float2 mv = m_tex.Load(int3(clamp(int2(p), int2(0, 0), int2(m_src2.xy) - 1), 0)).xy;
+    return float4(saturate(0.5 + mv / 32.0), 0.5, 1.0);
+}
 // depth from the exact grid's depth target (its D32 SRV, z / 2^20) into a surface: the nearest grid sample
 Texture2D<float> m_zgrid : register(t17);
 float ps_mft_zfrom(float4 pos : SV_Position) : SV_Depth {

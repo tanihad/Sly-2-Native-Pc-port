@@ -102,8 +102,16 @@ static struct {
     int nshp;
     int sv_bb[4];                        /* the volumes' samples drawn this sequence (surface pixels) */
     int shp_fail;                        /* (diagnostics) why the last shadow sequence did not plan: 1 head, 2 tail, 3 A */
+    int mv_on, mv_view;                  /* (r2-m8) motion vectors (PS2_MFT_MV=1), their picture (PS2_MFT_MV_VIEW=1) */
+    ID3D11Texture2D *mv, *mvr;           /* MS surface, resolved */
+    ID3D11RenderTargetView* mv_rtv;
+    ID3D11ShaderResourceView* mvr_srv;
+    int mv_w, mv_h, mv_n;
+    size_t r2op[256];                    /* this frame's R2 segments drawn in phase A (op positions) */
+    int nr2;
+    uint64_t mv_frames;
     /* statistics (PS2_R2_STATS) */
-    uint64_t frames, grid, why[MW_N], to_grid, from_grid, resolves, draws, svols;
+    uint64_t frames, grid, why[MW_N], to_grid, from_grid, resolves, draws, svols, n_dl, n_load, n_xcopy, n_mat;
     int why_last;
 } M = { .cb_phase = -1 };
 
@@ -127,6 +135,8 @@ static void mft_release(void) {
     for (int i = 0; i < 2; i++) { GPU_RELEASE(M.sds_dsv[i]); GPU_RELEASE(M.sds[i]); M.sds_w[i] = M.sds_h[i] = M.sds_n[i] = 0; }
     for (int i = 0; i < 8; i++) { GPU_RELEASE(M.ds_date[i][0]); GPU_RELEASE(M.ds_date[i][1]); }
     GPU_RELEASE(M.ds_mark);
+    GPU_RELEASE(M.mv_rtv); GPU_RELEASE(M.mv); GPU_RELEASE(M.mvr_srv); GPU_RELEASE(M.mvr);
+    M.mv_w = M.mv_h = M.mv_n = 0;
     M.spare_w = M.spare_h = M.spare_n = M.cnt_w = M.cnt_h = M.tmp_w = M.tmp_h = 0;
     M.cb_phase = -1;
     M.on = 0;
@@ -301,8 +311,9 @@ static ID3D11DepthStencilState* mft_ds_write(void) { return X.ds_write; }
 
 /* ---- truth conversions ------------------------------------------------------------------------------------------ */
 
-/* the grid target's colour / depth into the twin's MS surface (pic 0) or picture (pic 1) */
-static int mft_from_grid(int id, int pic) {
+/* the grid target's colour / depth into the twin's MS surface (pic 0) or picture (pic 1); nr: only that native rect
+ * [x0, x1) x [y0, y1) (blocks the exact path loaded), NULL: all */
+static int mft_from_grid_r(int id, int pic, const int* nr) {
     xtarget* t = tgt((uint32_t)id);
     mtarget* m = &MT[id];
     if (!t || !m->ms) return 0;
@@ -311,10 +322,12 @@ static int mft_from_grid(int id, int pic) {
     float s_x = pic ? m->psx : m->sx, s_y = pic ? m->psy : m->sy;
     int w = pic ? m->pw : m->w, h = pic ? m->ph : m->h;
     float r[4] = { 0.0f, 0.0f, (float)w, (float)h };
+    if (nr) { r[0] = (float)mft_px(nr[0], s_x); r[1] = (float)mft_px(nr[1], s_y); r[2] = (float)mft_px(nr[2], s_x); r[3] = (float)mft_px(nr[3], s_y); }
     /* MFT pixel centre p: GS g = p / s - 0.5; the grid's continuous texel coordinate g k + 0.5 */
     mft_src((float)t->kx / s_x, (float)t->ky / s_y, 0.5f * (1.0f - (float)t->kx), 0.5f * (1.0f - (float)t->ky), t->w, t->h);
     if (m->depth) {
-        ensure_dsv(t, 0, 0, t->w / t->kx - 1, t->h / t->ky - 1);
+        if (nr) ensure_dsv(t, nr[0], nr[1], nr[2] - 1, nr[3] - 1);
+        else ensure_dsv(t, 0, 0, t->w / t->kx - 1, t->h / t->ky - 1);
         unbind_all();
         mft_bind_raw(NULL, pic ? m->pdsv : m->dsv);
         ID3D11DeviceContext_PSSetShaderResources(gpu_rt.ctx, 17, 1, &t->srv);
@@ -336,6 +349,23 @@ static int mft_from_grid(int id, int pic) {
     prof_mark(pc);
     M.from_grid++;
     return 1;
+}
+static int mft_from_grid(int id, int pic) { return mft_from_grid_r(id, pic, NULL); }
+
+/* the native rect of target t's blocks: n local block numbers (u16, or gpu_dl_entry.local with stride 16) */
+static int mft_blocks_rect(const xtarget* t, const uint8_t* p, uint32_t n, size_t stride, int r[4]) {
+    int bw = t->bcols ? t->nat_w / t->bcols : 8;
+    r[0] = r[1] = 1 << 20; r[2] = r[3] = -1;
+    for (uint32_t i = 0; i < n; i++) {
+        uint16_t b;
+        memcpy(&b, p + i * stride, 2);
+        int bx = (b % t->bcols) * bw, by = (b / t->bcols) * 8;
+        if (bx < r[0]) r[0] = bx;
+        if (by < r[1]) r[1] = by;
+        if (bx + bw > r[2]) r[2] = bx + bw;
+        if (by + 8 > r[3]) r[3] = by + 8;
+    }
+    return t->bcols && r[2] > r[0];
 }
 
 static int mft_tmp(int w, int h) {
@@ -478,7 +508,7 @@ static int mft_materialize(int id) { return mft_materialize_r(id, NULL); }
 
 static void mft_materialize_all(void) {
     for (int i = 1; i <= MAX_TARGETS; i++)
-        if (MT[i].ms && MT[i].truth != MT_GRID) mft_materialize(i);
+        if (MT[i].ms && MT[i].truth != MT_GRID) { M.n_mat++; mft_materialize(i); }
 }
 
 /* the twin of id holds the target's newest content in the representation `want` (MT_MS / MT_PIC) */
@@ -503,6 +533,10 @@ static int mft_enabled(void) {
         if (e && *e) InterlockedExchange(&mcf_on, *e != '0');
         e = getenv("PS2_MFT_SCALE");
         if (e && *e) InterlockedExchange(&mcf_pct, atoi(e) < 25 ? 25 : atoi(e) > 400 ? 400 : atoi(e));
+        e = getenv("PS2_MFT_MV");
+        M.mv_on = e && *e == '1';
+        e = getenv("PS2_MFT_MV_VIEW");
+        M.mv_view = M.mv_on && e && *e == '1';
         e = getenv("PS2_MFT_MSAA");
         if (e && *e) { int n = atoi(e); InterlockedExchange(&mcf_msaa, n >= 8 ? 8 : n >= 4 ? 4 : n >= 2 ? 2 : 1); }
     }
@@ -1027,6 +1061,7 @@ static int mft_plan(const gpu_front_frame_data* fd) {
     M.cb_phase = -1;
     M.bound = 0;
     M.shp_at = 0;
+    M.nr2 = 0;
     return 1;
 }
 
@@ -1059,7 +1094,11 @@ static void mft_scissor(const int16_t sc[4]) {
 
 /* a draw's bindings, scissor and shaders on the phase's surfaces */
 static int mft_draw_setup(const gpu_fop_draw* d, int zuse, int force_dual) {
-    if (!mft_bind(d->ct, zuse ? d->zt : 0)) return 0;
+    /* a depth-only draw keeps the bound colour surface (write mask 0): the outlines' Z pass alternates with their colour
+     * pass, and rebinding multisampled targets per draw is not free */
+    int ct = d->ct;
+    if (!ct && zuse && M.bound && X.mode == 7 && M.zt_b == d->zt && M.ct_b && !d->wmask) ct = M.ct_b;
+    if (!mft_bind(ct, zuse ? d->zt : 0)) return 0;
     mft_scissor(d->sc);
     int dual = d->blend == BL_DUAL || force_dual, ps;
     if (d->cls == GPU_PC_TRI) {
@@ -1141,6 +1180,81 @@ static void mft_r2(const gpu_front_frame_data* fd, const gpu_fop_r2* o) {
     X.mode = 0;
     X.b_ct = X.b_zt = -1;
     M.bound = 0;
+    if (M.mv_on && M.nr2 < 256) M.r2op[M.nr2++] = (const uint8_t*)o - fd->cmd;   /* (the motion-vector pass draws it again) */
+}
+
+/* ---- (r2-m8) motion vectors: the frame's R2 segments again into an R16G16_FLOAT surface (r2.hlsl r2_vs_mv: current -
+ * previous position of every native entry's pass-A surface, render-surface pixels), resolved to one sample per pixel at the
+ * end of phase A. Nothing reads them yet: the base for TAA / FSR / DLSS. On with PS2_MFT_MV=1 (else no cost at all);
+ * PS2_MFT_MV_VIEW=1 shows them over the picture. Exact draws (particles, clipper fans, HUD) carry none (0). */
+static int mft_mv_ensure(int w, int h, int n) {
+    if (M.mv && M.mv_w == w && M.mv_h == h && M.mv_n == n) return 1;
+    GPU_RELEASE(M.mv_rtv); GPU_RELEASE(M.mv); GPU_RELEASE(M.mvr_srv); GPU_RELEASE(M.mvr);
+    M.mv_w = M.mv_h = M.mv_n = 0;
+    M.mv = mtex(w, h, n, DXGI_FORMAT_R16G16_FLOAT, D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE);
+    M.mvr = mtex(w, h, 1, DXGI_FORMAT_R16G16_FLOAT, D3D11_BIND_SHADER_RESOURCE | (n == 1 ? D3D11_BIND_RENDER_TARGET : 0));
+    if (!M.mv || !M.mvr) return 0;
+    D3D11_RENDER_TARGET_VIEW_DESC d;
+    memset(&d, 0, sizeof d);
+    d.Format = DXGI_FORMAT_R16G16_FLOAT;
+    d.ViewDimension = n > 1 ? D3D11_RTV_DIMENSION_TEXTURE2DMS : D3D11_RTV_DIMENSION_TEXTURE2D;
+    if (FAILED(ID3D11Device_CreateRenderTargetView(gpu_rt.dev, (ID3D11Resource*)M.mv, &d, &M.mv_rtv))) return 0;
+    M.mvr_srv = msrv(M.mvr, 0, DXGI_FORMAT_R16G16_FLOAT);
+    if (!M.mvr_srv) return 0;
+    M.mv_w = w; M.mv_h = h; M.mv_n = n;
+    return 1;
+}
+
+static void mft_mv_pass(const gpu_front_frame_data* fd) {
+    if (!M.nr2) return;
+    int pc = PR.cur;
+    prof_mark(PR_MFT_MV);
+    const gpu_fop_r2* o0 = (const gpu_fop_r2*)(fd->cmd + M.r2op[0]);
+    mtarget* c = &MT[o0->ct];
+    if (c->ms && mft_mv_ensure(c->w, c->h, c->n)) {
+        unbind_all();
+        static const float zero[4] = { 0, 0, 0, 0 };
+        ID3D11DeviceContext_ClearRenderTargetView(gpu_rt.ctx, M.mv_rtv, zero);
+        for (int i = 0; i < M.nr2; i++) {
+            const gpu_fop_r2* o = (const gpu_fop_r2*)(fd->cmd + M.r2op[i]);
+            mtarget* z = &MT[o->zt];
+            if (!z->dsv || z->w != c->w || z->h != c->h) continue;
+            r2_exec_in in = { gpu_rt.dev, gpu_rt.ctx, M.mv_rtv, z->dsv, 1, 1, X.vram_srv, X.swz_srv, X.dat.srv, X.iota,
+                              gpu_rt.caps.warp ? 0.49609375f : 0.42f, td_r2, NULL, NULL };
+            in.texdec_srv = TD.srv;
+            in.mft = 1; in.mv = 1; in.msaa = M.n; in.sx = M.rsx; in.sy = M.rsy;
+            r2_render_segment(o, fd->data, fd->data_bytes, &in);
+        }
+        unbind_all();
+        if (c->n > 1) ID3D11DeviceContext_ResolveSubresource(gpu_rt.ctx, (ID3D11Resource*)M.mvr, 0, (ID3D11Resource*)M.mv, 0, DXGI_FORMAT_R16G16_FLOAT);
+        else ID3D11DeviceContext_CopyResource(gpu_rt.ctx, (ID3D11Resource*)M.mvr, (ID3D11Resource*)M.mv);
+        bind_frame_buffers();
+        ID3D11Buffer* b = M.cb;
+        ID3D11DeviceContext_VSSetConstantBuffers(gpu_rt.ctx, 6, 1, &b);
+        ID3D11DeviceContext_PSSetConstantBuffers(gpu_rt.ctx, 6, 1, &b);
+        X.mode = 0;
+        M.bound = 0;
+        M.mv_frames++;
+    }
+    M.nr2 = 0;
+    prof_mark(pc);
+}
+
+/* (diagnostics) the resolved motion vectors over target id's picture */
+static void mft_mv_view(int id) {
+    mtarget* m = &MT[id];
+    if (!M.mvr_srv || !m->prtv) return;
+    unbind_all();
+    mft_bind_raw(m->prtv, NULL);
+    ID3D11DeviceContext_PSSetShaderResources(gpu_rt.ctx, 18, 1, &M.mvr_srv);
+    mft_src(M.rsx / M.osx, M.rsy / M.osy, 0.0f, 0.0f, M.mv_w, M.mv_h);
+    set_depth(X.ds_off);
+    set_blend(blend_state(BL_OFF, 7));
+    float r[4] = { 0.0f, 0.0f, (float)m->pw, (float)m->ph };
+    mft_quad(r, GPU_SH_ps_mft_mvview);
+    ID3D11ShaderResourceView* none = NULL;
+    ID3D11DeviceContext_PSSetShaderResources(gpu_rt.ctx, 18, 1, &none);
+    unbind_all();
 }
 
 static void mft_clear(const gpu_fop_clear* o) {
@@ -1455,10 +1569,12 @@ static void mft_present(const gpu_front_frame_data* fd, const gpu_fop_present* o
         exec_present(fd, o);
         return;
     }
+    mft_mv_pass(fd);                     /* (a frame without a resolve point before its PRESENT) */
     if (!mft_need(id, MT_PIC)) { mft_materialize_all(); exec_present(fd, o); return; }
     unbind_all();
     M.bound = 0;
     mtarget* m = &MT[id];
+    if (M.mv_view) mft_mv_view(id);
     int w = M.ow < m->pw ? M.ow : m->pw, h = M.oh < m->ph ? M.oh : m->ph;
     gpu_present_mft_picture(m->pic, w, h, (uint32_t)di->priv[15]);
     if (di->rb) gpu_present_readback((gpu_readback*)di->rb);
@@ -1474,7 +1590,11 @@ static int mft_op(const gpu_front_frame_data* fd, size_t pos, uint32_t slot, siz
     const gpu_fop* h = (const gpu_fop*)(fd->cmd + pos);
     *next = pos + h->size;
     *slots = 0;
-    while (M.iph < M.nph && pos >= M.ph_pos[M.iph]) M.phase = M.ph_val[M.iph++];
+    while (M.iph < M.nph && pos >= M.ph_pos[M.iph]) {
+        int np = M.ph_val[M.iph++];
+        if (!M.phase && np) mft_mv_pass(fd);   /* (the end of phase A: the frame's motion vectors) */
+        M.phase = np;
+    }
     switch (h->op) {
     case GPU_FOP_CLEAR: {
         const gpu_fop_clear* o = (const gpu_fop_clear*)h;
@@ -1486,33 +1606,43 @@ static int mft_op(const gpu_front_frame_data* fd, size_t pos, uint32_t slot, siz
         const gpu_fop_rov_end* o = (const gpu_fop_rov_end*)h;
         return mft_disp(o->ct) || mft_disp(o->zt);
     }
-    case GPU_FOP_DOWNLOAD: {             /* (the exact path reads the grid target: it gets the twin's content first) */
+    case GPU_FOP_DOWNLOAD: {             /* (the exact path reads the grid target: it gets the twin's content first, those blocks) */
         const gpu_fop_blocks* o = (const gpu_fop_blocks*)h;
         xtarget* t = tgt(o->target);
         mtarget* m = &MT[o->target];
-        if (t && mft_disp(o->target) && m->ms && m->truth != MT_GRID && o->data_off + (size_t)o->n * sizeof(gpu_dl_entry) <= fd->data_bytes) {
-            /* only the downloaded blocks (8 x 8 native pixels, 16 x 8 in 16-bit formats) */
-            const gpu_dl_entry* e = (const gpu_dl_entry*)(fd->data + o->data_off);
-            int bw = t->bcols ? t->nat_w / t->bcols : 8, r[4] = { 1 << 20, 1 << 20, -1, -1 };
-            for (uint32_t i = 0; i < o->n; i++) {
-                int bx = (e[i].local % t->bcols) * bw, by = (e[i].local / t->bcols) * 8;
-                if (bx < r[0]) r[0] = bx;
-                if (by < r[1]) r[1] = by;
-                if (bx + bw > r[2]) r[2] = bx + bw;
-                if (by + 8 > r[3]) r[3] = by + 8;
-            }
-            if (r[2] > r[0]) { int tr = m->truth; mft_materialize_r(o->target, r); m->truth = tr; }
+        int r[4];
+        if (t && mft_disp(o->target) && m->ms && m->truth != MT_GRID && o->data_off + (size_t)o->n * sizeof(gpu_dl_entry) <= fd->data_bytes &&
+            mft_blocks_rect(t, fd->data + o->data_off, o->n, sizeof(gpu_dl_entry), r)) {
+            int tr = m->truth;
+            mft_materialize_r(o->target, r);
+            m->truth = tr;
+            M.n_dl++;
             M.bound = 0;
         }
         return 0;
     }
-    case GPU_FOP_LOAD: {                 /* (the grid target is written: it is the truth from now on) */
+    case GPU_FOP_LOAD: {                 /* (the exact path writes blocks of the grid target from GS memory: then into the twin) */
         const gpu_fop_blocks* o = (const gpu_fop_blocks*)h;
-        if (mft_disp(o->target)) { mft_materialize(o->target); M.bound = 0; }
-        return 0;
+        xtarget* t = tgt(o->target);
+        mtarget* m = &MT[o->target];
+        int r[4];
+        if (!t || !mft_disp(o->target) || !m->ms || m->truth == MT_GRID) return 0;
+        M.n_load++;
+        if (o->data_off + (size_t)o->n * 2 > fd->data_bytes || !mft_blocks_rect(t, fd->data + o->data_off, o->n, 2, r)) {
+            mft_materialize(o->target);
+            M.bound = 0;
+            return 0;
+        }
+        exec_load(o);
+        int tr = m->truth;
+        if (!m->alias && tr == MT_PIC) mft_from_grid_r(o->target, 1, r);
+        else mft_from_grid_r(o->target, tr == MT_PIC, r);
+        M.bound = 0;
+        return 1;
     }
     case GPU_FOP_XCOPY: {
         const gpu_fop_xcopy* o = (const gpu_fop_xcopy*)h;
+        M.n_xcopy++;
         if (mft_disp(o->src)) mft_sync_grid(o->src);
         if (mft_disp(o->target)) mft_materialize(o->target);
         M.bound = 0;
@@ -1572,8 +1702,8 @@ static int mft_frame_begin(const gpu_front_frame_data* fd) {
         int o = snprintf(line, sizeof line, "mft: %llu modern frames, %llu exact (", (unsigned long long)M.frames, (unsigned long long)M.grid);
         for (int i = 0; i < MW_N && o < (int)sizeof line - 40; i++)
             if (M.why[i]) o += snprintf(line + o, sizeof line - (size_t)o, "%s %llu, ", mw_names[i], (unsigned long long)M.why[i]);
-        snprintf(line + o, sizeof line - (size_t)o, "); to grid %llu, from grid %llu, resolves %llu, draws %llu, volumes %llu; %dx%d -> %dx%d, %d samples",
-                 (unsigned long long)M.to_grid, (unsigned long long)M.from_grid, (unsigned long long)M.resolves,
+        snprintf(line + o, sizeof line - (size_t)o, "); to grid %llu (downloads %llu, loads %llu, copies %llu, all %llu), from grid %llu, resolves %llu, draws %llu, volumes %llu; %dx%d -> %dx%d, %d samples",
+                 (unsigned long long)M.to_grid, (unsigned long long)M.n_dl, (unsigned long long)M.n_load, (unsigned long long)M.n_xcopy, (unsigned long long)M.n_mat, (unsigned long long)M.from_grid, (unsigned long long)M.resolves,
                  (unsigned long long)M.draws, (unsigned long long)M.svols, (int)ceilf(M.gw * M.rsx), (int)ceilf(M.gh * M.rsy),
                  M.ow, M.oh, M.n);
         gpu_log("%s", line);

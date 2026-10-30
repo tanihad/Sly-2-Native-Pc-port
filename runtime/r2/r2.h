@@ -81,7 +81,7 @@ typedef struct {
 #define R2_SLOTS 16u
 #define R2_SLOT_ENTS 4096u
 #define R2_SLOT_RUNS 1024u
-typedef struct {                 /* 96 bytes */
+typedef struct {                 /* 160 bytes */
     float m[16];                 /* world x clip (W x C, the VU's 0x0070 arithmetic) */
     float fade;                  /* VU 8.x */
     uint32_t handle;             /* mesh */
@@ -89,6 +89,7 @@ typedef struct {                 /* 96 bytes */
     uint32_t flags;              /* R2E_* */
     uint32_t xoff, xn;           /* (r2-m3) lit / skinned: the entry's extra qwords in the slot's pool (r2_lit_block) */
     uint32_t pad[2];
+    float prev[16];              /* (r2-m8) the same object's W x C of the previous frame (motion vectors; = m when unknown) */
 } r2_slot_ent;
 #define R2_SLOT_XQ 32768u        /* (r2-m3) extra qwords per slot (light blocks, bone palettes) */
 enum { R2E_CLIP = 1,             /* the mesh's bounds cross the VU's guard band: R2 draws its triangles inside it (r2_gs_clip) */

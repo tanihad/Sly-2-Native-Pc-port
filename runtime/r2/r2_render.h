@@ -24,6 +24,7 @@ typedef struct {
     /* (r2-m8, R8) a modern frame's targets (gpu_exec_mft.h): rtv / dsv are the MFT surfaces, d3d = (GS + 0.5) * (sx, sy),
      * hardware depth (no SV_Depth), msaa samples (> 1: alpha-to-coverage for pass-A cut-outs) */
     int mft, msaa;
+    int mv;                              /* (r2-m8) the motion-vector pass: pass-A draws through r2_vs_mv / r2_ps_mv, depth GEQUAL */
     float sx, sy;
 } r2_exec_in;
 

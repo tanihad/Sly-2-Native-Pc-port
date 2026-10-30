@@ -398,7 +398,7 @@ static void seg_env(const gs_env_view* ev) {
 
 /* one native entry into the open segment; m = world x clip */
 static int entry_add(const gs_env_view* ev, uint32_t handle, const float m[16], float fade, uint32_t eflags, const void* xq, uint32_t xn,
-                     const uint32_t* rt) {
+                     const uint32_t* rt, const float* prev) {
     if (!fb_ok || !r2_mesh_get(handle)) { R2S.dropped++; return 0; }
     seg_env(ev);
     if (!grow((void**)&items, &capitems, nitems + 1, sizeof *items) || !grow((void**)&ents, &capents, nents + 1, sizeof *ents) ||
@@ -412,6 +412,7 @@ static int entry_add(const gs_env_view* ev, uint32_t handle, const float m[16], 
     }
     gpu_r2_entry* e = &ents[nents];
     memcpy(e->m, m, sizeof e->m);
+    memcpy(e->prev, prev ? prev : m, sizeof e->prev);   /* (r2-m8: motion vectors) */
     e->fade = fade;
     e->flags = eflags;
     e->pad[0] = e->pad[1] = 0;
@@ -464,7 +465,7 @@ static int entry_done(const gs_env_view* ev) {
         if (id >= xq_have) { R2S.bad_hints++; return 0; }
         xn = xq_n[id]; xo = xq_off[id];
     }
-    return entry_add(ev, RX.handle, m, fade, RX.flags & R2D_CLIP ? R2E_CLIP : 0, XQW + xo, xn, NULL);
+    return entry_add(ev, RX.handle, m, fade, RX.flags & R2D_CLIP ? R2E_CLIP : 0, XQW + xo, xn, NULL, NULL);
 }
 
 /* (r2-m2, hybrid) a run of native entries from the frame's scene slot */
@@ -485,7 +486,7 @@ static void run_hint(const gs_env_view* ev, uint32_t arg, uint32_t serial) {
     for (uint32_t i = 0; i < n; i++) {
         const r2_slot_ent* se = &S->ent[first + i];
         const uint32_t* rt = (se->flags & R2E_RUNS) && se->pad[0] && se->pad[0] <= R2_SLOT_XQ ? (const uint32_t*)S->xq[se->pad[0] - 1] : NULL;
-        entry_add(ev, se->handle, se->m, se->fade, se->flags, se->xn ? S->xq[se->xoff] : NULL, se->xn, rt);
+        entry_add(ev, se->handle, se->m, se->fade, se->flags, se->xn ? S->xq[se->xoff] : NULL, se->xn, rt, se->prev);
     }
     __atomic_thread_fence(__ATOMIC_ACQUIRE);
     if (__atomic_load_n(&S->serial, __ATOMIC_RELAXED) != serial) {   /* reused while read (the EE 16 frames ahead) */

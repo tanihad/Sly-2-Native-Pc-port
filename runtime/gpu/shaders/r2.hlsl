@@ -38,6 +38,10 @@ cbuffer r2_static : register(b1) {
 #define R2_MFT 0                         // (r2-m8, R8) the modern frame's surfaces (gpu_exec_mft.h): d3d = (GS + 0.5) * s,
                                          // the rasterized Z (GS Z / 2^20 at the vertices; no SV_Depth: MSAA keeps per-sample depth)
 #endif
+#ifndef R2_MV
+#define R2_MV 0                          // (r2-m8) the motion-vector pass (with R2_MFT)
+#endif
+static float2 g_prev_d3d;                // (R2_MV) the vertex's previous position, surface pixels
 #ifndef R2_A2C
 #define R2_A2C 0                         // (r2-m8) MSAA: pass-A cut-outs (alpha test GEQUAL / GREATER, failing fragments
                                          // discarded) as coverage instead of a discard (alpha-to-coverage through SV_Coverage)
@@ -196,7 +200,7 @@ void r2_vertex(R2V i, out R2O o, out float4 clip, out float4 alt) {
     }
     uint mat = r2_mtab.Load((dr.w & 0xFFFFFu) * 4u) + i.batch * 3u + rp;
     uint4 d3 = r2_mats.Load4(mat * 64u + 32u);   // fog scale, fog w max, flags
-    uint eb = sg.off.y + dr.x * 80u;
+    uint eb = sg.off.y + dr.x * 144u;     // (gpu_front.h gpu_r2_entry)
     float4 m[4] = { asfloat(fdata.Load4(eb)), asfloat(fdata.Load4(eb + 16u)), asfloat(fdata.Load4(eb + 32u)),
                     asfloat(fdata.Load4(eb + 48u)) };
     float fade = asfloat(fdata.Load(eb + 64u));
@@ -242,6 +246,24 @@ void r2_vertex(R2V i, out R2O o, out float4 clip, out float4 alt) {
     precise float dx = ((gx - sg.map.z) * (1.0 / 16.0) + 0.5) * r2_mft.x;
     precise float dy = ((gy - sg.map.w) * (1.0 / 16.0) + 0.5) * r2_mft.y;
     o.pos = float4(dx * (1.0 / 8192.0), -dy * (1.0 / 8192.0), gz * (1.0 / 1048576.0), 1.0);
+#if R2_MV
+    // (r2-m8) the motion vector: the same vertex through the object's previous world x clip (the entry's prev, +80) and
+    // the frame's screen constants, in the surface's pixels (plain floats: no exactness needed); none when the previous
+    // position was behind the camera or off the GS's coordinate range
+    {
+        float4 mp[4] = { asfloat(fdata.Load4(eb + 80u)), asfloat(fdata.Load4(eb + 96u)), asfloat(fdata.Load4(eb + 112u)),
+                         asfloat(fdata.Load4(eb + 128u)) };
+        float4 cp = mp[0] * ipos.x + mp[1] * ipos.y + mp[2] * ipos.z + mp[3];
+        g_prev_d3d = float2(dx, dy);
+        if (cp.w > 1e-6) {
+            float nx = cp.x / cp.w, ny = cp.y / cp.w;
+            if (abs(nx) < 4.0 && abs(ny) < 4.0) {
+                float pgx = (float)(asuint(c1.x + c0.x * nx) & 0xFFFFu), pgy = (float)(asuint(c1.y + c0.y * ny) & 0xFFFFu);
+                g_prev_d3d = float2(((pgx - sg.map.z) * (1.0 / 16.0) + 0.5) * r2_mft.x, ((pgy - sg.map.w) * (1.0 / 16.0) + 0.5) * r2_mft.y);
+            }
+        }
+    }
+#endif
 #else
     precise float dx = (gx - sg.map.z) * (sg.map.x * (1.0 / 16.0)) + 0.5;
     precise float dy = (gy - sg.map.w) * (sg.map.y * (1.0 / 16.0)) + 0.5;
@@ -281,6 +303,26 @@ R2O r2_vs(R2V i) {
     r2_vertex(i, o, clip, alt);
     return o;
 }
+
+#if R2_MV
+// (r2-m8, R8) the motion-vector pass of a modern frame (gpu_exec_mft.h mft_mv): pass A of every native entry again, depth
+// GEQUAL half a GS Z unit closer (its own surface passes, nothing behind it), writing current - previous position
+struct R2M {
+    float4 pos : SV_Position;
+    noperspective float2 mv : MOTION;
+};
+R2M r2_vs_mv(R2V i) {
+    R2O o;
+    float4 clip, alt;
+    r2_vertex(i, o, clip, alt);
+    R2M r;
+    r.pos = o.pos;
+    r.pos.z += 0.5 * (1.0 / 1048576.0);
+    r.mv = float2(o.pos.x * 8192.0, -o.pos.y * 8192.0) - g_prev_d3d;
+    return r;
+}
+float2 r2_ps_mv(R2M i) : SV_Target { return i.mv; }
+#endif
 
 R2C r2_vs_clip(R2V i) {
     R2O o;

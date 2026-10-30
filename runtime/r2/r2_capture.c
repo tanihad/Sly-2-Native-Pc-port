@@ -677,6 +677,39 @@ static void owe_epilogue(ps2_ctx* ctx) {
     if (dmas_put(ctx, 0, 0, l.p, l.n)) { st.epilogues++; epi_due = 0; }   /* (else: retried before the next exact entry) */
 }
 
+/* (r2-m8, R8) motion vectors: each native entry's world x clip of the previous frame, found by the entry's identity (its
+ * header / static packet address and mesh DMA: one object, every frame). An open-addressing table tagged with the frame
+ * serial; an object seen for the first time (or not in the last frame) gets its own matrix (no motion). PS2_R2_MV=0: off
+ * (every prev = the current matrix: no EE cost) */
+#define MV_CAP 16384u
+typedef struct { uint64_t key; uint32_t frame; float m[16], mp[16]; } mv_ent;
+static mv_ent* mv_tab;
+static int mv_on = -1;
+static void mv_prev(uint64_t key, const float M[16], float out[16]) {
+    if (mv_on < 0) { const char* e = getenv("PS2_R2_MV"); mv_on = !(e && *e == '0'); }
+    if (!mv_on || (!mv_tab && !(mv_tab = calloc(MV_CAP, sizeof *mv_tab)))) { memcpy(out, M, 64); return; }
+    uint32_t f = fr_serial + 1, h = (uint32_t)((key * 0x9E3779B97F4A7C15ull) >> 50) & (MV_CAP - 1);
+    for (uint32_t i = 0; i < 32; i++, h = (h + 1) & (MV_CAP - 1)) {
+        mv_ent* e = &mv_tab[h];
+        if (e->frame && e->key == key) {
+            if (e->frame == f) { memcpy(out, e->mp, 64); return; }     /* (another mesh of the same object this frame) */
+            if (e->frame + 1 == f) memcpy(e->mp, e->m, 64);
+            else memcpy(e->mp, M, 64);
+            memcpy(e->m, M, 64);
+            e->frame = f;
+            memcpy(out, e->mp, 64);
+            return;
+        }
+        if (!e->frame || e->frame + 1 < f) {                          /* (empty or stale: this object's from now on) */
+            e->key = key; e->frame = f;
+            memcpy(e->m, M, 64); memcpy(e->mp, M, 64);
+            memcpy(out, M, 64);
+            return;
+        }
+    }
+    memcpy(out, M, 64);
+}
+
 static double fr_cap_ms, fr_begin_ms;         /* (stats) this frame's capture time, its frame_begin part */
 
 /* (r2-m6, R6) the particle span hints (R2H_PART) */
@@ -900,6 +933,7 @@ void r2_cap_entry(ps2_ctx* ctx) {
         if (eflags & R2E_FANS) { st.fan_ents++; st.fan_tris += fan_o.tris; }
         r2_slot_ent* se = &S->ent[S->nent++];
         memcpy(se->m, M, sizeof M);
+        mv_prev((uint64_t)c1 << 32 | c2, M, se->prev);   /* (r2-m8) motion vectors */
         se->fade = vu8[0];
         se->handle = handle;
         se->addr = (form ? c2 : c1) | (uint32_t)form << 31;

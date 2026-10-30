@@ -31,7 +31,7 @@ struct r2g_dev {
     ID3D11Device* dev;
     ID3D11DeviceContext* ctx;
     ID3D11BlendState* bs[NBLEND][16];
-    ID3D11DepthStencilState* ds[4][2];
+    ID3D11DepthStencilState* ds[5][2];
     ID3D11RasterizerState* rs[3];
     /* filtered bindings */
     r2g_state cur;
@@ -51,7 +51,7 @@ r2g_dev* r2g_d3d11_create(void* device, void* context) {
 void r2g_destroy(r2g_dev* d) {
     if (!d) return;
     for (int i = 0; i < NBLEND; i++) for (int k = 0; k < 16; k++) REL(d->bs[i][k]);
-    for (int i = 0; i < 4; i++) for (int k = 0; k < 2; k++) REL(d->ds[i][k]);
+    for (int i = 0; i < 5; i++) for (int k = 0; k < 2; k++) REL(d->ds[i][k]);
     for (int i = 0; i < 3; i++) REL(d->rs[i]);
     free(d);
 }
@@ -186,13 +186,13 @@ static ID3D11BlendState* blend_obj(r2g_dev* d, int cls, int wmask) {
 }
 
 static ID3D11DepthStencilState* depth_obj(r2g_dev* d, int ztest, int zwrite) {
-    ztest &= 3;
+    if (ztest < 0 || ztest > R2G_Z_EQUAL) ztest = R2G_Z_ALWAYS;
     zwrite = zwrite != 0;
     if (d->ds[ztest][zwrite]) return d->ds[ztest][zwrite];
     D3D11_DEPTH_STENCIL_DESC dd;
     memset(&dd, 0, sizeof dd);
-    static const D3D11_COMPARISON_FUNC f[4] = { D3D11_COMPARISON_ALWAYS, D3D11_COMPARISON_ALWAYS, D3D11_COMPARISON_GREATER_EQUAL,
-                                                D3D11_COMPARISON_GREATER };
+    static const D3D11_COMPARISON_FUNC f[5] = { D3D11_COMPARISON_ALWAYS, D3D11_COMPARISON_ALWAYS, D3D11_COMPARISON_GREATER_EQUAL,
+                                                D3D11_COMPARISON_GREATER, D3D11_COMPARISON_EQUAL };
     dd.DepthEnable = ztest != R2G_Z_OFF;
     dd.DepthWriteMask = zwrite ? D3D11_DEPTH_WRITE_MASK_ALL : D3D11_DEPTH_WRITE_MASK_ZERO;
     dd.DepthFunc = f[ztest];

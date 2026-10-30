@@ -194,6 +194,8 @@ vs_r2m              r2.hlsl             r2_vs             vs_5_0    R2_MFT=1
 ps_r2m              r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1
 ps_r2m_nd           r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_NODISCARD=1
 ps_r2m_a2c          r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_A2C=1
+vs_r2m_mv           r2.hlsl             r2_vs_mv          vs_5_0    R2_MFT=1 R2_MV=1
+ps_r2m_mv           r2.hlsl             r2_ps_mv          ps_5_0    R2_MFT=1 R2_MV=1
 # (r2-m8, R8) modern frame targets (gpu_exec_mft.h): the exact draws of a modern frame at any resolution with MSAA
 vs_mft_tri          mft.hlsl            vs_mft_tri        vs_5_0    PRIM=0 TRI_REC=128u
 ps_mft_t0f          mft.hlsl            ps_mft_tri        ps_5_0    PRIM=0 DUAL=0 TRI_REC=128u SPEC_NOLOD=1
@@ -232,6 +234,7 @@ ps_mft_fill         mft.hlsl            ps_mft_fill       ps_5_0    PRIM=9
 ps_mft_zfill        mft.hlsl            ps_mft_zfill      ps_5_0    PRIM=9
 ps_mft_copy         mft.hlsl            ps_mft_copy       ps_5_0    PRIM=9
 ps_mft_upscale      mft.hlsl            ps_mft_upscale    ps_5_0    PRIM=9
+ps_mft_mvview       mft.hlsl            ps_mft_mvview     ps_5_0    PRIM=9
 ps_mft_zfrom        mft.hlsl            ps_mft_zfrom      ps_5_0    PRIM=9
 ps_mft_zto1         mft.hlsl            ps_mft_zto        ps_5_0    PRIM=9 MS=1
 ps_mft_zto0         mft.hlsl            ps_mft_zto        ps_5_0    PRIM=9 MS=0
