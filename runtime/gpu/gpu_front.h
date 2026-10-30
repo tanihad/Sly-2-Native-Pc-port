@@ -232,7 +232,7 @@ typedef struct { gpu_fop h; uint16_t target, pad; uint32_t n, data_off; } gpu_fo
 typedef struct { gpu_fop h; uint32_t slot, data_off; } gpu_fop_clut;
 /* a recognised full fill: rect [0, x1) x [0, y1) of the target (native pixels); colour: value under
  * the byte write mask `mask` (R1 G2 B4 A8); Z (zclear): the stored Z value (already clamped) */
-typedef struct { gpu_fop h; uint16_t target, zclear; uint32_t value, mask; int16_t x1, y1; } gpu_fop_clear;
+typedef struct { gpu_fop h; uint16_t target, zclear; uint32_t value, mask; int16_t x1, y1; uint16_t hud, pad; } gpu_fop_clear;   /* (r2-hud: hud = inside HUD_BEGIN / HUD_END, profiling) */
 /* one block of a download: the writer target's local block, the absolute 256-byte block, the 32-bit
  * words of the block to write (the GPU-owned ones) */
 typedef struct { uint16_t local, abs; uint32_t pad; uint64_t words; } gpu_dl_entry;
@@ -265,6 +265,7 @@ enum { GPU_DF_VIEW = 1,                  /* a texture view of a target (CT32 / C
                                             commutative wrapping G adds, drawn without rasterizer order) */
        GPU_DF_TEXDEC = 256,              /* (r2-m7b) modern frames: the draw may read level 0 of its vram textures from the
                                             decoded texture cache (gpu_exec.c td_prepass decides per StateRec) */
+       GPU_DF_HUD = 1024,                /* (r2-hud) a primitive of the draw was kicked inside HUD_BEGIN / HUD_END (profiling) */
        GPU_DF_PART = 512 };              /* (r2-m6) modern frames: an FF draw of particle triangles only (gpu_front.c "part"):
                                             the executor may run it through the native particle pipeline (ps_ff_part) */                /* (ROV tier) a primitive without a GEQUAL / GREATER depth test, or without a proven
                                             rasterized Z bound: the draw gets no early depth rejection (gpu_exec.c) */

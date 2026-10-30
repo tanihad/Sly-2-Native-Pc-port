@@ -1262,13 +1262,13 @@ static void fill_add(const gs_env_view* ev, const gs_sprite* sp, const gs_vtx* v
         if (ct) {
             gpu_fop_clear* c = gf_cmd(GPU_FOP_CLEAR, sizeof *c);
             c->target = ct->id; c->value = color; c->mask = (uint32_t)S.wmask;
-            c->x1 = (int16_t)w; c->y1 = (int16_t)h;
+            c->x1 = (int16_t)w; c->y1 = (int16_t)h; c->hud = (ev->hud & GS_ENV_HUD_ON) != 0;
             gf.clears_c++;
         }
         if (zt) {
             gpu_fop_clear* c = gf_cmd(GPU_FOP_CLEAR, sizeof *c);
             c->target = zt->id; c->zclear = 1; c->value = zclamp(P, (int64_t)v1->z << 16);
-            c->x1 = (int16_t)w; c->y1 = (int16_t)h;
+            c->x1 = (int16_t)w; c->y1 = (int16_t)h; c->hud = (ev->hud & GS_ENV_HUD_ON) != 0;
             gf.clears_z++;
             zt->z_high = 0;
         }
@@ -2190,6 +2190,7 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
     OD.outcomes |= outcome;
     if (svol) OD.d.feat |= GPU_DF_SVOL;
     if (part) OD.d.feat |= GPU_DF_PART;
+    if (ev->hud & GS_ENV_HUD_ON) OD.d.feat |= GPU_DF_HUD;   /* (r2-hud) inside HUD_BEGIN / HUD_END: profiling only (PR_HUD) */
     /* (r2-m7) a sprite reading a target view: the executor may run the draw as a native post pass (exec_npost checks it) */
     if (tier == GPU_TIER_FF && cls == GPU_PC_SPRITE && P->tme && ts.T && fx_on()) OD.d.feat |= GPU_DF_NPOST;
     /* (r2-m6) an untextured sprite on the ROV tier (bit-plane masks, blends the FF tier lacks): a flat post pass candidate */
