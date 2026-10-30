@@ -207,8 +207,16 @@ scale is a maximum the governor may lower while the GPU cannot keep up. An exact
 internal_scale) shows as "3x (2048 x 1344)". [graphics] render_scale = auto | original | 25%..400% | 2x..8x (old
 internal_scale / auto_max read and migrated). Headless runs (no window) assume 1080 output rows.
 
-Presets: **Original** = Original PS2, Faithful, PS2 outlines, 4:3; **Performance** = 50 % (2x at 1080p / 1440p);
+Presets (before r2-m8): **Original** = Original PS2, Faithful, PS2 outlines, 4:3; **Performance** = 50 % (2x at 1080p / 1440p);
 **Balanced** (default) = Auto; **Quality** = 100 % + thin outlines; **Custom** = anything else.
+
+(r2-m8, decision D6) In **Modern** rendering the render scale is a free slider 25 %..200 % (step 5 %) of the output's
+resolution, drawn at exactly that size (modern frames, notes/modern-renderer.md "R8 as built"; no integer grid), and an
+**MSAA** row follows it: Off / 2x / 4x / 8x (graphics.msaa; greyed out in Reference or at an exact Nx). Reference keeps
+the integer grid choices above. Presets: **PS2** (= original) = Reference rendering, Auto (the integer grid up to
+100 %), Faithful, PS2 outlines, 4:3; **Performance** = Modern 75 %, MSAA off; **Balanced** (default) = Modern 100 %,
+MSAA 4x; **Quality** = Modern 100 %, MSAA 8x, thin outlines; **Custom** = anything else. A preset is applied live like
+any option (Revert / Discard restore the previous values as before).
 
 ## Apply / Revert
 
@@ -229,7 +237,9 @@ Presets: **Original** = Original PS2, Faithful, PS2 outlines, 4:3; **Performance
 
 | page | option | values | key | applies |
 |---|---|---|---|---|
-| Graphics | Preset | Original / Performance / Balanced / Quality (Custom when the options match none) | graphics.preset | live |
+| Graphics | Preset | PS2 / Performance / Balanced / Quality (Custom when the options match none) | graphics.preset | live |
+| | Rendering | Modern / Reference (exact) | graphics.renderer_mode | live |
+| | MSAA (r2-m8) | Off / 2x / 4x / 8x (Modern at a percentage only) | graphics.msaa | live |
 | | Renderer | GPU (Direct3D 11) / Software (CPU) | graphics.renderer | Apply (live switch when started on the GPU renderer, else next start) |
 | | Render scale | Auto / Original PS2 / 50..200 % (W x H) [/ Nx] | graphics.render_scale | live (GPU) |
 | | Scaling filter, Outlines, Look, Motion blur, TV flicker filter, Interlacing | as before | graphics.* | live |

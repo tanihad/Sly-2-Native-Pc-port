@@ -1036,6 +1036,52 @@ covers; the owner confirms after testing the dist build. Effort is in agent-days
   1440p MSAA 4x; frame-time pacing checks (p99 / median <= 1.3).
 - **Gain**: >= 300 fps in hubs at native 1440p with MSAA; sharper and cheaper than 3x supersampling.
 
+#### R8 as built (r2-m8, branch next/r2-m8)
+"MFT" = modern frame targets. Everything is on the render thread (gpu_exec.c includes runtime/gpu/gpu_exec_mft.h);
+the frontend and the exact path are unchanged, so Reference, `PS2_GS_SCALE` runs and the gates draw what R7 drew.
+- **Per frame decision** (`mft_plan`, a pre-scan of the VBlank's op list): modern frame (R2 ops), MFT on
+  (`gpu_mft_config` from gfx.c: renderer_mode = modern and render_scale a percentage or auto; `PS2_MFT*` env win),
+  progressive and flicker off, the PRESENT shows one circuit of a display-family C32 target at DBX = DBY = 0, every op on
+  a display-family target is one MFT executes and the GPU has the MSAA count. Else the frame runs on the grid as before
+  (`PS2_MFT_LOG=<n>`: why). ep1 hub ~95% of frames are modern (the rest: loading, pause / menus, Binocucom, movies).
+- **Twin surfaces** per display-family target (`xtarget.family`): an MS colour / D32S8 depth surface at render resolution
+  and a single-sample "picture" at output resolution. Mapping d3d = (gs + 0.5) * s (pixel centres symmetric, no shift
+  at present); R2 and FF draws use a REF viewport (NDC = d3d / 8192), so R2's own vertex code is reused (`R2_MFT`:
+  hardware Z gz / 2^20, no SV_Depth). Sprites and line pixels evaluate the GS records at the native pixel (gs_frag with
+  kx = ky = 1), thin lines analytically, scissors at ceil(native * s - 0.5).
+- **Phases**: A = 3D into the MS surfaces; the R2 capture marks the first class-5 (2D) entry (R2H_MARK ->
+  GPU_FOP_MARK, moved back over the class-begin clears); there the colour / depth are resolved (ResolveSubresource;
+  below 100% + a 9-tap Catmull-Rom upscale) and phase B draws the **game's exact HUD** (prio 21 draws, its own Z16 target,
+  the alpha-plane masks, the HUD's DATE draws) and the motion blur NPOSTs on the output-resolution picture: the HUD
+  is composited after the resolve exactly as the PS2 layers it, only at output pixels. Present shows the picture 1:1.
+  An op list that starts the next game frame's 3D after the mark goes back to phase A.
+- **Truth per target** (MT_GRID / MT_MS / MT_PIC) with lazy conversions: from grid (upsample), resolve, unresolve,
+  materialize to the grid (downsample) - only for the block rect a DOWNLOAD / LOAD / XCOPY touches, so the game's
+  per-frame readbacks of aliased targets don't force whole conversions. Switching modern <-> grid frames is seamless
+  (each side converts what the other last drew).
+- **ROV-tier draws** (no rasterizer order in MS): COLCLAMP wrap -> saturate; DATE through the stencil bit (per-sample
+  mark pass of the alpha bit, EQUAL / NOT_EQUAL stencil states); runs split by primitive state with per-run overrides of
+  blend class, primitive base and ATST. `PS2_MFT_NOROV=1` keeps such frames on the grid.
+- **MSAA + alpha-to-coverage**: R2 pass-A cut-outs (rule-0 alpha test) write SV_Coverage from alpha / fwidth(alpha)
+  with a rotated dither mask (`R2_A2C`); FF cut-outs stay alpha-tested per sample.
+- **Shadow pipeline**: own planner (head / epochs of flat bit-plane passes between volumes / tail); volume counters per
+  sample in packed 16-bit lanes (two samples per R32 word, merged atomics); the fused darken pass runs per pixel where
+  all samples agree and per sample on edges (stencil split).
+- **Motion vectors** (`PS2_MFT_MV=1`; off by default: no consumer yet): the EE keeps every entry's previous W x C
+  (r2_capture.c mv_prev, key header << 32 | mesh DMA, 16384 entries; `PS2_R2_MV=0` off; gpu_r2_entry 144 bytes with
+  prev at +80). The MV pass draws the R2 pass-A entries again with prev / current positions (GEQUAL + half a unit bias
+  against the resolved depth) into R16G16F MS, resolved; non-R2 pixels get the camera's motion. `PS2_MFT_MV_VIEW=1`
+  shows it. Base for TAA / FSR / DLSS (R9+).
+- **Settings** (D6, notes/settings.md "Presets"): graphics.msaa; renderer_mode is part of the presets: PS2 (=
+  Original) = Reference + integer grid auto + faithful + PS2 outlines + 4:3; Performance = Modern 75% no MSAA;
+  Balanced (default) = Modern 100% MSAA 4x; Quality = Modern 100% 8x + thin outlines. Menu: free render-scale slider
+  25..200% in Modern, MSAA row.
+- **Cost** (owner's RTX 4060 Ti, noisy: the owner was gaming; in-run A/B 1440p): Modern 100% MSAA off ~ the 3x grid's
+  GPU time, MSAA 4x +7..18%; the expensive parts under MSAA are R2 itself, the line-pixel outlines, the shadow
+  counters / fused pass and the resolve. Chaos numbers: the r2-m8 report.
+- **Left**: native HUD (the HUD stays exact, R7 part 3); ROV draws are approximations (DATE / wrap) - checked visually
+  on the sweep, not byte-gated; MSAA for the FF cut-outs via A2C; a consumer for the motion vectors (TAA / upscaler).
+
 ### R9. Enhanced and mods - 12 agent-days (two tasks)
 - **R9a Enhanced, 7 days**: per-pixel lighting, shadow maps, SSAO, bloom, anisotropic + mipmaps, outline styles, and
   presets ("Original", "Enhanced", "Performance") in the Options menu.

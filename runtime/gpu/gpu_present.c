@@ -1273,6 +1273,63 @@ static int flicker_strip(uint64_t priv[16]) {
     return 0;
 }
 
+/* (r2-m8, R8) a modern frame's picture: the displayed buffer rect when the PCRTC shows one circuit's buffer 1:1, as
+ * display.hlsl would compose it (output column ox = buffer column dbx + ox, output line oy = buffer row dby + oy / 2 in
+ * field mode), progressive (no field display), nothing else mixed in */
+int gpu_present_mft_layout(const gpu_compose_in* in, int* circuit, int* x0, int* y0, int* w, int* h) {
+    if (!in->priv || in->fields) return 0;
+    uint64_t priv[16];
+    memcpy(priv, in->priv, sizeof priv);
+    if (in->flicker_off) flicker_strip(priv);
+    gs_display_layout L;
+    if (!gs_display_layout_of(priv, &L)) return 0;
+    int en0 = L.c[0].en, en1 = L.c[1].en;
+    if (en0 == en1) return 0;                   /* (two circuits mixed, or none) */
+    int i = en0 ? 0 : 1;
+    const gs_circuit* c = &L.c[i];
+    if (!in->tex[i] || L.ref != i || L.hs != c->magh + 1 || L.vs != c->magv + 1 || L.ux0 != c->dx || L.uy0 != c->dy) return 0;
+    int rows = L.field_mode ? L.H / 2 : L.H;
+    if (L.W <= 0 || rows <= 0 || (L.field_mode && (L.H & 1))) return 0;
+    *circuit = i;
+    *x0 = c->dbx;
+    *y0 = c->dby;
+    *w = L.W;
+    *h = rows;
+    return 1;
+}
+
+int gpu_present_output_rect(int aw, int ah, int* w, int* h) {
+    int cw = P.bb_w, ch = P.bb_h;
+    if (P.sc) {
+        cw = ch = 0;
+        if (gpu_rt.cfg.client_size) gpu_rt.cfg.client_size(&cw, &ch);
+        else {
+            RECT rc;
+            GetClientRect((HWND)gpu_rt.cfg.hwnd, &rc);
+            cw = rc.right;
+            ch = rc.bottom;
+        }
+    }
+    if (cw <= 0 || ch <= 0) return 0;
+    int x, y;
+    fit_aspect(cw, ch, aw > 0 ? aw : 4, ah > 0 ? ah : 3, &x, &y, w, h);
+    return *w > 0 && *h > 0;
+}
+
+void gpu_present_mft_picture(ID3D11Texture2D* tex, int w, int h, uint32_t vblank) {
+    if (!ensure_pictures(w, h)) { gpu_log("cannot allocate the pictures"); gpu_rt.lost = 1; return; }
+    int next = (P.cur + 1) % NPICT;
+    D3D11_BOX box = { 0, 0, 0, (UINT)w, (UINT)h, 1 };
+    ID3D11DeviceContext_CopySubresourceRegion(gpu_rt.ctx, (ID3D11Resource*)P.pict[next], 0, 0, 0, 0, (ID3D11Resource*)tex, 0, &box);
+    gpu_rt.n_copies++;
+    P.cur = next;
+    P.cur_w = w;
+    P.cur_h = h;
+    P.cur_shift[0] = P.cur_shift[1] = 0.0f;   /* (pixel centres on the PS2's: d3d = (gs + 0.5) * s) */
+    P.cur_vblank = vblank;
+    P.have = 1;
+}
+
 /* (pc-smooth debugging) PS2_FB_DUMP=<vsync>:<n>[:...] + PS2_FB_DUMP_DIR: the displayed circuits' source targets at scale
  * (every sample) as PNG, tgt_<vblank>_<circuit>_fbp<fbp>.png */
 static void target_dump(const gpu_compose_in* in) {

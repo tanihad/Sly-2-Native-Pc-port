@@ -76,8 +76,15 @@ typedef struct {
     int ini_version;             /* (pc-menu2) [settings] version: the defaults the file was written with (0: older files) */
     int renderer_modern;         /* (r2-m1) [graphics] renderer_mode = reference (0, default: the exact GS renderer draws
                                     everything) | modern (1: the modern renderer R2 draws what it covers - milestone R1: the
-                                    ep3 hub's static world; notes/modern-renderer.md). Environment: PS2_R2=off|hybrid|bracket */
+                                    ep3 hub's static world; notes/modern-renderer.md). Environment: PS2_R2=off|hybrid|bracket.
+                                    (r2-m8) part of the presets: modern by default (Balanced) */
+    int msaa;                    /* (r2-m8) [graphics] msaa = off (0) | 2x (1) | 4x (2, default) | 8x (3): multisampling of
+                                    modern frames (render_scale a percentage or auto; notes/modern-renderer.md R8) */
 } ps2_settings_t;
+
+/* (r2-m8) graphics.msaa: samples per pixel of modern frames (1, 2, 4, 8) */
+enum { SETTINGS_MSAA_OFF, SETTINGS_MSAA_2X, SETTINGS_MSAA_4X, SETTINGS_MSAA_8X, SETTINGS_MSAA_N };
+static inline int settings_msaa_samples(int msaa) { return msaa <= 0 ? 1 : msaa >= 3 ? 8 : 2 << (msaa - 1); }
 
 /* graphics.render_scale (pc-polish): how sharp the game is drawn, relative to the picture on the screen (the output: the
  * window's client area or the fullscreen display mode). The GPU renderer draws at integer multiples N of the PS2's 512 x 448
@@ -114,20 +121,20 @@ extern const char* const settings_scaler_names[SETTINGS_SCALER_N];   /* "auto", 
 #define SETTINGS_SCALE_AUTO_MAX 3        /* the scale auto aims for by default (the owner's decision: 3x on capable GPUs) */
 enum { SETTINGS_FULLSCREEN_OFF, SETTINGS_FULLSCREEN_BORDERLESS, SETTINGS_FULLSCREEN_EXCLUSIVE };
 
-/* Graphics presets (notes/settings.md "Presets"; the menu's Graphics > Preset):
- *   Original    - the PS2's look: render_scale original (512 x 448), filters faithful (flicker filter, interlacing,
- *                 motion blur), outlines ps2, aspect 4:3.
- *   Performance - render_scale 50 % (2x at 1080p and 1440p), Modern, outlines ps2, wide.
- *   Balanced    - (default) render_scale auto (up to 100 %, lowered while the GPU cannot keep up), Modern, outlines ps2,
- *                 wide.
- *   Quality     - render_scale 100 % (at least the output's rows: 4x on 1440p, 5x on 2160p), Modern, thin outlines, wide.
- * (Every scale is a maximum: the renderer's governor draws lower while the GPU cannot keep up.)
+/* Graphics presets (notes/settings.md "Presets"; the menu's Graphics > Preset). (r2-m8, D6) Rendering is part of them:
+ *   Original    - "PS2" in the menu: every faithful setting at once - Rendering Reference (the exact GS renderer), the
+ *                 integer sample grid (render_scale auto: the largest multiple of 512 x 448 up to the screen), filters
+ *                 faithful (flicker filter, interlacing, motion blur), outlines ps2, aspect 4:3.
+ *   Performance - Modern, render_scale 75 %, MSAA off, outlines ps2, wide.
+ *   Balanced    - (default) Modern, render_scale 100 % (the screen's own resolution), MSAA 4x, outlines ps2, wide.
+ *   Quality     - Modern, render_scale 100 %, MSAA 8x, thin outlines, wide.
  *   Custom      - anything else.
  * Every preset also sets the three filter toggles to `preset` and scaler = auto; "wide" keeps the current wide
- * aspect (16:9 when it was 4:3). The renderer is not part of a preset. */
+ * aspect (16:9 when it was 4:3). Modern frames draw at render_scale % of the screen with MSAA (gpu_exec_mft.h); an
+ * exact multiple (2x..8x, original) keeps the integer grid in Modern too; MSAA does nothing in Reference. */
 enum { SETTINGS_PRESET_ORIGINAL, SETTINGS_PRESET_PERFORMANCE, SETTINGS_PRESET_BALANCED, SETTINGS_PRESET_QUALITY,
        SETTINGS_PRESET_CUSTOM, SETTINGS_PRESET_N };
-#define SETTINGS_PRESET_PERFORMANCE_PCT 50   /* Performance's render scale (%) */
+#define SETTINGS_PRESET_PERFORMANCE_PCT 75   /* Performance's render scale (%) */
 extern const char* const settings_preset_names[SETTINGS_PRESET_N];   /* "original", ..., "custom" */
 int  settings_detect_preset(const ps2_settings_t* s);
 /* Set s's preset options to the preset's values (CUSTOM: nothing); s->preset = p. */

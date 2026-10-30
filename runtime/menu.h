@@ -192,6 +192,7 @@ enum {
     MENU_ROW_SPEAKERS,                   /* Audio > Speakers: the game's own */
     MENU_ROW_INV_BINO, MENU_ROW_INV_TURRET,   /* Controls: the game's own Invert Binocucom / Turret */
     MENU_ROW_RMODE,                      /* (r2-m2) Graphics > Rendering: [graphics] renderer_mode (Modern / Reference) */
+    MENU_ROW_MSAA,                       /* (r2-m8) Graphics > Anti-aliasing (MSAA): [graphics] msaa */
     MENU_ROW_BIND0 = 100,                /* binding rows: MENU_ROW_BIND0 + action */
     MENU_ROW_BIND_RESET = 99,
 };

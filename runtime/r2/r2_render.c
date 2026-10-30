@@ -11,6 +11,7 @@
 #include "r2_render.h"
 #include "gpu_shaders.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -30,9 +31,12 @@ static struct {
     r2g_pipe* pipe;                      /* (r2-m2) one pipeline: the pixel shader always writes the dual-source factor */
     r2g_pipe* pipe_clip;                 /* (r2-m2) entries crossing the guard band (state bit 13): r2_gs_clip */
     r2g_pipe* pipe_nd;                   /* (r2-m2) draws that cannot discard (state bit 14 clear): early depth stays on */
+    r2g_pipe *mpipe, *mpipe_nd, *mpipe_a2c;   /* (r2-m8, R8) modern frames: hardware Z on the MFT surfaces (R2_MFT) */
+    r2g_pipe* mvpipe;                    /* (r2-m8) the motion-vector pass */
     r2g_buf* cb;
     int cb_set;                          /* (r2-m2) cb holds the device's constants (r2.hlsl r2_static), written once */
     float cb_bias;
+    float cb_mft[4];                     /* (r2-m8) r2_mft as written: sx, sy, samples */
     arena A[SLOTS];
     uint32_t epoch;                      /* bumped when GPU resources are recreated: meshes upload again */
     uint64_t uploads, upload_bytes, draws, segments, missing;
@@ -47,6 +51,9 @@ static void release_all(void) {
     r2g_pipe_free(R.pipe_clip);
     if (R.pipe_nd != R.pipe) r2g_pipe_free(R.pipe_nd);
     R.pipe = R.pipe_clip = R.pipe_nd = NULL;
+    r2g_pipe_free(R.mpipe); r2g_pipe_free(R.mpipe_nd); r2g_pipe_free(R.mpipe_a2c); r2g_pipe_free(R.mvpipe);
+    R.mpipe = R.mpipe_nd = R.mpipe_a2c = R.mvpipe = NULL;
+    memset(R.cb_mft, 0, sizeof R.cb_mft);
     r2g_buf_free(R.cb);
     R.cb = NULL;
     R.cb_set = 0;
@@ -83,10 +90,19 @@ static int init(const r2_exec_in* in) {
     r2g_pipe_desc pc = { gpu_sh_vs_r2_clip, sizeof gpu_sh_vs_r2_clip, gpu_sh_ps_r2_clip, sizeof gpu_sh_ps_r2_clip, attrs, 10,
                          gpu_sh_gs_r2_clip, sizeof gpu_sh_gs_r2_clip };
     R.pipe_clip = R.d ? r2g_pipe_create(R.d, &pc) : NULL;
+    /* (r2-m8, R8) modern frames: the same draws on the MFT surfaces (hardware Z; with MSAA, alpha-to-coverage) */
+    r2g_pipe_desc pm = { gpu_sh_vs_r2m, sizeof gpu_sh_vs_r2m, gpu_sh_ps_r2m, sizeof gpu_sh_ps_r2m, attrs, 10, NULL, 0 };
+    R.mpipe = R.d ? r2g_pipe_create(R.d, &pm) : NULL;
+    pm.ps = gpu_sh_ps_r2m_nd; pm.ps_size = sizeof gpu_sh_ps_r2m_nd;
+    R.mpipe_nd = R.d ? r2g_pipe_create(R.d, &pm) : NULL;
+    pm.ps = gpu_sh_ps_r2m_a2c; pm.ps_size = sizeof gpu_sh_ps_r2m_a2c;
+    R.mpipe_a2c = R.d ? r2g_pipe_create(R.d, &pm) : NULL;
+    r2g_pipe_desc pv = { gpu_sh_vs_r2m_mv, sizeof gpu_sh_vs_r2m_mv, gpu_sh_ps_r2m_mv, sizeof gpu_sh_ps_r2m_mv, attrs, 10, NULL, 0 };
+    R.mvpipe = R.d ? r2g_pipe_create(R.d, &pv) : NULL;
     /* (r2-m2) the segment constants by UpdateSubresource (a DEFAULT buffer): Map(DISCARD) per segment, ~45 a frame with
      * frames queued, made the driver block the render thread for up to 10 ms when the GPU was the bottleneck */
     R.cb = R.d ? r2g_buf_create(R.d, R2G_BUF_CONSTANT, R2G_USAGE_DEFAULT, 48, NULL) : NULL;
-    if (!R.d || !R.pipe || !R.pipe_clip || !R.pipe_nd || !R.cb) {
+    if (!R.d || !R.pipe || !R.pipe_clip || !R.pipe_nd || !R.cb || !R.mpipe || !R.mpipe_nd || !R.mpipe_a2c || !R.mvpipe) {
         fprintf(stderr, "[r2] render: cannot create the pipelines: the modern renderer draws nothing\n");
         release_all();
         R.failed = 1;
@@ -249,15 +265,19 @@ static int segment(const gpu_fop_r2* o, const uint8_t* fdata, size_t fdata_bytes
      * be the targets' here (a rescale between the two would misplace every vertex). */
     if (dr[0].seg_off + sizeof(gpu_r2_seg) > fdata_bytes) return 0;
     const gpu_r2_seg* sg = (const gpu_r2_seg*)(fdata + dr[0].seg_off);
-    if (sg->kx != (float)in->kx || sg->ky != (float)in->ky) { R.missing += o->ndraw; return 0; }
-    if (!R.cb_set || R.cb_bias != in->dual_bias) {   /* the device's constants: once */
-        float cb[4];
+    if (!in->mft && (sg->kx != (float)in->kx || sg->ky != (float)in->ky)) { R.missing += o->ndraw; return 0; }
+    float mft[4] = { in->mft ? in->sx : 0.0f, in->mft ? in->sy : 0.0f, in->mft ? (float)in->msaa : 0.0f, 0.0f };
+    if (!R.cb_set || R.cb_bias != in->dual_bias || (in->mft && memcmp(mft, R.cb_mft, sizeof mft))) {   /* the device's constants */
+        float cb[12];                    /* (the whole 48-byte buffer: UpdateSubresource of a constant buffer writes all of it) */
         uint32_t* cu = (uint32_t*)cb;
+        memset(cb, 0, sizeof cb);
         const char* ze = getenv("PS2_R2_ZBIAS");
         const char* de = getenv("PS2_R2_DBG");   /* (r2-m2) cost experiments (shaders/r2.hlsl), never in play */
         cb[0] = in->dual_bias; cb[1] = ze ? (float)atof(ze) : 0.0f; cb[2] = 0.0f; cu[3] = de ? (uint32_t)atoi(de) : 0u;
         const char* ce = getenv("PS2_R2_CLIP");  /* (r2-m5b) 1: crossing triangles GPU-clipped (else the VU's fans draw them) */
         if (ce && *ce == '1') cu[3] |= 64u;
+        if (in->mft) memcpy(R.cb_mft, mft, sizeof mft);
+        memcpy(&cb[4], R.cb_mft, sizeof R.cb_mft);   /* (r2-m8) r2_mft: the modern frame's scale and samples */
         r2g_buf_write(R.d, R.cb, 0, cb, sizeof cb);
         R.cb_set = 1;
         R.cb_bias = in->dual_bias;
@@ -265,7 +285,10 @@ static int segment(const gpu_fop_r2* o, const uint8_t* fdata, size_t fdata_bytes
     double p2 = ph_now();
     r2g_bind_targets_native(R.d, in->rtv, in->dsv);
     r2g_viewport(R.d, -8192.0f, -8192.0f, 16384.0f, 16384.0f);   /* (the REF viewport of mixed frames: d3d pixels = NDC * 8192) */
-    r2g_scissor(R.d, o->sc[0] * in->kx, o->sc[1] * in->ky, (o->sc[2] + 1) * in->kx, (o->sc[3] + 1) * in->ky);
+    if (in->mft)                         /* (r2-m8) native pixel x covers d3d [x s, (x + 1) s): the pixels whose centres are inside */
+        r2g_scissor(R.d, (int)ceilf(o->sc[0] * in->sx - 0.5f), (int)ceilf(o->sc[1] * in->sy - 0.5f),
+                    (int)ceilf((o->sc[2] + 1) * in->sx - 0.5f), (int)ceilf((o->sc[3] + 1) * in->sy - 0.5f));
+    else r2g_scissor(R.d, o->sc[0] * in->kx, o->sc[1] * in->ky, (o->sc[2] + 1) * in->kx, (o->sc[3] + 1) * in->ky);
     r2g_bind_srv_native(R.d, 0, in->vram_srv);
     r2g_bind_srv_native(R.d, 6, in->swz_srv);
     r2g_bind_srv_native(R.d, 7, in->fdata_srv);
@@ -286,6 +309,19 @@ static int segment(const gpu_fop_r2* o, const uint8_t* fdata, size_t fdata_bytes
         int bl = (int)(st & 15), depth = (int)((st >> 4) & 15);
         r2g_state s = { (uint8_t)bl, (uint8_t)((st >> 8) & 15), (uint8_t)(depth >> 1), (uint8_t)(depth & 1),
                         (uint8_t)(((st >> 12) & 1) ? R2G_CULL_FRONT : R2G_CULL_NONE) };
+        if (in->mv) {                    /* (r2-m8) the motion vectors: pass A, its own depth surface passes, two channels */
+            if (((st >> 13) & 1) || (d->mode & 3)) continue;
+            r2g_state sm = { 0, 3, R2G_Z_GEQUAL, 0, s.cull };
+            r2g_bind_pipe(R.d, R.mvpipe);
+            r2g_bind_state(R.d, &sm);
+            r2g_draw_indexed(R.d, d->count, m->gpu_ibase + d->first, (int32_t)m->gpu_vbase, o->draw_off / 32u + i);
+            n++;
+            continue;
+        }
+        if (in->mft) {                   /* (r2-m8: the clip pipeline has no MFT form; gpu_exec_mft.h keeps such frames exact) */
+            if ((st >> 13) & 1) { R.missing++; continue; }
+            r2g_bind_pipe(R.d, (st >> 14) & 1 ? (in->msaa > 1 ? R.mpipe_a2c : R.mpipe) : R.mpipe_nd);
+        } else
         r2g_bind_pipe(R.d, (st >> 13) & 1 ? R.pipe_clip : (st >> 14) & 1 ? R.pipe : R.pipe_nd);   /* (filtered when unchanged) */
         r2g_bind_state(R.d, &s);
         r2g_draw_indexed(R.d, d->count, m->gpu_ibase + d->first, (int32_t)m->gpu_vbase, o->draw_off / 32u + i);

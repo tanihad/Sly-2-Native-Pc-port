@@ -29,7 +29,7 @@ typedef struct {
 
 /* fixed-function state: the GS blend classes (gpu_front.c BL_*), write mask, depth test / write, culling */
 enum { R2G_BLEND_OFF, R2G_BLEND_NOCOLOR, R2G_BLEND_ADD, R2G_BLEND_REVSUB, R2G_BLEND_DUAL };
-enum { R2G_Z_OFF, R2G_Z_ALWAYS, R2G_Z_GEQUAL, R2G_Z_GREATER };
+enum { R2G_Z_OFF, R2G_Z_ALWAYS, R2G_Z_GEQUAL, R2G_Z_GREATER, R2G_Z_EQUAL /* (r2-m8: the motion-vector pass) */ };
 enum { R2G_CULL_NONE, R2G_CULL_FRONT, R2G_CULL_BACK };
 typedef struct { uint8_t blend, wmask, ztest, zwrite, cull; } r2g_state;
 
