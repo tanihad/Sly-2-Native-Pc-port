@@ -9,7 +9,11 @@ Summary for the docs: notes/modern-renderer.md "The owner's flicker report and t
 - [x] temporal tool: scripts\flicker_check.c + scripts\flicker_run.ps1; r2_sweep check tf; gates.json level3_temporal
 - [x] diagnostics: PS2_DUMP_BMP / PS2_DUMP_WAIT, dump queue 32, PS2_MFT_LOG logs every grid frame
 - [ ] root cause of the missing lamp shadow (below) - NOT found; experiments listed
-- [ ] gates (run in progress at the time of writing: scratchpad gates.ps1), r2_sweep ab + hc + tf
+- [x] gates: run_tests PASS; tests\unit 25/26 (window: F11 / Alt+Enter, known flake); gpu_diff_all mixed S=1 28/28;
+      m9_exact S1 + S3 -Game all identical (base = 35bfeef runtime via git archive); pc_text_boot release + debug;
+      debug + release builds; package.py (0.1.1007); r2_sweep ab + hc + tf 33/33. Dumps / replays / exe copies deleted.
+- Also tried and reverted (no effect on the missing shadow): restoring VIF1 STCYCL / STMOD / STMASK / STROW / STCOL
+  as the dropped chain leaves them (decoder-tracked) after each native entry.
 
 ## Reproduce the missing shadow (deterministic enough, ~2.5 min per run, sequential runs only)
   .\scripts\flicker_run.ps1 -Name x -Episode 1 -Job m1_brawl -Play -At 7000 -Frames 6 -Keep -Pad '+3000:cross:6' `

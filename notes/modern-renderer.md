@@ -1101,7 +1101,7 @@ the frontend and the exact path are unchanged, so Reference, `PS2_GS_SCALE` runs
     vertices, other bbox): the *volumes* the exact path draws change when the world is native, so it is EE / VU-side
     state that dropping the world's static packets leaves (not the receivers' Z or alpha). Restoring the render list's
     zeroed CALL words after the chain is built, and owing VIF1 double-buffer flips for dropped meshes (m->flips is never
-    used for meshes, only for outlines), did not bring it back. Entries switching native / exact between frames then
+    used for meshes, only for outlines), did not bring it back, nor did restoring the VIF1 registers (STCYCL / STMOD / STMASK / STROW / STCOL) a dropped chain sets. Entries switching native / exact between frames then
     switch the shadow: the "shadows flicker". Open; next: trace the shadow class's VU1 program inputs (what it reads that a
     world static packet uploads), e.g. VU memory dumps after the world class in exact vs hybrid frames.
   - PS2_R2_ALT: a thin bright sliver along the searchlight volume's edge alternates (brighter in one mode); the clipper's
