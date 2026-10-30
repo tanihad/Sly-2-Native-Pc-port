@@ -801,6 +801,9 @@ static void flush_open(void) {
 /* (r2-m1) gpu_r2front.c: an R2 segment closes the open draws; the frontend's other events close an open segment first */
 void gf_flush_open(void) { flush_open(); }
 extern int gf_r2_pending, gf_r2_skip, gf_r2_fx_ttl, gf_r2_td_ttl;
+volatile int gpu_ab_phase = -1;         /* (r2-m5b) PS2_GPU_AB's current phase (gpu_exec.c sets it; r2_capture.c reads it) */
+uint32_t gf_z32_ab[2];                   /* (r2-m5b, diagnostics) primitives with Z beyond the FF range per PS2_GPU_AB phase */
+uint32_t gf_rov_ab[2][16];               /* (r2-m5b, diagnostics) ROV primitives by reason per phase */
 /* (r2-m7) the modern renderer's native passes are on for this frame (gpu_r2front.c gf_r2_fx_ttl; mixed frames only) */
 static int fx_on(void) { return gf_r2_fx_ttl > 0 && gf_cfg.mixed && !gf_cfg.ref; }
 /* (r2-m6, R6) the particle span (gpu_r2front.c, R2H_PART; PS2_R2_PART=0 on the EE side: no spans) */
@@ -1783,7 +1786,8 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
     PROF_START();
     PCOUNT(n_prims);
     R2_FLUSH();
-    if (gf_r2_skip) { gf.kicks++; goto out; }   /* (r2-m1 bracket A/B: R2 draws this entry) */
+    /* (r2-m1 bracket A/B: R2 draws this entry; r2-m5b: but for the VU clipper's fans of an R2D_FANS entry, gf_r2_skip 2) */
+    if (gf_r2_skip && !(gf_r2_skip == 2 && type == PRIM_TRIFAN)) { gf.kicks++; goto out; }
     const gs_prim* P = ev->P;
     /* (M10, 8.3) the HUD transform: between HUD_BEGIN and HUD_END (the StateRec's hint state, ev->hud) the game's
      * vertices are scaled about the anchor (left edge, centre, right edge of the FRAME width), full-width
@@ -1901,7 +1905,12 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
         if (!gf.zprims[f] || zh > gf.zmax[f]) gf.zmax[f] = zh;
         gf.zprims[f]++;
         /* (P1) beyond the DSV's exact range (gpu_front.h): the ROV tier, zpatch as the target's depth until a full clear */
-        if ((f == GPU_ZF_32 || f == GPU_ZF_24) && zh > GPU_Z_FF_MAX) { z32_high = 1; gf.z32_over++; if (S.zt) S.zt->z_high = 1; }
+        if ((f == GPU_ZF_32 || f == GPU_ZF_24) && zh > GPU_Z_FF_MAX) {
+            z32_high = 1; gf.z32_over++; if (S.zt) S.zt->z_high = 1;
+            extern volatile int gpu_ab_phase;
+            extern uint32_t gf_z32_ab[2];
+            gf_z32_ab[gpu_ab_phase > 0]++;       /* (r2-m5b, diagnostics) */
+        }
     }
 
     PROF_MARK(2);
@@ -1985,6 +1994,11 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
             if (c & gf_cfg.ff_rov_mask) why = GPU_ROV_CLASS;
         }
         if (why >= 0) tier = GPU_TIER_ROV;
+        if (why >= 0 && why < 16) {              /* (r2-m5b, diagnostics) ROV reasons per PS2_GPU_AB phase */
+            extern volatile int gpu_ab_phase;
+            extern uint32_t gf_rov_ab[2][16];
+            gf_rov_ab[gpu_ab_phase > 0][why]++;
+        }
     }
     gf.tier[tier]++;
     if (why >= 0) gf.rov_why[why]++;

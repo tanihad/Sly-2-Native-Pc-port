@@ -52,7 +52,8 @@ enum {
 enum { R2D_IDENTITY = 1,   /* the entry's world matrix is the identity (no matrix words) */
        R2D_FADE = 2,       /* a fade word follows (VU 8.x != 1.0) */
        R2D_CLIP = 4,       /* (r2-m2) the mesh crosses the VU's guard band (R2E_CLIP) */
-       R2D_EXTRA = 8 };    /* (r2-m3) after the address word: the index of the frame's R2H_XQ block (extra qwords) */
+       R2D_EXTRA = 8,      /* (r2-m3) after the address word: the index of the frame's R2H_XQ block (extra qwords) */
+       R2D_FANS = 16 };    /* (r2-m5b) bracket A/B: the entry's exact triangle fans (the VU clipper's) stay drawn */
 
 static inline uint64_t r2h_make(uint32_t kind, uint32_t arg, uint32_t value) {
     return (uint64_t)(kind & 0xFF) | ((uint64_t)(arg & 0xFFFFFF) << 8) | ((uint64_t)value << 32);
@@ -86,7 +87,9 @@ typedef struct {                 /* 96 bytes */
     uint32_t pad[2];
 } r2_slot_ent;
 #define R2_SLOT_XQ 32768u        /* (r2-m3) extra qwords per slot (light blocks, bone palettes) */
-enum { R2E_CLIP = 1 };           /* the mesh's bounds cross the VU's guard band: clipped triangles on the GPU */
+enum { R2E_CLIP = 1,             /* the mesh's bounds cross the VU's guard band: R2 draws its triangles inside it (r2_gs_clip) */
+       R2E_FANS = 2,             /* (r2-m5b) and the VU's clipper draws the others (r2_clip.c packets after the entry) */
+       R2E_RUNS = 4 };           /* (r2-m5b) a run table (slot qwords at ent.pad[0] - 1): R2 draws only the triangles the VU draws as strips */
 typedef struct {
     volatile uint32_t serial;    /* (atomic: 0 while the EE writes it) */
     uint32_t nent, nrun;
@@ -141,6 +144,9 @@ typedef struct {                 /* a sub-batch: one triangle strip, drawn with 
     uint8_t pad2;
     float bright;                /* (r2-m3) lit: ITOF12 of [16].x (added to the light block's ambient w) */
     r2_pass pass[3];
+    uint32_t vu9[4];             /* (r2-m5b) the header's [9] (fog offset / scale / w max: the clipper's projection) */
+    uint32_t pk[2][8][4];        /* (r2-m5b) pass 0 / 1 material packets as in VU memory from their qword 1: the fan GIF tag
+                                    template, the A+D packet (r2_clip.c runs the VU's clipper on them) */
 } r2_batch;
 
 /* (r2-m5) the RAM a decoded chain read (its DMA tags and data, a copy): the game rewrites mesh DMA in place while a
@@ -261,6 +267,24 @@ int r2_outline_same(const r2_oscript* s, const uint8_t* ram);   /* (r2-m5) the m
  * memory = fill (a decode check runs it with two fills: equal packets = the script reads only what it writes) */
 int r2_outline_exec(const r2_oscript* s, const uint32_t* (*hq)(uint32_t), const r2_frame_block* fb, uint32_t fill, uint8_t* out,
                     uint32_t cap, uint32_t* nout);
+
+/* ---- (r2-m5b, R5 part 2) the VU clipper of meshes crossing the guard band (r2_clip.c) -------------------------------
+ * r2_clip_entry: the entry's triangles the VU clips (0x0C60's marks), each run through the game's own 0x2540 on a private
+ * VU1 (vu.c vu_private_run); the GIF packets it kicks (fans with their material A+D packets) appended to o. 1: done
+ * (*last_fanned = 1 + the last sub-batch that kicked fans, 0: none), 0: the entry is not supported (stays exact).
+ * r2_clip_setup: the private VU's micro memory (NULL: the linked recompiled unit 376110651; tools pass a recording's) */
+#define R2_CLIP_VMAX 4096u
+typedef struct { uint8_t* out; uint32_t n, cap, overflow; uint32_t tris, fans, culled; } r2_fanbuf;
+int r2_clip_setup(const uint8_t* micro);
+extern int r2_clip_why;           /* the last r2_clip_entry's no: 1 sub-batch kind, 2 a strip triangle with w <= 0, 3 full, 4 size */
+/* (also for the oracle) the vertices' clip coordinates / flags; 0x0C60's verdict on the triangle ending at strip vertex k
+ * of sub-batch b; one sub-batch's clipped triangles (-1: unsupported, else how many kicked fans) */
+enum { R2CV_ADC, R2CV_STRIP, R2CV_CULLED, R2CV_CLIP };
+int r2_clip_prep(const r2_mesh* m, const float M[16]);
+int r2_clip_verdict(const r2_mesh* m, uint32_t b, uint32_t k);
+int r2_clip_batch(const r2_mesh* m, uint32_t b, float fade, const r2_frame_block* f, r2_fanbuf* o);
+int r2_clip_entry(const r2_mesh* m, const float M[16], float fade, const r2_frame_block* f, r2_fanbuf* o, uint32_t* last_fanned,
+                  uint32_t* rt, uint32_t rtcap);
 
 /* ---- EE side (r2_capture.c, called from recomp/patches.py patches) --------------------------------------------- */
 struct ps2_ctx;

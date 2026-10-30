@@ -908,6 +908,72 @@ covers; the owner confirms after testing the dist build. Effort is in agent-days
   `PS2_GPU_PART=0`, `PS2_R2_NPOST_FLAT=0`, prof category "part", stats line "particles: spans, native / FF / ROV
   triangles, other primitives".
 
+### R5 part 2 as built (next/r2-m5b, 2026-10-29): guard-band meshes native, the VU's own clipper
+- **Profile first** (chaos, modern, 3x, `PS2_GPU_PROF=1` + prof_window, census `PS2_R2_STATS=1`): the exact path's FF
+  triangles with Z were the largest exact GPU item (ep1 0.77 ms, ep3 1.10, m2 1.75), and the guard-band meshes the
+  largest exact census share (ep1 7.1k of 75k vertices, ep3 6.8k of 24k, m1 4.9k of 21k, m2 3.7k of 13k).
+- **How the main program clips** (376110651, read with the recompiled C build\rel\vu\vuc_376110651_vu1_ks0.c, which
+  encodes the 4-cycle CLIP-flag latency): 0x06D0's loop CLIPs every vertex against |x|, |y|, |z| <= w (the GS's guard
+  band); a triangle with a vertex outside goes to 0x0C60, which adds to the last vertex's w word (base 0x7000, so the
+  sum sets ADC): +0x1000 when all three are beyond the far or the near plane or all three off one side of the *screen*
+  (the clip coordinates x 7.93 / 18.1, vf31), else +0x2000 and [10].z = 1 (0x4000 is the backface mark). After the
+  sub-batch's strips, 0x2540 takes each +0x2000 triangle: its three records to VU 0x0E, 0x2150 back to clip space
+  ((screen float - VU 1) / VU 0 x w, STQ x w, colours ITOF0) and clipped plane by plane (+z, -z, +x, -x, +y, -y, each
+  when the CLIP flags say a vertex is outside; 0x1E88 Sutherland-Hodgman in place, d = w + c . plane by MUL / ADDz /
+  MADDy / MADDx, t = DIV d1 / (d1 - d0)), projected again (fog w from 9.x / 9.y / MINI 9.z), 0x1DC8 culls it by its
+  area's sign against the strip parity, and it is kicked as a fan: pass A's A+D packet, the fan (tag at VU 0x0D, PRIM /
+  REGS from the material packet's second tag), pass B's A+D packet and the fan again, pass A's packet again. (0x2058
+  records the new vertices of the near-plane clip in a list for callers with vi8 > 0: not the prelit ones.)
+- **Not a C port**: the game's own recompiled 0x2540 runs on a **private VU1** on the EE thread (vu.c
+  `vu_private_init` / `vu_private_run` / `vu_compiled_image`: its own data / micro memory and op cache, XGKICKs to a
+  callback through a thread-local; the interpreter if no unit matches). runtime/r2/r2_clip.c builds each clipped
+  triangle's three records exactly as 0x06D0 / 0x0BE0 leave them (SSE under the VU MXCSR, as r2_matmul_fast), the
+  batch header ([9], [10].z, [11].x) and its two material packets (kept by the decoder, r2_batch.pk / vu9), enters at
+  0x2540 with vi10 / vi11 around the one record and vi8 for the strip's parity, and collects the kicks. 0x0C60's verdict
+  is C (`r2_clip_verdict`, from every vertex's clip coordinates in the VU's arithmetic). Level 1
+  (scripts/r2_mesh_check.c, new "clipper" line): ep1 / ep3 / ep5 hubs and m2: every verdict identical (~160k triangles),
+  every clipper sequence identical (26 sequences, 60 clipped triangles in m2's frame) - most guard-band triangles are
+  culled off screen, only a few per frame are clipped.
+- **R2's side**: a crossing entry (rigid, lit included unless a lit sub-batch has a clipped triangle) carries a **run
+  table** (`R2E_RUNS`, in the slot's pool: per sub-batch the runs of its index list the VU draws as strips); the
+  frontend emits one draw per run through the plain pipeline. The geometry-shader clip pipeline is no longer used in
+  hybrid mode (bracket A/B and the PS2_GPU_AB_EE A phases still use it; it now discards crossing triangles,
+  `PS2_R2_CLIP=1` = GPU clipping): with it the guard meshes cost ~80% of the exact path's FF. The clipper's packets
+  (`R2E_FANS`) go into the slot and an R2H_OUTLINE hint after the entry; the run ends there (the game's order: the
+  entry's strips, then its fans), and the state epilogue follows the fans unless the mesh's last sub-batch kicked fans
+  (its pass A packet is then the VU's own last state). Bracket mode keeps the exact fans (`R2D_FANS`: gf_r2_skip 2
+  draws TRIFAN prims). `PS2_R2_FANS=0` off.
+- **Found**: degenerate objects (clip coordinates ~1e27, vertices on both sides of w = 0) give fans with Z beyond
+  GPU_Z_FF_MAX; one such vertex sets the Z target's `z_high` and every later primitive of the frame takes the ROV tier
+  (ep1: +0.19 ms "ref-other", +0.06 ref-tri, +0.04 zresolve). Such entries stay exact (stats "no: ... Z").
+- **In-run A/B of EE-side features** (new): `PS2_GPU_AB=<frames> PS2_GPU_AB_EE=1`: only EE features follow the phases
+  (gpu_exec.c `gpu_ab_phase`; the first 8 frames of a phase are not counted). Diagnostics: PS2_R2_STATS adds "clipper:"
+  (entries, triangles, packet KB, ms, reasons to stay exact) and the frontend's per-phase "Z beyond the FF range" /
+  "ROV primitives by reason"; `PS2_R2_FANS_DROP=1/2` (cost attribution only).
+- **GPU** (in-run A/B, A = crossing entries exact, B = native; 3x): ep1 3.73 -> 3.52 ms (FF Z triangles 0.88 -> 0.36,
+  R2 0.86 -> 1.20), m2 4.98 -> 4.69 (1.77 -> 0.95, 0.44 -> 1.00). EE: 0.07-0.12 ms per frame for the clipper.
+- **Faithfulness**: the clipped triangles are the exact path's own packets; the strip triangles are R2's (as every
+  native entry). Sweep (ab + hc): 21 / 22 (ab: every scene within gates.json; ep3 / ep7 bracket Z max 347 / 6911 on <= 0.05% of the pixels). ep7's hc fails intermittently with the clipper on and off alike (1 of 3
+  runs without it): its triple (4803, 4804, 4807) skips frames while a claw in the Binocucom view moves.
+- **Census** (native share of the main program's mesh vertices, PS2_R2_STATS, one run per scene at ~120 s, base ->
+  the first clipper build; scene load varies between runs): ep1 84.4 -> 90.7% (guard 7.1k -> 2.2k vertices), ep3 61.6
+  -> 94.8% (6.8k -> 0), ep5 86.8 -> 94.1% (3.7k -> 0), m1 72.2 -> 89.4% (4.9k -> 0), m2 51.4 -> 73.7% (3.7k -> 1.0k). The other
+  swept scenes were not censused.
+- **Performance** (chaos benchmark, modern mode, main 8e272dd vs this branch, interleaved, 1 repeat, release, 3x 16:9
+  unlimited, owner's PC; tag r2m5b_s3; fps median / 1% low, GPU ms median): ep1 hub 284.9 / 127.3, 3.42 -> **324.7** / 243.3,
+  2.97; m2 boardroom 190.1 / 109.4, 5.16 -> **227.8** / 139.0, 4.26; m1 brawl 285.7 / 125.5, 3.43 -> 290.7 / 123.0, 3.29.
+  CPU stages ep1 worker / GS / frontend 2.04 / 1.95 / 2.34 -> 1.37 / 1.28 / 1.74 ms. ep3 / ep5 at 3x and every scene at 4x
+  could not be measured: the owner's games (VALORANT, DayZ) ran on the GPU during every later attempt; the in-run
+  A/B above (ep3: 6.34 -> 6.11 ms under that load) is the reliable GPU number. To do on a quiet machine.
+- **Not done / left** (vertex share of the hub frames, r2_mesh_check): lit sub-batches with clipped triangles (m2:
+  ~50 entries a second stay exact: the records need r2_lit_eval's colours); the lit routines' second sub-batch whose
+  colours neither the chain nor the header writes (ep3 ~0.9k, ep5 ~1.0k vertices; stale VU memory?); billboards
+  [11].x 0x100 / 0x200 (ep1 ~0.7k: 0x0070 rewrites the W rows from ELENG of the rows and the camera position VU 9 =
+  f_00157FA0's sp + 0x70 - the private VU could run 0x0070 itself); 0x0E30 (~0.3-0.5k), 0x16B0 (~0.2-0.3k), 0x13F0
+  (~0.2k); sky and warps (< 0.2%). Each is about 1% of the vertices or less of a GPU-bound frame where R2 and the exact
+  path cost about the same per pixel, so none was taken. R2's own cost is now the largest GPU item (ep1 1.2 ms of 3.5;
+  more draws: one per run) and the next lever with R8's MSAA.
+
 ### R8. Fully modern frames: free resolution, MSAA, motion vectors - 8 agent-days
 - **Deliverable**:
   - Frames with no exact draws render at any resolution, defaulting to the output resolution. "Render scale" becomes a

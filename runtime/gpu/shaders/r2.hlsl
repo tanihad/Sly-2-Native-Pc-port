@@ -279,10 +279,11 @@ R2C r2_vs_clip(R2V i) {
 
 // (r2-m2) Meshes crossing the VU's guard band (r2_capture.c inside_guard; notes/modern-renderer.md "R2 as built"): per
 // triangle as the VU decides it (0x0C60: each vertex's CLIPW flags against |x|, |y|, |z| <= w): all three inside, the
-// VU-exact screen vertices; all three outside one plane, nothing; else the VU's clipper (0x2540) would draw it as
-// clipped fans - here the GPU clips the clip-space triangle against the same six planes (SV_ClipDistance), with
-// perspective-correct attributes (not bit-exact: the clipper's own arithmetic is not reproduced; such triangles are
-// near the camera and few).
+// VU-exact screen vertices; all three outside one plane, nothing; else the VU's clipper (0x2540) draws it as clipped
+// fans: (r2-m5b) those are the VU's own packets (runtime/r2/r2_clip.c, decoded after the entry), so the triangle is left
+// out here. Hybrid entries carry run tables instead (the strip triangles through the plain pipeline); this stage remains
+// for bracket A/B and the PS2_GPU_AB_EE A phases. PS2_R2_CLIP=1 (misc bit 64): the GPU clips the clip-space triangle
+// against the same six planes (SV_ClipDistance), perspective-correct, not the VU's arithmetic.
 uint r2_outcode(float4 c) {
     return (c.x > c.w ? 1u : 0u) | (c.x < -c.w ? 2u : 0u) | (c.y > c.w ? 4u : 0u) | (c.y < -c.w ? 8u : 0u) |
            (c.z > c.w ? 16u : 0u) | (c.z < -c.w ? 32u : 0u) | (c.w > 0.0 ? 0u : 64u);
@@ -293,6 +294,9 @@ void r2_gs_clip(triangle R2C v[3], inout TriangleStream<R2K> ts) {
     uint o0 = r2_outcode(v[0].clip), o1 = r2_outcode(v[1].clip), o2 = r2_outcode(v[2].clip);
     if ((o0 & o1 & o2 & 63u) != 0u) return;
     bool inside = (o0 | o1 | o2) == 0u && (asuint(r2_misc.w) & 16u) == 0u;   // (PS2_R2_DBG 16: always the clip path)
+    // (r2-m5b) a triangle the VU clips: its fans are the VU clipper's own (runtime/r2/r2_clip.c, decoded by the GS thread
+    // after the entry), or the VU culls it; GPU clipping only with PS2_R2_CLIP=1 (misc bit 64)
+    if ((o0 | o1 | o2) != 0u && (asuint(r2_misc.w) & 64u) == 0u) return;
     R2Seg sg = r2_seg(v[0].mr.z);
     float4 fr = asfloat(fdata.Load4(sg.off.x + 32u));       // screen model: ax, bx, ay, by (gpu_r2_frame)
     float2 fz = asfloat(fdata.Load2(sg.off.x + 48u));       //               az, bz

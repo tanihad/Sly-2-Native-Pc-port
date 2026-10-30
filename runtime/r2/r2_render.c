@@ -256,6 +256,8 @@ static int segment(const gpu_fop_r2* o, const uint8_t* fdata, size_t fdata_bytes
         const char* ze = getenv("PS2_R2_ZBIAS");
         const char* de = getenv("PS2_R2_DBG");   /* (r2-m2) cost experiments (shaders/r2.hlsl), never in play */
         cb[0] = in->dual_bias; cb[1] = ze ? (float)atof(ze) : 0.0f; cb[2] = 0.0f; cu[3] = de ? (uint32_t)atoi(de) : 0u;
+        const char* ce = getenv("PS2_R2_CLIP");  /* (r2-m5b) 1: crossing triangles GPU-clipped (else the VU's fans draw them) */
+        if (ce && *ce == '1') cu[3] |= 64u;
         r2g_buf_write(R.d, R.cb, 0, cb, sizeof cb);
         R.cb_set = 1;
         R.cb_bias = in->dual_bias;

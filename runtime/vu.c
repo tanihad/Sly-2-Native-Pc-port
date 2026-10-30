@@ -298,7 +298,76 @@ static void run(vu_state* st, uint32_t addr_dw) {
     perf_leave(perf_prev);
 }
 
+/* (r2-m5b) a private VU1 on another thread (runtime/r2/r2_clip.c: the main program's clipper for the modern renderer):
+ * its own data / micro memory and op cache, its XGKICKs handed to a callback instead of the GIF. The recompiled unit
+ * whose image matches the private micro memory runs it (the interpreter otherwise), exactly as on the real VU1. */
+static _Thread_local vu_private_kick_fn tl_kick;
+static _Thread_local void* tl_kick_user;
+static _Thread_local const vu_state* tl_kick_st;
+
+void vu_private_init(vu_state* st, uint8_t* data, uint8_t* micro, vu_op* cache) {
+    memset(st, 0, sizeof *st);
+    st->idx = 1;
+    st->data = data;
+    st->dmask = 0x3FF;
+    st->micro = micro;
+    st->pcmask = 0x7FF;
+    st->cache = cache;
+    vu_init_state(st);
+    st->inited = 1;
+}
+
+int vu_compiled_image(const char* name, uint8_t* micro, uint32_t size) {
+    for (uint32_t k = 0; k < vuc_nprogs; k++) {
+        const vuc_program* p = vuc_progs[k];
+        if (p->unit != 1 || strcmp(p->name, name)) continue;
+        const uint32_t* code = p->code;
+        for (uint32_t r = 0; r < p->nranges; r++) {
+            const vuc_range* g = &p->ranges[r];
+            if ((uint32_t)(g->start + g->len) * 8u > size) return 0;
+            memcpy(micro + g->start * 8u, code, g->len * 8u);
+            code += g->len * 2u;
+        }
+        return 1;
+    }
+    return 0;
+}
+
+uint32_t vu_private_run(vu_state* st, uint32_t pc, vu_private_kick_fn kick, void* user) {
+    static _Thread_local const vu_state* cst;
+    static _Thread_local const vuc_program* cprog[2048];
+    static _Thread_local uint16_t cidx[2048];
+    static _Thread_local uint8_t cknown[2048];
+    pc &= st->pcmask;
+    if (cst != st) { cst = st; memset(cknown, 0, sizeof cknown); }   /* (the private micro memory never changes) */
+    if (!cknown[pc]) {
+        cknown[pc] = 1;
+        cprog[pc] = NULL;
+        const char* e = getenv("PS2_VU_INTERP");
+        if (!(e && *e && *e != '0'))
+            for (uint32_t k = 0; k < vuc_nprogs && !cprog[pc]; k++) {
+                const vuc_program* p = vuc_progs[k];
+                if (p->unit != 1) continue;
+                for (uint32_t i = 0; i < p->nentries; i++)
+                    if (p->entries[i] == pc) { if (vuc_image_matches(st, p)) { cprog[pc] = p; cidx[pc] = (uint16_t)i; } break; }
+            }
+    }
+    const vu_private_kick_fn ok = tl_kick;
+    void* ou = tl_kick_user;
+    const vu_state* os = tl_kick_st;
+    tl_kick = kick; tl_kick_user = user; tl_kick_st = st;
+    const unsigned csr = _mm_getcsr();
+    _mm_setcsr(VU_MXCSR);
+    uint32_t n = VUC_NOT_COMPILED;
+    if (cprog[pc]) n = cprog[pc]->fn(st, cidx[pc]);
+    if (n == VUC_NOT_COMPILED) n = vu_run(st, pc);
+    _mm_setcsr(csr);
+    tl_kick = ok; tl_kick_user = ou; tl_kick_st = os;
+    return n;
+}
+
 void vu_xgkick(uint32_t qw_addr) {
+    if (tl_kick) { tl_kick(tl_kick_user, tl_kick_st->data, qw_addr & 0x3FF); return; }   /* (r2-m5b) a private VU1 */
     if (vuc_hashing) {                   /* PS2_VU_VERIFY: hash both runs' kicks; the shadow's go no further */
         const vu_state* cur = vuc_shadow_active ? &vuc_shadow : &vu_st[1];
         vuc_khash = vu_kick_hash(vuc_khash, qw_addr, cur->cyc);

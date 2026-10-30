@@ -89,6 +89,7 @@ static bref* get(uint64_t k) {
 static uint64_t n_vtx, xy_hist[6], z_hist[6], f_bad, rgba_bad, stq_bad, adc_extra, adc_missing, culled_back, culled_front,
     culled_off, culled_clip, packets, packet_bad, kicks_vertex, kicks_clip, kicks_unknown, programs_seen, batches_seen,
     tri_drawn, n_used, nocull_drawn, area_pos_culled, area_neg_culled, area_pos_drawn, area_neg_drawn, z_max, xy_max;
+static uint64_t verdict[4][4], verdict_bad, clip_seq, clip_seq_bad, clip_seq_unsup, clip_bytes;   /* (r2-m5b) */
 static double stq_max, model_ex, model_ez;
 static uint64_t model_bad;
 static long cur_prog;
@@ -110,6 +111,7 @@ static void check_vertices(const bufbatch* bb, int pass, const uint8_t* pkt, uin
     kicks_vertex++;
     int csel = P->csel;
     r2_gsv prev[2];
+    if (pass == 0) r2_clip_prep(bb->m, bb->mat);           /* (r2-m5b) */
     /* vertices of triangles the VU draws (the gate's quantities are about what is drawn: vertices of clipped or culled
      * triangles near or behind the camera have no meaning in GS coordinates) */
     uint8_t used[256] = { 0 };
@@ -169,6 +171,18 @@ static void check_vertices(const bufbatch* bb, int pass, const uint8_t* pkt, uin
         }
         /* primitive set: the triangle ending at k (k >= 2) */
         int adc = (xyz[3] >> 15) & 1;
+        if (k >= 2 && pass == 0 && !B->lit && !B->skin) {     /* (r2-m5b) r2_clip_verdict against the VU's marks */
+            int v = r2_clip_verdict(bb->m, bb->b, k), vu;
+            uint32_t mk = xyz[3] & 0xFFFF;
+            if (!adc) vu = R2CV_STRIP;
+            else if (o.adc) vu = R2CV_ADC;
+            else if ((mk & 0x3000) == 0x1000) vu = R2CV_CLIP;
+            else if ((mk & 0x3000) == 0x3000) vu = R2CV_STRIP;      /* (backface: a strip triangle the VU culls) */
+            else vu = R2CV_CULLED;
+            verdict[vu][v]++;
+            if ((v != vu || v == R2CV_CLIP) && verbose && verdict_bad++ < 12)
+                printf("  verdict mine %d VU %d (mark %04X) mesh %08X batch %u k %u\n", v, vu, mk, bb->m->addr, bb->b, k);
+        }
         if (k >= 2) {
             int in_adc = o.adc;
             if (!adc && in_adc) adc_extra++;                     /* the VU draws a triangle R2's lists lack */
@@ -395,7 +409,20 @@ int main(int argc, char** argv) {
         r2_mesh* m;
         int r = r2_mesh_decode(ram, c2 ? c2 : c1, c2 ? 1 : 0, &m);
         reasons[r]++;
-        if (r) { extern int r2_fail_line, r2_fail_info[4]; extern uint32_t r2_fail_ms[8], r2_fail_nms; if (verbose) { printf("entry %u prio %u c1 %08X c2 %08X: %s (line %d) flags %X second %d litr %d ms", idx, prio, c1, c2, r2m_reason[r], r == R2M_VERTEX ? r2_fail_line : 0, r2_fail_info[0], r2_fail_info[1], r2_fail_info[3]); for (uint32_t q = 0; q < r2_fail_nms && q < 8; q++) printf(" %04X", r2_fail_ms[q]); printf("\n"); } continue; }
+        if (r) { extern int r2_fail_line, r2_fail_info[4]; extern uint32_t r2_fail_ms[8], r2_fail_nms; if (verbose) { int fl = r2_fail_info[0], se = r2_fail_info[1], li = r2_fail_info[3]; r2_mesh_hash(ram, c2 ? c2 : c1); printf("entry %u prio %u c1 %08X c2 %08X: %s (line %d) flags %X second %d litr %d ~%u v ms", idx, prio, c1, c2, r2m_reason[r], r == R2M_VERTEX ? r2_fail_line : 0, fl, se, li, r2_hash_bytes / 45); for (uint32_t q = 0; q < r2_fail_nms && q < 8; q++) printf(" %04X", r2_fail_ms[q]);
+                if (c2) {                                    /* (r2-m5b) the qwords the entry's header writes */
+                    float hw[16], hv8[4];
+                    if (r2_header_parse(ram, c1, hw, hv8)) {
+                        printf(" header writes:");
+                        int in = 0;
+                        for (uint32_t q = 0; q <= 0x200; q++) {
+                            int wq = q < 0x200 && r2_header_qw(q) != NULL;
+                            if (wq && !in) { printf(" %X", q); in = 1; }
+                            else if (!wq && in) { printf("-%X", q - 1); in = 0; }
+                        }
+                    }
+                }
+                printf("\n"); } continue; }
         decoded++;
         if (verbose && m->lit) printf("lit entry %u prio %u c1 %08X c2 %08X: %u batches lit %d skin %d hq_hi %X\n", idx, prio, c1, c2, m->nb, m->any_lit, m->any_skin, m->hq_hi);
         verts += m->nvtx;
@@ -489,6 +516,8 @@ int main(int argc, char** argv) {
             else memset(BB[bufidx((0x24B - h->top) & 0x3FF)], 0, 2 * sizeof(bufbatch));
         }
         if (prelit) {
+            static int clip_ready;                           /* (r2-m5b) the private VU runs this micro image */
+            if (!clip_ready) clip_ready = r2_clip_setup(last_micro);
             programs_seen++;
             uint32_t X = ra == 0x2EE8 ? h->top : (0x24B - h->top) & 0x3FF;
             int sub = ra == 0x2EE8;
@@ -536,6 +565,80 @@ int main(int argc, char** argv) {
         vu_run(st, h->addr);
         _mm_setcsr(csr);
         if (!prelit && ra != 0x3AB0) continue;
+        /* (r2-m5b) the clipper's kicks (A+D packets of a batch's pass A / B around fans at VU 0x0D) against r2_clip_batch */
+        for (int k = 0; k + 1 < nk; k++) {
+            const uint64_t* tq = (const uint64_t*)K[k].pkt;
+            if (!((uint32_t)(tq[0] >> 60) == 1 && (tq[1] & 0xF) == 0xE && K[k + 1].addr == 13)) continue;
+            bufbatch* cand[4];
+            uint32_t pb[4];
+            int nc = 0;
+            for (int bi = 0; bi < 2; bi++)
+                for (int s = 0; s < 2; s++) {
+                    bufbatch* bb = &BB[bi][s];
+                    if (!bb->valid) continue;
+                    uint32_t Xb = bi ? 0x219 : 0x032;
+                    const uint32_t* pk = (const uint32_t*)vu_data_mem(1) + (Xb + (s ? 18 : 14)) * 4;
+                    if (pk[0] && K[k].addr == ((Xb + (pk[0] & 0x3FF) + 2) & 0x3FF)) {
+                        cand[nc] = bb; pb[nc] = pk[1] ? (Xb + (pk[1] & 0x3FF) + 2) & 0x3FF : 0xFFFF; nc++;
+                    }
+                }
+            if (!nc) continue;
+            static uint8_t vu_seq[1 << 18], mine[1 << 18];
+            uint32_t nv = 0, pa = K[k].addr;
+            int k2 = k;
+            for (; k2 < nk && (K[k2].addr == 13 || K[k2].addr == pa || K[k2].addr == pb[0]) && nv + K[k2].qw * 16 <= sizeof vu_seq; k2++) {
+                memcpy(vu_seq + nv, K[k2].pkt, K[k2].qw * 16);
+                nv += K[k2].qw * 16;
+            }
+            k = k2 - 1;
+            clip_seq++;
+            clip_bytes += nv;
+            int bad = 1, unsup = 0, r = 0;
+            r2_fanbuf o = { mine, 0, sizeof mine, 0, 0, 0, 0 };
+            for (int ci = 0; ci < nc && bad; ci++) {
+                bufbatch* hit = cand[ci];
+                o.n = 0; o.overflow = 0;
+                r2_clip_prep(hit->m, hit->mat);
+                r = r2_clip_batch(hit->m, hit->b, hit->fade, &fb, &o);
+                if (r < 0) { unsup = 1; continue; }
+                /* compare: A+D packets whole; fan tags words 0..2; per fan vertex the qwords its REGS read (ST words 0..2) */
+                bad = o.n != nv;
+                for (uint32_t p = 0; !bad && p < nv;) {
+                    const uint32_t* t = (const uint32_t*)(vu_seq + p);
+                    const uint32_t* u = (const uint32_t*)(mine + p);
+                    uint32_t nloop = t[0] & 0x7FFF, nreg = t[1] >> 28, regs = t[2];
+                    if (nreg == 1) {
+                        if (memcmp(t, u, (1 + nloop) * 16)) bad = 1;
+                        p += (1 + nloop) * 16;
+                    } else {
+                        if (memcmp(t, u, 12)) { bad = 1; break; }
+                        for (uint32_t v = 0; v < nloop && !bad; v++)
+                            for (uint32_t q = 0; q < 4; q++) {
+                                uint32_t rg = (regs >> (4 * q)) & 15;
+                                const uint8_t *a = vu_seq + p + (1 + 4 * v + q) * 16, *b = mine + p + (1 + 4 * v + q) * 16;
+                                if (rg == 0xF) continue;
+                                if (memcmp(a, b, rg == 2 ? 12 : 16)) { bad = 1; break; }
+                            }
+                        p += (1 + 4 * nloop) * 16;
+                    }
+                }
+            }
+            if (bad && unsup) { clip_seq_unsup++; continue; }
+            if (bad) {
+                clip_seq_bad++;
+                if (verbose && clip_seq_bad < 6) {
+                    printf("  clip sequence (prog %ld, %d candidates, last mesh %08X batch %u): VU %u bytes, mine %u (fans %d)\n", cur_prog, nc,
+                           cand[nc - 1]->m->addr, cand[nc - 1]->b, nv, o.n, r);
+                    for (uint32_t p = 0; p < (nv > o.n ? nv : o.n) && p < 64 * 16; p += 16) {
+                        const uint32_t* t = (const uint32_t*)(vu_seq + p);
+                        const uint32_t* u = (const uint32_t*)(mine + p);
+                        printf("    %3u VU %08X %08X %08X %08X  mine %08X %08X %08X %08X%s\n", p / 16, p < nv ? t[0] : 0, p < nv ? t[1] : 0,
+                               p < nv ? t[2] : 0, p < nv ? t[3] : 0, p < o.n ? u[0] : 0, p < o.n ? u[1] : 0, p < o.n ? u[2] : 0,
+                               p < o.n ? u[3] : 0, (p < nv && p < o.n && memcmp(t, u, 16)) ? " *" : "");
+                    }
+                }
+            }
+        }
         /* attribute the kicks: material packets (A+D tag) and vertex packets (tristrip) by their VU address */
         for (int k = 0; k < nk; k++) {
             uint32_t a = K[k].addr;
@@ -571,6 +674,12 @@ int main(int argc, char** argv) {
             }
         }
     }
+    printf("clipper (r2-m5b): sequences %llu (%llu bytes), differing from r2_clip_batch %llu, unsupported %llu; verdicts [VU][mine] "
+           "(adc strip culled clip):", (unsigned long long)clip_seq, (unsigned long long)clip_bytes, (unsigned long long)clip_seq_bad,
+           (unsigned long long)clip_seq_unsup);
+    for (int a = 0; a < 4; a++) printf(" |%llu %llu %llu %llu", (unsigned long long)verdict[a][0], (unsigned long long)verdict[a][1],
+                                      (unsigned long long)verdict[a][2], (unsigned long long)verdict[a][3]);
+    printf("\n");
     printf("outline programs: %llu (%llu kicks), differing from r2_outline_run: %llu\n", (unsigned long long)out_progs, (unsigned long long)out_kicks, (unsigned long long)out_bad);
     printf("lit routines: %llu programs (decode failures:", (unsigned long long)lit_progs);
     for (int r = 1; r < R2M_N; r++) if (lit_dec_fail[r]) printf(" %s %llu", r2m_reason[r], (unsigned long long)lit_dec_fail[r]);
