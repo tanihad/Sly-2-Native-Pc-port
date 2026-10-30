@@ -1,0 +1,4 @@
+m1_brawl@hudops#0: fps med 108.9 | 1% low 20.1 | 0.1% low 18.1 | avg 95.9 | worst 16.7 (1971 frames, 20.6 s) | ms med/p90: worker 1.13/1.45 GS 1.24/1.47 front 1.96/2.37 (max 4.49) render 3.60/4.08 GPU 7.57/10.53 (max 17.36) | prims 5583 draws 4802
+scene | build | runs | fps med | 1% low | 0.1% low | worker | GS | front (p90) | render | GPU | prims
+ep1_hub | hudops | 1 | 104.7 | 21.1 | 14.7 | 1.52 | 1.51 | 2.47 (2.60) | 3.93 | 7.61 | 7308
+m1_brawl | hudops | 1 | 108.9 | 20.1 | 18.1 | 1.13 | 1.24 | 1.96 (2.37) | 3.60 | 7.57 | 5583

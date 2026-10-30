@@ -974,6 +974,50 @@ covers; the owner confirms after testing the dist build. Effort is in agent-days
   path cost about the same per pixel, so none was taken. R2's own cost is now the largest GPU item (ep1 1.2 ms of 3.5;
   more draws: one per run) and the next lever with R8's MSAA.
 
+### R7 part 3, the gameplay HUD (next/r2-hud, 2026-10-29): profiled; no native HUD, its fixed GPU cost cut instead
+- **Profile first** (chaos, modern, 3x, release, unlimited; in-run A/B: `PS2_GPU_AB=600 PS2_GPU_AB_EE=2 PS2_R2_DROPCLS=0x20`
+  drops render class 5 = priority 21 = the 2D scenes in the A phases; EE-side diagnostics follow the phases with
+  `PS2_GPU_AB_EE=2`, only they, not the GPU features). What the HUD costs per game frame (B - A, means of ~150-250
+  windows of 60 frames each, the scenes' content averaged over 8-12 phase pairs; no PS2_GPU_PROF):
+
+  | scene | GPU | frontend | GS thread | worker | prims |
+  |---|---|---|---|---|---|
+  | ep1 hub | +0.49 ms | +0.14 | +0.04 | -0.04 | +0.6k |
+  | m1 brawl | +0.82 | +0.39 | +0.17 | +0.09 | +1.5k |
+  | m2 boardroom | +0.55 | +0.29 | +0.11 | -0.01 | +0.7k |
+
+  The HUD's *draws* are few and small (an ep1 frame: 11 draws, 0.06 ms; the new "hud" column of the GPU profile - draws
+  kicked inside HUD_BEGIN / HUD_END, GPU_DF_HUD - 0.11-0.26 ms per frame averaged). The rest of the +0.5-0.8 ms is the
+  class's begin / end work outside the hints: a full alpha-plane clear (mask 8, value 8F056E7D, ~0.045 ms) and, once
+  per 2D scene (two a frame), a Z clear of the HUD's own 16-bit Z target 4 (value 0) that is not a "full" clear
+  (512 x 224 cleared of the target's 512 x 256 rows): cs_clear over zpatch plus a zquad into the DSV, 0.045 + 0.05 ms each
+  (11 MB each at 3x: bandwidth bound), and ROV draws for DATE (6 vertices, 0.02 ms). The geometry is ~1-2k triangles of
+  tessellated vector art per frame (m1), few draws. CPU: 0.1-0.5 ms across the frontend and the GS thread, the worker nothing.
+- **Why not a native HUD** (the design's R7 item): the HUD's pixels come from GS rules, not from a mesh: Z layering
+  (GEQUAL against its own Z target, a growing Z per shape), alpha-plane masks (FBMSK FF000000, alpha-only writes with
+  other tests), DATE reads (ROV tier) and AA lines. Drawing it natively means re-implementing those rules (a Flash-like mask
+  stack) and proving pixel equality, for a draw cost of 0.06-0.26 ms. The fixed overhead is not in the draws, so a native
+  path would not remove it either, and the exact path is not idle in gameplay for other reasons anyway (guard-band
+  remnants, sky, shadow volumes, the final blur). The HUD stays on the exact path; the widescreen anchors are untouched.
+- **What changed: lazy partial Z clears** (gpu_exec.c exec_clear, mixed frames, `PS2_GPU_LAZYZ=0` off): a depth clear of a
+  tile-aligned part of a non-Z24 target to a value < 2^20 does no bandwidth-bound pass over the rect. The DSV is cleared
+  whole (a fast clear), the tiles outside the rect first get zpatch (their truth, ensure_zp_all) and are marked "zpatch
+  newer" (ensure_dsv resolves them when a draw needs them), the rect's tiles are marked "DSV newer" with zpatch left stale:
+  a ROV draw / download converts only its own bbox (cs_zsync). With the value < 2^20 the DSV encode and decode are exact.
+  Exact by construction and by test: `m9_exact` S = 1 and 3 with `-Game` identical on all 28 recordings, `gpu_diff_all`
+  mixed S = 1 28 / 28 (the HUD's clears occur in many of them; the stats line "lazy Z clears: first on target 4 (kind 4,
+  512 x 224 of 512 x 256)" shows it fires). In-run A/B (`PS2_GPU_AB=600 PS2_GPU_AB_EE=2`, off in the A phases, GPU timestamps,
+  no PS2_GPU_PROF): GPU ep1 4.93 -> 4.76 ms (-0.18), m1 3.44 -> 3.17 (-0.27), m2 5.44 -> 5.16 (-0.28); CPU stages unchanged.
+- Tried and dropped: the same laziness for *full* Z clears (the world's; experiment `PS2_GPU_LAZYZ=2`): the run was disturbed
+  by another GPU load and gave -0.03 / -0.14 / -0.41 ms, not clearly more, with more blast radius (every frame's world Z).
+  A bbox-limited colour / Z clear (experiment, wrong pictures: the HUD's clears limited to 120 x 60) confirmed that the
+  clears' cost is area: "clear" 0.60 -> 0.27 ms (two runs at once, inflated).
+- **Diagnostics added**: `PS2_R2_DROPCLS` follows the A phases of `PS2_GPU_AB_EE=1|2`; the GPU profile's "hud" column
+  and the "[HUD]" tag in `PS2_GPU_PROF_SEQ` lines; `PS2_GPU_OPDUMP` prints a clear's rect / value / mask / HUD flag.
+- **Left**: the alpha-plane clear (mask 8, a compute RMW over the whole target, ~0.045 ms: a write-masked quad would
+  roughly halve it); the world's own full Z clear (zpatch + DSV); a real native HUD only with a re-implementation of the
+  layering / mask rules, if the HUD's CPU share (frontend 0.14-0.39 ms) ever matters on weak CPUs.
+
 ### R8. Fully modern frames: free resolution, MSAA, motion vectors - 8 agent-days
 - **Deliverable**:
   - Frames with no exact draws render at any resolution, defaulting to the output resolution. "Render scale" becomes a

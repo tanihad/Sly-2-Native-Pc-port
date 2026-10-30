@@ -1,0 +1,3 @@
+ep1_hub@hudclrdbg#0: fps med 219.3 | 1% low 111.7 | 0.1% low 30.2 | avg 205.1 | worst 29.7 (3169 frames, 15.4 s) | ms med/p90: worker 1.18/1.62 GS 1.26/1.70 front 1.94/2.41 (max 4.10) render 0.82/1.11 GPU 4.34/5.01 (max 8.63) | prims 6247 draws 5234
+scene | build | runs | fps med | 1% low | 0.1% low | worker | GS | front (p90) | render | GPU | prims
+ep1_hub | hudclrdbg | 1 | 219.3 | 111.7 | 30.2 | 1.18 | 1.26 | 1.94 (2.41) | 0.82 | 4.34 | 6247

@@ -1,0 +1,7 @@
+m1_brawl@hudab3#0: fps med 201.2 | 1% low 82.2 | 0.1% low 27.3 | avg 185.4 | worst 23.4 (17610 frames, 95.0 s) | ms med/p90: worker 1.26/1.67 GS 1.24/1.55 front 1.70/2.18 (max 4.26) render 0.90/1.10 GPU 4.74/5.69 (max 12.00) | prims 5576 draws 5544
+m2_boardroom@hudab3#0: fps med 120.2 | 1% low 50.1 | 0.1% low 28.3 | avg 113.2 | worst 21.1 (14720 frames, 130.0 s) | ms med/p90: worker 1.23/1.72 GS 0.76/1.10 front 1.55/2.23 (max 3.99) render 0.50/0.67 GPU 7.95/10.92 (max 16.84) | prims 4586 draws 2330
+ep1_hub@hudab3#0: fps med 206.2 | 1% low 92.9 | 0.1% low 27.3 | avg 190.0 | worst 24.8 (20898 frames, 110.0 s) | ms med/p90: worker 1.46/1.87 GS 1.37/1.61 front 2.09/2.45 (max 4.39) render 1.01/1.15 GPU 4.58/5.37 (max 11.38) | prims 6638 draws 7182
+scene | build | runs | fps med | 1% low | 0.1% low | worker | GS | front (p90) | render | GPU | prims
+ep1_hub | hudab3 | 1 | 206.2 | 92.9 | 27.3 | 1.46 | 1.37 | 2.09 (2.45) | 1.01 | 4.58 | 6638
+m1_brawl | hudab3 | 1 | 201.2 | 82.2 | 27.3 | 1.26 | 1.24 | 1.70 (2.18) | 0.90 | 4.74 | 5576
+m2_boardroom | hudab3 | 1 | 120.2 | 50.1 | 28.3 | 1.23 | 0.76 | 1.55 (2.23) | 0.50 | 7.95 | 4586

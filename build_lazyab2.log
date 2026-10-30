@@ -1,0 +1,7 @@
+m1_brawl@lazyab2#0: fps med 224.2 | 1% low 109.3 | 0.1% low 29.6 | avg 213.0 | worst 22.9 (20232 frames, 95.0 s) | ms med/p90: worker 1.16/1.51 GS 1.12/1.40 front 1.71/2.03 (max 4.04) render 0.85/1.02 GPU 4.33/4.95 (max 7.19) | prims 5517 draws 5389
+m2_boardroom@lazyab2#0: fps med 95.8 | 1% low 35.4 | 0.1% low 27.4 | avg 95.1 | worst 19.9 (12366 frames, 130.0 s) | ms med/p90: worker 1.05/1.55 GS 0.75/1.04 front 1.66/2.04 (max 3.92) render 0.52/0.64 GPU 9.84/14.03 (max 17.30) | prims 4381 draws 2453
+ep1_hub@lazyab2#0: fps med 181.2 | 1% low 51.7 | 0.1% low 26.6 | avg 141.1 | worst 2.7 (15523 frames, 110.0 s) | ms med/p90: worker 1.65/2.25 GS 1.60/2.05 front 2.13/2.82 (max 4.66) render 1.02/1.26 GPU 5.15/9.68 (max 12.70) | prims 6967 draws 7312
+scene | build | runs | fps med | 1% low | 0.1% low | worker | GS | front (p90) | render | GPU | prims
+ep1_hub | lazyab2 | 1 | 181.2 | 51.7 | 26.6 | 1.65 | 1.60 | 2.13 (2.82) | 1.02 | 5.15 | 6967
+m1_brawl | lazyab2 | 1 | 224.2 | 109.3 | 29.6 | 1.16 | 1.12 | 1.71 (2.03) | 0.85 | 4.33 | 5517
+m2_boardroom | lazyab2 | 1 | 95.8 | 35.4 | 27.4 | 1.05 | 0.75 | 1.66 (2.04) | 0.52 | 9.84 | 4381
