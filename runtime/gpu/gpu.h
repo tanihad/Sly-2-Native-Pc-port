@@ -185,6 +185,7 @@ int gpu_exec_read_memory(const gpu_dl_entry* entries, const uint16_t* writers, i
 typedef struct {
     uint64_t frames, partial_frames, ref_draws, alias16_runs, downloads, loads, patches, clears, xcopies;
     uint64_t ff_draws, rov_draws;        /* M5 mixed frames: D3D draws on the FF tier (split halves counted), on the ROV tier */
+    uint64_t lazyz;                      /* (r2-hud) partial Z clears done lazily (gpu_exec.c exec_clear) */
     uint64_t zresolves, zsyncs;          /* zpatch -> DSV quads (ps_zresolve), DSV -> zpatch dispatches (cs_zsync) */
     uint64_t zresolve_px, zsync_px;      /* their pixels (samples) */
     uint64_t rescales;                   /* (M7) live targets whose contents moved to new sample factors */

@@ -1060,11 +1060,12 @@ static void exec_clear(const gpu_fop_clear* o) {
         lazy_ab = a && *a == '2';        /* (PS2_GPU_AB_EE=2: only the EE-side / lazy-clear features follow the A / B phases) */
     }
     extern volatile int gpu_ab_phase;
-    int lazyz = lazy_env && !nohw && !full && o->zclear && X.mixed && t->zts && !ab_off() && !(lazy_ab && gpu_ab_phase == 0) &&
-                (x1 & 15) == 0 && (y1 & 15) == 0 &&
-                x1 > 0 && y1 > 0 && ((uint32_t)o->value & (zbits_of(t) == 1 ? 0xFFFFu : zbits_of(t) == 2 ? 0xFFFFFFu : 0xFFFFFFFFu)) < GPU_ZE_ONE;
+    int lazyz = lazy_env && !nohw && !full && o->zclear && X.mixed && t->zts && t->kind != XK_Z24 && !ab_off() &&
+                !(lazy_ab && gpu_ab_phase == 0) && x1 > 0 && y1 > 0 && (x1 & 15) == 0 && (y1 & 15) == 0 &&
+                ((uint32_t)o->value & (zbits_of(t) == 1 ? 0xFFFFu : zbits_of(t) == 2 ? 0xFFFFFFu : 0xFFFFFFFFu)) < GPU_ZE_ONE;
     if (lazyz) {
         ensure_zp_all(t);                /* (the tiles outside the rect: zpatch is their truth before the DSV is wiped) */
+        if (!XC.lazyz++) gpu_log("lazy Z clears: first on target %u (kind %d, %d x %d of %d x %d)", o->target, (int)t->kind, x1, y1, t->nat_w, t->nat_h);
         hw = 1;                          /* (zpatch inside the rect is not written: stale, the tiles are DSV newer) */
     } else
     if (!t->depth && (o->mask & 15) == 15 && X.clearview && t->rtv && !nohw) {
@@ -1093,8 +1094,8 @@ static void exec_clear(const gpu_fop_clear* o) {
         if (lazyz) {
             ID3D11DeviceContext_ClearDepthStencilView(gpu_rt.ctx, t->dsv, D3D11_CLEAR_DEPTH, gpu_z_encode(zv), 0);
             int ra[4] = { 0, 0, t->zts_w, t->zts_h };
-            zt_set(t, ra, -1, ZT_ZP);    /* (outside the rect: the DSV is stale, zpatch is the truth) */
-            zt_set(t, r, -1, ZT_DSV);    /* (inside: the DSV holds the cleared value) */
+            zt_set(t, ra, -1, ZT_ZP);        /* (outside the rect: the DSV is stale, zpatch is the truth) */
+            zt_set(t, r, -1, ZT_DSV);        /* (inside: the DSV holds the cleared value) */
         } else if (full) {               /* (P1: enc(z), saturated at 1.0 - zpatch holds the value) */
             ID3D11DeviceContext_ClearDepthStencilView(gpu_rt.ctx, t->dsv, D3D11_CLEAR_DEPTH, gpu_z_encode(zv), 0);
         } else {
