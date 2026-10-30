@@ -153,25 +153,214 @@ static int dmax(const uint8_t* a, const uint8_t* b) {
     return d0 > d1 ? (d0 > d2 ? d0 : d2) : (d1 > d2 ? d1 : d2);
 }
 
+static int read_any(const char* path, pic* p) {
+    size_t ln = strlen(path);
+    return ln > 4 && !_stricmp(path + ln - 4, ".bmp") ? read_bmp(path, p) : read_png(path, p);
+}
+
+/* flicker_check --ab <dir A> <dir B> [--diff 40] [--out-dir D]: the same VBlanks of two replays of one stream (e.g. exact
+ * and modern): per picture the share of pixels differing by more than --diff, the longest run of them in a row and the
+ * 16 x 16 blobs; frames whose share is far above both neighbours are temporal outliers (a one-frame difference) */
+static int ab_main(int argc, char** argv) {
+    const char *da = argv[2], *db = argv[3], *od = NULL;
+    int diff = 40;
+    for (int i = 4; i < argc; i++) {
+        if (!strcmp(argv[i], "--diff") && i + 1 < argc) diff = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--out-dir") && i + 1 < argc) od = argv[++i];
+    }
+    char pat[1024];
+    snprintf(pat, sizeof pat, "%s\\frame_*.*", da);
+    WIN32_FIND_DATAA fdata;
+    HANDLE hf = FindFirstFileA(pat, &fdata);
+    char** names = NULL;
+    int nn = 0, cap = 0;
+    if (hf != INVALID_HANDLE_VALUE) {
+        do {
+            if (nn == cap) { cap = cap ? cap * 2 : 256; names = realloc(names, sizeof *names * (size_t)cap); }
+            names[nn++] = _strdup(fdata.cFileName);
+        } while (FindNextFileA(hf, &fdata));
+        FindClose(hf);
+    }
+    qsort(names, (size_t)nn, sizeof *names, cmp_name);
+    double* sh = calloc((size_t)nn + 1, sizeof(double));
+    for (int i = 0; i < nn; i++) {
+        char pa[1200], pb[1200];
+        snprintf(pa, sizeof pa, "%s\\%s", da, names[i]);
+        snprintf(pb, sizeof pb, "%s\\%s", db, names[i]);
+        pic a, b;
+        if (!read_any(pa, &a)) continue;
+        if (!read_any(pb, &b)) { free(a.px); printf("%s: missing in B\n", names[i]); continue; }
+        if (a.w != b.w || a.h != b.h) { printf("%s: sizes %dx%d / %dx%d\n", names[i], a.w, a.h, b.w, b.h); free(a.px); free(b.px); continue; }
+        int w = a.w, h = a.h, bw = (w + 15) / 16, bh = (h + 15) / 16, longest = 0, lrow = -1, maxd = 0;
+        int* blk = calloc((size_t)bw * bh, sizeof(int));
+        long long n = 0;
+        for (int y = 0; y < h; y++) {
+            int run = 0;
+            for (int x = 0; x < w; x++) {
+                size_t o = ((size_t)y * w + x) * 3;
+                int d = dmax(a.px + o, b.px + o);
+                if (d > maxd) maxd = d;
+                if (d > diff) {
+                    n++; blk[(y >> 4) * bw + (x >> 4)]++;
+                    if (++run > longest) { longest = run; lrow = y; }
+                    if (od) { b.px[o] = 255; b.px[o + 1] = 0; b.px[o + 2] = 255; }
+                } else run = 0;
+            }
+        }
+        int blobs = 0;
+        for (int k = 0; k < bw * bh; k++) blobs += blk[k] > 128;
+        sh[i] = (double)n / ((double)w * h);
+        printf("%s: diff>%d %.5f, max %d, longest run %d (row %d), blobs %d\n", names[i], diff, sh[i], maxd, longest, lrow, blobs);
+        if (od && (blobs || longest > w / 50)) {
+            char po[1200];
+            snprintf(po, sizeof po, "%s\\ab_%s.png", od, names[i]);
+            size_t l = strlen(po);
+            if (l > 8 && !_stricmp(po + l - 8, ".bmp.png")) strcpy(po + l - 8, ".png");
+            write_png(po, b.px, w, h);
+        }
+        free(blk); free(a.px); free(b.px);
+    }
+    return 0;
+}
+
+/* straight edges: per column x the longest run of rows whose pixels x - 1 and x differ by more than t (vertical edges),
+ * per row y the longest run of columns whose pixels in rows y - 1 and y do (horizontal edges) */
+static void edge_runs(const pic* p, int t, int* vr, int* hr) {
+    int w = p->w, h = p->h;
+    int* cur = calloc((size_t)w, sizeof(int));
+    for (int x = 0; x < w; x++) vr[x] = 0;
+    for (int y = 0; y < h; y++) {
+        const uint8_t* row = p->px + (size_t)y * w * 3;
+        const uint8_t* up = y ? row - (size_t)w * 3 : row;
+        int run = 0;
+        hr[y] = 0;
+        for (int x = 0; x < w; x++) {
+            if (x && dmax(row + 3 * x - 3, row + 3 * x) > t) { if (++cur[x] > vr[x]) vr[x] = cur[x]; } else cur[x] = 0;
+            if (y && dmax(up + 3 * x, row + 3 * x) > t) { if (++run > hr[y]) hr[y] = run; } else run = 0;
+        }
+    }
+    free(cur);
+}
+
+/* a straight edge (a seam: a tile / page / band boundary) in m, at least S.seam pixels long, that r1 and r2 do not have
+ * there (less than a quarter of it): the longest such edge, *pos its column (vertical, > 0) or -row (horizontal) */
+static int seam_blink(const pic* m, const pic* r1, const pic* r2, int minlen, int* pos) {
+    int w = m->w, h = m->h, n = w > h ? w : h, best = 0;
+    int *v0 = malloc(sizeof(int) * (size_t)n * 6), *h0 = v0 + n, *v1 = h0 + n, *h1 = v1 + n, *v2 = h1 + n, *h2 = v2 + n;
+    edge_runs(m, 24, v0, h0); edge_runs(r1, 24, v1, h1); edge_runs(r2, 24, v2, h2);
+    *pos = 0;
+    /* (the neighbours' edges within 2 pixels count: an edge that moves is no seam) */
+    for (int x = 1; x < w; x++) {
+        if (v0[x] < minlen || v0[x] <= best) continue;
+        int nb = 0;
+        for (int k = x - 2; k <= x + 2; k++) if (k > 0 && k < w) { if (v1[k] > nb) nb = v1[k]; if (v2[k] > nb) nb = v2[k]; }
+        if (nb * 4 < v0[x]) { best = v0[x]; *pos = x; }
+    }
+    for (int y = 1; y < h; y++) {
+        if (h0[y] < minlen || h0[y] <= best) continue;
+        int nb = 0;
+        for (int k = y - 2; k <= y + 2; k++) if (k > 0 && k < h) { if (h1[k] > nb) nb = h1[k]; if (h2[k] > nb) nb = h2[k]; }
+        if (nb * 4 < h0[y]) { best = h0[y]; *pos = -y; }
+    }
+    free(v0);
+    return best;
+}
+
+/* the picture m against r1 and r2, which agree with each other: its blinking pixels (main's statistics in S) */
+static struct {
+    int same, diff, quiet, max_blobs, npics, bad, nres, rows_max, blobs_max, ww, wh, want_worst, seam, seams;
+    double rowfrac, max_share, max_run, worst_score, share_max, run_max;
+    uint32_t worst_vb;
+    uint8_t* worst;
+} S = { 12, 40, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 160, 0, 0.25, 0.002, 0.25, -1, 0, 0, 0, NULL };
+
+static void eval(const pic* m, const pic* r1, const pic* r2, const char* tag) {
+    int w = m->w, h = m->h, bw = (w + 15) / 16, bh = (h + 15) / 16;
+    int* blk = calloc((size_t)bw * bh, sizeof(int));
+    uint8_t* mask = calloc((size_t)w * h, 1);
+    long long spikes = 0;
+    int longest = 0, rows = 0, worst_row = -1;
+    for (int y = 0; y < h; y++) {
+        int run = 0, rcount = 0;
+        for (int x = 0; x < w; x++) {
+            size_t o = ((size_t)y * w + x) * 3;
+            int s = dmax(r1->px + o, r2->px + o) <= S.same && dmax(r1->px + o, m->px + o) > S.diff && dmax(r2->px + o, m->px + o) > S.diff;
+            if (s) {
+                mask[(size_t)y * w + x] = 1;
+                spikes++; rcount++;
+                blk[(y >> 4) * bw + (x >> 4)]++;
+                if (++run > longest) { longest = run; worst_row = y; }
+            } else run = 0;
+        }
+        if (rcount >= S.rowfrac * w) rows++;
+    }
+    int blobs = 0;
+    for (int k = 0; k < bw * bh; k++) blobs += blk[k] > 128;
+    double share = (double)spikes / ((double)w * h), runf = (double)longest / w;
+    int spos = 0, seam = S.seam > 0 ? seam_blink(m, r1, r2, S.seam, &spos) : 0;
+    if (seam) S.seams++;
+    int over = share > S.max_share || runf > S.max_run || blobs > S.max_blobs || seam;
+    if (over) S.bad++;
+    if (share > S.share_max) S.share_max = share;
+    if (runf > S.run_max) S.run_max = runf;
+    if (rows > S.rows_max) S.rows_max = rows;
+    if (blobs > S.blobs_max) S.blobs_max = blobs;
+    if (!S.quiet || over)
+        printf("v%u%s: spikes %.5f, longest run %d (%.3f of the width, row %d), rows %d, blobs %d%s%s\n", m->vb, tag, share, longest,
+               runf, worst_row, rows, blobs, seam ? (spos > 0 ? ", SEAM vertical" : ", SEAM horizontal") : "", over ? "  <-- over" : "");
+    if (seam) printf("v%u: seam of %d pixels at %s %d\n", m->vb, seam, spos > 0 ? "column" : "row", spos > 0 ? spos : -spos);
+    double score = share + runf + blobs * 0.001;
+    if (S.want_worst && score > S.worst_score) {
+        S.worst_score = score; S.worst_vb = m->vb; S.ww = w; S.wh = h;
+        free(S.worst);
+        S.worst = malloc((size_t)w * h * 3);
+        memcpy(S.worst, m->px, (size_t)w * h * 3);
+        for (size_t k = 0; k < (size_t)w * h; k++) if (mask[k]) { S.worst[k * 3] = 255; S.worst[k * 3 + 1] = 0; S.worst[k * 3 + 2] = 255; }
+    }
+    free(blk); free(mask);
+}
+
 int main(int argc, char** argv) {
     const char* dir = NULL, *out = NULL;
-    int same = 12, diff = 40, quiet = 0, max_blobs = 0;
-    double rowfrac = 0.25, max_share = 0.002, max_run = 0.25;
     uint32_t from = 0, to = 0xFFFFFFFFu;
+    if (argc >= 4 && !strcmp(argv[1], "--ab")) return ab_main(argc, argv);
+    if ((argc == 4 || argc == 9) && !strcmp(argv[1], "--png")) {   /* --png <in .bmp/.png> <out.png> [x y w h zoom]: to look at */
+        pic p;
+        if (!read_any(argv[2], &p)) return 2;
+        if (argc == 9) {
+            int cx = atoi(argv[4]), cy = atoi(argv[5]), cw = atoi(argv[6]), ch = atoi(argv[7]), z = atoi(argv[8]);
+            if (z < 1) z = 1;
+            uint8_t* o = malloc((size_t)cw * z * ch * z * 3);
+            for (int y = 0; y < ch * z; y++)
+                for (int x = 0; x < cw * z; x++) {
+                    int sx = cx + x / z, sy = cy + y / z;
+                    uint8_t* d = o + ((size_t)y * cw * z + x) * 3;
+                    if (sx < 0 || sy < 0 || sx >= p.w || sy >= p.h) { d[0] = d[1] = d[2] = 0; continue; }
+                    memcpy(d, p.px + ((size_t)sy * p.w + sx) * 3, 3);
+                }
+            write_png(argv[3], o, cw * z, ch * z);
+            return 0;
+        }
+        write_png(argv[3], p.px, p.w, p.h);
+        return 0;
+    }
     for (int i = 1; i < argc; i++) {
-        if (!strcmp(argv[i], "--same") && i + 1 < argc) same = atoi(argv[++i]);
-        else if (!strcmp(argv[i], "--diff") && i + 1 < argc) diff = atoi(argv[++i]);
-        else if (!strcmp(argv[i], "--rowfrac") && i + 1 < argc) rowfrac = atof(argv[++i]);
-        else if (!strcmp(argv[i], "--max-share") && i + 1 < argc) max_share = atof(argv[++i]);
-        else if (!strcmp(argv[i], "--max-run") && i + 1 < argc) max_run = atof(argv[++i]);
-        else if (!strcmp(argv[i], "--max-blobs") && i + 1 < argc) max_blobs = atoi(argv[++i]);
+        if (!strcmp(argv[i], "--same") && i + 1 < argc) S.same = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--diff") && i + 1 < argc) S.diff = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--rowfrac") && i + 1 < argc) S.rowfrac = atof(argv[++i]);
+        else if (!strcmp(argv[i], "--max-share") && i + 1 < argc) S.max_share = atof(argv[++i]);
+        else if (!strcmp(argv[i], "--max-run") && i + 1 < argc) S.max_run = atof(argv[++i]);
+        else if (!strcmp(argv[i], "--max-blobs") && i + 1 < argc) S.max_blobs = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--out") && i + 1 < argc) out = argv[++i];
         else if (!strcmp(argv[i], "--from") && i + 1 < argc) from = (uint32_t)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--to") && i + 1 < argc) to = (uint32_t)atoi(argv[++i]);
-        else if (!strcmp(argv[i], "--quiet")) quiet = 1;
+        else if (!strcmp(argv[i], "--quiet")) S.quiet = 1;
+        else if (!strcmp(argv[i], "--seam") && i + 1 < argc) S.seam = atoi(argv[++i]);
         else dir = argv[i];
     }
     if (!dir) { fprintf(stderr, "usage: flicker_check <frames dir> [options]\n"); return 2; }
+    S.want_worst = out != NULL;
+    int quiet = S.quiet;
     char pat[1024];
     snprintf(pat, sizeof pat, "%s\\frame_*.*", dir);
     WIN32_FIND_DATAA fdata;
@@ -189,83 +378,41 @@ int main(int argc, char** argv) {
     }
     qsort(names, (size_t)nn, sizeof *names, cmp_name);
     pic win[3];
-    int have = 0, npics = 0, bad = 0, nres = 0;
-    double worst_score = -1, share_max = 0, run_max = 0;
-    int rows_max = 0, blobs_max = 0;
-    uint32_t worst_vb = 0, last_vb = 0;
-    uint8_t* worst = NULL;
-    int ww = 0, wh = 0;
+    int have = 0, fresh = 1;
+    uint32_t last_vb = 0;
     for (int i = 0; i < nn; i++) {
         char path[1200];
         snprintf(path, sizeof path, "%s\\%s", dir, names[i]);
         pic p;
-        size_t ln = strlen(path);
-        int isbmp = ln > 4 && !_stricmp(path + ln - 4, ".bmp");
-        if (!(isbmp ? read_bmp(path, &p) : read_png(path, &p))) { if (!quiet) printf("%s: unreadable\n", names[i]); continue; }
+        if (!read_any(path, &p)) { if (!quiet) printf("%s: unreadable\n", names[i]); continue; }
         p.vb = (uint32_t)strtoul(names[i] + 6, NULL, 10);
         if (have && p.vb != last_vb + 1) {   /* (a VBlank missing from the dump: start again) */
-            nres++;
+            S.nres++;
             for (int k = 0; k < have; k++) free(win[k].px);
-            have = 0;
+            have = 0; fresh = 1;
         }
         last_vb = p.vb;
         if (have && win[have - 1].w == p.w && win[have - 1].h == p.h && !memcmp(win[have - 1].px, p.px, (size_t)p.w * p.h * 3)) { free(p.px); continue; }
-        npics++;
-        if (have && (win[have - 1].w != p.w || win[have - 1].h != p.h)) {   /* (a new size: start again) */
+        S.npics++;
+        if (have && (win[have - 1].w != p.w || win[have - 1].h != p.h)) {   /* (a new size, e.g. a render scale change) */
             if (!quiet) printf("v%u: size %dx%d -> %dx%d\n", p.vb, win[have - 1].w, win[have - 1].h, p.w, p.h);
-            nres++;
+            S.nres++;
+            if (have == 3) eval(&win[2], &win[0], &win[1], " (last before a size change)");   /* (one-sided) */
             for (int k = 0; k < have; k++) free(win[k].px);
-            have = 0;
+            have = 0; fresh = 1;
         }
         if (have == 3) { free(win[0].px); win[0] = win[1]; win[1] = win[2]; have = 2; }
         win[have++] = p;
         if (have < 3) continue;
-        const pic *a = &win[0], *m = &win[1], *c = &win[2];
-        int w = m->w, h = m->h, bw = (w + 15) / 16, bh = (h + 15) / 16;
-        int* blk = calloc((size_t)bw * bh, sizeof(int));
-        uint8_t* mask = calloc((size_t)w * h, 1);
-        long long spikes = 0;
-        int longest = 0, rows = 0, worst_row = -1;
-        for (int y = 0; y < h; y++) {
-            int run = 0, rcount = 0;
-            for (int x = 0; x < w; x++) {
-                size_t o = ((size_t)y * w + x) * 3;
-                int s = dmax(a->px + o, c->px + o) <= same && dmax(a->px + o, m->px + o) > diff && dmax(c->px + o, m->px + o) > diff;
-                if (s) {
-                    mask[(size_t)y * w + x] = 1;
-                    spikes++; rcount++;
-                    blk[(y >> 4) * bw + (x >> 4)]++;
-                    if (++run > longest) { longest = run; worst_row = y; }
-                } else run = 0;
-            }
-            if (rcount >= rowfrac * w) rows++;
-        }
-        int blobs = 0;
-        for (int k = 0; k < bw * bh; k++) blobs += blk[k] > 128;
-        double share = (double)spikes / ((double)w * h), runf = (double)longest / w;
-        int over = share > max_share || runf > max_run || blobs > max_blobs;
-        if (over) bad++;
-        if (share > share_max) share_max = share;
-        if (runf > run_max) run_max = runf;
-        if (rows > rows_max) rows_max = rows;
-        if (blobs > blobs_max) blobs_max = blobs;
-        if (!quiet || over)
-            printf("v%u: spikes %.5f, longest run %d (%.3f of the width, row %d), rows %d, blobs %d%s\n", m->vb, share, longest,
-                   runf, worst_row, rows, blobs, over ? "  <-- over" : "");
-        double score = share + runf + blobs * 0.001;
-        if (out && score > worst_score) {
-            worst_score = score; worst_vb = m->vb; ww = w; wh = h;
-            free(worst);
-            worst = malloc((size_t)w * h * 3);
-            memcpy(worst, m->px, (size_t)w * h * 3);
-            for (size_t k = 0; k < (size_t)w * h; k++) if (mask[k]) { worst[k * 3] = 255; worst[k * 3 + 1] = 0; worst[k * 3 + 2] = 255; }
-        }
-        free(blk); free(mask);
+        if (fresh) eval(&win[0], &win[1], &win[2], " (first)");                /* (one-sided: the first picture) */
+        fresh = 0;
+        eval(&win[1], &win[0], &win[2], "");
     }
-    if (out && worst) write_png(out, worst, ww, wh);
+    int bad = S.bad, npics = S.npics;
+    uint8_t* worst = S.worst;    if (out && worst) write_png(out, worst, S.ww, S.wh);
     printf("flicker: %s - %d pictures, %d over the limits (spike share max %.5f, longest run max %.3f of the width, rows max %d, "
-           "blobs max %d, size changes / gaps %d)%s\n", bad ? "FAIL" : (npics >= 3 ? "PASS" : "NO DATA"), npics, bad, share_max,
-           run_max, rows_max, blobs_max, nres, out && worst ? "" : "");
-    if (out && worst) printf("worst: v%u -> %s\n", worst_vb, out);
+           "blobs max %d, size changes / gaps %d, blinking seams %d)%s\n", bad ? "FAIL" : (npics >= 3 ? "PASS" : "NO DATA"), npics, bad, S.share_max,
+           S.run_max, S.rows_max, S.blobs_max, S.nres, S.seams, out && worst ? "" : "");
+    if (out && worst) printf("worst: v%u -> %s\n", S.worst_vb, out);
     return npics < 3 ? 2 : bad ? 1 : 0;
 }

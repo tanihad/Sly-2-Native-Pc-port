@@ -103,7 +103,7 @@ static void on_picture_done(uint32_t vblank, void* user) {
 }
 
 /* ---- frame dumps: read-backs completed on a thread of their own ------------------------------------ */
-#define NDUMP 4
+#define NDUMP 32                         /* (r2-flicker: 4 -> 32, every VBlank of a 3x run can be dumped) */
 static struct { gpu_readback rb; uint32_t* px; int cap; uint32_t vblank; int content43; volatile LONG busy; } dumps[NDUMP];
 static volatile LONG dump_head, dump_tail;   /* queued: [head, tail) */
 static HANDLE dump_thread, dump_event;
