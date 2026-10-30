@@ -801,6 +801,7 @@ static void flush_open(void) {
 /* (r2-m1) gpu_r2front.c: an R2 segment closes the open draws; the frontend's other events close an open segment first */
 void gf_flush_open(void) { flush_open(); }
 extern int gf_r2_pending, gf_r2_skip, gf_r2_fx_ttl, gf_r2_td_ttl;
+volatile int gpu_ab_phase = -1;         /* (r2-m5b) PS2_GPU_AB's current phase (gpu_exec.c sets it; r2_capture.c reads it) */
 uint32_t gf_z32_ab[2];                   /* (r2-m5b, diagnostics) primitives with Z beyond the FF range per PS2_GPU_AB phase */
 uint32_t gf_rov_ab[2][16];               /* (r2-m5b, diagnostics) ROV primitives by reason per phase */
 /* (r2-m7) the modern renderer's native passes are on for this frame (gpu_r2front.c gf_r2_fx_ttl; mixed frames only) */

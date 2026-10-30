@@ -1206,7 +1206,7 @@ static struct {
 static int ab_off(void) { return PR.ab > 0 && !PR.ab_b && !PR.ab_ee; }
 /* (r2-m5b) the current phase for EE-side features (r2_capture.c: the VU clipper's entries with PS2_GPU_AB_EE=1, when only
  * they follow the phases); -1: no A/B */
-volatile int gpu_ab_phase = -1;
+extern volatile int gpu_ab_phase;      /* (defined in gpu_front.c: tools link the frontend alone) */
 
 static void prof_mark(int cat) {
     if (PR.on <= 0 || PR.n >= PR_MAXQ - 1 || (PR.n && cat == PR.cur && !PR.ops_on)) return;
