@@ -953,11 +953,18 @@ covers; the owner confirms after testing the dist build. Effort is in agent-days
 - **GPU** (in-run A/B, A = crossing entries exact, B = native; 3x): ep1 3.73 -> 3.52 ms (FF Z triangles 0.88 -> 0.36,
   R2 0.86 -> 1.20), m2 4.98 -> 4.69 (1.77 -> 0.95, 0.44 -> 1.00). EE: 0.07-0.12 ms per frame for the clipper.
 - **Faithfulness**: the clipped triangles are the exact path's own packets; the strip triangles are R2's (as every
-  native entry). Sweep (ab + hc): RESULT. ep7's hc fails intermittently with the clipper on and off alike (1 of 3
+  native entry). Sweep (ab + hc): 21 / 22 (ab: every scene within gates.json; ep3 / ep7 bracket Z max 347 / 6911 on <= 0.05% of the pixels). ep7's hc fails intermittently with the clipper on and off alike (1 of 3
   runs without it): its triple (4803, 4804, 4807) skips frames while a claw in the Binocucom view moves.
 - **Census** (native share of the main program's mesh vertices, PS2_R2_STATS, one run per scene at ~120 s, base ->
-  this branch): CENSUS.
-- **Performance**: CHAOS.
+  the first clipper build; scene load varies between runs): ep1 84.4 -> 90.7% (guard 7.1k -> 2.2k vertices), ep3 61.6
+  -> 94.8% (6.8k -> 0), ep5 86.8 -> 94.1% (3.7k -> 0), m1 72.2 -> 89.4% (4.9k -> 0), m2 51.4 -> 73.7% (3.7k -> 1.0k). The other
+  swept scenes were not censused.
+- **Performance** (chaos benchmark, modern mode, main 8e272dd vs this branch, interleaved, 1 repeat, release, 3x 16:9
+  unlimited, owner's PC; tag r2m5b_s3; fps median / 1% low, GPU ms median): ep1 hub 284.9 / 127.3, 3.42 -> **324.7** / 243.3,
+  2.97; m2 boardroom 190.1 / 109.4, 5.16 -> **227.8** / 139.0, 4.26; m1 brawl 285.7 / 125.5, 3.43 -> 290.7 / 123.0, 3.29.
+  CPU stages ep1 worker / GS / frontend 2.04 / 1.95 / 2.34 -> 1.37 / 1.28 / 1.74 ms. ep3 / ep5 at 3x and every scene at 4x
+  could not be measured: the owner's games (VALORANT, DayZ) ran on the GPU during every later attempt; the in-run
+  A/B above (ep3: 6.34 -> 6.11 ms under that load) is the reliable GPU number. To do on a quiet machine.
 - **Not done / left** (vertex share of the hub frames, r2_mesh_check): lit sub-batches with clipped triangles (m2:
   ~50 entries a second stay exact: the records need r2_lit_eval's colours); the lit routines' second sub-batch whose
   colours neither the chain nor the header writes (ep3 ~0.9k, ep5 ~1.0k vertices; stale VU memory?); billboards

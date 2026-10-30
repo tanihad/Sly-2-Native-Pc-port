@@ -30,22 +30,21 @@ Worktree C:\Users\tanih\Projects\sly2-worktrees\r2-m5b, branch next/r2-m5b (from
   Such entries stay exact (r2_clip_why 5). Result (A/B, A = guard entries exact): ep1 3.73 -> 3.52 ms, m2 4.98 -> 4.69.
 - Sweep ep1 / ep5 / m2 ab + hc pass (first build); hc ep1 / m2 pass with run tables.
 
-## In progress
-- Sweep (commit 7928e72 code): 21 / 22 pass; ep7 hc fails intermittently with the clipper on AND off (PS2_R2_FANS=0:
-  1 of 3 runs fails): the triple (4803, 4804, 4807) skips frames while a claw in the Binocucom view moves - harness.
-- Chaos (tags r2m5b_s3; base build\base\sly2_base.exe vs build\new\sly2_final.exe = commit 555d113): 3x valid so far
-  m1 285.7/125.5 GPU 3.43 -> 290.7/123.0 3.29; m2 190.1/109.4 5.16 -> 227.8/139.0 4.26; ep1 284.9/127.3 3.42 ->
-  324.7/243.3 2.97. Interrupted 18:40: the owner started VALORANT (GPU contention: ep3 new / ep5 base invalid). Rerun
-  ep3 / ep5 at 3x and everything at 4x when the machine is quiet (do not benchmark while VALORANT runs).
+**Status**: complete (2026-10-29). Write-up: notes/modern-renderer.md "R5 part 2 as built".
 
-## Next
-- Gates: run_tests, tests/unit, gpu_diff_all mixed S=1, pc_text_boot, debug + release builds, package.py, m9_exact.
-- Chaos benchmark base vs new, 3x and 4x, ep1/ep3/ep5/m1/m2 (interleaved).
-- Undecoded variants (vertex share per hub frame, r2_mesh_check): lit 2nd sub-batch with unwritten colours (ep3 ~0.9k,
-  ep5 ~1k: colours not written by chain or header - stale VU memory?), billboards 0x100/0x200 (ep1 ~0.7k: 0x0070
-  rewrites W rows from ELENG / camera VU 9), 0x0E30 (~0.3-0.5k), 0x16B0 (~0.2-0.3k), 0x13F0 (~0.2k). Each ~1% or less.
-- Notes: modern-renderer.md "R5 part 2 as built".
+## Gates (final code)
+- run_tests; all 26 tests/unit suites (gs-front needed gpu_ab_phase in gpu_front.c: fixed); gpu_diff_all mixed S=1 28/28;
+  m9_exact S1 + S3 -Game all identical (base gs_replay from `git archive 8e272dd`); pc_text_boot release + debug; debug +
+  release builds; package.py (0.1.970); r2_sweep 21 / 22 (ep7 hc: harness flake, fails without the clipper too).
+- Chaos 3x (clean runs before the owner's games started): ep1 284.9 -> 324.7 fps (1% low 127 -> 243, GPU 3.42 -> 2.97),
+  m2 190.1 -> 227.8 (GPU 5.16 -> 4.26), m1 285.7 -> 290.7 (3.43 -> 3.29).
 
+## Left
+- Chaos ep3 / ep5 at 3x and all five scenes at 4x on a quiet machine (every attempt overlapped VALORANT / DayZ).
+- Census of the other swept scenes; the scratchpad gates / census scripts were not added to scripts/.
+- Lit sub-batches with clipped triangles (exact: r2_lit_eval colours in the records), lit 2nd sub-batch with unwritten
+  colours, billboards (private VU could run 0x0070; camera VU 9 = f_00157FA0 sp + 0x70), 0x0E30, 0x16B0, 0x13F0, sky,
+  warps: each <= ~1% of the vertices.
 ## Findings / traps
 - Worktree: git = C:\Users\tanih\Projects\sly2-decomp\tools\git\cmd\git.exe; python = main .venv; clang from main
   tools\llvm-mingw\bin (the worktree's scripts\env.ps1 points at missing worktree tools).
