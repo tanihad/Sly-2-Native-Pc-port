@@ -1082,6 +1082,37 @@ the frontend and the exact path are unchanged, so Reference, `PS2_GS_SCALE` runs
 - **Left**: native HUD (the HUD stays exact, R7 part 3); ROV draws are approximations (DATE / wrap) - checked visually
   on the sweep, not byte-gated; MSAA for the FF cut-outs via A2C; a consumer for the motion vectors (TAA / upscaler).
 
+### The owner's flicker report and the temporal check (next/r2-flicker, 2026-10-30)
+- **Report**: ep1 hub at night, Modern only (Exact fine): "the shadows flicker" and "at random times a line on the screen
+  flicks", worst with light around Sly (lamps, the guards' searchlights). Owner: render_scale auto, 120 fps, 1440p.
+- **Temporal check** (new, r2_sweep check `tf`, tests/r2/gates.json `level3_temporal`): scripts/flicker_run.ps1 dumps
+  every VBlank of a warp scenario (PS2_DUMP_BMP=1 + PS2_DUMP_RAW=1: raw BMPs, fast enough at 3x 60 fps with the dump
+  queue now 32 deep; PS2_DUMP_WAIT=1 blocks instead of skipping - only above 60 fps, at 60 it stalls the EE) and
+  scripts/flicker_check.c judges each picture against its neighbours: one-picture blinks, the longest blinking run in a
+  row, rows >= 25% blinking, 16 x 16 blobs, blinking straight seams; `--heat` with PS2_R2_ALT marks what modern and exact
+  frames draw differently persistently; `--ab` compares two replays per VBlank; `--png` crops pictures. The per-frame
+  aggregate gates (ab, hc) average such things away.
+- **What was measured** (3x / 4x, 60 / 120 fps, walking and idle, lamp and searchlight scenes; notes/wip/r2-flicker.md):
+  - Bracket replays exact vs hybrid (fixed stream, 500 VBlanks with searchlight + explosion): no temporal outlier; the GPU
+    feature passes (svol, shfuse, npost, texdec, lazy Z, particles) are exact on a fixed stream.
+  - **Sly's lamp shadow on the ledge (ep1 start, idle, 120 fps) is missing in hybrid frames and present in Exact**, also
+    with PS2_R2_FX=0, PS2_GPU_LAZYZ=0, PS2_R2_FANS=0 / GCLEAN=0, PS2_GFX_ASYNC=0, any R2 FBA / alpha-write / Z-bias
+    override; present with PS2_R2_KINDS=props (world entries exact). The shadow-volume draw differs (4347 vs 2250
+    vertices, other bbox): the *volumes* the exact path draws change when the world is native, so it is EE / VU-side
+    state that dropping the world's static packets leaves (not the receivers' Z or alpha). Restoring the render list's
+    zeroed CALL words after the chain is built, and owing VIF1 double-buffer flips for dropped meshes (m->flips is never
+    used for meshes, only for outlines), did not bring it back. Entries switching native / exact between frames then
+    switch the shadow: the "shadows flicker". Open; next: trace the shadow class's VU1 program inputs (what it reads that a
+    world static packet uploads), e.g. VU memory dumps after the world class in exact vs hybrid frames.
+  - PS2_R2_ALT: a thin bright sliver along the searchlight volume's edge alternates (brighter in one mode); the clipper's
+    fans add ~50 persistently alternating pixels on a walk (PS2_R2_FANS=0: 5).
+  - A full-height 1-pixel vertical line (3x: raw column ~860) blinks for one picture during Sly's pole jump on the ledge
+    - in Reference too (not modern-specific).
+  - R8 frames: in steady gameplay no grid fallback (PS2_R2_STATS: only loading screens "not modern"); with frame dumps
+    at 120 fps single grid frames appeared between MFT frames (a visible resolution / AA pop). PS2_MFT_LOG now also logs
+    every grid frame and why (gpu_exec_mft.h mft_no).
+  - Scale changes (scaleup / scaledown tokens, auto): no glitch at the switch frames.
+
 ### R9. Enhanced and mods - 12 agent-days (two tasks)
 - **R9a Enhanced, 7 days**: per-pixel lighting, shadow maps, SSAO, bloom, anisotropic + mipmaps, outline styles, and
   presets ("Original", "Enhanced", "Performance") in the Options menu.
