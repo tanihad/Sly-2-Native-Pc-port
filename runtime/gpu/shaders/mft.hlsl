@@ -155,7 +155,8 @@ FOut ps_mft_tri(VM i, uint prim : SV_PrimitiveID) {
 }
 
 // ---- the shadow volumes (gs.hlsl ps_gs SVOL): each covered sample that passes the early depth test and DATE adds the
-// primitive's G step into its counter (x * samples + sample, y); the fused pass below adds them into G ----------------------
+// primitive's G step into its counter (sample x * samples + s, 16-bit lanes; one band of rows per epoch: the volumes
+// between two of the shadow pipeline's flat passes); the fused pass below adds them into G in order --------------------
 RWTexture2D<uint> m_cnt : register(u1);
 #if MS
 Texture2DMS<uint4> m_col : register(t12);
@@ -189,7 +190,10 @@ void ps_mft_svol(VM i, uint prim : SV_PrimitiveID, uint cov : SV_Coverage) {
         if (date && (dst >> 31) != datm) continue;
         int cc = csel == 0u ? (int)As : csel == 1u ? (int)(dst >> 24) : (int)fix;
         uint d = (uint)(((asel == 0u ? cs : -cs) * cc) >> 7);
-        if ((d & 255u) != 0u) InterlockedAdd(m_cnt[uint2(P.x * ns + s, P.y)], d);
+        // (two samples per word, 16-bit lanes: a lane overflows into the next only after 257 adds of up to 255 - far more
+        //  volumes than overlap anywhere; the fused pass takes the low byte. m_cfg.z: the epoch's first row)
+        uint fl = P.x * ns + s;
+        if ((d & 255u) != 0u) InterlockedAdd(m_cnt[uint2(fl >> 1, P.y + m_cfg.z)], (d & 255u) << ((fl & 1u) * 16u));
     }
 }
 #endif
@@ -402,17 +406,20 @@ float ps_mft_zto(float4 pos : SV_Position) : SV_Depth {
     return mft_zsurf(q);
 }
 
-// the shadow pipeline's fused pass (post.hlsl cs_shfuse) per sample of the frame's surface: B' = f(B, counter), written
-// into the other surface of the pair (ping-pong); the counters of the samples it reads go back to 0
-cbuffer shf_cb : register(b4) {
-    uint4 sf_rect;                       // (unused here: the quad's rect)
+// the shadow pipeline's fused pass (post.hlsl cs_shfuse) per sample of the frame's surface: B' = f(B, counters), written
+// into the other surface of the pair (ping-pong). In the game's order: copy 0 (the deferred shuffle 1, into A), the G
+// clear, then per epoch the volumes' counter into G and the flat pass that ends the epoch (gpu_exec_mft.h), then the
+// tail's copies (shuffles 2 + 3) and the darken. The counters are cleared by the executor afterwards.
+cbuffer mshf_cb : register(b5) {
     uint4 sf_svbb;                       // counter samples (surface pixels) [x0, x1) x [y0, y1) (x1 = 0: no counter)
-    uint4 sf_c[3];
-    uint4 sf_clr;
-    uint4 sf_np;
-    uint4 sf_np2;
+    uint4 sf_c[3];                       // copy draws (post.hlsl shf_cb)
+    uint4 sf_clr;                        // G clear of B after copy 0: on, value, byte mask
+    uint4 sf_np;                         // the darken: mode, alpha, fmask, vertex colour
+    uint4 sf_np2;                        // CLUT word, on, -, -
+    uint4 sf_ep;                         // epochs (flat passes + 1), counter rows per epoch, -, -
+    uint4 sf_flat[3];                    // the flat passes ending epochs 0..2: mode, alpha, fmask, vertex colour
 };
-RWTexture2D<uint> m_cnt : register(u1);
+Texture2D<uint> m_cntr : register(t14);
 #if MS
 Texture2DMS<uint4> m_col : register(t12);
 uint mft_col(uint2 P, uint s) { uint4 c = m_col.Load(int2(P), s); return c.x | (c.y << 8) | (c.z << 16) | (c.w << 24); }
@@ -426,6 +433,8 @@ float4 ps_mft_shfuse(float4 pos : SV_Position) : SV_Target {
     uint2 P = uint2(pos.xy);
     uint w = mft_col(P, s);
     uint a = 0u;                         // (the other frame's word: only bits copy 0 wrote are read, gpu_exec_mft.h checks)
+    bool inb = P.x >= sf_svbb.x && P.x < sf_svbb.z && P.y >= sf_svbb.y && P.y < sf_svbb.w;
+    uint fl = P.x * m_cfg.x + s;
     [unroll] for (uint k = 0u; k < 3u; k++) {
         uint4 c = sf_c[k];
         if ((c.w & (1u << 19)) != 0u) {
@@ -435,17 +444,28 @@ float4 ps_mft_shfuse(float4 pos : SV_Position) : SV_Target {
         }
         if (k == 0u) {
             if (sf_clr.x != 0u) w = (w & ~sf_clr.z) | (sf_clr.y & sf_clr.z);
-            if (P.x >= sf_svbb.x && P.x < sf_svbb.z && P.y >= sf_svbb.y && P.y < sf_svbb.w) {
-                uint2 cp = uint2(P.x * m_cfg.x + s, P.y);
-                uint n = m_cnt[cp];
-                if (n != 0u) {
-                    m_cnt[cp] = 0u;
+            [loop] for (uint e = 0u; e < sf_ep.x; e++) {
+                if (inb) {
+                    uint n = (m_cntr.Load(int3(fl >> 1, P.y + e * sf_ep.y, 0)) >> ((fl & 1u) * 16u)) & 255u;
                     w = (w & 0xFFFF00FFu) | ((((w >> 8) + n) & 255u) << 8);
                 }
+                if (e + 1u < sf_ep.x) { uint4 q = sf_flat[e]; w = npost_word(w, w, q.x, q.y, q.z, q.w, 0u); }
             }
         }
     }
     if (sf_np2.y != 0u) w = npost_word(w, w, sf_np.x, sf_np.y, sf_np.z, sf_np.w, sf_np2.x);
     return float4((float)(w & 255u), (float)((w >> 8) & 255u), (float)((w >> 16) & 255u), (float)(w >> 24)) * (1.0 / 255.0);
 }
+
+// DATE on the surfaces: the stencil's bit 0 = the colour's alpha bit 7 (per sample; the stencil was cleared, samples whose
+// bit is 0 are discarded); the DATE draws then test the stencil
+#if MS
+void ps_mft_date(float4 pos : SV_Position, uint s : SV_SampleIndex) {
+#else
+void ps_mft_date(float4 pos : SV_Position) {
+    uint s = 0u;
 #endif
+    if ((mft_col(uint2(pos.xy), s) >> 31) == 0u) discard;
+}
+#endif
+
