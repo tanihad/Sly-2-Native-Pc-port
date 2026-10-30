@@ -2,6 +2,8 @@
 
 ## Resume here (read first in a new session)
 
+**PAUSED by the owner (2026-10-29, during R5 part 2).** Nothing running. Branch next/r2-m5b (60fa7d2, pushed) is nearly done: VU clipper native (r2_clip.c, oracle-identical), crossing meshes native, A/B ep1 3.73->3.52 ms, m2 4.98->4.69; notes draft written; it was running the final gates. On "continue": resume that agent (SendMessage, or a new agent reading notes/wip/r2-m5b.md) to finish gates + benchmark, merge, package, push; then the native HUD (Sonnet), then R8, then the hold point below.
+
 **OWNER HOLD POINT (2026-10-29):** once the renderer is done (R5 part 2, the native gameplay HUD, and R8 with free scale + MSAA + the PS2-mode preset), STOP: tell the owner it's ready to try on their PC and wait. Do NOT start the launcher, 1.0 items or anything else until they say so.
 
 **2026-10-29: R6 MERGED into main.** Running: R5 part 2 (worktree r2-m5b: VU clipper for guard-band crossing triangles, remaining mesh variants). Ask the owner about D6 before R8 (MSAA, the big lever).
