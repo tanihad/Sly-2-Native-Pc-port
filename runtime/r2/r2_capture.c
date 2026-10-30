@@ -105,7 +105,7 @@ static LARGE_INTEGER qpf;
 
 typedef struct {
     uint32_t frames, cand, native, exact_level, exact_class, exact_decode, exact_budget, exact_dmas, exact_header, exact_fade, exact_guard,
-        decoded, decode_fail, bytes_hint, runs, epilogues, cand_props, native_props, exact_outline, outlines, outlines_parsed, clipped,
+        decoded, decode_fail, bytes_hint, runs, epilogues, vif_owed, cand_props, native_props, exact_outline, outlines, outlines_parsed, clipped,
         exact_bracket, stale, guard_clean, cand_lit, native_lit, exact_lit, lit_reason[4], outline_bad, outline_decoded, outline_native, outline_exact, dmas_min_free,
         part_spans, fan_ents, fan_tris, fan_kicked, fan_qw, fan_no[6];
     double decode_ms, cap_ms, fan_ms;
@@ -216,6 +216,7 @@ static int bracket_open;                  /* bracket mode: the previous entry's 
 static int part_open;                    /* (r2-m6) an R2H_PART 1 was written this frame and its end is due */
 static int mark_2d;                      /* (r2-m8) the frame's R2H_MARK 1 (2D class begins) was written */
 static int epi_due;                       /* hybrid: an epilogue is owed before the next exact entry */
+static struct { uint32_t set, cycle, mode, mask, row[4], col[4], flips; } VP;   /* (r2-flicker) VIF1 state owed (flush_vif) */
 static r2_pass epi_pass;
 
 void r2_cap_alloc(ps2_ctx* ctx) {
@@ -255,6 +256,27 @@ static int dmas_put(ps2_ctx* ctx, uint32_t v0, uint32_t v1, const uint64_t* ad, 
         ps2_w64(ctx, cur, ad[2 * i]);
         ps2_w64(ctx, cur + 8, ad[2 * i + 1]);
     }
+    ps2_w32(ctx, DMAS + 0x0C, cur);
+    st.bytes_hint += need;
+    return 1;
+}
+
+/* (r2-flicker) VIF codes only (n words, padded with NOPs to whole quadwords) at the write position, as dmas_put */
+static int dmas_vif(ps2_ctx* ctx, const uint32_t* vw, uint32_t n) {
+    uint32_t end = ps2_r32(ctx, DMAS + 0x00), cnt = ps2_r32(ctx, DMAS + 0x08), cur = ps2_r32(ctx, DMAS + 0x0C);
+    uint32_t vif_words = ps2_r32(ctx, DMAS + 0x10), gif_open = ps2_r32(ctx, DMAS + 0x14);
+    if (gif_open || ((cur & 15) && !vif_words) || !n || n > 64) return 0;
+    uint32_t nqw = (n + 3) / 4;
+    uint32_t pad = (16 - (cur & 15)) & 15;
+    uint32_t need = pad + (nqw + (cnt ? 0u : 1u)) * 16u;
+    if (cur + need + put_reserve > end) return 0;
+    for (; cur & 15; cur += 4) ps2_w32(ctx, cur, 0);
+    if (!cnt) {
+        ps2_w64(ctx, cur, 0x10000000ull | nqw);         /* DMA CNT, QWC nqw; VIF NOP NOP */
+        ps2_w64(ctx, cur + 8, 0);
+        cur += 16;
+    }
+    for (uint32_t i = 0; i < nqw * 4; i++, cur += 4) ps2_w32(ctx, cur, i < n ? vw[i] : 0);
     ps2_w32(ctx, DMAS + 0x0C, cur);
     st.bytes_hint += need;
     return 1;
@@ -401,6 +423,7 @@ static void frame_begin(ps2_ctx* ctx) {
     fr_block_sent = 0;
     fr_decode_ms = 0;
     prev_native = 0;
+    memset(&VP, 0, sizeof VP);           /* (r2-flicker) nothing owed across frames */
     prev_class = -1;
     bracket_open = 0;
     epi_due = 0;
@@ -670,7 +693,39 @@ static void close_bracket(ps2_ctx* ctx, int cls) {
     dmas_put(ctx, same ? MSCAL(0x3AB0) : 0, same ? MSCAL(0x0000) : 0, l.p, l.n);
 }
 
+/* (r2-flicker) VIF1 as the dropped chains of native meshes leave it. Its registers persist across chains and the game's
+ * later exact chains rely on them: the shadow-volume class (188054619) unpacks its vertex flags with a masked UNPACK
+ * under the STMASK 3F3F3F3F the world's chains leave (only W written, XYZ kept); with the mask a character chain left
+ * (50505050) its volumes came out wrong and Sly's lamp shadow vanished on native floors. And each MSCAL flips VIF1's
+ * double buffer: an all-exact frame reaches the shadow class with the same parity every frame. Native meshes owe both:
+ * the registers their chains write (decoder-tracked: STCYCL / STMOD / STMASK / STROW / STCOL, the last chain's values)
+ * and their MSCAL count mod 2 (an MSCAL 0x0000: the main program's [E] NOP), put before the next exact chain.
+ * PS2_R2_VIFSTATE=0: off (diagnostics). */
+static void owe_vif(const r2_mesh* m) {
+    VP.flips ^= m->flips & 1u;
+    if (m->vif_set & R2_VIF_CYCLE) VP.cycle = m->vif_cycle;
+    if (m->vif_set & R2_VIF_MODE) VP.mode = m->vif_mode;
+    if (m->vif_set & R2_VIF_MASK) VP.mask = m->vif_mask;
+    if (m->vif_set & R2_VIF_ROW) memcpy(VP.row, m->vif_row, 16);
+    if (m->vif_set & R2_VIF_COL) memcpy(VP.col, m->vif_col, 16);
+    VP.set |= m->vif_set;
+}
+static void flush_vif(ps2_ctx* ctx) {
+    static int env = -1;
+    if (env < 0) { const char* e = getenv("PS2_R2_VIFSTATE"); env = !(e && *e == '0'); }
+    if (!env || (!VP.set && !VP.flips)) { memset(&VP, 0, sizeof VP); return; }
+    uint32_t w[20], n = 0;
+    if (VP.flips) w[n++] = MSCAL(0x0000);
+    if (VP.set & R2_VIF_CYCLE) w[n++] = 0x01000000u | (VP.cycle & 0xFFFF);
+    if (VP.set & R2_VIF_MODE) w[n++] = 0x05000000u | (VP.mode & 3);
+    if (VP.set & R2_VIF_MASK) { w[n++] = 0x20000000u; w[n++] = VP.mask; }
+    if (VP.set & R2_VIF_ROW) { w[n++] = 0x30000000u; memcpy(w + n, VP.row, 16); n += 4; }
+    if (VP.set & R2_VIF_COL) { w[n++] = 0x31000000u; memcpy(w + n, VP.col, 16); n += 4; }
+    if (dmas_vif(ctx, w, n)) { st.vif_owed++; memset(&VP, 0, sizeof VP); }   /* (else: retried before the next exact entry) */
+}
+
 static void owe_epilogue(ps2_ctx* ctx) {
+    flush_vif(ctx);
     if (!epi_due) return;
     adlist l = { .n = 0 };
     ad_epilogue(&l, &epi_pass);
@@ -956,6 +1011,7 @@ void r2_cap_entry(ps2_ctx* ctx) {
         }
         S->run_count[S->nrun - 1]++;
         st.native++;
+        owe_vif(m);
         if (eflags & R2E_CLIP) st.clipped++;
         if (form) ps2_w32(ctx, e + 12, 0);           /* the mesh DMA; the header packet at +8 stays */
         else ps2_w32(ctx, e + 8, 0);                 /* the whole static packet */
@@ -966,7 +1022,7 @@ void r2_cap_entry(ps2_ctx* ctx) {
         if (fq) {
             /* (r2-m5b) after the fans: their last packet (pass A of the last sub-batch that kicked any) is the VU's own last
              * state when that is the mesh's last sub-batch; otherwise the epilogue follows them now */
-            if (fan_last == m->nb) epi_due = 0;
+            if (fan_last == m->nb) { epi_due = 0; flush_vif(ctx); }
             else owe_epilogue(ctx);
             prev_native = 0;
             if (stats_on) { double dt_ = now_ms() - t0; st.cap_ms += dt_; fr_cap_ms += dt_; }

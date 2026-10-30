@@ -187,12 +187,22 @@ static void upk_decode(const vif_state* v, const uint8_t* p, uint32_t d[4]) {
     }
 }
 
+extern int vu1_trk;                    /* (r2-flicker, diagnostics: vu_exec.c) lanes written into VU1 data */
+extern uint8_t vu1_trk_w[1024];
+static inline void trk_vif(const vif_state* v, uint32_t addr, uint32_t m) {
+    if (!vu1_trk || v->id != 1) return;
+    uint8_t l = 0;
+    for (int j = 0; j < 4; j++) if (((m >> (j * 2)) & 3) != 3) l |= (uint8_t)(1u << j);
+    vu1_trk_w[addr & 0x3FF] |= l;
+}
+
 /* Write one vector (d = unpacked input, or NULL for a filling cycle) and advance the address. */
 static void upk_write(vif_state* v, const uint32_t* d) {
     uint32_t* dst = (uint32_t*)(vu_data_mem(v->id) + ((v->u_addr & v->qmask) << 4));
     uint32_t row = v->u_cyc < 3 ? v->u_cyc : 3;
     uint32_t m = v->u_masked ? (v->mask >> (row * 8)) & 0xFFu : 0;
     uint32_t mode = v->mode & 3;
+    trk_vif(v, v->u_addr, m);
     if (d && !m && (mode == 0 || mode == 3)) {
         memcpy(dst, d, 16);
     } else {
@@ -284,6 +294,7 @@ static inline __attribute__((always_inline)) uint32_t upk_loop(vif_state* v, con
         }
         uint32_t* dst = mem + ((addr & qmask) << 2);
         uint32_t m = masked ? (v->mask >> ((cyc < 3 ? cyc : 3) * 8)) & 0xFFu : 0;
+        trk_vif(v, addr, m);
         if (!m && (mode == 0 || mode == 3)) {
             memcpy(dst, d, 16);
         } else {
@@ -385,6 +396,7 @@ static uint32_t upk_data_body(vif_state* v, const uint32_t* w, uint32_t n, int f
             uint32_t a = v->u_addr & v->qmask, c = v->qmask + 1 - a;
             if (c > nv - done) c = nv - done;
             memcpy(mem + a * 16, p + pos, c * 16);
+            for (uint32_t k = 0; k < c; k++) trk_vif(v, a + k, 0);
             pos += c * 16;
             done += c;
             v->u_addr += c;
@@ -689,6 +701,15 @@ int vif_dma_tag(int vif, const void* tag_qw) {
     if (k == 0) return 0;
     if (k == 1) fifo_push(v, w + 1, 1);
     return 1;
+}
+
+/* (r2-flicker, diagnostics) VIF registers: stat cycle mode mask base ofst tops itop top itops, then ROW[4], COL[4] */
+void vif_debug_regs(int vif, uint32_t out[18]) {
+    const vif_state* v = &vifs[vif & 1];
+    uint32_t a[10] = { v->stat, v->cycle, v->mode, v->mask, v->base, v->ofst, v->tops, v->itop, v->top, v->itops };
+    memcpy(out, a, sizeof a);
+    memcpy(out + 10, v->r, 16);
+    memcpy(out + 14, v->c, 16);
 }
 
 void vif_debug_state(int vif) {                              /* (pc-fps2) diagnostics */

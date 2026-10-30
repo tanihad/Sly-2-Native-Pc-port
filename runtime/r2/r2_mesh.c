@@ -31,6 +31,7 @@ typedef struct {
     uint32_t vu[QW][4];
     uint8_t wr[QW];                      /* written by this chain */
     uint32_t cycle, mask, row[4], col[4], mode, base, ofst, tops, top, dbf;
+    uint32_t vset;                       /* (r2-flicker) R2_VIF_* registers the chain wrote */
     uint32_t* w;                         /* the VIF word stream */
     uint32_t nw, capw;
     uint64_t hash;
@@ -632,21 +633,23 @@ static int interpret(dec* d) {
         }
         switch (cmd) {
         case 0x00: break;                                        /* NOP */
-        case 0x01: d->cycle = imm; break;                        /* STCYCL */
+        case 0x01: d->cycle = imm; d->vset |= R2_VIF_CYCLE; break;   /* STCYCL */
         case 0x02: d->ofst = imm & 0x3FF; d->dbf = 0; d->tops = d->base; d->ofs_seen = 1; break;   /* OFFSET */
         case 0x03: d->base = imm & 0x3FF; break;                 /* BASE */
         case 0x04: break;                                        /* ITOP */
-        case 0x05: d->mode = imm & 3; break;                     /* STMOD */
+        case 0x05: d->mode = imm & 3; d->vset |= R2_VIF_MODE; break;   /* STMOD */
         case 0x06: break;                                        /* MSKPATH3 */
         case 0x10: case 0x11: case 0x13: break;                  /* FLUSHE / FLUSH / FLUSHA */
         case 0x14: { int r = mscal(d, imm); if (r) return r; break; }   /* MSCAL */
         case 0x20:                                               /* STMASK */
             if (pos >= d->nw) return R2M_VIF;
             d->mask = d->w[pos++];
+            d->vset |= R2_VIF_MASK;
             break;
         case 0x30: case 0x31:                                    /* STROW / STCOL */
             if (pos + 4 > d->nw) return R2M_VIF;
             memcpy(cmd == 0x30 ? d->row : d->col, d->w + pos, 16);
+            d->vset |= cmd == 0x30 ? R2_VIF_ROW : R2_VIF_COL;
             pos += 4;
             break;
         case 0x07:                                               /* MARK: EE-visible */
@@ -689,6 +692,8 @@ int r2_mesh_decode(const uint8_t* ram, uint32_t addr, int form, r2_mesh** out) {
     m->hash = d->hash;
     m->form = form;
     m->flips = d->dbf;
+    m->vif_set = d->vset; m->vif_cycle = d->cycle; m->vif_mode = d->mode; m->vif_mask = d->mask;
+    memcpy(m->vif_row, d->row, 16); memcpy(m->vif_col, d->col, 16);
     if (!(m->src = src_make(d))) { free(m); free(d->vtx); free(d->idx); free(d->b); free(d->w); free(d->seg); free(d); return R2M_SIZE; }
     m->has_w = d->w_fixed == 1;
     if (m->has_w) { memcpy(m->w, d->wm, sizeof m->w); m->fade = d->fade; }

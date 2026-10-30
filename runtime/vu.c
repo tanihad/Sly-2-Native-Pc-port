@@ -286,8 +286,66 @@ static void vrec_end(vu_state* st, uint32_t pairs) {
 
 /* ---- running microprograms ---------------------------------------------------------------------- */
 
+/* (r2-flicker, diagnostics) PS2_VU_SNAP=<vblank> PS2_VU_SNAP_DIR=<dir> [PS2_VU_SNAP_NAME=<unit>] [PS2_VU_SNAP_COUNT=n]:
+ * before each of the first n (default 40) VU1 runs of the recompiled unit (default 188054619, the shadow volumes) from
+ * VBlank <vblank> on, the VU state
+ * (vi, vf, acc, I/Q/P, top/itop), VIF1's registers and VU1 data memory into <dir>\snap_<vblank>_<n>_<addr>.bin */
+void vif_debug_regs(int vif, uint32_t out[18]);
+static void vu_snap(vu_state* st, uint32_t addr_dw) {
+    static int init, left;
+    static uint32_t from, seq;
+    static char dir[300], name[40];
+    if (!init) {
+        init = 1;
+        const char* e = getenv("PS2_VU_SNAP"), *d = getenv("PS2_VU_SNAP_DIR"), *n = getenv("PS2_VU_SNAP_NAME"), *c = getenv("PS2_VU_SNAP_COUNT");
+        if (!e || !*e || !d || !*d) return;
+        from = (uint32_t)strtoul(e, NULL, 0);
+        snprintf(dir, sizeof dir, "%s", d);
+        snprintf(name, sizeof name, "%s", n && *n ? n : "188054619");
+        left = c ? atoi(c) : 40;
+        fprintf(stderr, "[vu] snapshots of %s from VBlank %u into %s (%d)\n", name, from, dir, left);
+    }
+    if (left <= 0 || st->idx != 1 || ps2_vblank_count() < from || !vuc_nprogs) return;
+    uint32_t pc = addr_dw & st->pcmask;
+    vuc_slot* s = &vuc_slots[1][pc];
+    if (s->gen != micro_gen[1]) vuc_lookup(st, pc, s);
+    int mine = s->prog && !strcmp(vuc_progs[s->prog - 1]->name, name);
+    /* PS2_VU_SNAP_TRACK=1 (with PS2_VU_INTERP=1): from each class begin (0x1AA0) to the next other program, the VU1 data
+     * lanes the unit reads before anything (VIF or VU) wrote them: lmap_<n>.bin (1024 bytes, lane bits) */
+    static int track = -1;
+    if (track < 0) { const char* e = getenv("PS2_VU_SNAP_TRACK"); track = e && *e == '1'; }
+    extern int vu1_trk;
+    extern uint8_t vu1_trk_w[1024], vu1_trk_r[1024];
+    if (track && vu1_trk && !mine) {
+        char lp[400];
+        snprintf(lp, sizeof lp, "%s\\lmap_%06u_%03u.bin", dir, ps2_vblank_count(), seq);
+        FILE* lf = fopen(lp, "wb");
+        if (lf) { fwrite(vu1_trk_r, 1024, 1, lf); fclose(lf); }
+        vu1_trk = 0;
+    }
+    if (!mine) return;
+    if (track && pc * 8u == 0x1AA0u) { memset(vu1_trk_w, 0, 1024); memset(vu1_trk_r, 0, 1024); vu1_trk = 1; }
+    left--;
+    char path[400];
+    snprintf(path, sizeof path, "%s\\snap_%06u_%03u_%04X.bin", dir, ps2_vblank_count(), seq++, pc * 8u);
+    FILE* f = fopen(path, "wb");
+    if (!f) return;
+    uint32_t vr[18];
+    vif_debug_regs(1, vr);
+    fwrite("VUS1", 4, 1, f);
+    fwrite(st->vi, sizeof st->vi, 1, f);
+    fwrite(st->vf, sizeof st->vf, 1, f);
+    fwrite(&st->acc, sizeof st->acc, 1, f);
+    fwrite(&st->I, 4, 1, f); fwrite(&st->Q, 4, 1, f); fwrite(&st->P, 4, 1, f);
+    fwrite(&st->top, 4, 1, f); fwrite(&st->itop, 4, 1, f);
+    fwrite(vr, sizeof vr, 1, f);
+    fwrite(st->data, (st->dmask + 1) * 16u, 1, f);
+    fclose(f);
+}
+
 static void run(vu_state* st, uint32_t addr_dw) {
     int perf_prev = perf_enter(PERF_VU);
+    vu_snap(st, addr_dw);
     if (vrec.state != 1) vrec_begin(st, addr_dw);
     unsigned csr = _mm_getcsr();
     host_csr[st->idx & 1] = csr;
