@@ -2,6 +2,8 @@
 
 ## Resume here (read first in a new session)
 
+**2026-10-30: R7 part 3 (HUD) MERGED (8a19e4d), dist 0.1.986.** Profiling showed a native HUD would not pay off: its draws cost about 0.1 ms; the overhead is in clears. So the branch makes partial Z clears lazy instead (-0.2..-0.3 ms GPU per frame). The window suite's F11/Alt+Enter checks fail on main too; that is environmental (the owner's focused apps), not a regression. Running: R8 (worktree r2-m8); it has been told to merge main. After R8 comes the HOLD POINT below.
+
 **2026-10-29: R5 part 2 MERGED (a3a5752), dist 0.1.977:** guard-band meshes native through the game's own VU clipper on a private VU1 (r2_clip.c). ep1 3x 285->325 fps (1% low 127->243), m2 190->228. Native vertex coverage: ep1 91%, ep3 95%, ep5 94%, m1 89%, m2 74%. Left (each <=1%): billboards, lit sub-batch variants, 0x0E30/0x16B0/0x13F0, sky/warps; 4x chaos not measured (owner was gaming). Running: native gameplay HUD (worktree r2-hud, Sonnet). Then R8 (D6 decided: free scale + MSAA, PS2 mode = preset), then the hold point below.
 
 **OWNER HOLD POINT (2026-10-29):** once the renderer is done (R5 part 2, the native gameplay HUD, and R8 with free scale + MSAA + the PS2-mode preset), STOP: tell the owner it's ready to try on their PC and wait. Do NOT start the launcher, 1.0 items or anything else until they say so.
