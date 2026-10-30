@@ -44,6 +44,7 @@ static mtarget MT[MAX_TARGETS + 1];
 
 /* the configuration: gfx.c (settings) or the environment (PS2_MFT=0|1, PS2_MFT_SCALE=<%>, PS2_MFT_MSAA=1|2|4|8) */
 static volatile LONG mcf_on = -1, mcf_pct = 100, mcf_msaa = 4;
+static int mcf_env_on = -1, mcf_env_pct, mcf_env_msaa;   /* (PS2_MFT, PS2_MFT_SCALE, PS2_MFT_MSAA: they win over the settings) */
 void gpu_mft_config(int on, int pct, int msaa) {
     InterlockedExchange(&mcf_pct, pct < 25 ? 25 : pct > 400 ? 400 : pct);
     InterlockedExchange(&mcf_msaa, msaa >= 8 ? 8 : msaa >= 4 ? 4 : msaa >= 2 ? 2 : 1);
@@ -530,17 +531,19 @@ static int mft_enabled(void) {
     if (!M.env) {
         M.env = 1;
         const char* e = getenv("PS2_MFT");
-        if (e && *e) InterlockedExchange(&mcf_on, *e != '0');
+        if (e && *e) mcf_env_on = *e != '0';
         e = getenv("PS2_MFT_SCALE");
-        if (e && *e) InterlockedExchange(&mcf_pct, atoi(e) < 25 ? 25 : atoi(e) > 400 ? 400 : atoi(e));
+        if (e && *e) mcf_env_pct = atoi(e) < 25 ? 25 : atoi(e) > 400 ? 400 : atoi(e);
         e = getenv("PS2_MFT_MV");
         M.mv_on = e && *e == '1';
         e = getenv("PS2_MFT_MV_VIEW");
         M.mv_view = M.mv_on && e && *e == '1';
         e = getenv("PS2_MFT_MSAA");
-        if (e && *e) { int n = atoi(e); InterlockedExchange(&mcf_msaa, n >= 8 ? 8 : n >= 4 ? 4 : n >= 2 ? 2 : 1); }
+        if (e && *e) { int n = atoi(e); mcf_env_msaa = n >= 8 ? 8 : n >= 4 ? 4 : n >= 2 ? 2 : 1; }
     }
-    return mcf_on > 0;
+    if (mcf_env_pct) mcf_pct = mcf_env_pct;
+    if (mcf_env_msaa) mcf_msaa = mcf_env_msaa;
+    return mcf_env_on >= 0 ? mcf_env_on : mcf_on > 0;
 }
 
 /* the shadow sequence starting at ALIAS16 op pos (gpu_exec.c shf_head's head, then volumes in epochs: a flat post pass on B

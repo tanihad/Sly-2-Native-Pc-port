@@ -18,7 +18,7 @@ ps2_settings_t ps2_settings = {
     .motion_blur = -1, .flicker_filter = -1, .interlacing = -1,
     .preset = SETTINGS_PRESET_BALANCED, .auto_max = SETTINGS_SCALE_AUTO_MAX,
     .vol_master = 100, .vol_music = 100, .vol_effects = 100, .audio_background = 1,
-    .frame_rate = 60, .render_scale = SETTINGS_RS_AUTO,
+    .frame_rate = 60, .render_scale = 100, .renderer_modern = 1, .msaa = SETTINGS_MSAA_4X,   /* (r2-m8: Balanced) */
 };
 const char* const settings_scaler_names[SETTINGS_SCALER_N] = { "auto", "point", "box", "lanczos", "catmull-rom", "bilinear" };
 const char* const settings_preset_names[SETTINGS_PRESET_N] = { "original", "performance", "balanced", "quality", "custom" };
@@ -37,6 +37,7 @@ static const char* const n_fullscreen[] = { "off", "on", "exclusive" };
 static const char* const n_mode[] = { "windowed", "borderless", "fullscreen" };   /* (pc-polish) [display] mode */
 static const char* const n_speakers[] = { "stereo", "mono", "surround" };
 static const char* const n_rmode[] = { "reference", "modern" };   /* (r2-m1) */
+static const char* const n_msaa[] = { "off", "2x", "4x", "8x" };  /* (r2-m8) */
 
 #define OFF(f) ((int)offsetof(ps2_settings_t, f))
 #define BOOL_(sec, key, f, flags, apply, def) { sec, key, SET_BOOL, flags, apply, OFF(f), 0, 1, def, NULL, NULL, NULL }
@@ -60,7 +61,7 @@ static const settings_opt opts[] = {
     INT_("display", "frame_rate", frame_rate, SET_LIVE, SET_APPLY_FRAME_RATE, 30, 1000, 60, "unlimited=-1|display=-2|uncapped=-1",
          "PS2_FRAME_RATE"),
     ENUM_("graphics", "preset", preset, SET_LIVE, SET_APPLY_GFX, settings_preset_names, SETTINGS_PRESET_N,
-          SETTINGS_PRESET_BALANCED, NULL, NULL),
+          SETTINGS_PRESET_BALANCED, "ps2=0", NULL),
     ENUM_("graphics", "renderer", renderer_gpu, SET_LIVE | SET_STAGED, SET_APPLY_RENDERER, n_renderer, 2, 1, "sw=0|hw=1|d3d11=1",
           "PS2_GS_BACKEND"),
     ENUM_("graphics", "pacing", pacing, SET_LIVE | SET_GPU, SET_APPLY_PACING, n_pacing, SETTINGS_PACING_N, SETTINGS_PACING_AUTO,
@@ -68,8 +69,11 @@ static const settings_opt opts[] = {
     ENUM_("graphics", "vsync", vsync, SET_LIVE | SET_GPU, SET_APPLY_PACING, settings_vsync_names, SETTINGS_VSYNC_N, SETTINGS_VSYNC_ON,
           NULL, "PS2_GS_VSYNC"),   /* (pc-pacing) */
     /* (pc-polish) the render scale, relative to the output (replaces internal_scale + auto_max) */
-    { "graphics", "render_scale", SET_SCALE, SET_LIVE | SET_PRESET | SET_GPU, SET_APPLY_GFX, OFF(render_scale), 0, 0, SETTINGS_RS_AUTO,
+    { "graphics", "render_scale", SET_SCALE, SET_LIVE | SET_PRESET | SET_GPU, SET_APPLY_GFX, OFF(render_scale), 0, 0, 100,
       NULL, NULL, "PS2_GS_SCALE" },
+    /* (r2-m8) multisampling of modern frames */
+    ENUM_("graphics", "msaa", msaa, SET_LIVE | SET_PRESET | SET_GPU, SET_APPLY_GFX, n_msaa, SETTINGS_MSAA_N, SETTINGS_MSAA_4X,
+          "1x=0|none=0|0=0|1=0|2=1|4=2|8=3", NULL),
     /* old keys: read and migrated (settings_migrate_text), never written */
     INT_("graphics", "internal_scale", internal_scale, SET_LEGACY | SET_LIVE | SET_GPU, SET_APPLY_GFX, 1, 8, SETTINGS_SCALE_AUTO,
          "auto=0|native=-1", NULL),
@@ -81,9 +85,9 @@ static const settings_opt opts[] = {
     TRI_("graphics", "interlacing", interlacing),
     ENUM_("graphics", "scaler", scaler, SET_LIVE | SET_PRESET | SET_GPU, SET_APPLY_GFX, settings_scaler_names, SETTINGS_SCALER_N,
           SETTINGS_SCALER_AUTO, "catmull=4", "PS2_GS_SCALER"),
-    /* (r2-m1) the modern renderer (runtime/r2, notes/modern-renderer.md): read every frame by r2_capture.c (live); not in the
-     * template while it is an opt-in milestone. Environment: PS2_R2=off|hybrid|bracket (r2_capture.c) */
-    ENUM_("graphics", "renderer_mode", renderer_modern, SET_LIVE | SET_GPU, SET_APPLY_NONE, n_rmode, 2, 0,
+    /* (r2-m1) the modern renderer (runtime/r2, notes/modern-renderer.md): read every frame by r2_capture.c (live).
+     * Environment: PS2_R2=off|hybrid|bracket (r2_capture.c). (r2-m8) part of the presets, modern by default */
+    ENUM_("graphics", "renderer_mode", renderer_modern, SET_LIVE | SET_PRESET | SET_GPU, SET_APPLY_GFX, n_rmode, 2, 1,
           "exact=0|original=0|off=0|r2=1|on=1", NULL),
     INT_("audio", "master", vol_master, SET_LIVE, SET_APPLY_AUDIO, 0, 100, 100, NULL, NULL),
     INT_("audio", "music", vol_music, SET_LIVE, SET_APPLY_AUDIO, 0, 100, 100, NULL, NULL),
@@ -342,11 +346,14 @@ static int is_43(const ps2_settings_t* s) { return s->aspect_w * 3 == s->aspect_
 int settings_detect_preset(const ps2_settings_t* s) {
     if (s->motion_blur != -1 || s->flicker_filter != -1 || s->interlacing != -1 || s->scaler != SETTINGS_SCALER_AUTO)
         return SETTINGS_PRESET_CUSTOM;
-    if (s->render_scale == SETTINGS_RS_ORIGINAL && s->filters_faithful && !s->outlines_thin && is_43(s)) return SETTINGS_PRESET_ORIGINAL;
+    if (!s->renderer_modern) {           /* (r2-m8) PS2: Reference with every faithful setting */
+        if (s->render_scale == SETTINGS_RS_AUTO && s->filters_faithful && !s->outlines_thin && is_43(s)) return SETTINGS_PRESET_ORIGINAL;
+        return SETTINGS_PRESET_CUSTOM;
+    }
     if (s->filters_faithful) return SETTINGS_PRESET_CUSTOM;
-    if (s->render_scale == SETTINGS_PRESET_PERFORMANCE_PCT && !s->outlines_thin) return SETTINGS_PRESET_PERFORMANCE;
-    if (s->render_scale == SETTINGS_RS_AUTO && !s->outlines_thin) return SETTINGS_PRESET_BALANCED;
-    if (s->render_scale == 100 && s->outlines_thin) return SETTINGS_PRESET_QUALITY;
+    if (s->render_scale == SETTINGS_PRESET_PERFORMANCE_PCT && s->msaa == SETTINGS_MSAA_OFF && !s->outlines_thin) return SETTINGS_PRESET_PERFORMANCE;
+    if (s->render_scale == 100 && s->msaa == SETTINGS_MSAA_4X && !s->outlines_thin) return SETTINGS_PRESET_BALANCED;
+    if (s->render_scale == 100 && s->msaa == SETTINGS_MSAA_8X && s->outlines_thin) return SETTINGS_PRESET_QUALITY;
     return SETTINGS_PRESET_CUSTOM;
 }
 
@@ -358,11 +365,12 @@ void settings_apply_preset(ps2_settings_t* s, int p) {
     s->scaler = SETTINGS_SCALER_AUTO;
     s->filters_faithful = p == SETTINGS_PRESET_ORIGINAL;
     s->outlines_thin = p == SETTINGS_PRESET_QUALITY;
+    s->renderer_modern = p != SETTINGS_PRESET_ORIGINAL;   /* (r2-m8, D6) */
     switch (p) {
-    case SETTINGS_PRESET_ORIGINAL: s->render_scale = SETTINGS_RS_ORIGINAL; s->aspect_w = 4; s->aspect_h = 3; break;
-    case SETTINGS_PRESET_PERFORMANCE: s->render_scale = SETTINGS_PRESET_PERFORMANCE_PCT; break;
-    case SETTINGS_PRESET_BALANCED: s->render_scale = SETTINGS_RS_AUTO; break;
-    default: s->render_scale = 100; break;
+    case SETTINGS_PRESET_ORIGINAL: s->render_scale = SETTINGS_RS_AUTO; s->aspect_w = 4; s->aspect_h = 3; break;
+    case SETTINGS_PRESET_PERFORMANCE: s->render_scale = SETTINGS_PRESET_PERFORMANCE_PCT; s->msaa = SETTINGS_MSAA_OFF; break;
+    case SETTINGS_PRESET_BALANCED: s->render_scale = 100; s->msaa = SETTINGS_MSAA_4X; break;
+    default: s->render_scale = 100; s->msaa = SETTINGS_MSAA_8X; break;
     }
 }
 
@@ -621,7 +629,7 @@ static const char* text_of(const ps2_settings_t* s, const char* section, const c
 int settings_format(const ps2_settings_t* s, char* out, size_t cap) {
     char disc[sizeof s->disc + 2];
     char win[256] = "";
-    char t[24][24];
+    char t[26][24];
 #define T(n, sec, key) text_of(s, sec, key, t[n], sizeof t[0])
     if (s->win_w > 0)
         snprintf(win, sizeof win, "x = %d\ny = %d\nwidth = %d\nheight = %d\nmaximized = %s\n", s->win_x, s->win_y,
@@ -653,8 +661,9 @@ int settings_format(const ps2_settings_t* s, char* out, size_t cap) {
         "frame_rate = %s\n"
         "\n"
         "[graphics]\n"
-        "; Preset: original (the PS2's look: its resolution, 4:3, TV filters), performance (render scale 50%%),\n"
-        "; balanced (default: render scale auto), quality (render scale 100%%, thin outlines) or custom. A preset\n"
+        "; Preset: original (PS2 mode: Reference rendering on the PS2's integer grid, 4:3, TV filters, PS2 outlines),\n"
+        "; performance (render scale 75%%, no MSAA), balanced (default: 100%%, MSAA 4x), quality (100%%, MSAA 8x, thin\n"
+        "; outlines) or custom. A preset\n"
         "; other than custom sets the options below when the game starts: set preset = custom to choose them one by one.\n"
         "preset = %s\n"
         "; Renderer: gpu (default: Direct3D 11, needs a Direct3D 11 graphics card - feature level 11_0) or\n"
@@ -670,12 +679,17 @@ int settings_format(const ps2_settings_t* s, char* out, size_t cap) {
         "; The settings below are used by the Direct3D 11 renderer (the software renderer ignores them, except\n"
         "; motion_blur, the game's own effect). They change while the game runs too: F2 / Shift+F2 scale,\n"
         "; Ctrl+F2 scale auto, F3 outlines, F4 filters preset, F5 motion blur, F6 flicker filter, Shift+F6 interlacing.\n"
-        "; Render scale: how sharp the game is drawn, relative to the picture on your screen. auto (default: as\n"
-        "; sharp as the graphics card keeps up with, up to 100%%), 25%%..400%% of the screen's height (e.g. 50%%, 75%%,\n"
-        "; 100%%, 150%%: the game draws at the next multiple of the PS2's 512 x 448 at least that high), original (the\n"
-        "; PS2's 512 x 448) or 2x..8x (exactly that multiple). Lowered for the time being while the graphics card\n"
-        "; cannot keep up. (Old files: internal_scale / auto_max are read and replaced.) Environment: PS2_GS_SCALE=N\n"
+        "; Rendering: modern (default: the modern renderer - any resolution, MSAA) or reference (every pixel exactly as\n"
+        "; the PS2's graphics chip, on its integer grid). F10 switches it. Environment: PS2_R2=off|hybrid\n"
+        "renderer_mode = %s\n"
+        "; Render scale: how sharp the game is drawn, relative to the picture on your screen. Modern: 25%%..400%% of\n"
+        "; the screen's resolution (default 100%%: exactly the screen's pixels; auto = 100%%). Reference (and 2x..8x in\n"
+        "; Modern): the next multiple of the PS2's 512 x 448 at least that high, auto (as sharp as the graphics card\n"
+        "; keeps up with, up to 100%%), original (the PS2's 512 x 448) or 2x..8x (exactly that multiple). (Old files:\n"
+        "; internal_scale / auto_max are read and replaced.) Environment: PS2_GS_SCALE=N\n"
         "render_scale = %s\n"
+        "; Modern rendering: multisampling (anti-aliasing): off, 2x, 4x (default) or 8x.\n"
+        "msaa = %s\n"
         "; Cel-shading outlines: ps2 (one PS2 pixel wide, exact) or thin (high-resolution lines).\n"
         "outlines = %s\n"
         "; Image filters preset: modern (motion blur on, no flicker filter, progressive) or\n"
@@ -718,7 +732,7 @@ int settings_format(const ps2_settings_t* s, char* out, size_t cap) {
         T(19, "display", "mode"), T(20, "display", "resolution"),
         s->aspect_w, s->aspect_h, T(0, "display", "hud"), T(1, "display", "monitor"), T(16, "display", "fullscreen_refresh"), T(18, "display", "frame_rate"),
         settings_preset_names[settings_detect_preset(s)], T(2, "graphics", "renderer"), T(3, "graphics", "pacing"), T(17, "graphics", "vsync"),
-        T(4, "graphics", "render_scale"), T(6, "graphics", "outlines"), T(7, "graphics", "filters"),
+        T(24, "graphics", "renderer_mode"), T(4, "graphics", "render_scale"), T(25, "graphics", "msaa"), T(6, "graphics", "outlines"), T(7, "graphics", "filters"),
         T(8, "graphics", "motion_blur"), T(9, "graphics", "flicker_filter"), T(10, "graphics", "interlacing"),
         T(11, "graphics", "scaler"),
         T(12, "audio", "master"), T(13, "audio", "music"), T(14, "audio", "effects"), T(15, "audio", "background"), T(5, "audio", "speakers"),

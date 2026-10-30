@@ -171,13 +171,15 @@ static void test_presets(void) {
     }
     settings_defaults(&s);
     settings_apply_preset(&s, SETTINGS_PRESET_ORIGINAL);
-    CHECK(s.render_scale == SETTINGS_RS_ORIGINAL && s.filters_faithful && !s.outlines_thin && s.aspect_w == 4 && s.aspect_h == 3,
-          "Original: PS2 resolution, faithful, 4:3");
+    CHECK(s.render_scale == SETTINGS_RS_AUTO && !s.renderer_modern && s.filters_faithful && !s.outlines_thin && s.aspect_w == 4 &&
+          s.aspect_h == 3, "Original (PS2): Reference on the integer grid, faithful, 4:3");
     settings_apply_preset(&s, SETTINGS_PRESET_QUALITY);
     CHECK(s.render_scale == 100 && s.outlines_thin && !s.filters_faithful, "Quality: 100%%, thin");
     CHECK(s.aspect_w == 4, "Quality keeps the aspect (the menu restores widescreen when leaving Original)");
     settings_apply_preset(&s, SETTINGS_PRESET_PERFORMANCE);
-    CHECK(s.render_scale == 50 && !s.outlines_thin, "Performance: 50%%");
+    CHECK(s.render_scale == 75 && s.msaa == SETTINGS_MSAA_OFF && s.renderer_modern && !s.outlines_thin, "Performance: Modern 75%%, no MSAA");
+    settings_apply_preset(&s, SETTINGS_PRESET_BALANCED);
+    CHECK(s.render_scale == 100 && s.msaa == SETTINGS_MSAA_4X && s.renderer_modern, "Balanced: Modern 100%%, MSAA 4x");
     s.outlines_thin = 1;
     CHECK(settings_detect_preset(&s) == SETTINGS_PRESET_CUSTOM, "changing an option -> custom");
     /* a preset in the file wins over its options; custom leaves them */
@@ -189,8 +191,8 @@ static void test_presets(void) {
     CHECK(s.render_scale == 5 && s.preset == SETTINGS_PRESET_CUSTOM, "preset = custom keeps the options");
     settings_defaults(&s);
     settings_parse("[graphics]\ninternal_scale = 1\nfilters = faithful\n[display]\naspect = 4:3\n", &s, NULL, NULL);
-    CHECK(s.preset == SETTINGS_PRESET_ORIGINAL && s.render_scale == SETTINGS_RS_ORIGINAL,
-          "an old file without preset (internal_scale = 1): derived (Original)");
+    CHECK(s.preset == SETTINGS_PRESET_CUSTOM && s.render_scale == SETTINGS_RS_ORIGINAL,
+          "an old file without preset (internal_scale = 1): derived (Custom: Rendering is Modern by default)");
     CHECK(gfx_native_scale(1440) == 4 && gfx_native_scale(1080) == 3 && gfx_native_scale(2160) == 5 && gfx_native_scale(448) == 1 &&
           gfx_native_scale(0) == 3, "native scale");
 }
@@ -433,19 +435,19 @@ static void test_persist(void) {
     CHECK(ps2_settings.preset == SETTINGS_PRESET_CUSTOM, "now custom");
     CHECK(settings_change_key("graphics", "preset", SETTINGS_PRESET_ORIGINAL, 1), "Original");
     t = read_file(ini);
-    CHECK(t && strstr(t, "preset = original") && strstr(t, "render_scale = original") && strstr(t, "filters = faithful") &&
+    CHECK(t && strstr(t, "preset = original") && strstr(t, "render_scale = auto") && strstr(t, "renderer_mode = reference") && strstr(t, "filters = faithful") &&
           strstr(t, "aspect = 4:3   ; wide") && strstr(t, "outlines = ps2"), "Original's options written:\n%s", t ? t : "");
     CHECK(settings_change_key("graphics", "preset", SETTINGS_PRESET_BALANCED, 1) && ps2_settings.aspect_w == 16, "leaving Original: 16:9");
     settings_load();
-    CHECK(ps2_settings.preset == SETTINGS_PRESET_BALANCED && ps2_settings.aspect_w == 16 && ps2_settings.render_scale == SETTINGS_RS_AUTO,
-          "persisted across a restart");
+    CHECK(ps2_settings.preset == SETTINGS_PRESET_BALANCED && ps2_settings.aspect_w == 16 && ps2_settings.render_scale == 100 &&
+          ps2_settings.renderer_modern && ps2_settings.msaa == SETTINGS_MSAA_4X, "persisted across a restart");
     CHECK(!settings_change_key("audio", "master", 150, 1), "invalid value refused");
     _putenv("PS2_GS_SCALE=2");
     CHECK(settings_change_key("graphics", "render_scale", 6, 1), "env-locked change in memory");
     t = read_file(ini);
     CHECK(t && !strstr(t, "render_scale = 6x"), "env-locked option not written");
     _putenv("PS2_GS_SCALE=");
-    settings_change_key("graphics", "render_scale", SETTINGS_RS_AUTO, 1);
+    settings_change_key("graphics", "render_scale", 100, 1);
     /* F-keys go through the table too */
     gfx_key(0x72, 0, 1);                         /* F3 */
     t = read_file(ini);
@@ -484,15 +486,29 @@ static void test_menu_nav(void) {
     go(MENU_ROW_SCALE);
     view();
     CHECK(!strcmp(V.rows[V.sel].label, "Render scale") && !strcmp(V.rows[V.sel].value, "100% (2560 x 1440)") &&
-          strstr(V.rows[V.sel].desc, "Rendering at 2560 x 1792 -> shown at 2560 x 1440") != NULL,
-          "render scale at 1440p 16:9: '%s' / '%s'", V.rows[V.sel].value, V.rows[V.sel].desc);
+          strstr(V.rows[V.sel].desc, "Rendering at 2560 x 1440 -> shown at 2560 x 1440") != NULL,
+          "Modern render scale at 1440p 16:9: '%s' / '%s'", V.rows[V.sel].value, V.rows[V.sel].desc);
     CHECK(find_row(&V, MENU_ROW_AUTO_MAX) < 0, "no separate auto maximum row");
-    menu_nav_event(MENU_NAV_LEFT, MENU_DEV_KEYBOARD);
-    CHECK(ps2_settings.render_scale == 75 && ps2_settings.preset == SETTINGS_PRESET_CUSTOM, "left: 75%%, Custom");
+    CHECK(find_row(&V, MENU_ROW_MSAA) >= 0 && V.rows[find_row(&V, MENU_ROW_MSAA)].enabled, "MSAA row (Modern)");
+    for (int k = 0; k < 5; k++) menu_nav_event(MENU_NAV_LEFT, MENU_DEV_KEYBOARD);
+    CHECK(ps2_settings.render_scale == 75 && ps2_settings.preset == SETTINGS_PRESET_CUSTOM, "left x5 (steps of 5%%): 75%%, Custom");
     view();
     CHECK(!strcmp(V.rows[0].value, "Custom"), "preset row shows Custom");
-    CHECK(!strcmp(V.rows[V.sel].value, "75% (1920 x 1080)") && strstr(V.rows[V.sel].desc, "Rendering at 2048 x 1344 -> shown at 2560 x 1440"),
-          "75%% at 1440p: 3x '%s' / '%s'", V.rows[V.sel].value, V.rows[V.sel].desc);
+    CHECK(!strcmp(V.rows[V.sel].value, "75% (1920 x 1080)") && strstr(V.rows[V.sel].desc, "Rendering at 1920 x 1080 -> shown at 2560 x 1440"),
+          "75%% at 1440p: '%s' / '%s'", V.rows[V.sel].value, V.rows[V.sel].desc);
+    for (int k = 0; k < 20; k++) menu_nav_event(MENU_NAV_LEFT, MENU_DEV_KEYBOARD);
+    CHECK(ps2_settings.render_scale == 25, "leftmost: 25%% (%d)", ps2_settings.render_scale);
+    /* Reference: the integer grid's choices */
+    settings_change_key("graphics", "renderer_mode", 0, 1);
+    settings_change_key("graphics", "render_scale", 100, 1);
+    view();
+    CHECK(!strcmp(V.rows[V.sel].value, "100% (2560 x 1440)") && strstr(V.rows[V.sel].desc, "Rendering at 2560 x 1792 -> shown at 2560 x 1440"),
+          "Reference render scale at 1440p: '%s' / '%s'", V.rows[V.sel].value, V.rows[V.sel].desc);
+    CHECK(!V.rows[find_row(&V, MENU_ROW_MSAA)].enabled, "MSAA disabled in Reference");
+    menu_nav_event(MENU_NAV_LEFT, MENU_DEV_KEYBOARD);
+    view();
+    CHECK(ps2_settings.render_scale == 75 && strstr(V.rows[V.sel].desc, "Rendering at 2048 x 1344 -> shown at 2560 x 1440"),
+          "Reference 75%%: 3x '%s'", V.rows[V.sel].desc);
     for (int k = 0; k < 8; k++) menu_nav_event(MENU_NAV_LEFT, MENU_DEV_KEYBOARD);
     view();
     CHECK(ps2_settings.render_scale == SETTINGS_RS_AUTO && !strcmp(V.rows[V.sel].value, "Auto (up to 100%)"), "leftmost: Auto ('%s')",
@@ -501,8 +517,7 @@ static void test_menu_nav(void) {
     CHECK(ps2_settings.render_scale == SETTINGS_RS_ORIGINAL, "then Original PS2");
     settings_change_key("graphics", "render_scale", 8, 1);       /* (an exact multiple: F2) */
     view();
-    CHECK(!strcmp(V.rows[V.sel].value, "8x (5632 x 3584)"), "8x 16:9 size (11 columns per pixel) '%s'", V.rows[V.sel].value);
-    /* reset the page: the confirm dialog */
+    CHECK(!strcmp(V.rows[V.sel].value, "8x (5632 x 3584)"), "8x 16:9 size (11 columns per pixel) '%s'", V.rows[V.sel].value);    /* reset the page: the confirm dialog */
     go(MENU_ROW_RESET);
     menu_nav_event(MENU_NAV_CONFIRM, MENU_DEV_KEYBOARD);
     view();
@@ -512,8 +527,8 @@ static void test_menu_nav(void) {
     CHECK(!V.confirm_reset && menu_is_open() && ps2_settings.render_scale == 8, "back cancels");
     menu_nav_event(MENU_NAV_CONFIRM, MENU_DEV_KEYBOARD);
     menu_nav_event(MENU_NAV_CONFIRM, MENU_DEV_KEYBOARD);
-    CHECK(ps2_settings.preset == SETTINGS_PRESET_BALANCED && ps2_settings.render_scale == SETTINGS_RS_AUTO && !ps2_settings.outlines_thin,
-          "reset Graphics: Balanced");
+    CHECK(ps2_settings.preset == SETTINGS_PRESET_BALANCED && ps2_settings.render_scale == 100 && !ps2_settings.outlines_thin &&
+          ps2_settings.renderer_modern && ps2_settings.msaa == SETTINGS_MSAA_4X, "reset Graphics: Balanced");
     /* the renderer is staged: Apply */
     go(MENU_ROW_RENDERER);
     menu_nav_event(MENU_NAV_RIGHT, MENU_DEV_KEYBOARD);
