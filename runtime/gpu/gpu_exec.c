@@ -1014,6 +1014,7 @@ static void exec_download(const gpu_fop_blocks* o) {
     XC.downloads++;
 }
 
+static int ab_off(void);
 static void exec_clear(const gpu_fop_clear* o) {
     xtarget* t = tgt(o->target);
     if (!t || (o->zclear != 0) != (t->depth != 0)) return;
@@ -1047,6 +1048,25 @@ static void exec_clear(const gpu_fop_clear* o) {
         }
     }
     if (nohw) fullrect = 0;
+    /* (r2-hud) a tile-aligned clear of part of a depth target in a mixed frame (the gameplay HUD's Z16 target: 512 x 224 of
+     * its 512 x 256 rows, twice a frame, ~11 MB each at 3x): no bandwidth-bound passes over the rect - the DSV is cleared
+     * whole (a fast clear), the tiles outside the rect take the zpatch (their truth) back through ensure_dsv when a draw
+     * needs them, and the rect's tiles are "DSV newer" (the cleared value, < 2^20: enc / dec are exact), converted into
+     * zpatch only over the bbox of a ROV draw / download that needs it. PS2_GPU_LAZYZ=0 off (and in the A phases of PS2_GPU_AB). */
+    static int lazy_env = -1, lazy_ab;
+    if (lazy_env < 0) {
+        const char* e = getenv("PS2_GPU_LAZYZ"), *a = getenv("PS2_GPU_AB_EE");
+        lazy_env = !(e && *e == '0');
+        lazy_ab = a && *a == '2';        /* (PS2_GPU_AB_EE=2: only the EE-side / lazy-clear features follow the A / B phases) */
+    }
+    extern volatile int gpu_ab_phase;
+    int lazyz = lazy_env && !nohw && !full && o->zclear && X.mixed && t->zts && !ab_off() && !(lazy_ab && gpu_ab_phase == 0) &&
+                (x1 & 15) == 0 && (y1 & 15) == 0 &&
+                x1 > 0 && y1 > 0 && ((uint32_t)o->value & (zbits_of(t) == 1 ? 0xFFFFu : zbits_of(t) == 2 ? 0xFFFFFFu : 0xFFFFFFFFu)) < GPU_ZE_ONE;
+    if (lazyz) {
+        ensure_zp_all(t);                /* (the tiles outside the rect: zpatch is their truth before the DSV is wiped) */
+        hw = 1;                          /* (zpatch inside the rect is not written: stale, the tiles are DSV newer) */
+    } else
     if (!t->depth && (o->mask & 15) == 15 && X.clearview && t->rtv && !nohw) {
         D3D11_RECT rc = { 0, 0, x1 * t->kx < t->w ? x1 * t->kx : t->w, y1 * t->ky < t->h ? y1 * t->ky : t->h };
         float col[4] = { (float)(o->value & 255) / 255.0f, (float)((o->value >> 8) & 255) / 255.0f,
@@ -1070,7 +1090,12 @@ static void exec_clear(const gpu_fop_clear* o) {
     }
     if (o->zclear && X.mixed && t->zts) {
         uint32_t zv = (uint32_t)o->value & (zbits_of(t) == 1 ? 0xFFFFu : zbits_of(t) == 2 ? 0xFFFFFFu : 0xFFFFFFFFu);
-        if (full) {                      /* (P1: enc(z), saturated at 1.0 - zpatch holds the value) */
+        if (lazyz) {
+            ID3D11DeviceContext_ClearDepthStencilView(gpu_rt.ctx, t->dsv, D3D11_CLEAR_DEPTH, gpu_z_encode(zv), 0);
+            int ra[4] = { 0, 0, t->zts_w, t->zts_h };
+            zt_set(t, ra, -1, ZT_ZP);    /* (outside the rect: the DSV is stale, zpatch is the truth) */
+            zt_set(t, r, -1, ZT_DSV);    /* (inside: the DSV holds the cleared value) */
+        } else if (full) {               /* (P1: enc(z), saturated at 1.0 - zpatch holds the value) */
             ID3D11DeviceContext_ClearDepthStencilView(gpu_rt.ctx, t->dsv, D3D11_CLEAR_DEPTH, gpu_z_encode(zv), 0);
         } else {
             int b[4] = { 0, 0, x1 - 1, y1 - 1 };
@@ -1283,6 +1308,7 @@ static void prof_ops_report(const UINT64* ts, double freq) {
         double ms = (double)(ts[i + 1] - ts[i]) * 1000.0 / freq;
         char s[200];
         prof_op_sig(X.fd, PR.opos[i], PR.cat[i], s, sizeof s);
+        if (PR.hudf[i]) { size_t l = strlen(s); if (l + 6 < sizeof s) memcpy(s + l, " [HUD]", 7); }
         if (getenv("PS2_GPU_PROF_SEQ")) gpu_log("prof-seq %4d %7.3f ms @%u %s", i, ms, PR.opos[i], s);   /* (r2-m7b: in order) */
         int k;
         for (k = 0; k < na && strcmp(A[k].sig, s); k++) {}
@@ -1971,6 +1997,10 @@ static const uint8_t* td_prepass(const gpu_front_frame_data* fd) {
                 const gpu_fop_draw* d = (const gpu_fop_draw*)h;
                 size_t l = strlen(s);
                 snprintf(s + l, sizeof s - l, " tier %u n %u bb %d,%d-%d,%d split %u", d->tier, d->count, d->bbox[0], d->bbox[1], d->bbox[2], d->bbox[3], d->split);
+            } else if (h->op == GPU_FOP_CLEAR) {
+                const gpu_fop_clear* c = (const gpu_fop_clear*)h;
+                size_t l = strlen(s);
+                snprintf(s + l, sizeof s - l, " z %u value %08X mask %X x1 %d y1 %d hud %u", c->zclear, c->value, c->mask, c->x1, c->y1, c->hud);
             } else if (h->op == GPU_FOP_ALIAS16 || h->op == GPU_FOP_ALIAS16_END) {
                 const gpu_fop_alias16* a = (const gpu_fop_alias16*)h;
                 size_t l = strlen(s);
