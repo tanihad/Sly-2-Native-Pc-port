@@ -247,7 +247,7 @@ vertices in the hubs (modern-renderer-re.md section 3).
 | particles (376109499, VU-simulated "blips") | 2-10 entries, heavy fill in fire/rain | **R6** | exact | port the VU physics to a compute pass; instanced quads | fire / rain scenes are GPU-bound today |
 | shadow volumes + G-channel stencil + CT16 shuffles + T8H darken | 6-41 entries | **R7** | exact (reads R2's depth and alpha) | real stencil volumes + a darken pass; no channel shuffles | removes ALIAS16 work |
 | motion blur (16 sprites, FIX 48) | full screen | R7 | exact | one full-screen blend | |
-| 2D, HUD, text, menus (prio 21) | 12-34 entries | R7 (gameplay HUD), Windows: may stay exact | exact | widescreen anchors from the existing hints | cheap on the exact path |
+| 2D, HUD, text, menus (prio 21) | 12-34 entries | R7 (gameplay HUD): decided to stay exact (R7 part 3) | exact | widescreen anchors from the existing hints | draws 0.06-0.26 ms; the fixed Z / alpha clears were the cost (lazy Z clears) |
 | Binocucom RTT, ep2 photo copy, portraits (class 8/9) | special scenes | R7 or never (Windows) | exact | render-to-texture passes | required before Linux/macOS |
 | FMV | - | already native | - | - | |
 
@@ -1012,6 +1012,12 @@ covers; the owner confirms after testing the dist build. Effort is in agent-days
   by another GPU load and gave -0.03 / -0.14 / -0.41 ms, not clearly more, with more blast radius (every frame's world Z).
   A bbox-limited colour / Z clear (experiment, wrong pictures: the HUD's clears limited to 120 x 60) confirmed that the
   clears' cost is area: "clear" 0.60 -> 0.27 ms (two runs at once, inflated).
+- **Gates**: run_tests 16/16; unit suites 25 of 26 (window: 2 fullscreen checks, F11 / Alt+Enter, fail with synthetic
+  input while the PC is in use - nothing near this change); gpu_diff_all mixed S = 1 28/28; m9_exact S1 + S3 -Game identical;
+  pc_text_boot release + debug; debug + release builds; package.py; r2_sweep ab + hc 22/22 (ep7 hc and m8_boss hc failed
+  once in the full sweep - blobs / no pictures - and pass on a re-run).
+- **Chaos benchmark** (3x, base a3a5752 vs this branch, interleaved, 1 run): not usable - the owner's games loaded the GPU
+  during the base runs (m1 base GPU 7.2 ms vs 2.6 ms, ep1 base 3.7 vs new 5.0): the in-run A/B above is the number.
 - **Diagnostics added**: `PS2_R2_DROPCLS` follows the A phases of `PS2_GPU_AB_EE=1|2`; the GPU profile's "hud" column
   and the "[HUD]" tag in `PS2_GPU_PROF_SEQ` lines; `PS2_GPU_OPDUMP` prints a clear's rect / value / mask / HUD flag.
 - **Left**: the alpha-plane clear (mask 8, a compute RMW over the whole target, ~0.045 ms: a write-masked quad would
