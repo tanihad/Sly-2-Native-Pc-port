@@ -2,15 +2,7 @@
 
 ## Resume here (read first in a new session)
 
-**PAUSED by the owner (2026-10-29).** Nothing running. Two branches, both checkpointed and pushed:
-- **next/r2-hud** (ed2e6ff, Sonnet agent): native gameplay HUD. It was in its final gates (about to run gpu_diff_all), so it is nearly done.
-- **next/r2-m8** (e595a10, strong-model agent): free scale + MSAA + PS2-mode preset. It was mid-implementation.
-
-On "continue":
-1. Resume both agents (SendMessage, or new agents reading notes/wip/r2-hud.md and r2-m8.md).
-2. Merge the HUD, then tell the R8 agent to merge main.
-3. Merge R8, package, push.
-4. Then the HOLD POINT below.
+**2026-10-30: R7 part 3 (HUD) MERGED (8a19e4d), dist 0.1.986.** Profiling showed a native HUD would not pay off: its draws cost about 0.1 ms; the overhead is in clears. So the branch makes partial Z clears lazy instead (-0.2..-0.3 ms GPU per frame). The window suite's F11/Alt+Enter checks fail on main too; that is environmental (the owner's focused apps), not a regression. Running: R8 (worktree r2-m8); it has been told to merge main. After R8 comes the HOLD POINT below.
 
 **2026-10-29: R5 part 2 MERGED (a3a5752), dist 0.1.977:** guard-band meshes native through the game's own VU clipper on a private VU1 (r2_clip.c). ep1 3x 285->325 fps (1% low 127->243), m2 190->228. Native vertex coverage: ep1 91%, ep3 95%, ep5 94%, m1 89%, m2 74%. Left (each <=1%): billboards, lit sub-batch variants, 0x0E30/0x16B0/0x13F0, sky/warps; 4x chaos not measured (owner was gaming). Running: native gameplay HUD (worktree r2-hud, Sonnet). Then R8 (D6 decided: free scale + MSAA, PS2 mode = preset), then the hold point below.
 
