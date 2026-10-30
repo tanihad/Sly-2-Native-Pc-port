@@ -1014,6 +1014,7 @@ static void exec_download(const gpu_fop_blocks* o) {
     XC.downloads++;
 }
 
+static int ab_off(void);
 static void exec_clear(const gpu_fop_clear* o) {
     xtarget* t = tgt(o->target);
     if (!t || (o->zclear != 0) != (t->depth != 0)) return;
@@ -1047,6 +1048,26 @@ static void exec_clear(const gpu_fop_clear* o) {
         }
     }
     if (nohw) fullrect = 0;
+    /* (r2-hud) a tile-aligned clear of part of a depth target in a mixed frame (the gameplay HUD's Z16 target: 512 x 224 of
+     * its 512 x 256 rows, twice a frame, ~11 MB each at 3x): no bandwidth-bound passes over the rect - the DSV is cleared
+     * whole (a fast clear), the tiles outside the rect take the zpatch (their truth) back through ensure_dsv when a draw
+     * needs them, and the rect's tiles are "DSV newer" (the cleared value, < 2^20: enc / dec are exact), converted into
+     * zpatch only over the bbox of a ROV draw / download that needs it. PS2_GPU_LAZYZ=0 off (and in the A phases of PS2_GPU_AB). */
+    static int lazy_env = -1, lazy_ab;
+    if (lazy_env < 0) {
+        const char* e = getenv("PS2_GPU_LAZYZ"), *a = getenv("PS2_GPU_AB_EE");
+        lazy_env = !(e && *e == '0');
+        lazy_ab = a && *a == '2';        /* (PS2_GPU_AB_EE=2: only the EE-side / lazy-clear features follow the A / B phases) */
+    }
+    extern volatile int gpu_ab_phase;
+    int lazyz = lazy_env && !nohw && !full && o->zclear && X.mixed && t->zts && t->kind != XK_Z24 && !ab_off() &&
+                !(lazy_ab && gpu_ab_phase == 0) && x1 > 0 && y1 > 0 && (x1 & 15) == 0 && (y1 & 15) == 0 &&
+                ((uint32_t)o->value & (zbits_of(t) == 1 ? 0xFFFFu : zbits_of(t) == 2 ? 0xFFFFFFu : 0xFFFFFFFFu)) < GPU_ZE_ONE;
+    if (lazyz) {
+        ensure_zp_all(t);                /* (the tiles outside the rect: zpatch is their truth before the DSV is wiped) */
+        if (!XC.lazyz++) gpu_log("lazy Z clears: first on target %u (kind %d, %d x %d of %d x %d)", o->target, (int)t->kind, x1, y1, t->nat_w, t->nat_h);
+        hw = 1;                          /* (zpatch inside the rect is not written: stale, the tiles are DSV newer) */
+    } else
     if (!t->depth && (o->mask & 15) == 15 && X.clearview && t->rtv && !nohw) {
         D3D11_RECT rc = { 0, 0, x1 * t->kx < t->w ? x1 * t->kx : t->w, y1 * t->ky < t->h ? y1 * t->ky : t->h };
         float col[4] = { (float)(o->value & 255) / 255.0f, (float)((o->value >> 8) & 255) / 255.0f,
@@ -1070,7 +1091,12 @@ static void exec_clear(const gpu_fop_clear* o) {
     }
     if (o->zclear && X.mixed && t->zts) {
         uint32_t zv = (uint32_t)o->value & (zbits_of(t) == 1 ? 0xFFFFu : zbits_of(t) == 2 ? 0xFFFFFFu : 0xFFFFFFFFu);
-        if (full) {                      /* (P1: enc(z), saturated at 1.0 - zpatch holds the value) */
+        if (lazyz) {
+            ID3D11DeviceContext_ClearDepthStencilView(gpu_rt.ctx, t->dsv, D3D11_CLEAR_DEPTH, gpu_z_encode(zv), 0);
+            int ra[4] = { 0, 0, t->zts_w, t->zts_h };
+            zt_set(t, ra, -1, ZT_ZP);        /* (outside the rect: the DSV is stale, zpatch is the truth) */
+            zt_set(t, r, -1, ZT_DSV);        /* (inside: the DSV holds the cleared value) */
+        } else if (full) {               /* (P1: enc(z), saturated at 1.0 - zpatch holds the value) */
             ID3D11DeviceContext_ClearDepthStencilView(gpu_rt.ctx, t->dsv, D3D11_CLEAR_DEPTH, gpu_z_encode(zv), 0);
         } else {
             int b[4] = { 0, 0, x1 - 1, y1 - 1 };
@@ -1189,6 +1215,10 @@ static struct {
     ID3D11Query* q[PR_MAXQ];
     ID3D11Query *sq[PR_MAXQ], *oq[PR_MAXQ];   /* (M9, PS2_GPU_PROF=2) pipeline statistics + occlusion per segment */
     uint8_t cat[PR_MAXQ];
+    /* (r2-hud) the ops of the gameplay HUD (draws kicked inside HUD_BEGIN / HUD_END, the clears of its scenes): their GPU
+     * time on top of the categories ("hud" in the prof lines) */
+    uint8_t hudf[PR_MAXQ], hudop;
+    double hud_ms, ab_hud[2];
     double ms[PR_N], total;
     uint64_t marks[PR_N];
     uint64_t ps_inv[PR_N], occl[PR_N], prims[PR_N];
@@ -1209,8 +1239,9 @@ static int ab_off(void) { return PR.ab > 0 && !PR.ab_b && !PR.ab_ee; }
 extern volatile int gpu_ab_phase;      /* (defined in gpu_front.c: tools link the frontend alone) */
 
 static void prof_mark(int cat) {
-    if (PR.on <= 0 || PR.n >= PR_MAXQ - 1 || (PR.n && cat == PR.cur && !PR.ops_on)) return;
+    if (PR.on <= 0 || PR.n >= PR_MAXQ - 1 || (PR.n && cat == PR.cur && !PR.ops_on && PR.hudop == PR.hudf[PR.n - 1])) return;
     PR.opos[PR.n] = PR.curpos;
+    PR.hudf[PR.n] = (uint8_t)PR.hudop;
     if (!PR.q[PR.n]) {
         D3D11_QUERY_DESC qt = { D3D11_QUERY_TIMESTAMP, 0 };
         if (FAILED(ID3D11Device_CreateQuery(gpu_rt.dev, &qt, &PR.q[PR.n]))) { PR.on = 0; return; }
@@ -1278,6 +1309,7 @@ static void prof_ops_report(const UINT64* ts, double freq) {
         double ms = (double)(ts[i + 1] - ts[i]) * 1000.0 / freq;
         char s[200];
         prof_op_sig(X.fd, PR.opos[i], PR.cat[i], s, sizeof s);
+        if (PR.hudf[i]) { size_t l = strlen(s); if (l + 6 < sizeof s) memcpy(s + l, " [HUD]", 7); }
         if (getenv("PS2_GPU_PROF_SEQ")) gpu_log("prof-seq %4d %7.3f ms @%u %s", i, ms, PR.opos[i], s);   /* (r2-m7b: in order) */
         int k;
         for (k = 0; k < na && strcmp(A[k].sig, s); k++) {}
@@ -1306,7 +1338,7 @@ static void prof_end(void) {
     while (ID3D11DeviceContext_GetData(gpu_rt.ctx, (ID3D11Asynchronous*)PR.dis, &dj, sizeof dj, 0) == S_FALSE) SwitchToThread();
     if (dj.Disjoint || !dj.Frequency) return;
     UINT64 prev = 0;
-    double f[PR_N] = { 0 }, ft = 0;
+    double f[PR_N] = { 0 }, ft = 0, fh = 0;
     uint64_t fi[PR_N] = { 0 }, fo[PR_N] = { 0 }, fp[PR_N] = { 0 };
     static UINT64 tsv[PR_MAXQ];
     for (int i = 0; i < PR.n; i++) {
@@ -1316,6 +1348,7 @@ static void prof_end(void) {
         if (i) {
             double ms = (double)(t - prev) * 1000.0 / (double)dj.Frequency;
             f[PR.cat[i - 1]] += ms;
+            if (PR.hudf[i - 1]) fh += ms;
             ft += ms;
         }
         prev = t;
@@ -1343,10 +1376,12 @@ static void prof_end(void) {
     if (ft > 50.0) return;               /* (loading frames: left out) */
     for (int c = 0; c < PR_N; c++) { PR.ms[c] += f[c]; PR.ps_inv[c] += fi[c]; PR.occl[c] += fo[c]; PR.prims[c] += fp[c]; }
     PR.total += ft;
+    PR.hud_ms += fh;
     if (PR.ab > 0 && PR.ab_skip > 0) PR.ab_skip--;   /* (r2-m5b) the frames after a switch: in flight / the EE's lag */
     else if (PR.ab > 0) {                /* (r2-m7b) per A / B phase */
         for (int c = 0; c < PR_N; c++) PR.ab_ms[PR.ab_b][c] += f[c];
         PR.ab_tot[PR.ab_b] += ft;
+        PR.ab_hud[PR.ab_b] += fh;
         PR.ab_n[PR.ab_b]++;
     }
     static int every = 0;                /* (r2-m1) PS2_GPU_PROF_EVERY=n: the line every n frames (short replays) */
@@ -1357,12 +1392,14 @@ static void prof_end(void) {
     for (int c = 0; c < PR_N && o < (int)sizeof line - 48; c++)
         if (PR.ms[c] > 0) o += snprintf(line + o, sizeof line - (size_t)o, " %s %.3f (%.0f)", pr_names[c], PR.ms[c] / PR.frames,
                                          (double)PR.marks[c] / PR.frames);
+    snprintf(line + o, sizeof line - (size_t)o, " | hud %.3f", PR.hud_ms / PR.frames);   /* (r2-hud) of the above, the HUD's ops */
     gpu_log("%s", line);
     for (int b = 0; PR.ab > 0 && b < 2; b++) {
         if (!PR.ab_n[b]) continue;
         o = snprintf(line, sizeof line, "prof-ab %c: %u frames, GPU ms per frame %.3f:", 'A' + b, PR.ab_n[b], PR.ab_tot[b] / PR.ab_n[b]);
         for (int c = 0; c < PR_N && o < (int)sizeof line - 48; c++)
             if (PR.ab_ms[b][c] > 0) o += snprintf(line + o, sizeof line - (size_t)o, " %s %.3f", pr_names[c], PR.ab_ms[b][c] / PR.ab_n[b]);
+        snprintf(line + o, sizeof line - (size_t)o, " | hud %.3f", PR.ab_hud[b] / PR.ab_n[b]);
         gpu_log("%s", line);
     }
     if (PR.on >= 2) {                    /* per frame: PS invocations (M), samples passing depth (M), primitives (k) */
@@ -1961,6 +1998,10 @@ static const uint8_t* td_prepass(const gpu_front_frame_data* fd) {
                 const gpu_fop_draw* d = (const gpu_fop_draw*)h;
                 size_t l = strlen(s);
                 snprintf(s + l, sizeof s - l, " tier %u n %u bb %d,%d-%d,%d split %u", d->tier, d->count, d->bbox[0], d->bbox[1], d->bbox[2], d->bbox[3], d->split);
+            } else if (h->op == GPU_FOP_CLEAR) {
+                const gpu_fop_clear* c = (const gpu_fop_clear*)h;
+                size_t l = strlen(s);
+                snprintf(s + l, sizeof s - l, " z %u value %08X mask %X x1 %d y1 %d hud %u", c->zclear, c->value, c->mask, c->x1, c->y1, c->hud);
             } else if (h->op == GPU_FOP_ALIAS16 || h->op == GPU_FOP_ALIAS16_END) {
                 const gpu_fop_alias16* a = (const gpu_fop_alias16*)h;
                 size_t l = strlen(s);
@@ -3178,7 +3219,7 @@ void gpu_exec_frame(const void* payload) {
     static int ab_init;
     if (!ab_init) {
         ab_init = 1; const char* e = getenv("PS2_GPU_AB"); PR.ab = e && atoi(e) > 0 ? atoi(e) : 0;   /* (r2-m7b) */
-        e = getenv("PS2_GPU_AB_EE"); PR.ab_ee = e && *e == '1';   /* (r2-m5b) */
+        e = getenv("PS2_GPU_AB_EE"); PR.ab_ee = e && (*e == '1' || *e == '2');   /* (r2-m5b; r2-hud: 2 = only the dropped render class follows the phases) */
     }
     if (PR.ab > 0) {
         int nb = (int)((XC.frames / (uint32_t)PR.ab) & 1);
@@ -3206,6 +3247,8 @@ void gpu_exec_frame(const void* payload) {
         if (!h->size) break;
         PR.curpos = (uint32_t)pos;
         X.curpos = (uint32_t)pos;
+        PR.hudop = (h->op == GPU_FOP_DRAW && (((const gpu_fop_draw*)h)->feat & GPU_DF_HUD)) ||
+                   (h->op == GPU_FOP_CLEAR && ((const gpu_fop_clear*)h)->hud);   /* (r2-hud, profiling) */
         if (h->op == GPU_FOP_ALIAS16) {     /* (r2-m7b) the shadow pipeline's tail as one pass */
             size_t nx;
             uint32_t ns;

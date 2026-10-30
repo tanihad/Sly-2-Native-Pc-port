@@ -707,8 +707,14 @@ void r2_cap_entry(ps2_ctx* ctx) {
     if (mode == R2_BRACKET) close_bracket(ctx, cls);
     {   /* (r2-m6, diagnostics) PS2_R2_DROPCLS=<mask>: drop the entries of these render classes (what do they cost) */
         static int dmask = -1;
-        if (dmask < 0) { const char* de = getenv("PS2_R2_DROPCLS"); dmask = de ? (int)strtol(de, NULL, 0) : 0; }
-        if (dmask && cls >= 0 && cls < 31 && (dmask >> cls & 1)) { ps2_w32(ctx, e + 8, 0); ps2_w32(ctx, e + 12, 0); return; }
+        static int drop_ab;                  /* PS2_GPU_AB_EE=1 or 2 (2: only this follows the phases) */
+        if (dmask < 0) {
+            const char* de = getenv("PS2_R2_DROPCLS"), *ae = getenv("PS2_GPU_AB_EE");
+            dmask = de ? (int)strtol(de, NULL, 0) : 0;
+            drop_ab = ae && (*ae == '1' || *ae == '2');
+        }
+        /* (r2-hud) with PS2_GPU_AB=<n> PS2_GPU_AB_EE=1 only in the A phases: the class's cost in one run */
+        if (dmask && cls >= 0 && cls < 31 && (dmask >> cls & 1) && (!drop_ab || gpu_ab_phase == 0)) { ps2_w32(ctx, e + 8, 0); ps2_w32(ctx, e + 12, 0); return; }
     }
     /* (r2-m6, R6) the particle class's span in the stream: R2H_PART 1 at its first entry (after the class switch's
      * packets: the particle program is loaded, everything before it is kicked), R2H_PART 0 at the next entry of another
