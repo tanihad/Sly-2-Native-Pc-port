@@ -184,7 +184,7 @@ static void build_choices(int id, choices* c) {
     char buf[64];
     switch (id) {
     case MENU_ROW_PRESET:
-        add(c, SETTINGS_PRESET_ORIGINAL, "Original");
+        add(c, SETTINGS_PRESET_ORIGINAL, "PS2");
         add(c, SETTINGS_PRESET_PERFORMANCE, "Performance");
         add(c, SETTINGS_PRESET_BALANCED, "Balanced");
         add(c, SETTINGS_PRESET_QUALITY, "Quality");
@@ -197,10 +197,32 @@ static void build_choices(int id, choices* c) {
         add(c, 1, "Modern");
         add(c, 0, "Reference (exact)");
         break;
+    case MENU_ROW_MSAA:                  /* (r2-m8) */
+        add(c, SETTINGS_MSAA_OFF, "Off");
+        add(c, SETTINGS_MSAA_2X, "2x MSAA");
+        add(c, SETTINGS_MSAA_4X, "4x MSAA");
+        add(c, SETTINGS_MSAA_8X, "8x MSAA");
+        break;
     case MENU_ROW_SCALE: {               /* (pc-polish) the render scale, relative to the output */
         static const int pcts[] = { 50, 67, 75, 100, 125, 150, 200 };
         int ow, oh;
         h_output(&ow, &oh);
+        if (ps2_settings.renderer_modern) {   /* (r2-m8, D6) Modern: a free percentage of the screen, in steps of 5 */
+            int cur = ps2_settings.render_scale, found = 0;
+            for (int p = 25; p <= 200; p += 5) {
+                if (cur != p && settings_rs_is_pct(cur) && cur > p - 5 && cur < p) add(c, cur, "%d%% (%d x %d)", cur, (ow * cur + 50) / 100, (oh * cur + 50) / 100);
+                add(c, p, "%d%% (%d x %d)", p, (ow * p + 50) / 100, (oh * p + 50) / 100);
+                found |= cur == p || (settings_rs_is_pct(cur) && cur > p - 5 && cur < p);
+            }
+            if (!found && settings_rs_is_pct(cur)) add(c, cur, "%d%% (%d x %d)", cur, (ow * cur + 50) / 100, (oh * cur + 50) / 100);
+            else if (!found && cur == SETTINGS_RS_AUTO) add(c, cur, "Auto (100%%)");
+            else if (!found) {               /* (an exact multiple: the integer grid, also in Modern) */
+                int w, h;
+                if (cur == SETTINGS_RS_ORIGINAL) add(c, cur, "Original PS2 (512 x 448)");
+                else { scale_pixels(cur, &w, &h); add(c, cur, "%dx grid (%d x %d)", cur, w, h); }
+            }
+            break;
+        }
         add(c, SETTINGS_RS_AUTO, "Auto (up to 100%%)");
         add(c, SETTINGS_RS_ORIGINAL, "Original PS2 (512 x 448)");
         int cur = ps2_settings.render_scale, found = cur == SETTINGS_RS_AUTO || cur == SETTINGS_RS_ORIGINAL;
@@ -377,6 +399,7 @@ static int row_value(int id) {
     case MENU_ROW_PRESET: return ps2_settings.preset;
     case MENU_ROW_RENDERER: return eff_renderer();
     case MENU_ROW_RMODE: return ps2_settings.renderer_modern;
+    case MENU_ROW_MSAA: return ps2_settings.msaa;
     case MENU_ROW_SCALE: return ps2_settings.render_scale;
     case MENU_ROW_RESOLUTION: return eff_mode() == SETTINGS_FULLSCREEN_EXCLUSIVE ? eff_res() : eff_winsize();
     case MENU_ROW_SPEAKERS: return ps2_settings.game_speakers;
@@ -412,6 +435,7 @@ static void row_set(int id, int v) {
     case MENU_ROW_PRESET: m_change("graphics", "preset", v); break;
     case MENU_ROW_RENDERER: stage(PEND_RENDERER, v); break;             /* (staged: Apply) */
     case MENU_ROW_RMODE: m_change("graphics", "renderer_mode", v); break;   /* (live: the next frame) */
+    case MENU_ROW_MSAA: m_change("graphics", "msaa", v); break;
     case MENU_ROW_SCALE: m_change("graphics", "render_scale", v); break;
     case MENU_ROW_RESOLUTION: stage(eff_mode() == SETTINGS_FULLSCREEN_EXCLUSIVE ? PEND_RES : PEND_WINSIZE, v); break;
     case MENU_ROW_SPEAKERS: m_change("audio", "speakers", v); break;
@@ -562,13 +586,14 @@ static void env_note(menu_row* r, const char* section, const char* key) {
 static const char* preset_desc(int p) {
     switch (p) {
     case SETTINGS_PRESET_ORIGINAL:
-        return "The PS2's look: the PS2's resolution (512 x 448), 4:3, the TV flicker filter and interlacing, PS2 outlines.";
+        return "PS2 mode: every pixel exactly as the PS2 drew it (Reference rendering on the PS2's pixel grid, as sharp as your "
+               "screen allows), 4:3, the TV flicker filter and interlacing, PS2 outlines.";
     case SETTINGS_PRESET_PERFORMANCE:
-        return "Render scale 50%, Modern look. For slower graphics cards.";
+        return "Modern rendering at 75% of your screen's resolution, no anti-aliasing. For slower graphics cards.";
     case SETTINGS_PRESET_BALANCED:
-        return "Render scale Auto: as sharp as your graphics card keeps up with, up to 100%. Modern look. The default.";
+        return "Modern rendering at your screen's resolution with 4x MSAA anti-aliasing. The default.";
     case SETTINGS_PRESET_QUALITY:
-        return "Render scale 100% (at least your screen's resolution), thin high-resolution outlines, Modern look. Needs a fast "
+        return "Modern rendering at your screen's resolution with 8x MSAA, thin high-resolution outlines. Needs a fast "
                "graphics card.";
     default:
         return "Your own combination of the options below. Choose a preset to set them all at once.";
@@ -602,7 +627,16 @@ static int build_rows(int page, menu_row* rows) {
         else if (getenv("PS2_R2") && *getenv("PS2_R2")) disable(last(rows, n), "Set by PS2_R2 (environment)");
         choice_row(rows, &n, MENU_ROW_SCALE, "Render scale", "");
         r = last(rows, n);
-        if (r) {                             /* what is drawn and what is shown, in pixels */
+        int modern_pct = ps2_settings.renderer_modern &&
+                         (ps2_settings.render_scale == SETTINGS_RS_AUTO || settings_rs_is_pct(ps2_settings.render_scale));
+        if (r && modern_pct) {               /* (r2-m8) Modern: a share of the screen's own pixels */
+            int ow, oh, p = settings_rs_is_pct(ps2_settings.render_scale) ? ps2_settings.render_scale : 100;
+            h_output(&ow, &oh);
+            snprintf(r->desc, sizeof r->desc,
+                     "How sharp the game is drawn, relative to your screen: 100%% draws exactly your screen's pixels; lower is "
+                     "faster and softer, higher is sharper and needs a faster graphics card. Rendering at %d x %d -> shown at "
+                     "%d x %d. Menus and loading screens keep the PS2's pixel grid.", (ow * p + 50) / 100, (oh * p + 50) / 100, ow, oh);
+        } else if (r) {                      /* what is drawn and what is shown, in pixels */
             int ow, oh, w, h, nn = gfx_scale();
             h_output(&ow, &oh);
             gfx_scale_info si;
@@ -617,6 +651,11 @@ static int build_rows(int page, menu_row* rows) {
         }
         if (!gpu) disable(r, gpu_only);
         env_note(r, "graphics", "render_scale");
+        choice_row(rows, &n, MENU_ROW_MSAA, "Anti-aliasing",
+                   "Multisampling (MSAA) of Modern rendering: smooth edges at little cost. 4x is a good balance; 8x is "
+                   "smoother and slower; Off is the fastest.");
+        if (!gpu) disable(last(rows, n), gpu_only);
+        else if (!modern_pct) disable(last(rows, n), "Modern rendering with a percentage render scale only");
         choice_row(rows, &n, MENU_ROW_SCALER, "Scaling filter",
                    "How the picture is scaled to your window. Automatic: sharp when shrinking (Lanczos), smooth when enlarging.");
         if (!gpu) disable(last(rows, n), gpu_only);

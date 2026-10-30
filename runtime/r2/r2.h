@@ -46,6 +46,10 @@ enum {
     R2H_PART = 0x29,       /* (r2-m6, R6) the particle class (render class 2, VU1 program 376109499) begins (arg 1) or ends
                               (arg 0); value = frame serial. Hybrid and bracket mode: the frontend draws the particles' exact
                               triangles in that span through the native particle pipeline (gpu_front.c "part") */
+    R2H_MARK = 0x2A,       /* (r2-m8, R8) a point of the frame: arg 1 = the 2D class (render class 5, prio 21: HUD, text) begins
+                              (its first entry, after the class switch's clears); value = frame serial. Hybrid mode only. The
+                              frontend emits GPU_FOP_MARK; the executor resolves a modern frame's picture there (HUD after the
+                              resolve, gpu_exec_mft.h) */
 };
 /* R2H_DRAW / R2H_BEGIN words, in order: [fade (R2D_FADE)] [world matrix, 16 words (unless R2D_IDENTITY)] [the mesh DMA
  * address | form << 31 (offline replays resolve the handle from a RAM dump with it)] */
@@ -77,7 +81,7 @@ typedef struct {
 #define R2_SLOTS 16u
 #define R2_SLOT_ENTS 4096u
 #define R2_SLOT_RUNS 1024u
-typedef struct {                 /* 96 bytes */
+typedef struct {                 /* 160 bytes */
     float m[16];                 /* world x clip (W x C, the VU's 0x0070 arithmetic) */
     float fade;                  /* VU 8.x */
     uint32_t handle;             /* mesh */
@@ -85,6 +89,7 @@ typedef struct {                 /* 96 bytes */
     uint32_t flags;              /* R2E_* */
     uint32_t xoff, xn;           /* (r2-m3) lit / skinned: the entry's extra qwords in the slot's pool (r2_lit_block) */
     uint32_t pad[2];
+    float prev[16];              /* (r2-m8) the same object's W x C of the previous frame (motion vectors; = m when unknown) */
 } r2_slot_ent;
 #define R2_SLOT_XQ 32768u        /* (r2-m3) extra qwords per slot (light blocks, bone palettes) */
 enum { R2E_CLIP = 1,             /* the mesh's bounds cross the VU's guard band: R2 draws its triangles inside it (r2_gs_clip) */

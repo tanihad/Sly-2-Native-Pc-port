@@ -257,7 +257,8 @@ static void test_settings(void) {
     /* [graphics] renderer = gpu (default since M11) | software, pacing = vsync (default) | vrr | display (M6) */
     settings_defaults(&s);
     CHECK(s.renderer_gpu == 1 && s.pacing == SETTINGS_PACING_VSYNC, "renderer / pacing defaults");
-    CHECK(strstr(tmpl, "\nrenderer = gpu\n") && strstr(tmpl, "\npacing = auto\n") && strstr(tmpl, "\nvsync = on\n") && strstr(tmpl, "\nrender_scale = auto\n") &&
+    CHECK(strstr(tmpl, "\nrenderer = gpu\n") && strstr(tmpl, "\npacing = auto\n") && strstr(tmpl, "\nvsync = on\n") && strstr(tmpl, "\nrender_scale = 100%\n") &&
+          strstr(tmpl, "\nmsaa = 4x\n") && strstr(tmpl, "\nrenderer_mode = modern\n") &&   /* (r2-m8: Balanced) */
           !strstr(tmpl, "internal_scale =") && strstr(tmpl, "\nmode = borderless\n"), "template writes renderer / pacing / render_scale / mode");
     warn_count = 0;
     n = settings_parse("[graphics]\nrenderer = GPU\npacing = vrr\n", &s, count_warn, NULL);

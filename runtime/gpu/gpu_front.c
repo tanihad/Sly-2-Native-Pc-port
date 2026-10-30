@@ -862,7 +862,10 @@ static uint32_t emit_vertex(const gs_vtx* v, const gs_env_view* ev, uint32_t sta
     o->fog_state = (uint32_t)(v->f & 0xFF) | state << 8;
     if (ev->P->fst) { o->s = (float)v->u; o->t = (float)v->v; o->q = 1.0f; }
     else { o->s = v->s; o->t = v->t; o->q = v->q; }
-    o->pad = nb > 0 ? 0xFFFFFFFFu : v->z;    /* (P1) the vertex Z: the early-depth bound of FF triangles (vs_ff_tri) */
+    /* (P1) the vertex Z: the early-depth bound of FF triangles (vs_ff_tri). (r2-m8) No bound: the Z with bit 31 set (any
+     * value >= 2^20 is the bound 1.0, int64.hlsli gs_z_bound_vtx), so every vertex carries its Z for the modern frame's
+     * hardware-interpolated depth (gpu_exec_mft.h; FF-tier Z is below 2^20) */
+    o->pad = nb > 0 ? v->z | 0x80000000u : v->z;
     uint32_t idx = (uint32_t)(A_vtx.n / sizeof *o) - 1;
     vcache[vcache_pos] = *v; vcache_idx[vcache_pos] = idx; vcache_state[vcache_pos] = state; vcache_nb[vcache_pos] = (uint8_t)(nb > 0);
     vcache_pos = (vcache_pos + 1) % 3;

@@ -15,6 +15,7 @@ extern void gpu_hw_set_auto_scale(int max) __attribute__((weak));
 extern int gpu_hw_auto_scale(void) __attribute__((weak));
 extern void gpu_hw_scale_status(gpu_hw_scale_info* s) __attribute__((weak));   /* (pc-pacing) */
 extern void gpu_present_set_mode(int mode, int vsync) __attribute__((weak));
+extern void gpu_mft_config(int on, int pct, int msaa) __attribute__((weak));   /* (r2-m8) gpu_exec_mft.h */
 extern void gpu_hw_pacing_changed(int pacing) __attribute__((weak));
 void (*gfx_output_size)(int* w, int* h);  /* set by window.c (window_client_size) */
 
@@ -124,6 +125,12 @@ void gfx_apply(void) {
     if (gpu_hw_set_auto_scale) gpu_hw_set_auto_scale(is_auto ? auto_max() : 0);
     auto_was_on = is_auto;
     if (gpu_hw_set_graphics) gpu_hw_set_graphics(scale, bits);
+    {   /* (r2-m8, R8) modern frames: Modern with a percentage (or auto) render scale draws at that share of the screen with
+         * MSAA; an exact multiple (2x..8x, original, PS2_GS_SCALE) keeps the integer grid */
+        int rs = ps2_settings.render_scale;
+        int on = ps2_settings.renderer_modern && !env_scale() && (rs == SETTINGS_RS_AUTO || settings_rs_is_pct(rs));
+        if (gpu_mft_config) gpu_mft_config(on, settings_rs_is_pct(rs) ? rs : 100, settings_msaa_samples(ps2_settings.msaa));
+    }
     gfx_apply_pacing();
     if (scale != logged_scale || bits != logged_bits || off != logged_blur || is_auto != logged_auto ||
         ps2_settings.preset != logged_preset) {

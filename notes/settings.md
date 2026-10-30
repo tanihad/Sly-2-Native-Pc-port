@@ -120,20 +120,38 @@ maximized = off
 
 ### Presets (graphics.preset; runtime/settings.c settings_apply_preset / settings_detect_preset)
 
-| preset | render_scale | outlines | filters | motion_blur / flicker_filter / interlacing | scaler | aspect |
-|---|---|---|---|---|---|---|
-| **original** | original (1x) | ps2 | faithful | preset (all on: as a PS2 on a TV) | auto | 4:3 |
-| **performance** | 50% (2x at 1080p / 1440p) | ps2 | modern | preset | auto | kept |
-| **balanced** (default) | auto (up to 100%) | ps2 | modern | preset | auto | kept |
-| **quality** | 100% (4x at 1440p) | thin | modern | preset | auto | kept |
-| **custom** | anything else | | | | | |
+(r2-m8, owner decision D6) The rendering mode is part of the presets. "PS2 mode" is the Original preset, shown as
+**PS2** in the menu (`preset = original`, also `ps2`):
 
-(Before pc-polish: performance = auto up to 2x, balanced = auto up to 3x, quality = native. Balanced's auto now reaches
-4x at 1440p when the GPU has room; the governor keeps 3x on the owner's RTX 4060 Ti in the heaviest hubs.)
+| preset | renderer_mode | render_scale | msaa | outlines | filters | motion_blur / flicker_filter / interlacing | scaler | aspect |
+|---|---|---|---|---|---|---|---|---|
+| **original** ("PS2") | reference | auto (integer grid, up to 100%) | (kept) | ps2 | faithful | preset (all on: as a PS2 on a TV) | auto | 4:3 |
+| **performance** | modern | 75% | off | ps2 | modern | preset | auto | kept |
+| **balanced** (default) | modern | 100% (the output's own pixels) | 4x | ps2 | modern | preset | auto | kept |
+| **quality** | modern | 100% | 8x | thin | modern | preset | auto | kept |
+| **custom** | anything else | | | | | | | |
 
-The renderer is not part of a preset. Choosing a modern preset in the menu while the aspect is the 4:3 that Original
-set returns to 16:9. Detection: a set of options is the preset whose values it has (aspect only matters for Original,
-which needs 4:3); anything else is custom.
+(Before r2-m8: original = 1x, performance = 50%, balanced = auto, quality = 100% + thin, the renderer mode was not in a
+preset. Before pc-polish: performance = auto up to 2x, balanced = auto up to 3x, quality = native.) Why Balanced = 100% +
+4x: modern frames are drawn at the screen's own pixels (no resampling, sharper than the 3x grid shrunk to 1440p) and 4x
+MSAA gives edges about as smooth as the 3x grid's supersampling for roughly the GPU time of the 3x grid
+(notes/modern-renderer.md "R8 as built").
+
+Choosing a modern preset in the menu while the aspect is the 4:3 that Original set returns to 16:9. Detection: a set
+of options is the preset whose values it has (aspect only matters for Original, which needs 4:3; msaa does not matter
+for Original); anything else is custom.
+
+`graphics.msaa` = off | 2x | 4x (default) | 8x (r2-m8, live, gpu renderer): multisampling of modern frames. **Modern
+frames** (R8) are drawn when renderer_mode = modern and render_scale is a percentage or auto (auto = 100% there): the 3D
+at that share of the output's resolution with MSAA (alpha-to-coverage for cut-outs), the HUD and 2D after the resolve at
+the output's resolution (gfx.c -> gpu_mft_config). An exact multiple (original, 2x..8x) or `PS2_GS_SCALE` keeps the
+integer grid in modern mode too (the gates use that); menus, loading screens and other frames the planner can't take
+stay on the grid frame by frame. Menu: Graphics > Render scale is a 25%..200% slider (step 5) in Modern; MSAA row
+(Off / 2x / 4x / 8x), disabled in Reference. Environment (tests; win over the file): `PS2_MFT=0|1` (modern frames off /
+on), `PS2_MFT_SCALE=<%>`, `PS2_MFT_MSAA=1|2|4|8`, `PS2_MFT_MV=1` (motion vectors), `PS2_MFT_MV_VIEW=1` (shown over the
+picture), `PS2_MFT_LOG=<n>` (why frames stay on the grid), `PS2_MFT_NOROV=1` (frames with ROV-tier draws stay on the
+grid), `PS2_R2_MV=0` (no previous matrices on the EE). With `PS2_R2_STATS=1` a line `mft: ... modern frames, exact
+(reasons), ...` every 300 VBlanks.
 
 `[controls]` (bindings, vibration, dead zones, camera inversion, light bar) belongs to runtime/input.c:
 settings.c accepts its keys without parsing them, and input.c reads the section with
