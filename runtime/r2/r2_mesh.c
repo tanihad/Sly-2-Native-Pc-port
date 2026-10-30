@@ -634,8 +634,8 @@ static int interpret(dec* d) {
         switch (cmd) {
         case 0x00: break;                                        /* NOP */
         case 0x01: d->cycle = imm; d->vset |= R2_VIF_CYCLE; break;   /* STCYCL */
-        case 0x02: d->ofst = imm & 0x3FF; d->dbf = 0; d->tops = d->base; d->ofs_seen = 1; break;   /* OFFSET */
-        case 0x03: d->base = imm & 0x3FF; break;                 /* BASE */
+        case 0x02: d->ofst = imm & 0x3FF; d->dbf = 0; d->tops = d->base; d->ofs_seen = 1; d->vset |= R2_VIF_OFST; break;   /* OFFSET */
+        case 0x03: d->base = imm & 0x3FF; d->vset |= R2_VIF_BASE; break;   /* BASE */
         case 0x04: break;                                        /* ITOP */
         case 0x05: d->mode = imm & 3; d->vset |= R2_VIF_MODE; break;   /* STMOD */
         case 0x06: break;                                        /* MSKPATH3 */
@@ -693,6 +693,7 @@ int r2_mesh_decode(const uint8_t* ram, uint32_t addr, int form, r2_mesh** out) {
     m->form = form;
     m->flips = d->dbf;
     m->vif_set = d->vset; m->vif_cycle = d->cycle; m->vif_mode = d->mode; m->vif_mask = d->mask;
+    m->vif_base = d->base; m->vif_ofst = d->ofst;   /* (R2_VIF_OFST: flips counts from the chain's last OFFSET, which sets DBF 0) */
     memcpy(m->vif_row, d->row, 16); memcpy(m->vif_col, d->col, 16);
     if (!(m->src = src_make(d))) { free(m); free(d->vtx); free(d->idx); free(d->b); free(d->w); free(d->seg); free(d); return R2M_SIZE; }
     m->has_w = d->w_fixed == 1;

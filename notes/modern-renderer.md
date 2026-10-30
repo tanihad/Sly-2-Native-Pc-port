@@ -1095,15 +1095,34 @@ the frontend and the exact path are unchanged, so Reference, `PS2_GS_SCALE` runs
 - **What was measured** (3x / 4x, 60 / 120 fps, walking and idle, lamp and searchlight scenes; notes/wip/r2-flicker.md):
   - Bracket replays exact vs hybrid (fixed stream, 500 VBlanks with searchlight + explosion): no temporal outlier; the GPU
     feature passes (svol, shfuse, npost, texdec, lazy Z, particles) are exact on a fixed stream.
-  - **Sly's lamp shadow on the ledge (ep1 start, idle, 120 fps) is missing in hybrid frames and present in Exact**, also
-    with PS2_R2_FX=0, PS2_GPU_LAZYZ=0, PS2_R2_FANS=0 / GCLEAN=0, PS2_GFX_ASYNC=0, any R2 FBA / alpha-write / Z-bias
-    override; present with PS2_R2_KINDS=props (world entries exact). The shadow-volume draw differs (4347 vs 2250
-    vertices, other bbox): the *volumes* the exact path draws change when the world is native, so it is EE / VU-side
-    state that dropping the world's static packets leaves (not the receivers' Z or alpha). Restoring the render list's
-    zeroed CALL words after the chain is built, and owing VIF1 double-buffer flips for dropped meshes (m->flips is never
-    used for meshes, only for outlines), did not bring it back, nor did restoring the VIF1 registers (STCYCL / STMOD / STMASK / STROW / STCOL) a dropped chain sets. Entries switching native / exact between frames then
-    switch the shadow: the "shadows flicker". Open; next: trace the shadow class's VU1 program inputs (what it reads that a
-    world static packet uploads), e.g. VU memory dumps after the world class in exact vs hybrid frames.
+  - **Sly's lamp shadow on the ledge (ep1 start, idle, 120 fps) was missing in hybrid frames** (present in Exact and with
+    PS2_R2_KINDS=props; no GPU feature switch, Z bias or alpha override changed it). The shadow-volume draw itself differed
+    (4347 vs 2250 vertices). **Root cause** (found with VU1 snapshots before every run of the shadow program 188054619,
+    exact vs hybrid, and a read / write lane tracker over VU1 data): VIF1's registers persist across chains, and the
+    shadow-volume class unpacks its per-vertex flags with a *masked* UNPACK under the **STMASK 3F3F3F3F the world's
+    chains leave** (only W written, XYZ kept). In hybrid frames the world's chains are dropped, so the class met the
+    mask a character chain left (50505050: X / Y data, Z / W row) and built wrong volumes. Second, every MSCAL flips VIF1's
+    double buffer: an all-exact frame reaches the class with the same parity (DBF 0) every frame, hybrid frames with a
+    parity that depended on which entries were native. **Fix** (r2_capture.c owe_vif / flush_vif / owe_flips_class,
+    r2_mesh.c): the mesh decoder records the VIF registers each chain writes (STCYCL / STMOD / STMASK / STROW / STCOL /
+    BASE / OFFSET, end values) and its MSCAL count mod 2 (from its last OFFSET). Native meshes owe them: the registers
+    go into one small VIF packet before the next exact chain of the same class (with the GS state epilogue; dropped when
+    a class switch's packets already came between). The flips are *not* paid inside the class - the main program's next
+    exact chain reads the "other" buffer the last exact chain filled, so there the parity must stay as if the native
+    chains were absent (paying them there broke ep2's hub) - but at the class switch: before it when the native run ends
+    at it (MSCAL 0x0000, the main program's [E] NOP), else at the next class's first entry (main classes 0 / 11: MSCAL
+    0x0000; the shadow classes 6 / 7: MSCAL 0x1A90, an [E] NOP of 188054619). From there on the game's chains read data
+    across classes by the parity (the shadow volumes read the caster's data its class-11 chain left). Verified: the class
+    starts with the exact frame's VIF state, the volume draw matches (3396 vs 3369 vertices), with PS2_R2_ALT the modern
+    and exact frames show the same shadow on the grid (3x / 4x), the shadow shows on MFT 100% MSAA 4x, hc ep1 / ep2 pass.
+    PS2_R2_VIFSTATE=<bits> (1 flips, 2 cycle, 4 mode, 8 mask, 16 row, 32 col, 64 base, 128 offset; 0: off) for diagnostics.
+  - Left: at the screen's bottom edge one overlapping shadow polygon still differs between modern and exact frames
+    (~600 px at 3x in the ledge view). The class's VIF / VU registers now match; it reads a few stale buffer lanes the
+    dropped world chains leave (pipelined reads past its own data), which the native path cannot reproduce cheaply.
+  - Diagnostics: PS2_VU_SNAP=<vblank> PS2_VU_SNAP_DIR=<dir> [PS2_VU_SNAP_NAME=<unit>, default 188054619]
+    [PS2_VU_SNAP_COUNT=n]: VU registers, VIF1 registers and data memory before each run of that unit (vu.c vu_snap);
+    with PS2_VU_SNAP_TRACK=1 and PS2_VU_INTERP=1 also lmap_*.bin per class: the data lanes it read before anything wrote
+    them (vu_exec.c / vif.c tracker).
   - PS2_R2_ALT: a thin bright sliver along the searchlight volume's edge alternates (brighter in one mode); the clipper's
     fans add ~50 persistently alternating pixels on a walk (PS2_R2_FANS=0: 5).
   - A full-height 1-pixel vertical line (3x: raw column ~860) blinks for one picture during Sly's pole jump on the ledge

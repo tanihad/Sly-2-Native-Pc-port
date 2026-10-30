@@ -162,13 +162,13 @@ void r2_src_free(r2_src* s);
 uint64_t r2_mesh_hash(const uint8_t* ram, uint32_t addr);   /* (diagnostics) m->hash of the chain at addr now */
 extern uint32_t r2_hash_bytes;                               /* the bytes it walked */
 
-enum { R2_VIF_CYCLE = 1, R2_VIF_MODE = 2, R2_VIF_MASK = 4, R2_VIF_ROW = 8, R2_VIF_COL = 16 };
+enum { R2_VIF_CYCLE = 1, R2_VIF_MODE = 2, R2_VIF_MASK = 4, R2_VIF_ROW = 8, R2_VIF_COL = 16, R2_VIF_BASE = 32, R2_VIF_OFST = 64 };
 typedef struct r2_mesh {
     uint32_t handle;             /* gen << 20 | index */
     r2_src* src;                 /* (r2-m5) its source bytes */
     uint32_t flips;              /* (r2-m5) VIF1 double-buffer flips of the chain (its MSCALs) mod 2 */
     uint32_t vif_set;            /* (r2-flicker) VIF1 registers the chain writes (R2_VIF_*) and their values at its end */
-    uint32_t vif_cycle, vif_mode, vif_mask, vif_row[4], vif_col[4];
+    uint32_t vif_cycle, vif_mode, vif_mask, vif_row[4], vif_col[4], vif_base, vif_ofst;
     uint32_t addr, bytes;        /* the DMA chain decoded, the bytes it reads */
     uint64_t hash;               /* of those bytes */
     int form;                    /* 0: whole static packet (header inside), 1: mesh DMA (header from the entry) */

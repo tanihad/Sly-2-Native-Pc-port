@@ -187,8 +187,8 @@ static void upk_decode(const vif_state* v, const uint8_t* p, uint32_t d[4]) {
     }
 }
 
-extern int vu1_trk;                    /* (r2-flicker, diagnostics: vu_exec.c) lanes written into VU1 data */
-extern uint8_t vu1_trk_w[1024];
+__attribute__((weak)) int vu1_trk;      /* (r2-flicker, diagnostics: vu_exec.c defines them) lanes written into VU1 data */
+__attribute__((weak)) uint8_t vu1_trk_w[1024];
 static inline void trk_vif(const vif_state* v, uint32_t addr, uint32_t m) {
     if (!vu1_trk || v->id != 1) return;
     uint8_t l = 0;

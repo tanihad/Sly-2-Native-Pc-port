@@ -290,7 +290,9 @@ static void vrec_end(vu_state* st, uint32_t pairs) {
  * before each of the first n (default 40) VU1 runs of the recompiled unit (default 188054619, the shadow volumes) from
  * VBlank <vblank> on, the VU state
  * (vi, vf, acc, I/Q/P, top/itop), VIF1's registers and VU1 data memory into <dir>\snap_<vblank>_<n>_<addr>.bin */
-void vif_debug_regs(int vif, uint32_t out[18]);
+__attribute__((weak)) void vif_debug_regs(int vif, uint32_t out[18]) { (void)vif; memset(out, 0, 72); }   /* (vif.c's when linked) */
+__attribute__((weak)) int vu1_trk;
+__attribute__((weak)) uint8_t vu1_trk_w[1024], vu1_trk_r[1024];
 static void vu_snap(vu_state* st, uint32_t addr_dw) {
     static int init, left;
     static uint32_t from, seq;
@@ -314,8 +316,6 @@ static void vu_snap(vu_state* st, uint32_t addr_dw) {
      * lanes the unit reads before anything (VIF or VU) wrote them: lmap_<n>.bin (1024 bytes, lane bits) */
     static int track = -1;
     if (track < 0) { const char* e = getenv("PS2_VU_SNAP_TRACK"); track = e && *e == '1'; }
-    extern int vu1_trk;
-    extern uint8_t vu1_trk_w[1024], vu1_trk_r[1024];
     if (track && vu1_trk && !mine) {
         char lp[400];
         snprintf(lp, sizeof lp, "%s\\lmap_%06u_%03u.bin", dir, ps2_vblank_count(), seq);
