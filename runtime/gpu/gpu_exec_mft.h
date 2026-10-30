@@ -828,6 +828,7 @@ static void mft_rov(const gpu_front_frame_data* fd, const gpu_fop_draw* d, uint3
         ID3D11DepthStencilView* dsv = NULL;
         int datm = (s->test >> 15) & 1;
         if (a.date) {                    /* the destination's alpha bit 7 into the stencil, over the draw's box */
+            if ((has_z && !mft_need(d->zt, ph ? MT_PIC : MT_MS)) || !mft_need(d->ct, ph ? MT_PIC : MT_MS)) { p0 = p1; continue; }
             dsv = has_z ? (ph ? MT[d->zt].pdsv : MT[d->zt].dsv) : mft_sds(ph, ph ? c->pw : c->w, ph ? c->ph : c->h, ph ? 1 : c->n);
             if (!dsv) { p0 = p1; continue; }
             int pc = PR.cur;
@@ -879,7 +880,22 @@ static void mft_rov(const gpu_front_frame_data* fd, const gpu_fop_draw* d, uint3
 /* a draw on display targets MFT can run: 0 no (why), 1 yes */
 static int mft_draw_ok(const gpu_front_frame_data* fd, const gpu_fop_draw* d, int phase_b, int* why) {
     if (d->tier == GPU_TIER_ROV) {       /* (approximated: mft_rov) */
-        if ((d->feat & GPU_DF_SVOL) || d->cls >= GPU_PC_N) { *why = MW_TIER; return 0; }   /* (volumes: in a shadow sequence only) */
+        static int norov = -1;           /* (diagnostics) PS2_MFT_NOROV=1: frames with ROV draws stay exact */
+        if (norov < 0) { const char* e = getenv("PS2_MFT_NOROV"); norov = e && *e == '1'; }
+        if (norov || (d->feat & GPU_DF_SVOL) || d->cls >= GPU_PC_N) { *why = MW_TIER; return 0; }   /* (volumes: in a shadow sequence only) */
+        if (getenv("PS2_MFT_LOG")) {     /* (diagnostics) the first primitive's state of each distinct ROV draw */
+            static uint32_t seen[64];
+            static int ns;
+            const gpu_staterec* s0 = mft_prim_state(fd, d, 0);
+            uint32_t k = s0 ? s0->flags * 31u + s0->test * 17u + s0->alpha * 7u + s0->fmask + (uint32_t)d->cls : 0;
+            int found = 0;
+            for (int i = 0; i < ns; i++) found |= seen[i] == k;
+            if (!found && ns < 64 && s0) {
+                seen[ns++] = k;
+                gpu_log("mft: ROV draw cls %u n %u bb %d,%d-%d,%d: flags %X test %X alpha %X fmask %08X zinfo %X", d->cls, d->count,
+                        d->bbox[0], d->bbox[1], d->bbox[2], d->bbox[3], s0->flags, s0->test, s0->alpha, s0->fmask, s0->zinfo);
+            }
+        }
         if ((d->feat & (GPU_DF_VIEW | GPU_DF_HIRES)) || (d->tex && tex_kind(d->ps_key) >= TK_VIEW_C32)) { *why = MW_VIEW; return 0; }
         if ((d->ct && !mft_disp(d->ct)) || (d->zt && !mft_disp(d->zt))) { *why = MW_TARGET; return 0; }
         if (!mft_rov_ok(fd, d, phase_b)) { *why = MW_TIER; return 0; }
