@@ -32,7 +32,16 @@
 // thread for up to 13 ms when the GPU was the bottleneck): the segment's own values are a record in fdata (r2_seg)
 cbuffer r2_static : register(b1) {
     float4 r2_misc;                      // dual-source bias (gs.hlsl ps_ff), Z bias (debugging), -, asuint: PS2_R2_DBG
+    float4 r2_mft;                       // (r2-m8, R2_MFT) modern frame targets: sx, sy (target pixels per GS pixel), samples
 };
+#ifndef R2_MFT
+#define R2_MFT 0                         // (r2-m8, R8) the modern frame's surfaces (gpu_exec_mft.h): d3d = (GS + 0.5) * s,
+                                         // the rasterized Z (GS Z / 2^20 at the vertices; no SV_Depth: MSAA keeps per-sample depth)
+#endif
+#ifndef R2_A2C
+#define R2_A2C 0                         // (r2-m8) MSAA: pass-A cut-outs (alpha test GEQUAL / GREATER, failing fragments
+                                         // discarded) as coverage instead of a discard (alpha-to-coverage through SV_Coverage)
+#endif
 // the segment record (gpu_front.h gpu_r2_seg, 32 bytes in fdata at the draw record's +28)
 struct R2Seg {
     float4 map;                          // kx, ky, XYOFFSET x, y (12.4)
@@ -228,11 +237,18 @@ void r2_vertex(R2V i, out R2O o, out float4 clip, out float4 alt) {
     float w = c[3];
     float gx = (float)(bx & 0xFFFFu), gy = (float)(by & 0xFFFFu), gz = (float)((bz >> 4) & 0xFFFFFFu);
     // the exact path's sample grid; positions are final (w = 1): the GS interpolates everything linearly on screen
+#if R2_MFT
+    // (r2-m8) the modern frame's surfaces: GS pixel centres at d3d (x + 0.5) s; the GS Z at the vertices, rasterized
+    precise float dx = ((gx - sg.map.z) * (1.0 / 16.0) + 0.5) * r2_mft.x;
+    precise float dy = ((gy - sg.map.w) * (1.0 / 16.0) + 0.5) * r2_mft.y;
+    o.pos = float4(dx * (1.0 / 8192.0), -dy * (1.0 / 8192.0), gz * (1.0 / 1048576.0), 1.0);
+#else
     precise float dx = (gx - sg.map.z) * (sg.map.x * (1.0 / 16.0)) + 0.5;
     precise float dy = (gy - sg.map.w) * (sg.map.y * (1.0 / 16.0)) + 0.5;
     // depth: the rasterized value only bounds the exact Z the pixel shader writes (SV_DepthLessEqual): half a unit above
     // the plane through the integer Z values, so it stays >= the GS's value at every sample
     o.pos = float4(dx * (1.0 / 8192.0), -dy * (1.0 / 8192.0), (gz + 0.5) * (1.0 / 1048576.0), 1.0);
+#endif
     o.gv = int3((int)(bx & 0xFFFFu) - (int)sg.map.z, (int)(by & 0xFFFFu) - (int)sg.map.w, (int)((bz >> 4) & 0xFFFFFFu));
     // colour: A (pass A) or B, VU 8.x fade on colour A's alpha / colour B's RGB (0x0BE0, truncated)
     bool csel = (d3.z & R2D_CSEL) != 0u;   // (material flags)
@@ -359,7 +375,13 @@ struct R2F {
 #if R2_DUAL
     float4 c1 : SV_Target1;
 #endif
+#if R2_MFT
+#if R2_A2C
+    uint cov : SV_Coverage;              // (r2-m8) the cut-out's coverage (ANDed with the rasterizer's)
+#endif
+#else
     float z : SV_DepthLessEqual;
+#endif
 };
 
 #if R2_ZREC
@@ -374,7 +396,13 @@ R2F r2_ps(R2O i) {
 #if R2_DUAL
         d.c1 = float4(0.0, 0.0, 0.0, 0.0);
 #endif
+#if R2_MFT
+#if R2_A2C
+        d.cov = 0xFFFFFFFFu;
+#endif
+#else
         d.z = i.pos.z;
+#endif
         return d;
     }
     uint mb = i.mr.x * 64u;
@@ -412,7 +440,33 @@ R2F r2_ps(R2O i) {
     }
     uint As = col >> 24;
     uint test = d2.y;
-#if !R2_NODISCARD
+#if R2_A2C
+    // (r2-m8, R8) alpha-to-coverage for the cut-outs of pass A (alpha test GEQUAL / GREATER, failing fragments discarded):
+    // the share of the pixel's samples that pass grows linearly with the alpha's distance from the reference across the
+    // alpha's screen-space gradient (the anti-aliased alpha test of modern engines); the GS alpha byte the target keeps is
+    // unchanged (the destination-alpha tests of the shadow pipeline read it), the coverage goes through SV_Coverage
+    uint a2c_cov = 0xFFFFFFFFu;
+    float fa = (float)As;
+    float wa = fwidth(fa);
+    {
+        bool rule1 = (i.mr.y & 1u) != 0u;
+        uint atst = (test >> 1) & 7u, aref = (test >> 4) & 0xFFu;
+        if ((test & 1u) != 0u && !rule1 && (atst == 5u || atst == 6u)) {
+            float thr = (float)aref + (atst == 6u ? 0.5 : -0.5);
+            float cv = saturate((fa - thr) / max(wa, 1.0) + 0.5);
+            uint ns = (uint)r2_mft.z;
+            uint n = (uint)(cv * (float)ns + 0.5);
+            if (n == 0u) discard;
+            uint all = ns >= 32u ? 0xFFFFFFFFu : (1u << ns) - 1u;
+            uint m = n >= ns ? all : (1u << n) - 1u;
+            uint rot = ((uint)i.pos.x ^ ((uint)i.pos.y << 1)) & (ns - 1u);   // (which samples: varied per pixel)
+            a2c_cov = rot == 0u ? m : ((m << rot) | (m >> (ns - rot))) & all;
+        } else {
+            bool apass = (test & 1u) == 0u || atst_pass(atst, aref, As);
+            if (apass == rule1) discard;
+        }
+    }
+#elif !R2_NODISCARD
     // (r2-m2) only draws whose alpha test splits the fragments use this pipeline; the others (no alpha test, every
     // fragment passing or every one failing) the R2_NODISCARD variant, whose depth stays early (no discard)
     bool apass = (test & 1u) == 0u || atst_pass((test >> 1) & 7u, (test >> 4) & 0xFFu, As);
@@ -455,6 +509,12 @@ R2F r2_ps(R2O i) {
 #if R2_DUAL
     o.c1 = float4(0.0, 0.0, 0.0, a1);
 #endif
+#if R2_MFT
+#if R2_A2C
+    o.cov = a2c_cov;
+#endif
+    return o;
+#else
 #if R2_ZREC
     // the exact path's Z at this sample (gs.hlsl gs_frag): native pixel (px, py), sample (si, sj) of kx x ky
     R2Seg sg = r2_seg(i.mr.z);
@@ -472,4 +532,5 @@ R2F r2_ps(R2O i) {
     o.z = max(zv + r2_misc.y, 0.0) * (1.0 / 1048576.0);   // (r2_misc.y: PS2_R2_ZBIAS, debugging)
     if ((asuint(r2_misc.w) & 2u) != 0u) o.z = i.pos.z;     // (PS2_R2_DBG 2: the rasterized depth)
     return o;
+#endif
 }

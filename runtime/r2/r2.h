@@ -46,6 +46,10 @@ enum {
     R2H_PART = 0x29,       /* (r2-m6, R6) the particle class (render class 2, VU1 program 376109499) begins (arg 1) or ends
                               (arg 0); value = frame serial. Hybrid and bracket mode: the frontend draws the particles' exact
                               triangles in that span through the native particle pipeline (gpu_front.c "part") */
+    R2H_MARK = 0x2A,       /* (r2-m8, R8) a point of the frame: arg 1 = the 2D class (render class 5, prio 21: HUD, text) begins
+                              (its first entry, after the class switch's clears); value = frame serial. Hybrid mode only. The
+                              frontend emits GPU_FOP_MARK; the executor resolves a modern frame's picture there (HUD after the
+                              resolve, gpu_exec_mft.h) */
 };
 /* R2H_DRAW / R2H_BEGIN words, in order: [fade (R2D_FADE)] [world matrix, 16 words (unless R2D_IDENTITY)] [the mesh DMA
  * address | form << 31 (offline replays resolve the handle from a RAM dump with it)] */

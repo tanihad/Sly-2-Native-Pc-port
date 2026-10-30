@@ -89,6 +89,7 @@ typedef struct {
     int zts_w, zts_h;
     ID3D11Texture2D* shadow;             /* feedback copies (5.1) */
     ID3D11ShaderResourceView *shadow_srv, *shadow_srv_u;
+    int family;                          /* (r2-m8) FAM_SQUARE 0 / FAM_DISPLAY 1 (gpu_fop_target.family) */
 } xtarget;
 
 typedef struct {
@@ -484,6 +485,7 @@ static void exec_target(const gpu_fop_target* o) {
     if (rescale && t->depth) ensure_zp_all(t);   /* (zpatch holds the truth of every tile first) */
     t->used = 1;
     t->kind = o->kind;
+    t->family = o->family;
     t->depth = o->kind != XK_C32;
     t->kx = nkx;
     t->ky = nky;
@@ -499,9 +501,14 @@ static void exec_target(const gpu_fop_target* o) {
     target_alloc(t, w, h);
 }
 
+static void mft_target_free(int id);    /* (r2-m8) gpu_exec_mft.h */
+static void mft_release(void);
+static void mft_materialize_all(void);
+
 static void exec_release(const gpu_fop_target* o) {
     if (o->id == 0 || o->id > MAX_TARGETS) return;
     unbind_all();
+    mft_target_free(o->id);
     target_free(&X.T[o->id]);
     free(X.T[o->id].zts);
     memset(&X.T[o->id], 0, sizeof X.T[o->id]);
@@ -1178,10 +1185,12 @@ static void zcb_set(const zs_consts* k) {
  * waits for its timestamps (profiling only: it serialises CPU and GPU). Averages per frame in the log every
  * 60 frames. Attribution is approximate (the GPU overlaps neighbouring work). */
 enum { PR_OTHER, PR_TARGET, PR_MEM, PR_CLEAR, PR_SHADOW, PR_FF_FAST, PR_FF_TRI, PR_FF_SPRITE, PR_FF_LINE,
-       PR_REF_TRI, PR_REF_OTHER, PR_A16, PR_ZRESOLVE, PR_ZSYNC, PR_PRESENT, PR_A16_DRAW, PR_FF_FAST_Z, PR_R2, PR_PART, PR_N };
+       PR_REF_TRI, PR_REF_OTHER, PR_A16, PR_ZRESOLVE, PR_ZSYNC, PR_PRESENT, PR_A16_DRAW, PR_FF_FAST_Z, PR_R2, PR_PART,
+       PR_MFT_RES, PR_MFT_SH, PR_MFT_MV, PR_N };
 static const char* const pr_names[PR_N] = { "other", "target", "mem", "clear", "shadow", "ff-tri-fast", "ff-tri",
                                             "ff-sprite", "ff-line", "ref-tri", "ref-other", "alias16", "zresolve",
-                                            "zsync", "present", "alias16-draw", "ff-tri-fast-z", "r2", "part" };
+                                            "zsync", "present", "alias16-draw", "ff-tri-fast-z", "r2", "part",
+                                            "mft-resolve", "mft-shadow", "mft-mv" };
 #define PR_MAXQ 8192
 static struct {
     int on, n, cur;
@@ -2996,6 +3005,7 @@ void gpu_exec_release(void) {
     if (!X.init) return;
     r2_render_release();                 /* (r2-m1: meshes upload again on the recreated device) */
     fence_release();                     /* (r2-m2: the GPU frame fence's queries) */
+    mft_release();                       /* (r2-m8: the modern frames' surfaces) */
     if (dbg_nosize || dbg_nocount) gpu_log("exec: %llu draws without a target, %llu empty draws (cls %llu %llu %llu %llu, tier %llu %llu)", (unsigned long long)dbg_nosize, (unsigned long long)dbg_nocount, (unsigned long long)dbg_cls[0], (unsigned long long)dbg_cls[1], (unsigned long long)dbg_cls[2], (unsigned long long)dbg_cls[3], (unsigned long long)dbg_tier[0], (unsigned long long)dbg_tier[1]);
     for (int i = 0; i <= MAX_TARGETS; i++) { target_free(&X.T[i]); free(X.T[i].zts); X.T[i].zts = NULL; }
     GPU_RELEASE(X.ztile_srv); GPU_RELEASE(X.ztile); GPU_RELEASE(X.zcb);
@@ -3157,6 +3167,8 @@ static void fence_release(void) {
     fence_i = 0;
 }
 
+#include "gpu_exec_mft.h"                /* (r2-m8, R8) modern frame targets: any resolution, MSAA */
+
 void gpu_exec_frame(const void* payload) {
     const gpu_op_frame* p = payload;
     const gpu_front_frame_data* fd = &p->fd;
@@ -3200,12 +3212,19 @@ void gpu_exec_frame(const void* payload) {
     prof_begin();
     X.fd = fd;
     X.a16c_on = 0;
+    int mft = ok && mft_frame_begin(fd);   /* (r2-m8) this frame on the modern frame targets (else: the twins back to the grid) */
     uint32_t slot = 1;
     for (size_t pos = 0; ok && pos + sizeof(gpu_fop) <= fd->cmd_bytes;) {
         const gpu_fop* h = (const gpu_fop*)(fd->cmd + pos);
         if (!h->size) break;
         PR.curpos = (uint32_t)pos;
         X.curpos = (uint32_t)pos;
+        if (mft) {
+            if (TD.jnext < TD.njob) td_run((uint32_t)pos);
+            size_t nx;
+            uint32_t ns;
+            if (mft_op(fd, pos, slot, &nx, &ns)) { slot += ns; pos = nx; continue; }
+        }
         if (h->op == GPU_FOP_ALIAS16) {     /* (r2-m7b) the shadow pipeline's tail as one pass */
             size_t nx;
             uint32_t ns;
@@ -3313,6 +3332,7 @@ static void readmem_fn(void* arg) {
     if (!exec_init()) return;
     ID3D11DeviceContext* c = gpu_rt.ctx;
     unbind_all();
+    mft_materialize_all();               /* (r2-m8: the modern frames' content back into the grid targets first) */
     for (int i = 1; i <= MAX_TARGETS; i++) ensure_zp_all(tgt((uint32_t)i));   /* (mixed frames: DSV-newer depth) */
     ID3D11DeviceContext_CopyResource(c, (ID3D11Resource*)X.scratch, (ID3D11Resource*)X.vram);
     /* entries grouped by writer, uploaded once; one download per writer into the scratch copy */
@@ -3380,6 +3400,7 @@ static void readtgt_fn(void* arg) {
     xtarget* t = tgt(a->id);
     if (!t || !t->tex) return;
     unbind_all();
+    mft_materialize_all();               /* (r2-m8) */
     if (t->depth) ensure_zp_all(t);
     ID3D11Texture2D* src = t->depth ? t->zp : t->tex;
     D3D11_TEXTURE2D_DESC td;

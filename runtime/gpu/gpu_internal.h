@@ -61,6 +61,14 @@ typedef struct {
     int fields;                          /* (M7) field display as the PS2 shows it (deinterlacer); 0: progressive */
 } gpu_compose_in;
 void gpu_present_compose(const gpu_compose_in* in);
+/* (r2-m8, R8) modern frames (gpu_exec_mft.h). The displayed buffer rect of a progressive picture that shows one circuit
+ * 1:1 (after the flicker-filter strip): circuit, buffer rect [x0, x0 + w) x [y0, y0 + h) in GS pixels / buffer rows;
+ * 0 when the layout is anything else (the frame stays on the exact grid) */
+int  gpu_present_mft_layout(const gpu_compose_in* in, int* circuit, int* x0, int* y0, int* w, int* h);
+/* the output rectangle a picture of aspect aw:ah is shown in (the window's client area or the headless target) */
+int  gpu_present_output_rect(int aw, int ah, int* w, int* h);
+/* the picture to present: rect (0, 0, w, h) of tex (R8G8B8A8_TYPELESS family), copied into the presenter's picture */
+void gpu_present_mft_picture(ID3D11Texture2D* tex, int w, int h, uint32_t vblank);
 /* present the last composed picture, fitted to w:h, resampled with scaler (GPU_SCALER_*, M7) */
 void gpu_present_show(int aspect_w, int aspect_h, int scaler);
 void gpu_present_readback(gpu_readback* rb);          /* read back the last composed picture */

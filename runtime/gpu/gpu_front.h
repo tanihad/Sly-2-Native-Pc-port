@@ -225,7 +225,10 @@ enum {
     GPU_FOP_XCOPY,               /* gpu_fop_xcopy: target blocks <- blocks of another target of the same kind and scale,
                                     every sample (data: n x (u16 source local block, u16 destination local block)) */
     GPU_FOP_R2,                  /* (r2-m1) gpu_fop_r2: a segment of modern-renderer draws (runtime/r2/r2_render.c) */
+    GPU_FOP_MARK,                /* (r2-m8) gpu_fop_mark: a point of the frame (GPU_MARK_*); the exact path ignores it */
 };
+typedef struct { uint16_t op, size; uint32_t kind, value; } gpu_fop_mark;
+enum { GPU_MARK_2D = 1 };                /* (r2-m8) the 2D class (HUD) begins (R2H_MARK 1): a modern frame resolves here */
 typedef struct { uint16_t op, size; } gpu_fop;       /* size in bytes, header included, 4-byte multiple */
 typedef struct { gpu_fop h; uint16_t id, kind, base, fbw, rows, kx, ky, family; } gpu_fop_target;
 typedef struct { gpu_fop h; uint16_t target, pad; uint32_t n, data_off; } gpu_fop_blocks;

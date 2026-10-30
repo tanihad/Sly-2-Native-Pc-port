@@ -214,6 +214,7 @@ static int prev_native;                   /* the previous entry was native (a ru
 static int prev_class = -1;
 static int bracket_open;                  /* bracket mode: the previous entry's END is due */
 static int part_open;                    /* (r2-m6) an R2H_PART 1 was written this frame and its end is due */
+static int mark_2d;                      /* (r2-m8) the frame's R2H_MARK 1 (2D class begins) was written */
 static int epi_due;                       /* hybrid: an epilogue is owed before the next exact entry */
 static r2_pass epi_pass;
 
@@ -404,6 +405,7 @@ static void frame_begin(ps2_ctx* ctx) {
     bracket_open = 0;
     epi_due = 0;
     part_open = 0;
+    mark_2d = 0;
     st.frames++;
     if (fr_mode == R2_OFF) return;
     uint32_t wid = ps2_r32(ctx, WID_CURRENT);
@@ -714,6 +716,17 @@ void r2_cap_entry(ps2_ctx* ctx) {
      * packets: the particle program is loaded, everything before it is kicked), R2H_PART 0 at the next entry of another
      * class or the frame's end. The frontend draws the particles' triangles inside it natively (gpu_front.c "part") */
     if (part_on && (cls == PART_CLASS) != part_open) part_hint(ctx, cls == PART_CLASS);
+    /* (r2-m8, R8) the 2D class (HUD, text) begins: R2H_MARK 1 at its first entry of the frame (after the class switch's
+     * alpha / Z clears), where a modern frame resolves its picture (gpu_exec_mft.h: the HUD after the resolve) */
+    if (mode == R2_HYBRID && cls == 5 && !mark_2d) {
+        adlist l = { .n = 0 };
+        ad_hint(&l, R2H_MARK, 1, fr_serial);
+        uint32_t keep = put_reserve;
+        put_reserve = 0;
+        mark_2d = 1;
+        dmas_put(ctx, 0, 0, l.p, l.n);
+        put_reserve = keep;
+    }
     /* (r2-m3, R4) an outline entry generated here (hybrid): its packets into the slot, R2H_OUTLINE, the mesh CALL dropped */
     if (mode == R2_HYBRID && cls == 1 && idx < RENDER_LIST_MAX && om_native[idx] && fr_slot) {
         if (prev_native) owe_epilogue(ctx);

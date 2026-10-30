@@ -21,6 +21,10 @@ typedef struct {
     uint32_t (*texdec)(void* user, uint64_t tex0);
     void* texdec_user;
     void* texdec_srv;
+    /* (r2-m8, R8) a modern frame's targets (gpu_exec_mft.h): rtv / dsv are the MFT surfaces, d3d = (GS + 0.5) * (sx, sy),
+     * hardware depth (no SV_Depth), msaa samples (> 1: alpha-to-coverage for pass-A cut-outs) */
+    int mft, msaa;
+    float sx, sy;
 } r2_exec_in;
 
 /* the segment's draws; returns how many were issued. The host re-establishes its own bindings afterwards. */

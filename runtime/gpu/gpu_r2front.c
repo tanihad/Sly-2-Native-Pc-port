@@ -556,6 +556,13 @@ static void fr_r2_hint(const gs_env_view* ev, uint64_t v) {
         gf_r2_part = arg & 1;
         if (gf_r2_part) R2S.part_spans++;
         break;
+    case R2H_MARK: {                             /* (r2-m8, R8) a point of the frame: GPU_FOP_MARK in stream order */
+        gf_r2_flush();
+        gf_flush_open();
+        gpu_fop_mark* o = gf_cmd(GPU_FOP_MARK, sizeof *o);
+        if (o) { o->kind = arg; o->value = value; }
+        break;
+    }
     case R2H_RUN: {                              /* (hybrid mode: runs, no R2H_FRAME) */
         if (fx_env < 0) { const char* e = getenv("PS2_R2_FX"); fx_env = !(e && *e == '0'); }
         gf_r2_fx_ttl = fx_env ? 2 : 0;
