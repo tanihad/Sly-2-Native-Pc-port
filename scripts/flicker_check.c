@@ -1,17 +1,23 @@
-/* (r2-flicker) Temporal outliers in a run's consecutive pictures (frame_NNNNNN.png of a frame dump, the runtime's own
- * stored-deflate PNGs: runtime/debug.c debug_write_png).
+/* (r2-flicker) Temporal outliers in a run's consecutive pictures: frame dumps (frame_NNNNNN.png, the runtime's own
+ * stored-deflate PNGs, runtime/debug.c; or frame_NNNNNN.bmp with PS2_DUMP_BMP=1, fast enough for every VBlank at 3x).
  *
  * A pixel "spikes" at picture i when pictures i - 1 and i + 1 agree within --same but picture i differs from both by
  * more than --diff: a one-picture blink. Smooth motion and animation do not spike; a frame that draws something wrong
  * (or misses it) for one picture does. Per picture: the spike share, the longest horizontal run of spiking pixels in
- * a row (a "line that flicks"), the rows with >= --rowfrac of their pixels spiking, and 16 x 16 blocks more than half
- * spiking (blobs). Pictures shown twice in a row are counted once.
+ * a row (a "line that flicks"), the rows with >= --rowfrac of their pixels spiking, 16 x 16 blocks more than half
+ * spiking (blobs), and blinking seams: a straight vertical / horizontal edge of >= --seam pixels (a tile, page or band
+ * boundary) that the pictures before and after do not have within 2 pixels. Pictures shown twice in a row are counted
+ * once; a missing VBlank or a size change (render scale) starts again (the pictures at the change are judged one-sided).
  *
- *   flicker_check <frames dir> [--same 12] [--diff 40] [--rowfrac 0.25] [--max-share 0.002] [--max-run F]
- *                 [--max-blobs 0] [--out worst.png] [--quiet] [--from N] [--to N]
- * --max-run: the longest run allowed, as a share of the width (default 0.25).
- * Exit 0 when every picture is within the limits, 1 otherwise, 2 on errors.
- * Build: clang -O2 -o build\flicker_check.exe scripts\flicker_check.c (scripts\flicker_check.ps1 does it). */
+ *   flicker_check <frames dir> [--same 12] [--diff 40] [--rowfrac 0.25] [--max-share 0.002] [--max-run 0.25]
+ *                 [--max-blobs 0] [--max-rows 0] [--seam 160] [--max-seams 2] [--out worst.png] [--heat heat.png]
+ *                 [--quiet] [--from N] [--to N]
+ *   flicker_check --ab <dir A> <dir B> [--diff 40] [--out-dir D]   per-VBlank A/B of two replays of one stream
+ *   flicker_check --png <in.bmp|png> <out.png> [x y w h zoom]        a picture (or a crop) to look at
+ * --max-run: the longest run allowed, as a share of the width. --heat: the last picture with the pixels that spike in
+ * >= 1/8 of the pictures (with PS2_R2_ALT: what modern and exact frames draw differently, persistently).
+ * Exit 0 when every picture is within the limits, 1 otherwise, 2 on errors (fewer than 3 pictures).
+ * Build: clang -O2 -o build\flicker_check.exe scripts\flicker_check.c (scripts\flicker_run.ps1 does it). */
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -268,11 +274,12 @@ static int seam_blink(const pic* m, const pic* r1, const pic* r2, int minlen, in
 
 /* the picture m against r1 and r2, which agree with each other: its blinking pixels (main's statistics in S) */
 static struct {
-    int same, diff, quiet, max_blobs, npics, bad, nres, rows_max, blobs_max, ww, wh, want_worst, seam, seams;
+    int same, diff, quiet, max_blobs, npics, bad, nres, rows_max, blobs_max, ww, wh, want_worst, seam, seams, max_rows, max_seams;
     double rowfrac, max_share, max_run, worst_score, share_max, run_max;
     uint32_t worst_vb;
     uint8_t* worst;
-} S = { 12, 40, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 160, 0, 0.25, 0.002, 0.25, -1, 0, 0, 0, NULL };
+    int* heat; int heat_w, heat_h, heat_n; uint8_t* heat_pic;   /* (--heat: spikes per pixel over the run) */
+} S = { 12, 40, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 160, 0, 0, 2, 0.25, 0.002, 0.25, -1, 0, 0, 0, NULL };
 
 static void eval(const pic* m, const pic* r1, const pic* r2, const char* tag) {
     int w = m->w, h = m->h, bw = (w + 15) / 16, bh = (h + 15) / 16;
@@ -287,6 +294,7 @@ static void eval(const pic* m, const pic* r1, const pic* r2, const char* tag) {
             int s = dmax(r1->px + o, r2->px + o) <= S.same && dmax(r1->px + o, m->px + o) > S.diff && dmax(r2->px + o, m->px + o) > S.diff;
             if (s) {
                 mask[(size_t)y * w + x] = 1;
+                if (S.heat && S.heat_w == w && S.heat_h == h) S.heat[(size_t)y * w + x]++;
                 spikes++; rcount++;
                 blk[(y >> 4) * bw + (x >> 4)]++;
                 if (++run > longest) { longest = run; worst_row = y; }
@@ -294,12 +302,14 @@ static void eval(const pic* m, const pic* r1, const pic* r2, const char* tag) {
         }
         if (rcount >= S.rowfrac * w) rows++;
     }
+    if (S.heat_w == w && S.heat_h == h) { S.heat_n++; if (!S.heat_pic) S.heat_pic = malloc((size_t)w * h * 3); memcpy(S.heat_pic, m->px, (size_t)w * h * 3); }
+    else if (S.heat_w == -1) { S.heat_w = w; S.heat_h = h; S.heat = calloc((size_t)w * h, sizeof(int)); }
     int blobs = 0;
     for (int k = 0; k < bw * bh; k++) blobs += blk[k] > 128;
     double share = (double)spikes / ((double)w * h), runf = (double)longest / w;
     int spos = 0, seam = S.seam > 0 ? seam_blink(m, r1, r2, S.seam, &spos) : 0;
     if (seam) S.seams++;
-    int over = share > S.max_share || runf > S.max_run || blobs > S.max_blobs || seam;
+    int over = share > S.max_share || runf > S.max_run || blobs > S.max_blobs || rows > S.max_rows;
     if (over) S.bad++;
     if (share > S.share_max) S.share_max = share;
     if (runf > S.run_max) S.run_max = runf;
@@ -321,7 +331,7 @@ static void eval(const pic* m, const pic* r1, const pic* r2, const char* tag) {
 }
 
 int main(int argc, char** argv) {
-    const char* dir = NULL, *out = NULL;
+    const char* dir = NULL, *out = NULL, *heat_out = NULL;
     uint32_t from = 0, to = 0xFFFFFFFFu;
     if (argc >= 4 && !strcmp(argv[1], "--ab")) return ab_main(argc, argv);
     if ((argc == 4 || argc == 9) && !strcmp(argv[1], "--png")) {   /* --png <in .bmp/.png> <out.png> [x y w h zoom]: to look at */
@@ -356,6 +366,9 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--to") && i + 1 < argc) to = (uint32_t)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--quiet")) S.quiet = 1;
         else if (!strcmp(argv[i], "--seam") && i + 1 < argc) S.seam = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--max-rows") && i + 1 < argc) S.max_rows = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--max-seams") && i + 1 < argc) S.max_seams = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--heat") && i + 1 < argc) { heat_out = argv[++i]; S.heat_w = -1; }
         else dir = argv[i];
     }
     if (!dir) { fprintf(stderr, "usage: flicker_check <frames dir> [options]\n"); return 2; }
@@ -408,8 +421,15 @@ int main(int argc, char** argv) {
         fresh = 0;
         eval(&win[1], &win[0], &win[2], "");
     }
-    int bad = S.bad, npics = S.npics;
+    int bad = S.bad + (S.seams > S.max_seams ? 1 : 0), npics = S.npics;
     uint8_t* worst = S.worst;    if (out && worst) write_png(out, worst, S.ww, S.wh);
+    if (heat_out && S.heat_pic && S.heat_n) {   /* pixels spiking in >= 1/8 of the pictures: magenta */
+        long long hot = 0;
+        for (size_t k = 0; k < (size_t)S.heat_w * S.heat_h; k++)
+            if (S.heat[k] * 8 >= S.heat_n) { S.heat_pic[k * 3] = 255; S.heat_pic[k * 3 + 1] = 0; S.heat_pic[k * 3 + 2] = 255; hot++; }
+        write_png(heat_out, S.heat_pic, S.heat_w, S.heat_h);
+        printf("heat: %lld pixels spike in >= 1/8 of %d pictures -> %s\n", hot, S.heat_n, heat_out);
+    }
     printf("flicker: %s - %d pictures, %d over the limits (spike share max %.5f, longest run max %.3f of the width, rows max %d, "
            "blobs max %d, size changes / gaps %d, blinking seams %d)%s\n", bad ? "FAIL" : (npics >= 3 ? "PASS" : "NO DATA"), npics, bad, S.share_max,
            S.run_max, S.rows_max, S.blobs_max, S.nres, S.seams, out && worst ? "" : "");

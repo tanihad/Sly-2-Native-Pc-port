@@ -648,7 +648,14 @@ static int mft_disp(int id) {
     return t && t->family == 1;
 }
 
-static int mft_no(int why) { M.why[why]++; M.why_last = why; return 0; }
+static int mft_no(int why) {
+    M.why[why]++;
+    M.why_last = why;
+    static int log = -1, budget = 400;   /* (r2-flicker, diagnostics) PS2_MFT_LOG: every grid frame and why, while in use */
+    if (log < 0) log = getenv("PS2_MFT_LOG") != NULL;
+    if (log && why != MW_OFF && budget > 0 && M.frames) { budget--; gpu_log("mft: grid frame v%u (%s) after %llu modern", X.fd ? X.fd->vblank : 0u, mw_names[why], (unsigned long long)M.frames); }
+    return 0;
+}
 
 /* a post-pass candidate: sprites reading a target view (the motion blur, flat bit-plane passes; npost_prep decides - also
  * without the frontend's NPOST mark, which needs an R2 hint within the last VBlank) */

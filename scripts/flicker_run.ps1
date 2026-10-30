@@ -1,9 +1,12 @@
 # (r2-flicker) The temporal check of one scene: the release build at a warp scenario in one renderer mode, every
 # picture of VBlanks At .. At + Frames - 1 dumped, then scripts\flicker_check.c: one-picture blinks (a pixel whose
 # pictures before and after agree but differ from it), the longest blinking run in a row (a line that flicks) and
-# blinking 16 x 16 blobs.
+# blinking 16 x 16 blobs and seams, judged by tests\r2\gates.json "level3_temporal" (or -Check: flicker_check options).
 #   .\scripts\flicker_run.ps1 -Name ep1 -Episode 1 -Job m1_brawl -Play -At 4800 [-Frames 240] [-Mode hybrid|off]
-#                             [-Scale 3] [-Env "K=V;K=V"] [-Pad ...] [-Keep] [-Check "--max-share 0.002"]
+#                             [-Scale 3|auto] [-Env "K=V;K=V"] [-Pad ...] [-Keep] [-Check "--max-share 0.002"]
+# Dumps: raw BMPs of every VBlank (PS2_DUMP_BMP, PS2_DUMP_RAW: anamorphic, no aspect shaping; 11 MB each at 3x 16:9).
+# At 60 fps they keep up (PS2_DUMP_WAIT=0); at a higher frame rate (-Env "PS2_FRAME_RATE=120") add PS2_DUMP_WAIT=1 so no
+# VBlank is skipped (at 60 fps waiting stalls the EE: VBlanks pile up behind the blocked GS thread).
 # Output: build\flicker\<Name>\ (frames deleted unless -Keep; worst.png = the worst picture, blinking pixels magenta).
 param([Parameter(Mandatory = $true)][string]$Name, [int]$Episode = 1, [string]$Job = "", [switch]$Direct, [switch]$Play,
       [int]$At = 4800, [string]$Pad = "", [int]$Frames = 240, [string]$Mode = 'hybrid', [string]$Scale = '3',
@@ -24,7 +27,7 @@ if (-not (Test-Path $tool) -or (Get-Item $src).LastWriteTime -gt (Get-Item $tool
 }
 $out = Join-Path $root "build\flicker\$Name"
 New-Item -ItemType Directory -Force $out | Out-Null
-$set = @{ PS2_R2 = $Mode; PS2_DUMP_FROM = "$At"; PS2_DUMP_TO = "$($At + $Frames - 1)"; PS2_ASPECT = '16:9'; PS2_DUMP_WAIT = '1'; PS2_DUMP_BMP = '1' }
+$set = @{ PS2_R2 = $Mode; PS2_DUMP_FROM = "$At"; PS2_DUMP_TO = "$($At + $Frames - 1)"; PS2_ASPECT = '16:9'; PS2_DUMP_WAIT = '0'; PS2_DUMP_BMP = '1'; PS2_DUMP_RAW = '1' }
 if ($Scale -eq 'auto') { $set.PS2_GS_SCALE = $null } else { $set.PS2_GS_SCALE = $Scale }
 foreach ($kv in ($Env -split ';' | Where-Object { $_ })) { $k, $v = $kv -split '=', 2; $set[$k.Trim()] = $v }
 $saved = @{}
@@ -47,6 +50,10 @@ Remove-Item (Join-Path $w 'sly2_warp_*.exe') -ErrorAction SilentlyContinue
 Copy-Item (Join-Path $w 'run.log') (Join-Path $out 'run.log') -ErrorAction SilentlyContinue
 $fr = Join-Path $w 'frames'
 Remove-Item (Join-Path $fr 'latest.png') -ErrorAction SilentlyContinue
+if (-not $Check) {                      # the gates (tests\r2\gates.json level3_temporal)
+    $g = (Get-Content (Join-Path $root 'tests\r2\gates.json') -Raw | ConvertFrom-Json).level3_temporal
+    $Check = "--max-share $($g.spike_share_max) --max-run $($g.longest_run_max) --max-rows $($g.rows_max) --max-blobs $($g.blobs_max) --seam $($g.seam_min_px) --max-seams $($g.seams_max)"
+}
 $ca = @($fr, '--quiet', '--out', (Join-Path $out 'worst.png')) + @($Check -split ' ' | Where-Object { $_ })
 & $tool @ca
 $rc = $LASTEXITCODE
