@@ -1,4 +1,0 @@
-m1_brawl@hudclrab#0: fps med 92.5 | 1% low 9.0 | 0.1% low 7.6 | avg 78.7 | worst 6.6 (7471 frames, 95.0 s) | ms med/p90: worker 1.21/1.74 GS 1.11/1.52 front 1.90/2.58 (max 4.81) render 3.72/4.44 GPU 9.59/13.52 (max 19.91) | prims 5400 draws 4878
-scene | build | runs | fps med | 1% low | 0.1% low | worker | GS | front (p90) | render | GPU | prims
-ep1_hub | hudclrab | 1 | 95.0 | 9.3 | 8.2 | 1.57 | 1.59 | 2.38 (2.96) | 4.08 | 9.71 | 7228
-m1_brawl | hudclrab | 1 | 92.5 | 9.0 | 7.6 | 1.21 | 1.11 | 1.90 (2.58) | 3.72 | 9.59 | 5400

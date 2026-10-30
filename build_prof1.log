@@ -1,7 +1,0 @@
-m1_brawl@prof1#0: fps med 143.9 | 1% low 14.5 | 0.1% low 10.4 | avg 107.4 | worst 9.2 (10206 frames, 95.0 s) | ms med/p90: worker 1.29/1.67 GS 1.21/1.50 front 1.60/1.87 (max 48.40) render 3.67/4.02 GPU 5.87/7.77 (max 13.88) | prims 6084 draws 5741
-m2_boardroom@prof1#0: fps med 95.3 | 1% low 15.0 | 0.1% low 10.7 | avg 79.4 | worst 7.8 (10323 frames, 130.0 s) | ms med/p90: worker 1.40/2.00 GS 0.79/1.32 front 1.56/2.17 (max 48.51) render 3.21/4.00 GPU 9.09/13.51 (max 18.97) | prims 4773 draws 2236
-ep1_hub@prof1#0: fps med 165.0 | 1% low 14.5 | 0.1% low 11.9 | avg 120.2 | worst 9.5 (13224 frames, 110.0 s) | ms med/p90: worker 1.67/2.18 GS 1.40/1.66 front 2.08/2.32 (max 48.90) render 3.79/4.05 GPU 4.75/6.05 (max 11.58) | prims 7258 draws 7158
-scene | build | runs | fps med | 1% low | 0.1% low | worker | GS | front (p90) | render | GPU | prims
-ep1_hub | prof1 | 1 | 165.0 | 14.5 | 11.9 | 1.67 | 1.40 | 2.08 (2.32) | 3.79 | 4.75 | 7258
-m1_brawl | prof1 | 1 | 143.9 | 14.5 | 10.4 | 1.29 | 1.21 | 1.60 (1.87) | 3.67 | 5.87 | 6084
-m2_boardroom | prof1 | 1 | 95.3 | 15.0 | 10.7 | 1.40 | 0.79 | 1.56 (2.17) | 3.21 | 9.09 | 4773

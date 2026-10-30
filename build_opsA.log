@@ -1,3 +1,0 @@
-ep1_hub@opsA#0: fps med 189.8 | 1% low 9.3 | 0.1% low 0.1 | avg 33.9 | worst 0.1 (1541 frames, 45.4 s) | ms med/p90: worker 1.48/1.76 GS 1.48/1.79 front 2.24/2.63 (max 4.66) render 3.90/4.12 GPU 4.23/8.43 (max 14.88) | prims 6264 draws 5986
-scene | build | runs | fps med | 1% low | 0.1% low | worker | GS | front (p90) | render | GPU | prims
-ep1_hub | opsA | 1 | 189.8 | 9.3 | 0.1 | 1.48 | 1.48 | 2.24 (2.63) | 3.90 | 4.23 | 6264

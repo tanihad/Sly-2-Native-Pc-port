@@ -1,6 +1,0 @@
-wrote 6,834 functions in 14 files to build\rel\recomp (2 untranslated instructions, 3 native overrides, 3 entry hooks, 46 instruction patches)
-wrote 634 IOP functions + 113 import stubs from 989snd_Library@0x20000, spiop@0x50000 to build\rel\iop (0 untranslated instructions, 0 load-delay hazards)
-wrote 10 recompiled VU microcode units to build\rel\vu
-hlslc: 163 shaders -> C:\Users\tanih\Projects\sly2-worktrees\r2-hud\build\gen\gpu_shaders.h
-compiled 146 files (-O2 -fno-auto-import -DPS2_NO_TRACE) in 77s
-linked build\rel\sly2.exe (30.4 MB) in 77s total

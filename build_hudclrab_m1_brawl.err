@@ -1,8 +1,0 @@
-Add-Content : Stream was not readable.
-At C:\Users\tanih\Projects\sly2-worktrees\r2-hud\scripts\chaos_bench.ps1:192 char:21
-+             $line | Add-Content $outTxt
-+                     ~~~~~~~~~~~~~~~~~~~
-    + CategoryInfo          : InvalidArgument: (C:\Users\tanih\...os\hudclrab.txt:String) [Add-Content], ArgumentExcep 
-   tion
-    + FullyQualifiedErrorId : GetContentWriterArgumentError,Microsoft.PowerShell.Commands.AddContentCommand
- 
