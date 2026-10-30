@@ -5,7 +5,8 @@
 #   hc  (r2-m5) scripts\r2_hcheck.ps1: the game in hybrid mode with hybrid and all-exact frames alternating; what only one
 #       mode draws alternates between consecutive pictures. Catches what the A/B cannot (it replays one GS stream): the
 #       VU1 / VIF / GS state dropped mesh DMA leaves for later exact draws, stale mesh decodes, hint / slot races.
-#   .\scripts\r2_sweep.ps1 [-Scenes ep1,ep3] [-Checks ab,hc] [-Parallel 3] [-Keep]
+#   shots (r2-m8) the scene's modern frames at 2560 x 1440 with MSAA 4x: one picture (build\r2hc\shot_<scene>\shot.png)
+#   .\scripts\r2_sweep.ps1 [-Scenes ep1,ep3] [-Checks ab,hc,shots] [-Parallel 3] [-Keep]
 # Output: build\r2ab\<scene>\, build\r2hc\sw_<scene>\worst.png (deleted unless -Keep / on failure).
 param([string[]]$Scenes = @(), [string[]]$Checks = @('ab', 'hc'), [int]$Parallel = 3, [switch]$Keep)
 $Scenes = @($Scenes | ForEach-Object { $_ -split ',' } | Where-Object { $_ })
@@ -43,6 +44,7 @@ while ($queue.Count -or $running.Count) {
             $args1 = @('-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'r2_ab.ps1'), '-Name', "sw_$($s.n)", '-Levels', 'all') + $s.a
         } else {
             $args1 = @('-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'r2_hcheck.ps1'), '-Name', "sw_$($s.n)") + $s.a
+            if ($t.c -eq 'shots') { $args1[5] = "shot_$($s.n)"; $args1 += @('-Shots', '-Frames', '4') }   # (r2-m8: modern frames at 1440p MSAA 4x)
         }
         $p = Start-Process -FilePath 'powershell' -ArgumentList $args1 -RedirectStandardOutput $log -RedirectStandardError "$log.err" -PassThru -NoNewWindow
         $running += [pscustomobject]@{ p = $p; s = $s; c = $t.c; log = $log }
@@ -52,6 +54,13 @@ while ($queue.Count -or $running.Count) {
     foreach ($r in $running) {
         if (-not $r.p.HasExited) { $still += $r; continue }
         $t = Get-Content $r.log -ErrorAction SilentlyContinue
+        if ($r.c -eq 'shots') {            # (r2-m8) the picture to look at: build\r2hc\shot_<scene>\shot.png
+            $sp = Join-Path $root "build\r2hc\shot_$($r.s.n)\shot.png"
+            if (-not (Test-Path $sp)) { $fail++ }
+            "{0,-13} shots | {1}" -f $r.s.n, $(if (Test-Path $sp) { $sp } else { '(no picture)' })
+            Remove-Item -Recurse -Force (Join-Path $root "build\warp\r2hc_shot_$($r.s.n)\frames") -ErrorAction SilentlyContinue
+            continue
+        }
         if ($r.c -eq 'hc') {
             $g = ($t | Select-String '^hcheck:' | Select-Object -Last 1)
             $gl = if ($g) { $g.Line } else { 'hcheck: (no result)' }

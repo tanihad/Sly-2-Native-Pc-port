@@ -291,8 +291,10 @@ static ID3D11SamplerState* mft_sampler(void) {
 static void mft_bind_raw(ID3D11RenderTargetView* rtv, ID3D11DepthStencilView* dsv) {
     if (X.b_t1) set_t1(NULL);
     if (X.b_t2) set_t2(NULL);
-    ID3D11ShaderResourceView* none[4] = { NULL, NULL, NULL, NULL };
-    ID3D11DeviceContext_PSSetShaderResources(gpu_rt.ctx, 12, 4, none);
+    /* (the views the passes use: t12, t14..t19 - never t13, the decoded texture cache of the draws) */
+    ID3D11ShaderResourceView* none[6] = { NULL, NULL, NULL, NULL, NULL, NULL };
+    ID3D11DeviceContext_PSSetShaderResources(gpu_rt.ctx, 12, 1, none);
+    ID3D11DeviceContext_PSSetShaderResources(gpu_rt.ctx, 14, 6, none);
     ID3D11DeviceContext_OMSetRenderTargets(gpu_rt.ctx, rtv ? 1 : 0, rtv ? &rtv : NULL, dsv);
     X.mode = 7;
     X.b_ct = X.b_zt = -1;
