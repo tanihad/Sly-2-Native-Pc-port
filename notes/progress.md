@@ -2,6 +2,17 @@
 
 ## Resume here (read first in a new session)
 
+**PAUSED by the owner (2026-10-30).** Nothing is running.
+
+The flicker fix is on branch next/r2-flicker (c61586e, pushed; main's R8 is already merged in).
+- **Cause:** native (dropped) world meshes no longer leave the VIF1 state the shadow-class VU program depends on (STMASK etc. plus the MSCAL double-buffer flip parity). So Sly's lamp shadow went missing in Modern, and it flickered whenever entries switched between native and exact.
+- **Fix:** owe the registers before the next exact chain, and apply the flips at the class switch.
+- **State:** it was re-verifying (ALT heat at 3x grid, class-begin VIF state). The full gates are not yet run on the final version.
+- **On "continue":**
+  1. Resume the agent (or start a new one reading notes/wip/r2-flicker.md) to verify on the grid path and on MFT 100%/MSAA 4x, then run the gates.
+  2. Merge, package, push.
+  3. HOLD POINT: tell the owner it is ready to try.
+
 **2026-10-30: R8 MERGED (35bfeef), dist 0.1.1001.** Modern frames: free render scale (25-200%) + MSAA off/2x/4x/8x, HUD after resolve, motion vectors (off). Presets: PS2 (=Original: Reference, integer grid, faithful filters, 4:3), Performance (Modern 75%, no MSAA), Balanced (DEFAULT: Modern 100% + MSAA 4x), Quality (100%, 8x). NOTE: this makes Modern the default for new installs (D2), pending the owner's approval. 1440p ep1: R8 100% MSAA 4x 258 fps vs 4x grid 221 / 3x grid 319. The owner reported a Modern-only shadow flicker plus a random flicking line in the ep1 hub outdoors (owner ini: render_scale auto, 120 fps, fullscreen). Running: fix agent in worktree r2-flicker (branched before R8; it must merge main). After that comes the HOLD POINT.
 
 **2026-10-30: R7 part 3 (HUD) MERGED (8a19e4d), dist 0.1.986.** Profiling showed a native HUD would not pay off: its draws cost about 0.1 ms; the overhead is in clears. So the branch makes partial Z clears lazy instead (-0.2..-0.3 ms GPU per frame). The window suite's F11/Alt+Enter checks fail on main too; that is environmental (the owner's focused apps), not a regression. Running: R8 (worktree r2-m8); it has been told to merge main. After R8 comes the HOLD POINT below.
