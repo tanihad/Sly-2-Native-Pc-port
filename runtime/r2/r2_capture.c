@@ -105,7 +105,7 @@ static LARGE_INTEGER qpf;
 
 typedef struct {
     uint32_t frames, cand, native, exact_level, exact_class, exact_decode, exact_budget, exact_dmas, exact_header, exact_fade, exact_guard,
-        decoded, decode_fail, bytes_hint, runs, epilogues, vif_owed, chains_kept, exact_last, cand_props, native_props, exact_outline, outlines, outlines_parsed, clipped,
+        decoded, decode_fail, bytes_hint, runs, epilogues, vif_owed, chains_kept, chains_run, exact_last, cand_props, native_props, exact_outline, outlines, outlines_parsed, clipped,
         exact_bracket, stale, guard_clean, cand_lit, native_lit, exact_lit, lit_reason[4], outline_bad, outline_decoded, outline_native, outline_exact, dmas_min_free,
         part_spans, fan_ents, fan_tris, fan_kicked, fan_qw, fan_no[6];
     double decode_ms, cap_ms, fan_ms;
@@ -216,7 +216,8 @@ static int bracket_open;                  /* bracket mode: the previous entry's 
 static int part_open;                    /* (r2-m6) an R2H_PART 1 was written this frame and its end is due */
 static int mark_2d;                      /* (r2-m8) the frame's R2H_MARK 1 (2D class begins) was written */
 static int epi_due;
-static int tail_owed;                    /* (r2-flicker) a kept chain's pending packet (drop_tail) */                       /* hybrid: an epilogue is owed before the next exact entry */
+static int tail_owed;                    /* (r2-flicker) a kept chain's pending packet (drop_tail) */
+static void cpu_ab_frame(void);                       /* hybrid: an epilogue is owed before the next exact entry */
 static struct { uint32_t set, cycle, mode, mask, row[4], col[4], base, ofst, flips; } VP;   /* (r2-flicker) VIF1 state owed (flush_vif) */
 static r2_pass epi_pass;
 
@@ -426,6 +427,7 @@ static void frame_begin(ps2_ctx* ctx) {
     prev_native = 0;
     memset(&VP, 0, sizeof VP);           /* (r2-flicker) nothing owed across frames */
     tail_owed = 0;
+    cpu_ab_frame();
     prev_class = -1;
     bracket_open = 0;
     epi_due = 0;
@@ -751,10 +753,34 @@ static void owe_flips_class(ps2_ctx* ctx, int cls) {
     if (dmas_vif(ctx, &w, 1)) VP.flips = 0;
 }
 
+static int cpu_ab = -1;                  /* PS2_GPU_AB_EE=3: kept chains in B phases only (CPU A/B, cpu_ab_frame) */
 static int keep_chains(void) {
     static int keep = -1;
     if (keep < 0) { const char* v = getenv("PS2_R2_KEEPCHAIN"); keep = !(v && *v == '0'); }
-    return keep;
+    if (cpu_ab < 0) { const char* v = getenv("PS2_GPU_AB_EE"); cpu_ab = v && *v == '3'; }
+    return keep && (!cpu_ab || gpu_ab_phase != 0);
+}
+/* (r2-flicker) the CPU A/B report: game frame time, VU1 and VIF1 ms per frame per phase (vu.c / vif.c timers) */
+extern volatile int vu_ab_phase;
+extern double vu_ab_ms[2][2];
+double vu_ab_now(void);
+static void cpu_ab_frame(void) {
+    if (cpu_ab <= 0) return;
+    static double last, fr_ms[2], vu0[2][2];
+    static uint32_t n[2], tot, skip;
+    static int lastp = -2;
+    double now = vu_ab_now();
+    int p = gpu_ab_phase > 0;
+    if (p != lastp) { skip = 16; lastp = p; }   /* (a phase's first frames: work of the other phase still in flight) */
+    if (skip) { skip--; vu_ab_phase = -1; last = now; return; }
+    if (vu_ab_phase == p && last > 0) { fr_ms[p] += now - last; n[p]++; }
+    else { vu0[p][0] = vu_ab_ms[p][0]; vu0[p][1] = vu_ab_ms[p][1]; }
+    vu_ab_phase = p;
+    last = now;
+    if (++tot % 1200 == 0 && n[0] && n[1])
+        fprintf(stderr, "[r2] cpu-ab A (chains dropped): %u frames, %.3f ms per frame, VU1 %.3f, VIF1 %.3f | B (kept): %u frames, %.3f, VU1 %.3f, VIF1 %.3f\n",
+                n[0], fr_ms[0] / n[0], vu_ab_ms[0][0] / n[0], vu_ab_ms[0][1] / n[0], n[1], fr_ms[1] / n[1], vu_ab_ms[1][0] / n[1], vu_ab_ms[1][1] / n[1]);
+    (void)vu0;
 }
 /* after a kept chain: its last packet, pending in the VU, flushed with the kicks dropped (MSCAL 0x3AB0, the main program's
  * class-end flush, then 0x0000 to keep the double-buffer parity), at the next entry's hook of the same class */
@@ -770,10 +796,43 @@ static void drop_tail(ps2_ctx* ctx) {
  * masked unpacks under the world's STMASK and its cross-class reads by the parity). Written last before the entry's
  * CALLs: nothing with an MSCAL may come between. Else (PS2_R2_KEEPCHAIN=0, or no room) the CALL is zeroed as before and
  * the VIF registers are owed (owe_vif). */
-static void drop_chain(ps2_ctx* ctx, const r2_mesh* m, uint32_t e, int form) {
+/* the entries left in this render class before the next class switch, and whether the next class runs another VU1
+ * program (the shadow-volume classes): cached per class run (the render list's pointer array, r21 / r20) */
+static int before_foreign(ps2_ctx* ctx, int cls, uint32_t* dist) {
+    static uint32_t sw_ptr, sw_serial;
+    static int sw_foreign;
+    uint32_t cur = ctx->r[21].uw[0], left = ctx->r[20].uw[0];
+    if (sw_serial != fr_serial || cur >= sw_ptr) {
+        sw_serial = fr_serial;
+        sw_ptr = cur + 4u * left;
+        sw_foreign = 0;
+        for (uint32_t j = 1; j < left; j++) {
+            uint32_t nx = ps2_r32(ctx, cur + 4u * j), np = nx ? ps2_r32(ctx, nx) : 0xFFFFFFFFu;
+            int nc = np <= 25 ? (int)ps2_r32(ctx, CLASS_TABLE + np * 4) : -1;
+            if (nc != cls) { sw_ptr = cur + 4u * j; sw_foreign = nc >= 0 && !MAINCLASS(nc); break; }
+        }
+    }
+    *dist = (sw_ptr - cur) / 4u;
+    return sw_foreign;
+}
+
+/* a kept chain's programs: run (their packets dropped) only where the next class's program reads what they leave in VU
+ * memory - the class run just before a class of another program (the shadow volumes read the main program's output
+ * buffers there); elsewhere only the uploads, VIF registers and buffer flips (PS2_R2_RUNPROG=0 never, 1 always, 2 that,
+ * the default; PS2_R2_RUNPROG_K=n: only the last n entries before that switch) */
+static int run_programs(ps2_ctx* ctx, int cls) {
+    static int mode = -1, k;
+    if (mode < 0) { const char* e = getenv("PS2_R2_RUNPROG"); mode = e ? atoi(e) : 2; e = getenv("PS2_R2_RUNPROG_K"); k = e ? atoi(e) : 0; }
+    if (mode != 2) return mode == 1;
+    uint32_t dist;
+    return before_foreign(ctx, cls, &dist) && (!k || dist <= (uint32_t)k);
+}
+
+static void drop_chain(ps2_ctx* ctx, const r2_mesh* m, uint32_t e, int form, int cls) {
     if (keep_chains() && m->nmscal < 0x10000u) {
-        uint32_t w[2] = { 0x07000000u | 0xA5A5u, 0x07000000u | m->nmscal };
-        if (!m->nmscal || dmas_vif(ctx, w, 2)) { st.chains_kept++; tail_owed = 1; return; }
+        int run = run_programs(ctx, cls);
+        uint32_t w[2] = { 0x07000000u | (run ? 0xA5A5u : 0xA5A6u), 0x07000000u | m->nmscal };
+        if (!m->nmscal || dmas_vif(ctx, w, 2)) { st.chains_kept++; if (run) { st.chains_run++; tail_owed = 1; } return; }
     }
     owe_vif(m);
     if (form) ps2_w32(ctx, e + 12, 0);           /* the mesh DMA; the header packet at +8 stays */
@@ -1095,14 +1154,14 @@ void r2_cap_entry(ps2_ctx* ctx) {
             if (fan_last == m->nb) { epi_due = 0; flush_vif(ctx, 1 + next_switches(ctx, cls)); }
             else owe_epilogue(ctx, 1 + next_switches(ctx, cls));
             prev_native = 0;
-            drop_chain(ctx, m, e, form);
+            drop_chain(ctx, m, e, form, cls);
             if (stats_on) { double dt_ = now_ms() - t0; st.cap_ms += dt_; fr_cap_ms += dt_; }
             return;
         }
         /* the state epilogue now when the next entry will be exact (ahead of a class switch's own packets) */
         uint32_t next = ctx->r[20].uw[0] > 1 ? ps2_r32(ctx, ctx->r[21].uw[0] + 4) : 0;
         if (!next || !likely_native(ctx, next)) owe_epilogue(ctx, 1 + next_switches(ctx, cls));
-        drop_chain(ctx, m, e, form);
+        drop_chain(ctx, m, e, form, cls);
         if (stats_on) { double dt_ = now_ms() - t0; st.cap_ms += dt_; fr_cap_ms += dt_; }
         return;
     }

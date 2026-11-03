@@ -12,6 +12,7 @@
 
 #include <stdlib.h>
 #include <xmmintrin.h>
+#include <windows.h>                    /* (r2-flicker: QueryPerformanceCounter, A/B timers) */
 
 static _Alignas(16) uint8_t vu0_data[4096], vu0_micro[4096], vu1_data[16384], vu1_micro[16384];
 static vu_op vu0_cache[512], vu1_cache[2048];
@@ -343,8 +344,17 @@ static void vu_snap(vu_state* st, uint32_t addr_dw) {
     fclose(f);
 }
 
+/* (r2-flicker) CPU time per PS2_GPU_AB phase (r2_capture.c sets vu_ab_phase; -1 off): [phase][0] VU1 programs,
+ * [1] VIF1 (vif.c, its programs' time included) */
+volatile int vu_ab_phase = -1;
+double vu_ab_ms[2][2];
+static double qpc_ms_now(void) { static double f; LARGE_INTEGER t; if (!f) { LARGE_INTEGER q; QueryPerformanceFrequency(&q); f = 1000.0 / (double)q.QuadPart; } QueryPerformanceCounter(&t); return (double)t.QuadPart * f; }
+double vu_ab_now(void) { return qpc_ms_now(); }
+
 static void run(vu_state* st, uint32_t addr_dw) {
     int perf_prev = perf_enter(PERF_VU);
+    int abp = st->idx == 1 ? vu_ab_phase : -1;
+    double ab0 = abp >= 0 ? qpc_ms_now() : 0;
     vu_snap(st, addr_dw);
     if (vrec.state != 1) vrec_begin(st, addr_dw);
     unsigned csr = _mm_getcsr();
@@ -353,6 +363,7 @@ static void run(vu_state* st, uint32_t addr_dw) {
     uint32_t pairs = vu_execute(st, addr_dw);
     _mm_setcsr(csr);
     if (vrec.state == 3) vrec_end(st, pairs);
+    if (abp >= 0) vu_ab_ms[abp & 1][0] += qpc_ms_now() - ab0;
     perf_leave(perf_prev);
 }
 
