@@ -420,7 +420,32 @@ static int outlined(const float w[16]) {
     return 0;
 }
 
+/* (r2-flicker, diagnostics) PS2_R2_SEQ_LOG=1: a frame's class runs (class:entries/native/kept) when it left parity unpaid */
+static int seq_on = -1, seq_cls = -2, seq_n, seq_nat, seq_kept, seq_unpaid, seq_len;
+static char seq_buf[2048];
+static void seq_flush(void) {
+    if (seq_cls != -2 && seq_len < (int)sizeof seq_buf - 40)
+        seq_len += snprintf(seq_buf + seq_len, sizeof seq_buf - (size_t)seq_len, " %d:%d/%d/%d", seq_cls, seq_n, seq_nat, seq_kept);
+    seq_cls = -2; seq_n = seq_nat = seq_kept = 0;
+}
+static void seq_entry(int cls) {
+    if (seq_on < 0) seq_on = getenv("PS2_R2_SEQ_LOG") != NULL;
+    if (!seq_on) return;
+    if (cls != seq_cls) { seq_flush(); seq_cls = cls; }
+    seq_n++;
+}
+static void seq_frame(void) {
+    if (seq_on > 0) {
+        seq_flush();
+        if (seq_unpaid && seq_len) fprintf(stderr, "[r2] seq v%u unpaid %d:%s\n", ps2_vblank_count(), seq_unpaid, seq_buf);
+        static uint32_t k;
+        if (!seq_unpaid && seq_len && ++k % 600 == 0) fprintf(stderr, "[r2] seq v%u ok:%s\n", ps2_vblank_count(), seq_buf);
+    }
+    seq_len = 0; seq_buf[0] = 0; seq_unpaid = 0;
+}
+
 static void frame_begin(ps2_ctx* ctx) {
+    seq_frame();
     fr_open = 1;
     fr_mode = mode_now();
     fr_block_sent = 0;
@@ -802,16 +827,32 @@ static void drop_tail(ps2_ctx* ctx) {
  * program (the shadow-volume classes): cached per class run (the render list's pointer array, r21 / r20) */
 static int before_foreign(ps2_ctx* ctx, int cls, uint32_t* dist) {
     static uint32_t sw_ptr, sw_serial;
-    static int sw_foreign;
+    static int sw_foreign, skip_max = -1;
+    /* short main-class runs between this run and the foreign class are looked through (PS2_R2_SKIPRUN=n entries, default
+     * 16): a few exact class-11 entries (Sly near a lamp) between the world's last class-0 run and the shadow volumes
+     * cannot pay the parity the dropped class-0 chains owe (their own chains are exact), so this run keeps its chains
+     * then; a short run's native entries are kept by the same rule (its next class is the foreign one) */
+    if (skip_max < 0) { const char* e = getenv("PS2_R2_SKIPRUN"); skip_max = e ? atoi(e) : 16; }
     uint32_t cur = ctx->r[21].uw[0], left = ctx->r[20].uw[0];
     if (sw_serial != fr_serial || cur >= sw_ptr) {
         sw_serial = fr_serial;
         sw_ptr = cur + 4u * left;
         sw_foreign = 0;
+        int scls = cls, first = 1;
+        uint32_t runlen = 0;
         for (uint32_t j = 1; j < left; j++) {
             uint32_t nx = ps2_r32(ctx, cur + 4u * j), np = nx ? ps2_r32(ctx, nx) : 0xFFFFFFFFu;
             int nc = np <= 25 ? (int)ps2_r32(ctx, CLASS_TABLE + np * 4) : -1;
-            if (nc != cls) { sw_ptr = cur + 4u * j; sw_foreign = nc >= 0 && !MAINCLASS(nc); break; }
+            if (nc == scls) {
+                if (!first && ++runlen > (uint32_t)skip_max) break;   /* (a long main-class run: it keeps its own) */
+                continue;
+            }
+            if (first) { sw_ptr = cur + 4u * j; first = 0; }
+            if (nc < 0) break;
+            if (!MAINCLASS(nc)) { sw_foreign = 1; break; }
+            scls = nc;
+            runlen = 1;
+            if (runlen > (uint32_t)skip_max) break;
         }
     }
     *dist = (sw_ptr - cur) / 4u;
@@ -847,7 +888,7 @@ static void drop_chain(ps2_ctx* ctx, const r2_mesh* m, uint32_t e, int form, int
         if (dmas_vif(ctx, w, n)) {
             parity_owed = 0;
             memset(&VP, 0, sizeof VP);           /* (the kept chain sets its own registers) */
-            st.chains_run++;
+            st.chains_run++; seq_kept++;
             tail_owed = 1;
             return;
         }
@@ -936,10 +977,16 @@ void r2_cap_entry(ps2_ctx* ctx) {
     uint32_t e = ctx->r[18].uw[0], prio = ctx->r[16].uw[0];
     int cls = (int)ctx->r[17].uw[0];
     uint32_t idx = (e - RENDER_LIST) / 16u;
+    seq_entry(cls);
     if (mode == R2_BRACKET) close_bracket(ctx, cls);
     if (mode == R2_HYBRID) {                     /* (r2-flicker) */
         drop_tail(ctx);
-        if (parity_owed && cls >= 0 && !MAINCLASS(cls)) { st.parity_unpaid++; parity_owed = 0; }   /* (no kept run before it) */
+        if (parity_owed && cls >= 0 && !MAINCLASS(cls)) {   /* (no kept run before it) */
+            static int ulog = -1;
+            if (ulog < 0) ulog = getenv("PS2_R2_UNPAID_LOG") != NULL;
+            if (ulog) fprintf(stderr, "[r2] parity unpaid: v%u entry %u class %d after class %d (native %d)\n", ps2_vblank_count(), idx, cls, prev_class, prev_native);
+            st.parity_unpaid++; parity_owed = 0; seq_unpaid++;
+        }
     }
     {   /* (r2-m6, diagnostics) PS2_R2_DROPCLS=<mask>: drop the entries of these render classes (what do they cost) */
         static int dmask = -1;
@@ -994,7 +1041,7 @@ void r2_cap_entry(ps2_ctx* ctx) {
             if (dmas_put(ctx, fl ? MSCAL(0x0000) : 0, 0, l.p, l.n)) {
                 S->nxq += 1 + n;
                 ps2_w32(ctx, e + 12, 0);             /* the outline mesh chain; the header (VU uploads only) stays */
-                st.outline_native++;
+                st.outline_native++; seq_nat++;
             } else st.outline_exact++;
         } else st.outline_exact++;
         if (stats_on) { double dt_ = now_ms() - t0; st.cap_ms += dt_; fr_cap_ms += dt_; }
@@ -1146,6 +1193,7 @@ void r2_cap_entry(ps2_ctx* ctx) {
             st.fan_qw += fq;
         }
         if (eflags & R2E_FANS) { st.fan_ents++; st.fan_tris += fan_o.tris; }
+        seq_nat++;
         r2_slot_ent* se = &S->ent[S->nent++];
         memcpy(se->m, M, sizeof M);
         mv_prev((uint64_t)c1 << 32 | c2, M, se->prev);   /* (r2-m8) motion vectors */
