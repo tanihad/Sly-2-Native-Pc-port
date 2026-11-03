@@ -1185,7 +1185,8 @@ static void mft_draw(const gpu_fop_draw* d, uint32_t slot) {
 static void mft_r2(const gpu_front_frame_data* fd, const gpu_fop_r2* o) {
     if (!mft_bind(o->ct, o->zt)) return;
     prof_mark(PR_R2);
-    if (!iota_ensure(o->draw_off / 32u + o->ndraw + 1)) return;
+    /* (r8-perf: the plan's merged draws find their member lists by StartInstanceLocation = fdata offset / 32) */
+    if (!iota_ensure(o->nplan ? (uint32_t)(fd->data_bytes / 32u) + 1u : o->draw_off / 32u + o->ndraw + 1)) return;
     if (TD.on != 0) td_ensure();
     mtarget *c = &MT[o->ct], *z = &MT[o->zt];
     r2_exec_in in = { gpu_rt.dev, gpu_rt.ctx, c->rtv, z->dsv, 1, 1, X.vram_srv, X.swz_srv, X.dat.srv, X.iota,
@@ -1195,6 +1196,8 @@ static void mft_r2(const gpu_front_frame_data* fd, const gpu_fop_r2* o) {
     in.msaa = M.n;
     in.sx = M.rsx;
     in.sy = M.rsy;
+    in.dbg_cull = r8s_skip(R8S_R2DRAW) ? (r8s_skip(R8S_R2UNI) ? 3 : r8s_skip(R8S_R2TINY) ? 2 : 1) : 0;
+    in.opt = r8p_on(R8P_R2BATCH) ? R2X_BATCH : 0;
     int n = r2_render_segment(o, fd->data, fd->data_bytes, &in);
     gpu_rt.n_draws += (uint32_t)n;
     r2_segs++;
@@ -1558,7 +1561,7 @@ static int mft_shadow(const gpu_front_frame_data* fd, const mft_shp* q, uint32_t
     mtarget* m = &MT[q->L.B];
     int pc = PR.cur;
     prof_mark(PR_MFT_SH);
-    int ok = mft_need(q->L.B, MT_MS) && mft_cnt_ensure((m->w * m->n + 1) / 2, m->h * epochs);
+    int ok = mft_need(q->L.B, MT_MS) && mft_cnt_ensure((m->w * m->n + 1) / 2, m->h * epochs) && !r8s_skip(R8S_SHADOW);
     int epoch = 0;
     for (size_t p = q->vol0; p < q->tail;) {
         const gpu_fop* h = (const gpu_fop*)(fd->cmd + p);
@@ -1690,6 +1693,13 @@ static int mft_op(const gpu_front_frame_data* fd, size_t pos, uint32_t slot, siz
             prof_mark(d->cls == GPU_PC_TRI ? ((d->feat & GPU_DF_PART) ? PR_PART : zo ? PR_FF_FAST_Z : PR_FF_FAST)
                       : d->cls == GPU_PC_SPRITE ? PR_FF_SPRITE : PR_FF_LINE);   /* (line / point pixels, thin lines) */
         }
+        if (PR.ncyc > 0) {               /* (r8-perf, diagnostics: PS2_R8P_SKIP's phases leave work out to measure its cost) */
+            int line = d->cls == GPU_PC_LINEPIX || d->cls == GPU_PC_POINT;
+            if ((mft_post_cand(d) && r8s_skip(R8S_NPOST)) || (d->cls == GPU_PC_TRI && r8s_skip(R8S_TRI)) ||
+                (d->cls == GPU_PC_SPRITE && !mft_post_cand(d) && r8s_skip(R8S_SPRITE)) || (line && r8s_skip(R8S_LINE)) ||
+                (line && !d->wmask && r8s_skip(R8S_LINEZ)) || (line && d->wmask && r8s_skip(R8S_LINEC)))
+                return 1;
+        }
         if (mft_post_cand(d)) {
             if (!mft_npost(d)) M.why[MW_NPOST]++;
             return 1;
@@ -1699,7 +1709,7 @@ static int mft_op(const gpu_front_frame_data* fd, size_t pos, uint32_t slot, siz
         return 1;
     }
     case GPU_FOP_R2:
-        mft_r2(fd, (const gpu_fop_r2*)h);
+        if (!r8s_skip(R8S_R2)) mft_r2(fd, (const gpu_fop_r2*)h);
         return 1;
     case GPU_FOP_MARK:
         return 1;

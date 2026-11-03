@@ -1,0 +1,35 @@
+# r8-perf: GPU time of the Modern renderer at the Balanced preset (MFT 100%, MSAA 4x, 2560x1440)
+
+**Goal**: >= 300 fps in hubs at Balanced (ep1 hub ~258 fps / 3.79 ms GPU, m2 boardroom ~172 at the start). Exact
+faithfulness gates unchanged (tests/r2/gates.json via r2_sweep ab+hc+tf; Reference identical: m9_exact).
+Worktree C:\Users\tanih\Projects\sly2-worktrees\r8-perf, branch next/r8-perf (from main 38a38df).
+
+## Done
+- Tools (gpu_exec.c): `PS2_GPU_PROF_OPS_N=<n>` + `PS2_GPU_PROF_OPS_MFT=1` (op signatures averaged over n MFT frames);
+  `PS2_R8P_SKIP=<m1>,<m2>,..` with `PS2_GPU_AB=<frames>`: phases cycle "nothing skipped" / each R8S_* mask left out
+  (prof-skip line: the cost of each item, one run); `PS2_GPU_AB_R8=<mask>`: only R8P_* features follow the A/B phases
+  (MFT stays on in both); `PS2_R8P=<mask>`: features on; per-phase picture GPU time without PS2_GPU_PROF ("ab-gpu"
+  line, gpu_present.c ts_complete; gpu_frame_stats.ab_phase).
+- Profile ep1 hub Balanced (machine shared, GPU ~4x inflated; shares): R2 ~31%, shadow (svol + fuse) ~21%, exact FF
+  triangles (sky, characters) ~22%, outline line pixels ~6%, blur ~4%. R2: ~5500 draws/frame of 1-6 triangles
+  (grass/leaves: per sub-batch pass A pass-half 5F74, fail-half 5F64, pass B additive 1F42); skipping the raster
+  (empty scissor) saves only ~40% of R2, 3-index draws cost as much as full ones: **draw count is R2's cost**.
+- R2 plan (gpu_r2front.c r2_plan, gpu_front.h gpu_r2_chunk, r2.hlsl r2_vs_pull / vs_r2m_pull, r2_render.c plan
+  loop, mesh table 16 B/mesh with vbase/ibase, arena VB/IB raw SRVs t20/t21): exact reordering of draws with disjoint
+  screen boxes (tile levels), runs of one state merged into instanced pulled draws. ep1: 5444 -> 3043 GPU draws
+  (TS 16), 2614 (TS 8), 2945 (TS 4): overlap-limited. A/B (prof): R2 1.67 -> 1.28 ms; ab-gpu -0.78 of 19.6 (loaded).
+
+## In progress
+- R2 plan: tuning; verify pictures identical (merge on/off).
+
+## Next
+1. R2: fewer levels? check pictures; m1 / m2 numbers.
+2. Shadow passes (svol per-sample atomics, shfuse), exact FF tris (sky), outlines (line pixels), blur.
+3. Gates, notes/modern-renderer.md "as built", final report.
+
+## Findings / traps
+- Build: `$env:PYTHON_CPU_COUNT='6'` limits build_game.py's thread pool (Python 3.13) to 6 jobs.
+- PS2_GPU_AB alone makes the A phases grid frames (ab_off() turns MFT, texdec, lazy Z, npost, shfuse off).
+- PS2_GPU_PROF=1 serialises CPU/GPU per frame (spin in prof_end: render CPU looks ~4 ms); without it render ~0.9 ms.
+- Other agents run 2-3 games at once: GPU time 3-5x inflated; only in-run A/B, long runs (-Secs 400).
+- PowerShell Set-Content -Encoding utf8 adds a BOM: strip it (files are CRLF in the worktree, autocrlf).

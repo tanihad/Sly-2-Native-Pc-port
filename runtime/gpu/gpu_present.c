@@ -574,6 +574,18 @@ static int ts_complete(int block) {             /* oldest timestamp set; returns
     st.gpu_ms = ok ? (double)(t1 - t0) * 1000.0 / (double)dj.Frequency : -1.0;
     st.present_gpu_ms = ok && P.ts[i].pres && t2 >= t1b ? (double)(t2 - t1b) * 1000.0 / (double)dj.Frequency : -1.0;
     if (ptrace_file()) fprintf(ptrace, "g %u %.3f %.3f\n", st.vblank, st.gpu_ms, st.present_gpu_ms);
+    if (st.ab_phase > 0 && st.gpu_ms >= 0 && st.gpu_ms < 50.0) {   /* (r8-perf) PS2_GPU_AB: the pictures' GPU time per phase */
+        static double ab_ms[2], ab_pms[2];
+        static uint32_t ab_n[2], ab_tot;
+        int b = st.ab_phase - 1;
+        ab_ms[b] += st.gpu_ms;
+        ab_pms[b] += st.present_gpu_ms > 0 ? st.present_gpu_ms : 0;
+        ab_n[b]++;
+        if (++ab_tot % 3000 == 0 && ab_n[0] && ab_n[1])
+            gpu_log("ab-gpu: A %u frames %.3f ms (+ present %.3f) | B %u frames %.3f ms (+ present %.3f) | B - A %.3f ms", ab_n[0],
+                    ab_ms[0] / ab_n[0], ab_pms[0] / ab_n[0], ab_n[1], ab_ms[1] / ab_n[1], ab_pms[1] / ab_n[1],
+                    ab_ms[1] / ab_n[1] + ab_pms[1] / ab_n[1] - ab_ms[0] / ab_n[0] - ab_pms[0] / ab_n[0]);
+    }
     stats_push(&st);
     P.ts[i].busy = 0;
     P.ts_head = (P.ts_head + 1) % NTS;

@@ -20,6 +20,7 @@
 #include "gs_mem_swizzle.h"
 #include "r2/r2.h"
 
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 #include <windows.h>
@@ -293,6 +294,209 @@ static void emit_entry(const r2_mesh* m, uint32_t ent, float fade, int zmsk, int
     }
 }
 
+/* ---- (r8-perf) the segment's draws as fewer GPU draws --------------------------------------------------------------
+ * Most of R2's GPU time in a hub was the draws themselves (ep1: ~5500 a frame of 1-6 triangles each - grass, leaves -
+ * three states alternating per sub-batch: pass A's alpha-test halves and pass B), not their pixels. Two draws that touch
+ * no common pixel commute exactly (every per-pixel effect - depth test and write, blend, alpha test - stays the same), so
+ * the draws are reordered within that freedom only: each draw's screen box (its sub-batch's object-space box through
+ * the entry's W x C and the frame's screen model, 2 pixels of margin; a skinned sub-batch or a corner behind the camera:
+ * the whole scissor) is entered into a tile grid, and draw j gets the level
+ *     L(j) = max over earlier draws k sharing a tile with j of L(k) + (rank(k) > rank(j))
+ * (rank: the order in which the segment's states first appear). Executing by (level, rank), the game's order within each,
+ * keeps every overlapping pair in order: L(k) < L(j), or equal levels with rank(k) <= rank(j). Runs of one (level, rank)
+ * become instanced draws of up to n small draws (shaders/r2.hlsl R2_PULL: the vertices pulled by index, padding
+ * triangles rejected; the waste is bounded: n x max count <= 2 x the indices + 96). Large draws stay plain. */
+#define PL_TS pl_ts                      /* tile size, GS pixels (PS2_R2_PLAN_TS, default 16) */
+#define PL_TMAX 128                      /* tiles per axis */
+#define PL_R 16                          /* distinct states per segment */
+#define PL_SMALL 384u                    /* indices: larger draws are not merged */
+#define PL_MESHES (4u * 16384u)          /* (r2_mesh.c: 4 generations x MESH_MAX) */
+typedef struct { uint32_t handle, nb; float* bb; } pl_mbox;   /* per sub-batch: min xyz, max xyz; min x > max x: no triangle */
+static pl_mbox* PLB;
+static int16_t (*pl_lev)[PL_R];
+static uint32_t* pl_stamp;
+static uint32_t pl_seg;
+static uint64_t* pl_key;
+static gpu_r2_chunk* pl_ch;
+static uint32_t* pl_mem;
+static uint32_t pl_capkey, pl_capch, pl_capmem;
+static uint64_t pl_stat_draws, pl_stat_chunks, pl_stat_merged, pl_stat_levels, pl_stat_segs;
+static int merge_env = -1;               /* PS2_R2_MERGE=0: no plan (the render thread draws every record) */
+static int pl_ts = 16, pl_margin = 2;    /* (PS2_R2_PLAN_TS, PS2_R2_PLAN_MARGIN: experiments) */
+
+static const float* pl_batch_box(const r2_mesh* m, uint32_t b) {
+    if (!PLB && !(PLB = calloc(PL_MESHES, sizeof *PLB))) return NULL;
+    uint32_t k = ((m->handle >> 20) & 3u) * 16384u + (m->handle & 0x3FFFu);
+    pl_mbox* e = &PLB[k];
+    if (e->handle != m->handle || e->nb != m->nb || !e->bb) {
+        free(e->bb);
+        e->bb = malloc((size_t)m->nb * 6 * sizeof(float));
+        e->handle = m->handle;
+        e->nb = m->nb;
+        if (!e->bb) { e->handle = 0; return NULL; }
+        for (uint32_t i = 0; i < m->nb; i++) {
+            float* q = e->bb + i * 6;
+            q[0] = q[1] = q[2] = 1e30f; q[3] = q[4] = q[5] = -1e30f;
+            const r2_batch* B = &m->b[i];
+            for (uint32_t j = B->ifirst; j < B->ifirst + B->icount && j < m->nidx; j++) {
+                uint32_t v = m->idx[j];
+                if (v >= m->nvtx) { q[0] = -1e30f; q[3] = 1e30f; break; }   /* (an index the box cannot bound: everything) */
+                const r2_vtx* p = &m->vtx[v];
+                if (p->x < q[0]) q[0] = p->x;
+                if (p->y < q[1]) q[1] = p->y;
+                if (p->z < q[2]) q[2] = p->z;
+                if (p->x > q[3]) q[3] = p->x;
+                if (p->y > q[4]) q[4] = p->y;
+                if (p->z > q[5]) q[5] = p->z;
+            }
+        }
+    }
+    return b < e->nb ? e->bb + b * 6 : NULL;
+}
+
+/* the tiles draw d may touch: 1 (t[0..3] inclusive), 0 none, -1 all */
+static int pl_tiles(const gpu_r2_draw* d, const r2_mesh* m, float xo, float yo, int sx0, int sy0, int sx1, int sy1, int t[4]) {
+    uint32_t b = d->mode >> 8;
+    if (b >= m->nb || m->b[b].skin || (d->state >> 13) & 1 || d->mask_off != ~0u) return -1;
+    const float* q = pl_batch_box(m, b);
+    if (!q || q[0] < -1e29f || q[3] > 1e29f) return -1;
+    if (q[0] > q[3]) return 0;
+    const float* M = ents[d->entry].m;
+    float gx0 = 1e30f, gy0 = 1e30f, gx1 = -1e30f, gy1 = -1e30f;
+    for (int c = 0; c < 8; c++) {
+        float x = q[(c & 1) ? 3 : 0], y = q[(c & 2) ? 4 : 1], z = q[(c & 4) ? 5 : 2];
+        float cx = x * M[0] + y * M[4] + z * M[8] + M[12];
+        float cy = x * M[1] + y * M[5] + z * M[9] + M[13];
+        float cw = x * M[3] + y * M[7] + z * M[11] + M[15];
+        if (!(cw > 1e-6f)) return -1;
+        float X = (SM.bx + SM.ax * (cx / cw) - xo) * (1.0f / 16.0f), Y = (SM.by + SM.ay * (cy / cw) - yo) * (1.0f / 16.0f);
+        if (!(X > -1e7f && X < 1e7f && Y > -1e7f && Y < 1e7f)) return -1;
+        if (X < gx0) gx0 = X;
+        if (X > gx1) gx1 = X;
+        if (Y < gy0) gy0 = Y;
+        if (Y > gy1) gy1 = Y;
+    }
+    int x0 = (int)floorf(gx0) - pl_margin, y0 = (int)floorf(gy0) - pl_margin, x1 = (int)ceilf(gx1) + pl_margin,
+        y1 = (int)ceilf(gy1) + pl_margin;
+    if (x0 < sx0) x0 = sx0;
+    if (y0 < sy0) y0 = sy0;
+    if (x1 > sx1) x1 = sx1;
+    if (y1 > sy1) y1 = sy1;
+    if (x0 > x1 || y0 > y1) return 0;
+    t[0] = (x0 - sx0) / PL_TS; t[1] = (y0 - sy0) / PL_TS; t[2] = (x1 - sx0) / PL_TS; t[3] = (y1 - sy0) / PL_TS;
+    return 1;
+}
+
+static int pl_cmp(const void* a, const void* b) {
+    uint64_t x = *(const uint64_t*)a, y = *(const uint64_t*)b;
+    return x < y ? -1 : x > y;
+}
+
+/* the plan of the closing segment's nd draws (records at draw_off); 0: none (the render thread draws every record) */
+static uint32_t r2_plan(uint32_t nd, uint32_t draw_off, int sx0, int sy0, int sx1, int sy1, float xo, float yo, uint32_t* nplan) {
+    *nplan = 0;
+    if (merge_env < 0) {
+        const char* e = getenv("PS2_R2_MERGE"); merge_env = !(e && *e == '0');
+        e = getenv("PS2_R2_PLAN_TS"); if (e && atoi(e) >= 4 && atoi(e) <= 64) pl_ts = atoi(e);
+        e = getenv("PS2_R2_PLAN_MARGIN"); if (e && atoi(e) >= 1 && atoi(e) <= 16) pl_margin = atoi(e);
+    }
+    if (!merge_env || consolidate || nd < 2) return 0;
+    int ntx = (sx1 - sx0) / PL_TS + 1, nty = (sy1 - sy0) / PL_TS + 1;
+    if (ntx > PL_TMAX || nty > PL_TMAX) return 0;
+    if (!pl_lev && (!(pl_lev = calloc(PL_TMAX * PL_TMAX, sizeof *pl_lev)) || !(pl_stamp = calloc(PL_TMAX * PL_TMAX, 4)))) return 0;
+    if (!grow((void**)&pl_key, &pl_capkey, nd, 8) || !grow((void**)&pl_ch, &pl_capch, nd, sizeof *pl_ch) ||
+        !grow((void**)&pl_mem, &pl_capmem, nd + 8 * nd, 4))
+        return 0;
+    pl_seg++;
+    uint32_t st_of[PL_R];
+    int nr = 0;
+    int floor_[PL_R], gmax[PL_R];
+    for (int s = 0; s < PL_R; s++) floor_[s] = gmax[s] = -1;
+    const gpu_r2_draw* D = R2S_draws;
+    int maxl = 0;
+    for (uint32_t i = 0; i < nd; i++) {
+        const gpu_r2_draw* d = &D[i];
+        int r = 0;
+        while (r < nr && st_of[r] != d->state) r++;
+        if (r == nr) { if (nr == PL_R) return 0; st_of[nr++] = d->state; }
+        const r2_mesh* m = r2_mesh_get(d->mesh);
+        if (!m) return 0;
+        int t[4];
+        int k = pl_tiles(d, m, xo, yo, sx0, sy0, sx1, sy1, t);
+        int L = 0;
+        if (k < 0) {                     /* (everything: against every earlier draw) */
+            for (int s = 0; s < nr; s++) if (gmax[s] >= 0 && gmax[s] + (s > r) > L) L = gmax[s] + (s > r);
+            if (L > floor_[r]) floor_[r] = L;
+        } else if (k > 0) {
+            for (int y = t[1]; y <= t[3]; y++)
+                for (int x = t[0]; x <= t[2]; x++) {
+                    uint32_t ti = (uint32_t)(y * PL_TMAX + x);
+                    if (pl_stamp[ti] != pl_seg) { pl_stamp[ti] = pl_seg; for (int s = 0; s < PL_R; s++) pl_lev[ti][s] = -1; }
+                    for (int s = 0; s < nr; s++) {
+                        int v = pl_lev[ti][s] > floor_[s] ? pl_lev[ti][s] : floor_[s];
+                        if (v >= 0 && v + (s > r) > L) L = v + (s > r);
+                    }
+                }
+            for (int y = t[1]; y <= t[3]; y++)
+                for (int x = t[0]; x <= t[2]; x++) {
+                    uint32_t ti = (uint32_t)(y * PL_TMAX + x);
+                    if (pl_lev[ti][r] < L) pl_lev[ti][r] = (int16_t)L;
+                }
+        }
+        if (L > 32000) return 0;
+        if (L > gmax[r]) gmax[r] = L;
+        if (L > maxl) maxl = L;
+        pl_key[i] = (uint64_t)((uint32_t)L * PL_R + (uint32_t)r) << 32 | i;
+    }
+    qsort(pl_key, nd, 8, pl_cmp);
+    /* chunks: runs of one key; small draws merged with bounded padding */
+    uint32_t nc = 0, nm = 0, mem0 = 0;
+    uint32_t cn = 0, cmax = 0, csum = 0, cst = 0;
+    uint64_t ckey = ~0ull;
+    uint32_t base = draw_off / 32u;
+#define PL_FLUSH() do { \
+        if (cn == 1) { pl_ch[nc++] = (gpu_r2_chunk){ pl_mem[mem0] - base, 0, 0, cst }; nm = mem0; } \
+        else if (cn > 1) { pl_ch[nc++] = (gpu_r2_chunk){ mem0, cn, cmax, cst }; nm = (mem0 + cn + 7) & ~7u; pl_stat_merged += cn; } \
+        cn = 0; cmax = 0; csum = 0; mem0 = nm; } while (0)
+    for (uint32_t j = 0; j < nd; j++) {
+        uint32_t i = (uint32_t)pl_key[j];
+        uint64_t key = pl_key[j] >> 32;
+        const gpu_r2_draw* d = &D[i];
+        uint32_t c = d->count;
+        if (key != ckey) { PL_FLUSH(); ckey = key; }
+        if (c > PL_SMALL || c % 3u) {
+            PL_FLUSH();
+            pl_ch[nc++] = (gpu_r2_chunk){ i, 0, 0, d->state };
+            continue;
+        }
+        uint32_t nmx = c > cmax ? c : cmax;
+        if (cn && (cn + 1) * nmx > 2u * (csum + c) + 96u) PL_FLUSH();
+        if (!cn) { cst = d->state; mem0 = nm; }
+        pl_mem[mem0 + cn] = base + i;
+        cn++;
+        csum += c;
+        if (c > cmax) cmax = c;
+    }
+    PL_FLUSH();
+#undef PL_FLUSH
+    pl_stat_draws += nd;
+    pl_stat_chunks += nc;
+    pl_stat_levels += (uint64_t)maxl + 1;
+    pl_stat_segs++;
+    if (nc >= nd) return 0;
+    /* the member lists (32-byte aligned per merged chunk), then the chunk records */
+    uint32_t mo = 0;
+    if (nm) {
+        uint32_t raw = gf_data(NULL, nm * 4u + 32u);
+        mo = (raw + 31u) & ~31u;
+        memcpy(gf_data_ptr(mo), pl_mem, nm * 4u);
+        for (uint32_t c = 0; c < nc; c++)
+            if (pl_ch[c].n) pl_ch[c].first = (mo + pl_ch[c].first * 4u) / 32u;
+    }
+    *nplan = nc;
+    return gf_data(pl_ch, nc * (uint32_t)sizeof *pl_ch);
+}
+
 /* the open segment becomes a GPU_FOP_R2 */
 static void gf_r2_flush_impl(void);
 void gf_r2_flush(void) {
@@ -374,6 +578,7 @@ static void gf_r2_flush_impl(void) {
     uint32_t base = gf_data(NULL, nd * (uint32_t)sizeof(gpu_r2_draw) + 16);
     o->draw_off = (base + 31) & ~31u;
     memcpy(gf_data_ptr(o->draw_off), R2S_draws, nd * sizeof(gpu_r2_draw));
+    o->plan_off = r2_plan(nd, o->draw_off, x0, y0, x1, y1, (float)(seg_xyo & 0xFFFF), (float)((seg_xyo >> 32) & 0xFFFF), &o->nplan);
     o->nent = nents;
     o->ndraw = nd;
     o->gen = items[0].handle >> 20;
@@ -601,6 +806,10 @@ void gf_r2_vblank(void) {
             s->segments / f, s->runs / f, s->entries / f, s->draws / f, s->items / f, s->zwrite_draws / f, s->splits / f, s->all_fail / f,
             s->textures / f, s->tex_gpu / f, s->dropped / f, s->unsupported / f, s->over128 / f, (unsigned long long)s->bad_hints,
             (unsigned long long)s->stale, s->brackets / f, s->part_spans / f, s->part_prims / f, s->part_exact / f, s->part_rov / f, s->part_other / f);
+    if (pl_stat_segs)                            /* (r8-perf) the batching plan */
+        fprintf(stderr, "[r2] front: plan per frame %.1f draws -> %.1f GPU draws (%.1f in merged ones), %.2f levels per segment\n",
+                pl_stat_draws / f, pl_stat_chunks / f, pl_stat_merged / f, (double)pl_stat_levels / (double)pl_stat_segs);
+    pl_stat_draws = pl_stat_chunks = pl_stat_merged = pl_stat_levels = pl_stat_segs = 0;
     extern uint32_t gf_z32_ab[2];                /* (r2-m5b, diagnostics) gpu_front.c: Z above the FF range per A / B phase */
     fprintf(stderr, "[r2] front: Z beyond the FF range: %u primitives in A phases, %u in B (300 frames)\n", gf_z32_ab[0], gf_z32_ab[1]);
     gf_z32_ab[0] = gf_z32_ab[1] = 0;

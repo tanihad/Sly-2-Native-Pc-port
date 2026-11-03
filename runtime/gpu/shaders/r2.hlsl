@@ -198,7 +198,7 @@ void r2_vertex(R2V i, out R2O o, out float4 clip, out float4 alt) {
         uint rel = i.batch - b0;
         skip = ((fdata.Load((dr.z + (rel >> 5)) * 4u) >> (rel & 31u)) & 1u) == 0u;
     }
-    uint mat = r2_mtab.Load((dr.w & 0xFFFFFu) * 4u) + i.batch * 3u + rp;
+    uint mat = r2_mtab.Load((dr.w & 0xFFFFFu) * 16u) + i.batch * 3u + rp;   // (r8-perf: mbase, vbase, ibase per mesh)
     uint4 d3 = r2_mats.Load4(mat * 64u + 32u);   // fog scale, fog w max, flags
     uint eb = sg.off.y + dr.x * 144u;     // (gpu_front.h gpu_r2_entry)
     float4 m[4] = { asfloat(fdata.Load4(eb)), asfloat(fdata.Load4(eb + 16u)), asfloat(fdata.Load4(eb + 32u)),
@@ -303,6 +303,47 @@ R2O r2_vs(R2V i) {
     r2_vertex(i, o, clip, alt);
     return o;
 }
+
+#ifndef R2_PULL
+#define R2_PULL 0
+#endif
+#if R2_PULL
+// (r8-perf) a merged draw of the segment's plan (gpu_front.h gpu_r2_chunk, gpu_r2front.c r2_plan): instance k is the draw
+// record whose absolute index is the k-th word of the chunk's member list (fdata, 32-byte aligned: StartInstanceLocation =
+// its offset / 32, so DRAWID - SV_InstanceID locates it); vertex v is index v of that draw's range, pulled from the arena
+// (r2_render.c: indices t21, vertices t20 as the r2_vtx records; the mesh table holds the mesh's vertex and index bases).
+// Vertices past the draw's count make triangles outside the clip volume (rejected).
+ByteAddressBuffer r2_vb : register(t20);
+ByteAddressBuffer r2_ib : register(t21);
+struct R2Pull {
+    uint did : DRAWID;
+    uint vid : SV_VertexID;
+    uint inst : SV_InstanceID;
+};
+R2O r2_vs_pull(R2Pull p) {
+    uint rid = fdata.Load((p.did - p.inst) * 32u + p.inst * 4u);
+    uint db = rid * 32u;
+    uint mesh = fdata.Load(db + 12u) & 0xFFFFFu;
+    uint2 fc = fdata.Load2(db + 16u);                       // first, count (indices)
+    uint3 mt = r2_mtab.Load3(mesh * 16u);                   // material, vertex, index bases
+    bool pad = p.vid >= fc.y;
+    uint vi = r2_ib.Load((mt.z + fc.x + (pad ? 0u : p.vid)) * 4u);
+    uint vb = (mt.y + vi) * 48u;
+    uint4 a = r2_vb.Load4(vb), b = r2_vb.Load4(vb + 16u), c = r2_vb.Load4(vb + 32u);
+    R2V i;
+    i.pos = asfloat(a.xyz);
+    i.wbits = a.w;
+    i.uv = int2((int)(b.x << 16) >> 16, (int)b.x >> 16);
+    i.cola = b.y; i.colb = b.z; i.batch = b.w;
+    i.nrm = c.x; i.lcol = c.y; i.wts = c.z;
+    i.did = rid;
+    R2O o;
+    float4 clip, alt;
+    r2_vertex(i, o, clip, alt);
+    if (pad) o.pos = float4(2.0, 2.0, 0.5, 1.0);
+    return o;
+}
+#endif
 
 #if R2_MV
 // (r2-m8, R8) the motion-vector pass of a modern frame (gpu_exec_mft.h mft_mv): pass A of every native entry again, depth

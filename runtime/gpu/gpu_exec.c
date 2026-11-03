@@ -1240,9 +1240,32 @@ static struct {
     int ab, ab_b, ab_skip, ab_ee;
     double ab_ms[2][PR_N], ab_tot[2];
     uint32_t ab_n[2];
+    /* (r8-perf) PS2_GPU_PROF_OPS_N=<n>: the op signatures of n frames from PS2_GPU_PROF_OPS on, averaged (only modern-frame-
+     * target frames count when MFT is on: PS2_GPU_PROF_OPS_MFT=1); PS2_GPU_AB_R8=<mask>: only this task's features (R8P_*)
+     * in the mask follow the A / B phases, everything else stays on in both */
+    uint32_t ops_n, ops_done, ops_mft;
+    int ab_r8;
+    /* (r8-perf, diagnostics) PS2_R8P_SKIP=<m1>,<m2>,..: with PS2_GPU_AB=<frames> the phases cycle through "nothing skipped"
+     * and each mask of MFT work left out (R8S_*): the GPU time per modern frame of each phase (prof-skip lines) = what the
+     * skipped work costs, measured in one run under the same load */
+    int ncyc, cyc, cyc_skip;
+    int cyc_mask[8];
+    double cyc_ms[8];
+    uint32_t cyc_n[8];
 } PR = { -1 };
+enum { R8S_LINE = 1, R8S_R2 = 2, R8S_SHADOW = 4, R8S_NPOST = 8, R8S_TRI = 16, R8S_SPRITE = 32, R8S_LINEZ = 64, R8S_LINEC = 128,
+       R8S_R2DRAW = 256, R8S_R2TINY = 512, R8S_R2UNI = 1024 };
+static int r8s_skip(int what) { return PR.ncyc > 0 && (PR.cyc_mask[PR.cyc] & what) != 0; }
 /* (r2-m7b) an experimental feature is off in this frame (an A phase of PS2_GPU_AB) */
-static int ab_off(void) { return PR.ab > 0 && !PR.ab_b && !PR.ab_ee; }
+static int ab_off(void) { return PR.ab > 0 && !PR.ab_b && !PR.ab_ee && !PR.ab_r8 && !PR.ncyc; }
+/* (r8-perf) the GPU optimisations of the Balanced preset (modern frame targets), each one switchable for in-run A/B */
+enum { R8P_R2BATCH = 1, R8P_LINEPIX = 2, R8P_SHADOW = 4, R8P_RESOLVE = 8, R8P_R2STATE = 16, R8P_MISC = 32 };
+static int r8p_mask = -1;                /* PS2_R8P=<mask>: the features on (default all) */
+static int r8p_on(int f) {
+    if (r8p_mask < 0) { const char* e = getenv("PS2_R8P"); r8p_mask = e && *e ? (int)strtol(e, NULL, 0) : 0x7FFFFFFF; }
+    if (!(r8p_mask & f)) return 0;
+    return !(PR.ab > 0 && !PR.ab_b && (PR.ab_r8 & f));
+}
 /* (r2-m5b) the current phase for EE-side features (r2_capture.c: the VU clipper's entries with PS2_GPU_AB_EE=1, when only
  * they follow the phases); -1: no A/B */
 extern volatile int gpu_ab_phase;      /* (defined in gpu_front.c: tools link the frontend alone) */
@@ -1283,8 +1306,12 @@ static void prof_begin(void) {
     }
     ID3D11DeviceContext_Begin(gpu_rt.ctx, (ID3D11Asynchronous*)PR.dis);
     PR.n = 0;
-    if (!PR.ops_frame) { const char* e = getenv("PS2_GPU_PROF_OPS"); PR.ops_frame = e ? (uint32_t)atoi(e) : 0xFFFFFFFFu; }
-    PR.ops_on = PR.frames + 1 == PR.ops_frame;
+    if (!PR.ops_frame) {
+        const char* e = getenv("PS2_GPU_PROF_OPS"); PR.ops_frame = e ? (uint32_t)atoi(e) : 0xFFFFFFFFu;
+        e = getenv("PS2_GPU_PROF_OPS_N"); PR.ops_n = e && atoi(e) > 0 ? (uint32_t)atoi(e) : 1;
+        e = getenv("PS2_GPU_PROF_OPS_MFT"); PR.ops_mft = e && *e == '1';
+    }
+    PR.ops_on = PR.frames + 1 >= PR.ops_frame && PR.ops_done < PR.ops_n;
     PR.curpos = 0xFFFFFFFFu;
     prof_mark(PR_OTHER);
 }
@@ -1309,17 +1336,20 @@ static void prof_op_sig(const gpu_front_frame_data* fd, uint32_t pos, int cat, c
     }
 }
 
+static int pr_frame_mft;                /* (r8-perf) this frame runs on the modern frame targets (gpu_exec_mft.h) */
 static void prof_ops_report(const UINT64* ts, double freq) {
     typedef struct { char sig[200]; double ms; uint32_t n; } agg;
     static agg A[512];
-    int na = 0;
-    double tot = 0;
+    static int na = 0;
+    static double tot = 0;
+    if (PR.ops_mft && !pr_frame_mft) return;   /* (r8-perf: modern-frame-target frames only) */
+    PR.ops_done++;
     for (int i = 0; i + 1 < PR.n; i++) {
         double ms = (double)(ts[i + 1] - ts[i]) * 1000.0 / freq;
         char s[200];
         prof_op_sig(X.fd, PR.opos[i], PR.cat[i], s, sizeof s);
         if (PR.hudf[i]) { size_t l = strlen(s); if (l + 6 < sizeof s) memcpy(s + l, " [HUD]", 7); }
-        if (getenv("PS2_GPU_PROF_SEQ")) gpu_log("prof-seq %4d %7.3f ms @%u %s", i, ms, PR.opos[i], s);   /* (r2-m7b: in order) */
+        if (PR.ops_done == 1 && getenv("PS2_GPU_PROF_SEQ")) gpu_log("prof-seq %4d %7.3f ms @%u %s", i, ms, PR.opos[i], s);   /* (r2-m7b: in order) */
         int k;
         for (k = 0; k < na && strcmp(A[k].sig, s); k++) {}
         if (k == na) { if (na == 512) continue; snprintf(A[na].sig, sizeof A[na].sig, "%s", s); A[na].ms = 0; A[na].n = 0; na++; }
@@ -1327,11 +1357,14 @@ static void prof_ops_report(const UINT64* ts, double freq) {
         A[k].n++;
         tot += ms;
     }
+    if (PR.ops_done < PR.ops_n) return;  /* (r8-perf: the report after the n-th frame, per frame) */
+    double nf = (double)PR.ops_n;
     for (int i = 0; i < na; i++)          /* (largest first) */
         for (int j = i + 1; j < na; j++)
             if (A[j].ms > A[i].ms) { agg t = A[i]; A[i] = A[j]; A[j] = t; }
-    gpu_log("prof-ops frame %u: %.3f ms in %d intervals, %d signatures", PR.frames + 1, tot, PR.n - 1, na);
-    for (int i = 0; i < na && i < 48; i++) gpu_log("prof-ops %7.3f ms %4u x %s", A[i].ms, A[i].n, A[i].sig);
+    gpu_log("prof-ops frame %u (%u frames): %.3f ms per frame in %d intervals, %d signatures", PR.frames + 1, PR.ops_n, tot / nf,
+            PR.n - 1, na);
+    for (int i = 0; i < na && i < 64; i++) gpu_log("prof-ops %7.3f ms %7.1f x %s", A[i].ms / nf, A[i].n / nf, A[i].sig);
 }
 
 static void prof_end(void) {
@@ -1386,6 +1419,8 @@ static void prof_end(void) {
     for (int c = 0; c < PR_N; c++) { PR.ms[c] += f[c]; PR.ps_inv[c] += fi[c]; PR.occl[c] += fo[c]; PR.prims[c] += fp[c]; }
     PR.total += ft;
     PR.hud_ms += fh;
+    if (PR.ncyc > 0 && PR.cyc_skip > 0) PR.cyc_skip--;
+    else if (PR.ncyc > 0 && pr_frame_mft) { PR.cyc_ms[PR.cyc] += ft; PR.cyc_n[PR.cyc]++; }
     if (PR.ab > 0 && PR.ab_skip > 0) PR.ab_skip--;   /* (r2-m5b) the frames after a switch: in flight / the EE's lag */
     else if (PR.ab > 0) {                /* (r2-m7b) per A / B phase */
         for (int c = 0; c < PR_N; c++) PR.ab_ms[PR.ab_b][c] += f[c];
@@ -1403,6 +1438,14 @@ static void prof_end(void) {
                                          (double)PR.marks[c] / PR.frames);
     snprintf(line + o, sizeof line - (size_t)o, " | hud %.3f", PR.hud_ms / PR.frames);   /* (r2-hud) of the above, the HUD's ops */
     gpu_log("%s", line);
+    if (PR.ncyc > 0 && PR.cyc_n[0]) {    /* (r8-perf) per skip mask: GPU ms per modern frame, the difference to nothing skipped */
+        double b = PR.cyc_ms[0] / PR.cyc_n[0];
+        o = snprintf(line, sizeof line, "prof-skip: none %.3f (%u)", b, PR.cyc_n[0]);
+        for (int c = 1; c < PR.ncyc && o < (int)sizeof line - 64; c++)
+            if (PR.cyc_n[c]) o += snprintf(line + o, sizeof line - (size_t)o, " | skip %X %.3f (%u) -> %.3f", PR.cyc_mask[c],
+                                           PR.cyc_ms[c] / PR.cyc_n[c], PR.cyc_n[c], b - PR.cyc_ms[c] / PR.cyc_n[c]);
+        gpu_log("%s", line);
+    }
     for (int b = 0; PR.ab > 0 && b < 2; b++) {
         if (!PR.ab_n[b]) continue;
         o = snprintf(line, sizeof line, "prof-ab %c: %u frames, GPU ms per frame %.3f:", 'A' + b, PR.ab_n[b], PR.ab_tot[b] / PR.ab_n[b]);
@@ -3232,8 +3275,24 @@ void gpu_exec_frame(const void* payload) {
     if (!ab_init) {
         ab_init = 1; const char* e = getenv("PS2_GPU_AB"); PR.ab = e && atoi(e) > 0 ? atoi(e) : 0;   /* (r2-m7b) */
         e = getenv("PS2_GPU_AB_EE"); PR.ab_ee = e && (*e == '1' || *e == '2' || *e == '3');   /* (r2-m5b; r2-hud: 2 = only the dropped render class follows the phases) */
+        e = getenv("PS2_GPU_AB_R8"); PR.ab_r8 = e && *e ? (int)strtol(e, NULL, 0) : 0;   /* (r8-perf: R8P_* mask) */
+        e = getenv("PS2_R8P_SKIP");      /* (r8-perf, diagnostics: phase 0 nothing skipped, then each mask) */
+        if (e && *e && PR.ab > 0) {
+            PR.ncyc = 1;
+            for (const char* s = e; *s && PR.ncyc < 8;) {
+                char* end;
+                long v = strtol(s, &end, 0);
+                if (end == s) break;
+                PR.cyc_mask[PR.ncyc++] = (int)v;
+                s = *end == ',' ? end + 1 : end;
+            }
+        }
     }
-    if (PR.ab > 0) {
+    if (PR.ncyc > 0) {
+        int c = (int)((XC.frames / (uint32_t)PR.ab) % (uint32_t)PR.ncyc);
+        if (c != PR.cyc) PR.cyc_skip = 8;
+        PR.cyc = c;
+    } else if (PR.ab > 0) {
         int nb = (int)((XC.frames / (uint32_t)PR.ab) & 1);
         if (nb != PR.ab_b) PR.ab_skip = 8;
         PR.ab_b = nb;
@@ -3254,6 +3313,15 @@ void gpu_exec_frame(const void* payload) {
     X.fd = fd;
     X.a16c_on = 0;
     int mft = ok && mft_frame_begin(fd);   /* (r2-m8) this frame on the modern frame targets (else: the twins back to the grid) */
+    pr_frame_mft = mft;
+    {                                    /* (r8-perf) the phase of this picture for the per-phase GPU time (gpu_present.c) */
+        static int last_b = -1, settle;
+        if (PR.ab > 0 && PR.ncyc == 0) {
+            if (PR.ab_b != last_b) { last_b = PR.ab_b; settle = 8; }
+            if (settle > 0) settle--;
+            else if (mft) gpu_stats_cur()->ab_phase = 1 + PR.ab_b;
+        }
+    }
     uint32_t slot = 1;
     for (size_t pos = 0; ok && pos + sizeof(gpu_fop) <= fd->cmd_bytes;) {
         const gpu_fop* h = (const gpu_fop*)(fd->cmd + pos);
