@@ -9,9 +9,11 @@
 #   tf  (r2-flicker) scripts\flicker_run.ps1: the game in modern mode, every picture of 180 VBlanks dumped; temporal
 #       outliers (one-picture blinks, a blinking line / row band, blobs, blinking seams) against tests\r2\gates.json
 #       level3_temporal - what the one-frame A/B and hc's averaged alternation can miss.
-#   .\scripts\r2_sweep.ps1 [-Scenes ep1,ep3] [-Checks ab,hc,tf,shots] [-Parallel 3] [-Keep]
+#   mf  (mft-pop) scripts\mft_pops.ps1: the game with R8's modern frame targets at 1440p MSAA 4x, 120 fps, no dumps;
+#       PS2_R2_STATS counts "pops" (1..8 grid frames between MFT frames: a one-frame resolution / AA switch); must be 0.
+#   .\scripts\r2_sweep.ps1 [-Scenes ep1,ep3] [-Checks ab,hc,tf,mf,shots] [-Parallel 3] [-Keep]
 # Output: build\r2ab\<scene>\, build\r2hc\sw_<scene>\worst.png (deleted unless -Keep / on failure).
-param([string[]]$Scenes = @(), [string[]]$Checks = @('ab', 'hc', 'tf'), [int]$Parallel = 3, [switch]$Keep)
+param([string[]]$Scenes = @(), [string[]]$Checks = @('ab', 'hc', 'tf', 'mf'), [int]$Parallel = 3, [switch]$Keep)
 $Scenes = @($Scenes | ForEach-Object { $_ -split ',' } | Where-Object { $_ })
 $Checks = @($Checks | ForEach-Object { $_ -split ',' } | Where-Object { $_ })
 $root = Split-Path $PSScriptRoot -Parent
@@ -45,6 +47,8 @@ while ($queue.Count -or $running.Count) {
         $log = Join-Path $logs "$($s.n)_$($t.c).txt"
         if ($t.c -eq 'ab') {
             $args1 = @('-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'r2_ab.ps1'), '-Name', "sw_$($s.n)", '-Levels', 'all') + $s.a
+        } elseif ($t.c -eq 'mf') {
+            $args1 = @('-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'mft_pops.ps1'), '-Name', "sw_$($s.n)") + $s.a
         } elseif ($t.c -eq 'tf') {
             $args1 = @('-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'flicker_run.ps1'), '-Name', "sw_$($s.n)", '-Frames', '180') + $s.a
         } else {
@@ -59,6 +63,13 @@ while ($queue.Count -or $running.Count) {
     foreach ($r in $running) {
         if (-not $r.p.HasExited) { $still += $r; continue }
         $t = Get-Content $r.log -ErrorAction SilentlyContinue
+        if ($r.c -eq 'mf') {               # (mft-pop) no MFT grid fallback in gameplay
+            $g = ($t | Select-String '^mftpops:' | Select-Object -Last 1)
+            $gl = if ($g) { $g.Line } else { 'mftpops: (no result)' }
+            if ($gl -notmatch 'PASS') { $fail++ }
+            "{0,-13} mf | {1}" -f $r.s.n, $gl
+            continue
+        }
         if ($r.c -eq 'tf') {               # (r2-flicker) temporal outliers
             $g = ($t | Select-String '^flicker:' | Select-Object -Last 1)
             $gl = if ($g) { $g.Line } else { 'flicker: (no result)' }

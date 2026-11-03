@@ -32,6 +32,7 @@ static struct {
     r2g_pipe* pipe_clip;                 /* (r2-m2) entries crossing the guard band (state bit 13): r2_gs_clip */
     r2g_pipe* pipe_nd;                   /* (r2-m2) draws that cannot discard (state bit 14 clear): early depth stays on */
     r2g_pipe *mpipe, *mpipe_nd, *mpipe_a2c;   /* (r2-m8, R8) modern frames: hardware Z on the MFT surfaces (R2_MFT) */
+    r2g_pipe *mcpipe, *mcpipe_nd, *mcpipe_a2c;   /* (mft-pop) the same for entries crossing the guard band (r2_gs_clip) */
     r2g_pipe* mvpipe;                    /* (r2-m8) the motion-vector pass */
     r2g_buf* cb;
     int cb_set;                          /* (r2-m2) cb holds the device's constants (r2.hlsl r2_static), written once */
@@ -53,6 +54,8 @@ static void release_all(void) {
     R.pipe = R.pipe_clip = R.pipe_nd = NULL;
     r2g_pipe_free(R.mpipe); r2g_pipe_free(R.mpipe_nd); r2g_pipe_free(R.mpipe_a2c); r2g_pipe_free(R.mvpipe);
     R.mpipe = R.mpipe_nd = R.mpipe_a2c = R.mvpipe = NULL;
+    r2g_pipe_free(R.mcpipe); r2g_pipe_free(R.mcpipe_nd); r2g_pipe_free(R.mcpipe_a2c);
+    R.mcpipe = R.mcpipe_nd = R.mcpipe_a2c = NULL;
     memset(R.cb_mft, 0, sizeof R.cb_mft);
     r2g_buf_free(R.cb);
     R.cb = NULL;
@@ -97,12 +100,20 @@ static int init(const r2_exec_in* in) {
     R.mpipe_nd = R.d ? r2g_pipe_create(R.d, &pm) : NULL;
     pm.ps = gpu_sh_ps_r2m_a2c; pm.ps_size = sizeof gpu_sh_ps_r2m_a2c;
     R.mpipe_a2c = R.d ? r2g_pipe_create(R.d, &pm) : NULL;
+    r2g_pipe_desc pmc = { gpu_sh_vs_r2m_clip, sizeof gpu_sh_vs_r2m_clip, gpu_sh_ps_r2m_clip, sizeof gpu_sh_ps_r2m_clip, attrs, 10,
+                          gpu_sh_gs_r2m_clip, sizeof gpu_sh_gs_r2m_clip };
+    R.mcpipe = R.d ? r2g_pipe_create(R.d, &pmc) : NULL;
+    pmc.ps = gpu_sh_ps_r2m_clip_nd; pmc.ps_size = sizeof gpu_sh_ps_r2m_clip_nd;
+    R.mcpipe_nd = R.d ? r2g_pipe_create(R.d, &pmc) : NULL;
+    pmc.ps = gpu_sh_ps_r2m_clip_a2c; pmc.ps_size = sizeof gpu_sh_ps_r2m_clip_a2c;
+    R.mcpipe_a2c = R.d ? r2g_pipe_create(R.d, &pmc) : NULL;
     r2g_pipe_desc pv = { gpu_sh_vs_r2m_mv, sizeof gpu_sh_vs_r2m_mv, gpu_sh_ps_r2m_mv, sizeof gpu_sh_ps_r2m_mv, attrs, 10, NULL, 0 };
     R.mvpipe = R.d ? r2g_pipe_create(R.d, &pv) : NULL;
     /* (r2-m2) the segment constants by UpdateSubresource (a DEFAULT buffer): Map(DISCARD) per segment, ~45 a frame with
      * frames queued, made the driver block the render thread for up to 10 ms when the GPU was the bottleneck */
     R.cb = R.d ? r2g_buf_create(R.d, R2G_BUF_CONSTANT, R2G_USAGE_DEFAULT, 48, NULL) : NULL;
-    if (!R.d || !R.pipe || !R.pipe_clip || !R.pipe_nd || !R.cb || !R.mpipe || !R.mpipe_nd || !R.mpipe_a2c || !R.mvpipe) {
+    if (!R.d || !R.pipe || !R.pipe_clip || !R.pipe_nd || !R.cb || !R.mpipe || !R.mpipe_nd || !R.mpipe_a2c || !R.mvpipe ||
+        !R.mcpipe || !R.mcpipe_nd || !R.mcpipe_a2c) {
         fprintf(stderr, "[r2] render: cannot create the pipelines: the modern renderer draws nothing\n");
         release_all();
         R.failed = 1;
@@ -318,9 +329,9 @@ static int segment(const gpu_fop_r2* o, const uint8_t* fdata, size_t fdata_bytes
             n++;
             continue;
         }
-        if (in->mft) {                   /* (r2-m8: the clip pipeline has no MFT form; gpu_exec_mft.h keeps such frames exact) */
-            if ((st >> 13) & 1) { R.missing++; continue; }
-            r2g_bind_pipe(R.d, (st >> 14) & 1 ? (in->msaa > 1 ? R.mpipe_a2c : R.mpipe) : R.mpipe_nd);
+        if (in->mft) {                   /* (r2-m8; mft-pop: entries crossing the guard band through the clip stage) */
+            if ((st >> 13) & 1) r2g_bind_pipe(R.d, (st >> 14) & 1 ? (in->msaa > 1 ? R.mcpipe_a2c : R.mcpipe) : R.mcpipe_nd);
+            else r2g_bind_pipe(R.d, (st >> 14) & 1 ? (in->msaa > 1 ? R.mpipe_a2c : R.mpipe) : R.mpipe_nd);
         } else
         r2g_bind_pipe(R.d, (st >> 13) & 1 ? R.pipe_clip : (st >> 14) & 1 ? R.pipe : R.pipe_nd);   /* (filtered when unchanged) */
         r2g_bind_state(R.d, &s);
