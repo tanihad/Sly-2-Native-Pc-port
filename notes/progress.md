@@ -2,6 +2,14 @@
 
 ## Resume here (read first in a new session)
 
+**2026-11-03: FLICKER FIX MERGED (57c8877), dist 0.1.1032 — HOLD POINT REACHED: the owner is testing.**
+- **Cause:** native world chains that were dropped no longer left the VIF1 state the exact shadow class needs (STMASK, flip parity, leftover lanes).
+- **Fix:** the owed registers are written, and native chains are kept, with drawing off, only in the class run before a switch. Cost about +0.03 ms per frame.
+- **New check:** the temporal flicker check (`tf`) is now part of r2_sweep.
+- **Open:** MFT falls back to the grid for a single frame about once per 27k frames ("other target", a full-screen blended draw into another target). That gives a one-frame AA pop and may be the owner's "random line". Fix it if the owner still sees the line.
+
+Do not start new work until the owner says so.
+
 **2026-11-03: LAUNCHER MERGED (2245f36).** build\installer\Sly2-Setup.exe is now the launcher.
 - **What it does:** drag-and-drop ISO; imports a 2.9 GB copy to `data\sly2.img`, so the ISO is no longer needed; Play / Repair / Previous / Uninstall.
 - **Updates:** Ed25519-signed updates from the GitHub latest release, with staged swap and rollback.
