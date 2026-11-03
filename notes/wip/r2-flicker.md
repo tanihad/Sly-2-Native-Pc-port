@@ -40,5 +40,11 @@ Summary for the docs: notes/modern-renderer.md "The owner's flicker report and t
       exact class-11 run between the world's last class-0 run and the shadow class 6 -> the class-0 run was not "before
       foreign", its chains dropped, parity unpaid at class 6 (hundreds of frames per walk, toggling = flicker)
 - [x] fix: before_foreign looks through short main-class runs (PS2_R2_SKIPRUN, default 16): unpaid 900 -> 2 (loading)
-- [ ] verify ALT at the persistent-unpaid spot (At 17640 after the walk) before / after; tf grid + MFT with DUMP_WAIT=1
-- [ ] r2_sweep: outline styles / preset combos; CPU A/B; full gates
+- [x] verified: ALT lamp walk (At 7900, 800 VBlanks, grid 3x): before, hybrid frames with the short class-11 run lost
+      Sly's lamp shadow the exact neighbours had (wa0 8491 / 8493); after, the same pattern draws the exact shadow (wa2 8500)
+- [x] owner set walk 700 @120 + DUMP_WAIT: grid PASS; MFT FAIL in both outline styles (om thin 4 over, omp ps2 5 over):
+      dump-induced MFT grid fallbacks (~1 per 60 VBlanks with dump waits, none without dumps) break the motion-blur
+      feedback for a few frames (v8547: whole frame lighter 10 frames after the v8537 fallback). Dump artefact; R8 note.
+      motion_blur=off: MFT dumps come out 512x448 (the grid memory, not the MFT picture) - not usable
+- [x] r2_sweep tf variants tft/tfq/tfb/tfp/tfo: ep1 6/6 PASS (settings confirmed in the logs); parity guard in flicker_run
+- [ ] full gates (scratchpad gatesC.ps1: m9 base = main 57c8877), CPU A/B (GPU was busy at 13:11: frame ms invalid)
