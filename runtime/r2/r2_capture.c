@@ -826,34 +826,59 @@ static void drop_tail(ps2_ctx* ctx) {
  * the VIF registers are owed (owe_vif). */
 /* the entries left in this render class before the next class switch, and whether the next class runs another VU1
  * program (the shadow-volume classes): cached per class run (the render list's pointer array, r21 / r20) */
+/* (r2-flicker) the previous decision per entry (its header / static packet and mesh DMA: one object, every frame):
+ * native or exact, for before_foreign's prediction of later runs. Not recorded: an entry made exact only because it was
+ * the last before a class switch (exact_last: structural, not the object's) */
+#define NAT_CAP 8192u
+static struct { uint64_t key; uint8_t nat; } nat_tab[NAT_CAP];
+static uint32_t nat_hash(uint64_t key) { return (uint32_t)((key * 0x9E3779B97F4A7C15ull) >> 51) & (NAT_CAP - 1); }
+static void nat_note(uint32_t c1, uint32_t c2, int nat) {
+    uint64_t key = (uint64_t)c1 << 32 | c2;
+    uint32_t h = nat_hash(key);
+    for (uint32_t i = 0; i < 16; i++, h = (h + 1) & (NAT_CAP - 1))
+        if (!nat_tab[h].key || nat_tab[h].key == key) { nat_tab[h].key = key; nat_tab[h].nat = (uint8_t)(nat ? 1 : 2); return; }
+    nat_tab[nat_hash(key)].key = key; nat_tab[nat_hash(key)].nat = (uint8_t)(nat ? 1 : 2);   /* (full: overwrite) */
+}
+static int nat_guess(ps2_ctx* ctx, uint32_t e) {
+    uint32_t c1 = ps2_r32(ctx, e + 8), c2 = ps2_r32(ctx, e + 12);
+    uint64_t key = (uint64_t)c1 << 32 | c2;
+    uint32_t h = nat_hash(key);
+    for (uint32_t i = 0; i < 16 && nat_tab[h].key; i++, h = (h + 1) & (NAT_CAP - 1))
+        if (nat_tab[h].key == key) return nat_tab[h].nat == 1;
+    return likely_native(ctx, e);                /* (not seen yet) */
+}
+
 static int before_foreign(ps2_ctx* ctx, int cls, uint32_t* dist) {
     static uint32_t sw_ptr, sw_serial;
-    static int sw_foreign, skip_max = -1;
-    /* short main-class runs between this run and the foreign class are looked through (PS2_R2_SKIPRUN=n entries, default
-     * 16): a few exact class-11 entries (Sly near a lamp) between the world's last class-0 run and the shadow volumes
-     * cannot pay the parity the dropped class-0 chains owe (their own chains are exact), so this run keeps its chains
-     * then; a short run's native entries are kept by the same rule (its next class is the foreign one) */
-    if (skip_max < 0) { const char* e = getenv("PS2_R2_SKIPRUN"); skip_max = e ? atoi(e) : 16; }
+    static int sw_foreign, look = -1;
+    /* main-class runs between this run and the foreign class that will have no native entry are looked through (the
+     * previous frame's decisions, nat_guess; a run's last entry is exact anyway): exact class-11 entries (Sly near a lamp,
+     * 1 - 2 entries; a boss, 18) between the world's last class-0 run and the shadow volumes cannot pay the parity the
+     * dropped class-0 chains owe, so this run keeps its chains then. A run with native entries keeps its own (the same
+     * rule: its next class is the foreign one). PS2_R2_LOOKTHROUGH=0: the next run only (as 478f6ad) */
+    if (look < 0) { const char* e = getenv("PS2_R2_LOOKTHROUGH"); look = !(e && *e == '0'); }
     uint32_t cur = ctx->r[21].uw[0], left = ctx->r[20].uw[0];
     if (sw_serial != fr_serial || cur >= sw_ptr) {
         sw_serial = fr_serial;
         sw_ptr = cur + 4u * left;
         sw_foreign = 0;
-        int scls = cls, first = 1;
-        uint32_t runlen = 0;
+        int scls = cls, first = 1, pend = 0;
         for (uint32_t j = 1; j < left; j++) {
             uint32_t nx = ps2_r32(ctx, cur + 4u * j), np = nx ? ps2_r32(ctx, nx) : 0xFFFFFFFFu;
             int nc = np <= 25 ? (int)ps2_r32(ctx, CLASS_TABLE + np * 4) : -1;
             if (nc == scls) {
-                if (!first && ++runlen > (uint32_t)skip_max) break;   /* (a long main-class run: it keeps its own) */
+                if (!first) {
+                    if (pend) break;             /* (a later run with a native entry before its last: it keeps its own) */
+                    pend = nat_guess(ctx, nx);
+                }
                 continue;
             }
             if (first) { sw_ptr = cur + 4u * j; first = 0; }
             if (nc < 0) break;
             if (!MAINCLASS(nc)) { sw_foreign = 1; break; }
+            if (!look) break;
             scls = nc;
-            runlen = 1;
-            if (runlen > (uint32_t)skip_max) break;
+            pend = nat_guess(ctx, nx);
         }
     }
     *dist = (sw_ptr - cur) / 4u;
@@ -1117,13 +1142,14 @@ void r2_cap_entry(ps2_ctx* ctx) {
         uint32_t np = next ? ps2_r32(ctx, next) : 0xFFFFFFFFu;
         if (!next || np > 25 || (int)ps2_r32(ctx, CLASS_TABLE + np * 4) != cls) { native = 0; st.exact_bracket++; }
     }
+    int last_x = 0;
     if (native && mode == R2_HYBRID && keep_chains() && run_programs(ctx, cls)) {
         /* (r2-flicker) a kept chain's last packet is still pending in the VU after it (the main program kicks a batch's
          * packet at its next run): drop_tail flushes it at the next entry's hook - which must come before a class switch's
          * packets, so the last entry before a switch (or the frame's end) stays exact, as in bracket mode */
         uint32_t nx = ctx->r[20].uw[0] > 1 ? ps2_r32(ctx, ctx->r[21].uw[0] + 4) : 0;
         uint32_t np = nx ? ps2_r32(ctx, nx) : 0xFFFFFFFFu;
-        if (!nx || np > 25 || (int)ps2_r32(ctx, CLASS_TABLE + np * 4) != cls) { native = 0; st.exact_last++; }
+        if (!nx || np > 25 || (int)ps2_r32(ctx, CLASS_TABLE + np * 4) != cls) { native = 0; st.exact_last++; last_x = 1; }
     }
     if (native && prop) st.native_props++;
     if (cand_now) {                              /* (r2-m5) census: vertices native / exact by reason (undecoded: ~bytes / 45) */
@@ -1133,6 +1159,7 @@ void r2_cap_entry(ps2_ctx* ctx) {
         if (native) st.v_native += nv;
         else st.v_exact[why < 10 ? why : 9] += nv;
     }
+    if (cand_now && !last_x && MAINCLASS(cls)) nat_note(c1, c2, native);   /* (r2-flicker: before_foreign's prediction) */
     if (!native) {
         if (mode == R2_HYBRID && prev_native) owe_epilogue(ctx, cls == prev_class);
         prev_native = 0;
