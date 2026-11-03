@@ -1144,7 +1144,7 @@ the frontend and the exact path are unchanged, so Reference, `PS2_GS_SCALE` runs
   - MFT grid fallbacks seen with dumps (single "not modern" frames in the walk) do not happen without dumps (same walk,
     PS2_DUMP_FROM out of range, PS2_MFT_LOG=1). Left for R8: about once per run (~27 000 frames) one "other target" grid
     frame (a full-screen blended draw into another target, fmask FF000000) - also with the fix off (PS2_R2_KEEPCHAIN=0
-    PS2_R2_VIFSTATE=0), so not from this change; a one-frame resolution / AA pop on MFT.
+    PS2_R2_VIFSTATE=0), so not from this change; a one-frame resolution / AA pop on MFT. Fixed: "MFT pops" below.
   - Diagnostics: PS2_VU_SNAP=<vblank> PS2_VU_SNAP_DIR=<dir> [PS2_VU_SNAP_NAME=<unit>, default 188054619]
     [PS2_VU_SNAP_COUNT=n]: VU registers, VIF1 registers and data memory before each run of that unit (vu.c vu_snap);
     with PS2_VU_SNAP_TRACK=1 and PS2_VU_INTERP=1 also lmap_*.bin per class: the data lanes it read before anything wrote

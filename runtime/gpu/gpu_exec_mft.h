@@ -121,7 +121,7 @@ static struct {
     uint32_t grid_run, grid_v0;
     int grid_why0, grid_off;
     uint64_t pops, pop_frames, pop_why[MW_N];
-    int last_r2;                         /* the last modern frame had R2 ops */
+    int last_r2;                         /* the last modern frame drawing on display targets had R2 ops */
     uint64_t conts;                      /* modern frames without R2 ops (continuations, mft_plan_ops) */
 } M = { .cb_phase = -1 };
 #define MFT_POP_MAX 8
@@ -602,7 +602,7 @@ static int mft_shadow_seq(const gpu_front_frame_data* fd, size_t pos, mft_shp* q
         } else if (o->op != GPU_FOP_ROV_END && o->op != GPU_FOP_CLUT) break;   /* (mft-pop: CLUT uploads run by mft_shadow) */
         p += o->size;
     }
-    if (!nvol) return 0;
+    (void)nvol;                          /* (mft-pop: none - no shadow caster in view - is a sequence too: zero counters) */
     M.shp_fail = 2;
     M.shp_failpos = p;
     shf_tail_clut = 1;
@@ -1071,9 +1071,8 @@ static int mft_plan_ops(const gpu_front_frame_data* fd) {
             const gpu_fop_r2* o = (const gpu_fop_r2*)h;
             if (phase) PH_SET(pos, 0);   /* (after the resolve: the next game frame's 3D - a VBlank's ops can hold the end of
                                             one frame and the start of the next) */
+            /* (mft-pop: entries crossing the guard band - state bit 13 - draw through r2_render.c's MFT clip pipelines) */
             if ((size_t)o->draw_off + (size_t)o->ndraw * sizeof(gpu_r2_draw) > fd->data_bytes) { why = MW_R2CLIP; break; }
-            const gpu_r2_draw* dr = (const gpu_r2_draw*)(fd->data + o->draw_off);
-            for (uint32_t i = 0; i < o->ndraw; i++) if ((dr[i].state >> 13) & 1) { why = MW_R2CLIP; break; }
             if (!mft_disp(o->ct) || !mft_disp(o->zt)) why = MW_TARGET;
             has_r2 = 1;
             break;
@@ -1195,7 +1194,8 @@ static int mft_plan_ops(const gpu_front_frame_data* fd) {
 #undef PH_SET
     M.on = 1;
     M.phase = phase0;
-    M.last_r2 = has_r2;
+    M.last_r2 = has_r2 ? 1 : nd ? 0 : M.last_r2;   /* (a PRESENT-only VBlank does not end gameplay: the rest of a game
+                                                      frame a hitch held back may follow it) */
     if (!has_r2) M.conts++;
     M.iph = 0;
     M.cb_phase = -1;
