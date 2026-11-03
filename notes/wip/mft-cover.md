@@ -31,3 +31,10 @@ Worktree C:\Users\tanih\Projects\sly2-worktrees\mft-cover, branch next/mft-cover
 - m5_ewok: "target view" 2292-5906 = briefing; the rejected draw is the right portrait (tri, ct 1 tex 5 feat 0x429 =
   VIEW|TEX|HIRES|HUD, bb 370,124-431,170). Gameplay after the briefing is modern (only stray single "not modern").
   The nd run's "target view to the end" was the briefing lasting longer in that run.
+- m5_ghost (2042-3586), m5_battlezone (2014-3138), m6_train_red (1976-2701): "target view" = the same briefing portrait
+  draw; gameplay after it modern. mft-pop (now in main) documents the briefing as grid by design.
+- m7_boss: both my tri run and qa-b's shots (f5428 etc.) show the long intro cutscene, not the fight. Its "not modern"
+  frames = PRESENT-only VBlanks or the cut-off end of a game frame (1 display draw of 16 sprites + PRESENT): mft-pop's
+  cause 2 ("continued"), fixed in main (aeaf310). Re-measure on main.
+- Branch rebased onto main abe57ff (mft-pop, qa-a, qa-b merged); took main's gpu_exec_mft.h + qa_scene.ps1, re-added
+  -DumpEvery / -Seconds and the mft_ssf check codes. Build with PYTHON_CPU_COUNT=6.
