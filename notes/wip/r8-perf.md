@@ -31,12 +31,15 @@ Worktree C:\Users\tanih\Projects\sly2-worktrees\r8-perf, branch next/r8-perf (fr
 - mft_tri_frag rows / steps in wide loads (same words).
 - All features A/B ep1 (no prof, loaded GPU): 12.12 -> 11.50 ms (-5.2%).
 
+- A/B all features (ab-gpu, loaded GPU): ep1 12.12 -> 11.50 (-5.2%), m1 8.32 -> 7.96 (-4.4%), m2 10.17 -> 9.63 (-5.3%).
+- Gates so far (c114ae4): run_tests 16/16; units 26/27 (window F11/Alt+Enter flake); debug + release builds;
+  pc_text_boot rel + dbg; package.py (0.1.1038). Base gs_replay for m9_exact: build\basert\out (main 38a38df runtime).
+
 ## In progress
-- Headline A/B m1 / m2 (PS2_GPU_AB=24 PS2_GPU_AB_R8=0xFF, -Secs 330, ab-gpu line).
+- gpu_diff_all mixed S=1, m9_exact S1 + S3 -Game (background).
 
 ## Next
-1. Gates: run_tests, tests\unit, gpu_diff_all mixed S=1, m9_exact, pc_text_boot, debug + release, package.py,
-   r2_sweep ab+hc+tf with -Parallel 1.
+1. r2_sweep ab+hc+tf with -Parallel 1.
 2. notes/modern-renderer.md "as built", final report, cleanup (build\chaos, build\r2trace, build\mftcheck).
 
 ## Findings / traps
