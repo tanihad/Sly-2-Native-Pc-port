@@ -13,7 +13,8 @@ Summary for the docs: notes/modern-renderer.md "The owner's flicker report and t
 - [x] verified on the final code: ALT 3x grid - same shadow in modern and exact frames; class begin mask 3F3F3F3F every
       frame; tf at the lamp spot PASS on the grid (236 pictures) and MFT 1440p MSAA 4x (240); hc ep1 / ep2 PASS.
 - [ ] final gate run on c61586e code: run_tests PASS; tests\unit 25/26 (window F11 / Alt+Enter, known); debug + release
-      builds OK; next: gpu_diff_all, m9_exact, pc_text_boot, package, r2_sweep ab+hc+tf
+      builds OK; gpu_diff_all mixed S=1 28/28; m9_exact S1+S3 -Game
+      identical; pc_text_boot release + debug PASS; next: package, r2_sweep ab+hc+tf
 
 ## Reproduce (sequential runs only, ~2.5 min each)
   .\scripts\flicker_run.ps1 -Name x -Scale 3 -Episode 1 -Job m1_brawl -Play -At 7000 -Frames 30 -Keep -Pad '+3000:cross:6' `
