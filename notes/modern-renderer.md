@@ -1107,15 +1107,19 @@ the frontend and the exact path are unchanged, so Reference, `PS2_GS_SCALE` runs
     r2_mesh.c): the mesh decoder records the VIF registers each chain writes (STCYCL / STMOD / STMASK / STROW / STCOL /
     BASE / OFFSET, end values) and its MSCAL count mod 2 (from its last OFFSET). Native meshes owe them: the registers
     go into one small VIF packet before the next exact chain of the same class (with the GS state epilogue; dropped when
-    a class switch's packets already came between). The flips are *not* paid inside the class - the main program's next
-    exact chain reads the "other" buffer the last exact chain filled, so there the parity must stay as if the native
-    chains were absent (paying them there broke ep2's hub) - but at the class switch: before it when the native run ends
-    at it (MSCAL 0x0000, the main program's [E] NOP), else at the next class's first entry (main classes 0 / 11: MSCAL
-    0x0000; the shadow classes 6 / 7: MSCAL 0x1A90, an [E] NOP of 188054619). From there on the game's chains read data
-    across classes by the parity (the shadow volumes read the caster's data its class-11 chain left). Verified: the class
-    starts with the exact frame's VIF state, the volume draw matches (3396 vs 3369 vertices), with PS2_R2_ALT the modern
-    and exact frames show the same shadow on the grid (3x / 4x), the shadow shows on MFT 100% MSAA 4x, hc ep1 / ep2 pass.
-    PS2_R2_VIFSTATE=<bits> (1 flips, 2 cycle, 4 mode, 8 mask, 16 row, 32 col, 64 base, 128 offset; 0: off) for diagnostics.
+    a class switch's packets already came between). **The double-buffer parity is not fixed by default**: paying the
+    owed flips (an MSCAL to an [E] NOP) inside the main class broke ep2 (the main program's next exact chain reads the
+    "other" buffer the last *executed* chain filled, so there the parity must stay as if the native chains were absent),
+    and paying them at class switches (into class 11, Sly's chain, which the ledge shadow needs) broke ep6 (garbage GIF
+    data: "write to unknown general register 0x0B"). Both needs hold at once only if the dropped chains' uploads still
+    reach VU memory: **next step - keep native entries' chains but with every MSCAL patched to the main program's [E] NOP
+    0x0000** (VU memory, VIF registers and parity exactly as in an exact frame, no XGKICK; a per-mesh patched copy of the
+    chain in EE memory, costs the VIF unpack CPU time). PS2_R2_VIFSTATE=0xFF enables the flips (diagnostics: fixes the
+    ledge shadow, breaks ep6); bits 1 flips, 2 cycle, 4 mode, 8 mask, 16 row, 32 col, 64 base, 128 offset; 0 off.
+  - Result with the default (registers only): the shadow class starts with the exact frame's STMASK / CYCLE / MODE every
+    frame and its volume draw has the exact frame's shape (3396 vs 3369 vertices instead of 4623); the lamp shadow is
+    back but lighter in hybrid frames than in exact ones in the ledge view (PS2_R2_ALT). MFT 100% MSAA 4x and the grid
+    pass the temporal check at the lamp (tf, 240 pictures each).
   - Left: at the screen's bottom edge one overlapping shadow polygon still differs between modern and exact frames
     (~600 px at 3x in the ledge view). The class's VIF / VU registers now match; it reads a few stale buffer lanes the
     dropped world chains leave (pipelined reads past its own data), which the native path cannot reproduce cheaply.

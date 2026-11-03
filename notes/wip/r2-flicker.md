@@ -15,7 +15,8 @@ Summary for the docs: notes/modern-renderer.md "The owner's flicker report and t
 - [ ] final gate run on c61586e code: run_tests PASS; tests\unit 25/26 (window F11 / Alt+Enter, known); debug + release
       builds OK; gpu_diff_all mixed S=1 28/28; m9_exact S1+S3 -Game
       identical; pc_text_boot release + debug PASS; package OK (0.1.1013); r2_sweep (parallel 3, GPU busy):
-      25/33 - ab 11/11, failures = runs that drew 0 pictures / few pictures + m2 hc 4.2%, ep5 hc 0.25%: re-running sequentially
+      25/33 - ab 11/11, failures = runs that drew 0 pictures / few pictures + m2 hc 4.2%, ep5 hc 0.25%: re-run: flips (MSCAL payment) broke ep6 -> off by default (0xFE);
+      ep4 / ep6 / m2 / m3 hc + tf 8/8 PASS after that. NEXT: keep native chains with MSCALs patched to NOP (VIF MARK count)
 
 ## Reproduce (sequential runs only, ~2.5 min each)
   .\scripts\flicker_run.ps1 -Name x -Scale 3 -Episode 1 -Job m1_brawl -Play -At 7000 -Frames 30 -Keep -Pad '+3000:cross:6' `

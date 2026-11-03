@@ -717,7 +717,7 @@ static void owe_vif(const r2_mesh* m) {
 }
 static void flush_vif(ps2_ctx* ctx, int ok) {
     static int env = -1;
-    if (env < 0) { const char* e = getenv("PS2_R2_VIFSTATE"); env = e ? (int)strtol(e, NULL, 0) : 0xFF; }   /* (bits: 1 flips, 2 cycle, 4 mode, 8 mask, 16 row, 32 col, 64 base, 128 offset) */
+    if (env < 0) { const char* e = getenv("PS2_R2_VIFSTATE"); env = e ? (int)strtol(e, NULL, 0) : 0xFE; }   /* (flips off by default: unsafe, see notes)   /* (bits: 1 flips, 2 cycle, 4 mode, 8 mask, 16 row, 32 col, 64 base, 128 offset) */
     VP.set &= (uint32_t)env >> 1;
     if (!(env & 1)) VP.flips = 0;
     /* the flips: now only before a class switch (ok 2, the main program still resident: MSCAL 0x0000 is its [E] NOP);
@@ -744,9 +744,8 @@ static void flush_vif(ps2_ctx* ctx, int ok) {
 static void owe_flips_class(ps2_ctx* ctx, int cls) {
     if (!VP.flips || prev_class < 0 || cls == prev_class) return;
     uint32_t w;
-    if (MAINCLASS(cls)) w = MSCAL(0x0000);   /* (class 11: the main program, its [E] NOP) */
-    else if (cls == 6 || cls == 7) w = MSCAL(0x1A90);
-    else return;
+    if (MAINCLASS(cls)) w = MSCAL(0x0000);   /* (class 0 / 11: the main program, its [E] NOP) */
+    else return;                         /* (another program: its [E] NOP is not known for every level - the flips stay owed) */
     if (dmas_vif(ctx, &w, 1)) VP.flips = 0;
 }
 
