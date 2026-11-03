@@ -103,6 +103,7 @@ static struct {
     int nshp;
     int sv_bb[4];                        /* the volumes' samples drawn this sequence (surface pixels) */
     int shp_fail;                        /* (diagnostics) why the last shadow sequence did not plan: 1 head, 2 tail, 3 A */
+    size_t shp_failpos;                  /* (diagnostics) where the tail was expected */
     int mv_on, mv_view;                  /* (r2-m8) motion vectors (PS2_MFT_MV=1), their picture (PS2_MFT_MV_VIEW=1) */
     ID3D11Texture2D *mv, *mvr;           /* MS surface, resolved */
     ID3D11RenderTargetView* mv_rtv;
@@ -114,7 +115,14 @@ static struct {
     /* statistics (PS2_R2_STATS) */
     uint64_t frames, grid, why[MW_N], to_grid, from_grid, resolves, draws, svols, n_dl, n_load, n_xcopy, n_mat;
     int why_last;
+    /* (mft-pop) pops: runs of 1 .. MFT_POP_MAX grid frames between modern frames - a gameplay frame on the grid, a
+     * visible resolution / AA pop; menus and loading screens are longer runs. Frames MFT is off for (settings, A/B
+     * phases) end a run without counting it. */
+    uint32_t grid_run, grid_v0;
+    int grid_why0, grid_off;
+    uint64_t pops, pop_frames, pop_why[MW_N];
 } M = { .cb_phase = -1 };
+#define MFT_POP_MAX 8
 
 static int mft_px(int native, float s) { return (int)ceilf((float)native * s - 0.5f); }   /* first d3d pixel of native x */
 
@@ -594,6 +602,7 @@ static int mft_shadow_seq(const gpu_front_frame_data* fd, size_t pos, mft_shp* q
     }
     if (!nvol) return 0;
     M.shp_fail = 2;
+    M.shp_failpos = p;
     if (!shf_tail(fd, p, &q->L) || q->L.B != bt || q->L.A != a->target || q->L.W != w || q->L.H != h) return 0;
     M.shp_fail = 3;
     memcpy(q->L.k.c[0], c0, sizeof c0);
@@ -642,8 +651,17 @@ static int mft_shadow_seq(const gpu_front_frame_data* fd, size_t pos, mft_shp* q
     return 1;
 }
 
+/* (mft-pop) while mft_plan scans a frame's ops: the family each target will have at the scanned op. The frame's own
+ * GPU_FOP_TARGET / GPU_FOP_RELEASE ops change it before the draws that follow run (a target created this frame - e.g. the
+ * HUD's Z target, released after 120 frames unused and created again when a HUD element with Z returns - starts square
+ * and is paired into the display family by its first draw with a display colour target); the executor's xtarget state
+ * is still the previous frame's. -1: no change in this frame so far. */
+static int8_t mft_pfam[MAX_TARGETS + 1];
+static int mft_planning;
+
 /* is target id one MFT twins (display family) */
 static int mft_disp(int id) {
+    if (mft_planning && id > 0 && id <= MAX_TARGETS && mft_pfam[id] >= 0) return mft_pfam[id] == 1;
     xtarget* t = tgt((uint32_t)id);
     return t && t->family == 1;
 }
@@ -651,9 +669,29 @@ static int mft_disp(int id) {
 static int mft_no(int why) {
     M.why[why]++;
     M.why_last = why;
-    static int log = -1, budget = 400;   /* (r2-flicker, diagnostics) PS2_MFT_LOG: every grid frame and why, while in use */
+    static int log = -1, budget = 400;   /* (r2-flicker, diagnostics) PS2_MFT_LOG: every grid frame after a modern one, and why */
     if (log < 0) log = getenv("PS2_MFT_LOG") != NULL;
-    if (log && why != MW_OFF && budget > 0 && M.frames) { budget--; gpu_log("mft: grid frame v%u (%s) after %llu modern", X.fd ? X.fd->vblank : 0u, mw_names[why], (unsigned long long)M.frames); }
+    if (log && why != MW_OFF && budget > 0 && M.frames && !M.grid_run) {
+        budget--;
+        const gpu_front_frame_data* fd = X.fd;
+        uint32_t nop = 0, ndraw = 0, ndisp = 0, nr2 = 0, nclr = 0, npres = 0, nother = 0;   /* (what the frame holds) */
+        for (size_t p = 0; fd && p + sizeof(gpu_fop) <= fd->cmd_bytes;) {
+            const gpu_fop* h = (const gpu_fop*)(fd->cmd + p);
+            if (!h->size) break;
+            nop++;
+            if (h->op == GPU_FOP_DRAW) {
+                const gpu_fop_draw* d = (const gpu_fop_draw*)h;
+                ndraw++;
+                ndisp += mft_disp(d->ct) || (d->zt && mft_disp(d->zt));
+            } else if (h->op == GPU_FOP_R2) nr2++;
+            else if (h->op == GPU_FOP_CLEAR) nclr++;
+            else if (h->op == GPU_FOP_PRESENT) npres++;
+            else nother++;
+            p += h->size;
+        }
+        gpu_log("mft: grid frame v%u (%s) after %llu modern: %u ops (%u draws, %u on display targets, %u R2, %u clears, %u presents, %u other)",
+                fd ? fd->vblank : 0u, mw_names[why], (unsigned long long)M.frames, nop, ndraw, ndisp, nr2, nclr, npres, nother);
+    }
     return 0;
 }
 
@@ -927,7 +965,16 @@ static int mft_draw_ok(const gpu_front_frame_data* fd, const gpu_fop_draw* d, in
     return 1;
 }
 
+static int mft_plan_ops(const gpu_front_frame_data* fd);
 static int mft_plan(const gpu_front_frame_data* fd) {
+    memset(mft_pfam, -1, sizeof mft_pfam);
+    mft_planning = 1;
+    int on = mft_plan_ops(fd);
+    mft_planning = 0;
+    return on;
+}
+
+static int mft_plan_ops(const gpu_front_frame_data* fd) {
     M.on = 0;
     M.nshp = 0;
     if (!mft_enabled()) return mft_no(MW_OFF);
@@ -950,10 +997,23 @@ static int mft_plan(const gpu_front_frame_data* fd) {
         switch (h->op) {
         case GPU_FOP_TARGET: {           /* (a display target created or grown: the surfaces' size covers it) */
             const gpu_fop_target* o = (const gpu_fop_target*)h;
+            if (o->id > 0 && o->id <= MAX_TARGETS) {   /* (mft-pop) */
+                static int log = -1;
+                if (log < 0) log = getenv("PS2_MFT_LOG") != NULL;
+                if (log && mft_disp(o->id) != (o->family == 1))
+                    gpu_log("mft: v%u target %u kind %u base %X family %u in the frame (%s)", fd->vblank, o->id, o->kind, o->base,
+                            o->family, tgt(o->id) ? "live" : "created");
+                mft_pfam[o->id] = o->family == 1 ? 1 : 0;
+            }
             if (o->family == 1) {
                 if (o->fbw * 64 > tgw) tgw = o->fbw * 64;
                 if (o->rows > tgh) tgh = o->rows;
             }
+            break;
+        }
+        case GPU_FOP_RELEASE: {          /* (mft-pop: the id may be created again later in the frame) */
+            const gpu_fop_target* o = (const gpu_fop_target*)h;
+            if (o->id > 0 && o->id <= MAX_TARGETS) mft_pfam[o->id] = 0;
             break;
         }
         case GPU_FOP_LOAD: case GPU_FOP_DOWNLOAD: case GPU_FOP_XCOPY:
@@ -1020,15 +1080,25 @@ static int mft_plan(const gpu_front_frame_data* fd) {
                 gpu_log("mft: v%u exact (%s%s) at @%u: %s", fd->vblank, mw_names[why],
                         why == MW_A16 ? (M.shp_fail == 1 ? " head" : M.shp_fail == 2 ? " tail" : M.shp_fail == 3 ? " A" : "") : "",
                         (unsigned)pos, s);
-                if (why == MW_A16) {     /* (the ops that follow) */
-                    size_t p = pos + h->size;
-                    for (int k = 0; k < 8 && p + sizeof(gpu_fop) <= fd->cmd_bytes; k++) {
+                if (why == MW_A16) {     /* (the ops that follow; a tail: from where it was expected) */
+                    size_t p = M.shp_fail == 2 ? M.shp_failpos : pos + h->size;
+                    if (M.shp_fail == 2) gpu_log("mft:   tail at @%u of %u bytes:", (unsigned)p, (unsigned)fd->cmd_bytes);
+                    for (int k = 0; k < (M.shp_fail == 2 ? 12 : 8) && p + sizeof(gpu_fop) <= fd->cmd_bytes; k++) {
                         const gpu_fop* q = (const gpu_fop*)(fd->cmd + p);
                         if (!q->size) break;
                         prof_op_sig(fd, (uint32_t)p, PR_OTHER, s, sizeof s);
                         if (q->op == GPU_FOP_CLEAR) {
                             const gpu_fop_clear* c = (const gpu_fop_clear*)q;
                             gpu_log("mft:   + clear target %u z %u value %08X mask %X rect %d,%d", c->target, c->zclear, c->value, c->mask, c->x1, c->y1);
+                        } else if (q->op == GPU_FOP_COPY_SHADOW) {
+                            const gpu_fop_shadow* c = (const gpu_fop_shadow*)q;
+                            gpu_log("mft:   + copy shadow target %u rect %d,%d-%d,%d", c->target, c->x0, c->y0, c->x1, c->y1);
+                        } else if (q->op == GPU_FOP_ALIAS16 || q->op == GPU_FOP_ALIAS16_END) {
+                            const gpu_fop_alias16* c = (const gpu_fop_alias16*)q;
+                            gpu_log("mft:   + alias16%s target %u mode %u psm %X", q->op == GPU_FOP_ALIAS16 ? "" : " end", c->target, c->mode, c->psm);
+                        } else if (q->op == GPU_FOP_DRAW) {
+                            const gpu_fop_draw* d = (const gpu_fop_draw*)q;
+                            gpu_log("mft:   + %s tier %u n %u bb %d,%d-%d,%d", s, d->tier, d->count, d->bbox[0], d->bbox[1], d->bbox[2], d->bbox[3]);
                         } else gpu_log("mft:   + %s", s);
                         p += q->size;
                     }
@@ -1051,7 +1121,7 @@ static int mft_plan(const gpu_front_frame_data* fd) {
     in.fields = (di->gfx & GPU_GFX_FIELDS) != 0;
     for (int i = 0; i < 2; i++) {
         xtarget* t = tgt(po->src[i]);
-        in.tex[i] = t && !t->depth && t->family == 1 ? t->srv_u : NULL;
+        in.tex[i] = t && !t->depth && mft_disp(po->src[i]) ? t->srv_u : NULL;
     }
     int circ, x0, y0, lw, lh;
     if (!gpu_present_mft_layout(&in, &circ, &x0, &y0, &lw, &lh) || x0 || y0) return mft_no(MW_LAYOUT);
@@ -1061,7 +1131,7 @@ static int mft_plan(const gpu_front_frame_data* fd) {
     int gw = tgw, gh = tgh;
     for (int i = 1; i <= MAX_TARGETS; i++) {
         xtarget* t = tgt((uint32_t)i);
-        if (!t || t->family != 1) continue;
+        if (!t || !mft_disp(i)) continue;
         if (t->nat_w > gw) gw = t->nat_w;
         if (t->nat_h > gh) gh = t->nat_h;
     }
@@ -1718,18 +1788,35 @@ static int mft_op(const gpu_front_frame_data* fd, size_t pos, uint32_t slot, siz
 /* the frame's start: plan it; an exact frame first gets the twins' content back into the grid */
 static int mft_frame_begin(const gpu_front_frame_data* fd) {
     int on = mft_plan(fd);
-    if (on) M.frames++;
-    else {
+    static int log = -1, stats = -1;
+    if (log < 0) log = getenv("PS2_MFT_LOG") != NULL;
+    if (stats < 0) { const char* e = getenv("PS2_R2_STATS"); stats = e && *e && *e != '0'; }
+    if (on) {
+        if (M.grid_run && M.frames && !M.grid_off && M.grid_run <= MFT_POP_MAX) {   /* (mft-pop) a pop */
+            M.pops++;
+            M.pop_frames += M.grid_run;
+            M.pop_why[M.grid_why0]++;
+            if (log || stats) gpu_log("mft: pop: %u grid frame(s) v%u..v%u between modern frames (first: %s)", M.grid_run, M.grid_v0,
+                             M.grid_v0 + M.grid_run - 1, mw_names[M.grid_why0]);
+        }
+        M.grid_run = 0;
+        M.grid_off = 0;
+        M.frames++;
+    } else {
+        if (!M.grid_run) { M.grid_v0 = fd->vblank; M.grid_why0 = M.why_last; }
+        if (M.why_last == MW_OFF) M.grid_off = 1;
+        M.grid_run++;
         M.grid++;
         mft_materialize_all();
     }
-    static int stats = -1;
-    if (stats < 0) { const char* e = getenv("PS2_R2_STATS"); stats = e && *e && *e != '0'; }
     if (stats && (M.frames + M.grid) % 300 == 0) {
-        char line[512];
+        char line[640];
         int o = snprintf(line, sizeof line, "mft: %llu modern frames, %llu exact (", (unsigned long long)M.frames, (unsigned long long)M.grid);
         for (int i = 0; i < MW_N && o < (int)sizeof line - 40; i++)
             if (M.why[i]) o += snprintf(line + o, sizeof line - (size_t)o, "%s %llu, ", mw_names[i], (unsigned long long)M.why[i]);
+        o += snprintf(line + o, sizeof line - (size_t)o, "); pops %llu (%llu frames", (unsigned long long)M.pops, (unsigned long long)M.pop_frames);
+        for (int i = 0; i < MW_N && o < (int)sizeof line - 40; i++)
+            if (M.pop_why[i]) o += snprintf(line + o, sizeof line - (size_t)o, ", %s %llu", mw_names[i], (unsigned long long)M.pop_why[i]);
         snprintf(line + o, sizeof line - (size_t)o, "); to grid %llu (downloads %llu, loads %llu, copies %llu, all %llu), from grid %llu, resolves %llu, draws %llu, volumes %llu; %dx%d -> %dx%d, %d samples",
                  (unsigned long long)M.to_grid, (unsigned long long)M.n_dl, (unsigned long long)M.n_load, (unsigned long long)M.n_xcopy, (unsigned long long)M.n_mat, (unsigned long long)M.from_grid, (unsigned long long)M.resolves,
                  (unsigned long long)M.draws, (unsigned long long)M.svols, (int)ceilf(M.gw * M.rsx), (int)ceilf(M.gh * M.rsy),
