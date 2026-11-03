@@ -2517,7 +2517,11 @@ static int shf_copy(const gpu_fop_draw* d, int B, uint32_t psm16, uint32_t c[4],
 }
 
 /* the tail at ALIAS16 op pos (a copy run on B, its feedback copy, the darken): constants (no head, no counter) */
-typedef struct { shf_consts k; int B, A, W, H; size_t next; uint32_t slots; } shf_plan;
+typedef struct { shf_consts k; int B, A, W, H; size_t next; uint32_t slots; size_t clut[4]; int nclut; } shf_plan;
+/* (mft-pop) the MFT planner's tails may hold CLUT uploads (rarely one lands between the copies, or before the darken: the
+ * frontend uploads a CLUT when its cache misses); their positions go into L->clut and the caller runs them before the
+ * fused pass (a CLUT op only fills a fresh ring slot, so running it earlier changes nothing). The exact path: 0. */
+static int shf_tail_clut;
 static int shf_tail(const gpu_front_frame_data* fd, size_t pos, shf_plan* L) {
     const gpu_fop_alias16* a = (const gpu_fop_alias16*)(fd->cmd + pos);
     if (pos + sizeof *a > fd->cmd_bytes || a->h.op != GPU_FOP_ALIAS16 || a->h.size < sizeof *a || a->mode != 1) return 0;
@@ -2529,10 +2533,12 @@ static int shf_tail(const gpu_front_frame_data* fd, size_t pos, shf_plan* L) {
     uint32_t sl = 0;
     size_t p = pos + a->h.size;
     const gpu_fop_draw* np = NULL;
-    for (int step = 0; step < 8 && p + sizeof(gpu_fop) <= fd->cmd_bytes; step++) {
+    for (int step = 0; step < 8 + L->nclut && p + sizeof(gpu_fop) <= fd->cmd_bytes; step++) {
         const gpu_fop* h = (const gpu_fop*)(fd->cmd + p);
         if (!h->size) return 0;
-        if (h->op == GPU_FOP_DRAW && ncopy >= 0 && ((const gpu_fop_draw*)h)->tier == GPU_TIER_ALIAS16) {
+        if (h->op == GPU_FOP_CLUT && shf_tail_clut && L->nclut < 4) {
+            L->clut[L->nclut++] = p;
+        } else if (h->op == GPU_FOP_DRAW && ncopy >= 0 && ((const gpu_fop_draw*)h)->tier == GPU_TIER_ALIAS16) {
             const gpu_fop_draw* d = (const gpu_fop_draw*)h;
             int w, hh;
             if (ncopy == 2 || d->ct != bt || !shf_copy(d, bt, a->psm, L->k.c[1 + ncopy], &w, &hh)) return 0;
