@@ -52,7 +52,7 @@ static int state, dpi = 96, running, job, result = -1, exit_code = EXIT_OK, uite
 static int disc_state;                               /* 0 none chosen, 1 ok, -1 refused */
 static wchar_t disc_name[MAXP], disc_msg[600], err_msg[2600], notice[600];
 static int notice_kind;                              /* 0 dim, 1 good */
-static int upd_state, upd_checked;
+static int upd_state, upd_checked, first_install;
 static update_info upd;
 static char game_ver[64], prev_ver[64];
 static HFONT f_body, f_small, f_title, f_sub, f_big, f_status, f_button;
@@ -358,7 +358,7 @@ static DWORD WINAPI job_thread(void* arg) {
     (void)arg;
     CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
     int r = EXIT_OK;
-    int first = !S->existing;
+    int first = first_install;
     wchar_t dl[MAXP];
     setup_state_get(S->dir, L"desktop_lnk", dl, MAXP);
     if (job == JOB_UPDATE && upd_state == UPD_NEWER) {
@@ -410,7 +410,8 @@ static void start_job(int kind) {
         S->image_src[0] = 0;
     }
     if (kind == JOB_UPDATE && upd_state == UPD_LOCAL) S->bundle[0] = 0;   /* this setup file's sources */
-    if (kind == JOB_INSTALL && !S->existing && !S->keep_tools) S->keep_tools = 1;   /* updates without downloading the tools */
+    first_install = kind == JOB_INSTALL && !setup_is_installed(S);
+    if (first_install) S->keep_tools = 1;           /* updates then rebuild without downloading the tools again */
     prog_pm = 0;
     wcopy(prog_status, 512, kind == JOB_UPDATE ? L"Updating Sly 2" : kind == JOB_REPAIR ? L"Repairing Sly 2" : L"Setting up Sly 2");
     prog_detail[0] = 0;

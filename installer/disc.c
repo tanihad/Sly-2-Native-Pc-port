@@ -91,7 +91,7 @@ int disc_check_iso(const wchar_t* path, wchar_t* why, size_t cap) {
     uint32_t root_lba = le32(pvd + 156 + 2), root_size = le32(pvd + 156 + 10);
     if (!find_file(h, root_lba, root_size, "SYSTEM.CNF;1", &lba, &size, &err) || size > 4096) {
         wfmt(why, cap, err == DISC_SHORT ? L"The image ends early: it is incomplete or damaged."
-                                         : L"This disc has no SYSTEM.CNF: it is not a PlayStation 2 game disc.");
+                                         : L"This image is not a game disc (it has no SYSTEM.CNF). Choose the image of your Sly 2 disc.");
         r = err == DISC_SHORT ? DISC_SHORT : DISC_NO_CNF;
         goto out;
     }
@@ -118,8 +118,8 @@ int disc_check_iso(const wchar_t* path, wchar_t* why, size_t cap) {
         line = next;
     }
     if (!boot[0]) {
-        wfmt(why, cap, L"SYSTEM.CNF names no PS2 boot file: this is not a PlayStation 2 game disc (a PS1 disc or a "
-                       L"data disc?).");
+        wfmt(why, cap, L"This is not the right kind of game disc (a disc for an older console, or a data disc?). "
+                       L"Choose the image of your Sly 2 disc.");
         r = DISC_NOT_PS2;
         goto out;
     }
