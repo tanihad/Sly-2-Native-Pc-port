@@ -1190,6 +1190,17 @@ Measured (ep1 hub walk uncapped 330 s, then every sweep scene) - four causes, al
 - Result: sweep mf 11/11 with 0 pops (before: ep3 1, ep4 1, ep7 1, m2 3 with the first two fixes alone); ep1 hub
   uncapped 330 s: 0 pops (before ~115). Left as grid runs by design: loading / menus / movies ("not modern"), the
   Binocucom briefing (ep7: its live character portraits are views of 128 x 128 render targets - "target view").
+- QA (qa-a, 2026-11-03): stray single "not modern" VBlanks at 120 fps in a steady ep1 hub = the PRESENT-only VBlanks
+  above (continued now). PS2_MFT_LOG logs only the first grid frame after an MFT frame (with what its op list holds),
+  so loading screens no longer use up its 400-line budget.
+- **Not done: Faithful filters on MFT.** With filters = faithful (or flicker filter / interlacing on) every frame is on
+  the grid: gpu_present_mft_layout refuses field display (in->fields) and the flicker filter's two enabled circuits
+  (en0 == en1). What it would take: (a) the flicker filter - both circuits read the same buffer, the second one native
+  row lower, blended (ALP) - as a pass in gpu_present_mft_picture: picture' = mix(picture(y), picture(y + osy)) with the
+  circuit's blend factor, osy = output pixels per native row; cheap and close to the PS2. (b) interlacing - field display
+  of field-resolution targets: on MFT only as an imitation (each VBlank shows one field's native rows, line-doubled, at
+  output resolution), which throws away the vertical resolution MFT exists for; an owner decision (keep Faithful on the
+  grid, or flicker filter only on MFT).
 
 ### R9. Enhanced and mods - 12 agent-days (two tasks)
 - **R9a Enhanced, 7 days**: per-pixel lighting, shadow maps, SSAO, bloom, anisotropic + mipmaps, outline styles, and
