@@ -103,7 +103,7 @@ static void on_picture_done(uint32_t vblank, void* user) {
 }
 
 /* ---- frame dumps: read-backs completed on a thread of their own ------------------------------------ */
-#define NDUMP 4
+#define NDUMP 32                         /* (r2-flicker: 4 -> 32, every VBlank of a 3x run can be dumped) */
 static struct { gpu_readback rb; uint32_t* px; int cap; uint32_t vblank; int content43; volatile LONG busy; } dumps[NDUMP];
 static volatile LONG dump_head, dump_tail;   /* queued: [head, tail) */
 static HANDLE dump_thread, dump_event;
@@ -138,6 +138,9 @@ static gpu_readback* dump_slot(uint32_t vblank, int content43) {
         SetThreadPriority(dump_thread, THREAD_PRIORITY_BELOW_NORMAL);
     }
     int i = (int)(dump_tail % NDUMP);
+    static int wait = -1;                /* (r2-flicker) PS2_DUMP_WAIT=1: wait for a slot (every VBlank dumped; tests) */
+    if (wait < 0) wait = getenv("PS2_DUMP_WAIT") && atoi(getenv("PS2_DUMP_WAIT")) > 0;
+    for (int n = 0; wait && n < 20000 && (dump_tail - dump_head >= NDUMP || dumps[i].busy); n++) Sleep(1);
     if (dump_tail - dump_head >= NDUMP || dumps[i].busy) {
         static int logged;
         if (!logged++) hlog("frame dump of VBlank %u skipped: the dump thread is behind", vblank);

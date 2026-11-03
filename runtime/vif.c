@@ -72,6 +72,8 @@ typedef struct {
     /* registers. stat keeps MRK DBF VSS VFS VIS INT ER0 ER1 FDR VGW; VPS, VEW, FQC are computed */
     uint32_t stat, err, mark, cycle, mode, num, mask, code, itops, base, ofst, tops, itop, top;
     uint32_t r[4], c[4];
+    uint32_t r2_arm, r2_skip, r2_norun;   /* (r2-flicker) MARK A5A5 (A5A6), MARK n: the next n MSCALs' programs kick nothing
+                                          (A5A6: run nothing, the double buffer still flips) */
 
     /* command in progress */
     int      kind;                     /* K_NONE between commands */
@@ -187,12 +189,23 @@ static void upk_decode(const vif_state* v, const uint8_t* p, uint32_t d[4]) {
     }
 }
 
+__attribute__((weak)) int vu1_trk;      /* (r2-flicker, diagnostics: vu_exec.c defines them) lanes written into VU1 data */
+__attribute__((weak)) uint8_t vu1_trk_w[1024];
+__attribute__((weak)) volatile int vu1_drop_kicks;   /* (r2-flicker: vu.c's) */
+static inline void trk_vif(const vif_state* v, uint32_t addr, uint32_t m) {
+    if (!vu1_trk || v->id != 1) return;
+    uint8_t l = 0;
+    for (int j = 0; j < 4; j++) if (((m >> (j * 2)) & 3) != 3) l |= (uint8_t)(1u << j);
+    vu1_trk_w[addr & 0x3FF] |= l;
+}
+
 /* Write one vector (d = unpacked input, or NULL for a filling cycle) and advance the address. */
 static void upk_write(vif_state* v, const uint32_t* d) {
     uint32_t* dst = (uint32_t*)(vu_data_mem(v->id) + ((v->u_addr & v->qmask) << 4));
     uint32_t row = v->u_cyc < 3 ? v->u_cyc : 3;
     uint32_t m = v->u_masked ? (v->mask >> (row * 8)) & 0xFFu : 0;
     uint32_t mode = v->mode & 3;
+    trk_vif(v, v->u_addr, m);
     if (d && !m && (mode == 0 || mode == 3)) {
         memcpy(dst, d, 16);
     } else {
@@ -284,6 +297,7 @@ static inline __attribute__((always_inline)) uint32_t upk_loop(vif_state* v, con
         }
         uint32_t* dst = mem + ((addr & qmask) << 2);
         uint32_t m = masked ? (v->mask >> ((cyc < 3 ? cyc : 3) * 8)) & 0xFFu : 0;
+        trk_vif(v, addr, m);
         if (!m && (mode == 0 || mode == 3)) {
             memcpy(dst, d, 16);
         } else {
@@ -385,6 +399,7 @@ static uint32_t upk_data_body(vif_state* v, const uint32_t* w, uint32_t n, int f
             uint32_t a = v->u_addr & v->qmask, c = v->qmask + 1 - a;
             if (c > nv - done) c = nv - done;
             memcpy(mem + a * 16, p + pos, c * 16);
+            for (uint32_t k = 0; k < c; k++) trk_vif(v, a + k, 0);
             pos += c * 16;
             done += c;
             v->u_addr += c;
@@ -550,7 +565,12 @@ static int cmd_begin(vif_state* v, uint32_t code) {
         if (!vif1) goto invalid;
         gif_set_path3_mask((imm >> 15) & 1);
         break;
-    case CMD_MARK: v->mark = imm; v->stat |= ST_MRK; break;
+    case CMD_MARK:
+        /* (r2-flicker) the modern renderer keeps a native mesh's chain (its uploads, VIF registers and double-buffer
+         * flips as in an all-exact frame) but not its programs: MARK 0xA5A5 then MARK n (not visible to the EE) */
+        if (vif1 && v->r2_arm) { v->r2_norun = v->r2_arm == 2; v->r2_arm = 0; v->r2_skip = imm; break; }
+        if (vif1 && (imm == 0xA5A5u || imm == 0xA5A6u)) { v->r2_arm = imm == 0xA5A6u ? 2 : 1; break; }
+        v->mark = imm; v->stat |= ST_MRK; break;
     case CMD_FLUSH:
     case CMD_FLUSHA:
         if (!vif1) goto invalid;
@@ -565,6 +585,19 @@ static int cmd_begin(vif_state* v, uint32_t code) {
     case CMD_MSCNT:
         if (vu_running(v)) return 0;
         v->code = code;
+        if (vif1) {                                          /* (r2-flicker) a kept native chain's runs: no packets */
+            vu1_drop_kicks = v->r2_skip != 0;
+            if (v->r2_skip && v->r2_norun) {                 /* (no program: the flip, TOP / ITOP as micro_start) */
+                v->r2_skip--;
+                v->itop = v->itops;
+                v->top = v->tops;
+                v->stat ^= ST_DBF;
+                v->tops = (v->base + ((v->stat & ST_DBF) ? v->ofst : 0)) & 0x3FF;
+                vu_set_vif_tops(1, v->top, v->itop);
+                break;
+            }
+            if (v->r2_skip) v->r2_skip--;
+        }
         micro_start(v, cmd, imm);
         break;
     case CMD_STMASK: v->kind = K_STMASK; v->left = 1; break;
@@ -666,7 +699,19 @@ static void resume(vif_state* v) {
 
 /* ---- DMA entry points ------------------------------------------------------------------------------ */
 
+__attribute__((weak)) volatile int vu_ab_phase = -1;   /* (r2-flicker: vu.c's) */
+__attribute__((weak)) double vu_ab_ms[2][2];
+__attribute__((weak)) double vu_ab_now(void) { return 0; }
+static uint32_t vif_dma_impl(int vif, const void* qw, uint32_t qwc);
 uint32_t vif_dma(int vif, const void* qw, uint32_t qwc) {
+    int abp = vif == 1 ? vu_ab_phase : -1;
+    if (abp < 0) return vif_dma_impl(vif, qw, qwc);
+    double t0 = vu_ab_now();
+    uint32_t r = vif_dma_impl(vif, qw, qwc);
+    vu_ab_ms[abp & 1][1] += vu_ab_now() - t0;
+    return r;
+}
+static uint32_t vif_dma_impl(int vif, const void* qw, uint32_t qwc) {
     vif_state* v = &vifs[vif & 1];
     resume(v);
     if (v->fifo_n) return 0;
@@ -689,6 +734,15 @@ int vif_dma_tag(int vif, const void* tag_qw) {
     if (k == 0) return 0;
     if (k == 1) fifo_push(v, w + 1, 1);
     return 1;
+}
+
+/* (r2-flicker, diagnostics) VIF registers: stat cycle mode mask base ofst tops itop top itops, then ROW[4], COL[4] */
+void vif_debug_regs(int vif, uint32_t out[18]) {
+    const vif_state* v = &vifs[vif & 1];
+    uint32_t a[10] = { v->stat, v->cycle, v->mode, v->mask, v->base, v->ofst, v->tops, v->itop, v->top, v->itops };
+    memcpy(out, a, sizeof a);
+    memcpy(out + 10, v->r, 16);
+    memcpy(out + 14, v->c, 16);
 }
 
 void vif_debug_state(int vif) {                              /* (pc-fps2) diagnostics */

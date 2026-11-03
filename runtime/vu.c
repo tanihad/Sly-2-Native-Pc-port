@@ -12,6 +12,7 @@
 
 #include <stdlib.h>
 #include <xmmintrin.h>
+#include <windows.h>                    /* (r2-flicker: QueryPerformanceCounter, A/B timers) */
 
 static _Alignas(16) uint8_t vu0_data[4096], vu0_micro[4096], vu1_data[16384], vu1_micro[16384];
 static vu_op vu0_cache[512], vu1_cache[2048];
@@ -286,8 +287,75 @@ static void vrec_end(vu_state* st, uint32_t pairs) {
 
 /* ---- running microprograms ---------------------------------------------------------------------- */
 
+/* (r2-flicker, diagnostics) PS2_VU_SNAP=<vblank> PS2_VU_SNAP_DIR=<dir> [PS2_VU_SNAP_NAME=<unit>] [PS2_VU_SNAP_COUNT=n]:
+ * before each of the first n (default 40) VU1 runs of the recompiled unit (default 188054619, the shadow volumes) from
+ * VBlank <vblank> on, the VU state
+ * (vi, vf, acc, I/Q/P, top/itop), VIF1's registers and VU1 data memory into <dir>\snap_<vblank>_<n>_<addr>.bin */
+__attribute__((weak)) void vif_debug_regs(int vif, uint32_t out[18]) { (void)vif; memset(out, 0, 72); }   /* (vif.c's when linked) */
+__attribute__((weak)) int vu1_trk;
+__attribute__((weak)) uint8_t vu1_trk_w[1024], vu1_trk_r[1024];
+static void vu_snap(vu_state* st, uint32_t addr_dw) {
+    static int init, left;
+    static uint32_t from, seq;
+    static char dir[300], name[40];
+    if (!init) {
+        init = 1;
+        const char* e = getenv("PS2_VU_SNAP"), *d = getenv("PS2_VU_SNAP_DIR"), *n = getenv("PS2_VU_SNAP_NAME"), *c = getenv("PS2_VU_SNAP_COUNT");
+        if (!e || !*e || !d || !*d) return;
+        from = (uint32_t)strtoul(e, NULL, 0);
+        snprintf(dir, sizeof dir, "%s", d);
+        snprintf(name, sizeof name, "%s", n && *n ? n : "188054619");
+        left = c ? atoi(c) : 40;
+        fprintf(stderr, "[vu] snapshots of %s from VBlank %u into %s (%d)\n", name, from, dir, left);
+    }
+    if (left <= 0 || st->idx != 1 || ps2_vblank_count() < from || !vuc_nprogs) return;
+    uint32_t pc = addr_dw & st->pcmask;
+    vuc_slot* s = &vuc_slots[1][pc];
+    if (s->gen != micro_gen[1]) vuc_lookup(st, pc, s);
+    int mine = s->prog && !strcmp(vuc_progs[s->prog - 1]->name, name);
+    /* PS2_VU_SNAP_TRACK=1 (with PS2_VU_INTERP=1): from each class begin (0x1AA0) to the next other program, the VU1 data
+     * lanes the unit reads before anything (VIF or VU) wrote them: lmap_<n>.bin (1024 bytes, lane bits) */
+    static int track = -1;
+    if (track < 0) { const char* e = getenv("PS2_VU_SNAP_TRACK"); track = e && *e == '1'; }
+    if (track && vu1_trk && !mine) {
+        char lp[400];
+        snprintf(lp, sizeof lp, "%s\\lmap_%06u_%03u.bin", dir, ps2_vblank_count(), seq);
+        FILE* lf = fopen(lp, "wb");
+        if (lf) { fwrite(vu1_trk_r, 1024, 1, lf); fclose(lf); }
+        vu1_trk = 0;
+    }
+    if (!mine) return;
+    if (track && pc * 8u == 0x1AA0u) { memset(vu1_trk_w, 0, 1024); memset(vu1_trk_r, 0, 1024); vu1_trk = 1; }
+    left--;
+    char path[400];
+    snprintf(path, sizeof path, "%s\\snap_%06u_%03u_%04X.bin", dir, ps2_vblank_count(), seq++, pc * 8u);
+    FILE* f = fopen(path, "wb");
+    if (!f) return;
+    uint32_t vr[18];
+    vif_debug_regs(1, vr);
+    fwrite("VUS1", 4, 1, f);
+    fwrite(st->vi, sizeof st->vi, 1, f);
+    fwrite(st->vf, sizeof st->vf, 1, f);
+    fwrite(&st->acc, sizeof st->acc, 1, f);
+    fwrite(&st->I, 4, 1, f); fwrite(&st->Q, 4, 1, f); fwrite(&st->P, 4, 1, f);
+    fwrite(&st->top, 4, 1, f); fwrite(&st->itop, 4, 1, f);
+    fwrite(vr, sizeof vr, 1, f);
+    fwrite(st->data, (st->dmask + 1) * 16u, 1, f);
+    fclose(f);
+}
+
+/* (r2-flicker) CPU time per PS2_GPU_AB phase (r2_capture.c sets vu_ab_phase; -1 off): [phase][0] VU1 programs,
+ * [1] VIF1 (vif.c, its programs' time included) */
+volatile int vu_ab_phase = -1;
+double vu_ab_ms[2][2];
+static double qpc_ms_now(void) { static double f; LARGE_INTEGER t; if (!f) { LARGE_INTEGER q; QueryPerformanceFrequency(&q); f = 1000.0 / (double)q.QuadPart; } QueryPerformanceCounter(&t); return (double)t.QuadPart * f; }
+double vu_ab_now(void) { return qpc_ms_now(); }
+
 static void run(vu_state* st, uint32_t addr_dw) {
     int perf_prev = perf_enter(PERF_VU);
+    int abp = st->idx == 1 ? vu_ab_phase : -1;
+    double ab0 = abp >= 0 ? qpc_ms_now() : 0;
+    vu_snap(st, addr_dw);
     if (vrec.state != 1) vrec_begin(st, addr_dw);
     unsigned csr = _mm_getcsr();
     host_csr[st->idx & 1] = csr;
@@ -295,6 +363,7 @@ static void run(vu_state* st, uint32_t addr_dw) {
     uint32_t pairs = vu_execute(st, addr_dw);
     _mm_setcsr(csr);
     if (vrec.state == 3) vrec_end(st, pairs);
+    if (abp >= 0) vu_ab_ms[abp & 1][0] += qpc_ms_now() - ab0;
     perf_leave(perf_prev);
 }
 
@@ -366,8 +435,10 @@ uint32_t vu_private_run(vu_state* st, uint32_t pc, vu_private_kick_fn kick, void
     return n;
 }
 
+volatile int vu1_drop_kicks;           /* (r2-flicker) set by VIF1 for the runs of a kept native chain */
 void vu_xgkick(uint32_t qw_addr) {
     if (tl_kick) { tl_kick(tl_kick_user, tl_kick_st->data, qw_addr & 0x3FF); return; }   /* (r2-m5b) a private VU1 */
+    if (vu1_drop_kicks) return;          /* (r2-flicker) a native mesh's program: its packets are R2's (vif.c) */
     if (vuc_hashing) {                   /* PS2_VU_VERIFY: hash both runs' kicks; the shadow's go no further */
         const vu_state* cur = vuc_shadow_active ? &vuc_shadow : &vu_st[1];
         vuc_khash = vu_kick_hash(vuc_khash, qw_addr, cur->cyc);

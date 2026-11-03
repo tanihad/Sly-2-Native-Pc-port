@@ -1082,6 +1082,82 @@ the frontend and the exact path are unchanged, so Reference, `PS2_GS_SCALE` runs
 - **Left**: native HUD (the HUD stays exact, R7 part 3); ROV draws are approximations (DATE / wrap) - checked visually
   on the sweep, not byte-gated; MSAA for the FF cut-outs via A2C; a consumer for the motion vectors (TAA / upscaler).
 
+### The owner's flicker report and the temporal check (next/r2-flicker, 2026-10-30)
+- **Report**: ep1 hub at night, Modern only (Exact fine): "the shadows flicker" and "at random times a line on the screen
+  flicks", worst with light around Sly (lamps, the guards' searchlights). Owner: render_scale auto, 120 fps, 1440p.
+- **Temporal check** (new, r2_sweep check `tf`, tests/r2/gates.json `level3_temporal`): scripts/flicker_run.ps1 dumps
+  every VBlank of a warp scenario (PS2_DUMP_BMP=1 + PS2_DUMP_RAW=1: raw BMPs, fast enough at 3x 60 fps with the dump
+  queue now 32 deep; PS2_DUMP_WAIT=1 blocks instead of skipping - only above 60 fps, at 60 it stalls the EE) and
+  scripts/flicker_check.c judges each picture against its neighbours: one-picture blinks, the longest blinking run in a
+  row, rows >= 25% blinking, 16 x 16 blobs, blinking straight seams; `--heat` with PS2_R2_ALT marks what modern and exact
+  frames draw differently persistently; `--ab` compares two replays per VBlank; `--png` crops pictures. The per-frame
+  aggregate gates (ab, hc) average such things away.
+- **What was measured** (3x / 4x, 60 / 120 fps, walking and idle, lamp and searchlight scenes; notes/wip/r2-flicker.md):
+  - Bracket replays exact vs hybrid (fixed stream, 500 VBlanks with searchlight + explosion): no temporal outlier; the GPU
+    feature passes (svol, shfuse, npost, texdec, lazy Z, particles) are exact on a fixed stream.
+  - **Sly's lamp shadow on the ledge (ep1 start, idle, 120 fps) was missing in hybrid frames** (present in Exact and with
+    PS2_R2_KINDS=props; no GPU feature switch, Z bias or alpha override changed it). The shadow-volume draw itself differed
+    (4347 vs 2250 vertices). **Root cause** (found with VU1 snapshots before every run of the shadow program 188054619,
+    exact vs hybrid, and a read / write lane tracker over VU1 data): VIF1's registers persist across chains, and the
+    shadow-volume class unpacks its per-vertex flags with a *masked* UNPACK under the **STMASK 3F3F3F3F the world's
+    chains leave** (only W written, XYZ kept). In hybrid frames the world's chains are dropped, so the class met the
+    mask a character chain left (50505050: X / Y data, Z / W row) and built wrong volumes. Second, every MSCAL flips VIF1's
+    double buffer: an all-exact frame reaches the class with the same parity (DBF 0) every frame, hybrid frames with a
+    parity that depended on which entries were native. **Fix** (r2_capture.c owe_vif / flush_vif / owe_flips_class,
+    r2_mesh.c): the mesh decoder records the VIF registers each chain writes (STCYCL / STMOD / STMASK / STROW / STCOL /
+    BASE / OFFSET, end values) and its MSCAL count mod 2 (from its last OFFSET). Native meshes owe them: the registers
+    go into one small VIF packet before the next exact chain of the same class (with the GS state epilogue; dropped when
+    a class switch's packets already came between). Third, the shadow program reads lanes of the main program's
+    *output* buffers it never wrote (pipelined reads past its own data), so the uploads alone are not enough either.
+    Paying the owed flips alone (an MSCAL to an [E] NOP) broke ep2 inside the main class (its next exact chain reads the
+    "other" buffer the last *executed* chain filled) and ep6 at class switches (garbage GIF data: "write to unknown
+    general register 0x0B").
+  - **Final fix (478f6ad)**: native chains stay dropped (registers owed, parity counted) except in the **class run just
+    before a foreign class** (a render-list lookahead, cached per run): there the native meshes' chains are kept and run
+    their programs **with XGKICK dropped** - VU memory, VIF registers, parity and the main program's output lanes are as
+    in an exact frame, nothing is drawn twice. The VIF-side protocol (vif.c, invisible to the EE): `MARK 0xA5A5, MARK n`
+    = the next n MSCALs run with kicks dropped; `MARK 0xA5A6, MARK n` = the next n MSCALs only flip the double buffer
+    (TOPS / ITOP set, the program not started). Before the first kept chain the parity owed by earlier dropped chains is
+    paid flip-only; the pending tail is flushed (kicks dropped) at the next entry's hook; the last native entry before
+    the switch is drawn exact (its tail kick feeds the switch). Switches: PS2_R2_KEEPCHAIN (default 1),
+    PS2_R2_RUNPROG (0 never, 1 always, 2 before a foreign class - default), PS2_R2_VIFSTATE (registers; bit 1 = the
+    old flips, off). PS2_R2_STATS adds "kept chains / exact last / parity unpaid" (ep1 hub ~70-90 kept of ~400 native,
+    m1 ~205, m2 ~17; parity unpaid 0).
+  - **CPU cost** (in-run A/B, PS2_GPU_AB=600 + PS2_GPU_AB_EE=3: kept chains on in B phases only, 3x grid, ~25 000
+    frames per phase; "[r2] cpu-ab" line). Frame = EE frame interval (wall ms between frame
+    begins, uncapped); VU1 = ms in VU1 programs, VIF1 = ms in VIF1 DMA (includes the VU1 runs it starts):
+
+    | scene | dropped (A) frame / VU1 / VIF1 | kept before switches (B) | delta frame |
+    |---|---|---|---|
+    | ep1 hub | 3.672 / 0.956 / 1.276 | 3.697 / 1.203 / 1.732 | +0.03 ms |
+    | m1 brawl | 3.670 / 0.689 / 0.925 | 3.706 / 0.865 / 1.243 | +0.04 ms |
+    | m2 boardroom | 4.817 / 0.644 / 0.836 | 4.806 / 0.756 / 1.001 | -0.01 ms |
+
+    fps medians in the same runs: ep1 364, m1 338, m2 233 (chaos_bench). Keeping *every* native chain with programs
+    (c3836a2) cost +2.5 ms per frame in ep1 (VU1 0.85 -> 3.08, VIF1 1.14 -> 4.98), +1.4 ms in m1 - hence the selective form.
+  - Result: in the ALT ledge view modern and exact frames draw the same lamp shadow (heat 276 px at 3x, the props-only
+    baseline ~190: idle animation); the bottom-edge polygon that differed before is gone. Final verification
+    (478f6ad, 120 fps): ALT heat at the ledge 118 px and at the ep1 spawn 154 px (3x grid); on MFT 1440p MSAA 4x the
+    modern frame's lamp shadow matches the exact frame's (ALT alternates MFT and grid pictures, so compared by crops);
+    tf on a 700-VBlank lamp walk: grid 3x PASS (416 pictures), grid 1x PASS (700), MFT 1440p PASS (372; one earlier
+    MFT run had one picture with 25 blobs, not reproduced).
+  - MFT grid fallbacks seen with dumps (single "not modern" frames in the walk) do not happen without dumps (same walk,
+    PS2_DUMP_FROM out of range, PS2_MFT_LOG=1). Left for R8: about once per run (~27 000 frames) one "other target" grid
+    frame (a full-screen blended draw into another target, fmask FF000000) - also with the fix off (PS2_R2_KEEPCHAIN=0
+    PS2_R2_VIFSTATE=0), so not from this change; a one-frame resolution / AA pop on MFT.
+  - Diagnostics: PS2_VU_SNAP=<vblank> PS2_VU_SNAP_DIR=<dir> [PS2_VU_SNAP_NAME=<unit>, default 188054619]
+    [PS2_VU_SNAP_COUNT=n]: VU registers, VIF1 registers and data memory before each run of that unit (vu.c vu_snap);
+    with PS2_VU_SNAP_TRACK=1 and PS2_VU_INTERP=1 also lmap_*.bin per class: the data lanes it read before anything wrote
+    them (vu_exec.c / vif.c tracker).
+  - PS2_R2_ALT: a thin bright sliver along the searchlight volume's edge alternates (brighter in one mode); the clipper's
+    fans add ~50 persistently alternating pixels on a walk (PS2_R2_FANS=0: 5).
+  - A full-height 1-pixel vertical line (3x: raw column ~860) blinks for one picture during Sly's pole jump on the ledge
+    - in Reference too (not modern-specific).
+  - R8 frames: in steady gameplay no grid fallback (PS2_R2_STATS: only loading screens "not modern"); with frame dumps
+    at 120 fps single grid frames appeared between MFT frames (a visible resolution / AA pop). PS2_MFT_LOG now also logs
+    every grid frame and why (gpu_exec_mft.h mft_no).
+  - Scale changes (scaleup / scaledown tokens, auto): no glitch at the switch frames.
+
 ### R9. Enhanced and mods - 12 agent-days (two tasks)
 - **R9a Enhanced, 7 days**: per-pixel lighting, shadow maps, SSAO, bloom, anisotropic + mipmaps, outline styles, and
   presets ("Original", "Enhanced", "Performance") in the Options menu.

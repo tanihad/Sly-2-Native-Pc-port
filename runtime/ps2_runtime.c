@@ -603,6 +603,29 @@ static void dump_picture(const uint32_t* frame, int w, int h, int stride, uint32
         if (raw < 0) raw = getenv("PS2_DUMP_RAW") && atoi(getenv("PS2_DUMP_RAW")) != 0;
         int dw = w;
         const uint32_t* shaped = ps2_aspect.wide && !raw ? display_shaped(frame, w, h, stride, ps2_aspect.ratio, content43, &dw) : NULL;
+        static int bmp = -1;                     /* (r2-flicker) PS2_DUMP_BMP=1: BMP files (fast: every VBlank of a run) */
+        if (bmp < 0) bmp = getenv("PS2_DUMP_BMP") && atoi(getenv("PS2_DUMP_BMP")) != 0;
+        if (bmp) {
+            const uint32_t* px = shaped ? shaped : frame;
+            int ow = shaped ? dw : w, os = shaped ? dw : stride;
+            snprintf(path, sizeof path, "%s/frame_%06u.bmp", dump_dir, vb);
+            FILE* f = fopen(path, "wb");
+            if (f) {
+                uint8_t hd[54];
+                uint32_t isz = (uint32_t)ow * (uint32_t)h * 4;
+                memset(hd, 0, sizeof hd);
+                hd[0] = 'B'; hd[1] = 'M';
+                uint32_t v[] = { 54 + isz, 0, 54, 40, (uint32_t)ow, (uint32_t)-h };
+                memcpy(hd + 2, v, sizeof v);
+                hd[26] = 1; hd[28] = 32;
+                memcpy(hd + 34, &isz, 4);
+                fwrite(hd, 1, sizeof hd, f);
+                for (int y = 0; y < h; y++) fwrite(px + (size_t)y * os, 4, (size_t)ow, f);
+                fclose(f);
+            }
+            ReleaseSRWLockExclusive(&lock);
+            return;
+        }
         if (shaped) debug_write_png(path, shaped, dw, h, dw);
         else debug_write_png(path, frame, w, h, stride);
         /* audio clock = position in a PS2_AUDIO_WAV recording, to line sound up with pictures */

@@ -17,6 +17,11 @@
     "z_within4_min": 0.999,
     "calibration": "ep3 hub r2-m1 61 dB / 0.002% > 16 / Z 100%; ep1 hub r2-m2 (props, clipped, consolidated) 58.9 dB / 0.019% > 16 / Z 99.85% exact, 100% within 2"
   },
+  "level3_temporal": {
+    "about": "(r2-flicker) temporal outliers in game: scripts/flicker_run.ps1 (r2_sweep check tf) dumps every VBlank of a modern-mode run (3x, 60 fps) and scripts/flicker_check.c judges each picture against its neighbours: one-picture blinks (spike share), the longest blinking run in a row (a line that flicks), rows with >= 25% blinking, 16 x 16 blobs, blinking straight seams (tile / page / band boundaries)",
+    "spike_share_max": 0.004, "longest_run_max": 0.25, "rows_max": 0, "blobs_max": 16, "seam_min_px": 160, "seams_max": 2,
+    "calibration": "ep1 hub r2-flicker: idle modern / reference 0.00001-0.0006 spike share, blobs 0-1; walking with a searchlight hit (explosion, camera shake) up to 0.0023 / 13 blobs in both modes; seams: moving edges can count, one natural seam (column 862 at 3x during a pole jump) also in reference"
+  },
   "level4_perf": {
     "about": "chaos benchmark (scripts/chaos_bench.ps1), modern vs reference in one session, interleaved, release, 3x 16:9 unlimited",
     "ep1_hub_fps_min": 190, "low1_no_regression": true, "low01_no_regression": true, "cpu_stage_ms_max": 2.5

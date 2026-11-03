@@ -3231,7 +3231,7 @@ void gpu_exec_frame(const void* payload) {
     static int ab_init;
     if (!ab_init) {
         ab_init = 1; const char* e = getenv("PS2_GPU_AB"); PR.ab = e && atoi(e) > 0 ? atoi(e) : 0;   /* (r2-m7b) */
-        e = getenv("PS2_GPU_AB_EE"); PR.ab_ee = e && (*e == '1' || *e == '2');   /* (r2-m5b; r2-hud: 2 = only the dropped render class follows the phases) */
+        e = getenv("PS2_GPU_AB_EE"); PR.ab_ee = e && (*e == '1' || *e == '2' || *e == '3');   /* (r2-m5b; r2-hud: 2 = only the dropped render class follows the phases) */
     }
     if (PR.ab > 0) {
         int nb = (int)((XC.frames / (uint32_t)PR.ab) & 1);

@@ -205,6 +205,16 @@ VU_INLINE uint16_t branch_vi(const vu_state* st, unsigned r) {
 /* VU0 sees VU1's registers at data addresses 0x4000-0x43FF (quadwords 0x400-0x43F). */
 #define VU0_HIGH(st, a) ((st)->idx == 0 && ((a) & 0x400))
 
+/* (r2-flicker, diagnostics) VU1 data lanes written / read before written since vu1_trk_reset (vu.c PS2_VU_SNAP_TRACK) */
+int vu1_trk;
+uint8_t vu1_trk_w[1024], vu1_trk_r[1024];
+static inline void trk_r(const vu_state* st, uint32_t a, unsigned lanes) {
+    if (vu1_trk && st->idx == 1) { a &= 0x3FF; vu1_trk_r[a] |= (uint8_t)(lanes & ~vu1_trk_w[a] & 15u); }
+}
+static inline void trk_w(const vu_state* st, uint32_t a, unsigned lanes) {
+    if (vu1_trk && st->idx == 1) vu1_trk_w[a & 0x3FF] |= (uint8_t)(lanes & 15u);
+}
+
 VU_INLINE uint32_t* qwp(const vu_state* st, uint32_t a) {
     return (uint32_t*)(st->data + ((a & st->dmask) << 4));
 }
@@ -213,15 +223,18 @@ VU_INLINE __m128 load_qw(const vu_state* st, uint32_t a) {
     return _mm_loadu_ps((const float*)qwp(st, a));
 }
 VU_INLINE void store_qw(vu_state* st, uint32_t a, __m128 v, unsigned lanes) {
+    trk_w(st, a, lanes);
     if (VU0_HIGH(st, a)) { uint32_t t[4]; _mm_storeu_ps((float*)t, v); vu1_reg_write(a & 0x3F, t, lanes); return; }
     float* p = (float*)qwp(st, a);
     _mm_storeu_ps(p, vblend(_mm_loadu_ps(p), v, lanes));
 }
 VU_INLINE uint32_t load_w(const vu_state* st, uint32_t a, unsigned lane) {
     if (VU0_HIGH(st, a)) { uint32_t t[4]; vu1_reg_read(a & 0x3F, t); return t[lane]; }
+    trk_r(st, a, 1u << lane);
     return qwp(st, a)[lane];
 }
 VU_INLINE void store_w(vu_state* st, uint32_t a, unsigned lanes, uint32_t v) {
+    trk_w(st, a, lanes);
     if (VU0_HIGH(st, a)) { uint32_t t[4] = { v, v, v, v }; vu1_reg_write(a & 0x3F, t, lanes); return; }
     uint32_t* p = qwp(st, a);
     if (lanes & 1) p[0] = v;
@@ -351,6 +364,7 @@ static vf128* u_invalid(vu_state* st, const vu_op* op, __m128* out) {
 #define SETVI(r, v) do { if (r) st->vi[(r)] = (uint16_t)(v); } while (0)
 
 LFN(l_lq) {
+    trk_r(st, (uint32_t)(VI(op->ls) + op->imm), op->ldst);
     __m128 v = load_qw(st, (uint32_t)(VI(op->ls) + op->imm));
     if (op->lt) vwrite(&st->vf[op->lt], v, op->ldst);
     return npc;
@@ -403,6 +417,7 @@ LFN(l_mr32) {
 }
 LFN(l_lqi) {
     uint32_t a = VI(op->ls);
+    trk_r(st, a, op->ldst);
     __m128 v = load_qw(st, a);
     SETVI(op->ls, a + 1);
     if (op->lt) vwrite(&st->vf[op->lt], v, op->ldst);
@@ -410,6 +425,7 @@ LFN(l_lqi) {
 }
 LFN(l_lqd) {
     uint32_t a = (VI(op->ls) - 1u) & 0xFFFF;
+    trk_r(st, a, op->ldst);
     __m128 v = load_qw(st, a);
     SETVI(op->ls, a);
     if (op->lt) vwrite(&st->vf[op->lt], v, op->ldst);
