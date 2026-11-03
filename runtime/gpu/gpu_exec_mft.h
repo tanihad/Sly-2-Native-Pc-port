@@ -652,7 +652,11 @@ static int mft_no(int why) {
     M.why[why]++;
     M.why_last = why;
     static int log = -1, budget = 400;   /* (r2-flicker, diagnostics) PS2_MFT_LOG: every grid frame and why, while in use */
-    if (log < 0) log = getenv("PS2_MFT_LOG") != NULL;
+    if (log < 0) {
+        log = getenv("PS2_MFT_LOG") != NULL;
+        const char* mx = getenv("PS2_MFT_LOG_MAX");   /* (qa-a, diagnostics) more than 400 lines: loading screens use them up */
+        if (mx && atoi(mx) > 0) budget = atoi(mx);
+    }
     if (log && why != MW_OFF && budget > 0 && M.frames) { budget--; gpu_log("mft: grid frame v%u (%s) after %llu modern", X.fd ? X.fd->vblank : 0u, mw_names[why], (unsigned long long)M.frames); }
     return 0;
 }

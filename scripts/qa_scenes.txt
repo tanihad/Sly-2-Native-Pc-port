@@ -1,0 +1,10 @@
+# (qa-a) Scenes of scripts\qa_run.ps1 (the modern renderer's visual QA matrix; notes/wip/qa-a.md).
+# name | episode | job | flags (direct, play) | at (first dumped VBlank) | frames (dumped VBlanks) | pad (after START; GP / HP as in m8_batch.ps1)
+# Idle scenes first (as scripts\r2_sweep.ps1); the walks move Sly (GP / HP pad macros of scripts\m8_batch.ps1, which are
+# chained: every token is relative to the one before). At is in VBlanks, so with frame_rate 120 the same At is half the game time.
+ep1_hub | 1 | m1_brawl | play | 4800 | 120 |
+ep2_hub | 2 | | play | 4800 | 120 |
+ep3_hub | 3 | | play | 5000 | 120 |
+ep4_hub | 4 | | play | 4800 | 120 |
+m2_boardroom | 2 | m2_boardroom_brawl | direct | 5400 | 120 |
+m3_boss | 3 | m3_boss | direct | 6600 | 120 |
