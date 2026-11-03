@@ -2,6 +2,13 @@
 
 ## Resume here (read first in a new session)
 
+**2026-11-03: LAUNCHER MERGED (2245f36).** build\installer\Sly2-Setup.exe is now the launcher.
+- **What it does:** drag-and-drop ISO; imports a 2.9 GB copy to `data\sly2.img`, so the ISO is no longer needed; Play / Repair / Previous / Uninstall.
+- **Updates:** Ed25519-signed updates from the GitHub latest release, with staged swap and rollback.
+- **Release key:** private key at `%USERPROFILE%\.sly2-release\release-ed25519.key`, outside the repo. The OWNER MUST BACK IT UP.
+- **Release process:** notes/install.md, "Publishing an update".
+- **Running:** the flicker fix (r2-flicker). The flips broke ep6, so it now keeps native meshes' chains with XGKICKs dropped; it is measuring the CPU cost, then the gates.
+
 **PAUSED by the owner (2026-10-30).** Nothing is running.
 
 The flicker fix is on branch next/r2-flicker (c61586e, pushed; main's R8 is already merged in).
