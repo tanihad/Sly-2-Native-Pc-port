@@ -19,13 +19,25 @@ Worktree C:\Users\tanih\Projects\sly2-worktrees\r8-perf, branch next/r8-perf (fr
   screen boxes (tile levels), runs of one state merged into instanced pulled draws. ep1: 5444 -> 3043 GPU draws
   (TS 16), 2614 (TS 8), 2945 (TS 4): overlap-limited. A/B (prof): R2 1.67 -> 1.28 ms; ab-gpu -0.78 of 19.6 (loaded).
 
+- `PS2_R8P_VERIFY=<n>` (gpu_exec_mft.h vf_*, mft.hlsl cs_mft_cmp): every n-th MFT frame each optimised step runs twice
+  (optimised, then original from the same surfaces), compared per sample; R2 plan, shadow sequence, line-pixel runs all
+  identical in ep1 (thousands of checks); negative test PS2_R2_PLAN_REVERSE=1 is caught.
+- Shadow volumes (R8P_SHADOW=4): SVOL_LITE perms (flat colour / TEST / ALPHA from record + state when the G / A planes
+  have no gradients), counters / DSV / colour SRV kept bound across the volume draws (X.mode 10). svol 0.79 -> 0.64 (prof).
+- Line-pixel runs (R8P_LINEPIX=2, lm_plan / lm_exec, vs_mft_linepix_m + table t26): 2.5 M -> 0.8 M draws, ~5% of
+  ff-line time only. Bugs fixed: m_cfg.z left at the table offset for plain draws; the iota (DRAWID) buffer must cover
+  slot + instances (R2 too: data / 32 + ndraw).
+- R2 plan boxes from the draw's vertices when the AABB reaches behind the camera: ep1 5167 -> 2542 GPU draws.
+- mft_tri_frag rows / steps in wide loads (same words).
+- All features A/B ep1 (no prof, loaded GPU): 12.12 -> 11.50 ms (-5.2%).
+
 ## In progress
-- R2 plan: tuning; verify pictures identical (merge on/off).
+- Headline A/B m1 / m2 (PS2_GPU_AB=24 PS2_GPU_AB_R8=0xFF, -Secs 330, ab-gpu line).
 
 ## Next
-1. R2: fewer levels? check pictures; m1 / m2 numbers.
-2. Shadow passes (svol per-sample atomics, shfuse), exact FF tris (sky), outlines (line pixels), blur.
-3. Gates, notes/modern-renderer.md "as built", final report.
+1. Gates: run_tests, tests\unit, gpu_diff_all mixed S=1, m9_exact, pc_text_boot, debug + release, package.py,
+   r2_sweep ab+hc+tf with -Parallel 1.
+2. notes/modern-renderer.md "as built", final report, cleanup (build\chaos, build\r2trace, build\mftcheck).
 
 ## Findings / traps
 - Build: `$env:PYTHON_CPU_COUNT='6'` limits build_game.py's thread pool (Python 3.13) to 6 jobs.
