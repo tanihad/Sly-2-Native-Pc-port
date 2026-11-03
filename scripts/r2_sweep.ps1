@@ -77,6 +77,8 @@ while ($queue.Count -or $running.Count) {
         if ($tfv.ContainsKey($r.c)) {     # (r2-flicker) temporal outliers
             $g = ($t | Select-String '^flicker:' | Select-Object -Last 1)
             $gl = if ($g) { $g.Line } else { 'flicker: (no result)' }
+            $pp = ($t | Select-String '^parity:' | Select-Object -Last 1)   # (the double-buffer parity at the shadow class)
+            if ($pp -and $pp.Line -notmatch 'PASS') { $gl = ($gl -replace 'PASS', 'pass') + " | $($pp.Line)" }
             if ($gl -notmatch 'PASS') { $fail++ }
             elseif (-not $Keep) { Remove-Item -Recurse -Force (Join-Path $root "build\flicker\sw_$($r.s.n)_$($r.c)") -ErrorAction SilentlyContinue }
             "{0,-13} {1} | {2}" -f $r.s.n, $r.c, $gl

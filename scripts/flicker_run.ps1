@@ -28,7 +28,7 @@ if (-not (Test-Path $tool) -or (Get-Item $src).LastWriteTime -gt (Get-Item $tool
 }
 $out = Join-Path $root "build\flicker\$Name"
 New-Item -ItemType Directory -Force $out | Out-Null
-$set = @{ PS2_R2 = $Mode; PS2_DUMP_FROM = "$At"; PS2_DUMP_TO = "$($At + $Frames - 1)"; PS2_ASPECT = '16:9'; PS2_DUMP_WAIT = '0'; PS2_DUMP_BMP = '1'; PS2_DUMP_RAW = '1' }
+$set = @{ PS2_R2 = $Mode; PS2_R2_STATS = '1'; PS2_DUMP_FROM = "$At"; PS2_DUMP_TO = "$($At + $Frames - 1)"; PS2_ASPECT = '16:9'; PS2_DUMP_WAIT = '0'; PS2_DUMP_BMP = '1'; PS2_DUMP_RAW = '1' }
 if ($Scale -eq 'auto') { $set.PS2_GS_SCALE = $null } else { $set.PS2_GS_SCALE = $Scale }
 foreach ($kv in ($Env -split ';' | Where-Object { $_ })) { $k, $v = $kv -split '=', 2; $set[$k.Trim()] = $v }
 $saved = @{}
@@ -71,5 +71,17 @@ if (-not $Check) {                      # the gates (tests\r2\gates.json level3_
 $ca = @($fr, '--quiet', '--out', (Join-Path $out 'worst.png')) + @($Check -split ' ' | Where-Object { $_ })
 & $tool @ca
 $rc = $LASTEXITCODE
+# (r2-flicker) hybrid frames that reached the shadow-volume class with VIF1's double-buffer parity unpaid (r2_capture.c
+# before_foreign): their shadows differ from an exact frame's, and toggling between paid and unpaid frames flickers.
+# PS2_R2_STATS prints the count per 60 frames; any inside the dump window fails the check
+$up = 0
+foreach ($m in (Select-String -Path (Join-Path $w 'run.log') -Pattern '^\[r2\] v(\d+) mode .*parity unpaid (\d+)' -ErrorAction SilentlyContinue)) {
+    $v = [int]$m.Matches[0].Groups[1].Value
+    if ($v -gt $At -and $v -le $At + $Frames + 60) { $up += [int]$m.Matches[0].Groups[2].Value }
+}
+if ($Mode -eq 'hybrid') {
+    "parity: $(if ($up) { 'FAIL' } else { 'PASS' }) - $up hybrid frames reached the shadow class with the double-buffer parity unpaid"
+    if ($up -and -not $rc) { $rc = 1 }
+}
 if (-not $Keep) { Remove-Item -Recurse -Force $fr -ErrorAction SilentlyContinue }
 exit $rc
