@@ -560,33 +560,34 @@ static int mft_enabled(void) {
 
 /* the shadow sequence starting at ALIAS16 op pos (gpu_exec.c shf_head's head, then volumes in epochs: a flat post pass on B
  * - a G bit plane written over the whole frame - ends an epoch; then shf_tail's tail) */
+static int mft_ssf(int c) { M.shp_fail = c; return 0; }   /* (mft-cover, diagnostics) which check of mft_shadow_seq failed (PS2_MFT_LOG) */
 static int mft_shadow_seq(const gpu_front_frame_data* fd, size_t pos, mft_shp* q) {
     memset(q, 0, sizeof *q);
     M.shp_fail = 1;
-    if (!shf_layout()) return 0;
+    if (!shf_layout()) return mft_ssf(11);
     const gpu_fop_alias16* a = (const gpu_fop_alias16*)(fd->cmd + pos);
-    if (a->h.size < sizeof *a || a->mode != 1) return 0;
+    if (a->h.size < sizeof *a || a->mode != 1) return mft_ssf(12);
     size_t p = pos + a->h.size;
     const gpu_fop_draw* d = (const gpu_fop_draw*)(fd->cmd + p);
-    if (p + sizeof *d > fd->cmd_bytes || d->h.op != GPU_FOP_DRAW || d->ct != a->target || d->tex == a->target) return 0;
+    if (p + sizeof *d > fd->cmd_bytes || d->h.op != GPU_FOP_DRAW || d->ct != a->target || d->tex == a->target) return mft_ssf(13);
     int bt = d->tex, w, h;
     uint32_t c0[4];
-    if (!shf_copy(d, bt, a->psm, c0, &w, &h)) return 0;
+    if (!shf_copy(d, bt, a->psm, c0, &w, &h)) return mft_ssf(14);
     q->head_slots = draw_slots(d, 1);
     p += d->h.size;
     const gpu_fop_alias16* e = (const gpu_fop_alias16*)(fd->cmd + p);
-    if (p + sizeof(gpu_fop) > fd->cmd_bytes || e->h.op != GPU_FOP_ALIAS16_END || e->target != a->target) return 0;
+    if (p + sizeof(gpu_fop) > fd->cmd_bytes || e->h.op != GPU_FOP_ALIAS16_END || e->target != a->target) return mft_ssf(15);
     p += e->h.size;
     const gpu_fop_clear* cl = (const gpu_fop_clear*)(fd->cmd + p);
-    if (p + sizeof *cl > fd->cmd_bytes || cl->h.op != GPU_FOP_CLEAR || cl->target != bt || cl->zclear || cl->mask != 2) return 0;
+    if (p + sizeof *cl > fd->cmd_bytes || cl->h.op != GPU_FOP_CLEAR || cl->target != bt || cl->zclear || cl->mask != 2) return mft_ssf(16);
     xtarget* tb = tgt((uint32_t)bt);
     int cx1 = cl->x1 > 0 ? cl->x1 : tb ? tb->nat_w : 0, cy1 = cl->y1 > 0 ? cl->y1 : tb ? tb->nat_h : 0;
-    if (cx1 != w || cy1 != h) return 0;
+    if (cx1 != w || cy1 != h) return mft_ssf(17);
     q->vol0 = p + cl->h.size;
     int nvol = 0;
     for (p = q->vol0; p + sizeof(gpu_fop) <= fd->cmd_bytes;) {
         const gpu_fop* o = (const gpu_fop*)(fd->cmd + p);
-        if (!o->size) return 0;
+        if (!o->size) return mft_ssf(18);
         if (o->op == GPU_FOP_DRAW) {
             const gpu_fop_draw* v = (const gpu_fop_draw*)o;
             if ((v->feat & GPU_DF_SVOL) && v->ct == bt) nvol++;
@@ -594,11 +595,11 @@ static int mft_shadow_seq(const gpu_front_frame_data* fd, size_t pos, mft_shp* q
                 static npost_plan P;
                 if (q->nflat >= 3 || !npost_prep(v, &P) || !(P.k.mode & 256u) || !P.whole || P.bb[0] || P.bb[1] || P.bb[2] != w ||
                     P.bb[3] != h)
-                    return 0;
+                    return mft_ssf(19);
                 q->flat[q->nflat][0] = P.k.mode; q->flat[q->nflat][1] = P.k.alpha;
                 q->flat[q->nflat][2] = P.k.fmask; q->flat[q->nflat][3] = P.k.vcol;
                 q->flat_pos[q->nflat++] = p;
-            } else return 0;
+            } else return mft_ssf(20);
         } else if (o->op != GPU_FOP_ROV_END && o->op != GPU_FOP_CLUT) break;   /* (mft-pop: CLUT uploads run by mft_shadow) */
         p += o->size;
     }
@@ -619,7 +620,7 @@ static int mft_shadow_seq(const gpu_front_frame_data* fd, size_t pos, mft_shp* q
     for (int i = 1; i < 3; i++) {
         const uint32_t* c = q->L.k.c[i];
         if (!(c[3] & 1u << 19) || !(c[3] & 1u << 18)) continue;
-        if (!(cc0[3] & 1u << 19) || !(cc0[3] & 1u << 20) || ((c[3] >> 16) & 1u) != ((cc0[3] >> 17) & 1u)) return 0;
+        if (!(cc0[3] & 1u << 19) || !(cc0[3] & 1u << 20) || ((c[3] >> 16) & 1u) != ((cc0[3] >> 17) & 1u)) return mft_ssf(22);
         /* copy i's written bits must depend only on source bits copy 0 wrote: checked over every 16-bit source value */
         uint32_t wb = c[3] & 0xFFFFu, wb0 = cc0[3] & 0xFFFFu;
         static uint32_t ck[4], cwb0, cres;
@@ -650,7 +651,7 @@ static int mft_shadow_seq(const gpu_front_frame_data* fd, size_t pos, mft_shp* q
                 if (cres && outs[0] != outs[1]) cres = 0;
             }
         }
-        if (!cres) return 0;
+        if (!cres) return mft_ssf(23);
     }
     M.shp_fail = 0;
     return 1;
@@ -1099,7 +1100,7 @@ static int mft_plan_ops(const gpu_front_frame_data* fd) {
                     snprintf(s + l, sizeof s - l, " tier %u cls %u feat %X n %u bb %d,%d-%d,%d", d->tier, d->cls, d->feat, d->count,
                              d->bbox[0], d->bbox[1], d->bbox[2], d->bbox[3]);
                 }
-                gpu_log("mft: v%u exact (%s%s) at @%u: %s", fd->vblank, mw_names[why],
+                gpu_log("mft: v%u exact (%s%s %d) at @%u: %s", fd->vblank, mw_names[why],
                         why == MW_A16 ? (M.shp_fail == 1 ? " head" : M.shp_fail == 2 ? " tail" : M.shp_fail == 3 ? " A" : "") : "",
                         (unsigned)pos, s);
                 if (why == MW_A16) {     /* (the ops that follow; a tail: from where it was expected) */
