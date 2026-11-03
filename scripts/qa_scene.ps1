@@ -14,7 +14,7 @@
 #   unless -Keep (they are 6-11 MB each).
 param([Parameter(Mandatory = $true)][string]$Scene, [string]$Config = 'balanced', [int]$Fps = 60, [int]$At = 0,
       [int]$Frames = 90, [string]$Size = '2560x1440', [string]$Extra = '', [string]$Ini = '', [string]$Tag = '',
-      [switch]$Keep, [switch]$Mft0, [switch]$NoDump, [int[]]$ShotAt = @(20, 45), [string]$Exe = '', [string]$Check = '')
+      [switch]$Keep, [switch]$Mft0, [switch]$NoDump, [switch]$Gov, [int[]]$ShotAt = @(20, 45), [string]$Exe = '', [string]$Check = '')
 $root = Split-Path $PSScriptRoot -Parent
 $main = $root
 if (-not (Test-Path (Join-Path $root 'tools\llvm-mingw'))) {
@@ -70,7 +70,7 @@ Copy-Item (Join-Path $w 'sly2.ini') (Join-Path $out 'sly2.ini')
 # environment (everything this run sets is restored)
 $set = [ordered]@{ PS2_DUMP_FROM = "$At"; PS2_DUMP_TO = "$($At + $Frames - 1)"; PS2_DUMP_WAIT = $(if ($Fps -gt 60) { '1' } else { '0' });
     PS2_DUMP_BMP = '1'; PS2_DUMP_RAW = '1'; PS2_GS_PRESENT_SIZE = $Size; PS2_MFT_LOG = '2000'; PS2_R2_STATS = '1';
-    PS2_R2 = $null; PS2_GS_SCALE = $null; PS2_MFT = $null }
+    PS2_GS_GOVERNOR = $(if ($Gov) { $null } else { '0' }); PS2_R2 = $null; PS2_GS_SCALE = $null; PS2_MFT = $null }
 if ($Mft0) { $set.PS2_MFT = '0' }
 if ($NoDump) { $set.PS2_DUMP_FROM = '99999'; $set.PS2_DUMP_TO = '99999' }
 foreach ($e in ($f[3] -split ' ' | Where-Object { $_ -like 'env=*' })) { $a, $b = $e.Substring(4) -split '=', 2; $set[$a] = $b }
@@ -133,5 +133,6 @@ foreach ($i in $ShotAt) {
 }
 if ($Keep) { "frames kept: $fr" } else { Remove-Item -Recurse -Force $fr -ErrorAction SilentlyContinue }
 exit $rc
+
 
 
