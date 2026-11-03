@@ -18,7 +18,8 @@ Summary for the docs: notes/modern-renderer.md "The owner's flicker report and t
 - [x] CPU A/B (PS2_GPU_AB_EE=3, 3x grid): ep1 +0.03 ms/frame, m1 +0.04, m2 -0.01 (table in the notes). Kept.
 - [x] verification: ALT heat ledge 118 / spawn 154 (3x grid); MFT ledge shadow = exact (crops); tf lamp walk 700: grid 3x / 1x PASS, MFT PASS (1 of 2 runs one picture 25 blobs, not reproduced); MFT "other target" grid frame ~1 per run also with the fix off (R8)
 - [x] gates A on 478f6ad: run_tests PASS, units 25/26 (window F11/Alt+Enter, known), debug build OK, gpu_diff_all 28/28, m9_exact S1+S3 identical
-- [ ] gates B: pc_text_boot rel + debug, package, r2_sweep ab,hc,tf
+- [x] gates B: pc_text_boot release + debug PASS, package OK (0.1.1020), r2_sweep ab,hc,tf 33/33 PASS
+- [x] COMPLETE (2026-11-03)
 ## Reproduce (sequential runs only, ~2.5 min each)
   .\scripts\flicker_run.ps1 -Name x -Scale 3 -Episode 1 -Job m1_brawl -Play -At 7000 -Frames 30 -Keep -Pad '+3000:cross:6' `
       -Env "PS2_FRAME_RATE=120;PS2_MFT=0;PS2_R2_ALT=6900"     (PS2_R2_VIFSTATE=0: the old behaviour)
