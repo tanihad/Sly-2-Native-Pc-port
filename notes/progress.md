@@ -2,6 +2,16 @@
 
 ## Resume here (read first in a new session)
 
+**2026-11-03 ~11:50: PARALLEL PUSH. The owner asked for many agents (usage until 15:00).** All worktrees branched from main 38a38df. Running:
+- **r2-flicker:** the flicker remains with outlines=thin; fixing the outline path's VIF state.
+- **mft-pop:** the one-frame MFT grid fallback ("other target").
+- **r8-perf:** Balanced (MFT 100% MSAA 4x) GPU time, aiming at 300 fps in the hubs.
+- **p6-pgo:** CPU overhead (LTO/PGO, hot paths).
+- **qa-a / qa-b** (Sonnet, report-only): Modern vs Exact visual QA across episodes 1-4 and 5-8, presets and setting combos.
+- **test-flake** (Sonnet): window suite F11/Alt+Enter made deterministic.
+
+Merge in batches, with one gate run per batch.
+
 **2026-11-03: FLICKER FIX MERGED (57c8877), dist 0.1.1032 — HOLD POINT REACHED: the owner is testing.**
 - **Cause:** native world chains that were dropped no longer left the VIF1 state the exact shadow class needs (STMASK, flip parity, leftover lanes).
 - **Fix:** the owed registers are written, and native chains are kept, with drawing off, only in the class run before a switch. Cost about +0.03 ms per frame.
