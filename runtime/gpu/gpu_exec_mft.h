@@ -594,8 +594,20 @@ static int mft_shadow_seq(const gpu_front_frame_data* fd, size_t pos, mft_shp* q
             else if ((v->feat & GPU_DF_NPOST) && v->ct == bt && !v->tex && v->cls == GPU_PC_SPRITE) {
                 static npost_plan P;
                 if (q->nflat >= 3 || !npost_prep(v, &P) || !(P.k.mode & 256u) || !P.whole || P.bb[0] || P.bb[1] || P.bb[2] != w ||
-                    P.bb[3] != h)
+                    P.bb[3] != h) {
+                    static int dl = -1;  /* (mft-cover, diagnostics) the flat pass that did not plan */
+                    if (dl < 0) dl = getenv("PS2_MFT_LOG") ? 20 : 0;
+                    if (dl > 0) {
+                        dl--;
+                        int ok = npost_prep(v, &P);
+                        const gpu_rec_sprite* r0 = (const gpu_rec_sprite*)(fd->rec + v->rec_first);
+                        const gpu_staterec* s0 = r0->state < fd->state_count ? (const gpu_staterec*)(fd->states + (size_t)r0->state * GPU_STATE_BYTES) : NULL;
+                        gpu_log("mft:   flat pass: nflat %d prep %d mode %X whole %d bb %d,%d-%d,%d (w %d h %d) n %u depth %u split %u; flags %X test %X alpha %X fmask %08X",
+                                q->nflat, ok, P.k.mode, P.whole, P.bb[0], P.bb[1], P.bb[2], P.bb[3], w, h, v->count, v->depth, v->split,
+                                s0 ? s0->flags : 0u, s0 ? s0->test : 0u, s0 ? s0->alpha : 0u, s0 ? s0->fmask : 0u);
+                    }
                     return mft_ssf(19);
+                }
                 q->flat[q->nflat][0] = P.k.mode; q->flat[q->nflat][1] = P.k.alpha;
                 q->flat[q->nflat][2] = P.k.fmask; q->flat[q->nflat][3] = P.k.vcol;
                 q->flat_pos[q->nflat++] = p;
@@ -1101,7 +1113,7 @@ static int mft_plan_ops(const gpu_front_frame_data* fd) {
                              d->bbox[0], d->bbox[1], d->bbox[2], d->bbox[3]);
                 }
                 gpu_log("mft: v%u exact (%s%s %d) at @%u: %s", fd->vblank, mw_names[why],
-                        why == MW_A16 ? (M.shp_fail == 1 ? " head" : M.shp_fail == 2 ? " tail" : M.shp_fail == 3 ? " A" : "") : "",
+                        why == MW_A16 ? (M.shp_fail == 1 ? " head" : M.shp_fail == 2 ? " tail" : M.shp_fail == 3 ? " A" : " check") : "", why == MW_A16 ? M.shp_fail : 0,
                         (unsigned)pos, s);
                 if (why == MW_A16) {     /* (the ops that follow; a tail: from where it was expected) */
                     size_t p = M.shp_fail == 2 ? M.shp_failpos : pos + h->size;
