@@ -3,46 +3,31 @@
 **Goal**: build-level (ThinLTO, PGO, -march / multiversioning) and hot-path CPU optimisation of the recompiled game +
 runtime; EE / frontend / worker ms per frame before -> after in ep1 hub, m1 brawl, m2 boardroom; all gates green.
 
-## Done
-- build_game.py: --jobs (SLY2_BUILD_JOBS), --lto thin (VU files kept out: -fno-slp-vectorize is a pass option),
-  --cflags/--ldflags (SLY2_CFLAGS/LDFLAGS), --pgo-gen (-fprofile-generate -DPS2_PGO_GEN), --pgo-use FILE (stamp includes
-  the profile hash). runtime/launch.h pgo_flush() before ExitProcess (watchdog, launch_exit).
-- scripts/pgo_train.ps1 (chaos_bench with LLVM_PROFILE_FILE, llvm-profdata merge).
-- ps2_call: direct table (addr - first)/4 -> fn instead of binary search (ps2_runtime.c).
-- vu0_macro_flags: SSE, branchless (vu.c); tests\unit\vu passes.
-- Baseline build build\rel (main code) copied to build\base\sly2_base.exe; 106 s with 6 jobs (machine busy).
-- ThinLTO build build\lto: 98 s (compile 51 + link 46).
+Results and design: notes/perf-plan.md "P6 results".
 
-- pgo-gen: -mllvm -do-counter-promotion=false (counter promotion took 10+ min per jump-table function); instrumented
-  build 104 s. First training (5 scenes, full-path static names): build\pgo\sly2.profdata 3.8 MB (5660 functions).
-- VU x86-64-v3 copies: build_game compiles *_ks*.c twice (VUC_V3 -march=x86-64-v3 -ffp-contract=off), dispatchers
-  pick them when the CPU has x86-64-v3 (PS2_VU_V3=0 off). vu_replay museum / rv_ep2hub: 1.81 -> 1.64 ns/pair median
-  (-9%), 0 programs differ.
-- Static function names in profiles: -mllvm -static-func-full-module-prefix=false (file name only; runtime basenames
-  are unique) so a committed profile fits any checkout. build_game --pgo-use auto (release): runtime/pgo/sly2.proftext
-  -> <out>/pgo/sly2.profdata via llvm-profdata (kept in the installer's trimmed toolchain); never fails the build.
-- pgo_train.ps1 -Ship writes runtime/pgo/sly2.proftext with translated code filtered out (f_*, iop_*, vuc_*,
-  generated files' statics): 0.19 MB text, ~800 runtime functions.
-- Unit tests: all 25 suites except window/warp pass (gs-hw 569 s). run_tests 16/16.
-- gs_replay builds for offline A/B: build\gsr_base, gsr_lto, gsr_pgo (GS_REPLAY_CFLAGS).
+## Done
+- build_game.py: --jobs (SLY2_BUILD_JOBS); release = ThinLTO + profile (runtime/pgo/sly2.proftext) for our code only
+  (translated recomp/iop/vu compiled as before); --lto off / --pgo-use none; --pgo-gen; --no-vu-v3; biggest files first.
+- VU x86-64-v3 copies for ks15/ks11 (recomp/vu_recomp.py V3_STICKY, runtime/vu_compiled.h, vu.c vuc_use_v3).
+- ps2_call direct table; vu0_macro_flags SSE; pgo_flush (launch.h); pgo_train.ps1 (-Ship); chaos_sum EE column.
+- Gates: run_tests 16/16; tests\unit all suites pass (window: only the known F11/Alt+Enter flake); m9_exact 28/28
+  identical S=1/3 (rv_intro needs -Every 7: 16 VBlanks, no sample at E20, both empty) and -Game all identical;
+  gpu_diff_all mixed S=1 28/28; pc_text_boot release + debug; debug + release builds; package.py; make_installer.py;
+  payload sources built in a scratch "builder" folder with absolute paths (as the installer does) incl. --package.
+- Offline frontend with the shipped profile: -10..-15%; GS decode -4..-9%; VU v3 -9%.
+- In game ab2 (Rate 120, Scale 1, 3 repeats): differences inside the +-20% run-to-run noise.
 
 ## In progress
-- chaos_bench -Tag ab1: base / code / lto / pgo (first profile), ep1_hub m1_brawl m2_boardroom, 2 repeats.
-  Very noisy (machine loaded; my unit tests ran during the first scenes).
+- ab2 3 more repeats (appends to build\chaos\ab2.jsonl), then fill IN_GAME_TABLE in perf-plan.md.
 
 ## Next
-1. After ab1: retrain with portable names (build\pgogen already rebuilt with --lto thin), pgo_train -Ship.
-2. Offline: front_bench -Hold with gsr_base/lto/pgo on corpus ep1_hub/m1_brawl; vu_replay done.
-3. Final build (release default: LTO? + shipped profile + VU v3); A/B base vs final, more repeats.
-4. Decide LTO default; build time + LTO link RAM; notes/perf-plan.md P6 results; install.md CPU note.
-5. Gates: window, warp, gpu_diff_all mixed S=1, m9_exact, pc_text_boot, debug build, package.py, make_installer.py.
+- Fill the table, final commit, clean build dirs, Status: complete.
 
 ## Findings / traps
-- Profiles (ep1 hub, release, 3x, other agents loading the GPU: 50-118 fps, GPU-bound): EE thread busy ~2.2 ms/frame,
-  half recompiled game code, rest runtime spread thin (vu0_macro_flags ~8% of busy, r2 capture ~5%, ps2_call ~2.5%);
-  worker: VU1 microcode ~60%, VIF unpack ~15%; frontend: fr_prim 31% self, then sb_prim, own_draw, pass_items,
-  gf_r2_flush, ring (fthread_main + done_rec ~9%); GS thread: decode spread (px_prim, send_state, gs_px_write...).
-  No lock or allocator hot spot: ntdll time is waiting (GPU-bound). Since r2 (modern renderer) the exact frontend sees
-  5-8k prims per frame in the ep1 hub (perf-plan's 35k was before), frontend ~1.3-2.9 ms.
-- Per-frame CPU ms vary 2x between runs of the same build (other agents' load, scripted play content): A/B must be
-  interleaved, repeated, medians.
+- Profiles: EE thread is now the largest CPU stage (r2 capture ~1/3 incl. r2_src_same memcmp ~10%); no lock/allocator
+  hot spot. Since r2 the exact frontend sees 5-8k prims per frame in the ep1 hub.
+- IR PGO counter promotion: 10+ min per translated jump-table function -> -do-counter-promotion=false.
+- Static function profile names carry the source path as given to clang -> -static-func-full-module-prefix=false.
+- PowerShell: a [switch] $Ship and a variable $ship are the same variable (assigning a path made it True).
+- Whole-program ThinLTO (game code too): 101 s build, 0.84 GB link, no measurable gain -> runtime only (67 s).
+- build_game --package with a relative --out fails in windres (pre-existing; package.py / the installer pass absolute).
