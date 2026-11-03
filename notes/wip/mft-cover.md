@@ -19,3 +19,15 @@ Worktree C:\Users\tanih\Projects\sly2-worktrees\mft-cover, branch next/mft-cover
 4. Verify: fallback table, gates.json, m9_exact, r2_sweep ab/hc/tf ep1, run_tests.py, PS2_GPU_AB frame times.
 
 ## Findings / traps
+- Triage tool: scripts/qa_scene.ps1 -DumpEvery N (PNG pictures into build\qa\<run>\pics, no flicker check) +
+  scratchpad sheets.py contact sheets (nearest-neighbour; scripts/contact_sheet.py box filter is too slow). PNGs are
+  ~9.6 MB each: delete after looking. Log vblank (fd->vblank) ~= dump frame number.
+- m6_paraglide (tri run, VBlanks 2400-9000): "target view" 1996-3006 and 3936-4869 = the mission briefing (PDA page with
+  3D view + portraits); "ALIAS16" 3007-3935 and 4854-5308 = briefing + intro cutscene (letterboxed); gameplay loops
+  (no input: crash / restart cutscene / paraglide, period ~600) with ~53 ALIAS16 frames per cycle around the cutscene
+  part (v6332-6372, 6938-6990, ...). Rejected sequence: ALIAS16 head on target 3 (other frame), copy ct 3 tex 1, clear
+  1 G 7E00, one SVOL draw, flat NPOST sprite fmask FFFF80FF, ROV_END, tail ALIAS16 on 1 (2 copies), COPY_SHADOW, darken
+  - looks standard; mft_shadow_seq says "head" -> check codes added (mft_ssf) to find which check.
+- m5_ewok: "target view" 2292-5906 = briefing; the rejected draw is the right portrait (tri, ct 1 tex 5 feat 0x429 =
+  VIEW|TEX|HIRES|HUD, bb 370,124-431,170). Gameplay after the briefing is modern (only stray single "not modern").
+  The nd run's "target view to the end" was the briefing lasting longer in that run.
