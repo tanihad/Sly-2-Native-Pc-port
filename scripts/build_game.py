@@ -173,14 +173,23 @@ R2_DIR = ROOT / "runtime" / "r2"                   # (r2-m1) the modern renderer
 GEN_DIR = ROOT / "build" / "gen"                   # generated headers (build/gen/gpu_shaders.h)
 
 
-def compile_one(src: Path, obj_dir: Path, flags: list[str]) -> tuple[Path, str]:
+VU_V3_FLAGS = ["-DVUC_V3", "-march=x86-64-v3", "-ffp-contract=off"]
+
+
+def compile_one(src: Path, obj_dir: Path, flags: list[str], v3: bool = False) -> tuple[Path, str]:
     gpu = src.parent in (GPU_DIR, R2_DIR)
-    obj = obj_dir / (("gpu_" if src.parent == GPU_DIR and not src.name.startswith("gpu_") else "") + src.with_suffix(".o").name)
+    obj = obj_dir / (("gpu_" if src.parent == GPU_DIR and not src.name.startswith("gpu_") else "") + src.stem +
+                     ("_v3" if v3 else "") + ".o")
     if src.parent.name == "vu":
         # recompiled VU microcode: already SIMD; clang's SLP vectorizer only costs minutes on these
         # huge functions (recomp/vu_recomp.py). Kept out of LTO: the link-time backend would not see
         # that flag (it is a pass option, not a function attribute) and the microcode calls little else.
-        flags = [f for f in flags if not f.startswith("-flto")] + ["-fno-slp-vectorize"]
+        # Nor profiled: straight-line code whose x86-64-v3 copy (v3: vu_compiled.h VUC_V3) runs instead
+        # wherever the CPU has it.
+        flags = [f for f in flags if not f.startswith(("-flto", "-fprofile", "-Wno-profile", "-Wno-backend"))
+                 and f not in ("-mllvm", "-do-counter-promotion=false")] + ["-fno-slp-vectorize"]
+        if v3:
+            flags = flags + VU_V3_FLAGS
     deps = list((ROOT / "runtime").glob("*.h"))
     if gpu:                                        # only the GPU backend depends on its headers/shaders
         deps += list(GPU_DIR.glob("*.h")) + list(R2_DIR.glob("*.h")) + [GEN_DIR / "gpu_shaders.h"]
@@ -283,6 +292,8 @@ def main() -> int:
     ap.add_argument("--pgo-gen", action="store_true",
                     help="instrumented build that writes a clang profile (.profraw) when the game exits (scripts/pgo_train.ps1)")
     ap.add_argument("--pgo-use", default=None, metavar="PROFDATA", help="optimise with this clang profile (.profdata)")
+    ap.add_argument("--no-vu-v3", dest="vu_v3", action="store_false",
+                    help="no x86-64-v3 copies of the VU microcode (runtime/vu_compiled.h)")
     args = ap.parse_args()
     global PROGRESS
     PROGRESS = args.progress
@@ -292,6 +303,8 @@ def main() -> int:
     flags = [f"-O{args.opt or ('2' if args.release else '1')}", "-fno-auto-import"]
     if args.release:
         flags.append("-DPS2_NO_TRACE")
+    if args.vu_v3:
+        flags.append("-DVUC_HAVE_V3")                  # (read only by the VU dispatchers: vu_compiled.h)
     flags += args.cflags.split()
     link_flags = args.ldflags.split()
     if args.lto == "thin":
@@ -300,8 +313,10 @@ def main() -> int:
                        f"-Wl,--thinlto-cache-dir={out / 'lto-cache'}", "-Wl,--thinlto-cache-policy=cache_size_bytes=2g"]
     if args.pgo_gen:
         # IR-level instrumentation; the runtime writes the profile itself before it ends the process
-        # (ExitProcess skips the CRT's atexit handlers): ps2_runtime.c pgo_flush
-        flags += ["-fprofile-generate", "-DPS2_PGO_GEN"]
+        # (ExitProcess skips the CRT's atexit handlers): runtime/launch.h pgo_flush. Counter promotion (keeping loop
+        # counters in registers) is off: on the translated functions with a jump table (every instruction a case) it
+        # runs for tens of minutes per function; it only makes the instrumented build faster, the counts are the same.
+        flags += ["-fprofile-generate", "-mllvm", "-do-counter-promotion=false", "-DPS2_PGO_GEN"]
         link_flags.append("-fprofile-generate")
     elif args.pgo_use:
         flags += [f"-fprofile-use={Path(args.pgo_use).resolve()}", "-Wno-profile-instr-out-of-date",
@@ -355,13 +370,19 @@ def main() -> int:
     sources = (sorted((out / "recomp").glob("*.c")) + sorted((out / "iop").glob("*.c")) +
                sorted((out / "vu").glob("*.c")) + runtime_sources() + sorted(GPU_DIR.glob("*.c")) +
                sorted(R2_DIR.glob("*.c")))
+    jobs = [(s, False) for s in sources]
+    if args.vu_v3:                                     # (P6) the microcode's x86-64-v3 copies (vu_compiled.h)
+        jobs += [(s, True) for s in sorted((out / "vu").glob("*_ks*.c"))]
     objs, errors = [], []
-    progress("compile", 0, len(sources))
+    progress("compile", 0, len(jobs))
     with ThreadPoolExecutor(max_workers=max(1, args.jobs)) as pool:
-        futures = [pool.submit(compile_one, s, obj_dir, flags) for s in sources]
+        # (the biggest files first: the build is not left waiting for one of them at the end)
+        order = sorted(range(len(jobs)), key=lambda k: -jobs[k][0].stat().st_size)
+        futs = {k: pool.submit(compile_one, jobs[k][0], obj_dir, flags, jobs[k][1]) for k in order}
+        futures = [futs[k] for k in range(len(jobs))]
         if PROGRESS:                                   # (completion order, for the installer's bar)
             for i, _ in enumerate(as_completed(futures), 1):
-                progress("compile", i, len(sources))
+                progress("compile", i, len(jobs))
         for f in futures:                              # (source order: the link order stays the same)
             obj, err = f.result()
             objs.append(obj)
@@ -370,7 +391,7 @@ def main() -> int:
     if errors:
         print(f"{len(errors)} file(s) failed to compile; first errors:\n" + "\n".join(errors)[:6000])
         return 1
-    print(f"compiled {len(sources)} files ({' '.join(flags)}) in {time.time() - t0:.0f}s")
+    print(f"compiled {len(jobs)} files ({' '.join(flags)}) in {time.time() - t0:.0f}s")
 
     exe = out / "sly2.exe"
     progress("link")

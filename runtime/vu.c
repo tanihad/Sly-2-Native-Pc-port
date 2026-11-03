@@ -79,9 +79,16 @@ static vuc_slot vuc_slots[2][2048];
 static uint32_t vuc_checked[VUC_MAX_PROGS];
 static uint8_t  vuc_match[VUC_MAX_PROGS];
 
+int vuc_use_v3;                          /* (P6) vu_compiled.h: the x86-64-v3 versions of the microcode */
+
 void vu_register_compiled(const vuc_program* const* progs, uint32_t n) {
     vuc_progs = progs;
     vuc_nprogs = n < VUC_MAX_PROGS ? n : VUC_MAX_PROGS;
+    __builtin_cpu_init();                /* (a constructor: may run before the CPU model's own) */
+    const char* e = getenv("PS2_VU_V3");
+    vuc_use_v3 = !(e && *e == '0') && __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma") &&
+                 __builtin_cpu_supports("bmi") && __builtin_cpu_supports("bmi2") && __builtin_cpu_supports("f16c") &&
+                 __builtin_cpu_supports("movbe") && __builtin_cpu_supports("lzcnt");
 }
 
 static int vuc_image_matches(const vu_state* st, const vuc_program* p) {
