@@ -536,9 +536,9 @@ static void on_command(int id) {
     case ID_CANCEL: cancel_job(); break;
     case ID_LOG: if (log_path()[0]) ShellExecuteW(win, L"open", L"notepad.exe", log_path(), NULL, SW_SHOWNORMAL); break;
     case ID_SETTINGS:
-        setup_message(S, L"Graphics, sound and controls are set in the game itself:\n\nwhile playing, press Esc on the keyboard, "
-                         L"or the PS / Xbox Guide button on a controller, and choose Options.\n\nThe Graphics page has presets "
-                         L"(Modern and Faithful) and a resolution scale; changes apply at once.", MB_ICONINFORMATION);
+        setup_message(S, L"Graphics, display, sound and controls are set in the game itself, while you play:\n\npress Esc "
+                         L"(keyboard) or the PS button (DualSense / DualShock 4), or pause the game (Start / Options) and "
+                         L"choose Options.\n\nChanges apply at once and are remembered.", MB_ICONINFORMATION);
         break;
     case ID_SAVES: {
         wchar_t ud[MAXP];

@@ -36,7 +36,7 @@ void setup_defaults(setup_t* s) {
 
 void setup_message(setup_t* s, const wchar_t* text, UINT flags) {
     logw(L"[message] %ls", text);
-    if (!s->silent && !s->uitest) MessageBoxW(NULL, text, APP_NAME L" Setup", flags | MB_SETFOREGROUND);
+    if (!s->silent && !s->uitest) MessageBoxW(NULL, text, APP_NAME, flags | MB_SETFOREGROUND);
 }
 
 int setup_ask(setup_t* s, const wchar_t* text, UINT flags) {
@@ -45,7 +45,7 @@ int setup_ask(setup_t* s, const wchar_t* text, UINT flags) {
         logw(L"[question] %ls -> %ls", text, def == IDYES || def == IDOK ? L"yes" : L"no");
         return def;
     }
-    return MessageBoxW(NULL, text, APP_NAME L" Setup", flags | MB_SETFOREGROUND);
+    return MessageBoxW(NULL, text, APP_NAME, flags | MB_SETFOREGROUND);
 }
 
 static void say(setup_t* s, const wchar_t* fmt, ...) {

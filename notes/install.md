@@ -3,19 +3,114 @@
 A folder the owner starts like any PC game: double-click `sly2.exe`, no console window, no files
 from the disc next to it.
 
-## Planned: launcher (owner request 2026-10-29, for 1.0)
+## Launcher (owner request 2026-10-29; built 2026-11, branch next/launcher)
 
-The owner wants a launcher aimed at players who know nothing technical:
-- **Drag and drop the .iso onto the window.** Check it is the right disc, with a clear message if it isn't, then
-  import once, so the ISO is no longer needed afterwards.
-- **Big Play button.**
-- **Update check against GitHub releases:** "version X available, update?". An update rebuilds from the new source,
-  keeping saves and settings, with no disc steps.
-- Possibly a settings shortcut and "open saves folder".
-- Builds on the installer's engine (installer/engine.c, disc.c, net.c).
-- Needs a public download location and code signing; decide these when going public.
+The player's front door. **The launcher absorbs the installer**: one program (installer/*.c, plain Win32 C,
+system DLLs only). `Sly2-Setup.exe` is that program with the sources appended (payload); the installed copy
+`<dir>\Sly 2 Launcher.exe` is the same program without the payload (as `Uninstall.exe` always was). One window
+replaces the old 7-page wizard. Why this and not "the installer as the launcher's first run": a first install, a
+repair and an update are the same job (unpack sources, build, stage, swap), so one engine and one window cover all
+three; a separate installer would be a second UI to keep in sync, and the player would meet two programs.
 
-Order: after the modern renderer (R5 part 2, HUD, R8) and before 1.0.
+**What a player sees**
+1. Downloads `Sly2-Setup.exe`, starts it. A single dark-blue window (gold title, the mask icon; no game artwork):
+   "Drop your Sly 2 disc image here - or click here to choose the .iso file".
+2. Drops the .iso on the window (or clicks and picks it). It is checked at once (the installer's disc check:
+   ISO 9660 -> SYSTEM.CNF -> SCUS_973.16 size + SHA-256): green "Sly 2: Band of Thieves (USA). Ready to install",
+   or red and friendly ("This file can't be used. This disc is SCES_... (a European / PAL disc) ...", "That is a
+   folder ...", ".bin/.cue, .chd, .cso must be converted to .iso first", "a different version ...").
+3. Ticks "I made this disc image from my own copy of the game", optionally changes the install folder (default
+   `%LOCALAPPDATA%\Programs\Sly2`; Program Files restarts it elevated), sees the space needed, clicks **Install**.
+4. Progress (status, bar, %, taskbar progress): "Copying your disc image" (first 30%), then the build as before.
+   Cancel asks first; "Stopped. Click Retry to continue where it stopped." Errors in red with Retry / Back / Show
+   details (e.g. not enough space, with how much is needed and free).
+5. Done: the **PLAY** screen. "All set! Your disc image is no longer needed: the game has its own copy." Below:
+   Settings (explains that options are in the game: Esc / PS button / pause -> Options), Saves folder (opens
+   `%LOCALAPPDATA%\Sly2`), Repair (rebuilds the installed version from its kept sources), Uninstall, and after an
+   update "Previous" (switch back to the version before). Play starts the game and closes the launcher.
+6. Next starts (Start menu / desktop shortcut "Sly 2 - Band of Thieves" -> the launcher): straight to PLAY; the
+   update check runs in the background: "You have the latest version." / "Couldn't check for updates." (quietly,
+   no pop-up) / a gold band "Version 0.1.N is available. Update?" [Update] -> progress -> "Updated to version
+   0.1.N. Your saves and settings are as they were." If an update fails: "Version X is unchanged and still ready to
+   play." A release that needs a newer launcher says so and its button opens the release page (https only).
+   Running a newer `Sly2-Setup.exe` over an installation offers "This setup file has version X. Update?".
+
+**Install folder**
+| path | what |
+|---|---|
+| `Sly 2 Launcher.exe`, `Uninstall.exe` | the program (no payload); shortcuts and Apps & features point here |
+| `game\` | the current game: sly2.exe, README.txt, Controller test.cmd, `sly2-version.txt` ("0.1.N hash") |
+| `game.old\` | the version before the last update (rollback); `game.new\` only while staging (`.complete` when done) |
+| `data\sly2.img` | the imported copy of the player's disc image |
+| `bundle\sly2-source-<ver>.zip` | the sources of `game` and `game.old` (Repair, rollback without a download) |
+| `builder\` | sources, toolchain (kept by default after a launcher install, ~480 MB: updates need no tool downloads) |
+| `updates\` | an update's download while it is verified; removed afterwards |
+| `setup-state.ini`, `setup.log` | state (`iso`, `game_version`, `keep_tools`, shortcuts, optional `update_url`, `update_check = 0`) |
+
+**Import** (`engine.c setup_import_image`): the whole image is copied (CopyFileEx: progress, cancel, disk-full
+message) to `data\sly2.img.part`, checked again, renamed. Not a subset: the ISO 9660 tree lists only 34 MB (SYSTEM.CNF,
+SCUS_973.16, IOPRP300.IMG, Z6TAIL.DUP) while the game reads its 2.7 GB of data by sector number from its own table of
+contents, and only 18,583 of 1,408,272 sectors are zero (measured): nothing worth compacting, and a plain copy keeps
+every sector where the game expects it. Space: about 2.9 GB + the build (~1.1 GB while building).
+The runtime reads the copy: the launcher starts `game\sly2.exe "<dir>\data\sly2.img"` (the existing "image as
+argv[1]" start) and writes `[game] disc = <dir>\data\sly2.img` into sly2.ini; `runtime/launch.c` also falls back to
+`<exe folder>\..\data\sly2.img` when nothing usable is configured (the player deleted the .iso, sly2.ini was reset).
+Development builds are unchanged (argv[1] ELF / image, PS2_ISO, sly2.ini, file dialog). `/noimport` keeps the old
+installer's way (play from the image where it is).
+
+**Staging / rollback** (`release.c stage_*`, unit-tested): the build is copied into `game.new`, marked complete,
+then `game -> game.old` (the one before is deleted) and `game.new -> game` - two renames; if the second fails the
+first is undone; if the game is running nothing changes ("close Sly 2 and click Retry"). A failed or cancelled update
+never touches `game`. At every start `stage_recover` finishes an interrupted commit (no `game`, complete `game.new`),
+restores `game.old` when `game` is missing, removes an unfinished `game.new`. "Previous" (/rollback) swaps `game` and
+`game.old` (again = forward). Saves and settings live in `%LOCALAPPDATA%\Sly2` and are never touched.
+
+**Updates** (`update.c`, `release.c`; tests: tests/unit/launcher, tests/installer/e2e.ps1)
+- Source: `https://github.com/tanihad/sly2-decomp/releases/latest/download/sly2-release.txt` and `.sig` (GitHub's
+  "latest release" asset URLs, no authentication). Configurable: `/updateurl=` or `[setup] update_url` in
+  setup-state.ini. While the repository is private these requests fail: "Couldn't check for updates." - nothing else.
+- The manifest (UTF-8 `key = value`): `format = 1`, `product = sly2-pc`, `version`, `commit`, `date`, `bundle` (URL,
+  or a name relative to the manifest), `bundle_size`, `bundle_sha256`, optional `min_launcher`, `page`, `notes`;
+  unknown keys ignored, repeated keys / bad values refused, at most 16 KB.
+- Trust: `sly2-release.txt.sig` = Ed25519 (RFC 8032) signature of the manifest's exact bytes, checked against the
+  public key built into the launcher (`installer/release_key.h`) before the manifest is parsed. The bundle is
+  downloaded into `updates\` with a size cap, then its size and SHA-256 must equal the signed manifest's before
+  anything reads it; the unpacked sources' version.txt must be the announced version. Only a newer version is
+  offered (no downgrade by a replayed old manifest).
+- Transport: WinHTTP with the system TLS (1.2/1.3), HTTPS only; redirects never go from HTTPS to HTTP (GitHub
+  redirects assets to its CDN). Plain HTTP only to 127.0.0.1 / localhost / [::1] and only in a test build
+  (`make_installer.py --test-build` -> `Sly2-Setup-Test.exe`, `-DSLY2_TEST_BUILD`, which also accepts `/pubkey=`);
+  release builds refuse both.
+- Ed25519: `installer/ed25519.c` (verification only, own field/curve code written from RFC 8032, SHA-512 from
+  bcrypt; Windows CNG has no EdDSA), `scripts/sly2_ed25519.py` (signing; pure Python from the RFC). Both pass the
+  RFC 8032 test vectors (TEST 1, 2, 3, SHA(abc)) and cross-check each other.
+- The update itself = the normal build from the bundle (tools kept: no downloads besides the ~1 MB bundle),
+  staged and swapped; the toolchain pins are those of the installed launcher (a release that needs other tools
+  sets `min_launcher`, and the player is sent to the new Setup).
+
+**Publishing an update** (owner / release machine; nothing here uploads by itself)
+1. Once: `<main checkout>\.venv\Scripts\python.exe scripts\release_keygen.py` -> private key
+   `%USERPROFILE%\.sly2-release\release-ed25519.key` (refuses any path inside the repository or its worktrees;
+   never overwrites without `--force`; ACL: only this user) and its public half in `installer/release_key.h`
+   (commit that). **Back up the private key** (password manager / offline USB stick); never commit or upload it.
+   Losing it means launchers already out there cannot accept updates (a new key needs a new Setup for everyone).
+   The key in use since 2026-11-03: public `2d2fa1da...a9bde4`.
+2. Commit the release, then `python scripts\make_release.py [--notes "..."] [--min-launcher 0.1.N]` ->
+   `build\release\0.1.<count>\` with `sly2-source-0.1.<count>.zip`, `sly2-release.txt`, `sly2-release.txt.sig`; it
+   refuses a dirty tree and prints the `gh release create v0.1.<count> ...` command for these three files.
+3. Also attach `Sly2-Setup.exe` (+ `SHA256SUMS.txt`) from `make_installer.py`, so new players get the same version.
+4. Publish it as the newest release ("latest"): every launcher then sees it at its next start.
+   Test first with a local server: tests/unit/launcher/run.ps1 shows how (`Sly2-Setup-Test.exe /checkupdate
+   /updateurl=http://127.0.0.1:<port>/... /pubkey=<test key>`).
+
+**Command line** (all of the installer's, plus): `/silent /update` (check, download, verify, build, swap),
+`/silent /repair`, `/rollback`, `/checkupdate` (prints `newer|current <version>`), `/noimport`, `/updateurl=`,
+`/noupdatecheck`, `/waitpid=` (Uninstall waits for the launcher that started it), `/uitest [/uiinstall /uicancel=s]`
+(the window driven hidden), `/uishot=<folder>` (each screen rendered off-screen to .bmp).
+
+**Before going public**: code-sign `Sly2-Setup.exe` (and the launcher stub inside it) so SmartScreen does not warn;
+make the repository (or a releases-only repository) public so the default URL answers; publish the first signed
+release; keep the private key backed up offline.
 
 ## Installer (Sly2-Setup.exe)
 
@@ -42,23 +137,20 @@ archives are taken from `tools\_downloads` and checked against the pins first.
 - **Single source of truth**: the toolchain pins (file, URL, SHA-256) are parsed from
   `scripts/setup-tools.ps1`, the expected executable (size, SHA-256) from `scripts/extract_elf.py`.
 
-**Wizard pages**: Welcome (says "update" if an installation is found through the registry) -> "Your copy
-of the game" (legal note; Next only after ticking "I have my own copy...") -> Install folder (default
-`%LOCALAPPDATA%\Programs\Sly2`, no admin; space needed vs free; a folder that needs admin rights, e.g.
-Program Files, offers to restart Setup elevated: then all-users Start menu + HKLM entry) -> Disc image
-(checked when chosen: ISO 9660 -> SYSTEM.CNF -> BOOT2 -> SCUS_973.16 size + SHA-256; separate messages
-for not-an-ISO (.bin/.cue/.chd/.cso), not a PS2 disc, another game/region (PAL/Japanese hints),
-another version/patched, truncated) -> Ready (summary) -> Installing (status, progress bar, current
-item with MB/s, a list of steps, taskbar progress; Cancel; on error the reason in red + Retry + Show log)
--> Done (desktop shortcut [on], free up disk space: remove the build files [on], keep the build tools
-for faster updates [off], Play now [on]).
+**The window**: the launcher's (see "Launcher" above; the 7-page wizard of 2026-10 is gone). The disc check
+(ISO 9660 -> SYSTEM.CNF -> BOOT2 -> SCUS_973.16 size + SHA-256) keeps its separate messages for not-an-ISO
+(.bin/.cue/.chd/.cso), not a game disc of this kind, another game/region (PAL/Japanese hints), another
+version/patched, truncated. Defaults of a launcher install: desktop shortcut on, build files removed, build tools
+kept (updates then download only the bundle).
 
 **What Install does** (`engine.c setup_install`; log: `<dir>\setup.log`):
 
-1. Checks the image again, the free space, that the game is not running; writes `Uninstall.exe` (the
-   program without its payload), `setup-state.ini` and the uninstall registry entry first, so a cancelled
-   or failed install can always be removed from Apps & features.
-2. Unpacks `source.zip` into `<dir>\builder` (old sources replaced; if `builder\built-version.txt` names
+1. Checks the image again, the free space (with the image copy), that the game is not running; writes
+   `Sly 2 Launcher.exe` and `Uninstall.exe` (the program without its payload), `setup-state.ini` and the uninstall
+   registry entry first, so a cancelled or failed install can always be removed from Apps & features.
+2. Unpacks the sources (the payload's `source.zip`, an update's verified bundle, or the kept `bundle\` zip for a
+   repair) into `<dir>\builder` and keeps the zip as `bundle\sly2-source-<ver>.zip`; then the disc image import
+   (`data\sly2.img`, see "Launcher"). (Old sources replaced; if `builder\built-version.txt` names
    another version, `builder\build` is deleted: the payload's file times are older than the player's
    objects, so build_game's time check could keep stale objects).
 3. Toolchain into `builder\tools`, each archive from the first source that has it: this setup file
@@ -81,20 +173,23 @@ for faster updates [off], Play now [on]).
 4. `extract_elf.py --iso <image>` (into `builder\orig`), then `build_game.py --release --out builder\build\rel
    --package builder\dist --progress` (`[progress] <stage> [i/n]` lines drive the bar), with no window and
    below-normal priority, the whole process tree in a job object (Cancel kills it).
-5. Copies `sly2.exe`, `README.txt`, `Controller test.cmd` into `<dir>` ("close Sly 2 and click Retry" if
-   it is running); sets `[game] disc = <image>` in `%LOCALAPPDATA%\Sly2\sly2.ini` (or the portable folder:
-   other keys untouched; a new file gets only that key), so the first start needs no file dialog; Start
-   menu shortcut `Sly 2 - Band of Thieves.lnk`; EstimatedSize.
+5. Stages `sly2.exe`, `README.txt`, `Controller test.cmd` (+ `sly2-version.txt`) in `<dir>\game.new` and swaps it
+   in (see "Staging / rollback"; "close Sly 2 and click Retry" if it is running); an old-layout install (the game
+   directly in `<dir>`) loses those root files; sets `[game] disc = <dir>\data\sly2.img` in
+   `%LOCALAPPDATA%\Sly2\sly2.ini` (other keys untouched; a new file gets only that key); Start menu shortcut
+   `Sly 2 - Band of Thieves.lnk` -> the launcher (an existing desktop shortcut is pointed at it too); EstimatedSize,
+   DisplayVersion = the game's version.
 6. Finish: desktop shortcut, clean-up (`builder\build`, `orig`, `dist`, `tools\_downloads`; without "keep
-   tools" the whole `builder`), Play now (started through Explorer when Setup runs elevated, never as admin).
+   tools" the whole `builder`), `/play` (started through Explorer when running elevated, never as admin).
 
-**Updates / repair**: run Setup again (any version): it finds the installation (registry
-`InstallLocation` + `setup-state.ini`), keeps saves/settings (they are not in the install folder),
-reuses kept tools whose `.sly2-pin` matches the pinned SHA-256, rebuilds and replaces the game.
+**Updates / repair**: the launcher's Update / Repair (above), or run a newer Setup: it finds the installation
+(registry `InstallLocation` + `setup-state.ini`) and offers its version; saves/settings are never in the install
+folder; kept tools whose `.sly2-pin` matches the pinned SHA-256 are reused.
 
 **Uninstall** (`Uninstall.exe`, Apps & features; `/silent` keeps saves, `/deletesaves` removes them):
-asks for confirmation, waits for the game to close, removes the shortcuts recorded in
-`setup-state.ini`, `builder`, the game files, `setup.log`, the registry entry, then asks (default No)
+asks for confirmation, waits for the game (and the launcher that started it) to close, removes the shortcuts
+recorded in `setup-state.ini`, `builder`, `game`, `game.old`, `data` (the imported image), `bundle`, `updates`, the
+launcher, `setup.log`, the registry entry, then asks (default No)
 whether to delete `%LOCALAPPDATA%\Sly2` (saves, settings, logs). Only files Setup made are removed: the
 folder itself goes only if empty (a hidden `cmd` removes `Uninstall.exe` and the folder 2 s after it
 exits). An all-users install asks for elevation. Its log: `%TEMP%\sly2-uninstall.log`.
