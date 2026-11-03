@@ -174,6 +174,37 @@ GEN_DIR = ROOT / "build" / "gen"                   # generated headers (build/ge
 
 
 VU_V3_FLAGS = ["-DVUC_V3", "-march=x86-64-v3", "-ffp-contract=off"]
+# (P6) A static function's name in a clang profile is "<source path>;<name>": with the path as given to clang (absolute
+# here) a profile would only fit the folder it was made in. File name only (runtime file names are unique).
+PGO_NAMES = ["-mllvm", "-static-func-full-module-prefix=false"]
+PGO_SHIPPED = ROOT / "runtime" / "pgo" / "sly2.proftext"
+PROFDATA = TOOLS / "llvm-mingw" / "bin" / "llvm-profdata.exe"
+
+
+def pgo_profile(choice: str | None, release: bool, out: Path) -> Path | None:
+    """The indexed profile to optimise with (notes/perf-plan.md P6): an explicit .profdata as it is; a text profile
+    (the shipped runtime/pgo/sly2.proftext, used by default in release builds) converted with llvm-profdata into
+    <out>/pgo/. None: no profile - also when the conversion is not possible (a build never fails for it)."""
+    if not choice or choice == "none" or (choice == "auto" and not release):
+        return None
+    src = PGO_SHIPPED if choice == "auto" else Path(choice).resolve()
+    if not src.exists():
+        if choice != "auto":
+            print(f"note: profile {src} not found: building without profile-guided optimisation")
+        return None
+    if src.suffix != ".proftext":
+        return src
+    dst = out / "pgo" / (src.stem + ".profdata")
+    if dst.exists() and dst.stat().st_mtime >= src.stat().st_mtime:
+        return dst
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    res = subprocess.run([str(PROFDATA), "merge", "-o", str(dst), str(src)], capture_output=True, text=True) \
+        if PROFDATA.exists() else None
+    if not res or res.returncode:
+        print(f"note: llvm-profdata could not read {src}: building without profile-guided optimisation"
+              + (f"\n{res.stderr[:500]}" if res else ""))
+        return None
+    return dst
 
 
 def compile_one(src: Path, obj_dir: Path, flags: list[str], v3: bool = False) -> tuple[Path, str]:
@@ -186,8 +217,14 @@ def compile_one(src: Path, obj_dir: Path, flags: list[str], v3: bool = False) ->
         # that flag (it is a pass option, not a function attribute) and the microcode calls little else.
         # Nor profiled: straight-line code whose x86-64-v3 copy (v3: vu_compiled.h VUC_V3) runs instead
         # wherever the CPU has it.
-        flags = [f for f in flags if not f.startswith(("-flto", "-fprofile", "-Wno-profile", "-Wno-backend"))
-                 and f not in ("-mllvm", "-do-counter-promotion=false")] + ["-fno-slp-vectorize"]
+        kept, skip = [], False
+        for f in flags:                            # (-mllvm options here are all profile options)
+            if skip or f == "-mllvm":
+                skip = f == "-mllvm"
+                continue
+            if not f.startswith(("-flto", "-fprofile", "-Wno-profile", "-Wno-backend")):
+                kept.append(f)
+        flags = kept + ["-fno-slp-vectorize"]
         if v3:
             flags = flags + VU_V3_FLAGS
     deps = list((ROOT / "runtime").glob("*.h"))
@@ -291,7 +328,9 @@ def main() -> int:
     ap.add_argument("--ldflags", default=os.environ.get("SLY2_LDFLAGS", ""), help="extra linker flags (experiments)")
     ap.add_argument("--pgo-gen", action="store_true",
                     help="instrumented build that writes a clang profile (.profraw) when the game exits (scripts/pgo_train.ps1)")
-    ap.add_argument("--pgo-use", default=None, metavar="PROFDATA", help="optimise with this clang profile (.profdata)")
+    ap.add_argument("--pgo-use", default="auto", metavar="PROFILE",
+                    help="optimise with this clang profile (.profdata or llvm-profdata --text); default (auto): "
+                         "runtime/pgo/sly2.proftext in release builds; none: no profile")
     ap.add_argument("--no-vu-v3", dest="vu_v3", action="store_false",
                     help="no x86-64-v3 copies of the VU microcode (runtime/vu_compiled.h)")
     args = ap.parse_args()
@@ -316,11 +355,14 @@ def main() -> int:
         # (ExitProcess skips the CRT's atexit handlers): runtime/launch.h pgo_flush. Counter promotion (keeping loop
         # counters in registers) is off: on the translated functions with a jump table (every instruction a case) it
         # runs for tens of minutes per function; it only makes the instrumented build faster, the counts are the same.
-        flags += ["-fprofile-generate", "-mllvm", "-do-counter-promotion=false", "-DPS2_PGO_GEN"]
+        flags += ["-fprofile-generate", "-mllvm", "-do-counter-promotion=false", *PGO_NAMES, "-DPS2_PGO_GEN"]
         link_flags.append("-fprofile-generate")
-    elif args.pgo_use:
-        flags += [f"-fprofile-use={Path(args.pgo_use).resolve()}", "-Wno-profile-instr-out-of-date",
-                  "-Wno-profile-instr-unprofiled", "-Wno-profile-instr-missing", "-Wno-backend-plugin"]
+    else:
+        profile = pgo_profile(args.pgo_use, args.release, out)
+        if profile:
+            flags += [f"-fprofile-use={profile}", *PGO_NAMES, "-Wno-profile-instr-out-of-date",
+                      "-Wno-profile-instr-unprofiled", "-Wno-profile-instr-missing", "-Wno-backend-plugin"]
+        args.pgo_use = str(profile) if profile else None
 
     t0 = time.time()
     if not Path(args.elf).exists() and Path(args.elf) == ELF:
