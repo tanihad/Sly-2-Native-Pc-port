@@ -88,10 +88,14 @@ END
 README = """Sly 2: Band of Thieves - native PC port (unofficial)
 =====================================================
 
-Start sly2.exe. On the first start it asks for your disc image: an .iso of your own
-Sly 2: Band of Thieves (USA, SCUS-97316) disc. The game checks that it is that disc and
-remembers where it is. The image is read while you play, so leave it where it is (if you
-move it, the game asks again).
+Installed with Setup: start "Sly 2 - Band of Thieves" (Start menu or desktop) and press Play.
+The launcher keeps its own copy of your disc image, so the original .iso is not needed any
+more; it also offers updates, Repair and Uninstall.
+
+A game folder built from the sources: start sly2.exe. On the first start it asks for your disc
+image: an .iso of your own Sly 2: Band of Thieves (USA, SCUS-97316) disc. The game checks that
+it is that disc and remembers where it is. The image is read while you play, so leave it where
+it is (if you move it, the game asks again).
 
 Your settings (sly2.ini), saves (the memcard folder) and the log (sly2.log) are in
 %LOCALAPPDATA%\\Sly2. Put a file named portable.txt next to sly2.exe to keep them in this

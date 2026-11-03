@@ -313,6 +313,27 @@ static void test_load_game(const wchar_t* exe_elf) {
           "argv[1] ELF, disc from PS2_ISO: %ls", cdvd_image);
     free(elf);
     _wputenv(L"PS2_ISO=");
+    /* installed by the launcher: sly2.ini names an image that is gone (the player deleted the .iso after the
+     * import) -> <exe>\..\data\sly2.img, the launcher's imported copy */
+    wchar_t data[MAX_PATH], img[MAX_PATH];
+    GetModuleFileNameW(NULL, data, MAX_PATH);
+    *wcsrchr(data, L'\\') = 0;
+    *wcsrchr(data, L'\\') = 0;
+    wcscat(data, L"\\data");
+    CreateDirectoryW(data, NULL);
+    swprintf(img, MAX_PATH, L"%ls\\sly2.img", data);
+    CopyFileW(iso_path(L"good.iso"), img, FALSE);
+    char gone[MAX_PATH * 3];
+    WideCharToMultiByte(CP_UTF8, 0, iso_path(L"deleted-after-import.iso"), -1, gone, sizeof gone, NULL, NULL);
+    const char* const kv[1][3] = { { "game", "disc", gone } };
+    settings_set(kv, 1);
+    settings_load();
+    elf = launch_load_game(1, NULL, 1, &n);
+    CHECK(elf && n == FAKE_ELF_SIZE && wcsstr(cdvd_image, L"data\\sly2.img"), "the imported copy when sly2.ini's image is gone: %ls",
+          cdvd_image);
+    free(elf);
+    DeleteFileW(img);
+    RemoveDirectoryW(data);
 }
 
 /* The real disc image: its boot executable is exactly the extracted file. */

@@ -40,6 +40,10 @@ static int attempt(setup_t* s, const wchar_t* url, const wchar_t* part, uint64_t
         return 0;
     }
     if (uc.lpszExtraInfo && uc.dwExtraInfoLength) wcsncat(path, uc.lpszExtraInfo, uc.dwExtraInfoLength);
+    if (s->net_https_only && !release_url_allowed(url, update_allow_loopback_http())) {
+        wfmt(s->error, sizeof s->error / sizeof s->error[0], L"Refusing to download over an insecure connection: %ls", url);
+        return 0;
+    }
 
     uint64_t have = file_size(part);
     if (have == (uint64_t)-1) have = 0;
@@ -54,6 +58,11 @@ static int attempt(setup_t* s, const wchar_t* url, const wchar_t* part, uint64_t
     WinHttpSetTimeouts(ses, 30000, 30000, 30000, 60000);
     DWORD protos = 0x00000800 | 0x00002000;          /* TLS 1.2, TLS 1.3 */
     WinHttpSetOption(ses, WINHTTP_OPTION_SECURE_PROTOCOLS, &protos, sizeof protos);
+    /* redirects (GitHub release assets redirect to their CDN): never from HTTPS down to HTTP; a plain HTTP
+     * download (a local test server or mirror) is not redirected at all */
+    DWORD redir = uc.nScheme == INTERNET_SCHEME_HTTPS ? WINHTTP_OPTION_REDIRECT_POLICY_DISALLOW_HTTPS_TO_HTTP
+                                                      : WINHTTP_OPTION_REDIRECT_POLICY_NEVER;
+    WinHttpSetOption(ses, WINHTTP_OPTION_REDIRECT_POLICY, &redir, sizeof redir);
     HINTERNET con = WinHttpConnect(ses, host, uc.nPort, 0);
     HINTERNET req = con ? WinHttpOpenRequest(con, L"GET", path, NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
                                              uc.nScheme == INTERNET_SCHEME_HTTPS ? WINHTTP_FLAG_SECURE : 0)
@@ -97,6 +106,11 @@ static int attempt(setup_t* s, const wchar_t* url, const wchar_t* part, uint64_t
         total += have;
     }
     if (!total) total = expect;
+    if (s->net_limit && total > s->net_limit) {
+        wfmt(s->error, sizeof s->error / sizeof s->error[0], L"Downloading %ls failed: the file is unexpectedly large.", label);
+        result = 0;
+        goto done;
+    }
     f = CreateFileW(part, GENERIC_WRITE, FILE_SHARE_READ, NULL, have ? OPEN_ALWAYS : CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (f == INVALID_HANDLE_VALUE) {
         wfmt(s->error, sizeof s->error / sizeof s->error[0], L"Cannot write %ls (error %lu).", part, GetLastError());
@@ -123,6 +137,11 @@ static int attempt(setup_t* s, const wchar_t* url, const wchar_t* part, uint64_t
             goto done;
         }
         done += got;
+        if (s->net_limit && done > s->net_limit) {
+            wfmt(s->error, sizeof s->error / sizeof s->error[0], L"Downloading %ls failed: the file is unexpectedly large.", label);
+            result = 0;
+            goto done;
+        }
         if (GetTickCount() - last > 100) { last = GetTickCount(); setup_bytes(s, label, done, total); }
     }
     setup_bytes(s, label, done, total);

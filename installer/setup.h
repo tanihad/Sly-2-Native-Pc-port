@@ -45,6 +45,13 @@ typedef struct {
 
 #define MAXP 1024                    /* path buffers (wchar_t) */
 
+/* the install folder (notes/install.md "Launcher") */
+#define LAUNCHER_EXE L"Sly 2 Launcher.exe"   /* this program without its payload: the player's front door */
+#define GAME_DIR L"game"                     /* the current game; game.new = staging, game.old = previous */
+#define IMAGE_REL L"data\\sly2.img"          /* the imported copy of the player's disc image */
+#define BUNDLE_DIR L"bundle"                 /* sly2-source-<version>.zip: the sources each game folder was built from */
+#define UPDATES_DIR L"updates"               /* downloads of an update in progress */
+
 /* ---- exit codes (also /silent) ---------------------------------------------------------------- */
 enum {
     EXIT_OK = 0, EXIT_FAILED = 1, EXIT_USAGE = 2, EXIT_CANCELLED = 3, EXIT_BAD_DISC = 4, EXIT_NO_SPACE = 5,
@@ -58,7 +65,14 @@ typedef void (*logline_fn)(void* ui, const wchar_t* line);
 typedef struct setup {
     /* choices */
     wchar_t dir[MAXP];               /* install folder */
-    wchar_t iso[MAXP];               /* the player's disc image */
+    wchar_t iso[MAXP];               /* the disc image the build reads (the imported copy, or image_src with /noimport) */
+    wchar_t image_src[MAXP];         /* the disc image the player chose (copied to <dir>\data\sly2.img) */
+    wchar_t bundle[MAXP];            /* the source bundle to build from ("" = this program's payload source.zip) */
+    wchar_t update_url[MAXP];        /* the release manifest's URL (/updateurl=, setup-state.ini, default) */
+    int no_import;                   /* /noimport: play from image_src itself (the old installer's way) */
+    int launcher;                    /* the launcher window drives this run (finish: no game start) */
+    int no_update_check;             /* /noupdatecheck (or [setup] update_check = 0) */
+    DWORD wait_pid;                /* uninstall: /waitpid= (the launcher that started it) ends first */
     wchar_t from[MAXP];              /* /from=: local folder with the toolchain (setup.ps1 -From layout) */
     wchar_t mirror[MAXP];            /* /mirror=: download base (URL or folder) instead of the official URLs */
     wchar_t startmenu[MAXP];         /* /startmenu=: folder for the Start menu shortcut (tests) */
@@ -86,6 +100,11 @@ typedef struct setup {
     progress_fn progress;
     logline_fn logline;
     int pm_base, pm_span;            /* current step's share of the progress bar (permille) */
+    int pm_off, pm_scale;            /* the whole run's part of the bar: off + pm * scale / 1000 (scale 0 = 1000) */
+    uint64_t net_limit;              /* downloads: stop above this many bytes (0 = no limit) */
+    int net_https_only;              /* downloads: release_url_allowed policy (update files) */
+    char built_version[64];          /* "0.1.<count> <hash>" of the sources just built (builder\version.txt) */
+    char expect_version[32];         /* an update: the bundle must be this version (from the signed manifest) */
     wchar_t status[512];
     wchar_t error[2048];             /* why the last step failed (shown to the player) */
     uint64_t used_build, used_tools; /* measured after the build (bytes) */
@@ -168,5 +187,31 @@ int setup_uninstall(setup_t* s);                     /* EXIT_* */
 int setup_launch_game(setup_t* s);
 void setup_bytes(setup_t* s, const wchar_t* label, uint64_t done, uint64_t total);   /* download / copy progress */
 const wchar_t* setup_default_regkey(void);
+int setup_is_installed(setup_t* s);                  /* a game folder and its disc image are there */
+int setup_game_running(setup_t* s);
+void setup_user_data_dir(setup_t* s, wchar_t* out);
+void setup_state_get(const wchar_t* dir, const wchar_t* key, wchar_t* out, size_t cap);
+void setup_state_set(setup_t* s, const wchar_t* key, const wchar_t* value);
+int setup_rollback(setup_t* s);                      /* game <-> game.old; EXIT_* */
+int setup_copy_launcher(setup_t* s);                 /* <dir>\Sly 2 Launcher.exe + Uninstall.exe from this program */
+void setup_bundle_path(setup_t* s, const char* version, wchar_t* out);   /* <dir>\bundle\sly2-source-<ver>.zip */
+int setup_import_image(setup_t* s);                  /* image_src -> <dir>\data\sly2.img (s->iso); EXIT_* */
+
+/* ---- update.c: signed updates (release.h) ------------------------------------------------------- */
+#include "release.h"
+typedef struct {
+    release_manifest m;
+    wchar_t bundle_url[MAXP * 2];
+    int newer;                       /* m.version > the installed game */
+    int launcher_too_old;            /* m.min_launcher > this program */
+} update_info;
+const wchar_t* update_default_url(void);
+int update_allow_loopback_http(void);                /* test builds only */
+void update_set_test_key(const char* hex);           /* test builds only: /pubkey= */
+/* Fetches and verifies the manifest. 1 = ok (u filled); 0 = could not check (s->error, friendly). */
+int update_check(setup_t* s, const char* installed_version, update_info* u);
+/* Downloads the bundle into <dir>\updates and verifies size + SHA-256 (from the signed manifest) before
+ * anything uses it. EXIT_OK with s->bundle set, else EXIT_* with s->error. */
+int update_download(setup_t* s, update_info* u);
 void setup_message(setup_t* s, const wchar_t* text, UINT flags);   /* message box (logged in tests) */
 int setup_ask(setup_t* s, const wchar_t* text, UINT flags);        /* MessageBox result; silent: IDNO / default */

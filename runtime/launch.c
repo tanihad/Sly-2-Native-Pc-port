@@ -209,6 +209,28 @@ uint8_t* launch_load_game(int argc, char** argv, int headless, size_t* size) {
 
     uint8_t* elf = NULL;
     int err = disc[0] ? launch_check_disc(disc, &elf, size) : -1;
+    if (err && argc <= 1 && !(env && *env)) {
+        /* installed by the launcher (<install>\game\sly2.exe): its imported copy of the disc,
+         * <install>\data\sly2.img, when sly2.ini names nothing usable (the launcher itself passes the
+         * image as argv[1]) */
+        wchar_t imp[1024];
+        DWORD n = GetModuleFileNameW(NULL, imp, 1024);
+        wchar_t* s1 = n && n < 1024 ? wcsrchr(imp, L'\\') : NULL;
+        if (s1) *s1 = 0;
+        wchar_t* s2 = s1 ? wcsrchr(imp, L'\\') : NULL;
+        if (s2 && wcslen(imp) + 16 < 1024) {
+            wcscpy(s2, L"\\data\\sly2.img");
+            uint8_t* e2 = NULL;
+            size_t n2 = 0;
+            if (GetFileAttributesW(imp) != INVALID_FILE_ATTRIBUTES && launch_check_disc(imp, &e2, &n2) == DISC_OK) {
+                fprintf(stderr, "[launch] using the imported disc image %s\n", u8(imp));
+                wcscpy(disc, imp);
+                elf = e2;
+                *size = n2;
+                err = DISC_OK;
+            }
+        }
+    }
     if (err > 0) {
         char u[1200] = "";
         wide_to_utf8(disc, u, sizeof u);
