@@ -14,7 +14,7 @@
 #   unless -Keep (they are 6-11 MB each).
 param([Parameter(Mandatory = $true)][string]$Scene, [string]$Config = 'balanced', [int]$Fps = 60, [int]$At = 0,
       [int]$Frames = 90, [string]$Size = '2560x1440', [string]$Extra = '', [string]$Ini = '', [string]$Tag = '',
-      [switch]$Keep, [switch]$Mft0, [switch]$NoDump, [switch]$Gov, [int[]]$ShotAt = @(20, 45), [string]$Exe = '', [string]$Check = '')
+      [switch]$Keep, [switch]$Mft0, [switch]$NoDump, [switch]$Gov, [switch]$Alt, [int[]]$ShotAt = @(20, 45), [string]$Exe = '', [string]$Check = '')
 $root = Split-Path $PSScriptRoot -Parent
 $main = $root
 if (-not (Test-Path (Join-Path $root 'tools\llvm-mingw'))) {
@@ -72,6 +72,7 @@ $set = [ordered]@{ PS2_DUMP_FROM = "$At"; PS2_DUMP_TO = "$($At + $Frames - 1)"; 
     PS2_DUMP_BMP = '1'; PS2_DUMP_RAW = '1'; PS2_GS_PRESENT_SIZE = $Size; PS2_MFT_LOG = '2000'; PS2_R2_STATS = '1';
     PS2_GS_GOVERNOR = $(if ($Gov) { $null } else { '0' }); PS2_R2 = $null; PS2_GS_SCALE = $null; PS2_MFT = $null }
 if ($Mft0) { $set.PS2_MFT = '0' }
+if ($Alt) { $set.PS2_R2_ALT = "$($At - 30)"; $set.PS2_MFT = '1' }   # modern (MFT) and all-exact (grid) pictures alternate: scripts\qa_pair.c
 if ($NoDump) { $set.PS2_DUMP_FROM = '99999'; $set.PS2_DUMP_TO = '99999' }
 foreach ($e in ($f[3] -split ' ' | Where-Object { $_ -like 'env=*' })) { $a, $b = $e.Substring(4) -split '=', 2; $set[$a] = $b }
 foreach ($e in ($Extra -split ';' | Where-Object { $_ })) { $a, $b = $e -split '=', 2; $set[$a.Trim()] = $b }
@@ -114,6 +115,12 @@ if (-not $Check) {
     $Check = "--max-share $($g.spike_share_max) --max-run $($g.longest_run_max) --max-rows $($g.rows_max) --max-blobs $($g.blobs_max) --seam $($g.seam_min_px) --max-seams $($g.seams_max)"
 }
 $ca = @($fr, '--out', (Join-Path $out 'worst.png'), '--heat', (Join-Path $out 'heat.png')) + @($Check -split ' ' | Where-Object { $_ })
+if ($Alt) {
+    $pt = Join-Path $root 'build\qa_pair.exe'
+    if (-not (Test-Path $pt) -or (Get-Item (Join-Path $PSScriptRoot 'qa_pair.c')).LastWriteTime -gt (Get-Item $pt).LastWriteTime) { & (Join-Path $main 'tools\llvm-mingw\bin\clang.exe') -O2 -o $pt (Join-Path $PSScriptRoot 'qa_pair.c') }
+    & $pt $fr --out (Join-Path $out 'pair.png') | Set-Content (Join-Path $out 'pairs.txt')
+    Get-Content (Join-Path $out 'pairs.txt') | Select-Object -Last 1 | ForEach-Object { "  ALT $_" }
+}
 # picture sizes: a different size = a grid frame between modern ones (dump runs only)
 $sizes = (Get-ChildItem $fr -Filter 'frame_*.bmp' -ErrorAction SilentlyContinue | Group-Object Length | ForEach-Object { "$($_.Count)x$([math]::Round($_.Name/1MB,1))MB" }) -join ' '
 $res = if ($n -ge 3) { & $tool @ca } else { @('flicker: (too few pictures)') }
@@ -124,6 +131,10 @@ $verdict = ($res | Select-String '^flicker:' | Select-Object -Last 1)
 # mft digest: the last two summary lines of the run's mft counters (cumulative), as modern / exact and the reasons
 $ms = @(Select-String -Path $log -Pattern 'mft: \d+ modern' | ForEach-Object { $_.Line })
 if ($ms.Count -ge 2) { $a = [regex]::Match($ms[-2], 'mft: (\d+) modern frames, (\d+) exact \((.*?)\);'); $b = [regex]::Match($ms[-1], 'mft: (\d+) modern frames, (\d+) exact \((.*?)\);'); "  mft last 300 VBlanks: modern $([int]$b.Groups[1].Value - [int]$a.Groups[1].Value) exact $([int]$b.Groups[2].Value - [int]$a.Groups[2].Value) (cum. $($b.Groups[3].Value)); picture sizes $sizes" | Tee-Object (Join-Path $out 'digest.txt')}
+# the whole series: per 300 VBlanks the exact frames and why (reason counters are per declined op / frame, cumulative)
+$prevc = @{}; $series = @(); $prevx = 0
+foreach ($l in $ms) { $m = [regex]::Match($l, 'mft: (\d+) modern frames, (\d+) exact \((.*?)\);'); if (-not $m.Success) { continue }; $cur = @{}; foreach ($r in ($m.Groups[3].Value -split ',')) { $r = $r.Trim(); if ($r -match '^(.*) (\d+)$') { $cur[$Matches[1]] = [int]$Matches[2] } }; $dl = ($cur.Keys | ForEach-Object { $d = $cur[$_] - [int]$prevc[$_]; if ($d -gt 0) { "$_ +$d" } }) -join '/'; $series += "$([int]$m.Groups[2].Value - $prevx)$(if ($dl) { ':' + $dl })"; $prevc = $cur; $prevx = [int]$m.Groups[2].Value }
+$series -join ' ' | Set-Content (Join-Path $out 'series.txt')
 # pictures: the first dumped frame in the list, 960-wide crops of the whole picture
 $bmps = @(Get-ChildItem $fr -Filter 'frame_*.bmp' -ErrorAction SilentlyContinue | Sort-Object Name)
 foreach ($i in $ShotAt) {
@@ -133,6 +144,9 @@ foreach ($i in $ShotAt) {
 }
 if ($Keep) { "frames kept: $fr" } else { Remove-Item -Recurse -Force $fr -ErrorAction SilentlyContinue }
 exit $rc
+
+
+
 
 
 

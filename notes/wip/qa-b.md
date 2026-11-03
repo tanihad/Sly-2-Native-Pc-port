@@ -18,3 +18,9 @@ Branch next/qa-b (main 38a38df), worktree C:\Users\tanih\Projects\sly2-worktrees
 
 - GPU governor ("the GPU could not draw it in real time ... drawing at 2x/1x") kicks in on this shared machine and lowers the grid scale (pictures 5.3 MB = 2x, 0.9 MB = 1x). qa_scene now sets PS2_GS_GOVERNOR=0 (use -Gov to keep it). Pictures of other sizes are still seen: grid frames ("not modern" = no R2 op in the VBlank) in bursts of 6-12 in the ep5 hub in dump runs (with PS2_GS_GOVERNOR=0 too). No-dump runs: 0 grid frames in steady hub play, but 25-30% in loading/safehouse phases. Not yet attributed.
 - tf flags near size changes (grid <-> MFT neighbours) and in fast camera motion: false positives; judge only runs whose pictures are all one size.
+
+## Results so far (2026-11-03)
+- batch 1 (balanced 60, dumps): no flicker verdict that is not explained by size changes / cutscenes / fast motion. m5_chase seams 11, ep6_hub blobs 750, ep8_hub rows 10 / run 0.209 are all on pictures next to a size change (grid <-> MFT) or in cutscenes; reference runs also show seams (m5_battlezone exact: 14).
+- Dump runs: Performance (75%, no MSAA) -> 60 of 60 pictures modern; Quality (100%, 8x) 15 of 60 grid pictures in 4 scenes; Balanced mixed. Cutscene / briefing frames are grid frames by design (no R2 ops: "not modern"; "target view" = a draw that samples a display target).
+- nodump series (digest series.txt = exact frames per 300 VBlanks and reason): m6_paraglide ALIAS16 x~1500 frames in a row (+ "target view" ~900), m5_ewok "target view" ~3000 frames, m5_ghost ~1500, m5_battlezone ~900, m7_boss 40-80 "not modern" per 300 all through (also with PS2_R2_BUDGET_MS=100 and KEEPCHAIN=0 VIFSTATE=0: not from the flicker fix).
+- qa_pair.c (new): ALT pairs MFT vs grid: quiet scene baseline 5-13 cells / pair (of 4800), moving scene up to ~100.
