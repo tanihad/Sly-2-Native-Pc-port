@@ -11,3 +11,4 @@ ep3_hub | 3 | | play | 5600 | 120 | +400:cross:6,+400:cross:6
 ep4_hub | 4 | | play | 5600 | 120 | +400:cross:6,+400:cross:6
 m2_boardroom | 2 | m2_boardroom_brawl | direct | 5400 | 120 |
 m3_boss | 3 | m3_boss | direct | 6600 | 120 |
+ep1_boot | 1 | m1_brawl | play | 1400 | 3000 | +400:cross:6,+400:cross:6

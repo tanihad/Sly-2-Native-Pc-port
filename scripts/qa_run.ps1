@@ -14,7 +14,7 @@
 # Output: build\qa\runs\<scene>__<cfg>__<rate>\ (summary.txt, tf.txt, run excerpt, samples\*.bmp until -Clean).
 param([Parameter(Mandatory = $true)][string]$Scene, [string]$Cfg = 'bal', [int]$Rate = 60, [int]$At = 0, [int]$Frames = 0,
       [int]$Sample = 15, [string]$Pad = $null, [string]$Env = '', [string]$Ini = '', [string]$Size = '2560x1440', [switch]$Keep,
-      [switch]$Tf, [string]$Exe = '', [string]$Seq = '')
+      [switch]$Tf, [string]$Exe = '', [string]$Seq = '', [int]$Seconds = 0)
 # -Seq "outlines:240,outlines:240,filters:240": live settings toggles (PS2_INPUT tokens, as F3 / F4 / F5 ...: outlines filters blur
 #   scaleup scaledown scaleauto flicker interlace, menu mup mdown mok mback ...) <frames> after the previous token (the scene's pad);
 #   run.log's "pad frame N (VBlank V): <token>" lines are collected into segments.txt. A static scene shows every setting once.
@@ -78,6 +78,7 @@ if ($Pad) { $ia += @('-Pad', $Pad) }
 # sampled pictures (every -Sample-th VBlank, the game less disturbed than by dumping each one): no temporal check
 if (-not $Tf) { $ia += @('-Check', '--max-share 1 --max-run 1 --max-blobs 99999 --max-rows 99999 --seam 99999 --max-seams 99999') }
 if ($Exe) { $ia += @('-Exe', $Exe) }
+if ($Seconds) { $ia += @('-Seconds', "$Seconds") }   # wall-clock budget (a loaded machine runs 120 fps scenes slower than real time)
 $t0 = Get-Date
 $tfOut = & powershell @ia
 $secs = [int]((Get-Date) - $t0).TotalSeconds
@@ -122,7 +123,8 @@ $sd = Join-Path $runDir 'samples'
 New-Item -ItemType Directory -Force $sd | Out-Null
 foreach ($p in $files) {
     $v = [int]($p.BaseName -replace 'frame_', '')
-    if ($v % $Sample -eq 0) { Move-Item $p.FullName (Join-Path $sd $p.Name) -Force }
+    $nearOdd = $odd -contains $v -or $odd -contains ($v + 1) -or $odd -contains ($v - 1)   # a fallback picture and its neighbours
+    if ($v % $Sample -eq 0 -or ($nearOdd -and $odd.Count -le 12)) { Move-Item $p.FullName (Join-Path $sd $p.Name) -Force }
 }
 Remove-Item -Recurse -Force $fr -ErrorAction SilentlyContinue
 $cmpTool = Join-Path $root 'build\qa_cmp.exe'
