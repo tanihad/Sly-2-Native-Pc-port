@@ -127,7 +127,9 @@ static void mft_surf_free(mtarget* m) {
 
 static void mft_target_free(int id) { if (id > 0 && id <= MAX_TARGETS) mft_surf_free(&MT[id]); }
 
+static void vf_release(void);            /* (r8-perf) */
 static void mft_release(void) {
+    vf_release();
     for (int i = 0; i <= MAX_TARGETS; i++) mft_surf_free(&MT[i]);
     GPU_RELEASE(M.cb); GPU_RELEASE(M.lin);
     GPU_RELEASE(M.spare_rtv); GPU_RELEASE(M.spare_srv); GPU_RELEASE(M.spare);
@@ -1182,7 +1184,122 @@ static void mft_draw(const gpu_fop_draw* d, uint32_t slot) {
     if (zuse && zw) MT[d->zt].truth = want;
 }
 
+/* ---- (r8-perf, diagnostics) PS2_R8P_VERIFY=<n>: in every n-th modern frame each optimised step (an R2 segment's plan) runs
+ * twice from the same surfaces - optimised, then the original way - and the two results are compared sample by sample
+ * (colour and depth, cs_mft_cmp); differences are logged ("verify:" lines). The original's result is kept. */
+static struct {
+    int every;
+    ID3D11Texture2D *c0, *z0, *c1, *z1;  /* the surfaces before, the optimised result */
+    ID3D11ShaderResourceView *c1s, *z1s;
+    ID3D11Buffer *ob, *os;               /* counters: differing colour samples, depth samples, first differing pixel */
+    ID3D11UnorderedAccessView* ou;
+    uint64_t checks, bad;
+} VF = { -1 };
+
+static void vf_release(void) {
+    GPU_RELEASE(VF.c1s); GPU_RELEASE(VF.z1s);
+    GPU_RELEASE(VF.c0); GPU_RELEASE(VF.z0); GPU_RELEASE(VF.c1); GPU_RELEASE(VF.z1);
+    GPU_RELEASE(VF.ou); GPU_RELEASE(VF.ob); GPU_RELEASE(VF.os);
+}
+static int vf_frame(void) {
+    if (VF.every < 0) { const char* e = getenv("PS2_R8P_VERIFY"); VF.every = e ? atoi(e) : 0; }
+    return VF.every > 0 && M.n > 1 && (M.frames % (uint64_t)VF.every) == 0;
+}
+static int vf_tex(ID3D11Texture2D** t, ID3D11ShaderResourceView** s, ID3D11Texture2D* like, DXGI_FORMAT sf) {
+    D3D11_TEXTURE2D_DESC d, h;
+    ID3D11Texture2D_GetDesc(like, &d);
+    if (*t) {
+        ID3D11Texture2D_GetDesc(*t, &h);
+        if (h.Width == d.Width && h.Height == d.Height && h.SampleDesc.Count == d.SampleDesc.Count && h.Format == d.Format) return 1;
+        GPU_RELEASE(*t);
+        if (s) GPU_RELEASE(*s);
+    }
+    d.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    d.MiscFlags = 0;
+    if (FAILED(ID3D11Device_CreateTexture2D(gpu_rt.dev, &d, NULL, t))) { *t = NULL; return 0; }
+    if (s && !(*s = msrv(*t, d.SampleDesc.Count > 1, sf))) return 0;
+    return 1;
+}
+/* before the optimised step: the surfaces' content saved */
+static int vf_begin(mtarget* c, mtarget* z) {
+    if (!c->ms || !z->ms || c->alias || z->alias) return 0;
+    if (!vf_tex(&VF.c0, NULL, c->ms, 0) || !vf_tex(&VF.z0, NULL, z->ms, 0) ||
+        !vf_tex(&VF.c1, &VF.c1s, c->ms, DXGI_FORMAT_R8G8B8A8_UINT) || !vf_tex(&VF.z1, &VF.z1s, z->ms, DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS))
+        return 0;
+    unbind_all();
+    ID3D11DeviceContext_CopyResource(gpu_rt.ctx, (ID3D11Resource*)VF.c0, (ID3D11Resource*)c->ms);
+    ID3D11DeviceContext_CopyResource(gpu_rt.ctx, (ID3D11Resource*)VF.z0, (ID3D11Resource*)z->ms);
+    return 1;
+}
+/* after it: its result saved, the content before restored (the original way runs next) */
+static void vf_mid(mtarget* c, mtarget* z) {
+    unbind_all();
+    ID3D11DeviceContext_CopyResource(gpu_rt.ctx, (ID3D11Resource*)VF.c1, (ID3D11Resource*)c->ms);
+    ID3D11DeviceContext_CopyResource(gpu_rt.ctx, (ID3D11Resource*)VF.z1, (ID3D11Resource*)z->ms);
+    ID3D11DeviceContext_CopyResource(gpu_rt.ctx, (ID3D11Resource*)c->ms, (ID3D11Resource*)VF.c0);
+    ID3D11DeviceContext_CopyResource(gpu_rt.ctx, (ID3D11Resource*)z->ms, (ID3D11Resource*)VF.z0);
+}
+/* after the original way: both results compared */
+static void vf_end(mtarget* c, mtarget* z, const char* what) {
+    unbind_all();
+    M.bound = 0;
+    if (!VF.ob) {
+        D3D11_BUFFER_DESC bd;
+        memset(&bd, 0, sizeof bd);
+        bd.ByteWidth = 16;
+        bd.BindFlags = D3D11_BIND_UNORDERED_ACCESS;
+        bd.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS;
+        if (FAILED(ID3D11Device_CreateBuffer(gpu_rt.dev, &bd, NULL, &VF.ob))) { VF.ob = NULL; return; }
+        bd.BindFlags = 0; bd.MiscFlags = 0; bd.Usage = D3D11_USAGE_STAGING; bd.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+        if (FAILED(ID3D11Device_CreateBuffer(gpu_rt.dev, &bd, NULL, &VF.os))) { VF.os = NULL; return; }
+        D3D11_UNORDERED_ACCESS_VIEW_DESC ud;
+        memset(&ud, 0, sizeof ud);
+        ud.Format = DXGI_FORMAT_R32_TYPELESS;
+        ud.ViewDimension = D3D11_UAV_DIMENSION_BUFFER;
+        ud.Buffer.NumElements = 4;
+        ud.Buffer.Flags = D3D11_BUFFER_UAV_FLAG_RAW;
+        if (FAILED(ID3D11Device_CreateUnorderedAccessView(gpu_rt.dev, (ID3D11Resource*)VF.ob, &ud, &VF.ou))) { VF.ou = NULL; return; }
+    }
+    if (!VF.ou || !VF.os) return;
+    ID3D11DeviceContext* x = gpu_rt.ctx;
+    static const UINT init[4] = { 0, 0, 0xFFFFFFFFu, 0 };   /* (a raw view's clear would take only the first value) */
+    ID3D11DeviceContext_UpdateSubresource(x, (ID3D11Resource*)VF.ob, 0, NULL, init, 0, 0);
+    ID3D11ShaderResourceView* v[4] = { VF.c1s, c->srv, VF.z1s, z->srv };
+    ID3D11DeviceContext_CSSetShader(x, gpu_cs(GPU_SH_cs_mft_cmp), NULL, 0);
+    ID3D11DeviceContext_CSSetShaderResources(x, 22, 4, v);
+    ID3D11DeviceContext_CSSetUnorderedAccessViews(x, 0, 1, &VF.ou, NULL);
+    ID3D11DeviceContext_Dispatch(x, (UINT)(c->w + 7) / 8, (UINT)(c->h + 7) / 8, 1);
+    ID3D11ShaderResourceView* nv[4] = { NULL, NULL, NULL, NULL };
+    ID3D11DeviceContext_CSSetShaderResources(x, 22, 4, nv);
+    ID3D11UnorderedAccessView* nu = NULL;
+    ID3D11DeviceContext_CSSetUnorderedAccessViews(x, 0, 1, &nu, NULL);
+    ID3D11DeviceContext_CopyResource(x, (ID3D11Resource*)VF.os, (ID3D11Resource*)VF.ob);
+    D3D11_MAPPED_SUBRESOURCE mp;
+    if (FAILED(ID3D11DeviceContext_Map(x, (ID3D11Resource*)VF.os, 0, D3D11_MAP_READ, 0, &mp))) return;
+    uint32_t r[4];
+    memcpy(r, mp.pData, 16);
+    ID3D11DeviceContext_Unmap(x, (ID3D11Resource*)VF.os, 0);
+    VF.checks++;
+    if (r[0] || r[1]) {
+        VF.bad++;
+        gpu_log("verify: %s differs: %u colour samples, %u depth samples, first at %u,%u (frame v%u; %llu of %llu checks differ)", what,
+                r[0], r[1], r[2] & 0xFFFF, r[2] >> 16, X.fd ? X.fd->vblank : 0u, (unsigned long long)VF.bad, (unsigned long long)VF.checks);
+    } else if (VF.checks % 200 == 1)
+        gpu_log("verify: %s identical (%llu checks, %llu differ)", what, (unsigned long long)VF.checks, (unsigned long long)VF.bad);
+}
+
+static void mft_r2_seg(const gpu_front_frame_data* fd, const gpu_fop_r2* o, int opt);
 static void mft_r2(const gpu_front_frame_data* fd, const gpu_fop_r2* o) {
+    int vf = o->nplan && vf_frame() && r8p_on(R8P_R2BATCH) && vf_begin(&MT[o->ct], &MT[o->zt]);
+    for (int pass = 0; pass < 1 + vf; pass++) {
+        if (pass) vf_mid(&MT[o->ct], &MT[o->zt]);
+        mft_r2_seg(fd, o, pass ? 0 : r8p_on(R8P_R2BATCH) ? R2X_BATCH : 0);
+    }
+    if (vf) vf_end(&MT[o->ct], &MT[o->zt], "R2 plan");
+    if (M.mv_on && M.nr2 < 256) M.r2op[M.nr2++] = (const uint8_t*)o - fd->cmd;   /* (the motion-vector pass draws it again) */
+}
+
+static void mft_r2_seg(const gpu_front_frame_data* fd, const gpu_fop_r2* o, int opt) {
     if (!mft_bind(o->ct, o->zt)) return;
     prof_mark(PR_R2);
     /* (r8-perf: the plan's merged draws find their member lists by StartInstanceLocation = fdata offset / 32) */
@@ -1197,7 +1314,7 @@ static void mft_r2(const gpu_front_frame_data* fd, const gpu_fop_r2* o) {
     in.sx = M.rsx;
     in.sy = M.rsy;
     in.dbg_cull = r8s_skip(R8S_R2DRAW) ? (r8s_skip(R8S_R2UNI) ? 3 : r8s_skip(R8S_R2TINY) ? 2 : 1) : 0;
-    in.opt = r8p_on(R8P_R2BATCH) ? R2X_BATCH : 0;
+    in.opt = opt;
     int n = r2_render_segment(o, fd->data, fd->data_bytes, &in);
     gpu_rt.n_draws += (uint32_t)n;
     r2_segs++;
@@ -1211,7 +1328,6 @@ static void mft_r2(const gpu_front_frame_data* fd, const gpu_fop_r2* o) {
     X.mode = 0;
     X.b_ct = X.b_zt = -1;
     M.bound = 0;
-    if (M.mv_on && M.nr2 < 256) M.r2op[M.nr2++] = (const uint8_t*)o - fd->cmd;   /* (the motion-vector pass draws it again) */
 }
 
 /* ---- (r2-m8) motion vectors: the frame's R2 segments again into an R16G16_FLOAT surface (r2.hlsl r2_vs_mv: current -

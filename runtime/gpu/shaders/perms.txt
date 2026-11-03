@@ -245,6 +245,8 @@ ps_mft_shfuse0      mft.hlsl            ps_mft_shfuse     ps_5_0    PRIM=9 MS=0
 ps_mft_shfuse_px    mft.hlsl            ps_mft_shfuse_px  ps_5_0    PRIM=9 MS=1
 ps_mft_date1        mft.hlsl            ps_mft_date       ps_5_0    PRIM=9 MS=1
 ps_mft_date0        mft.hlsl            ps_mft_date       ps_5_0    PRIM=9 MS=0
+# (r8-perf, diagnostics) PS2_R8P_VERIFY: two results of one step compared per sample
+cs_mft_cmp          mft.hlsl            cs_mft_cmp        cs_5_0    PRIM=9 MS=1
 # (r2-m1) its conformance kernels (tests/unit/r2)
 vs_r2c              r2_conf.hlsl        r2c_vs            vs_5_0
 ps_r2c_vu           r2_conf.hlsl        r2c_vu_ps         ps_5_0

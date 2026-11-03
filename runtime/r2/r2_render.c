@@ -340,7 +340,11 @@ static int segment(const gpu_fop_r2* o, const uint8_t* fdata, size_t fdata_bytes
         r2g_bind_srv_vs(R.d, 20, a->vb);
         r2g_bind_srv_vs(R.d, 21, a->ib);
         pulled = 1;
-        for (uint32_t c = 0; c < np; c++) {
+        static int rev = -1;             /* (diagnostics: PS2_R2_PLAN_REVERSE=1 draws the plan backwards - a wrong order the
+                                            verifier, PS2_R8P_VERIFY, must catch) */
+        if (rev < 0) { const char* e = getenv("PS2_R2_PLAN_REVERSE"); rev = e && *e == '1'; }
+        for (uint32_t cc = 0; cc < np; cc++) {
+            uint32_t c = rev ? np - 1 - cc : cc;
             uint32_t st = pc[c].state;
             int bl = (int)(st & 15), depth = (int)((st >> 4) & 15), disc = (st >> 14) & 1;
             r2g_state s = { (uint8_t)bl, (uint8_t)((st >> 8) & 15), (uint8_t)(depth >> 1), (uint8_t)(depth & 1),

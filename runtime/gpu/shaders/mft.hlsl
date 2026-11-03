@@ -498,6 +498,30 @@ float4 ps_mft_shfuse(float4 pos : SV_Position) : SV_Target {
     return mft_unorm(mft_shfuse_word(P, 0u, mft_col(P, 0u)));
 }
 #endif
+#if MS
+// (r8-perf, diagnostics: PS2_R8P_VERIFY) two results of one step compared per sample: colour words, depth bits; counts of
+// the differing samples and the first differing pixel (lowest y << 16 | x)
+Texture2DMS<uint4> v_ca : register(t22);
+Texture2DMS<uint4> v_cb : register(t23);
+Texture2DMS<float> v_za : register(t24);
+Texture2DMS<float> v_zb : register(t25);
+RWByteAddressBuffer v_out : register(u0);
+[numthreads(8, 8, 1)]
+void cs_mft_cmp(uint3 id : SV_DispatchThreadID) {
+    uint w, h, n;
+    v_ca.GetDimensions(w, h, n);
+    if (id.x >= w || id.y >= h) return;
+    uint dc = 0u, dz = 0u;
+    [loop] for (uint s = 0u; s < n; s++) {
+        if (any(v_ca.Load(int2(id.xy), s) != v_cb.Load(int2(id.xy), s))) dc++;
+        if (asuint(v_za.Load(int2(id.xy), s)) != asuint(v_zb.Load(int2(id.xy), s))) dz++;
+    }
+    uint o;
+    if (dc != 0u) v_out.InterlockedAdd(0, dc, o);
+    if (dz != 0u) v_out.InterlockedAdd(4, dz, o);
+    if (dc != 0u || dz != 0u) v_out.InterlockedMin(8, id.x | (id.y << 16), o);
+}
+#endif
 // DATE on the surfaces: the stencil's bit 0 = the colour's alpha bit 7 (per sample; the stencil was cleared, samples whose
 // bit is 0 are discarded); the DATE draws then test the stencil
 #if MS
