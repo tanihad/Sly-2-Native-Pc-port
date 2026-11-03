@@ -100,11 +100,17 @@ bool mft_tri_frag(float4 pos, float3 istq, uint prim, uint sidx, out Frag f, out
     int rows = py - by0;
     int a[7];
     uint nk = tme && fst ? 7u : (st.flags & SF_FGE) != 0u ? 5u : 4u;
+    // (r8-perf) the record's rows / steps in wide loads (the same words)
+    uint4 r0 = recs.Load4(rb + 24u), y0 = recs.Load4(rb + 52u), x0 = recs.Load4(rb + 80u);
+    uint3 r1 = recs.Load3(rb + 40u), y1 = recs.Load3(rb + 68u), x1 = recs.Load3(rb + 96u);
+    uint rw[7] = { r0.x, r0.y, r0.z, r0.w, r1.x, r1.y, r1.z };
+    uint dyw[7] = { y0.x, y0.y, y0.z, y0.w, y1.x, y1.y, y1.z };
+    uint dxw[7] = { x0.x, x0.y, x0.z, x0.w, x1.x, x1.y, x1.z };
     [unroll] for (uint k = 0u; k < 7u; k++) {
         a[k] = 0;
         if (k < nk) {
-            uint dyk = recs.Load(rb + 52u + 4u * k), dxk = recs.Load(rb + 80u + 4u * k);
-            uint v = recs.Load(rb + 24u + 4u * k) + dyk * (uint)rows + dxk * (uint)px;
+            uint dyk = dyw[k], dxk = dxw[k];
+            uint v = rw[k] + dyk * (uint)rows + dxk * (uint)px;
             v += (uint)(int)floor((float)asint(dyk) * fj);
             v += (uint)(int)floor((float)asint(dxk) * fi);
             a[k] = asint(v);

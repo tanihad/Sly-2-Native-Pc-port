@@ -363,18 +363,39 @@ static int pl_tiles(const gpu_r2_draw* d, const r2_mesh* m, float xo, float yo, 
     if (q[0] > q[3]) return 0;
     const float* M = ents[d->entry].m;
     float gx0 = 1e30f, gy0 = 1e30f, gx1 = -1e30f, gy1 = -1e30f;
-    for (int c = 0; c < 8; c++) {
+    int bad = 0;
+    for (int c = 0; c < 8 && !bad; c++) {
         float x = q[(c & 1) ? 3 : 0], y = q[(c & 2) ? 4 : 1], z = q[(c & 4) ? 5 : 2];
         float cx = x * M[0] + y * M[4] + z * M[8] + M[12];
         float cy = x * M[1] + y * M[5] + z * M[9] + M[13];
         float cw = x * M[3] + y * M[7] + z * M[11] + M[15];
-        if (!(cw > 1e-6f)) return -1;
+        if (!(cw > 1e-6f)) { bad = 1; break; }
         float X = (SM.bx + SM.ax * (cx / cw) - xo) * (1.0f / 16.0f), Y = (SM.by + SM.ay * (cy / cw) - yo) * (1.0f / 16.0f);
-        if (!(X > -1e7f && X < 1e7f && Y > -1e7f && Y < 1e7f)) return -1;
+        if (!(X > -1e7f && X < 1e7f && Y > -1e7f && Y < 1e7f)) { bad = 1; break; }
         if (X < gx0) gx0 = X;
         if (X > gx1) gx1 = X;
         if (Y < gy0) gy0 = Y;
         if (Y > gy1) gy1 = Y;
+    }
+    if (bad) {                           /* (the box reaches behind the camera: the draw's own vertices, when few) */
+        if (d->first + d->count > m->nidx || d->count > 1536u) return -1;
+        gx0 = gy0 = 1e30f; gx1 = gy1 = -1e30f;
+        for (uint32_t j = d->first; j < d->first + d->count; j++) {
+            uint32_t v = m->idx[j];
+            if (v >= m->nvtx) return -1;
+            const r2_vtx* p = &m->vtx[v];
+            float cx = p->x * M[0] + p->y * M[4] + p->z * M[8] + M[12];
+            float cy = p->x * M[1] + p->y * M[5] + p->z * M[9] + M[13];
+            float cw = p->x * M[3] + p->y * M[7] + p->z * M[11] + M[15];
+            if (!(cw > 1e-6f)) return -1;
+            float X = (SM.bx + SM.ax * (cx / cw) - xo) * (1.0f / 16.0f), Y = (SM.by + SM.ay * (cy / cw) - yo) * (1.0f / 16.0f);
+            if (!(X > -1e7f && X < 1e7f && Y > -1e7f && Y < 1e7f)) return -1;
+            if (X < gx0) gx0 = X;
+            if (X > gx1) gx1 = X;
+            if (Y < gy0) gy0 = Y;
+            if (Y > gy1) gy1 = Y;
+        }
+        if (gx0 > gx1) return 0;
     }
     int x0 = (int)floorf(gx0) - pl_margin, y0 = (int)floorf(gy0) - pl_margin, x1 = (int)ceilf(gx1) + pl_margin,
         y1 = (int)ceilf(gy1) + pl_margin;
@@ -479,6 +500,25 @@ static uint32_t r2_plan(uint32_t nd, uint32_t draw_off, int sx0, int sy0, int sx
     }
     PL_FLUSH();
 #undef PL_FLUSH
+    {                                    /* (diagnostics: PS2_R2_PLAN_LOG=<n> segments described once) */
+        static int plog = -1;
+        if (plog < 0) { const char* e = getenv("PS2_R2_PLAN_LOG"); plog = e ? atoi(e) : 0; }
+        if (plog > 0 && gf_frame > 3000) {
+            plog--;
+            uint32_t nall = 0, nsmall = 0, nbig = 0, nskin = 0;
+            for (uint32_t i = 0; i < nd; i++) {
+                int t[4];
+                const r2_mesh* m = r2_mesh_get(D[i].mesh);
+                int k = m ? pl_tiles(&D[i], m, xo, yo, sx0, sy0, sx1, sy1, t) : -1;
+                if (m && (D[i].mode >> 8) < m->nb && m->b[D[i].mode >> 8].skin) nskin++;
+                if (k < 0) nall++;
+                else if (k > 0 && (t[2] - t[0] + 1) * (t[3] - t[1] + 1) > 64) nbig++;
+                else nsmall++;
+            }
+            fprintf(stderr, "[r2] plan: segment of %u draws (%d states, %d levels): %u GPU draws; boxes: %u everything (%u skinned), %u > 64 tiles, %u small\n",
+                    nd, nr, maxl + 1, nc, nall, nskin, nbig, nsmall);
+        }
+    }
     pl_stat_draws += nd;
     pl_stat_chunks += nc;
     pl_stat_levels += (uint64_t)maxl + 1;

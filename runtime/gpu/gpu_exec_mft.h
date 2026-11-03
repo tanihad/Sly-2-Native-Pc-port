@@ -113,6 +113,7 @@ static struct {
     uint64_t mv_frames;
     /* statistics (PS2_R2_STATS) */
     uint64_t frames, grid, why[MW_N], to_grid, from_grid, resolves, draws, svols, n_dl, n_load, n_xcopy, n_mat;
+    uint64_t tri_n[5];                   /* (r8-perf) triangle draws: all, decoded textures, untextured, general LOD, 256-byte records */
     int why_last;
 } M = { .cb_phase = -1 };
 
@@ -1142,6 +1143,7 @@ static int mft_draw_setup(const gpu_fop_draw* d, int zuse, int force_dual) {
         int fast = (d->ps_key & GPU_PSK_FF_FAST) != 0, notex = !(d->feat & GPU_DF_TEX), lod = (d->feat & GPU_DF_LOD) != 0;
         int tdd = fast && !notex && !lod && TD.ndpos && td_draw(X.curpos);
         if (tdd) TD.draws++;
+        M.tri_n[0]++; M.tri_n[1] += tdd; M.tri_n[2] += notex; M.tri_n[3] += lod; M.tri_n[4] += !fast;   /* (r8-perf statistics) */
         static const int t[2][2][3] = { { { GPU_SH_ps_mft_t0s, GPU_SH_ps_mft_t0sl, GPU_SH_ps_mft_t0sn },
                                           { GPU_SH_ps_mft_t0f, GPU_SH_ps_mft_t0fl, GPU_SH_ps_mft_t0fn } },
                                         { { GPU_SH_ps_mft_t1s, GPU_SH_ps_mft_t1sl, GPU_SH_ps_mft_t1sn },
@@ -2141,6 +2143,9 @@ static int mft_frame_begin(const gpu_front_frame_data* fd) {
                  (unsigned long long)M.draws, (unsigned long long)M.svols, (int)ceilf(M.gw * M.rsx), (int)ceilf(M.gh * M.rsy),
                  M.ow, M.oh, M.n);
         gpu_log("%s", line);
+        gpu_log("mft: triangle draws %llu: decoded textures %llu, untextured %llu, LOD %llu, slow records %llu",
+                (unsigned long long)M.tri_n[0], (unsigned long long)M.tri_n[1], (unsigned long long)M.tri_n[2],
+                (unsigned long long)M.tri_n[3], (unsigned long long)M.tri_n[4]);
         if (LM.runs)                     /* (r8-perf) */
             gpu_log("mft: line-pixel runs %llu: %llu draws -> %llu GPU draws", (unsigned long long)LM.runs, (unsigned long long)LM.draws,
                     (unsigned long long)LM.gpu_draws);
