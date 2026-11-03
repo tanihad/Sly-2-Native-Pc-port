@@ -2,32 +2,26 @@
 
 Branch next/r2-flicker (main 05097e6 + main 35bfeef with R8 merged in), worktree
 C:\Users\tanih\Projects\sly2-worktrees\r2-flicker. Owner: render_scale auto, filters modern, fullscreen 120 fps, 1440p.
-Owner clue (via coordinator): it happens with light around Sly (lamps / lit areas, ep1 hub at night).
 Summary for the docs: notes/modern-renderer.md "The owner's flicker report and the temporal check".
 
 ## Status
 - [x] temporal tool: scripts\flicker_check.c + scripts\flicker_run.ps1; r2_sweep check tf; gates.json level3_temporal
-- [x] diagnostics: PS2_DUMP_BMP / PS2_DUMP_WAIT, dump queue 32, PS2_MFT_LOG logs every grid frame
-- [ ] root cause of the missing lamp shadow (below) - NOT found; experiments listed
-- [x] gates: run_tests PASS; tests\unit 25/26 (window: F11 / Alt+Enter, known flake); gpu_diff_all mixed S=1 28/28;
-      m9_exact S1 + S3 -Game all identical (base = 35bfeef runtime via git archive); pc_text_boot release + debug;
-      debug + release builds; package.py (0.1.1007); r2_sweep ab + hc + tf 33/33. Dumps / replays / exe copies deleted.
-- Also tried and reverted (no effect on the missing shadow): restoring VIF1 STCYCL / STMOD / STMASK / STROW / STCOL
-  as the dropped chain leaves them (decoder-tracked) after each native entry.
+- [x] diagnostics: PS2_DUMP_BMP / PS2_DUMP_WAIT, dump queue 32, PS2_MFT_LOG logs every grid frame, PS2_VU_SNAP(+_TRACK)
+- [x] root cause of the missing / flickering lamp shadow: VIF1 state the dropped world chains leave (STMASK 3F3F3F3F
+      for the shadow class's masked unpacks; MSCAL flip parity across classes). Fixed in r2_capture.c / r2_mesh.c
+      (owe_vif / flush_vif / owe_flips_class); see the notes section.
+- [x] verified on the final code: ALT 3x grid - same shadow in modern and exact frames; class begin mask 3F3F3F3F every
+      frame; tf at the lamp spot PASS on the grid (236 pictures) and MFT 1440p MSAA 4x (240); hc ep1 / ep2 PASS.
+- [ ] final gate run (in progress)
 
-## Reproduce the missing shadow (deterministic enough, ~2.5 min per run, sequential runs only)
-  .\scripts\flicker_run.ps1 -Name x -Episode 1 -Job m1_brawl -Play -At 7000 -Frames 6 -Keep -Pad '+3000:cross:6' `
-      -Env "PS2_FRAME_RATE=120;PS2_DUMP_RAW=1;PS2_MFT=0[;more]" [-Mode off]
-  .\build\flicker_check.exe --png build\warp\flk_x\frames\frame_007003.bmp build\flicker\x.png 400 800 1200 544 1
-  Shadow of Sly's tail on the ledge (raw ~x 780-1020, y 1200-1340): present with -Mode off and PS2_R2_KINDS=props;
-  absent in hybrid, also with PS2_R2_FX=0, PS2_GPU_LAZYZ=0, PS2_GPU_ROV_EARLYZ=0, PS2_R2_FANS=0 (+GCLEAN=0),
-  PS2_GFX_ASYNC=0, PS2_R2_KINDS=world, forced R2 FBA 0/1, R2 never writing alpha, PS2_R2_ZBIAS -64/+256/+4096, owing
-  VIF1 DBF flips for dropped meshes (m->flips), restoring the render list's zeroed CALLs after the chain is built.
-  Opdump (PS2_GPU_OPDUMP=6800): the volume draw has 4347 vertices (world native) vs 2250 (props only) - the volumes
-  themselves differ. Next: what the shadow class's VU1 program reads that the world's static packets leave.
+## Reproduce (sequential runs only, ~2.5 min each)
+  .\scripts\flicker_run.ps1 -Name x -Scale 3 -Episode 1 -Job m1_brawl -Play -At 7000 -Frames 30 -Keep -Pad '+3000:cross:6' `
+      -Env "PS2_FRAME_RATE=120;PS2_MFT=0;PS2_R2_ALT=6900"     (PS2_R2_VIFSTATE=0: the old behaviour)
+  .\build\flicker_check.exe --png build\warp\flk_x\frames\frame_007010.bmp build\x.png 400 800 1200 544 1   (and 7011)
 
 ## Findings / traps
-- PNG frame dumps too slow for every VBlank at 3x; BMP raw + 32 slots keep up at 60 fps. DUMP_WAIT at 60 fps stalls.
-- Parallel game runs perturb timing: scenes diverge (pad tokens fire at other game states). Run comparisons sequentially.
-- Bracket replays use interlaced pictures unless --progressive (temporal tools then see field flicker).
-- `Select-Object -First` in a pipeline kills the upstream warp run (PowerShell stops the pipeline).
+- Paying the flips inside the main class broke ep2 (its next exact chain reads the "other" buffer the last exact chain
+  filled); restoring registers after a class switch's packets would override them - both are gated now.
+- Left: an overlapping shadow polygon at the screen's bottom edge still differs in the ledge view (~600 px at 3x).
+- Parallel game runs perturb timing (scenes diverge); `Select-Object -First` kills an upstream warp run; PNG dumps too
+  slow at 3x (use BMP); PS2_DUMP_WAIT at 60 fps stalls the EE.
