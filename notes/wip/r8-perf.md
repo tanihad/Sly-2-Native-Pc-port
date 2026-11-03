@@ -36,7 +36,7 @@ Worktree C:\Users\tanih\Projects\sly2-worktrees\r8-perf, branch next/r8-perf (fr
   pc_text_boot rel + dbg; package.py (0.1.1038). Base gs_replay for m9_exact: build\basert\out (main 38a38df runtime).
 
 ## In progress
-- gpu_diff_all mixed S=1, m9_exact S1 + S3 -Game (background).
+- r2_sweep ab+hc+tf -Parallel 1 (background). Done: gpu_diff_all mixed S=1 28/28, m9_exact S1 + S3 -Game identical.
 
 ## Next
 1. r2_sweep ab+hc+tf with -Parallel 1.

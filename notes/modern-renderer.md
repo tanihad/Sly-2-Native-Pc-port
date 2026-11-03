@@ -1200,7 +1200,20 @@ inflated and drifting): only in-run comparisons count.
   not lengthen R2's runs (depth state alternates within each sub-batch); the volumes' remaining cost is raster + early
   depth of large volumes (only drawing the first volume of a sequence saved ~45% of it), the sky's the fragment
   evaluation of several full-screen layers (a constant colour saves ~60%).
-- **Result** (in-run A/B, all features off / on, loaded GPU, see the final table below).
+- **Result** (in-run A/B: `PS2_GPU_AB=24 PS2_GPU_AB_R8=0xFF`, chaos scenes, ~330 s each, Balanced; the pictures' GPU
+  time per phase, ~7500-10500 frames each; the GPU was shared with 2-3 other games, so the ms are ~3x the owner's):
+
+  | scene | GPU ms A (off) | GPU ms B (on) | change |
+  |---|---|---|---|
+  | ep1 hub | 12.12 | 11.50 | -5.2% |
+  | m1 brawl | 8.32 | 7.96 | -4.4% |
+  | m2 boardroom | 10.17 | 9.63 | -5.3% |
+
+  Applied to the owner's unloaded numbers (ep1 3.79 ms / 258 fps, m2 5.77 / 172) that is about ep1 3.59 ms / ~270 fps,
+  m2 5.46 / ~180 fps: **the 300 fps target is not reached**. What is left is mostly genuine work: R2's draws that overlap
+  (the plan cannot reorder them), the sky's and the characters' exact triangles (their per-fragment record evaluation; a
+  cheaper form would interpolate in hardware like the particle pipeline - not exact, not done), the large shadow volumes'
+  raster at 4x, the shadow pass's per-sample edge pass (~4% in one skip run).
 
 ### R9. Enhanced and mods - 12 agent-days (two tasks)
 - **R9a Enhanced, 7 days**: per-pixel lighting, shadow maps, SSAO, bloom, anisotropic + mipmaps, outline styles, and
