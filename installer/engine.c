@@ -1020,15 +1020,17 @@ int setup_install(setup_t* s) {
 
     int r = EXIT_OK;
     int pm_off = s->pm_off, pm_scale = s->pm_scale ? s->pm_scale : 1000;
-    if (importing) {                                 /* the copy takes the first 30% of the bar */
+    /* the sources first (a second; a damaged setup file or bundle is found before the 3 GB copy) */
+    s->pm_scale = 1;
+    r = install_sources(s);
+    if (!r && importing) {                           /* the copy takes the first 30% of the bar */
         s->pm_off = pm_off;
         s->pm_scale = pm_scale * 3 / 10;
         r = setup_import_image(s);
-        s->pm_off = pm_off + pm_scale * 3 / 10;
-        s->pm_scale = pm_scale - pm_scale * 3 / 10;
-    } else if (!s->no_import) wcopy(s->iso, MAXP, img);
+    } else if (!r && !s->no_import) wcopy(s->iso, MAXP, img);
+    s->pm_off = pm_off + (importing ? pm_scale * 3 / 10 : 0);
+    s->pm_scale = pm_scale - (importing ? pm_scale * 3 / 10 : 0);
     if (!r) state_set(s, L"iso", s->iso);
-    if (!r) r = install_sources(s);
     for (int i = 0; !r && i < SETUP_NPINS; i++) {
         int base = SETUP_PM_TOOLS + (SETUP_PM_PYTHON - SETUP_PM_TOOLS) * SETUP_PINS[i].pm_from / 1000;
         int end = SETUP_PM_TOOLS + (SETUP_PM_PYTHON - SETUP_PM_TOOLS) * SETUP_PINS[i].pm_to / 1000;

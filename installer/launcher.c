@@ -955,6 +955,20 @@ int launcher_uitest(setup_t* s, const wchar_t* bad_iso, int install, int cancel_
             logw(L"[uitest] result %d: %ls", result, err_msg);
             EXPECT(result == EXIT_OK && state == ST_READY && shown(item(ID_PLAY)), "installed: the Play screen");
         }
+    } else {                                         /* set up already: the Play screen and the update check */
+        EXPECT(state == ST_READY && shown(item(ID_PLAY)), "set up: the Play screen");
+        char gv[64];
+        short_version(game_ver, gv, sizeof gv);
+        loga("[uitest] installed version %s, previous %s", gv, prev_ver[0] ? prev_ver : "-");
+        if (s->update_url[0] && !s->no_update_check) {
+            start_check();
+            for (int i = 0; i < 300 && upd_state == UPD_CHECKING; i++) { Sleep(100); pump(); }
+            loga("[uitest] update check: state %d, latest %s", upd_state, upd.m.version);
+            EXPECT(upd_state != UPD_CHECKING, "the update check finished");
+            if (upd_state == UPD_NEWER) EXPECT(shown(item(ID_UPDATE)), "a newer version: Update offered");
+            if (upd_state == UPD_FAILED) EXPECT(!shown(item(ID_UPDATE)), "check failed: no Update button, a quiet note");
+        }
+        install = 1;                                 /* (no made-up screens over a real installation) */
     }
     if (!install) {                                  /* the other screens, with made-up results */
         running = 1;
