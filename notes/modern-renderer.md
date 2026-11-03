@@ -1158,6 +1158,39 @@ the frontend and the exact path are unchanged, so Reference, `PS2_GS_SCALE` runs
     every grid frame and why (gpu_exec_mft.h mft_no).
   - Scale changes (scaleup / scaledown tokens, auto): no glitch at the switch frames.
 
+### MFT pops: gameplay frames that fell back to the grid (next/mft-pop, 2026-11-03)
+A grid frame between MFT frames shows the same scene at the integer grid's resolution and without MSAA for one picture:
+a resolution / AA "pop" (outlines and edges change thickness for a frame - likely the owner's "line that flicks").
+PS2_R2_STATS now counts them: **pops** = runs of 1..8 grid frames between MFT frames (menus, loading screens and the
+Binocucom are longer runs; frames MFT is off for - settings, PS2_GPU_AB A phases - do not count), in the "mft:" line
+("continued N; pops N (frames, first reasons)") and one "mft: pop:" line each. New r2_sweep check **mf**
+(scripts/mft_pops.ps1, default on): the scene at 1440p MSAA 4x, 120 fps, no dumps; passes with MFT on and 0 pops.
+Measured (ep1 hub walk uncapped 330 s, then every sweep scene) - four causes, all fixed in gpu_exec_mft.h unless noted:
+- **"other target"** (the reported one, ~5 per 330 s in the ep1 hub): the HUD's Z16 target (base 0x70) is released by the
+  frontend after 120 frames unused (gpu_own.c own_frame_end) and created again - square family - when a HUD element with
+  Z returns (the coin counter, bb 8,6-96,39; a full-screen quad, ZTST GREATER + write, FBMSK FF000000). Its first draw with
+  the display colour target pairs it into the display family (a GPU_FOP_TARGET in the same op list, gpu_own.c
+  own_pair_family), but mft_plan judged by the executor's state before the frame. Fix: the planner follows the frame's own
+  TARGET / RELEASE ops (mft_pfam: the family each target has at the scanned op).
+- **VBlanks without a game frame** (~110 per 330 s uncapped; more under hitches, frame dumps, PS2_R2_STATS): an op list
+  of only a PRESENT (no game frame finished for that VBlank: the same buffer shown again) or the cut-off end of the
+  previous game frame (its last motion-blur sprite + PRESENT) has no R2 op -> "not modern" -> grid. Fix: a frame without
+  R2 ops right after an MFT frame **continues** it, in the phase that frame ended in (B: the picture); one that draws on
+  display targets only while the last drawing MFT frame had R2 ops (a PRESENT-only VBlank in between is fine), so a menu
+  or loading screen after gameplay still goes to the grid (its first frame may run on MFT). "continued" in the stats.
+- **"ALIAS16"**: the shadow pipeline's tail with a GPU_FOP_CLUT op inside (between the copy draws or before the darken:
+  the frontend uploads a CLUT when its cache misses; ~3 per 330 s) - gpu_exec.c shf_tail accepts CLUT ops when
+  shf_tail_clut (MFT only; the exact path unchanged) and mft_shadow runs them before the fused pass (also CLUTs between
+  volumes); and sequences with no volume at all (no shadow caster in view: m8 boss arena 33 frames, ep7 1) - planned
+  with zero counters (mshf svbb x1 = 0).
+- **"R2 clip"** (m2 boardroom, 2-3 per run): entries crossing the VU's guard band without a run table (guard-clean
+  meshes, r2_capture.c guard_clean) need the clip stage, which had no MFT form. Now r2_render.c has MFT clip pipelines
+  (perms vs/gs_r2m_clip, ps_r2m_clip[_nd|_a2c]; r2_gs_clip draws the triangles inside the guard band, as before without
+  MFT). Checked with PS2_R2_FANS=0 (10 such entries per frame in the ep1 hub): picture normal.
+- Result: sweep mf 11/11 with 0 pops (before: ep3 1, ep4 1, ep7 1, m2 3 with the first two fixes alone); ep1 hub
+  uncapped 330 s: 0 pops (before ~115). Left as grid runs by design: loading / menus / movies ("not modern"), the
+  Binocucom briefing (ep7: its live character portraits are views of 128 x 128 render targets - "target view").
+
 ### R9. Enhanced and mods - 12 agent-days (two tasks)
 - **R9a Enhanced, 7 days**: per-pixel lighting, shadow maps, SSAO, bloom, anisotropic + mipmaps, outline styles, and
   presets ("Original", "Enhanced", "Performance") in the Options menu.
