@@ -24,3 +24,9 @@ Branch next/qa-b (main 38a38df), worktree C:\Users\tanih\Projects\sly2-worktrees
 - Dump runs: Performance (75%, no MSAA) -> 60 of 60 pictures modern; Quality (100%, 8x) 15 of 60 grid pictures in 4 scenes; Balanced mixed. Cutscene / briefing frames are grid frames by design (no R2 ops: "not modern"; "target view" = a draw that samples a display target).
 - nodump series (digest series.txt = exact frames per 300 VBlanks and reason): m6_paraglide ALIAS16 x~1500 frames in a row (+ "target view" ~900), m5_ewok "target view" ~3000 frames, m5_ghost ~1500, m5_battlezone ~900, m7_boss 40-80 "not modern" per 300 all through (also with PS2_R2_BUDGET_MS=100 and KEEPCHAIN=0 VIFSTATE=0: not from the flicker fix).
 - qa_pair.c (new): ALT pairs MFT vs grid: quiet scene baseline 5-13 cells / pair (of 4800), moving scene up to ~100.
+
+## Final state (2026-11-03)
+- ALT sweep (balanced, qa_pair): quiet scenes 0-14 mean cells (m5_battlezone, m5_turret, m7_laser, m5_boss1, ep6/8 hubs); busy 40-390 are motion between consecutive pictures; dump runs also thin the pairs (dumping causes grid fallbacks; qa-a tip: sample every 20-25th VBlank).
+- Unconfirmed (1 of 2 runs): m7_thermals ALT pair 5254/5255: modern picture has a full-width dark banded strip across the water (rows ~130-230 of 360), exact has a thin line. Second run (same params) did not reproduce.
+- Confirmed twice: long all-grid stretches (counters, no dumps): m6_paraglide ALIAS16 ~1500 frames, m5_ewok "target view" ~3000 frames, m5_ghost / m5_battlezone / m6_train_red "target view" 700-1500; m7_boss 10-25% "not modern" through the fight.
+- COMPLETE: report delivered via SubagentHandback.
