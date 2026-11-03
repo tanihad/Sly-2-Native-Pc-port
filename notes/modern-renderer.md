@@ -1107,22 +1107,36 @@ the frontend and the exact path are unchanged, so Reference, `PS2_GS_SCALE` runs
     r2_mesh.c): the mesh decoder records the VIF registers each chain writes (STCYCL / STMOD / STMASK / STROW / STCOL /
     BASE / OFFSET, end values) and its MSCAL count mod 2 (from its last OFFSET). Native meshes owe them: the registers
     go into one small VIF packet before the next exact chain of the same class (with the GS state epilogue; dropped when
-    a class switch's packets already came between). **The double-buffer parity is not fixed by default**: paying the
-    owed flips (an MSCAL to an [E] NOP) inside the main class broke ep2 (the main program's next exact chain reads the
-    "other" buffer the last *executed* chain filled, so there the parity must stay as if the native chains were absent),
-    and paying them at class switches (into class 11, Sly's chain, which the ledge shadow needs) broke ep6 (garbage GIF
-    data: "write to unknown general register 0x0B"). Both needs hold at once only if the dropped chains' uploads still
-    reach VU memory: **next step - keep native entries' chains but with every MSCAL patched to the main program's [E] NOP
-    0x0000** (VU memory, VIF registers and parity exactly as in an exact frame, no XGKICK; a per-mesh patched copy of the
-    chain in EE memory, costs the VIF unpack CPU time). PS2_R2_VIFSTATE=0xFF enables the flips (diagnostics: fixes the
-    ledge shadow, breaks ep6); bits 1 flips, 2 cycle, 4 mode, 8 mask, 16 row, 32 col, 64 base, 128 offset; 0 off.
-  - Result with the default (registers only): the shadow class starts with the exact frame's STMASK / CYCLE / MODE every
-    frame and its volume draw has the exact frame's shape (3396 vs 3369 vertices instead of 4623); the lamp shadow is
-    back but lighter in hybrid frames than in exact ones in the ledge view (PS2_R2_ALT). MFT 100% MSAA 4x and the grid
-    pass the temporal check at the lamp (tf, 240 pictures each).
-  - Left: at the screen's bottom edge one overlapping shadow polygon still differs between modern and exact frames
-    (~600 px at 3x in the ledge view). The class's VIF / VU registers now match; it reads a few stale buffer lanes the
-    dropped world chains leave (pipelined reads past its own data), which the native path cannot reproduce cheaply.
+    a class switch's packets already came between). Third, the shadow program reads lanes of the main program's
+    *output* buffers it never wrote (pipelined reads past its own data), so the uploads alone are not enough either.
+    Paying the owed flips alone (an MSCAL to an [E] NOP) broke ep2 inside the main class (its next exact chain reads the
+    "other" buffer the last *executed* chain filled) and ep6 at class switches (garbage GIF data: "write to unknown
+    general register 0x0B").
+  - **Final fix (478f6ad)**: native chains stay dropped (registers owed, parity counted) except in the **class run just
+    before a foreign class** (a render-list lookahead, cached per run): there the native meshes' chains are kept and run
+    their programs **with XGKICK dropped** - VU memory, VIF registers, parity and the main program's output lanes are as
+    in an exact frame, nothing is drawn twice. The VIF-side protocol (vif.c, invisible to the EE): `MARK 0xA5A5, MARK n`
+    = the next n MSCALs run with kicks dropped; `MARK 0xA5A6, MARK n` = the next n MSCALs only flip the double buffer
+    (TOPS / ITOP set, the program not started). Before the first kept chain the parity owed by earlier dropped chains is
+    paid flip-only; the pending tail is flushed (kicks dropped) at the next entry's hook; the last native entry before
+    the switch is drawn exact (its tail kick feeds the switch). Switches: PS2_R2_KEEPCHAIN (default 1),
+    PS2_R2_RUNPROG (0 never, 1 always, 2 before a foreign class - default), PS2_R2_VIFSTATE (registers; bit 1 = the
+    old flips, off). PS2_R2_STATS adds "kept chains / exact last / parity unpaid" (ep1 hub ~70-90 kept of ~400 native,
+    m1 ~205, m2 ~17; parity unpaid 0).
+  - **CPU cost** (in-run A/B, PS2_GPU_AB=600 + PS2_GPU_AB_EE=3: kept chains on in B phases only, 3x grid, ~25 000
+    frames per phase; "[r2] cpu-ab" line). Frame = EE frame interval (wall ms between frame
+    begins, uncapped); VU1 = ms in VU1 programs, VIF1 = ms in VIF1 DMA (includes the VU1 runs it starts):
+
+    | scene | dropped (A) frame / VU1 / VIF1 | kept before switches (B) | delta frame |
+    |---|---|---|---|
+    | ep1 hub | 3.672 / 0.956 / 1.276 | 3.697 / 1.203 / 1.732 | +0.03 ms |
+    | m1 brawl | 3.670 / 0.689 / 0.925 | 3.706 / 0.865 / 1.243 | +0.04 ms |
+    | m2 boardroom | 4.817 / 0.644 / 0.836 | 4.806 / 0.756 / 1.001 | -0.01 ms |
+
+    fps medians in the same runs: ep1 364, m1 338, m2 233 (chaos_bench). Keeping *every* native chain with programs
+    (c3836a2) cost +2.5 ms per frame in ep1 (VU1 0.85 -> 3.08, VIF1 1.14 -> 4.98), +1.4 ms in m1 - hence the selective form.
+  - Result: in the ALT ledge view modern and exact frames draw the same lamp shadow (heat 276 px at 3x, the props-only
+    baseline ~190: idle animation); the bottom-edge polygon that differed before is gone.
   - Diagnostics: PS2_VU_SNAP=<vblank> PS2_VU_SNAP_DIR=<dir> [PS2_VU_SNAP_NAME=<unit>, default 188054619]
     [PS2_VU_SNAP_COUNT=n]: VU registers, VIF1 registers and data memory before each run of that unit (vu.c vu_snap);
     with PS2_VU_SNAP_TRACK=1 and PS2_VU_INTERP=1 also lmap_*.bin per class: the data lanes it read before anything wrote

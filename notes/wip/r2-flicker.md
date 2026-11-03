@@ -1,4 +1,4 @@
-# r2-flicker: shadows flicker + a blinking line, Modern renderer only (owner report, ep1 hub outdoors)
+﻿# r2-flicker: shadows flicker + a blinking line, Modern renderer only (owner report, ep1 hub outdoors)
 
 Branch next/r2-flicker (main 05097e6 + main 35bfeef with R8 merged in), worktree
 C:\Users\tanih\Projects\sly2-worktrees\r2-flicker. Owner: render_scale auto, filters modern, fullscreen 120 fps, 1440p.
@@ -12,12 +12,12 @@ Summary for the docs: notes/modern-renderer.md "The owner's flicker report and t
       (owe_vif / flush_vif / owe_flips_class); see the notes section.
 - [x] verified on the final code: ALT 3x grid - same shadow in modern and exact frames; class begin mask 3F3F3F3F every
       frame; tf at the lamp spot PASS on the grid (236 pictures) and MFT 1440p MSAA 4x (240); hc ep1 / ep2 PASS.
-- [ ] final gate run on c61586e code: run_tests PASS; tests\unit 25/26 (window F11 / Alt+Enter, known); debug + release
-      builds OK; gpu_diff_all mixed S=1 28/28; m9_exact S1+S3 -Game
-      identical; pc_text_boot release + debug PASS; package OK (0.1.1013); r2_sweep (parallel 3, GPU busy):
-      25/33 - ab 11/11, failures = runs that drew 0 pictures / few pictures + m2 hc 4.2%, ep5 hc 0.25%: re-run: flips (MSCAL payment) broke ep6 -> off by default (0xFE);
-      ep4 / ep6 / m2 / m3 hc + tf 8/8 PASS after that. NEXT: keep native chains with MSCALs patched to NOP (VIF MARK count)
-
+- [x] final design (478f6ad): chains dropped by default; in the class run before a foreign class kept + programs run
+      with XGKICK dropped (VIF MARK 0xA5A5 / 0xA5A6 protocol), owed parity paid flip-only; tail flushed at the next hook.
+      ALT ledge 3x grid: same shadow both modes (heat 276); ep2 / ep6 hc + tf PASS; kept 90 / frame, parity unpaid 0.
+- [x] CPU A/B (PS2_GPU_AB_EE=3, 3x grid): ep1 +0.03 ms/frame, m1 +0.04, m2 -0.01 (table in the notes). Kept.
+- [ ] verification (scratchpad vfy.ps1): ALT ledge + spawn, grid + MFT 1440p; tf lamp walk 700 frames grid 3x / 1x + MFT
+- [ ] final gates on 478f6ad code (gatesA: tests, units, debug, gpu_diff_all, m9; gatesB: pc_text_boot, package, sweep)
 ## Reproduce (sequential runs only, ~2.5 min each)
   .\scripts\flicker_run.ps1 -Name x -Scale 3 -Episode 1 -Job m1_brawl -Play -At 7000 -Frames 30 -Keep -Pad '+3000:cross:6' `
       -Env "PS2_FRAME_RATE=120;PS2_MFT=0;PS2_R2_ALT=6900"     (PS2_R2_VIFSTATE=0: the old behaviour)
