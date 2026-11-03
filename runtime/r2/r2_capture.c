@@ -420,7 +420,8 @@ static int outlined(const float w[16]) {
     return 0;
 }
 
-/* (r2-flicker, diagnostics) PS2_R2_SEQ_LOG=1: a frame's class runs (class:entries/native/kept) when it left parity unpaid */
+/* (r2-flicker, diagnostics) PS2_R2_SEQ_LOG=1: a frame's class runs (class:entries/native/kept) when it left parity unpaid
+ * (and every 600th frame); 2: every frame */
 static int seq_on = -1, seq_cls = -2, seq_n, seq_nat, seq_kept, seq_unpaid, seq_len;
 static char seq_buf[2048];
 static void seq_flush(void) {
@@ -429,7 +430,7 @@ static void seq_flush(void) {
     seq_cls = -2; seq_n = seq_nat = seq_kept = 0;
 }
 static void seq_entry(int cls) {
-    if (seq_on < 0) seq_on = getenv("PS2_R2_SEQ_LOG") != NULL;
+    if (seq_on < 0) { const char* se = getenv("PS2_R2_SEQ_LOG"); seq_on = se ? (atoi(se) > 1 ? 2 : 1) : 0; }
     if (!seq_on) return;
     if (cls != seq_cls) { seq_flush(); seq_cls = cls; }
     seq_n++;
@@ -439,7 +440,7 @@ static void seq_frame(void) {
         seq_flush();
         if (seq_unpaid && seq_len) fprintf(stderr, "[r2] seq v%u unpaid %d:%s\n", ps2_vblank_count(), seq_unpaid, seq_buf);
         static uint32_t k;
-        if (!seq_unpaid && seq_len && ++k % 600 == 0) fprintf(stderr, "[r2] seq v%u ok:%s\n", ps2_vblank_count(), seq_buf);
+        if (!seq_unpaid && seq_len && (seq_on == 2 || ++k % 600 == 0)) fprintf(stderr, "[r2] seq v%u ok:%s\n", ps2_vblank_count(), seq_buf);
     }
     seq_len = 0; seq_buf[0] = 0; seq_unpaid = 0;
 }
