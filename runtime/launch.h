@@ -26,6 +26,15 @@ void launch_fatal(const char* fmt, ...);
 /* The window was closed (window.c's exit hook): no new memory card operation, flush the log, exit. */
 void launch_exit(int code);
 
+/* (P6) An instrumented build (scripts/build_game.py --pgo-gen) writes its clang profile here: ExitProcess
+ * skips the CRT's atexit handlers, where the profile runtime would write it. */
+#ifdef PS2_PGO_GEN
+int __llvm_profile_write_file(void);
+static inline void pgo_flush(void) { __llvm_profile_write_file(); }
+#else
+static inline void pgo_flush(void) {}
+#endif
+
 /* ---- for the unit tests (tests/unit/disc) ---- */
 /* disc_check against this build's executable (LAUNCH_BOOT_ELF, ps2_elf_size, ps2_elf_sha256). */
 int launch_check_disc(const wchar_t* path, uint8_t** elf, size_t* size);

@@ -178,8 +178,9 @@ def compile_one(src: Path, obj_dir: Path, flags: list[str]) -> tuple[Path, str]:
     obj = obj_dir / (("gpu_" if src.parent == GPU_DIR and not src.name.startswith("gpu_") else "") + src.with_suffix(".o").name)
     if src.parent.name == "vu":
         # recompiled VU microcode: already SIMD; clang's SLP vectorizer only costs minutes on these
-        # huge functions (recomp/vu_recomp.py)
-        flags = flags + ["-fno-slp-vectorize"]
+        # huge functions (recomp/vu_recomp.py). Kept out of LTO: the link-time backend would not see
+        # that flag (it is a pass option, not a function attribute) and the microcode calls little else.
+        flags = [f for f in flags if not f.startswith("-flto")] + ["-fno-slp-vectorize"]
     deps = list((ROOT / "runtime").glob("*.h"))
     if gpu:                                        # only the GPU backend depends on its headers/shaders
         deps += list(GPU_DIR.glob("*.h")) + list(R2_DIR.glob("*.h")) + [GEN_DIR / "gpu_shaders.h"]
@@ -235,7 +236,7 @@ def _version() -> tuple[int, str]:
         return 0, "unknown"
 
 
-def package(objs: list[Path], out: Path, dest: Path) -> int:
+def package(objs: list[Path], out: Path, dest: Path, link_flags: list[str]) -> int:
     """Link the player's build (GUI subsystem, icon, version info, manifest) into dest."""
     import make_icon
     work = out / "package"
@@ -252,7 +253,7 @@ def package(objs: list[Path], out: Path, dest: Path) -> int:
         print("resource compiler failed:\n" + (rc.stderr or rc.stdout)[:4000])
         return 1
     exe = work / "sly2.exe"
-    link = subprocess.run([str(CLANG), *map(str, objs), str(res), "-mwindows", *LIBS, "-o", str(exe)],
+    link = subprocess.run([str(CLANG), *map(str, objs), str(res), "-mwindows", *link_flags, *LIBS, "-o", str(exe)],
                           capture_output=True, text=True)
     if link.returncode:
         print(link.stderr[:6000])
@@ -272,8 +273,16 @@ def main() -> int:
     ap.add_argument("--release", action="store_true")
     ap.add_argument("--out", default=str(ROOT / "build" / "sly2"))
     ap.add_argument("--package", default=None, metavar="DIR", help="also link the player's build into DIR")
+    ap.add_argument("--jobs", "-j", type=int, default=int(os.environ.get("SLY2_BUILD_JOBS", "0")) or os.cpu_count(),
+                    help="parallel compile jobs (default: SLY2_BUILD_JOBS or every logical CPU)")
     ap.add_argument("--progress", action="store_true",
                     help="print '[progress] <stage> [i/n]' lines (the installer's progress bar, installer/engine.c)")
+    ap.add_argument("--lto", choices=["off", "thin"], default="off", help="link-time optimisation")
+    ap.add_argument("--cflags", default=os.environ.get("SLY2_CFLAGS", ""), help="extra compiler flags (experiments)")
+    ap.add_argument("--ldflags", default=os.environ.get("SLY2_LDFLAGS", ""), help="extra linker flags (experiments)")
+    ap.add_argument("--pgo-gen", action="store_true",
+                    help="instrumented build that writes a clang profile (.profraw) when the game exits (scripts/pgo_train.ps1)")
+    ap.add_argument("--pgo-use", default=None, metavar="PROFDATA", help="optimise with this clang profile (.profdata)")
     args = ap.parse_args()
     global PROGRESS
     PROGRESS = args.progress
@@ -283,6 +292,20 @@ def main() -> int:
     flags = [f"-O{args.opt or ('2' if args.release else '1')}", "-fno-auto-import"]
     if args.release:
         flags.append("-DPS2_NO_TRACE")
+    flags += args.cflags.split()
+    link_flags = args.ldflags.split()
+    if args.lto == "thin":
+        flags.append("-flto=thin")
+        link_flags += ["-flto=thin", f"-flto-jobs={max(1, args.jobs)}", flags[0],
+                       f"-Wl,--thinlto-cache-dir={out / 'lto-cache'}", "-Wl,--thinlto-cache-policy=cache_size_bytes=2g"]
+    if args.pgo_gen:
+        # IR-level instrumentation; the runtime writes the profile itself before it ends the process
+        # (ExitProcess skips the CRT's atexit handlers): ps2_runtime.c pgo_flush
+        flags += ["-fprofile-generate", "-DPS2_PGO_GEN"]
+        link_flags.append("-fprofile-generate")
+    elif args.pgo_use:
+        flags += [f"-fprofile-use={Path(args.pgo_use).resolve()}", "-Wno-profile-instr-out-of-date",
+                  "-Wno-profile-instr-unprofiled", "-Wno-profile-instr-missing", "-Wno-backend-plugin"]
 
     t0 = time.time()
     if not Path(args.elf).exists() and Path(args.elf) == ELF:
@@ -314,8 +337,12 @@ def main() -> int:
     obj_dir = out / "obj"
     obj_dir.mkdir(parents=True, exist_ok=True)
     stamp = obj_dir / "flags.txt"
-    if not stamp.exists() or stamp.read_text() != " ".join(flags):
-        stamp.write_text(" ".join(flags))              # flag change: rebuild everything
+    stamp_text = " ".join(flags)
+    if args.pgo_use and not args.pgo_gen:              # a new profile: rebuild everything too
+        import hashlib
+        stamp_text += " profile " + hashlib.sha256(Path(args.pgo_use).read_bytes()).hexdigest()[:16]
+    if not stamp.exists() or stamp.read_text() != stamp_text:
+        stamp.write_text(stamp_text)                   # flag change: rebuild everything
 
     # The Direct3D 11 GS backend (runtime/gpu, notes/d3d11-renderer.md): shaders first, compile
     # errors fail the build. Selected at run time by PS2_GS_BACKEND (default sw).
@@ -330,7 +357,7 @@ def main() -> int:
                sorted(R2_DIR.glob("*.c")))
     objs, errors = [], []
     progress("compile", 0, len(sources))
-    with ThreadPoolExecutor(max_workers=os.cpu_count()) as pool:
+    with ThreadPoolExecutor(max_workers=max(1, args.jobs)) as pool:
         futures = [pool.submit(compile_one, s, obj_dir, flags) for s in sources]
         if PROGRESS:                                   # (completion order, for the installer's bar)
             for i, _ in enumerate(as_completed(futures), 1):
@@ -347,7 +374,7 @@ def main() -> int:
 
     exe = out / "sly2.exe"
     progress("link")
-    link = subprocess.run([str(CLANG), *map(str, objs), *LIBS, "-o", str(exe)], capture_output=True, text=True)
+    link = subprocess.run([str(CLANG), *map(str, objs), *link_flags, *LIBS, "-o", str(exe)], capture_output=True, text=True)
     if link.returncode:
         print(link.stderr[:6000])
         return 1
@@ -356,7 +383,7 @@ def main() -> int:
         if not args.release:
             print("note: --package without --release packages a debug build (-O1, function tracing)")
         progress("package")
-        return package(objs, out, Path(args.package))
+        return package(objs, out, Path(args.package), link_flags)
     return 0
 
 

@@ -62,6 +62,7 @@ static DWORD WINAPI watchdog(LPVOID arg) {
     for (uint32_t i = 24; i > 0; i--) fprintf(stderr, " %08X", snap[(pos - i) & (PS2_TRACE_SIZE - 1)]);
     fprintf(stderr, "\n");
     fflush(stderr);
+    pgo_flush();
     ExitProcess(3);
     return 0;
 }
@@ -251,8 +252,29 @@ static ps2_func find_func(uint32_t addr) {
     return (lo < ps2_func_count && ps2_funcs[lo].addr == addr) ? ps2_funcs[lo].fn : NULL;
 }
 
+/* (P6) Indirect calls (jalr: the game's virtual functions, ~1 in 3 calls in a hub) look the target up in a
+ * table indexed by (addr - first function) / 4 instead of a binary search over every function (13 dependent
+ * loads). Built at the first call (main's call of the entry point, before any other thread runs game code). */
+static ps2_func* call_table;
+static uint32_t call_lo, call_n;
+
+static void call_table_init(void) {
+    if (call_table || !ps2_func_count) return;
+    uint32_t lo = ps2_funcs[0].addr, n = ((ps2_funcs[ps2_func_count - 1].addr - lo) >> 2) + 1;
+    ps2_func* t = calloc(n, sizeof *t);
+    if (!t) return;                              /* (the binary search still works) */
+    for (size_t i = 0; i < ps2_func_count; i++) t[(ps2_funcs[i].addr - lo) >> 2] = ps2_funcs[i].fn;
+    call_lo = lo;
+    call_table = t;
+    call_n = n;
+}
+
 void ps2_call(ps2_ctx* ctx, uint32_t addr) {
-    ps2_func fn = find_func(addr);
+    uint32_t d = addr - call_lo, i = d >> 2 | d << 30;   /* (rotate: a misaligned address never fits) */
+    ps2_func fn;
+    if (__builtin_expect(i < call_n, 1) && (fn = call_table[i])) { fn(ctx); return; }
+    call_table_init();
+    fn = find_func(addr);
     if (!fn) {
         fprintf(stderr, "[ps2] fatal: call to 0x%08X, which is not the start of a recompiled function "
                         "($ra=0x%08X)\n", addr, ctx->r[31].uw[0]);
