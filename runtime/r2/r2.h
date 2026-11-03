@@ -167,6 +167,7 @@ typedef struct r2_mesh {
     uint32_t handle;             /* gen << 20 | index */
     r2_src* src;                 /* (r2-m5) its source bytes */
     uint32_t flips;              /* (r2-m5) VIF1 double-buffer flips of the chain (its MSCALs) mod 2 */
+    uint32_t nmscal;             /* (r2-flicker) the chain's MSCALs (hybrid: kept, VIF1 skips their programs) */
     uint32_t vif_set;            /* (r2-flicker) VIF1 registers the chain writes (R2_VIF_*) and their values at its end */
     uint32_t vif_cycle, vif_mode, vif_mask, vif_row[4], vif_col[4], vif_base, vif_ofst;
     uint32_t addr, bytes;        /* the DMA chain decoded, the bytes it reads */

@@ -32,6 +32,7 @@ typedef struct {
     uint8_t wr[QW];                      /* written by this chain */
     uint32_t cycle, mask, row[4], col[4], mode, base, ofst, tops, top, dbf;
     uint32_t vset;                       /* (r2-flicker) R2_VIF_* registers the chain wrote */
+    uint32_t nmscal;                     /* (r2-flicker) its MSCALs */
     uint32_t* w;                         /* the VIF word stream */
     uint32_t nw, capw;
     uint64_t hash;
@@ -640,7 +641,7 @@ static int interpret(dec* d) {
         case 0x05: d->mode = imm & 3; d->vset |= R2_VIF_MODE; break;   /* STMOD */
         case 0x06: break;                                        /* MSKPATH3 */
         case 0x10: case 0x11: case 0x13: break;                  /* FLUSHE / FLUSH / FLUSHA */
-        case 0x14: { int r = mscal(d, imm); if (r) return r; break; }   /* MSCAL */
+        case 0x14: { d->nmscal++; int r = mscal(d, imm); if (r) return r; break; }   /* MSCAL */
         case 0x20:                                               /* STMASK */
             if (pos >= d->nw) return R2M_VIF;
             d->mask = d->w[pos++];
@@ -692,6 +693,7 @@ int r2_mesh_decode(const uint8_t* ram, uint32_t addr, int form, r2_mesh** out) {
     m->hash = d->hash;
     m->form = form;
     m->flips = d->dbf;
+    m->nmscal = d->nmscal;
     m->vif_set = d->vset; m->vif_cycle = d->cycle; m->vif_mode = d->mode; m->vif_mask = d->mask;
     m->vif_base = d->base; m->vif_ofst = d->ofst;   /* (R2_VIF_OFST: flips counts from the chain's last OFFSET, which sets DBF 0) */
     memcpy(m->vif_row, d->row, 16); memcpy(m->vif_col, d->col, 16);

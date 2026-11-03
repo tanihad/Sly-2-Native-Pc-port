@@ -424,8 +424,10 @@ uint32_t vu_private_run(vu_state* st, uint32_t pc, vu_private_kick_fn kick, void
     return n;
 }
 
+volatile int vu1_drop_kicks;           /* (r2-flicker) set by VIF1 for the runs of a kept native chain */
 void vu_xgkick(uint32_t qw_addr) {
     if (tl_kick) { tl_kick(tl_kick_user, tl_kick_st->data, qw_addr & 0x3FF); return; }   /* (r2-m5b) a private VU1 */
+    if (vu1_drop_kicks) return;          /* (r2-flicker) a native mesh's program: its packets are R2's (vif.c) */
     if (vuc_hashing) {                   /* PS2_VU_VERIFY: hash both runs' kicks; the shadow's go no further */
         const vu_state* cur = vuc_shadow_active ? &vuc_shadow : &vu_st[1];
         vuc_khash = vu_kick_hash(vuc_khash, qw_addr, cur->cyc);

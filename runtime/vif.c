@@ -72,6 +72,7 @@ typedef struct {
     /* registers. stat keeps MRK DBF VSS VFS VIS INT ER0 ER1 FDR VGW; VPS, VEW, FQC are computed */
     uint32_t stat, err, mark, cycle, mode, num, mask, code, itops, base, ofst, tops, itop, top;
     uint32_t r[4], c[4];
+    uint32_t r2_arm, r2_skip;          /* (r2-flicker) MARK A5A5, MARK n: the next n MSCALs' programs kick nothing */
 
     /* command in progress */
     int      kind;                     /* K_NONE between commands */
@@ -189,6 +190,7 @@ static void upk_decode(const vif_state* v, const uint8_t* p, uint32_t d[4]) {
 
 __attribute__((weak)) int vu1_trk;      /* (r2-flicker, diagnostics: vu_exec.c defines them) lanes written into VU1 data */
 __attribute__((weak)) uint8_t vu1_trk_w[1024];
+__attribute__((weak)) volatile int vu1_drop_kicks;   /* (r2-flicker: vu.c's) */
 static inline void trk_vif(const vif_state* v, uint32_t addr, uint32_t m) {
     if (!vu1_trk || v->id != 1) return;
     uint8_t l = 0;
@@ -562,7 +564,12 @@ static int cmd_begin(vif_state* v, uint32_t code) {
         if (!vif1) goto invalid;
         gif_set_path3_mask((imm >> 15) & 1);
         break;
-    case CMD_MARK: v->mark = imm; v->stat |= ST_MRK; break;
+    case CMD_MARK:
+        /* (r2-flicker) the modern renderer keeps a native mesh's chain (its uploads, VIF registers and double-buffer
+         * flips as in an all-exact frame) but not its programs: MARK 0xA5A5 then MARK n (not visible to the EE) */
+        if (vif1 && v->r2_arm) { v->r2_arm = 0; v->r2_skip = imm; break; }
+        if (vif1 && imm == 0xA5A5u) { v->r2_arm = 1; break; }
+        v->mark = imm; v->stat |= ST_MRK; break;
     case CMD_FLUSH:
     case CMD_FLUSHA:
         if (!vif1) goto invalid;
@@ -577,6 +584,10 @@ static int cmd_begin(vif_state* v, uint32_t code) {
     case CMD_MSCNT:
         if (vu_running(v)) return 0;
         v->code = code;
+        if (vif1) {                                          /* (r2-flicker) a kept native chain's runs: no packets */
+            vu1_drop_kicks = v->r2_skip != 0;
+            if (v->r2_skip) v->r2_skip--;
+        }
         micro_start(v, cmd, imm);
         break;
     case CMD_STMASK: v->kind = K_STMASK; v->left = 1; break;
