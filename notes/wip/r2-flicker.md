@@ -16,8 +16,9 @@ Summary for the docs: notes/modern-renderer.md "The owner's flicker report and t
       with XGKICK dropped (VIF MARK 0xA5A5 / 0xA5A6 protocol), owed parity paid flip-only; tail flushed at the next hook.
       ALT ledge 3x grid: same shadow both modes (heat 276); ep2 / ep6 hc + tf PASS; kept 90 / frame, parity unpaid 0.
 - [x] CPU A/B (PS2_GPU_AB_EE=3, 3x grid): ep1 +0.03 ms/frame, m1 +0.04, m2 -0.01 (table in the notes). Kept.
-- [ ] verification (scratchpad vfy.ps1): ALT ledge + spawn, grid + MFT 1440p; tf lamp walk 700 frames grid 3x / 1x + MFT
-- [ ] final gates on 478f6ad code (gatesA: tests, units, debug, gpu_diff_all, m9; gatesB: pc_text_boot, package, sweep)
+- [x] verification: ALT heat ledge 118 / spawn 154 (3x grid); MFT ledge shadow = exact (crops); tf lamp walk 700: grid 3x / 1x PASS, MFT PASS (1 of 2 runs one picture 25 blobs, not reproduced); MFT "other target" grid frame ~1 per run also with the fix off (R8)
+- [x] gates A on 478f6ad: run_tests PASS, units 25/26 (window F11/Alt+Enter, known), debug build OK, gpu_diff_all 28/28, m9_exact S1+S3 identical
+- [ ] gates B: pc_text_boot rel + debug, package, r2_sweep ab,hc,tf
 ## Reproduce (sequential runs only, ~2.5 min each)
   .\scripts\flicker_run.ps1 -Name x -Scale 3 -Episode 1 -Job m1_brawl -Play -At 7000 -Frames 30 -Keep -Pad '+3000:cross:6' `
       -Env "PS2_FRAME_RATE=120;PS2_MFT=0;PS2_R2_ALT=6900"     (PS2_R2_VIFSTATE=0: the old behaviour)

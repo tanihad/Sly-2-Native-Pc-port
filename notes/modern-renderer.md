@@ -1136,7 +1136,15 @@ the frontend and the exact path are unchanged, so Reference, `PS2_GS_SCALE` runs
     fps medians in the same runs: ep1 364, m1 338, m2 233 (chaos_bench). Keeping *every* native chain with programs
     (c3836a2) cost +2.5 ms per frame in ep1 (VU1 0.85 -> 3.08, VIF1 1.14 -> 4.98), +1.4 ms in m1 - hence the selective form.
   - Result: in the ALT ledge view modern and exact frames draw the same lamp shadow (heat 276 px at 3x, the props-only
-    baseline ~190: idle animation); the bottom-edge polygon that differed before is gone.
+    baseline ~190: idle animation); the bottom-edge polygon that differed before is gone. Final verification
+    (478f6ad, 120 fps): ALT heat at the ledge 118 px and at the ep1 spawn 154 px (3x grid); on MFT 1440p MSAA 4x the
+    modern frame's lamp shadow matches the exact frame's (ALT alternates MFT and grid pictures, so compared by crops);
+    tf on a 700-VBlank lamp walk: grid 3x PASS (416 pictures), grid 1x PASS (700), MFT 1440p PASS (372; one earlier
+    MFT run had one picture with 25 blobs, not reproduced).
+  - MFT grid fallbacks seen with dumps (single "not modern" frames in the walk) do not happen without dumps (same walk,
+    PS2_DUMP_FROM out of range, PS2_MFT_LOG=1). Left for R8: about once per run (~27 000 frames) one "other target" grid
+    frame (a full-screen blended draw into another target, fmask FF000000) - also with the fix off (PS2_R2_KEEPCHAIN=0
+    PS2_R2_VIFSTATE=0), so not from this change; a one-frame resolution / AA pop on MFT.
   - Diagnostics: PS2_VU_SNAP=<vblank> PS2_VU_SNAP_DIR=<dir> [PS2_VU_SNAP_NAME=<unit>, default 188054619]
     [PS2_VU_SNAP_COUNT=n]: VU registers, VIF1 registers and data memory before each run of that unit (vu.c vu_snap);
     with PS2_VU_SNAP_TRACK=1 and PS2_VU_INTERP=1 also lmap_*.bin per class: the data lanes it read before anything wrote
