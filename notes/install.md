@@ -214,13 +214,20 @@ in a hidden window), `/uishot=<folder>` (pages rendered off-screen to .bmp).
 **Tests**: `tests\unit\installer\run.ps1` (quick: tool commands, payload contents, the disc check on
 synthetic images + the real one, downloads from `range_server.py` on 127.0.0.1 - complete, dropped and
 resumed, resume of a partial file, no-Range server, 404, wrong SHA-256, nothing listening - `/uitest`,
-a damaged payload removed again by Uninstall.exe). `tests\installer\e2e.ps1` (~5 min, ~2 GB in %TEMP%,
-removed): bad archive / 404 first, then install with the archives over HTTP from 127.0.0.1 and Python/
-packages from a `/from` folder, the installed game boots headless from the image Setup wrote into
-sly2.ini (PS2_HEADLESS, PS2_WATCHDOG -> exit 3), shortcuts + registry in test locations, update in place
-keeps a save, uninstall keeps saves, then the offline exe with `/offline` and `Uninstall /deletesaves`.
+a damaged payload removed again by Uninstall.exe). `tests\unit\launcher\run.ps1` (quick: test_release.c -
+Ed25519 RFC 8032 vectors + Python-signed cases + tampering, manifest parsing, version order, URL policy, the
+staged swap; release_keygen refuses a key in the repo; make_release; the window hidden; updates from 127.0.0.1:
+found, plain HTTP refused by the release build, another key / a changed manifest / a changed bundle rejected).
+`tests\installer\e2e.ps1` (~5 min with -SkipOffline, ~5 GB in `build\e2e-launcher`, removed): bad archive / 404
+first (/noimport), then the install through the hidden launcher window (drop, Install, Cancel, Retry; the image
+import; archives over HTTP from 127.0.0.1, Python/packages from a `/from` folder) - 90 s on the i7-14700F including
+the 2.9 GB copy; layout, shortcuts -> launcher, registry; the game boots headless from `data\sly2.img` (argv as the
+launcher starts it, and through the runtime fallback when sly2.ini's image is gone); updates signed by a test key
+from 127.0.0.1: a signed release whose build fails leaves the installed version untouched, a good one is verified,
+built (58 s, tools reused), swapped (previous kept), save + sly2.ini untouched; the window's update check;
+rollback and forward; uninstall keeps saves; then (unless -SkipOffline) the offline exe and `/deletesaves`.
 Not testable here: the real downloads from github.com / PyPI and `uv python install` (no network for
-agents), the UAC prompt of an all-users install.
+agents), the UAC prompt of an all-users install, a real GitHub release (the repository is private).
 
 ## From a fresh clone (any Windows 10/11 x64 PC)
 

@@ -1,49 +1,45 @@
 # WIP: launcher (branch next/launcher, worktree C:\Users\tanih\Projects\sly2-worktrees\launcher)
 
+**Status: complete** (2026-11-03). Documentation: notes/install.md "Launcher" (design, player flow, layout, import,
+staging, updates, publishing an update, command line, before going public).
+
 **Goal**: one player-facing launcher (drop the .iso, import once, big Play, signed updates) that absorbs the
-installer (notes/install.md "Planned: launcher").
+installer.
 
 ## Design (decided)
 - **The launcher absorbs the installer**: one program from installer/*.c. `Sly2-Setup.exe` = program + payload;
   the installed copy `<dir>\Sly 2 Launcher.exe` = the program without payload (like Uninstall.exe). One window
-  with states (welcome/drop -> working -> ready/error) replaces the 7-page wizard. Why: one code path for first
-  install, repair and update (all = build into staging, swap), one window for the player, no second UI to keep
-  in sync. CLI (/silent etc.) kept for CI.
-- **Install layout**: `<dir>\game\` (sly2.exe, README, Controller test.cmd, sly2-version.txt), `game.old\`
-  (previous, rollback), `game.new\` (staging, `.complete` marker), `data\sly2.img` (imported disc copy),
-  `bundle\sly2-source-<ver>.zip` (sources of game + game.old), `builder\`, `updates\` (downloads),
-  `Sly 2 Launcher.exe`, Uninstall.exe, setup-state.ini, setup.log.
-- **Import**: whole image copied (CopyFileEx, progress/cancel) to `data\sly2.img.part` -> checked -> renamed.
-  Measured: the ISO 9660 tree lists only 34 MB (4 files) but the game reads raw sectors by LBN from its own
-  TOC; only 18,583 of 1,408,272 sectors are zero -> nothing worth compacting; a plain copy keeps LBNs.
-- **Runtime**: launcher starts `game\sly2.exe "<dir>\data\sly2.img"` (argv[1] image, existing path) and writes
-  `[game] disc` = the imported copy; runtime fallback `<exe>\..\data\sly2.img` when nothing usable is configured.
-  ISO-path / ELF modes unchanged for dev builds.
-- **Updates**: manifest `sly2-release.txt` (key = value) + `sly2-release.txt.sig` (Ed25519 over the manifest
-  bytes, hex) + `sly2-source-<ver>.zip`. Default URL
-  https://github.com/tanihad/sly2-decomp/releases/latest/download/sly2-release.txt. HTTPS only; plain HTTP to
-  loopback only in a test build (-DSLY2_TEST_BUILD, also enables /pubkey=). Ed25519 verify in C
-  (installer/ed25519.c, SHA-512 from bcrypt), signing in Python (scripts/sly2_ed25519.py).
+  with states (welcome/drop -> working -> error / ready) replaces the 7-page wizard. Why: one code path for first
+  install, repair and update (all = unpack sources, build, stage, swap), one window for the player, no second UI.
+- **Install layout**: `game\` (+ `sly2-version.txt`), `game.old\` (previous), `game.new\` (staging, `.complete`),
+  `data\sly2.img` (imported disc copy), `bundle\sly2-source-<ver>.zip` (sources of game + game.old), `builder\`
+  (tools kept by default), `updates\`, `Sly 2 Launcher.exe`, Uninstall.exe, setup-state.ini, setup.log.
+- **Import**: whole image copied (the ISO 9660 tree lists only 34 MB; the game reads 2.7 GB by sector number;
+  only 1.3% of sectors are zero -> a plain copy).
+- **Runtime**: launcher starts `game\sly2.exe "<dir>\data\sly2.img"`; sly2.ini `[game] disc` = the copy;
+  runtime/launch.c falls back to `<exe>\..\data\sly2.img`. Dev modes unchanged.
+- **Updates**: signed manifest (Ed25519, key in installer/release_key.h) -> bundle size + SHA-256 -> staged build
+  -> swap; HTTPS only (loopback HTTP + /pubkey only in -DSLY2_TEST_BUILD builds).
 
 ## Done
-- installer/ed25519.c, release.c (manifest, URL policy, stage_*), update.c, launcher.c (window; replaces the wizard),
-  main.c (CLI: /update /repair /rollback /checkupdate /noimport /updateurl /pubkey /waitpid /noupdatecheck),
-  engine.c (import, staged install, bundles kept, launcher stub + shortcuts), net.c (https policy, size limit, redirects)
-- runtime/launch.c fallback `<exe>\..\data\sly2.img` (+ tests/unit/disc case): disc suite passes
-- scripts/release_keygen.py (release key made: %USERPROFILE%\.sly2-release\release-ed25519.key; public half in
-  installer/release_key.h), scripts/make_release.py, make_installer.py --test-build, make_source_zip (deterministic)
-- tests/unit/launcher/{run.ps1,test_release.c,release_tool.py}: all pass (122 C checks + 20 suite checks)
+- installer/ed25519.c, release.c, update.c, launcher.c, main.c, engine.c, net.c, disc.c (wording); runtime/launch.c
+- scripts/release_keygen.py (release key made: %USERPROFILE%\.sly2-release\release-ed25519.key, public
+  2d2fa1da...a9bde4 in installer/release_key.h), scripts/make_release.py, scripts/sly2_ed25519.py,
+  make_installer.py (--test-build, deterministic source.zip, per-monitor DPI manifest)
+- tests: tests/unit/launcher (122 C checks + 20), tests/unit/disc (+ fallback case), tests/installer/e2e.ps1 rewritten
+- Gates 2026-11-03: run_tests 16/16; every tests/unit suite passes except window's known F11/Alt+Enter flake (2);
+  e2e -SkipOffline passed (install 90 s incl. 2.9 GB import, update 58 s); pc_text_boot; debug + release builds;
+  package.py; make_installer.py.
 
-## Next
-1. tests/installer/e2e.ps1 rewrite for the launcher (temp dir in build\): uitest install (drop+import+cancel/retry),
-   boot from imported image, update via 127.0.0.1 (bad sig, tampered, failing build, good), rollback, uninstall
-2. tests/unit/installer/run.ps1 still passes? docs notes/install.md (launcher, release process)
-3. gates: run_tests.py, all tests/unit suites, pc_text_boot, debug+release builds, package.py, make_installer.py
+## Next (after the owner's review)
+- Code-sign Sly2-Setup.exe; make the repository / releases public; publish the first signed release (make_release.py
+  prints the gh command); optionally a launcher self-update (today a new launcher comes with a new Setup;
+  `min_launcher` sends players there).
 
 ## Findings / traps
 - git: C:\Users\tanih\Projects\sly2-decomp\tools\git\cmd\git.exe; python: main .venv; clang: main tools\llvm-mingw\bin.
   make_installer.py needs `. <main>\scripts\env.ps1` (llvm-rc on PATH) and an ABSOLUTE --out.
 - .NET file APIs resolve relative paths against the main checkout (process cwd): always absolute paths.
-- Owner's ISO: C:\Users\tanih\Projects\sly2-decomp\orig\disc\Sly 2 - Band of Thieves (USA).iso (2.88 GB).
 - IsWindowVisible() is false for children of a hidden window: /uitest checks WS_VISIBLE instead.
 - A Setup whose payload is newer than the installed game offers a local update (UPD_LOCAL) instead of the net check.
+- Windows CNG has no EdDSA (only X25519 ECDH): Ed25519 verification is our own code; SHA-512 comes from bcrypt.
