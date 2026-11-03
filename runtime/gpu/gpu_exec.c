@@ -1254,16 +1254,24 @@ static struct {
     uint32_t cyc_n[8];
 } PR = { -1 };
 enum { R8S_LINE = 1, R8S_R2 = 2, R8S_SHADOW = 4, R8S_NPOST = 8, R8S_TRI = 16, R8S_SPRITE = 32, R8S_LINEZ = 64, R8S_LINEC = 128,
-       R8S_R2DRAW = 256, R8S_R2TINY = 512, R8S_R2UNI = 1024 };
+       R8S_R2DRAW = 256, R8S_R2TINY = 512, R8S_R2UNI = 1024, R8S_SVOL = 0x800, R8S_FPX = 0x1000, R8S_FPS = 0x2000,
+       R8S_FCLR = 0x4000, R8S_RESOLVE = 0x8000, R8S_SVA = 0x10000, R8S_SVR = 0x20000, R8S_SVD = 0x40000, R8S_SV1 = 0x80000,
+       R8S_TRI_NOZ = 0x100000, R8S_TRI_Z = 0x200000, R8S_TRI_B = 0x400000, R8S_TRI_ROV = 0x800000, R8S_TRI_TEX = 0x1000000,
+       R8S_TRI_PSC = 0x2000000 };
 static int r8s_skip(int what) { return PR.ncyc > 0 && (PR.cyc_mask[PR.cyc] & what) != 0; }
 /* (r2-m7b) an experimental feature is off in this frame (an A phase of PS2_GPU_AB) */
 static int ab_off(void) { return PR.ab > 0 && !PR.ab_b && !PR.ab_ee && !PR.ab_r8 && !PR.ncyc; }
 /* (r8-perf) the GPU optimisations of the Balanced preset (modern frame targets), each one switchable for in-run A/B */
 enum { R8P_R2BATCH = 1, R8P_LINEPIX = 2, R8P_SHADOW = 4, R8P_RESOLVE = 8, R8P_R2STATE = 16, R8P_MISC = 32 };
 static int r8p_mask = -1;                /* PS2_R8P=<mask>: the features on (default all) */
+static int r8p_off_mask;                 /* (PS2_R8P_VERIFY: the original way's second run) */
+static int r8p_mask_has(int f) {         /* (the feature is enabled at all: PS2_R8P) */
+    if (r8p_mask < 0) { const char* e = getenv("PS2_R8P"); r8p_mask = e && *e ? (int)strtol(e, NULL, 0) : 0x7FFFFFFF; }
+    return (r8p_mask & f) != 0;
+}
 static int r8p_on(int f) {
     if (r8p_mask < 0) { const char* e = getenv("PS2_R8P"); r8p_mask = e && *e ? (int)strtol(e, NULL, 0) : 0x7FFFFFFF; }
-    if (!(r8p_mask & f)) return 0;
+    if (!(r8p_mask & f) || (r8p_off_mask & f)) return 0;
     return !(PR.ab > 0 && !PR.ab_b && (PR.ab_r8 & f));
 }
 /* (r2-m5b) the current phase for EE-side features (r2_capture.c: the VU clipper's entries with PS2_GPU_AB_EE=1, when only
