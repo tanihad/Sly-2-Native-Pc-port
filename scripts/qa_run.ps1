@@ -14,7 +14,10 @@
 # Output: build\qa\runs\<scene>__<cfg>__<rate>\ (summary.txt, tf.txt, run excerpt, samples\*.bmp until -Clean).
 param([Parameter(Mandatory = $true)][string]$Scene, [string]$Cfg = 'bal', [int]$Rate = 60, [int]$At = 0, [int]$Frames = 0,
       [int]$Sample = 15, [string]$Pad = $null, [string]$Env = '', [string]$Ini = '', [string]$Size = '2560x1440', [switch]$Keep,
-      [switch]$NoTf, [string]$Exe = '')
+      [switch]$Tf, [string]$Exe = '', [string]$Seq = '')
+# -Seq "outlines:240,outlines:240,filters:240": live settings toggles (PS2_INPUT tokens, as F3 / F4 / F5 ...: outlines filters blur
+#   scaleup scaledown scaleauto flicker interlace, menu mup mdown mok mback ...) <frames> after the previous token (the scene's pad);
+#   run.log's "pad frame N (VBlank V): <token>" lines are collected into segments.txt. A static scene shows every setting once.
 $root = Split-Path $PSScriptRoot -Parent
 $main = $root
 if (-not (Test-Path (Join-Path $root 'tools\llvm-mingw'))) {
@@ -30,8 +33,12 @@ $line = Get-Content (Join-Path $PSScriptRoot 'qa_scenes.txt') | Where-Object { $
 if (-not $line) { "unknown scene $Scene"; exit 2 }
 $f = @($line -split '\|' | ForEach-Object { $_.Trim() })
 if (-not $At) { $At = [int]$f[4] }
-if (-not $Frames) { $Frames = [int]$f[5] }
+if (-not $Frames) { $Frames = if ($Tf) { [int]$f[5] } else { 300 } }
 if ($null -eq $Pad -or $Pad -eq '') { $Pad = ($f[6] -replace '^GP$', $GP -replace '^HP$', $HP) }
+if ($Seq) {
+    $st = @($Seq -split ',' | Where-Object { $_ } | ForEach-Object { $a, $b = $_ -split ':'; "+${b}:${a}:2" })
+    $Pad = (@($Pad, ($st -join ',')) | Where-Object { $_ }) -join ','
+}
 $cfgs = @{
     ref = @{ mode = 'reference'; scale = '4x'; msaa = 'off'; outl = 'ps2'; filt = 'modern'; mb = 'preset' }
     bal = @{ preset = 'balanced' }; perf = @{ preset = 'performance' }; qual = @{ preset = 'quality' }
@@ -63,12 +70,13 @@ if ($Rate -gt 60) { $e += 'PS2_DUMP_WAIT=1' }
 if ($Cfg -eq 'ref') { $e += 'PS2_R2=off' }
 if ($Env) { $e += @($Env -split ';' | Where-Object { $_ }) }
 $ia = @('-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'flicker_run.ps1'), '-Name', $name, '-Episode', $f[1],
-        '-At', "$At", '-Frames', "$Frames", '-Scale', 'auto', '-Mode', 'default', '-Keep', '-Env', ($e -join ';'))
+        '-At', "$At", '-Frames', "$Frames", '-Scale', 'auto', '-Mode', 'default', '-Keep', '-Env', ($e -join ';'), '-DumpEvery', $(if ($Tf) { '1' } else { "$Sample" }))
 if ($f[2]) { $ia += @('-Job', $f[2]) }
 if ($f[3] -match 'direct') { $ia += '-Direct' }
 if ($f[3] -match 'play') { $ia += '-Play' }
 if ($Pad) { $ia += @('-Pad', $Pad) }
-if ($NoTf) { $ia += @('-Check', '--max-share 1 --max-run 1 --max-blobs 99999 --max-rows 99999 --seam 99999 --max-seams 99999') }
+# sampled pictures (every -Sample-th VBlank, the game less disturbed than by dumping each one): no temporal check
+if (-not $Tf) { $ia += @('-Check', '--max-share 1 --max-run 1 --max-blobs 99999 --max-rows 99999 --seam 99999 --max-seams 99999') }
 if ($Exe) { $ia += @('-Exe', $Exe) }
 $t0 = Get-Date
 $tfOut = & powershell @ia
@@ -104,6 +112,8 @@ if (Test-Path $log) {
     $err = @($lines | Select-String -Pattern 'not implemented|unhandled|assert|crash|exception|fatal|device lost|error|unknown general register' |
         Where-Object { $_.Line -notmatch 'syscall 0x5B|unimplemented eret' } | Select-Object -First 6 | ForEach-Object { 'log: ' + $_.Line })
     $sum += $err
+    $seg = @($lines | Select-String 'pad frame \d+ \(VBlank (\d+)\): (\w+) \(' | ForEach-Object { "$($_.Matches[0].Groups[1].Value) $($_.Matches[0].Groups[2].Value)" })
+    $seg | Set-Content (Join-Path $runDir 'segments.txt')
     $lines | Select-String 'settings\]|scale|MSAA|msaa' | Select-Object -First 6 | ForEach-Object { $_.Line } | Set-Content (Join-Path $runDir 'run_excerpt.txt')
     Copy-Item $log (Join-Path $runDir 'run.log')
 }

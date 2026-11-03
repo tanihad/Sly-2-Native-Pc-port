@@ -202,6 +202,24 @@ static void panel(uint8_t* out, int ow, int ox, const pic* p, int x, int y, int 
 typedef struct { int x0, y0, x1, y1, n; double sum; } cluster;
 
 int main(int argc, char** argv) {
+    if (argc >= 6 && !strcmp(argv[1], "--sheet")) {          /* --sheet out.png cols cellw cellh file...: a contact sheet */
+        int cols = atoi(argv[3]), cw = atoi(argv[4]), ch = atoi(argv[5]), n = argc - 6;
+        if (cols < 1 || cw < 8 || ch < 8 || n < 1) return 2;
+        int rows = (n + cols - 1) / cols, ow = cols * cw, oh = rows * ch;
+        uint8_t* o = calloc((size_t)ow * oh, 3);
+        for (int i = 0; i < n; i++) {
+            pic a;
+            if (!read_any(argv[6 + i], &a)) continue;
+            pic c = a;
+            c.px = malloc((size_t)a.w * a.h * 3); memcpy(c.px, a.px, (size_t)a.w * a.h * 3);
+            fit(&c, cw - 2, ch - 2);
+            int cx = (i % cols) * cw + 1, cy = (i / cols) * ch + 1;
+            for (int y = 0; y < c.h; y++) memcpy(o + ((size_t)(cy + y) * ow + cx) * 3, c.px + (size_t)y * c.w * 3, (size_t)c.w * 3);
+            free(c.px); free(a.px);
+        }
+        write_png(argv[2], o, ow, oh);
+        return 0;
+    }
     if (argc >= 5 && !strcmp(argv[1], "--crop")) {
         pic a; int x, y, w, h, z;
         if (!read_any(argv[2], &a) || !crop_args(argc, argv, 4, &x, &y, &w, &h, &z)) return 2;
