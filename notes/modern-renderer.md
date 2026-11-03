@@ -1187,8 +1187,10 @@ Measured (ep1 hub walk uncapped 330 s, then every sweep scene) - four causes, al
   meshes, r2_capture.c guard_clean) need the clip stage, which had no MFT form. Now r2_render.c has MFT clip pipelines
   (perms vs/gs_r2m_clip, ps_r2m_clip[_nd|_a2c]; r2_gs_clip draws the triangles inside the guard band, as before without
   MFT). Checked with PS2_R2_FANS=0 (10 such entries per frame in the ep1 hub): picture normal.
-- Result: sweep mf 11/11 with 0 pops (before: ep3 1, ep4 1, ep7 1, m2 3 with the first two fixes alone); ep1 hub
-  uncapped 330 s: 0 pops (before ~115). Left as grid runs by design: loading / menus / movies ("not modern"), the
+- Result: r2_sweep ab,hc,tf,mf: mf 11/11 with 0 pops (before: ep3 1, ep4 1, ep7 1, m2 3 with the first two fixes
+  alone); ep1 hub uncapped 330 s and the chaos m1_brawl / m5_boss fights (MFT, PS2_MFT_LOG): 0 pops (ep1 before ~115).
+  The other checks pass (ep2 ab and ep4 tf failed once each and passed on re-run: the ab bracket frame varies; tf runs
+  on the 3x grid with MFT off - one picture with a large blinking quad at v4921, not reproduced). Left as grid runs by design: loading / menus / movies ("not modern"), the
   Binocucom briefing (ep7: its live character portraits are views of 128 x 128 render targets - "target view").
 - QA (qa-a, 2026-11-03): stray single "not modern" VBlanks at 120 fps in a steady ep1 hub = the PRESENT-only VBlanks
   above (continued now). PS2_MFT_LOG logs only the first grid frame after an MFT frame (with what its op list holds),

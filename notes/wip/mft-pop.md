@@ -24,16 +24,17 @@ Per scene: scripts\mft_pops.ps1 -Name x <scene args> -Keep (log build\warp\mftpo
 - Gates so far: run_tests 16/16; units 26/27 (window F11/Alt+Enter known flake) - on cec2880, re-run at the end.
 - gs_replay builds: build\cur (this branch, rebuild after changes), build\basert (main 38a38df runtime, build\basesrc).
 
-## In progress
-- chaos audit m1_brawl / m5_boss (MFT, PS2_MFT_LOG)
+- Chaos audit m1_brawl / m5_boss: 0 pops.
+- Gates: gpu_diff_all mixed S=1 28/28; m9_exact S1+S3 -Game all identical (vs main 38a38df runtime); pc_text_boot
+  release + debug PASS; debug + release builds; package.py OK (0.1.1038); r2_sweep ab,hc,tf,mf 42/44, the two fails
+  (ep2 ab, ep4 tf) PASS on re-run; run_tests + units re-run on the final code.
+- QA (qa-a): PRESENT-only VBlanks = cause 2 (fixed); log budget redone (first grid frame after MFT only); Faithful
+  filters on MFT not done - what it takes is in the notes section.
 
-## Next
-1. Full gates on the final commit: run_tests, units, gpu_diff_all mixed S=1 (-Exe build\cur\gs_replay.exe),
-   m9_exact (-Exe build\cur -BaseExe build\basert -Game, S 1,3), pc_text_boot (release + debug), debug build,
-   package.py (absolute --out/--dest), r2_sweep ab,hc,tf,mf -Parallel 1.
-2. Fix the "sweep mf 11/11" claim in the notes with the real result; mark complete; cleanup build dirs.
+## Status: complete (2026-11-03)
 
 ## Findings / traps
 - build_game.py uses os.cpu_count() workers: set PYTHON_CPU_COUNT=6 (Python 3.13) to cap it.
 - warp_run copies build\rel\sly2.exe at each run's start: don't rebuild while a sweep runs.
 - r2_hcheck -Shots at At 4800 can miss the dump window on a loaded machine (fewer VBlanks than At in At/60+12 s).
+- Final: run_tests 16/16; units 26/27 (window: the known F11 / Alt+Enter flakes).
