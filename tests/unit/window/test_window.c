@@ -984,6 +984,10 @@ static void interactive(double seconds, int do_fullscreen) {
     InterlockedExchange(&fb_presented, 0);
     double t0 = now_ms(), early_due = t0;
     ps2_settings.show_fps = 1;                           /* the FPS checks below read it from the title */
+    /* The default display mode is borderless (settings.c, pc-menu2): the window would open fullscreen and
+     * the F11 / Alt+Enter checks below (which post the keys to the window itself, so they do not depend on
+     * which application has the foreground) would find the opposite state. Start windowed. */
+    ps2_settings.win_fullscreen = SETTINGS_FULLSCREEN_OFF;
     window_init();
     pattern(frame, FRAME_MAX, 640, 448, 0);
     for (int n = 0; n < 60; n++) window_present(frame, 640, 448, FRAME_MAX);
@@ -1013,6 +1017,7 @@ static void interactive(double seconds, int do_fullscreen) {
     double first_fps = -1;
     RECT before_fs;
     GetWindowRect(h, &before_fs);
+    CHECK(!window_fullscreen(), "the window did not start windowed");
     double start = now_ms();
     for (int i = 0; i < frames; i++) {
         const int* s = sizes[(i / 30) % (sizeof sizes / sizeof sizes[0])];
@@ -1176,6 +1181,7 @@ static int external_test(void) {
     set_dpi_fn set_dpi = (set_dpi_fn)dll_proc(GetModuleHandleW(L"user32.dll"), "SetThreadDpiAwarenessContext");
     if (set_dpi && !set_dpi((HANDLE)(LONG_PTR)-4)) set_dpi((HANDLE)(LONG_PTR)-3);
     window_set_external_presenter(1, ext_present_fn);
+    ps2_settings.win_fullscreen = SETTINGS_FULLSCREEN_OFF;   /* the default is borderless: start windowed, see interactive() */
     window_init();
     HWND h = (HWND)window_hwnd(5000);
     CHECK(h != NULL, "window did not come up");
@@ -1185,8 +1191,8 @@ static int external_test(void) {
     for (int i = 0; i < 5; i++) window_present(frame, 640, 448, FRAME_MAX);
     CHECK(ext_calls == 5, "window_present -> external presenter: %ld calls of 5", (long)ext_calls);
     HANDLE rt = CreateThread(NULL, 0, ext_render, h, 0, NULL);
-    Sleep(300);
-    CHECK(ext_presents > 5, "the external swap chain presents (%ld)", (long)ext_presents);
+    for (int i = 0; i < 300 && ext_presents <= 5; i++) Sleep(10);   /* device + swap chain creation time varies */
+    CHECK(ext_presents > 5,"the external swap chain presents (%ld)", (long)ext_presents);
     int cw, ch;
     uint32_t s0 = window_resize_serial();
     set_client_size(h, 700, 500);

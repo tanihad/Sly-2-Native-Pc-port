@@ -36,7 +36,8 @@ if (-not $UnitOnly -and $rc -eq 0) {
     if ($LASTEXITCODE -ne 0) { Write-Output "FAILED: exit code $LASTEXITCODE"; exit 1 }
     $ini = Join-Path $out 'userdata\sly2.ini'           # the window state written on close
     $text = if (Test-Path $ini) { Get-Content $ini -Raw } else { '' }
-    if ($text -notmatch '(?m)^width = \d+' -or $text -notmatch '(?m)^fullscreen = off') {
+    # (the display mode is "mode = borderless|windowed|fullscreen" since pc-polish; the default is borderless)
+    if ($text -notmatch '(?m)^width = \d+' -or $text -notmatch '(?m)^mode = (windowed|borderless|fullscreen)') {
         Write-Output "FAILED: no window state in $ini"; exit 1
     }
     Write-Output "PASSED (window state saved)"
