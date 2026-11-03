@@ -63,7 +63,8 @@ the "create a save file?" prompt appears first (SQUARE answers it).
 
 Notes: the game adapts its own work to the time it has (see the headroom table), so judge
 headroom by flips/s and VBlanks serviced, not by busy time alone. Never let the compiler contract
-VU arithmetic into FMA (`-march=x86-64-v3` changes results; the VU replay catches it).
+VU arithmetic into FMA (`-march=x86-64-v3` changes results; the VU replay catches it). The x86-64-v3 copies of
+the microcode (P6, runtime/vu_compiled.h) are compiled with `-ffp-contract=off`: vu_replay finds 0 programs that differ.
 
 ## Before / after (release build)
 

@@ -4,7 +4,10 @@ Usage (from the project root or a worktree):
     <main checkout>\\.venv\\Scripts\\python.exe scripts\\build_game.py [--release] [-O 1] [--out build/sly2]
                                                                      [--package dist/Sly2]
 
---release: -O2 and no function tracing (the watchdog then can't report locations).
+--release: -O2 and no function tracing (the watchdog then can't report locations); (P6) ThinLTO and
+  profile-guided optimisation with runtime/pgo/sly2.proftext (--lto off / --pgo-use none: without).
+Every build also compiles the VU microcode a second time for x86-64-v3 CPUs (runtime/vu_compiled.h; --no-vu-v3);
+the rest stays plain x86-64. --jobs N (or SLY2_BUILD_JOBS) limits the parallel compiles and LTO jobs.
 --package DIR: also link the player's build into DIR (scripts/package.py, notes/install.md): the same
   objects as <out>\\sly2.exe, linked as a Windows GUI program (no console window; the log goes to
   sly2.log in the user data folder) with an icon, version information and a manifest. Its user data
@@ -194,7 +197,7 @@ def pgo_profile(choice: str | None, release: bool, out: Path) -> Path | None:
         return None
     if src.suffix != ".proftext":
         return src
-    dst = out / "pgo" / (src.stem + ".profdata")
+    dst = (out / "pgo" / (src.stem + ".profdata")).resolve()
     if dst.exists() and dst.stat().st_mtime >= src.stat().st_mtime:
         return dst
     dst.parent.mkdir(parents=True, exist_ok=True)
@@ -211,12 +214,11 @@ def compile_one(src: Path, obj_dir: Path, flags: list[str], v3: bool = False) ->
     gpu = src.parent in (GPU_DIR, R2_DIR)
     obj = obj_dir / (("gpu_" if src.parent == GPU_DIR and not src.name.startswith("gpu_") else "") + src.stem +
                      ("_v3" if v3 else "") + ".o")
-    if src.parent.name == "vu":
-        # recompiled VU microcode: already SIMD; clang's SLP vectorizer only costs minutes on these
-        # huge functions (recomp/vu_recomp.py). Kept out of LTO: the link-time backend would not see
-        # that flag (it is a pass option, not a function attribute) and the microcode calls little else.
-        # Nor profiled: straight-line code whose x86-64-v3 copy (v3: vu_compiled.h VUC_V3) runs instead
-        # wherever the CPU has it.
+    if src.parent.name in ("vu", "recomp", "iop") and not any(f.startswith("-fprofile-generate") for f in flags):
+        # (P6) The translated code (EE, IOP, VU) is compiled as before: no LTO, no profile. ThinLTO of the ~45 MB of
+        # generated C would move most of the build into the link (+40 s on 6 cores) for little: the threads that
+        # gain from LTO + the profile run the runtime (frontend, GS thread, worker), and the shipped profile holds no
+        # translated functions (pgo_train.ps1). Instrumented builds (--pgo-gen) still instrument everything (dev).
         kept, skip = [], False
         for f in flags:                            # (-mllvm options here are all profile options)
             if skip or f == "-mllvm":
@@ -224,7 +226,12 @@ def compile_one(src: Path, obj_dir: Path, flags: list[str], v3: bool = False) ->
                 continue
             if not f.startswith(("-flto", "-fprofile", "-Wno-profile", "-Wno-backend")):
                 kept.append(f)
-        flags = kept + ["-fno-slp-vectorize"]
+        flags = kept
+    if src.parent.name == "vu":
+        # recompiled VU microcode: already SIMD; clang's SLP vectorizer only costs minutes on these
+        # huge functions (recomp/vu_recomp.py). (Also why it stays out of LTO: the link-time backend would not see
+        # that flag - a pass option, not a function attribute.) v3: the x86-64-v3 copy (vu_compiled.h VUC_V3).
+        flags = [f for f in flags if not f.startswith(("-flto", "-fprofile"))] + ["-fno-slp-vectorize"]
         if v3:
             flags = flags + VU_V3_FLAGS
     deps = list((ROOT / "runtime").glob("*.h"))
@@ -323,7 +330,8 @@ def main() -> int:
                     help="parallel compile jobs (default: SLY2_BUILD_JOBS or every logical CPU)")
     ap.add_argument("--progress", action="store_true",
                     help="print '[progress] <stage> [i/n]' lines (the installer's progress bar, installer/engine.c)")
-    ap.add_argument("--lto", choices=["off", "thin"], default="off", help="link-time optimisation")
+    ap.add_argument("--lto", choices=["auto", "off", "thin"], default="auto",
+                    help="link-time optimisation (auto: ThinLTO in release builds)")
     ap.add_argument("--cflags", default=os.environ.get("SLY2_CFLAGS", ""), help="extra compiler flags (experiments)")
     ap.add_argument("--ldflags", default=os.environ.get("SLY2_LDFLAGS", ""), help="extra linker flags (experiments)")
     ap.add_argument("--pgo-gen", action="store_true",
@@ -346,10 +354,12 @@ def main() -> int:
         flags.append("-DVUC_HAVE_V3")                  # (read only by the VU dispatchers: vu_compiled.h)
     flags += args.cflags.split()
     link_flags = args.ldflags.split()
-    if args.lto == "thin":
+    if args.lto == "thin" or (args.lto == "auto" and args.release):
+        # (P6) ThinLTO: alone it changes little, with the profile below it lets the profile's inlining cross files
+        # (frontend replays: profile -2..-13% alone, -11..-14% with ThinLTO); +~40 s link
         flags.append("-flto=thin")
         link_flags += ["-flto=thin", f"-flto-jobs={max(1, args.jobs)}", flags[0],
-                       f"-Wl,--thinlto-cache-dir={out / 'lto-cache'}", "-Wl,--thinlto-cache-policy=cache_size_bytes=2g"]
+                       f"-Wl,--thinlto-cache-dir={out / 'lto-cache'}", "-Wl,--thinlto-cache-policy=cache_size_bytes=1g:prune_after=72h"]
     if args.pgo_gen:
         # IR-level instrumentation; the runtime writes the profile itself before it ends the process
         # (ExitProcess skips the CRT's atexit handlers): runtime/launch.h pgo_flush. Counter promotion (keeping loop
@@ -413,8 +423,11 @@ def main() -> int:
                sorted((out / "vu").glob("*.c")) + runtime_sources() + sorted(GPU_DIR.glob("*.c")) +
                sorted(R2_DIR.glob("*.c")))
     jobs = [(s, False) for s in sources]
-    if args.vu_v3:                                     # (P6) the microcode's x86-64-v3 copies (vu_compiled.h)
-        jobs += [(s, True) for s in sorted((out / "vu").glob("*_ks*.c"))]
+    if args.vu_v3:                                     # (P6) the microcode's x86-64-v3 copies (vu_compiled.h): the
+        for s in sorted((out / "vu").glob("*_ks*.c")):  # specialisations whose dispatcher calls a _v3 version
+            disp = s.with_name(s.stem.rsplit("_ks", 1)[0] + ".c")
+            if disp.exists() and f"{s.stem}_v3(" in disp.read_text():
+                jobs.append((s, True))
     objs, errors = [], []
     progress("compile", 0, len(jobs))
     with ThreadPoolExecutor(max_workers=max(1, args.jobs)) as pool:
