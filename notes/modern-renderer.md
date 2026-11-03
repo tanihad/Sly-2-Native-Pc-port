@@ -1149,9 +1149,10 @@ the frontend and the exact path are unchanged, so Reference, `PS2_GS_SCALE` runs
     chains (its next class is a main one), and the exact class-11 entries cannot pay the parity, so class 6 met the wrong
     double-buffer parity - Sly's shadow lighter or missing in those frames and back in the next: a flicker as Sly moves
     (hundreds of such frames on the lamp walk, `parity unpaid` in the stats; in an ALT run the hybrid frames lost the
-    shadow the exact ones had). **Fix**: the lookahead looks through main-class runs of at most PS2_R2_SKIPRUN entries
-    (default 16) to the foreign class; such a short run's own native entries are kept by the same rule. Unpaid frames on
-    the walk: ~900 -> 2 (loading). PS2_R2_UNPAID_LOG=1 logs each unpaid entry; PS2_R2_SEQ_LOG=1 the class runs of each
+    shadow the exact ones had). **Fix**: the lookahead looks through later main-class runs that will draw nothing
+    native (predicted from the previous frame's decision per object, nat_note / nat_guess; a run's last entry is exact
+    anyway) to the foreign class; a run with native entries keeps its own by the same rule. A length limit (16) was the
+    first form; the m8 boss has an 18-entry exact class-11 run there. PS2_R2_LOOKTHROUGH=0: the old rule. PS2_R2_UNPAID_LOG=1 logs each unpaid entry; PS2_R2_SEQ_LOG=1 the class runs of each
     unpaid frame (class:entries/native/kept), =2 of every frame.
   - The temporal check now also fails on parity (flicker_run: PS2_R2_STATS on; any `parity unpaid` in the dump window of
     a hybrid run is a FAIL - the picture checks missed it: a shadow that toggles over a walk is not a one-picture blink),

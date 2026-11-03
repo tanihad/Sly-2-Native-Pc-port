@@ -845,7 +845,7 @@ static int nat_guess(ps2_ctx* ctx, uint32_t e) {
     uint32_t h = nat_hash(key);
     for (uint32_t i = 0; i < 16 && nat_tab[h].key; i++, h = (h + 1) & (NAT_CAP - 1))
         if (nat_tab[h].key == key) return nat_tab[h].nat == 1;
-    return likely_native(ctx, e);                /* (not seen yet) */
+    return 0;                                    /* (not seen yet: exact - a wrong guess costs a kept run, no shadow) */
 }
 
 static int before_foreign(ps2_ctx* ctx, int cls, uint32_t* dist) {
@@ -855,21 +855,26 @@ static int before_foreign(ps2_ctx* ctx, int cls, uint32_t* dist) {
      * previous frame's decisions, nat_guess; a run's last entry is exact anyway): exact class-11 entries (Sly near a lamp,
      * 1 - 2 entries; a boss, 18) between the world's last class-0 run and the shadow volumes cannot pay the parity the
      * dropped class-0 chains owe, so this run keeps its chains then. A run with native entries keeps its own (the same
-     * rule: its next class is the foreign one). PS2_R2_LOOKTHROUGH=0: the next run only (as 478f6ad) */
+     * rule: its next class is the foreign one), but runs of up to 16 entries are looked through either way.
+     * PS2_R2_LOOKTHROUGH=0: the next run only (as 478f6ad) */
     if (look < 0) { const char* e = getenv("PS2_R2_LOOKTHROUGH"); look = !(e && *e == '0'); }
     uint32_t cur = ctx->r[21].uw[0], left = ctx->r[20].uw[0];
     if (sw_serial != fr_serial || cur >= sw_ptr) {
         sw_serial = fr_serial;
         sw_ptr = cur + 4u * left;
         sw_foreign = 0;
-        int scls = cls, first = 1, pend = 0;
+        int scls = cls, first = 1, pend = 0, nat = 0;
+        uint32_t len = 0;
         for (uint32_t j = 1; j < left; j++) {
             uint32_t nx = ps2_r32(ctx, cur + 4u * j), np = nx ? ps2_r32(ctx, nx) : 0xFFFFFFFFu;
             int nc = np <= 25 ? (int)ps2_r32(ctx, CLASS_TABLE + np * 4) : -1;
             if (nc == scls) {
                 if (!first) {
-                    if (pend) break;             /* (a later run with a native entry before its last: it keeps its own) */
+                    nat |= pend;                 /* (the entry before this one is not its run's last) */
                     pend = nat_guess(ctx, nx);
+                    /* a later run with native entries keeps its own; looked through anyway while short (16 entries):
+                     * a wrong guess then costs a kept run, not a wrong shadow */
+                    if (++len > 16 && nat) break;
                 }
                 continue;
             }
@@ -879,6 +884,8 @@ static int before_foreign(ps2_ctx* ctx, int cls, uint32_t* dist) {
             if (!look) break;
             scls = nc;
             pend = nat_guess(ctx, nx);
+            nat = 0;
+            len = 1;
         }
     }
     *dist = (sw_ptr - cur) / 4u;
@@ -1159,7 +1166,7 @@ void r2_cap_entry(ps2_ctx* ctx) {
         if (native) st.v_native += nv;
         else st.v_exact[why < 10 ? why : 9] += nv;
     }
-    if (cand_now && !last_x && MAINCLASS(cls)) nat_note(c1, c2, native);   /* (r2-flicker: before_foreign's prediction) */
+    if (!last_x && MAINCLASS(cls)) nat_note(c1, c2, native);   /* (r2-flicker: before_foreign's prediction) */
     if (!native) {
         if (mode == R2_HYBRID && prev_native) owe_epilogue(ctx, cls == prev_class);
         prev_native = 0;
