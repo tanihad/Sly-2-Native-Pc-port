@@ -47,4 +47,7 @@ Summary for the docs: notes/modern-renderer.md "The owner's flicker report and t
       feedback for a few frames (v8547: whole frame lighter 10 frames after the v8537 fallback). Dump artefact; R8 note.
       motion_blur=off: MFT dumps come out 512x448 (the grid memory, not the MFT picture) - not usable
 - [x] r2_sweep tf variants tft/tfq/tfb/tfp/tfo: ep1 6/6 PASS (settings confirmed in the logs); parity guard in flicker_run
-- [ ] full gates (scratchpad gatesC.ps1: m9 base = main 57c8877), CPU A/B (GPU was busy at 13:11: frame ms invalid)
+- [x] gates on 541ff1d: all pass but sweep 54/55 (m8_boss tfq: 1 unpaid frame "0:226/57/0 11:18/0/0 0:5/0/0 6" - an 18-entry
+      exact class-11 run). Fix: look through runs predicted all-exact (previous frame's decision per object) or <= 16
+      entries (fcd8ff5, 95f5d06). Lamp walk unpaid: old rule 832 -> 0; m8 tfq / ep7 tf PASS.
+- [ ] final gates on 95f5d06 (gatesC: tests, units, builds, gpu_diff, m9 vs 57c8877, pc_text_boot, package, sweep, CPU A/B)
