@@ -138,8 +138,8 @@ int disc_check_iso(const wchar_t* path, wchar_t* why, size_t cap) {
                             : !_strnicmp(name, "SCPS_", 5) || !_strnicmp(name, "SLPS_", 5) || !_strnicmp(name, "SCAJ_", 5)
                                 ? L" (a Japanese / Asian disc)"
                                 : L"";
-        wfmt(why, cap, L"This disc is %ls%ls: another game or another region. Setup needs Sly 2: Band of Thieves, USA "
-                       L"release (SCUS-97316).", wn, hint);
+        wfmt(why, cap, L"This disc is %ls%ls: another game or another region. The PC version needs Sly 2: Band of "
+                       L"Thieves, USA release (SCUS-97316).", wn, hint);
         r = DISC_OTHER_GAME;
         goto out;
     }

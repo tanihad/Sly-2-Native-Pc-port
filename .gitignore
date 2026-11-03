@@ -27,3 +27,8 @@ tools/*
 __pycache__/
 .venv/
 *.pyc
+
+# release signing keys (scripts/release_keygen.py keeps them outside the repo; never commit one)
+*.key
+*ed25519*.key
+

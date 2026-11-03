@@ -177,7 +177,8 @@ MANIFEST = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
   </compatibility>
   <application xmlns="urn:schemas-microsoft-com:asm.v3">
     <windowsSettings>
-      <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true</dpiAware>
+      <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true/pm</dpiAware>
+      <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2, PerMonitor</dpiAwareness>
       <longPathAware xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">true</longPathAware>
     </windowsSettings>
   </application>
@@ -205,7 +206,7 @@ BEGIN
     BLOCK "040904B0"
     BEGIN
       VALUE "CompanyName", "sly2-decomp (unofficial fan port)"
-      VALUE "FileDescription", "Sly 2: Band of Thieves Setup (builds the game from your own disc)"
+      VALUE "FileDescription", "Sly 2: Band of Thieves launcher and setup (builds the game from your own disc)"
       VALUE "FileVersion", "0.1.{count}"
       VALUE "InternalName", "Sly2-Setup"
       VALUE "OriginalFilename", "Sly2-Setup.exe"
@@ -224,7 +225,9 @@ END
 LIBS = ["-lcomctl32", "-lole32", "-lshell32", "-luuid", "-lwinhttp", "-lbcrypt", "-ladvapi32", "-luser32", "-lgdi32"]
 
 
-def build_stub(work: Path, count: int, ghash: str) -> Path:
+def build_stub(work: Path, count: int, ghash: str, test_build: bool = False) -> Path:
+    """The program. test_build (-DSLY2_TEST_BUILD, tests only, never released): updates may also come over
+    plain HTTP from 127.0.0.1 and be signed by a /pubkey= test key."""
     import make_icon
     make_icon.make_ico(work / "setup.ico")
     (work / "setup.manifest").write_text(MANIFEST.format(ver=f"0.1.{count}.0"), encoding="utf-8")
@@ -234,9 +237,10 @@ def build_stub(work: Path, count: int, ghash: str) -> Path:
                        capture_output=True, text=True)
     if r.returncode:
         sys.exit("resource compiler failed:\n" + r.stderr + r.stdout)
-    stub = work / "setup-stub.exe"
+    stub = work / ("setup-stub-test.exe" if test_build else "setup-stub.exe")
     srcs = [str(p) for p in sorted(SRC.glob("*.c"))]
-    r = subprocess.run([str(CLANG), "-O2", "-std=c11", "-Wall", "-Wextra", "-Werror", "-municode", "-mwindows",
+    defs = ["-DSLY2_TEST_BUILD"] if test_build else []
+    r = subprocess.run([str(CLANG), "-O2", "-std=c11", "-Wall", "-Wextra", "-Werror", "-municode", "-mwindows", *defs,
                         "-I", str(work), "-I", str(SRC), *srcs, str(res), *LIBS, "-s", "-o", str(stub)],
                        capture_output=True, text=True)
     if r.returncode:
@@ -265,10 +269,28 @@ def assemble(stub: Path, entries: list[tuple[str, Path]], out: Path) -> None:
     os.replace(tmp, out)
 
 
+def make_source_zip(path: Path, count: int, ghash: str) -> int:
+    """source.zip: what Setup carries and what an update bundle is (scripts/make_release.py). Deterministic
+    (fixed entry times), so the same commit gives the same bundle and SHA-256."""
+    files = payload_files()
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
+        for f in files:
+            info = zipfile.ZipInfo(f, date_time=(2020, 1, 1, 0, 0, 0))
+            info.compress_type = zipfile.ZIP_DEFLATED
+            info.external_attr = 0o644 << 16
+            z.writestr(info, (ROOT / f).read_bytes(), compresslevel=9)
+        info = zipfile.ZipInfo("version.txt", date_time=(2020, 1, 1, 0, 0, 0))
+        info.compress_type = zipfile.ZIP_DEFLATED
+        z.writestr(info, f"{count} {ghash}\n")
+    return len(files)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out", default=str(ROOT / "build" / "installer"))
     ap.add_argument("--offline", action="store_true", help="also build Sly2-Setup-Offline.exe (toolchain included)")
+    ap.add_argument("--test-build", action="store_true",
+                    help="also build Sly2-Setup-Test.exe for the update tests (plain HTTP to 127.0.0.1, /pubkey=); never release it")
     args = ap.parse_args()
     out = Path(args.out)
     work = out / "work"
@@ -282,15 +304,16 @@ def main() -> int:
     stub = build_stub(work, count, ghash)
 
     src_zip = work / "source.zip"
-    files = payload_files()
-    with zipfile.ZipFile(src_zip, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
-        for f in files:
-            z.write(ROOT / f, f)
-        z.writestr("version.txt", f"{count} {ghash}\n")
+    nfiles = make_source_zip(src_zip, count, ghash)
     setup = out / "Sly2-Setup.exe"
     assemble(stub, [("source.zip", src_zip)], setup)
     print(f"{setup}: {setup.stat().st_size / 2**20:.1f} MB (program {stub.stat().st_size // 1024} KB, "
-          f"{len(files)} source files, version 0.1.{count} {ghash})")
+          f"{nfiles} source files, version 0.1.{count} {ghash})")
+    if args.test_build:
+        test_stub = build_stub(work, count, ghash, test_build=True)
+        test = out / "Sly2-Setup-Test.exe"
+        assemble(test_stub, [("source.zip", src_zip)], test)
+        print(f"{test}: test build (loopback HTTP + test keys allowed) - for tests only")
 
     if args.offline:
         pydir = next((d for d in (TOOLS / "python").glob(f"cpython-{pyver}-windows-x86_64-*")
@@ -314,7 +337,7 @@ def main() -> int:
 
     # checksums next to the files (for a release page)
     with open(out / "SHA256SUMS.txt", "w", encoding="utf-8") as f:
-        for exe in sorted(out.glob("Sly2-Setup*.exe")):
+        for exe in sorted(e for e in out.glob("Sly2-Setup*.exe") if e.name != "Sly2-Setup-Test.exe"):
             f.write(f"{sha256(exe)}  {exe.name}\n")
     return 0
 

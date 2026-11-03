@@ -61,6 +61,7 @@ static void say(setup_t* s, const wchar_t* fmt, ...) {
 
 static void report(setup_t* s, int permille, const wchar_t* detail) {
     if (permille > 1000) permille = 1000;
+    if (s->pm_scale) permille = s->pm_off + permille * s->pm_scale / 1000;
     if (s->progress) s->progress(s->ui, permille, s->status, detail);
 }
 
@@ -122,7 +123,13 @@ static void dpath(setup_t* s, wchar_t* out, const wchar_t* rel) { wpath(out, MAX
 
 static void state_path(setup_t* s, wchar_t* out) { dpath(s, out, L"setup-state.ini"); }
 
-static void state_set(setup_t* s, const wchar_t* key, const wchar_t* value) {
+void setup_state_set(setup_t* s, const wchar_t* key, const wchar_t* value);
+#define state_set setup_state_set
+#define state_get setup_state_get
+#define user_data_dir setup_user_data_dir
+#define game_running setup_game_running
+
+void setup_state_set(setup_t* s, const wchar_t* key, const wchar_t* value) {
     wchar_t p[MAXP];
     state_path(s, p);
     if (!file_exists(p)) {                           /* UTF-16 file: WritePrivateProfileString keeps Unicode */
@@ -132,13 +139,13 @@ static void state_set(setup_t* s, const wchar_t* key, const wchar_t* value) {
     WritePrivateProfileStringW(L"setup", key, value, p);
 }
 
-static void state_get(const wchar_t* dir, const wchar_t* key, wchar_t* out, size_t cap) {
+void setup_state_get(const wchar_t* dir, const wchar_t* key, wchar_t* out, size_t cap) {
     wchar_t p[MAXP];
     wpath(p, MAXP, dir, L"setup-state.ini");
     GetPrivateProfileStringW(L"setup", key, L"", out, (DWORD)cap, p);
 }
 
-static void user_data_dir(setup_t* s, wchar_t* out) {
+void setup_user_data_dir(setup_t* s, wchar_t* out) {
     wchar_t p[MAXP];
     dpath(s, p, L"portable.txt");
     if (s->userdata[0]) wcopy(out, MAXP, s->userdata);
@@ -546,12 +553,12 @@ static void build_line(setup_t* s, void* user, const char* line) {
     const char* l = line + 11;
     /* scripts/build_game.py --progress: stage names in order, and "compile i/n" */
     static const struct { const char* name; int pm; const wchar_t* text; } stages[] = {
-        { "generate", 0, L"Translating the game's code (MIPS -> C)" },
+        { "generate", 0, L"Translating the game's code for the PC" },
         { "iop", 110, L"Translating the sound modules" },
-        { "vu", 150, L"Translating the vector unit programs" },
+        { "vu", 150, L"Translating the graphics programs" },
         { "shaders", 165, L"Compiling the graphics shaders" },
         { "compile", 230, L"Compiling" },
-        { "link", 935, L"Linking sly2.exe" },
+        { "link", 935, L"Linking the game" },
         { "package", 950, L"Packaging the game" },
     };
     for (size_t i = 0; i < sizeof stages / sizeof stages[0]; i++) {
@@ -654,30 +661,19 @@ static int set_disc_in_ini(setup_t* s) {
 
 /* ---- registration ---------------------------------------------------------------------------- */
 
-static int write_uninstaller(setup_t* s) {
-    wchar_t un[MAXP];
-    dpath(s, un, L"Uninstall.exe");
-    if (!_wcsicmp(un, self_path())) return 1;
-    HANDLE in = CreateFileW(self_path(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
-    if (in == INVALID_HANDLE_VALUE) return 0;
-    uint64_t n = payload_stub_size();
-    char* buf = malloc((size_t)n);
-    DWORD got = 0;
-    int ok = buf && ReadFile(in, buf, (DWORD)n, &got, NULL) && got == n;
-    CloseHandle(in);
-    if (ok) ok = write_file(un, buf, (size_t)n);
-    free(buf);
-    return ok;
-}
-
 static void register_uninstall(setup_t* s, uint64_t bytes) {
     HKEY root = reg_root(s);
     wchar_t un[MAXP], v[MAXP * 2], icon[MAXP];
     dpath(s, un, L"Uninstall.exe");
-    dpath(s, icon, L"sly2.exe");
+    dpath(s, icon, LAUNCHER_EXE);
     if (!file_exists(icon)) wcopy(icon, MAXP, un);
     reg_set_str(root, s->regkey, L"DisplayName", APP_NAME L" (PC port)");
-    reg_set_str(root, s->regkey, L"DisplayVersion", SETUP_VERSION);
+    char gv[64];
+    stage_version(s->dir, GAME_DIR, gv, sizeof gv);
+    char* sp = strchr(gv, ' ');
+    if (sp) *sp = 0;
+    if (gv[0]) { wfmt(v, MAXP * 2, L"%hs", gv); reg_set_str(root, s->regkey, L"DisplayVersion", v); }
+    else reg_set_str(root, s->regkey, L"DisplayVersion", SETUP_VERSION);
     reg_set_str(root, s->regkey, L"Publisher", L"sly2-decomp (unofficial fan port)");
     reg_set_str(root, s->regkey, L"InstallLocation", s->dir);
     wfmt(v, MAXP * 2, L"%ls,0", icon);
@@ -691,41 +687,132 @@ static void register_uninstall(setup_t* s, uint64_t bytes) {
     if (bytes) reg_set_dword(root, s->regkey, L"EstimatedSize", (DWORD)(bytes / 1024));
 }
 
-/* sly2.exe in use (the game is running)? */
-static int game_running(setup_t* s) {
-    wchar_t exe[MAXP];
-    dpath(s, exe, L"sly2.exe");
-    if (!file_exists(exe)) return 0;
-    HANDLE h = CreateFileW(exe, GENERIC_READ | DELETE, 0, NULL, OPEN_EXISTING, 0, NULL);
-    if (h == INVALID_HANDLE_VALUE) return GetLastError() == ERROR_SHARING_VIOLATION;
-    CloseHandle(h);
+/* sly2.exe in use (the game is running)? Both layouts: <dir>\game\sly2.exe and the old <dir>\sly2.exe. */
+int setup_game_running(setup_t* s) {
+    static const wchar_t* where[] = { GAME_DIR L"\\sly2.exe", L"sly2.exe" };
+    for (int i = 0; i < 2; i++) {
+        wchar_t exe[MAXP];
+        dpath(s, exe, where[i]);
+        if (!file_exists(exe)) continue;
+        HANDLE h = CreateFileW(exe, GENERIC_READ | DELETE, 0, NULL, OPEN_EXISTING, 0, NULL);
+        if (h == INVALID_HANDLE_VALUE) { if (GetLastError() == ERROR_SHARING_VIOLATION) return 1; continue; }
+        CloseHandle(h);
+    }
     return 0;
+}
+
+int setup_is_installed(setup_t* s) {
+    wchar_t exe[MAXP], st[MAXP], v[MAXP];
+    dpath(s, exe, GAME_DIR L"\\sly2.exe");
+    state_path(s, st);
+    if (!file_exists(exe) || !file_exists(st)) return 0;
+    state_get(s->dir, L"iso", v, MAXP);              /* the image the game plays from (normally data\sly2.img) */
+    return v[0] && file_exists(v);
+}
+
+void setup_bundle_path(setup_t* s, const char* version, wchar_t* out) {
+    char v[64];
+    size_t n = 0;
+    while (version[n] && version[n] != ' ' && n < sizeof v - 1) { v[n] = version[n]; n++; }
+    v[n] = 0;
+    wchar_t name[128];
+    wfmt(name, 128, BUNDLE_DIR L"\\sly2-source-%hs.zip", v);
+    dpath(s, out, name);
+}
+
+/* this program without its payload, as dst (Uninstall.exe, the launcher) */
+static int write_stub(setup_t* s, const wchar_t* dst) {
+    (void)s;
+    if (!_wcsicmp(dst, self_path())) return 1;
+    HANDLE in = CreateFileW(self_path(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    if (in == INVALID_HANDLE_VALUE) return 0;
+    uint64_t n = payload_stub_size();
+    char* buf = malloc((size_t)n);
+    DWORD got = 0;
+    int ok = buf && ReadFile(in, buf, (DWORD)n, &got, NULL) && got == n;
+    CloseHandle(in);
+    if (ok) {
+        ok = write_file(dst, buf, (size_t)n);
+        if (!ok && (GetLastError() == ERROR_ACCESS_DENIED || GetLastError() == ERROR_SHARING_VIOLATION)) {
+            /* the old launcher is running: a running exe can be renamed, then replaced */
+            wchar_t old[MAXP];
+            wfmt(old, MAXP, L"%ls.old", dst);
+            DeleteFileW(old);
+            if (MoveFileExW(dst, old, MOVEFILE_REPLACE_EXISTING)) {
+                ok = write_file(dst, buf, (size_t)n);
+                MoveFileExW(old, NULL, MOVEFILE_DELAY_UNTIL_REBOOT);
+                DeleteFileW(old);
+            }
+        }
+    }
+    free(buf);
+    return ok;
+}
+
+int setup_copy_launcher(setup_t* s) {
+    wchar_t p[MAXP];
+    dpath(s, p, L"Uninstall.exe");
+    int ok = write_stub(s, p);
+    dpath(s, p, LAUNCHER_EXE);
+    return write_stub(s, p) && ok;
 }
 
 /* ---- install ----------------------------------------------------------------------------------- */
 
 static int install_sources(setup_t* s) {
-    step(s, 0, SETUP_PM_TOOLS, L"Installing the recompiler and the PC runtime");
-    const payload_entry* e = payload_find("source.zip");
-    if (!e) return fail(s, L"This setup program is incomplete (no source payload). Download it again.");
+    step(s, 0, SETUP_PM_TOOLS, L"Unpacking the PC version's sources");
     wchar_t b[MAXP], z[MAXP], v[MAXP];
     bpath(s, b, NULL);
     mkdir_p(b);
     bpath(s, z, L"source.zip");
-    int r0 = from_payload(s, e, z);
-    if (r0) return r0;
+    if (s->bundle[0]) {                              /* an update's bundle (verified) or the kept one (repair) */
+        say(s, L"Sources: %ls", s->bundle);
+        if (!CopyFileW(s->bundle, z, FALSE)) return fail(s, L"Cannot read the game's sources %ls (error %lu).", s->bundle, GetLastError());
+    } else {
+        const payload_entry* e = payload_find("source.zip");
+        if (!e) return fail(s, L"The game's sources are missing: download Setup again and run it.");
+        int r0 = from_payload(s, e, z);
+        if (r0) return r0;
+    }
     static const wchar_t* old[] = { L"recomp", L"runtime", L"scripts", L"requirements.txt", L"version.txt" };
     for (size_t i = 0; i < sizeof old / sizeof old[0]; i++) { bpath(s, v, old[i]); delete_tree(v); }
     int r = untar(s, z, b, NULL, 0, L"sources");
+    if (r) { DeleteFileW(z); return r; }
+    /* the version of these sources: version.txt = "<commit count> <hash>" -> "0.1.<count> <hash>" */
+    char* vt = NULL;
+    size_t n;
+    bpath(s, v, L"version.txt");
+    unsigned count = 0;
+    char hash[48] = "";
+    if (!read_file(v, &vt, &n) || sscanf(vt, "%u %47s", &count, hash) != 2) {
+        free(vt);
+        DeleteFileW(z);
+        return fail(s, L"The game's sources are incomplete (no version.txt).");
+    }
+    free(vt);
+    snprintf(s->built_version, sizeof s->built_version, "0.1.%u %s", count, hash);
+    if (s->expect_version[0]) {
+        char vv[32];
+        snprintf(vv, sizeof vv, "0.1.%u", count);
+        if (strcmp(vv, s->expect_version)) {
+            DeleteFileW(z);
+            return fail(s, L"The update's sources are version %hs, not %hs as announced: not installed.", vv, s->expect_version);
+        }
+    }
+    /* keep the bundle: Repair rebuilds this version later without a download */
+    wchar_t keep[MAXP], kd[MAXP];
+    setup_bundle_path(s, s->built_version, keep);
+    dpath(s, kd, BUNDLE_DIR);
+    mkdir_p(kd);
+    if (_wcsicmp(keep, s->bundle) && !MoveFileExW(z, keep, MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED))
+        say(s, L"(cannot keep the sources in %ls: error %lu)", keep, GetLastError());
     DeleteFileW(z);
-    if (r) return r;
     /* an update: objects built by another version are not reused (the payload's file times are older
      * than the player's objects, so the build's time check could keep stale ones) */
     char* built = NULL;
-    size_t n;
     bpath(s, v, L"built-version.txt");
     char want[128];
-    snprintf(want, sizeof want, "%ls %ls", SETUP_VERSION, SETUP_COMMIT);
+    snprintf(want, sizeof want, "%s", s->built_version);
     if (read_file(v, &built, &n) && strcmp(built, want)) {
         wchar_t bd[MAXP];
         bpath(s, bd, L"build");
@@ -738,9 +825,12 @@ static int install_sources(setup_t* s) {
 
 static int install_game_files(setup_t* s) {
     step(s, SETUP_PM_INSTALL, 1000 - SETUP_PM_INSTALL, L"Installing the game");
-    wchar_t dist[MAXP], pat[MAXP];
+    wchar_t dist[MAXP], pat[MAXP], staging[MAXP];
     bpath(s, dist, L"dist");
     wpath(pat, MAXP, dist, L"*");
+    /* staged: the new game goes into game.new and replaces game in one rename; until then the installed
+     * version stays untouched (a failed or cancelled update leaves it playable) */
+    if (!stage_begin(s->dir, staging, MAXP)) return fail(s, L"Cannot prepare %ls\\game.new (error %lu).", s->dir, GetLastError());
     WIN32_FIND_DATAW fd;
     HANDLE h = FindFirstFileW(pat, &fd);
     if (h == INVALID_HANDLE_VALUE) return fail(s, L"The build produced no game folder.");
@@ -749,23 +839,119 @@ static int install_game_files(setup_t* s) {
         if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
         wchar_t a[MAXP], b[MAXP];
         wpath(a, MAXP, dist, fd.cFileName);
-        dpath(s, b, fd.cFileName);
-        if (!CopyFileW(a, b, FALSE)) {
-            DWORD e = GetLastError();
-            ok = 0;
-            if (e == ERROR_SHARING_VIOLATION || e == ERROR_ACCESS_DENIED)
-                fail(s, L"%ls is in use: close Sly 2 and click Retry.", b);
-            else fail(s, L"Cannot copy %ls (error %lu).", b, e);
-            break;
-        }
+        wpath(b, MAXP, staging, fd.cFileName);
+        if (!CopyFileW(a, b, FALSE)) { fail(s, L"Cannot copy %ls (error %lu: is the disk full?).", b, GetLastError()); ok = 0; break; }
     } while (FindNextFileW(h, &fd));
     FindClose(h);
     if (!ok) return EXIT_FAILED;
+    if (!stage_mark_complete(s->dir, s->built_version)) return fail(s, L"Cannot write into %ls (error %lu).", staging, GetLastError());
+    for (int tries = 0;; tries++) {
+        unsigned long err;
+        if (stage_commit(s->dir, &err)) break;
+        if (tries < 20 && (err == ERROR_ACCESS_DENIED || err == ERROR_SHARING_VIOLATION)) { Sleep(250); continue; }   /* a scanner */
+        if (err == ERROR_ACCESS_DENIED || err == ERROR_SHARING_VIOLATION)
+            return fail(s, L"The game is in use: close Sly 2 and click Retry.");
+        return fail(s, L"Cannot replace the game folder (error %lu).", err);
+    }
+    say(s, L"Installed version %hs.", s->built_version);
+    /* the old installer's layout (the game directly in <dir>): replaced by <dir>\game */
+    static const wchar_t* old_files[] = { L"sly2.exe", L"README.txt", L"Controller test.cmd" };
+    for (size_t i = 0; i < sizeof old_files / sizeof old_files[0]; i++) {
+        wchar_t p[MAXP];
+        dpath(s, p, old_files[i]);
+        if (file_exists(p)) { DeleteFileW(p); say(s, L"Removed the old %ls (the game is in %ls\\game now)", old_files[i], s->dir); }
+    }
+    /* keep only the bundles of the current and the previous game */
+    char cur[64], prev[64];
+    stage_version(s->dir, GAME_DIR, cur, sizeof cur);
+    stage_version(s->dir, GAME_DIR L".old", prev, sizeof prev);
+    wchar_t keep1[MAXP], keep2[MAXP] = L"", bpat[MAXP];
+    setup_bundle_path(s, cur, keep1);
+    if (prev[0]) setup_bundle_path(s, prev, keep2);
+    dpath(s, bpat, BUNDLE_DIR L"\\sly2-source-*.zip");
+    h = FindFirstFileW(bpat, &fd);
+    if (h != INVALID_HANDLE_VALUE) {
+        do {
+            wchar_t p[MAXP];
+            dpath(s, p, BUNDLE_DIR);
+            wpath(p, MAXP, p, fd.cFileName);
+            if (_wcsicmp(p, keep1) && _wcsicmp(p, keep2)) DeleteFileW(p);
+        } while (FindNextFileW(h, &fd));
+        FindClose(h);
+    }
     wchar_t v[MAXP];
-    char want[128];
-    snprintf(want, sizeof want, "%ls %ls", SETUP_VERSION, SETUP_COMMIT);
     bpath(s, v, L"built-version.txt");
-    write_file(v, want, strlen(want));
+    write_file(v, s->built_version, strlen(s->built_version));
+    return EXIT_OK;
+}
+
+/* ---- the disc image ---------------------------------------------------------------------------- */
+
+typedef struct { setup_t* s; uint64_t total; } copy_ctx;
+
+static DWORD CALLBACK copy_progress(LARGE_INTEGER total, LARGE_INTEGER done, LARGE_INTEGER sz, LARGE_INTEGER sd, DWORD stream,
+                                    DWORD reason, HANDLE a, HANDLE b, LPVOID user) {
+    (void)sz; (void)sd; (void)stream; (void)reason; (void)a; (void)b;
+    copy_ctx* c = user;
+    static DWORD last;
+    if (GetTickCount() - last > 100 || done.QuadPart == total.QuadPart) {
+        last = GetTickCount();
+        setup_bytes(c->s, L"Copying your disc image", (uint64_t)done.QuadPart, (uint64_t)total.QuadPart);
+    }
+    return c->s->cancel ? PROGRESS_CANCEL : PROGRESS_CONTINUE;
+}
+
+/* The player's image becomes <dir>\data\sly2.img: the game reads only this copy afterwards, so the original
+ * (on a USB drive, in Downloads, ...) is not needed any more. A whole-image copy: the game reads its data
+ * by sector number from its own table of contents, not through the ISO 9660 file names (the file system
+ * lists only 34 MB of the 2.9 GB), so nothing smaller would keep every sector where the game expects it. */
+int setup_import_image(setup_t* s) {
+    wchar_t img[MAXP], part[MAXP], dd[MAXP], why[512];
+    dpath(s, img, IMAGE_REL);
+    wfmt(part, MAXP, L"%ls.part", img);
+    dpath(s, dd, L"data");
+    if (s->image_src[0] && !_wcsicmp(s->image_src, img)) s->image_src[0] = 0;   /* (it is the copy) */
+    if (!s->image_src[0]) {
+        if (file_exists(img) && disc_check_iso(img, why, 512) == DISC_OK) { wcopy(s->iso, MAXP, img); return EXIT_OK; }
+        return fail(s, L"The game's copy of your disc image is missing or damaged. Drop your Sly 2 disc image (.iso) on "
+                       L"this window to import it again.");
+    }
+    step(s, 0, 1000, L"Copying your disc image");
+    if (disc_check_iso(s->image_src, why, 512) != DISC_OK) { fail(s, L"%ls", why); return EXIT_BAD_DISC; }
+    if (!mkdir_p(dd)) return fail(s, L"Cannot create %ls (error %lu).", dd, GetLastError());
+    copy_ctx c = { s, file_size(s->image_src) };
+    say(s, L"Copying %ls to %ls", s->image_src, img);
+    BOOL cancel = FALSE;
+    if (!CopyFileExW(s->image_src, part, copy_progress, &c, &cancel, 0)) {
+        DWORD e = GetLastError();
+        DeleteFileW(part);
+        if (s->cancel || e == ERROR_REQUEST_ABORTED) return EXIT_CANCELLED;
+        if (e == ERROR_DISK_FULL || e == ERROR_HANDLE_DISK_FULL) return fail(s, L"The disk is full: free up some space and click Retry.");
+        return fail(s, L"Cannot copy your disc image (error %lu). Is the drive it is on still connected?", e);
+    }
+    if (disc_check_iso(part, why, 512) != DISC_OK || file_size(part) != c.total) {
+        DeleteFileW(part);
+        return fail(s, L"The copy of your disc image is damaged (%ls). Click Retry to copy it again.", why);
+    }
+    if (!MoveFileExW(part, img, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        DWORD e = GetLastError();
+        DeleteFileW(part);
+        return fail(s, L"Cannot write %ls (error %lu).", img, e);
+    }
+    say(s, L"Disc image imported: %ls", img);
+    wcopy(s->iso, MAXP, img);
+    s->image_src[0] = 0;
+    return EXIT_OK;
+}
+
+int setup_rollback(setup_t* s) {
+    if (game_running(s)) return fail(s, L"Sly 2 is running: close the game first.");
+    unsigned long err;
+    if (!stage_rollback(s->dir, &err)) return fail(s, L"Cannot switch versions (error %lu).", err);
+    char v[64];
+    stage_version(s->dir, GAME_DIR, v, sizeof v);
+    say(s, L"Switched to version %hs.", v);
+    register_uninstall(s, 0);
     return EXIT_OK;
 }
 
@@ -788,29 +974,61 @@ int setup_install(setup_t* s) {
          s->offline_only, s->allusers);
     if (payload_count() > 1) loga("offline setup: %d payload entries", payload_count());
 
-    wchar_t why[512];
-    if (disc_check_iso(s->iso, why, 512) != DISC_OK) { fail(s, L"%ls: %ls", s->iso, why); return EXIT_BAD_DISC; }
-    uint64_t need = setup_space_needed(s), have = disk_free(s->dir);
+    /* the disc image: the imported copy (normal), or with /noimport the player's file itself */
+    wchar_t why[512], img[MAXP];
+    dpath(s, img, IMAGE_REL);
+    int importing = 0;
+    uint64_t need_image = 0;
+    if (s->no_import) {
+        if (!s->image_src[0]) wcopy(s->image_src, MAXP, s->iso);
+        wcopy(s->iso, MAXP, s->image_src);
+        if (disc_check_iso(s->iso, why, 512) != DISC_OK) { fail(s, L"%ls: %ls", s->iso, why); return EXIT_BAD_DISC; }
+    } else {
+        if (!s->image_src[0] && s->iso[0] && _wcsicmp(s->iso, img)) wcopy(s->image_src, MAXP, s->iso);
+        if (s->image_src[0] && !_wcsicmp(s->image_src, img)) s->image_src[0] = 0;
+        if (s->image_src[0]) {
+            if (disc_check_iso(s->image_src, why, 512) != DISC_OK) { fail(s, L"%ls: %ls", s->image_src, why); return EXIT_BAD_DISC; }
+            importing = 1;
+            need_image = file_size(s->image_src) + (64ull << 20);
+            uint64_t have_img = file_size(img);
+            if (have_img != (uint64_t)-1) need_image = need_image > have_img ? need_image - have_img : 0;
+        } else if (!file_exists(img) || disc_check_iso(img, why, 512) != DISC_OK) {
+            fail(s, L"The game's copy of your disc image is missing or damaged. Drop your Sly 2 disc image (.iso) on the "
+                    L"window to import it again.");
+            return EXIT_BAD_DISC;
+        }
+    }
+    uint64_t need = setup_space_needed(s) + need_image, have = disk_free(s->dir);
     if (have < need) {
         wchar_t a[32], b[32];
         fmt_size(a, 32, need);
         fmt_size(b, 32, have);
-        fail(s, L"Not enough free disk space: Setup needs %ls on this drive while it builds the game, %ls is free.", a, b);
+        fail(s, L"Not enough free disk space: %ls is needed on this drive (%ls%ls), %ls is free. Free up some space and "
+                L"click Retry.", a, importing ? L"the copy of your disc image, then " : L"", L"building the game", b);
         return EXIT_NO_SPACE;
     }
     if (game_running(s)) return fail(s, L"Sly 2 is running: close the game and click Retry.");
 
     /* registered first, so a cancelled or failed installation can be removed in Settings > Apps */
-    if (!write_uninstaller(s)) return fail(s, L"Cannot write Uninstall.exe into %ls.", s->dir);
+    if (!setup_copy_launcher(s)) return fail(s, L"Cannot write the launcher into %ls (error %lu).", s->dir, GetLastError());
     state_set(s, L"version", SETUP_VERSION);
     state_set(s, L"dir", s->dir);
-    state_set(s, L"iso", s->iso);
     state_set(s, L"allusers", s->allusers ? L"1" : L"0");
     state_set(s, L"regkey", s->regkey);
     if (s->userdata[0]) state_set(s, L"userdata", s->userdata);
     register_uninstall(s, 0);
 
-    int r = install_sources(s);
+    int r = EXIT_OK;
+    int pm_off = s->pm_off, pm_scale = s->pm_scale ? s->pm_scale : 1000;
+    if (importing) {                                 /* the copy takes the first 30% of the bar */
+        s->pm_off = pm_off;
+        s->pm_scale = pm_scale * 3 / 10;
+        r = setup_import_image(s);
+        s->pm_off = pm_off + pm_scale * 3 / 10;
+        s->pm_scale = pm_scale - pm_scale * 3 / 10;
+    } else if (!s->no_import) wcopy(s->iso, MAXP, img);
+    if (!r) state_set(s, L"iso", s->iso);
+    if (!r) r = install_sources(s);
     for (int i = 0; !r && i < SETUP_NPINS; i++) {
         int base = SETUP_PM_TOOLS + (SETUP_PM_PYTHON - SETUP_PM_TOOLS) * SETUP_PINS[i].pm_from / 1000;
         int end = SETUP_PM_TOOLS + (SETUP_PM_PYTHON - SETUP_PM_TOOLS) * SETUP_PINS[i].pm_to / 1000;
@@ -820,6 +1038,8 @@ int setup_install(setup_t* s) {
     if (!r) r = install_packages(s, SETUP_PM_PACKAGES, SETUP_PM_ELF - SETUP_PM_PACKAGES);
     if (!r) r = build_game(s);
     if (!r) r = install_game_files(s);
+    s->pm_off = pm_off;
+    s->pm_scale = pm_scale == 1000 ? 0 : pm_scale;
     if (r) {
         if (s->cancel || r == EXIT_CANCELLED) { say(s, L"Cancelled."); return EXIT_CANCELLED; }
         if (!s->error[0]) wfmt(s->error, 2048, L"Setup failed. The details are in %ls.", log_path());
@@ -827,11 +1047,19 @@ int setup_install(setup_t* s) {
     }
 
     set_disc_in_ini(s);
-    wchar_t start[MAXP], desk[MAXP], exe[MAXP], icon[MAXP];
+    wchar_t start[MAXP], desk[MAXP], exe[MAXP];
     shortcut_paths(s, start, desk);
-    dpath(s, exe, L"sly2.exe");
-    wfmt(icon, MAXP, L"%ls", exe);
-    if (make_shortcut(start, exe, NULL, s->dir, L"Play Sly 2: Band of Thieves", icon)) state_set(s, L"startmenu_lnk", start);
+    dpath(s, exe, LAUNCHER_EXE);
+    if (make_shortcut(start, exe, NULL, s->dir, L"Play Sly 2: Band of Thieves", exe)) state_set(s, L"startmenu_lnk", start);
+    /* an existing desktop shortcut (also the old installer's, which started sly2.exe) now opens the launcher */
+    wchar_t dl[MAXP];
+    state_get(s->dir, L"desktop_lnk", dl, MAXP);
+    if (dl[0] && file_exists(dl)) make_shortcut(dl, exe, NULL, s->dir, L"Play Sly 2: Band of Thieves", exe);
+    {
+        wchar_t gv[64];
+        wfmt(gv, 64, L"%hs", s->built_version);
+        state_set(s, L"game_version", gv);
+    }
     register_uninstall(s, tree_size(s->dir));
 
     wchar_t p[MAXP];
@@ -848,22 +1076,28 @@ int setup_install(setup_t* s) {
     return EXIT_OK;
 }
 
+/* Starts <dir>\game\sly2.exe with the game's disc image as its argument (the runtime's "sly2.exe x.iso"
+ * start; sly2.ini's [game] disc names the same file for a start without the launcher). */
 int setup_launch_game(setup_t* s) {
-    wchar_t exe[MAXP];
-    dpath(s, exe, L"sly2.exe");
+    wchar_t exe[MAXP], gd[MAXP], img[MAXP], args[MAXP + 4];
+    dpath(s, gd, GAME_DIR);
+    wpath(exe, MAXP, gd, L"sly2.exe");
+    state_get(s->dir, L"iso", img, MAXP);
+    if (!img[0] || !file_exists(img)) dpath(s, img, IMAGE_REL);
+    wfmt(args, MAXP + 4, L"\"%ls\"", img);
     HINSTANCE r;
-    if (is_elevated()) {                             /* never start the game as administrator */
-        wchar_t args[MAXP + 4];
+    if (is_elevated()) {                             /* never start the game as administrator (sly2.ini names the image) */
         wfmt(args, MAXP + 4, L"\"%ls\"", exe);
         r = ShellExecuteW(NULL, L"open", L"explorer.exe", args, NULL, SW_SHOWNORMAL);
-    } else r = ShellExecuteW(NULL, L"open", exe, NULL, s->dir, SW_SHOWNORMAL);
+    } else r = ShellExecuteW(NULL, L"open", exe, file_exists(img) ? args : NULL, gd, SW_SHOWNORMAL);
+    logw(L"start %ls %ls: %ls", exe, args, (INT_PTR)r > 32 ? L"ok" : L"failed");
     return (INT_PTR)r > 32;
 }
 
 int setup_finish(setup_t* s) {
     wchar_t start[MAXP], desk[MAXP], exe[MAXP], p[MAXP];
     shortcut_paths(s, start, desk);
-    dpath(s, exe, L"sly2.exe");
+    dpath(s, exe, LAUNCHER_EXE);
     if (s->desktop_shortcut) {
         if (make_shortcut(desk, exe, NULL, s->dir, L"Play Sly 2: Band of Thieves", exe)) state_set(s, L"desktop_lnk", desk);
     }
@@ -915,6 +1149,10 @@ int setup_uninstall(setup_t* s) {
         if (setup_ask(s, L"Sly 2 is running. Close the game, then click Retry.", MB_RETRYCANCEL | MB_ICONWARNING | MB_DEFBUTTON2) != IDRETRY)
             return EXIT_CANCELLED;
     }
+    if (s->wait_pid) {                               /* the launcher closes itself after starting the uninstall */
+        HANDLE ph = OpenProcess(SYNCHRONIZE, FALSE, s->wait_pid);
+        if (ph) { WaitForSingleObject(ph, 10000); CloseHandle(ph); }
+    }
     wchar_t tmp[MAXP];
     GetTempPathW(MAXP, tmp);
     wcsncat(tmp, L"sly2-uninstall.log", MAXP - wcslen(tmp) - 1);
@@ -926,7 +1164,9 @@ int setup_uninstall(setup_t* s) {
         state_get(s->dir, links[i], v, MAXP);
         if (v[0] && file_exists(v)) { DeleteFileW(v); logw(L"removed %ls", v); }
     }
-    static const wchar_t* files[] = { L"builder", L"sly2.exe", L"README.txt", L"Controller test.cmd", L"setup.log" };
+    static const wchar_t* files[] = { L"builder", L"sly2.exe", L"README.txt", L"Controller test.cmd", L"setup.log",
+                                      GAME_DIR, GAME_DIR L".new", GAME_DIR L".old", GAME_DIR L".swap", L"data", BUNDLE_DIR,
+                                      UPDATES_DIR, LAUNCHER_EXE, LAUNCHER_EXE L".old" };
     int ok = 1;
     for (size_t i = 0; i < sizeof files / sizeof files[0]; i++) {
         dpath(s, p, files[i]);
