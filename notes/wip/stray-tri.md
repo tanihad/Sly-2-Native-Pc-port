@@ -22,3 +22,10 @@ Root cause summary goes to notes/modern-renderer.md.
   pale-blue slab + dark red wedge for one picture (exact path, straight edges) = the owner's slivers.
 - Bisect so far (spike events, noisy): base 31 / lt0 (LOOKTHROUGH=0) 23 / nofans 68 / kc0 (KEEPCHAIN=0) 1 / kc0b 0 /
   base2 0; AB (keep on odd 300-VBlank phases): ON 11, OFF 4. LOOKTHROUGH=0 does not fix it.
+- Later: RUNPROG=1 0, RUNPROG_K 0/0 (short windows), PS2_MFT=0 (grid) 0 events in 6144 pictures over the whole
+  route (MFT runs of the same length: 2..68) -> likely MFT-specific. Many events are noise (fights, close camera).
+- More tools: PS2_GF_BIGTRI=<px> + _FILE + _FROM (gpu_front.c: big exact triangles to a file), PS2_MFT_LOG_BA=n (op
+  list of frames that go back from phase B to A), PS2_MFT_PLANLOG=<file> (every planned MFT frame's phases),
+  PS2_VIF_TOPLOG (VU1 runs with the same TOP, not useful).
+- Found: in the ep1 hub every frame goes B -> A: after the 2D MARK come the outlines (thousands of line draws, in
+  phase B on the picture) and then a late native R2 segment (-> phase A, unresolve) + one draw, then PRESENT.

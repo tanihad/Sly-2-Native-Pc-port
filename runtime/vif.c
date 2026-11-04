@@ -535,6 +535,29 @@ static uint32_t cmd_data(vif_state* v, const uint32_t* w, uint32_t n) {
     }
 }
 
+/* (stray-tri, diagnostics) PS2_VIF_TOPLOG=1: VU1 program runs whose input buffer (TOP) is the same as the previous
+ * run's - the double buffer did not flip in between (an OFFSET reset it), so the program's "other buffer" is not the one
+ * the previous run filled. Counted per kind (kicks live / dropped), summed every 600 VBlanks, the first ones logged. */
+__attribute__((weak)) uint32_t ps2_vblank_count(void);
+static void vif_toplog(const vif_state* v, uint32_t imm) {
+    static int on = -1;
+    static uint32_t last_top = 0xFFFFFFFFu, n[2], same[2], lines, last_vb;
+    if (on < 0) { const char* e = getenv("PS2_VIF_TOPLOG"); on = e && atoi(e) > 0; }
+    if (!on || !ps2_vblank_count) return;
+    int k = v->r2_skip != 0 || vu1_drop_kicks;
+    n[k]++;
+    if (v->tops == last_top) {
+        same[k]++;
+        if (lines < 60) { lines++; fprintf(stderr, "[viftop] v%u same TOP %03X at MSCAL %04X (%s)\n", ps2_vblank_count(), v->tops, imm * 8, k ? "kicks dropped" : "live"); }
+    }
+    last_top = v->tops;
+    uint32_t vb = ps2_vblank_count();
+    if (vb / 600 != last_vb / 600) {
+        fprintf(stderr, "[viftop] v%u runs live %u (same TOP %u), dropped %u (same TOP %u)\n", vb, n[0], same[0], n[1], same[1]);
+        last_vb = vb;
+    }
+}
+
 /* Start the command `code`. Returns 0 if it has to wait (VU busy) and was not taken. */
 static int cmd_begin(vif_state* v, uint32_t code) {
     uint32_t cmd = (code >> 24) & 0x7F, imm = code & 0xFFFF, num = (code >> 16) & 0xFF;
@@ -597,6 +620,7 @@ static int cmd_begin(vif_state* v, uint32_t code) {
                 break;
             }
             if (v->r2_skip) v->r2_skip--;
+            vif_toplog(v, imm);
         }
         micro_start(v, cmd, imm);
         break;
