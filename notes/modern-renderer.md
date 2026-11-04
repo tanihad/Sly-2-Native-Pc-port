@@ -1224,6 +1224,36 @@ Measured (ep1 hub walk uncapped 330 s, then every sweep scene) - four causes, al
   output resolution), which throws away the vertical resolution MFT exists for; an owner decision (keep Faithful on the
   grid, or flicker filter only on MFT).
 
+### Stray triangles: one-frame huge / sliver wedges (next/stray-tri, 2026-11-04)
+- **Report** (0.1.1064, ep1 hub at night on the rooftops, Modern, outlines thin, 1080p, ~180 fps): for one frame a huge
+  flat orange triangle across half the screen; roughly 10-15 times in 34 s, long flat sliver wedges, e.g. a pale grey
+  wedge from x 1600 to the right edge (the owner's "random lines that flicker when moving").
+- **Root cause**: the clipped fans that R5 part 2's private-VU clipper (r2_clip.c, `R2E_FANS`) builds for *degenerate
+  objects*. Their world x clip matrix gives clip coordinates with w ~2^69, with vertices on both sides of w = 0. The R5
+  rule kept such entries exact only when a fan vertex's Z was beyond the FF range. Many such fans have Z in range but a
+  vertex Q that no clipped vertex can have: 2^-69 .. 2^-91, negative, or FLT_MAX (`[fanq]` lines: mesh 007F3F90 in the
+  ep1 hub, a few entries a second). Drawn, they are triangles from x 2 to x 1883 (GS) whose S/Q, T/Q leave the texture:
+  huge flat wedges and 1-2-row slivers, for one frame. An all-exact frame draws no such triangle. In-run measurement
+  (exact triangles with such a Q, PS2_GF_BIGTRI 'badq', ep1 rooftop route uncapped): hybrid 1178-1587 triangles in
+  177-192 frames per ~10 000; PS2_R2_FANS=0: 0; PS2_R2=off: 0. That the private clipper's packets for these inputs are
+  not the VU's was not traced further (the offline level-1 check never met a w that large).
+- **Fix** (r2_clip.c): a fan with a vertex Q outside 1e-18 .. 1e18 keeps its entry exact (clipper reason 6, "Q" in the
+  PS2_R2_STATS clipper line, ~0.05 entries / frame; PS2_R2_FANQ=0 off, PS2_R2_FANQ_LOG=n logs them). After the fix: 0
+  such triangles on the same route, and none of the spike detector's events was a stray triangle.
+- **Why it was hard to see**: rare, one frame, scene-dependent; the tf check runs on the grid, the earlier MFT-specific
+  suspects (mft-pop's MFT clip pipelines, kept chains, the look-through) were bisected and are not involved. Picture
+  dumps of 1080p MFT frames work with motion blur on (the default).
+- **Regression check**: r2_sweep `mf` (scripts/mft_pops.ps1) now also fails on any triangle with such a Q from VBlank At
+  on ("stray triangles N").
+- **Diagnostics added**: PS2_DUMP_SPIKE=1 (+ _T, _N, _MAX: ps2_runtime.c, an online one-picture blink detector that writes
+  only the event triples spike_<v>.bmp; noisy in fights / camera close-ups), scripts/stray_run.ps1 (the owner's
+  settings, 80 s rooftop route), PS2_GF_BIGTRI=<px> + _FILE + _FROM (big or bad-Q exact triangles with vertices and state),
+  PS2_R2_STRAY=1 (native plain-pipeline triangles with a vertex outside the guard band: always 0), PS2_MFT_PLANLOG=<file>
+  and PS2_MFT_LOG_BA=n (MFT phases per frame), PS2_R2_KEEPCHAIN_AB=n (kept chains in alternate VBlank phases).
+- Seen on the way, not changed: in close-ups some character meshes alternate frame by frame (ep1, Sly near the camera;
+  looks like the game's own near-camera handling); in the ep1 hub the outlines come after the 2D mark, so MFT draws
+  them in phase B and a late native entry sends the frame back to phase A (an unresolve per frame).
+
 ### R9. Enhanced and mods - 12 agent-days (two tasks)
 - **R9a Enhanced, 7 days**: per-pixel lighting, shadow maps, SSAO, bloom, anisotropic + mipmaps, outline styles, and
   presets ("Original", "Enhanced", "Performance") in the Options menu.

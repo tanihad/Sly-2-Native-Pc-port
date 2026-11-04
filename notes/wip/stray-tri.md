@@ -6,11 +6,12 @@ Evidence: build\clip\evidence (f1155 = big orange triangle, x1417 / w1417 etc. =
 Root cause summary goes to notes/modern-renderer.md.
 
 ## Status
-- [ ] release build (build\rel)
-- [ ] headless repro (MFT 1080p, thin) + detector
-- [ ] bisect (PS2_MFT=0, PS2_R2_FANS=0, PS2_R2_GCLEAN=0, outlines ps2, Exact)
-- [ ] root cause + fix
-- [ ] regression check (tf / mf with MFT on)
+- [x] release build (build\rel)
+- [x] headless repro (MFT 1080p, thin) + detectors
+- [x] root cause: R2 private-VU clipper fans of degenerate objects (w ~2^69) with impossible Q (see modern-renderer.md
+      "Stray triangles"); badq triangles hybrid 1178 / FANS=0 0 / Exact 0
+- [x] fix r2_clip.c reason 6 (Q): after fix badq 0
+- [x] regression check: mft_pops.ps1 (sweep mf) fails on badq triangles
 - [ ] gates: run_tests, gpu_diff_all, r2_sweep ep1 + 2-3 scenes mf,tf
 
 ## Findings

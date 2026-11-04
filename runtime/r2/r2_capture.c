@@ -107,7 +107,7 @@ typedef struct {
     uint32_t frames, cand, native, exact_level, exact_class, exact_decode, exact_budget, exact_dmas, exact_header, exact_fade, exact_guard,
         decoded, decode_fail, bytes_hint, runs, epilogues, vif_owed, chains_kept, chains_run, exact_last, parity_unpaid, cand_props, native_props, exact_outline, outlines, outlines_parsed, clipped,
         exact_bracket, stale, guard_clean, cand_lit, native_lit, exact_lit, lit_reason[4], outline_bad, outline_decoded, outline_native, outline_exact, dmas_min_free,
-        part_spans, fan_ents, fan_tris, fan_kicked, fan_qw, fan_no[6];
+        part_spans, fan_ents, fan_tris, fan_kicked, fan_qw, fan_no[7];
     double decode_ms, cap_ms, fan_ms;
     double v_native, v_exact[10];          /* (r2-m5) census */
     uint32_t reason[R2M_N];
@@ -764,7 +764,7 @@ static int clip_fans(const r2_mesh* m, const float M[16], float fade) {
     double t0 = stats_on ? now_ms() : 0;
     fan_o = (r2_fanbuf){ fan_buf, 0, sizeof fan_buf, 0, 0, 0, 0 };
     int ok = r2_clip_entry(m, M, fade, &fr_block, &fan_o, &fan_last, fan_rt, 8192);
-    if (!ok) st.fan_no[r2_clip_why < 6 ? r2_clip_why : 0]++;
+    if (!ok) st.fan_no[r2_clip_why < 7 ? r2_clip_why : 0]++;
     if (stats_on) st.fan_ms += now_ms() - t0;
     return ok;
 }
@@ -1448,6 +1448,6 @@ void r2_stats_line(char* buf, size_t n) {
         if (s->reason[r]) o += snprintf(buf + o, n - (size_t)o, " [%s %u]", r2m_reason[r], s->reason[r]);
     if (o > 0 && (size_t)o < n) o += snprintf(buf + o, n - (size_t)o, "; particle spans %.2f/frame", s->part_spans / f);   /* (r2-m6) */
     if (o > 0 && (size_t)o < n)                        /* (r2-m5b) */
-        snprintf(buf + o, n - (size_t)o, "; clipper: %.1f entries/frame (%.1f with fans), %.1f triangles, %.1f KB packets, %.3f ms; no: kind %u w %u full %u size %u Z %u",
-                 s->fan_ents / f, s->fan_kicked / f, s->fan_tris / f, s->fan_qw * 16.0 / 1024.0 / f, s->fan_ms / f, s->fan_no[1], s->fan_no[2], s->fan_no[3], s->fan_no[4], s->fan_no[5]);
+        snprintf(buf + o, n - (size_t)o, "; clipper: %.1f entries/frame (%.1f with fans), %.1f triangles, %.1f KB packets, %.3f ms; no: kind %u w %u full %u size %u Z %u Q %u",
+                 s->fan_ents / f, s->fan_kicked / f, s->fan_tris / f, s->fan_qw * 16.0 / 1024.0 / f, s->fan_ms / f, s->fan_no[1], s->fan_no[2], s->fan_no[3], s->fan_no[4], s->fan_no[5], s->fan_no[6]);
 }
