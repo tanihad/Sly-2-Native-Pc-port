@@ -42,7 +42,8 @@ Worktree C:\Users\tanih\Projects\sly2-worktrees\r8-perf, branch next/r8-perf (fr
 ## In progress
 - Merged main 8ddc789 -> 5a08d53 (clean); re-verified (all identical); A/B ep1 10.96 -> 10.24 (-6.5%), m1 11.67 -> 11.10 (-4.9%),
   m2 9.16 -> 8.61 (-6.0%); run_tests 16/16, debug build. Base gs_replay: build\basert\out (8ddc789 runtime).
-- Next gates: units, game units, pc_text_boot, gpu_diff_all, m9_exact, package, sweep ab,hc,tf -Parallel 1.
+- Gates on 01b66e5: units 27/27, pc_text_boot rel + dbg, gpu_diff_all mixed S=1 28/28, m9_exact S1 + S3 -Game identical,
+  package.py 0.1.1078. Remaining: r2_sweep ab,hc,tf -Parallel 1.
 
 ## Next
 1. r2_sweep ab+hc+tf with -Parallel 1.
