@@ -40,7 +40,9 @@ Worktree C:\Users\tanih\Projects\sly2-worktrees\r8-perf, branch next/r8-perf (fr
   the render loop draws plain clip chunks through mcpipe*. Re-verified in ep1 (R2 plan, shadows, line runs identical).
 
 ## In progress
-- Post-merge: A/B ep1 / m1 / m2, units; then pc_text_boot, gpu_diff_all, m9_exact, package, sweep (one game at a time).
+- Merged main 8ddc789 -> 5a08d53 (clean); re-verified (all identical); A/B ep1 10.96 -> 10.24 (-6.5%), m1 11.67 -> 11.10 (-4.9%),
+  m2 9.16 -> 8.61 (-6.0%); run_tests 16/16, debug build. Base gs_replay: build\basert\out (8ddc789 runtime).
+- Next gates: units, game units, pc_text_boot, gpu_diff_all, m9_exact, package, sweep ab,hc,tf -Parallel 1.
 
 ## Next
 1. r2_sweep ab+hc+tf with -Parallel 1.

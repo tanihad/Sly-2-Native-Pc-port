@@ -1274,9 +1274,13 @@ inflated and drifting): only in-run comparisons count.
   | ep1 hub | 12.12 | 11.50 | -5.2% |
   | m1 brawl | 8.32 | 7.96 | -4.4% |
   | m2 boardroom | 10.17 | 9.63 | -5.3% |
+  | after merging main 8ddc789 (mft-pop's clip pipelines): | | | |
+  | ep1 hub | 10.96 | 10.24 | -6.5% |
+  | m1 brawl | 11.67 | 11.10 | -4.9% |
+  | m2 boardroom | 9.16 | 8.61 | -6.0% |
 
-  Applied to the owner's unloaded numbers (ep1 3.79 ms / 258 fps, m2 5.77 / 172) that is about ep1 3.59 ms / ~270 fps,
-  m2 5.46 / ~180 fps: **the 300 fps target is not reached**. What is left is mostly genuine work: R2's draws that overlap
+  Applied to the owner's unloaded numbers (ep1 3.79 ms / 258 fps, m1 239 fps, m2 5.77 / 172; GPU-bound, fps scaling with the GPU time) the merged build gives about ep1 3.54 ms / ~276 fps, m1 ~251 fps,
+  m2 5.42 / ~183 fps: **the 300 fps target is not reached**. What is left is mostly genuine work: R2's draws that overlap
   (the plan cannot reorder them), the sky's and the characters' exact triangles (their per-fragment record evaluation; a
   cheaper form would interpolate in hardware like the particle pipeline - not exact, not done), the large shadow volumes'
   raster at 4x, the shadow pass's per-sample edge pass (~4% in one skip run).
