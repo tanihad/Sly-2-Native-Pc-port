@@ -2,6 +2,21 @@
 
 ## Resume here (read first in a new session)
 
+**2026-11-03 (late): PAUSED by the owner.** All agents stopped. WIP commits are pushed on each branch.
+- **Merged into main this round:**
+  - test-flake.
+  - mft-pop: 0 gameplay grid pops. The mf sweep check fixes 4 causes, probably the owner's "line that flicks".
+  - qa-a and qa-b: harness and reports, no renderer bugs found.
+  - Main is NOT yet re-gated or packaged. The run_tests + package.py run was interrupted, so the owner's dist is still 0.1.1032.
+- **On "continue":**
+  1. Run run_tests and package.py on main, deploy, and tell the owner the pop fix is in their game.
+  2. Resume these branches, each from its notes/wip/<task>.md:
+     - r2-flicker (dcde97a): the thin-outline flicker, the owner's main bug. It was replacing the outline length threshold with a native prediction from the previous frame. It branched before mft-pop, so merge main.
+     - mft-cover (1b5049c): MFT coverage for the "target view" / ALIAS16 / m7_boss grid stretches qa-b found, plus the m7_thermals water band. It had just started. Merge main first, because mft-pop already fixed some ALIAS16 cases.
+     - r8-perf (16e631f): gpu_diff_all + m9_exact pass, result table in notes.
+     - p6-pgo (a581c14): gates green, was running the window/warp unit suites.
+- **Owner decision pending:** Faithful filters in Modern. The flicker filter could run as a post pass. Interlacing on MFT would only imitate it and lose resolution. See notes/modern-renderer.md "MFT pops".
+
 **2026-11-03 ~11:50: PARALLEL PUSH. The owner asked for many agents (usage until 15:00).** All worktrees branched from main 38a38df. Running:
 - **r2-flicker:** the flicker remains with outlines=thin; fixing the outline path's VIF state.
 - **mft-pop:** the one-frame MFT grid fallback ("other target").
