@@ -1,4 +1,4 @@
-﻿/* Debug helpers: PNG frame dumps (uncompressed deflate, no dependencies). */
+/* Debug helpers: PNG frame dumps (uncompressed deflate, no dependencies). */
 #include "hw.h"
 
 #include <stdlib.h>
@@ -32,9 +32,7 @@ static void chunk(FILE* f, const char* type, const uint8_t* data, uint32_t len) 
     fwrite(c, 1, 4, f);
 }
 
-void debug_write_png(const char* path, const uint32_t* bgrx, int w, int h, int stride) {
-    FILE* f = fopen(path, "wb");
-    if (!f) return;
+static void write_png(FILE* f, const uint32_t* bgrx, int w, int h, int stride) {
     fwrite("\x89PNG\r\n\x1a\n", 1, 8, f);
     uint8_t ihdr[13];
     put_be32(ihdr, (uint32_t)w);
@@ -76,3 +74,19 @@ void debug_write_png(const char* path, const uint32_t* bgrx, int w, int h, int s
     free(raw);
     free(z);
 }
+
+void debug_write_png(const char* path, const uint32_t* bgrx, int w, int h, int stride) {
+    FILE* f = fopen(path, "wb");
+    if (f) write_png(f, bgrx, w, h, stride);
+}
+
+#ifdef _WIN32
+#include <wchar.h>
+/* (pc-shot) the same with a wide path (the Pictures folder may hold non-ASCII names); 1 if written */
+int debug_write_png_w(const wchar_t* path, const uint32_t* bgrx, int w, int h, int stride) {
+    FILE* f = _wfopen(path, L"wb");
+    if (!f) return 0;
+    write_png(f, bgrx, w, h, stride);
+    return 1;
+}
+#endif
