@@ -1391,7 +1391,7 @@ inflated and drifting): only in-run comparisons count.
 | # | decision | recommendation | needed before |
 |---|---|---|---|
 | **D1** | Must "Original" be **pixel-exact**, or **visually faithful within the section 5 gates**? | visually faithful: pixel-exact is only possible through the exact path, which stays available as "Rendering: Reference" | R1 |
-| **D2** | When does Modern become the default? | per milestone after the sweep and your check, from R2 on (R1 opt-in) | R2 |
+| **D2** | When does Modern become the default? | per milestone after the sweep and your check, from R2 on (R1 opt-in). **Decided 2026-11-04: Modern is the default** (Balanced preset; Original = Reference) | R2 |
 | **D3** | Stop perf-plan **P4 (GS decode fast path) and P5 (VU1 pool)**: R2 removes most of their work in gameplay. P6 (in-game overhead, PGO / LTO) and P7 (Reflex) stay useful because they speed up the EE thread and presentation | yes: P4 / P5 cancelled, P6 / P7 kept | R2 |
 | **D4** | Approval to **download developer-only shader tools** for the cross-platform phase: DXC + SPIRV-Cross (or SDL_shadercross), or Slang; SDL3 source (pinned); Vulkan-Headers + volk for the fallback. Nothing new on the player's PC. R0-R9 need none of them | approve at R10 | R10 |
 | **D5** | **Test hardware**: a weaker PC (or the E-core proxy of section 6), a Linux install or Steam Deck, an Apple Silicon Mac with Xcode Command Line Tools | the proxy until R8; a real machine for R10 / R11 | R8 / R10 |

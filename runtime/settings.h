@@ -74,10 +74,10 @@ typedef struct {
     int game_invert_turret;      /* [game] invert_turret: the game's own "Invert Turret Controls" (off default) */
     int game_speakers;           /* [audio] speakers: the game's own Speakers: stereo (0, default) | mono (1) | surround (2) */
     int ini_version;             /* (pc-menu2) [settings] version: the defaults the file was written with (0: older files) */
-    int renderer_modern;         /* (r2-m1) [graphics] renderer_mode = reference (0, default: the exact GS renderer draws
-                                    everything) | modern (1: the modern renderer R2 draws what it covers - milestone R1: the
-                                    ep3 hub's static world; notes/modern-renderer.md). Environment: PS2_R2=off|hybrid|bracket.
-                                    (r2-m8) part of the presets: modern by default (Balanced) */
+    int renderer_modern;         /* (r2-m1) [graphics] renderer_mode = reference (0: the exact GS renderer draws
+                                    everything; the Original preset) | modern (1, default: the modern renderer R2 draws what
+                                    it covers; notes/modern-renderer.md). Environment: PS2_R2=off|hybrid|bracket.
+                                    (r2-m8) part of the presets; Modern the default (Balanced), owner-approved 2026-11-04 (D2) */
     int msaa;                    /* (r2-m8) [graphics] msaa = off (0) | 2x (1) | 4x (2, default) | 8x (3): multisampling of
                                     modern frames (render_scale a percentage or auto; notes/modern-renderer.md R8) */
 } ps2_settings_t;

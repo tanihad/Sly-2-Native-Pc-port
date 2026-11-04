@@ -278,7 +278,7 @@ PATCHES: list[Patch] = [
           "movie_layer_ee(0);",
           "the movie player's only return: MOVIE_END"),
     # (r2-m1) the modern renderer R2 (runtime/r2/r2_capture.c, notes/modern-renderer.md 2.2): render-list hooks. With R2 off
-    # (the default: [graphics] renderer_mode = reference) they only read memory and write nothing.
+    # ([graphics] renderer_mode = reference, the Original preset) they only read memory and write nothing.
     Patch("r2m_alloc", *RENDER_ALLOC, 0x001CD9D4, "before",
           "{ void r2_cap_alloc(ps2_ctx*); r2_cap_alloc(ctx); }",
           "jr $ra of the render-list allocator ($v0 = the new entry): entries from object submitters; the static world tree "

@@ -9,7 +9,9 @@
 - Combined build checked: run_tests 16/16, ep1 mf (0 pops, 0 stray triangles) + tfo pass. Full gate batch still to run.
 - Open, seen by stray-tri: character meshes near the camera alternate frame to frame in close-ups (compare with Exact).
 - Owner confirmed on 0.1.1118: the flicker is fine (thin-outline flicker and stray triangles both gone).
-- Next: the 1.0 checklist (Modern default D2, DualSense, weaker PC, playthrough, key backup).
+- 1.0 checklist: Modern default (D2) approved and already the default (Balanced) - done; DualSense tested by the owner,
+  works well - done; weaker PC - the owner tests it; full playthrough check; back up the release key; first signed
+  release only on the owner's go.
 
 **2026-11-04: OWNER TEST HOLD.** The thin-outline flicker fix (r2-flicker) is merged as 111d8eb and shipped to the owner as dist 0.1.1064.
 - Final gates: all pass except 9 sweep checks in ep7, m8_boss and ep8 (no frames during the level load), all at -Parallel 4.
