@@ -12,7 +12,9 @@ Root cause summary goes to notes/modern-renderer.md.
       "Stray triangles"); badq triangles hybrid 1178 / FANS=0 0 / Exact 0
 - [x] fix r2_clip.c reason 6 (Q): after fix badq 0
 - [x] regression check: mft_pops.ps1 (sweep mf) fails on badq triangles
-- [ ] gates: run_tests, gpu_diff_all, r2_sweep ep1 + 2-3 scenes mf,tf
+- [x] gates: run_tests 16/16, gpu_diff_all mixed S=1 28/28, r2_sweep ep1,ep3,ep5,m2_boardroom mf,tf 8/8 PASS (stray
+      triangles 0); mf ep1 with PS2_R2_FANQ=0: FAIL, 10 stray triangles (the check catches it)
+- [x] COMPLETE (2026-11-04)
 
 ## Findings
 - Tools: PS2_DUMP_SPIKE=1 (ps2_runtime.c dump_spike: online one-picture blink detector, writes only event triples

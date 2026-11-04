@@ -1244,7 +1244,8 @@ Measured (ep1 hub walk uncapped 330 s, then every sweep scene) - four causes, al
   suspects (mft-pop's MFT clip pipelines, kept chains, the look-through) were bisected and are not involved. Picture
   dumps of 1080p MFT frames work with motion blur on (the default).
 - **Regression check**: r2_sweep `mf` (scripts/mft_pops.ps1) now also fails on any triangle with such a Q from VBlank At
-  on ("stray triangles N").
+  on ("stray triangles N"); ep1 with the fix off (PS2_R2_FANQ=0): FAIL, 10; with it: 0. Gates: run_tests 16/16, gpu_diff_all
+  28/28, r2_sweep ep1 / ep3 / ep5 / m2 mf + tf 8/8.
 - **Diagnostics added**: PS2_DUMP_SPIKE=1 (+ _T, _N, _MAX: ps2_runtime.c, an online one-picture blink detector that writes
   only the event triples spike_<v>.bmp; noisy in fights / camera close-ups), scripts/stray_run.ps1 (the owner's
   settings, 80 s rooftop route), PS2_GF_BIGTRI=<px> + _FILE + _FROM (big or bad-Q exact triangles with vertices and state),
