@@ -2,6 +2,14 @@
 
 ## Resume here (read first in a new session)
 
+**2026-11-04: OWNER TEST HOLD.** The thin-outline flicker fix (r2-flicker) is merged as 111d8eb and shipped to the owner as dist 0.1.1064.
+- Final gates: all pass except 9 sweep checks in ep7, m8_boss and ep8 (no frames during the level load), all at -Parallel 4.
+  ep7 and m8_boss re-run alone pass tf and mf, so it was load stalls on an overloaded machine.
+- mft-cover (2f62d02), r8-perf (837a1a1) and p6-pgo (2c52282) are stopped and pushed. Resume them on "continue".
+- mft-cover found that the remaining grid stretches are mostly briefing pages and cutscenes, so it is close to done.
+- If the owner still sees the flicker: ship the keep-all-chains safe mode first (+2.5 ms in ep1), then fix the cheap rule.
+- Brainstorm list: notes/future-ideas.md.
+
 **2026-11-03 (late): PAUSED by the owner.** All agents stopped. WIP commits are pushed on each branch.
 - **Merged into main this round:**
   - test-flake.
