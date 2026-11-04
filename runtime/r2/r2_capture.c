@@ -700,6 +700,60 @@ static int skin_inside_guard(const r2_mesh* m, const float mc[16]) {
     return 1;
 }
 
+/* (stray-tri, diagnostics) PS2_R2_STRAY=1: every native entry's triangles that R2 draws without a clip stage (plain
+ * pipeline: all of an inside entry's, a run table's) with each vertex as the GPU computes it (skinned: r2_lit_eval with
+ * the entry's bones); a vertex outside the VU's guard band (w <= 0, |x|, |y|, |z| > w) on such a triangle is drawn at a
+ * wrapped / mirrored GS position - a one-frame spike. Logged ("[stray]", up to 400 lines) with the entry and path. */
+static int stray_on = -1;
+static uint8_t stray_o[R2_CLIP_VMAX];
+static void stray_check(const r2_mesh* m, const float M[16], uint32_t eflags, int xn, uint32_t c1, uint32_t c2, int form,
+                        int cls, uint32_t idx, const uint32_t* rt0) {
+    if (stray_on < 0) { const char* e = getenv("PS2_R2_STRAY"); stray_on = e && atoi(e) > 0; }
+    if (!stray_on || !m || m->nvtx > R2_CLIP_VMAX) return;
+    if ((eflags & R2E_CLIP) && !(eflags & R2E_RUNS)) return;     /* (the clip stage draws only triangles inside) */
+    static int lines;
+    static uint32_t ents, tris, bad;
+    ents++;
+    const float (*hq)[4] = (const float (*)[4])xbuf[R2_LIGHT_QW];
+    float cc4[4];
+    for (uint32_t b = 0; b < m->nb; b++) {
+        const r2_batch* B = &m->b[b];
+        for (uint32_t i = B->vfirst; i < B->vfirst + B->vcount && i < m->nvtx; i++) {
+            const r2_vtx* v = &m->vtx[i];
+            float p[3] = { v->x, v->y, v->z };
+            if (B->skin && xn) { uint32_t col[2]; r2_lit_eval(v, B, (const float (*)[4])xbuf, hq, p, col); }
+            for (int j = 0; j < 4; j++) cc4[j] = p[0] * M[j] + p[1] * M[4 + j] + p[2] * M[8 + j] + M[12 + j];
+            uint8_t o = 0;
+            if (!(cc4[3] > 0.0f)) o |= 64;
+            for (int j = 0; j < 3; j++) { if (cc4[j] > cc4[3]) o |= (uint8_t)(1u << (2 * j)); if (cc4[j] < -cc4[3]) o |= (uint8_t)(2u << (2 * j)); }
+            stray_o[i] = o;
+        }
+    }
+    const uint32_t* rt = (eflags & R2E_RUNS) && rt0 ? rt0 + 2 : NULL;
+    for (uint32_t b = 0; b < m->nb; b++) {
+        const r2_batch* B = &m->b[b];
+        uint32_t nr = rt ? *rt++ : 1;
+        for (uint32_t q = 0; q < nr; q++) {
+            uint32_t t0 = rt ? rt[q] & 0xFFFF : 0, tn = rt ? rt[q] >> 16 : B->icount / 3;
+            for (uint32_t t = t0; t < t0 + tn && 3 * t + 2 < B->icount; t++) {
+                const uint32_t* ix = m->idx + B->ifirst + 3 * t;
+                tris++;
+                uint32_t a = stray_o[ix[0]], bb = stray_o[ix[1]], c = stray_o[ix[2]];
+                if (!(a | bb | c)) continue;
+                bad++;
+                if (lines < 400) {
+                    lines++;
+                    fprintf(stderr, "[stray] v%u cls %d ent %u %s %08X/%08X mesh %08X nb %u path %s%s skin %u lit %u batch %u tri %u oc %02X %02X %02X"
+                            " (%u bad of %u tris, %u entries)\n", ps2_vblank_count(), cls, idx, form ? "form1" : "form0", c1, c2,
+                            m->handle, m->nb, rt ? "runs" : "inside", (eflags & R2E_FANS) ? "+fans" : "", B->skin, B->lit, b, t,
+                            a, bb, c, bad, tris, ents);
+                }
+            }
+        }
+        if (rt) rt += nr;
+    }
+}
+
 /* (r2-m5b) a mesh crossing the guard band (r2_clip.c): the run table of the triangles the VU draws as strips into
  * fan_rt, the clipper's packets for the ones it clips into fan_buf */
 static uint8_t fan_buf[1u << 18];
@@ -786,6 +840,9 @@ static int keep_chains(void) {
     static int keep = -1;
     if (keep < 0) { const char* v = getenv("PS2_R2_KEEPCHAIN"); keep = !(v && *v == '0'); }
     if (cpu_ab < 0) { const char* v = getenv("PS2_GPU_AB_EE"); cpu_ab = v && *v == '3'; }
+    static int vab = -1;                 /* (stray-tri, diagnostics) PS2_R2_KEEPCHAIN_AB=n: kept chains only in VBlanks with (v / n) odd */
+    if (vab < 0) { const char* v = getenv("PS2_R2_KEEPCHAIN_AB"); vab = v ? atoi(v) : 0; }
+    if (vab > 0 && !((ps2_vblank_count() / (uint32_t)vab) & 1)) return 0;
     return keep && (!cpu_ab || gpu_ab_phase != 0);
 }
 /* (r2-flicker) the CPU A/B report: game frame time, VU1 and VIF1 ms per frame per phase (vu.c / vif.c timers) */
@@ -1159,6 +1216,7 @@ void r2_cap_entry(ps2_ctx* ctx) {
         if (!nx || np > 25 || (int)ps2_r32(ctx, CLASS_TABLE + np * 4) != cls) { native = 0; st.exact_last++; last_x = 1; }
     }
     if (native && prop) st.native_props++;
+    if (native) stray_check(r2_mesh_get(handle), M, eflags, xn, c1, c2, form, cls, idx, fan_rt);
     if (cand_now) {                              /* (r2-m5) census: vertices native / exact by reason (undecoded: ~bytes / 45) */
         const r2_mesh* cm = handle ? r2_mesh_get(handle) : NULL;
         if (!cm && why == 2 && stats_on && r2_mesh_hash(ps2_ram, form ? c2 : c1)) fail_bytes = r2_hash_bytes;   /* (another class) */
