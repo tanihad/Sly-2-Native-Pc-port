@@ -2,6 +2,14 @@
 
 ## Resume here (read first in a new session)
 
+**2026-11-04 (later): OWNER TEST HOLD on dist 0.1.1118 (main 0906f31).** No agents running.
+- Merged since 0.1.1064: mft-cover, shot-key (F12 screenshots), p6-pgo (ThinLTO + PGO, VU v3), stray-tri (a99bef8:
+  degenerate-w clipper fans kept exact, reason 6 "Q"; fixes the owner's one-frame "random lines"), r8-perf (0906f31:
+  exact R2 draw plan, ~6% GPU at Balanced; 300 fps hub target not reached, remaining cost listed in modern-renderer.md).
+- Combined build checked: run_tests 16/16, ep1 mf (0 pops, 0 stray triangles) + tfo pass. Full gate batch still to run.
+- Open, seen by stray-tri: character meshes near the camera alternate frame to frame in close-ups (compare with Exact).
+- Next: owner feedback, then the 1.0 checklist (Modern default D2, DualSense, weaker PC, playthrough, key backup).
+
 **2026-11-04: OWNER TEST HOLD.** The thin-outline flicker fix (r2-flicker) is merged as 111d8eb and shipped to the owner as dist 0.1.1064.
 - Final gates: all pass except 9 sweep checks in ep7, m8_boss and ep8 (no frames during the level load), all at -Parallel 4.
   ep7 and m8_boss re-run alone pass tf and mf, so it was load stalls on an overloaded machine.
