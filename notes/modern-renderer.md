@@ -1140,7 +1140,27 @@ the frontend and the exact path are unchanged, so Reference, `PS2_GS_SCALE` runs
     (478f6ad, 120 fps): ALT heat at the ledge 118 px and at the ep1 spawn 154 px (3x grid); on MFT 1440p MSAA 4x the
     modern frame's lamp shadow matches the exact frame's (ALT alternates MFT and grid pictures, so compared by crops);
     tf on a 700-VBlank lamp walk: grid 3x PASS (416 pictures), grid 1x PASS (700), MFT 1440p PASS (372; one earlier
-    MFT run had one picture with 25 blobs, not reproduced).
+    MFT run had one picture with 25 blobs, not reproduced - a one-sided judgement, see below).
+  - **Second report (0.1.1032, outlines = thin): still flickering near lamps.** `outlines` only changes the GPU
+    frontend (GS lines as analytic thin lines at scale > 1, gpu_front.c); R2's capture is the same. The shadow part was
+    in the fix itself and independent of the outline style: before_foreign looked only at the class run right after the
+    current one. Near lamps a frame often has a short exact class-11 run (1 - 2 entries) between the world's last
+    class-0 run and the shadow class 6 (PS2_R2_SEQ_LOG: `0:118/114/0 11:2/0/0 6:31`): the class-0 run then dropped its
+    chains (its next class is a main one), and the exact class-11 entries cannot pay the parity, so class 6 met the wrong
+    double-buffer parity - Sly's shadow lighter or missing in those frames and back in the next: a flicker as Sly moves
+    (hundreds of such frames on the lamp walk, `parity unpaid` in the stats; in an ALT run the hybrid frames lost the
+    shadow the exact ones had). **Fix**: the lookahead looks through later main-class runs that will draw nothing
+    native (predicted from the previous frame's decision per object, nat_note / nat_guess; a run's last entry is exact
+    anyway) to the foreign class; a run with native entries keeps its own by the same rule. A length limit (16) was the
+    first form; the m8 boss has an 18-entry exact class-11 run there. PS2_R2_LOOKTHROUGH=0: the old rule. PS2_R2_UNPAID_LOG=1 logs each unpaid entry; PS2_R2_SEQ_LOG=1 the class runs of each
+    unpaid frame (class:entries/native/kept), =2 of every frame.
+  - The temporal check now also fails on parity (flicker_run: PS2_R2_STATS on; any `parity unpaid` in the dump window of
+    a hybrid run is a FAIL - the picture checks missed it: a shadow that toggles over a walk is not a one-picture blink),
+    and one-sided judgements (the pictures beside a gap or a size change) are informational: they cannot tell a blink
+    from the start of a camera move (--edges counts them). flicker_run -Ini "graphics.outlines=thin;..." writes the run's
+    sly2.ini (a console exe reads it next to itself). r2_sweep tf variants: tft (grid, thin), tfq / tfb / tfp (the
+    Quality / Balanced / Performance presets, MFT 1440p), tfo (the owner's set: auto, thin, modern filters, 120 fps);
+    default checks ab, hc, tf, tft, tfq.
   - MFT grid fallbacks seen with dumps (single "not modern" frames in the walk) do not happen without dumps (same walk,
     PS2_DUMP_FROM out of range, PS2_MFT_LOG=1). Left for R8: about once per run (~27 000 frames) one "other target" grid
     frame (a full-screen blended draw into another target, fmask FF000000) - also with the fix off (PS2_R2_KEEPCHAIN=0
