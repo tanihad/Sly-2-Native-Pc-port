@@ -11,7 +11,7 @@
 # Output: build\flicker\<Name>\ (frames deleted unless -Keep; worst.png = the worst picture, blinking pixels magenta).
 param([Parameter(Mandatory = $true)][string]$Name, [int]$Episode = 1, [string]$Job = "", [switch]$Direct, [switch]$Play,
       [int]$At = 4800, [string]$Pad = "", [int]$Frames = 240, [string]$Mode = 'hybrid', [string]$Scale = '3',
-      [string]$Env = "", [switch]$Keep, [string]$Check = "", [string]$Exe = "", [string]$Ini = "")
+      [string]$Env = "", [switch]$Keep, [string]$Check = "", [string]$Exe = "", [string]$Ini = "", [int]$DumpEvery = 1, [int]$Seconds = 0)
 $root = Split-Path $PSScriptRoot -Parent
 $main = $root
 if (-not (Test-Path (Join-Path $root 'tools\llvm-mingw'))) {
@@ -51,7 +51,7 @@ if ($Ini) {                             # the game's settings (a console exe rea
     [IO.File]::WriteAllText((Join-Path $w 'sly2.ini'), $txt + "`r`n")
 }
 $wa = @('-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'warp_run.ps1'), '-Episode', "$Episode", '-Release',
-        '-Seconds', "$([int](($At + $Frames) / 60) + 20 + [int]($Frames / 6))", '-DumpEvery', '1', '-Name', "flk_$Name")
+        '-Seconds', "$(if ($Seconds) { $Seconds } else { [int](($At + $Frames) / 60) + 20 + [int]($Frames / 6) })",'-DumpEvery', "$DumpEvery", '-Name', "flk_$Name")   # (qa-a: -DumpEvery > 1: sampled pictures, the game less disturbed)
 if ($Job) { $wa += @('-Job', $Job) }
 if ($Direct) { $wa += '-Direct' }
 if ($Play) { $wa += '-Play' }

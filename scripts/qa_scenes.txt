@@ -1,0 +1,38 @@
+# QA scenes (qa-b, part B: episodes 5-8, bosses, effect-heavy). scripts\qa_scene.ps1 -Scene <name>.
+# name | episode | job (mission or task) | flags (direct play set= make= env=) | At (first dumped VBlank) | pad (GP / HP / tokens) | what to look at
+# At: VBlanks since the start of the process; hubs press X 1500 frames after START (play), missions start directly.
+# ---- episode 5 (Prague 2)
+ep5_hub | 5 | | play | 4800 | HP | hub, night street, lamps
+m5_battlezone | 5 | m5_battlezone | direct | 5200 | GP | tanks, explosions, projectiles
+m5_ghost | 5 | m5_ghost | direct | 5200 | GP | ghost / tomb, translucent effects
+m5_hack | 5 | t5_heist_free_carmelita_hack | direct | 5200 | +200:lup:60,+0:rleft:50,+60:lleft:50,+0:rup:50,+50:lright:60,+0:rright:60,+100:lup:200,+200:rright:100 | hacking mini-game
+m5_chase | 5 | t5_heist_neela_chase_intro | direct | 5200 | GP | chase
+m5_turret | 5 | t5_heist_turret_intro | direct | 5200 | GP | turret, tracers
+m5_boss1 | 5 | t5_heist_boss_1_battle | direct | 5200 | GP | boss 1
+m5_boss2 | 5 | t5_heist_boss_2_battle | direct | 5200 | GP | boss 2 (tank)
+m5_ewok | 5 | m5_ewok_trap | direct | 5200 | GP | tomb traps, fire?
+# ---- episode 6 (Canada 1)
+ep6_hub | 6 | | play | 4800 | HP | snow
+m6_paraglide | 6 | m6_paraglide | direct | 5200 | GP | paraglide, sky
+m6_train_red | 6 | m6_train_red | direct | 5200 | GP | train, snow particles
+m6_rc_battle | 6 | t6_rc_chopper_battle | direct | 5200 | GP | rc chopper, explosions
+m6_bearcubs | 6 | m6_kidnap_bearcubs | direct | 5200 | GP | cave
+m6_heist_rc | 6 | t6_heist_rc_chopper_1 | direct | 5200 | GP | rc heist
+m6_carmelita | 6 | m6_carmelita | direct | 5200 | GP | carmelita
+# ---- episode 7 (Canada 2)
+ep7_hub | 7 | | play | 4800 | HP | rain / snow
+m7_robot_war | 7 | t7_robot_war_intro_int | direct | 5200 | GP | robots, lasers
+m7_boat_hack | 7 | m7_boat_hack | direct | 5200 | GP | water
+m7_bear | 7 | m7_bear | direct | 5200 | GP | bear
+m7_thermals | 7 | m7_thermals | direct | 5200 | GP | thermals, fire
+m7_laser | 7 | m7_laser | direct | 5200 | GP | lasers
+m7_lighthouse | 7 | m7_lighthouse | direct | 5200 | GP | searchlight
+m7_boss | 7 | m7_boss | direct | 5400 | GP | boss
+# ---- episode 8 (blimp)
+ep8_hub | 8 | | play | 4800 | HP | blimp hub
+m8_tntbarrel | 8 | m8_tntbarrel | direct | 5200 | GP | explosions
+m8_engine | 8 | m8_engine_room_murray | direct | 5200 | GP | engine room, fire
+m8_megajump | 8 | m8_megajump | direct | 5200 | GP | megajump
+m8_turret | 8 | m8_turret | direct | 5200 | GP | turret
+m8_boss | 8 | m8_boss | direct | 5200 | +2600:lup:90 | boss
+m8_final | 8 | t8_open_head_intro | direct | 5200 | GP | final boss, Clock-La
