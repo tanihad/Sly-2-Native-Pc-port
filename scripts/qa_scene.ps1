@@ -1,4 +1,4 @@
-﻿# (qa-b) One QA run: a scene of scripts\qa_scenes.txt in one settings configuration, every picture of a window of VBlanks
+# (qa-b) One QA run: a scene of scripts\qa_scenes.txt in one settings configuration, every picture of a window of VBlanks
 # dumped, the temporal check (scripts\flicker_check.c, tests\r2\gates.json level3_temporal) and, with -Shots, the
 # pictures to look at. Settings go through a sly2.ini next to the exe copy (the way a player's file would) plus
 # PS2_* switches, so the run goes through the same gfx.c / settings.c paths as the game (presets, MFT, outlines, ...).
@@ -14,7 +14,7 @@
 #   unless -Keep (they are 6-11 MB each).
 param([Parameter(Mandatory = $true)][string]$Scene, [string]$Config = 'balanced', [int]$Fps = 60, [int]$At = 0,
       [int]$Frames = 90, [string]$Size = '2560x1440', [string]$Extra = '', [string]$Ini = '', [string]$Tag = '',
-      [switch]$Keep, [switch]$Mft0, [switch]$NoDump, [switch]$Gov, [switch]$Alt, [int[]]$ShotAt = @(20, 45), [string]$Exe = '', [string]$Check = '')
+      [switch]$Keep, [switch]$Mft0, [switch]$NoDump, [switch]$Gov, [switch]$Alt, [int[]]$ShotAt = @(20, 45), [string]$Exe = '', [string]$Check = '', [int]$DumpEvery = 1, [int]$Seconds = 0)
 $root = Split-Path $PSScriptRoot -Parent
 $main = $root
 if (-not (Test-Path (Join-Path $root 'tools\llvm-mingw'))) {
@@ -73,6 +73,7 @@ $set = [ordered]@{ PS2_DUMP_FROM = "$At"; PS2_DUMP_TO = "$($At + $Frames - 1)"; 
     PS2_GS_GOVERNOR = $(if ($Gov) { $null } else { '0' }); PS2_R2 = $null; PS2_GS_SCALE = $null; PS2_MFT = $null }
 if ($Mft0) { $set.PS2_MFT = '0' }
 if ($Alt) { $set.PS2_R2_ALT = "$($At - 30)"; $set.PS2_MFT = '1' }   # modern (MFT) and all-exact (grid) pictures alternate: scripts\qa_pair.c
+if ($DumpEvery -gt 1) { $set.PS2_DUMP_BMP = $null; $set.PS2_DUMP_RAW = $null; $set.PS2_DUMP_WAIT = '0' }   # (mft-cover) sampled PNG pictures, no check
 if ($NoDump) { $set.PS2_DUMP_FROM = '99999'; $set.PS2_DUMP_TO = '99999' }
 foreach ($e in ($f[3] -split ' ' | Where-Object { $_ -like 'env=*' })) { $a, $b = $e.Substring(4) -split '=', 2; $set[$a] = $b }
 foreach ($e in ($Extra -split ';' | Where-Object { $_ })) { $a, $b = $e -split '=', 2; $set[$a.Trim()] = $b }
@@ -81,7 +82,7 @@ foreach ($k in $set.Keys) { $saved[$k] = [Environment]::GetEnvironmentVariable($
 if ($Exe) { $env:M9_GAME_EXE = $Exe }
 $secs = [int](($At + $Frames) / 60) + 25 + [int]($Frames / $(if ($Fps -gt 60) { 4 } else { 8 }))
 $wa = @('-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'warp_run.ps1'), '-Episode', "$episode", '-Release',
-        '-Seconds', "$secs", '-DumpEvery', '1', '-Name', $runName)
+        '-Seconds', "$(if ($Seconds -gt 0) { $Seconds } else { $secs })", '-DumpEvery', "$DumpEvery", '-Name', $runName)
 if ($job) { $wa += @('-Job', $job) }
 if ($flags -match '\bdirect\b') { $wa += '-Direct' }
 if ($flags -match '\bplay\b') { $wa += '-Play' }
@@ -109,6 +110,7 @@ $src = Join-Path $PSScriptRoot 'flicker_check.c'
 if (-not (Test-Path $tool) -or (Get-Item $src).LastWriteTime -gt (Get-Item $tool).LastWriteTime) {
     & (Join-Path $main 'tools\llvm-mingw\bin\clang.exe') -O2 -o $tool $src
 }
+if ($DumpEvery -gt 1) { New-Item -ItemType Directory -Force (Join-Path $out 'pics') | Out-Null; Move-Item (Join-Path $fr 'frame_*.png') (Join-Path $out 'pics') -ErrorAction SilentlyContinue; $Check = 'skip' }
 $n = @(Get-ChildItem $fr -Filter 'frame_*.bmp' -ErrorAction SilentlyContinue).Count
 if (-not $Check) {
     $g = (Get-Content (Join-Path $root 'tests\r2\gates.json') -Raw | ConvertFrom-Json).level3_temporal

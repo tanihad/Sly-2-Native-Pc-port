@@ -1224,6 +1224,29 @@ Measured (ep1 hub walk uncapped 330 s, then every sweep scene) - four causes, al
   output resolution), which throws away the vertical resolution MFT exists for; an owner decision (keep Faithful on the
   grid, or flicker filter only on MFT).
 
+### MFT coverage of the qa-b grid stretches (next/mft-cover, 2026-11-04)
+qa-b (ep5-8, no-dump runs) reported long grid stretches: m6_paraglide ~1500 "ALIAS16" + ~900 "target view", m5_ewok /
+m5_ghost / m5_battlezone / m6_train_red 740-3600 "target view", m7_boss 10-25% "not modern". Triage with sampled
+pictures (qa_scene.ps1 -DumpEvery N, one picture per 25-100 VBlanks) and PS2_MFT_LOG:
+- **None of them is gameplay.** Every "target view" stretch is the mission **briefing** (the PDA page: a 3D view with
+  two live portraits; the rejected draw is the right portrait, FF triangles on the display target reading a 128 x 128
+  render target, feat VIEW|TEX|HIRES|HUD, bb 370,124-431,170). Paraglide's "ALIAS16" stretches are the briefing and the
+  intro cutscene. m7_boss: neither QA's runs nor mine reached the fight - the whole window is the intro cutscene, whose
+  "not modern" VBlanks are PRESENT-only / cut-off frames = mft-pop's "continued" case (fixed in main before this task).
+  Gameplay after each briefing runs on MFT.
+- Re-measured on main (mft-pop merged), same runs (qa_scene -NoDump, ~6600 VBlanks): pops 0 in all six; grid frames
+  only in loading screens, briefings, the "Job failed" page (m6_train_red) and cutscenes. m7_boss 1004 -> 320 grid
+  frames (all loading; 1176 continued), paraglide's gameplay cycle no longer shows ALIAS16 runs.
+- Left on the grid, by design: the briefing (MFT has no target-view sampling: the FF MFT shaders are SPEC_NOVIEW; a view
+  of a grid-resolution render target in phase B would need view constants and a view-enabled permutation - possible, but
+  a menu page). Paraglide's briefing / cutscene shadow sequence fails mft_shadow_seq at the flat pass (check 19): the
+  flat pass between the volumes is one draw of 32 sprites in two states / colours (16 + 16), while npost_prep and the
+  fused pass's flat epochs take one whole-frame constant.
+- Diagnostics (PS2_MFT_LOG only): "ALIAS16 check N" names the failing check of mft_shadow_seq (mft_ssf codes 11-23),
+  the flat pass that did not plan is logged with its states; frames without R2 ops log what they hold.
+- m7_thermals' dark banded strip (qa-b, one MFT picture of an ALT run at v5254): not reproduced (one more ALT run at the
+  same point: worst pair group 25 vs 1038 then; a second run was cut short by the owner pause).
+
 ### R9. Enhanced and mods - 12 agent-days (two tasks)
 - **R9a Enhanced, 7 days**: per-pixel lighting, shadow maps, SSAO, bloom, anisotropic + mipmaps, outline styles, and
   presets ("Original", "Enhanced", "Performance") in the Options menu.
