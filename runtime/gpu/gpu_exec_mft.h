@@ -600,6 +600,13 @@ static int mft_shadow_seq(const gpu_front_frame_data* fd, size_t pos, mft_shp* q
                     if (dl > 0) {
                         dl--;
                         int ok = npost_prep(v, &P);
+                        xtarget* tt = tgt(v->ct);
+                        const gpu_rec_sprite* rr = (const gpu_rec_sprite*)(fd->rec + v->rec_first);
+                        int nst = 0, ncol = 0;
+                        for (uint32_t i = 1; i < v->count; i++) { nst += rr[i].state != rr[0].state; ncol += rr[i].rgba != rr[0].rgba; }
+                        gpu_log("mft:   flat target %d uav32 %d kx %d ky %d depth %d; tier %u feat %X tex %u; states differ %d colours differ %d (%08X); X.fd %d mixed %d",
+                                v->ct, tt ? tt->uav32 != NULL : -1, tt ? tt->kx : 0, tt ? tt->ky : 0, tt ? tt->depth : -1, v->tier, v->feat,
+                                v->tex, nst, ncol, rr[0].rgba, X.fd == fd, X.mixed);
                         const gpu_rec_sprite* r0 = (const gpu_rec_sprite*)(fd->rec + v->rec_first);
                         const gpu_staterec* s0 = r0->state < fd->state_count ? (const gpu_staterec*)(fd->states + (size_t)r0->state * GPU_STATE_BYTES) : NULL;
                         gpu_log("mft:   flat pass: nflat %d prep %d mode %X whole %d bb %d,%d-%d,%d (w %d h %d) n %u depth %u split %u; flags %X test %X alpha %X fmask %08X",
