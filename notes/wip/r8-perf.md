@@ -39,16 +39,6 @@ Worktree C:\Users\tanih\Projects\sly2-worktrees\r8-perf, branch next/r8-perf (fr
 - Merged main 669ae0c (mft-pop: MFT clip pipelines for guard-band entries) -> b22c58c: r2_plan keeps clip draws plain,
   the render loop draws plain clip chunks through mcpipe*. Re-verified in ep1 (R2 plan, shadows, line runs identical).
 
-## In progress
-- Merged main 8ddc789 -> 5a08d53 (clean); re-verified (all identical); A/B ep1 10.96 -> 10.24 (-6.5%), m1 11.67 -> 11.10 (-4.9%),
-  m2 9.16 -> 8.61 (-6.0%); run_tests 16/16, debug build. Base gs_replay: build\basert\out (8ddc789 runtime).
-- Gates on 01b66e5: units 27/27, pc_text_boot rel + dbg, gpu_diff_all mixed S=1 28/28, m9_exact S1 + S3 -Game identical,
-  package.py 0.1.1078. Remaining: r2_sweep ab,hc,tf -Parallel 1.
-
-## Next
-1. r2_sweep ab+hc+tf with -Parallel 1.
-2. notes/modern-renderer.md "as built", final report, cleanup (build\chaos, build\r2trace, build\mftcheck).
-
 ## Findings / traps
 - Build: `$env:PYTHON_CPU_COUNT='6'` limits build_game.py's thread pool (Python 3.13) to 6 jobs.
 - PS2_GPU_AB alone makes the A phases grid frames (ab_off() turns MFT, texdec, lazy Z, npost, shfuse off).

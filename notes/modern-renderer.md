@@ -1261,7 +1261,9 @@ inflated and drifting): only in-run comparisons count.
   when the G / A planes have no gradients - else the full evaluation), and the counters / depth / colour views stay bound
   across the volume draws. Volumes -19% (prof A/B).
 - **Exact by construction and by test**: PS2_R8P_VERIFY in ep1: R2 plan, shadow sequences and line-pixel runs identical
-  in every check (thousands). Reference and grid frames are untouched.
+  in every check (thousands). Reference and grid frames are untouched. Gates (after merging main 8ddc789): run_tests
+  16/16, units 27/27, gpu_diff_all mixed S = 1 28/28, m9_exact S1 + S3 -Game identical, pc_text_boot rel + dbg, debug +
+  release builds, package.py, r2_sweep ab + hc + tf + mf 44/44.
 - **Tried / found**: smaller plan tiles (8 / 4 px) barely help (5444 -> 2614 / 2945); unifying blend / mask states would
   not lengthen R2's runs (depth state alternates within each sub-batch); the volumes' remaining cost is raster + early
   depth of large volumes (only drawing the first volume of a sequence saved ~45% of it), the sky's the fragment
