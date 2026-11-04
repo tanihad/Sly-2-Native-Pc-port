@@ -14,8 +14,9 @@ main 669ae0c).
 - Diagnostics in gpu_exec_mft.h (PS2_MFT_LOG only): mft_ssf check codes of mft_shadow_seq ("ALIAS16 check N"), flat
   pass details, what a frame without R2 ops holds.
 
-## In progress
-- m7_thermals band: 3 ALT runs (tags alt1..alt3).
+## Status: complete (2026-11-04; wrapped up on the coordinator's request: no new coverage work)
+- thermals: 1 ALT run, band not reproduced (alt2 cut by the pause).
+- Notes: notes/modern-renderer.md "MFT coverage of the qa-b grid stretches".
 
 ## Next
 1. thermals result; if it reproduces, root-cause.
