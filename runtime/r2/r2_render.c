@@ -34,6 +34,7 @@ static struct {
     r2g_pipe *mpipe, *mpipe_nd, *mpipe_a2c;   /* (r2-m8, R8) modern frames: hardware Z on the MFT surfaces (R2_MFT) */
     r2g_pipe *mcpipe, *mcpipe_nd, *mcpipe_a2c;   /* (mft-pop) the same for entries crossing the guard band (r2_gs_clip) */
     r2g_pipe* mvpipe;                    /* (r2-m8) the motion-vector pass */
+    r2g_pipe *ppipe, *ppipe_nd, *ppipe_a2c;   /* (r8-perf) the merged draws of a plan (vertices pulled: r2.hlsl R2_PULL) */
     r2g_buf* cb;
     int cb_set;                          /* (r2-m2) cb holds the device's constants (r2.hlsl r2_static), written once */
     float cb_bias;
@@ -41,6 +42,7 @@ static struct {
     arena A[SLOTS];
     uint32_t epoch;                      /* bumped when GPU resources are recreated: meshes upload again */
     uint64_t uploads, upload_bytes, draws, segments, missing;
+    uint64_t merged, gpu_draws;          /* (r8-perf) records drawn in merged draws; the planned segments' GPU draws */
 } R;
 
 static void release_all(void) {
@@ -54,6 +56,8 @@ static void release_all(void) {
     R.pipe = R.pipe_clip = R.pipe_nd = NULL;
     r2g_pipe_free(R.mpipe); r2g_pipe_free(R.mpipe_nd); r2g_pipe_free(R.mpipe_a2c); r2g_pipe_free(R.mvpipe);
     R.mpipe = R.mpipe_nd = R.mpipe_a2c = R.mvpipe = NULL;
+    r2g_pipe_free(R.ppipe); r2g_pipe_free(R.ppipe_nd); r2g_pipe_free(R.ppipe_a2c);
+    R.ppipe = R.ppipe_nd = R.ppipe_a2c = NULL;
     r2g_pipe_free(R.mcpipe); r2g_pipe_free(R.mcpipe_nd); r2g_pipe_free(R.mcpipe_a2c);
     R.mcpipe = R.mcpipe_nd = R.mcpipe_a2c = NULL;
     memset(R.cb_mft, 0, sizeof R.cb_mft);
@@ -109,6 +113,16 @@ static int init(const r2_exec_in* in) {
     R.mcpipe_a2c = R.d ? r2g_pipe_create(R.d, &pmc) : NULL;
     r2g_pipe_desc pv = { gpu_sh_vs_r2m_mv, sizeof gpu_sh_vs_r2m_mv, gpu_sh_ps_r2m_mv, sizeof gpu_sh_ps_r2m_mv, attrs, 10, NULL, 0 };
     R.mvpipe = R.d ? r2g_pipe_create(R.d, &pv) : NULL;
+    /* (r8-perf) the plan's merged draws: the same pixel shaders, vertices pulled per instance's draw record (optional:
+     * without them every record is drawn on its own) */
+    static const r2g_attr pattrs[] = { { "DRAWID", R2G_U32, 0, 1 } };
+    r2g_pipe_desc pp = { gpu_sh_vs_r2m_pull, sizeof gpu_sh_vs_r2m_pull, gpu_sh_ps_r2m, sizeof gpu_sh_ps_r2m, pattrs, 1, NULL, 0 };
+    R.ppipe = R.d ? r2g_pipe_create(R.d, &pp) : NULL;
+    pp.ps = gpu_sh_ps_r2m_nd; pp.ps_size = sizeof gpu_sh_ps_r2m_nd;
+    R.ppipe_nd = R.d ? r2g_pipe_create(R.d, &pp) : NULL;
+    pp.ps = gpu_sh_ps_r2m_a2c; pp.ps_size = sizeof gpu_sh_ps_r2m_a2c;
+    R.ppipe_a2c = R.d ? r2g_pipe_create(R.d, &pp) : NULL;
+    if (R.d && (!R.ppipe || !R.ppipe_nd || !R.ppipe_a2c)) fprintf(stderr, "[r2] render: no merged-draw pipelines (every draw on its own)\n");
     /* (r2-m2) the segment constants by UpdateSubresource (a DEFAULT buffer): Map(DISCARD) per segment, ~45 a frame with
      * frames queued, made the driver block the render thread for up to 10 ms when the GPU was the bottleneck */
     R.cb = R.d ? r2g_buf_create(R.d, R2G_BUF_CONSTANT, R2G_USAGE_DEFAULT, 48, NULL) : NULL;
@@ -175,7 +189,7 @@ static int resident(r2_mesh* m) {
         !arena_grow(&a->vb, R2G_BUF_VERTEX, a->vused, a->vused + m->nvtx, sizeof(r2_vtx)) ||
         !arena_grow(&a->ib, R2G_BUF_INDEX, a->iused, a->iused + m->nidx, 4) ||
         !arena_grow(&a->mb, R2G_BUF_RAW, a->mused, a->mused + nm, MAT_BYTES) ||
-        (!a->mt && !(a->mt = r2g_buf_create(R.d, R2G_BUF_RAW, R2G_USAGE_DEFAULT, MESH_IDX * 4, NULL)))) {
+        (!a->mt && !(a->mt = r2g_buf_create(R.d, R2G_BUF_RAW, R2G_USAGE_DEFAULT, MESH_IDX * 16, NULL)))) {
         m->gpu_state = -(int)R.epoch;
         return 0;
     }
@@ -190,7 +204,8 @@ static int resident(r2_mesh* m) {
     m->gpu_ibase = a->iused;
     m->gpu_mbase = a->mused;
     if (m->gpu_tdec) memset(m->gpu_tdec, 0, (size_t)m->nb * 3 * 4);   /* (r2-m7b: the records hold 0) */
-    r2g_buf_write(R.d, a->mt, (m->handle & 0xFFFFF) * 4u, &m->gpu_mbase, 4);
+    uint32_t mt[4] = { m->gpu_mbase, m->gpu_vbase, m->gpu_ibase, 0 };   /* (r8-perf: the bases the merged draws pull by) */
+    r2g_buf_write(R.d, a->mt, (m->handle & 0xFFFFF) * 16u, mt, 16);
     a->vused += m->nvtx;
     a->iused += m->nidx;
     a->mused += nm;
@@ -223,6 +238,9 @@ int r2_render_segment(const gpu_fop_r2* o, const uint8_t* fdata, size_t fdata_by
     int n = segment(o, fdata, fdata_bytes, in);
     QueryPerformanceCounter(&t1);
     double ms = (double)(t1.QuadPart - t0.QuadPart) / qf;
+    if (R.segments % 20000 == 0)
+        fprintf(stderr, "[r2] render: %llu segments, %llu draws (%llu of them in merged GPU draws; planned segments: %llu GPU draws)\n",
+                (unsigned long long)R.segments, (unsigned long long)R.draws, (unsigned long long)R.merged, (unsigned long long)R.gpu_draws);
     if (ms > 2.0)
         fprintf(stderr, "[r2] slow render segment: %.2f ms (residency %.2f, constants %.2f, bindings %.2f, draws %.2f), %u draws, %llu uploads\n",
                 ms, ph_ms[0], ph_ms[1], ph_ms[2], ph_ms[3], o->ndraw, (unsigned long long)(R.uploads - up0));
@@ -296,7 +314,8 @@ static int segment(const gpu_fop_r2* o, const uint8_t* fdata, size_t fdata_bytes
     double p2 = ph_now();
     r2g_bind_targets_native(R.d, in->rtv, in->dsv);
     r2g_viewport(R.d, -8192.0f, -8192.0f, 16384.0f, 16384.0f);   /* (the REF viewport of mixed frames: d3d pixels = NDC * 8192) */
-    if (in->mft)                         /* (r2-m8) native pixel x covers d3d [x s, (x + 1) s): the pixels whose centres are inside */
+    if (in->dbg_cull) r2g_scissor(R.d, 0, 0, 0, 0);
+    else if (in->mft)                    /* (r2-m8) native pixel x covers d3d [x s, (x + 1) s): the pixels whose centres are inside */
         r2g_scissor(R.d, (int)ceilf(o->sc[0] * in->sx - 0.5f), (int)ceilf(o->sc[1] * in->sy - 0.5f),
                     (int)ceilf((o->sc[2] + 1) * in->sx - 0.5f), (int)ceilf((o->sc[3] + 1) * in->sy - 0.5f));
     else r2g_scissor(R.d, o->sc[0] * in->kx, o->sc[1] * in->ky, (o->sc[2] + 1) * in->kx, (o->sc[3] + 1) * in->ky);
@@ -311,8 +330,57 @@ static int segment(const gpu_fop_r2* o, const uint8_t* fdata, size_t fdata_bytes
     r2g_bind_vertex_native(R.d, 1, in->iota_vb, 4);
     r2g_bind_index(R.d, a->ib);
     double p3 = ph_now();
-    int n = 0;
-    for (uint32_t i = 0; i < o->ndraw; i++) {
+    int n = 0, pulled = 0;
+    /* (r8-perf) the segment's plan (gpu_r2front.c r2_plan): fewer, merged draws in an order equivalent to the game's. Only
+     * on the modern frame's surfaces, with every mesh resident in the segment's generation */
+    uint32_t np = o->nplan;
+    const gpu_r2_chunk* pc = NULL;
+    if (np && in->mft && (in->opt & R2X_BATCH) && !in->mv && !in->dbg_cull && R.ppipe && R.ppipe_nd && R.ppipe_a2c &&
+        (size_t)o->plan_off + (size_t)np * sizeof(gpu_r2_chunk) <= fdata_bytes) {
+        pc = (const gpu_r2_chunk*)(fdata + o->plan_off);
+        for (uint32_t i = 0; i < o->ndraw && pc; i++) {
+            const r2_mesh* m = r2_mesh_get(dr[i].mesh);
+            if (!m || m->gpu_state != (int)R.epoch || (m->handle >> 20) != o->gen) pc = NULL;
+        }
+        for (uint32_t c = 0; c < np && pc; c++)   /* (merged chunks never hold guard-band entries: r2_plan keeps them plain) */
+            if (pc[c].n ? ((size_t)pc[c].first * 32u + (size_t)pc[c].n * 4u > fdata_bytes || pc[c].maxcount % 3u ||
+                           ((pc[c].state >> 13) & 1))
+                        : pc[c].first >= o->ndraw)
+                pc = NULL;
+    }
+    if (pc) {
+        r2g_bind_srv_vs(R.d, 20, a->vb);
+        r2g_bind_srv_vs(R.d, 21, a->ib);
+        pulled = 1;
+        static int rev = -1;             /* (diagnostics: PS2_R2_PLAN_REVERSE=1 draws the plan backwards - a wrong order the
+                                            verifier, PS2_R8P_VERIFY, must catch) */
+        if (rev < 0) { const char* e = getenv("PS2_R2_PLAN_REVERSE"); rev = e && *e == '1'; }
+        for (uint32_t cc = 0; cc < np; cc++) {
+            uint32_t c = rev ? np - 1 - cc : cc;
+            uint32_t st = pc[c].state;
+            int bl = (int)(st & 15), depth = (int)((st >> 4) & 15), disc = (st >> 14) & 1;
+            r2g_state s = { (uint8_t)bl, (uint8_t)((st >> 8) & 15), (uint8_t)(depth >> 1), (uint8_t)(depth & 1),
+                            (uint8_t)(((st >> 12) & 1) ? R2G_CULL_FRONT : R2G_CULL_NONE) };
+            if (pc[c].n) {
+                r2g_bind_pipe(R.d, disc ? (in->msaa > 1 ? R.ppipe_a2c : R.ppipe) : R.ppipe_nd);
+                r2g_bind_state(R.d, &s);
+                r2g_draw_instanced(R.d, pc[c].maxcount, pc[c].n, pc[c].first);
+                n += (int)pc[c].n;
+                R.merged += pc[c].n;
+            } else {
+                uint32_t i = pc[c].first;
+                const gpu_r2_draw* d = &dr[i];
+                const r2_mesh* m = r2_mesh_get(d->mesh);
+                if ((st >> 13) & 1) r2g_bind_pipe(R.d, disc ? (in->msaa > 1 ? R.mcpipe_a2c : R.mcpipe) : R.mcpipe_nd);
+                else r2g_bind_pipe(R.d, disc ? (in->msaa > 1 ? R.mpipe_a2c : R.mpipe) : R.mpipe_nd);
+                r2g_bind_state(R.d, &s);
+                r2g_draw_indexed(R.d, d->count, m->gpu_ibase + d->first, (int32_t)m->gpu_vbase, o->draw_off / 32u + i);
+                n++;
+            }
+            R.gpu_draws++;
+        }
+    }
+    for (uint32_t i = 0; i < o->ndraw && !pc; i++) {
         const gpu_r2_draw* d = &dr[i];
         const r2_mesh* m = r2_mesh_get(d->mesh);
         if (!m || m->gpu_state != (int)R.epoch || (m->handle >> 20) != o->gen) { R.missing++; continue; }
@@ -329,15 +397,24 @@ static int segment(const gpu_fop_r2* o, const uint8_t* fdata, size_t fdata_bytes
             n++;
             continue;
         }
+        if (in->dbg_cull == 3) {         /* (diagnostics: one pipeline and state for every draw) */
+            r2g_bind_pipe(R.d, R.mpipe_nd);
+            r2g_state s0 = { 0, 15, R2G_Z_GEQUAL, 1, 0 };
+            r2g_bind_state(R.d, &s0);
+            r2g_draw_indexed(R.d, 3u, m->gpu_ibase + d->first, (int32_t)m->gpu_vbase, o->draw_off / 32u + i);
+            n++;
+            continue;
+        }
         if (in->mft) {                   /* (r2-m8; mft-pop: entries crossing the guard band through the clip stage) */
             if ((st >> 13) & 1) r2g_bind_pipe(R.d, (st >> 14) & 1 ? (in->msaa > 1 ? R.mcpipe_a2c : R.mcpipe) : R.mcpipe_nd);
             else r2g_bind_pipe(R.d, (st >> 14) & 1 ? (in->msaa > 1 ? R.mpipe_a2c : R.mpipe) : R.mpipe_nd);
         } else
         r2g_bind_pipe(R.d, (st >> 13) & 1 ? R.pipe_clip : (st >> 14) & 1 ? R.pipe : R.pipe_nd);   /* (filtered when unchanged) */
         r2g_bind_state(R.d, &s);
-        r2g_draw_indexed(R.d, d->count, m->gpu_ibase + d->first, (int32_t)m->gpu_vbase, o->draw_off / 32u + i);
+        r2g_draw_indexed(R.d, in->dbg_cull == 2 ? 3u : d->count, m->gpu_ibase + d->first, (int32_t)m->gpu_vbase, o->draw_off / 32u + i);
         n++;
     }
+    if (pulled) { r2g_bind_srv_vs(R.d, 20, NULL); r2g_bind_srv_vs(R.d, 21, NULL); }
     r2g_bind_srv(R.d, 10, NULL);
     r2g_bind_srv(R.d, 11, NULL);
     r2g_end(R.d);

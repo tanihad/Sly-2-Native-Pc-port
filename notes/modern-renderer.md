@@ -1278,6 +1278,69 @@ pictures (qa_scene.ps1 -DumpEvery N, one picture per 25-100 VBlanks) and PS2_MFT
   looks like the game's own near-camera handling); in the ep1 hub the outlines come after the 2D mark, so MFT draws
   them in phase B and a late native entry sends the frame back to phase A (an unresolve per frame).
 
+#### R8 performance at the Balanced preset (next/r8-perf, 2026-11-03)
+Balanced = MFT 100%, MSAA 4x, 2560 x 1440. Measured on a GPU shared with 2-3 other agents' games (every GPU time 3-5x
+inflated and drifting): only in-run comparisons count.
+- **Tools** (gpu_exec.c, gpu_exec_mft.h, gpu_present.c):
+  - `PS2_GPU_AB=<frames> PS2_GPU_AB_R8=<mask>`: only this work's features (R8P_*: 1 R2 plan, 2 line-pixel runs, 4 shadow
+    volumes) follow the phases, MFT stays on in both; without PS2_GPU_PROF an "ab-gpu" line gives the pictures' GPU time
+    per phase (the M11 timestamps, gpu_frame_stats.ab_phase). `PS2_R8P=<mask>`: the features on (default all).
+  - `PS2_R8P_SKIP=<m1>,<m2>,..` with PS2_GPU_AB (+ PS2_GPU_PROF=1): the phases cycle through "nothing skipped" and each
+    mask of MFT work left out (R8S_* in gpu_exec.c: line pixels, R2, shadows, post passes, triangles by kind, cost
+    experiments inside the shaders), "prof-skip" line = what each item costs, all under the same load.
+  - `PS2_GPU_PROF_OPS_N=<n> PS2_GPU_PROF_OPS_MFT=1`: the op signatures of n modern frames averaged.
+  - `PS2_R8P_VERIFY=<n>`: every n-th modern frame each optimised step runs twice from the same surfaces - optimised, then
+    the original way - and the two results are compared per sample (colour and depth, cs_mft_cmp; "verify:" lines).
+    The original's result is kept. `PS2_R2_PLAN_REVERSE=1` (a wrong order on purpose) proves it catches differences.
+- **Profile** (ep1 hub, skip cycles): R2 ~30% of the GPU time, the shadow pipeline ~20% (volumes ~15%), exact FF
+  triangles ~18% (the sky alone ~11%; their fragment evaluation is ~60% of it), outline line pixels ~6%, blur ~4%, resolve
+  ~2%. R2: ~5500 draws a frame of 1-6 triangles each (grass, leaves; per sub-batch three states: pass A's alpha-test
+  halves and the additive pass B); an empty scissor saved only ~40% of R2 and draws of 3 indices cost as much as the full
+  ones: **the draws were R2's cost**, not its pixels or vertices.
+- **R2 plan** (gpu_r2front.c r2_plan, gpu_front.h gpu_r2_chunk, r2.hlsl r2_vs_pull, r2_render.c): two draws that touch
+  no common pixel commute exactly. The frontend gives every draw a screen box (its sub-batch's object-space box through
+  W x C and the screen model, or its own vertices when the box reaches behind the camera; skinned: everything), enters it
+  in a 16-pixel tile grid and assigns levels L(j) = max over earlier overlapping k of L(k) + (rank(k) > rank(j)), rank = the
+  order the segment's states first appear. Executing by (level, rank), the game's order inside, keeps every overlapping
+  pair in order. Runs of one (level, rank) become one DrawInstanced: instance k is the k-th record of a 32-byte aligned
+  member list in fdata (StartInstanceLocation = its offset / 32), the vertex shader pulls index and vertex from the arena
+  (raw views t20 / t21; the mesh table holds material, vertex and index bases), padding triangles fall outside the clip
+  volume. Large draws (> 384 indices) stay plain. ep1: 5167 -> 2542 GPU draws a frame (overlap limits it: the main world
+  segment has ~270 levels). Modern frames only (grid frames draw every record).
+- **Line-pixel runs** (gpu_exec_mft.h lm_plan / lm_exec, mft.hlsl vs_mft_linepix_m): consecutive outline line-pixel draws
+  on one depth target, same level rule on their native boxes, each group one instanced draw through an instance table
+  (relative draw slot, instance) uploaded once per frame. 2.5 M -> 0.8 M draws, but only ~5% of their time: their cost
+  was not the draw count.
+- **Shadow volumes**: flat volume primitives take colour, TEST and ALPHA from the record's row and the state (SVOL_LITE,
+  when the G / A planes have no gradients - else the full evaluation), and the counters / depth / colour views stay bound
+  across the volume draws. Volumes -19% (prof A/B).
+- **Exact by construction and by test**: PS2_R8P_VERIFY in ep1: R2 plan, shadow sequences and line-pixel runs identical
+  in every check (thousands). Reference and grid frames are untouched. Gates (after merging main 8ddc789): run_tests
+  16/16, units 27/27, gpu_diff_all mixed S = 1 28/28, m9_exact S1 + S3 -Game identical, pc_text_boot rel + dbg, debug +
+  release builds, package.py, r2_sweep ab + hc + tf + mf 44/44.
+- **Tried / found**: smaller plan tiles (8 / 4 px) barely help (5444 -> 2614 / 2945); unifying blend / mask states would
+  not lengthen R2's runs (depth state alternates within each sub-batch); the volumes' remaining cost is raster + early
+  depth of large volumes (only drawing the first volume of a sequence saved ~45% of it), the sky's the fragment
+  evaluation of several full-screen layers (a constant colour saves ~60%).
+- **Result** (in-run A/B: `PS2_GPU_AB=24 PS2_GPU_AB_R8=0xFF`, chaos scenes, ~330 s each, Balanced; the pictures' GPU
+  time per phase, ~7500-10500 frames each; the GPU was shared with 2-3 other games, so the ms are ~3x the owner's):
+
+  | scene | GPU ms A (off) | GPU ms B (on) | change |
+  |---|---|---|---|
+  | ep1 hub | 12.12 | 11.50 | -5.2% |
+  | m1 brawl | 8.32 | 7.96 | -4.4% |
+  | m2 boardroom | 10.17 | 9.63 | -5.3% |
+  | after merging main 8ddc789 (mft-pop's clip pipelines): | | | |
+  | ep1 hub | 10.96 | 10.24 | -6.5% |
+  | m1 brawl | 11.67 | 11.10 | -4.9% |
+  | m2 boardroom | 9.16 | 8.61 | -6.0% |
+
+  Applied to the owner's unloaded numbers (ep1 3.79 ms / 258 fps, m1 239 fps, m2 5.77 / 172; GPU-bound, fps scaling with the GPU time) the merged build gives about ep1 3.54 ms / ~276 fps, m1 ~251 fps,
+  m2 5.42 / ~183 fps: **the 300 fps target is not reached**. What is left is mostly genuine work: R2's draws that overlap
+  (the plan cannot reorder them), the sky's and the characters' exact triangles (their per-fragment record evaluation; a
+  cheaper form would interpolate in hardware like the particle pipeline - not exact, not done), the large shadow volumes'
+  raster at 4x, the shadow pass's per-sample edge pass (~4% in one skip run).
+
 ### R9. Enhanced and mods - 12 agent-days (two tasks)
 - **R9a Enhanced, 7 days**: per-pixel lighting, shadow maps, SSAO, bloom, anisotropic + mipmaps, outline styles, and
   presets ("Original", "Enhanced", "Performance") in the Options menu.

@@ -114,6 +114,7 @@ static struct {
     uint64_t mv_frames;
     /* statistics (PS2_R2_STATS) */
     uint64_t frames, grid, why[MW_N], to_grid, from_grid, resolves, draws, svols, n_dl, n_load, n_xcopy, n_mat;
+    uint64_t tri_n[5];                   /* (r8-perf) triangle draws: all, decoded textures, untextured, general LOD, 256-byte records */
     int why_last;
     /* (mft-pop) pops: runs of 1 .. MFT_POP_MAX grid frames between modern frames - a gameplay frame on the grid, a
      * visible resolution / AA pop; menus and loading screens are longer runs. Frames MFT is off for (settings, A/B
@@ -137,7 +138,11 @@ static void mft_surf_free(mtarget* m) {
 
 static void mft_target_free(int id) { if (id > 0 && id <= MAX_TARGETS) mft_surf_free(&MT[id]); }
 
+static void vf_release(void);            /* (r8-perf) */
+static void lm_release(void);
 static void mft_release(void) {
+    vf_release();
+    lm_release();
     for (int i = 0; i <= MAX_TARGETS; i++) mft_surf_free(&MT[i]);
     GPU_RELEASE(M.cb); GPU_RELEASE(M.lin);
     GPU_RELEASE(M.spare_rtv); GPU_RELEASE(M.spare_srv); GPU_RELEASE(M.spare);
@@ -270,6 +275,7 @@ static void mft_cb_scale(int pic) {
     uint32_t* u = (uint32_t*)M.cbv;
     u[4] = pic ? 1u : (uint32_t)M.n;
     u[5] = u[6] = u[7] = 0;
+    if (PR.ncyc > 0 && r8s_skip(R8S_TRI_PSC)) u[5] = 8u << 16;   /* (r8-perf cost experiment: constant FF triangle colour) */
     mft_cb_write();
     M.cb_phase = pic;
 }
@@ -411,7 +417,8 @@ static int mft_resolve(int id) {
         ID3D11DeviceContext_PSSetShaderResources(gpu_rt.ctx, 16, 1, &none);
     } else if (m->w == m->pw && m->h == m->ph) {
         unbind_all();
-        if (m->n > 1) ID3D11DeviceContext_ResolveSubresource(gpu_rt.ctx, (ID3D11Resource*)m->pic, 0, (ID3D11Resource*)m->ms, 0, DXGI_FORMAT_R8G8B8A8_UNORM);
+        if (r8s_skip(R8S_RESOLVE)) {}
+        else if (m->n > 1) ID3D11DeviceContext_ResolveSubresource(gpu_rt.ctx, (ID3D11Resource*)m->pic, 0, (ID3D11Resource*)m->ms, 0, DXGI_FORMAT_R8G8B8A8_UNORM);
         else ID3D11DeviceContext_CopyResource(gpu_rt.ctx, (ID3D11Resource*)m->pic, (ID3D11Resource*)m->ms);
         gpu_rt.n_copies++;
     } else {
@@ -1320,6 +1327,7 @@ static int mft_draw_setup(const gpu_fop_draw* d, int zuse, int force_dual) {
         int fast = (d->ps_key & GPU_PSK_FF_FAST) != 0, notex = !(d->feat & GPU_DF_TEX), lod = (d->feat & GPU_DF_LOD) != 0;
         int tdd = fast && !notex && !lod && TD.ndpos && td_draw(X.curpos);
         if (tdd) TD.draws++;
+        M.tri_n[0]++; M.tri_n[1] += tdd; M.tri_n[2] += notex; M.tri_n[3] += lod; M.tri_n[4] += !fast;   /* (r8-perf statistics) */
         static const int t[2][2][3] = { { { GPU_SH_ps_mft_t0s, GPU_SH_ps_mft_t0sl, GPU_SH_ps_mft_t0sn },
                                           { GPU_SH_ps_mft_t0f, GPU_SH_ps_mft_t0fl, GPU_SH_ps_mft_t0fn } },
                                         { { GPU_SH_ps_mft_t1s, GPU_SH_ps_mft_t1sl, GPU_SH_ps_mft_t1sn },
@@ -1366,10 +1374,136 @@ static void mft_draw(const gpu_fop_draw* d, uint32_t slot) {
     if (zuse && zw) MT[d->zt].truth = want;
 }
 
+/* ---- (r8-perf, diagnostics) PS2_R8P_VERIFY=<n>: in every n-th modern frame each optimised step (an R2 segment's plan) runs
+ * twice from the same surfaces - optimised, then the original way - and the two results are compared sample by sample
+ * (colour and depth, cs_mft_cmp); differences are logged ("verify:" lines). The original's result is kept. */
+static struct {
+    int every;
+    ID3D11Texture2D *c0, *z0, *c1, *z1;  /* the surfaces before, the optimised result */
+    ID3D11ShaderResourceView *c1s, *z1s;
+    ID3D11Buffer *ob, *os;               /* counters: differing colour samples, depth samples, first differing pixel */
+    ID3D11UnorderedAccessView* ou;
+    uint64_t checks, bad;
+} VF = { -1 };
+
+static void vf_release(void) {
+    GPU_RELEASE(VF.c1s); GPU_RELEASE(VF.z1s);
+    GPU_RELEASE(VF.c0); GPU_RELEASE(VF.z0); GPU_RELEASE(VF.c1); GPU_RELEASE(VF.z1);
+    GPU_RELEASE(VF.ou); GPU_RELEASE(VF.ob); GPU_RELEASE(VF.os);
+}
+static int vf_frame(void) {
+    if (VF.every < 0) { const char* e = getenv("PS2_R8P_VERIFY"); VF.every = e ? atoi(e) : 0; }
+    return VF.every > 0 && M.n > 1 && (M.frames % (uint64_t)VF.every) == 0;
+}
+static int vf_tex(ID3D11Texture2D** t, ID3D11ShaderResourceView** s, ID3D11Texture2D* like, DXGI_FORMAT sf) {
+    D3D11_TEXTURE2D_DESC d, h;
+    ID3D11Texture2D_GetDesc(like, &d);
+    if (*t) {
+        ID3D11Texture2D_GetDesc(*t, &h);
+        if (h.Width == d.Width && h.Height == d.Height && h.SampleDesc.Count == d.SampleDesc.Count && h.Format == d.Format) return 1;
+        GPU_RELEASE(*t);
+        if (s) GPU_RELEASE(*s);
+    }
+    d.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    d.MiscFlags = 0;
+    if (FAILED(ID3D11Device_CreateTexture2D(gpu_rt.dev, &d, NULL, t))) { *t = NULL; return 0; }
+    if (s && !(*s = msrv(*t, d.SampleDesc.Count > 1, sf))) return 0;
+    return 1;
+}
+/* before the optimised step: the surfaces' content saved */
+static int vf_begin(mtarget* c, mtarget* z) {   /* (z NULL: colour only) */
+    if (!c->ms || c->alias || (z && (!z->ms || z->alias))) return 0;
+    if (!vf_tex(&VF.c0, NULL, c->ms, 0) || !vf_tex(&VF.c1, &VF.c1s, c->ms, DXGI_FORMAT_R8G8B8A8_UINT) ||
+        (z && (!vf_tex(&VF.z0, NULL, z->ms, 0) || !vf_tex(&VF.z1, &VF.z1s, z->ms, DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS))))
+        return 0;
+    unbind_all();
+    ID3D11DeviceContext_CopyResource(gpu_rt.ctx, (ID3D11Resource*)VF.c0, (ID3D11Resource*)c->ms);
+    if (z) ID3D11DeviceContext_CopyResource(gpu_rt.ctx, (ID3D11Resource*)VF.z0, (ID3D11Resource*)z->ms);
+    return 1;
+}
+/* after it: its result saved, the content before restored (the original way runs next) */
+static void vf_mid(mtarget* c, mtarget* z) {
+    unbind_all();
+    ID3D11DeviceContext_CopyResource(gpu_rt.ctx, (ID3D11Resource*)VF.c1, (ID3D11Resource*)c->ms);
+    ID3D11DeviceContext_CopyResource(gpu_rt.ctx, (ID3D11Resource*)c->ms, (ID3D11Resource*)VF.c0);
+    if (z) {
+        ID3D11DeviceContext_CopyResource(gpu_rt.ctx, (ID3D11Resource*)VF.z1, (ID3D11Resource*)z->ms);
+        ID3D11DeviceContext_CopyResource(gpu_rt.ctx, (ID3D11Resource*)z->ms, (ID3D11Resource*)VF.z0);
+    }
+}
+/* after the original way: both results compared */
+static void vf_end(mtarget* c, mtarget* z, const char* what) {
+    unbind_all();
+    M.bound = 0;
+    if (!VF.ob) {
+        D3D11_BUFFER_DESC bd;
+        memset(&bd, 0, sizeof bd);
+        bd.ByteWidth = 16;
+        bd.BindFlags = D3D11_BIND_UNORDERED_ACCESS;
+        bd.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS;
+        if (FAILED(ID3D11Device_CreateBuffer(gpu_rt.dev, &bd, NULL, &VF.ob))) { VF.ob = NULL; return; }
+        bd.BindFlags = 0; bd.MiscFlags = 0; bd.Usage = D3D11_USAGE_STAGING; bd.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+        if (FAILED(ID3D11Device_CreateBuffer(gpu_rt.dev, &bd, NULL, &VF.os))) { VF.os = NULL; return; }
+        D3D11_UNORDERED_ACCESS_VIEW_DESC ud;
+        memset(&ud, 0, sizeof ud);
+        ud.Format = DXGI_FORMAT_R32_TYPELESS;
+        ud.ViewDimension = D3D11_UAV_DIMENSION_BUFFER;
+        ud.Buffer.NumElements = 4;
+        ud.Buffer.Flags = D3D11_BUFFER_UAV_FLAG_RAW;
+        if (FAILED(ID3D11Device_CreateUnorderedAccessView(gpu_rt.dev, (ID3D11Resource*)VF.ob, &ud, &VF.ou))) { VF.ou = NULL; return; }
+    }
+    if (!VF.ou || !VF.os) return;
+    ID3D11DeviceContext* x = gpu_rt.ctx;
+    static const UINT init[4] = { 0, 0, 0xFFFFFFFFu, 0 };   /* (a raw view's clear would take only the first value) */
+    ID3D11DeviceContext_UpdateSubresource(x, (ID3D11Resource*)VF.ob, 0, NULL, init, 0, 0);
+    ID3D11ShaderResourceView* v[4] = { VF.c1s, c->srv, z ? VF.z1s : NULL, z ? z->srv : NULL };
+    ID3D11DeviceContext_CSSetShader(x, gpu_cs(GPU_SH_cs_mft_cmp), NULL, 0);
+    ID3D11DeviceContext_CSSetShaderResources(x, 22, 4, v);
+    ID3D11DeviceContext_CSSetUnorderedAccessViews(x, 0, 1, &VF.ou, NULL);
+    ID3D11DeviceContext_Dispatch(x, (UINT)(c->w + 7) / 8, (UINT)(c->h + 7) / 8, 1);
+    ID3D11ShaderResourceView* nv[4] = { NULL, NULL, NULL, NULL };
+    ID3D11DeviceContext_CSSetShaderResources(x, 22, 4, nv);
+    ID3D11UnorderedAccessView* nu = NULL;
+    ID3D11DeviceContext_CSSetUnorderedAccessViews(x, 0, 1, &nu, NULL);
+    ID3D11DeviceContext_CopyResource(x, (ID3D11Resource*)VF.os, (ID3D11Resource*)VF.ob);
+    D3D11_MAPPED_SUBRESOURCE mp;
+    if (FAILED(ID3D11DeviceContext_Map(x, (ID3D11Resource*)VF.os, 0, D3D11_MAP_READ, 0, &mp))) return;
+    uint32_t r[4];
+    memcpy(r, mp.pData, 16);
+    ID3D11DeviceContext_Unmap(x, (ID3D11Resource*)VF.os, 0);
+    static const char* kinds[8];
+    static uint64_t kn[8], kbad[8];
+    int k = 0;
+    while (k < 7 && kinds[k] && kinds[k] != what) k++;
+    kinds[k] = what;
+    kn[k]++;
+    VF.checks++;
+    if (r[0] || r[1]) {
+        VF.bad++;
+        kbad[k]++;
+        gpu_log("verify: %s differs: %u colour samples, %u depth samples, first at %u,%u (frame v%u; %llu of %llu checks differ)", what,
+                r[0], r[1], r[2] & 0xFFFF, r[2] >> 16, X.fd ? X.fd->vblank : 0u, (unsigned long long)kbad[k], (unsigned long long)kn[k]);
+    } else if (kn[k] % 200 == 1)
+        gpu_log("verify: %s identical (%llu checks, %llu differ)", what, (unsigned long long)kn[k], (unsigned long long)kbad[k]);
+}
+
+static void mft_r2_seg(const gpu_front_frame_data* fd, const gpu_fop_r2* o, int opt);
 static void mft_r2(const gpu_front_frame_data* fd, const gpu_fop_r2* o) {
+    int vf = o->nplan && vf_frame() && r8p_on(R8P_R2BATCH) && mft_need(o->ct, MT_MS) && mft_need(o->zt, MT_MS) &&
+             vf_begin(&MT[o->ct], &MT[o->zt]);
+    for (int pass = 0; pass < 1 + vf; pass++) {
+        if (pass) vf_mid(&MT[o->ct], &MT[o->zt]);
+        mft_r2_seg(fd, o, pass ? 0 : r8p_on(R8P_R2BATCH) ? R2X_BATCH : 0);
+    }
+    if (vf) vf_end(&MT[o->ct], &MT[o->zt], "R2 plan");
+    if (M.mv_on && M.nr2 < 256) M.r2op[M.nr2++] = (const uint8_t*)o - fd->cmd;   /* (the motion-vector pass draws it again) */
+}
+
+static void mft_r2_seg(const gpu_front_frame_data* fd, const gpu_fop_r2* o, int opt) {
     if (!mft_bind(o->ct, o->zt)) return;
     prof_mark(PR_R2);
-    if (!iota_ensure(o->draw_off / 32u + o->ndraw + 1)) return;
+    /* (r8-perf: the plan's merged draws find their member lists by StartInstanceLocation = fdata offset / 32) */
+    if (!iota_ensure(o->nplan ? (uint32_t)(fd->data_bytes / 32u) + o->ndraw + 1u : o->draw_off / 32u + o->ndraw + 1)) return;
     if (TD.on != 0) td_ensure();
     mtarget *c = &MT[o->ct], *z = &MT[o->zt];
     r2_exec_in in = { gpu_rt.dev, gpu_rt.ctx, c->rtv, z->dsv, 1, 1, X.vram_srv, X.swz_srv, X.dat.srv, X.iota,
@@ -1379,6 +1513,8 @@ static void mft_r2(const gpu_front_frame_data* fd, const gpu_fop_r2* o) {
     in.msaa = M.n;
     in.sx = M.rsx;
     in.sy = M.rsy;
+    in.dbg_cull = r8s_skip(R8S_R2DRAW) ? (r8s_skip(R8S_R2UNI) ? 3 : r8s_skip(R8S_R2TINY) ? 2 : 1) : 0;
+    in.opt = opt;
     int n = r2_render_segment(o, fd->data, fd->data_bytes, &in);
     gpu_rt.n_draws += (uint32_t)n;
     r2_segs++;
@@ -1392,7 +1528,6 @@ static void mft_r2(const gpu_front_frame_data* fd, const gpu_fop_r2* o) {
     X.mode = 0;
     X.b_ct = X.b_zt = -1;
     M.bound = 0;
-    if (M.mv_on && M.nr2 < 256) M.r2op[M.nr2++] = (const uint8_t*)o - fd->cmd;   /* (the motion-vector pass draws it again) */
 }
 
 /* ---- (r2-m8) motion vectors: the frame's R2 segments again into an R16G16_FLOAT surface (r2.hlsl r2_vs_mv: current -
@@ -1590,27 +1725,47 @@ static int mft_cnt_ensure(int w, int h) {
     return 1;
 }
 
+static void mft_svol_unbind(void) {
+    ID3D11ShaderResourceView* none = NULL;
+    ID3D11DeviceContext_PSSetShaderResources(gpu_rt.ctx, 12, 1, &none);
+    unbind_all();
+}
+
 static void mft_svol(const gpu_fop_draw* d, uint32_t slot, int epoch) {
     mtarget* m = &MT[d->ct];
     int zuse = d->zt && (d->depth >> 1) != 0;
     if (!mft_need(d->ct, MT_MS) || (zuse && !mft_need(d->zt, MT_MS))) return;
     mtarget* z = zuse ? &MT[d->zt] : NULL;
-    if (X.b_t1) set_t1(NULL);
-    if (X.b_t2) set_t2(NULL);
-    ID3D11UnorderedAccessView* u = M.cnt_uav;
-    ID3D11DeviceContext_OMSetRenderTargetsAndUnorderedAccessViews(gpu_rt.ctx, 0, NULL, z ? z->dsv : NULL, 1, 1, &u, NULL);
-    X.mode = 7;
-    X.b_ct = X.b_zt = -1;
+    /* (r8-perf) consecutive volume draws keep the counters, depth and colour views bound (X.mode 10) */
+    int keep = r8p_on(R8P_SHADOW);
+    static ID3D11DepthStencilView* b_dsv;
+    static ID3D11ShaderResourceView* b_srv;
+    if (!(keep && X.mode == 10 && b_dsv == (z ? z->dsv : NULL) && b_srv == m->srv)) {
+        if (X.b_t1) set_t1(NULL);
+        if (X.b_t2) set_t2(NULL);
+        ID3D11UnorderedAccessView* u = M.cnt_uav;
+        ID3D11DeviceContext_OMSetRenderTargetsAndUnorderedAccessViews(gpu_rt.ctx, 0, NULL, z ? z->dsv : NULL, 1, 1, &u, NULL);
+        ID3D11DeviceContext_PSSetShaderResources(gpu_rt.ctx, 12, 1, &m->srv);
+        X.mode = keep ? 10 : 7;
+        X.b_ct = X.b_zt = -1;
+        b_dsv = z ? z->dsv : NULL;
+        b_srv = m->srv;
+    }
     M.bound = 0;
     set_viewport(-REF_VP, -REF_VP);
     mft_cb_scale(0);
     uint32_t* cu = (uint32_t*)M.cbv;
-    if (cu[6] != (uint32_t)(epoch * m->h)) { cu[6] = (uint32_t)(epoch * m->h); mft_cb_write(); }
-    ID3D11DeviceContext_PSSetShaderResources(gpu_rt.ctx, 12, 1, &m->srv);
+    uint32_t dbg = (r8s_skip(R8S_SVA) ? 1u : 0u) | (r8s_skip(R8S_SVR) ? 2u : 0u) | (r8s_skip(R8S_SVD) ? 4u : 0u);
+    if (cu[6] != (uint32_t)(epoch * m->h) || (cu[5] >> 16) != dbg) {
+        cu[6] = (uint32_t)(epoch * m->h); cu[5] = (cu[5] & 0xFFFFu) | dbg << 16; mft_cb_write();
+    }
     mft_scissor(d->sc);
     set_topo(0);
     set_vs(gpu_vs(GPU_SH_vs_mft_tri));
     int fast = (d->ps_key & GPU_PSK_FF_FAST) != 0, msv = m->n > 1;
+    if (keep)                            /* (r8-perf: the flat volumes' colour and tests without the plane evaluation) */
+        set_ps(gpu_ps(fast ? (msv ? GPU_SH_ps_mft_svol_fl1 : GPU_SH_ps_mft_svol_fl0) : (msv ? GPU_SH_ps_mft_svol_sl1 : GPU_SH_ps_mft_svol_sl0)));
+    else
     set_ps(gpu_ps(fast ? (msv ? GPU_SH_ps_mft_svol_f1 : GPU_SH_ps_mft_svol_f0) : (msv ? GPU_SH_ps_mft_svol_s1 : GPU_SH_ps_mft_svol_s0)));
     set_blend(blend_state(BL_OFF, 0));
     set_depth(depth_state(zuse ? d->depth & ~1 : 0));
@@ -1624,9 +1779,7 @@ static void mft_svol(const gpu_fop_draw* d, uint32_t slot, int epoch) {
     if (by0 < M.sv_bb[1]) M.sv_bb[1] = by0;
     if (bx1 > M.sv_bb[2]) M.sv_bb[2] = bx1;
     if (by1 > M.sv_bb[3]) M.sv_bb[3] = by1;
-    ID3D11ShaderResourceView* none = NULL;
-    ID3D11DeviceContext_PSSetShaderResources(gpu_rt.ctx, 12, 1, &none);
-    unbind_all();
+    if (!keep) mft_svol_unbind();
 }
 
 static int mft_spare(const mtarget* m) {
@@ -1678,10 +1831,13 @@ static void mft_shfuse(const mft_shp* q, int epochs) {
     unbind_all();
     /* the pass covers the whole surface when the frame (shf_tail: the darken covers W x H native) does */
     int W = mft_px(q->L.W, m->sx), H = mft_px(q->L.H, m->sy);
-    if (W < m->w || H < m->h)            /* (the rest of the surface: a copy first) */
+    if (W < m->w || H < m->h) {          /* (the rest of the surface: a copy first) */
+        static int logged;
+        if (!logged++) gpu_log("mft: the shadow pass copies its surface first (%dx%d of %dx%d)", W, H, m->w, m->h);
         ID3D11DeviceContext_CopyResource(gpu_rt.ctx, (ID3D11Resource*)M.spare, (ID3D11Resource*)m->ms);
+    }
     ID3D11DepthStencilView* sds = m->n > 1 ? mft_sds(0, m->w, m->h, m->n) : NULL;
-    if (sds) ID3D11DeviceContext_ClearDepthStencilView(gpu_rt.ctx, sds, D3D11_CLEAR_STENCIL, 1.0f, 0);
+    if (sds && !r8s_skip(R8S_FCLR)) ID3D11DeviceContext_ClearDepthStencilView(gpu_rt.ctx, sds, D3D11_CLEAR_STENCIL, 1.0f, 0);
     mft_bind_raw(M.spare_rtv, sds);
     mft_cb_scale(0);
     ID3D11DeviceContext_PSSetShaderResources(gpu_rt.ctx, 12, 1, &m->srv);
@@ -1695,9 +1851,9 @@ static void mft_shfuse(const mft_shp* q, int epochs) {
                                             per sample: the deferred renderers' edge / interior split) */
         prof_mark(PR_MFT_FUSE);
         set_depth(mft_ds_mark());
-        mft_quad(r, GPU_SH_ps_mft_shfuse_px);
+        if (!r8s_skip(R8S_FPX)) mft_quad(r, GPU_SH_ps_mft_shfuse_px);
         set_depth(mft_ds_date(0, 0));
-        mft_quad(r, GPU_SH_ps_mft_shfuse1);
+        if (!r8s_skip(R8S_FPS)) mft_quad(r, GPU_SH_ps_mft_shfuse1);
     } else {
         prof_mark(PR_MFT_FUSE);
         mft_quad(r, GPU_SH_ps_mft_shfuse0);
@@ -1707,7 +1863,7 @@ static void mft_shfuse(const mft_shp* q, int epochs) {
     unbind_all();
     td_bind_ps();                        /* (t13: the decoded textures again) */
     /* the counters read: back to 0 (their rect in every epoch's band) */
-    if (has_cnt) {
+    if (has_cnt && !r8s_skip(R8S_FCLR)) {
         int x0 = (int)k.svbb[0] * m->n / 2, x1 = ((int)k.svbb[2] * m->n + 1) / 2;
         D3D11_RECT rc[4];
         int nr = 0;
@@ -1742,8 +1898,8 @@ static int mft_shadow(const gpu_front_frame_data* fd, const mft_shp* q, uint32_t
     mtarget* m = &MT[q->L.B];
     int pc = PR.cur;
     prof_mark(PR_MFT_SH);
-    int ok = mft_need(q->L.B, MT_MS) && mft_cnt_ensure((m->w * m->n + 1) / 2, m->h * epochs);
-    int epoch = 0;
+    int ok = mft_need(q->L.B, MT_MS) && mft_cnt_ensure((m->w * m->n + 1) / 2, m->h * epochs) && !r8s_skip(R8S_SHADOW);
+    int epoch = 0, nvd = 0;
     for (size_t p = q->vol0; p < q->tail;) {
         const gpu_fop* h = (const gpu_fop*)(fd->cmd + p);
         if (!h->size) break;
@@ -1751,16 +1907,17 @@ static int mft_shadow(const gpu_front_frame_data* fd, const mft_shp* q, uint32_t
             const gpu_fop_draw* d = (const gpu_fop_draw*)h;
             if (TD.jnext < TD.njob) td_run((uint32_t)p);
             if (epoch < q->nflat && p == q->flat_pos[epoch]) epoch++;
-            else if (ok) mft_svol(d, s, epoch);
+            else if (ok && !r8s_skip(R8S_SVOL) && !(nvd++ && r8s_skip(R8S_SV1))) mft_svol(d, s, epoch);
             s += draw_slots(d, 1);
         } else if (h->op == GPU_FOP_CLUT) exec_clut(fd, (const gpu_fop_clut*)h);   /* (mft-pop) */
         p += h->size;
     }
+    if (X.mode == 10) mft_svol_unbind();  /* (r8-perf: the volumes' views stayed bound) */
     for (int i = 0; i < q->L.nclut; i++) exec_clut(fd, (const gpu_fop_clut*)(fd->cmd + q->L.clut[i]));   /* (the tail's) */
     prof_mark(pc);
     if (ok) mft_shfuse(q, epochs);
     uint32_t* cu = (uint32_t*)M.cbv;
-    if (cu[6]) { cu[6] = 0; mft_cb_write(); }
+    if (cu[6] || (cu[5] >> 16)) { cu[6] = 0; cu[5] &= 0xFFFFu; mft_cb_write(); }
     *next = q->next;
     *slots = s - slot + q->L.slots;
     return 1;
@@ -1796,6 +1953,216 @@ static void mft_present(const gpu_front_frame_data* fd, const gpu_fop_present* o
     gpu_stats_cur()->scale = 0;
     if (di->flags & GPU_DI_SHOW) gpu_present_show(di->aspect_w, di->aspect_h, (int)((di->gfx >> GPU_GFX_SCALER_SHIFT) & 15));
     present_done = 1;
+}
+
+/* ---- (r8-perf) the outlines' line pixels in fewer draws -----------------------------------------------------------------
+ * The PS2 outlines arrive as ~1000 line-pixel draws a frame of a few pixels each (one Z-only draw, then one AA colour draw
+ * per outline batch): their cost was the draws. A run of consecutive line-pixel draws on the same depth target is
+ * reordered as R2's plan does (gpu_r2front.c r2_plan): a draw's level is the highest level of the earlier draws whose
+ * native boxes share a tile with it, + 1 where that draw's state ranks after its own, so every overlapping pair keeps the
+ * game's order; each (level, state) group becomes one instanced draw whose instances find their draw and record through a
+ * table (shaders/mft.hlsl vs_mft_linepix_m: relative draw slot, instance in that draw), built at the frame's start. */
+#define LM_RUNS 64
+#define LM_GRPS 4096
+#define LM_TS 8
+#define LM_TMAX 128
+#define LM_R 16
+typedef struct { size_t pos, end; uint32_t slots; int g0, ng, ct, zt; } lm_run;
+typedef struct { size_t rep; uint32_t rel, tab, n, ninst; } lm_grp;
+static struct {
+    lm_run run[LM_RUNS];
+    int nrun, irun;
+    lm_grp g[LM_GRPS];
+    int ng;
+    uint32_t* tab;                       /* pairs: the member's slot relative to the run's first, its instance */
+    uint32_t ntab, captab;
+    dynbuf buf;
+    int16_t (*lev)[LM_R];
+    uint32_t *stamp, seg;
+    uint64_t* key;
+    uint32_t capkey;
+    uint64_t runs, draws, gpu_draws;
+} LM;
+
+static void lm_release(void) { GPU_RELEASE(LM.buf.srv); GPU_RELEASE(LM.buf.buf); LM.buf.cap = 0; }
+static int lm_grow(void** p, uint32_t* cap, uint32_t need, size_t el) {
+    if (need <= *cap) return 1;
+    uint32_t c = *cap ? *cap * 2 : 1024;
+    while (c < need) c *= 2;
+    void* n = realloc(*p, (size_t)c * el);
+    if (!n) return 0;
+    *p = n;
+    *cap = c;
+    return 1;
+}
+static int pl_cmp_u64(const void* a, const void* b) {
+    uint64_t x = *(const uint64_t*)a, y = *(const uint64_t*)b;
+    return x < y ? -1 : x > y;
+}
+
+/* a line-pixel draw a run may hold */
+static int lm_cand(const gpu_fop_draw* d) {
+    return d->h.op == GPU_FOP_DRAW && d->cls == GPU_PC_LINEPIX && d->tier == GPU_TIER_FF && !d->split && d->count && d->count < 65536 &&
+           !(d->feat & (GPU_DF_VIEW | GPU_DF_HIRES | GPU_DF_NPOST | GPU_DF_SVOL)) && !(d->tex && tex_kind(d->ps_key) >= TK_VIEW_C32) &&
+           !mft_post_cand(d) && mft_disp(d->ct ? d->ct : d->zt) && (!d->zt || mft_disp(d->zt));
+}
+static uint32_t lm_key(const gpu_fop_draw* d) {
+    int zuse = d->zt && (d->depth >> 1) != 0;
+    return (uint32_t)d->blend | (uint32_t)(d->wmask & 15) << 4 | (uint32_t)(zuse ? d->depth & 7 : 0) << 8 |
+           (uint32_t)!(d->feat & GPU_DF_TEX) << 12 | (uint32_t)d->ct << 16;
+}
+
+/* the frame's runs, their groups and the instance table (uploaded once); before the frame's ops run */
+static void lm_plan(const gpu_front_frame_data* fd) {
+    LM.nrun = LM.irun = LM.ng = 0;
+    LM.ntab = 0;
+    if (!r8p_mask_has(R8P_LINEPIX)) return;
+    if (!LM.lev && (!(LM.lev = calloc(LM_TMAX * LM_TMAX, sizeof *LM.lev)) || !(LM.stamp = calloc(LM_TMAX * LM_TMAX, 4)))) return;
+    int iph = 0;
+    for (size_t pos = 0; pos + sizeof(gpu_fop) <= fd->cmd_bytes && LM.nrun < LM_RUNS;) {
+        const gpu_fop* h = (const gpu_fop*)(fd->cmd + pos);
+        if (!h->size) break;
+        const gpu_fop_draw* d0 = (const gpu_fop_draw*)h;
+        if (!(h->op == GPU_FOP_DRAW && lm_cand(d0))) { pos += h->size; continue; }
+        /* the run: consecutive candidates on the same depth target, one colour target, inside one phase */
+        while (iph < M.nph && M.ph_pos[iph] <= pos) iph++;
+        size_t lim = iph < M.nph ? M.ph_pos[iph] : fd->cmd_bytes;
+        size_t p = pos;
+        int n = 0, ct = 0;
+        while (p + sizeof(gpu_fop) <= fd->cmd_bytes && p < lim) {
+            const gpu_fop_draw* d = (const gpu_fop_draw*)(fd->cmd + p);
+            if (!d->h.size || !lm_cand(d) || d->zt != d0->zt || (d->ct && ct && d->ct != ct)) break;
+            if (d->ct) ct = d->ct;
+            n++;
+            p += d->h.size;
+        }
+        if (n < 2 || !ct) { pos = p > pos ? p : pos + h->size; continue; }
+        if (!lm_grow((void**)&LM.key, &LM.capkey, (uint32_t)n, 8)) return;
+        /* levels */
+        LM.seg++;
+        uint32_t st_of[LM_R];
+        int nr = 0, ok = 1;
+        size_t q = pos;
+        uint32_t* rel = malloc((size_t)n * 4);
+        size_t* at = malloc((size_t)n * sizeof(size_t));
+        if (!rel || !at) { free(rel); free(at); return; }
+        uint32_t slots = 0;
+        for (int i = 0; i < n; i++) {
+            const gpu_fop_draw* d = (const gpu_fop_draw*)(fd->cmd + q);
+            rel[i] = slots;
+            at[i] = q;
+            slots += draw_slots(d, 1);
+            q += d->h.size;
+            uint32_t k = lm_key(d);
+            int r = 0;
+            while (r < nr && st_of[r] != k) r++;
+            if (r == nr) { if (nr == LM_R) { ok = 0; break; } st_of[nr++] = k; }
+            static int mg = -1;
+            if (mg < 0) { const char* e = getenv("PS2_LM_MARGIN"); mg = e ? atoi(e) : 1; }
+            int x0 = (d->bbox[0] - mg) / LM_TS, y0 = (d->bbox[1] - mg) / LM_TS, x1 = (d->bbox[2] + mg) / LM_TS, y1 = (d->bbox[3] + mg) / LM_TS;
+            x0 = x0 < 0 ? 0 : x0 >= LM_TMAX ? LM_TMAX - 1 : x0; x1 = x1 < 0 ? 0 : x1 >= LM_TMAX ? LM_TMAX - 1 : x1;
+            y0 = y0 < 0 ? 0 : y0 >= LM_TMAX ? LM_TMAX - 1 : y0; y1 = y1 < 0 ? 0 : y1 >= LM_TMAX ? LM_TMAX - 1 : y1;
+            int L = 0;
+            for (int y = y0; y <= y1; y++)
+                for (int x = x0; x <= x1; x++) {
+                    uint32_t t = (uint32_t)(y * LM_TMAX + x);
+                    if (LM.stamp[t] != LM.seg) { LM.stamp[t] = LM.seg; for (int s = 0; s < LM_R; s++) LM.lev[t][s] = -1; }
+                    for (int s = 0; s < nr; s++) {
+                        int v = LM.lev[t][s];
+                        if (v >= 0 && v + (s > r) > L) L = v + (s > r);
+                    }
+                }
+            for (int y = y0; y <= y1; y++)
+                for (int x = x0; x <= x1; x++) {
+                    uint32_t t = (uint32_t)(y * LM_TMAX + x);
+                    if (LM.lev[t][r] < L) LM.lev[t][r] = (int16_t)L;
+                }
+            if (L > 30000) { ok = 0; break; }
+            static int noreorder = -1;   /* (diagnostics: PS2_LM_NOREORDER=1 merges only consecutive draws of one state) */
+            if (noreorder < 0) { const char* e = getenv("PS2_LM_NOREORDER"); noreorder = e && *e == '1'; }
+            if (noreorder) { static int cl, lr; if (!i) { cl = 0; lr = r; } else if (r != lr) { cl++; lr = r; } L = cl; }
+            LM.key[i] = (uint64_t)((uint32_t)L * LM_R + (uint32_t)r) << 32 | (uint32_t)i;
+        }
+        if (ok) {
+            qsort(LM.key, (size_t)n, 8, pl_cmp_u64);
+            lm_run* R = &LM.run[LM.nrun];
+            R->pos = pos; R->end = p; R->slots = slots; R->g0 = LM.ng; R->ng = 0; R->ct = ct; R->zt = d0->zt;
+            for (int j = 0; j < n && ok;) {
+                uint64_t key = LM.key[j] >> 32;
+                int j1 = j;
+                uint32_t ninst = 0;
+                while (j1 < n && (LM.key[j1] >> 32) == key) {
+                    ninst += ((const gpu_fop_draw*)(fd->cmd + at[(uint32_t)LM.key[j1]]))->count;
+                    j1++;
+                }
+                if (LM.ng >= LM_GRPS || !lm_grow((void**)&LM.tab, &LM.captab, LM.ntab + 2 * ninst, 4)) { ok = 0; break; }
+                uint32_t m0 = (uint32_t)LM.key[j];
+                lm_grp* g = &LM.g[LM.ng++];
+                g->rep = at[m0]; g->rel = rel[m0]; g->n = (uint32_t)(j1 - j); g->ninst = ninst; g->tab = LM.ntab / 2;
+                if (g->n > 1)
+                    for (int k = j; k < j1; k++) {
+                        uint32_t i = (uint32_t)LM.key[k];
+                        uint32_t c = ((const gpu_fop_draw*)(fd->cmd + at[i]))->count;
+                        for (uint32_t e = 0; e < c; e++) { LM.tab[LM.ntab++] = rel[i]; LM.tab[LM.ntab++] = e; }
+                    }
+                R->ng++;
+                j = j1;
+            }
+            if (ok && R->ng < n) { LM.nrun++; LM.runs++; LM.draws += (uint64_t)n; LM.gpu_draws += (uint64_t)R->ng; }
+            else LM.ng = R->g0;
+        }
+        free(rel);
+        free(at);
+        pos = p;
+    }
+    if (LM.nrun && !dyn_fill(&LM.buf, LM.tab, (size_t)LM.ntab * 4, D3D11_BIND_SHADER_RESOURCE, 1)) LM.nrun = 0;
+    /* the merged draws' instances read DRAWID up to their run's slot + their instance count: the draw-slot buffer covers it
+     * (bc_maxid: the frame's largest draw slot) */
+    uint32_t mi = 0;
+    for (int i = 0; i < LM.ng; i++) if (LM.g[i].ninst > mi) mi = LM.g[i].ninst;
+    if (LM.nrun && !(X.iota && X.iota_n >= bc_maxid + mi + 1)) {
+        if (!iota_ensure(bc_maxid + mi + 1)) { LM.nrun = 0; return; }
+        bind_frame_buffers();            /* (the new draw-slot buffer on its input slot) */
+    }
+}
+
+/* a planned run at its first op (slot: that op's draw slot) */
+static void lm_exec(const gpu_front_frame_data* fd, const lm_run* R, uint32_t slot) {
+    uint32_t* cu = (uint32_t*)M.cbv;
+    int want = M.phase ? MT_PIC : MT_MS, bound = 0;
+    for (int i = 0; i < R->ng; i++) {
+        const lm_grp* g = &LM.g[R->g0 + i];
+        const gpu_fop_draw* d = (const gpu_fop_draw*)(fd->cmd + g->rep);
+        if (g->n == 1) {                 /* (the plain vertex shader reads m_cfg.z as its primitive base: 0) */
+            if (cu[6]) { cu[6] = 0; mft_cb_write(); }
+            mft_draw(d, slot + g->rel);
+            continue;
+        }
+        int zuse = d->zt && (d->depth >> 1) != 0, depth = zuse ? d->depth : 0;
+        if (!d->wmask && !(depth & 1)) continue;
+        if (!mft_draw_setup(d, zuse, 0)) continue;
+        set_vs(gpu_vs(GPU_SH_vs_mft_linepix_m));
+        if (!bound) { ID3D11DeviceContext_VSSetShaderResources(gpu_rt.ctx, 26, 1, &LM.buf.srv); bound = 1; }
+        set_blend(blend_state(d->blend, d->wmask));
+        set_depth(depth_state(depth));
+        cu[6] = g->tab;
+        mft_cb_write();
+        ID3D11DeviceContext_DrawInstanced(gpu_rt.ctx, 4, g->ninst, 0, slot);
+        gpu_rt.n_draws++;
+        M.draws++;
+        if (d->ct) MT[d->ct].truth = want;
+        if (zuse && (depth & 1)) MT[d->zt].truth = want;
+    }
+    if (cu[6]) { cu[6] = 0; mft_cb_write(); }
+}
+/* the same run the original way (PS2_R8P_VERIFY) */
+static void lm_exec_orig(const gpu_front_frame_data* fd, const lm_run* R, uint32_t slot) {
+    for (size_t p = R->pos; p < R->end;) {
+        const gpu_fop_draw* d = (const gpu_fop_draw*)(fd->cmd + p);
+        mft_draw(d, slot);
+        slot += draw_slots(d, 1);
+        p += d->h.size;
+    }
 }
 
 /* one op of an MFT frame; 1: done (*next, *slots: what it consumed), 0: the exact path runs it (memory ops, other targets) */
@@ -1863,7 +2230,17 @@ static int mft_op(const gpu_front_frame_data* fd, size_t pos, uint32_t slot, siz
     }
     case GPU_FOP_ALIAS16:
         for (int i = 0; i < M.nshp; i++)
-            if (M.shp[i].head == pos) return mft_shadow(fd, &M.shp[i], slot, next, slots);
+            if (M.shp[i].head == pos) {
+                const mft_shp* q = &M.shp[i];
+                int vf = vf_frame() && r8p_on(R8P_SHADOW) && mft_need(q->L.B, MT_MS) && vf_begin(&MT[q->L.B], NULL);
+                for (int pass = 0; pass < 1 + vf; pass++) {
+                    if (pass) { vf_mid(&MT[q->L.B], NULL); r8p_off_mask |= R8P_SHADOW; }
+                    mft_shadow(fd, q, slot, next, slots);
+                    r8p_off_mask &= ~R8P_SHADOW;
+                }
+                if (vf) vf_end(&MT[q->L.B], NULL, "shadow sequence");
+                return 1;
+            }
         return 0;
     case GPU_FOP_DRAW: {
         const gpu_fop_draw* d = (const gpu_fop_draw*)h;
@@ -1875,6 +2252,36 @@ static int mft_op(const gpu_front_frame_data* fd, size_t pos, uint32_t slot, siz
             prof_mark(d->cls == GPU_PC_TRI ? ((d->feat & GPU_DF_PART) ? PR_PART : zo ? PR_FF_FAST_Z : PR_FF_FAST)
                       : d->cls == GPU_PC_SPRITE ? PR_FF_SPRITE : PR_FF_LINE);   /* (line / point pixels, thin lines) */
         }
+        if (PR.ncyc > 0) {               /* (r8-perf, diagnostics: PS2_R8P_SKIP's phases leave work out to measure its cost) */
+            int line = d->cls == GPU_PC_LINEPIX || d->cls == GPU_PC_POINT, tri = d->cls == GPU_PC_TRI;
+            int tz = tri && d->zt && (d->depth >> 1) != 0;
+            if (tri && ((d->tier == GPU_TIER_ROV && r8s_skip(R8S_TRI_ROV)) || (M.phase && r8s_skip(R8S_TRI_B)) ||
+                        (!M.phase && d->tier != GPU_TIER_ROV && ((tz && r8s_skip(R8S_TRI_Z)) || (!tz && r8s_skip(R8S_TRI_NOZ)))) ||
+                        ((d->feat & GPU_DF_TEX) && r8s_skip(R8S_TRI_TEX))))
+                return 1;
+            if ((mft_post_cand(d) && r8s_skip(R8S_NPOST)) || (d->cls == GPU_PC_TRI && r8s_skip(R8S_TRI)) ||
+                (d->cls == GPU_PC_SPRITE && !mft_post_cand(d) && r8s_skip(R8S_SPRITE)) || (line && r8s_skip(R8S_LINE)) ||
+                (line && !d->wmask && r8s_skip(R8S_LINEZ)) || (line && d->wmask && r8s_skip(R8S_LINEC)))
+                return 1;
+        }
+        while (LM.irun < LM.nrun && LM.run[LM.irun].pos < pos) LM.irun++;
+        if (LM.irun < LM.nrun && LM.run[LM.irun].pos == pos && r8p_on(R8P_LINEPIX)) {   /* (r8-perf) a planned line-pixel run */
+            const lm_run* R = &LM.run[LM.irun++];
+            mtarget *c = &MT[R->ct], *z = R->zt && mft_disp(R->zt) ? &MT[R->zt] : NULL;
+            int want = M.phase ? MT_PIC : MT_MS;
+            int vf = !M.phase && vf_frame() && mft_need(R->ct, want) && (!z || mft_need(R->zt, want)) && vf_begin(c, z);
+            for (int pass = 0; pass < 1 + vf; pass++) {
+                static int sanity = -1;   /* (PS2_R8P_VERIFY_SANITY=1: the original way twice - the harness's own check) */
+                if (sanity < 0) { const char* e = getenv("PS2_R8P_VERIFY_SANITY"); sanity = e && *e == '1'; }
+                if (pass) { vf_mid(c, z); M.bound = 0; lm_exec_orig(fd, R, slot); }
+                else if (vf && sanity) lm_exec_orig(fd, R, slot);
+                else lm_exec(fd, R, slot);
+            }
+            if (vf) vf_end(c, z, "line-pixel run");
+            *next = R->end;
+            *slots = R->slots;
+            return 1;
+        }
         if (mft_post_cand(d)) {
             if (!mft_npost(d)) M.why[MW_NPOST]++;
             return 1;
@@ -1884,7 +2291,7 @@ static int mft_op(const gpu_front_frame_data* fd, size_t pos, uint32_t slot, siz
         return 1;
     }
     case GPU_FOP_R2:
-        mft_r2(fd, (const gpu_fop_r2*)h);
+        if (!r8s_skip(R8S_R2)) mft_r2(fd, (const gpu_fop_r2*)h);
         return 1;
     case GPU_FOP_MARK:
         return 1;
@@ -1903,6 +2310,7 @@ static int mft_op(const gpu_front_frame_data* fd, size_t pos, uint32_t slot, siz
 /* the frame's start: plan it; an exact frame first gets the twins' content back into the grid */
 static int mft_frame_begin(const gpu_front_frame_data* fd) {
     int on = mft_plan(fd);
+    LM.nrun = LM.irun = 0;
     static int log = -1, stats = -1;
     if (log < 0) log = getenv("PS2_MFT_LOG") != NULL;
     if (stats < 0) { const char* e = getenv("PS2_R2_STATS"); stats = e && *e && *e != '0'; }
@@ -1917,6 +2325,7 @@ static int mft_frame_begin(const gpu_front_frame_data* fd) {
         M.grid_run = 0;
         M.grid_off = 0;
         M.frames++;
+        lm_plan(fd);                     /* (r8-perf) */
     } else {
         if (!M.grid_run) { M.grid_v0 = fd->vblank; M.grid_why0 = M.why_last; }
         if (M.why_last == MW_OFF) M.grid_off = 1;
@@ -1938,6 +2347,12 @@ static int mft_frame_begin(const gpu_front_frame_data* fd) {
                  (unsigned long long)M.draws, (unsigned long long)M.svols, (int)ceilf(M.gw * M.rsx), (int)ceilf(M.gh * M.rsy),
                  M.ow, M.oh, M.n);
         gpu_log("%s", line);
+        gpu_log("mft: triangle draws %llu: decoded textures %llu, untextured %llu, LOD %llu, slow records %llu",
+                (unsigned long long)M.tri_n[0], (unsigned long long)M.tri_n[1], (unsigned long long)M.tri_n[2],
+                (unsigned long long)M.tri_n[3], (unsigned long long)M.tri_n[4]);
+        if (LM.runs)                     /* (r8-perf) */
+            gpu_log("mft: line-pixel runs %llu: %llu draws -> %llu GPU draws", (unsigned long long)LM.runs, (unsigned long long)LM.draws,
+                    (unsigned long long)LM.gpu_draws);
     }
     return on;
 }

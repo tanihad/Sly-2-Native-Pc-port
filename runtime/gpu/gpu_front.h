@@ -295,7 +295,14 @@ typedef struct {
     uint32_t frame_off, ent_off, draw_off;
     uint32_t nent, ndraw;
     uint32_t gen;                        /* mesh generation (r2_store_gen) */
+    uint32_t plan_off, nplan;            /* (r8-perf) the draws batched (gpu_r2_chunk records in fdata), 0: none */
 } gpu_fop_r2;
+/* (r8-perf) the segment's draws as fewer GPU draws (gpu_r2front.c r2_plan): the draws in an order that keeps every pair
+ * whose screen boxes overlap in the game's order (the others commute: they touch no common pixel), runs of one state
+ * merged into instanced draws whose vertices the shader pulls (shaders/r2.hlsl R2_PULL). Records in execution order:
+ * n = 0: draw record `first` (segment-local) as before; n > 0: n draws, their absolute record indices (fdata / 32) as
+ * words at fdata `first` x 32, drawn as one DrawInstanced(maxcount, n) */
+typedef struct { uint32_t first, n, maxcount, state; } gpu_r2_chunk;
 enum { GPU_R2F_FBA = 1, GPU_R2F_COLCLAMP = 2, GPU_R2F_ZMSK = 4, GPU_R2F_WMASK_SHIFT = 8 /* 4 bits */, GPU_R2F_ZW = 16 };
 typedef struct {                         /* 64 bytes (shaders/r2.hlsl reads it) */
     float c0[4], c1[4];                  /* the frame block's VU 0 / VU 1 (fog / unused w) */

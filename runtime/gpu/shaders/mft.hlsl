@@ -24,6 +24,9 @@
 #ifndef MS
 #define MS 1                             // the colour / depth surfaces are multisampled (Texture2DMS views)
 #endif
+#ifndef SVOL_LITE
+#define SVOL_LITE 0                      // (r8-perf) volumes: flat colour and TEST / ALPHA straight from the record and state
+#endif
 #include "gs.hlsl"
 #include "postfn.hlsli"
 
@@ -97,11 +100,17 @@ bool mft_tri_frag(float4 pos, float3 istq, uint prim, uint sidx, out Frag f, out
     int rows = py - by0;
     int a[7];
     uint nk = tme && fst ? 7u : (st.flags & SF_FGE) != 0u ? 5u : 4u;
+    // (r8-perf) the record's rows / steps in wide loads (the same words)
+    uint4 r0 = recs.Load4(rb + 24u), y0 = recs.Load4(rb + 52u), x0 = recs.Load4(rb + 80u);
+    uint3 r1 = recs.Load3(rb + 40u), y1 = recs.Load3(rb + 68u), x1 = recs.Load3(rb + 96u);
+    uint rw[7] = { r0.x, r0.y, r0.z, r0.w, r1.x, r1.y, r1.z };
+    uint dyw[7] = { y0.x, y0.y, y0.z, y0.w, y1.x, y1.y, y1.z };
+    uint dxw[7] = { x0.x, x0.y, x0.z, x0.w, x1.x, x1.y, x1.z };
     [unroll] for (uint k = 0u; k < 7u; k++) {
         a[k] = 0;
         if (k < nk) {
-            uint dyk = recs.Load(rb + 52u + 4u * k), dxk = recs.Load(rb + 80u + 4u * k);
-            uint v = recs.Load(rb + 24u + 4u * k) + dyk * (uint)rows + dxk * (uint)px;
+            uint dyk = dyw[k], dxk = dxw[k];
+            uint v = rw[k] + dyk * (uint)rows + dxk * (uint)px;
             v += (uint)(int)floor((float)asint(dyk) * fj);
             v += (uint)(int)floor((float)asint(dxk) * fi);
             a[k] = asint(v);
@@ -149,6 +158,12 @@ FOut ps_mft_tri(VM i, uint prim : SV_PrimitiveID) {
     mft_cfg_override();
     Frag f;
     St st;
+    if (((m_cfg.y >> 16) & 8u) != 0u) {  // (r8-perf cost experiment, PS2_R8P_SKIP: a constant colour, no fragment evaluation)
+        st = load_state(i.sidx);
+        f.col = 0x80404040u; f.z = 0u; f.P = int2(i.pos.xy); f.px = 0; f.py = 0; f.U = 0; f.V = 0; f.lq = 1.0; f.uf = 0.0;
+        f.vf = 0.0; f.fog = 0u; f.vcol = f.col; f.state = i.sidx; f.rb = 0u;
+        return ff_out(f, st);
+    }
     if (!mft_tri_frag(i.pos, i.stq, prim + m_cfg.z, i.sidx, f, st)) discard;
     if (mft_date_fails(int2(i.pos.xy), st.test)) discard;
     return ff_out(f, st);
@@ -171,8 +186,27 @@ void ps_mft_svol(VM i, uint prim : SV_PrimitiveID, uint cov : SV_Coverage) {
     mft_statics(i.dc, i.sidx);
     Frag f;
     St st;
-    if (cov == 0u || !mft_tri_frag(i.pos, i.stq, prim, i.sidx, f, st)) return;
+    uint dbg = m_cfg.y >> 16;            // (r8-perf cost experiments, PS2_R8P_SKIP: 1 no atomics, 2 no record, 4 no DATE loads)
+    if (cov == 0u) return;
+#if SVOL_LITE
+    // (r8-perf) a volume primitive is flat (gpu_front.c svol: no IIP, no texture, no fog, no SCANMSK): where its record's G
+    // and A planes have no gradients, every fragment's colour is the planes' row value (mft_tri_frag adds only the
+    // gradients' terms), and the tests read only TEST / ALPHA of its state: no per-fragment plane evaluation
+    uint rbl = rec_first + prim * TRI_REC;   // (as mft_tri_frag: m_cfg.z is the epoch's counter row here)
+    uint4 rw = recs.Load4(rbl + 24u), gy = recs.Load4(rbl + 52u), gx = recs.Load4(rbl + 80u);
+    if ((gy.y | gy.w | gx.y | gx.w) == 0u && (dbg & 2u) == 0u) {
+        f.col = (clamp255i(asint(rw.y) >> 16) << 8) | (clamp255i(asint(rw.w) >> 16) << 24);
+        uint sb = i.sidx * STATE_BYTES;
+        st.test = states.Load(sb + 40u);
+        st.alpha = states.Load(sb + 52u);
+    } else
+#endif
+    if ((dbg & 2u) != 0u) {
+        f.col = 0x80008000u; st.test = 0u; st.alpha = 0x8008u | (2u << 4);
+    } else
+    if (!mft_tri_frag(i.pos, i.stq, prim, i.sidx, f, st)) return;
     uint col = f.col, As = col >> 24, test = st.test;
+    if ((dbg & 4u) != 0u) test &= ~(1u << 14);
     if ((test & 1u) && !atst_pass((test >> 1) & 7u, (test >> 4) & 0xFFu, As)) {
         uint afail = (test >> 12) & 3u;
         if (afail == 0u || afail == 2u) return;   // KEEP, ZB_ONLY: no colour
@@ -191,7 +225,7 @@ void ps_mft_svol(VM i, uint prim : SV_PrimitiveID, uint cov : SV_Coverage) {
     [loop] for (uint s = 0u; s < ns; s++) {
         uint fl = P.x * ns + s;
         if ((fl >> 1) != word) {
-            if (acc != 0u) InterlockedAdd(m_cnt[uint2(word, P.y + m_cfg.z)], acc);
+            if (acc != 0u && (dbg & 1u) == 0u) InterlockedAdd(m_cnt[uint2(word, P.y + m_cfg.z)], acc);
             acc = 0u;
             word = fl >> 1;
         }
@@ -202,6 +236,7 @@ void ps_mft_svol(VM i, uint prim : SV_PrimitiveID, uint cov : SV_Coverage) {
         uint d = (uint)(((asel == 0u ? cs : -cs) * cc) >> 7);
         acc += (d & 255u) << ((fl & 1u) * 16u);
     }
+    if ((dbg & 1u) != 0u) return;
     if (acc != 0u) InterlockedAdd(m_cnt[uint2(word, P.y + m_cfg.z)], acc);
 }
 #endif
@@ -233,6 +268,25 @@ VQ vs_mft_linepix(VIn vin, uint vid : SV_VertexID, uint inst : SV_InstanceID) {
     uint did = vin.did - inst;
     load_draw(did);
     uint base = rec_first + (inst + m_cfg.z) * 32u;
+    uint r = recs.Load(base);
+    float px = (float)((int)(r << 16) >> 16), py = (float)((int)r >> 16);
+    VQ o;
+    o.pos = mft_ndc(float2((px + ((vid & 1u) ? 1.0 : 0.0)) * m_s.x, (py + ((vid & 2u) ? 1.0 : 0.0)) * m_s.y),
+                    gs_z_encode(recs.Load(base + 4u)));
+    o.rec = base;
+    o.did = did;
+    return o;
+}
+#endif
+#if PRIM == 2
+// (r8-perf) a merged draw of a line-pixel run (gpu_exec_mft.h lm_plan): instance k's entry at m_cfg.z + k of the table holds
+// its draw's slot relative to the run's first (StartInstanceLocation) and its instance in that draw
+ByteAddressBuffer m_lmtab : register(t26);
+VQ vs_mft_linepix_m(VIn vin, uint vid : SV_VertexID, uint inst : SV_InstanceID) {
+    uint2 e = m_lmtab.Load2((m_cfg.z + inst) * 8u);
+    uint did = vin.did - inst + e.x;
+    load_draw(did);
+    uint base = rec_first + e.y * 32u;
     uint r = recs.Load(base);
     float px = (float)((int)(r << 16) >> 16), py = (float)((int)r >> 16);
     VQ o;
@@ -496,6 +550,30 @@ float4 ps_mft_shfuse_px(float4 pos : SV_Position) : SV_Target {
 float4 ps_mft_shfuse(float4 pos : SV_Position) : SV_Target {
     uint2 P = uint2(pos.xy);
     return mft_unorm(mft_shfuse_word(P, 0u, mft_col(P, 0u)));
+}
+#endif
+#if MS
+// (r8-perf, diagnostics: PS2_R8P_VERIFY) two results of one step compared per sample: colour words, depth bits; counts of
+// the differing samples and the first differing pixel (lowest y << 16 | x)
+Texture2DMS<uint4> v_ca : register(t22);
+Texture2DMS<uint4> v_cb : register(t23);
+Texture2DMS<float> v_za : register(t24);
+Texture2DMS<float> v_zb : register(t25);
+RWByteAddressBuffer v_out : register(u0);
+[numthreads(8, 8, 1)]
+void cs_mft_cmp(uint3 id : SV_DispatchThreadID) {
+    uint w, h, n;
+    v_ca.GetDimensions(w, h, n);
+    if (id.x >= w || id.y >= h) return;
+    uint dc = 0u, dz = 0u;
+    [loop] for (uint s = 0u; s < n; s++) {
+        if (any(v_ca.Load(int2(id.xy), s) != v_cb.Load(int2(id.xy), s))) dc++;
+        if (asuint(v_za.Load(int2(id.xy), s)) != asuint(v_zb.Load(int2(id.xy), s))) dz++;
+    }
+    uint o;
+    if (dc != 0u) v_out.InterlockedAdd(0, dc, o);
+    if (dz != 0u) v_out.InterlockedAdd(4, dz, o);
+    if (dc != 0u || dz != 0u) v_out.InterlockedMin(8, id.x | (id.y << 16), o);
 }
 #endif
 // DATE on the surfaces: the stencil's bit 0 = the colour's alpha bit 7 (per sample; the stencil was cleared, samples whose

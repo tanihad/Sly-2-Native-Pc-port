@@ -69,6 +69,7 @@ r2g_buf* r2g_buf_create(r2g_dev* d, int kind, int usage, uint32_t bytes, const v
     bd.Usage = usage == R2G_USAGE_DYNAMIC ? D3D11_USAGE_DYNAMIC : D3D11_USAGE_DEFAULT;
     bd.CPUAccessFlags = usage == R2G_USAGE_DYNAMIC ? D3D11_CPU_ACCESS_WRITE : 0;
     switch (kind) {
+    /* (r8-perf) vertex and index buffers (DEFAULT) are raw shader resources too: shaders may pull from them */
     case R2G_BUF_VERTEX: bd.BindFlags = D3D11_BIND_VERTEX_BUFFER; break;
     case R2G_BUF_INDEX: bd.BindFlags = D3D11_BIND_INDEX_BUFFER; break;
     case R2G_BUF_CONSTANT: bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER; break;
@@ -77,9 +78,14 @@ r2g_buf* r2g_buf_create(r2g_dev* d, int kind, int usage, uint32_t bytes, const v
         bd.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS;
         break;
     }
+    int raw = kind == R2G_BUF_RAW || ((kind == R2G_BUF_VERTEX || kind == R2G_BUF_INDEX) && usage == R2G_USAGE_DEFAULT);
+    if (raw && kind != R2G_BUF_RAW) {
+        bd.BindFlags |= D3D11_BIND_SHADER_RESOURCE;
+        bd.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS;
+    }
     D3D11_SUBRESOURCE_DATA sd = { init, 0, 0 };
     if (FAILED(ID3D11Device_CreateBuffer(d->dev, &bd, init ? &sd : NULL, &b->b))) { free(b); return NULL; }
-    if (kind == R2G_BUF_RAW) {
+    if (raw) {
         D3D11_SHADER_RESOURCE_VIEW_DESC vd;
         memset(&vd, 0, sizeof vd);
         vd.Format = DXGI_FORMAT_R32_TYPELESS;
@@ -271,6 +277,11 @@ void r2g_bind_srv_native(r2g_dev* d, int slot, void* srv) {
 
 void r2g_bind_srv(r2g_dev* d, int slot, r2g_buf* b) { r2g_bind_srv_native(d, slot, b ? b->srv : NULL); }
 
+void r2g_bind_srv_vs(r2g_dev* d, int slot, r2g_buf* b) {
+    ID3D11ShaderResourceView* v = b ? b->srv : NULL;
+    ID3D11DeviceContext_VSSetShaderResources(d->ctx, (UINT)slot, 1, &v);
+}
+
 void r2g_bind_targets_native(r2g_dev* d, void* rtv, void* dsv) {
     ID3D11RenderTargetView* r = rtv;
     ID3D11DeviceContext_OMSetRenderTargets(d->ctx, r ? 1 : 0, r ? &r : NULL, (ID3D11DepthStencilView*)dsv);
@@ -288,6 +299,11 @@ void r2g_scissor(r2g_dev* d, int x0, int y0, int x1, int y1) {
 
 void r2g_draw_indexed(r2g_dev* d, uint32_t count, uint32_t first_index, int32_t base_vertex, uint32_t first_instance) {
     ID3D11DeviceContext_DrawIndexedInstanced(d->ctx, count, 1, first_index, base_vertex, first_instance);
+    d->draws++;
+}
+
+void r2g_draw_instanced(r2g_dev* d, uint32_t count, uint32_t instances, uint32_t first_instance) {
+    ID3D11DeviceContext_DrawInstanced(d->ctx, count, instances, 0, first_instance);
     d->draws++;
 }
 

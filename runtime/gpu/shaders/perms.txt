@@ -201,6 +201,8 @@ ps_r2m_clip         r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2
 ps_r2m_clip_nd      r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_CLIP=1 R2_NODISCARD=1
 ps_r2m_clip_a2c     r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_CLIP=1 R2_A2C=1
 vs_r2m_mv           r2.hlsl             r2_vs_mv          vs_5_0    R2_MFT=1 R2_MV=1
+# (r8-perf) the merged draws of the segment's plan: vertices pulled by the draw record of each instance
+vs_r2m_pull         r2.hlsl             r2_vs_pull        vs_5_0    R2_MFT=1 R2_PULL=1
 ps_r2m_mv           r2.hlsl             r2_ps_mv          ps_5_0    R2_MFT=1 R2_MV=1
 # (r2-m8, R8) modern frame targets (gpu_exec_mft.h): the exact draws of a modern frame at any resolution with MSAA
 vs_mft_tri          mft.hlsl            vs_mft_tri        vs_5_0    PRIM=0 TRI_REC=128u
@@ -230,8 +232,13 @@ ps_mft_svol_f1      mft.hlsl            ps_mft_svol       ps_5_0    PRIM=0 TRI_R
 ps_mft_svol_f0      mft.hlsl            ps_mft_svol       ps_5_0    PRIM=0 TRI_REC=128u MS=0 SPEC_NOTEX=1 SPEC_NOLOD=1
 ps_mft_svol_s1      mft.hlsl            ps_mft_svol       ps_5_0    PRIM=0 TRI_REC=256u MS=1 SPEC_NOTEX=1 SPEC_NOLOD=1
 ps_mft_svol_s0      mft.hlsl            ps_mft_svol       ps_5_0    PRIM=0 TRI_REC=256u MS=0 SPEC_NOTEX=1 SPEC_NOLOD=1
+ps_mft_svol_fl1     mft.hlsl            ps_mft_svol       ps_5_0    PRIM=0 TRI_REC=128u MS=1 SPEC_NOTEX=1 SPEC_NOLOD=1 SVOL_LITE=1
+ps_mft_svol_fl0     mft.hlsl            ps_mft_svol       ps_5_0    PRIM=0 TRI_REC=128u MS=0 SPEC_NOTEX=1 SPEC_NOLOD=1 SVOL_LITE=1
+ps_mft_svol_sl1     mft.hlsl            ps_mft_svol       ps_5_0    PRIM=0 TRI_REC=256u MS=1 SPEC_NOTEX=1 SPEC_NOLOD=1 SVOL_LITE=1
+ps_mft_svol_sl0     mft.hlsl            ps_mft_svol       ps_5_0    PRIM=0 TRI_REC=256u MS=0 SPEC_NOTEX=1 SPEC_NOLOD=1 SVOL_LITE=1
 vs_mft_sprite       mft.hlsl            vs_mft_sprite     vs_5_0    PRIM=1
 vs_mft_linepix      mft.hlsl            vs_mft_linepix    vs_5_0    PRIM=2
+vs_mft_linepix_m    mft.hlsl            vs_mft_linepix_m  vs_5_0    PRIM=2
 vs_mft_thin         mft.hlsl            vs_mft_thin       vs_5_0    PRIM=3
 ps_mft_n0           mft.hlsl            ps_mft_thin       ps_5_0    PRIM=3 DUAL=0
 ps_mft_n1           mft.hlsl            ps_mft_thin       ps_5_0    PRIM=3 DUAL=1
@@ -249,6 +256,8 @@ ps_mft_shfuse0      mft.hlsl            ps_mft_shfuse     ps_5_0    PRIM=9 MS=0
 ps_mft_shfuse_px    mft.hlsl            ps_mft_shfuse_px  ps_5_0    PRIM=9 MS=1
 ps_mft_date1        mft.hlsl            ps_mft_date       ps_5_0    PRIM=9 MS=1
 ps_mft_date0        mft.hlsl            ps_mft_date       ps_5_0    PRIM=9 MS=0
+# (r8-perf, diagnostics) PS2_R8P_VERIFY: two results of one step compared per sample
+cs_mft_cmp          mft.hlsl            cs_mft_cmp        cs_5_0    PRIM=9 MS=1
 # (r2-m1) its conformance kernels (tests/unit/r2)
 vs_r2c              r2_conf.hlsl        r2c_vs            vs_5_0
 ps_r2c_vu           r2_conf.hlsl        r2c_vu_ps         ps_5_0

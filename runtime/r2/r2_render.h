@@ -26,7 +26,11 @@ typedef struct {
     int mft, msaa;
     int mv;                              /* (r2-m8) the motion-vector pass: pass-A draws through r2_vs_mv / r2_ps_mv, depth GEQUAL */
     float sx, sy;
+    /* (r8-perf) the GPU optimisations of modern frames on (R2X_* bits; gpu_exec.c r8p_on), and diagnostics */
+    int opt;
+    int dbg_cull;                        /* (diagnostics, PS2_R8P_SKIP) every draw issued, nothing rasterized (empty scissor) */
 } r2_exec_in;
+enum { R2X_BATCH = 1, R2X_STATE = 2 };
 
 /* the segment's draws; returns how many were issued. The host re-establishes its own bindings afterwards. */
 int r2_render_segment(const gpu_fop_r2* o, const uint8_t* fdata, size_t fdata_bytes, const r2_exec_in* in);

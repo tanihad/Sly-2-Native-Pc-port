@@ -61,6 +61,9 @@ void r2g_viewport(r2g_dev* d, float x, float y, float w, float h);
 void r2g_scissor(r2g_dev* d, int x0, int y0, int x1, int y1);
 void r2g_draw_indexed(r2g_dev* d, uint32_t count, uint32_t first_index, int32_t base_vertex, uint32_t first_instance);
 void r2g_draw(r2g_dev* d, uint32_t count, uint32_t first_vertex);
+void r2g_draw_instanced(r2g_dev* d, uint32_t count, uint32_t instances, uint32_t first_instance);   /* (r8-perf) */
+/* (r8-perf) a buffer's raw view (R2G_BUF_RAW, and DEFAULT vertex / index buffers) on the vertex stage only */
+void r2g_bind_srv_vs(r2g_dev* d, int slot, r2g_buf* b);
 uint32_t r2g_draws(const r2g_dev* d);   /* draw calls issued (statistics) */
 /* the host's own bindings may have changed under it (the exact path drew): forget the filtered state */
 void r2g_invalidate(r2g_dev* d);
