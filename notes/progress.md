@@ -8,7 +8,8 @@
   exact R2 draw plan, ~6% GPU at Balanced; 300 fps hub target not reached, remaining cost listed in modern-renderer.md).
 - Combined build checked: run_tests 16/16, ep1 mf (0 pops, 0 stray triangles) + tfo pass. Full gate batch still to run.
 - Open, seen by stray-tri: character meshes near the camera alternate frame to frame in close-ups (compare with Exact).
-- Next: owner feedback, then the 1.0 checklist (Modern default D2, DualSense, weaker PC, playthrough, key backup).
+- Owner confirmed on 0.1.1118: the flicker is fine (thin-outline flicker and stray triangles both gone).
+- Next: the 1.0 checklist (Modern default D2, DualSense, weaker PC, playthrough, key backup).
 
 **2026-11-04: OWNER TEST HOLD.** The thin-outline flicker fix (r2-flicker) is merged as 111d8eb and shipped to the owner as dist 0.1.1064.
 - Final gates: all pass except 9 sweep checks in ep7, m8_boss and ep8 (no frames during the level load), all at -Parallel 4.
