@@ -38,11 +38,13 @@
 #define CLIP_RET (0x34C8u / 8u)        /* 0x2540's caller's return address: ISW [10].x, then the E bit */
 #define R2_CLIP_ZMAX 0xFFE00u          /* gpu_front.h GPU_Z_FF_MAX (GPU_ZE_ONE - 4 x GPU_ZB_MARGIN) */
 
+uint32_t ps2_vblank_count(void);
 static vu_state cv;
 static _Alignas(16) uint8_t cv_data[16384], cv_micro[16384];
 static vu_op cv_cache[2048];
 static int cv_state;                   /* 0 not set up, 1 ready, -1 no image */
-int r2_clip_why;                       /* why the last r2_clip_entry said no: 1 batch kind, 2 w <= 0, 3 full, 4 size */
+int r2_clip_why;                       /* why the last r2_clip_entry said no: 1 batch kind, 2 w <= 0, 3 full, 4 size,
+                                          5 fan Z beyond the FF range, 6 fan Q no clipped vertex has (stray-tri) */
 
 int r2_clip_setup(const uint8_t* micro) {
     if (cv_state) return cv_state > 0;
@@ -262,15 +264,32 @@ int r2_clip_entry(const r2_mesh* m, const float M[16], float fade, const r2_fram
     }
     /* a fan vertex with a Z beyond the exact path's FF range (degenerate objects: clip coordinates ~1e27, vertices on
      * both sides of w = 0) would put the rest of the frame's Z on the ROV tier (gpu_front.c z_high): such entries stay
-     * exact */
+     * exact.
+     * (stray-tri) The same degenerate objects (w ~2^69: a hidden object's matrix) also give fans whose Z is in range but
+     * whose vertex Q is not one a clipped vertex can have (2^-69 .. 2^-91, negative, FLT_MAX): the private clipper's
+     * packets for them are not the VU's (an all-exact frame draws no such triangle), and drawn they are the one-frame
+     * stray triangles of the owner's report - huge or sliver wedges across the screen, flat (S/Q, T/Q off the texture).
+     * Such entries stay exact too (r2_clip_why 6). PS2_R2_FANQ=0: off (diagnostics). */
+    static int qlog = -1, qchk = -1;     /* (PS2_R2_FANQ_LOG=n: log the first n such vertices) */
+    if (qlog < 0) { const char* e = getenv("PS2_R2_FANQ_LOG"); qlog = e ? atoi(e) : 0; e = getenv("PS2_R2_FANQ"); qchk = !(e && *e == '0'); }
     for (uint32_t p = n0; p + 16 <= o->n;) {
         const uint32_t* t = (const uint32_t*)(o->out + p);
         uint32_t nloop = t[0] & 0x7FFF, nreg = t[1] >> 28;
         if (nreg == 4) {
-            for (uint32_t v = 0; v < nloop; v++)
+            for (uint32_t v = 0; v < nloop; v++) {
                 if (((((const uint32_t*)(o->out + p + (1 + 4 * v + 3) * 16))[2] >> 4) & 0xFFFFFF) > R2_CLIP_ZMAX) {
                     r2_clip_why = 5; o->n = n0; return 0;
                 }
+                float q;
+                memcpy(&q, (const uint8_t*)o->out + p + (1 + 4 * v) * 16 + 8, 4);
+                if ((t[2] & 0xFu) == 2u && !(q > 1e-18f && q < 1e18f)) {   /* (the first register STQ: REGS 4F12 / 41F2) */
+                    if (qlog > 0) {
+                        qlog--;
+                        fprintf(stderr, "[fanq] v%u mesh %08X vertex %u of %u: Q %g (regs %08X)\n", ps2_vblank_count(), m->addr, v, nloop, q, t[2]);
+                    }
+                    if (qchk) { r2_clip_why = 6; o->n = n0; return 0; }
+                }
+            }
             p += (1 + 4 * nloop) * 16;
         } else p += (1 + nloop) * 16;
     }

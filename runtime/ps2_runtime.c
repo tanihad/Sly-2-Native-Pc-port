@@ -614,10 +614,112 @@ static void present_frame(const uint32_t* frame, int ok, int w, int h, uint32_t 
     if (dump_wanted(vb)) dump_picture(frame, w, h, 1024, vb, content43);
 }
 
+/* (stray-tri) PS2_DUMP_SPIKE=1: an online one-picture blink detector instead of writing every picture. Each dumped
+ * picture is kept for two more VBlanks; a pixel of picture n - 1 blinks when it differs from both neighbours
+ * (consecutive VBlanks, same size) by more than PS2_DUMP_SPIKE_T (default 48, max channel) while they agree within 16;
+ * a 16 x 16 cell more than half blinking is a blob. With >= PS2_DUMP_SPIKE_N (default 3) blobs: one "[spike]" log
+ * line (blobs, their bounding box, the most blinking pixels in a blob)
+ * and, for the first PS2_DUMP_SPIKE_MAX (default 12) events, the three pictures as BMPs. Disk use: only the events. */
+static void write_bmp(const char* path, const uint32_t* px, int w, int h, int stride) {
+    FILE* f = fopen(path, "wb");
+    if (!f) return;
+    uint8_t hd[54];
+    uint32_t isz = (uint32_t)w * (uint32_t)h * 4;
+    memset(hd, 0, sizeof hd);
+    hd[0] = 'B'; hd[1] = 'M';
+    uint32_t v[] = { 54 + isz, 0, 54, 40, (uint32_t)w, (uint32_t)-h };
+    memcpy(hd + 2, v, sizeof v);
+    hd[26] = 1; hd[28] = 32;
+    memcpy(hd + 34, &isz, 4);
+    fwrite(hd, 1, sizeof hd, f);
+    for (int y = 0; y < h; y++) fwrite(px + (size_t)y * stride, 4, (size_t)w, f);
+    fclose(f);
+}
+
+static int dump_spike(const uint32_t* frame, int w, int h, int stride, uint32_t vb) {
+    static int on = -1, thr, need, maxev;
+    if (on < 0) {
+        const char* e = getenv("PS2_DUMP_SPIKE");
+        on = e && atoi(e) > 0;
+        thr = getenv("PS2_DUMP_SPIKE_T") ? atoi(getenv("PS2_DUMP_SPIKE_T")) : 48;
+        need = getenv("PS2_DUMP_SPIKE_N") ? atoi(getenv("PS2_DUMP_SPIKE_N")) : 3;
+        maxev = getenv("PS2_DUMP_SPIKE_MAX") ? atoi(getenv("PS2_DUMP_SPIKE_MAX")) : 12;
+    }
+    if (!on) return 0;
+    enum { CS = 16, NR = 3 };
+    static uint32_t* pic[NR];
+    static uint32_t pvb[NR];
+    static int pw[NR], ph[NR], have[NR], nev, npics, nfl;
+    static size_t pcap[NR];
+    int k = (int)(vb % NR);
+    int cw = w / CS, ch = h / CS;
+    size_t np = (size_t)w * (size_t)h;
+    if (pcap[k] < np) { free(pic[k]); pic[k] = malloc(np * 4); pcap[k] = pic[k] ? np : 0; }
+    if (!pic[k]) return 1;
+    for (int y = 0; y < h; y++) memcpy(pic[k] + (size_t)y * w, frame + (size_t)y * stride, (size_t)w * 4);
+    pvb[k] = vb; pw[k] = w; ph[k] = h; have[k] = 1;
+    npics++;
+    int a = (int)((vb - 2) % NR), b = (int)((vb - 1) % NR);
+    if (!have[a] || !have[b] || pvb[a] != vb - 2 || pvb[b] != vb - 1 || pw[a] != w || pw[b] != w || ph[a] != h || ph[b] != h) {
+        if (vb > 2) nfl++;
+        return 1;
+    }
+    int cnt = 0, x0 = cw, y0 = ch, x1 = -1, y1 = -1, best = 0;
+    double fs = 0, fs2 = 0, fn = 0;      /* the blinking pixels' brightness in picture n - 1: a flat triangle has a low spread */
+    for (int i = 0; i < cw * ch; i++) {
+        int sp = 0;                      /* pixels of the cell that blink: B differs from A and C by > thr, A ~ C */
+        {
+            int cx = i % cw, cy = i / cw;
+            for (int y = 0; y < CS; y++) {
+                size_t o = (size_t)(cy * CS + y) * w + cx * CS;
+                const uint32_t *pa = pic[a] + o, *pb = pic[b] + o, *pc = pic[k] + o;
+                for (int x = 0; x < CS; x++) {
+                    int d1 = 0, d2 = 0, d0 = 0;
+                    for (int s = 0; s < 24; s += 8) {
+                        int A = (pa[x] >> s) & 255, B = (pb[x] >> s) & 255, C = (pc[x] >> s) & 255;
+                        int e1 = abs(B - A), e2 = abs(B - C), e0 = abs(A - C);
+                        if (e1 > d1) d1 = e1; if (e2 > d2) d2 = e2; if (e0 > d0) d0 = e0;
+                    }
+                    if (d1 > thr && d2 > thr && d0 < 16) {
+                        sp++;
+                        uint32_t bp = pb[x];
+                        double l = (double)((bp & 255) + ((bp >> 8) & 255) + ((bp >> 16) & 255)) / 3.0;
+                        fs += l; fs2 += l * l; fn++;
+                    }
+                }
+            }
+        }
+        if (sp > CS * CS / 2) {
+            cnt++;
+            int x = i % cw, y = i / cw;
+            if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+            if (sp > best) best = sp;
+        }
+    }
+    if (cnt >= need) {
+        nev++;
+        double mean = fn > 0 ? fs / fn : 0, sd = fn > 0 ? sqrt(fs2 / fn - mean * mean > 0 ? fs2 / fn - mean * mean : 0) : 0;
+        extern __attribute__((weak)) volatile int gpu_ab_phase;   /* (gpu_front.c: PS2_GPU_AB's phase, -1 off) */
+        fprintf(stderr, "[spike] v%u cells %d bbox %d,%d-%d,%d (px %d,%d-%d,%d) max %d luma %.0f sd %.1f %dx%d ab %d (event %d, %d pictures, %d gaps)\n",
+                vb - 1, cnt, x0, y0, x1, y1, x0 * CS, y0 * CS, (x1 + 1) * CS, (y1 + 1) * CS, best, mean, sd, w, h, &gpu_ab_phase ? gpu_ab_phase : -1, nev, npics, nfl);
+        if (nev <= maxev && dump_dir) {
+            char path[512];
+            int idx[3] = { a, b, k };
+            for (int j = 0; j < 3; j++) {
+                snprintf(path, sizeof path, "%s/spike_%06u.bmp", dump_dir, pvb[idx[j]]);
+                write_bmp(path, pic[idx[j]], w, h, w);
+            }
+        }
+    }
+    if ((npics & 1023) == 0) fprintf(stderr, "[spike] %d pictures, %d events, %d gaps\n", npics, nev, nfl);
+    return 1;
+}
+
 static void dump_picture(const uint32_t* frame, int w, int h, int stride, uint32_t vb, int content43) {
     static SRWLOCK lock = SRWLOCK_INIT;  /* (display_shaped's buffer: the GPU renderer's dump thread and a
                                             software picture right after a backend switch) */
     AcquireSRWLockExclusive(&lock);
+    if (dump_spike(frame, w, h, stride, vb)) { ReleaseSRWLockExclusive(&lock); return; }
     {
         char path[512];
         snprintf(path, sizeof path, "%s/frame_%06u.png", dump_dir, vb);

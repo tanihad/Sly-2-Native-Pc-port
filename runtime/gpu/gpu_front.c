@@ -1782,6 +1782,38 @@ static void hud_stats_reset(void) {
 }
 void gpu_front_hud_stats(gpu_hud_stats* out) { *out = hud_st; }
 
+/* (stray-tri, diagnostics) PS2_GF_BIGTRI=<px>: exact-path triangles whose pixel bounds reach px GS pixels in width or
+ * height, logged with their vertices and state into the file PS2_GF_BIGTRI_FILE (buffered; from VBlank
+ * PS2_GF_BIGTRI_FROM, up to 400000 lines): what a one-frame stray triangle is made of */
+static void big_tri_log(const gs_env_view* ev, int type, const gs_vtx* const* vs, int x0, int y0, int x1, int y1) {
+    static int lim = -1, lines;
+    static uint32_t from;
+    static FILE* f;
+    if (lim < 0) {
+        const char* e = getenv("PS2_GF_BIGTRI"); lim = e ? atoi(e) : 0;
+        e = getenv("PS2_GF_BIGTRI_FROM"); from = e ? (uint32_t)atoi(e) : 0;
+        e = getenv("PS2_GF_BIGTRI_FILE");
+        if (lim > 0 && e && (f = fopen(e, "w")) != NULL) setvbuf(f, NULL, _IOFBF, 1 << 20);
+        if (!f) lim = 0;
+    }
+    if (lim <= 0 || lines >= 400000 || cp_vblank < from) return;
+    int badq = 0;                        /* a vertex Q a clipped triangle cannot have (w <= 0, ~0 or ~inf): flagged "badq" */
+    if (ev->P->tme && !ev->P->fst)
+        for (int i = 0; i < 3; i++) { float q = vs[i]->q; if (!(q > 1e-18f && q < 1e18f)) badq = 1; }
+    if (x1 - x0 < lim && y1 - y0 < lim && !badq) return;
+    if (badq) fprintf(f, "badq ");
+    if (++lines % 4096 == 0) fflush(f);
+    const gs_prim* P = ev->P;
+    uint64_t tex0 = ev->reg[R_TEX0_1 + ev->ctx], fr = ev->reg[R_FRAME_1 + ev->ctx];
+    fprintf(f, "v%u t%d bb %d,%d-%d,%d tme %d fst %d iip %d abe %d fge %d tex0 %016llX frame %08llX phase %u",
+            cp_vblank, type, x0, y0, x1, y1, P->tme, P->fst, ev->iip, P->abe, P->fge, (unsigned long long)tex0,
+            (unsigned long long)(fr & 0xFFFFFFFFu), ev->phase);
+    for (int i = 0; i < 3; i++)
+        fprintf(f, " | %d,%d z%X q%g s%g t%g c%02X%02X%02X%02X f%d", (vs[i]->x - ev->ofx) >> 4, (vs[i]->y - ev->ofy) >> 4,
+                vs[i]->z, vs[i]->q, vs[i]->s, vs[i]->t, vs[i]->r, vs[i]->g, vs[i]->b, vs[i]->a, vs[i]->f);
+    fputc('\n', f);
+}
+
 static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_vtx* b, const gs_vtx* c) {
     /* time every 16th primitive (rdtsc costs about as much as a cheap primitive) */
     int timed = (gf.kicks & 15) == 0;
@@ -1847,6 +1879,7 @@ static void fr_prim(const gs_env_view* ev, int type, const gs_vtx* a, const gs_v
         nv = 3;
         if (!gs_tri_setup(&T, a, b, c, ev->ofx, ev->ofy, P->scx0, P->scx1, P->scy0, P->scy1)) { gf.culled++; goto out; }
         x0 = T.bx0; y0 = T.by0; x1 = T.bx1; y1 = T.by1;
+        big_tri_log(ev, type, vs, x0, y0, x1, y1);
         break;
     case GPU_PC_SPRITE:
         nv = 2;

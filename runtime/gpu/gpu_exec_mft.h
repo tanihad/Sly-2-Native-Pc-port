@@ -1089,6 +1089,39 @@ static int mft_plan_ops(const gpu_front_frame_data* fd) {
         }
         case GPU_FOP_R2: {
             const gpu_fop_r2* o = (const gpu_fop_r2*)h;
+            if (phase) {                 /* (stray-tri, diagnostics) PS2_MFT_LOG_BA=n: the display ops of phase B before it */
+                static int lba = -1;
+                if (lba < 0) { const char* e = getenv("PS2_MFT_LOG_BA"); lba = e ? atoi(e) : 0; }
+                if (lba > 0) {
+                    lba--;
+                    size_t from = M.nph ? M.ph_pos[M.nph - 1] : 0;
+                    gpu_log("mft: v%u B -> A at @%u (B from @%u%s), the frame's ops:", fd->vblank, (unsigned)pos, (unsigned)from, cont ? ", continued" : "");
+                    char line[600];
+                    int o = 0, run = 0, rct = -1, rzt = -1;
+                    for (size_t p = 0; p + sizeof(gpu_fop) <= fd->cmd_bytes;) {
+                        const gpu_fop* q = (const gpu_fop*)(fd->cmd + p);
+                        if (!q->size) break;
+                        int ct = -2, zt = -2;
+                        if (q->op == GPU_FOP_DRAW) { ct = ((const gpu_fop_draw*)q)->ct; zt = ((const gpu_fop_draw*)q)->zt; }
+                        if (run && (q->op != GPU_FOP_DRAW || ct != rct || zt != rzt)) {
+                            o += snprintf(line + o, sizeof line - (size_t)o, " D%d/%dx%d", rct, rzt, run);
+                            run = 0;
+                        }
+                        if (q->op == GPU_FOP_DRAW) { run++; rct = ct; rzt = zt; }
+                        else if (q->op == GPU_FOP_PRESENT) {
+                            const gpu_fop_present* pr = (const gpu_fop_present*)q;
+                            o += snprintf(line + o, sizeof line - (size_t)o, " PRESENT(%u,%u)@%u", pr->src[0], pr->src[1], (unsigned)p);
+                        } else if (q->op == GPU_FOP_R2) o += snprintf(line + o, sizeof line - (size_t)o, " R2@%u", (unsigned)p);
+                        else if (q->op == GPU_FOP_MARK) o += snprintf(line + o, sizeof line - (size_t)o, " MARK@%u", (unsigned)p);
+                        else if (q->op == GPU_FOP_CLEAR) o += snprintf(line + o, sizeof line - (size_t)o, " C%u", ((const gpu_fop_clear*)q)->target);
+                        else if (q->op == GPU_FOP_ALIAS16) o += snprintf(line + o, sizeof line - (size_t)o, " A16");
+                        if (o > 480) { gpu_log("mft:  %s", line); o = 0; }
+                        p += q->size;
+                    }
+                    if (run) o += snprintf(line + o, sizeof line - (size_t)o, " D%d/%dx%d", rct, rzt, run);
+                    if (o) gpu_log("mft:  %s", line);
+                }
+            }
             if (phase) PH_SET(pos, 0);   /* (after the resolve: the next game frame's 3D - a VBlank's ops can hold the end of
                                             one frame and the start of the next) */
             /* (mft-pop: entries crossing the guard band - state bit 13 - draw through r2_render.c's MFT clip pipelines) */
@@ -1212,6 +1245,25 @@ static int mft_plan_ops(const gpu_front_frame_data* fd) {
     if (gw * M.osx > 8192.0f || gh * M.osy > 8192.0f || gw * M.rsx > 8192.0f || gh * M.rsy > 8192.0f) return mft_no(MW_SIZE);
     M.gw = gw; M.gh = gh; M.ow = ow; M.oh = oh; M.n = n;
 #undef PH_SET
+    {   /* (stray-tri, diagnostics) PS2_MFT_PLANLOG=<file>: every planned frame's shape (buffered) */
+        static FILE* pl = (FILE*)1;
+        if (pl == (FILE*)1) { const char* e = getenv("PS2_MFT_PLANLOG"); pl = e ? fopen(e, "w") : NULL; if (pl) setvbuf(pl, NULL, _IOFBF, 1 << 20); }
+        if (pl) {
+            int cnt[2] = { 0, 0 }, r2n[2] = { 0, 0 }, mk = 0, ip = 0, ph = phase0;
+            for (size_t p = 0; p + sizeof(gpu_fop) <= fd->cmd_bytes;) {
+                const gpu_fop* q = (const gpu_fop*)(fd->cmd + p);
+                if (!q->size) break;
+                while (ip < M.nph && p >= M.ph_pos[ip]) ph = M.ph_val[ip++];
+                if (q->op == GPU_FOP_DRAW) cnt[ph]++;
+                else if (q->op == GPU_FOP_R2) r2n[ph]++;
+                else if (q->op == GPU_FOP_MARK) mk++;
+                p += q->size;
+            }
+            fprintf(pl, "v%u cont %d ph0 %d nph %d", fd->vblank, cont, phase0, M.nph);
+            for (int i = 0; i < M.nph; i++) fprintf(pl, " %u:%d", (unsigned)M.ph_pos[i], M.ph_val[i]);
+            fprintf(pl, " | draws A %d B %d r2 A %d B %d marks %d shp %d bytes %u\n", cnt[0], cnt[1], r2n[0], r2n[1], mk, M.nshp, (unsigned)fd->cmd_bytes);
+        }
+    }
     M.on = 1;
     M.phase = phase0;
     M.last_r2 = has_r2 ? 1 : nd ? 0 : M.last_r2;   /* (a PRESENT-only VBlank does not end gameplay: the rest of a game
