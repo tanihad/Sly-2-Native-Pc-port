@@ -406,7 +406,18 @@ differ, gpu_diff_all mixed S=1, every unit suite):
 (LTO / PGO-without-LTO columns: the first, full-path profile, same session; -O3 and whole-program x86-64-v3 gave
 -5..-9% each - not shippable as the baseline / not worth it next to PGO.)
 
-**In game**: IN_GAME_TABLE
+**In game** (chaos_bench, release, frame rate 120 so both builds run the same frames, 1x, base = main 38a38df vs P6,
+interleaved, medians of 5-6 runs; CPU ms per game frame):
+
+| scene | EE base -> P6 | worker | frontend | GS thread |
+|---|---|---|---|---|
+| ep1 hub | 3.55 -> 3.43 | 2.12 -> 1.96 | 2.18 -> 1.79 | 1.63 -> 1.49 |
+| m1 brawl | 3.12 -> 3.24 | 1.73 -> 1.65 | 1.52 -> 1.53 | 1.11 -> 1.18 |
+| m2 boardroom | 2.21 -> 2.19 | 1.27 -> 1.15 | 1.48 -> 1.44 | 0.83 -> 0.92 |
+
+Single runs of one build differ by up to +-20% (other agents' load, scripted play showing different content), so only the
+worker (-5..-9%, in every scene) is clearly above that; the frontend's -10..-15% of the replays is not resolved in game.
+The profile was retrained after merging main 669ae0c (render-thread changes).
 
 **Build** (fresh, 6 jobs, shared machine): plain 56-60 s -> 67 s (VU v3 copies +~8 s, ThinLTO + profile of the runtime +~3
 s); peak memory of 6 compilers ~1.0-1.2 GB, the ThinLTO link 0.17 GB (whole-program ThinLTO: 0.84 GB, 101 s).
