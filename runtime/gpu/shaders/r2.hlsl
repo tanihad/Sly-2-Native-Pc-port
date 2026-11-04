@@ -396,6 +396,9 @@ void r2_gs_clip(triangle R2C v[3], inout TriangleStream<R2K> ts) {
     // (r2-m5b) a triangle the VU clips: its fans are the VU clipper's own (runtime/r2/r2_clip.c, decoded by the GS thread
     // after the entry), or the VU culls it; GPU clipping only with PS2_R2_CLIP=1 (misc bit 64)
     if ((o0 | o1 | o2) != 0u && (asuint(r2_misc.w) & 64u) == 0u) return;
+#if R2_MFT
+    if (!inside) return;                 // (mft-pop: the modern frame's surfaces - no GPU-clipped form, positions are final)
+#endif
     R2Seg sg = r2_seg(v[0].mr.z);
     float4 fr = asfloat(fdata.Load4(sg.off.x + 32u));       // screen model: ax, bx, ay, by (gpu_r2_frame)
     float2 fz = asfloat(fdata.Load2(sg.off.x + 48u));       //               az, bz

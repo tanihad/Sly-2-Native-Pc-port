@@ -485,7 +485,7 @@ static uint32_t r2_plan(uint32_t nd, uint32_t draw_off, int sx0, int sy0, int sx
         const gpu_r2_draw* d = &D[i];
         uint32_t c = d->count;
         if (key != ckey) { PL_FLUSH(); ckey = key; }
-        if (c > PL_SMALL || c % 3u) {
+        if (c > PL_SMALL || c % 3u || ((d->state >> 13) & 1)) {   /* (guard-band entries: their clip stage, plain) */
             PL_FLUSH();
             pl_ch[nc++] = (gpu_r2_chunk){ i, 0, 0, d->state };
             continue;

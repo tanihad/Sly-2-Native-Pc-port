@@ -194,6 +194,12 @@ vs_r2m              r2.hlsl             r2_vs             vs_5_0    R2_MFT=1
 ps_r2m              r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1
 ps_r2m_nd           r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_NODISCARD=1
 ps_r2m_a2c          r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_A2C=1
+# (mft-pop) meshes crossing the guard band on the modern frame's surfaces: the triangles inside it (r2_gs_clip)
+vs_r2m_clip         r2.hlsl             r2_vs_clip        vs_5_0    R2_MFT=1 R2_CLIP=1
+gs_r2m_clip         r2.hlsl             r2_gs_clip        gs_5_0    R2_MFT=1 R2_CLIP=1
+ps_r2m_clip         r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_CLIP=1
+ps_r2m_clip_nd      r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_CLIP=1 R2_NODISCARD=1
+ps_r2m_clip_a2c     r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_CLIP=1 R2_A2C=1
 vs_r2m_mv           r2.hlsl             r2_vs_mv          vs_5_0    R2_MFT=1 R2_MV=1
 # (r8-perf) the merged draws of the segment's plan: vertices pulled by the draw record of each instance
 vs_r2m_pull         r2.hlsl             r2_vs_pull        vs_5_0    R2_MFT=1 R2_PULL=1
