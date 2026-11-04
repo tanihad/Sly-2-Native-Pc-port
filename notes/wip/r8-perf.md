@@ -35,8 +35,12 @@ Worktree C:\Users\tanih\Projects\sly2-worktrees\r8-perf, branch next/r8-perf (fr
 - Gates so far (c114ae4): run_tests 16/16; units 26/27 (window F11/Alt+Enter flake); debug + release builds;
   pc_text_boot rel + dbg; package.py (0.1.1038). Base gs_replay for m9_exact: build\basert\out (main 38a38df runtime).
 
+- Pre-merge: gpu_diff_all mixed S=1 28/28, m9_exact S1 + S3 -Game identical. The sweep was killed by the owner's pause.
+- Merged main 669ae0c (mft-pop: MFT clip pipelines for guard-band entries) -> b22c58c: r2_plan keeps clip draws plain,
+  the render loop draws plain clip chunks through mcpipe*. Re-verified in ep1 (R2 plan, shadows, line runs identical).
+
 ## In progress
-- r2_sweep ab+hc+tf -Parallel 1 (background). Done: gpu_diff_all mixed S=1 28/28, m9_exact S1 + S3 -Game identical.
+- Post-merge: A/B ep1 / m1 / m2, units; then pc_text_boot, gpu_diff_all, m9_exact, package, sweep (one game at a time).
 
 ## Next
 1. r2_sweep ab+hc+tf with -Parallel 1.
