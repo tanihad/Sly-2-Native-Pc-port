@@ -163,12 +163,13 @@ static const struct { const char* name; unsigned vk; int shift; } script_gfx[] =
 /* (pc-menu) the Options menu (menu_game.c menu_script): "menu" opens it as Esc does (or closes it), "mup" "mdown" "mleft"
  * "mright" "mok" "mback" "mtabn" "mtabp" navigate as a controller does, "menushot" writes the next presented picture with
  * the menu to PS2_MENU_SHOTS (folder; default the frame dump folder or .) as menu_<n>.png, (pc-polish) "mquit" = the
- * window's close button (Quit to desktop?; a second one quits) */
+ * window's close button (Quit to desktop?; a second one quits), (pc-shot) "screenshot" = F12 (menu_overlay.h) */
 #define SCRIPT_MENU0 (-40)
 static const char* const script_menu[] = { "menu", "mup", "mdown", "mleft", "mright", "mok", "mback", "mtabn", "mtabp", "menushot",
-                                           "mquit" };
+                                           "mquit", "screenshot" };
 #define SCRIPT_NMENU ((int)(sizeof script_menu / sizeof script_menu[0]))
 extern void menu_script(int k) __attribute__((weak));
+extern void overlay_request_screenshot(void) __attribute__((weak));
 static void switch_aspect(void);
 static void switch_hud(void);
 static int script_pause_req;
@@ -1385,6 +1386,7 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         /* (Esc no longer leaves fullscreen: it opens the Options menu - runtime/input.c INPUT_NAV_MENU) */
         if (wp == VK_F11 && !(lp & (1 << 30))) { toggle_fullscreen(hwnd); settings_mark_chosen(settings_find("display", "mode")); }
+        else if (wp == VK_F12 && !(lp & (1 << 30))) { if (overlay_request_screenshot) overlay_request_screenshot(); }   /* (pc-shot) */
         else if (wp == VK_F7 && !(lp & (1 << 30))) switch_aspect();
         else if (wp == VK_F8 && !(lp & (1 << 30))) switch_hud();
         else if (wp >= VK_F2 && wp <= VK_F6 && !(lp & (1 << 30)))   /* graphics settings (gfx.h), remembered in sly2.ini */

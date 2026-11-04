@@ -449,8 +449,20 @@ static void build_fps(ui_list* L, int w, int h, double fps) {
     text_box(L, 14 * u + bw / 2, 14 * u, bh, px, t, fps >= 58.0 ? ARGB(255, 150, 240, 150) : C_NOTE, AL_CENTER, 0);
 }
 
-int menu_build(ui_list* L, int w, int h, double now_s, double fps) {
-    L->n = 0;
+static char toast_text[48];
+void menu_set_toast(const char* text) { snprintf(toast_text, sizeof toast_text, "%s", text ? text : ""); }
+
+/* (pc-shot) a small notice, bottom centre, over everything */
+static void build_toast(ui_list* L, int w, int h) {
+    float u = (float)h / 1080.0f;
+    if (u < 0.4f) u = 0.4f;
+    float px = 30 * u, bw = tw(toast_text, px) + 40 * u, bh = 46 * u;
+    cur_clip = 0;
+    fillr(L, ((float)w - bw) / 2, (float)h - 70 * u - bh, bw, bh, 10 * u, ARGB(170, 0, 0, 0));
+    text_box(L, (float)w / 2, (float)h - 70 * u - bh, bh, px, toast_text, ARGB(255, 240, 240, 240), AL_CENTER, 0);
+}
+
+int menu_build(ui_list* L, int w, int h, double now_s, double fps) {    L->n = 0;
     L->nclip = 1;
     L->w = w;
     L->h = h;
@@ -461,6 +473,7 @@ int menu_build(ui_list* L, int w, int h, double now_s, double fps) {
     menu_get_view(&V, w, h);
     if (V.open) build_menu(L, &V, w, h);
     else if (fps >= 0) build_fps(L, w, h, fps);
+    if (toast_text[0] && now_s > 0) build_toast(L, w, h);
     return L->n;
 }
 
