@@ -290,3 +290,5 @@ button) only the dimmed game and the dialog are drawn.
 - Not testable here (headless only, no visible window): a real display mode change for Fullscreen at another
   resolution and the close button of a visible window; the code paths are the ones above (display_mode.c,
   window.c WM_CLOSE) and the pure parts are unit-tested.
+
+- **Screenshot key (pc-shot)**: **F12** (a window key, not bindable; works with the Options menu open) saves the presented back buffer - full output resolution, HUD, menu and counter included, so Modern / MFT at 1440p too - as `%USERPROFILE%\Pictures\Sly 2\Sly2_YYYY-MM-DD_HH-MM-SS.png` (`_2` ... on a name clash). menu_overlay.c: a GPU copy into a staging texture at the present, read back without waiting at a later present, PNG encoded and written by a worker thread (no hitch); `Screenshot saved` toast for 1.5 s (menu_draw.c `menu_set_toast`; D3D11 presenters only, the GDI fallback logs). PS2_INPUT token `screenshot`; `PS2_SCREENSHOT_DIR` names another folder. Test: `tests\unit\shot\run.ps1` (headless game, needs build\rel). Not rebindable (would need an ini key in input_map.c / a Controls row).

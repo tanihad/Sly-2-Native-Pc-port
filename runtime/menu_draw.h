@@ -29,6 +29,9 @@ typedef struct {
 /* Build the menu's picture for an output of w x h at time now_s (seconds; animations), plus the frame rate counter when
  * fps >= 0. Returns the number of primitives (0: nothing to draw). */
 int  menu_build(ui_list* L, int w, int h, double now_s, double fps);
+/* (pc-shot) a short notice at the bottom of the picture (NULL: none); set before menu_build, same serialisation. */
+/* The caller decides when it shows (menu_overlay.c: 1.5 s after a screenshot). */
+void menu_set_toast(const char* text);
 /* The list on the CPU over a transparent background. */
 void ui_raster(const ui_list* L, uint32_t* px, int w, int h, int stride);
 

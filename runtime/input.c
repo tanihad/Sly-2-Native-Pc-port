@@ -666,10 +666,10 @@ int input_window_message(void* hwnd, unsigned msg, uintptr_t wp, intptr_t lp) {
         if (msg == WM_SYSKEYDOWN) return 0;                   /* Alt+key: window shortcuts */
         if ((LONG)vk == swallow_vk) return menu_on != 0;      /* the key just captured, still held */
         if (capture_what) {
-            if (!capturing_keys) return (int)wp != VK_F11;
+            if (!capturing_keys) return (int)wp != VK_F11 && (int)wp != VK_F12;
             if (repeat) return 1;
             if (vk == VK_ESCAPE) { capture_done(INPUT_CAPTURE_CANCELLED, 0); return 1; }
-            if (!input_key_ini(vk)) return (int)wp != VK_F11;     /* not bindable: ignored, keep waiting */
+            if (!input_key_ini(vk)) return (int)wp != VK_F11 && (int)wp != VK_F12;     /* not bindable: ignored, keep waiting */
             InterlockedExchange(&swallow_vk, vk);
             capture_done(INPUT_CAPTURE_KEY, vk);
             return 1;
@@ -678,7 +678,7 @@ int input_window_message(void* hwnd, unsigned msg, uintptr_t wp, intptr_t lp) {
         if (!menu_on) return 0;
         int nav = key_nav((int)wp, GetKeyState(VK_SHIFT) < 0);
         if (nav) nav_push(nav, INPUT_SRC_KEYBOARD, 0, repeat, 0, 0);
-        return (int)wp != VK_F11;                             /* menu open: keys are the menu's (F11 still toggles fullscreen) */
+        return (int)wp != VK_F11 && (int)wp != VK_F12;       /* menu open: keys are the menu's (F11 still toggles fullscreen, F12 saves a screenshot) */
     }
     case WM_KEYUP: {
         if ((LONG)key_side((int)wp, lp) == swallow_vk) InterlockedExchange(&swallow_vk, 0);

@@ -107,9 +107,9 @@ pad_select = select, touchpad
 ```
 
 Key names: `A`..`Z`, `0`..`9`, `Space Enter Backspace Tab LShift RShift LCtrl RCtrl CapsLock Up Down
-Left Right Insert Delete Home End PageUp PageDown F1 F12 Numpad0..Numpad9 NumpadAdd NumpadSubtract
+Left Right Insert Delete Home End PageUp PageDown F1 Numpad0..Numpad9 NumpadAdd NumpadSubtract
 NumpadMultiply NumpadDivide NumpadDecimal Semicolon Equals Comma Minus Period Slash Backquote LBracket
-Backslash RBracket Quote Mouse1..Mouse5`, or `0x<vk>`. Not bindable: Esc (menu), F2-F11 (window and
+Backslash RBracket Quote Mouse1..Mouse5`, or `0x<vk>`. Not bindable: Esc (menu), F2-F12 (window and
 graphics keys), Alt, Windows keys. Controller button names: `cross circle square triangle l1 r1 l2
 r2 l3 r3 select start home touchpad mute up down left right`, aliases `a b x y lb rb lt rt ls rs
 back view create share options menu ps guide dpad_up ...`.
@@ -140,6 +140,7 @@ first or second binding; Esc or the PS button cancels).
 | Borderless fullscreen on/off   | F11 or Alt+Enter (also Display > Display mode in the menu) |
 | Widescreen (16:9) <-> 4:3      | F7                          |
 | HUD at the edges <-> centred   | F8 (wide aspects)           |
+| Save a screenshot             | F12: the picture as shown (HUD, full output resolution) to `Pictures\Sly 2\Sly2_YYYY-MM-DD_HH-MM-SS.png`, "Screenshot saved" for a moment; also with the Options menu open (F11, F12 work there) |
 | Quit to desktop                | the pause menu's "Quit to Desktop", "Quit to desktop" at the end of every Options page, the title screen's SELECT menu, or close the window / Alt+F4 - each asks "Quit to desktop?" first; closing the window again while it asks quits at once |
 
 (Esc no longer leaves fullscreen: it opens the Options menu.)

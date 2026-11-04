@@ -21,6 +21,10 @@ void overlay_gdi_draw(void* hdc, int w, int h);
 void overlay_set_fps(double fps);
 /* Write the next presented picture with the overlay to path (PNG; tests and screenshots: PS2_INPUT "menushot"). */
 void overlay_request_shot(const char* path);
+/* (pc-shot) F12 / PS2_INPUT "screenshot": the next presented picture, as shown, to %USERPROFILE%\Pictures\Sly 2\
+ * Sly2_YYYY-MM-DD_HH-MM-SS.png (PS2_SCREENSHOT_DIR: another folder), written on a worker thread; "Screenshot saved"
+ * shows for 1.5 s afterwards. Any thread. */
+void overlay_request_screenshot(void);
 /* (pc-menu2) the overlay changes between the game's pictures (the menu is open: the mouse, animations): the presenters
  * present at the display's refresh meanwhile (gpu_present.c gpu_present_menu, window.c) */
 int  overlay_wants_frames(void);

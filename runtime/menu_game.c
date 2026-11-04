@@ -528,7 +528,7 @@ void menu_game_init(int headless) {
     pcmenu_ee_pending = 1;               /* the [audio] volumes into the game once its main loop runs */
 }
 
-/* PS2_INPUT tokens (window.c): menu mup mdown mleft mright mok mback mtabn mtabp menushot, (pc-polish) mquit = the window's
+/* PS2_INPUT tokens (window.c): menu mup mdown mleft mright mok mback mtabn mtabp menushot, (pc-polish) mquit = the window's, screenshot = F12
  * close button */
 void menu_script(int k) {
     static const menu_nav navs[] = { MENU_NAV_NONE, MENU_NAV_UP, MENU_NAV_DOWN, MENU_NAV_LEFT, MENU_NAV_RIGHT,
@@ -548,5 +548,7 @@ void menu_script(int k) {
     } else if (k == 10) {
         if (menu_quit_showing()) menu_game_quit();          /* (a second press: at once, as the close button) */
         else pcmenu_quit_request();
+    } else if (k == 11) {
+        overlay_request_screenshot();                      /* (pc-shot) as F12: the Pictures folder (or PS2_SCREENSHOT_DIR) */
     }
 }

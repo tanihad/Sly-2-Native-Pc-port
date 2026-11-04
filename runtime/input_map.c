@@ -65,7 +65,7 @@ int input_button_from_name(const char* name) {
     return -1;
 }
 
-/* Bindable keys: ini name, label. F2..F11 (window and graphics keys), Esc (menu), Alt and the Windows
+/* Bindable keys: ini name, label. F2..F12 (window, graphics and screenshot keys), Esc (menu), Alt and the Windows
  * keys are not bindable. */
 static const struct { uint8_t vk; const char* ini; const char* label; } keys[] = {
     { VK_SPACE, "Space", "Space" }, { VK_RETURN, "Enter", "Enter" }, { VK_BACK, "Backspace", "Backspace" },
@@ -74,7 +74,7 @@ static const struct { uint8_t vk; const char* ini; const char* label; } keys[] =
     { VK_UP, "Up", "Up arrow" }, { VK_DOWN, "Down", "Down arrow" }, { VK_LEFT, "Left", "Left arrow" },
     { VK_RIGHT, "Right", "Right arrow" }, { VK_INSERT, "Insert", "Insert" }, { VK_DELETE, "Delete", "Delete" },
     { VK_HOME, "Home", "Home" }, { VK_END, "End", "End" }, { VK_PRIOR, "PageUp", "Page Up" },
-    { VK_NEXT, "PageDown", "Page Down" }, { VK_F1, "F1", "F1" }, { VK_F12, "F12", "F12" },
+    { VK_NEXT, "PageDown", "Page Down" }, { VK_F1, "F1", "F1" },
     { VK_NUMPAD0, "Numpad0", "Numpad 0" }, { VK_NUMPAD1, "Numpad1", "Numpad 1" }, { VK_NUMPAD2, "Numpad2", "Numpad 2" },
     { VK_NUMPAD3, "Numpad3", "Numpad 3" }, { VK_NUMPAD4, "Numpad4", "Numpad 4" }, { VK_NUMPAD5, "Numpad5", "Numpad 5" },
     { VK_NUMPAD6, "Numpad6", "Numpad 6" }, { VK_NUMPAD7, "Numpad7", "Numpad 7" }, { VK_NUMPAD8, "Numpad8", "Numpad 8" },

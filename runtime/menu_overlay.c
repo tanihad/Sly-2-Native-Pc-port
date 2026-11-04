@@ -25,8 +25,11 @@ void debug_write_png(const char* path, const uint32_t* bgrx, int w, int h, int s
 
 static SRWLOCK lock = SRWLOCK_INIT;
 static volatile LONG fps_x100;
-static char shot_path[512];
+static char shot_path[512];                   /* an explicit file (PS2_INPUT menushot); */
+static int shot_auto;                          /* ... or the Pictures folder (F12, "screenshot"), under `lock` */
 static volatile LONG shot_pending;
+static struct { ID3D11Device* dev; ID3D11Texture2D* st; int w, h, bgra, autop; char path[512]; } pend;
+static volatile LONG64 toast_until_ms;         /* (pc-shot) "Screenshot saved" shows until this time (now_s() * 1000) */
 static volatile LONG draws;                      /* (pc-menu2) menu pictures drawn (measurements) */
 
 void overlay_set_fps(double fps) { InterlockedExchange(&fps_x100, (LONG)(fps * 100.0 + 0.5)); }
@@ -34,11 +37,21 @@ void overlay_set_fps(double fps) { InterlockedExchange(&fps_x100, (LONG)(fps * 1
 void overlay_request_shot(const char* path) {
     AcquireSRWLockExclusive(&lock);
     snprintf(shot_path, sizeof shot_path, "%s", path);
+    shot_auto = 0;
     ReleaseSRWLockExclusive(&lock);
     InterlockedExchange(&shot_pending, 1);
 }
 
-int overlay_wants_frames(void) { return menu_is_open(); }
+void overlay_request_screenshot(void) {
+    AcquireSRWLockExclusive(&lock);
+    shot_auto = 1;
+    ReleaseSRWLockExclusive(&lock);
+    InterlockedExchange(&shot_pending, 1);
+}
+
+static double now_s(void);
+static int toast_active(void) { return now_s() * 1000.0 < (double)toast_until_ms; }
+int overlay_wants_frames(void) { return menu_is_open() || toast_active(); }
 long overlay_draw_count(void) { return draws; }
 
 static double now_s(void) {
@@ -132,6 +145,7 @@ static void res_free(dres* r) {
 void overlay_d3d11_release(ID3D11Device* dev) {
     AcquireSRWLockExclusive(&lock);
     for (int k = 0; k < 2; k++) if (res[k].dev == dev) res_free(&res[k]);
+    if (pend.dev == dev) { REL(pend.st); pend.dev = NULL; }
     ReleaseSRWLockExclusive(&lock);
 }
 
@@ -303,43 +317,133 @@ static int fill_vertices(const ui_list* L, int w, int h) {
     return n;
 }
 
-/* the back buffer -> PNG (a requested screenshot) */
-static void shot(ID3D11Device* dev, ID3D11DeviceContext* ctx, ID3D11RenderTargetView* rtv, int w, int h) {
+/* ---- screenshots (pc-shot) -----------------------------------------------------------------------------------------
+ * The presented back buffer, after the overlay is drawn (so the HUD, the menu and the frame rate counter are in it),
+ * is copied on the GPU into a staging texture; a later present reads it back without waiting (the copy is long done)
+ * and a worker thread writes the PNG, so the render thread never stalls on the disk. PS2_INPUT "menushot" writes to
+ * the named file; F12 / "screenshot" to %USERPROFILE%\Pictures\Sly 2\Sly2_YYYY-MM-DD_HH-MM-SS.png (PS2_SCREENSHOT_DIR
+ * names another folder: the tests) and shows "Screenshot saved" for 1.5 s. */
+
+int  debug_write_png_w(const wchar_t* path, const uint32_t* bgrx, int w, int h, int stride);   /* debug.c */
+
+typedef struct { uint32_t* px; int w, h, autop; char path[512]; } shot_job;
+
+static void mkdirs(wchar_t* dir) {
+    for (wchar_t* c = dir + 3; *c; c++)
+        if (*c == L'\\') { *c = 0; CreateDirectoryW(dir, NULL); *c = L'\\'; }
+    CreateDirectoryW(dir, NULL);
+}
+
+/* the next free Sly2_<date>_<time>[_n].png in the screenshot folder */
+static int auto_path(wchar_t* out, size_t cap) {
+    wchar_t dir[MAX_PATH * 2];
+    const wchar_t* e = _wgetenv(L"PS2_SCREENSHOT_DIR");
+    if (e && *e) swprintf(dir, MAX_PATH * 2, L"%ls", e);
+    else {
+        const wchar_t* h = _wgetenv(L"USERPROFILE");
+        if (!h || !*h) return 0;
+        swprintf(dir, MAX_PATH * 2, L"%ls\\Pictures\\Sly 2", h);
+    }
+    size_t n = wcslen(dir);
+    while (n > 3 && (dir[n - 1] == L'\\' || dir[n - 1] == L'/')) dir[--n] = 0;
+    for (wchar_t* c = dir; *c; c++) if (*c == L'/') *c = L'\\';
+    mkdirs(dir);
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    for (int k = 1; k < 1000; k++) {
+        wchar_t suffix[16] = L"";
+        if (k > 1) swprintf(suffix, 16, L"_%d", k);
+        swprintf(out, cap, L"%ls\\Sly2_%04d-%02d-%02d_%02d-%02d-%02d%ls.png", dir, st.wYear, st.wMonth, st.wDay, st.wHour,
+                 st.wMinute, st.wSecond, suffix);
+        if (GetFileAttributesW(out) == INVALID_FILE_ATTRIBUTES) return 1;
+    }
+    return 0;
+}
+
+static DWORD WINAPI shot_worker(LPVOID arg) {
+    shot_job* j = arg;
+    int ok = 0;
+    char shown[1200];
+    if (j->autop) {
+        wchar_t wp[MAX_PATH * 2 + 64];
+        if (auto_path(wp, sizeof wp / sizeof *wp) && debug_write_png_w(wp, j->px, j->w, j->h, j->w)) ok = 1;
+        WideCharToMultiByte(CP_UTF8, 0, wp, -1, shown, sizeof shown, NULL, NULL);
+        shown[sizeof shown - 1] = 0;
+    } else {
+        debug_write_png(j->path, j->px, j->w, j->h, j->w);
+        snprintf(shown, sizeof shown, "%s", j->path);
+        ok = 1;
+    }
+    fprintf(stderr, ok ? "[menu] screenshot %dx%d -> %s\n" : "[menu] screenshot %dx%d FAILED (%s)\n", j->w, j->h, shown);
+    if (ok && j->autop) {            /* the toast, from the next picture on */
+        InterlockedExchange64(&toast_until_ms, (LONG64)(now_s() * 1000.0) + 1500);
+    }
+    free(j->px);
+    free(j);
+    return 0;
+}
+
+/* hand a BGRX picture (malloc'd; taken over) to a worker thread */
+static void shot_submit(uint32_t* px, int w, int h, int autop, const char* path) {
+    shot_job* j = calloc(1, sizeof *j);
+    if (!j) { free(px); return; }
+    j->px = px; j->w = w; j->h = h; j->autop = autop;
+    snprintf(j->path, sizeof j->path, "%s", path);
+    HANDLE th = CreateThread(NULL, 0, shot_worker, j, 0, NULL);
+    if (th) CloseHandle(th);
+    else shot_worker(j);
+}
+
+/* the back buffer -> a staging texture (a GPU copy); shot_poll reads it on a later present */
+static void shot_start(ID3D11Device* dev, ID3D11DeviceContext* ctx, ID3D11RenderTargetView* rtv) {
     ID3D11Resource* src = NULL;
     ID3D11RenderTargetView_GetResource(rtv, &src);
     if (!src) return;
     D3D11_TEXTURE2D_DESC td;
     ID3D11Texture2D_GetDesc((ID3D11Texture2D*)src, &td);
-    td.Usage = D3D11_USAGE_STAGING;
-    td.BindFlags = 0;
-    td.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-    td.MiscFlags = 0;
-    ID3D11Texture2D* st = NULL;
-    if (SUCCEEDED(ID3D11Device_CreateTexture2D(dev, &td, NULL, &st))) {
-        ID3D11DeviceContext_CopyResource(ctx, (ID3D11Resource*)st, src);
-        D3D11_MAPPED_SUBRESOURCE m;
-        if (SUCCEEDED(ID3D11DeviceContext_Map(ctx, (ID3D11Resource*)st, 0, D3D11_MAP_READ, 0, &m))) {
-            uint32_t* px = malloc((size_t)w * h * 4);
-            if (px) {
-                int bgra = td.Format == DXGI_FORMAT_B8G8R8A8_UNORM;
-                for (int y = 0; y < h; y++) {
-                    const uint32_t* s = (const uint32_t*)((const uint8_t*)m.pData + (size_t)y * m.RowPitch);
-                    for (int x = 0; x < w; x++) {
-                        uint32_t v = s[x];   /* RGBA bytes -> BGRX */
-                        px[(size_t)y * w + x] = bgra ? v : (v & 0xFF00FF00u) | (v & 0xFF) << 16 | (v >> 16 & 0xFF);
-                    }
-                }
-                debug_write_png(shot_path, px, w, h, w);
-                fprintf(stderr, "[menu] screenshot %dx%d -> %s\n", w, h, shot_path);
-                free(px);
-            }
-            ID3D11DeviceContext_Unmap(ctx, (ID3D11Resource*)st, 0);
+    if (td.SampleDesc.Count > 1 || (td.Format != DXGI_FORMAT_B8G8R8A8_UNORM && td.Format != DXGI_FORMAT_R8G8B8A8_UNORM &&
+                                    td.Format != DXGI_FORMAT_B8G8R8A8_UNORM_SRGB && td.Format != DXGI_FORMAT_R8G8B8A8_UNORM_SRGB)) {
+        fprintf(stderr, "[menu] screenshot: back buffer format %d not supported\n", (int)td.Format);
+    } else {
+        int bgra = td.Format == DXGI_FORMAT_B8G8R8A8_UNORM || td.Format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+        td.Usage = D3D11_USAGE_STAGING;
+        td.BindFlags = 0;
+        td.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+        td.MiscFlags = 0;
+        ID3D11Texture2D* st = NULL;
+        if (SUCCEEDED(ID3D11Device_CreateTexture2D(dev, &td, NULL, &st))) {
+            ID3D11DeviceContext_CopyResource(ctx, (ID3D11Resource*)st, src);
+            pend.dev = dev; pend.st = st; pend.w = (int)td.Width; pend.h = (int)td.Height; pend.bgra = bgra;
+            pend.autop = shot_auto;
+            snprintf(pend.path, sizeof pend.path, "%s", shot_path);
         }
-        REL(st);
     }
     REL(src);
 }
 
+/* a staged picture whose copy has finished: to the worker thread (not yet: next present) */
+static void shot_poll(ID3D11Device* dev, ID3D11DeviceContext* ctx) {
+    if (!pend.st || pend.dev != dev) return;
+    D3D11_MAPPED_SUBRESOURCE m;
+    HRESULT hr = ID3D11DeviceContext_Map(ctx, (ID3D11Resource*)pend.st, 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &m);
+    if (hr == DXGI_ERROR_WAS_STILL_DRAWING) return;
+    if (SUCCEEDED(hr)) {
+        int w = pend.w, h = pend.h;
+        uint32_t* px = malloc((size_t)w * h * 4);
+        if (px) {
+            for (int y = 0; y < h; y++) {
+                const uint32_t* s = (const uint32_t*)((const uint8_t*)m.pData + (size_t)y * m.RowPitch);
+                uint32_t* d = px + (size_t)y * w;
+                if (pend.bgra) memcpy(d, s, (size_t)w * 4);
+                else for (int x = 0; x < w; x++) d[x] = (s[x] & 0xFF00FF00u) | (s[x] & 0xFF) << 16 | (s[x] >> 16 & 0xFF);
+            }
+            shot_submit(px, w, h, pend.autop, pend.path);
+        }
+        ID3D11DeviceContext_Unmap(ctx, (ID3D11Resource*)pend.st, 0);
+    }
+    REL(pend.st);
+    pend.dev = NULL;
+}
 /* (pc-menu2) PS2_MENU_STATS=1: every 2 s while the menu is open, how often it was drawn, how long after an input its
  * change was drawn (input -> the picture that shows it is handed to Present) and the CPU time of a picture */
 static struct { int on, draws, changes; double t0, lat_sum, lat_max, cpu_sum, cpu_max; uint32_t ver; } ms;
@@ -377,11 +481,14 @@ static void stats_note(double t_start, double t_end, int open) {
 void overlay_d3d11_draw(ID3D11Device* dev, ID3D11DeviceContext* ctx, ID3D11RenderTargetView* rtv, int w, int h) {
     if (!dev || !ctx || !rtv || w <= 0 || h <= 0) return;
     AcquireSRWLockExclusive(&lock);
+    shot_poll(dev, ctx);
     double t_start = now_s();
     if (!glist.p) glist.p = malloc(sizeof *glist.p * UI_MAX_PRIMS);
     int open = menu_is_open();
     double fps = fps_shown();
-    int n = glist.p && (open || fps >= 0) ? menu_build(&glist, w, h, now_s(), fps) : 0;
+    int toast = toast_active();
+    menu_set_toast(toast ? "Screenshot saved" : NULL);
+    int n = glist.p && (open || fps >= 0 || toast) ? menu_build(&glist, w, h, now_s(), fps) : 0;
     dres* r = n ? res_get(dev) : NULL;
     if (r && atlas_upload(r)) {
         int nv = fill_vertices(&glist, w, h);
@@ -467,7 +574,7 @@ void overlay_d3d11_draw(ID3D11Device* dev, ID3D11DeviceContext* ctx, ID3D11Rende
         }
     }
     stats_note(t_start, now_s(), open);
-    if (InterlockedExchange(&shot_pending, 0)) shot(dev, ctx, rtv, w, h);
+    if (!pend.st && InterlockedExchange(&shot_pending, 0)) shot_start(dev, ctx, rtv);
     ReleaseSRWLockExclusive(&lock);
 }
 
@@ -556,8 +663,11 @@ void overlay_gdi_draw(void* hdc, int w, int h) {
             HGDIOBJ old = SelectObject(m2, bmp);
             BitBlt(m2, 0, 0, w, h, (HDC)hdc, 0, 0, SRCCOPY);
             GdiFlush();
-            debug_write_png(shot_path, bits, w, h, w);
-            fprintf(stderr, "[menu] screenshot %dx%d (GDI) -> %s\n", w, h, shot_path);
+            uint32_t* px = malloc((size_t)w * h * 4);
+            if (px) {
+                memcpy(px, bits, (size_t)w * h * 4);
+                shot_submit(px, w, h, shot_auto, shot_path);
+            }
             SelectObject(m2, old);
             DeleteObject(bmp);
         }
