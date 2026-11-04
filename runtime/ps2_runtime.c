@@ -677,9 +677,9 @@ static int dump_spike(const uint32_t* frame, int w, int h, int stride, uint32_t 
     if (cnt >= need) {
         nev++;
         double mean = fn > 0 ? fs / fn : 0, sd = fn > 0 ? sqrt(fs2 / fn - mean * mean > 0 ? fs2 / fn - mean * mean : 0) : 0;
-        extern volatile int gpu_ab_phase;   /* (gpu_front.c: PS2_GPU_AB's phase, -1 off) */
+        extern __attribute__((weak)) volatile int gpu_ab_phase;   /* (gpu_front.c: PS2_GPU_AB's phase, -1 off) */
         fprintf(stderr, "[spike] v%u cells %d bbox %d,%d-%d,%d (px %d,%d-%d,%d) max %d luma %.0f sd %.1f %dx%d ab %d (event %d, %d pictures, %d gaps)\n",
-                vb - 1, cnt, x0, y0, x1, y1, x0 * CS, y0 * CS, (x1 + 1) * CS, (y1 + 1) * CS, best, mean, sd, w, h, gpu_ab_phase, nev, npics, nfl);
+                vb - 1, cnt, x0, y0, x1, y1, x0 * CS, y0 * CS, (x1 + 1) * CS, (y1 + 1) * CS, best, mean, sd, w, h, &gpu_ab_phase ? gpu_ab_phase : -1, nev, npics, nfl);
         if (nev <= maxev && dump_dir) {
             char path[512];
             int idx[3] = { a, b, k };
