@@ -16,6 +16,7 @@ main 669ae0c).
 
 ## Status: complete (2026-11-04; wrapped up on the coordinator's request: no new coverage work)
 - thermals: 1 ALT run, band not reproduced (alt2 cut by the pause).
+- Gates (on main 8ddc789 merged): run_tests 16/16; r2_sweep ep1 mf PASS (pops 0, 5354 modern / 346 exact).
 - Notes: notes/modern-renderer.md "MFT coverage of the qa-b grid stretches".
 
 ## Next
