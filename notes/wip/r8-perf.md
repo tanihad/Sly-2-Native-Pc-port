@@ -38,6 +38,13 @@ Worktree C:\Users\tanih\Projects\sly2-worktrees\r8-perf, branch next/r8-perf (fr
 - Pre-merge: gpu_diff_all mixed S=1 28/28, m9_exact S1 + S3 -Game identical. The sweep was killed by the owner's pause.
 - Merged main 669ae0c (mft-pop: MFT clip pipelines for guard-band entries) -> b22c58c: r2_plan keeps clip draws plain,
   the render loop draws plain clip chunks through mcpipe*. Re-verified in ep1 (R2 plan, shadows, line runs identical).
+- Merged main 8ddc789 -> 5a08d53 (clean); re-verified (all identical). A/B (all features off / on, ab-gpu, loaded GPU):
+  ep1 10.96 -> 10.24 ms (-6.5%), m1 11.67 -> 11.10 (-4.9%), m2 9.16 -> 8.61 (-6.0%).
+- Gates on 01b66e5 / 3f84352: run_tests 16/16, units 27/27, debug + release, pc_text_boot rel + dbg, gpu_diff_all mixed
+  S=1 28/28, m9_exact S1 + S3 -Game identical (base: 8ddc789 runtime), package.py 0.1.1078, r2_sweep ab,hc,tf,mf
+  -Parallel 1: 44/44.
+
+## Status: complete
 
 ## Findings / traps
 - Build: `$env:PYTHON_CPU_COUNT='6'` limits build_game.py's thread pool (Python 3.13) to 6 jobs.
