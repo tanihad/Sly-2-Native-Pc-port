@@ -7,11 +7,13 @@
  * a row (a "line that flicks"), the rows with >= --rowfrac of their pixels spiking, 16 x 16 blocks more than half
  * spiking (blobs), and blinking seams: a straight vertical / horizontal edge of >= --seam pixels (a tile, page or band
  * boundary) that the pictures before and after do not have within 2 pixels. Pictures shown twice in a row are counted
- * once; a missing VBlank or a size change (render scale) starts again (the pictures at the change are judged one-sided).
+ * once; a missing VBlank or a size change (render scale) starts again. The pictures at the change can only be judged
+ * one-sided (against the two before / after), which cannot tell a blink from the start of a camera move: they are
+ * printed but not counted unless --edges.
  *
  *   flicker_check <frames dir> [--same 12] [--diff 40] [--rowfrac 0.25] [--max-share 0.002] [--max-run 0.25]
  *                 [--max-blobs 0] [--max-rows 0] [--seam 160] [--max-seams 2] [--out worst.png] [--heat heat.png]
- *                 [--quiet] [--from N] [--to N]
+ *                 [--quiet] [--from N] [--to N] [--edges]
  *   flicker_check --ab <dir A> <dir B> [--diff 40] [--out-dir D]   per-VBlank A/B of two replays of one stream
  *   flicker_check --png <in.bmp|png> <out.png> [x y w h zoom]        a picture (or a crop) to look at
  * --max-run: the longest run allowed, as a share of the width. --heat: the last picture with the pixels that spike in
@@ -279,6 +281,7 @@ static struct {
     uint32_t worst_vb;
     uint8_t* worst;
     int* heat; int heat_w, heat_h, heat_n; uint8_t* heat_pic;   /* (--heat: spikes per pixel over the run) */
+    int edges, nside;            /* (--edges: one-sided judgements count too; nside: how many were not counted) */
 } S = { 12, 40, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 160, 0, 0, 2, 0.25, 0.002, 0.25, -1, 0, 0, 0, NULL };
 
 static void eval(const pic* m, const pic* r1, const pic* r2, const char* tag) {
@@ -308,6 +311,17 @@ static void eval(const pic* m, const pic* r1, const pic* r2, const char* tag) {
     for (int k = 0; k < bw * bh; k++) blobs += blk[k] > 128;
     double share = (double)spikes / ((double)w * h), runf = (double)longest / w;
     int spos = 0, seam = S.seam > 0 ? seam_blink(m, r1, r2, S.seam, &spos) : 0;
+    /* a one-sided judgement (the picture beside a gap or a size change, against the two on one side) cannot tell a
+     * blink from the start of a camera move: informational unless --edges */
+    if (tag[0] && !S.edges) {
+        S.nside++;
+        int o = share > S.max_share || runf > S.max_run || blobs > S.max_blobs || rows > S.max_rows;
+        if (!S.quiet || o)
+            printf("v%u%s: spikes %.5f, longest run %d, rows %d, blobs %d%s (one-sided: not counted)\n", m->vb, tag, share, longest,
+                   rows, blobs, seam ? ", seam" : "");
+        free(blk); free(mask);
+        return;
+    }
     if (seam) S.seams++;
     int over = share > S.max_share || runf > S.max_run || blobs > S.max_blobs || rows > S.max_rows;
     if (over) S.bad++;
@@ -365,6 +379,7 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--from") && i + 1 < argc) from = (uint32_t)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--to") && i + 1 < argc) to = (uint32_t)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--quiet")) S.quiet = 1;
+        else if (!strcmp(argv[i], "--edges")) S.edges = 1;
         else if (!strcmp(argv[i], "--seam") && i + 1 < argc) S.seam = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--max-rows") && i + 1 < argc) S.max_rows = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--max-seams") && i + 1 < argc) S.max_seams = atoi(argv[++i]);
@@ -431,8 +446,8 @@ int main(int argc, char** argv) {
         printf("heat: %lld pixels spike in >= 1/8 of %d pictures -> %s\n", hot, S.heat_n, heat_out);
     }
     printf("flicker: %s - %d pictures, %d over the limits (spike share max %.5f, longest run max %.3f of the width, rows max %d, "
-           "blobs max %d, size changes / gaps %d, blinking seams %d)%s\n", bad ? "FAIL" : (npics >= 3 ? "PASS" : "NO DATA"), npics, bad, S.share_max,
-           S.run_max, S.rows_max, S.blobs_max, S.nres, S.seams, out && worst ? "" : "");
+           "blobs max %d, size changes / gaps %d (one-sided pictures not counted %d), blinking seams %d)%s\n", bad ? "FAIL" : (npics >= 3 ? "PASS" : "NO DATA"), npics, bad, S.share_max,
+           S.run_max, S.rows_max, S.blobs_max, S.nres, S.nside, S.seams, out && worst ? "" : "");
     if (out && worst) printf("worst: v%u -> %s\n", S.worst_vb, out);
     return npics < 3 ? 2 : bad ? 1 : 0;
 }

@@ -420,7 +420,33 @@ static int outlined(const float w[16]) {
     return 0;
 }
 
+/* (r2-flicker, diagnostics) PS2_R2_SEQ_LOG=1: a frame's class runs (class:entries/native/kept) when it left parity unpaid
+ * (and every 600th frame); 2: every frame */
+static int seq_on = -1, seq_cls = -2, seq_n, seq_nat, seq_kept, seq_unpaid, seq_len;
+static char seq_buf[2048];
+static void seq_flush(void) {
+    if (seq_cls != -2 && seq_len < (int)sizeof seq_buf - 40)
+        seq_len += snprintf(seq_buf + seq_len, sizeof seq_buf - (size_t)seq_len, " %d:%d/%d/%d", seq_cls, seq_n, seq_nat, seq_kept);
+    seq_cls = -2; seq_n = seq_nat = seq_kept = 0;
+}
+static void seq_entry(int cls) {
+    if (seq_on < 0) { const char* se = getenv("PS2_R2_SEQ_LOG"); seq_on = se ? (atoi(se) > 1 ? 2 : 1) : 0; }
+    if (!seq_on) return;
+    if (cls != seq_cls) { seq_flush(); seq_cls = cls; }
+    seq_n++;
+}
+static void seq_frame(void) {
+    if (seq_on > 0) {
+        seq_flush();
+        if (seq_unpaid && seq_len) fprintf(stderr, "[r2] seq v%u unpaid %d:%s\n", ps2_vblank_count(), seq_unpaid, seq_buf);
+        static uint32_t k;
+        if (!seq_unpaid && seq_len && (seq_on == 2 || ++k % 600 == 0)) fprintf(stderr, "[r2] seq v%u ok:%s\n", ps2_vblank_count(), seq_buf);
+    }
+    seq_len = 0; seq_buf[0] = 0; seq_unpaid = 0;
+}
+
 static void frame_begin(ps2_ctx* ctx) {
+    seq_frame();
     fr_open = 1;
     fr_mode = mode_now();
     fr_block_sent = 0;
@@ -800,18 +826,66 @@ static void drop_tail(ps2_ctx* ctx) {
  * the VIF registers are owed (owe_vif). */
 /* the entries left in this render class before the next class switch, and whether the next class runs another VU1
  * program (the shadow-volume classes): cached per class run (the render list's pointer array, r21 / r20) */
+/* (r2-flicker) the previous decision per entry (its header / static packet and mesh DMA: one object, every frame):
+ * native or exact, for before_foreign's prediction of later runs. Not recorded: an entry made exact only because it was
+ * the last before a class switch (exact_last: structural, not the object's) */
+#define NAT_CAP 8192u
+static struct { uint64_t key; uint8_t nat; } nat_tab[NAT_CAP];
+static uint32_t nat_hash(uint64_t key) { return (uint32_t)((key * 0x9E3779B97F4A7C15ull) >> 51) & (NAT_CAP - 1); }
+static void nat_note(uint32_t c1, uint32_t c2, int nat) {
+    uint64_t key = (uint64_t)c1 << 32 | c2;
+    uint32_t h = nat_hash(key);
+    for (uint32_t i = 0; i < 16; i++, h = (h + 1) & (NAT_CAP - 1))
+        if (!nat_tab[h].key || nat_tab[h].key == key) { nat_tab[h].key = key; nat_tab[h].nat = (uint8_t)(nat ? 1 : 2); return; }
+    nat_tab[nat_hash(key)].key = key; nat_tab[nat_hash(key)].nat = (uint8_t)(nat ? 1 : 2);   /* (full: overwrite) */
+}
+static int nat_guess(ps2_ctx* ctx, uint32_t e) {
+    uint32_t c1 = ps2_r32(ctx, e + 8), c2 = ps2_r32(ctx, e + 12);
+    uint64_t key = (uint64_t)c1 << 32 | c2;
+    uint32_t h = nat_hash(key);
+    for (uint32_t i = 0; i < 16 && nat_tab[h].key; i++, h = (h + 1) & (NAT_CAP - 1))
+        if (nat_tab[h].key == key) return nat_tab[h].nat == 1;
+    return 0;                                    /* (not seen yet: exact - a wrong guess costs a kept run, no shadow) */
+}
+
 static int before_foreign(ps2_ctx* ctx, int cls, uint32_t* dist) {
     static uint32_t sw_ptr, sw_serial;
-    static int sw_foreign;
+    static int sw_foreign, look = -1;
+    /* main-class runs between this run and the foreign class that will have no native entry are looked through (the
+     * previous frame's decisions, nat_guess; a run's last entry is exact anyway): exact class-11 entries (Sly near a lamp,
+     * 1 - 2 entries; a boss, 18) between the world's last class-0 run and the shadow volumes cannot pay the parity the
+     * dropped class-0 chains owe, so this run keeps its chains then. A run with native entries keeps its own (the same
+     * rule: its next class is the foreign one), but runs of up to 16 entries are looked through either way.
+     * PS2_R2_LOOKTHROUGH=0: the next run only (as 478f6ad) */
+    if (look < 0) { const char* e = getenv("PS2_R2_LOOKTHROUGH"); look = !(e && *e == '0'); }
     uint32_t cur = ctx->r[21].uw[0], left = ctx->r[20].uw[0];
     if (sw_serial != fr_serial || cur >= sw_ptr) {
         sw_serial = fr_serial;
         sw_ptr = cur + 4u * left;
         sw_foreign = 0;
+        int scls = cls, first = 1, pend = 0, nat = 0;
+        uint32_t len = 0;
         for (uint32_t j = 1; j < left; j++) {
             uint32_t nx = ps2_r32(ctx, cur + 4u * j), np = nx ? ps2_r32(ctx, nx) : 0xFFFFFFFFu;
             int nc = np <= 25 ? (int)ps2_r32(ctx, CLASS_TABLE + np * 4) : -1;
-            if (nc != cls) { sw_ptr = cur + 4u * j; sw_foreign = nc >= 0 && !MAINCLASS(nc); break; }
+            if (nc == scls) {
+                if (!first) {
+                    nat |= pend;                 /* (the entry before this one is not its run's last) */
+                    pend = nat_guess(ctx, nx);
+                    /* a later run with native entries keeps its own; looked through anyway while short (16 entries):
+                     * a wrong guess then costs a kept run, not a wrong shadow */
+                    if (++len > 16 && nat) break;
+                }
+                continue;
+            }
+            if (first) { sw_ptr = cur + 4u * j; first = 0; }
+            if (nc < 0) break;
+            if (!MAINCLASS(nc)) { sw_foreign = 1; break; }
+            if (!look) break;
+            scls = nc;
+            pend = nat_guess(ctx, nx);
+            nat = 0;
+            len = 1;
         }
     }
     *dist = (sw_ptr - cur) / 4u;
@@ -847,7 +921,7 @@ static void drop_chain(ps2_ctx* ctx, const r2_mesh* m, uint32_t e, int form, int
         if (dmas_vif(ctx, w, n)) {
             parity_owed = 0;
             memset(&VP, 0, sizeof VP);           /* (the kept chain sets its own registers) */
-            st.chains_run++;
+            st.chains_run++; seq_kept++;
             tail_owed = 1;
             return;
         }
@@ -936,10 +1010,16 @@ void r2_cap_entry(ps2_ctx* ctx) {
     uint32_t e = ctx->r[18].uw[0], prio = ctx->r[16].uw[0];
     int cls = (int)ctx->r[17].uw[0];
     uint32_t idx = (e - RENDER_LIST) / 16u;
+    seq_entry(cls);
     if (mode == R2_BRACKET) close_bracket(ctx, cls);
     if (mode == R2_HYBRID) {                     /* (r2-flicker) */
         drop_tail(ctx);
-        if (parity_owed && cls >= 0 && !MAINCLASS(cls)) { st.parity_unpaid++; parity_owed = 0; }   /* (no kept run before it) */
+        if (parity_owed && cls >= 0 && !MAINCLASS(cls)) {   /* (no kept run before it) */
+            static int ulog = -1;
+            if (ulog < 0) ulog = getenv("PS2_R2_UNPAID_LOG") != NULL;
+            if (ulog) fprintf(stderr, "[r2] parity unpaid: v%u entry %u class %d after class %d (native %d)\n", ps2_vblank_count(), idx, cls, prev_class, prev_native);
+            st.parity_unpaid++; parity_owed = 0; seq_unpaid++;
+        }
     }
     {   /* (r2-m6, diagnostics) PS2_R2_DROPCLS=<mask>: drop the entries of these render classes (what do they cost) */
         static int dmask = -1;
@@ -994,7 +1074,7 @@ void r2_cap_entry(ps2_ctx* ctx) {
             if (dmas_put(ctx, fl ? MSCAL(0x0000) : 0, 0, l.p, l.n)) {
                 S->nxq += 1 + n;
                 ps2_w32(ctx, e + 12, 0);             /* the outline mesh chain; the header (VU uploads only) stays */
-                st.outline_native++;
+                st.outline_native++; seq_nat++;
             } else st.outline_exact++;
         } else st.outline_exact++;
         if (stats_on) { double dt_ = now_ms() - t0; st.cap_ms += dt_; fr_cap_ms += dt_; }
@@ -1069,13 +1149,14 @@ void r2_cap_entry(ps2_ctx* ctx) {
         uint32_t np = next ? ps2_r32(ctx, next) : 0xFFFFFFFFu;
         if (!next || np > 25 || (int)ps2_r32(ctx, CLASS_TABLE + np * 4) != cls) { native = 0; st.exact_bracket++; }
     }
+    int last_x = 0;
     if (native && mode == R2_HYBRID && keep_chains() && run_programs(ctx, cls)) {
         /* (r2-flicker) a kept chain's last packet is still pending in the VU after it (the main program kicks a batch's
          * packet at its next run): drop_tail flushes it at the next entry's hook - which must come before a class switch's
          * packets, so the last entry before a switch (or the frame's end) stays exact, as in bracket mode */
         uint32_t nx = ctx->r[20].uw[0] > 1 ? ps2_r32(ctx, ctx->r[21].uw[0] + 4) : 0;
         uint32_t np = nx ? ps2_r32(ctx, nx) : 0xFFFFFFFFu;
-        if (!nx || np > 25 || (int)ps2_r32(ctx, CLASS_TABLE + np * 4) != cls) { native = 0; st.exact_last++; }
+        if (!nx || np > 25 || (int)ps2_r32(ctx, CLASS_TABLE + np * 4) != cls) { native = 0; st.exact_last++; last_x = 1; }
     }
     if (native && prop) st.native_props++;
     if (cand_now) {                              /* (r2-m5) census: vertices native / exact by reason (undecoded: ~bytes / 45) */
@@ -1085,6 +1166,7 @@ void r2_cap_entry(ps2_ctx* ctx) {
         if (native) st.v_native += nv;
         else st.v_exact[why < 10 ? why : 9] += nv;
     }
+    if (!last_x && MAINCLASS(cls)) nat_note(c1, c2, native);   /* (r2-flicker: before_foreign's prediction) */
     if (!native) {
         if (mode == R2_HYBRID && prev_native) owe_epilogue(ctx, cls == prev_class);
         prev_native = 0;
@@ -1146,6 +1228,7 @@ void r2_cap_entry(ps2_ctx* ctx) {
             st.fan_qw += fq;
         }
         if (eflags & R2E_FANS) { st.fan_ents++; st.fan_tris += fan_o.tris; }
+        seq_nat++;
         r2_slot_ent* se = &S->ent[S->nent++];
         memcpy(se->m, M, sizeof M);
         mv_prev((uint64_t)c1 << 32 | c2, M, se->prev);   /* (r2-m8) motion vectors */

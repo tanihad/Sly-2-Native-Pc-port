@@ -31,3 +31,23 @@ Summary for the docs: notes/modern-renderer.md "The owner's flicker report and t
 - Left: an overlapping shadow polygon at the screen's bottom edge still differs in the ledge view (~600 px at 3x).
 - Parallel game runs perturb timing (scenes diverge); `Select-Object -First` kills an upstream warp run; PNG dumps too
   slow at 3x (use BMP); PS2_DUMP_WAIT at 60 fps stalls the EE.
+
+## Part 2: owner's report on 0.1.1032 (outlines = thin), 2026-11-03
+- [x] merged main 57c8877; flicker_run -Ini "section.key=value;..." writes the run's sly2.ini (console exe: portable)
+- [x] thin repro (owner's ini, lamp walk 700): MFT FAIL only on one-sided pictures (gaps / dump-induced grid frames);
+      flicker_check: one-sided judgements now informational (--edges to count them)
+- [x] real cause (thin or ps2 alike): PS2_R2_UNPAID_LOG / PS2_R2_SEQ_LOG show "0:118/114/0 11:2/0/0 6:..": a short
+      exact class-11 run between the world's last class-0 run and the shadow class 6 -> the class-0 run was not "before
+      foreign", its chains dropped, parity unpaid at class 6 (hundreds of frames per walk, toggling = flicker)
+- [x] fix: before_foreign looks through short main-class runs (PS2_R2_SKIPRUN, default 16): unpaid 900 -> 2 (loading)
+- [x] verified: ALT lamp walk (At 7900, 800 VBlanks, grid 3x): before, hybrid frames with the short class-11 run lost
+      Sly's lamp shadow the exact neighbours had (wa0 8491 / 8493); after, the same pattern draws the exact shadow (wa2 8500)
+- [x] owner set walk 700 @120 + DUMP_WAIT: grid PASS; MFT FAIL in both outline styles (om thin 4 over, omp ps2 5 over):
+      dump-induced MFT grid fallbacks (~1 per 60 VBlanks with dump waits, none without dumps) break the motion-blur
+      feedback for a few frames (v8547: whole frame lighter 10 frames after the v8537 fallback). Dump artefact; R8 note.
+      motion_blur=off: MFT dumps come out 512x448 (the grid memory, not the MFT picture) - not usable
+- [x] r2_sweep tf variants tft/tfq/tfb/tfp/tfo: ep1 6/6 PASS (settings confirmed in the logs); parity guard in flicker_run
+- [x] gates on 541ff1d: all pass but sweep 54/55 (m8_boss tfq: 1 unpaid frame "0:226/57/0 11:18/0/0 0:5/0/0 6" - an 18-entry
+      exact class-11 run). Fix: look through runs predicted all-exact (previous frame's decision per object) or <= 16
+      entries (fcd8ff5, 95f5d06). Lamp walk unpaid: old rule 832 -> 0; m8 tfq / ep7 tf PASS.
+- [ ] final gates on 95f5d06 (gatesC: tests, units, builds, gpu_diff, m9 vs 57c8877, pc_text_boot, package, sweep, CPU A/B)

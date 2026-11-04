@@ -8,15 +8,30 @@
 #   shots (r2-m8) the scene's modern frames at 2560 x 1440 with MSAA 4x: one picture (build\r2hc\shot_<scene>\shot.png)
 #   tf  (r2-flicker) scripts\flicker_run.ps1: the game in modern mode, every picture of 180 VBlanks dumped; temporal
 #       outliers (one-picture blinks, a blinking line / row band, blobs, blinking seams) against tests\r2\gates.json
-#       level3_temporal - what the one-frame A/B and hc's averaged alternation can miss.
+#       level3_temporal - what the one-frame A/B and hc's averaged alternation can miss. The grid at 3x, PS2 outlines.
+#   tft / tfq / tfb / tfp / tfo  tf with the settings the presets give (the run's own sly2.ini, flicker_run -Ini):
+#       tft the grid at 3x with thin outlines; tfq Quality (MFT 2560 x 1440, MSAA 8x, thin); tfb Balanced (MFT 4x, PS2
+#       outlines); tfp Performance (MFT 75 %, no MSAA); tfo the owner's custom set (auto scale, thin, modern filters,
+#       120 fps, MFT 4x); each also fails on hybrid frames reaching the shadow class with the parity unpaid.
 #   mf  (mft-pop) scripts\mft_pops.ps1: the game with R8's modern frame targets at 1440p MSAA 4x, 120 fps, no dumps;
 #       PS2_R2_STATS counts "pops" (1..8 grid frames between MFT frames: a one-frame resolution / AA switch); must be 0.
-#   .\scripts\r2_sweep.ps1 [-Scenes ep1,ep3] [-Checks ab,hc,tf,mf,shots] [-Parallel 3] [-Keep]
+#   .\scripts\r2_sweep.ps1 [-Scenes ep1,ep3] [-Checks ab,hc,tf,tft,tfq,tfb,tfp,tfo,mf,shots] [-Parallel 3] [-Keep]
 # Output: build\r2ab\<scene>\, build\r2hc\sw_<scene>\worst.png (deleted unless -Keep / on failure).
-param([string[]]$Scenes = @(), [string[]]$Checks = @('ab', 'hc', 'tf', 'mf'), [int]$Parallel = 3, [switch]$Keep)
+param([string[]]$Scenes = @(), [string[]]$Checks = @('ab', 'hc', 'tf', 'tft', 'tfq', 'mf'), [int]$Parallel = 3, [switch]$Keep)
 $Scenes = @($Scenes | ForEach-Object { $_ -split ',' } | Where-Object { $_ })
 $Checks = @($Checks | ForEach-Object { $_ -split ',' } | Where-Object { $_ })
 $root = Split-Path $PSScriptRoot -Parent
+# (r2-flicker) the tf variants: flicker_run arguments (MFT runs at 1440p: PS2_GS_PRESENT_SIZE; 120 fps with PS2_DUMP_WAIT)
+$mft = 'PS2_GS_PRESENT_SIZE=2560x1440'
+$tfv = @{
+    tf  = @()
+    tft = @('-Ini', 'graphics.outlines=thin')
+    tfq = @('-Scale', 'auto', '-Ini', 'graphics.preset=quality', '-Env', $mft)
+    tfb = @('-Scale', 'auto', '-Ini', 'graphics.preset=balanced', '-Env', $mft)
+    tfp = @('-Scale', 'auto', '-Ini', 'graphics.preset=performance', '-Env', $mft)
+    tfo = @('-Scale', 'auto', '-Ini', 'graphics.outlines=thin;graphics.render_scale=auto;graphics.preset=custom;graphics.filters=modern;display.frame_rate=120',
+            '-Env', "$mft;PS2_FRAME_RATE=120;PS2_DUMP_WAIT=1")
+}
 $list = @(
     @{ n = 'ep1'; a = @('-Episode', '1', '-Job', 'm1_brawl', '-Play', '-At', '4800') },
     @{ n = 'ep2'; a = @('-Episode', '2', '-Play', '-At', '4800') },
@@ -49,8 +64,8 @@ while ($queue.Count -or $running.Count) {
             $args1 = @('-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'r2_ab.ps1'), '-Name', "sw_$($s.n)", '-Levels', 'all') + $s.a
         } elseif ($t.c -eq 'mf') {
             $args1 = @('-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'mft_pops.ps1'), '-Name', "sw_$($s.n)") + $s.a
-        } elseif ($t.c -eq 'tf') {
-            $args1 = @('-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'flicker_run.ps1'), '-Name', "sw_$($s.n)", '-Frames', '180') + $s.a
+        } elseif ($tfv.ContainsKey($t.c)) {
+            $args1 = @('-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'flicker_run.ps1'), '-Name', "sw_$($s.n)_$($t.c)", '-Frames', '180') + $s.a + $tfv[$t.c]
         } else {
             $args1 = @('-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'r2_hcheck.ps1'), '-Name', "sw_$($s.n)") + $s.a
             if ($t.c -eq 'shots') { $args1[5] = "shot_$($s.n)"; $args1 += @('-Shots', '-Frames', '4') }   # (r2-m8: modern frames at 1440p MSAA 4x)
@@ -70,13 +85,15 @@ while ($queue.Count -or $running.Count) {
             "{0,-13} mf | {1}" -f $r.s.n, $gl
             continue
         }
-        if ($r.c -eq 'tf') {               # (r2-flicker) temporal outliers
+        if ($tfv.ContainsKey($r.c)) {     # (r2-flicker) temporal outliers
             $g = ($t | Select-String '^flicker:' | Select-Object -Last 1)
             $gl = if ($g) { $g.Line } else { 'flicker: (no result)' }
+            $pp = ($t | Select-String '^parity:' | Select-Object -Last 1)   # (the double-buffer parity at the shadow class)
+            if ($pp -and $pp.Line -notmatch 'PASS') { $gl = ($gl -replace 'PASS', 'pass') + " | $($pp.Line)" }
             if ($gl -notmatch 'PASS') { $fail++ }
-            elseif (-not $Keep) { Remove-Item -Recurse -Force (Join-Path $root "build\flicker\sw_$($r.s.n)") -ErrorAction SilentlyContinue }
-            "{0,-13} tf | {1}" -f $r.s.n, $gl
-            Remove-Item -Recurse -Force (Join-Path $root "build\warp\flk_sw_$($r.s.n)\frames") -ErrorAction SilentlyContinue
+            elseif (-not $Keep) { Remove-Item -Recurse -Force (Join-Path $root "build\flicker\sw_$($r.s.n)_$($r.c)") -ErrorAction SilentlyContinue }
+            "{0,-13} {1} | {2}" -f $r.s.n, $r.c, $gl
+            Remove-Item -Recurse -Force (Join-Path $root "build\warp\flk_sw_$($r.s.n)_$($r.c)\frames") -ErrorAction SilentlyContinue
             continue
         }
         if ($r.c -eq 'shots') {            # (r2-m8) the picture to look at: build\r2hc\shot_<scene>\shot.png
