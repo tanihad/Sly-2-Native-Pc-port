@@ -25,7 +25,7 @@ static uint32_t micro_gen[2] = { 1, 1 }; /* bumped on every write to a unit's mi
 
 static vu_state* get(int vu) {
     vu_state* st = &vu_st[vu];
-    if (!st->inited) {
+    if (__builtin_expect(!st->inited, 0)) {
         st->idx = vu;
         st->data = vu ? vu1_data : vu0_data;
         st->dmask = vu ? 0x3FF : 0xFF;
@@ -79,9 +79,16 @@ static vuc_slot vuc_slots[2][2048];
 static uint32_t vuc_checked[VUC_MAX_PROGS];
 static uint8_t  vuc_match[VUC_MAX_PROGS];
 
+int vuc_use_v3;                          /* (P6) vu_compiled.h: the x86-64-v3 versions of the microcode */
+
 void vu_register_compiled(const vuc_program* const* progs, uint32_t n) {
     vuc_progs = progs;
     vuc_nprogs = n < VUC_MAX_PROGS ? n : VUC_MAX_PROGS;
+    __builtin_cpu_init();                /* (a constructor: may run before the CPU model's own) */
+    const char* e = getenv("PS2_VU_V3");
+    vuc_use_v3 = !(e && *e == '0') && __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma") &&
+                 __builtin_cpu_supports("bmi") && __builtin_cpu_supports("bmi2") && __builtin_cpu_supports("f16c") &&
+                 __builtin_cpu_supports("movbe") && __builtin_cpu_supports("lzcnt");
 }
 
 static int vuc_image_matches(const vu_state* st, const vuc_program* p) {
@@ -545,15 +552,15 @@ uint32_t vu_get_tpc(int vu) { return get(vu ? 1 : 0)->tpc; }
  * Underflow cannot be told apart from an exact zero after the fact, so U is never set. */
 void vu0_macro_flags(const vf128* r, unsigned dest_xyzw) {
     vu_state* st = get(0);
-    unsigned z = 0, s = 0, o = 0;
-    for (int k = 0; k < 4; k++) {
-        unsigned bit = 8u >> k;
-        if (!(dest_xyzw & bit)) continue;
-        uint32_t u = r->u[k], a = u & 0x7FFFFFFFu;
-        if (!a || (a & 0x7F800000u) == 0) z |= bit;
-        if (u >> 31) s |= bit;
-        if (a >= 0x7F7FFFFFu) o |= bit;
-    }
+    /* (P6: lanes in parallel, no branches; ~2% of the EE thread in a hub) per lane k (dest bit 8 >> k): Z = exponent 0
+     * (zero or denormal), S = sign, O = magnitude >= FLT_MAX's bits */
+    __m128i v = _mm_loadu_si128((const __m128i*)r), a = _mm_and_si128(v, _mm_set1_epi32(0x7FFFFFFF));
+    unsigned zl = (unsigned)_mm_movemask_ps(_mm_castsi128_ps(_mm_cmpeq_epi32(_mm_and_si128(a, _mm_set1_epi32(0x7F800000)),
+                                                                            _mm_setzero_si128())));
+    unsigned sl = (unsigned)_mm_movemask_ps(_mm_castsi128_ps(v));
+    unsigned ol = (unsigned)_mm_movemask_ps(_mm_castsi128_ps(_mm_cmpgt_epi32(a, _mm_set1_epi32(0x7F7FFFFE))));
+    unsigned d = dest_xyzw & 15;                 /* lane bit k -> dest bit 8 >> k */
+    unsigned z = VU_REV4[zl] & d, s = VU_REV4[sl] & d, o = VU_REV4[ol] & d;
     unsigned zsuo = (z ? 1u : 0u) | (s ? 2u : 0u) | (o ? 8u : 0u);
     st->mac = o << 12 | s << 4 | z;
     st->status = (st->status & ~0xFu) | zsuo | zsuo << 6;

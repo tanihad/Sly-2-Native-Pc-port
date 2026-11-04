@@ -4,7 +4,10 @@ Usage (from the project root or a worktree):
     <main checkout>\\.venv\\Scripts\\python.exe scripts\\build_game.py [--release] [-O 1] [--out build/sly2]
                                                                      [--package dist/Sly2]
 
---release: -O2 and no function tracing (the watchdog then can't report locations).
+--release: -O2 and no function tracing (the watchdog then can't report locations); (P6) ThinLTO and
+  profile-guided optimisation with runtime/pgo/sly2.proftext (--lto off / --pgo-use none: without).
+Every build also compiles the VU microcode a second time for x86-64-v3 CPUs (runtime/vu_compiled.h; --no-vu-v3);
+the rest stays plain x86-64. --jobs N (or SLY2_BUILD_JOBS) limits the parallel compiles and LTO jobs.
 --package DIR: also link the player's build into DIR (scripts/package.py, notes/install.md): the same
   objects as <out>\\sly2.exe, linked as a Windows GUI program (no console window; the log goes to
   sly2.log in the user data folder) with an icon, version information and a manifest. Its user data
@@ -173,13 +176,64 @@ R2_DIR = ROOT / "runtime" / "r2"                   # (r2-m1) the modern renderer
 GEN_DIR = ROOT / "build" / "gen"                   # generated headers (build/gen/gpu_shaders.h)
 
 
-def compile_one(src: Path, obj_dir: Path, flags: list[str]) -> tuple[Path, str]:
+VU_V3_FLAGS = ["-DVUC_V3", "-march=x86-64-v3", "-ffp-contract=off"]
+# (P6) A static function's name in a clang profile is "<source path>;<name>": with the path as given to clang (absolute
+# here) a profile would only fit the folder it was made in. File name only (runtime file names are unique).
+PGO_NAMES = ["-mllvm", "-static-func-full-module-prefix=false"]
+PGO_SHIPPED = ROOT / "runtime" / "pgo" / "sly2.proftext"
+PROFDATA = TOOLS / "llvm-mingw" / "bin" / "llvm-profdata.exe"
+
+
+def pgo_profile(choice: str | None, release: bool, out: Path) -> Path | None:
+    """The indexed profile to optimise with (notes/perf-plan.md P6): an explicit .profdata as it is; a text profile
+    (the shipped runtime/pgo/sly2.proftext, used by default in release builds) converted with llvm-profdata into
+    <out>/pgo/. None: no profile - also when the conversion is not possible (a build never fails for it)."""
+    if not choice or choice == "none" or (choice == "auto" and not release):
+        return None
+    src = PGO_SHIPPED if choice == "auto" else Path(choice).resolve()
+    if not src.exists():
+        if choice != "auto":
+            print(f"note: profile {src} not found: building without profile-guided optimisation")
+        return None
+    if src.suffix != ".proftext":
+        return src
+    dst = (out / "pgo" / (src.stem + ".profdata")).resolve()
+    if dst.exists() and dst.stat().st_mtime >= src.stat().st_mtime:
+        return dst
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    res = subprocess.run([str(PROFDATA), "merge", "-o", str(dst), str(src)], capture_output=True, text=True) \
+        if PROFDATA.exists() else None
+    if not res or res.returncode:
+        print(f"note: llvm-profdata could not read {src}: building without profile-guided optimisation"
+              + (f"\n{res.stderr[:500]}" if res else ""))
+        return None
+    return dst
+
+
+def compile_one(src: Path, obj_dir: Path, flags: list[str], v3: bool = False) -> tuple[Path, str]:
     gpu = src.parent in (GPU_DIR, R2_DIR)
-    obj = obj_dir / (("gpu_" if src.parent == GPU_DIR and not src.name.startswith("gpu_") else "") + src.with_suffix(".o").name)
+    obj = obj_dir / (("gpu_" if src.parent == GPU_DIR and not src.name.startswith("gpu_") else "") + src.stem +
+                     ("_v3" if v3 else "") + ".o")
+    if src.parent.name in ("vu", "recomp", "iop") and not any(f.startswith("-fprofile-generate") for f in flags):
+        # (P6) The translated code (EE, IOP, VU) is compiled as before: no LTO, no profile. ThinLTO of the ~45 MB of
+        # generated C would move most of the build into the link (+40 s on 6 cores) for little: the threads that
+        # gain from LTO + the profile run the runtime (frontend, GS thread, worker), and the shipped profile holds no
+        # translated functions (pgo_train.ps1). Instrumented builds (--pgo-gen) still instrument everything (dev).
+        kept, skip = [], False
+        for f in flags:                            # (-mllvm options here are all profile options)
+            if skip or f == "-mllvm":
+                skip = f == "-mllvm"
+                continue
+            if not f.startswith(("-flto", "-fprofile", "-Wno-profile", "-Wno-backend")):
+                kept.append(f)
+        flags = kept
     if src.parent.name == "vu":
         # recompiled VU microcode: already SIMD; clang's SLP vectorizer only costs minutes on these
-        # huge functions (recomp/vu_recomp.py)
-        flags = flags + ["-fno-slp-vectorize"]
+        # huge functions (recomp/vu_recomp.py). (Also why it stays out of LTO: the link-time backend would not see
+        # that flag - a pass option, not a function attribute.) v3: the x86-64-v3 copy (vu_compiled.h VUC_V3).
+        flags = [f for f in flags if not f.startswith(("-flto", "-fprofile"))] + ["-fno-slp-vectorize"]
+        if v3:
+            flags = flags + VU_V3_FLAGS
     deps = list((ROOT / "runtime").glob("*.h"))
     if gpu:                                        # only the GPU backend depends on its headers/shaders
         deps += list(GPU_DIR.glob("*.h")) + list(R2_DIR.glob("*.h")) + [GEN_DIR / "gpu_shaders.h"]
@@ -235,7 +289,7 @@ def _version() -> tuple[int, str]:
         return 0, "unknown"
 
 
-def package(objs: list[Path], out: Path, dest: Path) -> int:
+def package(objs: list[Path], out: Path, dest: Path, link_flags: list[str]) -> int:
     """Link the player's build (GUI subsystem, icon, version info, manifest) into dest."""
     import make_icon
     work = out / "package"
@@ -252,7 +306,7 @@ def package(objs: list[Path], out: Path, dest: Path) -> int:
         print("resource compiler failed:\n" + (rc.stderr or rc.stdout)[:4000])
         return 1
     exe = work / "sly2.exe"
-    link = subprocess.run([str(CLANG), *map(str, objs), str(res), "-mwindows", *LIBS, "-o", str(exe)],
+    link = subprocess.run([str(CLANG), *map(str, objs), str(res), "-mwindows", *link_flags, *LIBS, "-o", str(exe)],
                           capture_output=True, text=True)
     if link.returncode:
         print(link.stderr[:6000])
@@ -272,8 +326,21 @@ def main() -> int:
     ap.add_argument("--release", action="store_true")
     ap.add_argument("--out", default=str(ROOT / "build" / "sly2"))
     ap.add_argument("--package", default=None, metavar="DIR", help="also link the player's build into DIR")
+    ap.add_argument("--jobs", "-j", type=int, default=int(os.environ.get("SLY2_BUILD_JOBS", "0")) or os.cpu_count(),
+                    help="parallel compile jobs (default: SLY2_BUILD_JOBS or every logical CPU)")
     ap.add_argument("--progress", action="store_true",
                     help="print '[progress] <stage> [i/n]' lines (the installer's progress bar, installer/engine.c)")
+    ap.add_argument("--lto", choices=["auto", "off", "thin"], default="auto",
+                    help="link-time optimisation (auto: ThinLTO in release builds)")
+    ap.add_argument("--cflags", default=os.environ.get("SLY2_CFLAGS", ""), help="extra compiler flags (experiments)")
+    ap.add_argument("--ldflags", default=os.environ.get("SLY2_LDFLAGS", ""), help="extra linker flags (experiments)")
+    ap.add_argument("--pgo-gen", action="store_true",
+                    help="instrumented build that writes a clang profile (.profraw) when the game exits (scripts/pgo_train.ps1)")
+    ap.add_argument("--pgo-use", default="auto", metavar="PROFILE",
+                    help="optimise with this clang profile (.profdata or llvm-profdata --text); default (auto): "
+                         "runtime/pgo/sly2.proftext in release builds; none: no profile")
+    ap.add_argument("--no-vu-v3", dest="vu_v3", action="store_false",
+                    help="no x86-64-v3 copies of the VU microcode (runtime/vu_compiled.h)")
     args = ap.parse_args()
     global PROGRESS
     PROGRESS = args.progress
@@ -283,6 +350,29 @@ def main() -> int:
     flags = [f"-O{args.opt or ('2' if args.release else '1')}", "-fno-auto-import"]
     if args.release:
         flags.append("-DPS2_NO_TRACE")
+    if args.vu_v3:
+        flags.append("-DVUC_HAVE_V3")                  # (read only by the VU dispatchers: vu_compiled.h)
+    flags += args.cflags.split()
+    link_flags = args.ldflags.split()
+    if args.lto == "thin" or (args.lto == "auto" and args.release):
+        # (P6) ThinLTO: alone it changes little, with the profile below it lets the profile's inlining cross files
+        # (frontend replays: profile -2..-13% alone, -11..-14% with ThinLTO); +~40 s link
+        flags.append("-flto=thin")
+        link_flags += ["-flto=thin", f"-flto-jobs={max(1, args.jobs)}", flags[0],
+                       f"-Wl,--thinlto-cache-dir={out / 'lto-cache'}", "-Wl,--thinlto-cache-policy=cache_size_bytes=1g:prune_after=72h"]
+    if args.pgo_gen:
+        # IR-level instrumentation; the runtime writes the profile itself before it ends the process
+        # (ExitProcess skips the CRT's atexit handlers): runtime/launch.h pgo_flush. Counter promotion (keeping loop
+        # counters in registers) is off: on the translated functions with a jump table (every instruction a case) it
+        # runs for tens of minutes per function; it only makes the instrumented build faster, the counts are the same.
+        flags += ["-fprofile-generate", "-mllvm", "-do-counter-promotion=false", *PGO_NAMES, "-DPS2_PGO_GEN"]
+        link_flags.append("-fprofile-generate")
+    else:
+        profile = pgo_profile(args.pgo_use, args.release, out)
+        if profile:
+            flags += [f"-fprofile-use={profile}", *PGO_NAMES, "-Wno-profile-instr-out-of-date",
+                      "-Wno-profile-instr-unprofiled", "-Wno-profile-instr-missing", "-Wno-backend-plugin"]
+        args.pgo_use = str(profile) if profile else None
 
     t0 = time.time()
     if not Path(args.elf).exists() and Path(args.elf) == ELF:
@@ -314,8 +404,12 @@ def main() -> int:
     obj_dir = out / "obj"
     obj_dir.mkdir(parents=True, exist_ok=True)
     stamp = obj_dir / "flags.txt"
-    if not stamp.exists() or stamp.read_text() != " ".join(flags):
-        stamp.write_text(" ".join(flags))              # flag change: rebuild everything
+    stamp_text = " ".join(flags)
+    if args.pgo_use and not args.pgo_gen:              # a new profile: rebuild everything too
+        import hashlib
+        stamp_text += " profile " + hashlib.sha256(Path(args.pgo_use).read_bytes()).hexdigest()[:16]
+    if not stamp.exists() or stamp.read_text() != stamp_text:
+        stamp.write_text(stamp_text)                   # flag change: rebuild everything
 
     # The Direct3D 11 GS backend (runtime/gpu, notes/d3d11-renderer.md): shaders first, compile
     # errors fail the build. Selected at run time by PS2_GS_BACKEND (default sw).
@@ -328,13 +422,22 @@ def main() -> int:
     sources = (sorted((out / "recomp").glob("*.c")) + sorted((out / "iop").glob("*.c")) +
                sorted((out / "vu").glob("*.c")) + runtime_sources() + sorted(GPU_DIR.glob("*.c")) +
                sorted(R2_DIR.glob("*.c")))
+    jobs = [(s, False) for s in sources]
+    if args.vu_v3:                                     # (P6) the microcode's x86-64-v3 copies (vu_compiled.h): the
+        for s in sorted((out / "vu").glob("*_ks*.c")):  # specialisations whose dispatcher calls a _v3 version
+            disp = s.with_name(s.stem.rsplit("_ks", 1)[0] + ".c")
+            if disp.exists() and f"{s.stem}_v3(" in disp.read_text():
+                jobs.append((s, True))
     objs, errors = [], []
-    progress("compile", 0, len(sources))
-    with ThreadPoolExecutor(max_workers=os.cpu_count()) as pool:
-        futures = [pool.submit(compile_one, s, obj_dir, flags) for s in sources]
+    progress("compile", 0, len(jobs))
+    with ThreadPoolExecutor(max_workers=max(1, args.jobs)) as pool:
+        # (the biggest files first: the build is not left waiting for one of them at the end)
+        order = sorted(range(len(jobs)), key=lambda k: -jobs[k][0].stat().st_size)
+        futs = {k: pool.submit(compile_one, jobs[k][0], obj_dir, flags, jobs[k][1]) for k in order}
+        futures = [futs[k] for k in range(len(jobs))]
         if PROGRESS:                                   # (completion order, for the installer's bar)
             for i, _ in enumerate(as_completed(futures), 1):
-                progress("compile", i, len(sources))
+                progress("compile", i, len(jobs))
         for f in futures:                              # (source order: the link order stays the same)
             obj, err = f.result()
             objs.append(obj)
@@ -343,11 +446,11 @@ def main() -> int:
     if errors:
         print(f"{len(errors)} file(s) failed to compile; first errors:\n" + "\n".join(errors)[:6000])
         return 1
-    print(f"compiled {len(sources)} files ({' '.join(flags)}) in {time.time() - t0:.0f}s")
+    print(f"compiled {len(jobs)} files ({' '.join(flags)}) in {time.time() - t0:.0f}s")
 
     exe = out / "sly2.exe"
     progress("link")
-    link = subprocess.run([str(CLANG), *map(str, objs), *LIBS, "-o", str(exe)], capture_output=True, text=True)
+    link = subprocess.run([str(CLANG), *map(str, objs), *link_flags, *LIBS, "-o", str(exe)], capture_output=True, text=True)
     if link.returncode:
         print(link.stderr[:6000])
         return 1
@@ -356,7 +459,7 @@ def main() -> int:
         if not args.release:
             print("note: --package without --release packages a debug build (-O1, function tracing)")
         progress("package")
-        return package(objs, out, Path(args.package))
+        return package(objs, out, Path(args.package), link_flags)
     return 0
 
 

@@ -68,6 +68,7 @@ void launch_exit(int code) {
     mc_quiesce();
     fflush(stderr);
     fflush(stdout);
+    pgo_flush();
     ExitProcess((UINT)code);
 }
 

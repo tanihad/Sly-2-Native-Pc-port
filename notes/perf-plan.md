@@ -363,6 +363,70 @@ cost (~180 ns, spread over state lookup, tier, ownership, merge, records and ver
 parallelisable at a profit on this CPU; further gains need fewer per-primitive decisions (e.g. batching a strip's
 primitives that share state, key and ownership outcome) - a larger, riskier change to the exact frontend.
 
+### P6 results (branch next/p6-pgo, 2026-11-03; history notes/wip/p6-pgo.md): build-level and hot-path CPU
+
+**Where the CPU goes now** (PS2_PROFILE on the four threads, ep1 hub, release, 3x): since the modern renderer (r2) the exact
+frontend sees 5-8k primitives per frame in the ep1 hub (35k when section 1 was written) and costs 1.3-2.9 ms; the **EE
+thread is now the largest CPU stage** (2-3.6 ms per frame: half recompiled game code, the rest runtime - the r2 capture
+~1/3 of it, with r2_src_same's memcmp of every cached mesh's DMA source ~10%, vu0_macro_flags ~8%, ps2_call ~2.5%);
+worker 1.2-2.2 ms (VU1 microcode ~60%, VIF unpack ~15%); GS thread 0.8-1.7 ms. No lock or allocator hot spot: the
+threads' ntdll time is waiting (spin-then-WaitOnAddress rings), malloc / free do not show.
+
+**Changed** (all exact: m9_exact 28/28 at S=1/3 and -Game identical against the plain -O2 build, vu_replay 0 programs
+differ, gpu_diff_all mixed S=1, every unit suite):
+- `ps2_call` (jalr / jump-table misses): a direct table (target - first function) / 4 -> function instead of a binary search
+  over 6834 functions; `vu0_macro_flags`: branchless SSE lanes.
+- Release builds: **ThinLTO + clang PGO** for our own code (runtime, runtime/gpu, runtime/r2). The translated EE / IOP / VU
+  C is compiled exactly as before (ThinLTO of the ~45 MB of generated C moved most of the build into the link: 101 s
+  instead of 67 s on 6 jobs, for little - the threads that gain run the runtime).
+- **The profile** `runtime/pgo/sly2.proftext` (llvm-profdata text, 0.17 MB, ~720 functions): counts of our functions only.
+  `scripts/pgo_train.ps1 -Ship` trains `build_game.py --pgo-gen` (IR instrumentation, written by runtime/launch.h
+  pgo_flush before ExitProcess) on ep3 hub, ep5 hub, m3 / m5 / m8 bosses (not the benchmark scenes) and filters out
+  every translated function (f_*, iop_*, vuc_*, the generated files' statics): it holds no names, hashes or counts of
+  the game's code, nothing from the disc. Static functions are named by file name only
+  (`-static-func-full-module-prefix=false`) so the profile fits any checkout; release builds convert it with the
+  toolchain's llvm-profdata (in the installer's trimmed llvm-mingw) and never fail for it (`--pgo-use none`; a function
+  changed since training is just built without profile - retrain after larger runtime changes). The full profile (game
+  code included) stays dev-only.
+- **VU microcode x86-64-v3 copies** (function multiversioning by hand: `*_ks15/_ks11` compiled again with `-DVUC_V3
+  -march=x86-64-v3 -ffp-contract=off`, dispatchers pick them when `__builtin_cpu_supports` has every v3 feature;
+  `PS2_VU_V3=0`): vu_replay museum / ep2 hub 1.81 -> 1.64 ns per pair (-9%), 0 programs differ. Baseline stays x86-64.
+- Instrumented builds: `-mllvm -do-counter-promotion=false` (counter promotion ran 10+ minutes per translated function
+  with a jump table).
+
+**Offline** (gs_replay --front-thread hold mode, pinned, 5 interleaved repeats, total frontend ms over the recording):
+
+| recording | plain -O2 | ThinLTO | PGO (no LTO) | ThinLTO + PGO (shipped) | GS decode thread |
+|---|---|---|---|---|---|
+| ep1 hub | 566 | +1% | -13% | **492 (-13%)** | -5% |
+| m1 brawl | 378 | +0% | -6% | **340 (-10%)** | -9% |
+| ep8 boss | 802 | +3% | -11% | **680 (-15%)** | -4% |
+| ep5 street | 837 | +4% | -2% | **737 (-12%)** | -6% |
+
+(LTO / PGO-without-LTO columns: the first, full-path profile, same session; -O3 and whole-program x86-64-v3 gave
+-5..-9% each - not shippable as the baseline / not worth it next to PGO.)
+
+**In game** (chaos_bench, release, frame rate 120 so both builds run the same frames, 1x, base = main 38a38df vs P6,
+interleaved, medians of 5-6 runs; CPU ms per game frame):
+
+| scene | EE base -> P6 | worker | frontend | GS thread |
+|---|---|---|---|---|
+| ep1 hub | 3.55 -> 3.43 | 2.12 -> 1.96 | 2.18 -> 1.79 | 1.63 -> 1.49 |
+| m1 brawl | 3.12 -> 3.24 | 1.73 -> 1.65 | 1.52 -> 1.53 | 1.11 -> 1.18 |
+| m2 boardroom | 2.21 -> 2.19 | 1.27 -> 1.15 | 1.48 -> 1.44 | 0.83 -> 0.92 |
+
+Single runs of one build differ by up to +-20% (other agents' load, scripted play showing different content), so only the
+worker (-5..-9%, in every scene) is clearly above that; the frontend's -10..-15% of the replays is not resolved in game.
+The profile was retrained after merging main 669ae0c (render-thread changes).
+
+**Build** (fresh, 6 jobs, shared machine): plain 56-60 s -> 67 s (VU v3 copies +~8 s, ThinLTO + profile of the runtime +~3
+s); peak memory of 6 compilers ~1.0-1.2 GB, the ThinLTO link 0.17 GB (whole-program ThinLTO: 0.84 GB, 101 s).
+
+**Next CPU levers found** (not done here): the EE thread's r2 capture (mesh source checks: dirty-page tracking, e.g.
+MEM_WRITE_WATCH on EE RAM, would skip the memcmp of unchanged meshes - needs a proof that every RAM writer is seen),
+mv_prev's 2 MB table; a shippable game-code profile would need the owner's call (it encodes the translated functions'
+names and branch counts).
+
 Order: P1 first (days; the biggest single gain; independent). P2 and P3 in parallel (shaders / executor vs gpu_front.c). Then
 P4, P5, P6. P7 any time (render thread). Re-measure after each; only if 200 at 100% render scale in the heaviest hub is
 still required after P1-P6, start option I (HLE renderer) as research.

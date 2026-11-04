@@ -46,11 +46,11 @@ def table(path):
             continue
         sc, rest = r["name"].split("@", 1)
         g.setdefault((sc, rest.split("#")[0]), []).append(r)
-    keys = ["fps_med", "low1", "low01", "worker", "gs", "fr", "fr_p90", "rc", "gpu", "prims"]
-    print("scene | build | runs | fps med | 1% low | 0.1% low | worker | GS | front (p90) | render | GPU | prims")
+    keys = ["fps_med", "low1", "low01", "ee", "worker", "gs", "fr", "fr_p90", "rc", "gpu", "prims"]
+    print("scene | build | runs | fps med | 1% low | 0.1% low | EE | worker | GS | front (p90) | render | GPU | prims")
     for (sc, b), rs in sorted(g.items()):
         m = {k: med([x.get(k, 0) for x in rs]) for k in keys}
-        print(f"{sc} | {b} | {len(rs)} | {m['fps_med']:.1f} | {m['low1']:.1f} | {m['low01']:.1f} | {m['worker']:.2f} | {m['gs']:.2f} | "
+        print(f"{sc} | {b} | {len(rs)} | {m['fps_med']:.1f} | {m['low1']:.1f} | {m['low01']:.1f} | {m['ee']:.2f} | {m['worker']:.2f} | {m['gs']:.2f} | "
               f"{m['fr']:.2f} ({m['fr_p90']:.2f}) | {m['rc']:.2f} | {m['gpu']:.2f} | {m['prims']:.0f}")
 
 
@@ -86,7 +86,7 @@ def main():
                    avg=len(ft) / span, worst=1000.0 / max(ft), ft_med=med(ft), ft_p99=pct(ft, 0.99), ft_p999=pct(ft, 0.999),
                    ft_max=max(ft), secs=span)
     st = {k: [] for k in ("gs", "fr", "frmax", "rc", "gpu", "gpumax", "prims", "draws")}
-    wk = []
+    wk, ee = [], []
     log = d / "run.log"
     for line in open(log, encoding="latin-1"):
         m = STATS.search(line)
@@ -102,14 +102,17 @@ def main():
         m = PERF.search(line)
         if m and t_from <= float(m.group(1)) <= t_to:
             wk.append(float(m.group(3)))
+            ee.append(float(m.group(2)))   # (P6) EE thread busy ms per VBlank (= per game frame above 60 fps)
     for k, v in st.items():
         out[k] = med(v)
         out[k + "_p90"] = pct(v, 0.9)
     out["worker"] = med(wk)
     out["worker_p90"] = pct(wk, 0.9)
+    out["ee"] = med(ee)
+    out["ee_p90"] = pct(ee, 0.9)
     if ft:
         print(f"{name}: fps med {out['fps_med']:.1f} | 1% low {out['low1']:.1f} | 0.1% low {out['low01']:.1f} | avg {out['avg']:.1f} | "
-              f"worst {out['worst']:.1f} ({len(ft)} frames, {out['secs']:.1f} s) | ms med/p90: worker {out['worker']:.2f}/{out['worker_p90']:.2f} "
+              f"worst {out['worst']:.1f} ({len(ft)} frames, {out['secs']:.1f} s) | ms med/p90: EE {out['ee']:.2f}/{out['ee_p90']:.2f} worker {out['worker']:.2f}/{out['worker_p90']:.2f} "
               f"GS {out['gs']:.2f}/{out['gs_p90']:.2f} front {out['fr']:.2f}/{out['fr_p90']:.2f} (max {out['frmax_p90']:.2f}) "
               f"render {out['rc']:.2f}/{out['rc_p90']:.2f} GPU {out['gpu']:.2f}/{out['gpu_p90']:.2f} (max {out['gpumax_p90']:.2f}) | "
               f"prims {out['prims']:.0f} draws {out['draws']:.0f}")

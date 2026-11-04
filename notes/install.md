@@ -302,6 +302,14 @@ depend on the build tree (it needs only the disc image there, asked for on the f
   plus 19 `tzcnt`, which is LLVM's encoding of `rep bsf` for count-trailing-zeros of a nonzero value
   (it executes as BSF on CPUs without BMI1, with the same result). No SSE3/SSSE3/SSE4/AVX/AVX2/
   AVX-512/FMA/BMI2/POPCNT/CMPXCHG16B. Minimum: any x86-64 CPU that runs 64-bit Windows 10.
+  (P6, 2026-11) The one exception: the recompiled VU microcode is in the executable twice, plain x86-64 and
+  `-march=x86-64-v3 -ffp-contract=off` (`*_v3` functions, AVX2/BMI2/FMA encodings but no fused multiply-add); the VU
+  dispatchers call the v3 copies only when `__builtin_cpu_supports` reports every x86-64-v3 feature (and the OS saves
+  AVX state), else the plain ones - so the minimum is unchanged. A scan of `.text` therefore finds AVX/AVX2 instructions,
+  all inside `vuc_*_v3`. `PS2_VU_V3=0` forces the plain copies.
+- **Build** (P6): release builds use ThinLTO and the profile in `runtime/pgo/sly2.proftext` (converted with the
+  toolchain's own `llvm-profdata.exe`, which the installer keeps); no extra tool. Time and memory: see notes/perf-plan.md
+  "P6 results".
 - **Windows**: minimum Windows 10 1809 (stated floor). What needs newer than Windows 8: the
   UCRT (inbox from Windows 10), the GPU renderer's FLIP_DISCARD swap chain (Windows 10; the software
   presenter falls back to FLIP_SEQUENTIAL and then GDI), DXGI tearing (checked with

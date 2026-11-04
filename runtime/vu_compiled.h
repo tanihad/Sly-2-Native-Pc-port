@@ -26,6 +26,19 @@ typedef struct vuc_program {
 } vuc_program;
 
 #define VUC_NOT_COMPILED 0xFFFFFFFFu  /* returned by a unit's function for an entry it has no code for */
+
+/* (P6) Function multiversioning of the microcode: scripts/build_game.py compiles every specialisation file
+ * (<unit>_ks<bits>.c) a second time with -DVUC_V3 -march=x86-64-v3 -ffp-contract=off (AVX2 encodings, blends,
+ * no fused multiply-add: the same results bit for bit), which names its function <name>_v3, and the
+ * dispatchers (compiled with -DVUC_HAVE_V3) call those when vuc_use_v3 is set: the CPU has AVX2 and the
+ * rest of x86-64-v3 (vu.c, at registration; PS2_VU_V3=0 turns it off). Other builds (vu_replay, the unit
+ * tests) compile each file once and never reference the _v3 names. */
+#ifdef VUC_V3
+#define VUC_V(name) name##_v3
+#else
+#define VUC_V(name) name
+#endif
+extern int vuc_use_v3;
 /* A program still running after this many pairs continues in the interpreter at its next backward
  * jump, so that one without an E bit stops exactly where the interpreter stops it (VU_MAX_PAIRS). */
 #define VUC_RUNAWAY_HANDOFF (VU_MAX_PAIRS - 0x10000u)

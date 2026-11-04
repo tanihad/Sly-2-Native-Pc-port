@@ -1,0 +1,22382 @@
+# IR level Instrumentation Flag
+:ir
+aspect_dl_begin
+# Func Hash:
+784007056844089447
+# Num Counters:
+2
+# Counter Values:
+710911
+710911
+
+aspect_dl_end
+# Func Hash:
+784007056844089447
+# Num Counters:
+2
+# Counter Values:
+710911
+710911
+
+aspect_dl_object
+# Func Hash:
+1029578616276742707
+# Num Counters:
+14
+# Counter Values:
+0
+0
+0
+0
+0
+2206238
+643629
+0
+0
+0
+0
+0
+0
+0
+
+aspect_hint_now
+# Func Hash:
+431494654108067943
+# Num Counters:
+3
+# Counter Values:
+10
+10
+0
+
+aspect_hint_value
+# Func Hash:
+562125816766380664
+# Num Counters:
+42
+# Counter Values:
+0
+238050
+238050
+0
+238050
+0
+238050
+0
+238050
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+238050
+0
+238050
+
+aspect_init
+# Func Hash:
+1051690257303657108
+# Num Counters:
+5
+# Counter Values:
+0
+5
+0
+0
+0
+
+aspect_item_draw
+# Func Hash:
+231012523796421279
+# Num Counters:
+11
+# Counter Values:
+811450
+0
+546391
+265059
+811450
+546391
+0
+0
+0
+59911
+486480
+
+aspect_item_queued
+# Func Hash:
+567185242391514848
+# Num Counters:
+5
+# Counter Values:
+0
+0
+811450
+811450
+811450
+
+aspect_render_done
+# Func Hash:
+334492581856181086
+# Num Counters:
+5
+# Counter Values:
+102176
+87593
+0
+0
+0
+
+aspect_render_entry
+# Func Hash:
+855345941348020244
+# Num Counters:
+19
+# Counter Values:
+28540423
+28540423
+0
+0
+1339875
+1220813
+1220813
+1220813
+31432
+0
+0
+0
+119025
+0
+0
+0
+1220813
+1101788
+1101788
+
+aspect_render_entry_alloc
+# Func Hash:
+816289418514876924
+# Num Counters:
+8
+# Counter Values:
+13895695
+13895695
+1339924
+119066
+119066
+12674837
+12555771
+1220858
+
+aspect_scene_begin
+# Func Hash:
+414877817402045808
+# Num Counters:
+50
+# Counter Values:
+255
+254
+1011136
+78617
+0
+0
+0
+225920
+96
+65800
+0
+144448
+65831
+5
+65831
+0
+0
+0
+31
+0
+0
+65800
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+144448
+97
+96
+255
+255
+254
+54748
+89700
+
+aspect_scene_end
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+144448
+
+audio_init
+# Func Hash:
+896858936491687896
+# Num Counters:
+11
+# Counter Values:
+0
+5
+0
+5
+0
+0
+5
+0
+0
+0
+0
+
+audio_out.c;alog
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+95
+
+audio_out.c;audio_thread
+# Func Hash:
+202080510976600182
+# Num Counters:
+9
+# Counter Values:
+0
+0
+5
+5
+5
+0
+0
+0
+0
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+1
+1
+** External Symbol **:5
+
+audio_out.c;env_on
+# Func Hash:
+1063705161908944610
+# Num Counters:
+3
+# Counter Values:
+10
+5
+5
+
+audio_out.c;log_start
+# Func Hash:
+844982798050903109
+# Num Counters:
+4
+# Counter Values:
+5
+5
+0
+0
+
+audio_out.c;log_writer
+# Func Hash:
+643771911220515355
+# Num Counters:
+3
+# Counter Values:
+198
+198
+5
+# Num Value Kinds:
+1
+# ValueKind = IPVK_MemOPSize:
+1
+# NumValueSites:
+1
+3
+257:102
+129:95
+513:1
+
+audio_out.c;null_run
+# Func Hash:
+93478049760584476
+# Num Counters:
+7
+# Counter Values:
+174722
+174722
+174727
+174722
+0
+0
+5
+
+audio_out.c;produce
+# Func Hash:
+159676627219794717
+# Num Counters:
+9
+# Counter Values:
+0
+0
+0
+174722
+0
+95
+174722
+0
+0
+
+audio_set_gain
+# Func Hash:
+702941992757231615
+# Num Counters:
+3
+# Counter Values:
+5
+5
+0
+
+cdvd.c;open_iso_locked
+# Func Hash:
+331779891142773232
+# Num Counters:
+9
+# Counter Values:
+7924
+5
+5
+0
+0
+0
+0
+0
+0
+
+cdvd_read_host
+# Func Hash:
+238984484093187152
+# Num Counters:
+3
+# Counter Values:
+0
+7914
+7914
+
+cdvd_rpc
+# Func Hash:
+913552905398948264
+# Num Counters:
+39
+# Counter Values:
+0
+0
+0
+0
+0
+0
+5202
+2604
+10
+714
+0
+1388
+2604
+2604
+0
+10
+2604
+0
+0
+10
+694
+0
+0
+0
+0
+694
+10
+694
+694
+0
+0
+0
+0
+694
+0
+0
+0
+0
+0
+# Num Value Kinds:
+1
+# ValueKind = IPVK_MemOPSize:
+1
+# NumValueSites:
+2
+5
+32:3065
+0:1403
+17:694
+4:35
+8:5
+1
+513:2604
+
+cdvd_set_image
+# Func Hash:
+1063705162558100101
+# Num Counters:
+3
+# Counter Values:
+5
+5
+5
+
+chain_dump
+# Func Hash:
+758285740702841751
+# Num Counters:
+113
+# Counter Values:
+0
+0
+0
+0
+0
+0
+0
+0
+0
+5
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+123739
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+5
+0
+5
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+
+clut_alpha_range
+# Func Hash:
+502407523849787540
+# Num Counters:
+11
+# Counter Values:
+0
+738016
+0
+23821
+282991
+282991
+282991
+0
+0
+1487
+0
+
+clut_current_slot
+# Func Hash:
+784007059655560962
+# Num Counters:
+2
+# Counter Values:
+19231918
+4036250
+
+clut_entry_alpha
+# Func Hash:
+37730073502490352
+# Num Counters:
+4
+# Counter Values:
+32072632
+0
+0
+0
+
+clut_frame_end
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+125221
+
+clut_mark_changed
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+27247853
+
+clut_note_pieces
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+27247858
+
+clut_reset
+# Func Hash:
+784007059655560962
+# Num Counters:
+2
+# Counter Values:
+5
+5
+
+clut_slot_gen
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+18925106
+
+dma.c;chcr_write
+# Func Hash:
+95820319882047651
+# Num Counters:
+17
+# Counter Values:
+0
+0
+0
+8752649
+720
+0
+4733146
+373369
+123739
+123739
+0
+0
+0
+0
+0
+0
+0
+
+dma.c;dev_out
+# Func Hash:
+531478467233478571
+# Num Counters:
+8
+# Counter Values:
+12404912
+12404912
+12404912
+151983004
+5
+125603174
+2162946
+12245652
+# Num Value Kinds:
+1
+# ValueKind = IPVK_MemOPSize:
+1
+# NumValueSites:
+1
+11
+16:5746389
+513:4219541
+129:657270
+257:621789
+65:429435
+64:210147
+128:167805
+32:167721
+33:116586
+256:46518
+512:21711
+
+dma.c;mode_of
+# Func Hash:
+927205940393541952
+# Num Counters:
+17
+# Counter Values:
+0
+10
+504216
+0
+0
+0
+3645254
+973008
+0
+23604216
+10191809
+0
+0
+3645254
+973008
+3645254
+0
+
+dma.c;pump
+# Func Hash:
+102231277787378050
+# Num Counters:
+25
+# Counter Values:
+0
+365908580
+36590858
+17648447
+36590858
+17165161
+19740657
+0
+0
+314960
+314960
+0
+311041720
+0
+314960
+314960
+297176996
+36590858
+31104172
+0
+314960
+5486686
+31104172
+31104172
+36590858
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+2
+1
+gfx_async.c;take:314960
+0
+
+dma.c;run
+# Func Hash:
+690951730000885539
+# Num Counters:
+81
+# Counter Values:
+0
+125069
+12245652
+0
+0
+0
+286831
+0
+0
+5467881
+5467881
+134358994
+5467901
+191840520
+191847138
+5467881
+0
+0
+134464407
+0
+3645254
+20
+5467881
+0
+0
+0
+5467901
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+13039040
+1822627
+3197347
+0
+372649
+0
+0
+0
+12370721
+4402364
+375851
+0
+2534667
+80281471
+47072754
+0
+13039040
+1822627
+0
+12666391
+2910491
+0
+28681819
+0
+28681818
+0
+0
+668319
+0
+0
+0
+0
+206883
+134172737
+0
+0
+191843122
+0
+191803111
+191800101
+191798139
+191794576
+0
+5467881
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+1
+0
+
+dma.c;runnable
+# Func Hash:
+567185241441244091
+# Num Counters:
+6
+# Counter Values:
+349557160
+18251693
+18251694
+18250224
+18250225
+0
+
+dma.c;xfer_in
+# Func Hash:
+730611247731244259
+# Num Counters:
+25
+# Counter Values:
+5467881
+0
+5467881
+5467881
+6136200
+6136200
+0
+0
+506619
+0
+0
+0
+0
+0
+668319
+0
+0
+6136200
+5467881
+0
+424874
+0
+0
+5629581
+424874
+# Num Value Kinds:
+1
+# ValueKind = IPVK_MemOPSize:
+1
+# NumValueSites:
+1
+11
+513:2750391
+129:657270
+257:621789
+65:429435
+16:278508
+64:210147
+128:167805
+32:167721
+33:116586
+256:46518
+512:21711
+
+dma.c;xfer_out
+# Func Hash:
+104655965115657987
+# Num Counters:
+36
+# Counter Values:
+0
+0
+146730848
+146727013
+146840715
+0
+0
+0
+135084138
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+146732553
+0
+0
+0
+134365474
+134361761
+12528348
+80568302
+47072754
+0
+0
+0
+0
+0
+0
+146728771
+12528340
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+1
+0
+
+dma_access
+# Func Hash:
+219384950808779697
+# Num Counters:
+51
+# Counter Values:
+4540
+0
+42970439
+42970439
+0
+0
+42970439
+0
+0
+35
+10
+0
+10
+0
+0
+10
+10
+30
+0
+0
+4540
+0
+0
+4540
+0
+991188
+21468408
+5
+21501956
+0
+0
+0
+15
+8753369
+4540
+0
+1990
+0
+21468408
+15
+5924530
+5110523
+374904
+4357319
+0
+0
+15
+0
+0
+0
+0
+# Num Value Kinds:
+2
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+3
+1
+gfx_async.c;wait_job:5
+0
+0
+# ValueKind = IPVK_MemOPSize:
+1
+# NumValueSites:
+18
+0
+0
+1
+4:21468408
+1
+4:21468408
+0
+0
+0
+1
+4:15
+1
+4:15
+0
+1
+4:4540
+1
+4:4540
+0
+0
+0
+1
+4:35
+1
+4:35
+0
+
+dma_debug_tadr
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+314960
+
+dma_run_owned
+# Func Hash:
+1096621590790165611
+# Num Counters:
+6
+# Counter Values:
+191221
+410570
+314960
+191221
+25
+25
+
+dma_service
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+9597631
+
+dmac_ack
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+148666
+
+dmac_mask_enabled
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+98866317
+
+dmac_pending
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+1970346
+
+dmac_raise
+# Func Hash:
+1138669268022014974
+# Num Counters:
+5
+# Counter Values:
+5376807
+5253140
+123738
+5253140
+148666
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+1
+1
+gfx_async.c;defer:123738
+
+dmac_set_mask
+# Func Hash:
+1124680653258158719
+# Num Counters:
+3
+# Counter Values:
+670
+0
+665
+
+dmac_stat_read
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+98866257
+
+dmac_stat_write
+# Func Hash:
+784007056844089447
+# Num Counters:
+2
+# Counter Values:
+1990
+0
+
+frame_rate_content_ms
+# Func Hash:
+871441887024567931
+# Num Counters:
+5
+# Counter Values:
+1368
+123846
+0
+0
+0
+
+frame_rate_describe
+# Func Hash:
+844982796732550096
+# Num Counters:
+4
+# Counter Values:
+0
+5
+0
+0
+
+frame_rate_high
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+665540
+
+frame_rate_init
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+5
+
+frame_rate_lock_hz
+# Func Hash:
+1124680650843380658
+# Num Counters:
+4
+# Counter Values:
+125209
+0
+0
+0
+
+frame_rate_min_gap
+# Func Hash:
+431494654108067943
+# Num Counters:
+3
+# Counter Values:
+1583702
+1551260
+0
+
+frame_rate_movie
+# Func Hash:
+431494654108067943
+# Num Counters:
+3
+# Counter Values:
+10
+10
+5
+
+frame_rate_set
+# Func Hash:
+679210743074613351
+# Num Counters:
+4
+# Counter Values:
+5
+5
+0
+0
+
+frame_rate_target_hz
+# Func Hash:
+720498104972961660
+# Num Counters:
+10
+# Counter Values:
+4175908
+4136691
+0
+4136666
+0
+5
+0
+0
+0
+5
+
+frame_vblank_event
+# Func Hash:
+1063705162462123496
+# Num Counters:
+3
+# Counter Values:
+123743
+5
+0
+
+frame_vblank_request
+# Func Hash:
+360019386918644976
+# Num Counters:
+6
+# Counter Values:
+125058
+0
+123738
+0
+0
+0
+
+frame_vblank_take_request
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+1583702
+
+fthread_start
+# Func Hash:
+869069518660318534
+# Num Counters:
+24
+# Counter Values:
+5
+5
+1345
+130
+0
+0
+220
+170
+0
+0
+5
+0
+0
+0
+5
+5
+5
+5
+0
+0
+0
+0
+0
+5
+
+fthread_vblank
+# Func Hash:
+1096621588149789025
+# Num Counters:
+5
+# Counter Values:
+125222
+124896
+0
+8803
+0
+
+gf_cmd
+# Func Hash:
+334492582013622509
+# Num Counters:
+5
+# Counter Values:
+1565755
+220810
+1565755
+0
+1344945
+
+gf_data
+# Func Hash:
+2202711501531239
+# Num Counters:
+2
+# Counter Values:
+6884004
+5549456
+# Num Value Kinds:
+1
+# ValueKind = IPVK_MemOPSize:
+1
+# NumValueSites:
+1
+16
+129:1330897
+513:1246997
+32:1233207
+64:1232652
+257:483755
+16:4031
+2:3787
+65:2892
+9:2739
+4:2683
+8:2165
+33:1706
+6:1635
+128:253
+17:53
+256:4
+
+gf_data_ptr
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+1334548
+
+gf_flush_open
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+1319763
+
+gf_hooks
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+5
+
+gf_r2_flush
+# Func Hash:
+324650981357164769
+# Num Counters:
+69
+# Counter Values:
+195948641
+0
+195948641
+29914464
+195948641
+0
+0
+0
+166034177
+195948641
+0
+0
+189853955
+0
+0
+0
+0
+0
+0
+165369842
+165369842
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+82510274
+82510274
+10711862
+4922056
+195948641
+4922056
+0
+0
+0
+0
+0
+0
+19210330
+1533080
+20743410
+1319763
+0
+1230514
+1533080
+1230514
+1230514
+0
+1230514
+1230514
+0
+0
+1230514
+5
+0
+0
+0
+0
+0
+1533080
+1533080
+165369842
+71798412
+0
+# Num Value Kinds:
+1
+# ValueKind = IPVK_MemOPSize:
+1
+# NumValueSites:
+2
+0
+10
+513:774005
+257:170105
+129:148243
+128:64462
+256:35384
+512:23371
+64:6829
+0:6758
+65:1349
+32:8
+
+gf_r2_hook
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+1521037
+
+gf_r2_part_count
+# Func Hash:
+536873293052540031
+# Num Counters:
+4
+# Counter Values:
+0
+0
+87697002
+769360
+
+gf_r2_vblank
+# Func Hash:
+436124197096667286
+# Num Counters:
+13
+# Counter Values:
+0
+0
+0
+125221
+102264
+102313
+0
+0
+5
+0
+0
+0
+0
+
+gf_target_op
+# Func Hash:
+134732432071261922
+# Num Counters:
+4
+# Counter Values:
+14900
+0
+0
+0
+
+gf_vblank_impl
+# Func Hash:
+315662490811939699
+# Num Counters:
+29
+# Counter Values:
+0
+128223232
+250442
+0
+125330
+0
+125330
+0
+125330
+125330
+125218
+125330
+0
+125221
+125221
+125216
+125221
+125218
+125211
+5
+0
+125216
+0
+0
+0
+0
+0
+125221
+5
+# Num Value Kinds:
+1
+# ValueKind = IPVK_MemOPSize:
+1
+# NumValueSites:
+2
+0
+0
+
+gfx.c;env_scale
+# Func Hash:
+134732432071261922
+# Num Counters:
+4
+# Counter Values:
+35
+35
+35
+35
+
+gfx_apply
+# Func Hash:
+1040764036047241254
+# Num Counters:
+29
+# Counter Values:
+5
+5
+5
+5
+5
+5
+5
+0
+5
+0
+0
+0
+0
+0
+0
+0
+5
+5
+5
+5
+5
+5
+5
+0
+0
+0
+0
+0
+0
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+1
+0
+
+gfx_apply_pacing
+# Func Hash:
+694937219804882290
+# Num Counters:
+7
+# Counter Values:
+5
+5
+5
+0
+0
+0
+0
+
+gfx_async.c;complete
+# Func Hash:
+287486626366643205
+# Num Counters:
+5
+# Counter Values:
+123738
+95610
+123733
+314959
+0
+
+gfx_async.c;defer
+# Func Hash:
+238984482413483552
+# Num Counters:
+3
+# Counter Values:
+0
+343081
+0
+
+gfx_async.c;take
+# Func Hash:
+661518736615210193
+# Num Counters:
+20
+# Counter Values:
+0
+314960
+0
+314960
+314960
+0
+0
+314960
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+
+gfx_async.c;wait_job
+# Func Hash:
+744640999678855327
+# Num Counters:
+21
+# Counter Values:
+0
+395061
+114
+369848
+114
+88
+95630
+95630
+88
+88
+88
+88
+25239
+0
+0
+25239
+25239
+25239
+25239
+0
+0
+
+gfx_async.c;worker_main
+# Func Hash:
+647472250798666928
+# Num Counters:
+12
+# Counter Values:
+192279
+273286168
+273093889
+122530
+314959
+0
+0
+314960
+314959
+314960
+314959
+5
+
+gfx_async_init
+# Func Hash:
+278041625420202077
+# Num Counters:
+16
+# Counter Values:
+0
+5816
+0
+0
+0
+0
+0
+0
+0
+0
+5
+0
+0
+0
+0
+5
+
+gfx_bits
+# Func Hash:
+1070163059680477183
+# Num Counters:
+7
+# Counter Values:
+5
+5
+5
+5
+5
+5
+5
+
+gfx_describe
+# Func Hash:
+643373857062780927
+# Num Counters:
+12
+# Counter Values:
+5
+5
+5
+5
+5
+5
+5
+0
+5
+5
+0
+5
+
+gfx_poll
+# Func Hash:
+1063705162558100101
+# Num Counters:
+3
+# Counter Values:
+3586872
+576356
+219329
+
+gfx_scale
+# Func Hash:
+1010762094129722013
+# Num Counters:
+10
+# Counter Values:
+15
+0
+0
+0
+0
+0
+0
+0
+0
+0
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+3
+0
+0
+0
+
+gif.c;fifo_drain
+# Func Hash:
+298789185783135970
+# Num Counters:
+3
+# Counter Values:
+2162966
+0
+0
+# Num Value Kinds:
+1
+# ValueKind = IPVK_MemOPSize:
+1
+# NumValueSites:
+1
+0
+
+gif.c;gif_feed
+# Func Hash:
+463681401134521661
+# Num Counters:
+49
+# Counter Values:
+0
+500910
+10234035
+10126760
+10234035
+10234035
+49527207
+10370312
+47777637
+1749570
+10370312
+10370312
+5
+2773398
+3970260
+0
+6986193
+0
+42628437
+0
+5
+500910
+9566781
+38558578
+2162946
+2162946
+9566781
+9566781
+7403835
+7403835
+0
+0
+107275
+0
+0
+3961264
+3961264
+0
+0
+34598634
+0
+1749570
+5
+0
+0
+1856845
+3961264
+0
+5149200
+
+gif_access
+# Func Hash:
+211365960342459042
+# Num Counters:
+32
+# Counter Values:
+0
+0
+0
+10
+0
+0
+125049
+0
+0
+5
+5
+0
+0
+0
+5
+5
+5
+125049
+0
+0
+0
+0
+0
+0
+0
+0
+125049
+0
+125049
+0
+0
+10
+# Num Value Kinds:
+2
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+1
+0
+# ValueKind = IPVK_MemOPSize:
+1
+# NumValueSites:
+5
+0
+0
+1
+4:125049
+1
+4:125049
+1
+4:10
+
+gif_path1_kick
+# Func Hash:
+1144177032072829495
+# Num Counters:
+74
+# Counter Values:
+0
+68869911
+103782912
+78991136
+292423481
+292423481
+292423481
+0
+0
+0
+261188891
+261188891
+0
+0
+0
+0
+0
+104310999
+0
+0
+0
+0
+78991136
+78991136
+528087
+103782912
+78991136
+0
+78991136
+0
+0
+0
+0
+0
+0
+0
+78991136
+78991136
+5
+78991136
+0
+0
+0
+78991136
+0
+78991136
+78991136
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+78991136
+78991136
+78991136
+0
+292423481
+78991136
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+# Num Value Kinds:
+1
+# ValueKind = IPVK_MemOPSize:
+1
+# NumValueSites:
+1
+0
+
+gif_path2
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+7403835
+
+gif_path3_dma
+# Func Hash:
+784007059655560962
+# Num Counters:
+2
+# Counter Values:
+2162946
+2162946
+
+gif_set_path3_mask
+# Func Hash:
+784007056844089447
+# Num Counters:
+2
+# Counter Values:
+10
+10
+
+gpu_caps_print
+# Func Hash:
+732038791293873167
+# Num Counters:
+8
+# Counter Values:
+5
+0
+5
+0
+0
+0
+5
+0
+
+gpu_clut.c;refresh
+# Func Hash:
+683271490167630508
+# Num Counters:
+29
+# Counter Values:
+2362846336
+484079935
+0
+20305138
+1835093
+1708
+0
+18459737
+0
+0
+19231918
+0
+18470045
+0
+0
+0
+0
+0
+0
+0
+0
+18459737
+10308
+0
+0
+0
+0
+0
+0
+
+gpu_cmd_alloc
+# Func Hash:
+484499718746297562
+# Num Counters:
+7
+# Counter Values:
+125223
+0
+0
+0
+125223
+1
+1
+
+gpu_cmd_commit
+# Func Hash:
+1124680651571308851
+# Num Counters:
+4
+# Counter Values:
+125223
+0
+0
+0
+
+gpu_cmd_done
+# Func Hash:
+238984483936707236
+# Num Counters:
+3
+# Counter Values:
+125214
+0
+0
+
+gpu_cmd_init
+# Func Hash:
+886271542915508096
+# Num Counters:
+4
+# Counter Values:
+5
+0
+5
+5
+
+gpu_cmd_lock
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+125223
+
+gpu_cmd_next
+# Func Hash:
+1127386592233283657
+# Num Counters:
+11
+# Counter Values:
+4469
+455853135
+455848666
+125219
+1
+111703
+54625
+54624
+39277
+221574
+39277
+
+gpu_cmd_publish
+# Func Hash:
+1063705161908944610
+# Num Counters:
+3
+# Counter Values:
+125223
+125223
+15347
+
+gpu_cmd_reset
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+5
+
+gpu_cmd_unlock
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+125223
+
+gpu_cs
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+1254517
+
+gpu_d3d11.c;fail_test
+# Func Hash:
+694937217372006643
+# Num Counters:
+7
+# Counter Values:
+0
+0
+0
+0
+0
+845
+0
+
+gpu_d3d11.c;rt_main
+# Func Hash:
+401684537572949239
+# Num Counters:
+90
+# Counter Values:
+830
+39277
+13280
+125214
+1100
+1100
+5
+5
+0
+1100
+890
+0
+0
+57078
+830
+57078
+0
+5
+0
+0
+0
+0
+0
+125214
+0
+830
+0
+39277
+0
+830
+5
+5
+0
+0
+0
+125214
+125209
+0
+0
+5
+0
+0
+0
+5
+5
+0
+0
+0
+5
+0
+5
+5
+5
+5
+5
+5
+5
+0
+0
+0
+5
+0
+5
+0
+0
+5
+0
+0
+0
+0
+5
+0
+0
+5
+5
+5
+5
+0
+0
+0
+0
+5
+13480
+60
+0
+0
+48922
+48922
+0
+125214
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+17
+1
+** External Symbol **:5
+0
+1
+** External Symbol **:5
+1
+** External Symbol **:5
+1
+** External Symbol **:5
+1
+** External Symbol **:5
+1
+** External Symbol **:5
+1
+** External Symbol **:5
+1
+** External Symbol **:5
+1
+** External Symbol **:5
+1
+** External Symbol **:5
+1
+** External Symbol **:5
+1
+** External Symbol **:5
+1
+** External Symbol **:57078
+1
+gpu_exec_release:5
+1
+** External Symbol **:125209
+0
+
+gpu_d3d11.c;shader_get
+# Func Hash:
+239377747497555172
+# Num Counters:
+9
+# Counter Values:
+298736418
+298736418
+0
+1100
+0
+15
+860
+100
+125
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+4
+1
+** External Symbol **:125
+1
+** External Symbol **:860
+1
+** External Symbol **:100
+1
+** External Symbol **:15
+
+gpu_device_lost
+# Func Hash:
+784007059655560962
+# Num Counters:
+2
+# Counter Values:
+125225
+125225
+
+gpu_exec.c;bind_ff
+# Func Hash:
+727548808802352716
+# Num Counters:
+28
+# Counter Values:
+0
+148226014
+84087534
+147958373
+83819893
+0
+84087534
+147958373
+0
+0
+66229376
+130140519
+130367856
+83819893
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+84087534
+146158429
+17962647
+66229376
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+3
+0
+0
+1
+** External Symbol **:130367857
+
+gpu_exec.c;bind_frame_buffers
+# Func Hash:
+162238551190628455
+# Num Counters:
+2
+# Counter Values:
+1355547
+1355547
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+11
+1
+** External Symbol **:1355547
+1
+** External Symbol **:1355547
+1
+** External Symbol **:1355547
+1
+** External Symbol **:1355547
+1
+** External Symbol **:1355547
+1
+** External Symbol **:1355547
+1
+** External Symbol **:1355547
+1
+** External Symbol **:1355547
+1
+** External Symbol **:1355547
+1
+** External Symbol **:1355547
+1
+** External Symbol **:1355547
+
+gpu_exec.c;blend_state
+# Func Hash:
+58826008950189273
+# Num Counters:
+6
+# Counter Values:
+152705714
+0
+10
+10
+20
+0
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+1
+1
+** External Symbol **:40
+
+gpu_exec.c;copy_old
+# Func Hash:
+212526878935420674
+# Num Counters:
+2
+# Counter Values:
+184
+82
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+1
+2
+** External Symbol **:59
+** External Symbol **:23
+
+gpu_exec.c;depth_state
+# Func Hash:
+491275434898903685
+# Num Counters:
+3
+# Counter Values:
+152705714
+152438073
+25
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+1
+1
+** External Symbol **:25
+
+gpu_exec.c;download_into
+# Func Hash:
+844982798525338607
+# Num Counters:
+4
+# Counter Values:
+14746
+14746
+14746
+0
+
+gpu_exec.c;dyn_ensure
+# Func Hash:
+383880589808545672
+# Num Counters:
+11
+# Counter Values:
+478
+751472
+751260
+107
+148
+251
+360
+360
+251
+0
+212
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+4
+1
+** External Symbol **:107
+1
+** External Symbol **:148
+1
+** External Symbol **:360
+1
+** External Symbol **:251
+
+gpu_exec.c;dyn_fill
+# Func Hash:
+389046810675583104
+# Num Counters:
+13
+# Counter Values:
+3286
+751260
+28933
+747854
+2490
+2490
+747854
+3406
+747854
+177
+119
+177
+177
+# Num Value Kinds:
+2
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+4
+1
+** External Symbol **:119
+1
+** External Symbol **:177
+1
+** External Symbol **:747865
+1
+** External Symbol **:747863
+# ValueKind = IPVK_MemOPSize:
+1
+# NumValueSites:
+1
+7
+513:700990
+257:21455
+129:21186
+128:1355
+512:1344
+64:1320
+256:215
+
+gpu_exec.c;ensure_dsv
+# Func Hash:
+247671765144391805
+# Num Counters:
+11
+# Counter Values:
+3015587
+2645259
+562501
+148511690
+148511690
+148511690
+0
+0
+148511690
+248515
+0
+
+gpu_exec.c;ensure_zp
+# Func Hash:
+569458406773522469
+# Num Counters:
+13
+# Counter Values:
+35879611
+31863620
+2434502
+1154726
+1154726
+0
+0
+1154726
+456211
+404443
+0
+0
+0
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+8
+1
+** External Symbol **:456212
+1
+** External Symbol **:456212
+1
+** External Symbol **:456212
+1
+** External Symbol **:456212
+1
+** External Symbol **:456212
+2
+** External Symbol **:454519
+** External Symbol **:1693
+1
+** External Symbol **:456212
+1
+** External Symbol **:456212
+
+gpu_exec.c;ensure_zp_all
+# Func Hash:
+1063705161908944610
+# Num Counters:
+3
+# Counter Values:
+148636
+148636
+148636
+
+gpu_exec.c;exec_alias16
+# Func Hash:
+644033657044030315
+# Num Counters:
+25
+# Counter Values:
+30382
+30382
+0
+15191
+15191
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+5
+0
+0
+0
+0
+0
+
+gpu_exec.c;exec_clut
+# Func Hash:
+728453322402006344
+# Num Counters:
+2
+# Counter Values:
+5277696
+10308
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+1
+2
+** External Symbol **:10298
+** External Symbol **:10
+
+gpu_exec.c;exec_draw_ff
+# Func Hash:
+785363426115274679
+# Num Counters:
+75
+# Counter Values:
+152705716
+145156981
+154544412
+146995677
+293456072
+146995677
+7548735
+152705716
+7548735
+23991150
+6539916
+5
+7548735
+128517747
+152705716
+82857197
+146728036
+0
+24187969
+0
+128517747
+141700299
+152188920
+82857197
+146728036
+146728036
+21454
+142053149
+0
+146728036
+146728036
+21454
+74332069
+24187969
+547507
+256747
+417159
+252711
+25153
+1744547
+1466384
+18477930
+0
+17796914
+17505764
+0
+128492594
+291150
+17451234
+6609304
+291150
+291150
+5
+291150
+291150
+288651
+0
+290760
+0
+0
+64138480
+21454
+18477930
+17796914
+0
+0
+0
+0
+17505764
+0
+25153
+0
+64138480
+0
+146728036
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+11
+1
+** External Symbol **:21454
+1
+** External Symbol **:1466384
+1
+** External Symbol **:1744547
+1
+** External Symbol **:291150
+1
+** External Symbol **:252711
+1
+** External Symbol **:417159
+1
+** External Symbol **:142053150
+1
+** External Symbol **:141700299
+1
+** External Symbol **:152188921
+2
+** External Symbol **:24178540
+** External Symbol **:9430
+2
+** External Symbol **:128434257
+** External Symbol **:83490
+
+gpu_exec.c;exec_draw_ref
+# Func Hash:
+153415436441050898
+# Num Counters:
+130
+# Counter Values:
+1100007
+1100007
+1100007
+0
+1100007
+1100007
+0
+1100007
+0
+0
+762915
+1100007
+662106
+1100007
+0
+5
+762915
+553319
+1100007
+333039
+0
+0
+0
+871792
+1100007
+762915
+766968
+762915
+5
+0
+546688
+553319
+0
+1100007
+1100007
+662106
+662106
+0
+0
+102350
+1100007
+0
+0
+429876
+762915
+762915
+429876
+583947
+333039
+333039
+0
+0
+0
+241180
+104862
+41287
+428875
+0
+0
+0
+429876
+18705
+49769
+30638
+9149
+333039
+333039
+0
+333039
+0
+41287
+553319
+583947
+0
+0
+333039
+0
+312139
+1100007
+0
+0
+0
+0
+0
+333039
+0
+333039
+0
+1100007
+0
+553319
+0
+766968
+0
+766968
+766968
+766968
+0
+0
+0
+1100007
+1100007
+1100007
+0
+766968
+0
+0
+0
+0
+312139
+312139
+333039
+0
+0
+333039
+0
+333039
+312139
+333039
+1100007
+0
+1100007
+1100007
+0
+0
+0
+0
+0
+0
+0
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+19
+0
+0
+1
+** External Symbol **:766968
+1
+** External Symbol **:766968
+0
+0
+0
+1
+** External Symbol **:333040
+0
+0
+1
+** External Symbol **:871793
+1
+** External Symbol **:41287
+1
+** External Symbol **:41287
+1
+** External Symbol **:428876
+2
+** External Symbol **:1099888
+** External Symbol **:120
+0
+0
+0
+0
+
+gpu_exec.c;exec_init
+# Func Hash:
+189758052272553614
+# Num Counters:
+49
+# Counter Values:
+0
+10240
+10240
+20480
+20480
+20480
+20480
+40960
+81920
+10240
+125214
+5
+0
+5
+5
+5
+5
+0
+5
+5
+5
+5
+1100
+5
+1100
+5
+0
+0
+0
+5
+0
+5
+860
+100
+125
+5
+0
+5
+5
+0
+5
+0
+0
+0
+0
+5
+5
+5
+0
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+9
+1
+** External Symbol **:5
+1
+** External Symbol **:5
+1
+** External Symbol **:5
+1
+** External Symbol **:5
+1
+** External Symbol **:5
+1
+** External Symbol **:5
+1
+** External Symbol **:5
+1
+** External Symbol **:5
+0
+
+gpu_exec.c;exec_load
+# Func Hash:
+159676628505532054
+# Num Counters:
+9
+# Counter Values:
+14741
+14741
+14741
+14741
+14741
+14741
+14741
+0
+0
+
+gpu_exec.c;exec_present
+# Func Hash:
+1117016367302869520
+# Num Counters:
+27
+# Counter Values:
+0
+0
+250418
+125318
+125318
+0
+125318
+0
+0
+125318
+0
+125318
+0
+125209
+0
+125318
+125209
+0
+0
+0
+125209
+125209
+125209
+125209
+0
+0
+0
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+1
+0
+
+gpu_exec.c;iota_ensure
+# Func Hash:
+247229325366972648
+# Num Counters:
+8
+# Counter Values:
+0
+327680
+1355552
+5
+0
+5
+0
+5
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+2
+0
+1
+** External Symbol **:5
+
+gpu_exec.c;mem_dispatch
+# Func Hash:
+939550016985589918
+# Num Counters:
+7
+# Counter Values:
+104419
+237927
+237927
+237927
+237927
+103225
+133508
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+12
+1
+** External Symbol **:237927
+1
+** External Symbol **:237927
+1
+** External Symbol **:237927
+1
+** External Symbol **:237927
+1
+** External Symbol **:237927
+1
+** External Symbol **:237927
+1
+** External Symbol **:237927
+1
+** External Symbol **:237927
+2
+** External Symbol **:123577
+** External Symbol **:114350
+1
+** External Symbol **:237927
+1
+** External Symbol **:237927
+1
+** External Symbol **:237927
+
+gpu_exec.c;mem_note
+# Func Hash:
+1096621588571495120
+# Num Counters:
+5
+# Counter Values:
+40
+0
+0
+5
+0
+
+gpu_exec.c;mft_materialize_all
+# Func Hash:
+844982796643043921
+# Num Counters:
+4
+# Counter Values:
+8013440
+0
+0
+125210
+
+gpu_exec.c;mft_no
+# Func Hash:
+373074074912778115
+# Num Counters:
+17
+# Counter Values:
+0
+0
+0
+125210
+0
+0
+0
+0
+0
+0
+5
+0
+0
+0
+125210
+125210
+125210
+
+gpu_exec.c;mft_surf_free
+# Func Hash:
+415830271231118433
+# Num Counters:
+13
+# Counter Values:
+26
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+10
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+
+gpu_exec.c;npcb_write
+# Func Hash:
+536744759626524775
+# Num Counters:
+2
+# Counter Values:
+200226
+200226
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+2
+1
+** External Symbol **:200227
+1
+** External Symbol **:200227
+
+gpu_exec.c;npost_prep
+# Func Hash:
+191516569528565626
+# Num Counters:
+86
+# Counter Values:
+309089
+309089
+5
+18052
+309089
+0
+18052
+309089
+18052
+5
+309089
+0
+4945424
+309089
+309089
+309089
+309089
+291037
+309089
+309089
+0
+291037
+291037
+309089
+0
+309089
+102236
+0
+309089
+309089
+0
+309089
+0
+37090680
+37090680
+309089
+4945424
+4945424
+0
+4945424
+0
+18052
+291037
+4945424
+0
+291037
+4656592
+291037
+4656592
+291037
+309089
+309089
+0
+4945424
+4656592
+188801
+309089
+291037
+309089
+206853
+291037
+4656592
+291037
+291037
+4656592
+188801
+188801
+188801
+18052
+18052
+309089
+309089
+291037
+0
+0
+309089
+291037
+291037
+102236
+188801
+309089
+4945424
+4945424
+188801
+291037
+18052
+
+gpu_exec.c;prof_begin
+# Func Hash:
+651056898275042038
+# Num Counters:
+9
+# Counter Values:
+125210
+0
+0
+5
+0
+0
+0
+0
+0
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+2
+0
+0
+
+gpu_exec.c;prof_mark
+# Func Hash:
+557408301447997082
+# Num Counters:
+17
+# Counter Values:
+0
+0
+3253659
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+3253659
+0
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+8
+0
+0
+0
+0
+0
+0
+0
+0
+
+gpu_exec.c;qpc_ms
+# Func Hash:
+784007059655560962
+# Num Counters:
+2
+# Counter Values:
+1146686218
+5
+
+gpu_exec.c;raw_default
+# Func Hash:
+800363214892206559
+# Num Counters:
+11
+# Counter Values:
+30
+30
+30
+15
+0
+0
+0
+0
+0
+15
+25
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+5
+1
+** External Symbol **:30
+1
+** External Symbol **:30
+0
+1
+** External Symbol **:15
+0
+
+gpu_exec.c;rescale_copy
+# Func Hash:
+711117500797380711
+# Num Counters:
+4
+# Counter Values:
+41
+41
+10
+10
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+10
+1
+** External Symbol **:41
+1
+** External Symbol **:41
+1
+** External Symbol **:41
+1
+** External Symbol **:41
+1
+** External Symbol **:41
+1
+** External Symbol **:41
+2
+** External Symbol **:28
+** External Symbol **:13
+1
+** External Symbol **:41
+1
+** External Symbol **:41
+1
+** External Symbol **:41
+
+gpu_exec.c;set_scissor
+# Func Hash:
+212526876123949159
+# Num Counters:
+2
+# Counter Values:
+148344197
+1763691
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+1
+1
+** External Symbol **:1763691
+
+gpu_exec.c;set_viewport
+# Func Hash:
+314967299806677346
+# Num Counters:
+4
+# Counter Values:
+131716378
+1850806
+1602291
+129865572
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+1
+1
+** External Symbol **:1850806
+
+gpu_exec.c;shadow_ensure
+# Func Hash:
+1004040627348585325
+# Num Counters:
+5
+# Counter Values:
+10
+7
+7
+7
+0
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+3
+1
+** External Symbol **:7
+1
+** External Symbol **:7
+1
+** External Symbol **:7
+
+gpu_exec.c;shf_copy
+# Func Hash:
+54085582195286736
+# Num Counters:
+59
+# Counter Values:
+494769
+494769
+494769
+494769
+494769
+494769
+494769
+494769
+494769
+494769
+494769
+494769
+494769
+494769
+494769
+494769
+305973
+494769
+0
+494769
+494769
+494769
+494769
+494769
+494769
+494769
+494769
+15832608
+15832608
+494769
+15832608
+494769
+15832608
+494769
+15832608
+15832608
+494769
+15832608
+494769
+15832608
+15832608
+15832608
+15832608
+15832608
+15832608
+0
+0
+494769
+494769
+0
+494769
+0
+0
+0
+6041472
+15832608
+15832608
+290792
+392778
+
+gpu_exec.c;shf_enabled
+# Func Hash:
+56200828321269473
+# Num Counters:
+9
+# Counter Values:
+147534
+147534
+5
+147534
+0
+0
+0
+147534
+147534
+
+gpu_exec.c;shf_exec
+# Func Hash:
+234493906518424505
+# Num Counters:
+28
+# Counter Values:
+0
+0
+101981
+101981
+101981
+101981
+86810
+86810
+86810
+101981
+101981
+101981
+101981
+0
+86810
+101981
+0
+86810
+86810
+0
+5
+101981
+61876
+0
+0
+86810
+0
+15171
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+11
+1
+** External Symbol **:86810
+1
+** External Symbol **:5
+1
+** External Symbol **:101981
+1
+** External Symbol **:101981
+1
+** External Symbol **:101981
+1
+** External Symbol **:101981
+1
+** External Symbol **:101981
+1
+** External Symbol **:101981
+1
+** External Symbol **:101981
+2
+** External Symbol **:101969
+** External Symbol **:12
+1
+** External Symbol **:101981
+
+gpu_exec.c;shf_layout
+# Func Hash:
+93478050165579926
+# Num Counters:
+7
+# Counter Values:
+20480
+10240
+0
+10240
+320
+147534
+5
+
+gpu_exec.c;shf_tail
+# Func Hash:
+774340251759442023
+# Num Counters:
+60
+# Counter Values:
+203982
+203982
+0
+203982
+0
+203982
+989533
+989533
+785551
+203982
+203982
+785551
+203982
+0
+203982
+392778
+203982
+203977
+203982
+392778
+203977
+188796
+203982
+188791
+392778
+188796
+188791
+188791
+392778
+188796
+392778
+188791
+188796
+188796
+392778
+188791
+188796
+203977
+188791
+0
+188791
+188791
+188791
+188791
+188791
+0
+10
+581569
+188796
+0
+203977
+188796
+188791
+15191
+188791
+188791
+188791
+188791
+188791
+0
+
+gpu_exec.c;spec_level
+# Func Hash:
+205679653438752164
+# Num Counters:
+13
+# Counter Values:
+165892486
+165892486
+5
+165892486
+0
+35616538
+165892486
+35616538
+21454
+0
+21454
+35595084
+0
+
+gpu_exec.c;svol_ensure
+# Func Hash:
+772592733628199406
+# Num Counters:
+11
+# Counter Values:
+766968
+5
+5
+0
+0
+5
+0
+0
+5
+5
+0
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+6
+0
+0
+1
+** External Symbol **:5
+1
+** External Symbol **:5
+0
+1
+** External Symbol **:5
+
+gpu_exec.c;svol_resolve
+# Func Hash:
+690575219357547399
+# Num Counters:
+11
+# Counter Values:
+205137
+79928
+79928
+79928
+79928
+79928
+5
+79928
+79928
+0
+79928
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+7
+1
+** External Symbol **:79928
+1
+** External Symbol **:5
+1
+** External Symbol **:79928
+1
+** External Symbol **:79928
+1
+** External Symbol **:79928
+2
+** External Symbol **:79924
+** External Symbol **:4
+1
+** External Symbol **:79928
+
+gpu_exec.c;target_free
+# Func Hash:
+189656113758617567
+# Num Counters:
+15
+# Counter Values:
+159
+20
+113
+20
+20
+20
+93
+93
+93
+93
+93
+0
+0
+0
+113
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+14
+1
+** External Symbol **:20
+1
+** External Symbol **:113
+1
+** External Symbol **:20
+1
+** External Symbol **:20
+1
+** External Symbol **:20
+1
+** External Symbol **:93
+1
+** External Symbol **:93
+1
+** External Symbol **:93
+1
+** External Symbol **:93
+1
+** External Symbol **:93
+0
+0
+0
+1
+** External Symbol **:113
+
+gpu_exec.c;target_realloc
+# Func Hash:
+186086368651256027
+# Num Counters:
+36
+# Counter Values:
+4608
+4608
+247
+144
+133
+87
+103
+103
+0
+30
+46
+0
+0
+103
+103
+103
+103
+41
+103
+92
+30
+0
+0
+31
+30
+30
+30
+30
+31
+10
+0
+0
+0
+0
+30
+0
+# Num Value Kinds:
+2
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+15
+1
+** External Symbol **:103
+1
+** External Symbol **:30
+1
+** External Symbol **:103
+0
+0
+1
+** External Symbol **:103
+1
+** External Symbol **:103
+1
+** External Symbol **:103
+1
+** External Symbol **:103
+1
+** External Symbol **:103
+1
+** External Symbol **:30
+1
+** External Symbol **:30
+1
+** External Symbol **:30
+1
+** External Symbol **:30
+1
+** External Symbol **:30
+# ValueKind = IPVK_MemOPSize:
+1
+# NumValueSites:
+1
+2
+512:62
+128:41
+
+gpu_exec.c;td_ensure
+# Func Hash:
+742655264260028311
+# Num Counters:
+10
+# Counter Values:
+163541621
+163541621
+5
+0
+5
+0
+5
+0
+0
+0
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+4
+1
+** External Symbol **:5
+0
+0
+0
+
+gpu_exec.c;td_r2
+# Func Hash:
+866914541942430574
+# Num Counters:
+31
+# Counter Values:
+0
+0
+119606806
+42579268
+4717
+283973753
+121787679
+283970602
+121787679
+162186074
+261545568
+162186074
+162186074
+162186074
+2183
+162186074
+4717
+162178206
+0
+7868
+0
+0
+3151
+3151
+0
+0
+162186074
+162186074
+162186074
+3151
+0
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+11
+1
+** External Symbol **:7868
+1
+** External Symbol **:7868
+1
+** External Symbol **:7868
+1
+** External Symbol **:7868
+1
+** External Symbol **:7868
+1
+** External Symbol **:7868
+1
+** External Symbol **:7868
+1
+** External Symbol **:7868
+2
+** External Symbol **:7863
+** External Symbol **:5
+1
+** External Symbol **:7868
+1
+** External Symbol **:7868
+
+gpu_exec.c;td_run
+# Func Hash:
+279401486931569749
+# Num Counters:
+9
+# Counter Values:
+2964787
+0
+252386
+244775
+244775
+2964787
+2964787
+109825
+6095
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+12
+1
+** External Symbol **:109825
+1
+** External Symbol **:109825
+1
+** External Symbol **:109825
+1
+** External Symbol **:109825
+1
+** External Symbol **:109825
+1
+** External Symbol **:109825
+1
+** External Symbol **:244775
+1
+** External Symbol **:244775
+2
+** External Symbol **:244626
+** External Symbol **:149
+1
+** External Symbol **:109825
+1
+** External Symbol **:109825
+1
+** External Symbol **:109825
+
+gpu_exec.c;td_state
+# Func Hash:
+616859554402751692
+# Num Counters:
+32
+# Counter Values:
+0
+0
+8509705
+1344105
+0
+0
+239909
+11452606
+1598796
+9853810
+10327622
+1598796
+9853810
+8739019
+9853810
+9853810
+806
+9853810
+1124984
+408399
+8320427
+0
+0
+0
+239909
+244775
+0
+4866
+4866
+0
+0
+4866
+
+gpu_exec.c;td_ver
+# Func Hash:
+928018419125692073
+# Num Counters:
+6
+# Counter Values:
+352497193
+227792110
+128116511
+43923373
+0
+0
+
+gpu_exec.c;thread_ms
+# Func Hash:
+238984481110885645
+# Num Counters:
+3
+# Counter Values:
+5576023
+375631
+5
+
+gpu_exec.c;unbind_all
+# Func Hash:
+1108079925070882919
+# Num Counters:
+2
+# Counter Values:
+1042197
+1042197
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+3
+1
+** External Symbol **:1042201
+1
+** External Symbol **:1042201
+1
+** External Symbol **:1042201
+
+gpu_exec.c;view_srv
+# Func Hash:
+252792767093580081
+# Num Counters:
+14
+# Counter Values:
+21454
+21454
+21454
+21454
+21454
+0
+0
+21454
+0
+21454
+0
+0
+0
+0
+
+gpu_exec.c;zcb_set
+# Func Hash:
+536744762437996290
+# Num Counters:
+2
+# Counter Values:
+704726
+704726
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+2
+1
+** External Symbol **:704727
+1
+** External Symbol **:704727
+
+gpu_exec.c;zp_written
+# Func Hash:
+287486625135879572
+# Num Counters:
+6
+# Counter Values:
+7547392
+235856
+14741
+14741
+14741
+14741
+
+gpu_exec.c;zquad
+# Func Hash:
+19426267034606947
+# Num Counters:
+13
+# Counter Values:
+0
+0
+248515
+248515
+248509
+248515
+248515
+130068
+0
+248515
+248515
+248515
+248515
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+11
+0
+1
+** External Symbol **:248515
+1
+** External Symbol **:130068
+1
+** External Symbol **:248515
+1
+** External Symbol **:248515
+1
+** External Symbol **:248509
+1
+** External Symbol **:248515
+1
+** External Symbol **:248515
+1
+** External Symbol **:248515
+2
+** External Symbol **:247774
+** External Symbol **:741
+1
+** External Symbol **:248515
+
+gpu_exec.c;zt_find
+# Func Hash:
+331779888424153029
+# Num Counters:
+8
+# Counter Values:
+1361182854
+34508879
+736551
+704726
+5691321
+2981599
+232597303
+149666416
+
+gpu_exec.c;zt_mark
+# Func Hash:
+917515342319605951
+# Num Counters:
+8
+# Counter Values:
+75664754
+745291473
+116790882
+75664754
+75664754
+75664754
+75664754
+0
+
+gpu_exec.c;zt_upload
+# Func Hash:
+807698259983204351
+# Num Counters:
+3
+# Counter Values:
+704726
+497541
+0
+# Num Value Kinds:
+2
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+1
+2
+** External Symbol **:704528
+** External Symbol **:199
+# ValueKind = IPVK_MemOPSize:
+1
+# NumValueSites:
+1
+1
+512:704727
+
+gpu_exec_frame
+# Func Hash:
+882790827804984781
+# Num Counters:
+1192
+# Counter Values:
+150648633
+104021
+0
+742385
+0
+0
+0
+0
+86810
+0
+15191
+5
+5
+5
+5
+0
+0
+0
+0
+0
+0
+120298
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+9853810
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+72726581
+359968
+1319424
+72726581
+359968
+0
+0
+8138715
+0
+0
+108941952
+467759
+467759
+0
+0
+0
+0
+0
+151610020
+151607770
+5455142
+151607929
+150962634
+150837425
+0
+60987904
+53364416
+151610020
+0
+0
+0
+0
+151607928
+2274870
+150837425
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+118767
+0
+0
+0
+0
+0
+0
+0
+0
+0
+148231179
+0
+0
+0
+0
+0
+150648633
+0
+0
+0
+0
+369429
+0
+133
+26
+148626158
+151478695
+10308
+0
+0
+0
+766968
+0
+0
+0
+148624084
+148624084
+148624084
+148624084
+0
+0
+0
+0
+531659
+531659
+0
+0
+2964787
+0
+0
+0
+0
+0
+0
+129047783
+1145780844
+0
+0
+64138521
+148624083
+1145780834
+117172
+148624084
+148624084
+148624083
+63517184
+26
+148623939
+148626158
+50560108
+10308
+133
+0
+0
+0
+0
+5
+148092425
+148092425
+147200021
+0
+0
+0
+0
+0
+0
+531659
+133
+0
+0
+0
+25
+86810
+18052
+0
+0
+87
+0
+0
+0
+0
+0
+3404436
+0
+0
+30362
+0
+125214
+0
+0
+125210
+0
+0
+0
+17796804
+0
+92
+0
+0
+0
+0
+0
+0
+0
+0
+145361325
+147200020
+125209
+0
+0
+102216
+125211
+0
+29
+5
+125210
+0
+125210
+125210
+0
+117172
+147200020
+147202092
+680158
+86810
+30362
+125210
+0
+120298
+0
+46
+0
+0
+5
+5
+5
+22994
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+1905872
+1667638
+0
+125204
+0
+0
+0
+125210
+0
+0
+0
+0
+0
+0
+117172
+0
+0
+0
+0
+0
+0
+0
+0
+0
+5710039
+0
+15171
+9
+120298
+125210
+0
+0
+0
+0
+17796804
+0
+662106
+133
+26
+104021
+10308
+0
+369429
+10
+428875
+15191
+125209
+14746
+14741
+15191
+0
+0
+0
+0
+0
+0
+0
+0
+0
+86810
+0
+0
+120298
+125201
+5
+0
+0
+0
+5
+125210
+125210
+5
+5
+125210
+0
+0
+0
+0
+0
+0
+0
+15171
+0
+9
+9
+0
+0
+117172
+207708752
+0
+125210
+207708752
+0
+0
+0
+0
+0
+20
+0
+0
+10
+104021
+14746
+0
+369429
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+86810
+9
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+10
+26
+1230337
+1230337
+1230337
+0
+14746
+0
+0
+0
+148231181
+369430
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+120298
+107380
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+17796804
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+117172
+207708752
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+10
+1230337
+1230337
+0
+0
+1230337
+14746
+14746
+87
+87
+87
+0
+0
+0
+15201
+369430
+0
+5
+125210
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+120298
+0
+0
+0
+0
+0
+486432
+0
+0
+0
+0
+0
+26
+41
+92
+41
+15201
+15201
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+10
+0
+0
+0
+0
+0
+0
+92
+125210
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+1230337
+14746
+0
+0
+17796804
+0
+0
+0
+147097921
+0
+0
+0
+1984912
+0
+0
+0
+0
+0
+0
+0
+117172
+19474736
+486432
+0
+0
+0
+0
+0
+0
+0
+0
+1230337
+31
+46
+0
+15201
+15201
+15201
+243175
+369429
+245372
+119117
+243174
+0
+0
+0
+0
+0
+0
+10
+0
+0
+0
+120298
+0
+0
+0
+148095682
+46
+125210
+0
+486432
+0
+0
+0
+0
+0
+0
+0
+104419
+0
+0
+0
+0
+0
+0
+0
+5
+369429
+5
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+120298
+243175
+0
+0
+17796804
+0
+0
+0
+0
+0
+117172
+19474736
+120298
+486432
+0
+0
+0
+0
+0
+46
+15201
+119117
+0
+0
+0
+0
+0
+10
+0
+243174
+0
+0
+124057
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+5
+126255
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+100645
+243174
+119117
+119117
+0
+0
+17796804
+0
+0
+0
+0
+0
+0
+0
+10
+104419
+104419
+0
+0
+0
+0
+0
+0
+117172
+0
+0
+0
+120298
+102236
+102236
+0
+0
+15201
+0
+0
+0
+0
+0
+0
+0
+0
+0
+243174
+0
+0
+0
+124057
+0
+0
+17796804
+0
+0
+0
+124057
+0
+21836
+0
+0
+0
+0
+0
+0
+0
+6290332
+0
+120298
+1100007
+119117
+0
+0
+0
+0
+124057
+0
+0
+9026
+0
+0
+101991
+102236
+6897955
+0
+0
+0
+15201
+124057
+0
+0
+0
+0
+0
+3563478
+146995675
+21836
+0
+0
+0
+0
+0
+101991
+0
+0
+0
+0
+0
+11
+6897955
+0
+0
+0
+0
+0
+124057
+0
+15201
+0
+0
+0
+0
+0
+0
+101991
+11
+92965
+0
+0
+124057
+15201
+0
+0
+6155
+0
+0
+0
+0
+0
+0
+0
+0
+119117
+0
+0
+0
+0
+0
+0
+0
+101991
+0
+10474
+15201
+0
+0
+0
+0
+0
+0
+0
+119117
+0
+0
+0
+5
+0
+0
+0
+0
+0
+101991
+0
+0
+0
+0
+0
+0
+15191
+0
+0
+0
+0
+101991
+0
+0
+101991
+0
+0
+0
+0
+915476
+101991
+0
+0
+915476
+0
+101991
+813485
+0
+735701
+101991
+0
+726675
+0
+0
+0
+101991
+101991
+0
+0
+0
+101991
+0
+0
+0
+0
+86810
+0
+0
+0
+86810
+86810
+0
+0
+0
+0
+0
+86810
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+86810
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+125211
+5710324
+1133005
+0
+148624145
+148624145
+148624145
+148624145
+5710039
+0
+125210
+125210
+0
+1288608
+5
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+86810
+0
+101991
+86810
+0
+15191
+15191
+15191
+0
+0
+41
+78
+0
+0
+0
+0
+0
+0
+0
+243175
+124057
+0
+0
+119118
+119117
+119117
+0
+0
+119117
+119117
+0
+119117
+21836
+0
+124057
+124057
+243174
+0
+119117
+126255
+0
+10
+0
+0
+0
+15201
+0
+0
+15201
+15201
+486432
+486432
+486432
+486432
+486432
+148095682
+148095682
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+148231181
+5710039
+326525
+326525
+0
+0
+0
+1230337
+1230337
+1230337
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+# Num Value Kinds:
+2
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+157
+1
+** External Symbol **:125204
+1
+** External Symbol **:1145892125
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+2
+** External Symbol **:19314
+** External Symbol **:2522
+2
+** External Symbol **:124048
+** External Symbol **:9
+2
+** External Symbol **:119084
+** External Symbol **:34
+2
+** External Symbol **:124036
+** External Symbol **:21
+0
+0
+1
+** External Symbol **:10
+1
+** External Symbol **:5
+1
+** External Symbol **:15201
+1
+** External Symbol **:15201
+1
+** External Symbol **:15201
+1
+** External Symbol **:15201
+1
+** External Symbol **:15201
+1
+** External Symbol **:15201
+1
+** External Symbol **:15201
+1
+** External Symbol **:15201
+2
+** External Symbol **:15181
+** External Symbol **:20
+1
+** External Symbol **:15201
+1
+** External Symbol **:15201
+0
+1
+** External Symbol **:120299
+1
+** External Symbol **:120299
+1
+** External Symbol **:120299
+1
+** External Symbol **:120299
+1
+** External Symbol **:120299
+2
+** External Symbol **:120241
+** External Symbol **:58
+1
+** External Symbol **:120299
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+1
+** External Symbol **:20
+1
+** External Symbol **:125210
+1
+** External Symbol **:125210
+# ValueKind = IPVK_MemOPSize:
+1
+# NumValueSites:
+2
+16
+33:50240
+65:25848
+3:21455
+17:21365
+1:1355
+64:1255
+32:1163
+16:600
+129:594
+9:585
+257:518
+0:164
+128:44
+2:20
+256:5
+513:1
+1
+513:102218
+
+gpu_exec_frame_done
+# Func Hash:
+974670604982964639
+# Num Counters:
+8
+# Counter Values:
+0
+0
+0
+0
+0
+0
+125209
+0
+
+gpu_exec_release
+# Func Hash:
+566176759701820615
+# Num Counters:
+76
+# Counter Values:
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+5
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+62
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+
+gpu_exec_reset
+# Func Hash:
+784007056844089447
+# Num Counters:
+2
+# Counter Values:
+5
+5
+
+gpu_front.c;a16_copy_prim
+# Func Hash:
+596847748166705811
+# Num Counters:
+23
+# Counter Values:
+9792384
+9792384
+9792384
+9792384
+9792384
+9792384
+0
+9792384
+9792384
+0
+0
+9792384
+9792384
+9792384
+9792384
+9792384
+9792384
+9792384
+9792384
+9792384
+9792384
+9792384
+9792384
+
+gpu_front.c;alias_prim
+# Func Hash:
+706456874520395475
+# Num Counters:
+31
+# Counter Values:
+512468096
+256234048
+303767912
+102004
+303665908
+303665908
+151883956
+9792384
+9588376
+0
+9792384
+9588376
+9792384
+9792384
+0
+0
+204008
+102004
+0
+6324248
+0
+9588376
+9588376
+9588376
+9588376
+102004
+512468096
+256234048
+9588376
+0
+303869916
+
+gpu_front.c;alias_prim_drawn
+# Func Hash:
+631255614795167881
+# Num Counters:
+6
+# Counter Values:
+9792384
+9792384
+306012
+9792384
+9792384
+9792384
+
+gpu_front.c;ar_alloc
+# Func Hash:
+1075941066414778740
+# Num Counters:
+5
+# Counter Values:
+140
+184840166
+123
+0
+60
+# Num Value Kinds:
+1
+# ValueKind = IPVK_MemOPSize:
+1
+# NumValueSites:
+1
+13
+33:149874362
+64:21915892
+128:5521992
+513:2148405
+129:1668817
+17:1418624
+32:1233260
+257:689237
+16:259323
+9:99557
+65:11029
+256:10
+512:9
+
+gpu_front.c;ar_reserve
+# Func Hash:
+290495009712007540
+# Num Counters:
+5
+# Counter Values:
+173
+1345993806
+203
+0
+30
+
+gpu_front.c;arect_overlap
+# Func Hash:
+948827211525875209
+# Num Counters:
+9
+# Counter Values:
+5773426400
+721678300
+32845288
+32845288
+32845288
+32845288
+3468136
+102004
+102004
+
+gpu_front.c;atst_count
+# Func Hash:
+187771964815010722
+# Num Counters:
+9
+# Counter Values:
+291924599
+0
+0
+0
+0
+0
+0
+291924599
+204256194
+
+gpu_front.c;close_alias
+# Func Hash:
+238984481799490044
+# Num Counters:
+3
+# Counter Values:
+3619352
+204008
+0
+
+gpu_front.c;close_draw
+# Func Hash:
+601112713630851947
+# Num Counters:
+39
+# Counter Values:
+0
+0
+0
+0
+594567260
+0
+0
+0
+158785266
+0
+0
+0
+0
+0
+0
+0
+2063147
+11486725
+147217500
+1424315
+0
+0
+147217500
+0
+0
+0
+0
+0
+0
+147217500
+3936541
+5711126
+0
+0
+0
+0
+0
+0
+0
+
+gpu_front.c;close_run
+# Func Hash:
+1096621587247895656
+# Num Counters:
+5
+# Counter Values:
+1715740
+4381372
+428935
+0
+102364
+
+gpu_front.c;ct16_blocks
+# Func Hash:
+856435871078979844
+# Num Counters:
+6
+# Counter Values:
+1096747008
+1096747008
+19584768
+0
+1096747008
+1096747008
+
+gpu_front.c;emit_linepix
+# Func Hash:
+332480061916698439
+# Num Counters:
+36
+# Counter Values:
+750746690
+748557980
+747111945
+745236629
+743484134
+736098176
+321442829
+235506289
+733960870
+0
+460993734
+0
+193797572
+733960870
+0
+736098176
+733960870
+0
+0
+0
+0
+0
+0
+0
+0
+144177598
+285198295
+285198295
+0
+0
+0
+0
+0
+0
+0
+0
+
+gpu_front.c;feedback_check
+# Func Hash:
+798733567884862143
+# Num Counters:
+5
+# Counter Values:
+1632064
+102004
+0
+101994
+10
+
+gpu_front.c;fill_add
+# Func Hash:
+161792433553540450
+# Num Counters:
+34
+# Counter Values:
+0
+6976384
+436024
+3409424
+3916336
+6976384
+6540360
+0
+0
+6540360
+0
+6951312
+6540360
+434457
+0
+434457
+0
+434457
+0
+213089
+243204
+434457
+434457
+434457
+6540360
+6540360
+6540360
+436024
+3566960
+6976384
+6951312
+0
+0
+0
+
+gpu_front.c;fr_prim
+# Func Hash:
+1010188242327238949
+# Num Counters:
+788
+# Counter Values:
+691652793
+0
+0
+0
+4463270640
+164102725
+33361
+271994
+1457
+0
+102004
+12128783
+6149
+0
+0
+14253700056
+0
+1117993560
+110984262
+1632064
+0
+1031040
+2492161768
+2080065445
+1979232
+9792384
+276747352
+90777742
+20378118
+0
+3578
+1426004
+132548653
+90767602
+0
+0
+185969610
+128894409
+173
+218
+1214808724
+0
+0
+1703143021
+691652793
+2375616676
+89378208
+199915708
+0
+0
+0
+396780552
+0
+412096323
+10407917
+10717444
+11498500
+4408224
+5951455
+0
+0
+380847110
+41688154
+41688154
+5589554
+3416
+0
+205838
+0
+0
+0
+0
+0
+0
+46432950
+46285393
+479873896
+148818941
+968347518
+397871335
+64440
+0
+19356140
+26
+362650
+362650
+18925106
+147557
+180562
+362650
+6149
+336989
+35177
+356501
+336989
+356898
+46285393
+362650
+12954
+24298
+45645
+19356140
+167300
+15926
+6149
+185969611
+0
+170403814
+306812
+356516
+13403680
+0
+5
+5
+12559619
+543691576
+371052
+0
+0
+6149
+221141562
+455552093
+221141562
+215937361
+79979591
+24455
+0
+0
+12954
+0
+5752
+0
+0
+144177597
+418629110
+477850927
+0
+0
+0
+556251195
+0
+9777
+0
+0
+0
+24298
+44001
+212984
+1870622
+20683208
+475119135
+455339109
+455339109
+207460231
+219161010
+213958129
+0
+13403680
+0
+12954
+0
+0
+7512
+317704
+19285
+487643311
+487643311
+0
+0
+0
+207736562
+221141562
+1320
+0
+74756739
+322782506
+20683208
+3556401
+382
+0
+286368926
+170270003
+170270003
+133811
+150647
+0
+0
+415062150
+13403680
+221141562
+482168177
+3816664
+4098398
+3080763
+5078444
+5586138
+24455
+15672
+27915
+12954
+13403680
+445632407
+410011486
+221141562
+410011486
+445632407
+13403680
+88466362
+221141562
+0
+204149960
+207736562
+0
+0
+155547401
+204008
+0
+0
+152336629
+0
+306012
+5521698
+9777
+3930
+20683208
+9792384
+9792384
+322782506
+387950510
+79690759
+62556285
+397742894
+387950510
+0
+141150020
+0
+149076274
+62556285
+87697002
+43183854
+10601992
+288832
+0
+147710987
+322782506
+9792384
+79690759
+79979591
+457039276
+102421313
+38041630
+7248069
+0
+4044
+0
+0
+0
+0
+0
+382970932
+13403680
+13403680
+0
+0
+0
+13403680
+0
+7564530
+3667364
+5
+15079
+3578
+0
+209368626
+9792384
+428935
+387950510
+5
+387950509
+149076274
+149076274
+0
+26092406
+107098748
+171809
+5017
+0
+482168177
+171
+4979657
+0
+0
+31
+400219102
+3916336
+87697002
+74705046
+333085
+109669371
+20022748
+17887460
+42875928
+17977951
+13403680
+74705046
+204148660
+144177597
+0
+1632064
+5521698
+0
+79979527
+0
+400219102
+79690759
+79550656
+917598
+797111
+2834410
+800221
+147710987
+40584834
+0
+0
+11486749
+3611296
+0
+11486725
+74705046
+0
+4098398
+27915
+3611296
+0
+0
+382970901
+79979591
+0
+3611296
+474239631
+0
+64440
+225706
+5054420
+144213587
+147710987
+288832
+207733620
+0
+9792384
+1979232
+171584
+1632064
+9792384
+482168177
+1979232
+207737882
+0
+0
+0
+1632064
+352586
+0
+87697002
+4925758
+0
+13403680
+74705046
+0
+0
+6976384
+397871400
+19456166
+204058286
+3611296
+79690759
+3268032
+89853684
+20683208
+0
+134256770
+225706
+1979232
+0
+3916336
+8507488
+0
+0
+9920826
+0
+201894940
+0
+288832
+74704982
+0
+0
+13706824
+0
+27915
+0
+482057173
+4024
+87697002
+74705046
+207736562
+307633868
+132260184
+132260184
+132260184
+132260184
+123856925
+0
+462029557
+7706150
+4481341
+0
+204052248
+0
+2784880
+0
+322782506
+0
+0
+199915708
+0
+0
+0
+0
+307633868
+15148638
+79690709
+0
+230143942
+0
+482057173
+0
+87697002
+51398157
+50138369
+53804164
+84050836
+98097166
+0
+0
+0
+0
+12252619
+0
+380847111
+203973498
+18511
+231512562
+229943247
+232827986
+270164934
+291071292
+0
+0
+0
+0
+0
+0
+72415061
+91269944
+91269944
+91269944
+92839259
+92839259
+92839259
+89954520
+89954520
+89954520
+52617572
+52617572
+52617572
+31711214
+31711214
+31711214
+0
+307633868
+307633868
+307633868
+0
+5040814
+0
+0
+0
+0
+0
+0
+0
+4834976
+87697002
+0
+0
+0
+0
+243091811
+203921218
+10313662
+10313662
+10313662
+75873002
+18511
+231512562
+229943247
+232827986
+270164934
+291071292
+0
+0
+0
+91269944
+91269944
+91269944
+92839259
+92839259
+92839259
+89954520
+89954520
+89954520
+52617572
+52617572
+52617572
+31711214
+31711214
+31711214
+0
+307633868
+307633868
+307633868
+0
+0
+0
+0
+0
+0
+0
+0
+0
+232928886
+75873002
+0
+0
+0
+10313662
+10313662
+10313662
+0
+0
+0
+87697002
+0
+18511
+9376
+0
+64
+75873002
+0
+0
+75873002
+57570572
+75873002
+62556285
+62556285
+62556285
+62556285
+62556285
+57570572
+4985713
+62556285
+0
+0
+0
+40106790
+46285393
+39977867
+0
+0
+347862
+1318
+0
+382
+42745
+12954
+7512
+225
+171809
+171809
+327473
+322231
+150647
+176826
+5017
+5017
+171584
+171584
+324996
+305355
+0
+6149
+343399
+9376
+12954
+352586
+12954
+168998
+1864046
+100644323
+100644323
+165270184
+161494775
+164796934
+155428121
+9982962
+3929328
+3929328
+42652908
+1320
+209368626
+207736562
+207736562
+0
+102961760
+487643312
+0
+0
+102421313
+38041630
+0
+0
+147710987
+0
+0
+0
+0
+0
+0
+211349178
+0
+0
+79979591
+0
+0
+0
+0
+0
+171
+0
+0
+0
+0
+492204
+167988
+2505375
+2223894
+5053100
+507694
+5405680
+5586138
+5586138
+1487740
+0
+5280126
+306012
+102004
+4140168
+5586138
+0
+5586138
+0
+1632064
+382050031
+477850928
+144177598
+1979232
+0
+256580923
+89771975
+32090078
+154939979
+154939979
+9792384
+13405000
+112414
+0
+322782506
+79979591
+0
+0
+0
+87697002
+0
+0
+0
+0
+769360
+87697002
+79550656
+5274545
+5274545
+243091747
+147710987
+0
+0
+62556285
+390025483
+477722485
+147710987
+146598294
+0
+0
+0
+470051155
+0
+19581478
+128506871
+3612616
+343264
+343264
+0
+0
+176601382
+180212678
+180216890
+180216890
+0
+322782506
+13405000
+0
+13403680
+13403680
+0
+3611296
+74705046
+0
+322782506
+1963520353
+380016608
+229833253
+255385713
+258445194
+6056447
+7328532
+7629478
+4834976
+66164534
+70369751
+70064411
+231512562
+67109394
+71957821
+71239098
+229943247
+64659176
+67380745
+68679241
+232827986
+38233307
+42773118
+40279651
+270164934
+16726908
+20581464
+24184083
+291071292
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+13403680
+# Num Value Kinds:
+2
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+2
+0
+0
+# ValueKind = IPVK_MemOPSize:
+1
+# NumValueSites:
+1
+7
+8:48754443
+16:30580221
+65:20993151
+33:19690307
+17:11374650
+64:9299021
+32:8127148
+
+gpu_front.c;fr_r2
+# Func Hash:
+170957022131388415
+# Num Counters:
+1
+# Counter Values:
+1521037
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+1
+1
+gpu_r2front.c;fr_r2_hint:1521037
+
+gpu_front.c;fr_reset
+# Func Hash:
+784007056844089447
+# Num Counters:
+2
+# Counter Values:
+10
+0
+
+gpu_front.c;fr_tex0
+# Func Hash:
+252792766347874587
+# Num Counters:
+13
+# Counter Values:
+117707983
+1230514
+27247853
+117174945
+1120698
+89927092
+0
+117098499
+0
+0
+0
+11667838
+11667838
+
+gpu_front.c;fr_xfer_data
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+1749540
+
+gpu_front.c;fr_xfer_start
+# Func Hash:
+798733565348961812
+# Num Counters:
+5
+# Counter Values:
+1749540
+0
+0
+0
+1749540
+
+gpu_front.c;sb_prim
+# Func Hash:
+1121131145479704839
+# Num Counters:
+121
+# Counter Values:
+0
+0
+0
+0
+0
+0
+0
+0
+48646074
+0
+4925758
+0
+0
+0
+0
+0
+0
+3508281228
+0
+0
+1731168523
+3467122598
+0
+0
+0
+0
+0
+1659574023
+0
+41158630
+0
+0
+0
+1735954075
+0
+169574145
+0
+6931238
+0
+0
+0
+40074042
+0
+0
+0
+0
+0
+1390781640
+169715260
+169715260
+0
+0
+0
+0
+0
+1169427076
+1241599779
+0
+0
+0
+40584834
+0
+1236674021
+150254205
+150254205
+150254205
+150254205
+0
+0
+0
+0
+0
+0
+5830918
+0
+0
+5805131
+0
+0
+0
+0
+112185270
+112202062
+114902073
+0
+115406881
+5
+0
+0
+0
+5762669
+0
+34479343
+0
+0
+0
+0
+0
+0
+0
+57974571
+112185270
+61529683
+112202062
+57103201
+114902073
+58013614
+169574145
+8073567
+164922348
+0
+0
+0
+0
+0
+0
+0
+0
+0
+157363167
+157363167
+
+gpu_front.c;sb_span
+# Func Hash:
+319113596878873890
+# Num Counters:
+14
+# Counter Values:
+1513212484
+1503197900
+14940342
+1241599779
+1237593774
+1237593774
+1223857255
+10883190
+98162255
+9182951
+9420353
+1237593774
+1237261238
+299394641
+
+gpu_front.c;sink_frame
+# Func Hash:
+107906898142390375
+# Num Counters:
+4
+# Counter Values:
+125221
+125221
+0
+125221
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+1
+1
+gpu_submit_sink:125221
+
+gpu_front.c;tex_used_alpha
+# Func Hash:
+128035615662535521
+# Num Counters:
+20
+# Counter Values:
+2208521728
+2754176
+140281344
+32072632
+776662
+931262
+4442224
+19456166
+547974
+547974
+547974
+547974
+547568
+506594
+36035
+506188
+545968
+504588
+41380
+0
+
+gpu_front.c;texel_rect
+# Func Hash:
+1070887353010293089
+# Num Counters:
+27
+# Counter Values:
+26810000
+0
+423
+623209263
+423
+221141562
+207736562
+209604337
+207736562
+11536862
+13405000
+26810000
+13405000
+26810000
+0
+0
+0
+0
+207736199
+207736199
+623209686
+623209686
+349148316
+350648620
+389927165
+306051894
+207736199
+
+gpu_front.c;view_read
+# Func Hash:
+1063705160269360465
+# Num Counters:
+3
+# Counter Values:
+9792384
+9792384
+3611296
+
+gpu_front.c;wrap_range
+# Func Hash:
+44185906045817225
+# Num Counters:
+12
+# Counter Values:
+0
+20079313
+0
+422203811
+0
+158975636
+158975636
+13833898
+0
+0
+0
+0
+
+gpu_front_arena_bytes
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+216
+
+gpu_front_detach
+# Func Hash:
+391331301392933127
+# Num Counters:
+6
+# Counter Values:
+751308
+125218
+125208
+10
+0
+0
+
+gpu_front_release
+# Func Hash:
+798733565071200204
+# Num Counters:
+4
+# Counter Values:
+0
+125209
+125209
+0
+
+gpu_front_set_mem_reader
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+5
+
+gpu_front_set_sink
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+5
+
+gpu_front_start
+# Func Hash:
+95820317245755550
+# Num Counters:
+13
+# Counter Values:
+15
+5120
+5
+0
+0
+0
+0
+5
+5
+0
+5
+0
+0
+
+gpu_front_take_frames
+# Func Hash:
+159605682339839999
+# Num Counters:
+1
+# Counter Values:
+249979
+# Num Value Kinds:
+1
+# ValueKind = IPVK_MemOPSize:
+1
+# NumValueSites:
+2
+2
+0:125222
+513:124757
+1
+0:249979
+
+gpu_front_thread_punts
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+125230
+
+gpu_front_vblank_display
+# Func Hash:
+146835647075900052
+# Num Counters:
+2
+# Counter Values:
+125222
+0
+
+gpu_front_zbound
+# Func Hash:
+526705731750239178
+# Num Counters:
+24
+# Counter Values:
+0
+5074865
+307633868
+15223365
+307633868
+307633868
+5074865
+307633868
+5074865
+5074865
+5074865
+5074865
+5074865
+5074455
+5074865
+5074865
+5074865
+34786269
+3936760
+3924445
+3963631
+240
+410
+5074455
+
+gpu_fthread.c;commit
+# Func Hash:
+287486628168582528
+# Num Counters:
+6
+# Counter Values:
+6750076839
+1004807446
+1004807446
+1474828
+1474828
+31073
+
+gpu_fthread.c;done_rec
+# Func Hash:
+414921810068527445
+# Num Counters:
+9
+# Counter Values:
+0
+1440140724
+1004773532
+1004773532
+1003297967
+0
+623938
+0
+0
+
+gpu_fthread.c;fthread_main
+# Func Hash:
+982144990230983551
+# Num Counters:
+38
+# Counter Values:
+1004773536
+232285
+1004773532
+19698524
+0
+0
+0
+10992
+42529
+232285
+0
+42519
+1807531455
+72652777
+659981930
+613728254
+408293307
+1197379724
+1004773532
+0
+0
+0
+666206160
+186716652
+1749540
+1749540
+1749540
+27247853
+117707983
+10
+1521037
+125221
+0
+1521037
+5
+19741054
+0
+0
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+7
+1
+gpu_front.c;fr_prim:666206516
+1
+gpu_front.c;fr_xfer_start:1749540
+1
+gpu_front.c;fr_xfer_data:1749540
+1
+gpu_front.c;fr_tex0:117707983
+1
+gpu_front.c;fr_reset:10
+1
+gpu_front.c;fr_r2:1521037
+0
+
+gpu_fthread.c;px_prim
+# Func Hash:
+487672446986624177
+# Num Counters:
+25
+# Counter Values:
+4789683080
+3469717698
+2125780110
+2272296928
+1197420770
+1197420770
+1654817240
+610175083
+1502380024
+1350088180
+261232386
+666229556
+0
+404997175
+404997175
+404997175
+404997175
+404997175
+404997175
+404997175
+404997175
+404997175
+475136733
+0
+152667410
+
+gpu_fthread.c;px_r2
+# Func Hash:
+599005161843770734
+# Num Counters:
+12
+# Counter Values:
+417131
+1521105
+0
+1103974
+1103974
+1103974
+1103974
+1103974
+1103974
+1103974
+1103974
+1103974
+
+gpu_fthread.c;px_reset
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+10
+
+gpu_fthread.c;px_tex0
+# Func Hash:
+928018420812120175
+# Num Counters:
+6
+# Counter Values:
+7499431616
+659997557
+117711673
+117178619
+27248911
+6839434059
+
+gpu_fthread.c;px_xfer_data
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+1749570
+
+gpu_fthread.c;px_xfer_start
+# Func Hash:
+146835646533373009
+# Num Counters:
+3
+# Counter Values:
+0
+1749570
+1749570
+
+gpu_fthread.c;reserve
+# Func Hash:
+436124197317092870
+# Num Counters:
+14
+# Counter Values:
+0
+0
+0
+14545
+0
+0
+0
+0
+0
+0
+1004807446
+1004807446
+10992
+10992
+
+gpu_fthread.c;send_blocks
+# Func Hash:
+290495007029879660
+# Num Counters:
+5
+# Counter Values:
+72655123
+1749570
+787337140
+1749570
+787336859
+
+gpu_fthread.c;send_state
+# Func Hash:
+307006549510714633
+# Num Counters:
+18
+# Counter Values:
+6802887434
+1022053466
+8896083544
+261649511
+74927261
+186722255
+261241483
+261241483
+261241483
+260380668
+95932538
+95932538
+95932538
+95761353
+14676917697
+613747423
+75015473
+186634043
+# Num Value Kinds:
+1
+# ValueKind = IPVK_MemOPSize:
+1
+# NumValueSites:
+1
+11
+65:164914022
+129:16776671
+16:2108851
+64:1168503
+257:519475
+32:395285
+128:325564
+33:298271
+256:127403
+0:88212
+513:5
+
+gpu_get_caps
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+5
+
+gpu_hw.c;dcmp
+# Func Hash:
+382993475055910911
+# Num Counters:
+2
+# Counter Values:
+4898594
+2297659
+
+gpu_hw.c;display_kx
+# Func Hash:
+483274750962026231
+# Num Counters:
+10
+# Counter Values:
+0
+125227
+125227
+5
+0
+125227
+0
+0
+0
+0
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+1
+1
+ps2_runtime.c;picture_aspect:125227
+
+gpu_hw.c;front_start
+# Func Hash:
+62306916776817461
+# Num Counters:
+5
+# Counter Values:
+5
+0
+0
+5
+0
+
+gpu_hw.c;hlog
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+5
+
+gpu_hw.c;log_main
+# Func Hash:
+146835644955007367
+# Num Counters:
+3
+# Counter Values:
+4376
+4175
+5
+
+gpu_hw.c;mem_log
+# Func Hash:
+191261015694015098
+# Num Counters:
+22
+# Counter Values:
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+216
+216
+0
+5
+0
+0
+0
+0
+0
+0
+0
+
+gpu_hw.c;on_picture_done
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+125218
+
+gpu_hw.c;render_start
+# Func Hash:
+30393574493342875
+# Num Counters:
+8
+# Counter Values:
+5
+0
+0
+0
+0
+0
+0
+0
+
+gpu_hw.c;slog
+# Func Hash:
+854638108563856232
+# Num Counters:
+11
+# Counter Values:
+0
+4376
+0
+4376
+4376
+0
+5
+5
+0
+0
+0
+
+gpu_hw.c;tsc_ms
+# Func Hash:
+238984481110885645
+# Num Counters:
+3
+# Counter Values:
+5792430
+3448
+5
+
+gpu_hw_active
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+102173
+
+gpu_hw_attach_gs
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+5
+
+gpu_hw_ee_vblank
+# Func Hash:
+193700189052056302
+# Num Counters:
+21
+# Counter Values:
+0
+0
+0
+0
+125225
+0
+0
+0
+0
+0
+0
+125225
+0
+0
+125225
+0
+0
+0
+0
+125225
+125225
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+1
+0
+
+gpu_hw_pacing_changed
+# Func Hash:
+488090587531465349
+# Num Counters:
+8
+# Counter Values:
+10
+0
+0
+10
+5
+10
+10
+10
+
+gpu_hw_set_auto_scale
+# Func Hash:
+784007056844089447
+# Num Counters:
+2
+# Counter Values:
+5
+0
+
+gpu_hw_set_graphics
+# Func Hash:
+536873293447606690
+# Num Counters:
+4
+# Counter Values:
+5
+5
+5
+5
+
+gpu_hw_start
+# Func Hash:
+122333359088037298
+# Num Counters:
+30
+# Counter Values:
+0
+0
+0
+0
+0
+5
+0
+5
+5
+0
+0
+5
+5
+0
+5
+0
+0
+0
+5
+0
+0
+5
+0
+0
+0
+0
+0
+5
+0
+5
+
+gpu_hw_vblank
+# Func Hash:
+289886203103363104
+# Num Counters:
+209
+# Counter Values:
+124757
+117492
+0
+125193
+125217
+125193
+125193
+125193
+0
+125217
+0
+0
+125193
+125193
+125193
+102223
+102223
+0
+0
+125193
+0
+0
+0
+125193
+125193
+125193
+0
+100795
+0
+0
+0
+0
+125193
+0
+100795
+100795
+125193
+0
+0
+0
+125193
+0
+125193
+0
+0
+125193
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+102101
+100674
+100674
+100674
+0
+0
+124782
+124782
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+125222
+0
+0
+0
+0
+0
+125222
+0
+0
+0
+0
+125222
+125222
+0
+0
+125222
+0
+125150
+5
+125222
+125222
+100152
+100152
+1
+0
+0
+0
+0
+5
+206
+2085
+0
+0
+2080
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+1724
+1724
+1724
+1703
+1703
+1703
+1703
+0
+0
+2080
+0
+2080
+2080
+0
+0
+0
+0
+0
+0
+0
+0
+2080
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+125150
+125222
+0
+0
+125222
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+102223
+125128
+125193
+125193
+0
+0
+0
+0
+0
+0
+125193
+0
+0
+125193
+125193
+0
+100795
+0
+0
+0
+0
+2080
+8542
+8315
+8188
+8559
+0
+0
+0
+2707
+2080
+124743
+0
+0
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+2
+1
+ps2_runtime.c;picture_aspect:125222
+1
+ps2_runtime.c;dump_wanted:125222
+
+gpu_log
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+30
+
+gpu_mft_config
+# Func Hash:
+134732432071261922
+# Num Counters:
+4
+# Counter Values:
+5
+5
+0
+0
+
+gpu_no_rov
+# Func Hash:
+334492580996896141
+# Num Counters:
+5
+# Counter Values:
+1866980
+0
+0
+0
+1866980
+
+gpu_own.c;download_block
+# Func Hash:
+948827211812900758
+# Num Counters:
+8
+# Counter Values:
+359968
+0
+359968
+359968
+359968
+359968
+359968
+0
+
+gpu_own.c;emit_target
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+159
+
+gpu_own.c;flush_downloads
+# Func Hash:
+1096621591212189245
+# Num Counters:
+4
+# Counter Values:
+359968
+0
+14746
+14746
+
+gpu_own.c;flush_lists
+# Func Hash:
+567991003015119432
+# Num Counters:
+11
+# Counter Values:
+14767
+0
+0
+0
+0
+0
+14767
+14746
+14741
+0
+0
+
+gpu_own.c;mem_check
+# Func Hash:
+386225742696645265
+# Num Counters:
+35
+# Counter Values:
+1370760
+26807360
+53861402
+26824704
+229338
+0
+3582426
+351579378
+322907424
+19584768
+0
+0
+322909398
+45361446
+18554086
+8178342
+28178120
+102887
+1327114788
+30513850
+3706490
+190510913
+190510913
+28671954
+1864594
+0
+8828250
+0
+258936
+1355786742
+322907424
+26824704
+26824704
+1370760
+1690654
+
+gpu_own.c;own_gen_of
+# Func Hash:
+886271542760124057
+# Num Counters:
+4
+# Counter Values:
+1950508061
+5
+0
+0
+
+gpu_own.c;release
+# Func Hash:
+93478048278194763
+# Num Counters:
+6
+# Counter Values:
+13312
+30464
+952
+8960
+8960
+26
+
+gpu_own.c;set_cpu
+# Func Hash:
+974670605212195744
+# Num Counters:
+6
+# Counter Values:
+212672188
+276538589
+139228098
+69627489
+69240652
+69213772
+
+gpu_own.c;set_scale
+# Func Hash:
+290495009251806736
+# Num Counters:
+6
+# Counter Values:
+87
+87
+41
+0
+41
+41
+
+gpu_own.c;target_layout
+# Func Hash:
+981446174327880790
+# Num Counters:
+12
+# Counter Values:
+2320
+74240
+62464
+11776
+290
+1680
+47104
+47104
+368
+2320
+92
+0
+
+gpu_own.c;target_local
+# Func Hash:
+844982796229228148
+# Num Counters:
+4
+# Counter Values:
+32000
+1097457984
+20
+0
+
+gpu_own.c;texel_word
+# Func Hash:
+927205939731955586
+# Num Counters:
+13
+# Counter Values:
+0
+0
+0
+0
+0
+0
+0
+0
+164234425
+60013852
+8833914
+0
+0
+
+gpu_own.c;word_of
+# Func Hash:
+93478047470474505
+# Num Counters:
+9
+# Counter Values:
+0
+0
+57974200
+39169536
+0
+0
+0
+81698552
+16234913
+
+gpu_present.c;ensure_mid
+# Func Hash:
+98865369443838535
+# Num Counters:
+14
+# Counter Values:
+125137
+0
+0
+0
+0
+5
+0
+0
+0
+5
+5
+5
+5
+0
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+9
+0
+0
+0
+1
+** External Symbol **:5
+1
+** External Symbol **:5
+1
+** External Symbol **:5
+0
+0
+0
+
+gpu_present.c;ensure_pictures
+# Func Hash:
+901775224028340232
+# Num Counters:
+15
+# Counter Values:
+0
+30
+30
+30
+30
+15
+15
+15
+15
+125209
+0
+10
+5
+10
+0
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+8
+1
+** External Symbol **:15
+1
+** External Symbol **:15
+1
+** External Symbol **:15
+1
+** External Symbol **:15
+1
+** External Symbol **:30
+1
+** External Symbol **:30
+1
+** External Symbol **:30
+1
+** External Symbol **:30
+
+gpu_present.c;flicker_strip
+# Func Hash:
+1061802870640907559
+# Num Counters:
+11
+# Counter Values:
+125209
+181
+181
+23
+158
+23
+23
+158
+158
+23
+23
+
+gpu_present.c;fullscreen_pass
+# Func Hash:
+716044507484782591
+# Num Counters:
+1
+# Counter Values:
+250274
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+13
+1
+** External Symbol **:250276
+1
+** External Symbol **:250276
+1
+** External Symbol **:250276
+1
+** External Symbol **:250276
+1
+** External Symbol **:250276
+1
+** External Symbol **:250276
+1
+** External Symbol **:250276
+1
+** External Symbol **:250276
+1
+** External Symbol **:250276
+1
+** External Symbol **:250276
+1
+** External Symbol **:250276
+2
+** External Symbol **:250029
+** External Symbol **:247
+1
+** External Symbol **:250276
+
+gpu_present.c;make_rtv
+# Func Hash:
+972606239099912973
+# Num Counters:
+5
+# Counter Values:
+0
+0
+0
+0
+5
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+5
+0
+0
+0
+0
+1
+** External Symbol **:5
+
+gpu_present.c;present_fit
+# Func Hash:
+173007862234131256
+# Num Counters:
+145
+# Counter Values:
+0
+0
+0
+0
+0
+0
+0
+125209
+125209
+0
+0
+125209
+125209
+125209
+0
+0
+0
+0
+16
+125209
+125137
+125209
+125209
+0
+125209
+0
+0
+0
+5
+0
+0
+0
+0
+0
+5
+5
+125209
+0
+0
+0
+125209
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+125137
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+125209
+125209
+0
+0
+125209
+125209
+0
+0
+0
+0
+0
+125209
+125209
+0
+0
+0
+0
+0
+0
+0
+20688
+16
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+23
+1
+** External Symbol **:125210
+1
+** External Symbol **:125210
+0
+0
+0
+0
+0
+0
+1
+** External Symbol **:125210
+2
+** External Symbol **:125102
+** External Symbol **:108
+0
+0
+0
+0
+0
+0
+0
+1
+** External Symbol **:125210
+0
+0
+0
+0
+0
+
+gpu_present.c;present_resample
+# Func Hash:
+952017407703004651
+# Num Counters:
+62
+# Counter Values:
+0
+0
+0
+125137
+125137
+5
+1333
+123804
+1333
+0
+1333
+0
+1328
+0
+0
+5
+0
+660
+123804
+123804
+0
+5
+0
+0
+1328
+1333
+1333
+673
+0
+0
+0
+0
+123804
+123804
+0
+0
+0
+0
+0
+1333
+0
+1333
+1333
+0
+0
+0
+0
+0
+0
+1333
+1333
+673
+0
+0
+125137
+125137
+125137
+0
+1333
+1333
+0
+0
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+10
+0
+0
+1
+** External Symbol **:5
+1
+** External Symbol **:5
+0
+0
+1
+** External Symbol **:660
+0
+0
+0
+
+gpu_present.c;ptrace_file
+# Func Hash:
+798733567602045750
+# Num Counters:
+5
+# Counter Values:
+250405
+5
+0
+0
+0
+
+gpu_present.c;ready_poll
+# Func Hash:
+499828438136376949
+# Num Counters:
+9
+# Counter Values:
+322017
+322017
+309723
+125196
+125196
+125196
+0
+0
+125196
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+1
+1
+** External Symbol **:309724
+
+gpu_present.c;resample_pass
+# Func Hash:
+1108079927882354434
+# Num Counters:
+2
+# Counter Values:
+250274
+250274
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+3
+1
+** External Symbol **:250276
+1
+** External Symbol **:250276
+1
+** External Symbol **:250276
+
+gpu_present.c;stats_push
+# Func Hash:
+784007059655560962
+# Num Counters:
+2
+# Counter Values:
+125196
+0
+
+gpu_present.c;ts_complete
+# Func Hash:
+552834999217668306
+# Num Counters:
+18
+# Counter Values:
+0
+0
+0
+0
+0
+0
+307473
+0
+125196
+182277
+0
+125196
+125196
+125196
+125196
+125196
+125196
+0
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+5
+1
+** External Symbol **:307473
+1
+** External Symbol **:125196
+1
+** External Symbol **:125196
+1
+** External Symbol **:125196
+1
+** External Symbol **:125196
+
+gpu_present_compose
+# Func Hash:
+1038441057543034103
+# Num Counters:
+75
+# Counter Values:
+0
+0
+0
+250274
+0
+0
+0
+0
+0
+0
+0
+0
+125210
+125210
+125209
+5
+0
+125210
+0
+0
+125209
+0
+5
+0
+125209
+5
+72
+125137
+0
+0
+0
+125137
+125137
+125137
+125137
+0
+0
+0
+125137
+0
+0
+0
+125137
+0
+125137
+0
+0
+0
+0
+0
+0
+0
+0
+5
+181
+0
+0
+0
+0
+0
+125209
+125137
+125137
+125137
+0
+125137
+0
+0
+0
+0
+0
+0
+0
+0
+0
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+27
+0
+0
+0
+0
+0
+0
+0
+0
+2
+** External Symbol **:42
+** External Symbol **:30
+0
+0
+0
+0
+1
+** External Symbol **:125138
+1
+** External Symbol **:125138
+1
+** External Symbol **:125138
+1
+** External Symbol **:125138
+1
+** External Symbol **:125138
+1
+** External Symbol **:125138
+1
+** External Symbol **:125138
+2
+** External Symbol **:124862
+** External Symbol **:276
+0
+0
+0
+1
+** External Symbol **:125138
+1
+** External Symbol **:125138
+0
+
+gpu_present_events_pending
+# Func Hash:
+1124680652201725962
+# Num Counters:
+3
+# Counter Values:
+71612
+57078
+0
+
+gpu_present_get_mode
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+5
+
+gpu_present_init
+# Func Hash:
+926509532463608143
+# Num Counters:
+43
+# Counter Values:
+5
+5
+5
+5
+40
+40
+40
+40
+40
+40
+0
+0
+0
+0
+0
+0
+5
+0
+0
+0
+5
+5
+0
+0
+0
+5
+0
+0
+5
+5
+0
+0
+0
+0
+5
+0
+0
+0
+0
+0
+5
+5
+0
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+27
+1
+** External Symbol **:5
+1
+** External Symbol **:5
+1
+** External Symbol **:5
+1
+** External Symbol **:5
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+1
+** External Symbol **:5
+1
+** External Symbol **:40
+1
+** External Symbol **:40
+1
+** External Symbol **:40
+1
+** External Symbol **:40
+1
+** External Symbol **:40
+1
+** External Symbol **:40
+
+gpu_present_pace_frames
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+250430
+
+gpu_present_poll
+# Func Hash:
+631255616644914039
+# Num Counters:
+7
+# Counter Values:
+0
+182277
+0
+0
+125196
+182292
+125196
+
+gpu_present_set_mode
+# Func Hash:
+238984482720105921
+# Num Counters:
+3
+# Counter Values:
+5
+5
+5
+
+gpu_present_show
+# Func Hash:
+702941992757231615
+# Num Counters:
+3
+# Counter Values:
+125209
+125209
+125209
+
+gpu_present_signal
+# Func Hash:
+212526876123949159
+# Num Counters:
+2
+# Counter Values:
+125218
+125218
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+1
+1
+gpu_hw.c;on_picture_done:125218
+
+gpu_ps
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+148595328
+
+gpu_r2front.c;entry_add
+# Func Hash:
+667102678455916270
+# Num Counters:
+28
+# Counter Values:
+0
+0
+0
+20743410
+0
+20743410
+0
+15
+20743410
+15
+15
+20743410
+15
+15
+20743410
+15
+1533080
+1714085
+1230514
+1533080
+14
+1533080
+14
+5
+5
+5
+5
+0
+# Num Value Kinds:
+1
+# ValueKind = IPVK_MemOPSize:
+1
+# NumValueSites:
+1
+12
+17:453768
+33:347960
+65:275297
+16:151594
+129:143910
+32:80495
+257:28595
+64:26273
+513:20073
+128:4355
+256:703
+512:57
+
+gpu_r2front.c;fr_r2_hint
+# Func Hash:
+95667168797964311
+# Num Counters:
+56
+# Counter Values:
+0
+1521037
+0
+0
+0
+0
+0
+20743410
+0
+0
+0
+0
+0
+0
+201274
+89249
+1714085
+0
+0
+1533080
+0
+89249
+1230514
+0
+0
+0
+100637
+1533080
+0
+0
+0
+5
+1230514
+0
+0
+0
+0
+0
+0
+0
+102166
+1230514
+0
+1230514
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+1128348
+
+gpu_r2front.c;new_draw
+# Func Hash:
+11922954139996049
+# Num Counters:
+6
+# Counter Values:
+0
+195948641
+26
+195948641
+26
+5
+
+gpu_r2front.c;pass_items
+# Func Hash:
+774340253497184578
+# Num Counters:
+53
+# Counter Values:
+26378375
+189853955
+189853955
+230616288
+800202240
+230616288
+189853955
+165369842
+78237981
+164413274
+0
+0
+17539308
+160803539
+3008371
+164413274
+82031990
+164413274
+0
+0
+146873966
+4752611
+164413274
+0
+164413274
+86175293
+26378375
+112553668
+86156385
+25459589
+0
+0
+0
+0
+80698216
+1095842
+0
+0
+0
+163317432
+3125790
+3125790
+0
+3125790
+82031990
+3556077
+86175293
+2667548
+0
+189853955
+78237981
+9069897
+51837964
+
+gpu_r2front.c;qms
+# Func Hash:
+784007056844089447
+# Num Counters:
+2
+# Counter Values:
+4922056
+5
+
+gpu_r2front.c;seg_env
+# Func Hash:
+1114177542396281630
+# Num Counters:
+9
+# Counter Values:
+21973924
+20743410
+1230514
+0
+20743410
+20743410
+20743410
+20743410
+20743410
+
+gpu_run_sync
+# Func Hash:
+1124680651418429887
+# Num Counters:
+3
+# Counter Values:
+5
+5
+5
+
+gpu_running
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+125226
+
+gpu_set_flip_callback
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+5
+
+gpu_set_picture_done
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+5
+
+gpu_start
+# Func Hash:
+1096621590284876321
+# Num Counters:
+5
+# Counter Values:
+5
+0
+5
+0
+0
+
+gpu_stats_begin
+# Func Hash:
+134852373437784740
+# Num Counters:
+4
+# Counter Values:
+125211
+125211
+0
+125211
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+2
+1
+** External Symbol **:125212
+1
+** External Symbol **:125212
+
+gpu_stats_cur
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+375629
+
+gpu_stats_end
+# Func Hash:
+146393203496045568
+# Num Counters:
+3
+# Counter Values:
+125209
+0
+0
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+2
+0
+1
+** External Symbol **:125209
+
+gpu_submit_absorbs
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+2080
+
+gpu_submit_set_adaptive
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+5
+
+gpu_submit_set_depth
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+5
+
+gpu_submit_sink
+# Func Hash:
+581876259592374501
+# Num Counters:
+19
+# Counter Values:
+125218
+165313
+100156
+125218
+125221
+125218
+0
+100153
+123858
+125218
+0
+1
+1363
+0
+6
+0
+1363
+1
+1
+
+gpu_submit_stall_ms
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+127302
+
+gpu_take_frame_stats
+# Func Hash:
+146835646621254984
+# Num Counters:
+2
+# Counter Values:
+125193
+242714
+
+gpu_video_memory
+# Func Hash:
+915580199163852702
+# Num Counters:
+11
+# Counter Values:
+216
+211
+5
+211
+211
+5
+5
+5
+5
+5
+10
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+7
+1
+** External Symbol **:5
+1
+** External Symbol **:5
+1
+** External Symbol **:5
+1
+** External Symbol **:5
+1
+** External Symbol **:5
+1
+** External Symbol **:211
+1
+** External Symbol **:211
+
+gpu_vs
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+148885743
+
+gs.c;decode_circuit
+# Func Hash:
+784007059655560962
+# Num Counters:
+2
+# Counter Values:
+500862
+0
+
+gs_async
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+125240
+
+gs_clut_buffer
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+117178614
+
+gs_clut_on_tex0
+# Func Hash:
+599005163857447560
+# Num Counters:
+13
+# Counter Values:
+0
+102007
+105510541
+117711663
+117178609
+533054
+117178609
+0
+0
+0
+0
+0
+0
+
+gs_csr_finish
+# Func Hash:
+784007059655560962
+# Num Counters:
+2
+# Counter Values:
+375831
+375831
+
+gs_display_field_code
+# Func Hash:
+784007059655560962
+# Num Counters:
+2
+# Counter Values:
+125150
+23130
+
+gs_display_layout_of
+# Func Hash:
+917515342093985948
+# Num Counters:
+7
+# Counter Values:
+500862
+250468
+250431
+250287
+250287
+181
+0
+
+gs_display_snapshot
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+125222
+
+gs_draw.c;draw
+# Func Hash:
+246972739199276814
+# Num Counters:
+21
+# Counter Values:
+0
+0
+0
+0
+0
+0
+0
+619794441
+46435014
+46287453
+0
+147561
+0
+0
+46435014
+40108409
+0
+0
+46435014
+46287453
+39979484
+
+gs_draw.c;draw_prim
+# Func Hash:
+1133222229742095214
+# Num Counters:
+219
+# Counter Values:
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+666229456
+0
+0
+0
+0
+5
+0
+261232378
+666229456
+666229456
+0
+0
+0
+0
+0
+1320
+0
+0
+0
+5
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+5
+1320
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+1320
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+1320
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+1320
+0
+5
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+1320
+0
+1320
+1320
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+666229456
+0
+46435014
+46435014
+666229456
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+2
+1
+gpu_fthread.c;px_prim:666229673
+0
+
+gs_draw.c;env_update
+# Func Hash:
+986749853823399857
+# Num Counters:
+49
+# Counter Values:
+0
+0
+0
+0
+4186392144
+0
+1046598036
+0
+0
+89786860
+0
+0
+0
+0
+0
+261649509
+261649509
+0
+0
+171862649
+0
+803641
+171
+0
+171
+89786689
+0
+0
+0
+0
+0
+0
+0
+19886205
+0
+0
+258765265
+0
+0
+0
+0
+0
+171
+171
+0
+0
+0
+0
+89786860
+
+gs_draw.c;hint_write
+# Func Hash:
+713571271437000725
+# Num Counters:
+68
+# Counter Values:
+0
+431537538
+0
+1597028
+145284512
+0
+4654486
+0
+0
+0
+278404484
+0
+0
+145284512
+0
+0
+0
+0
+146881540
+145284512
+142522623
+142522623
+1439335
+142522623
+0
+1439335
+1439335
+0
+1521104
+238228
+1439335
+1521104
+0
+0
+1439335
+1521104
+0
+1521104
+1439335
+417131
+119104
+119104
+5
+5
+0
+0
+5
+5
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+146881540
+431537538
+278404484
+0
+0
+0
+0
+119104
+0
+0
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+2
+1
+r2_slot_at:1439335
+1
+gpu_fthread.c;px_r2:1521105
+
+gs_draw.c;tex0_write
+# Func Hash:
+900700469903054933
+# Num Counters:
+16
+# Counter Values:
+0
+0
+102007
+105510541
+118358991
+117711662
+117178608
+117711662
+117178608
+0
+117178608
+0
+0
+0
+117178608
+11668067
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+1
+1
+gpu_fthread.c;px_tex0:117711680
+
+gs_draw.c;trxdir
+# Func Hash:
+650659460337849909
+# Num Counters:
+19
+# Counter Values:
+0
+0
+1749570
+1749570
+1749570
+0
+0
+0
+0
+0
+1749570
+0
+0
+0
+0
+0
+0
+0
+0
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+1
+1
+gpu_fthread.c;px_xfer_start:1749570
+
+gs_draw.c;vertex
+# Func Hash:
+1070589993024566384
+# Num Counters:
+21
+# Counter Values:
+328214764
+1495976053
+101373080
+7405066
+10234035
+1189203964
+20923480
+0
+184791294
+0
+184791294
+0
+6301533
+1128154346
+13162834
+3411345
+6301533
+458562449
+13162834
+3411345
+0
+
+gs_draw_kick
+# Func Hash:
+134732432071261922
+# Num Counters:
+4
+# Counter Values:
+226307
+226307
+0
+0
+
+gs_draw_pages_touched
+# Func Hash:
+526279452602991735
+# Num Counters:
+11
+# Counter Values:
+0
+0
+0
+0
+120677748
+120677748
+0
+120677748
+120677748
+120677748
+0
+
+gs_draw_pixel.c;pixel_worker
+# Func Hash:
+567185241225720440
+# Num Counters:
+5
+# Counter Values:
+677547
+0
+40
+0
+40
+
+gs_draw_reset
+# Func Hash:
+811594940626252597
+# Num Counters:
+3
+# Counter Values:
+10
+10
+0
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+1
+1
+gpu_fthread.c;px_reset:10
+
+gs_draw_set_workers
+# Func Hash:
+1127386592695470575
+# Num Counters:
+11
+# Counter Values:
+30
+30
+30
+40
+40
+40
+5
+5
+5
+0
+0
+
+gs_draw_swz.c;build16
+# Func Hash:
+1124680652598534200
+# Num Counters:
+3
+# Counter Values:
+81920
+1280
+20
+
+gs_draw_swz.c;build32
+# Func Hash:
+1124680652598534200
+# Num Counters:
+3
+# Counter Values:
+20480
+320
+10
+
+gs_draw_sync_why
+# Func Hash:
+31819175757358784
+# Num Counters:
+8
+# Counter Values:
+0
+20
+20
+0
+20
+20
+0
+0
+
+gs_draw_tex.c;raw_layout_of
+# Func Hash:
+927205941498487105
+# Num Counters:
+15
+# Counter Values:
+20
+20
+20
+20
+20
+260
+220
+80
+40
+40
+20
+20
+20
+20
+20
+
+gs_draw_tex.c;verify_raw
+# Func Hash:
+376496935290869720
+# Num Counters:
+41
+# Counter Values:
+7280000
+20
+20
+20
+0
+30720
+30720
+30720
+61440
+36400
+30400
+31230
+30210
+30590
+480
+7680
+0
+1120000
+2240000
+560000
+560000
+1120000
+560000
+560000
+560000
+260
+260
+36400
+0
+260
+60
+40
+160
+0
+80
+40
+0
+30720
+30720
+7680
+1920
+
+gs_exec_image_write
+# Func Hash:
+947813581946111560
+# Num Counters:
+9
+# Counter Values:
+1749570
+0
+1749570
+0
+1749570
+0
+1749570
+0
+0
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+1
+1
+gpu_fthread.c;px_xfer_data:1749570
+
+gs_exec_write_reg
+# Func Hash:
+63074862340524575
+# Num Counters:
+68
+# Counter Values:
+25225705
+0
+25327712
+306021
+441880
+622832
+125069
+0
+0
+0
+0
+0
+0
+306021
+25868000
+689292
+928853
+42244817
+306021
+0
+431090
+347135
+203502043
+622832
+0
+621379
+0
+1359144
+622832
+561021
+844128629
+944072302
+26810800
+0
+958230
+1749570
+793664
+0
+0
+117303634
+102007
+4116591662
+0
+232920179
+3666030
+1815011731
+117609655
+102007
+0
+246094681
+777354973
+92346219
+718621080
+9026861
+0
+0
+3198667
+0
+375831
+1749570
+0
+0
+246094681
+0
+0
+229036082
+0
+0
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+1
+0
+
+gs_fmt_of
+# Func Hash:
+93478048832413311
+# Num Counters:
+9
+# Counter Values:
+526866387
+0
+20
+306046
+25
+262359285
+20
+25
+822950
+
+gs_gif_packet
+# Func Hash:
+351780189957543978
+# Num Counters:
+10
+# Counter Values:
+78991136
+78991136
+78991136
+78991136
+78991136
+12452968
+78991136
+0
+57381
+78991136
+# Num Value Kinds:
+2
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+1
+0
+# ValueKind = IPVK_MemOPSize:
+1
+# NumValueSites:
+1
+9
+513:26544415
+65:22734779
+128:12858667
+33:7221612
+257:3627079
+129:3297880
+64:1973996
+32:677146
+256:55562
+
+gs_hint_content43
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+125222
+
+gs_hud_prim
+# Func Hash:
+589789192888146911
+# Num Counters:
+9
+# Counter Values:
+172603808
+263851147
+92627806
+92623711
+92331079
+91448325
+92333597
+23427116
+156560726
+
+gs_image_write
+# Func Hash:
+519820942088564226
+# Num Counters:
+8
+# Counter Values:
+1749570
+918552
+0
+0
+1749570
+918552
+0
+290186
+# Num Value Kinds:
+2
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+1
+0
+# ValueKind = IPVK_MemOPSize:
+1
+# NumValueSites:
+1
+9
+513:1366383
+64:340520
+257:33601
+512:6044
+128:1336
+256:1181
+16:232
+33:207
+32:66
+
+gs_line_planes
+# Func Hash:
+146835647075900052
+# Num Counters:
+2
+# Counter Values:
+0
+144177540
+
+gs_mark_rect
+# Func Hash:
+278041623224828660
+# Num Counters:
+18
+# Counter Values:
+0
+0
+0
+3484117
+637390
+0
+0
+0
+1953432
+0
+1749570
+1749570
+0
+1749570
+1276915
+141768
+330887
+0
+
+gs_mem.c;gs_mem_build_tables
+# Func Hash:
+896858934908600458
+# Num Counters:
+9
+# Counter Values:
+10240
+20480
+40960
+81920
+160
+320
+320
+640
+5
+
+gs_mem_read
+# Func Hash:
+647472252312847013
+# Num Counters:
+14
+# Counter Values:
+0
+203312000
+560000
+560000
+560000
+560000
+560000
+560000
+560000
+560000
+560000
+560000
+560000
+560000
+
+gs_mem_tex.c;clut_load
+# Func Hash:
+716976136069464897
+# Num Counters:
+38
+# Counter Values:
+240
+240
+1360
+1360
+1360
+30
+0
+0
+15
+4675194064
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+5
+117178609
+11668068
+255
+0
+117178609
+
+gs_mem_write
+# Func Hash:
+647472252312847013
+# Num Counters:
+14
+# Counter Values:
+0
+636800
+575360
+698240
+698240
+641920
+560000
+560000
+575360
+698240
+698240
+887680
+636800
+560000
+
+gs_mem_xfer.c;gs_px_write
+# Func Hash:
+647472252312847013
+# Num Counters:
+14
+# Counter Values:
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+4417730944
+0
+0
+
+gs_mem_xfer.c;put_pixels
+# Func Hash:
+438284563937336484
+# Num Counters:
+10
+# Counter Values:
+15284244
+34746360
+15364070400
+239092948
+4417730944
+110150284
+72138837
+1749131
+78549622
+110150284
+
+gs_mem_xfer_start
+# Func Hash:
+745895229927746545
+# Num Counters:
+87
+# Counter Values:
+0
+1749570
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+330887
+0
+0
+1276915
+0
+141768
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+1749570
+0
+0
+0
+1749570
+1749570
+0
+0
+330887
+0
+141768
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+1749570
+1749570
+0
+0
+0
+0
+
+gs_mem_xfer_write
+# Func Hash:
+488101496171140845
+# Num Counters:
+27
+# Counter Values:
+0
+60015900
+1276915
+2208865472
+0
+0
+15364070400
+239092948
+17256807
+61292815
+0
+0
+1749570
+0
+0
+1418683
+0
+0
+0
+17256807
+2225791392
+0
+61292815
+239092948
+0
+0
+15423944532
+# Num Value Kinds:
+1
+# ValueKind = IPVK_MemOPSize:
+1
+# NumValueSites:
+1
+0
+
+gs_picture_presented
+# Func Hash:
+784007056844089447
+# Num Counters:
+2
+# Counter Values:
+125218
+98977
+
+gs_prim_finalize
+# Func Hash:
+282362084912388097
+# Num Counters:
+28
+# Counter Values:
+4177708544
+0
+0
+0
+9851648
+0
+0
+2053479168
+260858653
+260858653
+306021
+261343488
+0
+16319174
+255901664
+171862649
+244747472
+0
+212183157
+87698179
+212059451
+87698179
+619412
+517066
+0
+0
+0
+0
+
+gs_priv_access
+# Func Hash:
+784075847183340208
+# Num Counters:
+25
+# Counter Values:
+0
+0
+0
+1121702
+2000060
+375842
+10
+0
+375842
+873506
+0
+1376042
+1127506
+0
+0
+0
+0
+0
+125110
+0
+0
+125110
+358
+125418
+0
+# Num Value Kinds:
+1
+# ValueKind = IPVK_MemOPSize:
+1
+# NumValueSites:
+6
+0
+0
+0
+2
+8:1751533
+4:248527
+2
+8:1751533
+4:248527
+1
+8:1625190
+
+gs_priv_snapshot
+# Func Hash:
+536873293191249204
+# Num Counters:
+4
+# Counter Values:
+125222
+0
+0
+0
+
+gs_publish
+# Func Hash:
+134732432624440808
+# Num Counters:
+4
+# Counter Values:
+314959
+123848
+1720
+314959
+
+gs_queue_vsync
+# Func Hash:
+399864113759826186
+# Num Counters:
+14
+# Counter Values:
+102733
+125225
+15
+98338
+102732
+15
+15
+1094
+102735
+102732
+102735
+102732
+0
+0
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+1
+1
+gfx_async.c;wait_job:15
+
+gs_record_vsync
+# Func Hash:
+908950566316036478
+# Num Counters:
+18
+# Counter Values:
+125220
+0
+125220
+5
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+125225
+125225
+5
+
+gs_rect_pages
+# Func Hash:
+247671765998596466
+# Num Counters:
+13
+# Counter Values:
+39169536
+0
+0
+504573700
+151255930
+495751468
+211834559
+0
+211834793
+143214229
+5978542
+23479062
+0
+
+gs_set_read_hook
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+5
+
+gs_set_vblank_hook
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+5
+
+gs_set_vsync_time
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+125225
+
+gs_sprite_setup
+# Func Hash:
+40408282208573013
+# Num Counters:
+22
+# Counter Values:
+20683208
+0
+0
+20683208
+13405000
+13405000
+0
+13405000
+13405000
+13405000
+13405000
+0
+0
+0
+0
+0
+13405000
+13405000
+0
+0
+0
+0
+
+gs_swz_init
+# Func Hash:
+436124195355243710
+# Num Counters:
+12
+# Counter Values:
+614400
+3200
+614400
+491520
+122880
+30
+3200
+5
+5
+0
+0
+491520
+
+gs_sync
+# Func Hash:
+399864113311045248
+# Num Counters:
+14
+# Counter Values:
+14
+10
+0
+10
+0
+0
+10
+2
+10
+10
+10
+10
+0
+0
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+1
+0
+
+gs_tex_fast_init
+# Func Hash:
+913621641324581215
+# Num Counters:
+25
+# Counter Values:
+81920
+327680
+640
+2560
+327680
+10
+20
+65
+0
+40960
+81920
+40960
+81920
+40960
+81920
+65
+65
+0
+5
+5
+5
+0
+40960
+0
+0
+
+gs_tex_fetch
+# Func Hash:
+274068938810502250
+# Num Counters:
+39
+# Counter Values:
+0
+15360
+15360
+15360
+15360
+7650
+7755
+7920
+7905
+15200
+0
+15200
+0
+0
+0
+0
+7710
+7605
+7440
+7455
+7490
+7595
+0
+7760
+0
+0
+7745
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+
+gs_thread.c;ee_wait_change
+# Func Hash:
+499828439136369848
+# Num Counters:
+8
+# Counter Values:
+403808608
+212585
+403803560
+0
+0
+104029
+98978
+212588
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+1
+0
+
+gs_thread.c;gs_thread_main
+# Func Hash:
+641795142336447924
+# Num Counters:
+84
+# Counter Values:
+49541024
+0
+4108877074
+0
+49541024
+0
+0
+944072370
+0
+841337336
+63966488
+0
+0
+1203376369
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+24770512
+0
+292423385
+0
+1164259723
+0
+0
+292423385
+0
+968351
+104310970
+0
+98966445
+0
+104310970
+0
+0
+0
+528087
+0
+4170369
+1296108557
+1295140206
+56456822
+20726
+1749570
+10
+78991106
+0
+125222
+0
+53258155
+0
+0
+0
+2615473
+0
+103937
+226307
+226230
+226212
+5
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+1164259724
+4108877077
+484755238
+54939627
+24770512
+49541024
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+2
+0
+1
+gpu_hw_vblank:125222
+
+gs_thread.c;reserve
+# Func Hash:
+804816982770455456
+# Num Counters:
+13
+# Counter Values:
+24393
+25675
+1282
+0
+0
+0
+1282
+1282
+1282
+1282
+80866380
+20726
+20726
+
+gs_thread_start
+# Func Hash:
+567185242743637878
+# Num Counters:
+5
+# Counter Values:
+5
+5
+5
+0
+0
+
+gs_tri_setup
+# Func Hash:
+438284564978700103
+# Num Counters:
+8
+# Counter Values:
+475119135
+247734882
+229827893
+239782223
+229602349
+243281675
+322782506
+81217505
+
+gs_vsync
+# Func Hash:
+567185242712857594
+# Num Counters:
+5
+# Counter Values:
+125225
+0
+0
+5
+0
+
+gs_vsync_qpc
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+125222
+
+gs_write_reg
+# Func Hash:
+701753977267166794
+# Num Counters:
+16
+# Counter Values:
+31353640
+0
+53634083
+31353640
+375831
+252098
+0
+123733
+53634083
+0
+123733
+123733
+442
+136372
+56456479
+1487
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+2
+0
+1
+gfx_async.c;defer:123733
+
+host_log_async
+# Func Hash:
+395509791012607611
+# Num Counters:
+3
+# Counter Values:
+198
+0
+198
+# Num Value Kinds:
+1
+# ValueKind = IPVK_MemOPSize:
+1
+# NumValueSites:
+1
+3
+257:102
+129:95
+513:1
+
+host_log_async
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+0
+
+hw_dma_ptr
+# Func Hash:
+109769661357415060
+# Num Counters:
+4
+# Counter Values:
+343642213
+23847293
+23847293
+343655989
+
+input.c;do_init
+# Func Hash:
+258198335996307863
+# Num Counters:
+10
+# Counter Values:
+0
+20
+5
+0
+5
+5
+5
+5
+0
+10
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+1
+1
+** External Symbol **:20
+
+input.c;xi_refresh
+# Func Hash:
+599005163635154693
+# Num Counters:
+9
+# Counter Values:
+0
+0
+0
+499460
+0
+0
+0
+0
+124865
+
+input_config_defaults
+# Func Hash:
+146835646621254984
+# Num Counters:
+2
+# Counter Values:
+80
+5
+
+input_config_get
+# Func Hash:
+784007059655560962
+# Num Counters:
+2
+# Counter Values:
+147837
+0
+
+input_config_reload
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+5
+
+input_get_pad
+# Func Hash:
+45209324934139888
+# Num Counters:
+16
+# Counter Values:
+0
+0
+0
+0
+124865
+124865
+0
+124865
+0
+124865
+0
+0
+0
+0
+0
+0
+
+input_hid.c;hlog
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+5
+
+input_hid.c;input_thread
+# Func Hash:
+108112840186310832
+# Num Counters:
+47
+# Counter Values:
+234888
+0
+0
+234828
+0
+0
+0
+0
+19574
+0
+19569
+0
+60
+0
+19569
+0
+19569
+0
+0
+0
+0
+5
+5
+5
+0
+5
+0
+5
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+19569
+0
+0
+0
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+3
+1
+** External Symbol **:5
+1
+** External Symbol **:5
+0
+
+input_hid.c;scan
+# Func Hash:
+409173601004951038
+# Num Counters:
+80
+# Counter Values:
+10590
+1265
+1380
+1380
+0
+0
+0
+0
+115
+115
+0
+115
+0
+0
+0
+0
+115
+0
+0
+0
+0
+0
+5
+115
+5
+0
+1265
+1265
+115
+0
+0
+0
+0
+115
+0
+0
+0
+115
+0
+115
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+75
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+# Num Value Kinds:
+2
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+17
+1
+** External Symbol **:5
+1
+** External Symbol **:120
+1
+** External Symbol **:5
+1
+** External Symbol **:115
+1
+** External Symbol **:115
+1
+** External Symbol **:115
+1
+** External Symbol **:115
+0
+1
+** External Symbol **:115
+0
+0
+0
+0
+0
+0
+0
+0
+# ValueKind = IPVK_MemOPSize:
+1
+# NumValueSites:
+3
+0
+0
+0
+
+input_hid_kick
+# Func Hash:
+784007056844089447
+# Num Counters:
+2
+# Counter Values:
+57
+52
+
+input_hid_start
+# Func Hash:
+1063705160746808702
+# Num Counters:
+3
+# Counter Values:
+5
+5
+0
+
+input_invert_camera
+# Func Hash:
+62306916776817461
+# Num Counters:
+5
+# Counter Values:
+124865
+0
+0
+0
+0
+
+input_menu_active
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+124865
+
+input_now_ms
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+19574
+
+input_pad_clear
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+124865
+
+input_service
+# Func Hash:
+249422125958966797
+# Num Counters:
+12
+# Counter Values:
+0
+0
+0
+0
+0
+0
+0
+19569
+1968
+1968
+0
+0
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+2
+1
+** External Symbol **:1968
+0
+
+input_set_rumble
+# Func Hash:
+536873292395032495
+# Num Counters:
+4
+# Counter Values:
+125150
+52
+125150
+0
+
+intc_ack
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+605346
+
+intc_pending
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+1970386
+
+intc_raise
+# Func Hash:
+123497035134910327
+# Num Counters:
+7
+# Counter Values:
+0
+0
+7535275
+7439665
+95610
+0
+605341
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+1
+1
+gfx_async.c;defer:95610
+
+intc_set_mask
+# Func Hash:
+1124680653258158719
+# Num Counters:
+3
+# Counter Values:
+20
+5
+0
+
+interp_frame_done
+# Func Hash:
+590860201300471148
+# Num Counters:
+82
+# Counter Values:
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+123655
+0
+0
+0
+5
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+# Num Value Kinds:
+1
+# ValueKind = IPVK_MemOPSize:
+1
+# NumValueSites:
+1
+0
+
+ipu.c;cmd_csc_pack
+# Func Hash:
+403434655881814639
+# Num Counters:
+11
+# Counter Values:
+50688000
+792000
+2694780
+2693460
+1320
+0
+792000
+2376000
+2693460
+0
+792000
+
+ipu.c;collect
+# Func Hash:
+980738357071593826
+# Num Counters:
+13
+# Counter Values:
+0
+0
+19008410
+0
+304134560
+0
+2693565
+159060
+306036020
+0
+0
+0
+19008410
+
+ipu.c;decode_blocks
+# Func Hash:
+1043799392003991051
+# Num Counters:
+50
+# Counter Values:
+50195770
+486195
+810
+2402850
+242125
+10024319
+72744
+14835
+1452750
+433980
+10005525
+19565
+8986755
+8986755
+1052399
+1018770
+0
+480570
+1670
+159920
+0
+1018770
+479760
+0
+157215
+726895
+858850
+276564
+539010
+170
+170
+170
+320495
+0
+84610
+19565
+479760
+552267
+5060
+5060
+5060
+6249987
+14835
+486195
+4488080
+5697720
+0
+0
+4498675
+0
+
+ipu.c;get_vlc
+# Func Hash:
+992789559065546859
+# Num Counters:
+12
+# Counter Values:
+6687100
+27085
+31985
+1337420
+515
+0
+1337420
+0
+0
+0
+0
+27085
+
+ipu.c;ipu_init
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+5
+
+ipu.c;ipu_run
+# Func Hash:
+282036064990782256
+# Num Counters:
+130
+# Counter Values:
+0
+34439
+242125
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+80
+0
+0
+21975656
+6400
+26443575
+9119669
+242125
+162165
+276564
+0
+6709035
+11622000
+162165
+242125
+242125
+0
+166910
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+1510
+0
+5290230
+100
+5
+0
+5
+2376000
+0
+0
+0
+0
+0
+0
+0
+1175255
+0
+0
+0
+100
+5288715
+1175255
+5288715
+100
+242125
+0
+1175255
+1175255
+5288715
+100
+338600
+0
+490460
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+162165
+0
+0
+0
+0
+10
+0
+0
+
+ipu.c;skip_fb
+# Func Hash:
+62306917883125671
+# Num Counters:
+5
+# Counter Values:
+324945
+6706195
+6706195
+5
+324945
+
+ipu.c;start_command
+# Func Hash:
+784007056844089447
+# Num Counters:
+2
+# Counter Values:
+6709035
+0
+
+ipu_access
+# Func Hash:
+207673878402598014
+# Num Counters:
+49
+# Counter Values:
+0
+0
+0
+9935275
+26221640
+26221640
+26221640
+26221640
+5
+50
+0
+0
+0
+0
+0
+0
+0
+7050355
+341320
+7285875
+0
+576840
+0
+0
+0
+0
+7050355
+50
+0
+8705480
+2013215
+1987055
+6709035
+341320
+50
+6465485
+840
+20
+341320
+6709035
+0
+0
+0
+0
+0
+0
+0
+0
+840
+# Num Value Kinds:
+1
+# ValueKind = IPVK_MemOPSize:
+1
+# NumValueSites:
+5
+0
+0
+0
+2
+4:10718695
+8:8452540
+1
+4:7050355
+
+ipu_csc_mb
+# Func Hash:
+27297398910385295
+# Num Counters:
+15
+# Counter Values:
+0
+202752000
+0
+202752000
+12672000
+792000
+0
+0
+0
+0
+0
+202752000
+202752000
+202752000
+0
+
+ipu_dct_symbol
+# Func Hash:
+510851649928939609
+# Num Counters:
+11
+# Counter Values:
+9905559
+133595
+995435
+1019975
+8608993
+261756
+0
+0
+0
+61940
+4324823
+
+ipu_dma_from
+# Func Hash:
+824185421458047379
+# Num Counters:
+13
+# Counter Values:
+62310000
+826059
+582614
+668319
+668319
+668319
+668319
+668319
+0
+0
+0
+424874
+424874
+
+ipu_dma_to
+# Func Hash:
+456618552342318206
+# Num Counters:
+15
+# Counter Values:
+12241517
+22311850
+19873545
+12241517
+2442440
+12245652
+12245652
+12245652
+12245652
+12245652
+0
+0
+0
+12241517
+12241517
+
+ipu_idct
+# Func Hash:
+974670608065346780
+# Num Counters:
+6
+# Counter Values:
+65201280
+8150160
+65201280
+8150160
+8150160
+1018770
+
+ipu_idct.c;idct_1d
+# Func Hash:
+1124680651230026125
+# Num Counters:
+3
+# Counter Values:
+37964160
+11554800
+4745520
+
+ipu_vlc_build
+# Func Hash:
+40662226574485605
+# Num Counters:
+27
+# Counter Values:
+1065
+22850
+19390
+19390
+22850
+14230
+14230
+14230
+19390
+19390
+2715
+2715
+2715
+2030
+360
+1065
+965
+15360
+2030
+2030
+105
+105
+105
+150
+1065
+60
+60
+
+ipu_vlc_init
+# Func Hash:
+844982799920253012
+# Num Counters:
+4
+# Counter Values:
+60
+5
+5
+0
+
+launch.c;u8
+# Func Hash:
+784007059655560962
+# Num Counters:
+2
+# Counter Values:
+5
+0
+
+launch_init
+# Func Hash:
+928018420760276996
+# Num Counters:
+7
+# Counter Values:
+5
+5
+0
+0
+0
+0
+0
+
+launch_load_game
+# Func Hash:
+335506647198699947
+# Num Counters:
+48
+# Counter Values:
+5
+5
+0
+0
+0
+0
+0
+5
+5
+5
+5
+0
+5
+0
+0
+0
+0
+5
+0
+0
+0
+0
+0
+5
+0
+0
+0
+5
+5
+0
+0
+5
+0
+0
+0
+5
+0
+5
+5
+5
+5
+0
+0
+0
+0
+5
+0
+0
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+1
+1
+** External Symbol **:5
+
+main
+# Func Hash:
+1117397016941672359
+# Num Counters:
+73
+# Counter Values:
+0
+10
+0
+0
+0
+10
+10
+0
+0
+0
+0
+0
+0
+0
+5
+0
+3
+0
+0
+0
+5
+5
+5
+5
+0
+5
+0
+5
+0
+0
+0
+5
+5
+0
+5
+5
+5
+0
+0
+0
+5
+0
+0
+5
+0
+0
+5
+0
+0
+5
+5
+0
+5
+0
+0
+0
+0
+0
+5
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+5
+0
+# Num Value Kinds:
+2
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+2
+1
+** External Symbol **:5
+0
+# ValueKind = IPVK_MemOPSize:
+1
+# NumValueSites:
+2
+1
+513:10
+2
+0:5
+513:5
+
+mc.c;card_free
+# Func Hash:
+1063705162494746942
+# Num Counters:
+3
+# Counter Values:
+2922
+748
+2915
+
+mc.c;card_setup
+# Func Hash:
+859667637507137938
+# Num Counters:
+29
+# Counter Values:
+65
+375
+0
+440
+60
+5
+0
+55
+3056
+5
+0
+5
+0
+5
+5
+5
+0
+5
+5
+0
+5
+5
+0
+0
+5
+0
+0
+0
+0
+
+mc.c;count_used
+# Func Hash:
+650973719458855899
+# Num Counters:
+9
+# Counter Values:
+4488
+8228
+2992
+748
+748
+1496
+748
+1496
+1496
+
+mc.c;default_self
+# Func Hash:
+146835647075900052
+# Num Counters:
+2
+# Counter Values:
+71
+0
+
+mc.c;dir_load
+# Func Hash:
+18969479783012056
+# Num Counters:
+36
+# Counter Values:
+92
+0
+210
+795
+216
+223
+154
+154
+287
+10
+39
+133
+0
+46
+115
+287
+41
+46
+0
+154
+46
+0
+46
+5
+46
+115
+0
+46
+5
+110
+41
+110
+154
+144
+0
+144
+
+mc.c;dir_save
+# Func Hash:
+948827211319572366
+# Num Counters:
+7
+# Counter Values:
+5
+16
+9
+9
+9
+0
+0
+
+mc.c;escape_name
+# Func Hash:
+241529132672494761
+# Num Counters:
+15
+# Counter Values:
+0
+0
+0
+0
+3640
+49375
+3640
+49375
+0
+0
+49375
+4415
+4415
+0
+0
+# Num Value Kinds:
+1
+# ValueKind = IPVK_MemOPSize:
+1
+# NumValueSites:
+1
+2
+5:2595
+17:1820
+
+mc.c;host_path
+# Func Hash:
+685179188002563444
+# Num Counters:
+12
+# Counter Values:
+184
+184
+368
+4105
+4105
+4105
+283
+283
+269
+137
+137
+0
+# Num Value Kinds:
+1
+# ValueKind = IPVK_MemOPSize:
+1
+# NumValueSites:
+2
+1
+129:283
+4
+4:46
+33:44
+9:33
+17:14
+
+mc.c;host_writable
+# Func Hash:
+431494654108067943
+# Num Counters:
+3
+# Counter Values:
+18
+0
+0
+
+mc.c;load_entry
+# Func Hash:
+187771963156903690
+# Num Counters:
+8
+# Counter Values:
+0
+32
+15
+0
+0
+17
+17
+0
+
+mc.c;load_self
+# Func Hash:
+619802541104386769
+# Num Counters:
+6
+# Counter Values:
+25
+25
+25
+25
+25
+0
+
+mc.c;lookup
+# Func Hash:
+526279454474668929
+# Num Counters:
+10
+# Counter Values:
+828
+53
+53
+53
+53
+53
+53
+53
+53
+53
+
+mc.c;mark_entry
+# Func Hash:
+187771963459337018
+# Num Counters:
+8
+# Counter Values:
+0
+2
+0
+2
+2
+2
+0
+2
+
+mc.c;match
+# Func Hash:
+303685790883597733
+# Num Counters:
+14
+# Counter Values:
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+65
+0
+65
+65
+
+mc.c;mc_read
+# Func Hash:
+579636723673587961
+# Num Counters:
+12
+# Counter Values:
+75
+75
+75
+75
+75
+75
+0
+75
+0
+0
+0
+0
+
+mc.c;mc_write
+# Func Hash:
+630343209262123815
+# Num Counters:
+19
+# Counter Values:
+8
+8
+8
+8
+8
+8
+8
+0
+0
+0
+0
+8
+0
+8
+8
+8
+0
+0
+0
+
+mc.c;open_existing_w
+# Func Hash:
+1063705160746808702
+# Num Counters:
+3
+# Counter Values:
+10
+0
+0
+
+mc.c;parse_meta_line
+# Func Hash:
+1063705162462123496
+# Num Counters:
+3
+# Counter Values:
+247
+176
+176
+
+mc.c;path_join
+# Func Hash:
+526351406347313495
+# Num Counters:
+5
+# Counter Values:
+53
+53
+34
+53
+19
+# Num Value Kinds:
+1
+# ValueKind = IPVK_MemOPSize:
+1
+# NumValueSites:
+2
+2
+17:19
+1:15
+2
+17:34
+5:19
+
+mc.c;read_sidecar
+# Func Hash:
+1063705161908944610
+# Num Counters:
+3
+# Counter Values:
+71
+71
+66
+
+mc.c;resolve
+# Func Hash:
+630556656830817264
+# Num Counters:
+28
+# Counter Values:
+39
+19
+58
+19
+775
+775
+58
+0
+19
+34
+19
+0
+0
+34
+39
+0
+0
+5
+0
+0
+0
+39
+0
+0
+0
+34
+19
+0
+
+mc.c;search_next
+# Func Hash:
+1096621590947040255
+# Num Counters:
+6
+# Counter Values:
+20
+65
+65
+20
+15
+25
+
+mc.c;store_entry
+# Func Hash:
+391331301056010128
+# Num Counters:
+7
+# Counter Values:
+0
+2
+0
+0
+0
+2
+2
+
+mc.c;time_from_unix
+# Func Hash:
+784007056844089447
+# Num Counters:
+2
+# Counter Values:
+474
+474
+
+mc.c;time_parse
+# Func Hash:
+238984484622511769
+# Num Counters:
+3
+# Counter Values:
+352
+352
+0
+
+mc.c;time_text
+# Func Hash:
+784007056844089447
+# Num Counters:
+2
+# Counter Values:
+50
+0
+
+mc.c;unescape_name
+# Func Hash:
+1103606759895059329
+# Num Counters:
+21
+# Counter Values:
+56366
+56366
+50218
+48681
+1537
+48681
+8683
+1537
+0
+1537
+0
+8683
+7146
+7146
+7146
+5604
+4062
+0
+0
+0
+0
+
+mc.c;write_file_w
+# Func Hash:
+431494654108067943
+# Num Counters:
+3
+# Counter Values:
+9
+9
+9
+
+mc_rpc
+# Func Hash:
+60133791668208908
+# Num Counters:
+258
+# Counter Values:
+0
+0
+0
+0
+0
+0
+5
+0
+0
+5
+6
+15
+0
+0
+45
+0
+0
+3010
+0
+2914
+15
+0
+0
+2990
+15
+5
+0
+6
+15
+0
+6
+0
+0
+45
+20
+0
+459
+459
+0
+0
+0
+0
+5
+2914
+17
+17
+0
+0
+2
+20
+0
+0
+0
+0
+0
+0
+0
+0
+17
+0
+2
+0
+0
+2
+2914
+0
+17
+0
+15
+15
+15
+2914
+2914
+2914
+2914
+0
+17
+0
+15
+15
+20
+0
+0
+17
+0
+0
+15
+0
+0
+2914
+2914
+20
+15
+0
+0
+17
+0
+17
+0
+0
+0
+0
+0
+2
+2914
+0
+20
+5
+2
+0
+0
+15
+0
+0
+0
+0
+0
+0
+0
+2
+0
+0
+0
+15
+0
+0
+0
+17
+0
+0
+0
+0
+0
+0
+0
+0
+17
+0
+0
+6
+6
+0
+0
+0
+6
+6
+0
+0
+0
+0
+17
+0
+0
+0
+0
+0
+0
+17
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+2
+0
+15
+0
+0
+0
+0
+0
+17
+0
+0
+0
+0
+0
+17
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+2
+0
+0
+0
+0
+0
+0
+0
+0
+2914
+0
+2914
+17
+0
+17
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+15
+0
+20
+0
+20
+5
+0
+15
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+# Num Value Kinds:
+1
+# ValueKind = IPVK_MemOPSize:
+1
+# NumValueSites:
+15
+2
+33:2953
+513:37
+3
+1:2948
+17:37
+0:5
+1
+129:2914
+0
+0
+1
+513:45
+1
+129:15
+1
+513:6
+2
+17:15
+1:5
+1
+256:15
+1
+5:15
+1
+64:15
+0
+0
+2
+4:2985
+9:5
+
+mc_set_default_dir
+# Func Hash:
+1063705162558100101
+# Num Counters:
+3
+# Counter Values:
+5
+5
+5
+
+menu_game.c;opt_get
+# Func Hash:
+536873290231689177
+# Num Counters:
+3
+# Counter Values:
+108976
+13622
+0
+
+menu_game.c;tick
+# Func Hash:
+303685787647795464
+# Num Counters:
+13
+# Counter Values:
+102181
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+
+menu_game_init
+# Func Hash:
+850539712863496295
+# Num Counters:
+11
+# Counter Values:
+5
+5
+0
+0
+0
+0
+0
+0
+0
+5
+5
+
+menu_is_open
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+182287
+
+menu_keep_tick
+# Func Hash:
+592238261352610010
+# Num Counters:
+6
+# Counter Values:
+102181
+0
+0
+0
+0
+0
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+1
+0
+
+menu_overlay.c;now_s
+# Func Hash:
+784007059655560962
+# Num Counters:
+2
+# Counter Values:
+250418
+5
+
+menu_set_host
+# Func Hash:
+146835647075900052
+# Num Counters:
+2
+# Counter Values:
+5
+0
+
+movie_gs_active
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+666229493
+
+movie_gs_hint
+# Func Hash:
+238984482966880379
+# Num Counters:
+3
+# Counter Values:
+10
+5
+5
+
+movie_gs_sprite
+# Func Hash:
+564796761272571270
+# Num Counters:
+25
+# Counter Values:
+202752000
+0
+316800
+1320
+0
+1320
+1320
+0
+0
+660
+40
+0
+0
+0
+0
+1315
+660
+660
+660
+660
+660
+660
+660
+0
+0
+
+movie_gs_vblank
+# Func Hash:
+974670607584382344
+# Num Counters:
+7
+# Counter Values:
+125222
+1368
+1320
+1320
+48
+1320
+0
+
+movie_layer_ee
+# Func Hash:
+334492584590461308
+# Num Counters:
+5
+# Counter Values:
+10
+10
+5
+0
+5
+
+movie_layer_get
+# Func Hash:
+844982798881822659
+# Num Counters:
+5
+# Counter Values:
+125137
+125137
+1333
+1333
+1333
+
+overlay_d3d11_draw
+# Func Hash:
+608228256461774967
+# Num Counters:
+117
+# Counter Values:
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+125209
+0
+0
+0
+125209
+0
+0
+0
+125209
+0
+0
+5
+5
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+# Num Value Kinds:
+2
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+87
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+# ValueKind = IPVK_MemOPSize:
+1
+# NumValueSites:
+1
+0
+
+overlay_wants_frames
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+57078
+
+own_blocks
+# Func Hash:
+1124680650144255556
+# Num Counters:
+3
+# Counter Values:
+1096747008
+1096747008
+19584768
+
+own_change_gen
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+20004140
+
+own_draw
+# Func Hash:
+1101635458482408091
+# Num Counters:
+61
+# Counter Values:
+203092916
+373889548
+92856
+26415872
+3090175
+0
+42449221
+1948670847
+529022296
+0
+1906221626
+1948670847
+203443924
+203363952
+0
+203092916
+351008
+79972
+14741
+351008
+203092916
+311327246
+213119389
+351008
+0
+351008
+351008
+0
+179246964
+351008
+351008
+0
+264239087
+0
+1785190797
+264140228
+0
+264140228
+0
+1948670847
+1948670847
+1902622392
+0
+46
+264140228
+1948670847
+1948670847
+14741
+3218144
+0
+0
+1900986312
+1161569754
+201134
+42449221
+0
+14741
+14741
+203092916
+203092916
+264337946
+# Num Value Kinds:
+1
+# ValueKind = IPVK_MemOPSize:
+1
+# NumValueSites:
+1
+14
+1:753556337
+4:261088038
+2:211634749
+9:124054740
+17:111322873
+3:96017573
+5:49782583
+6:40718152
+64:37523827
+7:33831479
+8:26312926
+33:22523926
+16:11892423
+32:4931420
+
+own_find
+# Func Hash:
+701607649742401562
+# Num Counters:
+15
+# Counter Values:
+24428969
+7626982
+7626982
+24428868
+2994
+2974
+24428842
+153
+24428842
+30
+16801987
+20
+16802053
+20
+66
+
+own_flush_patches
+# Func Hash:
+37730073867245697
+# Num Counters:
+4
+# Counter Values:
+72734697
+228108
+104034
+0
+
+own_frame_end
+# Func Hash:
+776814507338565218
+# Num Counters:
+13
+# Counter Values:
+62647
+8014144
+250442
+125330
+26
+467819
+125330
+10
+125320
+0
+125221
+125221
+181
+
+own_grow
+# Func Hash:
+784007059655560962
+# Num Counters:
+2
+# Counter Values:
+19584814
+46
+
+own_mem_flush
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+117174945
+
+own_mem_is_gpu
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+34440688
+
+own_mem_read
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+38895280
+
+own_mem_vstale
+# Func Hash:
+3603321167784325
+# Num Counters:
+23
+# Counter Values:
+0
+0
+0
+0
+0
+0
+0
+0
+117098499
+0
+0
+150828423
+128689891
+117098499
+127645639
+0
+0
+0
+0
+117098499
+0
+0
+0
+
+own_pair_family
+# Func Hash:
+1124680650679754289
+# Num Counters:
+4
+# Counter Values:
+31
+31
+31
+0
+
+own_rect_blocks
+# Func Hash:
+510152026778735723
+# Num Counters:
+27
+# Counter Values:
+95852974
+0
+0
+0
+0
+0
+0
+592045
+0
+1276915
+0
+387193
+8097689
+2256129
+2256115
+0
+592045
+0
+387193
+0
+1276915
+387194
+592045
+0
+0
+8097639
+95852846
+
+own_rect_current
+# Func Hash:
+948827209460775844
+# Num Counters:
+8
+# Counter Values:
+224591360
+224591360
+3509240
+3509240
+125330
+125330
+125330
+125330
+
+own_rect_serials
+# Func Hash:
+631255614377321279
+# Num Counters:
+6
+# Counter Values:
+23209946
+23209946
+23209946
+23209946
+506594
+0
+
+own_reset
+# Func Hash:
+536873293222025096
+# Num Counters:
+3
+# Counter Values:
+320
+81920
+5
+
+own_resync
+# Func Hash:
+391331303622448488
+# Num Counters:
+5
+# Counter Values:
+0
+81920
+320
+81920
+5
+
+own_set_family
+# Func Hash:
+1096621588052073557
+# Num Counters:
+6
+# Counter Values:
+125392
+125392
+125392
+41
+41
+0
+
+own_shadow_need
+# Func Hash:
+11850895433197170
+# Num Counters:
+8
+# Counter Values:
+182790048
+182773248
+182773248
+45697512
+2855832
+1632054
+101994
+10
+# Num Value Kinds:
+1
+# ValueKind = IPVK_MemOPSize:
+1
+# NumValueSites:
+2
+1
+513:10
+1
+513:101994
+
+own_target
+# Func Hash:
+453963835065287436
+# Num Counters:
+18
+# Counter Values:
+144
+2944
+103
+0
+5
+0
+0
+3141564
+3141518
+46
+0
+0
+10
+0
+190
+46
+0
+26
+
+own_target_kind_of_zpsm
+# Func Hash:
+844982796009977384
+# Num Counters:
+5
+# Counter Values:
+1567503
+19285
+0
+0
+0
+
+own_upload
+# Func Hash:
+614180802391825576
+# Num Counters:
+56
+# Counter Values:
+8969040
+8969040
+412301
+8762832
+1108402
+4649777728
+105611678
+4649777728
+0
+0
+0
+141763
+0
+0
+1276900
+0
+0
+0
+72240476
+412301
+0
+0
+0
+72240476
+330877
+0
+1276900
+0
+141763
+5729015
+72652777
+72652777
+0
+0
+72240476
+72265940
+72652777
+1749540
+0
+0
+330877
+0
+141763
+1276900
+141763
+330877
+0
+0
+0
+0
+0
+0
+851
+851
+17572240
+4632153296
+
+own_view_read
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+3611296
+
+pace_delay_init
+# Func Hash:
+382993475055910911
+# Num Counters:
+2
+# Counter Values:
+5
+5
+
+pace_delay_quantile
+# Func Hash:
+656349718818707495
+# Num Counters:
+5
+# Counter Values:
+456974832
+442856690
+14835625
+124935
+124935
+# Num Value Kinds:
+1
+# ValueKind = IPVK_MemOPSize:
+1
+# NumValueSites:
+1
+8
+257:124650
+129:155
+65:75
+33:35
+32:5
+64:5
+128:5
+256:5
+
+pace_delay_sample
+# Func Hash:
+124721843491777695
+# Num Counters:
+11
+# Counter Values:
+125196
+125196
+600
+124935
+35
+124935
+8
+118700
+0
+41279
+95648
+
+pace_disp_init
+# Func Hash:
+382993475055910911
+# Num Counters:
+2
+# Counter Values:
+5
+5
+
+pace_gov_evidence
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+1
+
+pace_gov_init
+# Func Hash:
+784007056844089447
+# Num Counters:
+2
+# Counter Values:
+5
+5
+
+pad.c;log_mode
+# Func Hash:
+814865058907396897
+# Num Counters:
+8
+# Counter Values:
+10
+10
+10
+10
+10
+5
+5
+0
+
+pad.c;set_act_direct
+# Func Hash:
+1070589993882515096
+# Num Counters:
+20
+# Counter Values:
+0
+0
+0
+2160
+1890
+0
+0
+0
+540
+1620
+540
+26
+0
+270
+0
+270
+270
+132
+1
+132
+
+pad_rpc
+# Func Hash:
+1051022875047723961
+# Num Counters:
+121
+# Counter Values:
+0
+5
+40
+0
+25
+0
+3040
+10
+0
+30
+0
+0
+30
+0
+30
+10
+0
+25
+20
+30
+5
+0
+5
+0
+0
+0
+5
+0
+5
+0
+5
+0
+0
+0
+0
+5
+0
+0
+25
+0
+0
+0
+0
+0
+5
+5
+5
+0
+0
+0
+0
+0
+5
+0
+0
+0
+0
+0
+5
+5
+5
+0
+0
+0
+0
+0
+0
+0
+5
+0
+0
+0
+0
+5
+5
+5
+5
+5
+5
+0
+0
+5
+0
+0
+0
+5
+5
+5
+0
+0
+0
+0
+5
+0
+0
+5
+5
+5
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+5
+5
+0
+5
+0
+0
+# Num Value Kinds:
+1
+# ValueKind = IPVK_MemOPSize:
+1
+# NumValueSites:
+2
+1
+128:30
+1
+128:30
+
+pad_vsync
+# Func Hash:
+178746069373673344
+# Num Counters:
+103
+# Counter Values:
+124800
+500600
+3620650
+0
+749190
+748656
+5049
+249552
+1492491
+249676
+0
+30
+60
+1497600
+1001200
+1001200
+1497600
+125150
+124850
+0
+0
+125150
+0
+1492551
+125150
+5
+105
+0
+0
+124795
+125150
+0
+0
+125150
+165
+124865
+0
+124865
+15
+15
+75
+15
+0
+0
+15
+270
+124843
+0
+0
+0
+124843
+124865
+5
+5
+0
+5
+5
+0
+15
+0
+5
+0
+5
+0
+5
+0
+124850
+250300
+250300
+250300
+5
+5
+15
+0
+0
+10
+0
+5
+0
+5
+5
+0
+15
+5
+125150
+0
+15
+0
+0
+125222
+250372
+0
+0
+0
+72486
+748656
+43
+22
+0
+5
+5
+250372
+250372
+
+pc_text_apply
+# Func Hash:
+700243262447205451
+# Num Counters:
+14
+# Counter Values:
+1170
+26
+27170
+26676
+494
+494
+14522
+494
+14522
+14522
+494
+494
+26
+1664
+# Num Value Kinds:
+1
+# ValueKind = IPVK_MemOPSize:
+1
+# NumValueSites:
+3
+4
+129:312
+65:104
+33:52
+257:26
+6
+129:208
+33:104
+65:104
+9:26
+16:26
+17:26
+5
+33:234
+65:156
+17:52
+3:26
+129:26
+
+pc_text_bank_loaded
+# Func Hash:
+948827209375725624
+# Num Counters:
+8
+# Counter Values:
+26
+26
+5
+26
+26
+5
+0
+0
+
+pcmenu_ee_frame
+# Func Hash:
+784714916558860549
+# Num Counters:
+26
+# Counter Values:
+80
+13612
+13612
+10
+102181
+102181
+5
+102176
+102176
+3403
+5
+3403
+0
+102176
+102176
+102176
+0
+102176
+0
+0
+3403
+0
+3403
+3403
+10
+102176
+
+pcmenu_pad
+# Func Hash:
+844982798994053766
+# Num Counters:
+5
+# Counter Values:
+124865
+124865
+0
+0
+0
+
+pcmenu_text
+# Func Hash:
+567185241707342056
+# Num Counters:
+6
+# Counter Values:
+32750
+0
+0
+0
+0
+0
+
+pcmenu_title_frame
+# Func Hash:
+536873291097491633
+# Num Counters:
+4
+# Counter Values:
+157
+0
+0
+0
+
+perf_final
+# Func Hash:
+269792486770235069
+# Num Counters:
+24
+# Counter Values:
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+5
+0
+0
+0
+0
+0
+0
+0
+0
+0
+5
+0
+0
+
+perf_init
+# Func Hash:
+249133660788141574
+# Num Counters:
+21
+# Counter Values:
+0
+0
+0
+5
+0
+5
+0
+5
+5
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+
+perf_vblank
+# Func Hash:
+292873010542296184
+# Num Counters:
+19
+# Counter Values:
+8937
+8937
+8937
+8937
+8937
+7944
+3832
+125226
+125226
+992
+993
+993
+989
+971
+95
+993
+989
+95
+8937
+
+ps2_call
+# Func Hash:
+998766301731691978
+# Num Counters:
+13
+# Counter Values:
+65
+34170
+302952696
+5
+5
+5
+5
+5
+5
+0
+5
+5
+5
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+2
+28
+** External Symbol **:34300820
+** External Symbol **:30424772
+** External Symbol **:25165712
+** External Symbol **:24205299
+** External Symbol **:5410582
+** External Symbol **:4217135
+** External Symbol **:2739125
+** External Symbol **:1226078
+** External Symbol **:915394
+** External Symbol **:533530
+** External Symbol **:386817
+** External Symbol **:375828
+** External Symbol **:283260
+** External Symbol **:209141
+** External Symbol **:163792
+** External Symbol **:144943
+** External Symbol **:134028
+** External Symbol **:132590
+** External Symbol **:101175
+** External Symbol **:95567
+** External Symbol **:82577
+** External Symbol **:69543
+** External Symbol **:64326
+** External Symbol **:50296
+** External Symbol **:188
+** External Symbol **:117
+** External Symbol **:98
+** External Symbol **:2
+1
+** External Symbol **:5
+
+ps2_func_calls
+# Func Hash:
+599005160874661553
+# Num Counters:
+9
+# Counter Values:
+0
+17560
+5
+17565
+17560
+0
+5
+0
+0
+
+ps2_hook
+# Func Hash:
+567185240501153194
+# Num Counters:
+5
+# Counter Values:
+217678
+115475
+157
+115475
+217684
+
+ps2_hw_read
+# Func Hash:
+74736850569947127
+# Num Counters:
+5
+# Counter Values:
+472459755
+540787159
+68327404
+0
+68327404
+# Num Value Kinds:
+2
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+1
+7
+vu_mem_access:26123447
+dma_access:21472998
+ipu_access:19171235
+gs_priv_access:1248396
+gif_access:125049
+vif_access:125049
+timer_access:61230
+# ValueKind = IPVK_MemOPSize:
+1
+# NumValueSites:
+1
+0
+
+ps2_hw_write
+# Func Hash:
+74736850569947127
+# Num Counters:
+5
+# Counter Values:
+172903388
+202833612
+29930224
+0
+29930224
+# Num Value Kinds:
+2
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+1
+6
+dma_access:21508591
+ipu_access:7050405
+gs_priv_access:1249338
+vif_access:95630
+timer_access:26250
+gif_access:10
+# ValueKind = IPVK_MemOPSize:
+1
+# NumValueSites:
+1
+3
+4:28680826
+8:1249338
+16:60
+
+ps2_in_interrupt
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+713806
+
+ps2_mem_read_slow
+# Func Hash:
+1119356335500622814
+# Num Counters:
+6
+# Counter Values:
+46603616
+68327404
+68492359
+0
+164955
+164955
+# Num Value Kinds:
+1
+# ValueKind = IPVK_MemOPSize:
+1
+# NumValueSites:
+1
+3
+4:46030781
+16:442028
+1:295762
+
+ps2_mem_write_slow
+# Func Hash:
+1119356335500622814
+# Num Counters:
+6
+# Counter Values:
+91464873
+29930224
+29933564
+0
+29590
+3340
+# Num Value Kinds:
+1
+# ValueKind = IPVK_MemOPSize:
+1
+# NumValueSites:
+1
+4
+4:42140751
+16:23771264
+1:14020722
+8:11535476
+
+ps2_mfc0
+# Func Hash:
+37730077182747661
+# Num Counters:
+5
+# Counter Values:
+5605997
+226610
+5379387
+0
+3462051
+
+ps2_mtc0
+# Func Hash:
+784007059655560962
+# Num Counters:
+2
+# Counter Values:
+52500
+26250
+
+ps2_poll_iop
+# Func Hash:
+607699197499721905
+# Num Counters:
+5
+# Counter Values:
+202526097
+76577323
+76577720
+8073361
+125932571
+
+ps2_runtime.c;add_handler
+# Func Hash:
+798733566058850320
+# Num Counters:
+4
+# Counter Values:
+0
+690
+0
+690
+
+ps2_runtime.c;dump_wanted
+# Func Hash:
+902206884299983162
+# Num Counters:
+15
+# Counter Values:
+0
+0
+125222
+0
+125222
+0
+0
+5
+0
+0
+0
+0
+0
+0
+0
+
+ps2_runtime.c;host_timer
+# Func Hash:
+1080702627079984290
+# Num Counters:
+21
+# Counter Values:
+0
+1583702
+0
+788308
+1583692
+125623
+705413
+32442
+125623
+0
+5
+795394
+0
+5
+1459964
+1459964
+1547855
+1410913
+0
+779184
+779184
+
+ps2_runtime.c;pgo_flush
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+5
+
+ps2_runtime.c;picture_aspect
+# Func Hash:
+960862598675300351
+# Num Counters:
+5
+# Counter Values:
+250449
+249081
+249081
+249081
+249081
+
+ps2_runtime.c;run_handlers
+# Func Hash:
+1124680650144255556
+# Num Counters:
+3
+# Counter Values:
+6032096
+754012
+754012
+
+ps2_runtime.c;watchdog
+# Func Hash:
+1127386593873382827
+# Num Counters:
+10
+# Counter Values:
+20475
+0
+0
+20480
+120
+5
+5
+5
+5
+0
+
+ps2_service_irq
+# Func Hash:
+155861565484960272
+# Num Counters:
+122
+# Counter Values:
+0
+0
+0
+0
+11908096
+11908096
+0
+605346
+148666
+0
+1970315
+744256
+744256
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+3586872
+0
+0
+0
+0
+0
+0
+1226059
+125226
+0
+71
+40
+0
+0
+0
+125225
+0
+0
+0
+0
+125222
+0
+0
+0
+5
+0
+125225
+31
+125225
+125222
+125225
+125222
+0
+0
+5
+5
+5
+5
+5
+5
+0
+0
+0
+0
+82695
+0
+0
+0
+5
+5
+206
+0
+0
+0
+0
+0
+0
+0
+5
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+82695
+0
+125222
+0
+0
+0
+0
+599320
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+1
+0
+
+ps2_syscall
+# Func Hash:
+982072633053329948
+# Num Counters:
+56
+# Counter Values:
+81897140
+95610
+5
+1040
+97648501
+85
+97648501
+25
+25
+96896424
+15
+83420837
+284625
+25
+60
+90
+0
+751664
+665
+10
+670
+665
+50
+375842
+0
+20
+5
+0
+20
+148793
+670
+1382
+30
+55
+10
+20
+0
+665
+15
+0
+85
+5
+665
+0
+0
+0
+0
+0
+0
+0
+0
+890
+890
+5
+0
+5
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+1
+3
+** External Symbol **:10
+** External Symbol **:10
+** External Symbol **:5
+
+ps2_unimpl
+# Func Hash:
+1096621591097325164
+# Num Counters:
+5
+# Counter Values:
+26245
+0
+26250
+5
+5
+
+ps2_vblank_count
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+1640572
+
+ps_kind
+# Func Hash:
+567185240673606770
+# Num Counters:
+7
+# Counter Values:
+0
+0
+115
+0
+0
+0
+0
+
+r2_cap_alloc
+# Func Hash:
+784007059655560962
+# Num Counters:
+2
+# Counter Values:
+13895695
+13895695
+
+r2_cap_done
+# Func Hash:
+162986347043300748
+# Num Counters:
+18
+# Counter Values:
+102176
+0
+102171
+12722
+0
+102171
+102171
+0
+0
+5
+102171
+102171
+102171
+102171
+102171
+102171
+0
+0
+
+r2_cap_entry
+# Func Hash:
+182135885622760248
+# Num Counters:
+335
+# Counter Values:
+1065256
+5
+0
+0
+486
+93
+2512807
+0
+0
+408692
+1634768
+408692
+1229995
+38124557
+28541168
+1117052
+12288
+28541168
+0
+49025776
+266314
+0
+60044
+0
+28541168
+865515
+266314
+0
+0
+0
+1564022
+28540423
+0
+0
+5
+102173
+1642389
+147311
+0
+0
+0
+28540423
+0
+0
+102173
+0
+0
+28540423
+0
+102173
+22967207
+89193
+1642352
+0
+0
+5
+5
+122587
+23717021
+0
+0
+102173
+0
+331522
+0
+937635
+27167963
+0
+20947539
+6496933
+26955169
+188444
+0
+0
+0
+11
+102173
+6792518
+523486
+1495078
+0
+0
+0
+0
+6433218
+11
+89193
+0
+408
+0
+0
+20947539
+21748080
+20734745
+5868099
+20734745
+0
+0
+0
+0
+0
+122587
+102173
+6792518
+23367437
+12522899
+14645064
+0
+0
+0
+1372491
+0
+1372460
+1372460
+0
+0
+0
+7005312
+20734745
+0
+0
+1856636
+2869971
+1162385
+3038324
+0
+0
+0
+0
+20135518
+0
+0
+0
+0
+0
+5
+5
+8682407
+8623964
+212794
+0
+0
+0
+0
+1372460
+0
+11472459
+7005312
+8959652
+0
+5
+0
+1372460
+0
+20734745
+7005312
+7005312
+0
+0
+0
+4593346
+0
+0
+2370746
+0
+0
+0
+1229995
+23385499
+219217
+20734745
+0
+0
+1372460
+8414567
+1372460
+21193751
+6824858
+0
+0
+31645
+0
+13333513
+21192853
+1713443
+1532699
+898
+937635
+3666
+1633753
+66036
+76175
+1532699
+554329
+865515
+612931
+1229995
+130563
+0
+937635
+20668709
+66036
+66036
+1229995
+0
+11078
+54958
+2026723
+6993525
+20144483
+0
+6918
+0
+0
+0
+0
+0
+0
+0
+0
+20667137
+0
+588085
+0
+20667137
+0
+0
+0
+0
+21061
+21061
+2026723
+0
+0
+62459
+1624066
+62459
+0
+52292
+0
+21727019
+0
+1564022
+1619113
+2415
+7388
+1561607
+0
+7722
+6195
+0
+0
+0
+0
+0
+0
+0
+0
+1483430
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+102173
+0
+0
+0
+0
+102162
+0
+0
+1495078
+0
+523486
+27200548
+1642352
+1372460
+1372460
+195456
+27167963
+12522899
+2080539
+23604716
+2151529
+10010128
+2026723
+2026723
+21140561
+6824858
+23904842
+1483430
+0
+0
+20734745
+219217
+0
+2086772
+1867462
+571635
+6433218
+20658570
+19202046
+20668709
+460274
+1077338
+1077338
+7450926
+0
+0
+0
+0
+0
+0
+# Num Value Kinds:
+1
+# ValueKind = IPVK_MemOPSize:
+1
+# NumValueSites:
+4
+6
+513:1340820
+33:17714
+257:5637
+65:5432
+129:2854
+512:3
+2
+513:66021
+257:15
+3
+129:968536
+513:555559
+257:189348
+12
+17:453650
+33:347924
+65:275180
+16:151540
+129:143881
+32:80491
+257:28584
+64:26265
+513:20072
+128:4352
+256:703
+512:57
+
+r2_capture.c;clip_fans
+# Func Hash:
+334492582214856887
+# Num Counters:
+5
+# Counter Values:
+1564022
+0
+0
+2415
+2415
+
+r2_capture.c;configure
+# Func Hash:
+849123999496965759
+# Num Counters:
+46
+# Counter Values:
+0
+0
+0
+5
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+
+r2_capture.c;corner_inside
+# Func Hash:
+414921813324851933
+# Num Counters:
+9
+# Counter Values:
+0
+160323556
+120242667
+40080889
+40040506
+40037375
+40031776
+40031017
+40020848
+
+r2_capture.c;dmas_put
+# Func Hash:
+899665447322440369
+# Num Counters:
+30
+# Counter Values:
+10272340
+0
+4177765
+4177765
+4177765
+4177765
+4177765
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+
+r2_capture.c;dmas_vif
+# Func Hash:
+940266883058203467
+# Num Counters:
+17
+# Counter Values:
+57008400
+0
+42472348
+14172912
+14172912
+14172912
+14172912
+14172912
+0
+0
+0
+0
+0
+0
+0
+0
+0
+
+r2_capture.c;drop_chain
+# Func Hash:
+280681506441958838
+# Num Counters:
+20
+# Counter Values:
+20734745
+20734745
+0
+13942227
+0
+0
+13942227
+0
+13343066
+58606
+0
+10103400
+20734745
+6792518
+38504
+6792518
+0
+0
+0
+0
+
+r2_capture.c;fans_now
+# Func Hash:
+567185240881612749
+# Num Counters:
+5
+# Counter Values:
+1624066
+1624066
+0
+5
+0
+
+r2_capture.c;flush_vif
+# Func Hash:
+581876257574161109
+# Num Counters:
+18
+# Counter Values:
+1330801
+1918677
+1782248
+5
+587876
+0
+587876
+0
+0
+0
+587876
+0
+405216
+40684
+0
+7764
+587876
+0
+
+r2_capture.c;guard_clean
+# Func Hash:
+252792768774331653
+# Num Counters:
+12
+# Counter Values:
+1384244
+1038183
+346061
+23073
+20658
+22784
+2415
+2415
+159181
+549158
+508472
+713568
+
+r2_capture.c;inside_guard
+# Func Hash:
+124721840531423433
+# Num Counters:
+11
+# Counter Values:
+609754976
+151385468
+151227006
+151038721
+151002948
+150874722
+20144483
+1564022
+76706435
+77083015
+77654715
+
+r2_capture.c;keep_chains
+# Func Hash:
+93478046643770193
+# Num Counters:
+7
+# Counter Values:
+41682284
+41682284
+0
+5
+5
+0
+0
+
+r2_capture.c;likely_native
+# Func Hash:
+916815791452264935
+# Num Counters:
+26
+# Counter Values:
+0
+20667137
+20939372
+20667137
+272235
+20667137
+20667137
+1453984
+6645653
+20667137
+14021484
+20654602
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+1453984
+20667137
+6645653
+13050527
+
+r2_capture.c;lit_extra
+# Func Hash:
+1101761138646821908
+# Num Counters:
+17
+# Counter Values:
+8494210
+0
+11615572
+135907360
+135907360
+33976840
+38080912
+11615572
+11615572
+0
+0
+0
+1974431
+2026723
+0
+0
+0
+
+r2_capture.c;mv_prev
+# Func Hash:
+436124195139842858
+# Num Counters:
+13
+# Counter Values:
+260725
+20913557
+20734745
+0
+5
+0
+5
+0
+1517088
+0
+13244717
+5972940
+81913
+
+r2_capture.c;nat_guess
+# Func Hash:
+599005160799158071
+# Num Counters:
+8
+# Counter Values:
+10506498
+8522618
+2513922
+1972472
+0
+0
+0
+0
+
+r2_capture.c;next_switches
+# Func Hash:
+1073436550814402474
+# Num Counters:
+11
+# Counter Values:
+654121
+652549
+652549
+652549
+0
+0
+0
+0
+0
+0
+652549
+
+r2_capture.c;oq_has
+# Func Hash:
+1096621589943958312
+# Num Counters:
+5
+# Counter Values:
+3750540
+938205
+72690
+570
+937635
+
+r2_capture.c;outline_for
+# Func Hash:
+740301980372789675
+# Num Counters:
+18
+# Counter Values:
+0
+2891720
+24182
+2867153
+0
+17
+2867153
+2867538
+381
+368
+368
+379
+2744583
+2867538
+2744583
+5
+370
+370
+# Num Value Kinds:
+1
+# ValueKind = IPVK_MemOPSize:
+1
+# NumValueSites:
+1
+5
+513:358
+33:7
+65:2
+257:2
+129:1
+
+r2_capture.c;owe_epilogue
+# Func Hash:
+52047011206613975
+# Num Counters:
+9
+# Counter Values:
+1907599
+1218915
+1218915
+1218915
+1218915
+1218915
+1218915
+1218915
+1218915
+
+r2_capture.c;part_hint
+# Func Hash:
+567185240312731653
+# Num Counters:
+5
+# Counter Values:
+201166
+201166
+100583
+0
+0
+
+r2_capture.c;run_programs
+# Func Hash:
+289505127316240264
+# Num Counters:
+31
+# Counter Values:
+216874
+24767826
+25160934
+25160934
+24662019
+498915
+393108
+498915
+398424
+2297048
+216874
+282041
+41682284
+0
+5
+394680
+13797830
+0
+0
+5
+0
+0
+0
+0
+0
+41580111
+143517
+111067
+111067
+116383
+13797830
+
+r2_capture.c;skin_inside_guard
+# Func Hash:
+187354409936996414
+# Num Counters:
+22
+# Counter Values:
+4999024
+7238778
+40080889
+40020845
+29021392
+28961348
+0
+5059068
+7298822
+7238778
+7298822
+0
+0
+865515
+805471
+20068231
+20071416
+20076274
+7238778
+0
+0
+0
+
+r2_clip.c;kick
+# Func Hash:
+1080275683364087024
+# Num Counters:
+8
+# Counter Values:
+12073500
+0
+0
+1138470
+1138470
+0
+0
+0
+
+r2_clip.c;record
+# Func Hash:
+81815080173011037
+# Num Counters:
+22
+# Counter Values:
+7499664
+1874916
+2812374
+21402
+0
+937458
+7134
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+
+r2_clip_batch
+# Func Hash:
+1138416057746909877
+# Num Counters:
+28
+# Counter Values:
+312486
+0
+0
+0
+0
+0
+5924677
+5923211
+0
+1466
+5
+115146
+228932
+83554
+116612
+115146
+115146
+115146
+115146
+115146
+115146
+113919
+5
+0
+1667
+309189
+0
+0
+
+r2_clip_entry
+# Func Hash:
+209654261110952164
+# Num Counters:
+32
+# Counter Values:
+262635479
+940
+407791691
+407791682
+1650243
+144449654
+262635479
+9
+249045444
+144449645
+10780829
+10779354
+144449645
+0
+0
+7559816
+10780820
+660549
+0
+10779354
+438719
+940
+1564022
+0
+6030219
+115146
+1564022
+89599
+1466
+1561607
+118185834
+118185834
+
+r2_clip_prep
+# Func Hash:
+991474888725551233
+# Num Counters:
+21
+# Counter Values:
+429452573
+1564022
+1564022
+0
+0
+0
+0
+21895543
+12683975
+4378342
+162323225
+178248
+0
+0
+0
+0
+128100744
+151521302
+76341223
+162323225
+178248
+
+r2_clip_setup
+# Func Hash:
+798733567688020882
+# Num Counters:
+4
+# Counter Values:
+0
+0
+5
+0
+
+r2_clip_verdict
+# Func Hash:
+334492584072975113
+# Num Counters:
+6
+# Counter Values:
+413716368
+413716368
+266324664
+120296357
+26425920
+636516
+
+r2_header_parse
+# Func Hash:
+927205938260155682
+# Num Counters:
+12
+# Counter Values:
+0
+11429416
+5
+11429416
+11429416
+42912554
+171644416
+10849416
+10849416
+10848314
+10727776
+10727776
+
+r2_header_qw
+# Func Hash:
+431494654108067943
+# Num Counters:
+3
+# Counter Values:
+1651170137
+1651170137
+1415331548
+
+r2_lights_prep
+# Func Hash:
+661840814949790452
+# Num Counters:
+38
+# Counter Values:
+18240507
+18193527
+31590896
+23693172
+31590896
+31592380
+23694285
+23694285
+6266679
+6080169
+6080169
+6064509
+7897724
+7897724
+7897724
+47072
+78421
+7819303
+2088893
+3834423
+4063672
+961558
+1065165
+5220
+1974431
+0
+2021503
+2026723
+2026723
+2026723
+6080169
+6080169
+7898460
+7898113
+78428
+2013228
+78428
+2010463
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+8
+1
+r2_header_qw:2026723
+1
+r2_header_qw:2026723
+1
+r2_header_qw:2026723
+1
+r2_header_qw:961558
+1
+r2_header_qw:1065165
+1
+r2_header_qw:7945167
+1
+r2_header_qw:7945167
+1
+r2_header_qw:7945167
+
+r2_matmul_fast
+# Func Hash:
+146835646621254984
+# Num Counters:
+2
+# Counter Values:
+56065892
+14016473
+
+r2_mesh.c;add_batch_packets
+# Func Hash:
+934653112910564746
+# Num Counters:
+27
+# Counter Values:
+77252
+704
+229960
+152994
+153750
+917964
+917964
+153698
+152656
+152994
+77304
+152994
+152994
+152994
+152994
+152994
+152994
+152994
+76548
+152994
+152994
+1221248
+152994
+152994
+152994
+152994
+0
+
+r2_mesh.c;add_seg
+# Func Hash:
+1031809834021157532
+# Num Counters:
+8
+# Counter Values:
+11
+40948438
+29469438
+28385
+17816000
+23132438
+28385
+28374
+
+r2_mesh.c;interpret
+# Func Hash:
+814428143658082608
+# Num Counters:
+112
+# Counter Values:
+76577448
+11159
+4114
+5432
+13141
+36201
+11520
+5218
+712826848
+586883
+633048
+114258
+633048
+885
+846
+18580
+0
+703918777
+21240
+8389988
+658906349
+0
+42821
+15108
+12660
+0
+0
+7347774
+3830232
+76695215
+35589939
+4442061
+5224499
+178199590
+35532813
+0
+158262
+76577448
+1227
+0
+12293727
+0
+1227
+35527830
+166907996
+3854351
+2018904
+11458165
+35525936
+28758
+28090
+39464
+43670
+0
+65608
+4843
+169479
+23567
+10524
+6516
+35120823
+2655
+65028
+870598
+52099
+148833
+35088490
+1492
+10924
+21021
+97711
+1770
+0
+381
+381
+23617
+2809
+4367
+30562
+23604
+9619
+23617
+23604
+9619
+8509
+12660
+3614
+16274
+14688
+9619
+23604
+14688
+12660
+9619
+0
+0
+1401
+172600
+172600
+48
+5946010
+852398
+381
+35120823
+35120823
+381
+0
+39464
+114258
+114258
+8869
+8869
+
+r2_mesh.c;lit_prepare
+# Func Hash:
+830659416716205602
+# Num Counters:
+10
+# Counter Values:
+396068
+394405
+16274
+10271
+9833
+10271
+0
+10271
+0
+10178
+
+r2_mesh.c;push_words
+# Func Hash:
+295935872077941363
+# Num Counters:
+8
+# Counter Values:
+107493
+817487830
+40948438
+40948438
+96945
+40948438
+96945
+28374
+# Num Value Kinds:
+1
+# ValueKind = IPVK_MemOPSize:
+1
+# NumValueSites:
+1
+12
+8:26213719
+65:8974265
+129:2589223
+257:1557948
+513:919559
+32:655001
+33:13737
+64:11001
+128:6890
+256:3936
+512:2857
+16:302
+
+r2_mesh.c;src_make
+# Func Hash:
+599077204698313595
+# Num Counters:
+6
+# Counter Values:
+144950
+144950
+21442
+0
+21442
+0
+# Num Value Kinds:
+1
+# ValueKind = IPVK_MemOPSize:
+1
+# NumValueSites:
+2
+6
+33:10713
+8:6438
+65:3524
+129:613
+257:145
+513:9
+10
+513:42165
+257:30892
+16:21127
+129:17281
+65:15048
+128:13548
+256:2094
+512:1484
+64:1279
+33:32
+
+r2_mesh.c;sub_batch
+# Func Hash:
+565869927600495934
+# Num Counters:
+136
+# Counter Values:
+78183
+0
+78170
+2
+77522
+0
+77522
+0
+77522
+30314
+47208
+0
+0
+30096
+26891
+77304
+26891
+2224
+1532592
+420256
+30096
+76548
+766296
+249700
+250148
+30096
+3022004
+76548
+19238
+30096
+766296
+76548
+20969
+767190
+76548
+41406
+152994
+0
+26266
+2277298
+26266
+2277442
+8896
+8896
+2277458
+5017
+26266
+76548
+8896
+29340
+8896
+1511002
+17019
+2277458
+0
+46419
+76548
+19254
+0
+0
+26266
+587
+0
+9247
+46419
+2224
+10034
+1511002
+2270654
+45400
+76548
+17019
+2277442
+0
+16
+6044008
+45400
+248428
+2270654
+2263163
+0
+71515
+10034
+3065760
+3065760
+2277442
+0
+6044008
+0
+0
+2263163
+766440
+2267572
+0
+766440
+0
+2267572
+2277442
+0
+766440
+0
+0
+62107
+766440
+2134390
+1511002
+0
+0
+62107
+0
+1511002
+0
+761382
+816321
+47221
+47208
+39230
+39230
+0
+39230
+39230
+28052
+30314
+28052
+15408
+26889
+19254
+26198
+26198
+0
+9743
+401960
+401960
+0
+0
+9743
+
+r2_mesh.c;walk
+# Func Hash:
+847869753779479810
+# Num Counters:
+24
+# Counter Values:
+0
+0
+0
+26213719
+26213719
+26213719
+14734719
+26213719
+26213719
+26213719
+11479000
+14734719
+14734719
+14734719
+14734719
+3168500
+0
+0
+11479000
+0
+0
+0
+3168500
+0
+
+r2_mesh_decode
+# Func Hash:
+591994642695325079
+# Num Counters:
+23
+# Counter Values:
+6450528
+297851
+370938
+65918
+63183
+2150176
+27979
+6918
+12219
+27979
+21100
+21100
+8881
+21061
+0
+0
+8881
+15004
+15004
+0
+21100
+8881
+12180
+
+r2_mesh_get
+# Func Hash:
+1124680652285324760
+# Num Counters:
+4
+# Counter Values:
+713935030
+713961938
+713971379
+713924141
+
+r2_mesh_hash
+# Func Hash:
+1124680653142780434
+# Num Counters:
+4
+# Counter Values:
+0
+20835
+5
+20835
+
+r2_outline.c;kick
+# Func Hash:
+1031809831579426734
+# Num Counters:
+8
+# Counter Values:
+562609112
+141416756
+69180170
+9
+141416758
+72236610
+11
+835
+
+r2_outline_decode
+# Func Hash:
+175250905672726866
+# Num Counters:
+18
+# Counter Values:
+385
+4
+385
+385
+385
+381
+381
+381
+381
+0
+385
+381
+381
+381
+385
+381
+0
+385
+
+r2_outline_exec
+# Func Hash:
+714500944081254253
+# Num Counters:
+10
+# Counter Values:
+2274913652
+2274913652
+568728413
+1406177280
+1406177280
+27994070
+6114537
+6114526
+3057274
+1373220
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+1
+1
+r2_header_qw:1406177280
+
+r2_outline_flips
+# Func Hash:
+784007056844089447
+# Num Counters:
+2
+# Counter Values:
+1372460
+1372460
+
+r2_outline_free
+# Func Hash:
+784007056844089447
+# Num Counters:
+2
+# Counter Values:
+12305
+201
+
+r2_outline_run
+# Func Hash:
+163963573676804315
+# Num Counters:
+119
+# Counter Values:
+139239040
+1201041768
+180058
+89202
+285974672
+86472
+48916208
+582091784
+582091784
+436568838
+582091784
+1189846772
+1189846772
+1189846772
+1189846772
+892385079
+400347256
+34809760
+400347256
+400347256
+300260442
+400347256
+436568838
+21971360
+21971360
+21971360
+21971360
+888847591
+887112247
+877716302
+300260442
+858899021
+858756056
+858718963
+858406517
+858333994
+858317315
+858139783
+858070250
+858053311
+138358672
+138358672
+138358672
+207538008
+276717344
+276717344
+276717344
+276717344
+12229052
+12229052
+12229052
+297461693
+8702440
+100086814
+22270
+145500676
+5492840
+5492840
+5492840
+5492840
+5492840
+4119630
+4119630
+5492840
+5492840
+4235140
+27163282
+5492794
+5492748
+69179336
+69179333
+3057263
+3057274
+0
+2175610
+1373210
+423514
+43009
+92
+0
+3200
+0
+214101
+27163282
+7660
+100086814
+0
+0
+113487
+0
+145522946
+0
+0
+22270
+0
+0
+0
+0
+67190
+0
+67190
+0
+0
+297461693
+0
+0
+0
+0
+0
+274971
+0
+4
+0
+0
+34712090
+0
+0
+0
+0
+
+r2_outline_same
+# Func Hash:
+784007056844089447
+# Num Counters:
+2
+# Counter Values:
+2744583
+2744583
+
+r2_pass_classify
+# Func Hash:
+520042073034227064
+# Num Counters:
+25
+# Counter Values:
+152994
+338
+152656
+338
+152656
+76548
+76548
+0
+76548
+76548
+152656
+152656
+76108
+76548
+0
+0
+76548
+76548
+76548
+76548
+0
+0
+152994
+0
+338
+
+r2_render.c;arena_grow
+# Func Hash:
+783548774365243532
+# Num Counters:
+9
+# Counter Values:
+25
+54708
+54675
+58
+58
+33
+25
+22
+11
+
+r2_render.c;ph_now
+# Func Hash:
+784007056844089447
+# Num Counters:
+2
+# Counter Values:
+6117895
+5
+
+r2_render.c;segment
+# Func Hash:
+523484670390085878
+# Num Counters:
+100
+# Counter Values:
+116126
+162186074
+116126
+195918477
+195918477
+18236
+58114
+1230337
+0
+1223579
+80938566
+195918477
+0
+1223579
+195918477
+18236
+5
+0
+18236
+195918477
+1223579
+195918477
+18236
+1223579
+195918477
+11
+20363182
+18236
+1223579
+0
+5
+0
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+0
+0
+5
+1223579
+18236
+20363182
+5
+11
+0
+1223579
+18236
+0
+20363182
+0
+20363182
+1223579
+0
+18236
+5
+0
+0
+0
+1223574
+0
+0
+1223579
+0
+0
+0
+0
+0
+1223579
+0
+195918477
+0
+0
+0
+0
+0
+1223574
+1223579
+0
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+5
+116126
+162186074
+0
+0
+143191017
+# Num Value Kinds:
+2
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+1
+1
+gpu_exec.c;td_r2:162186074
+# ValueKind = IPVK_MemOPSize:
+1
+# NumValueSites:
+2
+2
+257:11810
+513:6426
+0
+
+r2_render_segment
+# Func Hash:
+391331302648663903
+# Num Counters:
+6
+# Counter Values:
+0
+5
+1230337
+0
+0
+0
+
+r2_screen_model_of
+# Func Hash:
+30393575172981867
+# Num Counters:
+8
+# Counter Values:
+612963
+612958
+612964
+204324
+0
+204321
+204321
+612961
+
+r2_slot_at
+# Func Hash:
+382993475055910911
+# Num Counters:
+2
+# Counter Values:
+2669746
+0
+
+r2_slot_ring
+# Func Hash:
+784007059655560962
+# Num Counters:
+2
+# Counter Values:
+5
+5
+
+r2_src_free
+# Func Hash:
+784007056844089447
+# Num Counters:
+2
+# Counter Values:
+201
+201
+
+r2_src_same
+# Func Hash:
+978919879387345875
+# Num Counters:
+4
+# Counter Values:
+211022904
+211015516
+24478990
+24478990
+# Num Value Kinds:
+1
+# ValueKind = IPVK_MemOPSize:
+1
+# NumValueSites:
+1
+10
+513:66245287
+257:46512035
+16:25425360
+129:23808575
+65:22523159
+128:20273925
+256:2825393
+512:2433992
+64:873149
+33:102029
+
+r2_store_add
+# Func Hash:
+1124680653462654286
+# Num Counters:
+4
+# Counter Values:
+21061
+21061
+21061
+21061
+
+r2_store_new_gen
+# Func Hash:
+798733567366780958
+# Num Counters:
+4
+# Counter Values:
+0
+0
+11
+11
+
+r2_trace.c;active
+# Func Hash:
+52047012025954949
+# Num Counters:
+11
+# Counter Values:
+13997871
+0
+5
+0
+0
+0
+0
+0
+0
+0
+0
+
+r2_trace_alloc
+# Func Hash:
+886271541597773735
+# Num Counters:
+4
+# Counter Values:
+0
+13895695
+0
+13895695
+
+r2_trace_frame
+# Func Hash:
+29121669264649227
+# Num Counters:
+22
+# Counter Values:
+0
+0
+0
+0
+0
+102176
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+
+r2g_bind_constants
+# Func Hash:
+1138531377474437119
+# Num Counters:
+1
+# Counter Values:
+1223579
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+3
+1
+** External Symbol **:1223579
+1
+** External Symbol **:1223579
+1
+** External Symbol **:1223579
+
+r2g_bind_index
+# Func Hash:
+170957022131388415
+# Num Counters:
+1
+# Counter Values:
+1223579
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+1
+1
+** External Symbol **:1223579
+
+r2g_bind_pipe
+# Func Hash:
+316208502535579751
+# Num Counters:
+2
+# Counter Values:
+195918477
+51345338
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+5
+1
+** External Symbol **:51345338
+1
+** External Symbol **:51345338
+1
+** External Symbol **:51345338
+1
+** External Symbol **:51345338
+1
+** External Symbol **:51345338
+
+r2g_bind_srv
+# Func Hash:
+1108079925070882919
+# Num Counters:
+2
+# Counter Values:
+4894316
+2447158
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+3
+1
+** External Symbol **:4894316
+1
+** External Symbol **:4894316
+1
+** External Symbol **:4894316
+
+r2g_bind_srv_native
+# Func Hash:
+1138531377474437119
+# Num Counters:
+1
+# Counter Values:
+4894316
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+3
+1
+** External Symbol **:4894316
+1
+** External Symbol **:4894316
+1
+** External Symbol **:4894316
+
+r2g_bind_state
+# Func Hash:
+464126655683597619
+# Num Counters:
+20
+# Counter Values:
+195918477
+158142981
+181936913
+2341560
+194694898
+194694898
+194694898
+24
+19
+37775812
+41002618
+10
+0
+10
+10
+0
+0
+0
+0
+5
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+6
+1
+** External Symbol **:24
+1
+** External Symbol **:158142981
+1
+** External Symbol **:19
+1
+** External Symbol **:181936913
+1
+** External Symbol **:10
+1
+** External Symbol **:2341560
+
+r2g_bind_targets_native
+# Func Hash:
+955604089020874751
+# Num Counters:
+2
+# Counter Values:
+1223579
+1223579
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+1
+1
+** External Symbol **:1223579
+
+r2g_bind_vertex
+# Func Hash:
+170957022131388415
+# Num Counters:
+1
+# Counter Values:
+1223579
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+1
+1
+** External Symbol **:1223579
+
+r2g_bind_vertex_native
+# Func Hash:
+170957022131388415
+# Num Counters:
+1
+# Counter Values:
+1223579
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+1
+1
+** External Symbol **:1223579
+
+r2g_buf_copy
+# Func Hash:
+170957022131388415
+# Num Counters:
+1
+# Counter Values:
+25
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+1
+1
+** External Symbol **:25
+
+r2g_buf_create
+# Func Hash:
+696072650452155494
+# Num Counters:
+12
+# Counter Values:
+74
+0
+17
+5
+27
+25
+25
+0
+0
+0
+0
+74
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+3
+1
+** External Symbol **:74
+1
+** External Symbol **:25
+0
+
+r2g_buf_free
+# Func Hash:
+444246269908504524
+# Num Counters:
+4
+# Counter Values:
+58
+25
+3
+25
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+2
+1
+** External Symbol **:3
+1
+** External Symbol **:25
+
+r2g_buf_size
+# Func Hash:
+784007056844089447
+# Num Counters:
+2
+# Counter Values:
+54675
+54675
+
+r2g_buf_write
+# Func Hash:
+1003929209310505063
+# Num Counters:
+3
+# Counter Values:
+189075
+189075
+5
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+1
+2
+** External Symbol **:188979
+** External Symbol **:96
+
+r2g_d3d11_create
+# Func Hash:
+784007056844089447
+# Num Counters:
+2
+# Counter Values:
+5
+5
+
+r2g_draw_indexed
+# Func Hash:
+170957022131388415
+# Num Counters:
+1
+# Counter Values:
+195918477
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+1
+2
+** External Symbol **:195848286
+** External Symbol **:70191
+
+r2g_end
+# Func Hash:
+567090795815895039
+# Num Counters:
+1
+# Counter Values:
+1223579
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+2
+1
+** External Symbol **:1223579
+1
+** External Symbol **:1223579
+
+r2g_invalidate
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+1223579
+
+r2g_pipe_create
+# Func Hash:
+239377746144506358
+# Num Counters:
+9
+# Counter Values:
+0
+500
+50
+50
+0
+50
+50
+50
+20
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+4
+1
+** External Symbol **:50
+1
+** External Symbol **:50
+1
+** External Symbol **:50
+1
+** External Symbol **:20
+
+r2g_scissor
+# Func Hash:
+170957022131388415
+# Num Counters:
+1
+# Counter Values:
+1223579
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+1
+1
+** External Symbol **:1223579
+
+r2g_viewport
+# Func Hash:
+170957022131388415
+# Num Counters:
+1
+# Counter Values:
+1223579
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+1
+1
+** External Symbol **:1223579
+
+sceSdGetAddr
+# Func Hash:
+950994587742064166
+# Num Counters:
+14
+# Counter Values:
+0
+0
+0
+0
+0
+4343817
+0
+0
+0
+4343817
+0
+0
+0
+0
+
+sceSdGetParam
+# Func Hash:
+292873011074412807
+# Num Counters:
+27
+# Counter Values:
+1873130
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+1873130
+0
+0
+0
+0
+
+sceSdGetSwitch
+# Func Hash:
+414921809526846116
+# Num Counters:
+10
+# Counter Values:
+0
+0
+36460
+0
+0
+0
+0
+0
+18341
+18341
+
+sceSdInit
+# Func Hash:
+1013336875500651382
+# Num Counters:
+11
+# Counter Values:
+240
+240
+10
+10
+10
+5
+0
+10
+5
+5
+5
+
+sceSdNote2Pitch
+# Func Hash:
+765075803281889861
+# Num Counters:
+10
+# Counter Values:
+398018
+40155
+0
+438173
+0
+438173
+0
+40133
+0
+0
+
+sceSdSetAddr
+# Func Hash:
+502833846101874229
+# Num Counters:
+18
+# Counter Values:
+50649
+50649
+0
+50649
+0
+0
+0
+18341
+32308
+0
+0
+0
+0
+18341
+0
+32308
+0
+0
+
+sceSdSetCoreAttr
+# Func Hash:
+1096621587569034786
+# Num Counters:
+6
+# Counter Values:
+0
+10
+0
+0
+0
+5
+
+sceSdSetParam
+# Func Hash:
+714317983345985344
+# Num Counters:
+40
+# Counter Values:
+0
+1055270
+0
+0
+1055270
+1055270
+10
+0
+0
+0
+5
+10
+0
+10
+5
+0
+0
+18341
+0
+438838
+438838
+0
+0
+18341
+20
+20
+0
+289875
+289875
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+
+sceSdSetSwitch
+# Func Hash:
+349483443498969681
+# Num Counters:
+21
+# Counter Values:
+616464
+759072
+18341
+19765
+0
+878
+25686
+0
+36460
+18341
+25686
+0
+0
+18341
+25686
+31628
+0
+0
+0
+0
+16500
+
+sceSdVoiceTrans
+# Func Hash:
+415972144848034630
+# Num Counters:
+41
+# Counter Values:
+1099238
+1603776
+1100508
+0
+504538
+0
+0
+8
+504530
+66824
+0
+0
+64
+0
+64
+33412
+33412
+0
+33412
+24
+12
+13
+7
+33412
+8
+0
+0
+8
+33404
+33412
+66824
+100236
+385342
+504530
+33412
+8
+64
+8
+13
+0
+0
+# Num Value Kinds:
+1
+# ValueKind = IPVK_MemOPSize:
+1
+# NumValueSites:
+2
+1
+513:33412
+0
+
+sceSdVoiceTransStatus
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+1080
+
+sd.c;adma_fetch
+# Func Hash:
+229201174103988559
+# Num Counters:
+15
+# Counter Values:
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+1703216
+0
+0
+0
+0
+
+sd.c;core_render
+# Func Hash:
+1150520510544139531
+# Num Counters:
+139
+# Counter Values:
+11623386
+0
+649216996
+0
+649216996
+649216996
+18896478
+18896478
+662049310
+0
+2114442
+10195308
+136980
+649602580
+119968397
+12817588
+10195308
+1560303
+118981
+17999
+18013
+1560303
+346323464
+10009234
+0
+0
+0
+118981
+3948326
+3464233
+0
+0
+0
+0
+0
+0
+390923
+333247490
+13075974
+0
+0
+7430
+0
+0
+0
+0
+11783120
+0
+0
+39173968
+48007979
+48007979
+0
+0
+95559686
+456272
+0
+0
+0
+0
+0
+0
+96015958
+29122450
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+29094064
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+1703216
+0
+0
+28386
+0
+0
+0
+0
+0
+0
+0
+0
+2624014
+2624014
+4930641
+0
+0
+636430246
+639921
+639921
+333247490
+1132
+1132
+1132
+0
+0
+0
+0
+0
+0
+0
+0
+456272
+96015958
+48236115
+456272
+96015958
+48236115
+456272
+96015958
+96015958
+456272
+96015958
+96015958
+0
+0
+0
+0
+0
+0
+0
+0
+# Num Value Kinds:
+1
+# ValueKind = IPVK_MemOPSize:
+1
+# NumValueSites:
+1
+12
+128:23108315
+65:3152346
+17:2450759
+33:155479
+64:81710
+32:52391
+16:39315
+9:25796
+4:8047
+2:7613
+8:6157
+6:6136
+
+sd.c;global_init
+# Func Hash:
+750865549649567221
+# Num Counters:
+16
+# Counter Values:
+0
+2560
+2172867
+5
+5
+5
+0
+0
+0
+0
+0
+0
+0
+0
+0
+5
+
+sd.c;load_block
+# Func Hash:
+631255615332942209
+# Num Counters:
+6
+# Counter Values:
+131610364
+11641967
+116893184
+10
+0
+0
+
+sd.c;next_block
+# Func Hash:
+968759716730659121
+# Num Counters:
+11
+# Counter Values:
+0
+0
+116897853
+14693930
+0
+29373
+0
+0
+0
+0
+0
+
+sd.c;sdlog
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+8
+
+sd_adpcm_decode_block
+# Func Hash:
+942389666994816328
+# Num Counters:
+3
+# Counter Values:
+325975076
+11641967
+0
+
+sd_driver_holds
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+95
+
+sd_health
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+95
+
+sd_render
+# Func Hash:
+1070517935039534982
+# Num Counters:
+13
+# Counter Values:
+0
+1703216
+48007979
+222195
+0
+851608
+0
+0
+0
+0
+174722
+0
+0
+# Num Value Kinds:
+1
+# ValueKind = IPVK_MemOPSize:
+1
+# NumValueSites:
+2
+0
+0
+
+sd_reverb_init
+# Func Hash:
+438284562562023981
+# Num Counters:
+8
+# Counter Values:
+100
+95
+5
+90
+100
+5
+5
+0
+
+sd_reverb_reset
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+10
+
+sd_reverb_sample
+# Func Hash:
+1127386595073019058
+# Num Counters:
+9
+# Counter Values:
+1920319160
+1920319160
+0
+0
+96015958
+48007976
+0
+0
+0
+
+sd_voice_trans_writes
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+95
+
+settings.c;alias_lookup
+# Func Hash:
+93478049380069623
+# Num Counters:
+8
+# Counter Values:
+5
+5
+5
+0
+5
+5
+5
+5
+
+settings.c;read_text
+# Func Hash:
+784007056844089447
+# Num Counters:
+2
+# Counter Values:
+10
+0
+
+settings_find
+# Func Hash:
+536873293392352312
+# Num Counters:
+4
+# Counter Values:
+95
+85
+60
+10
+
+settings_load
+# Func Hash:
+541498318179787969
+# Num Counters:
+42
+# Counter Values:
+190
+5
+180
+0
+0
+0
+5
+0
+0
+0
+0
+0
+0
+5
+0
+0
+5
+0
+0
+0
+0
+0
+0
+5
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+5
+# Num Value Kinds:
+1
+# ValueKind = IPVK_MemOPSize:
+1
+# NumValueSites:
+1
+0
+
+settings_on_apply
+# Func Hash:
+784007059655560962
+# Num Counters:
+2
+# Counter Values:
+35
+35
+
+settings_parse_value
+# Func Hash:
+439547055002841828
+# Num Counters:
+46
+# Counter Values:
+0
+0
+0
+0
+0
+0
+0
+5
+0
+5
+0
+0
+5
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+
+settings_portable
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+5
+
+settings_read_section
+# Func Hash:
+238984482812021090
+# Num Counters:
+3
+# Counter Values:
+5
+5
+0
+
+settings_user_dir
+# Func Hash:
+934653110506923579
+# Num Counters:
+25
+# Counter Values:
+45
+0
+345
+390
+5
+0
+40
+25
+0
+5
+5
+5
+0
+0
+5
+5
+0
+0
+0
+0
+5
+0
+5
+0
+0
+
+settings_user_path
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+5
+
+settings_value_text
+# Func Hash:
+876966889707763250
+# Num Counters:
+22
+# Counter Values:
+5
+5
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+5
+0
+0
+0
+0
+0
+
+sif.c;copy_ee
+# Func Hash:
+776744641019895572
+# Num Counters:
+19
+# Counter Values:
+0
+0
+0
+142240
+0
+0
+0
+142240
+0
+0
+0
+0
+0
+0
+142240
+0
+0
+0
+0
+# Num Value Kinds:
+1
+# ValueKind = IPVK_MemOPSize:
+1
+# NumValueSites:
+2
+6
+9:125781
+16:11687
+17:4723
+32:22
+33:17
+4:10
+0
+
+sif.c;send_to_ee
+# Func Hash:
+643771914234550932
+# Num Counters:
+2
+# Counter Values:
+0
+147346
+# Num Value Kinds:
+1
+# ValueKind = IPVK_MemOPSize:
+1
+# NumValueSites:
+1
+2
+32:147336
+8:10
+
+sif_deliver
+# Func Hash:
+788747809140733514
+# Num Counters:
+11
+# Counter Values:
+98866810
+98866317
+98866242
+98576489
+147346
+0
+0
+0
+0
+0
+0
+# Num Value Kinds:
+1
+# ValueKind = IPVK_MemOPSize:
+1
+# NumValueSites:
+1
+2
+33:147336
+17:10
+
+sif_get_reg
+# Func Hash:
+536873292725133034
+# Num Counters:
+4
+# Counter Values:
+25
+25
+15
+0
+
+sif_iop_to_ee
+# Func Hash:
+146835647075900052
+# Num Counters:
+2
+# Counter Values:
+0
+142240
+
+sif_rpc_reply
+# Func Hash:
+1096621588273124609
+# Num Counters:
+5
+# Counter Values:
+142064
+142064
+142064
+0
+0
+
+sif_set_dma
+# Func Hash:
+222932136655361261
+# Num Counters:
+53
+# Counter Values:
+2301283
+293310
+0
+22112
+39768
+240
+34566
+230
+0
+0
+5
+148793
+142064
+70
+10
+0
+10
+10
+0
+0
+60
+0
+148793
+148793
+148793
+148793
+5202
+70
+60
+60
+50
+0
+0
+0
+3100
+0
+2357376
+50
+0
+3040
+3040
+0
+0
+0
+0
+0
+0
+3010
+0
+0
+20
+20
+20
+# Num Value Kinds:
+1
+# ValueKind = IPVK_MemOPSize:
+1
+# NumValueSites:
+2
+1
+4:4658659
+6
+4:4413
+0:694
+8:50
+128:30
+16:10
+9:5
+
+sif_set_reg
+# Func Hash:
+146835647075900052
+# Num Counters:
+2
+# Counter Values:
+15
+40
+
+sly_font.c;atlas_mips
+# Func Hash:
+968759714719475819
+# Num Counters:
+10
+# Counter Values:
+5374640
+7825
+35
+35
+35
+35
+5
+0
+5374640
+5371040
+
+sly_font.c;font_at
+# Func Hash:
+494971639462143284
+# Num Counters:
+26
+# Counter Values:
+62779
+237558
+237558
+237558
+237558
+237558
+237558
+237558
+93802
+125733
+62954
+71353
+125733
+79223
+62789
+62954
+2240
+2240
+62789
+10
+10
+0
+0
+49524
+10
+10
+
+sly_font.c;raster_thread
+# Func Hash:
+238984484093187152
+# Num Counters:
+3
+# Counter Values:
+5
+0
+5
+
+slyf_ee_poll
+# Func Hash:
+303685789097659684
+# Num Counters:
+12
+# Counter Values:
+102181
+305
+10
+0
+0
+5
+0
+0
+5
+0
+5
+0
+
+slyf_extract
+# Func Hash:
+413266014138944391
+# Num Counters:
+74
+# Counter Values:
+25255
+1110
+635
+1110
+0
+2220
+0
+75765
+0
+1110
+19645
+29995
+19645
+29995
+29995
+25255
+2775
+25255
+2775
+35545
+1210
+25255
+2775
+2220
+19440
+2220
+19440
+6740
+2775
+2220
+2775
+1120
+1120
+2220
+1110
+2775
+13635
+11620
+1120
+1120
+1120
+2220
+1110
+9370
+2220
+1110
+2775
+2855
+8260
+5
+1110
+5
+2220
+2775
+1110
+5
+5
+5
+5
+5
+5
+5
+5
+5
+0
+0
+2220
+1865
+11620
+11620
+13305
+9195
+2775
+1110
+
+slyf_find
+# Func Hash:
+694937218934757203
+# Num Counters:
+7
+# Counter Values:
+237548
+49052970
+49052965
+237553
+5
+10
+10
+
+slyf_raster
+# Func Hash:
+281935248451393481
+# Num Counters:
+45
+# Counter Values:
+209444720
+52361180
+395153570
+90640240
+5
+13090295
+1090
+75765
+75765
+3552300
+6235
+5610
+5655
+6825
+5606610
+147895
+0
+25255
+1280
+25255
+1280
+1110
+1120
+25255
+170
+1110
+9075
+1280
+1280
+130
+1100
+5
+1110
+10
+0
+5
+5
+5
+5
+5
+45
+45
+45
+268120715
+207969770
+
+snd_rpc
+# Func Hash:
+1094321737087454759
+# Num Counters:
+19
+# Counter Values:
+0
+0
+0
+0
+0
+0
+3040
+0
+5
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+# Num Value Kinds:
+1
+# ValueKind = IPVK_MemOPSize:
+1
+# NumValueSites:
+2
+0
+0
+
+thread_ctx
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+10
+
+thread_reschedule
+# Func Hash:
+134732432720417413
+# Num Counters:
+4
+# Counter Values:
+98122483
+571672
+571672
+97537671
+
+thread_syscall
+# Func Hash:
+175998275028796606
+# Num Counters:
+141
+# Counter Values:
+0
+0
+0
+10
+0
+2939
+0
+0
+3960438
+8077
+21507
+97648476
+35268
+567257565
+11706
+35354
+2731389
+129042
+17167786
+202311
+64573
+616214
+5887
+616214
+0
+0
+4466595
+2919
+0
+0
+0
+0
+0
+0
+0
+0
+2939
+0
+0
+21507
+4466595
+8077
+10
+0
+2939
+0
+1708
+0
+5257870
+0
+0
+2939
+0
+0
+0
+0
+0
+0
+0
+0
+21507
+8077
+0
+2939
+0
+0
+0
+0
+4458543
+2939
+1593
+2939
+1708
+0
+10
+0
+21507
+616214
+8077
+0
+0
+2939
+1593
+0
+0
+3850381
+586978
+0
+3842309
+0
+0
+5
+3850381
+2939
+0
+3850381
+616234
+2939
+0
+568757
+2934
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+
+threads.c;drop_fiber
+# Func Hash:
+11922955684890751
+# Num Counters:
+6
+# Counter Values:
+2919
+0
+0
+0
+2919
+0
+
+threads.c;pick_next
+# Func Hash:
+974670605821396719
+# Num Counters:
+8
+# Counter Values:
+1342808
+0
+178485800
+1834463
+723655
+80017
+0
+1405400
+
+threads.c;schedule
+# Func Hash:
+446858652643006670
+# Num Counters:
+18
+# Counter Values:
+122580
+214575
+214575
+214575
+214575
+214575
+0
+0
+1190825
+2919
+42368
+1148457
+42363
+2919
+558527
+42368
+0
+0
+
+threads.c;thread_main
+# Func Hash:
+238984484877909207
+# Num Counters:
+4
+# Counter Values:
+2939
+0
+0
+2939
+
+threads_init
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+5
+
+timer.c;count_ticks
+# Func Hash:
+73949594609492452
+# Num Counters:
+13
+# Counter Values:
+1308376
+1235348
+0
+0
+0
+22
+1226603
+8745
+0
+0
+0
+0
+0
+
+timer.c;qpc_now
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+1540134
+
+timer.c;timer_update
+# Func Hash:
+295568656739295141
+# Num Counters:
+57
+# Counter Values:
+1313519
+0
+0
+1308401
+0
+0
+0
+8745
+0
+1308376
+0
+0
+0
+0
+0
+0
+0
+1308376
+0
+1308376
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+
+timer_access
+# Func Hash:
+571639108444110235
+# Num Counters:
+27
+# Counter Values:
+0
+0
+87480
+0
+0
+8750
+0
+87480
+61230
+0
+0
+5
+17495
+8750
+0
+26235
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+# Num Value Kinds:
+2
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+2
+0
+1
+timer.c;qpc_now:87480
+# ValueKind = IPVK_MemOPSize:
+1
+# NumValueSites:
+4
+0
+1
+4:61230
+1
+4:61230
+1
+4:26250
+
+timer_cop0_count
+# Func Hash:
+470088713319659257
+# Num Counters:
+4
+# Counter Values:
+0
+0
+226610
+0
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+2
+0
+1
+timer.c;qpc_now:226610
+
+timer_service
+# Func Hash:
+651056898056825075
+# Num Counters:
+8
+# Counter Values:
+4904520
+1226039
+1226039
+0
+1226039
+1226130
+5
+5
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+2
+1
+timer.c;qpc_now:5
+1
+timer.c;qpc_now:1226040
+
+vif.c;cmd_done
+# Func Hash:
+607699198645953397
+# Num Counters:
+5
+# Counter Values:
+819560141
+0
+95610
+95610
+0
+
+vif.c;feed
+# Func Hash:
+178259717277040740
+# Num Counters:
+113
+# Counter Values:
+7403835
+4168504
+0
+9498900
+95610
+0
+4865485
+91050870
+7403835
+0
+185217642
+95610
+7228440
+0
+0
+20801830
+6342212
+16674016
+0
+91050865
+7324050
+8515466
+0
+7403835
+428527369
+935532235
+7403835
+95610
+4168504
+0
+7403835
+447670192
+0
+819560141
+29223968
+6342222
+8515466
+125520919
+4168504
+0
+6342212
+29223968
+7403835
+0
+380277209
+70673
+70673
+0
+125520919
+125520918
+0
+0
+400531672
+44832346
+327057604
+371889950
+0
+0
+0
+0
+0
+125450246
+125450245
+5
+0
+91050865
+0
+7324050
+7403835
+88507870
+579610
+579610
+5
+5
+5
+0
+29223968
+4168504
+0
+6342212
+91012349
+91050865
+6342212
+0
+0
+48397155
+5
+579610
+579610
+5
+6342207
+45551605
+0
+38516
+48358639
+13636003
+0
+0
+13636003
+19195
+0
+13636003
+0
+0
+0
+4168504
+0
+819560142
+0
+38516
+5275326
+0
+0
+# Num Value Kinds:
+1
+# ValueKind = IPVK_MemOPSize:
+1
+# NumValueSites:
+6
+4
+513:6151617
+257:101336
+129:89254
+16:5
+0
+0
+0
+0
+0
+
+vif.c;fifo_push
+# Func Hash:
+804747166468588993
+# Num Counters:
+3
+# Counter Values:
+70658
+0
+0
+# Num Value Kinds:
+1
+# ValueKind = IPVK_MemOPSize:
+1
+# NumValueSites:
+2
+0
+4
+9:24708
+8:23238
+4:22702
+16:10
+
+vif.c;resume
+# Func Hash:
+1096621587696032971
+# Num Counters:
+6
+# Counter Values:
+125823888
+125621005
+70658
+1111631
+70658
+0
+
+vif.c;upk_data_body
+# Func Hash:
+996915752184522340
+# Num Counters:
+557
+# Counter Values:
+8387259
+0
+1212783371
+0
+0
+719189266
+0
+0
+40548
+0
+0
+0
+0
+0
+8387259
+1204355564
+40548
+0
+125503320
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+380277209
+0
+0
+0
+0
+0
+0
+0
+0
+0
+380277209
+176185765
+0
+1204396112
+1204396112
+1204396112
+1204396112
+0
+0
+0
+0
+0
+0
+0
+371889950
+0
+0
+0
+0
+0
+0
+0
+0
+0
+33682580
+0
+0
+0
+4844547976
+111015268
+255863216
+0
+0
+0
+176185765
+0
+0
+0
+0
+0
+0
+380236661
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+371889950
+126348888
+0
+380236661
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+380236661
+0
+0
+0
+0
+0
+0
+0
+0
+0
+16841290
+0
+0
+0
+0
+0
+0
+0
+0
+486318
+27753817
+127931608
+0
+0
+0
+0
+0
+126308340
+176145217
+0
+658271750
+1296696720
+330072000
+257607
+1776108
+604838
+4816438
+0
+220753032
+76287521
+0
+639395750
+0
+0
+0
+8420645
+0
+0
+0
+1211136994
+27753817
+63965804
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+16841290
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+1211136994
+0
+83261451
+0
+127931608
+0
+0
+0
+0
+0
+0
+0
+0
+658271750
+1296696720
+330072000
+257607
+1776108
+604838
+220753032
+76287521
+0
+0
+0
+0
+0
+0
+63965804
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+4816438
+0
+0
+0
+0
+0
+0
+456728352
+0
+0
+0
+0
+8420645
+0
+0
+0
+0
+0
+1172628571
+0
+27753817
+0
+0
+0
+0
+0
+0
+658271750
+1296696720
+315080746
+330072000
+257607
+1776108
+604838
+4816438
+0
+220753032
+68577395
+76287521
+0
+639395750
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+182667398
+182667398
+182667398
+182667398
+0
+0
+0
+0
+0
+0
+38508423
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+3040330
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+26014586
+0
+0
+0
+0
+0
+0
+0
+604838
+257607
+0
+1776108
+22853542
+0
+7710126
+14991254
+1776108
+0
+24549892
+36592183
+44832346
+0
+0
+0
+634186
+0
+0
+0
+40957585
+1739231
+4816438
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+25
+25
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+1211136994
+0
+0
+0
+0
+0
+0
+0
+0
+656828321
+656828321
+0
+0
+63965804
+63965804
+0
+63965804
+0
+0
+0
+0
+0
+8420645
+0
+0
+7710126
+0
+0
+0
+0
+0
+0
+0
+14991254
+326619084
+326619084
+326619084
+315080746
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+1776108
+0
+0
+1739231
+0
+27753817
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+# Num Value Kinds:
+1
+# ValueKind = IPVK_MemOPSize:
+1
+# NumValueSites:
+4
+11
+129:41212447
+16:35292105
+64:22541658
+33:12233653
+65:10337452
+32:1555978
+513:958745
+257:587500
+128:509810
+512:195249
+256:78783
+2
+8:21707
+9:18841
+3
+0:8346711
+8:21707
+4:18841
+1
+0:40548
+
+vif.c;upk_write
+# Func Hash:
+252375180309679636
+# Num Counters:
+18
+# Counter Values:
+0
+0
+0
+0
+0
+1204396112
+0
+0
+0
+0
+0
+1204396112
+1204396112
+0
+1204274468
+0
+0
+0
+
+vif.c;vif_dma_impl
+# Func Hash:
+536873293077230314
+# Num Counters:
+4
+# Counter Values:
+125603199
+125450241
+70648
+74887
+
+vif_access
+# Func Hash:
+822335713780514713
+# Num Counters:
+40
+# Counter Values:
+0
+220679
+0
+0
+125049
+0
+10
+0
+0
+125049
+0
+0
+0
+0
+0
+125049
+0
+0
+0
+95615
+5
+0
+0
+5
+0
+95610
+0
+0
+0
+5
+0
+0
+0
+0
+0
+10
+0
+0
+0
+125049
+# Num Value Kinds:
+2
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+1
+0
+# ValueKind = IPVK_MemOPSize:
+1
+# NumValueSites:
+6
+0
+0
+1
+16:10
+1
+4:125049
+1
+4:125049
+1
+4:95620
+
+vif_debug_state
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+25
+
+vif_dma
+# Func Hash:
+1124680650264541954
+# Num Counters:
+3
+# Counter Values:
+0
+125603194
+125603199
+
+vif_dma_tag
+# Func Hash:
+1124680650948039339
+# Num Counters:
+4
+# Counter Values:
+20
+20
+20
+0
+
+vu.c;get
+# Func Hash:
+208392347189972738
+# Num Counters:
+7
+# Counter Values:
+91050872
+0
+0
+0
+0
+0
+0
+
+vu.c;run
+# Func Hash:
+904627522208141034
+# Num Counters:
+54
+# Counter Values:
+0
+0
+751871713
+5
+0
+0
+0
+0
+0
+0
+0
+91012351
+752448628
+5
+0
+666596111
+666596111
+755677010
+751824262
+5
+0
+0
+0
+0
+91012351
+91012351
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+5
+0
+0
+0
+0
+0
+# Num Value Kinds:
+1
+# ValueKind = IPVK_MemOPSize:
+1
+# NumValueSites:
+2
+0
+0
+
+vu.c;vuc_image_matches
+# Func Hash:
+978919878333547627
+# Num Counters:
+4
+# Counter Values:
+9535025
+9535025
+5893083
+5125795
+# Num Value Kinds:
+1
+# ValueKind = IPVK_MemOPSize:
+1
+# NumValueSites:
+1
+4
+513:8803735
+16:540700
+257:101336
+129:89254
+
+vu.c;vuc_lookup
+# Func Hash:
+5832819686196468
+# Num Counters:
+11
+# Counter Values:
+27092488
+23390036
+416205877
+34924800
+0
+8653641
+4951189
+5125790
+4951189
+0
+0
+
+vu0_callms
+# Func Hash:
+238984482720105921
+# Num Counters:
+3
+# Counter Values:
+666596111
+5
+0
+
+vu0_cfc2_ctrl
+# Func Hash:
+927205942299257108
+# Num Counters:
+13
+# Counter Values:
+9501794
+0
+0
+0
+9376735
+0
+0
+0
+0
+0
+5
+0
+5
+
+vu0_ctc2_ctrl
+# Func Hash:
+993108202498777314
+# Num Counters:
+14
+# Counter Values:
+10
+0
+0
+0
+0
+0
+0
+10
+0
+0
+0
+5
+0
+5
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+1
+0
+
+vu0_macro_flags
+# Func Hash:
+679210745886084866
+# Num Counters:
+4
+# Counter Values:
+4224778435
+0
+2841756890
+4212442919
+
+vu1_busy
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+104842173
+
+vu1_start
+# Func Hash:
+238984482720105921
+# Num Counters:
+3
+# Counter Values:
+91012351
+5
+0
+
+vu_compiled_image
+# Func Hash:
+1091155575861337122
+# Num Counters:
+8
+# Counter Values:
+40
+40
+40
+50
+45
+40
+5
+5
+# Num Value Kinds:
+1
+# ValueKind = IPVK_MemOPSize:
+1
+# NumValueSites:
+1
+1
+513:40
+
+vu_data_mem
+# Func Hash:
+382993475055910911
+# Num Counters:
+2
+# Counter Values:
+1534795896
+0
+
+vu_exec.c;vu_decode
+# Func Hash:
+315665108687577845
+# Num Counters:
+274
+# Counter Values:
+10
+60
+0
+10
+0
+110
+0
+55
+13765
+305
+820
+940
+35
+155
+0
+0
+20
+35
+0
+0
+0
+0
+0
+0
+0
+30
+10
+0
+390
+95
+80
+0
+50
+0
+55
+0
+10
+775
+65
+355
+425
+3365
+110
+105
+120
+0
+0
+60
+0
+20
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+3140
+0
+315
+15
+0
+0
+0
+0
+0
+0
+0
+0
+0
+1225
+380
+2920
+15150
+135
+10
+0
+25
+0
+0
+0
+25
+245
+0
+19320
+21055
+2360
+7890
+5380
+17525
+245
+1715
+245
+15865
+16060
+19570
+0
+20
+65
+600
+15135
+0
+245
+0
+2250
+0
+0
+45
+140
+260
+245
+25
+115
+25
+0
+2250
+1390
+65
+400
+65
+25
+95
+570
+1390
+55
+0
+25
+25
+115
+0
+25
+25
+0
+0
+0
+115
+0
+0
+120
+400
+0
+20
+0
+55
+10
+0
+0
+0
+55
+0
+0
+0
+465
+0
+775
+380
+110
+60
+0
+55
+25
+25
+115
+0
+25
+25
+14345
+335
+0
+465
+150
+5
+300
+150
+70
+0
+50
+40
+0
+15
+50
+445
+0
+110
+490
+70
+110
+0
+480
+55
+65
+0
+330
+0
+45
+0
+0
+0
+0
+10
+0
+0
+0
+35
+0
+45
+80
+300
+5
+0
+465
+150
+0
+0
+40
+0
+0
+0
+0
+105
+0
+70
+965
+350
+0
+645
+10
+55
+5
+770
+175
+105
+110
+0
+0
+0
+0
+0
+0
+0
+0
+45
+80
+150
+0
+0
+335
+105
+445
+120
+0
+45
+205
+5
+315
+890
+150
+50
+0
+0
+150
+335
+445
+65
+7890
+4510
+775
+0
+65
+225
+
+vu_execute
+# Func Hash:
+389624099858320519
+# Num Counters:
+43
+# Counter Values:
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+746220822
+0
+746803359
+5
+4951189
+0
+5
+750871710
+0
+747045629
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+746746374
+0
+0
+0
+0
+0
+0
+0
+# Num Value Kinds:
+2
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+2
+0
+8
+** External Symbol **:666596260
+** External Symbol **:37266186
+** External Symbol **:24929384
+** External Symbol **:15273882
+** External Symbol **:7800355
+** External Symbol **:3043582
+** External Symbol **:2115845
+** External Symbol **:583170
+# ValueKind = IPVK_MemOPSize:
+1
+# NumValueSites:
+2
+0
+0
+
+vu_init_state
+# Func Hash:
+146835646621254984
+# Num Counters:
+2
+# Counter Values:
+23040
+15
+
+vu_mem_access
+# Func Hash:
+176367758429672889
+# Num Counters:
+11
+# Counter Values:
+26123447
+0
+95610
+0
+0
+0
+0
+26123447
+0
+26123447
+0
+# Num Value Kinds:
+2
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+1
+1
+gfx_async.c;wait_job:95610
+# ValueKind = IPVK_MemOPSize:
+1
+# NumValueSites:
+3
+0
+0
+2
+1:23041490
+4:3081957
+
+vu_micro_mem
+# Func Hash:
+382993475055910911
+# Num Counters:
+2
+# Counter Values:
+6342222
+6342212
+
+vu_private_init
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+5
+
+vu_private_run
+# Func Hash:
+993108204834277465
+# Num Counters:
+14
+# Counter Values:
+35
+0
+570
+50
+50
+5
+312486
+5
+5
+312486
+5
+0
+5
+0
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+1
+1
+** External Symbol **:312486
+
+vu_register_compiled
+# Func Hash:
+844982797688140368
+# Num Counters:
+5
+# Counter Values:
+0
+5
+0
+5
+5
+
+vu_set_vif_tops
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+91050872
+
+vu_xgkick
+# Func Hash:
+644558645638617858
+# Num Counters:
+12
+# Counter Values:
+0
+0
+0
+1138470
+175934191
+78991136
+78991136
+0
+0
+0
+0
+0
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+1
+1
+r2_clip.c;kick:1138470
+
+warp_init
+# Func Hash:
+623493561743335788
+# Num Counters:
+16
+# Counter Values:
+2
+5
+0
+3
+0
+3
+0
+0
+0
+3
+0
+2
+3
+0
+0
+3
+
+warp_on_call
+# Func Hash:
+57181830790878276
+# Num Counters:
+29
+# Counter Values:
+0
+217684
+0
+9
+0
+0
+0
+0
+0
+0
+0
+0
+0
+3
+0
+0
+0
+0
+3
+0
+0
+3
+0
+0
+0
+0
+0
+0
+0
+
+window.c;script_name
+# Func Hash:
+701607647155998000
+# Num Counters:
+16
+# Counter Values:
+0
+626
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+290
+336
+
+window.c;script_parse
+# Func Hash:
+418425273283608178
+# Num Counters:
+52
+# Counter Values:
+727
+0
+0
+10380
+20
+5856
+8052
+11712
+5856
+2928
+0
+0
+0
+727
+722
+732
+732
+0
+727
+0
+0
+722
+717
+0
+5
+722
+5
+0
+5
+5
+722
+5
+5
+722
+717
+0
+722
+722
+722
+722
+0
+722
+0
+0
+0
+0
+0
+0
+372
+350
+722
+0
+# Num Value Kinds:
+1
+# ValueKind = IPVK_MemOPSize:
+1
+# NumValueSites:
+1
+1
+513:5
+
+window.c;wlog
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+631
+
+window_get_input
+# Func Hash:
+140061727014301445
+# Num Counters:
+113
+# Counter Values:
+0
+0
+0
+0
+0
+0
+0
+19210518
+19210518
+19210518
+19210518
+6211370
+6210594
+0
+12999779
+5940436
+6211220
+5
+12982214
+0
+64464
+63962
+0
+0
+0
+0
+0
+124865
+0
+0
+0
+124865
+0
+0
+612
+621
+0
+0
+5
+124865
+0
+0
+107781
+0
+0
+5
+0
+124865
+107781
+0
+0
+107781
+0
+0
+17565
+5
+5
+0
+0
+0
+0
+0
+0
+0
+0
+626
+0
+5
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+5099
+5049
+0
+0
+0
+0
+29513
+12659
+16631
+0
+0
+0
+0
+124865
+0
+270934
+0
+612
+631
+0
+
+window_take_debug_keys
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+125225
+
