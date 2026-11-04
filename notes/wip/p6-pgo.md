@@ -15,13 +15,12 @@ Results and design: notes/perf-plan.md "P6 results".
   gpu_diff_all mixed S=1 28/28; pc_text_boot release + debug; debug + release builds; package.py; make_installer.py;
   payload sources built in a scratch "builder" folder with absolute paths (as the installer does) incl. --package.
 - Offline frontend with the shipped profile: -10..-15%; GS decode -4..-9%; VU v3 -9%.
-- In game ab2 (Rate 120, Scale 1, 3 repeats): differences inside the +-20% run-to-run noise.
+- In game ab2 (Rate 120, Scale 1, 5-6 runs per build): table in perf-plan.md; only the worker clearly gains.
+- Merged main 669ae0c and 8ddc789 (r2_capture changes); profile retrained after each; gates rerun on the merged code
+  (run_tests, window/warp/r2/vu suites, m9_exact S=1/3 + -Game, gpu_diff_all mixed S=1, pc_text_boot, package,
+  debug build, make_installer).
 
-## In progress
-- ab2 3 more repeats (appends to build\chaos\ab2.jsonl), then fill IN_GAME_TABLE in perf-plan.md.
-
-## Next
-- Fill the table, final commit, clean build dirs, Status: complete.
+**Status: complete.**
 
 ## Findings / traps
 - Profiles: EE thread is now the largest CPU stage (r2 capture ~1/3 incl. r2_src_same memcmp ~10%); no lock/allocator
