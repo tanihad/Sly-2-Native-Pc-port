@@ -184,6 +184,9 @@ static void test_presets(void) {
     s.lighting_enhanced = 0;
     CHECK(settings_detect_preset(&s) == SETTINGS_PRESET_CUSTOM, "Balanced with original lighting -> custom");
     s.lighting_enhanced = 1;
+    s.textures_enhanced = 0;
+    CHECK(settings_detect_preset(&s) == SETTINGS_PRESET_CUSTOM, "Balanced with original textures -> custom");
+    s.textures_enhanced = 1;
     s.outlines_thin = 1;
     CHECK(settings_detect_preset(&s) == SETTINGS_PRESET_CUSTOM, "changing an option -> custom");
     /* a preset in the file wins over its options; custom leaves them */
@@ -552,6 +555,16 @@ static void test_menu_nav(void) {
               "Lighting -> Original: custom ('%s')", V.rows[V.sel].value);
         menu_nav_event(MENU_NAV_LEFT, MENU_DEV_KEYBOARD);
         CHECK(ps2_settings.lighting_enhanced && ps2_settings.preset == SETTINGS_PRESET_QUALITY, "back to Enhanced: Quality again");
+        /* (tex) Textures: the same, live */
+        int tr = find_row(&V, MENU_ROW_TEXTURES);
+        CHECK(tr >= 0 && V.rows[tr].enabled && !strcmp(V.rows[tr].value, "Enhanced"), "Textures row: Enhanced ('%s')", tr >= 0 ? V.rows[tr].value : "-");
+        go(MENU_ROW_TEXTURES);
+        menu_nav_event(MENU_NAV_RIGHT, MENU_DEV_KEYBOARD);
+        view();
+        CHECK(!ps2_settings.textures_enhanced && ps2_settings.preset == SETTINGS_PRESET_CUSTOM && !strcmp(V.rows[V.sel].value, "Original"),
+              "Textures -> Original: custom ('%s')", V.rows[V.sel].value);
+        menu_nav_event(MENU_NAV_LEFT, MENU_DEV_KEYBOARD);
+        CHECK(ps2_settings.textures_enhanced && ps2_settings.preset == SETTINGS_PRESET_QUALITY, "Textures back to Enhanced: Quality again");
         go(MENU_ROW_SCALE);
         view();
         (void)sel;
@@ -572,6 +585,7 @@ static void test_menu_nav(void) {
           "Reference render scale at 1440p: '%s' / '%s'", V.rows[V.sel].value, V.rows[V.sel].desc);
     CHECK(!V.rows[find_row(&V, MENU_ROW_MSAA)].enabled, "MSAA disabled in Reference");
     CHECK(!V.rows[find_row(&V, MENU_ROW_LIGHTING)].enabled, "Lighting disabled in Reference");
+    CHECK(!V.rows[find_row(&V, MENU_ROW_TEXTURES)].enabled, "Textures disabled in Reference");
     menu_nav_event(MENU_NAV_LEFT, MENU_DEV_KEYBOARD);
     view();
     CHECK(ps2_settings.render_scale == 75 && strstr(V.rows[V.sel].desc, "Rendering at 2048 x 1344 -> shown at 2560 x 1440"),
