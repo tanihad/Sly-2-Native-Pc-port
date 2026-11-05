@@ -2,6 +2,12 @@
 
 ## Resume here (read first in a new session)
 
+**2026-11-05 (late night): Enhanced lighting merged** (941dd02 = next/light d421d57; dist 0.1.1150): AO + bloom,
+per-pixel lighting + rim, soft shadow edges; "Lighting: Enhanced / Original" live, Enhanced default in Balanced/Quality;
++0.63 ms GPU at 1440p Balanced ep1. Design: notes/enhanced-lighting.md. **Open regression:** ep1 tfo (owner's settings)
+passes on 393ea64 (0 blinking seams) but fails on 941dd02 even with PS2_LIGHT=0 (15-25 seams); fix agent running on
+next/light. Merge the fix, re-package dist, push. No lighting release without the owner.
+
 **2026-11-05 (night): 1.0.2 RELEASED** - "Sly 2 PC 1.0.2", tag v0.1.1136 (d1d7328 = merge of next/setup-art d6eb131),
 Latest. Setup built with `--art C:\Users\tanih\AppData\Local\Sly2\art` (owner's decision: releases carry the owner's
 official art; the art is never committed): backdrop + logo + mask-badge exe icon; check_no_game_data with the allow-list:
