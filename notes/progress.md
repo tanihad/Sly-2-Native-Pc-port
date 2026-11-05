@@ -2,6 +2,13 @@
 
 ## Resume here (read first in a new session)
 
+**2026-11-05: 1.0 RELEASED** on the owner's go: GitHub release "Sly 2 PC 1.0", tag v0.1.1121 (18e74e4), Latest, private
+repo. Assets: Sly2-Setup.exe (sha256 e5b03805...), SHA256SUMS.txt, sly2-release.txt + .sig (Ed25519, key matches
+installer/release_key.h; owner backed the key up), sly2-source-0.1.1121.zip. Published through the owner's Windows
+Chrome (no gh CLI). While the repo is private launchers cannot self-update ("Couldn't check for updates"): the release
+notes say so; owner decision pending on a public release-only host. Full r2_sweep (ab,hc,tf,tfo,mf, -Parallel 2) was
+started on 18e74e4 before publishing; failures go out as 1.0.x.
+
 **2026-11-04 (later): OWNER TEST HOLD on dist 0.1.1118 (main 0906f31).** No agents running.
 - Merged since 0.1.1064: mft-cover, shot-key (F12 screenshots), p6-pgo (ThinLTO + PGO, VU v3), stray-tri (a99bef8:
   degenerate-w clipper fans kept exact, reason 6 "Q"; fixes the owner's one-frame "random lines"), r8-perf (0906f31:
