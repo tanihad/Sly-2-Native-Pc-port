@@ -14,9 +14,11 @@
  * /userdata=<the game's user data folder> /regkey=<HKCU subkey for the uninstall entry> /log=<file>
  * test builds (-DSLY2_TEST_BUILD) only: /pubkey=<hex> (another release key; plain HTTP to 127.0.0.1 allowed)
  * Tools: /version, /payload, /sha256 <file>, /checkdisc <image>, /download <url> <file> [sha256 [size]],
- * /checkupdate, /uitest (the window driven without showing it), /uishot=<folder> (rendered off-screen).
+ * /checkupdate, /uitest (the window driven without showing it), /uishot=<folder> (rendered off-screen),
+ * /articon <dir> <user data> (the game icon's choice: owner > disc > own), /makeicon <picture> <out.ico> [logo].
  */
 #include "setup.h"
+#include "art.h"
 
 #include <objbase.h>
 #include <shellapi.h>
@@ -132,6 +134,24 @@ static int tool_command(int argc, wchar_t** argv) {
         int r = disc_check_iso(argv[2], why, 512);
         out(L"%d %ls", r, why);
         return r == DISC_OK ? EXIT_OK : EXIT_BAD_DISC;
+    }
+    if (opt(c, L"articon", NULL) && argc > 3) {      /* /articon <install dir> <user data>: the game icon's choice (art.c) */
+        wcopy(S.dir, MAXP, argv[2]);
+        wcopy(S.userdata, MAXP, argv[3]);
+        const wchar_t* what = L"";
+        int changed = art_icon_refresh(&S, &what);
+        wchar_t loc[MAXP];
+        art_icon_location(&S, loc);
+        out(L"%ls %ls %ls", changed ? L"changed" : L"same", what[0] ? what : L"none", loc);
+        return EXIT_OK;
+    }
+    if (opt(c, L"makeicon", NULL) && argc > 3) {     /* /makeicon <picture> <out.ico> [logo]: an icon from a picture */
+        art_img src;
+        if (!art_load(argv[2], &src)) { out(L"FAILED: cannot read %ls", argv[2]); return EXIT_FAILED; }
+        int ok = art_write_icon(&src, argc > 4 && !_wcsicmp(argv[4], L"logo"), argv[3]);
+        art_free(&src);
+        out(ok ? L"OK" : L"FAILED: %ls cannot be made into the icon", argv[2]);
+        return ok ? EXIT_OK : EXIT_FAILED;
     }
     if (opt(c, L"download", NULL) && argc > 3) {     /* /download <url> <file> [sha256 [size]] */
         wchar_t part[MAXP];

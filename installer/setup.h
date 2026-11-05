@@ -196,6 +196,7 @@ int setup_rollback(setup_t* s);                      /* game <-> game.old; EXIT_
 int setup_copy_launcher(setup_t* s);                 /* <dir>\Sly 2 Launcher.exe + Uninstall.exe from this program */
 void setup_bundle_path(setup_t* s, const char* version, wchar_t* out);   /* <dir>\bundle\sly2-source-<ver>.zip */
 int setup_import_image(setup_t* s);                  /* image_src -> <dir>\data\sly2.img (s->iso); EXIT_* */
+int setup_refresh_icon(setup_t* s);                  /* art.c's choice of the game icon -> shortcuts, Apps & features; 1 = changed */
 
 /* ---- update.c: signed updates (release.h) ------------------------------------------------------- */
 #include "release.h"

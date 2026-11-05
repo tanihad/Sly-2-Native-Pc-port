@@ -40,7 +40,7 @@ SRC = ROOT / "installer"
 # The build's inputs (scripts/build_game.py and what it imports or runs).
 PAYLOAD_DIRS = ["recomp", "runtime"]
 PAYLOAD_FILES = ["scripts/build_game.py", "scripts/package.py", "scripts/paths.py", "scripts/extract_elf.py",
-                 "scripts/make_icon.py", "scripts/hlslc.c", "requirements.txt"]
+                 "scripts/make_icon.py", "scripts/disc_art.py", "scripts/hlslc.c", "requirements.txt"]
 NEVER = ("orig/", "build/", "dist/", "tools/", ".venv/")
 
 # Parts of llvm-mingw the game build never uses (other CPU targets, the debugger, clangd/clang-tidy, the
@@ -205,7 +205,7 @@ BEGIN
   BEGIN
     BLOCK "040904B0"
     BEGIN
-      VALUE "CompanyName", "sly2-decomp (unofficial fan port)"
+      VALUE "CompanyName", "tanihad"
       VALUE "FileDescription", "Sly 2: Band of Thieves launcher and setup (builds the game from your own disc)"
       VALUE "FileVersion", "0.1.{count}"
       VALUE "InternalName", "Sly2-Setup"
@@ -282,6 +282,14 @@ def make_source_zip(path: Path, count: int, ghash: str) -> int:
         info = zipfile.ZipInfo("version.txt", date_time=(2020, 1, 1, 0, 0, 0))
         info.compress_type = zipfile.ZIP_DEFLATED
         z.writestr(info, f"{count} {ghash}\n")
+    # nothing of the game, ever: no picture, icon or sound, none of the disc's files (game art is made on the
+    # player's PC: scripts/disc_art.py, notes/disc-art.md)
+    import check_no_game_data
+    problems: list[str] = []
+    check_no_game_data.check_zip(path.name, path.read_bytes(), problems)
+    if problems:
+        path.unlink()
+        sys.exit("make_installer: refusing to package game data:\n  " + "\n  ".join(problems))
     return len(files)
 
 

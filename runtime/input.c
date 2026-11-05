@@ -356,6 +356,8 @@ static INIT_ONCE init_once = INIT_ONCE_STATIC_INIT;
 static BOOL CALLBACK do_init(PINIT_ONCE once, PVOID param, PVOID* ctx) {
     (void)once; (void)param; (void)ctx;
     if (!cfg_ready) input_config_reload();
+    const char* off = getenv("PS2_INPUT_DEVICES");           /* "0": no controller is opened at all (scripts/disc_art.py's */
+    if (off && off[0] == '0') return TRUE;                    /* headless capture: no stray presses, light bar or rumble) */
     xi_load();
     if (xi_get)
         for (DWORD s = 0; s < XUSER_MAX_COUNT; s++) if (xi_read(s, NULL)) xi_connect(s);   /* ready from the first frame */

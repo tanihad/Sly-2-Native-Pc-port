@@ -12,9 +12,31 @@ replaces the old 7-page wizard. Why this and not "the installer as the launcher'
 repair and an update are the same job (unpack sources, build, stage, swap), so one engine and one window cover all
 three; a separate installer would be a second UI to keep in sync, and the player would meet two programs.
 
+**Look** (2026-11, branch next/launcher-art; notes/disc-art.md): one wide dark window (1120 x 440 at 100%, per-monitor
+DPI, dark title bar "Sly 2 - PC"): a column on the left (the title, what the state needs, the buttons) over a picture
+on the right, darkened towards the column and the bottom so text always reads. Play screen: version, "What's new"
+(the signed manifest's `notes` of an update, kept in setup-state.ini) or the update band ("Version X is available"
+[Update]), a large gold **PLAY**, then Options / Saves / Repair / Uninstall (+ Previous) as smaller glass buttons,
+the update check's line at the bottom. Everything is drawn into one 32-bit back buffer (anti-aliased shapes from
+installer/art.c, ClearType text); the buttons stay owner-drawn child controls (keyboard, focus, tests unchanged)
+painted over the same buffer with ~120 ms eased hover fades and a hand cursor.
+
+**Pictures** (first match wins; never in the repository, Setup or a bundle):
+1. **The owner's own**, `%LOCALAPPDATA%\Sly2\art\` (the game's user data folder, `art` subfolder):
+   `backdrop.png|jpg|jpeg|webp|bmp` (the background, any size: scaled to cover the window, anchored right - put the
+   characters on the right), `logo.png|webp|...` (the title art, with real transparency; its Cooper mask also becomes
+   the icon), `icon.ico` or `icon.png|...` (the game icon as it is). WebP needs Windows' WebP codec; PNG always works.
+   Used at the next launcher start (the icon also at install / repair / update).
+2. **From the player's disc**, made by the build (`game\art\`): the game's own save icon as the icon, a picture of the
+   game's opening scene (the pyramids at sunset) as the backdrop.
+3. **Ours**: the drawn night-sky theme with the icon as an emblem, "Sly 2 [PC] Band of Thieves" as text, the
+   procedural mask icon.
+The game icon (shortcuts, Apps & features, the window) is `<install>\art\sly2.ico`, chosen and rewritten by
+`setup_refresh_icon` at every install / repair / update and launcher start; without one, the launcher's own.
+
 **What a player sees**
-1. Downloads `Sly2-Setup.exe`, starts it. A single dark-blue window (gold title, the mask icon; no game artwork):
-   "Drop your Sly 2 disc image here - or click here to choose the .iso file".
+1. Downloads `Sly2-Setup.exe`, starts it. The launcher window (the owner's pictures if there are some in the art
+   folder, else our theme): "Drop your Sly 2 disc image here - or click here to choose the .iso file".
 2. Drops the .iso on the window (or clicks and picks it). It is checked at once (the installer's disc check:
    ISO 9660 -> SYSTEM.CNF -> SCUS_973.16 size + SHA-256): green "Sly 2: Band of Thieves (USA). Ready to install",
    or red and friendly ("This file can't be used. This disc is SCES_... (a European / PAL disc) ...", "That is a
@@ -25,11 +47,11 @@ three; a separate installer would be a second UI to keep in sync, and the player
    Cancel asks first; "Stopped. Click Retry to continue where it stopped." Errors in red with Retry / Back / Show
    details (e.g. not enough space, with how much is needed and free).
 5. Done: the **PLAY** screen. "All set! Your disc image is no longer needed: the game has its own copy." Below:
-   Settings (explains that options are in the game: Esc / PS button / pause -> Options), Saves folder (opens
+   Options (explains that options are in the game: Esc / PS button / pause -> Options), Saves folder (opens
    `%LOCALAPPDATA%\Sly2`), Repair (rebuilds the installed version from its kept sources), Uninstall, and after an
    update "Previous" (switch back to the version before). Play starts the game and closes the launcher.
 6. Next starts (Start menu / desktop shortcut "Sly 2 - Band of Thieves" -> the launcher): straight to PLAY; the
-   update check runs in the background: "You have the latest version." / "Couldn't check for updates." (quietly,
+   update check runs in the background: "You have the latest version." / nothing when the check fails (only in setup.log; quietly,
    no pop-up) / a gold band "Version 0.1.N is available. Update?" [Update] -> progress -> "Updated to version
    0.1.N. Your saves and settings are as they were." If an update fails: "Version X is unchanged and still ready to
    play." A release that needs a newer launcher says so and its button opens the release page (https only).
@@ -39,7 +61,8 @@ three; a separate installer would be a second UI to keep in sync, and the player
 | path | what |
 |---|---|
 | `Sly 2 Launcher.exe`, `Uninstall.exe` | the program (no payload); shortcuts and Apps & features point here |
-| `game\` | the current game: sly2.exe, README.txt, Controller test.cmd, `sly2-version.txt` ("0.1.N hash") |
+| `game\` | the current game: sly2.exe, README.txt, Controller test.cmd, `sly2-version.txt` ("0.1.N hash"), `art\` (icon + backdrop the build made from the disc) |
+| `art\` | `sly2.ico`: the game icon shortcuts and Apps & features show (owner's art > disc art), `sly2.ico.source` |
 | `game.old\` | the version before the last update (rollback); `game.new\` only while staging (`.complete` when done) |
 | `data\sly2.img` | the imported copy of the player's disc image |
 | `bundle\sly2-source-<ver>.zip` | the sources of `game` and `game.old` (Repair, rollback without a download) |
@@ -68,7 +91,7 @@ restores `game.old` when `game` is missing, removes an unfinished `game.new`. "P
 **Updates** (`update.c`, `release.c`; tests: tests/unit/launcher, tests/installer/e2e.ps1)
 - Source: `https://github.com/tanihad/sly2-decomp/releases/latest/download/sly2-release.txt` and `.sig` (GitHub's
   "latest release" asset URLs, no authentication). Configurable: `/updateurl=` or `[setup] update_url` in
-  setup-state.ini. While the repository is private these requests fail: "Couldn't check for updates." - nothing else.
+  setup-state.ini. While the repository is private these requests fail: the launcher shows nothing (the reason is in setup.log).
 - The manifest (UTF-8 `key = value`): `format = 1`, `product = sly2-pc`, `version`, `commit`, `date`, `bundle` (URL,
   or a name relative to the manifest), `bundle_size`, `bundle_sha256`, optional `min_launcher`, `page`, `notes`;
   unknown keys ignored, repeated keys / bad values refused, at most 16 KB.
@@ -275,8 +298,10 @@ powershell -ExecutionPolicy Bypass -File build.ps1        # -> dist\Sly2\sly2.ex
 the release build (as scripts\play.ps1 uses; objects reused if up to date), then the same objects
 linked again as a Windows GUI program (`-mwindows`) with a resource file made at build time:
 
-- an application icon, drawn by `scripts\make_icon.py` (an original picture - a thief's mask under a
-  crescent moon - rendered procedurally; the disc has no Windows icon, and no game artwork is used),
+- an application icon: the game's own save icon from the player's disc image (`scripts\disc_art.py`, when the build
+  knows the image: `--disc`, PS2_ISO or `orig\disc\*.iso`; notes/disc-art.md), else drawn by `scripts\make_icon.py`
+  (an original picture - a thief's mask under a crescent moon); `--art` also writes `<package>\art\` (that icon and
+  a backdrop for the launcher, from a headless run of the game),
 - version information (0.1.<commit count>, product version with the commit hash),
 - a manifest (per-monitor DPI aware, long paths, common controls 6, Windows 10/11).
 
