@@ -1,10 +1,15 @@
 """Prove that what we ship contains nothing of the game: no picture, icon, sound or movie, and none of the disc's files.
 
-    python scripts/check_no_game_data.py <sly2-source-*.zip | Sly2-Setup*.exe | folder> ...
+    python scripts/check_no_game_data.py [--allow <Sly2-Setup.art-allow.txt>] <sly2-source-*.zip | Sly2-Setup*.exe | folder> ...
 
 Game art (the icon and backdrop made from the player's disc by scripts/disc_art.py, the owner's own pictures in
-%LOCALAPPDATA%\\Sly2\\art) exists only on the player's PC; the sources, a release bundle and Setup carry none.
-For a Setup exe the payload (SLY2PAY1, scripts/make_installer.py) is opened and source.zip checked inside it;
+%LOCALAPPDATA%\\Sly2\\art) exists only on the player's PC; the sources and a release bundle carry none, and Setup
+none either - except a Setup built with `make_installer.py --art <folder>` (the owner's release Setup): its program
+carries the owner's backdrop and logo (RCDATA) and the icon made from that logo, and make_installer writes their
+SHA-256 to Sly2-Setup.art-allow.txt. With --allow <that file> exactly those resources are allowed; anything else
+(another picture, an icon that is neither ours nor on the list, a picture in the payload) still fails.
+For a Setup exe the program's resources are checked (the icon must be scripts/make_icon.py's or on the allow-list),
+then the payload (SLY2PAY1, scripts/make_installer.py) is opened and source.zip checked inside it;
 toolchain archives of the offline variant are third-party downloads: only their hashes are checked.
 
 Checked for every file: (1) no media file name (.png .bmp .ico .jpg .webp .gif .tga .dds .tif .pss .vag .wav ...),
@@ -77,12 +82,99 @@ def check_zip(label: str, data: bytes, problems: list[str]) -> int:
     return n
 
 
-def check_setup_exe(path: Path, problems: list[str]) -> int:
+RT_NAMES = {3: "ICON", 10: "RCDATA", 14: "GROUP_ICON", 16: "VERSION", 24: "MANIFEST"}
+
+
+def pe_resources(data: bytes) -> list[tuple[str, str, bytes]]:
+    """(type, name, bytes) of every resource of a PE file (the setup program before its payload)."""
+    if data[:2] != b"MZ":
+        raise ValueError("not a Windows program")
+    pe = struct.unpack_from("<I", data, 0x3C)[0]
+    if data[pe:pe + 4] != b"PE\0\0":
+        raise ValueError("not a Windows program")
+    nsec, = struct.unpack_from("<H", data, pe + 6)
+    optsize, = struct.unpack_from("<H", data, pe + 20)
+    opt = pe + 24
+    magic, = struct.unpack_from("<H", data, opt)
+    dirs = opt + (112 if magic == 0x20B else 96)
+    rva, _size = struct.unpack_from("<II", data, dirs + 2 * 8)     # data directory 2: resources
+    if not rva:
+        return []
+    secs = []
+    for i in range(nsec):
+        s = opt + optsize + 40 * i
+        vsize, vaddr, rsize, raw = struct.unpack_from("<IIII", data, s + 8)
+        secs.append((vaddr, max(vsize, rsize), raw))
+
+    def off(r: int) -> int:
+        for vaddr, size, raw in secs:
+            if vaddr <= r < vaddr + size:
+                return raw + r - vaddr
+        raise ValueError(f"resource address {r:#x} outside the sections")
+
+    base = off(rva)
+
+    def entries(d: int):
+        named, ids = struct.unpack_from("<HH", data, base + d + 12)
+        for i in range(named + ids):
+            name, target = struct.unpack_from("<II", data, base + d + 16 + 8 * i)
+            if name & 0x80000000:
+                n = struct.unpack_from("<H", data, base + (name & 0x7FFFFFFF))[0]
+                p = base + (name & 0x7FFFFFFF) + 2
+                label = data[p:p + 2 * n].decode("utf-16-le")
+            else:
+                label = name
+            yield label, target
+
+    out = []
+    for t, t_dir in entries(0):
+        for n, n_dir in entries(t_dir & 0x7FFFFFFF):
+            for _lang, leaf in entries(n_dir & 0x7FFFFFFF):
+                drva, dsize = struct.unpack_from("<II", data, base + (leaf & 0x7FFFFFFF))
+                o = off(drva)
+                out.append((RT_NAMES.get(t, str(t)), str(n), data[o:o + dsize]))
+    return out
+
+
+_OWN_ICON: set[str] | None = None
+
+
+def own_icon_images() -> set[str]:
+    """SHA-256 of the images of our own icon (scripts/make_icon.py: drawn here, nothing of the game)."""
+    global _OWN_ICON
+    if _OWN_ICON is None:
+        import make_icon
+        _OWN_ICON = {hashlib.sha256(make_icon.png(s, make_icon.render(s))).hexdigest() for s in make_icon.SIZES}
+    return _OWN_ICON
+
+
+def check_resources(label: str, data: bytes, problems: list[str], allowed: set[str]) -> int:
+    """The program's resources: our own icon; the version, the manifest; with `allowed` (make_installer.py --art's
+    allow-list: SHA-256 of the owner's pictures and of the images of the icon made from his logo) exactly those."""
+    n = 0
+    for rtype, name, blob in pe_resources(data):
+        what = f"{label}:resource {rtype}/{name}"
+        digest = hashlib.sha256(blob).hexdigest()
+        n += 1
+        if rtype == "GROUP_ICON":                      # (an icon's directory: sizes and ids, no pixels)
+            check_blob(what, blob, problems, media_check=False)
+        elif digest in allowed:
+            check_blob(what, blob, problems, media_check=False)
+        elif rtype == "ICON":                          # (any image format: only ours, or the allowed ones)
+            check_blob(what, blob, problems, media_check=False)
+            if digest not in own_icon_images():
+                problems.append(f"{what}: an icon image that is not ours (scripts/make_icon.py) nor on the allow-list")
+        else:
+            check_blob(what, blob, problems)
+    return n
+
+
+def check_setup_exe(path: Path, problems: list[str], allowed: set[str] = frozenset()) -> int:
     data = path.read_bytes()
     if len(data) < 24 or data[-24:-16] != b"SLY2PAY1":
         raise ValueError("no payload (not a Sly2-Setup exe, or a signed one: check the source zip instead)")
     _magic, count, _zero, tab = struct.unpack("<8sIIQ", data[-24:])
-    n = 0
+    n = check_resources(path.name, data, problems, set(allowed))
     for i in range(count):
         raw, off, size, _h = struct.unpack_from("<96sQQ32s", data, tab + i * 144)
         name = raw.rstrip(b"\0").decode("utf-8")
@@ -101,7 +193,17 @@ def main(argv: list[str]) -> int:
         return 2
     problems: list[str] = []
     total = 0
+    allowed: set[str] = set()
     try:
+        while argv and argv[0] == "--allow":           # --allow <make_installer --art's Sly2-Setup.art-allow.txt>
+            if len(argv) < 2:
+                print(__doc__)
+                return 2
+            for line in Path(argv[1]).read_text(encoding="utf-8").splitlines():
+                h = line.split()[0].lower() if line.strip() else ""
+                if len(h) == 64 and all(c in "0123456789abcdef" for c in h):
+                    allowed.add(h)
+            argv = argv[2:]
         for a in argv:
             p = Path(a)
             if p.is_dir():
@@ -112,7 +214,7 @@ def main(argv: list[str]) -> int:
             elif p.suffix.lower() == ".zip":
                 total += check_zip(p.name, p.read_bytes(), problems)
             else:
-                total += check_setup_exe(p, problems)
+                total += check_setup_exe(p, problems, allowed)
     except (OSError, ValueError, zipfile.BadZipFile) as e:
         print(f"check_no_game_data: cannot check: {e}")
         return 2
