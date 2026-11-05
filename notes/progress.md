@@ -2,6 +2,13 @@
 
 ## Resume here (read first in a new session)
 
+**2026-11-05 (night): 1.0.2 RELEASED** - "Sly 2 PC 1.0.2", tag v0.1.1136 (d1d7328 = merge of next/setup-art d6eb131),
+Latest. Setup built with `--art C:\Users\tanih\AppData\Local\Sly2\art` (owner's decision: releases carry the owner's
+official art; the art is never committed): backdrop + logo + mask-badge exe icon; check_no_game_data with the allow-list:
+0 problems; bundle clean. Setup sha256 306e4a77... Running overnight (owner asleep, "run till done"): next/light
+(Enhanced lighting, worktree sly2-worktrees\light; owner: ON by default in Balanced/Quality, live switch, Original =
+bit-exact). Merge each verified lighting step into the owner's dist build; no release of lighting without the owner.
+
 **2026-11-05: 1.0.1 RELEASED** (owner's go): "Sly 2 PC 1.0.1", tag v0.1.1130 (8cc3725 = merge of next/launcher-art
 4f4c9ae), Latest. New launcher look, owner art override (%LOCALAPPDATA%\Sly2\art, local only) > disc art (save icon
 .ico, intro backdrop capture) > own theme; publisher "tanihad"; failed update checks no longer shown;
