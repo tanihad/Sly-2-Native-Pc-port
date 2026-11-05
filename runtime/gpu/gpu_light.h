@@ -57,14 +57,14 @@ static void lt_env(void) {
     LT.ao_r = lt_envf("PS2_LIGHT_AO_R", 60.0f);         /* radius, world units (Sly: ~190 units tall crouching) */
     LT.ao_k = lt_envf("PS2_LIGHT_AO_K", 3.0f);          /* strength */
     LT.ao_min = lt_envf("PS2_LIGHT_AO_MIN", 0.35f);     /* darkest factor */
-    LT.ao_f0 = lt_envf("PS2_LIGHT_AO_FADE0", 3000.0f);    /* fades out from here ... */
-    LT.ao_f1 = lt_envf("PS2_LIGHT_AO_FADE", 8000.0f);    /* ... to here (view depth, world units) */
+    LT.ao_f0 = lt_envf("PS2_LIGHT_AO_FADE0", 4000.0f);    /* fades out from here ... */
+    LT.ao_f1 = lt_envf("PS2_LIGHT_AO_FADE", 10000.0f);    /* ... to here (view depth, world units) */
     LT.ao_pow = lt_envf("PS2_LIGHT_AO_POW", 1.0f);
     LT.ao_max = lt_envf("PS2_LIGHT_AO_MAXPX", 48.0f);   /* largest radius, half-res texels */
     LT.ao_bias = lt_envf("PS2_LIGHT_AO_BIAS", 0.06f);
-    LT.bl_t = lt_envf("PS2_LIGHT_BLOOM_T", 0.55f);      /* threshold (0..1 of the picture's channel) */
-    LT.bl_k = lt_envf("PS2_LIGHT_BLOOM_K", 0.25f);      /* soft knee */
-    LT.bl_i = lt_envf("PS2_LIGHT_BLOOM_I", 0.60f);      /* intensity */
+    LT.bl_t = lt_envf("PS2_LIGHT_BLOOM_T", 0.80f);      /* threshold (0..1 of the picture's channel) */
+    LT.bl_k = lt_envf("PS2_LIGHT_BLOOM_K", 0.10f);      /* soft knee */
+    LT.bl_i = lt_envf("PS2_LIGHT_BLOOM_I", 1.20f);      /* intensity */
     LT.bl_sat = lt_envf("PS2_LIGHT_BLOOM_SAT", 0.85f);
 }
 static int lt_enabled(void) {

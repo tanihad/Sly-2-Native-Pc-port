@@ -120,12 +120,13 @@ float ps_light_blur(float4 pos : SV_Position) : SV_Target {
 
 // ---- bloom ----------------------------------------------------------------------------------------------------------
 float l_luma(float3 c) { return dot(c, float3(0.2126, 0.7152, 0.0722)); }
-float3 l_bright(float3 c) {              // the part above the threshold, with a soft knee
-    float l = max(max(c.r, c.g), c.b);
+float3 l_bright(float3 c) {              // the part above the threshold (soft knee), squared: near-white lights glow, merely
+    float l = max(max(c.r, c.g), c.b);   // bright surfaces (a lit floor, snow) hardly - an LDR picture has no HDR to tell them apart
     float k = l_bloom.y, t = l_bloom.x;
     float s = clamp(l - t + k, 0.0, 2.0 * k);
     s = s * s / (4.0 * k + 1e-5);
-    float f = max(s, l - t) / max(l, 1e-4);
+    float e = max(s, l - t);
+    float f = e * e / (max(1.0 - t, 1e-3) * max(l, 1e-4));
     float3 b = c * f;
     return lerp(l_luma(b).xxx, b, l_bloom.w);
 }
