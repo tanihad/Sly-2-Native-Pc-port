@@ -386,7 +386,7 @@ static int icon_image(const art_img* src, int kind, int n, art_img* out) {
     art_rrect(out, e, e, n - 2 * e, n - 2 * e, n / 2.0, 0xFFF4F6FF);
     double b = e + ring;
     art_rrect_v(out, b, b, n - 2 * b, n - 2 * b, n / 2.0, 0xFF3C78EE, 0xFF0B1D58);
-    int mw = (int)(n * (n <= 32 ? 0.84 : 0.78) + 0.5);
+    int mw = (int)(n * (n <= 24 ? 0.94 : n <= 48 ? 0.86 : 0.80) + 0.5);   /* (small: as large as the badge allows) */
     art_img m;
     if (!art_logo_mask(src, &m, mw)) return 0;
     art_blend(out, &m, (n - m.w) / 2, (int)(n * 0.53 - m.h / 2.0 + 0.5), 1);
@@ -394,11 +394,88 @@ static int icon_image(const art_img* src, int kind, int n, art_img* out) {
     return 1;
 }
 
-/* a .ico of 32-bit DIB images (every Windows version and every icon API reads those) */
+/* ---- PNG (for the 256 px icon image: what Windows itself uses at that size; zlib "stored" blocks, no codec) -- */
+
+static uint32_t crc_tab[256];
+static uint32_t crc32_of(const uint8_t* p, size_t n, uint32_t c) {
+    if (!crc_tab[1])
+        for (uint32_t i = 0; i < 256; i++) {
+            uint32_t v = i;
+            for (int k = 0; k < 8; k++) v = v & 1 ? 0xEDB88320u ^ (v >> 1) : v >> 1;
+            crc_tab[i] = v;
+        }
+    c = ~c;
+    while (n--) c = crc_tab[(c ^ *p++) & 255] ^ (c >> 8);
+    return ~c;
+}
+
+static void be32(uint8_t* p, uint32_t v) { p[0] = (uint8_t)(v >> 24); p[1] = (uint8_t)(v >> 16); p[2] = (uint8_t)(v >> 8); p[3] = (uint8_t)v; }
+
+/* straight-alpha RGBA PNG of a premultiplied image; malloc'd, *n = size */
+static uint8_t* png_of(const art_img* im, size_t* n) {
+    size_t row = (size_t)im->w * 4 + 1, raw = row * im->h;
+    size_t blocks = (raw + 65534) / 65535, z = 2 + raw + blocks * 5 + 4;
+    size_t total = 8 + 25 + 12 + z + 12;
+    uint8_t* f = malloc(total);
+    uint8_t* r = malloc(raw);
+    if (!f || !r) { free(f); free(r); return NULL; }
+    for (int y = 0; y < im->h; y++) {
+        uint8_t* o = r + row * y;
+        *o++ = 0;
+        for (int x = 0; x < im->w; x++) {
+            uint32_t v = im->px[(size_t)y * im->w + x];
+            unsigned a = v >> 24, b = v & 255, g = v >> 8 & 255, rr = v >> 16 & 255;
+            if (a && a < 255) { b = b * 255 / a; g = g * 255 / a; rr = rr * 255 / a; }
+            *o++ = (uint8_t)(rr > 255 ? 255 : rr);
+            *o++ = (uint8_t)(g > 255 ? 255 : g);
+            *o++ = (uint8_t)(b > 255 ? 255 : b);
+            *o++ = (uint8_t)a;
+        }
+    }
+    uint8_t* p = f;
+    memcpy(p, "\x89PNG\r\n\x1a\n", 8);
+    p += 8;
+    be32(p, 13);
+    memcpy(p + 4, "IHDR", 4);
+    be32(p + 8, (uint32_t)im->w);
+    be32(p + 12, (uint32_t)im->h);
+    p[16] = 8; p[17] = 6; p[18] = 0; p[19] = 0; p[20] = 0;
+    be32(p + 21, crc32_of(p + 4, 17, 0));
+    p += 25;
+    be32(p, (uint32_t)z);
+    memcpy(p + 4, "IDAT", 4);
+    uint8_t* d = p + 8;
+    *d++ = 0x78; *d++ = 0x01;
+    uint32_t s1 = 1, s2 = 0;
+    for (size_t off = 0; off < raw; off += 65535) {
+        size_t len = raw - off > 65535 ? 65535 : raw - off;
+        *d++ = off + len >= raw;
+        d[0] = (uint8_t)len; d[1] = (uint8_t)(len >> 8); d[2] = (uint8_t)~len; d[3] = (uint8_t)(~len >> 8);
+        d += 4;
+        memcpy(d, r + off, len);
+        for (size_t i = 0; i < len; i++) { s1 = (s1 + r[off + i]) % 65521; s2 = (s2 + s1) % 65521; }
+        d += len;
+    }
+    be32(d, s2 << 16 | s1);
+    d += 4;
+    be32(d, crc32_of(p + 4, z + 4, 0));
+    p = d + 4;
+    be32(p, 0);
+    memcpy(p + 4, "IEND", 4);
+    be32(p + 8, crc32_of(p + 4, 4, 0));
+    free(r);
+    *n = total;
+    return f;
+}
+
+/* a .ico: 32-bit DIB images up to 128 px (every icon API reads those), PNG at 256 px (as Windows' own icons) */
 static int write_ico(const wchar_t* path, art_img* imgs, int count) {
+    uint8_t* pngs[32] = { 0 };
+    size_t png_n[32] = { 0 };
     size_t total = 6 + 16 * (size_t)count;
-    for (int i = 0; i < count; i++) {
+    for (int i = 0; i < count && i < 32; i++) {
         int n = imgs[i].w;
+        if (n >= 256 && (pngs[i] = png_of(&imgs[i], &png_n[i]))) { total += png_n[i]; continue; }
         total += 40 + (size_t)n * n * 4 + (size_t)((n + 31) / 32 * 4) * n;
     }
     uint8_t* f = calloc(1, total);
@@ -408,7 +485,7 @@ static int write_ico(const wchar_t* path, art_img* imgs, int count) {
     size_t off = 6 + 16 * (size_t)count;
     for (int i = 0; i < count; i++) {
         int n = imgs[i].w;
-        size_t mask_row = (size_t)((n + 31) / 32 * 4), bytes = 40 + (size_t)n * n * 4 + mask_row * n;
+        size_t mask_row = (size_t)((n + 31) / 32 * 4), bytes = pngs[i] ? png_n[i] : 40 + (size_t)n * n * 4 + mask_row * n;
         uint8_t* e = f + 6 + 16 * i;
         e[0] = (uint8_t)(n >= 256 ? 0 : n);
         e[1] = (uint8_t)(n >= 256 ? 0 : n);
@@ -418,6 +495,12 @@ static int write_ico(const wchar_t* path, art_img* imgs, int count) {
         memcpy(e + 6, &bpp, 2);
         memcpy(e + 8, &sz, 4);
         memcpy(e + 12, &o, 4);
+        if (pngs[i]) {
+            memcpy(f + off, pngs[i], png_n[i]);
+            free(pngs[i]);
+            off += bytes;
+            continue;
+        }
         BITMAPINFOHEADER bi;
         memset(&bi, 0, sizeof bi);
         bi.biSize = 40;
@@ -445,10 +528,7 @@ static int write_ico(const wchar_t* path, art_img* imgs, int count) {
         }
         off += bytes;
     }
-    wchar_t tmp[MAXP];
-    wfmt(tmp, MAXP, L"%ls.tmp", path);
-    int ok = write_file(tmp, f, total) && MoveFileExW(tmp, path, MOVEFILE_REPLACE_EXISTING);
-    if (!ok) DeleteFileW(tmp);
+    int ok = write_file(path, f, total);             /* (via <path>.tmp: never half a file) */
     free(f);
     return ok;
 }

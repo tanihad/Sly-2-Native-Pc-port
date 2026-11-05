@@ -282,6 +282,14 @@ def make_source_zip(path: Path, count: int, ghash: str) -> int:
         info = zipfile.ZipInfo("version.txt", date_time=(2020, 1, 1, 0, 0, 0))
         info.compress_type = zipfile.ZIP_DEFLATED
         z.writestr(info, f"{count} {ghash}\n")
+    # nothing of the game, ever: no picture, icon or sound, none of the disc's files (game art is made on the
+    # player's PC: scripts/disc_art.py, notes/disc-art.md)
+    import check_no_game_data
+    problems: list[str] = []
+    check_no_game_data.check_zip(path.name, path.read_bytes(), problems)
+    if problems:
+        path.unlink()
+        sys.exit("make_installer: refusing to package game data:\n  " + "\n  ".join(problems))
     return len(files)
 
 

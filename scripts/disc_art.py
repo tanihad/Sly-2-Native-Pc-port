@@ -412,7 +412,7 @@ def make_backdrop(iso: Path, exe: Path, out: Path, work: Path | None = None, tim
             p.mkdir(parents=True)
         # the throw-away settings: sharp (no motion blur while the camera pans), a fixed 2x internal scale (the automatic
         # one drops on a busy GPU: the picture would be the PS2's 448 lines), 16:9, the GPU renderer as default
-        (user / "sly2.ini").write_text("[graphics]\nmotion_blur = off\nrender_scale = 2\n", encoding="ascii")
+        (user / "sly2.ini").write_text("[graphics]\nmotion_blur = off\nrender_scale = 2x\n", encoding="ascii")
         every = b["every"]
         env = {k: v for k, v in os.environ.items() if not k.startswith("PS2_")}
         env.update(PS2_HEADLESS="1", PS2_AUDIO_NULL="1", PS2_INPUT_DEVICES="0", PS2_USER_DIR=str(user),
