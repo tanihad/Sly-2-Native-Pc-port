@@ -29,6 +29,9 @@ typedef struct {
     /* (r8-perf) the GPU optimisations of modern frames on (R2X_* bits; gpu_exec.c r8p_on), and diagnostics */
     int opt;
     int dbg_cull;                        /* (diagnostics, PS2_R8P_SKIP) every draw issued, nothing rasterized (empty scissor) */
+    /* (light) Enhanced lighting (modern frames): lit sub-batches lit per pixel (r2.hlsl R2_ENH), rim light strength */
+    int enh;
+    float rim;
 } r2_exec_in;
 enum { R2X_BATCH = 1, R2X_STATE = 2 };
 

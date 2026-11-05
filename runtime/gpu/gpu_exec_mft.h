@@ -140,7 +140,9 @@ static void mft_target_free(int id) { if (id > 0 && id <= MAX_TARGETS) mft_surf_
 
 static void vf_release(void);            /* (r8-perf) */
 static void lm_release(void);
+static void light_release(void);    /* (light) gpu_light.h */
 static void mft_release(void) {
+    light_release();
     vf_release();
     lm_release();
     for (int i = 0; i <= MAX_TARGETS; i++) mft_surf_free(&MT[i]);
@@ -1487,6 +1489,8 @@ static void vf_end(mtarget* c, mtarget* z, const char* what) {
         gpu_log("verify: %s identical (%llu checks, %llu differ)", what, (unsigned long long)kn[k], (unsigned long long)kbad[k]);
 }
 
+#include "gpu_light.h"               /* (light) Enhanced lighting: the post pass at the resolve point */
+
 static void mft_r2_seg(const gpu_front_frame_data* fd, const gpu_fop_r2* o, int opt);
 static void mft_r2(const gpu_front_frame_data* fd, const gpu_fop_r2* o) {
     int vf = o->nplan && vf_frame() && r8p_on(R8P_R2BATCH) && mft_need(o->ct, MT_MS) && mft_need(o->zt, MT_MS) &&
@@ -1497,6 +1501,7 @@ static void mft_r2(const gpu_front_frame_data* fd, const gpu_fop_r2* o) {
     }
     if (vf) vf_end(&MT[o->ct], &MT[o->zt], "R2 plan");
     if (M.mv_on && M.nr2 < 256) M.r2op[M.nr2++] = (const uint8_t*)o - fd->cmd;   /* (the motion-vector pass draws it again) */
+    light_note(fd, o);                   /* (light) */
 }
 
 static void mft_r2_seg(const gpu_front_frame_data* fd, const gpu_fop_r2* o, int opt) {
@@ -1515,6 +1520,8 @@ static void mft_r2_seg(const gpu_front_frame_data* fd, const gpu_fop_r2* o, int 
     in.sy = M.rsy;
     in.dbg_cull = r8s_skip(R8S_R2DRAW) ? (r8s_skip(R8S_R2UNI) ? 3 : r8s_skip(R8S_R2TINY) ? 2 : 1) : 0;
     in.opt = opt;
+    in.enh = lt_enabled() && LT.ppl;     /* (light) lit sub-batches per pixel */
+    in.rim = LT.rim;
     int n = r2_render_segment(o, fd->data, fd->data_bytes, &in);
     gpu_rt.n_draws += (uint32_t)n;
     r2_segs++;
@@ -1940,6 +1947,7 @@ static void mft_present(const gpu_front_frame_data* fd, const gpu_fop_present* o
         return;
     }
     mft_mv_pass(fd);                     /* (a frame without a resolve point before its PRESENT) */
+    light_post();                        /* (light) */
     if (!mft_need(id, MT_PIC)) { mft_materialize_all(); exec_present(fd, o); return; }
     unbind_all();
     M.bound = 0;
@@ -2172,7 +2180,8 @@ static int mft_op(const gpu_front_frame_data* fd, size_t pos, uint32_t slot, siz
     *slots = 0;
     while (M.iph < M.nph && pos >= M.ph_pos[M.iph]) {
         int np = M.ph_val[M.iph++];
-        if (!M.phase && np) mft_mv_pass(fd);   /* (the end of phase A: the frame's motion vectors) */
+        if (!M.phase && np) { mft_mv_pass(fd); light_post(); }   /* (the end of phase A: the frame's motion vectors; (light) the
+                                                                    Enhanced lighting pass before the HUD) */
         M.phase = np;
     }
     switch (h->op) {

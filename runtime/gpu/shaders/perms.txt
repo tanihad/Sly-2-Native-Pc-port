@@ -262,3 +262,25 @@ cs_mft_cmp          mft.hlsl            cs_mft_cmp        cs_5_0    PRIM=9 MS=1
 vs_r2c              r2_conf.hlsl        r2c_vs            vs_5_0
 ps_r2c_vu           r2_conf.hlsl        r2c_vu_ps         ps_5_0
 ps_r2c_div          r2_conf.hlsl        r2c_div_ps        ps_5_0
+# (light) Enhanced lighting of modern frames (gpu_light.h): ambient occlusion and bloom at the resolve point
+vs_light            light.hlsl          vs_light          vs_5_0
+ps_light_lin0       light.hlsl          ps_light_lin      ps_5_0    MS=0
+ps_light_lin1       light.hlsl          ps_light_lin      ps_5_0    MS=1
+ps_light_ao         light.hlsl          ps_light_ao       ps_5_0
+ps_light_blur       light.hlsl          ps_light_blur     ps_5_0
+ps_light_bright     light.hlsl          ps_light_bright   ps_5_0
+ps_light_down       light.hlsl          ps_light_down     ps_5_0
+ps_light_up         light.hlsl          ps_light_up       ps_5_0
+ps_light_comp0      light.hlsl          ps_light_comp     ps_5_0    MS=0
+ps_light_comp1      light.hlsl          ps_light_comp     ps_5_0    MS=1
+# (light) Enhanced lighting: the modern frame's R2 pipelines with lit sub-batches lit per pixel (R2_ENH; r2_render.c epipe*)
+vs_r2m_e            r2.hlsl             r2_vs             vs_5_0    R2_MFT=1 R2_ENH=1
+ps_r2m_e            r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_ENH=1
+ps_r2m_nd_e         r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_NODISCARD=1 R2_ENH=1
+ps_r2m_a2c_e        r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_A2C=1 R2_ENH=1
+vs_r2m_clip_e       r2.hlsl             r2_vs_clip        vs_5_0    R2_MFT=1 R2_CLIP=1 R2_ENH=1
+gs_r2m_clip_e       r2.hlsl             r2_gs_clip        gs_5_0    R2_MFT=1 R2_CLIP=1 R2_ENH=1
+ps_r2m_clip_e       r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_CLIP=1 R2_ENH=1
+ps_r2m_clip_nd_e    r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_CLIP=1 R2_NODISCARD=1 R2_ENH=1
+ps_r2m_clip_a2c_e   r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_CLIP=1 R2_A2C=1 R2_ENH=1
+vs_r2m_pull_e       r2.hlsl             r2_vs_pull        vs_5_0    R2_MFT=1 R2_PULL=1 R2_ENH=1

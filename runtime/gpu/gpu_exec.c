@@ -1212,11 +1212,11 @@ static void zcb_set(const zs_consts* k) {
  * 60 frames. Attribution is approximate (the GPU overlaps neighbouring work). */
 enum { PR_OTHER, PR_TARGET, PR_MEM, PR_CLEAR, PR_SHADOW, PR_FF_FAST, PR_FF_TRI, PR_FF_SPRITE, PR_FF_LINE,
        PR_REF_TRI, PR_REF_OTHER, PR_A16, PR_ZRESOLVE, PR_ZSYNC, PR_PRESENT, PR_A16_DRAW, PR_FF_FAST_Z, PR_R2, PR_PART,
-       PR_MFT_RES, PR_MFT_SH, PR_MFT_MV, PR_MFT_FUSE, PR_N };
+       PR_MFT_RES, PR_MFT_SH, PR_MFT_MV, PR_MFT_FUSE, PR_LIGHT, PR_N };
 static const char* const pr_names[PR_N] = { "other", "target", "mem", "clear", "shadow", "ff-tri-fast", "ff-tri",
                                             "ff-sprite", "ff-line", "ref-tri", "ref-other", "alias16", "zresolve",
                                             "zsync", "present", "alias16-draw", "ff-tri-fast-z", "r2", "part",
-                                            "mft-resolve", "mft-svol", "mft-mv", "mft-shfuse" };
+                                            "mft-resolve", "mft-svol", "mft-mv", "mft-shfuse", "light" };
 #define PR_MAXQ 8192
 static struct {
     int on, n, cur;
@@ -1262,7 +1262,8 @@ static int r8s_skip(int what) { return PR.ncyc > 0 && (PR.cyc_mask[PR.cyc] & wha
 /* (r2-m7b) an experimental feature is off in this frame (an A phase of PS2_GPU_AB) */
 static int ab_off(void) { return PR.ab > 0 && !PR.ab_b && !PR.ab_ee && !PR.ab_r8 && !PR.ncyc; }
 /* (r8-perf) the GPU optimisations of the Balanced preset (modern frame targets), each one switchable for in-run A/B */
-enum { R8P_R2BATCH = 1, R8P_LINEPIX = 2, R8P_SHADOW = 4, R8P_RESOLVE = 8, R8P_R2STATE = 16, R8P_MISC = 32 };
+enum { R8P_R2BATCH = 1, R8P_LINEPIX = 2, R8P_SHADOW = 4, R8P_RESOLVE = 8, R8P_R2STATE = 16, R8P_MISC = 32,
+       R8P_LIGHT = 64 /* (light) Enhanced lighting: PS2_GPU_AB=<n> PS2_GPU_AB_R8=64 compares Original / Enhanced in one run */ };
 static int r8p_mask = -1;                /* PS2_R8P=<mask>: the features on (default all) */
 static int r8p_off_mask;                 /* (PS2_R8P_VERIFY: the original way's second run) */
 static int r8p_mask_has(int f) {         /* (the feature is enabled at all: PS2_R8P) */

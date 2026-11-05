@@ -16,6 +16,7 @@ extern int gpu_hw_auto_scale(void) __attribute__((weak));
 extern void gpu_hw_scale_status(gpu_hw_scale_info* s) __attribute__((weak));   /* (pc-pacing) */
 extern void gpu_present_set_mode(int mode, int vsync) __attribute__((weak));
 extern void gpu_mft_config(int on, int pct, int msaa) __attribute__((weak));   /* (r2-m8) gpu_exec_mft.h */
+extern void gpu_light_config(int on) __attribute__((weak));   /* (light) gpu_light.h */
 extern void gpu_hw_pacing_changed(int pacing) __attribute__((weak));
 void (*gfx_output_size)(int* w, int* h);  /* set by window.c (window_client_size) */
 
@@ -79,13 +80,14 @@ void gfx_describe(char* out, int cap) {
     const ps2_settings_t* s = &ps2_settings;
     char rs[32];
     settings_value_text(settings_find("graphics", "render_scale"), s->render_scale, rs, sizeof rs);
-    snprintf(out, (size_t)cap, "render scale %s: internal scale %s%dx%s, outlines %s, filters %s (motion blur %s, flicker filter %s, %s), scaler %s, preset %s",
+    snprintf(out, (size_t)cap, "render scale %s: internal scale %s%dx%s, outlines %s, filters %s (motion blur %s, flicker filter %s, %s), scaler %s, lighting %s, preset %s",
              rs, scale_auto() ? "now " : "", gfx_scale(),
              env_scale() ? " (PS2_GS_SCALE)" : "", s->outlines_thin ? "thin" : "ps2",
              s->filters_faithful ? "faithful" : "modern",
              settings_motion_blur(s) ? "on" : "off", settings_flicker_filter(s) ? "on" : "off",
              settings_interlacing(s) ? "interlaced" : "progressive",
              settings_scaler_names[s->scaler >= 0 && s->scaler < SETTINGS_SCALER_N ? s->scaler : 0],
+             s->lighting_enhanced ? "enhanced" : "original",
              settings_preset_names[s->preset >= 0 && s->preset < SETTINGS_PRESET_N ? s->preset : SETTINGS_PRESET_CUSTOM]);
 }
 
@@ -130,6 +132,7 @@ void gfx_apply(void) {
         int rs = ps2_settings.render_scale;
         int on = ps2_settings.renderer_modern && !env_scale() && (rs == SETTINGS_RS_AUTO || settings_rs_is_pct(rs));
         if (gpu_mft_config) gpu_mft_config(on, settings_rs_is_pct(rs) ? rs : 100, settings_msaa_samples(ps2_settings.msaa));
+        if (gpu_light_config) gpu_light_config(ps2_settings.lighting_enhanced);   /* (light: modern frames only) */
     }
     gfx_apply_pacing();
     if (scale != logged_scale || bits != logged_bits || off != logged_blur || is_auto != logged_auto ||

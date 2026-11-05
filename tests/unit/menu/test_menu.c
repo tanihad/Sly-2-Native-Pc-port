@@ -172,14 +172,18 @@ static void test_presets(void) {
     settings_defaults(&s);
     settings_apply_preset(&s, SETTINGS_PRESET_ORIGINAL);
     CHECK(s.render_scale == SETTINGS_RS_AUTO && !s.renderer_modern && s.filters_faithful && !s.outlines_thin && s.aspect_w == 4 &&
-          s.aspect_h == 3, "Original (PS2): Reference on the integer grid, faithful, 4:3");
+          s.aspect_h == 3 && !s.lighting_enhanced, "Original (PS2): Reference on the integer grid, faithful, 4:3, original lighting");
     settings_apply_preset(&s, SETTINGS_PRESET_QUALITY);
-    CHECK(s.render_scale == 100 && s.outlines_thin && !s.filters_faithful, "Quality: 100%%, thin");
+    CHECK(s.render_scale == 100 && s.outlines_thin && !s.filters_faithful && s.lighting_enhanced, "Quality: 100%%, thin, enhanced lighting");
     CHECK(s.aspect_w == 4, "Quality keeps the aspect (the menu restores widescreen when leaving Original)");
     settings_apply_preset(&s, SETTINGS_PRESET_PERFORMANCE);
-    CHECK(s.render_scale == 75 && s.msaa == SETTINGS_MSAA_OFF && s.renderer_modern && !s.outlines_thin, "Performance: Modern 75%%, no MSAA");
+    CHECK(s.render_scale == 75 && s.msaa == SETTINGS_MSAA_OFF && s.renderer_modern && !s.outlines_thin && !s.lighting_enhanced,
+          "Performance: Modern 75%%, no MSAA, original lighting");
     settings_apply_preset(&s, SETTINGS_PRESET_BALANCED);
-    CHECK(s.render_scale == 100 && s.msaa == SETTINGS_MSAA_4X && s.renderer_modern, "Balanced: Modern 100%%, MSAA 4x");
+    CHECK(s.render_scale == 100 && s.msaa == SETTINGS_MSAA_4X && s.renderer_modern && s.lighting_enhanced, "Balanced: Modern 100%%, MSAA 4x, enhanced lighting");
+    s.lighting_enhanced = 0;
+    CHECK(settings_detect_preset(&s) == SETTINGS_PRESET_CUSTOM, "Balanced with original lighting -> custom");
+    s.lighting_enhanced = 1;
     s.outlines_thin = 1;
     CHECK(settings_detect_preset(&s) == SETTINGS_PRESET_CUSTOM, "changing an option -> custom");
     /* a preset in the file wins over its options; custom leaves them */
@@ -189,6 +193,25 @@ static void test_presets(void) {
     settings_defaults(&s);
     settings_parse("[graphics]\npreset = custom\nrender_scale = 5x\n", &s, NULL, NULL);
     CHECK(s.render_scale == 5 && s.preset == SETTINGS_PRESET_CUSTOM, "preset = custom keeps the options");
+    /* (light) lighting: a default of Balanced; an explicit preset decides it, a custom file without the key gets Enhanced */
+    settings_defaults(&s);
+    CHECK(s.lighting_enhanced == 1, "lighting: enhanced by default");
+    settings_parse("[graphics]\npreset = performance\nlighting = enhanced\n", &s, NULL, NULL);
+    CHECK(!s.lighting_enhanced && s.preset == SETTINGS_PRESET_PERFORMANCE, "preset = performance: original lighting");
+    settings_defaults(&s);
+    settings_parse("[graphics]\npreset = balanced\nlighting = original\n", &s, NULL, NULL);
+    CHECK(s.lighting_enhanced && s.preset == SETTINGS_PRESET_BALANCED, "preset = balanced: enhanced lighting (the preset wins)");
+    settings_defaults(&s);
+    settings_parse("[graphics]\npreset = custom\nrender_scale = 90%\n", &s, NULL, NULL);
+    CHECK(s.lighting_enhanced && s.preset == SETTINGS_PRESET_CUSTOM, "custom without the key: enhanced");
+    settings_defaults(&s);
+    settings_parse("[graphics]\npreset = custom\nlighting = original\n", &s, NULL, NULL);
+    CHECK(!s.lighting_enhanced && s.preset == SETTINGS_PRESET_CUSTOM, "custom, lighting = original");
+    {
+        int li = settings_find("graphics", "lighting"), lv;
+        CHECK(li >= 0 && settings_parse_value(li, "Original", &lv) && lv == 0 && settings_parse_value(li, "enhanced", &lv) && lv == 1 &&
+              settings_parse_value(li, "off", &lv) && lv == 0 && !settings_parse_value(li, "bright", &lv), "lighting values");
+    }
     settings_defaults(&s);
     settings_parse("[graphics]\ninternal_scale = 1\nfilters = faithful\n[display]\naspect = 4:3\n", &s, NULL, NULL);
     CHECK(s.preset == SETTINGS_PRESET_CUSTOM && s.render_scale == SETTINGS_RS_ORIGINAL,
@@ -490,6 +513,21 @@ static void test_menu_nav(void) {
           "Modern render scale at 1440p 16:9: '%s' / '%s'", V.rows[V.sel].value, V.rows[V.sel].desc);
     CHECK(find_row(&V, MENU_ROW_AUTO_MAX) < 0, "no separate auto maximum row");
     CHECK(find_row(&V, MENU_ROW_MSAA) >= 0 && V.rows[find_row(&V, MENU_ROW_MSAA)].enabled, "MSAA row (Modern)");
+    {   /* (light) Lighting: Enhanced (Quality), one step to Original (live, custom), back */
+        int lr = find_row(&V, MENU_ROW_LIGHTING);
+        CHECK(lr >= 0 && V.rows[lr].enabled && !strcmp(V.rows[lr].value, "Enhanced"), "Lighting row: Enhanced ('%s')", lr >= 0 ? V.rows[lr].value : "-");
+        int sel = V.sel;
+        go(MENU_ROW_LIGHTING);
+        menu_nav_event(MENU_NAV_RIGHT, MENU_DEV_KEYBOARD);
+        view();
+        CHECK(!ps2_settings.lighting_enhanced && ps2_settings.preset == SETTINGS_PRESET_CUSTOM && !strcmp(V.rows[V.sel].value, "Original"),
+              "Lighting -> Original: custom ('%s')", V.rows[V.sel].value);
+        menu_nav_event(MENU_NAV_LEFT, MENU_DEV_KEYBOARD);
+        CHECK(ps2_settings.lighting_enhanced && ps2_settings.preset == SETTINGS_PRESET_QUALITY, "back to Enhanced: Quality again");
+        go(MENU_ROW_SCALE);
+        view();
+        (void)sel;
+    }
     for (int k = 0; k < 5; k++) menu_nav_event(MENU_NAV_LEFT, MENU_DEV_KEYBOARD);
     CHECK(ps2_settings.render_scale == 75 && ps2_settings.preset == SETTINGS_PRESET_CUSTOM, "left x5 (steps of 5%%): 75%%, Custom");
     view();
@@ -505,6 +543,7 @@ static void test_menu_nav(void) {
     CHECK(!strcmp(V.rows[V.sel].value, "100% (2560 x 1440)") && strstr(V.rows[V.sel].desc, "Rendering at 2560 x 1792 -> shown at 2560 x 1440"),
           "Reference render scale at 1440p: '%s' / '%s'", V.rows[V.sel].value, V.rows[V.sel].desc);
     CHECK(!V.rows[find_row(&V, MENU_ROW_MSAA)].enabled, "MSAA disabled in Reference");
+    CHECK(!V.rows[find_row(&V, MENU_ROW_LIGHTING)].enabled, "Lighting disabled in Reference");
     menu_nav_event(MENU_NAV_LEFT, MENU_DEV_KEYBOARD);
     view();
     CHECK(ps2_settings.render_scale == 75 && strstr(V.rows[V.sel].desc, "Rendering at 2048 x 1344 -> shown at 2560 x 1440"),
@@ -528,7 +567,7 @@ static void test_menu_nav(void) {
     menu_nav_event(MENU_NAV_CONFIRM, MENU_DEV_KEYBOARD);
     menu_nav_event(MENU_NAV_CONFIRM, MENU_DEV_KEYBOARD);
     CHECK(ps2_settings.preset == SETTINGS_PRESET_BALANCED && ps2_settings.render_scale == 100 && !ps2_settings.outlines_thin &&
-          ps2_settings.renderer_modern && ps2_settings.msaa == SETTINGS_MSAA_4X, "reset Graphics: Balanced");
+          ps2_settings.renderer_modern && ps2_settings.msaa == SETTINGS_MSAA_4X && ps2_settings.lighting_enhanced, "reset Graphics: Balanced");
     /* the renderer is staged: Apply */
     go(MENU_ROW_RENDERER);
     menu_nav_event(MENU_NAV_RIGHT, MENU_DEV_KEYBOARD);

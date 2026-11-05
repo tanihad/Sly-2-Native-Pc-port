@@ -35,9 +35,13 @@ static struct {
     r2g_pipe *mcpipe, *mcpipe_nd, *mcpipe_a2c;   /* (mft-pop) the same for entries crossing the guard band (r2_gs_clip) */
     r2g_pipe* mvpipe;                    /* (r2-m8) the motion-vector pass */
     r2g_pipe *ppipe, *ppipe_nd, *ppipe_a2c;   /* (r8-perf) the merged draws of a plan (vertices pulled: r2.hlsl R2_PULL) */
+    /* (light) the same three sets with Enhanced lighting (r2.hlsl R2_ENH: lit sub-batches per pixel); NULL: not available */
+    r2g_pipe *empipe, *empipe_nd, *empipe_a2c, *emcpipe, *emcpipe_nd, *emcpipe_a2c, *eppipe, *eppipe_nd, *eppipe_a2c;
+    int enh_ok;
     r2g_buf* cb;
     int cb_set;                          /* (r2-m2) cb holds the device's constants (r2.hlsl r2_static), written once */
     float cb_bias;
+    float cb_rim;                        /* (light) r2_misc.z as written */
     float cb_mft[4];                     /* (r2-m8) r2_mft as written: sx, sy, samples */
     arena A[SLOTS];
     uint32_t epoch;                      /* bumped when GPU resources are recreated: meshes upload again */
@@ -60,6 +64,10 @@ static void release_all(void) {
     R.ppipe = R.ppipe_nd = R.ppipe_a2c = NULL;
     r2g_pipe_free(R.mcpipe); r2g_pipe_free(R.mcpipe_nd); r2g_pipe_free(R.mcpipe_a2c);
     R.mcpipe = R.mcpipe_nd = R.mcpipe_a2c = NULL;
+    r2g_pipe* ep[9] = { R.empipe, R.empipe_nd, R.empipe_a2c, R.emcpipe, R.emcpipe_nd, R.emcpipe_a2c, R.eppipe, R.eppipe_nd, R.eppipe_a2c };
+    for (int k = 0; k < 9; k++) r2g_pipe_free(ep[k]);
+    R.empipe = R.empipe_nd = R.empipe_a2c = R.emcpipe = R.emcpipe_nd = R.emcpipe_a2c = R.eppipe = R.eppipe_nd = R.eppipe_a2c = NULL;
+    R.enh_ok = 0;
     memset(R.cb_mft, 0, sizeof R.cb_mft);
     r2g_buf_free(R.cb);
     R.cb = NULL;
@@ -123,6 +131,31 @@ static int init(const r2_exec_in* in) {
     pp.ps = gpu_sh_ps_r2m_a2c; pp.ps_size = sizeof gpu_sh_ps_r2m_a2c;
     R.ppipe_a2c = R.d ? r2g_pipe_create(R.d, &pp) : NULL;
     if (R.d && (!R.ppipe || !R.ppipe_nd || !R.ppipe_a2c)) fprintf(stderr, "[r2] render: no merged-draw pipelines (every draw on its own)\n");
+    /* (light) Enhanced lighting's pipelines (optional: without them modern frames keep the per-vertex lighting) */
+    if (R.d) {
+        r2g_pipe_desc e = { gpu_sh_vs_r2m_e, sizeof gpu_sh_vs_r2m_e, gpu_sh_ps_r2m_e, sizeof gpu_sh_ps_r2m_e, attrs, 10, NULL, 0 };
+        R.empipe = r2g_pipe_create(R.d, &e);
+        e.ps = gpu_sh_ps_r2m_nd_e; e.ps_size = sizeof gpu_sh_ps_r2m_nd_e;
+        R.empipe_nd = r2g_pipe_create(R.d, &e);
+        e.ps = gpu_sh_ps_r2m_a2c_e; e.ps_size = sizeof gpu_sh_ps_r2m_a2c_e;
+        R.empipe_a2c = r2g_pipe_create(R.d, &e);
+        r2g_pipe_desc ec = { gpu_sh_vs_r2m_clip_e, sizeof gpu_sh_vs_r2m_clip_e, gpu_sh_ps_r2m_clip_e, sizeof gpu_sh_ps_r2m_clip_e, attrs, 10,
+                             gpu_sh_gs_r2m_clip_e, sizeof gpu_sh_gs_r2m_clip_e };
+        R.emcpipe = r2g_pipe_create(R.d, &ec);
+        ec.ps = gpu_sh_ps_r2m_clip_nd_e; ec.ps_size = sizeof gpu_sh_ps_r2m_clip_nd_e;
+        R.emcpipe_nd = r2g_pipe_create(R.d, &ec);
+        ec.ps = gpu_sh_ps_r2m_clip_a2c_e; ec.ps_size = sizeof gpu_sh_ps_r2m_clip_a2c_e;
+        R.emcpipe_a2c = r2g_pipe_create(R.d, &ec);
+        r2g_pipe_desc ee = { gpu_sh_vs_r2m_pull_e, sizeof gpu_sh_vs_r2m_pull_e, gpu_sh_ps_r2m_e, sizeof gpu_sh_ps_r2m_e, pattrs, 1, NULL, 0 };
+        R.eppipe = r2g_pipe_create(R.d, &ee);
+        ee.ps = gpu_sh_ps_r2m_nd_e; ee.ps_size = sizeof gpu_sh_ps_r2m_nd_e;
+        R.eppipe_nd = r2g_pipe_create(R.d, &ee);
+        ee.ps = gpu_sh_ps_r2m_a2c_e; ee.ps_size = sizeof gpu_sh_ps_r2m_a2c_e;
+        R.eppipe_a2c = r2g_pipe_create(R.d, &ee);
+        R.enh_ok = R.empipe && R.empipe_nd && R.empipe_a2c && R.emcpipe && R.emcpipe_nd && R.emcpipe_a2c &&
+                   (R.eppipe && R.eppipe_nd && R.eppipe_a2c ? 1 : 0);
+        if (!R.enh_ok) fprintf(stderr, "[r2] render: no Enhanced lighting pipelines (per-vertex lighting)\n");
+    }
     /* (r2-m2) the segment constants by UpdateSubresource (a DEFAULT buffer): Map(DISCARD) per segment, ~45 a frame with
      * frames queued, made the driver block the render thread for up to 10 ms when the GPU was the bottleneck */
     R.cb = R.d ? r2g_buf_create(R.d, R2G_BUF_CONSTANT, R2G_USAGE_DEFAULT, 48, NULL) : NULL;
@@ -296,13 +329,18 @@ static int segment(const gpu_fop_r2* o, const uint8_t* fdata, size_t fdata_bytes
     const gpu_r2_seg* sg = (const gpu_r2_seg*)(fdata + dr[0].seg_off);
     if (!in->mft && (sg->kx != (float)in->kx || sg->ky != (float)in->ky)) { R.missing += o->ndraw; return 0; }
     float mft[4] = { in->mft ? in->sx : 0.0f, in->mft ? in->sy : 0.0f, in->mft ? (float)in->msaa : 0.0f, 0.0f };
-    if (!R.cb_set || R.cb_bias != in->dual_bias || (in->mft && memcmp(mft, R.cb_mft, sizeof mft))) {   /* the device's constants */
+    /* (light) Enhanced lighting's pipelines for this segment (modern frames), the rim strength in r2_misc.z */
+    int enh = in->mft && in->enh && R.enh_ok && !in->mv;
+    float rim = enh ? in->rim : 0.0f;
+    if (!R.cb_set || R.cb_bias != in->dual_bias || (in->mft && memcmp(mft, R.cb_mft, sizeof mft)) || (enh && rim != R.cb_rim)) {   /* the device's constants */
         float cb[12];                    /* (the whole 48-byte buffer: UpdateSubresource of a constant buffer writes all of it) */
         uint32_t* cu = (uint32_t*)cb;
         memset(cb, 0, sizeof cb);
         const char* ze = getenv("PS2_R2_ZBIAS");
         const char* de = getenv("PS2_R2_DBG");   /* (r2-m2) cost experiments (shaders/r2.hlsl), never in play */
         cb[0] = in->dual_bias; cb[1] = ze ? (float)atof(ze) : 0.0f; cb[2] = 0.0f; cu[3] = de ? (uint32_t)atoi(de) : 0u;
+        if (enh) R.cb_rim = rim;         /* (light: read by the R2_ENH pixel shaders only) */
+        cb[2] = R.cb_rim;
         const char* ce = getenv("PS2_R2_CLIP");  /* (r2-m5b) 1: crossing triangles GPU-clipped (else the VU's fans draw them) */
         if (ce && *ce == '1') cu[3] |= 64u;
         if (in->mft) memcpy(R.cb_mft, mft, sizeof mft);
@@ -362,6 +400,8 @@ static int segment(const gpu_fop_r2* o, const uint8_t* fdata, size_t fdata_bytes
             r2g_state s = { (uint8_t)bl, (uint8_t)((st >> 8) & 15), (uint8_t)(depth >> 1), (uint8_t)(depth & 1),
                             (uint8_t)(((st >> 12) & 1) ? R2G_CULL_FRONT : R2G_CULL_NONE) };
             if (pc[c].n) {
+                if (enh) r2g_bind_pipe(R.d, disc ? (in->msaa > 1 ? R.eppipe_a2c : R.eppipe) : R.eppipe_nd);
+                else
                 r2g_bind_pipe(R.d, disc ? (in->msaa > 1 ? R.ppipe_a2c : R.ppipe) : R.ppipe_nd);
                 r2g_bind_state(R.d, &s);
                 r2g_draw_instanced(R.d, pc[c].maxcount, pc[c].n, pc[c].first);
@@ -371,6 +411,10 @@ static int segment(const gpu_fop_r2* o, const uint8_t* fdata, size_t fdata_bytes
                 uint32_t i = pc[c].first;
                 const gpu_r2_draw* d = &dr[i];
                 const r2_mesh* m = r2_mesh_get(d->mesh);
+                if (enh) {
+                    if ((st >> 13) & 1) r2g_bind_pipe(R.d, disc ? (in->msaa > 1 ? R.emcpipe_a2c : R.emcpipe) : R.emcpipe_nd);
+                    else r2g_bind_pipe(R.d, disc ? (in->msaa > 1 ? R.empipe_a2c : R.empipe) : R.empipe_nd);
+                } else
                 if ((st >> 13) & 1) r2g_bind_pipe(R.d, disc ? (in->msaa > 1 ? R.mcpipe_a2c : R.mcpipe) : R.mcpipe_nd);
                 else r2g_bind_pipe(R.d, disc ? (in->msaa > 1 ? R.mpipe_a2c : R.mpipe) : R.mpipe_nd);
                 r2g_bind_state(R.d, &s);
@@ -405,6 +449,10 @@ static int segment(const gpu_fop_r2* o, const uint8_t* fdata, size_t fdata_bytes
             n++;
             continue;
         }
+        if (enh) {                       /* (light) */
+            if ((st >> 13) & 1) r2g_bind_pipe(R.d, (st >> 14) & 1 ? (in->msaa > 1 ? R.emcpipe_a2c : R.emcpipe) : R.emcpipe_nd);
+            else r2g_bind_pipe(R.d, (st >> 14) & 1 ? (in->msaa > 1 ? R.empipe_a2c : R.empipe) : R.empipe_nd);
+        } else
         if (in->mft) {                   /* (r2-m8; mft-pop: entries crossing the guard band through the clip stage) */
             if ((st >> 13) & 1) r2g_bind_pipe(R.d, (st >> 14) & 1 ? (in->msaa > 1 ? R.mcpipe_a2c : R.mcpipe) : R.mcpipe_nd);
             else r2g_bind_pipe(R.d, (st >> 14) & 1 ? (in->msaa > 1 ? R.mpipe_a2c : R.mpipe) : R.mpipe_nd);
