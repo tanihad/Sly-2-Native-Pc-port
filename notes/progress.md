@@ -8,6 +8,10 @@ official art; the art is never committed): backdrop + logo + mask-badge exe icon
 0 problems; bundle clean. Setup sha256 306e4a77... Running overnight (owner asleep, "run till done"): next/light
 (Enhanced lighting, worktree sly2-worktrees\light; owner: ON by default in Balanced/Quality, live switch, Original =
 bit-exact). Merge each verified lighting step into the owner's dist build; no release of lighting without the owner.
+- Sweep on 0.1.1121+: NO DATA results were load stalls (all pass alone on a quiet machine). tfo (owner settings, 120
+  fps, MFT 4x, thin) intermittently flags 1 picture in ep4/ep5/ep6/ep7: worst pictures are HUD text (ep4 scrolling hint
+  ticker; ep7 cutscene fade-in with fading hint text) = detector noise on moving/fading 2D text, not 3D flicker. TODO
+  (low): let flicker_check ignore the HUD layer / text bands, or lower tfo's sensitivity there.
 
 **2026-11-05: 1.0.1 RELEASED** (owner's go): "Sly 2 PC 1.0.1", tag v0.1.1130 (8cc3725 = merge of next/launcher-art
 4f4c9ae), Latest. New launcher look, owner art override (%LOCALAPPDATA%\Sly2\art, local only) > disc art (save icon
