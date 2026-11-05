@@ -81,3 +81,21 @@ On the owner's unloaded PC (ep1 Balanced ~3.54 ms, ~276 fps) that is about 4.1-4
 
 Pictures (local only, never committed): build\light\shots\<scene>__final\ - Original and Enhanced of the same scene
 from one run (alternating 30-frame phases).
+
+### ep1 tfo "blinking seams" after the merge (2026-11-05): not a renderer change
+
+`r2_sweep -Scenes ep1 -Checks tfo` failed on 941dd02 (Original 15 seams, Enhanced 19-28) and passed on 393ea64. Cause:
+the scenario, not the lighting. ep1's dump window is VBlanks 4800-4979; the `-Play` script presses cross at pad frame
+"start + 1500", and the start press is anchored to the title screen's function call, so that press lands anywhere in
+VBlanks ~4880-4970+ depending on boot / load timing (measured: 4883, 4894, 4935 Enhanced; 4966 Original; 4941 393ea64).
+The cross starts the job: the game's cinematic letterbox bars slide in (3-13 rows a picture at 1440p, 120 fps) while the
+picture fades. Every seam reported was a bar edge (rows ~30-135 / ~1300-1434). flicker_check counted a straight edge as
+a blinking seam unless a neighbour had it within 2 pixels, so a sliding bar counts once per picture. When the press
+lands after ~4972 (the passing runs) the slide is outside the window. Proof: 393ea64 (build\pkg_old) with a 240-picture
+window fails the same way (28 seams, same rows); Original HEAD fails (6) when its press lands at 4966. The Original
+code path is unchanged (PS2_LIGHT=0: lt_enabled() false -> no light_note / light_post work, no SOFT permutations, no
+R2_ENH pipelines, cb r2_misc.z 0) and the exact gates show it.
+Fix (scripts/flicker_check.c): an edge that a neighbour has moved by 3-16 pixels (and the picture itself does not have
+there) is an edge in motion; a neighbour's edge within 2 pixels counts also at lower contrast (> 10 instead of 24: a bar
+edge fading out with the picture). A one-picture seam is still caught (synthetic check: a 4-row band in one picture ->
+SEAM). The kept failing runs re-judged: Enhanced 28 -> 0, Original 6 -> 0.
