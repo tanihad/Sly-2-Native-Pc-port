@@ -273,3 +273,14 @@ ps_light_down       light.hlsl          ps_light_down     ps_5_0
 ps_light_up         light.hlsl          ps_light_up       ps_5_0
 ps_light_comp0      light.hlsl          ps_light_comp     ps_5_0    MS=0
 ps_light_comp1      light.hlsl          ps_light_comp     ps_5_0    MS=1
+# (light) Enhanced lighting: the modern frame's R2 pipelines with lit sub-batches lit per pixel (R2_ENH; r2_render.c epipe*)
+vs_r2m_e            r2.hlsl             r2_vs             vs_5_0    R2_MFT=1 R2_ENH=1
+ps_r2m_e            r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_ENH=1
+ps_r2m_nd_e         r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_NODISCARD=1 R2_ENH=1
+ps_r2m_a2c_e        r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_A2C=1 R2_ENH=1
+vs_r2m_clip_e       r2.hlsl             r2_vs_clip        vs_5_0    R2_MFT=1 R2_CLIP=1 R2_ENH=1
+gs_r2m_clip_e       r2.hlsl             r2_gs_clip        gs_5_0    R2_MFT=1 R2_CLIP=1 R2_ENH=1
+ps_r2m_clip_e       r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_CLIP=1 R2_ENH=1
+ps_r2m_clip_nd_e    r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_CLIP=1 R2_NODISCARD=1 R2_ENH=1
+ps_r2m_clip_a2c_e   r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_CLIP=1 R2_A2C=1 R2_ENH=1
+vs_r2m_pull_e       r2.hlsl             r2_vs_pull        vs_5_0    R2_MFT=1 R2_PULL=1 R2_ENH=1

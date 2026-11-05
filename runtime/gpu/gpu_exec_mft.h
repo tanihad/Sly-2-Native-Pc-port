@@ -1520,6 +1520,8 @@ static void mft_r2_seg(const gpu_front_frame_data* fd, const gpu_fop_r2* o, int 
     in.sy = M.rsy;
     in.dbg_cull = r8s_skip(R8S_R2DRAW) ? (r8s_skip(R8S_R2UNI) ? 3 : r8s_skip(R8S_R2TINY) ? 2 : 1) : 0;
     in.opt = opt;
+    in.enh = lt_enabled() && LT.ppl;     /* (light) lit sub-batches per pixel */
+    in.rim = LT.rim;
     int n = r2_render_segment(o, fd->data, fd->data_bytes, &in);
     gpu_rt.n_draws += (uint32_t)n;
     r2_segs++;

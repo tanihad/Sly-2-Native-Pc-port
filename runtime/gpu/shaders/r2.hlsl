@@ -46,6 +46,14 @@ static float2 g_prev_d3d;                // (R2_MV) the vertex's previous positi
 #define R2_A2C 0                         // (r2-m8) MSAA: pass-A cut-outs (alpha test GEQUAL / GREATER, failing fragments
                                          // discarded) as coverage instead of a discard (alpha-to-coverage through SV_Coverage)
 #endif
+#ifndef R2_ENH
+#define R2_ENH 0                         // (light) Enhanced lighting (modern frames, runtime/gpu/gpu_light.h): lit sub-batches
+                                         // lit per pixel with the same light block and formula (r2_lit_px), optional rim light
+#endif
+#if R2_ENH
+static float4 g_lnrm;                    // r2_lit's (skinned) normal x 127 and its w
+static uint g_lxb, g_lmw;                // its light block's fdata offset + 1 (0: not lit), the material's ambient add
+#endif
 // the segment record (gpu_front.h gpu_r2_seg, 32 bytes in fdata at the draw record's +28)
 struct R2Seg {
     float4 map;                          // kx, ky, XYOFFSET x, y (12.4)
@@ -114,6 +122,9 @@ void r2_lit(R2V i, uint4 lm, uint xb, inout float3 p, inout uint cola, inout uin
         float k = lim - cl.w;
         float den = (2.0 + asfloat(0x3C810247u)) * asfloat(0x427DFF7Du) - k * asfloat(0x427DFF7Du);
         float4 cf = float4(r2_ub(i.lcol, 0u), r2_ub(i.lcol, 1u), r2_ub(i.lcol, 2u), r2_ub(i.lcol, 3u));
+#if R2_ENH
+        g_lnrm = n; g_lxb = xb + 1u; g_lmw = lm.w;
+#endif
         int3 a = (int3)((cl.xyz + v10.xyz * k) * n.w);
         int3 b = (int3)(cf.xyz * cl.w * (cf.w / den));
         cola = ((uint)a.x & 255u) | (((uint)a.y & 255u) << 8) | (((uint)a.z & 255u) << 16) | (((uint)(int)cf.w & 255u) << 24);
@@ -141,6 +152,12 @@ struct R2O {
     R2I float3 stq : TEXCOORD0;          // the VU's S, T, Q
     nointerpolation uint3 mr : MATRULE;  // the material record, the discard rule, the segment record
     nointerpolation int3 gv : GV;        // the GS vertex: X, Y (12.4, XYOFFSET subtracted), Z
+#if R2_ENH
+    nointerpolation uint4 lx : LITX;     // (light) light block offset + 1 (0: not lit), the ambient add, -, the fade (asuint)
+    R2I float4 ln : LNRM;                // the object-space normal x 127, its w
+    R2I float4 lc : LCOLV;               // the source record's colour (0..255)
+    R2I float3 lv : LVIEW;               // object-space vector to the camera (rim light)
+#endif
 };
 
 struct R2C {                             // (r2-m2) the clip pipeline's vertex: R2O + the clip-space position and the
@@ -150,6 +167,12 @@ struct R2C {                             // (r2-m2) the clip pipeline's vertex: 
     R2I float3 stq : TEXCOORD0;
     nointerpolation uint3 mr : MATRULE;
     nointerpolation int3 gv : GV;
+#if R2_ENH
+    nointerpolation uint4 lx : LITX;
+    R2I float4 ln : LNRM;
+    R2I float4 lc : LCOLV;
+    R2I float3 lv : LVIEW;
+#endif
     float4 clip : CLIPPOS;               // M x position (the VU's clip space: |x|, |y|, |z| <= w inside its guard band)
     float4 alt : ALT;                    // u, v, 1, F (clipped triangles: perspective-correct U, V; fog without Q)
 };
@@ -161,6 +184,12 @@ struct R2K {                             // the clip pipeline's rasterized verte
     R2I float3 stq : TEXCOORD0;
     nointerpolation uint3 mr : MATRULE;
     nointerpolation int3 gv : GV;
+#if R2_ENH                               // (light: R2O's fields in R2O's order, before the clip distances)
+    nointerpolation uint4 lx : LITX;
+    R2I float4 ln : LNRM;
+    R2I float4 lc : LCOLV;
+    R2I float3 lv : LVIEW;
+#endif
     float4 cd0 : SV_ClipDistance0;       // the VU's six clip planes: w - x, w + x, w - y, w + y
     float2 cd1 : SV_ClipDistance1;       //                            w - z, w + z
 };
@@ -210,6 +239,9 @@ void r2_vertex(R2V i, out R2O o, out float4 clip, out float4 alt) {
     uint icola = i.cola, icolb = i.colb;
     int2 iuv = i.uv;
     uint xq = fdata.Load(eb + 72u);
+#if R2_ENH
+    g_lxb = 0u; g_lmw = 0u; g_lnrm = float4(0.0, 0.0, 127.0, 0.0);
+#endif
     if (lm.x != 0u && xq != 0u) {
         r2_lit(i, lm, (xq - 1u) * 16u, ipos, icola, icolb, iuv);
         if ((asuint(r2_misc.w) & 32u) != 0u) { icola = 0x800000FFu; icolb = 0u; }   // (PS2_R2_DBG 32: lit entries red)
@@ -295,6 +327,21 @@ void r2_vertex(R2V i, out R2O o, out float4 clip, out float4 alt) {
     float wq = w < asfloat(d3.y) ? 1.0 : asfloat(d3.y) / w;
     alt = float4((float)iuv.x * (1.0 / 4096.0), (float)iuv.y * (1.0 / 4096.0), 1.0,
                  (float)((asuint(vu_add(asfloat(i.wbits), vu_mul(asfloat(d3.x), wq))) >> 4) & 255u));
+#if R2_ENH
+    // (light) what the pixel shader's per-pixel lighting needs; the camera in object space: the point whose clip x, y and
+    // w are 0 (the world x clip matrix's x / y / w columns: three planes)
+    o.lx = uint4(g_lxb, g_lmw, 0u, asuint(fade));
+    o.ln = g_lnrm;
+    o.lc = float4(r2_ub(i.lcol, 0u), r2_ub(i.lcol, 1u), r2_ub(i.lcol, 2u), r2_ub(i.lcol, 3u));
+    {
+        float3 r0 = float3(m[0].x, m[1].x, m[2].x), r1 = float3(m[0].y, m[1].y, m[2].y), r2 = float3(m[0].w, m[1].w, m[2].w);
+        float3 b = -float3(m[3].x, m[3].y, m[3].w);
+        float3 c12 = cross(r1, r2), c20 = cross(r2, r0), c01 = cross(r0, r1);
+        float det = dot(r0, c12);
+        float3 e = abs(det) > 1e-20 ? (c12 * b.x + c20 * b.y + c01 * b.z) / det : ipos + float3(0.0, 0.0, 1.0);
+        o.lv = e - ipos;
+    }
+#endif
 }
 
 R2O r2_vs(R2V i) {
@@ -371,6 +418,9 @@ R2C r2_vs_clip(R2V i) {
     r2_vertex(i, o, clip, alt);
     R2C r;
     r.pos = o.pos; r.col = o.col; r.fog = o.fog; r.stq = o.stq; r.mr = o.mr; r.gv = o.gv;
+#if R2_ENH
+    r.lx = o.lx; r.ln = o.ln; r.lc = o.lc; r.lv = o.lv;
+#endif
     r.clip = clip;
     r.alt = alt;
     return r;
@@ -406,6 +456,9 @@ void r2_gs_clip(triangle R2C v[3], inout TriangleStream<R2K> ts) {
     [unroll] for (uint k = 0u; k < 3u; k++) {
         R2K o;
         o.col = v[k].col; o.mr = v[k].mr; o.gv = v[k].gv;
+#if R2_ENH
+        o.lx = v[k].lx; o.ln = v[k].ln; o.lc = v[k].lc; o.lv = v[k].lv;
+#endif
         if (inside) {
             o.pos = v[k].pos; o.fog = v[k].fog; o.stq = v[k].stq;
             o.cd0 = float4(1.0, 1.0, 1.0, 1.0); o.cd1 = float2(1.0, 1.0);
@@ -470,6 +523,41 @@ struct R2F {
 #endif
 };
 
+#if R2_ENH
+// (light) r2_lit's colour per pixel: the interpolated normal (renormalised to the VU's 127) through the entry's light block,
+// the same formula (f = min(d + d^3, threshold), clamps, the highlight share), plus an optional rim light (r2_misc.z)
+float4 r2_lit_px(uint4 lx, float4 ln, float4 lc, float3 lv, bool csel, float4 col) {
+    uint xb = lx.x - 1u;
+    float3 N = ln.xyz * (127.0 * rsqrt(max(dot(ln.xyz, ln.xyz), 1e-6)));
+    float4 T0 = r2_xq(xb, 0u), T1 = r2_xq(xb, 1u), T2 = r2_xq(xb, 2u), amb = r2_xq(xb, 8u), thr = r2_xq(xb, 9u),
+           v10 = r2_xq(xb, 10u), L0 = r2_xq(xb, 4u);
+    float4 d = T0 * N.x + T1 * N.y + T2 * N.z;
+    float4 f = min(d + d * (d * d), thr);
+    amb.w = amb.w + asfloat(lx.y) + v10.w;
+    float4 C = L0 * f.x + r2_xq(xb, 5u) * f.y + r2_xq(xb, 6u) * f.z + r2_xq(xb, 7u) * f.w + amb;
+    float mx = max(max(C.x, C.y), C.z);
+    float lim = max(2.0 - mx, 0.0);
+    float4 cl = float4(min(C.xyz, 2.0), min(C.w, lim));
+    float k = lim - cl.w;
+    float den = (2.0 + asfloat(0x3C810247u)) * asfloat(0x427DFF7Du) - k * asfloat(0x427DFF7Du);
+    float fade = asfloat(lx.w);
+    if (csel) {
+        float3 b = lc.xyz * cl.w * (lc.w / den);
+        if (fade < 1.0) b *= fade;
+        return float4(b, col.w);
+    }
+    float3 a = (cl.xyz + v10.xyz * k) * ln.w;
+    if (r2_misc.z > 0.0) {               // rim: grazing angles towards the camera, in the key light's hue
+        float r = 1.0 - saturate(abs(dot(N * (1.0 / 127.0), normalize(lv))));
+        r = r * r * r;
+        float3 rc = max(L0.xyz, 0.0);
+        rc = rc / max(max(rc.x, rc.y), max(rc.z, 1e-3));
+        a += r * r2_misc.z * rc * ln.w;
+    }
+    return float4(a, col.w);
+}
+#endif
+
 #if R2_ZREC
 R2F r2_ps(R2P i) {
 #else
@@ -514,7 +602,12 @@ R2F r2_ps(R2O i) {
     precise float su16 = su * tw16;
     precise float tv16 = tv * th16;
     uint t = (asuint(r2_misc.w) & 1u) != 0u ? 0x80808080u : tex_sample(st, f2i(su16), f2i(tv16), 1.0);   // (PS2_R2_DBG 1)
+#if R2_ENH && !R2_ZREC
+    float4 icol = i.lx.x != 0u ? r2_lit_px(i.lx, i.ln, i.lc, i.lv, (flags & R2D_CSEL) != 0u, i.col) : i.col;
+    uint4 vc = (uint4)max(icol, 0.0);
+#else
     uint4 vc = (uint4)max(i.col, 0.0);                     // the GS's Gouraud stepping truncates
+#endif
     vc = min(vc, uint4(255u, 255u, 255u, 255u));
     uint col = tfx((t1 >> 3) & 3u, (flags & R2D_TCC) != 0u, vc.x | (vc.y << 8) | (vc.z << 16) | (vc.w << 24), t);
     if (flags & R2D_FGE) {
