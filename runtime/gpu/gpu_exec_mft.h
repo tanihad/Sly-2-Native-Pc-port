@@ -1819,6 +1819,9 @@ static void mft_shfuse(const mft_shp* q, int epochs) {
     memcpy(k.flat, q->flat, sizeof k.flat);
     k.ep[0] = (uint32_t)epochs;
     k.ep[1] = (uint32_t)m->h;
+    /* (light) Enhanced lighting: soft shadow edges - the penumbra radius in surface pixels (mft.hlsl SOFT) */
+    int soft = lt_enabled() && LT.soft > 0.0f;
+    if (soft) { float rad = LT.soft * m->sx / M.osx * M.osy / 6.4285f; memcpy(&k.ep[2], &rad, 4); }
     int has_cnt = M.sv_bb[2] > M.sv_bb[0];
     if (has_cnt) {
         k.svbb[0] = (uint32_t)(M.sv_bb[0] < 0 ? 0 : M.sv_bb[0]); k.svbb[1] = (uint32_t)(M.sv_bb[1] < 0 ? 0 : M.sv_bb[1]);
@@ -1858,12 +1861,12 @@ static void mft_shfuse(const mft_shp* q, int epochs) {
                                             per sample: the deferred renderers' edge / interior split) */
         prof_mark(PR_MFT_FUSE);
         set_depth(mft_ds_mark());
-        if (!r8s_skip(R8S_FPX)) mft_quad(r, GPU_SH_ps_mft_shfuse_px);
+        if (!r8s_skip(R8S_FPX)) mft_quad(r, soft ? GPU_SH_ps_mft_shfuse_px_s : GPU_SH_ps_mft_shfuse_px);
         set_depth(mft_ds_date(0, 0));
-        if (!r8s_skip(R8S_FPS)) mft_quad(r, GPU_SH_ps_mft_shfuse1);
+        if (!r8s_skip(R8S_FPS)) mft_quad(r, soft ? GPU_SH_ps_mft_shfuse1_s : GPU_SH_ps_mft_shfuse1);
     } else {
         prof_mark(PR_MFT_FUSE);
-        mft_quad(r, GPU_SH_ps_mft_shfuse0);
+        mft_quad(r, soft ? GPU_SH_ps_mft_shfuse0_s : GPU_SH_ps_mft_shfuse0);
     }
     ID3D11ShaderResourceView* none[3] = { NULL, NULL, NULL };
     ID3D11DeviceContext_PSSetShaderResources(gpu_rt.ctx, 12, 3, none);

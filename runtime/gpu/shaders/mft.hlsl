@@ -527,11 +527,77 @@ uint mft_shfuse_word(uint2 P, uint s, uint w) {
 float4 mft_unorm(uint w) {
     return float4((float)(w & 255u), (float)((w >> 8) & 255u), (float)((w >> 16) & 255u), (float)(w >> 24)) * (1.0 / 255.0);
 }
+#ifndef SOFT
+#define SOFT 0
+#endif
+#if SOFT
+// (light) Enhanced lighting: soft shadow edges (gpu_light.h; sf_ep.z = the penumbra radius in surface pixels, float bits).
+// The game's shadow is the fused pass's word with the volumes' counters; a pixel's word with the counters of a pixel
+// outside every volume is the same pixel unshadowed, with those of one inside it shadowed. The share of a disc of samples
+// around the pixel that lies inside the volumes blends the two (RGB; the alpha byte - read by later destination-alpha
+// tests - stays the game's), so the hard edge becomes a penumbra about twice the radius wide.
+bool mft_soft_in(uint2 Q, uint s) {
+    bool any = false;
+    [loop] for (uint e = 0u; e < sf_ep.x; e++) any = any || mft_cnt_at(Q, s, e) != 0u;
+    return any;
+}
+uint mft_shfuse_word_q(uint2 P, uint2 Q, uint s, uint w) {   // mft_shfuse_word with the counters of pixel Q
+    uint a = 0u;
+    [unroll] for (uint k = 0u; k < 3u; k++) {
+        uint4 c = sf_c[k];
+        if ((c.w & (1u << 19)) != 0u) {
+            uint src = (c.w & (1u << 18)) != 0u ? a : w;
+            if ((c.w & (1u << 20)) != 0u) a = sf_copy(c, src, a);
+            else w = sf_copy(c, src, w);
+        }
+        if (k == 0u) {
+            if (sf_clr.x != 0u) w = (w & ~sf_clr.z) | (sf_clr.y & sf_clr.z);
+            [loop] for (uint e = 0u; e < sf_ep.x; e++) {
+                uint n = mft_cnt_at(Q, s, e);
+                w = (w & 0xFFFF00FFu) | ((((w >> 8) + n) & 255u) << 8);
+                if (e + 1u < sf_ep.x) { uint4 q = sf_flat[e]; w = npost_word(w, w, q.x, q.y, q.z, q.w, 0u); }
+            }
+        }
+    }
+    if (sf_np2.y != 0u) w = npost_word(w, w, sf_np.x, sf_np.y, sf_np.z, sf_np.w, sf_np2.x);
+    return w;
+}
+float4 mft_shfuse_soft(uint2 P, uint s, uint w) {
+    uint S = mft_shfuse_word_q(P, P, s, w);
+    float R = asfloat(sf_ep.z);
+    bool inP = mft_soft_in(P, s);
+    int2 hi = int2(sf_svbb.zw) + 64;     // (outside the volumes' box every counter is 0)
+    float rot = frac(52.9829189 * frac(dot((float2)P, float2(0.06711056, 0.00583715)))) * 6.2831853;
+    uint nin = inP ? 1u : 0u, nt = 1u;
+    int2 qin = int2(-1, -1), qout = int2(-1, -1);
+    [unroll] for (uint i = 0u; i < 12u; i++) {
+        float a = (float)i * 2.39996323 + rot, r = R * sqrt(((float)i + 0.5) / 12.0);
+        int2 Q = int2(P) + int2(round(r * float2(cos(a), sin(a))));
+        Q = clamp(Q, int2(0, 0), hi);
+        bool b = mft_soft_in(uint2(Q), s);
+        nin += b ? 1u : 0u;
+        nt++;
+        if (b) qin = Q; else qout = Q;
+    }
+    float cov = (float)nin / (float)nt;
+    float4 sc = mft_unorm(S);
+    float4 res = sc;
+    int2 qo = inP ? qout : qin;          // inside: the pixel unshadowed (an outside neighbour's counters); outside: shadowed
+    uint2 qu = uint2(max(qo, int2(0, 0)));
+    float4 o = mft_unorm(mft_shfuse_word_q(P, qu, s, w));
+    if (qo.x >= 0) res.rgb = inP ? lerp(o.rgb, sc.rgb, cov) : lerp(sc.rgb, o.rgb, cov);
+    return res;
+}
+#endif
 #if MS
 // per sample (the pixels whose samples differ: the stencil marks the others, done by ps_mft_shfuse_px)
 float4 ps_mft_shfuse(float4 pos : SV_Position, uint s : SV_SampleIndex) : SV_Target {
     uint2 P = uint2(pos.xy);
+#if SOFT
+    return mft_shfuse_soft(P, s, mft_col(P, s));
+#else
     return mft_unorm(mft_shfuse_word(P, s, mft_col(P, s)));
+#endif
 }
 // per pixel: a pixel whose samples hold one word and one count in every epoch (most of them) is done once for all its
 // samples; the others are discarded (left to the per-sample pass)
@@ -544,12 +610,20 @@ float4 ps_mft_shfuse_px(float4 pos : SV_Position) : SV_Target {
         [loop] for (uint e = 0u; e < sf_ep.x; e++) same = same && mft_cnt_at(P, s, e) == mft_cnt_at(P, 0u, e);
     }
     if (!same) discard;
+#if SOFT
+    return mft_shfuse_soft(P, 0u, w);
+#else
     return mft_unorm(mft_shfuse_word(P, 0u, w));
+#endif
 }
 #else
 float4 ps_mft_shfuse(float4 pos : SV_Position) : SV_Target {
     uint2 P = uint2(pos.xy);
+#if SOFT
+    return mft_shfuse_soft(P, 0u, mft_col(P, 0u));
+#else
     return mft_unorm(mft_shfuse_word(P, 0u, mft_col(P, 0u)));
+#endif
 }
 #endif
 #if MS
