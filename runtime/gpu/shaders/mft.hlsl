@@ -564,28 +564,41 @@ uint mft_shfuse_word_q(uint2 P, uint2 Q, uint s, uint w) {   // mft_shfuse_word 
 }
 float4 mft_shfuse_soft(uint2 P, uint s, uint w) {
     uint S = mft_shfuse_word_q(P, P, s, w);
+    float4 res = mft_unorm(S);
     float R = asfloat(sf_ep.z);
-    bool inP = mft_soft_in(P, s);
+    int ri = (int)ceil(R);
     int2 hi = int2(sf_svbb.zw) + 64;     // (outside the volumes' box every counter is 0)
-    float rot = frac(52.9829189 * frac(dot((float2)P, float2(0.06711056, 0.00583715)))) * 6.2831853;
-    uint nin = inP ? 1u : 0u, nt = 1u;
-    int2 qin = int2(-1, -1), qout = int2(-1, -1);
-    [unroll] for (uint i = 0u; i < 12u; i++) {
-        float a = (float)i * 2.39996323 + rot, r = R * sqrt(((float)i + 0.5) / 12.0);
-        int2 Q = int2(P) + int2(round(r * float2(cos(a), sin(a))));
-        Q = clamp(Q, int2(0, 0), hi);
-        bool b = mft_soft_in(uint2(Q), s);
-        nin += b ? 1u : 0u;
-        nt++;
-        if (b) qin = Q; else qout = Q;
+    // (cost) only near the volumes' box, and only where a sample at the radius left / right / up / down disagrees with
+    // the pixel (an edge); everywhere else the game's word as it is
+    bool nearb = (int)P.x + ri >= (int)sf_svbb.x && (int)P.x - ri < (int)sf_svbb.z && (int)P.y + ri >= (int)sf_svbb.y &&
+                 (int)P.y - ri < (int)sf_svbb.w;
+    [branch] if (nearb) {
+        bool inP = mft_soft_in(P, s);
+        bool edge = false;
+        [unroll] for (uint j = 0u; j < 4u; j++) {
+            int2 o = j == 0u ? int2(ri, 0) : j == 1u ? int2(-ri, 0) : j == 2u ? int2(0, ri) : int2(0, -ri);
+            edge = edge || mft_soft_in(uint2(clamp(int2(P) + o, int2(0, 0), hi)), s) != inP;
+        }
+        [branch] if (edge) {
+            float rot = frac(52.9829189 * frac(dot((float2)P, float2(0.06711056, 0.00583715)))) * 6.2831853;
+            uint nin = inP ? 1u : 0u, nt = 1u;
+            int2 qin = int2(-1, -1), qout = int2(-1, -1);
+            [unroll] for (uint i = 0u; i < 12u; i++) {
+                float a = (float)i * 2.39996323 + rot, r = R * sqrt(((float)i + 0.5) / 12.0);
+                int2 Q = clamp(int2(P) + int2(round(r * float2(cos(a), sin(a)))), int2(0, 0), hi);
+                bool b = mft_soft_in(uint2(Q), s);
+                nin += b ? 1u : 0u;
+                nt++;
+                if (b) qin = Q; else qout = Q;
+            }
+            float cov = (float)nin / (float)nt;
+            int2 qo = inP ? qout : qin;  // inside: the pixel unshadowed (an outside neighbour's counters); outside: shadowed
+            [branch] if (qo.x >= 0) {
+                float4 o = mft_unorm(mft_shfuse_word_q(P, uint2(qo), s, w));
+                res.rgb = inP ? lerp(o.rgb, res.rgb, cov) : lerp(res.rgb, o.rgb, cov);
+            }
+        }
     }
-    float cov = (float)nin / (float)nt;
-    float4 sc = mft_unorm(S);
-    float4 res = sc;
-    int2 qo = inP ? qout : qin;          // inside: the pixel unshadowed (an outside neighbour's counters); outside: shadowed
-    uint2 qu = uint2(max(qo, int2(0, 0)));
-    float4 o = mft_unorm(mft_shfuse_word_q(P, qu, s, w));
-    if (qo.x >= 0) res.rgb = inP ? lerp(o.rgb, sc.rgb, cov) : lerp(sc.rgb, o.rgb, cov);
     return res;
 }
 #endif

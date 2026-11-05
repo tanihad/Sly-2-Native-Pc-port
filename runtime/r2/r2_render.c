@@ -400,7 +400,17 @@ static int segment(const gpu_fop_r2* o, const uint8_t* fdata, size_t fdata_bytes
             r2g_state s = { (uint8_t)bl, (uint8_t)((st >> 8) & 15), (uint8_t)(depth >> 1), (uint8_t)(depth & 1),
                             (uint8_t)(((st >> 12) & 1) ? R2G_CULL_FRONT : R2G_CULL_NONE) };
             if (pc[c].n) {
-                if (enh) r2g_bind_pipe(R.d, disc ? (in->msaa > 1 ? R.eppipe_a2c : R.eppipe) : R.eppipe_nd);
+                int el = 0;                  /* (light: the Enhanced pipelines only where a member mesh is lit - they cost) */
+                if (enh) {
+                    const uint32_t* mem = (const uint32_t*)(fdata + (size_t)pc[c].first * 32u);
+                    for (uint32_t k = 0; k < pc[c].n && !el; k++) {
+                        size_t ro = (size_t)mem[k] * 32u;
+                        if (ro + sizeof(gpu_r2_draw) > fdata_bytes) { el = 1; break; }
+                        const r2_mesh* mm = r2_mesh_get(((const gpu_r2_draw*)(fdata + ro))->mesh);
+                        el = !mm || mm->any_lit;
+                    }
+                }
+                if (el) r2g_bind_pipe(R.d, disc ? (in->msaa > 1 ? R.eppipe_a2c : R.eppipe) : R.eppipe_nd);
                 else
                 r2g_bind_pipe(R.d, disc ? (in->msaa > 1 ? R.ppipe_a2c : R.ppipe) : R.ppipe_nd);
                 r2g_bind_state(R.d, &s);
@@ -411,7 +421,7 @@ static int segment(const gpu_fop_r2* o, const uint8_t* fdata, size_t fdata_bytes
                 uint32_t i = pc[c].first;
                 const gpu_r2_draw* d = &dr[i];
                 const r2_mesh* m = r2_mesh_get(d->mesh);
-                if (enh) {
+                if (enh && (!m || m->any_lit)) {
                     if ((st >> 13) & 1) r2g_bind_pipe(R.d, disc ? (in->msaa > 1 ? R.emcpipe_a2c : R.emcpipe) : R.emcpipe_nd);
                     else r2g_bind_pipe(R.d, disc ? (in->msaa > 1 ? R.empipe_a2c : R.empipe) : R.empipe_nd);
                 } else
@@ -449,7 +459,7 @@ static int segment(const gpu_fop_r2* o, const uint8_t* fdata, size_t fdata_bytes
             n++;
             continue;
         }
-        if (enh) {                       /* (light) */
+        if (enh && m->any_lit) {         /* (light: lit meshes only) */
             if ((st >> 13) & 1) r2g_bind_pipe(R.d, (st >> 14) & 1 ? (in->msaa > 1 ? R.emcpipe_a2c : R.emcpipe) : R.emcpipe_nd);
             else r2g_bind_pipe(R.d, (st >> 14) & 1 ? (in->msaa > 1 ? R.empipe_a2c : R.empipe) : R.empipe_nd);
         } else
