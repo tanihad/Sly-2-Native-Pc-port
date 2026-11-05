@@ -115,7 +115,9 @@ static void et_free_class(int c) {
     GPU_RELEASE(ET.arr[c]);
 }
 
+static void et_release_late(void);      /* (the dump read-backs and the HD upload buffer, below) */
 static void et_release(void) {
+    et_release_late();
     for (int c = 0; c < ET_NCLS; c++) {
         et_free_class(c);
         free(ET.sl[c]);
@@ -573,17 +575,235 @@ static void et_dump_poll(void) {
     }
 }
 
+/* ---- the HD-pack folder: <user dir>\textures\<hash>.png (16 hex digits: the original image's content hash, as
+ * PS2_TEX_DUMP names it) replaces that image. The folder is listed once (when Enhanced textures start); a file is
+ * decoded with Windows' own image decoder (WIC, loaded at run time) on a worker thread and uploaded at a frame start.
+ * Any size: its width and height must be powers of two up to 2048 (else it is skipped, with a log line); alpha 255 =
+ * the GS's 0x80 (opaque). ----------------------------------------------------------------------------------------------- */
+#include <wincodec.h>
+#define ET_HDMIX 0x5D3C9A7E11F04B2Bull   /* (an HD image's key: never equal to a built image's) */
+#define ET_HDQ 256
+typedef struct { uint64_t raw; uint32_t w, h; uint32_t* px; int state; } et_hdjob;   /* state 1 queued, 2 done, 3 failed */
+static struct {
+    int listed, n, thread_on;
+    uint64_t* have;                      /* hashes with a file (sorted) */
+    et_hdjob q[ET_HDQ];
+    CRITICAL_SECTION cs;
+    HANDLE ev, th;
+    ID3D11Buffer* buf;
+    ID3D11ShaderResourceView* srv;
+} EH;
+extern const wchar_t* settings_user_dir(void) __attribute__((weak));
+
+static int et_hd_cmp(const void* a, const void* b) {
+    uint64_t x = *(const uint64_t*)a, y = *(const uint64_t*)b;
+    return x < y ? -1 : x > y;
+}
+static void et_hd_list(void) {
+    EH.listed = 1;
+    if (!ET.hd || !settings_user_path) return;
+    wchar_t pat[600];
+    if (!settings_user_path(L"textures", pat, 580)) return;
+    wcscat(pat, L"\\*.png");
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW(pat, &fd);
+    if (h == INVALID_HANDLE_VALUE) return;
+    int cap = 0;
+    do {
+        if (wcslen(fd.cFileName) != 20) continue;   /* (16 hex digits + ".png") */
+        wchar_t* end = NULL;
+        uint64_t v = _wcstoui64(fd.cFileName, &end, 16);
+        if (end != fd.cFileName + 16) continue;
+        if (EH.n == cap) { cap = cap ? cap * 2 : 64; uint64_t* a = realloc(EH.have, cap * sizeof *a); if (!a) break; EH.have = a; }
+        EH.have[EH.n++] = v;
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+    if (EH.n) qsort(EH.have, (size_t)EH.n, sizeof *EH.have, et_hd_cmp);
+    gpu_log("tex: HD folder: %d replacement textures", EH.n);
+}
+static int et_hd_has(uint64_t raw) {
+    if (!EH.n) return 0;
+    return bsearch(&raw, EH.have, (size_t)EH.n, sizeof raw, et_hd_cmp) != NULL;
+}
+
+/* the worker: decodes queued files with WIC into RGBA8 */
+static const GUID et_clsid_wic = { 0xcacaf262, 0x9370, 0x4615, { 0xa1, 0x3b, 0x9f, 0x55, 0x39, 0xda, 0x4c, 0x0a } };
+static const GUID et_iid_wic = { 0xec5ec8a9, 0xc395, 0x4314, { 0x9c, 0x77, 0x54, 0xd7, 0xa9, 0x35, 0xff, 0x70 } };
+static const GUID et_fmt_rgba = { 0xf5c7ad2d, 0x6a8d, 0x43dd, { 0xa7, 0xa8, 0xa2, 0x99, 0x35, 0x26, 0x1a, 0xe9 } };
+static int et_hd_decode(IWICImagingFactory* f, const wchar_t* path, et_hdjob* j) {
+    IWICBitmapDecoder* d = NULL;
+    IWICBitmapFrameDecode* fr = NULL;
+    IWICFormatConverter* cv = NULL;
+    int ok = 0;
+    if (SUCCEEDED(IWICImagingFactory_CreateDecoderFromFilename(f, path, NULL, GENERIC_READ, WICDecodeMetadataCacheOnDemand, &d)) &&
+        SUCCEEDED(IWICBitmapDecoder_GetFrame(d, 0, &fr)) && SUCCEEDED(IWICImagingFactory_CreateFormatConverter(f, &cv)) &&
+        SUCCEEDED(IWICFormatConverter_Initialize(cv, (IWICBitmapSource*)fr, &et_fmt_rgba, WICBitmapDitherTypeNone, NULL, 0.0,
+                                                 WICBitmapPaletteTypeCustom))) {
+        UINT w = 0, h = 0;
+        IWICFormatConverter_GetSize(cv, &w, &h);
+        if (w >= 1 && h >= 1 && w <= 2048 && h <= 2048 && !(w & (w - 1)) && !(h & (h - 1))) {
+            j->px = malloc((size_t)w * h * 4);
+            if (j->px && SUCCEEDED(IWICFormatConverter_CopyPixels(cv, NULL, w * 4, w * h * 4, (BYTE*)j->px))) {
+                for (size_t i = 0; i < (size_t)w * h; i++) {   /* (alpha 255 -> the GS's 0x80) */
+                    uint32_t p = j->px[i], a = ((p >> 24) * 128u + 127u) / 255u;
+                    j->px[i] = (p & 0xFFFFFFu) | a << 24;
+                }
+                j->w = w; j->h = h;
+                ok = 1;
+            }
+        } else gpu_log("tex: HD %016llx.png is %ux%u: width and height must be powers of two up to 2048", (unsigned long long)j->raw, w, h);
+    }
+    if (cv) IWICFormatConverter_Release(cv);
+    if (fr) IWICBitmapFrameDecode_Release(fr);
+    if (d) IWICBitmapDecoder_Release(d);
+    if (!ok) { free(j->px); j->px = NULL; }
+    return ok;
+}
+static DWORD WINAPI et_hd_thread(LPVOID unused) {
+    (void)unused;
+    HMODULE ole = LoadLibraryW(L"ole32.dll");
+    typedef HRESULT(WINAPI * coinit_fn)(LPVOID, DWORD);
+    typedef HRESULT(WINAPI * cocreate_fn)(REFCLSID, LPUNKNOWN, DWORD, REFIID, LPVOID*);
+    coinit_fn coinit = ole ? (coinit_fn)(void*)GetProcAddress(ole, "CoInitializeEx") : NULL;
+    cocreate_fn cocreate = ole ? (cocreate_fn)(void*)GetProcAddress(ole, "CoCreateInstance") : NULL;
+    IWICImagingFactory* f = NULL;
+    if (coinit && cocreate) {
+        coinit(NULL, COINIT_MULTITHREADED);
+        cocreate(&et_clsid_wic, NULL, CLSCTX_INPROC_SERVER, &et_iid_wic, (void**)&f);
+    }
+    if (!f) gpu_log("tex: no Windows image decoder (WIC): the HD folder is not used");
+    for (;;) {
+        WaitForSingleObject(EH.ev, INFINITE);
+        for (;;) {
+            et_hdjob* j = NULL;
+            EnterCriticalSection(&EH.cs);
+            for (int i = 0; i < ET_HDQ && !j; i++) if (EH.q[i].state == 1) j = &EH.q[i];
+            LeaveCriticalSection(&EH.cs);
+            if (!j) break;
+            wchar_t path[700];
+            int ok = 0;
+            if (f && settings_user_path && settings_user_path(L"textures", path, 600)) {
+                size_t l = wcslen(path);
+                _snwprintf(path + l, 700 - l, L"\\%016llx.png", (unsigned long long)j->raw);
+                path[699] = 0;
+                ok = et_hd_decode(f, path, j);
+            }
+            EnterCriticalSection(&EH.cs);
+            j->state = ok ? 2 : 3;
+            LeaveCriticalSection(&EH.cs);
+        }
+    }
+    return 0;
+}
+
+/* entry idx waits for the HD image of its content (queued once per hash) */
+static void et_hd_request(int32_t idx) {
+    et_ent* e = &ET.e[idx];
+    e->st = ES_HDLOAD;
+    if (!EH.thread_on) {
+        InitializeCriticalSection(&EH.cs);
+        EH.ev = CreateEventW(NULL, FALSE, FALSE, NULL);
+        EH.th = EH.ev ? CreateThread(NULL, 0, et_hd_thread, NULL, 0, NULL) : NULL;
+        EH.thread_on = EH.th ? 1 : -1;
+    }
+    if (EH.thread_on < 0) { e->st = ES_NONE; ET.hd = 0; return; }
+    EnterCriticalSection(&EH.cs);
+    int have = 0, slot = -1;
+    for (int i = 0; i < ET_HDQ; i++) {
+        if (EH.q[i].state && EH.q[i].raw == e->raw) have = 1;
+        if (!EH.q[i].state && slot < 0) slot = i;
+    }
+    if (!have && slot >= 0) { EH.q[slot].raw = e->raw; EH.q[slot].px = NULL; EH.q[slot].state = 1; }
+    LeaveCriticalSection(&EH.cs);
+    if (!have && slot < 0) { e->st = ES_WANT; return; }   /* (the queue is full: asked again at the next hash) */
+    SetEvent(EH.ev);
+}
+
+/* (frame start) finished HD files: their images, linked to every entry waiting for them */
+static int et_hd_poll(int* bound) {
+    if (EH.thread_on <= 0) return 0;
+    int n = 0;
+    for (int i = 0; i < ET_HDQ; i++) {
+        EnterCriticalSection(&EH.cs);
+        int st = EH.q[i].state;
+        LeaveCriticalSection(&EH.cs);
+        if (st != 2 && st != 3) continue;
+        et_hdjob* j = &EH.q[i];
+        int32_t id = -1;
+        uint64_t key = j->raw ^ ET_HDMIX;
+        if (st == 2) {
+            if (!EH.buf) EH.buf = raw_default(2048u * 2048u * 4u, NULL, &EH.srv, NULL);
+            uint32_t S = j->w > j->h ? j->w : j->h;
+            int cls = et_class_of(0, 0, (int)(S < 64 ? 64 : S));
+            id = EH.buf ? et_alloc(cls) : -1;
+            if (id >= 0) {
+                D3D11_BOX bx = { 0, 0, 0, j->w * j->h * 4u, 1, 1 };
+                ID3D11DeviceContext_UpdateSubresource(gpu_rt.ctx, (ID3D11Resource*)EH.buf, 0, &bx, j->px, 0, 0);
+                et_slot* s = et_slot_of(id);
+                s->used = 1; s->hd = 1; s->hash = key; s->first = -1; s->last = ET.frame;
+                et_ent t;
+                memset(&t, 0, sizeof t);
+                for (uint32_t k = 0; k < 12; k++) { if ((1u << k) == j->w) t.lw = (uint8_t)k; if ((1u << k) == j->h) t.lh = (uint8_t)k; }
+                for (int32_t k = 0; k < TD_HASH; k++)   /* (addressing and alpha test of a use) */
+                    if (ET.e[k].st == ES_HDLOAD && ET.e[k].raw == j->raw) { t.flags = ET.e[k].flags; t.ref = ET.e[k].ref; break; }
+                if (!*bound) {
+                    ID3D11ShaderResourceView* n1 = NULL;
+                    ID3D11DeviceContext_PSSetShaderResources(gpu_rt.ctx, 13, 1, &n1);
+                    *bound = 1;
+                }
+                et_build(&t, id, EH.srv, 0, 1);
+                et_map_put(key, id);
+                ET.n_hd++;
+            }
+        }
+        for (int32_t k = 0; k < TD_HASH; k++) {
+            et_ent* e = &ET.e[k];
+            if (e->st != ES_HDLOAD || e->raw != j->raw) continue;
+            if (id >= 0) et_link(k, id);
+            else { e->st = ES_QUEUED; if (ET.qn < TD_HASH) ET.q[ET.qn++] = k; else e->st = ES_NONE; }   /* (failed: built) */
+        }
+        if (st == 3 || id < 0) {         /* (no HD image: this hash is built from now on) */
+            for (int k = 0; k < EH.n; k++) if (EH.have[k] == j->raw) EH.have[k] = 0;
+            if (EH.n) qsort(EH.have, (size_t)EH.n, sizeof *EH.have, et_hd_cmp);
+        }
+        free(j->px);
+        j->px = NULL;
+        EnterCriticalSection(&EH.cs);
+        j->state = 0;
+        LeaveCriticalSection(&EH.cs);
+        n++;
+    }
+    return n;
+}
+
+static void et_release_late(void) {
+    for (int i = 0; i < ET_DJ; i++) if (ET_dump[i].st) { ID3D11Resource_Release(ET_dump[i].st); ET_dump[i].st = NULL; }
+    GPU_RELEASE(EH.srv);
+    GPU_RELEASE(EH.buf);
+    if (EH.thread_on > 0) {              /* (decoded files not yet uploaded are dropped; their entries ask again) */
+        EnterCriticalSection(&EH.cs);
+        for (int i = 0; i < ET_HDQ; i++) if (EH.q[i].state == 2 || EH.q[i].state == 3) { free(EH.q[i].px); EH.q[i].px = NULL; EH.q[i].state = 0; }
+        LeaveCriticalSection(&EH.cs);
+    }
+}
+
 /* a hashed entry: keep its image (same content), share one, load an HD file, or queue a build */
 static void et_resolve(int32_t idx) {
     et_ent* e = &ET.e[idx];
     et_slot* cur = et_slot_of(e->slot);
     if (cur) {
-        if (cur->hash == e->hash) { e->st = ES_READY; cur->last = ET.frame; return; }
+        if (cur->hash == e->hash || cur->hash == (e->raw ^ ET_HDMIX)) { e->st = ES_READY; cur->last = ET.frame; return; }
         et_unlink(idx);                  /* (the content changed) */
         if (e->nchg && ET.frame - e->chg < 1800) { e->st = ES_REJECT; ET.n_reject++; return; }
         e->nchg++;
         e->chg = ET.frame;
         ET.n_change++;
+    }
+    if (ET.hd && et_hd_has(e->raw)) {    /* (an HD-pack file: its image, shared by every entry of that content) */
+        int32_t hid = et_map_find(e->raw ^ ET_HDMIX);
+        if (hid >= 0) et_link(idx, hid);
+        else et_hd_request(idx);
+        return;
     }
     int32_t id = et_map_find(e->hash);
     if (id >= 0) { et_link(idx, id); ET.n_share++; return; }
@@ -597,6 +817,7 @@ static void et_frame_begin(void) {
     ID3D11DeviceContext* c = gpu_rt.ctx;
     ET.out_frame = 0;
     if (ET.dump) et_dump_poll();
+    if (!EH.listed) et_hd_list();
     /* 1. hashes of earlier frames */
     for (uint32_t k = 1; k <= ET_RING; k++) {
         uint32_t r = (ET.ring + k) % ET_RING;
@@ -658,7 +879,8 @@ static void et_frame_begin(void) {
             gpu_rt.n_dispatches += n;
         }
     }
-    /* 3. builds */
+    /* 3. HD-pack images decoded since, then builds */
+    if (ET.hd) et_hd_poll(&bound);
     uint32_t qi = 0;
     for (; qi < ET.qn && ET.out_frame < ET.frame_out; qi++) {
         int32_t idx = ET.q[qi];
@@ -693,9 +915,9 @@ static void et_frame_begin(void) {
         X.state_calls += 10;
     }
     if (ET.log && ET.frame % 600 == 0)
-        gpu_log("tex: %llu hashed, %llu built (%.1f M texels), %llu shared, %llu re-decoded (%llu changed), %llu rejected, "
+        gpu_log("tex: %llu hashed, %llu built (%.1f M texels), %llu HD, %llu shared, %llu re-decoded (%llu changed), %llu rejected, "
                 "%llu evicted, %u queued; %.0f MB",
-                (unsigned long long)ET.n_hash, (unsigned long long)ET.n_build, ET.n_texels / 1e6, (unsigned long long)ET.n_share,
+                (unsigned long long)ET.n_hash, (unsigned long long)ET.n_build, ET.n_texels / 1e6, (unsigned long long)ET.n_hd, (unsigned long long)ET.n_share,
                 (unsigned long long)ET.n_redec, (unsigned long long)ET.n_change, (unsigned long long)ET.n_reject,
                 (unsigned long long)ET.n_evict, ET.qn, ET.bytes / 1048576.0);
 }
