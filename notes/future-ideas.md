@@ -5,7 +5,13 @@ notes/modern-renderer.md or their own design note.
 
 ## 2026-11-04
 
-Agreed next big step after 1.0: **Enhanced lighting and shadows** (per-pixel lighting from the game's own lights,
+**2026-11-05: owner's next big update = sharper textures** ("things look very PS2 with just upscaled resolution").
+Proposed: (1) hash-based texture replacement in the renderer + anisotropic filtering with generated mipmaps; (2) the
+installer upscales every texture from the player's own disc into a local cache (non-ML edge-aware scaler first, an AI
+upscaler only if the owner approves the one-time model download), skipping render-target / CLUT-animated / data
+textures; (3) an HD pack folder for hand fixes. Nothing generated is ever shipped. Enhanced lighting follows.
+
+Earlier agreed next big step after 1.0: **Enhanced lighting and shadows** (per-pixel lighting from the game's own lights,
 shadow maps, SSAO, bloom, normal maps; each a switch, Original one click away).
 
 **Picture**
