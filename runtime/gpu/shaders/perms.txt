@@ -262,3 +262,14 @@ cs_mft_cmp          mft.hlsl            cs_mft_cmp        cs_5_0    PRIM=9 MS=1
 vs_r2c              r2_conf.hlsl        r2c_vs            vs_5_0
 ps_r2c_vu           r2_conf.hlsl        r2c_vu_ps         ps_5_0
 ps_r2c_div          r2_conf.hlsl        r2c_div_ps        ps_5_0
+# (light) Enhanced lighting of modern frames (gpu_light.h): ambient occlusion and bloom at the resolve point
+vs_light            light.hlsl          vs_light          vs_5_0
+ps_light_lin0       light.hlsl          ps_light_lin      ps_5_0    MS=0
+ps_light_lin1       light.hlsl          ps_light_lin      ps_5_0    MS=1
+ps_light_ao         light.hlsl          ps_light_ao       ps_5_0
+ps_light_blur       light.hlsl          ps_light_blur     ps_5_0
+ps_light_bright     light.hlsl          ps_light_bright   ps_5_0
+ps_light_down       light.hlsl          ps_light_down     ps_5_0
+ps_light_up         light.hlsl          ps_light_up       ps_5_0
+ps_light_comp0      light.hlsl          ps_light_comp     ps_5_0    MS=0
+ps_light_comp1      light.hlsl          ps_light_comp     ps_5_0    MS=1
