@@ -250,30 +250,51 @@ static void edge_runs(const pic* p, int t, int* vr, int* hr) {
     free(cur);
 }
 
+/* the longest edge run of e[a .. b] (clipped to 1 .. n - 1) */
+static int edge_max(const int* e, int n, int a, int b) {
+    int r = 0;
+    for (int k = a < 1 ? 1 : a; k <= b && k < n; k++) if (e[k] > r) r = e[k];
+    return r;
+}
+/* (light-flk) an edge at p (length len) that a neighbouring picture has moved by 3 .. SEAM_MOVE pixels - there, and not
+ * where the picture itself has an edge (a static edge nearby does not count): an edge in motion, shown in two pictures
+ * (the game's cinematic letterbox bars sliding in / out move 3 - 13 rows a picture at 1440p, and their first and last
+ * positions have a neighbour on one side only), not a seam that blinks for one picture */
+#define SEAM_MOVE 16
+static int edge_moved(const int* e0, const int* en, int n, int p, int len) {
+    for (int k = p - SEAM_MOVE; k <= p + SEAM_MOVE; k++) {
+        if (k < 1 || k >= n || (k >= p - 2 && k <= p + 2) || en[k] * 4 < len) continue;
+        if (edge_max(e0, n, k - 1, k + 1) * 2 < en[k]) return 1;
+    }
+    return 0;
+}
 /* a straight edge (a seam: a tile / page / band boundary) in m, at least S.seam pixels long, that r1 and r2 do not have
- * there (less than a quarter of it): the longest such edge, *pos its column (vertical, > 0) or -row (horizontal) */
+ * there (less than a quarter of it): the longest such edge, *pos its column (vertical, > 0) or -row (horizontal).
+ * Not seams: an edge the neighbours have within 2 pixels - (light-flk) also with less contrast (> SEAM_WEAK instead of
+ * 24: an edge fading in or out, e.g. a letterbox bar's edge as the picture fades to black) - or moved (edge_moved) */
+#define SEAM_WEAK 10
 static int seam_blink(const pic* m, const pic* r1, const pic* r2, int minlen, int* pos) {
     int w = m->w, h = m->h, n = w > h ? w : h, best = 0;
-    int *v0 = malloc(sizeof(int) * (size_t)n * 6), *h0 = v0 + n, *v1 = h0 + n, *h1 = v1 + n, *v2 = h1 + n, *h2 = v2 + n;
+    int* v0 = malloc(sizeof(int) * (size_t)n * 10);
+    int *h0 = v0 + n, *v1 = h0 + n, *h1 = v1 + n, *v2 = h1 + n, *h2 = v2 + n, *wv1 = h2 + n, *wh1 = wv1 + n, *wv2 = wh1 + n, *wh2 = wv2 + n;
     edge_runs(m, 24, v0, h0); edge_runs(r1, 24, v1, h1); edge_runs(r2, 24, v2, h2);
+    edge_runs(r1, SEAM_WEAK, wv1, wh1); edge_runs(r2, SEAM_WEAK, wv2, wh2);
     *pos = 0;
-    /* (the neighbours' edges within 2 pixels count: an edge that moves is no seam) */
     for (int x = 1; x < w; x++) {
         if (v0[x] < minlen || v0[x] <= best) continue;
-        int nb = 0;
-        for (int k = x - 2; k <= x + 2; k++) if (k > 0 && k < w) { if (v1[k] > nb) nb = v1[k]; if (v2[k] > nb) nb = v2[k]; }
-        if (nb * 4 < v0[x]) { best = v0[x]; *pos = x; }
+        int nb = edge_max(wv1, w, x - 2, x + 2), nb2 = edge_max(wv2, w, x - 2, x + 2);
+        if (nb2 > nb) nb = nb2;
+        if (nb * 4 < v0[x] && !edge_moved(v0, v1, w, x, v0[x]) && !edge_moved(v0, v2, w, x, v0[x])) { best = v0[x]; *pos = x; }
     }
     for (int y = 1; y < h; y++) {
         if (h0[y] < minlen || h0[y] <= best) continue;
-        int nb = 0;
-        for (int k = y - 2; k <= y + 2; k++) if (k > 0 && k < h) { if (h1[k] > nb) nb = h1[k]; if (h2[k] > nb) nb = h2[k]; }
-        if (nb * 4 < h0[y]) { best = h0[y]; *pos = -y; }
+        int nb = edge_max(wh1, h, y - 2, y + 2), nb2 = edge_max(wh2, h, y - 2, y + 2);
+        if (nb2 > nb) nb = nb2;
+        if (nb * 4 < h0[y] && !edge_moved(h0, h1, h, y, h0[y]) && !edge_moved(h0, h2, h, y, h0[y])) { best = h0[y]; *pos = -y; }
     }
     free(v0);
     return best;
 }
-
 /* the picture m against r1 and r2, which agree with each other: its blinking pixels (main's statistics in S) */
 static struct {
     int same, diff, quiet, max_blobs, npics, bad, nres, rows_max, blobs_max, ww, wh, want_worst, seam, seams, max_rows, max_seams;

@@ -16,6 +16,9 @@ key -> Enhanced. Original must cost nothing (skip all passes) and stay bit-ident
 - [x] cost: full Enhanced +0.63 ms (8703e18); owner shots build\light\shots\*_original/_enhanced/_compare_original_left.png
 - [x] final gates on 8703e18: m9_exact S1+S3 -Game identical, gpu_diff_all 28/28, units 0 failed, run_tests 16/16, sweep Original ab+mf ep1/m2 4/4, Enhanced tfb+tfq+mf ep1/m2 6/6 + m2 tfo; (earlier, f2feb6a: Original ab,hc,tf,mf ep1/ep3/ep5/m2 16/16)
 - STATUS: COMPLETE (2026-11-05)
+- [x] tfo follow-up (2026-11-05, after merge 941dd02): ep1 tfo 'blinking seams' = the job-start letterbox bars sliding
+  inside the dump window (press timing varies run to run; 393ea64 fails the same with a wider window). Not a renderer
+  change. Fix: scripts/flicker_check.c treats moved / fading edges as motion (notes/enhanced-lighting.md). Gates on bbcbaf7 (runtime = 941dd02): run_tests 16/16, units 0 failed, m9_exact S1+S3 -Game identical, gpu_diff_all 28/28; r2_sweep -Parallel 1 PS2_LIGHT=0 ep1 ab,tfo,tfb,mf + m2 tfo,tfb,mf 7/7, PS2_LIGHT=1 ep1 + m2 tfo,tfb,mf 6/6, all 0 seams (Enhanced ep1 press at v4898, inside the window). Cost unchanged (no runtime change): +0.63 ms.
 - [x] settings / menu / tests (graphics.lighting; 350 menu checks)
 - gates on f2feb6a (AO/bloom/ppl): m9_exact S1+S3 -Game identical (on bfaa875 code), gpu_diff_all 28/28, run_tests 16/16,
   units all but gs-hw (my mid-edit; re-run), r2_sweep Original + Enhanced RUNNING (build\gates_sweep.txt)
