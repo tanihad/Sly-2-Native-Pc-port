@@ -82,6 +82,9 @@ typedef struct {
                                     modern frames (render_scale a percentage or auto; notes/modern-renderer.md R8) */
     int lighting_enhanced;       /* (light) [graphics] lighting = original (0) | enhanced (1, default): ambient occlusion and
                                     bloom on modern frames (runtime/gpu/gpu_light.h, notes/enhanced-lighting.md) */
+    int textures_enhanced;       /* (tex) [graphics] textures = original (0) | enhanced (1, default): the 3D's textures
+                                    upscaled, sharpened and mip-mapped on modern frames (runtime/gpu/gpu_tex.h,
+                                    notes/enhanced-textures.md) */
 } ps2_settings_t;
 
 /* (r2-m8) graphics.msaa: samples per pixel of modern frames (1, 2, 4, 8) */
@@ -127,11 +130,11 @@ enum { SETTINGS_FULLSCREEN_OFF, SETTINGS_FULLSCREEN_BORDERLESS, SETTINGS_FULLSCR
  *   Original    - "PS2" in the menu: every faithful setting at once - Rendering Reference (the exact GS renderer), the
  *                 integer sample grid (render_scale auto: the largest multiple of 512 x 448 up to the screen), filters
  *                 faithful (flicker filter, interlacing, motion blur), outlines ps2, aspect 4:3.
- *   Performance - Modern, render_scale 75 %, MSAA off, outlines ps2, lighting original, wide.
+ *   Performance - Modern, render_scale 75 %, MSAA off, outlines ps2, lighting and textures original, wide.
  *   Balanced    - (default) Modern, render_scale 100 % (the screen's own resolution), MSAA 4x, outlines ps2, lighting
- *                 enhanced, wide.
- *   Quality     - Modern, render_scale 100 %, MSAA 8x, thin outlines, lighting enhanced, wide.
- *   (Original also sets lighting original: the PS2's picture.)
+ *                 and textures enhanced, wide.
+ *   Quality     - Modern, render_scale 100 %, MSAA 8x, thin outlines, lighting and textures enhanced, wide.
+ *   (Original also sets lighting and textures original: the PS2's picture.)
  *   Custom      - anything else.
  * Every preset also sets the three filter toggles to `preset` and scaler = auto; "wide" keeps the current wide
  * aspect (16:9 when it was 4:3). Modern frames draw at render_scale % of the screen with MSAA (gpu_exec_mft.h); an

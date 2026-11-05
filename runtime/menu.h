@@ -194,6 +194,7 @@ enum {
     MENU_ROW_RMODE,                      /* (r2-m2) Graphics > Rendering: [graphics] renderer_mode (Modern / Reference) */
     MENU_ROW_MSAA,                       /* (r2-m8) Graphics > Anti-aliasing (MSAA): [graphics] msaa */
     MENU_ROW_LIGHTING,                   /* (light) Graphics > Lighting: [graphics] lighting (Enhanced / Original) */
+    MENU_ROW_TEXTURES,                   /* (tex) Graphics > Textures: [graphics] textures (Enhanced / Original) */
     MENU_ROW_BIND0 = 100,                /* binding rows: MENU_ROW_BIND0 + action */
     MENU_ROW_BIND_RESET = 99,
 };

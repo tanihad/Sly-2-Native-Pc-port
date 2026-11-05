@@ -172,15 +172,15 @@ static void test_presets(void) {
     settings_defaults(&s);
     settings_apply_preset(&s, SETTINGS_PRESET_ORIGINAL);
     CHECK(s.render_scale == SETTINGS_RS_AUTO && !s.renderer_modern && s.filters_faithful && !s.outlines_thin && s.aspect_w == 4 &&
-          s.aspect_h == 3 && !s.lighting_enhanced, "Original (PS2): Reference on the integer grid, faithful, 4:3, original lighting");
+          s.aspect_h == 3 && !s.lighting_enhanced && !s.textures_enhanced, "Original (PS2): Reference on the integer grid, faithful, 4:3, original lighting and textures");
     settings_apply_preset(&s, SETTINGS_PRESET_QUALITY);
-    CHECK(s.render_scale == 100 && s.outlines_thin && !s.filters_faithful && s.lighting_enhanced, "Quality: 100%%, thin, enhanced lighting");
+    CHECK(s.render_scale == 100 && s.outlines_thin && !s.filters_faithful && s.lighting_enhanced && s.textures_enhanced, "Quality: 100%%, thin, enhanced lighting and textures");
     CHECK(s.aspect_w == 4, "Quality keeps the aspect (the menu restores widescreen when leaving Original)");
     settings_apply_preset(&s, SETTINGS_PRESET_PERFORMANCE);
-    CHECK(s.render_scale == 75 && s.msaa == SETTINGS_MSAA_OFF && s.renderer_modern && !s.outlines_thin && !s.lighting_enhanced,
+    CHECK(s.render_scale == 75 && s.msaa == SETTINGS_MSAA_OFF && s.renderer_modern && !s.outlines_thin && !s.lighting_enhanced && !s.textures_enhanced,
           "Performance: Modern 75%%, no MSAA, original lighting");
     settings_apply_preset(&s, SETTINGS_PRESET_BALANCED);
-    CHECK(s.render_scale == 100 && s.msaa == SETTINGS_MSAA_4X && s.renderer_modern && s.lighting_enhanced, "Balanced: Modern 100%%, MSAA 4x, enhanced lighting");
+    CHECK(s.render_scale == 100 && s.msaa == SETTINGS_MSAA_4X && s.renderer_modern && s.lighting_enhanced && s.textures_enhanced, "Balanced: Modern 100%%, MSAA 4x, enhanced lighting and textures");
     s.lighting_enhanced = 0;
     CHECK(settings_detect_preset(&s) == SETTINGS_PRESET_CUSTOM, "Balanced with original lighting -> custom");
     s.lighting_enhanced = 1;
@@ -211,6 +211,34 @@ static void test_presets(void) {
         int li = settings_find("graphics", "lighting"), lv;
         CHECK(li >= 0 && settings_parse_value(li, "Original", &lv) && lv == 0 && settings_parse_value(li, "enhanced", &lv) && lv == 1 &&
               settings_parse_value(li, "off", &lv) && lv == 0 && !settings_parse_value(li, "bright", &lv), "lighting values");
+    }
+    /* (tex) textures: the same rules as lighting */
+    settings_defaults(&s);
+    CHECK(s.textures_enhanced == 1, "textures: enhanced by default");
+    settings_parse("[graphics]\npreset = performance\ntextures = enhanced\n", &s, NULL, NULL);
+    CHECK(!s.textures_enhanced && s.preset == SETTINGS_PRESET_PERFORMANCE, "preset = performance: original textures");
+    settings_defaults(&s);
+    settings_parse("[graphics]\npreset = original\n", &s, NULL, NULL);
+    CHECK(!s.textures_enhanced && s.preset == SETTINGS_PRESET_ORIGINAL, "preset = original (PS2): original textures");
+    settings_defaults(&s);
+    settings_parse("[graphics]\npreset = quality\ntextures = original\n", &s, NULL, NULL);
+    CHECK(s.textures_enhanced && s.preset == SETTINGS_PRESET_QUALITY, "preset = quality: enhanced textures (the preset wins)");
+    settings_defaults(&s);
+    settings_parse("[graphics]\npreset = custom\nlighting = original\n", &s, NULL, NULL);
+    CHECK(s.textures_enhanced && s.preset == SETTINGS_PRESET_CUSTOM, "custom without the textures key: enhanced");
+    settings_defaults(&s);
+    settings_parse("[graphics]\npreset = custom\ntextures = original\n", &s, NULL, NULL);
+    CHECK(!s.textures_enhanced && s.lighting_enhanced && s.preset == SETTINGS_PRESET_CUSTOM, "custom, textures = original");
+    {
+        int ti = settings_find("graphics", "textures"), tv;
+        CHECK(ti >= 0 && settings_parse_value(ti, "Original", &tv) && tv == 0 && settings_parse_value(ti, "enhanced", &tv) && tv == 1 &&
+              settings_parse_value(ti, "off", &tv) && tv == 0 && !settings_parse_value(ti, "sharp", &tv), "textures values");
+        static char buf[16384];
+        settings_defaults(&s);
+        s.preset = SETTINGS_PRESET_CUSTOM;
+        s.textures_enhanced = 0;
+        settings_format(&s, buf, sizeof buf);
+        CHECK(strstr(buf, "\ntextures = original\n") != NULL, "sly2.ini writes textures");
     }
     settings_defaults(&s);
     settings_parse("[graphics]\ninternal_scale = 1\nfilters = faithful\n[display]\naspect = 4:3\n", &s, NULL, NULL);
@@ -567,7 +595,7 @@ static void test_menu_nav(void) {
     menu_nav_event(MENU_NAV_CONFIRM, MENU_DEV_KEYBOARD);
     menu_nav_event(MENU_NAV_CONFIRM, MENU_DEV_KEYBOARD);
     CHECK(ps2_settings.preset == SETTINGS_PRESET_BALANCED && ps2_settings.render_scale == 100 && !ps2_settings.outlines_thin &&
-          ps2_settings.renderer_modern && ps2_settings.msaa == SETTINGS_MSAA_4X && ps2_settings.lighting_enhanced, "reset Graphics: Balanced");
+          ps2_settings.renderer_modern && ps2_settings.msaa == SETTINGS_MSAA_4X && ps2_settings.lighting_enhanced && ps2_settings.textures_enhanced, "reset Graphics: Balanced");
     /* the renderer is staged: Apply */
     go(MENU_ROW_RENDERER);
     menu_nav_event(MENU_NAV_RIGHT, MENU_DEV_KEYBOARD);
