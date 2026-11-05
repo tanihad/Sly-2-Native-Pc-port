@@ -248,7 +248,7 @@ def find_art(folder: Path) -> dict:
 
 
 def rc_path(p: Path) -> str:
-    return '"' + p.resolve().as_posix() + '"'
+    return '"' + p.absolute().as_posix() + '"'
 
 
 def build_stub(work: Path, count: int, ghash: str, test_build: bool = False, art: dict | None = None,
@@ -263,7 +263,7 @@ def build_stub(work: Path, count: int, ghash: str, test_build: bool = False, art
     lines = []
     if art:
         if art.get("icon"):
-            icon = art["icon"].resolve().as_posix()
+            icon = art["icon"].absolute().as_posix()
         lines = [f"ART_{k.upper()} RCDATA {rc_path(art[k])}" for k in ("backdrop", "logo") if art.get(k)]
     rc = work / ("setup-art.rc" if art else "setup.rc")
     rc.write_text(RC.format(count=count, hash=ghash, icon=icon, art="\n".join(lines)), encoding="utf-8")
@@ -401,7 +401,7 @@ def main() -> int:
         p.update(archive_info(p))
     count, ghash = version()
     write_config(work / "setup_config.h", pins, pyver, count, ghash)
-    art = find_art(Path(args.art).resolve()) if args.art else None
+    art = find_art(Path(args.art).absolute()) if args.art else None   # (absolute, not resolve: as the owner names it)
     allow_file = out / "Sly2-Setup.art-allow.txt"
     if art:
         make_art_icon(work, count, ghash, art)
@@ -419,7 +419,7 @@ def main() -> int:
         allowed = art_allow_list(art)
         allow_file.write_text("".join(f"{h}  {what}\n" for h, what in allowed.items()), encoding="utf-8")
         check_setup(setup, set(allowed))
-        print(f"Setup includes the owner's art from {Path(args.art).resolve()} "
+        print(f"Setup includes the owner's art from {Path(args.art).absolute()} "
               f"({', '.join(p.name for p in (art['backdrop'], art['logo']) if p)}"
               f"{', the logo badge as its icon' if art['icon'] else ''}); allow-list for check_no_game_data: {allow_file}")
     if args.test_build:
