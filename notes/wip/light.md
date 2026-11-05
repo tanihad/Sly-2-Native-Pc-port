@@ -11,8 +11,10 @@ key -> Enhanced. Original must cost nothing (skip all passes) and stay bit-ident
 - [x] 1 design note (notes/enhanced-lighting.md)
 - [x] 2 SSAO + bloom (gpu_light.h, light.hlsl) - tuned on ep1 / ep6 / m2 boardroom; +0.42 ms GPU at 1440p Balanced (ep1)
 - [x] 3 per-pixel lighting (r2.hlsl R2_ENH, r2_render.c epipe*) + rim 0.5
-- [~] 4 soft shadow edges (mft.hlsl SOFT, gpu_exec_mft.h mft_shfuse) - built in build\rel2, NOT YET LOOKED AT
-- [ ] 5 aniso: deferred (no mipmaps; design note)
+- [x] 4 soft shadow edges (mft.hlsl SOFT) - verified on ep1 (Sly's lamp shadow); edge-only for cost
+- [x] 5 aniso: deferred (no mipmaps; design note)
+- [x] cost: full Enhanced +0.63 ms (8703e18); owner shots build\light\shots\*_original/_enhanced/_compare_original_left.png
+- [ ] final gates on 8703e18 (build\gates_final.txt) running
 - [x] settings / menu / tests (graphics.lighting; 350 menu checks)
 - gates on f2feb6a (AO/bloom/ppl): m9_exact S1+S3 -Game identical (on bfaa875 code), gpu_diff_all 28/28, run_tests 16/16,
   units all but gs-hw (my mid-edit; re-run), r2_sweep Original + Enhanced RUNNING (build\gates_sweep.txt)
