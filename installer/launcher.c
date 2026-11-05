@@ -8,8 +8,8 @@
  * The work itself is engine.c / update.c on a worker thread (the same code as /silent).
  *
  * Look: a wide dark window, the controls in a column on the left over a picture on the right. The pictures
- * (art.h): the owner's own (%LOCALAPPDATA%\Sly2\art: logo, backdrop, icon), else those the build made from the
- * player's disc (game\art), else our own drawn theme (night blue, gold, the icon as an emblem). Everything is drawn
+ * (art.h): the owner's own (%LOCALAPPDATA%\Sly2\art: logo, backdrop, icon), else those built into this program
+ * (make_installer.py --art), else those the build made from the player's disc (game\art), else our own drawn theme (night blue, gold, the icon as an emblem). Everything is drawn
  * into one 32-bit back buffer (anti-aliased shapes from art.c, ClearType text from GDI); the buttons are owner-drawn
  * child controls (keyboard, focus and the tests work as before) painted over the same buffer, with eased hover
  * fades. Per-monitor DPI aware (the manifest), no console window.

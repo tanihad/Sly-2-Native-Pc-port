@@ -1,6 +1,11 @@
 """Build the Windows installer: build\\installer\\Sly2-Setup.exe (and with --offline Sly2-Setup-Offline.exe).
 
-    <main checkout>\\.venv\\Scripts\\python.exe scripts\\make_installer.py [--offline] [--out build\\installer]
+    <main checkout>\\.venv\\Scripts\\python.exe scripts\\make_installer.py [--offline] [--out build\\installer] [--art <folder>]
+
+--art <folder> (the owner's release Setup; notes/install.md "Publishing an update", notes/disc-art.md): the folder's
+backdrop.* and logo.* go into the program as resources (the window shows them before anything is installed), the
+logo's mask badge becomes its icon, and <out>\\Sly2-Setup.art-allow.txt lists their SHA-256 for
+check_no_game_data.py --allow. Without it the program carries no picture and the procedural icon.
 
 The setup program (installer/*.c, compiled with llvm-mingw) is a "builder installer": it installs our
 recompiler and runtime and the pinned build toolchain, checks the player's own disc image, builds sly2.exe

@@ -102,7 +102,9 @@ def main() -> int:
     print("\nPublish (after the owner's go-ahead) with the GitHub CLI, from this checkout:")
     print(f'  gh release create v{version} --repo {REPO} --title "Sly 2 PC {version}" --notes "{args.notes or "Update"}" '
           f'"{bundle}" "{out / "sly2-release.txt"}" "{out / "sly2-release.txt.sig"}"')
-    print("Attach the Setup files too (build\\installer\\Sly2-Setup.exe, SHA256SUMS.txt) so new players get this version.")
+    print("Attach the Setup files too (build\\installer\\Sly2-Setup.exe, SHA256SUMS.txt) so new players get this version;")
+    print("release Setups carry the owner's art: scripts\\make_installer.py --art %LOCALAPPDATA%\\Sly2\\art, then")
+    print("  scripts\\check_no_game_data.py --allow build\\installer\\Sly2-Setup.art-allow.txt build\\installer\\Sly2-Setup.exe")
     print("It must be the newest (\"latest\") release: launchers read releases/latest/download/sly2-release.txt.")
     return 0
 
