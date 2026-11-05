@@ -2,6 +2,13 @@
 
 ## Resume here (read first in a new session)
 
+**2026-11-05: 1.0.1 RELEASED** (owner's go): "Sly 2 PC 1.0.1", tag v0.1.1130 (8cc3725 = merge of next/launcher-art
+4f4c9ae), Latest. New launcher look, owner art override (%LOCALAPPDATA%\Sly2\art, local only) > disc art (save icon
+.ico, intro backdrop capture) > own theme; publisher "tanihad"; failed update checks no longer shown;
+check_no_game_data.py: 0 problems in Setup and bundle. Setup sha256 9671dae1... Open: sweep NO DATA re-checks (ep4,
+ep6, ep7, m2_boardroom tfo/hc) once the machine is quiet; committed game-frame screenshots exist in notes/pc-menu,
+notes/pc-text, notes/m10 (private repo; owner to decide).
+
 **2026-11-05: 1.0 RELEASED** on the owner's go: GitHub release "Sly 2 PC 1.0", tag v0.1.1121 (18e74e4), Latest, private
 repo. Assets: Sly2-Setup.exe (sha256 e5b03805...), SHA256SUMS.txt, sly2-release.txt + .sig (Ed25519, key matches
 installer/release_key.h; owner backed the key up), sly2-source-0.1.1121.zip. Published through the owner's Windows
