@@ -909,7 +909,7 @@ static void draw_text(HDC dc) {
             text(dc, f_body, C_TEXT, L"Ready to play.", R(X, 216, COL_W, 44), DT_WORDBREAK);
         }
         const wchar_t* u = upd_state == UPD_CHECKING ? L"Checking for updates..." : upd_state == UPD_CURRENT ? L"You have the latest version."
-                         : upd_state == UPD_FAILED ? L"Couldn't check for updates." : L"";
+                         : L"";   /* (a failed check - e.g. the release address unreachable while the repository is private - shows nothing; it is in the log) */
         if (u[0]) text(dc, f_small, C_DIM, u, R(X, 380, COL_W, 20), DT_SINGLELINE | DT_VCENTER);
         text(dc, f_small, C_DIM, L"Saves and settings stay in your user folder: updates and repairs never touch them.",
              R(X, 400, COL_W, 34), DT_WORDBREAK);

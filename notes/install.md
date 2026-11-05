@@ -51,7 +51,7 @@ The game icon (shortcuts, Apps & features, the window) is `<install>\art\sly2.ic
    `%LOCALAPPDATA%\Sly2`), Repair (rebuilds the installed version from its kept sources), Uninstall, and after an
    update "Previous" (switch back to the version before). Play starts the game and closes the launcher.
 6. Next starts (Start menu / desktop shortcut "Sly 2 - Band of Thieves" -> the launcher): straight to PLAY; the
-   update check runs in the background: "You have the latest version." / "Couldn't check for updates." (quietly,
+   update check runs in the background: "You have the latest version." / nothing when the check fails (only in setup.log; quietly,
    no pop-up) / a gold band "Version 0.1.N is available. Update?" [Update] -> progress -> "Updated to version
    0.1.N. Your saves and settings are as they were." If an update fails: "Version X is unchanged and still ready to
    play." A release that needs a newer launcher says so and its button opens the release page (https only).
@@ -91,7 +91,7 @@ restores `game.old` when `game` is missing, removes an unfinished `game.new`. "P
 **Updates** (`update.c`, `release.c`; tests: tests/unit/launcher, tests/installer/e2e.ps1)
 - Source: `https://github.com/tanihad/sly2-decomp/releases/latest/download/sly2-release.txt` and `.sig` (GitHub's
   "latest release" asset URLs, no authentication). Configurable: `/updateurl=` or `[setup] update_url` in
-  setup-state.ini. While the repository is private these requests fail: "Couldn't check for updates." - nothing else.
+  setup-state.ini. While the repository is private these requests fail: the launcher shows nothing (the reason is in setup.log).
 - The manifest (UTF-8 `key = value`): `format = 1`, `product = sly2-pc`, `version`, `commit`, `date`, `bundle` (URL,
   or a name relative to the manifest), `bundle_size`, `bundle_sha256`, optional `min_launcher`, `page`, `notes`;
   unknown keys ignored, repeated keys / bad values refused, at most 16 KB.

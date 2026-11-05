@@ -205,7 +205,7 @@ BEGIN
   BEGIN
     BLOCK "040904B0"
     BEGIN
-      VALUE "CompanyName", "sly2-decomp (unofficial fan port)"
+      VALUE "CompanyName", "tanihad"
       VALUE "FileDescription", "Sly 2: Band of Thieves launcher and setup (builds the game from your own disc)"
       VALUE "FileVersion", "0.1.{count}"
       VALUE "InternalName", "Sly2-Setup"

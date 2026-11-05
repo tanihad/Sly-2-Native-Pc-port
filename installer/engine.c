@@ -680,7 +680,7 @@ static void register_uninstall(setup_t* s, uint64_t bytes) {
     if (sp) *sp = 0;
     if (gv[0]) { wfmt(v, MAXP * 2, L"%hs", gv); reg_set_str(root, s->regkey, L"DisplayVersion", v); }
     else reg_set_str(root, s->regkey, L"DisplayVersion", SETUP_VERSION);
-    reg_set_str(root, s->regkey, L"Publisher", L"sly2-decomp (unofficial fan port)");
+    reg_set_str(root, s->regkey, L"Publisher", L"tanihad");
     reg_set_str(root, s->regkey, L"InstallLocation", s->dir);
     wfmt(v, MAXP * 2, L"%ls,0", icon);
     reg_set_str(root, s->regkey, L"DisplayIcon", v);

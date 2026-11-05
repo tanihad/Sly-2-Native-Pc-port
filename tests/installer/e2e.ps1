@@ -136,8 +136,15 @@ try {
     $sm = Join-Path $t 'startmenu\Sly 2 - Band of Thieves.lnk'; $dk = Join-Path $t 'desktop\Sly 2 - Band of Thieves.lnk'
     Check ((Test-Path $sm) -and (LinkTarget $sm) -eq $launcher) "Start menu shortcut -> the launcher"
     Check ((Test-Path $dk) -and (LinkTarget $dk) -eq $launcher) "desktop shortcut -> the launcher"
+    # the game's icon from the player's disc (scripts/disc_art.py, notes/disc-art.md): built, chosen, on the shortcuts and
+    # the Apps & features entry; the backdrop is a headless run of the game (optional: logged, not required)
+    $artIco = Join-Path $dir 'art\sly2.ico'
+    Check ((Test-Path (Join-Path $dir 'game\art\sly2.ico')) -and (Test-Path $artIco)) "the game icon made from the disc (game\art\sly2.ico -> art\sly2.ico)"
+    $lnkIcon = (New-Object -ComObject WScript.Shell).CreateShortcut($sm).IconLocation
+    Check ($lnkIcon -like "$artIco,*") "the shortcuts show it ($lnkIcon)"
+    Write-Output "     backdrop from the disc: $(if (Test-Path (Join-Path $dir 'game\art\backdrop.bmp')) { 'yes' } else { 'no (the launcher uses its own theme)' })"
     $reg = Get-ItemProperty "HKCU:\$key" -ErrorAction SilentlyContinue
-    Check ($reg -and $reg.InstallLocation -eq $dir -and $reg.DisplayVersion -eq $v0 -and $reg.DisplayIcon -match 'Launcher') "uninstall entry (test key), version $($reg.DisplayVersion)"
+    Check ($reg -and $reg.InstallLocation -eq $dir -and $reg.DisplayVersion -eq $v0 -and $reg.DisplayIcon -eq "$artIco,0") "uninstall entry (test key), version $($reg.DisplayVersion), the game icon"
     Write-Output ("     game {0} MB, data {1} MB, builder (tools kept) {2} MB, whole folder {3} MB" -f (MB "$dir\game"), (MB "$dir\data"), (MB "$dir\builder"), (MB $dir))
 
     $game = Join-Path $dir 'game\sly2_launcher_e2e.exe'          # (a copy under its own name: no kill-by-name accidents)

@@ -71,7 +71,7 @@ BEGIN
   BEGIN
     BLOCK "040904B0"
     BEGIN
-      VALUE "CompanyName", "sly2-decomp (unofficial fan port)"
+      VALUE "CompanyName", "tanihad"
       VALUE "FileDescription", "Sly 2: Band of Thieves"
       VALUE "FileVersion", "{v0}.{v1}.{v2}"
       VALUE "InternalName", "sly2"
