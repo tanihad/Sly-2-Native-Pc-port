@@ -38,6 +38,10 @@ static struct {
     /* (light) the same three sets with Enhanced lighting (r2.hlsl R2_ENH: lit sub-batches per pixel); NULL: not available */
     r2g_pipe *empipe, *empipe_nd, *empipe_a2c, *emcpipe, *emcpipe_nd, *emcpipe_a2c, *eppipe, *eppipe_nd, *eppipe_a2c;
     int enh_ok;
+    /* (tex) the modern frame's pipelines with Enhanced textures (r2.hlsl R2_ETEX): [lighting per pixel][family: plain, clip,
+     * pull][discard, no discard, alpha-to-coverage]; tex_ok: all of them exist */
+    r2g_pipe* tp[2][3][3];
+    int tex_ok;
     r2g_buf* cb;
     int cb_set;                          /* (r2-m2) cb holds the device's constants (r2.hlsl r2_static), written once */
     float cb_bias;
@@ -68,6 +72,8 @@ static void release_all(void) {
     for (int k = 0; k < 9; k++) r2g_pipe_free(ep[k]);
     R.empipe = R.empipe_nd = R.empipe_a2c = R.emcpipe = R.emcpipe_nd = R.emcpipe_a2c = R.eppipe = R.eppipe_nd = R.eppipe_a2c = NULL;
     R.enh_ok = 0;
+    for (int a = 0; a < 2; a++) for (int f = 0; f < 3; f++) for (int v = 0; v < 3; v++) { r2g_pipe_free(R.tp[a][f][v]); R.tp[a][f][v] = NULL; }
+    R.tex_ok = 0;
     memset(R.cb_mft, 0, sizeof R.cb_mft);
     r2g_buf_free(R.cb);
     R.cb = NULL;
@@ -155,6 +161,35 @@ static int init(const r2_exec_in* in) {
         R.enh_ok = R.empipe && R.empipe_nd && R.empipe_a2c && R.emcpipe && R.emcpipe_nd && R.emcpipe_a2c &&
                    (R.eppipe && R.eppipe_nd && R.eppipe_a2c ? 1 : 0);
         if (!R.enh_ok) fprintf(stderr, "[r2] render: no Enhanced lighting pipelines (per-vertex lighting)\n");
+    }
+    /* (tex) Enhanced textures' pipelines (optional: without them modern frames keep the original textures) */
+    if (R.d) {
+#define PS_(n) gpu_sh_##n, sizeof gpu_sh_##n
+        static const struct { const void* p; size_t n; } tps[2][2][3] = {
+            { { { PS_(ps_r2m_t) }, { PS_(ps_r2m_nd_t) }, { PS_(ps_r2m_a2c_t) } },
+              { { PS_(ps_r2m_clip_t) }, { PS_(ps_r2m_clip_nd_t) }, { PS_(ps_r2m_clip_a2c_t) } } },
+            { { { PS_(ps_r2m_e_t) }, { PS_(ps_r2m_nd_e_t) }, { PS_(ps_r2m_a2c_e_t) } },
+              { { PS_(ps_r2m_clip_e_t) }, { PS_(ps_r2m_clip_nd_e_t) }, { PS_(ps_r2m_clip_a2c_e_t) } } } };
+#undef PS_
+        R.tex_ok = 1;
+        for (int a = 0; a < 2; a++)
+            for (int f = 0; f < 3; f++)
+                for (int v = 0; v < 3; v++) {
+                    r2g_pipe_desc t;
+                    if (f == 0) t = (r2g_pipe_desc){ a ? gpu_sh_vs_r2m_e : gpu_sh_vs_r2m, a ? sizeof gpu_sh_vs_r2m_e : sizeof gpu_sh_vs_r2m,
+                                                     tps[a][0][v].p, tps[a][0][v].n, attrs, 10, NULL, 0 };
+                    else if (f == 1) t = (r2g_pipe_desc){ a ? gpu_sh_vs_r2m_clip_e : gpu_sh_vs_r2m_clip,
+                                                          a ? sizeof gpu_sh_vs_r2m_clip_e : sizeof gpu_sh_vs_r2m_clip,
+                                                          tps[a][1][v].p, tps[a][1][v].n, attrs, 10,
+                                                          a ? gpu_sh_gs_r2m_clip_e : gpu_sh_gs_r2m_clip,
+                                                          a ? sizeof gpu_sh_gs_r2m_clip_e : sizeof gpu_sh_gs_r2m_clip };
+                    else t = (r2g_pipe_desc){ a ? gpu_sh_vs_r2m_pull_e : gpu_sh_vs_r2m_pull,
+                                              a ? sizeof gpu_sh_vs_r2m_pull_e : sizeof gpu_sh_vs_r2m_pull,
+                                              tps[a][0][v].p, tps[a][0][v].n, pattrs, 1, NULL, 0 };
+                    R.tp[a][f][v] = r2g_pipe_create(R.d, &t);
+                    if (!R.tp[a][f][v]) R.tex_ok = 0;
+                }
+        if (!R.tex_ok) fprintf(stderr, "[r2] render: no Enhanced textures pipelines (original textures)\n");
     }
     /* (r2-m2) the segment constants by UpdateSubresource (a DEFAULT buffer): Map(DISCARD) per segment, ~45 a frame with
      * frames queued, made the driver block the render thread for up to 10 ms when the GPU was the bottleneck */
@@ -313,7 +348,9 @@ static int segment(const gpu_fop_r2* o, const uint8_t* fdata, size_t fdata_bytes
             if (!m->gpu_tdec && !(m->gpu_tdec = calloc((size_t)m->nb * 3, 4))) continue;
             for (uint32_t b = 0; b < m->nb; b++)
                 for (uint32_t p = 0; p < m->b[b].npass && p < 3; p++) {
-                    uint32_t v = in->texdec(in->texdec_user, m->b[b].pass[p].tex0), k = b * 3 + p;
+                    const r2_pass* P = &m->b[b].pass[p];
+                    r2_tex_use u = { P->clamp, P->tex1, P->test, P->mflags, p };
+                    uint32_t v = in->texdec(in->texdec_user, P->tex0, &u), k = b * 3 + p;
                     if (v == m->gpu_tdec[k]) continue;
                     r2g_buf_write(R.d, ma->mb, (m->gpu_mbase + k) * MAT_BYTES + 60u, &v, 4);
                     m->gpu_tdec[k] = v;
@@ -350,6 +387,9 @@ static int segment(const gpu_fop_r2* o, const uint8_t* fdata, size_t fdata_bytes
         R.cb_bias = in->dual_bias;
     }
     double p2 = ph_now();
+    /* (tex) Enhanced textures' pipelines for this segment (modern frames, not the motion vectors) and their bindings */
+    int etex = in->mft && in->etex && R.tex_ok && !in->mv && in->etex_bind;
+    if (etex) in->etex_bind();
     r2g_bind_targets_native(R.d, in->rtv, in->dsv);
     r2g_viewport(R.d, -8192.0f, -8192.0f, 16384.0f, 16384.0f);   /* (the REF viewport of mixed frames: d3d pixels = NDC * 8192) */
     if (in->dbg_cull) r2g_scissor(R.d, 0, 0, 0, 0);
@@ -410,6 +450,8 @@ static int segment(const gpu_fop_r2* o, const uint8_t* fdata, size_t fdata_bytes
                         el = !mm || mm->any_lit;
                     }
                 }
+                if (etex) r2g_bind_pipe(R.d, R.tp[el][2][disc ? (in->msaa > 1 ? 2 : 0) : 1]);
+                else
                 if (el) r2g_bind_pipe(R.d, disc ? (in->msaa > 1 ? R.eppipe_a2c : R.eppipe) : R.eppipe_nd);
                 else
                 r2g_bind_pipe(R.d, disc ? (in->msaa > 1 ? R.ppipe_a2c : R.ppipe) : R.ppipe_nd);
@@ -421,6 +463,8 @@ static int segment(const gpu_fop_r2* o, const uint8_t* fdata, size_t fdata_bytes
                 uint32_t i = pc[c].first;
                 const gpu_r2_draw* d = &dr[i];
                 const r2_mesh* m = r2_mesh_get(d->mesh);
+                if (etex) r2g_bind_pipe(R.d, R.tp[enh && (!m || m->any_lit)][(st >> 13) & 1][disc ? (in->msaa > 1 ? 2 : 0) : 1]);
+                else
                 if (enh && (!m || m->any_lit)) {
                     if ((st >> 13) & 1) r2g_bind_pipe(R.d, disc ? (in->msaa > 1 ? R.emcpipe_a2c : R.emcpipe) : R.emcpipe_nd);
                     else r2g_bind_pipe(R.d, disc ? (in->msaa > 1 ? R.empipe_a2c : R.empipe) : R.empipe_nd);
@@ -459,6 +503,10 @@ static int segment(const gpu_fop_r2* o, const uint8_t* fdata, size_t fdata_bytes
             n++;
             continue;
         }
+        if (etex) {                      /* (tex) */
+            int dv = (st >> 14) & 1;
+            r2g_bind_pipe(R.d, R.tp[enh && m->any_lit][(st >> 13) & 1][dv ? (in->msaa > 1 ? 2 : 0) : 1]);
+        } else
         if (enh && m->any_lit) {         /* (light: lit meshes only) */
             if ((st >> 13) & 1) r2g_bind_pipe(R.d, (st >> 14) & 1 ? (in->msaa > 1 ? R.emcpipe_a2c : R.emcpipe) : R.emcpipe_nd);
             else r2g_bind_pipe(R.d, (st >> 14) & 1 ? (in->msaa > 1 ? R.empipe_a2c : R.empipe) : R.empipe_nd);

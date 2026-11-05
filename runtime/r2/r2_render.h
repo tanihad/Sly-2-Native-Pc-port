@@ -6,6 +6,10 @@
 
 #include "gpu_front.h"
 
+/* (tex) how a material uses its texture (Enhanced textures, runtime/gpu/gpu_tex.h): CLAMP, TEX1, TEST, the GPU_R2D_* flags
+ * and the pass (0 base, 1 highlight, 2 third) */
+typedef struct r2_tex_use { uint64_t clamp, tex1, test; uint32_t mflags, pass; } r2_tex_use;
+
 typedef struct {
     void* dev;                           /* ID3D11Device* */
     void* ctx;                           /* ID3D11DeviceContext* (immediate) */
@@ -17,8 +21,9 @@ typedef struct {
     void* fdata_srv;                     /* t7: the frame's data arena (raw) */
     void* iota_vb;                       /* draw ids: element i holds i */
     float dual_bias;                     /* dual-source blend source bias (gpu_exec.c, per GPU) */
-    /* (r2-m7b) the decoded texture cache (gpu_exec.c td_r2): a material texture's decoded word + 1 (0: none), its buffer (t13) */
-    uint32_t (*texdec)(void* user, uint64_t tex0);
+    /* (r2-m7b) the decoded texture cache (gpu_exec.c td_r2): a material texture's decoded word + 1 (0: none), its buffer (t13);
+     * (tex) the pass's other registers, for Enhanced textures' classification (gpu_tex.h) */
+    uint32_t (*texdec)(void* user, uint64_t tex0, const struct r2_tex_use* use);
     void* texdec_user;
     void* texdec_srv;
     /* (r2-m8, R8) a modern frame's targets (gpu_exec_mft.h): rtv / dsv are the MFT surfaces, d3d = (GS + 0.5) * (sx, sy),
@@ -32,6 +37,10 @@ typedef struct {
     /* (light) Enhanced lighting (modern frames): lit sub-batches lit per pixel (r2.hlsl R2_ENH), rim light strength */
     int enh;
     float rim;
+    /* (tex) Enhanced textures (modern frames): the R2_ETEX pipelines; etex_bind binds their resources (after the
+     * materials' texdec calls, which may build images) */
+    int etex;
+    void (*etex_bind)(void);
 } r2_exec_in;
 enum { R2X_BATCH = 1, R2X_STATE = 2 };
 

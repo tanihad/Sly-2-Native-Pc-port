@@ -288,3 +288,24 @@ ps_r2m_clip_e       r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2
 ps_r2m_clip_nd_e    r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_CLIP=1 R2_NODISCARD=1 R2_ENH=1
 ps_r2m_clip_a2c_e   r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_CLIP=1 R2_A2C=1 R2_ENH=1
 vs_r2m_pull_e       r2.hlsl             r2_vs_pull        vs_5_0    R2_MFT=1 R2_PULL=1 R2_ENH=1
+# (tex) Enhanced textures: the modern frame's R2 pixel shaders with enhanced images (R2_ETEX; r2_render.c tpipe), with and
+# without Enhanced lighting, the phase-A exact triangles from the decoded cache (ETEX), and the compute passes (tex.hlsl)
+ps_r2m_t            r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_ETEX=1
+ps_r2m_nd_t         r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_NODISCARD=1 R2_ETEX=1
+ps_r2m_a2c_t        r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_A2C=1 R2_ETEX=1
+ps_r2m_clip_t       r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_CLIP=1 R2_ETEX=1
+ps_r2m_clip_nd_t    r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_CLIP=1 R2_NODISCARD=1 R2_ETEX=1
+ps_r2m_clip_a2c_t   r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_CLIP=1 R2_A2C=1 R2_ETEX=1
+ps_r2m_e_t          r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_ENH=1 R2_ETEX=1
+ps_r2m_nd_e_t       r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_NODISCARD=1 R2_ENH=1 R2_ETEX=1
+ps_r2m_a2c_e_t      r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_A2C=1 R2_ENH=1 R2_ETEX=1
+ps_r2m_clip_e_t     r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_CLIP=1 R2_ENH=1 R2_ETEX=1
+ps_r2m_clip_nd_e_t  r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_CLIP=1 R2_NODISCARD=1 R2_ENH=1 R2_ETEX=1
+ps_r2m_clip_a2c_e_t r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_CLIP=1 R2_A2C=1 R2_ENH=1 R2_ETEX=1
+ps_mft_t0fd_t       mft.hlsl            ps_mft_tri        ps_5_0    PRIM=0 DUAL=0 TRI_REC=128u SPEC_NOLOD=1 TEXDEC=1 ETEX=1
+ps_mft_t1fd_t       mft.hlsl            ps_mft_tri        ps_5_0    PRIM=0 DUAL=1 TRI_REC=128u SPEC_NOLOD=1 TEXDEC=1 ETEX=1
+cs_et_up            tex.hlsl            cs_et_up          cs_5_0
+cs_et_mip           tex.hlsl            cs_et_mip         cs_5_0
+cs_et_cov           tex.hlsl            cs_et_cov         cs_5_0
+cs_et_store         tex.hlsl            cs_et_store       cs_5_0
+cs_et_hash          tex.hlsl            cs_et_hash        cs_5_0
