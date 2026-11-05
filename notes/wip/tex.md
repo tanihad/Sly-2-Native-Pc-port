@@ -10,8 +10,11 @@ notes/enhanced-textures.md. Setting graphics.textures = enhanced | original (liv
 - [x] 3 R2 permutations (R2_ETEX, r2_render.c tp[][][]) + MFT FF triangle permutations (phase A, depth) (dece937)
 - [x] 4 setting / menu / presets / tests (f66235b; menu test 360 checks)
 - [x] 5 HD-pack folder hook (WIC worker) + PS2_TEX_DUMP=1/2 (c2944c1; tested with a tinted pack: works)
-- [ ] 6 tuning with pictures (build\tex\shots), perf A/B (avg + worst)
-- [ ] 7 gates
+- [x] 6a batched builds / hashes (e4408af), tuning + deband line exemption (ca997a0); pictures build\tex\shots\final
+      (<scene>_original / _enhanced / _compare / _closeup for ep1_hub, ep3_hub, ep6_hub (+ _ground), m2_boardroom)
+- [ ] 6b perf A/B at the end (after gates: GPU quiet): tex_shots -Scene ep1_hub -Phase 24 -Fps unlimited -Seconds 330
+- [ ] 7 gates RUNNING (scratch gates.ps1 -> build\gates_tex.txt): run_tests, units, m9_exact (build\basert = main
+      7601e3f runtime via git archive into build\basesrc), gpu_diff_all, sweeps PS2_TEX=0 / 1
 
 ## Tuning state
 - defaults: scale 4, sharp 1.6, sigma across 0.40 / along 1.2, edge 0.03, flat 6 / detail 18 (deband), bias -0.75, aniso 16

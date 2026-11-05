@@ -36,43 +36,80 @@ pass B (the additive highlight with the second CLUT) ATST NEVER. FF textures (fa
   smears thin strokes. The HUD keeps its exact look (a future "HD HUD" would need its own sprite path and pack art).
 - **Particles**: left alone (soft blobs; nothing to sharpen, and they are fill-bound).
 
-## How
 
-1. **Content hash** (GPU, cs_et_hash): when an art image is decoded (or first used with Enhanced on), a 64-bit hash of
-   its decoded words (texels + CLUT applied, so texture data + CLUT) and its size is computed on the GPU and read back
-   asynchronously (staging ring, no stall). Same content under another key (FF vs R2 keys, a level reload) shares one
-   enhanced image.
-2. **HD-pack hook**: `<user dir>\textures\<hash>.png` replaces the image (decoded with WIC on a worker thread, any size,
-   fitted into the slice). `PS2_TEX_DUMP=1` writes every original image to `<user dir>\textures\dump\<hash>.png`.
-3. **Upscale** (cs_et_up, our own edge-directed scaler): 4x (cap 1024) of the decoded image in one pass. Per output pixel
-   a 4x4 source neighbourhood: the colour structure tensor (RGB + alpha Sobel gradients of the central 2x2, bilinearly
-   weighted) gives the edge direction and its coherence; coherent edges are interpolated with a kernel steered along the
-   edge (wide along, narrow across: smooth, anti-aliased lines without staircases), the rest with Catmull-Rom clamped to
-   the central 2x2's range (no ringing). An unsharp mask at the source scale (the 4x4 Gaussian as the blur), limited to
-   the local range (no halos), restores the painted detail the PS2's bilinear filter smeared. Transparent texels take
-   the colour of their opaque neighbours before filtering (no dark fringes on cut-outs).
-4. **Mip chain** (cs_et_mip / cs_et_cov / cs_et_store): alpha-weighted 2x2 averages; for alpha-tested images (pass A,
-   GEQUAL 126) each level's alpha is scaled so the share of texels passing the test equals level 0's (coverage-preserving
-   mips: foliage and fences keep their thickness in the distance).
-5. **Storage**: square Texture2DArray classes 64..2048 (RGBA8, the GS bytes: alpha 0x80 = 1.0), slices allocated per
-   class (grown by doubling, LRU eviction past a budget, PS2_TEX_MB, default 1024); non-square images are stretched
-   to the square slice (normalized coordinates make this invisible). Lookup: `et_tab` (t30) indexed by the decoded base
-   / 64 holds (decoded base + 1, class | slice); the pixel shader takes the enhanced path only when the stored base equals
-   its own.
-6. **Sampling** (R2_ETEX / ETEX permutations): trilinear + 16x anisotropic (SampleGrad with the S/Q, T/Q derivatives;
-   REPEAT through a wrap sampler, CLAMP through a clamp sampler), the result back to GS bytes and on into the unchanged
-   TFX / fog / alpha test / blend. Pass-A cut-outs keep alpha-to-coverage (MSAA), now on a smooth alpha edge.
-7. **Budget**: hashing and upscaling run on the render thread's GPU queue, at most a few textures per frame
-   (PS2_TEX_FRAME, output texels per frame), so a level's first frames fill in over a fraction of a second instead of a
-   frame-time spike. No disk cache: the GPU scaler makes an image in well under a millisecond, faster than reading one.
+## How (as built: runtime/gpu/gpu_tex.h, shaders/tex.hlsl, shaders/etex.hlsli)
+
+1. **Noted at use**: td_r2 (R2 materials) and td_state (the FF prepass) call et_use for every art use of a decoded entry
+   (addressing flags, the alpha test's reference); a new decode of the entry calls et_decoded in stream order.
+2. **Content hash** (cs_et_hash, one dispatch per frame, one group per request): at the next frame start a 64-bit hash
+   of the entry's decoded words (texels with the CLUT applied: texture data + CLUT) and its size, read back through a
+   4-deep staging ring (Map DO_NOT_WAIT: no stall; ~2-3 frames of latency). The image's key = the hash + addressing +
+   alpha-tested: the same content under another key (FF vs R2 keys, level reloads) shares one image. A re-decode with the
+   same content (a neighbour's upload into the same page) keeps the image; a changed content builds a new one; a second
+   change within 30 s marks the texture dynamic (CLUT animation, per-frame uploads): Original sampling from then on.
+3. **HD-pack hook**: `<user dir>\textures\<hash>.png` (16 hex digits, the raw content hash) replaces the image. The
+   folder is listed once; files are decoded with Windows' own WIC (ole32 loaded at run time) on a worker thread, uploaded
+   at a frame start; power-of-two sizes up to 2048, alpha 255 = the GS's 0x80. `PS2_TEX_DUMP=1` writes every original
+   image as `<user dir>\textures\dump\<hash>.png` (=2 also the enhanced level 0 as <hash>_enh.png). Tested with a
+   generated pack of 470 tinted replacements (ep1 hub): every replaced texture showed it.
+4. **Upscale** (cs_et_up, our own scaler): 4x (cap 1024) straight to the square slice in one pass. Per output pixel a 4x4
+   source neighbourhood: transparent texels take their opaque neighbours' colour (no dark fringes); the colour structure
+   tensor (RGB + alpha Sobel gradients at the central 2x2) gives the edge direction and coherence; coherent strong edges
+   use a Gaussian steered along the edge (sigma 1.2 along, 0.35 across: smooth, anti-aliased lines, no staircase), the
+   rest Catmull-Rom clamped to the central 2x2 (no ringing); then an unsharp mask at the source scale (amount 2.2, the
+   4x4 Gaussian of sigma 0.9 texels as the blur) limited to the range of the 3x3 texels around the nearest one (no
+   halos). Low-contrast neighbourhoods (range < 6..18 of 255: a gradient in 4-bit palette steps) are smoothed instead of
+   sharpened (no ridges), except thin lines and dots (the nearest texel darker / brighter than both neighbours along x or
+   y: grout, seams, strokes), which keep the full mask.
+5. **Mip chain** (cs_et_mip / cs_et_cov / cs_et_store): RGB is the Catmull-Rom value half-way between each 2x2 (crisper
+   than a box), clamped to the 2x2's range; alpha the box average. Alpha-tested images (pass A: GEQUAL 126) get each
+   level's alpha scaled so the share of texels passing the test equals level 0's (coverage-preserving mips; histograms in
+   group-shared memory, 8 copies against atomic contention).
+6. **Batches**: all images built in a frame are one job table; each pass is one dispatch per class and mip level over all
+   of them (SV_GroupID.z = job). The first version dispatched per image and level (~25 per image, ~400 per frame at a
+   level start) and the barriers between them cost up to 50 ms GPU in one frame.
+7. **Storage**: square Texture2DArray classes 64..2048 (RGBA8 GS bytes), pre-sized to a hub's set (64: 64, 128: 256,
+   256: 256, 512: 256, 1024: 64 slices = 790 MB; ep1 builds 690 images) because a growth copies the whole array (a GPU
+   spike); grown by doubling within PS2_TEX_MB (default 1024), then LRU reuse of images unused for 10 s. Non-square images
+   are stretched to the square slice (normalized coordinates). Lookup: `et_tab` (t30), entry = decoded base / 64:
+   (decoded base + 1, class | slice << 3); the pixel shader uses it only when the stored base equals its own.
+8. **Sampling** (R2_ETEX / ETEX permutations, shaders/etex.hlsli): SampleGrad with the S/Q, T/Q derivatives (taken
+   before any divergent branch), trilinear + 16x anisotropic, LOD bias -0.75; REPEAT through a wrap sampler, CLAMP through
+   a clamp sampler (a REPEAT axis wrapped in the shader), REGION modes and nearest (TEX1) uses the original way. The texel
+   goes back to GS bytes into the unchanged TFX / fog / alpha test / A2C / blend.
+9. **Budget**: at most 1 M output texels built per frame (PS2_TEX_FRAME); a hub's images fill in over the load's last
+   seconds. No disk cache: building an image costs well under a millisecond of GPU, less than reading one from disk.
+
+## Original stays Original
+
+graphics.textures = original (or PS2_TEX=0): et_cfg() is false, so no resource exists and no hash / build / table write
+happens; the pipelines are the old ones. The 250 shaders main has compile byte-identical on this branch (compared in
+build\gen\gpu_shaders.h); the 19 new ones (12 R2 PS, 2 MFT PS, 5 CS) are only used in Enhanced.
 
 ## Switches (tests, not in the menu)
 
-PS2_TEX=0|1 (wins over the setting), PS2_TEX_UP=0 (mips + anisotropic only, no upscale), PS2_TEX_ANISO=<1..16>,
-PS2_TEX_SCALE=<2|4>, PS2_TEX_SHARP=<0..>, PS2_TEX_BIAS=<lod bias>, PS2_TEX_HD=0 (ignore the HD folder), PS2_TEX_DUMP=1,
-PS2_TEX_LOG=1, PS2_TEX_SPLIT=1 (pictures: Enhanced on the right half only). In-run A/B: PS2_GPU_AB=<frames>
-PS2_GPU_AB_R8=128 (R8P_TEX: Original in A phases, Enhanced in B).
+PS2_TEX=0|1 (wins over the setting), PS2_TEX_UP=0 (mips + anisotropic of the original images only), PS2_TEX_SCALE=2|4|8,
+PS2_TEX_SHARP, PS2_TEX_SIGMA_C / _SIGMA_A, PS2_TEX_EDGE, PS2_TEX_FLAT / _DETAIL, PS2_TEX_ANISO=1..16, PS2_TEX_BIAS,
+PS2_TEX_MB, PS2_TEX_FRAME, PS2_TEX_HD=0, PS2_TEX_DUMP=1|2, PS2_TEX_LOG=1, PS2_TEX_SPLIT=1 (Enhanced right of the middle),
+PS2_TEX_DBG=1 (enhanced texels red: coverage) / 2 (grey by class), PS2_TEX_STATS=1 (every texture's format and use).
+In-run A/B: PS2_GPU_AB=<frames> PS2_GPU_AB_R8=128 (R8P_TEX), PS2_GPU_AB_LOG=1 logs the phase switches; the ab-gpu line
+now has an ab-worst companion (p99 and maximum of GPU and render-thread time per phase), and tex-build reports the
+frames that built images. Pictures: scripts\tex_shots.ps1 (A/B pictures of one run, like light_shots.ps1).
+
+## Tuning findings
+
+- Coverage (PS2_TEX_DBG=1, ep1 hub): every 3D surface but particles (the sky's moon and clouds included; it is not
+  re-uploaded); the HUD untouched. ep1: ~690 images, 0 re-decodes / rejections over 3 minutes.
+- An 8x scale looked no sharper than 4x on screen (ep6 close-ups): the source's information, not the resolution, is the
+  limit; the unsharp mask's amount is what reads as "sharper".
+- More negative LOD biases (-1.25, -1.75) changed little at a distance; -0.75 keeps distant surfaces as crisp as the
+  original's aliased level 0 (zoomed: Enhanced is the more legible, e.g. ep1's "BISTRO DE PARIS" menu board) without its
+  shimmer.
+- The deband first faded the m2 pool floor's thin grout lines (low contrast, mistaken for palette steps): thin lines and
+  dots are now exempt and come out crisper than Original.
+- Traps: `line` is an HLSL keyword; PowerShell `@('a', 'b' + 'c')` is ('a','b') + 'c' (an array of three) - multi-part
+  strings in array literals need parentheses.
 
 ## Results
 
-(filled in as built)
+(perf and pictures: below, filled in at the end)
