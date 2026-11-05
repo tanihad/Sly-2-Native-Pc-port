@@ -8,6 +8,9 @@ installer/release_key.h; owner backed the key up), sly2-source-0.1.1121.zip. Pub
 Chrome (no gh CLI). While the repo is private launchers cannot self-update ("Couldn't check for updates"): the release
 notes say so; owner decision pending on a public release-only host. Full r2_sweep (ab,hc,tf,tfo,mf, -Parallel 2) was
 started on 18e74e4 before publishing; failures go out as 1.0.x.
+- Owner roadmap after 1.0 (notes/future-ideas.md): launcher-art (running: owner's own art in %LOCALAPPDATA%\Sly2\art,
+  local only, never committed) -> sharper textures -> better lighting -> settings menu overhaul. European release
+  support: dropped by the owner.
 
 **2026-11-04 (later): OWNER TEST HOLD on dist 0.1.1118 (main 0906f31).** No agents running.
 - Merged since 0.1.1064: mft-cover, shot-key (F12 screenshots), p6-pgo (ThinLTO + PGO, VU v3), stray-tri (a99bef8:

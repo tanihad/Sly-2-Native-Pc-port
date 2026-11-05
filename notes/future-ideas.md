@@ -5,7 +5,11 @@ notes/modern-renderer.md or their own design note.
 
 ## 2026-11-04
 
-**2026-11-05: owner's next big update = sharper textures** ("things look very PS2 with just upscaled resolution").
+**2026-11-05: owner's plan after 1.0, in order: (1) sharper textures, (2) better lighting (Enhanced lighting /
+shadows), (3) a settings menu overhaul** ("really improve the settings menu, decrease some of them and in general make
+things better": fewer, clearer options; presets doing the work; advanced options tucked away).
+
+Sharper textures ("things look very PS2 with just upscaled resolution").
 Proposed: (1) hash-based texture replacement in the renderer + anisotropic filtering with generated mipmaps; (2) the
 installer upscales every texture from the player's own disc into a local cache (non-ML edge-aware scaler first, an AI
 upscaler only if the owner approves the one-time model download), skipping render-target / CLUT-animated / data
