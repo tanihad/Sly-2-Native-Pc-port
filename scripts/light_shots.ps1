@@ -5,7 +5,7 @@
 # Scenes: scripts\qa_scenes_a.txt (ep1-4 hubs, m2_boardroom, m3_boss) and scripts\qa_scenes.txt (ep5-8).
 # Output: build\light\shots\<scene>[__tag]\frame_<v>.png (every dumped picture) + run.log. Local only: never commit them.
 param([Parameter(Mandatory = $true)][string]$Scene, [int]$At = 0, [int]$Frames = 72, [int]$Phase = 30, [string]$Extra = '',
-      [string]$Ini = '', [string]$Tag = '', [string]$Size = '2560x1440', [int]$Every = 1, [switch]$NoAB)
+      [string]$Ini = '', [string]$Tag = '', [string]$Size = '2560x1440', [int]$Every = 1, [switch]$NoAB, [string]$Fps = '60', [int]$Seconds = 0)
 $root = Split-Path $PSScriptRoot -Parent
 $free = [math]::Round((Get-PSDrive C).Free / 1GB, 1)
 if ($free -lt 40) { "C: has $free GB free (< 40): not starting"; exit 2 }
@@ -23,7 +23,7 @@ Remove-Item -Recurse -Force $out -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $out | Out-Null
 $kv = [ordered]@{ 'graphics.preset' = 'balanced' }
 foreach ($p in ($Ini -split ';' | Where-Object { $_ })) { $k, $v = $p -split '=', 2; $kv[$k.Trim()] = $v.Trim(); if ($k.Trim() -ne 'graphics.preset') { $kv['graphics.preset'] = 'custom' } }
-$kv['display.frame_rate'] = '60'; $kv['display.aspect'] = '16:9'
+$kv['display.frame_rate'] = $Fps; $kv['display.aspect'] = '16:9'
 $sec = [ordered]@{}
 foreach ($k in $kv.Keys) { $s, $n = $k -split '\.', 2; if (-not $sec.Contains($s)) { $sec[$s] = @() }; $sec[$s] += "$n = $($kv[$k])" }
 $ini = ''
@@ -40,7 +40,7 @@ foreach ($e in ($flags -split ' ' | Where-Object { $_ -like 'env=*' })) { $a, $b
 foreach ($e in ($Extra -split ';' | Where-Object { $_ })) { $a, $b = $e -split '=', 2; $set[$a.Trim()] = $b }
 $saved = @{}
 foreach ($k in $set.Keys) { $saved[$k] = [Environment]::GetEnvironmentVariable($k); [Environment]::SetEnvironmentVariable($k, $set[$k]) }
-$secs = [int](($At + $Frames) / 60) + 40
+$secs = if ($Seconds -gt 0) { $Seconds } else { [int](($At + $Frames) / 60) + 40 }
 $wa = @('-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'warp_run.ps1'), '-Episode', "$episode", '-Release',
         '-Seconds', "$secs", '-DumpEvery', "$Every", '-Name', $runName)
 if ($job) { $wa += @('-Job', $job) }
