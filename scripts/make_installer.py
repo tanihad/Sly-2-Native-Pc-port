@@ -1,6 +1,11 @@
 """Build the Windows installer: build\\installer\\Sly2-Setup.exe (and with --offline Sly2-Setup-Offline.exe).
 
-    <main checkout>\\.venv\\Scripts\\python.exe scripts\\make_installer.py [--offline] [--out build\\installer]
+    <main checkout>\\.venv\\Scripts\\python.exe scripts\\make_installer.py [--offline] [--out build\\installer] [--art <folder>]
+
+--art <folder> (the owner's release Setup; notes/install.md "Publishing an update", notes/disc-art.md): the folder's
+backdrop.* and logo.* go into the program as resources (the window shows them before anything is installed), the
+logo's mask badge becomes its icon, and <out>\\Sly2-Setup.art-allow.txt lists their SHA-256 for
+check_no_game_data.py --allow. Without it the program carries no picture and the procedural icon.
 
 The setup program (installer/*.c, compiled with llvm-mingw) is a "builder installer": it installs our
 recompiler and runtime and the pinned build toolchain, checks the player's own disc image, builds sly2.exe
@@ -190,8 +195,9 @@ MANIFEST = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 """
 
 RC = """#include <winver.h>
-1 ICON "setup.ico"
+1 ICON "{icon}"
 1 24 "setup.manifest"
+{art}
 VS_VERSION_INFO VERSIONINFO
 FILEVERSION 0,1,{count},0
 PRODUCTVERSION 0,1,{count},0
@@ -225,19 +231,48 @@ END
 LIBS = ["-lcomctl32", "-lole32", "-lshell32", "-luuid", "-lwinhttp", "-lbcrypt", "-ladvapi32", "-luser32", "-lgdi32"]
 
 
-def build_stub(work: Path, count: int, ghash: str, test_build: bool = False) -> Path:
+ART_EXT = ("png", "webp", "jpg", "jpeg", "bmp")      # (installer/art.c art_find's order)
+
+
+def find_art(folder: Path) -> dict:
+    """--art <folder>: its backdrop.* and logo.* (the first of each by art_find's order)."""
+    if not folder.is_dir():
+        sys.exit(f"make_installer --art: {folder} is not a folder")
+    art = {}
+    for base in ("backdrop", "logo"):
+        art[base] = next((folder / f"{base}.{e}" for e in ART_EXT if (folder / f"{base}.{e}").is_file()), None)
+    if not art["backdrop"] and not art["logo"]:
+        sys.exit(f"make_installer --art: no backdrop.* or logo.* ({'/'.join(ART_EXT)}) in {folder}")
+    art["icon"] = None
+    return art
+
+
+def rc_path(p: Path) -> str:
+    return '"' + p.absolute().as_posix() + '"'
+
+
+def build_stub(work: Path, count: int, ghash: str, test_build: bool = False, art: dict | None = None,
+               name: str | None = None) -> Path:
     """The program. test_build (-DSLY2_TEST_BUILD, tests only, never released): updates may also come over
-    plain HTTP from 127.0.0.1 and be signed by a /pubkey= test key."""
+    plain HTTP from 127.0.0.1 and be signed by a /pubkey= test key. art (--art): the backdrop and logo as RCDATA
+    resources ART_BACKDROP / ART_LOGO (installer/launcher.c load_art), art["icon"] (a .ico) as the program's icon."""
     import make_icon
     make_icon.make_ico(work / "setup.ico")
     (work / "setup.manifest").write_text(MANIFEST.format(ver=f"0.1.{count}.0"), encoding="utf-8")
-    (work / "setup.rc").write_text(RC.format(count=count, hash=ghash), encoding="utf-8")
-    res = work / "setup_res.o"
-    r = subprocess.run([str(WINDRES), "-I", str(work), "setup.rc", "-O", "coff", "-o", str(res)], cwd=work,
+    icon = "setup.ico"
+    lines = []
+    if art:
+        if art.get("icon"):
+            icon = art["icon"].absolute().as_posix()
+        lines = [f"ART_{k.upper()} RCDATA {rc_path(art[k])}" for k in ("backdrop", "logo") if art.get(k)]
+    rc = work / ("setup-art.rc" if art else "setup.rc")
+    rc.write_text(RC.format(count=count, hash=ghash, icon=icon, art="\n".join(lines)), encoding="utf-8")
+    res = rc.with_name(rc.stem + "_res.o")
+    r = subprocess.run([str(WINDRES), "-I", str(work), rc.name, "-O", "coff", "-o", str(res)], cwd=work,
                        capture_output=True, text=True)
     if r.returncode:
         sys.exit("resource compiler failed:\n" + r.stderr + r.stdout)
-    stub = work / ("setup-stub-test.exe" if test_build else "setup-stub.exe")
+    stub = work / (name or ("setup-stub-test.exe" if test_build else "setup-stub.exe"))
     srcs = [str(p) for p in sorted(SRC.glob("*.c"))]
     defs = ["-DSLY2_TEST_BUILD"] if test_build else []
     r = subprocess.run([str(CLANG), "-O2", "-std=c11", "-Wall", "-Wextra", "-Werror", "-municode", "-mwindows", *defs,
@@ -246,6 +281,60 @@ def build_stub(work: Path, count: int, ghash: str, test_build: bool = False) -> 
     if r.returncode:
         sys.exit("compiling the setup program failed:\n" + r.stderr[:8000])
     return stub
+
+
+def make_art_icon(work: Path, count: int, ghash: str, art: dict) -> None:
+    """art["icon"] = the logo's mask on the badge, made by the program itself (installer/art.c, /makeicon ... logo):
+    a first build with the procedural icon makes it, the real build then carries it as icon 1."""
+    ico = work / "owner-icon.ico"
+    ico.unlink(missing_ok=True)
+    if not art["logo"]:
+        print("make_installer --art: no logo.* in the folder: the program keeps its own (procedural) icon")
+        return
+    tool = build_stub(work, count, ghash, name="setup-stub-icontool.exe")
+    try:
+        r = subprocess.run([str(tool), "/makeicon", str(art["logo"]), str(ico), "logo"], capture_output=True,
+                           text=True, timeout=300)
+    finally:
+        tool.unlink(missing_ok=True)
+    if r.returncode or not ico.exists():
+        print(f"make_installer --art: WARNING: {art['logo'].name} is not the logo whose mask makes the icon "
+              f"({(r.stdout or '').strip()}): the program keeps its own (procedural) icon")
+        ico.unlink(missing_ok=True)
+        return
+    art["icon"] = ico
+
+
+def ico_images(path: Path) -> list[bytes]:
+    data = path.read_bytes()
+    _r, _t, n = struct.unpack_from("<HHH", data, 0)
+    out = []
+    for i in range(n):
+        size, off = struct.unpack_from("<II", data, 6 + 16 * i + 8)
+        out.append(data[off:off + size])
+    return out
+
+
+def art_allow_list(art: dict) -> dict[str, str]:
+    """SHA-256 -> what, of everything --art puts into the program: the two pictures as they are (RCDATA) and each
+    image of the badge icon (RT_ICON). check_no_game_data allows exactly these (and only as the program's resources)."""
+    allowed = {}
+    for k in ("backdrop", "logo"):
+        if art[k]:
+            allowed[sha256(art[k])] = f"ART_{k.upper()} ({art[k].name})"
+    if art["icon"]:
+        for i, img in enumerate(ico_images(art["icon"])):
+            allowed[hashlib.sha256(img).hexdigest()] = f"icon image {i + 1} (the logo's mask badge)"
+    return allowed
+
+
+def check_setup(setup: Path, allowed: set[str]) -> None:
+    import check_no_game_data
+    problems: list[str] = []
+    check_no_game_data.check_setup_exe(setup, problems, allowed)
+    if problems:
+        setup.unlink()
+        sys.exit("make_installer: refusing this Setup (something besides the owner's art):\n  " + "\n  ".join(problems))
 
 
 def assemble(stub: Path, entries: list[tuple[str, Path]], out: Path) -> None:
@@ -299,6 +388,9 @@ def main() -> int:
     ap.add_argument("--offline", action="store_true", help="also build Sly2-Setup-Offline.exe (toolchain included)")
     ap.add_argument("--test-build", action="store_true",
                     help="also build Sly2-Setup-Test.exe for the update tests (plain HTTP to 127.0.0.1, /pubkey=); never release it")
+    ap.add_argument("--art", metavar="FOLDER",
+                    help="build the owner's pictures into the program: <folder>\\backdrop.* and logo.* as the window's "
+                         "pictures, the logo's mask badge as the program's icon (the release Setup: notes/install.md)")
     args = ap.parse_args()
     out = Path(args.out)
     work = out / "work"
@@ -309,7 +401,13 @@ def main() -> int:
         p.update(archive_info(p))
     count, ghash = version()
     write_config(work / "setup_config.h", pins, pyver, count, ghash)
-    stub = build_stub(work, count, ghash)
+    art = find_art(Path(args.art).absolute()) if args.art else None   # (absolute, not resolve: as the owner names it)
+    allow_file = out / "Sly2-Setup.art-allow.txt"
+    if art:
+        make_art_icon(work, count, ghash, art)
+    elif allow_file.exists():
+        allow_file.unlink()                          # (from an earlier --art build into this folder)
+    stub = build_stub(work, count, ghash, art=art)
 
     src_zip = work / "source.zip"
     nfiles = make_source_zip(src_zip, count, ghash)
@@ -317,8 +415,15 @@ def main() -> int:
     assemble(stub, [("source.zip", src_zip)], setup)
     print(f"{setup}: {setup.stat().st_size / 2**20:.1f} MB (program {stub.stat().st_size // 1024} KB, "
           f"{nfiles} source files, version 0.1.{count} {ghash})")
+    if art:
+        allowed = art_allow_list(art)
+        allow_file.write_text("".join(f"{h}  {what}\n" for h, what in allowed.items()), encoding="utf-8")
+        check_setup(setup, set(allowed))
+        print(f"Setup includes the owner's art from {Path(args.art).absolute()} "
+              f"({', '.join(p.name for p in (art['backdrop'], art['logo']) if p)}"
+              f"{', the logo badge as its icon' if art['icon'] else ''}); allow-list for check_no_game_data: {allow_file}")
     if args.test_build:
-        test_stub = build_stub(work, count, ghash, test_build=True)
+        test_stub = build_stub(work, count, ghash, test_build=True, art=art)
         test = out / "Sly2-Setup-Test.exe"
         assemble(test_stub, [("source.zip", src_zip)], test)
         print(f"{test}: test build (loopback HTTP + test keys allowed) - for tests only")
@@ -341,6 +446,8 @@ def main() -> int:
                   [("python.zip", py_zip), ("uv-cache.zip", cache_zip)]
         off = out / "Sly2-Setup-Offline.exe"
         assemble(stub, entries, off)
+        if art:
+            check_setup(off, set(art_allow_list(art)))
         print(f"{off}: {off.stat().st_size / 2**20:.1f} MB")
 
     # checksums next to the files (for a release page)

@@ -28,18 +28,24 @@ void art_free(art_img* a) {
     a->w = a->h = 0;
 }
 
-int art_load(const wchar_t* path, art_img* out) {
-    memset(out, 0, sizeof *out);
-    if (!path[0] || !file_exists(path)) return 0;
+/* a file (path) or bytes in memory (mem, n): WIC finds the format by the content */
+static int decode(const wchar_t* path, const void* mem, size_t n, art_img* out) {
     HRESULT ci = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
     IWICImagingFactory* f = NULL;
+    IWICStream* st = NULL;
     IWICBitmapDecoder* dec = NULL;
     IWICBitmapFrameDecode* fr = NULL;
     IWICFormatConverter* cv = NULL;
     int ok = 0;
     UINT w = 0, h = 0;
     if (FAILED(CoCreateInstance(&CLSID_WICImagingFactory_, NULL, CLSCTX_INPROC_SERVER, &IID_IWICImagingFactory_, (void**)&f))) goto done;
-    if (FAILED(IWICImagingFactory_CreateDecoderFromFilename(f, path, NULL, GENERIC_READ, WICDecodeMetadataCacheOnDemand, &dec))) goto done;
+    if (path) {
+        if (FAILED(IWICImagingFactory_CreateDecoderFromFilename(f, path, NULL, GENERIC_READ, WICDecodeMetadataCacheOnDemand, &dec))) goto done;
+    } else {
+        if (n > 0x7FFFFFFF || FAILED(IWICImagingFactory_CreateStream(f, &st))) goto done;
+        if (FAILED(IWICStream_InitializeFromMemory(st, (BYTE*)mem, (DWORD)n))) goto done;   /* (read only by the decoder) */
+        if (FAILED(IWICImagingFactory_CreateDecoderFromStream(f, (IStream*)st, NULL, WICDecodeMetadataCacheOnDemand, &dec))) goto done;
+    }
     if (FAILED(IWICBitmapDecoder_GetFrame(dec, 0, &fr))) goto done;
     if (FAILED(IWICImagingFactory_CreateFormatConverter(f, &cv))) goto done;
     if (FAILED(IWICFormatConverter_Initialize(cv, (IWICBitmapSource*)fr, &FMT_32PBGRA, WICBitmapDitherTypeNone, NULL, 0.0,
@@ -52,9 +58,30 @@ done:
     if (cv) IWICFormatConverter_Release(cv);
     if (fr) IWICBitmapFrameDecode_Release(fr);
     if (dec) IWICBitmapDecoder_Release(dec);
+    if (st) IWICStream_Release(st);
     if (f) IWICImagingFactory_Release(f);
     if (SUCCEEDED(ci)) CoUninitialize();
+    return ok;
+}
+
+int art_load(const wchar_t* path, art_img* out) {
+    memset(out, 0, sizeof *out);
+    if (!path[0] || !file_exists(path)) return 0;
+    int ok = decode(path, NULL, 0, out);
     if (!ok) logw(L"[art] cannot read %ls (not a picture, or no decoder for it on this PC)", path);
+    return ok;
+}
+
+int art_load_resource(const wchar_t* name, art_img* out) {
+    memset(out, 0, sizeof *out);
+    HMODULE m = GetModuleHandleW(NULL);
+    HRSRC r = FindResourceW(m, name, MAKEINTRESOURCEW(10) /* RT_RCDATA */);
+    if (!r) return 0;                                /* (a build without --art: nothing embedded) */
+    HGLOBAL g = LoadResource(m, r);
+    const void* p = g ? LockResource(g) : NULL;
+    DWORD n = SizeofResource(m, r);
+    int ok = p && n && decode(NULL, p, n, out);
+    if (!ok) logw(L"[art] cannot read the embedded picture %ls (no decoder for it on this PC?)", name);
     return ok;
 }
 
@@ -541,6 +568,48 @@ int art_write_icon(const art_img* src, int kind, const wchar_t* path) {
     if (ok) ok = write_ico(path, imgs, ICON_N);
     for (int i = 0; i < ICON_N; i++) art_free(&imgs[i]);
     return ok;
+}
+
+HICON art_make_hicon(const art_img* src, int kind, int n) {
+    art_img im;
+    memset(&im, 0, sizeof im);
+    if (n < 1 || n > 512 || !icon_image(src, kind, n, &im)) { art_free(&im); return NULL; }
+    BITMAPV5HEADER bi;
+    memset(&bi, 0, sizeof bi);
+    bi.bV5Size = sizeof bi;
+    bi.bV5Width = n;
+    bi.bV5Height = -n;                                 /* top-down, as art_img */
+    bi.bV5Planes = 1;
+    bi.bV5BitCount = 32;
+    bi.bV5Compression = BI_BITFIELDS;
+    bi.bV5RedMask = 0x00FF0000;
+    bi.bV5GreenMask = 0x0000FF00;
+    bi.bV5BlueMask = 0x000000FF;
+    bi.bV5AlphaMask = 0xFF000000;
+    void* bits = NULL;
+    HDC dc = GetDC(NULL);
+    HBITMAP color = CreateDIBSection(dc, (BITMAPINFO*)&bi, DIB_RGB_COLORS, &bits, NULL, 0);
+    ReleaseDC(NULL, dc);
+    HICON h = NULL;
+    uint8_t* zero = calloc((size_t)((n + 15) / 16 * 2) * n, 1);   /* the AND mask: all 0 (alpha decides) */
+    HBITMAP mask = zero ? CreateBitmap(n, n, 1, 1, zero) : NULL;
+    if (color && bits && mask) {
+        uint32_t* d = bits;
+        for (size_t i = 0; i < (size_t)n * n; i++) {    /* icons take straight alpha */
+            uint32_t v = im.px[i];
+            unsigned a = v >> 24, b = v & 255, g = v >> 8 & 255, r = v >> 16 & 255;
+            if (a && a < 255) { b = b * 255 / a; g = g * 255 / a; r = r * 255 / a; }
+            d[i] = (b > 255 ? 255 : b) | (g > 255 ? 255 : g) << 8 | (r > 255 ? 255 : r) << 16 | a << 24;
+        }
+        GdiFlush();
+        ICONINFO ii = { TRUE, 0, 0, mask, color };
+        h = CreateIconIndirect(&ii);
+    }
+    if (color) DeleteObject(color);
+    if (mask) DeleteObject(mask);
+    free(zero);
+    art_free(&im);
+    return h;
 }
 
 /* ---- the choice ------------------------------------------------------------------------------------------- */

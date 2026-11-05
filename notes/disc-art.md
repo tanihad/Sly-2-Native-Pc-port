@@ -5,13 +5,25 @@ build (like the game itself). Nothing of it is in the repository, a source bundl
 `scripts/check_no_game_data.py` proves that for every Setup / bundle the tests build (no picture, icon or media file
 by name or content, none of the disc's known files by SHA-256), and `make_installer.py` refuses to package one.
 
+**Exception: the owner's release Setup** (owner decision 2026-11-05). `make_installer.py --art <folder>` builds the
+owner's `backdrop.*` and `logo.*` into the setup program (RCDATA `ART_BACKDROP` / `ART_LOGO`: Setup shows them from
+the first second) and makes the program's icon from the logo's mask badge: a first build with the procedural icon runs
+`/makeicon <logo> owner-icon.ico logo` (art.c, the same badge as the installed game icon), the real build carries that
+.ico as icon 1, so Explorer shows it for Sly2-Setup.exe. It writes `Sly2-Setup.art-allow.txt` (SHA-256 of the two
+files and of each icon image) and checks its Setup with it. `check_no_game_data.py` now also reads a Setup's PE
+resources: the icon must be `make_icon.py`'s (re-rendered and hashed) or on the allow-list (`--allow <file>`), any
+other resource gets the picture checks; the allow-list counts only for the program's resources, never for source.zip.
+Without `--art` the build is unchanged (no RCDATA, the procedural icon). The art, the .ico made from it and screenshots
+of it are never committed; the source bundle never carries them. Launcher order for backdrop and logo: the art folder
+> built in > the disc's > our theme.
+
 ## Where the pictures come from (first match wins)
 
 | what | 1. the owner's own (`%LOCALAPPDATA%\Sly2\art\`) | 2. from the disc (`<install>\game\art\`) | 3. ours |
 |---|---|---|---|
 | game icon | `icon.ico` (as it is), `icon.png/webp/jpg/jpeg/bmp` (fitted), `logo.png/webp/...` (its raccoon mask on a badge) | `sly2.ico` (the save icon, below) | `scripts/make_icon.py` (thief's mask + moon) |
-| launcher backdrop | `backdrop.png/jpg/jpeg/webp/bmp` (any size: cover, anchored right) | `backdrop.bmp` (the opening scene, below) | a drawn night sky with the icon as an emblem |
-| launcher title | `logo.png/webp/...` (the whole logo) | - | "Sly 2" + PC + "Band of Thieves" in text |
+| launcher backdrop | `backdrop.png/jpg/jpeg/webp/bmp` (any size: cover, anchored right); then the one built in by `--art` | `backdrop.bmp` (the opening scene, below) | a drawn night sky with the icon as an emblem |
+| launcher title | `logo.png/webp/...` (the whole logo); then the one built in by `--art` | - | "Sly 2" + PC + "Band of Thieves" in text |
 
 - Pictures are decoded with Windows' own WIC: PNG, JPEG, BMP, GIF, TIFF everywhere; **WebP only if Windows has the
   WebP codec** ("WebP Image Extensions"; not installed on the owner's PC: his `logo.webp` was converted once to

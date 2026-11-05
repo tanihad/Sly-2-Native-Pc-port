@@ -6,6 +6,8 @@
 # - scripts: release_keygen.py refuses a key inside the repository; make_release.py makes a signed release
 # - the program (scripts\make_installer.py --test-build): the window driven hidden (/uitest: drop a wrong
 #   file, a folder, the right image; the Play screen of an installation with its update check)
+# - art: the game icon's choice, the window's pictures and icon; make_installer.py --art (synthetic pictures):
+#   resources, the logo badge icon, check_no_game_data's allow-list, built-in pictures < the art folder's
 # - updates from a local server: a newer version found; the release build refuses plain HTTP; a manifest
 #   signed by another key, a changed manifest, a changed bundle -> rejected, the installation untouched
 # The full flow (import, build, update with a staged rebuild, a failing build, rollback, uninstall) is
@@ -126,7 +128,52 @@ foreach ($k in 'none', 'owner') {                    # the window rendered off-s
     $n = @(Get-ChildItem $shots -Filter *.bmp -ErrorAction SilentlyContinue).Count
     $want = if ($k -eq 'none') { 'backdrop none \(theme\), logo none' } else { "backdrop the owner's, logo the owner's" }
     Check ($r.Code -eq 0 -and $n -eq 8 -and ((Get-Content $slog) -match $want)) "the window with $k art: $n screens rendered"
+    $wantIcon = if ($k -eq 'none') { "window icon: the program's own" } else { "window icon: the owner's logo \(its mask, made in memory\)" }
+    Check ((Get-Content $slog) -match $wantIcon) "not installed, $k art: $wantIcon"
 }
+
+# ---- Setup with the owner's art built in (make_installer.py --art; synthetic pictures stand in for his) ----------
+$sr = Join-Path $PSScriptRoot 'setup_resources.py'
+$cg = Join-Path $root 'scripts\check_no_game_data.py'
+$plain = @(& $py $sr $exe)
+Check (-not ($plain -match '^rcdata') -and ($plain -contains 'icon own')) "a build without --art: no pictures, the procedural icon ($($plain -join '; '))"
+$artDir = Join-Path $out 'setup-art'
+if (Test-Path $artDir) { Remove-Item -Recurse -Force $artDir }
+$mk = @(& $py (Join-Path $root 'scripts\make_installer.py') --art $pics --out $artDir)
+$aexe = Join-Path $artDir 'Sly2-Setup.exe'; $allow = Join-Path $artDir 'Sly2-Setup.art-allow.txt'
+Check ($LASTEXITCODE -eq 0 -and ($mk -match [regex]::Escape("Setup includes the owner's art from $pics")) -and (Test-Path $allow)) "make_installer --art: built, says so, writes the allow-list"
+$res = @(& $py $sr $aexe)
+$hb = (Get-FileHash (Join-Path $pics 'backdrop.png') -Algorithm SHA256).Hash.ToLower()
+$hl = (Get-FileHash (Join-Path $pics 'logo.png') -Algorithm SHA256).Hash.ToLower()
+$iconLine = @($res -match '^icon other ')
+$allowText = Get-Content $allow -Raw
+$iconHashes = if ($iconLine) { $iconLine[0].Substring(11).Split(',') } else { @() }
+Check (($res -contains "rcdata ART_BACKDROP $hb") -and ($res -contains "rcdata ART_LOGO $hl")) "--art: backdrop and logo embedded as they are"
+Check ($iconHashes.Count -eq 10 -and @($iconHashes | Where-Object { $allowText -notmatch $_ }).Count -eq 0) "--art: the program's icon is the logo's badge (10 sizes, all on the allow-list)"
+$null = & $py $cg $aexe
+Check ($LASTEXITCODE -eq 1) "check_no_game_data without the allow-list refuses the --art Setup"
+$r = @(& $py $cg --allow $allow $aexe)
+Check ($LASTEXITCODE -eq 0) "check_no_game_data --allow passes exactly the embedded art: $($r[-1])"
+$partial = Join-Path $out 'allow-partial.txt'
+Set-Content -Encoding utf8 $partial (Get-Content $allow | Where-Object { $_ -notmatch 'ART_BACKDROP' })
+$null = & $py $cg --allow $partial $aexe
+Check ($LASTEXITCODE -eq 1) "an allow-list without the backdrop's hash: refused"
+$null = & $py $cg --allow $allow (Join-Path $pics 'game.zip')
+Check ($LASTEXITCODE -eq 1) "the allow-list does not let a picture into a bundle"
+$r = @(& $py $cg --allow $allow $exe)
+Check ($LASTEXITCODE -eq 0) "a Setup without art passes with or without the list"
+$eu = Join-Path $out 'art-ud-empty'; $shots = Join-Path $out 'shots-embedded'; $slog = Join-Path $out 'shots-embedded.log'
+Remove-Item -Recurse -Force $eu, $shots, $slog -ErrorAction SilentlyContinue
+$r = Run $aexe "`"/uishot=$shots`" `"/dir=$(Join-Path $out 'art-nodir')`" `"/userdata=$eu`" `"/log=$slog`""
+$sl = Get-Content $slog
+Check ($r.Code -eq 0 -and ($sl -match 'backdrop built in, logo built in') -and ($sl -match "window icon: the program's own")) "--art Setup, no art folder: built-in pictures, its own (badge) icon"
+New-Item -ItemType Directory -Force (Join-Path $eu 'art') | Out-Null
+Copy-Item (Join-Path $pics 'backdrop.png') (Join-Path $eu 'art')
+Remove-Item -Recurse -Force $shots, $slog -ErrorAction SilentlyContinue
+$r = Run $aexe "`"/uishot=$shots`" `"/dir=$(Join-Path $out 'art-nodir')`" `"/userdata=$eu`" `"/log=$slog`""
+Check ($r.Code -eq 0 -and ((Get-Content $slog) -match "backdrop the owner's, logo built in")) "the art folder's picture wins over the built-in one"
+Check (-not (Test-Path (Join-Path $out 'art-nodir'))) "the window leaves no install folder"
+Remove-Item -Recurse -Force $artDir, $eu, $shots, $slog, $partial -ErrorAction SilentlyContinue
 
 # ---- nothing of the game in what we ship ---------------------------------------------------------------------
 $cg = Join-Path $root 'scripts\check_no_game_data.py'

@@ -21,18 +21,26 @@ the update check's line at the bottom. Everything is drawn into one 32-bit back 
 installer/art.c, ClearType text); the buttons stay owner-drawn child controls (keyboard, focus, tests unchanged)
 painted over the same buffer with ~120 ms eased hover fades and a hand cursor.
 
-**Pictures** (first match wins; never in the repository, Setup or a bundle):
+**Pictures** (first match wins; never in the repository or a source bundle; in Setup only when built with `--art`):
 1. **The owner's own**, `%LOCALAPPDATA%\Sly2\art\` (the game's user data folder, `art` subfolder):
    `backdrop.png|jpg|jpeg|webp|bmp` (the background, any size: scaled to cover the window, anchored right - put the
    characters on the right), `logo.png|webp|...` (the title art, with real transparency; its Cooper mask also becomes
    the icon), `icon.ico` or `icon.png|...` (the game icon as it is). WebP needs Windows' WebP codec; PNG always works.
    Used at the next launcher start (the icon also at install / repair / update).
+   1b. **Built into the program** (backdrop and logo only): a Setup made with `make_installer.py --art <folder>` (the
+   release Setup, "Publishing an update") carries that folder's `backdrop.*` / `logo.*` as resources `ART_BACKDROP` /
+   `ART_LOGO`, so Setup shows them from the first second, before anything is installed; its icon (Explorer, window,
+   taskbar) is the logo's mask badge.
 2. **From the player's disc**, made by the build (`game\art\`): the game's own save icon as the icon, a picture of the
    game's opening scene (the pyramids at sunset) as the backdrop.
 3. **Ours**: the drawn night-sky theme with the icon as an emblem, "Sly 2 [PC] Band of Thieves" as text, the
    procedural mask icon.
 The game icon (shortcuts, Apps & features, the window) is `<install>\art\sly2.ico`, chosen and rewritten by
 `setup_refresh_icon` at every install / repair / update and launcher start; without one, the launcher's own.
+The window's icon (launcher.c `choose_icon`): `<install>\art\sly2.ico` > the art folder's `icon.ico`, or
+`icon.<picture>` / `logo.<picture>` made into the icon in memory (before an installation there is no sly2.ico yet) >
+the program's own icon resource (the badge in an `--art` Setup, else the procedural one). The log says which
+(`[ui] window icon: ...`, next to `[ui] art: backdrop ..., logo ...`: "the owner's", "built in", "from the disc").
 
 **What a player sees**
 1. Downloads `Sly2-Setup.exe`, starts it. The launcher window (the owner's pictures if there are some in the art
@@ -122,6 +130,17 @@ restores `game.old` when `game` is missing, removes an unfinished `game.new`. "P
    `build\release\0.1.<count>\` with `sly2-source-0.1.<count>.zip`, `sly2-release.txt`, `sly2-release.txt.sig`; it
    refuses a dirty tree and prints the `gh release create v0.1.<count> ...` command for these three files.
 3. Also attach `Sly2-Setup.exe` (+ `SHA256SUMS.txt`) from `make_installer.py`, so new players get the same version.
+   **Release Setups are built with the owner's art** (owner decision 2026-11-05):
+   `python scripts\make_installer.py --art %LOCALAPPDATA%\Sly2\art` (it prints "Setup includes the owner's art from
+   <folder>"). That embeds `backdrop.*` and `logo.*` of the folder as the window's pictures and the logo's mask badge
+   as the program's icon (Explorer, window, taskbar from the first second), and writes
+   `build\installer\Sly2-Setup.art-allow.txt` (the SHA-256 of exactly those embedded files and icon images); the
+   build checks its Setup against it, and `python scripts\check_no_game_data.py --allow
+   build\installer\Sly2-Setup.art-allow.txt build\installer\Sly2-Setup.exe` proves it again (anything else -
+   another picture, an icon not ours nor listed, a picture in source.zip - still fails). The art itself is never
+   committed, and the source bundle (`make_release.py`) never carries it (the launcher an update installs is not
+   rebuilt from the bundle; the installed `Sly 2 Launcher.exe` is the Setup's own program, art included). Tests and
+   the default build stay without art.
 4. Publish it as the newest release ("latest"): every launcher then sees it at its next start.
    Test first with a local server: tests/unit/launcher/run.ps1 shows how (`Sly2-Setup-Test.exe /checkupdate
    /updateurl=http://127.0.0.1:<port>/... /pubkey=<test key>`).

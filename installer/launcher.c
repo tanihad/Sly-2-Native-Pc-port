@@ -8,8 +8,8 @@
  * The work itself is engine.c / update.c on a worker thread (the same code as /silent).
  *
  * Look: a wide dark window, the controls in a column on the left over a picture on the right. The pictures
- * (art.h): the owner's own (%LOCALAPPDATA%\Sly2\art: logo, backdrop, icon), else those the build made from the
- * player's disc (game\art), else our own drawn theme (night blue, gold, the icon as an emblem). Everything is drawn
+ * (art.h): the owner's own (%LOCALAPPDATA%\Sly2\art: logo, backdrop, icon), else those built into this program
+ * (make_installer.py --art), else those the build made from the player's disc (game\art), else our own drawn theme (night blue, gold, the icon as an emblem). Everything is drawn
  * into one 32-bit back buffer (anti-aliased shapes from art.c, ClearType text from GDI); the buttons are owner-drawn
  * child controls (keyboard, focus and the tests work as before) painted over the same buffer, with eased hover
  * fades. Per-monitor DPI aware (the manifest), no console window.
@@ -74,7 +74,11 @@ static wchar_t notes[600];                           /* "what's new" of the inst
 
 /* pictures (art.h) and the back buffer */
 static art_img src_backdrop, src_logo;               /* as loaded (full size) */
-static int have_backdrop, have_logo;
+static int have_backdrop, have_logo;                 /* backdrop 1 the owner's folder, 2 the disc's, 3 embedded; logo 1 / 3 */
+static wchar_t icon_file[MAXP];                      /* the window's icon: a .ico file, */
+static art_img icon_pic;                             /* else made from a picture of the owner's folder (in memory), */
+static const art_img* icon_src;                      /* (icon_pic or src_logo) */
+static int icon_kind;                                /* (art_write_icon's kind) else the program's own icon */
 static art_img bg;                                   /* the background at the client size (picture or theme + shading) */
 static art_img logo_px;                              /* the logo at its drawn size */
 static int bg_w, bg_h, bg_dpi, logo_w;
@@ -665,24 +669,60 @@ static int load_first(const wchar_t* dir, const wchar_t* base, art_img* out) {
     return 0;
 }
 
-static void set_window_icons(void) {
-    wchar_t ico[MAXP];
-    wpath(ico, MAXP, S->dir, L"art\\sly2.ico");
-    int big = GetSystemMetricsForDpi(SM_CXICON, (UINT)dpi), small = GetSystemMetricsForDpi(SM_CXSMICON, (UINT)dpi);
-    HICON hb = NULL, hs = NULL;
-    if (file_exists(ico)) {
-        hb = (HICON)LoadImageW(NULL, ico, IMAGE_ICON, big, big, LR_LOADFROMFILE);
-        hs = (HICON)LoadImageW(NULL, ico, IMAGE_ICON, small, small, LR_LOADFROMFILE);
+/* The window's icon (title bar, taskbar, Alt+Tab; also the theme's emblem), first match wins:
+ * <dir>\art\sly2.ico (an installation: art_icon_refresh's choice) > the owner's art folder (icon.ico; icon.<picture>
+ * or logo.<picture> made into the icon in memory: before the installation there is no sly2.ico yet) > this program's
+ * own icon (resource 1: the logo's mask badge in a Setup built with --art, else the procedural one). */
+static void choose_icon(void) {
+    art_free(&icon_pic);
+    icon_src = NULL;
+    icon_file[0] = 0;
+    const wchar_t* what = L"the program's own";
+    wchar_t ud[MAXP], p[MAXP];
+    art_user_dir(S, ud);
+    wpath(p, MAXP, S->dir, L"art\\sly2.ico");
+    if (file_exists(p)) { wcopy(icon_file, MAXP, p); what = L"the installation's art\\sly2.ico"; goto done; }
+    wpath(p, MAXP, ud, L"icon.ico");
+    if (file_exists(p)) { wcopy(icon_file, MAXP, p); what = L"the owner's icon.ico"; goto done; }
+    if (art_find(ud, L"icon", p) && art_load(p, &icon_pic)) {
+        icon_src = &icon_pic;
+        icon_kind = 0;
+        what = L"the owner's icon picture (made in memory)";
+        goto done;
     }
-    if (!hb) hb = (HICON)LoadImageW(inst, MAKEINTRESOURCEW(1), IMAGE_ICON, big, big, 0);
-    if (!hs) hs = (HICON)LoadImageW(inst, MAKEINTRESOURCEW(1), IMAGE_ICON, small, small, 0);
+    art_free(&icon_pic);
+    if (have_logo == 1) {                            /* (the owner's logo: its mask on the badge, if it is that logo) */
+        HICON t = art_make_hicon(&src_logo, 1, 16);
+        if (t) {
+            DestroyIcon(t);
+            icon_src = &src_logo;
+            icon_kind = 1;
+            what = L"the owner's logo (its mask, made in memory)";
+        }
+    }
+done:
+    logw(L"[ui] window icon: %ls", what);
+}
+
+static HICON icon_at(int px) {
+    HICON h = NULL;
+    if (icon_file[0]) h = (HICON)LoadImageW(NULL, icon_file, IMAGE_ICON, px, px, LR_LOADFROMFILE);
+    if (!h && icon_src) h = art_make_hicon(icon_src, icon_kind, px);
+    if (!h) h = (HICON)LoadImageW(inst, MAKEINTRESOURCEW(1), IMAGE_ICON, px, px, 0);
+    return h;
+}
+
+static void set_window_icons(void) {
+    int big = GetSystemMetricsForDpi(SM_CXICON, (UINT)dpi), small = GetSystemMetricsForDpi(SM_CXSMICON, (UINT)dpi);
+    HICON hb = icon_at(big), hs = icon_at(small);
     HICON ob = (HICON)SendMessageW(win, WM_SETICON, ICON_BIG, (LPARAM)hb), os = (HICON)SendMessageW(win, WM_SETICON, ICON_SMALL, (LPARAM)hs);
     static int ours;                                 /* (the class icons are not ours to destroy) */
     if (ours) { if (ob) DestroyIcon(ob); if (os) DestroyIcon(os); }
     ours = 1;
 }
 
-/* the owner's pictures, else the disc's (art.h); at the start and after every job (a new game folder) */
+/* the owner's pictures (art folder), else the ones built into this program (make_installer.py --art), else the
+ * disc's (art.h); at the start and after every job (a new game folder) */
 static void load_art(void) {
     art_free(&src_backdrop);
     art_free(&src_logo);
@@ -691,27 +731,28 @@ static void load_art(void) {
     wchar_t ud[MAXP], p[MAXP];
     art_user_dir(S, ud);
     have_backdrop = load_first(ud, L"backdrop", &src_backdrop) ? 1 : 0;
+    if (!have_backdrop && art_load_resource(L"ART_BACKDROP", &src_backdrop)) have_backdrop = 3;
     if (!have_backdrop) {
         wpath(p, MAXP, S->dir, GAME_DIR L"\\art\\backdrop.bmp");
         if (file_exists(p) && art_load(p, &src_backdrop)) have_backdrop = 2;
     }
-    have_logo = load_first(ud, L"logo", &src_logo);
+    have_logo = load_first(ud, L"logo", &src_logo) ? 1 : 0;
+    if (!have_logo && art_load_resource(L"ART_LOGO", &src_logo)) have_logo = 3;
     if (emblem) DestroyIcon(emblem);
     emblem = NULL;
     emblem_px = 0;
     bg_w = 0;
-    logw(L"[ui] art: backdrop %ls, logo %ls", have_backdrop == 1 ? L"the owner's" : have_backdrop == 2 ? L"from the disc" : L"none (theme)",
-         have_logo ? L"the owner's" : L"none (title text)");
+    logw(L"[ui] art: backdrop %ls, logo %ls",
+         have_backdrop == 1 ? L"the owner's" : have_backdrop == 3 ? L"built in" : have_backdrop == 2 ? L"from the disc" : L"none (theme)",
+         have_logo == 1 ? L"the owner's" : have_logo == 3 ? L"built in" : L"none (title text)");
+    choose_icon();
     set_window_icons();
 }
 
 static HICON get_emblem(int px) {
     if (emblem && emblem_px == px) return emblem;
     if (emblem) DestroyIcon(emblem);
-    wchar_t ico[MAXP];
-    wpath(ico, MAXP, S->dir, L"art\\sly2.ico");
-    emblem = file_exists(ico) ? (HICON)LoadImageW(NULL, ico, IMAGE_ICON, px, px, LR_LOADFROMFILE) : NULL;
-    if (!emblem) emblem = (HICON)LoadImageW(inst, MAKEINTRESOURCEW(1), IMAGE_ICON, px, px, 0);
+    emblem = icon_at(px);
     emblem_px = px;
     return emblem;
 }
@@ -725,7 +766,7 @@ static void build_bg(int w, int h) {
     if (have_backdrop) {
         double sw = src_backdrop.w, sh = src_backdrop.h, s = w / sw > h / sh ? w / sw : h / sh;
         double vw = w / s, vh = h / s;
-        double x0 = have_backdrop == 1 ? sw - vw : (sw - vw) / 2, y0 = (sh - vh) / 2;
+        double x0 = have_backdrop != 2 ? sw - vw : (sw - vw) / 2, y0 = (sh - vh) / 2;   /* (the owner's: anchored right) */
         if (have_backdrop == 2 && h / (w / (sw * 0.80)) <= sh) {   /* the disc's opening scene: its left 80%, so the */
             s = w / (sw * 0.80);                                     /* pyramid stands right of the column */
             vw = w / s;

@@ -4,9 +4,12 @@
  *   1. the owner's own files in <user data>\art (%LOCALAPPDATA%\Sly2\art): icon.ico, icon.png|webp|jpg|bmp,
  *      logo.png|webp (the game's logo: its raccoon mask becomes the icon, the whole logo the launcher's title),
  *      backdrop.png|jpg|webp|bmp (the launcher's background)
+ *   (1b. the launcher's backdrop and logo only: pictures embedded in the program by `make_installer.py --art`,
+ *       resources ART_BACKDROP / ART_LOGO; such a build's own icon, resource 1, is the logo's mask badge)
  *   2. art made from the player's disc by the build (scripts/disc_art.py): <dir>\game\art\sly2.ico, backdrop.bmp
  *   3. our own: the launcher's built-in icon (scripts/make_icon.py) and its drawn dark theme
- * Nothing of 1 or 2 is ever part of the repository, Setup or a source bundle: they exist only on the player's PC.
+ * Nothing of 2 is ever part of the repository, Setup or a source bundle; 1 only in a Setup built with --art (the
+ * owner's release Setup), never in the repository or a source bundle.
  */
 #pragma once
 #include "setup.h"
@@ -14,6 +17,7 @@
 typedef struct { int w, h; uint32_t* px; } art_img;   /* premultiplied BGRA, top-down rows, w*h pixels */
 
 int art_load(const wchar_t* path, art_img* out);      /* WIC: PNG, JPEG, BMP, GIF, TIFF, ICO; WebP if Windows has the codec */
+int art_load_resource(const wchar_t* name, art_img* out);   /* an RCDATA picture of this program (0: none) */
 void art_free(art_img* a);
 int art_alloc(art_img* a, int w, int h);              /* zeroed (transparent) */
 /* the source rectangle (sx, sy, sw, sh: may be fractional) resampled into dst (w, h set, px allocated):
@@ -47,3 +51,5 @@ int art_icon_refresh(setup_t* s, const wchar_t** what);
 void art_icon_location(setup_t* s, wchar_t* out);
 /* builds a .ico (16..256) from a picture: kind 0 = the picture fitted as it is, 1 = the logo's mask on a badge */
 int art_write_icon(const art_img* src, int kind, const wchar_t* path);
+/* the same icon image at n x n as an HICON, in memory (DestroyIcon it); NULL if it cannot be made */
+HICON art_make_hicon(const art_img* src, int kind, int n);
