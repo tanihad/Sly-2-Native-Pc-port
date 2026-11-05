@@ -22,7 +22,7 @@ void gpu_light_config(int on) { InterlockedExchange(&lcf_on, on ? 1 : 0); }
 
 enum { LT_W, LT_AO0, LT_AO1, LT_B1, LT_B2, LT_B3, LT_B4, LT_B5, LT_N };
 static struct {
-    int env, env_on, ao, bloom, log;
+    int env, env_on, ao, bloom, log, split, dbg;
     float ao_r, ao_k, ao_min, ao_f0, ao_f1, ao_pow, ao_max, ao_bias, bl_t, bl_k, bl_i, bl_sat;
     ID3D11Texture2D* t[LT_N];
     ID3D11RenderTargetView* rtv[LT_N];
@@ -50,17 +50,19 @@ static void lt_env(void) {
     e = getenv("PS2_LIGHT_AO"); LT.ao = !(e && *e == '0');
     e = getenv("PS2_LIGHT_BLOOM"); LT.bloom = !(e && *e == '0');
     e = getenv("PS2_LIGHT_LOG"); LT.log = e && *e == '1';
-    LT.ao_r = lt_envf("PS2_LIGHT_AO_R", 1.6f);          /* radius, world units */
-    LT.ao_k = lt_envf("PS2_LIGHT_AO_K", 1.1f);          /* strength */
-    LT.ao_min = lt_envf("PS2_LIGHT_AO_MIN", 0.55f);     /* darkest factor */
-    LT.ao_f0 = lt_envf("PS2_LIGHT_AO_FADE0", 40.0f);    /* fades out from here ... */
-    LT.ao_f1 = lt_envf("PS2_LIGHT_AO_FADE", 120.0f);    /* ... to here (view depth, world units) */
+    e = getenv("PS2_LIGHT_DBG"); LT.dbg = e && *e ? atoi(e) : 0;   /* (1: the occlusion alone, 2: the bloom alone) */
+    e = getenv("PS2_LIGHT_SPLIT"); LT.split = e && *e == '1';   /* (pictures: Enhanced on the right half only) */
+    LT.ao_r = lt_envf("PS2_LIGHT_AO_R", 60.0f);         /* radius, world units (Sly: ~190 units tall crouching) */
+    LT.ao_k = lt_envf("PS2_LIGHT_AO_K", 3.0f);          /* strength */
+    LT.ao_min = lt_envf("PS2_LIGHT_AO_MIN", 0.35f);     /* darkest factor */
+    LT.ao_f0 = lt_envf("PS2_LIGHT_AO_FADE0", 3000.0f);    /* fades out from here ... */
+    LT.ao_f1 = lt_envf("PS2_LIGHT_AO_FADE", 8000.0f);    /* ... to here (view depth, world units) */
     LT.ao_pow = lt_envf("PS2_LIGHT_AO_POW", 1.0f);
     LT.ao_max = lt_envf("PS2_LIGHT_AO_MAXPX", 48.0f);   /* largest radius, half-res texels */
     LT.ao_bias = lt_envf("PS2_LIGHT_AO_BIAS", 0.06f);
-    LT.bl_t = lt_envf("PS2_LIGHT_BLOOM_T", 0.72f);      /* threshold (0..1 of the picture's channel) */
-    LT.bl_k = lt_envf("PS2_LIGHT_BLOOM_K", 0.18f);      /* soft knee */
-    LT.bl_i = lt_envf("PS2_LIGHT_BLOOM_I", 0.30f);      /* intensity */
+    LT.bl_t = lt_envf("PS2_LIGHT_BLOOM_T", 0.55f);      /* threshold (0..1 of the picture's channel) */
+    LT.bl_k = lt_envf("PS2_LIGHT_BLOOM_K", 0.25f);      /* soft knee */
+    LT.bl_i = lt_envf("PS2_LIGHT_BLOOM_I", 0.60f);      /* intensity */
     LT.bl_sat = lt_envf("PS2_LIGHT_BLOOM_SAT", 0.85f);
 }
 static int lt_enabled(void) {
@@ -229,7 +231,7 @@ static void light_post(void) {
     float* lao = cb + 20; float* lao2 = cb + 24; float* lbl = cb + 28; float* ldir = cb + 32;
     map[0] = M.rsx / M.osx; map[1] = M.rsy / M.osy; map[2] = (float)pw / (float)hw; map[3] = (float)ph / (float)hh;
     if (proj) { memcpy(lv, view, 16); lz[0] = zz[0]; lz[1] = zz[1]; }
-    lz[2] = 1e6f; lz[3] = (float)pw;
+    lz[2] = 1e6f; lz[3] = (float)LT.dbg;
     lao[0] = LT.ao_r; lao[1] = ao ? LT.ao_k : 0.0f; lao[2] = LT.ao_max; lao[3] = LT.ao_bias;
     lao2[0] = LT.ao_f0; lao2[1] = LT.ao_f1; lao2[2] = LT.ao_min; lao2[3] = LT.ao_pow;
     lbl[0] = LT.bl_t; lbl[1] = LT.bl_k; lbl[2] = LT.bloom ? LT.bl_i : 0.0f; lbl[3] = LT.bl_sat;
@@ -304,6 +306,14 @@ static void light_post(void) {
     ID3D11DeviceContext_PSSetConstantBuffers(gpu_rt.ctx, 7, 1, &b);
     if (ao) { lt_srv(14, LT.srv[LT_W]); lt_srv(15, LT.srv[LT_AO0]); lt_srv(17, z->srv); }
     if (LT.bloom) lt_srv(16, LT.srv[LT_B1]);
+    if (LT.split) {                      /* (PS2_LIGHT_SPLIT=1: the left half stays Original) */
+        ID3D11DeviceContext_OMSetRenderTargets(gpu_rt.ctx, 1, &c->prtv, NULL);
+        set_viewport(pw, ph);
+        set_scissor(pw / 2, 0, pw, ph);
+        set_blend(LT.bs_comp);
+        set_ps(gpu_ps(ms ? GPU_SH_ps_light_comp1 : GPU_SH_ps_light_comp0));
+        ID3D11DeviceContext_Draw(gpu_rt.ctx, 3, 0);
+    } else
     lt_pass(c->prtv, pw, ph, ms ? GPU_SH_ps_light_comp1 : GPU_SH_ps_light_comp0, LT.bs_comp);
     lt_unbind();
 #undef LT_SIZE

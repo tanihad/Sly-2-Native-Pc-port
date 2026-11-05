@@ -203,6 +203,10 @@ static void build_choices(int id, choices* c) {
         add(c, SETTINGS_MSAA_4X, "4x MSAA");
         add(c, SETTINGS_MSAA_8X, "8x MSAA");
         break;
+    case MENU_ROW_LIGHTING:              /* (light) */
+        add(c, 1, "Enhanced");
+        add(c, 0, "Original");
+        break;
     case MENU_ROW_SCALE: {               /* (pc-polish) the render scale, relative to the output */
         static const int pcts[] = { 50, 67, 75, 100, 125, 150, 200 };
         int ow, oh;
@@ -400,6 +404,7 @@ static int row_value(int id) {
     case MENU_ROW_RENDERER: return eff_renderer();
     case MENU_ROW_RMODE: return ps2_settings.renderer_modern;
     case MENU_ROW_MSAA: return ps2_settings.msaa;
+    case MENU_ROW_LIGHTING: return ps2_settings.lighting_enhanced;
     case MENU_ROW_SCALE: return ps2_settings.render_scale;
     case MENU_ROW_RESOLUTION: return eff_mode() == SETTINGS_FULLSCREEN_EXCLUSIVE ? eff_res() : eff_winsize();
     case MENU_ROW_SPEAKERS: return ps2_settings.game_speakers;
@@ -436,6 +441,7 @@ static void row_set(int id, int v) {
     case MENU_ROW_RENDERER: stage(PEND_RENDERER, v); break;             /* (staged: Apply) */
     case MENU_ROW_RMODE: m_change("graphics", "renderer_mode", v); break;   /* (live: the next frame) */
     case MENU_ROW_MSAA: m_change("graphics", "msaa", v); break;
+    case MENU_ROW_LIGHTING: m_change("graphics", "lighting", v); break;
     case MENU_ROW_SCALE: m_change("graphics", "render_scale", v); break;
     case MENU_ROW_RESOLUTION: stage(eff_mode() == SETTINGS_FULLSCREEN_EXCLUSIVE ? PEND_RES : PEND_WINSIZE, v); break;
     case MENU_ROW_SPEAKERS: m_change("audio", "speakers", v); break;
@@ -589,11 +595,11 @@ static const char* preset_desc(int p) {
         return "PS2 mode: every pixel exactly as the PS2 drew it (Reference rendering on the PS2's pixel grid, as sharp as your "
                "screen allows), 4:3, the TV flicker filter and interlacing, PS2 outlines.";
     case SETTINGS_PRESET_PERFORMANCE:
-        return "Modern rendering at 75% of your screen's resolution, no anti-aliasing. For slower graphics cards.";
+        return "Modern rendering at 75% of your screen's resolution, no anti-aliasing, original lighting. For slower graphics cards.";
     case SETTINGS_PRESET_BALANCED:
-        return "Modern rendering at your screen's resolution with 4x MSAA anti-aliasing. The default.";
+        return "Modern rendering at your screen's resolution with 4x MSAA anti-aliasing and enhanced lighting. The default.";
     case SETTINGS_PRESET_QUALITY:
-        return "Modern rendering at your screen's resolution with 8x MSAA, thin high-resolution outlines. Needs a fast "
+        return "Modern rendering at your screen's resolution with 8x MSAA, enhanced lighting, thin high-resolution outlines. Needs a fast "
                "graphics card.";
     default:
         return "Your own combination of the options below. Choose a preset to set them all at once.";
@@ -654,6 +660,11 @@ static int build_rows(int page, menu_row* rows) {
         choice_row(rows, &n, MENU_ROW_MSAA, "Anti-aliasing",
                    "Multisampling (MSAA) of Modern rendering: smooth edges at little cost. 4x is a good balance; 8x is "
                    "smoother and slower; Off is the fastest.");
+        if (!gpu) disable(last(rows, n), gpu_only);
+        else if (!modern_pct) disable(last(rows, n), "Modern rendering with a percentage render scale only");
+        choice_row(rows, &n, MENU_ROW_LIGHTING, "Lighting",
+                   "Enhanced: soft shadowing where surfaces meet and a gentle glow around lamps, windows and other bright "
+                   "lights. Original: the game's own lighting, unchanged.");
         if (!gpu) disable(last(rows, n), gpu_only);
         else if (!modern_pct) disable(last(rows, n), "Modern rendering with a percentage render scale only");
         choice_row(rows, &n, MENU_ROW_SCALER, "Scaling filter",

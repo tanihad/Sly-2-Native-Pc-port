@@ -19,6 +19,7 @@ ps2_settings_t ps2_settings = {
     .preset = SETTINGS_PRESET_BALANCED, .auto_max = SETTINGS_SCALE_AUTO_MAX,
     .vol_master = 100, .vol_music = 100, .vol_effects = 100, .audio_background = 1,
     .frame_rate = 60, .render_scale = 100, .renderer_modern = 1, .msaa = SETTINGS_MSAA_4X,   /* (r2-m8: Balanced) */
+    .lighting_enhanced = 1,              /* (light: Balanced) */
 };
 const char* const settings_scaler_names[SETTINGS_SCALER_N] = { "auto", "point", "box", "lanczos", "catmull-rom", "bilinear" };
 const char* const settings_preset_names[SETTINGS_PRESET_N] = { "original", "performance", "balanced", "quality", "custom" };
@@ -38,6 +39,7 @@ static const char* const n_mode[] = { "windowed", "borderless", "fullscreen" }; 
 static const char* const n_speakers[] = { "stereo", "mono", "surround" };
 static const char* const n_rmode[] = { "reference", "modern" };   /* (r2-m1) */
 static const char* const n_msaa[] = { "off", "2x", "4x", "8x" };  /* (r2-m8) */
+static const char* const n_lighting[] = { "original", "enhanced" };   /* (light) */
 
 #define OFF(f) ((int)offsetof(ps2_settings_t, f))
 #define BOOL_(sec, key, f, flags, apply, def) { sec, key, SET_BOOL, flags, apply, OFF(f), 0, 1, def, NULL, NULL, NULL }
@@ -74,6 +76,9 @@ static const settings_opt opts[] = {
     /* (r2-m8) multisampling of modern frames */
     ENUM_("graphics", "msaa", msaa, SET_LIVE | SET_PRESET | SET_GPU, SET_APPLY_GFX, n_msaa, SETTINGS_MSAA_N, SETTINGS_MSAA_4X,
           "1x=0|none=0|0=0|1=0|2=1|4=2|8=3", NULL),
+    /* (light) Enhanced lighting of modern frames (gpu_light.h; PS2_LIGHT=0|1 overrides it in the renderer) */
+    ENUM_("graphics", "lighting", lighting_enhanced, SET_LIVE | SET_PRESET | SET_GPU, SET_APPLY_GFX, n_lighting, 2, 1,
+          "off=0|on=1|0=0|1=1|ps2=0|modern=1", NULL),
     /* old keys: read and migrated (settings_migrate_text), never written */
     INT_("graphics", "internal_scale", internal_scale, SET_LEGACY | SET_LIVE | SET_GPU, SET_APPLY_GFX, 1, 8, SETTINGS_SCALE_AUTO,
          "auto=0|native=-1", NULL),
@@ -347,13 +352,15 @@ int settings_detect_preset(const ps2_settings_t* s) {
     if (s->motion_blur != -1 || s->flicker_filter != -1 || s->interlacing != -1 || s->scaler != SETTINGS_SCALER_AUTO)
         return SETTINGS_PRESET_CUSTOM;
     if (!s->renderer_modern) {           /* (r2-m8) PS2: Reference with every faithful setting */
-        if (s->render_scale == SETTINGS_RS_AUTO && s->filters_faithful && !s->outlines_thin && is_43(s)) return SETTINGS_PRESET_ORIGINAL;
+        if (s->render_scale == SETTINGS_RS_AUTO && s->filters_faithful && !s->outlines_thin && !s->lighting_enhanced && is_43(s))
+            return SETTINGS_PRESET_ORIGINAL;
         return SETTINGS_PRESET_CUSTOM;
     }
     if (s->filters_faithful) return SETTINGS_PRESET_CUSTOM;
-    if (s->render_scale == SETTINGS_PRESET_PERFORMANCE_PCT && s->msaa == SETTINGS_MSAA_OFF && !s->outlines_thin) return SETTINGS_PRESET_PERFORMANCE;
-    if (s->render_scale == 100 && s->msaa == SETTINGS_MSAA_4X && !s->outlines_thin) return SETTINGS_PRESET_BALANCED;
-    if (s->render_scale == 100 && s->msaa == SETTINGS_MSAA_8X && s->outlines_thin) return SETTINGS_PRESET_QUALITY;
+    if (s->render_scale == SETTINGS_PRESET_PERFORMANCE_PCT && s->msaa == SETTINGS_MSAA_OFF && !s->outlines_thin && !s->lighting_enhanced)
+        return SETTINGS_PRESET_PERFORMANCE;
+    if (s->render_scale == 100 && s->msaa == SETTINGS_MSAA_4X && !s->outlines_thin && s->lighting_enhanced) return SETTINGS_PRESET_BALANCED;
+    if (s->render_scale == 100 && s->msaa == SETTINGS_MSAA_8X && s->outlines_thin && s->lighting_enhanced) return SETTINGS_PRESET_QUALITY;
     return SETTINGS_PRESET_CUSTOM;
 }
 
@@ -366,6 +373,7 @@ void settings_apply_preset(ps2_settings_t* s, int p) {
     s->filters_faithful = p == SETTINGS_PRESET_ORIGINAL;
     s->outlines_thin = p == SETTINGS_PRESET_QUALITY;
     s->renderer_modern = p != SETTINGS_PRESET_ORIGINAL;   /* (r2-m8, D6) */
+    s->lighting_enhanced = p == SETTINGS_PRESET_BALANCED || p == SETTINGS_PRESET_QUALITY;   /* (light, owner 2026-11-05) */
     switch (p) {
     case SETTINGS_PRESET_ORIGINAL: s->render_scale = SETTINGS_RS_AUTO; s->aspect_w = 4; s->aspect_h = 3; break;
     case SETTINGS_PRESET_PERFORMANCE: s->render_scale = SETTINGS_PRESET_PERFORMANCE_PCT; s->msaa = SETTINGS_MSAA_OFF; break;
@@ -629,7 +637,7 @@ static const char* text_of(const ps2_settings_t* s, const char* section, const c
 int settings_format(const ps2_settings_t* s, char* out, size_t cap) {
     char disc[sizeof s->disc + 2];
     char win[256] = "";
-    char t[26][24];
+    char t[27][24];
 #define T(n, sec, key) text_of(s, sec, key, t[n], sizeof t[0])
     if (s->win_w > 0)
         snprintf(win, sizeof win, "x = %d\ny = %d\nwidth = %d\nheight = %d\nmaximized = %s\n", s->win_x, s->win_y,
@@ -690,6 +698,9 @@ int settings_format(const ps2_settings_t* s, char* out, size_t cap) {
         "render_scale = %s\n"
         "; Modern rendering: multisampling (anti-aliasing): off, 2x, 4x (default) or 8x.\n"
         "msaa = %s\n"
+        "; Modern rendering: lighting. enhanced (default: soft shadowing in corners and creases, a glow around lamps and\n"
+        "; other bright lights) or original (the game's own lighting, unchanged). Environment: PS2_LIGHT=0|1\n"
+        "lighting = %s\n"
         "; Cel-shading outlines: ps2 (one PS2 pixel wide, exact) or thin (high-resolution lines).\n"
         "outlines = %s\n"
         "; Image filters preset: modern (motion blur on, no flicker filter, progressive) or\n"
@@ -732,7 +743,7 @@ int settings_format(const ps2_settings_t* s, char* out, size_t cap) {
         T(19, "display", "mode"), T(20, "display", "resolution"),
         s->aspect_w, s->aspect_h, T(0, "display", "hud"), T(1, "display", "monitor"), T(16, "display", "fullscreen_refresh"), T(18, "display", "frame_rate"),
         settings_preset_names[settings_detect_preset(s)], T(2, "graphics", "renderer"), T(3, "graphics", "pacing"), T(17, "graphics", "vsync"),
-        T(24, "graphics", "renderer_mode"), T(4, "graphics", "render_scale"), T(25, "graphics", "msaa"), T(6, "graphics", "outlines"), T(7, "graphics", "filters"),
+        T(24, "graphics", "renderer_mode"), T(4, "graphics", "render_scale"), T(25, "graphics", "msaa"), T(26, "graphics", "lighting"), T(6, "graphics", "outlines"), T(7, "graphics", "filters"),
         T(8, "graphics", "motion_blur"), T(9, "graphics", "flicker_filter"), T(10, "graphics", "interlacing"),
         T(11, "graphics", "scaler"),
         T(12, "audio", "master"), T(13, "audio", "music"), T(14, "audio", "effects"), T(15, "audio", "background"), T(5, "audio", "speakers"),

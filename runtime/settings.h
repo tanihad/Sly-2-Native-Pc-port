@@ -80,6 +80,8 @@ typedef struct {
                                     (r2-m8) part of the presets; Modern the default (Balanced), owner-approved 2026-11-04 (D2) */
     int msaa;                    /* (r2-m8) [graphics] msaa = off (0) | 2x (1) | 4x (2, default) | 8x (3): multisampling of
                                     modern frames (render_scale a percentage or auto; notes/modern-renderer.md R8) */
+    int lighting_enhanced;       /* (light) [graphics] lighting = original (0) | enhanced (1, default): ambient occlusion and
+                                    bloom on modern frames (runtime/gpu/gpu_light.h, notes/enhanced-lighting.md) */
 } ps2_settings_t;
 
 /* (r2-m8) graphics.msaa: samples per pixel of modern frames (1, 2, 4, 8) */
@@ -125,9 +127,11 @@ enum { SETTINGS_FULLSCREEN_OFF, SETTINGS_FULLSCREEN_BORDERLESS, SETTINGS_FULLSCR
  *   Original    - "PS2" in the menu: every faithful setting at once - Rendering Reference (the exact GS renderer), the
  *                 integer sample grid (render_scale auto: the largest multiple of 512 x 448 up to the screen), filters
  *                 faithful (flicker filter, interlacing, motion blur), outlines ps2, aspect 4:3.
- *   Performance - Modern, render_scale 75 %, MSAA off, outlines ps2, wide.
- *   Balanced    - (default) Modern, render_scale 100 % (the screen's own resolution), MSAA 4x, outlines ps2, wide.
- *   Quality     - Modern, render_scale 100 %, MSAA 8x, thin outlines, wide.
+ *   Performance - Modern, render_scale 75 %, MSAA off, outlines ps2, lighting original, wide.
+ *   Balanced    - (default) Modern, render_scale 100 % (the screen's own resolution), MSAA 4x, outlines ps2, lighting
+ *                 enhanced, wide.
+ *   Quality     - Modern, render_scale 100 %, MSAA 8x, thin outlines, lighting enhanced, wide.
+ *   (Original also sets lighting original: the PS2's picture.)
  *   Custom      - anything else.
  * Every preset also sets the three filter toggles to `preset` and scaler = auto; "wide" keeps the current wide
  * aspect (16:9 when it was 4:3). Modern frames draw at render_scale % of the screen with MSAA (gpu_exec_mft.h); an

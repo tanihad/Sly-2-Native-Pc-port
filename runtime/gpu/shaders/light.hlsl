@@ -15,7 +15,7 @@ cbuffer light_cb : register(b7) {
     float4 l_src;                        // sampled source size w, h, 1 / w, 1 / h
     float4 l_map;                        // depth surface pixels per picture pixel x, y; half-res: picture pixels per texel x, y
     float4 l_view;                       // view x = (x * p + y) * w, view y = (z * p + w) * w (p: picture pixel centre)
-    float4 l_z;                          // 1 / w = x * d + y; sky w (no depth); picture size w, h
+    float4 l_z;                          // 1 / w = x * d + y; sky w (no depth); debug view (1 occlusion, 2 bloom)
     float4 l_ao;                         // radius (world units), strength, largest radius (texels), bias (x radius)
     float4 l_ao2;                        // fade start, fade end (w), darkest factor, power
     float4 l_bloom;                      // threshold, knee, intensity, saturation of the bloom colour
@@ -195,5 +195,11 @@ LOut ps_light_comp(float4 pos : SV_Position) {
     float3 b = l_bloom.z > 0.0 ? l_tex.SampleLevel(l_lin, p * l_dir.zw, 0.0).rgb * l_bloom.z : 0.0;
     o.add = float4(b, 0.0);
     o.mul = float4(ao, ao, ao, 1.0);
+    if (l_z.w == 1.0) { o.add = float4(ao.xxx * 0.8, 0.0); o.mul = 0.0; }        // (PS2_LIGHT_DBG=1: the occlusion)
+    else if (l_z.w == 2.0) { o.add = float4(b, 0.0); o.mul = 0.0; }               // (2: the bloom)
+    else if (l_z.w == 3.0) {                                                        // (3: view depth, bands of 500 units)
+        float w = l_wof(l_depth_at(p));
+        o.add = float4(saturate(w / 8000.0), frac(w / 500.0), w >= l_z.z * 0.5 ? 1.0 : 0.0, 0.0); o.mul = 0.0;
+    }
     return o;
 }

@@ -1,4 +1,4 @@
-﻿/* The in-game Options menu (notes/pc-menu.md, notes/settings.md).
+/* The in-game Options menu (notes/pc-menu.md, notes/settings.md).
  *
  * Reached from the game's own pause menu (an entry "Options" added by instruction patches, menu_game.c), with
  * Esc on the keyboard or Select+Start on a controller. It is an overlay: the game stays in its pause menu
@@ -193,6 +193,7 @@ enum {
     MENU_ROW_INV_BINO, MENU_ROW_INV_TURRET,   /* Controls: the game's own Invert Binocucom / Turret */
     MENU_ROW_RMODE,                      /* (r2-m2) Graphics > Rendering: [graphics] renderer_mode (Modern / Reference) */
     MENU_ROW_MSAA,                       /* (r2-m8) Graphics > Anti-aliasing (MSAA): [graphics] msaa */
+    MENU_ROW_LIGHTING,                   /* (light) Graphics > Lighting: [graphics] lighting (Enhanced / Original) */
     MENU_ROW_BIND0 = 100,                /* binding rows: MENU_ROW_BIND0 + action */
     MENU_ROW_BIND_RESET = 99,
 };
