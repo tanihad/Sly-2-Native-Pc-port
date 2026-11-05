@@ -1350,6 +1350,14 @@ inflated and drifting): only in-run comparisons count.
   sample pack loads with no hitch (frame-time p99 unchanged).
 - **Gain**: features, not speed. Enhanced High targets >= 165 fps at 1440p.
 
+#### R9a part 1 as built: Enhanced lighting (next/light, 2026-11-05)
+One owner-facing setting, graphics.lighting = enhanced (default; Balanced / Quality) | original (Performance / PS2), live,
+modern frames only: ambient occlusion + bloom as one post pass at the resolve point (before the HUD; runtime/gpu/gpu_light.h,
+shaders/light.hlsl), the game's own light block evaluated per pixel on lit meshes + a rim light (r2.hlsl R2_ENH pipelines),
+soft shadow edges in the fused shadow pass (mft.hlsl SOFT). Original runs none of it (bit-identical: the R2_ENH / SOFT code
+exists only in separate permutations). Details, numbers and pictures: notes/enhanced-lighting.md. Anisotropic filtering
+waits for mipmaps (the sharper-textures work).
+
 ### R10. SDL3 GPU backend; Linux - 10 agent-days. R11. macOS - 8 agent-days
 - **Precondition**: R7 coverage. There is no exact path off Windows: remaining exact content (menus, RTTs) must be
   native, or the frame falls back to the software GS renderer. That is acceptable only for rare frames, so the census
