@@ -163,7 +163,21 @@ void cs_et_up(uint3 id : SV_DispatchThreadID, uint li : SV_GroupIndex, uint3 gid
         if (abs(o.x) <= 1 && abs(o.y) <= 1) { lo = min(lo, c[k4].rgb); hi = max(hi, c[k4].rgb); }
     }
     float rng = dot(hi - lo, float3(0.299, 0.587, 0.114));
-    float k = as_is ? 1.0 : smoothstep(e_q.x, e_q.y, rng);
+    // ... but a thin line or dot (the nearest texel darker or brighter than both neighbours along x or y: grout, seams,
+    // painted strokes) is detail, however faint; a palette step is a ramp (the texel between its neighbours)
+    float lc = 0.0, ll = 0.0, lr = 0.0, lu = 0.0, ld = 0.0;
+    [unroll] for (int k5 = 0; k5 < 16; k5++) {
+        int2 o = int2(k5 & 3, k5 >> 2) - nb;
+        float lum = dot(c[k5].rgb, float3(0.299, 0.587, 0.114));
+        if (o.x == 0 && o.y == 0) lc = lum;
+        if (o.x == -1 && o.y == 0) ll = lum;
+        if (o.x == 1 && o.y == 0) lr = lum;
+        if (o.x == 0 && o.y == -1) lu = lum;
+        if (o.x == 0 && o.y == 1) ld = lum;
+    }
+    const float ex = 1.5;
+    bool thin = (lc < min(ll, lr) - ex) || (lc > max(ll, lr) + ex) || (lc < min(lu, ld) - ex) || (lc > max(lu, ld) + ex);
+    float k = as_is || thin ? 1.0 : smoothstep(e_q.x, e_q.y, rng);
     float3 base = lerp(rg.rgb, r.rgb, k);
     r.rgb = clamp(base + ((as_is ? 0.0 : e_p.x) * k) * (r.rgb - rg.rgb), lo, hi);
     uint w = et_pack(r);

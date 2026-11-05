@@ -92,8 +92,8 @@ static void et_env(void) {
     ET.aniso = (int)et_envf("PS2_TEX_ANISO", 16.0f);
     if (ET.aniso < 1) ET.aniso = 1;
     if (ET.aniso > 16) ET.aniso = 16;
-    ET.sharp = et_envf("PS2_TEX_SHARP", 1.6f);     /* unsharp mask at the source scale */
-    ET.sig_c = et_envf("PS2_TEX_SIGMA_C", 0.40f);  /* steered kernel: across the edge (source texels) */
+    ET.sharp = et_envf("PS2_TEX_SHARP", 2.2f);     /* unsharp mask at the source scale */
+    ET.sig_c = et_envf("PS2_TEX_SIGMA_C", 0.35f);  /* steered kernel: across the edge (source texels) */
     ET.sig_a = et_envf("PS2_TEX_SIGMA_A", 1.2f);   /*                 along it */
     ET.edge = et_envf("PS2_TEX_EDGE", 0.03f);      /* gradients below this are noise: no steering */
     ET.flat = et_envf("PS2_TEX_FLAT", 6.0f);       /* local range (0..255) below which a texel is smoothed (palette steps) */

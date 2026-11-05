@@ -3387,7 +3387,12 @@ void gpu_exec_frame(const void* payload) {
         PR.cyc = c;
     } else if (PR.ab > 0) {
         int nb = (int)((XC.frames / (uint32_t)PR.ab) & 1);
-        if (nb != PR.ab_b) PR.ab_skip = 8;
+        if (nb != PR.ab_b) {
+            PR.ab_skip = 8;
+            static int lg = -1;          /* (tex, pictures: which dumped VBlanks are A and which B) */
+            if (lg < 0) { const char* e = getenv("PS2_GPU_AB_LOG"); lg = e && *e == '1'; }
+            if (lg) gpu_log("ab: phase %c from v%u", nb ? 'B' : 'A', fd->vblank);
+        }
         PR.ab_b = nb;
         gpu_ab_phase = nb;
     }
