@@ -23,7 +23,7 @@ void gpu_light_config(int on) { InterlockedExchange(&lcf_on, on ? 1 : 0); }
 enum { LT_W, LT_AO0, LT_AO1, LT_B1, LT_B2, LT_B3, LT_B4, LT_B5, LT_N };
 static struct {
     int env, env_on, ao, bloom, ppl, log, split, dbg;
-    float rim, ao_r, ao_k, ao_min, ao_f0, ao_f1, ao_pow, ao_max, ao_bias, bl_t, bl_k, bl_i, bl_sat;
+    float rim, soft, ao_r, ao_k, ao_min, ao_f0, ao_f1, ao_pow, ao_max, ao_bias, bl_t, bl_k, bl_i, bl_sat;
     ID3D11Texture2D* t[LT_N];
     ID3D11RenderTargetView* rtv[LT_N];
     ID3D11ShaderResourceView* srv[LT_N];
@@ -53,6 +53,7 @@ static void lt_env(void) {
     e = getenv("PS2_LIGHT_LOG"); LT.log = e && *e == '1';
     e = getenv("PS2_LIGHT_DBG"); LT.dbg = e && *e ? atoi(e) : 0;   /* (1: the occlusion alone, 2: the bloom alone) */
     e = getenv("PS2_LIGHT_SPLIT"); LT.split = e && *e == '1';   /* (pictures: Enhanced on the right half only) */
+    LT.soft = lt_envf("PS2_LIGHT_SOFT", 6.0f);        /* soft shadow edges: penumbra radius, output pixels at 1440p (0: hard) */
     LT.rim = lt_envf("PS2_LIGHT_RIM", 0.5f);          /* rim light on lit meshes (0: none) */
     LT.ao_r = lt_envf("PS2_LIGHT_AO_R", 60.0f);         /* radius, world units (Sly: ~190 units tall crouching) */
     LT.ao_k = lt_envf("PS2_LIGHT_AO_K", 3.0f);          /* strength */
@@ -70,7 +71,7 @@ static void lt_env(void) {
 static int lt_enabled(void) {
     lt_env();
     int on = LT.env_on >= 0 ? LT.env_on : lcf_on > 0;
-    return on && (LT.ao || LT.bloom || LT.ppl) && r8p_on(R8P_LIGHT);
+    return on && (LT.ao || LT.bloom || LT.ppl || LT.soft > 0.0f) && r8p_on(R8P_LIGHT);
 }
 
 static void light_release(void) {

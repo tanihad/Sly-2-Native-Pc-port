@@ -218,6 +218,9 @@ the integer grid choices above. Presets: **PS2** (= original) = Reference render
 MSAA 4x; **Quality** = Modern 100 %, MSAA 8x, thin outlines; **Custom** = anything else. A preset is applied live like
 any option (Revert / Discard restore the previous values as before).
 
+(light, owner 2026-11-05) A **Lighting** row (Enhanced / Original) follows MSAA: Balanced and Quality set Enhanced,
+Performance and PS2 set Original (notes/enhanced-lighting.md).
+
 ## Apply / Revert
 
 - Live (apply as they change, as before): everything except the four below.
@@ -240,6 +243,7 @@ any option (Revert / Discard restore the previous values as before).
 | Graphics | Preset | PS2 / Performance / Balanced / Quality (Custom when the options match none) | graphics.preset | live |
 | | Rendering | Modern / Reference (exact) | graphics.renderer_mode | live |
 | | MSAA (r2-m8) | Off / 2x / 4x / 8x (Modern at a percentage only) | graphics.msaa | live |
+| | Lighting (light) | Enhanced / Original (Modern at a percentage only; notes/enhanced-lighting.md) | graphics.lighting | live |
 | | Renderer | GPU (Direct3D 11) / Software (CPU) | graphics.renderer | Apply (live switch when started on the GPU renderer, else next start) |
 | | Render scale | Auto / Original PS2 / 50..200 % (W x H) [/ Nx] | graphics.render_scale | live (GPU) |
 | | Scaling filter, Outlines, Look, Motion blur, TV flicker filter, Interlacing | as before | graphics.* | live |

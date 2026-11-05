@@ -56,6 +56,7 @@ pacing = auto          ; gpu renderer: auto (default) | paced | immediate | disp
 vsync = on             ; gpu renderer: on (default) | off (tearing allowed) | adaptive
 render_scale = auto    ; (pc-polish) auto (default: up to 100%, lowered while the GPU can't keep up) | original (512x448) |
                        ;   25%..400% of the output's height | 2x..8x (the keys from here on: Direct3D 11 renderer, except motion_blur)
+lighting = enhanced    ; (light) enhanced (default; ambient occlusion, bloom, per-pixel lighting, soft shadow edges) | original
 outlines = ps2         ; ps2 (one PS2 pixel wide, exact) | thin (high-resolution lines)
 filters = modern       ; modern | faithful (preset for the three toggles below)
 motion_blur = preset   ; on | off | preset   (modern: on,  faithful: on)
@@ -98,6 +99,7 @@ maximized = off
 | audio.speakers | stereo (default) / mono / surround | (pc-polish) the game's own Speakers option (its Options page's item, now in Audio): set through the game's own setter (menu_game.c), again after a loaded save; the disc's default is surround (a Dolby Pro Logic II matrix mix) |
 | game.invert_binocucom / game.invert_turret | on / off (default off) | (pc-polish) the game's own "Invert Binocucom Controls" / "Invert Turret Controls" (aiming up / down), set through its setter like speakers. The game's Vibrations option follows [controls] vibration |
 | graphics.internal_scale | auto (default) or 1..8 | **old key** (pc-polish: read and migrated to render_scale). gpu renderer: the internal resolution, N x the PS2's (512 x 448 -> 1536 x 1344 at 3x), shrunk or enlarged to the window by `scaler` (supersampling: the anti-aliasing). Every target is drawn with N x N samples per PS2 pixel (the displayed buffers N x 2N while progressive, 4 x 6 at 3x 16:9); sample 0 of every pixel is exactly the PS2's. **auto** (M11): 3x (the owner's choice), lowered while the GPU cannot keep up and raised again (never above 3, never below 1) - the renderer measures the GPU time of every picture; when the GPU is busy more than 85% of the time for 3 s in a row it goes to the highest lower scale predicted (time ~ N^2) to fit in 70%; when the next scale up is predicted at <= 60% for 15 s in a row it goes up one, but not to a scale it left for being too slow in the last 120 s; nothing is judged for 3 s after a change. Each change is logged. (pc-pacing) The rules now (gpu_pace.c pace_gov): load = GPU ms per picture / 16.68 ms; auto goes down above 90% for 3 s (to the scale predicted at <= 80%) and up when the next scale is predicted at <= 75%; **every scale is a maximum**: a fixed scale (or native) the GPU cannot draw in real time is drawn lower for the time being (logged: `internal scale 7x: the GPU could not draw it in real time (145% of the frame time at 7x) -> drawing at 5x, the game keeps its speed`) and raised back when it fits - the game's speed never depends on the GPU (`PS2_GS_SCALE` and `PS2_GS_GOVERNOR=0` keep a scale exactly, for tests). When even 1x is more than the GPU can draw (above 120% for 10 s) the software renderer takes over (logged; `PS2_GS_SW_FALLBACK=0` keeps the GPU). At 1440p on the RTX 4060 Ti 3x takes 7-11 ms per picture (43-68%), 4x 13-19 ms (80-112%: drawn at 3x in the heaviest scenes), see notes/pc-experience.md. F2 / Shift+F2 step up / down from the scale in use and make it fixed (written as a number), Ctrl+F2 sets auto again; the targets are rescaled at the next frame (nothing restarts). `PS2_GS_SCALE=N` overrides it (not written); `PS2_GS_AUTO_SLOW=<factor>[:<seconds>]` multiplies the measured GPU time (tests of a slower GPU) |
+| graphics.lighting | enhanced / original (also on / off) | (light, live, modern frames only: Modern rendering at a percentage render scale) Enhanced lighting (notes/enhanced-lighting.md, runtime/gpu/gpu_light.h): ambient occlusion from the frame's depth and bloom of the bright parts at the resolve point (before the HUD), the game's own lights evaluated per pixel on lit meshes with a rim light, soft shadow edges. original = the game's lighting, bit-identical to the build before (no pass runs, no cost). Default enhanced; part of the presets (Balanced / Quality enhanced, Performance / Original original). Menu: Graphics > Lighting. Environment (tests, not written): `PS2_LIGHT=0|1` wins over the file; per feature `PS2_LIGHT_AO=0`, `PS2_LIGHT_BLOOM=0`, `PS2_LIGHT_PPL=0`, `PS2_LIGHT_RIM=<strength>` (0.5), `PS2_LIGHT_SOFT=<px>` (penumbra radius at 1440p, 0 = hard); tuning `PS2_LIGHT_AO_R/_K/_MIN/_FADE0/_FADE/_POW/_MAXPX/_BIAS`, `PS2_LIGHT_BLOOM_T/_K/_I/_SAT`; diagnostics `PS2_LIGHT_DBG=1|2|3` (occlusion / bloom / depth view), `PS2_LIGHT_SPLIT=1` (Enhanced on the right half only), `PS2_LIGHT_LOG=1`; in-run A/B `PS2_GPU_AB=<frames> PS2_GPU_AB_R8=64` |
 | graphics.outlines | ps2 / thin | gpu renderer, scale > 1: ps2 = the cel outlines one PS2 pixel wide, as the PS2 draws them (exact; thicker at high resolution); thin = each line drawn analytically at the high resolution (coverage from the distance to the line, width `PS2_GS_THIN_WIDTH` samples, default half the scale), so outlines stay fine at 3x and above (not exact). F3 switches |
 | graphics.filters | modern / faithful | the preset for the three toggles below: modern = motion blur on, flicker filter off, progressive; faithful = everything as a PS2 on a TV. F4 switches the preset and puts the toggles back to `preset` |
 | graphics.motion_blur | on / off / preset | the game's own motion blur (previous frame blended into the new one). off = the game's own switch for it: the flag at 0x2DEB24 the effect's function f_00160F98 tests first reads 1 (instruction patch `motion_blur_off`, recomp/patches.py; both renderers). F5 switches |
@@ -123,12 +125,15 @@ maximized = off
 (r2-m8, owner decision D6) The rendering mode is part of the presets. "PS2 mode" is the Original preset, shown as
 **PS2** in the menu (`preset = original`, also `ps2`):
 
-| preset | renderer_mode | render_scale | msaa | outlines | filters | motion_blur / flicker_filter / interlacing | scaler | aspect |
-|---|---|---|---|---|---|---|---|---|
-| **original** ("PS2") | reference | auto (integer grid, up to 100%) | (kept) | ps2 | faithful | preset (all on: as a PS2 on a TV) | auto | 4:3 |
-| **performance** | modern | 75% | off | ps2 | modern | preset | auto | kept |
-| **balanced** (default) | modern | 100% (the output's own pixels) | 4x | ps2 | modern | preset | auto | kept |
-| **quality** | modern | 100% | 8x | thin | modern | preset | auto | kept |
+| preset | renderer_mode | render_scale | msaa | outlines | lighting | filters | motion_blur / flicker_filter / interlacing | scaler | aspect |
+|---|---|---|---|---|---|---|---|---|---|
+| **original** ("PS2") | reference | auto (integer grid, up to 100%) | (kept) | ps2 | original | faithful | preset (all on: as a PS2 on a TV) | auto | 4:3 |
+| **performance** | modern | 75% | off | ps2 | original | modern | preset | auto | kept |
+| **balanced** (default) | modern | 100% (the output's own pixels) | 4x | ps2 | enhanced | modern | preset | auto | kept |
+| **quality** | modern | 100% | 8x | thin | enhanced | modern | preset | auto | kept |
+
+(light, owner decision 2026-11-05) lighting is part of the presets: new installs (Balanced) get Enhanced; a file with an
+explicit preset follows it; a custom file without the key gets the default (Enhanced).
 | **custom** | anything else | | | | | | | |
 
 (Before r2-m8: original = 1x, performance = 50%, balanced = auto, quality = 100% + thin, the renderer mode was not in a
