@@ -8,8 +8,10 @@
  *                             dist\ (the packaged game before it is copied into <dir>)
  */
 #include "setup.h"
+#include "art.h"
 
 #include <shellapi.h>
+#include <shlobj.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -560,6 +562,7 @@ static void build_line(setup_t* s, void* user, const char* line) {
         { "compile", 230, L"Compiling" },
         { "link", 935, L"Linking the game" },
         { "package", 950, L"Packaging the game" },
+        { "art", 965, L"Making the game's pictures from your disc" },
     };
     for (size_t i = 0; i < sizeof stages / sizeof stages[0]; i++) {
         size_t n = strlen(stages[i].name);
@@ -594,7 +597,10 @@ static int build_game(setup_t* s) {
     bpath(s, out, L"build\\rel");
     bpath(s, dist, L"dist");
     delete_tree(dist);
-    wfmt(cmd, MAXP * 4, L"\"%ls\" -u \"%ls\" --release --out \"%ls\" --package \"%ls\" --progress", vpy, script, out, dist);
+    /* --disc/--art: the game's icon and the launcher's backdrop made from the player's disc (scripts/disc_art.py);
+     * never fails the build (without them: our own icon and theme) */
+    wfmt(cmd, MAXP * 4, L"\"%ls\" -u \"%ls\" --release --out \"%ls\" --package \"%ls\" --progress --disc \"%ls\" --art", vpy, script,
+         out, dist, s->iso);
     build_state bs = { 0 };
     r = run_tool(s, cmd, build_line, &bs, L"Building the game");
     return r;
@@ -665,7 +671,7 @@ static void register_uninstall(setup_t* s, uint64_t bytes) {
     HKEY root = reg_root(s);
     wchar_t un[MAXP], v[MAXP * 2], icon[MAXP];
     dpath(s, un, L"Uninstall.exe");
-    dpath(s, icon, LAUNCHER_EXE);
+    art_icon_location(s, icon);                      /* <dir>\art\sly2.ico (owner / disc art), else the launcher */
     if (!file_exists(icon)) wcopy(icon, MAXP, un);
     reg_set_str(root, s->regkey, L"DisplayName", APP_NAME L" (PC port)");
     char gv[64];
@@ -844,6 +850,24 @@ static int install_game_files(setup_t* s) {
     } while (FindNextFileW(h, &fd));
     FindClose(h);
     if (!ok) return EXIT_FAILED;
+    {                                                /* dist\art: pictures made from the player's disc (optional) */
+        wchar_t ap[MAXP], sa[MAXP];
+        wpath(ap, MAXP, dist, L"art\\*");
+        wpath(sa, MAXP, staging, L"art");
+        h = FindFirstFileW(ap, &fd);
+        if (h != INVALID_HANDLE_VALUE) {
+            mkdir_p(sa);
+            do {
+                if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+                wchar_t a[MAXP], b[MAXP];
+                wpath(a, MAXP, dist, L"art");
+                wpath(a, MAXP, a, fd.cFileName);
+                wpath(b, MAXP, sa, fd.cFileName);
+                if (!CopyFileW(a, b, FALSE)) say(s, L"(cannot copy %ls: error %lu; the launcher uses its own art)", a, GetLastError());
+            } while (FindNextFileW(h, &fd));
+            FindClose(h);
+        }
+    }
     if (!stage_mark_complete(s->dir, s->built_version)) return fail(s, L"Cannot write into %ls (error %lu).", staging, GetLastError());
     for (int tries = 0;; tries++) {
         unsigned long err;
@@ -1049,14 +1073,19 @@ int setup_install(setup_t* s) {
     }
 
     set_disc_in_ini(s);
-    wchar_t start[MAXP], desk[MAXP], exe[MAXP];
+    wchar_t start[MAXP], desk[MAXP], exe[MAXP], icon[MAXP];
     shortcut_paths(s, start, desk);
     dpath(s, exe, LAUNCHER_EXE);
-    if (make_shortcut(start, exe, NULL, s->dir, L"Play Sly 2: Band of Thieves", exe)) state_set(s, L"startmenu_lnk", start);
+    const wchar_t* art = L"";
+    art_icon_refresh(s, &art);                       /* the owner's art, else the disc's, else the launcher's own icon */
+    art_icon_location(s, icon);
+    say(s, L"Game icon: %ls", art[0] ? art : L"the launcher's own");
+    if (make_shortcut(start, exe, NULL, s->dir, L"Play Sly 2: Band of Thieves", icon)) state_set(s, L"startmenu_lnk", start);
     /* an existing desktop shortcut (also the old installer's, which started sly2.exe) now opens the launcher */
     wchar_t dl[MAXP];
     state_get(s->dir, L"desktop_lnk", dl, MAXP);
-    if (dl[0] && file_exists(dl)) make_shortcut(dl, exe, NULL, s->dir, L"Play Sly 2: Band of Thieves", exe);
+    if (dl[0] && file_exists(dl)) make_shortcut(dl, exe, NULL, s->dir, L"Play Sly 2: Band of Thieves", icon);
+    SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, NULL, NULL);   /* (Explorer reloads shortcut icons) */
     {
         wchar_t gv[64];
         wfmt(gv, 64, L"%hs", s->built_version);
@@ -1096,12 +1125,36 @@ int setup_launch_game(setup_t* s) {
     return (INT_PTR)r > 32;
 }
 
+/* The owner's art may change between runs (%LOCALAPPDATA%\Sly2\art): the launcher calls this at every start.
+ * When the game's icon changed, the shortcuts this setup made and the Apps & features entry show the new one. */
+int setup_refresh_icon(setup_t* s) {
+    const wchar_t* art = L"";
+    if (!art_icon_refresh(s, &art)) return 0;
+    wchar_t exe[MAXP], icon[MAXP], v[MAXP];
+    dpath(s, exe, LAUNCHER_EXE);
+    art_icon_location(s, icon);
+    static const wchar_t* links[] = { L"startmenu_lnk", L"desktop_lnk" };
+    for (int i = 0; i < 2; i++) {
+        state_get(s->dir, links[i], v, MAXP);
+        if (v[0] && file_exists(v)) make_shortcut(v, exe, NULL, s->dir, L"Play Sly 2: Band of Thieves", icon);
+    }
+    wchar_t dn[MAXP];
+    if (reg_get_str(reg_root(s), s->regkey, L"DisplayName", dn, MAXP)) {   /* (only an existing entry) */
+        wfmt(v, MAXP, L"%ls,0", icon);
+        reg_set_str(reg_root(s), s->regkey, L"DisplayIcon", v);
+    }
+    SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, NULL, NULL);
+    logw(L"Game icon now: %ls", art[0] ? art : L"the launcher's own");
+    return 1;
+}
+
 int setup_finish(setup_t* s) {
-    wchar_t start[MAXP], desk[MAXP], exe[MAXP], p[MAXP];
+    wchar_t start[MAXP], desk[MAXP], exe[MAXP], p[MAXP], icon[MAXP];
     shortcut_paths(s, start, desk);
     dpath(s, exe, LAUNCHER_EXE);
+    art_icon_location(s, icon);
     if (s->desktop_shortcut) {
-        if (make_shortcut(desk, exe, NULL, s->dir, L"Play Sly 2: Band of Thieves", exe)) state_set(s, L"desktop_lnk", desk);
+        if (make_shortcut(desk, exe, NULL, s->dir, L"Play Sly 2: Band of Thieves", icon)) state_set(s, L"desktop_lnk", desk);
     }
     if (s->keep_build) s->keep_tools = 1;           /* (the intermediates are useless without the tools) */
     if (!s->keep_build) {
@@ -1168,7 +1221,7 @@ int setup_uninstall(setup_t* s) {
     }
     static const wchar_t* files[] = { L"builder", L"sly2.exe", L"README.txt", L"Controller test.cmd", L"setup.log",
                                       GAME_DIR, GAME_DIR L".new", GAME_DIR L".old", GAME_DIR L".swap", L"data", BUNDLE_DIR,
-                                      UPDATES_DIR, LAUNCHER_EXE, LAUNCHER_EXE L".old" };
+                                      UPDATES_DIR, LAUNCHER_EXE, LAUNCHER_EXE L".old", L"art" };
     int ok = 1;
     for (size_t i = 0; i < sizeof files / sizeof files[0]; i++) {
         dpath(s, p, files[i]);

@@ -289,14 +289,27 @@ def _version() -> tuple[int, str]:
         return 0, "unknown"
 
 
-def package(objs: list[Path], out: Path, dest: Path, link_flags: list[str]) -> int:
-    """Link the player's build (GUI subsystem, icon, version info, manifest) into dest."""
+def package(objs: list[Path], out: Path, dest: Path, link_flags: list[str], disc: Path | None = None,
+            art: bool = False) -> int:
+    """Link the player's build (GUI subsystem, icon, version info, manifest) into dest.
+
+    The icon is made from the player's disc (scripts/disc_art.py: the game's save icon) when the disc image is known,
+    else drawn by scripts/make_icon.py. With art, dest/art also gets sly2.ico and a backdrop picture for the launcher
+    (a headless run of the game just built). Art never fails the build."""
     import make_icon
     work = out / "package"
     work.mkdir(parents=True, exist_ok=True)
     count, ghash = _version()
     v = (0, 1, count)
-    make_icon.make_ico(work / "sly2.ico")
+    disc_icon = False
+    if disc is not None and disc.is_file():
+        try:
+            import disc_art
+            disc_icon = disc_art.make_icon(disc, work / "sly2.ico")
+        except Exception as e:                        # (art is optional: never a reason for a failed build)
+            print(f"[art] icon: {e!r}: using the original icon")
+    if not disc_icon:
+        make_icon.make_ico(work / "sly2.ico")
     (work / "sly2.manifest").write_text(MANIFEST.format(ver=f"{v[0]}.{v[1]}.{v[2]}.0"), encoding="utf-8")
     (work / "sly2.rc").write_text(RC.format(v0=v[0], v1=v[1], v2=v[2], hash=ghash), encoding="utf-8")
     res = work / "sly2_res.o"
@@ -316,6 +329,22 @@ def package(objs: list[Path], out: Path, dest: Path, link_flags: list[str]) -> i
     (dest / "README.txt").write_text(README.format(ver=f"{v[0]}.{v[1]}.{v[2]}", hash=ghash), encoding="utf-8")
     (dest / "Controller test.cmd").write_text('@start "" "%~dp0sly2.exe" --pad-test\r\n', encoding="ascii", newline="")   # input_padtest.c
     print(f"packaged {dest / 'sly2.exe'} ({exe.stat().st_size / 1e6:.1f} MB, version {v[0]}.{v[1]}.{v[2]} {ghash})")
+    art_dir = dest / "art"
+    shutil.rmtree(art_dir, ignore_errors=True)
+    if art and disc is not None and disc.is_file():
+        progress("art")
+        try:
+            import disc_art
+            art_dir.mkdir(parents=True, exist_ok=True)
+            if disc_icon:
+                shutil.copy2(work / "sly2.ico", art_dir / "sly2.ico")
+            disc_art.make_backdrop(disc, out / "sly2.exe", art_dir / "backdrop.bmp", work=out / "art-work")
+        except Exception as e:
+            print(f"[art] {e!r}: the launcher uses its own art")
+        finally:
+            shutil.rmtree(out / "art-work", ignore_errors=True)
+        if art_dir.exists() and not any(art_dir.iterdir()):
+            art_dir.rmdir()
     return 0
 
 
@@ -326,6 +355,10 @@ def main() -> int:
     ap.add_argument("--release", action="store_true")
     ap.add_argument("--out", default=str(ROOT / "build" / "sly2"))
     ap.add_argument("--package", default=None, metavar="DIR", help="also link the player's build into DIR")
+    ap.add_argument("--disc", default=None, metavar="IMAGE",
+                    help="the player's disc image for the icon / art (default: PS2_ISO or the first orig\\disc\\*.iso)")
+    ap.add_argument("--art", action="store_true",
+                    help="with --package: also <package>\\art (icon + launcher backdrop from the disc; scripts/disc_art.py)")
     ap.add_argument("--jobs", "-j", type=int, default=int(os.environ.get("SLY2_BUILD_JOBS", "0")) or os.cpu_count(),
                     help="parallel compile jobs (default: SLY2_BUILD_JOBS or every logical CPU)")
     ap.add_argument("--progress", action="store_true",
@@ -459,7 +492,11 @@ def main() -> int:
         if not args.release:
             print("note: --package without --release packages a debug build (-O1, function tracing)")
         progress("package")
-        return package(objs, out, Path(args.package), link_flags)
+        disc = Path(args.disc) if args.disc else None
+        if disc is None:
+            import extract_elf
+            disc = extract_elf.default_iso()
+        return package(objs, out, Path(args.package), link_flags, disc, args.art)
     return 0
 
 

@@ -40,7 +40,7 @@ SRC = ROOT / "installer"
 # The build's inputs (scripts/build_game.py and what it imports or runs).
 PAYLOAD_DIRS = ["recomp", "runtime"]
 PAYLOAD_FILES = ["scripts/build_game.py", "scripts/package.py", "scripts/paths.py", "scripts/extract_elf.py",
-                 "scripts/make_icon.py", "scripts/hlslc.c", "requirements.txt"]
+                 "scripts/make_icon.py", "scripts/disc_art.py", "scripts/hlslc.c", "requirements.txt"]
 NEVER = ("orig/", "build/", "dist/", "tools/", ".venv/")
 
 # Parts of llvm-mingw the game build never uses (other CPU targets, the debugger, clangd/clang-tidy, the

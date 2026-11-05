@@ -410,8 +410,9 @@ def make_backdrop(iso: Path, exe: Path, out: Path, work: Path | None = None, tim
         for p in (frames, user):
             shutil.rmtree(p, ignore_errors=True)
             p.mkdir(parents=True)
-        # the throw-away settings: sharp (no motion blur while the camera pans), 16:9, the GPU renderer as default
-        (user / "sly2.ini").write_text("[graphics]\nmotion_blur = off\n", encoding="ascii")
+        # the throw-away settings: sharp (no motion blur while the camera pans), a fixed 2x internal scale (the automatic
+        # one drops on a busy GPU: the picture would be the PS2's 448 lines), 16:9, the GPU renderer as default
+        (user / "sly2.ini").write_text("[graphics]\nmotion_blur = off\nrender_scale = 2\n", encoding="ascii")
         every = b["every"]
         env = {k: v for k, v in os.environ.items() if not k.startswith("PS2_")}
         env.update(PS2_HEADLESS="1", PS2_AUDIO_NULL="1", PS2_INPUT_DEVICES="0", PS2_USER_DIR=str(user),
@@ -442,12 +443,12 @@ def make_backdrop(iso: Path, exe: Path, out: Path, work: Path | None = None, tim
                     continue
                 w, h, rows = _read_dump_bmp(f)
                 box = _letterbox(w, h, rows)
-                if start is None and box and seen_other:
+                if not box:
+                    start = None                 # (a letterboxed run must last: the scene, not a stray picture)
+                    seen_other = True
+                elif start is None and seen_other:
                     start = v                    # the scene's first picture (after the black before it)
-                seen_other |= not box
-                if start is not None and v >= start + b["after"]:
-                    if not box:
-                        raise ArtError(f"the opening scene ended early (VBlank {start}..{v})")
+                if start is not None and box and v >= start + b["after"]:
                     best = (v, w, rows[box[0]:box[1]], box[2])
                 f.unlink()
                 v += every
