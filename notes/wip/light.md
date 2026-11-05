@@ -14,7 +14,8 @@ key -> Enhanced. Original must cost nothing (skip all passes) and stay bit-ident
 - [x] 4 soft shadow edges (mft.hlsl SOFT) - verified on ep1 (Sly's lamp shadow); edge-only for cost
 - [x] 5 aniso: deferred (no mipmaps; design note)
 - [x] cost: full Enhanced +0.63 ms (8703e18); owner shots build\light\shots\*_original/_enhanced/_compare_original_left.png
-- [ ] final gates on 8703e18 (build\gates_final.txt) running
+- [x] final gates on 8703e18: m9_exact S1+S3 -Game identical, gpu_diff_all 28/28, units 0 failed, run_tests 16/16, sweep Original ab+mf ep1/m2 4/4, Enhanced tfb+tfq+mf ep1/m2 6/6 + m2 tfo; (earlier, f2feb6a: Original ab,hc,tf,mf ep1/ep3/ep5/m2 16/16)
+- STATUS: COMPLETE (2026-11-05)
 - [x] settings / menu / tests (graphics.lighting; 350 menu checks)
 - gates on f2feb6a (AO/bloom/ppl): m9_exact S1+S3 -Game identical (on bfaa875 code), gpu_diff_all 28/28, run_tests 16/16,
   units all but gs-hw (my mid-edit; re-run), r2_sweep Original + Enhanced RUNNING (build\gates_sweep.txt)
