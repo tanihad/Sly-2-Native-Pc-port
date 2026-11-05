@@ -112,4 +112,36 @@ frames that built images. Pictures: scripts\tex_shots.ps1 (A/B pictures of one r
 
 ## Results
 
-(perf and pictures: below, filled in at the end)
+**Cost** (in-run A/B on this machine, shared GPU: `PS2_GPU_AB=24 PS2_GPU_AB_R8=128`, ep1 hub, Balanced = 2560 x 1440 MSAA
+4x with Enhanced lighting in both phases, unlimited frame rate, 6000 pictures per phase, ca997a0):
+
+| ep1 hub | Original | Enhanced | delta |
+|---|---|---|---|
+| GPU per picture, average (+ present) | 6.15 ms | 5.93 ms | -0.22 |
+| GPU p99 | 8.52 ms | 8.32 ms | -0.20 |
+| GPU worst | 14.05 ms (a build frame) | 9.71 ms | |
+| render thread p99 / worst | 1.96 / 22.79 ms (one outlier) | 1.96 / 2.64 ms | |
+| frames that built images (the hub's load, 164 frames) | | 6.34 ms average, worst 14.05 | +0.37 vs 5.97 |
+
+Enhanced is cheaper on the GPU than Original: hardware trilinear / anisotropic fetches of an RGBA8 mip chain cost less
+than the decoded cache's four loads and the 4-bit bilinear arithmetic per pixel. On the owner's PC (ep1 Balanced ~3.54 ms
+unloaded) that is ~3.4 ms (~290 fps): above 165. Building costs ~1.6 ms of GPU per million output texels here (budget 1 M
+per frame), only while a level's textures first appear (the load / fade-in); with the classes pre-sized no array grows
+in ep1. Memory: ~790 MB of VRAM for the image classes while Enhanced is on (none with Original).
+
+**Gates** (on ca997a0): run_tests 16/16; units 0 failed (menu 365 checks); m9_exact S1 + S3 -Game identical (base:
+main 7601e3f's runtime); gpu_diff_all mixed S=1 28/28; r2_sweep -Parallel 1 PS2_TEX=0 ep1 ab, tfo, tfb, mf + m2_boardroom
+tfo, tfb, mf 7/7; PS2_TEX=1 ep1, ep3, m2_boardroom tfo, tfb, mf 9/9 (0 pops, 0 stray triangles, 0 blinking seams).
+
+**Pictures** (local only, never committed): build\tex\shots\final\ - for ep1_hub (night), ep3_hub, ep6_hub (dusk, close
+wooden houses), m2_boardroom: <scene>_original.png / _enhanced.png (2560 x 1440, the same scene from one A/B run),
+<scene>_compare.png (the middle 1280 columns of each side by side, Original left) and <scene>_closeup.png (a 640 x 720
+region of each, 2x, Original left); ep6_hub_ground_*: the planks and barrel. What shows: wood grain, boards and window
+frames crisp (ep6), leaf outlines on ep1's vine wall, legible signs (ep1's menu board), crisp tile grout (m2), smooth
+alpha edges on ep3's hanging moss; no halos, no ringing, no fringes along cut-outs.
+
+**Known limits**: the HUD, text, menus and particles keep the PS2's sampling (by design); Reference / integer-grid frames
+(Modern with an exact multiple, menus, loading screens) are never enhanced; FST (fixed-point UV) exact triangles and
+region-addressed or nearest-filtered textures keep the original sampling; textures that change content twice within 30 s
+are left Original; HD-pack images must be power-of-two sized (up to 2048); 4-bit textures with dithering can show a light
+grain after sharpening (glass in ep6); the first seconds of a level show a texture's original until its image is built.
