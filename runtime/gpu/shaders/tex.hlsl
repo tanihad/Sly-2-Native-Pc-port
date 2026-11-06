@@ -16,6 +16,7 @@ cbuffer et_cb : register(b3) {
     float4 e_p;                          // sharpen, sigma across, sigma along, minimum edge strength
     float4 e_q;                          // flat below this local range (0..255: smoothed), detail above this (sharpened),
                                          // dither resolve strength (0..1), its contrast limit (0..255)
+    float4 e_r;                          // share of the unsharp mask kept on resolved dither, -, -, -
 };
 ByteAddressBuffer e_src : register(t0);                   // decoded words (texdec) / the uploaded HD image
 ByteAddressBuffer e_jobs : register(t1);                  // jobs: 16 words each (et_job below)
@@ -150,24 +151,30 @@ void cs_et_dd(uint3 gtid : SV_GroupThreadID, uint li : SV_GroupIndex, uint3 gid 
                 nd += cl == 1u ? 1.0 : 0.0;
                 nl += cl == 2u ? 1.0 : 0.0;
             }
-        // (colour distances, not luminance: rust on grey wood can have the same luminance and must keep its edge)
-        float3 lo = c.rgb, hi = c.rgb, acc = float3(0.0, 0.0, 0.0);
+        // the distance of a neighbour: its luminance difference, or 2.5 x its hue / saturation difference (a dither mixes
+        // two neighbouring shades of one ramp; rust dots on teal planks have another hue and are detail)
+        float dmax = 0.0;
+        float3 acc = float3(0.0, 0.0, 0.0);
         float ws = 0.0;
         [unroll] for (int j2 = -1; j2 <= 1; j2++)
             [unroll] for (int i2 = -1; i2 <= 1; i2++) {
                 int t = tc + j2 * 16 + i2;
                 float4 ct = et_unpack(gs_w[t]);
                 bool op = gs_l[t] >= 0.0;
-                if (op) { lo = min(lo, ct.rgb); hi = max(hi, ct.rgb); }
-                float3 dc = abs(ct.rgb - c.rgb);
+                float3 dv = ct.rgb - c.rgb;
+                float dl = dot(dv, float3(0.299, 0.587, 0.114));
+                float3 dh = abs(dv - dl);
+                float dist = max(abs(dl), 2.5 * max(dh.x, max(dh.y, dh.z)));
+                if (op) dmax = max(dmax, dist);
                 float b = (i2 == 0 ? 2.0 : 1.0) * (j2 == 0 ? 2.0 : 1.0) *
-                          (op && max(dc.x, max(dc.y, dc.z)) < e_q.w && abs(ct.w - c.w) < 16.0 ? 1.0 : 0.0);
+                          (op && dist < e_q.w && abs(ct.w - c.w) < 16.0 ? 1.0 : 0.0) *
+                          (t != tc && gs_k[t] == 2u ? 0.25 : 1.0);   // (a line next to the texel: little of it)
                 acc += ct.rgb * b;
                 ws += b;
             }
-        float3 rg3 = hi - lo;
         d = e_q.z * smoothstep(0.45, 0.7, nd / (nd + nl + 1.0)) * smoothstep(1.0, 3.0, nd) *
-            (1.0 - smoothstep(e_q.w, e_q.w * 1.5, max(rg3.x, max(rg3.y, rg3.z))));
+            (1.0 - smoothstep(e_q.w, e_q.w * 1.5, dmax)) *
+            (gs_k[tc] == 2u ? 0.3 : 1.0);   // (a line texel itself - grain, a seam - keeps most of its value)
         c.rgb = lerp(c.rgb, acc / ws, d);
     }
     if (p.x < (int)W && p.y < (int)H) {
@@ -284,16 +291,19 @@ void cs_et_up(uint3 id : SV_DispatchThreadID, uint li : SV_GroupIndex, uint3 gid
         if (o.x == 0 && o.y == -1) lu = lum;
         if (o.x == 0 && o.y == 1) ld = lum;
     }
-    const float ex = 1.5;
-    bool thin = (lc < min(ll, lr) - ex) || (lc > max(ll, lr) + ex) || (lc < min(lu, ld) - ex) || (lc > max(lu, ld) + ex);
-    float k = as_is || thin ? 1.0 : smoothstep(e_q.x, e_q.y, rng);
-    // resolved dither (cs_et_dd): the interpolation of the resolved texels as it is - no deband blur, no sharpening
+    // resolved dither (cs_et_dd): no dot / line exemption there (what is left of a dither pattern is no stroke), no
+    // deband blur (the resolve did it); the unsharp mask (x e_r.x, default 1) now works on the resolved shading's
+    // real structure - cracks, rust, streaks - since the dither's own texel-scale pattern is gone
     float dd = 0.0;
     if (j_dd != 0xFFFFFFFFu)
         dd = lerp(lerp(et_dither(b.x, b.y, W, H), et_dither(b.x + 1, b.y, W, H), f.x),
                   lerp(et_dither(b.x, b.y + 1, W, H), et_dither(b.x + 1, b.y + 1, W, H), f.x), f.y);
+    const float ex = 1.5;
+    bool thin = (lc < min(ll, lr) - ex) || (lc > max(ll, lr) + ex) || (lc < min(lu, ld) - ex) || (lc > max(lu, ld) + ex);
+    thin = thin && dd < 0.35;
+    float k = as_is || thin ? 1.0 : smoothstep(e_q.x, e_q.y, rng);
     float3 base = lerp(rg.rgb, r.rgb, max(k, dd));
-    k *= 1.0 - dd;
+    k *= 1.0 - (1.0 - e_r.x) * dd;
     r.rgb = clamp(base + ((as_is ? 0.0 : e_p.x) * k) * (r.rgb - rg.rgb), lo, hi);
     uint w = et_pack(r);
     if (ok) {
