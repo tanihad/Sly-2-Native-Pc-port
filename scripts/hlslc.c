@@ -127,7 +127,7 @@ typedef struct {
     int failed;
 } job;
 
-static job jobs[256];
+static job jobs[512];
 static int njobs;
 static volatile LONG next_job;
 static compile_fn compile;
@@ -258,7 +258,7 @@ int main(int argc, char** argv) {
             while (*p && !is_space(*p)) p++;
         }
         if (!nt) continue;
-        if (nt < 4 || njobs >= 256) { fprintf(stderr, "hlslc: bad line in %s: %s\n", argv[1], tok[0]); return 1; }
+        if (nt < 4 || njobs >= 512) { fprintf(stderr, "hlslc: bad line in %s: %s\n", argv[1], tok[0]); return 1; }
         job* j = &jobs[njobs++];
         snprintf(j->name, sizeof j->name, "%s", tok[0]);
         snprintf(j->file, sizeof j->file, "%s", tok[1]);

@@ -29,6 +29,14 @@
 #endif
 #include "gs.hlsl"
 #include "postfn.hlsli"
+#ifndef ETEX
+#define ETEX 0                           // (tex) Enhanced textures on the exact triangles of phase A (shaders/etex.hlsli)
+#endif
+#if ETEX
+#include "etex.hlsli"
+static float2 g_edx, g_edy;              // the fragment's S/Q, T/Q derivatives (taken before any divergent branch)
+static float g_epx;
+#endif
 
 cbuffer mft_cb : register(b6) {
     float4 m_s;                          // sx, sy (surface pixels per GS pixel), 1 / sx, 1 / sy
@@ -119,6 +127,9 @@ bool mft_tri_frag(float4 pos, float3 istq, uint prim, uint sidx, out Frag f, out
     f.col = clamp255i(a[0] >> 16) | (clamp255i(a[1] >> 16) << 8) | (clamp255i(a[2] >> 16) << 16) | (clamp255i(a[3] >> 16) << 24);
     f.fog = clamp255i(a[4] >> 16);
     f.lq = asfloat(recs.Load(rb + 116u));
+#if ETEX
+    float2 euv = float2(0.0, 0.0);
+#endif
     if (tme) {
         if (fst) { f.U = a[5] >> 12; f.V = a[6] >> 12; }
         else {
@@ -133,12 +144,20 @@ bool mft_tri_frag(float4 pos, float3 istq, uint prim, uint sidx, out Frag f, out
             f.U = f2i(su16);
             f.V = f2i(tv16);
             f.lq = istq.z;
+#if ETEX
+            euv = float2(su, tv);
+#endif
         }
     }
     f.vcol = f.col;
     uint col = f.col;
     if (tme && (st.tlev & 3u) != 0u) {
+#if ETEX
+        uint t;
+        if (fst || !et_sample(st.dec, st.tex0clamp, st.tlev, euv, g_edx, g_edy, g_epx, t)) t = tex_sample(st, f.U, f.V, f.lq);
+#else
         uint t = tex_sample(st, f.U, f.V, f.lq);
+#endif
         col = tfx((st.flags >> 2) & 3u, (st.flags & SF_TCC) != 0u, col, t);
     }
     if (st.flags & SF_FGE) {
@@ -154,6 +173,12 @@ bool mft_tri_frag(float4 pos, float3 istq, uint prim, uint sidx, out Frag f, out
 
 #if PRIM == 0
 FOut ps_mft_tri(VM i, uint prim : SV_PrimitiveID) {
+#if ETEX
+    {
+        float2 e = i.stq.xy / i.stq.z;
+        g_edx = ddx(e); g_edy = ddy(e); g_epx = i.pos.x;
+    }
+#endif
     mft_statics(i.dc, i.sidx);
     mft_cfg_override();
     Frag f;

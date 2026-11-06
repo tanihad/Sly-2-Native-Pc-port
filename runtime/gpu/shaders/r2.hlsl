@@ -50,6 +50,13 @@ static float2 g_prev_d3d;                // (R2_MV) the vertex's previous positi
 #define R2_ENH 0                         // (light) Enhanced lighting (modern frames, runtime/gpu/gpu_light.h): lit sub-batches
                                          // lit per pixel with the same light block and formula (r2_lit_px), optional rim light
 #endif
+#ifndef R2_ETEX
+#define R2_ETEX 0                        // (tex) Enhanced textures (modern frames, runtime/gpu/gpu_tex.h): materials with an
+                                         // enhanced image sample it (trilinear + anisotropic, shaders/etex.hlsli)
+#endif
+#if R2_ETEX
+#include "etex.hlsli"
+#endif
 #if R2_ENH
 static float4 g_lnrm;                    // r2_lit's (skinned) normal x 127 and its w
 static uint g_lxb, g_lmw;                // its light block's fdata offset + 1 (0: not lit), the material's ambient add
@@ -601,7 +608,17 @@ R2F r2_ps(R2O i) {
     precise float tv = i.stq.y * iq;
     precise float su16 = su * tw16;
     precise float tv16 = tv * th16;
+#if R2_ETEX
+    uint t;
+    {
+        float2 euv = float2(su, tv);
+        float2 edx = ddx(euv), edy = ddy(euv);
+        if ((asuint(r2_misc.w) & 1u) != 0u) t = 0x80808080u;
+        else if (!et_sample(st.dec, d1, st.tlev, euv, edx, edy, i.pos.x, t)) t = tex_sample(st, f2i(su16), f2i(tv16), 1.0);
+    }
+#else
     uint t = (asuint(r2_misc.w) & 1u) != 0u ? 0x80808080u : tex_sample(st, f2i(su16), f2i(tv16), 1.0);   // (PS2_R2_DBG 1)
+#endif
 #if R2_ENH && !R2_ZREC
     float4 icol = i.lx.x != 0u ? r2_lit_px(i.lx, i.ln, i.lc, i.lv, (flags & R2D_CSEL) != 0u, i.col) : i.col;
     uint4 vc = (uint4)max(icol, 0.0);

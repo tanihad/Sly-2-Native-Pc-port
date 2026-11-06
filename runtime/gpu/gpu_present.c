@@ -571,6 +571,7 @@ static int ts_complete(int block) {             /* oldest timestamp set; returns
     ready_poll(i);                               /* (finished: its event is signalled by now, if not seen before) */
     gpu_frame_stats st = P.ts[i].st;
     int ok = hr == S_OK && !dj.Disjoint && dj.Frequency;
+    if (ok) gpu_ts_freq = dj.Frequency;  /* (tex: PS2_TEX_TIME's own timestamps) */
     st.gpu_ms = ok ? (double)(t1 - t0) * 1000.0 / (double)dj.Frequency : -1.0;
     st.present_gpu_ms = ok && P.ts[i].pres && t2 >= t1b ? (double)(t2 - t1b) * 1000.0 / (double)dj.Frequency : -1.0;
     if (ptrace_file()) fprintf(ptrace, "g %u %.3f %.3f\n", st.vblank, st.gpu_ms, st.present_gpu_ms);
@@ -581,10 +582,45 @@ static int ts_complete(int block) {             /* oldest timestamp set; returns
         ab_ms[b] += st.gpu_ms;
         ab_pms[b] += st.present_gpu_ms > 0 ? st.present_gpu_ms : 0;
         ab_n[b]++;
-        if (++ab_tot % 3000 == 0 && ab_n[0] && ab_n[1])
+        /* (tex) the worst pictures too: GPU (drawing + present) and render-thread wall time per phase, p99 and maximum
+         * (histograms of 0.02 ms bins up to 50 ms) */
+        static uint32_t hg[2][2500], hr[2][2500];
+        static double mxg[2], mxr[2];
+        double g = st.gpu_ms + (st.present_gpu_ms > 0 ? st.present_gpu_ms : 0), r = st.render_ms;
+        hg[b][g < 49.99 ? (int)(g * 50.0) : 2499]++;
+        hr[b][r >= 0 && r < 49.99 ? (int)(r * 50.0) : 2499]++;
+        if (g > mxg[b]) mxg[b] = g;
+        if (r > mxr[b]) mxr[b] = r;
+        if (++ab_tot % 3000 == 0 && ab_n[0] && ab_n[1]) {
             gpu_log("ab-gpu: A %u frames %.3f ms (+ present %.3f) | B %u frames %.3f ms (+ present %.3f) | B - A %.3f ms", ab_n[0],
                     ab_ms[0] / ab_n[0], ab_pms[0] / ab_n[0], ab_n[1], ab_ms[1] / ab_n[1], ab_pms[1] / ab_n[1],
                     ab_ms[1] / ab_n[1] + ab_pms[1] / ab_n[1] - ab_ms[0] / ab_n[0] - ab_pms[0] / ab_n[0]);
+            double p99[2][2];
+            for (int k = 0; k < 2; k++)
+                for (int w = 0; w < 2; w++) {
+                    uint32_t* h = w ? hr[k] : hg[k];
+                    uint32_t lim = ab_n[k] - ab_n[k] / 100, acc = 0;
+                    int bin = 0;
+                    while (bin < 2499 && (acc += h[bin]) < lim) bin++;
+                    p99[k][w] = (bin + 1) / 50.0;
+                }
+            gpu_log("ab-worst: GPU+present p99 A %.2f / B %.2f ms, max A %.2f / B %.2f | render thread p99 A %.2f / B %.2f ms, "
+                    "max A %.2f / B %.2f", p99[0][0], p99[1][0], mxg[0], mxg[1], p99[0][1], p99[1][1], mxr[0], mxr[1]);
+        }
+    }
+    if (st.gpu_ms >= 0) {                /* (tex) pictures whose frame built Enhanced textures: their cost */
+        static double bms, bmx, ams;
+        static uint32_t bn, an, tot;
+        double g = st.gpu_ms + (st.present_gpu_ms > 0 ? st.present_gpu_ms : 0);
+        if (st.tex_built) {
+            bms += g; bn++; if (g > bmx) bmx = g;
+            static int nlog;
+            if (g > 10.0 && nlog++ < 20) gpu_log("tex-build: v%u GPU %.2f ms, %u K texels built", st.vblank, g, st.tex_built);
+        }
+        else if (g < 50.0) { ams += g; an++; }
+        if (bn && ++tot % 3000 == 0)
+            gpu_log("tex-build: %u pictures with builds: GPU %.2f ms on average, max %.2f | others %.2f ms", bn, bms / bn, bmx,
+                    an ? ams / an : 0.0);
     }
     stats_push(&st);
     P.ts[i].busy = 0;
@@ -596,6 +632,7 @@ static int ts_complete(int block) {             /* oldest timestamp set; returns
 #define frame_begin gpu_stats_begin
 #define frame_end gpu_stats_end
 gpu_frame_stats* gpu_stats_cur(void) { return &P.st; }
+UINT64 gpu_ts_freq;
 
 void gpu_stats_begin(uint32_t vblank, double front_ms) {
     /* a full timestamp ring waits for the GPU before this picture's time starts */

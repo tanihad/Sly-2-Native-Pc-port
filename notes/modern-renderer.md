@@ -1358,6 +1358,15 @@ soft shadow edges in the fused shadow pass (mft.hlsl SOFT). Original runs none o
 exists only in separate permutations). Details, numbers and pictures: notes/enhanced-lighting.md. Anisotropic filtering
 waits for mipmaps (the sharper-textures work).
 
+#### R9a part 2 as built: Enhanced textures (next/tex, 2026-11-05)
+One setting, graphics.textures = enhanced (default; Balanced / Quality) | original (Performance / PS2), live, modern frames
+only: every 3D art texture (R2 materials, the exact triangles of phase A from the decoded texture cache) gets an image of
+its own - a 4x edge-directed upscale with a range-limited unsharp mask and deband, a cubic mip chain with coverage-
+preserving alpha - sampled trilinear + 16x anisotropic (R2_ETEX / ETEX permutations); images are keyed by a GPU content
+hash (texture + CLUT), built in batches at frame starts (runtime/gpu/gpu_tex.h, shaders/tex.hlsl, shaders/etex.hlsli);
+`<user dir>\textures\<hash>.png` replaces one (HD-pack hook, WIC). Original is untouched (the old shaders compile byte-
+identical). ep1 Balanced: Enhanced -0.22 ms GPU per picture. Details: notes/enhanced-textures.md.
+
 ### R10. SDL3 GPU backend; Linux - 10 agent-days. R11. macOS - 8 agent-days
 - **Precondition**: R7 coverage. There is no exact path off Windows: remaining exact content (menus, RTTs) must be
   native, or the frame falls back to the software GS renderer. That is acceptable only for rare frames, so the census

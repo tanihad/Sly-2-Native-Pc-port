@@ -1263,7 +1263,8 @@ static int r8s_skip(int what) { return PR.ncyc > 0 && (PR.cyc_mask[PR.cyc] & wha
 static int ab_off(void) { return PR.ab > 0 && !PR.ab_b && !PR.ab_ee && !PR.ab_r8 && !PR.ncyc; }
 /* (r8-perf) the GPU optimisations of the Balanced preset (modern frame targets), each one switchable for in-run A/B */
 enum { R8P_R2BATCH = 1, R8P_LINEPIX = 2, R8P_SHADOW = 4, R8P_RESOLVE = 8, R8P_R2STATE = 16, R8P_MISC = 32,
-       R8P_LIGHT = 64 /* (light) Enhanced lighting: PS2_GPU_AB=<n> PS2_GPU_AB_R8=64 compares Original / Enhanced in one run */ };
+       R8P_LIGHT = 64 /* (light) Enhanced lighting: PS2_GPU_AB=<n> PS2_GPU_AB_R8=64 compares Original / Enhanced in one run */,
+       R8P_TEX = 128 /* (tex) Enhanced textures: PS2_GPU_AB_R8=128 */ };
 static int r8p_mask = -1;                /* PS2_R8P=<mask>: the features on (default all) */
 static int r8p_off_mask;                 /* (PS2_R8P_VERIFY: the original way's second run) */
 static int r8p_mask_has(int f) {         /* (the feature is enabled at all: PS2_R8P) */
@@ -1885,7 +1886,7 @@ static uint64_t shf_fused_n, shf_heads_n;   /* (r2-m7b) shadow tails fused, head
 #define TD_JOBS 1024
 #define TD_FRAME_TEXELS (4u << 20)       /* decodes per frame at most (the rest stay undecoded until a later frame) */
 typedef struct { uint64_t k1, k2; uint32_t ver, base, n, frame; int live; } td_ent;
-typedef struct { uint32_t pos, tex0lo, tex0hi, texa, clut_slot, base, lw, n; } td_job;
+typedef struct { uint32_t pos, tex0lo, tex0hi, texa, clut_slot, base, lw, n, ent; } td_job;
 typedef struct { uint32_t tex0lo, tex0hi, clamp0, clamp1, texa, clut_slot, base, lw, n, pad0, pad1, pad2; } td_consts;   /* (gs.hlsl texdec_cb) */
 static struct {
     int on;                              /* -1 unknown */
@@ -1964,8 +1965,20 @@ static uint64_t td_hash64(const uint8_t* p, size_t n) {
     return h;
 }
 
-/* the decoded base (1 + first word) for StateRec s at op position pos, scheduling its decode; 0: none */
-static uint32_t td_state(const gpu_staterec* s, uint32_t pos, int64_t area) {
+#include "gpu_tex.h"                     /* (tex) Enhanced textures: images hang off the decoded entries */
+
+/* (tex) how a use of a texture looks to Enhanced textures: addressing flags (1 clamp u, 2 clamp v; -1: not art) and the
+ * alpha test's reference when it cuts out */
+static int et_use_of(uint64_t clamp, uint32_t texm, uint32_t test, uint32_t* ref) {
+    uint32_t wms = (uint32_t)clamp & 3, wmt = (uint32_t)(clamp >> 2) & 3, atst = (test >> 1) & 7, aref = (test >> 4) & 0xFF;
+    *ref = (test & 1) && (atst == 5 || atst == 6) && aref ? aref : 0;
+    if (texm != 2 || wms > 1 || wmt > 1) return -1;
+    return (int)(wms | wmt << 1);
+}
+
+/* the decoded base (1 + first word) for StateRec s at op position pos, scheduling its decode; 0: none. art: the draw is
+ * a 3D one (a depth target) Enhanced textures may give an image */
+static uint32_t td_state(const gpu_staterec* s, uint32_t pos, int64_t area, int art) {
     if (!(s->flags & GPU_SF_TME)) return 0;
     uint32_t tk = s->texsrc & 0xFF;
     if (tk != TK_VRAM_IDX && tk != TK_VRAM_DIRECT) return 0;
@@ -1986,6 +1999,27 @@ static uint32_t td_state(const gpu_staterec* s, uint32_t pos, int64_t area) {
         if (cpsm == 0x02 || cpsm == 0x0A) k2 ^= (uint64_t)s->texa * 0x9E3779B97F4A7C15ull;
     } else if (psm != 0x00 && psm != 0x30) k2 = (uint64_t)s->texa * 0x9E3779B97F4A7C15ull + 2;
     uint32_t ver = td_ver(tbp, tbw, psm, tw, th);
+    {   /* (tex, temporary statistics) */
+        static int on = -1;
+        static uint64_t seen[4096];
+        if (on < 0) { const char* e = getenv("PS2_TEX_STATS"); on = e && *e == '1'; }
+        if (on) {
+            uint64_t k = k1 ^ k2 * 31 ^ (s->clamp & 15) << 60;
+            uint32_t h = (uint32_t)((k * 0x9E3779B97F4A7C15ull) >> 52);
+            for (uint32_t i = 0; i < 4096; i++) {
+                uint64_t* sp = &seen[(h + i) & 4095];
+                if (*sp == k + 1) break;
+                if (!*sp) {
+                    *sp = k + 1;
+                    gpu_log("texstat ff psm %02X tw %u th %u texm %u wm %u/%u ate %u atst %u aref %u abe %u tcc %u fst %u area %lld",
+                            psm, tw, th, texm, (unsigned)s->clamp & 3, (unsigned)(s->clamp >> 2) & 3,
+                            s->test & 1, (s->test >> 1) & 7, (s->test >> 4) & 0xFF, (s->flags & GPU_SF_ABE) != 0,
+                            (s->flags & GPU_SF_TCC) != 0, (s->flags & GPU_SF_FST) != 0, (long long)area);
+                    break;
+                }
+            }
+        }
+    }
     uint32_t h = (uint32_t)((k1 * 0x9E3779B97F4A7C15ull ^ k2) >> 40) & (TD_HASH - 1);
     td_ent* e = NULL;
     for (uint32_t i = 0; i < TD_HASH; i++) {
@@ -1993,7 +2027,13 @@ static uint32_t td_state(const gpu_staterec* s, uint32_t pos, int64_t area) {
         if (!c->live) break;
         if (c->k1 == k1 && c->k2 == k2) { e = c; break; }
     }
-    if (e && e->ver == ver) { e->frame = TD.frame; return e->base + 1; }
+    uint32_t eref = 0;
+    int eflags = art && !(s->flags & GPU_SF_FST) ? et_use_of(s->clamp, texm, s->test, &eref) : -1;
+    if (e && e->ver == ver) {
+        e->frame = TD.frame;
+        if (eflags >= 0) et_use(e, tw, th, (uint32_t)eflags, eref);
+        return e->base + 1;
+    }
     if (e && e->frame == TD.frame) return 0;  /* (decoded at another version earlier in this frame) */
     /* a decode: worth it when the draw covers a fair share of the texels (cached entries need none) */
     if (area * 8 < (int64_t)n || TD.frame_texels + n > TD_FRAME_TEXELS || TD.njob >= TD_JOBS) return 0;
@@ -2015,7 +2055,9 @@ static uint32_t td_state(const gpu_staterec* s, uint32_t pos, int64_t area) {
     td_job* j = &TD.job[TD.njob++];
     j->pos = pos; j->tex0lo = (uint32_t)t0; j->tex0hi = (uint32_t)(t0 >> 32); j->texa = s->texa;
     j->clut_slot = idx ? s->clut_slot & 4095 : 0; j->base = base; j->lw = tw; j->n = n;
+    j->ent = (uint32_t)(e - TD.ent);
     TD.frame_texels += n;
+    if (eflags >= 0) et_use(e, tw, th, (uint32_t)eflags, eref);
     return base + 1;
 }
 
@@ -2038,6 +2080,7 @@ static const uint8_t* td_prepass(const gpu_front_frame_data* fd) {
         TD.reset = 0;
         TD.nent = TD.used = 0;
         memset(TD.ent, 0, sizeof TD.ent);
+        et_reset();                      /* (tex) */
     }
     if (cand && TD.scap < fd->state_count) {
         size_t c = fd->state_count + 256;
@@ -2102,7 +2145,8 @@ static const uint8_t* td_prepass(const gpu_front_frame_data* fd) {
                     last = si;
                     uint8_t f = TD.sflag[si];
                     if (f == 2) continue;
-                    uint32_t v = td_state((const gpu_staterec*)(fd->states + (size_t)si * GPU_STATE_BYTES), (uint32_t)pos, area);
+                    uint32_t v = td_state((const gpu_staterec*)(fd->states + (size_t)si * GPU_STATE_BYTES), (uint32_t)pos, area,
+                                          d->zt && (d->depth >> 1) != 0);
                     if (f == 0) { TD.sflag[si] = v ? 1 : 2; TD.sdec[si] = v; }
                     else if (TD.sdec[si] != v) { TD.sflag[si] = 2; TD.sdec[si] = 0; }
                     got |= v != 0;
@@ -2162,6 +2206,7 @@ static void td_run(uint32_t pos) {
         gpu_rt.n_dispatches++;
         TD.decodes++;
         TD.decode_texels += j->n;
+        if (j->ent < TD_HASH) et_decoded(&TD.ent[j->ent]);   /* (tex) */
     }
     prof_mark(pc);
     ID3D11UnorderedAccessView* nu = NULL;
@@ -2185,8 +2230,30 @@ static int td_draw(uint32_t pos) {
 /* (r2-m7b) R2 materials (r2_render.c, through r2_exec_in.texdec at the start of a segment): the decoded base (1 + first
  * word) of a material's texture as R2's pixel shader reads it (no TEXA, the CLUT from GS memory at CBP: R2_CLUT), decoded
  * right away when needed (GS memory is current at the segment); 0: none. The CLUT's pages count in the version. */
-static uint32_t td_r2(void* user, uint64_t t0) {
+static uint32_t td_r2(void* user, uint64_t t0, const r2_tex_use* use) {
     (void)user;
+    {   /* (tex, temporary statistics) */
+        static int on = -1;
+        static uint64_t seen[4096];
+        if (on < 0) { const char* e = getenv("PS2_TEX_STATS"); on = e && *e == '1'; }
+        if (on && use) {
+            uint64_t k = (t0 & 0x3FFFFFFFFull) ^ ((t0 >> 37) & 0x3FFF) << 34 ^ (uint64_t)use->pass << 50 ^ (use->clamp & 15) << 52;
+            uint32_t h = (uint32_t)((k * 0x9E3779B97F4A7C15ull) >> 52);
+            for (uint32_t i = 0; i < 4096; i++) {
+                uint64_t* s = &seen[(h + i) & 4095];
+                if (*s == k + 1) break;
+                if (!*s) {
+                    *s = k + 1;
+                    gpu_log("texstat r2 psm %02X tw %u th %u pass %u texm %u wm %u/%u ate %u atst %u aref %u abe %u tcc %u",
+                            (unsigned)(t0 >> 20) & 0x3F, (unsigned)(t0 >> 26) & 15, (unsigned)(t0 >> 30) & 15, use->pass,
+                            (use->mflags >> 8) & 3, (unsigned)use->clamp & 3, (unsigned)(use->clamp >> 2) & 3,
+                            (unsigned)use->test & 1, (unsigned)(use->test >> 1) & 7, (unsigned)(use->test >> 4) & 0xFF,
+                            (use->mflags & 8) != 0, (use->mflags & 32) != 0);
+                    break;
+                }
+            }
+        }
+    }
     if (!X.mixed || X.ref || TD.on <= 0 || TD.on == 3 || ab_off() || !td_ensure()) return 0;
     uint32_t tbp = (uint32_t)t0 & 0x3FFF, tbw = (uint32_t)(t0 >> 14) & 0x3F, psm = (uint32_t)(t0 >> 20) & 0x3F;
     uint32_t tw = (uint32_t)(t0 >> 26) & 15, th = (uint32_t)(t0 >> 30) & 15;
@@ -2209,10 +2276,17 @@ static uint32_t td_r2(void* user, uint64_t t0) {
         if (!c->live) break;
         if (c->k1 == k1 && c->k2 == k2) { e = c; break; }
     }
-    if (e && e->ver == ver) { e->frame = TD.frame; return e->base + 1; }
+    uint32_t eref = 0;                   /* (tex) the use as Enhanced textures see it */
+    int eflags = use ? et_use_of(use->clamp, (use->mflags >> 8) & 3, (uint32_t)use->test, &eref) : -1;
+    if (e && e->ver == ver) {
+        e->frame = TD.frame;
+        if (eflags >= 0) et_use(e, tw, th, (uint32_t)eflags, eref);
+        return e->base + 1;
+    }
     if (e && e->frame == TD.frame) return 0;
     if (TD.frame_texels + n > TD_FRAME_TEXELS) return 0;
     uint32_t base;
+    int redec = e != NULL;
     if (e) base = e->base;
     else {
         if (TD.nent >= TD_HASH * 3 / 4 || TD.used + n > TD_WORDS) { TD.reset = 1; return 0; }
@@ -2252,7 +2326,10 @@ static uint32_t td_r2(void* user, uint64_t t0) {
     ID3D11ShaderResourceView* ns = NULL;
     ID3D11DeviceContext_CSSetShaderResources(c, 0, 1, &ns);
     X.state_calls += 9;
-    return e->ver == 0xFFFFFFFFu ? 0 : base + 1;
+    if (e->ver == 0xFFFFFFFFu) return 0;
+    if (redec) et_decoded(e);            /* (tex) */
+    if (eflags >= 0) et_use(e, tw, th, (uint32_t)eflags, eref);
+    return base + 1;
 }
 
 /* (r2-m6, R6) particle draws (GPU_DF_PART) run the native particle pipeline: modern frames only (the frontend marks them
@@ -3121,6 +3198,7 @@ void gpu_exec_release(void) {
     GPU_RELEASE(X.a16cb);
     GPU_RELEASE(X.npcb);
     td_release();
+    et_release();                        /* (tex) */
     GPU_RELEASE(X.svcnt_uav); GPU_RELEASE(X.svcnt);
     X.svcnt_w = X.svcnt_h = 0;
     X.sv_on = 0;
@@ -3309,10 +3387,16 @@ void gpu_exec_frame(const void* payload) {
         PR.cyc = c;
     } else if (PR.ab > 0) {
         int nb = (int)((XC.frames / (uint32_t)PR.ab) & 1);
-        if (nb != PR.ab_b) PR.ab_skip = 8;
+        if (nb != PR.ab_b) {
+            PR.ab_skip = 8;
+            static int lg = -1;          /* (tex, pictures: which dumped VBlanks are A and which B) */
+            if (lg < 0) { const char* e = getenv("PS2_GPU_AB_LOG"); lg = e && *e == '1'; }
+            if (lg) gpu_log("ab: phase %c from v%u", nb ? 'B' : 'A', fd->vblank);
+        }
         PR.ab_b = nb;
         gpu_ab_phase = nb;
     }
+    et_frame_begin();                    /* (tex) hashes read back, images built (before this frame's decodes) */
     const uint8_t* states = td_prepass(fd);   /* (r2-m7b) the decoded texture cache's StateRec fields */
     int ok = dyn_fill(&X.vb, fd->vtx, fd->vtx_bytes, D3D11_BIND_VERTEX_BUFFER, 0) &&
              dyn_fill(&X.ib, fd->idx, fd->idx_count * 4, D3D11_BIND_INDEX_BUFFER, 0) &&

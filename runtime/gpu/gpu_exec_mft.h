@@ -1335,6 +1335,10 @@ static int mft_draw_setup(const gpu_fop_draw* d, int zuse, int force_dual) {
                                         { { GPU_SH_ps_mft_t1s, GPU_SH_ps_mft_t1sl, GPU_SH_ps_mft_t1sn },
                                           { GPU_SH_ps_mft_t1f, GPU_SH_ps_mft_t1fl, GPU_SH_ps_mft_t1fn } } };
         ps = tdd ? (dual ? GPU_SH_ps_mft_t1fd : GPU_SH_ps_mft_t0fd) : t[dual][fast][notex ? 2 : lod ? 1 : 0];
+        if (tdd && zuse && !M.phase && et_enabled()) {   /* (tex) the 3D's exact triangles: Enhanced textures */
+            ps = dual ? GPU_SH_ps_mft_t1fd_t : GPU_SH_ps_mft_t0fd_t;
+            et_bind_ps(M.ct_b ? MT[M.ct_b].w : 0);
+        }
     } else {
         set_topo(1);
         int sprite = d->cls == GPU_PC_SPRITE, thin = d->cls == GPU_PC_THIN, notex = !(d->feat & GPU_DF_TEX);
@@ -1504,6 +1508,8 @@ static void mft_r2(const gpu_front_frame_data* fd, const gpu_fop_r2* o) {
     light_note(fd, o);                   /* (light) */
 }
 
+static int mft_et_w;                     /* (tex) the segment's surface width (PS2_TEX_SPLIT) */
+static void mft_et_bind(void) { et_bind_ps(mft_et_w); }
 static void mft_r2_seg(const gpu_front_frame_data* fd, const gpu_fop_r2* o, int opt) {
     if (!mft_bind(o->ct, o->zt)) return;
     prof_mark(PR_R2);
@@ -1522,6 +1528,9 @@ static void mft_r2_seg(const gpu_front_frame_data* fd, const gpu_fop_r2* o, int 
     in.opt = opt;
     in.enh = lt_enabled() && LT.ppl;     /* (light) lit sub-batches per pixel */
     in.rim = LT.rim;
+    in.etex = et_enabled();              /* (tex) Enhanced textures */
+    in.etex_bind = mft_et_bind;
+    mft_et_w = c->w;
     int n = r2_render_segment(o, fd->data, fd->data_bytes, &in);
     gpu_rt.n_draws += (uint32_t)n;
     r2_segs++;

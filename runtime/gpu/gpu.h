@@ -155,6 +155,7 @@ typedef struct {
     double present_late_ms;               /* Present called this long after the planned time (only when paced) */
     int skipped;                          /* the present was skipped: the render thread was behind (a newer picture queued) */
     int ab_phase;                         /* (r8-perf) PS2_GPU_AB: 1 A phase, 2 B phase (a modern-frame-target frame), 0 none */
+    uint32_t tex_built;                   /* (tex) Enhanced textures built at this frame's start (K output texels; 0: none) */
 } gpu_frame_stats;
 int gpu_take_frame_stats(gpu_frame_stats* out, int max);   /* returns how many were taken */
 
