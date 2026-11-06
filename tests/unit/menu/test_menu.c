@@ -348,7 +348,9 @@ static void test_migration(void) {
           "performance -> low:\n%s", out);
     CHECK(settings_migrate_text("[graphics]\npreset = balanced\n", out, sizeof out) > 0 && strstr(out, "preset = medium\n"), "balanced -> medium");
     CHECK(settings_migrate_text("[display]\naspect = 4:3\n[graphics]\npreset = ps2\nrenderer_mode = reference\nfilters = faithful\n", out, sizeof out) > 0 &&
-          strstr(out, "preset = medium\n") && strstr(out, "look = retro\n") && strstr(out, "aspect = 16:9\n"), "ps2 -> Look Retro:\n%s", out);
+          strstr(out, "preset = medium\n") && strstr(out, "look = retro\n") && strstr(out, "aspect = 16:9\n") &&
+          strstr(out, "renderer_mode = modern\n") && strstr(out, "filters = modern\n"),
+          "ps2 -> Look Retro (Original's option lines -> Medium's: no stale reference / faithful under Custom later):\n%s", out);
     {
         ps2_settings_t s;
         settings_defaults(&s);

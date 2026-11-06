@@ -31,11 +31,15 @@ Implemented as graphics.look (enum FAITHFUL 0, RETRO 1, REIMAGINED 2) with retro
 - [x] 1 settings.c/h: presets, look, migration + tests (44257b8)
 - [x] 2 menu.c staging / pages / dialogs; menu_draw.c footer, dots, 3-button dialog; input F / R, Square / Triangle (44257b8)
 - [x] 3 unit tests menu 453 / window 525 / all suites 0 failed; Ultra = 125 % measured; pictures build\menu\shots (c5df16f)
-- [ ] 4 gates: run_tests 16/16 done; m9_exact S1+S3 -Game, gpu_diff_all, r2_sweep ep1 tfo,tfb,mf running (build\gates.txt;
-      script in the session scratchpad: m9 -Exe build\cur\gs_replay.exe -BaseExe build\basert\gs_replay.exe (e1a20a9 runtime
-      via git archive -o + tar))
+- [x] 4 gates (on c5df16f): run_tests 16/16; m9_exact S1+S3 -Game all identical (base = e1a20a9 runtime: git archive -o +
+      tar -> build\basesrc, gs_replay -BuildOnly -Runtime -> build\basert); gpu_diff_all 28/28; r2_sweep -Parallel 1 ep1
+      tfo, tfb, mf 3/3 PASS (build\gates.txt)
 - [x] 5 notes/pc-menu.md, notes/settings.md
-- [ ] 6 headless in-game check (menu tokens mapply, old ini preset = original -> look = retro)
+- [x] 6 headless game: an old "preset = original" + 4:3 file -> look retro in effect, file preset medium / look retro /
+      aspect 16:9 / option lines Medium's (fix after the first run left renderer_mode = reference); the owner-style custom
+      file unchanged, Custom / thin / auto. Menu units again 453 / window 525 after the fix.
+
+STATUS: COMPLETE (2026-11-06)
 
 ## Findings / traps
 - Gate scripts run the console exe copy in build\warp\<name> (user dir = that folder); flicker_run -Ini writes it.

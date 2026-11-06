@@ -1014,6 +1014,18 @@ int settings_migrate_text(const char* text, char* out, size_t cap) {
                 if (settings_update_text(a, "graphics", "look", "retro", b, sizeof b) < 0) return -1;
                 memcpy(a, b, strlen(b) + 1);
             }
+            if (retro) {                         /* the Original preset's option lines -> Medium's (the player's own now) */
+                static ps2_settings_t mv;
+                settings_defaults(&mv);
+                settings_apply_preset(&mv, SETTINGS_PRESET_MEDIUM);
+                for (int i = 0; i < NOPTS; i++) {
+                    if (!(opts[i].flags & SET_PRESET) || (opts[i].flags & SET_LEGACY) || !has_key(a, opts[i].section, opts[i].key)) continue;
+                    char v[64];
+                    settings_value_text(i, settings_get(&mv, i), v, sizeof v);
+                    if (settings_update_text(a, opts[i].section, opts[i].key, v, b, sizeof b) < 0) return -1;
+                    memcpy(a, b, strlen(b) + 1);
+                }
+            }
             char av[32];
             int aw, ah;
             if (retro && key_value(a, "display", "aspect", av, sizeof av) && settings_parse_aspect(av, &aw, &ah) && aw * 3 == ah * 4) {
