@@ -8,8 +8,11 @@ STATUS: follow-up 2026-11-06 - dither resolve (owner: 4-bit dither turned into d
 ## Follow-up: dither (2026-11-06)
 - [x] cs_et_dd: per-texel dither classification (residual sign coherence) + range-limited 3x3 binomial before the
       upscale; cs_et_up: no sharpening / deband blur where resolved (PS2_TEX_DEDITHER=0 off, PS2_TEX_DD_RANGE=40) (376b596)
-- [ ] final2 shots + re-check of grain everywhere
-- [ ] gates + perf
+- [x] tuning (54ad3d0, 77538d9, 75ed143): hue-aware distance, line texels kept, density rule (sparse dot rows stay,
+      unsharpened), grout keeps its exemption (nearest texel's weight), resolved data through an SRV buffer
+- [x] final2 shots: build\tex\shots\final2 (scratchpad final2.ps1 picks an A/B pair; a phase's FIRST VBlank still
+      shows the previous phase - never use it)
+- [ ] gates + perf on the final commit
 - tools: dumps via PS2_TEX_DUMP=2 (build\tex\dump_old = before the fix); a C# prototype lived in the session scratchpad
 - trap: [IO.File] calls resolve relative paths against the process directory (the main checkout), not the PS location
 

@@ -77,6 +77,9 @@ static struct {
     int resets;
     double cpu_max;                      /* (statistics) the slowest et_frame_begin, ms */
 } ET = { 0 };
+#define ET_TQ 8                          /* (PS2_TEX_TIME: et_frame_begin) */
+static struct { int on; ID3D11Query* q[ET_TQ][2]; uint32_t tex[ET_TQ]; uint8_t busy[ET_TQ]; uint32_t head;
+                double ms, mx; uint64_t texels; uint32_t n; } ETT = { -1 };
 
 static float et_envf(const char* n, float d) { const char* e = getenv(n); return e && *e ? (float)atof(e) : d; }
 static void et_env(void) {
@@ -137,6 +140,7 @@ static void et_release(void) {
     GPU_RELEASE(ET.hist_uav); GPU_RELEASE(ET.hist);
     GPU_RELEASE(ET.hout_uav); GPU_RELEASE(ET.hout);
     GPU_RELEASE(ET.ddb_srv); GPU_RELEASE(ET.ddb_uav); GPU_RELEASE(ET.ddb);
+    for (int k = 0; k < ET_TQ; k++) { GPU_RELEASE(ETT.q[k][0]); GPU_RELEASE(ETT.q[k][1]); ETT.busy[k] = 0; }
     GPU_RELEASE(ET.cb); GPU_RELEASE(ET.pcb);
     GPU_RELEASE(ET.jobs_srv); GPU_RELEASE(ET.jobs); GPU_RELEASE(ET.hjobs_srv); GPU_RELEASE(ET.hjobs);
     for (int r = 0; r < ET_RING; r++) { GPU_RELEASE(ET.stage[r]); ET.stage_n[r] = 0; }
@@ -888,13 +892,51 @@ static void et_resolve(int32_t idx) {
 
 /* the start of a frame's execution (before the prepass): read-backs, hash requests, builds within the frame's budget */
 static void et_frame_body(void);
+/* PS2_TEX_TIME=1: the GPU time of the frame-start work (hashes + builds) of frames that built images, from timestamps
+ * around it (a ring read back a few frames later): "tex-time" lines, ms per frame and per million output texels */
+static void et_time_poll(void) {
+    for (uint32_t k = 0; k < ET_TQ; k++) {
+        if (!ETT.busy[k]) continue;
+        UINT64 a, b;
+        if (ID3D11DeviceContext_GetData(gpu_rt.ctx, (ID3D11Asynchronous*)ETT.q[k][0], &a, sizeof a, D3D11_ASYNC_GETDATA_DONOTFLUSH) != S_OK ||
+            ID3D11DeviceContext_GetData(gpu_rt.ctx, (ID3D11Asynchronous*)ETT.q[k][1], &b, sizeof b, D3D11_ASYNC_GETDATA_DONOTFLUSH) != S_OK)
+            continue;
+        ETT.busy[k] = 0;
+        if (!gpu_ts_freq || b < a) continue;
+        double ms = (double)(b - a) * 1000.0 / (double)gpu_ts_freq;
+        ETT.ms += ms; ETT.texels += (uint64_t)ETT.tex[k] << 10; ETT.n++;
+        if (ms > ETT.mx) ETT.mx = ms;
+        if (ETT.n % 20 == 0)
+            gpu_log("tex-time: %u frames with builds: GPU %.3f ms on average, max %.2f; %.3f ms per million output texels", ETT.n,
+                    ETT.ms / ETT.n, ETT.mx, ETT.texels ? ETT.ms / ((double)ETT.texels / 1048576.0) : 0.0);
+    }
+}
 static void et_frame_begin(void) {
     ET.frame++;
     if (!et_cfg() || !et_init()) return;
     LARGE_INTEGER q0, q1, qf;
     QueryPerformanceCounter(&q0);
     uint64_t h0 = ET.n_hash, b0 = ET.n_build, g0 = ET.n_grow, s0 = ET.n_share;
+    if (ETT.on < 0) { const char* e = getenv("PS2_TEX_TIME"); ETT.on = e && *e == '1'; }
+    uint32_t ts = ETT.head % ET_TQ;
+    int timed = 0;
+    if (ETT.on) {
+        et_time_poll();
+        if (!ETT.q[ts][0]) {
+            D3D11_QUERY_DESC qt = { D3D11_QUERY_TIMESTAMP, 0 };
+            ID3D11Device_CreateQuery(gpu_rt.dev, &qt, &ETT.q[ts][0]);
+            ID3D11Device_CreateQuery(gpu_rt.dev, &qt, &ETT.q[ts][1]);
+        }
+        timed = !ETT.busy[ts] && ETT.q[ts][0] && ETT.q[ts][1];
+        if (timed) ID3D11DeviceContext_End(gpu_rt.ctx, (ID3D11Asynchronous*)ETT.q[ts][0]);
+    }
     et_frame_body();
+    if (timed && ET.out_frame) {
+        ID3D11DeviceContext_End(gpu_rt.ctx, (ID3D11Asynchronous*)ETT.q[ts][1]);
+        ETT.tex[ts] = ET.out_frame >> 10;
+        ETT.busy[ts] = 1;
+        ETT.head++;
+    }
     QueryPerformanceCounter(&q1);
     QueryPerformanceFrequency(&qf);
     double ms = (double)(q1.QuadPart - q0.QuadPart) * 1000.0 / (double)qf.QuadPart;   /* (the render thread's cost) */
