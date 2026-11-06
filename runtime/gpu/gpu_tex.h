@@ -33,6 +33,7 @@ void gpu_tex_config(int on) { InterlockedExchange(&tcf_on, on ? 1 : 0); }
 #define ET_HREQ 256                      /* hash requests per frame */
 #define ET_MAP 16384                     /* hash -> slot */
 #define ET_SCR_WORDS (2048u * 2048u * 4u / 3u + 64u)   /* scratch: a 2048 level chain */
+#define ET_DD_WORDS (1u << 20)           /* a batch's dither-resolved sources + weights (cs_et_dd -> cs_et_up) */
 enum { ES_NONE, ES_WANT, ES_HASHING, ES_QUEUED, ES_READY, ES_HDLOAD, ES_REJECT };
 
 typedef struct {                         /* per decoded entry (the index of TD.ent) */
@@ -57,9 +58,9 @@ static struct {
     uint32_t cap[ET_NCLS];
     et_slot* sl[ET_NCLS];
     uint64_t bytes;
-    ID3D11Buffer *tab, *lv, *hist, *hout, *cb, *pcb, *jobs, *hjobs;   /* (jobs, hjobs: the batches' job tables) */
-    ID3D11ShaderResourceView *tab_srv, *jobs_srv, *hjobs_srv;
-    ID3D11UnorderedAccessView *tab_uav, *lv_uav, *hist_uav, *hout_uav;
+    ID3D11Buffer *tab, *lv, *hist, *hout, *cb, *pcb, *jobs, *hjobs, *ddb;   /* (jobs, hjobs: the batches' job tables) */
+    ID3D11ShaderResourceView *tab_srv, *jobs_srv, *hjobs_srv, *ddb_srv;
+    ID3D11UnorderedAccessView *tab_uav, *lv_uav, *hist_uav, *hout_uav, *ddb_uav;
     ID3D11Buffer* stage[ET_RING];
     uint32_t stage_n[ET_RING];
     et_req req[ET_RING][ET_HREQ];
@@ -135,6 +136,7 @@ static void et_release(void) {
     GPU_RELEASE(ET.lv_uav); GPU_RELEASE(ET.lv);
     GPU_RELEASE(ET.hist_uav); GPU_RELEASE(ET.hist);
     GPU_RELEASE(ET.hout_uav); GPU_RELEASE(ET.hout);
+    GPU_RELEASE(ET.ddb_srv); GPU_RELEASE(ET.ddb_uav); GPU_RELEASE(ET.ddb);
     GPU_RELEASE(ET.cb); GPU_RELEASE(ET.pcb);
     GPU_RELEASE(ET.jobs_srv); GPU_RELEASE(ET.jobs); GPU_RELEASE(ET.hjobs_srv); GPU_RELEASE(ET.hjobs);
     for (int r = 0; r < ET_RING; r++) { GPU_RELEASE(ET.stage[r]); ET.stage_n[r] = 0; }
@@ -166,9 +168,10 @@ static int et_init(void) {
     ET.jobs = raw_default(256u * 64u, NULL, &ET.jobs_srv, NULL);
     ET.hjobs = raw_default(ET_HREQ * 64u, NULL, &ET.hjobs_srv, NULL);
     ET.hout = raw_default(ET_HREQ * 16u, NULL, NULL, &ET.hout_uav);
+    ET.ddb = raw_default(ET_DD_WORDS * 4u, NULL, &ET.ddb_srv, &ET.ddb_uav);
     ET.cb = et_buf(64, D3D11_BIND_CONSTANT_BUFFER, D3D11_USAGE_DYNAMIC, D3D11_CPU_ACCESS_WRITE);
     ET.pcb = et_buf(16, D3D11_BIND_CONSTANT_BUFFER, D3D11_USAGE_DYNAMIC, D3D11_CPU_ACCESS_WRITE);
-    int ok = ET.tab && ET.lv && ET.hist && ET.hout && ET.cb && ET.pcb && ET.jobs && ET.hjobs;
+    int ok = ET.tab && ET.lv && ET.hist && ET.hout && ET.cb && ET.pcb && ET.jobs && ET.hjobs && ET.ddb;
     for (int r = 0; r < ET_RING && ok; r++) {
         ET.stage[r] = et_buf(ET_HREQ * 16u, 0, D3D11_USAGE_STAGING, D3D11_CPU_ACCESS_READ);
         ok = ET.stage[r] != NULL;
@@ -335,7 +338,7 @@ typedef struct { uint32_t src, lw, lh, flags, S, slice, lv, hist, ref, nm, dd, p
 static struct {
     et_job j[ET_JOBS];
     int32_t id[ET_JOBS];
-    uint32_t n, lv_used;
+    uint32_t n, lv_used, dd_used;
     ID3D11ShaderResourceView* src;
 } EB;
 
@@ -351,10 +354,10 @@ static void et_cb_set(uint32_t level, uint32_t first) {
 
 static void et_cs_unbind(void) {
     ID3D11DeviceContext* c = gpu_rt.ctx;
-    ID3D11UnorderedAccessView* nu[4] = { NULL, NULL, NULL, NULL };
-    ID3D11DeviceContext_CSSetUnorderedAccessViews(c, 0, 4, nu, NULL);
-    ID3D11ShaderResourceView* ns[2] = { NULL, NULL };
-    ID3D11DeviceContext_CSSetShaderResources(c, 0, 2, ns);
+    ID3D11UnorderedAccessView* nu[5] = { NULL, NULL, NULL, NULL, NULL };
+    ID3D11DeviceContext_CSSetUnorderedAccessViews(c, 0, 5, nu, NULL);
+    ID3D11ShaderResourceView* ns[3] = { NULL, NULL, NULL };
+    ID3D11DeviceContext_CSSetShaderResources(c, 0, 3, ns);
 }
 
 /* the batch's images: per class one dispatch per pass and mip level over all of its jobs (tex.hlsl) */
@@ -389,9 +392,16 @@ static void et_batch_run(void) {
         ID3D11UnorderedAccessView* u[3] = { ET.lv_uav, ET.uav[cls][0], ET.hist_uav };
         ID3D11DeviceContext_CSSetUnorderedAccessViews(c, 0, 3, u, NULL);
         et_cb_set(0, a);
-        if (dw) {                        /* the dither resolve of the sources (tex.hlsl cs_et_dd) */
+        if (dw) {                        /* the dither resolve of the sources (tex.hlsl cs_et_dd): written through u4, read
+                                          * by the upscale through t2 (an SRV: the cached load path) */
+            ID3D11ShaderResourceView* n1 = NULL;
+            ID3D11UnorderedAccessView* nu1 = NULL;
+            ID3D11DeviceContext_CSSetShaderResources(c, 2, 1, &n1);
+            ID3D11DeviceContext_CSSetUnorderedAccessViews(c, 4, 1, &ET.ddb_uav, NULL);
             ID3D11DeviceContext_CSSetShader(c, gpu_cs(GPU_SH_cs_et_dd), NULL, 0);
             ID3D11DeviceContext_Dispatch(c, (dw + 7) / 8, (dh + 7) / 8, n);
+            ID3D11DeviceContext_CSSetUnorderedAccessViews(c, 4, 1, &nu1, NULL);
+            ID3D11DeviceContext_CSSetShaderResources(c, 2, 1, &ET.ddb_srv);
             gpu_rt.n_dispatches++;
         }
         ID3D11DeviceContext_CSSetShader(c, gpu_cs(GPU_SH_cs_et_up), NULL, 0);
@@ -420,6 +430,7 @@ static void et_batch_run(void) {
     et_cs_unbind();
     EB.n = 0;
     EB.lv_used = 0;
+    EB.dd_used = 0;
 }
 
 /* queue the image of a decoded texture (base, 2^lw x 2^lh) for slot id; 0: no room in this batch (the caller runs it
@@ -428,14 +439,14 @@ static int et_build(const et_ent* e, int32_t id, ID3D11ShaderResourceView* src, 
     int cls = id >> 16;
     uint32_t S = 64u << cls, words = S * S * 4u / 3u + 16u;
     int dd = !hd && ET.up && ET.dd > 0.0f;   /* (the dither resolve: built images only; the source again + weights) */
-    uint32_t dw = dd ? 2u << (e->lw + e->lh) : 0u;
-    if (EB.n && (EB.n >= ET_JOBS || EB.src != src || EB.lv_used + words + dw > ET_SCR_WORDS)) return 0;
+    uint32_t dw = dd ? 2u << (e->lw + e->lh) : 0u, dbase = EB.n ? EB.dd_used : 0u;
+    if (EB.n && (EB.n >= ET_JOBS || EB.src != src || EB.lv_used + words > ET_SCR_WORDS || dbase + dw > ET_DD_WORDS)) return 0;
     et_job* j = &EB.j[EB.n];
     memset(j, 0, sizeof *j);
     j->src = src_base; j->lw = e->lw; j->lh = e->lh; j->flags = e->flags | (hd || !ET.up ? 4u : 0u);
     j->S = S; j->slice = (uint32_t)(id & 0xFFFF); j->lv = EB.lv_used; j->ref = e->ref; j->nm = (uint32_t)cls + 7u;
-    j->dd = dd ? EB.lv_used + words : 0xFFFFFFFFu;
-    words += dw;
+    j->dd = dd ? dbase : 0xFFFFFFFFu;
+    EB.dd_used = dbase + dw;
     EB.id[EB.n++] = id;
     EB.src = src;
     EB.lv_used += words;
@@ -841,6 +852,7 @@ static int et_hd_poll(int* bound) {
 static void et_release_late(void) {
     EB.n = 0;
     EB.lv_used = 0;
+    EB.dd_used = 0;
     for (int i = 0; i < ET_DJ; i++) if (ET_dump[i].st) { ID3D11Resource_Release(ET_dump[i].st); ET_dump[i].st = NULL; }
     GPU_RELEASE(EH.srv);
     GPU_RELEASE(EH.buf);

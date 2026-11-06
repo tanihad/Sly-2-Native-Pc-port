@@ -69,12 +69,15 @@ pass B (the additive highlight with the second CLUT) ATST NEVER. FF textures (fa
    neighbours (an isolated dot) or with both diagonals only (a checker) is dither-like, one coherent along a direction (3 in
    a row: grain, grout, strokes) is a line. Dither-likeness = most active texels of the 5x5 dither-like (>= 45..70%), at
    least 1..3 of them, local contrast below PS2_TEX_DD_RANGE (40; the distance is the luminance difference or 2.5x the
-   hue / saturation difference, so rust dots on teal planks are detail), a line texel itself x0.3. Where >= 4..7 of the 25
+   hue / saturation difference, so rust dots on teal planks are detail), a line texel itself x0.15. Where >= 4..7 of the 25
    are dither-like (an area, PS2_TEX_DD_DENSE) the texel takes the range-limited 3x3 binomial (the dither's average;
    neighbours beyond the range or line texels next to it count little); a sparse row of dots (stitching, rivets, a dotted
-   streak) stays. cs_et_up then: no dot / line exemption and no deband blur on dither-like texels; resolved texels get the
+   streak) stays. cs_et_up then: no dot / line exemption on a dither-like nearest texel (its own value, not the
+   interpolated one: a dithered tile's would spill onto its grout line and soften it) and no deband blur; resolved texels get the
    full unsharp mask (it now sharpens the shading's real structure - cracks, rust, streaks; PS2_TEX_DD_SHARP), unresolved
    dither-like ones none (soft dots as the PS2 drew them). PS2_TEX_DEDITHER=0 turns it off (exactly the earlier output).
+   The resolved sources and weights go to their own 4 MB buffer (written through a UAV, read by cs_et_up through an
+   SRV - the cached load path; reading them back through the scratch UAV cost more on build frames).
    Tried and dropped: an "edge" guard (the binomial's gradient against the residuals) - steep dithered ramps such as glows
    pass it too and came back as grain; resolving every dotted pattern (range 40, no density rule) - also erased stitch rows
    and the dotted streaks the original filter showed softly.

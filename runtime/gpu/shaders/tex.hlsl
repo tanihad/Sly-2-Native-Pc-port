@@ -24,10 +24,12 @@ RWByteAddressBuffer e_lv : register(u0);                  // scratch: each job's
 RWTexture2DArray<unorm float4> e_tex : register(u1);      // the class array, one mip level (the slice is the job's)
 RWByteAddressBuffer e_hist : register(u2);                // per job (13 x 256 words): histograms of levels, then scales
 RWByteAddressBuffer e_out : register(u3);                 // hashes: 4 words per request
+RWByteAddressBuffer e_ddw : register(u4);                 // cs_et_dd: the dither-resolved sources + weights ...
+ByteAddressBuffer e_dd : register(t2);                    // ... read by cs_et_up (an SRV: the cached load path)
 
 // a job: source base (words), log2 w, log2 h, flags (1 clamp u, 2 clamp v, 4 as it is: no steering / sharpening),
 // S (slice size), slice, scratch base (words), histogram base (words), alpha ref (0: no coverage scaling), levels,
-// the dither-resolved source in scratch (words: w x h texels, then w x h dither weights; ~0u: none, read the source)
+// the dither-resolved source in e_dd (words: w x h texels, then w x h dither weights; ~0u: none, read the source)
 static uint j_src, j_lw, j_lh, j_flags, j_S, j_slice, j_lv, j_hist, j_ref, j_nm, j_dd;
 void job_load(uint z) {
     uint o = (e_b.y + z) * 64u;
@@ -52,10 +54,10 @@ float4 et_fetch_src(int x, int y, uint W, uint H) { return et_unpack(e_src.Load(
 // (the upscale: the dither-resolved source when there is one)
 float4 et_fetch(int x, int y, uint W, uint H) {
     uint a = et_addr(x, y, W, H);
-    return j_dd != 0xFFFFFFFFu ? et_unpack(e_lv.Load((j_dd + a) * 4u)) : et_unpack(e_src.Load((j_src + a) * 4u));
+    return j_dd != 0xFFFFFFFFu ? et_unpack(e_dd.Load((j_dd + a) * 4u)) : et_unpack(e_src.Load((j_src + a) * 4u));
 }
 float2 et_dither(int x, int y, uint W, uint H) {     // (resolved share, dither-likeness)
-    uint w = e_lv.Load((j_dd + W * H + et_addr(x, y, W, H)) * 4u);
+    uint w = e_dd.Load((j_dd + W * H + et_addr(x, y, W, H)) * 4u);
     return float2(w & 0xFFFFu, w >> 16) * (1.0 / 65535.0);
 }
 float et_cr(float t, uint k) {           // Catmull-Rom weight of tap k (offsets -1, 0, 1, 2) at fraction t
@@ -177,7 +179,7 @@ void cs_et_dd(uint3 gtid : SV_GroupThreadID, uint li : SV_GroupIndex, uint3 gid 
         //  e.g. a glow, passes it too and came back as grain)
         dn = e_q.z * smoothstep(0.45, 0.7, nd / (nd + nl + 1.0)) * smoothstep(1.0, 3.0, nd) *
              (1.0 - smoothstep(e_q.w, e_q.w * 1.5, dmax)) *
-             (gs_k[tc] == 2u ? 0.3 : 1.0);   // (a line texel itself - grain, a seam - keeps most of its value)
+             (gs_k[tc] == 2u ? 0.15 : 1.0);  // (a line texel itself - grain, a seam, grout - keeps its value)
         // resolved only where the pattern fills an area (a 2D dither: >= ~5 dither-like texels of 25); a row of dots
         // (stitching, rivets, a dotted streak) is drawn - it stays, just not sharpened into grain (the up pass)
         d = dn * smoothstep(e_r.z, e_r.z + 3.0, nd);
@@ -185,8 +187,8 @@ void cs_et_dd(uint3 gtid : SV_GroupThreadID, uint li : SV_GroupIndex, uint3 gid 
     }
     if (p.x < (int)W && p.y < (int)H) {
         uint a = (uint)p.y * W + (uint)p.x;
-        e_lv.Store((j_dd + a) * 4u, et_pack(c));
-        e_lv.Store((j_dd + W * H + a) * 4u, (uint)(saturate(d) * 65535.0 + 0.5) | ((uint)(saturate(dn) * 65535.0 + 0.5) << 16));
+        e_ddw.Store((j_dd + a) * 4u, et_pack(c));
+        e_ddw.Store((j_dd + W * H + a) * 4u, (uint)(saturate(d) * 65535.0 + 0.5) | ((uint)(saturate(dn) * 65535.0 + 0.5) << 16));
     }
 }
 
@@ -301,13 +303,17 @@ void cs_et_up(uint3 id : SV_DispatchThreadID, uint li : SV_GroupIndex, uint3 gid
     // no deband blur (the resolve did it). Resolved: the unsharp mask (x e_r.x, default 1) works on the resolved
     // shading's real structure - cracks, rust, streaks - since the texel-scale pattern is gone. Dither-like but not
     // resolved (a sparse row of dots): no sharpening - the dots stay as soft as the PS2's filter drew them
-    float2 dd = float2(0.0, 0.0);
-    if (j_dd != 0xFFFFFFFFu)
-        dd = lerp(lerp(et_dither(b.x, b.y, W, H), et_dither(b.x + 1, b.y, W, H), f.x),
-                  lerp(et_dither(b.x, b.y + 1, W, H), et_dither(b.x + 1, b.y + 1, W, H), f.x), f.y);
+    float2 dd = float2(0.0, 0.0), dnear = dd;
+    if (j_dd != 0xFFFFFFFFu) {
+        float2 d00 = et_dither(b.x, b.y, W, H), d10 = et_dither(b.x + 1, b.y, W, H);
+        float2 d01 = et_dither(b.x, b.y + 1, W, H), d11 = et_dither(b.x + 1, b.y + 1, W, H);
+        dd = lerp(lerp(d00, d10, f.x), lerp(d01, d11, f.x), f.y);
+        dnear = nb.y == 1 ? (nb.x == 1 ? d00 : d10) : (nb.x == 1 ? d01 : d11);
+    }
     const float ex = 1.5;
     bool thin = (lc < min(ll, lr) - ex) || (lc > max(ll, lr) + ex) || (lc < min(lu, ld) - ex) || (lc > max(lu, ld) + ex);
-    thin = thin && dd.y < 0.35;
+    // (the nearest texel's own dither-likeness: interpolated, a dithered tile's would spill onto its grout line)
+    thin = thin && dnear.y < 0.35;
     float k = as_is || thin ? 1.0 : smoothstep(e_q.x, e_q.y, rng);
     float3 base = lerp(rg.rgb, r.rgb, max(k, dd.y));
     k *= (1.0 - (1.0 - e_r.x) * dd.x) * (1.0 - max(dd.y - dd.x, 0.0));
