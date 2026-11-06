@@ -2,6 +2,14 @@
 
 ## Resume here (read first in a new session)
 
+**2026-11-06 (later): owner build 0.1.1178 (81cde3d)** = Enhanced textures (de-dither) + Options overhaul (Look Retro /
+Faithful / Reimagined [hidden], Quality Low..Ultra, Apply for everything; footer without a count). Owner direction:
+Reimagined = bold reimagining; Faithful stays as is. Running: next/ai (worktree sly2-worktrees\ai: Reimagined textures,
+RealESRGAN_x4plus approved + downloaded, sha256 4FA0D389..., plus generated normal maps, interface in
+notes/reimagined.md) and next/reimagine (worktree sly2-worktrees\light: Reimagined lighting/grading/shadows). A menu
+agent once wrote into the main checkout via a relative path; its stray edits were discarded with the owner's OK (patch
+kept in the session scratchpad). Agents must use absolute paths.
+
 **2026-11-06: three agents running** (owner approved all): next/tex dither-grain fix (worktree sly2-worktrees\light);
 next/ai AI texture upscaler prototype (sly2-worktrees\ai; owner approved the one download: Real-ESRGAN anime 6B,
 tools\models\realesrgan, sha256 F872D837..., BSD-3; load the .pth with a restricted unpickler only); next/menu settings
