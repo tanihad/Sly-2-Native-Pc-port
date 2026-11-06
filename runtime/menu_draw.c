@@ -244,7 +244,11 @@ static void draw_row(ui_list* L, const menu_view* v, const menu_layout* Y, int k
     int sel = i == v->sel;
     uint32_t lc = !row->enabled ? C_DISABLED : sel ? C_ORANGE : C_TEXT;
     float px = 38 * u, vpx = 36 * u;
-    text_box(L, r.x + 28 * u, (float)r.y, (float)r.h, px, row->label, lc, AL_LEFT, (float)(Y->value_x - r.x) - 40 * u);
+    text_box(L, r.x + 28 * u, (float)r.y, (float)r.h, px, row->label, lc, AL_LEFT, (float)(Y->value_x - r.x) - 64 * u);
+    if (row->changed) {                          /* (menu) a change not applied yet: an orange dot before the value */
+        float d = 12 * u;
+        fillr(L, Y->value_x - 30 * u, r.y + (r.h - d) / 2.0f, d, d, d / 2, C_ORANGE);
+    }
     menu_rect lft = Y->left[k], rgt = Y->right[k];
     float vx0 = (float)(lft.x + lft.w), vx1 = (float)rgt.x, ay = r.y + r.h / 2.0f, as = 11 * u;
     uint32_t vc = row->enabled ? (sel ? C_WHITE : C_TEXT) : C_DISABLED;
@@ -317,15 +321,23 @@ static void draw_dialog(ui_list* L, const menu_view* v, const menu_layout* Y, fl
     float ty = B.y + 30 * u;
     text_box(L, B.x + B.w / 2.0f, ty, 60 * u, 50 * u, v->dlg_title, C_ORANGE, AL_CENTER, B.w - 60 * u);
     if (v->dlg_text[0]) text_wrap(L, B.x + 44 * u, ty + 76 * u, B.w - 88 * u, 96 * u, 34 * u, v->dlg_text, C_TEXT);
-    for (int k = 0; k < 2; k++) {
-        menu_rect b = k ? Y->dlg_no : Y->dlg_yes;
-        int hov = v->hover_btn == 3 + k;
-        box(L, (float)b.x, (float)b.y, (float)b.w, (float)b.h, 14 * u, hov ? with_alpha(C_ORANGE, 0.30f) : ARGB(255, 20, 34, 62),
-            hov ? with_alpha(C_ORANGE, 0.16f) : ARGB(255, 12, 22, 42), 2.5f * u, k ? C_SLATE : C_ORANGE);
+    /* the buttons: yes (gold), [alt,] no; (menu) the focused one is lit (left / right move it, Confirm presses it); each
+     * shows its own shortcut */
+    int three = v->dlg_buttons == 3;
+    for (int k = 0; k < (three ? 3 : 2); k++) {
+        int which = three ? k : (k ? 2 : 0);    /* 0 yes, 1 alt, 2 no */
+        menu_rect b = three ? Y->dlg3[k] : k ? Y->dlg_no : Y->dlg_yes;
+        int hov = v->hover_btn == (which == 0 ? 3 : which == 2 ? 4 : 7), foc = v->dlg_focus == which;
+        int lit = hov || foc;
+        box(L, (float)b.x, (float)b.y, (float)b.w, (float)b.h, 14 * u, lit ? with_alpha(C_ORANGE, 0.30f) : ARGB(255, 20, 34, 62),
+            lit ? with_alpha(C_ORANGE, 0.16f) : ARGB(255, 12, 22, 42), (foc ? 3.5f : 2.5f) * u, which == 0 || foc ? C_ORANGE : C_SLATE);
+        const char* kb = three ? (which == 0 ? "F" : which == 1 ? "R" : "Esc") : which ? "Esc" : "Enter";
+        int g = three ? (which == 0 ? G_SQUARE : which == 1 ? G_TRIANGLE : G_CIRCLE) : which ? G_CIRCLE : G_CROSS;
         float gh = b.h * 0.62f, gx = b.x + 18 * u, gy = b.y + (b.h - gh) / 2;
-        float gw = dev == MENU_DEV_KEYBOARD ? key_cap(L, gx, gy, gh, k ? "Esc" : "Enter", 1) : (pad_glyph(L, gx, gy, gh, k ? G_CIRCLE : G_CROSS, dev == MENU_DEV_XBOX), gh);
+        float gw = dev == MENU_DEV_KEYBOARD ? key_cap(L, gx, gy, gh, kb, 1) : (pad_glyph(L, gx, gy, gh, g, dev == MENU_DEV_XBOX), gh);
         float lx0 = gx + gw + 8 * u, lx1 = b.x + b.w - 14 * u;
-        text_box(L, (lx0 + lx1) / 2, (float)b.y, (float)b.h, 38 * u, k ? v->dlg_no : v->dlg_yes, hov || !k ? C_ORANGE : C_TEXT, AL_CENTER, lx1 - lx0);
+        const char* t = which == 0 ? v->dlg_yes : which == 1 ? v->dlg_alt : v->dlg_no;
+        text_box(L, (lx0 + lx1) / 2, (float)b.y, (float)b.h, 38 * u, t, lit || which == 0 ? C_ORANGE : C_TEXT, AL_CENTER, lx1 - lx0);
     }
 }
 
@@ -340,20 +352,13 @@ static void build_menu(ui_list* L, const menu_view* v, int w, int h) {
     if (v->dialog_only) { draw_dialog(L, v, &Y, u); return; }
     menu_rect P = Y.panel;
     panel(L, (float)P.x, (float)P.y, (float)P.w, (float)P.h, u);
-    /* title, sub-page title, the pending changes' Apply button */
+    /* title, sub-page title */
     menu_rect H = Y.header;
     float tpx = 104 * u, tyb = H.y + H.h * 0.5f + F->ascent * tpx / SLYF_EM * 0.5f;
     float tw0 = title(L, (float)H.x + 4 * u, tyb, tpx, "OPTIONS");
     if (v->page_title[0]) text_base(L, H.x + tw0 + 30 * u, tyb, 46 * u, v->page_title, C_TEXT, AL_LEFT, 0, 0, 0);
-    if (v->pending) {
-        menu_rect b = Y.btn[2];
-        int hov = v->hover_btn == 2;
-        box(L, (float)b.x, (float)b.y, (float)b.w, (float)b.h, b.h * 0.3f, hov ? with_alpha(C_ORANGE, 0.34f) : ARGB(255, 22, 36, 66),
-            hov ? with_alpha(C_ORANGE, 0.18f) : ARGB(255, 14, 24, 46), 2.5f * u, C_ORANGE);
-        text_box(L, b.x + b.w / 2.0f, (float)b.y, (float)b.h, 34 * u, "Apply changes", C_ORANGE, AL_CENTER, b.w - 16 * u);
-    }
     /* tabs */
-    int main_page = v->page >= MENU_PAGE_N ? MENU_PAGE_CONTROLS : v->page;
+    int main_page = menu_page_parent(v->page);
     for (int k = 0; k < MENU_PAGE_N; k++) {
         menu_rect t = Y.tabs[k];
         int on = k == main_page, hov = k == v->hover_tab;
@@ -406,7 +411,14 @@ static void build_menu(ui_list* L, const menu_view* v, int w, int h) {
     /* footer: navigation on the left, buttons on the right */
     menu_rect Fr = Y.footer;
     int dev = v->device;
-    {
+    if (v->pending) {                             /* (menu) changes staged: how many, Apply / Discard */
+        char t[64];
+        if (v->pending == 1) snprintf(t, sizeof t, "1 change not applied");
+        else snprintf(t, sizeof t, "%d changes not applied", v->pending);
+        float d = 12 * u;
+        fillr(L, (float)Fr.x + 4 * u, Fr.y + (Fr.h - d) / 2.0f, d, d, d / 2, C_ORANGE);
+        text_box(L, Fr.x + 26 * u, (float)Fr.y, (float)Fr.h, 33 * u, t, C_NOTE, AL_LEFT, (float)(Y.btn[2].x - Fr.x) - 40 * u);
+    } else {
         float gh = Fr.h * 0.8f, x = (float)Fr.x, y = Fr.y + (Fr.h - gh) / 2, px = 33 * u;
         if (dev == MENU_DEV_KEYBOARD) {
             float kw = gh * 1.5f;                     /* (the arrow keys: drawn as keys with arrows) */
@@ -428,7 +440,10 @@ static void build_menu(ui_list* L, const menu_view* v, int w, int h) {
     }
     int sub = v->page >= MENU_PAGE_N;
     hint(L, Y.btn[0], dev, "Esc", G_CIRCLE, sub ? "Back" : "Close", u, v->hover_btn == 0);
-    if (dev != MENU_DEV_KEYBOARD && sub) hint(L, Y.btn[1], dev, "", G_START, "Close", u, 0);
+    if (v->pending) {
+        hint(L, Y.btn[1], dev, "R", G_TRIANGLE, "Discard", u, v->hover_btn == 1);
+        hint(L, Y.btn[2], dev, "F", G_SQUARE, "Apply", u, v->hover_btn == 2);
+    } else if (dev != MENU_DEV_KEYBOARD && sub) hint(L, Y.btn[1], dev, "", G_START, "Close", u, 0);
     else if (dev != MENU_DEV_KEYBOARD) hint(L, Y.btn[1], dev, "", G_CROSS, "Select", u, 0);
     else hint(L, Y.btn[1], dev, "Enter", G_CROSS, "Select", u, 0);
     if (v->dialog) {

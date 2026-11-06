@@ -50,7 +50,8 @@ fullscreen_refresh = desktop ; desktop (default) | auto (a multiple of 59.94 Hz 
 frame_rate = 60         ; (pc-fps) 60 (default: the PS2's 59.94) | 120 | 144 | 165 | 200 | <30..1000> | display | unlimited
 
 [graphics]
-preset = balanced      ; original | performance | balanced (default) | quality | custom (see "Presets")
+preset = medium        ; (menu) the Quality: low | medium (default) | high | ultra | custom (see "Look and Quality")
+look = faithful        ; (menu) faithful (default) | retro (the original look over these options) | reimagined
 renderer = gpu         ; gpu (default: the Direct3D 11 renderer; software if it can't start) | software
 pacing = auto          ; gpu renderer: auto (default) | paced | immediate | display | vrr (old: paced + vsync off)
 vsync = on             ; gpu renderer: on (default) | off (tearing allowed) | adaptive
@@ -107,7 +108,8 @@ maximized = off
 | graphics.interlacing | on / off / preset | gpu renderer: on = field display as the PS2 sends it to the TV - the field buffers drawn at field resolution (N rows per PS2 row) and shown line-doubled, fields drawn with the half-line offset (movies, the intro) woven by gs.c's deinterlacer: at internal_scale 1 identical to the software renderer's picture; off = progressive: the field buffers drawn with 2N rows per PS2 row (the full 448-line picture at every scale), odd fields of half-line-offset content shown one frame line lower (no bob). Shift+F6 switches |
 | graphics.scaler | auto / lanczos / catmull-rom / box / bilinear / point | gpu renderer: the filter from the picture to the window (separable, two passes). auto = Lanczos-2 when shrinking (the "sharp downscale" of 3x supersampling), Catmull-Rom when enlarging, point at 1:1. The picture's sample grid (sample 0 at the PS2 pixel) is taken out, so it is centred like the PS2's. `PS2_GS_SCALER` overrides it |
 | graphics.renderer_mode | reference / modern (also exact / original / off = reference; r2 / on = modern) | (r2-m1, live, gpu renderer; not in the template, not in a preset; `PS2_R2=off|hybrid|bracket` overrides it) reference (default) = the exact path draws everything, the GS stream is the game's own; modern = the modern renderer R2 (notes/modern-renderer.md) draws what it covers natively into the same targets: in milestone R1 the static world of the levels on its allowlist (`PS2_R2_LEVELS`, default the ep3 hub, widCurrent 12; `all`), the exact path everything else. (r2-m2) Milestone R2: every prelit mesh (static world + glob props; objects with cel outlines stay exact) in every level (`PS2_R2_LEVELS` = an allowlist of world ids, default all; `PS2_R2_BLOCK` = blocked world ids), meshes crossing the guard band stay exact (`PS2_R2_CLIP=1`: GPU-clipped, not within the A/B Z gate), `PS2_R2_KINDS=world,props`, `PS2_R2_CONSOLIDATE=1` (opt-in: one draw per entry, pass and state; changes foliage edges, see notes/modern-renderer.md "R2 as built"), `PS2_R2_DBG` (GPU cost experiments: 1 no texture, 2 rasterized Z, 4 float transform, 8 constant colour - never for play). Options > Graphics > **Rendering**: Modern / Reference (exact); **F10** switches while playing (persisted). Diagnostics: `PS2_R2_STATS=1` (a line every 300 VBlanks: native / exact entries per frame and why, capture ms, hint KB; slow capture / frontend / render-segment frames logged), `PS2_R2_BUDGET_MS` (mesh decoding per frame, default 3), `PS2_R2_ZBIAS` (debugging); (r2-m5) the stats line ends with a census (native share of the mesh vertices, exact by reason), `PS2_R2_VERIFY=1` (log stale mesh decodes), `PS2_R2_GCLEAN=0` (guard-band meshes with no crossing triangle stay exact), `PS2_R2_ALT=<vblank>` (hybrid and all-exact frames alternate from that VBlank on: scripts\r2_hcheck.ps1), `PS2_DUMP_TO=<vblank>` (no frame dumps after it); (r2-m7) the native GPU passes of modern frames (notes/modern-renderer.md "R7 as built": shadow volumes without rasterizer order, shadow darken and motion blur as compute passes) - `PS2_R2_FX=0` all off, `PS2_R2_NPOST=0` only the darken / blur ones; `PS2_GPU_PROF_OPS=<frame>` with `PS2_GPU_PROF=1`: GPU ms per op signature of that frame; (r2-m7b, notes/modern-renderer.md "R7 part 2 as built") `PS2_R2_TEXDEC=0` (decoded texture cache off; 3: only FF draws without a depth target), `PS2_R2_SHFUSE=0` (the shadow pipeline's passes unfused), `PS2_GPU_AB=<frames>` with `PS2_GPU_PROF=1` (in-run A/B: those features off in A phases and on in B phases, alternating every <frames> frames, `prof-ab` lines per phase), `PS2_GPU_PROF_SEQ=1` (the `PS2_GPU_PROF_OPS` frame's ops in order), `PS2_GPU_OPDUMP=<frame>` (every op of that frame logged) |
-| graphics.preset | original / performance / balanced / quality / custom | (pc-menu) the graphics preset, see "Presets". A preset other than custom sets its options when the file is read (it wins over them: `preset = custom` to set them by hand); the game writes `custom` as soon as an option leaves the preset (menu or F-keys). A file without the key (older builds): derived from the options |
+| graphics.look | faithful / retro / reimagined | (menu) the look, see "Look and Quality": retro overrides the options it controls, the file keeps the player's own |
+| graphics.preset | low / medium / high / ultra / custom (old: performance / balanced / quality; original / ps2 = look retro) | (pc-menu; menu: the Quality) the graphics preset, see "Look and Quality". A preset other than custom sets its options when the file is read (it wins over them: `preset = custom` to set them by hand); the game writes `custom` as soon as an option leaves the preset (menu or F-keys). A file without the key (older builds): derived from the options |
 | graphics.internal_scale = native | native | (old key; render_scale 100% now) (pc-menu) the smallest scale N with 448 N rows >= the window's client height (4x at 1440p, 3x at 1080p, 5x at 2160p), followed when the window is resized (gfx.c gfx_output_resized) |
 | graphics.auto_max | 1..8 (default 3) | **old key** (pc-polish: removed; auto's maximum is 100% of the output now) (pc-menu) the highest scale `internal_scale = auto` ran at |
 | display.monitor | 0..16 (default 0) | (pc-menu) 0: the monitor the window is on; n: fullscreen on monitor n (EnumDisplayMonitors order), a window moves there |
@@ -120,7 +122,42 @@ maximized = off
 | window.x/y/width/height/maximized | integers / on/off | the window's normal placement; remembered on close |
 | window.show_fps | on/off | title "Sly 2: Band of Thieves - 59.9 fps" instead of "Sly 2: Band of Thieves", and (pc-menu) a counter in the top left corner of the picture (menu_overlay.c; also fullscreen) |
 
-### Presets (graphics.preset; runtime/settings.c settings_apply_preset / settings_detect_preset)
+### Look and Quality (menu overhaul, owner decisions 2026-11-06)
+
+`[graphics] look = faithful | retro | reimagined` (default faithful; also original / ps2 = retro, modern = faithful):
+- **faithful**: the options of the file as they are (the Quality's).
+- **retro**: the game exactly as it originally looked: every option `settings_retro_controls` names (the preset options
+  - renderer_mode, render_scale, msaa, lighting, textures, outlines, filters, motion_blur, flicker_filter, interlacing,
+  scaler - plus graphics.preset and display.aspect) takes the Original values (`settings_apply_preset(ORIGINAL)`:
+  reference, auto, faithful, ps2, original, original, 4:3). `ps2_settings` holds those effective values; the player's
+  own values are kept in `ps2_settings.retro_own[]` and **stay in sly2.ini** (`settings_own`, `settings_own_copy`: the
+  writer and the template write them; only `look` changes when Retro is chosen or left). Leaving Retro (another look)
+  restores them. A hotkey that changes a controlled option (F3, F4, F7, F10, ...) leaves Retro first (to Faithful).
+- **reimagined**: a bold modern reimagining - in development: no renderer change yet (it draws as faithful). The
+  renderer asks `settings_look(&ps2_settings)` (settings.h). **To enable it** for development: `look = reimagined` in
+  sly2.ini (the menu then offers it next to Retro / Faithful); to show it to everyone, add it unconditionally in menu.c
+  `build_choices` (MENU_ROW_GLOOK).
+- `settings_set_look(s, look)` is the pure switch; `settings_parse` reads the player's values, then applies the look.
+
+`[graphics] preset = low | medium | high | ultra | custom` (the Quality). Old names are read and the file rewritten on
+start (`settings_migrate_text`): performance -> low, balanced -> medium, quality -> high; **original / ps2 -> `look =
+retro` + `preset = medium`** (the player's options when Retro is left; an `aspect = 4:3`, which only Original set,
+becomes 16:9). A file without a look key is faithful. The owner's own custom file (preset custom, outlines thin, filters
+modern, render_scale auto) needs no change and reads as Custom / Faithful (unit test `test_migration`).
+
+| Quality | renderer_mode | render_scale | msaa | outlines | lighting / textures |
+|---|---|---|---|---|---|
+| **low** (was performance) | modern | 75% | off | ps2 | original |
+| **medium** (default; was balanced) | modern | 100% | 4x | ps2 | enhanced |
+| **high** (was quality) | modern | 100% | 8x | thin | enhanced |
+| **ultra** (new) | modern | 125% | 8x | thin | enhanced |
+
+All: filters modern, the three toggles preset, scaler auto, the aspect kept. Ultra's 125 %: the owner's RTX 4060 Ti at
+1440p holds 60 fps with it (GPU ~5.3 ms in the ep1 hub); 150 % with 8x MSAA ran out of video memory on the 8 GB card
+(notes/pc-menu.md). Detection: `settings_detect_preset` gives ORIGINAL only under Retro, else the Quality whose values the
+options have, else custom.
+
+### Presets before the menu overhaul (graphics.preset; runtime/settings.c settings_apply_preset / settings_detect_preset)
 
 (r2-m8, owner decision D6) The rendering mode is part of the presets. "PS2 mode" is the Original preset, shown as
 **PS2** in the menu (`preset = original`, also `ps2`):
@@ -219,6 +256,8 @@ aspect / HUD at the game's next frame, volumes at the game's next frame, display
 thread), except: `renderer` when the game started on the software renderer (a game started on the GPU renderer
 switches both ways live). (pc-pacing) `pacing` and `vsync` are live (`pacing_apply_mode`); `window.fullscreen = exclusive`
 switches the display's refresh as described above; `display.fullscreen_refresh` applies when the window next goes fullscreen.
-(pc-polish) In the menu, the options flagged `SET_STAGED` in the table - display.mode, display.resolution, display.monitor,
-graphics.renderer - are not changed until **Apply changes**; a display change then asks "Keep these display settings?"
-and reverts after 15 s without an answer (notes/pc-menu.md "Apply / Revert"). `settings_reset_section` leaves them alone.
+(pc-polish; menu overhaul 2026-11-06: every option) In the menu nothing changes until **Apply** (the menu stages every
+change; `SET_STAGED` now only marks the options whose change asks "Keep these display settings?" - display.mode,
+display.resolution, display.monitor - and the renderer); a display change then reverts after 15 s without an answer
+(notes/pc-menu.md "Apply / Revert"). Hotkeys (F2..F10, F7, F8, Alt+Enter) and an edited file still apply at once.
+`settings_reset_section` leaves the staged-class options alone.

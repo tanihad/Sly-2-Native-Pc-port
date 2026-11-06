@@ -248,7 +248,7 @@ static void test_settings(void) {
     CHECK(n == 0 && s.hud_centered == 1, "hud = centred (British spelling)");
     n = settings_parse("hud = left\n", &s, count_warn, NULL);
     CHECK(n == 1 && warn_count == 1 && s.hud_centered == 1, "bad hud value reported and ignored");
-    char tmpl[4096];
+    char tmpl[8192];                              /* (menu: the template grew past 4 KB with the look) */
     settings_defaults(&s);
     s.hud_centered = 1;
     settings_format(&s, tmpl, sizeof tmpl);
@@ -316,7 +316,7 @@ static void test_settings(void) {
     CHECK(strstr(tmpl, "\npacing = immediate\n") && strstr(tmpl, "\nvsync = off\n"), "template writes immediate / vsync off");
 
     /* the template written next to the exe parses back to the defaults */
-    char text[4096];
+    static char text[8192];
     ps2_settings_t d, back;
     settings_defaults(&d);
     settings_format(&d, text, sizeof text);
@@ -324,6 +324,7 @@ static void test_settings(void) {
     settings_defaults(&back);
     back.aspect_w = 1;
     warn_count = 0;
+    d.ini_version = SETTINGS_VERSION;            /* (the template's [settings] version: read now that the whole template fits) */
     CHECK(settings_parse(text, &back, count_warn, NULL) == 0 && !memcmp(&back, &d, sizeof d), "template round trip");
 
     /* [game] disc (quoted: ; and # inside), [window] keys */
