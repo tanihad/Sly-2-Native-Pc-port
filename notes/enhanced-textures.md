@@ -77,7 +77,7 @@ pass B (the additive highlight with the second CLUT) ATST NEVER. FF textures (fa
    full unsharp mask (it now sharpens the shading's real structure - cracks, rust, streaks; PS2_TEX_DD_SHARP), unresolved
    dither-like ones none (soft dots as the PS2 drew them). PS2_TEX_DEDITHER=0 turns it off (exactly the earlier output).
    The resolved sources and weights go to their own 4 MB buffer (written through a UAV, read by cs_et_up through an
-   SRV - the cached load path; reading them back through the scratch UAV cost more on build frames).
+   SRV, the cached load path, like the source). PS2_TEX_TIME=1 logs the GPU time of the build work ("tex-time" lines).
    Tried and dropped: an "edge" guard (the binomial's gradient against the residuals) - steep dithered ramps such as glows
    pass it too and came back as grain; resolving every dotted pattern (range 40, no density rule) - also erased stitch rows
    and the dotted streaks the original filter showed softly.
@@ -149,6 +149,18 @@ than the decoded cache's four loads and the 4-bit bilinear arithmetic per pixel.
 unloaded) that is ~3.4 ms (~290 fps): above 165. Building costs ~1.6 ms of GPU per million output texels here (budget 1 M
 per frame), only while a level's textures first appear (the load / fade-in); with the classes pre-sized no array grows
 in ep1. Memory: ~790 MB of VRAM for the image classes while Enhanced is on (none with Original).
+
+**Dither resolve follow-up** (2026-11-06, same in-run A/B, ep1 hub, 6000 pictures per phase): Original 6.64 ms, Enhanced
+6.36 ms average (-0.28), p99 8.70 / 8.44, worst 9.04 / 12.74; render thread p99 2.38 / 2.46 ms. Build cost from GPU
+timestamps around the frame-start work (PS2_TEX_TIME=1, two runs each way, ~160 build frames per run): 1.00 ms per million
+output texels with the resolve vs 1.10 without (0.965 / 1.044 vs 1.184 / 1.018: noise, not worse); worst build frame
+15-22 ms both ways (the first frames of the load). A first measurement through the frame-time averages was spoiled by
+another program using the GPU (DayZ: build-frame averages of 7-10 ms, worst 180-270 ms in both settings): the
+timestamp lines isolate the build work, use them. The resolved sources are read through their own SRV buffer.
+Gates on the follow-up: run_tests 16/16; units 28/28; m9_exact S1 + S3 -Game identical; gpu_diff_all 28/28; r2_sweep
+-Parallel 1 PS2_TEX=1 ep1, ep3, m2_boardroom tfo, tfb, mf 9/9 (ep1 / ep3 tfo, tfb first came out NO DATA - 0 pictures -
+while DayZ held the GPU; a rerun passed), PS2_TEX=0 ep1 tfo, mf 2/2. Pictures: build\tex\shots\final2 (same names and
+regions as final; a phase's first VBlank still shows the previous phase, so pairs avoid it).
 
 **Gates** (on ca997a0): run_tests 16/16; units 0 failed (menu 365 checks); m9_exact S1 + S3 -Game identical (base:
 main 7601e3f's runtime); gpu_diff_all mixed S=1 28/28; r2_sweep -Parallel 1 PS2_TEX=0 ep1 ab, tfo, tfb, mf + m2_boardroom
