@@ -81,7 +81,7 @@ void gfx_describe(char* out, int cap) {
     const ps2_settings_t* s = &ps2_settings;
     char rs[32];
     settings_value_text(settings_find("graphics", "render_scale"), s->render_scale, rs, sizeof rs);
-    snprintf(out, (size_t)cap, "render scale %s: internal scale %s%dx%s, outlines %s, filters %s (motion blur %s, flicker filter %s, %s), scaler %s, lighting %s, textures %s, preset %s",
+    snprintf(out, (size_t)cap, "render scale %s: internal scale %s%dx%s, outlines %s, filters %s (motion blur %s, flicker filter %s, %s), scaler %s, lighting %s, textures %s, preset %s%s",
              rs, scale_auto() ? "now " : "", gfx_scale(),
              env_scale() ? " (PS2_GS_SCALE)" : "", s->outlines_thin ? "thin" : "ps2",
              s->filters_faithful ? "faithful" : "modern",
@@ -89,7 +89,8 @@ void gfx_describe(char* out, int cap) {
              settings_interlacing(s) ? "interlaced" : "progressive",
              settings_scaler_names[s->scaler >= 0 && s->scaler < SETTINGS_SCALER_N ? s->scaler : 0],
              s->lighting_enhanced ? "enhanced" : "original", s->textures_enhanced ? "enhanced" : "original",
-             settings_preset_names[s->preset >= 0 && s->preset < SETTINGS_PRESET_N ? s->preset : SETTINGS_PRESET_CUSTOM]);
+             settings_preset_names[s->preset >= 0 && s->preset < SETTINGS_PRESET_N ? s->preset : SETTINGS_PRESET_CUSTOM],
+             s->look == SETTINGS_LOOK_RETRO ? ", look retro" : s->look == SETTINGS_LOOK_REIMAGINED ? ", look reimagined" : "");
 }
 
 static void gfx_applier(int option) { (void)option; gfx_apply(); }

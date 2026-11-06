@@ -23,7 +23,7 @@ ps2_settings_t ps2_settings = {
     .textures_enhanced = 1,              /* (tex: Balanced) */
 };
 const char* const settings_scaler_names[SETTINGS_SCALER_N] = { "auto", "point", "box", "lanczos", "catmull-rom", "bilinear" };
-const char* const settings_preset_names[SETTINGS_PRESET_N] = { "original", "performance", "balanced", "quality", "custom" };
+const char* const settings_preset_names[SETTINGS_PRESET_N] = { "original", "low", "medium", "high", "ultra", "custom" };
 volatile long settings_serial;
 
 /* ---- the option table ---------------------------------------------------------------------------- */
@@ -42,6 +42,7 @@ static const char* const n_rmode[] = { "reference", "modern" };   /* (r2-m1) */
 static const char* const n_msaa[] = { "off", "2x", "4x", "8x" };  /* (r2-m8) */
 static const char* const n_lighting[] = { "original", "enhanced" };   /* (light) */
 static const char* const n_textures[] = { "original", "enhanced" };   /* (tex) */
+static const char* const n_look[] = { "faithful", "retro", "reimagined" };   /* (menu) */
 
 #define OFF(f) ((int)offsetof(ps2_settings_t, f))
 #define BOOL_(sec, key, f, flags, apply, def) { sec, key, SET_BOOL, flags, apply, OFF(f), 0, 1, def, NULL, NULL, NULL }
@@ -64,8 +65,13 @@ static const settings_opt opts[] = {
     /* (pc-fps) frame_rate.c: the game loop's rate; live */
     INT_("display", "frame_rate", frame_rate, SET_LIVE, SET_APPLY_FRAME_RATE, 30, 1000, 60, "unlimited=-1|display=-2|uncapped=-1",
          "PS2_FRAME_RATE"),
+    /* (menu) old names: performance / balanced / quality (read, rewritten by settings_migrate_text); original / ps2 is the
+     * Retro look now (settings_parse) */
     ENUM_("graphics", "preset", preset, SET_LIVE, SET_APPLY_GFX, settings_preset_names, SETTINGS_PRESET_N,
-          SETTINGS_PRESET_BALANCED, "ps2=0", NULL),
+          SETTINGS_PRESET_MEDIUM, "ps2=0|performance=1|balanced=2|quality=3", NULL),
+    /* (menu) the look: retro (the original look over the player's own options: settings_set_look) | faithful | reimagined */
+    ENUM_("graphics", "look", look, SET_LIVE, SET_APPLY_GFX, n_look, SETTINGS_LOOK_N, SETTINGS_LOOK_FAITHFUL,
+          "original=1|ps2=1|modern=0", NULL),
     ENUM_("graphics", "renderer", renderer_gpu, SET_LIVE | SET_STAGED, SET_APPLY_RENDERER, n_renderer, 2, 1, "sw=0|hw=1|d3d11=1",
           "PS2_GS_BACKEND"),
     ENUM_("graphics", "pacing", pacing, SET_LIVE | SET_GPU, SET_APPLY_PACING, n_pacing, SETTINGS_PACING_N, SETTINGS_PACING_AUTO,
@@ -354,20 +360,17 @@ int settings_env_locked(int i) {
 static int is_43(const ps2_settings_t* s) { return s->aspect_w * 3 == s->aspect_h * 4; }
 
 int settings_detect_preset(const ps2_settings_t* s) {
-    if (s->motion_blur != -1 || s->flicker_filter != -1 || s->interlacing != -1 || s->scaler != SETTINGS_SCALER_AUTO)
+    if (s->look == SETTINGS_LOOK_RETRO) return SETTINGS_PRESET_ORIGINAL;   /* (menu) the original look is Look = Retro */
+    if (s->motion_blur != -1 || s->flicker_filter != -1 || s->interlacing != -1 || s->scaler != SETTINGS_SCALER_AUTO ||
+        !s->renderer_modern || s->filters_faithful)
         return SETTINGS_PRESET_CUSTOM;
-    if (!s->renderer_modern) {           /* (r2-m8) PS2: Reference with every faithful setting */
-        if (s->render_scale == SETTINGS_RS_AUTO && s->filters_faithful && !s->outlines_thin && !s->lighting_enhanced &&
-            !s->textures_enhanced && is_43(s))
-            return SETTINGS_PRESET_ORIGINAL;
-        return SETTINGS_PRESET_CUSTOM;
-    }
-    if (s->filters_faithful) return SETTINGS_PRESET_CUSTOM;
     int enh = s->lighting_enhanced && s->textures_enhanced, orig = !s->lighting_enhanced && !s->textures_enhanced;   /* (tex) */
     if (s->render_scale == SETTINGS_PRESET_PERFORMANCE_PCT && s->msaa == SETTINGS_MSAA_OFF && !s->outlines_thin && orig)
-        return SETTINGS_PRESET_PERFORMANCE;
-    if (s->render_scale == 100 && s->msaa == SETTINGS_MSAA_4X && !s->outlines_thin && enh) return SETTINGS_PRESET_BALANCED;
-    if (s->render_scale == 100 && s->msaa == SETTINGS_MSAA_8X && s->outlines_thin && enh) return SETTINGS_PRESET_QUALITY;
+        return SETTINGS_PRESET_LOW;
+    if (s->render_scale == 100 && s->msaa == SETTINGS_MSAA_4X && !s->outlines_thin && enh) return SETTINGS_PRESET_MEDIUM;
+    if (s->render_scale == 100 && s->msaa == SETTINGS_MSAA_8X && s->outlines_thin && enh) return SETTINGS_PRESET_HIGH;
+    if (s->render_scale == SETTINGS_PRESET_ULTRA_PCT && s->msaa == SETTINGS_MSAA_8X && s->outlines_thin && enh)
+        return SETTINGS_PRESET_ULTRA;
     return SETTINGS_PRESET_CUSTOM;
 }
 
@@ -378,16 +381,49 @@ void settings_apply_preset(ps2_settings_t* s, int p) {
     s->motion_blur = s->flicker_filter = s->interlacing = -1;
     s->scaler = SETTINGS_SCALER_AUTO;
     s->filters_faithful = p == SETTINGS_PRESET_ORIGINAL;
-    s->outlines_thin = p == SETTINGS_PRESET_QUALITY;
+    s->outlines_thin = p == SETTINGS_PRESET_HIGH || p == SETTINGS_PRESET_ULTRA;
     s->renderer_modern = p != SETTINGS_PRESET_ORIGINAL;   /* (r2-m8, D6) */
-    s->lighting_enhanced = p == SETTINGS_PRESET_BALANCED || p == SETTINGS_PRESET_QUALITY;   /* (light, owner 2026-11-05) */
+    s->lighting_enhanced = p == SETTINGS_PRESET_MEDIUM || p == SETTINGS_PRESET_HIGH || p == SETTINGS_PRESET_ULTRA;   /* (light) */
     s->textures_enhanced = s->lighting_enhanced;                                           /* (tex: the same presets) */
     switch (p) {
     case SETTINGS_PRESET_ORIGINAL: s->render_scale = SETTINGS_RS_AUTO; s->aspect_w = 4; s->aspect_h = 3; break;
-    case SETTINGS_PRESET_PERFORMANCE: s->render_scale = SETTINGS_PRESET_PERFORMANCE_PCT; s->msaa = SETTINGS_MSAA_OFF; break;
-    case SETTINGS_PRESET_BALANCED: s->render_scale = 100; s->msaa = SETTINGS_MSAA_4X; break;
-    default: s->render_scale = 100; s->msaa = SETTINGS_MSAA_8X; break;
+    case SETTINGS_PRESET_LOW: s->render_scale = SETTINGS_PRESET_PERFORMANCE_PCT; s->msaa = SETTINGS_MSAA_OFF; break;
+    case SETTINGS_PRESET_MEDIUM: s->render_scale = 100; s->msaa = SETTINGS_MSAA_4X; break;
+    case SETTINGS_PRESET_HIGH: s->render_scale = 100; s->msaa = SETTINGS_MSAA_8X; break;
+    default: s->render_scale = SETTINGS_PRESET_ULTRA_PCT; s->msaa = SETTINGS_MSAA_8X; break;
     }
+}
+
+/* ---- (menu) the Retro look ------------------------------------------------------------------------- */
+
+int settings_retro_controls(int i) {
+    if (i < 0 || i >= NOPTS || (opts[i].flags & SET_LEGACY)) return 0;
+    if (opts[i].flags & SET_PRESET) return 1;
+    return (!strcmp(opts[i].section, "graphics") && !strcmp(opts[i].key, "preset")) ||
+           (!strcmp(opts[i].section, "display") && !strcmp(opts[i].key, "aspect"));
+}
+
+void settings_set_look(ps2_settings_t* s, int look) {
+    if (look < 0 || look >= SETTINGS_LOOK_N) return;
+    int was = s->look == SETTINGS_LOOK_RETRO, now = look == SETTINGS_LOOK_RETRO;
+    if (now && !was) {                           /* the player's options aside, the original look's values */
+        for (int i = 0; i < NOPTS && i < SETTINGS_MAX_OPTS; i++) if (settings_retro_controls(i)) s->retro_own[i] = settings_get(s, i);
+        settings_apply_preset(s, SETTINGS_PRESET_ORIGINAL);
+    } else if (was && !now) {                    /* back to the player's options */
+        for (int i = 0; i < NOPTS && i < SETTINGS_MAX_OPTS; i++) if (settings_retro_controls(i)) settings_put(s, i, s->retro_own[i]);
+    }
+    s->look = look;
+    if (was && !now) s->preset = settings_detect_preset(s);
+}
+
+int settings_own(const ps2_settings_t* s, int i) {
+    if (s->look == SETTINGS_LOOK_RETRO && settings_retro_controls(i) && i < SETTINGS_MAX_OPTS) return s->retro_own[i];
+    return settings_get(s, i);
+}
+
+void settings_own_copy(const ps2_settings_t* s, ps2_settings_t* out) {
+    if (out != s) *out = *s;
+    if (out->look == SETTINGS_LOOK_RETRO) settings_set_look(out, SETTINGS_LOOK_FAITHFUL);
 }
 
 /* ---- values ---------------------------------------------------------------------------------------- */
@@ -539,6 +575,10 @@ int settings_parse(const char* text, ps2_settings_t* s, settings_warn_fn warn, v
     int problems = 0, line = 0, preset_seen = 0;
     unsigned char seen[NOPTS];
     memset(seen, 0, sizeof seen);
+    if (s->look == SETTINGS_LOOK_RETRO) {          /* (menu) keys not in the text keep the player's own values */
+        settings_set_look(s, SETTINGS_LOOK_FAITHFUL);
+        s->look = SETTINGS_LOOK_RETRO;             /* (the flag only: decided at the end) */
+    }
     static ps2_settings_t leg;                     /* (big: the disc path) */
     leg = *s;
     const char* p = text;
@@ -583,9 +623,20 @@ int settings_parse(const char* text, ps2_settings_t* s, settings_warn_fn warn, v
         problems += apply(s, section, key, v, warn, user, line, &preset_seen, seen, &leg);
     }
     use_legacy(s, seen, &leg);
-    /* a preset other than custom decides its options; otherwise the preset is what the options make */
-    if (preset_seen && s->preset != SETTINGS_PRESET_CUSTOM) settings_apply_preset(s, s->preset);
-    else s->preset = settings_detect_preset(s);
+    /* (menu) the values below are the player's own; the Retro look goes over them at the end */
+    int look = s->look;
+    s->look = SETTINGS_LOOK_FAITHFUL;
+    if (preset_seen && s->preset == SETTINGS_PRESET_ORIGINAL) {   /* an old "preset = original" (PS2): Look = Retro */
+        look = SETTINGS_LOOK_RETRO;
+        settings_apply_preset(s, SETTINGS_PRESET_MEDIUM);
+        if (is_43(s)) { s->aspect_w = 16; s->aspect_h = 9; }
+    } else if (preset_seen && s->preset != SETTINGS_PRESET_CUSTOM) {
+        /* a preset other than custom decides its options; otherwise the preset is what the options make */
+        settings_apply_preset(s, s->preset);
+    } else {
+        s->preset = settings_detect_preset(s);
+    }
+    settings_set_look(s, look);
     return problems;
 }
 
@@ -642,10 +693,13 @@ static const char* text_of(const ps2_settings_t* s, const char* section, const c
     return settings_value_text(i, settings_get(s, i), buf, cap);
 }
 
-int settings_format(const ps2_settings_t* s, char* out, size_t cap) {
+int settings_format(const ps2_settings_t* s_in, char* out, size_t cap) {
+    static ps2_settings_t own;                   /* (menu) the file holds the player's own options (the Retro look: a switch) */
+    settings_own_copy(s_in, &own);
+    const ps2_settings_t* s = &own;
     char disc[sizeof s->disc + 2];
     char win[256] = "";
-    char t[28][24];
+    char t[29][24];
 #define T(n, sec, key) text_of(s, sec, key, t[n], sizeof t[0])
     if (s->win_w > 0)
         snprintf(win, sizeof win, "x = %d\ny = %d\nwidth = %d\nheight = %d\nmaximized = %s\n", s->win_x, s->win_y,
@@ -677,11 +731,16 @@ int settings_format(const ps2_settings_t* s, char* out, size_t cap) {
         "frame_rate = %s\n"
         "\n"
         "[graphics]\n"
-        "; Preset: original (PS2 mode: Reference rendering on the PS2's integer grid, 4:3, TV filters, PS2 outlines),\n"
-        "; performance (render scale 75%%, no MSAA), balanced (default: 100%%, MSAA 4x), quality (100%%, MSAA 8x, thin\n"
-        "; outlines) or custom. A preset\n"
-        "; other than custom sets the options below when the game starts: set preset = custom to choose them one by one.\n"
+        "; Quality preset: low (render scale 75%%, no MSAA, original lighting and textures), medium (default: 100%%, MSAA 4x,\n"
+        "; enhanced lighting and textures), high (100%%, MSAA 8x, thin outlines), ultra (%d%%, MSAA 8x, thin outlines) or\n"
+        "; custom. A preset other than custom sets the options below when the game starts: set preset = custom to choose\n"
+        "; them one by one.\n"
         "preset = %s\n"
+        "; Look: faithful (default: the game's look drawn by the modern renderer with the options in this file), retro (the\n"
+        "; game exactly as it originally looked: Reference rendering on the original pixel grid, 4:3, TV flicker filter and\n"
+        "; interlacing, original outlines, lighting and textures - the options in this file come back with another look) or\n"
+        "; reimagined (a bold modern reimagining: in development, drawn as faithful for now; not offered in the menu).\n"
+        "look = %s\n"
         "; Renderer: gpu (default: Direct3D 11, needs a Direct3D 11 graphics card - feature level 11_0) or\n"
         "; software (the PS2's renderer on the CPU, at the PS2's resolution). When the GPU renderer cannot\n"
         "; start, the software renderer is used and sly2.log says why. Environment override: PS2_GS_BACKEND=sw|hw\n"
@@ -754,7 +813,7 @@ int settings_format(const ps2_settings_t* s, char* out, size_t cap) {
         "version = %d\n",
         T(19, "display", "mode"), T(20, "display", "resolution"),
         s->aspect_w, s->aspect_h, T(0, "display", "hud"), T(1, "display", "monitor"), T(16, "display", "fullscreen_refresh"), T(18, "display", "frame_rate"),
-        settings_preset_names[settings_detect_preset(s)], T(2, "graphics", "renderer"), T(3, "graphics", "pacing"), T(17, "graphics", "vsync"),
+        SETTINGS_PRESET_ULTRA_PCT, settings_preset_names[settings_detect_preset(s)], n_look[s_in->look >= 0 && s_in->look < SETTINGS_LOOK_N ? s_in->look : 0], T(2, "graphics", "renderer"), T(3, "graphics", "pacing"), T(17, "graphics", "vsync"),
         T(24, "graphics", "renderer_mode"), T(4, "graphics", "render_scale"), T(25, "graphics", "msaa"), T(26, "graphics", "lighting"), T(27, "graphics", "textures"), T(6, "graphics", "outlines"), T(7, "graphics", "filters"),
         T(8, "graphics", "motion_blur"), T(9, "graphics", "flicker_filter"), T(10, "graphics", "interlacing"),
         T(11, "graphics", "scaler"),
@@ -900,6 +959,19 @@ static int has_key(const char* text, const char* section, const char* key) {
     return want[1] != NULL;
 }
 
+typedef struct { const char* key; char* out; size_t cap; int found; } key_value_q;
+static void key_value_seen(void* user, const char* key, const char* value, int line) {
+    (void)line;
+    key_value_q* q = user;
+    if (!q->found && !_stricmp(key, q->key)) { snprintf(q->out, q->cap, "%s", value); q->found = 1; }
+}
+/* (menu) the value of section.key in INI text (the first one): 1 if there */
+static int key_value(const char* text, const char* section, const char* key, char* out, size_t cap) {
+    key_value_q q = { key, out, cap, 0 };
+    settings_parse_section(text, section, key_value_seen, &q);
+    return q.found;
+}
+
 int settings_migrate_text(const char* text, char* out, size_t cap) {
     static const struct { const char *sec, *key, *nsec, *nkey; } old[] = {
         { "window", "fullscreen", "display", "mode" },
@@ -925,6 +997,32 @@ int settings_migrate_text(const char* text, char* out, size_t cap) {
         }
         if (settings_remove_text(a, old[k].sec, old[k].key, b, sizeof b) < 0) return -1;
         memcpy(a, b, strlen(b) + 1);
+    }
+    /* (menu) the preset's old names: performance / balanced / quality -> low / medium / high; original (ps2) -> the Retro
+     * look over Medium (the player's options when it is turned off; a 4:3 aspect, which only Original set, back to 16:9) */
+    char pv[64];
+    if (key_value(a, "graphics", "preset", pv, sizeof pv)) {
+        static const struct { const char *from, *to; } ren[] = {
+            { "performance", "low" }, { "balanced", "medium" }, { "quality", "high" }, { "original", "medium" }, { "ps2", "medium" },
+        };
+        for (size_t k = 0; k < sizeof ren / sizeof ren[0]; k++) {
+            if (_stricmp(pv, ren[k].from)) continue;
+            int retro = k >= 3;
+            if (settings_update_text(a, "graphics", "preset", ren[k].to, b, sizeof b) < 0) return -1;
+            memcpy(a, b, strlen(b) + 1);
+            if (retro && !has_key(a, "graphics", "look")) {
+                if (settings_update_text(a, "graphics", "look", "retro", b, sizeof b) < 0) return -1;
+                memcpy(a, b, strlen(b) + 1);
+            }
+            char av[32];
+            int aw, ah;
+            if (retro && key_value(a, "display", "aspect", av, sizeof av) && settings_parse_aspect(av, &aw, &ah) && aw * 3 == ah * 4) {
+                if (settings_update_text(a, "display", "aspect", "16:9", b, sizeof b) < 0) return -1;
+                memcpy(a, b, strlen(b) + 1);
+            }
+            changed = 1;
+            break;
+        }
     }
     if (!changed) return 0;
     size_t n = strlen(a);
@@ -1004,11 +1102,11 @@ static void kv_add(kv_list* l, int i) {
     if (i < 0 || settings_env_locked(i)) return;
     for (int k = 0; k < l->n; k++)
         if (!strcmp(l->kv[k][0], opts[i].section) && !strcmp(l->kv[k][1], opts[i].key)) {   /* (already listed: new value) */
-            settings_value_text(i, settings_get(&ps2_settings, i), l->text[k], sizeof l->text[0]);
+            settings_value_text(i, settings_own(&ps2_settings, i), l->text[k], sizeof l->text[0]);
             return;
         }
     if (l->n >= 48) return;
-    settings_value_text(i, settings_get(&ps2_settings, i), l->text[l->n], sizeof l->text[0]);
+    settings_value_text(i, settings_own(&ps2_settings, i), l->text[l->n], sizeof l->text[0]);
     l->kv[l->n][0] = opts[i].section;
     l->kv[l->n][1] = opts[i].key;
     l->kv[l->n][2] = l->text[l->n];
@@ -1028,9 +1126,29 @@ int settings_change(int i, int v, int persist) {
         settings_touch();
         return 1;
     }
+    int is_preset = !strcmp(o->key, "preset") && !strcmp(o->section, "graphics");
+    int ri = settings_find("graphics", "look");
+    if (is_preset && v == SETTINGS_PRESET_ORIGINAL) return settings_change(ri, SETTINGS_LOOK_RETRO, persist);   /* (menu) */
+    if (i == ri) {                               /* (menu) the look: the player's options stay in the file */
+        int old_aspect = settings_get(&ps2_settings, settings_find("display", "aspect"));
+        int ai = settings_find("display", "aspect");
+        settings_set_look(&ps2_settings, v);
+        if (settings_env_locked(ai)) settings_put(&ps2_settings, ai, old_aspect);   /* (PS2_ASPECT decides) */
+        static kv_list rl;
+        rl.n = 0;
+        kv_add(&rl, i);
+#ifdef _WIN32
+        if (persist && !settings_set((const char* const (*)[3])rl.kv, rl.n)) fprintf(stderr, "[settings] cannot write graphics.look to sly2.ini\n");
+#endif
+        settings_touch();
+        run_applier(o->apply, i);
+        if (settings_get(&ps2_settings, ai) != old_aspect) run_applier(SET_APPLY_DISPLAY, ai);
+        return 1;
+    }
+    /* (menu) an option the Retro look controls (a hotkey: F3, F7, F10 ...): the Retro look ends first, then it changes */
+    if (ps2_settings.look == SETTINGS_LOOK_RETRO && settings_retro_controls(i)) settings_change(ri, SETTINGS_LOOK_FAITHFUL, persist);
     static kv_list l;
     l.n = 0;
-    int is_preset = !strcmp(o->key, "preset") && !strcmp(o->section, "graphics");
     int old_aspect = settings_get(&ps2_settings, settings_find("display", "aspect"));
     if (is_preset) {
         int prev = ps2_settings.preset;
@@ -1187,7 +1305,7 @@ void settings_load(void) {
             /* (pc-polish) old keys -> new ones in the file (window.fullscreen -> display.mode, internal_scale -> render_scale) */
             int n = settings_migrate_text(text, migrated, sizeof migrated);
             if (n > 0) {
-                if (write_text(path, migrated, (size_t)n)) fprintf(stderr, "[settings] %s: old keys replaced by [display] mode / [graphics] render_scale\n", upath);
+                if (write_text(path, migrated, (size_t)n)) fprintf(stderr, "[settings] %s: old keys and values replaced (display.mode, graphics.render_scale, graphics.preset, graphics.look)\n", upath);
                 else fprintf(stderr, "[settings] %s: cannot write the migrated keys\n", upath);
                 memcpy(text, migrated, (size_t)n + 1);
             }
@@ -1267,18 +1385,23 @@ int settings_read_graphics(ps2_settings_t* g) {
     wchar_t path[MAX_PATH + 80];
     static char text[65536];
     if (!settings_path(path, sizeof path / sizeof path[0]) || read_text(path, text, sizeof text) == (size_t)-1) return 0;
-    ps2_settings_t s;
+    static ps2_settings_t s;
     settings_defaults(&s);
+    settings_set_look(g, SETTINGS_LOOK_FAITHFUL);   /* (menu) the player's own options of g, the file's, then the look */
     s.aspect_w = g->aspect_w;                    /* (a preset in the file decides from the aspect in use) */
     s.aspect_h = g->aspect_h;
     settings_parse(text, &s, NULL, NULL);
+    int look = s.look;
+    settings_set_look(&s, SETTINGS_LOOK_FAITHFUL);
     for (int i = 0; i < NOPTS; i++) {
         const settings_opt* o = &opts[i];
         int ours = !(o->flags & SET_LEGACY) && (!strcmp(o->section, "audio") || !strcmp(o->section, "controls") ||
-                   (!strcmp(o->section, "graphics") && strcmp(o->key, "renderer") && strcmp(o->key, "pacing")));
+                   (!strcmp(o->section, "graphics") && strcmp(o->key, "renderer") && strcmp(o->key, "pacing") &&
+                    strcmp(o->key, "look")));
         if (ours && !settings_env_locked(i)) settings_put(g, i, settings_get(&s, i));
     }
     g->preset = settings_detect_preset(g);
+    settings_set_look(g, look);
     settings_touch();
     return 1;
 }

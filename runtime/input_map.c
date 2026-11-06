@@ -420,13 +420,15 @@ uint32_t input_state_nav_bits(const input_state* s) {
     if (b >> INPUT_BTN_R1 & 1) n |= NAV_BIT(INPUT_NAV_TAB_NEXT);
     if (b >> INPUT_BTN_L1 & 1) n |= NAV_BIT(INPUT_NAV_TAB_PREV);
     if ((b >> INPUT_BTN_START & 1) || (b >> INPUT_BTN_HOME & 1)) n |= NAV_BIT(INPUT_NAV_MENU);
+    if (b >> INPUT_BTN_SQUARE & 1) n |= NAV_BIT(INPUT_NAV_APPLY);      /* (menu) */
+    if (b >> INPUT_BTN_TRIANGLE & 1) n |= NAV_BIT(INPUT_NAV_DISCARD);
     return n;
 }
 
 int input_nav_step(input_nav_tracker* t, uint32_t now_bits, uint32_t pressed, uint64_t now_ms, int* navs, int* repeats,
                    int max) {
     int n = 0;
-    for (int nav = 1; nav < 16; nav++) {
+    for (int nav = 1; nav < INPUT_NAV_BITS; nav++) {
         uint32_t bit = NAV_BIT(nav);
         int held = (now_bits & bit) != 0, was = (t->held & bit) != 0;
         if ((held && !was) || ((pressed & bit) && !was) || ((pressed & bit) && !held)) {

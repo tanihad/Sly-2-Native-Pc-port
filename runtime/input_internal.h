@@ -91,7 +91,8 @@ uint32_t input_state_nav_bits(const input_state* s);
  * since the last step even if released again (short taps). Returns the number of events written. */
 #define INPUT_NAV_DELAY_MS  400
 #define INPUT_NAV_REPEAT_MS 110
-typedef struct { uint32_t held; uint64_t next[16]; } input_nav_tracker;
+#define INPUT_NAV_BITS 24                         /* (menu) INPUT_NAV_* below this (APPLY / DISCARD after WHEEL) */
+typedef struct { uint32_t held; uint64_t next[INPUT_NAV_BITS]; } input_nav_tracker;
 int input_nav_step(input_nav_tracker* t, uint32_t now_bits, uint32_t pressed, uint64_t now_ms, int* navs, int* repeats,
                    int max);
 
