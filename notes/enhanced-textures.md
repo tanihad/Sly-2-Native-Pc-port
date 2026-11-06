@@ -61,6 +61,23 @@ pass B (the additive highlight with the second CLUT) ATST NEVER. FF textures (fa
    halos). Low-contrast neighbourhoods (range < 6..18 of 255: a gradient in 4-bit palette steps) are smoothed instead of
    sharpened (no ridges), except thin lines and dots (the nearest texel darker / brighter than both neighbours along x or
    y: grout, seams, strokes), which keep the full mask.
+   **Dither resolve first** (cs_et_dd, one dispatch per class before cs_et_up; 2026-11-06 follow-up): most 4-bit textures
+   draw smooth shading as ordered / scattered dither between two close palette entries (ep6's teal planks and window
+   glass, ep1's grass and stone, ep3's bark). The PS2's bilinear filter blurred it; upscaling + the unsharp mask (and the
+   dot exemption above) turned it into crisp dot grain. Per source texel, from a 16x16 group-shared tile: the luminance
+   residual against a 3x3 binomial and its sign; a texel whose residual is coherent with neither pair of opposite
+   neighbours (an isolated dot) or with both diagonals only (a checker) is dither-like, one coherent along a direction (3 in
+   a row: grain, grout, strokes) is a line. Dither-likeness = most active texels of the 5x5 dither-like (>= 45..70%), at
+   least 1..3 of them, local contrast below PS2_TEX_DD_RANGE (40; the distance is the luminance difference or 2.5x the
+   hue / saturation difference, so rust dots on teal planks are detail), a line texel itself x0.3. Where >= 4..7 of the 25
+   are dither-like (an area, PS2_TEX_DD_DENSE) the texel takes the range-limited 3x3 binomial (the dither's average;
+   neighbours beyond the range or line texels next to it count little); a sparse row of dots (stitching, rivets, a dotted
+   streak) stays. cs_et_up then: no dot / line exemption and no deband blur on dither-like texels; resolved texels get the
+   full unsharp mask (it now sharpens the shading's real structure - cracks, rust, streaks; PS2_TEX_DD_SHARP), unresolved
+   dither-like ones none (soft dots as the PS2 drew them). PS2_TEX_DEDITHER=0 turns it off (exactly the earlier output).
+   Tried and dropped: an "edge" guard (the binomial's gradient against the residuals) - steep dithered ramps such as glows
+   pass it too and came back as grain; resolving every dotted pattern (range 40, no density rule) - also erased stitch rows
+   and the dotted streaks the original filter showed softly.
 5. **Mip chain** (cs_et_mip / cs_et_cov / cs_et_store): RGB is the Catmull-Rom value half-way between each 2x2 (crisper
    than a box), clamped to the 2x2's range; alpha the box average. Alpha-tested images (pass A: GEQUAL 126) get each
    level's alpha scaled so the share of texels passing the test equals level 0's (coverage-preserving mips; histograms in
@@ -89,7 +106,8 @@ build\gen\gpu_shaders.h); the 19 new ones (12 R2 PS, 2 MFT PS, 5 CS) are only us
 ## Switches (tests, not in the menu)
 
 PS2_TEX=0|1 (wins over the setting), PS2_TEX_UP=0 (mips + anisotropic of the original images only), PS2_TEX_SCALE=2|4|8,
-PS2_TEX_SHARP, PS2_TEX_SIGMA_C / _SIGMA_A, PS2_TEX_EDGE, PS2_TEX_FLAT / _DETAIL, PS2_TEX_ANISO=1..16, PS2_TEX_BIAS,
+PS2_TEX_SHARP, PS2_TEX_SIGMA_C / _SIGMA_A, PS2_TEX_EDGE, PS2_TEX_FLAT / _DETAIL, PS2_TEX_DEDITHER=0..1 (0: off),
+PS2_TEX_DD_RANGE (40), PS2_TEX_DD_DENSE (4), PS2_TEX_DD_SHARP (1), PS2_TEX_ANISO=1..16, PS2_TEX_BIAS,
 PS2_TEX_MB, PS2_TEX_FRAME, PS2_TEX_HD=0, PS2_TEX_DUMP=1|2, PS2_TEX_LOG=1, PS2_TEX_SPLIT=1 (Enhanced right of the middle),
 PS2_TEX_DBG=1 (enhanced texels red: coverage) / 2 (grey by class), PS2_TEX_STATS=1 (every texture's format and use).
 In-run A/B: PS2_GPU_AB=<frames> PS2_GPU_AB_R8=128 (R8P_TEX), PS2_GPU_AB_LOG=1 logs the phase switches; the ab-gpu line
@@ -143,5 +161,6 @@ alpha edges on ep3's hanging moss; no halos, no ringing, no fringes along cut-ou
 **Known limits**: the HUD, text, menus and particles keep the PS2's sampling (by design); Reference / integer-grid frames
 (Modern with an exact multiple, menus, loading screens) are never enhanced; FST (fixed-point UV) exact triangles and
 region-addressed or nearest-filtered textures keep the original sampling; textures that change content twice within 30 s
-are left Original; HD-pack images must be power-of-two sized (up to 2048); 4-bit textures with dithering can show a light
-grain after sharpening (glass in ep6); the first seconds of a level show a texture's original until its image is built.
+are left Original; HD-pack images must be power-of-two sized (up to 2048); dithered areas are resolved to their average
+shading, so a texture whose fine noise was painted as such (some grass, stone and carpet) comes out smoother than the
+PS2's filtered look, and sparse dotted rows stay as soft as the PS2 drew them (not sharper); the first seconds of a level show a texture's original until its image is built.

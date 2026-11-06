@@ -2,7 +2,8 @@
  * once by gpu_exec.c after the decoded texture cache (texdec, TD): an enhanced image hangs off a decoded entry.
  *
  *   what    art textures of the 3D (R2 materials, exact phase-A triangles from the decoded cache) get an image of their
- *           own: an edge-directed 4x upscale with an unsharp mask at the source scale, a full mip chain (alpha-tested
+ *           own: dithered areas resolved to their shading first (cs_et_dd), an edge-directed 4x upscale with an unsharp
+ *           mask at the source scale, a full mip chain (alpha-tested
  *           images keep their coverage), sampled trilinear + anisotropic. Or an HD-pack image: <user dir>\textures\
  *           <hash>.png. Render targets, CLUT-animated / per-frame textures, nearest / region-addressed ones, sprites, the
  *           HUD and particles keep the GS's sampling.
@@ -18,6 +19,7 @@
  *           texels per frame.
  *   config  gpu_tex_config (gfx.c: graphics.textures); PS2_TEX=0|1 wins. Tests: PS2_TEX_UP=0 (mips + anisotropic of the
  *           original images only), PS2_TEX_SCALE=2|4, PS2_TEX_SHARP, PS2_TEX_SIGMA_C / _SIGMA_A / _EDGE, PS2_TEX_ANISO,
+ *           PS2_TEX_DEDITHER=0 (no dither resolve), PS2_TEX_DD_RANGE / _DENSE / _SHARP,
  *           PS2_TEX_BIAS, PS2_TEX_MB, PS2_TEX_FRAME, PS2_TEX_HD=0, PS2_TEX_DUMP=1, PS2_TEX_LOG=1, PS2_TEX_SPLIT=1. In-run
  *           A/B: PS2_GPU_AB=<frames> PS2_GPU_AB_R8=128 (R8P_TEX). */
 
