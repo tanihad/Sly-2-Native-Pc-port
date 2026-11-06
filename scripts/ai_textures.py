@@ -1,4 +1,4 @@
-﻿"""(ai) AI texture upscaling prototype, phase 1 (notes/ai-textures.md): a texture dump -> an HD-pack folder.
+"""(ai) AI texture upscaling prototype, phase 1 (notes/ai-textures.md): a texture dump -> an HD-pack folder.
 
     python -I scripts/ai_textures.py build                           build\\tools\\ai_up.exe (+ build\\ai\\x4anime6b.bin)
     python -I scripts/ai_textures.py selftest [--size 5x4]           pure-Python reference vs C reference vs GPU
@@ -40,6 +40,9 @@ WEIGHTS = ROOT / 'build' / 'ai' / 'x4anime6b.bin'
 HLSL = ROOT / 'runtime' / 'gpu' / 'shaders' / 'ai_up.hlsl'
 PAD = 16
 TILE = 128
+DITHER = float(os.environ.get('AI_DITHER', '9'))   # (dither score above which flat areas are smoothed first: off -
+# the net removes dither by itself and the pre-smoothing cost the textures' grain; notes/ai-textures.md)
+os.environ.setdefault('AI_UP_DETAIL', '1.0')        # (the source's grain added back under the net's lines; 0 = the net alone)
 os.environ.setdefault('AI_UP_CACHE', str(ROOT / 'build' / 'ai' / 'shcache'))   # (compiled shader permutations)
 
 
@@ -243,39 +246,10 @@ def crop_pad(w, h, planes, x0, y0, cw, ch, wx, wy):
     return out
 
 
-# ---- 4. alpha ---------------------------------------------------------------------------------------------------------
-def cubic_w(t):
-    # Catmull-Rom weights for offsets -1, 0, 1, 2
-    t2, t3 = t * t, t * t * t
-    return (-0.5 * t3 + t2 - 0.5 * t, 1.5 * t3 - 2.5 * t2 + 1.0, -1.5 * t3 + 2.0 * t2 + 0.5 * t, 0.5 * t3 - 0.5 * t2)
-
-
-def alpha_up(w, h, a, wx, wy, s=4):
-    W, H = w * s, h * s
-    cut = sum(1 for v in a if 16 < v < 239) < 0.1 * len(a) and min(a) < 128 <= max(a)   # cut-out (mostly 0 / 255)
-    taps = []
-    for o in range(s):
-        f = (o + 0.5) / s - 0.5
-        b = -1 if f < 0 else 0
-        taps.append((b, cubic_w(f - b)))
-    out = bytearray(W * H)
-    for Y in range(H):
-        by, wyv = taps[Y % s]
-        y = Y // s + by
-        rows = [sample_idx(y - 1 + k, h, wy) * w for k in range(4)]
-        for X in range(W):
-            bx, wxv = taps[X % s]
-            x = X // s + bx
-            cols = [sample_idx(x - 1 + k, w, wx) for k in range(4)]
-            v = 0.0
-            for ky in range(4):
-                r = rows[ky]
-                v += wyv[ky] * (wxv[0] * a[r + cols[0]] + wxv[1] * a[r + cols[1]] + wxv[2] * a[r + cols[2]] + wxv[3] * a[r + cols[3]])
-            if cut:     # a steep ramp around 50 %: smooth contour, the same coverage, ~1.5 output texels of soft edge
-                v = (v - 127.5) * 2.5 + 127.5
-            out[Y * W + X] = 0 if v < 0 else 255 if v > 255 else int(v + 0.5)
-    return out, cut
-
+# ---- 4. alpha (ai_up.exe alpha: Catmull-Rom 4x, wrapped / clamped like the RGB, a steep ramp for cut-outs) ------------
+def is_cutout(a):
+    """mostly 0 / 255 (alpha-tested leaves, railings, moss): sharpen the interpolated contour"""
+    return sum(1 for v in a if 16 < v < 239) < 0.1 * len(a) and min(a) < 128 <= max(a)
 
 # ---- the pipeline ------------------------------------------------------------------------------------------------------
 def prepare(path):
@@ -284,7 +258,7 @@ def prepare(path):
     planes = list(bleed(w, h, rgba))
     ncol = len(set(bytes(rgba[i * 4:i * 4 + 3]) for i in range(w * h)))
     ds = dither_score(w, h, planes) if ncol <= 256 else 0.0
-    dith = ncol <= 256 and ds > 0.12
+    dith = ncol <= 256 and ds > DITHER
     if dith:
         planes = dedither(w, h, planes)
     wx, wy = tiles_axis(w, h, planes, 0), tiles_axis(w, h, planes, 1)
@@ -325,6 +299,15 @@ def upscale(dump, pack, max_pixels=131072, keep_tmp=False):
         print(r.stderr)
         raise SystemExit('ai_up failed')
     t3 = time.perf_counter()
+    with open(tmp / 'ain.bin', 'wb') as f:
+        al = [inf for inf in infos if not inf['opaque']]
+        f.write(b'AIA1' + struct.pack('<I', len(al)))
+        for inf in al:
+            inf['cut'] = is_cutout(inf['a'])
+            f.write(struct.pack('<III', inf['w'], inf['h'], inf['wx'] | inf['wy'] << 1 | inf['cut'] << 2) + bytes(inf['a']))
+    subprocess.check_call([str(EXE), 'alpha', str(tmp / 'ain.bin'), str(tmp / 'aout.bin')])
+    adata, apos = open(tmp / 'aout.bin', 'rb').read(), 0
+    t3b = time.perf_counter()
     data = open(tmp / 'out.bin', 'rb').read()
     pos = 8
     k = 0
@@ -342,27 +325,25 @@ def upscale(dump, pack, max_pixels=131072, keep_tmp=False):
                 s = ((y + 4 * PAD) * ow + 4 * PAD) * 3
                 d = ((4 * ty + y) * W + 4 * tx) * 3
                 rgb[d:d + 4 * cw * 3] = img[s:s + 4 * cw * 3]
+        out = bytearray(W * H * 4)
+        out[0::4], out[1::4], out[2::4] = rgb[0::3], rgb[1::3], rgb[2::3]
         if inf['opaque']:
-            out = bytearray(W * H * 4)
-            out[0::4], out[1::4], out[2::4] = rgb[0::3], rgb[1::3], rgb[2::3]
             out[3::4] = b'\xff' * (W * H)
         else:
-            al, cut = alpha_up(w, h, inf['a'], inf['wx'], inf['wy'])
-            stats['cut'] += cut
-            out = bytearray(W * H * 4)
-            out[0::4], out[1::4], out[2::4] = rgb[0::3], rgb[1::3], rgb[2::3]
-            out[3::4] = al
+            out[3::4] = adata[apos:apos + W * H]
+            apos += W * H
+            stats['cut'] += inf['cut']
         stats['dith'] += inf['dith']
         stats['wrap_both'] += inf['wx'] and inf['wy']
         stats['clamp_any'] += not (inf['wx'] and inf['wy'])
         write_png(pack / (inf['name'] + '.png'), W, H, out, 4)
     t4 = time.perf_counter()
     print(f'{len(infos)} textures ({k} net tiles): prepare {t1 - t0:.1f} s, write batch {t2 - t1:.1f} s, net (ai_up) {t3 - t2:.1f} s, '
-          f'finish + PNGs {t4 - t3:.1f} s, total {t4 - t0:.1f} s')
+          f'alpha {t3b - t3:.1f} s, finish + PNGs {t4 - t3b:.1f} s, total {t4 - t0:.1f} s')
     print(f"  dithered (smoothed first) {stats['dith']}, cut-out alpha {stats['cut']}, tiling both axes {stats['wrap_both']}, "
           f"clamped on an axis {stats['clamp_any']}")
     if not keep_tmp:
-        for p in ('in.bin', 'out.bin'):
+        for p in ('in.bin', 'out.bin', 'ain.bin', 'aout.bin'):
             (tmp / p).unlink(missing_ok=True)
 
 

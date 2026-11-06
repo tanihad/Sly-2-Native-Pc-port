@@ -13,6 +13,7 @@
 #include <windows.h>
 #include <d3d11.h>
 #include <dxgi1_4.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -83,8 +84,100 @@ static int cmp_size(const void* a, const void* b) {
     return x < y ? -1 : x > y;
 }
 
+/* alpha <in.bin> <out.bin>: "AIA1", count, per image u32 w, h, flags (1 wrap x, 2 wrap y, 4 cut-out) + w*h alpha
+ * bytes -> 4x alpha bytes per image (same order, no header per image). Catmull-Rom 4x (wrapped / clamped); cut-out
+ * images get a steep ramp around 50 % (smooth contours, the same coverage). */
+static int alpha_mode(const char* inp, const char* outp) {
+    FILE* f = fopen(inp, "rb");
+    FILE* o = fopen(outp, "wb");
+    uint32_t hd[2];
+    if (!f || !o || fread(hd, 4, 2, f) != 2 || memcmp(hd, "AIA1", 4)) return 1;
+    for (uint32_t i = 0; i < hd[1]; i++) {
+        uint32_t d[3];
+        if (fread(d, 4, 3, f) != 3 || !d[0] || !d[1] || d[0] > 4096 || d[1] > 4096) return 1;
+        int w = (int)d[0], h = (int)d[1], wx = d[2] & 1, wy = d[2] & 2, cut = d[2] & 4;
+        uint8_t* a = malloc((size_t)w * h);
+        uint8_t* r = malloc((size_t)w * h * 16);
+        if (fread(a, 1, (size_t)w * h, f) != (size_t)w * h) return 1;
+        for (int Y = 0; Y < 4 * h; Y++) {
+            float fy = (Y + 0.5f) / 4 - 0.5f;
+            int by = (int)floorf(fy);
+            float ty = fy - by, wyv[4];
+            float t2 = ty * ty, t3 = t2 * ty;
+            wyv[0] = -0.5f * t3 + t2 - 0.5f * ty; wyv[1] = 1.5f * t3 - 2.5f * t2 + 1; wyv[2] = -1.5f * t3 + 2 * t2 + 0.5f * ty; wyv[3] = 0.5f * t3 - 0.5f * t2;
+            int rows[4];
+            for (int k = 0; k < 4; k++) { int yy = by - 1 + k; rows[k] = wy ? ((yy % h) + h) % h : yy < 0 ? 0 : yy >= h ? h - 1 : yy; }
+            for (int X = 0; X < 4 * w; X++) {
+                float fx = (X + 0.5f) / 4 - 0.5f;
+                int bx = (int)floorf(fx);
+                float tx = fx - bx, wxv[4];
+                float s2 = tx * tx, s3 = s2 * tx;
+                wxv[0] = -0.5f * s3 + s2 - 0.5f * tx; wxv[1] = 1.5f * s3 - 2.5f * s2 + 1; wxv[2] = -1.5f * s3 + 2 * s2 + 0.5f * tx; wxv[3] = 0.5f * s3 - 0.5f * s2;
+                float v = 0;
+                for (int ky = 0; ky < 4; ky++)
+                    for (int kx = 0; kx < 4; kx++) {
+                        int xx = bx - 1 + kx;
+                        xx = wx ? ((xx % w) + w) % w : xx < 0 ? 0 : xx >= w ? w - 1 : xx;
+                        v += wyv[ky] * wxv[kx] * a[rows[ky] * w + xx];
+                    }
+                if (cut) v = (v - 127.5f) * 2.5f + 127.5f;
+                r[(size_t)Y * 4 * w + X] = (uint8_t)(v < 0 ? 0 : v > 255 ? 255 : v + 0.5f);
+            }
+        }
+        fwrite(r, 1, (size_t)w * h * 16, o);
+        free(a); free(r);
+    }
+    fclose(f); fclose(o);
+    return 0;
+}
+
+/* AI_UP_DETAIL=g: the source's own fine texture (texel minus its 3x3 Gaussian), Catmull-Rom 4x, added g times to the
+ * net's output: the anime model flattens material grain (wood, grass, cloth); this puts the original grain back under
+ * its crisp lines. in: 3 planes w x h; out: 3 planes 4w x 4h (modified). */
+static void add_detail(const float* in, int w, int h, float* out, float g) {
+    size_t P = (size_t)w * h;
+    float* hp = malloc(P * 4);
+    for (int c = 0; c < 3; c++) {
+        const float* s = in + c * P;
+        for (int y = 0; y < h; y++)
+            for (int x = 0; x < w; x++) {
+                float b = 0;
+                for (int dy = -1; dy <= 1; dy++)
+                    for (int dx = -1; dx <= 1; dx++) {
+                        int yy = y + dy < 0 ? 0 : y + dy >= h ? h - 1 : y + dy, xx = x + dx < 0 ? 0 : x + dx >= w ? w - 1 : x + dx;
+                        b += s[yy * w + xx] * (dy ? 0.5f : 1.0f) * (dx ? 0.5f : 1.0f) * 0.25f;
+                    }
+                hp[y * w + x] = s[y * w + x] - b;
+            }
+        float* o = out + c * 16 * P;
+        for (int Y = 0; Y < 4 * h; Y++) {
+            float fy = (Y + 0.5f) / 4 - 0.5f;
+            int by = (int)floorf(fy);
+            float t = fy - by, t2 = t * t, t3 = t2 * t;
+            float wy[4] = { -0.5f * t3 + t2 - 0.5f * t, 1.5f * t3 - 2.5f * t2 + 1, -1.5f * t3 + 2 * t2 + 0.5f * t, 0.5f * t3 - 0.5f * t2 };
+            for (int X = 0; X < 4 * w; X++) {
+                float fx = (X + 0.5f) / 4 - 0.5f;
+                int bx = (int)floorf(fx);
+                float u = fx - bx, u2 = u * u, u3 = u2 * u;
+                float wx[4] = { -0.5f * u3 + u2 - 0.5f * u, 1.5f * u3 - 2.5f * u2 + 1, -1.5f * u3 + 2 * u2 + 0.5f * u, 0.5f * u3 - 0.5f * u2 };
+                float v = 0;
+                for (int ky = 0; ky < 4; ky++) {
+                    int yy = by - 1 + ky; yy = yy < 0 ? 0 : yy >= h ? h - 1 : yy;
+                    for (int kx = 0; kx < 4; kx++) {
+                        int xx = bx - 1 + kx; xx = xx < 0 ? 0 : xx >= w ? w - 1 : xx;
+                        v += wy[ky] * wx[kx] * hp[yy * w + xx];
+                    }
+                }
+                o[(size_t)Y * 4 * w + X] += g * v;
+            }
+        }
+    }
+    free(hp);
+}
+
 int main(int argc, char** argv) {
     char err[512] = "";
+    if (argc == 4 && !strcmp(argv[1], "alpha")) return alpha_mode(argv[2], argv[3]);
     if (argc < 5) { fprintf(stderr, "usage: see scripts/ai_up_tool.c\n"); return 2; }
     ai_weights* wt = ai_weights_load(argv[2], err, sizeof err);
     if (!wt) { fprintf(stderr, "%s\n", err); return 1; }
@@ -118,6 +211,8 @@ int main(int argc, char** argv) {
     }
     if (strcmp(argv[1], "batch")) { fprintf(stderr, "unknown mode %s\n", argv[1]); return 2; }
     size_t maxp = argc > 6 ? (size_t)_strtoui64(argv[6], NULL, 10) : 131072;
+    const char* de = getenv("AI_UP_DETAIL");
+    float detail = de && *de ? (float)atof(de) : 0.0f;
     FILE* f = fopen(argv[4], "rb");
     uint32_t hd[2];
     if (!f || fread(hd, 4, 2, f) != 2 || memcmp(hd, "AIB1", 4)) { fprintf(stderr, "bad batch file\n"); return 1; }
@@ -160,7 +255,8 @@ int main(int argc, char** argv) {
         size_t Q = 16 * P;
         for (uint32_t j = 0; j < k; j++) {
             uint8_t* o = ord[i + j]->out = malloc(Q * 3);
-            const float* s = fout + (size_t)j * 3 * Q;
+            float* s = fout + (size_t)j * 3 * Q;
+            if (detail > 0) add_detail(fin + (size_t)j * 3 * P, (int)w, (int)h, s, detail);
             for (size_t p = 0; p < Q; p++)
                 for (int c = 0; c < 3; c++) {
                     float v = s[c * Q + p];
