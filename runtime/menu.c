@@ -822,6 +822,7 @@ static int build_rows(int page, menu_row* rows) {
         if (!gpu) disable(r, gpu_only);
         else if (!modern_pct) disable(r, modern_only);
         retro_lock(r);
+        if (r && retro_view()) { snprintf(r->value, sizeof r->value, "Off"); r->changed = 0; }   /* (no multisampling then) */
         choice_row(rows, &n, MENU_ROW_OUTLINES, "Outlines",
                    "The cel-shading outlines. Original: as the game drew them, one original pixel wide (bolder at high "
                    "resolutions). Thin: fine lines at your screen's resolution.");
