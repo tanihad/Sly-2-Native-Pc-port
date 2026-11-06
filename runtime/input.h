@@ -83,7 +83,8 @@ int input_poll_notice(input_notice* out);       /* 1 and the oldest unread notic
 /* ---- the Options menu --------------------------------------------------------------------------------- */
 enum { INPUT_NAV_NONE, INPUT_NAV_UP, INPUT_NAV_DOWN, INPUT_NAV_LEFT, INPUT_NAV_RIGHT, INPUT_NAV_CONFIRM,
        INPUT_NAV_BACK, INPUT_NAV_TAB_NEXT, INPUT_NAV_TAB_PREV, INPUT_NAV_MENU, INPUT_NAV_CLICK,
-       INPUT_NAV_POINTER, INPUT_NAV_RELEASE, INPUT_NAV_WHEEL };
+       INPUT_NAV_POINTER, INPUT_NAV_RELEASE, INPUT_NAV_WHEEL,
+       INPUT_NAV_APPLY, INPUT_NAV_DISCARD };     /* (menu) Square / X or F: apply the changes; Triangle / Y or R: discard them */
 enum { INPUT_SRC_KEYBOARD, INPUT_SRC_MOUSE, INPUT_SRC_CONTROLLER };
 typedef struct {
     int nav;                                     /* INPUT_NAV_* */

@@ -654,6 +654,8 @@ static int key_nav(int vk, int shift) {
     case VK_TAB: return shift ? INPUT_NAV_TAB_PREV : INPUT_NAV_TAB_NEXT;
     case 'E': case VK_NEXT: return INPUT_NAV_TAB_NEXT;
     case 'Q': case VK_PRIOR: return INPUT_NAV_TAB_PREV;
+    case 'F': return INPUT_NAV_APPLY;            /* (menu) apply the staged changes */
+    case 'R': return INPUT_NAV_DISCARD;          /* (menu) discard them */
     default: return INPUT_NAV_NONE;
     }
 }

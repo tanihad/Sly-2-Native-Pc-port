@@ -85,7 +85,19 @@ typedef struct {
     int textures_enhanced;       /* (tex) [graphics] textures = original (0) | enhanced (1, default): the 3D's textures
                                     upscaled, sharpened and mip-mapped on modern frames (runtime/gpu/gpu_tex.h,
                                     notes/enhanced-textures.md) */
+    /* (menu, owner 2026-11-06) [graphics] look = retro | faithful (default) | reimagined: SETTINGS_LOOK_*. Retro = the game
+     * exactly as it originally looked - the options it controls (settings_retro_controls: every preset option and the
+     * aspect) take the Original values; the player's own values are kept in retro_own[] (indexed by option) and come back
+     * when another look is chosen. sly2.ini always holds the player's own values in those keys. Faithful = the modern
+     * renderer with the options as they are (Enhanced lighting / textures by the Quality). Reimagined = a bold modern
+     * reimagining (not built yet: renders as Faithful; hidden in the menu unless sly2.ini says look = reimagined). */
+    int look;
+    int retro_own[64];
 } ps2_settings_t;
+#define SETTINGS_MAX_OPTS 64
+enum { SETTINGS_LOOK_FAITHFUL, SETTINGS_LOOK_RETRO, SETTINGS_LOOK_REIMAGINED, SETTINGS_LOOK_N };   /* (0: a zeroed struct is Faithful) */
+/* the look in effect (the renderer's query: SETTINGS_LOOK_*) */
+static inline int settings_look(const ps2_settings_t* s) { return s->look; }
 
 /* (r2-m8) graphics.msaa: samples per pixel of modern frames (1, 2, 4, 8) */
 enum { SETTINGS_MSAA_OFF, SETTINGS_MSAA_2X, SETTINGS_MSAA_4X, SETTINGS_MSAA_8X, SETTINGS_MSAA_N };
@@ -126,26 +138,41 @@ extern const char* const settings_scaler_names[SETTINGS_SCALER_N];   /* "auto", 
 #define SETTINGS_SCALE_AUTO_MAX 3        /* the scale auto aims for by default (the owner's decision: 3x on capable GPUs) */
 enum { SETTINGS_FULLSCREEN_OFF, SETTINGS_FULLSCREEN_BORDERLESS, SETTINGS_FULLSCREEN_EXCLUSIVE };
 
-/* Graphics presets (notes/settings.md "Presets"; the menu's Graphics > Preset). (r2-m8, D6) Rendering is part of them:
- *   Original    - "PS2" in the menu: every faithful setting at once - Rendering Reference (the exact GS renderer), the
- *                 integer sample grid (render_scale auto: the largest multiple of 512 x 448 up to the screen), filters
- *                 faithful (flicker filter, interlacing, motion blur), outlines ps2, aspect 4:3.
- *   Performance - Modern, render_scale 75 %, MSAA off, outlines ps2, lighting and textures original, wide.
- *   Balanced    - (default) Modern, render_scale 100 % (the screen's own resolution), MSAA 4x, outlines ps2, lighting
- *                 and textures enhanced, wide.
- *   Quality     - Modern, render_scale 100 %, MSAA 8x, thin outlines, lighting and textures enhanced, wide.
- *   (Original also sets lighting and textures original: the PS2's picture.)
- *   Custom      - anything else.
+/* Graphics presets (notes/settings.md "Presets"; the menu's Graphics > Quality). (menu, 2026-11-06) Low / Medium / High /
+ * Ultra (+ Custom); the original look is Look = Retro (graphics.look), not a Quality:
+ *   Original - only while the look is Retro (settings_detect_preset): Rendering Reference (the exact GS renderer), the
+ *              integer sample grid (render_scale auto), filters faithful (flicker filter, interlacing, motion blur),
+ *              outlines ps2, lighting and textures original, aspect 4:3. settings_apply_preset(ORIGINAL) sets these values.
+ *   Low      - (was Performance) Modern, render_scale 75 %, MSAA off, outlines ps2, lighting and textures original, wide.
+ *   Medium   - (was Balanced, the default) Modern, render_scale 100 % (the screen's own resolution), MSAA 4x, outlines
+ *              ps2, lighting and textures enhanced, wide.
+ *   High     - (was Quality) Modern, render_scale 100 %, MSAA 8x, thin outlines, lighting and textures enhanced, wide.
+ *   Ultra    - Modern, render_scale SETTINGS_PRESET_ULTRA_PCT %, MSAA 8x, thin outlines, lighting and textures enhanced.
+ *   Custom   - anything else.
  * Every preset also sets the three filter toggles to `preset` and scaler = auto; "wide" keeps the current wide
  * aspect (16:9 when it was 4:3). Modern frames draw at render_scale % of the screen with MSAA (gpu_exec_mft.h); an
  * exact multiple (2x..8x, original) keeps the integer grid in Modern too; MSAA does nothing in Reference. */
-enum { SETTINGS_PRESET_ORIGINAL, SETTINGS_PRESET_PERFORMANCE, SETTINGS_PRESET_BALANCED, SETTINGS_PRESET_QUALITY,
+enum { SETTINGS_PRESET_ORIGINAL, SETTINGS_PRESET_LOW, SETTINGS_PRESET_MEDIUM, SETTINGS_PRESET_HIGH, SETTINGS_PRESET_ULTRA,
        SETTINGS_PRESET_CUSTOM, SETTINGS_PRESET_N };
-#define SETTINGS_PRESET_PERFORMANCE_PCT 75   /* Performance's render scale (%) */
-extern const char* const settings_preset_names[SETTINGS_PRESET_N];   /* "original", ..., "custom" */
+#define SETTINGS_PRESET_PERFORMANCE SETTINGS_PRESET_LOW      /* (the old names) */
+#define SETTINGS_PRESET_BALANCED SETTINGS_PRESET_MEDIUM
+#define SETTINGS_PRESET_QUALITY SETTINGS_PRESET_HIGH
+#define SETTINGS_PRESET_PERFORMANCE_PCT 75   /* Low's render scale (%) */
+#define SETTINGS_PRESET_ULTRA_PCT 125        /* Ultra's render scale (%) */
+extern const char* const settings_preset_names[SETTINGS_PRESET_N];   /* "original", "low", ..., "custom" */
 int  settings_detect_preset(const ps2_settings_t* s);
-/* Set s's preset options to the preset's values (CUSTOM: nothing); s->preset = p. */
+/* Set s's preset options to the preset's values (CUSTOM: nothing); s->preset = p. ORIGINAL sets the original look's
+ * values (without touching the look: settings_set_look is the switch). */
 void settings_apply_preset(ps2_settings_t* s, int p);
+/* (menu) Look = Retro: option i is one it controls (the preset options, graphics.preset, display.aspect) */
+int  settings_retro_controls(int i);
+/* The look of s (SETTINGS_LOOK_*): entering Retro keeps s's controlled values in retro_own and sets the Original values;
+ * leaving it puts them back (preset re-derived). Pure. */
+void settings_set_look(ps2_settings_t* s, int look);
+/* the player's own value of option i (retro_own while the look is Retro, else the value in s) */
+int  settings_own(const ps2_settings_t* s, int i);
+/* *out = s with the player's own options (Retro left: out->look = Faithful when s's is Retro) */
+void settings_own_copy(const ps2_settings_t* s, ps2_settings_t* out);
 
 /* The preset's value where a toggle is -1: Modern = motion blur on, flicker filter off, progressive;
  * Faithful = all three on (as on a PS2 on a TV). */

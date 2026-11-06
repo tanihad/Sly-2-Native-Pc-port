@@ -2,6 +2,14 @@
 
 ## Resume here (read first in a new session)
 
+**2026-11-06: three agents running** (owner approved all): next/tex dither-grain fix (worktree sly2-worktrees\light);
+next/ai AI texture upscaler prototype (sly2-worktrees\ai; owner approved the one download: Real-ESRGAN anime 6B,
+tools\models\realesrgan, sha256 F872D837..., BSD-3; load the .pth with a restricted unpickler only); next/menu settings
+overhaul (sly2-worktrees\menu). Owner's menu decisions: Quality Original/Low/Medium/High/Ultra (no "PS2" wording), one
+"Retro look" switch for the old-TV effects, Advanced sub-page, and Apply for every change (stage -> Apply/Discard, ask
+on leave, display changes keep the 15 s Keep check). Weaker-PC test: owner says done (details not given). Enhanced
+textures (next/tex e1a20a9) are not in the owner's build until the grain fix lands.
+
 **2026-11-05 (late night): Enhanced lighting merged** (941dd02 = next/light d421d57; dist 0.1.1150): AO + bloom,
 per-pixel lighting + rim, soft shadow edges; "Lighting: Enhanced / Original" live, Enhanced default in Balanced/Quality;
 +0.63 ms GPU at 1440p Balanced ep1. Design: notes/enhanced-lighting.md. ep1 tfo "blinking seams" were NOT a lighting

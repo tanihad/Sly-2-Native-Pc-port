@@ -550,5 +550,7 @@ void menu_script(int k) {
         else pcmenu_quit_request();
     } else if (k == 11) {
         overlay_request_screenshot();                      /* (pc-shot) as F12: the Pictures folder (or PS2_SCREENSHOT_DIR) */
+    } else if (k == 12 || k == 13) {
+        menu_nav_event(k == 12 ? MENU_NAV_APPLY : MENU_NAV_DISCARD, MENU_DEV_PLAYSTATION);   /* (menu) mapply / mdiscard */
     }
 }

@@ -95,6 +95,9 @@ static int h_modes(int* wh, int max) {
     return n;
 }
 static int h_mode_now(void) { return ps2_settings.win_fullscreen; }   /* (the window does what the setting says) */
+static int host_monitors = 1;
+static int h_mon_count(void) { return host_monitors; }
+static void h_mon_info(int k, int* w, int* h, int* hz, int* pri) { *w = 2560; *h = 1440; *hz = 165; *pri = k == 0; }
 
 static void use_host(void) {
     menu_host h;
@@ -113,6 +116,8 @@ static void use_host(void) {
     h.now_ms = h_now;
     h.quit = h_quit;
     h.display_modes = h_modes;
+    h.monitor_count = h_mon_count;
+    h.monitor_info = h_mon_info;
     menu_set_host(&h);
     gfx_output_size = h_out;                     /* (the render scale follows the output, as window.c sets it) */
 }
@@ -163,16 +168,49 @@ static void test_table(void) {
 
 static void test_presets(void) {
     ps2_settings_t s;
-    for (int p = 0; p < SETTINGS_PRESET_CUSTOM; p++) {
+    for (int p = SETTINGS_PRESET_LOW; p < SETTINGS_PRESET_CUSTOM; p++) {
         settings_defaults(&s);
         s.aspect_w = 21; s.aspect_h = 9;
         settings_apply_preset(&s, p);
         CHECK(settings_detect_preset(&s) == p, "preset %d detected after applying it (%d)", p, settings_detect_preset(&s));
     }
     settings_defaults(&s);
-    settings_apply_preset(&s, SETTINGS_PRESET_ORIGINAL);
+    CHECK(s.look == SETTINGS_LOOK_FAITHFUL && s.preset == SETTINGS_PRESET_MEDIUM, "defaults: Look Faithful, Quality Medium");
+    settings_apply_preset(&s, SETTINGS_PRESET_ULTRA);
+    CHECK(s.render_scale == SETTINGS_PRESET_ULTRA_PCT && s.msaa == SETTINGS_MSAA_8X && s.outlines_thin && s.lighting_enhanced &&
+          s.textures_enhanced && s.renderer_modern && settings_detect_preset(&s) == SETTINGS_PRESET_ULTRA, "Ultra: %d%%, 8x, thin, enhanced",
+          SETTINGS_PRESET_ULTRA_PCT);
+    /* (menu) Look = Retro: the original values over the player's own, which come back */
+    settings_defaults(&s);
+    settings_apply_preset(&s, SETTINGS_PRESET_HIGH);
+    settings_set_look(&s, SETTINGS_LOOK_RETRO);
     CHECK(s.render_scale == SETTINGS_RS_AUTO && !s.renderer_modern && s.filters_faithful && !s.outlines_thin && s.aspect_w == 4 &&
-          s.aspect_h == 3 && !s.lighting_enhanced && !s.textures_enhanced, "Original (PS2): Reference on the integer grid, faithful, 4:3, original lighting and textures");
+          s.aspect_h == 3 && !s.lighting_enhanced && !s.textures_enhanced && settings_detect_preset(&s) == SETTINGS_PRESET_ORIGINAL,
+          "Retro: Reference on the integer grid, TV effects, 4:3, original outlines, lighting and textures");
+    CHECK(settings_own(&s, settings_find("graphics", "msaa")) == SETTINGS_MSAA_8X && settings_own(&s, settings_find("display", "aspect")) == (16 << 16 | 9) &&
+          settings_own(&s, settings_find("graphics", "preset")) == SETTINGS_PRESET_HIGH, "the player's own values kept");
+    settings_set_look(&s, SETTINGS_LOOK_FAITHFUL);
+    CHECK(s.preset == SETTINGS_PRESET_HIGH && s.renderer_modern && s.outlines_thin && s.aspect_w == 16 && !s.filters_faithful, "Faithful again: High");
+    settings_set_look(&s, SETTINGS_LOOK_REIMAGINED);
+    CHECK(s.look == SETTINGS_LOOK_REIMAGINED && s.preset == SETTINGS_PRESET_HIGH && settings_look(&s) == SETTINGS_LOOK_REIMAGINED,
+          "Reimagined: the Quality stays (renders as Faithful for now)");
+    /* old preset names */
+    static const struct { const char* name; int p; } old_names[] = { { "performance", SETTINGS_PRESET_LOW }, { "balanced", SETTINGS_PRESET_MEDIUM },
+                                                                       { "quality", SETTINGS_PRESET_HIGH }, { "ultra", SETTINGS_PRESET_ULTRA } };
+    for (size_t k = 0; k < sizeof old_names / sizeof old_names[0]; k++) {
+        char txt[64];
+        snprintf(txt, sizeof txt, "[graphics]\npreset = %s\n", old_names[k].name);
+        settings_defaults(&s);
+        settings_parse(txt, &s, NULL, NULL);
+        CHECK(s.preset == old_names[k].p && s.look == SETTINGS_LOOK_FAITHFUL, "preset = %s read (%d)", old_names[k].name, s.preset);
+    }
+    settings_defaults(&s);
+    settings_parse("[display]\naspect = 4:3\n[graphics]\npreset = ps2\n", &s, NULL, NULL);
+    CHECK(s.look == SETTINGS_LOOK_RETRO && !s.renderer_modern && s.aspect_w == 4 && settings_own(&s, settings_find("graphics", "preset")) == SETTINGS_PRESET_MEDIUM &&
+          settings_own(&s, settings_find("display", "aspect")) == (16 << 16 | 9), "preset = ps2: Look Retro over Medium (16:9 when left)");
+    settings_defaults(&s);
+    settings_apply_preset(&s, SETTINGS_PRESET_ORIGINAL);         /* (the raw values, the look untouched) */
+    CHECK(s.look == SETTINGS_LOOK_FAITHFUL && settings_detect_preset(&s) == SETTINGS_PRESET_CUSTOM, "the original values without Retro: Custom");
     settings_apply_preset(&s, SETTINGS_PRESET_QUALITY);
     CHECK(s.render_scale == 100 && s.outlines_thin && !s.filters_faithful && s.lighting_enhanced && s.textures_enhanced, "Quality: 100%%, thin, enhanced lighting and textures");
     CHECK(s.aspect_w == 4, "Quality keeps the aspect (the menu restores widescreen when leaving Original)");
@@ -303,8 +341,39 @@ static void test_migration(void) {
           strstr(out, "[display]\r\naspect = 16:9\r\nmode = borderless\r\n") && !strstr(out, "fullscreen") && strstr(out, "show_fps = on\r\n") &&
           strstr(out, "width = 1280\r\n") && strstr(out, "outlines = thin\r\n"), "migrated text (%d):\n%s", n, out);
     CHECK(settings_migrate_text(out, out + 4096, 4096) == 0, "a migrated file needs nothing more");
-    CHECK(settings_migrate_text("[graphics]\npreset = quality\ninternal_scale = 2\n", out, sizeof out) > 0 && strstr(out, "render_scale = 100%"),
-          "a preset decides the migrated render scale: %s", out);
+    CHECK(settings_migrate_text("[graphics]\npreset = quality\ninternal_scale = 2\n", out, sizeof out) > 0 && strstr(out, "render_scale = 100%") &&
+          strstr(out, "preset = high"), "a preset decides the migrated render scale: %s", out);
+    /* (menu) the preset's old names; original / ps2 -> Look = Retro over Medium */
+    CHECK(settings_migrate_text("[graphics]\r\npreset = performance ; mine\r\n", out, sizeof out) > 0 && strstr(out, "preset = low ") && strstr(out, "; mine\r\n"),
+          "performance -> low:\n%s", out);
+    CHECK(settings_migrate_text("[graphics]\npreset = balanced\n", out, sizeof out) > 0 && strstr(out, "preset = medium\n"), "balanced -> medium");
+    CHECK(settings_migrate_text("[display]\naspect = 4:3\n[graphics]\npreset = ps2\nrenderer_mode = reference\nfilters = faithful\n", out, sizeof out) > 0 &&
+          strstr(out, "preset = medium\n") && strstr(out, "look = retro\n") && strstr(out, "aspect = 16:9\n") &&
+          strstr(out, "renderer_mode = modern\n") && strstr(out, "filters = modern\n"),
+          "ps2 -> Look Retro (Original's option lines -> Medium's: no stale reference / faithful under Custom later):\n%s", out);
+    {
+        ps2_settings_t s;
+        settings_defaults(&s);
+        settings_parse(out, &s, NULL, NULL);
+        CHECK(s.look == SETTINGS_LOOK_RETRO && !s.renderer_modern && s.aspect_w == 4 && s.filters_faithful, "the migrated file: Retro in effect");
+        settings_set_look(&s, SETTINGS_LOOK_FAITHFUL);
+        CHECK(s.preset == SETTINGS_PRESET_MEDIUM && s.renderer_modern && s.aspect_w == 16 && !s.filters_faithful, "leaving Retro: Medium, 16:9");
+        CHECK(settings_migrate_text(out, out + 4096, 4096) == 0, "migrated once");
+    }
+    {   /* the owner's own file (custom: thin outlines, modern filters, render scale auto): nothing changes, no surprises */
+        const char* own = "; Sly 2 PC settings.\r\n[display]\r\nmode = borderless\r\nresolution = desktop\r\naspect = 16:9\r\nhud = edges\r\n"
+                          "monitor = 0\r\nfullscreen_refresh = desktop\r\nframe_rate = 60\r\n\r\n[graphics]\r\npreset = custom\r\nrenderer = gpu\r\n"
+                          "pacing = auto\r\nvsync = on\r\nrenderer_mode = modern\r\nrender_scale = auto\r\nmsaa = 4x\r\nlighting = enhanced\r\n"
+                          "textures = enhanced\r\noutlines = thin\r\nfilters = modern\r\nmotion_blur = preset\r\nflicker_filter = preset\r\n"
+                          "interlacing = preset\r\nscaler = auto\r\n\r\n[settings]\r\nversion = 2\r\n";
+        CHECK(settings_migrate_text(own, out, sizeof out) == 0 && settings_migrate_defaults(own, out, sizeof out) == 0, "the owner's file: unchanged");
+        ps2_settings_t s;
+        settings_defaults(&s);
+        int probs = settings_parse(own, &s, count_warn, NULL);
+        CHECK(probs == 0 && s.preset == SETTINGS_PRESET_CUSTOM && s.look == SETTINGS_LOOK_FAITHFUL && s.outlines_thin && !s.filters_faithful &&
+              s.render_scale == SETTINGS_RS_AUTO && s.renderer_modern && s.msaa == SETTINGS_MSAA_4X && s.motion_blur == -1,
+              "the owner's file: Custom, Faithful, thin, auto (%d problems)", probs);
+    }
     /* on load: the file is rewritten */
     wchar_t ini[MAX_PATH + 80];
     settings_user_path(L"sly2.ini", ini, MAX_PATH + 80);
@@ -487,11 +556,24 @@ static void test_persist(void) {
           strstr(t, "key_cross = Space ; mine\r\n") && strstr(t, "; keep me\r\noutlines = thin\r\n") && strstr(t, "preset = custom"),
           "comments, unknown keys and [controls] kept; outlines + preset written:\n%s", t ? t : "(none)");
     CHECK(ps2_settings.preset == SETTINGS_PRESET_CUSTOM, "now custom");
-    CHECK(settings_change_key("graphics", "preset", SETTINGS_PRESET_ORIGINAL, 1), "Original");
+    /* (menu) the original look is Look = Retro: in effect at once, the player's own options stay in the file */
+    CHECK(settings_change_key("graphics", "preset", SETTINGS_PRESET_ORIGINAL, 1) && ps2_settings.look == SETTINGS_LOOK_RETRO &&
+          !ps2_settings.renderer_modern && ps2_settings.filters_faithful && ps2_settings.aspect_w == 4 && !ps2_settings.outlines_thin &&
+          ps2_settings.preset == SETTINGS_PRESET_ORIGINAL, "preset original = Look Retro");
     t = read_file(ini);
-    CHECK(t && strstr(t, "preset = original") && strstr(t, "render_scale = auto") && strstr(t, "renderer_mode = reference") && strstr(t, "filters = faithful") &&
-          strstr(t, "aspect = 4:3   ; wide") && strstr(t, "outlines = ps2"), "Original's options written:\n%s", t ? t : "");
-    CHECK(settings_change_key("graphics", "preset", SETTINGS_PRESET_BALANCED, 1) && ps2_settings.aspect_w == 16, "leaving Original: 16:9");
+    CHECK(t && strstr(t, "look = retro") && strstr(t, "outlines = thin") && strstr(t, "aspect = 16:9   ; wide") && strstr(t, "preset = custom") &&
+          !strstr(t, "renderer_mode = reference") && !strstr(t, "filters = faithful"), "Retro: only the look written:\n%s", t ? t : "");
+    CHECK(settings_own(&ps2_settings, settings_find("graphics", "outlines")) == 1, "the player's outlines kept aside");
+    settings_load();
+    CHECK(ps2_settings.look == SETTINGS_LOOK_RETRO && !ps2_settings.renderer_modern && ps2_settings.aspect_w == 4 &&
+          settings_own(&ps2_settings, settings_find("graphics", "outlines")) == 1, "Retro across a restart");
+    CHECK(settings_change_key("display", "aspect", 16 << 16 | 9, 1) && ps2_settings.look == SETTINGS_LOOK_FAITHFUL && ps2_settings.outlines_thin &&
+          ps2_settings.renderer_modern && ps2_settings.aspect_w == 16, "an option Retro sets (F7): Retro ends, the player's options back");
+    t = read_file(ini);
+    CHECK(t && strstr(t, "look = faithful"), "written:\n%s", t ? t : "");
+    CHECK(settings_change_key("graphics", "look", SETTINGS_LOOK_RETRO, 1) && settings_change_key("graphics", "look", SETTINGS_LOOK_FAITHFUL, 1) &&
+          ps2_settings.outlines_thin && ps2_settings.aspect_w == 16 && ps2_settings.preset == SETTINGS_PRESET_CUSTOM, "Retro and back: as before");
+    CHECK(settings_change_key("graphics", "preset", SETTINGS_PRESET_BALANCED, 1) && ps2_settings.aspect_w == 16, "Medium");
     settings_load();
     CHECK(ps2_settings.preset == SETTINGS_PRESET_BALANCED && ps2_settings.aspect_w == 16 && ps2_settings.render_scale == 100 &&
           ps2_settings.renderer_modern && ps2_settings.msaa == SETTINGS_MSAA_4X, "persisted across a restart");
@@ -525,6 +607,9 @@ static void go(int id) {                          /* select row id on the curren
     for (int i = 0; i < 64 && V.sel != k; i++) { menu_nav_event(V.sel < k ? MENU_NAV_DOWN : MENU_NAV_UP, MENU_DEV_KEYBOARD); view(); }
 }
 
+static int changed_row(int id) { view(); int k = find_row(&V, id); return k >= 0 && V.rows[k].changed; }
+static void apply_now(void) { menu_nav_event(MENU_NAV_APPLY, MENU_DEV_KEYBOARD); view(); }
+
 static void test_menu_nav(void) {
     settings_load();
     use_host();
@@ -533,134 +618,193 @@ static void test_menu_nav(void) {
     menu_tick();
     CHECK(menu_is_open() && host_open_requests == 1 && fake_menu_active && fake_flushes, "Esc opens (through the host)");
     view();
-    CHECK(V.page == MENU_PAGE_GRAPHICS && V.sel == 0 && V.rows[0].id == MENU_ROW_PRESET && !strcmp(V.rows[0].value, "Balanced"),
-          "Graphics, Preset = Balanced ('%s')", V.rows[0].value);
-    menu_nav_event(MENU_NAV_RIGHT, MENU_DEV_KEYBOARD);
-    CHECK(ps2_settings.preset == SETTINGS_PRESET_QUALITY && ps2_settings.render_scale == 100 && ps2_settings.outlines_thin, "right: Quality");
-    go(MENU_ROW_SCALE);
-    view();
-    CHECK(!strcmp(V.rows[V.sel].label, "Render scale") && !strcmp(V.rows[V.sel].value, "100% (2560 x 1440)") &&
-          strstr(V.rows[V.sel].desc, "Rendering at 2560 x 1440 -> shown at 2560 x 1440") != NULL,
-          "Modern render scale at 1440p 16:9: '%s' / '%s'", V.rows[V.sel].value, V.rows[V.sel].desc);
-    CHECK(find_row(&V, MENU_ROW_AUTO_MAX) < 0, "no separate auto maximum row");
-    CHECK(find_row(&V, MENU_ROW_MSAA) >= 0 && V.rows[find_row(&V, MENU_ROW_MSAA)].enabled, "MSAA row (Modern)");
-    {   /* (light) Lighting: Enhanced (Quality), one step to Original (live, custom), back */
-        int lr = find_row(&V, MENU_ROW_LIGHTING);
-        CHECK(lr >= 0 && V.rows[lr].enabled && !strcmp(V.rows[lr].value, "Enhanced"), "Lighting row: Enhanced ('%s')", lr >= 0 ? V.rows[lr].value : "-");
-        int sel = V.sel;
-        go(MENU_ROW_LIGHTING);
-        menu_nav_event(MENU_NAV_RIGHT, MENU_DEV_KEYBOARD);
-        view();
-        CHECK(!ps2_settings.lighting_enhanced && ps2_settings.preset == SETTINGS_PRESET_CUSTOM && !strcmp(V.rows[V.sel].value, "Original"),
-              "Lighting -> Original: custom ('%s')", V.rows[V.sel].value);
-        menu_nav_event(MENU_NAV_LEFT, MENU_DEV_KEYBOARD);
-        CHECK(ps2_settings.lighting_enhanced && ps2_settings.preset == SETTINGS_PRESET_QUALITY, "back to Enhanced: Quality again");
-        /* (tex) Textures: the same, live */
-        int tr = find_row(&V, MENU_ROW_TEXTURES);
-        CHECK(tr >= 0 && V.rows[tr].enabled && !strcmp(V.rows[tr].value, "Enhanced"), "Textures row: Enhanced ('%s')", tr >= 0 ? V.rows[tr].value : "-");
-        go(MENU_ROW_TEXTURES);
-        menu_nav_event(MENU_NAV_RIGHT, MENU_DEV_KEYBOARD);
-        view();
-        CHECK(!ps2_settings.textures_enhanced && ps2_settings.preset == SETTINGS_PRESET_CUSTOM && !strcmp(V.rows[V.sel].value, "Original"),
-              "Textures -> Original: custom ('%s')", V.rows[V.sel].value);
-        menu_nav_event(MENU_NAV_LEFT, MENU_DEV_KEYBOARD);
-        CHECK(ps2_settings.textures_enhanced && ps2_settings.preset == SETTINGS_PRESET_QUALITY, "Textures back to Enhanced: Quality again");
-        go(MENU_ROW_SCALE);
-        view();
-        (void)sel;
+    CHECK(V.page == MENU_PAGE_GRAPHICS && V.sel == 0 && V.rows[0].id == MENU_ROW_GLOOK && !strcmp(V.rows[0].value, "Faithful") &&
+          V.rows[1].id == MENU_ROW_PRESET && !strcmp(V.rows[1].value, "Medium") && V.rows[0].nchoices == 2,
+          "Graphics: Look = Faithful (Reimagined hidden), Quality = Medium ('%s', '%s')", V.rows[0].value, V.rows[1].value);
+    {   /* the page is short: Look, Quality, Resolution scale, Anti-aliasing, Outlines, Advanced graphics, Reset, Quit */
+        static const int ids[] = { MENU_ROW_GLOOK, MENU_ROW_PRESET, MENU_ROW_SCALE, MENU_ROW_MSAA, MENU_ROW_OUTLINES, MENU_ROW_GFX_ADV,
+                                   MENU_ROW_RESET, MENU_ROW_QUIT };
+        int ok = V.nrows == 8;
+        for (int k = 0; k < 8 && ok; k++) ok = V.rows[k].id == ids[k];
+        CHECK(ok, "Graphics rows (%d)", V.nrows);
+        for (int k = 0; k < V.nrows; k++) CHECK(!strstr(V.rows[k].label, "PS2") && !strstr(V.rows[k].value, "PS2") && !strstr(V.rows[k].desc, "PS2"),
+                                                "no PS2 wording: '%s'", V.rows[k].label);
     }
-    for (int k = 0; k < 5; k++) menu_nav_event(MENU_NAV_LEFT, MENU_DEV_KEYBOARD);
-    CHECK(ps2_settings.render_scale == 75 && ps2_settings.preset == SETTINGS_PRESET_CUSTOM, "left x5 (steps of 5%%): 75%%, Custom");
+    /* Quality High: staged (the rows below restaged), applied with Apply */
+    go(MENU_ROW_PRESET);
+    menu_nav_event(MENU_NAV_RIGHT, MENU_DEV_KEYBOARD);
     view();
-    CHECK(!strcmp(V.rows[0].value, "Custom"), "preset row shows Custom");
-    CHECK(!strcmp(V.rows[V.sel].value, "75% (1920 x 1080)") && strstr(V.rows[V.sel].desc, "Rendering at 1920 x 1080 -> shown at 2560 x 1440"),
-          "75%% at 1440p: '%s' / '%s'", V.rows[V.sel].value, V.rows[V.sel].desc);
-    for (int k = 0; k < 20; k++) menu_nav_event(MENU_NAV_LEFT, MENU_DEV_KEYBOARD);
-    CHECK(ps2_settings.render_scale == 25, "leftmost: 25%% (%d)", ps2_settings.render_scale);
-    /* Reference: the integer grid's choices */
-    settings_change_key("graphics", "renderer_mode", 0, 1);
-    settings_change_key("graphics", "render_scale", 100, 1);
+    CHECK(ps2_settings.preset == SETTINGS_PRESET_MEDIUM && !ps2_settings.outlines_thin && !strcmp(V.rows[V.sel].value, "High") &&
+          V.rows[V.sel].changed && V.pending == 2 && menu_pending() == 2, "High staged, not applied (%d changes)", V.pending);
+    CHECK(changed_row(MENU_ROW_MSAA) && changed_row(MENU_ROW_OUTLINES) && !changed_row(MENU_ROW_SCALE) &&
+          !strcmp(V.rows[find_row(&V, MENU_ROW_MSAA)].value, "High") && !strcmp(V.rows[find_row(&V, MENU_ROW_OUTLINES)].value, "Thin"),
+          "the rows below show High's values, marked");
+    apply_now();
+    CHECK(ps2_settings.preset == SETTINGS_PRESET_HIGH && ps2_settings.msaa == SETTINGS_MSAA_8X && ps2_settings.outlines_thin && !V.pending &&
+          !V.rows[V.sel].changed, "Apply: High in effect");
+    menu_nav_event(MENU_NAV_RIGHT, MENU_DEV_KEYBOARD);         /* Ultra, then Discard */
     view();
-    CHECK(!strcmp(V.rows[V.sel].value, "100% (2560 x 1440)") && strstr(V.rows[V.sel].desc, "Rendering at 2560 x 1792 -> shown at 2560 x 1440"),
-          "Reference render scale at 1440p: '%s' / '%s'", V.rows[V.sel].value, V.rows[V.sel].desc);
-    CHECK(!V.rows[find_row(&V, MENU_ROW_MSAA)].enabled, "MSAA disabled in Reference");
-    CHECK(!V.rows[find_row(&V, MENU_ROW_LIGHTING)].enabled, "Lighting disabled in Reference");
-    CHECK(!V.rows[find_row(&V, MENU_ROW_TEXTURES)].enabled, "Textures disabled in Reference");
+    CHECK(!strcmp(V.rows[V.sel].value, "Ultra") && V.pending == 1, "Ultra staged (%d)", V.pending);
+    menu_nav_event(MENU_NAV_DISCARD, MENU_DEV_KEYBOARD);
+    view();
+    CHECK(!V.pending && !strcmp(V.rows[V.sel].value, "High") && ps2_settings.preset == SETTINGS_PRESET_HIGH, "Discard: High");
+    menu_nav_event(MENU_NAV_RIGHT, MENU_DEV_KEYBOARD);
+    apply_now();
+    CHECK(ps2_settings.preset == SETTINGS_PRESET_ULTRA && ps2_settings.render_scale == SETTINGS_PRESET_ULTRA_PCT, "Ultra applied");
+    go(MENU_ROW_SCALE);
+    CHECK(!strcmp(V.rows[V.sel].label, "Resolution scale") && strstr(V.rows[V.sel].value, "% (3200 x 1800)") &&
+          strstr(V.rows[V.sel].desc, "Rendering at 3200 x 1800 -> shown at 2560 x 1440") != NULL, "Ultra at 1440p: '%s' / '%s'",
+          V.rows[V.sel].value, V.rows[V.sel].desc);
+    for (int k = 0; k < 2; k++) menu_nav_event(MENU_NAV_LEFT, MENU_DEV_KEYBOARD);
+    view();
+    CHECK(!strcmp(V.rows[V.sel].value, "75% (1920 x 1080)") && ps2_settings.render_scale == SETTINGS_PRESET_ULTRA_PCT && V.rows[V.sel].changed &&
+          !strcmp(V.rows[find_row(&V, MENU_ROW_PRESET)].value, "Custom"), "75%% staged: Quality shows Custom ('%s')", V.rows[V.sel].value);
+    for (int k = 0; k < 10; k++) menu_nav_event(MENU_NAV_LEFT, MENU_DEV_KEYBOARD);
+    view();
+    CHECK(!strcmp(V.rows[V.sel].value, "Auto (2560 x 1440)"), "leftmost: Auto ('%s')", V.rows[V.sel].value);
+    menu_nav_event(MENU_NAV_RIGHT, MENU_DEV_KEYBOARD);
+    menu_nav_event(MENU_NAV_RIGHT, MENU_DEV_KEYBOARD);
+    menu_nav_event(MENU_NAV_RIGHT, MENU_DEV_KEYBOARD);         /* 75 % */
+    /* Look Retro: the rows it sets show the original values, locked; applied with the staged 75 % as the player's own */
+    go(MENU_ROW_GLOOK);
     menu_nav_event(MENU_NAV_LEFT, MENU_DEV_KEYBOARD);
     view();
-    CHECK(ps2_settings.render_scale == 75 && strstr(V.rows[V.sel].desc, "Rendering at 2048 x 1344 -> shown at 2560 x 1440"),
-          "Reference 75%%: 3x '%s'", V.rows[V.sel].desc);
-    for (int k = 0; k < 8; k++) menu_nav_event(MENU_NAV_LEFT, MENU_DEV_KEYBOARD);
-    view();
-    CHECK(ps2_settings.render_scale == SETTINGS_RS_AUTO && !strcmp(V.rows[V.sel].value, "Auto (up to 100%)"), "leftmost: Auto ('%s')",
-          V.rows[V.sel].value);
-    menu_nav_event(MENU_NAV_RIGHT, MENU_DEV_KEYBOARD);
-    CHECK(ps2_settings.render_scale == SETTINGS_RS_ORIGINAL, "then Original PS2");
-    settings_change_key("graphics", "render_scale", 8, 1);       /* (an exact multiple: F2) */
-    view();
-    CHECK(!strcmp(V.rows[V.sel].value, "8x (5632 x 3584)"), "8x 16:9 size (11 columns per pixel) '%s'", V.rows[V.sel].value);    /* reset the page: the confirm dialog */
-    go(MENU_ROW_RESET);
+    CHECK(!strcmp(V.rows[0].value, "Retro") && ps2_settings.look == SETTINGS_LOOK_FAITHFUL, "Retro staged");
+    {
+        int q = find_row(&V, MENU_ROW_PRESET), sc = find_row(&V, MENU_ROW_SCALE), o = find_row(&V, MENU_ROW_OUTLINES);
+        CHECK(!strcmp(V.rows[q].value, "Original") && !V.rows[q].enabled && !V.rows[sc].enabled && !strcmp(V.rows[sc].value, "Auto (up to 100%)") &&
+              !V.rows[o].enabled && !strcmp(V.rows[o].value, "Original") && strstr(V.rows[q].note, "Retro"),
+              "Retro: Quality 'Original' locked ('%s'), scale '%s', outlines '%s'", V.rows[q].value, V.rows[sc].value, V.rows[o].value);
+    }
+    apply_now();
+    CHECK(ps2_settings.look == SETTINGS_LOOK_RETRO && !ps2_settings.renderer_modern && ps2_settings.aspect_w == 4 &&
+          ps2_settings.render_scale == SETTINGS_RS_AUTO && settings_own(&ps2_settings, settings_find("graphics", "render_scale")) == 75,
+          "Retro applied, the player's 75%% kept aside");
+    {
+        wchar_t ini[MAX_PATH + 80];
+        settings_user_path(L"sly2.ini", ini, MAX_PATH + 80);
+        char* t = read_file(ini);
+        CHECK(t && strstr(t, "look = retro") && strstr(t, "render_scale = 75%") && strstr(t, "outlines = thin") && !strstr(t, "renderer_mode = reference"),
+              "sly2.ini: the look, the player's options:\n%s", t ? t : "");
+    }
+    menu_nav_event(MENU_NAV_RIGHT, MENU_DEV_KEYBOARD);         /* Faithful again */
+    apply_now();
+    CHECK(ps2_settings.look == SETTINGS_LOOK_FAITHFUL && ps2_settings.render_scale == 75 && ps2_settings.outlines_thin &&
+          ps2_settings.renderer_modern && ps2_settings.aspect_w == 16, "Faithful: the player's options back");
+    /* Advanced graphics: Lighting, Textures, Renderer, Rendering ... */
+    go(MENU_ROW_GFX_ADV);
     menu_nav_event(MENU_NAV_CONFIRM, MENU_DEV_KEYBOARD);
     view();
-    CHECK(V.confirm_reset && V.dialog == MENU_DLG_RESET && !strcmp(V.dlg_yes, "Reset"), "reset asks");
-    menu_nav_event(MENU_NAV_BACK, MENU_DEV_KEYBOARD);
+    CHECK(V.page == MENU_PAGE_GFX_ADV && V.rows[0].id == MENU_ROW_LIGHTING && !strcmp(V.rows[0].value, "Enhanced") &&
+          !strcmp(V.page_title, "Advanced graphics") && find_row(&V, MENU_ROW_TVFX) >= 0 && find_row(&V, MENU_ROW_HUD) >= 0 &&
+          find_row(&V, MENU_ROW_QUIT) < 0, "Advanced graphics ('%s')", V.rows[0].value);
+    menu_nav_event(MENU_NAV_LEFT, MENU_DEV_KEYBOARD);
     view();
-    CHECK(!V.confirm_reset && menu_is_open() && ps2_settings.render_scale == 8, "back cancels");
-    menu_nav_event(MENU_NAV_CONFIRM, MENU_DEV_KEYBOARD);
-    menu_nav_event(MENU_NAV_CONFIRM, MENU_DEV_KEYBOARD);
-    CHECK(ps2_settings.preset == SETTINGS_PRESET_BALANCED && ps2_settings.render_scale == 100 && !ps2_settings.outlines_thin &&
-          ps2_settings.renderer_modern && ps2_settings.msaa == SETTINGS_MSAA_4X && ps2_settings.lighting_enhanced && ps2_settings.textures_enhanced, "reset Graphics: Balanced");
-    /* the renderer is staged: Apply */
+    CHECK(ps2_settings.lighting_enhanced && !strcmp(V.rows[0].value, "Original") && V.rows[0].changed, "Lighting Original staged");
     go(MENU_ROW_RENDERER);
     menu_nav_event(MENU_NAV_RIGHT, MENU_DEV_KEYBOARD);
     view();
-    CHECK(ps2_settings.renderer_gpu == 1 && V.pending && menu_pending() && !strcmp(V.rows[V.sel].value, "Software (CPU)") && V.rows[V.sel].note[0] &&
-          find_row(&V, MENU_ROW_APPLY) >= 0, "renderer staged ('%s', note '%s')", V.rows[V.sel].value, V.rows[V.sel].note);
+    CHECK(ps2_settings.renderer_gpu == 1 && !strcmp(V.rows[V.sel].value, "Software (CPU)") && V.rows[V.sel].changed && V.pending == 2,
+          "renderer staged ('%s', %d)", V.rows[V.sel].value, V.pending);
     menu_nav_event(MENU_NAV_LEFT, MENU_DEV_KEYBOARD);
     view();
-    CHECK(!V.pending && find_row(&V, MENU_ROW_APPLY) < 0, "back to the value in effect: nothing to apply");
+    CHECK(V.pending == 1 && !V.rows[V.sel].changed, "back to the value in effect: not a change");
+    menu_nav_event(MENU_NAV_BACK, MENU_DEV_KEYBOARD);
+    view();
+    CHECK(V.page == MENU_PAGE_GRAPHICS && V.rows[V.sel].id == MENU_ROW_GFX_ADV && V.rows[V.sel].changed && menu_is_open(),
+          "Back: Graphics, on Advanced graphics (marked)");
+    apply_now();
+    CHECK(!ps2_settings.lighting_enhanced, "Lighting applied");
+    /* reset Graphics: staged (Faithful + Medium) */
+    go(MENU_ROW_RESET);
+    menu_nav_event(MENU_NAV_CONFIRM, MENU_DEV_KEYBOARD);
+    view();
+    CHECK(V.dialog == MENU_DLG_NONE && V.pending > 0 && !strcmp(V.rows[find_row(&V, MENU_ROW_PRESET)].value, "Medium") &&
+          ps2_settings.render_scale == 75, "Reset stages Medium (%d changes)", V.pending);
+    apply_now();
+    CHECK(ps2_settings.preset == SETTINGS_PRESET_MEDIUM && ps2_settings.render_scale == 100 && !ps2_settings.outlines_thin &&
+          ps2_settings.lighting_enhanced && ps2_settings.textures_enhanced && ps2_settings.msaa == SETTINGS_MSAA_4X, "Medium applied");
     /* wrap-around and tabs */
-    go(MENU_ROW_PRESET);
+    go(MENU_ROW_GLOOK);
     menu_nav_event(MENU_NAV_UP, MENU_DEV_KEYBOARD);
     view();
     CHECK(V.sel == V.nrows - 1 && V.rows[V.sel].id == MENU_ROW_QUIT, "up from the first row: the last, Quit (%d)", V.sel);
     menu_nav_event(MENU_NAV_DOWN, MENU_DEV_KEYBOARD);
     view();
     CHECK(V.sel == 0, "down from the last row wraps to the first (%d)", V.sel);
+    /* leaving with changes: Apply / Discard / Cancel */
+    go(MENU_ROW_OUTLINES);
+    menu_nav_event(MENU_NAV_RIGHT, MENU_DEV_KEYBOARD);
+    menu_nav_event(MENU_NAV_BACK, MENU_DEV_KEYBOARD);
+    view();
+    CHECK(menu_is_open() && V.dialog == MENU_DLG_PENDING && V.dlg_buttons == 3 && !strcmp(V.dlg_yes, "Apply") && !strcmp(V.dlg_alt, "Discard") &&
+          !strcmp(V.dlg_no, "Cancel") && V.dlg_focus == 0 && strstr(V.dlg_text, "not applied"), "close: Apply / Discard / Cancel ('%s')", V.dlg_text);
+    menu_nav_event(MENU_NAV_BACK, MENU_DEV_KEYBOARD);
+    view();
+    CHECK(menu_is_open() && V.dialog == MENU_DLG_NONE && V.pending == 1, "Cancel: back to the menu, still staged");
+    push(INPUT_NAV_MENU, INPUT_SRC_CONTROLLER);                /* the PS button: the same question */
+    menu_tick();
+    view();
+    CHECK(V.dialog == MENU_DLG_PENDING, "PS button with changes: asks");
+    menu_nav_event(MENU_NAV_RIGHT, MENU_DEV_PLAYSTATION);
+    view();
+    CHECK(V.dlg_focus == 1, "right: Discard focused");
+    menu_nav_event(MENU_NAV_CONFIRM, MENU_DEV_PLAYSTATION);
+    CHECK(!menu_is_open() && !ps2_settings.outlines_thin && host_closed == 1, "Discard: closed, nothing applied");
+    menu_open();
+    view();
+    CHECK(!V.pending, "reopened: nothing staged");
+    go(MENU_ROW_OUTLINES);
+    menu_nav_event(MENU_NAV_RIGHT, MENU_DEV_KEYBOARD);
+    menu_nav_event(MENU_NAV_BACK, MENU_DEV_KEYBOARD);
+    menu_nav_event(MENU_NAV_CONFIRM, MENU_DEV_KEYBOARD);       /* Apply (focused) */
+    CHECK(!menu_is_open() && ps2_settings.outlines_thin && host_closed == 2, "Apply: applied and closed");
+    menu_open();
+    go(MENU_ROW_OUTLINES);
+    menu_nav_event(MENU_NAV_LEFT, MENU_DEV_KEYBOARD);
+    menu_nav_event(MENU_NAV_CLOSE, MENU_DEV_KEYBOARD);
+    menu_nav_event(MENU_NAV_APPLY, MENU_DEV_KEYBOARD);         /* (Square / F on the question: Apply) */
+    CHECK(!menu_is_open() && !ps2_settings.outlines_thin, "Apply by its shortcut");
+    menu_open();
     push(INPUT_NAV_TAB_NEXT, INPUT_SRC_CONTROLLER);
     menu_tick();
     view();
     CHECK(V.page == MENU_PAGE_DISPLAY && V.device == MENU_DEV_PLAYSTATION, "R1: Display, PlayStation hints");
-    go(MENU_ROW_ASPECT);
+    CHECK(find_row(&V, MENU_ROW_MONITOR) < 0 && find_row(&V, MENU_ROW_PACING) < 0 && find_row(&V, MENU_ROW_VRR) < 0 &&
+          find_row(&V, MENU_ROW_FRAME_RATE) >= 0 && !strcmp(V.rows[find_row(&V, MENU_ROW_FRAME_RATE)].label, "Frame rate limit"),
+          "Display: no Monitor with one monitor, pacing / VRR automatic");
+    host_monitors = 2;
     view();
+    CHECK(find_row(&V, MENU_ROW_MONITOR) >= 0, "two monitors: Monitor");
+    host_monitors = 1;
+    go(MENU_ROW_ASPECT);
     CHECK(!strcmp(V.rows[V.sel].value, "16:9 (widescreen)"), "aspect '%s'", V.rows[V.sel].value);
     menu_nav_event(MENU_NAV_LEFT, MENU_DEV_KEYBOARD);
     menu_nav_event(MENU_NAV_LEFT, MENU_DEV_KEYBOARD);
     view();
-    CHECK(ps2_settings.aspect_w == 4 && ps2_settings.aspect_h == 3, "aspect 4:3 (at once)");
-    CHECK(!V.rows[find_row(&V, MENU_ROW_HUD)].enabled, "HUD layout disabled at 4:3");
+    CHECK(ps2_settings.aspect_w == 16 && !strcmp(V.rows[V.sel].value, "4:3 (original)") && V.rows[V.sel].changed, "4:3 staged");
+    apply_now();
+    CHECK(ps2_settings.aspect_w == 4 && ps2_settings.aspect_h == 3 && V.dialog == MENU_DLG_NONE, "4:3 applied (no Keep question)");
     menu_nav_event(MENU_NAV_RIGHT, MENU_DEV_KEYBOARD);
     menu_nav_event(MENU_NAV_RIGHT, MENU_DEV_KEYBOARD);
+    apply_now();
     CHECK(ps2_settings.aspect_w == 16 && ps2_settings.aspect_h == 9, "back to 16:9");
     /* resolution (windowed: the window size), staged - (pc-menu2: borderless is the default now; these steps start windowed) */
     ps2_settings.win_fullscreen = SETTINGS_FULLSCREEN_OFF;
     go(MENU_ROW_RESOLUTION);
-    view();
     CHECK(V.rows[V.sel].enabled && V.rows[V.sel].cur < 0 && !strcmp(V.rows[V.sel].value, "2560 x 1440") && !strcmp(V.rows[V.sel].label, "Resolution"),
           "resolution: the window's ('%s')", V.rows[V.sel].value);
-    CHECK(!V.rows[find_row(&V, MENU_ROW_APPLY)].enabled, "Apply disabled: nothing staged");
     menu_nav_event(MENU_NAV_RIGHT, MENU_DEV_KEYBOARD);
     view();
-    CHECK(host_size_w == 0 && !strcmp(V.rows[V.sel].value, "960 x 540") && V.pending, "window size staged, not applied ('%s')", V.rows[V.sel].value);
+    CHECK(host_size_w == 0 && !strcmp(V.rows[V.sel].value, "960 x 540") && V.pending == 1 && V.rows[V.sel].changed, "window size staged ('%s')", V.rows[V.sel].value);
     /* display mode: staged; Fullscreen offers the monitor's modes */
     go(MENU_ROW_MODE);
     menu_nav_event(MENU_NAV_RIGHT, MENU_DEV_KEYBOARD);
     menu_nav_event(MENU_NAV_RIGHT, MENU_DEV_KEYBOARD);
     view();
-    CHECK(ps2_settings.win_fullscreen == 0 && !strcmp(V.rows[V.sel].value, "Fullscreen") && V.rows[V.sel].note[0], "Fullscreen staged ('%s')",
+    CHECK(ps2_settings.win_fullscreen == 0 && !strcmp(V.rows[V.sel].value, "Fullscreen") && V.rows[V.sel].changed, "Fullscreen staged ('%s')",
           V.rows[V.sel].value);
     go(MENU_ROW_RESOLUTION);
-    view();
     CHECK(!strcmp(V.rows[V.sel].value, "Desktop (2560 x 1440)") && V.rows[V.sel].nchoices == 3, "fullscreen resolutions ('%s', %d)",
           V.rows[V.sel].value, V.rows[V.sel].nchoices);
     menu_nav_event(MENU_NAV_RIGHT, MENU_DEV_KEYBOARD);
@@ -673,9 +817,7 @@ static void test_menu_nav(void) {
           "borderless: the desktop's resolution ('%s')", V.rows[find_row(&V, MENU_ROW_RESOLUTION)].value);
     menu_nav_event(MENU_NAV_RIGHT, MENU_DEV_KEYBOARD);         /* Fullscreen again, 1920 x 1080 */
     /* Apply -> Keep these display settings? (fake clock) */
-    go(MENU_ROW_APPLY);
-    menu_nav_event(MENU_NAV_CONFIRM, MENU_DEV_KEYBOARD);
-    view();
+    apply_now();
     CHECK(ps2_settings.win_fullscreen == SETTINGS_FULLSCREEN_EXCLUSIVE && ps2_settings.fullscreen_res == (1920 << 16 | 1080) && !V.pending &&
           V.dialog == MENU_DLG_KEEP && strstr(V.dlg_text, "15 s"), "applied, Keep? ('%s')", V.dlg_text);
     fake_now += 5200;
@@ -688,8 +830,7 @@ static void test_menu_nav(void) {
     CHECK(V.dialog == MENU_DLG_NONE && ps2_settings.win_fullscreen == 0 && ps2_settings.fullscreen_res == 0, "no answer in 15 s: reverted");
     go(MENU_ROW_MODE);
     menu_nav_event(MENU_NAV_RIGHT, MENU_DEV_KEYBOARD);         /* borderless, Apply, Keep */
-    go(MENU_ROW_APPLY);
-    menu_nav_event(MENU_NAV_CONFIRM, MENU_DEV_KEYBOARD);
+    apply_now();
     menu_nav_event(MENU_NAV_CONFIRM, MENU_DEV_KEYBOARD);
     fake_now += 20000;
     menu_keep_tick();
@@ -697,19 +838,19 @@ static void test_menu_nav(void) {
     CHECK(V.dialog == MENU_DLG_NONE && ps2_settings.win_fullscreen == SETTINGS_FULLSCREEN_BORDERLESS, "Keep: borderless stays");
     go(MENU_ROW_MODE);
     menu_nav_event(MENU_NAV_LEFT, MENU_DEV_KEYBOARD);          /* windowed, Apply, Revert */
-    go(MENU_ROW_APPLY);
-    menu_nav_event(MENU_NAV_CONFIRM, MENU_DEV_KEYBOARD);
+    apply_now();
     CHECK(ps2_settings.win_fullscreen == 0, "windowed applied");
     menu_nav_event(MENU_NAV_BACK, MENU_DEV_KEYBOARD);
     CHECK(ps2_settings.win_fullscreen == SETTINGS_FULLSCREEN_BORDERLESS && menu_is_open(), "Revert: borderless again");
-    /* closing with a staged change asks */
+    /* leaving with a display change: Apply -> Keep? -> Keep closes */
     go(MENU_ROW_MODE);
     menu_nav_event(MENU_NAV_LEFT, MENU_DEV_KEYBOARD);
     menu_nav_event(MENU_NAV_BACK, MENU_DEV_KEYBOARD);
+    menu_nav_event(MENU_NAV_CONFIRM, MENU_DEV_KEYBOARD);
     view();
-    CHECK(menu_is_open() && V.dialog == MENU_DLG_PENDING && !strcmp(V.dlg_yes, "Apply") && !strcmp(V.dlg_no, "Discard"), "close: Apply the changes?");
-    menu_nav_event(MENU_NAV_BACK, MENU_DEV_KEYBOARD);
-    CHECK(!menu_is_open() && !menu_pending() && ps2_settings.win_fullscreen == SETTINGS_FULLSCREEN_BORDERLESS, "Discard: closed, unchanged");
+    CHECK(menu_is_open() && V.dialog == MENU_DLG_KEEP && ps2_settings.win_fullscreen == 0, "leave + Apply: Keep these display settings?");
+    menu_nav_event(MENU_NAV_CONFIRM, MENU_DEV_KEYBOARD);
+    CHECK(!menu_is_open() && ps2_settings.win_fullscreen == 0, "Keep: closed");
     menu_open();
     menu_nav_event(MENU_NAV_TAB_NEXT, MENU_DEV_KEYBOARD);
     menu_nav_event(MENU_NAV_TAB_PREV, MENU_DEV_KEYBOARD);
@@ -717,28 +858,22 @@ static void test_menu_nav(void) {
     host_size_w = host_size_h = 0;
     go(MENU_ROW_RESOLUTION);
     menu_nav_event(MENU_NAV_RIGHT, MENU_DEV_KEYBOARD);
-    go(MENU_ROW_APPLY);
-    menu_nav_event(MENU_NAV_CONFIRM, MENU_DEV_KEYBOARD);
+    apply_now();
     menu_nav_event(MENU_NAV_CONFIRM, MENU_DEV_KEYBOARD);       /* Keep */
     CHECK(host_size_w == 960 && host_size_h == 540, "window size applied: 960 x 540 (%d x %d)", host_size_w, host_size_h);
-    go(MENU_ROW_PACING);
-    view();
-    CHECK(!strcmp(V.rows[V.sel].note, "Applies at the next start"), "pacing note (stand-in): '%s'", V.rows[V.sel].note);
-    /* (pc-fps) Frame rate: 60 (original) -> 120 -> ... -> Display -> Unlimited, written to [display] frame_rate */
+    /* (pc-fps) Frame rate: staged; Apply writes [display] frame_rate */
     go(MENU_ROW_FRAME_RATE);
-    view();
-    CHECK(V.rows[V.sel].id == MENU_ROW_FRAME_RATE && !strcmp(V.rows[V.sel].value, "60 fps (original)"), "frame rate '%s'",
-          V.rows[V.sel].value);
+    CHECK(V.rows[V.sel].id == MENU_ROW_FRAME_RATE && !strcmp(V.rows[V.sel].value, "60 fps (original)"), "frame rate '%s'", V.rows[V.sel].value);
     menu_nav_event(MENU_NAV_RIGHT, MENU_DEV_KEYBOARD);
     view();
-    CHECK(ps2_settings.frame_rate == 120 && !strcmp(V.rows[V.sel].value, "120 fps"), "frame rate 120 (%d, '%s')",
+    CHECK(ps2_settings.frame_rate == 60 && !strcmp(V.rows[V.sel].value, "120 fps"), "frame rate 120 staged (%d, '%s')",
           ps2_settings.frame_rate, V.rows[V.sel].value);
     for (int k = 0; k < 4; k++) menu_nav_event(MENU_NAV_RIGHT, MENU_DEV_KEYBOARD);
     view();
-    CHECK(ps2_settings.frame_rate == -2 && !strcmp(V.rows[V.sel].value, "Display refresh rate"), "frame rate display (%d, '%s')",
-          ps2_settings.frame_rate, V.rows[V.sel].value);
+    CHECK(!strcmp(V.rows[V.sel].value, "Display refresh rate"), "frame rate display ('%s')", V.rows[V.sel].value);
     menu_nav_event(MENU_NAV_RIGHT, MENU_DEV_KEYBOARD);
-    CHECK(ps2_settings.frame_rate == -1, "frame rate unlimited (%d)", ps2_settings.frame_rate);
+    apply_now();
+    CHECK(ps2_settings.frame_rate == -1, "frame rate unlimited applied (%d)", ps2_settings.frame_rate);
     {
         char t[64];
         int fi = settings_find("display", "frame_rate");
@@ -749,48 +884,71 @@ static void test_menu_nav(void) {
               !settings_parse_value(fi, "20", &v), "frame_rate parse");
     }
     m_change("display", "frame_rate", 60);
-    view();
-    {                                             /* (pc-fps) the read-only variable refresh status */
-        int k = find_row(&V, MENU_ROW_VRR);
-        CHECK(k >= 0 && V.rows[k].kind == MENU_ITEM_INFO && V.rows[k].value[0], "variable refresh status row ('%s')", k >= 0 ? V.rows[k].value : "");
-    }
     menu_nav_event(MENU_NAV_TAB_NEXT, MENU_DEV_KEYBOARD);
     view();
     CHECK(V.page == MENU_PAGE_AUDIO && V.rows[0].id == MENU_ROW_MASTER && V.rows[0].kind == MENU_ITEM_SLIDER, "Audio, master slider");
     menu_nav_event(MENU_NAV_LEFT, MENU_DEV_KEYBOARD);
     menu_nav_event(MENU_NAV_LEFT, MENU_DEV_KEYBOARD);
-    CHECK(ps2_settings.vol_master == 90, "master 90 (%d)", ps2_settings.vol_master);
-    /* mouse: click on the slider bar at 25 % */
+    view();
+    CHECK(ps2_settings.vol_master == 100 && V.rows[0].val == 90 && V.rows[0].changed, "master 90 staged (%d)", V.rows[0].val);
+    /* mouse: click on the slider bar at 25 %, the footer's Apply */
     {
         menu_layout L;
-        view();
         menu_compute_layout(host_cw, host_ch, V.nrows, V.scroll, &L);
         int x0 = L.left[0].x + L.left[0].w, x1 = L.right[0].x;
         int tx0 = x0 + (int)(10 * L.u), tx1 = x1 - (int)(96 * L.u) - (int)(10 * L.u);   /* (the track: menu.c slider_drag_to) */
         menu_mouse_button(tx0 + (tx1 - tx0) / 4, L.rows[0].y + L.rows[0].h / 2, 1);
-        CHECK(ps2_settings.vol_master == 25, "click on the bar: 25 (%d)", ps2_settings.vol_master);
+        view();
+        CHECK(V.rows[0].val == 25 && ps2_settings.vol_master == 100, "click on the bar: 25 staged (%d)", V.rows[0].val);
         /* (pc-menu2) the button held: dragging moves the value, the button up ends the drag */
         menu_mouse_move(tx0 + (tx1 - tx0) * 3 / 4, L.rows[5].y);         /* (anywhere vertically while dragging) */
-        CHECK(ps2_settings.vol_master == 75, "drag to 75 (%d)", ps2_settings.vol_master);
+        view();
+        CHECK(V.rows[0].val == 75, "drag to 75 (%d)", V.rows[0].val);
         menu_mouse_up(tx0, L.rows[0].y);
         menu_mouse_move(tx0, L.rows[0].y + L.rows[0].h / 2);
-        CHECK(ps2_settings.vol_master == 75, "released: no more dragging (%d)", ps2_settings.vol_master);
+        view();
+        CHECK(V.rows[0].val == 75, "released: no more dragging (%d)", V.rows[0].val);
+        menu_mouse_move(L.btn[2].x + 5, L.btn[2].y + 5);
+        view();
+        CHECK(V.hover_btn == 2, "hover on Apply");
+        menu_mouse_button(L.btn[2].x + 5, L.btn[2].y + 5, 1);
+        CHECK(ps2_settings.vol_master == 75 && !menu_pending(), "click on Apply: 75 (%d)", ps2_settings.vol_master);
         menu_mouse_button(tx0 + (tx1 - tx0) / 4, L.rows[0].y + L.rows[0].h / 2, 1);
         menu_mouse_up(0, 0);
+        menu_mouse_button(L.btn[1].x + 5, L.btn[1].y + 5, 1);
+        CHECK(ps2_settings.vol_master == 75 && !menu_pending(), "click on Discard");
         menu_mouse_button(L.tabs[MENU_PAGE_CONTROLS].x + 5, L.tabs[MENU_PAGE_CONTROLS].y + 5, 1);
         view();
-        CHECK(V.page == MENU_PAGE_CONTROLS, "click on the Controls tab");
-        menu_mouse_move(L.rows[2].x + 10, L.rows[2].y + 5);
+        CHECK(V.page == MENU_PAGE_CONTROLS && V.rows[0].id == MENU_ROW_INVERT && !strcmp(V.rows[0].value, "Off"), "click on the Controls tab");
+        menu_mouse_move(L.rows[0].x + 10, L.rows[0].y + 5);
+        menu_mouse_button(L.right[0].x + 2, L.right[0].y + 5, 1);
         view();
-        CHECK(V.sel == 2 && V.hover_row == 2, "hover selects row 2");
-        menu_mouse_button(L.right[2].x + 2, L.right[2].y + 5, 1);
-        CHECK(fake_cfg.invert_camera_x == 1 && fake_saves > 0, "click on > : invert X on (input_config_set saved)");
+        int saves = fake_saves;
+        CHECK(!strcmp(V.rows[0].value, "Vertical") && !fake_cfg.invert_camera_y && V.rows[0].changed, "click on > : invert Vertical staged ('%s')", V.rows[0].value);
+        apply_now();
+        CHECK(fake_cfg.invert_camera_y == 1 && !fake_cfg.invert_camera_x && fake_saves == saves + 1, "applied: input_config_set saved");
     }
-    go(MENU_ROW_VIB_STRENGTH);
+    go(MENU_ROW_INVERT);
+    for (int k = 0; k < 2; k++) menu_nav_event(MENU_NAV_RIGHT, MENU_DEV_KEYBOARD);
+    apply_now();
+    CHECK(fake_cfg.invert_camera_x && fake_cfg.invert_camera_y && !strcmp(V.rows[V.sel].value, "Both"), "Both ('%s')", V.rows[V.sel].value);
+    menu_nav_event(MENU_NAV_LEFT, MENU_DEV_KEYBOARD);
+    menu_nav_event(MENU_NAV_LEFT, MENU_DEV_KEYBOARD);
+    menu_nav_event(MENU_NAV_LEFT, MENU_DEV_KEYBOARD);
+    apply_now();
+    CHECK(!fake_cfg.invert_camera_x && !fake_cfg.invert_camera_y, "Off");
+    go(MENU_ROW_CTL_ADV);
+    menu_nav_event(MENU_NAV_CONFIRM, MENU_DEV_KEYBOARD);
+    view();
+    CHECK(V.page == MENU_PAGE_CTL_ADV && V.rows[0].id == MENU_ROW_VIB_STRENGTH && find_row(&V, MENU_ROW_INV_BINO) >= 0 &&
+          find_row(&V, MENU_ROW_DEADZONE) >= 0, "Advanced controls");
     int r0 = fake_rumbles;
     menu_nav_event(MENU_NAV_LEFT, MENU_DEV_KEYBOARD);
-    CHECK(fake_cfg.vibration_strength == 90 && fake_rumbles == r0 + 1, "strength 90 + test rumble");
-    /* bindings */
+    CHECK(fake_cfg.vibration_strength == 100 && fake_rumbles == r0, "strength 90 staged, no rumble yet");
+    apply_now();
+    CHECK(fake_cfg.vibration_strength == 90 && fake_rumbles == r0 + 1, "applied: strength 90 + a test rumble");
+    menu_nav_event(MENU_NAV_BACK, MENU_DEV_KEYBOARD);
+    /* bindings: staged too */
     go(MENU_ROW_KEYS);
     menu_nav_event(MENU_NAV_CONFIRM, MENU_DEV_KEYBOARD);
     view();
@@ -800,14 +958,17 @@ static void test_menu_nav(void) {
     menu_nav_event(MENU_NAV_CONFIRM, MENU_DEV_KEYBOARD);
     CHECK(menu_capturing() && fake_capture == INPUT_CAPTURE_KEYBOARD, "capture begins (second column)");
     menu_capture_result(INPUT_CAPTURE_KEY, 'G');
-    CHECK(!menu_capturing() && fake_cfg.key[INPUT_ACT_CROSS][1] == 'G', "G bound as Cross's second key");
+    view();
+    CHECK(!menu_capturing() && fake_cfg.key[INPUT_ACT_CROSS][1] != 'G' && !strcmp(V.rows[0].value2, "G") && V.rows[0].changed,
+          "G staged as Cross's second key");
     go(MENU_ROW_BIND0 + INPUT_ACT_CIRCLE);
     menu_nav_event(MENU_NAV_DOWN, MENU_DEV_KEYBOARD);
     menu_nav_event(MENU_NAV_UP, MENU_DEV_KEYBOARD);
     menu_nav_event(MENU_NAV_LEFT, MENU_DEV_KEYBOARD);
     menu_nav_event(MENU_NAV_CONFIRM, MENU_DEV_KEYBOARD);
     menu_capture_result(INPUT_CAPTURE_KEY, VK_SPACE);
-    CHECK(fake_cfg.key[INPUT_ACT_CIRCLE][0] == VK_SPACE, "Space bound to Circle (row 1, first column)");
+    apply_now();
+    CHECK(fake_cfg.key[INPUT_ACT_CROSS][1] == 'G' && fake_cfg.key[INPUT_ACT_CIRCLE][0] == VK_SPACE, "applied: G on Cross, Space on Circle");
     CHECK(fake_cfg.key[INPUT_ACT_CROSS][0] != VK_SPACE, "a key does one thing: Space taken from Cross");
     menu_nav_event(MENU_NAV_CONFIRM, MENU_DEV_KEYBOARD);
     menu_capture_result(INPUT_CAPTURE_CANCELLED, 0);
@@ -815,31 +976,33 @@ static void test_menu_nav(void) {
     menu_nav_event(MENU_NAV_BACK, MENU_DEV_KEYBOARD);
     view();
     CHECK(V.page == MENU_PAGE_CONTROLS && V.rows[V.sel].id == MENU_ROW_KEYS && menu_is_open(), "back: Controls, on the Keyboard row");
+    int closed0 = host_closed;
     menu_nav_event(MENU_NAV_BACK, MENU_DEV_KEYBOARD);
-    CHECK(!menu_is_open() && host_closed == 2 && !fake_menu_active, "back on a main page closes (host told, input released)");
+    CHECK(!menu_is_open() && host_closed == closed0 + 1 && !fake_menu_active, "back on a main page closes (host told, input released)");
     menu_open();
     push(INPUT_NAV_MENU, INPUT_SRC_CONTROLLER);       /* Options / PS while open: close */
     menu_tick();
-    CHECK(!menu_is_open() && host_closed == 3, "MENU closes");
+    CHECK(!menu_is_open() && host_closed == closed0 + 2, "MENU closes");
     /* (pc-polish) Quit to desktop: alone over the game (the pause menu's entry, the close button) */
     CHECK(menu_quit_request() && menu_is_open() && menu_quit_showing() && fake_menu_active, "quit asks");
     view();
-    CHECK(V.dialog_only && V.dialog == MENU_DLG_QUIT && !strcmp(V.dlg_title, "Quit to desktop?") &&
+    CHECK(V.dialog_only && V.dialog == MENU_DLG_QUIT && !strcmp(V.dlg_title, "Quit to desktop?") && V.dlg_buttons == 2 &&
           !strcmp(V.dlg_text, "Unsaved progress since the last save will be lost.") && !strcmp(V.dlg_yes, "Quit"), "the quit question");
     menu_nav_event(MENU_NAV_BACK, MENU_DEV_KEYBOARD);
-    CHECK(!menu_is_open() && host_quits == 0 && host_closed == 4, "Cancel: back to the game");
+    CHECK(!menu_is_open() && host_quits == 0 && host_closed == closed0 + 3, "Cancel: back to the game");
     menu_quit_request();
     menu_nav_event(MENU_NAV_CONFIRM, MENU_DEV_PLAYSTATION);
     CHECK(host_quits == 1 && !menu_is_open(), "Quit: host.quit");
-    /* from the Options menu: the Quit row; Cancel returns to the page */
+    /* from the Options menu: the Quit row; Cancel returns to the page; right + Confirm = Cancel too */
     menu_open();
     go(MENU_ROW_QUIT);
     menu_nav_event(MENU_NAV_CONFIRM, MENU_DEV_KEYBOARD);
     view();
     CHECK(V.dialog == MENU_DLG_QUIT && !V.dialog_only, "Quit row asks");
-    menu_nav_event(MENU_NAV_BACK, MENU_DEV_KEYBOARD);
+    menu_nav_event(MENU_NAV_RIGHT, MENU_DEV_KEYBOARD);
+    menu_nav_event(MENU_NAV_CONFIRM, MENU_DEV_KEYBOARD);
     view();
-    CHECK(menu_is_open() && V.dialog == MENU_DLG_NONE && host_quits == 1, "Cancel: still in Options");
+    CHECK(menu_is_open() && V.dialog == MENU_DLG_NONE && host_quits == 1, "Cancel focused + Confirm: still in Options");
     {                                                 /* the mouse: the dialog's buttons */
         menu_layout L;
         menu_nav_event(MENU_NAV_CONFIRM, MENU_DEV_KEYBOARD);
@@ -849,6 +1012,22 @@ static void test_menu_nav(void) {
         CHECK(menu_quit_showing(), "a click beside the buttons does nothing");
         menu_mouse_button(L.dlg_yes.x + 5, L.dlg_yes.y + 5, 1);
         CHECK(host_quits == 2 && !menu_is_open(), "click on Quit");
+        /* the leave question's three buttons */
+        menu_open();
+        menu_nav_event(MENU_NAV_TAB_NEXT, MENU_DEV_KEYBOARD);
+        menu_nav_event(MENU_NAV_TAB_NEXT, MENU_DEV_KEYBOARD);
+        go(MENU_ROW_FRAME_RATE);
+        menu_nav_event(MENU_NAV_RIGHT, MENU_DEV_KEYBOARD);
+        menu_nav_event(MENU_NAV_BACK, MENU_DEV_KEYBOARD);
+        view();
+        menu_mouse_move(L.dlg3[1].x + 5, L.dlg3[1].y + 5);
+        view();
+        CHECK(V.dialog == MENU_DLG_PENDING && V.hover_btn == 7, "hover on Discard (%d)", V.hover_btn);
+        menu_mouse_button(L.dlg3[2].x + 5, L.dlg3[2].y + 5, 1);
+        CHECK(menu_is_open() && menu_pending() == 1, "click on Cancel");
+        menu_nav_event(MENU_NAV_BACK, MENU_DEV_KEYBOARD);
+        menu_mouse_button(L.dlg3[1].x + 5, L.dlg3[1].y + 5, 1);
+        CHECK(!menu_is_open() && ps2_settings.vol_master == 75, "click on Discard: closed, unchanged");
     }
     settings_reset_section("audio");
     settings_reset_section("display");
@@ -887,6 +1066,12 @@ static void test_draw(void) {
                 set_page(MENU_PAGE_CONTROLS);
                 go(page == MENU_PAGE_KEYS ? MENU_ROW_KEYS : MENU_ROW_PAD);
                 menu_nav_event(MENU_NAV_CONFIRM, page == MENU_PAGE_PAD ? MENU_DEV_PLAYSTATION : MENU_DEV_KEYBOARD);
+            } else if (page >= MENU_PAGE_N) {    /* (menu) Advanced graphics / controls */
+                LOCK(); set_page(menu_page_parent(page)); UNLOCK();
+                go(page == MENU_PAGE_GFX_ADV ? MENU_ROW_GFX_ADV : MENU_ROW_CTL_ADV);
+                menu_nav_event(MENU_NAV_CONFIRM, page == MENU_PAGE_CTL_ADV ? MENU_DEV_XBOX : MENU_DEV_KEYBOARD);
+                view();
+                CHECK(V.page == page, "sub-page %d opened", page);
             } else {
                 LOCK(); set_page(page); UNLOCK();
                 menu_nav_event(MENU_NAV_DOWN, page == MENU_PAGE_CONTROLS ? MENU_DEV_XBOX : page == MENU_PAGE_AUDIO ? MENU_DEV_PLAYSTATION
@@ -903,18 +1088,33 @@ static void test_draw(void) {
                   "panel inside the output, %d rows visible at %dx%d", L.visible, w, h);
             char name[64];
             snprintf(name, sizeof name, "pc_menu_%s_%s", menu_page_name(page), sizes[s].tag);
-            for (char* c = name; *c; c++) if (*c >= 'A' && *c <= 'Z') *c += 32;
+            for (char* c = name; *c; c++) { if (*c >= 'A' && *c <= 'Z') *c += 32; if (*c == ' ') *c = '_'; }
             save_raw(name, px, w, h);
-            if (page == MENU_PAGE_KEYS || page == MENU_PAGE_PAD) menu_nav_event(MENU_NAV_BACK, MENU_DEV_KEYBOARD);
+            if (page >= MENU_PAGE_N) menu_nav_event(MENU_NAV_BACK, MENU_DEV_KEYBOARD);
         }
-        if (s == 0) {                            /* the reset dialog and a binding capture */
+        if (s == 0) {                            /* (menu) staged changes, the leave question, the Retro look */
             LOCK(); set_page(MENU_PAGE_GRAPHICS); UNLOCK();
-            go(MENU_ROW_RESET);
-            menu_nav_event(MENU_NAV_CONFIRM, MENU_DEV_PLAYSTATION);
+            settings_change_key("graphics", "preset", SETTINGS_PRESET_MEDIUM, 0);
+            go(MENU_ROW_PRESET);
+            menu_nav_event(MENU_NAV_RIGHT, MENU_DEV_PLAYSTATION);    /* High: Quality, Anti-aliasing, Outlines marked */
             menu_draw(px, w, h, w);
-            save_raw("pc_menu_reset_1440p", px, w, h);
-            menu_nav_event(MENU_NAV_BACK, MENU_DEV_PLAYSTATION);
-            /* (pc-polish) a staged display mode (the Apply button), Apply on close?, Keep these display settings?, Quit */
+            save_raw("pc_menu_changes_1440p", px, w, h);
+            view();
+            CHECK(V.pending == 2, "the changes picture: 2 changes (%d)", V.pending);
+            menu_nav_event(MENU_NAV_BACK, MENU_DEV_PLAYSTATION);     /* leave: Apply / Discard / Cancel */
+            menu_draw(px, w, h, w);
+            save_raw("pc_menu_leave_1440p", px, w, h);
+            menu_nav_event(MENU_NAV_RIGHT, MENU_DEV_KEYBOARD);
+            menu_draw(px, w, h, w);
+            save_raw("pc_menu_leave_keys_1440p", px, w, h);
+            menu_nav_event(MENU_NAV_BACK, MENU_DEV_KEYBOARD);        /* Cancel */
+            menu_nav_event(MENU_NAV_DISCARD, MENU_DEV_KEYBOARD);
+            go(MENU_ROW_GLOOK);
+            menu_nav_event(MENU_NAV_LEFT, MENU_DEV_KEYBOARD);        /* Retro: the rows it sets locked */
+            menu_draw(px, w, h, w);
+            save_raw("pc_menu_retro_1440p", px, w, h);
+            menu_nav_event(MENU_NAV_DISCARD, MENU_DEV_KEYBOARD);
+            /* (pc-polish) a staged display mode, Apply on close?, Keep these display settings?, Quit */
             LOCK(); set_page(MENU_PAGE_DISPLAY); UNLOCK();
             go(MENU_ROW_MODE);
             menu_nav_event(MENU_NAV_RIGHT, MENU_DEV_KEYBOARD);

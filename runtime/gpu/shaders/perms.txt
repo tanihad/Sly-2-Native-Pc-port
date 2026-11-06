@@ -309,3 +309,4 @@ cs_et_mip           tex.hlsl            cs_et_mip         cs_5_0
 cs_et_cov           tex.hlsl            cs_et_cov         cs_5_0
 cs_et_store         tex.hlsl            cs_et_store       cs_5_0
 cs_et_hash          tex.hlsl            cs_et_hash        cs_5_0
+cs_et_dd            tex.hlsl            cs_et_dd          cs_5_0

@@ -17,12 +17,19 @@
 
 enum { MENU_PAGE_GRAPHICS, MENU_PAGE_DISPLAY, MENU_PAGE_AUDIO, MENU_PAGE_CONTROLS, MENU_PAGE_N,
        MENU_PAGE_KEYS = MENU_PAGE_N,     /* sub-pages of Controls: keyboard / controller bindings */
-       MENU_PAGE_PAD, MENU_PAGE_ALL };
+       MENU_PAGE_PAD,
+       MENU_PAGE_GFX_ADV,                /* (menu) Graphics > Advanced graphics */
+       MENU_PAGE_CTL_ADV,                /* (menu) Controls > Advanced controls */
+       MENU_PAGE_ALL };
+/* the main page a sub-page belongs to (a main page: itself) */
+int menu_page_parent(int page);
 
 /* navigation events (keyboard, controller, scripted tokens) */
 typedef enum {
     MENU_NAV_NONE, MENU_NAV_UP, MENU_NAV_DOWN, MENU_NAV_LEFT, MENU_NAV_RIGHT, MENU_NAV_CONFIRM, MENU_NAV_BACK,
     MENU_NAV_TAB_NEXT, MENU_NAV_TAB_PREV, MENU_NAV_DEFAULTS, MENU_NAV_PAGE_UP, MENU_NAV_PAGE_DOWN, MENU_NAV_CLOSE,
+    MENU_NAV_APPLY,                      /* (menu) apply the staged changes (Square / X, F, the footer button) */
+    MENU_NAV_DISCARD,                    /* (menu) discard them (Triangle / Y, R) */
     MENU_NAV_N
 } menu_nav;
 
@@ -48,6 +55,7 @@ typedef struct {
     int nchoices, cur;                   /* CHOICE: count and current index (-1 none of them) */
     int lo, hi, step, val;               /* SLIDER */
     int can_left, can_right;             /* arrows shown */
+    int changed;                         /* (menu) a staged change, not applied yet (marked) */
 } menu_row;
 
 /* What the menu needs from the rest of the game (menu_host.c in the game; a fake in the unit test). Any member may
@@ -83,7 +91,7 @@ enum { MENU_DLG_NONE, MENU_DLG_RESET, MENU_DLG_QUIT, MENU_DLG_KEEP, MENU_DLG_PEN
 int  menu_quit_request(void);
 /* the quit confirmation is showing (window.c: a second close button press quits at once) */
 int  menu_quit_showing(void);
-/* settings changed but not applied yet (Display mode, Resolution, Monitor, Renderer) */
+/* (menu) the number of changes staged and not applied yet (every option is staged until Apply) */
 int  menu_pending(void);
 /* the Keep / Revert countdown (menu_tick calls it; tests with a fake clock) */
 void menu_keep_tick(void);
@@ -139,7 +147,10 @@ typedef struct {
     int dialog;                          /* MENU_DLG_* */
     int dialog_only;                     /* only the dialog (Quit opened from the game's menus / the close button): no panel */
     char dlg_title[MENU_TEXT], dlg_text[3 * MENU_TEXT], dlg_yes[32], dlg_no[32];
-    int pending;                         /* changes waiting for Apply (the footer's Apply button) */
+    int pending;                         /* changes waiting for Apply: their number (the footer's status, Apply / Discard) */
+    int dlg_buttons;                     /* (menu) 2 (yes / no) or 3 (yes / alt / no: Apply / Discard / Cancel) */
+    int dlg_focus;                       /* (menu) the focused button: 0 yes, 1 alt, 2 no */
+    char dlg_alt[32];
     /* (pc-menu2) */
     float scroll_f;                      /* the list's scroll as shown (rows, animated towards scroll) */
     float sel_f;                         /* the selection band's position as shown (rows, animated towards sel) */
@@ -159,10 +170,11 @@ typedef struct {
     menu_rect rows[MENU_MAX_ROWS];       /* visible rows (index = row - first; visible + 1 of them, the last ones may be
                                             partly outside the list: hit tests check list too) */
     menu_rect left[MENU_MAX_ROWS], right[MENU_MAX_ROWS];   /* the value's arrows */
-    menu_rect btn[3];                    /* footer buttons, right to left: 0 back (close on a main page), 1 close
-                                            (controller hint; 2 unused) */
+    menu_rect btn[3];                    /* footer buttons, right to left: 0 back (close on a main page), 1 the select
+                                            hint / (changes staged) Discard, 2 (changes staged) Apply */
     menu_rect tab_hint[2];               /* the page-switch hints left and right of the tabs (L1 / R1, Q / E) */
-    menu_rect dlg, dlg_yes, dlg_no;      /* the "reset to defaults?" dialog and its buttons */
+    menu_rect dlg, dlg_yes, dlg_no;      /* a dialog and its two buttons */
+    menu_rect dlg3[3];                   /* (menu) a three-button dialog's buttons: yes, alt, no */
     menu_rect scrollbar;                 /* right of the rows (when they do not all fit) */
     int value_x;                         /* where the values column starts */
 } menu_layout;
@@ -195,6 +207,11 @@ enum {
     MENU_ROW_MSAA,                       /* (r2-m8) Graphics > Anti-aliasing (MSAA): [graphics] msaa */
     MENU_ROW_LIGHTING,                   /* (light) Graphics > Lighting: [graphics] lighting (Enhanced / Original) */
     MENU_ROW_TEXTURES,                   /* (tex) Graphics > Textures: [graphics] textures (Enhanced / Original) */
+    /* (menu) */
+    MENU_ROW_GLOOK,                      /* Graphics > Look: [graphics] look (Retro / Faithful [/ Reimagined]) */
+    MENU_ROW_GFX_ADV, MENU_ROW_CTL_ADV,  /* "Advanced graphics" / "Advanced controls" (sub-pages) */
+    MENU_ROW_INVERT,                     /* Controls > Invert camera: Off / Vertical / Horizontal / Both */
+    MENU_ROW_TVFX,                       /* Advanced graphics > TV effects: [graphics] filters */
     MENU_ROW_BIND0 = 100,                /* binding rows: MENU_ROW_BIND0 + action */
     MENU_ROW_BIND_RESET = 99,
 };

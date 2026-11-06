@@ -571,6 +571,7 @@ static int ts_complete(int block) {             /* oldest timestamp set; returns
     ready_poll(i);                               /* (finished: its event is signalled by now, if not seen before) */
     gpu_frame_stats st = P.ts[i].st;
     int ok = hr == S_OK && !dj.Disjoint && dj.Frequency;
+    if (ok) gpu_ts_freq = dj.Frequency;  /* (tex: PS2_TEX_TIME's own timestamps) */
     st.gpu_ms = ok ? (double)(t1 - t0) * 1000.0 / (double)dj.Frequency : -1.0;
     st.present_gpu_ms = ok && P.ts[i].pres && t2 >= t1b ? (double)(t2 - t1b) * 1000.0 / (double)dj.Frequency : -1.0;
     if (ptrace_file()) fprintf(ptrace, "g %u %.3f %.3f\n", st.vblank, st.gpu_ms, st.present_gpu_ms);
@@ -631,6 +632,7 @@ static int ts_complete(int block) {             /* oldest timestamp set; returns
 #define frame_begin gpu_stats_begin
 #define frame_end gpu_stats_end
 gpu_frame_stats* gpu_stats_cur(void) { return &P.st; }
+UINT64 gpu_ts_freq;
 
 void gpu_stats_begin(uint32_t vblank, double front_ms) {
     /* a full timestamp ring waits for the GPU before this picture's time starts */

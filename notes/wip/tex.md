@@ -3,7 +3,20 @@
 Goal: textures clearly sharper / cleaner at 1440p (HD-remaster look), Original bit-identical and free. Design and
 results: notes/enhanced-textures.md. Setting graphics.textures = enhanced | original (live), env PS2_TEX=0/1 + per feature.
 
-STATUS: COMPLETE (2026-11-05)
+STATUS: COMPLETE (follow-up 2026-11-06: dither resolve done)
+
+## Follow-up: dither (2026-11-06)
+- [x] cs_et_dd: per-texel dither classification (residual sign coherence) + range-limited 3x3 binomial before the
+      upscale; cs_et_up: no sharpening / deband blur where resolved (PS2_TEX_DEDITHER=0 off, PS2_TEX_DD_RANGE=40) (376b596)
+- [x] tuning (54ad3d0, 77538d9, 75ed143): hue-aware distance, line texels kept, density rule (sparse dot rows stay,
+      unsharpened), grout keeps its exemption (nearest texel's weight), resolved data through an SRV buffer
+- [x] final2 shots: build\tex\shots\final2 (scratchpad final2.ps1 picks an A/B pair; a phase's FIRST VBlank still
+      shows the previous phase - never use it)
+- [x] gates + perf (results in notes/enhanced-textures.md "Dither resolve follow-up"); PS2_TEX_TIME=1 for build cost
+- trap: another program on the GPU (the owner's games) ruins frame-time perf and can make -Play tf runs NO DATA; check
+  Get-Process before perf runs, use the tex-time timestamps for build cost
+- tools: dumps via PS2_TEX_DUMP=2 (build\tex\dump_old = before the fix); a C# prototype lived in the session scratchpad
+- trap: [IO.File] calls resolve relative paths against the process directory (the main checkout), not the PS location
 
 ## Status
 - [x] 1 design note (notes/enhanced-textures.md) + texture statistics (PS2_TEX_STATS=1)

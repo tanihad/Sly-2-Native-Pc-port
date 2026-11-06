@@ -163,10 +163,11 @@ static const struct { const char* name; unsigned vk; int shift; } script_gfx[] =
 /* (pc-menu) the Options menu (menu_game.c menu_script): "menu" opens it as Esc does (or closes it), "mup" "mdown" "mleft"
  * "mright" "mok" "mback" "mtabn" "mtabp" navigate as a controller does, "menushot" writes the next presented picture with
  * the menu to PS2_MENU_SHOTS (folder; default the frame dump folder or .) as menu_<n>.png, (pc-polish) "mquit" = the
- * window's close button (Quit to desktop?; a second one quits), (pc-shot) "screenshot" = F12 (menu_overlay.h) */
+ * window's close button (Quit to desktop?; a second one quits), (pc-shot) "screenshot" = F12 (menu_overlay.h), (menu)
+ * "mapply" / "mdiscard" = Square / Triangle (apply / discard the staged changes) */
 #define SCRIPT_MENU0 (-40)
 static const char* const script_menu[] = { "menu", "mup", "mdown", "mleft", "mright", "mok", "mback", "mtabn", "mtabp", "menushot",
-                                           "mquit", "screenshot" };
+                                           "mquit", "screenshot", "mapply", "mdiscard" };
 #define SCRIPT_NMENU ((int)(sizeof script_menu / sizeof script_menu[0]))
 extern void menu_script(int k) __attribute__((weak));
 extern void overlay_request_screenshot(void) __attribute__((weak));

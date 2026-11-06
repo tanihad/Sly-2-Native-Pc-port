@@ -1,9 +1,9 @@
 # The in-game Options menu, the pause menu and Quit to desktop
 
 The PC port's settings screen, as a PC release has one: pause, choose **Options**, change graphics, display, audio and
-controls with the keyboard, the mouse or a controller; most options apply while the game runs (with the game's paused
-picture behind the menu) and are saved to sly2.ini at once (notes/settings.md); display mode, resolution, monitor and
-renderer are staged and applied with **Apply changes**, then confirmed ("Keep these display settings? Reverting in 15 s").
+controls with the keyboard, the mouse or a controller; (menu overhaul, 2026-11-06) every change is staged and put into
+effect with **Apply** (the game's paused picture behind the menu; saved to sly2.ini then, notes/settings.md), display
+changes then confirmed ("Keep these display settings? Reverting in 15 s"); see "Apply / Revert" and "Pages and options".
 **Quit to Desktop** is in the pause menu, in Options and on the title screen, and the window's close button asks the
 same question.
 
@@ -166,7 +166,7 @@ Our camera inversion rows (right stick) stay: the game's two inversions are diff
 - **Esc** (keyboard) and the **PS button**: (pc-menu2) the game's own pause / title menu (section "pc-menu2" above); our
   menu opens directly only where the game has no menu to show (after 0.6 s).
 - **Closing** (Esc / Circle / B on a main page, Options / PS button anywhere) returns to the game's pause menu; with
-  staged changes it asks first ("Apply the changed settings?" Apply / Discard).
+  staged changes it asks first ("Apply the changed settings?" Apply / Discard / Cancel).
 - Pause signal: page depth `*(s32*)0x3D9EF4 >= 1` and page 1's entry list `*(u32*)0x3D9EFC == 0xFF000`, state
   `*(s32*)0x3DA0B8 == 7` = idle.
 
@@ -221,39 +221,98 @@ any option (Revert / Discard restore the previous values as before).
 (light, owner 2026-11-05) A **Lighting** row (Enhanced / Original) follows MSAA: Balanced and Quality set Enhanced,
 Performance and PS2 set Original (notes/enhanced-lighting.md).
 
-## Apply / Revert
+## Apply / Revert (menu overhaul, 2026-11-06: Apply for everything)
 
-- Live (apply as they change, as before): everything except the four below.
-- **Staged** (`SET_STAGED` in the settings table; the menu keeps the chosen value, the row says "Choose Apply to use
-  it", the header shows an **Apply changes** button and the page an "Apply changes" row): Display mode, Resolution,
-  Monitor (a display mode change) and Renderer (a renderer switch; started on the software renderer it needs a restart:
-  "Choose Apply - needs a restart of the game", afterwards "Restart the game to use it"). Stepping back to the value in
-  effect un-stages it.
-- After a display change is applied: "Keep these display settings? Reverting to the previous settings in 15 s." Keep /
-  Revert; no answer in 15 s (or Back / Esc / the PS button) restores the previous display mode, resolution, monitor and
-  window size.
-- Closing the menu with staged changes: "Apply the changed settings?" Apply / Discard.
-- Needs a restart: the renderer when the game started on the software renderer; frame pacing only if pc-pacing's
-  live switch is missing (the stand-in): the row's note says so.
+The owner: "I want to have to apply the settings every time". (Before: everything live except display mode, resolution,
+monitor and renderer.)
+- **Every change is staged** (menu.c `sg`: options of the settings table as the player's own values, the controls
+  configuration with the bindings, the window size). A changed row has an orange dot before its value; the footer
+  shows "Changes not applied" (no number: a Quality change dots its own row plus the rows it restages, so a count of
+  option values disagreed with the dots; owner build 2026-11-06) and two buttons: **Apply** (Square / X on a controller, F on the keyboard, a click) and
+  **Discard** (Triangle / Y, R, a click). Stepping back to the value in effect un-stages a row. The rows show the staged
+  values (a preview: menu.c `preview`, PO = the player's options, PE = what would be in effect).
+- **Apply** puts every staged change into effect at once (`apply_pending`: each through `settings_change`, written to
+  sly2.ini, [chosen]; the look left first / entered last so the options Retro sets become the player's own; the renderer
+  last; the controls with one `input_config_set`, a test rumble when the vibration strength changed). **Discard** forgets
+  them. Changing **Quality** restages the rows it sets (Resolution scale, Anti-aliasing, Outlines; Lighting, Textures
+  in Advanced) - applied with Apply like the rest. **Reset to defaults** stages the page's defaults (no question:
+  Discard undoes it).
+- **Leaving with changes** (Back / Esc / Circle on a main page, the PS / Options button, closing the pause): "Apply the
+  changed settings? Some settings were changed but not applied yet." **Apply** / **Discard** / **Cancel** (left / right move the focus,
+  Confirm presses the focused one, Square / Triangle / Circle - F / R / Esc - press them directly, the mouse clicks
+  them). Apply then closes the menu (after "Keep these display settings?" when a display change was in it); Discard
+  closes without them; Cancel stays. The menu opens with nothing staged.
+- After a display change (display mode, resolution, window size, monitor) is applied: "Keep these display settings?
+  Reverting to the previous settings in 15 s." Keep / Revert; no answer in 15 s (or Back / Esc / the PS button) restores
+  the previous display mode, resolution, monitor and window size.
+- Needs a restart: the renderer when the game started on the software renderer (the row says "Needs a restart of the
+  game", afterwards "Restart the game to use it").
+- Tests: tests/unit/menu `test_menu_nav` (staging, Apply, Discard, the leave question by keys / pad / mouse, Keep after
+  leaving, Quality restaging, Retro, bindings and controls staged).
 
-## Pages and options
+## Pages and options (menu overhaul, 2026-11-06)
 
-| page | option | values | key | applies |
-|---|---|---|---|---|
-| Graphics | Preset | PS2 / Performance / Balanced / Quality (Custom when the options match none) | graphics.preset | live |
-| | Rendering | Modern / Reference (exact) | graphics.renderer_mode | live |
-| | MSAA (r2-m8) | Off / 2x / 4x / 8x (Modern at a percentage only) | graphics.msaa | live |
-| | Lighting (light) | Enhanced / Original (Modern at a percentage only; notes/enhanced-lighting.md) | graphics.lighting | live |
-| | Renderer | GPU (Direct3D 11) / Software (CPU) | graphics.renderer | Apply (live switch when started on the GPU renderer, else next start) |
-| | Render scale | Auto / Original PS2 / 50..200 % (W x H) [/ Nx] | graphics.render_scale | live (GPU) |
-| | Scaling filter, Outlines, Look, Motion blur, TV flicker filter, Interlacing | as before | graphics.* | live |
-| Display | Display mode | Windowed / Borderless / Fullscreen | display.mode | Apply + Keep |
-| | Resolution | window sizes / desktop (read-only) / the monitor's modes | [window] size, display.resolution | Apply + Keep |
-| | Monitor | Automatic / 1: 2560 x 1440, 165 Hz (main) / ... | display.monitor | Apply + Keep (2+ monitors) |
-| | Aspect ratio, HUD layout, Frame rate, Frame pacing, VSync, Variable refresh (status), Show frame rate | as before | | live |
-| Audio | Master, Music, Effects volume, **Speakers** (Stereo / Mono / Surround), Sound in the background | | audio.* | live |
-| Controls | Vibration (also the game's), strength, Invert camera X / Y, **Invert Binocucom aiming**, **Invert turret aiming**, dead zones, Light bar, Keyboard controls / Controller buttons | | [controls], game.invert_* | live |
-| every page | Reset to defaults (asks; keeps display mode / resolution / monitor), **Quit to desktop** (asks) | | | |
+Fewer, clearer options; no "PS2" in any player-facing text (the unit test checks the Graphics page). Sub-pages
+(Advanced graphics, Advanced controls, Keyboard controls, Controller buttons) open from a row of their page; Back returns
+to that row; the page's tab stays lit.
+
+| page | option | values | key |
+|---|---|---|---|
+| Graphics | Look | Faithful / Retro (Reimagined: only shown when sly2.ini has it) | graphics.look |
+| | Quality | Low / Medium / High / Ultra (Custom when the options match none; "Original", locked, under Retro) | graphics.preset |
+| | Resolution scale | Auto (W x H) / 50 / 67 / 75 / 100 / 125 / 150 / 200 % (W x H); Reference: Auto (up to 100%), Original (512 x 448) and the same steps; a file's other value or Nx in its place | graphics.render_scale |
+| | Anti-aliasing | Off / Low (4x MSAA) / High (8x MSAA) (2x only when a file has it; Modern at a percentage only) | graphics.msaa |
+| | Outlines | Original / Thin | graphics.outlines |
+| | Advanced graphics... | the sub-page | |
+| Advanced graphics | Lighting, Textures | Original / Enhanced (Modern at a percentage only; a later "AI" textures value goes after Enhanced) | graphics.lighting, graphics.textures |
+| | Renderer | GPU (Direct3D 11) / Software (CPU) - the fallback for other PCs | graphics.renderer |
+| | Rendering | Modern / Reference (exact) | graphics.renderer_mode |
+| | Scaling filter | Automatic / Lanczos / Catmull-Rom / Box / Bilinear / Nearest | graphics.scaler |
+| | Motion blur | On (the game's own) / Off | graphics.motion_blur |
+| | TV effects | Off / On (flicker filter + interlacing; "Custom" when a file overrides one of them) | graphics.filters (+ flicker_filter / interlacing back to preset) |
+| | HUD layout | At the screen's edges / Centered (widescreen only) | display.hud |
+| Display | Display mode | Windowed / Borderless / Fullscreen | display.mode (+ Keep) |
+| | Resolution | window sizes / desktop (read-only) / the monitor's modes | [window] size, display.resolution (+ Keep) |
+| | Monitor | only with 2+ monitors: Automatic / 1: 2560 x 1440, 165 Hz (main) / ... | display.monitor (+ Keep) |
+| | Aspect ratio | 4:3 (original) / 16:10 / 16:9 / 21:9 / 32:9 / the display's | display.aspect |
+| | Frame rate limit | 60 fps (original) / 120 / 144 / 165 / 200 / Display / Unlimited | display.frame_rate |
+| | VSync | On / Off / Adaptive | graphics.vsync |
+| | Show frame rate | Off / On | window.show_fps |
+| Audio | Master, Music, Effects volume, Speakers (Stereo / Mono / Surround), Sound in the background (unchanged) | | audio.* |
+| Controls | Invert camera | Off / Vertical / Horizontal / Both (the X and Y inversions in one row) | [controls] invert_camera_x / _y |
+| | Vibration | Off / On (also the game's Vibrations) | [controls] vibration |
+| | Keyboard controls..., Controller buttons... | the binding pages (staged too) | [controls] |
+| | Advanced controls... | Vibration strength, Invert Binocucom aiming, Invert turret aiming, Left / Right stick dead zone, Light bar | [controls], game.invert_* |
+| every main page | Reset to defaults (staged; Display keeps display mode / resolution / monitor), Quit to desktop (asks) | | |
+
+Frame pacing and the variable refresh status rows are gone: pacing is automatic (`graphics.pacing = auto`, the default:
+paced on G-Sync / FreeSync, immediate on a fixed refresh, the display's clock on 60 / 120 / 240 Hz); the ini keys
+(`pacing`, `fullscreen_refresh`) still work and Reset on Display stages pacing = auto. HUD layout moved to Advanced
+graphics.
+
+**Look** (owner decision 2026-11-06): **Faithful** (default) = the game's own look drawn by the modern renderer at the
+screen's resolution, with the Quality's options (Enhanced lighting and textures from Medium up); **Retro** = everything as
+the original console drew it (Reference rendering on the integer grid, render scale auto, TV effects, original outlines,
+lighting and textures, 4:3) - the rows it sets are greyed with those values ("Set by the Retro look"), Quality shows
+"Original"; choosing Faithful again brings the player's Quality and options back (they stay in sly2.ini all along);
+**Reimagined** (planned: stronger lighting / colour grading, AI textures) has its plumbing (graphics.look, the renderer's
+query `settings_look()`) and renders as Faithful; the menu offers it only when sly2.ini already says `look = reimagined`.
+Quality works with Faithful and Reimagined and is locked under Retro.
+
+**Quality** presets (notes/settings.md "Presets"): Low = 75 %, MSAA off, original lighting / textures; Medium (default) =
+100 %, 4x, enhanced; High = 100 %, 8x, thin outlines, enhanced; Ultra = 125 %, 8x, thin outlines, enhanced. Ultra measured
+on the owner's RTX 4060 Ti at 2560 x 1440 (ep1 hub, release, headless with PS2_GS_PRESENT_SIZE, PS2_GS_HW_STATS medians):
+
+| Quality | GPU ms per frame (median) | 60 fps held |
+|---|---|---|
+| Medium | 3.8 | yes |
+| High | 5.4 | yes |
+| Ultra 125 % | 5.3 | yes (video memory ~3.1 GB) |
+| (150 % + 8x) | 10-16, then 270-340 (video memory exhausted on the 8 GB card) | no |
+| (133 % + 8x) | 15-24 after 300+ ms stalls | no |
+
+So Ultra stays at 125 % (another agent's GPU work ran at the same time; the 150 % / 133 % runs are the reason not to go
+higher on 8 GB cards, not exact numbers).
 
 "Voices": not offered (the game has no voice volume of its own: its Effects slider sets sound manager categories 0 and 3).
 
@@ -279,6 +338,12 @@ button) only the dimmed game and the dialog are drawn.
 
 ## Testing
 
+- (menu overhaul) `tests\unit\menu\run.ps1` 450+ checks: also Look / Quality / Ultra, Retro and back, old preset names and
+  the owner's own file migrated, staging / Apply / Discard / the leave question / Keep after leaving, the sub-pages.
+  `-Shots` also writes `pc_menu_changes_1440p` (staged changes: dots + footer), `pc_menu_leave_1440p` (+ `_keys`: the
+  leave question), `pc_menu_retro_1440p` (Retro staged: locked rows) and the Advanced pages. With PS2_MENU_FONT_RAM
+  (an EE RAM dump of the title screen, `PS2_DUMP_RAM=<vblank>` in a headless run; never committed) the pictures use
+  the game's font.
 - `tests\unit\menu\run.ps1` (305 checks, no window): option table, render scale values and the N(P, rows) mapping,
   legacy keys (the new key wins; files migrated on load; old keys through settings_change), presets, persistence, the
   menu (render scale texts and "Rendering at ... -> shown at ...", staged renderer / mode / resolution, Fullscreen's
