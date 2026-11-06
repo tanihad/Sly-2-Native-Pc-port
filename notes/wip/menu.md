@@ -22,13 +22,27 @@ Quality Low / Medium / High / Ultra (+ Custom); old ini files migrate cleanly. B
 - Apply: every row stages (menu.c stg); row "changed" mark, footer "N changes not applied" + Apply / Discard (pad
   Square / Triangle, keys F / R, mouse); leaving with changes -> Apply / Discard / Cancel; display changes -> Keep (15 s).
 
+## Owner's final decision (relayed, supersedes the Retro switch above)
+Look row: Retro / Faithful (default) / Reimagined (plumbing only: graphics.look, settings_look(); hidden unless the ini
+has it). Quality Low / Medium / High / Ultra (+ Custom), locked under Retro. Lighting / Textures moved to Advanced.
+Implemented as graphics.look (enum FAITHFUL 0, RETRO 1, REIMAGINED 2) with retro_own[]; no retro_look key.
+
 ## Status
-- [ ] 1 settings.c/h: presets, retro_look, migration + tests
-- [ ] 2 menu.c: pages / rows / staging / dialogs; menu_draw.c footer, changed mark, 3-button dialog; input nav keys
-- [ ] 3 unit tests (menu, window), Ultra measurement, pictures build\menu\shots
-- [ ] 4 gates: run_tests, m9_exact S1+S3 -Game, gpu_diff_all, r2_sweep -Parallel 1 ep1 tfo,tfb,mf
-- [ ] 5 notes/pc-menu.md, notes/settings.md
+- [x] 1 settings.c/h: presets, look, migration + tests (44257b8)
+- [x] 2 menu.c staging / pages / dialogs; menu_draw.c footer, dots, 3-button dialog; input F / R, Square / Triangle (44257b8)
+- [x] 3 unit tests menu 453 / window 525 / all suites 0 failed; Ultra = 125 % measured; pictures build\menu\shots (c5df16f)
+- [ ] 4 gates: run_tests 16/16 done; m9_exact S1+S3 -Game, gpu_diff_all, r2_sweep ep1 tfo,tfb,mf running (build\gates.txt;
+      script in the session scratchpad: m9 -Exe build\cur\gs_replay.exe -BaseExe build\basert\gs_replay.exe (e1a20a9 runtime
+      via git archive -o + tar))
+- [x] 5 notes/pc-menu.md, notes/settings.md
+- [ ] 6 headless in-game check (menu tokens mapply, old ini preset = original -> look = retro)
 
 ## Findings / traps
 - Gate scripts run the console exe copy in build\warp\<name> (user dir = that folder); flicker_run -Ini writes it.
 - r2_sweep tf variants use ini preset=balanced/quality/performance and graphics.filters=modern: must keep parsing.
+- [IO.File] in PowerShell resolves relative paths against the process cwd (the main checkout!), not `cd`: always
+  absolute paths. An early slip modified runtime/menu.c, menu.h, settings.c in the MAIN checkout (uncommitted; restoring
+  them was refused by the permission classifier: left for the owner; diff in the session scratchpad main_accidental.patch).
+- The Edit tool keeps its own view of a file: after a PowerShell rewrite, Read the file before the next Edit.
+- 150 % + 8x MSAA at 1440p exhausts the 8 GB RTX 4060 Ti (300 ms frames); 125 % + 8x holds 60 fps (GPU ~5.3 ms ep1).
+- The settings template is > 4 KB now (test_window used 4 KB buffers: truncated, hid [settings] version).
