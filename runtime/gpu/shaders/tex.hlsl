@@ -4,6 +4,7 @@
 // RGBA8 Texture2DArray class (the GS bytes, unorm) with its whole mip chain. Work comes in batches: the images of one
 // class built in one frame are one job table, every pass is one dispatch over all of them (SV_GroupID.z = the job), so
 // a frame's builds cost a few dispatches per mip level instead of a few per image.
+//   cs_et_dd     dither resolve of the source (ordered / scattered dither of 4-bit palettes -> its smooth shading)
 //   cs_et_up     edge-directed upscale to the slice size S, plus an unsharp mask at the source scale (level 0)
 //   cs_et_mip    one mip level from the previous one (cubic RGB, box alpha), alpha histogram
 //   cs_et_cov    per level, the alpha scale that keeps the alpha test's coverage of level 0 (alpha-tested images)
@@ -13,7 +14,8 @@
 cbuffer et_cb : register(b3) {
     uint4 e_b;                           // level, first job of the batch, -, -
     float4 e_p;                          // sharpen, sigma across, sigma along, minimum edge strength
-    float4 e_q;                          // flat below this local range (0..255: smoothed), detail above this (sharpened)
+    float4 e_q;                          // flat below this local range (0..255: smoothed), detail above this (sharpened),
+                                         // dither resolve strength (0..1), its contrast limit (0..255)
 };
 ByteAddressBuffer e_src : register(t0);                   // decoded words (texdec) / the uploaded HD image
 ByteAddressBuffer e_jobs : register(t1);                  // jobs: 16 words each (et_job below)
@@ -23,12 +25,14 @@ RWByteAddressBuffer e_hist : register(u2);                // per job (13 x 256 w
 RWByteAddressBuffer e_out : register(u3);                 // hashes: 4 words per request
 
 // a job: source base (words), log2 w, log2 h, flags (1 clamp u, 2 clamp v, 4 as it is: no steering / sharpening),
-// S (slice size), slice, scratch base (words), histogram base (words), alpha ref (0: no coverage scaling), levels
-static uint j_src, j_lw, j_lh, j_flags, j_S, j_slice, j_lv, j_hist, j_ref, j_nm;
+// S (slice size), slice, scratch base (words), histogram base (words), alpha ref (0: no coverage scaling), levels,
+// the dither-resolved source in scratch (words: w x h texels, then w x h dither weights; ~0u: none, read the source)
+static uint j_src, j_lw, j_lh, j_flags, j_S, j_slice, j_lv, j_hist, j_ref, j_nm, j_dd;
 void job_load(uint z) {
     uint o = (e_b.y + z) * 64u;
     uint4 a = e_jobs.Load4(o), b = e_jobs.Load4(o + 16u), c = e_jobs.Load4(o + 32u);
     j_src = a.x; j_lw = a.y; j_lh = a.z; j_flags = a.w; j_S = b.x; j_slice = b.y; j_lv = b.z; j_hist = b.w; j_ref = c.x; j_nm = c.y;
+    j_dd = c.z;
 }
 uint lv_off(uint k) { uint s = j_S >> k; return j_lv + (4u * j_S * j_S - 4u * s * s) / 3u; }   // (levels 0 .. k-1 before it)
 
@@ -38,10 +42,19 @@ uint et_pack(float4 c) {
     return b.x | (b.y << 8) | (b.z << 16) | (b.w << 24);
 }
 // the texel (x, y) of the source with the image's addressing (REPEAT wraps, CLAMP clamps)
-float4 et_fetch(int x, int y, uint W, uint H) {
+uint et_addr(int x, int y, uint W, uint H) {
     x = (j_flags & 1u) ? clamp(x, 0, (int)W - 1) : (x & (int)(W - 1u));
     y = (j_flags & 2u) ? clamp(y, 0, (int)H - 1) : (y & (int)(H - 1u));
-    return et_unpack(e_src.Load((j_src + (uint)y * W + (uint)x) * 4u));
+    return (uint)y * W + (uint)x;
+}
+float4 et_fetch_src(int x, int y, uint W, uint H) { return et_unpack(e_src.Load((j_src + et_addr(x, y, W, H)) * 4u)); }
+// (the upscale: the dither-resolved source when there is one)
+float4 et_fetch(int x, int y, uint W, uint H) {
+    uint a = et_addr(x, y, W, H);
+    return j_dd != 0xFFFFFFFFu ? et_unpack(e_lv.Load((j_dd + a) * 4u)) : et_unpack(e_src.Load((j_src + a) * 4u));
+}
+float et_dither(int x, int y, uint W, uint H) {
+    return j_dd != 0xFFFFFFFFu ? asfloat(e_lv.Load((j_dd + W * H + et_addr(x, y, W, H)) * 4u)) : 0.0;
 }
 float et_cr(float t, uint k) {           // Catmull-Rom weight of tap k (offsets -1, 0, 1, 2) at fraction t
     float t2 = t * t, t3 = t2 * t;
@@ -65,6 +78,102 @@ void hist_end(uint li, uint level) {
         uint b = li + 64u * k, n = 0u;
         [unroll] for (uint c = 0u; c < 8u; c++) n += gs_hist[c * 256u + b];
         if (n != 0u) e_hist.InterlockedAdd((j_hist + level * 256u + b) * 4u, n);
+    }
+}
+
+// ---- dither resolve: one thread per source texel (before the upscale) -----------------------------------------------------
+// Many 4-bit palette textures were quantized with ordered / scattered dithering: smooth shading drawn as a fine mix of two
+// close palette entries. The PS2's bilinear filter blurred it; upscaling + sharpening would turn it into dot grain. Per
+// texel: the luminance residual against a 3 x 3 binomial (r = L - B3 L) and its sign in the 3 x 3 around it; a texel
+// whose residual is coherent with neither pair of opposite neighbours (an isolated dot) or with both diagonals only (a
+// checker) is dither-like, one coherent along a direction (a line: grain, grout, strokes) is detail. Where the 5 x 5
+// around a texel is mostly dither-like and the local contrast is low, the texel takes a range-limited 3 x 3 binomial
+// (the dither's average; real edges above the range keep their side) and the upscale does not sharpen it.
+// Output (scratch at j_dd): the resolved texels, then the dither weight d (0..1, float) of each.
+// Group 8 x 8 texels, a 16 x 16 tile (apron 4: 2 for the 5 x 5 count, 1 for the signs, 1 for the binomial).
+groupshared uint gs_w[256];
+groupshared float gs_l[256], gs_r[256];
+groupshared uint gs_k[256];
+static const float DD_T = 2.0;           // |residual| below this: flat (no sign)
+// (-1: a transparent texel - its colour is no part of the image; translucent ones such as glass, alpha ~0x38, count)
+float dd_lum(float4 c) { return c.w < 4.0 ? -1.0 : dot(c.rgb, float3(0.299, 0.587, 0.114)); }
+int dd_sign(int t) { float v = gs_r[t]; return v > DD_T ? 1 : v < -DD_T ? -1 : 0; }
+[numthreads(8, 8, 1)]
+void cs_et_dd(uint3 gtid : SV_GroupThreadID, uint li : SV_GroupIndex, uint3 gid : SV_GroupID) {
+    job_load(gid.z);
+    uint W = 1u << j_lw, H = 1u << j_lh;
+    if (j_dd == 0xFFFFFFFFu || gid.x * 8u >= W || gid.y * 8u >= H) return;   // (uniform per group)
+    int2 o = int2(gid.xy * 8u) - 4;
+    [unroll] for (uint k = 0u; k < 4u; k++) {
+        uint t = li + 64u * k;
+        uint w = e_src.Load((j_src + et_addr(o.x + (int)(t & 15u), o.y + (int)(t >> 4), W, H)) * 4u);
+        gs_w[t] = w;
+        gs_l[t] = dd_lum(et_unpack(w));
+    }
+    GroupMemoryBarrierWithGroupSync();
+    // residuals at tile 1..14 (transparent texels and their neighbourhoods: none)
+    for (uint t1 = li; t1 < 196u; t1 += 64u) {
+        uint t = (t1 / 14u + 1u) * 16u + t1 % 14u + 1u;
+        float s = 0.0, wt = 0.0;
+        bool cut = gs_l[t] < 0.0;
+        [unroll] for (int j = -1; j <= 1; j++)
+            [unroll] for (int i = -1; i <= 1; i++) {
+                float l = gs_l[(int)t + j * 16 + i], b = (i == 0 ? 2.0 : 1.0) * (j == 0 ? 2.0 : 1.0);
+                cut = cut || l < 0.0;
+                s += b * l;
+            }
+        gs_r[t] = cut ? 0.0 : gs_l[t] - s * (1.0 / 16.0);
+    }
+    GroupMemoryBarrierWithGroupSync();
+    // class at tile 2..13: 0 flat, 1 dither-like, 2 line-like
+    for (uint t2 = li; t2 < 144u; t2 += 64u) {
+        int t = (int)((t2 / 12u + 2u) * 16u + t2 % 12u + 2u);
+        int sc = dd_sign(t);
+        uint cl = 0u;
+        if (sc != 0) {
+            bool h = dd_sign(t - 1) == sc && dd_sign(t + 1) == sc, v = dd_sign(t - 16) == sc && dd_sign(t + 16) == sc;
+            bool d1 = dd_sign(t - 17) == sc && dd_sign(t + 17) == sc, d2 = dd_sign(t - 15) == sc && dd_sign(t + 15) == sc;
+            cl = (!h && !v && !d1 && !d2) || (!h && !v && d1 && d2) ? 1u : 2u;
+        }
+        gs_k[t] = cl;
+    }
+    GroupMemoryBarrierWithGroupSync();
+    int2 p = int2(gid.xy * 8u + gtid.xy);
+    int tc = (int)((gtid.y + 4u) * 16u + gtid.x + 4u);
+    float4 c = et_unpack(gs_w[tc]);
+    float d = 0.0;
+    if (gs_l[tc] >= 0.0) {
+        float nd = 0.0, nl = 0.0;
+        [unroll] for (int j = -2; j <= 2; j++)
+            [unroll] for (int i = -2; i <= 2; i++) {
+                uint cl = gs_k[tc + j * 16 + i];
+                nd += cl == 1u ? 1.0 : 0.0;
+                nl += cl == 2u ? 1.0 : 0.0;
+            }
+        // (colour distances, not luminance: rust on grey wood can have the same luminance and must keep its edge)
+        float3 lo = c.rgb, hi = c.rgb, acc = float3(0.0, 0.0, 0.0);
+        float ws = 0.0;
+        [unroll] for (int j2 = -1; j2 <= 1; j2++)
+            [unroll] for (int i2 = -1; i2 <= 1; i2++) {
+                int t = tc + j2 * 16 + i2;
+                float4 ct = et_unpack(gs_w[t]);
+                bool op = gs_l[t] >= 0.0;
+                if (op) { lo = min(lo, ct.rgb); hi = max(hi, ct.rgb); }
+                float3 dc = abs(ct.rgb - c.rgb);
+                float b = (i2 == 0 ? 2.0 : 1.0) * (j2 == 0 ? 2.0 : 1.0) *
+                          (op && max(dc.x, max(dc.y, dc.z)) < e_q.w && abs(ct.w - c.w) < 16.0 ? 1.0 : 0.0);
+                acc += ct.rgb * b;
+                ws += b;
+            }
+        float3 rg3 = hi - lo;
+        d = e_q.z * smoothstep(0.45, 0.7, nd / (nd + nl + 1.0)) * smoothstep(1.0, 3.0, nd) *
+            (1.0 - smoothstep(e_q.w, e_q.w * 1.5, max(rg3.x, max(rg3.y, rg3.z))));
+        c.rgb = lerp(c.rgb, acc / ws, d);
+    }
+    if (p.x < (int)W && p.y < (int)H) {
+        uint a = (uint)p.y * W + (uint)p.x;
+        e_lv.Store((j_dd + a) * 4u, et_pack(c));
+        e_lv.Store((j_dd + W * H + a) * 4u, asuint(d));
     }
 }
 
@@ -178,7 +287,13 @@ void cs_et_up(uint3 id : SV_DispatchThreadID, uint li : SV_GroupIndex, uint3 gid
     const float ex = 1.5;
     bool thin = (lc < min(ll, lr) - ex) || (lc > max(ll, lr) + ex) || (lc < min(lu, ld) - ex) || (lc > max(lu, ld) + ex);
     float k = as_is || thin ? 1.0 : smoothstep(e_q.x, e_q.y, rng);
-    float3 base = lerp(rg.rgb, r.rgb, k);
+    // resolved dither (cs_et_dd): the interpolation of the resolved texels as it is - no deband blur, no sharpening
+    float dd = 0.0;
+    if (j_dd != 0xFFFFFFFFu)
+        dd = lerp(lerp(et_dither(b.x, b.y, W, H), et_dither(b.x + 1, b.y, W, H), f.x),
+                  lerp(et_dither(b.x, b.y + 1, W, H), et_dither(b.x + 1, b.y + 1, W, H), f.x), f.y);
+    float3 base = lerp(rg.rgb, r.rgb, max(k, dd));
+    k *= 1.0 - dd;
     r.rgb = clamp(base + ((as_is ? 0.0 : e_p.x) * k) * (r.rgb - rg.rgb), lo, hi);
     uint w = et_pack(r);
     if (ok) {

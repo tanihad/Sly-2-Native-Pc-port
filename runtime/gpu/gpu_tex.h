@@ -47,7 +47,7 @@ typedef struct { int32_t ent; uint32_t ver; } et_req;
 
 static struct {
     int env, env_on, up, aniso, hd, dump, log, split, scale, init, failed, dbg;
-    float sharp, bias, sig_c, sig_a, edge, flat, detail;
+    float sharp, bias, sig_c, sig_a, edge, flat, detail, dd, dd_rng;
     uint32_t budget_mb, frame_out;
     ID3D11Texture2D* arr[ET_NCLS];
     ID3D11ShaderResourceView* srv[ET_NCLS];
@@ -98,6 +98,8 @@ static void et_env(void) {
     ET.edge = et_envf("PS2_TEX_EDGE", 0.03f);      /* gradients below this are noise: no steering */
     ET.flat = et_envf("PS2_TEX_FLAT", 6.0f);       /* local range (0..255) below which a texel is smoothed (palette steps) */
     ET.detail = et_envf("PS2_TEX_DETAIL", 18.0f);  /* ... above which it gets the whole unsharp mask */
+    ET.dd = et_envf("PS2_TEX_DEDITHER", 1.0f);     /* dither resolve strength (0: off) */
+    ET.dd_rng = et_envf("PS2_TEX_DD_RANGE", 40.0f); /* ... below this local contrast (0..255) */
     ET.bias = et_envf("PS2_TEX_BIAS", -0.75f);       /* LOD bias of the sampling */
     ET.budget_mb = (uint32_t)et_envf("PS2_TEX_MB", 1024.0f);
     ET.frame_out = (uint32_t)et_envf("PS2_TEX_FRAME", 1048576.0f);   /* output texels built per frame */
@@ -177,7 +179,7 @@ static int et_init(void) {
         sd.MaxLOD = D3D11_FLOAT32_MAX;
         ok = SUCCEEDED(ID3D11Device_CreateSamplerState(gpu_rt.dev, &sd, &ET.smp[s]));
     }
-    if (!ok || !gpu_cs(GPU_SH_cs_et_up) || !gpu_cs(GPU_SH_cs_et_hash)) {
+    if (!ok || !gpu_cs(GPU_SH_cs_et_up) || !gpu_cs(GPU_SH_cs_et_dd) || !gpu_cs(GPU_SH_cs_et_hash)) {
         gpu_log("tex: cannot create the Enhanced textures' resources (%d%d%d%d%d%d%d%d %d %p %p): Original textures", !!ET.tab, !!ET.lv, !!ET.hist, !!ET.hout, !!ET.cb, !!ET.pcb, !!ET.jobs, !!ET.hjobs, ok, (void*)gpu_cs(GPU_SH_cs_et_up), (void*)gpu_cs(GPU_SH_cs_et_hash));
         et_release();
         ET.failed = 1;
@@ -325,7 +327,7 @@ static int32_t et_alloc(int c) {
 
 #define ET_JOBS 256                      /* jobs (images) per batch; hash requests per frame */
 #define ET_HIST_WORDS (13u * 256u)       /* per job: 12 level histograms, then the scales */
-typedef struct { uint32_t src, lw, lh, flags, S, slice, lv, hist, ref, nm, pad[6]; } et_job;   /* (tex.hlsl job_load) */
+typedef struct { uint32_t src, lw, lh, flags, S, slice, lv, hist, ref, nm, dd, pad[5]; } et_job;   /* (tex.hlsl job_load) */
 static struct {
     et_job j[ET_JOBS];
     int32_t id[ET_JOBS];
@@ -338,7 +340,7 @@ static void et_cb_set(uint32_t level, uint32_t first) {
     if (FAILED(ID3D11DeviceContext_Map(gpu_rt.ctx, (ID3D11Resource*)ET.cb, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) return;
     uint32_t* w = m.pData;
     uint32_t b[4] = { level, first, 0, 0 };
-    float p[4] = { ET.sharp, ET.sig_c, ET.sig_a, ET.edge }, q[4] = { ET.flat, ET.detail, 0.0f, 0.0f };
+    float p[4] = { ET.sharp, ET.sig_c, ET.sig_a, ET.edge }, q[4] = { ET.flat, ET.detail, ET.dd, ET.dd_rng };
     memcpy(w, b, 16); memcpy(w + 4, p, 16); memcpy(w + 8, q, 16);
     ID3D11DeviceContext_Unmap(gpu_rt.ctx, (ID3D11Resource*)ET.cb, 0);
 }
@@ -371,12 +373,23 @@ static void et_batch_run(void) {
     ID3D11DeviceContext_CSSetConstantBuffers(c, 3, 1, &ET.cb);
     for (uint32_t a = 0; a < EB.n;) {
         int cls = EB.id[a] >> 16;
-        uint32_t b = a, ref = 0;
-        while (b < EB.n && (EB.id[b] >> 16) == cls) ref |= EB.j[b++].ref;
+        uint32_t b = a, ref = 0, dw = 0, dh = 0;
+        for (; b < EB.n && (EB.id[b] >> 16) == cls; b++) {
+            ref |= EB.j[b].ref;
+            if (EB.j[b].dd != 0xFFFFFFFFu) {
+                if ((1u << EB.j[b].lw) > dw) dw = 1u << EB.j[b].lw;
+                if ((1u << EB.j[b].lh) > dh) dh = 1u << EB.j[b].lh;
+            }
+        }
         uint32_t n = b - a, S = 64u << cls, nm = (uint32_t)cls + 7u;
         ID3D11UnorderedAccessView* u[3] = { ET.lv_uav, ET.uav[cls][0], ET.hist_uav };
         ID3D11DeviceContext_CSSetUnorderedAccessViews(c, 0, 3, u, NULL);
         et_cb_set(0, a);
+        if (dw) {                        /* the dither resolve of the sources (tex.hlsl cs_et_dd) */
+            ID3D11DeviceContext_CSSetShader(c, gpu_cs(GPU_SH_cs_et_dd), NULL, 0);
+            ID3D11DeviceContext_Dispatch(c, (dw + 7) / 8, (dh + 7) / 8, n);
+            gpu_rt.n_dispatches++;
+        }
         ID3D11DeviceContext_CSSetShader(c, gpu_cs(GPU_SH_cs_et_up), NULL, 0);
         ID3D11DeviceContext_Dispatch(c, (S + 7) / 8, (S + 7) / 8, n);
         ID3D11DeviceContext_CSSetShader(c, gpu_cs(GPU_SH_cs_et_mip), NULL, 0);
@@ -410,11 +423,15 @@ static void et_batch_run(void) {
 static int et_build(const et_ent* e, int32_t id, ID3D11ShaderResourceView* src, uint32_t src_base, int hd) {
     int cls = id >> 16;
     uint32_t S = 64u << cls, words = S * S * 4u / 3u + 16u;
-    if (EB.n && (EB.n >= ET_JOBS || EB.src != src || EB.lv_used + words > ET_SCR_WORDS)) return 0;
+    int dd = !hd && ET.up && ET.dd > 0.0f;   /* (the dither resolve: built images only; the source again + weights) */
+    uint32_t dw = dd ? 2u << (e->lw + e->lh) : 0u;
+    if (EB.n && (EB.n >= ET_JOBS || EB.src != src || EB.lv_used + words + dw > ET_SCR_WORDS)) return 0;
     et_job* j = &EB.j[EB.n];
     memset(j, 0, sizeof *j);
     j->src = src_base; j->lw = e->lw; j->lh = e->lh; j->flags = e->flags | (hd || !ET.up ? 4u : 0u);
     j->S = S; j->slice = (uint32_t)(id & 0xFFFF); j->lv = EB.lv_used; j->ref = e->ref; j->nm = (uint32_t)cls + 7u;
+    j->dd = dd ? EB.lv_used + words : 0xFFFFFFFFu;
+    words += dw;
     EB.id[EB.n++] = id;
     EB.src = src;
     EB.lv_used += words;
