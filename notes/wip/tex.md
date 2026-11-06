@@ -3,7 +3,15 @@
 Goal: textures clearly sharper / cleaner at 1440p (HD-remaster look), Original bit-identical and free. Design and
 results: notes/enhanced-textures.md. Setting graphics.textures = enhanced | original (live), env PS2_TEX=0/1 + per feature.
 
-STATUS: COMPLETE (2026-11-05)
+STATUS: follow-up 2026-11-06 - dither resolve (owner: 4-bit dither turned into dot grain in Enhanced)
+
+## Follow-up: dither (2026-11-06)
+- [x] cs_et_dd: per-texel dither classification (residual sign coherence) + range-limited 3x3 binomial before the
+      upscale; cs_et_up: no sharpening / deband blur where resolved (PS2_TEX_DEDITHER=0 off, PS2_TEX_DD_RANGE=40) (376b596)
+- [ ] final2 shots + re-check of grain everywhere
+- [ ] gates + perf
+- tools: dumps via PS2_TEX_DUMP=2 (build\tex\dump_old = before the fix); a C# prototype lived in the session scratchpad
+- trap: [IO.File] calls resolve relative paths against the process directory (the main checkout), not the PS location
 
 ## Status
 - [x] 1 design note (notes/enhanced-textures.md) + texture statistics (PS2_TEX_STATS=1)
