@@ -1754,8 +1754,7 @@ void menu_get_view(menu_view* v, int cw, int ch) {
         break;
     case MENU_DLG_PENDING:
         snprintf(v->dlg_title, sizeof v->dlg_title, "Apply the changed settings?");
-        if (v->pending == 1) snprintf(v->dlg_text, sizeof v->dlg_text, "1 change is not applied yet.");
-        else snprintf(v->dlg_text, sizeof v->dlg_text, "%d changes are not applied yet.", v->pending);
+        snprintf(v->dlg_text, sizeof v->dlg_text, "Some settings were changed but not applied yet.");
         snprintf(v->dlg_yes, sizeof v->dlg_yes, "Apply");
         snprintf(v->dlg_alt, sizeof v->dlg_alt, "Discard");
         snprintf(v->dlg_no, sizeof v->dlg_no, "Cancel");

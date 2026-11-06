@@ -738,7 +738,7 @@ static void test_menu_nav(void) {
     menu_nav_event(MENU_NAV_BACK, MENU_DEV_KEYBOARD);
     view();
     CHECK(menu_is_open() && V.dialog == MENU_DLG_PENDING && V.dlg_buttons == 3 && !strcmp(V.dlg_yes, "Apply") && !strcmp(V.dlg_alt, "Discard") &&
-          !strcmp(V.dlg_no, "Cancel") && V.dlg_focus == 0 && strstr(V.dlg_text, "1 change"), "close: Apply / Discard / Cancel ('%s')", V.dlg_text);
+          !strcmp(V.dlg_no, "Cancel") && V.dlg_focus == 0 && strstr(V.dlg_text, "not applied"), "close: Apply / Discard / Cancel ('%s')", V.dlg_text);
     menu_nav_event(MENU_NAV_BACK, MENU_DEV_KEYBOARD);
     view();
     CHECK(menu_is_open() && V.dialog == MENU_DLG_NONE && V.pending == 1, "Cancel: back to the menu, still staged");

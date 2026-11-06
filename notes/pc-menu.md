@@ -227,7 +227,8 @@ The owner: "I want to have to apply the settings every time". (Before: everythin
 monitor and renderer.)
 - **Every change is staged** (menu.c `sg`: options of the settings table as the player's own values, the controls
   configuration with the bindings, the window size). A changed row has an orange dot before its value; the footer
-  shows "N changes not applied" and two buttons: **Apply** (Square / X on a controller, F on the keyboard, a click) and
+  shows "Changes not applied" (no number: a Quality change dots its own row plus the rows it restages, so a count of
+  option values disagreed with the dots; owner build 2026-11-06) and two buttons: **Apply** (Square / X on a controller, F on the keyboard, a click) and
   **Discard** (Triangle / Y, R, a click). Stepping back to the value in effect un-stages a row. The rows show the staged
   values (a preview: menu.c `preview`, PO = the player's options, PE = what would be in effect).
 - **Apply** puts every staged change into effect at once (`apply_pending`: each through `settings_change`, written to
@@ -237,7 +238,7 @@ monitor and renderer.)
   in Advanced) - applied with Apply like the rest. **Reset to defaults** stages the page's defaults (no question:
   Discard undoes it).
 - **Leaving with changes** (Back / Esc / Circle on a main page, the PS / Options button, closing the pause): "Apply the
-  changed settings? N changes are not applied yet." **Apply** / **Discard** / **Cancel** (left / right move the focus,
+  changed settings? Some settings were changed but not applied yet." **Apply** / **Discard** / **Cancel** (left / right move the focus,
   Confirm presses the focused one, Square / Triangle / Circle - F / R / Esc - press them directly, the mouse clicks
   them). Apply then closes the menu (after "Keep these display settings?" when a display change was in it); Discard
   closes without them; Cancel stays. The menu opens with nothing staged.

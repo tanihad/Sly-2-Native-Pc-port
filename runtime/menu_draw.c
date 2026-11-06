@@ -413,8 +413,9 @@ static void build_menu(ui_list* L, const menu_view* v, int w, int h) {
     int dev = v->device;
     if (v->pending) {                             /* (menu) changes staged: how many, Apply / Discard */
         char t[64];
-        if (v->pending == 1) snprintf(t, sizeof t, "1 change not applied");
-        else snprintf(t, sizeof t, "%d changes not applied", v->pending);
+        /* no number: a Quality change marks its own row plus the rows it restages, so a count of option values would
+           disagree with the orange dots the player sees */
+        snprintf(t, sizeof t, "Changes not applied");
         float d = 12 * u;
         fillr(L, (float)Fr.x + 4 * u, Fr.y + (Fr.h - d) / 2.0f, d, d, d / 2, C_ORANGE);
         text_box(L, Fr.x + 26 * u, (float)Fr.y, (float)Fr.h, 33 * u, t, C_NOTE, AL_LEFT, (float)(Y.btn[2].x - Fr.x) - 40 * u);
