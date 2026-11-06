@@ -16,7 +16,7 @@ cbuffer et_cb : register(b3) {
     float4 e_p;                          // sharpen, sigma across, sigma along, minimum edge strength
     float4 e_q;                          // flat below this local range (0..255: smoothed), detail above this (sharpened),
                                          // dither resolve strength (0..1), its contrast limit (0..255)
-    float4 e_r;                          // share of the unsharp mask kept on resolved dither, -, -, -
+    float4 e_r;                          // share of the unsharp mask kept on resolved dither, -, density resolved from, -
 };
 ByteAddressBuffer e_src : register(t0);                   // decoded words (texdec) / the uploaded HD image
 ByteAddressBuffer e_jobs : register(t1);                  // jobs: 16 words each (et_job below)
@@ -54,8 +54,9 @@ float4 et_fetch(int x, int y, uint W, uint H) {
     uint a = et_addr(x, y, W, H);
     return j_dd != 0xFFFFFFFFu ? et_unpack(e_lv.Load((j_dd + a) * 4u)) : et_unpack(e_src.Load((j_src + a) * 4u));
 }
-float et_dither(int x, int y, uint W, uint H) {
-    return j_dd != 0xFFFFFFFFu ? asfloat(e_lv.Load((j_dd + W * H + et_addr(x, y, W, H)) * 4u)) : 0.0;
+float2 et_dither(int x, int y, uint W, uint H) {     // (resolved share, dither-likeness)
+    uint w = e_lv.Load((j_dd + W * H + et_addr(x, y, W, H)) * 4u);
+    return float2(w & 0xFFFFu, w >> 16) * (1.0 / 65535.0);
 }
 float et_cr(float t, uint k) {           // Catmull-Rom weight of tap k (offsets -1, 0, 1, 2) at fraction t
     float t2 = t * t, t3 = t2 * t;
@@ -142,7 +143,7 @@ void cs_et_dd(uint3 gtid : SV_GroupThreadID, uint li : SV_GroupIndex, uint3 gid 
     int2 p = int2(gid.xy * 8u + gtid.xy);
     int tc = (int)((gtid.y + 4u) * 16u + gtid.x + 4u);
     float4 c = et_unpack(gs_w[tc]);
-    float d = 0.0;
+    float d = 0.0, dn = 0.0;                 // resolved share; dither-likeness (no sharpening into grain)
     if (gs_l[tc] >= 0.0) {
         float nd = 0.0, nl = 0.0;
         [unroll] for (int j = -2; j <= 2; j++)
@@ -172,15 +173,20 @@ void cs_et_dd(uint3 gtid : SV_GroupThreadID, uint li : SV_GroupIndex, uint3 gid 
                 acc += ct.rgb * b;
                 ws += b;
             }
-        d = e_q.z * smoothstep(0.45, 0.7, nd / (nd + nl + 1.0)) * smoothstep(1.0, 3.0, nd) *
-            (1.0 - smoothstep(e_q.w, e_q.w * 1.5, dmax)) *
-            (gs_k[tc] == 2u ? 0.3 : 1.0);   // (a line texel itself - grain, a seam - keeps most of its value)
+        // (an "edge" test - the binomial's gradient against the residuals - was tried and dropped: a steep dithered ramp,
+        //  e.g. a glow, passes it too and came back as grain)
+        dn = e_q.z * smoothstep(0.45, 0.7, nd / (nd + nl + 1.0)) * smoothstep(1.0, 3.0, nd) *
+             (1.0 - smoothstep(e_q.w, e_q.w * 1.5, dmax)) *
+             (gs_k[tc] == 2u ? 0.3 : 1.0);   // (a line texel itself - grain, a seam - keeps most of its value)
+        // resolved only where the pattern fills an area (a 2D dither: >= ~5 dither-like texels of 25); a row of dots
+        // (stitching, rivets, a dotted streak) is drawn - it stays, just not sharpened into grain (the up pass)
+        d = dn * smoothstep(e_r.z, e_r.z + 3.0, nd);
         c.rgb = lerp(c.rgb, acc / ws, d);
     }
     if (p.x < (int)W && p.y < (int)H) {
         uint a = (uint)p.y * W + (uint)p.x;
         e_lv.Store((j_dd + a) * 4u, et_pack(c));
-        e_lv.Store((j_dd + W * H + a) * 4u, asuint(d));
+        e_lv.Store((j_dd + W * H + a) * 4u, (uint)(saturate(d) * 65535.0 + 0.5) | ((uint)(saturate(dn) * 65535.0 + 0.5) << 16));
     }
 }
 
@@ -291,19 +297,20 @@ void cs_et_up(uint3 id : SV_DispatchThreadID, uint li : SV_GroupIndex, uint3 gid
         if (o.x == 0 && o.y == -1) lu = lum;
         if (o.x == 0 && o.y == 1) ld = lum;
     }
-    // resolved dither (cs_et_dd): no dot / line exemption there (what is left of a dither pattern is no stroke), no
-    // deband blur (the resolve did it); the unsharp mask (x e_r.x, default 1) now works on the resolved shading's
-    // real structure - cracks, rust, streaks - since the dither's own texel-scale pattern is gone
-    float dd = 0.0;
+    // dither (cs_et_dd; x: resolved share, y: dither-likeness): no dot / line exemption (a dither's dots are no strokes),
+    // no deband blur (the resolve did it). Resolved: the unsharp mask (x e_r.x, default 1) works on the resolved
+    // shading's real structure - cracks, rust, streaks - since the texel-scale pattern is gone. Dither-like but not
+    // resolved (a sparse row of dots): no sharpening - the dots stay as soft as the PS2's filter drew them
+    float2 dd = float2(0.0, 0.0);
     if (j_dd != 0xFFFFFFFFu)
         dd = lerp(lerp(et_dither(b.x, b.y, W, H), et_dither(b.x + 1, b.y, W, H), f.x),
                   lerp(et_dither(b.x, b.y + 1, W, H), et_dither(b.x + 1, b.y + 1, W, H), f.x), f.y);
     const float ex = 1.5;
     bool thin = (lc < min(ll, lr) - ex) || (lc > max(ll, lr) + ex) || (lc < min(lu, ld) - ex) || (lc > max(lu, ld) + ex);
-    thin = thin && dd < 0.35;
+    thin = thin && dd.y < 0.35;
     float k = as_is || thin ? 1.0 : smoothstep(e_q.x, e_q.y, rng);
-    float3 base = lerp(rg.rgb, r.rgb, max(k, dd));
-    k *= 1.0 - (1.0 - e_r.x) * dd;
+    float3 base = lerp(rg.rgb, r.rgb, max(k, dd.y));
+    k *= (1.0 - (1.0 - e_r.x) * dd.x) * (1.0 - max(dd.y - dd.x, 0.0));
     r.rgb = clamp(base + ((as_is ? 0.0 : e_p.x) * k) * (r.rgb - rg.rgb), lo, hi);
     uint w = et_pack(r);
     if (ok) {

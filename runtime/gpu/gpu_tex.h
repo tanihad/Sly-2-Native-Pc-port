@@ -47,7 +47,7 @@ typedef struct { int32_t ent; uint32_t ver; } et_req;
 
 static struct {
     int env, env_on, up, aniso, hd, dump, log, split, scale, init, failed, dbg;
-    float sharp, bias, sig_c, sig_a, edge, flat, detail, dd, dd_rng, dd_sharp;
+    float sharp, bias, sig_c, sig_a, edge, flat, detail, dd, dd_rng, dd_sharp, dd_dense;
     uint32_t budget_mb, frame_out;
     ID3D11Texture2D* arr[ET_NCLS];
     ID3D11ShaderResourceView* srv[ET_NCLS];
@@ -101,6 +101,7 @@ static void et_env(void) {
     ET.dd = et_envf("PS2_TEX_DEDITHER", 1.0f);     /* dither resolve strength (0: off) */
     ET.dd_rng = et_envf("PS2_TEX_DD_RANGE", 40.0f); /* ... below this local contrast (0..255) */
     ET.dd_sharp = et_envf("PS2_TEX_DD_SHARP", 1.0f); /* share of the unsharp mask kept on resolved texels */
+    ET.dd_dense = et_envf("PS2_TEX_DD_DENSE", 4.0f); /* dither-like texels of 25 from which an area is resolved */
     ET.bias = et_envf("PS2_TEX_BIAS", -0.75f);       /* LOD bias of the sampling */
     ET.budget_mb = (uint32_t)et_envf("PS2_TEX_MB", 1024.0f);
     ET.frame_out = (uint32_t)et_envf("PS2_TEX_FRAME", 1048576.0f);   /* output texels built per frame */
@@ -341,7 +342,7 @@ static void et_cb_set(uint32_t level, uint32_t first) {
     if (FAILED(ID3D11DeviceContext_Map(gpu_rt.ctx, (ID3D11Resource*)ET.cb, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) return;
     uint32_t* w = m.pData;
     uint32_t b[4] = { level, first, 0, 0 };
-    float p[4] = { ET.sharp, ET.sig_c, ET.sig_a, ET.edge }, q[4] = { ET.flat, ET.detail, ET.dd, ET.dd_rng }, r[4] = { ET.dd_sharp, 0.0f, 0.0f, 0.0f };
+    float p[4] = { ET.sharp, ET.sig_c, ET.sig_a, ET.edge }, q[4] = { ET.flat, ET.detail, ET.dd, ET.dd_rng }, r[4] = { ET.dd_sharp, 0.0f, ET.dd_dense, 0.0f };
     memcpy(w, b, 16); memcpy(w + 4, p, 16); memcpy(w + 8, q, 16); memcpy(w + 12, r, 16);
     ID3D11DeviceContext_Unmap(gpu_rt.ctx, (ID3D11Resource*)ET.cb, 0);
 }
