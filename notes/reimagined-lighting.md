@@ -116,3 +116,29 @@ look = reimagined run with PS2_GPU_AB_R8=1024; 255cb7e):
 textures + maps) 9/9 - each run alone.
 
 Pictures: build\reimagine\shots3 (local only).
+## Outlines anti-aliased (2026-11-07, owner-approved; 6332e6f)
+
+What the jaggies were: PS2 outlines (Medium) are the GS line's pixels drawn as native-pixel quads (one PS2 pixel = a
+5 x 6.4 block at 1440p); thin outlines (High / Ultra) were analytic lines (ps_mft_thin) with square-cut segment ends
+(gaps and notches where an outline's segments meet - the "dots") and lines without the GS AA1 flag (the outline's depth
+pass) decided per pixel by a discard, so MSAA added nothing.
+
+Changes (modern frames only; Retro and the exact / replay paths untouched):
+- **thin lines** (mft.hlsl ps_mft_thin / vs_mft_thin): round caps (distance to the segment, not just across it: segments
+  join), and per-sample coverage (SV_Coverage from the distance at each sample position) for lines without AA1 under
+  MSAA; AA1 lines keep the GS's coverage alpha from the distance. Thickness unchanged.
+- **PS2 outlines in Faithful / Reimagined**: drawn as those analytic lines at the PS2's own width (1 native pixel,
+  GPU_GFX_SMOOTH from gfx.c when outlines = ps2 and the look isn't Retro) instead of native-pixel blocks: the PS2's
+  look and thickness, smooth edges. Retro keeps the line pixels.
+- Only vs_mft_thin, ps_mft_n0 and ps_mft_n1 changed (block compare); every other compiled shader is byte-identical.
+
+Gates (6332e6f, each run alone): run_tests 16/16; 28/28 unit suites; m9_exact S1 + S3 -Game identical; gpu_diff_all
+28/28 with the same numbers as before (the replays never draw modern-frame outlines: no re-baseline); r2_sweep ep1 /
+ep3 / m2 tfo, tfb, mf Faithful 9/9 and Reimagined 9/9 (tfb now draws the smoothed PS2 outlines, tfo the new thin lines).
+
+Cost (ep1 hub, 1440p High = thin outlines, MSAA 8x, unlimited frame rate, PS2_GPU_PROF): outline draws ("ff-line")
+0.457 -> 0.540 ms (+0.08), GPU per frame 6.28 -> 6.37 ms (the "after" run may have shared the GPU for a while).
+
+Pictures (local): build\reimagine\outlines\sly_<medium|high>_<faithful|reimagined>__before_after_1to1.png (ep3, Sly,
+1:1). No moving-camera pair (the owner was playing the build; runs kept short). The tfo / tfb flicker checks cover
+motion: 0 blinks, 0 seams.
