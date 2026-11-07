@@ -2,6 +2,14 @@
 
 ## Resume here (read first in a new session)
 
+**2026-11-07: Reimagined test build 0.1.1207 (next/reimagine 85bba3d, not on main)** in dist\Sly2-Reimagined (+
+models\x4plus.bin from sly2-worktrees\light\build\models, never committed). next/reimagine = next/ai merged (AI
+x4plus textures + surface maps, background cache) + Reimagined lighting (moon shadow maps, warm grade, auto exposure,
+glow/shafts/fog, normal-mapped relief/cavity) + menu always offers Look = Reimagined + smooth outlines (owner approved;
+modern frames only, Retro/exact untouched). All gates green run alone; perf ep1 1440p Medium idle: Faithful 4.77 ms,
+Reimagined 5.85 ms. Waiting for the owner's verdict; then merge to main, package dist\Sly2, push. No release without
+the owner. Open: ep3 slightly darker, no daylight scene checked; decide whether to ship x4plus.bin in releases.
+
 **2026-11-06 (later): owner build 0.1.1178 (81cde3d)** = Enhanced textures (de-dither) + Options overhaul (Look Retro /
 Faithful / Reimagined [hidden], Quality Low..Ultra, Apply for everything; footer without a count). Owner direction:
 Reimagined = bold reimagining; Faithful stays as is. Running: next/ai (worktree sly2-worktrees\ai: Reimagined textures,
