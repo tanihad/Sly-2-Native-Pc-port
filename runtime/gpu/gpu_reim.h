@@ -28,10 +28,12 @@ static struct {
     /* the key light kept from frame to frame (smoothed) */
     float key[3], keyc[3], keyw;
     float kv[3];                         /* the key light in view space (the last post pass): the surface maps' relief */
+    float cand[3]; int pend;             /* (fix) a different key light seen for pend frames in a row */
+    uint64_t posts, maps, map_reuse, map_fd, map_ops, key_snaps;   /* (fix) statistics */
     float relief, cavity, nmap;
     int have_key;
 } RE;
-enum { RT_SH, RT_SH2, RT_B6, RT_SHAFT, RT_PIC, RT_ST0, RT_ST1, RT_SCENE, RT_N };
+enum { RT_SHH, RT_SH, RT_SH2, RT_B6, RT_SHAFT, RT_PIC, RT_ST0, RT_ST1, RT_SCENE, RT_N };
 static struct {
     ID3D11Texture2D* t[RT_N];
     ID3D11RenderTargetView* rtv[RT_N];
@@ -45,9 +47,13 @@ static struct {
     ID3D11ShaderResourceView* sm_srv;
     int sm_n;
     uint64_t sm_frames, sm_draws;
+    float smR, lm_last[16], smp_last[12]; int have_last;
+    float ppv[16], pndc[4]; int have_prev; uint32_t prev_serial;   /* (fix) the last frame's world x clip, ndc mapping */   /* (fix) the sphere radius kept; the last map's matrix */
     uint64_t frames;
 } RR;
 
+/* PS2_REIM_FIX=0: 0.1.1207's behaviour (for before / after measurements) */
+static int re_fix(void) { static int v = -1; if (v < 0) { const char* e = getenv("PS2_REIM_FIX"); v = !(e && *e == '0'); } return v && r8p_on(R8P_REIMFIX); }
 static void re_env(void) {
     if (RE.env) return;
     RE.env = 1;
@@ -250,8 +256,8 @@ static int rr_tex(int i, int w, int h, DXGI_FORMAT f, int mips, int rt) {
     return 1;
 }
 static void rr_unbind(void) {
-    ID3D11ShaderResourceView* none[12] = { NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL };
-    ID3D11DeviceContext_PSSetShaderResources(gpu_rt.ctx, 14, 12, none);
+    ID3D11ShaderResourceView* none[13] = { NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL };
+    ID3D11DeviceContext_PSSetShaderResources(gpu_rt.ctx, 14, 13, none);
     ID3D11RenderTargetView* nr[2] = { NULL, NULL };
     ID3D11DeviceContext_OMSetRenderTargets(gpu_rt.ctx, 2, nr, NULL);
 }
@@ -274,6 +280,23 @@ static void reim_key(const reim_scene* s) {
         float l = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
         for (int j = 0; j < 3; j++) d[j] /= l;
     }
+    if (re_fix()) {
+        /* (fix) steady: the key light changes only when another one has won for 90 frames in a row, and then at once
+         * (0.1.1207 eased towards each frame's winner: the light set changes as entries come and go, so the shadows swam
+         * continuously); a frame without a light from above keeps the current one */
+        if (!RE.have_key) {
+            memcpy(RE.key, d, sizeof d); memcpy(RE.keyc, c, sizeof c);
+            RE.have_key = 1; RE.pend = 0; RE.key_snaps++;
+        } else if (best > 0.0f && RE.key[0] * d[0] + RE.key[1] * d[1] + RE.key[2] * d[2] < 0.995f) {
+            if (RE.pend > 0 && RE.cand[0] * d[0] + RE.cand[1] * d[1] + RE.cand[2] * d[2] > 0.995f) RE.pend++;
+            else { memcpy(RE.cand, d, sizeof d); RE.pend = 1; }
+            if (RE.pend >= 90) { memcpy(RE.key, d, sizeof d); memcpy(RE.keyc, c, sizeof c); RE.pend = 0; RE.key_snaps++; RR.smR = 0.0f; }
+        } else RE.pend = 0;
+        if (RE.log >= 3)
+            gpu_log("reim-key: cand %.4f %.4f %.4f score %.3f key %.4f %.4f %.4f pend %d", d[0], d[1], d[2], best, RE.key[0], RE.key[1],
+                    RE.key[2], RE.pend);
+        return;
+    }
     if (!RE.have_key || RE.key[0] * d[0] + RE.key[1] * d[1] + RE.key[2] * d[2] < 0.7f) {
         memcpy(RE.key, d, sizeof d); memcpy(RE.keyc, c, sizeof c);
         RE.have_key = 1;
@@ -291,7 +314,8 @@ static void reim_key(const reim_scene* s) {
  * (lm: 16 floats, smp: 12). 0: no map this frame. */
 static int reim_smap(const reim_scene* S, const float* rndc, const float* rzab, int pw, int ph, float* lm, float* smp) {
     int n = RE.sm_size;
-    if (!S->nops || S->fd != X.fd || !X.fd) return 0;
+    if (!S->nops) { RE.map_ops++; return 0; }
+    if (S->fd != X.fd || !X.fd) { RE.map_fd++; return 0; }
     if (!RR.sm || RR.sm_n != n) {
         GPU_RELEASE(RR.sm_dsv); GPU_RELEASE(RR.sm_srv); GPU_RELEASE(RR.sm);
         RR.sm_n = 0;
@@ -330,6 +354,11 @@ static int reim_smap(const reim_scene* S, const float* rndc, const float* rzab, 
         if (d2 > R) R = d2;
     }
     R = ceilf(sqrtf(R) / 64.0f) * 64.0f;
+    if (re_fix()) {                      /* (fix) a radius that does not change with the camera's small FOV changes */
+        R = ceilf(R / 512.0f) * 512.0f;
+        if (R > RR.smR || R < RR.smR - 1536.0f) RR.smR = R;
+        R = RR.smR;
+    }
     if (!(R > 1.0f && R < 1e6f)) return 0;
     const float* Lz = RE.key;
     float Lx[3], Ly[3];
@@ -343,10 +372,13 @@ static int reim_smap(const reim_scene* S, const float* rndc, const float* rzab, 
     float cy = floorf((cen[0] * Ly[0] + cen[1] * Ly[1] + cen[2] * Ly[2]) / texel) * texel;
     float cz = cen[0] * Lz[0] + cen[1] * Lz[1] + cen[2] * Lz[2];
     float E = 4000.0f, z0 = cz - R, zr = 2.0f * R + E;   /* (casters up to E above the sphere, towards the light) */
+    if (re_fix()) { z0 = floorf(z0 / 256.0f) * 256.0f; zr += 256.0f; }   /* (fix: the depths do not shift with the camera) */
     for (int j = 0; j < 3; j++) { lm[j * 4] = Lx[j] / R; lm[j * 4 + 1] = Ly[j] / R; lm[j * 4 + 2] = Lz[j] / zr; lm[j * 4 + 3] = 0.0f; }
     lm[12] = -cx / R; lm[13] = -cy / R; lm[14] = -z0 / zr; lm[15] = 1.0f;
     smp[0] = smp[1] = 1.0f / (float)n; smp[2] = texel; smp[3] = D * 0.7f;
     smp[4] = D; smp[5] = RE.sm_k; smp[6] = Lz[0]; smp[7] = Lz[1]; smp[8] = Lz[2];
+    smp[9] = re_fix() ? 1.0f : 0.0f;   /* (fix: the normal-offset receiver bias) */
+    if (re_fix()) smp[3] = D * 0.5f;   /* (fix: fading out from half the reach: the far texels are coarse) */
     /* the casters */
     float m32[32];
     memcpy(m32, ip, 64);
@@ -371,7 +403,9 @@ static int reim_smap(const reim_scene* S, const float* rndc, const float* rzab, 
     ID3D11DeviceContext_PSSetConstantBuffers(gpu_rt.ctx, 6, 1, &b);
     X.mode = 0;
     M.bound = 0;
+    if (RE.log >= 3) gpu_log("reim-map: v%u serial %u ops %d casters %llu R %.0f c %.0f %.0f %.0f pv x%d %.5f %.5f %.5f cam %.0f %.0f %.0f", X.fd ? X.fd->vblank : 0u, S->serial, S->nops, (unsigned long long)RR.sm_draws, R, cx, cy, cz, S->pv_n, S->pv[0], S->pv[5], S->pv[10], ip[8] / ip[11], ip[9] / ip[11], ip[10] / ip[11]);
     RR.sm_frames++;
+    if (re_fix()) { memcpy(RR.lm_last, lm, sizeof RR.lm_last); memcpy(RR.smp_last, smp, sizeof RR.smp_last); RR.have_last = 1; }
     prof_mark(PR_LIGHT);
     if (RE.log && RR.sm_frames % 600 == 1)
         gpu_log("reim: shadow map %d: sphere R %.0f at %.0f %.0f %.0f, %d segments, %.1f casters a frame", n, R, cen[0], cen[1], cen[2],
@@ -391,7 +425,7 @@ static void reim_post(mtarget* c, mtarget* z, int pc) {
     bw[1] = hw; bh[1] = hh;
     for (int i = 2; i <= 6; i++) { bw[i] = (bw[i - 1] + 1) / 2; bh[i] = (bh[i - 1] + 1) / 2; }
     if (!lt_tex(LT_W, hw, hh, DXGI_FORMAT_R32_FLOAT) || !lt_tex(LT_AO0, hw, hh, DXGI_FORMAT_R8_UNORM) ||
-        !lt_tex(LT_AO1, hw, hh, DXGI_FORMAT_R8_UNORM) || !rr_tex(RT_SH, hw, hh, DXGI_FORMAT_R8G8_UNORM, 0, 1) || !rr_tex(RT_SH2, hw, hh, DXGI_FORMAT_R8G8_UNORM, 0, 1) ||
+        !lt_tex(LT_AO1, hw, hh, DXGI_FORMAT_R8_UNORM) || !rr_tex(RT_SH, hw, hh, DXGI_FORMAT_R8G8_UNORM, 0, 1) || !rr_tex(RT_SH2, hw, hh, DXGI_FORMAT_R8G8_UNORM, 0, 1) || !rr_tex(RT_SHH, hw, hh, DXGI_FORMAT_R8G8_UNORM, 0, 1) ||
         !rr_tex(RT_B6, bw[6], bh[6], DXGI_FORMAT_R11G11B10_FLOAT, 0, 1) ||
         !rr_tex(RT_SHAFT, bw[2], bh[2], DXGI_FORMAT_R11G11B10_FLOAT, 0, 1) ||
         !rr_tex(RT_PIC, pw, ph, DXGI_FORMAT_R8G8B8A8_TYPELESS, 0, 0) ||
@@ -416,14 +450,16 @@ static void reim_post(mtarget* c, mtarget* z, int pc) {
     lz[2] = 1e6f; lz[3] = 0.0f;
     int ao = LT.ao && proj;
     lao[0] = RE.ao_r; lao[1] = ao ? RE.ao_k : 0.0f; lao[2] = LT.ao_max; lao[3] = LT.ao_bias;
+    if (re_fix() && ao) { lao[0] = LT.ao_r; lao[1] = LT.ao_k; }   /* (fix: Faithful's occlusion radius and strength - the stronger one's noise crawled under motion) */
     lao2[0] = LT.ao_f0; lao2[1] = LT.ao_f1; lao2[2] = RE.ao_min; lao2[3] = LT.ao_pow;
+    if (re_fix()) lao2[2] = LT.ao_min;
     lbl[0] = RE.bl_t; lbl[1] = RE.bl_k; lbl[2] = RE.bl_i; lbl[3] = 1.0f;
     ldir[2] = 1.0f / (float)pw; ldir[3] = 1.0f / (float)ph;
     /* reim_cb */
     float rc[128];
     memset(rc, 0, sizeof rc);
     float *rw = rc, *rndc = rc + 16, *rzab = rc + 20, *rkey = rc + 24, *rsss = rc + 28, *rgr = rc + 32, *rfog = rc + 36,
-          *rhf = rc + 40, *rvig = rc + 44, *rsh = rc + 48, *rbl = rc + 52, *rmisc = rc + 56, *rkc = rc + 60, *rlm = rc + 64, *rsmp = rc + 80;
+          *rhf = rc + 40, *rvig = rc + 44, *rsh = rc + 48, *rbl = rc + 52, *rmisc = rc + 56, *rkc = rc + 60, *rlm = rc + 64, *rsmp = rc + 80, *rppv = rc + 92, *rpndc = rc + 108, *rptaa = rc + 112;
     int have_world = proj && S->pv_ok;
     if (have_world) {
         const float* pv = S->pv;
@@ -453,9 +489,26 @@ static void reim_post(mtarget* c, mtarget* z, int pc) {
         memcpy(RE.kv, rkey, sizeof RE.kv);
         memcpy(rkc, RE.keyc, sizeof RE.keyc);
         rkc[3] = RE.key_i;
-        if (RE.smap && rkey[3] > 0.0f && S == &RS && !reim_smap(S, rndc, rzab, pw, ph, rlm, rsmp)) memset(rsmp, 0, 12 * sizeof(float));
+        RE.posts++;
+        if (RE.smap && rkey[3] > 0.0f) {
+            int okm = S == &RS && reim_smap(S, rndc, rzab, pw, ph, rlm, rsmp);
+            if (okm) RE.maps++;
+            else if (re_fix() && RR.have_last) {   /* (fix: 0.1.1207 drew no map shadows on such frames - a blink) */
+                memcpy(rlm, RR.lm_last, sizeof RR.lm_last); memcpy(rsmp, RR.smp_last, sizeof RR.smp_last); RE.map_reuse++;
+            } else memset(rsmp, 0, 12 * sizeof(float));
+        }
+        if (RE.log && RE.posts % 600 == 0)
+            gpu_log("reim-stats: %llu post passes, %llu maps drawn, %llu reused (no segments %llu, another frame's data %llu), key changes %llu",
+                    (unsigned long long)RE.posts, (unsigned long long)RE.maps, (unsigned long long)RE.map_reuse,
+                    (unsigned long long)RE.map_ops, (unsigned long long)RE.map_fd, (unsigned long long)RE.key_snaps);
     }
+    if (re_fix() && have_world && RR.have_prev && RR.prev_serial != S->serial) {   /* (fix: the key-light term's history) */
+        memcpy(rppv, RR.ppv, sizeof RR.ppv); memcpy(rpndc, RR.pndc, sizeof RR.pndc); rptaa[0] = 0.8f;
+    }
+    if (re_fix() && have_world) { memcpy(RR.ppv, S->pv, sizeof RR.ppv); memcpy(RR.pndc, rndc, sizeof RR.pndc); RR.have_prev = 1; RR.prev_serial = S->serial; }
+    else RR.have_prev = 0;
     rsss[0] = RE.sss_len; rsss[1] = RE.sss_th; rsss[2] = 2.0f; rsss[3] = 5000.0f;
+    if (re_fix() && rsmp[5] > 0.0f) rsss[0] = 0.0f;   /* (fix: the shadow map alone; the contact march crawled under motion) */
     rgr[0] = RE.grade ? RE.sat : 1.0f; rgr[1] = RE.grade ? RE.con : 1.0f; rgr[2] = RE.grade ? RE.vib : 0.0f; rgr[3] = RE.grade ? RE.expo : 1.0f;
     rfog[0] = RE.fog0; rfog[1] = RE.fogd; rfog[2] = RE.fog && have_world ? RE.fogmax : 0.0f; rfog[3] = RE.hfog;
     rhf[0] = RE.hfog_h; rhf[1] = 250.0f;
@@ -463,6 +516,10 @@ static void reim_post(mtarget* c, mtarget* z, int pc) {
     rsh[0] = RE.shafts ? RE.sh_i : 0.0f; rsh[1] = 0.965f; rsh[2] = 0.85f; rsh[3] = 6000.0f;
     rbl[0] = 1.0f; rbl[1] = RE.halo;
     rmisc[0] = RE.stat_a; rmisc[1] = RE.grade ? RE.night : 0.0f;
+    if (re_fix()) {                      /* (fix: the same adaptation time at any frame rate, ~0.7 s) */
+        double hz = frame_rate_target_hz ? frame_rate_target_hz() : 60.0;
+        rmisc[0] = (float)(1.0 - exp(-1.0 / (0.7 * (hz > 1.0 ? hz : 240.0))));
+    }
     rmisc[2] = (float)(RE.dbg == 9 ? (int)((RR.frames / 30u) % 5u) : RE.dbg);   /* (9: the debug views in turn, 30 frames each) */
     rmisc[3] = (float)(RR.frames & 0xFFFF);
     ID3D11DeviceContext_UpdateSubresource(gpu_rt.ctx, (ID3D11Resource*)RR.cb, 0, NULL, rc, 0, 0);
@@ -519,6 +576,14 @@ static void reim_post(mtarget* c, mtarget* z, int pc) {
             rr_unbind();
         }
         ldir[0] = ldir[1] = 0.0f;
+        if (rptaa[0] > 0.0f) {           /* (fix) the temporal resolve: RT_SH + history -> RT_SH2, kept as RT_SH and the history */
+            lt_cb(cb, 36);
+            lt_srv(14, LT.srv[LT_W]); lt_srv(25, RR.srv[RT_SH]); lt_srv(26, RR.srv[RT_SHH]);
+            lt_pass(RR.rtv[RT_SH2], hw, hh, GPU_SH_ps_reim_shtaa, off);
+            rr_unbind();
+            ID3D11DeviceContext_CopyResource(gpu_rt.ctx, (ID3D11Resource*)RR.t[RT_SH], (ID3D11Resource*)RR.t[RT_SH2]);
+        }
+        if (re_fix()) ID3D11DeviceContext_CopyResource(gpu_rt.ctx, (ID3D11Resource*)RR.t[RT_SHH], (ID3D11Resource*)RR.t[RT_SH]);
     } else {
         static const float one[4] = { 1, 0, 0, 0 };   /* (visible, N.L 0: nothing changes) */
         ID3D11DeviceContext_ClearRenderTargetView(gpu_rt.ctx, RR.rtv[RT_SH], one);

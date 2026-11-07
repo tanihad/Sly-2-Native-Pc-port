@@ -708,6 +708,7 @@ static int ra_apply(int32_t i, int* bound) {
     if (!et_build(&t, id, RA.up_srv, RA.reg[it->reg].at, 1)) { et_batch_run(); et_build(&t, id, RA.up_srv, RA.reg[it->reg].at, 1); }
     et_batch_run();
     s->ai = 1;
+    for (int32_t k = s->first; k >= 0; k = ET.e[k].next) et_swap_note(k, 'A');   /* (reimagine: Enhanced -> AI, once) */
     if (RA.dump) { et_dump_ai(id, it->hash); et_dump_nrm(id, it->hash); }
     return 1;
 }
@@ -761,8 +762,10 @@ static double ra_budget_ms(void) {
         double room = 0.8 * 1000.0 / hz - others;
         if (room < lim) lim = room;
     } else if (hz <= 1.0) lim = RA.ms_min * 2.0;          /* (unlimited frame rate: a small fixed share) */
-    if (ET.out_frame) lim -= 1.2 * ET.out_frame / 1048576.0;   /* (this frame's Enhanced builds) */
-    return lim < RA.ms_min ? RA.ms_min : lim;
+    if (et_fix_on() && lim > 0.8 * 1000.0 / (hz > 1.0 ? hz : 60.0) * 0.25) lim = 0.8 * 1000.0 / (hz > 1.0 ? hz : 60.0) * 0.25;   /* (reimagine: at most a quarter of the frame) */
+    if (ET.out_frame) lim -= (et_fix_on() ? ETB.ms_per_m : 1.2) * ET.out_frame / 1048576.0;   /* (this frame's Enhanced builds) */
+    double mn = et_fix_on() ? 0.25 : RA.ms_min;   /* (reimagine: a frame already over its interval gets a smaller floor) */
+    return lim < mn ? mn : lim;
 }
 
 /* start a net batch from the prepared tiles (same padded size) */
@@ -893,6 +896,7 @@ static void ra_post_poll(int* bound) {
         int sv = -1;
         for (int k = 0; k < RA_SAVEN && sv < 0; k++) if (RA.sav[k].item < 0) sv = k;
         if (sv < 0) break;               /* (all read-backs busy: next frame) */
+        if (et_fix_on() && ET.out_frame && ET.out_frame >= ETB.cap) break;   /* (reimagine: within the frame's build time) */
         uint32_t words = 16u << (it->lw + it->lh);
         if (!RA.sav[sv].st) RA.sav[sv].st = et_buf(RA_UP_WORDS / 4u * 4u, 0, D3D11_USAGE_STAGING, D3D11_CPU_ACCESS_READ);
         ra_apply(i, bound);
@@ -957,7 +961,7 @@ static void ra_frame(int* bound) {
         if (i < 0) break;
         ra_item* it = &RA.it[i];
         uint32_t words = it->rw * it->rh;
-        if (up && up + words > RA_LOAD_TEXELS) break;
+        if (up && up + words > RA_LOAD_TEXELS) break; if (et_fix_on() && ET.out_frame && ET.out_frame >= ETB.cap) break;   /* (reimagine: within the frame's build time) */
         int32_t r = ra_reg_alloc(words, i);
         if (r < 0) break;
         D3D11_BOX bx = { RA.reg[r].at * 4u, 0, 0, (RA.reg[r].at + words) * 4u, 1, 1 };

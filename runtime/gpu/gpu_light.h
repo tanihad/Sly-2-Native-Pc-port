@@ -136,6 +136,7 @@ static void light_note(const gpu_front_frame_data* fd, const gpu_fop_r2* o) {
             LT.ent_ok = 1;
         }
     }
+    if (lt_reim() && fb->serial == LT.done) { static uint32_t late_n; late_n++; if (getenv("PS2_REIM_LOG") && atoi(getenv("PS2_REIM_LOG")) >= 3) gpu_log("reim-late: v%u serial %u: a segment after the post pass (%u, %u entries)", X.fd ? X.fd->vblank : 0u, fb->serial, late_n, o->nent); }
     if (lt_reim()) reim_note(fd, o, fb);   /* (reimagine) */
     LT.fb = *fb;
     LT.serial = fb->serial;

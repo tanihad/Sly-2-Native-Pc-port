@@ -780,8 +780,8 @@ static int build_rows(int page, menu_row* rows) {
     switch (page) {
     case MENU_PAGE_GRAPHICS:
         choice_row(rows, &n, MENU_ROW_GLOOK, "Look",
-                   "Faithful: the game's own look, drawn sharp and clean by a modern renderer at your screen's resolution. Retro: "
-                   "exactly as the original console drew it - its pixel grid, 4:3, TV flicker filter and interlacing.");
+                   "Faithful: the game's own look, sharp and clean at your screen's resolution. Retro: exactly as the console "
+                   "drew it (pixel grid, 4:3, interlacing). Reimagined: redrawn textures, real shadows, glow and richer colour.");
         env_note(last(rows, n), "graphics", "look");
         choice_row(rows, &n, MENU_ROW_PRESET, "Quality", "");
         r = last(rows, n);

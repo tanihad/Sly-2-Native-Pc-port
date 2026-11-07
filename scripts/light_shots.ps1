@@ -5,7 +5,7 @@
 # Scenes: scripts\qa_scenes_a.txt (ep1-4 hubs, m2_boardroom, m3_boss) and scripts\qa_scenes.txt (ep5-8).
 # Output: build\light\shots\<scene>[__tag]\frame_<v>.png (every dumped picture) + run.log. Local only: never commit them.
 param([Parameter(Mandatory = $true)][string]$Scene, [int]$At = 0, [int]$Frames = 72, [int]$Phase = 30, [string]$Extra = '',
-      [string]$Ini = '', [string]$Tag = '', [string]$Size = '2560x1440', [int]$Every = 1, [switch]$NoAB, [string]$Fps = '60', [int]$Seconds = 0)
+      [string]$Ini = '', [string]$Tag = '', [string]$Size = '2560x1440', [int]$Every = 1, [switch]$NoAB, [string]$Fps = '60', [int]$Seconds = 0, [string]$PadExtra = '')
 $root = Split-Path $PSScriptRoot -Parent
 $free = [math]::Round((Get-PSDrive C).Free / 1GB, 1)
 if ($free -lt 40) { "C: has $free GB free (< 40): not starting"; exit 2 }
@@ -46,6 +46,7 @@ $wa = @('-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'warp_ru
 if ($job) { $wa += @('-Job', $job) }
 if ($flags -match '\bdirect\b') { $wa += '-Direct' }
 if ($flags -match '\bplay\b') { $wa += '-Play' }
+if ($PadExtra) { $pad = if ($pad) { "$pad,$PadExtra" } else { $PadExtra } }   # (reimagine: motion for stability clips)
 if ($pad) { $wa += @('-Pad', $pad) }
 & powershell @wa | Out-Null
 foreach ($k in $saved.Keys) { [Environment]::SetEnvironmentVariable($k, $saved[$k]) }
@@ -53,8 +54,8 @@ Remove-Item (Join-Path $w 'sly2_warp_*.exe') -ErrorAction SilentlyContinue
 Copy-Item (Join-Path $w 'run.log') (Join-Path $out 'run.log') -ErrorAction SilentlyContinue
 $fr = Join-Path $w 'frames'
 Remove-Item (Join-Path $fr 'latest.png') -ErrorAction SilentlyContinue
-Move-Item (Join-Path $fr 'frame_*.png') $out -ErrorAction SilentlyContinue
+Move-Item (Join-Path $fr 'frame_*.*') $out -ErrorAction SilentlyContinue
 Remove-Item -Recurse -Force $w -ErrorAction SilentlyContinue
-$n = @(Get-ChildItem $out -Filter 'frame_*.png').Count
+$n = @(Get-ChildItem $out -Filter 'frame_*.*').Count
 "$Scene`: $n pictures in $out"
 Select-String -Path (Join-Path $out 'run.log') -Pattern 'light:|GPU renderer unavailable|device lost|error' | Select-Object -First 12 | ForEach-Object { $_.Line }

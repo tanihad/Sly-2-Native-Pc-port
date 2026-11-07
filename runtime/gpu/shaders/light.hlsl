@@ -232,7 +232,10 @@ cbuffer reim_cb : register(b8) {
     float4 r_lm0, r_lm1, r_lm2, r_lm3;   // world -> the key light's shadow map clip (rows; gpu_reim.h reim_smap)
     float4 r_smp;                        // shadow map: texel (uv), texel (world units), fade start / end (view depth)
     float4 r_smp2;                       // fade end, strength (0: no map), the key light's world direction (x, y)
-    float4 r_smp3;                       // its world direction z, -, -, -
+    float4 r_smp3;                       // its world direction z, the stable receiver bias (1: on), -, -
+    float4 r_pv0, r_pv1, r_pv2, r_pv3;   // (fix) the previous frame's world x clip (rows): the key-light term's history
+    float4 r_pndc;                       // the previous frame's ndc of a picture pixel (as r_ndc)
+    float4 r_ptaa;                       // history weight (0: none), -, -, -
 };
 Texture2D<float> r_smap : register(t24);     // the key light's shadow map (1 at the light, 0 far)
 Texture2D<float4> r_stats : register(t18);   // 4 x 1: [0] average colour, mood; [1] fog colour; [2] shaft source; [3] -
@@ -296,6 +299,19 @@ float2 ps_reim_shadow(float4 pos : SV_Position) : SV_Target {
         float3 Lw = float3(r_smp2.zw, r_smp3.x);
         float slope = sqrt(saturate(1.0 - nl * nl)) / max(nl, 0.2);
         float3 Pw = r_world(pp, w) + Lw * (r_smp.z * (1.5 + 2.0 * slope) + w * 0.002);
+        if (r_smp3.y > 0.0) {
+            // (fix) the receiver pushed out along its own world normal (normal-offset bias, ~2 map texels growing with the
+            // distance): the depth-rebuilt positions jitter by a sub-texel as the camera moves, which flipped surfaces
+            // turned partly away from the light between lit and shadowed every few frames (acne under motion)
+            float3 W0 = r_world(pp, w);
+            float3 Wx = r_world(pp + (abs(wr - w) < abs(w - wl) ? 1.0 : -1.0) * float2(l_map.z, 0.0), abs(wr - w) < abs(w - wl) ? wr : wl) - W0;
+            float3 Wy = r_world(pp + (abs(wd - w) < abs(w - wu) ? 1.0 : -1.0) * float2(0.0, l_map.w), abs(wd - w) < abs(w - wu) ? wd : wu) - W0;
+            float3 Nw = cross(Wx, Wy);
+            float nn = dot(Nw, Nw);
+            Nw = nn > 1e-12 ? Nw * rsqrt(nn) : Lw;
+            if (dot(Nw, Lw) < 0.0) Nw = -Nw;
+            Pw = W0 + Nw * (r_smp.z * (2.0 + w * 0.0008)) + Lw * (r_smp.z * (1.0 + 1.5 * slope));
+        }
         float4 lc = Pw.x * r_lm0 + Pw.y * r_lm1 + Pw.z * r_lm2 + r_lm3;
         float2 uv = float2(lc.x * 0.5 + 0.5, 0.5 - lc.y * 0.5);
         if (all(uv > r_smp.xy) && all(uv < 1.0 - r_smp.xy) && lc.z > 0.0 && lc.z < 1.0) {
@@ -308,6 +324,7 @@ float2 ps_reim_shadow(float4 pos : SV_Position) : SV_Target {
             lit *= 0.25;
             float2 e = min(uv, 1.0 - uv);
             float sf = saturate(min(e.x, e.y) * 12.0) * saturate((r_smp2.x - w) / max(r_smp2.x - r_smp.w, 1.0));
+            if (r_smp3.y > 0.0) sf *= saturate(nl * 6.0);   // (fix: surfaces almost edge-on to the light fade out: no flip-flop)
             occ = max(occ, (1.0 - lit) * sf);
         }
     }
@@ -329,6 +346,32 @@ float2 ps_reim_blur2(float4 pos : SV_Position) : SV_Target {
         ws += g;
     }
     return s / ws;
+}
+
+// (fix) the key-light term's temporal resolve (half res): this frame's (visibility, N.L) blended with the last frame's at
+// the same world position (reprojected through the previous world x clip), the history clamped to this frame's 3 x 3
+// neighbourhood (no ghosts): shadow edges that crawled or blinked between frames under camera motion settle
+Texture2D<float2> r_shist : register(t26);
+float2 ps_reim_shtaa(float4 pos : SV_Position) : SV_Target {
+    int2 q = int2(pos.xy);
+    float2 cur = r_bsrc.Load(int3(q, 0));
+    float w = l_wload(q);
+    if (r_ptaa.x <= 0.0 || w >= l_z.z * 0.5) return cur;
+    float2 mn = cur, mx = cur;
+    [unroll] for (int j = -1; j <= 1; j++)
+        [unroll] for (int i = -1; i <= 1; i++) {
+            float2 v = r_bsrc.Load(int3(clamp(q + int2(i, j), int2(0, 0), int2(l_dst.xy) - 1), 0));
+            mn = min(mn, v); mx = max(mx, v);
+        }
+    float3 P = r_world(pos.xy * l_map.zw, w);
+    float4 c = P.x * r_pv0 + P.y * r_pv1 + P.z * r_pv2 + r_pv3;
+    if (c.w <= 1e-3) return cur;
+    float2 nd = c.xy / c.w;
+    float2 pp = float2((nd.x - r_pndc.y) / r_pndc.x, (nd.y - r_pndc.w) / r_pndc.z);   // previous picture pixel
+    float2 uv = pp / l_map.zw * l_dst.zw;
+    if (any(uv < 0.0) || any(uv > 1.0)) return cur;
+    float2 h = clamp(r_shist.SampleLevel(l_lin, uv, 0.0), mn, mx);
+    return lerp(cur, h, r_ptaa.x);
 }
 
 // ---- bloom: a softer, lower threshold and the half-res scene colour for the averages (MRT) --------------------------
