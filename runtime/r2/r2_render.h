@@ -40,6 +40,7 @@ typedef struct {
     /* (reimagine) Look = Reimagined: the R2_ENH=2 pixel shaders (specular of strength spec, the rim, the normal hook) */
     int reim;
     float spec;
+    float reim_k[8];                     /* (reimagine) r2.hlsl r2_reim, r2_reim2: the key light on screen, relief, cavity, normal maps */
     /* (reimagine) the shadow-caster pass: the segment's pass-A draws that write Z, depth only, into dsv (a size x size
      * map) through r2.hlsl r2_vs_shadow with these 32 floats (inverse world x clip, world -> light clip) */
     int shadow, shadow_size;

@@ -27,6 +27,8 @@ static struct {
         night, stat_a, rim, spec, clar, key_i, ao_r, ao_k, ao_min;
     /* the key light kept from frame to frame (smoothed) */
     float key[3], keyc[3], keyw;
+    float kv[3];                         /* the key light in view space (the last post pass): the surface maps' relief */
+    float relief, cavity, nmap;
     int have_key;
 } RE;
 enum { RT_SH, RT_SH2, RT_B6, RT_SHAFT, RT_PIC, RT_ST0, RT_ST1, RT_SCENE, RT_N };
@@ -84,7 +86,10 @@ static void re_env(void) {
     RE.night = lt_envf("PS2_REIM_NIGHT", -1.0f);     /* (tests: 0 day .. 1 night; default from the picture) */
     RE.stat_a = lt_envf("PS2_REIM_STAT_A", 0.06f);   /* the statistics' smoothing per frame */
     RE.rim = lt_envf("PS2_REIM_RIM", 1.1f);          /* rim light on lit meshes (Faithful: 0.5) */
-    RE.spec = lt_envf("PS2_REIM_SPEC", 0.45f);     /* specular highlights on lit meshes (Faithful: none) */
+    RE.spec = lt_envf("PS2_REIM_SPEC", 0.45f);
+    RE.relief = lt_envf("PS2_REIM_RELIEF", 0.6f);   /* surface maps (next/ai): relief lit from the key light's side */
+    RE.cavity = lt_envf("PS2_REIM_CAVITY", 0.6f);   /* ... their cavity deepening creases */
+    RE.nmap = lt_envf("PS2_REIM_NMAP", 1.0f);       /* ... their normals on the characters' lighting */     /* specular highlights on lit meshes (Faithful: none) */
     RE.ao_r = lt_envf("PS2_REIM_AO_R", 80.0f);
     RE.ao_k = lt_envf("PS2_REIM_AO_K", 3.5f);
     RE.ao_min = lt_envf("PS2_REIM_AO_MIN", 0.3f);
@@ -193,7 +198,13 @@ static void reim_note(const gpu_front_frame_data* fd, const gpu_fop_r2* o, const
 }
 
 static float reim_rim(void) { re_env(); return RE.rim; }
-static float reim_spec(void) { re_env(); return RE.spec; }   /* (the R2 pipelines' rim light under Reimagined) */
+static float reim_spec(void) { re_env(); return RE.spec; }
+/* (the R2 pipelines' r2_reim / r2_reim2: the key light's direction in the picture plane, relief, cavity, normal maps) */
+static void reim_r2k(float* k) {
+    re_env();
+    memset(k, 0, 8 * sizeof(float));
+    k[0] = RE.kv[0]; k[1] = RE.kv[1]; k[2] = RE.relief; k[3] = RE.cavity; k[4] = RE.nmap;
+}   /* (the R2 pipelines' rim light under Reimagined) */
 
 /* ---- the post pass -------------------------------------------------------------------------------------------- */
 static int light_proj(float view[4], float z[2]);
@@ -439,6 +450,7 @@ static void reim_post(mtarget* c, mtarget* z, int pc) {
         float kv[3] = { (dc[0] - o2[0] * dc[3]) / f2[0], (dc[1] - o2[1] * dc[3]) / f2[1], dc[3] };
         float l = sqrtf(kv[0] * kv[0] + kv[1] * kv[1] + kv[2] * kv[2]);
         if (l > 1e-6f) { rkey[0] = kv[0] / l; rkey[1] = kv[1] / l; rkey[2] = kv[2] / l; rkey[3] = RE.ss ? RE.sss_k : 0.0f; }
+        memcpy(RE.kv, rkey, sizeof RE.kv);
         memcpy(rkc, RE.keyc, sizeof RE.keyc);
         rkc[3] = RE.key_i;
         if (RE.smap && rkey[3] > 0.0f && S == &RS && !reim_smap(S, rndc, rzab, pw, ph, rlm, rsmp)) memset(rsmp, 0, 12 * sizeof(float));

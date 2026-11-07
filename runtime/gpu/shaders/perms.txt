@@ -296,12 +296,19 @@ ps_r2m_a2c_e_r      r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2
 ps_r2m_clip_e_r     r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_CLIP=1 R2_ENH=2
 ps_r2m_clip_nd_e_r  r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_CLIP=1 R2_NODISCARD=1 R2_ENH=2
 ps_r2m_clip_a2c_e_r r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_CLIP=1 R2_A2C=1 R2_ENH=2
-ps_r2m_e_t_r        r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_ENH=2 R2_ETEX=1
-ps_r2m_nd_e_t_r     r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_NODISCARD=1 R2_ENH=2 R2_ETEX=1
-ps_r2m_a2c_e_t_r    r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_A2C=1 R2_ENH=2 R2_ETEX=1
-ps_r2m_clip_e_t_r   r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_CLIP=1 R2_ENH=2 R2_ETEX=1
-ps_r2m_clip_nd_e_t_r r2.hlsl            r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_CLIP=1 R2_NODISCARD=1 R2_ENH=2 R2_ETEX=1
-ps_r2m_clip_a2c_e_t_r r2.hlsl           r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_CLIP=1 R2_A2C=1 R2_ENH=2 R2_ETEX=1
+ps_r2m_e_t_r        r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_ENH=2 R2_ETEX=1 R2_REIM=1
+ps_r2m_nd_e_t_r     r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_NODISCARD=1 R2_ENH=2 R2_ETEX=1 R2_REIM=1
+ps_r2m_a2c_e_t_r    r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_A2C=1 R2_ENH=2 R2_ETEX=1 R2_REIM=1
+ps_r2m_clip_e_t_r   r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_CLIP=1 R2_ENH=2 R2_ETEX=1 R2_REIM=1
+ps_r2m_clip_nd_e_t_r r2.hlsl            r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_CLIP=1 R2_NODISCARD=1 R2_ENH=2 R2_ETEX=1 R2_REIM=1
+ps_r2m_clip_a2c_e_t_r r2.hlsl           r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_CLIP=1 R2_A2C=1 R2_ENH=2 R2_ETEX=1 R2_REIM=1
+# (reimagine) the prelit meshes' Enhanced textures pipelines under Reimagined: surface-map relief + cavity (R2_REIM)
+ps_r2m_t_rm         r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_ETEX=1 R2_REIM=1
+ps_r2m_nd_t_rm      r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_NODISCARD=1 R2_ETEX=1 R2_REIM=1
+ps_r2m_a2c_t_rm     r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_A2C=1 R2_ETEX=1 R2_REIM=1
+ps_r2m_clip_t_rm    r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_CLIP=1 R2_ETEX=1 R2_REIM=1
+ps_r2m_clip_nd_t_rm r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_CLIP=1 R2_NODISCARD=1 R2_ETEX=1 R2_REIM=1
+ps_r2m_clip_a2c_t_rm r2.hlsl            r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_CLIP=1 R2_A2C=1 R2_ETEX=1 R2_REIM=1
 # (light) Enhanced lighting: the modern frame's R2 pipelines with lit sub-batches lit per pixel (R2_ENH; r2_render.c epipe*)
 vs_r2m_e            r2.hlsl             r2_vs             vs_5_0    R2_MFT=1 R2_ENH=1
 ps_r2m_e            r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_ENH=1

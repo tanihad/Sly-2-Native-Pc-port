@@ -33,6 +33,11 @@
 cbuffer r2_static : register(b1) {
     float4 r2_misc;                      // dual-source bias (gs.hlsl ps_ff), Z bias (debugging), -, asuint: PS2_R2_DBG
     float4 r2_mft;                       // (r2-m8, R2_MFT) modern frame targets: sx, sy (target pixels per GS pixel), samples
+#if R2_REIM
+    float4 r2_reim;                      // (reimagine) the key light on screen (x, y: towards it, length = its share in the
+                                         // picture plane), surface-map relief strength, cavity strength
+    float4 r2_reim2;                     // normal-map strength on characters, -, -, -
+#endif
 };
 #ifndef R2_MFT
 #define R2_MFT 0                         // (r2-m8, R8) the modern frame's surfaces (gpu_exec_mft.h): d3d = (GS + 0.5) * s,
@@ -56,6 +61,16 @@ static float2 g_prev_d3d;                // (R2_MV) the vertex's previous positi
 #endif
 #if R2_ETEX
 #include "etex.hlsli"
+#endif
+#ifndef R2_REIM
+#define R2_REIM 0                        // (reimagine) Look = Reimagined: the surface maps (relief, cavity, normal-mapped characters)
+#endif
+#if R2_REIM && R2_ETEX
+#include "etn.hlsli"
+static float4 g_nm;                      // the texel's surface map (normal x, y; height; cavity)
+static float g_nmf;                      // its weight: 0 without a map, fading out where a map texel gets smaller than a pixel
+static float2 g_duvx, g_duvy;            // the uv's screen derivatives
+static float3 g_dpx, g_dpy;              // (lit meshes) the object-space position's screen derivatives
 #endif
 #if R2_ENH
 static float4 g_lnrm;                    // r2_lit's (skinned) normal x 127 and its w
@@ -582,9 +597,23 @@ struct R2F {
 // normal of a lit sub-batch, V the unit direction to the camera, both object space. A normal map (the Reimagined textures'
 // normal maps, notes/reimagined.md) perturbs N here - define R2_NMAP and provide this function (e.g. a tangent frame from
 // the screen-space derivatives of the position and UV). Default: the flat, interpolated normal.
-#ifndef R2_NMAP
-float3 r2_reim_normal(float3 N, float3 V) { return normalize(N); }
+float3 r2_reim_normal(float3 N, float3 V) {
+    N = normalize(N);
+#if R2_REIM && R2_ETEX
+    // the surface map's tangent normal through a cotangent frame from the screen derivatives of the position and uv
+    // (meshes carry no tangents); faded with the map's footprint (no shimmer at a distance)
+    if (g_nmf > 0.0) {
+        float3 dp2p = cross(g_dpy, N), dp1p = cross(N, g_dpx);
+        float3 T = dp2p * g_duvx.x + dp1p * g_duvy.x, B = dp2p * g_duvx.y + dp1p * g_duvy.y;
+        float im = rsqrt(max(max(dot(T, T), dot(B, B)), 1e-30));
+        float2 nxy = g_nm.xy * (g_nmf * r2_reim2.x);
+        float nz = sqrt(saturate(1.0 - dot(nxy, nxy)));
+        float3 Np = T * (im * nxy.x) + B * (im * nxy.y) + N * nz;
+        if (dot(Np, Np) > 1e-12) N = normalize(Np);
+    }
 #endif
+    return N;
+}
 static uint g_reim_skin;                 // (the sub-batch is skinned: a character - only they get the rim and the highlight)
 #endif
 #if R2_ENH
@@ -593,6 +622,9 @@ static uint g_reim_skin;                 // (the sub-batch is skinned: a charact
 float4 r2_lit_px(uint4 lx, float4 ln, float4 lc, float3 lv, bool csel, float4 col) {
     uint xb = lx.x - 1u;
     float3 N = ln.xyz * (127.0 * rsqrt(max(dot(ln.xyz, ln.xyz), 1e-6)));
+#if R2_ENH >= 2
+    N = r2_reim_normal(N, lv) * 127.0;   // (reimagine: the surface map's normal, when there is one)
+#endif
     float4 T0 = r2_xq(xb, 0u), T1 = r2_xq(xb, 1u), T2 = r2_xq(xb, 2u), amb = r2_xq(xb, 8u), thr = r2_xq(xb, 9u),
            v10 = r2_xq(xb, 10u), L0 = r2_xq(xb, 4u);
     float4 d = T0 * N.x + T1 * N.y + T2 * N.z;
@@ -615,7 +647,7 @@ float4 r2_lit_px(uint4 lx, float4 ln, float4 lc, float3 lv, bool csel, float4 co
     // (reimagine) Look = Reimagined: a specular highlight from the strongest light and a rim light in its hue (the lights'
     // colours may be negative - the light then comes from -direction, as in f's sign)
     {
-        float3 V = normalize(lv), Nn = r2_reim_normal(N * (1.0 / 127.0), V);
+        float3 V = normalize(lv), Nn = normalize(N);
         uint kk = 0u;
         float best = -1.0;
         [unroll] for (uint j = 0u; j < 4u; j++) {
@@ -705,6 +737,19 @@ R2F r2_ps(R2O i) {
         float2 edx = ddx(euv), edy = ddy(euv);
         if ((asuint(r2_misc.w) & 1u) != 0u) t = 0x80808080u;
         else if (!et_sample(st.dec, d1, st.tlev, euv, edx, edy, i.pos.x, t)) t = tex_sample(st, f2i(su16), f2i(tv16), 1.0);
+#if R2_REIM
+        g_nmf = 0.0; g_nm = float4(0.0, 0.0, 0.5, 1.0); g_duvx = edx; g_duvy = edy;
+        float4 nm;
+        if (etn_sample(st.dec, d1, st.tlev, euv, edx, edy, nm)) {
+            uint2 ee = et_tab.Load2(((st.dec - 1u) >> 6) * 8u);
+            float fp = max(length(edx), length(edy)) * (float)(32u << (ee.y & 7u)) * e_ps.x;   // map texels per pixel
+            g_nmf = saturate((4.0 - fp) / 2.5);
+            g_nm = nm;
+        }
+#if R2_ENH
+        g_dpx = -ddx(i.lv); g_dpy = -ddy(i.lv);
+#endif
+#endif
     }
 #else
     uint t = (asuint(r2_misc.w) & 1u) != 0u ? 0x80808080u : tex_sample(st, f2i(su16), f2i(tv16), 1.0);   // (PS2_R2_DBG 1)
@@ -717,6 +762,21 @@ R2F r2_ps(R2O i) {
     uint4 vc = (uint4)max(icol, 0.0);
 #else
     uint4 vc = (uint4)max(i.col, 0.0);                     // the GS's Gouraud stepping truncates
+#endif
+#if R2_REIM && R2_ETEX
+    // (reimagine) the surface map on the world: relief lit from the key light's side (the slope's direction on screen against
+    // the light's) and the cavity deepening creases; faded with the map's footprint
+#if R2_ENH
+    if (g_nmf > 0.0 && i.lx.x == 0u) {
+#else
+    if (g_nmf > 0.0) {
+#endif
+        float2 dux = g_duvx * rsqrt(max(dot(g_duvx, g_duvx), 1e-30)), duy = g_duvy * rsqrt(max(dot(g_duvy, g_duvy), 1e-30));
+        float2 sd = float2(dot(g_nm.xy, dux), dot(g_nm.xy, duy));
+        float rel = clamp(dot(sd, r2_reim.xy) * r2_reim.z, -0.45, 0.45);
+        float f = (1.0 + rel * g_nmf) * lerp(1.0, g_nm.w, r2_reim.w * g_nmf);
+        vc.xyz = (uint3)min((float3)vc.xyz * f, 255.0);
+    }
 #endif
     vc = min(vc, uint4(255u, 255u, 255u, 255u));
     uint col = tfx((t1 >> 3) & 3u, (flags & R2D_TCC) != 0u, vc.x | (vc.y << 8) | (vc.z << 16) | (vc.w << 24), t);

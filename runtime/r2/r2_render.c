@@ -46,6 +46,7 @@ static struct {
      * empipe .. eppipe_a2c, rtp as tp[1]; swapped in for a Reimagined segment (reim_ok: all of them exist) */
     r2g_pipe* rp[9];
     r2g_pipe* rtp[3][3];
+    r2g_pipe* rtp0[3][3];                /* (reimagine) tp[0] (prelit meshes) with the surface maps (R2_REIM) */
     int reim_ok;
     r2g_pipe* shpipe;                    /* (reimagine) the shadow casters (r2.hlsl R2_SHADOW) and their constants */
     r2g_buf* shcb;
@@ -54,6 +55,7 @@ static struct {
     float cb_bias;
     float cb_rim;                        /* (light) r2_misc.z as written */
     float cb_mft[4];                     /* (r2-m8) r2_mft as written: sx, sy, samples */
+    float cb_reim[8];                    /* (reimagine) r2_reim, r2_reim2 as written (R2_REIM permutations only) */
     arena A[SLOTS];
     uint32_t epoch;                      /* bumped when GPU resources are recreated: meshes upload again */
     uint64_t uploads, upload_bytes, draws, segments, missing;
@@ -82,7 +84,7 @@ static void release_all(void) {
     for (int a = 0; a < 2; a++) for (int f = 0; f < 3; f++) for (int v = 0; v < 3; v++) { r2g_pipe_free(R.tp[a][f][v]); R.tp[a][f][v] = NULL; }
     R.tex_ok = 0;
     for (int k = 0; k < 9; k++) { r2g_pipe_free(R.rp[k]); R.rp[k] = NULL; }   /* (reimagine) */
-    for (int f = 0; f < 3; f++) for (int v = 0; v < 3; v++) { r2g_pipe_free(R.rtp[f][v]); R.rtp[f][v] = NULL; }
+    for (int f = 0; f < 3; f++) for (int v = 0; v < 3; v++) { r2g_pipe_free(R.rtp[f][v]); R.rtp[f][v] = NULL; r2g_pipe_free(R.rtp0[f][v]); R.rtp0[f][v] = NULL; }
     R.reim_ok = 0;
     r2g_pipe_free(R.shpipe); R.shpipe = NULL;
     r2g_buf_free(R.shcb); R.shcb = NULL;
@@ -228,6 +230,21 @@ static int init(const r2_exec_in* in) {
                     if (t) R.rtp[f][v] = p; else R.rp[f * 3 + v] = p;
                     if (!p) R.reim_ok = 0;
                 }
+#define PS_(n) gpu_sh_##n, sizeof gpu_sh_##n
+        static const struct { const void* p; size_t n; } rmps[2][3] = {
+            { { PS_(ps_r2m_t_rm) }, { PS_(ps_r2m_nd_t_rm) }, { PS_(ps_r2m_a2c_t_rm) } },
+            { { PS_(ps_r2m_clip_t_rm) }, { PS_(ps_r2m_clip_nd_t_rm) }, { PS_(ps_r2m_clip_a2c_t_rm) } } };
+#undef PS_
+        for (int f = 0; f < 3; f++)          /* (tp[0]'s family / variant layout: the prelit meshes' surface maps) */
+            for (int v = 0; v < 3; v++) {
+                r2g_pipe_desc d;
+                if (f == 0) d = (r2g_pipe_desc){ gpu_sh_vs_r2m, sizeof gpu_sh_vs_r2m, rmps[0][v].p, rmps[0][v].n, attrs, 10, NULL, 0 };
+                else if (f == 1) d = (r2g_pipe_desc){ gpu_sh_vs_r2m_clip, sizeof gpu_sh_vs_r2m_clip, rmps[1][v].p, rmps[1][v].n, attrs, 10,
+                                                      gpu_sh_gs_r2m_clip, sizeof gpu_sh_gs_r2m_clip };
+                else d = (r2g_pipe_desc){ gpu_sh_vs_r2m_pull, sizeof gpu_sh_vs_r2m_pull, rmps[0][v].p, rmps[0][v].n, pattrs, 1, NULL, 0 };
+                R.rtp0[f][v] = r2g_pipe_create(R.d, &d);
+                if (!R.rtp0[f][v]) R.reim_ok = 0;
+            }
         if (!R.reim_ok) fprintf(stderr, "[r2] render: no Reimagined pipelines (Enhanced lighting's instead)\n");
         r2g_pipe_desc sd = { gpu_sh_vs_r2m_sh, sizeof gpu_sh_vs_r2m_sh, gpu_sh_ps_r2m_sh, sizeof gpu_sh_ps_r2m_sh, attrs, 10, NULL, 0 };
         R.shpipe = r2g_pipe_create(R.d, &sd);
@@ -235,7 +252,7 @@ static int init(const r2_exec_in* in) {
     }
     /* (r2-m2) the segment constants by UpdateSubresource (a DEFAULT buffer): Map(DISCARD) per segment, ~45 a frame with
      * frames queued, made the driver block the render thread for up to 10 ms when the GPU was the bottleneck */
-    R.cb = R.d ? r2g_buf_create(R.d, R2G_BUF_CONSTANT, R2G_USAGE_DEFAULT, 48, NULL) : NULL;
+    R.cb = R.d ? r2g_buf_create(R.d, R2G_BUF_CONSTANT, R2G_USAGE_DEFAULT, 80, NULL) : NULL;
     if (!R.d || !R.pipe || !R.pipe_clip || !R.pipe_nd || !R.cb || !R.mpipe || !R.mpipe_nd || !R.mpipe_a2c || !R.mvpipe ||
         !R.mcpipe || !R.mcpipe_nd || !R.mcpipe_a2c) {
         fprintf(stderr, "[r2] render: cannot create the pipelines: the modern renderer draws nothing\n");
@@ -414,7 +431,7 @@ static int segment(const gpu_fop_r2* o, const uint8_t* fdata, size_t fdata_bytes
     /* (reimagine) Look = Reimagined: its pipelines in the Enhanced ones' place for this segment, the specular strength in
      * r2_mft.w (0 otherwise, as before) */
     int reim = enh && in->reim && R.reim_ok;
-    r2g_pipe *rsave[9], *rtsave[3][3];
+    r2g_pipe *rsave[9], *rtsave[3][3], *rtsave0[3][3];
     r2g_pipe** epp[9] = { &R.empipe, &R.empipe_nd, &R.empipe_a2c, &R.emcpipe, &R.emcpipe_nd, &R.emcpipe_a2c,
                           &R.eppipe, &R.eppipe_nd, &R.eppipe_a2c };
     if (reim) {
@@ -422,9 +439,12 @@ static int segment(const gpu_fop_r2* o, const uint8_t* fdata, size_t fdata_bytes
         for (int k = 0; k < 9; k++) { rsave[k] = *epp[k]; *epp[k] = R.rp[k]; }
         memcpy(rtsave, R.tp[1], sizeof rtsave);
         memcpy(R.tp[1], R.rtp, sizeof rtsave);
+        memcpy(rtsave0, R.tp[0], sizeof rtsave0);
+        memcpy(R.tp[0], R.rtp0, sizeof rtsave0);
     }
-    if (!R.cb_set || R.cb_bias != in->dual_bias || (in->mft && memcmp(mft, R.cb_mft, sizeof mft)) || (enh && rim != R.cb_rim)) {   /* the device's constants */
-        float cb[12];                    /* (the whole 48-byte buffer: UpdateSubresource of a constant buffer writes all of it) */
+    if (!R.cb_set || R.cb_bias != in->dual_bias || (in->mft && memcmp(mft, R.cb_mft, sizeof mft)) || (enh && rim != R.cb_rim) ||
+        (reim && memcmp(in->reim_k, R.cb_reim, sizeof R.cb_reim))) {   /* the device's constants */
+        float cb[20];                    /* (the whole 80-byte buffer: UpdateSubresource of a constant buffer writes all of it) */
         uint32_t* cu = (uint32_t*)cb;
         memset(cb, 0, sizeof cb);
         const char* ze = getenv("PS2_R2_ZBIAS");
@@ -436,6 +456,8 @@ static int segment(const gpu_fop_r2* o, const uint8_t* fdata, size_t fdata_bytes
         if (ce && *ce == '1') cu[3] |= 64u;
         if (in->mft) memcpy(R.cb_mft, mft, sizeof mft);
         memcpy(&cb[4], R.cb_mft, sizeof R.cb_mft);   /* (r2-m8) r2_mft: the modern frame's scale and samples */
+        if (reim) memcpy(R.cb_reim, in->reim_k, sizeof R.cb_reim);   /* (reimagine) r2_reim, r2_reim2 */
+        memcpy(&cb[8], R.cb_reim, sizeof R.cb_reim);
         r2g_buf_write(R.d, R.cb, 0, cb, sizeof cb);
         R.cb_set = 1;
         R.cb_bias = in->dual_bias;
@@ -444,7 +466,7 @@ static int segment(const gpu_fop_r2* o, const uint8_t* fdata, size_t fdata_bytes
     if (in->shadow) {                    /* (reimagine) the key light's shadow casters: pass-A draws that write Z, depth only */
         if (reim) {
             for (int k = 0; k < 9; k++) *epp[k] = rsave[k];
-            memcpy(R.tp[1], rtsave, sizeof rtsave);
+            memcpy(R.tp[1], rtsave, sizeof rtsave); memcpy(R.tp[0], rtsave0, sizeof rtsave0);
         }
         if (!R.shpipe || !R.shcb || !in->shadow_m || in->shadow_size <= 0) return 0;
         r2g_buf_write(R.d, R.shcb, 0, in->shadow_m, 128);
@@ -617,7 +639,7 @@ static int segment(const gpu_fop_r2* o, const uint8_t* fdata, size_t fdata_bytes
     r2g_end(R.d);
     if (reim) {                          /* (reimagine) the Enhanced lighting pipelines back */
         for (int k = 0; k < 9; k++) *epp[k] = rsave[k];
-        memcpy(R.tp[1], rtsave, sizeof rtsave);
+        memcpy(R.tp[1], rtsave, sizeof rtsave); memcpy(R.tp[0], rtsave0, sizeof rtsave0);
     }
     double p4 = ph_now();
     ph_ms[0] = p1 - p0; ph_ms[1] = p2 - p1; ph_ms[2] = p3 - p2; ph_ms[3] = p4 - p3;
