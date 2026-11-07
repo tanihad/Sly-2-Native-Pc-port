@@ -25,6 +25,19 @@
 
 static volatile LONG tcf_on = 0;         /* graphics.textures (gfx.c); 0 until the settings say otherwise (tools, tests) */
 void gpu_tex_config(int on) { InterlockedExchange(&tcf_on, on ? 1 : 0); }
+static volatile LONG tcf_look = 0;       /* (ai) graphics.look = reimagined (gfx.c): Reimagined textures (gpu_tex_ai.h) */
+void gpu_tex_look(int reimagined) { InterlockedExchange(&tcf_look, reimagined ? 1 : 0); }
+#include "gpu_tex_normals.h"             /* (ai) the surface maps' interface for the lighting */
+static int etn_on(void);                 /* (ai) gpu_tex_ai.h: hooks of Reimagined (nothing runs under Faithful / Retro) */
+static float etn_k(void);
+static void etn_grow(int c, uint32_t oc, uint32_t nc);
+static void etn_run(int cls, uint32_t a, uint32_t n);
+static int ra_cfg(void);
+static int ra_init(void);
+static void ra_note(int32_t idx, int32_t id);
+static void ra_frame(int* bound);
+static void ra_release(void);
+static int ra_on_now;                    /* (ai) Reimagined textures this frame */
 
 #define ET_NCLS 6                        /* square classes: 64 << c texels */
 #define ET_MAXMIP 12
@@ -45,7 +58,7 @@ typedef struct {                         /* per decoded entry (the index of TD.e
     uint64_t raw;                        /* the content's alone (the HD pack's file name) */
     uint32_t chg;                        /* the frame of the last content change */
 } et_ent;
-typedef struct { uint64_t hash; uint32_t last; int32_t first; uint8_t used, hd; } et_slot;
+typedef struct { uint64_t hash; uint32_t last; int32_t first; uint8_t used, hd, ai; } et_slot;   /* (ai: the AI image is in it) */
 typedef struct { int32_t ent; uint32_t ver; } et_req;
 
 static struct {
@@ -114,7 +127,7 @@ static void et_env(void) {
 }
 static int et_cfg(void) {                /* the setting (work happens while it is on, whatever the A/B phase) */
     et_env();
-    return !ET.failed && (ET.env_on >= 0 ? ET.env_on : tcf_on > 0);
+    return !ET.failed && (ET.env_on >= 0 ? ET.env_on : tcf_on > 0 || tcf_look > 0);
 }
 static int et_enabled(void) { return et_cfg() && ET.init && r8p_on(R8P_TEX); }   /* draws use the images */
 
@@ -128,6 +141,7 @@ static void et_free_class(int c) {
 
 static void et_release_late(void);      /* (the dump read-backs and the HD upload buffer, below) */
 static void et_release(void) {
+    ra_release();                        /* (ai) */
     et_release_late();
     for (int c = 0; c < ET_NCLS; c++) {
         et_free_class(c);
@@ -232,6 +246,7 @@ static void et_link(int32_t idx, int32_t id) {
     s->last = ET.frame;
     e->st = ES_READY;
     et_tab_write(e->base, e->base + 1, (uint32_t)(id >> 16) | (uint32_t)(id & 0xFFFF) << 3);
+    if (ra_on_now) ra_note(idx, id);     /* (ai) its AI image: from the cache or built */
 }
 
 static int32_t et_map_find(uint64_t h) {
@@ -310,6 +325,7 @@ static int et_grow(int c) {
     ET.n_grow++;
     if (!ok) { gpu_log("tex: class %u views failed", S); ET.failed = 1; return 0; }
     if (ET.log) gpu_log("tex: class %ux%u: %u slices (%.0f MB in all)", S, S, nc, ET.bytes / 1048576.0);
+    if (ra_on_now) etn_grow(c, oc, nc);  /* (ai) the surface maps follow */
     return 1;
 }
 
@@ -332,6 +348,7 @@ static int32_t et_alloc(int c) {
         ET.e[i].st = ES_NONE;
     }
     s->used = 0;
+    s->ai = 0;
     ET.n_evict++;
     return (int32_t)(c << 16 | best);
 }
@@ -351,7 +368,7 @@ static void et_cb_set(uint32_t level, uint32_t first) {
     if (FAILED(ID3D11DeviceContext_Map(gpu_rt.ctx, (ID3D11Resource*)ET.cb, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) return;
     uint32_t* w = m.pData;
     uint32_t b[4] = { level, first, 0, 0 };
-    float p[4] = { ET.sharp, ET.sig_c, ET.sig_a, ET.edge }, q[4] = { ET.flat, ET.detail, ET.dd, ET.dd_rng }, r[4] = { ET.dd_sharp, 0.0f, ET.dd_dense, 0.0f };
+    float p[4] = { ET.sharp, ET.sig_c, ET.sig_a, ET.edge }, q[4] = { ET.flat, ET.detail, ET.dd, ET.dd_rng }, r[4] = { ET.dd_sharp, ra_on_now ? etn_k() : 0.0f, ET.dd_dense, 0.0f };
     memcpy(w, b, 16); memcpy(w + 4, p, 16); memcpy(w + 8, q, 16); memcpy(w + 12, r, 16);
     ID3D11DeviceContext_Unmap(gpu_rt.ctx, (ID3D11Resource*)ET.cb, 0);
 }
@@ -428,6 +445,7 @@ static void et_batch_run(void) {
                 ID3D11DeviceContext_Dispatch(c, (sz + 7) / 8, (sz + 7) / 8, n);
             }
         }
+        if (ra_on_now) etn_run(cls, a, n);   /* (ai) the surface maps from the levels in the scratch */
         gpu_rt.n_dispatches += nm * (ref ? 2 : 1) + 1;
         a = b;
     }
@@ -628,7 +646,8 @@ static void et_dump_poll(void) {
             wcscat(dir, L"\\dump");
             CreateDirectoryW(dir, NULL);
             wchar_t path[700];
-            _snwprintf(path, 700, L"%ls\\%016llx%ls.png", dir, (unsigned long long)d->raw, d->tex ? L"_enh" : L"");
+            static const wchar_t* const sfx[4] = { L"", L"_enh", L"_ai", L"_nrm" };   /* (ai: 2, 3) */
+            _snwprintf(path, 700, L"%ls\\%016llx%ls.png", dir, (unsigned long long)d->raw, sfx[d->tex & 3]);
             path[699] = 0;
             uint8_t* px = malloc((size_t)d->w * d->h * 4);
             if (px) {
@@ -637,7 +656,7 @@ static void et_dump_poll(void) {
                     uint8_t* o = px + (size_t)y * d->w * 4;
                     for (uint32_t x = 0; x < d->w; x++) {   /* (GS alpha 0x80 = 1.0 -> PNG 255) */
                         o[x * 4] = s[x * 4]; o[x * 4 + 1] = s[x * 4 + 1]; o[x * 4 + 2] = s[x * 4 + 2];
-                        uint32_t a = (uint32_t)s[x * 4 + 3] * 255u / 128u;
+                        uint32_t a = d->tex == 3 ? s[x * 4 + 3] : (uint32_t)s[x * 4 + 3] * 255u / 128u;
                         o[x * 4 + 3] = (uint8_t)(a > 255 ? 255 : a);
                     }
                 }
@@ -816,7 +835,7 @@ static int et_hd_poll(int* bound) {
                 D3D11_BOX bx = { 0, 0, 0, j->w * j->h * 4u, 1, 1 };
                 ID3D11DeviceContext_UpdateSubresource(gpu_rt.ctx, (ID3D11Resource*)EH.buf, 0, &bx, j->px, 0, 0);
                 et_slot* s = et_slot_of(id);
-                s->used = 1; s->hd = 1; s->hash = key; s->first = -1; s->last = ET.frame;
+                s->used = 1; s->hd = 1; s->ai = 0; s->hash = key; s->first = -1; s->last = ET.frame;
                 et_ent t;
                 memset(&t, 0, sizeof t);
                 for (uint32_t k = 0; k < 12; k++) { if ((1u << k) == j->w) t.lw = (uint8_t)k; if ((1u << k) == j->h) t.lh = (uint8_t)k; }
@@ -913,7 +932,15 @@ static void et_time_poll(void) {
 }
 static void et_frame_begin(void) {
     ET.frame++;
+    {                                    /* (ai) Reimagined on / off: every image is built again with / without its parts */
+        static int was;
+        int ra = et_cfg() && ra_cfg();
+        if (ra != was && ET.init) et_release();
+        was = ra;
+        ra_on_now = ra;
+    }
     if (!et_cfg() || !et_init()) return;
+    if (ra_on_now && !ra_init()) ra_on_now = 0;
     LARGE_INTEGER q0, q1, qf;
     QueryPerformanceCounter(&q0);
     uint64_t h0 = ET.n_hash, b0 = ET.n_build, g0 = ET.n_grow, s0 = ET.n_share;
@@ -1031,7 +1058,7 @@ static void et_frame_body(void) {
             id = et_alloc(cls);
             if (id < 0) { e->st = ES_NONE; ET.n_reject++; continue; }   /* (budget: tried again at a later use) */
             et_slot* s = et_slot_of(id);
-            s->used = 1; s->hd = 0; s->hash = e->hash; s->first = -1; s->last = ET.frame;
+            s->used = 1; s->hd = 0; s->ai = 0; s->hash = e->hash; s->first = -1; s->last = ET.frame;
             if (!bound) {
                 ID3D11ShaderResourceView* n1 = NULL;
                 ID3D11DeviceContext_PSSetShaderResources(c, 13, 1, &n1);
@@ -1048,6 +1075,7 @@ static void et_frame_body(void) {
     if (ET.out_frame) gpu_stats_cur()->tex_built += ET.out_frame >> 10;   /* (the cost of frames with builds: tex-build) */
     memmove(ET.q, ET.q + qi, (ET.qn - qi) * sizeof ET.q[0]);
     ET.qn -= qi;
+    if (ra_on_now) ra_frame(&bound);     /* (ai) cached AI images, read-backs, the net's slice of this frame */
     if (bound) {
         et_cs_unbind();
         ID3D11DeviceContext_PSSetShaderResources(c, 13, 1, &TD.srv);
@@ -1077,4 +1105,7 @@ static void et_bind_ps(int w) {
     ID3D11DeviceContext_PSSetShaderResources(c, 30, 7, s);
     ID3D11DeviceContext_PSSetSamplers(c, 4, 2, ET.smp);
     ID3D11DeviceContext_PSSetConstantBuffers(c, 8, 1, &ET.pcb);
+    if (ra_on_now && etn_enabled()) etn_bind_ps();   /* (ai) the surface maps for the lighting */
 }
+
+#include "gpu_tex_ai.h"                  /* (ai) Reimagined textures + surface maps */

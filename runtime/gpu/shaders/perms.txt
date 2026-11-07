@@ -335,3 +335,23 @@ cs_et_cov           tex.hlsl            cs_et_cov         cs_5_0
 cs_et_store         tex.hlsl            cs_et_store       cs_5_0
 cs_et_hash          tex.hlsl            cs_et_hash        cs_5_0
 cs_et_dd            tex.hlsl            cs_et_dd          cs_5_0
+# (ai) Reimagined textures (runtime/gpu/gpu_tex_ai.h, notes/reimagined.md): the Real-ESRGAN layer kernel per buffer
+# combination ai_up.c's plan uses (name = its key: in | out << 4 | r1 << 8 | r2 << 12 | o2 << 16, 8 = none), the tiles'
+# finish (crop, alpha, grain) and the surface maps of the lighting (gpu_tex_normals.h)
+cs_ai_38810         ai_up.hlsl          cs_conv           cs_5_0    BIN=U0 BOUT=U1 BO2=U3
+cs_ai_88833         ai_up.hlsl          cs_conv           cs_5_0    BIN=U3 BOUT=U3
+cs_ai_88844         ai_up.hlsl          cs_conv           cs_5_0    BIN=U4 BOUT=U4
+cs_ai_88343         ai_up.hlsl          cs_conv           cs_5_0    BIN=U3 BOUT=U4 BR1=U3
+cs_ai_88434         ai_up.hlsl          cs_conv           cs_5_0    BIN=U4 BOUT=U3 BR1=U4
+cs_ai_21343         ai_up.hlsl          cs_conv           cs_5_0    BIN=U3 BOUT=U4 BR1=U3 BR2=U1 BO2=U2
+cs_ai_22343         ai_up.hlsl          cs_conv           cs_5_0    BIN=U3 BOUT=U4 BR1=U3 BR2=U2 BO2=U2
+cs_ai_22434         ai_up.hlsl          cs_conv           cs_5_0    BIN=U4 BOUT=U3 BR1=U4 BR2=U2 BO2=U2
+cs_ai_88114         ai_up.hlsl          cs_conv           cs_5_0    BIN=U4 BOUT=U1 BR1=U1
+cs_ai_88113         ai_up.hlsl          cs_conv           cs_5_0    BIN=U3 BOUT=U1 BR1=U1
+cs_ai_88851         ai_up.hlsl          cs_conv           cs_5_0    BIN=U1 BOUT=U5
+cs_ai_88865         ai_up.hlsl          cs_conv           cs_5_0    BIN=U5 BOUT=U6
+cs_ai_88856         ai_up.hlsl          cs_conv           cs_5_0    BIN=U6 BOUT=U5
+cs_ai_88875         ai_up.hlsl          cs_conv           cs_5_0    BIN=U5 BOUT=U7
+cs_ai_post          tex_ai.hlsl         cs_ai_post        cs_5_0
+cs_ai_res           tex_ai.hlsl         cs_ai_res         cs_5_0
+cs_etn              tex_ai.hlsl         cs_etn            cs_5_0
