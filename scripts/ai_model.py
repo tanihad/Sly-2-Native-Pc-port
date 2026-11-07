@@ -22,7 +22,12 @@ import struct
 import sys
 import zipfile
 
-MODEL_SHA256 = 'F872D837D3C90ED2E05227BED711AF5671A6FD1C9F7D7E91C911A61F155E99DA'
+MODEL_SHA256 = 'F872D837D3C90ED2E05227BED711AF5671A6FD1C9F7D7E91C911A61F155E99DA'   # (RealESRGAN_x4plus_anime_6B.pth)
+# the owner-approved model files (both Real-ESRGAN, BSD-3): only these load
+APPROVED = {
+    MODEL_SHA256: 'RealESRGAN_x4plus_anime_6B.pth',
+    '4FA0D38905F75AC06EB49A7951B426670021BE3018265FD191D2125DF9D682F1': 'RealESRGAN_x4plus.pth',
+}
 
 
 # ---- inert stand-ins for the only globals a state-dict pickle may name ------------------------------------------------
@@ -84,7 +89,7 @@ class _SafeUnpickler(pickle.Unpickler):
 def load_state(path, check_hash=True):
     """{name: (shape tuple, flat list of floats)} of the model's EMA weights."""
     raw = open(path, 'rb').read()
-    if check_hash and hashlib.sha256(raw).hexdigest().upper() != MODEL_SHA256:
+    if check_hash and hashlib.sha256(raw).hexdigest().upper() not in APPROVED:
         raise SystemExit(f'{path}: unexpected SHA-256 (not the approved model file)')
     z = zipfile.ZipFile(io.BytesIO(raw))
     names = z.namelist()
@@ -120,7 +125,16 @@ def load_state(path, check_hash=True):
         n = 1
         for d in t.size:
             n *= d
-        # gather in C order through the stride (contiguous in practice)
+        # gather in C order through the stride (contiguous in practice: one slice)
+        cst, acc = [], 1
+        for d in reversed(t.size):
+            cst.insert(0, acc)
+            acc *= d
+        if tuple(t.stride) == tuple(cst) or n <= 1:
+            if t.offset + n > len(flat):
+                raise SystemExit(f'{name}: out of its storage')
+            state[name] = (t.size, flat[t.offset:t.offset + n])
+            continue
         out = array.array('f', bytes(4 * n))
         idx = [0] * len(t.size)
         for i in range(n):

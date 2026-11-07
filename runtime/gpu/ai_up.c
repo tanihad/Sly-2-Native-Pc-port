@@ -77,8 +77,9 @@ static const ai_tensor* ai_get(const ai_weights* w, const char* layer, const cha
 
 /* ---- the layer list (both implementations follow it) ------------------------------------------------------------ */
 typedef struct { char name[32]; int cin, cout, act, up; } ai_layer;
+#define AI_MAXOPS 512
 
-static int ai_layers(const ai_weights* w, ai_layer* L) {   /* returns the count (<= 256) */
+static int ai_layers(const ai_weights* w, ai_layer* L) {   /* returns the count (<= AI_MAXOPS: 351 for 23 blocks) */
     int n = 0;
 #define ADD(nm, ci, co, a, u) do { snprintf(L[n].name, 32, "%s", nm); L[n].cin = ci; L[n].cout = co; L[n].act = a; L[n].up = u; n++; } while (0)
     ADD("conv_first", 3, 64, 0, 0);
@@ -128,7 +129,7 @@ static void ref_conv(const ai_weights* wt, const ai_layer* l, const float* in, i
 }
 
 int ai_cpu_forward(const ai_weights* wt, const float* in, int w, int h, float* out) {
-    ai_layer L[256];
+    ai_layer L[AI_MAXOPS];
     ai_layers(wt, L);
     size_t P = (size_t)w * h;
     float* F = malloc(64 * P * 4), *R = malloc(64 * P * 4), *D = malloc(192 * P * 4), *T = malloc(64 * P * 4);
@@ -160,12 +161,16 @@ int ai_cpu_forward(const ai_weights* wt, const float* in, int w, int h, float* o
 typedef struct {
     uint32_t in_buf, in_cap, cin, up_in, out_buf, out_c0, out_cap, cout, W, H, act, n_ocb;
     uint32_t r1_buf, r1_c0, r1_cap, r2_buf, r2_c0, r2_cap, o2_buf, o2_c0, o2_cap, w_off, b_off, n_cchunk;
-    float a0, a1, a2, pad0;
+    float a0, a1, a2;
+    uint32_t row0;                       /* (time slicing) the dispatch's first group row */
 } ai_cb;
 
 enum { B_IMG, B_F, B_R, B_D0, B_D1, B_BA, B_BB, B_OUT, B_N, B_NONE = 8 };
 static const uint32_t ai_cap[B_N] = { 3, 64, 64, 192, 192, 64, 64, 3 };
 static const uint32_t ai_res[B_N] = { 1, 1, 1, 1, 1, 16, 16, 16 };   /* pixels per input pixel */
+
+/* one dispatch of the plan: layer li over W x H output pixels, its buffers and epilogue */
+typedef struct { int li; uint32_t W, H, in, out, out_c0, r1, r1_c0, r2, o2; float a0, a1, a2; } ai_op;
 
 struct ai_gpu {
     ID3D11Device* dev;
@@ -174,15 +179,20 @@ struct ai_gpu {
     char* src;
     size_t nsrc;
     char path[260];
+    ai_cs_fn cs_fn;
+    void* cs_user;
     struct { uint32_t key; ID3D11ComputeShader* cs; } perm[32];
     int nperm;
     ID3D11Buffer *wbuf, *cbuf, *buf[B_N], *stage;
     ID3D11ShaderResourceView* wsrv;
     ID3D11UnorderedAccessView* uav[B_N];
-    ai_layer L[256];
-    uint32_t woff[256], boff[256];
+    ai_layer L[AI_MAXOPS];
+    uint32_t woff[AI_MAXOPS], boff[AI_MAXOPS];
     int nl;
     size_t maxp, bytes;
+    ai_op ops[AI_MAXOPS];                /* the current run's plan (ai_gpu_begin) */
+    int nops, cur, n_img;
+    uint32_t row, w, h;                  /* the next group row of ops[cur]; the run's input size */
 };
 
 static ID3D11Buffer* ai_buffer(ai_gpu* g, size_t bytes, UINT bind, D3D11_USAGE use, UINT cpu, UINT stride, const void* init) {
@@ -200,25 +210,12 @@ static ID3D11Buffer* ai_buffer(ai_gpu* g, size_t bytes, UINT bind, D3D11_USAGE u
 typedef HRESULT(WINAPI* ai_compile_fn)(LPCVOID, SIZE_T, LPCSTR, const D3D_SHADER_MACRO*, ID3DInclude*, LPCSTR, LPCSTR,
                                        UINT, UINT, ID3DBlob**, ID3DBlob**);
 
-ai_gpu* ai_gpu_create(ID3D11Device* dev, ID3D11DeviceContext* ctx, const ai_weights* wt, const char* hlsl_path,
-                      size_t max_pixels, char* err, size_t errn) {
+static ai_gpu* ai_gpu_new(ID3D11Device* dev, ID3D11DeviceContext* ctx, const ai_weights* wt, size_t max_pixels, int staging,
+                          char* err, size_t errn) {
     ai_gpu* g = calloc(1, sizeof *g);
     g->dev = dev; g->ctx = ctx;
     if (max_pixels > 131072) max_pixels = 131072;   /* (each 4x buffer stays under 2^27 floats: a view's limit) */
     g->maxp = max_pixels;
-    /* shader source (permutations compiled on first use: ai_shader) */
-    FILE* f = fopen(hlsl_path, "rb");
-    if (!f) { ai_err(err, errn, "cannot open %s", hlsl_path); free(g); return NULL; }
-    fseek(f, 0, SEEK_END);
-    long n = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    g->src = calloc(1, (size_t)n + 1);
-    g->nsrc = fread(g->src, 1, (size_t)n, f);
-    fclose(f);
-    snprintf(g->path, sizeof g->path, "%s", hlsl_path);
-    HMODULE dc = LoadLibraryA("d3dcompiler_47.dll");
-    g->compile = dc ? (void*)GetProcAddress(dc, "D3DCompile") : NULL;
-    if (!g->compile) { ai_err(err, errn, "%s", "no d3dcompiler_47.dll"); free(g->src); free(g); return NULL; }
     /* packed weights: per layer [ocb][ci chunk][ci 8][tap 9][oc 16], then biases [ocb][16] */
     g->nl = ai_layers(wt, g->L);
     size_t tot = 0;
@@ -260,8 +257,8 @@ ai_gpu* ai_gpu_create(ID3D11Device* dev, ID3D11DeviceContext* ctx, const ai_weig
         ud.Format = DXGI_FORMAT_UNKNOWN; ud.ViewDimension = D3D11_UAV_DIMENSION_BUFFER; ud.Buffer.NumElements = (UINT)e;
         if (!g->buf[b] || FAILED(ID3D11Device_CreateUnorderedAccessView(dev, (ID3D11Resource*)g->buf[b], &ud, &g->uav[b]))) goto fail;
     }
-    g->stage = ai_buffer(g, g->maxp * 48 * 4, 0, D3D11_USAGE_STAGING, D3D11_CPU_ACCESS_READ, 0, NULL);
-    if (!g->cbuf || !g->stage) goto fail;
+    if (staging) g->stage = ai_buffer(g, g->maxp * 48 * 4, 0, D3D11_USAGE_STAGING, D3D11_CPU_ACCESS_READ, 0, NULL);
+    if (!g->cbuf || (staging && !g->stage)) goto fail;
     return g;
 fail:
     ai_err(err, errn, "%s", "out of video memory (buffers)");
@@ -269,13 +266,57 @@ fail:
     return NULL;
 }
 
+ai_gpu* ai_gpu_create(ID3D11Device* dev, ID3D11DeviceContext* ctx, const ai_weights* wt, const char* hlsl_path,
+                      size_t max_pixels, char* err, size_t errn) {
+    /* shader source (permutations compiled on first use: ai_shader) */
+    FILE* f = fopen(hlsl_path, "rb");
+    if (!f) { ai_err(err, errn, "cannot open %s", hlsl_path); return NULL; }
+    HMODULE dc = LoadLibraryA("d3dcompiler_47.dll");
+    void* comp = dc ? (void*)GetProcAddress(dc, "D3DCompile") : NULL;
+    if (!comp) { fclose(f); ai_err(err, errn, "%s", "no d3dcompiler_47.dll"); return NULL; }
+    ai_gpu* g = ai_gpu_new(dev, ctx, wt, max_pixels, 1, err, errn);
+    if (!g) { fclose(f); return NULL; }
+    fseek(f, 0, SEEK_END);
+    long n = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    g->src = calloc(1, (size_t)n + 1);
+    g->nsrc = fread(g->src, 1, (size_t)n, f);
+    fclose(f);
+    snprintf(g->path, sizeof g->path, "%s", hlsl_path);
+    g->compile = comp;
+    return g;
+}
+
+ai_gpu* ai_gpu_create_cs(ID3D11Device* dev, ID3D11DeviceContext* ctx, const ai_weights* wt, ai_cs_fn fn, void* user,
+                         size_t max_pixels, char* err, size_t errn) {
+    ai_gpu* g = ai_gpu_new(dev, ctx, wt, max_pixels, 0, err, errn);
+    if (!g) return NULL;
+    g->cs_fn = fn;
+    g->cs_user = user;
+    return g;
+}
+
 size_t ai_gpu_bytes(const ai_gpu* g) { return g ? g->bytes : 0; }
+int ai_gpu_blocks(const ai_gpu* g) { return g ? (g->nl - 6) / 15 : 0; }
+size_t ai_gpu_max_pixels(const ai_gpu* g) { return g ? g->maxp : 0; }
+struct ID3D11UnorderedAccessView* ai_gpu_uav(ai_gpu* g, int which) {
+    return which == AI_BUF_IMG ? g->uav[B_IMG] : which == AI_BUF_OUT ? g->uav[B_OUT] : NULL;
+}
+struct ID3D11Buffer* ai_gpu_buffer(ai_gpu* g, int which) {
+    return which == AI_BUF_IMG ? g->buf[B_IMG] : which == AI_BUF_OUT ? g->buf[B_OUT] : NULL;
+}
 
 /* the permutation for a layer's buffers (BIN, BOUT, BR1, BR2, BO2 macros; B_NONE = absent) */
 static ID3D11ComputeShader* ai_shader(ai_gpu* g, uint32_t in, uint32_t out, uint32_t r1, uint32_t r2, uint32_t o2) {
     uint32_t key = in | out << 4 | r1 << 8 | r2 << 12 | o2 << 16;
     for (int i = 0; i < g->nperm; i++) if (g->perm[i].key == key) return g->perm[i].cs;
     if (g->nperm == 32) return NULL;
+    ID3D11ComputeShader* cs = NULL;
+    if (g->cs_fn) {                      /* (the game: compiled at build time, scripts/hlslc.c) */
+        cs = (ID3D11ComputeShader*)g->cs_fn(key, g->cs_user);
+        if (cs) { g->perm[g->nperm].key = key; g->perm[g->nperm++].cs = cs; ID3D11ComputeShader_AddRef(cs); }
+        return cs;
+    }
     static const char* nm[B_N] = { "U0", "U1", "U2", "U3", "U4", "U5", "U6", "U7" };
     D3D_SHADER_MACRO m[6];
     int k = 0;
@@ -286,9 +327,7 @@ static ID3D11ComputeShader* ai_shader(ai_gpu* g, uint32_t in, uint32_t out, uint
     if (o2 < B_N) { m[k].Name = "BO2"; m[k++].Definition = nm[o2]; }
     m[k].Name = NULL; m[k].Definition = NULL;
     ID3DBlob *code = NULL, *msg = NULL;
-    ID3D11ComputeShader* cs = NULL;
-    /* (a compiled-shader cache next to the tool's temp files: the unrolled kernel takes ~4 s per permutation to compile;
-     * the game would embed the DXBC at build time through scripts/hlslc.c instead) */
+    /* (a compiled-shader cache next to the tool's temp files: the unrolled kernel takes ~4 s per permutation to compile) */
     char cpath[400] = "";
     uint64_t hsh = 1469598103934665603ull;
     for (size_t i = 0; i < g->nsrc; i++) hsh = (hsh ^ (uint8_t)g->src[i]) * 1099511628211ull;
@@ -319,58 +358,118 @@ static ID3D11ComputeShader* ai_shader(ai_gpu* g, uint32_t in, uint32_t out, uint
     return cs;
 }
 
-static void ai_dispatch(ai_gpu* g, const ai_layer* l, int li, int n, uint32_t W, uint32_t H, uint32_t in, uint32_t out,
-                        uint32_t out_c0, uint32_t r1, uint32_t r1_c0, uint32_t r2, uint32_t o2, float a0, float a1, float a2) {
-    ai_cb c;
-    memset(&c, 0, sizeof c);
-    c.in_buf = in; c.in_cap = ai_cap[in]; c.cin = (uint32_t)l->cin; c.up_in = (uint32_t)l->up;
-    c.out_buf = out; c.out_c0 = out_c0; c.out_cap = ai_cap[out]; c.cout = (uint32_t)l->cout;
-    c.W = W; c.H = H; c.act = (uint32_t)l->act; c.n_ocb = (uint32_t)(l->cout + 15) / 16;
-    c.r1_buf = r1; c.r1_c0 = r1_c0; c.r1_cap = r1 < B_N ? ai_cap[r1] : 0;
-    c.r2_buf = r2; c.r2_c0 = 0; c.r2_cap = r2 < B_N ? ai_cap[r2] : 0;
-    c.o2_buf = o2; c.o2_c0 = 0; c.o2_cap = o2 < B_N ? ai_cap[o2] : 0;
-    c.w_off = g->woff[li]; c.b_off = g->boff[li]; c.n_cchunk = (uint32_t)(l->cin + 7) / 8;
-    c.a0 = a0; c.a1 = a1; c.a2 = a2;
-    ID3D11ComputeShader* cs = ai_shader(g, in, out, r1, r2, o2);
-    if (!cs) return;
-    ID3D11DeviceContext_CSSetShader(g->ctx, cs, NULL, 0);
-    D3D11_MAPPED_SUBRESOURCE m;
-    if (FAILED(ID3D11DeviceContext_Map(g->ctx, (ID3D11Resource*)g->cbuf, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) return;
-    memcpy(m.pData, &c, sizeof c);
-    ID3D11DeviceContext_Unmap(g->ctx, (ID3D11Resource*)g->cbuf, 0);
-    ID3D11DeviceContext_Dispatch(g->ctx, (W + 31) / 32, (H + 7) / 8, (UINT)n * c.n_ocb);
+static void ai_add(ai_gpu* g, int li, uint32_t W, uint32_t H, uint32_t in, uint32_t out, uint32_t out_c0, uint32_t r1,
+                   uint32_t r1_c0, uint32_t r2, uint32_t o2, float a0, float a1, float a2) {
+    if (g->nops >= AI_MAXOPS) return;
+    ai_op o = { li, W, H, in, out, out_c0, r1, r1_c0, r2, o2, a0, a1, a2 };
+    g->ops[g->nops++] = o;
 }
 
-int ai_gpu_run(ai_gpu* g, int n, int w, int h, const float* in, float* out) {
-    size_t P = (size_t)w * h;
-    if (n < 1 || (size_t)n * P > g->maxp) return -1;
-    D3D11_BOX bx = { 0, 0, 0, (UINT)((size_t)n * 3 * P * 4), 1, 1 };
-    ID3D11DeviceContext_UpdateSubresource(g->ctx, (ID3D11Resource*)g->buf[B_IMG], 0, &bx, in, 0, 0);
-    ID3D11DeviceContext_CSSetShaderResources(g->ctx, 0, 1, &g->wsrv);
-    ID3D11DeviceContext_CSSetConstantBuffers(g->ctx, 0, 1, &g->cbuf);
-    ID3D11DeviceContext_CSSetUnorderedAccessViews(g->ctx, 0, B_N, g->uav, NULL);
+int ai_gpu_begin(ai_gpu* g, int n, int w, int h) {
+    if (n < 1 || w < 1 || h < 1 || (size_t)n * w * h > g->maxp) return -1;
+    g->nops = 0; g->cur = 0; g->row = 0; g->n_img = n; g->w = (uint32_t)w; g->h = (uint32_t)h;
     uint32_t W = (uint32_t)w, H = (uint32_t)h;
     int li = 0;
-    ai_dispatch(g, &g->L[li], li, n, W, H, B_IMG, B_F, 0, B_NONE, 0, B_NONE, B_D0, 1, 0, 0); li++;
+    ai_add(g, li++, W, H, B_IMG, B_F, 0, B_NONE, 0, B_NONE, B_D0, 1, 0, 0);
     uint32_t cur = B_D0, oth = B_D1;
     for (int b = 0; b < (g->nl - 6) / 15; b++) {
         for (int r = 0; r < 3; r++) {
-            for (int c = 0; c < 4; c++) { ai_dispatch(g, &g->L[li], li, n, W, H, cur, cur, 64 + 32 * c, B_NONE, 0, B_NONE, B_NONE, 1, 0, 0); li++; }
+            for (int c = 0; c < 4; c++) ai_add(g, li++, W, H, cur, cur, 64 + 32 * c, B_NONE, 0, B_NONE, B_NONE, 1, 0, 0);
             if (r < 2)      /* x5 * 0.2 + x -> the next RDB's input */
-                ai_dispatch(g, &g->L[li], li, n, W, H, cur, oth, 0, cur, 0, B_NONE, B_NONE, 0.2f, 1, 0);
+                ai_add(g, li, W, H, cur, oth, 0, cur, 0, B_NONE, B_NONE, 0.2f, 1, 0);
             else            /* ((x5 * 0.2 + x) * 0.2 + RRDB input) -> R and the next RRDB's dense buffer */
-                ai_dispatch(g, &g->L[li], li, n, W, H, cur, oth, 0, cur, 0, b ? B_R : B_F, B_R, 0.04f, 0.2f, 1);
+                ai_add(g, li, W, H, cur, oth, 0, cur, 0, b ? B_R : B_F, B_R, 0.04f, 0.2f, 1);
             li++;
             uint32_t t = cur; cur = oth; oth = t;
         }
     }
-    ai_dispatch(g, &g->L[li], li, n, W, H, cur, B_F, 0, B_F, 0, B_NONE, B_NONE, 1, 1, 0); li++;      /* + conv_first */
-    ai_dispatch(g, &g->L[li], li, n, 2 * W, 2 * H, B_F, B_BA, 0, B_NONE, 0, B_NONE, B_NONE, 1, 0, 0); li++;
-    ai_dispatch(g, &g->L[li], li, n, 4 * W, 4 * H, B_BA, B_BB, 0, B_NONE, 0, B_NONE, B_NONE, 1, 0, 0); li++;
-    ai_dispatch(g, &g->L[li], li, n, 4 * W, 4 * H, B_BB, B_BA, 0, B_NONE, 0, B_NONE, B_NONE, 1, 0, 0); li++;
-    ai_dispatch(g, &g->L[li], li, n, 4 * W, 4 * H, B_BA, B_OUT, 0, B_NONE, 0, B_NONE, B_NONE, 1, 0, 0); li++;
+    ai_add(g, li++, W, H, cur, B_F, 0, B_F, 0, B_NONE, B_NONE, 1, 1, 0);      /* + conv_first */
+    ai_add(g, li++, 2 * W, 2 * H, B_F, B_BA, 0, B_NONE, 0, B_NONE, B_NONE, 1, 0, 0);
+    ai_add(g, li++, 4 * W, 4 * H, B_BA, B_BB, 0, B_NONE, 0, B_NONE, B_NONE, 1, 0, 0);
+    ai_add(g, li++, 4 * W, 4 * H, B_BB, B_BA, 0, B_NONE, 0, B_NONE, B_NONE, 1, 0, 0);
+    ai_add(g, li++, 4 * W, 4 * H, B_BA, B_OUT, 0, B_NONE, 0, B_NONE, B_NONE, 1, 0, 0);
+    return 0;
+}
+
+void ai_gpu_upload(ai_gpu* g, const float* in) {
+    D3D11_BOX bx = { 0, 0, 0, (UINT)((size_t)g->n_img * 3 * g->w * g->h * 4), 1, 1 };
+    ID3D11DeviceContext_UpdateSubresource(g->ctx, (ID3D11Resource*)g->buf[B_IMG], 0, &bx, in, 0, 0);
+}
+
+static double ai_op_row_gflop(const ai_gpu* g, const ai_op* o) {   /* one group row (8 output rows) */
+    const ai_layer* l = &g->L[o->li];
+    return (double)g->n_img * o->W * 8.0 * l->cin * l->cout * 18.0 * 1e-9;
+}
+double ai_gpu_total_gflop(const ai_gpu* g) {
+    double s = 0;
+    for (int i = 0; i < g->nops; i++) s += ai_op_row_gflop(g, &g->ops[i]) * ((g->ops[i].H + 7) / 8);
+    return s;
+}
+int ai_gpu_done(const ai_gpu* g) { return g->cur >= g->nops; }
+
+/* dispatch the plan from where it stopped until about `budget` GFLOP are issued (at least one band); returns the GFLOP
+ * issued. Binds t0, b0 and u0..u7 of the compute stage and clears them again. */
+double ai_gpu_step(ai_gpu* g, double budget) {
+    if (g->cur >= g->nops) return 0;
+    ID3D11DeviceContext* c = g->ctx;
+    ID3D11DeviceContext_CSSetShaderResources(c, 0, 1, &g->wsrv);
+    ID3D11DeviceContext_CSSetConstantBuffers(c, 0, 1, &g->cbuf);
+    ID3D11DeviceContext_CSSetUnorderedAccessViews(c, 0, B_N, g->uav, NULL);
+    double done = 0;
+    while (g->cur < g->nops && (done == 0 || done < budget)) {
+        const ai_op* o = &g->ops[g->cur];
+        const ai_layer* l = &g->L[o->li];
+        uint32_t rows = (o->H + 7) / 8;
+        double rg = ai_op_row_gflop(g, o);
+        uint32_t k = rows - g->row;
+        if (budget < 1e30) {
+            double left = budget - done;
+            uint32_t fit = left > 0 ? (uint32_t)(left / rg) : 0;
+            if (fit < 1) fit = 1;
+            if (fit < k) k = fit;
+        }
+        ai_cb cb;
+        memset(&cb, 0, sizeof cb);
+        cb.in_buf = o->in; cb.in_cap = ai_cap[o->in]; cb.cin = (uint32_t)l->cin; cb.up_in = (uint32_t)l->up;
+        cb.out_buf = o->out; cb.out_c0 = o->out_c0; cb.out_cap = ai_cap[o->out]; cb.cout = (uint32_t)l->cout;
+        cb.W = o->W; cb.H = o->H; cb.act = (uint32_t)l->act; cb.n_ocb = (uint32_t)(l->cout + 15) / 16;
+        cb.r1_buf = o->r1; cb.r1_c0 = o->r1_c0; cb.r1_cap = o->r1 < B_N ? ai_cap[o->r1] : 0;
+        cb.r2_buf = o->r2; cb.r2_c0 = 0; cb.r2_cap = o->r2 < B_N ? ai_cap[o->r2] : 0;
+        cb.o2_buf = o->o2; cb.o2_c0 = 0; cb.o2_cap = o->o2 < B_N ? ai_cap[o->o2] : 0;
+        cb.w_off = g->woff[o->li]; cb.b_off = g->boff[o->li]; cb.n_cchunk = (uint32_t)(l->cin + 7) / 8;
+        cb.a0 = o->a0; cb.a1 = o->a1; cb.a2 = o->a2;
+        cb.row0 = g->row;
+        ID3D11ComputeShader* cs = ai_shader(g, o->in, o->out, o->r1, o->r2, o->o2);
+        D3D11_MAPPED_SUBRESOURCE m;
+        if (!cs || FAILED(ID3D11DeviceContext_Map(c, (ID3D11Resource*)g->cbuf, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) {
+            g->cur = g->nops;            /* (a missing permutation: the run fails; the caller sees ai_gpu_failed) */
+            g->n_img = -1;
+            break;
+        }
+        memcpy(m.pData, &cb, sizeof cb);
+        ID3D11DeviceContext_Unmap(c, (ID3D11Resource*)g->cbuf, 0);
+        ID3D11DeviceContext_CSSetShader(c, cs, NULL, 0);
+        ID3D11DeviceContext_Dispatch(c, (o->W + 31) / 32, k, (UINT)g->n_img * cb.n_ocb);
+        done += rg * k;
+        g->row += k;
+        if (g->row >= rows) { g->row = 0; g->cur++; }
+    }
     ID3D11UnorderedAccessView* nul[B_N] = { 0 };
-    ID3D11DeviceContext_CSSetUnorderedAccessViews(g->ctx, 0, B_N, nul, NULL);
+    ID3D11DeviceContext_CSSetUnorderedAccessViews(c, 0, B_N, nul, NULL);
+    ID3D11ShaderResourceView* ns = NULL;
+    ID3D11Buffer* nb = NULL;
+    ID3D11DeviceContext_CSSetShaderResources(c, 0, 1, &ns);
+    ID3D11DeviceContext_CSSetConstantBuffers(c, 0, 1, &nb);
+    return done;
+}
+int ai_gpu_failed(const ai_gpu* g) { return g->n_img < 0; }
+
+int ai_gpu_run(ai_gpu* g, int n, int w, int h, const float* in, float* out) {
+    if (!g->stage || ai_gpu_begin(g, n, w, h)) return -1;
+    size_t P = (size_t)w * h;
+    ai_gpu_upload(g, in);
+    ai_gpu_step(g, 1e31);
+    if (ai_gpu_failed(g)) return -3;
     size_t ob = (size_t)n * 48 * P * 4;
     D3D11_BOX ox = { 0, 0, 0, (UINT)ob, 1, 1 };
     ID3D11DeviceContext_CopySubresourceRegion(g->ctx, (ID3D11Resource*)g->stage, 0, 0, 0, 0, (ID3D11Resource*)g->buf[B_OUT], 0, &ox);

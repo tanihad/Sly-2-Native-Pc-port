@@ -4,6 +4,8 @@
 // [oc block of 16][ci chunk of 8][ci 8][tap 9][oc 16], then the biases [oc block][16].
 // A group computes a 32 x 8 tile of output pixels x 16 output channels; each thread 4 pixels (columns tx + 8k) x 16.
 // The epilogue: v = conv + bias; lrelu(0.2) if act; v = v * a0 + res1 * a1 + res2 * a2; stored to out (and out2).
+// A layer may be dispatched in bands of group rows (row0: the first; the game spreads the net over frames). No layer
+// reads what it writes at another pixel, so bands are independent.
 
 RWStructuredBuffer<float> U0 : register(u0);
 RWStructuredBuffer<float> U1 : register(u1);
@@ -22,7 +24,8 @@ cbuffer AiLayer : register(b0) {
     uint r1_buf, r1_c0, r1_cap, r2_buf;     // residuals (buffer 8 = none): channel r1_c0 + oc
     uint r2_c0, r2_cap, o2_buf, o2_c0;      // second output (8 = none)
     uint o2_cap, w_off, b_off, n_cchunk;    // weights / biases (float4 units), input channel chunks of 8
-    float a0, a1, a2, pad0;
+    float a0, a1, a2;
+    uint row0;                              // (time slicing) first group row of this dispatch: rows split over frames
 };
 
 // The buffers of a layer are compile-time choices (ai_up.c compiles one permutation per combination, ~12):
@@ -41,7 +44,7 @@ groupshared float4 s_w[CI * 9 * 4];
 [numthreads(8, 8, 1)]
 void cs_conv(uint3 gid : SV_GroupID, uint3 tid : SV_GroupThreadID, uint li : SV_GroupIndex) {
     uint img = gid.z / n_ocb, ocb = gid.z - img * n_ocb;
-    int x0 = (int)(gid.x * TW), y0 = (int)(gid.y * TH);
+    int x0 = (int)(gid.x * TW), y0 = (int)((gid.y + row0) * TH);
     uint iw = up_in ? W >> 1 : W, ih = up_in ? H >> 1 : H;
     uint plane = iw * ih;
     float4 acc[4][4];      // [pixel][oc / 4]

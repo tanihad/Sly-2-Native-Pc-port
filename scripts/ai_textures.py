@@ -34,11 +34,13 @@ if not (ROOT / 'tools' / 'llvm-mingw').exists():          # worktree: tools live
     g = (ROOT / '.git').read_text().split('gitdir:')[1].strip()
     MAIN = Path(g).parent.parent.parent
 CLANG = MAIN / 'tools' / 'llvm-mingw' / 'bin' / 'clang.exe'
-MODEL = MAIN / 'tools' / 'models' / 'realesrgan' / 'RealESRGAN_x4plus_anime_6B.pth'
+MODELS = {'6b': ('RealESRGAN_x4plus_anime_6B.pth', 'x4anime6b.bin'), 'x4plus': ('RealESRGAN_x4plus.pth', 'x4plus.bin')}
+AI_MODEL = os.environ.get('AI_MODEL', '6b')        # (6b: the phase-1 anime model; x4plus: the general 23-block one)
+MODEL = MAIN / 'tools' / 'models' / 'realesrgan' / MODELS[AI_MODEL][0]
 EXE = ROOT / 'build' / 'tools' / 'ai_up.exe'
-WEIGHTS = ROOT / 'build' / 'ai' / 'x4anime6b.bin'
+WEIGHTS = ROOT / 'build' / 'ai' / MODELS[AI_MODEL][1]
 HLSL = ROOT / 'runtime' / 'gpu' / 'shaders' / 'ai_up.hlsl'
-PAD = 16
+PAD = int(os.environ.get('AI_PAD', '16'))
 TILE = 128
 DITHER = float(os.environ.get('AI_DITHER', '9'))   # (dither score above which flat areas are smoothed first: off -
 # the net removes dither by itself and the pre-smoothing cost the textures' grain; notes/ai-textures.md)
@@ -271,6 +273,50 @@ def prepare(path):
             'opaque': min(a) >= 250}
 
 
+def run_net(blobs, weights, max_pixels, tmp, detail=None):
+    """blobs: (tx, ty, cw, ch, padded RGB bytes) -> the out.bin bytes"""
+    with open(tmp / 'in.bin', 'wb') as f:
+        f.write(b'AIB1' + struct.pack('<I', len(blobs)))
+        for (tx, ty, cw, ch, px) in blobs:
+            f.write(struct.pack('<II', cw + 2 * PAD, ch + 2 * PAD) + px)
+    env = dict(os.environ)
+    if detail is not None:
+        env['AI_UP_DETAIL'] = detail
+    r = subprocess.run([str(EXE), 'batch', str(weights), str(HLSL), str(tmp / 'in.bin'), str(tmp / 'out.bin'), str(max_pixels)],
+                       capture_output=True, text=True, env=env)
+    print(r.stdout.strip())
+    if r.returncode:
+        print(r.stderr)
+        raise SystemExit('ai_up failed')
+    return open(tmp / 'out.bin', 'rb').read()
+
+
+def chain_clean(infos, data):
+    """(AI_CHAIN=1) the first pass's 4x RGB (anime 6B: dither and palette noise gone) boxed back down to the source size:
+    the cleaned source the second model upscales"""
+    pos = 8
+    for inf in infos:
+        w, h = inf['w'], inf['h']
+        planes = [[0.0] * (w * h) for _ in range(3)]
+        for (tx, ty, cw, ch, _) in inf['jobs']:
+            ow, oh = struct.unpack('<II', data[pos:pos + 8])
+            img = data[pos + 8:pos + 8 + ow * oh * 3]
+            pos += 8 + ow * oh * 3
+            for y in range(ch):
+                for x in range(cw):
+                    s = [0, 0, 0]
+                    for yy in range(4):
+                        o = ((4 * (y + PAD) + yy) * ow + 4 * (x + PAD)) * 3
+                        for xx in range(4):
+                            s[0] += img[o]; s[1] += img[o + 1]; s[2] += img[o + 2]
+                            o += 3
+                    i = (ty + y) * w + tx + x
+                    planes[0][i], planes[1][i], planes[2][i] = s[0] / 16.0, s[1] / 16.0, s[2] / 16.0
+        wx, wy = inf['wx'], inf['wy']
+        inf['jobs'] = [(tx, ty, cw, ch, crop_pad(w, h, planes, tx - PAD, ty - PAD, cw + 2 * PAD, ch + 2 * PAD, wx, wy))
+                       for (tx, ty, cw, ch, _) in inf['jobs']]
+
+
 def upscale(dump, pack, max_pixels=131072, keep_tmp=False):
     build()
     dump, pack = Path(dump), Path(pack)
@@ -287,17 +333,13 @@ def upscale(dump, pack, max_pixels=131072, keep_tmp=False):
     t1 = time.perf_counter()
     tmp = ROOT / 'build' / 'ai' / 'tmp'
     tmp.mkdir(parents=True, exist_ok=True)
-    with open(tmp / 'in.bin', 'wb') as f:
-        f.write(b'AIB1' + struct.pack('<I', len(blobs)))
-        for (tx, ty, cw, ch, px) in blobs:
-            f.write(struct.pack('<II', cw + 2 * PAD, ch + 2 * PAD) + px)
     t2 = time.perf_counter()
-    r = subprocess.run([str(EXE), 'batch', str(WEIGHTS), str(HLSL), str(tmp / 'in.bin'), str(tmp / 'out.bin'), str(max_pixels)],
-                       capture_output=True, text=True)
-    print(r.stdout.strip())
-    if r.returncode:
-        print(r.stderr)
-        raise SystemExit('ai_up failed')
+    if os.environ.get('AI_CHAIN') == '1':    # 2 passes: anime 6B cleans, then the selected model (x4plus) upscales
+        first = ROOT / 'build' / 'ai' / MODELS['6b'][1]
+        chain_clean(infos, run_net(blobs, first, max_pixels, tmp, detail='0'))
+        blobs = [j for inf in infos for j in inf['jobs']]
+        print(f'chain: first pass done in {time.perf_counter() - t2:.1f} s')
+    data = run_net(blobs, WEIGHTS, max_pixels, tmp)
     t3 = time.perf_counter()
     with open(tmp / 'ain.bin', 'wb') as f:
         al = [inf for inf in infos if not inf['opaque']]
