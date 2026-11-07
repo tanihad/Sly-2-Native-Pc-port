@@ -26,7 +26,7 @@
 #include "ai_up.h"
 extern double frame_rate_target_hz(void) __attribute__((weak));   /* (runtime/frame_rate.c; 0: unlimited) */
 
-#define RA_VER 2                         /* the pipeline's version: part of the cache folder's name (a change rebuilds) */
+#define RA_VER 3                         /* the pipeline's version: part of the cache folder's name (a change rebuilds) */
 #define RA_TILE 128
 #define RA_ITEMS 32768                   /* hash -> item (open addressing) */
 #define RA_SRCN 16                       /* source read-backs in flight */
@@ -340,6 +340,14 @@ static void ra_prep(ra_job* j) {
     /* soft alpha (glows, smoke, snow flakes, light shafts): the net turns soft blobs into rings - Enhanced keeps them */
     double sd = nsoft ? sqrt(fmax(0.0, ms2 / nsoft - (ms / nsoft) * (ms / nsoft))) : 0.0;
     if (!opaque && nsoft > n / 5 && sd > 10.0) { it->st = RI_EXCL; RA.n_excl++; free(pl); free(known); return; }
+    /* small sprites (<= 32 texels, transparent all along the border: snow flakes, bubbles, orbs): drawn blended over the
+     * scene, the net's crisp rim reads as a ring - Enhanced keeps them soft */
+    if (!opaque && w <= 32 && h <= 32) {
+        int edge = 0;
+        for (int x = 0; x < w; x++) edge |= A[x] >= 8 || A[(h - 1) * w + x] >= 8;
+        for (int y = 0; y < h; y++) edge |= A[y * w] >= 8 || A[y * w + w - 1] >= 8;
+        if (!edge) { it->st = RI_EXCL; RA.n_excl++; free(pl); free(known); return; }
+    }
     it->opaque = (uint8_t)opaque;
     it->cut = (uint8_t)(!opaque && nmid < n / 10 && amin < 128 && amax >= 128);
     int wx = !(j->flags & 1), wy = !(j->flags & 2);
