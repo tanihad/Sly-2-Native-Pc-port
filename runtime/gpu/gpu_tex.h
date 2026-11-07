@@ -240,16 +240,19 @@ static void et_unlink(int32_t idx) {
 /* (reimagine) visible changes of an already enhanced texture (PS2_TEX_SWAPLOG=1: a summary, 2: every change): its image
  * replaced by another, by the AI image, or by the original sampling. A texture should change at most once (Enhanced ->
  * AI) after it first shows enhanced. */
-static struct { int on; int32_t prev[TD_HASH]; uint16_t n[TD_HASH]; uint32_t base[TD_HASH]; uint64_t total; uint32_t frame; } ESW;
+static struct { int on; int32_t prev[TD_HASH], prev2[TD_HASH]; uint16_t n[TD_HASH]; uint32_t base[TD_HASH]; uint64_t total, game; uint32_t frame; } ESW;
 static void et_swap_note(int32_t idx, char kind) {
     if (ESW.on < 0) return;
     if (!ESW.on) { const char* v = getenv("PS2_TEX_SWAPLOG"); ESW.on = v && *v ? atoi(v) : -1; if (ESW.on < 0) return;
-                   for (int i = 0; i < TD_HASH; i++) ESW.prev[i] = -1; }
-    if (ESW.base[idx] != ET.e[idx].base) { ESW.base[idx] = ET.e[idx].base; ESW.n[idx] = 0; ESW.prev[idx] = -1; }
+                   for (int i = 0; i < TD_HASH; i++) ESW.prev[i] = ESW.prev2[i] = -1; }
+    if (ESW.base[idx] != ET.e[idx].base) { ESW.base[idx] = ET.e[idx].base; ESW.n[idx] = 0; ESW.prev[idx] = ESW.prev2[idx] = -1; }
     if (kind == 'L') {                  /* (linked to a slot: a change only when another image showed before) */
-        int32_t p = ESW.prev[idx];
+        int32_t p = ESW.prev[idx], p2 = ESW.prev2[idx];
         ESW.prev[idx] = ET.e[idx].slot;
         if (p < 0 || p == ET.e[idx].slot) return;
+        ESW.prev2[idx] = p;
+        /* (another image because the game put other content there: its change, not ours - unless it flips back) */
+        if (p2 != ET.e[idx].slot) { ESW.game++; return; }
     }
     if (kind == 'O' && ESW.prev[idx] < 0) return;   /* (never enhanced: nothing changes) */
     if (kind == 'O') ESW.prev[idx] = -1;
@@ -263,8 +266,8 @@ static void et_swap_summary(void) {
     if (ESW.on <= 0) return;
     uint32_t h[4] = { 0, 0, 0, 0 }, worst = 0;
     for (int i = 0; i < TD_HASH; i++) { uint32_t k = ESW.n[i]; h[k > 3 ? 3 : k]++; if (k > worst) worst = k; }
-    gpu_log("tex-swap: frame %u: %llu changes; textures with 1: %u, 2: %u, 3+: %u (most %u)", ET.frame,
-            (unsigned long long)ESW.total, h[1], h[2], h[3], worst);
+    gpu_log("tex-swap: frame %u: %llu changes; textures with 1: %u, 2: %u, 3+: %u (most %u); content the game changed %llu", ET.frame,
+            (unsigned long long)ESW.total, h[1], h[2], h[3], worst, (unsigned long long)ESW.game);
 }
 
 static void et_link(int32_t idx, int32_t id) {
