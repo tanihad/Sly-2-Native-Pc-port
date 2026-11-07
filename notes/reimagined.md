@@ -24,7 +24,7 @@ the same batch: ~0.1 ms per million texels).
 | a | cavity 0..1 (1 = open surface, lower in creases: an ambient-occlusion factor) |
 
 Height = luminance minus the mean of its 4x and 8x coarser mip levels (a band-pass: large shading gradients painted into
-a texture do not tilt the surface, painted detail does). Slope scale `PS2_TEX_NRM_K` (default 4, in level-0 map texels):
+a texture do not tilt the surface, painted detail does). Slope scale `PS2_TEX_NRM_K` (default 10, in level-0 map texels):
 scale x, y yourself (and renormalize) for more or less relief. Mip levels come from the colour's own lower levels with
 slopes in level-0 units, so distant surfaces flatten.
 

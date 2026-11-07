@@ -2,7 +2,11 @@
 // (ai_up.hlsl) and the surface maps of the lighting (gpu_tex_normals.h). Used only under Look = Reimagined.
 //   cs_ai_post   the net's 4x output of a batch of padded tiles -> RGBA words (the GS's bytes) of each tile's place in its
 //                texture's upload region: the padding cropped, the source's fine grain added back (optional), alpha
-//                Catmull-Rom 4x from the source (cut-outs: a steep ramp around 50 %: smooth contours, the same coverage)
+//                Catmull-Rom 4x from the source (cut-outs: a steep ramp around 50 %: smooth contours, the same coverage),
+//                faint lines the net erased put back (below)
+//   cs_ai_res    the restore's residual per source texel: the source minus the 4 x 4 box of the net's output. cs_ai_post
+//                adds it back (bilinear 4x) where it continues along a direction (grout, grain, cracks, strokes: lines)
+//                and is faint (the net keeps strong edges) - never isolated dots (dither: the net rightly removed it)
 //   cs_etn       one level of a texture's surface map (normal x, y, height, cavity) from the colour levels the Enhanced
 //                build left in its scratch (tex.hlsl e_lv): level k of the map (half the colour's size) from colour level
 //                k + 1, height = luminance minus its coarser levels (a band-pass: shading gradients do not tilt
@@ -11,13 +15,53 @@
 // ---- cs_ai_post ---------------------------------------------------------------------------------------------------------
 cbuffer ai_post_cb : register(b4) {
     uint4 p_b;                           // first job, padding (input texels), -, -
-    float4 p_f;                          // grain (0: off), -, -, -
+    float4 p_f;                          // grain (0: off), restore strength (0: off), clarity (0: off), -
 };
 RWStructuredBuffer<float> p_out : register(u0);   // the net's output: per image 3 planes of 4 wp x 4 hp
 RWStructuredBuffer<float> p_img : register(u1);   // the net's input: per image 3 planes of wp x hp (0..1)
 RWByteAddressBuffer p_up : register(u2);          // upload regions (words: 0xAABBGGRR, alpha 0x80 = 1)
 ByteAddressBuffer p_al : register(t0);            // per image the padded source alpha (floats 0..255)
 ByteAddressBuffer p_jobs : register(t1);          // 16 words per image: below
+RWByteAddressBuffer p_res : register(u3);         // per image 3 planes of wp x hp residuals (floats, 0..1 units)
+
+// cs_ai_res: one thread per padded source texel (dispatch wp / 8, hp / 8, n)
+[numthreads(8, 8, 1)]
+void cs_ai_res(uint3 id : SV_DispatchThreadID, uint3 gid : SV_GroupID) {
+    uint o = (p_b.x + gid.z) * 64u;
+    uint4 b = p_jobs.Load4(o + 16u);
+    uint wp = b.z, hp = b.w, P = wp * hp, W4 = 4u * wp, P16 = 16u * P, z = gid.z;
+    if (id.x >= wp || id.y >= hp) return;
+    uint q = id.y * wp + id.x;
+    [unroll] for (uint c = 0u; c < 3u; c++) {
+        float s = 0.0;
+        [unroll] for (uint j = 0u; j < 4u; j++)
+            [unroll] for (uint i = 0u; i < 4u; i++) s += p_out[(z * 3u + c) * P16 + (4u * id.y + j) * W4 + 4u * id.x + i];
+        p_res.Store(((z * 3u + c) * P + q) * 4u, asuint(p_img[(z * 3u + c) * P + q] - s * (1.0 / 16.0)));
+    }
+}
+float3 res_at(uint z, uint P, uint wp, int x, int y) {
+    uint q = (uint)y * wp + (uint)x;
+    return float3(asfloat(p_res.Load(((z * 3u) * P + q) * 4u)), asfloat(p_res.Load(((z * 3u + 1u) * P + q) * 4u)),
+                  asfloat(p_res.Load(((z * 3u + 2u) * P + q) * 4u)));
+}
+// the residual of texel (x, y) kept: its luminance continues on both sides along some direction, faint (fades out from
+// 10 to 28 of 255)
+float3 res_kept(uint z, uint P, uint wp, uint hp, int x, int y) {
+    float3 r = res_at(z, P, wp, x, y);
+    const float3 lw = float3(0.299, 0.587, 0.114);
+    float l = dot(r, lw), al = abs(l);
+    if (al < 1.5 / 255.0) return float3(0.0, 0.0, 0.0);
+    float best = 0.0;
+    int2 d4[4] = { int2(1, 0), int2(0, 1), int2(1, 1), int2(1, -1) };
+    [unroll] for (uint k = 0u; k < 4u; k++) {
+        int2 a = clamp(int2(x, y) + d4[k], int2(0, 0), int2((int)wp - 1, (int)hp - 1));
+        int2 c = clamp(int2(x, y) - d4[k], int2(0, 0), int2((int)wp - 1, (int)hp - 1));
+        float l1 = dot(res_at(z, P, wp, a.x, a.y), lw), l2 = dot(res_at(z, P, wp, c.x, c.y), lw);
+        if (l1 * l > 0.0 && l2 * l > 0.0) best = max(best, min(min(abs(l1), abs(l2)), al) / al);
+    }
+    float fade = saturate((28.0 / 255.0 - al) / (18.0 / 255.0));
+    return r * (best * fade);
+}
 
 float cr_w(float t, uint k) {
     float t2 = t * t, t3 = t2 * t;
@@ -67,6 +111,34 @@ void cs_ai_post(uint3 id : SV_DispatchThreadID, uint3 gid : SV_GroupID) {
         }
     }
     rgb += p_f.x * gr;
+    [branch] if (p_f.z > 0.0) {                         // clarity: the luminance's mid band (a Gaussian of 5 x 5 taps 2
+        const float3 lw = float3(0.299, 0.587, 0.114);  // pixels apart: ~1 source texel) boosted, at most +-24 levels
+        float gk[5] = { 1.0, 4.0, 6.0, 4.0, 1.0 };
+        float bl = 0.0;
+        [unroll] for (uint gy = 0u; gy < 5u; gy++) {
+            uint yy2 = (uint)clamp((int)Y + 2 * (int)gy - 4, 0, (int)(4u * hp) - 1);
+            [unroll] for (uint gx = 0u; gx < 5u; gx++) {
+                uint xx2 = (uint)clamp((int)X + 2 * (int)gx - 4, 0, (int)W4 - 1);
+                uint pq = yy2 * W4 + xx2;
+                bl += gk[gy] * gk[gx] * dot(float3(p_out[(z * 3u) * P16 + pq], p_out[(z * 3u + 1u) * P16 + pq], p_out[(z * 3u + 2u) * P16 + pq]), lw);
+            }
+        }
+        float lc = dot(float3(p_out[(z * 3u) * P16 + Y * W4 + X], p_out[(z * 3u + 1u) * P16 + Y * W4 + X], p_out[(z * 3u + 2u) * P16 + Y * W4 + X]), lw);
+        rgb += clamp(p_f.z * (lc - bl * (1.0 / 256.0)), -24.0 / 255.0, 24.0 / 255.0);
+    }
+    [branch] if (p_f.y > 0.0) {                         // the restore: bilinear 4x of the kept residuals
+        float2 t = s - 0.0;
+        float2 tb = floor(t);
+        int2 t0 = (int2)tb;
+        float2 tf = t - tb;
+        float3 rr = float3(0.0, 0.0, 0.0);
+        [unroll] for (uint jj = 0u; jj < 2u; jj++)
+            [unroll] for (uint ii = 0u; ii < 2u; ii++) {
+                int2 q = clamp(t0 + int2((int)ii, (int)jj), int2(0, 0), int2((int)wp - 1, (int)hp - 1));
+                rr += (ii ? tf.x : 1.0 - tf.x) * (jj ? tf.y : 1.0 - tf.y) * res_kept(z, P, wp, hp, q.x, q.y);
+            }
+        rgb += p_f.y * rr;
+    }
     if (flags & 1u) al = (al - 127.5) * 2.5 + 127.5;
     uint ga = (flags & 2u) ? 128u : (uint)(clamp(al, 0.0, 255.0) * (128.0 / 255.0) + 0.5);
     uint3 q8 = (uint3)(saturate(rgb) * 255.0 + 0.5);

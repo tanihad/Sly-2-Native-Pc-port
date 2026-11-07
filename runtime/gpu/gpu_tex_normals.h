@@ -11,7 +11,7 @@
  *           z = sqrt(1 - x^2 - y^2) (>= 0, towards the viewer of the texture); flat = (0.5, 0.5)
  *     b     height 0..1 (0.5 = the texture's local mean; dark paint = low: grooves, grout, cracks)
  *     a     cavity 0..1 (1 = open surface, lower in creases: an occlusion term for ambient light)
- * The slope is moderate (PS2_TEX_NRM_K, default 4): scale x, y and renormalize for more or less relief. Mips flatten
+ * The slope is moderate (PS2_TEX_NRM_K, default 10): scale x, y and renormalize for more or less relief. Mips flatten
  * naturally (each level comes from the colour's own lower level, slopes in level-0 units).
  *
  * Shader side (shaders/etn.hlsli): include it after etex.hlsli and call
@@ -34,7 +34,7 @@ static int etn_enabled(void);
 static void etn_bind_ps(void);
 /* the normal class array of class c (0..5; NULL when absent) and the validity buffer (ByteAddressBuffer, word
  * c * 4096 + slice) */
-static ID3D11ShaderResourceView* etn_srv(int cls);
-static ID3D11ShaderResourceView* etn_ok_srv(void);
+static ID3D11ShaderResourceView* etn_srv(int cls) __attribute__((unused));
+static ID3D11ShaderResourceView* etn_ok_srv(void) __attribute__((unused));
 
 #endif

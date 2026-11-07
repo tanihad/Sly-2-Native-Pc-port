@@ -328,4 +328,5 @@ cs_ai_88865         ai_up.hlsl          cs_conv           cs_5_0    BIN=U5 BOUT=
 cs_ai_88856         ai_up.hlsl          cs_conv           cs_5_0    BIN=U6 BOUT=U5
 cs_ai_88875         ai_up.hlsl          cs_conv           cs_5_0    BIN=U5 BOUT=U7
 cs_ai_post          tex_ai.hlsl         cs_ai_post        cs_5_0
+cs_ai_res           tex_ai.hlsl         cs_ai_res         cs_5_0
 cs_etn              tex_ai.hlsl         cs_etn            cs_5_0

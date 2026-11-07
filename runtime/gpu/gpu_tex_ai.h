@@ -19,13 +19,14 @@
  *            (images built so far stay), the maps are dropped above 99 %.
  *   config   gpu_tex_look (gfx.c: graphics.look = reimagined); PS2_TEX_AI=0|1 wins. PS2_AI_WEIGHTS (the converted
  *            weights: scripts/ai_model.py export; default <exe dir>\models\x4plus.bin, then <user dir>\models\x4plus.bin),
- *            PS2_AI_MS, PS2_AI_MS_MIN, PS2_AI_GRAIN (0), PS2_AI_PAD (12), PS2_AI_LOG=1, PS2_AI_NET=0 (cache only),
- *            PS2_TEX_NRM=0 (no maps), PS2_TEX_NRM_K (4: slope), PS2_TEX_DUMP=3 (also <hash>_ai.png / _nrm.png). */
+ *            PS2_AI_MS, PS2_AI_MS_MIN, PS2_AI_GRAIN (0), PS2_AI_RESTORE (1: faint lines the net erased), PS2_AI_CLARITY (0.8: mid-band luminance boost),
+ *            PS2_AI_PAD (12), PS2_AI_LOG=1, PS2_AI_NET=0 (cache only),
+ *            PS2_TEX_NRM=0 (no maps), PS2_TEX_NRM_K (10: slope), PS2_TEX_DUMP=3 (also <hash>_ai.png / _nrm.png). */
 #include <dxgi1_4.h>
 #include "ai_up.h"
 extern double frame_rate_target_hz(void) __attribute__((weak));   /* (runtime/frame_rate.c; 0: unlimited) */
 
-#define RA_VER 1                         /* the pipeline's version: part of the cache folder's name (a change rebuilds) */
+#define RA_VER 2                         /* the pipeline's version: part of the cache folder's name (a change rebuilds) */
 #define RA_TILE 128
 #define RA_ITEMS 32768                   /* hash -> item (open addressing) */
 #define RA_SRCN 16                       /* source read-backs in flight */
@@ -52,7 +53,7 @@ typedef struct { int type; int32_t item; uint32_t* data; uint32_t w, h; uint8_t 
 
 static struct {
     int env, env_on, log, pad, net_env, nrm_env, dump;
-    float ms, ms_min, grain, nrm_k;
+    float ms, ms_min, grain, nrm_k, restore, clarity;
     int on, was, failed, init, inited_thread, net_state;   /* net_state: 0 none, 1 creating, 2 ready, -1 unavailable */
     wchar_t dir[600];
     char model[32];
@@ -67,9 +68,9 @@ static struct {
     ai_gpu* net; ai_gpu* net_new; char net_err[256];
     double net_mb;
     /* GPU */
-    ID3D11Buffer *up, *al, *pj, *pcb, *nok;
+    ID3D11Buffer *up, *al, *pj, *pcb, *nok, *res;
     ID3D11ShaderResourceView *up_srv, *al_srv, *pj_srv, *nok_srv;
-    ID3D11UnorderedAccessView *up_uav, *nok_uav;
+    ID3D11UnorderedAccessView *up_uav, *nok_uav, *res_uav;
     struct { uint32_t at, n; int32_t item; } reg[RA_REG];
     struct { ID3D11Buffer* st; int32_t item; uint32_t frame; uint32_t w, h; } src[RA_SRCN];
     struct { ID3D11Buffer* st; int32_t item; uint32_t frame, words; } sav[RA_SAVEN];
@@ -81,6 +82,7 @@ static struct {
     /* statistics */
     uint64_t n_net, n_load, n_saved, n_excl, n_tiles, n_fail, n_low;
     double gf_total, ms_total, worst_step;
+    uint32_t step_hist[80];              /* GPU time of the net per frame, 0.25 ms buckets */
     uint32_t frames_busy;
 } RA = { 0 };
 
@@ -109,7 +111,9 @@ static int ra_cfg(void) {
         RA.ms_min = et_envf("PS2_AI_MS_MIN", 0.5f);
         if (RA.ms_min > RA.ms) RA.ms_min = RA.ms;
         RA.grain = et_envf("PS2_AI_GRAIN", 0.0f);
-        RA.nrm_k = et_envf("PS2_TEX_NRM_K", 4.0f);
+        RA.restore = et_envf("PS2_AI_RESTORE", 1.0f);
+        RA.clarity = et_envf("PS2_AI_CLARITY", 0.8f);
+        RA.nrm_k = et_envf("PS2_TEX_NRM_K", 10.0f);
         RA.ms_per_gf = 1.0 / 6.0;        /* (6 TFLOPS until measured) */
     }
     return RA.env_on >= 0 ? RA.env_on : tcf_look > 0;
@@ -598,9 +602,10 @@ static int ra_init(void) {
     size_t P = (size_t)(RA_TILE + 2 * RA.pad) * (RA_TILE + 2 * RA.pad);
     if (!(RA.al = raw_default((UINT)(P * 4u), NULL, &RA.al_srv, NULL))) return 0;
     if (!(RA.pj = raw_default(RA_BMAX * 64u, NULL, &RA.pj_srv, NULL))) return 0;
+    if (!(RA.res = raw_default((UINT)(P * 12u), NULL, NULL, &RA.res_uav))) return 0;
     if (!(RA.nok = raw_default(ET_NCLS * 4096u * 4u, NULL, &RA.nok_srv, &RA.nok_uav))) return 0;
     RA.pcb = et_buf(32, D3D11_BIND_CONSTANT_BUFFER, D3D11_USAGE_DYNAMIC, D3D11_CPU_ACCESS_WRITE);
-    if (!RA.pcb || !gpu_cs(GPU_SH_cs_ai_post) || !gpu_cs(GPU_SH_cs_etn)) return 0;
+    if (!RA.pcb || !gpu_cs(GPU_SH_cs_ai_post) || !gpu_cs(GPU_SH_cs_ai_res) || !gpu_cs(GPU_SH_cs_etn)) return 0;
     for (int i = 0; i < RA_REG; i++) RA.reg[i].item = -1;
     for (int i = 0; i < RA_SRCN; i++) RA.src[i].item = -1;
     for (int i = 0; i < RA_SAVEN; i++) RA.sav[i].item = -1;
@@ -617,8 +622,8 @@ static int ra_init(void) {
     RA.init = 1;
     const char* e = getenv("PS2_TEX_DUMP");
     RA.dump = e && *e == '3';
-    gpu_log("ai: Reimagined textures on (x4plus, padding %d, grain %.2f, GPU %.1f..%.1f ms per frame, surface maps %s)", RA.pad,
-            RA.grain, RA.ms_min, RA.ms, RA.nrm_env ? "on" : "off");
+    gpu_log("ai: Reimagined textures on (x4plus, padding %d, grain %.2f, restore %.2f, clarity %.2f, GPU %.1f..%.1f ms per frame, "
+            "surface maps %s)", RA.pad, RA.grain, RA.restore, RA.clarity, RA.ms_min, RA.ms, RA.nrm_env ? "on" : "off");
     return 1;
 }
 
@@ -728,6 +733,7 @@ static void ra_time_poll(void) {
         RA.last_ms = ms;
         RA.ms_total += ms;
         if (ms > RA.worst_step) RA.worst_step = ms;
+        RA.step_hist[ms * 4.0 < 79.0 ? (int)(ms * 4.0) : 79]++;
         double r = ms / RA.tgf[k];
         if (r > 0.01 && r < 5.0) RA.ms_per_gf = RA.ms_per_gf * 0.8 + r * 0.2;
     }
@@ -828,7 +834,7 @@ static void ra_batch_finish(int* bound) {
     D3D11_MAPPED_SUBRESOURCE m;
     if (SUCCEEDED(ID3D11DeviceContext_Map(c, (ID3D11Resource*)RA.pcb, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) {
         uint32_t u[4] = { 0, (uint32_t)RA.pad, 0, 0 };
-        float fl[4] = { RA.grain, 0, 0, 0 };
+        float fl[4] = { RA.grain, RA.restore, RA.clarity, 0 };
         memcpy(m.pData, u, 16); memcpy((char*)m.pData + 16, fl, 16);
         ID3D11DeviceContext_Unmap(c, (ID3D11Resource*)RA.pcb, 0);
     }
@@ -837,17 +843,21 @@ static void ra_batch_finish(int* bound) {
         ID3D11DeviceContext_PSSetShaderResources(c, 13, 1, &n1);
         *bound = 1;
     }
-    ID3D11UnorderedAccessView* u[3] = { ai_gpu_uav(RA.net, AI_BUF_OUT), ai_gpu_uav(RA.net, AI_BUF_IMG), RA.up_uav };
-    ID3D11DeviceContext_CSSetUnorderedAccessViews(c, 0, 3, u, NULL);
+    ID3D11UnorderedAccessView* u[4] = { ai_gpu_uav(RA.net, AI_BUF_OUT), ai_gpu_uav(RA.net, AI_BUF_IMG), RA.up_uav, RA.res_uav };
+    ID3D11DeviceContext_CSSetUnorderedAccessViews(c, 0, 4, u, NULL);
     ID3D11ShaderResourceView* s2[2] = { RA.al_srv, RA.pj_srv };
     ID3D11DeviceContext_CSSetShaderResources(c, 0, 2, s2);
     ID3D11DeviceContext_CSSetConstantBuffers(c, 4, 1, &RA.pcb);
+    if (RA.restore > 0) {                /* (the restore's residuals first) */
+        ID3D11DeviceContext_CSSetShader(c, gpu_cs(GPU_SH_cs_ai_res), NULL, 0);
+        ID3D11DeviceContext_Dispatch(c, (pw + 7) / 8, (ph + 7) / 8, (UINT)RA.bn);
+        gpu_rt.n_dispatches++;
+    }
     ID3D11DeviceContext_CSSetShader(c, gpu_cs(GPU_SH_cs_ai_post), NULL, 0);
     ID3D11DeviceContext_Dispatch(c, (4 * cw + 7) / 8, (4 * ch + 7) / 8, (UINT)RA.bn);
-    (void)pw; (void)ph;
     gpu_rt.n_dispatches++;
-    ID3D11UnorderedAccessView* nu[3] = { NULL, NULL, NULL };
-    ID3D11DeviceContext_CSSetUnorderedAccessViews(c, 0, 3, nu, NULL);
+    ID3D11UnorderedAccessView* nu[4] = { NULL, NULL, NULL, NULL };
+    ID3D11DeviceContext_CSSetUnorderedAccessViews(c, 0, 4, nu, NULL);
     ID3D11ShaderResourceView* ns[2] = { NULL, NULL };
     ID3D11DeviceContext_CSSetShaderResources(c, 0, 2, ns);
     ID3D11Buffer* nb = NULL;
@@ -896,6 +906,13 @@ static void ra_post_poll(int* bound) {
         ID3D11DeviceContext_Unmap(gpu_rt.ctx, (ID3D11Resource*)RA.sav[k].st, 0);
         RA.sav[k].item = -1;
     }
+}
+
+static double ra_pct(double p) {         /* (statistics) a percentile of the net's GPU time per frame */
+    uint32_t n = 0, c = 0;
+    for (int i = 0; i < 80; i++) n += RA.step_hist[i];
+    for (int i = 0; i < 80; i++) { c += RA.step_hist[i]; if (n && c >= p * n) return (i + 1) * 0.25; }
+    return 0;
 }
 
 /* the frame's Reimagined work (et_frame_body, after Enhanced's): cached images up, source read-backs, the net */
@@ -1034,9 +1051,10 @@ static void ra_frame(int* bound) {
         uint32_t queued = 0, want = 0;
         for (int32_t i = 0; i < RA_ITEMS; i++) if (RA.it[i].hash) { queued += RA.it[i].st == RI_TILES || RA.it[i].st == RI_PREP; want += RA.it[i].st == RI_WANT; }
         gpu_log("ai: %llu built by the net (%llu tiles), %llu from the cache, %llu saved, %llu excluded; %u in the net's queue, %u waiting; "
-                "%.1f TFLOP, GPU %.0f ms in all (%.3f ms per GFLOP, worst step %.2f ms)",
+                "%.1f TFLOP, GPU %.0f ms in all (%.3f ms per GFLOP; per frame p50 %.2f, p99 %.2f, worst %.2f ms)",
                 (unsigned long long)RA.n_net, (unsigned long long)RA.n_tiles, (unsigned long long)RA.n_load, (unsigned long long)RA.n_saved,
-                (unsigned long long)RA.n_excl, queued, want, RA.gf_total / 1000.0, RA.ms_total, RA.ms_per_gf, RA.worst_step);
+                (unsigned long long)RA.n_excl, queued, want, RA.gf_total / 1000.0, RA.ms_total, RA.ms_per_gf, ra_pct(0.5), ra_pct(0.99),
+                RA.worst_step);
     }
 }
 
@@ -1049,6 +1067,7 @@ static void ra_release(void) {
     GPU_RELEASE(RA.up_srv); GPU_RELEASE(RA.up_uav); GPU_RELEASE(RA.up);
     GPU_RELEASE(RA.al_srv); GPU_RELEASE(RA.al);
     GPU_RELEASE(RA.pj_srv); GPU_RELEASE(RA.pj);
+    GPU_RELEASE(RA.res_uav); GPU_RELEASE(RA.res);
     GPU_RELEASE(RA.nok_srv); GPU_RELEASE(RA.nok_uav); GPU_RELEASE(RA.nok);
     GPU_RELEASE(RA.pcb);
     for (int k = 0; k < RA_SRCN; k++) { GPU_RELEASE(RA.src[k].st); RA.src[k].item = -1; }
