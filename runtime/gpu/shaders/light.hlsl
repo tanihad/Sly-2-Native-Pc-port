@@ -415,6 +415,18 @@ float4 ps_reim_stats(float4 pos : SV_Position) : SV_Target {
             }
         v = sw > 1e-6 ? float4(s / sw, sqrt(sw / 960.0), 1.0) : float4(prev.xy, 0.0, 1.0);
     }
+    if (k == 3u) {                       // the light the relight / shadows / occlusion leave on average (a 32 x 18 grid):
+        float s = 0.0;                   // the picture is brought back to the game's own brightness by its inverse
+        [loop] for (uint y = 0u; y < 18u; y++)
+            [loop] for (uint x = 0u; x < 32u; x++) {
+                float2 uv = (float2(x, y) + 0.5) / float2(32.0, 18.0);
+                float ao = l_ao.y > 0.0 ? l_aot.SampleLevel(l_lin, uv, 0.0) : 1.0;
+                float2 sh = r_sh.SampleLevel(l_lin, uv, 0.0);
+                float lit = smoothstep(0.0, 0.7, sh.y) * sh.x, dark = saturate(sh.y * 4.0) * (1.0 - sh.x);
+                s += ao * (1.0 + r_keyc.w * lit * 0.8) * (1.0 - r_key.w * dark * 0.75);
+            }
+        v = float4(s / 576.0, 0.0, 0.0, 1.0);
+    }
     float a = r_misc.x;
     if (prev.w <= 0.0) a = 1.0;          // (the first frame)
     if (k == 2u && prev.z < 1e-3) prev.xy = v.xy;   // (a source appearing: from where it is)
@@ -493,6 +505,9 @@ float4 ps_reim_comp(float4 pos : SV_Position) : SV_Target {
         c *= 1.0 + r_keyc.w * lit * head * lerp(float3(1.0, 1.0, 1.0), kc, 0.05);   // (white light: the surfaces keep their own hue)
         c *= lerp(float3(1.0, 1.0, 1.0), shc * (1.0 - r_key.w), dark);
     }
+    // exposure: what the occlusion, shadows and relight take away on average comes back (the picture at least as bright as
+    // the game's own: depth from the contrast, not from darkening)
+    c *= clamp(1.04 / max(r_stats.Load(int3(3, 0, 0)).x, 0.5), 1.0, 1.35);
     // light: bloom + shafts
     float3 bl = l_tex.SampleLevel(l_lin, p * l_dir.zw, 0.0).rgb * r_bloom.x;
     float3 sf = r_shafts.SampleLevel(l_lin, p * l_dir.zw, 0.0).rgb * r_shaft.x;

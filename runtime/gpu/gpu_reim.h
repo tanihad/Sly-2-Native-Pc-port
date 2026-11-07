@@ -560,7 +560,7 @@ static void reim_post(mtarget* c, mtarget* z, int pc) {
     int sc = RR.st_cur, sn = sc ^ 1;
     LT_SIZE(dst, 4, 1); LT_SIZE(src, hw, hh);
     lt_cb(cb, 36);
-    lt_srv(14, LT.srv[LT_W]); lt_srv(16, bsrv[4]); lt_srv(22, RR.srv[RT_SCENE]); lt_srv(23, RR.srv[sc ? RT_ST1 : RT_ST0]);
+    lt_srv(14, LT.srv[LT_W]); lt_srv(16, bsrv[4]); lt_srv(22, RR.srv[RT_SCENE]); lt_srv(23, RR.srv[sc ? RT_ST1 : RT_ST0]); lt_srv(15, LT.srv[LT_AO0]); lt_srv(20, RR.srv[RT_SH]);   /* (the light left on average: [3]) */
     lt_pass(RR.rtv[sn ? RT_ST1 : RT_ST0], 4, 1, GPU_SH_ps_reim_stats, off);
     rr_unbind();
     RR.st_cur = sn;
