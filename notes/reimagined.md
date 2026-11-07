@@ -102,4 +102,70 @@ with the licence text in the third-party notices); it is never committed.
 
 ### Numbers (RTX 4060 Ti 8 GB, shared with other agents' game runs and at times VALORANT: GPU numbers are noisy)
 
-TODO
+**Build cost** (x4plus: 35.8 MFLOP per padded input pixel; our kernel ran at 6-9 TFLOPS effective, 0.11-0.15 ms per
+GFLOP, when the GPU was not shared; up to 1 ms per GFLOP while other game runs used it):
+
+| | images | TFLOP | GPU time | play time |
+|---|---|---|---|---|
+| ep6 hub (PS2_AI_MS=12) | 621 | 280 | 48 s | ~5 min run |
+| ep1 hub, default budget, 60 fps | 560 of ~630 in one 270 s run | 248 | 50 s (contended) | ~3 min in the hub |
+| census (below) | 2746 | 1358 | ~3.2 min at 7 TFLOPS | |
+
+**Census** (PS2_TEX_DUMP=1 while walking: 8 hubs + m2 boardroom, m3 boss, m5 ghost, m6 bear cubs, m7 boat hack, m8 engine
+room; scratchpad census.ps1): **2746 unique art textures** (128x128 706, 64x64 657, 32x32 463, 64x32 213, 128x64 173,
+256x128 106, ...; none above 256), 24.4 M source texels, 37.9 M padded pixels. The walks see part of each hub and 6 of
+~45 jobs, so the whole game is estimated at **~5000-6000 textures, ~2700 TFLOP: ~6-7 min of GPU time on an RTX 4060 Ti**
+(~2x on a GTX 1060-class card, ~2 min on an RTX 4090); in the background at the default budget (<= 4 ms of a 16.7 ms
+frame) that is spread over ~25-30 min of play, ~3 min per new hub; levels seen before load from the cache.
+
+**Cache size**: 2104 files = 69 MB (34 KB average: JPEG 4:4:4 q 0.93, PNG for the 7 % with alpha) -> ~180 MB for the
+whole game. Under `<user dir>\textures\reimagined\x4plus-v3\`; never in the repo, never shipped.
+
+**Video memory** (on top of Faithful's ~790 MB of Enhanced classes, which Reimagined reuses: the AI image replaces the
+Enhanced one in the same slice): the net 294 MB (weights 64 + feature buffers for one 152 x 152 batch), surface maps
+198 MB at the pre-sized classes, upload regions + residuals 17 MB: **~510 MB**. The net is only created when DXGI's
+budget minus the process's use exceeds its size + 512 MB, and released when the use passes 97 % of the budget (built
+images stay; the surface maps go above 99 %). System memory: 36 MB of read-back buffers.
+
+**Frame times** (ep1 hub, 2560 x 1440, Medium, 60 fps, 9000 pictures after the first 90 s, PS2_GPU_FT=1; the GPU was
+shared with the lighting agent's r2_sweep game runs the whole time, so the averages say more about that load than about
+us - Faithful's own average here is 2x a quiet run's):
+
+| ep1 hub | GPU + present avg / p99 / max | render thread avg / p99 / max | picture interval avg / p99 / max |
+|---|---|---|---|
+| Faithful | 12.73 / 20.76 / 26.05 ms | 1.40 / 5.80 / 7.23 | 16.69 / 23.72 / 45.98 |
+| Reimagined, building (560 images during the run) | 8.66 / 15.74 / 24.74 | 1.53 / 5.84 / 16.43 | 16.68 / 21.26 / 31.73 |
+| Reimagined, all from the cache | 9.35 / 14.20 / 20.88 | 1.64 / 6.48 / 29.62 * | 16.68 / 21.76 / 44.81 |
+
+The net's own GPU time per frame while building: p50 3.75, p99 6.0, worst 14.1 ms (timestamps; the worst ones while
+another process held the GPU). No added dropped pictures (interval p99 unchanged). * one render-thread peak while 631
+cached images were uploaded at the hub's load with 1 M texels per frame: now 256 K per frame (0391e82). A first version
+created the net's 14 kernels on the render thread at first use: 70 ms peaks; they are created on the worker now.
+A clean measurement needs a quiet GPU (no other game running).
+
+### Pictures (local only, never committed): build\ai\shots2 (worktree next/ai)
+
+Per scene (ep1_hub, ep3_hub, ep6_hub, m2_boardroom; ep6_hub_ground = the planks): `<scene>_original / _enhanced (=
+Faithful) / _ai (= Reimagined).png` (2560 x 1440), `<scene>_compare3.png` (middle 852 columns: Original | Faithful |
+Reimagined) and `<scene>_closeup3.png` (640 x 720 at 2x). Original + Faithful come from one A/B run, Reimagined from
+another (cache filled by a build run first: scratchpad ri_runs.ps1), so Sly's idle pose differs between columns.
+`surface_maps_preview.png`: per texture AI image | lit by its surface map (light from the upper left) | normal map |
+height. What shows: crisp glass streaks, paint chips and plank edges (ep6), m2's pool grout restored (x4plus alone
+had faded it), no snow / bubble rings (excluded), no seams on tiling floors and walls, cut-outs clean.
+
+### Switches (tests; not in the menu)
+
+PS2_TEX_AI=0|1 (wins over the look), PS2_AI_WEIGHTS, PS2_AI_MS (4) / PS2_AI_MS_MIN (0.5), PS2_AI_NET=0 (cache only),
+PS2_AI_RESTORE (1), PS2_AI_CLARITY (0.8), PS2_AI_GRAIN (0), PS2_AI_PAD (12), PS2_AI_LOG=1 (a line every 600 frames:
+built / cached / saved / excluded / queued, TFLOP, ms per GFLOP, p50 / p99 / worst GPU ms per frame), PS2_TEX_NRM=0,
+PS2_TEX_NRM_K (10), PS2_TEX_DUMP=3 (also `<key>_ai.png` and `<key>_nrm.png`), PS2_GPU_FT=1 (frame-time line every 3000
+pictures after PS2_GPU_FT_SKIP = 90 s). Note: with PS2_USER_DIR set, sly2.ini is read from that folder (tex_shots'
+-Ini then does not apply): use PS2_TEX_AI=1 for headless runs.
+
+### Not done / next
+
+- The menu still hides Reimagined unless sly2.ini says `look = reimagined` (menu.c build_choices): the owner decides
+  when both halves are in.
+- Shipping the weights (models\x4plus.bin, BSD-3) and a "prepare all levels" button (needs a census of every level's
+  textures from the disc data rather than walks).
+- fp16 feature buffers would halve the net's 294 MB and speed it up on cards with fast fp16.
