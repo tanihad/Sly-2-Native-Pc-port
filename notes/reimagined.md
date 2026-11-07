@@ -162,6 +162,13 @@ PS2_TEX_NRM_K (10), PS2_TEX_DUMP=3 (also `<key>_ai.png` and `<key>_nrm.png`), PS
 pictures after PS2_GPU_FT_SKIP = 90 s). Note: with PS2_USER_DIR set, sly2.ini is read from that folder (tex_shots'
 -Ini then does not apply): use PS2_TEX_AI=1 for headless runs.
 
+### Gates (code of 0391e82)
+
+run_tests 16/16; unit suites all pass; m9_exact S1 + S3 -Game identical (base: git archive of main 81cde3d's runtime);
+gpu_diff_all mixed S=1 28/28; r2_sweep -Parallel 1 Faithful ep1, ep3, m2_boardroom tfo, tfb, mf 9/9; Reimagined
+(PS2_TEX_AI=1, fresh caches: the net built during the checks) ep1, m2_boardroom tfo, mf 4/4. Faithful / Retro: nothing of
+this runs (tcf_look 0, ra_on_now 0); the shared code only gained an unused slot field and an env-gated log.
+
 ### Not done / next
 
 - The menu still hides Reimagined unless sly2.ini says `look = reimagined` (menu.c build_choices): the owner decides

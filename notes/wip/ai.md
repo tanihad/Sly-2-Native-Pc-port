@@ -6,7 +6,7 @@ Phase 1 (prototype, anime 6B): COMPLETE 2026-11-06, notes/ai-textures.md.
 Bold AI textures (x4plus / chain), height + normal maps for the lighting agent (gpu_tex_normals.h, notes/reimagined.md),
 in-game background build on the GPU into a local cache (user dir), Enhanced fallback, Faithful / Retro bit-identical.
 
-STATUS: IN PROGRESS
+STATUS: COMPLETE (2026-11-06). Design, results, numbers, contract: notes/reimagined.md.
 
 ## Plan
 1. [~] quality eval: dumps (ep1, ep3, ep6, m2: 1120 textures) -> packs build\ai\eval\pack_{x4,x4g,chain,dd}; texture
@@ -15,8 +15,8 @@ STATUS: IN PROGRESS
 2. [x] height + normal maps (1a24f82; preview pending) (compute), gpu_tex_normals.h interface, notes/reimagined.md
 3. [x] runtime (1a24f82; first ep1 run: 237 built + saved, JPEG ~19 KB each): x4plus net in the game (hlslc perms), time-sliced per frame, cache files in <user dir>\textures\ai,
        Enhanced fallback, VRAM budget, Look = Reimagined only
-4. [ ] census of the game's textures, projected build time
-5. [~] gates: run_tests 16/16, units all pass (shot needed a rerun: exe relinked mid-run), m9_exact S1+S3 -Game
+4. [x] census: 2746 textures in walks of 8 hubs + 6 jobs; whole game ~5-6 k, ~6-7 min GPU on a 4060 Ti
+5. [x] gates (final, 0391e82): r2_sweep Faithful 9/9 + Reimagined 4/4, perf in notes; earlier: run_tests 16/16, units all pass (shot needed a rerun: exe relinked mid-run), m9_exact S1+S3 -Game
        identical (base = git archive 81cde3d runtime -> build\basert), gpu_diff_all 28/28 (on ae86eb9 / d724197);
        todo r2_sweep, perf, pictures (scratchpad ri_runs.ps1 builds the cache then shoots; census.ps1 running)
 6. decisions: x4plus alone + restore (line-coherent back-projection: m2 grout) + clarity 0.8; grain off; chain / dd
@@ -39,3 +39,6 @@ STATUS: IN PROGRESS
   [IO.File] resolves relative paths against the process cwd (the main checkout): absolute paths only.
 - tex_shots A/B runs: the two runs' Original pictures differ 3-6 / 255 (Sly's idle animation): poses differ per column.
 - 2026-11-06: VALORANT was running on the owner's GPU (39 % busy): perf numbers noisy - check Get-Process first.
+- m9_exact once printed '56 FAILED / no baseline lines' while other jobs ran at the same time; rerun alone: all identical.
+- PowerShell aliases: R = Invoke-History, rp = Remove-ItemProperty - never name helper functions R / Rp (use a Python patcher).
+- "$Tag`build" in PowerShell: `b is a backspace escape.
