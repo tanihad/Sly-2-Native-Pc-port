@@ -340,6 +340,7 @@ static int reim_smap(const reim_scene* S, const float* rndc, const float* rzab, 
     float m32[32];
     memcpy(m32, ip, 64);
     memcpy(m32 + 16, lm, 64);
+    prof_mark(PR_REIM_SM);
     unbind_all();
     ID3D11DeviceContext_ClearDepthStencilView(gpu_rt.ctx, RR.sm_dsv, D3D11_CLEAR_DEPTH, 0.0f, 0);
     const gpu_front_frame_data* fd = S->fd;
@@ -360,6 +361,7 @@ static int reim_smap(const reim_scene* S, const float* rndc, const float* rzab, 
     X.mode = 0;
     M.bound = 0;
     RR.sm_frames++;
+    prof_mark(PR_LIGHT);
     if (RE.log && RR.sm_frames % 600 == 1)
         gpu_log("reim: shadow map %d: sphere R %.0f at %.0f %.0f %.0f, %d segments, %.1f casters a frame", n, R, cen[0], cen[1], cen[2],
                 S->nops, (double)RR.sm_draws / (double)RR.sm_frames);
@@ -402,7 +404,7 @@ static void reim_post(mtarget* c, mtarget* z, int pc) {
     if (proj) { memcpy(lv, view, 16); lz[0] = zz[0]; lz[1] = zz[1]; }
     lz[2] = 1e6f; lz[3] = 0.0f;
     int ao = LT.ao && proj;
-    lao[0] = RE.ao_r; lao[1] = ao ? RE.ao_k : 0.0f; lao[2] = 64.0f; lao[3] = LT.ao_bias;
+    lao[0] = RE.ao_r; lao[1] = ao ? RE.ao_k : 0.0f; lao[2] = LT.ao_max; lao[3] = LT.ao_bias;
     lao2[0] = LT.ao_f0; lao2[1] = LT.ao_f1; lao2[2] = RE.ao_min; lao2[3] = LT.ao_pow;
     lbl[0] = RE.bl_t; lbl[1] = RE.bl_k; lbl[2] = RE.bl_i; lbl[3] = 1.0f;
     ldir[2] = 1.0f / (float)pw; ldir[3] = 1.0f / (float)ph;

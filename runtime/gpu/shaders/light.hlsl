@@ -274,7 +274,7 @@ float2 ps_reim_shadow(float4 pos : SV_Position) : SV_Target {
     float noise = r_noise(pos.xy);
     float3 Po = P + N * (r_sss.z * (1.0 + w * 0.002));   // (off the surface: no self-shadowing)
     float occ = 0.0;
-    const uint NS = 14u;
+    const uint NS = 10u;
     [unroll] for (uint i = 0u; i < NS; i++) {
         if (w >= r_sss.w || r_sss.x <= 0.0) break;   // (beyond the contact shadows' reach / none: the map only)
         float t = ((float)i + noise) / (float)NS;
@@ -400,9 +400,9 @@ float4 ps_reim_stats(float4 pos : SV_Position) : SV_Target {
     } else if (k == 2u) {                // the shafts' source: the centroid of the bright far texels (moon, sky glow)
         float2 s = 0.0;
         float sw = 0.0;
-        [loop] for (uint y = 0u; y < 36u; y++)
-            [loop] for (uint x = 0u; x < 64u; x++) {
-                float2 uv = (float2(x, y) + 0.5) / float2(64.0, 36.0);
+        [loop] for (uint y = 0u; y < 24u; y++)
+            [loop] for (uint x = 0u; x < 40u; x++) {
+                float2 uv = (float2(x, y) + 0.5) / float2(40.0, 24.0);
                 float3 b = l_tex.SampleLevel(l_lin, uv, 0.0).rgb;   // (bloom level 4)
                 float w = l_w.Load(int3(int2(uv * l_src.xy), 0));
                 float far = w >= r_shaft.w ? 1.0 : 0.0;
@@ -411,7 +411,7 @@ float4 ps_reim_stats(float4 pos : SV_Position) : SV_Target {
                 s += uv * e;
                 sw += e;
             }
-        v = sw > 1e-6 ? float4(s / sw, sqrt(sw / 2304.0), 1.0) : float4(prev.xy, 0.0, 1.0);
+        v = sw > 1e-6 ? float4(s / sw, sqrt(sw / 960.0), 1.0) : float4(prev.xy, 0.0, 1.0);
     }
     float a = r_misc.x;
     if (prev.w <= 0.0) a = 1.0;          // (the first frame)
@@ -440,8 +440,8 @@ float4 ps_reim_shafts(float4 pos : SV_Position) : SV_Target {
 }
 
 // ---- composite + grade (full res, no blend) ----------------------------------------------------------------------
-float3 r_srgb2lin(float3 c) { return pow(max(c, 0.0), 2.2); }
-float3 r_lin2srgb(float3 c) { return pow(max(c, 0.0), 1.0 / 2.2); }
+float3 r_srgb2lin(float3 c) { return c * c; }   // (gamma 2: cheap, its exact inverse below)
+float3 r_lin2srgb(float3 c) { return sqrt(max(c, 0.0)); }
 float r_curve(float x, float k) {        // filmic contrast around the pivot 0.42 (display values), a soft toe and shoulder
     const float p = 0.42;
     x = saturate(x);

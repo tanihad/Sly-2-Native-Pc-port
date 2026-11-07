@@ -431,10 +431,34 @@ cbuffer r2_shadow : register(b3) {
     float4 sh_lm[4];                     // world -> the light's clip (rows)
 };
 float4 r2_vs_shadow(R2V i) : SV_Position {
-    R2O o;
-    float4 clip, alt;
-    r2_vertex(i, o, clip, alt);
-    if (o.pos.x == 2.0 && o.pos.y == 2.0) return float4(2.0, 2.0, 0.5, 1.0);   // (a batch left to another draw)
+    // (r2_vertex's position alone, in plain floats: no colours, fog, UVs or the VU's rounding - a caster needs none)
+    uint db = i.did * 32u;
+    uint4 dr = fdata.Load4(db);
+    R2Seg sg = r2_seg(fdata.Load(db + 28u));
+    if (dr.z != 0xFFFFFFFFu) {
+        uint rel = i.batch - (dr.y >> 8);
+        if (((fdata.Load((dr.z + (rel >> 5)) * 4u) >> (rel & 31u)) & 1u) == 0u) return float4(2.0, 2.0, 0.5, 1.0);
+    }
+    uint mat = r2_mtab.Load((dr.w & 0xFFFFFu) * 16u) + i.batch * 3u + (dr.y & 3u);
+    uint4 lm = r2_mats.Load4(mat * 64u + 44u);
+    uint eb = sg.off.y + dr.x * 144u;
+    float4 m[4] = { asfloat(fdata.Load4(eb)), asfloat(fdata.Load4(eb + 16u)), asfloat(fdata.Load4(eb + 32u)),
+                    asfloat(fdata.Load4(eb + 48u)) };
+    float3 p = i.pos;
+    uint xq = fdata.Load(eb + 72u);
+    uint skin = (lm.x >> 1) & 3u;
+    if (lm.x != 0u && xq != 0u && skin != 0u) {   // (0x1940's 4-bone skinning of the position)
+        uint xb = (xq - 1u) * 16u;
+        float3 P = float3(0.0, 0.0, 0.0);
+        [unroll] for (uint k = 0u; k < 4u; k++) {
+            uint bo = ((k < 2u ? lm.y : lm.z) >> (16u * (k & 1u))) & 0xFFFFu;
+            uint q = 11u + bo - 0x15u;
+            float wk = r2_ub(i.wts, k) * (1.0 / 255.0);
+            P += (r2_xq(xb, q).xyz * p.x + r2_xq(xb, q + 1u).xyz * p.y + r2_xq(xb, q + 2u).xyz * p.z + r2_xq(xb, q + 3u).xyz) * wk;
+        }
+        p = P;
+    }
+    float4 clip = m[0] * p.x + m[1] * p.y + m[2] * p.z + m[3];
     float4 h = clip.x * sh_ipv[0] + clip.y * sh_ipv[1] + clip.z * sh_ipv[2] + clip.w * sh_ipv[3];
     float3 wp = h.xyz / h.w;
     return wp.x * sh_lm[0] + wp.y * sh_lm[1] + wp.z * sh_lm[2] + sh_lm[3];

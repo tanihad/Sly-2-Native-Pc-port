@@ -27,6 +27,7 @@ $dir = Join-Path $root "build\warp\$Name"
 $card = Join-Path $dir 'card'
 $frames = Join-Path $dir 'frames'
 New-Item -ItemType Directory -Force $dir, $frames | Out-Null
+$env:PS2_USER_DIR = $dir                        # (the run's own folder holds its settings: never %LOCALAPPDATA%\Sly2)
 Remove-Item (Join-Path $frames '*.png') -ErrorAction SilentlyContinue
 Remove-Item -Recurse -Force $card -ErrorAction SilentlyContinue
 

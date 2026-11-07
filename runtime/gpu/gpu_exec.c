@@ -1212,11 +1212,11 @@ static void zcb_set(const zs_consts* k) {
  * 60 frames. Attribution is approximate (the GPU overlaps neighbouring work). */
 enum { PR_OTHER, PR_TARGET, PR_MEM, PR_CLEAR, PR_SHADOW, PR_FF_FAST, PR_FF_TRI, PR_FF_SPRITE, PR_FF_LINE,
        PR_REF_TRI, PR_REF_OTHER, PR_A16, PR_ZRESOLVE, PR_ZSYNC, PR_PRESENT, PR_A16_DRAW, PR_FF_FAST_Z, PR_R2, PR_PART,
-       PR_MFT_RES, PR_MFT_SH, PR_MFT_MV, PR_MFT_FUSE, PR_LIGHT, PR_N };
+       PR_MFT_RES, PR_MFT_SH, PR_MFT_MV, PR_MFT_FUSE, PR_LIGHT, PR_REIM_SM, PR_N };
 static const char* const pr_names[PR_N] = { "other", "target", "mem", "clear", "shadow", "ff-tri-fast", "ff-tri",
                                             "ff-sprite", "ff-line", "ref-tri", "ref-other", "alias16", "zresolve",
                                             "zsync", "present", "alias16-draw", "ff-tri-fast-z", "r2", "part",
-                                            "mft-resolve", "mft-svol", "mft-mv", "mft-shfuse", "light" };
+                                            "mft-resolve", "mft-svol", "mft-mv", "mft-shfuse", "light", "reim-smap" };
 #define PR_MAXQ 8192
 static struct {
     int on, n, cur;
