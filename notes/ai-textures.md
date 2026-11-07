@@ -1,5 +1,9 @@
 # AI textures (prototype, phase 1)
 
+> Phase 2 (2026-11-06) is built: x4plus + restore + clarity in the game under Look = Reimagined, cached on the player's PC,
+> with per-texture surface maps for the lighting - notes/reimagined.md. The phase-1 text below is history.
+
+
 Owner request 2026-11-06: an AI texture upscaler for the PC port, judged first as a before/after, no game integration.
 Owner direction during the work: the menu gets **Look = Retro / Faithful / Reimagined**; AI textures are for Reimagined
 ("I want Sly to be kinda reimagined ... go above and beyond"), Faithful keeps the Enhanced textures

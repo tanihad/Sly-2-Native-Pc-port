@@ -1017,6 +1017,15 @@ static void ra_frame(int* bound) {
     }
     /* 3. the net: a batch started, stepped within the budget, finished */
     ra_post_poll(bound);
+    if (RA.log && ET.frame % 600 == 0) {
+        uint32_t queued = 0, want = 0;
+        for (int32_t i = 0; i < RA_ITEMS; i++) if (RA.it[i].hash) { queued += RA.it[i].st == RI_TILES || RA.it[i].st == RI_PREP; want += RA.it[i].st == RI_WANT; }
+        gpu_log("ai: %llu built by the net (%llu tiles), %llu from the cache, %llu saved, %llu excluded; %u in the net's queue, %u waiting; "
+                "%.1f TFLOP, GPU %.0f ms in all (%.3f ms per GFLOP; per frame p50 %.2f, p99 %.2f, worst %.2f ms)",
+                (unsigned long long)RA.n_net, (unsigned long long)RA.n_tiles, (unsigned long long)RA.n_load, (unsigned long long)RA.n_saved,
+                (unsigned long long)RA.n_excl, queued, want, RA.gf_total / 1000.0, RA.ms_total, RA.ms_per_gf, ra_pct(0.5), ra_pct(0.99),
+                RA.worst_step);
+    }
     if (!RA.net) return;
     if (!RA.bon) ra_batch_start();
     if (!RA.bon) return;
@@ -1055,15 +1064,6 @@ static void ra_frame(int* bound) {
         return;
     }
     if (ai_gpu_done(RA.net)) ra_batch_finish(bound);
-    if (RA.log && ET.frame % 600 == 0) {
-        uint32_t queued = 0, want = 0;
-        for (int32_t i = 0; i < RA_ITEMS; i++) if (RA.it[i].hash) { queued += RA.it[i].st == RI_TILES || RA.it[i].st == RI_PREP; want += RA.it[i].st == RI_WANT; }
-        gpu_log("ai: %llu built by the net (%llu tiles), %llu from the cache, %llu saved, %llu excluded; %u in the net's queue, %u waiting; "
-                "%.1f TFLOP, GPU %.0f ms in all (%.3f ms per GFLOP; per frame p50 %.2f, p99 %.2f, worst %.2f ms)",
-                (unsigned long long)RA.n_net, (unsigned long long)RA.n_tiles, (unsigned long long)RA.n_load, (unsigned long long)RA.n_saved,
-                (unsigned long long)RA.n_excl, queued, want, RA.gf_total / 1000.0, RA.ms_total, RA.ms_per_gf, ra_pct(0.5), ra_pct(0.99),
-                RA.worst_step);
-    }
 }
 
 /* (et_release) the GPU side goes; the worker, the items and the cache list stay */

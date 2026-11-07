@@ -49,4 +49,57 @@ tests; `PS2_TEX_NRM=0` builds no maps. Switching the look rebuilds every image (
 
 ## Textures (AI images)
 
-TODO: results of the evaluation, pipeline, cache, budget, census, numbers.
+### Choice (evaluation 2026-11-06, test set ep1 / ep3 / ep6 hubs + m2 boardroom: 1120 textures)
+
+Candidates, all on our own D3D11 net (runtime/gpu/ai_up.c), compared per texture (contact sheets) and in game:
+
+| variant | verdict |
+|---|---|
+| **x4plus alone** (RealESRGAN_x4plus, 23 RRDB blocks) | crisp edges, dither / 4-bit noise gone, text and logos legible (the best of the four); but faint linework fades (m2 pool grout) and flat material grain goes smooth |
+| 6B -> x4plus chain (anime 6B cleans, boxed back to 1x, x4plus upscales) | orange / white outline artifacts around letters, small text garbled ("THEATRE" -> "THO ATI"): rejected |
+| de-dither -> x4plus (range-limited 3x3 on dithered textures) | small text garbled, flatter still: rejected |
+| x4plus + grain (the source's high-pass added back) | brings the dither dots back on logos and flat paint: off by default (PS2_AI_GRAIN) |
+
+**Chosen: x4plus + restore + clarity.** Restore = a line-coherent back-projection: per source texel the residual
+(source - the 4x4 box of the net's output) is put back (bilinear 4x) only where it continues along a direction on both
+sides (grout, cracks, wood grain, strokes) and is faint (fades out from 10 to 28 / 255; the net keeps strong edges) -
+never isolated dots, so dither stays gone. It brings the m2 grout and painted lines back. Clarity 0.8 = the luminance's
+mid band (a 5x5 Gaussian of taps 2 output pixels apart, ~1 source texel) boosted, at most +-24 levels: materials and
+edges read crisper and punchier without halos. Exclusions (keep the Enhanced image): soft-alpha textures (> 20 % of
+texels between 8 and 247 with a spread > 10: glows, smoke; the net turns soft blobs into rings), small sprites
+(<= 32 texels, transparent all along the border: snow flakes, bubbles - their crisp rim read as rings in ep6), sources
+above 256 texels, HD-pack images. Tiling: REPEAT axes are padded by wrapping when the content continues across its edge,
+else by the edge; padding 12 texels (vs 24: 0.9 / 255 mean difference in the border band, no visible seams).
+
+**Honest verdict**: at scene scale the textures read as a sharp, clean HD remaster of the same art (glass streaks, paint
+chips, plank edges and tile grout crisp; no dither, no shimmer) rather than a redraw. The "reimagined" weight has to
+come from the lighting using the surface maps (relief, cavity) and the grading; texture-wise this is the boldest result
+without real defects that the approved models give.
+
+### Pipeline (gpu_tex_ai.h; Look = Reimagined only)
+
+1. An Enhanced image is linked (et_link) -> its key (content hash + addressing + alpha-tested) names a cache file
+   `<user dir>\textures\reimagined\x4plus-v<RA_VER>\<key>.jpg|png`. Present: decoded on the worker thread (WIC) and
+   uploaded over the Enhanced image (at most 1 M texels per frame). Absent: the source texels are read back (staging,
+   no stall) for the worker.
+2. Worker thread (below normal priority): colour under transparent texels, exclusions, wrap / edge padding, tiles of
+   128 + 12 padding as float planes; alpha kept apart.
+3. The net: same-sized tiles batched (up to 152 x 152 padded pixels per batch), the 351 dispatches spread over frames:
+   each frame issues layers in bands of 8 output rows worth `budget` GFLOP at the start of the frame (et_frame_begin).
+   budget = what the frame leaves of 80 % of the frame interval (from the last pictures' GPU time), clamped to
+   PS2_AI_MS_MIN .. PS2_AI_MS (0.5 .. 4 ms), minus this frame's Enhanced builds; ms per GFLOP measured with timestamps.
+4. cs_ai_res + cs_ai_post: restore residuals, crop, clarity, alpha (Catmull-Rom 4x, cut-outs a steep ramp), into an
+   upload region; the image is built over the Enhanced one as an HD image (mips, alpha coverage) and gets its surface
+   map; read back and written by the worker as JPEG (quality 0.93, 4:4:4; opaque) or PNG (alpha), via .tmp + rename.
+5. Until an image is ready the Enhanced (Faithful) image shows; a slot reused for another texture loses its AI image and
+   reloads it from the cache when the texture comes back.
+
+Weights: the converted file (`python -I scripts/ai_model.py export RealESRGAN_x4plus.pth x4plus.bin`, restricted
+unpickler + SHA-256 check, 64 MB fp32) at PS2_AI_WEIGHTS, else `<exe dir>\models\x4plus.bin`, else `<user dir>\models\
+x4plus.bin`. No Python at run time. The game only reads that file (SLYAIW01: names, shapes, float32); missing -> the
+cache alone is used and Faithful's images show for the rest (logged). Shipping it is the owner's call (BSD-3 allows it
+with the licence text in the third-party notices); it is never committed.
+
+### Numbers (RTX 4060 Ti 8 GB, shared with other agents' game runs and at times VALORANT: GPU numbers are noisy)
+
+TODO
