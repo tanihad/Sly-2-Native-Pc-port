@@ -16,7 +16,11 @@ STATUS: IN PROGRESS
 3. [x] runtime (1a24f82; first ep1 run: 237 built + saved, JPEG ~19 KB each): x4plus net in the game (hlslc perms), time-sliced per frame, cache files in <user dir>\textures\ai,
        Enhanced fallback, VRAM budget, Look = Reimagined only
 4. [ ] census of the game's textures, projected build time
-5. [ ] gates + perf + pictures (build\ai\shots2)
+5. [~] gates: run_tests 16/16, units all pass (shot needed a rerun: exe relinked mid-run), m9_exact S1+S3 -Game
+       identical (base = git archive 81cde3d runtime -> build\basert), gpu_diff_all 28/28 (on ae86eb9 / d724197);
+       todo r2_sweep, perf, pictures (scratchpad ri_runs.ps1 builds the cache then shoots; census.ps1 running)
+6. decisions: x4plus alone + restore (line-coherent back-projection: m2 grout) + clarity 0.8; grain off; chain / dd
+   rejected (garble text); soft-alpha + small-sprite exclusion (snow rings); slope K 10
 
 ## Phase 1 done (kept)
 - scripts/ai_model.py (safe loader), runtime/gpu/ai_up.c/.h + shaders/ai_up.hlsl, scripts/ai_up_tool.c,
