@@ -40,3 +40,38 @@ _SPEC, _AO_R/_K/_MIN. GPU profile: PS2_GPU_PROF=1 shows "light" (the post pass) 
 
 Look = Reimagined works from sly2.ini (`[graphics] look = reimagined`); the menu offers it only when the ini says so
 (menu.c MENU_ROW_GLOOK) until the owner approves it - then add it unconditionally there.
+
+## Results (b3663a4)
+
+**Cost** (in-run A/B `PS2_GPU_AB=24 PS2_GPU_AB_R8=1024`, ep1 hub, 2560 x 1440 Medium (MSAA 4x), unlimited frame rate,
+6000 pictures per phase; the GPU was shared with other agents' game runs the whole time, so the absolute numbers are
+~1.8x an unloaded machine's):
+
+| ep1 hub | Faithful | Reimagined | delta |
+|---|---|---|---|
+| GPU per picture, average | 7.81 ms | 9.17 ms | +1.28 |
+| GPU + present p99 | 16.10 ms | 17.60 ms | |
+| worst | 19.30 ms | 22.26 ms | |
+
+GPU profile (PS2_GPU_PROF=1, Reimagined, same shared GPU): post pass ("light") ~1.7 ms, shadow casters ("reim-smap")
+~0.65 ms before the lean caster VS. Unloaded estimate: Faithful ~4.3 ms here (notes/enhanced-lighting.md) -> Reimagined
+~5.0-5.5 ms (~180-200 fps), within the 6 ms / 165 fps budget; to be confirmed on an idle GPU.
+
+**Gates**: run_tests 16/16; every tests\unit suite passes; m9_exact S1 + S3 -Game identical and gpu_diff_all 28/28 (on
+25d1062; later commits touch only Reimagined-only shader code and constants); r2_sweep -Parallel 1 ep1 / ep3 /
+m2_boardroom tfo, tfb, mf: Faithful 9/9 and Reimagined (PS2_REIMAGINE=1) 9/9 - no flicker, 0 pops, 0 stray triangles.
+
+**Pictures** (local only): build\reimagine\shots\<scene>__retro_faithful_reimagined.png (Retro from its own run;
+Faithful / Reimagined from one A/B run, 30 VBlanks apart) for ep1 hub night, ep3 hub (night, rain), ep6 hub dusk, m2
+boardroom; closeup_sly_ep3__faithful_reimagined.png. (ep1 / ep6 / m2 were taken before the last softening of the
+shadows: 0.45 -> 0.32.)
+
+**Judgement**: a player sees at once that it is a different look - ep1's moon throws real shadows (Sly's own on the ledge,
+the fountain's), moonlit floors and roofs, a glowing moon with a halo, warmer lamps, a cooler graded night; Sly gets a
+rim and highlights. It stays pleasant at night; weaker spots: indoor / pool scenes (m2) come out lighter and less
+saturated than Faithful (the relight brightens the floor), and the key light is the game's character light, which in some
+levels is a weak overhead light (the effect is then subtler). Day scenes were not checked (none of the four).
+
+## Next ideas
+- Plug the next/ai normal maps into r2_reim_normal (and a normal-mapped relight of the prelit world: the R2 pass would
+  write a normal G-buffer); per-level tuning of the key-light strength; temporal accumulation of the shadow edges.
