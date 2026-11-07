@@ -18,6 +18,7 @@ extern void gpu_present_set_mode(int mode, int vsync) __attribute__((weak));
 extern void gpu_mft_config(int on, int pct, int msaa) __attribute__((weak));   /* (r2-m8) gpu_exec_mft.h */
 extern void gpu_light_config(int on) __attribute__((weak));   /* (light) gpu_light.h */
 extern void gpu_tex_config(int on) __attribute__((weak));     /* (tex) gpu_tex.h */
+extern void gpu_tex_look(int reimagined) __attribute__((weak));   /* (ai) gpu_tex.h: Reimagined textures */
 extern void gpu_hw_pacing_changed(int pacing) __attribute__((weak));
 void (*gfx_output_size)(int* w, int* h);  /* set by window.c (window_client_size) */
 
@@ -136,6 +137,7 @@ void gfx_apply(void) {
         if (gpu_mft_config) gpu_mft_config(on, settings_rs_is_pct(rs) ? rs : 100, settings_msaa_samples(ps2_settings.msaa));
         if (gpu_light_config) gpu_light_config(ps2_settings.lighting_enhanced);   /* (light: modern frames only) */
         if (gpu_tex_config) gpu_tex_config(ps2_settings.textures_enhanced);       /* (tex: modern frames only) */
+        if (gpu_tex_look) gpu_tex_look(settings_look(&ps2_settings) == SETTINGS_LOOK_REIMAGINED);   /* (ai) */
     }
     gfx_apply_pacing();
     if (scale != logged_scale || bits != logged_bits || off != logged_blur || is_auto != logged_auto ||

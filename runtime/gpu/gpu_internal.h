@@ -90,6 +90,7 @@ void gpu_stats_begin(uint32_t vblank, double front_ms);
 gpu_frame_stats* gpu_stats_cur(void);
 void gpu_stats_end(void);
 extern UINT64 gpu_ts_freq;               /* (tex) the GPU timestamp frequency, from the frames' disjoint queries (0: none yet) */
+extern double gpu_frame_ms_last;         /* (ai) the last measured picture's GPU time + present, ms (-1: none yet) */
 
 /* gpu_exec.c: frontend frames (M2 submission) */
 void gpu_exec_frame(const void* payload);
