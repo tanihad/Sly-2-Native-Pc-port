@@ -1264,7 +1264,8 @@ static int ab_off(void) { return PR.ab > 0 && !PR.ab_b && !PR.ab_ee && !PR.ab_r8
 /* (r8-perf) the GPU optimisations of the Balanced preset (modern frame targets), each one switchable for in-run A/B */
 enum { R8P_R2BATCH = 1, R8P_LINEPIX = 2, R8P_SHADOW = 4, R8P_RESOLVE = 8, R8P_R2STATE = 16, R8P_MISC = 32,
        R8P_LIGHT = 64 /* (light) Enhanced lighting: PS2_GPU_AB=<n> PS2_GPU_AB_R8=64 compares Original / Enhanced in one run */,
-       R8P_TEX = 128 /* (tex) Enhanced textures: PS2_GPU_AB_R8=128 */ };
+       R8P_TEX = 128 /* (tex) Enhanced textures: PS2_GPU_AB_R8=128 */,
+       R8P_REIM = 1024 /* (reimagine) Reimagined lighting: PS2_GPU_AB_R8=1024 compares Faithful / Reimagined in one run */ };
 static int r8p_mask = -1;                /* PS2_R8P=<mask>: the features on (default all) */
 static int r8p_off_mask;                 /* (PS2_R8P_VERIFY: the original way's second run) */
 static int r8p_mask_has(int f) {         /* (the feature is enabled at all: PS2_R8P) */

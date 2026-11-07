@@ -530,6 +530,15 @@ struct R2F {
 #endif
 };
 
+#if R2_ENH >= 2
+// (reimagine) THE per-pixel normal hook of Look = Reimagined (R2_ENH=2): N is the interpolated (skinned) object-space unit
+// normal of a lit sub-batch, V the unit direction to the camera, both object space. A normal map (the Reimagined textures'
+// normal maps, notes/reimagined.md) perturbs N here - define R2_NMAP and provide this function (e.g. a tangent frame from
+// the screen-space derivatives of the position and UV). Default: the flat, interpolated normal.
+#ifndef R2_NMAP
+float3 r2_reim_normal(float3 N, float3 V) { return normalize(N); }
+#endif
+#endif
 #if R2_ENH
 // (light) r2_lit's colour per pixel: the interpolated normal (renormalised to the VU's 127) through the entry's light block,
 // the same formula (f = min(d + d^3, threshold), clamps, the highlight share), plus an optional rim light (r2_misc.z)
@@ -554,6 +563,39 @@ float4 r2_lit_px(uint4 lx, float4 ln, float4 lc, float3 lv, bool csel, float4 co
         return float4(b, col.w);
     }
     float3 a = (cl.xyz + v10.xyz * k) * ln.w;
+#if R2_ENH >= 2
+    // (reimagine) Look = Reimagined: a specular highlight from the strongest light and a rim light in its hue (the lights'
+    // colours may be negative - the light then comes from -direction, as in f's sign)
+    {
+        float3 V = normalize(lv), Nn = r2_reim_normal(N * (1.0 / 127.0), V);
+        uint kk = 0u;
+        float best = -1.0;
+        [unroll] for (uint j = 0u; j < 4u; j++) {
+            float4 Lj = r2_xq(xb, 4u + j);
+            float m = abs(dot(Lj.xyz, float3(0.3, 0.59, 0.11)));
+            if (m > best) { best = m; kk = j; }
+        }
+        float4 Lc = r2_xq(xb, 4u + kk);
+        float sg = dot(Lc.xyz, float3(0.3, 0.59, 0.11)) < 0.0 ? -1.0 : 1.0;
+        float3 Ld = float3(T0[kk], T1[kk], T2[kk]) * sg;
+        float ll = length(Ld);
+        float3 lc3 = abs(Lc.xyz);
+        float3 hue = lc3 / max(max(lc3.x, lc3.y), max(lc3.z, 1e-3));
+        if (ll > 1e-6 && r2_mft.w > 0.0) {
+            Ld /= ll;
+            float3 H = normalize(Ld + V);
+            float nh = saturate(dot(Nn, H)), nl = saturate(dot(Nn, Ld));
+            float sp = pow(nh, 28.0) * nl;
+            a += sp * r2_mft.w * (0.35 + 0.65 * hue) * ln.w;   // (ln.w: the colour's scale, 128 = the texture as it is)
+        }
+        if (r2_misc.z > 0.0) {
+            float r = 1.0 - saturate(abs(dot(Nn, V)));
+            r = r * r * r;
+            a += r * r2_misc.z * (0.4 + 0.6 * hue) * ln.w;
+        }
+    }
+    return float4(a, col.w);
+#endif
     if (r2_misc.z > 0.0) {               // rim: grazing angles towards the camera, in the key light's hue
         float r = 1.0 - saturate(abs(dot(N * (1.0 / 127.0), normalize(lv))));
         r = r * r * r;

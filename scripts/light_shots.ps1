@@ -34,7 +34,7 @@ New-Item -ItemType Directory -Force $w | Out-Null
 [IO.File]::WriteAllText((Join-Path $w 'sly2.ini'), $ini)
 $set = [ordered]@{ PS2_DUMP_FROM = "$At"; PS2_DUMP_TO = "$($At + $Frames - 1)"; PS2_DUMP_WAIT = '0'; PS2_GS_PRESENT_SIZE = $Size;
     PS2_GS_GOVERNOR = '0'; PS2_R2 = $null; PS2_GS_SCALE = $null; PS2_MFT = $null; PS2_LIGHT = '1'; PS2_LIGHT_LOG = '1';
-    PS2_GPU_AB = "$Phase"; PS2_GPU_AB_R8 = '64' }
+    PS2_GPU_AB = "$Phase"; PS2_GPU_AB_R8 = '64'; PS2_USER_DIR = $w }   # (the run's own folder: never %LOCALAPPDATA%\Sly2)
 if ($NoAB) { $set.PS2_GPU_AB = $null; $set.PS2_GPU_AB_R8 = $null }
 foreach ($e in ($flags -split ' ' | Where-Object { $_ -like 'env=*' })) { $a, $b = $e.Substring(4) -split '=', 2; $set[$a] = $b }
 foreach ($e in ($Extra -split ';' | Where-Object { $_ })) { $a, $b = $e -split '=', 2; $set[$a.Trim()] = $b }

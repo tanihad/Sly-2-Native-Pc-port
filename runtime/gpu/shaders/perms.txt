@@ -277,6 +277,27 @@ ps_light_down       light.hlsl          ps_light_down     ps_5_0
 ps_light_up         light.hlsl          ps_light_up       ps_5_0
 ps_light_comp0      light.hlsl          ps_light_comp     ps_5_0    MS=0
 ps_light_comp1      light.hlsl          ps_light_comp     ps_5_0    MS=1
+# (reimagine) Look = Reimagined (gpu_reim.h): screen-space shadows, bloom + halos, shafts, fog, the grade
+ps_reim_shadow      light.hlsl          ps_reim_shadow    ps_5_0    REIM=1
+ps_reim_bright      light.hlsl          ps_reim_bright    ps_5_0    REIM=1
+ps_reim_up          light.hlsl          ps_reim_up        ps_5_0    REIM=1
+ps_reim_stats       light.hlsl          ps_reim_stats     ps_5_0    REIM=1
+ps_reim_shafts      light.hlsl          ps_reim_shafts    ps_5_0    REIM=1
+ps_reim_comp0       light.hlsl          ps_reim_comp      ps_5_0    MS=0 REIM=1
+ps_reim_comp1       light.hlsl          ps_reim_comp      ps_5_0    MS=1 REIM=1
+# (reimagine) the R2 pipelines' pixel shaders under Reimagined (R2_ENH=2: specular, rim, the per-pixel normal hook)
+ps_r2m_e_r          r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_ENH=2
+ps_r2m_nd_e_r       r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_NODISCARD=1 R2_ENH=2
+ps_r2m_a2c_e_r      r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_A2C=1 R2_ENH=2
+ps_r2m_clip_e_r     r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_CLIP=1 R2_ENH=2
+ps_r2m_clip_nd_e_r  r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_CLIP=1 R2_NODISCARD=1 R2_ENH=2
+ps_r2m_clip_a2c_e_r r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_CLIP=1 R2_A2C=1 R2_ENH=2
+ps_r2m_e_t_r        r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_ENH=2 R2_ETEX=1
+ps_r2m_nd_e_t_r     r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_NODISCARD=1 R2_ENH=2 R2_ETEX=1
+ps_r2m_a2c_e_t_r    r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_A2C=1 R2_ENH=2 R2_ETEX=1
+ps_r2m_clip_e_t_r   r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_CLIP=1 R2_ENH=2 R2_ETEX=1
+ps_r2m_clip_nd_e_t_r r2.hlsl            r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_CLIP=1 R2_NODISCARD=1 R2_ENH=2 R2_ETEX=1
+ps_r2m_clip_a2c_e_t_r r2.hlsl           r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_CLIP=1 R2_A2C=1 R2_ENH=2 R2_ETEX=1
 # (light) Enhanced lighting: the modern frame's R2 pipelines with lit sub-batches lit per pixel (R2_ENH; r2_render.c epipe*)
 vs_r2m_e            r2.hlsl             r2_vs             vs_5_0    R2_MFT=1 R2_ENH=1
 ps_r2m_e            r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_ENH=1

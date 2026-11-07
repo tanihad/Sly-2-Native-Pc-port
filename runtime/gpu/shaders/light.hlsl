@@ -204,3 +204,290 @@ LOut ps_light_comp(float4 pos : SV_Position) {
     }
     return o;
 }
+
+#ifndef REIM
+#define REIM 0
+#endif
+#if REIM
+// ======================================================================================================================
+// (reimagine) Look = Reimagined (runtime/gpu/gpu_reim.h, notes/reimagined-lighting.md): the post pass reimagined - screen-
+// space shadows along the key light, a wider and stronger bloom with halos, light shafts from bright distant sources
+// (the moon, the sky), depth + height fog in the scene's own sky colour, and a per-scene-mood colour grade (night: deep
+// blues, warm lamps; day: warm, saturated), filmic contrast and a vignette. Composited from a copy of the picture (no
+// blend): RGB written, the GS alpha byte kept. Only the REIM permutations contain this code (Faithful's are unchanged).
+cbuffer reim_cb : register(b8) {
+    float4 r_w0, r_w1, r_w2, r_w3;       // picture pixel + view depth -> world: the inverse world x clip matrix's rows
+    float4 r_ndc;                        // ndc x = x * p.x + y, ndc y = z * p.y + w (picture pixel centres)
+    float4 r_zab;                        // clip z = x * w + y; camera world height (z); -
+    float4 r_key;                        // the key light's direction in view space (towards it), shadow strength
+    float4 r_sss;                        // screen-space shadow: length (world units), thickness, bias, fade-out depth
+    float4 r_grade;                      // saturation, contrast, vibrance, exposure
+    float4 r_fog;                        // depth fog start, density, largest share, height fog density
+    float4 r_hfog;                       // height fog: scale height, offset below the camera, -, -
+    float4 r_vig;                        // vignette strength, inner radius, outer radius; clarity (local contrast power)
+    float4 r_shaft;                      // shafts: intensity, decay, length (share of the way to the source), far depth
+    float4 r_bloom;                      // bloom intensity, halo weight (up passes), -, -
+    float4 r_misc;                       // stats blend (0..1), night override (<0: auto), debug view, frame
+    float4 r_keyc;                       // key light colour (shadow tint), -
+};
+Texture2D<float4> r_stats : register(t18);   // 4 x 1: [0] average colour, mood; [1] fog colour; [2] shaft source; [3] -
+Texture2D<float4> r_pic : register(t19);     // the picture (a copy)
+Texture2D<float> r_sh : register(t20);       // screen-space shadow (half res)
+Texture2D<float4> r_shafts : register(t21);  // light shafts (quarter res)
+Texture2D<float4> r_scene : register(t22);   // half-res picture colour with its mips (the scene's averages)
+
+// view position of a picture position (as l_pos) -> picture position
+float2 r_pix(float3 S) { return float2((S.x / S.z - l_view.y) / l_view.x, (S.y / S.z - l_view.w) / l_view.z); }
+// world position of picture position p at view depth w
+float3 r_world(float2 p, float w) {
+    float4 c = float4((r_ndc.x * p.x + r_ndc.y) * w, (r_ndc.z * p.y + r_ndc.w) * w, r_zab.x * w + r_zab.y, w);
+    float4 h = c.x * r_w0 + c.y * r_w1 + c.z * r_w2 + c.w * r_w3;
+    return h.xyz / h.w;
+}
+float r_noise(float2 q) { return frac(52.9829189 * frac(dot(q, float2(0.06711056, 0.00583715)))); }
+
+// ---- screen-space shadows (half res): a short march from the surface towards the key light through the depth --------
+float ps_reim_shadow(float4 pos : SV_Position) : SV_Target {
+    if (r_key.w <= 0.0) return 1.0;
+    int2 q = int2(pos.xy);
+    float w = l_wload(q);
+    if (w >= l_z.z * 0.5 || w >= r_sss.w) return 1.0;
+    float2 pp = pos.xy * l_map.zw;
+    float3 P = l_pos(pp, w);
+    float3 L = r_key.xyz;
+    // the surface normal from the depth (the flatter neighbour, as the occlusion): surfaces turned away keep their light
+    float wl = l_wload(q - int2(1, 0)), wr = l_wload(q + int2(1, 0)), wu = l_wload(q - int2(0, 1)), wd = l_wload(q + int2(0, 1));
+    float3 Pl = l_pos(pp - float2(l_map.z, 0.0), wl), Pr = l_pos(pp + float2(l_map.z, 0.0), wr);
+    float3 Pu = l_pos(pp - float2(0.0, l_map.w), wu), Pd = l_pos(pp + float2(0.0, l_map.w), wd);
+    float3 dx = abs(wr - w) < abs(w - wl) ? Pr - P : P - Pl;
+    float3 dy = abs(wd - w) < abs(w - wu) ? Pd - P : P - Pu;
+    float3 N = normalize(cross(dx, dy));
+    if (dot(N, P) > 0.0) N = -N;
+    float nl = dot(N, L);
+    if (nl <= 0.02) return 1.0;
+    float len = r_sss.x * (1.0 + w / 3000.0);       // (a little longer far away: the same share of the screen)
+    float noise = r_noise(pos.xy);
+    float3 Po = P + N * (r_sss.z * (1.0 + w * 0.002));   // (off the surface: no self-shadowing)
+    float occ = 0.0;
+    const uint NS = 14u;
+    [unroll] for (uint i = 0u; i < NS; i++) {
+        float t = ((float)i + noise) / (float)NS;
+        t = t * t;                       // (denser near the surface: contact shadows stay crisp)
+        float3 S = Po + L * (len * t + 2.0);
+        if (S.z <= 1.0) break;
+        float2 sp = r_pix(S) / l_map.zw;  // half-res texel
+        if (any(sp < 0.0) || any(sp >= l_dst.xy)) break;
+        float ws = l_wload(int2(sp));
+        float dz = S.z - ws;             // > 0: something is in front of the ray point
+        float th = r_sss.y * (1.0 + S.z / 2000.0);
+        if (dz > 0.5 + S.z * 0.0015 && dz < th) occ = max(occ, 1.0 - t * 0.6);
+    }
+    float fade = saturate((r_sss.w - w) / (r_sss.w * 0.3));
+    return 1.0 - occ * r_key.w * fade * saturate(nl * 4.0);
+}
+
+// ---- bloom: a softer, lower threshold and the half-res scene colour for the averages (MRT) --------------------------
+struct RBOut { float4 bright : SV_Target0; float4 scene : SV_Target1; };
+RBOut ps_reim_bright(float4 pos : SV_Position) {
+    float2 p = pos.xy * l_map.zw;
+    float3 s = 0.0, sc = 0.0;
+    float ws = 0.0;
+    [unroll] for (int j = 0; j < 4; j++) {
+        float2 o = float2((j & 1) ? 1.0 : -1.0, (j & 2) ? 1.0 : -1.0);
+        float3 c0 = l_tex.SampleLevel(l_lin, (p + o) * l_dir.zw, 0.0).rgb;
+        float3 c = l_bright(c0);
+        float wt = 1.0 / (1.0 + l_luma(c));
+        s += c * wt;
+        ws += wt;
+        sc += c0;
+    }
+    RBOut o;
+    o.bright = float4(s / ws, 1.0);
+    o.scene = float4(sc * 0.25, 1.0);
+    return o;
+}
+// the dual-filter upsample with the wider level weighted (halos around lamps, windows and the moon)
+float4 ps_reim_up(float4 pos : SV_Position) : SV_Target {
+    float2 uv = pos.xy * l_dst.zw, h = l_src.zw;
+    float3 s = l_tex.SampleLevel(l_lin, uv + float2(-2.0 * h.x, 0.0), 0.0).rgb;
+    s += l_tex.SampleLevel(l_lin, uv + float2(2.0 * h.x, 0.0), 0.0).rgb;
+    s += l_tex.SampleLevel(l_lin, uv + float2(0.0, -2.0 * h.y), 0.0).rgb;
+    s += l_tex.SampleLevel(l_lin, uv + float2(0.0, 2.0 * h.y), 0.0).rgb;
+    s += l_tex.SampleLevel(l_lin, uv + float2(-h.x, h.y), 0.0).rgb * 2.0;
+    s += l_tex.SampleLevel(l_lin, uv + float2(h.x, h.y), 0.0).rgb * 2.0;
+    s += l_tex.SampleLevel(l_lin, uv + float2(h.x, -h.y), 0.0).rgb * 2.0;
+    s += l_tex.SampleLevel(l_lin, uv + float2(-h.x, -h.y), 0.0).rgb * 2.0;
+    return float4(s * (r_bloom.y / 12.0), 1.0);
+}
+
+// ---- scene statistics (4 x 1, smoothed over frames): the mood, the fog colour, the shafts' source ----------------
+Texture2D<float4> r_prev : register(t23);    // the previous statistics
+float4 ps_reim_stats(float4 pos : SV_Position) : SV_Target {
+    uint k = (uint)pos.x;
+    float4 prev = r_prev.Load(int3(k, 0, 0));
+    float4 v = 0.0;
+    uint lw, lh, nl;
+    r_scene.GetDimensions(0, lw, lh, nl);
+    if (k == 0u) {                       // the average colour (mip 4: 80 x 45 at 1440p) and its log-average brightness
+        float3 s = 0.0;
+        float ll = 0.0;
+        [loop] for (uint y = 0u; y < 12u; y++)
+            [loop] for (uint x = 0u; x < 16u; x++) {
+                float3 c = r_scene.SampleLevel(l_lin, (float2(x, y) + 0.5) / float2(16.0, 12.0), 3.0).rgb;
+                s += c;
+                ll += log(l_luma(c) + 0.02);
+            }
+        s /= 192.0;
+        v = float4(s, exp(ll / 192.0));
+    } else if (k == 1u) {                // the fog colour: the top third of the picture, far / sky texels weighted up
+        float3 s = 0.0;
+        float sw = 1e-4;
+        [loop] for (uint y = 0u; y < 8u; y++)
+            [loop] for (uint x = 0u; x < 16u; x++) {
+                float2 uv = (float2(x, y) + 0.5) / float2(16.0, 24.0);
+                float3 c = r_scene.SampleLevel(l_lin, uv, 2.0).rgb;
+                float w = l_w.Load(int3(int2(uv * l_src.xy), 0));
+                float g = w >= l_z.z * 0.5 ? 1.0 : saturate(w / 6000.0) * 0.6 + 0.05;
+                s += c * g;
+                sw += g;
+            }
+        v = float4(s / sw, 1.0);
+    } else if (k == 2u) {                // the shafts' source: the centroid of the bright far texels (moon, sky glow)
+        float2 s = 0.0;
+        float sw = 0.0;
+        [loop] for (uint y = 0u; y < 36u; y++)
+            [loop] for (uint x = 0u; x < 64u; x++) {
+                float2 uv = (float2(x, y) + 0.5) / float2(64.0, 36.0);
+                float3 b = l_tex.SampleLevel(l_lin, uv, 0.0).rgb;   // (bloom level 4)
+                float w = l_w.Load(int3(int2(uv * l_src.xy), 0));
+                float far = w >= r_shaft.w ? 1.0 : 0.0;
+                float e = l_luma(b) * far;
+                e *= e;
+                s += uv * e;
+                sw += e;
+            }
+        v = sw > 1e-6 ? float4(s / sw, sqrt(sw / 2304.0), 1.0) : float4(prev.xy, 0.0, 1.0);
+    }
+    float a = r_misc.x;
+    if (prev.w <= 0.0) a = 1.0;          // (the first frame)
+    if (k == 2u && prev.z < 1e-3) prev.xy = v.xy;   // (a source appearing: from where it is)
+    return lerp(prev, v, a);
+}
+
+// ---- light shafts (quarter res): bright far texels smeared along the way towards the source -------------------------
+float4 ps_reim_shafts(float4 pos : SV_Position) : SV_Target {
+    float4 src = r_stats.Load(int3(2, 0, 0));
+    if (src.z * r_shaft.x <= 1e-4) return 0.0;
+    float2 uv = pos.xy * l_dst.zw;
+    float2 d = (src.xy - uv) * (r_shaft.z / 24.0);
+    float noise = r_noise(pos.xy);
+    float2 t = uv + d * noise;
+    float3 s = 0.0;
+    float dec = 1.0;
+    [unroll] for (uint i = 0u; i < 24u; i++) {
+        float3 b = l_tex.SampleLevel(l_lin, t, 0.0).rgb;
+        float w = l_w.SampleLevel(l_lin, t, 0.0);
+        s += b * (w >= r_shaft.w ? 1.0 : 0.0) * dec;
+        dec *= r_shaft.y;
+        t += d;
+    }
+    return float4(s * (1.0 / 24.0), 1.0);
+}
+
+// ---- composite + grade (full res, no blend) ----------------------------------------------------------------------
+float3 r_srgb2lin(float3 c) { return pow(max(c, 0.0), 2.2); }
+float3 r_lin2srgb(float3 c) { return pow(max(c, 0.0), 1.0 / 2.2); }
+float r_curve(float x, float k) {        // filmic contrast around the pivot 0.42 (display values), a soft toe and shoulder
+    const float p = 0.42;
+    x = saturate(x);
+    return x < p ? p * pow(x / p, k) : 1.0 - (1.0 - p) * pow((1.0 - x) / (1.0 - p), k);
+}
+float4 ps_reim_comp(float4 pos : SV_Position) : SV_Target {
+    float2 p = pos.xy;
+    int2 ip = int2(p);
+    float4 pic = r_pic.Load(int3(ip, 0));
+    float3 c = pic.rgb;
+    float d = l_depth_at(p);
+    float w = l_wof(d);
+    bool sky = w >= l_z.z * 0.5;
+    // occlusion + screen-space shadow, depth-aware upsampled together
+    float ao = 1.0, sh = 1.0;
+    if (!sky) {
+        float2 t = p / l_map.zw - 0.5, f0 = floor(t), f = t - f0;
+        float s = 0.0, s2 = 0.0, ws = 0.0;
+        [unroll] for (int j = 0; j < 4; j++) {
+            int2 qj = clamp(int2(f0) + int2(j & 1, j >> 1), int2(0, 0), int2(l_src.xy) - 1);
+            float bw = ((j & 1) ? f.x : 1.0 - f.x) * ((j & 2) ? f.y : 1.0 - f.y);
+            float wj = l_w.Load(int3(qj, 0));
+            float g = (bw + 1e-3) / (1e-3 + abs(wj - w) / w * 20.0 + 0.02);
+            s += (l_ao.y > 0.0 ? l_aot.Load(int3(qj, 0)) : 1.0) * g;
+            s2 += r_sh.Load(int3(qj, 0)) * g;
+            ws += g;
+        }
+        ao = s / ws;
+        sh = s2 / ws;
+    }
+    float4 st0 = r_stats.Load(int3(0, 0, 0)), fogc = r_stats.Load(int3(1, 0, 0));
+    // the mood: night (a dark picture) .. day
+    float night = r_misc.y >= 0.0 ? r_misc.y : saturate((0.30 - st0.w) / 0.16);
+    // shadows: in the key light's opposite hue a little (cool under a warm lamp), occlusion neutral
+    float3 shc = lerp(float3(1.0, 1.0, 1.0), float3(0.82, 0.88, 1.08), 0.5 + 0.5 * night);
+    c *= ao;
+    c *= lerp(shc, float3(1.0, 1.0, 1.0), sh);
+    // light: bloom + shafts
+    float3 bl = l_tex.SampleLevel(l_lin, p * l_dir.zw, 0.0).rgb * r_bloom.x;
+    float3 sf = r_shafts.SampleLevel(l_lin, p * l_dir.zw, 0.0).rgb * r_shaft.x;
+    float3 lin = r_srgb2lin(c) * r_grade.w;
+    // clarity: local contrast against the picture's mean around (a ~16 pixel scale), on the brightness only
+    {
+        float Lc = l_luma(lin), Ll = l_luma(r_srgb2lin(r_scene.SampleLevel(l_lin, p * l_dir.zw, 3.0).rgb));
+        lin *= clamp(pow(max((Lc + 0.004) / (Ll + 0.004), 1e-3), r_vig.w), 0.7, 1.45);
+    }
+    lin += min(bl, 4.0) * (l_bloom.z * 0.35) + min(sf, 4.0);   // (the glow is light: added linearly)
+    // atmosphere: depth fog + height fog towards the scene's sky colour (the sky itself has it already)
+    if (!sky) {
+        float3 P = r_world(p, w);
+        float dist = w;
+        float fd = max(dist - r_fog.x, 0.0) * r_fog.y;
+        float h0 = r_zab.z - r_hfog.y;
+        float dz = P.z - r_zab.z;
+        float e0 = exp(-(r_zab.z - h0) / r_hfog.x), e1 = exp(-clamp(P.z - h0, -2.0 * r_hfog.x, 50.0 * r_hfog.x) / r_hfog.x);
+        float hint = abs(dz) > 1.0 ? (e0 - e1) * r_hfog.x / -dz : e0;
+        float fh = r_fog.w * dist * max(hint, 0.0);
+        float fa = r_fog.z * (1.0 - exp(-(fd + fh)));
+        float3 fcol = r_srgb2lin(fogc.rgb);
+        fcol = lerp(l_luma(fcol).xxx, fcol, 0.7) * lerp(float3(1.0, 1.0, 1.0), float3(0.85, 0.95, 1.25), night);
+        lin = lerp(lin, fcol, fa);
+    }
+    // grade: split toning by the mood (night: blue shadows and amber highlights; day: warm, a cool teal in the darks)
+    float L = l_luma(lin);
+    float3 cs = lerp(float3(0.97, 1.0, 1.04), float3(0.92, 0.97, 1.09), night);   // shadow tint
+    float3 ch = lerp(float3(1.05, 1.0, 0.92), float3(1.12, 1.00, 0.84), night);   // highlight tint
+    float hw = smoothstep(0.02, 0.45, L);
+    lin *= lerp(cs, ch, hw);
+    // warm lamps: warm-hued light glows warmer and a little brighter against the night
+    float warm = saturate((lin.r - lin.b) / max(lin.r, 1e-3)) * smoothstep(0.04, 0.35, L);
+    lin *= 1.0 + warm * (0.15 + 0.35 * night) * float3(1.0, 0.82, 0.55);
+    lin += float3(0.0, 0.0015, 0.005) * night * (1.0 - hw);   // (a blue floor in the deep darks: night, not mud)
+    // saturation and vibrance (luminance kept)
+    L = l_luma(lin);
+    float mx = max(max(lin.r, lin.g), lin.b), mn = min(min(lin.r, lin.g), lin.b);
+    float sat = (mx - mn) / max(mx, 1e-4);
+    float sk = r_grade.x + r_grade.z * (1.0 - sat);
+    lin = max(lerp(L.xxx, lin, sk), 0.0);
+    // filmic: the light added above white rolls off on a short shoulder, then the contrast curve
+    float3 o = r_lin2srgb(lin);
+    float3 sh2 = max(o - 1.0, 0.0);
+    o = o - sh2 + (1.0 - exp(-sh2 * 2.0)) * 0.12;   // (above white: a short soft shoulder)
+    o = float3(r_curve(o.r, r_grade.y), r_curve(o.g, r_grade.y), r_curve(o.b, r_grade.y));
+    // vignette
+    float2 v = (p * l_dir.zw - 0.5) * float2(l_dst.x * l_dst.w, 1.0);
+    float vr = length(v) / length(float2(0.5 * l_dst.x * l_dst.w, 0.5));
+    o *= 1.0 - r_vig.x * smoothstep(r_vig.y, r_vig.z, vr);
+    if (r_misc.z == 1.0) o = sh.xxx;                       // (PS2_REIM_DBG=1: the screen-space shadow)
+    else if (r_misc.z == 2.0) o = sf;                      // (2: the shafts)
+    else if (r_misc.z == 3.0) { float3 P = r_world(p, w); o = sky ? float3(0, 0, 1) : frac(P / 500.0); }   // (3: world position bands)
+    else if (r_misc.z == 4.0) o = fogc.rgb;                // (4: the fog colour)
+    return float4(saturate(o), pic.a);
+}
+#endif
