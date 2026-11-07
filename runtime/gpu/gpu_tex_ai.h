@@ -34,7 +34,7 @@ extern double frame_rate_target_hz(void) __attribute__((weak));   /* (runtime/fr
 #define RA_MAXT 2048                     /* prepared tiles waiting for the net */
 #define RA_BMAX 64                       /* tiles per net batch */
 #define RA_UP_WORDS (4u << 20)           /* upload regions: 16 MB */
-#define RA_LOAD_TEXELS (1u << 20)        /* cached images uploaded per frame */
+#define RA_LOAD_TEXELS (1u << 18)        /* cached images uploaded per frame (1 M: render-thread peaks of ~30 ms at a hub load) */
 #define RA_JOBQ 4096
 #define RA_REG 64
 

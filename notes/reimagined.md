@@ -80,7 +80,7 @@ without real defects that the approved models give.
 
 1. An Enhanced image is linked (et_link) -> its key (content hash + addressing + alpha-tested) names a cache file
    `<user dir>\textures\reimagined\x4plus-v<RA_VER>\<key>.jpg|png`. Present: decoded on the worker thread (WIC) and
-   uploaded over the Enhanced image (at most 1 M texels per frame). Absent: the source texels are read back (staging,
+   uploaded over the Enhanced image (at most 256 K texels per frame). Absent: the source texels are read back (staging,
    no stall) for the worker.
 2. Worker thread (below normal priority): colour under transparent texels, exclusions, wrap / edge padding, tiles of
    128 + 12 padding as float planes; alpha kept apart.
