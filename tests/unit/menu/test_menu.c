@@ -619,8 +619,8 @@ static void test_menu_nav(void) {
     CHECK(menu_is_open() && host_open_requests == 1 && fake_menu_active && fake_flushes, "Esc opens (through the host)");
     view();
     CHECK(V.page == MENU_PAGE_GRAPHICS && V.sel == 0 && V.rows[0].id == MENU_ROW_GLOOK && !strcmp(V.rows[0].value, "Faithful") &&
-          V.rows[1].id == MENU_ROW_PRESET && !strcmp(V.rows[1].value, "Medium") && V.rows[0].nchoices == 2,
-          "Graphics: Look = Faithful (Reimagined hidden), Quality = Medium ('%s', '%s')", V.rows[0].value, V.rows[1].value);
+          V.rows[1].id == MENU_ROW_PRESET && !strcmp(V.rows[1].value, "Medium") && V.rows[0].nchoices == 3,
+          "Graphics: Look = Faithful (Retro/Faithful/Reimagined), Quality = Medium ('%s', '%s')", V.rows[0].value, V.rows[1].value);
     {   /* the page is short: Look, Quality, Resolution scale, Anti-aliasing, Outlines, Advanced graphics, Reset, Quit */
         static const int ids[] = { MENU_ROW_GLOOK, MENU_ROW_PRESET, MENU_ROW_SCALE, MENU_ROW_MSAA, MENU_ROW_OUTLINES, MENU_ROW_GFX_ADV,
                                    MENU_ROW_RESET, MENU_ROW_QUIT };

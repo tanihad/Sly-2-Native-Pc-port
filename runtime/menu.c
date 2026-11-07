@@ -252,11 +252,10 @@ static void build_choices(int id, choices* c) {
         add(c, SETTINGS_PRESET_HIGH, "High");
         add(c, SETTINGS_PRESET_ULTRA, "Ultra");
         break;
-    case MENU_ROW_GLOOK:                 /* (menu) Reimagined: offered once there is something behind it (or sly2.ini says so) */
+    case MENU_ROW_GLOOK:                 /* (menu) Reimagined: AI textures + surface maps + Reimagined lighting (next/reimagine) */
         add(c, SETTINGS_LOOK_RETRO, "Retro");
         add(c, SETTINGS_LOOK_FAITHFUL, "Faithful");
-        if (svk("graphics", "look") == SETTINGS_LOOK_REIMAGINED || ps2_settings.look == SETTINGS_LOOK_REIMAGINED)
-            add(c, SETTINGS_LOOK_REIMAGINED, "Reimagined");
+        add(c, SETTINGS_LOOK_REIMAGINED, "Reimagined");
         break;
     case MENU_ROW_INVERT:                /* (menu) bit 0 horizontal, bit 1 vertical */
         add(c, 0, "Off");
