@@ -513,6 +513,7 @@ static void reim_post(mtarget* c, mtarget* z, int pc) {
     rfog[0] = RE.fog0; rfog[1] = RE.fogd; rfog[2] = RE.fog && have_world ? RE.fogmax : 0.0f; rfog[3] = RE.hfog;
     rhf[0] = RE.hfog_h; rhf[1] = 250.0f;
     rvig[0] = RE.vig; rvig[1] = 0.55f; rvig[2] = 1.15f; rvig[3] = RE.grade ? RE.clar : 0.0f;
+    if (re_fix() && rvig[3] > 0.08f && !getenv("PS2_REIM_CLARITY")) rvig[3] = 0.08f;   /* (fix: local contrast amplified every small flicker under motion: a hint only) */
     rsh[0] = RE.shafts ? RE.sh_i : 0.0f; rsh[1] = 0.965f; rsh[2] = 0.85f; rsh[3] = 6000.0f;
     rbl[0] = 1.0f; rbl[1] = RE.halo;
     rmisc[0] = RE.stat_a; rmisc[1] = RE.grade ? RE.night : 0.0f;
