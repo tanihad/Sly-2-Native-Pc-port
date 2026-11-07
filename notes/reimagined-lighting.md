@@ -75,3 +75,44 @@ levels is a weak overhead light (the effect is then subtler). Day scenes were no
 ## Next ideas
 - Plug the next/ai normal maps into r2_reim_normal (and a normal-mapped relight of the prelit world: the R2 pass would
   write a normal G-buffer); per-level tuning of the key-light strength; temporal accumulation of the shadow edges.
+## Tuning pass + surface maps (2026-11-07, coordinator review)
+
+Review: ep1 good; ep6 / ep3 drained the warm colours, went teal and darker than Faithful. Changes:
+- **Grade keeps the game's colours**: relight in (nearly) white light - it was tinted by the moon's blue, and the relight
+  boost had been lost in an edit, so the "relight" only darkened; mild split tone (no night teal / blue floor), fog only
+  half the sky's hue, contrast around the scene's own mid-tone (log-average) instead of a fixed 0.42 pivot, saturation 1.06
+  + vibrance 0.35 with skin-like warm tones and the sky protected, warm lights x 1.3 boost kept, vignette 0.16.
+- **Brightness**: an exposure that gives back what occlusion, shadows and relight take on average (statistics texel 3,
+  a 32 x 18 sample of AO and the key-light terms, smoothed; gain 1..1.35): Reimagined >= Faithful's mean luminance.
+- **Rim / highlight on characters only** (skinned sub-batches): world lit meshes seen at grazing angles got a bluish rim.
+- **next/ai merged** (5c0afec) and its surface maps used: prelit R2 meshes under Reimagined draw through R2_REIM
+  permutations in tp[0]'s place: relief lit from the key light's side (the map normal's slope projected on screen
+  against the key light's screen direction, +-45 %) and cavity deepening creases (60 %); lit meshes (characters) are
+  normal-mapped in r2_reim_normal (cotangent frame from the screen derivatives of the object-space position and uv:
+  diffuse, highlight, rim). Both fade out where a map texel gets smaller than ~0.5 pixel (no shimmer / speckle at a
+  distance). Switches PS2_REIM_RELIEF / _CAVITY / _NMAP. Faithful's 270 shaders stay byte-identical (block compare).
+
+**Outline jaggies (finding, not changed)**: the pictures use Medium, i.e. PS2 outlines: the game's line pixels drawn as
+native-pixel quads (gpu_exec_mft.h mft_draw_setup, ps_mft_l*) - at 1440p one PS2 pixel is a 5 x 6.4 block, hence the
+stair-steps and the dots of the GS's AA1 coverage pattern. With thin outlines (High / Ultra, tfo) ps_mft_thin computes a
+coverage from the distance to the line only when the GS AA1 flag is set and otherwise discards per pixel; either way the
+coverage decision is per pixel in the shader (discard), so the MSAA surfaces they are drawn into (phase A, before the
+resolve) add no anti-aliasing. A fix would output SV_Coverage from the analytic distance (as R2_A2C does) in
+ps_mft_thin, and offer thin outlines under Reimagined; it changes Faithful's thin-outline output (High / Ultra), so it
+was left for an owner decision.
+
+**Cost, idle GPU** (RTX 4060 Ti, nothing else on the GPU; ep1 hub, 2560 x 1440 Medium, unlimited frame rate, 6000+
+pictures per phase, AI texture cache warm; Faithful from a look = faithful run, Reimagined = the B phases of a
+look = reimagined run with PS2_GPU_AB_R8=1024; 255cb7e):
+
+| ep1 hub | Faithful | Reimagined (AI textures + maps + lighting) |
+|---|---|---|
+| GPU + present, average | 4.77 ms (~210 fps) | 5.85 ms (~171 fps) |
+| p99 | 8.44 ms | 9.32 ms |
+| worst | 9.0-11.1 ms | 10.2 ms |
+
+**Gates** (255cb7e; 8ffdafb changes only Reimagined shader code): run_tests 16/16; all 28 unit suites; m9_exact S1+S3
+-Game identical; gpu_diff_all 28/28; r2_sweep ep1 / ep3 / m2 tfo, tfb, mf Faithful 9/9 and Reimagined (lighting + AI
+textures + maps) 9/9 - each run alone.
+
+Pictures: build\reimagine\shots3 (local only).

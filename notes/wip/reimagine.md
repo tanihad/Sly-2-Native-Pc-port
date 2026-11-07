@@ -17,7 +17,7 @@ shadows, atmosphere); Faithful and Retro stay bit-identical to main (81cde3d).
   (R2_NMAP). r2_render.c swaps them in per segment (in.reim). Faithful's 270 shaders byte-identical (checked against
   build\reimagine\gpu_shaders_main.h with a block compare).
 
-## Status: COMPLETE (b3663a4 + notes; results in notes/reimagined-lighting.md)
+## Status: COMPLETE (2026-11-07: tuning pass, next/ai merged + surface maps, exposure; results in notes/reimagined-lighting.md)
 
 ## Was in progress
 - gates: run_tests + units pass (shot: re-run - the exe was rebuilt under it), m9_exact S1+S3 -Game identical, gpu_diff_all 28/28 (on 25d1062 runtime).
