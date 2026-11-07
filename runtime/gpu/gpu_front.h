@@ -28,7 +28,8 @@ typedef struct {
     int split_ff;                /* the plain two-draw ATST split (M5 measured it visibly different from REF); default 0:
                                     the exact split (a new draw where a pass-capable primitive covers a pixel of an
                                     earlier fail-capable one of the draw) */
-    int thin;                    /* (M7) outlines = thin: lines drawn as analytic thin lines at scale > 1 (not exact) */
+    int thin;                    /* (M7) outlines = thin: lines drawn as analytic thin lines at scale > 1 (not exact);
+                                    (outlines) 2: PS2 outlines smoothed - analytic lines one native pixel wide */
     int display_kx;              /* (M10, 8.3) anamorphic display targets: kx of the display family, round(N * W) at a
                                     wide aspect A (W = A / (4/3)); 0 or <= scale: kx = N */
     int no_tex_alpha;            /* (M9) 1: the source-alpha bound of indexed textures from the whole palette only (the
@@ -183,6 +184,8 @@ enum { GPU_GFX_PROGRESSIVE = 1,          /* display-family targets 2N rows per n
        GPU_GFX_THIN = 2,                 /* thin analytic outlines at scale > 1 (outlines = thin) */
        GPU_GFX_FLICKER_OFF = 4,          /* the standard flicker-filter circuit pair shows one circuit */
        GPU_GFX_FIELDS = 8,               /* field display as the PS2 (gs.c deinterlacer); else progressive pictures */
+       GPU_GFX_SMOOTH = 16,              /* (outlines) PS2 outlines as anti-aliased analytic lines of the PS2's width (Faithful /
+                                            Reimagined; Retro keeps the line pixels) */
        GPU_GFX_SCALER_SHIFT = 8 };       /* bits 8..11: GPU_SCALER_* of the presenter */
 enum { GPU_SCALER_AUTO, GPU_SCALER_POINT, GPU_SCALER_BOX, GPU_SCALER_LANCZOS, GPU_SCALER_CATMULL, GPU_SCALER_BILINEAR, GPU_SCALER_N };
 void gpu_front_vblank_display(const gpu_display_info* di);

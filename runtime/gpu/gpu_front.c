@@ -1433,6 +1433,7 @@ static void emit_thin(const gs_env_view* ev, const gs_line* L, const gs_vtx* a, 
     int k = T ? (L->xmajor ? T->ky : T->kx) : (gf_cfg.scale > 0 ? gf_cfg.scale : 1);
     r->w = thin_width_samples() / (float)(k > 0 ? k : 1);
     if (r->w > 1.0f) r->w = 1.0f;        /* (never wider than the PS2's own line) */
+    if (gf_cfg.thin == 2) r->w = 1.0f;   /* (outlines: PS2 outlines smoothed - the PS2's own width, anti-aliased) */
 }
 
 /* ---- the exact ATST split (M5) ----------------------------------------------------------------------
@@ -2773,7 +2774,8 @@ void gf_vblank_impl(const uint64_t priv[16], uint32_t vblank, const gpu_display_
     frame_begin();
     trace_on = vblank + 1 == trace_vblank;
     if (di && (di->flags & GPU_DI_CONFIG))
-        gf_configure(di->scale, (di->gfx & GPU_GFX_PROGRESSIVE) != 0, (di->gfx & GPU_GFX_THIN) != 0, di->scale_x);
+        gf_configure(di->scale, (di->gfx & GPU_GFX_PROGRESSIVE) != 0,
+                     (di->gfx & GPU_GFX_THIN) ? 1 : (di->gfx & GPU_GFX_SMOOTH) ? 2 : 0, di->scale_x);
 }
 
 /* (M7) settings changed at run time: from this frame on (the targets take their new factors before any draw);

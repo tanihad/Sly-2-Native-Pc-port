@@ -74,6 +74,7 @@ uint32_t gfx_bits(void) {
     else g |= GPU_GFX_PROGRESSIVE;                          /* progressive: display targets 2N rows per native row */
     if (!settings_flicker_filter(s)) g |= GPU_GFX_FLICKER_OFF;
     if (s->outlines_thin) g |= GPU_GFX_THIN;
+    else if (settings_look(s) != SETTINGS_LOOK_RETRO) g |= GPU_GFX_SMOOTH;   /* (outlines) PS2 outlines, smoothed (Retro: as the PS2) */
     int sc = s->scaler >= 0 && s->scaler < SETTINGS_SCALER_N ? s->scaler : 0;
     g |= (uint32_t)sc << GPU_GFX_SCALER_SHIFT;
     return g;

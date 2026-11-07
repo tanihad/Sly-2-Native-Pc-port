@@ -560,7 +560,7 @@ const char* gpu_hw_start_error(void) { return start_err[0] ? start_err : "unknow
 
 static int punt_reader(uint8_t* out, void* user) { (void)user; return gpu_exec_read_memory(NULL, NULL, 0, out); }
 
-#define GFX_FRONT (GPU_GFX_PROGRESSIVE | GPU_GFX_THIN)   /* the bits the frontend's configuration depends on */
+#define GFX_FRONT (GPU_GFX_PROGRESSIVE | GPU_GFX_THIN | GPU_GFX_SMOOTH)   /* the bits the frontend's configuration depends on */
 
 void gpu_hw_set_graphics(int scale, uint32_t gfx) {
     if (scale < 1) scale = 1;
@@ -580,7 +580,7 @@ static void front_start(void) {
     run_kx = display_kx(run_scale);      /* (M10) */
     fc.display_kx = run_kx;
     fc.display_ky2 = (run_gfx & GPU_GFX_PROGRESSIVE) != 0;
-    fc.thin = (run_gfx & GPU_GFX_THIN) != 0;
+    fc.thin = (run_gfx & GPU_GFX_THIN) ? 1 : (run_gfx & GPU_GFX_SMOOTH) ? 2 : 0;
     fc.sw = C.verify > 0;                /* verify: the software renderer draws too (same thread) */
     fc.thread = !fc.sw && !C.same_thread;
     gpu_exec_reset();                    /* (a restart: the render thread forgets the old targets) */
