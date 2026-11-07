@@ -489,6 +489,7 @@ float4 ps_reim_comp(float4 pos : SV_Position) : SV_Target {
         float3 kc = abs(r_keyc.rgb);
         kc = kc / max(max(kc.r, kc.g), max(kc.b, 1e-3));
         float lit = smoothstep(0.0, 0.7, nl) * vis, dark = saturate(nl * 4.0) * (1.0 - vis);
+        dark *= 1.0 - 0.6 * smoothstep(0.25, 0.65, l_luma(c));   // (a lamp-lit spot keeps its own light: no mud under a canopy by the fire)
         float head = saturate(1.15 - max(max(c.r, c.g), c.b));   // (bright surfaces: little headroom - no clipping to white)
         c *= lerp(float3(1.0, 1.0, 1.0), shc * (1.0 - r_key.w), dark);
     }

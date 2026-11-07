@@ -18,7 +18,8 @@ shadows, atmosphere); Faithful and Retro stay bit-identical to main (81cde3d).
   build\reimagine\gpu_shaders_main.h with a block compare).
 
 ## In progress
-- tuning on ep1 / ep3 / ep6 / m2 A/B pictures.
+- gates: run_tests + units pass (shot: re-run - the exe was rebuilt under it), m9_exact S1+S3 -Game identical, gpu_diff_all 28/28 (on 25d1062 runtime).
+- pictures: build\reimagine\shots_all.ps1 (shots.ps1 per scene) -> build\reimagine\shots; then perf A/B, r2_sweep Faithful + Reimagined.
 
 ## Next
 1. tune; perf A/B (PS2_GPU_AB=24 PS2_GPU_AB_R8=1024); notes/reimagined-lighting.md
@@ -31,3 +32,5 @@ shadows, atmosphere); Faithful and Retro stay bit-identical to main (81cde3d).
 - Darkening alone made the shadows invisible at night; relighting (lit faces x (1 + 0.45 x key hue)) made them read.
 - Parallel game runs (3) slowed VBlanks so hubs never reached the dump window: run <= 2 at once, -Seconds 240.
 - PowerShell [IO.File] with a relative path writes into the main checkout: absolute paths only.
+- env.ps1 sets $root to the MAIN checkout: a script that dot-sources it must not use $root for the worktree (my first gate run wrote build\reimagine + build\unit outputs into the main checkout; removed build\reimagine there).
+- AI agent's normal maps: next/ai notes/reimagined.md (etn_sample in etn.hlsli, t40..t46); r2_reim_normal is where they plug in (not integrated: their branch not merged).

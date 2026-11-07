@@ -61,7 +61,7 @@ static void re_env(void) {
     if (RE.sm_size > 8192) RE.sm_size = 8192;
     RE.sm_k = lt_envf("PS2_REIM_SM_K", 0.5f);         /* its strength */
     RE.sm_dist = lt_envf("PS2_REIM_SM_DIST", 3500.0f); /* its reach from the camera (world units) */
-    RE.sss_k = lt_envf("PS2_REIM_SS_K", 0.45f);      /* shadow strength (shadow map and contact shadows) */
+    RE.sss_k = lt_envf("PS2_REIM_SS_K", 0.32f);      /* shadow strength (shadow map and contact shadows) */
     RE.key_i = lt_envf("PS2_REIM_KEY_I", 0.45f);     /* the key light's added share where it reaches */
     RE.sss_len = lt_envf("PS2_REIM_SS_LEN", 160.0f); /* its march length, world units */
     RE.sss_th = lt_envf("PS2_REIM_SS_TH", 60.0f);    /* an occluder's assumed thickness */
@@ -86,8 +86,8 @@ static void re_env(void) {
     RE.rim = lt_envf("PS2_REIM_RIM", 1.1f);          /* rim light on lit meshes (Faithful: 0.5) */
     RE.spec = lt_envf("PS2_REIM_SPEC", 0.45f);     /* specular highlights on lit meshes (Faithful: none) */
     RE.ao_r = lt_envf("PS2_REIM_AO_R", 80.0f);
-    RE.ao_k = lt_envf("PS2_REIM_AO_K", 4.0f);
-    RE.ao_min = lt_envf("PS2_REIM_AO_MIN", 0.22f);
+    RE.ao_k = lt_envf("PS2_REIM_AO_K", 3.5f);
+    RE.ao_min = lt_envf("PS2_REIM_AO_MIN", 0.3f);
 }
 
 /* general 4 x 4 inverse (row-major); 0: singular */
