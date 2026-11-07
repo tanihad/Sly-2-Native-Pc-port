@@ -13,19 +13,23 @@ typedef struct {
     /* the lit entries' lights, clustered by world direction (a directional light repeats with one direction) */
     struct { float d[3], c[3], br; int n; } cl[RE_NCL];
     int ncl;
+    uint32_t ops[256];                   /* the frame's R2 segments (fd->cmd offsets: the shadow casters) */
+    int nops;
+    const gpu_front_frame_data* fd;
     uint32_t serial;
     int nlit;
 } reim_scene;
 static reim_scene RS, RS_last;
 static struct {
-    int env, log, dbg, ss, shafts, fog, grade;
+    int env, log, dbg, ss, shafts, fog, grade, smap, sm_size;
+    float sm_k, sm_dist;
     float sss_k, sss_len, sss_th, bl_t, bl_k, bl_i, halo, sat, con, vib, expo, fog0, fogd, fogmax, hfog, hfog_h, vig, sh_i,
-        night, stat_a, rim, spec, clar, ao_r, ao_k, ao_min;
+        night, stat_a, rim, spec, clar, key_i, ao_r, ao_k, ao_min;
     /* the key light kept from frame to frame (smoothed) */
     float key[3], keyc[3], keyw;
     int have_key;
 } RE;
-enum { RT_SH, RT_B6, RT_SHAFT, RT_PIC, RT_ST0, RT_ST1, RT_SCENE, RT_N };
+enum { RT_SH, RT_SH2, RT_B6, RT_SHAFT, RT_PIC, RT_ST0, RT_ST1, RT_SCENE, RT_N };
 static struct {
     ID3D11Texture2D* t[RT_N];
     ID3D11RenderTargetView* rtv[RT_N];
@@ -34,6 +38,11 @@ static struct {
     DXGI_FORMAT tf[RT_N];
     ID3D11Buffer* cb;
     int st_cur;                          /* which statistics texture holds the latest */
+    ID3D11Texture2D* sm;                 /* the key light's shadow map (R32, depth: 1 at the light) */
+    ID3D11DepthStencilView* sm_dsv;
+    ID3D11ShaderResourceView* sm_srv;
+    int sm_n;
+    uint64_t sm_frames, sm_draws;
     uint64_t frames;
 } RR;
 
@@ -46,7 +55,14 @@ static void re_env(void) {
     e = getenv("PS2_REIM_SHAFTS"); RE.shafts = !(e && *e == '0');
     e = getenv("PS2_REIM_FOG"); RE.fog = !(e && *e == '0');
     e = getenv("PS2_REIM_GRADE"); RE.grade = !(e && *e == '0');
-    RE.sss_k = lt_envf("PS2_REIM_SS_K", 0.55f);      /* screen-space shadow strength */
+    e = getenv("PS2_REIM_SMAP"); RE.smap = !(e && *e == '0');   /* the key light's shadow map */
+    RE.sm_size = (int)lt_envf("PS2_REIM_SM_SIZE", 2048.0f);
+    if (RE.sm_size < 256) RE.sm_size = 256;
+    if (RE.sm_size > 8192) RE.sm_size = 8192;
+    RE.sm_k = lt_envf("PS2_REIM_SM_K", 0.5f);         /* its strength */
+    RE.sm_dist = lt_envf("PS2_REIM_SM_DIST", 3500.0f); /* its reach from the camera (world units) */
+    RE.sss_k = lt_envf("PS2_REIM_SS_K", 0.45f);      /* shadow strength (shadow map and contact shadows) */
+    RE.key_i = lt_envf("PS2_REIM_KEY_I", 0.45f);     /* the key light's added share where it reaches */
     RE.sss_len = lt_envf("PS2_REIM_SS_LEN", 160.0f); /* its march length, world units */
     RE.sss_th = lt_envf("PS2_REIM_SS_TH", 60.0f);    /* an occluder's assumed thickness */
     RE.bl_t = lt_envf("PS2_REIM_BLOOM_T", 0.55f);
@@ -108,6 +124,8 @@ static void reim_note(const gpu_front_frame_data* fd, const gpu_fop_r2* o, const
         memset(&RS, 0, sizeof RS);
         RS.serial = fb->serial;
     }
+    if (RS.nops < 256) RS.ops[RS.nops++] = (uint32_t)((const uint8_t*)o - fd->cmd);
+    RS.fd = fd;
     uint32_t n = o->nent;
     if (o->ent_off + (size_t)n * sizeof(gpu_r2_entry) > fd->data_bytes) return;
     const gpu_r2_entry* ent = (const gpu_r2_entry*)(fd->data + o->ent_off);
@@ -187,6 +205,8 @@ static void lt_cb(const float* v, int n);
 static void reim_release(void) {
     for (int i = 0; i < RT_N; i++) { GPU_RELEASE(RR.rtv[i]); GPU_RELEASE(RR.srv[i]); GPU_RELEASE(RR.t[i]); RR.tw[i] = RR.th[i] = 0; }
     GPU_RELEASE(RR.cb);
+    GPU_RELEASE(RR.sm_dsv); GPU_RELEASE(RR.sm_srv); GPU_RELEASE(RR.sm);
+    RR.sm_n = 0;
     RE.have_key = 0;
 }
 /* texture i: w x h of format f (mips: a full chain, GenerateMips; rt 0: a copy destination, shader view only) */
@@ -219,8 +239,8 @@ static int rr_tex(int i, int w, int h, DXGI_FORMAT f, int mips, int rt) {
     return 1;
 }
 static void rr_unbind(void) {
-    ID3D11ShaderResourceView* none[10] = { NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL };
-    ID3D11DeviceContext_PSSetShaderResources(gpu_rt.ctx, 14, 10, none);
+    ID3D11ShaderResourceView* none[12] = { NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL };
+    ID3D11DeviceContext_PSSetShaderResources(gpu_rt.ctx, 14, 12, none);
     ID3D11RenderTargetView* nr[2] = { NULL, NULL };
     ID3D11DeviceContext_OMSetRenderTargets(gpu_rt.ctx, 2, nr, NULL);
 }
@@ -254,6 +274,98 @@ static void reim_key(const reim_scene* s) {
     }
 }
 
+/* the key light's shadow map: an orthographic view along the key light around the camera's frustum slice up to
+ * RE.sm_dist (a bounding sphere, its centre snapped to the map's texels: no crawling edges while the camera moves or
+ * turns), the frame's R2 segments drawn again as casters (r2_render_segment, in.shadow). Fills light.hlsl's r_lm* / r_smp*
+ * (lm: 16 floats, smp: 12). 0: no map this frame. */
+static int reim_smap(const reim_scene* S, const float* rndc, const float* rzab, int pw, int ph, float* lm, float* smp) {
+    int n = RE.sm_size;
+    if (!S->nops || S->fd != X.fd || !X.fd) return 0;
+    if (!RR.sm || RR.sm_n != n) {
+        GPU_RELEASE(RR.sm_dsv); GPU_RELEASE(RR.sm_srv); GPU_RELEASE(RR.sm);
+        RR.sm_n = 0;
+        D3D11_TEXTURE2D_DESC td;
+        memset(&td, 0, sizeof td);
+        td.Width = td.Height = (UINT)n; td.MipLevels = 1; td.ArraySize = 1; td.Format = DXGI_FORMAT_R32_TYPELESS;
+        td.SampleDesc.Count = 1; td.Usage = D3D11_USAGE_DEFAULT; td.BindFlags = D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE;
+        if (FAILED(ID3D11Device_CreateTexture2D(gpu_rt.dev, &td, NULL, &RR.sm))) { RR.sm = NULL; return 0; }
+        D3D11_DEPTH_STENCIL_VIEW_DESC dd;
+        memset(&dd, 0, sizeof dd);
+        dd.Format = DXGI_FORMAT_D32_FLOAT; dd.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2D;
+        D3D11_SHADER_RESOURCE_VIEW_DESC sd;
+        memset(&sd, 0, sizeof sd);
+        sd.Format = DXGI_FORMAT_R32_FLOAT; sd.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D; sd.Texture2D.MipLevels = 1;
+        if (FAILED(ID3D11Device_CreateDepthStencilView(gpu_rt.dev, (ID3D11Resource*)RR.sm, &dd, &RR.sm_dsv)) ||
+            FAILED(ID3D11Device_CreateShaderResourceView(gpu_rt.dev, (ID3D11Resource*)RR.sm, &sd, &RR.sm_srv))) {
+            GPU_RELEASE(RR.sm_dsv); GPU_RELEASE(RR.sm_srv); GPU_RELEASE(RR.sm);
+            return 0;
+        }
+        RR.sm_n = n;
+    }
+    /* the frustum slice [near, D] in the world: its corners through the inverse world x clip */
+    const float* ip = S->ipv;
+    float D = RE.sm_dist, nx[2] = { rndc[1], rndc[0] * (float)pw + rndc[1] }, ny[2] = { rndc[3], rndc[2] * (float)ph + rndc[3] };
+    float ws[2] = { 50.0f, D }, cor[8][3], cen[3] = { 0, 0, 0 };
+    for (int k = 0; k < 8; k++) {
+        float w = ws[k >> 2], c[4] = { nx[k & 1] * w, ny[(k >> 1) & 1] * w, rzab[0] * w + rzab[1], w }, h[4];
+        for (int j = 0; j < 4; j++) h[j] = c[0] * ip[j] + c[1] * ip[4 + j] + c[2] * ip[8 + j] + c[3] * ip[12 + j];
+        if (!(fabsf(h[3]) > 1e-20f)) return 0;
+        for (int j = 0; j < 3; j++) { cor[k][j] = h[j] / h[3]; cen[j] += cor[k][j] * 0.125f; }
+    }
+    float R = 0.0f;
+    for (int k = 0; k < 8; k++) {
+        float d2 = 0.0f;
+        for (int j = 0; j < 3; j++) d2 += (cor[k][j] - cen[j]) * (cor[k][j] - cen[j]);
+        if (d2 > R) R = d2;
+    }
+    R = ceilf(sqrtf(R) / 64.0f) * 64.0f;
+    if (!(R > 1.0f && R < 1e6f)) return 0;
+    const float* Lz = RE.key;
+    float Lx[3], Ly[3];
+    if (fabsf(Lz[2]) < 0.99f) { Lx[0] = -Lz[1]; Lx[1] = Lz[0]; Lx[2] = 0.0f; }   /* (up x Lz) */
+    else { Lx[0] = 0.0f; Lx[1] = Lz[2]; Lx[2] = -Lz[1]; }
+    float l = sqrtf(Lx[0] * Lx[0] + Lx[1] * Lx[1] + Lx[2] * Lx[2]);
+    for (int j = 0; j < 3; j++) Lx[j] /= l;
+    Ly[0] = Lz[1] * Lx[2] - Lz[2] * Lx[1]; Ly[1] = Lz[2] * Lx[0] - Lz[0] * Lx[2]; Ly[2] = Lz[0] * Lx[1] - Lz[1] * Lx[0];
+    float texel = 2.0f * R / (float)n;
+    float cx = floorf((cen[0] * Lx[0] + cen[1] * Lx[1] + cen[2] * Lx[2]) / texel) * texel;
+    float cy = floorf((cen[0] * Ly[0] + cen[1] * Ly[1] + cen[2] * Ly[2]) / texel) * texel;
+    float cz = cen[0] * Lz[0] + cen[1] * Lz[1] + cen[2] * Lz[2];
+    float E = 4000.0f, z0 = cz - R, zr = 2.0f * R + E;   /* (casters up to E above the sphere, towards the light) */
+    for (int j = 0; j < 3; j++) { lm[j * 4] = Lx[j] / R; lm[j * 4 + 1] = Ly[j] / R; lm[j * 4 + 2] = Lz[j] / zr; lm[j * 4 + 3] = 0.0f; }
+    lm[12] = -cx / R; lm[13] = -cy / R; lm[14] = -z0 / zr; lm[15] = 1.0f;
+    smp[0] = smp[1] = 1.0f / (float)n; smp[2] = texel; smp[3] = D * 0.7f;
+    smp[4] = D; smp[5] = RE.sm_k; smp[6] = Lz[0]; smp[7] = Lz[1]; smp[8] = Lz[2];
+    /* the casters */
+    float m32[32];
+    memcpy(m32, ip, 64);
+    memcpy(m32 + 16, lm, 64);
+    unbind_all();
+    ID3D11DeviceContext_ClearDepthStencilView(gpu_rt.ctx, RR.sm_dsv, D3D11_CLEAR_DEPTH, 0.0f, 0);
+    const gpu_front_frame_data* fd = S->fd;
+    for (int i = 0; i < S->nops; i++) {
+        const gpu_fop_r2* o = (const gpu_fop_r2*)(fd->cmd + S->ops[i]);
+        r2_exec_in in = { gpu_rt.dev, gpu_rt.ctx, NULL, RR.sm_dsv, 1, 1, X.vram_srv, X.swz_srv, X.dat.srv, X.iota,
+                          gpu_rt.caps.warp ? 0.49609375f : 0.42f, td_r2, NULL, NULL };
+        in.texdec_srv = TD.srv;
+        in.mft = 1; in.msaa = M.n; in.sx = M.rsx; in.sy = M.rsy;
+        in.shadow = 1; in.shadow_size = n; in.shadow_m = m32;
+        RR.sm_draws += (uint64_t)r2_render_segment(o, fd->data, fd->data_bytes, &in);
+    }
+    unbind_all();
+    bind_frame_buffers();
+    ID3D11Buffer* b = M.cb;
+    ID3D11DeviceContext_VSSetConstantBuffers(gpu_rt.ctx, 6, 1, &b);
+    ID3D11DeviceContext_PSSetConstantBuffers(gpu_rt.ctx, 6, 1, &b);
+    X.mode = 0;
+    M.bound = 0;
+    RR.sm_frames++;
+    if (RE.log && RR.sm_frames % 600 == 1)
+        gpu_log("reim: shadow map %d: sphere R %.0f at %.0f %.0f %.0f, %d segments, %.1f casters a frame", n, R, cen[0], cen[1], cen[2],
+                S->nops, (double)RR.sm_draws / (double)RR.sm_frames);
+    return 1;
+}
+
 /* the Reimagined post pass (light_post's place; the picture's 3D is complete, the HUD not drawn yet) */
 static void reim_post(mtarget* c, mtarget* z, int pc) {
     re_env();
@@ -266,7 +378,7 @@ static void reim_post(mtarget* c, mtarget* z, int pc) {
     bw[1] = hw; bh[1] = hh;
     for (int i = 2; i <= 6; i++) { bw[i] = (bw[i - 1] + 1) / 2; bh[i] = (bh[i - 1] + 1) / 2; }
     if (!lt_tex(LT_W, hw, hh, DXGI_FORMAT_R32_FLOAT) || !lt_tex(LT_AO0, hw, hh, DXGI_FORMAT_R8_UNORM) ||
-        !lt_tex(LT_AO1, hw, hh, DXGI_FORMAT_R8_UNORM) || !rr_tex(RT_SH, hw, hh, DXGI_FORMAT_R8_UNORM, 0, 1) ||
+        !lt_tex(LT_AO1, hw, hh, DXGI_FORMAT_R8_UNORM) || !rr_tex(RT_SH, hw, hh, DXGI_FORMAT_R8G8_UNORM, 0, 1) || !rr_tex(RT_SH2, hw, hh, DXGI_FORMAT_R8G8_UNORM, 0, 1) ||
         !rr_tex(RT_B6, bw[6], bh[6], DXGI_FORMAT_R11G11B10_FLOAT, 0, 1) ||
         !rr_tex(RT_SHAFT, bw[2], bh[2], DXGI_FORMAT_R11G11B10_FLOAT, 0, 1) ||
         !rr_tex(RT_PIC, pw, ph, DXGI_FORMAT_R8G8B8A8_TYPELESS, 0, 0) ||
@@ -278,7 +390,7 @@ static void reim_post(mtarget* c, mtarget* z, int pc) {
     if (!RR.cb) {
         D3D11_BUFFER_DESC bd;
         memset(&bd, 0, sizeof bd);
-        bd.ByteWidth = 16 * 16; bd.Usage = D3D11_USAGE_DEFAULT; bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+        bd.ByteWidth = 32 * 16; bd.Usage = D3D11_USAGE_DEFAULT; bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
         if (FAILED(ID3D11Device_CreateBuffer(gpu_rt.dev, &bd, NULL, &RR.cb))) { prof_mark(pc); return; }
     }
     /* light_cb (light.hlsl) with the Reimagined occlusion and bloom */
@@ -295,10 +407,10 @@ static void reim_post(mtarget* c, mtarget* z, int pc) {
     lbl[0] = RE.bl_t; lbl[1] = RE.bl_k; lbl[2] = RE.bl_i; lbl[3] = 1.0f;
     ldir[2] = 1.0f / (float)pw; ldir[3] = 1.0f / (float)ph;
     /* reim_cb */
-    float rc[64];
+    float rc[128];
     memset(rc, 0, sizeof rc);
     float *rw = rc, *rndc = rc + 16, *rzab = rc + 20, *rkey = rc + 24, *rsss = rc + 28, *rgr = rc + 32, *rfog = rc + 36,
-          *rhf = rc + 40, *rvig = rc + 44, *rsh = rc + 48, *rbl = rc + 52, *rmisc = rc + 56, *rkc = rc + 60;
+          *rhf = rc + 40, *rvig = rc + 44, *rsh = rc + 48, *rbl = rc + 52, *rmisc = rc + 56, *rkc = rc + 60, *rlm = rc + 64, *rsmp = rc + 80;
     int have_world = proj && S->pv_ok;
     if (have_world) {
         const float* pv = S->pv;
@@ -326,6 +438,8 @@ static void reim_post(mtarget* c, mtarget* z, int pc) {
         float l = sqrtf(kv[0] * kv[0] + kv[1] * kv[1] + kv[2] * kv[2]);
         if (l > 1e-6f) { rkey[0] = kv[0] / l; rkey[1] = kv[1] / l; rkey[2] = kv[2] / l; rkey[3] = RE.ss ? RE.sss_k : 0.0f; }
         memcpy(rkc, RE.keyc, sizeof RE.keyc);
+        rkc[3] = RE.key_i;
+        if (RE.smap && rkey[3] > 0.0f && S == &RS && !reim_smap(S, rndc, rzab, pw, ph, rlm, rsmp)) memset(rsmp, 0, 12 * sizeof(float));
     }
     rsss[0] = RE.sss_len; rsss[1] = RE.sss_th; rsss[2] = 2.0f; rsss[3] = 5000.0f;
     rgr[0] = RE.grade ? RE.sat : 1.0f; rgr[1] = RE.grade ? RE.con : 1.0f; rgr[2] = RE.grade ? RE.vib : 0.0f; rgr[3] = RE.grade ? RE.expo : 1.0f;
@@ -380,18 +494,19 @@ static void reim_post(mtarget* c, mtarget* z, int pc) {
     /* screen-space shadow along the key light */
     if (rkey[3] > 0.0f) {
         lt_srv(14, LT.srv[LT_W]);
+        if (RR.sm_srv && rsmp[5] > 0.0f) lt_srv(24, RR.sm_srv);
         lt_pass(RR.rtv[RT_SH], hw, hh, GPU_SH_ps_reim_shadow, off);
         rr_unbind();
         for (int k = 0; k < 2; k++) {
             ldir[0] = k ? 0.0f : 1.0f; ldir[1] = k ? 1.0f : 0.0f;
             lt_cb(cb, 36);
-            lt_srv(14, LT.srv[LT_W]); lt_srv(15, k ? LT.srv[LT_AO1] : RR.srv[RT_SH]);
-            lt_pass(k ? RR.rtv[RT_SH] : LT.rtv[LT_AO1], hw, hh, GPU_SH_ps_light_blur, off);
+            lt_srv(14, LT.srv[LT_W]); lt_srv(25, k ? RR.srv[RT_SH2] : RR.srv[RT_SH]);
+            lt_pass(k ? RR.rtv[RT_SH] : RR.rtv[RT_SH2], hw, hh, GPU_SH_ps_reim_blur2, off);
             rr_unbind();
         }
         ldir[0] = ldir[1] = 0.0f;
     } else {
-        static const float one[4] = { 1, 1, 1, 1 };
+        static const float one[4] = { 1, 0, 0, 0 };   /* (visible, N.L 0: nothing changes) */
         ID3D11DeviceContext_ClearRenderTargetView(gpu_rt.ctx, RR.rtv[RT_SH], one);
     }
     /* bloom: the bright pass + the scene colour (MRT), the pyramid (6 levels), its upsample with the halo weight */

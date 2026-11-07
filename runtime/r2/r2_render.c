@@ -47,6 +47,8 @@ static struct {
     r2g_pipe* rp[9];
     r2g_pipe* rtp[3][3];
     int reim_ok;
+    r2g_pipe* shpipe;                    /* (reimagine) the shadow casters (r2.hlsl R2_SHADOW) and their constants */
+    r2g_buf* shcb;
     r2g_buf* cb;
     int cb_set;                          /* (r2-m2) cb holds the device's constants (r2.hlsl r2_static), written once */
     float cb_bias;
@@ -82,6 +84,8 @@ static void release_all(void) {
     for (int k = 0; k < 9; k++) { r2g_pipe_free(R.rp[k]); R.rp[k] = NULL; }   /* (reimagine) */
     for (int f = 0; f < 3; f++) for (int v = 0; v < 3; v++) { r2g_pipe_free(R.rtp[f][v]); R.rtp[f][v] = NULL; }
     R.reim_ok = 0;
+    r2g_pipe_free(R.shpipe); R.shpipe = NULL;
+    r2g_buf_free(R.shcb); R.shcb = NULL;
     memset(R.cb_mft, 0, sizeof R.cb_mft);
     r2g_buf_free(R.cb);
     R.cb = NULL;
@@ -225,6 +229,9 @@ static int init(const r2_exec_in* in) {
                     if (!p) R.reim_ok = 0;
                 }
         if (!R.reim_ok) fprintf(stderr, "[r2] render: no Reimagined pipelines (Enhanced lighting's instead)\n");
+        r2g_pipe_desc sd = { gpu_sh_vs_r2m_sh, sizeof gpu_sh_vs_r2m_sh, gpu_sh_ps_r2m_sh, sizeof gpu_sh_ps_r2m_sh, attrs, 10, NULL, 0 };
+        R.shpipe = r2g_pipe_create(R.d, &sd);
+        R.shcb = r2g_buf_create(R.d, R2G_BUF_CONSTANT, R2G_USAGE_DEFAULT, 128, NULL);
     }
     /* (r2-m2) the segment constants by UpdateSubresource (a DEFAULT buffer): Map(DISCARD) per segment, ~45 a frame with
      * frames queued, made the driver block the render thread for up to 10 ms when the GPU was the bottleneck */
@@ -434,6 +441,43 @@ static int segment(const gpu_fop_r2* o, const uint8_t* fdata, size_t fdata_bytes
         R.cb_bias = in->dual_bias;
     }
     double p2 = ph_now();
+    if (in->shadow) {                    /* (reimagine) the key light's shadow casters: pass-A draws that write Z, depth only */
+        if (reim) {
+            for (int k = 0; k < 9; k++) *epp[k] = rsave[k];
+            memcpy(R.tp[1], rtsave, sizeof rtsave);
+        }
+        if (!R.shpipe || !R.shcb || !in->shadow_m || in->shadow_size <= 0) return 0;
+        r2g_buf_write(R.d, R.shcb, 0, in->shadow_m, 128);
+        r2g_bind_targets_native(R.d, NULL, in->dsv);
+        r2g_viewport(R.d, 0.0f, 0.0f, (float)in->shadow_size, (float)in->shadow_size);
+        r2g_scissor(R.d, 0, 0, in->shadow_size, in->shadow_size);
+        r2g_bind_srv_native(R.d, 0, in->vram_srv);
+        r2g_bind_srv_native(R.d, 6, in->swz_srv);
+        r2g_bind_srv_native(R.d, 7, in->fdata_srv);
+        r2g_bind_srv(R.d, 10, a->mb);
+        r2g_bind_srv(R.d, 11, a->mt);
+        r2g_bind_constants(R.d, 1, R.cb);
+        r2g_bind_constants(R.d, 3, R.shcb);
+        r2g_bind_vertex(R.d, 0, a->vb, sizeof(r2_vtx));
+        r2g_bind_vertex_native(R.d, 1, in->iota_vb, 4);
+        r2g_bind_index(R.d, a->ib);
+        r2g_bind_pipe(R.d, R.shpipe);
+        r2g_state ss = { 0, 0, R2G_Z_GEQUAL, 1, R2G_CULL_NONE };
+        r2g_bind_state(R.d, &ss);
+        int ns = 0;
+        for (uint32_t i = 0; i < o->ndraw; i++) {
+            const gpu_r2_draw* d = &dr[i];
+            const r2_mesh* m = r2_mesh_get(d->mesh);
+            if (!m || m->gpu_state != (int)R.epoch || (m->handle >> 20) != o->gen) continue;
+            if ((d->mode & 3) || !((d->state >> 4) & 1)) continue;   /* (pass A, Z written: solid geometry, no sky / effects) */
+            r2g_draw_indexed(R.d, d->count, m->gpu_ibase + d->first, (int32_t)m->gpu_vbase, o->draw_off / 32u + i);
+            ns++;
+        }
+        r2g_bind_srv(R.d, 10, NULL);
+        r2g_bind_srv(R.d, 11, NULL);
+        r2g_end(R.d);
+        return ns;
+    }
     /* (tex) Enhanced textures' pipelines for this segment (modern frames, not the motion vectors) and their bindings */
     int etex = in->mft && in->etex && R.tex_ok && !in->mv && in->etex_bind;
     if (etex) in->etex_bind();

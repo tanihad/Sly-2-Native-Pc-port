@@ -419,6 +419,29 @@ R2M r2_vs_mv(R2V i) {
 float2 r2_ps_mv(R2M i) : SV_Target { return i.mv; }
 #endif
 
+#ifndef R2_SHADOW
+#define R2_SHADOW 0
+#endif
+#if R2_SHADOW
+// (reimagine) Look = Reimagined: the frame's R2 draws again as shadow casters, depth only, into the key light's shadow map
+// (runtime/gpu/gpu_reim.h): the vertex's clip position (the entry's world x clip) back to the world through the frame's
+// inverse world x clip, then the light's orthographic projection (depth: 1 at the light, GEQUAL as the frame's own)
+cbuffer r2_shadow : register(b3) {
+    float4 sh_ipv[4];                    // the frame's inverse world x clip (rows)
+    float4 sh_lm[4];                     // world -> the light's clip (rows)
+};
+float4 r2_vs_shadow(R2V i) : SV_Position {
+    R2O o;
+    float4 clip, alt;
+    r2_vertex(i, o, clip, alt);
+    if (o.pos.x == 2.0 && o.pos.y == 2.0) return float4(2.0, 2.0, 0.5, 1.0);   // (a batch left to another draw)
+    float4 h = clip.x * sh_ipv[0] + clip.y * sh_ipv[1] + clip.z * sh_ipv[2] + clip.w * sh_ipv[3];
+    float3 wp = h.xyz / h.w;
+    return wp.x * sh_lm[0] + wp.y * sh_lm[1] + wp.z * sh_lm[2] + sh_lm[3];
+}
+void r2_ps_shadow() {}
+#endif
+
 R2C r2_vs_clip(R2V i) {
     R2O o;
     float4 clip, alt;

@@ -229,10 +229,15 @@ cbuffer reim_cb : register(b8) {
     float4 r_bloom;                      // bloom intensity, halo weight (up passes), -, -
     float4 r_misc;                       // stats blend (0..1), night override (<0: auto), debug view, frame
     float4 r_keyc;                       // key light colour (shadow tint), -
+    float4 r_lm0, r_lm1, r_lm2, r_lm3;   // world -> the key light's shadow map clip (rows; gpu_reim.h reim_smap)
+    float4 r_smp;                        // shadow map: texel (uv), texel (world units), fade start / end (view depth)
+    float4 r_smp2;                       // fade end, strength (0: no map), the key light's world direction (x, y)
+    float4 r_smp3;                       // its world direction z, -, -, -
 };
+Texture2D<float> r_smap : register(t24);     // the key light's shadow map (1 at the light, 0 far)
 Texture2D<float4> r_stats : register(t18);   // 4 x 1: [0] average colour, mood; [1] fog colour; [2] shaft source; [3] -
 Texture2D<float4> r_pic : register(t19);     // the picture (a copy)
-Texture2D<float> r_sh : register(t20);       // screen-space shadow (half res)
+Texture2D<float2> r_sh : register(t20);      // the key light (half res): visibility (shadows), N.L
 Texture2D<float4> r_shafts : register(t21);  // light shafts (quarter res)
 Texture2D<float4> r_scene : register(t22);   // half-res picture colour with its mips (the scene's averages)
 
@@ -247,11 +252,11 @@ float3 r_world(float2 p, float w) {
 float r_noise(float2 q) { return frac(52.9829189 * frac(dot(q, float2(0.06711056, 0.00583715)))); }
 
 // ---- screen-space shadows (half res): a short march from the surface towards the key light through the depth --------
-float ps_reim_shadow(float4 pos : SV_Position) : SV_Target {
-    if (r_key.w <= 0.0) return 1.0;
+float2 ps_reim_shadow(float4 pos : SV_Position) : SV_Target {
+    if (r_key.w <= 0.0) return float2(1.0, 0.0);
     int2 q = int2(pos.xy);
     float w = l_wload(q);
-    if (w >= l_z.z * 0.5 || w >= r_sss.w) return 1.0;
+    if (w >= l_z.z * 0.5 || w >= max(r_sss.w, r_smp2.x)) return float2(1.0, 0.0);
     float2 pp = pos.xy * l_map.zw;
     float3 P = l_pos(pp, w);
     float3 L = r_key.xyz;
@@ -264,13 +269,14 @@ float ps_reim_shadow(float4 pos : SV_Position) : SV_Target {
     float3 N = normalize(cross(dx, dy));
     if (dot(N, P) > 0.0) N = -N;
     float nl = dot(N, L);
-    if (nl <= 0.02) return 1.0;
+    if (nl <= 0.02) return float2(1.0, 0.0);
     float len = r_sss.x * (1.0 + w / 3000.0);       // (a little longer far away: the same share of the screen)
     float noise = r_noise(pos.xy);
     float3 Po = P + N * (r_sss.z * (1.0 + w * 0.002));   // (off the surface: no self-shadowing)
     float occ = 0.0;
     const uint NS = 14u;
     [unroll] for (uint i = 0u; i < NS; i++) {
+        if (w >= r_sss.w || r_sss.x <= 0.0) break;   // (beyond the contact shadows' reach / none: the map only)
         float t = ((float)i + noise) / (float)NS;
         t = t * t;                       // (denser near the surface: contact shadows stay crisp)
         float3 S = Po + L * (len * t + 2.0);
@@ -283,7 +289,46 @@ float ps_reim_shadow(float4 pos : SV_Position) : SV_Target {
         if (dz > 0.5 + S.z * 0.0015 && dz < th) occ = max(occ, 1.0 - t * 0.6);
     }
     float fade = saturate((r_sss.w - w) / (r_sss.w * 0.3));
-    return 1.0 - occ * r_key.w * fade * saturate(nl * 4.0);
+    occ *= fade;
+    // the key light's shadow map (real cast shadows of every solid R2 mesh): 4 x 4 PCF from four gathers, the receiver
+    // pushed towards the light by a slope-scaled offset
+    if (r_smp2.y > 0.0) {
+        float3 Lw = float3(r_smp2.zw, r_smp3.x);
+        float slope = sqrt(saturate(1.0 - nl * nl)) / max(nl, 0.2);
+        float3 Pw = r_world(pp, w) + Lw * (r_smp.z * (1.5 + 2.0 * slope) + w * 0.002);
+        float4 lc = Pw.x * r_lm0 + Pw.y * r_lm1 + Pw.z * r_lm2 + r_lm3;
+        float2 uv = float2(lc.x * 0.5 + 0.5, 0.5 - lc.y * 0.5);
+        if (all(uv > r_smp.xy) && all(uv < 1.0 - r_smp.xy) && lc.z > 0.0 && lc.z < 1.0) {
+            float lit = 0.0;
+            [unroll] for (int j = 0; j < 4; j++) {
+                float2 o = float2((j & 1) ? 1.0 : -1.0, (j & 2) ? 1.0 : -1.0) * r_smp.xy;
+                float4 g = r_smap.GatherRed(l_lin, uv + o);
+                lit += dot(step(g, lc.z.xxxx + 1e-5), 0.25.xxxx);
+            }
+            lit *= 0.25;
+            float2 e = min(uv, 1.0 - uv);
+            float sf = saturate(min(e.x, e.y) * 12.0) * saturate((r_smp2.x - w) / max(r_smp2.x - r_smp.w, 1.0));
+            occ = max(occ, (1.0 - lit) * sf);
+        }
+    }
+    return float2(1.0 - saturate(occ), nl);
+}
+
+// the key light's (visibility, N.L) blurred depth-aware (separable, l_dir.xy), as the occlusion
+Texture2D<float2> r_bsrc : register(t25);
+float2 ps_reim_blur2(float4 pos : SV_Position) : SV_Target {
+    int2 q = int2(pos.xy);
+    float w = l_wload(q);
+    float2 s = 0.0;
+    float ws = 0.0;
+    [unroll] for (int i = -4; i <= 4; i++) {
+        int2 qi = q + int2(l_dir.xy * (float)i);
+        float wi = l_wload(qi);
+        float g = exp(-(float)(i * i) * (1.0 / 12.0)) * exp(-abs(wi - w) / max(w, 1e-3) * 40.0);
+        s += r_bsrc.Load(int3(clamp(qi, int2(0, 0), int2(l_dst.xy) - 1), 0)) * g;
+        ws += g;
+    }
+    return s / ws;
 }
 
 // ---- bloom: a softer, lower threshold and the half-res scene colour for the averages (MRT) --------------------------
@@ -411,17 +456,19 @@ float4 ps_reim_comp(float4 pos : SV_Position) : SV_Target {
     float w = l_wof(d);
     bool sky = w >= l_z.z * 0.5;
     // occlusion + screen-space shadow, depth-aware upsampled together
-    float ao = 1.0, sh = 1.0;
+    float ao = 1.0;
+    float2 sh = float2(1.0, 0.0);
     if (!sky) {
         float2 t = p / l_map.zw - 0.5, f0 = floor(t), f = t - f0;
-        float s = 0.0, s2 = 0.0, ws = 0.0;
+        float s = 0.0, ws = 0.0;
+        float2 s2 = 0.0;
         [unroll] for (int j = 0; j < 4; j++) {
             int2 qj = clamp(int2(f0) + int2(j & 1, j >> 1), int2(0, 0), int2(l_src.xy) - 1);
             float bw = ((j & 1) ? f.x : 1.0 - f.x) * ((j & 2) ? f.y : 1.0 - f.y);
             float wj = l_w.Load(int3(qj, 0));
             float g = (bw + 1e-3) / (1e-3 + abs(wj - w) / w * 20.0 + 0.02);
             s += (l_ao.y > 0.0 ? l_aot.Load(int3(qj, 0)) : 1.0) * g;
-            s2 += r_sh.Load(int3(qj, 0)) * g;
+            s2 += r_sh.Load(int3(qj, 0)).xy * g;
             ws += g;
         }
         ao = s / ws;
@@ -431,9 +478,18 @@ float4 ps_reim_comp(float4 pos : SV_Position) : SV_Target {
     // the mood: night (a dark picture) .. day
     float night = r_misc.y >= 0.0 ? r_misc.y : saturate((0.30 - st0.w) / 0.16);
     // shadows: in the key light's opposite hue a little (cool under a warm lamp), occlusion neutral
-    float3 shc = lerp(float3(1.0, 1.0, 1.0), float3(0.82, 0.88, 1.08), 0.5 + 0.5 * night);
+    float3 shc = lerp(float3(1.0, 1.0, 1.0), float3(0.86, 0.92, 1.06), 0.5 + 0.5 * night);
     c *= ao;
-    c *= lerp(shc, float3(1.0, 1.0, 1.0), sh);
+    // the key light relit: surfaces facing it brighten in its hue where it reaches them, darken (cool) where something casts
+    // a shadow on them; surfaces turned away keep the game's own lighting
+    {
+        float nl = sh.y, vis = sh.x;
+        float3 kc = abs(r_keyc.rgb);
+        kc = kc / max(max(kc.r, kc.g), max(kc.b, 1e-3));
+        float lit = smoothstep(0.0, 0.7, nl) * vis, dark = saturate(nl * 4.0) * (1.0 - vis);
+        c *= 1.0 + r_keyc.w * lit * lerp(float3(1.0, 1.0, 1.0), kc, 0.45);
+        c *= lerp(float3(1.0, 1.0, 1.0), shc * (1.0 - r_key.w), dark);
+    }
     // light: bloom + shafts
     float3 bl = l_tex.SampleLevel(l_lin, p * l_dir.zw, 0.0).rgb * r_bloom.x;
     float3 sf = r_shafts.SampleLevel(l_lin, p * l_dir.zw, 0.0).rgb * r_shaft.x;
@@ -461,7 +517,7 @@ float4 ps_reim_comp(float4 pos : SV_Position) : SV_Target {
     }
     // grade: split toning by the mood (night: blue shadows and amber highlights; day: warm, a cool teal in the darks)
     float L = l_luma(lin);
-    float3 cs = lerp(float3(0.97, 1.0, 1.04), float3(0.92, 0.97, 1.09), night);   // shadow tint
+    float3 cs = lerp(float3(0.98, 1.0, 1.03), float3(0.95, 0.98, 1.05), night);   // shadow tint
     float3 ch = lerp(float3(1.05, 1.0, 0.92), float3(1.12, 1.00, 0.84), night);   // highlight tint
     float hw = smoothstep(0.02, 0.45, L);
     lin *= lerp(cs, ch, hw);
