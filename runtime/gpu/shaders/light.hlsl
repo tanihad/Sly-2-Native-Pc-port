@@ -444,8 +444,7 @@ float4 ps_reim_shafts(float4 pos : SV_Position) : SV_Target {
 // ---- composite + grade (full res, no blend) ----------------------------------------------------------------------
 float3 r_srgb2lin(float3 c) { return c * c; }   // (gamma 2: cheap, its exact inverse below)
 float3 r_lin2srgb(float3 c) { return sqrt(max(c, 0.0)); }
-float r_curve(float x, float k) {        // filmic contrast around the pivot 0.42 (display values), a soft toe and shoulder
-    const float p = 0.42;
+float r_curve(float x, float k, float p) {   // filmic contrast around the pivot p (display values), a soft toe and shoulder
     x = saturate(x);
     return x < p ? p * pow(x / p, k) : 1.0 - (1.0 - p) * pow((1.0 - x) / (1.0 - p), k);
 }
@@ -480,7 +479,7 @@ float4 ps_reim_comp(float4 pos : SV_Position) : SV_Target {
     // the mood: night (a dark picture) .. day
     float night = r_misc.y >= 0.0 ? r_misc.y : saturate((0.30 - st0.w) / 0.16);
     // shadows: in the key light's opposite hue a little (cool under a warm lamp), occlusion neutral
-    float3 shc = lerp(float3(1.0, 1.0, 1.0), float3(0.86, 0.92, 1.06), 0.5 + 0.5 * night);
+    float3 shc = lerp(float3(1.0, 1.0, 1.0), float3(0.95, 0.98, 1.02), 0.5 + 0.5 * night);
     c *= ao;
     // the key light relit: surfaces facing it brighten in its hue where it reaches them, darken (cool) where something casts
     // a shadow on them; surfaces turned away keep the game's own lighting
@@ -491,6 +490,7 @@ float4 ps_reim_comp(float4 pos : SV_Position) : SV_Target {
         float lit = smoothstep(0.0, 0.7, nl) * vis, dark = saturate(nl * 4.0) * (1.0 - vis);
         dark *= 1.0 - 0.6 * smoothstep(0.25, 0.65, l_luma(c));   // (a lamp-lit spot keeps its own light: no mud under a canopy by the fire)
         float head = saturate(1.15 - max(max(c.r, c.g), c.b));   // (bright surfaces: little headroom - no clipping to white)
+        c *= 1.0 + r_keyc.w * lit * head * lerp(float3(1.0, 1.0, 1.0), kc, 0.05);   // (white light: the surfaces keep their own hue)
         c *= lerp(float3(1.0, 1.0, 1.0), shc * (1.0 - r_key.w), dark);
     }
     // light: bloom + shafts
@@ -515,30 +515,33 @@ float4 ps_reim_comp(float4 pos : SV_Position) : SV_Target {
         float fh = r_fog.w * dist * max(hint, 0.0);
         float fa = r_fog.z * (1.0 - exp(-(fd + fh)));
         float3 fcol = r_srgb2lin(fogc.rgb);
-        fcol = lerp(l_luma(fcol).xxx, fcol, 0.7) * lerp(float3(1.0, 1.0, 1.0), float3(0.85, 0.95, 1.25), night);
+        fcol = lerp(l_luma(fcol).xxx, fcol, 0.5);   // (half the sky's hue: haze, not a tint)
         lin = lerp(lin, fcol, fa);
     }
     // grade: split toning by the mood (night: blue shadows and amber highlights; day: warm, a cool teal in the darks)
     float L = l_luma(lin);
-    float3 cs = lerp(float3(0.98, 1.0, 1.03), float3(0.95, 0.98, 1.05), night);   // shadow tint
-    float3 ch = lerp(float3(1.05, 1.0, 0.92), float3(1.12, 1.00, 0.84), night);   // highlight tint
+    float3 cs = float3(0.99, 1.0, 1.01);                       // shadow tint (mild: the game's own hues stay)
+    float3 ch = float3(1.05, 1.0, 0.93);                       // highlight tint
     float hw = smoothstep(0.02, 0.45, L);
     lin *= lerp(cs, ch, hw);
     // warm lamps: warm-hued light glows warmer and a little brighter against the night
     float warm = saturate((lin.r - lin.b) / max(lin.r, 1e-3)) * smoothstep(0.04, 0.35, L);
-    lin *= 1.0 + warm * (0.15 + 0.35 * night) * float3(1.0, 0.82, 0.55);
-    lin += float3(0.0, 0.0015, 0.005) * night * (1.0 - hw);   // (a blue floor in the deep darks: night, not mud)
+    lin *= 1.0 + warm * 0.3 * float3(1.0, 0.85, 0.6);
     // saturation and vibrance (luminance kept)
     L = l_luma(lin);
     float mx = max(max(lin.r, lin.g), lin.b), mn = min(min(lin.r, lin.g), lin.b);
     float sat = (mx - mn) / max(mx, 1e-4);
-    float sk = r_grade.x + r_grade.z * (1.0 - sat);
+    // (vibrance: the dull colours gain most; skin-like warm tones and the sky are protected)
+    float skin = (lin.r > lin.g && lin.g > lin.b) ? saturate(1.0 - abs(sat - 0.35) / 0.25) * saturate((lin.g - lin.b) / max(lin.r - lin.b, 1e-4) * 2.0) : 0.0;
+    float prot = max(skin * 0.8, sky ? 0.8 : 0.0);
+    float sk = 1.0 + (r_grade.x - 1.0 + r_grade.z * (1.0 - sat)) * (1.0 - prot);
     lin = max(lerp(L.xxx, lin, sk), 0.0);
     // filmic: the light added above white rolls off on a short shoulder, then the contrast curve
     float3 o = r_lin2srgb(lin);
     float3 sh2 = max(o - 1.0, 0.0);
     o = o - sh2 + (1.0 - exp(-sh2 * 2.0)) * 0.12;   // (above white: a short soft shoulder)
-    o = float3(r_curve(o.r, r_grade.y), r_curve(o.g, r_grade.y), r_curve(o.b, r_grade.y));
+    float pv = clamp(sqrt(st0.w) * 0.9, 0.18, 0.5);            // (contrast around the scene's own mid-tone: no overall darkening)
+    o = float3(r_curve(o.r, r_grade.y, pv), r_curve(o.g, r_grade.y, pv), r_curve(o.b, r_grade.y, pv));
     // vignette
     float2 v = (p * l_dir.zw - 0.5) * float2(l_dst.x * l_dst.w, 1.0);
     float vr = length(v) / length(float2(0.5 * l_dst.x * l_dst.w, 0.5));

@@ -585,6 +585,7 @@ struct R2F {
 #ifndef R2_NMAP
 float3 r2_reim_normal(float3 N, float3 V) { return normalize(N); }
 #endif
+static uint g_reim_skin;                 // (the sub-batch is skinned: a character - only they get the rim and the highlight)
 #endif
 #if R2_ENH
 // (light) r2_lit's colour per pixel: the interpolated normal (renormalised to the VU's 127) through the entry's light block,
@@ -628,14 +629,14 @@ float4 r2_lit_px(uint4 lx, float4 ln, float4 lc, float3 lv, bool csel, float4 co
         float ll = length(Ld);
         float3 lc3 = abs(Lc.xyz);
         float3 hue = lc3 / max(max(lc3.x, lc3.y), max(lc3.z, 1e-3));
-        if (ll > 1e-6 && r2_mft.w > 0.0) {
+        if (ll > 1e-6 && r2_mft.w > 0.0 && g_reim_skin != 0u) {
             Ld /= ll;
             float3 H = normalize(Ld + V);
             float nh = saturate(dot(Nn, H)), nl = saturate(dot(Nn, Ld));
             float sp = pow(nh, 28.0) * nl;
             a += sp * r2_mft.w * (0.35 + 0.65 * hue) * ln.w;   // (ln.w: the colour's scale, 128 = the texture as it is)
         }
-        if (r2_misc.z > 0.0) {
+        if (r2_misc.z > 0.0 && g_reim_skin != 0u) {   // (world meshes seen at a grazing angle: no rim - a floor turned grey-blue)
             float r = 1.0 - saturate(abs(dot(Nn, V)));
             r = r * r * r;
             a += r * r2_misc.z * (0.4 + 0.6 * hue) * ln.w;
@@ -707,6 +708,9 @@ R2F r2_ps(R2O i) {
     }
 #else
     uint t = (asuint(r2_misc.w) & 1u) != 0u ? 0x80808080u : tex_sample(st, f2i(su16), f2i(tv16), 1.0);   // (PS2_R2_DBG 1)
+#endif
+#if R2_ENH >= 2 && !R2_ZREC
+    g_reim_skin = (r2_mats.Load(mb + 44u) >> 1) & 3u;
 #endif
 #if R2_ENH && !R2_ZREC
     float4 icol = i.lx.x != 0u ? r2_lit_px(i.lx, i.ln, i.lc, i.lv, (flags & R2D_CSEL) != 0u, i.col) : i.col;
