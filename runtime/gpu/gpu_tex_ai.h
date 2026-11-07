@@ -66,6 +66,7 @@ static struct {
     ra_tile tq[RA_MAXT]; uint32_t tn;    /* prepared tiles (FIFO) */
     int32_t loaded[256]; uint32_t nloaded;
     ai_gpu* net; ai_gpu* net_new; char net_err[256];
+    ID3D11ComputeShader* kcs[16];          /* (created on the worker: a first use on the render thread cost up to 70 ms) */
     double net_mb;
     /* GPU */
     ID3D11Buffer *up, *al, *pj, *pcb, *nok, *res;
@@ -260,6 +261,20 @@ static void ra_push(ra_job j) {
     SetEvent(RA.ev);
 }
 static void* ra_cs_of(uint32_t key, void* user);
+/* the net's kernels + the tiles' finish: created on the worker (the driver compiles each big kernel for tens of ms) */
+static const struct { uint32_t key; int id; } ra_cs_ids[16] = {
+    { 0x38810, GPU_SH_cs_ai_38810 }, { 0x88833, GPU_SH_cs_ai_88833 }, { 0x88844, GPU_SH_cs_ai_88844 }, { 0x88343, GPU_SH_cs_ai_88343 },
+    { 0x88434, GPU_SH_cs_ai_88434 }, { 0x21343, GPU_SH_cs_ai_21343 }, { 0x22343, GPU_SH_cs_ai_22343 }, { 0x22434, GPU_SH_cs_ai_22434 },
+    { 0x88114, GPU_SH_cs_ai_88114 }, { 0x88113, GPU_SH_cs_ai_88113 }, { 0x88851, GPU_SH_cs_ai_88851 }, { 0x88865, GPU_SH_cs_ai_88865 },
+    { 0x88856, GPU_SH_cs_ai_88856 }, { 0x88875, GPU_SH_cs_ai_88875 }, { 1, GPU_SH_cs_ai_post }, { 2, GPU_SH_cs_ai_res } };
+static int ra_make_cs(void) {
+    for (int k = 0; k < 16; k++) {
+        GPU_RELEASE(RA.kcs[k]);
+        const gpu_shader_blob* b = &gpu_shaders[ra_cs_ids[k].id];
+        if (FAILED(ID3D11Device_CreateComputeShader(gpu_rt.dev, b->code, b->size, NULL, &RA.kcs[k]))) return 0;
+    }
+    return 1;
+}
 static void ra_init_net(void) {
     wchar_t wp[700] = L"";
     const char* e = getenv("PS2_AI_WEIGHTS");
@@ -276,10 +291,15 @@ static void ra_init_net(void) {
     char err[256] = "";
     ai_weights* w = ai_weights_load(path, err, sizeof err);
     ai_gpu* g = NULL;
+    if (w && !ra_make_cs()) { snprintf(err, sizeof err, "cannot create its shaders"); ai_weights_free(w); w = NULL; }
     if (w) {
         size_t P = (size_t)(RA_TILE + 2 * RA.pad) * (RA_TILE + 2 * RA.pad);
         g = ai_gpu_create_cs(gpu_rt.dev, gpu_rt.ctx, w, ra_cs_of, NULL, P, err, sizeof err);
         ai_weights_free(w);
+        for (int k = 0; g && k < RA_SRCN; k++)   /* (the read-back buffers too: not created on the render thread) */
+            if (!RA.src[k].st) RA.src[k].st = et_buf(256u * 256u * 4u, 0, D3D11_USAGE_STAGING, D3D11_CPU_ACCESS_READ);
+        for (int k = 0; g && k < RA_SAVEN; k++)
+            if (!RA.sav[k].st) RA.sav[k].st = et_buf(RA_UP_WORDS, 0, D3D11_USAGE_STAGING, D3D11_CPU_ACCESS_READ);
     }
     EnterCriticalSection(&RA.cs);
     RA.net_new = g;
@@ -529,24 +549,9 @@ static DWORD WINAPI ra_thread(LPVOID unused) {
 
 /* ---- GPU side (render thread) ------------------------------------------------------------------------------------------ */
 static void* ra_cs_of(uint32_t key, void* user) {
-    (void)user;
-    switch (key) {                       /* (shaders/perms.txt cs_ai_*: every buffer combination ai_up.c's plan uses) */
-    case 0x38810: return gpu_cs(GPU_SH_cs_ai_38810);
-    case 0x88833: return gpu_cs(GPU_SH_cs_ai_88833);
-    case 0x88844: return gpu_cs(GPU_SH_cs_ai_88844);
-    case 0x88343: return gpu_cs(GPU_SH_cs_ai_88343);
-    case 0x88434: return gpu_cs(GPU_SH_cs_ai_88434);
-    case 0x21343: return gpu_cs(GPU_SH_cs_ai_21343);
-    case 0x22343: return gpu_cs(GPU_SH_cs_ai_22343);
-    case 0x22434: return gpu_cs(GPU_SH_cs_ai_22434);
-    case 0x88114: return gpu_cs(GPU_SH_cs_ai_88114);
-    case 0x88113: return gpu_cs(GPU_SH_cs_ai_88113);
-    case 0x88851: return gpu_cs(GPU_SH_cs_ai_88851);
-    case 0x88865: return gpu_cs(GPU_SH_cs_ai_88865);
-    case 0x88856: return gpu_cs(GPU_SH_cs_ai_88856);
-    case 0x88875: return gpu_cs(GPU_SH_cs_ai_88875);
-    default: return NULL;
-    }
+    (void)user;                          /* (shaders/perms.txt cs_ai_*: every buffer combination ai_up.c's plan uses) */
+    for (int k = 0; k < 14; k++) if (ra_cs_ids[k].key == key) return RA.kcs[k];
+    return NULL;
 }
 
 static const IID ra_iid_adapter3 = { 0x645967a4, 0x1392, 0x4310, { 0xa7, 0x98, 0x80, 0x53, 0xce, 0x3e, 0x93, 0xfd } };
@@ -613,7 +618,7 @@ static int ra_init(void) {
     if (!(RA.res = raw_default((UINT)(P * 12u), NULL, NULL, &RA.res_uav))) return 0;
     if (!(RA.nok = raw_default(ET_NCLS * 4096u * 4u, NULL, &RA.nok_srv, &RA.nok_uav))) return 0;
     RA.pcb = et_buf(32, D3D11_BIND_CONSTANT_BUFFER, D3D11_USAGE_DYNAMIC, D3D11_CPU_ACCESS_WRITE);
-    if (!RA.pcb || !gpu_cs(GPU_SH_cs_ai_post) || !gpu_cs(GPU_SH_cs_ai_res) || !gpu_cs(GPU_SH_cs_etn)) return 0;
+    if (!RA.pcb || !gpu_cs(GPU_SH_cs_etn)) return 0;
     for (int i = 0; i < RA_REG; i++) RA.reg[i].item = -1;
     for (int i = 0; i < RA_SRCN; i++) RA.src[i].item = -1;
     for (int i = 0; i < RA_SAVEN; i++) RA.sav[i].item = -1;
@@ -857,11 +862,11 @@ static void ra_batch_finish(int* bound) {
     ID3D11DeviceContext_CSSetShaderResources(c, 0, 2, s2);
     ID3D11DeviceContext_CSSetConstantBuffers(c, 4, 1, &RA.pcb);
     if (RA.restore > 0) {                /* (the restore's residuals first) */
-        ID3D11DeviceContext_CSSetShader(c, gpu_cs(GPU_SH_cs_ai_res), NULL, 0);
+        ID3D11DeviceContext_CSSetShader(c, RA.kcs[15], NULL, 0);
         ID3D11DeviceContext_Dispatch(c, (pw + 7) / 8, (ph + 7) / 8, (UINT)RA.bn);
         gpu_rt.n_dispatches++;
     }
-    ID3D11DeviceContext_CSSetShader(c, gpu_cs(GPU_SH_cs_ai_post), NULL, 0);
+    ID3D11DeviceContext_CSSetShader(c, RA.kcs[14], NULL, 0);
     ID3D11DeviceContext_Dispatch(c, (4 * cw + 7) / 8, (4 * ch + 7) / 8, (UINT)RA.bn);
     gpu_rt.n_dispatches++;
     ID3D11UnorderedAccessView* nu[4] = { NULL, NULL, NULL, NULL };
