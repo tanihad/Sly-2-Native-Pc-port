@@ -337,10 +337,12 @@ RBOut ps_reim_bright(float4 pos : SV_Position) {
     float2 p = pos.xy * l_map.zw;
     float3 s = 0.0, sc = 0.0;
     float ws = 0.0;
+    // a bright scene raises the threshold (its own brightness, last frame's statistics): only real lights glow
+    float rb_k = 1.0 / (1.0 + 0.9 * saturate(r_stats.Load(int3(0, 0, 0)).w - 0.12));
     [unroll] for (int j = 0; j < 4; j++) {
         float2 o = float2((j & 1) ? 1.0 : -1.0, (j & 2) ? 1.0 : -1.0);
         float3 c0 = l_tex.SampleLevel(l_lin, (p + o) * l_dir.zw, 0.0).rgb;
-        float3 c = l_bright(c0);
+        float3 c = l_bright(c0 * rb_k) * (1.0 / rb_k);
         float wt = 1.0 / (1.0 + l_luma(c));
         s += c * wt;
         ws += wt;
@@ -487,7 +489,7 @@ float4 ps_reim_comp(float4 pos : SV_Position) : SV_Target {
         float3 kc = abs(r_keyc.rgb);
         kc = kc / max(max(kc.r, kc.g), max(kc.b, 1e-3));
         float lit = smoothstep(0.0, 0.7, nl) * vis, dark = saturate(nl * 4.0) * (1.0 - vis);
-        c *= 1.0 + r_keyc.w * lit * lerp(float3(1.0, 1.0, 1.0), kc, 0.45);
+        float head = saturate(1.15 - max(max(c.r, c.g), c.b));   // (bright surfaces: little headroom - no clipping to white)
         c *= lerp(float3(1.0, 1.0, 1.0), shc * (1.0 - r_key.w), dark);
     }
     // light: bloom + shafts
@@ -507,7 +509,7 @@ float4 ps_reim_comp(float4 pos : SV_Position) : SV_Target {
         float fd = max(dist - r_fog.x, 0.0) * r_fog.y;
         float h0 = r_zab.z - r_hfog.y;
         float dz = P.z - r_zab.z;
-        float e0 = exp(-(r_zab.z - h0) / r_hfog.x), e1 = exp(-clamp(P.z - h0, -2.0 * r_hfog.x, 50.0 * r_hfog.x) / r_hfog.x);
+        float e0 = exp(-max(r_zab.z - h0, 0.0) / r_hfog.x), e1 = exp(-clamp(P.z - h0, 0.0, 50.0 * r_hfog.x) / r_hfog.x);   // (no thicker than at h0 below it: pits and pools stay clear)
         float hint = abs(dz) > 1.0 ? (e0 - e1) * r_hfog.x / -dz : e0;
         float fh = r_fog.w * dist * max(hint, 0.0);
         float fa = r_fog.z * (1.0 - exp(-(fd + fh)));

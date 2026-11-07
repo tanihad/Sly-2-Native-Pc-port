@@ -73,9 +73,9 @@ static void re_env(void) {
     RE.con = lt_envf("PS2_REIM_CONTRAST", 1.15f);
     RE.vib = lt_envf("PS2_REIM_VIBRANCE", 0.25f);
     RE.expo = lt_envf("PS2_REIM_EXPOSURE", 1.05f);
-    RE.fog0 = lt_envf("PS2_REIM_FOG0", 2500.0f);
+    RE.fog0 = lt_envf("PS2_REIM_FOG0", 3000.0f);
     RE.fogd = lt_envf("PS2_REIM_FOGD", 1.0f / 30000.0f);
-    RE.fogmax = lt_envf("PS2_REIM_FOGMAX", 0.30f);
+    RE.fogmax = lt_envf("PS2_REIM_FOGMAX", 0.22f);
     RE.hfog = lt_envf("PS2_REIM_HFOG", 1.0f / 20000.0f);
     RE.hfog_h = lt_envf("PS2_REIM_HFOG_H", 300.0f);
     RE.vig = lt_envf("PS2_REIM_VIG", 0.28f);
@@ -514,7 +514,7 @@ static void reim_post(mtarget* c, mtarget* z, int pc) {
     /* bloom: the bright pass + the scene colour (MRT), the pyramid (6 levels), its upsample with the halo weight */
     LT_SIZE(dst, hw, hh); LT_SIZE(src, pw, ph);
     lt_cb(cb, 36);
-    lt_srv(16, c->psrv);
+    lt_srv(16, c->psrv); lt_srv(18, RR.srv[RR.st_cur ? RT_ST1 : RT_ST0]);   /* (last frame's statistics: the threshold) */
     {
         ID3D11RenderTargetView* r2[2] = { LT.rtv[LT_B1], RR.rtv[RT_SCENE] };
         ID3D11DeviceContext_OMSetRenderTargets(gpu_rt.ctx, 2, r2, NULL);
