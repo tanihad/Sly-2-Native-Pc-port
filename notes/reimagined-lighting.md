@@ -262,3 +262,32 @@ Reimagined's dark-block flicker per motion <= 1.15 x Faithful's in both shots an
 Switches: PS2_REIM2=0, PS2_REIM_SHAFT_KEY=0, PS2_REIM_FIRE, PS2_REIM_CAS, PS2_REIM_SH_AT=0, PS2_REIM_SC=0,
 PS2_REIM_SC_SIZE, PS2_REIM_SC_EVERY; PS2_REIM_X=<mask> with PS2_GPU_AB_R8=4096 turns these off in A phases (1 cut-out
 casters, 2 CAS, 4 key-light shafts, 8 fire light, 16 static cache).
+
+### Results (next/reimagine2; RTX 4060 Ti, High = 1440p, 100 %, MSAA 8x, thin outlines, 120 fps)
+
+| | 0.1.1214 | now | Faithful |
+|---|---|---|---|
+| ep2 torches: shafts | rays from the near torch, a beam from a far one | none (halo + warm light on the torch and ground) | - |
+| ep2 trees path: frames where 0.1.1214's world-matrix choice was wrong (counted by the new code) | 119 (of one run) | 0 (camera continuous) | - |
+| key-light term alone (DBG=1) under the trees: flicker per 1000 / dark / motion | 13.96 / 14.72 / 4.58 | 9.25 / 10.35 / 2.94 | - |
+| Sly, close-up orbit, 440 x 480 around him: gradient / Laplacian / acutance | 3.21 / 5.09 / 27.4 | 4.33 / 11.14 / 34.9 | 2.04 / 3.28 / 19.8 |
+| Sly at rest, 440 x 450: gradient / Laplacian / acutance | - | 5.77 / 15.2 / 39.2 (anime_6B: 5.19 / 13.3 / 39.0) | 2.76 / 4.65 / 23.0 |
+| ep1 orbit, GPU ms per frame over the clip (deterministic path, per-frame timestamps): mean / p95 / max | 5.97 / 6.83 / 7.26 | 6.04 / 6.94 / 7.52 | - |
+| in-run A/B (ep1 orbit, PS2_GPU_PROF): Faithful lighting / Reimagined | 5.44 / 6.29 | 5.58 / 6.79 (static cache every 2nd frame; now every 4th) | - |
+| in-run A/B (ep2 path) | 4.36 / 4.98 | 4.36 / 5.11 | - |
+
+Reimagined on High holds 120 fps (8.33 ms) with 17-28 % headroom on these paths (the worst single frame 7.52 ms, 10 %).
+Per pass (ep1, after): reim-smap 0.33 (cut-out casters + cache at every 2nd frame), reim-shadow 0.54, reim-bloom 0.19,
+reim-comp 0.33 ms; the R2 pass +0.39 ms over Faithful lighting (the Reimagined pixel shaders with the surface maps).
+
+Evidence (local, never committed): build\reimagine\videos2 - ep2_fire_and_trees BEFORE / AFTER / SIDE_BY_SIDE,
+sly_closeup_orbit FAITHFUL / BEFORE / AFTER / two side by sides, sly_1to1_<frame>_faithful_before_after.png,
+sly_still_1to1_faithful_anime6B_x4plus.png, ep1_orbit_High_frametime BEFORE / AFTER (each picture's GPU time written in)
+/ SIDE_BY_SIDE.
+
+Stability gate (final code): warm 3 of 3 PASS - orbit 1.088 / 1.079 / 1.086 x, trees 0.977 / 1.027 / 1.031 x Faithful;
+cold PASS (orbit 1.118 x, trees 1.029 x); no world-matrix flip, every texture changed once. The same gate on 0.1.1214
+(PS2_REIM2=0) also passes the ratio (orbit 1.033 x, trees 0.978 x): the reversal count does not see a few large shadow
+jumps, hence the flip check (0.1.1214 cannot log it; on its trees path the new code counts 119 wrong frames). Two runs
+of the same path differ by < 0.5 %. Standard gates on the final code: run_tests, 28 unit suites (all exit 0), m9_exact S1 + S3 -Game
+identical, gpu_diff_all 28/28, r2_sweep Faithful 9/9 and Reimagined 9/9 (ep1, ep3, m2_boardroom x tfo, tfb, mf); after them only Reimagined-side logging changed (the world-camera cut / flip lines the gate reads).
