@@ -4,6 +4,7 @@
  * three consecutive pictures a "flicker event" is a reversal of the luma's change - up then down or down then up - with
  * both steps above the threshold. Real motion mostly changes a block one way for several pictures; flicker reverses.
  *   stability_check <dir with frame_*.bmp> [threshold (luma units of 255, default 3)] [dark (luma, default 64)]
+ *                   [heat.pgm | -] [top share left out (0..1: the HUD)]
  * Prints: pictures, events per 1000 blocks x pictures over all blocks and over the dark blocks (luma < dark: the
  * shadowed regions), and the mean absolute block change (motion energy) for scale. Exit 0. */
 #include <stdio.h>
@@ -60,7 +61,9 @@ int main(int argc, char** argv) {
     float *b0 = NULL, *b1 = NULL, *b2 = NULL;
     uint32_t* heat = NULL;   /* (argv[4]: a picture of where the reversals are, one pixel per block) */
     double ev = 0, evd = 0, cnt = 0, cntd = 0, mot = 0, j2 = 0, j1 = 0, j2d = 0, j1d = 0;   /* (jitter: |second difference| / |first differences|, contrast-free) */
-    int pics = 0, run = 0, total = 0;
+    int pics = 0, run = 0, total = 0, top = 0;
+    double topf = argc > 5 ? atof(argv[5]) : 0.0;   /* (reimagine2) the top share of the picture left out (the HUD's
+                                                       icons and ticker: the same in both looks, they only dilute) */
     long prevnum = -10;   /* (only triples of consecutive pictures - frame numbers in the names - are compared) */
     for (int i = 0; i < n; i++) {
         int w, hh; uint8_t* L;
@@ -70,7 +73,11 @@ int main(int argc, char** argv) {
         if (num != prevnum + 1) run = 0;
         prevnum = num;
         int nbw = w / 8, nbh = hh / 8;
-        if (!b0) { bw = nbw; bh = nbh; b0 = calloc(bw * bh, 4); b1 = calloc(bw * bh, 4); b2 = calloc(bw * bh, 4); heat = calloc(bw * bh, 4); }
+        if (!b0) {
+            bw = nbw; bh = nbh; b0 = calloc(bw * bh, 4); b1 = calloc(bw * bh, 4); b2 = calloc(bw * bh, 4); heat = calloc(bw * bh, 4);
+            top = (int)(topf * bh + 0.5);
+            if (top < 0 || top >= bh) top = 0;
+        }
         if (nbw != bw || nbh != bh) { free(L); continue; }
         float* t = b0; b0 = b1; b1 = b2; b2 = t;   /* b2: the newest */
         for (int by = 0; by < bh; by++)
@@ -82,7 +89,7 @@ int main(int argc, char** argv) {
         free(L);
         pics++; run++; total++;
         if (run < 3) continue;
-        for (int k = 0; k < bw * bh; k++) {
+        for (int k = top * bw; k < bw * bh; k++) {
             float d1 = b1[k] - b0[k], d2 = b2[k] - b1[k];
             int e = (d1 > thr && d2 < -thr) || (d1 < -thr && d2 > thr);
             ev += e; cnt++; heat[k] += e;
@@ -92,7 +99,7 @@ int main(int argc, char** argv) {
             if (b1[k] < dark) { evd += e; cntd++; }
         }
     }
-    if (argc > 4 && heat) {
+    if (argc > 4 && heat && strcmp(argv[4], "-")) {
         FILE* o = fopen(argv[4], "wb");
         if (o) { fprintf(o, "P5 %d %d 255\n", bw, bh); for (int k = 0; k < bw * bh; k++) { uint32_t v = pics > 2 ? heat[k] * 255u * 4u / (uint32_t)(pics - 2) : 0; fputc(v > 255 ? 255 : (int)v, o); } fclose(o); }
     }

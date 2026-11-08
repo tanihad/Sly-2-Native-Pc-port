@@ -456,6 +456,9 @@ static DWORD WINAPI host_timer(LPVOID arg) {
              * the slow frame needs (a slow GPU was made slower by its own repeated pictures); 10 Hz then keeps the VBlank
              * handler's display state machine going */
             int64_t idle = now.QuadPart - last_req < qpc_freq.QuadPart / 4 ? qpc_freq.QuadPart / 10 : ntsc;
+            /* (reimagine2, tests: PS2_FRAME_DT_FIXED) no VBlank between the game's frames while they keep coming, however
+             * slow (frame dumps): one VBlank - one pad read of the input script - per game frame, the same every run */
+            if (ps2_frame_dt_fixed > 0.0f && now.QuadPart - last_req < qpc_freq.QuadPart * 3) idle = qpc_freq.QuadPart * 3;
             due = req ? req : last_raise + idle;
             if (due < last_raise + gap) due = last_raise + gap;
         } else {

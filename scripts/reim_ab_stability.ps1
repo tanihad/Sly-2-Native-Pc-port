@@ -8,7 +8,7 @@
 #   -Mask 1024: A = Faithful lighting, B = Reimagined; 2048: A = 0.1.1207's shadows, B = fixed; 4096: A / B = PS2_REIM_X off / on
 #   -Dbg 1: the key-light term alone (PS2_REIM_DBG=1). Prints one line per set; deletes the dumps unless -Keep.
 param([int]$Mask = 1024, [int]$Dbg = 0, [int]$Phase = 6, [int]$Frames = 600, [double]$Thr = 3, [string]$Tag = '', [switch]$Keep,
-      [string]$Blur = 'preset', [ValidateSet('orbit', 'trees')][string]$Shot = 'orbit', [string]$Extra = '')
+      [string]$Blur = 'preset', [ValidateSet('orbit', 'trees')][string]$Shot = 'orbit', [string]$Extra = '', [double]$Thr2 = 12)
 $wt = Split-Path $PSScriptRoot -Parent
 $chk = Join-Path $wt 'build\stability_check.exe'
 if (-not $Tag) { $Tag = "ab$Mask`_$Shot`_dbg$Dbg" }
@@ -39,6 +39,7 @@ foreach ($f in Get-ChildItem $d -Filter 'frame_*.bmp') {
 foreach ($s in 'A', 'B') {
     $r = & $chk (Join-Path $d $s) $Thr 64
     "$Tag $s (mask $Mask, dbg $Dbg, threshold $Thr): $r"
+    if ($Thr2 -gt 0) { $r2 = & $chk (Join-Path $d $s) $Thr2 64; "  ($s at threshold $Thr2`: $r2)" }
 }
 $sw = Select-String -Path (Join-Path $d 'run.log') -Pattern 'tex-swap: frame' | Select-Object -Last 1
 if ($sw) { "$Tag swaps: $($sw.Line.Trim())" }

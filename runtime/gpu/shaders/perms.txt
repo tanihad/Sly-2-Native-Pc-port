@@ -281,6 +281,7 @@ ps_light_comp1      light.hlsl          ps_light_comp     ps_5_0    MS=1
 ps_reim_shadow      light.hlsl          ps_reim_shadow    ps_5_0    REIM=1
 ps_reim_blur2       light.hlsl          ps_reim_blur2     ps_5_0    REIM=1
 ps_reim_shtaa       light.hlsl          ps_reim_shtaa     ps_5_0    REIM=1
+ps_reim_sccopy      light.hlsl          ps_reim_sccopy    ps_5_0    REIM=1
 ps_reim_bright      light.hlsl          ps_reim_bright    ps_5_0    REIM=1
 ps_reim_up          light.hlsl          ps_reim_up        ps_5_0    REIM=1
 ps_reim_stats       light.hlsl          ps_reim_stats     ps_5_0    REIM=1

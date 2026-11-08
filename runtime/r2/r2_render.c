@@ -497,6 +497,12 @@ static int segment(const gpu_fop_r2* o, const uint8_t* fdata, size_t fdata_bytes
             const r2_mesh* m = r2_mesh_get(d->mesh);
             if (!m || m->gpu_state != (int)R.epoch || (m->handle >> 20) != o->gen) continue;
             if ((d->mode & 3) || !((d->state >> 4) & 1)) continue;   /* (pass A, Z written: solid geometry, no sky / effects) */
+            if (in->shadow_sel && in->shadow_pv) {   /* (reimagine2) the static world (its entry's matrix is the world's) or the rest */
+                const gpu_r2_entry* ent = (const gpu_r2_entry*)(fdata + o->ent_off);
+                int st = d->entry < o->nent && o->ent_off + (size_t)(d->entry + 1) * sizeof(gpu_r2_entry) <= fdata_bytes &&
+                         !memcmp(ent[d->entry].m, in->shadow_pv, 64);
+                if (st != (in->shadow_sel == 1)) continue;
+            }
             int cut = in->shadow_at && R.shpipe_at && ((d->state >> 14) & 1);   /* (reimagine2: its alpha test splits it) */
             if (cut != at) { r2g_bind_pipe(R.d, cut ? R.shpipe_at : R.shpipe); at = cut; }
             r2g_draw_indexed(R.d, d->count, m->gpu_ibase + d->first, (int32_t)m->gpu_vbase, o->draw_off / 32u + i);

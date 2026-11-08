@@ -238,7 +238,10 @@ cbuffer reim_cb : register(b8) {
     float4 r_ptaa;                       // history weight (0: none), -, -, -
     float4 r_ksrc;                       // (2) the key light's picture position (uv, may be off the picture), its weight (0: not
                                          // in front: no shafts; < 0: 0.1.1214's bright-texel centroid), warm glow light (fires)
+    float4 r_lc0, r_lc1, r_lc2, r_lc3;   // (2) world -> the static shadow cache's clip (rows; gpu_reim.h reim_smap)
+    float4 r_scp;                        // (2) the cache: texel (uv), texel (world units), strength (0: none), -
 };
+Texture2D<float> r_smc : register(t27);      // (2) the static shadow cache (and ps_reim_sccopy's source)
 Texture2D<float> r_smap : register(t24);     // the key light's shadow map (1 at the light, 0 far)
 Texture2D<float4> r_stats : register(t18);   // 4 x 1: [0] average colour, mood; [1] fog colour; [2] shaft source; [3] -
 Texture2D<float4> r_pic : register(t19);     // the picture (a copy)
@@ -338,8 +341,30 @@ float2 ps_reim_shadow(float4 pos : SV_Position) : SV_Target {
             if (r_smp3.y > 0.0) sf *= saturate(nl * 6.0);   // (fix: surfaces almost edge-on to the light fade out: no flip-flop)
             occ = max(occ, (1.0 - lit) * sf);
         }
+        if (r_scp.z > 0.0) {             // (2) the static world's casters, kept from frame to frame (the static shadow cache)
+            float4 lc2 = Pw.x * r_lc0 + Pw.y * r_lc1 + Pw.z * r_lc2 + r_lc3;
+            float2 uv2 = float2(lc2.x * 0.5 + 0.5, 0.5 - lc2.y * 0.5);
+            if (all(uv2 > r_scp.xx) && all(uv2 < 1.0 - r_scp.xx) && lc2.z > 0.0 && lc2.z < 1.0) {
+                float lit2 = 0.0;
+                [unroll] for (int j2 = 0; j2 < 4; j2++) {
+                    float2 o2 = float2((j2 & 1) ? 1.0 : -1.0, (j2 & 2) ? 1.0 : -1.0) * r_scp.xx;
+                    float4 g2 = r_smc.GatherRed(l_lin, uv2 + o2);
+                    lit2 += dot(step(g2, lc2.z.xxxx + 1e-5), 0.25.xxxx);
+                }
+                float2 e2 = min(uv2, 1.0 - uv2);
+                float sf2 = saturate(min(e2.x, e2.y) * 12.0) * saturate((r_smp2.x - w) / max(r_smp2.x - r_smp.w, 1.0)) * saturate(nl * 6.0);
+                occ = max(occ, (1.0 - lit2 * 0.25) * sf2);
+            }
+        }
     }
     return float2(1.0 - saturate(occ), nl);
+}
+
+// (2) the static shadow cache moved by whole texels (gpu_reim.h sc_move): the old map's depth at the offset texel
+float ps_reim_sccopy(float4 pos : SV_Position) : SV_Depth {
+    int2 q = int2(pos.xy) + int2(l_dir.xy);
+    if (any(q < 0) || any(q >= int2(l_src.xy))) return 0.0;
+    return r_smc.Load(int3(q, 0));
 }
 
 // the key light's (visibility, N.L) blurred depth-aware (separable, l_dir.xy), as the occlusion
