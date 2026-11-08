@@ -43,6 +43,15 @@ Tasks (owner priority order):
   every receiver rebuilt in the wrong space -> shadows jump; the before run's visible flip is at the same X+1491. Fix:
   reim_finish - unlit entries only, counted over the whole frame, continuity of the rebuilt camera (< 600 units from the
   last frame's) preferred, the most common only on the first frame / a cut; lights clustered after the choice.
+- With the world fix: DBG=1 view 9.25 / dark 10.35, motion 2.94 (before 13.96 / 14.72, 4.58); the former switch frame
+  stays continuous (camera -3625,3109 -> -3615,3126). Full picture ep2 fire+trees: flicker 13.03/dark 10.45 motion 1.64
+  -> 10.16/8.14 motion 1.46. Torch streaks gone (before frames 6758: rays from the torch; 6838-6878 a beam from a far torch).
+- PERF (High, 1440p, MSAA 8x, 120 fps, in-run A/B 1024, perf2.ps1; not fixed-dt): ep1 orbit before (REIM2=0) Faithful
+  5.44 / Reimagined 6.29 ms; after 5.58 / 6.79 (reim-smap 0.04 -> 0.33: static cache + cut-out casters; sc_every 2 then)
+  -> sc_every 4 default. ep2: after 4.36 / 5.11, before 4.98. Owner's 9.3 = 0.1.1207 log "tex-build ... others 9.27 ms".
+- SLY (ep2 close-up fast orbit, region 300x350 around him, 600 pictures): Faithful grad 2.63 lap 4.31 acut 21.7;
+  0.1.1214 3.92 / 6.39 / 30.1; now (CAS 0.6) 5.13 / 12.96 / 37.0. Motion blur (the game's, preset = on) smears him in
+  fast camera turns in every look. anime_6B exported to build\models\x4anime6b.bin (not tried in game yet).
 - Shadow-term debug view (DBG=1) before 13.96 / dark 14.72 per 1000, motion 4.58 -> cache only (no world fix yet)
   9.76 / 10.72, motion 3.11.
 - Code in this pass: alpha-tested cut-out casters (r2.hlsl r2_vs/ps_shadow_at, r2_render.c shpipe_at, state bit 14),

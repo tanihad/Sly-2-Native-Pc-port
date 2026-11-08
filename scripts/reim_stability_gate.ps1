@@ -1,4 +1,4 @@
-﻿# (reimagine) Look = Reimagined's stability gate (notes/reimagined-lighting.md "Stability"): what idle-scene sweeps miss.
+# (reimagine) Look = Reimagined's stability gate (notes/reimagined-lighting.md "Stability"): what idle-scene sweeps miss.
 # scripts\reim_ab_stability.ps1 -Mask 1024, one game run per shot on the owner's settings (High: 1440p, MSAA 8x, thin
 # outlines; 120 fps), deterministic (reimagine2): START anchored at the title, one X at the safehouse, the pad and the
 # dump window relative to it, the game clock stepped 1/120 s per frame (PS2_FRAME_DT_FIXED) - the same pictures every run.
@@ -9,7 +9,7 @@
 # blocks is at most 1.15 x Faithful's and no texture changed more than once (PS2_TEX_SWAPLOG). A shot whose pictures
 # barely move (the pad path missed: motion < 0.3) is run once more. -Cold: an empty Reimagined texture cache.
 # -Shots orbit,trees (default both). One game run at a time; the dumps are deleted.
-param([switch]$Cold, [string]$Shots = 'orbit,trees', [double]$Limit = 1.15)
+param([switch]$Cold, [string]$Shots = 'orbit,trees', [double]$Limit = 1.15, [string]$Extra = '')   # (-Extra: env for both looks, e.g. PS2_REIM2=0)
 $wt = Split-Path $PSScriptRoot -Parent
 $clang = Join-Path (Split-Path $wt -Parent) 'sly2-decomp\tools\llvm-mingw\bin\clang.exe'
 $chk = Join-Path $wt 'build\stability_check.exe'
@@ -29,7 +29,7 @@ foreach ($shot in ($Shots -split ',')) {
     for ($try = 0; $try -lt 2; $try++) {
         if ($Cold -and $try) { Get-ChildItem $env:PS2_TEXCACHE_SEED -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue }
         $frames = if ($shot -eq 'trees') { 850 } else { 600 }
-        $out = powershell -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'reim_ab_stability.ps1') -Mask 1024 -Dbg 0 -Shot $shot -Frames $frames `
+        $out = powershell -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'reim_ab_stability.ps1') -Mask 1024 -Dbg 0 -Shot $shot -Frames $frames -Extra $Extra `
             -Tag "gate_$shot$(if ($Cold) { '_cold' })"
         $out
         $v = @{}; $mo = @{}

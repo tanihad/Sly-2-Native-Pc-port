@@ -126,7 +126,7 @@ static void re_env(void) {
     RE.sc_size = (int)lt_envf("PS2_REIM_SC_SIZE", 4096.0f);
     if (RE.sc_size < 512) RE.sc_size = 512;
     if (RE.sc_size > 8192) RE.sc_size = 8192;
-    RE.sc_every = (int)lt_envf("PS2_REIM_SC_EVERY", 2.0f);
+    RE.sc_every = (int)lt_envf("PS2_REIM_SC_EVERY", 4.0f);
     if (RE.sc_every < 1) RE.sc_every = 1;
     e = getenv("PS2_REIM2");                            /* (=0: 0.1.1214's Reimagined, for before / after evidence) */
     RE.v2 = !(e && *e == '0');

@@ -37,9 +37,9 @@ foreach ($f in Get-ChildItem $d -Filter 'frame_*.bmp') {
     Move-Item $f.FullName (Join-Path $d "$cur\$($f.Name)")
 }
 foreach ($s in 'A', 'B') {
-    $r = & $chk (Join-Path $d $s) $Thr 64
+    $r = & $chk (Join-Path $d $s) $Thr 64 - 0.12   # (the top 12 %: the HUD's icons and ticker, the same in both)
     "$Tag $s (mask $Mask, dbg $Dbg, threshold $Thr): $r"
-    if ($Thr2 -gt 0) { $r2 = & $chk (Join-Path $d $s) $Thr2 64; "  ($s at threshold $Thr2`: $r2)" }
+    if ($Thr2 -gt 0) { $r2 = & $chk (Join-Path $d $s) $Thr2 64 - 0.12; "  ($s at threshold $Thr2`: $r2)" }
 }
 $sw = Select-String -Path (Join-Path $d 'run.log') -Pattern 'tex-swap: frame' | Select-Object -Last 1
 if ($sw) { "$Tag swaps: $($sw.Line.Trim())" }
