@@ -142,3 +142,62 @@ Cost (ep1 hub, 1440p High = thin outlines, MSAA 8x, unlimited frame rate, PS2_GP
 Pictures (local): build\reimagine\outlines\sly_<medium|high>_<faithful|reimagined>__before_after_1to1.png (ep3, Sly,
 1:1). No moving-camera pair (the owner was playing the build; runs kept short). The tfo / tfb flicker checks cover
 motion: 0 blinks, 0 seams.
+## Stability (the owner's 0.1.1207 report, 2026-11-07)
+
+Reproduced the way a player sees it: the owner's settings (1440p, 120 fps, thin outlines, render scale auto, filters
+modern), Sly running in the ep1 hub with the camera orbiting (pad lup + rright), every picture dumped. The idle-scene
+sweeps could not see any of it. Measurement (scripts/stability_check.c): 8 x 8 block luma, a "flicker event" = the
+change reversing (up then down or down then up) with both steps over 16 / 255, per 1000 blocks x pictures, divided by
+the mean block change (motion) - real motion of textured content also reverses, so only a comparison on THE SAME camera
+path means anything: scripts/reim_ab_stability.ps1 alternates Faithful / Reimagined (PS2_GPU_AB_R8=1024) or 0.1.1207 /
+fixed (PS2_GPU_AB_R8=2048, PS2_REIM_FIX=0) every 60 pictures of one run. Separate runs differed by up to 50 % in
+motion alone and gave contradicting numbers.
+
+| ep1 orbit, dark blocks, flicker per motion | Faithful | Reimagined | ratio |
+|---|---|---|---|
+| 0.1.1207 (PS2_REIM_FIX=0) | 0.641 | 1.015 | 1.58 x |
+| fixed | 0.688 | 0.802 | 1.17 x |
+
+Root causes found (each with its fix, all behind PS2_REIM_FIX / R8P_REIMFIX for before / after):
+- the key light was eased towards each frame's winning light cluster: its direction wandered by ~0.5 deg as entries came
+  and went (149 changes of the winner in 2000 frames), enough to move a shadow 3-4 map texels at 3000 units -> held,
+  changing only after another light has won 90 frames in a row (2-3 changes per run instead of a continuous drift);
+- the screen-space contact march (per-pixel noise) and the stronger occlusion (radius 80, strength 4) crawled under
+  motion -> no contact march where the shadow map draws, Faithful's occlusion strength;
+- shadow acne under motion: depth-rebuilt receiver positions jitter by a sub-texel -> a normal-offset bias along the
+  world normal, surfaces nearly edge-on to the light faded out, the map faded from half its reach;
+- residual crawl of the shadow edges -> a temporal resolve of the key-light term (half res): last frame's value at the
+  same world position (reprojected with the previous world x clip), clamped to this frame's 3 x 3 neighbourhood,
+  80 % history;
+- the statistics (exposure, fog colour, shaft source) adapted per frame: at 120 fps twice as fast -> per second (0.7 s);
+- also checked and ruled out: the map's texel snapping (radius constant, centre in whole texels), frames without a map
+  (0 of 18 000), segments after the post pass (0), the world-matrix choice (stable).
+
+**Textures** (PS2_TEX_SWAPLOG=1: per-texture changes after a texture first shows enhanced): warm and cold caches,
+ep1 / ep2 hubs, 0.1.1207 and fixed: every texture changes exactly once (Enhanced -> AI), no texture swapped back and
+forth; the content changes the game makes itself are counted apart. The one path that could flip a texture between AI,
+Enhanced and the original sampling - a second content change within 30 s rejected the texture for good (characters'
+parts streamed into a shared area) - now shares any content seen before at once and only treats four NEW contents in
+30 s as an animation. No crossfade yet (the AI image is built over the Enhanced one in place; a fade needs both).
+
+**Build hitches**: builds were capped at 1 M output texels a frame (~3 ms under Reimagined with the surface maps) and
+the AI images' applies (cached loads and finished net results) were not capped at all. Now both share one GPU-time cap:
+what the frame leaves of 80 % of the frame interval at the player's frame rate (0.25..2 ms), converted with the measured
+ms per million texels (timestamps). Cold cache, ep2 hub, 120 fps: no frame with builds over 10 ms in play either way;
+frames with builds +0.87 -> +0.75 ms over the others; the owner's 10-22 ms frames are hub / title loads. (Logging with
+PS2_REIM_LOG made a 100-150 ms CPU stall show up as GPU time in "tex-build" lines: not a hitch in play.)
+
+Gate: scripts/reim_stability_gate.ps1 [-Cold] (one run each: Reimagined's flicker per motion <= 1.3 x Faithful's on the
+same path, no texture changed more than once).
+
+Videos (build\reimagine\videos, local; scripts/frames_to_mp4.c: Media Foundation H.264, 40 Mbps, 60 fps from the
+120 fps dumps): ep1_orbit_faithful, ep1_orbit_reimagined_BEFORE (PS2_REIM_FIX=0), ep1_orbit_reimagined_after,
+ep1_orbit_SIDE_BY_SIDE_faithful_left_reimagined_after_right, ep2_coldcache_reimagined_after; each with its run.log.
+Follow-up (same day): clarity 0.22 -> 0.08 (local contrast amplified small flicker; with it off the ratio fell 1.42 ->
+1.15 in one run), N.L from a 2-texel baseline, history 0.9. Ablation on the same path: with the key-light terms off
+(PS2_REIM_SS=0) Reimagined / Faithful = 1.08 x; shafts off 1.18 x; grade off 1.15 x - the relight / shadow terms are
+still the largest share. The gate's ratio varies run to run by +-0.15 (the camera path differs between runs; some runs
+lose the pad timing and barely move): final runs 1.26 x (pass) and 1.44 x (fail) warm, 1.43 x cold. Status: much
+better than 0.1.1207 (1.58 x, and the per-frame key drift and contact noise gone), not yet at Faithful parity.
+Also: one r2_sweep ep3 mf run reported 2 stray triangles (an exact-path triangle with q = 0 at v5096, not R2 / post);
+the same check passed when run again alone.

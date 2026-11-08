@@ -271,6 +271,15 @@ float2 ps_reim_shadow(float4 pos : SV_Position) : SV_Target {
     float3 dy = abs(wd - w) < abs(w - wu) ? Pd - P : P - Pu;
     float3 N = normalize(cross(dx, dy));
     if (dot(N, P) > 0.0) N = -N;
+    if (r_smp3.y > 0.0) {                // (fix) a wider baseline (2 texels each way): N.L no longer jumps with the depth's texels
+        float wl2 = l_wload(q - int2(2, 0)), wr2 = l_wload(q + int2(2, 0)), wu2 = l_wload(q - int2(0, 2)), wd2 = l_wload(q + int2(0, 2));
+        float3 Pl2 = l_pos(pp - float2(2.0 * l_map.z, 0.0), wl2), Pr2 = l_pos(pp + float2(2.0 * l_map.z, 0.0), wr2);
+        float3 Pu2 = l_pos(pp - float2(0.0, 2.0 * l_map.w), wu2), Pd2 = l_pos(pp + float2(0.0, 2.0 * l_map.w), wd2);
+        float3 dx2 = abs(wr2 - w) < abs(w - wl2) ? Pr2 - P : P - Pl2;
+        float3 dy2 = abs(wd2 - w) < abs(w - wu2) ? Pd2 - P : P - Pu2;
+        float3 N2 = cross(dx2, dy2);
+        if (dot(N2, N2) > 1e-12) { N2 = normalize(N2); if (dot(N2, P) > 0.0) N2 = -N2; if (dot(N2, N) > 0.8) N = normalize(N + N2); }
+    }
     float nl = dot(N, L);
     if (nl <= 0.02) return float2(1.0, 0.0);
     float len = r_sss.x * (1.0 + w / 3000.0);       // (a little longer far away: the same share of the screen)

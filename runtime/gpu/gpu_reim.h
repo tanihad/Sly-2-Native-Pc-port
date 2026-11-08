@@ -503,7 +503,7 @@ static void reim_post(mtarget* c, mtarget* z, int pc) {
                     (unsigned long long)RE.map_ops, (unsigned long long)RE.map_fd, (unsigned long long)RE.key_snaps);
     }
     if (re_fix() && have_world && RR.have_prev && RR.prev_serial != S->serial) {   /* (fix: the key-light term's history) */
-        memcpy(rppv, RR.ppv, sizeof RR.ppv); memcpy(rpndc, RR.pndc, sizeof RR.pndc); rptaa[0] = 0.8f;
+        memcpy(rppv, RR.ppv, sizeof RR.ppv); memcpy(rpndc, RR.pndc, sizeof RR.pndc); rptaa[0] = 0.9f;
     }
     if (re_fix() && have_world) { memcpy(RR.ppv, S->pv, sizeof RR.ppv); memcpy(RR.pndc, rndc, sizeof RR.pndc); RR.have_prev = 1; RR.prev_serial = S->serial; }
     else RR.have_prev = 0;
