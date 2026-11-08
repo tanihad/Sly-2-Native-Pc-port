@@ -2,6 +2,12 @@
 
 ## Resume here (read first in a new session)
 
+**2026-11-08: main d2de0e7 = next/reimagine merged (owner asked); dist\Sly2 0.1.1214 + models\x4plus.bin.** Owner
+playtest: fires cast light shafts (wrong), tree shadows flicker when walking under them, Sly looks blurry (wants more
+detail), Reimagined on High + 8x MSAA is ~9.3 ms (misses 120 fps). Fix agent on next/reimagine2 (worktree
+sly2-worktrees\light), MP4 evidence in build\reimagine\videos2. NOTE: games launched from the agent shell run in the
+Claude app's MSIX sandbox (AppData redirected -> wrong save/settings); the owner must start dist\Sly2\sly2.exe himself.
+
 **2026-11-07: Reimagined test build 0.1.1207 (next/reimagine 85bba3d, not on main)** in dist\Sly2-Reimagined (+
 models\x4plus.bin from sly2-worktrees\light\build\models, never committed). next/reimagine = next/ai merged (AI
 x4plus textures + surface maps, background cache) + Reimagined lighting (moon shadow maps, warm grade, auto exposure,
