@@ -60,7 +60,7 @@ int main(int argc, char** argv) {
     int bw = 0, bh = 0;
     float *b0 = NULL, *b1 = NULL, *b2 = NULL;
     uint32_t* heat = NULL;   /* (argv[4]: a picture of where the reversals are, one pixel per block) */
-    double ev = 0, evd = 0, cnt = 0, cntd = 0, mot = 0, j2 = 0, j1 = 0, j2d = 0, j1d = 0;   /* (jitter: |second difference| / |first differences|, contrast-free) */
+    double ev = 0, evd = 0, cnt = 0, cntd = 0, mot = 0, j2 = 0, j1 = 0, j2d = 0, j1d = 0, pops = 0;   /* (jitter: |second difference| / |first differences|, contrast-free) */
     int pics = 0, run = 0, total = 0, top = 0;
     double topf = argc > 5 ? atof(argv[5]) : 0.0;   /* (reimagine2) the top share of the picture left out (the HUD's
                                                        icons and ticker: the same in both looks, they only dilute) */
@@ -95,6 +95,7 @@ int main(int argc, char** argv) {
             ev += e; cnt++; heat[k] += e;
             mot += fabsf(d2);
             j2 += fabsf(d2 - d1); j1 += fabsf(d1) + fabsf(d2);
+            if (fabsf(d2) > 16.0f && fabsf(d1) < 2.0f) pops++;   /* (a still block that jumps: a shadow popping in or out) */
             if (b1[k] < dark) { j2d += fabsf(d2 - d1); j1d += fabsf(d1) + fabsf(d2); }
             if (b1[k] < dark) { evd += e; cntd++; }
         }
@@ -103,7 +104,8 @@ int main(int argc, char** argv) {
         FILE* o = fopen(argv[4], "wb");
         if (o) { fprintf(o, "P5 %d %d 255\n", bw, bh); for (int k = 0; k < bw * bh; k++) { uint32_t v = pics > 2 ? heat[k] * 255u * 4u / (uint32_t)(pics - 2) : 0; fputc(v > 255 ? 255 : (int)v, o); } fclose(o); }
     }
-    printf("jitter %.4f (all), %.4f (dark); ", j1 > 0 ? j2 / j1 : 0.0, j1d > 0 ? j2d / j1d : 0.0);
+    printf("jitter %.4f (all), %.4f (dark); pops %.3f per 1000; ", j1 > 0 ? j2 / j1 : 0.0, j1d > 0 ? j2d / j1d : 0.0,
+           cnt ? pops * 1000.0 / cnt : 0.0);
     printf("pictures %d, blocks %dx%d: flicker %.3f per 1000 (all), %.3f per 1000 (dark < %.0f, %.0f%% of blocks), motion %.3f\n",
            pics, bw, bh, cnt ? ev * 1000.0 / cnt : 0.0, cntd ? evd * 1000.0 / cntd : 0.0, dark, cnt ? 100.0 * cntd / cnt : 0.0,
            cnt ? mot / cnt : 0.0);

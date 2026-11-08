@@ -23,9 +23,10 @@ typedef struct {
     struct { float m[16]; int n; } cand[32];
     int ncand, nlent, done;
     struct { float m[16]; uint32_t lb; } lent[384];
+    float pv_old[16]; int pv_old_n;           /* (2, diagnostics) what 0.1.1214 would have taken (the best segment's most common) */
 } reim_scene;
 static reim_scene RS, RS_last;
-static struct { float cam[3]; int have; uint64_t switches, cuts; } RW;   /* (2) the world camera of the last frame */
+static struct { float cam[3]; int have; uint64_t switches, cuts, old_wrong; } RW;   /* (2) the world camera of the last frame */
 static struct {
     int env, log, dbg, ss, shafts, fog, grade, smap, sm_size;
     float sm_k, sm_dist;
@@ -223,6 +224,17 @@ static void reim_note(const gpu_front_frame_data* fd, const gpu_fop_r2* o, const
          * not: where few world entries were drawn (under trees, a wall in front of the camera) a group of plants or Sly's
          * own entries could win - every position rebuilt from the depth then sat in the wrong space and the shadows
          * jumped about ("confused where to show") */
+        {                                /* (diagnostics: 0.1.1214's choice, to count the frames it got wrong) */
+            int cand[8], cn[8], nc = 0, best = -1, bestn = 0;
+            for (uint32_t i = 0; i < n && i < 512; i++) {
+                int f = -1;
+                for (int j = 0; j < nc && f < 0; j++) if (!memcmp(ent[i].m, ent[cand[j]].m, 64)) f = j;
+                if (f >= 0) cn[f]++;
+                else if (nc < 8) { cand[nc] = (int)i; cn[nc++] = 1; }
+            }
+            for (int j = 0; j < nc; j++) if (cn[j] > bestn) { bestn = cn[j]; best = cand[j]; }
+            if (best >= 0 && bestn > RS.pv_old_n && bestn >= 3) { memcpy(RS.pv_old, ent[best].m, 64); RS.pv_old_n = bestn; }
+        }
         for (uint32_t i = 0; i < n && i < 2048; i++) {
             uint32_t xq = ent[i].pad[0];
             if (xq) {
@@ -304,6 +316,7 @@ static void reim_finish(reim_scene* s) {
         if (best < 0) return;
     }
     for (int j = 0; j < s->ncand; j++) if (okj[j] && s->cand[j].n > s->cand[best].n) { RW.switches++; break; }   /* (the count alone: another) */
+    if (s->pv_old_n && memcmp(s->pv_old, s->cand[best].m, 64)) RW.old_wrong++;
     memcpy(s->pv, s->cand[best].m, 64);
     memcpy(s->ipv, inv[best], 64);
     s->pv_ok = 1; s->pv_n = s->cand[best].n;
@@ -739,10 +752,10 @@ static void reim_post(mtarget* c, mtarget* z, int pc) {
         }
         if (RE.log && RE.posts % 600 == 0)
             gpu_log("reim-stats: %llu post passes, %llu maps drawn, %llu reused (no segments %llu, another frame's data %llu), key changes %llu, "
-                    "shadow cache %llu new, %llu moves, world matrix: %llu frames not the most common, %llu cuts",
+                    "shadow cache %llu new, %llu moves, world matrix: %llu frames not the most common, %llu cuts, %llu frames 0.1.1214 took another",
                     (unsigned long long)RE.posts, (unsigned long long)RE.maps, (unsigned long long)RE.map_reuse,
                     (unsigned long long)RE.map_ops, (unsigned long long)RE.map_fd, (unsigned long long)RE.key_snaps,
-                    (unsigned long long)RE.sc_fresh, (unsigned long long)RE.sc_moves, (unsigned long long)RW.switches, (unsigned long long)RW.cuts);
+                    (unsigned long long)RE.sc_fresh, (unsigned long long)RE.sc_moves, (unsigned long long)RW.switches, (unsigned long long)RW.cuts, (unsigned long long)RW.old_wrong);
     }
     if (re_fix() && have_world && RR.have_prev && RR.prev_serial != S->serial) {   /* (fix: the key-light term's history) */
         memcpy(rppv, RR.ppv, sizeof RR.ppv); memcpy(rpndc, RR.pndc, sizeof RR.pndc); rptaa[0] = 0.9f;
