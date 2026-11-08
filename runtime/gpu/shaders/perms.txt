@@ -290,6 +290,9 @@ ps_reim_comp1       light.hlsl          ps_reim_comp      ps_5_0    MS=1 REIM=1
 # (reimagine) the key light's shadow map: the frame's R2 draws as casters (r2.hlsl R2_SHADOW)
 vs_r2m_sh           r2.hlsl             r2_vs_shadow      vs_5_0    R2_MFT=1 R2_SHADOW=1
 ps_r2m_sh           r2.hlsl             r2_ps_shadow      ps_5_0    R2_MFT=1 R2_SHADOW=1
+# (reimagine2) cut-out casters (alpha-tested draws: leaves, fronds): the material's texture alpha
+vs_r2m_sha          r2.hlsl             r2_vs_shadow_at   vs_5_0    R2_MFT=1 R2_SHADOW=1
+ps_r2m_sha          r2.hlsl             r2_ps_shadow_at   ps_5_0    R2_MFT=1 R2_SHADOW=1
 # (reimagine) the R2 pipelines' pixel shaders under Reimagined (R2_ENH=2: specular, rim, the per-pixel normal hook)
 ps_r2m_e_r          r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_ENH=2
 ps_r2m_nd_e_r       r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_NODISCARD=1 R2_ENH=2

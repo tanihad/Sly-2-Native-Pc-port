@@ -481,6 +481,59 @@ float4 r2_vs_shadow(R2V i) : SV_Position {
 void r2_ps_shadow() {}
 #endif
 
+#if R2_SHADOW
+// (reimagine2) cut-out casters: the draws whose alpha test splits their fragments (leaves, fronds, grilles, fences) cast
+// the shape of what the picture shows, not their whole cards - the full vertex (lit / skinned UVs and colours) and the
+// material's texture and alpha test, as r2_ps does (the PS2 texels: the cut-out's shape is the game's own)
+struct R2SA {
+    float4 pos : SV_Position;
+    float2 uv : TEXCOORD0;               // U, V (texture units; affine in the light's orthographic view = exact)
+    float va : COLOR0;                   // the vertex colour's alpha
+    nointerpolation uint3 mr : MATRULE;
+};
+R2SA r2_vs_shadow_at(R2V i) {
+    R2O o;
+    float4 clip, alt;
+    r2_vertex(i, o, clip, alt);
+    R2SA r;
+    float4 h = clip.x * sh_ipv[0] + clip.y * sh_ipv[1] + clip.z * sh_ipv[2] + clip.w * sh_ipv[3];
+    float3 wp = h.xyz / h.w;
+    r.pos = wp.x * sh_lm[0] + wp.y * sh_lm[1] + wp.z * sh_lm[2] + sh_lm[3];
+    if (o.pos.x >= 2.0) r.pos = float4(2.0, 2.0, 0.5, 1.0);   // (a batch left to another draw)
+    r.uv = alt.xy;
+    r.va = o.col.w;
+    r.mr = o.mr;
+    return r;
+}
+void r2_ps_shadow_at(R2SA i) {
+    vkx = 1u; vky = 1u; vbase = 0u; vfbw = 1u; vflags = 0u; one = 1.0; kx = 1u; ky = 1u;   // (gs.hlsl statics, as r2_ps)
+    uint mb = i.mr.x * 64u;
+    uint4 d1 = r2_mats.Load4(mb);
+    uint4 d2 = r2_mats.Load4(mb + 16u);
+    uint4 d3 = r2_mats.Load4(mb + 32u);
+    uint test = d2.y;
+    if ((test & 1u) == 0u) return;
+    uint flags = d3.z;
+    St st;
+    st.tex0clamp = d1;
+    st.tex1 = uint2(d2.x, 0u);
+    st.texa = 0u; st.clut_slot = 0u; st.texsrc = 1u; st.fogcol = d2.w; st.test = d2.y; st.fmask = 0u; st.flags = 0u;
+    st.alpha = d2.z; st.zinfo = 0u;
+    st.tlev = (flags >> 8) & 3u;
+    st.mip[0] = 0u; st.mip[1] = 0u; st.mip[2] = 0u; st.mip[3] = 0u; st.mip[4] = 0u; st.mip[5] = 0u;
+    st.dimx = uint2(0u, 0u);
+    st.dec = r2_mats.Load(mb + 60u);
+    uint t0 = d1.x, t1 = d1.y;
+    uint tw = (t0 >> 26) & 15u, th = ((t0 >> 30) | (t1 << 2)) & 15u;
+    float tw16 = (float)(16u << (tw > 10u ? 10u : tw)), th16 = (float)(16u << (th > 10u ? 10u : th));
+    uint t = tex_sample(st, f2i(i.uv.x * tw16), f2i(i.uv.y * th16), 1.0);
+    uint va = (uint)clamp(i.va, 0.0, 255.0);
+    uint col = tfx((t1 >> 3) & 3u, (flags & R2D_TCC) != 0u, 0x808080u | (va << 24), t);
+    bool apass = atst_pass((test >> 1) & 7u, (test >> 4) & 0xFFu, col >> 24);
+    if (apass == ((i.mr.y & 1u) != 0u)) discard;   // rule 0: failing fragments discarded, rule 1: passing ones
+}
+#endif
+
 R2C r2_vs_clip(R2V i) {
     R2O o;
     float4 clip, alt;

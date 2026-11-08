@@ -236,6 +236,8 @@ cbuffer reim_cb : register(b8) {
     float4 r_pv0, r_pv1, r_pv2, r_pv3;   // (fix) the previous frame's world x clip (rows): the key-light term's history
     float4 r_pndc;                       // the previous frame's ndc of a picture pixel (as r_ndc)
     float4 r_ptaa;                       // history weight (0: none), -, -, -
+    float4 r_ksrc;                       // (2) the key light's picture position (uv, may be off the picture), its weight (0: not
+                                         // in front: no shafts; < 0: 0.1.1214's bright-texel centroid), warm glow light (fires)
 };
 Texture2D<float> r_smap : register(t24);     // the key light's shadow map (1 at the light, 0 far)
 Texture2D<float4> r_stats : register(t18);   // 4 x 1: [0] average colour, mood; [1] fog colour; [2] shaft source; [3] -
@@ -419,6 +421,16 @@ float4 ps_reim_up(float4 pos : SV_Position) : SV_Target {
     return float4(s * (r_bloom.y / 12.0), 1.0);
 }
 
+// (2) a texel that light shafts may come from: far (the sky, the distant background) and neutral in hue - moonlight, a
+// pale sky, the sun's glow. Fires, torches, lamps, lasers and glows are saturated (orange, yellow, red, green): never.
+// (Their sprites write no depth, so over the sky they are "far" too: the hue is what tells them apart.)
+float r_skyw(float3 b, float w) {
+    float mx = max(max(b.r, b.g), b.b), mn = min(min(b.r, b.g), b.b);
+    float sat = (mx - mn) / max(mx, 1e-4);
+    float warm = saturate((b.r - b.b) / max(mx, 1e-4) * 2.5);   // (any warm cast: firelight)
+    return (w >= r_shaft.w ? 1.0 : 0.0) * saturate((0.45 - sat) / 0.2) * (1.0 - warm);
+}
+
 // ---- scene statistics (4 x 1, smoothed over frames): the mood, the fog colour, the shafts' source ----------------
 Texture2D<float4> r_prev : register(t23);    // the previous statistics
 float4 ps_reim_stats(float4 pos : SV_Position) : SV_Target {
@@ -451,6 +463,19 @@ float4 ps_reim_stats(float4 pos : SV_Position) : SV_Target {
                 sw += g;
             }
         v = float4(s / sw, 1.0);
+    } else if (k == 2u && r_ksrc.z >= 0.0) {   // (2) the shafts' source: the key light (moon / sun) itself, and how much
+        float sw = 0.0;                  // bright neutral sky lies towards it (fires, lamps, lasers and glows never count)
+        [loop] for (uint y = 0u; y < 24u; y++)
+            [loop] for (uint x = 0u; x < 40u; x++) {
+                float2 uv = (float2(x, y) + 0.5) / float2(40.0, 24.0);
+                float3 b = l_tex.SampleLevel(l_lin, uv, 0.0).rgb;   // (bloom level 4)
+                float w = l_w.Load(int3(int2(uv * l_src.xy), 0));
+                float e = l_luma(b) * r_skyw(b, w);
+                float2 dv = (uv - r_ksrc.xy) * float2(l_src.x * l_src.w, 1.0);
+                e *= exp(-dot(dv, dv) * 4.0);    // (near the light: a sky glow across the picture is no source)
+                sw += e * e;
+            }
+        v = float4(r_ksrc.xy, sqrt(sw / 960.0) * 3.0 * r_ksrc.z, 1.0);
     } else if (k == 2u) {                // the shafts' source: the centroid of the bright far texels (moon, sky glow)
         float2 s = 0.0;
         float sw = 0.0;
@@ -481,8 +506,8 @@ float4 ps_reim_stats(float4 pos : SV_Position) : SV_Target {
     }
     float a = r_misc.x;
     if (prev.w <= 0.0) a = 1.0;          // (the first frame)
-    if (k == 2u && prev.z < 1e-3) prev.xy = v.xy;   // (a source appearing: from where it is)
-    return lerp(prev, v, a);
+    if (k == 2u && (prev.z < 1e-3 || r_ksrc.z >= 0.0)) prev.xy = v.xy;   // (a source appearing: from where it is; (2) the key
+    return lerp(prev, v, a);                                               //  light: always exactly where it is)
 }
 
 // ---- light shafts (quarter res): bright far texels smeared along the way towards the source -------------------------
@@ -498,7 +523,7 @@ float4 ps_reim_shafts(float4 pos : SV_Position) : SV_Target {
     [unroll] for (uint i = 0u; i < 24u; i++) {
         float3 b = l_tex.SampleLevel(l_lin, t, 0.0).rgb;
         float w = l_w.SampleLevel(l_lin, t, 0.0);
-        s += b * (w >= r_shaft.w ? 1.0 : 0.0) * dec;
+        s += b * (r_ksrc.z >= 0.0 ? r_skyw(b, w) : (w >= r_shaft.w ? 1.0 : 0.0)) * dec;   // (2: sky light only)
         dec *= r_shaft.y;
         t += d;
     }
@@ -520,6 +545,15 @@ float4 ps_reim_comp(float4 pos : SV_Position) : SV_Target {
     float d = l_depth_at(p);
     float w = l_wof(d);
     bool sky = w >= l_z.z * 0.5;
+    if (r_ptaa.y > 0.0) {                // (2) contrast-adaptive sharpening (AMD CAS's cross form): the picture's own detail
+        int2 mxp = int2(l_dst.xy) - 1;   // crisper - Sly, textures, edges - without halos (weaker where contrast is already high)
+        float3 cb = r_pic.Load(int3(clamp(ip - int2(0, 1), 0, mxp), 0)).rgb, cd = r_pic.Load(int3(clamp(ip - int2(1, 0), 0, mxp), 0)).rgb;
+        float3 cf = r_pic.Load(int3(clamp(ip + int2(1, 0), 0, mxp), 0)).rgb, ch = r_pic.Load(int3(clamp(ip + int2(0, 1), 0, mxp), 0)).rgb;
+        float3 mn = min(c, min(min(cb, cd), min(cf, ch))), mx = max(c, max(max(cb, cd), max(cf, ch)));
+        float3 amp = sqrt(saturate(min(mn, 1.0 - mx) / max(mx, 1e-4)));
+        float3 wk = amp * -lerp(0.125, 0.2, saturate(r_ptaa.y));
+        c = saturate((c + (cb + cd + cf + ch) * wk) / (1.0 + 4.0 * wk));
+    }
     // occlusion + screen-space shadow, depth-aware upsampled together
     float ao = 1.0;
     float2 sh = float2(1.0, 0.0);
@@ -568,6 +602,12 @@ float4 ps_reim_comp(float4 pos : SV_Position) : SV_Target {
     {
         float Lc = l_luma(lin), Ll = l_luma(r_srgb2lin(r_scene.SampleLevel(l_lin, p * l_dir.zw, 3.0).rgb));
         lin *= clamp(pow(max((Lc + 0.004) / (Ll + 0.004), 1e-3), r_vig.w), 0.7, 1.45);
+    }
+    if (r_ksrc.w > 0.0 && !sky) {        // (2) warm glow lights its surroundings: fires and torches light the ground, walls and
+        float3 g = min(bl, 2.0);         // characters near them in their own hue (the glow's own flicker: the flames' animation)
+        float gm = max(max(g.r, g.g), g.b);
+        float wg = saturate((g.r - g.b) / max(gm, 1e-4) * 1.6 - 0.2);
+        lin += lin * g * (wg * r_ksrc.w);
     }
     lin += min(bl, 4.0) * (l_bloom.z * 0.35) + min(sf, 4.0);   // (the glow is light: added linearly)
     // atmosphere: depth fog + height fog towards the scene's sky colour (the sky itself has it already)

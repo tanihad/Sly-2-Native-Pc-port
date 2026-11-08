@@ -32,6 +32,11 @@ static struct {
     uint64_t posts, maps, map_reuse, map_fd, map_ops, key_snaps;   /* (fix) statistics */
     float relief, cavity, nmap;
     int have_key;
+    int shaft_key;                       /* (2) shafts from the key light only (0: 0.1.1214's brightest far texels) */
+    float fire_k;                        /* (2) warm glow lighting its surroundings */
+    float cas;                           /* (2) contrast-adaptive sharpening of the picture (0: off) */
+    int sh_at;                           /* (2) cut-out casters through their alpha test (PS2_REIM_SH_AT) */
+    int v2;                              /* (2) PS2_REIM2=0: none of reimagine2's changes */
 } RE;
 enum { RT_SHH, RT_SH, RT_SH2, RT_B6, RT_SHAFT, RT_PIC, RT_ST0, RT_ST1, RT_SCENE, RT_N };
 static struct {
@@ -54,6 +59,13 @@ static struct {
 
 /* PS2_REIM_FIX=0: 0.1.1207's behaviour (for before / after measurements) */
 static int re_fix(void) { static int v = -1; if (v < 0) { const char* e = getenv("PS2_REIM_FIX"); v = !(e && *e == '0'); } return v && r8p_on(R8P_REIMFIX); }
+/* (reimagine2) a switchable change: experiment bit b (PS2_REIM_X=<mask>) is off in A phases and on in B phases of PS2_GPU_AB
+ * with PS2_GPU_AB_R8=4096 (one run, the same camera path for both); not in the mask: its default def */
+static int re_x(int b, int def) {
+    static int m = -1;
+    if (m < 0) { const char* e = getenv("PS2_REIM_X"); m = e && *e ? (int)strtol(e, NULL, 0) : 0; }
+    return (m & b) ? r8p_on(R8P_REIMX) : def;
+}
 static void re_env(void) {
     if (RE.env) return;
     RE.env = 1;
@@ -89,6 +101,13 @@ static void re_env(void) {
     RE.vig = lt_envf("PS2_REIM_VIG", 0.16f);
     RE.clar = lt_envf("PS2_REIM_CLARITY", 0.18f);   /* local contrast */
     RE.sh_i = lt_envf("PS2_REIM_SHAFT_I", 1.0f);
+    e = getenv("PS2_REIM_SHAFT_KEY"); RE.shaft_key = !(e && *e == '0');
+    RE.fire_k = lt_envf("PS2_REIM_FIRE", 0.5f);
+    RE.cas = lt_envf("PS2_REIM_CAS", 0.6f);
+    e = getenv("PS2_REIM_SH_AT"); RE.sh_at = !(e && *e == '0');
+    e = getenv("PS2_REIM2");                            /* (=0: 0.1.1214's Reimagined, for before / after evidence) */
+    RE.v2 = !(e && *e == '0');
+    if (!RE.v2) { RE.shaft_key = 0; RE.fire_k = 0.0f; RE.cas = 0.0f; RE.sh_at = 0; }
     RE.night = lt_envf("PS2_REIM_NIGHT", -1.0f);     /* (tests: 0 day .. 1 night; default from the picture) */
     RE.stat_a = lt_envf("PS2_REIM_STAT_A", 0.06f);   /* the statistics' smoothing per frame */
     RE.rim = lt_envf("PS2_REIM_RIM", 1.1f);          /* rim light on lit meshes (Faithful: 0.5) */
@@ -394,6 +413,7 @@ static int reim_smap(const reim_scene* S, const float* rndc, const float* rzab, 
         in.texdec_srv = TD.srv;
         in.mft = 1; in.msaa = M.n; in.sx = M.rsx; in.sy = M.rsy;
         in.shadow = 1; in.shadow_size = n; in.shadow_m = m32;
+        in.shadow_at = re_x(1, RE.sh_at);   /* (2: cut-outs cast their shapes) */
         RR.sm_draws += (uint64_t)r2_render_segment(o, fd->data, fd->data_bytes, &in);
     }
     unbind_all();
@@ -459,7 +479,11 @@ static void reim_post(mtarget* c, mtarget* z, int pc) {
     float rc[128];
     memset(rc, 0, sizeof rc);
     float *rw = rc, *rndc = rc + 16, *rzab = rc + 20, *rkey = rc + 24, *rsss = rc + 28, *rgr = rc + 32, *rfog = rc + 36,
-          *rhf = rc + 40, *rvig = rc + 44, *rsh = rc + 48, *rbl = rc + 52, *rmisc = rc + 56, *rkc = rc + 60, *rlm = rc + 64, *rsmp = rc + 80, *rppv = rc + 92, *rpndc = rc + 108, *rptaa = rc + 112;
+          *rhf = rc + 40, *rvig = rc + 44, *rsh = rc + 48, *rbl = rc + 52, *rmisc = rc + 56, *rkc = rc + 60, *rlm = rc + 64, *rsmp = rc + 80, *rppv = rc + 92, *rpndc = rc + 108, *rptaa = rc + 112, *rks = rc + 116;
+    int shkey = re_x(4, RE.shaft_key);
+    rks[2] = shkey ? 0.0f : -1.0f;       /* (2: no key light in front: no shafts) */
+    rks[3] = re_x(8, 1) ? RE.fire_k : 0.0f;
+    rptaa[1] = re_x(2, 1) ? RE.cas : 0.0f;   /* (2) the sharpening */
     int have_world = proj && S->pv_ok;
     if (have_world) {
         const float* pv = S->pv;
@@ -482,6 +506,18 @@ static void reim_post(mtarget* c, mtarget* z, int pc) {
             float q = 0.0f;
             for (int k = 0; k < 3; k++) { float v = pv[k * 4 + j] - o2[j] * pv[k * 4 + 3]; q += v * v; }
             f2[j] = sqrtf(q / c3);
+        }
+        /* (2) the key light's place in the picture (a point at infinity): the light shafts come from there only */
+        if (!shkey) rks[2] = -1.0f;
+        else {
+            float cs = dc[3] / sqrtf(c3);    /* (the cosine to the camera's forward axis) */
+            if (cs > 0.02f && rndc[0] != 0.0f && rndc[2] != 0.0f) {
+                float u = ((dc[0] / dc[3]) - rndc[1]) / rndc[0] / (float)pw, v = ((dc[1] / dc[3]) - rndc[3]) / rndc[2] / (float)ph;
+                float out = fmaxf(fmaxf(-u, u - 1.0f), fmaxf(-v, v - 1.0f));
+                float fr = cs < 0.3f ? (cs - 0.02f) / 0.28f : 1.0f;
+                rks[0] = fminf(fmaxf(u, -2.0f), 3.0f); rks[1] = fminf(fmaxf(v, -2.0f), 3.0f);
+                rks[2] = fr * (out <= 0.0f ? 1.0f : out >= 0.8f ? 0.0f : 1.0f - out / 0.8f);
+            }
         }
         float kv[3] = { (dc[0] - o2[0] * dc[3]) / f2[0], (dc[1] - o2[1] * dc[3]) / f2[1], dc[3] };
         float l = sqrtf(kv[0] * kv[0] + kv[1] * kv[1] + kv[2] * kv[2]);

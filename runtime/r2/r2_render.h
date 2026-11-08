@@ -45,6 +45,7 @@ typedef struct {
      * map) through r2.hlsl r2_vs_shadow with these 32 floats (inverse world x clip, world -> light clip) */
     int shadow, shadow_size;
     const float* shadow_m;
+    int shadow_at;                       /* (reimagine2) cut-out draws through r2_vs/ps_shadow_at (their texture's alpha test) */
     /* (tex) Enhanced textures (modern frames): the R2_ETEX pipelines; etex_bind binds their resources (after the
      * materials' texdec calls, which may build images) */
     int etex;
