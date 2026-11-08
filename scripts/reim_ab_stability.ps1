@@ -21,7 +21,7 @@ if (-not $env:PS2_TEXCACHE_SEED) { $env:PS2_TEXCACHE_SEED = Join-Path $wt 'build
 $ini = "graphics.look=reimagined;graphics.render_scale=100%;graphics.msaa=8x;graphics.outlines=thin;graphics.filters=modern;graphics.motion_blur=$Blur;graphics.preset=high"
 if ($Shot -eq 'orbit') { $scene = 'ep1_hub'; $pad = "+2000:cross:6,+1000:lup:1500,+0:rright:1500,+300:dump:$Frames" }
 else { $scene = 'ep2_hub'; $pad = "+2000:cross:6,+1000:lup:400,+0:lleft:200,+50:dump:$Frames,+350:lup:600" }   # (a torch, then the trees' shadows)
-$ex = "PS2_LIGHT=;PS2_LIGHT_LOG=;PS2_DUMP_BMP=1;PS2_DUMP_WAIT=1;PS2_GPU_AB_R8=$Mask;PS2_GPU_AB_LOG=1;PS2_REIM_DBG=$Dbg;PS2_TEX_SWAPLOG=1;PS2_DUMP_FROM=script;PS2_DUMP_TO=0;PS2_FRAME_DT_FIXED=1"
+$ex = "PS2_LIGHT=;PS2_LIGHT_LOG=;PS2_DUMP_BMP=1;PS2_DUMP_WAIT=1;PS2_GPU_AB_R8=$Mask;PS2_GPU_AB_LOG=1;PS2_REIM_DBG=$Dbg;PS2_TEX_SWAPLOG=1;PS2_DUMP_FROM=script;PS2_DUMP_TO=0;PS2_FRAME_DT_FIXED=1;PS2_REIM_LOG=1"
 if ($Extra) { $ex += ";$Extra" }
 powershell -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'light_shots.ps1') -Scene $scene -At 1 -Frames 1 -Every 1 -Phase $Phase -Fps 120 `
     -Seconds ([int](240 + $Frames * 0.3)) -Tag $Tag -Ini $ini -Extra $ex -PadAll $pad | Out-Null
@@ -43,4 +43,12 @@ foreach ($s in 'A', 'B') {
 }
 $sw = Select-String -Path (Join-Path $d 'run.log') -Pattern 'tex-swap: frame' | Select-Object -Last 1
 if ($sw) { "$Tag swaps: $($sw.Line.Trim())" }
+# (reimagine2) the world camera must not jump inside the window (the rebuilt positions were in another space: the shadows
+# under trees "confused where to show"); 0.1.1214 (PS2_REIM2=0) does not log it
+$win = Select-String -Path (Join-Path $d 'run.log') -Pattern 'frame dumps VBlank (\d+)\.\.(\d+)' | Select-Object -First 1
+if ($win) {
+    $w0 = [int]$win.Matches[0].Groups[1].Value; $w1 = [int]$win.Matches[0].Groups[2].Value
+    $cuts = @(Select-String -Path (Join-Path $d 'run.log') -Pattern 'reim-world: v(\d+) the world camera flipped back' | Where-Object { $v = [int]$_.Matches[0].Groups[1].Value; $v -ge $w0 -and $v -le $w1 })
+    "$Tag world camera flips in the window: $($cuts.Count)"
+}
 if (-not $Keep) { Remove-Item -Recurse -Force $d -ErrorAction SilentlyContinue }

@@ -26,7 +26,7 @@ typedef struct {
     float pv_old[16]; int pv_old_n;           /* (2, diagnostics) what 0.1.1214 would have taken (the best segment's most common) */
 } reim_scene;
 static reim_scene RS, RS_last;
-static struct { float cam[3]; int have; uint64_t switches, cuts, old_wrong; } RW;   /* (2) the world camera of the last frame */
+static struct { float cam[3], pre[3]; int have, pre_ok; uint32_t pre_v; uint64_t switches, cuts, old_wrong, flips; } RW;   /* (2) the world camera of the last frame */
 static struct {
     int env, log, dbg, ss, shafts, fog, grade, smap, sm_size;
     float sm_k, sm_dist;
@@ -310,7 +310,11 @@ static void reim_finish(reim_scene* s) {
         }
     }
     if (best < 0 || bd > 600.0f * 600.0f) {   /* (none continues: the first frame or a cut - the most common) */
-        if (RW.have) RW.cuts++;
+        if (RW.have) {
+            RW.cuts++;
+            if (RE.log) gpu_log("reim-world: v%u the world camera jumped (a cut or a load): the most common matrix again", s->fd->vblank);
+            RW.pre_v = s->fd->vblank; memcpy(RW.pre, RW.cam, sizeof RW.pre); RW.pre_ok = 1;
+        }
         best = -1;
         for (int j = 0; j < s->ncand; j++) if (okj[j] && (best < 0 || s->cand[j].n > s->cand[best].n)) best = j;
         if (best < 0) return;
@@ -320,6 +324,16 @@ static void reim_finish(reim_scene* s) {
     memcpy(s->pv, s->cand[best].m, 64);
     memcpy(s->ipv, inv[best], 64);
     s->pv_ok = 1; s->pv_n = s->cand[best].n;
+    if (RW.pre_ok && s->fd->vblank != RW.pre_v && s->fd->vblank - RW.pre_v < 60u) {   /* (a jump straight back: the choice flipped) */
+        float d = 0.0f;
+        for (int k = 0; k < 3; k++) d += (cam[best][k] - RW.pre[k]) * (cam[best][k] - RW.pre[k]);
+        float e = 0.0f;
+        for (int k = 0; k < 3; k++) e += (cam[best][k] - RW.cam[k]) * (cam[best][k] - RW.cam[k]);
+        if (d < 600.0f * 600.0f && e > 600.0f * 600.0f) {
+            RW.flips++; RW.pre_ok = 0;
+            if (RE.log) gpu_log("reim-world: v%u the world camera flipped back (the world matrix choice went wrong)", s->fd->vblank);
+        }
+    } else if (RW.pre_ok && s->fd->vblank - RW.pre_v >= 60u) RW.pre_ok = 0;
     memcpy(RW.cam, cam[best], sizeof RW.cam);
     RW.have = 1;
     s->ncl = 0; s->nlit = 0;
