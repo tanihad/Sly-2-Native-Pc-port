@@ -19,10 +19,12 @@
 
 static volatile LONG lcf_on = 0;         /* graphics.lighting (gfx.c); 0 until the settings say otherwise (tools, tests) */
 void gpu_light_config(int on) { InterlockedExchange(&lcf_on, on ? 1 : 0); }
+static volatile LONG lcf_reim = 0;       /* (reimagine) graphics.look = reimagined (gfx.c) */
+void gpu_look_config(int reimagined) { InterlockedExchange(&lcf_reim, reimagined ? 1 : 0); }
 
 enum { LT_W, LT_AO0, LT_AO1, LT_B1, LT_B2, LT_B3, LT_B4, LT_B5, LT_N };
 static struct {
-    int env, env_on, ao, bloom, ppl, log, split, dbg;
+    int env, env_on, env_reim, ao, bloom, ppl, log, split, dbg;
     float rim, soft, ao_r, ao_k, ao_min, ao_f0, ao_f1, ao_pow, ao_max, ao_bias, bl_t, bl_k, bl_i, bl_sat;
     ID3D11Texture2D* t[LT_N];
     ID3D11RenderTargetView* rtv[LT_N];
@@ -47,6 +49,8 @@ static void lt_env(void) {
     LT.env = 1;
     const char* e = getenv("PS2_LIGHT");
     LT.env_on = e && *e ? *e != '0' : -1;
+    e = getenv("PS2_REIMAGINE");
+    LT.env_reim = e && *e ? *e != '0' : -1;
     e = getenv("PS2_LIGHT_AO"); LT.ao = !(e && *e == '0');
     e = getenv("PS2_LIGHT_BLOOM"); LT.bloom = !(e && *e == '0');
     e = getenv("PS2_LIGHT_PPL"); LT.ppl = !(e && *e == '0');      /* per-pixel lighting of lit meshes (r2.hlsl R2_ENH) */
@@ -68,17 +72,28 @@ static void lt_env(void) {
     LT.bl_i = lt_envf("PS2_LIGHT_BLOOM_I", 1.20f);      /* intensity */
     LT.bl_sat = lt_envf("PS2_LIGHT_BLOOM_SAT", 0.85f);
 }
+/* (reimagine) Look = Reimagined (graphics.look; PS2_REIMAGINE=0|1 wins; A/B: PS2_GPU_AB_R8=1024): every Enhanced
+ * feature plus the Reimagined passes (gpu_reim.h), whatever graphics.lighting says */
+static int lt_reim(void) {
+    lt_env();
+    int on = LT.env_reim >= 0 ? LT.env_reim : lcf_reim > 0;
+    return on && r8p_on(R8P_REIM) && r8p_on(R8P_LIGHT);
+}
 static int lt_enabled(void) {
     lt_env();
     int on = LT.env_on >= 0 ? LT.env_on : lcf_on > 0;
+    if (!on && LT.env_on < 0 && lt_reim()) on = 1;
     return on && (LT.ao || LT.bloom || LT.ppl || LT.soft > 0.0f) && r8p_on(R8P_LIGHT);
 }
+
+#include "gpu_reim.h"                    /* (reimagine) Look = Reimagined */
 
 static void light_release(void) {
     for (int i = 0; i < LT_N; i++) { GPU_RELEASE(LT.rtv[i]); GPU_RELEASE(LT.srv[i]); GPU_RELEASE(LT.t[i]); LT.tw[i] = LT.th[i] = 0; }
     GPU_RELEASE(LT.cb);
     GPU_RELEASE(LT.bs_comp);
     LT.have = 0;
+    reim_release();                      /* (reimagine) */
 }
 
 static int lt_tex(int i, int w, int h, DXGI_FORMAT f) {
@@ -121,6 +136,8 @@ static void light_note(const gpu_front_frame_data* fd, const gpu_fop_r2* o) {
             LT.ent_ok = 1;
         }
     }
+    if (lt_reim() && fb->serial == LT.done) { static uint32_t late_n; late_n++; if (getenv("PS2_REIM_LOG") && atoi(getenv("PS2_REIM_LOG")) >= 3) gpu_log("reim-late: v%u serial %u: a segment after the post pass (%u, %u entries)", X.fd ? X.fd->vblank : 0u, fb->serial, late_n, o->nent); }
+    if (lt_reim()) reim_note(fd, o, fb);   /* (reimagine) */
     LT.fb = *fb;
     LT.serial = fb->serial;
     LT.xyo = o->xyoffset;
@@ -209,6 +226,7 @@ static void light_post(void) {
     if (!mft_need(ct, MT_PIC)) return;   /* (the resolve, as the next phase-B draw would do it) */
     LT.done = LT.serial;
     prof_mark(PR_LIGHT);
+    if (lt_reim()) { reim_post(c, z, pc); return; }   /* (reimagine) Look = Reimagined: its own post pass */
     int pw = c->pw, ph = c->ph, hw = (pw + 1) / 2, hh = (ph + 1) / 2;
     if (!lt_tex(LT_W, hw, hh, DXGI_FORMAT_R32_FLOAT) || !lt_tex(LT_AO0, hw, hh, DXGI_FORMAT_R8_UNORM) ||
         !lt_tex(LT_AO1, hw, hh, DXGI_FORMAT_R8_UNORM)) { prof_mark(pc); return; }

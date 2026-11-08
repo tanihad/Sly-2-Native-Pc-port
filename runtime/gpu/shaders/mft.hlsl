@@ -345,10 +345,10 @@ VQ vs_mft_thin(VIn vin, uint vid : SV_VertexID, uint inst : SV_InstanceID) {
     float4 g = asfloat(recs.Load4(base));            // lo, hi, a0, len (12.4)
     float2 o = asfloat(recs.Load2(base + 16u));      // o0, od (12.4)
     uint flags = recs.Load(base + 24u);
-    float w = asfloat(recs.Load(base + 108u));
     bool xm = (flags & 1u) != 0u;
     float km = xm ? m_s.x : m_s.y, kn = xm ? m_s.y : m_s.x;
-    float m = ((vid & 1u) ? g.y / 16.0 + 1.0 / km : g.x / 16.0 - 1.0 / km);
+    float w = asfloat(recs.Load(base + 108u));
+    float m = ((vid & 1u) ? g.y / 16.0 + w + 1.0 / km : g.x / 16.0 - w - 1.0 / km);   // (outlines: room for the round caps)
     float t = (m * 16.0 - g.z) / g.w;
     float h = w + 1.0 / kn;
     float n = (o.x + o.y * t) / 16.0 + ((vid & 2u) ? h : -h);
@@ -362,7 +362,23 @@ VQ vs_mft_thin(VIn vin, uint vid : SV_VertexID, uint inst : SV_InstanceID) {
     return r;
 }
 
-FOut ps_mft_thin(VQ i) {
+// (outlines) the distance of a GS position to the line, in native pixels: across it, and beyond its ends (round caps: the
+// segments of an outline join without gaps or square notches); t: the attribute parameter there (clamped to the line)
+float thin_dist(float2 gp, float4 g, float2 o, bool xm, out float t) {
+    float mj = (xm ? gp.x : gp.y) * 16.0, mn = (xm ? gp.y : gp.x) * 16.0;
+    float mc = clamp(mj, g.x, g.y);
+    t = (mc - g.z) / g.w;
+    float d = (mn - (o.x + o.y * t)) / 16.0, e = (mj - mc) / 16.0;
+    return sqrt(d * d + e * e);
+}
+struct FOutT {                           // (outlines) the thin line's output with its per-sample coverage
+    float4 c0 : SV_Target0;
+#if DUAL
+    float4 c1 : SV_Target1;
+#endif
+    uint cov : SV_Coverage;
+};
+FOutT ps_mft_thin(VQ i) {
     load_draw(i.did);
     mft_cfg_override();
     kx = 1u; ky = 1u;
@@ -380,18 +396,27 @@ FOut ps_mft_thin(VQ i) {
     float2 o = asfloat(recs.Load2(rb + 16u));
     uint lf = recs.Load(rb + 24u);
     bool xm = (lf & 1u) != 0u;
-    float mj = (xm ? gx : gy) * 16.0, mn = (xm ? gy : gx) * 16.0;
-    if (mj < g.x || mj >= g.y) discard;
-    float t = (mj - g.z) / g.w;
-    float d = (mn - (o.x + o.y * t)) / 16.0;
+    // (outlines) anti-aliased: the GS's AA1 lines take their coverage from the distance (alpha, as the GS); lines without
+    // AA1 (the outlines' depth pass among them) cover the samples within half the width - per sample under MSAA (their
+    // edges and the depth the AA1 pass is tested against are anti-aliased), at the pixel centre without it
+    float t;
+    float r = thin_dist(float2(gx, gy), g, o, xm, t);
     float w = asfloat(recs.Load(rb + 108u));
-    uint cov = 0x80u;
+    uint cov = 0x80u, smask = 0xFFFFFFFFu;
     if ((lf & 2u) != 0u) {
-        float c = 1.0 - abs(d) / w;
+        float c = 1.0 - r / w;
         if (c <= 0.0) discard;
         cov = (uint)round(c * 128.0);
         if (cov == 0u) discard;
-    } else if (abs(d) >= w * 0.5) discard;
+    } else if (m_cfg.x > 1u) {
+        smask = 0u;
+        [loop] for (uint s = 0u; s < m_cfg.x && s < 16u; s++) {
+            float2 sp = (floor(i.pos.xy) + 0.5 + GetRenderTargetSamplePosition((int)s)) * m_s.zw - 0.5;
+            float ts;
+            if (thin_dist(sp, g, o, xm, ts) < w * 0.5) smask |= 1u << s;
+        }
+        if (smask == 0u) discard;
+    } else if (r >= w * 0.5) discard;
     float4 c0 = asfloat(recs.Load4(rb + 40u)), cx = asfloat(recs.Load4(rb + 56u));
     float4 cv = floor(c0 + cx * t);
     uint ca = (lf & 2u) != 0u ? cov : clamp255i((int)cv.w);
@@ -430,7 +455,14 @@ FOut ps_mft_thin(VQ i) {
     }
     f.col = col;
     if (mft_date_fails(int2(i.pos.xy), st.test)) discard;
-    return ff_out(f, st);
+    FOut fo = ff_out(f, st);
+    FOutT ot;
+    ot.c0 = fo.c0;
+#if DUAL
+    ot.c1 = fo.c1;
+#endif
+    ot.cov = smask;
+    return ot;
 }
 #endif
 

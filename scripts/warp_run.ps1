@@ -27,6 +27,7 @@ $dir = Join-Path $root "build\warp\$Name"
 $card = Join-Path $dir 'card'
 $frames = Join-Path $dir 'frames'
 New-Item -ItemType Directory -Force $dir, $frames | Out-Null
+$env:PS2_USER_DIR = $dir                        # (the run's own folder holds its settings: never %LOCALAPPDATA%\Sly2)
 Remove-Item (Join-Path $frames '*.png') -ErrorAction SilentlyContinue
 Remove-Item -Recurse -Force $card -ErrorAction SilentlyContinue
 
@@ -59,7 +60,12 @@ $runArgs = @('-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'ru
              '-Out', $dir, '-Card', $card, '-Dump', $frames, '-DumpEvery', "$DumpEvery", '-Pad', $script,
              '-Exe', $exeName)
 if ($Window) { $runArgs += '-Window' }
+# (reimagine) PS2_TEXCACHE_SEED=<dir>: the Reimagined textures' cache (<user dir>\textures) copied in before the run and
+# the new images back after it, so runs start with a warm cache (a copy, never a junction: run folders get deleted)
+$seed = $env:PS2_TEXCACHE_SEED
+if ($seed -and (Test-Path $seed)) { robocopy $seed (Join-Path $dir 'textures') /E /NFL /NDL /NJH /NJS /NP | Out-Null }
 & powershell @runArgs | Select-Object -First 1
+if ($seed) { New-Item -ItemType Directory -Force $seed | Out-Null; if (Test-Path (Join-Path $dir 'textures')) { robocopy (Join-Path $dir 'textures') $seed /E /XO /NFL /NDL /NJH /NJS /NP | Out-Null } }
 "log: $dir\run.log; frames: $frames (latest.png)"
 Select-String -Path (Join-Path $dir 'run.log') -Pattern '\[warp\]|pad frame|not implemented|unhandled|error|assert|crash|exception|fatal' |
     Where-Object { $_.Line -notmatch 'syscall 0x5B' } | Select-Object -First 40 | ForEach-Object { $_.Line }

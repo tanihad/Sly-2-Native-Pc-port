@@ -574,6 +574,7 @@ static int ts_complete(int block) {             /* oldest timestamp set; returns
     if (ok) gpu_ts_freq = dj.Frequency;  /* (tex: PS2_TEX_TIME's own timestamps) */
     st.gpu_ms = ok ? (double)(t1 - t0) * 1000.0 / (double)dj.Frequency : -1.0;
     st.present_gpu_ms = ok && P.ts[i].pres && t2 >= t1b ? (double)(t2 - t1b) * 1000.0 / (double)dj.Frequency : -1.0;
+    if (st.gpu_ms >= 0) gpu_frame_ms_last = st.gpu_ms + (st.present_gpu_ms > 0 ? st.present_gpu_ms : 0);   /* (ai: the net's budget) */
     if (ptrace_file()) fprintf(ptrace, "g %u %.3f %.3f\n", st.vblank, st.gpu_ms, st.present_gpu_ms);
     if (st.ab_phase > 0 && st.gpu_ms >= 0 && st.gpu_ms < 50.0) {   /* (r8-perf) PS2_GPU_AB: the pictures' GPU time per phase */
         static double ab_ms[2], ab_pms[2];
@@ -608,6 +609,45 @@ static int ts_complete(int block) {             /* oldest timestamp set; returns
                     "max A %.2f / B %.2f", p99[0][0], p99[1][0], mxg[0], mxg[1], p99[0][1], p99[1][1], mxr[0], mxr[1]);
         }
     }
+    {                                    /* (ai) PS2_GPU_FT=1: every picture's GPU time (+ present), render-thread time and the
+                                          * interval between pictures read back (avg / p99 / max, 0.02 ms bins; every 3000) */
+        static int on = -1;
+        if (on < 0) { const char* e = getenv("PS2_GPU_FT"); on = e && *e == '1'; }
+        if (on && st.gpu_ms >= 0) {
+            static uint32_t h[3][2500], n;
+            static double sum[3], mx[3];
+            static LARGE_INTEGER last;
+            LARGE_INTEGER now, f;
+            QueryPerformanceCounter(&now);
+            QueryPerformanceFrequency(&f);
+            static LARGE_INTEGER t0;             /* (PS2_GPU_FT_SKIP seconds after the first picture are left out: the boot) */
+            static double skip = -1;
+            if (skip < 0) { const char* e = getenv("PS2_GPU_FT_SKIP"); skip = e && *e ? atof(e) : 90.0; t0 = now; }
+            if ((double)(now.QuadPart - t0.QuadPart) / (double)f.QuadPart < skip) { last = now; goto ft_done; }
+            double v[3] = { st.gpu_ms + (st.present_gpu_ms > 0 ? st.present_gpu_ms : 0), st.render_ms,
+                            last.QuadPart ? (double)(now.QuadPart - last.QuadPart) * 1000.0 / (double)f.QuadPart : -1.0 };
+            last = now;
+            for (int k = 0; k < 3; k++) {
+                if (v[k] < 0) continue;
+                h[k][v[k] < 49.99 ? (int)(v[k] * 50.0) : 2499]++;
+                sum[k] += v[k];
+                if (v[k] > mx[k]) mx[k] = v[k];
+            }
+            if (++n % 3000 == 0) {
+                double p99[3];
+                for (int k = 0; k < 3; k++) {
+                    uint32_t acc = 0, lim = n - n / 100;
+                    int bin = 0;
+                    while (bin < 2499 && (acc += h[k][bin]) < lim) bin++;
+                    p99[k] = (bin + 1) / 50.0;
+                }
+                gpu_log("ft: %u pictures: GPU+present avg %.2f p99 %.2f max %.2f ms | render thread avg %.2f p99 %.2f max %.2f | "
+                        "interval avg %.2f p99 %.2f max %.2f", n, sum[0] / n, p99[0], mx[0], sum[1] / n, p99[1], mx[1], sum[2] / n,
+                        p99[2], mx[2]);
+            }
+        }
+    ft_done:;
+    }
     if (st.gpu_ms >= 0) {                /* (tex) pictures whose frame built Enhanced textures: their cost */
         static double bms, bmx, ams;
         static uint32_t bn, an, tot;
@@ -633,6 +673,7 @@ static int ts_complete(int block) {             /* oldest timestamp set; returns
 #define frame_end gpu_stats_end
 gpu_frame_stats* gpu_stats_cur(void) { return &P.st; }
 UINT64 gpu_ts_freq;
+double gpu_frame_ms_last = -1.0;
 
 void gpu_stats_begin(uint32_t vblank, double front_ms) {
     /* a full timestamp ring waits for the GPU before this picture's time starts */

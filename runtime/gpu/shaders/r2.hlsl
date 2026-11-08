@@ -33,6 +33,11 @@
 cbuffer r2_static : register(b1) {
     float4 r2_misc;                      // dual-source bias (gs.hlsl ps_ff), Z bias (debugging), -, asuint: PS2_R2_DBG
     float4 r2_mft;                       // (r2-m8, R2_MFT) modern frame targets: sx, sy (target pixels per GS pixel), samples
+#if R2_REIM
+    float4 r2_reim;                      // (reimagine) the key light on screen (x, y: towards it, length = its share in the
+                                         // picture plane), surface-map relief strength, cavity strength
+    float4 r2_reim2;                     // normal-map strength on characters, -, -, -
+#endif
 };
 #ifndef R2_MFT
 #define R2_MFT 0                         // (r2-m8, R8) the modern frame's surfaces (gpu_exec_mft.h): d3d = (GS + 0.5) * s,
@@ -56,6 +61,16 @@ static float2 g_prev_d3d;                // (R2_MV) the vertex's previous positi
 #endif
 #if R2_ETEX
 #include "etex.hlsli"
+#endif
+#ifndef R2_REIM
+#define R2_REIM 0                        // (reimagine) Look = Reimagined: the surface maps (relief, cavity, normal-mapped characters)
+#endif
+#if R2_REIM && R2_ETEX
+#include "etn.hlsli"
+static float4 g_nm;                      // the texel's surface map (normal x, y; height; cavity)
+static float g_nmf;                      // its weight: 0 without a map, fading out where a map texel gets smaller than a pixel
+static float2 g_duvx, g_duvy;            // the uv's screen derivatives
+static float3 g_dpx, g_dpy;              // (lit meshes) the object-space position's screen derivatives
 #endif
 #if R2_ENH
 static float4 g_lnrm;                    // r2_lit's (skinned) normal x 127 and its w
@@ -419,6 +434,53 @@ R2M r2_vs_mv(R2V i) {
 float2 r2_ps_mv(R2M i) : SV_Target { return i.mv; }
 #endif
 
+#ifndef R2_SHADOW
+#define R2_SHADOW 0
+#endif
+#if R2_SHADOW
+// (reimagine) Look = Reimagined: the frame's R2 draws again as shadow casters, depth only, into the key light's shadow map
+// (runtime/gpu/gpu_reim.h): the vertex's clip position (the entry's world x clip) back to the world through the frame's
+// inverse world x clip, then the light's orthographic projection (depth: 1 at the light, GEQUAL as the frame's own)
+cbuffer r2_shadow : register(b3) {
+    float4 sh_ipv[4];                    // the frame's inverse world x clip (rows)
+    float4 sh_lm[4];                     // world -> the light's clip (rows)
+};
+float4 r2_vs_shadow(R2V i) : SV_Position {
+    // (r2_vertex's position alone, in plain floats: no colours, fog, UVs or the VU's rounding - a caster needs none)
+    uint db = i.did * 32u;
+    uint4 dr = fdata.Load4(db);
+    R2Seg sg = r2_seg(fdata.Load(db + 28u));
+    if (dr.z != 0xFFFFFFFFu) {
+        uint rel = i.batch - (dr.y >> 8);
+        if (((fdata.Load((dr.z + (rel >> 5)) * 4u) >> (rel & 31u)) & 1u) == 0u) return float4(2.0, 2.0, 0.5, 1.0);
+    }
+    uint mat = r2_mtab.Load((dr.w & 0xFFFFFu) * 16u) + i.batch * 3u + (dr.y & 3u);
+    uint4 lm = r2_mats.Load4(mat * 64u + 44u);
+    uint eb = sg.off.y + dr.x * 144u;
+    float4 m[4] = { asfloat(fdata.Load4(eb)), asfloat(fdata.Load4(eb + 16u)), asfloat(fdata.Load4(eb + 32u)),
+                    asfloat(fdata.Load4(eb + 48u)) };
+    float3 p = i.pos;
+    uint xq = fdata.Load(eb + 72u);
+    uint skin = (lm.x >> 1) & 3u;
+    if (lm.x != 0u && xq != 0u && skin != 0u) {   // (0x1940's 4-bone skinning of the position)
+        uint xb = (xq - 1u) * 16u;
+        float3 P = float3(0.0, 0.0, 0.0);
+        [unroll] for (uint k = 0u; k < 4u; k++) {
+            uint bo = ((k < 2u ? lm.y : lm.z) >> (16u * (k & 1u))) & 0xFFFFu;
+            uint q = 11u + bo - 0x15u;
+            float wk = r2_ub(i.wts, k) * (1.0 / 255.0);
+            P += (r2_xq(xb, q).xyz * p.x + r2_xq(xb, q + 1u).xyz * p.y + r2_xq(xb, q + 2u).xyz * p.z + r2_xq(xb, q + 3u).xyz) * wk;
+        }
+        p = P;
+    }
+    float4 clip = m[0] * p.x + m[1] * p.y + m[2] * p.z + m[3];
+    float4 h = clip.x * sh_ipv[0] + clip.y * sh_ipv[1] + clip.z * sh_ipv[2] + clip.w * sh_ipv[3];
+    float3 wp = h.xyz / h.w;
+    return wp.x * sh_lm[0] + wp.y * sh_lm[1] + wp.z * sh_lm[2] + sh_lm[3];
+}
+void r2_ps_shadow() {}
+#endif
+
 R2C r2_vs_clip(R2V i) {
     R2O o;
     float4 clip, alt;
@@ -530,12 +592,39 @@ struct R2F {
 #endif
 };
 
+#if R2_ENH >= 2
+// (reimagine) THE per-pixel normal hook of Look = Reimagined (R2_ENH=2): N is the interpolated (skinned) object-space unit
+// normal of a lit sub-batch, V the unit direction to the camera, both object space. A normal map (the Reimagined textures'
+// normal maps, notes/reimagined.md) perturbs N here - define R2_NMAP and provide this function (e.g. a tangent frame from
+// the screen-space derivatives of the position and UV). Default: the flat, interpolated normal.
+float3 r2_reim_normal(float3 N, float3 V) {
+    N = normalize(N);
+#if R2_REIM && R2_ETEX
+    // the surface map's tangent normal through a cotangent frame from the screen derivatives of the position and uv
+    // (meshes carry no tangents); faded with the map's footprint (no shimmer at a distance)
+    if (g_nmf > 0.0) {
+        float3 dp2p = cross(g_dpy, N), dp1p = cross(N, g_dpx);
+        float3 T = dp2p * g_duvx.x + dp1p * g_duvy.x, B = dp2p * g_duvx.y + dp1p * g_duvy.y;
+        float im = rsqrt(max(max(dot(T, T), dot(B, B)), 1e-30));
+        float2 nxy = g_nm.xy * (g_nmf * r2_reim2.x);
+        float nz = sqrt(saturate(1.0 - dot(nxy, nxy)));
+        float3 Np = T * (im * nxy.x) + B * (im * nxy.y) + N * nz;
+        if (dot(Np, Np) > 1e-12) N = normalize(Np);
+    }
+#endif
+    return N;
+}
+static uint g_reim_skin;                 // (the sub-batch is skinned: a character - only they get the rim and the highlight)
+#endif
 #if R2_ENH
 // (light) r2_lit's colour per pixel: the interpolated normal (renormalised to the VU's 127) through the entry's light block,
 // the same formula (f = min(d + d^3, threshold), clamps, the highlight share), plus an optional rim light (r2_misc.z)
 float4 r2_lit_px(uint4 lx, float4 ln, float4 lc, float3 lv, bool csel, float4 col) {
     uint xb = lx.x - 1u;
     float3 N = ln.xyz * (127.0 * rsqrt(max(dot(ln.xyz, ln.xyz), 1e-6)));
+#if R2_ENH >= 2
+    N = r2_reim_normal(N, lv) * 127.0;   // (reimagine: the surface map's normal, when there is one)
+#endif
     float4 T0 = r2_xq(xb, 0u), T1 = r2_xq(xb, 1u), T2 = r2_xq(xb, 2u), amb = r2_xq(xb, 8u), thr = r2_xq(xb, 9u),
            v10 = r2_xq(xb, 10u), L0 = r2_xq(xb, 4u);
     float4 d = T0 * N.x + T1 * N.y + T2 * N.z;
@@ -554,6 +643,39 @@ float4 r2_lit_px(uint4 lx, float4 ln, float4 lc, float3 lv, bool csel, float4 co
         return float4(b, col.w);
     }
     float3 a = (cl.xyz + v10.xyz * k) * ln.w;
+#if R2_ENH >= 2
+    // (reimagine) Look = Reimagined: a specular highlight from the strongest light and a rim light in its hue (the lights'
+    // colours may be negative - the light then comes from -direction, as in f's sign)
+    {
+        float3 V = normalize(lv), Nn = normalize(N);
+        uint kk = 0u;
+        float best = -1.0;
+        [unroll] for (uint j = 0u; j < 4u; j++) {
+            float4 Lj = r2_xq(xb, 4u + j);
+            float m = abs(dot(Lj.xyz, float3(0.3, 0.59, 0.11)));
+            if (m > best) { best = m; kk = j; }
+        }
+        float4 Lc = r2_xq(xb, 4u + kk);
+        float sg = dot(Lc.xyz, float3(0.3, 0.59, 0.11)) < 0.0 ? -1.0 : 1.0;
+        float3 Ld = float3(T0[kk], T1[kk], T2[kk]) * sg;
+        float ll = length(Ld);
+        float3 lc3 = abs(Lc.xyz);
+        float3 hue = lc3 / max(max(lc3.x, lc3.y), max(lc3.z, 1e-3));
+        if (ll > 1e-6 && r2_mft.w > 0.0 && g_reim_skin != 0u) {
+            Ld /= ll;
+            float3 H = normalize(Ld + V);
+            float nh = saturate(dot(Nn, H)), nl = saturate(dot(Nn, Ld));
+            float sp = pow(nh, 28.0) * nl;
+            a += sp * r2_mft.w * (0.35 + 0.65 * hue) * ln.w;   // (ln.w: the colour's scale, 128 = the texture as it is)
+        }
+        if (r2_misc.z > 0.0 && g_reim_skin != 0u) {   // (world meshes seen at a grazing angle: no rim - a floor turned grey-blue)
+            float r = 1.0 - saturate(abs(dot(Nn, V)));
+            r = r * r * r;
+            a += r * r2_misc.z * (0.4 + 0.6 * hue) * ln.w;
+        }
+    }
+    return float4(a, col.w);
+#endif
     if (r2_misc.z > 0.0) {               // rim: grazing angles towards the camera, in the key light's hue
         float r = 1.0 - saturate(abs(dot(N * (1.0 / 127.0), normalize(lv))));
         r = r * r * r;
@@ -615,15 +737,46 @@ R2F r2_ps(R2O i) {
         float2 edx = ddx(euv), edy = ddy(euv);
         if ((asuint(r2_misc.w) & 1u) != 0u) t = 0x80808080u;
         else if (!et_sample(st.dec, d1, st.tlev, euv, edx, edy, i.pos.x, t)) t = tex_sample(st, f2i(su16), f2i(tv16), 1.0);
+#if R2_REIM
+        g_nmf = 0.0; g_nm = float4(0.0, 0.0, 0.5, 1.0); g_duvx = edx; g_duvy = edy;
+        float4 nm;
+        if (etn_sample(st.dec, d1, st.tlev, euv, edx, edy, nm)) {
+            uint2 ee = et_tab.Load2(((st.dec - 1u) >> 6) * 8u);
+            float fp = max(length(edx), length(edy)) * (float)(32u << (ee.y & 7u)) * e_ps.x;   // map texels per pixel
+            g_nmf = saturate((4.0 - fp) / 2.5);
+            g_nm = nm;
+        }
+#if R2_ENH
+        g_dpx = -ddx(i.lv); g_dpy = -ddy(i.lv);
+#endif
+#endif
     }
 #else
     uint t = (asuint(r2_misc.w) & 1u) != 0u ? 0x80808080u : tex_sample(st, f2i(su16), f2i(tv16), 1.0);   // (PS2_R2_DBG 1)
+#endif
+#if R2_ENH >= 2 && !R2_ZREC
+    g_reim_skin = (r2_mats.Load(mb + 44u) >> 1) & 3u;
 #endif
 #if R2_ENH && !R2_ZREC
     float4 icol = i.lx.x != 0u ? r2_lit_px(i.lx, i.ln, i.lc, i.lv, (flags & R2D_CSEL) != 0u, i.col) : i.col;
     uint4 vc = (uint4)max(icol, 0.0);
 #else
     uint4 vc = (uint4)max(i.col, 0.0);                     // the GS's Gouraud stepping truncates
+#endif
+#if R2_REIM && R2_ETEX
+    // (reimagine) the surface map on the world: relief lit from the key light's side (the slope's direction on screen against
+    // the light's) and the cavity deepening creases; faded with the map's footprint
+#if R2_ENH
+    if (g_nmf > 0.0 && i.lx.x == 0u) {
+#else
+    if (g_nmf > 0.0) {
+#endif
+        float2 dux = g_duvx * rsqrt(max(dot(g_duvx, g_duvx), 1e-30)), duy = g_duvy * rsqrt(max(dot(g_duvy, g_duvy), 1e-30));
+        float2 sd = float2(dot(g_nm.xy, dux), dot(g_nm.xy, duy));
+        float rel = clamp(dot(sd, r2_reim.xy) * r2_reim.z, -0.45, 0.45);
+        float f = (1.0 + rel * g_nmf) * lerp(1.0, g_nm.w, r2_reim.w * g_nmf);
+        vc.xyz = (uint3)min((float3)vc.xyz * f, 255.0);
+    }
 #endif
     vc = min(vc, uint4(255u, 255u, 255u, 255u));
     uint col = tfx((t1 >> 3) & 3u, (flags & R2D_TCC) != 0u, vc.x | (vc.y << 8) | (vc.z << 16) | (vc.w << 24), t);

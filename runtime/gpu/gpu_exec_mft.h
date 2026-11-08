@@ -1527,7 +1527,10 @@ static void mft_r2_seg(const gpu_front_frame_data* fd, const gpu_fop_r2* o, int 
     in.dbg_cull = r8s_skip(R8S_R2DRAW) ? (r8s_skip(R8S_R2UNI) ? 3 : r8s_skip(R8S_R2TINY) ? 2 : 1) : 0;
     in.opt = opt;
     in.enh = lt_enabled() && LT.ppl;     /* (light) lit sub-batches per pixel */
-    in.rim = LT.rim;
+    in.rim = lt_reim() ? reim_rim() : LT.rim;   /* (reimagine: a stronger rim) */
+    in.reim = lt_reim();                 /* (reimagine) the R2_ENH=2 pipelines: specular, rim, the normal hook */
+    in.spec = in.reim ? reim_spec() : 0.0f;
+    if (in.reim) reim_r2k(in.reim_k);   /* (reimagine) the surface maps' constants */
     in.etex = et_enabled();              /* (tex) Enhanced textures */
     in.etex_bind = mft_et_bind;
     mft_et_w = c->w;

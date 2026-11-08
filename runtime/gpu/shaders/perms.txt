@@ -277,6 +277,39 @@ ps_light_down       light.hlsl          ps_light_down     ps_5_0
 ps_light_up         light.hlsl          ps_light_up       ps_5_0
 ps_light_comp0      light.hlsl          ps_light_comp     ps_5_0    MS=0
 ps_light_comp1      light.hlsl          ps_light_comp     ps_5_0    MS=1
+# (reimagine) Look = Reimagined (gpu_reim.h): screen-space shadows, bloom + halos, shafts, fog, the grade
+ps_reim_shadow      light.hlsl          ps_reim_shadow    ps_5_0    REIM=1
+ps_reim_blur2       light.hlsl          ps_reim_blur2     ps_5_0    REIM=1
+ps_reim_shtaa       light.hlsl          ps_reim_shtaa     ps_5_0    REIM=1
+ps_reim_bright      light.hlsl          ps_reim_bright    ps_5_0    REIM=1
+ps_reim_up          light.hlsl          ps_reim_up        ps_5_0    REIM=1
+ps_reim_stats       light.hlsl          ps_reim_stats     ps_5_0    REIM=1
+ps_reim_shafts      light.hlsl          ps_reim_shafts    ps_5_0    REIM=1
+ps_reim_comp0       light.hlsl          ps_reim_comp      ps_5_0    MS=0 REIM=1
+ps_reim_comp1       light.hlsl          ps_reim_comp      ps_5_0    MS=1 REIM=1
+# (reimagine) the key light's shadow map: the frame's R2 draws as casters (r2.hlsl R2_SHADOW)
+vs_r2m_sh           r2.hlsl             r2_vs_shadow      vs_5_0    R2_MFT=1 R2_SHADOW=1
+ps_r2m_sh           r2.hlsl             r2_ps_shadow      ps_5_0    R2_MFT=1 R2_SHADOW=1
+# (reimagine) the R2 pipelines' pixel shaders under Reimagined (R2_ENH=2: specular, rim, the per-pixel normal hook)
+ps_r2m_e_r          r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_ENH=2
+ps_r2m_nd_e_r       r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_NODISCARD=1 R2_ENH=2
+ps_r2m_a2c_e_r      r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_A2C=1 R2_ENH=2
+ps_r2m_clip_e_r     r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_CLIP=1 R2_ENH=2
+ps_r2m_clip_nd_e_r  r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_CLIP=1 R2_NODISCARD=1 R2_ENH=2
+ps_r2m_clip_a2c_e_r r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_CLIP=1 R2_A2C=1 R2_ENH=2
+ps_r2m_e_t_r        r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_ENH=2 R2_ETEX=1 R2_REIM=1
+ps_r2m_nd_e_t_r     r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_NODISCARD=1 R2_ENH=2 R2_ETEX=1 R2_REIM=1
+ps_r2m_a2c_e_t_r    r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_A2C=1 R2_ENH=2 R2_ETEX=1 R2_REIM=1
+ps_r2m_clip_e_t_r   r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_CLIP=1 R2_ENH=2 R2_ETEX=1 R2_REIM=1
+ps_r2m_clip_nd_e_t_r r2.hlsl            r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_CLIP=1 R2_NODISCARD=1 R2_ENH=2 R2_ETEX=1 R2_REIM=1
+ps_r2m_clip_a2c_e_t_r r2.hlsl           r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_CLIP=1 R2_A2C=1 R2_ENH=2 R2_ETEX=1 R2_REIM=1
+# (reimagine) the prelit meshes' Enhanced textures pipelines under Reimagined: surface-map relief + cavity (R2_REIM)
+ps_r2m_t_rm         r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_ETEX=1 R2_REIM=1
+ps_r2m_nd_t_rm      r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_NODISCARD=1 R2_ETEX=1 R2_REIM=1
+ps_r2m_a2c_t_rm     r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_A2C=1 R2_ETEX=1 R2_REIM=1
+ps_r2m_clip_t_rm    r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_CLIP=1 R2_ETEX=1 R2_REIM=1
+ps_r2m_clip_nd_t_rm r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_CLIP=1 R2_NODISCARD=1 R2_ETEX=1 R2_REIM=1
+ps_r2m_clip_a2c_t_rm r2.hlsl            r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_CLIP=1 R2_A2C=1 R2_ETEX=1 R2_REIM=1
 # (light) Enhanced lighting: the modern frame's R2 pipelines with lit sub-batches lit per pixel (R2_ENH; r2_render.c epipe*)
 vs_r2m_e            r2.hlsl             r2_vs             vs_5_0    R2_MFT=1 R2_ENH=1
 ps_r2m_e            r2.hlsl             r2_ps             ps_5_0    R2_DUAL=1 R2_ZREC=0 R2_MFT=1 R2_ENH=1
@@ -310,3 +343,23 @@ cs_et_cov           tex.hlsl            cs_et_cov         cs_5_0
 cs_et_store         tex.hlsl            cs_et_store       cs_5_0
 cs_et_hash          tex.hlsl            cs_et_hash        cs_5_0
 cs_et_dd            tex.hlsl            cs_et_dd          cs_5_0
+# (ai) Reimagined textures (runtime/gpu/gpu_tex_ai.h, notes/reimagined.md): the Real-ESRGAN layer kernel per buffer
+# combination ai_up.c's plan uses (name = its key: in | out << 4 | r1 << 8 | r2 << 12 | o2 << 16, 8 = none), the tiles'
+# finish (crop, alpha, grain) and the surface maps of the lighting (gpu_tex_normals.h)
+cs_ai_38810         ai_up.hlsl          cs_conv           cs_5_0    BIN=U0 BOUT=U1 BO2=U3
+cs_ai_88833         ai_up.hlsl          cs_conv           cs_5_0    BIN=U3 BOUT=U3
+cs_ai_88844         ai_up.hlsl          cs_conv           cs_5_0    BIN=U4 BOUT=U4
+cs_ai_88343         ai_up.hlsl          cs_conv           cs_5_0    BIN=U3 BOUT=U4 BR1=U3
+cs_ai_88434         ai_up.hlsl          cs_conv           cs_5_0    BIN=U4 BOUT=U3 BR1=U4
+cs_ai_21343         ai_up.hlsl          cs_conv           cs_5_0    BIN=U3 BOUT=U4 BR1=U3 BR2=U1 BO2=U2
+cs_ai_22343         ai_up.hlsl          cs_conv           cs_5_0    BIN=U3 BOUT=U4 BR1=U3 BR2=U2 BO2=U2
+cs_ai_22434         ai_up.hlsl          cs_conv           cs_5_0    BIN=U4 BOUT=U3 BR1=U4 BR2=U2 BO2=U2
+cs_ai_88114         ai_up.hlsl          cs_conv           cs_5_0    BIN=U4 BOUT=U1 BR1=U1
+cs_ai_88113         ai_up.hlsl          cs_conv           cs_5_0    BIN=U3 BOUT=U1 BR1=U1
+cs_ai_88851         ai_up.hlsl          cs_conv           cs_5_0    BIN=U1 BOUT=U5
+cs_ai_88865         ai_up.hlsl          cs_conv           cs_5_0    BIN=U5 BOUT=U6
+cs_ai_88856         ai_up.hlsl          cs_conv           cs_5_0    BIN=U6 BOUT=U5
+cs_ai_88875         ai_up.hlsl          cs_conv           cs_5_0    BIN=U5 BOUT=U7
+cs_ai_post          tex_ai.hlsl         cs_ai_post        cs_5_0
+cs_ai_res           tex_ai.hlsl         cs_ai_res         cs_5_0
+cs_etn              tex_ai.hlsl         cs_etn            cs_5_0

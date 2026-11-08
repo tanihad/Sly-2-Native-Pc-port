@@ -90,7 +90,8 @@ typedef struct {
      * aspect) take the Original values; the player's own values are kept in retro_own[] (indexed by option) and come back
      * when another look is chosen. sly2.ini always holds the player's own values in those keys. Faithful = the modern
      * renderer with the options as they are (Enhanced lighting / textures by the Quality). Reimagined = a bold modern
-     * reimagining (not built yet: renders as Faithful; hidden in the menu unless sly2.ini says look = reimagined). */
+     * reimagining of the lighting (runtime/gpu/gpu_reim.h, notes/reimagined-lighting.md; hidden in the menu unless sly2.ini says
+     * look = reimagined, until the owner approves it). */
     int look;
     int retro_own[64];
 } ps2_settings_t;

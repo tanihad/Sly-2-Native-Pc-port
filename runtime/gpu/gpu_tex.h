@@ -25,6 +25,19 @@
 
 static volatile LONG tcf_on = 0;         /* graphics.textures (gfx.c); 0 until the settings say otherwise (tools, tests) */
 void gpu_tex_config(int on) { InterlockedExchange(&tcf_on, on ? 1 : 0); }
+static volatile LONG tcf_look = 0;       /* (ai) graphics.look = reimagined (gfx.c): Reimagined textures (gpu_tex_ai.h) */
+void gpu_tex_look(int reimagined) { InterlockedExchange(&tcf_look, reimagined ? 1 : 0); }
+#include "gpu_tex_normals.h"             /* (ai) the surface maps' interface for the lighting */
+static int etn_on(void);                 /* (ai) gpu_tex_ai.h: hooks of Reimagined (nothing runs under Faithful / Retro) */
+static float etn_k(void);
+static void etn_grow(int c, uint32_t oc, uint32_t nc);
+static void etn_run(int cls, uint32_t a, uint32_t n);
+static int ra_cfg(void);
+static int ra_init(void);
+static void ra_note(int32_t idx, int32_t id);
+static void ra_frame(int* bound);
+static void ra_release(void);
+static int ra_on_now;                    /* (ai) Reimagined textures this frame */
 
 #define ET_NCLS 6                        /* square classes: 64 << c texels */
 #define ET_MAXMIP 12
@@ -45,7 +58,7 @@ typedef struct {                         /* per decoded entry (the index of TD.e
     uint64_t raw;                        /* the content's alone (the HD pack's file name) */
     uint32_t chg;                        /* the frame of the last content change */
 } et_ent;
-typedef struct { uint64_t hash; uint32_t last; int32_t first; uint8_t used, hd; } et_slot;
+typedef struct { uint64_t hash; uint32_t last; int32_t first; uint8_t used, hd, ai; } et_slot;   /* (ai: the AI image is in it) */
 typedef struct { int32_t ent; uint32_t ver; } et_req;
 
 static struct {
@@ -114,7 +127,7 @@ static void et_env(void) {
 }
 static int et_cfg(void) {                /* the setting (work happens while it is on, whatever the A/B phase) */
     et_env();
-    return !ET.failed && (ET.env_on >= 0 ? ET.env_on : tcf_on > 0);
+    return !ET.failed && (ET.env_on >= 0 ? ET.env_on : tcf_on > 0 || tcf_look > 0);
 }
 static int et_enabled(void) { return et_cfg() && ET.init && r8p_on(R8P_TEX); }   /* draws use the images */
 
@@ -128,6 +141,7 @@ static void et_free_class(int c) {
 
 static void et_release_late(void);      /* (the dump read-backs and the HD upload buffer, below) */
 static void et_release(void) {
+    ra_release();                        /* (ai) */
     et_release_late();
     for (int c = 0; c < ET_NCLS; c++) {
         et_free_class(c);
@@ -223,6 +237,39 @@ static void et_unlink(int32_t idx) {
     e->next = -1;
 }
 
+/* (reimagine) visible changes of an already enhanced texture (PS2_TEX_SWAPLOG=1: a summary, 2: every change): its image
+ * replaced by another, by the AI image, or by the original sampling. A texture should change at most once (Enhanced ->
+ * AI) after it first shows enhanced. */
+static struct { int on; int32_t prev[TD_HASH], prev2[TD_HASH]; uint16_t n[TD_HASH]; uint32_t base[TD_HASH]; uint64_t total, game; uint32_t frame; } ESW;
+static void et_swap_note(int32_t idx, char kind) {
+    if (ESW.on < 0) return;
+    if (!ESW.on) { const char* v = getenv("PS2_TEX_SWAPLOG"); ESW.on = v && *v ? atoi(v) : -1; if (ESW.on < 0) return;
+                   for (int i = 0; i < TD_HASH; i++) ESW.prev[i] = ESW.prev2[i] = -1; }
+    if (ESW.base[idx] != ET.e[idx].base) { ESW.base[idx] = ET.e[idx].base; ESW.n[idx] = 0; ESW.prev[idx] = ESW.prev2[idx] = -1; }
+    if (kind == 'L') {                  /* (linked to a slot: a change only when another image showed before) */
+        int32_t p = ESW.prev[idx], p2 = ESW.prev2[idx];
+        ESW.prev[idx] = ET.e[idx].slot;
+        if (p < 0 || p == ET.e[idx].slot) return;
+        ESW.prev2[idx] = p;
+        /* (another image because the game put other content there: its change, not ours - unless it flips back) */
+        if (p2 != ET.e[idx].slot) { ESW.game++; return; }
+    }
+    if (kind == 'O' && ESW.prev[idx] < 0) return;   /* (never enhanced: nothing changes) */
+    if (kind == 'O') ESW.prev[idx] = -1;
+    ESW.n[idx]++;
+    ESW.total++;
+    if (ESW.on >= 2) gpu_log("tex-swap: frame %u entry %d base %05X %c (%u)", ET.frame, idx, ET.e[idx].base, kind, ESW.n[idx]);
+}
+/* (reimagine) PS2_REIM_FIX=0: the 0.1.1207 behaviour (content changes, build budget), for before / after measurements */
+static int et_fix_on(void) { static int v = -1; if (v < 0) { const char* e = getenv("PS2_REIM_FIX"); v = !(e && *e == '0'); } return v; }
+static void et_swap_summary(void) {
+    if (ESW.on <= 0) return;
+    uint32_t h[4] = { 0, 0, 0, 0 }, worst = 0;
+    for (int i = 0; i < TD_HASH; i++) { uint32_t k = ESW.n[i]; h[k > 3 ? 3 : k]++; if (k > worst) worst = k; }
+    gpu_log("tex-swap: frame %u: %llu changes; textures with 1: %u, 2: %u, 3+: %u (most %u); content the game changed %llu", ET.frame,
+            (unsigned long long)ESW.total, h[1], h[2], h[3], worst, (unsigned long long)ESW.game);
+}
+
 static void et_link(int32_t idx, int32_t id) {
     et_ent* e = &ET.e[idx];
     et_slot* s = et_slot_of(id);
@@ -232,6 +279,8 @@ static void et_link(int32_t idx, int32_t id) {
     s->last = ET.frame;
     e->st = ES_READY;
     et_tab_write(e->base, e->base + 1, (uint32_t)(id >> 16) | (uint32_t)(id & 0xFFFF) << 3);
+    et_swap_note(idx, 'L');
+    if (ra_on_now) ra_note(idx, id);     /* (ai) its AI image: from the cache or built */
 }
 
 static int32_t et_map_find(uint64_t h) {
@@ -310,6 +359,7 @@ static int et_grow(int c) {
     ET.n_grow++;
     if (!ok) { gpu_log("tex: class %u views failed", S); ET.failed = 1; return 0; }
     if (ET.log) gpu_log("tex: class %ux%u: %u slices (%.0f MB in all)", S, S, nc, ET.bytes / 1048576.0);
+    if (ra_on_now) etn_grow(c, oc, nc);  /* (ai) the surface maps follow */
     return 1;
 }
 
@@ -328,10 +378,12 @@ static int32_t et_alloc(int c) {
     et_slot* s = &ET.sl[c][best];
     while (s->first >= 0) {              /* (its entries go back to unknown: a later use builds again) */
         int32_t i = s->first;
+        et_swap_note(i, 'O');
         et_unlink(i);
         ET.e[i].st = ES_NONE;
     }
     s->used = 0;
+    s->ai = 0;
     ET.n_evict++;
     return (int32_t)(c << 16 | best);
 }
@@ -351,7 +403,7 @@ static void et_cb_set(uint32_t level, uint32_t first) {
     if (FAILED(ID3D11DeviceContext_Map(gpu_rt.ctx, (ID3D11Resource*)ET.cb, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) return;
     uint32_t* w = m.pData;
     uint32_t b[4] = { level, first, 0, 0 };
-    float p[4] = { ET.sharp, ET.sig_c, ET.sig_a, ET.edge }, q[4] = { ET.flat, ET.detail, ET.dd, ET.dd_rng }, r[4] = { ET.dd_sharp, 0.0f, ET.dd_dense, 0.0f };
+    float p[4] = { ET.sharp, ET.sig_c, ET.sig_a, ET.edge }, q[4] = { ET.flat, ET.detail, ET.dd, ET.dd_rng }, r[4] = { ET.dd_sharp, ra_on_now ? etn_k() : 0.0f, ET.dd_dense, 0.0f };
     memcpy(w, b, 16); memcpy(w + 4, p, 16); memcpy(w + 8, q, 16); memcpy(w + 12, r, 16);
     ID3D11DeviceContext_Unmap(gpu_rt.ctx, (ID3D11Resource*)ET.cb, 0);
 }
@@ -428,6 +480,7 @@ static void et_batch_run(void) {
                 ID3D11DeviceContext_Dispatch(c, (sz + 7) / 8, (sz + 7) / 8, n);
             }
         }
+        if (ra_on_now) etn_run(cls, a, n);   /* (ai) the surface maps from the levels in the scratch */
         gpu_rt.n_dispatches += nm * (ref ? 2 : 1) + 1;
         a = b;
     }
@@ -628,7 +681,8 @@ static void et_dump_poll(void) {
             wcscat(dir, L"\\dump");
             CreateDirectoryW(dir, NULL);
             wchar_t path[700];
-            _snwprintf(path, 700, L"%ls\\%016llx%ls.png", dir, (unsigned long long)d->raw, d->tex ? L"_enh" : L"");
+            static const wchar_t* const sfx[4] = { L"", L"_enh", L"_ai", L"_nrm" };   /* (ai: 2, 3) */
+            _snwprintf(path, 700, L"%ls\\%016llx%ls.png", dir, (unsigned long long)d->raw, sfx[d->tex & 3]);
             path[699] = 0;
             uint8_t* px = malloc((size_t)d->w * d->h * 4);
             if (px) {
@@ -637,7 +691,7 @@ static void et_dump_poll(void) {
                     uint8_t* o = px + (size_t)y * d->w * 4;
                     for (uint32_t x = 0; x < d->w; x++) {   /* (GS alpha 0x80 = 1.0 -> PNG 255) */
                         o[x * 4] = s[x * 4]; o[x * 4 + 1] = s[x * 4 + 1]; o[x * 4 + 2] = s[x * 4 + 2];
-                        uint32_t a = (uint32_t)s[x * 4 + 3] * 255u / 128u;
+                        uint32_t a = d->tex == 3 ? s[x * 4 + 3] : (uint32_t)s[x * 4 + 3] * 255u / 128u;
                         o[x * 4 + 3] = (uint8_t)(a > 255 ? 255 : a);
                     }
                 }
@@ -816,7 +870,7 @@ static int et_hd_poll(int* bound) {
                 D3D11_BOX bx = { 0, 0, 0, j->w * j->h * 4u, 1, 1 };
                 ID3D11DeviceContext_UpdateSubresource(gpu_rt.ctx, (ID3D11Resource*)EH.buf, 0, &bx, j->px, 0, 0);
                 et_slot* s = et_slot_of(id);
-                s->used = 1; s->hd = 1; s->hash = key; s->first = -1; s->last = ET.frame;
+                s->used = 1; s->hd = 1; s->ai = 0; s->hash = key; s->first = -1; s->last = ET.frame;
                 et_ent t;
                 memset(&t, 0, sizeof t);
                 for (uint32_t k = 0; k < 12; k++) { if ((1u << k) == j->w) t.lw = (uint8_t)k; if ((1u << k) == j->h) t.lh = (uint8_t)k; }
@@ -874,10 +928,21 @@ static void et_resolve(int32_t idx) {
     if (cur) {
         if (cur->hash == e->hash || cur->hash == (e->raw ^ ET_HDMIX)) { e->st = ES_READY; cur->last = ET.frame; return; }
         et_unlink(idx);                  /* (the content changed) */
-        if (e->nchg && ET.frame - e->chg < 1800) { e->st = ES_REJECT; ET.n_reject++; return; }
-        e->nchg++;
-        e->chg = ET.frame;
+        if (!et_fix_on() && e->nchg && ET.frame - e->chg < 1800) { e->st = ES_REJECT; ET.n_reject++; et_swap_note(idx, 'O'); return; }
+        if (!et_fix_on()) { e->nchg++; e->chg = ET.frame; }
         ET.n_change++;
+    }
+    /* (reimagine) a content seen before (its image is in the cache) is shared at once: textures the game swaps in and out
+     * at one place (characters' parts streamed into a shared area) keep their images instead of falling back to the
+     * original sampling on the second change, which made Sly's textures flip between AI, Enhanced and original. Only NEW
+     * contents count: four within 30 s is an animation (CLUT cycling), left to the original sampling. */
+    if (et_fix_on() && !(ET.hd && et_hd_has(e->raw))) {
+        int32_t sid = et_map_find(e->hash);
+        if (sid >= 0) { et_link(idx, sid); ET.n_share++; return; }
+        if (cur) {
+            if (ET.frame - e->chg >= 3600) { e->nchg = 0; e->chg = ET.frame; }
+            if (++e->nchg >= 4) { e->st = ES_REJECT; ET.n_reject++; et_swap_note(idx, 'O'); return; }
+        }
     }
     if (ET.hd && et_hd_has(e->raw)) {    /* (an HD-pack file: its image, shared by every entry of that content) */
         int32_t hid = et_map_find(e->raw ^ ET_HDMIX);
@@ -892,6 +957,41 @@ static void et_resolve(int32_t idx) {
 
 /* the start of a frame's execution (before the prepass): read-backs, hash requests, builds within the frame's budget */
 static void et_frame_body(void);
+/* (reimagine) the builds' GPU time per frame (timestamps around them, read back a few frames later) and the cap that
+ * follows from it: what the frame leaves of 80 % of the frame interval at the player's frame rate (from the last
+ * frame's GPU time without the builds), 0.25..2 ms, converted with the measured ms per million output texels. The fixed
+ * 1 M texels a frame of 0.1.1207 cost ~3 ms under Reimagined (surface maps too): 10 ms frames at 120 fps. */
+extern double frame_rate_target_hz(void) __attribute__((weak));
+static struct { ID3D11Query* q[8][2]; uint8_t busy[8]; uint32_t tex[8], head; double ms_per_m, last_ms; uint64_t n, over; void* dev; uint32_t cap; } ETB = { .ms_per_m = 3.0 };
+static void etb_poll(void) {
+    if (ETB.dev != (void*)gpu_rt.dev) { memset(ETB.q, 0, sizeof ETB.q); memset(ETB.busy, 0, sizeof ETB.busy); ETB.dev = gpu_rt.dev; }   /* (a new device: its own queries) */
+    for (int k = 0; k < 8; k++) {
+        if (!ETB.busy[k]) continue;
+        UINT64 a, b;
+        if (ID3D11DeviceContext_GetData(gpu_rt.ctx, (ID3D11Asynchronous*)ETB.q[k][0], &a, sizeof a, D3D11_ASYNC_GETDATA_DONOTFLUSH) != S_OK ||
+            ID3D11DeviceContext_GetData(gpu_rt.ctx, (ID3D11Asynchronous*)ETB.q[k][1], &b, sizeof b, D3D11_ASYNC_GETDATA_DONOTFLUSH) != S_OK)
+            continue;
+        ETB.busy[k] = 0;
+        if (!gpu_ts_freq || b < a || ETB.tex[k] < 16384) continue;
+        double ms = (double)(b - a) * 1000.0 / (double)gpu_ts_freq;
+        ETB.last_ms = ms;
+        double r = ms / ((double)ETB.tex[k] / 1048576.0);
+        if (r > 0.05 && r < 50.0) ETB.ms_per_m = ETB.ms_per_m * 0.8 + r * 0.2;
+    }
+}
+static uint32_t etb_cap(void) {
+    if (!et_fix_on()) return ET.frame_out;
+    double hz = frame_rate_target_hz ? frame_rate_target_hz() : 60.0;
+    double room = 2.0;
+    if (hz > 1.0 && gpu_frame_ms_last > 0.0) {
+        room = 0.8 * 1000.0 / hz - (gpu_frame_ms_last - ETB.last_ms);
+        if (room > 2.0) room = 2.0;
+    } else if (hz <= 1.0) room = 1.0;
+    if (room < 0.25) room = 0.25;
+    double t = room / ETB.ms_per_m * 1048576.0;
+    uint32_t cap = t > (double)ET.frame_out ? ET.frame_out : t < 65536.0 ? 65536u : (uint32_t)t;
+    return cap;
+}
 /* PS2_TEX_TIME=1: the GPU time of the frame-start work (hashes + builds) of frames that built images, from timestamps
  * around it (a ring read back a few frames later): "tex-time" lines, ms per frame and per million output texels */
 static void et_time_poll(void) {
@@ -913,7 +1013,15 @@ static void et_time_poll(void) {
 }
 static void et_frame_begin(void) {
     ET.frame++;
+    {                                    /* (ai) Reimagined on / off: every image is built again with / without its parts */
+        static int was;
+        int ra = et_cfg() && ra_cfg();
+        if (ra != was && ET.init) et_release();
+        was = ra;
+        ra_on_now = ra;
+    }
     if (!et_cfg() || !et_init()) return;
+    if (ra_on_now && !ra_init()) ra_on_now = 0;
     LARGE_INTEGER q0, q1, qf;
     QueryPerformanceCounter(&q0);
     uint64_t h0 = ET.n_hash, b0 = ET.n_build, g0 = ET.n_grow, s0 = ET.n_share;
@@ -946,6 +1054,7 @@ static void et_frame_begin(void) {
                 (unsigned long long)(ET.n_hash - h0), (unsigned long long)(ET.n_build - b0), ET.out_frame >> 10,
                 (unsigned long long)(ET.n_share - s0), (unsigned long long)(ET.n_grow - g0));
     if (ET.log && ET.frame % 600 == 0) gpu_log("tex: frame start CPU max %.2f ms", ET.cpu_max);
+    if (ET.frame % 1200 == 0) et_swap_summary();
 }
 static void et_frame_body(void) {
     ID3D11DeviceContext* c = gpu_rt.ctx;
@@ -1018,7 +1127,21 @@ static void et_frame_body(void) {
     /* 3. HD-pack images decoded since, then builds (queued into one batch, run together) */
     if (ET.hd) et_hd_poll(&bound);
     uint32_t qi = 0;
-    for (; qi < ET.qn && ET.out_frame < ET.frame_out; qi++) {
+    uint32_t cap = etb_cap();
+    ETB.cap = cap;   /* (the AI images' applies share it: gpu_tex_ai.h) */
+    int tb = 0;
+    uint32_t tk = ETB.head % 8;
+    if (et_fix_on()) {                   /* (the builds timed: the cap's rate) */
+        etb_poll();
+        if (!ETB.q[tk][0]) {
+            D3D11_QUERY_DESC qt = { D3D11_QUERY_TIMESTAMP, 0 };
+            ID3D11Device_CreateQuery(gpu_rt.dev, &qt, &ETB.q[tk][0]);
+            ID3D11Device_CreateQuery(gpu_rt.dev, &qt, &ETB.q[tk][1]);
+        }
+        tb = !ETB.busy[tk] && ETB.q[tk][0] && ETB.q[tk][1] && ET.qn;
+        if (tb) ID3D11DeviceContext_End(c, (ID3D11Asynchronous*)ETB.q[tk][0]);
+    }
+    for (; qi < ET.qn && ET.out_frame < cap; qi++) {
         int32_t idx = ET.q[qi];
         et_ent* e = &ET.e[idx];
         const td_ent* t = &TD.ent[idx];
@@ -1031,7 +1154,7 @@ static void et_frame_body(void) {
             id = et_alloc(cls);
             if (id < 0) { e->st = ES_NONE; ET.n_reject++; continue; }   /* (budget: tried again at a later use) */
             et_slot* s = et_slot_of(id);
-            s->used = 1; s->hd = 0; s->hash = e->hash; s->first = -1; s->last = ET.frame;
+            s->used = 1; s->hd = 0; s->ai = 0; s->hash = e->hash; s->first = -1; s->last = ET.frame;
             if (!bound) {
                 ID3D11ShaderResourceView* n1 = NULL;
                 ID3D11DeviceContext_PSSetShaderResources(c, 13, 1, &n1);
@@ -1045,9 +1168,16 @@ static void et_frame_body(void) {
         et_link(idx, id);
     }
     et_batch_run();
+    if (tb) {
+        ID3D11DeviceContext_End(c, (ID3D11Asynchronous*)ETB.q[tk][1]);
+        ETB.tex[tk] = ET.out_frame;
+        ETB.busy[tk] = 1;
+        ETB.head++;
+    }
     if (ET.out_frame) gpu_stats_cur()->tex_built += ET.out_frame >> 10;   /* (the cost of frames with builds: tex-build) */
     memmove(ET.q, ET.q + qi, (ET.qn - qi) * sizeof ET.q[0]);
     ET.qn -= qi;
+    if (ra_on_now) ra_frame(&bound);     /* (ai) cached AI images, read-backs, the net's slice of this frame */
     if (bound) {
         et_cs_unbind();
         ID3D11DeviceContext_PSSetShaderResources(c, 13, 1, &TD.srv);
@@ -1077,4 +1207,7 @@ static void et_bind_ps(int w) {
     ID3D11DeviceContext_PSSetShaderResources(c, 30, 7, s);
     ID3D11DeviceContext_PSSetSamplers(c, 4, 2, ET.smp);
     ID3D11DeviceContext_PSSetConstantBuffers(c, 8, 1, &ET.pcb);
+    if (ra_on_now && etn_enabled()) etn_bind_ps();   /* (ai) the surface maps for the lighting */
 }
+
+#include "gpu_tex_ai.h"                  /* (ai) Reimagined textures + surface maps */
