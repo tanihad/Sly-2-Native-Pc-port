@@ -1212,11 +1212,13 @@ static void zcb_set(const zs_consts* k) {
  * 60 frames. Attribution is approximate (the GPU overlaps neighbouring work). */
 enum { PR_OTHER, PR_TARGET, PR_MEM, PR_CLEAR, PR_SHADOW, PR_FF_FAST, PR_FF_TRI, PR_FF_SPRITE, PR_FF_LINE,
        PR_REF_TRI, PR_REF_OTHER, PR_A16, PR_ZRESOLVE, PR_ZSYNC, PR_PRESENT, PR_A16_DRAW, PR_FF_FAST_Z, PR_R2, PR_PART,
-       PR_MFT_RES, PR_MFT_SH, PR_MFT_MV, PR_MFT_FUSE, PR_LIGHT, PR_REIM_SM, PR_N };
+       PR_MFT_RES, PR_MFT_SH, PR_MFT_MV, PR_MFT_FUSE, PR_LIGHT, PR_REIM_SM, PR_REIM_SH, PR_REIM_BL, PR_REIM_CO, PR_N };
 static const char* const pr_names[PR_N] = { "other", "target", "mem", "clear", "shadow", "ff-tri-fast", "ff-tri",
                                             "ff-sprite", "ff-line", "ref-tri", "ref-other", "alias16", "zresolve",
                                             "zsync", "present", "alias16-draw", "ff-tri-fast-z", "r2", "part",
-                                            "mft-resolve", "mft-svol", "mft-mv", "mft-shfuse", "light", "reim-smap" };
+                                            "mft-resolve", "mft-svol", "mft-mv", "mft-shfuse", "light", "reim-smap",
+                                            "reim-shadow" /* (2: depth, AO, key-light term) */, "reim-bloom" /* (bloom,
+                                            stats, shafts) */, "reim-comp" };
 #define PR_MAXQ 8192
 static struct {
     int on, n, cur;
@@ -1428,6 +1430,11 @@ static void prof_end(void) {
         s->phase_ms[5] = (float)(f[PR_OTHER] + f[PR_TARGET] + f[PR_MEM] + f[PR_CLEAR] + f[PR_SHADOW] + f[PR_PRESENT]);
     }
     if (PR.ops_on) prof_ops_report(tsv, (double)dj.Frequency);
+    {                                    /* (reimagine2) PS2_GPU_PROF_FRAME=1: every frame's GPU time (frames_to_mp4 --label) */
+        static int pf = -1;
+        if (pf < 0) pf = getenv("PS2_GPU_PROF_FRAME") && atoi(getenv("PS2_GPU_PROF_FRAME")) > 0;
+        if (pf) gpu_log("prof-frame v%u %.3f", X.fd ? X.fd->vblank : 0u, ft);
+    }
     if (ft > 50.0) return;               /* (loading frames: left out) */
     for (int c = 0; c < PR_N; c++) { PR.ms[c] += f[c]; PR.ps_inv[c] += fi[c]; PR.occl[c] += fo[c]; PR.prims[c] += fp[c]; }
     PR.total += ft;

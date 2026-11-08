@@ -5,7 +5,8 @@
 # Scenes: scripts\qa_scenes_a.txt (ep1-4 hubs, m2_boardroom, m3_boss) and scripts\qa_scenes.txt (ep5-8).
 # Output: build\light\shots\<scene>[__tag]\frame_<v>.png (every dumped picture) + run.log. Local only: never commit them.
 param([Parameter(Mandatory = $true)][string]$Scene, [int]$At = 0, [int]$Frames = 72, [int]$Phase = 30, [string]$Extra = '',
-      [string]$Ini = '', [string]$Tag = '', [string]$Size = '2560x1440', [int]$Every = 1, [switch]$NoAB, [string]$Fps = '60', [int]$Seconds = 0, [string]$PadExtra = '')
+      [string]$Ini = '', [string]$Tag = '', [string]$Size = '2560x1440', [int]$Every = 1, [switch]$NoAB, [string]$Fps = '60', [int]$Seconds = 0, [string]$PadExtra = '',
+      [string]$PadAll = '')   # (reimagine2) -PadAll: the whole script after START instead of the scene's (no -Play X either)
 $root = Split-Path $PSScriptRoot -Parent
 $free = [math]::Round((Get-PSDrive C).Free / 1GB, 1)
 if ($free -lt 40) { "C: has $free GB free (< 40): not starting"; exit 2 }
@@ -16,6 +17,7 @@ $f = @($line -split '\|' | ForEach-Object { $_.Trim() })
 $episode = [int]$f[1]; $job = $f[2]; $flags = $f[3]
 $pad = if ($f[5] -match '^\d+$') { if ($f.Count -ge 7) { $f[6] } else { '' } } else { $f[5] }   # (qa_scenes_a: name|ep|job|flags|at|frames|pad; qa_scenes: name|ep|job|flags|at|pad|note)
 if ($pad -match '^[A-Z]+$') { $pad = '' }   # (the GP / HP walk macros of qa_scene.ps1: not here - an idle scene)
+if ($PadAll) { $pad = $PadAll; $flags = $flags -replace '\bplay\b', '' }
 if ($At -le 0) { $At = [int]$f[4] }
 $name = "$Scene$(if ($Tag) { "__$Tag" })" -replace '[^A-Za-z0-9_]', '_'
 $out = Join-Path $root "build\light\shots\$name"

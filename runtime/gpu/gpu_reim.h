@@ -578,6 +578,7 @@ static void reim_post(mtarget* c, mtarget* z, int pc) {
     int ms = z->n > 1 && !z->alias;
     ID3D11Buffer* bufs[2] = { LT.cb, RR.cb };
     /* depth, occlusion */
+    prof_mark(PR_REIM_SH);
     LT_SIZE(dst, hw, hh); LT_SIZE(src, hw, hh);
     lt_cb(cb, 36);
     bufs[0] = LT.cb;
@@ -626,6 +627,7 @@ static void reim_post(mtarget* c, mtarget* z, int pc) {
         ID3D11DeviceContext_ClearRenderTargetView(gpu_rt.ctx, RR.rtv[RT_SH], one);
     }
     /* bloom: the bright pass + the scene colour (MRT), the pyramid (6 levels), its upsample with the halo weight */
+    prof_mark(PR_REIM_BL);
     LT_SIZE(dst, hw, hh); LT_SIZE(src, pw, ph);
     lt_cb(cb, 36);
     lt_srv(16, c->psrv); lt_srv(18, RR.srv[RR.st_cur ? RT_ST1 : RT_ST0]);   /* (last frame's statistics: the threshold) */
@@ -675,6 +677,7 @@ static void reim_post(mtarget* c, mtarget* z, int pc) {
         rr_unbind();
     }
     /* composite + grade: from a copy of the picture onto it (RGB) */
+    prof_mark(PR_REIM_CO);
     ID3D11DeviceContext_CopyResource(gpu_rt.ctx, (ID3D11Resource*)RR.t[RT_PIC], (ID3D11Resource*)c->pic);
     LT_SIZE(dst, pw, ph); LT_SIZE(src, hw, hh);
     lt_cb(cb, 36);

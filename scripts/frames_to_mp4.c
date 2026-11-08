@@ -1,10 +1,11 @@
 /* (reimagine) Frame dumps -> an MP4 (H.264) with Windows' own Media Foundation: no third-party encoder.
  *   frames_to_mp4 <out.mp4> <dir> [<dir2>] [--fps 60] [--every 2] [--mbps 40] [--width W --height H] [--first N] [--count N]
+ *                 [--title "text"] [--label <file: lines "<frame number> <text>">]
  * <dir>: frame_*.bmp (PS2_DUMP_BMP=1: 32-bit BGRX, top-down or bottom-up) or frame_*.png (8-bit RGB / RGBA, as the
  * game writes them: stored or deflated). Frames in name order; --every k takes every k-th (a 120 fps dump at 60 fps).
  * With <dir2>: side by side (each half the width; both scaled into W/2 x H). The picture is box-scaled to W x H
  * (default: the first frame's size, side by side: its width x half its height). Build (llvm-mingw clang):
- *   clang -O2 -o frames_to_mp4.exe frames_to_mp4.c -lmfplat -lmfreadwrite -lmfuuid -lole32 */
+ *   clang -O2 -o frames_to_mp4.exe frames_to_mp4.c -lmfplat -lmfreadwrite -lmfuuid -lole32 -lgdi32 */
 #define COBJMACROS
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -229,12 +230,81 @@ static char** list(const char* dir, int* n) {
     return v;
 }
 
+/* (reimagine2) text over the frame (GDI on a DIB section of the frame's size): --title (every frame, top left) and
+ * --label <file> (lines "<frame number> <text>": the text of the frame whose name has that number, e.g. its GPU time) */
+typedef struct { long num; char text[120]; } label;
+static label* labels;
+static int nlabels;
+static void load_labels(const char* path) {
+    FILE* f = fopen(path, "r");
+    if (!f) return;
+    char line[256];
+    int cap = 0;
+    while (fgets(line, sizeof line, f)) {
+        char* e = NULL;
+        long v = strtol(line, &e, 10);
+        if (e == line) continue;
+        while (*e == ' ' || *e == '\t') e++;
+        size_t l = strlen(e);
+        while (l && (e[l - 1] == '\n' || e[l - 1] == '\r')) e[--l] = 0;
+        if (nlabels == cap) { cap = cap ? cap * 2 : 1024; labels = realloc(labels, cap * sizeof *labels); }
+        labels[nlabels].num = v;
+        snprintf(labels[nlabels].text, sizeof labels[nlabels].text, "%s", e);
+        nlabels++;
+    }
+    fclose(f);
+}
+static const char* label_of(const char* path) {
+    const char* u = strrchr(path, '_');
+    if (!u || !nlabels) return NULL;
+    long v = atol(u + 1);
+    const char* best = NULL;
+    for (int i = 0; i < nlabels; i++) if (labels[i].num <= v) best = labels[i].text;   /* (the latest at or before it) */
+    return best;
+}
+static void draw_text(uint8_t* frame, int W, int H, int x, int y, const char* t1, const char* t2) {
+    if ((!t1 || !*t1) && (!t2 || !*t2)) return;
+    static HDC dc;
+    static HBITMAP bm;
+    static void* bits;
+    static HFONT font;
+    static int bw, bh;
+    if (!dc || bw != W || bh != H) {
+        if (dc) { DeleteObject(bm); DeleteDC(dc); }
+        dc = CreateCompatibleDC(NULL);
+        BITMAPINFO bi;
+        memset(&bi, 0, sizeof bi);
+        bi.bmiHeader.biSize = sizeof bi.bmiHeader; bi.bmiHeader.biWidth = W; bi.bmiHeader.biHeight = -H;
+        bi.bmiHeader.biPlanes = 1; bi.bmiHeader.biBitCount = 32; bi.bmiHeader.biCompression = BI_RGB;
+        bm = CreateDIBSection(dc, &bi, DIB_RGB_COLORS, &bits, NULL, 0);
+        SelectObject(dc, bm);
+        font = CreateFontA(H / 30, 0, 0, 0, FW_BOLD, 0, 0, 0, ANSI_CHARSET, 0, 0, ANTIALIASED_QUALITY, 0, "Consolas");
+        SelectObject(dc, font);
+        SetBkMode(dc, TRANSPARENT);
+        bw = W; bh = H;
+    }
+    memcpy(bits, frame, (size_t)W * H * 4);
+    int lh = H / 28;
+    for (int k = 0; k < 2; k++) {
+        const char* t = k ? t2 : t1;
+        if (!t || !*t) continue;
+        int yy = y + (t1 && *t1 && k ? lh : 0);
+        SetTextColor(dc, RGB(0, 0, 0));
+        TextOutA(dc, x + 2, yy + 2, t, (int)strlen(t));
+        SetTextColor(dc, RGB(255, 235, 80));
+        TextOutA(dc, x, yy, t, (int)strlen(t));
+    }
+    GdiFlush();
+    memcpy(frame, bits, (size_t)W * H * 4);
+}
+
 #define CK(x) do { HRESULT hr_ = (x); if (FAILED(hr_)) { fprintf(stderr, "%s failed: 0x%08lX\n", #x, (unsigned long)hr_); return 1; } } while (0)
 
 int main(int argc, char** argv) {
     if (argc < 3) { fprintf(stderr, "usage: frames_to_mp4 <out.mp4> <dir> [<dir2>] [--fps 60] [--every 2] [--mbps 40] [--width W --height H] [--first N] [--count N]\n"); return 2; }
     const char* out = argv[1]; const char* d1 = argv[2]; const char* d2 = NULL;
     int fps = 60, every = 1, W = 0, H = 0, first = 0, count = 0; double mbps = 40.0;
+    const char* title = NULL;
     for (int i = 3; i < argc; i++) {
         if (!strcmp(argv[i], "--fps") && i + 1 < argc) fps = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--every") && i + 1 < argc) every = atoi(argv[++i]);
@@ -243,6 +313,8 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--height") && i + 1 < argc) H = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--first") && i + 1 < argc) first = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--count") && i + 1 < argc) count = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--label") && i + 1 < argc) load_labels(argv[++i]);
+        else if (!strcmp(argv[i], "--title") && i + 1 < argc) title = argv[++i];
         else if (argv[i][0] != '-' && !d2) d2 = argv[i];
     }
     if (every < 1) every = 1;
@@ -305,6 +377,7 @@ int main(int argc, char** argv) {
             if (load(f2[i], &y)) { blit(&y, frame, W, hw, (H - hh) / 2, hw, hh); free(y.px); }
         }
         free(x.px);
+        draw_text(frame, W, H, W / 60, H / 40, title, label_of(f1[i]));
         IMFMediaBuffer* mb = NULL;
         CK(MFCreateMemoryBuffer((DWORD)W * H * 4, &mb));
         BYTE* p = NULL;

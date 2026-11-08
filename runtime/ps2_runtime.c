@@ -135,6 +135,22 @@ void ps2_hook(ps2_ctx* ctx, uint32_t addr) {
 #ifdef PS2_NO_TRACE
     anchors_count(ctx, addr);                    /* debug builds count them in ps2_calls_record */
 #endif
+    {                                            /* (reimagine2) PS2_HOOK_LOG=1: each hooked function's call sites as they */
+        static int on = -1;                      /* first appear (to find PS2_INPUT anchors such as a menu's button test) */
+        static uint32_t seen[256][2];
+        static int ns;
+        if (on < 0) on = getenv("PS2_HOOK_LOG") && atoi(getenv("PS2_HOOK_LOG")) > 0;
+        if (on) {
+            uint32_t ra = ctx->r[REG_RA].uw[0];
+            int k = 0;
+            while (k < ns && (seen[k][0] != addr || seen[k][1] != ra)) k++;
+            if (k == ns && ns < 256) {
+                seen[ns][0] = addr; seen[ns][1] = ra; ns++;
+                fprintf(stderr, "[ps2] hook %06X called from %06X (first at VBlank %u, a0 %X)\n", addr, ra, ps2_vblank_count(),
+                        ctx->r[4].uw[0]);
+            }
+        }
+    }
     warp_on_call(ctx, addr);
 }
 
@@ -1173,6 +1189,7 @@ int main(int argc, char** argv) {
     ps2_log_sif = getenv("PS2_LOG_SIF") != NULL;
     watch_init();
     if (warp_init()) ps2_hooks_on = 1;
+    if (getenv("PS2_HOOK_LOG") && atoi(getenv("PS2_HOOK_LOG")) > 0) ps2_hooks_on = 1;   /* (reimagine2) */
     dump_dir = getenv("PS2_DUMP_FRAMES");
     if (getenv("PS2_DUMP_EVERY")) dump_every = atoi(getenv("PS2_DUMP_EVERY")) > 0 ? atoi(getenv("PS2_DUMP_EVERY")) : 60;
     if (getenv("PS2_DUMP_SECS")) dump_secs = atof(getenv("PS2_DUMP_SECS"));   /* (pc-fps) */
