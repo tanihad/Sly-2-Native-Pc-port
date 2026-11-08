@@ -246,12 +246,15 @@ PATCHES: list[Patch] = [
           "waiting for the pause menu opens"),
     # The frame rate (runtime/frame_rate.h, notes/frame-rate.md): both do nothing at frame_rate = 60 (the default).
     Patch("frame_dt_min", *CLOCK_TICK, 0x0014D120, "after",
-          "if (ps2_frame_dt_min > 0.0f) ctx->f[2].f = ps2_frame_dt_min;",
+          "if (ps2_frame_dt_min > 0.0f) ctx->f[2].f = ps2_frame_dt_min; "
+          "if (ps2_frame_dt_fixed > 0.0f) { ctx->f[1].f = 0.0f; ctx->f[2].f = ps2_frame_dt_fixed; }",
           "the game clock (f_0014D0B8, once per main-loop frame: a0 = the clock at 0x2DDED0) turns the COP0 Count ticks "
           "since its last call into seconds (x 1/294.912 MHz) and clamps them to [$f2, $f1] = [1/60, 1/30] (mtc1 here "
           "loads 1/60 = 0x3C888889 into $f2, used only by the clamp at 0x14D134/0x14D140). Above 60 frames per second "
           "the lower bound would make every frame a 1/60 s step (120 fps = double speed): the frame limiter's rates "
-          "need it lower (frame_rate.c: 1/625 s; real steps come from the Count). The upper bound stays"),
+          "need it lower (frame_rate.c: 1/625 s; real steps come from the Count). The upper bound stays. (reimagine2, tests "
+          "only: PS2_FRAME_DT_FIXED=1 -> ps2_frame_dt_fixed = 1 / the rate: $f1 (the ticks) 0, so the clamp's lower "
+          "bound is the step: the same game time per frame however long frame dumps stalled it)"),
     Patch("frame_vblank_wait", *VBLANK_WAIT, 0x0016F560, "before",
           "{ uint32_t t_ = ps2_r32(ctx, 0x002DE1A0u); frame_vblank_request(t_ >= 0x100000u && t_ < 0x1FF0000u ? ps2_r32(ctx, t_ + 0xCu) : 0u); }",
           "entry of 'wait for the next VBlank' (sets 0x2DFB58 and waits on the semaphore 0x2DFB4C that the VBlank "

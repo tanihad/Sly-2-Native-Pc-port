@@ -90,6 +90,10 @@ static const struct { const char* name; int axis, value; } script_sticks[] = {
  *       n frames after the recompiled function <hexaddr> was called (from the call site returning
  *       to <hexra>, if given) once the previous token has started, e.g. "@187D80/1DD96C+30:start"
  *       = START 30 frames after the title screen first checks for START.
+ *   "@<hexaddr>[/<hexra>]#<k>[+<n>]:<button>[:<hold>]"
+ *       n frames after the k-th call of the function since the script was read, whenever that was (the tokens before
+ *       it may still be running), e.g. "@22b490#2+600:none" = 600 frames after the second level load was queued
+ *       (Resume Game's, then the safehouse's "play" into the hub): a pad path that starts with the hub itself.
  *   "@!<hexaddr>[/<hexra>][+<n>]:<button>[:<hold>]"
  *       once the function has been called and then not called for n frames (default 30), e.g.
  *       "@!227820+60:none" = when the Binocucom dialogue has been gone for 60 frames.
@@ -104,6 +108,7 @@ static const struct { const char* name; int axis, value; } script_sticks[] = {
  * "watch:<n>" logs every call of the PS2_WATCH functions in the next n VBlanks (debug builds).
  * "rec" starts the PS2_GS_RECORD GS recording at the next VBlank (gs_record.c; with
  * PS2_GS_RECORD_FROM=-1 only this starts it).
+ * "dump:<n>" dumps the pictures of the next n VBlanks (PS2_DUMP_FRAMES; with PS2_DUMP_FROM=script only these).
  * "aspect" and "hud" switch the display aspect / the HUD mode as F7 / F8 do (aspect.c).
  * "scaleup", "scaledown", "outlines", "filters", "blur", "flicker", "interlace" change the graphics settings as
  * F2, Shift+F2, F3, F4, F5, F6, Shift+F6 do (gfx.h), without writing sly2.ini.
@@ -145,6 +150,8 @@ static double script_seconds(void) {
 #define SCRIPT_REC   (-11)                /* "rec": start the GS recording (gs_record.c) */
 #define SCRIPT_GPUSWITCH (-12)            /* "renderer": GPU <-> software renderer (as F9, window_gpu.h) */
 #define SCRIPT_GPULOSE (-13)              /* "losedevice": simulate a GPU device loss (as Shift+F9) */
+#define SCRIPT_DUMP  (-14)                /* (reimagine2) "dump:<n>": the frame dumps of the next n VBlanks (PS2_DUMP_FROM=script) */
+void ps2_request_dump_window(uint32_t frames);
 static void script_debug_key(int key);
 void gs_record_start_now(void);
 #define SCRIPT_PAUSE (-5)                 /* "pause": stop until the next live input line */
@@ -178,7 +185,7 @@ void ps2_request_ram_dump(void);
 void ps2_request_calls_window(uint32_t frames);
 void ps2_request_watch_window(uint32_t frames);
 void ps2_debug_hold(int on);              /* runtime: EE timers, IOP time and the SPU2 stand still */
-static struct { uint32_t frame, hold, start, addr, ra, base, last; int button, kind, armed, seen, axis, value;
+static struct { uint32_t frame, hold, start, addr, ra, base, last, nth; int button, kind, armed, seen, axis, value;
                 double hold_s, start_s; }     /* (pc-fps) hold_s > 0: held for that many seconds ("...:2.5s") */
     script[SCRIPT_MAX];
 static int script_n = -1;
@@ -198,7 +205,7 @@ static void script_parse(const char* s) {
         }
         for (char* c = tok; *c; c++) if (*c >= 'A' && *c <= 'Z') *c += 'a' - 'A';   /* "lxFF" = "lxff" */
         char name[32] = { 0 };
-        unsigned frame = 0, hold = 6, addr = 0, ra = 0;
+        unsigned frame = 0, hold = 6, addr = 0, ra = 0, nth = 0;
         int kind = SCRIPT_ABS;
         double at = 0;
         if (tok[0] == '+') {
@@ -215,6 +222,7 @@ static void script_parse(const char* s) {
             char* p = tok + (kind == SCRIPT_QUIET ? 2 : 1);
             addr = (unsigned)strtoul(p, &p, 16);
             if (*p == '/') ra = (unsigned)strtoul(p + 1, &p, 16);
+            if (*p == '#' && kind == SCRIPT_ANCHOR) nth = (unsigned)strtoul(p + 1, &p, 10);   /* (reimagine2) the n-th call */
             if (kind == SCRIPT_QUIET) frame = 30;
             if (*p == '+') frame = (unsigned)strtoul(p + 1, &p, 10);
             if (*p != ':' || sscanf(p + 1, "%31[a-z0-9]:%u", name, &hold) < 1) continue;
@@ -223,7 +231,7 @@ static void script_parse(const char* s) {
                     !strcmp(name, "release") ? SCRIPT_RELEASE : !strcmp(name, "pause") ? SCRIPT_PAUSE :
                     !strcmp(name, "calls") ? SCRIPT_CALLS : !strcmp(name, "watch") ? SCRIPT_WATCH :
                     !strcmp(name, "aspect") ? SCRIPT_ASPECT : !strcmp(name, "hud") ? SCRIPT_HUD :
-                    !strcmp(name, "rec") ? SCRIPT_REC : !strcmp(name, "renderer") ? SCRIPT_GPUSWITCH :
+                    !strcmp(name, "rec") ? SCRIPT_REC : !strcmp(name, "dump") ? SCRIPT_DUMP : !strcmp(name, "renderer") ? SCRIPT_GPUSWITCH :
                     !strcmp(name, "losedevice") ? SCRIPT_GPULOSE : -1,
             axis = 0, value = 0x80;
         for (int g = 0; g < SCRIPT_NGFX; g++)
@@ -252,6 +260,8 @@ static void script_parse(const char* s) {
         script[script_n].frame = frame; script[script_n].hold = hold; script[script_n].button = found;
         script[script_n].kind = kind; script[script_n].addr = addr; script[script_n].ra = ra;
         script[script_n].armed = script[script_n].seen = 0;
+        script[script_n].nth = nth;
+        if (nth) ps2_func_calls(addr, ra);   /* (counted from now on: the n-th call since the script was read) */
         script_at[script_n] = at;
         script[script_n++].start = kind == SCRIPT_ABS ? frame : SCRIPT_UNSET;
     }
@@ -277,7 +287,7 @@ static const char* script_name(int b) {
     if (b <= SCRIPT_MENU0 && b > SCRIPT_MENU0 - SCRIPT_NMENU) return script_menu[SCRIPT_MENU0 - b];
     return b == SCRIPT_NONE ? "none" : b == SCRIPT_AXIS ? "axis" : b == SCRIPT_RAM ? "ram" : b == SCRIPT_PAUSE ? "pause" :
            b == SCRIPT_RELEASE ? "release" : b == SCRIPT_CALLS ? "calls" : b == SCRIPT_WATCH ? "watch" :
-           b == SCRIPT_ASPECT ? "aspect" : b == SCRIPT_HUD ? "hud" : b == SCRIPT_REC ? "rec" :
+           b == SCRIPT_ASPECT ? "aspect" : b == SCRIPT_HUD ? "hud" : b == SCRIPT_REC ? "rec" : b == SCRIPT_DUMP ? "dump" :
            b == SCRIPT_GPUSWITCH ? "renderer" : b == SCRIPT_GPULOSE ? "losedevice" :
            b >= SCRIPT_NBUTTONS ? script_sticks[b - SCRIPT_NBUTTONS].name : script_buttons[b].name;
 }
@@ -365,8 +375,22 @@ static void script_resolve(uint32_t now) {
     if (now_s <= 0) now_s = 1e-9;
     for (int i = 0; i < script_n; i++)
         if (script[i].start != SCRIPT_UNSET && now >= script[i].start && script[i].start_s <= 0) script[i].start_s = now_s;
+    for (int i = 0; i < script_n; i++)                           /* (reimagine2) "@addr#n": when the n-th call happened, */
+        if (script[i].nth && !script[i].seen && script[i].start == SCRIPT_UNSET &&   /* whatever the order of the tokens */
+            ps2_func_calls(script[i].addr, script[i].ra) >= script[i].nth) {
+            script[i].seen = 1; script[i].last = now;
+            wlog("pad frame %u: call %u of function %08X", now, script[i].nth, script[i].addr);
+        }
     for (int i = 0; i < script_n; i++) {
         if (script[i].start != SCRIPT_UNSET) continue;
+        if (script[i].nth) {                                     /* (reimagine2) n frames after the n-th call */
+            uint32_t prev = i ? script[i - 1].start : 0;
+            if (!script[i].seen || prev == SCRIPT_UNSET || now < prev) continue;
+            script[i].start = script[i].last + script[i].frame > now ? script[i].last + script[i].frame : now;
+            wlog("pad frame %u: '%s' at %u (call %u of %08X at %u)", now, script_name(script[i].button), script[i].start,
+                 script[i].nth, script[i].addr, script[i].last);
+            continue;
+        }
         uint32_t prev = i ? script[i - 1].start : 0;
         if (prev == SCRIPT_UNSET || now < prev) continue;        /* previous one hasn't started */
         if (script[i].kind == SCRIPT_REL) { script[i].start = prev + script[i].frame; continue; }
@@ -452,6 +476,7 @@ static void script_apply(int port, pad_input* in) {
         }
         if (b == SCRIPT_HUD) { if (now == script[i].start) switch_hud(); continue; }
         if (b == SCRIPT_REC) { if (now == script[i].start) gs_record_start_now(); continue; }
+        if (b == SCRIPT_DUMP) { if (now == script[i].start) ps2_request_dump_window(script[i].hold); continue; }
         if (b == SCRIPT_GPUSWITCH || b == SCRIPT_GPULOSE) {
             if (now == script[i].start) script_debug_key(b == SCRIPT_GPUSWITCH ? WINDOW_KEY_SWITCH : WINDOW_KEY_LOSE_DEVICE);
             continue;

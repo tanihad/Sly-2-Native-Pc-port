@@ -20,6 +20,10 @@
 #define FRAME_RATE_NTSC_HZ (60000.0 / 1001.0)
 
 extern volatile float ps2_frame_dt_min;  /* (patch frame_dt_min) the game clock's lower clamp; 0 = the game's own 1/60 */
+/* (reimagine2, tests only) PS2_FRAME_DT_FIXED=1: every game frame steps the clock by exactly 1 / the frame rate (patch
+ * frame_dt_min), whatever real time passed - a scripted run then plays the same in game time even when frame dumps
+ * (PS2_DUMP_WAIT) stall it: the same pictures every run. 0 = off (always in play) */
+extern volatile float ps2_frame_dt_fixed;
 
 /* the setting (frame_rate = 60 | 120 | 144 | 165 | 200 | unlimited | display), live from any thread */
 void   frame_rate_init(void);            /* ps2_settings.frame_rate, and its applier (settings SET_APPLY_FRAME_RATE) */

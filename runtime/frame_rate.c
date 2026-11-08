@@ -3,9 +3,11 @@
 #include "settings.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <windows.h>
 
 volatile float ps2_frame_dt_min;
+volatile float ps2_frame_dt_fixed;
 static volatile LONG setting = 60;
 static volatile LONG display_mhz;        /* the display's refresh, mHz (0 = unknown) */
 static volatile LONG64 request_qpc;
@@ -18,6 +20,10 @@ static void update_dt_min(void) {
     /* the game's own 1/60 at 60; above, low enough for any rate the limiter allows (the clamp only guards against a
      * zero / negative step; real steps come from the COP0 Count) */
     ps2_frame_dt_min = frame_rate_high() ? (float)(1.0 / (FRAME_RATE_MAX_HZ * 1.25)) : 0.0f;
+    static int fixed = -1;               /* (reimagine2, tests) PS2_FRAME_DT_FIXED=1: 1 / the target rate per game frame */
+    if (fixed < 0) fixed = getenv("PS2_FRAME_DT_FIXED") && atoi(getenv("PS2_FRAME_DT_FIXED")) > 0;
+    double hz = fixed ? frame_rate_target_hz() : 0.0;
+    ps2_frame_dt_fixed = hz > 1.0 ? (float)(1.0 / hz) : 0.0f;
 }
 
 void frame_rate_set(int s) {

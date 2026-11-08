@@ -541,6 +541,9 @@ static int rec_starts;
 void gs_record_start_now(void) { rec_starts++; }
 void ps2_request_calls_window(uint32_t frames) { calls_requests++; calls_frames = frames; }
 void ps2_request_watch_window(uint32_t frames) { watch_requests++; watch_frames = frames; }
+static int dump_requests;
+static uint32_t dump_frames;
+void ps2_request_dump_window(uint32_t frames) { dump_requests++; dump_frames = frames; }
 
 static void test_input_script(void) {
     script_n = 0;
@@ -620,6 +623,33 @@ static void test_input_script(void) {
         CHECK(watch_requests == (f >= 3), "watch requests at frame %d: %d", f, watch_requests);
     }
     CHECK(calls_frames == 120 && watch_frames == 30, "window lengths %u %u", calls_frames, watch_frames);
+    /* (reimagine2) "@addr#k+n": n frames after the k-th call, even while the tokens before it still wait; "dump:<n>" */
+    script_n = 0;
+    script_frame = 0;
+    fake_anchor_calls = 0;
+    dump_requests = 0;
+    script_parse("30:cross:1,@187d80/1dd96c#2+4:none,+0:circle:1,+1:dump:50");
+    CHECK(script_n == 4, "parsed %d tokens", script_n);
+    for (int f = 0; f < 40; f++) {
+        if (f == 5 || f == 12) fake_anchor_calls++;       /* the 2nd call before frame 12 - the cross before it starts at 30 */
+        pad_input p;
+        pad_clear(&p);
+        script_apply(0, &p);
+        CHECK(!!(p.buttons & PAD_CIRCLE) == (f == 30), "circle at frame %d", f);   /* (12 + 4 is over when 30 starts: then) */
+        CHECK(dump_requests == (f >= 31), "dump requests at frame %d: %d", f, dump_requests);
+    }
+    CHECK(dump_frames == 50, "dump window %u", dump_frames);
+    script_n = 0;
+    script_frame = 0;
+    fake_anchor_calls = 0;
+    script_parse("@187d80/1dd96c#1+3:square:1");
+    for (int f = 0; f < 12; f++) {
+        if (f == 2) fake_anchor_calls++;
+        pad_input p;
+        pad_clear(&p);
+        script_apply(0, &p);
+        CHECK(!!(p.buttons & PAD_SQUARE) == (f == 5), "square at frame %d", f);
+    }
     script_n = 0;                                         /* leave scripting off for the other tests */
 }
 

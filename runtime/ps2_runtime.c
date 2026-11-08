@@ -135,6 +135,22 @@ void ps2_hook(ps2_ctx* ctx, uint32_t addr) {
 #ifdef PS2_NO_TRACE
     anchors_count(ctx, addr);                    /* debug builds count them in ps2_calls_record */
 #endif
+    {                                            /* (reimagine2) PS2_HOOK_LOG=1: each hooked function's call sites as they */
+        static int on = -1;                      /* first appear (to find PS2_INPUT anchors such as a menu's button test) */
+        static uint32_t seen[256][2];
+        static int ns;
+        if (on < 0) on = getenv("PS2_HOOK_LOG") && atoi(getenv("PS2_HOOK_LOG")) > 0;
+        if (on) {
+            uint32_t ra = ctx->r[REG_RA].uw[0];
+            int k = 0;
+            while (k < ns && (seen[k][0] != addr || seen[k][1] != ra)) k++;
+            if (k == ns && ns < 256) {
+                seen[ns][0] = addr; seen[ns][1] = ra; ns++;
+                fprintf(stderr, "[ps2] hook %06X called from %06X (first at VBlank %u, a0 %X)\n", addr, ra, ps2_vblank_count(),
+                        ctx->r[4].uw[0]);
+            }
+        }
+    }
     warp_on_call(ctx, addr);
 }
 
@@ -356,6 +372,14 @@ static const char* dump_dir;
 static int dump_every = 60, headless;
 static uint32_t dump_from;                       /* PS2_DUMP_FROM=<vblank>: no dumps before it */
 static int dump_from_rec;                        /* PS2_DUMP_FROM=rec: none before the GS recording */
+static volatile uint32_t dump_win0, dump_win1;   /* (reimagine2) PS2_DUMP_FROM=script: the pad script's "dump:<n>" window */
+static int dump_from_script;
+void ps2_request_dump_window(uint32_t frames) {
+    uint32_t v = ps2_vblank_count();
+    dump_win1 = v + (frames ? frames : 1);
+    dump_win0 = v;
+    fprintf(stderr, "[ps2] frame dumps VBlank %u..%u (the pad script)\n", v, dump_win1 - 1);
+}
 extern volatile uint32_t gs_record_first;        /* gs_record.c: its first VBlank, 0 = not started */
 
 /* VBlank pacing: VBlanks are due at exact multiples of 1/59.94 s of host time (QPC), so the game
@@ -432,6 +456,9 @@ static DWORD WINAPI host_timer(LPVOID arg) {
              * the slow frame needs (a slow GPU was made slower by its own repeated pictures); 10 Hz then keeps the VBlank
              * handler's display state machine going */
             int64_t idle = now.QuadPart - last_req < qpc_freq.QuadPart / 4 ? qpc_freq.QuadPart / 10 : ntsc;
+            /* (reimagine2, tests: PS2_FRAME_DT_FIXED) no VBlank between the game's frames while they keep coming, however
+             * slow (frame dumps): one VBlank - one pad read of the input script - per game frame, the same every run */
+            if (ps2_frame_dt_fixed > 0.0f && now.QuadPart - last_req < qpc_freq.QuadPart * 3) idle = qpc_freq.QuadPart * 3;
             due = req ? req : last_raise + idle;
             if (due < last_raise + gap) due = last_raise + gap;
         } else {
@@ -582,6 +609,7 @@ static int dump_wanted(uint32_t vb) {
     static int to = -1;                           /* (r2-m5) PS2_DUMP_TO: no dumps after this VBlank */
     if (to < 0) to = getenv("PS2_DUMP_TO") ? atoi(getenv("PS2_DUMP_TO")) : 0;
     if (to > 0 && vb > (uint32_t)to) return 0;
+    if (dump_from_script && !(dump_win1 && vb >= dump_win0 && vb < dump_win1)) return 0;
     return dump_dir && vb % (uint32_t)dump_every == 0 && vb >= dump_from &&
            (!dump_from_rec || (gs_record_first && vb >= gs_record_first));
 }
@@ -1164,12 +1192,14 @@ int main(int argc, char** argv) {
     ps2_log_sif = getenv("PS2_LOG_SIF") != NULL;
     watch_init();
     if (warp_init()) ps2_hooks_on = 1;
+    if (getenv("PS2_HOOK_LOG") && atoi(getenv("PS2_HOOK_LOG")) > 0) ps2_hooks_on = 1;   /* (reimagine2) */
     dump_dir = getenv("PS2_DUMP_FRAMES");
     if (getenv("PS2_DUMP_EVERY")) dump_every = atoi(getenv("PS2_DUMP_EVERY")) > 0 ? atoi(getenv("PS2_DUMP_EVERY")) : 60;
     if (getenv("PS2_DUMP_SECS")) dump_secs = atof(getenv("PS2_DUMP_SECS"));   /* (pc-fps) */
     if (getenv("PS2_DUMP_FROM")) {
         dump_from = (uint32_t)atoi(getenv("PS2_DUMP_FROM"));
         dump_from_rec = !strcmp(getenv("PS2_DUMP_FROM"), "rec");
+        dump_from_script = !strcmp(getenv("PS2_DUMP_FROM"), "script");
     }
     const char* wd = getenv("PS2_WATCHDOG");
     if (wd && atoi(wd) > 0) CreateThread(NULL, 0, watchdog, (LPVOID)(uintptr_t)atoi(wd), 0, NULL);

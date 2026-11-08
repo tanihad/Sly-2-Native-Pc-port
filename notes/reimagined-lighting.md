@@ -201,3 +201,93 @@ lose the pad timing and barely move): final runs 1.26 x (pass) and 1.44 x (fail)
 better than 0.1.1207 (1.58 x, and the per-frame key drift and contact noise gone), not yet at Faithful parity.
 Also: one r2_sweep ep3 mf run reported 2 stray triangles (an exact-path triangle with q = 0 at v5096, not R2 / post);
 the same check passed when run again alone.
+
+## Owner playtest of 0.1.1214 (reimagine2, 2026-11-08)
+
+Four reports, in his order. Everything new is behind `PS2_REIM2=0` (= 0.1.1214's Reimagined, used for every "before").
+
+**1. "Fires cast beams of light."** The shafts smeared the bright texels whose depth was far towards their centroid: fire
+and torch sprites write no depth, so over the sky or distant background they counted as "far" and became sources (ep2
+hub: rays from the torch next to the camera, a beam from a far torch). Now the shafts come only from the key light:
+its direction projected into the picture (a point at infinity; none when it is behind the camera, faded out up to 0.8
+screens off the picture), the strength from bright sky texels near it, and only texels that are far AND neutral in hue
+(`r_skyw`: saturation < 0.25..0.45, no warm cast) are smeared - fire, lamps, lasers and glows never are. Fires instead
+light their surroundings: the warm part of the bloom (the flames' own glow, so it flickers with their animation)
+multiplies the picture's colour around them (`PS2_REIM_FIRE`, 0.5). Lasers are saturated red: unchanged.
+
+**2. "Shadows under trees flicker as if confused."** Reproduced on a deterministic ep2 path (below; Sly walks past a torch
+into the trees' shadows) with the key-light term alone (`PS2_REIM_DBG=1`): over 1-3 frames whole shadow regions jumped
+to other shapes. Logged per frame (`PS2_REIM_LOG=3`): key light and shadow-map radius steady, but the **world matrix**
+changed at that frame (the camera rebuilt from it jumped (-3625, 3109, 449) -> (1358, -1734, 240) while the real
+camera moved smoothly). Every receiver is rebuilt from the depth through that matrix, so the shadows of the whole picture
+were looked up in the wrong place. 0.1.1214 took the most common matrix of whichever segment had the most entries
+sharing one; under trees few world entries are drawn and a group of plants (or Sly's own entries) won. Fix
+(`reim_finish`, once the frame is complete): only unlit entries (characters and lit props are never the world), counted
+over the whole frame, and of those the one whose camera continues last frame's (< 600 units away); the most common only
+on the first frame or a camera cut; the lights are clustered after the choice. Two more causes, both fixed:
+- the casters are what the game draws for its own camera: a canopy above the picture or a wall behind the camera cast
+  nothing, so shadows came and went as the camera turned (the segment count went 33 -> 38 -> 33 at such moments).
+  A **static shadow cache**: the static world's casters (entry matrix = the world's) accumulate in a light-space map
+  (4096^2, half size 1.5 x the per-frame sphere: 4 units a texel at R 5120 instead of 5) that keeps them; it is
+  centred on a coarse grid and when the camera's sphere nears its edge it moves by whole grid steps, its content copied
+  along (`ps_reim_sccopy`); a new key light or radius starts it again. Static casters are drawn into it every 4th frame,
+  the rest (characters, props) into the per-frame map every frame.
+- cut-outs (leaves, fronds, canopies) were solid cards in the map (no alpha test: an octagon for a canopy): draws whose
+  alpha test splits their fragments now go through `r2_vs/ps_shadow_at` (the material's texture and alpha test).
+
+**3. "Sly looks blurry."** Measured on 1:1 crops of Sly (scripts/sharp_check.c: mean gradient, |Laplacian|, acutance =
+the top 5 % gradients). The AI textures already made him sharper than Faithful; what read as soft was the shading and the
+outlines' edges. A contrast-adaptive sharpening pass (AMD CAS, cross form) on the Reimagined picture before the grade
+(`PS2_REIM_CAS`, 0.6), weaker where the contrast is already high (no halos). anime_6B for him measured no better than
+x4plus (still, Sly region 440 x 450: grad 5.19 vs 5.77, Laplacian 13.3 vs 15.2): x4plus stays. The game's own motion blur
+(Display: motion blur, on in the preset) smears him in every look while the camera turns fast.
+
+**4. Performance on High** (1440p, render scale 100 %, MSAA 8x, thin outlines, 120 fps; PS2_GPU_PROF with the new
+categories reim-smap / reim-shadow / reim-bloom / reim-comp; in-run A/B with PS2_GPU_AB_R8=1024, AI textures in both).
+The owner's "GPU ~9.3 ms" is the 0.1.1207 log's "tex-build ... others 9.27 ms" (before the stability fixes).
+
+**Determinism (the stability gate, all evidence runs)**: the pad script ran in VBlanks from START, but the hub's start
+moved by 400+ VBlanks between runs (several X presses at the safehouse), and frame dumps that stall the game made the
+host timer add VBlanks between game frames, so Sly's path drifted (one "tree walk" ended in a van). Now: one X 2000
+VBlanks after START (light_shots -PadAll), the dump window is a pad token (`dump:<n>`, `PS2_DUMP_FROM=script`),
+`PS2_FRAME_DT_FIXED=1` steps the game clock 1/rate per game frame (patch frame_dt_min) and the host timer raises no VBlank
+between game frames in that mode: two runs of the same path differ by 0.25 / 255 per 8 x 8 block (pic_diff.c), their
+stability numbers by < 0.5 %. Also new for scripts: `@addr#k+n` anchors (the k-th call), `PS2_HOOK_LOG=1` (hooked
+functions' call sites), `PS2_GPU_PROF_FRAME=1` / `PS2_GPU_PROF_FROM=<vblank>`, frames_to_mp4 `--title` / `--label`.
+
+Gate (scripts/reim_stability_gate.ps1 [-Cold] [-Extra env]): shots orbit (ep1) and trees (ep2), Faithful / Reimagined
+alternating every 6 pictures in one run, triples of consecutive pictures, the HUD's top 12 % left out; passes when
+Reimagined's dark-block flicker per motion <= 1.15 x Faithful's in both shots and no texture changed more than once.
+
+Switches: PS2_REIM2=0, PS2_REIM_SHAFT_KEY=0, PS2_REIM_FIRE, PS2_REIM_CAS, PS2_REIM_SH_AT=0, PS2_REIM_SC=0,
+PS2_REIM_SC_SIZE, PS2_REIM_SC_EVERY; PS2_REIM_X=<mask> with PS2_GPU_AB_R8=4096 turns these off in A phases (1 cut-out
+casters, 2 CAS, 4 key-light shafts, 8 fire light, 16 static cache).
+
+### Results (next/reimagine2; RTX 4060 Ti, High = 1440p, 100 %, MSAA 8x, thin outlines, 120 fps)
+
+| | 0.1.1214 | now | Faithful |
+|---|---|---|---|
+| ep2 torches: shafts | rays from the near torch, a beam from a far one | none (halo + warm light on the torch and ground) | - |
+| ep2 trees path: frames where 0.1.1214's world-matrix choice was wrong (counted by the new code) | 119 (of one run) | 0 (camera continuous) | - |
+| key-light term alone (DBG=1) under the trees: flicker per 1000 / dark / motion | 13.96 / 14.72 / 4.58 | 9.25 / 10.35 / 2.94 | - |
+| Sly, close-up orbit, 440 x 480 around him: gradient / Laplacian / acutance | 3.21 / 5.09 / 27.4 | 4.33 / 11.14 / 34.9 | 2.04 / 3.28 / 19.8 |
+| Sly at rest, 440 x 450: gradient / Laplacian / acutance | - | 5.77 / 15.2 / 39.2 (anime_6B: 5.19 / 13.3 / 39.0) | 2.76 / 4.65 / 23.0 |
+| ep1 orbit, GPU ms per frame over the clip (deterministic path, per-frame timestamps): mean / p95 / max | 5.97 / 6.83 / 7.26 | 6.04 / 6.94 / 7.52 | - |
+| in-run A/B (ep1 orbit, PS2_GPU_PROF): Faithful lighting / Reimagined | 5.44 / 6.29 | 5.58 / 6.79 (static cache every 2nd frame; now every 4th) | - |
+| in-run A/B (ep2 path) | 4.36 / 4.98 | 4.36 / 5.11 | - |
+
+Reimagined on High holds 120 fps (8.33 ms) with 17-28 % headroom on these paths (the worst single frame 7.52 ms, 10 %).
+Per pass (ep1, after): reim-smap 0.33 (cut-out casters + cache at every 2nd frame), reim-shadow 0.54, reim-bloom 0.19,
+reim-comp 0.33 ms; the R2 pass +0.39 ms over Faithful lighting (the Reimagined pixel shaders with the surface maps).
+
+Evidence (local, never committed): build\reimagine\videos2 - ep2_fire_and_trees BEFORE / AFTER / SIDE_BY_SIDE,
+sly_closeup_orbit FAITHFUL / BEFORE / AFTER / two side by sides, sly_1to1_<frame>_faithful_before_after.png,
+sly_still_1to1_faithful_anime6B_x4plus.png, ep1_orbit_High_frametime BEFORE / AFTER (each picture's GPU time written in)
+/ SIDE_BY_SIDE.
+
+Stability gate (final code): warm 3 of 3 PASS - orbit 1.088 / 1.079 / 1.086 x, trees 0.977 / 1.027 / 1.031 x Faithful;
+cold PASS (orbit 1.118 x, trees 1.029 x); no world-matrix flip, every texture changed once. The same gate on 0.1.1214
+(PS2_REIM2=0) also passes the ratio (orbit 1.033 x, trees 0.978 x): the reversal count does not see a few large shadow
+jumps, hence the flip check (0.1.1214 cannot log it; on its trees path the new code counts 119 wrong frames). Two runs
+of the same path differ by < 0.5 %. Standard gates on the final code: run_tests, 28 unit suites (all exit 0), m9_exact S1 + S3 -Game
+identical, gpu_diff_all 28/28, r2_sweep Faithful 9/9 and Reimagined 9/9 (ep1, ep3, m2_boardroom x tfo, tfb, mf); after them only Reimagined-side logging changed (the world-camera cut / flip lines the gate reads).

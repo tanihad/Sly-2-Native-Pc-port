@@ -49,6 +49,7 @@ static struct {
     r2g_pipe* rtp0[3][3];                /* (reimagine) tp[0] (prelit meshes) with the surface maps (R2_REIM) */
     int reim_ok;
     r2g_pipe* shpipe;                    /* (reimagine) the shadow casters (r2.hlsl R2_SHADOW) and their constants */
+    r2g_pipe* shpipe_at;                 /* (reimagine2) the cut-out casters (alpha test) */
     r2g_buf* shcb;
     r2g_buf* cb;
     int cb_set;                          /* (r2-m2) cb holds the device's constants (r2.hlsl r2_static), written once */
@@ -87,6 +88,7 @@ static void release_all(void) {
     for (int f = 0; f < 3; f++) for (int v = 0; v < 3; v++) { r2g_pipe_free(R.rtp[f][v]); R.rtp[f][v] = NULL; r2g_pipe_free(R.rtp0[f][v]); R.rtp0[f][v] = NULL; }
     R.reim_ok = 0;
     r2g_pipe_free(R.shpipe); R.shpipe = NULL;
+    r2g_pipe_free(R.shpipe_at); R.shpipe_at = NULL;
     r2g_buf_free(R.shcb); R.shcb = NULL;
     memset(R.cb_mft, 0, sizeof R.cb_mft);
     r2g_buf_free(R.cb);
@@ -248,6 +250,8 @@ static int init(const r2_exec_in* in) {
         if (!R.reim_ok) fprintf(stderr, "[r2] render: no Reimagined pipelines (Enhanced lighting's instead)\n");
         r2g_pipe_desc sd = { gpu_sh_vs_r2m_sh, sizeof gpu_sh_vs_r2m_sh, gpu_sh_ps_r2m_sh, sizeof gpu_sh_ps_r2m_sh, attrs, 10, NULL, 0 };
         R.shpipe = r2g_pipe_create(R.d, &sd);
+        r2g_pipe_desc sda = { gpu_sh_vs_r2m_sha, sizeof gpu_sh_vs_r2m_sha, gpu_sh_ps_r2m_sha, sizeof gpu_sh_ps_r2m_sha, attrs, 10, NULL, 0 };
+        R.shpipe_at = r2g_pipe_create(R.d, &sda);
         R.shcb = r2g_buf_create(R.d, R2G_BUF_CONSTANT, R2G_USAGE_DEFAULT, 128, NULL);
     }
     /* (r2-m2) the segment constants by UpdateSubresource (a DEFAULT buffer): Map(DISCARD) per segment, ~45 a frame with
@@ -476,6 +480,7 @@ static int segment(const gpu_fop_r2* o, const uint8_t* fdata, size_t fdata_bytes
         r2g_bind_srv_native(R.d, 0, in->vram_srv);
         r2g_bind_srv_native(R.d, 6, in->swz_srv);
         r2g_bind_srv_native(R.d, 7, in->fdata_srv);
+        r2g_bind_srv_native(R.d, 13, in->texdec_srv);
         r2g_bind_srv(R.d, 10, a->mb);
         r2g_bind_srv(R.d, 11, a->mt);
         r2g_bind_constants(R.d, 1, R.cb);
@@ -486,12 +491,20 @@ static int segment(const gpu_fop_r2* o, const uint8_t* fdata, size_t fdata_bytes
         r2g_bind_pipe(R.d, R.shpipe);
         r2g_state ss = { 0, 0, R2G_Z_GEQUAL, 1, R2G_CULL_NONE };
         r2g_bind_state(R.d, &ss);
-        int ns = 0;
+        int ns = 0, at = 0;
         for (uint32_t i = 0; i < o->ndraw; i++) {
             const gpu_r2_draw* d = &dr[i];
             const r2_mesh* m = r2_mesh_get(d->mesh);
             if (!m || m->gpu_state != (int)R.epoch || (m->handle >> 20) != o->gen) continue;
             if ((d->mode & 3) || !((d->state >> 4) & 1)) continue;   /* (pass A, Z written: solid geometry, no sky / effects) */
+            if (in->shadow_sel && in->shadow_pv) {   /* (reimagine2) the static world (its entry's matrix is the world's) or the rest */
+                const gpu_r2_entry* ent = (const gpu_r2_entry*)(fdata + o->ent_off);
+                int st = d->entry < o->nent && o->ent_off + (size_t)(d->entry + 1) * sizeof(gpu_r2_entry) <= fdata_bytes &&
+                         !memcmp(ent[d->entry].m, in->shadow_pv, 64);
+                if (st != (in->shadow_sel == 1)) continue;
+            }
+            int cut = in->shadow_at && R.shpipe_at && ((d->state >> 14) & 1);   /* (reimagine2: its alpha test splits it) */
+            if (cut != at) { r2g_bind_pipe(R.d, cut ? R.shpipe_at : R.shpipe); at = cut; }
             r2g_draw_indexed(R.d, d->count, m->gpu_ibase + d->first, (int32_t)m->gpu_vbase, o->draw_off / 32u + i);
             ns++;
         }
