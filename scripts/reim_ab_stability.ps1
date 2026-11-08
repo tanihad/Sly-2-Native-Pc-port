@@ -14,16 +14,17 @@ if (Test-Path $w) { $env:PS2_AI_WEIGHTS = $w }
 if (-not $env:PS2_TEXCACHE_SEED) { $env:PS2_TEXCACHE_SEED = Join-Path $wt 'build\reimagine\texcache' }
 $ini = "graphics.outlines=thin;graphics.render_scale=auto;graphics.filters=modern;graphics.look=reimagined;graphics.motion_blur=$Blur"
 powershell -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'light_shots.ps1') -Scene ep1_hub -At 6400 -Frames $Frames -Every 1 -Phase $Phase -Fps 120 `
-    -Seconds 280 -Tag $Tag -Ini $ini -Extra "PS2_LIGHT=;PS2_LIGHT_LOG=;PS2_DUMP_BMP=1;PS2_DUMP_WAIT=1;PS2_GPU_AB_R8=$Mask;PS2_GPU_AB_LOG=1;PS2_REIM_DBG=$Dbg;PS2_TEX_SWAPLOG=1" `
+    -Seconds 420 -Tag $Tag -Ini $ini -Extra "PS2_LIGHT=;PS2_LIGHT_LOG=;PS2_DUMP_BMP=1;PS2_DUMP_WAIT=1;PS2_GPU_AB_R8=$Mask;PS2_GPU_AB_LOG=1;PS2_REIM_DBG=$Dbg;PS2_TEX_SWAPLOG=1" `
     -PadExtra '+400:lup:1500,+0:rright:1500' | Out-Null
 $d = Join-Path $wt "build\light\shots\ep1_hub__$Tag"
 $ph = @(Select-String -Path (Join-Path $d 'run.log') -Pattern 'ab: phase ([AB]) from v(\d+)' | ForEach-Object { @{ p = $_.Matches[0].Groups[1].Value; v = [int]$_.Matches[0].Groups[2].Value } })
 foreach ($s in 'A', 'B') { New-Item -ItemType Directory -Force (Join-Path $d $s) | Out-Null }
+$skip = if ($Phase -le 1) { 0 } elseif ($Phase -le 8) { 1 } else { 4 }   # (the first pictures after a switch: the other mode's history)
 foreach ($f in Get-ChildItem $d -Filter 'frame_*.bmp') {
     $v = [int]($f.BaseName -replace 'frame_', '')
     $cur = $null; $start = 0
     foreach ($x in $ph) { if ($x.v -le $v) { $cur = $x.p; $start = $x.v } }
-    if (-not $cur -or $v - $start -lt 4) { continue }
+    if (-not $cur -or $v - $start -lt $skip) { continue }
     Move-Item $f.FullName (Join-Path $d "$cur\$($f.Name)")
 }
 foreach ($s in 'A', 'B') {

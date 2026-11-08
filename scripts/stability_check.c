@@ -59,11 +59,16 @@ int main(int argc, char** argv) {
     int bw = 0, bh = 0;
     float *b0 = NULL, *b1 = NULL, *b2 = NULL;
     uint32_t* heat = NULL;   /* (argv[4]: a picture of where the reversals are, one pixel per block) */
-    double ev = 0, evd = 0, cnt = 0, cntd = 0, mot = 0;
-    int pics = 0;
+    double ev = 0, evd = 0, cnt = 0, cntd = 0, mot = 0, j2 = 0, j1 = 0, j2d = 0, j1d = 0;   /* (jitter: |second difference| / |first differences|, contrast-free) */
+    int pics = 0, run = 0, total = 0;
+    long prevnum = -10;   /* (only triples of consecutive pictures - frame numbers in the names - are compared) */
     for (int i = 0; i < n; i++) {
         int w, hh; uint8_t* L;
+        const char* bn = strrchr(names[i], '_');
+        long num = bn ? atol(bn + 1) : prevnum + 1;
         if (!read_bmp(names[i], &w, &hh, &L)) continue;
+        if (num != prevnum + 1) run = 0;
+        prevnum = num;
         int nbw = w / 8, nbh = hh / 8;
         if (!b0) { bw = nbw; bh = nbh; b0 = calloc(bw * bh, 4); b1 = calloc(bw * bh, 4); b2 = calloc(bw * bh, 4); heat = calloc(bw * bh, 4); }
         if (nbw != bw || nbh != bh) { free(L); continue; }
@@ -75,13 +80,15 @@ int main(int argc, char** argv) {
                 b2[by * bw + bx] = s / 64.0f;
             }
         free(L);
-        pics++;
-        if (pics < 3) continue;
+        pics++; run++; total++;
+        if (run < 3) continue;
         for (int k = 0; k < bw * bh; k++) {
             float d1 = b1[k] - b0[k], d2 = b2[k] - b1[k];
             int e = (d1 > thr && d2 < -thr) || (d1 < -thr && d2 > thr);
             ev += e; cnt++; heat[k] += e;
             mot += fabsf(d2);
+            j2 += fabsf(d2 - d1); j1 += fabsf(d1) + fabsf(d2);
+            if (b1[k] < dark) { j2d += fabsf(d2 - d1); j1d += fabsf(d1) + fabsf(d2); }
             if (b1[k] < dark) { evd += e; cntd++; }
         }
     }
@@ -89,6 +96,7 @@ int main(int argc, char** argv) {
         FILE* o = fopen(argv[4], "wb");
         if (o) { fprintf(o, "P5 %d %d 255\n", bw, bh); for (int k = 0; k < bw * bh; k++) { uint32_t v = pics > 2 ? heat[k] * 255u * 4u / (uint32_t)(pics - 2) : 0; fputc(v > 255 ? 255 : (int)v, o); } fclose(o); }
     }
+    printf("jitter %.4f (all), %.4f (dark); ", j1 > 0 ? j2 / j1 : 0.0, j1d > 0 ? j2d / j1d : 0.0);
     printf("pictures %d, blocks %dx%d: flicker %.3f per 1000 (all), %.3f per 1000 (dark < %.0f, %.0f%% of blocks), motion %.3f\n",
            pics, bw, bh, cnt ? ev * 1000.0 / cnt : 0.0, cntd ? evd * 1000.0 / cntd : 0.0, dark, cnt ? 100.0 * cntd / cnt : 0.0,
            cnt ? mot / cnt : 0.0);
