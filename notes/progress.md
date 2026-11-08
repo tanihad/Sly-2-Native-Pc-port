@@ -2,6 +2,18 @@
 
 ## Resume here (read first in a new session)
 
+**2026-11-08 (paused by the owner until Tuesday 2026-11-10): owner build dist\Sly2 0.1.1226 = main 6bbf81a**
+(next/reimagine2 merged: no fire shafts, tree-shadow world-matrix fix + static/alpha-tested casters, CAS sharpening,
+deterministic reim_stability_gate). OPEN BUG: switching Look Faithful -> Reimagined + Apply sometimes crashes
+(0xC0000005 in nvwgf2umx.dll / ntdll, right after "ai: Reimagined textures on", before "x4plus net ready"; his real
+logs via \\localhost\C$\Users\tanih\AppData\Local\Sly2). Lead found before the pause: ra_init_net runs on the AI worker
+thread (ra_thread, RJ_INIT) and uses gpu_rt.ctx, the D3D11 IMMEDIATE context, while the render thread draws. Work
+branch next/reimagine-crash (worktree sly2-worktrees\light, no commits yet). Plan: move all context use to the render
+thread, safe resource lifetimes on re-config, toggle stress gate (500 toggles cold+warm, 0 crashes).
+Then the owner's next-step menu (he hasn't chosen yet): 1 HD HUD/menus, 2 smoother characters (tessellation),
+3 local lights from lamps/windows/fires, 4 water/wet reflections, 5 pre-build AI textures (no pop-in),
+6 new detail on characters (needs a download approval).
+
 **2026-11-08: main d2de0e7 = next/reimagine merged (owner asked); dist\Sly2 0.1.1214 + models\x4plus.bin.** Owner
 playtest: fires cast light shafts (wrong), tree shadows flicker when walking under them, Sly looks blurry (wants more
 detail), Reimagined on High + 8x MSAA is ~9.3 ms (misses 120 fps). Fix agent on next/reimagine2 (worktree
