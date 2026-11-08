@@ -26,6 +26,25 @@ Tasks (owner priority order):
   (ps2_runtime.c). Level transition 0x22B490 (entry hook, release builds): calls 1+2 = Resume Game (right after START),
   hub load = later call. Test settings now = owner's ini (preset high, 100%, MSAA 8x): render_scale=auto made the
   dumps switch 2560 -> 2389 wide mid-run (governor), which broke stability_check (it skips other sizes).
+- DETERMINISM (done): one X 2000 VBlanks after START (light_shots -PadAll), PS2_FRAME_DT_FIXED=1 (patch frame_dt_min:
+  dt = 1/rate per game frame) and no idle VBlanks between game frames in that mode (ps2_runtime.c host timer: pad frame
+  = game frame even when dumps stall). Two identical runs: pic_diff mean block difference 0.25 / 255 (max 1.2), stability
+  9.03 vs 9.00 flicker. Before that: BMP dump stalls added 10 Hz VBlanks -> the pad path drifted (Sly into a van).
+- TREE FLICKER evidence (DBG=1 shadow-term view, before): over 1-3 frames whole shadow regions change (v7079: the big
+  shadow in the lower left goes grey, then a different shape) with key and world matrix unchanged (LOG=3: key steady,
+  pv x61 steady) but R2 segment count 33 -> 38 -> 33: the casters are only what the game draws for ITS camera, so
+  casters above / behind the view (tree canopies when under the tree) come and go with the camera -> their shadows
+  pop. Fix: static shadow cache (gpu_reim.h, static world casters accumulate in a light-space map that moves with
+  whole grid steps by copying; per-frame map only the rest). Also: canopies are solid octagons in the map (no alpha
+  test) -> cut-out casters.
+- ROOT CAUSE found (LOG=3, deterministic): at X+1491 the WORLD MATRIX choice switched (pv[0] 0.0968 -> 0.1171, the
+  rebuilt camera jumped (-3625, 3109, 449) -> (1358, -1734, 240) while the real camera moved smoothly; pv x34 -> x35):
+  under the trees few world entries are drawn and another object's matrix (a plant group) won the per-segment count ->
+  every receiver rebuilt in the wrong space -> shadows jump; the before run's visible flip is at the same X+1491. Fix:
+  reim_finish - unlit entries only, counted over the whole frame, continuity of the rebuilt camera (< 600 units from the
+  last frame's) preferred, the most common only on the first frame / a cut; lights clustered after the choice.
+- Shadow-term debug view (DBG=1) before 13.96 / dark 14.72 per 1000, motion 4.58 -> cache only (no world fix yet)
+  9.76 / 10.72, motion 3.11.
 - Code in this pass: alpha-tested cut-out casters (r2.hlsl r2_vs/ps_shadow_at, r2_render.c shpipe_at, state bit 14),
   re_x() experiments (PS2_REIM_X=<mask> + PS2_GPU_AB_R8=4096: 1 cut-out casters, 2 CAS, 4 key-light shafts, 8 fire
   light), PS2_REIM2=0 = 0.1.1214 behaviour (before clips).

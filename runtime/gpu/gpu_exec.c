@@ -1434,6 +1434,9 @@ static void prof_end(void) {
         static int pf = -1;
         if (pf < 0) pf = getenv("PS2_GPU_PROF_FRAME") && atoi(getenv("PS2_GPU_PROF_FRAME")) > 0;
         if (pf) gpu_log("prof-frame v%u %.3f", X.fd ? X.fd->vblank : 0u, ft);
+        static int from = -1;            /* (reimagine2) PS2_GPU_PROF_FROM=<vblank>: the averages from then on (play, not menus) */
+        if (from < 0) from = getenv("PS2_GPU_PROF_FROM") ? atoi(getenv("PS2_GPU_PROF_FROM")) : 0;
+        if (from > 0 && X.fd && X.fd->vblank < (uint32_t)from) return;
     }
     if (ft > 50.0) return;               /* (loading frames: left out) */
     for (int c = 0; c < PR_N; c++) { PR.ms[c] += f[c]; PR.ps_inv[c] += fi[c]; PR.occl[c] += fo[c]; PR.prims[c] += fp[c]; }

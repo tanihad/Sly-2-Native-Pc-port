@@ -18,8 +18,14 @@ typedef struct {
     const gpu_front_frame_data* fd;
     uint32_t serial;
     int nlit;
+    /* (reimagine2) the whole frame's candidates for the world matrix (unlit entries only: characters and lit props are
+     * never the world) and its lit entries (their matrix, light block), decided once the frame is complete (reim_finish) */
+    struct { float m[16]; int n; } cand[32];
+    int ncand, nlent, done;
+    struct { float m[16]; uint32_t lb; } lent[384];
 } reim_scene;
 static reim_scene RS, RS_last;
+static struct { float cam[3]; int have; uint64_t switches, cuts; } RW;   /* (2) the world camera of the last frame */
 static struct {
     int env, log, dbg, ss, shafts, fog, grade, smap, sm_size;
     float sm_k, sm_dist;
@@ -164,6 +170,41 @@ static void re_mul4(const float* a, const float* b, float* o) {   /* o = a b (ro
     memcpy(o, t, sizeof t);
 }
 
+/* one lit entry's four lights (light block q, entry matrix em) into the frame's world-direction clusters (s->ipv: the
+ * world x clip's inverse) */
+static void re_lights(reim_scene* s, const float* em, const float* q, const gpu_front_frame_data* fd, uint32_t i) {
+    float om[16];
+    re_mul4(em, s->ipv, om);             /* object -> world */
+    s->nlit++;
+    for (int k = 0; k < 4; k++) {
+        float d[3] = { q[0 * 4 + k], q[1 * 4 + k], q[2 * 4 + k] };
+        const float* c = q + (4 + k) * 4;
+        float w[3];
+        for (int j = 0; j < 3; j++) w[j] = d[0] * om[0 * 4 + j] + d[1] * om[1 * 4 + j] + d[2] * om[2 * 4 + j];
+        float l = sqrtf(w[0] * w[0] + w[1] * w[1] + w[2] * w[2]);
+        float br = c[0] * 0.3f + c[1] * 0.59f + c[2] * 0.11f;
+        if (RE.log >= 2 && fd->vblank % 300u < 2u && s->nlit <= 6)
+            gpu_log("reim: v%u ent %u light %d obj %.3f %.3f %.3f world %.3f %.3f %.3f |%.3f| col %.3f %.3f %.3f %.3f thr %.3f amb %.3f %.3f %.3f",
+                    fd->vblank, i, k, d[0], d[1], d[2], l > 0 ? w[0] / l : 0, l > 0 ? w[1] / l : 0, l > 0 ? w[2] / l : 0, l, c[0], c[1], c[2], c[3],
+                    q[9 * 4 + k], q[8 * 4], q[8 * 4 + 1], q[8 * 4 + 2]);
+        /* f = min(d + d^3, threshold) x colour: with a negative colour the light comes from -direction */
+        if (!(l > 1e-6f) || !(fabsf(br) > 1e-3f)) continue;
+        float sg = br < 0.0f ? -1.0f : 1.0f;
+        float u[3] = { sg * w[0] / l, sg * w[1] / l, sg * w[2] / l }, cc[3] = { sg * c[0], sg * c[1], sg * c[2] };
+        br = fabsf(br);
+        int f = -1;
+        for (int j = 0; j < s->ncl && f < 0; j++) {
+            float dd = s->cl[j].d[0] * u[0] + s->cl[j].d[1] * u[1] + s->cl[j].d[2] * u[2];
+            if (dd > 0.995f * s->cl[j].n) f = j;    /* (d: the sum of n unit vectors) */
+        }
+        if (f < 0 && s->ncl < RE_NCL) { f = s->ncl++; memset(&s->cl[f], 0, sizeof s->cl[f]); }
+        if (f < 0) continue;
+        for (int j = 0; j < 3; j++) { s->cl[f].d[j] += u[j]; s->cl[f].c[j] += cc[j]; }
+        s->cl[f].br += br;
+        s->cl[f].n++;
+    }
+}
+
 static void reim_note(const gpu_front_frame_data* fd, const gpu_fop_r2* o, const gpu_r2_frame* fb) {
     re_env();
     if (fb->serial != RS.serial) {       /* a new game frame: the last one's result stays for the post pass */
@@ -176,6 +217,29 @@ static void reim_note(const gpu_front_frame_data* fd, const gpu_fop_r2* o, const
     uint32_t n = o->nent;
     if (o->ent_off + (size_t)n * sizeof(gpu_r2_entry) > fd->data_bytes) return;
     const gpu_r2_entry* ent = (const gpu_r2_entry*)(fd->data + o->ent_off);
+    if (RE.v2) {
+        /* (reimagine2) the frame's unlit entries' matrices counted over every segment, the lit entries kept: reim_finish
+         * decides. 0.1.1214 took the most common matrix of whichever segment had the most entries with one matrix, lit or
+         * not: where few world entries were drawn (under trees, a wall in front of the camera) a group of plants or Sly's
+         * own entries could win - every position rebuilt from the depth then sat in the wrong space and the shadows
+         * jumped about ("confused where to show") */
+        for (uint32_t i = 0; i < n && i < 2048; i++) {
+            uint32_t xq = ent[i].pad[0];
+            if (xq) {
+                size_t lb = (size_t)(xq - 1) * 16u;
+                if (lb + 11 * 16 <= fd->data_bytes && RS.nlent < (int)(sizeof RS.lent / sizeof RS.lent[0])) {
+                    memcpy(RS.lent[RS.nlent].m, ent[i].m, 64);
+                    RS.lent[RS.nlent++].lb = (uint32_t)lb;
+                }
+                continue;
+            }
+            int f = -1;
+            for (int j = 0; j < RS.ncand && f < 0; j++) if (!memcmp(ent[i].m, RS.cand[j].m, 64)) f = j;
+            if (f >= 0) RS.cand[f].n++;
+            else if (RS.ncand < 32) { memcpy(RS.cand[RS.ncand].m, ent[i].m, 64); RS.cand[RS.ncand++].n = 1; }
+        }
+        return;
+    }
     /* the most common matrix of the segment (the static world: object space = world space) */
     int best = -1, bestn = 0;
     {
@@ -199,37 +263,7 @@ static void reim_note(const gpu_front_frame_data* fd, const gpu_fop_r2* o, const
         if (!xq) continue;
         size_t lb = (size_t)(xq - 1) * 16u;
         if (lb + 11 * 16 > fd->data_bytes) continue;
-        const float* q = (const float*)(fd->data + lb);   /* T0..T2 [0..2], colours [4..7], ambient [8], thresholds [9] */
-        float om[16];
-        re_mul4(ent[i].m, RS.ipv, om);    /* object -> world */
-        RS.nlit++;
-        for (int k = 0; k < 4; k++) {
-            float d[3] = { q[0 * 4 + k], q[1 * 4 + k], q[2 * 4 + k] };
-            const float* c = q + (4 + k) * 4;
-            float w[3];
-            for (int j = 0; j < 3; j++) w[j] = d[0] * om[0 * 4 + j] + d[1] * om[1 * 4 + j] + d[2] * om[2 * 4 + j];
-            float l = sqrtf(w[0] * w[0] + w[1] * w[1] + w[2] * w[2]);
-            float br = c[0] * 0.3f + c[1] * 0.59f + c[2] * 0.11f;
-            if (RE.log >= 2 && fd->vblank % 300u < 2u && RS.nlit <= 6)
-                gpu_log("reim: v%u ent %u light %d obj %.3f %.3f %.3f world %.3f %.3f %.3f |%.3f| col %.3f %.3f %.3f %.3f thr %.3f amb %.3f %.3f %.3f",
-                        fd->vblank, i, k, d[0], d[1], d[2], l > 0 ? w[0] / l : 0, l > 0 ? w[1] / l : 0, l > 0 ? w[2] / l : 0, l, c[0], c[1], c[2], c[3],
-                        q[9 * 4 + k], q[8 * 4], q[8 * 4 + 1], q[8 * 4 + 2]);
-            /* f = min(d + d^3, threshold) x colour: with a negative colour the light comes from -direction */
-            if (!(l > 1e-6f) || !(fabsf(br) > 1e-3f)) continue;
-            float sg = br < 0.0f ? -1.0f : 1.0f;
-            float u[3] = { sg * w[0] / l, sg * w[1] / l, sg * w[2] / l }, cc[3] = { sg * c[0], sg * c[1], sg * c[2] };
-            br = fabsf(br);
-            int f = -1;
-            for (int j = 0; j < RS.ncl && f < 0; j++) {
-                float dd = RS.cl[j].d[0] * u[0] + RS.cl[j].d[1] * u[1] + RS.cl[j].d[2] * u[2];
-                if (dd > 0.995f * RS.cl[j].n) f = j;    /* (d: the sum of n unit vectors) */
-            }
-            if (f < 0 && RS.ncl < RE_NCL) { f = RS.ncl++; memset(&RS.cl[f], 0, sizeof RS.cl[f]); }
-            if (f < 0) continue;
-            for (int j = 0; j < 3; j++) { RS.cl[f].d[j] += u[j]; RS.cl[f].c[j] += cc[j]; }
-            RS.cl[f].br += br;
-            RS.cl[f].n++;
-        }
+        re_lights(&RS, ent[i].m, (const float*)(fd->data + lb), fd, i);   /* T0..T2 [0..2], colours [4..7], ambient [8], thresholds [9] */
     }
     if (RE.log && fd->vblank % 300u < 2u) {
         float cam[4] = { RS.ipv[8] / RS.ipv[11], RS.ipv[9] / RS.ipv[11], RS.ipv[10] / RS.ipv[11], 0 };   /* (clip x = y = w = 0) */
@@ -239,6 +273,48 @@ static void reim_note(const gpu_front_frame_data* fd, const gpu_fop_r2* o, const
     }
 }
 
+/* (reimagine2) the frame's world matrix, once all its segments are noted: of the unlit entries' matrices (>= 3 entries),
+ * the one whose camera continues the last frame's (the world camera moves a little per frame; another object's matrix
+ * puts its "camera" where that object is), else (the first frame, a camera cut) the one most entries share over the
+ * whole frame; then the lit entries' lights in that world */
+static void reim_finish(reim_scene* s) {
+    if (!RE.v2 || s->done) return;
+    s->done = 1;
+    if (!s->fd || s->fd != X.fd) return;
+    int maxn = 0;
+    for (int j = 0; j < s->ncand; j++) if (s->cand[j].n > maxn) maxn = s->cand[j].n;
+    if (maxn < 3) return;
+    float inv[32][16], cam[32][3];
+    int okj[32], best = -1;
+    float bd = 1e30f;
+    for (int j = 0; j < s->ncand; j++) {
+        okj[j] = s->cand[j].n >= 3 && re_inv4(s->cand[j].m, inv[j]) && fabsf(inv[j][11]) > 1e-20f;
+        if (!okj[j]) continue;
+        for (int k = 0; k < 3; k++) cam[j][k] = inv[j][8 + k] / inv[j][11];
+        if (RW.have && s->cand[j].n * 4 >= maxn) {
+            float d = 0.0f;
+            for (int k = 0; k < 3; k++) d += (cam[j][k] - RW.cam[k]) * (cam[j][k] - RW.cam[k]);
+            if (d < bd) { bd = d; best = j; }
+        }
+    }
+    if (best < 0 || bd > 600.0f * 600.0f) {   /* (none continues: the first frame or a cut - the most common) */
+        if (RW.have) RW.cuts++;
+        best = -1;
+        for (int j = 0; j < s->ncand; j++) if (okj[j] && (best < 0 || s->cand[j].n > s->cand[best].n)) best = j;
+        if (best < 0) return;
+    }
+    for (int j = 0; j < s->ncand; j++) if (okj[j] && s->cand[j].n > s->cand[best].n) { RW.switches++; break; }   /* (the count alone: another) */
+    memcpy(s->pv, s->cand[best].m, 64);
+    memcpy(s->ipv, inv[best], 64);
+    s->pv_ok = 1; s->pv_n = s->cand[best].n;
+    memcpy(RW.cam, cam[best], sizeof RW.cam);
+    RW.have = 1;
+    s->ncl = 0; s->nlit = 0;
+    for (int i = 0; i < s->nlent; i++) re_lights(s, s->lent[i].m, (const float*)(s->fd->data + s->lent[i].lb), s->fd, (uint32_t)i);
+    if (RE.log >= 3)
+        gpu_log("reim-world: v%u %d candidates (most %d), world x%d cam %.0f %.0f %.0f, %d lit entries, %d clusters", s->fd->vblank,
+                s->ncand, maxn, s->pv_n, RW.cam[0], RW.cam[1], RW.cam[2], s->nlent, s->ncl);
+}
 static float reim_rim(void) { re_env(); return RE.rim; }
 static float reim_spec(void) { re_env(); return RE.spec; }
 /* (the R2 pipelines' r2_reim / r2_reim2: the key light's direction in the picture plane, relief, cavity, normal maps) */
@@ -530,6 +606,10 @@ static int reim_smap(const reim_scene* S, const float* rndc, const float* rzab, 
             unbind_all();
             sm_draw(S, RR.sc_dsv[RR.sc_cur], nc, c32, 1);
         }
+        if (RE.log >= 3)
+            gpu_log("reim-sc: v%u %s c %.0f %.0f z0 %.0f zr %.0f Rc %.0f p %.0f %.0f cz %.0f age %llu", X.fd ? X.fd->vblank : 0u,
+                    fresh ? "fresh" : drew ? "moved" : "keep", RR.sc_c[0], RR.sc_c[1], RR.sc_z0, RR.sc_zr, Rc, px, py, cz,
+                    (unsigned long long)RR.sc_age);
         RR.sc_age++;
         unbind_all();
         ID3D11DeviceContext_ClearDepthStencilView(gpu_rt.ctx, RR.sm_dsv, D3D11_CLEAR_DEPTH, 0.0f, 0);
@@ -564,6 +644,7 @@ static void reim_post(mtarget* c, mtarget* z, int pc) {
     int proj = light_proj(view, zz);
     if (!proj) LT.noproj++;
     const reim_scene* S = RS.serial == LT.serial ? &RS : &RS_last;
+    reim_finish((reim_scene*)S);         /* (2: the world matrix of the complete frame) */
     int bw[7], bh[7];
     bw[1] = hw; bh[1] = hh;
     for (int i = 2; i <= 6; i++) { bw[i] = (bw[i - 1] + 1) / 2; bh[i] = (bh[i - 1] + 1) / 2; }
@@ -657,9 +738,11 @@ static void reim_post(mtarget* c, mtarget* z, int pc) {
             } else memset(rsmp, 0, 12 * sizeof(float));
         }
         if (RE.log && RE.posts % 600 == 0)
-            gpu_log("reim-stats: %llu post passes, %llu maps drawn, %llu reused (no segments %llu, another frame's data %llu), key changes %llu",
+            gpu_log("reim-stats: %llu post passes, %llu maps drawn, %llu reused (no segments %llu, another frame's data %llu), key changes %llu, "
+                    "shadow cache %llu new, %llu moves, world matrix: %llu frames not the most common, %llu cuts",
                     (unsigned long long)RE.posts, (unsigned long long)RE.maps, (unsigned long long)RE.map_reuse,
-                    (unsigned long long)RE.map_ops, (unsigned long long)RE.map_fd, (unsigned long long)RE.key_snaps);
+                    (unsigned long long)RE.map_ops, (unsigned long long)RE.map_fd, (unsigned long long)RE.key_snaps,
+                    (unsigned long long)RE.sc_fresh, (unsigned long long)RE.sc_moves, (unsigned long long)RW.switches, (unsigned long long)RW.cuts);
     }
     if (re_fix() && have_world && RR.have_prev && RR.prev_serial != S->serial) {   /* (fix: the key-light term's history) */
         memcpy(rppv, RR.ppv, sizeof RR.ppv); memcpy(rpndc, RR.pndc, sizeof RR.pndc); rptaa[0] = 0.9f;
