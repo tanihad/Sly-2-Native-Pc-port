@@ -425,7 +425,59 @@ static void script_resolve(uint32_t now) {
     }
 }
 
+/* (reimagine-crash, tests) PS2_GFX_STRESS="<n>[,<actions>][,<from>]": from pad frame <from> (default 0) on, every n pad
+ * frames one graphics change as the Options menu's Apply makes it (settings_change on this thread, not written to
+ * sly2.ini), the actions taken in turn: l = Look Faithful <-> Reimagined, r = Look Retro <-> Reimagined, q = Quality
+ * (Low, Medium, High, Ultra in turn; Look stays), s = render scale 100 % <-> 75 % (the modern frame's targets resized),
+ * m = MSAA 8x <-> 4x. Each change is logged ("[window] stress <k>: ..."): the gate counts them. */
+static void gfx_stress_tick(uint32_t now) {
+    static int n = -1, nact;
+    static uint32_t from, k;
+    static char act[16];
+    if (n < 0) {
+        n = 0;
+        const char* e = getenv("PS2_GFX_STRESS");
+        if (!e || !*e) return;
+        char a[16] = "l";
+        unsigned f = 0;
+        int v = 0;
+        if (sscanf(e, "%d,%15[a-z],%u", &v, a, &f) < 1 || v < 1) return;
+        n = v; from = f;
+        for (const char* p = a; *p && nact < 15; p++) if (strchr("lrqsm", *p)) act[nact++] = *p;
+        if (!nact) act[nact++] = 'l';
+        wlog("stress: a graphics change every %d pad frames from %u (%s)", n, from, act);
+    }
+    if (!n || now < from || (now - from) % (uint32_t)n) return;
+    char c = act[k % (uint32_t)nact];
+    ps2_settings_t* s = &ps2_settings;
+    char what[64];
+    if (c == 'l' || c == 'r') {
+        int other = c == 'l' ? SETTINGS_LOOK_FAITHFUL : SETTINGS_LOOK_RETRO;
+        int to = s->look == SETTINGS_LOOK_REIMAGINED ? other : SETTINGS_LOOK_REIMAGINED;
+        settings_change_key("graphics", "look", to, 0);
+        snprintf(what, sizeof what, "look %s", to == SETTINGS_LOOK_REIMAGINED ? "reimagined" : to == SETTINGS_LOOK_RETRO ? "retro" : "faithful");
+    } else if (c == 'q') {
+        static const int qs[4] = { SETTINGS_PRESET_LOW, SETTINGS_PRESET_MEDIUM, SETTINGS_PRESET_HIGH, SETTINGS_PRESET_ULTRA };
+        static int qi;
+        int look = s->look, p = qs[qi++ % 4];
+        settings_change_key("graphics", "preset", p, 0);
+        if (s->look != look) settings_change_key("graphics", "look", look, 0);   /* (a Quality keeps the Look) */
+        snprintf(what, sizeof what, "quality %s", settings_preset_names[p]);
+    } else if (c == 's') {
+        int to = s->render_scale == 100 ? 75 : 100;
+        settings_change_key("graphics", "render_scale", to, 0);
+        snprintf(what, sizeof what, "render scale %d%%", to);
+    } else {
+        int to = s->msaa == SETTINGS_MSAA_8X ? SETTINGS_MSAA_4X : SETTINGS_MSAA_8X;
+        settings_change_key("graphics", "msaa", to, 0);
+        snprintf(what, sizeof what, "msaa %s", to == SETTINGS_MSAA_8X ? "8x" : "4x");
+    }
+    k++;
+    wlog("stress %u: %s (pad frame %u)", k, what, now);
+}
+
 static void script_apply(int port, pad_input* in) {
+    if (port == 0) gfx_stress_tick(script_frame);
     if (script_n < 0) {
         script_n = 0;
         script_t0 = script_seconds();

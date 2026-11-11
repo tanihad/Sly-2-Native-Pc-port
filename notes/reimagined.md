@@ -177,3 +177,36 @@ this runs (tcf_look 0, ra_on_now 0); the shared code only gained an unused slot 
 - A "prepare all levels" button (needs a census of every level's textures from the disc data rather than walks).
   (Shipping the weights: done, notes/install.md "AI model".)
 - fp16 feature buffers would halve the net's 294 MB and speed it up on cards with fast fp16.
+
+## Look switch crash (owner, 0.1.1226, 2026-11-10)
+
+Faithful -> Reimagined + Apply crashed "sometimes" (0xC0000005 reading 0xFFFFFFFFFFFFFFFF, in ntdll or nvwgf2umx;
+the log stopped after "ai: Reimagined textures on", before "x4plus net ready").
+
+**Cause** (proven): `ra_list` (the Reimagined cache's file list, read again every time Reimagined turns on) kept the
+previous listing's count but started from a capacity of 0, so the second listing appended past the end of the first
+one's buffer: a heap overflow of (files x 8) bytes per switch (the owner: 637 entries in a 1024-entry buffer, then 1348
+more written behind them). Whatever lived after the buffer - heap metadata, a driver object - was overwritten, hence the
+two crash sites. Repro (below, warm cache of 1763 files, Look toggles only): the logged count grew by 1763 per toggle
+("26445 in the cache") and the game crashed after 28 changes with the owner's signature. Fix: the listing starts empty
+and grows within its own recorded capacity (`RA.have_cap`; the HD folder's list hardened the same way).
+
+Also made safe while there (no crash seen from them, but the same class): the AI worker thread no longer writes any RA
+field the render thread uses or releases - its new compute shaders and read-back buffers go into locals and are handed
+over with the net under the lock, installed by the render thread (`ra_net_poll`); `ra_release` resets the items' states
+under the lock. The worker never used the immediate context (ai_gpu_create_cs only keeps the pointer; the device is
+free-threaded); every context call is on the render thread.
+
+**Stress gate**: scripts/gfx_stress_gate.ps1 [-Cold] - the owner's settings (High, Reimagined, 120 fps), ep2 hub with Sly
+walking (textures building), and every 20 pad frames one change as the menu's Apply makes it (`PS2_GFX_STRESS=<n>,<actions>,
+<from pad frame>`, window.c: l Look Faithful <-> Reimagined, r Retro <-> Reimagined, q Quality Low..Ultra, s render
+scale 100 <-> 75 %, m MSAA 8x <-> 4x). Passes with no crash and >= 500 changes.
+
+| build | run | changes | Reimagined re-inits (nets) | crashes |
+|---|---|---|---|---|
+| 0.1.1226 | warm, Look only | 28 | 15 | 1 (0xC0000005 reading 0xFF..FF, ntdll) |
+| fixed | warm, Look only | 1366 | 685 | 0 |
+| fixed | warm, all five (2 runs) | 2664 | 536 | 0 |
+| fixed | cold, all five (2 runs) | 2843 | 572 | 0 |
+
+Gates on the fix (alone): run_tests, 28 unit suites, m9_exact S1 + S3 -Game identical, gpu_diff_all 28/28, r2_sweep Faithful 9/9 and Reimagined 9/9, reim_stability_gate PASS (orbit 1.085 x, trees 1.031 x, no world-matrix flips).
