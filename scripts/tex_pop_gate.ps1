@@ -7,7 +7,8 @@
 # render-thread times after the first 3D frame (p99 / max), and video memory.
 #   scripts\tex_pop_gate.ps1 [-Cold] [-Scene ep2_hub] [-Seed <cache dir>] [-Extra "K=V;.."] [-Tag t] [-Video <frames>]
 # -Cold: an empty Reimagined cache (else -Seed, default build\prebuild\texcache_warm; new images are copied back).
-# -Video n: also dumps n pictures (every 2nd, 1920 x 1080) from the X on into build\prebuild\frames\<tag> (no timing then).
+# -Video n: also dumps the pictures of n VBlanks (every 2nd, 1920 x 1080) from START on into build\prebuild\frames\<tag>
+# (no timing then).
 # Passes (exit 0) when no visible swap happened after the first 3D frame. One game run; nothing is left but a summary
 # (and the frames with -Video).
 param([switch]$Cold, [string]$Scene = 'ep2_hub', [string]$Seed = '', [string]$Extra = '', [int]$Seconds = 260, [string]$Tag = 'pop',
@@ -42,13 +43,19 @@ $walk = '+1000:lup:400,+0:rright:300,+400:lleft:200,+200:rleft:500,+200:lup:600,
 $pad = "+2000:cross:6,$walk"
 $ex = 'PS2_LIGHT=;PS2_LIGHT_LOG=;PS2_DUMP_FROM=script;PS2_DUMP_TO=0;PS2_FRAME_DT_FIXED=1;PS2_AI_POPLOG=1;PS2_AI_LOG=1;PS2_TEX_SWAPLOG=1'
 $every = 100000
-if ($Video -gt 0) { $pad = "+2000:cross:6,+0:dump:$Video,$walk" -replace ',\+1000:lup', ',+1000:lup'; $every = 2; $Size = '1920x1080'; $ex += ';PS2_DUMP_BMP=1' }
+if ($Video -gt 0) { $pad = "+0:dump:$Video,+2000:cross:6,$walk"; $every = 2; $Size = '1920x1080'; $ex += ';PS2_DUMP_BMP=1' }   # (from START: the load, the level's first view)
 else { $ex += ';PS2_GPU_FT=2;PS2_GPU_FT_SKIP=0' }
 if ($Extra) { $ex += ";$Extra" }
 $name = "$Tag$(if ($Cold) { '_cold' })"
+$mine = "sly2_warp_light_$($Scene)__$name"
+$watch = Start-Job -ScriptBlock { param($mine) $seen = @{}; while ($true) { foreach ($p in Get-Process -Name 'sly2*' -ErrorAction SilentlyContinue) { if ($p.Name -ne $mine) { $seen[$p.Name] = 1 } }; Set-Content -Path "$env:TEMP\tex_pop_watch_$mine.txt" -Value ($seen.Keys -join ','); Start-Sleep -Seconds 5 } } -ArgumentList $mine
 powershell -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'light_shots.ps1') -Scene $Scene -At 1 -Frames 1 -Every $every -NoAB -Fps 120 `
     -Seconds $Seconds -Tag $name -Ini $ini -Extra $ex -PadAll $pad -Size $Size | Out-Null
 Remove-Item Env:\PS2_TEXCACHE_SEED -ErrorAction SilentlyContinue
+Stop-Job $watch -ErrorAction SilentlyContinue; Remove-Job $watch -Force -ErrorAction SilentlyContinue
+$wf = "$env:TEMP\tex_pop_watch_$mine.txt"
+$others = if (Test-Path $wf) { (Get-Content $wf -Raw).Trim() } else { '' }
+Remove-Item $wf -ErrorAction SilentlyContinue
 $d = Join-Path $wt "build\light\shots\$($Scene)__$name"
 $log = Join-Path $d 'run.log'
 if (-not (Test-Path $log)) { "pop $name`: no run log"; exit 2 }
@@ -62,7 +69,7 @@ $crash = @($L | Where-Object { $_ -match '\[ps2\] crash|device lost' }).Count
 $v3 = 0; $t3 = 0; $tl = 0
 if ($f3 -match 'v(\d+) t (\d+) ms') { $v3 = [int]$Matches[1]; $t3 = [double]$Matches[2] }
 if ($lc -match 't (\d+) ms') { $tl = [double]$Matches[1] }
-"pop $name ($Scene, seed $Seed)"
+"pop $name ($Scene, seed $Seed)$(if ($others) { "  [OTHER GAME RUNS DURING IT: $others - timings not clean]" })"
 if ($lc) { "  level change: $($lc.Trim())" }
 if ($f3) { "  $($f3.Trim())   [load: $([math]::Round(($t3 - $tl) / 1000.0, 2)) s from the level change]" }
 if ($sum) { "  $($sum.Trim())" } else { "  (no ai-pop summary)" }
@@ -75,7 +82,9 @@ if ($vr) { "  $($vr.Trim())" }
 if ($Video -le 0 -and $v3) {
     $g = New-Object System.Collections.Generic.List[double]; $r = New-Object System.Collections.Generic.List[double]
     foreach ($l in $L) {
-        if ($l -match '^.*ftp: v(\d+) ([\d.]+) ([\d.]+)') { if ([int]$Matches[1] -ge $v3) { $g.Add([double]$Matches[2]); $r.Add([double]$Matches[3]) } }
+        # (pictures at VBlanks 1200 k, 1200 k + 1 left out: the statistics lines of this test - PS2_AI_POPLOG, PS2_TEX_SWAPLOG -
+        # are written then and cost the render thread up to ~40 ms; the player's build writes none)
+        if ($l -match '^.*ftp: v(\d+) ([\d.]+) ([\d.]+)') { $vv = [int]$Matches[1]; if ($vv -ge $v3 -and ($vv % 1200) -gt 1) { $g.Add([double]$Matches[2]); $r.Add([double]$Matches[3]) } }
     }
     if ($g.Count) {
         $gs = $g.ToArray(); [Array]::Sort($gs); $rs = $r.ToArray(); [Array]::Sort($rs)

@@ -1063,17 +1063,26 @@ static void ra_wait_poll(void) {
     }
     RQ.n_wait = n;
 }
-/* a slot of class c for a new AI image: et_alloc's for a texture in use; for a preload only a free slot or one of the
- * previous level's (unused since the level changed) - never a class growth, never an image of this level */
+/* a slot of class c for a new AI image: et_alloc's for a texture in use; for a preload a free slot (a class not made
+ * yet is made at its first size - no copy; a full one grows only while no 3D is drawn: the boot, a loading screen - never
+ * in play, where a growth's copy would cost a frame), else one of the previous level's (unused since the level changed),
+ * never an image of this level */
 static int32_t ra_alloc(int c, int pre) {
     if (!pre) return et_alloc(c);
-    for (uint32_t j = 0; j < ET.cap[c]; j++) if (!ET.sl[c][j].used) return (int32_t)(c << 16 | j);
+    for (int pass = 0; pass < 2; pass++) {
+        for (uint32_t j = 0; j < ET.cap[c]; j++) if (!ET.sl[c][j].used) return (int32_t)(c << 16 | j);
+        if (pass || !(ET.cap[c] == 0 || !RQ.uses_last) || !et_grow(c)) break;
+    }
     uint32_t best = 0xFFFFFFFFu, bl = 0xFFFFFFFFu;
     for (uint32_t j = 0; j < ET.cap[c]; j++) {
         const et_slot* s = &ET.sl[c][j];
         if (s->last < RQ.wframe && s->last + 2 < ET.frame && s->last < bl) { bl = s->last; best = j; }
     }
-    if (best == 0xFFFFFFFFu) return -1;
+    if (best == 0xFFFFFFFFu) {
+        static uint32_t told;
+        if ((RA.log || RP.on > 0) && !(told & 1u << c)) { told |= 1u << c; gpu_log("ai-pre: frame %u: no image slot of class %u (%u) for a preload", ET.frame, 64u << c, ET.cap[c]); }
+        return -1;
+    }
     et_slot* s = &ET.sl[c][best];
     while (s->first >= 0) {              /* (as et_alloc: its entries go back to unknown) */
         int32_t k = s->first;
