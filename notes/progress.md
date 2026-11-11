@@ -2,7 +2,12 @@
 
 ## Resume here (read first in a new session)
 
-**2026-11-11: 1.1.1 candidate 0.1.1247 (main 190981d) built, NOT published.** Laptop fix: the game ran on the
+**2026-11-11: 1.1.1 RELEASED** - "Sly 2 PC 1.1.1", tag v0.1.1247 (190981d), Latest; repo renamed by the owner to
+tanihad/Sly-2-Native-Pc-port (old URL redirects; launchers fetch 0.1.1247 through it). Published assets re-downloaded
+and hash-checked. Waiting for the owner's laptop result (`[gpu] adapter:` line). TODO (low): point the launcher's
+update URL and make_release's base URL at the new repo name in a later release.
+
+**2026-11-11: 1.1.1 candidate 0.1.1247 (main 190981d) built.** Laptop fix: the game ran on the
 integrated GPU of the owner's RTX 5070 laptop (slow + pixelated); now the high-performance GPU (notes/d3d11-renderer.md
 2.1). Setup sha256 C8C37307..., bundle build\release\0.1.1247 signed, check_no_game_data 0 problems. Owner tests on the
 laptop; publish (tag v0.1.1247 -> 190981d) only after his go. Ask him for the `[gpu] adapter:` line of the laptop's log.
