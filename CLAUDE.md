@@ -42,7 +42,8 @@ meaningful step, so an interrupted run resumes where it stopped instead of start
 
 ## GitHub
 
-- Remote: https://github.com/tanihad/sly2-decomp (private). Commits are authored as `tanihad`
+- Remote: https://github.com/tanihad/sly2-decomp (public since 2026-11-11, the owner's choice; launchers can
+  now self-update from releases/latest). Commits are authored as `tanihad`
   with the no-reply email (repo-local git config). Credentials are stored by Git Credential
   Manager, so `git push` works from the agent shell.
 - The user's GitHub account is **tanihad**. Two Chrome browsers are connected to Claude in
