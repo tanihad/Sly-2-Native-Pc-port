@@ -8,6 +8,7 @@ re-enable; gfx_stress_gate 0 crashes in 6873 changes) + Setup/update carry the x
 Gates on main: run_tests, 28 unit suites. Setup build\installer\Sly2-Setup.exe (--art, 62.9 MB, sha256 F8AA9FB7...),
 check_no_game_data 0 problems (Setup and bundle); bundle build\release\0.1.1237 signed with the real key. After the
 owner's go: GitHub release v0.1.1237 (name from the owner) via his Windows Chrome, Latest, attach Setup + SHA256SUMS.
+The tag must point at 9328406 (the built commit), not the later progress commits.
 
 **2026-11-08 (paused by the owner until Tuesday 2026-11-10): owner build dist\Sly2 0.1.1226 = main 6bbf81a**
 (next/reimagine2 merged: no fire shafts, tree-shadow world-matrix fix + static/alpha-tested casters, CAS sharpening,
