@@ -738,13 +738,14 @@ static void et_hd_list(void) {
     WIN32_FIND_DATAW fd;
     HANDLE h = FindFirstFileW(pat, &fd);
     if (h == INVALID_HANDLE_VALUE) return;
-    int cap = 0;
+    static int cap;                      /* (reimagine-crash: a second listing starts empty, within its own capacity) */
+    EH.n = 0;
     do {
         if (wcslen(fd.cFileName) != 20) continue;   /* (16 hex digits + ".png") */
         wchar_t* end = NULL;
         uint64_t v = _wcstoui64(fd.cFileName, &end, 16);
         if (end != fd.cFileName + 16) continue;
-        if (EH.n == cap) { cap = cap ? cap * 2 : 64; uint64_t* a = realloc(EH.have, cap * sizeof *a); if (!a) break; EH.have = a; }
+        if (EH.n >= cap) { int nc = cap ? cap * 2 : 64; uint64_t* a = realloc(EH.have, (size_t)nc * sizeof *a); if (!a) break; EH.have = a; cap = nc; }
         EH.have[EH.n++] = v;
     } while (FindNextFileW(h, &fd));
     FindClose(h);
