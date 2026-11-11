@@ -91,6 +91,70 @@ static struct {
     uint32_t frames_busy;
 } RA = { 0 };
 
+/* (tex-prebuild) PS2_AI_POPLOG=1: what the player sees of the AI images (notes/reimagined.md "Ready before first
+ * sight"). The level (the game's widCurrent, read from EE memory), the first frame with 3D art after a level change
+ * ("first 3D frame": play starts), and from then on: AI images that replaced an Enhanced image already shown (swaps; visible
+ * = a draw used it in the last 2 frames), and each texture's first image (AI or Enhanced) with its delay after the first
+ * draw that used it (the original sampling shows meanwhile). Lines "ai-pop:" every 1200 frames and at level changes. */
+extern uint8_t* ps2_ram __attribute__((weak));   /* (ps2_runtime.c; tools: none) */
+#define RA_WID_CURRENT 0x003D4A68u               /* widCurrent (notes/warp.md; r2_capture.c WID_CURRENT) */
+static struct {
+    int on;
+    uint32_t world, wframe, first3d, play;
+    uint64_t swap, swap_vis, swap_play, swap_play_vis, first_ai, first_enh, lat[6];
+} RP = { -1 };
+static uint32_t ra_world_now(void) {
+    return &ps2_ram && ps2_ram ? *(volatile uint32_t*)(ps2_ram + RA_WID_CURRENT) : 0xFFFFFFFFu;
+}
+static void ra_pop_line(const char* why) {
+    gpu_log("ai-pop: %s frame %u v%u world %u (first 3D frame %u): swaps after it %llu (visible %llu), before %llu (visible %llu); "
+            "first images AI %llu, Enhanced %llu; delay after the first draw <=3 frames %llu, <=7 %llu, <=15 %llu, <=63 %llu, "
+            "<=255 %llu, more %llu", why, ET.frame, gpu_stats_cur()->vblank, RP.world, RP.first3d,
+            (unsigned long long)RP.swap_play, (unsigned long long)RP.swap_play_vis,
+            (unsigned long long)(RP.swap - RP.swap_play), (unsigned long long)(RP.swap_vis - RP.swap_play_vis),
+            (unsigned long long)RP.first_ai, (unsigned long long)RP.first_enh, (unsigned long long)RP.lat[0],
+            (unsigned long long)RP.lat[1], (unsigned long long)RP.lat[2], (unsigned long long)RP.lat[3],
+            (unsigned long long)RP.lat[4], (unsigned long long)RP.lat[5]);
+}
+/* (ra_frame, every frame) the level and the first 3D frame after a change; ET.uses = the last frame's art uses */
+static void ra_pop_frame(void) {
+    if (RP.on < 0) { const char* e = getenv("PS2_AI_POPLOG"); RP.on = e && *e == '1'; }
+    uint32_t uses = ET.uses;
+    ET.uses = 0;
+    if (!RP.on) return;
+    uint32_t w = ra_world_now();
+    if (w != RP.world) {
+        if (RP.play) ra_pop_line("level left:");
+        gpu_log("ai-pop: frame %u v%u t %.0f ms level %u -> %u", ET.frame, gpu_stats_cur()->vblank, (double)GetTickCount64(), RP.world, w);
+        uint32_t keep = RP.on;
+        memset(&RP, 0, sizeof RP);
+        RP.on = (int)keep; RP.world = w; RP.wframe = ET.frame;
+    }
+    if (!RP.play && uses) {
+        RP.play = 1; RP.first3d = ET.frame - 1;
+        gpu_log("ai-pop: frame %u v%u t %.0f ms world %u: first 3D frame (%u frames after the level change, %u art uses)", RP.first3d,
+                gpu_stats_cur()->vblank, (double)GetTickCount64(), w, RP.first3d - RP.wframe, uses);
+    }
+    if (ET.frame % 1200 == 0) ra_pop_line("");
+}
+/* (et_link) entry idx shows slot s: its first image since it was noted? */
+static void ra_link_note(int32_t idx, const et_slot* s) {
+    if (RP.on <= 0 || !RP.play) return;
+    et_ent* e = &ET.e[idx];
+    if (!e->want) return;                /* (counted once per noting) */
+    uint32_t d = ET.frame - e->want;
+    e->want = 0;
+    if (s->ai) RP.first_ai++; else RP.first_enh++;
+    RP.lat[d <= 3 ? 0 : d <= 7 ? 1 : d <= 15 ? 2 : d <= 63 ? 3 : d <= 255 ? 4 : 5]++;
+}
+/* (ra_apply) the AI image replaces the image of slot s: a swap where it was shown */
+static void ra_pop_swap(const et_slot* s) {
+    if (RP.on <= 0 || s->first < 0) return;
+    int vis = s->last + 2 >= ET.frame;
+    RP.swap++; RP.swap_vis += vis;
+    if (RP.play) { RP.swap_play++; RP.swap_play_vis += vis; }
+}
+
 /* the surface maps (gpu_tex_normals.h) */
 static struct {
     int on;
@@ -752,6 +816,7 @@ static int ra_apply(int32_t i, int* bound) {
     }
     if (!et_build(&t, id, RA.up_srv, RA.reg[it->reg].at, 1)) { et_batch_run(); et_build(&t, id, RA.up_srv, RA.reg[it->reg].at, 1); }
     et_batch_run();
+    ra_pop_swap(s);
     s->ai = 1;
     for (int32_t k = s->first; k >= 0; k = ET.e[k].next) et_swap_note(k, 'A');   /* (reimagine: Enhanced -> AI, once) */
     if (RA.dump) { et_dump_ai(id, it->hash); et_dump_nrm(id, it->hash); }
@@ -980,6 +1045,7 @@ static double ra_pct(double p) {         /* (statistics) a percentile of the net
 /* the frame's Reimagined work (et_frame_body, after Enhanced's): cached images up, source read-backs, the net */
 static void ra_frame(int* bound) {
     ID3D11DeviceContext* c = gpu_rt.ctx;
+    ra_pop_frame();
     if (!ra_init()) {
         if (!RA.failed) { gpu_log("ai: cannot create the Reimagined textures' resources: Faithful's textures"); RA.failed = 1; }
         return;
