@@ -16,3 +16,4 @@ standard gates + reim_stability_gate -> commit -> report.
   0xFFFF..FF, ntdll). Cold cache survived 1405 changes only because the list stayed small at first. Fixed: reset + own
   capacity. Also: worker (ra_init_net) no longer writes RA.kcs / src / sav (handed over to the render thread);
   ra_release resets items under the lock.
+- COMPLETE: stress after the fix 0 crashes in 6873 changes (warm Look-only 1366, warm all 2664, cold all 2843); gates green. Results: notes/reimagined.md 'Look switch crash'.
