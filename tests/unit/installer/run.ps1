@@ -60,12 +60,16 @@ $tmpzip = Join-Path $out 'source-check.zip'
 $bytes = [IO.File]::ReadAllBytes($exe)
 $m = [regex]::Match(($r = Run $exe '/payload').Out, 'program (\d+) bytes[\s\S]*source\.zip (\d+)')
 $off = [int64]$m.Groups[1].Value; $len = [int64]$m.Groups[2].Value
-[IO.File]::WriteAllBytes($tmpzip, $bytes[$off..($off + $len - 1)])
+$slice = New-Object byte[] $len; [Array]::Copy($bytes, $off, $slice, 0, $len)   # (60 MB with the model: no range slice)
+[IO.File]::WriteAllBytes($tmpzip, $slice); $slice = $null
 $z = [IO.Compression.ZipFile]::OpenRead($tmpzip)
 $names = @($z.Entries | ForEach-Object { $_.FullName }); $z.Dispose(); Remove-Item $tmpzip
-$bad = @($names | Where-Object { $_ -match '^(orig|build|dist|tools|\.venv)/' -or $_ -match '\.(iso|elf|bin)$' -or $_ -match 'SCUS_' })
-Check ($names.Count -gt 100 -and $bad.Count -eq 0 -and ($names -contains 'scripts/build_game.py') -and ($names -contains 'version.txt')) `
-    "payload: $($names.Count) files, only recomp/runtime/build scripts (no game data)"
+# (models/x4plus.bin: the Real-ESRGAN weights, the one .bin allowed - its SHA-256 is checked by tests\unit\launcher\run.ps1
+# and check_no_game_data.py)
+$bad = @($names | Where-Object { $_ -match '^(orig|build|dist|tools|\.venv)/' -or ($_ -match '\.(iso|elf|bin)$' -and $_ -ne 'models/x4plus.bin') -or $_ -match 'SCUS_' })
+Check ($names.Count -gt 100 -and $bad.Count -eq 0 -and ($names -contains 'scripts/build_game.py') -and ($names -contains 'version.txt') -and
+       ($names -contains 'models/x4plus.bin') -and ($names -contains 'THIRD-PARTY-NOTICES.txt')) `
+    "payload: $($names.Count) files, only recomp/runtime/build scripts + the AI model and its notice (no game data)"
 
 # ---- disc check --------------------------------------------------------------------------------------
 $isos = Join-Path $out 'isos'
