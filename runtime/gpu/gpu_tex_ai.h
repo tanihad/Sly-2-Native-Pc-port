@@ -106,7 +106,7 @@ static struct {
  *   defer     an AI image that would replace an Enhanced image a draw used in the last 2 frames waits (RI_DEFER) until the
  *             texture is out of sight or no 3D is drawn (loading, menus): built images are written to the cache and
  *             loaded again then - no visible swap (a cold cache's first visit) */
-#define RA_LDN 3                         /* loader threads */
+#define RA_LDN 6                         /* loader threads at most (a third of the CPU's threads, at least 2) */
 #define RA_LQ 8192                       /* per queue */
 #define RA_LBYTES (160u << 20)           /* decoded images waiting for their upload, at most */
 #define RA_RECN 8192                     /* textures per level list */
@@ -122,6 +122,7 @@ static struct {
     uint32_t world, wframe, uses_last;
     ra_rec* rec; uint32_t nrec; uint64_t* set; int dirty; uint32_t saved;
     uint32_t mreq; int mstate; ra_rec* mbuf; uint32_t mn;   /* (a list read by a loader: mstate 1 asked, 2 reading, 3 ready) */
+    ra_rec* mbuf2; uint32_t mn2, last_world;   /* (the title: also the list of the level played last - "Resume Game" loads it) */
     ra_rec* pre; uint32_t npre, ipre;    /* the level list's images still to queue */
     int32_t defer[RA_DEFN]; uint32_t ndefer;
     uint32_t n_wait;
@@ -637,6 +638,13 @@ static void ra_level_write(uint32_t world, const ra_rec* r, uint32_t n) {
     _snwprintf(dir, 640, L"%ls\\levels", RA.dir);
     dir[639] = 0;
     CreateDirectoryW(dir, NULL);
+    if (world == 0xFFFFFFFFu) {          /* (the level played last: its world id) */
+        _snwprintf(path, 700, L"%ls\\last.bin", dir);
+        path[699] = 0;
+        FILE* f = _wfopen(path, L"wb");
+        if (f) { fwrite(r, 4, 1, f); fclose(f); }
+        return;
+    }
     ra_level_path(world, path, 700, 0);
     ra_level_path(world, tmp, 700, 1);
     FILE* f = _wfopen(tmp, L"wb");
@@ -706,9 +714,22 @@ static DWORD WINAPI ra_loader(LPVOID unused) {
             if (mani) {
                 uint32_t n = 0;
                 ra_rec* r = ra_level_read(mw, &n);
+                uint32_t n2 = 0, lw = 0;
+                ra_rec* r2 = NULL;
+                if (mw == 0) {               /* (the title: the level played last comes next, most likely) */
+                    wchar_t lp[700];
+                    _snwprintf(lp, 700, L"%ls\\levels\\last.bin", RA.dir);
+                    lp[699] = 0;
+                    FILE* lf = _wfopen(lp, L"rb");
+                    if (lf) { if (fread(&lw, 4, 1, lf) != 1) lw = 0; fclose(lf); }
+                    if (lw && lw < 0xFFFFFFF0u) r2 = ra_level_read(lw, &n2);
+                }
                 EnterCriticalSection(&RA.cs);
-                if (RQ.mstate == 2 && RQ.mreq == mw) { free(RQ.mbuf); RQ.mbuf = r; RQ.mn = n; RQ.mstate = 3; }
-                else free(r);                /* (the level changed again meanwhile) */
+                if (RQ.mstate == 2 && RQ.mreq == mw) {
+                    free(RQ.mbuf); RQ.mbuf = r; RQ.mn = n;
+                    free(RQ.mbuf2); RQ.mbuf2 = r2; RQ.mn2 = n2; RQ.last_world = lw;
+                    RQ.mstate = 3;
+                } else { free(r); free(r2); }   /* (the level changed again meanwhile) */
                 LeaveCriticalSection(&RA.cs);
                 continue;
             }
@@ -744,7 +765,11 @@ static int ra_ready_on(void) {
 static void ra_loaders_start(void) {
     if (RQ.nth || !ra_ready_on()) return;
     RQ.ev = CreateEventW(NULL, FALSE, FALSE, NULL);
-    for (int k = 0; RQ.ev && k < RA_LDN; k++) {
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    int n = (int)si.dwNumberOfProcessors / 3;
+    n = n < 2 ? 2 : n > RA_LDN ? RA_LDN : n;
+    for (int k = 0; RQ.ev && k < n; k++) {
         RQ.th[k] = CreateThread(NULL, 0, ra_loader, NULL, 0, NULL);
         if (RQ.th[k]) RQ.nth++;
     }
@@ -1158,6 +1183,10 @@ static void ra_level_frame(uint32_t uses) {
     if (w != RQ.world) {
         if (RA.log || RP.on > 0) ra_pre_line("level left: ");
         ra_level_flush();
+        if (w && w < 0xFFFFFFF0u && RA.dir[0] && RA.inited_thread > 0) {   /* (the level played last: levels\\last.bin) */
+            uint32_t* lw = malloc(4);
+            if (lw) { *lw = w; ra_job j = { RJ_MANI, -1, lw, 0xFFFFFFFFu, 0, 0, 0 }; ra_push(j); }
+        }
         RQ.world = w; RQ.wframe = ET.frame; RQ.nrec = 0; RQ.n_new = 0;
         if (RQ.set) memset(RQ.set, 0, 2u * RA_RECN * sizeof *RQ.set);
         free(RQ.pre); RQ.pre = NULL; RQ.npre = RQ.ipre = 0;
@@ -1171,17 +1200,28 @@ static void ra_level_frame(uint32_t uses) {
         EnterCriticalSection(&RA.cs);
         ra_rec* r = RQ.mbuf;
         uint32_t n = RQ.mn;
-        RQ.mbuf = NULL; RQ.mstate = 0;
+        ra_rec* r2 = RQ.mbuf2;
+        uint32_t n2 = RQ.mn2, lw = RQ.last_world;
+        RQ.mbuf = NULL; RQ.mbuf2 = NULL; RQ.mstate = 0;
         LeaveCriticalSection(&RA.cs);
         for (uint32_t k = 0; r && k < n; k++) ra_rec_add(&r[k]);
+        if (r2 && n2) {                  /* (the preloads: the title's, then the last level's - not in the title's list) */
+            ra_rec* c = realloc(r, ((size_t)n + n2) * sizeof *c);
+            if (c) { memcpy(c + n, r2, (size_t)n2 * sizeof *c); r = c; n += n2; }
+        }
+        free(r2);
         RQ.pre = r; RQ.npre = n; RQ.ipre = 0;
-        if (RA.log || RP.on > 0) gpu_log("ai-pre: frame %u level %u: %u textures in its list", ET.frame, w, n);
+        if (RA.log || RP.on > 0) gpu_log("ai-pre: frame %u level %u: %u textures in its list (+ %u of level %u, played last)", ET.frame, w,
+                                         n - n2, n2, lw);
     }
     for (uint32_t m = 0; RQ.pre && RQ.ipre < RQ.npre && m < 256; m++) {   /* (its images to the loaders, in the order seen) */
         const ra_rec* r = &RQ.pre[RQ.ipre++];
         if (r->lw > 8 || r->lh > 8) continue;
         et_slot* s = et_slot_of(et_map_find(r->key));
-        if (s && (s->ai || s->hd)) continue;   /* (resident already) */
+        if (s && (s->ai || s->hd)) {          /* (resident already: kept from reuse for a while) */
+            if (s->last < ET.frame + RA_PRE_GRACE) s->last = ET.frame + RA_PRE_GRACE;
+            continue;
+        }
         int32_t i = ra_find(r->key, 1);
         if (i < 0) continue;
         ra_item* it = &RA.it[i];
@@ -1474,6 +1514,7 @@ static void ra_frame(int* bound) {
         if (RQ.ndefer) ra_defer_poll();
         /* while no 3D is drawn (the loading screen) a bigger share: what the frame leaves of 80 % of its interval, <= 5 ms */
         uint32_t lim = RA_LOAD_TEXELS, cap = ETB.cap;
+        if (RQ.n_wait) lim = cap > lim ? (cap < (2u << 20) ? cap : 2u << 20) : lim;   /* (textures wait: Enhanced's share) */
         if (!uses) {
             double hz = frame_rate_target_hz ? frame_rate_target_hz() : 60.0;
             double room = (hz > 1.0 ? 0.8 * 1000.0 / hz : 12.0) - (gpu_frame_ms_last > 0.0 ? gpu_frame_ms_last - ETB.last_ms : 0.0);
@@ -1697,6 +1738,7 @@ static void ra_release(void) {
             RQ.qt[0] = RQ.qh[0]; RQ.qt[1] = RQ.qh[1];
             RQ.mstate = 0;
             free(RQ.mbuf); RQ.mbuf = NULL;
+            free(RQ.mbuf2); RQ.mbuf2 = NULL;
         }
         LeaveCriticalSection(&RA.cs);
     }
