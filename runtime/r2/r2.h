@@ -95,6 +95,16 @@ typedef struct {                 /* 160 bytes */
 enum { R2E_CLIP = 1,             /* the mesh's bounds cross the VU's guard band: R2 draws its triangles inside it (r2_gs_clip) */
        R2E_FANS = 2,             /* (r2-m5b) and the VU's clipper draws the others (r2_clip.c packets after the entry) */
        R2E_RUNS = 4 };           /* (r2-m5b) a run table (slot qwords at ent.pad[0] - 1): R2 draws only the triangles the VU draws as strips */
+/* (local-lights) one of the game's point lights (the static world's light table, notes/reimagined-lighting.md "Local
+ * lights"): what the frame's lighting needs of LIGHT + 0x100 .. + 0x168, copied by the EE at the frame's start */
+typedef struct {                 /* 64 bytes (gpu_reim.h reads it from the frame data) */
+    float pos[3], r_out;         /* world position (+0x100), outer radius: no light beyond (+0x168) */
+    float col[3], r_in;          /* colour, max channel 1 (+0x130), inner radius: full light inside (+0x164) */
+    float amb, dif, cw;          /* the VU record's ambient and diffuse shares (+0x124, +0x128: negative), colour w */
+    uint32_t id;                 /* table slot | (LIGHT address >> 4) << 8: the same light from frame to frame */
+    uint32_t kind, flags, pad[2];   /* +0xE0 (1: point), +0x15C */
+} r2_light;
+#define R2_SLOT_LIGHTS 256u
 typedef struct {
     volatile uint32_t serial;    /* (atomic: 0 while the EE writes it) */
     uint32_t nent, nrun;
@@ -103,6 +113,8 @@ typedef struct {
     r2_slot_ent ent[R2_SLOT_ENTS];
     uint32_t nxq;                /* (r2-m3) */
     float xq[R2_SLOT_XQ][4];
+    uint32_t nlight;             /* (local-lights) Look = Reimagined only (0 otherwise) */
+    r2_light light[R2_SLOT_LIGHTS];
 } r2_slot;
 const r2_slot* r2_slot_at(uint32_t index);       /* NULL: not allocated (r2_mesh.c) */
 r2_slot* r2_slot_ring(void);                     /* the writer (EE): the ring, allocated on first use */

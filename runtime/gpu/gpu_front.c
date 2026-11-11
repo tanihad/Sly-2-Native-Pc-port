@@ -144,6 +144,7 @@ uint32_t gf_data(const void* src, uint32_t bytes) {
 }
 
 void* gf_data_ptr(uint32_t off) { return A_data.p + off; }
+uint32_t gf_data_epoch;                  /* (local-lights) */
 
 /* ---- completed frames ----------------------------------------------------------------------------- */
 static gpu_front_frame* done;
@@ -2523,6 +2524,7 @@ const gs_front_hooks* gf_hooks(void) { return &hooks; }
 static void frame_begin(void) {
     memset(&gf, 0, sizeof gf);
     A_cmd.n = A_vtx.n = A_idx.n = A_rec.n = A_state.n = A_data.n = 0;
+    gf_data_epoch++;                     /* (local-lights) */
     memset(smap_idx, 0, sizeof smap_idx);
     nstates = 0;
     /* StateRecs are per frame. (M9) The state analyses stay valid across frames (target pointers: own_epoch; CLUT ring
@@ -2562,6 +2564,7 @@ void gpu_front_checkpoint(void) {
     /* a new partial frame: arenas, StateRecs and vertex reuse start over (counters and state
      * analyses go on) */
     A_cmd.n = A_vtx.n = A_idx.n = A_rec.n = A_state.n = A_data.n = 0;
+    gf_data_epoch++;                     /* (local-lights) */
     memset(smap_idx, 0, sizeof smap_idx);
     nstates = 0;
     for (int i = 0; i < SC_N; i++) SC[i].state_valid = 0;

@@ -25,6 +25,14 @@ typedef struct {
     struct { float m[16]; uint32_t lb; } lent[384];
     float pv_old[16]; int pv_old_n;           /* (2, diagnostics) what 0.1.1214 would have taken (the best segment's most common) */
 } reim_scene;
+/* (local lights) the frame data's light record (runtime/r2/r2.h r2_light) */
+typedef struct {
+    float pos[3], r_out, col[3], r_in, amb, dif, cw;
+    uint32_t id, kind, flags, pad[2];
+} re_light_rec;
+_Static_assert(sizeof(re_light_rec) == 64, "r2_light is 64 bytes");
+/* the latest game frame's light table (copied when its first segment is noted: the frame data does not outlive it) */
+static struct { re_light_rec l[256]; int n; uint32_t serial; uint64_t age; } RLIN;
 static reim_scene RS, RS_last;
 static struct { float cam[3], pre[3]; int have, pre_ok; uint32_t pre_v; uint64_t switches, cuts, old_wrong, flips; } RW;   /* (2) the world camera of the last frame */
 static struct {
@@ -47,7 +55,7 @@ static struct {
     int sc_on, sc_size, sc_every;        /* (2) the static shadow cache (PS2_REIM_SC=0: off), its size, its update interval */
     uint64_t sc_fresh, sc_moves;
 } RE;
-enum { RT_SHH, RT_SH, RT_SH2, RT_B6, RT_SHAFT, RT_PIC, RT_ST0, RT_ST1, RT_SCENE, RT_N };
+enum { RT_SHH, RT_SH, RT_SH2, RT_B6, RT_SHAFT, RT_PIC, RT_ST0, RT_ST1, RT_SCENE, RT_LOC, RT_N };
 static struct {
     ID3D11Texture2D* t[RT_N];
     ID3D11RenderTargetView* rtv[RT_N];
@@ -215,6 +223,17 @@ static void reim_note(const gpu_front_frame_data* fd, const gpu_fop_r2* o, const
     }
     if (RS.nops < 256) RS.ops[RS.nops++] = (uint32_t)((const uint8_t*)o - fd->cmd);
     RS.fd = fd;
+    if (fb->pad && RLIN.serial != fb->serial) {   /* (local lights) the frame's light table (gpu_r2front.c FL) */
+        size_t lo = (size_t)(fb->pad - 1u) * 16u;
+        uint32_t ln = 0;
+        if (lo + 16u <= fd->data_bytes) memcpy(&ln, fd->data + lo, 4);
+        if (ln && ln <= 256u && lo + 16u + (size_t)ln * sizeof(re_light_rec) <= fd->data_bytes) {
+            memcpy(RLIN.l, fd->data + lo + 16u, (size_t)ln * sizeof(re_light_rec));
+            RLIN.n = (int)ln;
+            RLIN.serial = fb->serial;
+            RLIN.age = 0;
+        }
+    }
     uint32_t n = o->nent;
     if (o->ent_off + (size_t)n * sizeof(gpu_r2_entry) > fd->data_bytes) return;
     const gpu_r2_entry* ent = (const gpu_r2_entry*)(fd->data + o->ent_off);
@@ -351,6 +370,153 @@ static void reim_r2k(float* k) {
     k[0] = RE.kv[0]; k[1] = RE.kv[1]; k[2] = RE.relief; k[3] = RE.cavity; k[4] = RE.nmap;
 }   /* (the R2 pipelines' rim light under Reimagined) */
 
+/* ---- (local lights) the game's own point lights (notes/reimagined-lighting.md "Local lights") ---------------------
+ * The static world's light table (lamps, torches, fires, windows and the designers' fill lights; r2_capture.c copies it
+ * at each frame's start, Reimagined only) lights the picture's surfaces with the VU's own light model (light.hlsl
+ * ps_reim_local, half res). Here: per light a weight that eases (0.25 s) in when the game adds it or it enters the list
+ * and out when it leaves (never a pop); lights whose sphere misses the view are not sent but keep their weight (no fade-in
+ * when the camera turns towards one); cool fills count less than warm sources; fires (orange, small) flicker gently and
+ * deterministically. Quality: Low none, Medium 32 lights, High 64, Ultra 96 (gpu_reim_lights_config from gfx.c).
+ * PS2_REIM_LIGHTS=0: none (also the EE copy); _N (count), _I (gain), _FLOOR, _COOL, _FLICK, _Q (quality 0..3). */
+#define RL_MAX 96
+static volatile LONG rl_cfg_level = 2;   /* graphics quality: 0 Low (off) .. 3 Ultra */
+void gpu_reim_lights_config(int level) { InterlockedExchange(&rl_cfg_level, level); }
+static struct {
+    int env, on, nmax, q;
+    float gain, floor, cool, flick, d0, d1;
+    uint32_t id[256];                    /* per table slot: the light it holds (r2_light.id), its weight, selected */
+    float w[256];
+    uint8_t sel[256];
+    float t;                             /* the flicker's clock (1 / frame rate per post pass: deterministic) */
+    float cb[(1 + RL_MAX * 3) * 4];
+    int n;
+    ID3D11Buffer* buf;
+    uint64_t frames, sum_n, sum_vis, max_n;
+} RL;
+static void rl_env(void) {
+    if (RL.env) return;
+    RL.env = 1;
+    const char* e = getenv("PS2_REIM_LIGHTS"); RL.on = !(e && *e == '0');
+    RL.nmax = (int)lt_envf("PS2_REIM_LIGHTS_N", -1.0f);
+    RL.q = (int)lt_envf("PS2_REIM_LIGHTS_Q", -1.0f);
+    RL.gain = lt_envf("PS2_REIM_LIGHTS_I", 1.0f);
+    RL.floor = lt_envf("PS2_REIM_LIGHTS_FLOOR", 0.012f);
+    RL.cool = lt_envf("PS2_REIM_LIGHTS_COOL", 0.3f);    /* the cool (blue) fills' share */
+    RL.flick = lt_envf("PS2_REIM_LIGHTS_FLICK", 0.06f);
+    RL.d0 = lt_envf("PS2_REIM_LIGHTS_D0", 6000.0f);     /* fade with the distance from the camera to the light's sphere */
+    RL.d1 = lt_envf("PS2_REIM_LIGHTS_D1", 12000.0f);
+}
+static int rl_count(void) {
+    rl_env();
+    if (!RL.on) return 0;
+    int q = RL.q >= 0 ? RL.q : (int)rl_cfg_level;
+    int n = q <= 0 ? 0 : q == 1 ? 32 : q == 2 ? 64 : 96;
+    if (RL.nmax >= 0) n = RL.nmax;
+    return n < 0 ? 0 : n > RL_MAX ? RL_MAX : n;
+}
+static float rl_smooth(float a, float b, float x) { float t = (x - a) / (b - a); t = t < 0.0f ? 0.0f : t > 1.0f ? 1.0f : t; return t * t * (3.0f - 2.0f * t); }
+/* this frame's light list into RL.cb (light.hlsl reim_lights); pv: world x clip (row vectors), cam: the camera (world) */
+static int reim_lights_build(const float* pv, const float* cam, const float* ndc, double hz) {
+    int nmax = rl_count();
+    RL.n = 0;
+    memset(RL.cb, 0, 4 * sizeof(float));
+    if (++RLIN.age > 30u) RLIN.n = 0;    /* (no table for half a second: a level without lights, or another look) */
+    if (!nmax || !RLIN.n) return 0;
+    float dt = (float)(1.0 / (hz > 1.0 ? hz : 60.0));
+    RL.t += dt;
+    if (RL.t > 3600.0f) RL.t -= 3600.0f;
+    float ease = 1.0f - expf(-dt / 0.25f);
+    /* the picture's planes: ndc x / y between the picture's edges (ndc[0..3]: x0, x1, y0, y1; the clip volume is the VU's
+     * guard band, ~8 x the picture), 15 % margin each side; and in front of the camera */
+    float pl[5][4];
+    for (int k = 0; k < 4; k++) {
+        float* p = pl[k];
+        int j = k >> 1;
+        float lo = fminf(ndc[2 * j], ndc[2 * j + 1]), hi = fmaxf(ndc[2 * j], ndc[2 * j + 1]), m = (hi - lo) * 0.15f;
+        lo -= m; hi += m;
+        for (int r = 0; r < 4; r++) p[r] = (k & 1) ? hi * pv[r * 4 + 3] - pv[r * 4 + j] : pv[r * 4 + j] - lo * pv[r * 4 + 3];
+    }
+    for (int r = 0; r < 4; r++) pl[4][r] = pv[r * 4 + 3];
+    for (int k = 0; k < 5; k++) { float l = sqrtf(pl[k][0] * pl[k][0] + pl[k][1] * pl[k][1] + pl[k][2] * pl[k][2]); if (l > 1e-20f) for (int r = 0; r < 4; r++) pl[k][r] /= l; }
+    int cand[256], nc = 0, nvis = 0;
+    float pri[256];
+    uint8_t vis[256];
+    for (int i = 0; i < RLIN.n; i++) {
+        const re_light_rec* L = &RLIN.l[i];
+        uint32_t s = L->id & 0xFFu;
+        if (RL.id[s] != L->id) { RL.id[s] = L->id; RL.w[s] = 0.0f; RL.sel[s] = 0; }   /* (a new light: it fades in) */
+        vis[i] = 1;
+        for (int k = 0; k < 5 && vis[i]; k++)
+            if (pl[k][0] * L->pos[0] + pl[k][1] * L->pos[1] + pl[k][2] * L->pos[2] + pl[k][3] < -L->r_out) vis[i] = 0;
+        if (!vis[i]) continue;
+        nvis++;
+        float dx = L->pos[0] - cam[0], dy = L->pos[1] - cam[1], dz = L->pos[2] - cam[2];
+        float dist = sqrtf(dx * dx + dy * dy + dz * dz);
+        float fd = 1.0f - rl_smooth(RL.d0, RL.d1, dist - L->r_out);
+        float pk = fmaxf(L->col[0], fmaxf(L->col[1], L->col[2])) * (2.0f * fabsf(L->dif) + fmaxf(L->amb, 0.0f));
+        if (!(fd > 0.0f) || !(pk > 1e-3f)) { vis[i] = 2; continue; }   /* (too far / black: not selected, fades out) */
+        float warm = rl_smooth(-0.1f, 0.3f, L->col[0] - L->col[2]);
+        pri[nc] = fd * pk * (RL.cool + (1.0f - RL.cool) * warm) * L->r_out / fmaxf(dist, L->r_out) * (RL.sel[s] ? 1.25f : 1.0f);   /* (hysteresis) */
+        cand[nc++] = i;
+    }
+    /* the nmax most important (insertion sort by priority, descending) */
+    for (int a = 1; a < nc; a++) {
+        int ci = cand[a]; float cp = pri[a]; int b = a - 1;
+        while (b >= 0 && pri[b] < cp) { pri[b + 1] = pri[b]; cand[b + 1] = cand[b]; b--; }
+        pri[b + 1] = cp; cand[b + 1] = ci;
+    }
+    uint8_t chosen[256];
+    memset(chosen, 0, sizeof chosen);
+    for (int a = 0; a < nc && a < nmax; a++) chosen[cand[a]] = 1;
+    float* o = RL.cb + 4;
+    int n = 0;
+    for (int i = 0; i < RLIN.n; i++) {
+        const re_light_rec* L = &RLIN.l[i];
+        uint32_t s = L->id & 0xFFu;
+        if (!vis[i]) continue;           /* (outside the view: lights nothing in it; its weight is kept) */
+        RL.sel[s] = chosen[i];
+        RL.w[s] += ((chosen[i] ? 1.0f : 0.0f) - RL.w[s]) * ease;
+        if (RL.w[s] < 0.002f || n >= nmax + 8 || n >= RL_MAX) continue;   /* (a few fading out beyond the count) */
+        float dx = L->pos[0] - cam[0], dy = L->pos[1] - cam[1], dz = L->pos[2] - cam[2];
+        float dist = sqrtf(dx * dx + dy * dy + dz * dz);
+        float fd = 1.0f - rl_smooth(RL.d0, RL.d1, dist - L->r_out);
+        float warm = rl_smooth(-0.1f, 0.3f, L->col[0] - L->col[2]);
+        float k = 2.0f * RL.gain * RL.w[s] * fd * (RL.cool + (1.0f - RL.cool) * warm);
+        /* fires: orange and small - a gentle flicker of three slow sines (phases from the light's id) */
+        if (RL.flick > 0.0f && L->col[0] > 0.5f && L->col[1] < 0.72f * L->col[0] && L->col[2] < 0.45f * L->col[0] && L->r_out < 2000.0f) {
+            uint32_t h = L->id * 2654435761u;
+            float p1 = (float)(h & 1023u) * 0.00614f, p2 = (float)((h >> 10) & 1023u) * 0.00614f, p3 = (float)((h >> 20) & 1023u) * 0.00614f;
+            float f = 0.5f * sinf(RL.t * 10.7f + p1) + 0.3f * sinf(RL.t * 27.0f + p2) + 0.2f * sinf(RL.t * 57.2f + p3);
+            k *= 1.0f + RL.flick * f;
+        }
+        float dif = -fabsf(L->dif), amb = L->amb;
+        if (!(fabsf(dif) > 1e-4f)) { dif = -0.25f; amb = 0.1f; }
+        float span = L->r_out - L->r_in;
+        o[0] = L->pos[0]; o[1] = L->pos[1]; o[2] = L->pos[2]; o[3] = 1.0f / (span > 1.0f ? span : 1.0f);
+        o[4] = L->col[0] * k; o[5] = L->col[1] * k; o[6] = L->col[2] * k; o[7] = L->r_out;
+        o[8] = dif; o[9] = amb; o[10] = -amb / dif; o[11] = L->r_out * L->r_out;
+        o += 12;
+        n++;
+    }
+    RL.cb[0] = (float)n;
+    RL.cb[1] = RE.dbg == 5 ? 1.0f : 0.0f;
+    RL.n = n;
+    RL.frames++; RL.sum_n += (uint64_t)n; RL.sum_vis += (uint64_t)nvis;
+    if ((uint64_t)n > RL.max_n) RL.max_n = (uint64_t)n;
+    if (RE.log && RL.frames % 600 == 1)
+        gpu_log("reim-lights: %d in the table, %d in view, %d drawn (cap %d; average %.1f drawn / %.1f in view, most %llu)", RLIN.n, nvis, n, nmax,
+                (double)RL.sum_n / (double)RL.frames, (double)RL.sum_vis / (double)RL.frames, (unsigned long long)RL.max_n);
+    if (!n) return 0;
+    if (!RL.buf) {
+        D3D11_BUFFER_DESC bd;
+        memset(&bd, 0, sizeof bd);
+        bd.ByteWidth = (UINT)sizeof RL.cb; bd.Usage = D3D11_USAGE_DEFAULT; bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+        if (FAILED(ID3D11Device_CreateBuffer(gpu_rt.dev, &bd, NULL, &RL.buf))) { RL.buf = NULL; RL.n = 0; return 0; }
+    }
+    ID3D11DeviceContext_UpdateSubresource(gpu_rt.ctx, (ID3D11Resource*)RL.buf, 0, NULL, RL.cb, 0, 0);
+    return n;
+}
+
 /* ---- the post pass -------------------------------------------------------------------------------------------- */
 static int light_proj(float view[4], float z[2]);
 static int lt_tex(int i, int w, int h, DXGI_FORMAT f);
@@ -366,6 +532,7 @@ static void reim_release(void) {
     for (int i = 0; i < 2; i++) { GPU_RELEASE(RR.sc_dsv[i]); GPU_RELEASE(RR.sc_srv[i]); GPU_RELEASE(RR.sc[i]); }
     RR.sc_n = 0; RR.sc_valid = 0;
     GPU_RELEASE(RR.ds_always);
+    GPU_RELEASE(RL.buf);                 /* (local lights) */
     RE.have_key = 0;
 }
 /* texture i: w x h of format f (mips: a full chain, GenerateMips; rt 0: a copy destination, shader view only) */
@@ -398,8 +565,8 @@ static int rr_tex(int i, int w, int h, DXGI_FORMAT f, int mips, int rt) {
     return 1;
 }
 static void rr_unbind(void) {
-    ID3D11ShaderResourceView* none[14] = { NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL };
-    ID3D11DeviceContext_PSSetShaderResources(gpu_rt.ctx, 14, 14, none);   /* (t14..t27) */
+    ID3D11ShaderResourceView* none[15] = { NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL };
+    ID3D11DeviceContext_PSSetShaderResources(gpu_rt.ctx, 14, 15, none);   /* (t14..t28) */
     ID3D11RenderTargetView* nr[2] = { NULL, NULL };
     ID3D11DeviceContext_OMSetRenderTargets(gpu_rt.ctx, 2, nr, NULL);
 }
@@ -683,6 +850,7 @@ static void reim_post(mtarget* c, mtarget* z, int pc) {
         !rr_tex(RT_ST0, 4, 1, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 1) || !rr_tex(RT_ST1, 4, 1, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 1) ||
         !rr_tex(RT_SCENE, hw, hh, DXGI_FORMAT_R16G16B16A16_FLOAT, 1, 1))
         { prof_mark(pc); return; }
+    int nloc = 0;                        /* (local lights) this frame's count (0: the composite skips them) */
     for (int i = 1; i <= 5; i++)
         if (!lt_tex(LT_B1 + i - 1, bw[i], bh[i], DXGI_FORMAT_R11G11B10_FLOAT)) { prof_mark(pc); return; }
     if (!RR.cb) {
@@ -756,6 +924,11 @@ static void reim_post(mtarget* c, mtarget* z, int pc) {
         memcpy(RE.kv, rkey, sizeof RE.kv);
         memcpy(rkc, RE.keyc, sizeof RE.keyc);
         rkc[3] = RE.key_i;
+        if (rl_count() && re_x(32, 1) && rr_tex(RT_LOC, hw, hh, DXGI_FORMAT_R11G11B10_FLOAT, 0, 1) && fabsf(S->ipv[11]) > 1e-20f) {   /* (local lights) */
+            float cam[3] = { S->ipv[8] / S->ipv[11], S->ipv[9] / S->ipv[11], S->ipv[10] / S->ipv[11] };
+            float ndc[4] = { rndc[1], rndc[0] * (float)pw + rndc[1], rndc[3], rndc[2] * (float)ph + rndc[3] };
+            nloc = reim_lights_build(pv, cam, ndc, frame_rate_target_hz ? frame_rate_target_hz() : 60.0);
+        }
         RE.posts++;
         if (RE.smap && rkey[3] > 0.0f) {
             int okm = S == &RS && reim_smap(S, rndc, rzab, pw, ph, rlm, rsmp, rlc);
@@ -792,6 +965,8 @@ static void reim_post(mtarget* c, mtarget* z, int pc) {
     }
     rmisc[2] = (float)(RE.dbg == 9 ? (int)((RR.frames / 30u) % 5u) : RE.dbg);   /* (9: the debug views in turn, 30 frames each) */
     rmisc[3] = (float)(RR.frames & 0xFFFF);
+    float* rloc = rc + 140;              /* (local lights) light.hlsl r_loc */
+    rloc[0] = nloc > 0 ? 1.0f : 0.0f; rloc[1] = 1.0f; rloc[2] = RL.floor;
     ID3D11DeviceContext_UpdateSubresource(gpu_rt.ctx, (ID3D11Resource*)RR.cb, 0, NULL, rc, 0, 0);
 #define LT_SIZE(v, w, h) do { (v)[0] = (float)(w); (v)[1] = (float)(h); (v)[2] = 1.0f / (float)(w); (v)[3] = 1.0f / (float)(h); } while (0)
     if (RE.log && LT.frames % 600 == 0)
@@ -819,6 +994,15 @@ static void reim_post(mtarget* c, mtarget* z, int pc) {
     lt_srv(17, z->srv);
     lt_pass(LT.rtv[LT_W], hw, hh, ms ? GPU_SH_ps_light_lin1 : GPU_SH_ps_light_lin0, off);
     rr_unbind();
+    if (nloc > 0) {                      /* (local lights) the game's point lights' light, half res */
+        prof_mark(PR_REIM_LL);
+        ID3D11Buffer* lb = RL.buf;
+        ID3D11DeviceContext_PSSetConstantBuffers(gpu_rt.ctx, 9, 1, &lb);
+        lt_srv(14, LT.srv[LT_W]);
+        lt_pass(RR.rtv[RT_LOC], hw, hh, GPU_SH_ps_reim_local, off);
+        rr_unbind();
+        prof_mark(PR_REIM_SH);
+    }
     if (ao) {
         lt_srv(14, LT.srv[LT_W]);
         lt_pass(LT.rtv[LT_AO0], hw, hh, GPU_SH_ps_light_ao, off);
@@ -916,6 +1100,7 @@ static void reim_post(mtarget* c, mtarget* z, int pc) {
     lt_cb(cb, 36);
     lt_srv(14, LT.srv[LT_W]); lt_srv(15, LT.srv[LT_AO0]); lt_srv(16, LT.srv[LT_B1]); lt_srv(17, z->srv); lt_srv(18, stv);
     lt_srv(19, RR.srv[RT_PIC]); lt_srv(20, RR.srv[RT_SH]); lt_srv(21, RR.srv[RT_SHAFT]); lt_srv(22, RR.srv[RT_SCENE]);
+    if (nloc > 0) lt_srv(28, RR.srv[RT_LOC]);   /* (local lights) */
     {
         static const float zero[4] = { 0, 0, 0, 0 };
         if (rsh[0] <= 0.0f) ID3D11DeviceContext_ClearRenderTargetView(gpu_rt.ctx, RR.rtv[RT_SHAFT], zero);
