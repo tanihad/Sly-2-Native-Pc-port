@@ -879,7 +879,10 @@ static int install_game_files(setup_t* s) {
         char why[256] = "";
         bpath(s, md, L"models");
         int m = stage_place_model(md, staging, why, sizeof why);
-        if (m < 0) return fail(s, L"Installing the AI model failed: %hs. Click Retry.", why);
+        if (m < 0) {                                 /* (the installed version stays as it is; no half-staged folder) */
+            stage_delete_tree(staging);
+            return fail(s, L"Installing the AI model failed: %hs. The installed version is unchanged.", why);
+        }
         if (m > 0) say(s, L"AI model: %ls\\models\\" MODEL_FILE L" (SHA-256 checked)", staging);
         else say(s, L"AI model: not in these sources");
     }
