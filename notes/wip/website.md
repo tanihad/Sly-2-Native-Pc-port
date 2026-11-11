@@ -1,7 +1,11 @@
 # WIP: website (owner request 2026-11-11: a small Sly-themed site to advertise the port and offer the launcher)
 
-**Status**: page built and checked locally (desktop 1360 px, phone 375 px); committed on main, **not pushed, not
-published**. Waiting for the owner's OK on hosting (GitHub Pages from `main` / `docs`).
+**Status**: published 2026-11-11 (owner's OK): pushed to main, GitHub Pages enabled (Settings > Pages, branch `main`,
+folder `/docs`) -> https://tanihad.github.io/Sly-2-Native-Pc-port/ . README links to it.
+
+**Repository renamed**: GitHub now reports `tanihad/Sly-2-Native-Pc-port` (the old `tanihad/sly2-decomp` URLs redirect,
+pushes included). The page's links use the new name. The launcher's update check, CLAUDE.md and the local remote still
+use the old name and work through the redirect, as long as nobody creates a new repository called `sly2-decomp`.
 
 ## What there is
 - `docs/index.html`: one self-contained page (inline CSS, SVG, a little JS; fonts from Google Fonts: Bangers, Barlow,
@@ -20,6 +24,6 @@ published**. Waiting for the owner's OK on hosting (GitHub Pages from `main` / `
   those belong to Sony / Sucker Punch, and a public advertising page is where a takedown would start.
 - Facts on the page come from README.md, notes/install.md, notes/controls.md and the 1.1 release notes.
 
-## Next
-- Owner OK -> push, enable Pages (Settings > Pages > main /docs) -> check https://tanihad.github.io/sly2-decomp/ ->
-  add the link to README.md and the repository's "About".
+## Next (optional, owner's call)
+- The repository's "About" box has no website link yet.
+- Screenshots for the Recon photos section (`docs/shots/1.jpg` ...).

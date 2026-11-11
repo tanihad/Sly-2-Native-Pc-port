@@ -1,5 +1,7 @@
 # Sly 2: Band of Thieves - native PC port (unofficial)
 
+**Website and download: https://tanihad.github.io/Sly-2-Native-Pc-port/**
+
 A native Windows version of **Sly 2: Band of Thieves** (PS2, 2004), made from your own copy of the
 game. It is not an emulator: the game's code is translated ahead of time ("statically recompiled")
 from the PS2 executable into C and compiled into a normal 64-bit Windows program, and the PS2
