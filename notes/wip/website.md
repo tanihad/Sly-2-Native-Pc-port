@@ -25,5 +25,6 @@ use the old name and work through the redirect, as long as nobody creates a new 
 - Facts on the page come from README.md, notes/install.md, notes/controls.md and the 1.1 release notes.
 
 ## Next (optional, owner's call)
-- The repository's "About" box has no website link yet.
+- The repository's "About" box links to the site (2026-11-11); its description still says "Matching decompilation
+  workspace for Sly 2: Band of Thieves (PS2)."
 - Screenshots for the Recon photos section (`docs/shots/1.jpg` ...).
