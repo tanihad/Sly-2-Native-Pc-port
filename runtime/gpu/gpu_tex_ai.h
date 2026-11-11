@@ -57,7 +57,7 @@ static struct {
     int on, was, failed, init, inited_thread, net_state;   /* net_state: 0 none, 1 creating, 2 ready, -1 unavailable */
     wchar_t dir[600];
     char model[32];
-    uint64_t* have; int nhave;           /* cache files (sorted hashes) */
+    uint64_t* have; int nhave, have_cap; /* cache files (sorted hashes; render thread only) */
     ra_item* it;
     /* worker */
     CRITICAL_SECTION cs;
@@ -67,6 +67,9 @@ static struct {
     int32_t loaded[256]; uint32_t nloaded;
     ai_gpu* net; ai_gpu* net_new; char net_err[256];
     ID3D11ComputeShader* kcs[16];          /* (created on the worker: a first use on the render thread cost up to 70 ms) */
+    ID3D11ComputeShader* kcs_new[16];      /* (reimagine-crash) the worker's new shaders and read-back buffers, handed over */
+    ID3D11Buffer* src_new[RA_SRCN];        /* with net_new (under cs) and installed by the render thread (ra_net_poll) */
+    ID3D11Buffer* sav_new[RA_SAVEN];
     double net_mb;
     /* GPU */
     ID3D11Buffer *up, *al, *pj, *pcb, *nok, *res;
@@ -267,11 +270,15 @@ static const struct { uint32_t key; int id; } ra_cs_ids[16] = {
     { 0x88434, GPU_SH_cs_ai_88434 }, { 0x21343, GPU_SH_cs_ai_21343 }, { 0x22343, GPU_SH_cs_ai_22343 }, { 0x22434, GPU_SH_cs_ai_22434 },
     { 0x88114, GPU_SH_cs_ai_88114 }, { 0x88113, GPU_SH_cs_ai_88113 }, { 0x88851, GPU_SH_cs_ai_88851 }, { 0x88865, GPU_SH_cs_ai_88865 },
     { 0x88856, GPU_SH_cs_ai_88856 }, { 0x88875, GPU_SH_cs_ai_88875 }, { 1, GPU_SH_cs_ai_post }, { 2, GPU_SH_cs_ai_res } };
-static int ra_make_cs(void) {
+/* (worker) the net's compute shaders into cs[16] (the device is free-threaded; nothing of RA is touched here: the render
+ * thread installs them with the net, ra_net_poll) */
+static int ra_make_cs(ID3D11ComputeShader** cs) {
     for (int k = 0; k < 16; k++) {
-        GPU_RELEASE(RA.kcs[k]);
         const gpu_shader_blob* b = &gpu_shaders[ra_cs_ids[k].id];
-        if (FAILED(ID3D11Device_CreateComputeShader(gpu_rt.dev, b->code, b->size, NULL, &RA.kcs[k]))) return 0;
+        if (FAILED(ID3D11Device_CreateComputeShader(gpu_rt.dev, b->code, b->size, NULL, &cs[k]))) {
+            for (int j = 0; j < 16; j++) GPU_RELEASE(cs[j]);
+            return 0;
+        }
     }
     return 1;
 }
@@ -291,18 +298,33 @@ static void ra_init_net(void) {
     char err[256] = "";
     ai_weights* w = ai_weights_load(path, err, sizeof err);
     ai_gpu* g = NULL;
-    if (w && !ra_make_cs()) { snprintf(err, sizeof err, "cannot create its shaders"); ai_weights_free(w); w = NULL; }
+    /* (reimagine-crash) everything is made through the device (free-threaded) into locals and handed over under the lock;
+     * the render thread installs it (ra_net_poll). The immediate context is never touched here (ai_gpu_create_cs only
+     * keeps the pointer for the runs, which happen on the render thread), and no RA field the render thread uses or
+     * releases (ra_release on a Look switch) is written from this thread */
+    ID3D11ComputeShader* cs[16] = { NULL };
+    ID3D11Buffer* src[RA_SRCN] = { NULL };
+    ID3D11Buffer* sav[RA_SAVEN] = { NULL };
+    if (w && !ra_make_cs(cs)) { snprintf(err, sizeof err, "cannot create its shaders"); ai_weights_free(w); w = NULL; }
     if (w) {
         size_t P = (size_t)(RA_TILE + 2 * RA.pad) * (RA_TILE + 2 * RA.pad);
         g = ai_gpu_create_cs(gpu_rt.dev, gpu_rt.ctx, w, ra_cs_of, NULL, P, err, sizeof err);
         ai_weights_free(w);
         for (int k = 0; g && k < RA_SRCN; k++)   /* (the read-back buffers too: not created on the render thread) */
-            if (!RA.src[k].st) RA.src[k].st = et_buf(256u * 256u * 4u, 0, D3D11_USAGE_STAGING, D3D11_CPU_ACCESS_READ);
+            src[k] = et_buf(256u * 256u * 4u, 0, D3D11_USAGE_STAGING, D3D11_CPU_ACCESS_READ);
         for (int k = 0; g && k < RA_SAVEN; k++)
-            if (!RA.sav[k].st) RA.sav[k].st = et_buf(RA_UP_WORDS, 0, D3D11_USAGE_STAGING, D3D11_CPU_ACCESS_READ);
+            sav[k] = et_buf(RA_UP_WORDS, 0, D3D11_USAGE_STAGING, D3D11_CPU_ACCESS_READ);
+    }
+    if (!g) {
+        for (int k = 0; k < 16; k++) GPU_RELEASE(cs[k]);
+        for (int k = 0; k < RA_SRCN; k++) GPU_RELEASE(src[k]);
+        for (int k = 0; k < RA_SAVEN; k++) GPU_RELEASE(sav[k]);
     }
     EnterCriticalSection(&RA.cs);
     RA.net_new = g;
+    memcpy(RA.kcs_new, cs, sizeof cs);
+    memcpy(RA.src_new, src, sizeof src);
+    memcpy(RA.sav_new, sav, sizeof sav);
     if (!g) snprintf(RA.net_err, sizeof RA.net_err, "%s", err[0] ? err : "no weights");
     RA.net_state = g ? 2 : -1;
     LeaveCriticalSection(&RA.cs);
@@ -590,7 +612,12 @@ static void ra_list(void) {
     pat[619] = 0;
     WIN32_FIND_DATAW fd;
     HANDLE h = FindFirstFileW(pat, &fd);
-    int cap = 0;
+    /* (reimagine-crash) the list is read again at every Reimagined on (Look switched back): it starts empty and grows from
+     * its own capacity. 0.1.1226 kept the old count with a capacity of 0 here, so the second listing appended past the end
+     * of the first one's buffer (owner: 637 entries in a 1024-entry buffer, then 1348 more written after them): heap
+     * corruption -> 0xC0000005 in ntdll / the driver soon after "Reimagined textures on" */
+    RA.nhave = 0;
+    int cap = RA.have_cap;
     uint64_t bytes = 0;
     if (h != INVALID_HANDLE_VALUE) {
         do {
@@ -598,7 +625,12 @@ static void ra_list(void) {
             wchar_t* end = NULL;
             uint64_t v = _wcstoui64(fd.cFileName, &end, 16);
             if (end != fd.cFileName + 16) continue;
-            if (RA.nhave == cap) { cap = cap ? cap * 2 : 256; uint64_t* a = realloc(RA.have, cap * sizeof *a); if (!a) break; RA.have = a; }
+            if (RA.nhave >= cap) {
+                int nc = cap ? cap * 2 : 256;
+                uint64_t* a = realloc(RA.have, (size_t)nc * sizeof *a);
+                if (!a) break;
+                RA.have = a; cap = RA.have_cap = nc;
+            }
             RA.have[RA.nhave++] = v;
             bytes += ((uint64_t)fd.nFileSizeHigh << 32) | fd.nFileSizeLow;
         } while (FindNextFileW(h, &fd));
@@ -662,8 +694,19 @@ static void ra_net_poll(void) {
     ai_gpu* g = RA.net_new;
     RA.net_new = NULL;
     int st = RA.net_state;
+    ID3D11ComputeShader* cs[16];
+    ID3D11Buffer* src[RA_SRCN];
+    ID3D11Buffer* sav[RA_SAVEN];
+    memcpy(cs, RA.kcs_new, sizeof cs); memset(RA.kcs_new, 0, sizeof RA.kcs_new);
+    memcpy(src, RA.src_new, sizeof src); memset(RA.src_new, 0, sizeof RA.src_new);
+    memcpy(sav, RA.sav_new, sizeof sav); memset(RA.sav_new, 0, sizeof RA.sav_new);
     LeaveCriticalSection(&RA.cs);
+    /* (reimagine-crash) the worker's objects installed here, on the render thread */
+    for (int k = 0; k < 16; k++) if (cs[k]) { GPU_RELEASE(RA.kcs[k]); RA.kcs[k] = cs[k]; }
+    for (int k = 0; k < RA_SRCN; k++) if (src[k]) { if (!RA.src[k].st) RA.src[k].st = src[k]; else GPU_RELEASE(src[k]); }
+    for (int k = 0; k < RA_SAVEN; k++) if (sav[k]) { if (!RA.sav[k].st) RA.sav[k].st = sav[k]; else GPU_RELEASE(sav[k]); }
     if (g) {
+        if (RA.net) ai_gpu_destroy(RA.net);   /* (not expected: one net at a time) */
         RA.net = g;
         RA.net_mb = ai_gpu_bytes(g) / 1048576.0;
         gpu_log("ai: x4plus net ready (%d blocks, %.0f MB of buffers)", ai_gpu_blocks(g), RA.net_mb);
@@ -1091,6 +1134,7 @@ static void ra_release(void) {
     for (int k = 0; k < RA_SAVEN; k++) { GPU_RELEASE(RA.sav[k].st); RA.sav[k].item = -1; }
     for (int k = 0; k < 4; k++) { GPU_RELEASE(RA.tq_[k][0]); GPU_RELEASE(RA.tq_[k][1]); RA.tbusy[k] = 0; }
     for (int r = 0; r < RA_REG; r++) RA.reg[r].item = -1;
+    if (RA.inited_thread > 0) EnterCriticalSection(&RA.cs);   /* (reimagine-crash: the worker writes the items' states too) */
     if (RA.it)                           /* (items in flight on the GPU start again; the worker's own finish) */
         for (int32_t i = 0; i < RA_ITEMS; i++) {
             ra_item* it = &RA.it[i];
@@ -1098,7 +1142,6 @@ static void ra_release(void) {
             if (it->st == RI_SRC || it->st == RI_POST || it->st == RI_DONE || it->st == RI_WANT) it->st = RI_NONE;
         }
     if (RA.inited_thread > 0) {
-        EnterCriticalSection(&RA.cs);
         for (uint32_t k = 0; k < RA.tn; k++) { free(RA.tq[k].px); RA.it[RA.tq[k].item].st = RI_NONE; }
         RA.tn = 0;
         LeaveCriticalSection(&RA.cs);
