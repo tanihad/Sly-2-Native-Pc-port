@@ -2,6 +2,11 @@
 
 ## Resume here (read first in a new session)
 
+**2026-11-11: 1.1.1 candidate 0.1.1247 (main 190981d) built, NOT published.** Laptop fix: the game ran on the
+integrated GPU of the owner's RTX 5070 laptop (slow + pixelated); now the high-performance GPU (notes/d3d11-renderer.md
+2.1). Setup sha256 C8C37307..., bundle build\release\0.1.1247 signed, check_no_game_data 0 problems. Owner tests on the
+laptop; publish (tag v0.1.1247 -> 190981d) only after his go. Ask him for the `[gpu] adapter:` line of the laptop's log.
+
 **2026-11-11: 1.1 RELEASED** - "Sly 2 PC 1.1", tag v0.1.1237 (9328406), Latest, repo public. 5 assets verified by
 SHA-256 (Setup f8aa9fb7..., bundle a21f2ff6...); releases/latest/download/sly2-release.txt and the bundle URL answer
 200 unauthenticated, so installed launchers self-update. Next: the owner picks the next improvements (list in the
