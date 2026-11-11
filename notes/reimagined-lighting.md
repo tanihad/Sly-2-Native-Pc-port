@@ -291,3 +291,53 @@ cold PASS (orbit 1.118 x, trees 1.029 x); no world-matrix flip, every texture ch
 jumps, hence the flip check (0.1.1214 cannot log it; on its trees path the new code counts 119 wrong frames). Two runs
 of the same path differ by < 0.5 %. Standard gates on the final code: run_tests, 28 unit suites (all exit 0), m9_exact S1 + S3 -Game
 identical, gpu_diff_all 28/28, r2_sweep Faithful 9/9 and Reimagined 9/9 (ep1, ep3, m2_boardroom x tfo, tfb, mf); after them only Reimagined-side logging changed (the world-camera cut / flip lines the gate reads).
+## Local lights (2026-11-11, branch next/local-lights)
+
+Owner's menu item 3 ("local lights from lamps / windows / fires"): under Look = Reimagined the game's own point lights
+(lamps, lit windows, torches, fires, neon, and the designers' fill lights) light the ground, walls, Sly and the other
+characters around them; before, only the key light (the moon) was re-lit and the night levels looked moonlit only.
+
+**Where the light data comes from: the game's own light table** (RE with scripts/r2_dis.py, func 0x1A4478 builds each
+object's light set from the best four of 0x1A3F78's search; 0x1A3D00 registers a light):
+- the static world SW = 0x3DD490; SW + 0x4154: LIGHT* table[256] (a slot's LIGHT + 0x118 = its index); SW + 0x4590 the
+  free-slot bitmask (8 words, set = free); SW + 0x4570 / 0x4580 the always-considered lights (256-bit mask); SW + 0x455C
+  a BSP of light influence (node: plane +0, children +0x10 / +0x14, leaf +0x1C -> a 32-byte mask at SW + 0x4564 + 32 leaf).
+- LIGHT: +0xE0 kind (1 point, 0 directional), +0xF0 colour as hue / saturation / value (0..255 scale), +0x100 world
+  position (w = 1), +0x110 / +0x114 the search score a + b x distance (0 at the outer radius), +0x120 the VU record (3 qw,
+  copied into an object's light set at VU 0x15 + 3 i): {type, ambient share y, diffuse share z (< 0: the VU's direction
+  convention), falloff offset}, {colour rgb (max channel 1), w}, {position, falloff slope}: falloff
+  clamp(w0 + slope d, 0, 1) = 1 inside +0x164 (inner radius), 0 at +0x168 (outer radius); +0x150 two shading params,
+  +0x15C a flag. The VU (0x1050) lights a vertex with colour x 2 (z min(d + d^3, -y / z) + y) x falloff, d = N . (vertex -
+  light) / |..|: a wrapped diffuse.
+- Census: ep2 hub 168 lights (~70 warm torches / fires (1, 0.61, 0.22), (1, 0.74, 0.37), ~80 cool blue moonlight fills
+  of radius 400-2500), ep1 hub 241 (mostly warm street lamps / windows (1, 0.9, 0.41), (1, 0.77, 0.45), radius 130-1400,
+  some cyan: the fountain), m2 boardroom 58 (one directional). All kind 1 except that one; the values are constant (the
+  game animates none of them).
+
+**Path** (all Reimagined-only; Faithful / Retro never see it): r2_capture.c lights_capture copies the point lights
+(r2.h r2_light, 64 bytes) into the frame's scene slot at the frame's start (only when the look is Reimagined, or
+PS2_REIMAGINE=1; PS2_REIM_LIGHTS=0: never); gpu_r2front.c writes them into the frame data once per data arena
+(gf_data_epoch) and points gpu_r2_frame's unused `pad` at them; gpu_reim.h reim_note copies the table on the render
+thread (RLIN; the frame data does not outlive the frame).
+
+**Per frame** (gpu_reim.h reim_lights_build): lights whose sphere misses the picture (the picture's own ndc range: the
+clip volume is the VU's guard band, ~8 x the picture) are not sent but keep their weight, so turning towards a lamp
+never fades it in; the rest are ranked (strength x kind x radius / distance, 25 % hysteresis) and the Quality's count
+kept (Low none, Medium 32, High 64, Ultra 96); each light's weight eases in / out over 0.25 s (a light the game adds,
+one entering / leaving the count): nothing pops. Kind: warm sources fully, cool fills x 0.3, wide fills (outer radius >
+1200..2500) down to x 0.4. Fires (orange, small) flicker gently: x (1 + 0.06 (three slow sines, 1.7 / 4.3 / 9.1 Hz,
+phases from the light's id)), deterministic (the clock steps 1 / frame rate per post pass).
+
+**Shading** (light.hlsl ps_reim_local, half res, after the depth pass): world position from the depth (r_world), the
+normal from the depth 2 texels each way (the flatter neighbour), per light the game's own wrapped diffuse x a pool
+falloff: (1 - x^2)^2 / (1 + x^2 / core^2), x = distance / outer radius, core 0.35 (half the light at a third of the
+radius: it reads as coming from the lamp, a soft tail to the radius). Composite (ps_reim_comp): depth-aware upsample
+with the occlusion, then lin += (lin + 0.025) x E (the picture's colour as the surface's, a floor so dark paint still
+shows the pool), before the fire glow, the bloom and the grade. No shadows from local lights (light passes through
+walls within a light's radius: the radii are small).
+
+Switches: PS2_REIM_LIGHTS=0 (kill switch: EE copy and pass), _N (count), _Q (quality 0..3), _I (gain, 3.0), _FLOOR
+(0.025), _COOL (0.3), _FLICK (0.06), _CORE (0.35), _POOL (1: pool falloff; 0: the game's linear ramp), _D0 / _D1 (fade
+by distance, 6000 / 12000), PS2_REIM_LIGHTS_DUMP=1|2 (the table every 600 VBlanks), PS2_REIM_DBG=5 (the light buffer,
+each light's place as a magenta dot), PS2_REIM_LOG=2 (each drawn light's picture position). In-run A/B: PS2_REIM_X=32
+with PS2_GPU_AB_R8=4096 (A no local lights, B local lights). GPU profile category "reim-lights".
