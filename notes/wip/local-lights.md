@@ -17,14 +17,19 @@ from the game's own light objects; stable in motion; <= 1 ms GPU at 1440p; PS2_R
   fires); light.hlsl ps_reim_local (half res) + composite (lin += (lin + floor) * E); DBG=5 shows the light buffer.
 - PS2_REIM_X bit 32 = local lights (A/B in one run with PS2_GPU_AB_R8=4096).
 
-## In progress
-- tuning strength / falloff (pool shape: win / (1 + x^2 / core^2)); ep1 lights' positions check (log level 2).
+## Results so far
+- Tuned: gain 3.0, floor 0.025, pool core 0.35, kind weight (rl_kind). Positions verified (DBG=5 markers on ep1 lamps).
+- Cost (in-run A/B PS2_REIM_X=32, R8 4096, High 1440p MSAA 8x 120 fps, AI net off): ep1 orbit 7.08 -> 7.22 ms
+  (+0.14; pass 0.13 ms), ep2 trees 8.65 -> 8.80 (+0.14; pass 0.09).
+- Stability lights off vs on (reim_ab_stability -Mask 4096 -Extra PS2_REIM_X=32): orbit dark flicker/motion 13.44 ->
+  12.36 (0.92x), trees 5.36 -> 5.05 (0.94x). reim_stability_gate warm PASS (orbit 1.024x, trees 0.991x).
+- Gates so far: run_tests, unit suites 0 failures, m9_exact S1+S3 -Game identical (base build\basert_ll = e656907
+  runtime), gpu_diff_all 28/28 (code of 8d422de; later only Reimagined-side gpu_reim.h changes).
 
 ## Next
-1. Tune on ep2 / ep1; interior (m2_boardroom), cutscene; motion videos (scratchpad vid.ps1: two deterministic runs
-   PS2_REIM_LIGHTS=0 vs on, side-by-side mp4).
-2. Cost (PS2_GPU_PROF "reim-lights"), before/after fps.
-3. Gates; notes/reimagined-lighting.md "Local lights" section.
+1. m2_boardroom / m7_robot_war (cutscene) A/B stills + cost; motion videos (scratchpad vid.ps1 off vs on).
+2. reim_stability_gate -Cold, gfx_stress_gate, r2_sweep Faithful + Reimagined.
+3. Final notes section numbers, Status complete.
 
 ## Traps
 - light_shots dumps only pictures whose VBlank is a multiple of -Every; the PS2_GPU_AB phase switch logged "from vN"

@@ -490,7 +490,7 @@ static int reim_lights_build(const float* pv, const float* cam, const float* ndc
     for (int i = 0; i < RLIN.n; i++) {
         const re_light_rec* L = &RLIN.l[i];
         uint32_t s = L->id & 0xFFu;
-        if (!vis[i] || chosen[i] != (pass == 0) || RL.w[s] < 0.002f || n >= RL_MAX) continue;
+        if (!vis[i] || chosen[i] != (pass == 0) || RL.w[s] < 0.002f || n >= RL_MAX || (pass && n >= nmax + 16)) continue;
         float dx = L->pos[0] - cam[0], dy = L->pos[1] - cam[1], dz = L->pos[2] - cam[2];
         float dist = sqrtf(dx * dx + dy * dy + dz * dz);
         float fd = 1.0f - rl_smooth(RL.d0, RL.d1, dist - L->r_out);
