@@ -18,7 +18,8 @@
  *            RGBA8: ~200 MB at the pre-sized classes). Low video memory (use > 97 % of the budget): the net is released
  *            (images built so far stay), the maps are dropped above 99 %.
  *   config   gpu_tex_look (gfx.c: graphics.look = reimagined); PS2_TEX_AI=0|1 wins. PS2_AI_WEIGHTS (the converted
- *            weights: scripts/ai_model.py export; default <exe dir>\models\x4plus.bin, then <user dir>\models\x4plus.bin),
+ *            weights: scripts/ai_model.py export; default <exe dir>\models\x4plus.bin, then <exe dir>\x4plus.bin (where a
+ *            1.0.x launcher's update puts it: scripts/build_game.py), then <user dir>\models\x4plus.bin),
  *            PS2_AI_MS, PS2_AI_MS_MIN, PS2_AI_GRAIN (0), PS2_AI_RESTORE (1: faint lines the net erased), PS2_AI_CLARITY (0.8: mid-band luminance boost),
  *            PS2_AI_PAD (12), PS2_AI_LOG=1, PS2_AI_NET=0 (cache only),
  *            PS2_TEX_NRM=0 (no maps), PS2_TEX_NRM_K (10: slope), PS2_TEX_DUMP=3 (also <hash>_ai.png / _nrm.png). */
@@ -284,6 +285,7 @@ static void ra_init_net(void) {
         GetModuleFileNameW(NULL, wp, 600);
         wchar_t* sl = wcsrchr(wp, L'\\');
         if (sl) { wcscpy(sl + 1, L"models\\x4plus.bin"); }
+        if (sl && GetFileAttributesW(wp) == INVALID_FILE_ATTRIBUTES) wcscpy(sl + 1, L"x4plus.bin");   /* (a 1.0.x launcher's update) */
         if (GetFileAttributesW(wp) == INVALID_FILE_ATTRIBUTES && settings_user_path)
             settings_user_path(L"models\\x4plus.bin", wp, 600);
         WideCharToMultiByte(CP_UTF8, 0, wp, -1, path, sizeof path, NULL, NULL);

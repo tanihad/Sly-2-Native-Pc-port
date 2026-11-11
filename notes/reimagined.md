@@ -95,10 +95,11 @@ without real defects that the approved models give.
    reloads it from the cache when the texture comes back.
 
 Weights: the converted file (`python -I scripts/ai_model.py export RealESRGAN_x4plus.pth x4plus.bin`, restricted
-unpickler + SHA-256 check, 64 MB fp32) at PS2_AI_WEIGHTS, else `<exe dir>\models\x4plus.bin`, else `<user dir>\models\
-x4plus.bin`. No Python at run time. The game only reads that file (SLYAIW01: names, shapes, float32); missing -> the
-cache alone is used and Faithful's images show for the rest (logged). Shipping it is the owner's call (BSD-3 allows it
-with the licence text in the third-party notices); it is never committed.
+unpickler + SHA-256 check, 64 MB fp32) at PS2_AI_WEIGHTS, else `<exe dir>\models\x4plus.bin`, else `<exe dir>\
+x4plus.bin` (where a 1.0.x launcher's update puts it), else `<user dir>\models\x4plus.bin`. No Python at run time. The
+game only reads that file (SLYAIW01: names, shapes, float32); missing -> the cache alone is used and Faithful's images
+show for the rest (logged). Shipped (owner approved, 2026-11-10): Setup and every update bundle carry it, the launcher
+installs it as `game\models\x4plus.bin` (notes/install.md "AI model", THIRD-PARTY-NOTICES.txt); it is never committed.
 
 ### Numbers (RTX 4060 Ti 8 GB, shared with other agents' game runs and at times VALORANT: GPU numbers are noisy)
 
@@ -173,6 +174,6 @@ this runs (tcf_look 0, ra_on_now 0); the shared code only gained an unused slot 
 
 - The menu still hides Reimagined unless sly2.ini says `look = reimagined` (menu.c build_choices): the owner decides
   when both halves are in.
-- Shipping the weights (models\x4plus.bin, BSD-3) and a "prepare all levels" button (needs a census of every level's
-  textures from the disc data rather than walks).
+- A "prepare all levels" button (needs a census of every level's textures from the disc data rather than walks).
+  (Shipping the weights: done, notes/install.md "AI model".)
 - fp16 feature buffers would halve the net's 294 MB and speed it up on cards with fast fp16.

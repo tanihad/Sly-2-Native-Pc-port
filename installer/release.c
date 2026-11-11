@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <windows.h>
+#include <bcrypt.h>
 
 /* ---- manifest ----------------------------------------------------------------------------------- */
 
@@ -298,4 +299,76 @@ void stage_version(const wchar_t* dir, const wchar_t* subdir, char* out, size_t 
     CloseHandle(h);
     size_t n = strlen(out);
     while (n && (out[n - 1] == '\n' || out[n - 1] == '\r' || out[n - 1] == ' ')) out[--n] = 0;
+}
+
+/* ---- the AI model ------------------------------------------------------------------------------ */
+
+int release_sha256_file(const wchar_t* path, uint8_t out[32]) {
+    HANDLE f = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, NULL);
+    if (f == INVALID_HANDLE_VALUE) return 0;
+    BCRYPT_ALG_HANDLE alg = NULL;
+    BCRYPT_HASH_HANDLE h = NULL;
+    int ok = BCRYPT_SUCCESS(BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA256_ALGORITHM, NULL, 0)) &&
+             BCRYPT_SUCCESS(BCryptCreateHash(alg, &h, NULL, 0, NULL, 0, 0));
+    enum { CHUNK = 1 << 20 };
+    uint8_t* buf = ok ? malloc(CHUNK) : NULL;
+    ok = ok && buf;
+    for (DWORD got = 0; ok;) {
+        if (!ReadFile(f, buf, CHUNK, &got, NULL)) { ok = 0; break; }
+        if (!got) break;
+        ok = BCRYPT_SUCCESS(BCryptHashData(h, buf, got, 0));
+    }
+    ok = ok && BCRYPT_SUCCESS(BCryptFinishHash(h, out, 32, 0));
+    free(buf);
+    if (h) BCryptDestroyHash(h);
+    if (alg) BCryptCloseAlgorithmProvider(alg, 0);
+    CloseHandle(f);
+    return ok;
+}
+
+int stage_place_model(const wchar_t* src_dir, const wchar_t* staging, char* why, size_t cap) {
+    wchar_t src[1024], sum[1024], dd[1024], dst[1024], part[1024];
+    sub(src, src_dir, MODEL_FILE);
+    sub(sum, src_dir, MODEL_FILE L".sha256");
+    if (!is_file(src)) return 0;                     /* (sources of a version without the model) */
+    sub(dd, staging, L"models");
+    sub(dst, dd, MODEL_FILE);
+    _snwprintf(part, 1024, L"%ls.part", dst);
+    part[1023] = 0;
+    char text[160] = "";
+    HANDLE h = CreateFileW(sum, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    if (h != INVALID_HANDLE_VALUE) {
+        DWORD got = 0;
+        if (ReadFile(h, text, sizeof text - 1, &got, NULL)) text[got] = 0;
+        CloseHandle(h);
+    }
+    uint8_t want[32], have[32];
+    if (strlen(text) < 64 || (text[64] && !isspace((unsigned char)text[64])) || !ed25519_from_hex(text, want, 32)) {
+        setwhy(why, cap, "the sources' models\\x4plus.bin.sha256 is missing or not a SHA-256", NULL);
+        return -1;
+    }
+    if (!CreateDirectoryW(dd, NULL) && GetLastError() != ERROR_ALREADY_EXISTS) {
+        setwhy(why, cap, "cannot create the models folder", NULL);
+        return -1;
+    }
+    DeleteFileW(part);
+    if (!CopyFileW(src, part, FALSE)) {
+        setwhy(why, cap, "cannot copy models\\x4plus.bin (is the disk full?)", NULL);
+        DeleteFileW(part);
+        RemoveDirectoryW(dd);
+        return -1;
+    }
+    if (!release_sha256_file(part, have) || memcmp(have, want, 32)) {
+        setwhy(why, cap, "the copied models\\x4plus.bin does not match its SHA-256: not installed", NULL);
+        DeleteFileW(part);
+        RemoveDirectoryW(dd);
+        return -1;
+    }
+    if (!MoveFileExW(part, dst, MOVEFILE_REPLACE_EXISTING)) {
+        setwhy(why, cap, "cannot write models\\x4plus.bin", NULL);
+        DeleteFileW(part);
+        RemoveDirectoryW(dd);
+        return -1;
+    }
+    return 1;
 }

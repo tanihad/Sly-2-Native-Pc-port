@@ -28,6 +28,40 @@ APPROVED = {
     MODEL_SHA256: 'RealESRGAN_x4plus_anime_6B.pth',
     '4FA0D38905F75AC06EB49A7951B426670021BE3018265FD191D2125DF9D682F1': 'RealESRGAN_x4plus.pth',
 }
+# The weights Setup and the update bundle ship (scripts/make_installer.py, notes/ai-textures.md "Shipping"): `export` of
+# RealESRGAN_x4plus.pth is deterministic (fixed tensor order, raw float32), so the .bin has one SHA-256, recorded here.
+# check_no_game_data.py allows exactly this file (it is third-party weights, nothing of the game).
+X4PLUS_PTH_SHA256 = '4FA0D38905F75AC06EB49A7951B426670021BE3018265FD191D2125DF9D682F1'
+X4PLUS_BIN_SHA256 = 'B3FF1E5FB8F9F5FC2A39BD5045EACFB43F9DF3A1163856DF6A8638E2364874D3'
+X4PLUS_BIN_SIZE = 66819626
+
+
+def sha256_file(path):
+    h = hashlib.sha256()
+    with open(path, 'rb') as f:
+        for chunk in iter(lambda: f.read(1 << 20), b''):
+            h.update(chunk)
+    return h.hexdigest().upper()
+
+
+def export_x4plus(pth, out):
+    """x4plus.bin from the pinned RealESRGAN_x4plus.pth: checks the .pth's SHA-256 first and the result's after.
+    An existing `out` with the pinned SHA-256 is kept (it is the same bytes). Returns the .bin's SHA-256."""
+    import os
+    if os.path.isfile(out) and os.path.getsize(out) == X4PLUS_BIN_SIZE and sha256_file(out) == X4PLUS_BIN_SHA256:
+        return X4PLUS_BIN_SHA256
+    if sha256_file(pth) != X4PLUS_PTH_SHA256:
+        raise SystemExit(f'{pth}: not the pinned RealESRGAN_x4plus.pth (SHA-256 {X4PLUS_PTH_SHA256[:8]}...)')
+    state = load_state(pth)
+    arch = check_arch(state)
+    tmp = str(out) + '.tmp'
+    export(state, arch, tmp)
+    got = sha256_file(tmp)
+    if got != X4PLUS_BIN_SHA256:
+        os.remove(tmp)
+        raise SystemExit(f'export of {pth}: SHA-256 {got}, expected the pinned {X4PLUS_BIN_SHA256} (exporter changed?)')
+    os.replace(tmp, out)
+    return got
 
 
 # ---- inert stand-ins for the only globals a state-dict pickle may name ------------------------------------------------

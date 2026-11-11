@@ -192,6 +192,11 @@ static void mk(const wchar_t* rel, const char* content) {
     wcscpy(d, p);
     wchar_t* s = wcsrchr(d, L'\\');
     *s = 0;
+    for (wchar_t* q = d + wcslen(T) + 1; (q = wcschr(q, L'\\')) != NULL; q++) {   /* (parents first) */
+        *q = 0;
+        CreateDirectoryW(d, NULL);
+        *q = L'\\';
+    }
     CreateDirectoryW(d, NULL);
     HANDLE h = CreateFileW(p, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);
     DWORD w;
@@ -283,6 +288,62 @@ static void test_stage(void) {
     stage_delete_tree(T);
 }
 
+/* ---- the AI model: builder\models\x4plus.bin -> game.new\models\x4plus.bin, SHA-256 checked; rollback keeps each
+ * version's own model (it lives inside the game folder) ---------------------------------------------------------- */
+static void path_of(wchar_t* out, const wchar_t* rel) { _snwprintf(out, 1024, L"%ls\\%ls", T, rel); }
+
+static void test_model(void) {
+    /* sha256("abc") */
+    static const char abc[] = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+    wchar_t src[1024], st[1024], p[1024];
+    char why[256], v[64];
+    unsigned long err;
+    uint8_t d[32], want[32];
+    stage_delete_tree(T);
+    CreateDirectoryW(T, NULL);
+    path_of(src, L"builder\\models");
+    mk(L"builder\\models\\x4plus.bin", "abc");
+    path_of(p, L"builder\\models\\x4plus.bin");
+    ed25519_from_hex(abc, want, 32);
+    CHECK(release_sha256_file(p, d) && !memcmp(d, want, 32), "release_sha256_file(\"abc\")");
+    /* sources without the model (an older version): nothing placed, no error */
+    CHECK(stage_begin(T, st, 1024), "begin");
+    wchar_t none[1024];
+    path_of(none, L"builder\\no-models");
+    CHECK(stage_place_model(none, st, why, sizeof why) == 0 && !has(L"game.new\\models"), "no model in the sources: nothing done");
+    /* no .sha256 next to it: refused */
+    CHECK(stage_place_model(src, st, why, sizeof why) == -1 && !has(L"game.new\\models"), "a model without its SHA-256: refused");
+    /* a wrong SHA-256: refused, nothing left in staging */
+    mk(L"builder\\models\\x4plus.bin.sha256", "0000000000000000000000000000000000000000000000000000000000000000  x4plus.bin\n");
+    CHECK(stage_place_model(src, st, why, sizeof why) == -1 && !has(L"game.new\\models"), "a model that does not match: refused, staging clean");
+    mk(L"builder\\models\\x4plus.bin.sha256", "not a hash\n");
+    CHECK(stage_place_model(src, st, why, sizeof why) == -1, "a malformed .sha256: refused");
+    /* the right one: placed and verified, then committed with the game */
+    char line[100];
+    snprintf(line, sizeof line, "%s  x4plus.bin\n", abc);
+    mk(L"builder\\models\\x4plus.bin.sha256", line);
+    mk(L"game.new\\sly2.exe", "2.0");
+    CHECK(stage_place_model(src, st, why, sizeof why) == 1 && has(L"game.new\\models\\x4plus.bin") &&
+          !has(L"game.new\\models\\x4plus.bin.part"), "the model is placed in game.new\\models");
+    path_of(p, L"game.new\\models\\x4plus.bin");
+    CHECK(release_sha256_file(p, d) && !memcmp(d, want, 32), "the placed copy has the right SHA-256");
+    /* an update over a version without the model (1.0.2: game\sly2.exe only), then rollback and forward */
+    stage_delete_tree(st);
+    mk(L"game\\sly2.exe", "1.0.2");
+    mk(L"game\\sly2-version.txt", "0.1.1136 d1d7328");
+    CHECK(stage_begin(T, st, 1024), "begin the update");
+    mk(L"game.new\\sly2.exe", "new");
+    CHECK(stage_place_model(src, st, why, sizeof why) == 1, "update: model placed");
+    CHECK(stage_mark_complete(T, "0.1.2000 abc") && stage_commit(T, &err), "update committed");
+    ver(L"game", v);
+    CHECK(!strcmp(v, "0.1.2000 abc") && has(L"game\\models\\x4plus.bin") && !has(L"game.old\\models"), "game has the model, game.old (1.0.2) none");
+    CHECK(stage_rollback(T, &err), "rollback to 1.0.2");
+    ver(L"game", v);
+    CHECK(!strcmp(v, "0.1.1136 d1d7328") && !has(L"game\\models") && has(L"game.old\\models\\x4plus.bin"), "rolled back: 1.0.2 without the model, the update's kept");
+    CHECK(stage_rollback(T, &err) && has(L"game\\models\\x4plus.bin"), "forward again: the model is back");
+    stage_delete_tree(T);
+}
+
 int main(int argc, char** argv) {
     if (argc < 2) { printf("usage: test_release <temp folder> [python cases]\n"); return 2; }
     MultiByteToWideChar(CP_ACP, 0, argv[1], -1, T, 1024);
@@ -290,6 +351,7 @@ int main(int argc, char** argv) {
     if (argc > 2) test_python_cases(argv[2]);
     test_manifest();
     test_stage();
+    test_model();
     printf("%d passed, %d failed\n", passes, fails);
     return fails ? 1 : 0;
 }
