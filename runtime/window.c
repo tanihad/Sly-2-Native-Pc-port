@@ -33,6 +33,7 @@
 #include "input.h"
 #include "input_internal.h"
 #include "window_gpu.h"
+#include "gpu_adapter.h"                  /* the high-performance GPU on laptops with two */
 
 #include <stdarg.h>
 #include <windows.h>
@@ -51,6 +52,11 @@
 #define WINDOW_TITLE     "Sly 2: Band of Thieves"
 
 void (*window_exit_hook)(int code);      /* set by main (launch_exit); NULL: ExitProcess */
+
+/* Laptops with two GPUs: the NVIDIA (Optimus) and AMD (switchable graphics) drivers run an exe that exports these on
+ * the discrete GPU (gpu_adapter.h). */
+__declspec(dllexport) DWORD NvOptimusEnablement = 1;
+__declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
 #define LIVE_RESIZE_TIMER 1
 
 static void wlog(const char* fmt, ...) {
@@ -849,12 +855,16 @@ static int d3d_init(HWND hwnd) {
 
     static const D3D_FEATURE_LEVEL levels[] = { D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0,
                                                 D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_10_0 };
-    static const D3D_DRIVER_TYPE drivers[] = { D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP };
-    for (size_t i = 0; i < 2 && !d3d.dev; i++) {
-        hr = create(NULL, drivers[i], NULL, 0, levels, 4, D3D11_SDK_VERSION, &d3d.dev, &d3d.level, &d3d.ctx);
+    /* the high-performance GPU on laptops with two (gpu_adapter.h), then the default adapter, then WARP */
+    IDXGIAdapter* hp = ps2_pick_adapter();
+    IDXGIAdapter* adapters[] = { hp, NULL, NULL };
+    static const D3D_DRIVER_TYPE drivers[] = { D3D_DRIVER_TYPE_UNKNOWN, D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP };
+    for (size_t i = hp ? 0 : 1; i < 3 && !d3d.dev; i++) {
+        hr = create(adapters[i], drivers[i], NULL, 0, levels, 4, D3D11_SDK_VERSION, &d3d.dev, &d3d.level, &d3d.ctx);
         if (hr == E_INVALIDARG)          /* runtimes without 11_1 reject the whole list */
-            hr = create(NULL, drivers[i], NULL, 0, levels + 1, 3, D3D11_SDK_VERSION, &d3d.dev, &d3d.level, &d3d.ctx);
+            hr = create(adapters[i], drivers[i], NULL, 0, levels + 1, 3, D3D11_SDK_VERSION, &d3d.dev, &d3d.level, &d3d.ctx);
     }
+    if (hp) IDXGIAdapter_Release(hp);
     if (!d3d.dev) { why = "no Direct3D 10/11 capable device"; goto fail; }
 
     hr = compile(d3d_shader_src, sizeof d3d_shader_src - 1, "window", NULL, NULL, "vs_main", "vs_4_0",

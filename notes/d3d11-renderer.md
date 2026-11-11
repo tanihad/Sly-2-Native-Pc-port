@@ -124,6 +124,15 @@ runs on a **frontend thread** of its own: the GS thread decodes and a proxy ship
 deltas, transfer contents, CLUT changes and VBlanks through an SPSC ring (`gpu_fthread.c`); the
 frontend's output is identical to the same-thread one. Appendix D.)*
 
+**Laptops with two GPUs (1.1.1, 2026-11-11).** Until 1.1 both device starts passed a NULL adapter, i.e. Windows'
+default, which on Optimus / AMD switchable laptops is the integrated GPU (the one wired to the built-in screen). The
+owner's RTX 5070 laptop (2560x1600) ran the game there: slow, and pixelated at every resolution setting because the
+scale governor (gpu_hw.c) held the internal scale at its floor. Now `runtime/gpu_adapter.h` picks the
+`DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE` adapter (IDXGIFactory6; skips the Basic Render Driver; falls back to the
+default adapter if creation fails) for gpu_d3d11.c and window.c alike, and window.c exports `NvOptimusEnablement` and
+`AmdPowerXpressRequestHighPerformance`. `PS2_GPU_PREFER=default` restores the old choice. The log's `[gpu] adapter:`
+line names the GPU in use; check it first for any "slow on a laptop" report.
+
 ### 2.2 Files
 
 New directory `runtime/gpu/` (non-frozen; the frozen `hw.h` and `gs_internal.h` do not change):
