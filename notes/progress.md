@@ -2,7 +2,12 @@
 
 ## Resume here (read first in a new session)
 
-**2026-11-10: release candidate 0.1.1237 built (main 9328406), waiting for the owner's test; NOT on GitHub yet.**
+**2026-11-11: 1.1 RELEASED** - "Sly 2 PC 1.1", tag v0.1.1237 (9328406), Latest, repo public. 5 assets verified by
+SHA-256 (Setup f8aa9fb7..., bundle a21f2ff6...); releases/latest/download/sly2-release.txt and the bundle URL answer
+200 unauthenticated, so installed launchers self-update. Next: the owner picks the next improvements (list in the
+2026-11-08 entry below).
+
+**2026-11-10: release candidate 0.1.1237 built (main 9328406), waiting for the owner's test.**
 Look-switch crash fixed (next/reimagine-crash 605be08: the Reimagined cache list overflowed its buffer on every
 re-enable; gfx_stress_gate 0 crashes in 6873 changes) + Setup/update carry the x4plus model (next/setup-model).
 Gates on main: run_tests, 28 unit suites. Setup build\installer\Sly2-Setup.exe (--art, 62.9 MB, sha256 F8AA9FB7...),
