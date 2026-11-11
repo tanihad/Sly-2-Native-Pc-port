@@ -11,8 +11,12 @@
 # Passes (exit 0) when no visible swap happened after the first 3D frame. One game run; nothing is left but a summary
 # (and the frames with -Video).
 param([switch]$Cold, [string]$Scene = 'ep2_hub', [string]$Seed = '', [string]$Extra = '', [int]$Seconds = 260, [string]$Tag = 'pop',
-      [int]$Video = 0, [switch]$KeepLog, [string]$Size = '2560x1440')
+      [int]$Video = 0, [switch]$KeepLog, [string]$Size = '2560x1440', [string]$SeedOut = '')
 $wt = Split-Path $PSScriptRoot -Parent
+if ($Seed -and -not [IO.Path]::IsPathRooted($Seed)) { $Seed = Join-Path $wt $Seed }
+if ($SeedOut -and -not [IO.Path]::IsPathRooted($SeedOut)) { $SeedOut = Join-Path $wt $SeedOut }
+# (timings: no other game run on this PC - another agent's runs share the GPU; wait for them, up to 40 minutes)
+for ($k = 0; $k -lt 80 -and @(Get-Process -Name 'sly2*' -ErrorAction SilentlyContinue).Count; $k++) { Start-Sleep -Seconds 30 }
 $w = Join-Path $wt 'build\models\x4plus.bin'
 if (-not (Test-Path $w)) { $w = Join-Path (Split-Path $wt -Parent) 'light\build\models\x4plus.bin' }
 $env:PS2_AI_WEIGHTS = $w
@@ -21,6 +25,15 @@ if ($Cold) {
     Remove-Item -Recurse -Force $Seed -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force $Seed | Out-Null
 } elseif (-not $Seed) { $Seed = Join-Path $wt 'build\prebuild\texcache_warm' }
+# (warm: the run works on a copy of the seed - every run starts from the same cache; -SeedOut keeps the copy, with the
+# images and level lists the run added)
+$tmpSeed = $null
+if (-not $Cold) {
+    $tmpSeed = if ($SeedOut) { $SeedOut } else { Join-Path $wt "build\prebuild\seed_run_$Tag" }
+    Remove-Item -Recurse -Force $tmpSeed -ErrorAction SilentlyContinue
+    robocopy $Seed $tmpSeed /E /NFL /NDL /NJH /NJS /NP | Out-Null
+    $Seed = $tmpSeed
+}
 $env:PS2_TEXCACHE_SEED = $Seed
 $ini = 'graphics.look=reimagined;graphics.render_scale=100%;graphics.msaa=8x;graphics.outlines=thin;graphics.filters=modern;graphics.preset=high'
 # (X at the safehouse -> the hub's load; then walk + camera turns, as gfx_stress_gate's walk with the right stick)
@@ -83,5 +96,8 @@ if ($Video -gt 0) {
     "  frames: $fd ($(@(Get-ChildItem $fd).Count))"
 }
 Remove-Item -Recurse -Force $d -ErrorAction SilentlyContinue
+if ($tmpSeed -and -not $SeedOut) { Remove-Item -Recurse -Force $tmpSeed -ErrorAction SilentlyContinue }
+if ($Cold -and -not $SeedOut) { Remove-Item -Recurse -Force $Seed -ErrorAction SilentlyContinue }
+elseif ($Cold -and $SeedOut) { Remove-Item -Recurse -Force $SeedOut -ErrorAction SilentlyContinue; Move-Item $Seed $SeedOut }
 $vis = if ($sum -match 'swaps after it \d+ \(visible (\d+)\)') { [int]$Matches[1] } else { -1 }
 if ($vis -eq 0 -and -not $crash) { exit 0 } else { exit 1 }

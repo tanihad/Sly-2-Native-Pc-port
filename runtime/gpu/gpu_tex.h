@@ -39,6 +39,7 @@ static void ra_frame(int* bound);
 static void ra_release(void);
 typedef struct et_slot_s et_slot;
 static void ra_link_note(int32_t idx, const et_slot* s);
+static int ra_direct(int32_t idx);
 static int ra_on_now;                   /* (ai) Reimagined textures this frame */
 
 #define ET_NCLS 6                        /* square classes: 64 << c texels */
@@ -49,7 +50,8 @@ static int ra_on_now;                   /* (ai) Reimagined textures this frame *
 #define ET_MAP 16384                     /* hash -> slot */
 #define ET_SCR_WORDS (2048u * 2048u * 4u / 3u + 64u)   /* scratch: a 2048 level chain */
 #define ET_DD_WORDS (1u << 20)           /* a batch's dither-resolved sources + weights (cs_et_dd -> cs_et_up) */
-enum { ES_NONE, ES_WANT, ES_HASHING, ES_QUEUED, ES_READY, ES_HDLOAD, ES_REJECT };
+enum { ES_NONE, ES_WANT, ES_HASHING, ES_QUEUED, ES_READY, ES_HDLOAD, ES_REJECT, ES_AILOAD };   /* (ES_AILOAD: waits for its AI
+                                          * image from the Reimagined cache - tex-prebuild, gpu_tex_ai.h ra_direct) */
 
 typedef struct {                         /* per decoded entry (the index of TD.ent) */
     uint8_t st, nchg, flags, ref;        /* state; content changes seen; addressing (1 clamp u, 2 clamp v); alpha-test ref */
@@ -60,6 +62,7 @@ typedef struct {                         /* per decoded entry (the index of TD.e
     uint64_t raw;                        /* the content's alone (the HD pack's file name) */
     uint32_t chg;                        /* the frame of the last content change */
     uint32_t want;                       /* (tex-prebuild) the frame it was first noted (statistics: PS2_AI_POPLOG) */
+    uint32_t wait;                       /* (tex-prebuild) ES_AILOAD since this frame */
 } et_ent;
 struct et_slot_s { uint64_t hash; uint32_t last; int32_t first; uint8_t used, hd, ai; };   /* (ai: the AI image is in it) */
 typedef struct { int32_t ent; uint32_t ver; } et_req;
@@ -959,6 +962,7 @@ static void et_resolve(int32_t idx) {
     }
     int32_t id = et_map_find(e->hash);
     if (id >= 0) { et_link(idx, id); ET.n_share++; return; }
+    if (ra_on_now && ra_direct(idx)) return;   /* (tex-prebuild) its AI image from the cache, no Enhanced image first */
     if (ET.qn < TD_HASH) { ET.q[ET.qn++] = idx; e->st = ES_QUEUED; }
 }
 

@@ -39,17 +39,20 @@ extern double frame_rate_target_hz(void) __attribute__((weak));   /* (runtime/fr
 #define RA_JOBQ 4096
 #define RA_REG 64
 
-enum { RI_NONE, RI_WANT, RI_SRC, RI_PREP, RI_TILES, RI_POST, RI_DONE, RI_LOAD, RI_LOADED, RI_EXCL, RI_FAIL };
+enum { RI_NONE, RI_WANT, RI_SRC, RI_PREP, RI_TILES, RI_POST, RI_DONE, RI_LOAD, RI_LOADED, RI_EXCL, RI_FAIL,
+       RI_DECODE, RI_LFAIL, RI_DEFER };   /* (tex-prebuild: a loader decodes it; its file failed; built / loaded while shown) */
 typedef struct {
     uint64_t hash;
     uint8_t st, lw, lh, flags, ref, cut, opaque, file;
+    uint8_t bad, pre, waiters, gen;      /* (tex-prebuild) bad file; a preload (no entry waits); entries wait (ES_AILOAD);
+                                          * a generation (a loader's result for an item reset meanwhile is dropped) */
     uint16_t tiles, left;                /* tiles of the texture, not yet through the net */
     int32_t reg;                         /* upload region (index) or -1 */
     uint32_t* rgba;                      /* (worker: a decoded cache file) */
     uint32_t rw, rh;
 } ra_item;
 typedef struct { int32_t item; uint16_t tx, ty, cw, ch, pw, ph; float* px; } ra_tile;   /* px: r, g, b (0..1), a (0..255) planes */
-enum { RJ_INIT = 1, RJ_PREP, RJ_SAVE, RJ_LOAD };
+enum { RJ_INIT = 1, RJ_PREP, RJ_SAVE, RJ_LOAD, RJ_MANI };   /* (RJ_MANI: write a level's list - tex-prebuild) */
 typedef struct { int type; int32_t item; uint32_t* data; uint32_t w, h; uint8_t flags, opaque; } ra_job;
 
 static struct {
@@ -65,7 +68,7 @@ static struct {
     HANDLE ev, th;
     ra_job jq[RA_JOBQ]; uint32_t jh, jt;
     ra_tile tq[RA_MAXT]; uint32_t tn;    /* prepared tiles (FIFO) */
-    int32_t loaded[256]; uint32_t nloaded;
+    int32_t loaded[512]; uint32_t nloaded;
     ai_gpu* net; ai_gpu* net_new; char net_err[256];
     ID3D11ComputeShader* kcs[16];          /* (created on the worker: a first use on the render thread cost up to 70 ms) */
     ID3D11ComputeShader* kcs_new[16];      /* (reimagine-crash) the worker's new shaders and read-back buffers, handed over */
@@ -91,6 +94,40 @@ static struct {
     uint32_t frames_busy;
 } RA = { 0 };
 
+/* (tex-prebuild) Ready before first sight (notes/reimagined.md): PS2_AI_READY=0 turns all of it off (the 0.1.1247 flow)
+ *   direct    a texture whose AI image is in the cache gets it at its first resolve (ES_AILOAD: the original sampling
+ *             shows until it is there, as it does until an Enhanced image is built) - never an Enhanced image first
+ *   loaders   cache files are decoded by RA_LDN threads (on-demand requests before preloads), not behind the net's
+ *             creation and the tile work on the worker
+ *   levels    every level (widCurrent) keeps a list of the textures it showed (<cache>\levels\w<world>.bin); when the
+ *             level changes (the game writes widCurrent as its load starts) the list's AI images are decoded and built
+ *             into free image slots during the loading screen (a bigger per-frame budget while no 3D is drawn), so the
+ *             level's textures find them at their first use
+ *   defer     an AI image that would replace an Enhanced image a draw used in the last 2 frames waits (RI_DEFER) until the
+ *             texture is out of sight or no 3D is drawn (loading, menus): built images are written to the cache and
+ *             loaded again then - no visible swap (a cold cache's first visit) */
+#define RA_LDN 3                         /* loader threads */
+#define RA_LQ 8192                       /* per queue */
+#define RA_LBYTES (160u << 20)           /* decoded images waiting for their upload, at most */
+#define RA_RECN 8192                     /* textures per level list */
+#define RA_DEFN 4096
+#define RA_PRE_GRACE 2400u               /* a preloaded image is not reused for another one for this many frames */
+typedef struct { uint64_t key; uint8_t lw, lh, flags, ref; uint32_t pad; } ra_rec;
+static struct {
+    int on, nth;
+    HANDLE ev, th[RA_LDN];
+    int32_t q[2][RA_LQ]; uint32_t qh[2], qt[2];   /* 0: on demand, 1: preloads */
+    uint64_t bytes;                      /* decoded, not uploaded yet */
+    /* the level and its list */
+    uint32_t world, wframe, uses_last;
+    ra_rec* rec; uint32_t nrec; uint64_t* set; int dirty; uint32_t saved;
+    uint32_t mreq; int mstate; ra_rec* mbuf; uint32_t mn;   /* (a list read by a loader: mstate 1 asked, 2 reading, 3 ready) */
+    ra_rec* pre; uint32_t npre, ipre;    /* the level list's images still to queue */
+    int32_t defer[RA_DEFN]; uint32_t ndefer;
+    uint32_t n_wait;
+    uint64_t n_direct, n_pre_q, n_pre_built, n_pre_noslot, n_defer, n_defer_done, n_timeout, n_lfail, n_new;
+} RQ = { .on = -1 };
+
 /* (tex-prebuild) PS2_AI_POPLOG=1: what the player sees of the AI images (notes/reimagined.md "Ready before first
  * sight"). The level (the game's widCurrent, read from EE memory), the first frame with 3D art after a level change
  * ("first 3D frame": play starts), and from then on: AI images that replaced an Enhanced image already shown (swaps; visible
@@ -100,7 +137,7 @@ extern uint8_t* ps2_ram __attribute__((weak));   /* (ps2_runtime.c; tools: none)
 #define RA_WID_CURRENT 0x003D4A68u               /* widCurrent (notes/warp.md; r2_capture.c WID_CURRENT) */
 static struct {
     int on;
-    uint32_t world, wframe, first3d, play;
+    uint32_t world, wframe, first3d, play, gap;
     uint64_t swap, swap_vis, swap_play, swap_play_vis, first_ai, first_enh, lat[6];
 } RP = { -1 };
 static uint32_t ra_world_now(void) {
@@ -117,10 +154,8 @@ static void ra_pop_line(const char* why) {
             (unsigned long long)RP.lat[4], (unsigned long long)RP.lat[5]);
 }
 /* (ra_frame, every frame) the level and the first 3D frame after a change; ET.uses = the last frame's art uses */
-static void ra_pop_frame(void) {
+static void ra_pop_frame(uint32_t uses) {
     if (RP.on < 0) { const char* e = getenv("PS2_AI_POPLOG"); RP.on = e && *e == '1'; }
-    uint32_t uses = ET.uses;
-    ET.uses = 0;
     if (!RP.on) return;
     uint32_t w = ra_world_now();
     if (w != RP.world) {
@@ -130,7 +165,13 @@ static void ra_pop_frame(void) {
         memset(&RP, 0, sizeof RP);
         RP.on = (int)keep; RP.world = w; RP.wframe = ET.frame;
     }
-    if (!RP.play && uses) {
+    if (!uses && !RP.gap) {              /* (the level change comes with the title's / last level's frames: play starts after
+                                          * the loading screen - frames without 3D art) */
+        RP.gap = 1;
+        gpu_log("ai-pop: frame %u v%u t %.0f ms world %u: loading (%u frames after the level change)", ET.frame - 1,
+                gpu_stats_cur()->vblank, (double)GetTickCount64(), w, ET.frame - 1 - RP.wframe);
+    }
+    if (!RP.play && uses && RP.gap) {
         RP.play = 1; RP.first3d = ET.frame - 1;
         gpu_log("ai-pop: frame %u v%u t %.0f ms world %u: first 3D frame (%u frames after the level change, %u art uses)", RP.first3d,
                 gpu_stats_cur()->vblank, (double)GetTickCount64(), w, RP.first3d - RP.wframe, uses);
@@ -138,9 +179,14 @@ static void ra_pop_frame(void) {
     if (ET.frame % 1200 == 0) ra_pop_line("");
 }
 /* (et_link) entry idx shows slot s: its first image since it was noted? */
+static int ra_rec_add(const ra_rec* r);
 static void ra_link_note(int32_t idx, const et_slot* s) {
-    if (RP.on <= 0 || !RP.play) return;
     et_ent* e = &ET.e[idx];
+    if (RQ.on > 0 && RQ.world < 0xFFFFFFF0u && !s->hd && (e->lw > e->lh ? e->lw : e->lh) <= 8) {   /* (the level's list) */
+        ra_rec r = { e->hash, e->lw, e->lh, e->flags, e->ref, 0 };
+        if (ra_rec_add(&r)) { RQ.dirty = 1; RQ.n_new++; }
+    }
+    if (RP.on <= 0 || !RP.play) return;
     if (!e->want) return;                /* (counted once per noting) */
     uint32_t d = ET.frame - e->want;
     e->want = 0;
@@ -154,6 +200,7 @@ static void ra_pop_swap(const et_slot* s) {
     RP.swap++; RP.swap_vis += vis;
     if (RP.play) { RP.swap_play++; RP.swap_play_vis += vis; }
 }
+
 
 /* the surface maps (gpu_tex_normals.h) */
 static struct {
@@ -579,6 +626,131 @@ static int ra_save(IWICImagingFactory* f, ra_job* j, const ra_item* it) {
     return ok;
 }
 
+/* ---- (tex-prebuild) level lists and the loader threads ------------------------------------------------------------------- */
+static void ra_level_path(uint32_t world, wchar_t* out, size_t cap, int tmp) {
+    _snwprintf(out, cap, L"%ls\\levels\\w%u.bin%ls", RA.dir, world, tmp ? L".tmp" : L"");
+    out[cap - 1] = 0;
+}
+/* (worker, RJ_MANI) a level's list: "SLYAIL01", count, records (ra_rec); .tmp + rename */
+static void ra_level_write(uint32_t world, const ra_rec* r, uint32_t n) {
+    wchar_t dir[640], path[700], tmp[700];
+    _snwprintf(dir, 640, L"%ls\\levels", RA.dir);
+    dir[639] = 0;
+    CreateDirectoryW(dir, NULL);
+    ra_level_path(world, path, 700, 0);
+    ra_level_path(world, tmp, 700, 1);
+    FILE* f = _wfopen(tmp, L"wb");
+    if (!f) return;
+    int ok = fwrite("SLYAIL01", 1, 8, f) == 8 && fwrite(&n, 4, 1, f) == 1 && fwrite(r, sizeof *r, n, f) == n;
+    ok = fclose(f) == 0 && ok;
+    if (ok) ok = MoveFileExW(tmp, path, MOVEFILE_REPLACE_EXISTING) != 0;
+    if (!ok) DeleteFileW(tmp);
+}
+/* (loader) a level's list, or NULL */
+static ra_rec* ra_level_read(uint32_t world, uint32_t* n) {
+    wchar_t path[700];
+    ra_level_path(world, path, 700, 0);
+    *n = 0;
+    FILE* f = _wfopen(path, L"rb");
+    if (!f) return NULL;
+    char m[8];
+    uint32_t c = 0;
+    ra_rec* r = NULL;
+    if (fread(m, 1, 8, f) == 8 && !memcmp(m, "SLYAIL01", 8) && fread(&c, 4, 1, f) == 1 && c && c <= RA_RECN &&
+        (r = malloc((size_t)c * sizeof *r)) != NULL && fread(r, sizeof *r, c, f) == c)
+        *n = c;
+    else { free(r); r = NULL; }
+    fclose(f);
+    return r;
+}
+
+static int ra_file_of(const ra_item* it) { return !it->bad && (it->file || ra_have(it->hash)); }
+/* queue item i for a loader (q 0: on demand, 1: preload); its state is RI_LOAD */
+static void ra_load_push(int32_t i, int q) {
+    EnterCriticalSection(&RA.cs);
+    if (RQ.qh[q] - RQ.qt[q] < RA_LQ) RQ.q[q][RQ.qh[q]++ % RA_LQ] = i;
+    else RA.it[i].st = RI_NONE;          /* (full: asked again at its next use) */
+    LeaveCriticalSection(&RA.cs);
+    SetEvent(RQ.ev);
+}
+static DWORD WINAPI ra_loader(LPVOID unused) {
+    (void)unused;
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+    HMODULE ole = LoadLibraryW(L"ole32.dll");
+    typedef HRESULT(WINAPI * coinit_fn)(LPVOID, DWORD);
+    typedef HRESULT(WINAPI * cocreate_fn)(REFCLSID, LPUNKNOWN, DWORD, REFIID, LPVOID*);
+    coinit_fn coinit = ole ? (coinit_fn)(void*)GetProcAddress(ole, "CoInitializeEx") : NULL;
+    cocreate_fn cocreate = ole ? (cocreate_fn)(void*)GetProcAddress(ole, "CoCreateInstance") : NULL;
+    IWICImagingFactory* f = NULL;
+    if (coinit && cocreate) {
+        coinit(NULL, COINIT_MULTITHREADED);
+        cocreate(&et_clsid_wic, NULL, CLSCTX_INPROC_SERVER, &et_iid_wic, (void**)&f);
+    }
+    for (;;) {
+        WaitForSingleObject(RQ.ev, 20);
+        for (;;) {
+            int32_t i = -1;
+            uint8_t gen = 0;
+            uint32_t mw = 0;
+            int mani = 0;
+            EnterCriticalSection(&RA.cs);
+            if (RQ.mstate == 1) { RQ.mstate = 2; mw = RQ.mreq; mani = 1; }
+            else if (RQ.bytes < RA_LBYTES && RA.nloaded < 512 - RA_LDN)
+                for (int q = 0; q < 2 && i < 0; q++)
+                    while (RQ.qt[q] != RQ.qh[q] && i < 0) {
+                        int32_t k = RQ.q[q][RQ.qt[q]++ % RA_LQ];
+                        if (RA.it && RA.it[k].st == RI_LOAD) { i = k; RA.it[k].st = RI_DECODE; gen = RA.it[k].gen; }   /* (stale / repeated requests skipped) */
+                    }
+            int more = RQ.mstate == 1 || RQ.qt[0] != RQ.qh[0] || RQ.qt[1] != RQ.qh[1];
+            LeaveCriticalSection(&RA.cs);
+            if (mani) {
+                uint32_t n = 0;
+                ra_rec* r = ra_level_read(mw, &n);
+                EnterCriticalSection(&RA.cs);
+                if (RQ.mstate == 2 && RQ.mreq == mw) { free(RQ.mbuf); RQ.mbuf = r; RQ.mn = n; RQ.mstate = 3; }
+                else free(r);                /* (the level changed again meanwhile) */
+                LeaveCriticalSection(&RA.cs);
+                continue;
+            }
+            if (i < 0) break;
+            if (more) SetEvent(RQ.ev);       /* (the other loaders) */
+            ra_item* it = &RA.it[i];
+            et_hdjob hj;
+            memset(&hj, 0, sizeof hj);
+            hj.raw = it->hash;
+            wchar_t path[700];
+            ra_path(it->hash, 0, path, 700);
+            int ok = f && GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES && et_hd_decode(f, path, &hj);
+            if (!ok && f) { ra_path(it->hash, 1, path, 700); ok = GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES && et_hd_decode(f, path, &hj); }
+            EnterCriticalSection(&RA.cs);
+            if (it->st == RI_DECODE && it->gen == gen) {   /* (else ra_release reset it meanwhile) */
+                if (ok && hj.w == (4u << it->lw) && hj.h == (4u << it->lh)) {
+                    it->rgba = hj.px; it->rw = hj.w; it->rh = hj.h; it->st = RI_LOADED;
+                    RQ.bytes += (uint64_t)hj.w * hj.h * 4u;
+                    hj.px = NULL;
+                } else it->st = RI_LFAIL;    /* (a bad / missing / foreign file: built again) */
+                RA.loaded[RA.nloaded++] = i;
+            }
+            LeaveCriticalSection(&RA.cs);
+            free(hj.px);
+        }
+    }
+    return 0;
+}
+static int ra_ready_on(void) {
+    if (RQ.on < 0) { const char* e = getenv("PS2_AI_READY"); RQ.on = !(e && *e == '0'); }
+    return RQ.on;
+}
+static void ra_loaders_start(void) {
+    if (RQ.nth || !ra_ready_on()) return;
+    RQ.ev = CreateEventW(NULL, FALSE, FALSE, NULL);
+    for (int k = 0; RQ.ev && k < RA_LDN; k++) {
+        RQ.th[k] = CreateThread(NULL, 0, ra_loader, NULL, 0, NULL);
+        if (RQ.th[k]) RQ.nth++;
+    }
+    if (!RQ.nth) { gpu_log("ai: no loader threads: the cache is read by the worker"); RQ.on = 0; }
+}
+
 static DWORD WINAPI ra_thread(LPVOID unused) {
     (void)unused;
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
@@ -604,6 +776,7 @@ static DWORD WINAPI ra_thread(LPVOID unused) {
             if (!any) break;
             ra_item* it = j.item >= 0 ? &RA.it[j.item] : NULL;
             if (j.type == RJ_INIT) ra_init_net();
+            else if (j.type == RJ_MANI) ra_level_write(j.w, (const ra_rec*)j.data, j.h);   /* (tex-prebuild) */
             else if (j.type == RJ_PREP) ra_prep(&j);
             else if (j.type == RJ_SAVE) {
                 int ok = f && ra_save(f, &j, it);
@@ -619,7 +792,7 @@ static DWORD WINAPI ra_thread(LPVOID unused) {
                 int ok = f && GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES && et_hd_decode(f, path, &hj);
                 if (!ok && f) { ra_path(it->hash, 1, path, 700); ok = GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES && et_hd_decode(f, path, &hj); }
                 EnterCriticalSection(&RA.cs);
-                if (ok && hj.w == (4u << it->lw) && hj.h == (4u << it->lh) && RA.nloaded < 256) {
+                if (ok && hj.w == (4u << it->lw) && hj.h == (4u << it->lh) && RA.nloaded < 512 - RA_LDN) {
                     it->rgba = hj.px; it->rw = hj.w; it->rh = hj.h; it->st = RI_LOADED;
                     RA.loaded[RA.nloaded++] = j.item;
                 } else {
@@ -729,6 +902,8 @@ static int ra_init(void) {
     if (RA.inited_thread < 0) return 0;
     if (!RA.it) RA.it = calloc(RA_ITEMS, sizeof *RA.it);
     if (!RA.it) return 0;
+    ra_loaders_start();                  /* (tex-prebuild) */
+    RQ.world = 0xFFFFFFFEu;              /* (the level's list is read at the next frame) */
     ra_list();
     RA.init = 1;
     const char* e = getenv("PS2_TEX_DUMP");
@@ -800,12 +975,234 @@ static int32_t ra_reg_alloc(uint32_t n, int32_t item) {
 }
 static void ra_reg_free(int32_t r) { if (r >= 0) RA.reg[r].item = -1; }
 
-/* build the image in upload region r over the Enhanced image of item i (its slot) */
+/* ---- (tex-prebuild) render thread: direct images, level lists, preloads, deferred swaps ------------------------------------ */
+/* a draw used slot s's image in the last 2 frames (3D is being drawn): replacing it now would show */
+static int ra_visible(const et_slot* s) { return RQ.uses_last && s->first >= 0 && s->last + 2 >= ET.frame; }
+static void ra_defer_add(int32_t i) {
+    RQ.n_defer++;
+    if (RQ.ndefer < RA_DEFN) { RA.it[i].st = RI_DEFER; RQ.defer[RQ.ndefer++] = i; }
+    else RA.it[i].st = RI_NONE;          /* (full: noted again at a later link) */
+}
+/* (et_resolve) entry idx has no image yet: it waits for its AI image when the cache has one (1) */
+static int ra_direct(int32_t idx) {
+    if (RQ.on <= 0 || !RQ.nth || !RA.it) return 0;
+    et_ent* e = &ET.e[idx];
+    if ((e->lw > e->lh ? e->lw : e->lh) > 8) return 0;   /* (sources above 256 texels: Enhanced) */
+    int32_t i = ra_find(e->hash, 1);
+    if (i < 0) return 0;
+    ra_item* it = &RA.it[i];
+    if (!ra_file_of(it)) return 0;
+    switch (it->st) {
+    case RI_NONE: case RI_DONE: case RI_DEFER:
+        it->lw = e->lw; it->lh = e->lh; it->flags = e->flags; it->ref = e->ref;
+        it->file = 1; it->pre = 0; it->st = RI_LOAD;
+        ra_load_push(i, 0);
+        break;
+    case RI_LOAD:
+        if (it->pre) { it->pre = 0; ra_load_push(i, 0); }   /* (a queued preload: now on demand) */
+        break;
+    case RI_DECODE: case RI_LOADED: break;
+    default: return 0;                   /* (excluded, failed, or the net is on it: Enhanced first) */
+    }
+    e->st = ES_AILOAD;
+    e->wait = ET.frame;
+    it->waiters = 1;
+    RQ.n_wait++;
+    RQ.n_direct++;
+    return 1;
+}
+/* entries waiting for item i's image: linked to slot id, or (id < 0) back to an Enhanced build */
+static void ra_waiters(int32_t i, int32_t id) {
+    ra_item* it = &RA.it[i];
+    if (!it->waiters) return;
+    it->waiters = 0;
+    for (int32_t k = 0; k < TD_HASH; k++) {
+        et_ent* e = &ET.e[k];
+        if (e->st != ES_AILOAD || e->hash != it->hash) continue;
+        if (RQ.n_wait) RQ.n_wait--;
+        if (id >= 0) et_link(k, id);
+        else if (ET.qn < TD_HASH) { ET.q[ET.qn++] = k; e->st = ES_QUEUED; }
+        else e->st = ES_NONE;
+    }
+}
+/* entries waiting too long (a loader backlog): an Enhanced image after all (its AI image then comes as a deferred swap) */
+static void ra_wait_poll(void) {
+    if (!RQ.n_wait || ET.frame % 16) return;
+    uint32_t n = 0;
+    for (int32_t k = 0; k < TD_HASH; k++) {
+        et_ent* e = &ET.e[k];
+        if (e->st != ES_AILOAD) continue;
+        if (ET.frame - e->wait < 360) { n++; continue; }
+        if (ET.qn < TD_HASH) { ET.q[ET.qn++] = k; e->st = ES_QUEUED; } else e->st = ES_NONE;
+        RQ.n_timeout++;
+    }
+    RQ.n_wait = n;
+}
+/* a slot of class c for a new AI image: et_alloc's for a texture in use; for a preload only a free slot or one of the
+ * previous level's (unused since the level changed) - never a class growth, never an image of this level */
+static int32_t ra_alloc(int c, int pre) {
+    if (!pre) return et_alloc(c);
+    for (uint32_t j = 0; j < ET.cap[c]; j++) if (!ET.sl[c][j].used) return (int32_t)(c << 16 | j);
+    uint32_t best = 0xFFFFFFFFu, bl = 0xFFFFFFFFu;
+    for (uint32_t j = 0; j < ET.cap[c]; j++) {
+        const et_slot* s = &ET.sl[c][j];
+        if (s->last < RQ.wframe && s->last + 2 < ET.frame && s->last < bl) { bl = s->last; best = j; }
+    }
+    if (best == 0xFFFFFFFFu) return -1;
+    et_slot* s = &ET.sl[c][best];
+    while (s->first >= 0) {              /* (as et_alloc: its entries go back to unknown) */
+        int32_t k = s->first;
+        et_swap_note(k, 'O');
+        et_unlink(k);
+        ET.e[k].st = ES_NONE;
+    }
+    s->used = 0;
+    s->ai = 0;
+    ET.n_evict++;
+    return (int32_t)(c << 16 | best);
+}
+/* item i's decoded image into a new slot (no image of its texture exists): 1 built, 0 no slot, -1 no room this frame */
+static int ra_build_new(int32_t i, int* bound) {
+    ra_item* it = &RA.it[i];
+    uint32_t S = 4u << (it->lw > it->lh ? it->lw : it->lh);
+    int cls = et_class_of(0, 0, (int)(S < 64 ? 64 : S));
+    uint32_t words = it->rw * it->rh;
+    int32_t r = ra_reg_alloc(words, i);
+    if (r < 0) return -1;
+    int32_t id = ra_alloc(cls, it->pre);
+    if (id < 0) { ra_reg_free(r); return 0; }
+    D3D11_BOX bx = { RA.reg[r].at * 4u, 0, 0, (RA.reg[r].at + words) * 4u, 1, 1 };
+    ID3D11DeviceContext_UpdateSubresource(gpu_rt.ctx, (ID3D11Resource*)RA.up, 0, &bx, it->rgba, 0, 0);
+    et_slot* s = et_slot_of(id);
+    s->used = 1; s->hd = 0; s->ai = 1; s->hash = it->hash; s->first = -1;
+    s->last = ET.frame + (it->pre ? RA_PRE_GRACE : 0u);
+    et_ent t;
+    memset(&t, 0, sizeof t);
+    t.lw = (uint8_t)(it->lw + 2); t.lh = (uint8_t)(it->lh + 2); t.flags = it->flags; t.ref = it->ref;
+    if (!*bound) {
+        ID3D11ShaderResourceView* n1 = NULL;
+        ID3D11DeviceContext_PSSetShaderResources(gpu_rt.ctx, 13, 1, &n1);
+        *bound = 1;
+    }
+    if (!et_build(&t, id, RA.up_srv, RA.reg[r].at, 1)) { et_batch_run(); et_build(&t, id, RA.up_srv, RA.reg[r].at, 1); }
+    et_batch_run();
+    et_map_put(it->hash, id);
+    ra_reg_free(r);
+    if (it->pre) RQ.n_pre_built++;
+    ra_waiters(i, id);
+    if (RA.dump) { et_dump_ai(id, it->hash); et_dump_nrm(id, it->hash); }
+    return 1;
+}
+/* deferred AI images whose texture is out of sight now: loaded again from the cache (the file was written meanwhile) */
+static void ra_defer_poll(void) {
+    uint32_t k = 0, pushed = 0;
+    while (k < RQ.ndefer) {
+        int32_t i = RQ.defer[k];
+        ra_item* it = &RA.it[i];
+        int drop = it->st != RI_DEFER;
+        if (!drop) {
+            et_slot* s = et_slot_of(et_map_find(it->hash));
+            if (!s || s->ai || s->hd) { it->st = s && s->ai ? RI_DONE : RI_NONE; drop = 1; }
+            else if (pushed < 32 && !ra_visible(s) && ra_file_of(it)) {
+                it->pre = 0; it->st = RI_LOAD;
+                ra_load_push(i, 0);
+                pushed++; RQ.n_defer_done++; drop = 1;
+            }
+        }
+        if (drop) RQ.defer[k] = RQ.defer[--RQ.ndefer]; else k++;
+    }
+}
+/* the level's list: a texture shown in it (once per level) */
+static int ra_rec_add(const ra_rec* r) {
+    if (!RQ.set) {
+        RQ.set = calloc(2u * RA_RECN, sizeof *RQ.set);
+        RQ.rec = malloc(RA_RECN * sizeof *RQ.rec);
+        if (!RQ.set || !RQ.rec) { free(RQ.set); free(RQ.rec); RQ.set = NULL; RQ.rec = NULL; return 0; }
+    }
+    if (RQ.nrec >= RA_RECN) return 0;
+    uint64_t k = r->key ? r->key : 1;
+    uint32_t h = (uint32_t)((k * 0x9E3779B97F4A7C15ull) >> 50) & (2u * RA_RECN - 1);
+    while (RQ.set[h]) { if (RQ.set[h] == k) return 0; h = (h + 1) & (2u * RA_RECN - 1); }
+    RQ.set[h] = k;
+    RQ.rec[RQ.nrec++] = *r;
+    return 1;
+}
+static void ra_level_flush(void) {       /* (written by the worker) */
+    /* (not while its file is being read: the merge is not in yet and the write would lose it) */
+    if (!RQ.dirty || RQ.world >= 0xFFFFFFF0u || !RQ.nrec || !RA.dir[0] || RA.inited_thread <= 0 || RQ.mstate) return;
+    ra_rec* c = malloc((size_t)RQ.nrec * sizeof *c);
+    if (!c) return;
+    memcpy(c, RQ.rec, (size_t)RQ.nrec * sizeof *c);
+    ra_job j = { RJ_MANI, -1, (uint32_t*)c, RQ.world, RQ.nrec, 0, 0 };
+    ra_push(j);
+    RQ.dirty = 0;
+    RQ.saved = ET.frame;
+}
+static int ra_vram(double* use, double* budget);
+static void ra_pre_line(const char* why) {
+    double use = 0, bud = 0;
+    ra_vram(&use, &bud);
+    gpu_log("ai-pre: %sframe %u level %u: %u listed (%u new); preloads queued %llu, built %llu, no slot %llu; direct %llu, waiting %u, "
+            "timed out %llu, bad files %llu; deferred swaps %llu (%llu out of sight since, %u waiting); video memory %.0f of %.0f MB "
+            "(images %.0f MB, surface maps %.0f MB)", why, ET.frame, RQ.world,
+            RQ.nrec, (unsigned)RQ.n_new, (unsigned long long)RQ.n_pre_q, (unsigned long long)RQ.n_pre_built,
+            (unsigned long long)RQ.n_pre_noslot, (unsigned long long)RQ.n_direct, RQ.n_wait, (unsigned long long)RQ.n_timeout,
+            (unsigned long long)RQ.n_lfail, (unsigned long long)RQ.n_defer, (unsigned long long)RQ.n_defer_done, RQ.ndefer, use, bud,
+            ET.bytes / 1048576.0, ETN.bytes / 1048576.0);
+}
+/* (ra_frame) the level: a change reads its list and queues its images; the list is written now and then */
+static void ra_level_frame(uint32_t uses) {
+    RQ.uses_last = uses;
+    if (RQ.on <= 0 || !RQ.nth) return;
+    uint32_t w = ra_world_now();
+    if (w != RQ.world) {
+        if (RA.log || RP.on > 0) ra_pre_line("level left: ");
+        ra_level_flush();
+        RQ.world = w; RQ.wframe = ET.frame; RQ.nrec = 0; RQ.n_new = 0;
+        if (RQ.set) memset(RQ.set, 0, 2u * RA_RECN * sizeof *RQ.set);
+        free(RQ.pre); RQ.pre = NULL; RQ.npre = RQ.ipre = 0;
+        EnterCriticalSection(&RA.cs);
+        RQ.mreq = w;
+        RQ.mstate = w < 0xFFFFFFF0u && RA.dir[0] ? 1 : 0;
+        LeaveCriticalSection(&RA.cs);
+        SetEvent(RQ.ev);
+    }
+    if (RQ.mstate == 3) {
+        EnterCriticalSection(&RA.cs);
+        ra_rec* r = RQ.mbuf;
+        uint32_t n = RQ.mn;
+        RQ.mbuf = NULL; RQ.mstate = 0;
+        LeaveCriticalSection(&RA.cs);
+        for (uint32_t k = 0; r && k < n; k++) ra_rec_add(&r[k]);
+        RQ.pre = r; RQ.npre = n; RQ.ipre = 0;
+        if (RA.log || RP.on > 0) gpu_log("ai-pre: frame %u level %u: %u textures in its list", ET.frame, w, n);
+    }
+    for (uint32_t m = 0; RQ.pre && RQ.ipre < RQ.npre && m < 256; m++) {   /* (its images to the loaders, in the order seen) */
+        const ra_rec* r = &RQ.pre[RQ.ipre++];
+        if (r->lw > 8 || r->lh > 8) continue;
+        et_slot* s = et_slot_of(et_map_find(r->key));
+        if (s && (s->ai || s->hd)) continue;   /* (resident already) */
+        int32_t i = ra_find(r->key, 1);
+        if (i < 0) continue;
+        ra_item* it = &RA.it[i];
+        if (it->st != RI_NONE && it->st != RI_DONE) continue;
+        if (!ra_file_of(it)) continue;
+        it->lw = r->lw; it->lh = r->lh; it->flags = r->flags; it->ref = r->ref;
+        it->file = 1; it->pre = 1; it->st = RI_LOAD;
+        ra_load_push(i, 1);
+        RQ.n_pre_q++;
+    }
+    if (RQ.dirty && ET.frame - RQ.saved > 3600) ra_level_flush();
+    if ((RA.log || RP.on > 0) && ET.frame % 1200 == 0) ra_pre_line("");
+}
+
+/* build the image in upload region r over the Enhanced image of item i (its slot); -1: not now (it is shown: deferred) */
 static int ra_apply(int32_t i, int* bound) {
     ra_item* it = &RA.it[i];
     int32_t id = et_map_find(it->hash);
     et_slot* s = et_slot_of(id);
     if (!s || !s->used || s->hd || s->hash != it->hash) return 0;
+    if (RQ.on > 0 && ra_visible(s)) return -1;
     et_ent t;
     memset(&t, 0, sizeof t);
     t.lw = (uint8_t)(it->lw + 2); t.lh = (uint8_t)(it->lh + 2); t.flags = it->flags; t.ref = it->ref;
@@ -835,7 +1232,10 @@ static void ra_note(int32_t idx, int32_t id) {
     ra_item* it = &RA.it[i];
     if (it->st == RI_NONE || it->st == RI_DONE) {
         it->lw = e->lw; it->lh = e->lh; it->flags = e->flags; it->ref = e->ref;
-        if (it->file || ra_have(it->hash)) {
+        if (RQ.on && RQ.nth) {               /* (tex-prebuild) through the loaders; a bad file is built again */
+            if (ra_file_of(it)) { it->file = 1; it->pre = 0; it->st = RI_LOAD; ra_load_push(i, 0); }
+            else it->st = RI_WANT;
+        } else if (it->file || ra_have(it->hash)) {
             it->file = 1;
             it->st = RI_LOAD;
             ra_job j = { RJ_LOAD, i, NULL, 0, 0, 0, 0 };
@@ -1009,7 +1409,7 @@ static void ra_post_poll(int* bound) {
         if (et_fix_on() && ET.out_frame && ET.out_frame >= ETB.cap) break;   /* (reimagine: within the frame's build time) */
         uint32_t words = 16u << (it->lw + it->lh);
         if (!RA.sav[sv].st) RA.sav[sv].st = et_buf(RA_UP_WORDS / 4u * 4u, 0, D3D11_USAGE_STAGING, D3D11_CPU_ACCESS_READ);
-        ra_apply(i, bound);
+        int ap = ra_apply(i, bound);
         if (RA.sav[sv].st && words <= RA_UP_WORDS / 4u) {
             D3D11_BOX bx = { RA.reg[r].at * 4u, 0, 0, (RA.reg[r].at + words) * 4u, 1, 1 };
             ID3D11DeviceContext_CopySubresourceRegion(gpu_rt.ctx, (ID3D11Resource*)RA.sav[sv].st, 0, 0, 0, 0, (ID3D11Resource*)RA.up, 0, &bx);
@@ -1017,7 +1417,8 @@ static void ra_post_poll(int* bound) {
         }
         ra_reg_free(it->reg);
         it->reg = -1;
-        it->st = RI_DONE;
+        if (ap < 0) ra_defer_add(i);     /* (tex-prebuild: shown right now - from its cache file once out of sight) */
+        else it->st = RI_DONE;
     }
     for (int k = 0; k < RA_SAVEN; k++) {
         if (RA.sav[k].item < 0 || ET.frame - RA.sav[k].frame < 2) continue;
@@ -1045,11 +1446,14 @@ static double ra_pct(double p) {         /* (statistics) a percentile of the net
 /* the frame's Reimagined work (et_frame_body, after Enhanced's): cached images up, source read-backs, the net */
 static void ra_frame(int* bound) {
     ID3D11DeviceContext* c = gpu_rt.ctx;
-    ra_pop_frame();
+    uint32_t uses = ET.uses;             /* (tex-prebuild) the last frame's art uses: 0 = no 3D (loading, menus) */
+    ET.uses = 0;
+    ra_pop_frame(uses);
     if (!ra_init()) {
         if (!RA.failed) { gpu_log("ai: cannot create the Reimagined textures' resources: Faithful's textures"); RA.failed = 1; }
         return;
     }
+    ra_level_frame(uses);
     ra_net_poll();
     ra_time_poll();
     if (RA.net && ET.frame % 120 == 0) {   /* (video memory: the net goes when the game needs the room) */
@@ -1065,7 +1469,71 @@ static void ra_frame(int* bound) {
     }
     /* 1. cached images decoded since: up into a region, built over the slot */
     uint32_t up = 0;
-    for (;;) {
+    if (RQ.on > 0 && RQ.nth) {           /* (tex-prebuild) */
+        ra_wait_poll();
+        if (RQ.ndefer) ra_defer_poll();
+        /* while no 3D is drawn (the loading screen) a bigger share: what the frame leaves of 80 % of its interval, <= 5 ms */
+        uint32_t lim = RA_LOAD_TEXELS, cap = ETB.cap;
+        if (!uses) {
+            double hz = frame_rate_target_hz ? frame_rate_target_hz() : 60.0;
+            double room = (hz > 1.0 ? 0.8 * 1000.0 / hz : 12.0) - (gpu_frame_ms_last > 0.0 ? gpu_frame_ms_last - ETB.last_ms : 0.0);
+            room = room > 5.0 ? 5.0 : room < 0.5 ? 0.5 : room;
+            double t = room / ETB.ms_per_m * 1048576.0;
+            lim = cap = t > 4194304.0 ? 4194304u : t < 262144.0 ? 262144u : (uint32_t)t;
+        }
+        for (;;) {
+            EnterCriticalSection(&RA.cs);
+            int32_t i = RA.nloaded ? RA.loaded[0] : -1;
+            LeaveCriticalSection(&RA.cs);
+            if (i < 0) break;
+            ra_item* it = &RA.it[i];
+            int res = 0;                 /* 1 built, 2 nothing to do, 3 deferred, 0 dropped */
+            uint32_t words = 0;
+            if (it->st != RI_LOADED && it->st != RI_LFAIL) { /* (stale) */ }
+            else if (it->st == RI_LOADED && !it->rgba) it->st = RI_NONE;
+            else if (it->st == RI_LFAIL) {    /* (a bad file: built again by the net, its entries get Enhanced images meanwhile) */
+                RQ.n_lfail++;
+                it->bad = 1; it->file = 0; it->st = RI_NONE;
+                ra_waiters(i, -1);
+            } else {
+                words = it->rw * it->rh;
+                if (up && up + words > lim) break;
+                if (et_fix_on() && ET.out_frame && ET.out_frame >= cap) break;
+                int32_t id = et_map_find(it->hash);
+                et_slot* s = et_slot_of(id);
+                if (s && (s->ai || s->hd)) { res = 2; if (s->ai) ra_waiters(i, id); }
+                else if (s && ra_visible(s)) res = 3;
+                else if (s) {            /* (over its Enhanced image, out of sight) */
+                    int32_t r = ra_reg_alloc(words, i);
+                    if (r < 0) break;
+                    D3D11_BOX bx = { RA.reg[r].at * 4u, 0, 0, (RA.reg[r].at + words) * 4u, 1, 1 };
+                    ID3D11DeviceContext_UpdateSubresource(c, (ID3D11Resource*)RA.up, 0, &bx, it->rgba, 0, 0);
+                    it->reg = r;
+                    res = ra_apply(i, bound) < 0 ? 3 : 1;
+                    ra_reg_free(r);
+                    it->reg = -1;
+                } else {
+                    res = ra_build_new(i, bound);
+                    if (res < 0) break;
+                    if (!res) { RQ.n_pre_noslot++; ra_waiters(i, -1); }
+                }
+                free(it->rgba);
+                it->rgba = NULL;
+                if (res == 3) ra_defer_add(i);
+                else it->st = res ? RI_DONE : RI_NONE;
+                if (res == 1) RA.n_load++;
+                up += res == 1 ? words : 0;
+                EnterCriticalSection(&RA.cs);
+                RQ.bytes -= RQ.bytes >= (uint64_t)words * 4u ? (uint64_t)words * 4u : RQ.bytes;
+                LeaveCriticalSection(&RA.cs);
+            }
+            EnterCriticalSection(&RA.cs);
+            memmove(RA.loaded, RA.loaded + 1, (RA.nloaded - 1) * sizeof RA.loaded[0]);
+            RA.nloaded--;
+            LeaveCriticalSection(&RA.cs);
+        }
+    }
+    for (; !(RQ.on > 0 && RQ.nth);) {   /* (PS2_AI_READY=0: 0.1.1247's) */
         EnterCriticalSection(&RA.cs);
         int32_t i = RA.nloaded ? RA.loaded[0] : -1;
         LeaveCriticalSection(&RA.cs);
@@ -1188,6 +1656,7 @@ static void ra_frame(int* bound) {
 
 /* (et_release) the GPU side goes; the worker, the items and the cache list stay */
 static void ra_release(void) {
+    if (RQ.on > 0 && RQ.nth) ra_level_flush();   /* (tex-prebuild: the level's list is kept) */
     etn_free();
     if (RA.bon) for (int k = 0; k < RA.bn; k++) RA.it[RA.bt[k].item].st = RI_NONE;
     RA.bon = 0; RA.bn = 0;
@@ -1208,11 +1677,34 @@ static void ra_release(void) {
             ra_item* it = &RA.it[i];
             it->reg = -1;
             if (it->st == RI_SRC || it->st == RI_POST || it->st == RI_DONE || it->st == RI_WANT) it->st = RI_NONE;
+            if (RQ.on > 0 && RQ.nth) {   /* (tex-prebuild) queued / decoding / decoded / deferred images: dropped (a loader
+                                          * finishing one sees the state changed and frees it) */
+                if (it->st == RI_LOAD || it->st == RI_DECODE || it->st == RI_LOADED || it->st == RI_LFAIL || it->st == RI_DEFER) {
+                    free(it->rgba);
+                    it->rgba = NULL;
+                    it->st = RI_NONE;
+                    it->gen++;
+                }
+                it->waiters = 0;
+            }
         }
     if (RA.inited_thread > 0) {
         for (uint32_t k = 0; k < RA.tn; k++) { free(RA.tq[k].px); RA.it[RA.tq[k].item].st = RI_NONE; }
         RA.tn = 0;
+        if (RQ.on > 0 && RQ.nth) {
+            RA.nloaded = 0;
+            RQ.bytes = 0;
+            RQ.qt[0] = RQ.qh[0]; RQ.qt[1] = RQ.qh[1];
+            RQ.mstate = 0;
+            free(RQ.mbuf); RQ.mbuf = NULL;
+        }
         LeaveCriticalSection(&RA.cs);
+    }
+    if (RQ.on > 0) {
+        RQ.ndefer = 0; RQ.n_wait = 0; RQ.uses_last = 0;
+        RQ.world = 0xFFFFFFFEu; RQ.nrec = 0; RQ.dirty = 0;
+        if (RQ.set) memset(RQ.set, 0, 2u * RA_RECN * sizeof *RQ.set);
+        free(RQ.pre); RQ.pre = NULL; RQ.npre = RQ.ipre = 0;
     }
     RA.init = 0;
     RA.failed = 0;
