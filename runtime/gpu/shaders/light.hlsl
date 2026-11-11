@@ -271,6 +271,7 @@ float r_noise(float2 q) { return frac(52.9829189 * frac(dot(q, float2(0.06711056
 cbuffer reim_lights : register(b9) {
     float4 rl_n;                         // count, debug (1: mark the light positions), 1 / pool core^2 (share of the outer
                                          // radius), the pool falloff's share (0: the game's ramp alone)
+    float4 rl_pv0, rl_pv1, rl_pv2, rl_pv3;   // (debug) world -> clip (rows): the lights' places marked in the picture
     float4 rl[RL_MAX * 3];
 };
 float3 ps_reim_local(float4 pos : SV_Position) : SV_Target {
@@ -304,7 +305,15 @@ float3 ps_reim_local(float4 pos : SV_Position) : SV_Target {
         float nl = dot(N, d) * id;       // (towards the light)
         float s = c.x * min(-nl - nl * nl * nl, c.z) + c.y;
         E += b.rgb * (max(s, 0.0) * att);
-        if (rl_n.y > 0.0 && d2 < 900.0) E += float3(4.0, 0.0, 4.0);   // (PS2_REIM_DBG=5: the lights' own positions)
+    }
+    if (rl_n.y > 0.0) {                  // (PS2_REIM_DBG=5: each light's place in the picture, a magenta dot)
+        for (uint j = 0u; j < n; j++) {
+            float3 L = rl[3u * j].xyz;
+            float4 c = L.x * rl_pv0 + L.y * rl_pv1 + L.z * rl_pv2 + rl_pv3;
+            if (c.w <= 1.0) continue;
+            float2 sp = float2((c.x / c.w - r_ndc.y) / r_ndc.x, (c.y / c.w - r_ndc.w) / r_ndc.z);   // (picture pixels)
+            if (length(sp - pp) < 12.0) E = float3(6.0, 0.0, 6.0);
+        }
     }
     return E;
 }

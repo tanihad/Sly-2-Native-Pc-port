@@ -388,7 +388,7 @@ static struct {
     float w[256];
     uint8_t sel[256];
     float t;                             /* the flicker's clock (1 / frame rate per post pass: deterministic) */
-    float cb[(1 + RL_MAX * 3) * 4];
+    float cb[(5 + RL_MAX * 3) * 4];      /* light.hlsl reim_lights: rl_n, rl_pv0..3, rl[] */
     int n;
     ID3D11Buffer* buf;
     uint64_t frames, sum_n, sum_vis, max_n;
@@ -418,11 +418,18 @@ static int rl_count(void) {
     return n < 0 ? 0 : n > RL_MAX ? RL_MAX : n;
 }
 static float rl_smooth(float a, float b, float x) { float t = (x - a) / (b - a); t = t < 0.0f ? 0.0f : t > 1.0f ? 1.0f : t; return t * t * (3.0f - 2.0f * t); }
+/* how much of a light the surroundings get: warm sources (lamps, fires, windows) fully, the cool (blue) fills that tint
+ * the characters with moonlight RL.cool, and the wide fills placed to light characters (outer radius beyond ~1200) less */
+static float rl_kind(const re_light_rec* L) {
+    float warm = rl_smooth(-0.1f, 0.3f, L->col[0] - L->col[2]);
+    float big = rl_smooth(1200.0f, 2500.0f, L->r_out);
+    return (RL.cool + (1.0f - RL.cool) * warm) * (1.0f - 0.6f * big);
+}
 /* this frame's light list into RL.cb (light.hlsl reim_lights); pv: world x clip (row vectors), cam: the camera (world) */
 static int reim_lights_build(const float* pv, const float* cam, const float* ndc, double hz) {
     int nmax = rl_count();
     RL.n = 0;
-    memset(RL.cb, 0, 4 * sizeof(float));
+    memset(RL.cb, 0, 20 * sizeof(float));
     if (++RLIN.age > 30u) RLIN.n = 0;    /* (no table for half a second: a level without lights, or another look) */
     if (!nmax || !RLIN.n) return 0;
     float dt = (float)(1.0 / (hz > 1.0 ? hz : 60.0));
@@ -458,8 +465,7 @@ static int reim_lights_build(const float* pv, const float* cam, const float* ndc
         float fd = 1.0f - rl_smooth(RL.d0, RL.d1, dist - L->r_out);
         float pk = fmaxf(L->col[0], fmaxf(L->col[1], L->col[2])) * (2.0f * fabsf(L->dif) + fmaxf(L->amb, 0.0f));
         if (!(fd > 0.0f) || !(pk > 1e-3f)) { vis[i] = 2; continue; }   /* (too far / black: not selected, fades out) */
-        float warm = rl_smooth(-0.1f, 0.3f, L->col[0] - L->col[2]);
-        pri[nc] = fd * pk * (RL.cool + (1.0f - RL.cool) * warm) * L->r_out / fmaxf(dist, L->r_out) * (RL.sel[s] ? 1.25f : 1.0f);   /* (hysteresis) */
+        pri[nc] = fd * pk * rl_kind(L) * L->r_out / fmaxf(dist, L->r_out) * (RL.sel[s] ? 1.25f : 1.0f);   /* (hysteresis) */
         cand[nc++] = i;
     }
     /* the nmax most important (insertion sort by priority, descending) */
@@ -471,20 +477,24 @@ static int reim_lights_build(const float* pv, const float* cam, const float* ndc
     uint8_t chosen[256];
     memset(chosen, 0, sizeof chosen);
     for (int a = 0; a < nc && a < nmax; a++) chosen[cand[a]] = 1;
-    float* o = RL.cb + 4;
+    for (int i = 0; i < RLIN.n; i++) {   /* (the weights: in view only - outside it a light lights nothing visible) */
+        uint32_t s = RLIN.l[i].id & 0xFFu;
+        if (!vis[i]) continue;
+        RL.sel[s] = chosen[i];
+        RL.w[s] += ((chosen[i] ? 1.0f : 0.0f) - RL.w[s]) * ease;
+    }
+    memcpy(RL.cb + 4, pv, 16 * sizeof(float));   /* (debug: the lights' places) */
+    float* o = RL.cb + 20;
     int n = 0;
+    for (int pass = 0; pass < 2; pass++)   /* (the chosen first, then those still fading out while room is left) */
     for (int i = 0; i < RLIN.n; i++) {
         const re_light_rec* L = &RLIN.l[i];
         uint32_t s = L->id & 0xFFu;
-        if (!vis[i]) continue;           /* (outside the view: lights nothing in it; its weight is kept) */
-        RL.sel[s] = chosen[i];
-        RL.w[s] += ((chosen[i] ? 1.0f : 0.0f) - RL.w[s]) * ease;
-        if (RL.w[s] < 0.002f || n >= nmax + 8 || n >= RL_MAX) continue;   /* (a few fading out beyond the count) */
+        if (!vis[i] || chosen[i] != (pass == 0) || RL.w[s] < 0.002f || n >= RL_MAX) continue;
         float dx = L->pos[0] - cam[0], dy = L->pos[1] - cam[1], dz = L->pos[2] - cam[2];
         float dist = sqrtf(dx * dx + dy * dy + dz * dz);
         float fd = 1.0f - rl_smooth(RL.d0, RL.d1, dist - L->r_out);
-        float warm = rl_smooth(-0.1f, 0.3f, L->col[0] - L->col[2]);
-        float k = 2.0f * RL.gain * RL.w[s] * fd * (RL.cool + (1.0f - RL.cool) * warm);
+        float k = 2.0f * RL.gain * RL.w[s] * fd * rl_kind(L);
         /* fires: orange and small - a gentle flicker of three slow sines (phases from the light's id) */
         if (RL.flick > 0.0f && L->col[0] > 0.5f && L->col[1] < 0.72f * L->col[0] && L->col[2] < 0.45f * L->col[0] && L->r_out < 2000.0f) {
             uint32_t h = L->id * 2654435761u;
