@@ -2,6 +2,14 @@
 
 ## Resume here (read first in a new session)
 
+**2026-11-11: next/tex-prebuild (worktree sly2-worktrees\ai, not merged) - Reimagined AI textures ready before first
+sight.** Cached AI images go straight onto textures (no Enhanced image first), loader threads, per-level texture lists
+preloaded at each level change (title: also the last-played level, so Resume Game starts ready), AI images never
+swapped in while their texture is on screen (deferred until out of sight). ep2 hub, owner's settings: warm cache 354
+Enhanced -> AI swaps after the level appeared (349 visible) -> 0; cold 39 visible -> 0; level change ep2 -> ep1 hub 321
+visible -> 0; frame times and load time unchanged. Details + table: notes/reimagined.md "Ready before first sight".
+Videos build\prebuild\videos (worktree). Switch PS2_AI_READY=0 = old flow.
+
 **2026-11-11: 1.1.1 RELEASED** - "Sly 2 PC 1.1.1", tag v0.1.1247 (190981d), Latest; repo renamed by the owner to
 tanihad/Sly-2-Native-Pc-port (old URL redirects; launchers fetch 0.1.1247 through it). Published assets re-downloaded
 and hash-checked. Waiting for the owner's laptop result (`[gpu] adapter:` line). TODO (low): point the launcher's
