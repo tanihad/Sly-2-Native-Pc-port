@@ -9,15 +9,27 @@ from the game's own light objects; stable in motion; <= 1 ms GPU at 1440p; PS2_R
 - Diagnostic dump PS2_REIM_LIGHTS_DUMP=1|2 (r2_capture.c lights_dump): ep2 hub 168 lights, ep1 hub 241 lights, all
   kind 1 (point), values constant over time (no game flicker).
 
+## Done (code, commit 4bd7a3c + later)
+- r2.h r2_light + slot table; r2_capture.c lights_capture at frame_begin (hybrid, Reimagined only).
+- gpu_r2front.c FL: copied into fdata once per (serial, arena epoch gf_data_epoch); gpu_r2_frame.pad = off/16 + 1.
+- gpu_reim.h: RLIN copy at reim_note; reim_lights_build (weights ease 0.25 s, picture-frustum cull with the picture's
+  ndc range - the clip volume is the VU guard band ~8x the picture!, priority cap by Quality, flicker on orange
+  fires); light.hlsl ps_reim_local (half res) + composite (lin += (lin + floor) * E); DBG=5 shows the light buffer.
+- PS2_REIM_X bit 32 = local lights (A/B in one run with PS2_GPU_AB_R8=4096).
+
 ## In progress
-- m2_boardroom dump; then the data path EE -> slot -> frontend -> fdata -> render thread.
+- tuning strength / falloff (pool shape: win / (1 + x^2 / core^2)); ep1 lights' positions check (log level 2).
 
 ## Next
-1. r2.h: r2_light + slot table; r2_capture.c fills it at frame_begin (hybrid, Reimagined only).
-2. gpu_r2front.c: copy into fdata once per (serial, arena epoch); gpu_r2_frame.pad = offset/16 + 1.
-3. gpu_reim.h: gather lights, fade weights per light id, CPU cull (frustum sphere + distance), cbuffer list.
-4. light.hlsl: half-res ps_reim_local (world pos + depth normal, smooth falloff, wrap N.L), composite add.
-5. Quality scaling, PS2_REIM_LIGHTS=0, tests, captures, gates, notes/reimagined-lighting.md section.
+1. Tune on ep2 / ep1; interior (m2_boardroom), cutscene; motion videos (scratchpad vid.ps1: two deterministic runs
+   PS2_REIM_LIGHTS=0 vs on, side-by-side mp4).
+2. Cost (PS2_GPU_PROF "reim-lights"), before/after fps.
+3. Gates; notes/reimagined-lighting.md "Local lights" section.
+
+## Traps
+- light_shots dumps only pictures whose VBlank is a multiple of -Every; the PS2_GPU_AB phase switch logged "from vN"
+  is NOT yet applied to picture N: use mid-phase pictures (At 5730, Every 30: 5730 = B, 5790 = A).
+- Never use [IO.File] with relative paths: the process cwd is the MAIN checkout (an edit landed there once; reverted).
 
 ## Findings
 - Static world SW = 0x3DD490. SW + 0x4154: LIGHT* table[256]; SW + 0x4590: free-slot bitmask (8 words, set = free);

@@ -269,7 +269,8 @@ float r_noise(float2 q) { return frac(52.9829189 * frac(dot(q, float2(0.06711056
 // colour x (diffuse x min(d + d^3, clamp) + ambient), d = N . (surface - light)) with a smooth distance falloff.
 #define RL_MAX 96
 cbuffer reim_lights : register(b9) {
-    float4 rl_n;                         // count, debug (1: mark the light positions), -, -
+    float4 rl_n;                         // count, debug (1: mark the light positions), 1 / pool core^2 (share of the outer
+                                         // radius), the pool falloff's share (0: the game's ramp alone)
     float4 rl[RL_MAX * 3];
 };
 float3 ps_reim_local(float4 pos : SV_Position) : SV_Target {
@@ -297,7 +298,9 @@ float3 ps_reim_local(float4 pos : SV_Position) : SV_Target {
         float id = rsqrt(max(d2, 1.0));
         float dist = d2 * id;
         float att = saturate((b.w - dist) * a.w);
-        att *= att * (3.0 - 2.0 * att);  // (smooth to the outer radius: no visible rim)
+        att *= att * (3.0 - 2.0 * att);  // (the game's ramp from the inner to the outer radius, smoothed)
+        float x2 = d2 / c.w, win = (1.0 - x2) * (1.0 - x2);   // (a pool: bright near the source, a long soft tail to the
+        att = lerp(att, win / (1.0 + x2 * rl_n.z), rl_n.w);   //  outer radius - the light reads as coming from it)
         float nl = dot(N, d) * id;       // (towards the light)
         float s = c.x * min(-nl - nl * nl * nl, c.z) + c.y;
         E += b.rgb * (max(s, 0.0) * att);

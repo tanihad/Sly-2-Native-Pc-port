@@ -383,7 +383,7 @@ static volatile LONG rl_cfg_level = 2;   /* graphics quality: 0 Low (off) .. 3 U
 void gpu_reim_lights_config(int level) { InterlockedExchange(&rl_cfg_level, level); }
 static struct {
     int env, on, nmax, q;
-    float gain, floor, cool, flick, d0, d1;
+    float gain, floor, cool, flick, d0, d1, core, pool;
     uint32_t id[256];                    /* per table slot: the light it holds (r2_light.id), its weight, selected */
     float w[256];
     uint8_t sel[256];
@@ -399,12 +399,15 @@ static void rl_env(void) {
     const char* e = getenv("PS2_REIM_LIGHTS"); RL.on = !(e && *e == '0');
     RL.nmax = (int)lt_envf("PS2_REIM_LIGHTS_N", -1.0f);
     RL.q = (int)lt_envf("PS2_REIM_LIGHTS_Q", -1.0f);
-    RL.gain = lt_envf("PS2_REIM_LIGHTS_I", 1.0f);
-    RL.floor = lt_envf("PS2_REIM_LIGHTS_FLOOR", 0.012f);
+    RL.gain = lt_envf("PS2_REIM_LIGHTS_I", 3.0f);
+    RL.floor = lt_envf("PS2_REIM_LIGHTS_FLOOR", 0.025f);
     RL.cool = lt_envf("PS2_REIM_LIGHTS_COOL", 0.3f);    /* the cool (blue) fills' share */
     RL.flick = lt_envf("PS2_REIM_LIGHTS_FLICK", 0.06f);
     RL.d0 = lt_envf("PS2_REIM_LIGHTS_D0", 6000.0f);     /* fade with the distance from the camera to the light's sphere */
     RL.d1 = lt_envf("PS2_REIM_LIGHTS_D1", 12000.0f);
+    RL.core = lt_envf("PS2_REIM_LIGHTS_CORE", 0.35f);   /* the pool's core (share of the outer radius: half the light there) */
+    if (RL.core < 0.05f) RL.core = 0.05f;
+    RL.pool = lt_envf("PS2_REIM_LIGHTS_POOL", 1.0f);     /* the pool falloff's share (0: the game's ramp) */
 }
 static int rl_count(void) {
     rl_env();
@@ -500,12 +503,37 @@ static int reim_lights_build(const float* pv, const float* cam, const float* ndc
     }
     RL.cb[0] = (float)n;
     RL.cb[1] = RE.dbg == 5 ? 1.0f : 0.0f;
+    RL.cb[2] = 1.0f / (RL.core * RL.core);
+    RL.cb[3] = RL.pool;
     RL.n = n;
     RL.frames++; RL.sum_n += (uint64_t)n; RL.sum_vis += (uint64_t)nvis;
     if ((uint64_t)n > RL.max_n) RL.max_n = (uint64_t)n;
-    if (RE.log && RL.frames % 600 == 1)
+    if (RE.log && RL.frames % 600 == 1) {
         gpu_log("reim-lights: %d in the table, %d in view, %d drawn (cap %d; average %.1f drawn / %.1f in view, most %llu)", RLIN.n, nvis, n, nmax,
                 (double)RL.sum_n / (double)RL.frames, (double)RL.sum_vis / (double)RL.frames, (unsigned long long)RL.max_n);
+        if (RE.log >= 2) {
+            int bi = -1; float bd = 1e30f;
+            for (int i = 0; i < RLIN.n; i++) {
+                const re_light_rec* L = &RLIN.l[i];
+                float dx = L->pos[0] - cam[0], dy = L->pos[1] - cam[1], dz = L->pos[2] - cam[2], d = sqrtf(dx * dx + dy * dy + dz * dz);
+                if (d < bd) { bd = d; bi = i; }
+            }
+            gpu_log("reim-lights: camera %.0f %.0f %.0f; nearest light %d at %.0f %.0f %.0f (%.0f away, radius %.0f); ndc %.3f..%.3f %.3f..%.3f",
+                    cam[0], cam[1], cam[2], bi, bi >= 0 ? RLIN.l[bi].pos[0] : 0.0f, bi >= 0 ? RLIN.l[bi].pos[1] : 0.0f, bi >= 0 ? RLIN.l[bi].pos[2] : 0.0f,
+                    bd, bi >= 0 ? RLIN.l[bi].r_out : 0.0f, ndc[0], ndc[1], ndc[2], ndc[3]);
+            for (int i = 0, k = 0; i < RLIN.n && k < 24; i++) {   /* (where the drawn lights are in the picture: 0..1) */
+                const re_light_rec* L = &RLIN.l[i];
+                if (vis[i] != 1 || RL.w[L->id & 0xFFu] < 0.01f) continue;
+                float c[4];
+                for (int j = 0; j < 4; j++) c[j] = L->pos[0] * pv[j] + L->pos[1] * pv[4 + j] + L->pos[2] * pv[8 + j] + pv[12 + j];
+                if (!(c[3] > 1e-3f)) continue;
+                k++;
+                gpu_log("reim-lights:   #%u at %.0f %.0f %.0f r %.0f..%.0f col %.2f %.2f %.2f amb %.3f dif %.3f -> picture %.3f %.3f, %.0f away, weight %.2f",
+                        L->id & 0xFFu, L->pos[0], L->pos[1], L->pos[2], L->r_in, L->r_out, L->col[0], L->col[1], L->col[2], L->amb, L->dif,
+                        (c[0] / c[3] - ndc[0]) / (ndc[1] - ndc[0]), (c[1] / c[3] - ndc[2]) / (ndc[3] - ndc[2]), c[3], RL.w[L->id & 0xFFu]);
+            }
+        }
+    }
     if (!n) return 0;
     if (!RL.buf) {
         D3D11_BUFFER_DESC bd;
