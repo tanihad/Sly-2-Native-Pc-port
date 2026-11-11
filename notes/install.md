@@ -69,7 +69,7 @@ the program's own icon resource (the badge in an `--art` Setup, else the procedu
 | path | what |
 |---|---|
 | `Sly 2 Launcher.exe`, `Uninstall.exe` | the program (no payload); shortcuts and Apps & features point here |
-| `game\` | the current game: sly2.exe, README.txt, Controller test.cmd, `sly2-version.txt` ("0.1.N hash"), `art\` (icon + backdrop the build made from the disc) |
+| `game\` | the current game: sly2.exe, README.txt, THIRD-PARTY-NOTICES.txt, Controller test.cmd, `sly2-version.txt` ("0.1.N hash"), `models\x4plus.bin` (the AI model, see "AI model"), `art\` (icon + backdrop the build made from the disc) |
 | `art\` | `sly2.ico`: the game icon shortcuts and Apps & features show (owner's art > disc art), `sly2.ico.source` |
 | `game.old\` | the version before the last update (rollback); `game.new\` only while staging (`.complete` when done) |
 | `data\sly2.img` | the imported copy of the player's disc image |
@@ -119,6 +119,32 @@ restores `game.old` when `game` is missing, removes an unfinished `game.new`. "P
   staged and swapped; the toolchain pins are those of the installed launcher (a release that needs other tools
   sets `min_launcher`, and the player is sent to the new Setup).
 
+**AI model** (2026-11-10, branch next/setup-model; owner approved shipping it): Look = Reimagined needs the Real-ESRGAN
+x4plus weights (BSD-3, Xintao Wang). They travel inside source.zip, i.e. in Setup's payload and in every update bundle:
+`models/x4plus.bin` (66,819,626 bytes, SHA-256 `b3ff1e5f...2364874d3`) + `models/x4plus.bin.sha256`, and
+`THIRD-PARTY-NOTICES.txt` (the licence notice, installed next to sly2.exe). So the signed manifest's bundle size + SHA-256
+(updates) and Setup's payload table (installs) cover the model like every other byte of the bundle.
+- **Made by** `make_installer.make_source_zip` (also used by make_release.py): `scripts/ai_model.py export_x4plus` reads
+  the pinned `tools\models\realesrgan\RealESRGAN_x4plus.pth` (SHA-256 `4FA0D389...` checked first; restricted unpickler,
+  never pickle.load / torch.load) and the result must equal `ai_model.X4PLUS_BIN_SHA256` (the export is deterministic);
+  cached in `build\models\x4plus.bin`. Fixed zip entry times and attributes keep source.zip deterministic.
+  check_no_game_data.py allows exactly that SHA-256 (ALLOWED_THIRD_PARTY): any other `.bin` still fails.
+- **Fresh install / update / repair with this launcher**: the build runs with `SLY2_SETUP_PLACES_MODEL=1`; after the game
+  files, `release.c stage_place_model` copies `builder\models\x4plus.bin` to `game.new\models\x4plus.bin` and checks the
+  copy against `x4plus.bin.sha256` before `.complete` is written (a mismatch fails the update: game untouched); after the
+  swap `builder\models` is deleted (the kept bundle has it for Repair). Sources without a model (Repair of an old version)
+  install without one.
+- **An update applied by a 1.0.x launcher** (0.1.1136 and older; installer code unchanged since): its `install_game_files`
+  copies only dist's top-level files and `dist\art\*`, so it would drop `models\`. Without `SLY2_SETUP_PLACES_MODEL`,
+  build_game.py (from the new bundle) therefore also puts the model at `dist\x4plus.bin` (after checking it against the
+  .sha256), the 1.0.x launcher installs it as `game\x4plus.bin`, and the runtime looks there after `models\x4plus.bin`
+  (runtime/gpu/gpu_tex_ai.h). Tested with a v0.1.1136 test build (scratch e2e, 2026-11-10): update, "ai: x4plus net
+  ready" from game\x4plus.bin, rollback / forward. Leftover there: `builder\models` (64 MB) stays until the next update
+  by a newer launcher; the 1.0.x launcher's disk-space estimate is ~200 MB too low.
+- **Rollback**: the model lives inside each game folder (game / game.old), so a swap always keeps version and model together.
+- Sizes: Setup 1.3 MB -> 60.7 MB, bundle 1.2 MB -> 60.5 MB (the weights barely compress), installed game +64 MB (+64 MB
+  more for game.old, +62 MB per kept bundle).
+
 **Publishing an update** (owner / release machine; nothing here uploads by itself)
 1. Once: `<main checkout>\.venv\Scripts\python.exe scripts\release_keygen.py` -> private key
    `%USERPROFILE%\.sly2-release\release-ed25519.key` (refuses any path inside the repository or its worktrees;
@@ -161,7 +187,7 @@ A "builder installer" for players: no commands, no console windows. It contains 
 translated code exists only after it is built on the player's PC from the player's disc.
 
 **Make it**: `<main checkout>\.venv\Scripts\python.exe scripts\make_installer.py [--offline]` ->
-`build\installer\Sly2-Setup.exe` (1.0 MB: 190 KB program + 0.8 MB sources), with `--offline` also
+`build\installer\Sly2-Setup.exe` (60.7 MB: 280 KB program + 1.2 MB sources + 59 MB AI model), with `--offline` also
 `Sly2-Setup-Offline.exe` (220 MB), and `SHA256SUMS.txt`. Needs a set-up checkout (`setup.ps1`): the
 archives are taken from `tools\_downloads` and checked against the pins first.
 
@@ -174,6 +200,7 @@ archives are taken from `tools\_downloads` and checked against the pins first.
   If the exe is Authenticode-signed after the payload is appended, the payload end is found from the PE
   certificate table, so signing works. `source.zip` = `git ls-files recomp runtime` + `scripts/
   {build_game,package,paths,extract_elf,make_icon}.py`, `scripts/hlslc.c`, `requirements.txt`,
+  `THIRD-PARTY-NOTICES.txt`, `models/x4plus.bin` + `.sha256` (see "AI model"),
   `version.txt` (`<commit count> <hash>`; `build_game.py` uses it when there is no `.git`).
   make_installer refuses any path under orig/, build/, dist/, tools/ or any .iso/.elf/.bin/SCUS_ name.
 - **Single source of truth**: the toolchain pins (file, URL, SHA-256) are parsed from

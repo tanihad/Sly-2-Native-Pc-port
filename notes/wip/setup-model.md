@@ -20,14 +20,26 @@
 - Rollback: the model lives inside each game folder (game / game.old), so swaps stay consistent.
 
 ## Done
+- 00dcb78: ai_model.py pin (bin sha B3FF1E5F..., 66,819,626 B; export deterministic = the light worktree's copy) +
+  export_x4plus; make_installer (model_bin, make_source_zip with models/, notice warning, NEED_* sizes); make_release
+  (refuses a pending notice unless --allow-dirty); check_no_game_data ALLOWED_THIRD_PARTY; build_game.py
+  (notices + package_model_for_old_launcher); engine.c (env var, stage_place_model, skip top-level x4plus.bin,
+  builder\models removed after the swap, old-sources list); release.c stage_place_model + release_sha256_file;
+  gpu_tex_ai.h fallback <exe dir>\x4plus.bin; test_release.c test_model (102 passed).
+- Sizes: Setup 1.3 MB (1.0.2) -> 60.7 MB; source.zip / bundle 1.24 MB -> 60.5 MB (63,387,684 B).
+- Scratch e2e (scratchpad\model_e2e.ps1, 1.0.2 test Setup from a detached worktree of v0.1.1136): part A install +
+  update by the 1.0.2 launcher OK: game\x4plus.bin pinned hash, notices, game.old without model.
 
 ## In progress
+- e2e part A boot check (headless, PS2_TEX_AI=1: does it log "x4plus net ready"?), rollback; then part B.
 
 ## Next
-1. ai_model.py pin + export helper; make_installer/make_release; check_no_game_data allow-list
-2. build_game.py package (notice + legacy model); installer C; runtime fallback
-3. THIRD-PARTY-NOTICES.txt (licence text: not on disk -> ask the owner; placeholder + make_release guard)
-4. tests: test_release.c placement, run.ps1 payload check, local update test (scratch key), sizes; notes
+1. run.ps1: payload model hash check + check_no_game_data refuses a changed model
+2. run tests/unit/launcher, tests/unit/installer, tests/run_tests.py (runtime change)
+3. notes/install.md, notes/ai-textures.md / reimagined.md; delete scratch Setups / worktree wt102 / e2e folder
+4. licence text: ask the owner (not on disk)
 
 ## Findings / traps
 - No copy of Real-ESRGAN's LICENSE anywhere on disk (searched C:\Users\tanih for "Xintao Wang").
+- make_release --count must stay < 65536 (VERSIONINFO 16-bit fields): 999999 fails the game's resource compile.
+- In PowerShell `H` is an alias of Get-History (don't name a helper H).

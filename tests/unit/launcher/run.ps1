@@ -182,6 +182,30 @@ Check ($LASTEXITCODE -eq 0) "Setup carries no picture, icon or disc file: $($r[-
 $null = & $py $cg (Join-Path $pics 'game.zip')
 Check ($LASTEXITCODE -eq 1) "check_no_game_data finds a picture hidden in a bundle"
 
+# ---- the AI model in the payload (models/x4plus.bin + its .sha256, THIRD-PARTY-NOTICES.txt; notes/install.md "AI model") ----
+$pin = (& $py -c "import sys; sys.path.insert(0, r'$root\scripts'); import ai_model; print(ai_model.X4PLUS_BIN_SHA256.lower())").Trim()
+$pl = @(& $py -c @"
+import hashlib, io, struct, sys, zipfile
+d = open(sys.argv[1], 'rb').read()
+_m, n, _z, tab = struct.unpack('<8sIIQ', d[-24:])
+for i in range(n):
+    raw, off, size, h = struct.unpack_from('<96sQQ32s', d, tab + i * 144)
+    if raw.rstrip(b'\0') != b'source.zip': continue
+    blob = d[off:off + size]
+    print('payload', hashlib.sha256(blob).digest() == h)
+    z = zipfile.ZipFile(io.BytesIO(blob))
+    print('model', hashlib.sha256(z.read('models/x4plus.bin')).hexdigest())
+    print('sidecar', z.read('models/x4plus.bin.sha256').decode().split()[0])
+    print('notice', 'Real-ESRGAN' in z.read('THIRD-PARTY-NOTICES.txt').decode() and 'PS2' not in z.read('THIRD-PARTY-NOTICES.txt').decode())
+"@ $exe)
+Check (($pl -contains 'payload True') -and ($pl -contains "model $pin") -and ($pl -contains "sidecar $pin")) "Setup's source.zip carries models/x4plus.bin with the pinned SHA-256 ($($pin.Substring(0, 8))...) and its .sha256"
+Check ($pl -contains 'notice True') "THIRD-PARTY-NOTICES.txt names Real-ESRGAN (and never says PS2)"
+$fakeModel = Join-Path $out 'fake-model.zip'
+& $py -c "import zipfile, sys; z = zipfile.ZipFile(sys.argv[1], 'w'); z.writestr('models/x4plus.bin', b'SLYAIW01' + bytes(64)); z.close()" $fakeModel
+$null = & $py $cg $fakeModel
+Check ($LASTEXITCODE -eq 1) "check_no_game_data refuses a models/x4plus.bin that is not the pinned one"
+Remove-Item $fakeModel -ErrorAction SilentlyContinue
+
 # ---- updates from 127.0.0.1 ------------------------------------------------------------------------------
 $srv = Join-Path $out 'srv'
 New-Item -ItemType Directory -Force $srv | Out-Null
