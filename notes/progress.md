@@ -2,6 +2,12 @@
 
 ## Resume here (read first in a new session)
 
+**2026-11-11 (later): laptop fix confirmed by the owner. Started his next picks (1 then 2):** texture pre-build / no
+pop-in (worktree sly2-worktrees\ai, branch next/tex-prebuild, checkpoint notes/wip/tex-prebuild.md) and local lights
+(worktree sly2-worktrees\light, branch next/local-lights, notes/wip/local-lights.md), both from main e656907. Later
+picks on the list: HD HUD/menus, water/wet reflections, HDR output, smoother characters, new character detail
+(needs a download approval).
+
 **2026-11-11: 1.1.1 RELEASED** - "Sly 2 PC 1.1.1", tag v0.1.1247 (190981d), Latest; repo renamed by the owner to
 tanihad/Sly-2-Native-Pc-port (old URL redirects; launchers fetch 0.1.1247 through it). Published assets re-downloaded
 and hash-checked. Waiting for the owner's laptop result (`[gpu] adapter:` line). TODO (low): point the launcher's
