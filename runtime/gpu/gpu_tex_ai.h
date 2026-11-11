@@ -126,6 +126,8 @@ static struct {
     ra_rec* pre; uint32_t npre, ipre;    /* the level list's images still to queue */
     int32_t defer[RA_DEFN]; uint32_t ndefer;
     uint32_t n_wait;
+    ID3D11Query* tq[4][2]; uint8_t tbusy[4]; uint32_t ttex[4], thead; double ms_per_m, last_ms;   /* (GPU time of the
+                                          * cached images' builds: their own rate - no upscale, so cheaper than Enhanced's) */
     uint64_t n_direct, n_pre_q, n_pre_built, n_pre_noslot, n_defer, n_defer_done, n_timeout, n_lfail, n_new;
 } RQ = { .on = -1 };
 
@@ -863,14 +865,17 @@ static int ra_vram(double* use, double* budget) {
 }
 
 static void ra_list(void) {
-    if (!settings_user_path || !settings_user_path(L"textures", RA.dir, 400)) { RA.dir[0] = 0; return; }
-    CreateDirectoryW(RA.dir, NULL);
-    wcscat(RA.dir, L"\\reimagined");
-    CreateDirectoryW(RA.dir, NULL);
-    size_t l = wcslen(RA.dir);
-    _snwprintf(RA.dir + l, 600 - l, L"\\x4plus-v%d", RA_VER);
-    RA.dir[599] = 0;
-    CreateDirectoryW(RA.dir, NULL);
+    /* (tex-prebuild) built in a local buffer: the loaders and the worker read RA.dir while Reimagined turns on again */
+    wchar_t dir[600];
+    if (!settings_user_path || !settings_user_path(L"textures", dir, 400)) { RA.dir[0] = 0; return; }
+    CreateDirectoryW(dir, NULL);
+    wcscat(dir, L"\\reimagined");
+    CreateDirectoryW(dir, NULL);
+    size_t l = wcslen(dir);
+    _snwprintf(dir + l, 600 - l, L"\\x4plus-v%d", RA_VER);
+    dir[599] = 0;
+    CreateDirectoryW(dir, NULL);
+    if (wcscmp(dir, RA.dir)) wcscpy(RA.dir, dir);
     wchar_t pat[620];
     _snwprintf(pat, 620, L"%ls\\*.*", RA.dir);
     pat[619] = 0;
@@ -1178,11 +1183,11 @@ static void ra_pre_line(const char* why) {
     ra_vram(&use, &bud);
     gpu_log("ai-pre: %sframe %u level %u: %u listed (%u new); preloads queued %llu, built %llu, no slot %llu; direct %llu, waiting %u, "
             "timed out %llu, bad files %llu; deferred swaps %llu (%llu out of sight since, %u waiting); video memory %.0f of %.0f MB "
-            "(images %.0f MB, surface maps %.0f MB)", why, ET.frame, RQ.world,
+            "(images %.0f MB, surface maps %.0f MB); cached images built at %.2f ms per M texels", why, ET.frame, RQ.world,
             RQ.nrec, (unsigned)RQ.n_new, (unsigned long long)RQ.n_pre_q, (unsigned long long)RQ.n_pre_built,
             (unsigned long long)RQ.n_pre_noslot, (unsigned long long)RQ.n_direct, RQ.n_wait, (unsigned long long)RQ.n_timeout,
             (unsigned long long)RQ.n_lfail, (unsigned long long)RQ.n_defer, (unsigned long long)RQ.n_defer_done, RQ.ndefer, use, bud,
-            ET.bytes / 1048576.0, ETN.bytes / 1048576.0);
+            ET.bytes / 1048576.0, ETN.bytes / 1048576.0, RQ.ms_per_m);
 }
 /* (ra_frame) the level: a change reads its list and queues its images; the list is written now and then */
 static void ra_level_frame(uint32_t uses) {
@@ -1521,15 +1526,44 @@ static void ra_frame(int* bound) {
     if (RQ.on > 0 && RQ.nth) {           /* (tex-prebuild) */
         ra_wait_poll();
         if (RQ.ndefer) ra_defer_poll();
-        /* while no 3D is drawn (the loading screen) a bigger share: what the frame leaves of 80 % of its interval, <= 5 ms */
+        /* the builds' GPU time (timestamps, read back a few frames later): ms per million texels */
+        if (RQ.ms_per_m <= 0.0) RQ.ms_per_m = 1.5;
+        for (int k = 0; k < 4; k++) {
+            UINT64 a, b;
+            if (!RQ.tbusy[k] || ID3D11DeviceContext_GetData(c, (ID3D11Asynchronous*)RQ.tq[k][0], &a, sizeof a, D3D11_ASYNC_GETDATA_DONOTFLUSH) != S_OK ||
+                ID3D11DeviceContext_GetData(c, (ID3D11Asynchronous*)RQ.tq[k][1], &b, sizeof b, D3D11_ASYNC_GETDATA_DONOTFLUSH) != S_OK) continue;
+            RQ.tbusy[k] = 0;
+            if (!gpu_ts_freq || b < a || RQ.ttex[k] < 65536) continue;
+            RQ.last_ms = (double)(b - a) * 1000.0 / (double)gpu_ts_freq;
+            double r = RQ.last_ms / (RQ.ttex[k] / 1048576.0);
+            if (r > 0.05 && r < 50.0) RQ.ms_per_m = RQ.ms_per_m * 0.8 + r * 0.2;
+        }
+        uint32_t ts = RQ.thead % 4;
+        int timed = 0;
+        if (RA.nloaded && !RQ.tbusy[ts]) {
+            if (!RQ.tq[ts][0]) {
+                D3D11_QUERY_DESC qt = { D3D11_QUERY_TIMESTAMP, 0 };
+                ID3D11Device_CreateQuery(gpu_rt.dev, &qt, &RQ.tq[ts][0]);
+                ID3D11Device_CreateQuery(gpu_rt.dev, &qt, &RQ.tq[ts][1]);
+            }
+            timed = RQ.tq[ts][0] && RQ.tq[ts][1];
+            if (timed) ID3D11DeviceContext_End(c, (ID3D11Asynchronous*)RQ.tq[ts][0]);
+        }
+        /* the share of the frame: 256 K texels; while textures wait for their image (the original shows) what the frame leaves
+         * of 80 % of its interval, <= 2 ms; while no 3D is drawn (a loading screen, the boot) <= 5 ms */
         uint32_t lim = RA_LOAD_TEXELS, cap = ETB.cap;
-        if (RQ.n_wait) lim = cap > lim ? (cap < (2u << 20) ? cap : 2u << 20) : lim;   /* (textures wait: Enhanced's share) */
-        if (!uses) {
+        if (RQ.n_wait || !uses) {
             double hz = frame_rate_target_hz ? frame_rate_target_hz() : 60.0;
-            double room = (hz > 1.0 ? 0.8 * 1000.0 / hz : 12.0) - (gpu_frame_ms_last > 0.0 ? gpu_frame_ms_last - ETB.last_ms : 0.0);
-            room = room > 5.0 ? 5.0 : room < 0.5 ? 0.5 : room;
-            double t = room / ETB.ms_per_m * 1048576.0;
-            lim = cap = t > 4194304.0 ? 4194304u : t < 262144.0 ? 262144u : (uint32_t)t;
+            double room = (hz > 1.0 ? 0.8 * 1000.0 / hz : 12.0) -
+                          (gpu_frame_ms_last > 0.0 ? gpu_frame_ms_last - ETB.last_ms - RQ.last_ms : 0.0);
+            double mx = uses ? 2.0 : 5.0;
+            room = room > mx ? mx : room < 0.5 ? 0.5 : room;
+            room -= (et_fix_on() ? ETB.ms_per_m : 1.2) * ET.out_frame / 1048576.0;   /* (this frame's Enhanced builds) */
+            double t = room / RQ.ms_per_m * 1048576.0;
+            uint32_t tl = t > 4194304.0 ? 4194304u : t < 262144.0 ? 262144u : (uint32_t)t;
+            if (uses && tl > (2u << 20)) tl = 2u << 20;
+            lim = tl;
+            cap = ET.out_frame + tl;
         }
         for (;;) {
             EnterCriticalSection(&RA.cs);
@@ -1581,6 +1615,12 @@ static void ra_frame(int* bound) {
             memmove(RA.loaded, RA.loaded + 1, (RA.nloaded - 1) * sizeof RA.loaded[0]);
             RA.nloaded--;
             LeaveCriticalSection(&RA.cs);
+        }
+        if (timed && up) {
+            ID3D11DeviceContext_End(c, (ID3D11Asynchronous*)RQ.tq[ts][1]);
+            RQ.ttex[ts] = up;
+            RQ.tbusy[ts] = 1;
+            RQ.thead++;
         }
     }
     for (; !(RQ.on > 0 && RQ.nth);) {   /* (PS2_AI_READY=0: 0.1.1247's) */
@@ -1751,6 +1791,7 @@ static void ra_release(void) {
         }
         LeaveCriticalSection(&RA.cs);
     }
+    for (int k = 0; k < 4; k++) { GPU_RELEASE(RQ.tq[k][0]); GPU_RELEASE(RQ.tq[k][1]); RQ.tbusy[k] = 0; }
     if (RQ.on > 0) {
         RQ.ndefer = 0; RQ.n_wait = 0; RQ.uses_last = 0;
         RQ.world = 0xFFFFFFFEu; RQ.nrec = 0; RQ.dirty = 0;
