@@ -602,7 +602,11 @@ static int build_game(setup_t* s) {
     wfmt(cmd, MAXP * 4, L"\"%ls\" -u \"%ls\" --release --out \"%ls\" --package \"%ls\" --progress --disc \"%ls\" --art", vpy, script,
          out, dist, s->iso);
     build_state bs = { 0 };
+    /* this launcher puts the sources' AI model into game\models itself (install_game_files): build_game.py then
+     * leaves it out of the package (it puts it there for 1.0.x launchers, which copy only top-level files) */
+    SetEnvironmentVariableW(L"SLY2_SETUP_PLACES_MODEL", L"1");
     r = run_tool(s, cmd, build_line, &bs, L"Building the game");
+    SetEnvironmentVariableW(L"SLY2_SETUP_PLACES_MODEL", NULL);
     return r;
 }
 
@@ -780,7 +784,8 @@ static int install_sources(setup_t* s) {
         int r0 = from_payload(s, e, z);
         if (r0) return r0;
     }
-    static const wchar_t* old[] = { L"recomp", L"runtime", L"scripts", L"requirements.txt", L"version.txt" };
+    static const wchar_t* old[] = { L"recomp", L"runtime", L"scripts", L"requirements.txt", L"version.txt", L"models",
+                                    L"THIRD-PARTY-NOTICES.txt" };
     for (size_t i = 0; i < sizeof old / sizeof old[0]; i++) { bpath(s, v, old[i]); delete_tree(v); }
     int r = untar(s, z, b, NULL, 0, L"sources");
     if (r) { DeleteFileW(z); return r; }
@@ -843,6 +848,7 @@ static int install_game_files(setup_t* s) {
     int ok = 1;
     do {
         if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+        if (!_wcsicmp(fd.cFileName, MODEL_FILE)) continue;      /* (the 1.0.x launchers' place: this one uses models\) */
         wchar_t a[MAXP], b[MAXP];
         wpath(a, MAXP, dist, fd.cFileName);
         wpath(b, MAXP, staging, fd.cFileName);
@@ -868,6 +874,15 @@ static int install_game_files(setup_t* s) {
             FindClose(h);
         }
     }
+    {                                                /* the AI model (Look = Reimagined) from the verified sources */
+        wchar_t md[MAXP];
+        char why[256] = "";
+        bpath(s, md, L"models");
+        int m = stage_place_model(md, staging, why, sizeof why);
+        if (m < 0) return fail(s, L"Installing the AI model failed: %hs. Click Retry.", why);
+        if (m > 0) say(s, L"AI model: %ls\\models\\" MODEL_FILE L" (SHA-256 checked)", staging);
+        else say(s, L"AI model: not in these sources");
+    }
     if (!stage_mark_complete(s->dir, s->built_version)) return fail(s, L"Cannot write into %ls (error %lu).", staging, GetLastError());
     for (int tries = 0;; tries++) {
         unsigned long err;
@@ -878,6 +893,11 @@ static int install_game_files(setup_t* s) {
         return fail(s, L"Cannot replace the game folder (error %lu).", err);
     }
     say(s, L"Installed version %hs.", s->built_version);
+    {                                                /* (the unpacked model: game\models has it, the kept bundle too) */
+        wchar_t md[MAXP];
+        bpath(s, md, L"models");
+        delete_tree(md);
+    }
     /* the old installer's layout (the game directly in <dir>): replaced by <dir>\game */
     static const wchar_t* old_files[] = { L"sly2.exe", L"README.txt", L"Controller test.cmd" };
     for (size_t i = 0; i < sizeof old_files / sizeof old_files[0]; i++) {

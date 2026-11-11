@@ -10,6 +10,10 @@ SLUS_*
 SLES_*
 SLPS_*
 
+# AI model weights (third-party; Setup / the update bundle carry the export: scripts/make_installer.py)
+*.pth
+/models/
+
 # Generated
 build/
 dist/

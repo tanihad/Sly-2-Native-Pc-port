@@ -13,7 +13,12 @@ on the player's PC and installs it (notes/install.md, "Installer").
 
 What goes into the setup file (appended to the program as a payload, each entry with its SHA-256):
   source.zip       the tracked files the build needs: recomp/, runtime/, the build scripts, requirements.txt,
-                   version.txt. Nothing from orig/, build/, dist/ or any other game data.
+                   version.txt, THIRD-PARTY-NOTICES.txt. Nothing from orig/, build/, dist/ or any other game data.
+                   Also models/x4plus.bin (+ models/x4plus.bin.sha256): the Real-ESRGAN x4plus weights for
+                   Look = Reimagined (third-party, BSD-3), exported by scripts/ai_model.py from the pinned
+                   tools/models/realesrgan/RealESRGAN_x4plus.pth (its SHA-256 checked, the result's SHA-256 must be
+                   ai_model.X4PLUS_BIN_SHA256; cached in build/models). The launcher puts it at game\\models\\x4plus.bin
+                   (notes/install.md "AI model").
   --offline also:  the toolchain archives exactly as their publishers ship them (llvm-mingw, uv; same files
                    and SHA-256 as scripts/setup-tools.ps1 pins), python.zip (this checkout's
                    tools/python/cpython-<ver>-windows-x86_64-none, the python-build-standalone build uv
@@ -45,8 +50,15 @@ SRC = ROOT / "installer"
 # The build's inputs (scripts/build_game.py and what it imports or runs).
 PAYLOAD_DIRS = ["recomp", "runtime"]
 PAYLOAD_FILES = ["scripts/build_game.py", "scripts/package.py", "scripts/paths.py", "scripts/extract_elf.py",
-                 "scripts/make_icon.py", "scripts/disc_art.py", "scripts/hlslc.c", "requirements.txt"]
+                 "scripts/make_icon.py", "scripts/disc_art.py", "scripts/hlslc.c", "requirements.txt",
+                 "THIRD-PARTY-NOTICES.txt"]
 NEVER = ("orig/", "build/", "dist/", "tools/", ".venv/")
+
+# The AI model (Look = Reimagined): exported from the pinned .pth into the cache, then models/ in source.zip.
+MODEL_PTH = TOOLS / "models" / "realesrgan" / "RealESRGAN_x4plus.pth"
+MODEL_CACHE = ROOT / "build" / "models" / "x4plus.bin"
+MODEL_ARC = "models/x4plus.bin"
+NOTICE_PENDING = "[LICENCE TEXT PENDING"
 
 # Parts of llvm-mingw the game build never uses (other CPU targets, the debugger, clangd/clang-tidy, the
 # Python of lldb, Linux sanitizer runtimes): not unpacked, which saves ~350 MB.
@@ -56,9 +68,9 @@ LLVM_EXCLUDES = ["*/aarch64-w64-mingw32/*", "*/armv7-w64-mingw32/*", "*/i686-w64
                  "*/lib/windows/*-i386.*", "*/lib/windows/*-aarch64.*", "*/lib/windows/*-arm.*"]
 
 # Disk use measured on a full install (notes/install.md "Installer: disk space"), MB.
-NEED_SOURCES_MB = 10
+NEED_SOURCES_MB = 150     # sources 2 + the bundle with the AI model (62 MB, kept in bundle\) + the model unpacked (64)
 NEED_BUILD_MB = 300        # build\rel (generated C + objects ~225), build\gen, hlslc cache, dist staging, orig ELF
-NEED_GAME_MB = 30          # sly2.exe + README
+NEED_GAME_MB = 100         # sly2.exe + README + models\x4plus.bin (64)
 NEED_PYTHON_MB = 90        # uv python install (60) + its download in the uv cache
 NEED_VENV_MB = 40          # .venv (13) + uv cache with the two wheels (~20)
 DOWNLOAD_EXTRA_MB = 25     # python-build-standalone (~20 MB) + wheels, on top of the archive sizes
@@ -358,21 +370,46 @@ def assemble(stub: Path, entries: list[tuple[str, Path]], out: Path) -> None:
     os.replace(tmp, out)
 
 
-def make_source_zip(path: Path, count: int, ghash: str) -> int:
+def model_bin() -> tuple[Path, str]:
+    """models/x4plus.bin for source.zip: the cached export if it has the pinned SHA-256, else exported again from the
+    pinned .pth (scripts/ai_model.py: restricted unpickler, the .pth's SHA-256 checked first). (path, sha256 lower)."""
+    import ai_model
+    if not MODEL_CACHE.exists() and not MODEL_PTH.exists():
+        sys.exit(f"make_installer: {MODEL_PTH} is missing (the owner-approved Real-ESRGAN x4plus model, "
+                 f"SHA-256 {ai_model.X4PLUS_PTH_SHA256[:8]}...): Setup and the update bundle carry its export")
+    MODEL_CACHE.parent.mkdir(parents=True, exist_ok=True)
+    digest = ai_model.export_x4plus(str(MODEL_PTH), str(MODEL_CACHE))
+    return MODEL_CACHE, digest.lower()
+
+
+def notice_complete() -> bool:
+    """THIRD-PARTY-NOTICES.txt has the model's licence text (not the placeholder)."""
+    return NOTICE_PENDING not in (ROOT / "THIRD-PARTY-NOTICES.txt").read_text(encoding="utf-8")
+
+
+def make_source_zip(path: Path, count: int, ghash: str, with_model: bool = True) -> int:
     """source.zip: what Setup carries and what an update bundle is (scripts/make_release.py). Deterministic
-    (fixed entry times), so the same commit gives the same bundle and SHA-256."""
+    (fixed entry times and attributes, sorted names, the model's bytes pinned), so the same commit gives the same bundle
+    and SHA-256. with_model: also models/x4plus.bin and models/x4plus.bin.sha256 (installer/release.c stage_place_model
+    checks the copy in game\\models against it; the signed manifest / Setup's payload table cover the whole zip)."""
     files = payload_files()
+    model = model_bin() if with_model else None
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
-        for f in files:
-            info = zipfile.ZipInfo(f, date_time=(2020, 1, 1, 0, 0, 0))
+        def add(name: str, data: bytes) -> None:
+            info = zipfile.ZipInfo(name, date_time=(2020, 1, 1, 0, 0, 0))
             info.compress_type = zipfile.ZIP_DEFLATED
             info.external_attr = 0o644 << 16
-            z.writestr(info, (ROOT / f).read_bytes(), compresslevel=9)
+            z.writestr(info, data, compresslevel=9)
+        for f in files:
+            add(f, (ROOT / f).read_bytes())
+        if model:
+            add(MODEL_ARC, model[0].read_bytes())
+            add(MODEL_ARC + ".sha256", f"{model[1]}  x4plus.bin\n".encode("ascii"))
         info = zipfile.ZipInfo("version.txt", date_time=(2020, 1, 1, 0, 0, 0))
         info.compress_type = zipfile.ZIP_DEFLATED
         z.writestr(info, f"{count} {ghash}\n")
     # nothing of the game, ever: no picture, icon or sound, none of the disc's files (game art is made on the
-    # player's PC: scripts/disc_art.py, notes/disc-art.md)
+    # player's PC: scripts/disc_art.py, notes/disc-art.md); the model is allowed by its exact SHA-256 only
     import check_no_game_data
     problems: list[str] = []
     check_no_game_data.check_zip(path.name, path.read_bytes(), problems)
@@ -415,6 +452,9 @@ def main() -> int:
     assemble(stub, [("source.zip", src_zip)], setup)
     print(f"{setup}: {setup.stat().st_size / 2**20:.1f} MB (program {stub.stat().st_size // 1024} KB, "
           f"{nfiles} source files, version 0.1.{count} {ghash})")
+    print(f"  source.zip {src_zip.stat().st_size / 2**20:.1f} MB, with {MODEL_ARC} sha256 {model_bin()[1]}")
+    if not notice_complete():
+        print("WARNING: THIRD-PARTY-NOTICES.txt still lacks Real-ESRGAN's licence text: this Setup must not be released")
     if art:
         allowed = art_allow_list(art)
         allow_file.write_text("".join(f"{h}  {what}\n" for h, what in allowed.items()), encoding="utf-8")

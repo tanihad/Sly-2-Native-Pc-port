@@ -15,6 +15,8 @@ toolchain archives of the offline variant are third-party downloads: only their 
 Checked for every file: (1) no media file name (.png .bmp .ico .jpg .webp .gif .tga .dds .tif .pss .vag .wav ...),
 (2) no picture by its content (PNG, BMP, ICO / PS2 icon model, JPEG, GIF, WebP, TIFF), (3) its SHA-256 is none of
 the disc files we know (the boot executable, the save icon of every disc in scripts/disc_art.py's table).
+One third-party file is allowed by its exact SHA-256 (ALLOWED_THIRD_PARTY): the Real-ESRGAN x4plus weights
+models/x4plus.bin (scripts/ai_model.py X4PLUS_BIN_SHA256); any other .bin, or a changed model, still fails.
 Exit code 0 = clean, 1 = something found (each listed), 2 = cannot read.
 """
 import hashlib
@@ -35,6 +37,10 @@ KNOWN = {extract_elf.EXPECTED_SHA256: "the game's executable (SCUS_973.16)"}
 for d in disc_art.DISCS:
     KNOWN[d["elf_sha256"]] = f"the {d['region']} disc's executable"
     KNOWN[d["icon"]["sha256"]] = f"the {d['region']} disc's save icon (memcard_icon.ico)"
+# Third-party files we ship on purpose that the name check would flag (.bin): allowed by their exact SHA-256 only.
+# models/x4plus.bin = scripts/ai_model.py's export of RealESRGAN_x4plus.pth (BSD-3 network weights, no game data).
+import ai_model  # noqa: E402
+ALLOWED_THIRD_PARTY = {ai_model.X4PLUS_BIN_SHA256.lower(): "the Real-ESRGAN x4plus weights (models/x4plus.bin)"}
 
 
 def picture_kind(data: bytes) -> str | None:
@@ -61,7 +67,7 @@ def check_blob(name: str, data: bytes, problems: list[str], media_check: bool = 
     digest = hashlib.sha256(data).hexdigest()
     if digest in KNOWN:
         problems.append(f"{name}: is {KNOWN[digest]}")
-    if not media_check:
+    if not media_check or digest in ALLOWED_THIRD_PARTY:
         return
     ext = Path(name).suffix.lower()
     if ext in MEDIA_EXT:

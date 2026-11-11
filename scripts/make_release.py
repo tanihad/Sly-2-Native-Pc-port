@@ -4,7 +4,9 @@
 
 Writes into build\\release\\<version>\\:
   sly2-source-<version>.zip   the source bundle (exactly what Sly2-Setup.exe carries as source.zip: our
-                              recompiler, runtime and build scripts; never anything from the game)
+                              recompiler, runtime and build scripts, plus the Real-ESRGAN x4plus weights
+                              models/x4plus.bin with their SHA-256 and THIRD-PARTY-NOTICES.txt; never anything
+                              from the game). ~62 MB because of the model.
   sly2-release.txt            the manifest: version, the bundle's URL, size and SHA-256
   sly2-release.txt.sig        the Ed25519 signature of the manifest (scripts/release_keygen.py's key)
 then prints the `gh release create` command that publishes them. It uploads nothing itself.
@@ -54,6 +56,8 @@ def main() -> int:
     count, ghash = make_installer.version()
     if ghash.endswith("-dirty") and not args.allow_dirty:
         sys.exit("make_release: the working tree has uncommitted changes in the game's sources; commit first")
+    if not make_installer.notice_complete() and not args.allow_dirty:
+        sys.exit("make_release: THIRD-PARTY-NOTICES.txt still lacks Real-ESRGAN's licence text (the bundle ships the model)")
     if args.count is not None:
         count = args.count
     version = f"0.1.{count}"
@@ -94,7 +98,8 @@ def main() -> int:
     header = ROOT / "installer" / "release_key.h"
     if header.exists() and pub.hex() not in header.read_text(encoding="utf-8"):
         built_in = "WARNING: this key is not the one in installer/release_key.h: launchers will reject this release."
-    print(f"release {version} ({commit}), {nfiles} source files, bundle {len(data) / 1024:.0f} KB")
+    print(f"release {version} ({commit}), {nfiles} source files + {make_installer.MODEL_ARC}, "
+          f"bundle {len(data) / 2**20:.1f} MB ({len(data)} bytes)")
     print(f"  {bundle}\n  {out / 'sly2-release.txt'}\n  {out / 'sly2-release.txt.sig'}")
     print(f"signed with public key {pub.hex()}")
     if built_in:

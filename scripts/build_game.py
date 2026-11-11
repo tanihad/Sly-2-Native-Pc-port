@@ -289,6 +289,34 @@ def _version() -> tuple[int, str]:
         return 0, "unknown"
 
 
+def package_model_for_old_launcher(dest: Path) -> None:
+    """Sources unpacked from Setup or an update bundle carry models/x4plus.bin (the Real-ESRGAN weights for
+    Look = Reimagined; scripts/make_installer.py). A launcher of 1.0.x (0.1.1136 and older) copies only the package's
+    top-level files (and art\\) into <install>\\game, so for it the model goes next to sly2.exe as x4plus.bin; the runtime
+    looks there after models\\x4plus.bin (runtime/gpu/gpu_tex_ai.h). Newer launchers set SLY2_SETUP_PLACES_MODEL=1 and put
+    it into game\\models\\ themselves after checking its SHA-256 (installer/release.c stage_place_model). A development
+    checkout has no models/ folder: nothing happens."""
+    import hashlib
+    src = ROOT / "models" / "x4plus.bin"
+    old = dest / "x4plus.bin"
+    old.unlink(missing_ok=True)
+    if not src.is_file() or os.environ.get("SLY2_SETUP_PLACES_MODEL") == "1":
+        return
+    try:
+        want = (ROOT / "models" / "x4plus.bin.sha256").read_text(encoding="ascii").split()[0].lower()
+    except (OSError, IndexError):
+        want = ""
+    h = hashlib.sha256()
+    with open(src, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    if h.hexdigest() != want:
+        print(f"[model] {src}: SHA-256 does not match models/x4plus.bin.sha256: not packaged (Reimagined has no AI textures)")
+        return
+    shutil.copyfile(src, old)
+    print(f"[model] {old} (for a 1.0.x launcher, which installs only the package's top-level files)")
+
+
 def package(objs: list[Path], out: Path, dest: Path, link_flags: list[str], disc: Path | None = None,
             art: bool = False) -> int:
     """Link the player's build (GUI subsystem, icon, version info, manifest) into dest.
@@ -328,6 +356,10 @@ def package(objs: list[Path], out: Path, dest: Path, link_flags: list[str], disc
     shutil.copy2(exe, dest / "sly2.exe")
     (dest / "README.txt").write_text(README.format(ver=f"{v[0]}.{v[1]}.{v[2]}", hash=ghash), encoding="utf-8")
     (dest / "Controller test.cmd").write_text('@start "" "%~dp0sly2.exe" --pad-test\r\n', encoding="ascii", newline="")   # input_padtest.c
+    notices = ROOT / "THIRD-PARTY-NOTICES.txt"
+    if notices.is_file():
+        shutil.copy2(notices, dest / notices.name)
+    package_model_for_old_launcher(dest)
     print(f"packaged {dest / 'sly2.exe'} ({exe.stat().st_size / 1e6:.1f} MB, version {v[0]}.{v[1]}.{v[2]} {ghash})")
     art_dir = dest / "art"
     shutil.rmtree(art_dir, ignore_errors=True)
