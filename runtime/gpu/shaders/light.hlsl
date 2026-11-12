@@ -243,7 +243,15 @@ cbuffer reim_cb : register(b8) {
     float4 r_loc;                        // (local lights) on (1: r_lloc holds this frame's light), gain on the picture, floor, -
     float4 r_v3;                         // (3) the shadows rework: on, the game-lit mask drawn (r_glit), its depth tolerance,
                                          // the history's depth tolerance (0: no last-frame depth in r_pw)
+    float4 r_v3b;                        // (3) the game shadow's darkening written this frame (r_gsm), -, -, -
 };
+#if MS
+Texture2DMS<float> r_gsm : register(t31);    // (3) the game's own shadow: how much it darkened the pixel (1: not at all; mft.hlsl GSM)
+float r_gsmload(int2 q) { return r_gsm.Load(q, 0); }
+#else
+Texture2D<float> r_gsm : register(t31);
+float r_gsmload(int2 q) { return r_gsm.Load(int3(q, 0)); }
+#endif
 Texture2D<float> r_glit : register(t29);     // (3) the game-lit mask: 1 / view depth of the lit entries (0: none), half res
 Texture2D<float> r_pw : register(t30);       // (3) last frame's half-res view depth (the key-light history's disocclusion test)
 // (3) the half-res texel q at view depth w shows a lit entry (characters, lit props: the game lit it in the VU itself): the
@@ -713,6 +721,16 @@ float4 ps_reim_comp(float4 pos : SV_Position) : SV_Target {
         // twice, and its N.L from the depth flickered over a running character); shadows still darken them
         float lit = smoothstep(0.0, 0.7, nl) * vis * (1.0 - sh.w), dark = saturate(nl * 4.0) * (1.0 - vis);
         dark *= 1.0 - 0.6 * smoothstep(0.25, 0.65, l_luma(c));   // (a lamp-lit spot keeps its own light: no mud under a canopy by the fire)
+        if (r_v3b.x > 0.0) {
+            // (3) ONE shadow per pixel: where the game's own shadow (its volumes, cast from this same light) already darkened
+            // the pixel by gf, the key light's shadow only darkens further where it is darker than that - min(game, ours),
+            // not their product (the double-dark band and the flicker where the two copies of a shadow overlap and slide) -
+            // and the key light's relight does not brighten what the game put in shadow
+            float gf = r_gsmload(int2(p * l_map.xy));
+            float fo = 1.0 - r_key.w * dark;
+            dark = gf < 0.999 ? saturate((1.0 - fo / max(gf, 0.05)) / max(r_key.w, 1e-3)) : dark;
+            lit *= saturate(gf * 4.0 - 3.0);   // (gf 1: all of it; <= 0.75: none)
+        }
         float head = saturate(1.15 - max(max(c.r, c.g), c.b));   // (bright surfaces: little headroom - no clipping to white)
         c *= 1.0 + r_keyc.w * lit * head * lerp(float3(1.0, 1.0, 1.0), kc, 0.05);   // (white light: the surfaces keep their own hue)
         c *= lerp(float3(1.0, 1.0, 1.0), shc * (1.0 - r_key.w), dark);
@@ -795,6 +813,11 @@ float4 ps_reim_comp(float4 pos : SV_Position) : SV_Target {
         int2 qh = int2(p / l_map.zw);                      //  the mask's own test at this texel, blue its depth's presence)
         float wh = l_w.Load(int3(qh, 0));
         o = float3(sh.w, r_gamelit(qh, wh), r_glit.Load(int3(qh, 0)) > 0.0 ? 0.5 : 0.0);
+    }
+    else if (r_misc.z == 7.0) {                            // (7: (3) the game's shadow and the key light's visibility)
+        float gf = r_v3b.x > 0.0 ? r_gsmload(int2(p * l_map.xy)) : 1.0;
+        float v = r_v3.x > 0.0 ? min(sh.x, sh.z) : sh.x;
+        o = float3(gf, min(gf, v), v);   // (white: lit; red: only the key light's shadow; blue: only the game's; black: both)
     }
     return float4(saturate(o), pic.a);
 }

@@ -90,6 +90,8 @@ static struct {
     ID3D11ShaderResourceView* gl_srv;
     int gl_w, gl_h, have_pw;
 } RR;
+/* (3) the game shadow's darkening target (reim_gsm_rtv) */
+static struct { ID3D11Texture2D* t; ID3D11RenderTargetView* rtv; ID3D11ShaderResourceView* srv; int w, h, n; uint64_t post, writes, used, seq, seq_ok; } RG;
 
 /* PS2_REIM_FIX=0: 0.1.1207's behaviour (for before / after measurements) */
 static int re_fix(void) { static int v = -1; if (v < 0) { const char* e = getenv("PS2_REIM_FIX"); v = !(e && *e == '0'); } return v && r8p_on(R8P_REIMFIX); }
@@ -584,6 +586,7 @@ static void reim_release(void) {
     GPU_RELEASE(RR.ds_always);
     GPU_RELEASE(RR.gl_dsv); GPU_RELEASE(RR.gl_srv); GPU_RELEASE(RR.gl);   /* (3) */
     RR.gl_w = RR.gl_h = 0; RR.have_pw = 0;
+    GPU_RELEASE(RG.rtv); GPU_RELEASE(RG.srv); GPU_RELEASE(RG.t); RG.w = RG.h = RG.n = 0;
     GPU_RELEASE(RL.buf);                 /* (local lights) */
     RE.have_key = 0;
 }
@@ -617,8 +620,8 @@ static int rr_tex(int i, int w, int h, DXGI_FORMAT f, int mips, int rt) {
     return 1;
 }
 static void rr_unbind(void) {
-    ID3D11ShaderResourceView* none[17] = { NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL };
-    ID3D11DeviceContext_PSSetShaderResources(gpu_rt.ctx, 14, 17, none);   /* (t14..t30) */
+    ID3D11ShaderResourceView* none[18] = { NULL };
+    ID3D11DeviceContext_PSSetShaderResources(gpu_rt.ctx, 14, 18, none);   /* (t14..t31) */
     ID3D11RenderTargetView* nr[2] = { NULL, NULL };
     ID3D11DeviceContext_OMSetRenderTargets(gpu_rt.ctx, 2, nr, NULL);
 }
@@ -883,6 +886,31 @@ static int reim_smap(const reim_scene* S, const float* rndc, const float* rzab, 
     return 1;
 }
 
+/* (3) the game's own shadow: the fused shadow pass (gpu_exec_mft.h mft_shfuse, mft.hlsl GSM) also writes how much it
+ * darkened each pixel (1 = not at all) into this target - the frame surface's size and samples. The composite then takes one
+ * shadow per pixel, the darker of the game's and the key light's, instead of the product (the key light IS the light the
+ * game casts its characters' shadow volumes from: two copies of Sly's shadow, slightly apart, darkest where they overlap -
+ * "two shadows collide and flick"). Valid for the post pass right after the frame's shadow pass (RG.post). */
+static int reim_gsm_on(void) { re_env(); return lt_reim() && RE.v3 && re_x(64, 1); }
+static ID3D11RenderTargetView* reim_gsm_rtv(int w, int h, int n) {
+    if (!reim_gsm_on()) return NULL;
+    if (!RG.t || RG.w != w || RG.h != h || RG.n != n) {
+        GPU_RELEASE(RG.rtv); GPU_RELEASE(RG.srv); GPU_RELEASE(RG.t);
+        RG.w = RG.h = RG.n = 0;
+        RG.t = mtex(w, h, n, DXGI_FORMAT_R8_UNORM, D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE);
+        if (!RG.t) return NULL;
+        if (FAILED(ID3D11Device_CreateRenderTargetView(gpu_rt.dev, (ID3D11Resource*)RG.t, NULL, &RG.rtv))) RG.rtv = NULL;   /* (mrtv: RGBA8 only) */
+        RG.srv = msrv(RG.t, n > 1, DXGI_FORMAT_R8_UNORM);
+        if (!RG.rtv || !RG.srv) { GPU_RELEASE(RG.rtv); GPU_RELEASE(RG.srv); GPU_RELEASE(RG.t); return NULL; }
+        RG.w = w; RG.h = h; RG.n = n;
+    }
+    static const float one[4] = { 1, 1, 1, 1 };
+    ID3D11DeviceContext_ClearRenderTargetView(gpu_rt.ctx, RG.rtv, one);
+    RG.post = RR.frames;                 /* (the next post pass reads it) */
+    RG.writes++;
+    return RG.rtv;
+}
+
 /* (3) the game-lit mask: the frame's lit entries - the R2 entries with a light block, which the game lights itself in the VU
  * with its own lights (characters, lit props: the key light's diffuse, the best four point lights) - drawn again from the
  * camera, depth only, into a half-res map holding 1 / view depth (0: none). light.hlsl r_gamelit compares it with the
@@ -1055,6 +1083,10 @@ static void reim_post(mtarget* c, mtarget* z, int pc) {
                     (unsigned long long)RE.posts, (unsigned long long)RE.maps, (unsigned long long)RE.map_reuse,
                     (unsigned long long)RE.map_ops, (unsigned long long)RE.map_fd, (unsigned long long)RE.key_snaps,
                     (unsigned long long)RE.sc_fresh, (unsigned long long)RE.sc_moves, (unsigned long long)RW.switches, (unsigned long long)RW.cuts, (unsigned long long)RW.old_wrong);
+        if (RE.log && RE.posts % 600 == 0 && RE.v3)
+            gpu_log("reim3-stats: game-lit mask %llu frames (%llu draws), game shadow pass %llu written / %llu used (shadow sequences %llu, %llu run)",
+                    (unsigned long long)RE.gl_frames, (unsigned long long)RE.gl_draws, (unsigned long long)RG.writes, (unsigned long long)RG.used,
+                    (unsigned long long)RG.seq, (unsigned long long)RG.seq_ok);
     }
     if (re_fix() && have_world && RR.have_prev && RR.prev_serial != S->serial) {   /* (fix: the key-light term's history) */
         memcpy(rppv, RR.ppv, sizeof RR.ppv); memcpy(rpndc, RR.pndc, sizeof RR.pndc); rptaa[0] = 0.9f;
@@ -1081,6 +1113,10 @@ static void reim_post(mtarget* c, mtarget* z, int pc) {
     rloc[0] = nloc > 0 ? 1.0f : 0.0f; rloc[1] = 1.0f; rloc[2] = RL.floor;
     float* rv3 = rc + 144;               /* (3) light.hlsl r_v3: on, the game-lit mask drawn, its depth tolerance, the history's */
     rv3[0] = v3 ? 1.0f : 0.0f; rv3[1] = glm ? 1.0f : 0.0f; rv3[2] = RE.gl_tol; rv3[3] = v3 && RR.have_pw ? RE.h_tol : 0.0f;
+    float* rv3b = rc + 148;              /* (3) light.hlsl r_v3b: the game shadow's darkening written this frame (r_gsm) */
+    int gsm = v3 && RG.srv && RG.post == RR.frames && RG.w == z->w && RG.h == z->h;
+    rv3b[0] = gsm ? 1.0f : 0.0f;
+    if (gsm) RG.used++;
     ID3D11DeviceContext_UpdateSubresource(gpu_rt.ctx, (ID3D11Resource*)RR.cb, 0, NULL, rc, 0, 0);
 #define LT_SIZE(v, w, h) do { (v)[0] = (float)(w); (v)[1] = (float)(h); (v)[2] = 1.0f / (float)(w); (v)[3] = 1.0f / (float)(h); } while (0)
     if (RE.log && LT.frames % 600 == 0)
@@ -1226,6 +1262,7 @@ static void reim_post(mtarget* c, mtarget* z, int pc) {
     lt_srv(19, RR.srv[RT_PIC]); lt_srv(20, RR.srv[RT_SH]); lt_srv(21, RR.srv[RT_SHAFT]); lt_srv(22, RR.srv[RT_SCENE]);
     if (nloc > 0) lt_srv(28, RR.srv[RT_LOC]);   /* (local lights) */
     if (glm && RE.dbg == 6) lt_srv(29, RR.gl_srv);   /* (3: the mask's debug view) */
+    if (gsm) lt_srv(31, RG.srv);         /* (3: the game shadow's darkening) */
     {
         static const float zero[4] = { 0, 0, 0, 0 };
         if (rsh[0] <= 0.0f) ID3D11DeviceContext_ClearRenderTargetView(gpu_rt.ctx, RR.rtv[RT_SHAFT], zero);

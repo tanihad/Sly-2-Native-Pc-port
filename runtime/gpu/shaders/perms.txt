@@ -258,6 +258,13 @@ ps_mft_shfuse_px    mft.hlsl            ps_mft_shfuse_px  ps_5_0    PRIM=9 MS=1
 ps_mft_shfuse1_s    mft.hlsl            ps_mft_shfuse     ps_5_0    PRIM=9 MS=1 SOFT=1
 ps_mft_shfuse0_s    mft.hlsl            ps_mft_shfuse     ps_5_0    PRIM=9 MS=0 SOFT=1
 ps_mft_shfuse_px_s  mft.hlsl            ps_mft_shfuse_px  ps_5_0    PRIM=9 MS=1 SOFT=1
+# (shadows) Look = Reimagined: the same passes also writing the game shadow's darkening (SV_Target1, mft.hlsl GSM)
+ps_mft_shfuse1_g    mft.hlsl            ps_mft_shfuse_g   ps_5_0    PRIM=9 MS=1 GSM=1
+ps_mft_shfuse0_g    mft.hlsl            ps_mft_shfuse_g   ps_5_0    PRIM=9 MS=0 GSM=1
+ps_mft_shfuse_px_g  mft.hlsl            ps_mft_shfuse_px_g ps_5_0   PRIM=9 MS=1 GSM=1
+ps_mft_shfuse1_sg   mft.hlsl            ps_mft_shfuse_g   ps_5_0    PRIM=9 MS=1 SOFT=1 GSM=1
+ps_mft_shfuse0_sg   mft.hlsl            ps_mft_shfuse_g   ps_5_0    PRIM=9 MS=0 SOFT=1 GSM=1
+ps_mft_shfuse_px_sg mft.hlsl            ps_mft_shfuse_px_g ps_5_0   PRIM=9 MS=1 SOFT=1 GSM=1
 ps_mft_date1        mft.hlsl            ps_mft_date       ps_5_0    PRIM=9 MS=1
 ps_mft_date0        mft.hlsl            ps_mft_date       ps_5_0    PRIM=9 MS=0
 # (r8-perf, diagnostics) PS2_R8P_VERIFY: two results of one step compared per sample
