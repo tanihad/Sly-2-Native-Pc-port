@@ -174,8 +174,8 @@ this runs (tcf_look 0, ra_on_now 0); the shared code only gained an unused slot 
 
 - The menu still hides Reimagined unless sly2.ini says `look = reimagined` (menu.c build_choices): the owner decides
   when both halves are in.
-- A "prepare all levels" button (needs a census of every level's textures from the disc data rather than walks).
-  (Shipping the weights: done, notes/install.md "AI model".)
+- A "prepare all levels" button (needs a census of every level's textures from the disc data rather than walks; see
+  "Ready before first sight" below for why it was not done). (Shipping the weights: done, notes/install.md "AI model".)
 - fp16 feature buffers would halve the net's 294 MB and speed it up on cards with fast fp16.
 
 ## Look switch crash (owner, 0.1.1226, 2026-11-10)
@@ -210,3 +210,105 @@ scale 100 <-> 75 %, m MSAA 8x <-> 4x). Passes with no crash and >= 500 changes.
 | fixed | cold, all five (2 runs) | 2843 | 572 | 0 |
 
 Gates on the fix (alone): run_tests, 28 unit suites, m9_exact S1 + S3 -Game identical, gpu_diff_all 28/28, r2_sweep Faithful 9/9 and Reimagined 9/9, reim_stability_gate PASS (orbit 1.085 x, trees 1.031 x, no world-matrix flips).
+
+## Ready before first sight (no pop-in; branch next/tex-prebuild, 2026-11-11)
+
+Owner request: Reimagined's AI textures must be there before the player sees a texture - no visible switch from the
+Faithful (Enhanced) image to the AI image during play. Before: a texture's AI image was looked up (cache) or built
+(net) only after its Enhanced image had been built and shown, so every texture of a level changed once on screen; with
+a warm cache too (the file still had to be decoded and uploaded, behind the worker's other jobs, 256 K texels a frame).
+
+### Options weighed
+
+| option | verdict |
+|---|---|
+| (a) at the level's load, find every texture it will use and build them | the loading screen is **0.2 s** on PC (widCurrent changes at the load's start, the 3D follows ~22 frames later: the ISO reads are instant), far too short to build anything; finding a level's textures before it draws them would need the engine's level data (shaders / textures / CLUTs) parsed and decoded exactly as the GS path does, plus each use's addressing and alpha test (they are part of the image's key): a project of its own, not reliable enough here |
+| (b) a one-time "prepare all levels" pass | needs the same census of every level's textures from the disc (walks only see part of a hub); not done |
+| (c) cached images ready before first use | **done**, plus level lists so that "before first use" is known, a prediction for the title -> resume case and deferral for the cold case |
+| holding the loading screen | not needed (no load-time increase); would need the EE stalled while the render thread works without frames |
+
+### How it works (gpu_tex_ai.h, "Ready before first sight"; PS2_AI_READY=0 = the 0.1.1247 flow, for A/B)
+
+1. **Direct AI images**: a texture whose AI image is in the cache never gets an Enhanced image first. At its first
+   resolve (et_resolve, after the content hash) it waits (ES_AILOAD, the original sampling shows - as it does while an
+   Enhanced image is being built) for the file, which is decoded and built straight into a new image slot (mips,
+   coverage, surface map) and linked: one change on screen (original -> AI) instead of two.
+2. **Loader threads** (a third of the CPU's threads, 2..6, below normal priority, their own WIC factories) decode cache
+   files; on-demand requests first, preloads after; at most 160 MB decoded and not yet uploaded. The worker keeps the
+   net's creation, tile preparation and saving (a long net creation no longer delays cached images).
+3. **Level lists**: every level (the game's widCurrent, 0x3D4A68, read from EE memory each frame) keeps the list of
+   the textures it showed (key, size, addressing, alpha test): `<cache>\levels\w<world>.bin` ("SLYAIL01", count, 16-byte
+   records, written by the worker via .tmp + rename at a level change and every 3600 frames). When the level changes (the
+   game writes widCurrent as its load starts), its list is read by a loader and every listed AI image in the cache is
+   decoded and built into image slots - free ones, or slots of the previous level not used since the change; a class
+   not made yet is made, a full one grows only while no 3D is drawn (never a growth copy during play) - so the level's
+   textures find their AI image at the first hash (0 extra frames). Images in the list already resident are kept from
+   reuse for 20 s. `levels\last.bin` = the last level played: the title (world 0, which the game's boot logos give ~5 s
+   to prepare) also preloads that level's list, so **Resume Game** starts with every listed image ready.
+4. **Per-frame share**: cached images' builds are timed with their own timestamps (~1.7 ms per million texels: no
+   upscale) - 256 K texels a frame normally; while textures wait for their image what the frame leaves of 80 % of its
+   interval (<= 2 ms); while no 3D is drawn (boot, loading screens) up to 5 ms.
+5. **Deferred swaps** (the cold cache's first visit): an AI image built by the net (or loaded) for a texture whose
+   Enhanced image a draw used in the last 2 frames is not applied: the image is written to the cache as usual and the
+   texture waits (RI_DEFER) until it is out of sight (no draw for 2 frames) or no 3D is drawn (loading, menus), then it
+   is loaded again and applied - never while visible. A texture that never leaves the screen keeps its Enhanced image
+   until then (the next visit of the level has it from the list).
+
+Faithful / Retro: nothing of this runs (ra_on_now 0); the shared code gained an art-use counter and two entry fields
+(statistics) and one guarded call in et_resolve.
+
+### Measurement (scripts/tex_pop_gate.ps1)
+
+Owner's settings (High: 2560 x 1440, 100 %, MSAA 8x, thin outlines; Reimagined; 120 fps), deterministic
+(PS2_FRAME_DT_FIXED), START at the title (Resume Game -> ep2 hub's safehouse), X 2000 VBlanks later, then ~3 min of
+walking with camera turns; transition runs also load the ep1 hub at VBlank 9000 (PS2_TASK_SET=w2@9000). PS2_AI_POPLOG=1
+counts from the level's first 3D frame on: **swaps** (an AI image replacing an image already shown; visible = a draw
+used it in the last 2 frames) and each texture's **first image** with its delay after the first draw that used it (the
+original sampling shows meanwhile; <= 3 frames is the content hash's read-back latency, the same in Faithful).
+Frame times: every picture after the first 3D frame (~25,800), the statistics lines' frames left out.
+
+| run | swaps after 1st 3D frame (visible) | first image AI / Enhanced | original shown <= 3 / 4-63 / 64-255 / > 255 frames | GPU+present p99 / max ms | render thread p99 / max ms |
+|---|---|---|---|---|---|
+| warm, before | 354 (349) | 381 / 507 | 517 / 316 / 55 / 0 | 8.64 / 10.81 | 4.43 / 13.64 |
+| warm, after (lists) | **0 (0)** | 801 / 81 | **869 / 13 / 0 / 0** | 8.53 / 10.64 | 3.75 / 13.23 |
+| warm, after, first run with the update (no lists yet) | 0 (0) | 814 / 83 | 526 / 251 / 120 / 0 | 8.59 / 11.01 | 3.42 / 12.16 |
+| cold, before | 283 (39) | 7 / 882 | 521 / 348 / 20 / 0 | 8.87 / 11.90 | 2.56 / 32.26 |
+| cold, after | 249 (**0**) | 7 / 878 | 517 / 331 / 37 / 0 | 8.86 / 12.14 | 3.89 / 12.63 |
+| ep2 hub -> ep1 hub, before | 327 (321) | 137 / 439 | 173 / 222 / 181 / 0 | 9.35 / 12.92 | 4.93 / 12.14 |
+| ep2 hub -> ep1 hub, after (list) | **0 (0)** | 542 / 48 | 500 / 90 / 0 / 0 | 9.31 / 10.79 * | 5.72 / 31.7 * |
+| ep2 hub -> ep1 hub, after, first visit with the update | 0 (0) | 552 / 48 | 161 / 149 / 277 / 13 | 9.32 / 13.64 | 5.14 / 20.72 |
+
+\* another agent's game run shared the GPU during part of it. Enhanced first images "after" = textures without an AI
+image (excluded soft-alpha / small sprites, sources above 256 texels, HD-pack images). Cold after: 46 AI images were
+deferred (18 applied out of sight later, 28 still waiting at the end); the rest of the 249 swaps happened out of sight.
+
+Load (START -> the level's first 3D frame): 0.20-0.27 s in every run, before and after (no hold). Video memory with
+the title + hub preloaded: 2.0-2.7 GB in use of the 7.2 GB DXGI budget (image classes 791 MB = the pre-size; 876 MB
+after the ep1 hub's load grew one class while no 3D was drawn; surface maps 198-219 MB). Boot / title frame times
+unchanged (title GPU p99 15.3 vs 15.5 ms, render thread max 11.2 vs 10.7 ms) while the hub's list is preloaded.
+
+Videos (local, never committed): build\prebuild\videos\ep2_start_before_after_sbs.mp4 (left before, right after; from
+the load into the safehouse, 9 s at 60 fps of the 120 fps run), ep2_start_before.mp4, ep2_start_after.mp4. Before: the
+table top, the blueprints and the laptop sharpen in visible steps 1.0-1.9 s after the level appears (a static region's
+change against the last picture drops 8.6 -> 7.8 -> 6.3 -> 3.3 -> 0.5 in jumps); after: the first frames already show
+the final images (only the scene's own fade-in changes).
+
+### What remains
+
+- The first 2-3 frames of a texture's first appearance show the original sampling (the content hash's read-back
+  latency; the same in Faithful).
+- The first visit of a level after this update (cache files but no list yet): textures wait for their AI image
+  instead of showing Enhanced first; at a level start ~300 of ~600 show the original for 0.5-2 s (before: Enhanced
+  after a similar delay, then the AI image swapped in). The list is written on that visit.
+- A cold cache's first visit shows Enhanced images for whatever stays in view; their AI images come when out of sight
+  or at the next visit. A "prepare all levels" pass (option b) is still the only way to a fully AI first visit.
+- Switches: PS2_AI_READY=0 (old flow), PS2_AI_POPLOG=1 (ai-pop / ai-pre lines), PS2_GPU_FT=2 (a line per picture).
+
+### Gates (code of this branch's last commit)
+
+run_tests 16/16; unit suites 0 failed; m9_exact S1 + S3 -Game all identical (base: git archive of main e656907's
+runtime); gpu_diff_all mixed S=1 28/28; r2_sweep -Parallel 1 Faithful ep1, ep3, m2_boardroom tfo, tfb, mf 9/9,
+Reimagined (PS2_TEX_AI=1, fresh caches) ep1, m2_boardroom tfo, mf 4/4; reim_stability_gate PASS (orbit 1.04 x, trees
+1.028 x, no texture changed more than once, no world-matrix flips; warm seed with level lists); gfx_stress_gate -Cold
+PASS (1183 changes, 0 crashes, 238 nets) and warm PASS (1033 changes, 0 crashes, 209 nets). reim_stability_gate built its
+checker with a clang path that only exists for worktrees inside the main checkout's parent: it now takes project.ps1's.

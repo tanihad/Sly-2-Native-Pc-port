@@ -2,6 +2,14 @@
 
 ## Resume here (read first in a new session)
 
+**2026-11-11: next/tex-prebuild (worktree sly2-worktrees\ai, not merged) - Reimagined AI textures ready before first
+sight.** Cached AI images go straight onto textures (no Enhanced image first), loader threads, per-level texture lists
+preloaded at each level change (title: also the last-played level, so Resume Game starts ready), AI images never
+swapped in while their texture is on screen (deferred until out of sight). ep2 hub, owner's settings: warm cache 354
+Enhanced -> AI swaps after the level appeared (349 visible) -> 0; cold 39 visible -> 0; level change ep2 -> ep1 hub 321
+visible -> 0; frame times and load time unchanged. Details + table: notes/reimagined.md "Ready before first sight".
+Videos build\prebuild\videos (worktree). Switch PS2_AI_READY=0 = old flow.
+
 **2026-11-11 (later): laptop fix confirmed by the owner. Started his next picks (1 then 2):** texture pre-build / no
 pop-in (worktree sly2-worktrees\ai, branch next/tex-prebuild, checkpoint notes/wip/tex-prebuild.md) and local lights
 (worktree sly2-worktrees\light, branch next/local-lights, notes/wip/local-lights.md), both from main e656907. Later

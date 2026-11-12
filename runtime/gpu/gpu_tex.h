@@ -37,7 +37,10 @@ static int ra_init(void);
 static void ra_note(int32_t idx, int32_t id);
 static void ra_frame(int* bound);
 static void ra_release(void);
-static int ra_on_now;                    /* (ai) Reimagined textures this frame */
+typedef struct et_slot_s et_slot;
+static void ra_link_note(int32_t idx, const et_slot* s);
+static int ra_direct(int32_t idx);
+static int ra_on_now;                   /* (ai) Reimagined textures this frame */
 
 #define ET_NCLS 6                        /* square classes: 64 << c texels */
 #define ET_MAXMIP 12
@@ -47,7 +50,8 @@ static int ra_on_now;                    /* (ai) Reimagined textures this frame 
 #define ET_MAP 16384                     /* hash -> slot */
 #define ET_SCR_WORDS (2048u * 2048u * 4u / 3u + 64u)   /* scratch: a 2048 level chain */
 #define ET_DD_WORDS (1u << 20)           /* a batch's dither-resolved sources + weights (cs_et_dd -> cs_et_up) */
-enum { ES_NONE, ES_WANT, ES_HASHING, ES_QUEUED, ES_READY, ES_HDLOAD, ES_REJECT };
+enum { ES_NONE, ES_WANT, ES_HASHING, ES_QUEUED, ES_READY, ES_HDLOAD, ES_REJECT, ES_AILOAD };   /* (ES_AILOAD: waits for its AI
+                                          * image from the Reimagined cache - tex-prebuild, gpu_tex_ai.h ra_direct) */
 
 typedef struct {                         /* per decoded entry (the index of TD.ent) */
     uint8_t st, nchg, flags, ref;        /* state; content changes seen; addressing (1 clamp u, 2 clamp v); alpha-test ref */
@@ -57,8 +61,10 @@ typedef struct {                         /* per decoded entry (the index of TD.e
     uint64_t hash;                       /* the content's (with flags / ref mixed in: the image's key) */
     uint64_t raw;                        /* the content's alone (the HD pack's file name) */
     uint32_t chg;                        /* the frame of the last content change */
+    uint32_t want;                       /* (tex-prebuild) the frame it was first noted (statistics: PS2_AI_POPLOG) */
+    uint32_t wait;                       /* (tex-prebuild) ES_AILOAD since this frame */
 } et_ent;
-typedef struct { uint64_t hash; uint32_t last; int32_t first; uint8_t used, hd, ai; } et_slot;   /* (ai: the AI image is in it) */
+struct et_slot_s { uint64_t hash; uint32_t last; int32_t first; uint8_t used, hd, ai; };   /* (ai: the AI image is in it) */
 typedef struct { int32_t ent; uint32_t ver; } et_req;
 
 static struct {
@@ -85,7 +91,7 @@ static struct {
     int32_t map_s[ET_MAP];
     int32_t q[TD_HASH];
     uint32_t qn;
-    uint32_t frame, out_frame;
+    uint32_t frame, out_frame, uses;     /* (uses: art uses since the frame began - tex-prebuild) */
     uint64_t n_hash, n_build, n_share, n_hd, n_reject, n_evict, n_grow, n_texels, n_redec, n_change;
     int resets;
     double cpu_max;                      /* (statistics) the slowest et_frame_begin, ms */
@@ -280,6 +286,7 @@ static void et_link(int32_t idx, int32_t id) {
     e->st = ES_READY;
     et_tab_write(e->base, e->base + 1, (uint32_t)(id >> 16) | (uint32_t)(id & 0xFFFF) << 3);
     et_swap_note(idx, 'L');
+    if (ra_on_now) ra_link_note(idx, s); /* (tex-prebuild) statistics */
     if (ra_on_now) ra_note(idx, id);     /* (ai) its AI image: from the cache or built */
 }
 
@@ -528,10 +535,12 @@ static void et_use(const td_ent* te, uint32_t lw, uint32_t lh, uint32_t flags, u
     if (!et_cfg()) return;
     int32_t idx = (int32_t)(te - TD.ent);
     et_ent* e = &ET.e[idx];
+    ET.uses++;
     if (e->st == ES_READY) { et_slot* s = et_slot_of(e->slot); if (s) s->last = ET.frame; return; }
     if (e->st != ES_NONE) return;
     if ((lw > lh ? lw : lh) < 4) { e->st = ES_REJECT; return; }   /* (tiny: nothing to gain) */
     e->st = ES_WANT;
+    e->want = ET.frame;
     e->lw = (uint8_t)lw; e->lh = (uint8_t)lh;
     e->flags = (uint8_t)flags; e->ref = (uint8_t)ref;
     e->base = te->base;
@@ -953,6 +962,7 @@ static void et_resolve(int32_t idx) {
     }
     int32_t id = et_map_find(e->hash);
     if (id >= 0) { et_link(idx, id); ET.n_share++; return; }
+    if (ra_on_now && ra_direct(idx)) return;   /* (tex-prebuild) its AI image from the cache, no Enhanced image first */
     if (ET.qn < TD_HASH) { ET.q[ET.qn++] = idx; e->st = ES_QUEUED; }
 }
 

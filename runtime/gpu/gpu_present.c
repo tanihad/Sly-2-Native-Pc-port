@@ -612,7 +612,9 @@ static int ts_complete(int block) {             /* oldest timestamp set; returns
     {                                    /* (ai) PS2_GPU_FT=1: every picture's GPU time (+ present), render-thread time and the
                                           * interval between pictures read back (avg / p99 / max, 0.02 ms bins; every 3000) */
         static int on = -1;
-        if (on < 0) { const char* e = getenv("PS2_GPU_FT"); on = e && *e == '1'; }
+        if (on < 0) { const char* e = getenv("PS2_GPU_FT"); on = e && (*e == '1' || *e == '2') ? *e - '0' : 0; }   /* (2: also a line per picture) */
+        if (on == 2 && st.gpu_ms >= 0)       /* (tex-prebuild) "ftp: v<vblank> <GPU+present> <render thread> ms" */
+            gpu_log("ftp: v%u %.2f %.2f", st.vblank, st.gpu_ms + (st.present_gpu_ms > 0 ? st.present_gpu_ms : 0), st.render_ms);
         if (on && st.gpu_ms >= 0) {
             static uint32_t h[3][2500], n;
             static double sum[3], mx[3];
