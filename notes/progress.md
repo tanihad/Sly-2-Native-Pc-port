@@ -2,6 +2,14 @@
 
 ## Resume here (read first in a new session)
 
+**2026-11-12: shadows (32a5c19), corpus (ccd9420), tex-opt (ef7c53c) merged; test build 0.1.1296 in dist\Sly2 (owner to
+try; NOT a release yet).** Merged gates: gpu_diff_all 28/28 (re-recorded corpus in C:\Users\tanih\Projects\sly2-corpus),
+m9_exact all identical, units 0 failed, stability PASS, gfx_stress PASS. reim_shadow_gate is noisy: world-shadow flicker
+vs old 1.559 / 0.702 / 1.097 / 1.142 / 1.249x over 5 runs (median ~1.14x; also on the shadow branch's own exe), stacked
+shadows and character-light flicker reliably better. Follow-up next/shadows2 (worktree sly2-worktrees\shadow2): median-of-N
+gate, ground-shadow flicker below old, the game's soft shadow edge noise crawl. Release 1.2 after that + owner's playtest.
+Open owner decision: static-world (walls / roofs / trees) key-light shadows (PS2_REIM_SC_CAST=1), off today.
+
 **2026-11-11: both merged into main (82e0535 tex-prebuild, c0a7fb5 local-lights); test build 0.1.1267 packaged in
 dist\Sly2 for the owner to try (not a release). Merged-tree gates running (units, gpu_diff_all, reim_stability_gate,
 gfx_stress_gate -Cold). Next queued: lossless-looking optimisations (BC7 AI textures, fp16 AI builder, optional
