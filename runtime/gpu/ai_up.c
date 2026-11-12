@@ -193,7 +193,31 @@ struct ai_gpu {
     ai_op ops[AI_MAXOPS];                /* the current run's plan (ai_gpu_begin) */
     int nops, cur, n_img;
     uint32_t row, w, h;                  /* the next group row of ops[cur]; the run's input size */
+    int half;                            /* (tex-opt) ai_up.h AI_GPU_HALF*: half feature buffers / weights */
 };
+
+/* (tex-opt) the half flags in a permutation key: buffers 1..6 (bits 1..6), the weights (bit 0) */
+uint32_t ai_half_key(int half) { return (uint32_t)((half >> 8) & 0x7E) | (uint32_t)((half >> 1) & 1); }
+/* (tex-opt) float -> half, round to nearest even (the weights' upload) */
+static uint16_t ai_f2h(float f) {
+    uint32_t x;
+    memcpy(&x, &f, 4);
+    uint32_t s = (x >> 16) & 0x8000u, e = (x >> 23) & 0xFFu, m = x & 0x7FFFFFu;
+    if (e == 0xFFu) return (uint16_t)(s | 0x7C00u | (m ? 0x200u : 0u));
+    int ee = (int)e - 127 + 15;
+    if (ee >= 31) return (uint16_t)(s | 0x7C00u);
+    if (ee <= 0) {                       /* (subnormal / zero) */
+        if (ee < -10) return (uint16_t)s;
+        m |= 0x800000u;
+        uint32_t sh = (uint32_t)(14 - ee), hm = m >> sh, rem = m & ((1u << sh) - 1u), half = 1u << (sh - 1);
+        if (rem > half || (rem == half && (hm & 1u))) hm++;
+        return (uint16_t)(s | hm);
+    }
+    uint32_t hm = m >> 13, rem = m & 0x1FFFu;
+    uint32_t h = s | (uint32_t)ee << 10 | hm;
+    if (rem > 0x1000u || (rem == 0x1000u && (hm & 1u))) h++;
+    return (uint16_t)h;
+}
 
 static ID3D11Buffer* ai_buffer(ai_gpu* g, size_t bytes, UINT bind, D3D11_USAGE use, UINT cpu, UINT stride, const void* init) {
     D3D11_BUFFER_DESC d;
@@ -211,9 +235,10 @@ typedef HRESULT(WINAPI* ai_compile_fn)(LPCVOID, SIZE_T, LPCSTR, const D3D_SHADER
                                        UINT, UINT, ID3DBlob**, ID3DBlob**);
 
 static ai_gpu* ai_gpu_new(ID3D11Device* dev, ID3D11DeviceContext* ctx, const ai_weights* wt, size_t max_pixels, int staging,
-                          char* err, size_t errn) {
+                          int half, char* err, size_t errn) {
     ai_gpu* g = calloc(1, sizeof *g);
     g->dev = dev; g->ctx = ctx;
+    g->half = half;
     if (max_pixels > 131072) max_pixels = 131072;   /* (each 4x buffer stays under 2^27 floats: a view's limit) */
     g->maxp = max_pixels;
     /* packed weights: per layer [ocb][ci chunk][ci 8][tap 9][oc 16], then biases [ocb][16] */
@@ -242,7 +267,12 @@ static ai_gpu* ai_gpu_new(ID3D11Device* dev, ID3D11DeviceContext* ctx, const ai_
                         }
         for (int o = 0; o < l->cout; o++) pk[(size_t)g->boff[i] * 4 + o] = B->data[o];
     }
-    g->wbuf = ai_buffer(g, tot * 4, D3D11_BIND_SHADER_RESOURCE, D3D11_USAGE_IMMUTABLE, 0, 16, pk);
+    if (half & AI_GPU_HALF_W) {          /* (tex-opt) 4 halves per element, the same element offsets */
+        uint16_t* hk = malloc(tot * 2);
+        if (hk) for (size_t i = 0; i < tot; i++) hk[i] = ai_f2h(pk[i]);
+        g->wbuf = hk ? ai_buffer(g, tot * 2, D3D11_BIND_SHADER_RESOURCE, D3D11_USAGE_IMMUTABLE, 0, 8, hk) : NULL;
+        free(hk);
+    } else g->wbuf = ai_buffer(g, tot * 4, D3D11_BIND_SHADER_RESOURCE, D3D11_USAGE_IMMUTABLE, 0, 16, pk);
     free(pk);
     D3D11_SHADER_RESOURCE_VIEW_DESC sd;
     memset(&sd, 0, sizeof sd);
@@ -251,6 +281,7 @@ static ai_gpu* ai_gpu_new(ID3D11Device* dev, ID3D11DeviceContext* ctx, const ai_
     g->cbuf = ai_buffer(g, sizeof(ai_cb), D3D11_BIND_CONSTANT_BUFFER, D3D11_USAGE_DYNAMIC, D3D11_CPU_ACCESS_WRITE, 0, NULL);
     for (int b = 0; b < B_N; b++) {
         size_t e = g->maxp * ai_cap[b] * ai_res[b];
+        if ((half >> 8 >> b & 1) && b != B_IMG && b != B_OUT) e /= 2;   /* (tex-opt: two halves per word) */
         g->buf[b] = ai_buffer(g, e * 4, D3D11_BIND_UNORDERED_ACCESS, D3D11_USAGE_DEFAULT, 0, 4, NULL);
         D3D11_UNORDERED_ACCESS_VIEW_DESC ud;
         memset(&ud, 0, sizeof ud);
@@ -274,7 +305,8 @@ ai_gpu* ai_gpu_create(ID3D11Device* dev, ID3D11DeviceContext* ctx, const ai_weig
     HMODULE dc = LoadLibraryA("d3dcompiler_47.dll");
     void* comp = dc ? (void*)GetProcAddress(dc, "D3DCompile") : NULL;
     if (!comp) { fclose(f); ai_err(err, errn, "%s", "no d3dcompiler_47.dll"); return NULL; }
-    ai_gpu* g = ai_gpu_new(dev, ctx, wt, max_pixels, 1, err, errn);
+    const char* hv = getenv("AI_UP_HALF");   /* (tex-opt, the tool: the half flags, e.g. 0x7E02 = all half) */
+    ai_gpu* g = ai_gpu_new(dev, ctx, wt, max_pixels, 1, hv && *hv ? (int)strtol(hv, NULL, 0) : 0, err, errn);
     if (!g) { fclose(f); return NULL; }
     fseek(f, 0, SEEK_END);
     long n = ftell(f);
@@ -288,8 +320,8 @@ ai_gpu* ai_gpu_create(ID3D11Device* dev, ID3D11DeviceContext* ctx, const ai_weig
 }
 
 ai_gpu* ai_gpu_create_cs(ID3D11Device* dev, ID3D11DeviceContext* ctx, const ai_weights* wt, ai_cs_fn fn, void* user,
-                         size_t max_pixels, char* err, size_t errn) {
-    ai_gpu* g = ai_gpu_new(dev, ctx, wt, max_pixels, 0, err, errn);
+                         size_t max_pixels, int half, char* err, size_t errn) {
+    ai_gpu* g = ai_gpu_new(dev, ctx, wt, max_pixels, 0, half, err, errn);
     if (!g) return NULL;
     g->cs_fn = fn;
     g->cs_user = user;
@@ -308,7 +340,7 @@ struct ID3D11Buffer* ai_gpu_buffer(ai_gpu* g, int which) {
 
 /* the permutation for a layer's buffers (BIN, BOUT, BR1, BR2, BO2 macros; B_NONE = absent) */
 static ID3D11ComputeShader* ai_shader(ai_gpu* g, uint32_t in, uint32_t out, uint32_t r1, uint32_t r2, uint32_t o2) {
-    uint32_t key = in | out << 4 | r1 << 8 | r2 << 12 | o2 << 16;
+    uint32_t key = in | out << 4 | r1 << 8 | r2 << 12 | o2 << 16 | ai_half_key(g->half) << 20;   /* (tex-opt: + the half flags) */
     for (int i = 0; i < g->nperm; i++) if (g->perm[i].key == key) return g->perm[i].cs;
     if (g->nperm == 32) return NULL;
     ID3D11ComputeShader* cs = NULL;
@@ -318,13 +350,23 @@ static ID3D11ComputeShader* ai_shader(ai_gpu* g, uint32_t in, uint32_t out, uint
         return cs;
     }
     static const char* nm[B_N] = { "U0", "U1", "U2", "U3", "U4", "U5", "U6", "U7" };
-    D3D_SHADER_MACRO m[6];
+    D3D_SHADER_MACRO m[20];
     int k = 0;
     m[k].Name = "BIN"; m[k++].Definition = nm[in];
     m[k].Name = "BOUT"; m[k++].Definition = nm[out];
     if (r1 < B_N) { m[k].Name = "BR1"; m[k++].Definition = nm[r1]; }
     if (r2 < B_N) { m[k].Name = "BR2"; m[k++].Definition = nm[r2]; }
     if (o2 < B_N) { m[k].Name = "BO2"; m[k++].Definition = nm[o2]; }
+#define AI_H(b) ((b) < B_N && (b) != B_IMG && (b) != B_OUT && (g->half >> 8 >> (b) & 1))
+    static const char* hn[B_N] = { "", "U1_H", "U2_H", "U3_H", "U4_H", "U5_H", "U6_H", "" };
+    for (int b = 1; b < 7; b++) if (AI_H(b)) { m[k].Name = hn[b]; m[k++].Definition = "1"; }
+    if (g->half & AI_GPU_HALF_W) { m[k].Name = "AI_HALF_W"; m[k++].Definition = "1"; }
+    if (AI_H(in)) { m[k].Name = "BIN_H"; m[k++].Definition = "1"; }
+    if (AI_H(out)) { m[k].Name = "BOUT_H"; m[k++].Definition = "1"; }
+    if (AI_H(r1)) { m[k].Name = "BR1_H"; m[k++].Definition = "1"; }
+    if (AI_H(r2)) { m[k].Name = "BR2_H"; m[k++].Definition = "1"; }
+    if (AI_H(o2)) { m[k].Name = "BO2_H"; m[k++].Definition = "1"; }
+#undef AI_H
     m[k].Name = NULL; m[k].Definition = NULL;
     ID3DBlob *code = NULL, *msg = NULL;
     /* (a compiled-shader cache next to the tool's temp files: the unrolled kernel takes ~4 s per permutation to compile) */

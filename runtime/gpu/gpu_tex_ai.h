@@ -46,6 +46,7 @@ typedef struct {
     uint8_t st, lw, lh, flags, ref, cut, opaque, file;
     uint8_t bad, pre, waiters, gen;      /* (tex-prebuild) bad file; a preload (no entry waits); entries wait (ES_AILOAD);
                                           * a generation (a loader's result for an item reset meanwhile is dropped) */
+    uint8_t alias;                       /* (tex-opt) its cache file is the other alpha-test key's (ra_file_of) */
     uint16_t tiles, left;                /* tiles of the texture, not yet through the net */
     int32_t reg;                         /* upload region (index) or -1 */
     uint32_t* rgba;                      /* (worker: a decoded cache file) */
@@ -56,7 +57,7 @@ enum { RJ_INIT = 1, RJ_PREP, RJ_SAVE, RJ_LOAD, RJ_MANI };   /* (RJ_MANI: write a
 typedef struct { int type; int32_t item; uint32_t* data; uint32_t w, h; uint8_t flags, opaque; } ra_job;
 
 static struct {
-    int env, env_on, log, pad, net_env, nrm_env, dump;
+    int env, env_on, log, pad, net_env, nrm_env, dump, half;
     float ms, ms_min, grain, nrm_k, restore, clarity;
     int on, was, failed, init, inited_thread, net_state;   /* net_state: 0 none, 1 creating, 2 ready, -1 unavailable */
     wchar_t dir[600];
@@ -233,6 +234,7 @@ static int ra_cfg(void) {
         RA.restore = et_envf("PS2_AI_RESTORE", 1.0f);
         RA.clarity = et_envf("PS2_AI_CLARITY", 0.8f);
         RA.nrm_k = et_envf("PS2_TEX_NRM_K", 10.0f);
+        e = getenv("PS2_AI_HALF"); RA.half = !(e && *e == '0');   /* (tex-opt: the half-float net; 0 = 0.1.1267's float one) */
         RA.ms_per_gf = 1.0 / 6.0;        /* (6 TFLOPS until measured) */
     }
     return RA.env_on >= 0 ? RA.env_on : tcf_look > 0;
@@ -344,6 +346,327 @@ static void et_dump_ai(int32_t id, uint64_t raw) {
     ID3D11DeviceContext_CopySubresourceRegion(gpu_rt.ctx, (ID3D11Resource*)t, 0, 0, 0, 0, (ID3D11Resource*)ET.arr[cls], slice * nm, NULL);
     et_dump_add((ID3D11Resource*)t, S, S, 2, raw);
 }
+/* (tex-opt, PS2_TEX_DUMP=3) level 0 of an S x S RGBA8 subresource (a BC7 image's staging copy) as kind 2 (_ai) / 3 (_nrm) */
+static void et_dump_from(ID3D11Resource* src, uint32_t S, int kind, uint64_t raw) {
+    if (!src || et_dump_seen(raw, kind)) return;
+    D3D11_TEXTURE2D_DESC td;
+    memset(&td, 0, sizeof td);
+    td.Width = td.Height = S; td.MipLevels = 1; td.ArraySize = 1; td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    td.SampleDesc.Count = 1; td.Usage = D3D11_USAGE_STAGING; td.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    ID3D11Texture2D* t = NULL;
+    if (FAILED(ID3D11Device_CreateTexture2D(gpu_rt.dev, &td, NULL, &t))) return;
+    ID3D11DeviceContext_CopySubresourceRegion(gpu_rt.ctx, (ID3D11Resource*)t, 0, 0, 0, 0, src, 0, NULL);
+    et_dump_add((ID3D11Resource*)t, S, S, kind, raw);
+}
+
+/* ---- (tex-opt) BC7 classes: the opaque AI images compressed (notes/reimagined.md "Lighter and faster") -----------------
+ *   what     under Reimagined an opaque AI image (a JPEG cache file, or a net build without alpha) is built as before (mips,
+ *            surface map) but into a one-slice RGBA8 staging array of its class, then BC7-encoded on the GPU (shaders/
+ *            bc7.hlsl, every level) into a slot of the class's BC7 array (ET.sl[ET_BC + c]); its map is copied to the BC7
+ *            class's map array. et_tab info bit 31 sends the shaders there (etex.hlsli et_bclass, etn.hlsli). 1 byte per
+ *            texel instead of 4. Images with alpha (cut-outs, glass), excluded and Enhanced images stay RGBA8, whose classes
+ *            are then pre-sized small (et_grow first_bc: 205 instead of 790 MB).
+ *   quality  scripts/bc7_tool.c encode over the caches (notes): every opaque image >= 43 dB PSNR, median 55 dB.
+ *   config   PS2_TEX_BC7=0: the AI images stay RGBA8 (0.1.1267's memory layout). Faithful / Retro: nothing of this. */
+#define EBC_BLK 11                       /* block scratch textures: 256 >> j blocks square (j = 0 .. 10) */
+static struct {
+    int env, failed;
+    ID3D11Texture2D* arr[ET_NCLS];      /* BC7 classes (ET.cap[ET_BC + c] slices) */
+    ID3D11ShaderResourceView* srv[ET_NCLS];
+    ID3D11Texture2D* narr[ET_NCLS];     /* their surface maps (RGBA8, 32 << c, the slot's slice) */
+    ID3D11ShaderResourceView* nsrv[ET_NCLS];
+    uint32_t ncap[ET_NCLS], abcap[ET_NCLS];   /* (abcap: PS2_TEX_BC7=2's copies) */
+    ID3D11Texture2D* stg[ET_NCLS];      /* one-slice staging: the colour levels and the map levels of the image being built */
+    ID3D11ShaderResourceView* stg_srv[ET_NCLS];
+    ID3D11UnorderedAccessView* stg_uav[ET_NCLS][ET_MAXMIP];
+    ID3D11Texture2D* nstg[ET_NCLS];
+    ID3D11UnorderedAccessView* nstg_uav[ET_NCLS][ET_MAXMIP];
+    ID3D11Texture2D* blk[EBC_BLK];
+    ID3D11UnorderedAccessView* blk_uav[EBC_BLK];
+    ID3D11Buffer *cb, *nok0;             /* (nok0: the staging build's map flag goes here, not into RA.nok) */
+    ID3D11UnorderedAccessView* nok0_uav;
+    uint64_t bytes, nbytes, n_bc, n_rgba;
+} EBC;
+static int ebc_env(void) {
+    if (!EBC.env) { const char* e = getenv("PS2_TEX_BC7"); EBC.env = e && *e == '0' ? -1 : e && *e == '2' ? 2 : 1; }
+    return EBC.env == 1;
+}
+/* PS2_TEX_BC7=2 (tests): the AI images stay RGBA8 as with 0 and each opaque one also gets a BC7 copy at the same class /
+ * slice (ebc_shadow; et_tab info bit 30), which the shaders sample in the B phases of PS2_GPU_AB=<n> PS2_GPU_AB_R8=8192:
+ * the same pictures of one run with and without BC7 */
+static int ebc_ab(void) { ebc_env(); return EBC.env == 2; }
+static int ebc_small(void) { return ra_on_now && ebc_env() && !EBC.failed; }
+static int ebc_on(void) { return ebc_small() && RA.init > 0; }
+static void ebc_bind_ps(void) {
+    ID3D11DeviceContext_PSSetShaderResources(gpu_rt.ctx, 50, 6, EBC.srv);
+    if (etn_enabled()) ID3D11DeviceContext_PSSetShaderResources(gpu_rt.ctx, 56, 6, EBC.nsrv);
+}
+static void ebc_free(void) {
+    for (int c = 0; c < ET_NCLS; c++) {
+        GPU_RELEASE(EBC.srv[c]); GPU_RELEASE(EBC.arr[c]);
+        GPU_RELEASE(EBC.nsrv[c]); GPU_RELEASE(EBC.narr[c]); EBC.ncap[c] = 0; EBC.abcap[c] = 0;
+        for (int m = 0; m < ET_MAXMIP; m++) { GPU_RELEASE(EBC.stg_uav[c][m]); GPU_RELEASE(EBC.nstg_uav[c][m]); }
+        GPU_RELEASE(EBC.stg_srv[c]); GPU_RELEASE(EBC.stg[c]); GPU_RELEASE(EBC.nstg[c]);
+    }
+    for (int j = 0; j < EBC_BLK; j++) { GPU_RELEASE(EBC.blk_uav[j]); GPU_RELEASE(EBC.blk[j]); }
+    GPU_RELEASE(EBC.cb); GPU_RELEASE(EBC.nok0_uav); GPU_RELEASE(EBC.nok0);
+    EBC.bytes = EBC.nbytes = 0;
+}
+static uint64_t ebc_slice_bytes(int c) { uint64_t s = 64ull << c; return s * s * 4 / 3; }   /* (1 byte per texel) */
+static ID3D11Texture2D* ebc_tex(uint32_t S, uint32_t nm, uint32_t n, DXGI_FORMAT f, UINT bind) {
+    D3D11_TEXTURE2D_DESC td;
+    memset(&td, 0, sizeof td);
+    td.Width = td.Height = S; td.MipLevels = nm; td.ArraySize = n; td.Format = f;
+    td.SampleDesc.Count = 1; td.Usage = D3D11_USAGE_DEFAULT; td.BindFlags = bind;
+    ID3D11Texture2D* t = NULL;
+    return SUCCEEDED(ID3D11Device_CreateTexture2D(gpu_rt.dev, &td, NULL, &t)) ? t : NULL;
+}
+static ID3D11ShaderResourceView* ebc_srv_of(ID3D11Texture2D* t, DXGI_FORMAT f, uint32_t nm, uint32_t n) {
+    D3D11_SHADER_RESOURCE_VIEW_DESC sd;
+    memset(&sd, 0, sizeof sd);
+    sd.Format = f; sd.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2DARRAY;
+    sd.Texture2DArray.MipLevels = nm; sd.Texture2DArray.ArraySize = n;
+    ID3D11ShaderResourceView* v = NULL;
+    return t && SUCCEEDED(ID3D11Device_CreateShaderResourceView(gpu_rt.dev, (ID3D11Resource*)t, &sd, &v)) ? v : NULL;
+}
+/* the class's BC7 array (and its maps) grown by doubling, keeping what it holds; 0: no room (the budget, video memory) */
+static int ebc_grow(int c) {
+    static const uint32_t first[ET_NCLS] = { 64, 256, 512, 256, 64, 0 };   /* (the RGBA8 pre-size's slices at a quarter of the bytes,
+                                          * 256 x 256 doubled: a hub + the title's list - ep2 - outgrew 256 during play) */
+    uint32_t oc = ET.cap[ET_BC + c], nc = oc ? oc * 2 : first[c];
+    if (!nc || nc > 2048) return 0;
+    if (ET.bytes + EBC.bytes + (uint64_t)(nc - oc) * ebc_slice_bytes(c) > (uint64_t)ET.budget_mb << 20) return 0;
+    uint32_t S = 64u << c, nm = (uint32_t)c + 7u;
+    ID3D11Texture2D* t = ebc_tex(S, nm, nc, DXGI_FORMAT_BC7_UNORM, D3D11_BIND_SHADER_RESOURCE);
+    ID3D11ShaderResourceView* v = ebc_srv_of(t, DXGI_FORMAT_BC7_UNORM, nm, nc);
+    ID3D11Texture2D* nt = NULL;
+    ID3D11ShaderResourceView* nv = NULL;
+    if (v && RA.nrm_env && RA.nok) {     /* (the maps: as etn_grow's, read-only - the staging map is copied in; made whether
+                                          * or not an RGBA8 class - whose growth turns ETN on - exists yet) */
+        nt = ebc_tex(S / 2, nm - 1, nc, DXGI_FORMAT_R8G8B8A8_UNORM, D3D11_BIND_SHADER_RESOURCE);
+        nv = ebc_srv_of(nt, DXGI_FORMAT_R8G8B8A8_UNORM, nm - 1, nc);
+        if (!nv) { GPU_RELEASE(nt); }
+    }
+    et_slot* sl = v ? realloc(ET.sl[ET_BC + c], nc * sizeof(et_slot)) : NULL;
+    if (!sl) { GPU_RELEASE(v); GPU_RELEASE(t); GPU_RELEASE(nv); GPU_RELEASE(nt); return 0; }
+    memset(sl + oc, 0, (nc - oc) * sizeof(et_slot));
+    for (uint32_t j = oc; j < nc; j++) sl[j].first = -1;
+    ET.sl[ET_BC + c] = sl;
+    if (EBC.arr[c])
+        for (uint32_t j = 0; j < oc; j++)
+            for (uint32_t m = 0; m < nm; m++)
+                ID3D11DeviceContext_CopySubresourceRegion(gpu_rt.ctx, (ID3D11Resource*)t, m + j * nm, 0, 0, 0, (ID3D11Resource*)EBC.arr[c], m + j * nm, NULL);
+    if (nt && EBC.narr[c] && EBC.ncap[c] == oc)
+        for (uint32_t j = 0; j < oc; j++)
+            for (uint32_t m = 0; m + 1 < nm; m++)
+                ID3D11DeviceContext_CopySubresourceRegion(gpu_rt.ctx, (ID3D11Resource*)nt, m + j * (nm - 1), 0, 0, 0, (ID3D11Resource*)EBC.narr[c], m + j * (nm - 1), NULL);
+    GPU_RELEASE(EBC.srv[c]); GPU_RELEASE(EBC.arr[c]); GPU_RELEASE(EBC.nsrv[c]); GPU_RELEASE(EBC.narr[c]);
+    EBC.arr[c] = t; EBC.srv[c] = v; EBC.narr[c] = nt; EBC.nsrv[c] = nv;
+    EBC.ncap[c] = nt ? nc : 0;
+    if (nt) ETN.on = 1;                  /* (etn_enabled: the maps are bound) */
+    EBC.bytes += (uint64_t)(nc - oc) * ebc_slice_bytes(c);
+    EBC.nbytes = 0;
+    for (int k = 0; k < ET_NCLS; k++) EBC.nbytes += (uint64_t)EBC.ncap[k] * (32ull << k) * (32ull << k) * 4u * 4u / 3u;
+    ET.cap[ET_BC + c] = nc;
+    ET.n_grow++;
+    if (RA.log) gpu_log("ai: BC7 class %ux%u: %u slices (%.0f MB, maps %.0f MB)", S, S, nc, EBC.bytes / 1048576.0, EBC.nbytes / 1048576.0);
+    return 1;
+}
+/* the staging arrays of class c and the block scratch (made at first use) */
+static int ebc_stage(int c) {
+    if (EBC.stg[c] && (!RA.nrm_env || EBC.nstg[c])) return 1;
+    uint32_t S = 64u << c, nm = (uint32_t)c + 7u;
+    if (!EBC.stg[c]) {
+        EBC.stg[c] = ebc_tex(S, nm, 1, DXGI_FORMAT_R8G8B8A8_UNORM, D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS);
+        EBC.stg_srv[c] = ebc_srv_of(EBC.stg[c], DXGI_FORMAT_R8G8B8A8_UNORM, nm, 1);
+        for (uint32_t m = 0; EBC.stg_srv[c] && m < nm; m++) {
+            D3D11_UNORDERED_ACCESS_VIEW_DESC ud;
+            memset(&ud, 0, sizeof ud);
+            ud.Format = DXGI_FORMAT_R8G8B8A8_UNORM; ud.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2DARRAY;
+            ud.Texture2DArray.MipSlice = m; ud.Texture2DArray.ArraySize = 1;
+            if (FAILED(ID3D11Device_CreateUnorderedAccessView(gpu_rt.dev, (ID3D11Resource*)EBC.stg[c], &ud, &EBC.stg_uav[c][m]))) return 0;
+        }
+        if (!EBC.stg_srv[c]) return 0;
+    }
+    if (RA.nrm_env && !EBC.nstg[c]) {
+        EBC.nstg[c] = ebc_tex(S / 2, nm - 1, 1, DXGI_FORMAT_R8G8B8A8_UNORM, D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS);
+        for (uint32_t m = 0; EBC.nstg[c] && m + 1 < nm; m++) {
+            D3D11_UNORDERED_ACCESS_VIEW_DESC ud;
+            memset(&ud, 0, sizeof ud);
+            ud.Format = DXGI_FORMAT_R8G8B8A8_UNORM; ud.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2DARRAY;
+            ud.Texture2DArray.MipSlice = m; ud.Texture2DArray.ArraySize = 1;
+            if (FAILED(ID3D11Device_CreateUnorderedAccessView(gpu_rt.dev, (ID3D11Resource*)EBC.nstg[c], &ud, &EBC.nstg_uav[c][m]))) return 0;
+        }
+        if (!EBC.nstg[c]) return 0;
+    }
+    for (int j = 0; j < EBC_BLK && !EBC.blk[j]; j++) {
+        uint32_t b = 256u >> j ? 256u >> j : 1u;
+        D3D11_TEXTURE2D_DESC td;
+        memset(&td, 0, sizeof td);
+        td.Width = td.Height = b; td.MipLevels = 1; td.ArraySize = 1; td.Format = DXGI_FORMAT_R32G32B32A32_UINT;
+        td.SampleDesc.Count = 1; td.Usage = D3D11_USAGE_DEFAULT; td.BindFlags = D3D11_BIND_UNORDERED_ACCESS;
+        if (FAILED(ID3D11Device_CreateTexture2D(gpu_rt.dev, &td, NULL, &EBC.blk[j])) ||
+            FAILED(ID3D11Device_CreateUnorderedAccessView(gpu_rt.dev, (ID3D11Resource*)EBC.blk[j], NULL, &EBC.blk_uav[j]))) return 0;
+    }
+    if (!EBC.cb) EBC.cb = et_buf(32, D3D11_BIND_CONSTANT_BUFFER, D3D11_USAGE_DYNAMIC, D3D11_CPU_ACCESS_WRITE);
+    if (!EBC.nok0) EBC.nok0 = raw_default(ET_NSL * 4096u * 4u, NULL, NULL, &EBC.nok0_uav);
+    return EBC.cb && EBC.nok0;
+}
+/* a BC7 slot of class c for an AI image: a free one, the class grown (a preload: only while no 3D is drawn, as ra_alloc),
+ * or the least recently used one unused for 10 s (a preload: unused since the level changed) whose entries go back to
+ * unknown; -1: none */
+static int32_t ebc_alloc(int c, int pre) {
+    int b = ET_BC + c;
+    for (int pass = 0; pass < 2; pass++) {
+        for (uint32_t j = 0; j < ET.cap[b]; j++) if (!ET.sl[b][j].used) return (int32_t)(b << 16 | j);
+        if (pass || (pre && ET.cap[b] && RQ.uses_last) || !ebc_grow(c)) break;
+    }
+    uint32_t best = 0xFFFFFFFFu, bl = 0xFFFFFFFFu;
+    for (uint32_t j = 0; j < ET.cap[b]; j++) {
+        const et_slot* s = &ET.sl[b][j];
+        int ok = pre ? s->last < RQ.wframe && s->last + 2 < ET.frame : s->last + 600 < ET.frame;
+        if (ok && s->last < bl) { bl = s->last; best = j; }
+    }
+    if (best == 0xFFFFFFFFu) return -1;
+    et_slot* s = &ET.sl[b][best];
+    while (s->first >= 0) {
+        int32_t k = s->first;
+        et_swap_note(k, 'O');
+        et_unlink(k);
+        ET.e[k].st = ES_NONE;
+    }
+    s->used = 0;
+    s->ai = 0;
+    ET.n_evict++;
+    return (int32_t)(b << 16 | best);
+}
+/* build template t's image from the upload region at src_base (words) into a new BC7 slot of class c: the usual build
+ * (mips, coverage, surface map) into the staging arrays, then every level encoded and copied in. The slot (used, ai,
+ * hash) is the caller's to fill. -1: no slot / resources (the caller builds an RGBA8 image instead) */
+static int32_t ebc_build(const et_ent* t, int c, uint32_t src_base, int pre, uint64_t hash, int* bound) {
+    if (!ebc_stage(c) || !gpu_cs(GPU_SH_cs_bc7)) { if (!EBC.failed) gpu_log("ai: BC7 resources failed: AI images stay RGBA8"); EBC.failed = 1; return -1; }
+    int32_t id = ebc_alloc(c, pre);
+    if (id < 0) return -1;
+    ID3D11DeviceContext* x = gpu_rt.ctx;
+    uint32_t S = 64u << c, nm = (uint32_t)c + 7u, slice = (uint32_t)(id & 0xFFFF);
+    if (!*bound) {
+        ID3D11ShaderResourceView* n1 = NULL;
+        ID3D11DeviceContext_PSSetShaderResources(x, 13, 1, &n1);
+        *bound = 1;
+    }
+    et_batch_run();                      /* (one job alone in its batch: it writes slice 0 of the staging arrays) */
+    ID3D11UnorderedAccessView *sv[ET_MAXMIP], *sn[ET_MAXMIP], *sk = RA.nok_uav;
+    memcpy(sv, ET.uav[c], sizeof sv);
+    memcpy(sn, ETN.uav[c], sizeof sn);
+    memcpy(ET.uav[c], EBC.stg_uav[c], sizeof sv);
+    if (EBC.nstg[c]) memcpy(ETN.uav[c], EBC.nstg_uav[c], sizeof sn);
+    RA.nok_uav = EBC.nok0_uav;
+    /* (etn_run writes the staging map: it checks the class's map array, the caps and ETN.on - all made to pass here, even
+     * before the RGBA8 class c or its maps exist; without maps (PS2_TEX_NRM=0, dropped for memory) it skips) */
+    uint32_t cap0 = ETN.cap[c];
+    ID3D11Texture2D* arr0 = ETN.arr[c];
+    int on0 = ETN.on, mapped = EBC.nstg[c] && RA.nrm_env;
+    if (mapped) { if (!ETN.arr[c]) ETN.arr[c] = EBC.nstg[c]; if (ETN.cap[c] < ET.cap[c]) ETN.cap[c] = ET.cap[c]; ETN.on = 1; }
+    else ETN.cap[c] = 0;
+    et_build(t, (int32_t)(c << 16), RA.up_srv, src_base, 1);
+    et_batch_run();
+    ETN.cap[c] = cap0;
+    ETN.arr[c] = arr0;
+    ETN.on = on0 || (mapped && EBC.narr[c]);
+    memcpy(ET.uav[c], sv, sizeof sv);
+    memcpy(ETN.uav[c], sn, sizeof sn);
+    RA.nok_uav = sk;
+    /* the levels: one thread per block into the scratch (R32G32B32A32_UINT), copied into the BC7 slice */
+    ID3D11DeviceContext_CSSetShader(x, gpu_cs(GPU_SH_cs_bc7), NULL, 0);
+    ID3D11DeviceContext_CSSetShaderResources(x, 0, 1, &EBC.stg_srv[c]);
+    ID3D11DeviceContext_CSSetConstantBuffers(x, 0, 1, &EBC.cb);
+    for (uint32_t k = 0; k < nm; k++) {
+        uint32_t s = S >> k, b = (s + 3) / 4, j = k + 4u - (uint32_t)c;
+        if (j >= EBC_BLK) j = EBC_BLK - 1;
+        D3D11_MAPPED_SUBRESOURCE m;
+        if (SUCCEEDED(ID3D11DeviceContext_Map(x, (ID3D11Resource*)EBC.cb, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) {
+            uint32_t v[8] = { 0, k, b, b, s, s, 0, 0 };
+            memcpy(m.pData, v, sizeof v);
+            ID3D11DeviceContext_Unmap(x, (ID3D11Resource*)EBC.cb, 0);
+        }
+        ID3D11DeviceContext_CSSetUnorderedAccessViews(x, 0, 1, &EBC.blk_uav[j], NULL);
+        ID3D11DeviceContext_Dispatch(x, (b + 7) / 8, (b + 7) / 8, 1);
+        ID3D11UnorderedAccessView* nu = NULL;
+        ID3D11DeviceContext_CSSetUnorderedAccessViews(x, 0, 1, &nu, NULL);
+        D3D11_BOX bx = { 0, 0, 0, b, b, 1 };
+        ID3D11DeviceContext_CopySubresourceRegion(x, (ID3D11Resource*)EBC.arr[c], k + slice * nm, 0, 0, 0, (ID3D11Resource*)EBC.blk[j], 0, &bx);
+    }
+    ID3D11ShaderResourceView* ns = NULL;
+    ID3D11Buffer* nb = NULL;
+    ID3D11DeviceContext_CSSetShaderResources(x, 0, 1, &ns);
+    ID3D11DeviceContext_CSSetConstantBuffers(x, 0, 1, &nb);
+    gpu_rt.n_dispatches += nm;
+    /* its map: the staging map's levels into the slot; the flag for the shaders */
+    uint32_t has = 0;
+    if (mapped && EBC.narr[c] && EBC.ncap[c] > slice) {
+        for (uint32_t m = 0; m + 1 < nm; m++)
+            ID3D11DeviceContext_CopySubresourceRegion(x, (ID3D11Resource*)EBC.narr[c], m + slice * (nm - 1), 0, 0, 0, (ID3D11Resource*)EBC.nstg[c], m, NULL);
+        has = 1;
+    }
+    if (RA.nok) {
+        uint32_t o = ((uint32_t)(ET_BC + c) * 4096u + slice) * 4u;
+        D3D11_BOX fb = { o, 0, 0, o + 4u, 1, 1 };
+        ID3D11DeviceContext_UpdateSubresource(x, (ID3D11Resource*)RA.nok, 0, &fb, &has, 0, 0);
+    }
+    if (RA.dump) { et_dump_from((ID3D11Resource*)EBC.stg[c], S, 2, hash); if (has) et_dump_from((ID3D11Resource*)EBC.nstg[c], S / 2, 3, hash); }
+    EBC.n_bc++;
+    return id;
+}
+/* (PS2_TEX_BC7=2) RGBA8 slot id's image (just built) encoded into the BC7 array of its class at the same slice (the array
+ * follows the RGBA8 class's size); its entries' et_tab info gains bit 30 */
+static void ebc_shadow(int32_t id, int* bound) {
+    int c = id >> 16;
+    uint32_t slice = (uint32_t)(id & 0xFFFF), S = 64u << c, nm = (uint32_t)c + 7u;
+    if (c >= ET_NCLS || !ebc_stage(c) || !gpu_cs(GPU_SH_cs_bc7)) return;
+    if (EBC.abcap[c] < ET.cap[c]) {          /* (the copies' array: the RGBA8 class's slice count; no slots of its own) */
+        uint32_t oc = EBC.abcap[c], nc = ET.cap[c];
+        ID3D11Texture2D* t = ebc_tex(S, nm, nc, DXGI_FORMAT_BC7_UNORM, D3D11_BIND_SHADER_RESOURCE);
+        ID3D11ShaderResourceView* v = ebc_srv_of(t, DXGI_FORMAT_BC7_UNORM, nm, nc);
+        if (!v) { GPU_RELEASE(t); return; }
+        for (uint32_t j = 0; EBC.arr[c] && j < oc; j++)
+            for (uint32_t m = 0; m < nm; m++)
+                ID3D11DeviceContext_CopySubresourceRegion(gpu_rt.ctx, (ID3D11Resource*)t, m + j * nm, 0, 0, 0, (ID3D11Resource*)EBC.arr[c], m + j * nm, NULL);
+        GPU_RELEASE(EBC.srv[c]); GPU_RELEASE(EBC.arr[c]);
+        EBC.arr[c] = t; EBC.srv[c] = v;
+        EBC.abcap[c] = nc;
+    }
+    if (!*bound) {
+        ID3D11ShaderResourceView* n1 = NULL;
+        ID3D11DeviceContext_PSSetShaderResources(gpu_rt.ctx, 13, 1, &n1);
+        *bound = 1;
+    }
+    ID3D11DeviceContext* x = gpu_rt.ctx;
+    ID3D11DeviceContext_CSSetShader(x, gpu_cs(GPU_SH_cs_bc7), NULL, 0);
+    ID3D11DeviceContext_CSSetShaderResources(x, 0, 1, &ET.srv[c]);
+    ID3D11DeviceContext_CSSetConstantBuffers(x, 0, 1, &EBC.cb);
+    for (uint32_t k = 0; k < nm; k++) {
+        uint32_t s = S >> k, b = (s + 3) / 4, j = k + 4u - (uint32_t)c;
+        if (j >= EBC_BLK) j = EBC_BLK - 1;
+        D3D11_MAPPED_SUBRESOURCE m;
+        if (SUCCEEDED(ID3D11DeviceContext_Map(x, (ID3D11Resource*)EBC.cb, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) {
+            uint32_t v[8] = { slice, k, b, b, s, s, 0, 0 };
+            memcpy(m.pData, v, sizeof v);
+            ID3D11DeviceContext_Unmap(x, (ID3D11Resource*)EBC.cb, 0);
+        }
+        ID3D11DeviceContext_CSSetUnorderedAccessViews(x, 0, 1, &EBC.blk_uav[j], NULL);
+        ID3D11DeviceContext_Dispatch(x, (b + 7) / 8, (b + 7) / 8, 1);
+        ID3D11UnorderedAccessView* nu = NULL;
+        ID3D11DeviceContext_CSSetUnorderedAccessViews(x, 0, 1, &nu, NULL);
+        D3D11_BOX bx = { 0, 0, 0, b, b, 1 };
+        ID3D11DeviceContext_CopySubresourceRegion(x, (ID3D11Resource*)EBC.arr[c], k + slice * nm, 0, 0, 0, (ID3D11Resource*)EBC.blk[j], 0, &bx);
+    }
+    ID3D11ShaderResourceView* ns = NULL;
+    ID3D11DeviceContext_CSSetShaderResources(x, 0, 1, &ns);
+    et_slot* s = et_slot_of(id);
+    s->bcs = 1;
+    for (int32_t k = s->first; k >= 0; k = ET.e[k].next) et_tab_write(ET.e[k].base, ET.e[k].base + 1, et_info(id));
+    EBC.n_bc++;
+}
 
 /* ---- items ----------------------------------------------------------------------------------------------------------- */
 static int32_t ra_find(uint64_t h, int add) {
@@ -385,11 +708,18 @@ static const struct { uint32_t key; int id; } ra_cs_ids[16] = {
     { 0x88434, GPU_SH_cs_ai_88434 }, { 0x21343, GPU_SH_cs_ai_21343 }, { 0x22343, GPU_SH_cs_ai_22343 }, { 0x22434, GPU_SH_cs_ai_22434 },
     { 0x88114, GPU_SH_cs_ai_88114 }, { 0x88113, GPU_SH_cs_ai_88113 }, { 0x88851, GPU_SH_cs_ai_88851 }, { 0x88865, GPU_SH_cs_ai_88865 },
     { 0x88856, GPU_SH_cs_ai_88856 }, { 0x88875, GPU_SH_cs_ai_88875 }, { 1, GPU_SH_cs_ai_post }, { 2, GPU_SH_cs_ai_res } };
+/* (tex-opt) the half-float net's (PS2_AI_HALF, default 1: ai_up.h AI_GPU_HALF_BIG | AI_GPU_HALF_W; key + 0x79 << 20) */
+#define RA_HALF (AI_GPU_HALF_BIG | AI_GPU_HALF_W)
+#define RA_HKEY (0x79u << 20)
+static const int ra_cs_half[14] = {
+    GPU_SH_cs_ai_38810h, GPU_SH_cs_ai_88833h, GPU_SH_cs_ai_88844h, GPU_SH_cs_ai_88343h, GPU_SH_cs_ai_88434h, GPU_SH_cs_ai_21343h,
+    GPU_SH_cs_ai_22343h, GPU_SH_cs_ai_22434h, GPU_SH_cs_ai_88114h, GPU_SH_cs_ai_88113h, GPU_SH_cs_ai_88851h, GPU_SH_cs_ai_88865h,
+    GPU_SH_cs_ai_88856h, GPU_SH_cs_ai_88875h };
 /* (worker) the net's compute shaders into cs[16] (the device is free-threaded; nothing of RA is touched here: the render
  * thread installs them with the net, ra_net_poll) */
 static int ra_make_cs(ID3D11ComputeShader** cs) {
     for (int k = 0; k < 16; k++) {
-        const gpu_shader_blob* b = &gpu_shaders[ra_cs_ids[k].id];
+        const gpu_shader_blob* b = &gpu_shaders[RA.half && k < 14 ? ra_cs_half[k] : ra_cs_ids[k].id];
         if (FAILED(ID3D11Device_CreateComputeShader(gpu_rt.dev, b->code, b->size, NULL, &cs[k]))) {
             for (int j = 0; j < 16; j++) GPU_RELEASE(cs[j]);
             return 0;
@@ -424,7 +754,7 @@ static void ra_init_net(void) {
     if (w && !ra_make_cs(cs)) { snprintf(err, sizeof err, "cannot create its shaders"); ai_weights_free(w); w = NULL; }
     if (w) {
         size_t P = (size_t)(RA_TILE + 2 * RA.pad) * (RA_TILE + 2 * RA.pad);
-        g = ai_gpu_create_cs(gpu_rt.dev, gpu_rt.ctx, w, ra_cs_of, NULL, P, err, sizeof err);
+        g = ai_gpu_create_cs(gpu_rt.dev, gpu_rt.ctx, w, ra_cs_of, NULL, P, RA.half ? RA_HALF : 0, err, sizeof err);
         ai_weights_free(w);
         for (int k = 0; g && k < RA_SRCN; k++)   /* (the read-back buffers too: not created on the render thread) */
             src[k] = et_buf(256u * 256u * 4u, 0, D3D11_USAGE_STAGING, D3D11_CPU_ACCESS_READ);
@@ -674,7 +1004,18 @@ static ra_rec* ra_level_read(uint32_t world, uint32_t* n) {
     return r;
 }
 
-static int ra_file_of(const ra_item* it) { return !it->bad && (it->file || ra_have(it->hash)); }
+/* (tex-opt) the alpha test (key bit 60) does not change an AI image (only the coverage of its mips, built at load): a
+ * texture drawn with and without it shares one cache file - found under the other key, never built twice (the caches:
+ * ~1 % of the files were such pairs, all identical) */
+#define RA_REFBIT (1ull << 60)
+static uint64_t n_alias;
+static int ra_file_of(ra_item* it) {
+    if (it->bad) return 0;
+    if (it->file || ra_have(it->hash)) return 1;
+    if (ra_have(it->hash ^ RA_REFBIT)) { it->alias = 1; n_alias++; return 1; }
+    return 0;
+}
+static uint64_t ra_fkey(const ra_item* it) { return it->hash ^ (it->alias ? RA_REFBIT : 0ull); }
 /* queue item i for a loader (q 0: on demand, 1: preload); its state is RI_LOAD */
 static void ra_load_push(int32_t i, int q) {
     EnterCriticalSection(&RA.cs);
@@ -742,13 +1083,15 @@ static DWORD WINAPI ra_loader(LPVOID unused) {
             memset(&hj, 0, sizeof hj);
             hj.raw = it->hash;
             wchar_t path[700];
-            ra_path(it->hash, 0, path, 700);
+            ra_path(ra_fkey(it), 0, path, 700);
             int ok = f && GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES && et_hd_decode(f, path, &hj);
-            if (!ok && f) { ra_path(it->hash, 1, path, 700); ok = GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES && et_hd_decode(f, path, &hj); }
+            if (!ok && f) { ra_path(ra_fkey(it), 1, path, 700); ok = GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES && et_hd_decode(f, path, &hj); }
+            int op = ok && hj.px;            /* (tex-opt) no alpha below 0x80: a BC7 image */
+            for (size_t q = 0; op && q < (size_t)hj.w * hj.h; q++) op = (hj.px[q] >> 24) == 0x80u;
             EnterCriticalSection(&RA.cs);
             if (it->st == RI_DECODE && it->gen == gen) {   /* (else ra_release reset it meanwhile) */
                 if (ok && hj.w == (4u << it->lw) && hj.h == (4u << it->lh)) {
-                    it->rgba = hj.px; it->rw = hj.w; it->rh = hj.h; it->st = RI_LOADED;
+                    it->rgba = hj.px; it->rw = hj.w; it->rh = hj.h; it->st = RI_LOADED; it->opaque = (uint8_t)op;
                     RQ.bytes += (uint64_t)hj.w * hj.h * 4u;
                     hj.px = NULL;
                 } else it->st = RI_LFAIL;    /* (a bad / missing / foreign file: built again) */
@@ -815,12 +1158,14 @@ static DWORD WINAPI ra_thread(LPVOID unused) {
                 memset(&hj, 0, sizeof hj);
                 hj.raw = it->hash;
                 wchar_t path[700];
-                ra_path(it->hash, 0, path, 700);
+                ra_path(ra_fkey(it), 0, path, 700);
                 int ok = f && GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES && et_hd_decode(f, path, &hj);
-                if (!ok && f) { ra_path(it->hash, 1, path, 700); ok = GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES && et_hd_decode(f, path, &hj); }
+                if (!ok && f) { ra_path(ra_fkey(it), 1, path, 700); ok = GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES && et_hd_decode(f, path, &hj); }
+                int op = ok && hj.px;        /* (tex-opt) no alpha below 0x80: a BC7 image */
+                for (size_t q = 0; op && q < (size_t)hj.w * hj.h; q++) op = (hj.px[q] >> 24) == 0x80u;
                 EnterCriticalSection(&RA.cs);
                 if (ok && hj.w == (4u << it->lw) && hj.h == (4u << it->lh) && RA.nloaded < 512 - RA_LDN) {
-                    it->rgba = hj.px; it->rw = hj.w; it->rh = hj.h; it->st = RI_LOADED;
+                    it->rgba = hj.px; it->rw = hj.w; it->rh = hj.h; it->st = RI_LOADED; it->opaque = (uint8_t)op;
                     RA.loaded[RA.nloaded++] = j.item;
                 } else {
                     free(hj.px);
@@ -838,7 +1183,7 @@ static DWORD WINAPI ra_thread(LPVOID unused) {
 /* ---- GPU side (render thread) ------------------------------------------------------------------------------------------ */
 static void* ra_cs_of(uint32_t key, void* user) {
     (void)user;                          /* (shaders/perms.txt cs_ai_*: every buffer combination ai_up.c's plan uses) */
-    for (int k = 0; k < 14; k++) if (ra_cs_ids[k].key == key) return RA.kcs[k];
+    for (int k = 0; k < 14; k++) if ((ra_cs_ids[k].key | (RA.half ? RA_HKEY : 0u)) == key) return RA.kcs[k];
     return NULL;
 }
 
@@ -917,7 +1262,7 @@ static int ra_init(void) {
     if (!(RA.al = raw_default((UINT)(P * 4u), NULL, &RA.al_srv, NULL))) return 0;
     if (!(RA.pj = raw_default(RA_BMAX * 64u, NULL, &RA.pj_srv, NULL))) return 0;
     if (!(RA.res = raw_default((UINT)(P * 12u), NULL, NULL, &RA.res_uav))) return 0;
-    if (!(RA.nok = raw_default(ET_NCLS * 4096u * 4u, NULL, &RA.nok_srv, &RA.nok_uav))) return 0;
+    if (!(RA.nok = raw_default(ET_NSL * 4096u * 4u, NULL, &RA.nok_srv, &RA.nok_uav))) return 0;   /* (tex-opt: + the BC7 classes) */
     RA.pcb = et_buf(32, D3D11_BIND_CONSTANT_BUFFER, D3D11_USAGE_DYNAMIC, D3D11_CPU_ACCESS_WRITE);
     if (!RA.pcb || !gpu_cs(GPU_SH_cs_etn)) return 0;
     for (int i = 0; i < RA_REG; i++) RA.reg[i].item = -1;
@@ -949,7 +1294,7 @@ static void ra_net_poll(void) {
     if (RA.net_state == 0) {
         double use, bud;
         size_t P = (size_t)(RA_TILE + 2 * RA.pad) * (RA_TILE + 2 * RA.pad);
-        double need = P * 10.5 * 1024.0 / 1048576.0 + 64.0;
+        double need = RA.half ? P * 5.6 * 1024.0 / 1048576.0 + 32.0 : P * 10.5 * 1024.0 / 1048576.0 + 64.0;   /* (tex-opt: half ~159 MB) */
         if (ra_vram(&use, &bud) && bud > 0 && bud - use < need + 512.0) {
             if (RA.frames_busy++ % 600 == 0) gpu_log("ai: %.0f of %.0f MB video memory in use: no room for the net (%.0f MB) - Faithful's textures", use, bud, need);
             RA.n_low++;
@@ -1108,28 +1453,42 @@ static int ra_build_new(int32_t i, int* bound) {
     uint32_t words = it->rw * it->rh;
     int32_t r = ra_reg_alloc(words, i);
     if (r < 0) return -1;
-    int32_t id = ra_alloc(cls, it->pre);
-    if (id < 0) { ra_reg_free(r); return 0; }
-    D3D11_BOX bx = { RA.reg[r].at * 4u, 0, 0, (RA.reg[r].at + words) * 4u, 1, 1 };
-    ID3D11DeviceContext_UpdateSubresource(gpu_rt.ctx, (ID3D11Resource*)RA.up, 0, &bx, it->rgba, 0, 0);
-    et_slot* s = et_slot_of(id);
-    s->used = 1; s->hd = 0; s->ai = 1; s->hash = it->hash; s->first = -1;
-    s->last = ET.frame + (it->pre ? RA_PRE_GRACE : 0u);
     et_ent t;
     memset(&t, 0, sizeof t);
     t.lw = (uint8_t)(it->lw + 2); t.lh = (uint8_t)(it->lh + 2); t.flags = it->flags; t.ref = it->ref;
-    if (!*bound) {
-        ID3D11ShaderResourceView* n1 = NULL;
-        ID3D11DeviceContext_PSSetShaderResources(gpu_rt.ctx, 13, 1, &n1);
-        *bound = 1;
+    D3D11_BOX bx = { RA.reg[r].at * 4u, 0, 0, (RA.reg[r].at + words) * 4u, 1, 1 };
+    int32_t id = -1;
+    if (ebc_on() && it->opaque) {        /* (tex-opt) an opaque image: into a BC7 slot */
+        ID3D11DeviceContext_UpdateSubresource(gpu_rt.ctx, (ID3D11Resource*)RA.up, 0, &bx, it->rgba, 0, 0);
+        id = ebc_build(&t, cls, RA.reg[r].at, it->pre, it->hash, bound);
+        if (id >= 0) {
+            et_slot* s = et_slot_of(id);
+            s->used = 1; s->hd = 0; s->ai = 1; s->hash = it->hash; s->first = -1;
+            s->last = ET.frame + (it->pre ? RA_PRE_GRACE : 0u);
+        }
     }
-    if (!et_build(&t, id, RA.up_srv, RA.reg[r].at, 1)) { et_batch_run(); et_build(&t, id, RA.up_srv, RA.reg[r].at, 1); }
-    et_batch_run();
+    if (id < 0) {
+        id = ra_alloc(cls, it->pre);
+        if (id < 0) { ra_reg_free(r); return 0; }
+        ID3D11DeviceContext_UpdateSubresource(gpu_rt.ctx, (ID3D11Resource*)RA.up, 0, &bx, it->rgba, 0, 0);
+        et_slot* s = et_slot_of(id);
+        s->used = 1; s->hd = 0; s->ai = 1; s->hash = it->hash; s->first = -1;
+        s->last = ET.frame + (it->pre ? RA_PRE_GRACE : 0u);
+        if (!*bound) {
+            ID3D11ShaderResourceView* n1 = NULL;
+            ID3D11DeviceContext_PSSetShaderResources(gpu_rt.ctx, 13, 1, &n1);
+            *bound = 1;
+        }
+        if (!et_build(&t, id, RA.up_srv, RA.reg[r].at, 1)) { et_batch_run(); et_build(&t, id, RA.up_srv, RA.reg[r].at, 1); }
+        et_batch_run();
+        EBC.n_rgba++;
+        if (ebc_ab() && it->opaque) ebc_shadow(id, bound);   /* (PS2_TEX_BC7=2) */
+        if (RA.dump) { et_dump_ai(id, it->hash); et_dump_nrm(id, it->hash); }
+    }
     et_map_put(it->hash, id);
     ra_reg_free(r);
     if (it->pre) RQ.n_pre_built++;
     ra_waiters(i, id);
-    if (RA.dump) { et_dump_ai(id, it->hash); et_dump_nrm(id, it->hash); }
     return 1;
 }
 /* deferred AI images whose texture is out of sight now: loaded again from the cache (the file was written meanwhile) */
@@ -1183,11 +1542,14 @@ static void ra_pre_line(const char* why) {
     ra_vram(&use, &bud);
     gpu_log("ai-pre: %sframe %u level %u: %u listed (%u new); preloads queued %llu, built %llu, no slot %llu; direct %llu, waiting %u, "
             "timed out %llu, bad files %llu; deferred swaps %llu (%llu out of sight since, %u waiting); video memory %.0f of %.0f MB "
-            "(images %.0f MB, surface maps %.0f MB); cached images built at %.2f ms per M texels", why, ET.frame, RQ.world,
+            "(images %.0f MB, surface maps %.0f MB; BC7 images %.0f MB + maps %.0f MB, %llu BC7 / %llu RGBA8 AI images built, "
+            "%llu shared alpha-test files); "
+            "cached images built at %.2f ms per M texels", why, ET.frame, RQ.world,
             RQ.nrec, (unsigned)RQ.n_new, (unsigned long long)RQ.n_pre_q, (unsigned long long)RQ.n_pre_built,
             (unsigned long long)RQ.n_pre_noslot, (unsigned long long)RQ.n_direct, RQ.n_wait, (unsigned long long)RQ.n_timeout,
             (unsigned long long)RQ.n_lfail, (unsigned long long)RQ.n_defer, (unsigned long long)RQ.n_defer_done, RQ.ndefer, use, bud,
-            ET.bytes / 1048576.0, ETN.bytes / 1048576.0, RQ.ms_per_m);
+            ET.bytes / 1048576.0, ETN.bytes / 1048576.0, EBC.bytes / 1048576.0, EBC.nbytes / 1048576.0,
+            (unsigned long long)EBC.n_bc, (unsigned long long)EBC.n_rgba, (unsigned long long)n_alias, RQ.ms_per_m);
 }
 /* (ra_frame) the level: a change reads its list and queues its images; the list is written now and then */
 static void ra_level_frame(uint32_t uses) {
@@ -1260,6 +1622,26 @@ static int ra_apply(int32_t i, int* bound) {
     et_ent t;
     memset(&t, 0, sizeof t);
     t.lw = (uint8_t)(it->lw + 2); t.lh = (uint8_t)(it->lh + 2); t.flags = it->flags; t.ref = it->ref;
+    if (ebc_on() && it->opaque && (id >> 16) < ET_BC) {   /* (tex-opt) into a BC7 slot; the entries move there */
+        int32_t nid = ebc_build(&t, id >> 16, RA.reg[it->reg].at, 0, it->hash, bound);
+        if (nid >= 0) {
+            et_slot* ns = et_slot_of(nid);
+            ra_pop_swap(s);
+            ns->used = 1; ns->hd = 0; ns->ai = 1; ns->hash = s->hash; ns->first = -1; ns->last = s->last;
+            while (s->first >= 0) {
+                int32_t k = s->first;
+                et_ent* e = &ET.e[k];
+                s->first = e->next;
+                e->slot = nid; e->next = ns->first; ns->first = k;
+                et_tab_write(e->base, e->base + 1, et_info(nid));
+                et_swap_note(k, 'A');
+                if (ESW.on > 0) ESW.prev[k] = nid;   /* (the same image, moved: no change seen at its next link) */
+            }
+            s->used = 0; s->ai = 0; s->hash = 0;   /* (the Enhanced image's slot is free again) */
+            et_map_put(ns->hash, nid);
+            return 1;
+        }
+    }
     if (!*bound) {
         ID3D11ShaderResourceView* n1 = NULL;
         ID3D11DeviceContext_PSSetShaderResources(gpu_rt.ctx, 13, 1, &n1);
@@ -1267,6 +1649,8 @@ static int ra_apply(int32_t i, int* bound) {
     }
     if (!et_build(&t, id, RA.up_srv, RA.reg[it->reg].at, 1)) { et_batch_run(); et_build(&t, id, RA.up_srv, RA.reg[it->reg].at, 1); }
     et_batch_run();
+    if (ebc_on()) EBC.n_rgba++;
+    if (ebc_ab() && it->opaque) ebc_shadow(id, bound);   /* (PS2_TEX_BC7=2) */
     ra_pop_swap(s);
     s->ai = 1;
     for (int32_t k = s->first; k >= 0; k = ET.e[k].next) et_swap_note(k, 'A');   /* (reimagine: Enhanced -> AI, once) */
@@ -1577,7 +1961,7 @@ static void ra_frame(int* bound) {
             else if (it->st == RI_LOADED && !it->rgba) it->st = RI_NONE;
             else if (it->st == RI_LFAIL) {    /* (a bad file: built again by the net, its entries get Enhanced images meanwhile) */
                 RQ.n_lfail++;
-                it->bad = 1; it->file = 0; it->st = RI_NONE;
+                it->bad = 1; it->file = 0; it->alias = 0; it->st = RI_NONE;
                 ra_waiters(i, -1);
             } else {
                 words = it->rw * it->rh;
@@ -1748,6 +2132,7 @@ static void ra_frame(int* bound) {
 static void ra_release(void) {
     if (RQ.on > 0 && RQ.nth) ra_level_flush();   /* (tex-prebuild: the level's list is kept) */
     etn_free();
+    ebc_free();                          /* (tex-opt; et_release frees the BC7 classes' slot tables) */
     if (RA.bon) for (int k = 0; k < RA.bn; k++) RA.it[RA.bt[k].item].st = RI_NONE;
     RA.bon = 0; RA.bn = 0;
     if (RA.net) { ai_gpu_destroy(RA.net); RA.net = NULL; RA.net_state = 0; }
