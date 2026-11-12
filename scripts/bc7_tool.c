@@ -55,6 +55,16 @@ static ID3D11ComputeShader* cs_from(const char* src, size_t n, const char* name,
         return NULL;
     }
     ID3D11Device_CreateComputeShader(dev, ID3D10Blob_GetBufferPointer(code), ID3D10Blob_GetBufferSize(code), NULL, &cs);
+    if (getenv("BC7_ASM")) {             /* (the DXBC listing: temps, indexable temps) */
+        typedef HRESULT(WINAPI * dis_fn)(LPCVOID, SIZE_T, UINT, LPCSTR, ID3DBlob**);
+        dis_fn dis = (dis_fn)(void*)GetProcAddress(LoadLibraryA("d3dcompiler_47.dll"), "D3DDisassemble");
+        ID3DBlob* t = NULL;
+        if (dis && SUCCEEDED(dis(ID3D10Blob_GetBufferPointer(code), ID3D10Blob_GetBufferSize(code), 0, NULL, &t))) {
+            FILE* f = fopen(getenv("BC7_ASM"), "wb");
+            if (f) { fwrite(ID3D10Blob_GetBufferPointer(t), 1, ID3D10Blob_GetBufferSize(t), f); fclose(f); }
+            ID3D10Blob_Release(t);
+        }
+    }
     ID3D10Blob_Release(code);
     if (msg) ID3D10Blob_Release(msg);
     return cs;

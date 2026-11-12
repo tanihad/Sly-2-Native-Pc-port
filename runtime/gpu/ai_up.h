@@ -27,9 +27,11 @@ ai_gpu* ai_gpu_create(struct ID3D11Device* dev, struct ID3D11DeviceContext* ctx,
 /* GPU (game): the permutations come from fn(key) (an ID3D11ComputeShader*, AddRef'd here; compiled at build time).
  * key = in | out << 4 | r1 << 8 | r2 << 12 | o2 << 16 (buffer indices, 8 = none): ai_up.hlsl BIN / BOUT / BR1 / BR2 / BO2 */
 typedef void* (*ai_cs_fn)(uint32_t key, void* user);
-/* (tex-opt) half: AI_GPU_HALF = feature buffers 1..6 as half floats (ai_up.hlsl AI_HALF; the key gains half << 20),
- * AI_GPU_HALF_W = the weights too; 0 = all float (the cache's x4plus-v3 images were built that way) */
-enum { AI_GPU_HALF = 1, AI_GPU_HALF_W = 2 };
+/* (tex-opt) half: bit 8 + b = feature buffer b (1..6: F, R, D0, D1, BA, BB) as half floats (ai_up.hlsl U<b>_H),
+ * AI_GPU_HALF_W = the weights too; 0 = all float (the cache's x4plus-v3 images were built that way). A permutation's key
+ * gains ai_half_key(half) << 20. BIG = D0, D1, BA, BB (F and R, which accumulate over the blocks, stay float). */
+enum { AI_GPU_HALF_W = 2, AI_GPU_HALF = 0x7E00, AI_GPU_HALF_BIG = 0x7800 };
+uint32_t ai_half_key(int half);
 ai_gpu* ai_gpu_create_cs(struct ID3D11Device* dev, struct ID3D11DeviceContext* ctx, const ai_weights* wt, ai_cs_fn fn,
                          void* user, size_t max_pixels, int half, char* err, size_t errn);
 /* n images of w x h, each 3 float planes (in: n*3*w*h, out: n*3*16*w*h); n * w * h <= max_pixels (tool: all at once) */

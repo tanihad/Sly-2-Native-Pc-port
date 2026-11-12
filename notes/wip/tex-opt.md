@@ -37,6 +37,11 @@ BC7 AI images in VRAM, fp16 net, dedupe, full-build feasibility; no visible qual
 4. Measurements: VRAM, load, ms per M texels, ep2 hub cold build time, frame times at owner's settings; stills.
 5. Gates (see task list); notes/reimagined.md section; checkpoint complete.
 
+## Coordinator changes (2026-11-12)
+- NO videos / comparison clips for the owner; keep PSNR measurements, gates, small stills only to check my own work.
+- GPU corpus deleted (re-recorded elsewhere): gpu_diff_all = "pending" (coordinator runs it at merge); m9_exact with
+  -CorpusRoot C:\Users\tanih\Projects\sly2-worktrees\shadow\build\shadows\corpus (read only, 2 recordings).
+
 ## Findings / traps
 - Worktree files are CRLF; PowerShell `R` is an alias (Invoke-History) - don't name helpers R.
 - fxc: loop var names must not shadow (X3078 warning = error in hlslc).

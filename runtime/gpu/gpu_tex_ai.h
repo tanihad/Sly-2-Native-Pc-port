@@ -46,6 +46,7 @@ typedef struct {
     uint8_t st, lw, lh, flags, ref, cut, opaque, file;
     uint8_t bad, pre, waiters, gen;      /* (tex-prebuild) bad file; a preload (no entry waits); entries wait (ES_AILOAD);
                                           * a generation (a loader's result for an item reset meanwhile is dropped) */
+    uint8_t alias;                       /* (tex-opt) its cache file is the other alpha-test key's (ra_file_of) */
     uint16_t tiles, left;                /* tiles of the texture, not yet through the net */
     int32_t reg;                         /* upload region (index) or -1 */
     uint32_t* rgba;                      /* (worker: a decoded cache file) */
@@ -426,7 +427,8 @@ static ID3D11ShaderResourceView* ebc_srv_of(ID3D11Texture2D* t, DXGI_FORMAT f, u
 }
 /* the class's BC7 array (and its maps) grown by doubling, keeping what it holds; 0: no room (the budget, video memory) */
 static int ebc_grow(int c) {
-    static const uint32_t first[ET_NCLS] = { 64, 256, 256, 256, 64, 0 };   /* (the RGBA8 pre-size's slices at a quarter of the bytes) */
+    static const uint32_t first[ET_NCLS] = { 64, 256, 512, 256, 64, 0 };   /* (the RGBA8 pre-size's slices at a quarter of the bytes,
+                                          * 256 x 256 doubled: a hub + the title's list - ep2 - outgrew 256 during play) */
     uint32_t oc = ET.cap[ET_BC + c], nc = oc ? oc * 2 : first[c];
     if (!nc || nc > 2048) return 0;
     if (ET.bytes + EBC.bytes + (uint64_t)(nc - oc) * ebc_slice_bytes(c) > (uint64_t)ET.budget_mb << 20) return 0;
@@ -940,7 +942,18 @@ static ra_rec* ra_level_read(uint32_t world, uint32_t* n) {
     return r;
 }
 
-static int ra_file_of(const ra_item* it) { return !it->bad && (it->file || ra_have(it->hash)); }
+/* (tex-opt) the alpha test (key bit 60) does not change an AI image (only the coverage of its mips, built at load): a
+ * texture drawn with and without it shares one cache file - found under the other key, never built twice (the caches:
+ * ~1 % of the files were such pairs, all identical) */
+#define RA_REFBIT (1ull << 60)
+static uint64_t n_alias;
+static int ra_file_of(ra_item* it) {
+    if (it->bad) return 0;
+    if (it->file || ra_have(it->hash)) return 1;
+    if (ra_have(it->hash ^ RA_REFBIT)) { it->alias = 1; n_alias++; return 1; }
+    return 0;
+}
+static uint64_t ra_fkey(const ra_item* it) { return it->hash ^ (it->alias ? RA_REFBIT : 0ull); }
 /* queue item i for a loader (q 0: on demand, 1: preload); its state is RI_LOAD */
 static void ra_load_push(int32_t i, int q) {
     EnterCriticalSection(&RA.cs);
@@ -1008,9 +1021,9 @@ static DWORD WINAPI ra_loader(LPVOID unused) {
             memset(&hj, 0, sizeof hj);
             hj.raw = it->hash;
             wchar_t path[700];
-            ra_path(it->hash, 0, path, 700);
+            ra_path(ra_fkey(it), 0, path, 700);
             int ok = f && GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES && et_hd_decode(f, path, &hj);
-            if (!ok && f) { ra_path(it->hash, 1, path, 700); ok = GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES && et_hd_decode(f, path, &hj); }
+            if (!ok && f) { ra_path(ra_fkey(it), 1, path, 700); ok = GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES && et_hd_decode(f, path, &hj); }
             int op = ok && hj.px;            /* (tex-opt) no alpha below 0x80: a BC7 image */
             for (size_t q = 0; op && q < (size_t)hj.w * hj.h; q++) op = (hj.px[q] >> 24) == 0x80u;
             EnterCriticalSection(&RA.cs);
@@ -1083,9 +1096,9 @@ static DWORD WINAPI ra_thread(LPVOID unused) {
                 memset(&hj, 0, sizeof hj);
                 hj.raw = it->hash;
                 wchar_t path[700];
-                ra_path(it->hash, 0, path, 700);
+                ra_path(ra_fkey(it), 0, path, 700);
                 int ok = f && GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES && et_hd_decode(f, path, &hj);
-                if (!ok && f) { ra_path(it->hash, 1, path, 700); ok = GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES && et_hd_decode(f, path, &hj); }
+                if (!ok && f) { ra_path(ra_fkey(it), 1, path, 700); ok = GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES && et_hd_decode(f, path, &hj); }
                 int op = ok && hj.px;        /* (tex-opt) no alpha below 0x80: a BC7 image */
                 for (size_t q = 0; op && q < (size_t)hj.w * hj.h; q++) op = (hj.px[q] >> 24) == 0x80u;
                 EnterCriticalSection(&RA.cs);
@@ -1466,13 +1479,14 @@ static void ra_pre_line(const char* why) {
     ra_vram(&use, &bud);
     gpu_log("ai-pre: %sframe %u level %u: %u listed (%u new); preloads queued %llu, built %llu, no slot %llu; direct %llu, waiting %u, "
             "timed out %llu, bad files %llu; deferred swaps %llu (%llu out of sight since, %u waiting); video memory %.0f of %.0f MB "
-            "(images %.0f MB, surface maps %.0f MB; BC7 images %.0f MB + maps %.0f MB, %llu BC7 / %llu RGBA8 AI images built); "
+            "(images %.0f MB, surface maps %.0f MB; BC7 images %.0f MB + maps %.0f MB, %llu BC7 / %llu RGBA8 AI images built, "
+            "%llu shared alpha-test files); "
             "cached images built at %.2f ms per M texels", why, ET.frame, RQ.world,
             RQ.nrec, (unsigned)RQ.n_new, (unsigned long long)RQ.n_pre_q, (unsigned long long)RQ.n_pre_built,
             (unsigned long long)RQ.n_pre_noslot, (unsigned long long)RQ.n_direct, RQ.n_wait, (unsigned long long)RQ.n_timeout,
             (unsigned long long)RQ.n_lfail, (unsigned long long)RQ.n_defer, (unsigned long long)RQ.n_defer_done, RQ.ndefer, use, bud,
             ET.bytes / 1048576.0, ETN.bytes / 1048576.0, EBC.bytes / 1048576.0, EBC.nbytes / 1048576.0,
-            (unsigned long long)EBC.n_bc, (unsigned long long)EBC.n_rgba, RQ.ms_per_m);
+            (unsigned long long)EBC.n_bc, (unsigned long long)EBC.n_rgba, (unsigned long long)n_alias, RQ.ms_per_m);
 }
 /* (ra_frame) the level: a change reads its list and queues its images; the list is written now and then */
 static void ra_level_frame(uint32_t uses) {
@@ -1883,7 +1897,7 @@ static void ra_frame(int* bound) {
             else if (it->st == RI_LOADED && !it->rgba) it->st = RI_NONE;
             else if (it->st == RI_LFAIL) {    /* (a bad file: built again by the net, its entries get Enhanced images meanwhile) */
                 RQ.n_lfail++;
-                it->bad = 1; it->file = 0; it->st = RI_NONE;
+                it->bad = 1; it->file = 0; it->alias = 0; it->st = RI_NONE;
                 ra_waiters(i, -1);
             } else {
                 words = it->rw * it->rh;

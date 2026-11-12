@@ -39,13 +39,19 @@ static const uint W4[16] = { 0, 4, 9, 13, 17, 21, 26, 30, 34, 38, 43, 47, 51, 55
 #define BC7_NPART 2u
 #endif
 #ifndef BC7_MODE1
-#define BC7_MODE1 1
+#define BC7_MODE1 0                      // (mode 1 tried too: +0.0..0.4 dB, 3x the time - off)
 #endif
 static int3 px[16];                      // the block's RGB (0..255)
 
 uint wt(uint nb, uint i) { return nb == 2u ? W2[i & 3u] : nb == 3u ? W3[i & 7u] : W4[i & 15u]; }
 int3 lerp6(int3 a, int3 b, uint w) { return (a * (64 - (int)w) + b * (int)w + 32) >> 6; }
 uint sub_of(uint part, uint i) { return (part >> (2u * i)) & 3u; }
+// 16 indices of <= 4 bits packed in a uint2 (pixel i: bits 4 (i & 7) of word i >> 3): no indexable arrays
+uint iget(uint2 p, uint i) { return ((i < 8u ? p.x : p.y) >> ((i & 7u) * 4u)) & 15u; }
+void iset(inout uint2 p, uint i, uint v) {
+    uint s = (i & 7u) * 4u, m = ~(15u << s);
+    if (i < 8u) p.x = (p.x & m) | (v << s); else p.y = (p.y & m) | (v << s);
+}
 
 // endpoint quantizers: kind 0 = 6 bits + p (mode 1), 1 = 7 bits + p (modes 3, 6)
 int unq(uint kind, int q, uint p) {
@@ -88,7 +94,7 @@ void axis_ends(uint part, uint s, out float3 e0, out float3 e1) {
 }
 
 // indices of subset s for decoded endpoints a, b (nb bits): projection, then the nearest of three; returns the error
-uint assign(uint part, uint s, int3 a, int3 b, uint nb, inout uint idx[16]) {
+uint assign(uint part, uint s, int3 a, int3 b, uint nb, inout uint2 idx) {
     uint err = 0u, mx = (1u << nb) - 1u;
     float3 d = (float3)(b - a);
     float dd = dot(d, d), sc = dd > 0.0 ? (float)mx / dd : 0.0;
@@ -102,18 +108,18 @@ uint assign(uint part, uint s, int3 a, int3 b, uint nb, inout uint idx[16]) {
             uint ee = (uint)dot(e, e);
             if (ee < be) { be = ee; bi = k; }
         }
-        idx[i] = bi;
+        iset(idx, i, bi);
         err += be;
     }
     return err;
 }
 // least squares: the endpoints that fit subset s best for its indices
-void refine(uint part, uint s, uint nb, uint idx[16], inout float3 e0, inout float3 e1) {
+void refine(uint part, uint s, uint nb, uint2 idx, inout float3 e0, inout float3 e1) {
     float a = 0.0, b = 0.0, c = 0.0;
     float3 r0 = 0.0, r1 = 0.0;
     [unroll] for (uint i = 0u; i < 16u; i++) {
         if (sub_of(part, i) != s) continue;
-        float w = (float)wt(nb, idx[i]) * (1.0 / 64.0), u = 1.0 - w;
+        float w = (float)wt(nb, iget(idx, i)) * (1.0 / 64.0), u = 1.0 - w;
         a += u * u; b += u * w; c += w * w;
         r0 += u * (float3)px[i]; r1 += w * (float3)px[i];
     }
@@ -124,34 +130,34 @@ void refine(uint part, uint s, uint nb, uint idx[16], inout float3 e0, inout flo
 }
 
 struct Fit { int3 q0, q1; uint p0, p1; uint err; };
-// one subset: nb index bits, quantizer kind, p-bits pm (1: one per subset, 2: one per endpoint, 3: both forced to 1)
-Fit fit(uint part, uint s, uint nb, uint kind, uint pm, inout uint idx[16]) {
+// the p-bit(s) for endpoints e0, e1: per endpoint (pm 2) or shared (pm 1) the one that quantizes it closest; pm 3: both 1
+uint qerr(uint kind, float3 e, uint p) { int3 d = unq3(kind, quant3(kind, e, p), p) - (int3)round(e); return (uint)dot(d, d); }
+void pbits(uint kind, uint pm, float3 e0, float3 e1, out uint p0, out uint p1) {
+    if (pm == 3u) { p0 = 1u; p1 = 1u; return; }
+    uint a0 = qerr(kind, e0, 0u), a1 = qerr(kind, e0, 1u), b0 = qerr(kind, e1, 0u), b1 = qerr(kind, e1, 1u);
+    if (pm == 2u) { p0 = a1 < a0 ? 1u : 0u; p1 = b1 < b0 ? 1u : 0u; }
+    else { p0 = a1 + b1 < a0 + b0 ? 1u : 0u; p1 = p0; }
+}
+// one subset: nb index bits, quantizer kind, p-bits pm (1: one per subset, 2: one per endpoint, 3: both forced to 1);
+// the principal axis' extremes, then a least-squares refinement; the better of the two
+Fit fit(uint part, uint s, uint nb, uint kind, uint pm, inout uint2 idx) {
     float3 e0, e1;
     axis_ends(part, s, e0, e1);
     Fit best;
     best.q0 = 0; best.q1 = 0; best.p0 = 0u; best.p1 = 0u; best.err = 0xFFFFFFFFu;
-    uint bidx[16];
-    [unroll] for (uint z = 0u; z < 16u; z++) bidx[z] = idx[z];
-    [loop] for (uint it = 0u; it < 2u; it++) {
-        uint ncomb = pm == 1u ? 2u : pm == 2u ? 4u : 1u;
-        [loop] for (uint c = 0u; c < ncomb; c++) {
-            uint p0 = pm == 3u ? 1u : pm == 1u ? c : (c & 1u), p1 = pm == 3u ? 1u : pm == 1u ? c : (c >> 1);
-            int3 q0 = quant3(kind, e0, p0), q1 = quant3(kind, e1, p1);
-            uint ti[16];
-            [unroll] for (uint y = 0u; y < 16u; y++) ti[y] = bidx[y];
-            uint e = assign(part, s, unq3(kind, q0, p0), unq3(kind, q1, p1), nb, ti);
-            if (e < best.err) {
-                best.err = e; best.q0 = q0; best.q1 = q1; best.p0 = p0; best.p1 = p1;
-                [unroll] for (uint y2 = 0u; y2 < 16u; y2++) bidx[y2] = ti[y2];
-            }
-        }
-        if (best.err == 0u) break;
-        refine(part, s, nb, bidx, e0, e1);
+    uint2 bidx = idx;
+    [unroll] for (uint it = 0u; it < 2u; it++) {
+        uint p0, p1;
+        pbits(kind, pm, e0, e1, p0, p1);
+        int3 q0 = quant3(kind, e0, p0), q1 = quant3(kind, e1, p1);
+        uint2 ti = bidx;
+        uint e = assign(part, s, unq3(kind, q0, p0), unq3(kind, q1, p1), nb, ti);
+        if (e < best.err) { best.err = e; best.q0 = q0; best.q1 = q1; best.p0 = p0; best.p1 = p1; bidx = ti; }
+        if (it == 0u) refine(part, s, nb, bidx, e0, e1);
     }
-    [unroll] for (uint y3 = 0u; y3 < 16u; y3++) if (sub_of(part, y3) == s) idx[y3] = bidx[y3];
+    [unroll] for (uint y3 = 0u; y3 < 16u; y3++) if (sub_of(part, y3) == s) iset(idx, y3, iget(bidx, y3));
     return best;
 }
-
 // ---- bit packing --------------------------------------------------------------------------------------------------------
 static uint ob[4];
 static uint opos;
@@ -167,20 +173,20 @@ void put(uint v, uint n) {               // (n <= 8 here; a field never crosses 
 void put_begin() { ob[0] = 0u; ob[1] = 0u; ob[2] = 0u; ob[3] = 0u; opos = 0u; }
 void swap_ends(inout Fit f) { int3 t = f.q0; f.q0 = f.q1; f.q1 = t; uint p = f.p0; f.p0 = f.p1; f.p1 = p; }
 
-uint4 pack6(Fit f, uint idx[16]) {       // mode 6, alpha 127 + p-bit 1 = 255
-    if (idx[0] >= 8u) { swap_ends(f); [unroll] for (uint i = 0u; i < 16u; i++) idx[i] = 15u - idx[i]; }
+uint4 pack6(Fit f, uint2 idx) {          // mode 6, alpha 127 + p-bit 1 = 255
+    if (iget(idx, 0u) >= 8u) { swap_ends(f); idx = ~idx; }   // (15 - i in every nibble)
     put_begin();
     put(64u, 7u);
     put((uint)f.q0.x, 7u); put((uint)f.q1.x, 7u); put((uint)f.q0.y, 7u); put((uint)f.q1.y, 7u);
     put((uint)f.q0.z, 7u); put((uint)f.q1.z, 7u); put(127u, 7u); put(127u, 7u);
     put(f.p0, 1u); put(f.p1, 1u);
-    [unroll] for (uint j = 0u; j < 16u; j++) put(idx[j], j == 0u ? 3u : 4u);
+    [unroll] for (uint j = 0u; j < 16u; j++) put(iget(idx, j), j == 0u ? 3u : 4u);
     return uint4(ob[0], ob[1], ob[2], ob[3]);
 }
-uint4 pack13(uint mode, uint pi, Fit f0, Fit f1, uint idx[16]) {   // modes 1 and 3
+uint4 pack13(uint mode, uint pi, Fit f0, Fit f1, uint2 idx) {   // modes 1 and 3
     uint part = bc7_p2[pi], anc = bc7_a2[pi], nb = mode == 1u ? 3u : 2u, hi = 1u << (nb - 1u), mx = (1u << nb) - 1u;
-    if (idx[0] >= hi) { swap_ends(f0); [unroll] for (uint i = 0u; i < 16u; i++) if (sub_of(part, i) == 0u) idx[i] = mx - idx[i]; }
-    if (idx[anc] >= hi) { swap_ends(f1); [unroll] for (uint i2 = 0u; i2 < 16u; i2++) if (sub_of(part, i2) == 1u) idx[i2] = mx - idx[i2]; }
+    if (iget(idx, 0u) >= hi) { swap_ends(f0); [unroll] for (uint i = 0u; i < 16u; i++) if (sub_of(part, i) == 0u) iset(idx, i, mx - iget(idx, i)); }
+    if (iget(idx, anc) >= hi) { swap_ends(f1); [unroll] for (uint i2 = 0u; i2 < 16u; i2++) if (sub_of(part, i2) == 1u) iset(idx, i2, mx - iget(idx, i2)); }
     put_begin();
     uint cb = mode == 1u ? 6u : 7u;
     put(mode == 1u ? 2u : 8u, mode == 1u ? 2u : 4u);
@@ -190,7 +196,7 @@ uint4 pack13(uint mode, uint pi, Fit f0, Fit f1, uint idx[16]) {   // modes 1 an
     put((uint)f0.q0.z, cb); put((uint)f0.q1.z, cb); put((uint)f1.q0.z, cb); put((uint)f1.q1.z, cb);
     if (mode == 1u) { put(f0.p0, 1u); put(f1.p0, 1u); }
     else { put(f0.p0, 1u); put(f0.p1, 1u); put(f1.p0, 1u); put(f1.p1, 1u); }
-    [unroll] for (uint j = 0u; j < 16u; j++) put(idx[j], j == 0u || j == anc ? nb - 1u : nb);
+    [unroll] for (uint j = 0u; j < 16u; j++) put(iget(idx, j), j == 0u || j == anc ? nb - 1u : nb);
     return uint4(ob[0], ob[1], ob[2], ob[3]);
 }
 
@@ -199,18 +205,14 @@ void cs_bc7(uint3 id : SV_DispatchThreadID) {
     if (id.x >= b_a.z || id.y >= b_a.w) return;
     float3 sum = 0.0;
     float sq = 0.0;
-    float3 pv[16];
-    float pq[16];
     [unroll] for (uint i = 0u; i < 16u; i++) {
         uint x = min(id.x * 4u + (i & 3u), b_b.x - 1u), y = min(id.y * 4u + (i >> 2), b_b.y - 1u);
         int3 c = (int3)(saturate(b_src.Load(int4(x, y, b_a.x, b_a.y)).rgb) * 255.0 + 0.5);
         px[i] = c;
-        pv[i] = (float3)c;
-        pq[i] = dot(pv[i], pv[i]);
-        sum += pv[i]; sq += pq[i];
+        float3 f = (float3)c;
+        sum += f; sq += dot(f, f);
     }
-    uint idx[16];
-    [unroll] for (uint z = 0u; z < 16u; z++) idx[z] = 0u;
+    uint2 idx = 0u;
     Fit f6 = fit(0u, 0u, 4u, 1u, 3u, idx);
     uint4 best = pack6(f6, idx);
     uint be = f6.err;
@@ -223,7 +225,7 @@ void cs_bc7(uint3 id : SV_DispatchThreadID) {
             uint part = bc7_p2[p];
             float3 s0 = 0.0;
             float q0 = 0.0, n0 = 0.0;
-            [unroll] for (uint k = 0u; k < 16u; k++) if (sub_of(part, k) == 0u) { s0 += pv[k]; q0 += pq[k]; n0 += 1.0; }
+            [unroll] for (uint k = 0u; k < 16u; k++) if (sub_of(part, k) == 0u) { float3 f = (float3)px[k]; s0 += f; q0 += dot(f, f); n0 += 1.0; }
             float3 s1 = sum - s0;
             float n1 = 16.0 - n0;
             float c = q0 - dot(s0, s0) / n0 + (sq - q0) - dot(s1, s1) / n1;
