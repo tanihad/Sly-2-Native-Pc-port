@@ -29,14 +29,23 @@ green on 336e78e.
   - ep2_hub | 4279-4458 | 582 | 18/18 | corpus.txt pad
   - ep4_hub | 4454-4633 | 486 | 18/18 | corpus.txt pad
   - load_m3 | 2294-2533 | 235 | 48/48 | corpus.txt how
+  - m6_rc_feedback | 3164-3223 | 80 | 12/12 | -Episode 6 -Job t6_rc_chopper_battle_intro -Direct -Pad "+1222:rec" -Frames 60 -RecDumpEvery 5
+  - m5_battlezone | 4847-4906 | 137 | 12/12 | -Episode 5 -Job m5_battlezone -Direct -Pad "+2902:rec" -Frames 60 -RecDumpEvery 5
+    (tank in the rain, 31.5k translucent prims/frame; the green gas cloud of the old take NOT found: no input = no
+    cloud; live driving/firing for a while did not show one either)
+  - ep6 rc_battle | 4950-5069 | 273 | 12/12 | same job, "+3000:rec" -Frames 120
+  - ep1_hub | 7217-7396 | 436 | 18/18 | -Episode 1 -Pad "+1800:cross:10,+90:cross:10,+3400:rec,+10:lup:90,+90:rright:60,+60:lup:60,+60:cross:6,+30:lleft:60" (ep1 hub entry has a ~3000-VBlank Binocucom briefing)
+  - thiefnet | 4020-4119 | 349 | 10/10 | corpus.txt how with -Make "--coins=5000"
+  - hack_minigame | 3459-3638 | 33 | 17/18 (first VBlank, as before) | -Episode 5 -Job t5_heist_free_carmelita_hack -Direct -Pad "+1500:rec,+5:lup:60,+0:rleft:50,+60:lleft:50,+0:rup:50,+50:lright:60,+0:rright:60"
+  - fmv | 2842-3081 | 132 | 24/24 | PS2_MOVIE_LAYER=0 -Episode 2 -Set episode.palace.percent_complete=100 -Pad "+600:up:10,+40:up:10,+40:up:10,+60:cross:10,+150:rec,+30:cross:10" -Frames 240
+  - pause_save | 4640-4789 | 416 | 15/15 | PS2_MOVIE_LAYER=0 -Episode 2 -Pad "+1800:cross:10,+700:start:10,+60:down:10,+60:cross:10,+60:rec,+20:up:10,+50:cross:10" -Frames 300, cut to 150 (53.2k prims max, 17148 uploads = old)
 
 ## In progress
-- m5_battlezone (+2902:rec), m6_rc_feedback (+1222:rec); scouting ep1 hub (Binocucom briefing at hub entry: the scripted pad lands in it).
+- ws_* re-runs, then ep2_photo live.
 
 ## Next
-1. Remaining: ep3 rope (live), ep5 hub_street, ep6 rc_battle, ep7 boss, ep8 hub, ep8 boss, gpu-C ep1_hub (live),
-   m1_brawl, ep2_hub, ep2_photo (live), ep4_hub, hack_minigame (live), fmv (live), load_m3, pause_save (live),
-   thiefnet, ws_museum169 (16:9, hud centered), ws_ep3_hud (16:9), m5_battlezone, m6_rc_feedback.
+1. Remaining: ws_museum169 + ws_ep3_hud (re-running with PS2_DUMP_RAW=1: display-shaped 796x448 live dumps can't be
+   compared), ep2_photo (live), ep3 rope (live).
 2. corpus.txt windows/MB/how; baseline.json + vram_hashes.txt regenerated (gpu_diff_all -Update; gs_vram_hashes).
 3. Gates: gpu_diff_all 28/28, m9_exact S1+S3 -Game, sanity (broken shader constant detected).
 4. notes/d3d11-renderer.md corpus section.
@@ -53,6 +62,11 @@ green on 336e78e.
 - With a warp card the safehouse menu is already up at START+500 (loads are fast now); ep3 brief (old: "title / menu
   at load", 2900-3139) is the title menu itself: -NoStart.
 - First VBlank of a recording now verifies identical too (rv_*, title, brief).
+- IPU movies: the PC movie layer presents them natively (640x480 live dumps): PS2_MOVIE_LAYER=0 for fmv / pause_save
+  so the live dumps are GS pictures (the GS stream has the macroblock uploads either way: 120000 in fmv).
+- 16:9 runs: PS2_DUMP_RAW=1 (live dumps unshaped), else gs_corpus_verify sees 796x448 vs 512x448.
+- -Make "--coins 5000" loses its quoting through the wrapper: use --coins=5000.
 - Direct-start timing relative to START is stable (ep8 boss: two takes with +4200 had the same profile); absolute VBlanks vary by ~250.
 - ep8 boss: debris fall is light (6k prims) for ~480 VBlanks, then heavy (35-41k prims, 6k states) for ~700: +4700.
 - m7_boss direct: ~9300 VBlanks of cutscenes before the arena (old recordings were made at v6400: different flow then).
+
