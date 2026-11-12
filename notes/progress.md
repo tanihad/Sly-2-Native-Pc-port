@@ -2,7 +2,12 @@
 
 ## Resume here (read first in a new session)
 
-**2026-11-11: next/tex-prebuild (worktree sly2-worktrees\ai, not merged) - Reimagined AI textures ready before first
+**2026-11-11: both merged into main (82e0535 tex-prebuild, c0a7fb5 local-lights); test build 0.1.1267 packaged in
+dist\Sly2 for the owner to try (not a release). Merged-tree gates running (units, gpu_diff_all, reim_stability_gate,
+gfx_stress_gate -Cold). Next queued: lossless-looking optimisations (BC7 AI textures, fp16 AI builder, optional
+one-time full texture build, dedupe check), each proven by picture comparison.**
+
+**2026-11-11: next/tex-prebuild (worktree sly2-worktrees\ai, merged 82e0535) - Reimagined AI textures ready before first
 sight.** Cached AI images go straight onto textures (no Enhanced image first), loader threads, per-level texture lists
 preloaded at each level change (title: also the last-played level, so Resume Game starts ready), AI images never
 swapped in while their texture is on screen (deferred until out of sight). ep2 hub, owner's settings: warm cache 354
