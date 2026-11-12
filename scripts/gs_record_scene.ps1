@@ -17,10 +17,16 @@
 #    all along (frames\latest.png to look at), the oldest deleted after -Ring dumps;
 #  - -NoCard runs without a warp card (a fresh card directory: new game, no save).
 # The run stops by itself (PS2_WATCHDOG) -Seconds after the start, or soon after the recording ends.
+# Corpus settings (tests/gpu/corpus.txt; the corpus was made before the PC options existed): the software renderer
+# (PS2_GS_BACKEND=sw), -Aspect 4:3 (default; 16:9 for the widescreen recordings, -Hud edges|centered), the game's own
+# interlaced field offsets (PS2_PROGRESSIVE_FIX=0), unshaped frame dumps (PS2_DUMP_RAW=1, so 16:9 dumps compare with
+# the replay), settings and logs in build\gsrec\<Name>\user (PS2_USER_DIR, never the player's folder). -ExtraEnv "K=V;K=V"
+# sets more (e.g. PS2_PC_TEXT=0 for the boot's save prompt, PS2_MOVIE_LAYER=0 so IPU movies are dumped as GS pictures).
 param([Parameter(Mandatory = $true)][string]$Name, [int]$Episode = 0, [string]$Job = "", [switch]$Direct,
       [switch]$Play, [switch]$NoCard, [switch]$NoStart, [int]$Seconds = 300, [switch]$DebugBuild, [string]$Pad = "",
       [int]$From = 0, [int]$Frames = 120, [int]$DumpEvery = 60, [int]$RecDumpEvery = 10, [switch]$Live, [int]$Ring = 300,
-      [string]$Set = "", [string]$Make = "", [switch]$KeepRunning)
+      [string]$Set = "", [string]$Make = "", [switch]$KeepRunning, [string]$Aspect = "4:3", [string]$Hud = "",
+      [string]$ExtraEnv = "")
 $root = Split-Path $PSScriptRoot -Parent
 $main = $root
 if (-not (Test-Path (Join-Path $root 'orig\SCUS_973.16'))) {   # worktree: find the main checkout
@@ -86,6 +92,12 @@ if ($Live) {
     $env:PS2_DUMP_RING = "$Ring"
     "live input: append lines to $inp"
 }
+$user = Join-Path $dir 'user'
+New-Item -ItemType Directory -Force $user | Out-Null
+$corpusEnv = [ordered]@{ PS2_USER_DIR = $user; PS2_GS_BACKEND = 'sw'; PS2_ASPECT = $Aspect; PS2_PROGRESSIVE_FIX = '0';
+                         PS2_DUMP_RAW = '1'; PS2_HUD = $Hud }
+foreach ($kv in ($ExtraEnv -split ';' | Where-Object { $_ })) { $k, $v = $kv -split '=', 2; $corpusEnv[$k.Trim()] = $v }
+foreach ($k in $corpusEnv.Keys) { if ($corpusEnv[$k]) { Set-Item "Env:\$k" $corpusEnv[$k] } else { Remove-Item "Env:\$k" -ErrorAction SilentlyContinue } }
 $env:PS2_WATCHDOG = "$Seconds"
 $env:PS2_HEADLESS = "1"
 $env:PS2_AUDIO_NULL = "1"
@@ -131,6 +143,7 @@ if ($recording -and -not $done -and (Select-String -Path $log -Pattern 'GS recor
 "-- ran $([int]((Get-Date) - $t0).TotalSeconds) s"
 Remove-Item Env:\PS2_GS_RECORD, Env:\PS2_GS_RECORD_FROM, Env:\PS2_GS_RECORD_FRAMES, Env:\PS2_DUMP_FROM, Env:\PS2_WARP_TASK,
             Env:\PS2_INPUT_FILE, Env:\PS2_DUMP_RING -ErrorAction SilentlyContinue
+foreach ($k in $corpusEnv.Keys) { Remove-Item "Env:\$k" -ErrorAction SilentlyContinue }
 Select-String -Path $log -Pattern '\[warp\]|\[gs\]|not implemented|unhandled|error|assert|crash|exception|fatal' |
     Where-Object { $_.Line -notmatch 'syscall 0x5B' } | Select-Object -First 30 | ForEach-Object { $_.Line }
 if (Test-Path $rec) { "recording: $rec ($([int]((Get-Item $rec).Length / 1MB)) MB)" }
