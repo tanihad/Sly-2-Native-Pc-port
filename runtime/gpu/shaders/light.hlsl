@@ -476,8 +476,8 @@ float4 ps_reim_blur2(float4 pos : SV_Position) : SV_Target {
 // (fix) the key-light term's temporal resolve (half res): this frame's (visibility, N.L) blended with the last frame's at
 // the same world position (reprojected through the previous world x clip), the history clamped to this frame's 3 x 3
 // neighbourhood (no ghosts): shadow edges that crawled or blinked between frames under camera motion settle
-// (3) only the static world's term (x) and N.L (y) take history; the per-frame casters (z) and the mask (w) are this frame's,
-// and the history is dropped where the reprojected point was not what last frame showed there (its depth differs: it was
+// (3) the static world's term (x) and N.L (y) take the full history, the per-frame casters (z) a shorter one, the mask (w)
+// none; the history is dropped where the reprojected point was not what last frame showed there (its depth differs: it was
 // hidden, or it moved - a character) and on the game-lit pixels (characters move: the world's reprojection is wrong on them)
 Texture2D<float4> r_shist : register(t26);
 float4 ps_reim_shtaa(float4 pos : SV_Position) : SV_Target {
@@ -507,7 +507,9 @@ float4 ps_reim_shtaa(float4 pos : SV_Position) : SV_Target {
             float dmin = min(min(abs(pw4.x - c.w), abs(pw4.y - c.w)), min(abs(pw4.z - c.w), abs(pw4.w - c.w)));
             k *= saturate(2.0 - dmin / (c.w * r_v3.w + 1.0));
         }
-        return float4(lerp(cur.xy, h.xy, k), cur.zw);
+        // (the per-frame casters' term: a shorter history - props standing still keep steady edges, a moving character's
+        // shadow lags less than a frame's step behind; clamped to this frame's neighbourhood like the rest)
+        return float4(lerp(cur.xy, h.xy, k), lerp(cur.z, h.z, k * 0.65), cur.w);
     }
     return lerp(cur, h, k);
 }
@@ -711,6 +713,10 @@ float4 ps_reim_comp(float4 pos : SV_Position) : SV_Target {
     // shadows: in the key light's opposite hue a little (cool under a warm lamp), occlusion neutral
     float3 shc = lerp(float3(1.0, 1.0, 1.0), float3(0.95, 0.98, 1.02), 0.5 + 0.5 * night);
     c *= ao;
+    // (3, PS2_REIM_DBG=8) the light this pass applies, as one factor (display units): occlusion, relight, shadow, exposure,
+    // local lights, times the game's own shadow darkening - what the shadow-overlap check measures (no texture, no grade)
+    float gfd = r_v3b.x > 0.0 ? r_gsmload(int2(p * l_map.xy)) : 1.0;
+    float kd = ao * gfd;
     // the key light relit: surfaces facing it brighten in its hue where it reaches them, darken (cool) where something casts
     // a shadow on them; surfaces turned away keep the game's own lighting
     {
@@ -721,7 +727,7 @@ float4 ps_reim_comp(float4 pos : SV_Position) : SV_Target {
         // twice, and its N.L from the depth flickered over a running character); shadows still darken them
         float lit = smoothstep(0.0, 0.7, nl) * vis * (1.0 - sh.w), dark = saturate(nl * 4.0) * (1.0 - vis);
         dark *= 1.0 - 0.6 * smoothstep(0.25, 0.65, l_luma(c));   // (a lamp-lit spot keeps its own light: no mud under a canopy by the fire)
-        if (r_v3b.x > 0.0) {
+        if (r_v3b.x > 0.0 && r_v3.x > 0.0) {
             // (3) ONE shadow per pixel: where the game's own shadow (its volumes, cast from this same light) already darkened
             // the pixel by gf, the key light's shadow only darkens further where it is darker than that - min(game, ours),
             // not their product (the double-dark band and the flicker where the two copies of a shadow overlap and slide) -
@@ -734,10 +740,13 @@ float4 ps_reim_comp(float4 pos : SV_Position) : SV_Target {
         float head = saturate(1.15 - max(max(c.r, c.g), c.b));   // (bright surfaces: little headroom - no clipping to white)
         c *= 1.0 + r_keyc.w * lit * head * lerp(float3(1.0, 1.0, 1.0), kc, 0.05);   // (white light: the surfaces keep their own hue)
         c *= lerp(float3(1.0, 1.0, 1.0), shc * (1.0 - r_key.w), dark);
+        kd *= (1.0 + r_keyc.w * lit * head) * (1.0 - r_key.w * dark);
     }
     // exposure: what the occlusion, shadows and relight take away on average comes back (the picture at least as bright as
     // the game's own: depth from the contrast, not from darkening)
-    c *= clamp(1.04 / max(r_stats.Load(int3(3, 0, 0)).x, 0.5), 1.0, 1.35);
+    float expo = clamp(1.04 / max(r_stats.Load(int3(3, 0, 0)).x, 0.5), 1.0, 1.35);
+    c *= expo;
+    kd *= expo;
     // light: bloom + shafts
     float3 bl = l_tex.SampleLevel(l_lin, p * l_dir.zw, 0.0).rgb * r_bloom.x;
     float3 sf = r_shafts.SampleLevel(l_lin, p * l_dir.zw, 0.0).rgb * r_shaft.x;
@@ -752,7 +761,9 @@ float4 ps_reim_comp(float4 pos : SV_Position) : SV_Target {
         // (3) not on what the game keeps black: the floor lifted a silhouette the game draws near-black on purpose (Sly hiding
         // on the museum's rope, unlit) to a brown figure; dark paint (luma >= 0.08) keeps the whole floor
         if (r_v3.x > 0.0) fl *= smoothstep(0.02, 0.08, l_luma(pic.rgb));
+        float lb = l_luma(lin);
         lin += (lin + fl) * loc * r_loc.y;
+        kd *= sqrt(l_luma(lin) / max(lb, 1e-4));
     }
     if (r_ksrc.w > 0.0 && !sky) {        // (2) warm glow lights its surroundings: fires and torches light the ground, walls and
         float3 g = min(bl, 2.0);         // characters near them in their own hue (the glow's own flicker: the flames' animation)
@@ -819,6 +830,7 @@ float4 ps_reim_comp(float4 pos : SV_Position) : SV_Target {
         float v = r_v3.x > 0.0 ? min(sh.x, sh.z) : sh.x;
         o = float3(gf, min(gf, v), v);   // (white: lit; red: only the key light's shadow; blue: only the game's; black: both)
     }
+    else if (r_misc.z == 8.0) o = sky ? 0.5 : saturate(kd * 0.5).xxx;   // (8: (3) the light this pass applies x the game's shadow)
     return float4(saturate(o), pic.a);
 }
 #endif

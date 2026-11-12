@@ -16,14 +16,25 @@ Faithful / Retro byte-identical.
   settings, 165 fps, BMP dumps).
 - Report 2 reproduced + root cause (see Findings).
 
+## Done (code, commits f59bde1, 063975e, + working tree)
+- PS2_REIM3 (default on; PS2_REIM_X=64 + PS2_GPU_AB_R8=4096: A old / B new in one run).
+- Game-lit mask (reim_litmask, r2_render shadow_sel 3, light.hlsl r_gamelit): lit entries from the camera, half res.
+- RT_SH RGBA8: x static-world visibility, y N.L, z per-frame casters' visibility (shorter history, none on game-lit), w mask.
+- History: disocclusion test with last frame's depth (RT_PW), none on game-lit.
+- No relight / no local light on game-lit pixels; local-light floor off near-black (report 2).
+- GSM: mft_shfuse also writes the game shadow's darkening (ps_mft_shfuse*_g / _sg, perms.txt); composite: min(game, ours).
+- Static cache: main never read it; v3 keeps "no static-world shadows" by default and SKIPS drawing the cache (GPU saved);
+  PS2_REIM_SC_CAST=1 reads it (radius fixed, no restarts on radius changes) - more shadow flicker / big look change.
+- DBG 6 (mask), 7 (game shadow vs ours), 8 (the post pass's light x game shadow: the overlap gate's picture).
+- scripts/reim_shadow_gate.ps1 (new gate), stability_check region argument.
+
 ## In progress
-- Report 1: ep2 trees path at owner settings (build\light\shots\ep2_hub__base_reim).
+- First run of reim_shadow_gate on v3e (build\shadows\v3e.exe).
 
 ## Next
-1. Report 1: look at the frames / video, find the causes, build the overlap measure.
-2. Fix report 2: game-lit pixels (lit R2 entries) get no local light (mask pass of lit entries from the camera).
-3. Fix report 1; PS2_REIM3=0 = old path.
-4. Gates, videos, notes.
+1. Gate numbers; tune (stacked threshold from the DBG 8 levels); cost (in-run A/B ab-gpu, owner settings, no dumps).
+2. Videos: ep2 trees old | new (PS2_REIM3=0 vs 1, two runs or A/B split), title rope main | new.
+3. Notes section "Shadows rework" in notes/reimagined-lighting.md; all gates.
 
 ## Findings / traps
 - Report 2 (intro, not the title menu: the museum rope shot is VBlank ~2700-3300 of a boot with no input; deterministic
@@ -33,4 +44,28 @@ Faithful / Retro byte-identical.
   lin += (lin + floor 0.025) x E lights the black silhouette from the museum's lamps. But the game already lights every lit
   entry (characters, lit props) with its own best four point lights in the VU (0x1A4478) - the post pass double-counts them
   on characters, and overrides the game where it deliberately leaves a character dark.
+- Report 2 fix (f59bde1+): the cutscene's Sly is NOT a lit entry (no light block, his entries even share the world matrix):
+  the lit-entry mask does not cover him. What fixed it: the local lights' floor is weighted by smoothstep(0.02, 0.08,
+  picture luma) (v3) -> silhouette 8.8/6.2/6.2 (Faithful 6.3/5.5/6.0, main 17.2/11.5/7.8). The lit-entry mask stays for
+  gameplay characters (lit: the VU already lit them with the same lights; mask pass = every lit draw, any pass / Z write,
+  full vertex through r2_vs_shadow_at, depth 1/w; a pixel is game-lit when the nearest lit entry is at or in front of the
+  picture's depth - characters are often drawn without Z writes).
+- **main bug**: the static shadow cache (reimagine2) was never bound for ps_reim_shadow (t27 only bound in sc_move): the
+  static world's casters (kept out of the per-frame map) cast NOTHING since reimagine2. DBG=1 on the trees path showed only
+  plants / Sly. v3 binds it.
+- Trees path baseline (owner settings, 165 fps, separate deterministic runs, Sly region "0.33,0.40,0.67,0.95"):
+  Faithful region flicker 6.20 / motion 1.105 (5.61 per motion), pops 0.91; Reimagined main 15.78 / 1.832 (8.61, 1.53x),
+  pops 1.71. The gate's dark-block metric sees nothing (0.96x).
+- Faithful shows the GAME's own shadows on that path: Sly's shadow volume (lower right) and stepped dark bands on the
+  ground (baked / volume); our key light casts Sly's shadow in nearly the same direction -> two Sly shadows, product.
+- Separate "deterministic" runs of the trees path did NOT give the same pictures here (v3a vs base: Sly elsewhere at the
+  same VBlank - hub load timing / texture cache): compare only inside one run (PS2_GPU_AB_R8=4096 + PS2_REIM_X=64: A old,
+  B new; or 1024: A Faithful, B Reimagined).
+- Region flicker is dominated by texture / animation content: main Reimagined with PS2_REIM_SS=0 (no key-light terms)
+  8.26 per motion vs 8.61 with them (Faithful 5.61) - the AI textures / grade make most of the gap, not shadows.
+- Game shadows: the fused shadow pass (mft_shfuse) runs every frame in the museum attract (12000 / 12000); GSM target
+  works there after fixing the RTV (mrtv forces RGBA8: use a NULL desc). mrtv gotcha.
+- Static cache now bound (v3): DBG=7 shows big key-light shadows (interiors: the roof shadows the whole museum floor) -
+  a large look change vs what the owner has (main never showed static-world shadows). Decide by stills in several scenes.
+- Game-lit mask cost: ~470 lit draws a frame on the ep2 path (all passes) - measure GPU ms.
 - Parallel game runs: at most 2 at once (7 at once: VRAM full, the game crawled - no dumps).

@@ -56,6 +56,8 @@ static struct {
     uint64_t sc_fresh, sc_moves;
     int v3;                              /* (3) PS2_REIM3=0: none of the shadows rework's changes (notes "Shadows rework") */
     float gl_tol, h_tol;                 /* (3) the game-lit mask's and the history's depth tolerance (share of the depth) */
+    int sc_cast;                         /* (3) PS2_REIM_SC_CAST=1: the static world casts through the cache (main: never read) */
+    int cur_v3;                          /* (3) this post pass takes the rework (reim_smap reads it) */
     uint64_t gl_frames, gl_draws;
 } RE;
 enum { RT_SHH, RT_SH, RT_SH2, RT_B6, RT_SHAFT, RT_PIC, RT_ST0, RT_ST1, RT_SCENE, RT_LOC, RT_PW, RT_N };
@@ -154,6 +156,7 @@ static void re_env(void) {
     RE.v3 = RE.v2 && !(e && *e == '0');
     RE.gl_tol = lt_envf("PS2_REIM_GL_TOL", 0.03f);
     RE.h_tol = lt_envf("PS2_REIM_H_TOL", 0.04f);
+    e = getenv("PS2_REIM_SC_CAST"); RE.sc_cast = e && *e == '1';   /* (3) the static world's casters shadow (the cache read) */
     RE.night = lt_envf("PS2_REIM_NIGHT", -1.0f);     /* (tests: 0 day .. 1 night; default from the picture) */
     RE.stat_a = lt_envf("PS2_REIM_STAT_A", 0.06f);   /* the statistics' smoothing per frame */
     RE.rim = lt_envf("PS2_REIM_RIM", 1.1f);          /* rim light on lit meshes (Faithful: 0.5) */
@@ -817,7 +820,15 @@ static int reim_smap(const reim_scene* S, const float* rndc, const float* rzab, 
         if (sm_tex(&RR.sc[0], &RR.sc_dsv[0], &RR.sc_srv[0], RE.sc_size) && sm_tex(&RR.sc[1], &RR.sc_dsv[1], &RR.sc_srv[1], RE.sc_size))
             RR.sc_n = RE.sc_size;
     }
-    if (cache && RR.sc_n) {
+    /* (3) main never read the cache (reim_post bound no view for it): the static world cast nothing, the look the owner knows.
+     * The rework keeps that (PS2_REIM_SC_CAST=1: cast through the cache, its radius fixed) and skips drawing it - its casters
+     * stay out of the per-frame map as before */
+    int sc_cast = !RE.cur_v3 || re_x(128, RE.sc_cast);
+    if (cache && RR.sc_n && !sc_cast) {
+        unbind_all();
+        ID3D11DeviceContext_ClearDepthStencilView(gpu_rt.ctx, RR.sm_dsv, D3D11_CLEAR_DEPTH, 0.0f, 0);
+        sm_draw(S, RR.sm_dsv, n, m32, 2);
+    } else if (cache && RR.sc_n) {
         /* (reimagine2) the static world's casters go into a light-space cache that keeps them: the game draws only what its
          * camera sees, so a tree canopy above the picture, a wall behind the camera, cast nothing in a per-frame map - their
          * shadows on the ground in view came and went as the camera turned and moved (under trees: "confused where to
@@ -826,9 +837,11 @@ static int reim_smap(const reim_scene* S, const float* rndc, const float* rzab, 
          * with it (sc_move); a new key light or radius starts it again. Static casters are drawn into it every sc_every
          * frames (GEQUAL: what was ever seen stays), the rest (characters, props) into the per-frame map every frame. */
         int nc = RR.sc_n;
-        float Rc = ceilf(R * 1.5f / 1024.0f) * 1024.0f, step = Rc / 8.0f;
+        float Rc = ceilf(R * 1.5f / 1024.0f) * 1024.0f;
+        if (RE.cur_v3) Rc = fmaxf(Rc, ceilf(RE.sm_dist * 1.5f / 1024.0f) * 1024.0f);   /* (3: a radius change restarted it) */
+        float step = Rc / 8.0f;
         float px = cen[0] * Lx[0] + cen[1] * Lx[1] + cen[2] * Lx[2], py = cen[0] * Ly[0] + cen[1] * Ly[1] + cen[2] * Ly[2];
-        int fresh = !RR.sc_valid || RR.sc_R != Rc || RR.sc_key[0] * Lz[0] + RR.sc_key[1] * Lz[1] + RR.sc_key[2] * Lz[2] < 0.99999f ||
+        int fresh = !RR.sc_valid || (RR.sc_R != Rc && !(RE.cur_v3 && RR.sc_R > Rc)) || RR.sc_key[0] * Lz[0] + RR.sc_key[1] * Lz[1] + RR.sc_key[2] * Lz[2] < 0.99999f ||
                     cz - R < RR.sc_z0 + 256.0f || cz + R + E > RR.sc_z0 + RR.sc_zr - 256.0f;
         int drew = 0;
         if (fresh) {
@@ -891,7 +904,7 @@ static int reim_smap(const reim_scene* S, const float* rndc, const float* rzab, 
  * shadow per pixel, the darker of the game's and the key light's, instead of the product (the key light IS the light the
  * game casts its characters' shadow volumes from: two copies of Sly's shadow, slightly apart, darkest where they overlap -
  * "two shadows collide and flick"). Valid for the post pass right after the frame's shadow pass (RG.post). */
-static int reim_gsm_on(void) { re_env(); return lt_reim() && RE.v3 && re_x(64, 1); }
+static int reim_gsm_on(void) { re_env(); return lt_reim() && RE.v2 && (re_x(64, RE.v3) || RE.dbg == 8); }   /* (8: measured in both paths) */
 static ID3D11RenderTargetView* reim_gsm_rtv(int w, int h, int n) {
     if (!reim_gsm_on()) return NULL;
     if (!RG.t || RG.w != w || RG.h != h || RG.n != n) {
@@ -1017,6 +1030,7 @@ static void reim_post(mtarget* c, mtarget* z, int pc) {
     float *rw = rc, *rndc = rc + 16, *rzab = rc + 20, *rkey = rc + 24, *rsss = rc + 28, *rgr = rc + 32, *rfog = rc + 36,
           *rhf = rc + 40, *rvig = rc + 44, *rsh = rc + 48, *rbl = rc + 52, *rmisc = rc + 56, *rkc = rc + 60, *rlm = rc + 64, *rsmp = rc + 80, *rppv = rc + 92, *rpndc = rc + 108, *rptaa = rc + 112, *rks = rc + 116, *rlc = rc + 120;
     int v3 = RE.v2 && re_x(64, RE.v3);   /* (3) the shadows rework (PS2_REIM_X=64 with PS2_GPU_AB_R8=4096: A old, B new) */
+    RE.cur_v3 = v3;
     int glm = 0;                         /* (3) the game-lit mask drawn this frame */
     int shkey = re_x(4, RE.shaft_key);
     rks[2] = shkey ? 0.0f : -1.0f;       /* (2: no key light in front: no shafts) */
@@ -1114,7 +1128,7 @@ static void reim_post(mtarget* c, mtarget* z, int pc) {
     float* rv3 = rc + 144;               /* (3) light.hlsl r_v3: on, the game-lit mask drawn, its depth tolerance, the history's */
     rv3[0] = v3 ? 1.0f : 0.0f; rv3[1] = glm ? 1.0f : 0.0f; rv3[2] = RE.gl_tol; rv3[3] = v3 && RR.have_pw ? RE.h_tol : 0.0f;
     float* rv3b = rc + 148;              /* (3) light.hlsl r_v3b: the game shadow's darkening written this frame (r_gsm) */
-    int gsm = v3 && RG.srv && RG.post == RR.frames && RG.w == z->w && RG.h == z->h;
+    int gsm = (v3 || RE.dbg == 8) && RG.srv && RG.post == RR.frames && RG.w == z->w && RG.h == z->h;
     rv3b[0] = gsm ? 1.0f : 0.0f;
     if (gsm) RG.used++;
     ID3D11DeviceContext_UpdateSubresource(gpu_rt.ctx, (ID3D11Resource*)RR.cb, 0, NULL, rc, 0, 0);
@@ -1174,7 +1188,7 @@ static void reim_post(mtarget* c, mtarget* z, int pc) {
         if (RR.sm_srv && rsmp[5] > 0.0f) lt_srv(24, RR.sm_srv);
         /* (3) the static shadow cache's view: main never bound it here (t27 only in sc_move), so the static world's casters -
          * kept out of the per-frame map when the cache is on - cast nothing at all since reimagine2 */
-        if (v3 && rlc[18] > 0.0f && RR.sc_n) lt_srv(27, RR.sc_srv[RR.sc_cur]);
+        if (v3 && re_x(128, RE.sc_cast) && rlc[18] > 0.0f && RR.sc_n) lt_srv(27, RR.sc_srv[RR.sc_cur]);
         if (glm) lt_srv(29, RR.gl_srv);
         lt_pass(RR.rtv[RT_SH], hw, hh, GPU_SH_ps_reim_shadow, off);
         rr_unbind();

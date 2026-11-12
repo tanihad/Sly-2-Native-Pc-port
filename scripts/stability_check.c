@@ -110,7 +110,7 @@ int main(int argc, char** argv) {
     }
     printf("jitter %.4f (all), %.4f (dark); pops %.3f per 1000; ", j1 > 0 ? j2 / j1 : 0.0, j1d > 0 ? j2d / j1d : 0.0,
            cnt ? pops * 1000.0 / cnt : 0.0);
-    printf("pictures %d, blocks %dx%d: flicker %.3f per 1000 (all), %.3f per 1000 (dark < %.0f, %.0f%% of blocks), motion %.3f\n",
+    printf("pictures %d, blocks %dx%d: flicker %.3f per 1000 (all), %.3f per 1000 (dark < %.0f, %.2f%% of blocks), motion %.3f\n",
            pics, bw, bh, cnt ? ev * 1000.0 / cnt : 0.0, cntd ? evd * 1000.0 / cntd : 0.0, dark, cnt ? 100.0 * cntd / cnt : 0.0,
            cnt ? mot / cnt : 0.0);
     return 0;
