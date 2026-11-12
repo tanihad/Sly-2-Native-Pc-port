@@ -53,8 +53,17 @@ judged on the median of >= 3 runs.
 - Cost (v6, X=13056 = all new parts A off / B on, ZH via 512; parallel with another game, so absolute ms high): B - A
   +0.10 ms (reim-shadow +0.04, mft-shfuse +0.02).
 
+- Clean cost run (v6 alone, X=13056): prof-ab 6.443 -> 6.464 ms; per frame mean 6.489 / 6.465, p99 9.50 / 9.60.
+- Final gate (final.exe, 3 runs): PASS - world 0.682x (0.583..0.979), stacked 2.33 -> 0.33 %, char 0.738x.
+  main-equivalent (POP=0 PCF=0 ZH=0.65 SOFT_STABLE=0) same gate: world 1.786x (1.221..3.968), char 0.848x.
+- Stable soft edges moved to SOFT=2 permutations (ps_mft_shfuse*_s2) for the non-GSM path: Faithful's 341 shaders
+  byte-identical to ef7c53c (block compare: 8 Reimagined-only differ, 3 new). final2.exe.
+- Gates: run_tests 16/16; 28 unit suites exit 0; gpu_diff_all 28/28; m9_exact S1+S3 -Game all identical (base = main's
+  build\gpu_diff_mixed_s1\gs_replay.exe copy). Notes: reimagined-lighting.md "Shadows rework, part 2".
+
 ## In progress
-- clean cost run alone (cost2), then final gates.
+- chain: r2_sweep Faithful + Reimagined (ep1, ep3, m2_boardroom x tfo, tfb, mf), reim_stability_gate warm + cold,
+  gfx_stress_gate -Cold.
 
 ## Next
 1. Soft-edge crawl measured on the game's shadow alone: DBG=7 red channel (scratch redcheck = stability_check on R),

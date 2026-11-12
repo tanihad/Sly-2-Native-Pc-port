@@ -466,3 +466,69 @@ Open: the static cache (PS2_REIM_SC_CAST=1) - real key-light shadows of trees, w
 and more work (interiors under their roofs, pops in the gate); the game's own soft shadow edges (Enhanced lighting) use a
 screen-fixed noise rotation that crawls under motion in every look; characters the game draws unlit (cutscenes) are not
 in the game-lit mask (the floor rule covers the silhouette case).
+
+## Shadows rework, part 2 (2026-11-12, branch next/shadows2)
+
+Owner (Reimagined): "when two shadows collide they kinda flick; when Sly runs below a shadow from a tree it's not smooth".
+Part 1's gate (reim_shadow_gate) gave world-shadow flicker 0.70..1.56 x the old path over 6 runs of one build: no verdict.
+
+**Why the gate was noisy, and what it measured**: a run has only ~300-400 reversal events per phase, and single triples
+(three consecutive pictures) carried up to 47 of them. Those bursts were (1) Sly's silhouette: view 8 drew the game-lit
+(characters) flat grey, so his legs swinging over the shadowed ground made reversals - animation, not shadow flicker;
+(2) posts, planks and the sign in front of him sweeping across the shadowed ground as the camera moves. Both are the same
+in both paths and land in an A or a B phase by chance.
+
+**Gate now** (scripts/reim_shadow_gate.ps1): -Runs N pairs (default 3), verdict on the medians, ranges printed; view 8
+paints in a pure-red marker the game-lit AND what last frame did not show at the same world point (reprojected through
+last frame's world x clip, its half-res depth differs by > 4 %: something moved in front / out of the way); the world
+number counts shadow-sized reversals (12 / 255) only in blocks away from markers (stability_check args: `mask`, block
+size, per-triple cap). Passes: median stacked share <= half the old, world <= -Limit8 (0.8) x old, character light <=
+-Limit (0.85) x old. Printed for reference: small reversals (6 / 255, at most 5 a triple: dominated by content like the
+swaying plants' shadows, ~0.9-1.0 x in every variant) and the count with the markers read as grey.
+
+**Causes of the world-shadow flicker** (on the trees path nearly every ground shadow is the key light's per-frame map -
+DBG=7 - trees, posts, planks; the game's volumes there are only Sly's shadow and one patch):
+- part 1 cut the per-frame casters' history to 0.65 x (0.585 effective): the map's texel steps and caster changes came
+  through 2-3x stronger than with the old 0.9;
+- the 3 x 3 neighbourhood clamp lets a one-frame pop through whole (a far caster the game draws for a single frame, a thin
+  post's face flipping lit / shadowed with its depth normal): its whole neighbourhood popped with it;
+- the 4 x 4 box PCF's 1-2 texel hard edges step by a whole texel as a cut-out plant sways.
+
+**Changes** (Reimagined only, all switchable; Faithful / Retro shaders byte-identical, block compare):
+- history: median of this frame's term, last frame's own term before its resolve (RT_RAW, t12) and the history, at the
+  same world point, before the clamp and blend: one-frame outliers never show, a lasting change one frame later (6 ms at
+  165 Hz). `PS2_REIM_POP=0` off.
+- the per-frame casters' term takes the full history again (`PS2_REIM_ZH`, 1.0; main 0.65).
+- the key light's map: a wider tent filter, nine gathers 2 texels apart (6 x 6 texels, 1 2 1 weights), slope bias 3.5
+  texels: softer key-light shadow edges (a mild look change). `PS2_REIM_PCF=0` off.
+- the game's soft shadow edges (Enhanced lighting, mft.hlsl SOFT): one fixed 16-sample spiral for every pixel instead of
+  12 samples turned by a screen-space noise per pixel (the dither stayed on the screen while the edge slid: it crawled).
+  New permutations ps_mft_shfuse*_s2 (non-GSM) and a flag (sf_ep.w) in the Reimagined GSM ones. On under Reimagined;
+  `PS2_LIGHT_SOFT_STABLE=1` gives it to Faithful too (owner's decision), `=0` the old pattern everywhere.
+- A/B bits (PS2_GPU_AB_R8=4096): PS2_REIM_X=256 soft pattern, 512 z history (B = PS2_REIM_ZH), 1024 blur keeping the
+  game-lit apart (test, off), 2048 no disocclusion (test), 4096 outlier filter, 8192 wide PCF.
+
+### Results (RTX 4060 Ti, the owner's settings: 2560x1440, 100 %, MSAA 2x, thin, modern filters, motion blur off, 165 fps)
+
+| reim_shadow_gate, 3 runs each, median (range) | old path (A) | main ef7c53c's rework | now |
+|---|---|---|---|
+| stacked shadows (Sly's region) | 2.30 % (2.28..2.34) | 0.35 % (0.34..0.36) | 0.33 % (0.31..0.36) |
+| world-shadow flicker on persistent surfaces, x old | 1 | 1.786 x (1.221..3.968) | 0.682 x (0.583..0.979); same code, 3 earlier runs: 0.39 x (0.37..0.565) |
+| the same, B per 1000 blocks | 0.031..0.088 | 0.083 / 0.100 / 0.123 | 0.047 / 0.035 / 0.060 |
+| small reversals (6 / 255, capped), x old | 1 | 0.934 x | 0.904 x |
+| character-light flicker, x old | 1 | 0.848 x (0.768..0.864) | 0.738 x (0.737..0.874) |
+
+("main's rework" = this build with PS2_REIM_POP=0 PS2_REIM_PCF=0 PS2_REIM_ZH=0.65 PS2_LIGHT_SOFT_STABLE=0, the same
+code paths as ef7c53c; ef7c53c's own exe cannot draw the new markers.)
+
+Soft edges, museum intro (ep1_boot VBlank 2750..3250, no input; DBG=7's red channel = the game's own shadow alone;
+PS2_REIM_X=256 A noise / B fixed in one run): pixel reversals at 4 / 255 2.97 -> 2.54 per 1000, 2 x 2 blocks at 6 / 255
+1.41 -> 1.08, the mean pixel change between pictures 0.534 -> 0.458 (-14 %: the dither's own motion). On the trees path
+the game's volumes cover too little to measure.
+
+Cost (in-run A/B, all new parts off in A, trees path + turns, no dumps, ~16 700 frames a phase): GPU 6.443 -> 6.464 ms per
+frame (reim-shadow +0.018, mft-shfuse +0.011); per-frame timestamps mean 6.489 / 6.465, p99 9.50 / 9.60 ms.
+
+Faithful: unchanged (its shaders byte-identical; the fixed soft-edge pattern only with PS2_LIGHT_SOFT_STABLE=1).
+Recommendation: give it to Faithful too - the change is the dither's crawl only (the penumbra's width and darkness stay),
+at no measurable cost; an owner decision.
