@@ -441,7 +441,8 @@ static int ebc_grow(int c) {
     ID3D11ShaderResourceView* v = ebc_srv_of(t, DXGI_FORMAT_BC7_UNORM, nm, nc);
     ID3D11Texture2D* nt = NULL;
     ID3D11ShaderResourceView* nv = NULL;
-    if (v && RA.nrm_env && ETN.on) {     /* (the maps: as etn_grow's, read-only - the staging map is copied in) */
+    if (v && RA.nrm_env && RA.nok) {     /* (the maps: as etn_grow's, read-only - the staging map is copied in; made whether
+                                          * or not an RGBA8 class - whose growth turns ETN on - exists yet) */
         nt = ebc_tex(S / 2, nm - 1, nc, DXGI_FORMAT_R8G8B8A8_UNORM, D3D11_BIND_SHADER_RESOURCE);
         nv = ebc_srv_of(nt, DXGI_FORMAT_R8G8B8A8_UNORM, nm - 1, nc);
         if (!nv) { GPU_RELEASE(nt); }
@@ -462,6 +463,7 @@ static int ebc_grow(int c) {
     GPU_RELEASE(EBC.srv[c]); GPU_RELEASE(EBC.arr[c]); GPU_RELEASE(EBC.nsrv[c]); GPU_RELEASE(EBC.narr[c]);
     EBC.arr[c] = t; EBC.srv[c] = v; EBC.narr[c] = nt; EBC.nsrv[c] = nv;
     EBC.ncap[c] = nt ? nc : 0;
+    if (nt) ETN.on = 1;                  /* (etn_enabled: the maps are bound) */
     EBC.bytes += (uint64_t)(nc - oc) * ebc_slice_bytes(c);
     EBC.nbytes = 0;
     for (int k = 0; k < ET_NCLS; k++) EBC.nbytes += (uint64_t)EBC.ncap[k] * (32ull << k) * (32ull << k) * 4u * 4u / 3u;
@@ -472,7 +474,7 @@ static int ebc_grow(int c) {
 }
 /* the staging arrays of class c and the block scratch (made at first use) */
 static int ebc_stage(int c) {
-    if (EBC.stg[c] && (!RA.nrm_env || !ETN.on || EBC.nstg[c])) return 1;
+    if (EBC.stg[c] && (!RA.nrm_env || EBC.nstg[c])) return 1;
     uint32_t S = 64u << c, nm = (uint32_t)c + 7u;
     if (!EBC.stg[c]) {
         EBC.stg[c] = ebc_tex(S, nm, 1, DXGI_FORMAT_R8G8B8A8_UNORM, D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS);
@@ -486,7 +488,7 @@ static int ebc_stage(int c) {
         }
         if (!EBC.stg_srv[c]) return 0;
     }
-    if (RA.nrm_env && ETN.on && !EBC.nstg[c]) {
+    if (RA.nrm_env && !EBC.nstg[c]) {
         EBC.nstg[c] = ebc_tex(S / 2, nm - 1, 1, DXGI_FORMAT_R8G8B8A8_UNORM, D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS);
         for (uint32_t m = 0; EBC.nstg[c] && m + 1 < nm; m++) {
             D3D11_UNORDERED_ACCESS_VIEW_DESC ud;
@@ -559,12 +561,18 @@ static int32_t ebc_build(const et_ent* t, int c, uint32_t src_base, int pre, uin
     memcpy(ET.uav[c], EBC.stg_uav[c], sizeof sv);
     if (EBC.nstg[c]) memcpy(ETN.uav[c], EBC.nstg_uav[c], sizeof sn);
     RA.nok_uav = EBC.nok0_uav;
+    /* (etn_run writes the staging map: it checks the class's map array, the caps and ETN.on - all made to pass here, even
+     * before the RGBA8 class c or its maps exist; without maps (PS2_TEX_NRM=0, dropped for memory) it skips) */
     uint32_t cap0 = ETN.cap[c];
-    if (!EBC.nstg[c] || !ETN.arr[c]) ETN.cap[c] = 0;   /* (no maps: etn_run skips) */
-    else if (ETN.cap[c] < ET.cap[c]) ETN.cap[c] = ET.cap[c];
+    ID3D11Texture2D* arr0 = ETN.arr[c];
+    int on0 = ETN.on, mapped = EBC.nstg[c] && RA.nrm_env;
+    if (mapped) { if (!ETN.arr[c]) ETN.arr[c] = EBC.nstg[c]; if (ETN.cap[c] < ET.cap[c]) ETN.cap[c] = ET.cap[c]; ETN.on = 1; }
+    else ETN.cap[c] = 0;
     et_build(t, (int32_t)(c << 16), RA.up_srv, src_base, 1);
     et_batch_run();
     ETN.cap[c] = cap0;
+    ETN.arr[c] = arr0;
+    ETN.on = on0 || (mapped && EBC.narr[c]);
     memcpy(ET.uav[c], sv, sizeof sv);
     memcpy(ETN.uav[c], sn, sizeof sn);
     RA.nok_uav = sk;
@@ -595,7 +603,7 @@ static int32_t ebc_build(const et_ent* t, int c, uint32_t src_base, int pre, uin
     gpu_rt.n_dispatches += nm;
     /* its map: the staging map's levels into the slot; the flag for the shaders */
     uint32_t has = 0;
-    if (EBC.nstg[c] && EBC.narr[c] && EBC.ncap[c] > slice && ETN.on) {
+    if (mapped && EBC.narr[c] && EBC.ncap[c] > slice) {
         for (uint32_t m = 0; m + 1 < nm; m++)
             ID3D11DeviceContext_CopySubresourceRegion(x, (ID3D11Resource*)EBC.narr[c], m + slice * (nm - 1), 0, 0, 0, (ID3D11Resource*)EBC.nstg[c], m, NULL);
         has = 1;
