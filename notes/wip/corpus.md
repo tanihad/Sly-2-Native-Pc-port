@@ -1,6 +1,6 @@
 # WIP corpus: re-record the GPU gate corpus (branch next/corpus, worktree sly2-worktrees\corpus, from main 336e78e)
 
-**Status: in progress**
+**Status: complete**
 
 **Goal**: the 28 GS recordings of tests/gpu/corpus.txt (destroyed with other worktrees' build folders) re-recorded
 into a durable root C:\Users\tanih\Projects\sly2-corpus (same relative paths), verified, baseline regenerated, gates
@@ -40,13 +40,18 @@ green on 336e78e.
   - fmv | 2842-3081 | 132 | 24/24 | PS2_MOVIE_LAYER=0 -Episode 2 -Set episode.palace.percent_complete=100 -Pad "+600:up:10,+40:up:10,+40:up:10,+60:cross:10,+150:rec,+30:cross:10" -Frames 240
   - pause_save | 4640-4789 | 416 | 15/15 | PS2_MOVIE_LAYER=0 -Episode 2 -Pad "+1800:cross:10,+700:start:10,+60:down:10,+60:cross:10,+60:rec,+20:up:10,+50:cross:10" -Frames 300, cut to 150 (53.2k prims max, 17148 uploads = old)
 
-## In progress
-- All 28 recorded, verified, copied (C:\Users\tanih\Projects\sly2-corpus, 8.2 GB); corpus.txt (20a8b3c), baseline.json +
-  vram_hashes.txt (18bd844). gpu_diff_all mixed 28/28 and ref 28/28 on the new baseline. Running: m9_exact -Game S1+S3
-  (base = new = build\ctools\gs_replay_336e78e.exe), sanity (build\sanity: copy of runtime with tfx MODULATE red >> 6).
+## Results (main 336e78e code)
+- gpu_diff_all mixed S=1 28/28 and ref S=1 28/28 on the regenerated baseline (and mixed 28/28 again after the sanity
+  revert, gs_replay rebuilt from the worktree).
+- m9_exact -Game S=1 + S=3, base = new (same gs_replay): 56/56 identical.
+- Sanity: gs_replay built from a throwaway runtime copy with tfx MODULATE red `>> 6` (gs.hlsl): gpu_diff_all mixed
+  FAILED 28/28 (sw hashes = baseline, every recording beyond the picture gate, min PSNR 7.9-30.6 dB).
+- gs_vram_hashes sw 28/28 -> tests/gpu/vram_hashes.txt (now all 28; the old file had 25).
 
-## Next
-1. Record m9_exact + sanity results; delete build\gpu_diff_*\*\*.png; Status complete; final commit.
+## Not matched
+- m5_battlezone: the old take's green gas cloud (not found without input, nor in a while of live driving/firing).
+- ep3 rope: Sly beside the salmon rope on the boss roof (m3_boss start), not on a rope.
+- Windows / sizes differ from the old ones (load timings changed); old 13's exact input was never recorded.
 
 ## Findings / traps
 - Recording settings: settings defaults are now 16:9, renderer gpu, interlacing off (filters modern -> ps2_progressive
