@@ -708,6 +708,20 @@ int main(int argc, char** argv) {
     if (!strcmp(argv[1], "probe")) return probe();
     if (!strcmp(argv[1], "encode") && argc == 5) return encode(argv[2], argv[3], argv[4]);
     if (!strcmp(argv[1], "dedupe") && argc == 3) return dedupe(argv[2]);
+    if (!strcmp(argv[1], "pair") && argc == 4) {   /* pair <a> <b>: two pictures (e.g. dumped frames): PSNR, max error */
+        wchar_t a[600], b[600];
+        _snwprintf(a, 600, L"%hs", argv[2]); _snwprintf(b, 600, L"%hs", argv[3]);
+        uint32_t w, h, w2, h2;
+        uint32_t *pa = load_img(a, &w, &h), *pb = load_img(b, &w2, &h2);
+        if (!pa || !pb || w != w2 || h != h2) return fprintf(stderr, "pair: cannot compare\n"), 1;
+        err_t er = { 0 };
+        err_add(&er, pa, pb, (size_t)w * h);
+        size_t over = 0;
+        for (size_t i = 0; i < (size_t)w * h; i++)
+            for (int c = 0; c < 3; c++) { int d = (int)(pa[i] >> (8 * c) & 255) - (int)(pb[i] >> (8 * c) & 255); if (d > 8 || d < -8) { over++; break; } }
+        printf("%.2f dB, max %d, pixels off by > 8: %.3f %%\n", psnr(er.se_rgb, er.n * 3, 255), er.max_rgb, 100.0 * over / ((double)w * h));
+        return 0;
+    }
     if (!strcmp(argv[1], "time") && argc >= 4) return time_enc(argv[2], argv[3], argc > 4 ? atoi(argv[4]) : 5);
     if (!strcmp(argv[1], "diff") && argc == 5) return diff_dirs(argv[2], argv[3], argv[4]);
     if (!strcmp(argv[1], "mkbatch") && argc >= 4) return mkbatch(argv[2], argv[3], argc > 4 ? atoi(argv[4]) : 0);
