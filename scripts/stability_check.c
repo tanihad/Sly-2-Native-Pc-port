@@ -6,7 +6,7 @@
  *   stability_check <dir with frame_*.bmp> [threshold (luma units of 255, default 3)] [dark (luma, default 64)]
  *                   [heat.pgm | -] [top share left out (0..1: the HUD)] [region "x0,y0,x1,y1" (shares; default all)]
  *                   [mask | marks: blocks at / next to pure-red marker pixels (in any picture of the triple) left out |
- *                    the markers only read as luma 128]
+ *                    the markers only read as luma 128 | -] [block size (default 8)]
  * Prints: pictures, events per 1000 blocks x pictures over all blocks and over the dark blocks (luma < dark: the
  * shadowed regions), and the mean absolute block change (motion energy) for scale. Exit 0. */
 #include <stdio.h>
@@ -84,6 +84,8 @@ int main(int argc, char** argv) {
     long prevnum = -10;   /* (only triples of consecutive pictures - frame numbers in the names - are compared) */
     int usemask = argc > 7 && !strcmp(argv[7], "mask");   /* (shadows2) blocks at or next to a marker pixel left out */
     g_marks = argc > 7 && (usemask || !strcmp(argv[7], "marks"));
+    int BS = argc > 8 ? atoi(argv[8]) : 8;   /* (shadows2) the block size (2: pixel-scale crawl - a dither sliding along an edge) */
+    if (BS < 1 || BS > 64) BS = 8;
     uint8_t *m0 = NULL, *m1 = NULL, *m2 = NULL;
     double skipped = 0;
     for (int i = 0; i < n; i++) {
@@ -93,7 +95,7 @@ int main(int argc, char** argv) {
         if (!read_bmp(names[i], &w, &hh, &L)) continue;
         if (num != prevnum + 1) run = 0;
         prevnum = num;
-        int nbw = w / 8, nbh = hh / 8;
+        int nbw = w / BS, nbh = hh / BS;
         if (!b0) {
             bw = nbw; bh = nbh; b0 = calloc(bw * bh, 4); b1 = calloc(bw * bh, 4); b2 = calloc(bw * bh, 4); heat = calloc(bw * bh, 4);
             top = (int)(topf * bh + 0.5);
@@ -107,8 +109,8 @@ int main(int argc, char** argv) {
         for (int by = 0; by < bh; by++)
             for (int bx = 0; bx < bw; bx++) {
                 int s = 0, mk = 0;
-                for (int y = 0; y < 8; y++) for (int x = 0; x < 8; x++) { size_t o = (size_t)(by * 8 + y) * w + bx * 8 + x; s += L[o]; mk |= g_mark[o]; }
-                b2[by * bw + bx] = s / 64.0f;
+                for (int y = 0; y < BS; y++) for (int x = 0; x < BS; x++) { size_t o = (size_t)(by * BS + y) * w + bx * BS + x; s += L[o]; mk |= g_mark[o]; }
+                b2[by * bw + bx] = s / (float)(BS * BS);
                 if (mk)                  /* (the block and the ones around it) */
                     for (int j = -1; j <= 1; j++) for (int i = -1; i <= 1; i++)
                         if (by + j >= 0 && by + j < bh && bx + i >= 0 && bx + i < bw) m2[(by + j) * bw + bx + i] = 1;

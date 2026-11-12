@@ -1121,8 +1121,10 @@ static void reim_post(mtarget* c, mtarget* z, int pc) {
     }
     if (re_fix() && have_world) { memcpy(RR.ppv, S->pv, sizeof RR.ppv); memcpy(RR.pndc, rndc, sizeof RR.pndc); RR.have_prev = 1; RR.prev_serial = S->serial; }
     else RR.have_prev = 0;
-    rptaa[2] = RE.zh;                    /* (3) the per-frame casters' history share (of the full one) */
-    rptaa[3] = RE.blsep ? 1.0f : 0.0f;   /* (shadows2 test) the blur keeps the game-lit and the world apart */
+    /* (shadows2 tests, in-run with PS2_GPU_AB_R8=4096: PS2_REIM_X=512 A z history 0.65 / B PS2_REIM_ZH; 1024 A / B the blur
+     * keeping the game-lit apart; 2048 A / B no disocclusion test) */
+    rptaa[2] = re_x(512, 1) ? RE.zh : 0.65f;   /* (3) the per-frame casters' history share (of the full one) */
+    rptaa[3] = re_x(1024, RE.blsep) ? 1.0f : 0.0f;
     rsss[0] = RE.sss_len; rsss[1] = RE.sss_th; rsss[2] = 2.0f; rsss[3] = 5000.0f;
     if (re_fix() && rsmp[5] > 0.0f) rsss[0] = 0.0f;   /* (fix: the shadow map alone; the contact march crawled under motion) */
     rgr[0] = RE.grade ? RE.sat : 1.0f; rgr[1] = RE.grade ? RE.con : 1.0f; rgr[2] = RE.grade ? RE.vib : 0.0f; rgr[3] = RE.grade ? RE.expo : 1.0f;
@@ -1142,7 +1144,7 @@ static void reim_post(mtarget* c, mtarget* z, int pc) {
     float* rloc = rc + 140;              /* (local lights) light.hlsl r_loc */
     rloc[0] = nloc > 0 ? 1.0f : 0.0f; rloc[1] = 1.0f; rloc[2] = RL.floor;
     float* rv3 = rc + 144;               /* (3) light.hlsl r_v3: on, the game-lit mask drawn, its depth tolerance, the history's */
-    rv3[0] = v3 ? 1.0f : 0.0f; rv3[1] = glm ? 1.0f : 0.0f; rv3[2] = RE.gl_tol; rv3[3] = v3 && RR.have_pw ? RE.h_tol : 0.0f;
+    rv3[0] = v3 ? 1.0f : 0.0f; rv3[1] = glm ? 1.0f : 0.0f; rv3[2] = RE.gl_tol; rv3[3] = v3 && RR.have_pw && !re_x(2048, 0) ? RE.h_tol : 0.0f;
     float* rv3b = rc + 148;              /* (3) light.hlsl r_v3b: the game shadow's darkening written this frame (r_gsm) */
     int gsm = (v3 || RE.dbg == 8 || RE.dbg == 10) && RG.srv && RG.post == RR.frames && RG.w == z->w && RG.h == z->h;
     rv3b[0] = gsm ? 1.0f : 0.0f;

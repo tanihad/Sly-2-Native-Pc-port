@@ -20,11 +20,22 @@ judged on the median of >= 3 runs.
   and around red left out); the gate's world number is the masked one, the old one printed as "with the silhouettes".
 - build\shadows2\v1.exe = the above.
 
+- G1 (v1, soft stable off in both: the rework vs old, new metric): world masked 0.696x (0.441..0.722), silhouettes
+  0.667x, char 0.738x, stacked 2.35 -> 0.36 %. G2 (v1 default, soft stable in B): world 0.992x (0.767..1.333) - but
+  cross-run noise: the in-run soft A/B (PS2_REIM_X=256, 1 run) gave world 0.552x; pixel-scale metrics (block 1/2,
+  thr 3..12) A vs B within 3 %.
+- stability_check arg 8 = block size. v2.exe: ablation bits PS2_REIM_X=512 (A z history 0.65 / B PS2_REIM_ZH),
+  1024 (B blur keeps game-lit apart), 2048 (B no disocclusion).
+- DBG=7 on the trees path: nearly every world shadow is OURS (the key light's per-frame map: trees, posts, planks are
+  per-frame casters); the game's volumes are only Sly's shadow and a small patch -> the soft-edge change cannot show in
+  this gate. Masked bursts = our map's shadows popping for 1 frame / whole post faces flipping lit <-> shadowed.
+
 ## In progress
-- G1 (v1, PS2_LIGHT_SOFT_STABLE=0: metric only) and G2 (v1 default) gates, 3 runs each.
+- ablation gates ZH=1.0, no disocclusion, blur sep (3 runs each, v2.exe, task chain).
 
 ## Next
-1. Ablations on the masked metric: ZH 1.0, H_TOL 0, BLSEP 1.
+1. Soft-edge crawl measured on the game's shadow alone: DBG=7 red channel (scratch redcheck = stability_check on R),
+   X=256, every frame, pixel blocks.
 2. Gates on final code.
 
 ## Findings / traps
