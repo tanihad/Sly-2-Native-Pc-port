@@ -542,8 +542,8 @@ float4 ps_reim_shtaa(float4 pos : SV_Position) : SV_Target {
             base.xyz = lerp(cur.xyz, md, saturate(k / max(r_ptaa.x, 1e-3)));
             h = clamp(hu, min(mn, base), max(mx, base));
         }
-        // (the per-frame casters' term: a shorter history - props standing still keep steady edges, a moving character's
-        // shadow lags less than a frame's step behind; clamped to this frame's neighbourhood like the rest)
+        // (the per-frame casters' term: r_ptaa.z of the history - (shadows2) 1 by default: with the outlier filter and the
+        // clamp a moving character's shadow stays on time; main ef7c53c's 0.65 let the map's texel steps through)
         return float4(lerp(base.xy, h.xy, k), lerp(base.z, h.z, k * r_ptaa.z), cur.w);
     }
     return lerp(cur, h, k);

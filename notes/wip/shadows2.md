@@ -39,8 +39,22 @@ judged on the median of >= 3 runs.
 - v3.exe: ps_reim_shtaa median(this frame, last frame's raw term, history) per channel (RT_RAW copy, t12, r_v3b.y;
   PS2_REIM_POP=0 off, PS2_REIM_X=4096 A off / B on).
 
+- pop filter alone (X=4096, 1 run): capped 6/255 0.975x - the small reversals are content.
+- v4: view 8 also marks "fresh" surfaces (last frame's depth at the reprojected point differs: posts / planks sweeping
+  across the ground); RT_PW copy moved after the composite (bound at t30 for view 8). v4 rework-as-main vs old, 1 run:
+  12/255 masked 1.435x.
+- v5: wider tent PCF (9 gathers, 6x6 texels) + slope bias 3.5 (r_v3b.w, PS2_REIM_PCF=0, X=8192). v5 + ZH 1.0 vs old,
+  3 runs: world 12/255 on persistent surfaces 0.39x (0.37..0.565); 6/255 capped 1.009x (0.913..1.033: content, plants);
+  char 0.747x; stacked 2.32 -> 0.33 %.
+- v6 = v5 + ZH default 1.0; gate world number = 12/255 masked (characters + fresh).
+- Soft edges: trees path has almost no game volumes (DBG 7: only Sly's shadow + a patch) -> measured in the museum intro
+  (ep1_boot, VBlank 2750+500, DBG=7 red channel = the game's shadow alone, X=256): stable pattern B vs noise A: pixel
+  reversals thr 4: 2.97 -> 2.54 per 1000, 2x2 thr 6: 1.41 -> 1.08, mean pixel change (motion) 0.534 -> 0.458 (-14 %).
+- Cost (v6, X=13056 = all new parts A off / B on, ZH via 512; parallel with another game, so absolute ms high): B - A
+  +0.10 ms (reim-shadow +0.04, mft-shfuse +0.02).
+
 ## In progress
-- pop-filter in-run A/B (v3, X=4096, 3 runs, kept: build\light\shots\*gatepr*).
+- clean cost run alone (cost2), then final gates.
 
 ## Next
 1. Soft-edge crawl measured on the game's shadow alone: DBG=7 red channel (scratch redcheck = stability_check on R),
