@@ -1,11 +1,11 @@
 {
-    "about":  "Gate for scripts/gpu_diff_all.ps1 (notes/d3d11-renderer.md 10.1). Paths are relative to the worktrees directory (sly2-worktrees next to the main checkout); recordings are read in place. frames/sw_hash come from the software renderer (-Update refreshes them); max_diff_px/min_psnr are the hw-vs-sw tolerances (M0 all-fallback backend: exact). M8: all 24 corpus recordings; the default mode (mixed) and ref gate PUNT = 0 and the picture gates of 10.2 instead of max_diff_px/min_psnr (those are the fallback mode\u0027s). M9: 27 recordings (M10\u0027s two widescreen recordings, ws_museum169 and ws_ep3_hud, added; their frames/sw_hash from gpu_diff_all -Update).",
+    "about":  "Gate for scripts/gpu_diff_all.ps1 (notes/d3d11-renderer.md 10.1). Paths are relative to the corpus root (scripts/gpu_corpus.ps1: sly2-corpus next to the main checkout); recordings are read in place. frames/sw_hash come from the software renderer (-Update refreshes them); max_diff_px/min_psnr are the hw-vs-sw tolerances (M0 all-fallback backend: exact). M8: all 24 corpus recordings; the default mode (mixed) and ref gate PUNT = 0 and the picture gates of 10.2 instead of max_diff_px/min_psnr (those are the fallback mode\u0027s). M9: 27 recordings (M10\u0027s two widescreen recordings, ws_museum169 and ws_ep3_hud, added; their frames/sw_hash from gpu_diff_all -Update). 2026-11-12: all 28 re-recorded (the originals were lost with the worktrees' build folders); frames/sw_hash regenerated with gpu_diff_all -Update on main 336e78e.",
     "recordings":  [
                        {
                            "name":  "fix-perf/rv_prompt",
                            "path":  "fix-perf\\build\\rv_prompt.gsrec",
                            "frames":  20,
-                           "sw_hash":  "c980b51c0459162e",
+                           "sw_hash":  "e0f882ed2888f5cb",
                            "max_diff_px":  0,
                            "min_psnr":  999
                        },
@@ -13,7 +13,7 @@
                            "name":  "fix-perf/rv_intro",
                            "path":  "fix-perf\\build\\rv_intro.gsrec",
                            "frames":  16,
-                           "sw_hash":  "36dad3d2b57c525b",
+                           "sw_hash":  "d49b79c9d6b13cbf",
                            "max_diff_px":  0,
                            "min_psnr":  999
                        },
@@ -21,7 +21,7 @@
                            "name":  "fix-perf/title",
                            "path":  "fix-perf\\build\\title.gsrec",
                            "frames":  30,
-                           "sw_hash":  "3cbeb39ebfb4b2b7",
+                           "sw_hash":  "3ed505e4d449fbe7",
                            "max_diff_px":  0,
                            "min_psnr":  999
                        },
@@ -29,7 +29,7 @@
                            "name":  "fix-perf/brief",
                            "path":  "fix-perf\\build\\brief.gsrec",
                            "frames":  30,
-                           "sw_hash":  "392e8d87db122a43",
+                           "sw_hash":  "ad11264e3e9b1aff",
                            "max_diff_px":  0,
                            "min_psnr":  999
                        },
@@ -37,7 +37,7 @@
                            "name":  "ep3/hub",
                            "path":  "ep3\\build\\gsrec\\hub.gsrec",
                            "frames":  240,
-                           "sw_hash":  "1303f89488b17c83",
+                           "sw_hash":  "c61b1c2e2b273b83",
                            "max_diff_px":  0,
                            "min_psnr":  999
                        },
@@ -45,7 +45,7 @@
                            "name":  "ep3/recon_int",
                            "path":  "ep3\\build\\gsrec\\recon_int.gsrec",
                            "frames":  240,
-                           "sw_hash":  "e66863c5015032df",
+                           "sw_hash":  "19113a5c06905133",
                            "max_diff_px":  0,
                            "min_psnr":  999
                        },
@@ -53,7 +53,7 @@
                            "name":  "ep3/rope",
                            "path":  "ep3\\build\\gsrec\\rope.gsrec",
                            "frames":  20,
-                           "sw_hash":  "84392c291daeaa0f",
+                           "sw_hash":  "1c7e1e47bf0518bb",
                            "max_diff_px":  0,
                            "min_psnr":  999
                        },
@@ -61,7 +61,7 @@
                            "name":  "ep3/brief",
                            "path":  "ep3\\build\\gsrec\\brief.gsrec",
                            "frames":  240,
-                           "sw_hash":  "45cb931314a36ae7",
+                           "sw_hash":  "4a91f6b6404dcf3f",
                            "max_diff_px":  0,
                            "min_psnr":  999
                        },
@@ -69,7 +69,7 @@
                            "name":  "ep5/hub_street",
                            "path":  "ep5\\build\\gsrec\\hub_street.gsrec",
                            "frames":  240,
-                           "sw_hash":  "aaedb54b55e1d827",
+                           "sw_hash":  "74f1021ec8261523",
                            "max_diff_px":  0,
                            "min_psnr":  999
                        },
@@ -77,7 +77,7 @@
                            "name":  "ep6/rc_battle",
                            "path":  "ep6\\build\\gsrec\\rc_battle.gsrec",
                            "frames":  120,
-                           "sw_hash":  "4ca205175262808b",
+                           "sw_hash":  "7407db989a1d0bde",
                            "max_diff_px":  0,
                            "min_psnr":  999
                        },
@@ -85,7 +85,7 @@
                            "name":  "ep7/boss",
                            "path":  "ep7\\build\\boss.gsrec",
                            "frames":  120,
-                           "sw_hash":  "1db01e7144f06203",
+                           "sw_hash":  "104ad4f4ba66b815",
                            "max_diff_px":  0,
                            "min_psnr":  999
                        },
@@ -93,7 +93,7 @@
                            "name":  "ep8/hub",
                            "path":  "ep8\\build\\gsrec\\hub.gsrec",
                            "frames":  240,
-                           "sw_hash":  "5830b18a9e52908f",
+                           "sw_hash":  "bde9c0177328b683",
                            "max_diff_px":  0,
                            "min_psnr":  999
                        },
@@ -101,7 +101,7 @@
                            "name":  "ep8/boss",
                            "path":  "ep8\\build\\gsrec\\boss.gsrec",
                            "frames":  240,
-                           "sw_hash":  "fd9d2f959133bfcf",
+                           "sw_hash":  "6f4a0b7529059b13",
                            "max_diff_px":  0,
                            "min_psnr":  999
                        },
@@ -109,7 +109,7 @@
                            "name":  "gpu-C/ep0_museum",
                            "path":  "gpu-C\\build\\gsrec\\ep0_museum.gsrec",
                            "frames":  150,
-                           "sw_hash":  "b6c6d06df89f75c7",
+                           "sw_hash":  "55cbf991e3b06a33",
                            "max_diff_px":  0,
                            "min_psnr":  999
                        },
@@ -117,7 +117,7 @@
                            "name":  "gpu-C/ep1_hub",
                            "path":  "gpu-C\\build\\gsrec\\ep1_hub.gsrec",
                            "frames":  180,
-                           "sw_hash":  "28421b46381d0eb7",
+                           "sw_hash":  "9ff824919654200b",
                            "max_diff_px":  0,
                            "min_psnr":  999
                        },
@@ -125,7 +125,7 @@
                            "name":  "gpu-C/m1_brawl",
                            "path":  "gpu-C\\build\\gsrec\\m1_brawl.gsrec",
                            "frames":  180,
-                           "sw_hash":  "8d7afd081249b2e3",
+                           "sw_hash":  "0b157cf295f456ab",
                            "max_diff_px":  0,
                            "min_psnr":  999
                        },
@@ -133,7 +133,7 @@
                            "name":  "gpu-C/ep2_hub",
                            "path":  "gpu-C\\build\\gsrec\\ep2_hub.gsrec",
                            "frames":  180,
-                           "sw_hash":  "a24507e7a19c4b43",
+                           "sw_hash":  "4adef93f9bdbdaf3",
                            "max_diff_px":  0,
                            "min_psnr":  999
                        },
@@ -141,7 +141,7 @@
                            "name":  "gpu-C/ep2_photo",
                            "path":  "gpu-C\\build\\gsrec\\ep2_photo.gsrec",
                            "frames":  240,
-                           "sw_hash":  "11af3d1177b0b0d3",
+                           "sw_hash":  "f52d58bcfec3681e",
                            "max_diff_px":  0,
                            "min_psnr":  999
                        },
@@ -149,7 +149,7 @@
                            "name":  "gpu-C/ep4_hub",
                            "path":  "gpu-C\\build\\gsrec\\ep4_hub.gsrec",
                            "frames":  180,
-                           "sw_hash":  "c38a862d5a7e6913",
+                           "sw_hash":  "dd91f32f52ada4cf",
                            "max_diff_px":  0,
                            "min_psnr":  999
                        },
@@ -157,7 +157,7 @@
                            "name":  "gpu-C/hack_minigame",
                            "path":  "gpu-C\\build\\gsrec\\hack_minigame.gsrec",
                            "frames":  180,
-                           "sw_hash":  "83251ca6063d79f6",
+                           "sw_hash":  "88d38e82f233a8e6",
                            "max_diff_px":  0,
                            "min_psnr":  999
                        },
@@ -165,7 +165,7 @@
                            "name":  "gpu-C/fmv",
                            "path":  "gpu-C\\build\\gsrec\\fmv.gsrec",
                            "frames":  240,
-                           "sw_hash":  "6caff146dead0c2f",
+                           "sw_hash":  "c6cc408cab93fc59",
                            "max_diff_px":  0,
                            "min_psnr":  999
                        },
@@ -173,7 +173,7 @@
                            "name":  "gpu-C/load_m3",
                            "path":  "gpu-C\\build\\gsrec\\load_m3.gsrec",
                            "frames":  240,
-                           "sw_hash":  "5022538603eab161",
+                           "sw_hash":  "c793a1b84a3f6320",
                            "max_diff_px":  0,
                            "min_psnr":  999
                        },
@@ -181,7 +181,7 @@
                            "name":  "gpu-C/pause_save",
                            "path":  "gpu-C\\build\\gsrec\\pause_save.gsrec",
                            "frames":  150,
-                           "sw_hash":  "273accc25daf0440",
+                           "sw_hash":  "d816e78a15f19e79",
                            "max_diff_px":  0,
                            "min_psnr":  999
                        },
@@ -189,7 +189,7 @@
                            "name":  "gpu-C/thiefnet",
                            "path":  "gpu-C\\build\\gsrec\\thiefnet.gsrec",
                            "frames":  100,
-                           "sw_hash":  "440255df2d1d1337",
+                           "sw_hash":  "90b66a038bfe9413",
                            "max_diff_px":  0,
                            "min_psnr":  999
                        },
@@ -197,7 +197,7 @@
                            "name":  "gpu-M8/m5_battlezone",
                            "path":  "gpu-M8\\build\\gsrec\\m5_battlezone.gsrec",
                            "frames":  60,
-                           "sw_hash":  "c6901705b474b06b",
+                           "sw_hash":  "cf5a8a862e9b5077",
                            "max_diff_px":  0,
                            "min_psnr":  999
                        },
@@ -205,7 +205,7 @@
                            "name":  "gpu-M10/ws_museum169",
                            "path":  "gpu-M10\\build\\gsrec\\ws_museum169.gsrec",
                            "frames":  60,
-                           "sw_hash":  "1b2a539b41d19923",
+                           "sw_hash":  "d525496e2002a08b",
                            "max_diff_px":  0,
                            "min_psnr":  999
                        },
@@ -213,7 +213,7 @@
                            "name":  "gpu-M10/ws_ep3_hud",
                            "path":  "gpu-M10\\build\\gsrec\\ws_ep3_hud.gsrec",
                            "frames":  200,
-                           "sw_hash":  "c661e013dcb6de03",
+                           "sw_hash":  "af8ec67d2c88e417",
                            "max_diff_px":  0,
                            "min_psnr":  999
                        },
@@ -221,7 +221,7 @@
                            "name":  "gpu-M11/m6_rc_feedback",
                            "path":  "gpu-M11\\build\\gsrec\\m6_rc_feedback.gsrec",
                            "frames":  60,
-                           "sw_hash":  "f03f37da37b01cff",
+                           "sw_hash":  "dcce898a6f24b8fb",
                            "max_diff_px":  0,
                            "min_psnr":  999
                        }
