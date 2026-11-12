@@ -510,8 +510,7 @@ static int segment(const gpu_fop_r2* o, const uint8_t* fdata, size_t fdata_bytes
                          !memcmp(ent[d->entry].m, in->shadow_pv, 64);
                 if (st != (in->shadow_sel == 1)) continue;
             }
-            int cut = in->shadow_at && R.shpipe_at && (((d->state >> 14) & 1) || in->shadow_sel == 3);   /* (reimagine2: its alpha
-                test splits it; (shadows) the game-lit mask: the full vertex - the picture's own positions, to the unit) */
+            int cut = in->shadow_at && R.shpipe_at && ((d->state >> 14) & 1);   /* (reimagine2: its alpha test splits it) */
             if (cut != at) { r2g_bind_pipe(R.d, cut ? R.shpipe_at : R.shpipe); at = cut; }
             r2g_draw_indexed(R.d, d->count, m->gpu_ibase + d->first, (int32_t)m->gpu_vbase, o->draw_off / 32u + i);
             ns++;
