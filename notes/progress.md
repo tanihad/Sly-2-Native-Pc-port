@@ -2,6 +2,13 @@
 
 ## Resume here (read first in a new session)
 
+**2026-11-12: next/shadows2 merged (feecf9c); test build 0.1.1307 in dist\Sly2 = the 1.2 candidate (owner to playtest;
+NOT released).** Branch gates (code identical after merge): reim_shadow_gate PASS on 3-run medians (ground flicker 0.68x
+old, main before was 1.79x on the masked metric; stacked 2.30 -> 0.33 %; char 0.74x), gpu_diff_all 28/28, m9_exact
+identical, r2_sweep 18/18, stability warm+cold PASS, gfx_stress -Cold PASS, +0.02 ms. run_tests green on main. Open owner
+decisions: (1) PS2_LIGHT_SOFT_STABLE=1 for Faithful (fixed soft-edge pattern, agent recommends), (2) static-world
+key-light shadows (PS2_REIM_SC_CAST=1). Release 1.2 after the owner's OK.
+
 **2026-11-12: shadows (32a5c19), corpus (ccd9420), tex-opt (ef7c53c) merged; test build 0.1.1296 in dist\Sly2 (owner to
 try; NOT a release yet).** Merged gates: gpu_diff_all 28/28 (re-recorded corpus in C:\Users\tanih\Projects\sly2-corpus),
 m9_exact all identical, units 0 failed, stability PASS, gfx_stress PASS. reim_shadow_gate is noisy: world-shadow flicker
