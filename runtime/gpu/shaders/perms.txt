@@ -369,3 +369,20 @@ cs_ai_88875         ai_up.hlsl          cs_conv           cs_5_0    BIN=U5 BOUT=
 cs_ai_post          tex_ai.hlsl         cs_ai_post        cs_5_0
 cs_ai_res           tex_ai.hlsl         cs_ai_res         cs_5_0
 cs_etn              tex_ai.hlsl         cs_etn            cs_5_0
+# (tex-opt) the same with half-float dense / 4x feature buffers (D0, D1, BA, BB = u3..u6) and half weights (ai_up.h
+# AI_GPU_HALF_BIG | AI_GPU_HALF_W: key + 0x79 << 20; F and R stay float), and the BC7 encoder of the AI images (gpu_tex_ai.h EBC)
+cs_ai_38810h        ai_up.hlsl          cs_conv           cs_5_0    BIN=U0 BOUT=U1 BO2=U3 AI_HALF_W=1 U3_H=1 U4_H=1 U5_H=1 U6_H=1 BO2_H=1
+cs_ai_88833h        ai_up.hlsl          cs_conv           cs_5_0    BIN=U3 BOUT=U3 AI_HALF_W=1 U3_H=1 U4_H=1 U5_H=1 U6_H=1 BIN_H=1 BOUT_H=1
+cs_ai_88844h        ai_up.hlsl          cs_conv           cs_5_0    BIN=U4 BOUT=U4 AI_HALF_W=1 U3_H=1 U4_H=1 U5_H=1 U6_H=1 BIN_H=1 BOUT_H=1
+cs_ai_88343h        ai_up.hlsl          cs_conv           cs_5_0    BIN=U3 BOUT=U4 BR1=U3 AI_HALF_W=1 U3_H=1 U4_H=1 U5_H=1 U6_H=1 BIN_H=1 BOUT_H=1 BR1_H=1
+cs_ai_88434h        ai_up.hlsl          cs_conv           cs_5_0    BIN=U4 BOUT=U3 BR1=U4 AI_HALF_W=1 U3_H=1 U4_H=1 U5_H=1 U6_H=1 BIN_H=1 BOUT_H=1 BR1_H=1
+cs_ai_21343h        ai_up.hlsl          cs_conv           cs_5_0    BIN=U3 BOUT=U4 BR1=U3 BR2=U1 BO2=U2 AI_HALF_W=1 U3_H=1 U4_H=1 U5_H=1 U6_H=1 BIN_H=1 BOUT_H=1 BR1_H=1
+cs_ai_22343h        ai_up.hlsl          cs_conv           cs_5_0    BIN=U3 BOUT=U4 BR1=U3 BR2=U2 BO2=U2 AI_HALF_W=1 U3_H=1 U4_H=1 U5_H=1 U6_H=1 BIN_H=1 BOUT_H=1 BR1_H=1
+cs_ai_22434h        ai_up.hlsl          cs_conv           cs_5_0    BIN=U4 BOUT=U3 BR1=U4 BR2=U2 BO2=U2 AI_HALF_W=1 U3_H=1 U4_H=1 U5_H=1 U6_H=1 BIN_H=1 BOUT_H=1 BR1_H=1
+cs_ai_88114h        ai_up.hlsl          cs_conv           cs_5_0    BIN=U4 BOUT=U1 BR1=U1 AI_HALF_W=1 U3_H=1 U4_H=1 U5_H=1 U6_H=1 BIN_H=1
+cs_ai_88113h        ai_up.hlsl          cs_conv           cs_5_0    BIN=U3 BOUT=U1 BR1=U1 AI_HALF_W=1 U3_H=1 U4_H=1 U5_H=1 U6_H=1 BIN_H=1
+cs_ai_88851h        ai_up.hlsl          cs_conv           cs_5_0    BIN=U1 BOUT=U5 AI_HALF_W=1 U3_H=1 U4_H=1 U5_H=1 U6_H=1 BOUT_H=1
+cs_ai_88865h        ai_up.hlsl          cs_conv           cs_5_0    BIN=U5 BOUT=U6 AI_HALF_W=1 U3_H=1 U4_H=1 U5_H=1 U6_H=1 BIN_H=1 BOUT_H=1
+cs_ai_88856h        ai_up.hlsl          cs_conv           cs_5_0    BIN=U6 BOUT=U5 AI_HALF_W=1 U3_H=1 U4_H=1 U5_H=1 U6_H=1 BIN_H=1 BOUT_H=1
+cs_ai_88875h        ai_up.hlsl          cs_conv           cs_5_0    BIN=U5 BOUT=U7 AI_HALF_W=1 U3_H=1 U4_H=1 U5_H=1 U6_H=1 BIN_H=1
+cs_bc7              bc7.hlsl            cs_bc7            cs_5_0

@@ -40,10 +40,14 @@ static void ra_release(void);
 typedef struct et_slot_s et_slot;
 static void ra_link_note(int32_t idx, const et_slot* s);
 static int ra_direct(int32_t idx);
-static int ra_on_now;                   /* (ai) Reimagined textures this frame */
+static int ebc_small(void);              /* (tex-opt) gpu_tex_ai.h: the BC7 classes hold the AI images (Reimagined) */
+static void ebc_bind_ps(void);
+static int ra_on_now;                  /* (ai) Reimagined textures this frame */
 
 #define ET_NCLS 6                        /* square classes: 64 << c texels */
 #define ET_MAXMIP 12
+#define ET_NSL 16                        /* (tex-opt) slot tables: classes 0..5 RGBA8, ET_BC + c the BC7 class c (Reimagined) */
+#define ET_BC 8
 #define ET_TAB_N (TD_WORDS >> 6)         /* et_tab entries: decoded base / 64 */
 #define ET_RING 4                        /* staging buffers of hash read-backs (frames of latency) */
 #define ET_HREQ 256                      /* hash requests per frame */
@@ -74,8 +78,8 @@ static struct {
     ID3D11Texture2D* arr[ET_NCLS];
     ID3D11ShaderResourceView* srv[ET_NCLS];
     ID3D11UnorderedAccessView* uav[ET_NCLS][ET_MAXMIP];
-    uint32_t cap[ET_NCLS];
-    et_slot* sl[ET_NCLS];
+    uint32_t cap[ET_NSL];                /* (tex-opt) 0..5: the RGBA8 classes, ET_BC + c: the BC7 class c (gpu_tex_ai.h EBC) */
+    et_slot* sl[ET_NSL];
     uint64_t bytes;
     ID3D11Buffer *tab, *lv, *hist, *hout, *cb, *pcb, *jobs, *hjobs, *ddb;   /* (jobs, hjobs: the batches' job tables) */
     ID3D11ShaderResourceView *tab_srv, *jobs_srv, *hjobs_srv, *ddb_srv;
@@ -149,8 +153,8 @@ static void et_release_late(void);      /* (the dump read-backs and the HD uploa
 static void et_release(void) {
     ra_release();                        /* (ai) */
     et_release_late();
-    for (int c = 0; c < ET_NCLS; c++) {
-        et_free_class(c);
+    for (int c = 0; c < ET_NSL; c++) {
+        if (c < ET_NCLS) et_free_class(c);
         free(ET.sl[c]);
         ET.sl[c] = NULL;
         ET.cap[c] = 0;
@@ -230,6 +234,8 @@ static void et_tab_write(uint32_t base, uint32_t dec, uint32_t info) {
 }
 
 static et_slot* et_slot_of(int32_t id) { return id < 0 ? NULL : &ET.sl[id >> 16][id & 0xFFFF]; }
+/* et_tab's info word of slot id: class | slice << 3, bit 31 = a BC7 class (tex-opt; never set under Faithful / Retro) */
+static uint32_t et_info(int32_t id) { return (uint32_t)(id >> 16 & 7) | (uint32_t)(id & 0xFFFF) << 3 | (uint32_t)(id >> 16 >= ET_BC) << 31; }
 
 static void et_unlink(int32_t idx) {
     et_ent* e = &ET.e[idx];
@@ -284,7 +290,7 @@ static void et_link(int32_t idx, int32_t id) {
     s->first = idx;
     s->last = ET.frame;
     e->st = ES_READY;
-    et_tab_write(e->base, e->base + 1, (uint32_t)(id >> 16) | (uint32_t)(id & 0xFFFF) << 3);
+    et_tab_write(e->base, e->base + 1, et_info(id));
     et_swap_note(idx, 'L');
     if (ra_on_now) ra_link_note(idx, s); /* (tex-prebuild) statistics */
     if (ra_on_now) ra_note(idx, id);     /* (ai) its AI image: from the cache or built */
@@ -314,7 +320,7 @@ static void et_map_put(uint64_t h, int32_t id) {
     }
     /* (a crowded run: rebuild the table from the live slots) */
     memset(ET.map_h, 0, sizeof ET.map_h);
-    for (int c = 0; c < ET_NCLS; c++)
+    for (int c = 0; c < ET_NSL; c++)
         for (uint32_t j = 0; j < ET.cap[c]; j++)
             if (ET.sl[c][j].used && ET.sl[c][j].hash != h) et_map_put(ET.sl[c][j].hash, (int32_t)(c << 16 | j));
     ET.map_h[(uint32_t)(h >> 40) & (ET_MAP - 1)] = h;
@@ -324,7 +330,9 @@ static void et_map_put(uint64_t h, int32_t id) {
 /* a class with room for n more slices (grown by doubling, copying what it holds) */
 static int et_grow(int c) {
     static const uint32_t first[ET_NCLS] = { 64, 256, 256, 256, 64, 4 };   /* (~790 MB: a hub's images (ep1: 690) without growing: a growth copies the array, a frame-time spike) */
-    uint32_t oc = ET.cap[c], nc = oc ? oc * 2 : first[c];
+    static const uint32_t first_bc[ET_NCLS] = { 64, 64, 64, 64, 16, 4 };   /* (tex-opt: Reimagined with BC7 AI images - most images
+                                          * live in the BC7 classes, these hold the rest: 205 MB) */
+    uint32_t oc = ET.cap[c], nc = oc ? oc * 2 : ebc_small() ? first_bc[c] : first[c];
     if (nc > 4096) return 0;
     if (ET.bytes + (uint64_t)(nc - oc) * et_slice_bytes(c) > (uint64_t)ET.budget_mb << 20) return 0;
     uint32_t S = 64u << c, nm = (uint32_t)c + 7u;
@@ -568,7 +576,7 @@ static void et_decoded(const td_ent* te) {
 /* (td_prepass: the cache was reset) every entry is gone: images stay, keyed by hash, for when the textures return */
 static void et_reset(void) {
     if (!ET.init) return;
-    for (int c = 0; c < ET_NCLS; c++)
+    for (int c = 0; c < ET_NSL; c++)
         for (uint32_t j = 0; j < ET.cap[c]; j++) ET.sl[c][j].first = -1;
     memset(ET.e, 0, sizeof ET.e);
     for (int i = 0; i < TD_HASH; i++) ET.e[i].slot = ET.e[i].next = -1;
@@ -1218,6 +1226,7 @@ static void et_bind_ps(int w) {
     ID3D11DeviceContext_PSSetShaderResources(c, 30, 7, s);
     ID3D11DeviceContext_PSSetSamplers(c, 4, 2, ET.smp);
     ID3D11DeviceContext_PSSetConstantBuffers(c, 8, 1, &ET.pcb);
+    if (ra_on_now) ebc_bind_ps();        /* (tex-opt) the BC7 classes (t50..t55) */
     if (ra_on_now && etn_enabled()) etn_bind_ps();   /* (ai) the surface maps for the lighting */
 }
 

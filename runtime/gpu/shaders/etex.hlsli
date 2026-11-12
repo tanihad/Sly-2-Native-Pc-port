@@ -11,6 +11,13 @@ Texture2DArray<float4> et_t2 : register(t33);
 Texture2DArray<float4> et_t3 : register(t34);
 Texture2DArray<float4> et_t4 : register(t35);
 Texture2DArray<float4> et_t5 : register(t36);
+// (tex-opt) Reimagined: the BC7 classes (opaque AI images; et_tab info bit 31), alpha stored x 255 / 128 (0x80 -> 255)
+Texture2DArray<float4> et_b0 : register(t50);
+Texture2DArray<float4> et_b1 : register(t51);
+Texture2DArray<float4> et_b2 : register(t52);
+Texture2DArray<float4> et_b3 : register(t53);
+Texture2DArray<float4> et_b4 : register(t54);
+Texture2DArray<float4> et_b5 : register(t55);
 SamplerState et_sw : register(s4);               // REPEAT: wrap, trilinear, anisotropic
 SamplerState et_sc : register(s5);               // CLAMP
 cbuffer et_ps_cb : register(b8) {
@@ -36,6 +43,26 @@ float4 et_class(uint k, bool cl, float3 c, float2 dx, float2 dy) {
     }
     return v;
 }
+float4 et_bclass(uint k, bool cl, float3 c, float2 dx, float2 dy) {
+    float4 v = float4(0.0, 0.0, 0.0, 0.0);
+    [branch] if (cl) {
+        [branch] if (k == 0u) v = et_b0.SampleGrad(et_sc, c, dx, dy);
+        else if (k == 1u) v = et_b1.SampleGrad(et_sc, c, dx, dy);
+        else if (k == 2u) v = et_b2.SampleGrad(et_sc, c, dx, dy);
+        else if (k == 3u) v = et_b3.SampleGrad(et_sc, c, dx, dy);
+        else if (k == 4u) v = et_b4.SampleGrad(et_sc, c, dx, dy);
+        else v = et_b5.SampleGrad(et_sc, c, dx, dy);
+    } else {
+        [branch] if (k == 0u) v = et_b0.SampleGrad(et_sw, c, dx, dy);
+        else if (k == 1u) v = et_b1.SampleGrad(et_sw, c, dx, dy);
+        else if (k == 2u) v = et_b2.SampleGrad(et_sw, c, dx, dy);
+        else if (k == 3u) v = et_b3.SampleGrad(et_sw, c, dx, dy);
+        else if (k == 4u) v = et_b4.SampleGrad(et_sw, c, dx, dy);
+        else v = et_b5.SampleGrad(et_sw, c, dx, dy);
+    }
+    v.a *= 128.0 / 255.0;
+    return v;
+}
 
 // the enhanced texel (0xAABBGGRR, GS alpha) at normalized (S/Q, T/Q) uv with its screen derivatives; false: none (the
 // caller samples the original way). tc: TEX0 lo, hi, CLAMP lo, hi; tlev: the state's texm (bits 0..1: 2 = bilinear)
@@ -51,7 +78,10 @@ bool et_sample(uint dec, uint4 tc, uint tlev, float2 uv, float2 dx, float2 dy, f
         if (wms == 0u) uv.x = frac(uv.x);        //  stay those of the unwrapped coordinate)
         if (wmt == 0u) uv.y = frac(uv.y);
     }
-    float4 v = et_class(e.y & 7u, cl, float3(uv, (float)(e.y >> 3)), dx * e_ps.x, dy * e_ps.x);
+    float3 c3 = float3(uv, (float)((e.y >> 3) & 0xFFFFu));
+    float4 v;
+    [branch] if (e.y >> 31) v = et_bclass(e.y & 7u, cl, c3, dx * e_ps.x, dy * e_ps.x);
+    else v = et_class(e.y & 7u, cl, c3, dx * e_ps.x, dy * e_ps.x);
     uint4 b = (uint4)(saturate(v) * 255.0 + 0.5);
     t = b.x | (b.y << 8) | (b.z << 16) | (b.w << 24);
     if (e_ps.z == 1.0) t = (t & 0xFF000000u) | 0x000000FFu;   // (PS2_TEX_DBG=1: enhanced texels red)

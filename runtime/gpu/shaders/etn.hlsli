@@ -7,7 +7,13 @@ Texture2DArray<float4> etn_t2 : register(t42);
 Texture2DArray<float4> etn_t3 : register(t43);
 Texture2DArray<float4> etn_t4 : register(t44);
 Texture2DArray<float4> etn_t5 : register(t45);
-ByteAddressBuffer etn_ok : register(t46);       // class * 4096 + slice: 1 = the slice has a map
+ByteAddressBuffer etn_ok : register(t46);       // class * 4096 + slice: 1 = the slice has a map (BC7 classes: 8 + class)
+Texture2DArray<float4> etn_b0 : register(t56);  // (tex-opt) the maps of the BC7 classes' slices (et_tab info bit 31)
+Texture2DArray<float4> etn_b1 : register(t57);
+Texture2DArray<float4> etn_b2 : register(t58);
+Texture2DArray<float4> etn_b3 : register(t59);
+Texture2DArray<float4> etn_b4 : register(t60);
+Texture2DArray<float4> etn_b5 : register(t61);
 
 float4 etn_class(uint k, bool cl, float3 c, float2 dx, float2 dy) {
     float4 v = float4(0.5, 0.5, 0.5, 1.0);
@@ -28,6 +34,25 @@ float4 etn_class(uint k, bool cl, float3 c, float2 dx, float2 dy) {
     }
     return v;
 }
+float4 etn_bclass(uint k, bool cl, float3 c, float2 dx, float2 dy) {
+    float4 v = float4(0.5, 0.5, 0.5, 1.0);
+    [branch] if (cl) {
+        [branch] if (k == 0u) v = etn_b0.SampleGrad(et_sc, c, dx, dy);
+        else if (k == 1u) v = etn_b1.SampleGrad(et_sc, c, dx, dy);
+        else if (k == 2u) v = etn_b2.SampleGrad(et_sc, c, dx, dy);
+        else if (k == 3u) v = etn_b3.SampleGrad(et_sc, c, dx, dy);
+        else if (k == 4u) v = etn_b4.SampleGrad(et_sc, c, dx, dy);
+        else v = etn_b5.SampleGrad(et_sc, c, dx, dy);
+    } else {
+        [branch] if (k == 0u) v = etn_b0.SampleGrad(et_sw, c, dx, dy);
+        else if (k == 1u) v = etn_b1.SampleGrad(et_sw, c, dx, dy);
+        else if (k == 2u) v = etn_b2.SampleGrad(et_sw, c, dx, dy);
+        else if (k == 3u) v = etn_b3.SampleGrad(et_sw, c, dx, dy);
+        else if (k == 4u) v = etn_b4.SampleGrad(et_sw, c, dx, dy);
+        else v = etn_b5.SampleGrad(et_sw, c, dx, dy);
+    }
+    return v;
+}
 
 // the surface map at (S/Q, T/Q) uv (arguments as et_sample's). m.xy: tangent normal x, y (-1..1; z = sqrt(1 - x^2 - y^2)),
 // m.z: height 0..1, m.w: cavity 0..1. false: none (use a flat normal, height 0.5, cavity 1)
@@ -36,8 +61,8 @@ bool etn_sample(uint dec, uint4 tc, uint tlev, float2 uv, float2 dx, float2 dy, 
     if (dec == 0u || (tlev & 3u) != 2u) return false;
     uint2 e = et_tab.Load2(((dec - 1u) >> 6) * 8u);
     if (e.x != dec) return false;
-    uint k = e.y & 7u, slice = e.y >> 3;
-    if (k > 5u || etn_ok.Load((k * 4096u + slice) * 4u) == 0u) return false;
+    uint k = e.y & 7u, slice = (e.y >> 3) & 0xFFFFu, bc = e.y >> 31;
+    if (k > 5u || etn_ok.Load(((k + 8u * bc) * 4096u + slice) * 4u) == 0u) return false;
     uint wms = tc.z & 3u, wmt = (tc.z >> 2) & 3u;
     if (wms > 1u || wmt > 1u) return false;
     bool cl = (wms | wmt) != 0u;
@@ -45,7 +70,9 @@ bool etn_sample(uint dec, uint4 tc, uint tlev, float2 uv, float2 dx, float2 dy, 
         if (wms == 0u) uv.x = frac(uv.x);
         if (wmt == 0u) uv.y = frac(uv.y);
     }
-    float4 v = etn_class(k, cl, float3(uv, (float)slice), dx * e_ps.x, dy * e_ps.x);
+    float4 v;
+    [branch] if (bc) v = etn_bclass(k, cl, float3(uv, (float)slice), dx * e_ps.x, dy * e_ps.x);
+    else v = etn_class(k, cl, float3(uv, (float)slice), dx * e_ps.x, dy * e_ps.x);
     m = float4(v.xy * 2.0 - 1.0, v.z, v.w);
     return true;
 }
