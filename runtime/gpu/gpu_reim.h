@@ -56,6 +56,7 @@ static struct {
     uint64_t sc_fresh, sc_moves;
     int v3;                              /* (3) PS2_REIM3=0: none of the shadows rework's changes (notes "Shadows rework") */
     float gl_tol, h_tol;                 /* (3) the game-lit mask's and the history's depth tolerance (share of the depth) */
+    float zh; int blsep;                 /* (shadows2) the per-frame casters' history share; the blur keeps game-lit / world apart */
     int sc_cast;                         /* (3) PS2_REIM_SC_CAST=1: the static world casts through the cache (main: never read) */
     int cur_v3;                          /* (3) this post pass takes the rework (reim_smap reads it) */
     uint64_t gl_frames, gl_draws;
@@ -156,6 +157,8 @@ static void re_env(void) {
     RE.v3 = RE.v2 && !(e && *e == '0');
     RE.gl_tol = lt_envf("PS2_REIM_GL_TOL", 0.03f);
     RE.h_tol = lt_envf("PS2_REIM_H_TOL", 0.04f);
+    RE.zh = lt_envf("PS2_REIM_ZH", 0.65f);
+    RE.blsep = (int)lt_envf("PS2_REIM_BLSEP", 0.0f);
     e = getenv("PS2_REIM_SC_CAST"); RE.sc_cast = e && *e == '1';   /* (3) the static world's casters shadow (the cache read) */
     RE.night = lt_envf("PS2_REIM_NIGHT", -1.0f);     /* (tests: 0 day .. 1 night; default from the picture) */
     RE.stat_a = lt_envf("PS2_REIM_STAT_A", 0.06f);   /* the statistics' smoothing per frame */
@@ -905,6 +908,17 @@ static int reim_smap(const reim_scene* S, const float* rndc, const float* rzab, 
  * game casts its characters' shadow volumes from: two copies of Sly's shadow, slightly apart, darkest where they overlap -
  * "two shadows collide and flick"). Valid for the post pass right after the frame's shadow pass (RG.post). */
 static int reim_gsm_on(void) { re_env(); return lt_reim() && RE.v2 && (re_x(64, RE.v3) || RE.dbg == 8 || RE.dbg == 10); }   /* (8 / 10: measured in both paths) */
+/* (shadows2) the game's soft shadow edges (Enhanced lighting, mft.hlsl SOFT) in one fixed sample pattern instead of one turned
+ * by a screen-space noise per pixel (that dither crawled along every soft edge as the camera or a character moved). Default:
+ * Look = Reimagined with the shadows rework (PS2_REIM_X=64: A old, B new; PS2_REIM_X=256: this alone); Faithful keeps the
+ * old pattern unless PS2_LIGHT_SOFT_STABLE=1 (=0: the old pattern in every look). */
+static int reim_soft_stable(void) {
+    static int ev = -2;
+    if (ev == -2) { const char* e = getenv("PS2_LIGHT_SOFT_STABLE"); ev = e && *e ? (*e == '1') : -1; }
+    if (ev >= 0) return ev;
+    re_env();
+    return lt_reim() && RE.v3 && re_x(64, 1) && re_x(256, 1);
+}
 static ID3D11RenderTargetView* reim_gsm_rtv(int w, int h, int n) {
     if (!reim_gsm_on()) return NULL;
     if (!RG.t || RG.w != w || RG.h != h || RG.n != n) {
@@ -1107,6 +1121,8 @@ static void reim_post(mtarget* c, mtarget* z, int pc) {
     }
     if (re_fix() && have_world) { memcpy(RR.ppv, S->pv, sizeof RR.ppv); memcpy(RR.pndc, rndc, sizeof RR.pndc); RR.have_prev = 1; RR.prev_serial = S->serial; }
     else RR.have_prev = 0;
+    rptaa[2] = RE.zh;                    /* (3) the per-frame casters' history share (of the full one) */
+    rptaa[3] = RE.blsep ? 1.0f : 0.0f;   /* (shadows2 test) the blur keeps the game-lit and the world apart */
     rsss[0] = RE.sss_len; rsss[1] = RE.sss_th; rsss[2] = 2.0f; rsss[3] = 5000.0f;
     if (re_fix() && rsmp[5] > 0.0f) rsss[0] = 0.0f;   /* (fix: the shadow map alone; the contact march crawled under motion) */
     rgr[0] = RE.grade ? RE.sat : 1.0f; rgr[1] = RE.grade ? RE.con : 1.0f; rgr[2] = RE.grade ? RE.vib : 0.0f; rgr[3] = RE.grade ? RE.expo : 1.0f;

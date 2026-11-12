@@ -5,6 +5,8 @@
  * both steps above the threshold. Real motion mostly changes a block one way for several pictures; flicker reverses.
  *   stability_check <dir with frame_*.bmp> [threshold (luma units of 255, default 3)] [dark (luma, default 64)]
  *                   [heat.pgm | -] [top share left out (0..1: the HUD)] [region "x0,y0,x1,y1" (shares; default all)]
+ *                   [mask | marks: blocks at / next to pure-red marker pixels (in any picture of the triple) left out |
+ *                    the markers only read as luma 128]
  * Prints: pictures, events per 1000 blocks x pictures over all blocks and over the dark blocks (luma < dark: the
  * shadowed regions), and the mean absolute block change (motion energy) for scale. Exit 0. */
 #include <stdio.h>
@@ -14,6 +16,11 @@
 #include <math.h>
 #include <windows.h>
 
+/* (shadows2) a marker pixel: pure red (R high, G and B low) - reim_shadow_gate's view 8 paints the game-lit (characters)
+ * so; its luma counts as 128 (the view's old flat grey: the unmasked numbers stay comparable with earlier runs) and, with
+ * the "mask" argument, a block that holds one in any picture of a triple (or touches one: 1 block around) is left out */
+static uint8_t* g_mark;
+static int g_marks;                      /* (argv[7] "mask" or "marks": markers read as such; otherwise plain luma) */
 static int read_bmp(const char* path, int* ow, int* oh, uint8_t** lum) {
     FILE* f = fopen(path, "rb");
     if (!f) return 0;
@@ -27,10 +34,17 @@ static int read_bmp(const char* path, int* ow, int* oh, uint8_t** lum) {
     fseek(f, (long)off, SEEK_SET);
     uint8_t* row = malloc((size_t)w * 4);
     uint8_t* L = malloc((size_t)w * h);
+    free(g_mark);
+    g_mark = calloc((size_t)w * h, 1);
     for (int y = 0; y < h; y++) {
         if (fread(row, 4, (size_t)w, f) != (size_t)w) { free(row); free(L); fclose(f); return 0; }
-        uint8_t* d = L + (size_t)(flip ? h - 1 - y : y) * w;
-        for (int x = 0; x < w; x++) d[x] = (uint8_t)((54 * row[4 * x + 2] + 183 * row[4 * x + 1] + 19 * row[4 * x]) >> 8);
+        size_t o = (size_t)(flip ? h - 1 - y : y) * w;
+        uint8_t* d = L + o;
+        for (int x = 0; x < w; x++) {
+            int r = row[4 * x + 2], g = row[4 * x + 1], b = row[4 * x];
+            if (g_marks && r > 200 && g < 40 && b < 40) { d[x] = 128; g_mark[o + x] = 1; continue; }
+            d[x] = (uint8_t)((54 * r + 183 * g + 19 * b) >> 8);
+        }
     }
     free(row);
     fclose(f);
@@ -68,6 +82,10 @@ int main(int argc, char** argv) {
                                                            the picture (e.g. the third-person character and his shadow) */
     if (argc > 6 && sscanf(argv[6], "%lf,%lf,%lf,%lf", &rx0, &ry0, &rx1, &ry1) != 4) { rx0 = ry0 = 0.0; rx1 = ry1 = 1.0; }
     long prevnum = -10;   /* (only triples of consecutive pictures - frame numbers in the names - are compared) */
+    int usemask = argc > 7 && !strcmp(argv[7], "mask");   /* (shadows2) blocks at or next to a marker pixel left out */
+    g_marks = argc > 7 && (usemask || !strcmp(argv[7], "marks"));
+    uint8_t *m0 = NULL, *m1 = NULL, *m2 = NULL;
+    double skipped = 0;
     for (int i = 0; i < n; i++) {
         int w, hh; uint8_t* L;
         const char* bn = strrchr(names[i], '_');
@@ -82,18 +100,25 @@ int main(int argc, char** argv) {
             if (top < 0 || top >= bh) top = 0;
         }
         if (nbw != bw || nbh != bh) { free(L); continue; }
+        if (!m0) { m0 = calloc(bw * bh, 1); m1 = calloc(bw * bh, 1); m2 = calloc(bw * bh, 1); }
         float* t = b0; b0 = b1; b1 = b2; b2 = t;   /* b2: the newest */
+        uint8_t* tm = m0; m0 = m1; m1 = m2; m2 = tm;
+        memset(m2, 0, bw * bh);
         for (int by = 0; by < bh; by++)
             for (int bx = 0; bx < bw; bx++) {
-                int s = 0;
-                for (int y = 0; y < 8; y++) for (int x = 0; x < 8; x++) s += L[(size_t)(by * 8 + y) * w + bx * 8 + x];
+                int s = 0, mk = 0;
+                for (int y = 0; y < 8; y++) for (int x = 0; x < 8; x++) { size_t o = (size_t)(by * 8 + y) * w + bx * 8 + x; s += L[o]; mk |= g_mark[o]; }
                 b2[by * bw + bx] = s / 64.0f;
+                if (mk)                  /* (the block and the ones around it) */
+                    for (int j = -1; j <= 1; j++) for (int i = -1; i <= 1; i++)
+                        if (by + j >= 0 && by + j < bh && bx + i >= 0 && bx + i < bw) m2[(by + j) * bw + bx + i] = 1;
             }
         free(L);
         pics++; run++; total++;
         if (run < 3) continue;
         for (int k = top * bw; k < bw * bh; k++) {
             if (k % bw < (int)(rx0 * bw) || k % bw >= (int)(rx1 * bw + 0.5) || k / bw < (int)(ry0 * bh) || k / bw >= (int)(ry1 * bh + 0.5)) continue;
+            if (usemask && (m0[k] | m1[k] | m2[k])) { skipped++; continue; }
             float d1 = b1[k] - b0[k], d2 = b2[k] - b1[k];
             int e = (d1 > thr && d2 < -thr) || (d1 < -thr && d2 > thr);
             ev += e; cnt++; heat[k] += e;
@@ -113,5 +138,6 @@ int main(int argc, char** argv) {
     printf("pictures %d, blocks %dx%d: flicker %.3f per 1000 (all), %.3f per 1000 (dark < %.0f, %.2f%% of blocks), motion %.3f\n",
            pics, bw, bh, cnt ? ev * 1000.0 / cnt : 0.0, cntd ? evd * 1000.0 / cntd : 0.0, dark, cnt ? 100.0 * cntd / cnt : 0.0,
            cnt ? mot / cnt : 0.0);
+    if (usemask) printf("masked: %.2f%% of the region's blocks left out (markers)\n", cnt + skipped > 0 ? 100.0 * skipped / (cnt + skipped) : 0.0);
     return 0;
 }

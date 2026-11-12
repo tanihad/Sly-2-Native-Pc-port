@@ -465,11 +465,15 @@ float4 ps_reim_blur2(float4 pos : SV_Position) : SV_Target {
     float w = l_wload(q);
     float4 s = 0.0;
     float ws = 0.0;
+    float gw0 = r_bsrc.Load(int3(q, 0)).w;
+    bool sep = r_v3.x > 0.0 && r_ptaa.w > 0.0;   // (shadows2 test: the game-lit and the world not blurred into each other)
     [unroll] for (int i = -4; i <= 4; i++) {
         int2 qi = q + int2(l_dir.xy * (float)i);
         float wi = l_wload(qi);
         float g = exp(-(float)(i * i) * (1.0 / 12.0)) * exp(-abs(wi - w) / max(w, 1e-3) * 40.0);
-        s += r_bsrc.Load(int3(clamp(qi, int2(0, 0), int2(l_dst.xy) - 1), 0)) * g;
+        float4 v = r_bsrc.Load(int3(clamp(qi, int2(0, 0), int2(l_dst.xy) - 1), 0));
+        if (sep) g *= saturate(1.0 - abs(v.w - gw0));
+        s += v * g;
         ws += g;
     }
     return s / ws;
@@ -511,7 +515,7 @@ float4 ps_reim_shtaa(float4 pos : SV_Position) : SV_Target {
         }
         // (the per-frame casters' term: a shorter history - props standing still keep steady edges, a moving character's
         // shadow lags less than a frame's step behind; clamped to this frame's neighbourhood like the rest)
-        return float4(lerp(cur.xy, h.xy, k), lerp(cur.z, h.z, k * 0.65), cur.w);
+        return float4(lerp(cur.xy, h.xy, k), lerp(cur.z, h.z, k * r_ptaa.z), cur.w);
     }
     return lerp(cur, h, k);
 }
@@ -839,7 +843,10 @@ float4 ps_reim_comp(float4 pos : SV_Position) : SV_Target {
     else if (r_misc.z == 8.0 || r_misc.z == 10.0) {      // (8 / 10: (3) the overlap check's views - the mask read raw, the same in both paths)
         int2 qh = int2(p / l_map.zw);
         float gm = r_gamelit(qh, l_w.Load(int3(qh, 0)));
-        if (r_misc.z == 8.0) o = sky || gm > 0.0 ? 0.5 : saturate(gfd * sfac * 0.5).xxx;   // (8: (3) the world's shadows: the game's x ours (the game-lit as lit))
+        // (8: (3) the world's shadows: the game's x ours; (shadows2) the game-lit in a pure-red marker - stability_check reads it
+        //  as the old flat grey, or with "mask" leaves the blocks at and around the characters out: their silhouettes moving
+        //  over the shadowed ground were most of this view's reversals)
+        if (r_misc.z == 8.0) o = sky ? 0.5 : gm > 0.0 ? float3(1.0, 0.0, 0.0) : saturate(gfd * sfac * 0.5).xxx;
         else o = gm > 0.0 && !sky ? saturate(kd * 0.5).xxx : 0.5;
     }   // (10: (3) the light on the game-lit (characters) alone, the rest grey)
     return float4(saturate(o), pic.a);

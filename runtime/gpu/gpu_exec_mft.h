@@ -1833,7 +1833,7 @@ static void mft_shfuse(const mft_shp* q, int epochs) {
     k.ep[1] = (uint32_t)m->h;
     /* (light) Enhanced lighting: soft shadow edges - the penumbra radius in surface pixels (mft.hlsl SOFT) */
     int soft = lt_enabled() && LT.soft > 0.0f;
-    if (soft) { float rad = LT.soft * m->sx / M.osx * M.osy / 6.4285f; memcpy(&k.ep[2], &rad, 4); }
+    if (soft) { float rad = LT.soft * m->sx / M.osx * M.osy / 6.4285f; memcpy(&k.ep[2], &rad, 4); k.ep[3] = reim_soft_stable() ? 1u : 0u; }
     int has_cnt = M.sv_bb[2] > M.sv_bb[0];
     if (has_cnt) {
         k.svbb[0] = (uint32_t)(M.sv_bb[0] < 0 ? 0 : M.sv_bb[0]); k.svbb[1] = (uint32_t)(M.sv_bb[1] < 0 ? 0 : M.sv_bb[1]);
