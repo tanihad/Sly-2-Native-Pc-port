@@ -341,3 +341,41 @@ Switches: PS2_REIM_LIGHTS=0 (kill switch: EE copy and pass), _N (count), _Q (qua
 by distance, 6000 / 12000), PS2_REIM_LIGHTS_DUMP=1|2 (the table every 600 VBlanks), PS2_REIM_DBG=5 (the light buffer,
 each light's place as a magenta dot), PS2_REIM_LOG=2 (each drawn light's picture position). In-run A/B: PS2_REIM_X=32
 with PS2_GPU_AB_R8=4096 (A no local lights, B local lights). GPU profile category "reim-lights".
+
+### Results (next/local-lights; RTX 4060 Ti, High = 1440p, 100 %, MSAA 8x, thin outlines, 120 fps, Reimagined)
+
+Cost, in-run A/B (PS2_REIM_X=32, PS2_GPU_AB_R8=4096, phases of 24 pictures, AI net off, no other game running; GPU ms per
+picture, average over ~6000 pictures per phase):
+
+| scene | lights off | lights on | delta | "reim-lights" pass | lights drawn (avg / most) |
+|---|---|---|---|---|---|
+| ep1 hub, orbit path (city at night) | 7.08 ms (~141 fps GPU-bound) | 7.22 ms (~138) | +0.14 | 0.13 ms | 53 / 64 of 240 |
+| ep2 hub, trees path (torches) | 8.65 | 8.80 | +0.14 | 0.09 | 32 / 64 of 167 |
+| m7 robot war (warehouse interior, lamps) | 9.14 | 9.20 | +0.06 | 0.07 | |
+| m5 chase (in-engine cutscene, then play) | 7.56 | 7.69 | +0.13 | 0.12 | |
+| m2 boardroom (interior, pool) | 11.06 | 11.11 | +0.05 | 0.04 | |
+
+The game holds 120 fps in all of them (GPU + present p99 unchanged, 14.6-15.1 ms both ways: the 120 fps pacing).
+
+Stability: lights off vs on on the same deterministic path (reim_ab_stability -Mask 4096 -Extra PS2_REIM_X=32), dark-
+block flicker per motion: orbit 13.44 -> 12.36 (0.92x), trees 5.36 -> 5.05 (0.94x) - the lights add no flicker (their
+fades and the fire flicker are slow; the normals come from a 2-texel baseline). reim_stability_gate (Faithful vs
+Reimagined with the lights): warm PASS orbit 1.024x, trees 0.991x; cold PASS orbit 1.028x, trees 1.003x (before the
+lights: 1.08 / 1.03). No world-matrix flips, every texture changed once.
+
+What shows: ep2's torch-lit clearings get warm pools on the ground, the tree trunks and Sly; the ep1 square's lamps and
+lit windows light their walls and the cyan fountain light its basin; the m7 warehouse floor is lit by its hanging lamps
+(the strongest change); in the m5 cutscene the lantern lights Neyla and the wall under it. Where the game has no light
+near a visible torch (some ep2 torches are decoration only) nothing changes there; m2's pool room (blue fills) barely
+changes. Pictures / videos (local, never committed): build\locallights\stills (*_off_left_on_right.png, the DBG=5 light
+buffer with markers) and build\locallights\videos (trees / orbit: OFF left | ON right side by side, and ON alone; two
+deterministic runs each, PS2_FRAME_DT_FIXED).
+
+Gates (code of 0c31154 + the final cap tweak, Reimagined-only): run_tests 16/16; unit suites 0 failures; m9_exact S1 + S3
+-Game identical (base = e656907 runtime); gpu_diff_all 28/28; r2_sweep ep1 / ep3 / m2_boardroom x tfo, tfb, mf Faithful
+9/9 and Reimagined (PS2_REIMAGINE=1) 9/9; reim_stability_gate warm + cold PASS; gfx_stress_gate PASS (1930 changes in 2
+runs, 0 crashes - Look and Quality switches turn the lights' copy and count on and off).
+
+Open: local lights cast no shadows (light within a radius reaches through a wall); a light the game parents to a moving
+object follows it (positions are read every frame) but none was seen moving in the tested levels; emissive textures
+without a game light (some torches, signs) stay unlit - a texture-based fallback was not needed for the tested levels.

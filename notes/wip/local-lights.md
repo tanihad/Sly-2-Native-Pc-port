@@ -1,5 +1,7 @@
 # WIP: local lights in the Reimagined look (branch next/local-lights, worktree sly2-worktrees\light)
 
+**Status: complete** (2026-11-11). Results and gates: notes/reimagined-lighting.md "Local lights".
+
 **Goal**: lamps, windows, fires, torches cast light on Sly, characters, walls and ground under Look = Reimagined,
 from the game's own light objects; stable in motion; <= 1 ms GPU at 1440p; PS2_REIM_LIGHTS=0 kill switch.
 
