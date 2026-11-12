@@ -1,6 +1,6 @@
 # WIP: Reimagined shadows (branch next/shadows, worktree sly2-worktrees\shadow, from main 336e78e)
 
-**Status: in progress**
+**Status: complete** (2026-11-12). Results, design and gates: notes/reimagined-lighting.md "Shadows rework". Videos dropped (owner).
 
 **Goal**: owner reports (Look = Reimagined) - (1) overlapping shadows flick (Sly under a tree's shadow), (2) title
 museum rope shot: Sly brown instead of hidden in shadow. Fix the causes (re-architecture allowed, PS2_REIM3=0 = old path);
@@ -28,13 +28,22 @@ Faithful / Retro byte-identical.
 - DBG 6 (mask), 7 (game shadow vs ours), 8 (the post pass's light x game shadow: the overlap gate's picture).
 - scripts/reim_shadow_gate.ps1 (new gate), stability_check region argument.
 
+## Results so far (code 32a7534 = build\shadows\v3k.exe)
+- reim_shadow_gate PASS (v3i): stacked 2.27% -> 0.31%, world-shadow flicker 0.679x, character-light flicker 0.767x.
+- Cost in-run A/B (owner settings, 165 fps, no dumps): v3i +0.15 ms, p99 +0.4; v3k (lean mask, cheap GSM) +0.03 ms,
+  p99 14.22 / 14.20.
+- run_tests 16/16.
+
 ## In progress
-- First run of reim_shadow_gate on v3e (build\shadows\v3e.exe).
+- unit suites (bg), title videos main | new (build\shadows\runs\vid_title_*), re-recording corpus scenes.
 
 ## Next
-1. Gate numbers; tune (stacked threshold from the DBG 8 levels); cost (in-run A/B ab-gpu, owner settings, no dumps).
-2. Videos: ep2 trees old | new (PS2_REIM3=0 vs 1, two runs or A/B split), title rope main | new.
-3. Notes section "Shadows rework" in notes/reimagined-lighting.md; all gates.
+1. m9_exact / gpu_diff_all: the 28 corpus recordings are GONE from this PC (other worktrees' build folders deleted by a
+   cleanup). Re-record ep0_museum + ep2_hub (gs_record_scene, corpus.txt pads) into build\gsrec, m9_exact -Only them with
+   -CorpusRoot build\shadows\corpus (gpu-C\build\gsrec\...). gpu_diff_all cannot pass on new recordings (baseline sw hashes).
+2. r2_sweep Faithful + Reimagined, reim_stability_gate warm + cold, gfx_stress_gate -Cold, reim_shadow_gate on final.
+3. ep2 trees video old | new (two runs, same seed copies).
+4. Notes numbers, Status complete.
 
 ## Findings / traps
 - Report 2 (intro, not the title menu: the museum rope shot is VBlank ~2700-3300 of a boot with no input; deterministic

@@ -436,3 +436,33 @@ game shadow pass written / used).
 alternating every 6 pictures, views 8 and 10, Sly's region (x 0.33..0.67, y 0.40..0.95; scripts/stability_check.c takes a
 region now): stacked shadows (blocks darker than one shadow can make), world-shadow reversals at 12 / 255, character-light
 reversals at 6 / 255.
+
+### Results (next/shadows; RTX 4060 Ti, the owner's settings, Reimagined)
+
+| | main 336e78e (PS2_REIM3=0) | rework | Faithful |
+|---|---|---|---|
+| intro rope shot, Sly's silhouette mean RGB (VBlank 3100 / 3200) | 17.2 / 11.5 / 7.8 ; 14.9 / 10.1 / 6.9 (brown) | 7.3 / 5.5 / 5.7 ; 6.6 / 5.2 / 5.3 | 6.3 / 5.5 / 6.0 ; 5.8 / 5.3 / 5.7 |
+| shadow gate, stacked shadows (Sly's region, blocks darker than one shadow) | 2.27 % / 3.12 % (two runs) | 0.31 % / 1.15 % | - |
+| shadow gate, world-shadow reversals per 1000 (view 8, 12 / 255) | 0.190 / 0.181 | 0.129 / 0.169 (0.68x / 0.93x) | - |
+| shadow gate, character-light reversals per 1000 (view 10, 6 / 255) | 1.573 / 1.566 | 1.207 / 1.216 (0.77x / 0.78x) | - |
+| reim_stability_gate (flicker per motion vs Faithful, warm / cold) | orbit 1.024x, trees 0.991x (local-lights notes) | orbit 1.008x / 0.988x, trees 1.025x / 1.034x | 1 |
+| GPU per picture, in-run A/B (ep2 path + camera turns, no dumps, 13 500 pictures each) | 6.730 ms + 0.204 present, p99 14.22 | 6.763 ms + 0.203, p99 14.20 (+0.03 ms) | - |
+
+GPU profile per pass (separate runs, ep2 path): reim-smap 0.094 -> 0.060 ms (the static cache is no longer drawn; the
+game-lit mask, ~200-300 lit pass-A draws a frame through the lean casters' pipeline, is in this category), mft-shfuse
++0.09 ms before the "outside the volumes" shortcut (with it: inside the A/B's +0.03 total), reim-shadow / reim-comp within
++-0.01. The frame rate is GPU-bound at the same place in both (the owner's 165 fps where main reaches it).
+
+Gates (final code): run_tests 16/16; 28 unit suites, 0 failures; m9_exact S1 + S3 -Game identical (base = 336e78e
+runtime) on the two recordings that exist on this PC now (ep0_museum, ep2_hub, re-recorded with corpus.txt's pads - the 28
+corpus recordings were deleted from the other worktrees' build folders; the full m9_exact and gpu_diff_all 28/28 are
+pending the restored corpus); r2_sweep ep1 / ep3 / m2_boardroom x tfo, tfb, mf: Faithful 9/9, Reimagined 9/9 (m2 tfo
+failed once with a one-picture row band 0.87 of the width and passed when run again; main's path (PS2_REIM3=0) failed the
+same check the same way in one of two runs - a pre-existing intermittent blink, not this change); reim_stability_gate
+warm and -Cold PASS; gfx_stress_gate -Cold PASS (885 changes, 0 crashes); reim_shadow_gate PASS. Faithful's compiled
+shaders byte-identical (block compare: 9 REIM shaders differ, 6 new GSM permutations, nothing else).
+
+Open: the static cache (PS2_REIM_SC_CAST=1) - real key-light shadows of trees, walls and roofs - needs an owner decision
+and more work (interiors under their roofs, pops in the gate); the game's own soft shadow edges (Enhanced lighting) use a
+screen-fixed noise rotation that crawls under motion in every look; characters the game draws unlit (cutscenes) are not
+in the game-lit mask (the floor rule covers the silhouette case).
