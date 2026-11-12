@@ -160,7 +160,7 @@ static void re_env(void) {
     RE.v3 = RE.v2 && !(e && *e == '0');
     RE.gl_tol = lt_envf("PS2_REIM_GL_TOL", 0.03f);
     RE.h_tol = lt_envf("PS2_REIM_H_TOL", 0.04f);
-    RE.zh = lt_envf("PS2_REIM_ZH", 0.65f);
+    RE.zh = lt_envf("PS2_REIM_ZH", 1.0f);    /* (shadows2: the full history - the outlier filter and the clamp keep moving shadows on time; 0.65: main ef7c53c) */
     e = getenv("PS2_REIM_POP"); RE.pop = !(e && *e == '0');   /* (shadows2) the history's one-frame outlier filter */
     e = getenv("PS2_REIM_PCF"); RE.pcf = !(e && *e == '0');   /* (shadows2) the wider shadow-map filter */
     RE.blsep = (int)lt_envf("PS2_REIM_BLSEP", 0.0f);
