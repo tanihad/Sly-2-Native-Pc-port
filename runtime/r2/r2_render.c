@@ -475,8 +475,9 @@ static int segment(const gpu_fop_r2* o, const uint8_t* fdata, size_t fdata_bytes
         if (!R.shpipe || !R.shcb || !in->shadow_m || in->shadow_size <= 0) return 0;
         r2g_buf_write(R.d, R.shcb, 0, in->shadow_m, 128);
         r2g_bind_targets_native(R.d, NULL, in->dsv);
-        r2g_viewport(R.d, 0.0f, 0.0f, (float)in->shadow_size, (float)in->shadow_size);
-        r2g_scissor(R.d, 0, 0, in->shadow_size, in->shadow_size);
+        int shh = in->shadow_h > 0 ? in->shadow_h : in->shadow_size;
+        r2g_viewport(R.d, 0.0f, 0.0f, (float)in->shadow_size, (float)shh);
+        r2g_scissor(R.d, 0, 0, in->shadow_size, shh);
         r2g_bind_srv_native(R.d, 0, in->vram_srv);
         r2g_bind_srv_native(R.d, 6, in->swz_srv);
         r2g_bind_srv_native(R.d, 7, in->fdata_srv);
@@ -496,14 +497,21 @@ static int segment(const gpu_fop_r2* o, const uint8_t* fdata, size_t fdata_bytes
             const gpu_r2_draw* d = &dr[i];
             const r2_mesh* m = r2_mesh_get(d->mesh);
             if (!m || m->gpu_state != (int)R.epoch || (m->handle >> 20) != o->gen) continue;
-            if ((d->mode & 3) || !((d->state >> 4) & 1)) continue;   /* (pass A, Z written: solid geometry, no sky / effects) */
-            if (in->shadow_sel && in->shadow_pv) {   /* (reimagine2) the static world (its entry's matrix is the world's) or the rest */
+            /* (pass A, Z written: solid geometry, no sky / effects; (shadows) the game-lit mask takes every lit draw - characters
+             * are often drawn without Z writes (the museum's Sly on the rope): the picture's depth there is what lies behind) */
+            if (((d->mode & 3) || !((d->state >> 4) & 1)) && in->shadow_sel != 3) continue;
+            if (in->shadow_sel == 3) {   /* (shadows) the lit entries (a light block): the game-lit mask */
+                const gpu_r2_entry* ent = (const gpu_r2_entry*)(fdata + o->ent_off);
+                if (!(d->entry < o->nent && o->ent_off + (size_t)(d->entry + 1) * sizeof(gpu_r2_entry) <= fdata_bytes && ent[d->entry].pad[0]))
+                    continue;
+            } else if (in->shadow_sel && in->shadow_pv) {   /* (reimagine2) the static world (its entry's matrix is the world's) or the rest */
                 const gpu_r2_entry* ent = (const gpu_r2_entry*)(fdata + o->ent_off);
                 int st = d->entry < o->nent && o->ent_off + (size_t)(d->entry + 1) * sizeof(gpu_r2_entry) <= fdata_bytes &&
                          !memcmp(ent[d->entry].m, in->shadow_pv, 64);
                 if (st != (in->shadow_sel == 1)) continue;
             }
-            int cut = in->shadow_at && R.shpipe_at && ((d->state >> 14) & 1);   /* (reimagine2: its alpha test splits it) */
+            int cut = in->shadow_at && R.shpipe_at && (((d->state >> 14) & 1) || in->shadow_sel == 3);   /* (reimagine2: its alpha
+                test splits it; (shadows) the game-lit mask: the full vertex - the picture's own positions, to the unit) */
             if (cut != at) { r2g_bind_pipe(R.d, cut ? R.shpipe_at : R.shpipe); at = cut; }
             r2g_draw_indexed(R.d, d->count, m->gpu_ibase + d->first, (int32_t)m->gpu_vbase, o->draw_off / 32u + i);
             ns++;
