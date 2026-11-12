@@ -413,18 +413,32 @@ float4 ps_reim_shadow(float4 pos : SV_Position) : SV_Target {
             float nn = dot(Nw, Nw);
             Nw = nn > 1e-12 ? Nw * rsqrt(nn) : Lw;
             if (dot(Nw, Lw) < 0.0) Nw = -Nw;
-            Pw = W0 + Nw * (r_smp.z * (2.0 + w * 0.0008)) + Lw * (r_smp.z * (1.0 + 1.5 * slope));
+            // ((shadows2) the wider filter reaches 3 texels: a sloped receiver needs the matching depth slack)
+            float sb = r_v3.x > 0.0 && r_v3b.w > 0.0 ? 3.5 : 1.5;
+            Pw = W0 + Nw * (r_smp.z * (2.0 + w * 0.0008)) + Lw * (r_smp.z * (1.0 + sb * slope));
         }
         float4 lc = Pw.x * r_lm0 + Pw.y * r_lm1 + Pw.z * r_lm2 + r_lm3;
         float2 uv = float2(lc.x * 0.5 + 0.5, 0.5 - lc.y * 0.5);
         if (all(uv > r_smp.xy) && all(uv < 1.0 - r_smp.xy) && lc.z > 0.0 && lc.z < 1.0) {
             float lit = 0.0;
-            [unroll] for (int j = 0; j < 4; j++) {
-                float2 o = float2((j & 1) ? 1.0 : -1.0, (j & 2) ? 1.0 : -1.0) * r_smp.xy;
-                float4 g = r_smap.GatherRed(l_lin, uv + o);
-                lit += dot(step(g, lc.z.xxxx + 1e-5), 0.25.xxxx);
+            [branch] if (r_v3.x > 0.0 && r_v3b.w > 0.0) {
+                // (shadows2) a wider, tent-weighted filter: nine gathers 2 texels apart (6 x 6 texels, weights 1 2 1 x 1 2 1).
+                // The 4 x 4 box's hard 1-2 texel edges stepped as the map's casters (swaying plants, cut-out leaves) moved
+                // by a texel; a soft ~6 texel edge changes by a little instead of a whole step
+                [unroll] for (int j = 0; j < 9; j++) {
+                    int jx = j % 3 - 1, jy = j / 3 - 1;
+                    float4 g = r_smap.GatherRed(l_lin, uv + float2(jx, jy) * 2.0 * r_smp.xy);
+                    lit += dot(step(g, lc.z.xxxx + 1e-5), 0.25.xxxx) * (jx == 0 ? 2.0 : 1.0) * (jy == 0 ? 2.0 : 1.0);
+                }
+                lit *= 1.0 / 16.0;
+            } else {
+                [unroll] for (int j = 0; j < 4; j++) {
+                    float2 o = float2((j & 1) ? 1.0 : -1.0, (j & 2) ? 1.0 : -1.0) * r_smp.xy;
+                    float4 g = r_smap.GatherRed(l_lin, uv + o);
+                    lit += dot(step(g, lc.z.xxxx + 1e-5), 0.25.xxxx);
+                }
+                lit *= 0.25;
             }
-            lit *= 0.25;
             float2 e = min(uv, 1.0 - uv);
             float sf = saturate(min(e.x, e.y) * 12.0) * saturate((r_smp2.x - w) / max(r_smp2.x - r_smp.w, 1.0));
             if (r_smp3.y > 0.0) sf *= saturate(nl * 6.0);   // (fix: surfaces almost edge-on to the light fade out: no flip-flop)
@@ -861,7 +875,26 @@ float4 ps_reim_comp(float4 pos : SV_Position) : SV_Target {
         // (8: (3) the world's shadows: the game's x ours; (shadows2) the game-lit in a pure-red marker - stability_check reads it
         //  as the old flat grey, or with "mask" leaves the blocks at and around the characters out: their silhouettes moving
         //  over the shadowed ground were most of this view's reversals)
-        if (r_misc.z == 8.0) o = sky ? 0.5 : gm > 0.0 ? float3(1.0, 0.0, 0.0) : saturate(gfd * sfac * 0.5).xxx;
+        //  ... and what last frame did not show at the same world point (its depth there differs: something moved in front,
+        //  or out of the way - a post sweeping across the shadowed ground is motion, not a flickering shadow)
+        bool fresh = false;
+        if (r_misc.z == 8.0 && r_v3b.z > 0.0 && !sky) {
+            float3 P = r_world(p, w);
+            float4 cp = P.x * r_pv0 + P.y * r_pv1 + P.z * r_pv2 + r_pv3;
+            if (cp.w > 1e-3) {
+                float2 nd = cp.xy / cp.w;
+                float2 pq = float2((nd.x - r_pndc.y) / r_pndc.x, (nd.y - r_pndc.w) / r_pndc.z) / l_map.zw;   // (last frame's half-res texel)
+                if (any(pq < 0.0) || any(pq >= l_src.xy)) fresh = true;
+                else {
+                    int2 q0 = int2(floor(pq - 0.5)), qm = int2(l_src.xy) - 1;
+                    float dm = 1e30;
+                    [unroll] for (int j = 0; j < 4; j++)
+                        dm = min(dm, abs(r_pw.Load(int3(clamp(q0 + int2(j & 1, j >> 1), int2(0, 0), qm), 0)) - cp.w));
+                    fresh = dm > cp.w * 0.04 + 1.0;
+                }
+            }
+        }
+        if (r_misc.z == 8.0) o = sky ? 0.5 : gm > 0.0 || fresh ? float3(1.0, 0.0, 0.0) : saturate(gfd * sfac * 0.5).xxx;
         else o = gm > 0.0 && !sky ? saturate(kd * 0.5).xxx : 0.5;
     }   // (10: (3) the light on the game-lit (characters) alone, the rest grey)
     return float4(saturate(o), pic.a);

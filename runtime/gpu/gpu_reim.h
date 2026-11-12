@@ -58,6 +58,7 @@ static struct {
     float gl_tol, h_tol;                 /* (3) the game-lit mask's and the history's depth tolerance (share of the depth) */
     float zh; int blsep;                 /* (shadows2) the per-frame casters' history share; the blur keeps game-lit / world apart */
     int pop;                             /* (shadows2) PS2_REIM_POP=0: no one-frame outlier filter in the history */
+    int pcf;                             /* (shadows2) PS2_REIM_PCF=0: the 4 x 4 box filter of the key light's map */
     int sc_cast;                         /* (3) PS2_REIM_SC_CAST=1: the static world casts through the cache (main: never read) */
     int cur_v3;                          /* (3) this post pass takes the rework (reim_smap reads it) */
     uint64_t gl_frames, gl_draws;
@@ -161,6 +162,7 @@ static void re_env(void) {
     RE.h_tol = lt_envf("PS2_REIM_H_TOL", 0.04f);
     RE.zh = lt_envf("PS2_REIM_ZH", 0.65f);
     e = getenv("PS2_REIM_POP"); RE.pop = !(e && *e == '0');   /* (shadows2) the history's one-frame outlier filter */
+    e = getenv("PS2_REIM_PCF"); RE.pcf = !(e && *e == '0');   /* (shadows2) the wider shadow-map filter */
     RE.blsep = (int)lt_envf("PS2_REIM_BLSEP", 0.0f);
     e = getenv("PS2_REIM_SC_CAST"); RE.sc_cast = e && *e == '1';   /* (3) the static world's casters shadow (the cache read) */
     RE.night = lt_envf("PS2_REIM_NIGHT", -1.0f);     /* (tests: 0 day .. 1 night; default from the picture) */
@@ -1154,6 +1156,8 @@ static void reim_post(mtarget* c, mtarget* z, int pc) {
     rv3b[0] = gsm ? 1.0f : 0.0f;
     int popf = v3 && re_x(4096, RE.pop);     /* (shadows2) the one-frame outlier filter (PS2_REIM_X=4096: A off / B on) */
     rv3b[1] = popf && RR.have_raw && rptaa[0] > 0.0f ? 1.0f : 0.0f;
+    rv3b[2] = RE.dbg == 8 && RR.have_pw && rptaa[0] > 0.0f ? 1.0f : 0.0f;   /* (shadows2) view 8: r_pw = last frame's depth */
+    rv3b[3] = v3 && re_x(8192, RE.pcf) ? 1.0f : 0.0f;   /* (shadows2) the wider shadow-map filter (PS2_REIM_X=8192: A off / B on) */
     if (gsm) RG.used++;
     ID3D11DeviceContext_UpdateSubresource(gpu_rt.ctx, (ID3D11Resource*)RR.cb, 0, NULL, rc, 0, 0);
 #define LT_SIZE(v, w, h) do { (v)[0] = (float)(w); (v)[1] = (float)(h); (v)[2] = 1.0f / (float)(w); (v)[3] = 1.0f / (float)(h); } while (0)
@@ -1245,10 +1249,6 @@ static void reim_post(mtarget* c, mtarget* z, int pc) {
         ID3D11DeviceContext_ClearRenderTargetView(gpu_rt.ctx, RR.rtv[RT_SH], one);
         RR.have_raw = 0;
     }
-    if (v3 && have_world) {              /* (3) this frame's depth: the next frame's history test */
-        ID3D11DeviceContext_CopyResource(gpu_rt.ctx, (ID3D11Resource*)RR.t[RT_PW], (ID3D11Resource*)LT.t[LT_W]);
-        RR.have_pw = 1;
-    } else RR.have_pw = 0;
     /* bloom: the bright pass + the scene colour (MRT), the pyramid (6 levels), its upsample with the halo weight */
     prof_mark(PR_REIM_BL);
     LT_SIZE(dst, hw, hh); LT_SIZE(src, pw, ph);
@@ -1309,6 +1309,7 @@ static void reim_post(mtarget* c, mtarget* z, int pc) {
     if (nloc > 0) lt_srv(28, RR.srv[RT_LOC]);   /* (local lights) */
     if (glm && (RE.dbg == 6 || RE.dbg == 8 || RE.dbg == 10)) lt_srv(29, RR.gl_srv);   /* (3: the debug views) */
     if (gsm) lt_srv(31, RG.srv);         /* (3: the game shadow's darkening) */
+    if (rv3b[2] > 0.0f) lt_srv(30, RR.srv[RT_PW]);   /* (shadows2, view 8: last frame's depth) */
     {
         static const float zero[4] = { 0, 0, 0, 0 };
         if (rsh[0] <= 0.0f) ID3D11DeviceContext_ClearRenderTargetView(gpu_rt.ctx, RR.rtv[RT_SHAFT], zero);
@@ -1323,6 +1324,11 @@ static void reim_post(mtarget* c, mtarget* z, int pc) {
     } else
     lt_pass(c->prtv, pw, ph, ms ? GPU_SH_ps_reim_comp1 : GPU_SH_ps_reim_comp0, blend_state(BL_OFF, 7));
     rr_unbind();
+    if ((v3 || RE.dbg == 8) && have_world) {   /* (3) this frame's depth: the next frame's history test ((shadows2) after the
+                                                  composite: view 8 marks what last frame did not show at the same point) */
+        ID3D11DeviceContext_CopyResource(gpu_rt.ctx, (ID3D11Resource*)RR.t[RT_PW], (ID3D11Resource*)LT.t[LT_W]);
+        RR.have_pw = 1;
+    } else RR.have_pw = 0;
 #undef LT_SIZE
     X.mode = 0;
     X.b_ct = X.b_zt = -1;

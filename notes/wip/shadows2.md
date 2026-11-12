@@ -30,8 +30,17 @@ judged on the median of >= 3 runs.
   per-frame casters); the game's volumes are only Sly's shadow and a small patch -> the soft-edge change cannot show in
   this gate. Masked bursts = our map's shadows popping for 1 frame / whole post faces flipping lit <-> shadowed.
 
+- ZH=1.0 vs 0.65 in-run (X=512): 0.70 / 1.06 / 2.03 (uncapped 12/255 metric: useless noise). Disocclusion / blur-sep
+  ablations stopped (metric too noisy to tell).
+- Metric study on 3 kept runs (v2, X=64, old vs rework): uncapped 12/255 masked 1.08 / 0.57 / 1.26; capped (<= 5 events
+  a triple) at 6/255 masked 0.977 / 0.968 / 0.950 -> the gate's world number now = capped 6/255 masked (stability_check
+  arg 9 = cap). The rework's world shadows are ~0.97x old: equal. The bursts (A and B alike, same moments): our map's
+  shadows popping in for ONE frame (a blob of a far caster), thin post / plank faces flipping.
+- v3.exe: ps_reim_shtaa median(this frame, last frame's raw term, history) per channel (RT_RAW copy, t12, r_v3b.y;
+  PS2_REIM_POP=0 off, PS2_REIM_X=4096 A off / B on).
+
 ## In progress
-- ablation gates ZH=1.0, no disocclusion, blur sep (3 runs each, v2.exe, task chain).
+- pop-filter in-run A/B (v3, X=4096, 3 runs, kept: build\light\shots\*gatepr*).
 
 ## Next
 1. Soft-edge crawl measured on the game's shadow alone: DBG=7 red channel (scratch redcheck = stability_check on R),
