@@ -1833,7 +1833,9 @@ static void mft_shfuse(const mft_shp* q, int epochs) {
     k.ep[1] = (uint32_t)m->h;
     /* (light) Enhanced lighting: soft shadow edges - the penumbra radius in surface pixels (mft.hlsl SOFT) */
     int soft = lt_enabled() && LT.soft > 0.0f;
-    if (soft) { float rad = LT.soft * m->sx / M.osx * M.osy / 6.4285f; memcpy(&k.ep[2], &rad, 4); k.ep[3] = reim_soft_stable() ? 1u : 0u; }
+    /* (shadows2) the fixed sample pattern: the SOFT=2 permutations, or sf_ep.w in the Reimagined GSM ones */
+    int stable = soft && reim_soft_stable();
+    if (soft) { float rad = LT.soft * m->sx / M.osx * M.osy / 6.4285f; memcpy(&k.ep[2], &rad, 4); k.ep[3] = stable ? 1u : 0u; }
     int has_cnt = M.sv_bb[2] > M.sv_bb[0];
     if (has_cnt) {
         k.svbb[0] = (uint32_t)(M.sv_bb[0] < 0 ? 0 : M.sv_bb[0]); k.svbb[1] = (uint32_t)(M.sv_bb[1] < 0 ? 0 : M.sv_bb[1]);
@@ -1876,12 +1878,12 @@ static void mft_shfuse(const mft_shp* q, int epochs) {
                                             per sample: the deferred renderers' edge / interior split) */
         prof_mark(PR_MFT_FUSE);
         set_depth(mft_ds_mark());
-        if (!r8s_skip(R8S_FPX)) mft_quad(r, grtv ? (soft ? GPU_SH_ps_mft_shfuse_px_sg : GPU_SH_ps_mft_shfuse_px_g) : soft ? GPU_SH_ps_mft_shfuse_px_s : GPU_SH_ps_mft_shfuse_px);
+        if (!r8s_skip(R8S_FPX)) mft_quad(r, grtv ? (soft ? GPU_SH_ps_mft_shfuse_px_sg : GPU_SH_ps_mft_shfuse_px_g) : soft ? (stable ? GPU_SH_ps_mft_shfuse_px_s2 : GPU_SH_ps_mft_shfuse_px_s) : GPU_SH_ps_mft_shfuse_px);
         set_depth(mft_ds_date(0, 0));
-        if (!r8s_skip(R8S_FPS)) mft_quad(r, grtv ? (soft ? GPU_SH_ps_mft_shfuse1_sg : GPU_SH_ps_mft_shfuse1_g) : soft ? GPU_SH_ps_mft_shfuse1_s : GPU_SH_ps_mft_shfuse1);
+        if (!r8s_skip(R8S_FPS)) mft_quad(r, grtv ? (soft ? GPU_SH_ps_mft_shfuse1_sg : GPU_SH_ps_mft_shfuse1_g) : soft ? (stable ? GPU_SH_ps_mft_shfuse1_s2 : GPU_SH_ps_mft_shfuse1_s) : GPU_SH_ps_mft_shfuse1);
     } else {
         prof_mark(PR_MFT_FUSE);
-        mft_quad(r, grtv ? (soft ? GPU_SH_ps_mft_shfuse0_sg : GPU_SH_ps_mft_shfuse0_g) : soft ? GPU_SH_ps_mft_shfuse0_s : GPU_SH_ps_mft_shfuse0);
+        mft_quad(r, grtv ? (soft ? GPU_SH_ps_mft_shfuse0_sg : GPU_SH_ps_mft_shfuse0_g) : soft ? (stable ? GPU_SH_ps_mft_shfuse0_s2 : GPU_SH_ps_mft_shfuse0_s) : GPU_SH_ps_mft_shfuse0);
     }
     ID3D11ShaderResourceView* none[3] = { NULL, NULL, NULL };
     ID3D11DeviceContext_PSSetShaderResources(gpu_rt.ctx, 12, 3, none);

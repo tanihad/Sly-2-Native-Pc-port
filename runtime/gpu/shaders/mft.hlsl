@@ -653,15 +653,13 @@ float4 mft_shfuse_soft(uint2 P, uint s, uint w) {
             int2 o = j == 0u ? int2(ri, 0) : j == 1u ? int2(-ri, 0) : j == 2u ? int2(0, ri) : int2(0, -ri);
             edge = edge || mft_soft_in(uint2(clamp(int2(P) + o, int2(0, 0), hi)), s) != inP;
         }
-        [branch] if (edge && sf_ep.w != 0u) {   // (shadows2: the fixed pattern)
+#if SOFT == 2
+        [branch] if (edge) {             // (shadows2: SOFT=2 permutations - the fixed pattern; SOFT=1 is the original)
             int2 qin, qout;
             float cov = mft_soft_cov_fixed(P, s, R, hi, inP, qin, qout);
             int2 qo = inP ? qout : qin;
-            [branch] if (qo.x >= 0) {
-                float4 o = mft_unorm(mft_shfuse_word_q(P, uint2(qo), s, w));
-                res.rgb = inP ? lerp(o.rgb, res.rgb, cov) : lerp(res.rgb, o.rgb, cov);
-            }
-        } else [branch] if (edge) {
+#else
+        [branch] if (edge) {
             float rot = frac(52.9829189 * frac(dot((float2)P, float2(0.06711056, 0.00583715)))) * 6.2831853;
             uint nin = inP ? 1u : 0u, nt = 1u;
             int2 qin = int2(-1, -1), qout = int2(-1, -1);
@@ -675,6 +673,7 @@ float4 mft_shfuse_soft(uint2 P, uint s, uint w) {
             }
             float cov = (float)nin / (float)nt;
             int2 qo = inP ? qout : qin;  // inside: the pixel unshadowed (an outside neighbour's counters); outside: shadowed
+#endif
             [branch] if (qo.x >= 0) {
                 float4 o = mft_unorm(mft_shfuse_word_q(P, uint2(qo), s, w));
                 res.rgb = inP ? lerp(o.rgb, res.rgb, cov) : lerp(res.rgb, o.rgb, cov);
