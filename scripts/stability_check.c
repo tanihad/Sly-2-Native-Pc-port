@@ -6,7 +6,7 @@
  *   stability_check <dir with frame_*.bmp> [threshold (luma units of 255, default 3)] [dark (luma, default 64)]
  *                   [heat.pgm | -] [top share left out (0..1: the HUD)] [region "x0,y0,x1,y1" (shares; default all)]
  *                   [mask | marks: blocks at / next to pure-red marker pixels (in any picture of the triple) left out |
- *                    the markers only read as luma 128 | -] [block size (default 8)]
+ *                    the markers only read as luma 128 | -] [block size (default 8)] [cap: events counted per triple, 0 none]
  * Prints: pictures, events per 1000 blocks x pictures over all blocks and over the dark blocks (luma < dark: the
  * shadowed regions), and the mean absolute block change (motion energy) for scale. Exit 0. */
 #include <stdio.h>
@@ -88,6 +88,10 @@ int main(int argc, char** argv) {
     if (BS < 1 || BS > 64) BS = 8;
     uint8_t *m0 = NULL, *m1 = NULL, *m2 = NULL;
     double skipped = 0;
+    int tcap = argc > 9 ? atoi(argv[9]) : 0;   /* (shadows2) each triple counts at most tcap events: a content pop (a caster the
+                                                 game draws for one frame) covers dozens of blocks at once and lands in an A or
+                                                 a B phase by chance - uncapped, a handful of them decide the ratio */
+    double evc = 0;
     for (int i = 0; i < n; i++) {
         int w, hh; uint8_t* L;
         const char* bn = strrchr(names[i], '_');
@@ -118,18 +122,20 @@ int main(int argc, char** argv) {
         free(L);
         pics++; run++; total++;
         if (run < 3) continue;
+        int evt = 0;
         for (int k = top * bw; k < bw * bh; k++) {
             if (k % bw < (int)(rx0 * bw) || k % bw >= (int)(rx1 * bw + 0.5) || k / bw < (int)(ry0 * bh) || k / bw >= (int)(ry1 * bh + 0.5)) continue;
             if (usemask && (m0[k] | m1[k] | m2[k])) { skipped++; continue; }
             float d1 = b1[k] - b0[k], d2 = b2[k] - b1[k];
             int e = (d1 > thr && d2 < -thr) || (d1 < -thr && d2 > thr);
-            ev += e; cnt++; heat[k] += e;
+            ev += e; cnt++; heat[k] += e; evt += e;
             mot += fabsf(d2);
             j2 += fabsf(d2 - d1); j1 += fabsf(d1) + fabsf(d2);
             if (fabsf(d2) > 16.0f && fabsf(d1) < 2.0f) pops++;   /* (a still block that jumps: a shadow popping in or out) */
             if (b1[k] < dark) { j2d += fabsf(d2 - d1); j1d += fabsf(d1) + fabsf(d2); }
             if (b1[k] < dark) { evd += e; cntd++; }
         }
+        evc += tcap > 0 && evt > tcap ? tcap : evt;
     }
     if (argc > 4 && heat && strcmp(argv[4], "-")) {
         FILE* o = fopen(argv[4], "wb");
@@ -140,6 +146,7 @@ int main(int argc, char** argv) {
     printf("pictures %d, blocks %dx%d: flicker %.3f per 1000 (all), %.3f per 1000 (dark < %.0f, %.2f%% of blocks), motion %.3f\n",
            pics, bw, bh, cnt ? ev * 1000.0 / cnt : 0.0, cntd ? evd * 1000.0 / cntd : 0.0, dark, cnt ? 100.0 * cntd / cnt : 0.0,
            cnt ? mot / cnt : 0.0);
+    if (tcap > 0) printf("capped (%d a triple): flicker %.4f per 1000\n", tcap, cnt ? evc * 1000.0 / cnt : 0.0);
     if (usemask) printf("masked: %.2f%% of the region's blocks left out (markers)\n", cnt + skipped > 0 ? 100.0 * skipped / (cnt + skipped) : 0.0);
     return 0;
 }

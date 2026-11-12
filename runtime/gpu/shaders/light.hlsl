@@ -243,7 +243,8 @@ cbuffer reim_cb : register(b8) {
     float4 r_loc;                        // (local lights) on (1: r_lloc holds this frame's light), gain on the picture, floor, -
     float4 r_v3;                         // (3) the shadows rework: on, the game-lit mask drawn (r_glit), its depth tolerance,
                                          // the history's depth tolerance (0: no last-frame depth in r_pw)
-    float4 r_v3b;                        // (3) the game shadow's darkening written this frame (r_gsm), -, -, -
+    float4 r_v3b;                        // (3) the game shadow's darkening written this frame (r_gsm); (shadows2) r_praw valid
+                                         // (the history's one-frame outlier filter), -, -
 };
 #if MS
 Texture2DMS<float> r_gsm : register(t31);    // (3) the game's own shadow: how much it darkened the pixel (1: not at all; mft.hlsl GSM)
@@ -486,6 +487,7 @@ float4 ps_reim_blur2(float4 pos : SV_Position) : SV_Target {
 // none; the history is dropped where the reprojected point was not what last frame showed there (its depth differs: it was
 // hidden, or it moved - a character) and on the game-lit pixels (characters move: the world's reprojection is wrong on them)
 Texture2D<float4> r_shist : register(t26);
+Texture2D<float4> r_praw : register(t12);    // (shadows2) last frame's key-light term before its resolve (r_v3b.y: valid)
 float4 ps_reim_shtaa(float4 pos : SV_Position) : SV_Target {
     int2 q = int2(pos.xy);
     float4 cur = r_bsrc.Load(int3(q, 0));
@@ -504,7 +506,8 @@ float4 ps_reim_shtaa(float4 pos : SV_Position) : SV_Target {
     float2 pp = float2((nd.x - r_pndc.y) / r_pndc.x, (nd.y - r_pndc.w) / r_pndc.z);   // previous picture pixel
     float2 uv = pp / l_map.zw * l_dst.zw;
     if (any(uv < 0.0) || any(uv > 1.0)) return cur;
-    float4 h = clamp(r_shist.SampleLevel(l_lin, uv, 0.0), mn, mx);
+    float4 hu = r_shist.SampleLevel(l_lin, uv, 0.0);
+    float4 h = clamp(hu, mn, mx);
     float k = r_ptaa.x;
     if (r_v3.x > 0.0) {
         k *= 1.0 - cur.w;                // (no history on the game-lit)
@@ -513,9 +516,21 @@ float4 ps_reim_shtaa(float4 pos : SV_Position) : SV_Target {
             float dmin = min(min(abs(pw4.x - c.w), abs(pw4.y - c.w)), min(abs(pw4.z - c.w), abs(pw4.w - c.w)));
             k *= saturate(2.0 - dmin / (c.w * r_v3.w + 1.0));
         }
+        float4 base = cur;
+        if (r_v3b.y > 0.0) {
+            // (shadows2) one-frame outliers out: the median of this frame's value, last frame's own (before its resolve) and
+            // the history, at the same world point. A shadow the map holds for one frame only (a caster the game drew in one
+            // frame, a thin post's face flipping lit / shadowed with its depth normal) never shows; a lasting change shows
+            // one frame later (6 ms at 165 Hz). The neighbourhood clamp alone let such a pop through whole (its whole
+            // neighbourhood popped with it). Where the history is not valid (disoccluded, game-lit) this frame's value.
+            float4 pr = r_praw.SampleLevel(l_lin, uv, 0.0);
+            float3 md = max(min(cur.xyz, pr.xyz), min(max(cur.xyz, pr.xyz), hu.xyz));
+            base.xyz = lerp(cur.xyz, md, saturate(k / max(r_ptaa.x, 1e-3)));
+            h = clamp(hu, min(mn, base), max(mx, base));
+        }
         // (the per-frame casters' term: a shorter history - props standing still keep steady edges, a moving character's
         // shadow lags less than a frame's step behind; clamped to this frame's neighbourhood like the rest)
-        return float4(lerp(cur.xy, h.xy, k), lerp(cur.z, h.z, k * r_ptaa.z), cur.w);
+        return float4(lerp(base.xy, h.xy, k), lerp(base.z, h.z, k * r_ptaa.z), cur.w);
     }
     return lerp(cur, h, k);
 }

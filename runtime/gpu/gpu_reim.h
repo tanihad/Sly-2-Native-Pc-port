@@ -57,11 +57,12 @@ static struct {
     int v3;                              /* (3) PS2_REIM3=0: none of the shadows rework's changes (notes "Shadows rework") */
     float gl_tol, h_tol;                 /* (3) the game-lit mask's and the history's depth tolerance (share of the depth) */
     float zh; int blsep;                 /* (shadows2) the per-frame casters' history share; the blur keeps game-lit / world apart */
+    int pop;                             /* (shadows2) PS2_REIM_POP=0: no one-frame outlier filter in the history */
     int sc_cast;                         /* (3) PS2_REIM_SC_CAST=1: the static world casts through the cache (main: never read) */
     int cur_v3;                          /* (3) this post pass takes the rework (reim_smap reads it) */
     uint64_t gl_frames, gl_draws;
 } RE;
-enum { RT_SHH, RT_SH, RT_SH2, RT_B6, RT_SHAFT, RT_PIC, RT_ST0, RT_ST1, RT_SCENE, RT_LOC, RT_PW, RT_N };
+enum { RT_SHH, RT_SH, RT_SH2, RT_B6, RT_SHAFT, RT_PIC, RT_ST0, RT_ST1, RT_SCENE, RT_LOC, RT_PW, RT_RAW, RT_N };
 static struct {
     ID3D11Texture2D* t[RT_N];
     ID3D11RenderTargetView* rtv[RT_N];
@@ -92,6 +93,7 @@ static struct {
     ID3D11DepthStencilView* gl_dsv;
     ID3D11ShaderResourceView* gl_srv;
     int gl_w, gl_h, have_pw;
+    int have_raw;                        /* (shadows2) RT_RAW holds last frame's key-light term before its resolve */
 } RR;
 /* (3) the game shadow's darkening target (reim_gsm_rtv) */
 static struct { ID3D11Texture2D* t; ID3D11RenderTargetView* rtv; ID3D11ShaderResourceView* srv; int w, h, n; uint64_t post, writes, used, seq, seq_ok; } RG;
@@ -158,6 +160,7 @@ static void re_env(void) {
     RE.gl_tol = lt_envf("PS2_REIM_GL_TOL", 0.03f);
     RE.h_tol = lt_envf("PS2_REIM_H_TOL", 0.04f);
     RE.zh = lt_envf("PS2_REIM_ZH", 0.65f);
+    e = getenv("PS2_REIM_POP"); RE.pop = !(e && *e == '0');   /* (shadows2) the history's one-frame outlier filter */
     RE.blsep = (int)lt_envf("PS2_REIM_BLSEP", 0.0f);
     e = getenv("PS2_REIM_SC_CAST"); RE.sc_cast = e && *e == '1';   /* (3) the static world's casters shadow (the cache read) */
     RE.night = lt_envf("PS2_REIM_NIGHT", -1.0f);     /* (tests: 0 day .. 1 night; default from the picture) */
@@ -591,7 +594,7 @@ static void reim_release(void) {
     RR.sc_n = 0; RR.sc_valid = 0;
     GPU_RELEASE(RR.ds_always);
     GPU_RELEASE(RR.gl_dsv); GPU_RELEASE(RR.gl_srv); GPU_RELEASE(RR.gl);   /* (3) */
-    RR.gl_w = RR.gl_h = 0; RR.have_pw = 0;
+    RR.gl_w = RR.gl_h = 0; RR.have_pw = 0; RR.have_raw = 0;
     GPU_RELEASE(RG.rtv); GPU_RELEASE(RG.srv); GPU_RELEASE(RG.t); RG.w = RG.h = RG.n = 0;
     GPU_RELEASE(RL.buf);                 /* (local lights) */
     RE.have_key = 0;
@@ -1002,12 +1005,13 @@ static void reim_post(mtarget* c, mtarget* z, int pc) {
     const reim_scene* S = RS.serial == LT.serial ? &RS : &RS_last;
     reim_finish((reim_scene*)S);         /* (2: the world matrix of the complete frame) */
     int bw[7], bh[7];
+    if (!(RR.t[RT_RAW] && RR.tw[RT_RAW] == hw && RR.th[RT_RAW] == hh)) RR.have_raw = 0;   /* (shadows2: a new size) */
     bw[1] = hw; bh[1] = hh;
     for (int i = 2; i <= 6; i++) { bw[i] = (bw[i - 1] + 1) / 2; bh[i] = (bh[i - 1] + 1) / 2; }
     if (!lt_tex(LT_W, hw, hh, DXGI_FORMAT_R32_FLOAT) || !lt_tex(LT_AO0, hw, hh, DXGI_FORMAT_R8_UNORM) ||
         /* (the key light: visibility, N.L; (3) the per-frame casters' visibility, the game-lit mask - RGBA8 for both paths) */
         !lt_tex(LT_AO1, hw, hh, DXGI_FORMAT_R8_UNORM) || !rr_tex(RT_SH, hw, hh, DXGI_FORMAT_R8G8B8A8_UNORM, 0, 1) || !rr_tex(RT_SH2, hw, hh, DXGI_FORMAT_R8G8B8A8_UNORM, 0, 1) || !rr_tex(RT_SHH, hw, hh, DXGI_FORMAT_R8G8B8A8_UNORM, 0, 1) ||
-        !rr_tex(RT_PW, hw, hh, DXGI_FORMAT_R32_FLOAT, 0, 0) ||
+        !rr_tex(RT_PW, hw, hh, DXGI_FORMAT_R32_FLOAT, 0, 0) || !rr_tex(RT_RAW, hw, hh, DXGI_FORMAT_R8G8B8A8_UNORM, 0, 0) ||
         !rr_tex(RT_B6, bw[6], bh[6], DXGI_FORMAT_R11G11B10_FLOAT, 0, 1) ||
         !rr_tex(RT_SHAFT, bw[2], bh[2], DXGI_FORMAT_R11G11B10_FLOAT, 0, 1) ||
         !rr_tex(RT_PIC, pw, ph, DXGI_FORMAT_R8G8B8A8_TYPELESS, 0, 0) ||
@@ -1148,6 +1152,8 @@ static void reim_post(mtarget* c, mtarget* z, int pc) {
     float* rv3b = rc + 148;              /* (3) light.hlsl r_v3b: the game shadow's darkening written this frame (r_gsm) */
     int gsm = (v3 || RE.dbg == 8 || RE.dbg == 10) && RG.srv && RG.post == RR.frames && RG.w == z->w && RG.h == z->h;
     rv3b[0] = gsm ? 1.0f : 0.0f;
+    int popf = v3 && re_x(4096, RE.pop);     /* (shadows2) the one-frame outlier filter (PS2_REIM_X=4096: A off / B on) */
+    rv3b[1] = popf && RR.have_raw && rptaa[0] > 0.0f ? 1.0f : 0.0f;
     if (gsm) RG.used++;
     ID3D11DeviceContext_UpdateSubresource(gpu_rt.ctx, (ID3D11Resource*)RR.cb, 0, NULL, rc, 0, 0);
 #define LT_SIZE(v, w, h) do { (v)[0] = (float)(w); (v)[1] = (float)(h); (v)[2] = 1.0f / (float)(w); (v)[3] = 1.0f / (float)(h); } while (0)
@@ -1222,14 +1228,22 @@ static void reim_post(mtarget* c, mtarget* z, int pc) {
             lt_cb(cb, 36);
             lt_srv(14, LT.srv[LT_W]); lt_srv(25, RR.srv[RT_SH]); lt_srv(26, RR.srv[RT_SHH]);
             if (rv3[3] > 0.0f) lt_srv(30, RR.srv[RT_PW]);   /* (3: last frame's depth - disocclusion) */
+            if (rv3b[1] > 0.0f) lt_srv(12, RR.srv[RT_RAW]);   /* (shadows2: last frame's term before its resolve) */
             lt_pass(RR.rtv[RT_SH2], hw, hh, GPU_SH_ps_reim_shtaa, off);
             rr_unbind();
-            ID3D11DeviceContext_CopyResource(gpu_rt.ctx, (ID3D11Resource*)RR.t[RT_SH], (ID3D11Resource*)RR.t[RT_SH2]);
+            lt_srv(12, NULL);
         }
+        if (popf) {                      /* (shadows2) this frame's term before its resolve: the next frame's outlier filter */
+            ID3D11DeviceContext_CopyResource(gpu_rt.ctx, (ID3D11Resource*)RR.t[RT_RAW], (ID3D11Resource*)RR.t[RT_SH]);
+            RR.have_raw = 1;
+        } else RR.have_raw = 0;
+        if (rptaa[0] > 0.0f)
+            ID3D11DeviceContext_CopyResource(gpu_rt.ctx, (ID3D11Resource*)RR.t[RT_SH], (ID3D11Resource*)RR.t[RT_SH2]);
         if (re_fix()) ID3D11DeviceContext_CopyResource(gpu_rt.ctx, (ID3D11Resource*)RR.t[RT_SHH], (ID3D11Resource*)RR.t[RT_SH]);
     } else {
         static const float one[4] = { 1, 0, 1, 0 };   /* (visible, N.L 0: nothing changes; (3) the per-frame casters' visibility) */
         ID3D11DeviceContext_ClearRenderTargetView(gpu_rt.ctx, RR.rtv[RT_SH], one);
+        RR.have_raw = 0;
     }
     if (v3 && have_world) {              /* (3) this frame's depth: the next frame's history test */
         ID3D11DeviceContext_CopyResource(gpu_rt.ctx, (ID3D11Resource*)RR.t[RT_PW], (ID3D11Resource*)LT.t[LT_W]);

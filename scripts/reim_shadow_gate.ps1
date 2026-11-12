@@ -14,6 +14,9 @@
 # (shadows2) View 8 paints the game-lit (characters) in a pure-red marker: the world-shadow number leaves out the blocks at
 # and next to them ("mask") - Sly's silhouette moving over the shadowed ground made most of the old number's reversals (one
 # triple of his legs over a shadow: 40+ of a run's ~400). The old number (markers read as the flat grey) is printed too.
+# The world number counts reversals at 6 / 255 with at most 5 a triple: a content pop (a caster the game draws for one
+# frame) covers dozens of blocks at once and lands in an A or a B phase by chance - uncapped at 12 / 255 the same build gave
+# 0.57..1.26 x over three runs, capped at 6 / 255 0.95..0.98 x.
 # (shadows2) One pair of runs is not a verdict: the world-shadow ratio of single pairs spread 0.70..1.56 x on one build (the
 # events come in bursts - a few frames of one shadow edge - that fall into A or B phases by chance). -Runs pairs (default 3)
 # are made one after the other and the verdict is on the MEDIAN of the per-run numbers (the spread is printed): passes
@@ -51,14 +54,14 @@ for ($run = 1; $run -le $Runs; $run++) {
               "PS2_DUMP_FROM=script;PS2_DUMP_TO=0;PS2_FRAME_DT_FIXED=1;PS2_REIM_LOG=1"
         if ($Extra) { $ex += ";$Extra" }
         $a = @('-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'light_shots.ps1'), '-Scene', 'ep2_hub', '-At', '1', '-Frames', '1',
-               '-Every', '1', '-Phase', '6', '-Fps', '165', '-Seconds', "$([int](240 + $Frames * 0.1))", '-Tag', "shadow_gate$Tag$v", '-Ini', $ini,
+               '-Every', '1', '-Phase', '6', '-Fps', '165', '-Seconds', "$([int](240 + $Frames * 0.1))", '-Tag', "shadow_gate$Tag$(if ($Keep) { "r$run" })$v", '-Ini', $ini,
                '-Extra', "`"$ex`"", '-PadAll', "`"$pad`"")
         $ps += Start-Process powershell -ArgumentList $a -PassThru -WindowStyle Hidden
     }
     $ps | Wait-Process -Timeout 1200
     $m = @{}
     foreach ($v in $views) {
-        $d = Join-Path $wt "build\light\shots\ep2_hub__shadow_gate$Tag$v"
+        $d = Join-Path $wt "build\light\shots\ep2_hub__shadow_gate$Tag$(if ($Keep) { "r$run" })$v"
         $ph = @(Select-String -Path (Join-Path $d 'run.log') -Pattern 'ab: phase ([AB]) from v(\d+)' | ForEach-Object { @{ p = $_.Matches[0].Groups[1].Value; v = [int]$_.Matches[0].Groups[2].Value } })
         foreach ($s in 'A', 'B') { New-Item -ItemType Directory -Force (Join-Path $d $s) | Out-Null }
         foreach ($f in Get-ChildItem $d -Filter 'frame_*.bmp') {
@@ -78,10 +81,12 @@ for ($run = 1; $run -le $Runs; $run++) {
                 $r1 = & $chk $sd 12 70 '-' 0.12 $reg marks
                 $x = [regex]::Match("$r1", 'flicker ([\d.]+) per 1000 \(all\), [\d.]+ per 1000 \(dark < 70, ([\d.]+)% .*motion ([\d.]+)')
                 if (-not $x.Success) { "FAIL: no measurement (run $run, view $v, $s): $r1"; exit 1 }
-                $r2 = & $chk $sd 12 70 $hp 0.12 $reg mask   # (the world alone: blocks at / around the characters left out)
-                $x2 = [regex]::Match("$r2", 'flicker ([\d.]+) per 1000 \(all\)')
+                $r2 = & $chk $sd 6 70 $hp 0.12 $reg mask 8 5   # (the world alone: blocks at / around the characters left out, 6 / 255, <= 5 a triple)
+                $x2 = [regex]::Match("$r2", 'capped \(5 a triple\): flicker ([\d.]+) per 1000')
                 if (-not $x2.Success) { "FAIL: no masked measurement (run $run, view $v, $s): $r2"; exit 1 }
-                $m[$k] = @{ fl = [double]$x2.Groups[1].Value; fls = [double]$x.Groups[1].Value; stacked = [double]$x.Groups[2].Value; mo = [double]$x.Groups[3].Value; n = $n }
+                $r3 = & $chk $sd 12 70 '-' 0.12 $reg mask   # (the same at 12 / 255, uncapped: printed)
+                $x3 = [regex]::Match("$r3", 'flicker ([\d.]+) per 1000 \(all\)')
+                $m[$k] = @{ fl = [double]$x2.Groups[1].Value; f12 = [double]$x3.Groups[1].Value; fls = [double]$x.Groups[1].Value; stacked = [double]$x.Groups[2].Value; mo = [double]$x.Groups[3].Value; n = $n }
             } else {
                 $r1 = & $chk $sd 6 64 $hp 0.12 $reg
                 $x = [regex]::Match("$r1", 'flicker ([\d.]+) per 1000 \(all\).*motion ([\d.]+)')
@@ -93,22 +98,22 @@ for ($run = 1; $run -le $Runs; $run++) {
     }
     $r = [pscustomobject]@{ run = $run; stA = $m['8A'].stacked; stB = $m['8B'].stacked; w8A = $m['8A'].fl; w8B = $m['8B'].fl;
                             r8 = $m['8B'].fl / [math]::Max($m['8A'].fl, 1e-6); s8A = $m['8A'].fls; s8B = $m['8B'].fls;
-                            r8s = $m['8B'].fls / [math]::Max($m['8A'].fls, 1e-6); c10A = $m['10A'].fl; c10B = $m['10B'].fl;
+                            r8s = $m['8B'].fls / [math]::Max($m['8A'].fls, 1e-6); r12 = $m['8B'].f12 / [math]::Max($m['8A'].f12, 1e-6); c10A = $m['10A'].fl; c10B = $m['10B'].fl;
                             r10 = $m['10B'].fl / [math]::Max($m['10A'].fl, 1e-6); moA = $m['8A'].mo; moB = $m['8B'].mo }
     $res += $r
     "run $run`: stacked $($r.stA)% -> $($r.stB)%, world-shadow flicker $($r.w8A) -> $($r.w8B) per 1000 ($([math]::Round($r.r8, 3))x; with the " +
-    "characters' silhouettes $($r.s8A) -> $($r.s8B), $([math]::Round($r.r8s, 3))x), " +
+    "12 / 255 uncapped $([math]::Round($r.r12, 3))x, with the characters' silhouettes $($r.s8A) -> $($r.s8B), $([math]::Round($r.r8s, 3))x), " +
     "character-light flicker $($r.c10A) -> $($r.c10B) ($([math]::Round($r.r10, 3))x), motion $($r.moA) / $($r.moB)"
 }
 Remove-Item Env:\M9_GAME_EXE -ErrorAction SilentlyContinue
 function med($a) { $s = @($a | Sort-Object); if ($s.Count % 2) { $s[($s.Count - 1) / 2] } else { ($s[$s.Count / 2 - 1] + $s[$s.Count / 2]) / 2 } }
 function rng($a) { $s = @($a | Sort-Object); "$([math]::Round($s[0], 3))..$([math]::Round($s[-1], 3))" }
-$mStA = med $res.stA; $mStB = med $res.stB; $m8 = med $res.r8; $m8s = med $res.r8s; $m10 = med $res.r10
+$mStA = med $res.stA; $mStB = med $res.stB; $m8 = med $res.r8; $m8s = med $res.r8s; $m12 = med $res.r12; $m10 = med $res.r10
 $ok = $true
 if ($mStA -gt 0 -and $mStB -gt 0.5 * $mStA) { "FAIL: median stacked shadows $mStB% vs the old $mStA%"; $ok = $false }
 if ($m8 -gt $Limit8) { "FAIL: median world-shadow flicker $([math]::Round($m8, 3)) x the old (> $Limit8)"; $ok = $false }
 if ($m10 -gt $Limit) { "FAIL: median character-light flicker $([math]::Round($m10, 3)) x the old (> $Limit)"; $ok = $false }
 $sum = "$Runs runs, medians (range): stacked shadows $mStA% ($(rng $res.stA)) -> $mStB% ($(rng $res.stB)), " +
-       "world-shadow flicker $([math]::Round($m8, 3))x ($(rng $res.r8); with the silhouettes $([math]::Round($m8s, 3))x ($(rng $res.r8s))), " +
+       "world-shadow flicker $([math]::Round($m8, 3))x ($(rng $res.r8); 12 / 255 uncapped $([math]::Round($m12, 3))x ($(rng $res.r12)); old metric with the silhouettes $([math]::Round($m8s, 3))x ($(rng $res.r8s))), " +
        "character-light flicker $([math]::Round($m10, 3))x ($(rng $res.r10))"
 if ($ok) { "shadow gate: PASS ($sum)"; exit 0 } else { "shadow gate: FAIL ($sum)"; exit 1 }
