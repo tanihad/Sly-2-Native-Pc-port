@@ -1,6 +1,6 @@
 # WIP: Reimagined shadows, part 2 (branch next/shadows2, worktree sly2-worktrees\shadow2, from main ef7c53c)
 
-**Status: in progress**
+**Status: complete** (2026-11-12). Results and design: notes/reimagined-lighting.md "Shadows rework, part 2".
 
 **Goal**: world (ground) shadows flicker less than main's old path under motion (reim_shadow_gate view 8, median <= 0.8x),
 stacked / character-light gains kept; the game's soft shadow edges (Enhanced lighting) stable under motion; the gate
@@ -61,14 +61,11 @@ judged on the median of >= 3 runs.
 - Gates: run_tests 16/16; 28 unit suites exit 0; gpu_diff_all 28/28; m9_exact S1+S3 -Game all identical (base = main's
   build\gpu_diff_mixed_s1\gs_replay.exe copy). Notes: reimagined-lighting.md "Shadows rework, part 2".
 
-## In progress
-- chain: r2_sweep Faithful + Reimagined (ep1, ep3, m2_boardroom x tfo, tfb, mf), reim_stability_gate warm + cold,
-  gfx_stress_gate -Cold.
+- Game gates: r2_sweep Faithful 9/9 + Reimagined 9/9; reim_stability_gate warm (1.003 / 1.038x) + cold (1.008 / 1.059x)
+  PASS; gfx_stress_gate -Cold PASS (1913 changes, 0 crashes).
 
 ## Next
-1. Soft-edge crawl measured on the game's shadow alone: DBG=7 red channel (scratch redcheck = stability_check on R),
-   X=256, every frame, pixel blocks.
-2. Gates on final code.
+- none (owner decisions: the fixed soft-edge pattern for Faithful, PS2_LIGHT_SOFT_STABLE=1).
 
 ## Findings / traps
 - Baseline gate (ef7c53c, 1 run): world 1.256x, events only 326 (A) / 417 (B) per run, one triple up to 47: bursty.

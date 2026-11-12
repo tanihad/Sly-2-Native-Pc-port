@@ -532,3 +532,12 @@ frame (reim-shadow +0.018, mft-shfuse +0.011); per-frame timestamps mean 6.489 /
 Faithful: unchanged (its shaders byte-identical; the fixed soft-edge pattern only with PS2_LIGHT_SOFT_STABLE=1).
 Recommendation: give it to Faithful too - the change is the dither's crawl only (the penumbra's width and darkness stay),
 at no measurable cost; an owner decision.
+
+Gates (final code): run_tests 16/16; 28 unit suites exit 0; gpu_diff_all 28/28; m9_exact S1 + S3 -Game all identical (base =
+main's gs_replay); r2_sweep ep1 / ep3 / m2_boardroom x tfo, tfb, mf: Faithful 9/9, Reimagined 9/9; reim_stability_gate
+warm PASS (orbit 1.003x, trees 1.038x) and -Cold PASS (orbit 1.008x, trees 1.059x); gfx_stress_gate -Cold PASS (1913
+changes, 0 crashes); reim_shadow_gate PASS (3 runs, above).
+
+Open: the gate's world number still swings run to run (0.58..0.98 x on the final code, 0.37..0.57 x on 3 earlier runs of the
+same code: a few dozen events a run); judge it on >= 3 runs. Sly takes no shadow from the per-frame casters (trees, posts:
+game-lit pixels, part 1) - under a tree's shadow the ground darkens, he does not (the game's own lighting on him only).
