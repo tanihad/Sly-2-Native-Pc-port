@@ -375,7 +375,7 @@ static struct {
     ID3D11ShaderResourceView* srv[ET_NCLS];
     ID3D11Texture2D* narr[ET_NCLS];     /* their surface maps (RGBA8, 32 << c, the slot's slice) */
     ID3D11ShaderResourceView* nsrv[ET_NCLS];
-    uint32_t ncap[ET_NCLS];
+    uint32_t ncap[ET_NCLS], abcap[ET_NCLS];   /* (abcap: PS2_TEX_BC7=2's copies) */
     ID3D11Texture2D* stg[ET_NCLS];      /* one-slice staging: the colour levels and the map levels of the image being built */
     ID3D11ShaderResourceView* stg_srv[ET_NCLS];
     ID3D11UnorderedAccessView* stg_uav[ET_NCLS][ET_MAXMIP];
@@ -388,9 +388,13 @@ static struct {
     uint64_t bytes, nbytes, n_bc, n_rgba;
 } EBC;
 static int ebc_env(void) {
-    if (!EBC.env) { const char* e = getenv("PS2_TEX_BC7"); EBC.env = e && *e == '0' ? -1 : 1; }
-    return EBC.env > 0;
+    if (!EBC.env) { const char* e = getenv("PS2_TEX_BC7"); EBC.env = e && *e == '0' ? -1 : e && *e == '2' ? 2 : 1; }
+    return EBC.env == 1;
 }
+/* PS2_TEX_BC7=2 (tests): the AI images stay RGBA8 as with 0 and each opaque one also gets a BC7 copy at the same class /
+ * slice (ebc_shadow; et_tab info bit 30), which the shaders sample in the B phases of PS2_GPU_AB=<n> PS2_GPU_AB_R8=8192:
+ * the same pictures of one run with and without BC7 */
+static int ebc_ab(void) { ebc_env(); return EBC.env == 2; }
 static int ebc_small(void) { return ra_on_now && ebc_env() && !EBC.failed; }
 static int ebc_on(void) { return ebc_small() && RA.init > 0; }
 static void ebc_bind_ps(void) {
@@ -400,7 +404,7 @@ static void ebc_bind_ps(void) {
 static void ebc_free(void) {
     for (int c = 0; c < ET_NCLS; c++) {
         GPU_RELEASE(EBC.srv[c]); GPU_RELEASE(EBC.arr[c]);
-        GPU_RELEASE(EBC.nsrv[c]); GPU_RELEASE(EBC.narr[c]); EBC.ncap[c] = 0;
+        GPU_RELEASE(EBC.nsrv[c]); GPU_RELEASE(EBC.narr[c]); EBC.ncap[c] = 0; EBC.abcap[c] = 0;
         for (int m = 0; m < ET_MAXMIP; m++) { GPU_RELEASE(EBC.stg_uav[c][m]); GPU_RELEASE(EBC.nstg_uav[c][m]); }
         GPU_RELEASE(EBC.stg_srv[c]); GPU_RELEASE(EBC.stg[c]); GPU_RELEASE(EBC.nstg[c]);
     }
@@ -604,6 +608,56 @@ static int32_t ebc_build(const et_ent* t, int c, uint32_t src_base, int pre, uin
     if (RA.dump) { et_dump_from((ID3D11Resource*)EBC.stg[c], S, 2, hash); if (has) et_dump_from((ID3D11Resource*)EBC.nstg[c], S / 2, 3, hash); }
     EBC.n_bc++;
     return id;
+}
+/* (PS2_TEX_BC7=2) RGBA8 slot id's image (just built) encoded into the BC7 array of its class at the same slice (the array
+ * follows the RGBA8 class's size); its entries' et_tab info gains bit 30 */
+static void ebc_shadow(int32_t id, int* bound) {
+    int c = id >> 16;
+    uint32_t slice = (uint32_t)(id & 0xFFFF), S = 64u << c, nm = (uint32_t)c + 7u;
+    if (c >= ET_NCLS || !ebc_stage(c) || !gpu_cs(GPU_SH_cs_bc7)) return;
+    if (EBC.abcap[c] < ET.cap[c]) {          /* (the copies' array: the RGBA8 class's slice count; no slots of its own) */
+        uint32_t oc = EBC.abcap[c], nc = ET.cap[c];
+        ID3D11Texture2D* t = ebc_tex(S, nm, nc, DXGI_FORMAT_BC7_UNORM, D3D11_BIND_SHADER_RESOURCE);
+        ID3D11ShaderResourceView* v = ebc_srv_of(t, DXGI_FORMAT_BC7_UNORM, nm, nc);
+        if (!v) { GPU_RELEASE(t); return; }
+        for (uint32_t j = 0; EBC.arr[c] && j < oc; j++)
+            for (uint32_t m = 0; m < nm; m++)
+                ID3D11DeviceContext_CopySubresourceRegion(gpu_rt.ctx, (ID3D11Resource*)t, m + j * nm, 0, 0, 0, (ID3D11Resource*)EBC.arr[c], m + j * nm, NULL);
+        GPU_RELEASE(EBC.srv[c]); GPU_RELEASE(EBC.arr[c]);
+        EBC.arr[c] = t; EBC.srv[c] = v;
+        EBC.abcap[c] = nc;
+    }
+    if (!*bound) {
+        ID3D11ShaderResourceView* n1 = NULL;
+        ID3D11DeviceContext_PSSetShaderResources(gpu_rt.ctx, 13, 1, &n1);
+        *bound = 1;
+    }
+    ID3D11DeviceContext* x = gpu_rt.ctx;
+    ID3D11DeviceContext_CSSetShader(x, gpu_cs(GPU_SH_cs_bc7), NULL, 0);
+    ID3D11DeviceContext_CSSetShaderResources(x, 0, 1, &ET.srv[c]);
+    ID3D11DeviceContext_CSSetConstantBuffers(x, 0, 1, &EBC.cb);
+    for (uint32_t k = 0; k < nm; k++) {
+        uint32_t s = S >> k, b = (s + 3) / 4, j = k + 4u - (uint32_t)c;
+        if (j >= EBC_BLK) j = EBC_BLK - 1;
+        D3D11_MAPPED_SUBRESOURCE m;
+        if (SUCCEEDED(ID3D11DeviceContext_Map(x, (ID3D11Resource*)EBC.cb, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) {
+            uint32_t v[8] = { slice, k, b, b, s, s, 0, 0 };
+            memcpy(m.pData, v, sizeof v);
+            ID3D11DeviceContext_Unmap(x, (ID3D11Resource*)EBC.cb, 0);
+        }
+        ID3D11DeviceContext_CSSetUnorderedAccessViews(x, 0, 1, &EBC.blk_uav[j], NULL);
+        ID3D11DeviceContext_Dispatch(x, (b + 7) / 8, (b + 7) / 8, 1);
+        ID3D11UnorderedAccessView* nu = NULL;
+        ID3D11DeviceContext_CSSetUnorderedAccessViews(x, 0, 1, &nu, NULL);
+        D3D11_BOX bx = { 0, 0, 0, b, b, 1 };
+        ID3D11DeviceContext_CopySubresourceRegion(x, (ID3D11Resource*)EBC.arr[c], k + slice * nm, 0, 0, 0, (ID3D11Resource*)EBC.blk[j], 0, &bx);
+    }
+    ID3D11ShaderResourceView* ns = NULL;
+    ID3D11DeviceContext_CSSetShaderResources(x, 0, 1, &ns);
+    et_slot* s = et_slot_of(id);
+    s->bcs = 1;
+    for (int32_t k = s->first; k >= 0; k = ET.e[k].next) et_tab_write(ET.e[k].base, ET.e[k].base + 1, et_info(id));
+    EBC.n_bc++;
 }
 
 /* ---- items ----------------------------------------------------------------------------------------------------------- */
@@ -1420,6 +1474,7 @@ static int ra_build_new(int32_t i, int* bound) {
         if (!et_build(&t, id, RA.up_srv, RA.reg[r].at, 1)) { et_batch_run(); et_build(&t, id, RA.up_srv, RA.reg[r].at, 1); }
         et_batch_run();
         EBC.n_rgba++;
+        if (ebc_ab() && it->opaque) ebc_shadow(id, bound);   /* (PS2_TEX_BC7=2) */
         if (RA.dump) { et_dump_ai(id, it->hash); et_dump_nrm(id, it->hash); }
     }
     et_map_put(it->hash, id);
@@ -1587,6 +1642,7 @@ static int ra_apply(int32_t i, int* bound) {
     if (!et_build(&t, id, RA.up_srv, RA.reg[it->reg].at, 1)) { et_batch_run(); et_build(&t, id, RA.up_srv, RA.reg[it->reg].at, 1); }
     et_batch_run();
     if (ebc_on()) EBC.n_rgba++;
+    if (ebc_ab() && it->opaque) ebc_shadow(id, bound);   /* (PS2_TEX_BC7=2) */
     ra_pop_swap(s);
     s->ai = 1;
     for (int32_t k = s->first; k >= 0; k = ET.e[k].next) et_swap_note(k, 'A');   /* (reimagine: Enhanced -> AI, once) */

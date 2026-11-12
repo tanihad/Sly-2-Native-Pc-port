@@ -21,7 +21,8 @@ Texture2DArray<float4> et_b5 : register(t55);
 SamplerState et_sw : register(s4);               // REPEAT: wrap, trilinear, anisotropic
 SamplerState et_sc : register(s5);               // CLAMP
 cbuffer et_ps_cb : register(b8) {
-    float4 e_ps;                                 // gradient scale (2^lod bias), split x (pictures: Enhanced right of it), -, -
+    float4 e_ps;                                 // gradient scale (2^lod bias), split x (pictures: Enhanced right of it), debug,
+                                                 // (tex-opt) 1: sample the A/B BC7 copies (PS2_TEX_BC7=2, B phases)
 };
 
 float4 et_class(uint k, bool cl, float3 c, float2 dx, float2 dy) {
@@ -80,7 +81,8 @@ bool et_sample(uint dec, uint4 tc, uint tlev, float2 uv, float2 dx, float2 dy, f
     }
     float3 c3 = float3(uv, (float)((e.y >> 3) & 0xFFFFu));
     float4 v;
-    [branch] if (e.y >> 31) v = et_bclass(e.y & 7u, cl, c3, dx * e_ps.x, dy * e_ps.x);
+    [branch] if ((e.y >> 31) != 0u || (((e.y >> 30) & 1u) != 0u && e_ps.w > 0.5))   // (bit 30: an A/B copy, B phases)
+        v = et_bclass(e.y & 7u, cl, c3, dx * e_ps.x, dy * e_ps.x);
     else v = et_class(e.y & 7u, cl, c3, dx * e_ps.x, dy * e_ps.x);
     uint4 b = (uint4)(saturate(v) * 255.0 + 0.5);
     t = b.x | (b.y << 8) | (b.z << 16) | (b.w << 24);

@@ -708,6 +708,23 @@ int main(int argc, char** argv) {
     if (!strcmp(argv[1], "probe")) return probe();
     if (!strcmp(argv[1], "encode") && argc == 5) return encode(argv[2], argv[3], argv[4]);
     if (!strcmp(argv[1], "dedupe") && argc == 3) return dedupe(argv[2]);
+    if (!strcmp(argv[1], "dec") && argc == 3) {    /* dec <dir>: WIC decode time of a cache (one thread) vs its BC7 size */
+        entry* e;
+        int n = list_dir(argv[2], &e);
+        double t0 = now(), mtex = 0, file_mb = 0, bc_mb = 0;
+        for (int i = 0; i < n; i++) {
+            uint32_t w, h;
+            WIN32_FILE_ATTRIBUTE_DATA fa;
+            if (GetFileAttributesExW(e[i].path, GetFileExInfoStandard, &fa)) file_mb += fa.nFileSizeLow / 1048576.0;
+            uint32_t* px = load_img(e[i].path, &w, &h);
+            if (px) { uint32_t s = w > h ? w : h; mtex += (double)w * h / 1048576.0; bc_mb += (double)s * s * 4.0 / 3.0 / 1048576.0; }
+            free(px);
+        }
+        double t = now() - t0;
+        printf("dec: %d files, %.1f MB on disk, %.1f M texels: %.0f ms (%.2f ms per file, %.1f ms per M texels); as BC7 blocks with mips: %.0f MB\n",
+               n, file_mb, mtex, t * 1000, t * 1000 / n, t * 1000 / mtex, bc_mb);
+        return 0;
+    }
     if (!strcmp(argv[1], "pair") && argc == 4) {   /* pair <a> <b>: two pictures (e.g. dumped frames): PSNR, max error */
         wchar_t a[600], b[600];
         _snwprintf(a, 600, L"%hs", argv[2]); _snwprintf(b, 600, L"%hs", argv[3]);

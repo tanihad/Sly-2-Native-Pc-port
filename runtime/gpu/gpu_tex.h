@@ -42,6 +42,7 @@ static void ra_link_note(int32_t idx, const et_slot* s);
 static int ra_direct(int32_t idx);
 static int ebc_small(void);              /* (tex-opt) gpu_tex_ai.h: the BC7 classes hold the AI images (Reimagined) */
 static void ebc_bind_ps(void);
+static int ebc_ab(void);                 /* (tex-opt) PS2_TEX_BC7=2: BC7 copies for an in-run A/B */
 static int ra_on_now;                  /* (ai) Reimagined textures this frame */
 
 #define ET_NCLS 6                        /* square classes: 64 << c texels */
@@ -68,7 +69,8 @@ typedef struct {                         /* per decoded entry (the index of TD.e
     uint32_t want;                       /* (tex-prebuild) the frame it was first noted (statistics: PS2_AI_POPLOG) */
     uint32_t wait;                       /* (tex-prebuild) ES_AILOAD since this frame */
 } et_ent;
-struct et_slot_s { uint64_t hash; uint32_t last; int32_t first; uint8_t used, hd, ai; };   /* (ai: the AI image is in it) */
+struct et_slot_s { uint64_t hash; uint32_t last; int32_t first; uint8_t used, hd, ai, bcs; };   /* (ai: the AI image is in it;
+                                          * bcs: tex-opt A/B mode, a BC7 copy at the same index - gpu_tex_ai.h ebc_shadow) */
 typedef struct { int32_t ent; uint32_t ver; } et_req;
 
 static struct {
@@ -235,7 +237,10 @@ static void et_tab_write(uint32_t base, uint32_t dec, uint32_t info) {
 
 static et_slot* et_slot_of(int32_t id) { return id < 0 ? NULL : &ET.sl[id >> 16][id & 0xFFFF]; }
 /* et_tab's info word of slot id: class | slice << 3, bit 31 = a BC7 class (tex-opt; never set under Faithful / Retro) */
-static uint32_t et_info(int32_t id) { return (uint32_t)(id >> 16 & 7) | (uint32_t)(id & 0xFFFF) << 3 | (uint32_t)(id >> 16 >= ET_BC) << 31; }
+static uint32_t et_info(int32_t id) {
+    return (uint32_t)(id >> 16 & 7) | (uint32_t)(id & 0xFFFF) << 3 | (uint32_t)(id >> 16 >= ET_BC) << 31 |
+           (uint32_t)(id >= 0 && ET.sl[id >> 16][id & 0xFFFF].bcs) << 30;   /* (bit 30: PS2_TEX_BC7=2's copy, sampled in B phases) */
+}
 
 static void et_unlink(int32_t idx) {
     et_ent* e = &ET.e[idx];
@@ -510,6 +515,7 @@ static void et_batch_run(void) {
 static int et_build(const et_ent* e, int32_t id, ID3D11ShaderResourceView* src, uint32_t src_base, int hd) {
     int cls = id >> 16;
     uint32_t S = 64u << cls, words = S * S * 4u / 3u + 16u;
+    if (cls < ET_BC && ET.sl[cls]) ET.sl[cls][id & 0xFFFF].bcs = 0;   /* (tex-opt: a new image - its A/B copy is gone) */
     int dd = !hd && ET.up && ET.dd > 0.0f;   /* (the dither resolve: built images only; the source again + weights) */
     uint32_t dw = dd ? 2u << (e->lw + e->lh) : 0u, dbase = EB.n ? EB.dd_used : 0u;
     if (EB.n && (EB.n >= ET_JOBS || EB.src != src || EB.lv_used + words > ET_SCR_WORDS || dbase + dw > ET_DD_WORDS)) return 0;
@@ -1213,7 +1219,7 @@ static void et_frame_body(void) {
 /* the pixel shaders' bindings (t30..t36, s4 / s5, b8); w: the surface width (PS2_TEX_SPLIT) */
 static void et_bind_ps(int w) {
     ID3D11DeviceContext* c = gpu_rt.ctx;
-    float v[4] = { exp2f(ET.bias), ET.split ? (float)(w / 2) : -1.0f, (float)ET.dbg, 0.0f };
+    float v[4] = { exp2f(ET.bias), ET.split ? (float)(w / 2) : -1.0f, (float)ET.dbg, ra_on_now && ebc_ab() && r8p_on(R8P_TEXBC) ? 1.0f : 0.0f };
     if (memcmp(v, ET.pcb_val, sizeof v)) {
         D3D11_MAPPED_SUBRESOURCE m;
         if (SUCCEEDED(ID3D11DeviceContext_Map(c, (ID3D11Resource*)ET.pcb, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) {
