@@ -13,7 +13,8 @@
 # -Shots orbit,trees (default both). One game run at a time; the dumps are deleted.
 param([switch]$Cold, [string]$Shots = 'orbit,trees', [double]$Limit = 1.15, [string]$Extra = '')   # (-Extra: env for both looks, e.g. PS2_REIM2=0)
 $wt = Split-Path $PSScriptRoot -Parent
-$clang = Join-Path (Split-Path $wt -Parent) 'sly2-decomp\tools\llvm-mingw\bin\clang.exe'
+. (Join-Path $PSScriptRoot 'project.ps1')   # (tex-prebuild: the main checkout's clang, wherever the worktree lives)
+$clang = $ProjectClang
 $chk = Join-Path $wt 'build\stability_check.exe'
 if (-not (Test-Path $chk) -or (Get-Item $chk).LastWriteTime -lt (Get-Item (Join-Path $PSScriptRoot 'stability_check.c')).LastWriteTime) {
     & $clang -O2 -o $chk (Join-Path $PSScriptRoot 'stability_check.c')

@@ -303,3 +303,12 @@ the final images (only the scene's own fade-in changes).
 - A cold cache's first visit shows Enhanced images for whatever stays in view; their AI images come when out of sight
   or at the next visit. A "prepare all levels" pass (option b) is still the only way to a fully AI first visit.
 - Switches: PS2_AI_READY=0 (old flow), PS2_AI_POPLOG=1 (ai-pop / ai-pre lines), PS2_GPU_FT=2 (a line per picture).
+
+### Gates (code of this branch's last commit)
+
+run_tests 16/16; unit suites 0 failed; m9_exact S1 + S3 -Game all identical (base: git archive of main e656907's
+runtime); gpu_diff_all mixed S=1 28/28; r2_sweep -Parallel 1 Faithful ep1, ep3, m2_boardroom tfo, tfb, mf 9/9,
+Reimagined (PS2_TEX_AI=1, fresh caches) ep1, m2_boardroom tfo, mf 4/4; reim_stability_gate PASS (orbit 1.04 x, trees
+1.028 x, no texture changed more than once, no world-matrix flips; warm seed with level lists); gfx_stress_gate -Cold
+PASS (1183 changes, 0 crashes, 238 nets) and warm PASS (1033 changes, 0 crashes, 209 nets). reim_stability_gate built its
+checker with a clang path that only exists for worktrees inside the main checkout's parent: it now takes project.ps1's.
