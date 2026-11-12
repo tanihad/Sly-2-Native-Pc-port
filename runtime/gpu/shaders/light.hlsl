@@ -300,7 +300,7 @@ float3 ps_reim_local(float4 pos : SV_Position) : SV_Target {
     if (w >= l_z.z * 0.5) return 0.0;
     // (3) what the game lit itself (characters, lit props: the VU's best four point lights) gets none of it again - a
     // character the game leaves dark (Sly hiding in the museum's shadow) stays dark
-    if (r_gamelit(q, w) > 0.0) return 0.0;
+    if (r_v3.x > 0.0 && r_gamelit(q, w) > 0.0) return 0.0;
     float2 pp = pos.xy * l_map.zw;
     float3 P = r_world(pp, w);
     // the surface normal from the depth (the flatter neighbour of each pair, 2 texels apart: steady under motion)
@@ -349,7 +349,7 @@ float4 ps_reim_shadow(float4 pos : SV_Position) : SV_Target {
     int2 q = int2(pos.xy);
     float w = l_wload(q);
     if (w >= l_z.z * 0.5 || w >= max(r_sss.w, r_smp2.x)) return float4(1.0, 0.0, 1.0, 0.0);
-    float glit = r_gamelit(q, w);
+    float glr = r_gamelit(q, w), glit = r_v3.x > 0.0 ? glr : 0.0;   // (the mask: drawn for the rework, or the debug views 8 / 10)
     float2 pp = pos.xy * l_map.zw;
     float3 P = l_pos(pp, w);
     float3 L = r_key.xyz;
@@ -371,7 +371,9 @@ float4 ps_reim_shadow(float4 pos : SV_Position) : SV_Target {
         if (dot(N2, N2) > 1e-12) { N2 = normalize(N2); if (dot(N2, P) > 0.0) N2 = -N2; if (dot(N2, N) > 0.8) N = normalize(N + N2); }
     }
     float nl = dot(N, L);
-    if (nl <= 0.02) return float4(1.0, 0.0, 1.0, glit);
+    if (nl <= 0.02 && glit < 0.5) return float4(1.0, 0.0, 1.0, glit);
+    float nlr = nl;                      // (3) a game-lit pixel (a character) takes the world's shadows whatever its depth normal
+    if (glit >= 0.5) nl = max(nl, 0.5);  //  says: N.L from the depth flickers over a running character
     float len = r_sss.x * (1.0 + w / 3000.0);       // (a little longer far away: the same share of the screen)
     float noise = r_noise(pos.xy);
     float3 Po = P + N * (r_sss.z * (1.0 + w * 0.002));   // (off the surface: no self-shadowing)
@@ -446,7 +448,7 @@ float4 ps_reim_shadow(float4 pos : SV_Position) : SV_Target {
             }
         }
     }
-    return float4(1.0 - saturate(occ), nl, 1.0 - saturate(occd), glit);
+    return float4(1.0 - saturate(occ), max(nlr, 0.0), 1.0 - saturate(occd), glr);
 }
 
 // (2) the static shadow cache moved by whole texels (gpu_reim.h sc_move): the old map's depth at the offset texel
@@ -629,7 +631,7 @@ float4 ps_reim_stats(float4 pos : SV_Position) : SV_Target {
                 float ao = l_ao.y > 0.0 ? l_aot.SampleLevel(l_lin, uv, 0.0) : 1.0;
                 float4 sh4 = r_sh.SampleLevel(l_lin, uv, 0.0);
                 float2 sh = float2(r_v3.x > 0.0 ? min(sh4.x, sh4.z) : sh4.x, sh4.y);
-                float lit = smoothstep(0.0, 0.7, sh.y) * sh.x * (1.0 - sh4.w), dark = saturate(sh.y * 4.0) * (1.0 - sh.x);
+                float lit = smoothstep(0.0, 0.7, sh.y) * sh.x * (1.0 - (r_v3.x > 0.0 ? sh4.w : 0.0)), dark = saturate(sh.y * 4.0) * (1.0 - sh.x);
                 s += ao * (1.0 + r_keyc.w * lit * 0.8) * (1.0 - r_key.w * dark * 0.75);
             }
         v = float4(s / 576.0, 0.0, 0.0, 1.0);
@@ -717,15 +719,18 @@ float4 ps_reim_comp(float4 pos : SV_Position) : SV_Target {
     // local lights, times the game's own shadow darkening - what the shadow-overlap check measures (no texture, no grade)
     float gfd = r_v3b.x > 0.0 ? r_gsmload(int2(p * l_map.xy)) : 1.0;
     float kd = ao * gfd;
+    float sfac = 1.0;                    // (the key light's shadow alone)
     // the key light relit: surfaces facing it brighten in its hue where it reaches them, darken (cool) where something casts
     // a shadow on them; surfaces turned away keep the game's own lighting
     {
         float nl = sh.y, vis = r_v3.x > 0.0 ? min(sh.x, sh.z) : sh.x;
         float3 kc = abs(r_keyc.rgb);
         kc = kc / max(max(kc.r, kc.g), max(kc.b, 1e-3));
-        // (3) the game-lit (characters) already have the key light's diffuse from the game itself: no relight on them (it was
-        // twice, and its N.L from the depth flickered over a running character); shadows still darken them
-        float lit = smoothstep(0.0, 0.7, nl) * vis * (1.0 - sh.w), dark = saturate(nl * 4.0) * (1.0 - vis);
+        // (3) the game-lit (characters) already have the key light's diffuse from the game itself: on them a steady lift of half
+        // the relight (their brightness as before against the relit world) instead of N.L from the depth, which flickered over
+        // a running character; shadows still darken them
+        float gw = r_v3.x > 0.0 ? sh.w : 0.0;
+        float lit = lerp(smoothstep(0.0, 0.7, nl), 0.5, gw) * vis, dark = saturate(lerp(nl * 4.0, 1.0, gw)) * (1.0 - vis);
         dark *= 1.0 - 0.6 * smoothstep(0.25, 0.65, l_luma(c));   // (a lamp-lit spot keeps its own light: no mud under a canopy by the fire)
         if (r_v3b.x > 0.0 && r_v3.x > 0.0) {
             // (3) ONE shadow per pixel: where the game's own shadow (its volumes, cast from this same light) already darkened
@@ -741,6 +746,7 @@ float4 ps_reim_comp(float4 pos : SV_Position) : SV_Target {
         c *= 1.0 + r_keyc.w * lit * head * lerp(float3(1.0, 1.0, 1.0), kc, 0.05);   // (white light: the surfaces keep their own hue)
         c *= lerp(float3(1.0, 1.0, 1.0), shc * (1.0 - r_key.w), dark);
         kd *= (1.0 + r_keyc.w * lit * head) * (1.0 - r_key.w * dark);
+        sfac = 1.0 - r_key.w * dark;
     }
     // exposure: what the occlusion, shadows and relight take away on average comes back (the picture at least as bright as
     // the game's own: depth from the contrast, not from darkening)
@@ -830,7 +836,12 @@ float4 ps_reim_comp(float4 pos : SV_Position) : SV_Target {
         float v = r_v3.x > 0.0 ? min(sh.x, sh.z) : sh.x;
         o = float3(gf, min(gf, v), v);   // (white: lit; red: only the key light's shadow; blue: only the game's; black: both)
     }
-    else if (r_misc.z == 8.0) o = sky ? 0.5 : saturate(kd * 0.5).xxx;   // (8: (3) the light this pass applies x the game's shadow)
+    else if (r_misc.z == 8.0 || r_misc.z == 10.0) {      // (8 / 10: (3) the overlap check's views - the mask read raw, the same in both paths)
+        int2 qh = int2(p / l_map.zw);
+        float gm = r_gamelit(qh, l_w.Load(int3(qh, 0)));
+        if (r_misc.z == 8.0) o = sky || gm > 0.0 ? 0.5 : saturate(gfd * sfac * 0.5).xxx;   // (8: (3) the world's shadows: the game's x ours (the game-lit as lit))
+        else o = gm > 0.0 && !sky ? saturate(kd * 0.5).xxx : 0.5;
+    }   // (10: (3) the light on the game-lit (characters) alone, the rest grey)
     return float4(saturate(o), pic.a);
 }
 #endif

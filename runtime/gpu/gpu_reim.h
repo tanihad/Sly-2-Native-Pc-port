@@ -904,7 +904,7 @@ static int reim_smap(const reim_scene* S, const float* rndc, const float* rzab, 
  * shadow per pixel, the darker of the game's and the key light's, instead of the product (the key light IS the light the
  * game casts its characters' shadow volumes from: two copies of Sly's shadow, slightly apart, darkest where they overlap -
  * "two shadows collide and flick"). Valid for the post pass right after the frame's shadow pass (RG.post). */
-static int reim_gsm_on(void) { re_env(); return lt_reim() && RE.v2 && (re_x(64, RE.v3) || RE.dbg == 8); }   /* (8: measured in both paths) */
+static int reim_gsm_on(void) { re_env(); return lt_reim() && RE.v2 && (re_x(64, RE.v3) || RE.dbg == 8 || RE.dbg == 10); }   /* (8 / 10: measured in both paths) */
 static ID3D11RenderTargetView* reim_gsm_rtv(int w, int h, int n) {
     if (!reim_gsm_on()) return NULL;
     if (!RG.t || RG.w != w || RG.h != h || RG.n != n) {
@@ -1090,7 +1090,7 @@ static void reim_post(mtarget* c, mtarget* z, int pc) {
                 memcpy(rlm, RR.lm_last, sizeof RR.lm_last); memcpy(rsmp, RR.smp_last, sizeof RR.smp_last); memcpy(rlc, RR.lc_last, sizeof RR.lc_last); RE.map_reuse++;
             } else memset(rsmp, 0, 12 * sizeof(float));
         }
-        if (v3) glm = S == &RS && reim_litmask(S, rndc, pw, ph, hw, hh);
+        if (v3 || RE.dbg == 8 || RE.dbg == 10) glm = S == &RS && reim_litmask(S, rndc, pw, ph, hw, hh);   /* (8 / 10: the old path too, for the views only) */
         if (RE.log && RE.posts % 600 == 0)
             gpu_log("reim-stats: %llu post passes, %llu maps drawn, %llu reused (no segments %llu, another frame's data %llu), key changes %llu, "
                     "shadow cache %llu new, %llu moves, world matrix: %llu frames not the most common, %llu cuts, %llu frames 0.1.1214 took another",
@@ -1128,7 +1128,7 @@ static void reim_post(mtarget* c, mtarget* z, int pc) {
     float* rv3 = rc + 144;               /* (3) light.hlsl r_v3: on, the game-lit mask drawn, its depth tolerance, the history's */
     rv3[0] = v3 ? 1.0f : 0.0f; rv3[1] = glm ? 1.0f : 0.0f; rv3[2] = RE.gl_tol; rv3[3] = v3 && RR.have_pw ? RE.h_tol : 0.0f;
     float* rv3b = rc + 148;              /* (3) light.hlsl r_v3b: the game shadow's darkening written this frame (r_gsm) */
-    int gsm = (v3 || RE.dbg == 8) && RG.srv && RG.post == RR.frames && RG.w == z->w && RG.h == z->h;
+    int gsm = (v3 || RE.dbg == 8 || RE.dbg == 10) && RG.srv && RG.post == RR.frames && RG.w == z->w && RG.h == z->h;
     rv3b[0] = gsm ? 1.0f : 0.0f;
     if (gsm) RG.used++;
     ID3D11DeviceContext_UpdateSubresource(gpu_rt.ctx, (ID3D11Resource*)RR.cb, 0, NULL, rc, 0, 0);
@@ -1275,7 +1275,7 @@ static void reim_post(mtarget* c, mtarget* z, int pc) {
     lt_srv(14, LT.srv[LT_W]); lt_srv(15, LT.srv[LT_AO0]); lt_srv(16, LT.srv[LT_B1]); lt_srv(17, z->srv); lt_srv(18, stv);
     lt_srv(19, RR.srv[RT_PIC]); lt_srv(20, RR.srv[RT_SH]); lt_srv(21, RR.srv[RT_SHAFT]); lt_srv(22, RR.srv[RT_SCENE]);
     if (nloc > 0) lt_srv(28, RR.srv[RT_LOC]);   /* (local lights) */
-    if (glm && RE.dbg == 6) lt_srv(29, RR.gl_srv);   /* (3: the mask's debug view) */
+    if (glm && (RE.dbg == 6 || RE.dbg == 8 || RE.dbg == 10)) lt_srv(29, RR.gl_srv);   /* (3: the debug views) */
     if (gsm) lt_srv(31, RG.srv);         /* (3: the game shadow's darkening) */
     {
         static const float zero[4] = { 0, 0, 0, 0 };

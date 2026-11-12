@@ -497,9 +497,9 @@ static int segment(const gpu_fop_r2* o, const uint8_t* fdata, size_t fdata_bytes
             const gpu_r2_draw* d = &dr[i];
             const r2_mesh* m = r2_mesh_get(d->mesh);
             if (!m || m->gpu_state != (int)R.epoch || (m->handle >> 20) != o->gen) continue;
-            /* (pass A, Z written: solid geometry, no sky / effects; (shadows) the game-lit mask takes every lit draw - characters
-             * are often drawn without Z writes (the museum's Sly on the rope): the picture's depth there is what lies behind) */
-            if (((d->mode & 3) || !((d->state >> 4) & 1)) && in->shadow_sel != 3) continue;
+            /* (pass A, Z written: solid geometry, no sky / effects; (shadows) the game-lit mask takes pass A's lit draws with or
+             * without Z writes - characters are often drawn without (the picture's depth there is what lies behind them) */
+            if ((d->mode & 3) || (!((d->state >> 4) & 1) && in->shadow_sel != 3)) continue;
             if (in->shadow_sel == 3) {   /* (shadows) the lit entries (a light block): the game-lit mask */
                 const gpu_r2_entry* ent = (const gpu_r2_entry*)(fdata + o->ent_off);
                 if (!(d->entry < o->nent && o->ent_off + (size_t)(d->entry + 1) * sizeof(gpu_r2_entry) <= fdata_bytes && ent[d->entry].pad[0]))
