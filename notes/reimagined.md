@@ -176,7 +176,7 @@ this runs (tcf_look 0, ra_on_now 0); the shared code only gained an unused slot 
   when both halves are in.
 - A "prepare all levels" button (needs a census of every level's textures from the disc data rather than walks; see
   "Ready before first sight" below for why it was not done). (Shipping the weights: done, notes/install.md "AI model".)
-- fp16 feature buffers would halve the net's 294 MB and speed it up on cards with fast fp16.
+- fp16 feature buffers: done (2026-11-12, "Lighter and faster": 155 MB, -22 % time).
 
 ## Look switch crash (owner, 0.1.1226, 2026-11-10)
 
@@ -332,7 +332,9 @@ there - m9_exact identical).
   subset; p-bits 1 for alpha 255); where its block error exceeds 16, mode 3 (two subsets, 7+1-bit endpoints) on the two
   partitions with the least within-subset variance. Endpoints: the principal axis' extremes, p-bits by their own
   quantization error, one least-squares refinement; indices by projection (+-1 checked), packed in a uint2 (indexable
-  arrays made it 10x slower). Mode 1 was tried too: +0..0.4 dB for 3x the time - off.
+  arrays made it 10x slower). Mode 1 was tried too: +0..0.4 dB for 3x the time - off. Speed: 0.87 ms per million texels
+  (bc7_tool time, every level, quiet GPU); a cached image's whole build (mips, coverage, map, encode, copies) 5.3-6.4
+  instead of 2.0 ms per million texels - the preloads' share per frame is time-based, first-image delays did not change.
 - **Quality** (scripts/bc7_tool.c encode: every cache file as the game holds it - GS alpha, square, box mips - encoded,
   decoded by the GPU's own BC7 sampler, compared):
 
@@ -363,8 +365,10 @@ there - m9_exact identical).
 - In the game (cold ep2 runs, the same textures built by both nets): the JPEG cache files differ by 45.8-59 dB (median
   ~51; JPEG requantization amplifies 1-3 / 255 into larger steps). The cache key stays x4plus-v3: the owner's ~800 files
   stay valid, new images mix in invisibly. PS2_AI_HALF=0: the float net.
-- Also: the layer kernel's tile loader without integer divisions (outputs bit-identical); batches of 2-4 tiles instead of
-  one: only 6 % faster (the kernel, not occupancy, is the limit) - not done.
+- Speed (ai_up_tool, the 400 images = 4.15 M padded source pixels, 148 TFLOP, quiet GPU, best of 3): 0.1.1267's kernel
+  17.8 s (0.120 ms per GFLOP), the same with the tile loader rewritten without integer divisions 15.4 s (bit-identical
+  output), + half storage **13.8 s (0.093 ms per GFLOP): -22 %**, i.e. 4.29 -> 3.32 s per million padded source pixels
+  (268 -> 208 ms per million output texels). Batches of 2-4 tiles instead of one: only 6 % more - not done.
 
 ### 3. Dedupe
 
@@ -392,3 +396,31 @@ Same content under other addresses / levels already shares one image (et_map_fin
 The owner's 887 files: 29 MB as JPEG / PNG, 207 MB as BC7 blocks with mips (whole game ~1.2 GB instead of 167 MB). The
 JPEG decode costs 1.3 ms per file on the loader threads (background, 2-6 of them), and the surface map still needs the
 colour image: 7x the disk for a saving the player does not see.
+
+### Before / after at the owner's settings
+
+2560 x 1440, render scale 100 %, MSAA 2x, thin outlines, modern filters, motion blur off, Look Reimagined, 165 fps; RTX
+4060 Ti 8 GB; headless, deterministic (PS2_FRAME_DT_FIXED), title -> Resume -> ep2 hub + a walk with camera turns; warm =
+a copy of the owner's own cache (887 files, level lists); cold = an empty cache, 480 s. Quiet GPU (no other game for 45 s
+before each run; none during them). Before = main 336e78e, after = this branch.
+
+| | before | after |
+|---|---|---|
+| video memory in use, warm (process, DXGI) | 1657 MB | **1358 MB** (-299) |
+| AI images: classes + surface maps, warm | 791 + 198 = 989 MB | RGBA8 199 + 50, BC7 219 + 219 = **687 MB** |
+| the net's buffers | 294 MB | **155 MB** |
+| video memory in use, cold first visit | 1993 MB | 2102 MB (+109: the Enhanced images come first, RGBA8 classes regrow) |
+| disk cache | 29 MB (owner), ~167 MB whole game | the same (-1 %: alpha-test twins shared) |
+| net speed (400 images, ai_up_tool) | 268 ms per M output texels (0.120 ms per GFLOP) | **208 ms (0.093): -22 %** |
+| net in the game, cold run | 0.183 ms per GFLOP | 0.137 ms per GFLOP |
+| cold ep2 hub: its AI images all built | not done after ~445 s (557 built, 11 queued) | **~264 s** (567 built) |
+| cached images built (load / preload) | 2.0 ms per M texels | 5.3-6.4 ms (the BC7 encode: 0.9 ms per M texels alone) |
+| first image after its first draw (warm) | <= 3 frames 760 / 755, 4-15 13 / 15 | 750 / 756, 13 / 15 (the same) |
+| level load (level change -> first 3D frame) | 0.25-0.27 s | 0.25 s |
+| GPU + present mean / p99, warm (2 runs) | 4.34 / 7.22, 4.43 / 7.22 ms | 4.46 / 7.18, 4.49 / 7.19 ms |
+| GPU + present mean / p99, cold | 4.94 / 7.37 ms | 4.63 / 7.36 ms |
+| render thread p99, warm | 1.63, 1.38 ms | 1.38, 1.91 ms |
+
+(Cold "seconds": the VBlank counter runs at the picture rate, ~161 per s at 165 fps; converted with it.) A laptop RTX
+5070 (8 GB) has the same budget: Reimagined's warm use drops from ~1.7 to ~1.4 GB; the net needs 155 instead of 294 MB of
+free video memory to be created (ra_net_poll: + 512 MB margin).
