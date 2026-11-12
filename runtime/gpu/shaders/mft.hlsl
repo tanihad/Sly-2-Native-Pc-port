@@ -598,6 +598,23 @@ bool mft_soft_in(uint2 Q, uint s) {
     [loop] for (uint e = 0u; e < sf_ep.x; e++) any = any || mft_cnt_at(Q, s, e) != 0u;
     return any;
 }
+// (shadows2) sf_ep.w = 1: the penumbra's samples in ONE fixed pattern (16, a golden-angle spiral) for every pixel. The old
+// pattern was turned by a per-pixel screen-space noise: as the camera or a character moved, the shadow edge slid over a
+// noise that stayed put on the screen and the dither crawled along every soft edge. With one pattern the coverage is a
+// function of where the edge lies around the pixel only - it moves with the shadow (bands ~1 / 17 apart: ~1 pixel each at
+// the default radius). Returns the covered share; qin / qout: a sample inside / outside (-1: none).
+float mft_soft_cov_fixed(uint2 P, uint s, float R, int2 hi, bool inP, out int2 qin, out int2 qout) {
+    uint nin = inP ? 1u : 0u;
+    qin = int2(-1, -1); qout = int2(-1, -1);
+    [unroll] for (uint i = 0u; i < 16u; i++) {
+        float a = (float)i * 2.39996323 + 0.37, r = R * sqrt(((float)i + 0.5) / 16.0);
+        int2 Q = clamp(int2(P) + int2(round(r * float2(cos(a), sin(a)))), int2(0, 0), hi);
+        bool b = mft_soft_in(uint2(Q), s);
+        nin += b ? 1u : 0u;
+        if (b) qin = Q; else qout = Q;
+    }
+    return (float)nin / 17.0;
+}
 uint mft_shfuse_word_q(uint2 P, uint2 Q, uint s, uint w) {   // mft_shfuse_word with the counters of pixel Q
     uint a = 0u;
     [unroll] for (uint k = 0u; k < 3u; k++) {
@@ -636,6 +653,12 @@ float4 mft_shfuse_soft(uint2 P, uint s, uint w) {
             int2 o = j == 0u ? int2(ri, 0) : j == 1u ? int2(-ri, 0) : j == 2u ? int2(0, ri) : int2(0, -ri);
             edge = edge || mft_soft_in(uint2(clamp(int2(P) + o, int2(0, 0), hi)), s) != inP;
         }
+#if SOFT == 2
+        [branch] if (edge) {             // (shadows2: SOFT=2 permutations - the fixed pattern; SOFT=1 is the original)
+            int2 qin, qout;
+            float cov = mft_soft_cov_fixed(P, s, R, hi, inP, qin, qout);
+            int2 qo = inP ? qout : qin;
+#else
         [branch] if (edge) {
             float rot = frac(52.9829189 * frac(dot((float2)P, float2(0.06711056, 0.00583715)))) * 6.2831853;
             uint nin = inP ? 1u : 0u, nt = 1u;
@@ -650,6 +673,7 @@ float4 mft_shfuse_soft(uint2 P, uint s, uint w) {
             }
             float cov = (float)nin / (float)nt;
             int2 qo = inP ? qout : qin;  // inside: the pixel unshadowed (an outside neighbour's counters); outside: shadowed
+#endif
             [branch] if (qo.x >= 0) {
                 float4 o = mft_unorm(mft_shfuse_word_q(P, uint2(qo), s, w));
                 res.rgb = inP ? lerp(o.rgb, res.rgb, cov) : lerp(res.rgb, o.rgb, cov);
@@ -745,7 +769,15 @@ float4 mft_gsm_soft(uint2 P, uint s, uint w, out float4 s0) {   // mft_shfuse_so
             int2 o = j == 0u ? int2(ri, 0) : j == 1u ? int2(-ri, 0) : j == 2u ? int2(0, ri) : int2(0, -ri);
             edge = edge || mft_soft_in(uint2(clamp(int2(P) + o, int2(0, 0), hi)), s) != inP;
         }
-        [branch] if (edge) {
+        [branch] if (edge && sf_ep.w != 0u) {   // (shadows2: the fixed pattern)
+            int2 qin, qout;
+            float cov = mft_soft_cov_fixed(P, s, R, hi, inP, qin, qout);
+            int2 qo = inP ? qout : qin;
+            [branch] if (qo.x >= 0) {
+                float4 o = mft_unorm(mft_shfuse_word_q(P, uint2(qo), s, w));
+                res.rgb = inP ? lerp(o.rgb, res.rgb, cov) : lerp(res.rgb, o.rgb, cov);
+            }
+        } else [branch] if (edge) {
             float rot = frac(52.9829189 * frac(dot((float2)P, float2(0.06711056, 0.00583715)))) * 6.2831853;
             uint nin = inP ? 1u : 0u, nt = 1u;
             int2 qin = int2(-1, -1), qout = int2(-1, -1);

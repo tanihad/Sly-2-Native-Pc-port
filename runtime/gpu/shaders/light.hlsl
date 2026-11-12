@@ -243,7 +243,8 @@ cbuffer reim_cb : register(b8) {
     float4 r_loc;                        // (local lights) on (1: r_lloc holds this frame's light), gain on the picture, floor, -
     float4 r_v3;                         // (3) the shadows rework: on, the game-lit mask drawn (r_glit), its depth tolerance,
                                          // the history's depth tolerance (0: no last-frame depth in r_pw)
-    float4 r_v3b;                        // (3) the game shadow's darkening written this frame (r_gsm), -, -, -
+    float4 r_v3b;                        // (3) the game shadow's darkening written this frame (r_gsm); (shadows2) r_praw valid
+                                         // (the history's one-frame outlier filter), -, -
 };
 #if MS
 Texture2DMS<float> r_gsm : register(t31);    // (3) the game's own shadow: how much it darkened the pixel (1: not at all; mft.hlsl GSM)
@@ -412,18 +413,32 @@ float4 ps_reim_shadow(float4 pos : SV_Position) : SV_Target {
             float nn = dot(Nw, Nw);
             Nw = nn > 1e-12 ? Nw * rsqrt(nn) : Lw;
             if (dot(Nw, Lw) < 0.0) Nw = -Nw;
-            Pw = W0 + Nw * (r_smp.z * (2.0 + w * 0.0008)) + Lw * (r_smp.z * (1.0 + 1.5 * slope));
+            // ((shadows2) the wider filter reaches 3 texels: a sloped receiver needs the matching depth slack)
+            float sb = r_v3.x > 0.0 && r_v3b.w > 0.0 ? 3.5 : 1.5;
+            Pw = W0 + Nw * (r_smp.z * (2.0 + w * 0.0008)) + Lw * (r_smp.z * (1.0 + sb * slope));
         }
         float4 lc = Pw.x * r_lm0 + Pw.y * r_lm1 + Pw.z * r_lm2 + r_lm3;
         float2 uv = float2(lc.x * 0.5 + 0.5, 0.5 - lc.y * 0.5);
         if (all(uv > r_smp.xy) && all(uv < 1.0 - r_smp.xy) && lc.z > 0.0 && lc.z < 1.0) {
             float lit = 0.0;
-            [unroll] for (int j = 0; j < 4; j++) {
-                float2 o = float2((j & 1) ? 1.0 : -1.0, (j & 2) ? 1.0 : -1.0) * r_smp.xy;
-                float4 g = r_smap.GatherRed(l_lin, uv + o);
-                lit += dot(step(g, lc.z.xxxx + 1e-5), 0.25.xxxx);
+            [branch] if (r_v3.x > 0.0 && r_v3b.w > 0.0) {
+                // (shadows2) a wider, tent-weighted filter: nine gathers 2 texels apart (6 x 6 texels, weights 1 2 1 x 1 2 1).
+                // The 4 x 4 box's hard 1-2 texel edges stepped as the map's casters (swaying plants, cut-out leaves) moved
+                // by a texel; a soft ~6 texel edge changes by a little instead of a whole step
+                [unroll] for (int j = 0; j < 9; j++) {
+                    int jx = j % 3 - 1, jy = j / 3 - 1;
+                    float4 g = r_smap.GatherRed(l_lin, uv + float2(jx, jy) * 2.0 * r_smp.xy);
+                    lit += dot(step(g, lc.z.xxxx + 1e-5), 0.25.xxxx) * (jx == 0 ? 2.0 : 1.0) * (jy == 0 ? 2.0 : 1.0);
+                }
+                lit *= 1.0 / 16.0;
+            } else {
+                [unroll] for (int j = 0; j < 4; j++) {
+                    float2 o = float2((j & 1) ? 1.0 : -1.0, (j & 2) ? 1.0 : -1.0) * r_smp.xy;
+                    float4 g = r_smap.GatherRed(l_lin, uv + o);
+                    lit += dot(step(g, lc.z.xxxx + 1e-5), 0.25.xxxx);
+                }
+                lit *= 0.25;
             }
-            lit *= 0.25;
             float2 e = min(uv, 1.0 - uv);
             float sf = saturate(min(e.x, e.y) * 12.0) * saturate((r_smp2.x - w) / max(r_smp2.x - r_smp.w, 1.0));
             if (r_smp3.y > 0.0) sf *= saturate(nl * 6.0);   // (fix: surfaces almost edge-on to the light fade out: no flip-flop)
@@ -465,11 +480,15 @@ float4 ps_reim_blur2(float4 pos : SV_Position) : SV_Target {
     float w = l_wload(q);
     float4 s = 0.0;
     float ws = 0.0;
+    float gw0 = r_bsrc.Load(int3(q, 0)).w;
+    bool sep = r_v3.x > 0.0 && r_ptaa.w > 0.0;   // (shadows2 test: the game-lit and the world not blurred into each other)
     [unroll] for (int i = -4; i <= 4; i++) {
         int2 qi = q + int2(l_dir.xy * (float)i);
         float wi = l_wload(qi);
         float g = exp(-(float)(i * i) * (1.0 / 12.0)) * exp(-abs(wi - w) / max(w, 1e-3) * 40.0);
-        s += r_bsrc.Load(int3(clamp(qi, int2(0, 0), int2(l_dst.xy) - 1), 0)) * g;
+        float4 v = r_bsrc.Load(int3(clamp(qi, int2(0, 0), int2(l_dst.xy) - 1), 0));
+        if (sep) g *= saturate(1.0 - abs(v.w - gw0));
+        s += v * g;
         ws += g;
     }
     return s / ws;
@@ -482,6 +501,7 @@ float4 ps_reim_blur2(float4 pos : SV_Position) : SV_Target {
 // none; the history is dropped where the reprojected point was not what last frame showed there (its depth differs: it was
 // hidden, or it moved - a character) and on the game-lit pixels (characters move: the world's reprojection is wrong on them)
 Texture2D<float4> r_shist : register(t26);
+Texture2D<float4> r_praw : register(t12);    // (shadows2) last frame's key-light term before its resolve (r_v3b.y: valid)
 float4 ps_reim_shtaa(float4 pos : SV_Position) : SV_Target {
     int2 q = int2(pos.xy);
     float4 cur = r_bsrc.Load(int3(q, 0));
@@ -500,7 +520,8 @@ float4 ps_reim_shtaa(float4 pos : SV_Position) : SV_Target {
     float2 pp = float2((nd.x - r_pndc.y) / r_pndc.x, (nd.y - r_pndc.w) / r_pndc.z);   // previous picture pixel
     float2 uv = pp / l_map.zw * l_dst.zw;
     if (any(uv < 0.0) || any(uv > 1.0)) return cur;
-    float4 h = clamp(r_shist.SampleLevel(l_lin, uv, 0.0), mn, mx);
+    float4 hu = r_shist.SampleLevel(l_lin, uv, 0.0);
+    float4 h = clamp(hu, mn, mx);
     float k = r_ptaa.x;
     if (r_v3.x > 0.0) {
         k *= 1.0 - cur.w;                // (no history on the game-lit)
@@ -509,9 +530,21 @@ float4 ps_reim_shtaa(float4 pos : SV_Position) : SV_Target {
             float dmin = min(min(abs(pw4.x - c.w), abs(pw4.y - c.w)), min(abs(pw4.z - c.w), abs(pw4.w - c.w)));
             k *= saturate(2.0 - dmin / (c.w * r_v3.w + 1.0));
         }
-        // (the per-frame casters' term: a shorter history - props standing still keep steady edges, a moving character's
-        // shadow lags less than a frame's step behind; clamped to this frame's neighbourhood like the rest)
-        return float4(lerp(cur.xy, h.xy, k), lerp(cur.z, h.z, k * 0.65), cur.w);
+        float4 base = cur;
+        if (r_v3b.y > 0.0) {
+            // (shadows2) one-frame outliers out: the median of this frame's value, last frame's own (before its resolve) and
+            // the history, at the same world point. A shadow the map holds for one frame only (a caster the game drew in one
+            // frame, a thin post's face flipping lit / shadowed with its depth normal) never shows; a lasting change shows
+            // one frame later (6 ms at 165 Hz). The neighbourhood clamp alone let such a pop through whole (its whole
+            // neighbourhood popped with it). Where the history is not valid (disoccluded, game-lit) this frame's value.
+            float4 pr = r_praw.SampleLevel(l_lin, uv, 0.0);
+            float3 md = max(min(cur.xyz, pr.xyz), min(max(cur.xyz, pr.xyz), hu.xyz));
+            base.xyz = lerp(cur.xyz, md, saturate(k / max(r_ptaa.x, 1e-3)));
+            h = clamp(hu, min(mn, base), max(mx, base));
+        }
+        // (the per-frame casters' term: r_ptaa.z of the history - (shadows2) 1 by default: with the outlier filter and the
+        // clamp a moving character's shadow stays on time; main ef7c53c's 0.65 let the map's texel steps through)
+        return float4(lerp(base.xy, h.xy, k), lerp(base.z, h.z, k * r_ptaa.z), cur.w);
     }
     return lerp(cur, h, k);
 }
@@ -839,7 +872,29 @@ float4 ps_reim_comp(float4 pos : SV_Position) : SV_Target {
     else if (r_misc.z == 8.0 || r_misc.z == 10.0) {      // (8 / 10: (3) the overlap check's views - the mask read raw, the same in both paths)
         int2 qh = int2(p / l_map.zw);
         float gm = r_gamelit(qh, l_w.Load(int3(qh, 0)));
-        if (r_misc.z == 8.0) o = sky || gm > 0.0 ? 0.5 : saturate(gfd * sfac * 0.5).xxx;   // (8: (3) the world's shadows: the game's x ours (the game-lit as lit))
+        // (8: (3) the world's shadows: the game's x ours; (shadows2) the game-lit in a pure-red marker - stability_check reads it
+        //  as the old flat grey, or with "mask" leaves the blocks at and around the characters out: their silhouettes moving
+        //  over the shadowed ground were most of this view's reversals)
+        //  ... and what last frame did not show at the same world point (its depth there differs: something moved in front,
+        //  or out of the way - a post sweeping across the shadowed ground is motion, not a flickering shadow)
+        bool fresh = false;
+        if (r_misc.z == 8.0 && r_v3b.z > 0.0 && !sky) {
+            float3 P = r_world(p, w);
+            float4 cp = P.x * r_pv0 + P.y * r_pv1 + P.z * r_pv2 + r_pv3;
+            if (cp.w > 1e-3) {
+                float2 nd = cp.xy / cp.w;
+                float2 pq = float2((nd.x - r_pndc.y) / r_pndc.x, (nd.y - r_pndc.w) / r_pndc.z) / l_map.zw;   // (last frame's half-res texel)
+                if (any(pq < 0.0) || any(pq >= l_src.xy)) fresh = true;
+                else {
+                    int2 q0 = int2(floor(pq - 0.5)), qm = int2(l_src.xy) - 1;
+                    float dm = 1e30;
+                    [unroll] for (int j = 0; j < 4; j++)
+                        dm = min(dm, abs(r_pw.Load(int3(clamp(q0 + int2(j & 1, j >> 1), int2(0, 0), qm), 0)) - cp.w));
+                    fresh = dm > cp.w * 0.04 + 1.0;
+                }
+            }
+        }
+        if (r_misc.z == 8.0) o = sky ? 0.5 : gm > 0.0 || fresh ? float3(1.0, 0.0, 0.0) : saturate(gfd * sfac * 0.5).xxx;
         else o = gm > 0.0 && !sky ? saturate(kd * 0.5).xxx : 0.5;
     }   // (10: (3) the light on the game-lit (characters) alone, the rest grey)
     return float4(saturate(o), pic.a);
