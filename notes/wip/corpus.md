@@ -19,9 +19,19 @@ green on 336e78e.
   - brief | 2700-2729 | 27 | 30/30 | same, -From 2700
   - ep3 hub | 4436-4675 | 677 | 24/24 | -Episode 3 -Pad "+1800:cross:10,+90:cross:10,+600:rec,+20:lup:90,+90:rright:60,+60:lup:60,+60:cross:6,+30:lleft:60,+60:lup:80" -Frames 240
   - ep0_museum | 4791-4940 | 266 | 15/15 | corpus.txt pad as before
+  - ep3 brief | 2900-3139 | 463 | 24/24 | -Episode 3 -NoStart -From 2900 -Frames 240 (the title menu over the museum attract, ep3 card)
+  - ep3 recon_int | 4264-4503 | 530 | 24/24 | -Episode 3 -Job t3_recon_int_intro -Direct -Pad "+2300:rec" -Frames 240
+  - ep5 hub_street | 4468-4707 | 545 | 24/24 | -Episode 5, pad as ep3 hub
+  - ep8 hub | 4461-4700 | 398 | 24/24 | -Episode 8, pad as ep3 hub
+  - ep7 boss | 11388-11507 | 255 | 12/12 | -Episode 7 -Job m7_boss -Direct -Pad "+9400:rec" -Frames 120 (arena after ~9300 VBlanks of cutscenes)
+  - ep8 boss | 6647-6886 | 553 | 24/24 | -Episode 8 -Job m8_boss -Direct -Pad "+4700:rec" -Frames 240 (heavy debris: 41.2k prims, 6.3k states max)
+  - m1_brawl | 4444-4623 | 276 | 18/18 | corpus.txt pad
+  - ep2_hub | 4279-4458 | 582 | 18/18 | corpus.txt pad
+  - ep4_hub | 4454-4633 | 486 | 18/18 | corpus.txt pad
+  - load_m3 | 2294-2533 | 235 | 48/48 | corpus.txt how
 
 ## In progress
-- ep3 brief (title menu, -NoStart -From 2900), ep3 recon_int (t3_recon_int_intro direct, +2300:rec).
+- m5_battlezone (+2902:rec), m6_rc_feedback (+1222:rec); scouting ep1 hub (Binocucom briefing at hub entry: the scripted pad lands in it).
 
 ## Next
 1. Remaining: ep3 rope (live), ep5 hub_street, ep6 rc_battle, ep7 boss, ep8 hub, ep8 boss, gpu-C ep1_hub (live),
@@ -43,3 +53,6 @@ green on 336e78e.
 - With a warp card the safehouse menu is already up at START+500 (loads are fast now); ep3 brief (old: "title / menu
   at load", 2900-3139) is the title menu itself: -NoStart.
 - First VBlank of a recording now verifies identical too (rv_*, title, brief).
+- Direct-start timing relative to START is stable (ep8 boss: two takes with +4200 had the same profile); absolute VBlanks vary by ~250.
+- ep8 boss: debris fall is light (6k prims) for ~480 VBlanks, then heavy (35-41k prims, 6k states) for ~700: +4700.
+- m7_boss direct: ~9300 VBlanks of cutscenes before the arena (old recordings were made at v6400: different flow then).
