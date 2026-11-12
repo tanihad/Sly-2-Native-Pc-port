@@ -424,3 +424,16 @@ before each run; none during them). Before = main 336e78e, after = this branch.
 (Cold "seconds": the VBlank counter runs at the picture rate, ~161 per s at 165 fps; converted with it.) A laptop RTX
 5070 (8 GB) has the same budget: Reimagined's warm use drops from ~1.7 to ~1.4 GB; the net needs 155 instead of 294 MB of
 free video memory to be created (ra_net_poll: + 512 MB margin).
+
+### Gates (code of e1161ab; the later commits are notes)
+
+run_tests 16/16; unit suites 28/28; m9_exact S1 + S3 -Game identical on the two recordings that exist today
+(gpu-C_ep0_museum, gpu-C_ep2_hub, -CorpusRoot of the shadow worktree; the corpus was deleted in a disk cleanup and is
+being re-recorded: the other 26 and gpu_diff_all are pending, run at merge); r2_sweep -Parallel 1 Faithful ep1, ep3,
+m2_boardroom tfo, tfb, mf 9/9, Reimagined (PS2_TEX_AI=1, fresh caches) ep1, m2_boardroom tfo, mf 4/4;
+reim_stability_gate warm PASS (orbit 1.009 x, trees 0.983 x) and -Cold PASS (1.011 x, 0.98 x), no world-matrix flips;
+gfx_stress_gate -Cold PASS (1898 changes, 0 crashes, 382 nets) and warm PASS (1930, 0, 389); tex_pop_gate warm PASS
+(0 visible swaps, 1 out of sight; its default seed has no level lists, so the first-image delays are those of 0.1.1267's
+"first run with the update" row: <= 3 frames 536, 4-63 247, 64-255 123; GPU + present p99 8.79, max 12.57 ms).
+Tests' traps: the frame dumps (dump:<n>) write nothing at 165 fps (interpolated pictures) - use 120; unit suite shot
+fails when the PC is loaded (passes quiet).
