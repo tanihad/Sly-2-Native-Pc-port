@@ -764,15 +764,27 @@ the DDA, coordinate convention at k = 1, 2, 3, design 3's measured constants (G 
 
 ### 10.4 Corpus
 
-Read in place, never modified:
-`sly2-worktrees\fix-perf\build\{rv_prompt,rv_intro,title,brief}.gsrec`,
-`sly2-worktrees\ep3\build\gsrec\{hub,recon_int,rope,brief}.gsrec`,
-`sly2-worktrees\ep5\build\gsrec\hub_street.gsrec`, `sly2-worktrees\ep6\build\gsrec\rc_battle.gsrec`,
-`sly2-worktrees\ep7\build\boss.gsrec`, `sly2-worktrees\ep8\build\gsrec\{hub,boss}.gsrec`;
-plus milestone C's new recordings (ep1 hub + mission, ep2 hub + photo mission, ep4 hub + mission,
-prologue, an FMV, a loading screen, pause and save menus, the ThiefNet/safehouse menus), stored under
-the C worktree's `build\gsrec\` and listed in `tests/gpu/corpus.txt` (all 24 with scene, VBlanks and
-what each exercises; census results in appendix B).
+Read in place, never modified. **Where it lives (since 2026-11-12): `C:\Users\tanih\Projects\sly2-corpus`**
+(`sly2-corpus` next to the main checkout), keeping the historical relative paths of `tests/gpu/corpus.txt`
+(`fix-perf\build\{rv_prompt,rv_intro,title,brief}.gsrec`, `ep3\build\gsrec\{hub,recon_int,rope,brief}.gsrec`,
+`ep5\build\gsrec\hub_street.gsrec`, `ep6\build\gsrec\rc_battle.gsrec`, `ep7\build\boss.gsrec`,
+`ep8\build\gsrec\{hub,boss}.gsrec`, `gpu-C\build\gsrec\*` (milestone C: prologue, ep1 hub + mission, ep2 hub + photo
+mission, ep4 hub, hack minigame, an FMV, a loading screen, pause/save, ThiefNet), `gpu-M10\build\gsrec\ws_*` (16:9),
+`gpu-M8\...\m5_battlezone`, `gpu-M11\...\m6_rc_feedback`): 28 recordings, ~8.2 GB, made from the owner's disc and
+never committed. `scripts\gpu_corpus.ps1` resolves the root: `-CorpusRoot`, `SLY2_GPU_CORPUS`, `sly2-corpus` next to
+the main checkout, then the old `sly2-worktrees`.
+
+**The corpus must never live inside a build folder** (or any folder a cleanup treats as scratch). Until 2026-11-12 the
+recordings were read in place from the worktrees' `build\` folders (`sly2-worktrees\<wt>\build\...`); a disk cleanup
+deleted those folders and with them every recording. All 28 were then re-recorded (branch next/corpus, release build
+of main 336e78e) with `scripts\gs_record_scene.ps1`, which now applies the corpus settings itself (software renderer,
+4:3 unless `-Aspect 16:9`, the game's interlaced field offsets `PS2_PROGRESSIVE_FIX=0`, unshaped dumps, its own
+`PS2_USER_DIR`), verified with `scripts\gs_corpus_verify.ps1` (every dumped frame identical, except hack_minigame's
+first VBlank as before) and copied to the corpus root; `tests/gpu/baseline.json` and `tests/gpu/vram_hashes.txt` were
+regenerated from them. Scenes follow the originals' descriptions, but windows and sizes differ (corpus.txt has the new
+VBlanks, MB and the exact "how"); not reproduced: m5_battlezone's green gas cloud (the new take is the tank in the
+rain, 31.5k blended primitives per frame) and ep3 rope has Sly beside the rope, not on it. Keep a copy of the corpus
+folder elsewhere if disk space allows; re-recording all 28 takes about three hours.
 
 ### 10.5 In-game checks
 
