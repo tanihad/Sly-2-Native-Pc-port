@@ -20,6 +20,7 @@ extern void gpu_light_config(int on) __attribute__((weak));   /* (light) gpu_lig
 extern void gpu_tex_config(int on) __attribute__((weak));     /* (tex) gpu_tex.h */
 extern void gpu_look_config(int reimagined) __attribute__((weak));   /* (reimagine) gpu_light.h: Look = Reimagined */
 extern void gpu_tex_look(int reimagined) __attribute__((weak));   /* (ai) gpu_tex.h: Reimagined textures */
+extern void gpu_reim_lights_config(int level) __attribute__((weak));   /* (local lights) gpu_reim.h: 0 off .. 3 */
 extern void gpu_hw_pacing_changed(int pacing) __attribute__((weak));
 void (*gfx_output_size)(int* w, int* h);  /* set by window.c (window_client_size) */
 
@@ -141,6 +142,10 @@ void gfx_apply(void) {
         if (gpu_tex_config) gpu_tex_config(ps2_settings.textures_enhanced);       /* (tex: modern frames only) */
         if (gpu_look_config) gpu_look_config(settings_look(&ps2_settings) == SETTINGS_LOOK_REIMAGINED);   /* (reimagine) */
         if (gpu_tex_look) gpu_tex_look(settings_look(&ps2_settings) == SETTINGS_LOOK_REIMAGINED);   /* (ai) */
+        if (gpu_reim_lights_config) {    /* (local lights) by the Quality: Low none, Medium fewer, High, Ultra the most */
+            int p = ps2_settings.preset;
+            gpu_reim_lights_config(p == SETTINGS_PRESET_LOW ? 0 : p == SETTINGS_PRESET_MEDIUM ? 1 : p == SETTINGS_PRESET_ULTRA ? 3 : 2);
+        }
     }
     gfx_apply_pacing();
     if (scale != logged_scale || bits != logged_bits || off != logged_blur || is_auto != logged_auto ||

@@ -288,6 +288,8 @@ ps_reim_stats       light.hlsl          ps_reim_stats     ps_5_0    REIM=1
 ps_reim_shafts      light.hlsl          ps_reim_shafts    ps_5_0    REIM=1
 ps_reim_comp0       light.hlsl          ps_reim_comp      ps_5_0    MS=0 REIM=1
 ps_reim_comp1       light.hlsl          ps_reim_comp      ps_5_0    MS=1 REIM=1
+# (local lights) the game's point lights (gpu_reim.h reim_lights_build)
+ps_reim_local       light.hlsl          ps_reim_local     ps_5_0    REIM=1
 # (reimagine) the key light's shadow map: the frame's R2 draws as casters (r2.hlsl R2_SHADOW)
 vs_r2m_sh           r2.hlsl             r2_vs_shadow      vs_5_0    R2_MFT=1 R2_SHADOW=1
 ps_r2m_sh           r2.hlsl             r2_ps_shadow      ps_5_0    R2_MFT=1 R2_SHADOW=1

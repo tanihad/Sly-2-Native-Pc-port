@@ -240,7 +240,9 @@ cbuffer reim_cb : register(b8) {
                                          // in front: no shafts; < 0: 0.1.1214's bright-texel centroid), warm glow light (fires)
     float4 r_lc0, r_lc1, r_lc2, r_lc3;   // (2) world -> the static shadow cache's clip (rows; gpu_reim.h reim_smap)
     float4 r_scp;                        // (2) the cache: texel (uv), texel (world units), strength (0: none), -
+    float4 r_loc;                        // (local lights) on (1: r_lloc holds this frame's light), gain on the picture, floor, -
 };
+Texture2D<float4> r_lloc : register(t28);    // (local lights) the game's point lights' light (half res, ps_reim_local)
 Texture2D<float> r_smc : register(t27);      // (2) the static shadow cache (and ps_reim_sccopy's source)
 Texture2D<float> r_smap : register(t24);     // the key light's shadow map (1 at the light, 0 far)
 Texture2D<float4> r_stats : register(t18);   // 4 x 1: [0] average colour, mood; [1] fog colour; [2] shaft source; [3] -
@@ -258,6 +260,63 @@ float3 r_world(float2 p, float w) {
     return h.xyz / h.w;
 }
 float r_noise(float2 q) { return frac(52.9829189 * frac(dot(q, float2(0.06711056, 0.00583715)))); }
+
+// ---- (local lights) the game's own point lights (half res): lamps, torches, fires, windows light the ground, the walls
+// and the characters around them (gpu_reim.h reim_lights_build: the static world's light table, culled, faded in and out,
+// a gentle flicker on fires). Per light: rl[3i] = world position, 1 / (outer - inner radius); rl[3i + 1] = colour x
+// strength (the VU's 2 x colour, the fade, the quality's gain), outer radius; rl[3i + 2] = the VU record's diffuse (< 0)
+// and ambient shares, the wrap clamp (-ambient / diffuse), outer radius^2. The light model is the game's own (VU 0x1050:
+// colour x (diffuse x min(d + d^3, clamp) + ambient), d = N . (surface - light)) with a smooth distance falloff.
+#define RL_MAX 96
+cbuffer reim_lights : register(b9) {
+    float4 rl_n;                         // count, debug (1: mark the light positions), 1 / pool core^2 (share of the outer
+                                         // radius), the pool falloff's share (0: the game's ramp alone)
+    float4 rl_pv0, rl_pv1, rl_pv2, rl_pv3;   // (debug) world -> clip (rows): the lights' places marked in the picture
+    float4 rl[RL_MAX * 3];
+};
+float3 ps_reim_local(float4 pos : SV_Position) : SV_Target {
+    int2 q = int2(pos.xy);
+    float w = l_wload(q);
+    if (w >= l_z.z * 0.5) return 0.0;
+    float2 pp = pos.xy * l_map.zw;
+    float3 P = r_world(pp, w);
+    // the surface normal from the depth (the flatter neighbour of each pair, 2 texels apart: steady under motion)
+    float wl = l_wload(q - int2(2, 0)), wr = l_wload(q + int2(2, 0)), wu = l_wload(q - int2(0, 2)), wd = l_wload(q + int2(0, 2));
+    float3 dx = abs(wr - w) < abs(w - wl) ? r_world(pp + float2(2.0 * l_map.z, 0.0), wr) - P : P - r_world(pp - float2(2.0 * l_map.z, 0.0), wl);
+    float3 dy = abs(wd - w) < abs(w - wu) ? r_world(pp + float2(0.0, 2.0 * l_map.w), wd) - P : P - r_world(pp - float2(0.0, 2.0 * l_map.w), wu);
+    float3 N = cross(dx, dy);
+    float nn = dot(N, N);
+    float3 cam = r_w2.xyz / r_w2.w;
+    N = nn > 1e-12 ? N * rsqrt(nn) : normalize(cam - P);
+    if (dot(N, cam - P) < 0.0) N = -N;
+    float3 E = 0.0;
+    uint n = (uint)rl_n.x;
+    [loop] for (uint i = 0u; i < n; i++) {
+        float4 a = rl[3u * i], b = rl[3u * i + 1u], c = rl[3u * i + 2u];
+        float3 d = a.xyz - P;
+        float d2 = dot(d, d);
+        if (d2 >= c.w) continue;
+        float id = rsqrt(max(d2, 1.0));
+        float dist = d2 * id;
+        float att = saturate((b.w - dist) * a.w);
+        att *= att * (3.0 - 2.0 * att);  // (the game's ramp from the inner to the outer radius, smoothed)
+        float x2 = d2 / c.w, win = (1.0 - x2) * (1.0 - x2);   // (a pool: bright near the source, a long soft tail to the
+        att = lerp(att, win / (1.0 + x2 * rl_n.z), rl_n.w);   //  outer radius - the light reads as coming from it)
+        float nl = dot(N, d) * id;       // (towards the light)
+        float s = c.x * min(-nl - nl * nl * nl, c.z) + c.y;
+        E += b.rgb * (max(s, 0.0) * att);
+    }
+    if (rl_n.y > 0.0) {                  // (PS2_REIM_DBG=5: each light's place in the picture, a magenta dot)
+        for (uint j = 0u; j < n; j++) {
+            float3 L = rl[3u * j].xyz;
+            float4 c = L.x * rl_pv0 + L.y * rl_pv1 + L.z * rl_pv2 + rl_pv3;
+            if (c.w <= 1.0) continue;
+            float2 sp = float2((c.x / c.w - r_ndc.y) / r_ndc.x, (c.y / c.w - r_ndc.w) / r_ndc.z);   // (picture pixels)
+            if (length(sp - pp) < 12.0) E = float3(6.0, 0.0, 6.0);
+        }
+    }
+    return E;
+}
 
 // ---- screen-space shadows (half res): a short march from the surface towards the key light through the depth --------
 float2 ps_reim_shadow(float4 pos : SV_Position) : SV_Target {
@@ -582,10 +641,12 @@ float4 ps_reim_comp(float4 pos : SV_Position) : SV_Target {
     // occlusion + screen-space shadow, depth-aware upsampled together
     float ao = 1.0;
     float2 sh = float2(1.0, 0.0);
+    float3 loc = 0.0;                    // (local lights)
     if (!sky) {
         float2 t = p / l_map.zw - 0.5, f0 = floor(t), f = t - f0;
         float s = 0.0, ws = 0.0;
         float2 s2 = 0.0;
+        float3 s3 = 0.0;
         [unroll] for (int j = 0; j < 4; j++) {
             int2 qj = clamp(int2(f0) + int2(j & 1, j >> 1), int2(0, 0), int2(l_src.xy) - 1);
             float bw = ((j & 1) ? f.x : 1.0 - f.x) * ((j & 2) ? f.y : 1.0 - f.y);
@@ -593,10 +654,12 @@ float4 ps_reim_comp(float4 pos : SV_Position) : SV_Target {
             float g = (bw + 1e-3) / (1e-3 + abs(wj - w) / w * 20.0 + 0.02);
             s += (l_ao.y > 0.0 ? l_aot.Load(int3(qj, 0)) : 1.0) * g;
             s2 += r_sh.Load(int3(qj, 0)).xy * g;
+            if (r_loc.x > 0.0) s3 += r_lloc.Load(int3(qj, 0)).rgb * g;
             ws += g;
         }
         ao = s / ws;
         sh = s2 / ws;
+        loc = s3 / ws;
     }
     float4 st0 = r_stats.Load(int3(0, 0, 0)), fogc = r_stats.Load(int3(1, 0, 0));
     // the mood: night (a dark picture) .. day
@@ -628,6 +691,8 @@ float4 ps_reim_comp(float4 pos : SV_Position) : SV_Target {
         float Lc = l_luma(lin), Ll = l_luma(r_srgb2lin(r_scene.SampleLevel(l_lin, p * l_dir.zw, 3.0).rgb));
         lin *= clamp(pow(max((Lc + 0.004) / (Ll + 0.004), 1e-3), r_vig.w), 0.7, 1.45);
     }
+    if (r_loc.x > 0.0 && !sky)           // (local lights) the game's lamps, torches and fires light what is around them: the
+        lin += (lin + r_loc.z) * loc * r_loc.y;   // picture's colour as the surface's (+ a floor: dark paint still shows the pool)
     if (r_ksrc.w > 0.0 && !sky) {        // (2) warm glow lights its surroundings: fires and torches light the ground, walls and
         float3 g = min(bl, 2.0);         // characters near them in their own hue (the glow's own flicker: the flames' animation)
         float gm = max(max(g.r, g.g), g.b);
@@ -682,6 +747,7 @@ float4 ps_reim_comp(float4 pos : SV_Position) : SV_Target {
     else if (r_misc.z == 2.0) o = sf;                      // (2: the shafts)
     else if (r_misc.z == 3.0) { float3 P = r_world(p, w); o = sky ? float3(0, 0, 1) : frac(P / 500.0); }   // (3: world position bands)
     else if (r_misc.z == 4.0) o = fogc.rgb;                // (4: the fog colour)
+    else if (r_misc.z == 5.0) o = r_lin2srgb(loc * 0.5);   // (5: the local lights' light, their positions marked)
     return float4(saturate(o), pic.a);
 }
 #endif

@@ -52,6 +52,10 @@ static int fx_env = -1;
 /* (r2-m6, R6) inside the particle class's span of this frame (R2H_PART): gpu_front.c draws its triangles natively */
 int gf_r2_part;
 
+/* (local-lights) the frame's point lights from its scene slot (hybrid; Look = Reimagined), written into the frame data once
+ * per data arena: gpu_r2_frame.pad = their offset / 16 + 1 (a qword {count} then count r2_light records; gpu_reim.h) */
+static struct { r2_light l[R2_SLOT_LIGHTS]; uint32_t n, serial, written, epoch, off; } FL;
+
 /* ---- receiving hint words ----------------------------------------------------------------------------------------- */
 enum { RX_IDLE, RX_FRAME, RX_ENTRY, RX_XQ };
 static struct {
@@ -602,6 +606,16 @@ static void gf_r2_flush_impl(void) {
     memcpy(fr.c1, FB.c1, 16);
     fr.ax = SM.ax; fr.bx = SM.bx; fr.ay = SM.ay; fr.by = SM.by; fr.az = SM.az; fr.bz = SM.bz;
     fr.serial = fb_serial;
+    if (FL.n && FL.serial == fb_serial) {    /* (local-lights) */
+        if (!FL.written || FL.epoch != gf_data_epoch) {
+            uint32_t hdr[4] = { FL.n, 0, 0, 0 };
+            FL.off = gf_data(hdr, sizeof hdr);
+            gf_data(FL.l, FL.n * (uint32_t)sizeof(r2_light));
+            FL.epoch = gf_data_epoch;
+            FL.written = 1;
+        }
+        fr.pad = (FL.off >> 4) + 1u;
+    }
     o->frame_off = gf_data(&fr, sizeof fr);
     o->ent_off = gf_data(ents, nents * (uint32_t)sizeof *ents);
     if (nmask) {
@@ -722,6 +736,14 @@ static void run_hint(const gs_env_view* ev, uint32_t arg, uint32_t serial) {
         FB = S->fb;
         fb_ok = r2_screen_model_of(&FB, &SM);
         fb_serial = serial;
+    }
+    if (FL.serial != serial) {               /* (local-lights) the frame's lights (Look = Reimagined; else none) */
+        uint32_t nl = S->nlight < R2_SLOT_LIGHTS ? S->nlight : R2_SLOT_LIGHTS;
+        memcpy(FL.l, S->light, nl * sizeof(r2_light));
+        __atomic_thread_fence(__ATOMIC_ACQUIRE);
+        FL.n = __atomic_load_n(&S->serial, __ATOMIC_RELAXED) == serial ? nl : 0;
+        FL.serial = serial;
+        FL.written = 0;
     }
     uint32_t first = S->run_first[run], n = S->run_count[run];
     if (first + n > S->nent) { R2S.stale++; return; }

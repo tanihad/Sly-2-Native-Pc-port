@@ -445,7 +445,77 @@ static void seq_frame(void) {
     seq_len = 0; seq_buf[0] = 0; seq_unpaid = 0;
 }
 
+/* (local-lights) the game's own lights: the static world (0x3DD490) keeps every registered LIGHT in a table of 256
+ * pointers at +0x4154 (func 0x1A3D00 adds one, its slot index at LIGHT + 0x118); the light search (0x1A3F78) scores them
+ * per object (LIGHT + 0x100 position, + 0x110 / + 0x114: score = a + b x distance) and copies the best 4 VU records (LIGHT
+ * + 0x120, 3 qw) into the object's light set (notes/local-lights.md) */
+#define SW_ADDR 0x003DD490u
+#define SW_LIGHTS (SW_ADDR + 0x4154u)
+static float ps2_rf(ps2_ctx* ctx, uint32_t a) { uint32_t u = ps2_r32(ctx, a); float f; memcpy(&f, &u, 4); return f; }
+static void lights_dump(ps2_ctx* ctx) {
+    static int on = -1;
+    if (on < 0) { const char* e = getenv("PS2_REIM_LIGHTS_DUMP"); on = e && *e ? atoi(e) : 0; }
+    if (!on || ps2_vblank_count() % 600u > 1u) return;
+    int n = 0;
+    for (uint32_t i = 0; i < 256; i++) {
+        uint32_t L = ps2_r32(ctx, SW_LIGHTS + 4u * i);
+        if (!L || L >= PS2_RAM_SIZE - 0x200u) continue;
+        n++;
+        float f[0x80 / 4];
+        for (uint32_t k = 0; k < 0x80 / 4; k++) { uint32_t u = ps2_r32(ctx, L + 0xE0u + 4u * k); memcpy(&f[k], &u, 4); }
+        uint32_t w[0x80 / 4];
+        memcpy(w, f, sizeof w);
+        fprintf(stderr, "[lights] v%u #%u L %06X idx %u kind %u (+E4 %08X) pos %.1f %.1f %.1f %.3g | sc %.4g %.4g %.4g %.4g | "
+                "vu0 %08X %.4g %.4g %.4g | col %.4g %.4g %.4g %.4g | vu2 %.4g %.4g %.4g %.4g | +150 %.4g %.4g %.4g %.4g | +15C %08X +160 %08X +168 %.4g\n",
+                ps2_vblank_count(), i, L, ps2_r32(ctx, L + 0x118u), w[0], w[1], f[8], f[9], f[10], f[11], f[12], f[13], f[14], f[15],
+                w[16], f[17], f[18], f[19], f[20], f[21], f[22], f[23], f[24], f[25], f[26], f[27], f[28], f[29], f[30], f[31],
+                ps2_r32(ctx, L + 0x15Cu), ps2_r32(ctx, L + 0x160u), ps2_rf(ctx, L + 0x168u));
+        if (on >= 2 && n <= 3) {
+            for (uint32_t k = 0; k < 0x180; k += 16)
+                fprintf(stderr, "[lights]   +%03X %08X %08X %08X %08X\n", k, ps2_r32(ctx, L + k), ps2_r32(ctx, L + k + 4), ps2_r32(ctx, L + k + 8), ps2_r32(ctx, L + k + 12));
+        }
+    }
+    fprintf(stderr, "[lights] v%u %d lights registered\n", ps2_vblank_count(), n);
+}
+/* the frame's point lights into its scene slot (Look = Reimagined only - Faithful / Retro never read them; PS2_REIMAGINE
+ * wins as in gpu_light.h; PS2_REIM_LIGHTS=0: none) */
+static uint32_t lights_capture(ps2_ctx* ctx, r2_light* out) {
+    static int env_on = -2, env_reim = -2;
+    if (env_on == -2) {
+        const char* e = getenv("PS2_REIM_LIGHTS"); env_on = !(e && *e == '0');
+        e = getenv("PS2_REIMAGINE"); env_reim = e && *e ? *e != '0' : -1;
+    }
+    int reim = env_reim >= 0 ? env_reim : settings_look(&ps2_settings) == SETTINGS_LOOK_REIMAGINED;
+    if (!env_on || !reim) return 0;
+    uint32_t n = 0;
+    for (uint32_t i = 0; i < 256 && n < R2_SLOT_LIGHTS; i++) {
+        uint32_t L = ps2_r32(ctx, SW_LIGHTS + 4u * i);
+        if (!L || (L & 15u) || L >= PS2_RAM_SIZE - 0x200u || ps2_r32(ctx, L + 0x118u) != i) continue;
+        uint32_t kind = ps2_r32(ctx, L + 0xE0u);
+        if (kind != 1u) continue;                /* (point lights; 0: directional - the key light's business) */
+        r2_light* o = &out[n];
+        for (int k = 0; k < 3; k++) { o->pos[k] = ps2_rf(ctx, L + 0x100u + 4u * (uint32_t)k); o->col[k] = ps2_rf(ctx, L + 0x130u + 4u * (uint32_t)k); }
+        o->r_out = ps2_rf(ctx, L + 0x168u);
+        o->r_in = ps2_rf(ctx, L + 0x164u);
+        o->amb = ps2_rf(ctx, L + 0x124u);
+        o->dif = ps2_rf(ctx, L + 0x128u);
+        o->cw = ps2_rf(ctx, L + 0x13Cu);
+        o->id = i | ((L >> 4) << 8);
+        o->kind = kind;
+        o->flags = ps2_r32(ctx, L + 0x15Cu);
+        o->pad[0] = o->pad[1] = 0;
+        int ok = o->r_out > 1.0f && o->r_out < 1e5f;
+        for (int k = 0; k < 3; k++) ok &= isfinite(o->pos[k]) && fabsf(o->pos[k]) < 1e6f && isfinite(o->col[k]);
+        ok &= isfinite(o->amb) && isfinite(o->dif) && isfinite(o->r_in);
+        if (!ok) continue;
+        if (!(o->r_in >= 0.0f) || o->r_in > o->r_out) o->r_in = 0.0f;
+        n++;
+    }
+    return n;
+}
+
 static void frame_begin(ps2_ctx* ctx) {
+    lights_dump(ctx);
     seq_frame();
     fr_open = 1;
     fr_mode = mode_now();
@@ -496,6 +566,7 @@ static void frame_begin(ps2_ctx* ctx) {
             __atomic_thread_fence(__ATOMIC_RELEASE);
             fr_slot->nent = fr_slot->nrun = fr_slot->nxq = 0;
             fr_slot->fb = fr_block;
+            fr_slot->nlight = lights_capture(ctx, fr_slot->light);   /* (local-lights) */
         }
     }
 }

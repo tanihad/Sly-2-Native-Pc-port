@@ -27,6 +27,7 @@ extern int gf_trace;                     /* PS2_GPU_FRONT_TRACE: this frame is l
 void* gf_cmd(uint16_t op, uint32_t bytes);          /* append a command (zeroed), returns it */
 uint32_t gf_data(const void* src, uint32_t bytes);  /* append to the data arena (src NULL: zeroed), returns offset */
 void* gf_data_ptr(uint32_t off);
+extern uint32_t gf_data_epoch;                      /* (local-lights) counts the data arena's restarts (offsets before it are gone) */
 void gf_target_op(uint16_t id);                     /* an op on target id follows: an ALIAS16 run on it ends first */
 
 /* ---- targets and ownership (gpu_own.c) ---------------------------------------------------------- */
