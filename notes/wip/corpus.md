@@ -41,21 +41,19 @@ green on 336e78e.
   - pause_save | 4640-4789 | 416 | 15/15 | PS2_MOVIE_LAYER=0 -Episode 2 -Pad "+1800:cross:10,+700:start:10,+60:down:10,+60:cross:10,+60:rec,+20:up:10,+50:cross:10" -Frames 300, cut to 150 (53.2k prims max, 17148 uploads = old)
 
 ## In progress
-- ws_* re-runs, then ep2_photo live.
+- All 28 recorded, verified, copied (C:\Users\tanih\Projects\sly2-corpus, 8.2 GB); corpus.txt (20a8b3c), baseline.json +
+  vram_hashes.txt (18bd844). gpu_diff_all mixed 28/28 and ref 28/28 on the new baseline. Running: m9_exact -Game S1+S3
+  (base = new = build\ctools\gs_replay_336e78e.exe), sanity (build\sanity: copy of runtime with tfx MODULATE red >> 6).
 
 ## Next
-1. Remaining: ws_museum169 + ws_ep3_hud (re-running with PS2_DUMP_RAW=1: display-shaped 796x448 live dumps can't be
-   compared), ep2_photo (live), ep3 rope (live).
-2. corpus.txt windows/MB/how; baseline.json + vram_hashes.txt regenerated (gpu_diff_all -Update; gs_vram_hashes).
-3. Gates: gpu_diff_all 28/28, m9_exact S1+S3 -Game, sanity (broken shader constant detected).
-4. notes/d3d11-renderer.md corpus section.
+1. Record m9_exact + sanity results; delete build\gpu_diff_*\*\*.png; Status complete; final commit.
 
 ## Findings / traps
 - Recording settings: settings defaults are now 16:9, renderer gpu, interlacing off (filters modern -> ps2_progressive
   = 1 changes the game's field offsets via recomp patches). The original corpus (2026-10-14 and before) was 4:3,
   interlaced, sw. So every run sets PS2_GS_BACKEND=sw, PS2_ASPECT=4:3 (16:9 for ws_*), PS2_PROGRESSIVE_FIX=0,
   PS2_USER_DIR=build\gsrec\<name>\user.
-- gs_record_scene.ps1 does not set PS2_USER_DIR: set it per run (scratch under build\).
+- gs_record_scene.ps1 now sets these corpus settings itself (-Aspect, -Hud, -ExtraEnv; PS2_USER_DIR = build\gsrec\<Name>\user).
 - The boot's "create a save file?" prompt is skipped by the PC port (pc_save_boot_create): PS2_PC_TEXT=0 brings it
   back (rv_prompt). The standard path (fresh card, square at 600) now reaches the "Sly Cooper the thief" card at
   ~1980-2250 and the title menu's START at ~2313 (hook anchor); the Binocucom briefing from ~2430.
