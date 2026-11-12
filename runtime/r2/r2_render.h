@@ -53,6 +53,9 @@ typedef struct {
      * materials' texdec calls, which may build images) */
     int etex;
     void (*etex_bind)(void);
+    /* (shadows) shadow_sel 3: the lit entries only (a light block: the game lights them in the VU - characters, lit props),
+     * drawn from the camera into the game-lit mask (gpu_reim.h); shadow_h: the target's height (0: shadow_size, square) */
+    int shadow_h;
 } r2_exec_in;
 enum { R2X_BATCH = 1, R2X_STATE = 2 };
 

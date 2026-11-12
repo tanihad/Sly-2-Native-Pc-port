@@ -1860,7 +1860,10 @@ static void mft_shfuse(const mft_shp* q, int epochs) {
     }
     ID3D11DepthStencilView* sds = m->n > 1 ? mft_sds(0, m->w, m->h, m->n) : NULL;
     if (sds && !r8s_skip(R8S_FCLR)) ID3D11DeviceContext_ClearDepthStencilView(gpu_rt.ctx, sds, D3D11_CLEAR_STENCIL, 1.0f, 0);
+    /* (shadows) Look = Reimagined: also the game shadow's darkening per pixel (gpu_reim.h reim_gsm_rtv, mft.hlsl GSM) */
+    ID3D11RenderTargetView* grtv = reim_gsm_rtv(m->w, m->h, m->n);
     mft_bind_raw(M.spare_rtv, sds);
+    if (grtv) { ID3D11RenderTargetView* r2[2] = { M.spare_rtv, grtv }; ID3D11DeviceContext_OMSetRenderTargets(gpu_rt.ctx, 2, r2, sds); }
     mft_cb_scale(0);
     ID3D11DeviceContext_PSSetShaderResources(gpu_rt.ctx, 12, 1, &m->srv);
     ID3D11DeviceContext_PSSetShaderResources(gpu_rt.ctx, 14, 1, &M.cnt_srv);
@@ -1873,12 +1876,12 @@ static void mft_shfuse(const mft_shp* q, int epochs) {
                                             per sample: the deferred renderers' edge / interior split) */
         prof_mark(PR_MFT_FUSE);
         set_depth(mft_ds_mark());
-        if (!r8s_skip(R8S_FPX)) mft_quad(r, soft ? GPU_SH_ps_mft_shfuse_px_s : GPU_SH_ps_mft_shfuse_px);
+        if (!r8s_skip(R8S_FPX)) mft_quad(r, grtv ? (soft ? GPU_SH_ps_mft_shfuse_px_sg : GPU_SH_ps_mft_shfuse_px_g) : soft ? GPU_SH_ps_mft_shfuse_px_s : GPU_SH_ps_mft_shfuse_px);
         set_depth(mft_ds_date(0, 0));
-        if (!r8s_skip(R8S_FPS)) mft_quad(r, soft ? GPU_SH_ps_mft_shfuse1_s : GPU_SH_ps_mft_shfuse1);
+        if (!r8s_skip(R8S_FPS)) mft_quad(r, grtv ? (soft ? GPU_SH_ps_mft_shfuse1_sg : GPU_SH_ps_mft_shfuse1_g) : soft ? GPU_SH_ps_mft_shfuse1_s : GPU_SH_ps_mft_shfuse1);
     } else {
         prof_mark(PR_MFT_FUSE);
-        mft_quad(r, soft ? GPU_SH_ps_mft_shfuse0_s : GPU_SH_ps_mft_shfuse0);
+        mft_quad(r, grtv ? (soft ? GPU_SH_ps_mft_shfuse0_sg : GPU_SH_ps_mft_shfuse0_g) : soft ? GPU_SH_ps_mft_shfuse0_s : GPU_SH_ps_mft_shfuse0);
     }
     ID3D11ShaderResourceView* none[3] = { NULL, NULL, NULL };
     ID3D11DeviceContext_PSSetShaderResources(gpu_rt.ctx, 12, 3, none);
@@ -1921,6 +1924,7 @@ static int mft_shadow(const gpu_front_frame_data* fd, const mft_shp* q, uint32_t
     int pc = PR.cur;
     prof_mark(PR_MFT_SH);
     int ok = mft_need(q->L.B, MT_MS) && mft_cnt_ensure((m->w * m->n + 1) / 2, m->h * epochs) && !r8s_skip(R8S_SHADOW);
+    RG.seq++; RG.seq_ok += (uint64_t)ok;   /* (shadows: statistics) */
     int epoch = 0, nvd = 0;
     for (size_t p = q->vol0; p < q->tail;) {
         const gpu_fop* h = (const gpu_fop*)(fd->cmd + p);

@@ -4,7 +4,7 @@
  * three consecutive pictures a "flicker event" is a reversal of the luma's change - up then down or down then up - with
  * both steps above the threshold. Real motion mostly changes a block one way for several pictures; flicker reverses.
  *   stability_check <dir with frame_*.bmp> [threshold (luma units of 255, default 3)] [dark (luma, default 64)]
- *                   [heat.pgm | -] [top share left out (0..1: the HUD)]
+ *                   [heat.pgm | -] [top share left out (0..1: the HUD)] [region "x0,y0,x1,y1" (shares; default all)]
  * Prints: pictures, events per 1000 blocks x pictures over all blocks and over the dark blocks (luma < dark: the
  * shadowed regions), and the mean absolute block change (motion energy) for scale. Exit 0. */
 #include <stdio.h>
@@ -64,6 +64,9 @@ int main(int argc, char** argv) {
     int pics = 0, run = 0, total = 0, top = 0;
     double topf = argc > 5 ? atof(argv[5]) : 0.0;   /* (reimagine2) the top share of the picture left out (the HUD's
                                                        icons and ticker: the same in both looks, they only dilute) */
+    double rx0 = 0.0, ry0 = 0.0, rx1 = 1.0, ry1 = 1.0;   /* (shadows) argv[6] "x0,y0,x1,y1": only the blocks in that share of
+                                                           the picture (e.g. the third-person character and his shadow) */
+    if (argc > 6 && sscanf(argv[6], "%lf,%lf,%lf,%lf", &rx0, &ry0, &rx1, &ry1) != 4) { rx0 = ry0 = 0.0; rx1 = ry1 = 1.0; }
     long prevnum = -10;   /* (only triples of consecutive pictures - frame numbers in the names - are compared) */
     for (int i = 0; i < n; i++) {
         int w, hh; uint8_t* L;
@@ -90,6 +93,7 @@ int main(int argc, char** argv) {
         pics++; run++; total++;
         if (run < 3) continue;
         for (int k = top * bw; k < bw * bh; k++) {
+            if (k % bw < (int)(rx0 * bw) || k % bw >= (int)(rx1 * bw + 0.5) || k / bw < (int)(ry0 * bh) || k / bw >= (int)(ry1 * bh + 0.5)) continue;
             float d1 = b1[k] - b0[k], d2 = b2[k] - b1[k];
             int e = (d1 > thr && d2 < -thr) || (d1 < -thr && d2 > thr);
             ev += e; cnt++; heat[k] += e;
@@ -106,7 +110,7 @@ int main(int argc, char** argv) {
     }
     printf("jitter %.4f (all), %.4f (dark); pops %.3f per 1000; ", j1 > 0 ? j2 / j1 : 0.0, j1d > 0 ? j2d / j1d : 0.0,
            cnt ? pops * 1000.0 / cnt : 0.0);
-    printf("pictures %d, blocks %dx%d: flicker %.3f per 1000 (all), %.3f per 1000 (dark < %.0f, %.0f%% of blocks), motion %.3f\n",
+    printf("pictures %d, blocks %dx%d: flicker %.3f per 1000 (all), %.3f per 1000 (dark < %.0f, %.2f%% of blocks), motion %.3f\n",
            pics, bw, bh, cnt ? ev * 1000.0 / cnt : 0.0, cntd ? evd * 1000.0 / cntd : 0.0, dark, cnt ? 100.0 * cntd / cnt : 0.0,
            cnt ? mot / cnt : 0.0);
     return 0;

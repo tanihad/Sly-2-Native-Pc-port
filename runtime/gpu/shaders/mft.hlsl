@@ -696,6 +696,115 @@ float4 ps_mft_shfuse(float4 pos : SV_Position) : SV_Target {
 #endif
 }
 #endif
+#ifndef GSM
+#define GSM 0
+#endif
+#if GSM
+// (shadows) Look = Reimagined: the fused pass also writes how much the game's own shadow darkened each pixel (SV_Target1:
+// the result's luma over the same pixel's word without any volume counter, 1 = not darkened). Reimagined's composite then
+// takes one shadow - the game's or the key light's, whichever is darker - instead of multiplying both (gpu_reim.h).
+uint mft_shfuse_word_z(uint s, uint w) {   // mft_shfuse_word with every counter 0
+    uint a = 0u;
+    [unroll] for (uint k = 0u; k < 3u; k++) {
+        uint4 c = sf_c[k];
+        if ((c.w & (1u << 19)) != 0u) {
+            uint src = (c.w & (1u << 18)) != 0u ? a : w;
+            if ((c.w & (1u << 20)) != 0u) a = sf_copy(c, src, a);
+            else w = sf_copy(c, src, w);
+        }
+        if (k == 0u) {
+            if (sf_clr.x != 0u) w = (w & ~sf_clr.z) | (sf_clr.y & sf_clr.z);
+            [loop] for (uint e = 0u; e + 1u < sf_ep.x; e++) { uint4 q = sf_flat[e]; w = npost_word(w, w, q.x, q.y, q.z, q.w, 0u); }
+        }
+    }
+    if (sf_np2.y != 0u) w = npost_word(w, w, sf_np.x, sf_np.y, sf_np.z, sf_np.w, sf_np2.x);
+    return w;
+}
+float mft_gsm(uint2 P, uint s, uint w, float3 res) {
+    int r = (int)ceil(asfloat(sf_ep.z)) + 1;   // (the soft edge's reach: SOFT's penumbra; 1 without)
+    if (sf_svbb.z <= sf_svbb.x || (int)P.x + r < (int)sf_svbb.x || (int)P.x - r >= (int)sf_svbb.z || (int)P.y + r < (int)sf_svbb.y ||
+        (int)P.y - r >= (int)sf_svbb.w) return 1.0;
+    float3 u = mft_unorm(mft_shfuse_word_z(s, w)).rgb;
+    float lu = dot(u, float3(0.2126, 0.7152, 0.0722)), lr = dot(res, float3(0.2126, 0.7152, 0.0722));
+    return lu > 2.0 / 255.0 ? saturate(lr / lu) : 1.0;
+}
+#if SOFT
+float4 mft_gsm_soft(uint2 P, uint s, uint w, out float4 s0) {   // mft_shfuse_soft, also giving the pixel's own word (s0)
+    uint S = mft_shfuse_word_q(P, P, s, w);
+    float4 res = mft_unorm(S);
+    s0 = res;
+    float R = asfloat(sf_ep.z);
+    int ri = (int)ceil(R);
+    int2 hi = int2(sf_svbb.zw) + 64;
+    bool nearb = (int)P.x + ri >= (int)sf_svbb.x && (int)P.x - ri < (int)sf_svbb.z && (int)P.y + ri >= (int)sf_svbb.y &&
+                 (int)P.y - ri < (int)sf_svbb.w;
+    [branch] if (nearb) {
+        bool inP = mft_soft_in(P, s);
+        bool edge = false;
+        [unroll] for (uint j = 0u; j < 4u; j++) {
+            int2 o = j == 0u ? int2(ri, 0) : j == 1u ? int2(-ri, 0) : j == 2u ? int2(0, ri) : int2(0, -ri);
+            edge = edge || mft_soft_in(uint2(clamp(int2(P) + o, int2(0, 0), hi)), s) != inP;
+        }
+        [branch] if (edge) {
+            float rot = frac(52.9829189 * frac(dot((float2)P, float2(0.06711056, 0.00583715)))) * 6.2831853;
+            uint nin = inP ? 1u : 0u, nt = 1u;
+            int2 qin = int2(-1, -1), qout = int2(-1, -1);
+            [unroll] for (uint i = 0u; i < 12u; i++) {
+                float a = (float)i * 2.39996323 + rot, r = R * sqrt(((float)i + 0.5) / 12.0);
+                int2 Q = clamp(int2(P) + int2(round(r * float2(cos(a), sin(a)))), int2(0, 0), hi);
+                bool b = mft_soft_in(uint2(Q), s);
+                nin += b ? 1u : 0u;
+                nt++;
+                if (b) qin = Q; else qout = Q;
+            }
+            float cov = (float)nin / (float)nt;
+            int2 qo = inP ? qout : qin;
+            [branch] if (qo.x >= 0) {
+                float4 o = mft_unorm(mft_shfuse_word_q(P, uint2(qo), s, w));
+                res.rgb = inP ? lerp(o.rgb, res.rgb, cov) : lerp(res.rgb, o.rgb, cov);
+            }
+        }
+    }
+    return res;
+}
+#endif
+struct GsmOut { float4 c : SV_Target0; float g : SV_Target1; };
+GsmOut mft_gsm_out(uint2 P, uint s, uint w) {
+    GsmOut o;
+    // (cost) a pixel outside every volume is its own unshadowed word: the word without counters is computed only inside
+    bool inP = false;
+    [loop] for (uint e = 0u; e < sf_ep.x; e++) inP = inP || mft_cnt_at(P, s, e) != 0u;
+#if SOFT
+    float4 s0;
+    o.c = mft_gsm_soft(P, s, w, s0);
+#else
+    float4 s0 = mft_unorm(mft_shfuse_word(P, s, w));
+    o.c = s0;
+#endif
+    if (inP) o.g = mft_gsm(P, s, w, o.c.rgb);
+    else {
+        float lu = dot(s0.rgb, float3(0.2126, 0.7152, 0.0722)), lr = dot(o.c.rgb, float3(0.2126, 0.7152, 0.0722));
+        o.g = lu > 2.0 / 255.0 ? saturate(lr / lu) : 1.0;
+    }
+    return o;
+}
+#if MS
+GsmOut ps_mft_shfuse_g(float4 pos : SV_Position, uint s : SV_SampleIndex) { return mft_gsm_out(uint2(pos.xy), s, mft_col(uint2(pos.xy), s)); }
+GsmOut ps_mft_shfuse_px_g(float4 pos : SV_Position) {
+    uint2 P = uint2(pos.xy);
+    uint w = mft_col(P, 0u);
+    bool same = true;
+    [loop] for (uint s = 1u; s < m_cfg.x; s++) {
+        same = same && mft_col(P, s) == w;
+        [loop] for (uint e = 0u; e < sf_ep.x; e++) same = same && mft_cnt_at(P, s, e) == mft_cnt_at(P, 0u, e);
+    }
+    if (!same) discard;
+    return mft_gsm_out(P, 0u, w);
+}
+#else
+GsmOut ps_mft_shfuse_g(float4 pos : SV_Position) { return mft_gsm_out(uint2(pos.xy), 0u, mft_col(uint2(pos.xy), 0u)); }
+#endif
+#endif
 #if MS
 // (r8-perf, diagnostics: PS2_R8P_VERIFY) two results of one step compared per sample: colour words, depth bits; counts of
 // the differing samples and the first differing pixel (lowest y << 16 | x)
